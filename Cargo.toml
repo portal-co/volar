@@ -1,0 +1,10 @@
+[workspace]
+members=[]
+resolver="3"
+
+[workspace.package]
+license = "CC0-1.0 AND MIT AND Apache-2.0"
+description = "VOLE-in-the-head computations for a cloud world"
+
+[workspace.dependencies]
+
