@@ -13,7 +13,9 @@ pub type ByteVole<T> = Vole<U1, T>;
 pub trait VoleArray<T>: ArrayLength<T> + ArrayLength<MaybeUninit<T>> {}
 impl<T, X: ArrayLength<T> + ArrayLength<MaybeUninit<T>>> VoleArray<T> for X {}
 pub struct Vole<N: VoleArray<T>, T> {
+    ///Multiplication-based randomizer
     pub u: GenericArray<T, N>,
+    ///Fixed offset
     pub v: GenericArray<T, N>,
 }
 impl<N: VoleArray<T> + VoleArray<U> + VoleArray<T::Output>, T: Add<U> + Clone, U: Clone>
@@ -46,6 +48,15 @@ where
     }
 }
 impl<N: VoleArray<T>, T> Vole<N, T> {
+    pub fn r#static(v: GenericArray<T, N>) -> Self
+    where
+        T: Default,
+    {
+        Vole {
+            u: GenericArray::default(),
+            v,
+        }
+    }
     pub fn glue<'a, M: VoleArray<T>>(
         a: impl Iterator<Item = Vole<M, T>> + Clone + 'a,
     ) -> (Self, impl Iterator<Item = GenericArray<T, M>> + Clone + 'a)
