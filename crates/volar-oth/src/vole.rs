@@ -1,6 +1,6 @@
 use core::{
     mem::MaybeUninit,
-    ops::{Add, Mul},
+    ops::{Add, BitXor, Mul},
 };
 
 use cipher::consts::{U1, U8};
@@ -35,6 +35,15 @@ impl<N: VoleArray<T> + VoleArray<U> + VoleArray<T::Output>, T: Add<U> + Clone, U
         Vole {
             u: self.u.zip(rhs.u, |a, b| a ^ b),
             v: result_v.map(|x| unsafe { x.assume_init() }),
+        }
+    }
+}
+impl<N: VoleArray<T>, T> BitXor<GenericArray<u8, N>> for Vole<N, T> {
+    type Output = Vole<N, T>;
+    fn bitxor(self, rhs: GenericArray<u8, N>) -> Self::Output {
+        Vole {
+            u: self.u.zip(rhs, |a, b| a ^ b),
+            v: self.v,
         }
     }
 }
