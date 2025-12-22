@@ -107,16 +107,13 @@ impl<B: ByteBlockEncrypt, D: Digest> ABO<B, D> {
                 .fold(GenericArray::<u8, B::BlockSize>::default(), |a, b| {
                     a.zip(b, |a, b| a.wrapping_add(b))
                 });
-            let v: GenericArray<[u8; 8], B::BlockSize> = s.iter().cloned().enumerate().fold(
-                GenericArray::<[u8; 8], B::BlockSize>::default(),
-                |a, (i, b)| {
-                    a.zip(b, |a, b| {
-                        core::array::from_fn(|j| {
-                            a[j].wrapping_add(b.wrapping_mul(((i << 3 + j) & 0xff) as u8))
-                        })
-                    })
-                },
-            );
+            let v: GenericArray<u8, B::BlockSize> = s
+                .iter()
+                .cloned()
+                .enumerate()
+                .fold(GenericArray::<u8, B::BlockSize>::default(), |a, (i, b)| {
+                    a.zip(b, |a, b| a.wrapping_add(b).wrapping_add(i as u8))
+                });
             Vole { u, v }
         })
     }
