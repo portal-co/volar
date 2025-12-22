@@ -11,3 +11,4 @@ pub trait Commitment {
 pub mod simple;
 pub mod vole;
 pub mod byte_gen;
+pub mod field;
