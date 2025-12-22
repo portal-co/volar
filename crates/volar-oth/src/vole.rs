@@ -8,6 +8,7 @@ use rand::distr::Distribution;
 
 use super::*;
 pub mod poly;
+
 pub type ByteVole<T> = Vole<U1, T>;
 pub trait VoleArray<T>: ArrayLength<T> + ArrayLength<MaybeUninit<T>> {}
 impl<T, X: ArrayLength<T> + ArrayLength<MaybeUninit<T>>> VoleArray<T> for X {}

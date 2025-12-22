@@ -5,32 +5,41 @@ pub struct Poly<N: ArrayLength<T>, T> {
 }
 impl<N: ArrayLength<T>, T> Poly<N, T> {
     pub fn get_qs<
-        Q: Clone + Mul<T, Output: Mul<Q, Output = A>>,
+        Q: Clone + Mul<A, Output = A>,
         A: Add<A, Output = A>,
         M: ArrayLength<Q> + ArrayLength<A>,
+        X: ArrayLength<GenericArray<GenericArray<Q, M>, N>>,
     >(
         &self,
         root: GenericArray<Q, M>,
-        inputs: [GenericArray<GenericArray<Q, M>, N>; 2],
+        inputs: GenericArray<GenericArray<GenericArray<Q, M>, N>, X>,
     ) -> GenericArray<A, M>
     where
         N: ArrayLength<GenericArray<Q, M>>,
-        T: Clone,
+        T: Clone + Into<A>,
     {
         GenericArray::generate(|i| {
-            let mut sum: A = (root[i].clone() * self.c0.clone() * root[i].clone());
+            let mut sum: A = self.c0.clone().into();
+            for _ in 0..N::to_usize() {
+                sum = root[i].clone() * sum;
+            }
             for j in 0..N::to_usize() {
-                let a = inputs[0][j][i].clone();
-                let b = self.c1[j].clone();
-                let c = inputs[1][j][i].clone();
-                sum = sum + a * b * c;
+                let mut b: A = self.c1[j].clone().into();
+                for i2 in inputs.iter() {
+                    b = i2[j][i].clone() * b;
+                }
+                sum = sum + b;
             }
             sum
         })
     }
-    pub fn apply<M, O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(
+    pub fn apply<
+        M,
+        O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone,
+        X: ArrayLength<GenericArray<Vole<M, T>, N>>,
+    >(
         &self,
-        voles: [GenericArray<Vole<M, T>, N>; 2],
+        voles: GenericArray<GenericArray<Vole<M, T>, N>, X>,
     ) -> Vole<M, O>
     where
         N: ArrayLength<Vole<M, T>>,
@@ -41,10 +50,11 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
             // core::array::from_fn(|j| {
             let mut sum = O::default();
             for k in 0..N::to_usize() {
-                let a: O = voles[0][k].v[i].clone().into();
-                let b: O = self.c1[k].clone().into();
-                let c: O = voles[1][k].v[i].clone().into();
-                sum = sum + a * b * c;
+                let mut b: O = self.c1[k].clone().into();
+                for v in &voles {
+                    b = b * v[k].v[i].clone().into();
+                }
+                sum = sum + b;
             }
             let c0: O = self.c0.clone().into();
             sum + c0
@@ -54,11 +64,16 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
             // core::array::from_fn(|j| {
             let mut sum = O::default();
             for k in 0..N::to_usize() {
-                for (ai, bi) in [(0, 1), (1, 0)] {
-                    let a: O = voles[ai][k].v[i].clone().into();
-                    let b: O = self.c1[k].clone().into();
-                    let c: O = voles[bi][k].u[i].clone().into();
-                    sum = sum + a * b * c;
+                for n in 0..X::to_usize() {
+                    let mut b: O = self.c1[k].clone().into();
+                    for (idx, v) in voles.iter().enumerate() {
+                        b = b * if idx == n {
+                            v[k].u[i].clone().into()
+                        } else {
+                            v[k].v[i].clone().into()
+                        };
+                    }
+                    sum = sum + b;
                 }
             }
             sum
