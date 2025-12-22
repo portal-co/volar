@@ -20,20 +20,39 @@ pub struct Vole<N: VoleArray<T>, T> {
     pub u: GenericArray<u8, N>,
     pub v: GenericArray<[T; 8], N>,
 }
+impl<N: VoleArray<T> + VoleArray<U> + VoleArray<T::Output>, T: Add<U> + Clone, U: Clone>
+    Add<Vole<N, U>> for Vole<N, T>
+{
+    type Output = Vole<N, T::Output>;
+    fn add(self, rhs: Vole<N, U>) -> Self::Output {
+        let mut result_v: GenericArray<MaybeUninit<[T::Output; 8]>, N> =
+            GenericArray::generate(|_| MaybeUninit::uninit());
+        for i in 0..N::to_usize() {
+            result_v[i] = MaybeUninit::new(core::array::from_fn(|j| {
+                self.v[i][j].clone() + rhs.v[i][j].clone()
+            }));
+        }
+        Vole {
+            u: self.u.zip(rhs.u, |a, b| a ^ b),
+            v: result_v.map(|x| unsafe { x.assume_init() }),
+        }
+    }
+}
 impl<N: VoleArray<T>, T> Vole<N, T> {
-    pub fn glue<M: VoleArray<T>>(
-        a: &[Vole<M, T>],
-    ) -> (Self, impl Iterator<Item = GenericArray<u8, M>> + Clone)
+    pub fn glue<'a, M: VoleArray<T>>(
+        a: impl Iterator<Item = Vole<M, T>> + Clone + 'a,
+    ) -> (Self, impl Iterator<Item = GenericArray<u8, M>> + Clone + 'a)
     where
         T: Clone,
     {
+        let first = a.clone().next().unwrap();
         let corrections = a
-            .iter()
-            .map(|a2| a2.u.clone().zip(a[0].u.clone(), |a, b| a.wrapping_sub(b)));
+            .clone()
+            .map(move |a2| a2.u.clone().zip(first.u.clone(), |a, b| a.wrapping_sub(b)));
         (
             Self {
-                u: GenericArray::from_iter(a.iter().flat_map(|a| a.u.iter()).cloned()),
-                v: GenericArray::from_iter(a.iter().flat_map(|a| a.v.iter()).cloned()),
+                u: GenericArray::from_iter(a.clone().flat_map(|a| a.u)),
+                v: GenericArray::from_iter(a.clone().flat_map(|a| a.v)),
             },
             corrections,
         )
