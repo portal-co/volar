@@ -1,5 +1,3 @@
-use crate::byte_gen::prover::{create_vole_from_material, create_vole_from_material_expanded};
-
 use super::*;
 impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::BlockSize>>> ABO<B, D, K> {
     pub fn open<

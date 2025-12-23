@@ -1,4 +1,4 @@
-use core::{array, ops::Mul};
+use core::{array, ops::{BitXor, Deref, Mul}};
 
 use cipher::{
     BlockEncrypt, Unsigned,
@@ -42,6 +42,50 @@ pub trait ByteBlockEncrypt: BlockEncrypt + From<[u8; 32]> {
     }
 }
 impl<T: BlockEncrypt + From<[u8; 32]>> ByteBlockEncrypt for T {}
+pub fn create_vole_from_material<B: ByteBlockEncrypt<BlockSize: VoleArray<u8>>>(
+    s: &[impl Deref<Target = [u8]>],
+) -> Vole<B::BlockSize, u8> {
+    let u: GenericArray<u8, B::BlockSize> = s
+        .iter()
+        .fold(GenericArray::<u8, B::BlockSize>::default(), |a, b| {
+            a.zip(GenericArray::generate(|i| b[i]), |a, b| a.bitxor(b))
+        });
+    let v: GenericArray<u8, B::BlockSize> =
+        s.iter()
+            .enumerate()
+            .fold(GenericArray::<u8, B::BlockSize>::default(), |a, (i, b)| {
+                a.zip(GenericArray::generate(|i| b[i]), |a, b| {
+                    a.bitxor(b).bitxor(i as u8)
+                })
+            });
+    Vole { u, v }
+}
+pub fn create_vole_from_material_expanded<
+    B: ByteBlockEncrypt<BlockSize: VoleArray<u8>>,
+    X: AsRef<[u8]>,
+>(
+    s: &[impl Deref<Target = [u8]>],
+    mut f: impl FnMut(&[u8]) -> X,
+) -> Vole<B::BlockSize, u8> {
+    let u: GenericArray<u8, B::BlockSize> = s
+        .iter()
+        .map(|b| f(&b[..(B::BlockSize::to_usize())]))
+        .fold(GenericArray::<u8, B::BlockSize>::default(), |a, b| {
+            a.zip(GenericArray::generate(|i| b.as_ref()[i]), |a, b| {
+                a.bitxor(b)
+            })
+        });
+    let v: GenericArray<u8, B::BlockSize> = s
+        .iter()
+        .map(|b| f(&b[..(B::BlockSize::to_usize())]))
+        .enumerate()
+        .fold(GenericArray::<u8, B::BlockSize>::default(), |a, (i, b)| {
+            a.zip(GenericArray::generate(|i| b.as_ref()[i]), |a, b| {
+                a.bitxor(b).bitxor(i as u8)
+            })
+        });
+    Vole { u, v }
+}
 pub struct ABO<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::BlockSize>>> {
     pub commit: GenericArray<u8, D::OutputSize>,
     pub per_byte: GenericArray<GenericArray<u8, B::BlockSize>, K>,
