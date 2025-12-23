@@ -1,9 +1,19 @@
+use cipher::consts::U0;
+
 use super::*;
 pub struct Vope<N: VoleArray<T>, T, K: ArrayLength<GenericArray<T, N>> = U1> {
     ///Multiplication-based randomizer
     pub u: GenericArray<GenericArray<T, N>, K>,
     ///Fixed offset
     pub v: GenericArray<T, N>,
+}
+impl<N: VoleArray<T>, T> Vope<N, T, U0> {
+    pub fn constant(v: GenericArray<T, N>) -> Self {
+        Vope {
+            u: GenericArray::generate(|_| unreachable!()),
+            v,
+        }
+    }
 }
 impl<
     N: VoleArray<T> + VoleArray<U> + VoleArray<T::Output>,
@@ -77,6 +87,18 @@ impl<
 }
 
 impl<N: VoleArray<T>, T, K: ArrayLength<GenericArray<T, N>>> Vope<N, T, K> {
+    pub fn expand<L: ArrayLength<GenericArray<T, N>>>(&self) -> Vope<N, T, L>
+    where
+        T: Clone + Default,
+    {
+        let Self { u, v } = self;
+        Vope {
+            u: GenericArray::generate(|l| {
+                GenericArray::generate(|i| u.get(l).map_or(T::default(), |a| a[i].clone()))
+            }),
+            v: v.clone(),
+        }
+    }
     pub fn rotate_left(&self, n: usize) -> Self
     where
         T: Clone,
