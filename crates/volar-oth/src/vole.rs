@@ -7,8 +7,8 @@ use cipher::consts::{U1, U8};
 use rand::distr::Distribution;
 
 use super::*;
-pub mod poly;
 pub mod field_rotate;
+pub mod poly;
 pub type ByteVole<T> = Vole<U1, T>;
 pub trait VoleArray<T>: ArrayLength<T> + ArrayLength<MaybeUninit<T>> {}
 impl<T, X: ArrayLength<T> + ArrayLength<MaybeUninit<T>>> VoleArray<T> for X {}
@@ -70,13 +70,13 @@ impl<N: VoleArray<T>, T> Vole<N, T> {
             v: GenericArray::generate(|i| v[f(i) % N::to_usize()].clone()),
         }
     }
-    pub fn r#static(v: GenericArray<T, N>) -> Self
+    pub fn r#static(u: GenericArray<T, N>) -> Self
     where
         T: Default,
     {
         Vole {
-            u: GenericArray::default(),
-            v,
+            u,
+            v: GenericArray::default(),
         }
     }
     pub fn glue<'a, M: VoleArray<T>>(
