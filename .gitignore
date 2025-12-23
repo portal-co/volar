@@ -1,2 +1,4 @@
+.DS_Store
+**/.DS_Storetarget
+node_modules
 target
-**/.DS_Store
