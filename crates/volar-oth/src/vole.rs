@@ -8,7 +8,7 @@ use rand::distr::Distribution;
 
 use super::*;
 pub mod poly;
-
+pub mod field_rotate;
 pub type ByteVole<T> = Vole<U1, T>;
 pub trait VoleArray<T>: ArrayLength<T> + ArrayLength<MaybeUninit<T>> {}
 impl<T, X: ArrayLength<T> + ArrayLength<MaybeUninit<T>>> VoleArray<T> for X {}
@@ -48,6 +48,28 @@ where
     }
 }
 impl<N: VoleArray<T>, T> Vole<N, T> {
+    pub fn rotate_left(&self, n: usize) -> Self
+    where
+        T: Clone,
+    {
+        self.remap(|a| a.wrapping_sub(n))
+    }
+    pub fn rotate_right(&self, n: usize) -> Self
+    where
+        T: Clone,
+    {
+        self.remap(|a| a.wrapping_add(n))
+    }
+    pub fn remap<M: VoleArray<T>>(&self, mut f: impl FnMut(usize) -> usize) -> Vole<M, T>
+    where
+        T: Clone,
+    {
+        let Self { u, v } = self;
+        Vole {
+            u: GenericArray::generate(|i| u[f(i) % N::to_usize()].clone()),
+            v: GenericArray::generate(|i| v[f(i) % N::to_usize()].clone()),
+        }
+    }
     pub fn r#static(v: GenericArray<T, N>) -> Self
     where
         T: Default,
