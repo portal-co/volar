@@ -22,6 +22,7 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
         &self,
         root: Delta<M, Q>,
         inputs: PolyInputPool<super::Q<M, Q>, N, X>,
+        reduction: usize,
     ) -> super::Q<M, A>
     where
         N: ArrayLength<usize>,
@@ -36,7 +37,9 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
                 for j in 0..N::to_usize() {
                     let mut b: A = self.c1[j].clone().into();
                     for i2 in inputs.indices.iter() {
-                        b = inputs.inputs[i2[j]].q[i].clone() * b;
+                        for _ in 0..reduction {
+                            b = inputs.inputs[i2[j]].q[i].clone() * b;
+                        }
                     }
                     sum = sum + b;
                 }
@@ -53,6 +56,7 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
         &self,
         root: Delta<M, Q>,
         inputs: GenericArray<GenericArray<super::Q<M, Q>, N>, X>,
+        reduction: usize,
     ) -> super::Q<M, A>
     where
         N: ArrayLength<super::Q<M, Q>>,
@@ -67,7 +71,9 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
                 for j in 0..N::to_usize() {
                     let mut b: A = self.c1[j].clone().into();
                     for i2 in inputs.iter() {
-                        b = i2[j].q[i].clone() * b;
+                        for _ in 0..reduction {
+                            b = i2[j].q[i].clone() * b;
+                        }
                     }
                     sum = sum + b;
                 }
@@ -111,9 +117,9 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
                 let mut sum = O::default();
                 for k in 0..N::to_usize() {
                     for n in 0..X::to_usize() {
+                        let mut b: O = self.c1[k].clone().into();
                         for m in 0..S::to_usize() {
                             let l = l * S::to_usize() + m;
-                            let mut b: O = self.c1[k].clone().into();
                             for (idx, v) in voles.indices.iter().enumerate() {
                                 b = b * if idx == n {
                                     voles.inputs[v[k]].u[l][i].clone().into()
@@ -121,8 +127,8 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
                                     voles.inputs[v[k]].v[i].clone().into()
                                 };
                             }
-                            sum = sum + b;
                         }
+                        sum = sum + b;
                     }
                 }
                 sum
@@ -167,9 +173,9 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
                 let mut sum = O::default();
                 for k in 0..N::to_usize() {
                     for n in 0..X::to_usize() {
+                        let mut b: O = self.c1[k].clone().into();
                         for m in 0..S::to_usize() {
                             let l = l * S::to_usize() + m;
-                            let mut b: O = self.c1[k].clone().into();
                             for (idx, v) in voles.iter().enumerate() {
                                 b = b * if idx == n {
                                     v[k].u[l][i].clone().into()
@@ -177,8 +183,8 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
                                     v[k].v[i].clone().into()
                                 };
                             }
-                            sum = sum + b;
                         }
+                        sum = sum + b;
                     }
                 }
                 sum
