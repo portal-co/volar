@@ -1,4 +1,6 @@
-use cipher::consts::U2;
+use core::ops::Div;
+
+use cipher::{Unsigned, consts::U2};
 
 use super::*;
 
@@ -77,11 +79,13 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
         M,
         O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone,
         X: ArrayLength<GenericArray<usize, N>>,
-        X2: ArrayLength<GenericArray<T, M>> + ArrayLength<GenericArray<O, M>>,
+        X2: ArrayLength<GenericArray<T, M>> + Div<S, Output = XS>,
+        XS: ArrayLength<GenericArray<O, M>>,
+        S: Unsigned,
     >(
         &self,
         voles: &PolyInputPool<Vope<M, T, X2>, N, X>,
-    ) -> Vope<M, O, X2>
+    ) -> Vope<M, O, XS>
     where
         N: ArrayLength<usize>,
         T: Into<O> + Clone,
@@ -107,15 +111,18 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
                 let mut sum = O::default();
                 for k in 0..N::to_usize() {
                     for n in 0..X::to_usize() {
-                        let mut b: O = self.c1[k].clone().into();
-                        for (idx, v) in voles.indices.iter().enumerate() {
-                            b = b * if idx == n {
-                                voles.inputs[v[k]].u[l][i].clone().into()
-                            } else {
-                                voles.inputs[v[k]].v[i].clone().into()
-                            };
+                        for m in 0..S::to_usize() {
+                            let l = l * S::to_usize() + m;
+                            let mut b: O = self.c1[k].clone().into();
+                            for (idx, v) in voles.indices.iter().enumerate() {
+                                b = b * if idx == n {
+                                    voles.inputs[v[k]].u[l][i].clone().into()
+                                } else {
+                                    voles.inputs[v[k]].v[i].clone().into()
+                                };
+                            }
+                            sum = sum + b;
                         }
-                        sum = sum + b;
                     }
                 }
                 sum
@@ -128,11 +135,13 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
         M,
         O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone,
         X: ArrayLength<GenericArray<Vope<M, T, X2>, N>>,
-        X2: ArrayLength<GenericArray<T, M>> + ArrayLength<GenericArray<O, M>>,
+        X2: ArrayLength<GenericArray<T, M>> + Div<S, Output = XS>,
+        XS: ArrayLength<GenericArray<O, M>>,
+        S: Unsigned,
     >(
         &self,
         voles: GenericArray<GenericArray<Vope<M, T, X2>, N>, X>,
-    ) -> Vope<M, O, X2>
+    ) -> Vope<M, O, XS>
     where
         N: ArrayLength<Vope<M, T, X2>>,
         T: Into<O> + Clone,
@@ -158,15 +167,18 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
                 let mut sum = O::default();
                 for k in 0..N::to_usize() {
                     for n in 0..X::to_usize() {
-                        let mut b: O = self.c1[k].clone().into();
-                        for (idx, v) in voles.iter().enumerate() {
-                            b = b * if idx == n {
-                                v[k].u[l][i].clone().into()
-                            } else {
-                                v[k].v[i].clone().into()
-                            };
+                        for m in 0..S::to_usize() {
+                            let l = l * S::to_usize() + m;
+                            let mut b: O = self.c1[k].clone().into();
+                            for (idx, v) in voles.iter().enumerate() {
+                                b = b * if idx == n {
+                                    v[k].u[l][i].clone().into()
+                                } else {
+                                    v[k].v[i].clone().into()
+                                };
+                            }
+                            sum = sum + b;
                         }
-                        sum = sum + b;
                     }
                 }
                 sum
