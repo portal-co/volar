@@ -63,7 +63,7 @@ impl<
         }
         h.finalize().as_slice() == commit.as_slice()
     }
-    pub fn to_vole_material<const N: usize>(&self) -> [Vole<B::BlockSize, u8>; N]
+    pub fn to_vole_material<const N: usize>(&self) -> [Vope<B::BlockSize, u8>; N]
     where
         B::BlockSize: VoleArray<u8>,
     {
@@ -72,9 +72,9 @@ impl<
             create_vole_from_material::<B>(s)
         })
     }
-    pub fn to_vole_material_typenum<N: ArrayLength<Vole<B::BlockSize, u8>>>(
+    pub fn to_vole_material_typenum<N: ArrayLength<Vope<B::BlockSize, u8>>>(
         &self,
-    ) -> GenericArray<Vole<B::BlockSize, u8>, N>
+    ) -> GenericArray<Vope<B::BlockSize, u8>, N>
     where
         B::BlockSize: VoleArray<u8>,
     {
@@ -86,7 +86,7 @@ impl<
     pub fn to_vole_material_expanded<const N: usize, X: AsRef<[u8]>>(
         &self,
         mut f: impl FnMut(&[u8]) -> X,
-    ) -> [Vole<B::BlockSize, u8>; N]
+    ) -> [Vope<B::BlockSize, u8>; N]
     where
         B::BlockSize: VoleArray<u8>,
     {
@@ -96,12 +96,12 @@ impl<
         })
     }
     pub fn to_vole_material_typenum_expanded<
-        N: ArrayLength<Vole<B::BlockSize, u8>>,
+        N: ArrayLength<Vope<B::BlockSize, u8>>,
         X: AsRef<[u8]>,
     >(
         &self,
         mut f: impl FnMut(&[u8]) -> X,
-    ) -> GenericArray<Vole<B::BlockSize, u8>, N>
+    ) -> GenericArray<Vope<B::BlockSize, u8>, N>
     where
         B::BlockSize: VoleArray<u8>,
     {

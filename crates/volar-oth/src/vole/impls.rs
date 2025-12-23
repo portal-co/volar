@@ -1,9 +1,11 @@
+use crate::vole::vope::Vope;
+
 use super::*;
-impl<N: VoleArray<T>, T: Clone> Clone for Vole<N, T> {
+impl<N: VoleArray<T>, T: Clone, K: ArrayLength<GenericArray<T, N>>> Clone for Vope<N, T, K> {
     fn clone(&self) -> Self {
-        let Vole { u, v } = self;
-        Vole {
-            u: GenericArray::generate(|i| u[i].clone()),
+        let Vope { u, v } = self;
+        Vope {
+            u: GenericArray::generate(|l| GenericArray::generate(|i| u[l][i].clone())),
             v: GenericArray::generate(|i| v[i].clone()),
         }
     }
@@ -24,12 +26,21 @@ impl<N: ArrayLength<T>, T: Clone> Clone for Delta<N, T> {
         }
     }
 }
-impl<N: VoleArray<T>, T: PartialEq> PartialEq for Vole<N, T> {
+impl<N: VoleArray<T>, T: PartialEq, K: ArrayLength<GenericArray<T, N>>> PartialEq
+    for Vope<N, T, K>
+{
     fn eq(&self, other: &Self) -> bool {
-        let Vole { u: u1, v: v1 } = self;
-        let Vole { u: u2, v: v2 } = other;
+        let Vope { u: u1, v: v1 } = self;
+        let Vope { u: u2, v: v2 } = other;
+        for l in 0..K::to_usize() {
+            for i in 0..N::to_usize() {
+                if u1[l][i] != u2[l][i] {
+                    return false;
+                }
+            }
+        }
         for i in 0..N::to_usize() {
-            if u1[i] != u2[i] || v1[i] != v2[i] {
+            if v1[i] != v2[i] {
                 return false;
             }
         }
@@ -60,6 +71,6 @@ impl<N: ArrayLength<T>, T: PartialEq> PartialEq for Delta<N, T> {
         true
     }
 }
-impl<N: VoleArray<T>, T: Eq> Eq for Vole<N, T> {}
+impl<N: VoleArray<T>, T: Eq, K: ArrayLength<GenericArray<T, N>>> Eq for Vope<N, T, K> {}
 impl<N: ArrayLength<T>, T: Eq> Eq for Q<N, T> {}
 impl<N: ArrayLength<T>, T: Eq> Eq for Delta<N, T> {}

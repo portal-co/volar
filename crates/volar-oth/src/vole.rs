@@ -9,66 +9,16 @@ use rand::distr::Distribution;
 use super::*;
 pub mod field_rotate;
 mod impls;
-pub mod poly;
-pub type ByteVole<T> = Vole<U1, T>;
+// pub mod poly;
+
 pub trait VoleArray<T>: ArrayLength<T> + ArrayLength<MaybeUninit<T>> {}
 impl<T, X: ArrayLength<T> + ArrayLength<MaybeUninit<T>>> VoleArray<T> for X {}
-pub struct Vole<N: VoleArray<T>, T> {
-    ///Multiplication-based randomizer
-    pub u: GenericArray<T, N>,
-    ///Fixed offset
-    pub v: GenericArray<T, N>,
-}
+
 pub struct Delta<N: ArrayLength<T>, T> {
     pub delta: GenericArray<T, N>,
 }
 pub struct Q<N: ArrayLength<T>, T> {
     pub q: GenericArray<T, N>,
-}
-impl<N: VoleArray<T> + VoleArray<U> + VoleArray<T::Output>, T: Add<U> + Clone, U: Clone>
-    Add<Vole<N, U>> for Vole<N, T>
-{
-    type Output = Vole<N, T::Output>;
-    fn add(self, rhs: Vole<N, U>) -> Self::Output {
-        let mut result_v: GenericArray<MaybeUninit<T::Output>, N> =
-            GenericArray::generate(|_| MaybeUninit::uninit());
-        for i in 0..N::to_usize() {
-            result_v[i] = MaybeUninit::new(self.v[i].clone() + rhs.v[i].clone());
-        }
-        Vole {
-            u: self.u.zip(rhs.u, |a, b| a + b),
-            v: result_v.map(|x| unsafe { x.assume_init() }),
-        }
-    }
-}
-impl<N: VoleArray<T> + VoleArray<T::Output> + VoleArray<U>, T: BitXor<U>, U>
-    BitXor<GenericArray<U, N>> for Vole<N, T>
-where
-    T: Into<T::Output>,
-{
-    type Output = Vole<N, T::Output>;
-    fn bitxor(self, rhs: GenericArray<U, N>) -> Self::Output {
-        Vole {
-            u: self.u.zip(rhs, |a, b| a ^ b),
-            v: self.v.map(|a| a.into()),
-        }
-    }
-}
-impl<
-    N: VoleArray<T> + VoleArray<T::Output> + VoleArray<U> + VoleArray<<T::Output as Add<T>>::Output>,
-    T: Mul<U, Output: Add<T>>,
-    U,
-> Mul<Delta<N, U>> for Vole<N, T>
-{
-    type Output = Q<N, <T::Output as Add<T>>::Output>;
-    fn mul(self, rhs: Delta<N, U>) -> Self::Output {
-        Q {
-            q: self
-                .u
-                .zip(rhs.delta, |a, b| a * b)
-                .zip(self.v, |a, b| a + b),
-        }
-    }
 }
 impl<N: ArrayLength<T>, T> Delta<N, T> {
     pub fn remap<M: ArrayLength<T>>(&self, mut f: impl FnMut(usize) -> usize) -> Delta<M, T>
@@ -125,77 +75,4 @@ impl<N: ArrayLength<T>, T> Q<N, T> {
         self.remap(|a| a.wrapping_add(n))
     }
 }
-impl<N: VoleArray<T>, T> Vole<N, T> {
-    pub fn rotate_left(&self, n: usize) -> Self
-    where
-        T: Clone,
-    {
-        self.remap(|a| a.wrapping_sub(n))
-    }
-    pub fn rotate_right(&self, n: usize) -> Self
-    where
-        T: Clone,
-    {
-        self.remap(|a| a.wrapping_add(n))
-    }
-    pub fn remap<M: VoleArray<T>>(&self, mut f: impl FnMut(usize) -> usize) -> Vole<M, T>
-    where
-        T: Clone,
-    {
-        let Self { u, v } = self;
-        Vole {
-            u: GenericArray::generate(|i| u[f(i) % N::to_usize()].clone()),
-            v: GenericArray::generate(|i| v[f(i) % N::to_usize()].clone()),
-        }
-    }
-    pub fn r#static(u: GenericArray<T, N>) -> Self
-    where
-        T: Default,
-    {
-        Vole {
-            u,
-            v: GenericArray::default(),
-        }
-    }
-    pub fn glue<'a, M: VoleArray<T>>(
-        a: impl Iterator<Item = Vole<M, T>> + Clone + 'a,
-    ) -> (Self, impl Iterator<Item = GenericArray<T, M>> + Clone + 'a)
-    where
-        T: Clone + Sub<T, Output = T> + 'a,
-    {
-        let first = a.clone().next().unwrap();
-        let corrections = a
-            .clone()
-            .map(move |a2| a2.u.clone().zip(first.u.clone(), |a, b| a - b));
-        (
-            Self {
-                u: GenericArray::from_iter(a.clone().flat_map(|a| a.u)),
-                v: GenericArray::from_iter(a.clone().flat_map(|a| a.v)),
-            },
-            corrections,
-        )
-    }
-    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> Vole<N, U>
-    where
-        N: VoleArray<U>,
-    {
-        let Self { u, v } = self;
-        Vole {
-            u: u.map(&mut f),
-            v: v.map(&mut f),
-        }
-    }
-    pub fn q<U: Default + Clone + Mul<T, Output = M>, M: Add<T, Output = O>, O>(
-        self,
-        q: GenericArray<U, N>,
-    ) -> GenericArray<O, N>
-    where
-        T: Clone,
-        N: ArrayLength<U> + ArrayLength<O>,
-    {
-        GenericArray::generate(|i| {
-            let m: M = (q[i].clone() * self.u[i].clone());
-            m + self.v[i].clone()
-        })
-    }
-}
+pub mod vope;

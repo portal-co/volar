@@ -1,4 +1,7 @@
-use core::{array, ops::{BitXor, Deref, Mul}};
+use core::{
+    array,
+    ops::{BitXor, Deref, Mul},
+};
 
 use cipher::{
     BlockEncrypt, Unsigned,
@@ -8,7 +11,7 @@ use cipher::{
 
 use crate::{
     simple::CommitmentCore,
-    vole::{ByteVole, Vole, VoleArray},
+    vole::{VoleArray, vope::Vope},
 };
 
 use super::*;
@@ -44,7 +47,7 @@ pub trait ByteBlockEncrypt: BlockEncrypt + From<[u8; 32]> {
 impl<T: BlockEncrypt + From<[u8; 32]>> ByteBlockEncrypt for T {}
 pub fn create_vole_from_material<B: ByteBlockEncrypt<BlockSize: VoleArray<u8>>>(
     s: &[impl Deref<Target = [u8]>],
-) -> Vole<B::BlockSize, u8> {
+) -> Vope<B::BlockSize, u8> {
     let u: GenericArray<u8, B::BlockSize> = s
         .iter()
         .fold(GenericArray::<u8, B::BlockSize>::default(), |a, b| {
@@ -58,7 +61,10 @@ pub fn create_vole_from_material<B: ByteBlockEncrypt<BlockSize: VoleArray<u8>>>(
                     a.bitxor(b).bitxor(i as u8)
                 })
             });
-    Vole { u, v }
+    Vope {
+        u: GenericArray::generate(|_| u.clone()),
+        v,
+    }
 }
 pub fn create_vole_from_material_expanded<
     B: ByteBlockEncrypt<BlockSize: VoleArray<u8>>,
@@ -66,7 +72,7 @@ pub fn create_vole_from_material_expanded<
 >(
     s: &[impl Deref<Target = [u8]>],
     mut f: impl FnMut(&[u8]) -> X,
-) -> Vole<B::BlockSize, u8> {
+) -> Vope<B::BlockSize, u8> {
     let u: GenericArray<u8, B::BlockSize> = s
         .iter()
         .map(|b| f(&b[..(B::BlockSize::to_usize())]))
@@ -84,7 +90,10 @@ pub fn create_vole_from_material_expanded<
                 a.bitxor(b).bitxor(i as u8)
             })
         });
-    Vole { u, v }
+    Vope {
+        u: GenericArray::generate(|_| u.clone()),
+        v,
+    }
 }
 pub struct ABO<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::BlockSize>>> {
     pub commit: GenericArray<u8, D::OutputSize>,
