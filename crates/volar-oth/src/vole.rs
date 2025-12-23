@@ -8,8 +8,8 @@ use rand::distr::Distribution;
 
 use super::*;
 pub mod field_rotate;
-pub mod poly;
 mod impls;
+pub mod poly;
 pub type ByteVole<T> = Vole<U1, T>;
 pub trait VoleArray<T>: ArrayLength<T> + ArrayLength<MaybeUninit<T>> {}
 impl<T, X: ArrayLength<T> + ArrayLength<MaybeUninit<T>>> VoleArray<T> for X {}
@@ -91,6 +91,15 @@ impl<N: ArrayLength<T>, T> Delta<N, T> {
         T: Clone,
     {
         self.remap(|a| a.wrapping_add(n))
+    }
+    pub fn r#static<U: Mul<T> + Clone>(&self, val: GenericArray<U, N>) -> Q<N, U::Output>
+    where
+        T: Clone,
+        N: ArrayLength<U::Output> + ArrayLength<U>,
+    {
+        Q {
+            q: GenericArray::generate(|i| val[i].clone() * self.delta[i].clone()),
+        }
     }
 }
 impl<N: ArrayLength<T>, T> Q<N, T> {
