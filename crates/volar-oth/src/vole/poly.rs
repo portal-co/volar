@@ -77,10 +77,11 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
         M,
         O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone,
         X: ArrayLength<GenericArray<usize, N>>,
+        X2: ArrayLength<GenericArray<T, M>> + ArrayLength<GenericArray<O, M>>,
     >(
         &self,
-        voles: &PolyInputPool<Vole<M, T>, N, X>,
-    ) -> Vole<M, O>
+        voles: &PolyInputPool<Vope<M, T, X2>, N, X>,
+    ) -> Vope<M, O, X2>
     where
         N: ArrayLength<usize>,
         T: Into<O> + Clone,
@@ -100,37 +101,40 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
             sum + c0
             // })
         });
-        let u = GenericArray::generate(|i| {
-            // core::array::from_fn(|j| {
-            let mut sum = O::default();
-            for k in 0..N::to_usize() {
-                for n in 0..X::to_usize() {
-                    let mut b: O = self.c1[k].clone().into();
-                    for (idx, v) in voles.indices.iter().enumerate() {
-                        b = b * if idx == n {
-                            voles.inputs[v[k]].u[i].clone().into()
-                        } else {
-                            voles.inputs[v[k]].v[i].clone().into()
-                        };
+        let u = GenericArray::generate(|l| {
+            GenericArray::generate(|i| {
+                // core::array::from_fn(|j| {
+                let mut sum = O::default();
+                for k in 0..N::to_usize() {
+                    for n in 0..X::to_usize() {
+                        let mut b: O = self.c1[k].clone().into();
+                        for (idx, v) in voles.indices.iter().enumerate() {
+                            b = b * if idx == n {
+                                voles.inputs[v[k]].u[l][i].clone().into()
+                            } else {
+                                voles.inputs[v[k]].v[i].clone().into()
+                            };
+                        }
+                        sum = sum + b;
                     }
-                    sum = sum + b;
                 }
-            }
-            sum
-            // })
+                sum
+                // })
+            })
         });
-        return Vole { u, v };
+        return Vope { u, v };
     }
     pub fn apply<
         M,
         O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone,
-        X: ArrayLength<GenericArray<Vole<M, T>, N>>,
+        X: ArrayLength<GenericArray<Vope<M, T, X2>, N>>,
+        X2: ArrayLength<GenericArray<T, M>> + ArrayLength<GenericArray<O, M>>,
     >(
         &self,
-        voles: GenericArray<GenericArray<Vole<M, T>, N>, X>,
-    ) -> Vole<M, O>
+        voles: GenericArray<GenericArray<Vope<M, T, X2>, N>, X>,
+    ) -> Vope<M, O, X2>
     where
-        N: ArrayLength<Vole<M, T>>,
+        N: ArrayLength<Vope<M, T, X2>>,
         T: Into<O> + Clone,
         M: VoleArray<T> + VoleArray<O>,
     {
@@ -148,25 +152,27 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
             sum + c0
             // })
         });
-        let u = GenericArray::generate(|i| {
-            // core::array::from_fn(|j| {
-            let mut sum = O::default();
-            for k in 0..N::to_usize() {
-                for n in 0..X::to_usize() {
-                    let mut b: O = self.c1[k].clone().into();
-                    for (idx, v) in voles.iter().enumerate() {
-                        b = b * if idx == n {
-                            v[k].u[i].clone().into()
-                        } else {
-                            v[k].v[i].clone().into()
-                        };
+        let u = GenericArray::generate(|l| {
+            GenericArray::generate(|i| {
+                // core::array::from_fn(|j| {
+                let mut sum = O::default();
+                for k in 0..N::to_usize() {
+                    for n in 0..X::to_usize() {
+                        let mut b: O = self.c1[k].clone().into();
+                        for (idx, v) in voles.iter().enumerate() {
+                            b = b * if idx == n {
+                                v[k].u[l][i].clone().into()
+                            } else {
+                                v[k].v[i].clone().into()
+                            };
+                        }
+                        sum = sum + b;
                     }
-                    sum = sum + b;
                 }
-            }
-            sum
-            // })
+                sum
+                // })
+            })
         });
-        return Vole { u, v };
+        return Vope { u, v };
     }
 }

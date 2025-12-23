@@ -9,7 +9,7 @@ use rand::distr::Distribution;
 use super::*;
 pub mod field_rotate;
 mod impls;
-// pub mod poly;
+pub mod poly;
 
 pub trait VoleArray<T>: ArrayLength<T> + ArrayLength<MaybeUninit<T>> {}
 impl<T, X: ArrayLength<T> + ArrayLength<MaybeUninit<T>>> VoleArray<T> for X {}
@@ -76,3 +76,4 @@ impl<N: ArrayLength<T>, T> Q<N, T> {
     }
 }
 pub mod vope;
+pub use vope::Vope;
