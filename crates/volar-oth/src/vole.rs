@@ -18,6 +18,12 @@ pub struct Vole<N: VoleArray<T>, T> {
     ///Fixed offset
     pub v: GenericArray<T, N>,
 }
+pub struct Delta<N: ArrayLength<T>, T> {
+    pub delta: GenericArray<T, N>,
+}
+pub struct Q<N: ArrayLength<T>, T> {
+    pub q: GenericArray<T, N>,
+}
 impl<N: VoleArray<T> + VoleArray<U> + VoleArray<T::Output>, T: Add<U> + Clone, U: Clone>
     Add<Vole<N, U>> for Vole<N, T>
 {
@@ -45,6 +51,68 @@ where
             u: self.u.zip(rhs, |a, b| a ^ b),
             v: self.v.map(|a| a.into()),
         }
+    }
+}
+impl<
+    N: VoleArray<T> + VoleArray<T::Output> + VoleArray<U> + VoleArray<<T::Output as Add<T>>::Output>,
+    T: Mul<U, Output: Add<T>>,
+    U,
+> Mul<Delta<N, U>> for Vole<N, T>
+{
+    type Output = Q<N, <T::Output as Add<T>>::Output>;
+    fn mul(self, rhs: Delta<N, U>) -> Self::Output {
+        Q {
+            q: self
+                .u
+                .zip(rhs.delta, |a, b| a * b)
+                .zip(self.v, |a, b| a + b),
+        }
+    }
+}
+impl<N: ArrayLength<T>, T> Delta<N, T> {
+    pub fn remap<M: ArrayLength<T>>(&self, mut f: impl FnMut(usize) -> usize) -> Delta<M, T>
+    where
+        T: Clone,
+    {
+        let Self { delta } = self;
+        Delta {
+            delta: GenericArray::generate(|i| delta[f(i) % N::to_usize()].clone()),
+        }
+    }
+    pub fn rotate_left(&self, n: usize) -> Self
+    where
+        T: Clone,
+    {
+        self.remap(|a| a.wrapping_sub(n))
+    }
+    pub fn rotate_right(&self, n: usize) -> Self
+    where
+        T: Clone,
+    {
+        self.remap(|a| a.wrapping_add(n))
+    }
+}
+impl<N: ArrayLength<T>, T> Q<N, T> {
+    pub fn remap<M: ArrayLength<T>>(&self, mut f: impl FnMut(usize) -> usize) -> Q<M, T>
+    where
+        T: Clone,
+    {
+        let Self { q } = self;
+        Q {
+            q: GenericArray::generate(|i| q[f(i) % N::to_usize()].clone()),
+        }
+    }
+    pub fn rotate_left(&self, n: usize) -> Self
+    where
+        T: Clone,
+    {
+        self.remap(|a| a.wrapping_sub(n))
+    }
+    pub fn rotate_right(&self, n: usize) -> Self
+    where
+        T: Clone,
+    {
+        self.remap(|a| a.wrapping_add(n))
     }
 }
 impl<N: VoleArray<T>, T> Vole<N, T> {

@@ -18,56 +18,60 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
         X: ArrayLength<GenericArray<usize, N>>,
     >(
         &self,
-        root: GenericArray<Q, M>,
-        inputs: PolyInputPool<GenericArray<Q, M>, N, X>,
-    ) -> GenericArray<A, M>
+        root: Delta<M, Q>,
+        inputs: PolyInputPool<super::Q<M, Q>, N, X>,
+    ) -> super::Q<M, A>
     where
         N: ArrayLength<usize>,
         T: Clone + Into<A>,
     {
-        GenericArray::generate(|i| {
-            let mut sum: A = self.c0.clone().into();
-            for _ in 0..N::to_usize() {
-                sum = root[i].clone() * sum;
-            }
-            for j in 0..N::to_usize() {
-                let mut b: A = self.c1[j].clone().into();
-                for i2 in inputs.indices.iter() {
-                    b = inputs.inputs[i2[j]][i].clone() * b;
+        super::Q {
+            q: GenericArray::generate(|i| {
+                let mut sum: A = self.c0.clone().into();
+                for _ in 0..N::to_usize() {
+                    sum = root.delta[i].clone() * sum;
                 }
-                sum = sum + b;
-            }
-            sum
-        })
+                for j in 0..N::to_usize() {
+                    let mut b: A = self.c1[j].clone().into();
+                    for i2 in inputs.indices.iter() {
+                        b = inputs.inputs[i2[j]].q[i].clone() * b;
+                    }
+                    sum = sum + b;
+                }
+                sum
+            }),
+        }
     }
     pub fn get_qs<
         Q: Clone + Mul<A, Output = A>,
         A: Add<A, Output = A>,
         M: ArrayLength<Q> + ArrayLength<A>,
-        X: ArrayLength<GenericArray<GenericArray<Q, M>, N>>,
+        X: ArrayLength<GenericArray<super::Q<M, Q>, N>>,
     >(
         &self,
-        root: GenericArray<Q, M>,
-        inputs: GenericArray<GenericArray<GenericArray<Q, M>, N>, X>,
-    ) -> GenericArray<A, M>
+        root: Delta<M, Q>,
+        inputs: GenericArray<GenericArray<super::Q<M, Q>, N>, X>,
+    ) -> super::Q<M, A>
     where
-        N: ArrayLength<GenericArray<Q, M>>,
+        N: ArrayLength<super::Q<M, Q>>,
         T: Clone + Into<A>,
     {
-        GenericArray::generate(|i| {
-            let mut sum: A = self.c0.clone().into();
-            for _ in 0..N::to_usize() {
-                sum = root[i].clone() * sum;
-            }
-            for j in 0..N::to_usize() {
-                let mut b: A = self.c1[j].clone().into();
-                for i2 in inputs.iter() {
-                    b = i2[j][i].clone() * b;
+        super::Q {
+            q: GenericArray::generate(|i| {
+                let mut sum: A = self.c0.clone().into();
+                for _ in 0..N::to_usize() {
+                    sum = root.delta[i].clone() * sum;
                 }
-                sum = sum + b;
-            }
-            sum
-        })
+                for j in 0..N::to_usize() {
+                    let mut b: A = self.c1[j].clone().into();
+                    for i2 in inputs.iter() {
+                        b = i2[j].q[i].clone() * b;
+                    }
+                    sum = sum + b;
+                }
+                sum
+            }),
+        }
     }
     pub fn apply_pool<
         M,
