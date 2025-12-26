@@ -1,5 +1,7 @@
 use cipher::consts::U0;
 
+use crate::field::Bit;
+
 use super::*;
 pub struct Vope<N: VoleArray<T>, T, K: ArrayLength<GenericArray<T, N>> = U1> {
     ///Multiplication-based randomizer
@@ -124,15 +126,29 @@ impl<N: VoleArray<T>, T, K: ArrayLength<GenericArray<T, N>>> Vope<N, T, K> {
             v: GenericArray::generate(|i| v[f(i) % N::to_usize()].clone()),
         }
     }
-    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> Vope<N, U, K>
+}
+impl<N, K> Vope<N, Bit, K>
+where
+    N: VoleArray<Bit>,
+    K: ArrayLength<GenericArray<Bit, N>>,
+{
+    pub fn scale<T>(self, f: impl Fn(bool) -> T) -> Vope<N, T, K>
     where
-        N: VoleArray<U>,
-        K: ArrayLength<GenericArray<U, N>>,
+        N: VoleArray<T>,
+        K: ArrayLength<GenericArray<T, N>>,
     {
-        let Self { u, v } = self;
+        let Vope { u, v } = self;
         Vope {
-            u: u.map(|a| a.map(&mut f)),
-            v: v.map(&mut f),
+            u: GenericArray::generate(|l| {
+                GenericArray::generate(|i| {
+                    let Bit(b) = u[l][i].clone();
+                    f(b)
+                })
+            }),
+            v: GenericArray::generate(|i| {
+                let Bit(b) = v[i].clone();
+                f(b)
+            }),
         }
     }
 }
