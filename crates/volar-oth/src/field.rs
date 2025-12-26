@@ -33,6 +33,9 @@ macro_rules! u64_field {
         )*
     };
 }
+pub trait Invert {
+    fn invert(&self) -> Self;
+}
 u8_field!(Galois, BitsInBytes);
 u64_field!(Galois64, BitsInBytes64);
 impl Add<BitsInBytes> for BitsInBytes {
@@ -86,6 +89,22 @@ impl Mul<Galois> for Galois {
         let c = 0x1b; // x^8 + x^4 + x^3 + x + 1
         let p = backend::field_mul(a, b, c);
         Galois(p)
+    }
+}
+impl Invert for Galois {
+    fn invert(&self) -> Self {
+        if self.0 == 0{
+            // Follow tradition in AES that since 0 has no inverse, we map it to 0
+            return Galois(0);
+        }
+        let mut a = self.0;
+        let mut b = 1u8;
+        let c = 0x1b; // x^8 + x^4 + x^3 + x + 1
+        for _ in 0..254 {
+            b = backend::field_mul(b, a, c);
+            a = backend::field_mul(a, a, c);
+        }
+        Galois(b)
     }
 }
 impl Sub<Galois> for Galois {
