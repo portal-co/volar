@@ -17,6 +17,21 @@ macro_rules! u8_field {
         )*
     };
 }
+macro_rules! bool_field {
+    ($($a:ident)*) => {
+        $(
+            #[repr(transparent)] 
+            #[derive(Clone,Copy, Debug, PartialEq, Eq,PartialOrd, Ord, Hash,Default)] 
+            pub struct $a(pub bool);
+            impl BitXor<u8> for $a{
+                type Output = Self;
+                fn bitxor(self, rhs: u8) -> Self::Output {
+                    $a(self.0 ^ (rhs & 1 != 0))
+                }
+            }
+    )*
+    };
+}
 macro_rules! u64_field {
     ($($a:ident),*) => {
         $(
@@ -36,6 +51,7 @@ macro_rules! u64_field {
 pub trait Invert {
     fn invert(&self) -> Self;
 }
+bool_field!(Bit);
 u8_field!(Galois, BitsInBytes);
 u64_field!(Galois64, BitsInBytes64);
 impl Add<BitsInBytes> for BitsInBytes {
@@ -93,7 +109,7 @@ impl Mul<Galois> for Galois {
 }
 impl Invert for Galois {
     fn invert(&self) -> Self {
-        if self.0 == 0{
+        if self.0 == 0 {
             // Follow tradition in AES that since 0 has no inverse, we map it to 0
             return Galois(0);
         }

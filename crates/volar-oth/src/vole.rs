@@ -11,8 +11,8 @@ pub mod field_rotate;
 mod impls;
 pub mod poly;
 
-pub trait VoleArray<T>: ArrayLength<T> + ArrayLength<MaybeUninit<T>> {}
-impl<T, X: ArrayLength<T> + ArrayLength<MaybeUninit<T>>> VoleArray<T> for X {}
+pub trait VoleArray<T>: ArrayLength<T> {}
+impl<T, X: ArrayLength<T>> VoleArray<T> for X {}
 
 pub struct Delta<N: ArrayLength<T>, T> {
     pub delta: GenericArray<T, N>,
