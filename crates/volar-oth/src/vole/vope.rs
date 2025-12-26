@@ -3,6 +3,7 @@ use cipher::consts::U0;
 use crate::field::Bit;
 
 use super::*;
+pub mod ai_hazmat;
 pub struct Vope<N: VoleArray<T>, T, K: ArrayLength<GenericArray<T, N>> = U1> {
     ///Multiplication-based randomizer
     pub u: GenericArray<GenericArray<T, N>, K>,
