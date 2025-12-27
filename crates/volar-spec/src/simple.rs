@@ -29,13 +29,9 @@ impl<D: Digest> CommitmentCore<D> {
         CommitmentCore(hasher.finalize())
     }
 }
-impl<D: Digest> Commitment for CommitmentCore<D> {
-    type Opening = (
-        GenericArray<u8, D::OutputSize>,
-        GenericArray<u8, D::OutputSize>,
-    );
-    fn validate(&self, o: &Self::Opening) -> bool {
-        let recomputed: CommitmentCore<D> = CommitmentCore::commit(&o.0, &o.1);
+impl<D: Digest> CommitmentCore<D> {
+    pub fn validate(&self, opened_message: &impl AsRef<[u8]>, opened_rand: &impl AsRef<[u8]>) -> bool {
+        let recomputed: CommitmentCore<D> = CommitmentCore::commit(opened_message, opened_rand);
         &recomputed.0 == &self.0
     }
 }
