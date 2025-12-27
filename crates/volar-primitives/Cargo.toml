@@ -1,5 +1,5 @@
 [package]
-name = "volar-spec"
+name = "volar-primitives"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
@@ -7,7 +7,4 @@ description.workspace = true
 repository.workspace = true
 
 [dependencies]
-cipher.workspace = true
-rand.workspace = true
-digest.workspace = true
-volar-primitives = { path = "../volar-primitives" }
+core = { package = "core", version = "0.0.0", optional = true }

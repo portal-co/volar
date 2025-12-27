@@ -1,5 +1,5 @@
 [workspace]
-members=["crates/volar-spec"]
+members=["crates/volar-spec", "crates/volar-primitives"]
 resolver="3"
 
 [workspace.package]
