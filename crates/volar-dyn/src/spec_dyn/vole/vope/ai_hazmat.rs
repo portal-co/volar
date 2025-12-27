@@ -21,16 +21,7 @@ where
         }
         let mut res_v: Vec<T> = vec![T::default(); n];
 
-        // helper to get coefficient: index 0 -> v, else u[index-1]
-        let get_coeff = |vope: &VopeDyn<T>, idx: usize| -> &Vec<T> {
-            if idx == 0 {
-                // wrap v as single-row-like view via slicing into a Vec
-                // We'll create a temporary Vec for v case per use; instead, handle separately below
-                &vope.u[0] // placeholder; but we won't call this for idx==0
-            } else {
-                &vope.u[idx - 1]
-            }
-        };
+        // helper: index 0 maps to `v`, otherwise to `u[index-1]` — handled inline below.
 
         // perform convolution-like loops
         for i in 0..=k1 {
