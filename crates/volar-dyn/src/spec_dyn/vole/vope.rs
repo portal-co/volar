@@ -1,6 +1,7 @@
 use super::*;
 
 use alloc::vec::Vec;
+pub mod ai_hazmat;
 
 /// Dynamic Vope equivalent moved out into its own module to mirror the spec.
 pub struct VopeDyn<T> {
