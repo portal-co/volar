@@ -7,13 +7,13 @@ where
 {
     /// Multiplies this Vope with another, returning a Vope of degree K1 + K2.
     /// This represents the algebraic product in the context of Delta.
-    pub fn mul_generalized<K2, KRes>(&self, other: &Vope<N, T, K2>) -> Vope<N, T, KRes>
+    pub fn mul_generalized<K2: Add<K>>(&self, other: &Vope<N, T, K2>) -> Vope<N, T, K2::Output>
     where
         K2: ArrayLength<GenericArray<T, N>>,
-        KRes: ArrayLength<GenericArray<T, N>>, // KRes must be K + K2
+        K2::Output: ArrayLength<GenericArray<T, N>>, // KRes must be K + K2
     {
         // 1. Initialize result with zeros
-        let mut res_u = GenericArray::<GenericArray<T, N>, KRes>::default();
+        let mut res_u = GenericArray::<GenericArray<T, N>, K2::Output>::default();
         let mut res_v = GenericArray::<T, N>::default();
 
         macro_rules! get_coeff {
