@@ -39,14 +39,13 @@ pub enum IRStmt {
         addr: IRVarId,
     },
     Const(Vec<u8>, IRTypeId),
-    Linear(BTreeMap<IRVarId, u8>),
     Transmute {
         src: IRVarId,
         src_ty: IRTypeId,
         dst_ty: IRTypeId,
     },
     Poly {
-        coeffs: Vec<(IRVarId, u8)>,
+        coeffs: BTreeMap<Vec<IRVarId>,u8>,
         constant: Vec<u8>,
     },
     Rol {
@@ -63,23 +62,20 @@ pub enum IRStmt {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum IRTerminator {
     Jmp {
-        func: IRBlockIdOrReturn,
+        func: IRBlockTargetId,
         args: Vec<IRVarId>,
     },
     JumpCond {
         condition: IRVarId,
-        true_block: IRBlockIdOrReturn,
+        true_block: IRBlockTargetId,
         true_args: Vec<IRVarId>,
-        false_block: IRBlockIdOrReturn,
+        false_block: IRBlockTargetId,
         false_args: Vec<IRVarId>,
-    },
-    JmpDyn {
-        func: IRVarId,
-        args: Vec<IRVarId>,
-    },
+    }
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub enum IRBlockIdOrReturn {
+pub enum IRBlockTargetId {
     Block(IRBlockId),
     Return,
+    Dyn(IRVarId),
 }
