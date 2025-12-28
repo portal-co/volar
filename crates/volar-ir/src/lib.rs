@@ -3,7 +3,7 @@
 use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 extern crate alloc;
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct IrBlockId(pub usize);
+pub struct IRBlockId(pub usize);
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct IRBlocks(pub Vec<IRBlock>);
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -62,7 +62,24 @@ pub enum IRStmt {
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum IRTerminator {
-    Return { src: IRVarId, ty: IRTypeId },
-    Jmp { func: IrBlockId, args: Vec<IRVarId> },
-    JmpDyn { func: IRVarId, args: Vec<IRVarId> },
+    Jmp {
+        func: IRBlockIdOrReturn,
+        args: Vec<IRVarId>,
+    },
+    JumpCond {
+        condition: IRVarId,
+        true_block: IRBlockIdOrReturn,
+        true_args: Vec<IRVarId>,
+        false_block: IRBlockIdOrReturn,
+        false_args: Vec<IRVarId>,
+    },
+    JmpDyn {
+        func: IRVarId,
+        args: Vec<IRVarId>,
+    },
+}
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum IRBlockIdOrReturn {
+    Block(IRBlockId),
+    Return,
 }
