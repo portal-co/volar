@@ -58,6 +58,14 @@ pub enum IRStmt {
         ty: IRTypeId,
         n: usize,
     },
+    Merge{
+        parts: Vec<IRVarId>,
+        ty: IRTypeId,
+    },
+    Splat{
+        src: IRVarId,
+        ty: IRTypeId,
+    },
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum IRTerminator {
