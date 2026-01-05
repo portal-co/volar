@@ -25,15 +25,15 @@ pub enum IRType {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct IRVarId(pub usize);
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub enum IRStmt<Var = IRVarId> {
+pub enum IRStmt<Var = IRVarId, Addr = Var> {
     StorageRead {
         ty: IRTypeId,
-        addr: Var,
+        addr: Addr,
     },
     StorageWrite {
         src: Var,
         ty: IRTypeId,
-        addr: Var,
+        addr: Addr,
     },
     Const(Vec<u8>, IRTypeId),
     Transmute {
