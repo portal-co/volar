@@ -1,13 +1,14 @@
 # volar
 
 ## Description
-Project volar
+"VOLE-in-the-head computations for a cloud world". Cryptographic library implementing VOLE (Vector Oblivious Linear Evaluation) or related primitives.
 
 ## Goals
-- [ ] Add project goals
+- [ ] Implement VOLE primitives
+- [ ] Support secure computation
 
 ## Progress
-- [ ] Initial setup
+- [ ] Workspace setup with spec and primitives
 
 ---
 *AI assisted*
