@@ -1,0 +1,23 @@
+//! # Volar Compiler
+//!
+//! A compiler that parses Rust code from `volar-spec` and produces an IR
+//! suitable for transpilation to other languages or dynamic code generation.
+//!
+//! This compiler focuses on the specific Rust features used in `volar-spec`:
+//! - Generic structs and their type parameters
+//! - Trait bounds and where clauses  
+//! - Impl blocks with trait implementations (Add, Mul, BitXor, etc.)
+//! - Methods with generic parameters
+//! - Type-level computation patterns (typenum style)
+//! - Closures and iterators
+//! - Control flow (for loops, if-else, pattern matching)
+
+pub mod ir;
+pub mod parser;
+pub mod lowering;
+pub mod printer;
+
+pub use ir::*;
+pub use parser::*;
+pub use lowering::*;
+pub use printer::*;
