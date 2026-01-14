@@ -33,20 +33,22 @@ pub struct PolyInputPoolDyn<'a, T: > {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct BitVoleDyn<N: VoleArray<compile_error!("Unknown type parameter: T")> + VoleArray<Bit>, T: > {
+pub struct BitVoleDyn<T: > {
+    pub n: usize,
     pub u: Vec<Bit>,
     pub v: Vec<T>,
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct VopeDyn<N: VoleArray<compile_error!("Unknown type parameter: T")>, T: > {
+pub struct VopeDyn<T: > {
+    pub n: usize,
     pub k: usize,
     pub u: Vec<Vec<T>>,
     pub v: Vec<T>,
 }
 
 impl<T> PolyDyn<T> {
-    pub fn get_qs_pool<Q: Clone + Mul<compile_error!("Unknown type parameter: A"), Output = compile_error!("Unknown type parameter: A")>, A: Add<compile_error!("Unknown type parameter: A"), Output = compile_error!("Unknown type parameter: A")>>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: PolyInputPoolDyn<QDyn<Q>, >, reduction: usize) -> QDyn<A> {
+    pub fn get_qs_pool<Q: Clone + Mul<compile_error!("Unknown type parameter: A"), Output = compile_error!("Unknown type parameter: A")>, A: Add<A, Output = A>>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: PolyInputPoolDyn<QDyn<Q>, >, reduction: usize) -> QDyn<A> {
         let n = self.n;
         QDyn { q: (0..m).map(|i| {
     let _ = self.c0.clone().into();
@@ -65,7 +67,7 @@ impl<T> PolyDyn<T> {
     sum
 }).collect() }
     }
-    pub fn get_qs<Q: Clone + Mul<compile_error!("Unknown type parameter: A"), Output = compile_error!("Unknown type parameter: A")>, A: Add<compile_error!("Unknown type parameter: A"), Output = compile_error!("Unknown type parameter: A")>>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: Vec<Vec<QDyn<Q>>>, reduction: usize) -> QDyn<A> {
+    pub fn get_qs<Q: Clone + Mul<compile_error!("Unknown type parameter: A"), Output = compile_error!("Unknown type parameter: A")>, A: Add<A, Output = A>>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: Vec<Vec<QDyn<Q>>>, reduction: usize) -> QDyn<A> {
         let n = self.n;
         QDyn { q: (0..m).map(|i| {
     let _ = self.c0.clone().into();
@@ -84,7 +86,7 @@ impl<T> PolyDyn<T> {
     sum
 }).collect() }
     }
-    pub fn apply_pool<M, O: Mul<compile_error!("Unknown type parameter: O"), Output = compile_error!("Unknown type parameter: O")> + Add<compile_error!("Unknown type parameter: O"), Output = compile_error!("Unknown type parameter: O")> + Default + Clone>(&self, x: usize, x2: usize, xs: usize, s: usize, voles: &'a PolyInputPoolDyn<VopeDyn<M, T, >, >) -> VopeDyn<M, O, > {
+    pub fn apply_pool<M, O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, x: usize, x2: usize, xs: usize, s: usize, voles: &'a PolyInputPoolDyn<VopeDyn<M, T, >, >) -> VopeDyn<M, O, > {
         let n = self.n;
         let v = (0..m).map(|i| {
     let mut sum = O::new();
@@ -120,9 +122,9 @@ impl<T> PolyDyn<T> {
     sum
 }).collect()
 }).collect();
-        return VopeDyn { u: u, v: v, k: k };
+        return VopeDyn { u: u, v: v, n: n, k: k };
     }
-    pub fn apply<M, O: Mul<compile_error!("Unknown type parameter: O"), Output = compile_error!("Unknown type parameter: O")> + Add<compile_error!("Unknown type parameter: O"), Output = compile_error!("Unknown type parameter: O")> + Default + Clone>(&self, x: usize, x2: usize, xs: usize, s: usize, voles: Vec<Vec<VopeDyn<M, T, >>>) -> VopeDyn<M, O, > {
+    pub fn apply<M, O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, x: usize, x2: usize, xs: usize, s: usize, voles: Vec<Vec<VopeDyn<M, T, >>>) -> VopeDyn<M, O, > {
         let n = self.n;
         let v = (0..m).map(|i| {
     let mut sum = O::new();
@@ -158,12 +160,13 @@ impl<T> PolyDyn<T> {
     sum
 }).collect()
 }).collect();
-        return VopeDyn { u: u, v: v, k: k };
+        return VopeDyn { u: u, v: v, n: n, k: k };
     }
 }
 
-impl<N, T> VopeDyn<N, T> {
-    pub fn mul_generalized<K2: Add<compile_error!("Unknown type parameter: K")>>(&self, other: &'a VopeDyn<N, T, K2>) -> VopeDyn<N, T, OutputDyn> {
+impl<T> VopeDyn<T> {
+    pub fn mul_generalized<K2: Add<K>>(&self, other: &'a VopeDyn<N, T, K2>) -> VopeDyn<N, T, OutputDyn> {
+        let n = self.n;
         let k = self.k;
         let mut res_u = Vec::new();
         let mut res_v = Vec::new();
@@ -183,12 +186,13 @@ impl<N, T> VopeDyn<N, T> {
 }
 }
 };
-        VopeDyn { u: res_u, v: res_v, k: k }
+        VopeDyn { u: res_u, v: res_v, n: n, k: k }
     }
 }
 
-impl<N: VoleArray<BitsInBytes>> VopeDyn<N, BitsInBytes> {
+impl VopeDyn<BitsInBytes> {
     pub fn rotate_left_bits(&self, n: usize) -> Self {
+        let n = self.n;
         let k = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {
@@ -201,9 +205,10 @@ impl<N: VoleArray<BitsInBytes>> VopeDyn<N, BitsInBytes> {
     let BitsInBytes(b) = v[i].clone();
     let BitsInBytes(next) = v[((i + 1) % n)].clone();
     BitsInBytes((b.shl((n as u32)) | next.shr((8 - (n as u32)))))
-}).collect(), k: k }
+}).collect(), n: n, k: k }
     }
     pub fn rotate_right_bits(&self, n: usize) -> Self {
+        let n = self.n;
         let k = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {
@@ -216,9 +221,10 @@ impl<N: VoleArray<BitsInBytes>> VopeDyn<N, BitsInBytes> {
     let BitsInBytes(prev) = v[(((i + n) - 1) % n)].clone();
     let BitsInBytes(b) = v[i].clone();
     BitsInBytes((prev.shl((8 - (n as u32))) | b.shr((n as u32))))
-}).collect(), k: k }
+}).collect(), n: n, k: k }
     }
-    pub fn bit(&self, n: u8) -> VopeDyn<N, Bit, > {
+    pub fn bit(&self, n: u8) -> VopeDyn<Bit, > {
+        let n = self.n;
         let k = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {
@@ -229,12 +235,13 @@ impl<N: VoleArray<BitsInBytes>> VopeDyn<N, BitsInBytes> {
 }).collect(), v: (0..n).map(|i| {
     let BitsInBytes(b) = v[i].clone();
     Bit((((b >> n) & 1) != 0))
-}).collect(), k: k }
+}).collect(), n: n, k: k }
     }
 }
 
-impl<N: VoleArray<BitsInBytes64>> VopeDyn<N, BitsInBytes64> {
+impl VopeDyn<BitsInBytes64> {
     pub fn rotate_left_bits(&self, n: usize) -> Self {
+        let n = self.n;
         let k = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {
@@ -247,9 +254,10 @@ impl<N: VoleArray<BitsInBytes64>> VopeDyn<N, BitsInBytes64> {
     let BitsInBytes64(b) = v[i].clone();
     let BitsInBytes64(next) = v[((i + 1) % n)].clone();
     BitsInBytes64((b.shl((n as u32)) | next.shr((64 - (n as u32)))))
-}).collect(), k: k }
+}).collect(), n: n, k: k }
     }
     pub fn rotate_right_bits(&self, n: usize) -> Self {
+        let n = self.n;
         let k = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {
@@ -262,9 +270,10 @@ impl<N: VoleArray<BitsInBytes64>> VopeDyn<N, BitsInBytes64> {
     let BitsInBytes64(prev) = v[(((i + n) - 1) % n)].clone();
     let BitsInBytes64(b) = v[i].clone();
     BitsInBytes64((prev.shl((64 - (n as u32))) | b.shr((n as u32))))
-}).collect(), k: k }
+}).collect(), n: n, k: k }
     }
-    pub fn bit(&self, n: u8) -> VopeDyn<N, Bit, > {
+    pub fn bit(&self, n: u8) -> VopeDyn<Bit, > {
+        let n = self.n;
         let k = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {
@@ -275,17 +284,18 @@ impl<N: VoleArray<BitsInBytes64>> VopeDyn<N, BitsInBytes64> {
 }).collect(), v: (0..n).map(|i| {
     let BitsInBytes64(b) = v[i].clone();
     Bit((((b >> n) & 1) != 0))
-}).collect(), k: k }
+}).collect(), n: n, k: k }
     }
 }
 
-impl<N: VoleArray<compile_error!("Unknown type parameter: T")>, T: Clone> VopeDyn<N, T> {
+impl<T: Clone> VopeDyn<T> {
     pub fn clone(&self) -> Self {
+        let n = self.n;
         let k = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {
     (0..n).map(|i| u[l][i].clone()).collect()
-}).collect(), v: (0..n).map(|i| v[i].clone()).collect(), k: k }
+}).collect(), v: (0..n).map(|i| v[i].clone()).collect(), n: n, k: k }
     }
 }
 
@@ -303,8 +313,9 @@ impl<T: Clone> DeltaDyn<N, T> {
     }
 }
 
-impl<N: VoleArray<compile_error!("Unknown type parameter: T")>, T: PartialEq> VopeDyn<N, T> {
+impl<T: PartialEq> VopeDyn<T> {
     pub fn eq(&self, other: &'a Self) -> bool {
+        let n = self.n;
         let k = self.k;
         let VopeDyn { u: u1, v: v1, .. } = self;
         let VopeDyn { u: u2, v: v2, .. } = other;
@@ -350,7 +361,7 @@ impl<T: PartialEq> DeltaDyn<N, T> {
     }
 }
 
-impl<N: VoleArray<compile_error!("Unknown type parameter: T")>, T: Eq> VopeDyn<N, T> {
+impl<T: Eq> VopeDyn<T> {
 }
 
 impl<T: Eq> QDyn<N, T> {
@@ -463,33 +474,36 @@ impl DeltaDyn<N, BitsInBytes64> {
     }
 }
 
-impl<N: VoleArray<compile_error!("Unknown type parameter: T")>, T> VopeDyn<N, T, usize> {
+impl<T> VopeDyn<T, usize> {
     pub fn constant(v: Vec<T>) -> Self {
-        VopeDyn { u: (0..n).map(|_| compile_error!("Unsupported expression Macro { name: "unreachable", tokens: "" }")).collect(), v: v, k: k }
+        VopeDyn { u: (0..n).map(|_| compile_error!("Unsupported expression Macro { name: "unreachable", tokens: "" }")).collect(), v: v, n: n, k: k }
     }
 }
 
-impl<N: VoleArray<compile_error!("Unknown type parameter: T")> + VoleArray<compile_error!("Unknown type parameter: U")> + VoleArray<OutputDyn>, T: Add<compile_error!("Unknown type parameter: U")> + Clone, U: Clone> VopeDyn<N, T> {
-    pub fn add(self, rhs: VopeDyn<N, U, >) -> OutputDyn {
+impl<T: Add<compile_error!("Unknown type parameter: U")> + Clone, U: Clone> VopeDyn<T> {
+    pub fn add(self, rhs: VopeDyn<U, >) -> OutputDyn {
+        let n = self.n;
         let k = self.k;
-        VopeDyn { u: self.u.iter().zip(rhs.u.iter()).map(|(a, b)| a.iter().zip(b.iter()).map(|(a, b)| (a + b)).collect()).collect(), v: self.v.iter().zip(rhs.v.iter()).map(|(a, b)| (a + b)).collect(), k: k }
+        VopeDyn { u: self.u.iter().zip(rhs.u.iter()).map(|(a, b)| a.iter().zip(b.iter()).map(|(a, b)| (a + b)).collect()).collect(), v: self.v.iter().zip(rhs.v.iter()).map(|(a, b)| (a + b)).collect(), n: n, k: k }
     }
 }
 
-impl<N: VoleArray<compile_error!("Unknown type parameter: T")> + VoleArray<OutputDyn> + VoleArray<compile_error!("Unknown type parameter: U")> + Mul<compile_error!("Unknown type parameter: K")>, T: BitXor<compile_error!("Unknown type parameter: U"), Output = compile_error!("Unknown type parameter: O")> + Clone, U: Clone, O> VopeDyn<N, T> {
+impl<T: BitXor<compile_error!("Unknown type parameter: U"), Output = compile_error!("Unknown type parameter: O")> + Clone, U: Clone, O> VopeDyn<T> {
     pub fn bitxor(self, rhs: Vec<U>) -> OutputDyn {
+        let n = self.n;
         let k = self.k;
         VopeDyn { u: (0..k).map(|i| {
     (0..n).map(|j| {
     let _ = self.u[i][j].clone().bitxor(rhs[((i * k) + j)].clone());
     o
 }).collect()
-}).collect(), v: self.v.iter().map(|a| a.into()).collect(), k: k }
+}).collect(), v: self.v.iter().map(|a| a.into()).collect(), n: n, k: k }
     }
 }
 
-impl<N: VoleArray<compile_error!("Unknown type parameter: T")> + VoleArray<OutputDyn> + VoleArray<compile_error!("Unknown type parameter: U")> + VoleArray<compile_error!("Unknown type parameter: O")>, T: Mul<compile_error!("Unknown type parameter: U"), Output = compile_error!("Unknown type parameter: O")> + Into<compile_error!("Unknown type parameter: O")> + Clone, U: Mul<compile_error!("Unknown type parameter: U"), Output = compile_error!("Unknown type parameter: U")> + Clone, O: Add<compile_error!("Unknown type parameter: O"), Output = compile_error!("Unknown type parameter: O")>> VopeDyn<N, T> {
-    pub fn mul(self, rhs: DeltaDyn<N, U>) -> OutputDyn {
+impl<T: Mul<compile_error!("Unknown type parameter: U"), Output = compile_error!("Unknown type parameter: O")> + Into<compile_error!("Unknown type parameter: O")> + Clone, U: Mul<U, Output = U> + Clone, O: Add<O, Output = O>> VopeDyn<T> {
+    pub fn mul(self, rhs: DeltaDyn<U>) -> OutputDyn {
+        let n = self.n;
         let k = self.k;
         QDyn { q: self.u.iter().enumerate().fold(self.v.clone().iter().map(|a| a.into()).collect(), |a, (i, b)| {
     a.iter().zip(b.iter()).map(|(a, b)| {
@@ -504,33 +518,38 @@ impl<N: VoleArray<compile_error!("Unknown type parameter: T")> + VoleArray<Outpu
     }
 }
 
-impl<N: VoleArray<compile_error!("Unknown type parameter: T")>, T> VopeDyn<N, T> {
-    pub fn expand(&self, l: usize) -> VopeDyn<N, T, > {
+impl<T> VopeDyn<T> {
+    pub fn expand(&self, l: usize) -> VopeDyn<T, > {
+        let n = self.n;
         let k = self.k;
         let Self { u: u, v: v } = self;
         VopeDyn { u: (0..l).map(|l| {
     (0..n).map(|i| u.get(l).map_or(T::new(), |a| a[i].clone())).collect()
-}).collect(), v: v.clone(), k: k }
+}).collect(), v: v.clone(), n: n, k: k }
     }
     pub fn rotate_left(&self, n: usize) -> Self {
+        let n = self.n;
         let k = self.k;
         self.remap(|a| a.wrapping_sub(n))
     }
     pub fn rotate_right(&self, n: usize) -> Self {
+        let n = self.n;
         let k = self.k;
         self.remap(|a| a.wrapping_add(n))
     }
-    pub fn remap<M: VoleArray<compile_error!("Unknown type parameter: T")>>(&self, f: compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Expand(Primitive(Usize)), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<M, T, > {
+    pub fn remap(&self, m: usize, f: compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Expand(Primitive(Usize)), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<T, > {
+        let n = self.n;
         let k = self.k;
         let Self { u: u, v: v } = self;
         VopeDyn { u: (0..k).map(|l| {
     (0..m).map(|i| u[l][(f(i) % n)].clone()).collect()
-}).collect(), v: (0..m).map(|i| v[(f(i) % n)].clone()).collect(), k: k }
+}).collect(), v: (0..m).map(|i| v[(f(i) % n)].clone()).collect(), n: n, k: k }
     }
 }
 
-impl<N> VopeDyn<N, Bit> {
+impl VopeDyn<Bit> {
     pub fn scale<T>(self, f: compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Custom("Fn"), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<N, T, K> {
+        let n = self.n;
         let k = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {
@@ -541,7 +560,7 @@ impl<N> VopeDyn<N, Bit> {
 }).collect(), v: (0..n).map(|i| {
     let Bit(b) = v[i].clone();
     f(b)
-}).collect(), k: k }
+}).collect(), n: n, k: k }
     }
 }
 

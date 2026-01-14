@@ -56,6 +56,17 @@ fn classify_generic(param: &IrGenericParam, all_params: &[&[IrGenericParam]]) ->
                 }
                 false
             }
+            IrType::Projection { base, assoc: _ } => {
+                // For projections like `<B as _>::BlockSize`, check the base type
+                type_refers_to_length(base, all_params, visited)
+            }
+            IrType::Param { path } => {
+                // For paths like `N::Something`, treat the first segment as a type param name
+                if let Some(first) = path.first() {
+                    return is_length_name(first, all_params, visited);
+                }
+                false
+            }
             IrType::Array { elem, .. }
             | IrType::Vector { elem }
             | IrType::Reference { elem, .. } => type_refers_to_length(elem, all_params, visited),
@@ -134,8 +145,9 @@ fn classify_generic(param: &IrGenericParam, all_params: &[&[IrGenericParam]]) ->
             TraitKind::Crypto(CryptoTrait::BlockCipher)
             | TraitKind::Crypto(CryptoTrait::Digest)
             | TraitKind::Crypto(CryptoTrait::Rng)
-            | TraitKind::Crypto(CryptoTrait::ByteBlockEncrypt)
-            | TraitKind::Crypto(CryptoTrait::VoleArray) => return GenericKind::Crypto,
+            | TraitKind::Crypto(CryptoTrait::ByteBlockEncrypt) => return GenericKind::Crypto,
+            // VoleArray behaves like a length (wraps ArrayLength)
+            TraitKind::Crypto(CryptoTrait::VoleArray) => return GenericKind::Length,
             TraitKind::Math(m)
                 if matches!(
                     m,
