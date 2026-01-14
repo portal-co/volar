@@ -49,7 +49,7 @@ pub struct VopeDyn<T> {
 
 impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 51: T
  {
-    pub fn get_qs_pool<Q: Clone + Mul<compile_error!("Unknown type parameter: A"), Output = compile_error!("Unknown type parameter: A")>, A: Add<A, Output = A>>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: PolyInputPoolDyn<QDyn<Q>>, reduction: usize) -> QDyn<A> where T: Clone + Into<A> {
+    pub fn get_qs_pool<Q: Clone + Mul<compile_error!("Unknown type parameter: A"), Output = compile_error!("Unknown type parameter: A")>, A: Add<A, Output = A>>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: PolyInputPoolDyn, reduction: usize) -> QDyn<A> where T: Clone + Into<A> {
         let n = self.n;
         QDyn { q: (0..m).map(|i| {
     let _ = self.c0.clone().into();
@@ -87,7 +87,7 @@ impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 51: T
     sum
 }).collect() }
     }
-    pub fn apply_pool<M, O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, x: usize, x2: usize, xs: usize, s: usize, voles: &'a PolyInputPoolDyn<VopeDyn<M, T>>) -> VopeDyn<M, O> where T: Into<O> + Clone, M: VoleArray<T> + VoleArray<O> {
+    pub fn apply_pool<M, O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, x: usize, x2: usize, xs: usize, s: usize, voles: &'a PolyInputPoolDyn) -> VopeDyn<O> where T: Into<O> + Clone, M: VoleArray<T> + VoleArray<O> {
         let n = self.n;
         let v = (0..m).map(|i| {
     let mut sum = O::new();
@@ -125,7 +125,7 @@ impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 51: T
 }).collect();
         return VopeDyn { u: u, v: v, n: n, k: k };
     }
-    pub fn apply<M, O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, x: usize, x2: usize, xs: usize, s: usize, voles: Vec<Vec<VopeDyn<M, T>>>) -> VopeDyn<M, O> where T: Into<O> + Clone, M: VoleArray<T> + VoleArray<O> {
+    pub fn apply<M, O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, x: usize, x2: usize, xs: usize, s: usize, voles: Vec<Vec<VopeDyn<T>>>) -> VopeDyn<O> where T: Into<O> + Clone, M: VoleArray<T> + VoleArray<O> {
         let n = self.n;
         let v = (0..m).map(|i| {
     let mut sum = O::new();
@@ -166,7 +166,7 @@ impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 51: T
 }
 
 impl<T: Add<Output = T> + Mul<Output = T> + Default + Clone> VopeDyn<T> where N: VoleArray<T>, T: Add<Output = T> + Mul<Output = T> + Default + Clone, K: ArrayLength<Vec<T>> {
-    pub fn mul_generalized<K2: Add<K>>(&self, other: &'a VopeDyn<N, T, K2>) -> VopeDyn<N, T, OutputDyn> where K2: ArrayLength<Vec<T>>, OutputDyn: ArrayLength<Vec<T>> {
+    pub fn mul_generalized<K2: Add<K>>(&self, other: &'a VopeDyn<T>) -> VopeDyn<T> where K2: ArrayLength<Vec<T>>, OutputDyn: ArrayLength<Vec<T>> {
         let n = self.n;
         let k = self.k;
         let mut res_u = Vec::new();
@@ -300,14 +300,14 @@ impl<T: Clone> Clone for VopeDyn<T> {
     }
 }
 
-impl<T: Clone> Clone for QDyn<T> {
+impl<T: Clone> Clone for QDyn {
     fn clone(&self) -> Self {
         let QDyn { q: q, .. } = self;
         QDyn { q: (0..n).map(|i| q[i].clone()).collect() }
     }
 }
 
-impl<T: Clone> Clone for DeltaDyn<T> {
+impl<T: Clone> Clone for DeltaDyn {
     fn clone(&self) -> Self {
         let DeltaDyn { delta: delta, .. } = self;
         DeltaDyn { delta: (0..n).map(|i| delta[i].clone()).collect() }
@@ -336,7 +336,7 @@ impl<T: PartialEq> PartialEq for VopeDyn<T> {
     }
 }
 
-impl<T: PartialEq> PartialEq for QDyn<T> {
+impl<T: PartialEq> PartialEq for QDyn {
     fn eq(&self, other: &'a Self) -> bool {
         let QDyn { q: q1, .. } = self;
         let QDyn { q: q2, .. } = other;
@@ -349,7 +349,7 @@ impl<T: PartialEq> PartialEq for QDyn<T> {
     }
 }
 
-impl<T: PartialEq> PartialEq for DeltaDyn<T> {
+impl<T: PartialEq> PartialEq for DeltaDyn {
     fn eq(&self, other: &'a Self) -> bool {
         let DeltaDyn { delta: d1, .. } = self;
         let DeltaDyn { delta: d2, .. } = other;
@@ -365,10 +365,10 @@ impl<T: PartialEq> PartialEq for DeltaDyn<T> {
 impl<T: Eq> Eq for VopeDyn<T> {
 }
 
-impl<T: Eq> Eq for QDyn<T> {
+impl<T: Eq> Eq for QDyn {
 }
 
-impl<T: Eq> Eq for DeltaDyn<T> {
+impl<T: Eq> Eq for DeltaDyn {
 }
 
 impl QDyn<BitsInBytes> {
@@ -544,7 +544,7 @@ impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 528: T
         let k = self.k;
         self.remap(|a| a.wrapping_add(n))
     }
-    pub fn remap(&self, m: usize, f: compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Expand(Primitive(Usize)), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<T> where T: Clone {
+    pub fn remap<F: FnMut(usize) -> usize>(&self, m: usize, f: F) -> VopeDyn<T> where T: Clone {
         let n = self.n;
         let k = self.k;
         let Self { u: u, v: v } = self;
@@ -555,7 +555,7 @@ impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 528: T
 }
 
 impl VopeDyn<Bit> where N: VoleArray<Bit>, K: ArrayLength<Vec<Bit>> {
-    pub fn scale<T>(self, f: compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Custom("Fn"), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<N, T, K> where N: VoleArray<T>, K: ArrayLength<Vec<T>>// UNCONSTRAINED GENERICS at generated.rs line 559: T
+    pub fn scale<T>(self, f: compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Custom("Fn"), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<T> where N: VoleArray<T>, K: ArrayLength<Vec<T>>// UNCONSTRAINED GENERICS at generated.rs line 559: T
  {
         let n = self.n;
         let k = self.k;

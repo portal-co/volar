@@ -1169,18 +1169,41 @@ fn write_type_dyn(
         IrType::Struct { kind, type_args } => {
             // Add Dyn suffix to struct names
             write!(out, "{}Dyn", kind).unwrap();
-
-            // Filter out length type params
-            let filtered: Vec<_> = type_args.clone();
-            let mut parts: Vec<String> = Vec::new();
-            for arg in filtered.iter() {
-                let mut s = String::new();
-                if write_type_dyn(&mut s, arg, &cur_params, struct_info) {
-                    parts.push(s);
+            // Use `StructInfo.orig_generics` to decide which type_args correspond
+            // to non-length, non-lifetime generics so the printed arity matches
+            // the declared `Dyn` struct. Fall back to printing any non-length
+            // args if struct info is missing.
+            if let Some(info) = struct_info.get(&kind.to_string()) {
+                let mut parts: Vec<String> = Vec::new();
+                for (idx, arg) in type_args.iter().enumerate() {
+                    if let Some((_, gkind, param_kind)) = info.orig_generics.get(idx) {
+                        if *param_kind == IrGenericParamKind::Lifetime {
+                            continue;
+                        }
+                        if *gkind == GenericKind::Length {
+                            continue;
+                        }
+                    }
+                    let mut s = String::new();
+                    if write_type_dyn(&mut s, arg, &cur_params, struct_info) {
+                        parts.push(s);
+                    }
                 }
-            }
-            if !parts.is_empty() {
-                write!(out, "<{}>", parts.join(", ")).unwrap();
+                if !parts.is_empty() {
+                    write!(out, "<{}>", parts.join(", ")).unwrap();
+                }
+            } else {
+                // Fallback: print any non-length type args
+                let mut parts: Vec<String> = Vec::new();
+                for arg in type_args.iter() {
+                    let mut s = String::new();
+                    if write_type_dyn(&mut s, arg, &cur_params, struct_info) {
+                        parts.push(s);
+                    }
+                }
+                if !parts.is_empty() {
+                    write!(out, "<{}>", parts.join(", ")).unwrap();
+                }
             }
         }
 
