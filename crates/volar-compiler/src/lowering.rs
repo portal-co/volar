@@ -2,20 +2,18 @@
 
 use crate::ir::*;
 #[cfg(feature = "std")]
-use std::{collections::{HashMap, HashSet}, string::{String, ToString}, vec::Vec, boxed::Box, format};
+use std::{collections::{BTreeMap, BTreeSet}, string::{String, ToString}, vec::Vec, boxed::Box, format};
 
 #[cfg(not(feature = "std"))]
-use hashbrown::{HashMap, HashSet};
-#[cfg(not(feature = "std"))]
-use alloc::{string::{String, ToString}, vec::Vec, boxed::Box, format};
+use alloc::{collections::{BTreeMap, BTreeSet}, string::{String, ToString}, vec::Vec, boxed::Box, format};
 
 /// Context for type resolution and analysis
 #[derive(Debug, Clone, Default)]
 pub struct TypeContext {
-    pub structs: HashMap<String, IrStruct>,
-    pub traits: HashMap<String, IrTrait>,
+    pub structs: BTreeMap<String, IrStruct>,
+    pub traits: BTreeMap<String, IrTrait>,
     pub trait_impls: Vec<IrImpl>,
-    pub assoc_types: HashMap<(String, AssociatedType), IrType>,
+    pub assoc_types: BTreeMap<(String, AssociatedType), IrType>,
 }
 
 impl TypeContext {
@@ -48,7 +46,7 @@ impl TypeContext {
     }
 
     /// Substitute type parameters with concrete types
-    pub fn substitute(&self, ty: &IrType, mapping: &HashMap<String, IrType>) -> IrType {
+    pub fn substitute(&self, ty: &IrType, mapping: &BTreeMap<String, IrType>) -> IrType {
         match ty {
             IrType::TypeParam(name) => {
                 if let Some(concrete) = mapping.get(name) {
@@ -135,7 +133,7 @@ pub fn type_to_string(ty: &IrType) -> String {
 #[derive(Debug, Clone, Default)]
 pub struct OperatorAnalysis {
     /// Maps (trait, self_ty, rhs_ty) -> output_ty
-    pub binary_ops: HashMap<(String, String, String), IrType>,
+    pub binary_ops: BTreeMap<(String, String, String), IrType>,
 }
 
 impl OperatorAnalysis {
@@ -173,8 +171,8 @@ impl OperatorAnalysis {
 }
 
 /// Utility for tracking used types to guide monomorphization or code gen
-pub fn collect_type_refs(module: &IrModule) -> HashSet<String> {
-    let mut refs = HashSet::new();
+pub fn collect_type_refs(module: &IrModule) -> BTreeSet<String> {
+    let mut refs = BTreeSet::new();
     for s in &module.structs {
         for field in &s.fields {
             collect_type_refs_in_type(&field.ty, &mut refs);
@@ -191,7 +189,7 @@ pub fn collect_type_refs(module: &IrModule) -> HashSet<String> {
     refs
 }
 
-fn collect_type_refs_in_function(f: &IrFunction, refs: &mut HashSet<String>) {
+fn collect_type_refs_in_function(f: &IrFunction, refs: &mut BTreeSet<String>) {
     for param in &f.params {
         collect_type_refs_in_type(&param.ty, refs);
     }
@@ -201,7 +199,7 @@ fn collect_type_refs_in_function(f: &IrFunction, refs: &mut HashSet<String>) {
     collect_type_refs_in_block(&f.body, refs);
 }
 
-fn collect_type_refs_in_block(block: &IrBlock, refs: &mut HashSet<String>) {
+fn collect_type_refs_in_block(block: &IrBlock, refs: &mut BTreeSet<String>) {
     for stmt in &block.stmts {
         match stmt {
             IrStmt::Let { ty, init, .. } => {
@@ -216,7 +214,7 @@ fn collect_type_refs_in_block(block: &IrBlock, refs: &mut HashSet<String>) {
     }
 }
 
-fn collect_type_refs_in_expr(expr: &IrExpr, refs: &mut HashSet<String>) {
+fn collect_type_refs_in_expr(expr: &IrExpr, refs: &mut BTreeSet<String>) {
     match expr {
         IrExpr::Binary { left, right, .. } => {
             collect_type_refs_in_expr(left, refs);
@@ -235,7 +233,7 @@ fn collect_type_refs_in_expr(expr: &IrExpr, refs: &mut HashSet<String>) {
     }
 }
 
-fn collect_type_refs_in_type(ty: &IrType, refs: &mut HashSet<String>) {
+fn collect_type_refs_in_type(ty: &IrType, refs: &mut BTreeSet<String>) {
     match ty {
         IrType::Struct { kind, type_args } => {
             refs.insert(kind.to_string());
