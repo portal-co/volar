@@ -28,6 +28,7 @@ fn test_generate_dyn_module() -> Result<(), Box<dyn std::error::Error>> {
             }
             Err(e) => {
                 eprintln!("Warning: Error parsing {:?}: {}", file, e);
+                return Err(Box::new(e));
             }
         }
     }
