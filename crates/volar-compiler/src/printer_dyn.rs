@@ -392,6 +392,10 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
     )
     .unwrap();
     writeln!(out).unwrap();
+    // Input enum for generic `Fn`-style trait bounds (used by `Expand`)
+    writeln!(out, "/// Input enum for generated Fn-like traits").unwrap();
+    writeln!(out, "pub enum FnInput<'a> {{ Bytes(&'a [u8]), Size(usize) }}").unwrap();
+    writeln!(out).unwrap();
 
     // Helper function
     writeln!(out, "/// Compute integer log2").unwrap();
@@ -592,11 +596,11 @@ fn bname(
         }
         TraitKind::Expand(t) => {
             return format!(
-                "FnMut(&[u8]) -> {}",
+                "FnMut(FnInput<'_>) -> {}",
                 type_to_string(&**t, cur_params, struct_info)
             );
         }
-    }
+        }
 }
 fn pname(
     p: &IrGenericParam,
@@ -614,7 +618,7 @@ fn pname(
                 .join(" + ")
         ),
     }
-}
+    }
 fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, StructInfo>) {
     let generics = i
         .generics
@@ -772,7 +776,8 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
         write!(out, " {} for {}", trait_name, dyn_name).unwrap();
 
         // append self-type generic args
-        if !concrete_type_args.is_empty() {
+        if !concrete_type_args.is_empty() && concrete_type_args.len() == info.type_params.len() {
+            // Only emit concrete type args when they match the declared dyn type parameter arity
             write!(out, "<{}>", concrete_type_args.join(", ")).unwrap();
         } else if !info.type_params.is_empty() {
             write!(out, "<{}>",
