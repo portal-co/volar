@@ -734,6 +734,7 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                 .flatten()
                 .collect(),
         }),
+        Type::Infer(_) => Ok(IrType::Infer),
         _ => Err(CompilerError::Unsupported(format!("Type: {:?}", ty))),
     }
 }
@@ -992,18 +993,35 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
         if (path_str == "GenericArray::generate" || path_str.ends_with("::generate"))
             && args.len() == 1
         {
-            if params.len() < 2 {
-                return Err(CompilerError::InvalidType(
-                    "GenericArray::generate requires two type parameters".to_string(),
-                ));
-            }
             if let Expr::Closure(c) = args[0] {
+                // Type parameters may be inferred or come from complex paths
+                // Try to extract what we can
+                let elem_ty = params.get(0).cloned().map(Box::new);
+                let len = if params.len() >= 2 {
+                    match &params[1] {
+                        IrType::TypeParam(name) => ArrayLength::TypeParam(name.clone()),
+                        IrType::Projection { base, assoc } => {
+                            let base_str = match base.as_ref() {
+                                IrType::TypeParam(name) => name.clone(),
+                                _ => "Self".to_string(),
+                            };
+                            let assoc_str = match assoc {
+                                AssociatedType::Output => "Output",
+                                AssociatedType::BlockSize => "BlockSize",
+                                AssociatedType::OutputSize => "OutputSize",
+                                AssociatedType::Other(name) => name,
+                                _ => "Output",
+                            };
+                            ArrayLength::TypeParam(format!("{}::{}", base_str, assoc_str))
+                        }
+                        _ => ArrayLength::TypeParam("N".to_string()),
+                    }
+                } else {
+                    ArrayLength::TypeParam("N".to_string()) // Placeholder for inferred
+                };
                 return Ok(IrExpr::ArrayGenerate {
-                    elem_ty: params.get(0).cloned().map(Box::new),
-                    len: ArrayLength::TypeParam(match params.get(1) {
-                        Some(IrType::TypeParam(name)) => name.clone(),
-                        _ => "N".to_string(),
-                    }),
+                    elem_ty,
+                    len,
                     index_var: extract_pat_name(&c.inputs[0]),
                     body: Box::new(convert_expr(&c.body)?),
                 });
@@ -1012,18 +1030,34 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
         if (path_str == "core::array::from_fn" || path_str.ends_with("::from_fn"))
             && args.len() == 1
         {
-            if params.len() < 2 {
-                return Err(CompilerError::InvalidType(
-                    "GenericArray::generate requires two type parameters".to_string(),
-                ));
-            }
             if let Expr::Closure(c) = args[0] {
+                // Type parameters may be inferred or come from complex paths
+                let elem_ty = params.get(0).cloned().map(Box::new);
+                let len = if params.len() >= 2 {
+                    match &params[1] {
+                        IrType::TypeParam(name) => ArrayLength::TypeParam(name.clone()),
+                        IrType::Projection { base, assoc } => {
+                            let base_str = match base.as_ref() {
+                                IrType::TypeParam(name) => name.clone(),
+                                _ => "Self".to_string(),
+                            };
+                            let assoc_str = match assoc {
+                                AssociatedType::Output => "Output",
+                                AssociatedType::BlockSize => "BlockSize", 
+                                AssociatedType::OutputSize => "OutputSize",
+                                AssociatedType::Other(name) => name,
+                                _ => "Output",
+                            };
+                            ArrayLength::TypeParam(format!("{}::{}", base_str, assoc_str))
+                        }
+                        _ => ArrayLength::TypeParam("N".to_string()),
+                    }
+                } else {
+                    ArrayLength::TypeParam("N".to_string()) // Placeholder for inferred
+                };
                 return Ok(IrExpr::ArrayGenerate {
-                    elem_ty: params.get(0).cloned().map(Box::new),
-                    len: ArrayLength::TypeParam(match params.get(1) {
-                        Some(IrType::TypeParam(name)) => name.clone(),
-                        _ => "N".to_string(),
-                    }),
+                    elem_ty,
+                    len,
                     index_var: extract_pat_name(&c.inputs[0]),
                     body: Box::new(convert_expr(&c.body)?),
                 });
