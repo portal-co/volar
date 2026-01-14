@@ -1044,12 +1044,30 @@ fn write_function_dyn(
             ty: &IrType,
             cur_params: &BTreeMap<String, (String, GenericKind)>,
             struct_info: &BTreeMap<String, StructInfo>,
+            self_struct: Option<&str>,
         ) -> bool {
             match ty {
-                IrType::TypeParam(n) => cur_params
-                    .get(n)
-                    .map(|(_, k)| *k == GenericKind::Length)
-                    .unwrap_or(false),
+                IrType::TypeParam(n) => {
+                    // First check local (function) params
+                    if cur_params
+                        .get(n)
+                        .map(|(_, k)| *k == GenericKind::Length)
+                        .unwrap_or(false)
+                    {
+                        return true;
+                    }
+                    // Next, if we're inside a struct impl, check the struct's declared generics
+                    if let Some(sname) = self_struct {
+                        if let Some(info) = struct_info.get(sname) {
+                            for (nm, gkind, _pk) in &info.orig_generics {
+                                if nm == n && *gkind == GenericKind::Length {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    false
+                }
                 IrType::Struct { kind, type_args } => {
                     // If we have struct metadata, align type_args with the
                     // struct's original generic kinds so length-positioned
@@ -1059,32 +1077,33 @@ fn write_function_dyn(
                             // If the original generic at this index is a length,
                             // then the type argument refers to a length when the
                             // argument itself refers to a length.
-                            if let Some((_, gkind, _)) = info.orig_generics.get(idx) {
-                                if *gkind == GenericKind::Length {
-                                    if type_refers_to_length_in_cur_func(
-                                        ta,
-                                        cur_params,
-                                        struct_info,
-                                    ) {
-                                        return true;
-                                    }
+                                    if let Some((_, gkind, _)) = info.orig_generics.get(idx) {
+                                        if *gkind == GenericKind::Length {
+                                            if type_refers_to_length_in_cur_func(
+                                                ta,
+                                                cur_params,
+                                                struct_info,
+                                                self_struct,
+                                            ) {
+                                                return true;
+                                            }
                                     // continue checking other args
                                     continue;
                                 }
                             }
-                            if type_refers_to_length_in_cur_func(ta, cur_params, struct_info) {
+                            if type_refers_to_length_in_cur_func(ta, cur_params, struct_info, self_struct) {
                                 return true;
                             }
                         }
                         false
                     } else {
                         type_args.iter().any(|ta| {
-                            type_refers_to_length_in_cur_func(ta, cur_params, struct_info)
+                            type_refers_to_length_in_cur_func(ta, cur_params, struct_info, self_struct)
                         })
                     }
                 }
                 IrType::Projection { base, assoc: _ } => {
-                    type_refers_to_length_in_cur_func(base, cur_params, struct_info)
+                    type_refers_to_length_in_cur_func(base, cur_params, struct_info, self_struct)
                 }
                 IrType::Param { path } => path
                     .first()
@@ -1098,11 +1117,11 @@ fn write_function_dyn(
                 IrType::Array { elem, .. }
                 | IrType::Vector { elem }
                 | IrType::Reference { elem, .. } => {
-                    type_refers_to_length_in_cur_func(elem, cur_params, struct_info)
+                    type_refers_to_length_in_cur_func(elem, cur_params, struct_info, self_struct)
                 }
                 IrType::Tuple(elems) => elems
                     .iter()
-                    .any(|e| type_refers_to_length_in_cur_func(e, cur_params, struct_info)),
+                    .any(|e| type_refers_to_length_in_cur_func(e, cur_params, struct_info, self_struct)),
                 _ => false,
             }
         }
@@ -1110,7 +1129,7 @@ fn write_function_dyn(
         for wp in &f.where_clause {
             if let IrWherePredicate::TypeBound { ty, bounds } = wp {
                 // Skip any predicate that mentions length params
-                if type_refers_to_length_in_cur_func(ty, &cur_params, struct_info) {
+                if type_refers_to_length_in_cur_func(ty, &cur_params, struct_info, self_struct) {
                     continue;
                 }
                 let mut lhs = String::new();

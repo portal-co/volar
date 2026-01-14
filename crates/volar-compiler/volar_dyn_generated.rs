@@ -555,7 +555,7 @@ impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 528: T
 }
 
 impl VopeDyn<Bit> where N: VoleArray<Bit>, K: ArrayLength<Vec<Bit>> {
-    pub fn scale<T>(self, f: compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Custom("Fn"), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<T> where N: VoleArray<T>, K: ArrayLength<Vec<T>>// UNCONSTRAINED GENERICS at generated.rs line 559: T
+    pub fn scale<T>(self, f: compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Custom("Fn"), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 559: T
  {
         let n = self.n;
         let k = self.k;
