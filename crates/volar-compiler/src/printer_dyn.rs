@@ -1514,6 +1514,31 @@ fn write_type_dyn(
             return write_type_dyn(out, elem, cur_params, struct_info);
         }
 
+        IrType::Projection { base, assoc } => {
+            // For associated types like <T as Add>::Output, emit the full qualified path
+            // In dynamic code, we keep the same structure
+            write!(out, "<").unwrap();
+            write_type_dyn(out, base, cur_params, struct_info);
+            // Infer the trait from the associated type
+            let trait_name = match assoc {
+                AssociatedType::Output => "core::ops::Add",
+                AssociatedType::Key => "cipher::KeyInit",
+                AssociatedType::BlockSize => "cipher::BlockSizeUser",
+                AssociatedType::OutputSize => "digest::OutputSizeUser", 
+                AssociatedType::TotalLoopCount => "TotalLoopCount",
+                AssociatedType::Other(name) => name,
+            };
+            let assoc_name = match assoc {
+                AssociatedType::Output => "Output",
+                AssociatedType::Key => "Key",
+                AssociatedType::BlockSize => "BlockSize",
+                AssociatedType::OutputSize => "OutputSize",
+                AssociatedType::TotalLoopCount => "TotalLoopCount",
+                AssociatedType::Other(name) => name,
+            };
+            write!(out, " as {}>::{}", trait_name, assoc_name).unwrap();
+        }
+
         ty => write!(out, "compile_error!(\"Unsupported type {ty:?}\")").unwrap(),
     }
     return true;

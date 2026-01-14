@@ -27,7 +27,7 @@ impl<N: ArrayLength<T>, T> Delta<N, T> {
     {
         let Self { delta } = self;
         Delta {
-            delta: GenericArray::generate(|i| delta[f(i) % N::to_usize()].clone()),
+            delta: GenericArray::<T, M>::generate(|i| delta[f(i) % N::to_usize()].clone()),
         }
     }
     pub fn rotate_left(&self, n: usize) -> Self
@@ -42,13 +42,13 @@ impl<N: ArrayLength<T>, T> Delta<N, T> {
     {
         self.remap(|a| a.wrapping_add(n))
     }
-    pub fn r#static<U: Mul<T> + Clone>(&self, val: GenericArray<U, N>) -> Q<N, U::Output>
+    pub fn r#static<U: Mul<T, Output = O>, O>(&self, val: GenericArray<U, N>) -> Q<N, O>
     where
         T: Clone,
-        N: ArrayLength<U::Output> + ArrayLength<U>,
+        N: ArrayLength<O> + ArrayLength<U>,
     {
         Q {
-            q: GenericArray::generate(|i| val[i].clone() * self.delta[i].clone()),
+            q: GenericArray::<O, N>::generate(|i| val[i].clone() * self.delta[i].clone()),
         }
     }
 }
@@ -59,7 +59,7 @@ impl<N: ArrayLength<T>, T> Q<N, T> {
     {
         let Self { q } = self;
         Q {
-            q: GenericArray::generate(|i| q[f(i) % N::to_usize()].clone()),
+            q: GenericArray::<T, M>::generate(|i| q[f(i) % N::to_usize()].clone()),
         }
     }
     pub fn rotate_left(&self, n: usize) -> Self

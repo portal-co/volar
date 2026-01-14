@@ -18,7 +18,7 @@ impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::BlockSiz
     where
         B::BlockSize: VoleArray<u8>,
     {
-        GenericArray::generate(|i| {
+        GenericArray::<Vope<B::BlockSize, u8>, N>::generate(|i| {
             let s = &self.per_byte[(i * N::to_usize())..][..N::to_usize()];
             create_vole_from_material::<B>(s)
         })
@@ -46,7 +46,7 @@ impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::BlockSiz
     where
         B::BlockSize: VoleArray<u8>,
     {
-        GenericArray::generate(|i| {
+        GenericArray::<Vope<B::BlockSize, u8>, N>::generate(|i| {
             let s = &self.per_byte[(i * N::to_usize())..][..N::to_usize()];
             create_vole_from_material_expanded::<B, X>(s, &mut f)
         })

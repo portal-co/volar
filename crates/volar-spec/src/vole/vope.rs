@@ -19,15 +19,16 @@ impl<N: VoleArray<T>, T> Vope<N, T, U0> {
     }
 }
 impl<
-    N: VoleArray<T> + VoleArray<U> + VoleArray<T::Output>,
-    T: Add<U> + Clone,
+    N: VoleArray<T> + VoleArray<U> + VoleArray<O>,
+    T: Add<U, Output = O> + Clone,
     U: Clone,
+    O,
     K: ArrayLength<GenericArray<U, N>>
-        + ArrayLength<GenericArray<T::Output, N>>
+        + ArrayLength<GenericArray<O, N>>
         + ArrayLength<GenericArray<T, N>>,
 > Add<Vope<N, U, K>> for Vope<N, T, K>
 {
-    type Output = Vope<N, T::Output, K>;
+    type Output = Vope<N, O, K>;
     fn add(self, rhs: Vope<N, U, K>) -> Self::Output {
         Vope {
             u: self.u.zip(rhs.u, |a, b| a.zip(b, |a, b| a + b)),
@@ -36,19 +37,19 @@ impl<
     }
 }
 impl<
-    N: VoleArray<T> + VoleArray<T::Output> + VoleArray<U> + Mul<K, Output: ArrayLength<U>>,
+    N: VoleArray<T> + VoleArray<O> + VoleArray<U> + Mul<K, Output: ArrayLength<U>>,
     T: BitXor<U, Output = O> + Clone,
     U: Clone,
     O,
     K: ArrayLength<GenericArray<U, N>>
         + ArrayLength<GenericArray<O, N>>
         + ArrayLength<GenericArray<T, N>>,
-> BitXor<GenericArray<U, N::Output>> for Vope<N, T, K>
+> BitXor<GenericArray<U, <N as Mul<K>>::Output>> for Vope<N, T, K>
 where
     T: Into<O>,
 {
     type Output = Vope<N, O, K>;
-    fn bitxor(self, rhs: GenericArray<U, N::Output>) -> Self::Output {
+    fn bitxor(self, rhs: GenericArray<U, <N as Mul<K>>::Output>) -> Self::Output {
         Vope {
             u: GenericArray::<GenericArray<O, N>, K>::generate(|i| {
                 GenericArray::<O, N>::generate(|j| {
@@ -61,7 +62,7 @@ where
     }
 }
 impl<
-    N: VoleArray<T> + VoleArray<T::Output> + VoleArray<U> + VoleArray<O>,
+    N: VoleArray<T> + VoleArray<O> + VoleArray<U>,
     T: Mul<U, Output = O> + Into<O> + Clone,
     U: Mul<U, Output = U> + Clone,
     K: ArrayLength<GenericArray<T, N>>,
@@ -81,7 +82,7 @@ impl<
                         for _ in 0..i {
                             x = x * rhs.delta[i].clone();
                         }
-                        let m: T::Output = b.clone() * x;
+                        let m: O = b.clone() * x;
                         m + a
                     })
                 }),

@@ -585,6 +585,44 @@ fn convert_receiver(r: &syn::Receiver) -> IrReceiver {
 fn convert_type(ty: &Type) -> Result<IrType> {
     match ty {
         Type::Path(p) => {
+            // Check for qualified path like <T as Trait>::Output
+            // qself is Some when we have <...> before the path
+            if let Some(qself) = &p.qself {
+                // Convert the base type (the T in <T as Trait>)
+                let base = convert_type(&qself.ty)?;
+                
+                // The associated type name is the last segment
+                if let Some(last) = p.path.segments.last() {
+                    let assoc_name = last.ident.to_string();
+                    let assoc = AssociatedType::from_str(&assoc_name);
+                    return Ok(IrType::Projection {
+                        base: Box::new(base),
+                        assoc,
+                    });
+                }
+            }
+            
+            // Check for associated type path like T::Output
+            // These have multiple segments where the first is a type param
+            if p.path.segments.len() == 2 && p.qself.is_none() {
+                let first = &p.path.segments[0];
+                let second = &p.path.segments[1];
+                let first_name = first.ident.to_string();
+                let second_name = second.ident.to_string();
+                
+                // Check if first segment looks like a type parameter (single uppercase letter or PascalCase)
+                // and second segment is an associated type name
+                if first.arguments.is_empty() 
+                    && first_name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+                {
+                    let assoc = AssociatedType::from_str(&second_name);
+                    return Ok(IrType::Projection {
+                        base: Box::new(IrType::TypeParam(first_name)),
+                        assoc,
+                    });
+                }
+            }
+            
             let last = p
                 .path
                 .segments
@@ -705,6 +743,23 @@ fn convert_array_length_from_type(ty: &IrType) -> Result<ArrayLength> {
         IrType::Primitive(_) => Ok(ArrayLength::TypeNum(TypeNumConst::U8)), // Simplified
         IrType::TypeParam(name) => Ok(ArrayLength::TypeParam(name.clone())),
         IrType::Struct { kind, .. } => Ok(ArrayLength::TypeParam(kind.to_string())), // Common for GenericArray<T, BlockSize>
+        IrType::Projection { base, assoc } => {
+            // Handle projections like Self::BlockSize, T::Output, <T as Trait>::Output
+            // Convert to a type param string representation
+            let base_str = match base.as_ref() {
+                IrType::TypeParam(name) => name.clone(),
+                _ => "Self".to_string(),
+            };
+            let assoc_str = match assoc {
+                AssociatedType::Output => "Output",
+                AssociatedType::Key => "Key",
+                AssociatedType::BlockSize => "BlockSize",
+                AssociatedType::OutputSize => "OutputSize",
+                AssociatedType::TotalLoopCount => "TotalLoopCount",
+                AssociatedType::Other(name) => name,
+            };
+            Ok(ArrayLength::TypeParam(format!("{}::{}", base_str, assoc_str)))
+        }
         _ => Err(CompilerError::InvalidType(format!(
             "Invalid array length type: {:?}",
             ty

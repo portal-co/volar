@@ -61,12 +61,12 @@ pub fn create_vole_from_material<B: ByteBlockEncrypt<BlockSize: VoleArray<u8>>>(
             .enumerate()
             .fold(GenericArray::<u8, B::BlockSize>::default(), |a, (i, b)| {
                 a.zip(
-                    GenericArray    ::generate(|i| b[i]),
+                    GenericArray::<u8, B::BlockSize>::generate(|i| b[i]),
                     |a, b| a.bitxor(b).bitxor(i as u8),
                 )
             });
     Vope {
-        u: GenericArray::generate(|_| u.clone()),
+        u: GenericArray::<GenericArray<u8, B::BlockSize>, U1>::generate(|_| u.clone()),
         v,
     }
 }

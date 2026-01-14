@@ -18,15 +18,15 @@ impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::BlockSiz
     {
         ABOOpening {
             bad: bad.clone(),
-            openings: GenericArray::generate(move |i| {
+            openings: GenericArray::<GenericArray<GenericArray<u8, <B::BlockSize as Max<D::OutputSize>>::Output>, U>, T>::generate(move |i| {
                 let bad = bad.clone();
-                GenericArray::generate(move |j| {
+                GenericArray::<GenericArray<u8, <B::BlockSize as Max<D::OutputSize>>::Output>, U>::generate(move |j| {
                     let i2 = i | ((j as usize) << T::to_usize().ilog2());
                     if bad.contains(&(i2 as u64)) {
                         let h = commit::<D>(&self.per_byte[i2], rand);
-                        GenericArray::generate(|j| h.as_ref().get(j).cloned().unwrap_or_default())
+                        GenericArray::<u8, <B::BlockSize as Max<D::OutputSize>>::Output>::generate(|j| h.as_ref().get(j).cloned().unwrap_or_default())
                     } else {
-                        GenericArray::generate(|j| {
+                        GenericArray::<u8, <B::BlockSize as Max<D::OutputSize>>::Output>::generate(|j| {
                             self.per_byte[i2].get(j).cloned().unwrap_or_default()
                         })
                     }
@@ -79,7 +79,7 @@ impl<
     where
         B::BlockSize: VoleArray<u8>,
     {
-        GenericArray::generate(|i| {
+        GenericArray::<Vope<B::BlockSize, u8>, N>::generate(|i| {
             let s = &self.openings[i];
             create_vole_from_material::<B>(s)
         })
@@ -107,7 +107,7 @@ impl<
     where
         B::BlockSize: VoleArray<u8>,
     {
-        GenericArray::generate(|i| {
+        GenericArray::<Vope<B::BlockSize, u8>, N>::generate(|i| {
             let s = &self.openings[i];
             create_vole_from_material_expanded::<B, X>(s, &mut f)
         })
