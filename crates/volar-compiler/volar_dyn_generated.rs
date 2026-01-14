@@ -55,7 +55,11 @@ impl<T> PolyDyn<T> {
 };
     for j in 0..n {
     let _ = self.c1[j].clone().into();
-    todo!();
+    for i2 in inputs.indices.iter() {
+    for _ in 0..reduction {
+    b = (inputs.inputs[i2[j]].q[i].clone() * b);
+}
+};
     sum = (sum + b);
 };
     sum
@@ -70,7 +74,11 @@ impl<T> PolyDyn<T> {
 };
     for j in 0..n {
     let _ = self.c1[j].clone().into();
-    todo!();
+    for i2 in inputs.iter() {
+    for _ in 0..reduction {
+    b = (i2[j].q[i].clone() * b);
+}
+};
     sum = (sum + b);
 };
     sum
@@ -82,7 +90,9 @@ impl<T> PolyDyn<T> {
     let mut sum = O::new();
     for k in 0..n {
     let _ = self.c1[k].clone().into();
-    todo!();
+    for v in &voles.indices {
+    b = (b * voles.inputs[v[k]].v[i].clone().into());
+};
     sum = (sum + b);
 };
     let _ = self.c0.clone().into();
@@ -96,7 +106,13 @@ impl<T> PolyDyn<T> {
     let _ = self.c1[k].clone().into();
     for m in 0..s {
     let l = ((l * s) + m);
-    todo!()
+    for (idx, v) in voles.indices.iter().enumerate() {
+    b = (b * if (idx == n) {
+    voles.inputs[v[k]].u[l][i].clone().into()
+} else {
+    voles.inputs[v[k]].v[i].clone().into()
+});
+}
 };
     sum = (sum + b);
 }
@@ -112,7 +128,9 @@ impl<T> PolyDyn<T> {
     let mut sum = O::new();
     for k in 0..n {
     let _ = self.c1[k].clone().into();
-    todo!();
+    for v in &voles {
+    b = (b * v[k].v[i].clone().into());
+};
     sum = (sum + b);
 };
     let _ = self.c0.clone().into();
@@ -126,7 +144,13 @@ impl<T> PolyDyn<T> {
     let _ = self.c1[k].clone().into();
     for m in 0..s {
     let l = ((l * s) + m);
-    todo!()
+    for (idx, v) in voles.iter().enumerate() {
+    b = (b * if (idx == n) {
+    v[k].u[l][i].clone().into()
+} else {
+    v[k].v[i].clone().into()
+});
+}
 };
     sum = (sum + b);
 }
@@ -146,8 +170,8 @@ impl<N, T> VopeDyn<N, T> {
         for i in 0..=k {
     for j in 0..=k2 {
     let k = (i + j);
-    let a_coeff = todo!();
-    let b_coeff = todo!();
+    let a_coeff = compile_error!("Unsupported expression Macro { name: "get_coeff", tokens: "& self . v , & self . u , i" }");
+    let b_coeff = compile_error!("Unsupported expression Macro { name: "get_coeff", tokens: "& other . v , & other . u , j" }");
     if (k == 0) {
     for lane in 0..n {
     res_v[lane] = (res_v[lane].clone() + (a_coeff[lane].clone() * b_coeff[lane].clone()));
@@ -335,9 +359,113 @@ impl<T: Eq> QDyn<N, T> {
 impl<T: Eq> DeltaDyn<N, T> {
 }
 
+impl QDyn<N, BitsInBytes> {
+    pub fn rotate_left_bits(&self, n: usize) -> Self {
+        let QDyn { q: q, .. } = self;
+        QDyn { q: (0..n).map(|i| {
+    let BitsInBytes(b) = q[i].clone();
+    let BitsInBytes(next) = q[((i + 1) % n)].clone();
+    BitsInBytes((b.shl((n as u32)) | next.shr((8 - (n as u32)))))
+}).collect() }
+    }
+    pub fn rotate_right_bits(&self, n: usize) -> Self {
+        let QDyn { q: q, .. } = self;
+        QDyn { q: (0..n).map(|i| {
+    let BitsInBytes(prev) = q[(((i + n) - 1) % n)].clone();
+    let BitsInBytes(b) = q[i].clone();
+    BitsInBytes((prev.shl((8 - (n as u32))) | b.shr((n as u32))))
+}).collect() }
+    }
+    pub fn bit(&self, n: u8) -> QDyn<Bit> {
+        let QDyn { q: q, .. } = self;
+        QDyn { q: (0..n).map(|i| {
+    let BitsInBytes(b) = q[i].clone();
+    Bit((((b >> n) & 1) != 0))
+}).collect() }
+    }
+}
+
+impl QDyn<N, BitsInBytes64> {
+    pub fn rotate_left_bits(&self, n: usize) -> Self {
+        let QDyn { q: q, .. } = self;
+        QDyn { q: (0..n).map(|i| {
+    let BitsInBytes64(b) = q[i].clone();
+    let BitsInBytes64(next) = q[((i + 1) % n)].clone();
+    BitsInBytes64((b.shl((n as u32)) | next.shr((64 - (n as u32)))))
+}).collect() }
+    }
+    pub fn rotate_right_bits(&self, n: usize) -> Self {
+        let QDyn { q: q, .. } = self;
+        QDyn { q: (0..n).map(|i| {
+    let BitsInBytes64(prev) = q[(((i + n) - 1) % n)].clone();
+    let BitsInBytes64(b) = q[i].clone();
+    BitsInBytes64((prev.shl((64 - (n as u32))) | b.shr((n as u32))))
+}).collect() }
+    }
+    pub fn bit(&self, n: u8) -> QDyn<Bit> {
+        let QDyn { q: q, .. } = self;
+        QDyn { q: (0..n).map(|i| {
+    let BitsInBytes64(b) = q[i].clone();
+    Bit((((b >> n) & 1) != 0))
+}).collect() }
+    }
+}
+
+impl DeltaDyn<N, BitsInBytes> {
+    pub fn rotate_left_bits(&self, n: usize) -> Self {
+        let DeltaDyn { delta: delta, .. } = self;
+        DeltaDyn { delta: (0..n).map(|i| {
+    let BitsInBytes(b) = delta[i].clone();
+    let BitsInBytes(next) = delta[((i + 1) % n)].clone();
+    BitsInBytes((b.shl((n as u32)) | next.shr((8 - (n as u32)))))
+}).collect() }
+    }
+    pub fn rotate_right_bits(&self, n: usize) -> Self {
+        let DeltaDyn { delta: delta, .. } = self;
+        DeltaDyn { delta: (0..n).map(|i| {
+    let BitsInBytes(prev) = delta[(((i + n) - 1) % n)].clone();
+    let BitsInBytes(b) = delta[i].clone();
+    BitsInBytes((prev.shl((8 - (n as u32))) | b.shr((n as u32))))
+}).collect() }
+    }
+    pub fn bit(&self, n: u8) -> DeltaDyn<Bit> {
+        let DeltaDyn { delta: delta, .. } = self;
+        DeltaDyn { delta: (0..n).map(|i| {
+    let BitsInBytes(b) = delta[i].clone();
+    Bit((((b >> n) & 1) != 0))
+}).collect() }
+    }
+}
+
+impl DeltaDyn<N, BitsInBytes64> {
+    pub fn rotate_left_bits(&self, n: usize) -> Self {
+        let DeltaDyn { delta: delta, .. } = self;
+        DeltaDyn { delta: (0..n).map(|i| {
+    let BitsInBytes64(b) = delta[i].clone();
+    let BitsInBytes64(next) = delta[((i + 1) % n)].clone();
+    BitsInBytes64((b.shl((n as u32)) | next.shr((64 - (n as u32)))))
+}).collect() }
+    }
+    pub fn rotate_right_bits(&self, n: usize) -> Self {
+        let DeltaDyn { delta: delta, .. } = self;
+        DeltaDyn { delta: (0..n).map(|i| {
+    let BitsInBytes64(prev) = delta[(((i + n) - 1) % n)].clone();
+    let BitsInBytes64(b) = delta[i].clone();
+    BitsInBytes64((prev.shl((64 - (n as u32))) | b.shr((n as u32))))
+}).collect() }
+    }
+    pub fn bit(&self, n: u8) -> DeltaDyn<Bit> {
+        let DeltaDyn { delta: delta, .. } = self;
+        DeltaDyn { delta: (0..n).map(|i| {
+    let BitsInBytes64(b) = delta[i].clone();
+    Bit((((b >> n) & 1) != 0))
+}).collect() }
+    }
+}
+
 impl<N: VoleArray, T> VopeDyn<N, T, usize> {
     pub fn constant(v: Vec<T>) -> Self {
-        VopeDyn { u: (0..n).map(|_| todo!()).collect(), v: v, k: k }
+        VopeDyn { u: (0..n).map(|_| compile_error!("Unsupported expression Macro { name: "unreachable", tokens: "" }")).collect(), v: v, k: k }
     }
 }
 
@@ -392,7 +520,7 @@ impl<N: VoleArray, T> VopeDyn<N, T> {
         let k = self.k;
         self.remap(|a| a.wrapping_add(n))
     }
-    pub fn remap<M: VoleArray>(&self, f: _) -> VopeDyn<M, T, > {
+    pub fn remap<M: VoleArray>(&self, f: compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Expand(Primitive(Usize)), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<M, T, > {
         let k = self.k;
         let Self { u: u, v: v } = self;
         VopeDyn { u: (0..k).map(|l| {
@@ -402,7 +530,7 @@ impl<N: VoleArray, T> VopeDyn<N, T> {
 }
 
 impl<N> VopeDyn<N, Bit> {
-    pub fn scale<T>(self, f: _) -> VopeDyn<N, T, K> {
+    pub fn scale<T>(self, f: compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Custom("Fn"), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<N, T, K> {
         let k = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {

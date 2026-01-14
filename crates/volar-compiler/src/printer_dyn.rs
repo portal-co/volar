@@ -616,7 +616,7 @@ fn write_type_dyn(
             return write_type_dyn(out, elem, cur_params, struct_info);
         }
 
-        _ => write!(out, "_").unwrap(),
+        ty => write!(out, "compile_error!(\"Unsupported type {ty:?}\")").unwrap(),
     }
     return true;
 }
@@ -740,10 +740,15 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             if let IrExpr::Path { segments, .. } = func.as_ref() {
                 if let [receiver, path] = &segments[..] {
                     if (path == "default" || path == "new") && args.is_empty() {
-                        write!(out, "{}::new()", match &**receiver{
-                            "GenericArray" => "Vec",
-                            a => a,
-                        }).unwrap();
+                        write!(
+                            out,
+                            "{}::new()",
+                            match &**receiver {
+                                "GenericArray" => "Vec",
+                                a => a,
+                            }
+                        )
+                        .unwrap();
                         return;
                     }
                     if path == "to_usize" {
@@ -1123,8 +1128,28 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
 
             write!(out, " }}").unwrap();
         }
+        IrExpr::IterLoop {
+            pattern,
+            collection,
+            body,
+        } => {
+            write!(out, "for ").unwrap();
+            write_pattern_dyn(out, pattern, ctx.cur_params, ctx.struct_info);
+            write!(out, " in ").unwrap();
+            write_expr_dyn(out, collection, ctx);
+            writeln!(out, " {{").unwrap();
+            for stmt in &body.stmts {
+                write_stmt_dyn(out, stmt, 1, ctx);
+            }
+            if let Some(e) = &body.expr {
+                write!(out, "    ").unwrap();
+                write_expr_dyn(out, e, ctx);
+                writeln!(out).unwrap();
+            }
+            write!(out, "}}").unwrap();
+        }
 
-        _ => write!(out, "todo!()").unwrap(),
+        e => write!(out, "compile_error!(\"Unsupported expression {e:?}\")").unwrap(),
     }
 }
 
