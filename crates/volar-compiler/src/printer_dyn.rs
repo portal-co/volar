@@ -8,6 +8,17 @@ use alloc::{collections::{BTreeMap, BTreeSet}, string::{String, ToString}, vec::
 use crate::ir::*;
 
 pub fn print_module_rust_dyn(module: &IrModule) -> String {
+    let mut struct_witnesses = BTreeMap::new();
+    for s in &module.structs {
+        let mut witnesses = Vec::new();
+        for p in &s.generics {
+            if is_length_param(p, &s.fields) {
+                witnesses.push(p.name.clone());
+            }
+        }
+        struct_witnesses.insert(s.kind.to_string(), witnesses);
+    }
+
     let mut out = String::new();
     writeln!(out, "#![allow(unused_variables, dead_code, unused_mut, unused_imports)]").unwrap();
     writeln!(out, "use alloc::vec::Vec;").unwrap();
@@ -40,6 +51,7 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
     writeln!(out, "impl GenericArray {{ pub fn default<T: Default>() -> Vec<T> {{ Vec::new() }} pub fn generate<T, F: FnMut(usize) -> T>(n: usize, mut f: F) -> Vec<T> {{ (0..n).map(f).collect() }} }}").unwrap();
     writeln!(out, "pub struct CommitmentCore;").unwrap();
     writeln!(out, "impl CommitmentCore {{ pub fn commit<T>(_: T, _: &u64) -> Vec<u8> {{ Vec::new() }} }}").unwrap();
+    writeln!(out, "pub fn ilog2(x: usize) -> u32 {{ (usize::BITS - x.leading_zeros() - 1) }}").unwrap();
     writeln!(out, "pub trait New {{ fn new() -> Self; }}").unwrap();
     writeln!(out, "impl New for u8 {{ fn new() -> Self {{ 0 }} }}").unwrap();
     writeln!(out, "impl New for u64 {{ fn new() -> Self {{ 0 }} }}").unwrap();
@@ -57,10 +69,7 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
     writeln!(out, "impl Default for BlockSizeDyn {{ fn default() -> Self {{ BlockSizeDyn }} }}").unwrap();
     writeln!(out, "impl Default for OutputSizeDyn {{ fn default() -> Self {{ OutputSizeDyn }} }}").unwrap();
     writeln!(out, "pub struct B; impl B {{ pub fn from<T>(_: T) -> usize {{ 0 }} pub const BlockSize: BlockSizeDyn = BlockSizeDyn; }}").unwrap();
-    writeln!(out, "pub struct N; impl N {{ pub fn to_usize(&self) -> usize {{ 0 }} }}").unwrap();
-    writeln!(out, "pub struct K; impl K {{ pub fn to_usize(&self) -> usize {{ 0 }} }}").unwrap();
-    writeln!(out, "pub struct T; impl T {{ pub fn to_usize(&self) -> usize {{ 0 }} pub fn default<X: DefaultVal>() -> X {{ X::default_val() }} }}").unwrap();
-    writeln!(out, "pub struct X; impl X {{ pub fn to_usize(&self) -> usize {{ 0 }} }}").unwrap();
+    writeln!(out, "pub struct D; impl D {{ pub fn new() -> Self {{ D }} pub fn to_usize(&self) -> usize {{ 0 }} pub fn finalize(&self) -> Vec<u8> {{ Vec::new() }} pub fn update(&mut self, _: &[u8]) {{}} pub const OutputSize: OutputSizeDyn = OutputSizeDyn; }}").unwrap();
     writeln!(out, "pub trait DefaultVal {{ fn default_val() -> Self; }}").unwrap();
     writeln!(out, "impl DefaultVal for u8 {{ fn default_val() -> Self {{ 0 }} }}").unwrap();
     writeln!(out, "impl DefaultVal for u64 {{ fn default_val() -> Self {{ 0 }} }}").unwrap();
@@ -68,28 +77,37 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
     writeln!(out, "impl DefaultVal for BitsInBytes {{ fn default_val() -> Self {{ BitsInBytes(0) }} }}").unwrap();
     writeln!(out, "impl DefaultVal for BitsInBytes64 {{ fn default_val() -> Self {{ BitsInBytes64(0) }} }}").unwrap();
     writeln!(out, "impl<T: DefaultVal> DefaultVal for Vec<T> {{ fn default_val() -> Self {{ Vec::new() }} }}").unwrap();
-    writeln!(out, "pub struct S; impl S {{ pub fn to_usize(&self) -> usize {{ 0 }} }}").unwrap();
-    writeln!(out, "pub struct U; impl U {{ pub fn to_usize(&self) -> usize {{ 0 }} }}").unwrap();
-    writeln!(out, "pub struct D; impl D {{ pub fn new() -> Self {{ D }} pub fn to_usize(&self) -> usize {{ 0 }} pub fn finalize(&self) -> Vec<u8> {{ Vec::new() }} pub fn update(&mut self, _: &[u8]) {{}} pub const OutputSize: OutputSizeDyn = OutputSizeDyn; }}").unwrap();
-    writeln!(out, "pub struct O; impl O {{ pub fn default<X: DefaultVal>() -> X {{ X::default_val() }} }}").unwrap();
     writeln!(out, "impl<T> core::ops::Add<T> for PolyDyn<T> where T: core::ops::Add<Output=T> + Clone {{ type Output = Self; fn add(self, rhs: T) -> Self {{ todo!() }} }}").unwrap();
     writeln!(out, "impl<T> core::ops::Mul<T> for PolyDyn<T> where T: core::ops::Mul<Output=T> + Clone {{ type Output = Self; fn mul(self, rhs: T) -> Self {{ todo!() }} }}").unwrap();
     writeln!(out, "impl<T> core::ops::Add<Self> for VopeDyn<T> where T: core::ops::Add<Output=T> + Clone {{ type Output = Self; fn add(self, rhs: Self) -> Self {{ todo!() }} }}").unwrap();
     writeln!(out, "impl<T> core::ops::Sub<Self> for VopeDyn<T> where T: core::ops::Sub<Output=T> + Clone {{ type Output = Self; fn sub(self, rhs: Self) -> Self {{ todo!() }} }}").unwrap();
     writeln!(out, "impl<T> core::ops::Mul<T> for VopeDyn<T> where T: core::ops::Mul<Output=T> + Clone {{ type Output = Self; fn mul(self, rhs: T) -> Self {{ todo!() }} }}").unwrap();
+    writeln!(out, "pub type OutputDyn = Vec<u8>;").unwrap();
+    writeln!(out, "pub type Q = u8;").unwrap();
+    writeln!(out, "pub type A = u8;").unwrap();
+    writeln!(out, "pub type Delta = u8;").unwrap();
+
+    writeln!(out, "pub struct PolyInputPoolDyn<'a, T> {{").unwrap();
+    writeln!(out, "    pub t: usize,").unwrap();
+    writeln!(out, "    pub n: usize,").unwrap();
+    writeln!(out, "    pub x: usize,").unwrap();
+    writeln!(out, "    pub inputs: &'a Vec<T>,").unwrap();
+    writeln!(out, "    pub indices: Vec<Vec<usize>>,").unwrap();
+    writeln!(out, "}}").unwrap();
 
     for s in &module.structs {
+        if s.kind.to_string() == "PolyInputPool" { continue; }
         write_struct_dyn(&mut out, s);
         writeln!(out).unwrap();
     }
 
     for i in &module.impls {
-        write_impl_dyn(&mut out, i);
+        write_impl_dyn(&mut out, i, &struct_witnesses);
         writeln!(out).unwrap();
     }
 
     for f in &module.functions {
-        write_function_dyn(&mut out, f, 0, &IrType::Unit);
+        write_function_dyn(&mut out, f, 0, &IrType::Unit, &struct_witnesses);
         writeln!(out).unwrap();
     }
 
@@ -170,7 +188,7 @@ fn type_uses_as_len(ty: &IrType, name: &str) -> bool {
     }
 }
 
-fn write_impl_dyn(out: &mut String, i: &IrImpl) {
+fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_witnesses: &BTreeMap<String, Vec<String>>) {
     let self_name = match &i.self_ty {
         IrType::Struct { kind, .. } => format!("{}Dyn", kind),
         _ => return,
@@ -195,14 +213,14 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl) {
     writeln!(out, " {{").unwrap();
     for item in &i.items {
         match item {
-            IrImplItem::Method(f) => write_function_dyn(out, f, 1, &i.self_ty),
+            IrImplItem::Method(f) => write_function_dyn(out, f, 1, &i.self_ty, struct_witnesses),
             _ => {}
         }
     }
     writeln!(out, "}}").unwrap();
 }
 
-fn write_function_dyn(out: &mut String, f: &IrFunction, level: usize, self_ty: &IrType) {
+fn write_function_dyn(out: &mut String, f: &IrFunction, level: usize, self_ty: &IrType, struct_witnesses: &BTreeMap<String, Vec<String>>) {
     let indent = "    ".repeat(level);
     write!(out, "{}pub fn {}(", indent, f.name).unwrap();
     
@@ -219,17 +237,15 @@ fn write_function_dyn(out: &mut String, f: &IrFunction, level: usize, self_ty: &
             IrReceiver::Ref => write!(out, "&self").unwrap(),
             IrReceiver::RefMut => write!(out, "&mut self").unwrap(),
         }
-        if !f.params.is_empty() || !len_params_in_func.is_empty() { write!(out, ", ").unwrap(); }
     }
 
     for (i, lp) in len_params_in_func.iter().enumerate() {
-        if i > 0 { write!(out, ", ").unwrap(); }
+        if i > 0 || f.receiver.is_some() { write!(out, ", ").unwrap(); }
         write!(out, "{}_len: usize", lp.to_lowercase()).unwrap();
-        if i < len_params_in_func.len() - 1 || !f.params.is_empty() { write!(out, ", ").unwrap(); }
     }
 
     for (i, p) in f.params.iter().enumerate() {
-        if i > 0 { write!(out, ", ").unwrap(); }
+        if i > 0 || f.receiver.is_some() || !len_params_in_func.is_empty() { write!(out, ", ").unwrap(); }
         write!(out, "{}: ", p.name).unwrap();
         write_type_dyn(out, &p.ty);
     }
@@ -245,16 +261,18 @@ fn write_function_dyn(out: &mut String, f: &IrFunction, level: usize, self_ty: &
 
     // Unpack witnesses from self
     if f.receiver.is_some() {
-        if let IrType::Struct { type_args, .. } = self_ty {
-            for arg in type_args {
-                if let IrType::TypeParam(n) = arg {
-                    if is_likely_len_param(n) {
-                        writeln!(out, "{}let {} = self.{};", indent_body, n.to_lowercase(), n.to_lowercase()).unwrap();
-                    }
+        if let IrType::Struct { kind, .. } = self_ty {
+            if let Some(witnesses) = struct_witnesses.get(&kind.to_string()) {
+                for w in witnesses {
+                    writeln!(out, "{}let {} = self.{};", indent_body, w.to_lowercase(), w.to_lowercase()).unwrap();
                 }
             }
         }
     }
+
+    // Heuristic: for many cryptographic functions, 'n' is a standard parameter name for Vec length
+    // If n is used in the body but not defined, we might need to derive it
+    // But for now, let's just make sure n, t, k etc. are available if they are struct fields
 
     // Unpack witnesses from arguments
     for (i, lp) in len_params_in_func.iter().enumerate() {
@@ -262,11 +280,19 @@ fn write_function_dyn(out: &mut String, f: &IrFunction, level: usize, self_ty: &
     }
 
     for stmt in &f.body.stmts {
-        write_stmt_dyn(out, stmt, level + 1);
+        write_stmt_dyn(out, stmt, level + 1, struct_witnesses);
     }
     if let Some(e) = &f.body.expr {
         write!(out, "{}    ", indent).unwrap();
-        write_expr_dyn(out, e);
+        if let IrExpr::Var(v) = e.as_ref() {
+            if v == "sum" {
+                write!(out, "sum").unwrap();
+            } else {
+                write_expr_dyn(out, e, struct_witnesses);
+            }
+        } else {
+            write_expr_dyn(out, e, struct_witnesses);
+        }
         writeln!(out).unwrap();
     }
     writeln!(out, "{}}}", indent).unwrap();
@@ -281,7 +307,11 @@ fn write_type_dyn(out: &mut String, ty: &IrType) {
             write!(out, ">").unwrap();
         }
         IrType::Struct { kind, type_args } => {
-            write!(out, "{}Dyn", kind).unwrap();
+            if kind.to_string() == "PolyInputPool" {
+                write!(out, "PolyInputPoolDyn<'_").unwrap();
+            } else {
+                write!(out, "{}Dyn", kind).unwrap();
+            }
             let mut filtered_args = Vec::new();
             for arg in type_args {
                 if let IrType::TypeParam(n) = arg {
@@ -290,11 +320,17 @@ fn write_type_dyn(out: &mut String, ty: &IrType) {
                 filtered_args.push(arg);
             }
             if !filtered_args.is_empty() {
-                write!(out, "<").unwrap();
+                if kind.to_string() == "PolyInputPool" {
+                    write!(out, ", ").unwrap();
+                } else {
+                    write!(out, "<").unwrap();
+                }
                 for (i, arg) in filtered_args.iter().enumerate() {
                     if i > 0 { write!(out, ", ").unwrap(); }
                     write_type_dyn(out, arg);
                 }
+                write!(out, ">").unwrap();
+            } else if kind.to_string() == "PolyInputPool" {
                 write!(out, ">").unwrap();
             }
         }
@@ -316,92 +352,88 @@ fn write_type_dyn(out: &mut String, ty: &IrType) {
     }
 }
 
-fn write_stmt_dyn(out: &mut String, stmt: &IrStmt, level: usize) {
+fn write_stmt_dyn(out: &mut String, stmt: &IrStmt, level: usize, struct_witnesses: &BTreeMap<String, Vec<String>>) {
     let indent = "    ".repeat(level);
-    write!(out, "{}", indent).unwrap();
     match stmt {
         IrStmt::Let { pattern, ty, init } => {
-            write!(out, "let mut ").unwrap(); // Default to mut for ease in generated code
-            write_pattern_dyn(out, pattern);
+            let mut pat_str = String::new();
+            write_pattern_dyn(&mut pat_str, pattern);
+            
+            if pat_str == "_" {
+                write!(out, "{}let ", indent).unwrap();
+            } else {
+                write!(out, "{}let mut ", indent).unwrap();
+            }
+            write!(out, "{}", pat_str).unwrap();
+            
             if let Some(t) = ty {
                 write!(out, ": ").unwrap();
                 write_type_dyn(out, t);
             }
             if let Some(i) = init {
                 write!(out, " = ").unwrap();
-                write_expr_dyn(out, i);
+                write_expr_dyn(out, i, struct_witnesses);
             }
             writeln!(out, ";").unwrap();
         }
         IrStmt::Semi(e) => {
-            write_expr_dyn(out, e);
+            write!(out, "{}", indent).unwrap();
+            write_expr_dyn(out, e, struct_witnesses);
             writeln!(out, ";").unwrap();
         }
         IrStmt::Expr(e) => {
-            write_expr_dyn(out, e);
+            write!(out, "{}", indent).unwrap();
+            write_expr_dyn(out, e, struct_witnesses);
             writeln!(out).unwrap();
         }
     }
 }
 
-fn write_expr_dyn(out: &mut String, expr: &IrExpr) {
+fn write_expr_dyn(out: &mut String, expr: &IrExpr, struct_witnesses: &BTreeMap<String, Vec<String>>) {
     match expr {
         IrExpr::Lit(l) => write!(out, "{}", l).unwrap(),
         IrExpr::Var(v) => {
             if is_likely_len_param(v) {
                 write!(out, "{}", v.to_lowercase()).unwrap();
-            } else if matches!(v.as_str(), "delta" | "q" | "u" | "v" | "c0" | "c1" | "indices" | "inputs" | "commit" | "per_byte" | "bad" | "openings" | "b" | "d") {
+            } else if matches!(v.as_str(), "delta" | "q" | "u" | "v" | "c0" | "c1" | "indices" | "inputs" | "commit" | "per_byte" | "bad" | "openings") {
                 write!(out, "self.{}", v).unwrap();
             } else if matches!(v.as_str(), "BlockSize" | "OutputSize") {
                 write!(out, "16").unwrap(); // Default mock constants
-            } else if v == "T" {
-                write!(out, "t").unwrap(); // Often used as both type and value in byte_gen
-            } else if v == "N" {
-                write!(out, "n").unwrap();
-            } else if v == "M" {
-                write!(out, "m").unwrap();
-            } else if v == "K" {
-                write!(out, "k").unwrap();
-            } else if v == "K2" {
-                write!(out, "k2").unwrap();
-            } else if v == "X" {
-                write!(out, "x").unwrap();
-            } else if v == "U" {
-                write!(out, "u").unwrap();
-            } else if v == "S" {
-                write!(out, "s").unwrap();
-            } else if v == "D" {
-                write!(out, "d").unwrap();
-            } else if v == "O" {
-                write!(out, "0").unwrap();
+            } else if v == "sum" || v == "i" || v == "j" || v == "k" || v == "m" || v == "l" || v == "n" || v == "o" || v == "a" || v == "next" || v == "prev" || v == "u1" || v == "u2" || v == "v1" || v == "v2" || v == "q1" || v == "q2" || v == "d1" || v == "d2" {
+                write!(out, "{}", v).unwrap();
             } else {
                 write!(out, "{}", v).unwrap();
             }
         }
         IrExpr::Binary { op, left, right } => {
-            write!(out, "(").unwrap();
-            write_expr_dyn(out, left);
-            write!(out, " {} ", match op {
-                SpecBinOp::Add => "+",
-                SpecBinOp::Sub => "-",
-                SpecBinOp::Mul => "*",
-                SpecBinOp::Div => "/",
-                SpecBinOp::Rem => "%",
-                SpecBinOp::BitAnd => "&",
-                SpecBinOp::BitOr => "|",
-                SpecBinOp::BitXor => "^",
-                SpecBinOp::Shl => "<<",
-                SpecBinOp::Shr => ">>",
-                SpecBinOp::Eq => "==",
-                SpecBinOp::Ne => "!=",
-                SpecBinOp::Lt => "<",
-                SpecBinOp::Le => "<=",
-                SpecBinOp::Gt => ">",
-                SpecBinOp::Ge => ">=",
-                _ => "+", // Fallback
-            }).unwrap();
-            write_expr_dyn(out, right);
-            write!(out, ")").unwrap();
+            let mut left_str = String::new();
+            write_expr_dyn(&mut left_str, left, struct_witnesses);
+            let mut right_str = String::new();
+            write_expr_dyn(&mut right_str, right, struct_witnesses);
+
+            if *op == SpecBinOp::Shl && left_str.contains(" as ") {
+                write!(out, "(({}) << {})", left_str, right_str).unwrap();
+            } else {
+                write!(out, "({} {} {})", left_str, match op {
+                    SpecBinOp::Add => "+",
+                    SpecBinOp::Sub => "-",
+                    SpecBinOp::Mul => "*",
+                    SpecBinOp::Div => "/",
+                    SpecBinOp::Rem => "%",
+                    SpecBinOp::BitAnd => "&",
+                    SpecBinOp::BitOr => "|",
+                    SpecBinOp::BitXor => "^",
+                    SpecBinOp::Shl => "<<",
+                    SpecBinOp::Shr => ">>",
+                    SpecBinOp::Eq => "==",
+                    SpecBinOp::Ne => "!=",
+                    SpecBinOp::Lt => "<",
+                    SpecBinOp::Le => "<=",
+                    SpecBinOp::Gt => ">",
+                    SpecBinOp::Ge => ">=",
+                    _ => "+", // Fallback
+                }, right_str).unwrap();
+            }
         }
         IrExpr::Unary { op, expr } => {
             match op {
@@ -411,19 +443,39 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr) {
                 SpecUnaryOp::Ref => write!(out, "&").unwrap(),
                 SpecUnaryOp::RefMut => write!(out, "&mut ").unwrap(),
             }
-            write_expr_dyn(out, expr);
+            write_expr_dyn(out, expr, struct_witnesses);
         }
         IrExpr::Call { func, args } => {
-            write_expr_dyn(out, func);
-            write!(out, "(").unwrap();
-            for (i, arg) in args.iter().enumerate() {
-                if i > 0 { write!(out, ", ").unwrap(); }
-                write_expr_dyn(out, arg);
+            if let IrExpr::Var(v) = func.as_ref() {
+                if is_likely_len_param(v) {
+                    write!(out, "{}", v.to_lowercase()).unwrap();
+                } else if v == "ilog2" {
+                    write!(out, "ilog2(").unwrap();
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 { write!(out, ", ").unwrap(); }
+                        write_expr_dyn(out, arg, struct_witnesses);
+                    }
+                    write!(out, ")").unwrap();
+                } else {
+                    write_expr_dyn(out, func, struct_witnesses);
+                    write!(out, "(").unwrap();
+                    for (i, arg) in args.iter().enumerate() {
+                        if i > 0 { write!(out, ", ").unwrap(); }
+                        write_expr_dyn(out, arg, struct_witnesses);
+                    }
+                    write!(out, ")").unwrap();
+                }
+            } else {
+                write_expr_dyn(out, func, struct_witnesses);
+                write!(out, "(").unwrap();
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 { write!(out, ", ").unwrap(); }
+                    write_expr_dyn(out, arg, struct_witnesses);
+                }
+                write!(out, ")").unwrap();
             }
-            write!(out, ")").unwrap();
         }
         IrExpr::MethodCall { receiver, method, args, .. } => {
-            write_expr_dyn(out, receiver);
             let method_name = match method {
                 MethodKind::Std(s) => s.clone(),
                 MethodKind::Vole(v) => match v {
@@ -433,37 +485,41 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr) {
                 MethodKind::Crypto(c) => format!("{:?}", c).to_lowercase(),
                 MethodKind::Unknown(s) => s.clone(),
             };
-            write!(out, ".{}(", method_name).unwrap();
             
-            // Special handling for to_usize which is now on instance
-            if method_name == "to_usize" && args.is_empty() {
-                // Already printed receiver.to_usize(
+            if method_name == "to_usize" {
+                write_expr_dyn(out, receiver, struct_witnesses);
+            } else if method_name == "ilog2" {
+                write!(out, "ilog2(").unwrap();
+                write_expr_dyn(out, receiver, struct_witnesses);
+                write!(out, ")").unwrap();
             } else {
+                write_expr_dyn(out, receiver, struct_witnesses);
+                write!(out, ".{}(", method_name).unwrap();
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 { write!(out, ", ").unwrap(); }
-                    write_expr_dyn(out, arg);
+                    write_expr_dyn(out, arg, struct_witnesses);
                 }
+                write!(out, ")").unwrap();
             }
-            write!(out, ")").unwrap();
         }
         IrExpr::Field { base, field } => {
-            write_expr_dyn(out, base);
+            write_expr_dyn(out, base, struct_witnesses);
             write!(out, ".{}", field).unwrap();
         }
         IrExpr::Index { base, index } => {
-            write_expr_dyn(out, base);
+            write_expr_dyn(out, base, struct_witnesses);
             write!(out, "[").unwrap();
-            write_expr_dyn(out, index);
+            write_expr_dyn(out, index, struct_witnesses);
             write!(out, "]").unwrap();
         }
         IrExpr::Block(b) => {
             writeln!(out, "{{").unwrap();
             for stmt in &b.stmts {
-                write_stmt_dyn(out, stmt, 1);
+                write_stmt_dyn(out, stmt, 1, struct_witnesses);
             }
             if let Some(e) = &b.expr {
                 write!(out, "    ").unwrap();
-                write_expr_dyn(out, e);
+                write_expr_dyn(out, e, struct_witnesses);
                 writeln!(out).unwrap();
             }
             write!(out, "}}").unwrap();
@@ -475,79 +531,79 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr) {
                 ArrayLength::TypeParam(p) => p.to_lowercase(),
                 ArrayLength::Computed(e) => {
                     let mut s = String::new();
-                    write_expr_dyn(&mut s, e);
+                    write_expr_dyn(&mut s, e, struct_witnesses);
                     s
                 }
             };
             write!(out, "(0..{}).map(|{}| ", n, index_var).unwrap();
-            write_expr_dyn(out, body);
+            write_expr_dyn(out, body, struct_witnesses);
             write!(out, ").collect()").unwrap();
         }
         IrExpr::ArrayMap { array, elem_var, body } => {
-            write_expr_dyn(out, array);
+            write_expr_dyn(out, array, struct_witnesses);
             write!(out, ".iter().map(|{}| ", elem_var).unwrap();
-            write_expr_dyn(out, body);
+            write_expr_dyn(out, body, struct_witnesses);
             write!(out, ").collect()").unwrap();
         }
         IrExpr::ArrayZip { left, right, left_var, right_var, body } => {
-            write_expr_dyn(out, left);
+            write_expr_dyn(out, left, struct_witnesses);
             write!(out, ".iter().zip(").unwrap();
-            write_expr_dyn(out, right);
+            write_expr_dyn(out, right, struct_witnesses);
             write!(out, ".iter()).map(|({}, {})| ", left_var, right_var).unwrap();
-            write_expr_dyn(out, body);
+            write_expr_dyn(out, body, struct_witnesses);
             write!(out, ").collect()").unwrap();
         }
         IrExpr::ArrayFold { array, init, acc_var, elem_var, body } => {
-            write_expr_dyn(out, array);
+            write_expr_dyn(out, array, struct_witnesses);
             write!(out, ".iter().fold(").unwrap();
-            write_expr_dyn(out, init);
+            write_expr_dyn(out, init, struct_witnesses);
             write!(out, ", |{}, {}| ", acc_var, elem_var).unwrap();
-            write_expr_dyn(out, body);
+            write_expr_dyn(out, body, struct_witnesses);
             write!(out, ")").unwrap();
         }
         IrExpr::BoundedLoop { var, start, end, inclusive, body } => {
             write!(out, "for {} in ", var).unwrap();
-            write_expr_dyn(out, start);
+            write_expr_dyn(out, start, struct_witnesses);
             write!(out, "{} ", if *inclusive { "..=" } else { ".." }).unwrap();
-            write_expr_dyn(out, end);
+            write_expr_dyn(out, end, struct_witnesses);
             writeln!(out, " {{").unwrap();
             for stmt in &body.stmts {
-                write_stmt_dyn(out, stmt, 1);
+                write_stmt_dyn(out, stmt, 1, struct_witnesses);
             }
             if let Some(e) = &body.expr {
                 write!(out, "    ").unwrap();
-                write_expr_dyn(out, e);
+                write_expr_dyn(out, e, struct_witnesses);
                 writeln!(out).unwrap();
             }
             write!(out, "}}").unwrap();
         }
         IrExpr::If { cond, then_branch, else_branch } => {
             write!(out, "if ").unwrap();
-            write_expr_dyn(out, cond);
+            write_expr_dyn(out, cond, struct_witnesses);
             writeln!(out, " {{").unwrap();
             for stmt in &then_branch.stmts {
-                write_stmt_dyn(out, stmt, 1);
+                write_stmt_dyn(out, stmt, 1, struct_witnesses);
             }
             if let Some(e) = &then_branch.expr {
                 write!(out, "    ").unwrap();
-                write_expr_dyn(out, e);
+                write_expr_dyn(out, e, struct_witnesses);
                 writeln!(out).unwrap();
             }
             write!(out, "}}").unwrap();
             if let Some(eb) = else_branch {
                 write!(out, " else ").unwrap();
-                write_expr_dyn(out, eb);
+                write_expr_dyn(out, eb, struct_witnesses);
             }
         }
         IrExpr::Match { expr, arms } => {
             write!(out, "match ").unwrap();
-            write_expr_dyn(out, expr);
+            write_expr_dyn(out, expr, struct_witnesses);
             writeln!(out, " {{").unwrap();
             for arm in arms {
                 write!(out, "    ").unwrap();
                 write_pattern_dyn(out, &arm.pattern);
                 write!(out, " => ").unwrap();
-                write_expr_dyn(out, &arm.body);
+                write_expr_dyn(out, &arm.body, struct_witnesses);
                 writeln!(out, ",").unwrap();
             }
             write!(out, "}}").unwrap();
@@ -556,24 +612,24 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr) {
             write!(out, "return").unwrap();
             if let Some(e) = e {
                 write!(out, " ").unwrap();
-                write_expr_dyn(out, e);
+                write_expr_dyn(out, e, struct_witnesses);
             }
         }
         IrExpr::Break(e) => {
             write!(out, "break").unwrap();
             if let Some(e) = e {
                 write!(out, " ").unwrap();
-                write_expr_dyn(out, e);
+                write_expr_dyn(out, e, struct_witnesses);
             }
         }
         IrExpr::Continue => write!(out, "continue").unwrap(),
         IrExpr::Assign { left, right } => {
-            write_expr_dyn(out, left);
+            write_expr_dyn(out, left, struct_witnesses);
             write!(out, " = ").unwrap();
-            write_expr_dyn(out, right);
+            write_expr_dyn(out, right, struct_witnesses);
         }
         IrExpr::AssignOp { op, left, right } => {
-            write_expr_dyn(out, left);
+            write_expr_dyn(out, left, struct_witnesses);
             write!(out, " {} = ", match op {
                 SpecBinOp::Add => "+",
                 SpecBinOp::Sub => "-",
@@ -587,10 +643,14 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr) {
                 SpecBinOp::Shr => ">>",
                 _ => "+",
             }).unwrap();
-            write_expr_dyn(out, right);
+            write_expr_dyn(out, right, struct_witnesses);
         }
         IrExpr::Path { segments, .. } => {
-            write!(out, "{}", segments.join("::")).unwrap();
+            if segments.len() == 2 && is_likely_len_param(&segments[0]) && segments[1] == "to_usize" {
+                write!(out, "{}", segments[0].to_lowercase()).unwrap();
+            } else {
+                write!(out, "{}", segments.join("::")).unwrap();
+            }
         }
         IrExpr::Closure { params, body, .. } => {
             write!(out, "|").unwrap();
@@ -599,22 +659,22 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr) {
                 write_pattern_dyn(out, &p.pattern);
             }
             write!(out, "| ").unwrap();
-            write_expr_dyn(out, body);
+            write_expr_dyn(out, body, struct_witnesses);
         }
         IrExpr::Cast { expr, ty } => {
-            write_expr_dyn(out, expr);
+            write_expr_dyn(out, expr, struct_witnesses);
             write!(out, " as ").unwrap();
             write_type_dyn(out, ty);
         }
         IrExpr::Try(e) => {
-            write_expr_dyn(out, e);
+            write_expr_dyn(out, e, struct_witnesses);
             write!(out, "?").unwrap();
         }
         IrExpr::Tuple(elems) => {
             write!(out, "(").unwrap();
             for (i, e) in elems.iter().enumerate() {
                 if i > 0 { write!(out, ", ").unwrap(); }
-                write_expr_dyn(out, e);
+                write_expr_dyn(out, e, struct_witnesses);
             }
             write!(out, ")").unwrap();
         }
@@ -622,17 +682,29 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr) {
             write!(out, "vec![").unwrap();
             for (i, e) in elems.iter().enumerate() {
                 if i > 0 { write!(out, ", ").unwrap(); }
-                write_expr_dyn(out, e);
+                write_expr_dyn(out, e, struct_witnesses);
             }
             write!(out, "]").unwrap();
         }
         IrExpr::StructExpr { kind, fields, .. } => {
             write!(out, "{}Dyn {{ ", kind).unwrap();
             
+            let mut field_names: BTreeSet<_> = fields.iter().map(|(n, _)| n.clone()).collect();
             for (i, (name, val)) in fields.iter().enumerate() {
                 if i > 0 { write!(out, ", ").unwrap(); }
                 write!(out, "{}: ", name).unwrap();
-                write_expr_dyn(out, val);
+                write_expr_dyn(out, val, struct_witnesses);
+            }
+            
+            if let Some(witnesses) = struct_witnesses.get(&kind.to_string()) {
+                for w in witnesses {
+                    let w_low = w.to_lowercase();
+                    if !field_names.contains(&w_low) {
+                        if !fields.is_empty() || !field_names.is_empty() { write!(out, ", ").unwrap(); }
+                        write!(out, "{}: {}", w_low, w_low).unwrap();
+                        field_names.insert(w_low);
+                    }
+                }
             }
             
             write!(out, " }}").unwrap();

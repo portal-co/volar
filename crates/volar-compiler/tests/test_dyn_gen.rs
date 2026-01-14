@@ -33,11 +33,9 @@ fn test_generated_dyn_compiles() -> Result<(), Box<dyn std::error::Error>> {
 
     let dyn_code = print_module_rust_dyn(&combined_ir);
     
-    // Write to a temporary file in the target directory for compilation check
-    let out_dir = Path::new("../../target/debug");
-    let test_file = out_dir.join("volar_dyn_test.rs");
-    fs::create_dir_all(out_dir)?;
-    fs::write(&test_file, dyn_code)?;
+    // Write to a file for compilation check and inspection
+    let test_file = Path::new("volar_dyn_generated.rs");
+    fs::write(&test_file, &dyn_code)?;
 
     // Use rustc to check if it compiles
     let output = std::process::Command::new("rustc")
@@ -46,7 +44,7 @@ fn test_generated_dyn_compiles() -> Result<(), Box<dyn std::error::Error>> {
         .arg("--emit")
         .arg("dep-info,metadata")
         .arg("-o")
-        .arg(out_dir.join("volar_dyn_test.rmeta"))
+        .arg("target/volar_dyn_test.rmeta")
         .arg(&test_file)
         .output()?;
 
