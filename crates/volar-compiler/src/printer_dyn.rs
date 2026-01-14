@@ -692,6 +692,59 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
         .unwrap();
     }
 
+    // Emit a `where` clause derived from the original impl where-predicates
+    // (still emit even if we merged some bounds above). This helps preserve
+    // more complex predicates (projections, external targets) that can't be
+    // folded into individual generic bounds.
+    let mut where_parts: Vec<String> = Vec::new();
+    for wp in &i.where_clause {
+        match wp {
+            IrWherePredicate::TypeBound { ty, bounds } => {
+                // Skip length-type params in where clause emission
+                if let IrType::TypeParam(name) = ty {
+                    if cur_params.get(name).map(|(_, k)| *k == GenericKind::Length).unwrap_or(false) {
+                        continue;
+                    }
+                }
+                // Format the left-hand type
+                let mut lhs = String::new();
+                write_type_dyn(&mut lhs, ty, &cur_params, struct_info);
+                // Format bounds
+                let bstr = bounds
+                    .iter()
+                    .map(|b| bname(b, &cur_params, struct_info))
+                    .collect::<Vec<_>>()
+                    .join(" + ");
+                where_parts.push(format!("{}: {}", lhs, bstr));
+            }
+        }
+    }
+
+    // If there are any where predicates, emit them before the impl body.
+    if !where_parts.is_empty() {
+        write!(out, " where {}", where_parts.join(", ")).unwrap();
+    }
+
+    // Detect unconstrained type generics (no collected bounds) and annotate
+    // the generated output with a comment containing the generated file line
+    // number so the user can inspect it.
+    let mut unconstrained: Vec<String> = Vec::new();
+    for p in &i.generics {
+        if let Some(vec) = collected_bounds.get(&p.name) {
+            // Exclude length params and lifetimes
+            if vec.is_empty() {
+                if cur_params.get(&p.name).map(|(_, k)| *k != GenericKind::Length).unwrap_or(false) {
+                    unconstrained.push(p.name.clone());
+                }
+            }
+        }
+    }
+    if !unconstrained.is_empty() {
+        // compute current line number in generated output (1-based)
+        let current_line = out.lines().count() + 1;
+        writeln!(out, "// UNCONSTRAINED GENERICS at generated.rs line {}: {}", current_line, unconstrained.join(", ")).unwrap();
+    }
+
     writeln!(out, " {{").unwrap();
 
     for item in &i.items {
@@ -773,6 +826,41 @@ fn write_function_dyn(
         // Re-emit generics with updated bounds
         if !type_params.is_empty() {
             // overwrite previously written generics by writing a space (the caller expects this printed once)
+        }
+        // Emit a where clause for the function based on original where predicates
+        let mut where_parts: Vec<String> = Vec::new();
+        for wp in &f.where_clause {
+            if let IrWherePredicate::TypeBound { ty, bounds } = wp {
+                // Skip length params
+                if let IrType::TypeParam(name) = ty {
+                    if cur_params.get(name).map(|(_, k)| *k == GenericKind::Length).unwrap_or(false) {
+                        continue;
+                    }
+                }
+                let mut lhs = String::new();
+                write_type_dyn(&mut lhs, ty, &cur_params, struct_info);
+                let bstr = bounds.iter().map(|b| bname(b, &cur_params, struct_info)).collect::<Vec<_>>().join(" + ");
+                where_parts.push(format!("{}: {}", lhs, bstr));
+            }
+        }
+        if !where_parts.is_empty() {
+            write!(out, " where {}", where_parts.join(", ")).unwrap();
+        }
+
+        // Detect unconstrained generics at function level and annotate generated output
+        let mut unconstrained: Vec<String> = Vec::new();
+        for tp in &f.generics {
+            let k = classify_generic(tp, &[&f.generics]);
+            if k != GenericKind::Length {
+                let existing = fn_bounds.get(&tp.name).map(|v| v.is_empty()).unwrap_or(true);
+                if existing {
+                    unconstrained.push(tp.name.clone());
+                }
+            }
+        }
+        if !unconstrained.is_empty() {
+            let current_line = out.lines().count() + 1;
+            writeln!(out, "// UNCONSTRAINED GENERICS at generated.rs line {}: {}", current_line, unconstrained.join(", ")).unwrap();
         }
     }
 
