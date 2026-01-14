@@ -415,7 +415,7 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
 
     // Generate free functions
     for f in &module.functions {
-        write_function_dyn(&mut out, f, 0, None, &BTreeMap::new(), &struct_info);
+        write_function_dyn(&mut out, f, 0, None, &BTreeMap::new(), &struct_info, None);
         writeln!(out).unwrap();
     }
 
@@ -872,7 +872,7 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
     for item in &i.items {
         match item {
             IrImplItem::Method(f) => {
-                write_function_dyn(out, f, 1, Some(&self_name), &cur_params, struct_info);
+                write_function_dyn(out, f, 1, Some(&self_name), &cur_params, struct_info, i.trait_.as_ref());
             }
             IrImplItem::AssociatedType { name, ty } => {
                 // emit associated type binding inside trait impls
@@ -901,6 +901,7 @@ fn write_function_dyn(
     self_struct: Option<&str>,
     cur_params: &BTreeMap<String, (String, GenericKind)>,
     struct_info: &BTreeMap<String, StructInfo>,
+    trait_ref: Option<&IrTraitRef>,
 ) {
     let indent = "    ".repeat(level);
 
@@ -918,7 +919,12 @@ fn write_function_dyn(
         }
     }
 
-    write!(out, "{}pub fn {}", indent, f.name).unwrap();
+    // Trait impl methods are not `pub` in impl blocks.
+    if trait_ref.is_some() {
+        write!(out, "{}fn {}", indent, f.name).unwrap();
+    } else {
+        write!(out, "{}pub fn {}", indent, f.name).unwrap();
+    }
 
     // Generic type parameters (non-length)
     if !type_params.is_empty() {
@@ -1068,10 +1074,34 @@ fn write_function_dyn(
 
     write!(out, ")").unwrap();
 
-    // Return type
+    // Return type: if this is an implementation of an operator trait that
+    // has an associated `Output` type, emit `Self::Output` instead of the
+    // concrete `OutputDyn` type to use the trait-associated output.
     if let Some(ret) = &f.return_type {
-        write!(out, " -> ").unwrap();
-        write_type_dyn(out, ret, &cur_params, struct_info);
+        let mut emitted = false;
+        if let Some(tr) = trait_ref {
+            if let TraitKind::Math(mt) = &tr.kind {
+                match mt {
+                    MathTrait::Add
+                    | MathTrait::Mul
+                    | MathTrait::Div
+                    | MathTrait::Rem
+                    | MathTrait::BitAnd
+                    | MathTrait::BitOr
+                    | MathTrait::BitXor
+                    | MathTrait::Shl
+                    | MathTrait::Shr => {
+                        write!(out, " -> Self::Output").unwrap();
+                        emitted = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !emitted {
+            write!(out, " -> ").unwrap();
+            write_type_dyn(out, ret, &cur_params, struct_info);
+        }
     }
 
     writeln!(out, " {{").unwrap();

@@ -290,7 +290,7 @@ impl VopeDyn<BitsInBytes64> {
 }
 
 impl<T: Clone> Clone for VopeDyn<T> {
-    pub fn clone(&self) -> Self {
+    fn clone(&self) -> Self {
         let n = self.n;
         let k = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
@@ -301,21 +301,21 @@ impl<T: Clone> Clone for VopeDyn<T> {
 }
 
 impl<T: Clone> Clone for QDyn<T> {
-    pub fn clone(&self) -> Self {
+    fn clone(&self) -> Self {
         let QDyn { q: q, .. } = self;
         QDyn { q: (0..n).map(|i| q[i].clone()).collect() }
     }
 }
 
 impl<T: Clone> Clone for DeltaDyn<T> {
-    pub fn clone(&self) -> Self {
+    fn clone(&self) -> Self {
         let DeltaDyn { delta: delta, .. } = self;
         DeltaDyn { delta: (0..n).map(|i| delta[i].clone()).collect() }
     }
 }
 
 impl<T: PartialEq> PartialEq for VopeDyn<T> {
-    pub fn eq(&self, other: &'a Self) -> bool {
+    fn eq(&self, other: &'a Self) -> bool {
         let n = self.n;
         let k = self.k;
         let VopeDyn { u: u1, v: v1, .. } = self;
@@ -337,7 +337,7 @@ impl<T: PartialEq> PartialEq for VopeDyn<T> {
 }
 
 impl<T: PartialEq> PartialEq for QDyn<T> {
-    pub fn eq(&self, other: &'a Self) -> bool {
+    fn eq(&self, other: &'a Self) -> bool {
         let QDyn { q: q1, .. } = self;
         let QDyn { q: q2, .. } = other;
         for i in 0..n {
@@ -350,7 +350,7 @@ impl<T: PartialEq> PartialEq for QDyn<T> {
 }
 
 impl<T: PartialEq> PartialEq for DeltaDyn<T> {
-    pub fn eq(&self, other: &'a Self) -> bool {
+    fn eq(&self, other: &'a Self) -> bool {
         let DeltaDyn { delta: d1, .. } = self;
         let DeltaDyn { delta: d2, .. } = other;
         for i in 0..n {
@@ -484,7 +484,7 @@ impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 479: T
 
 impl<T: Add<U> + Clone, U: Clone> Add<VopeDyn<U>> for VopeDyn<T> {
     type Output = VopeDyn<OutputDyn>;
-    pub fn add(self, rhs: VopeDyn<U>) -> OutputDyn {
+    fn add(self, rhs: VopeDyn<U>) -> Self::Output {
         let n = self.n;
         let k = self.k;
         VopeDyn { u: self.u.iter().zip(rhs.u.iter()).map(|(a, b)| a.iter().zip(b.iter()).map(|(a, b)| (a + b)).collect()).collect(), v: self.v.iter().zip(rhs.v.iter()).map(|(a, b)| (a + b)).collect(), n: n, k: k }
@@ -494,7 +494,7 @@ impl<T: Add<U> + Clone, U: Clone> Add<VopeDyn<U>> for VopeDyn<T> {
 impl<T: BitXor<U, Output = O> + Clone + Into<O>, U: Clone, O> BitXor<Vec<U>> for VopeDyn<T> where T: Into<O>// UNCONSTRAINED GENERICS at generated.rs line 495: O
  {
     type Output = VopeDyn<O>;
-    pub fn bitxor(self, rhs: Vec<U>) -> OutputDyn {
+    fn bitxor(self, rhs: Vec<U>) -> Self::Output {
         let n = self.n;
         let k = self.k;
         VopeDyn { u: (0..k).map(|i| {
@@ -508,7 +508,7 @@ impl<T: BitXor<U, Output = O> + Clone + Into<O>, U: Clone, O> BitXor<Vec<U>> for
 
 impl<T: Mul<U, Output = O> + Into<O> + Clone, U: Mul<U, Output = U> + Clone, O: Add<O, Output = O>> Mul<DeltaDyn<U>> for VopeDyn<T> {
     type Output = QDyn<O>;
-    pub fn mul(self, rhs: DeltaDyn<U>) -> OutputDyn {
+    fn mul(self, rhs: DeltaDyn<U>) -> Self::Output {
         let n = self.n;
         let k = self.k;
         QDyn { q: self.u.iter().enumerate().fold(self.v.clone().iter().map(|a| a.into()).collect(), |a, (i, b)| {
