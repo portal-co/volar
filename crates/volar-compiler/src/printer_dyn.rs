@@ -228,6 +228,76 @@ struct StructInfo {
 
 /// Main entry point for generating dynamic Rust code
 pub fn print_module_rust_dyn(module: &IrModule) -> String {
+    // Determine whether any crypto-related ops are used in the module
+    fn expr_uses_crypto(e: &IrExpr) -> bool {
+        match e {
+            IrExpr::MethodCall { method, .. } => match method {
+                MethodKind::Crypto(_) => true,
+                MethodKind::Unknown(s) => {
+                    let s = s.to_lowercase();
+                    s.contains("digest") || s.contains("commit") || s.contains("encrypt")
+                }
+                _ => false,
+            },
+            IrExpr::Call { func, args } => {
+                if let IrExpr::Path { segments, .. } = func.as_ref() {
+                    let joined = segments.join("::").to_lowercase();
+                    if joined.contains("digest") || joined.contains("commit") || joined.contains("encrypt") {
+                        return true;
+                    }
+                }
+                args.iter().any(|a| expr_uses_crypto(a))
+            }
+            IrExpr::Block(b) => b.stmts.iter().any(|s| stmt_uses_crypto(s)) || b.expr.as_ref().map_or(false, |e| expr_uses_crypto(e)),
+            IrExpr::ArrayGenerate { body, .. } => expr_uses_crypto(body),
+            IrExpr::ArrayMap { body, .. } => expr_uses_crypto(body),
+            IrExpr::ArrayZip { body, .. } => expr_uses_crypto(body),
+            IrExpr::ArrayFold { init, body, .. } => expr_uses_crypto(init) || expr_uses_crypto(body),
+            IrExpr::Unary { expr, .. } => expr_uses_crypto(expr),
+            IrExpr::Binary { left, right, .. } => expr_uses_crypto(left) || expr_uses_crypto(right),
+            IrExpr::If { then_branch, else_branch, .. } => {
+                then_branch.stmts.iter().any(|s| stmt_uses_crypto(s))
+                    || then_branch.expr.as_ref().map_or(false, |e| expr_uses_crypto(e))
+                    || else_branch.as_ref().map_or(false, |e| expr_uses_crypto(e))
+            }
+            IrExpr::Match { arms, expr, .. } => expr_uses_crypto(expr) || arms.iter().any(|a| expr_uses_crypto(&a.body)),
+            IrExpr::Closure { body, .. } => expr_uses_crypto(body),
+            IrExpr::Call { .. } | IrExpr::Path { .. } | IrExpr::Var(_) | IrExpr::Lit(_) | IrExpr::Tuple(_) | IrExpr::Array(_) => false,
+            _ => false,
+        }
+    }
+
+    fn stmt_uses_crypto(s: &IrStmt) -> bool {
+        match s {
+            IrStmt::Let { init, .. } => init.as_ref().map_or(false, |e| expr_uses_crypto(e)),
+            IrStmt::Semi(e) => expr_uses_crypto(e),
+            IrStmt::Expr(e) => expr_uses_crypto(e),
+        }
+    }
+
+    let mut crypto_used = false;
+    for f in &module.functions {
+        if f.body.stmts.iter().any(|s| stmt_uses_crypto(s)) || f.body.expr.as_ref().map_or(false, |e| expr_uses_crypto(e)) {
+            crypto_used = true;
+            break;
+        }
+    }
+    if !crypto_used {
+        for i in &module.impls {
+            for item in &i.items {
+                if let IrImplItem::Method(m) = item {
+                    if m.body.stmts.iter().any(|s| stmt_uses_crypto(s)) || m.body.expr.as_ref().map_or(false, |e| expr_uses_crypto(e)) {
+                        crypto_used = true;
+                        break;
+                    }
+                }
+            }
+            if crypto_used {
+                break;
+            }
+        }
+    }
+
     // First pass: collect struct information
     let mut struct_info: BTreeMap<String, StructInfo> = BTreeMap::new();
 
@@ -243,7 +313,7 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
                         p.name.clone(),
                         p.bounds
                             .iter()
-                            .map(|b| bname(b, &BTreeMap::new(), &struct_info))
+                            .map(|b| bname(b, &BTreeMap::new(), &struct_info, crypto_used))
                             .collect::<Vec<_>>()
                             .join(" + "),
                     )),
@@ -300,26 +370,26 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
 
     // Generate structs
     for s in &module.structs {
-        write_struct_dyn(&mut out, s, &struct_info);
+        write_struct_dyn(&mut out, s, &struct_info, crypto_used);
         writeln!(out).unwrap();
     }
 
     // Generate impls
     for i in &module.impls {
-        write_impl_dyn(&mut out, i, &struct_info);
+        write_impl_dyn(&mut out, i, &struct_info, crypto_used);
         writeln!(out).unwrap();
     }
 
     // Generate free functions
     for f in &module.functions {
-        write_function_dyn(&mut out, f, 0, None, &BTreeMap::new(), &struct_info);
+        write_function_dyn(&mut out, f, 0, None, &BTreeMap::new(), &struct_info, crypto_used);
         writeln!(out).unwrap();
     }
 
     out
 }
 
-fn write_struct_dyn(out: &mut String, s: &IrStruct, struct_info: &BTreeMap<String, StructInfo>) {
+fn write_struct_dyn(out: &mut String, s: &IrStruct, struct_info: &BTreeMap<String, StructInfo>, crypto_used: bool) {
     let info = match struct_info.get(&s.kind.to_string()).cloned() {
         Some(v) => v,
         None => {
@@ -420,6 +490,7 @@ fn bname(
     b: &IrTraitBound,
     cur_params: &BTreeMap<String, (String, GenericKind)>,
     struct_info: &BTreeMap<String, StructInfo>,
+    crypto_used: bool,
 ) -> String {
     // Helper to format an `IrType` using the existing `write_type_dyn` codepath.
     fn type_to_string(
@@ -438,13 +509,20 @@ fn bname(
         b: &IrTraitBound,
         cur_params: &BTreeMap<String, (String, GenericKind)>,
         struct_info: &BTreeMap<String, StructInfo>,
+        crypto_used: bool,
     ) -> String {
         let mut parts: Vec<String> = Vec::new();
         for ta in &b.type_args {
             parts.push(type_to_string(ta, cur_params, struct_info));
         }
         for (name, ty) in &b.assoc_bindings {
-            parts.push(format!("{:?} = {}", name, type_to_string(ty, cur_params, struct_info)));
+            let s = type_to_string(ty, cur_params, struct_info);
+            // Decide if this associated binding is a numeric witness. If so, omit unless crypto is used.
+            let is_numeric = s.contains("USIZE") || s.chars().all(|c| c.is_ascii_digit());
+            if is_numeric && !crypto_used {
+                continue;
+            }
+            parts.push(format!("{:?} = {}", name, s));
         }
         if parts.is_empty() {
             base
@@ -454,9 +532,9 @@ fn bname(
     }
 
     match &b.trait_kind {
-        TraitKind::Crypto(c) => with_args_and_assoc(format!("{:?}", c), b, cur_params, struct_info),
+        TraitKind::Crypto(c) => with_args_and_assoc(format!("{:?}", c), b, cur_params, struct_info, crypto_used),
         TraitKind::Math(math_trait) => {
-            with_args_and_assoc(format!("{:?}", math_trait), b, cur_params, struct_info)
+            with_args_and_assoc(format!("{:?}", math_trait), b, cur_params, struct_info, crypto_used)
         }
         TraitKind::External { path } => format!(
             "compile_error!(\"External trait bounds not supported in dyn code: {:?}\")",
@@ -481,6 +559,7 @@ fn pname(
     p: &IrGenericParam,
     cur_params: &BTreeMap<String, (String, GenericKind)>,
     struct_info: &BTreeMap<String, StructInfo>,
+    crypto_used: bool,
 ) -> String {
     match &*p.bounds {
         [] => p.name.clone(),
@@ -488,13 +567,13 @@ fn pname(
             "{}: {}",
             p.name,
             x.iter()
-                .map(|b| bname(b, cur_params, struct_info))
+                .map(|b| bname(b, cur_params, struct_info, crypto_used))
                 .collect::<Vec<_>>()
                 .join(" + ")
         ),
     }
 }
-fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, StructInfo>) {
+fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, StructInfo>, crypto_used: bool) {
     let generics = i
         .generics
         .iter()
@@ -547,7 +626,7 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
         let c = classify_generic(p, &[&i.generics]);
         cur_params.insert(p.name.clone(), (format!(""), c.clone()));
         if c != GenericKind::Length && !info.length_witnesses.contains(&p.name.to_lowercase()) {
-            impl_type_params.push(pname(p, &cur_params, struct_info));
+            impl_type_params.push(pname(p, &cur_params, struct_info, crypto_used));
         }
     }
 
@@ -584,7 +663,7 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
 
     for item in &i.items {
         if let IrImplItem::Method(f) = item {
-            write_function_dyn(out, f, 1, Some(&self_name), &cur_params, struct_info);
+            write_function_dyn(out, f, 1, Some(&self_name), &cur_params, struct_info, crypto_used);
         }
     }
 
@@ -598,6 +677,7 @@ fn write_function_dyn(
     self_struct: Option<&str>,
     cur_params: &BTreeMap<String, (String, GenericKind)>,
     struct_info: &BTreeMap<String, StructInfo>,
+    crypto_used: bool,
 ) {
     let indent = "    ".repeat(level);
 
@@ -611,7 +691,7 @@ fn write_function_dyn(
         cur_params.insert(p.name.clone(), (format!(""), k.clone()));
         match k {
             GenericKind::Length => length_params.push(p.name.clone()),
-            _ => type_params.push(pname(p, &cur_params, struct_info)),
+            _ => type_params.push(pname(p, &cur_params, struct_info, crypto_used)),
         }
     }
 
@@ -721,19 +801,15 @@ fn write_type_dyn(
 
             // Filter out length type params
             let filtered: Vec<_> = type_args.clone();
-
-            if !filtered.is_empty() {
-                write!(out, "<").unwrap();
-                let mut skip = true;
-                for (i, arg) in filtered.iter().enumerate() {
-                    if !take(&mut skip) {
-                        write!(out, ", ").unwrap();
-                    }
-                    if !write_type_dyn(out, arg, &cur_params, struct_info) {
-                        skip = true;
-                    }
+            let mut parts: Vec<String> = Vec::new();
+            for arg in filtered.iter() {
+                let mut s = String::new();
+                if write_type_dyn(&mut s, arg, &cur_params, struct_info) {
+                    parts.push(s);
                 }
-                write!(out, ">").unwrap();
+            }
+            if !parts.is_empty() {
+                write!(out, "<{}>", parts.join(", ")).unwrap();
             }
         }
 
@@ -766,17 +842,14 @@ fn write_type_dyn(
         }
 
         IrType::Tuple(elems) => {
-            write!(out, "(").unwrap();
-            let mut skip = true;
-            for (i, elem) in elems.iter().enumerate() {
-                if take(&mut skip) {
-                    write!(out, ", ").unwrap();
-                }
-                if !write_type_dyn(out, elem, cur_params, struct_info) {
-                    skip = true;
+            let mut parts: Vec<String> = Vec::new();
+            for elem in elems.iter() {
+                let mut s = String::new();
+                if write_type_dyn(&mut s, elem, cur_params, struct_info) {
+                    parts.push(s);
                 }
             }
-            write!(out, ")").unwrap();
+            write!(out, "({})", parts.join(", ")).unwrap();
         }
 
         IrType::Unit => write!(out, "()").unwrap(),
