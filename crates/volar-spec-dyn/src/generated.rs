@@ -165,8 +165,8 @@ impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 51: T
     }
 }
 
-impl<T: Add<Output = T> + Mul<Output = T> + Default + Clone> VopeDyn<T> where N: VoleArray<T>, T: Add<Output = T> + Mul<Output = T> + Default + Clone, K: ArrayLength<Vec<T>> {
-    pub fn mul_generalized<K2: Add<K>>(&self, other: &'a VopeDyn<T>) -> VopeDyn<T> where K2: ArrayLength<Vec<T>>, OutputDyn: ArrayLength<Vec<T>> {
+impl<T: Add<Output = T> + Mul<Output = T> + Default + Clone + Add<Output = T> + Mul<Output = T> + Default + Clone> VopeDyn<T> where T: Add<Output = T> + Mul<Output = T> + Default + Clone {
+    pub fn mul_generalized<K2: Add<>>(&self, other: &'a VopeDyn<T>) -> VopeDyn<T> where K2: ArrayLength<Vec<T>>, OutputDyn: ArrayLength<Vec<T>> {
         let n = self.n;
         let k = self.k;
         let mut res_u = Vec::new();
@@ -491,7 +491,7 @@ impl<T: Add<U> + Clone, U: Clone> Add<VopeDyn<U>> for VopeDyn<T> {
     }
 }
 
-impl<T: BitXor<U, Output = O> + Clone + Into<O>, U: Clone, O> BitXor<Vec<U>> for VopeDyn<T> where T: Into<O>// UNCONSTRAINED GENERICS at generated.rs line 495: O
+impl<T: BitXor<U, Output = O> + Clone + Into<O> + Into<O>, U: Clone, O> BitXor<Vec<U>> for VopeDyn<T> where T: Into<O>// UNCONSTRAINED GENERICS at generated.rs line 495: O
  {
     type Output = VopeDyn<O>;
     fn bitxor(self, rhs: Vec<U>) -> Self::Output {
@@ -554,7 +554,7 @@ impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 528: T
     }
 }
 
-impl VopeDyn<Bit> where N: VoleArray<Bit>, K: ArrayLength<Vec<Bit>> {
+impl VopeDyn<Bit> {
     pub fn scale<T>(self, f: compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Custom("Fn"), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 559: T
  {
         let n = self.n;

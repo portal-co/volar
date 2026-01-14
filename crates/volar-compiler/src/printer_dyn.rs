@@ -620,13 +620,34 @@ fn pname(
     }
 }
 fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, StructInfo>) {
-    let generics = i
-        .generics
+    // Helper: create augmented generic params by merging where-clause bounds
+    fn augment_generics_with_where_clause(
+        generics: &[IrGenericParam],
+        where_clause: &[IrWherePredicate],
+    ) -> Vec<IrGenericParam> {
+        let mut result = generics.to_vec();
+        for pred in where_clause {
+            if let IrWherePredicate::TypeBound { ty, bounds } = pred {
+                if let IrType::TypeParam(name) = ty {
+                    // Find the matching generic and add bounds
+                    for param in &mut result {
+                        if &param.name == name {
+                            param.bounds.extend(bounds.clone());
+                        }
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    let augmented_generics = augment_generics_with_where_clause(&i.generics, &i.where_clause);
+    let generics = augmented_generics
         .iter()
         .map(|p| {
             (
                 p.name.clone(),
-                (format!(""), classify_generic(p, &[&i.generics])),
+                (format!(""), classify_generic(p, &[&augmented_generics])),
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -668,8 +689,8 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
 
     // First pass: populate `cur_params` with all generics so bounds may
     // reference each other when formatting (avoids Unknown type parameter).
-    for p in &i.generics {
-        let c = classify_generic(p, &[&i.generics]);
+    for p in &augmented_generics {
+        let c = classify_generic(p, &[&augmented_generics]);
         cur_params.insert(p.name.clone(), (format!(""), c.clone()));
         if c != GenericKind::Length && !info.length_witnesses.contains(&p.name.to_lowercase()) {
             collected_bounds.insert(p.name.clone(), Vec::new());
@@ -760,7 +781,7 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
         false
     }
 
-    for p in &i.generics {
+    for p in &augmented_generics {
         if let Some(vec) = collected_bounds.get_mut(&p.name) {
             for b in &p.bounds {
                 vec.push(bname(b, &cur_params, struct_info));
