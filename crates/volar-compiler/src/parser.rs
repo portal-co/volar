@@ -218,6 +218,7 @@ fn convert_generic_param(p: &GenericParam) -> Result<IrGenericParam> {
     match p {
         GenericParam::Type(tp) => Ok(IrGenericParam {
             name: tp.ident.to_string(),
+            kind: IrGenericParamKind::Type,
             bounds: tp.bounds.iter().map(|bound| {
                 if let syn::TypeParamBound::Trait(tb) = bound {
                     Ok(Some(convert_trait_bound(tb)?))
@@ -229,11 +230,13 @@ fn convert_generic_param(p: &GenericParam) -> Result<IrGenericParam> {
         }),
         GenericParam::Const(cp) => Ok(IrGenericParam {
             name: cp.ident.to_string(),
+            kind: IrGenericParamKind::Const,
             bounds: Vec::new(),
             default: None, // TODO: handle const param default
         }),
-        GenericParam::Lifetime(_) => Ok(IrGenericParam {
-            name: "_lifetime".to_string(),
+        GenericParam::Lifetime(lp) => Ok(IrGenericParam {
+            name: lp.lifetime.ident.to_string(),
+            kind: IrGenericParamKind::Lifetime,
             bounds: Vec::new(),
             default: None,
         }),
@@ -367,8 +370,15 @@ fn convert_type(ty: &Type) -> Result<IrType> {
             else { Ok(IrType::Tuple(t.elems.iter().map(convert_type).collect::<Result<Vec<_>>>()?)) }
         }
         Type::ImplTrait(it) => {
-            // Simplify impl trait to just the first bound name or a placeholder
-            Ok(IrType::TypeParam("impl_trait".to_string()))
+            Ok(IrType::Existential {
+                bounds: it.bounds.iter().map(|bound| {
+                    if let syn::TypeParamBound::Trait(tb) = bound {
+                        Ok(Some(convert_trait_bound(tb)?))
+                    } else {
+                        Ok(None)
+                    }
+                }).collect::<Result<Vec<Option<_>>>>()?.into_iter().flatten().collect(),
+            })
         }
         _ => Err(CompilerError::Unsupported(format!("Type: {:?}", ty))),
     }
@@ -394,7 +404,7 @@ fn convert_array_length_from_syn_expr(expr: &syn::Expr) -> Result<ArrayLength> {
 
 fn convert_expr(expr: &Expr) -> Result<IrExpr> {
     match expr {
-        Expr::Lit(l) => Ok(IrExpr::Lit(convert_lit(&l.lit))),
+        Expr::Lit(l) => Ok(IrExpr::Lit(convert_lit(&l.lit)?)),
         Expr::Path(p) => {
             let segments: Vec<String> = p.path.segments.iter().map(|s| s.ident.to_string()).collect();
             if segments.len() == 1 {
@@ -610,16 +620,16 @@ fn extract_pat_name(pat: &Pat) -> String {
     if let Pat::Ident(pi) = pat { pi.ident.to_string() } else { "_".to_string() }
 }
 
-fn convert_lit(lit: &syn::Lit) -> IrLit {
+fn convert_lit(lit: &syn::Lit) -> Result<IrLit> {
     match lit {
-        syn::Lit::Int(n) => IrLit::Int(n.base10_parse().unwrap_or(0)),
-        syn::Lit::Bool(b) => IrLit::Bool(b.value),
-        syn::Lit::Str(s) => IrLit::Str(s.value()),
-        syn::Lit::Float(f) => IrLit::Float(f.base10_parse().unwrap_or(0.0)),
-        syn::Lit::Byte(b) => IrLit::Byte(b.value()),
-        syn::Lit::ByteStr(bs) => IrLit::ByteStr(bs.value()),
-        syn::Lit::Char(c) => IrLit::Char(c.value()),
-        _ => IrLit::Int(0),
+        syn::Lit::Int(n) => Ok(IrLit::Int(n.base10_parse().map_err(|e| CompilerError::ParseError(e.to_string()))?)),
+        syn::Lit::Bool(b) => Ok(IrLit::Bool(b.value)),
+        syn::Lit::Str(s) => Ok(IrLit::Str(s.value())),
+        syn::Lit::Float(f) => Ok(IrLit::Float(f.base10_parse().map_err(|e| CompilerError::ParseError(e.to_string()))?)),
+        syn::Lit::Byte(b) => Ok(IrLit::Byte(b.value())),
+        syn::Lit::ByteStr(bs) => Ok(IrLit::ByteStr(bs.value())),
+        syn::Lit::Char(c) => Ok(IrLit::Char(c.value())),
+        _ => Err(CompilerError::Unsupported(format!("Literal: {:?}", lit))),
     }
 }
 

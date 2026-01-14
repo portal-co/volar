@@ -308,7 +308,7 @@ fn write_type(out: &mut String, ty: &IrType) {
             write_type(out, base);
             write!(out, " as _>::{:?}", assoc).unwrap();
         }
-        IrType::ImplTrait(bounds) => {
+        IrType::Existential { bounds } => {
             write!(out, "impl ").unwrap();
             for (i, bound) in bounds.iter().enumerate() {
                 if i > 0 { write!(out, " + ").unwrap(); }

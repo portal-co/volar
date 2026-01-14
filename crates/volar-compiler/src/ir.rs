@@ -532,9 +532,17 @@ pub struct IrField {
     pub public: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum IrGenericParamKind {
+    Type,
+    Const,
+    Lifetime,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct IrGenericParam {
     pub name: String,
+    pub kind: IrGenericParamKind,
     pub bounds: Vec<IrTraitBound>,
     pub default: Option<IrType>,
 }
@@ -611,7 +619,10 @@ pub enum IrType {
         base: Box<IrType>,
         assoc: AssociatedType,
     },
-    ImplTrait(Vec<IrTraitBound>),
+    /// Existential type (impl Trait)
+    Existential {
+        bounds: Vec<IrTraitBound>,
+    },
     FnPtr {
         params: Vec<IrType>,
         ret: Box<IrType>,
@@ -791,6 +802,7 @@ pub enum IrLit {
     Str(String),
     ByteStr(Vec<u8>),
     Byte(u8),
+    Unit,
 }
 
 impl IrLit {
@@ -803,6 +815,7 @@ impl IrLit {
             Self::Str(s) => format!("\"{}\"", s),
             Self::ByteStr(bs) => format!("b\"{:?}\"", bs),
             Self::Byte(b) => format!("b'{}'", b),
+            Self::Unit => "()".to_string(),
         }
     }
 }
