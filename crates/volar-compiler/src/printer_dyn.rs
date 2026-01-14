@@ -393,7 +393,6 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
     .unwrap();
     writeln!(out).unwrap();
 
-
     // Helper function
     writeln!(out, "/// Compute integer log2").unwrap();
     writeln!(out, "#[inline]").unwrap();
@@ -601,7 +600,7 @@ fn bname(
                 type_to_string(&**t, cur_params, struct_info)
             );
         }
-        }
+    }
 }
 fn pname(
     p: &IrGenericParam,
@@ -619,7 +618,7 @@ fn pname(
                 .join(" + ")
         ),
     }
-    }
+}
 fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, StructInfo>) {
     let generics = i
         .generics
@@ -696,18 +695,19 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
             IrType::Struct { type_args, .. } => type_args
                 .iter()
                 .any(|ta| type_refers_to_length_in_cur(ta, cur_params)),
-            IrType::Projection { base, assoc: _ } => {
-                type_refers_to_length_in_cur(base, cur_params)
-            }
+            IrType::Projection { base, assoc: _ } => type_refers_to_length_in_cur(base, cur_params),
             IrType::Param { path } => path
                 .first()
-                .map(|s| cur_params.get(s).map(|(_, k)| *k == GenericKind::Length).unwrap_or(false))
+                .map(|s| {
+                    cur_params
+                        .get(s)
+                        .map(|(_, k)| *k == GenericKind::Length)
+                        .unwrap_or(false)
+                })
                 .unwrap_or(false),
             IrType::Array { elem, .. }
             | IrType::Vector { elem }
-            | IrType::Reference { elem, .. } => {
-                type_refers_to_length_in_cur(elem, cur_params)
-            }
+            | IrType::Reference { elem, .. } => type_refers_to_length_in_cur(elem, cur_params),
             IrType::Tuple(elems) => elems
                 .iter()
                 .any(|e| type_refers_to_length_in_cur(e, cur_params)),
@@ -812,10 +812,16 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
             // Only emit concrete type args when they match the declared dyn type parameter arity
             write!(out, "<{}>", concrete_type_args.join(", ")).unwrap();
         } else if !info.type_params.is_empty() {
-            write!(out, "<{}>",
+            write!(
+                out,
+                "<{}>",
                 info.type_params
                     .iter()
-                    .map(|(n, b)| if !b.is_empty() { format!("{}: {}", n, b) } else { n.clone() })
+                    .map(|(n, b)| if !b.is_empty() {
+                        format!("{}: {}", n, b)
+                    } else {
+                        n.clone()
+                    })
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -827,10 +833,16 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
         if !concrete_type_args.is_empty() {
             write!(out, "<{}>", concrete_type_args.join(", ")).unwrap();
         } else if !info.type_params.is_empty() {
-            write!(out, "<{}>",
+            write!(
+                out,
+                "<{}>",
                 info.type_params
                     .iter()
-                    .map(|(n, b)| if !b.is_empty() { format!("{}: {}", n, b) } else { n.clone() })
+                    .map(|(n, b)| if !b.is_empty() {
+                        format!("{}: {}", n, b)
+                    } else {
+                        n.clone()
+                    })
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -903,7 +915,15 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
     for item in &i.items {
         match item {
             IrImplItem::Method(f) => {
-                write_function_dyn(out, f, 1, Some(&self_name), &cur_params, struct_info, i.trait_.as_ref());
+                write_function_dyn(
+                    out,
+                    f,
+                    1,
+                    Some(&self_name),
+                    &cur_params,
+                    struct_info,
+                    i.trait_.as_ref(),
+                );
             }
             IrImplItem::AssociatedType { name, ty } => {
                 // emit associated type binding inside trait impls
@@ -1041,7 +1061,11 @@ fn write_function_dyn(
                             // argument itself refers to a length.
                             if let Some((_, gkind, _)) = info.orig_generics.get(idx) {
                                 if *gkind == GenericKind::Length {
-                                    if type_refers_to_length_in_cur_func(ta, cur_params, struct_info) {
+                                    if type_refers_to_length_in_cur_func(
+                                        ta,
+                                        cur_params,
+                                        struct_info,
+                                    ) {
                                         return true;
                                     }
                                     // continue checking other args
@@ -1054,9 +1078,9 @@ fn write_function_dyn(
                         }
                         false
                     } else {
-                        type_args
-                            .iter()
-                            .any(|ta| type_refers_to_length_in_cur_func(ta, cur_params, struct_info))
+                        type_args.iter().any(|ta| {
+                            type_refers_to_length_in_cur_func(ta, cur_params, struct_info)
+                        })
                     }
                 }
                 IrType::Projection { base, assoc: _ } => {
@@ -1064,7 +1088,12 @@ fn write_function_dyn(
                 }
                 IrType::Param { path } => path
                     .first()
-                    .map(|s| cur_params.get(s).map(|(_, k)| *k == GenericKind::Length).unwrap_or(false))
+                    .map(|s| {
+                        cur_params
+                            .get(s)
+                            .map(|(_, k)| *k == GenericKind::Length)
+                            .unwrap_or(false)
+                    })
                     .unwrap_or(false),
                 IrType::Array { elem, .. }
                 | IrType::Vector { elem }
