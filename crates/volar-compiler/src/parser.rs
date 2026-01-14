@@ -1143,15 +1143,23 @@ fn convert_block(block: &syn::Block) -> Result<IrBlock> {
     for (i, stmt) in block.stmts.iter().enumerate() {
         let is_last = i == block.stmts.len() - 1;
         match stmt {
-            syn::Stmt::Local(l) => stmts.push(IrStmt::Let {
-                pattern: convert_pattern(&l.pat),
-                ty: None,
-                init: l
-                    .init
-                    .as_ref()
-                    .map(|init| convert_expr(&init.expr))
-                    .transpose()?,
-            }),
+            syn::Stmt::Local(l) => {
+                // Extract type annotation from type-annotated patterns like `let x: T = ...`
+                let ty = if let Pat::Type(pt) = &l.pat {
+                    convert_type(&pt.ty).ok()
+                } else {
+                    None
+                };
+                stmts.push(IrStmt::Let {
+                    pattern: convert_pattern(&l.pat),
+                    ty,
+                    init: l
+                        .init
+                        .as_ref()
+                        .map(|init| convert_expr(&init.expr))
+                        .transpose()?,
+                });
+            }
             syn::Stmt::Expr(e, semi) => {
                 if is_last && semi.is_none() {
                     expr = Some(Box::new(convert_expr(e)?));
@@ -1231,6 +1239,8 @@ fn convert_pattern(pat: &Pat) -> IrPattern {
         },
         Pat::Or(po) => IrPattern::Or(po.cases.iter().map(convert_pattern).collect()),
         Pat::Rest(_) => IrPattern::Rest,
+        // Handle type-annotated patterns like `let mut x: T = ...`
+        Pat::Type(pt) => convert_pattern(&pt.pat),
         _ => IrPattern::Wild,
     }
 }

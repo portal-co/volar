@@ -393,6 +393,7 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
         "use core::ops::{{Add, Sub, Mul, Div, BitAnd, BitOr, BitXor, Shl, Shr}};"
     )
     .unwrap();
+    writeln!(out, "use typenum::Unsigned;").unwrap();
     writeln!(out).unwrap();
 
     // Re-export primitives
@@ -1021,8 +1022,6 @@ fn write_function_dyn(
 
     // Collect length params that need to be passed as usize arguments
     let mut length_params = Vec::new();
-    // Collect associated type witnesses from crypto types (e.g., B::BlockSize from B: ByteBlockEncrypt)
-    let mut assoc_type_witnesses: Vec<String> = Vec::new();
     let mut type_params = Vec::new();
     let mut cur_params = cur_params.clone();
 
@@ -1060,31 +1059,10 @@ fn write_function_dyn(
     }
     
     // Second pass: now format the type params with all generics visible
-    // Also extract associated type witnesses from crypto type bounds
     for p in &augmented_fn_generics {
         let k = classify_generic(p, &[&augmented_fn_generics, impl_gen_slice]);
         match k {
             GenericKind::Length => length_params.push(p.name.clone()),
-            GenericKind::Crypto => {
-                // For crypto types, extract associated type constraints as witnesses
-                for bound in &p.bounds {
-                    if is_crypto_bound(bound) {
-                        for (assoc, _ty) in &bound.assoc_bindings {
-                            let assoc_name = match assoc {
-                                AssociatedType::BlockSize => "blocksize",
-                                AssociatedType::OutputSize => "outputsize",
-                                AssociatedType::Other(s) => s.as_str(),
-                                _ => continue,
-                            };
-                            let witness_name = format!("{}_{}", p.name.to_lowercase(), assoc_name);
-                            if !assoc_type_witnesses.contains(&witness_name) {
-                                assoc_type_witnesses.push(witness_name);
-                            }
-                        }
-                    }
-                }
-                type_params.push(pname(p, &cur_params, struct_info));
-            }
             _ => type_params.push(pname(p, &cur_params, struct_info)),
         }
     }
@@ -1328,15 +1306,6 @@ fn write_function_dyn(
             write!(out, ", ").unwrap();
         }
         write!(out, "{}: usize", lp.to_lowercase()).unwrap();
-        param_count += 1;
-    }
-
-    // Associated type witnesses from crypto types as usize
-    for w in &assoc_type_witnesses {
-        if param_count > 0 {
-            write!(out, ", ").unwrap();
-        }
-        write!(out, "{}: usize", w).unwrap();
         param_count += 1;
     }
 
@@ -1585,13 +1554,8 @@ fn array_length_to_runtime(len: &ArrayLength, ctx: &ExprContext) -> String {
             // Handle projections like "B::BlockSize" or "D::OutputSize"
             if let Some((type_name, assoc)) = p.split_once("::") {
                 if assoc == "BlockSize" || assoc == "OutputSize" {
-                    // For crypto type associated types, we need to get the value at runtime
-                    // Check if we have a witness field for this
-                    let witness_name = format!("{}_{}", type_name.to_lowercase(), assoc.to_lowercase());
-                    // If we have it as a local variable, use that
-                    // Otherwise, try to use the trait's associated constant
-                    // In dyn mode, these should come from witness fields
-                    return witness_name;
+                    // For crypto type associated types, get the value at runtime via typenum
+                    return format!("<{}::{} as typenum::Unsigned>::USIZE", type_name, assoc);
                 }
             }
             // Simple type params become lowercase witness variables

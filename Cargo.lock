@@ -220,6 +220,7 @@ dependencies = [
  "cipher",
  "digest",
  "rand",
+ "typenum",
  "volar-common",
  "volar-primitives",
 ]
