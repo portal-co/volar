@@ -231,7 +231,7 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
                         p.name.clone(),
                         p.bounds
                             .iter()
-                            .map(|b| bname(b))
+                            .map(|b| bname(b, &BTreeMap::new(), &struct_info))
                             .collect::<Vec<_>>()
                             .join(" + "),
                     )),
@@ -405,22 +405,29 @@ fn bname(
     struct_info: &BTreeMap<String, StructInfo>,
 ) -> String {
     // Helper to format an `IrType` using the existing `write_type_dyn` codepath.
-    fn type_to_string(ty: &IrType) -> String {
+    fn type_to_string(
+        ty: &IrType,
+        cur_params: &BTreeMap<String, (String, GenericKind)>,
+        struct_info: &BTreeMap<String, StructInfo>,
+    ) -> String {
         let mut s = String::new();
-        let empty_params: BTreeMap<String, (String, GenericKind)> = BTreeMap::new();
-        let empty_struct_info: BTreeMap<String, StructInfo> = BTreeMap::new();
-        write_type_dyn(&mut s, ty, &empty_params, &empty_struct_info);
+        write_type_dyn(&mut s, ty, cur_params, struct_info);
         s
     }
 
     // Helper to append type args and associated bindings to a base trait name.
-    fn with_args_and_assoc(base: String, b: &IrTraitBound) -> String {
+    fn with_args_and_assoc(
+        base: String,
+        b: &IrTraitBound,
+        cur_params: &BTreeMap<String, (String, GenericKind)>,
+        struct_info: &BTreeMap<String, StructInfo>,
+    ) -> String {
         let mut parts: Vec<String> = Vec::new();
         for ta in &b.type_args {
-            parts.push(type_to_string(ta));
+            parts.push(type_to_string(ta, cur_params, struct_info));
         }
         for (name, ty) in &b.assoc_bindings {
-            parts.push(format!("{:?} = {}", name, type_to_string(ty)));
+            parts.push(format!("{:?} = {}", name, type_to_string(ty, cur_params, struct_info)));
         }
         if parts.is_empty() {
             base
@@ -453,13 +460,20 @@ fn bname(
         }
     }
 }
-fn pname(p: &IrGenericParam) -> String {
+fn pname(
+    p: &IrGenericParam,
+    cur_params: &BTreeMap<String, (String, GenericKind)>,
+    struct_info: &BTreeMap<String, StructInfo>,
+) -> String {
     match &*p.bounds {
         [] => p.name.clone(),
         x => format!(
             "{}: {}",
             p.name,
-            x.iter().map(|b| bname(b)).collect::<Vec<_>>().join(" + ")
+            x.iter()
+                .map(|b| bname(b, cur_params, struct_info))
+                .collect::<Vec<_>>()
+                .join(" + ")
         ),
     }
 }
@@ -516,7 +530,7 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
         let c = classify_generic(p, &[&i.generics]);
         cur_params.insert(p.name.clone(), (format!(""), c.clone()));
         if c != GenericKind::Length && !info.length_witnesses.contains(&p.name.to_lowercase()) {
-            impl_type_params.push(pname(p));
+            impl_type_params.push(pname(p, &cur_params, struct_info));
         }
     }
 
@@ -580,7 +594,7 @@ fn write_function_dyn(
         cur_params.insert(p.name.clone(), (format!(""), k.clone()));
         match k {
             GenericKind::Length => length_params.push(p.name.clone()),
-            _ => type_params.push(pname(p)),
+            _ => type_params.push(pname(p, &cur_params, struct_info)),
         }
     }
 
