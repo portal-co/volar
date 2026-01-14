@@ -114,7 +114,7 @@ impl<N: VoleArray<T>, T, K: ArrayLength<GenericArray<T, N>>> Vope<N, T, K> {
     {
         self.remap(|a| a.wrapping_add(n))
     }
-    pub fn remap<M: VoleArray<T>>(&self, mut f: impl FnMut(usize) -> usize) -> Vope<M, T, K>
+    pub fn remap<M: VoleArray<T>, F: FnMut(usize) -> usize>(&self, mut f: F) -> Vope<M, T, K>
     where
         T: Clone,
         K: ArrayLength<GenericArray<T, M>>,

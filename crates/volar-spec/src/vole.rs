@@ -21,7 +21,7 @@ pub struct Q<N: ArrayLength<T>, T> {
     pub q: GenericArray<T, N>,
 }
 impl<N: ArrayLength<T>, T> Delta<N, T> {
-    pub fn remap<M: ArrayLength<T>>(&self, mut f: impl FnMut(usize) -> usize) -> Delta<M, T>
+    pub fn remap<M: ArrayLength<T>, F: FnMut(usize) -> usize>(&self, mut f: F) -> Delta<M, T>
     where
         T: Clone,
     {
@@ -53,7 +53,7 @@ impl<N: ArrayLength<T>, T> Delta<N, T> {
     }
 }
 impl<N: ArrayLength<T>, T> Q<N, T> {
-    pub fn remap<M: ArrayLength<T>>(&self, mut f: impl FnMut(usize) -> usize) -> Q<M, T>
+    pub fn remap<M: ArrayLength<T>, F: FnMut(usize) -> usize>(&self, mut f: F) -> Q<M, T>
     where
         T: Clone,
     {
