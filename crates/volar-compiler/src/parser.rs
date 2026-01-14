@@ -58,13 +58,13 @@ fn convert_trait(t: &syn::ItemTrait) -> Result<IrTrait> {
     Ok(IrTrait {
         kind: TraitKind::from_path(&[t.ident.to_string()]),
         generics: t.generics.params.iter().map(convert_generic_param).collect::<Result<Vec<_>>>()?,
-        super_traits: t.supertraits.iter().filter_map(|bound| {
+        super_traits: t.supertraits.iter().map(|bound| {
             if let syn::TypeParamBound::Trait(tb) = bound {
-                Some(convert_trait_bound(tb))
+                Ok(Some(convert_trait_bound(tb)?))
             } else {
-                None
+                Ok(None)
             }
-        }).collect::<Result<Vec<_>>>()?,
+        }).collect::<Result<Vec<Option<_>>>>()?.into_iter().flatten().collect(),
         items: t.items.iter().map(convert_trait_item).collect::<Result<Vec<Option<_>>>>()?
             .into_iter().flatten().collect(),
     })
@@ -97,13 +97,13 @@ fn convert_trait_item(item: &syn::TraitItem) -> Result<Option<IrTraitItem>> {
         }))),
         syn::TraitItem::Type(ty) => Ok(Some(IrTraitItem::AssociatedType {
             name: AssociatedType::from_str(&ty.ident.to_string()),
-            bounds: ty.bounds.iter().filter_map(|bound| {
+            bounds: ty.bounds.iter().map(|bound| {
                 if let syn::TypeParamBound::Trait(tb) = bound {
-                    Some(convert_trait_bound(tb))
+                    Ok(Some(convert_trait_bound(tb)?))
                 } else {
-                    None
+                    Ok(None)
                 }
-            }).collect::<Result<Vec<_>>>()?,
+            }).collect::<Result<Vec<Option<_>>>>()?.into_iter().flatten().collect(),
             default: ty.default.as_ref().map(|(_, t)| convert_type(t)).transpose()?,
         })),
         _ => Ok(None),
@@ -218,16 +218,25 @@ fn convert_generic_param(p: &GenericParam) -> Result<IrGenericParam> {
     match p {
         GenericParam::Type(tp) => Ok(IrGenericParam {
             name: tp.ident.to_string(),
-            bounds: tp.bounds.iter().filter_map(|bound| {
+            bounds: tp.bounds.iter().map(|bound| {
                 if let syn::TypeParamBound::Trait(tb) = bound {
-                    Some(convert_trait_bound(tb))
+                    Ok(Some(convert_trait_bound(tb)?))
                 } else {
-                    None
+                    Ok(None)
                 }
-            }).collect::<Result<Vec<_>>>()?,
+            }).collect::<Result<Vec<Option<_>>>>()?.into_iter().flatten().collect(),
             default: tp.default.as_ref().map(convert_type).transpose()?,
         }),
-        _ => Ok(IrGenericParam { name: "_".to_string(), bounds: Vec::new(), default: None }),
+        GenericParam::Const(cp) => Ok(IrGenericParam {
+            name: cp.ident.to_string(),
+            bounds: Vec::new(),
+            default: None, // TODO: handle const param default
+        }),
+        GenericParam::Lifetime(_) => Ok(IrGenericParam {
+            name: "_lifetime".to_string(),
+            bounds: Vec::new(),
+            default: None,
+        }),
     }
 }
 
@@ -275,15 +284,15 @@ fn convert_where_predicate(p: &syn::WherePredicate) -> Result<IrWherePredicate> 
     match p {
         syn::WherePredicate::Type(pt) => Ok(IrWherePredicate::TypeBound {
             ty: convert_type(&pt.bounded_ty)?,
-            bounds: pt.bounds.iter().filter_map(|bound| {
+            bounds: pt.bounds.iter().map(|bound| {
                 if let syn::TypeParamBound::Trait(tb) = bound {
-                    Some(convert_trait_bound(tb))
+                    Ok(Some(convert_trait_bound(tb)?))
                 } else {
-                    None
+                    Ok(None)
                 }
-            }).collect::<Result<Vec<_>>>()?,
+            }).collect::<Result<Vec<Option<_>>>>()?.into_iter().flatten().collect(),
         }),
-        _ => Ok(IrWherePredicate::TypeBound { ty: IrType::Infer, bounds: Vec::new() }),
+        _ => Err(CompilerError::Unsupported(format!("Where predicate: {:?}", p))),
     }
 }
 
@@ -325,7 +334,7 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                 return Ok(IrType::Array {
                     kind: ArrayKind::GenericArray,
                     elem: Box::new(type_args[0].clone()),
-                    len: convert_array_length_from_type(&type_args[1]),
+                    len: convert_array_length_from_type(&type_args[1])?,
                 });
             }
             
@@ -357,15 +366,20 @@ fn convert_type(ty: &Type) -> Result<IrType> {
             if t.elems.is_empty() { Ok(IrType::Unit) }
             else { Ok(IrType::Tuple(t.elems.iter().map(convert_type).collect::<Result<Vec<_>>>()?)) }
         }
-        _ => Ok(IrType::Infer),
+        Type::ImplTrait(it) => {
+            // Simplify impl trait to just the first bound name or a placeholder
+            Ok(IrType::TypeParam("impl_trait".to_string()))
+        }
+        _ => Err(CompilerError::Unsupported(format!("Type: {:?}", ty))),
     }
 }
 
-fn convert_array_length_from_type(ty: &IrType) -> ArrayLength {
+fn convert_array_length_from_type(ty: &IrType) -> Result<ArrayLength> {
     match ty {
-        IrType::Primitive(_) => ArrayLength::TypeNum(TypeNumConst::U8), // Simplified
-        IrType::TypeParam(name) => ArrayLength::TypeParam(name.clone()),
-        _ => ArrayLength::Const(0),
+        IrType::Primitive(_) => Ok(ArrayLength::TypeNum(TypeNumConst::U8)), // Simplified
+        IrType::TypeParam(name) => Ok(ArrayLength::TypeParam(name.clone())),
+        IrType::Struct { kind, .. } => Ok(ArrayLength::TypeParam(kind.to_string())), // Common for GenericArray<T, BlockSize>
+        _ => Err(CompilerError::InvalidType(format!("Invalid array length type: {:?}", ty))),
     }
 }
 
@@ -601,6 +615,10 @@ fn convert_lit(lit: &syn::Lit) -> IrLit {
         syn::Lit::Int(n) => IrLit::Int(n.base10_parse().unwrap_or(0)),
         syn::Lit::Bool(b) => IrLit::Bool(b.value),
         syn::Lit::Str(s) => IrLit::Str(s.value()),
+        syn::Lit::Float(f) => IrLit::Float(f.base10_parse().unwrap_or(0.0)),
+        syn::Lit::Byte(b) => IrLit::Byte(b.value()),
+        syn::Lit::ByteStr(bs) => IrLit::ByteStr(bs.value()),
+        syn::Lit::Char(c) => IrLit::Char(c.value()),
         _ => IrLit::Int(0),
     }
 }
