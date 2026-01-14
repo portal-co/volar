@@ -164,7 +164,7 @@ impl<T> PolyDyn<T> {
     }
 }
 
-impl<T> VopeDyn<T> {
+impl<T: Add<Output = T> + Mul<Output = T> + Default + Clone> VopeDyn<T> {
     pub fn mul_generalized<K2: Add<K>>(&self, other: &'a VopeDyn<N, T, K2>) -> VopeDyn<N, T, OutputDyn> {
         let n = self.n;
         let k = self.k;
@@ -488,7 +488,7 @@ impl<T: Add<compile_error!("Unknown type parameter: U")> + Clone, U: Clone> Vope
     }
 }
 
-impl<T: BitXor<compile_error!("Unknown type parameter: U"), Output = compile_error!("Unknown type parameter: O")> + Clone, U: Clone, O> VopeDyn<T> {
+impl<T: BitXor<compile_error!("Unknown type parameter: U"), Output = compile_error!("Unknown type parameter: O")> + Clone + Into<O>, U: Clone, O> VopeDyn<T> {
     pub fn bitxor(self, rhs: Vec<U>) -> OutputDyn {
         let n = self.n;
         let k = self.k;

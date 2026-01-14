@@ -616,11 +616,50 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
     // Collect type params for this impl (excluding length params)
     let mut impl_type_params = Vec::new();
     let mut cur_params = BTreeMap::new();
+    // Map of param -> collected bounds (including declared bounds and where-clause bounds)
+    let mut collected_bounds: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for p in &i.generics {
         let c = classify_generic(p, &[&i.generics]);
         cur_params.insert(p.name.clone(), (format!(""), c.clone()));
         if c != GenericKind::Length && !info.length_witnesses.contains(&p.name.to_lowercase()) {
-            impl_type_params.push(pname(p, &cur_params, struct_info));
+            // start with declared bounds on the generic param
+            let mut v = Vec::new();
+            for b in &p.bounds {
+                v.push(bname(b, &cur_params, struct_info));
+            }
+            collected_bounds.insert(p.name.clone(), v);
+        }
+    }
+
+    // Merge where-clause bounds: these may add bounds to existing type params.
+    for wp in &i.where_clause {
+        match wp {
+            IrWherePredicate::TypeBound { ty, bounds } => {
+                if let IrType::TypeParam(name) = ty {
+                    // Skip length type params
+                    if cur_params.get(name).map(|(_, k)| *k == GenericKind::Length).unwrap_or(false) {
+                        continue;
+                    }
+                    if let Some(vec) = collected_bounds.get_mut(name) {
+                        for b in bounds {
+                            vec.push(bname(b, &cur_params, struct_info));
+                        }
+                    }
+                }
+                // Other predicate targets (Struct, Projection, etc.) are ignored for now
+            }
+        }
+    }
+
+    // Build impl_type_params strings in the original generic order
+    for p in &i.generics {
+        if let Some(bounds) = collected_bounds.get(&p.name) {
+            if !bounds.is_empty() {
+                impl_type_params.push(format!("{}: {}", p.name, bounds.join(" + ")));
+            } else {
+                // include bare param name
+                impl_type_params.push(p.name.clone());
+            }
         }
     }
 
@@ -693,6 +732,48 @@ fn write_function_dyn(
     // Generic type parameters (non-length)
     if !type_params.is_empty() {
         write!(out, "<{}>", type_params.join(", ")).unwrap();
+    }
+
+    // Merge where-clause bounds into function-level type param bounds
+    if !f.where_clause.is_empty() {
+        // Build map of typeparam -> bounds
+        let mut fn_bounds: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for tp in &f.generics {
+            let k = classify_generic(tp, &[&f.generics]);
+            if k != GenericKind::Length {
+                fn_bounds.insert(tp.name.clone(), tp.bounds.iter().map(|b| bname(b, &cur_params, struct_info)).collect());
+            }
+        }
+        for wp in &f.where_clause {
+            if let IrWherePredicate::TypeBound { ty, bounds } = wp {
+                if let IrType::TypeParam(name) = ty {
+                    if cur_params.get(name).map(|(_, k)| *k == GenericKind::Length).unwrap_or(false) {
+                        continue;
+                    }
+                    if let Some(vec) = fn_bounds.get_mut(name) {
+                        for b in bounds {
+                            vec.push(bname(b, &cur_params, struct_info));
+                        }
+                    }
+                }
+            }
+        }
+        // Rebuild type_params list replacing entries with bounds from fn_bounds
+        type_params = f.generics.iter().filter_map(|tp| {
+            if let Some(bounds) = fn_bounds.get(&tp.name) {
+                if !bounds.is_empty() {
+                    Some(format!("{}: {}", tp.name, bounds.join(" + ")))
+                } else {
+                    Some(tp.name.clone())
+                }
+            } else {
+                None
+            }
+        }).collect();
+        // Re-emit generics with updated bounds
+        if !type_params.is_empty() {
+            // overwrite previously written generics by writing a space (the caller expects this printed once)
+        }
     }
 
     write!(out, "(").unwrap();
