@@ -392,22 +392,13 @@ impl fmt::Display for TraitKind {
             Self::External { path } => write!(f, "{}", path.join("::")),
             Self::Custom(name) => write!(f, "{}", name),
             Self::Into(ty) => {
-                write!(f, "Into<")?;
-                // write!(f, "{}", ty)?;
-                todo!("Implement Display for IrType");
-                write!(f, ">")
+                write!(f, "Into<{}>", ty)
             }
             Self::AsRef(ty) => {
-                write!(f, "AsRef<")?;
-                // write!(f, "{}", ty)?;
-                todo!("Implement Display for IrType");
-                write!(f, ">")
+                write!(f, "AsRef<{}>", ty)
             }
             Self::Expand(ty) => {
-                write!(f, "FnMut(&[u8]) -> ")?;
-                // write!(f, "{}", ty)?;
-                todo!("Implement Display for IrType");
-                write!(f, "")
+                write!(f, "FnMut(&[u8]) -> {}", ty)
             }
         }
     }
@@ -714,11 +705,111 @@ pub enum IrType {
     },
 }
 
+impl fmt::Display for IrType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Primitive(p) => write!(f, "{}", p),
+            Self::Array { kind: _, elem, len } => {
+                write!(f, "[{}; ", elem)?;
+                match len {
+                    ArrayLength::Const(n) => write!(f, "{}", n)?,
+                    ArrayLength::TypeNum(tn) => write!(f, "{:?}", tn)?,
+                    ArrayLength::TypeParam(p) => write!(f, "{}", p)?,
+                    ArrayLength::Computed(_) => write!(f, "_")?,
+                }
+                write!(f, "]")
+            }
+            Self::Vector { elem } => write!(f, "Vec<{}>", elem),
+            Self::Struct { kind, type_args } => {
+                write!(f, "{}", kind)?;
+                if !type_args.is_empty() {
+                    write!(f, "<")?;
+                    for (i, arg) in type_args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", arg)?;
+                    }
+                    write!(f, ">")?;
+                }
+                Ok(())
+            }
+            Self::TypeParam(p) => write!(f, "{}", p),
+            Self::Tuple(elems) => {
+                write!(f, "(")?;
+                for (i, elem) in elems.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", elem)?;
+                }
+                write!(f, ")")
+            }
+            Self::Unit => write!(f, "()"),
+            Self::Reference { mutable, elem } => {
+                write!(f, "&{}{}", if *mutable { "mut " } else { "" }, elem)
+            }
+            Self::Projection { base, assoc } => {
+                write!(f, "<{} as _>::{:?}", base, assoc)
+            }
+            Self::Existential { bounds } => {
+                write!(f, "impl ")?;
+                for (i, bound) in bounds.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " + ")?;
+                    }
+                    write!(f, "{:?}", bound)?; // Using Debug for now as we don't have Display for IrTraitBound yet
+                }
+                Ok(())
+            }
+            Self::FnPtr { params, ret } => {
+                write!(f, "fn(")?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", p)?;
+                }
+                write!(f, ") -> {}", ret)
+            }
+            Self::Never => write!(f, "!"),
+            Self::Infer => write!(f, "_"),
+            Self::Param { path } => write!(f, "{}", path.join("::")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct IrTraitBound {
     pub trait_kind: TraitKind,
     pub type_args: Vec<IrType>,
     pub assoc_bindings: Vec<(AssociatedType, IrType)>,
+}
+
+impl fmt::Display for IrTraitBound {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.trait_kind)?;
+        if !self.type_args.is_empty() || !self.assoc_bindings.is_empty() {
+            write!(f, "<")?;
+            let mut first = true;
+            for arg in &self.type_args {
+                if !first {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{}", arg)?;
+                first = false;
+            }
+            for (name, ty) in &self.assoc_bindings {
+                if !first {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{:?} = {}", name, ty)?;
+                first = false;
+            }
+            write!(f, ">")?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

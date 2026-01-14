@@ -157,15 +157,7 @@ fn write_generics(out: &mut String, generics: &[IrGenericParam]) {
 }
 
 fn write_trait_bound(out: &mut String, bound: &IrTraitBound) {
-    write!(out, "{}", bound.trait_kind).unwrap();
-    if !bound.type_args.is_empty() {
-        write!(out, "<").unwrap();
-        for (i, arg) in bound.type_args.iter().enumerate() {
-            if i > 0 { write!(out, ", ").unwrap(); }
-            write_type(out, arg);
-        }
-        write!(out, ">").unwrap();
-    }
+    write!(out, "{}", bound).unwrap();
 }
 
 fn write_where_clause(out: &mut String, where_clause: &[IrWherePredicate], level: usize) {

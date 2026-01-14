@@ -422,95 +422,79 @@ fn convert_generic_param(p: &GenericParam) -> Result<IrGenericParam> {
 }
 
 fn convert_trait_bound(b: &syn::TraitBound) -> Result<IrTraitBound> {
-    macro_rules! tx {
-        () => {
-            Box::new(convert_type(
-                match &b.path.segments.last().unwrap().arguments {
-                    PathArguments::AngleBracketed(a) => match a.args.iter().next().unwrap() {
-                        syn::GenericArgument::Type(t) => t,
-                        _ => todo!("not yet implemented: {}", line!()),
-                    },
-                    _ => todo!("not yet implemented: {}", line!()),
-                },
-            )?)
-        };
+    let last_segment = b
+        .path
+        .segments
+        .last()
+        .ok_or_else(|| CompilerError::ParseError("Empty trait path".to_string()))?;
+
+    let path_names: Vec<String> = b
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .collect();
+
+    let trait_kind = match path_names.last().map(|s| s.as_str()) {
+        Some("Into") => {
+            if let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments {
+                if let Some(syn::GenericArgument::Type(ty)) = args.args.first() {
+                    TraitKind::Into(Box::new(convert_type(ty)?))
+                } else {
+                    TraitKind::from_path(&path_names)
+                }
+            } else {
+                TraitKind::from_path(&path_names)
+            }
+        }
+        Some("AsRef") => {
+            if let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments {
+                if let Some(syn::GenericArgument::Type(ty)) = args.args.first() {
+                    TraitKind::AsRef(Box::new(convert_type(ty)?))
+                } else {
+                    TraitKind::from_path(&path_names)
+                }
+            } else {
+                TraitKind::from_path(&path_names)
+            }
+        }
+        Some("FnMut") => {
+            if let syn::PathArguments::Parenthesized(args) = &last_segment.arguments {
+                match &args.output {
+                    syn::ReturnType::Type(_, ty) => TraitKind::Expand(Box::new(convert_type(ty)?)),
+                    _ => TraitKind::from_path(&path_names),
+                }
+            } else {
+                TraitKind::from_path(&path_names)
+            }
+        }
+        _ => TraitKind::from_path(&path_names),
+    };
+
+    let mut type_args = Vec::new();
+    let mut assoc_bindings = Vec::new();
+
+    if let syn::PathArguments::AngleBracketed(args) = &last_segment.arguments {
+        for arg in &args.args {
+            match arg {
+                syn::GenericArgument::Type(ty) => {
+                    type_args.push(convert_type(ty)?);
+                }
+                syn::GenericArgument::AssocType(assoc) => {
+                    assoc_bindings.push((
+                        AssociatedType::from_str(&assoc.ident.to_string()),
+                        convert_type(&assoc.ty)?,
+                    ));
+                }
+                _ => {}
+            }
+        }
     }
+
     Ok(IrTraitBound {
-        trait_kind: match b
-            .path
-            .segments
-            .iter()
-            .map(|s| s.ident.to_string())
-            .collect::<Vec<_>>()
-        {
-            s => match s.last().map(|a| &**a).map(|a| a.trim()) {
-                Some("Into") => TraitKind::Into(tx!()),
-                Some("AsRef") => TraitKind::AsRef(tx!()),
-                Some("FnMut") => {
-                    TraitKind::Expand(match &b.path.segments.last().unwrap().arguments {
-                        PathArguments::Parenthesized(p) => match &p.output {
-                            syn::ReturnType::Type(_, ty) => Box::new(convert_type(ty)?),
-                            _ => todo!(),
-                        },
-                        _ => todo!(),
-                    })
-                }
-                _ => TraitKind::from_path(&s),
-            },
-        },
-        type_args: b
-            .path
-            .segments
-            .last()
-            .and_then(|s| {
-                if let syn::PathArguments::AngleBracketed(args) = &s.arguments {
-                    Some(
-                        args.args
-                            .iter()
-                            .map(|arg| {
-                                if let syn::GenericArgument::Type(ty) = arg {
-                                    Ok(Some(convert_type(ty)?))
-                                } else {
-                                    Ok(None)
-                                }
-                            })
-                            .collect::<Result<Vec<Option<_>>>>(),
-                    )
-                } else {
-                    None
-                }
-            })
-            .transpose()?
-            .map(|v| v.into_iter().flatten().collect())
-            .unwrap_or_default(),
-        assoc_bindings: b
-            .path
-            .segments
-            .last()
-            .and_then(|s| {
-                if let syn::PathArguments::AngleBracketed(args) = &s.arguments {
-                    Some(
-                        args.args
-                            .iter()
-                            .map(|arg| {
-                                if let syn::GenericArgument::AssocType(at) = arg {
-                                    Ok(Some((
-                                        AssociatedType::from_str(&at.ident.to_string()),
-                                        convert_type(&at.ty)?,
-                                    )))
-                                } else {
-                                    Ok(None)
-                                }
-                            })
-                            .collect::<Result<Vec<Option<_>>>>(),
-                    )
-                } else {
-                    None
-                }
-            })
-            .transpose()?
-            .map(|v| v.into_iter().flatten().collect())
-            .unwrap_or_default(),
+        trait_kind,
+        type_args,
+        assoc_bindings,
     })
 }
 

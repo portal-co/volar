@@ -39,7 +39,7 @@ enum GenericKind {
 }
 
 /// Analyze a generic parameter to determine its kind
-fn classify_generic(param: &IrGenericParam) -> GenericKind {
+fn classify_generic(param: &IrGenericParam, all_params: &[IrGenericParam]) -> GenericKind {
     // Check bounds for crypto traits
     for bound in &param.bounds {
         match &bound.trait_kind {
@@ -51,14 +51,53 @@ fn classify_generic(param: &IrGenericParam) -> GenericKind {
             | TraitKind::Crypto(CryptoTrait::Rng)
             | TraitKind::Crypto(CryptoTrait::ByteBlockEncrypt)
             | TraitKind::Crypto(CryptoTrait::VoleArray) => return GenericKind::Crypto,
-            TraitKind::Math(_) => {}
-            k => {
-                // panic!("Unhandled trait kind in classify_generic: {:?}", k);
+            TraitKind::Math(m) if matches!(m, MathTrait::Add | MathTrait::Sub | MathTrait::Mul | MathTrait::Div) => {
+                // If the Rhs or Output is a length, this is a length
+                for arg in &bound.type_args {
+                    if let IrType::TypeParam(name) = arg {
+                        if is_likely_length_param(name, all_params) {
+                            return GenericKind::Length;
+                        }
+                    }
+                }
+                for (name, ty) in &bound.assoc_bindings {
+                    if *name == AssociatedType::Output {
+                        if let IrType::TypeParam(target_name) = ty {
+                            if is_likely_length_param(target_name, all_params) {
+                                return GenericKind::Length;
+                            }
+                        }
+                    }
+                }
             }
+            _ => {}
         }
     }
 
     GenericKind::Type
+}
+
+fn is_likely_length_param(name: &str, all_params: &[IrGenericParam]) -> bool {
+    // Check if it's already explicitly marked as length
+    for p in all_params {
+        if p.name == name {
+            for bound in &p.bounds {
+                if matches!(bound.trait_kind, TraitKind::Crypto(CryptoTrait::ArrayLength) | TraitKind::Math(MathTrait::Unsigned)) {
+                    return true;
+                }
+            }
+        }
+    }
+    
+    // Heuristics
+    if name.len() == 1 && matches!(name.chars().next().unwrap(), 'N' | 'M' | 'K' | 'L' | 'S' | 'X') {
+        return true;
+    }
+    if name.len() == 2 && name.chars().next().unwrap().is_ascii_uppercase() && name.chars().nth(1).unwrap().is_ascii_digit() {
+        return true;
+    }
+    
+    false
 }
 
 // /// Check if a type parameter name represents a length
@@ -99,7 +138,7 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
             if p.kind == IrGenericParamKind::Lifetime {
                 info.lifetimes.push(format!("'{}", p.name));
             } else {
-                match classify_generic(p) {
+                match classify_generic(p, &s.generics) {
                     GenericKind::Length => info.length_witnesses.push(p.name.to_lowercase()),
                     GenericKind::Crypto | GenericKind::Type => info.type_params.push((
                         p.name.clone(),
@@ -274,49 +313,7 @@ fn write_struct_dyn(out: &mut String, s: &IrStruct, struct_info: &BTreeMap<Strin
     }
 }
 fn bname(b: &IrTraitBound) -> String {
-    match &b.trait_kind {
-        TraitKind::Crypto(c) => format!("{:?}", c),
-        TraitKind::Math(math_trait) => format!("{:?}", math_trait),
-        TraitKind::External { path } => format!(
-            "compile_error!(\"External trait bounds not supported in dyn code: {:?}\")",
-            path
-        ),
-        TraitKind::Custom(path) => format!(
-            "compile_error!(\"External trait bounds not supported in dyn code: {}\")",
-            path
-        ),
-        TraitKind::Into(t) => format!(
-            "Into<{}>",
-            match &**t {
-                IrType::TypeParam(t) => t.clone(),
-                a => format!("compile_error!(\"Into bounds not supported in dyn code {a:?}\")"),
-            }
-        ),
-        TraitKind::AsRef(t) => format!(
-            "AsRef<{}>",
-            match &**t {
-                IrType::TypeParam(t) => t.clone(),
-                IrType::Array {
-                    kind: ArrayKind::Slice,
-                    elem,
-                    len,
-                } => match &**elem {
-                    IrType::Primitive(PrimitiveType::U8) => "[u8]".to_string(),
-                    a => format!(
-                        "compile_error!(\"AsRef bounds with slice elem not supported in dyn code {a:?}\")"
-                    ),
-                },
-                a => format!("compile_error!(\"AsRef bounds not supported in dyn code {a:?}\")"),
-            }
-        ),
-        TraitKind::Expand(t) => format!(
-            "FnMut(&[u8]) -> {}",
-            match &**t {
-                IrType::TypeParam(t) => t.clone(),
-                a => format!("compile_error!(\"Expand bounds not supported in dyn code {a:?}\")"),
-            }
-        ),
-    }
+    format!("{}", b)
 }
 fn pname(p: &IrGenericParam) -> String {
     match &*p.bounds {
@@ -332,7 +329,7 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
     let generics = i
         .generics
         .iter()
-        .map(|p| (p.name.clone(), (format!(""), classify_generic(p))))
+        .map(|p| (p.name.clone(), (format!(""), classify_generic(p, &i.generics))))
         .collect::<BTreeMap<_, _>>();
     let (self_name, concrete_type_args) = match &i.self_ty {
         IrType::Struct { kind, type_args } => {
@@ -373,7 +370,7 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
     let mut impl_type_params = Vec::new();
     let mut cur_params = BTreeMap::new();
     for p in &i.generics {
-        let c = classify_generic(p);
+        let c = classify_generic(p, &i.generics);
         cur_params.insert(p.name.clone(), (format!(""), c.clone()));
         if c != GenericKind::Length && !info.length_witnesses.contains(&p.name.to_lowercase()) {
             impl_type_params.push(pname(p));
@@ -436,7 +433,7 @@ fn write_function_dyn(
     let mut cur_params = cur_params.clone();
 
     for p in &f.generics {
-        let k = classify_generic(p);
+        let k = classify_generic(p, &f.generics);
         cur_params.insert(p.name.clone(), (format!(""), k.clone()));
         match k {
             GenericKind::Length => length_params.push(p.name.clone()),
