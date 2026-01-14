@@ -931,7 +931,12 @@ fn write_function_dyn(
         write!(out, "<{}>", type_params.join(", ")).unwrap();
     }
 
-    // Merge where-clause bounds into function-level type param bounds
+    // Prepare to merge where-clause bounds into function-level type param bounds.
+    // We collect updated `type_params`, `where_parts`, and unconstrained markers
+    // now, but defer emitting the `where` clause until after parameters and
+    // return type have been written (to produce valid Rust signatures).
+    let mut deferred_where_parts: Vec<String> = Vec::new();
+    let mut deferred_unconstrained: Vec<String> = Vec::new();
     if !f.where_clause.is_empty() {
         // Build map of typeparam -> bounds
         let mut fn_bounds: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -981,12 +986,8 @@ fn write_function_dyn(
                 }
             })
             .collect();
-        // Re-emit generics with updated bounds
-        if !type_params.is_empty() {
-            // overwrite previously written generics by writing a space (the caller expects this printed once)
-        }
-        // Emit a where clause for the function based on original where predicates
-        let mut where_parts: Vec<String> = Vec::new();
+
+        // Build deferred where parts
         for wp in &f.where_clause {
             if let IrWherePredicate::TypeBound { ty, bounds } = wp {
                 // Skip length params
@@ -1006,15 +1007,12 @@ fn write_function_dyn(
                     .map(|b| bname(b, &cur_params, struct_info))
                     .collect::<Vec<_>>()
                     .join(" + ");
-                where_parts.push(format!("{}: {}", lhs, bstr));
+                deferred_where_parts.push(format!("{}: {}", lhs, bstr));
             }
         }
-        if !where_parts.is_empty() {
-            write!(out, " where {}", where_parts.join(", ")).unwrap();
-        }
 
-        // Detect unconstrained generics at function level and annotate generated output
-        let mut unconstrained: Vec<String> = Vec::new();
+        // Detect unconstrained generics at function level and record them for
+        // deferred emission alongside the where-clause.
         for tp in &f.generics {
             let k = classify_generic(tp, &[&f.generics]);
             if k != GenericKind::Length {
@@ -1023,19 +1021,9 @@ fn write_function_dyn(
                     .map(|v| v.is_empty())
                     .unwrap_or(true);
                 if existing {
-                    unconstrained.push(tp.name.clone());
+                    deferred_unconstrained.push(tp.name.clone());
                 }
             }
-        }
-        if !unconstrained.is_empty() {
-            let current_line = out.lines().count() + 1;
-            writeln!(
-                out,
-                "// UNCONSTRAINED GENERICS at generated.rs line {}: {}",
-                current_line,
-                unconstrained.join(", ")
-            )
-            .unwrap();
         }
     }
 
@@ -1102,6 +1090,22 @@ fn write_function_dyn(
             write!(out, " -> ").unwrap();
             write_type_dyn(out, ret, &cur_params, struct_info);
         }
+    }
+
+    // Emit any deferred where-clause parts collected earlier (after params/return)
+    if !deferred_where_parts.is_empty() {
+        write!(out, " where {}", deferred_where_parts.join(", ")).unwrap();
+    }
+    // Emit deferred unconstrained generics annotation if present
+    if !deferred_unconstrained.is_empty() {
+        let current_line = out.lines().count() + 1;
+        writeln!(
+            out,
+            "// UNCONSTRAINED GENERICS at generated.rs line {}: {}",
+            current_line,
+            deferred_unconstrained.join(", ")
+        )
+        .unwrap();
     }
 
     writeln!(out, " {{").unwrap();
