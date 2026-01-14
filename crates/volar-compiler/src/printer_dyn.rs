@@ -399,10 +399,41 @@ fn write_struct_dyn(out: &mut String, s: &IrStruct, struct_info: &BTreeMap<Strin
         writeln!(out, "}}").unwrap();
     }
 }
-fn bname(b: &IrTraitBound) -> String {
+fn bname(
+    b: &IrTraitBound,
+    cur_params: &BTreeMap<String, (String, GenericKind)>,
+    struct_info: &BTreeMap<String, StructInfo>,
+) -> String {
+    // Helper to format an `IrType` using the existing `write_type_dyn` codepath.
+    fn type_to_string(ty: &IrType) -> String {
+        let mut s = String::new();
+        let empty_params: BTreeMap<String, (String, GenericKind)> = BTreeMap::new();
+        let empty_struct_info: BTreeMap<String, StructInfo> = BTreeMap::new();
+        write_type_dyn(&mut s, ty, &empty_params, &empty_struct_info);
+        s
+    }
+
+    // Helper to append type args and associated bindings to a base trait name.
+    fn with_args_and_assoc(base: String, b: &IrTraitBound) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        for ta in &b.type_args {
+            parts.push(type_to_string(ta));
+        }
+        for (name, ty) in &b.assoc_bindings {
+            parts.push(format!("{:?} = {}", name, type_to_string(ty)));
+        }
+        if parts.is_empty() {
+            base
+        } else {
+            format!("{}<{}>", base, parts.join(", "))
+        }
+    }
+
     match &b.trait_kind {
-        TraitKind::Crypto(c) => format!("{:?}", c),
-        TraitKind::Math(math_trait) => format!("{:?}", math_trait),
+        TraitKind::Crypto(c) => with_args_and_assoc(format!("{:?}", c), b, cur_params, struct_info),
+        TraitKind::Math(math_trait) => {
+            with_args_and_assoc(format!("{:?}", math_trait), b, cur_params, struct_info)
+        }
         TraitKind::External { path } => format!(
             "compile_error!(\"External trait bounds not supported in dyn code: {:?}\")",
             path
@@ -411,37 +442,15 @@ fn bname(b: &IrTraitBound) -> String {
             "compile_error!(\"External trait bounds not supported in dyn code: {}\")",
             path
         ),
-        TraitKind::Into(t) => format!(
-            "Into<{}>",
-            match &**t {
-                IrType::TypeParam(t) => t.clone(),
-                a => format!("compile_error!(\"Into bounds not supported in dyn code {a:?}\")"),
-            }
-        ),
-        TraitKind::AsRef(t) => format!(
-            "AsRef<{}>",
-            match &**t {
-                IrType::TypeParam(t) => t.clone(),
-                IrType::Array {
-                    kind: ArrayKind::Slice,
-                    elem,
-                    len,
-                } => match &**elem {
-                    IrType::Primitive(PrimitiveType::U8) => "[u8]".to_string(),
-                    a => format!(
-                        "compile_error!(\"AsRef bounds with slice elem not supported in dyn code {a:?}\")"
-                    ),
-                },
-                a => format!("compile_error!(\"AsRef bounds not supported in dyn code {a:?}\")"),
-            }
-        ),
-        TraitKind::Expand(t) => format!(
-            "FnMut(&[u8]) -> {}",
-            match &**t {
-                IrType::TypeParam(t) => t.clone(),
-                a => format!("compile_error!(\"Expand bounds not supported in dyn code {a:?}\")"),
-            }
-        ),
+        TraitKind::Into(t) => {
+            return format!("Into<{}>", type_to_string(&**t, cur_params, struct_info));
+        }
+        TraitKind::AsRef(t) => {
+            return format!("AsRef<{}>", type_to_string(&**t, cur_params, struct_info));
+        }
+        TraitKind::Expand(t) => {
+            return format!("FnMut(&[u8]) -> {}", type_to_string(&**t, cur_params, struct_info));
+        }
     }
 }
 fn pname(p: &IrGenericParam) -> String {
