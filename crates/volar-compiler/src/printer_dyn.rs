@@ -1021,6 +1021,8 @@ fn write_function_dyn(
 
     // Collect length params that need to be passed as usize arguments
     let mut length_params = Vec::new();
+    // Collect associated type witnesses from crypto types (e.g., B::BlockSize from B: ByteBlockEncrypt)
+    let mut assoc_type_witnesses: Vec<String> = Vec::new();
     let mut type_params = Vec::new();
     let mut cur_params = cur_params.clone();
 
@@ -1058,10 +1060,31 @@ fn write_function_dyn(
     }
     
     // Second pass: now format the type params with all generics visible
+    // Also extract associated type witnesses from crypto type bounds
     for p in &augmented_fn_generics {
         let k = classify_generic(p, &[&augmented_fn_generics, impl_gen_slice]);
         match k {
             GenericKind::Length => length_params.push(p.name.clone()),
+            GenericKind::Crypto => {
+                // For crypto types, extract associated type constraints as witnesses
+                for bound in &p.bounds {
+                    if is_crypto_bound(bound) {
+                        for (assoc, _ty) in &bound.assoc_bindings {
+                            let assoc_name = match assoc {
+                                AssociatedType::BlockSize => "blocksize",
+                                AssociatedType::OutputSize => "outputsize",
+                                AssociatedType::Other(s) => s.as_str(),
+                                _ => continue,
+                            };
+                            let witness_name = format!("{}_{}", p.name.to_lowercase(), assoc_name);
+                            if !assoc_type_witnesses.contains(&witness_name) {
+                                assoc_type_witnesses.push(witness_name);
+                            }
+                        }
+                    }
+                }
+                type_params.push(pname(p, &cur_params, struct_info));
+            }
             _ => type_params.push(pname(p, &cur_params, struct_info)),
         }
     }
@@ -1308,6 +1331,15 @@ fn write_function_dyn(
         param_count += 1;
     }
 
+    // Associated type witnesses from crypto types as usize
+    for w in &assoc_type_witnesses {
+        if param_count > 0 {
+            write!(out, ", ").unwrap();
+        }
+        write!(out, "{}: usize", w).unwrap();
+        param_count += 1;
+    }
+
     // Regular parameters
     for p in &f.params {
         if param_count > 0 {
@@ -1542,6 +1574,35 @@ fn write_type_dyn(
         ty => write!(out, "compile_error!(\"Unsupported type {ty:?}\")").unwrap(),
     }
     return true;
+}
+
+/// Convert an ArrayLength to a runtime usize expression string
+fn array_length_to_runtime(len: &ArrayLength, ctx: &ExprContext) -> String {
+    match len {
+        ArrayLength::Const(n) => n.to_string(),
+        ArrayLength::TypeNum(tn) => tn.to_usize().to_string(),
+        ArrayLength::TypeParam(p) => {
+            // Handle projections like "B::BlockSize" or "D::OutputSize"
+            if let Some((type_name, assoc)) = p.split_once("::") {
+                if assoc == "BlockSize" || assoc == "OutputSize" {
+                    // For crypto type associated types, we need to get the value at runtime
+                    // Check if we have a witness field for this
+                    let witness_name = format!("{}_{}", type_name.to_lowercase(), assoc.to_lowercase());
+                    // If we have it as a local variable, use that
+                    // Otherwise, try to use the trait's associated constant
+                    // In dyn mode, these should come from witness fields
+                    return witness_name;
+                }
+            }
+            // Simple type params become lowercase witness variables
+            p.to_lowercase()
+        }
+        ArrayLength::Computed(e) => {
+            let mut s = String::new();
+            write_expr_dyn(&mut s, e, ctx);
+            s
+        }
+    }
 }
 
 /// Context for expression generation
@@ -1794,16 +1855,7 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             len,
             ..
         } => {
-            let len_str = match len {
-                ArrayLength::Const(n) => n.to_string(),
-                ArrayLength::TypeNum(tn) => tn.to_usize().to_string(),
-                ArrayLength::TypeParam(p) => p.to_lowercase(),
-                ArrayLength::Computed(e) => {
-                    let mut s = String::new();
-                    write_expr_dyn(&mut s, e, ctx);
-                    s
-                }
-            };
+            let len_str = array_length_to_runtime(len, ctx);
             write!(out, "(0..{}).map(|{}| ", len_str, index_var).unwrap();
             write_expr_dyn(out, body, ctx);
             write!(out, ").collect()").unwrap();

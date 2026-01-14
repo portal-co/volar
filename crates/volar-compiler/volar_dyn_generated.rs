@@ -765,22 +765,22 @@ impl<B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
 
 pub fn create_vole_from_material<B: ByteBlockEncrypt>(s: &'a Vec<compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Custom("Deref"), type_args: [], assoc_bindings: [(Other("Target"), Array { kind: Slice, elem: Primitive(U8), len: Const(0) })] }] }")>) -> VopeDyn<u8> {
     let _ = s.iter().fold(Vec::new(), |a, b| {
-    a.iter().zip((0..b::blocksize).map(|i| b[i]).collect().iter()).map(|(a, b)| a.bitxor(b)).collect()
+    a.iter().zip((0..b_blocksize).map(|i| b[i]).collect().iter()).map(|(a, b)| a.bitxor(b)).collect()
 });
     let _ = s.iter().enumerate().fold(Vec::new(), |a, (i, b)| {
-    a.iter().zip((0..b::blocksize).map(|i| b[i]).collect().iter()).map(|(a, b)| a.bitxor(b).bitxor((i as u8))).collect()
+    a.iter().zip((0..b_blocksize).map(|i| b[i]).collect().iter()).map(|(a, b)| a.bitxor(b).bitxor((i as u8))).collect()
 });
     VopeDyn { u: (0..n).map(|_| u.clone()).collect(), v: v, n: n, k: k }
 }
 
 pub fn create_vole_from_material_expanded<B: ByteBlockEncrypt, X: AsRef<Vec<u8>>>(s: &'a Vec<compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Custom("Deref"), type_args: [], assoc_bindings: [(Other("Target"), Array { kind: Slice, elem: Primitive(U8), len: Const(0) })] }] }")>, f: compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Fn(BytesSlice, TypeParam("X")), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<u8> {
     let _ = s.iter().iter().map(|b| f(&b[(0 + unsigned)])).collect().fold(Vec::new(), |a, b| {
-    a.iter().zip((0..b::blocksize).map(|i| b.as_ref()[i]).collect().iter()).map(|(a, b)| {
+    a.iter().zip((0..b_blocksize).map(|i| b.as_ref()[i]).collect().iter()).map(|(a, b)| {
     a.bitxor(b)
 }).collect()
 });
     let _ = s.iter().iter().map(|b| f(&b[(0 + unsigned)])).collect().enumerate().fold(Vec::new(), |a, (i, b)| {
-    a.iter().zip((0..b::blocksize).map(|i| b.as_ref()[i]).collect().iter()).map(|(a, b)| {
+    a.iter().zip((0..b_blocksize).map(|i| b.as_ref()[i]).collect().iter()).map(|(a, b)| {
     a.bitxor(b).bitxor((i as u8))
 }).collect()
 });
