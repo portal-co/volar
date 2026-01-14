@@ -742,6 +742,24 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
         }
     }
 
+    // helper: check whether a trait bound uses any length parameter (in type_args or assoc_bindings)
+    fn bound_uses_length(
+        b: &IrTraitBound,
+        cur_params: &BTreeMap<String, (String, GenericKind)>,
+    ) -> bool {
+        for ta in &b.type_args {
+            if type_refers_to_length_in_cur(ta, cur_params) {
+                return true;
+            }
+        }
+        for (_name, ty) in &b.assoc_bindings {
+            if type_refers_to_length_in_cur(ty, cur_params) {
+                return true;
+            }
+        }
+        false
+    }
+
     for p in &i.generics {
         if let Some(vec) = collected_bounds.get_mut(&p.name) {
             for b in &p.bounds {
@@ -857,8 +875,12 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
     for wp in &i.where_clause {
         match wp {
             IrWherePredicate::TypeBound { ty, bounds } => {
-                // Skip predicates that refer to length parameters anywhere
+                // Skip predicates that refer to length parameters anywhere (in ty or any bound)
                 if type_refers_to_length_in_cur(ty, &cur_params) {
+                    continue;
+                }
+                // Also skip if any bound uses length parameters
+                if bounds.iter().any(|b| bound_uses_length(b, &cur_params)) {
                     continue;
                 }
                 // Format the left-hand type
@@ -961,9 +983,15 @@ fn write_function_dyn(
     let mut type_params = Vec::new();
     let mut cur_params = cur_params.clone();
 
+    // First pass: add ALL function generics to cur_params so bounds can reference each other
     for p in &f.generics {
         let k = classify_generic(p, &[&f.generics]);
         cur_params.insert(p.name.clone(), (format!(""), k.clone()));
+    }
+    
+    // Second pass: now format the type params with all generics visible
+    for p in &f.generics {
+        let k = classify_generic(p, &[&f.generics]);
         match k {
             GenericKind::Length => length_params.push(p.name.clone()),
             _ => type_params.push(pname(p, &cur_params, struct_info)),
@@ -1126,10 +1154,34 @@ fn write_function_dyn(
             }
         }
 
+        // helper: check whether a trait bound uses any length parameter in the function context
+        fn bound_uses_length_func(
+            b: &IrTraitBound,
+            cur_params: &BTreeMap<String, (String, GenericKind)>,
+            struct_info: &BTreeMap<String, StructInfo>,
+            self_struct: Option<&str>,
+        ) -> bool {
+            for ta in &b.type_args {
+                if type_refers_to_length_in_cur_func(ta, cur_params, struct_info, self_struct) {
+                    return true;
+                }
+            }
+            for (_name, ty) in &b.assoc_bindings {
+                if type_refers_to_length_in_cur_func(ty, cur_params, struct_info, self_struct) {
+                    return true;
+                }
+            }
+            false
+        }
+
         for wp in &f.where_clause {
             if let IrWherePredicate::TypeBound { ty, bounds } = wp {
-                // Skip any predicate that mentions length params
+                // Skip any predicate that mentions length params (in ty or any bound)
                 if type_refers_to_length_in_cur_func(ty, &cur_params, struct_info, self_struct) {
+                    continue;
+                }
+                // Also skip if any bound uses length parameters
+                if bounds.iter().any(|b| bound_uses_length_func(b, &cur_params, struct_info, self_struct)) {
                     continue;
                 }
                 let mut lhs = String::new();

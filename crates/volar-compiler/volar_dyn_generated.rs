@@ -49,7 +49,7 @@ pub struct VopeDyn<T> {
 
 impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 51: T
  {
-    pub fn get_qs_pool<Q: Clone + Mul<compile_error!("Unknown type parameter: A"), Output = compile_error!("Unknown type parameter: A")>, A: Add<A, Output = A>>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: PolyInputPoolDyn, reduction: usize) -> QDyn<A> where T: Clone + Into<A> {
+    pub fn get_qs_pool<Q: Clone + Mul<A, Output = A>, A: Add<A, Output = A>>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: PolyInputPoolDyn, reduction: usize) -> QDyn<A> where T: Clone + Into<A> {
         let n = self.n;
         QDyn { q: (0..m).map(|i| {
     let _ = self.c0.clone().into();
@@ -68,7 +68,7 @@ impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 51: T
     sum
 }).collect() }
     }
-    pub fn get_qs<Q: Clone + Mul<compile_error!("Unknown type parameter: A"), Output = compile_error!("Unknown type parameter: A")>, A: Add<A, Output = A>>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: Vec<Vec<QDyn<Q>>>, reduction: usize) -> QDyn<A> where T: Clone + Into<A> {
+    pub fn get_qs<Q: Clone + Mul<A, Output = A>, A: Add<A, Output = A>>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: Vec<Vec<QDyn<Q>>>, reduction: usize) -> QDyn<A> where T: Clone + Into<A> {
         let n = self.n;
         QDyn { q: (0..m).map(|i| {
     let _ = self.c0.clone().into();
