@@ -6,7 +6,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 use alloc::vec;
-use core::ops::{Add, Sub, Mul, Div, BitAnd, BitOr, BitXor};
+use core::ops::{Add, Sub, Mul, Div, BitAnd, BitOr, BitXor, Shl, Shr};
 
 // Primitive field types from volar-primitives
 pub use volar_primitives::{Bit, BitsInBytes, BitsInBytes64, Galois, Galois64};
@@ -18,14 +18,14 @@ pub fn ilog2(x: usize) -> u32 {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct PolyDyn<T: > {
+pub struct PolyDyn<T> {
     pub n: usize,
     pub c0: T,
     pub c1: Vec<T>,
 }
 
 #[derive(Clone, Debug)]
-pub struct PolyInputPoolDyn<'a, T: > {
+pub struct PolyInputPoolDyn<'a, T> {
     pub n: usize,
     pub x: usize,
     pub inputs: &'a Vec<T>,
@@ -33,14 +33,14 @@ pub struct PolyInputPoolDyn<'a, T: > {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct BitVoleDyn<T: > {
+pub struct BitVoleDyn<T> {
     pub n: usize,
     pub u: Vec<Bit>,
     pub v: Vec<T>,
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct VopeDyn<T: > {
+pub struct VopeDyn<T> {
     pub n: usize,
     pub k: usize,
     pub u: Vec<Vec<T>>,

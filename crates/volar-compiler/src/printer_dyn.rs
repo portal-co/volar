@@ -276,7 +276,7 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
     writeln!(out, "use alloc::vec;").unwrap();
     writeln!(
         out,
-        "use core::ops::{{Add, Sub, Mul, Div, BitAnd, BitOr, BitXor}};"
+        "use core::ops::{{Add, Sub, Mul, Div, BitAnd, BitOr, BitXor, Shl, Shr}};"
     )
     .unwrap();
     writeln!(out).unwrap();
@@ -352,7 +352,12 @@ fn write_struct_dyn(out: &mut String, s: &IrStruct, struct_info: &BTreeMap<Strin
     // Generic parameters: lifetimes first, then type params
     let mut all_generics = Vec::new();
     all_generics.extend(info.lifetimes.iter().cloned().map(|a| (a, None)));
-    all_generics.extend(info.type_params.iter().cloned().map(|(n, b)| (n, Some(b))));
+    all_generics.extend(
+        info.type_params
+            .iter()
+            .cloned()
+            .map(|(n, b)| if b.is_empty() { (n, None) } else { (n, Some(b)) }),
+    );
 
     if !all_generics.is_empty() {
         write!(
