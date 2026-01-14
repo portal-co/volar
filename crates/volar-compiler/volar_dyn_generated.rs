@@ -482,7 +482,7 @@ impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 479: T
     }
 }
 
-impl<T: Add<compile_error!("Unknown type parameter: U")> + Clone, U: Clone> VopeDyn<T> {
+impl<T: Add<U> + Clone, U: Clone> VopeDyn<T> {
     pub fn add(self, rhs: VopeDyn<U>) -> OutputDyn {
         let n = self.n;
         let k = self.k;
@@ -490,7 +490,7 @@ impl<T: Add<compile_error!("Unknown type parameter: U")> + Clone, U: Clone> Vope
     }
 }
 
-impl<T: BitXor<compile_error!("Unknown type parameter: U"), Output = compile_error!("Unknown type parameter: O")> + Clone + Into<O>, U: Clone, O> VopeDyn<T> where T: Into<O>// UNCONSTRAINED GENERICS at generated.rs line 494: O
+impl<T: BitXor<U, Output = O> + Clone + Into<O>, U: Clone, O> VopeDyn<T> where T: Into<O>// UNCONSTRAINED GENERICS at generated.rs line 494: O
  {
     pub fn bitxor(self, rhs: Vec<U>) -> OutputDyn {
         let n = self.n;
@@ -504,7 +504,7 @@ impl<T: BitXor<compile_error!("Unknown type parameter: U"), Output = compile_err
     }
 }
 
-impl<T: Mul<compile_error!("Unknown type parameter: U"), Output = compile_error!("Unknown type parameter: O")> + Into<compile_error!("Unknown type parameter: O")> + Clone, U: Mul<U, Output = U> + Clone, O: Add<O, Output = O>> VopeDyn<T> {
+impl<T: Mul<U, Output = O> + Into<O> + Clone, U: Mul<U, Output = U> + Clone, O: Add<O, Output = O>> VopeDyn<T> {
     pub fn mul(self, rhs: DeltaDyn<U>) -> OutputDyn {
         let n = self.n;
         let k = self.k;

@@ -244,25 +244,40 @@ fn expr_uses_crypto(e: &IrExpr) -> bool {
         IrExpr::Call { func, args } => {
             if let IrExpr::Path { segments, .. } = func.as_ref() {
                 let joined = segments.join("::").to_lowercase();
-                if joined.contains("digest") || joined.contains("commit") || joined.contains("encrypt") {
+                if joined.contains("digest")
+                    || joined.contains("commit")
+                    || joined.contains("encrypt")
+                {
                     return true;
                 }
             }
             args.iter().any(|a| expr_uses_crypto(a))
         }
-        IrExpr::Block(b) => b.stmts.iter().any(|s| stmt_uses_crypto(s)) || b.expr.as_ref().map_or(false, |e| expr_uses_crypto(e)),
+        IrExpr::Block(b) => {
+            b.stmts.iter().any(|s| stmt_uses_crypto(s))
+                || b.expr.as_ref().map_or(false, |e| expr_uses_crypto(e))
+        }
         IrExpr::ArrayGenerate { body, .. } => expr_uses_crypto(body),
         IrExpr::ArrayMap { body, .. } => expr_uses_crypto(body),
         IrExpr::ArrayZip { body, .. } => expr_uses_crypto(body),
         IrExpr::ArrayFold { init, body, .. } => expr_uses_crypto(init) || expr_uses_crypto(body),
         IrExpr::Unary { expr, .. } => expr_uses_crypto(expr),
         IrExpr::Binary { left, right, .. } => expr_uses_crypto(left) || expr_uses_crypto(right),
-        IrExpr::If { then_branch, else_branch, .. } => {
+        IrExpr::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
             then_branch.stmts.iter().any(|s| stmt_uses_crypto(s))
-                || then_branch.expr.as_ref().map_or(false, |e| expr_uses_crypto(e))
+                || then_branch
+                    .expr
+                    .as_ref()
+                    .map_or(false, |e| expr_uses_crypto(e))
                 || else_branch.as_ref().map_or(false, |e| expr_uses_crypto(e))
         }
-        IrExpr::Match { arms, expr, .. } => expr_uses_crypto(expr) || arms.iter().any(|a| expr_uses_crypto(&a.body)),
+        IrExpr::Match { arms, expr, .. } => {
+            expr_uses_crypto(expr) || arms.iter().any(|a| expr_uses_crypto(&a.body))
+        }
         IrExpr::Closure { body, .. } => expr_uses_crypto(body),
         _ => false,
     }
@@ -279,7 +294,7 @@ fn stmt_uses_crypto(s: &IrStmt) -> bool {
 /// Main entry point for generating dynamic Rust code
 pub fn print_module_rust_dyn(module: &IrModule) -> String {
     // Note: crypto-detection helpers are defined at module level (see below)
-    
+
     // First pass: collect struct information
 
     // First pass: collect struct information
@@ -298,7 +313,8 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
                 classify_generic(p, &[&s.generics])
             };
             // record original generic ordering and kinds
-            info.orig_generics.push((p.name.clone(), kind.clone(), p.kind.clone()));
+            info.orig_generics
+                .push((p.name.clone(), kind.clone(), p.kind.clone()));
 
             if p.kind == IrGenericParamKind::Lifetime {
                 info.lifetimes.push(format!("'{}", p.name));
@@ -424,12 +440,13 @@ fn write_struct_dyn(out: &mut String, s: &IrStruct, struct_info: &BTreeMap<Strin
     // Generic parameters: lifetimes first, then type params
     let mut all_generics = Vec::new();
     all_generics.extend(info.lifetimes.iter().cloned().map(|a| (a, None)));
-    all_generics.extend(
-        info.type_params
-            .iter()
-            .cloned()
-            .map(|(n, b)| if b.is_empty() { (n, None) } else { (n, Some(b)) }),
-    );
+    all_generics.extend(info.type_params.iter().cloned().map(|(n, b)| {
+        if b.is_empty() {
+            (n, None)
+        } else {
+            (n, Some(b))
+        }
+    }));
 
     if !all_generics.is_empty() {
         write!(
@@ -554,7 +571,10 @@ fn bname(
             return format!("AsRef<{}>", type_to_string(&**t, cur_params, struct_info));
         }
         TraitKind::Expand(t) => {
-            return format!("FnMut(&[u8]) -> {}", type_to_string(&**t, cur_params, struct_info));
+            return format!(
+                "FnMut(&[u8]) -> {}",
+                type_to_string(&**t, cur_params, struct_info)
+            );
         }
     }
 }
@@ -589,7 +609,10 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
     let (self_name, concrete_type_args) = match &i.self_ty {
         IrType::Struct { kind, type_args } => {
             // Collect concrete types from the impl, aligning with the struct's original generics
-            let info_local = struct_info.get(&kind.to_string()).cloned().unwrap_or_default();
+            let info_local = struct_info
+                .get(&kind.to_string())
+                .cloned()
+                .unwrap_or_default();
             let mut concrete = Vec::new();
             for (idx, arg) in type_args.iter().enumerate() {
                 if let Some((_, gkind, param_kind)) = info_local.orig_generics.get(idx) {
@@ -618,16 +641,56 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
     let mut cur_params = BTreeMap::new();
     // Map of param -> collected bounds (including declared bounds and where-clause bounds)
     let mut collected_bounds: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+    // First pass: populate `cur_params` with all generics so bounds may
+    // reference each other when formatting (avoids Unknown type parameter).
     for p in &i.generics {
         let c = classify_generic(p, &[&i.generics]);
         cur_params.insert(p.name.clone(), (format!(""), c.clone()));
         if c != GenericKind::Length && !info.length_witnesses.contains(&p.name.to_lowercase()) {
-            // start with declared bounds on the generic param
-            let mut v = Vec::new();
-            for b in &p.bounds {
-                v.push(bname(b, &cur_params, struct_info));
+            collected_bounds.insert(p.name.clone(), Vec::new());
+        }
+    }
+
+    // Second pass: format declared bounds into `collected_bounds` using the
+    // fully-populated `cur_params` so bounds that reference other generics
+    // (e.g., `T: Add<U>`) are printed correctly. Bounds that reference other
+    // generics will instead be emitted in the `where` clause so the other
+    // generic becomes constrained by a predicate and is allowed on impl.
+    let mut where_parts: Vec<String> = Vec::new();
+    // helper: check whether a type refers to some generic other than `self_name`
+    fn type_refers_to_other(
+        ty: &IrType,
+        cur_params: &BTreeMap<String, (String, GenericKind)>,
+        self_name: &str,
+    ) -> bool {
+        match ty {
+            IrType::TypeParam(n) => n != self_name && cur_params.contains_key(n),
+            IrType::Struct { type_args, .. } => type_args
+                .iter()
+                .any(|ta| type_refers_to_other(ta, cur_params, self_name)),
+            IrType::Projection { base, assoc: _ } => {
+                type_refers_to_other(base, cur_params, self_name)
             }
-            collected_bounds.insert(p.name.clone(), v);
+            IrType::Param { path } => path
+                .first()
+                .map(|s| s != self_name && cur_params.contains_key(s))
+                .unwrap_or(false),
+            IrType::Array { elem, .. }
+            | IrType::Vector { elem }
+            | IrType::Reference { elem, .. } => type_refers_to_other(elem, cur_params, self_name),
+            IrType::Tuple(elems) => elems
+                .iter()
+                .any(|e| type_refers_to_other(e, cur_params, self_name)),
+            _ => false,
+        }
+    }
+
+    for p in &i.generics {
+        if let Some(vec) = collected_bounds.get_mut(&p.name) {
+            for b in &p.bounds {
+                vec.push(bname(b, &cur_params, struct_info));
+            }
         }
     }
 
@@ -637,7 +700,11 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
             IrWherePredicate::TypeBound { ty, bounds } => {
                 if let IrType::TypeParam(name) = ty {
                     // Skip length type params
-                    if cur_params.get(name).map(|(_, k)| *k == GenericKind::Length).unwrap_or(false) {
+                    if cur_params
+                        .get(name)
+                        .map(|(_, k)| *k == GenericKind::Length)
+                        .unwrap_or(false)
+                    {
                         continue;
                     }
                     if let Some(vec) = collected_bounds.get_mut(name) {
@@ -702,7 +769,11 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
             IrWherePredicate::TypeBound { ty, bounds } => {
                 // Skip length-type params in where clause emission
                 if let IrType::TypeParam(name) = ty {
-                    if cur_params.get(name).map(|(_, k)| *k == GenericKind::Length).unwrap_or(false) {
+                    if cur_params
+                        .get(name)
+                        .map(|(_, k)| *k == GenericKind::Length)
+                        .unwrap_or(false)
+                    {
                         continue;
                     }
                 }
@@ -733,7 +804,11 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
         if let Some(vec) = collected_bounds.get(&p.name) {
             // Exclude length params and lifetimes
             if vec.is_empty() {
-                if cur_params.get(&p.name).map(|(_, k)| *k != GenericKind::Length).unwrap_or(false) {
+                if cur_params
+                    .get(&p.name)
+                    .map(|(_, k)| *k != GenericKind::Length)
+                    .unwrap_or(false)
+                {
                     unconstrained.push(p.name.clone());
                 }
             }
@@ -742,7 +817,13 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
     if !unconstrained.is_empty() {
         // compute current line number in generated output (1-based)
         let current_line = out.lines().count() + 1;
-        writeln!(out, "// UNCONSTRAINED GENERICS at generated.rs line {}: {}", current_line, unconstrained.join(", ")).unwrap();
+        writeln!(
+            out,
+            "// UNCONSTRAINED GENERICS at generated.rs line {}: {}",
+            current_line,
+            unconstrained.join(", ")
+        )
+        .unwrap();
     }
 
     writeln!(out, " {{").unwrap();
@@ -794,13 +875,23 @@ fn write_function_dyn(
         for tp in &f.generics {
             let k = classify_generic(tp, &[&f.generics]);
             if k != GenericKind::Length {
-                fn_bounds.insert(tp.name.clone(), tp.bounds.iter().map(|b| bname(b, &cur_params, struct_info)).collect());
+                fn_bounds.insert(
+                    tp.name.clone(),
+                    tp.bounds
+                        .iter()
+                        .map(|b| bname(b, &cur_params, struct_info))
+                        .collect(),
+                );
             }
         }
         for wp in &f.where_clause {
             if let IrWherePredicate::TypeBound { ty, bounds } = wp {
                 if let IrType::TypeParam(name) = ty {
-                    if cur_params.get(name).map(|(_, k)| *k == GenericKind::Length).unwrap_or(false) {
+                    if cur_params
+                        .get(name)
+                        .map(|(_, k)| *k == GenericKind::Length)
+                        .unwrap_or(false)
+                    {
                         continue;
                     }
                     if let Some(vec) = fn_bounds.get_mut(name) {
@@ -812,17 +903,21 @@ fn write_function_dyn(
             }
         }
         // Rebuild type_params list replacing entries with bounds from fn_bounds
-        type_params = f.generics.iter().filter_map(|tp| {
-            if let Some(bounds) = fn_bounds.get(&tp.name) {
-                if !bounds.is_empty() {
-                    Some(format!("{}: {}", tp.name, bounds.join(" + ")))
+        type_params = f
+            .generics
+            .iter()
+            .filter_map(|tp| {
+                if let Some(bounds) = fn_bounds.get(&tp.name) {
+                    if !bounds.is_empty() {
+                        Some(format!("{}: {}", tp.name, bounds.join(" + ")))
+                    } else {
+                        Some(tp.name.clone())
+                    }
                 } else {
-                    Some(tp.name.clone())
+                    None
                 }
-            } else {
-                None
-            }
-        }).collect();
+            })
+            .collect();
         // Re-emit generics with updated bounds
         if !type_params.is_empty() {
             // overwrite previously written generics by writing a space (the caller expects this printed once)
@@ -833,13 +928,21 @@ fn write_function_dyn(
             if let IrWherePredicate::TypeBound { ty, bounds } = wp {
                 // Skip length params
                 if let IrType::TypeParam(name) = ty {
-                    if cur_params.get(name).map(|(_, k)| *k == GenericKind::Length).unwrap_or(false) {
+                    if cur_params
+                        .get(name)
+                        .map(|(_, k)| *k == GenericKind::Length)
+                        .unwrap_or(false)
+                    {
                         continue;
                     }
                 }
                 let mut lhs = String::new();
                 write_type_dyn(&mut lhs, ty, &cur_params, struct_info);
-                let bstr = bounds.iter().map(|b| bname(b, &cur_params, struct_info)).collect::<Vec<_>>().join(" + ");
+                let bstr = bounds
+                    .iter()
+                    .map(|b| bname(b, &cur_params, struct_info))
+                    .collect::<Vec<_>>()
+                    .join(" + ");
                 where_parts.push(format!("{}: {}", lhs, bstr));
             }
         }
@@ -852,7 +955,10 @@ fn write_function_dyn(
         for tp in &f.generics {
             let k = classify_generic(tp, &[&f.generics]);
             if k != GenericKind::Length {
-                let existing = fn_bounds.get(&tp.name).map(|v| v.is_empty()).unwrap_or(true);
+                let existing = fn_bounds
+                    .get(&tp.name)
+                    .map(|v| v.is_empty())
+                    .unwrap_or(true);
                 if existing {
                     unconstrained.push(tp.name.clone());
                 }
@@ -860,7 +966,13 @@ fn write_function_dyn(
         }
         if !unconstrained.is_empty() {
             let current_line = out.lines().count() + 1;
-            writeln!(out, "// UNCONSTRAINED GENERICS at generated.rs line {}: {}", current_line, unconstrained.join(", ")).unwrap();
+            writeln!(
+                out,
+                "// UNCONSTRAINED GENERICS at generated.rs line {}: {}",
+                current_line,
+                unconstrained.join(", ")
+            )
+            .unwrap();
         }
     }
 
@@ -1455,7 +1567,12 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                 if assoc == "BlockSize" || assoc == "OutputSize" {
                     // Emit an immediate runtime witness for the associated type.
                     // Wrap in a block so we can create the witness inline.
-                    write!(out, "({{ let w = <{} as typenum::Unsigned>::USIZE; w }})", type_name).unwrap();
+                    write!(
+                        out,
+                        "({{ let w = <{} as typenum::Unsigned>::USIZE; w }})",
+                        type_name
+                    )
+                    .unwrap();
                     return;
                 }
             }
