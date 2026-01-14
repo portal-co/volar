@@ -3,7 +3,14 @@
 //! This module provides the unified intermediate representation for volar-spec,
 //! incorporating domain-specific knowledge about cryptography, math, and VOLE.
 
-use std::fmt;
+use core::fmt;
+
+#[cfg(feature = "std")]
+use std::{string::{String, ToString}, vec::Vec, boxed::Box, format};
+
+#[cfg(not(feature = "std"))]
+use alloc::{string::{String, ToString}, vec::Vec, boxed::Box, format};
+
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -20,7 +27,7 @@ pub enum CompilerError {
     InvalidType(String),
 }
 
-pub type Result<T> = std::result::Result<T, CompilerError>;
+pub type Result<T> = core::result::Result<T, CompilerError>;
 
 // ============================================================================
 // PRIMITIVE TYPES

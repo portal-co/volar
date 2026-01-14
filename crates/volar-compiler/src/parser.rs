@@ -1,9 +1,18 @@
 //! Parser module for converting Rust source code directly into specialized IR.
 
+use crate::ir::*;
+#[cfg(feature = "std")]
+use std::{collections::{HashMap, HashSet}, string::{String, ToString}, vec::Vec, boxed::Box, format};
+
+#[cfg(not(feature = "std"))]
+use hashbrown::{HashMap, HashSet};
+#[cfg(not(feature = "std"))]
+use alloc::{string::{String, ToString}, vec::Vec, boxed::Box, format};
+
+#[cfg(feature = "parsing")]
 use syn::{
     parse_file, Expr, FnArg, GenericParam, Item, Pat, ReturnType, Type, Visibility,
 };
-use crate::ir::*;
 
 pub fn parse_sources(sources: &[(&str, &str)], module_name: &str) -> Result<IrModule> {
     let mut module = IrModule {

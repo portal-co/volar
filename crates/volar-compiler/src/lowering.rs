@@ -1,7 +1,13 @@
 //! Specialized analysis and transformation of the unified IR.
 
 use crate::ir::*;
-use std::collections::{HashMap, HashSet};
+#[cfg(feature = "std")]
+use std::{collections::{HashMap, HashSet}, string::{String, ToString}, vec::Vec, boxed::Box, format};
+
+#[cfg(not(feature = "std"))]
+use hashbrown::{HashMap, HashSet};
+#[cfg(not(feature = "std"))]
+use alloc::{string::{String, ToString}, vec::Vec, boxed::Box, format};
 
 /// Context for type resolution and analysis
 #[derive(Debug, Clone, Default)]

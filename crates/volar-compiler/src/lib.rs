@@ -19,12 +19,22 @@
 //! - `lowering`: Type resolution, operator analysis, monomorphization
 //! - `printer`: Pretty-printer for IR
 
+#![no_std]
+
+#[cfg(feature = "std")]
+extern crate std;
+
+#[cfg(not(feature = "std"))]
+extern crate alloc;
+
 pub mod ir;
+#[cfg(feature = "parsing")]
 pub mod parser;
 pub mod lowering;
 pub mod printer;
 
 pub use ir::*;
+#[cfg(feature = "parsing")]
 pub use parser::*;
 pub use lowering::*;
 pub use printer::*;
