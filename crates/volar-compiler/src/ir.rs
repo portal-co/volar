@@ -614,6 +614,9 @@ pub enum IrType {
         elem: Box<IrType>,
         len: ArrayLength,
     },
+    Vector {
+        elem: Box<IrType>,
+    },
     Struct {
         kind: StructKind,
         type_args: Vec<IrType>,
