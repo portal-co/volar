@@ -2,7 +2,11 @@
 
 use std::fs;
 use std::path::Path;
-use volar_compiler::{parse_sources, print_module, TypeContext, OperatorAnalysis, type_to_string};
+use volar_compiler::{
+    parse_sources, print_module, specialize_module,
+    TypeContext, OperatorAnalysis, type_to_string,
+    StructKind, TraitKind, MathTrait, SpecType, ArrayKind,
+};
 
 fn main() {
     let base_path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -40,7 +44,7 @@ fn main() {
 
     match parse_sources(&sources_ref, "volar_spec") {
         Ok(module) => {
-            println!("\n=== Module Statistics ===");
+            println!("\n=== Generic IR Module Statistics ===");
             println!("Structs: {}", module.structs.len());
             println!("Traits: {}", module.traits.len());
             println!("Impls: {}", module.impls.len());
@@ -67,13 +71,70 @@ fn main() {
             println!("Trait implementations: {}", type_ctx.trait_impls.len());
             println!("Associated types: {}", type_ctx.assoc_types.len());
 
-            // Print the full IR
-            println!("\n=== IR Output ===");
+            // Now specialize the IR
+            println!("\n=== Specializing IR ===");
+            let spec_module = specialize_module(&module);
+            
+            println!("\n=== Specialized Struct Classifications ===");
+            for s in &spec_module.structs {
+                let classification = match &s.kind {
+                    StructKind::Delta | StructKind::Q | StructKind::Vope | StructKind::BitVole => "VOLE",
+                    StructKind::ABO | StructKind::ABOOpening | StructKind::CommitmentCore => "Crypto",
+                    StructKind::Poly | StructKind::PolyInputPool => "Polynomial",
+                    _ => "Other",
+                };
+                println!("  {:?}: {} ({} fields)", s.kind, classification, s.fields.len());
+                
+                // Show field types
+                for field in &s.fields {
+                    let ty_desc = match &field.ty {
+                        SpecType::Primitive(p) => format!("primitive {:?}", p),
+                        SpecType::Array { kind: ArrayKind::GenericArray, .. } => "GenericArray".to_string(),
+                        SpecType::Array { kind: ArrayKind::FixedArray, .. } => "fixed array".to_string(),
+                        SpecType::TypeParam(name) => format!("type param {}", name),
+                        SpecType::Struct { kind, .. } => format!("struct {:?}", kind),
+                        _ => "other".to_string(),
+                    };
+                    println!("    {}: {}", field.name, ty_desc);
+                }
+            }
+            
+            println!("\n=== Specialized Trait Impl Classifications ===");
+            let mut math_count = 0;
+            let mut crypto_count = 0;
+            let mut inherent_count = 0;
+            
+            for imp in &spec_module.impls {
+                match &imp.trait_ {
+                    Some(tr) => match &tr.kind {
+                        TraitKind::Math(m) => {
+                            math_count += 1;
+                            if matches!(m, MathTrait::Add | MathTrait::Sub | MathTrait::Mul | MathTrait::BitXor) {
+                                println!("  Math op: {:?} for {:?}", m, imp.self_ty.as_struct());
+                            }
+                        }
+                        TraitKind::Crypto(c) => {
+                            crypto_count += 1;
+                            println!("  Crypto: {:?} for {:?}", c, imp.self_ty.as_struct());
+                        }
+                        _ => {}
+                    },
+                    None => {
+                        inherent_count += 1;
+                    }
+                }
+            }
+            
+            println!("\n  Math trait impls: {}", math_count);
+            println!("  Crypto trait impls: {}", crypto_count);
+            println!("  Inherent impls: {}", inherent_count);
+
+            // Print the generic IR (truncated)
+            println!("\n=== Generic IR Output (truncated) ===");
             let printed = print_module(&module);
             
-            // Just print first 5000 chars to avoid overwhelming output
-            if printed.len() > 5000 {
-                println!("{}...\n\n(truncated, showing first 5000 chars)", &printed[..5000]);
+            if printed.len() > 3000 {
+                println!("{}...\n", &printed[..3000]);
             } else {
                 println!("{}", printed);
             }
