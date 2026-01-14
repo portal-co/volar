@@ -49,7 +49,7 @@ pub struct VopeDyn<T> {
 
 impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 51: T
  {
-    pub fn get_qs_pool<Q: Clone + Mul<A, Output = A>, A: Add<A, Output = A>>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: PolyInputPoolDyn, reduction: usize) -> QDyn<A> where T: Clone + Into<A> {
+    pub fn get_qs_pool<Q: Clone + Mul<A, Output = A>, A: Add<A, Output = A>>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: PolyInputPoolDyn<QDyn<Q>>, reduction: usize) -> QDyn<A> where T: Clone + Into<A> {
         let n = self.n;
         QDyn { q: (0..m).map(|i| {
     let _ = self.c0.clone().into();
@@ -87,7 +87,7 @@ impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 51: T
     sum
 }).collect() }
     }
-    pub fn apply_pool<M, O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, x: usize, x2: usize, xs: usize, s: usize, voles: &'a PolyInputPoolDyn) -> VopeDyn<O> where T: Into<O> + Clone, M: VoleArray<T> + VoleArray<O> {
+    pub fn apply_pool<M, O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, x: usize, x2: usize, xs: usize, s: usize, voles: &'a PolyInputPoolDyn<VopeDyn<T>>) -> VopeDyn<O> where T: Into<O> + Clone, M: VoleArray<T> + VoleArray<O> {
         let n = self.n;
         let v = (0..m).map(|i| {
     let mut sum = O::new();

@@ -1351,13 +1351,21 @@ fn write_type_dyn(
             // to non-length, non-lifetime generics so the printed arity matches
             // the declared `Dyn` struct. Fall back to printing any non-length
             // args if struct info is missing.
+            //
+            // Note: type_args typically doesn't include lifetimes (they're elided),
+            // but orig_generics does. We need to skip lifetime entries in orig_generics
+            // when correlating with type_args indices.
             if let Some(info) = struct_info.get(&kind.to_string()) {
                 let mut parts: Vec<String> = Vec::new();
+                // Build a list of non-lifetime generics from orig_generics
+                let non_lifetime_generics: Vec<_> = info
+                    .orig_generics
+                    .iter()
+                    .filter(|(_, _, pk)| *pk != IrGenericParamKind::Lifetime)
+                    .collect();
                 for (idx, arg) in type_args.iter().enumerate() {
-                    if let Some((_, gkind, param_kind)) = info.orig_generics.get(idx) {
-                        if *param_kind == IrGenericParamKind::Lifetime {
-                            continue;
-                        }
+                    // Match type_args[idx] with non_lifetime_generics[idx]
+                    if let Some((_, gkind, _)) = non_lifetime_generics.get(idx) {
                         if *gkind == GenericKind::Length {
                             continue;
                         }
