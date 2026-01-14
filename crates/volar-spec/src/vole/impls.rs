@@ -5,8 +5,10 @@ impl<N: VoleArray<T>, T: Clone, K: ArrayLength<GenericArray<T, N>>> Clone for Vo
     fn clone(&self) -> Self {
         let Vope { u, v } = self;
         Vope {
-            u: GenericArray::generate(|l| GenericArray::generate(|i| u[l][i].clone())),
-            v: GenericArray::generate(|i| v[i].clone()),
+            u: GenericArray::<GenericArray<T, N>, K>::generate(|l| {
+                GenericArray::<T, N>::generate(|i| u[l][i].clone())
+            }),
+            v: GenericArray::<T, N>::generate(|i| v[i].clone()),
         }
     }
 }
@@ -14,7 +16,7 @@ impl<N: ArrayLength<T>, T: Clone> Clone for Q<N, T> {
     fn clone(&self) -> Self {
         let Q { q } = self;
         Q {
-            q: GenericArray::generate(|i| q[i].clone()),
+            q: GenericArray::<T, N>::generate(|i| q[i].clone()),
         }
     }
 }
@@ -22,7 +24,7 @@ impl<N: ArrayLength<T>, T: Clone> Clone for Delta<N, T> {
     fn clone(&self) -> Self {
         let Delta { delta } = self;
         Delta {
-            delta: GenericArray::generate(|i| delta[i].clone()),
+            delta: GenericArray::<T, N>::generate(|i| delta[i].clone()),
         }
     }
 }

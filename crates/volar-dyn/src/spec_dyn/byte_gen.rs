@@ -7,7 +7,7 @@ use core::ops::Deref;
 use digest::Digest;
 use cipher::BlockEncrypt;
 
-use volar_common::hash_commitment::CommitmentCore;
+use volar_common::hash_commitment::{CommitmentCore, commit};
 
 use super::vole::VopeDyn;
 
@@ -92,7 +92,7 @@ pub fn gen_abo_dyn<B: ByteBlockEncryptDyn, D: Digest>(
             }
         }
         let core = acc;
-        let c = CommitmentCore::<D>::commit(&core, rand);
+        let c = commit::<D>(&core, rand);
         h.update(c.as_ref());
         per_byte.push(core);
     }

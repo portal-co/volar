@@ -13,7 +13,7 @@ pub struct Vope<N: VoleArray<T>, T, K: ArrayLength<GenericArray<T, N>> = U1> {
 impl<N: VoleArray<T>, T> Vope<N, T, U0> {
     pub fn constant(v: GenericArray<T, N>) -> Self {
         Vope {
-            u: GenericArray::generate(|_| unreachable!()),
+            u: GenericArray::<GenericArray<T, N>, U0>::generate(|_| unreachable!()),
             v,
         }
     }
@@ -50,8 +50,8 @@ where
     type Output = Vope<N, O, K>;
     fn bitxor(self, rhs: GenericArray<U, N::Output>) -> Self::Output {
         Vope {
-            u: GenericArray::generate(|i| {
-                GenericArray::generate(|j| {
+            u: GenericArray::<GenericArray<O, N>, K>::generate(|i| {
+                GenericArray::<O, N>::generate(|j| {
                     let o: O = (self.u[i][j].clone()).bitxor(rhs[i * K::to_usize() + j].clone());
                     o
                 })
@@ -96,8 +96,8 @@ impl<N: VoleArray<T>, T, K: ArrayLength<GenericArray<T, N>>> Vope<N, T, K> {
     {
         let Self { u, v } = self;
         Vope {
-            u: GenericArray::generate(|l| {
-                GenericArray::generate(|i| u.get(l).map_or(T::default(), |a| a[i].clone()))
+            u: GenericArray::<GenericArray<T, N>, L>::generate(|l| {
+                GenericArray::<T, N>::generate(|i| u.get(l).map_or(T::default(), |a| a[i].clone()))
             }),
             v: v.clone(),
         }
@@ -121,10 +121,10 @@ impl<N: VoleArray<T>, T, K: ArrayLength<GenericArray<T, N>>> Vope<N, T, K> {
     {
         let Self { u, v } = self;
         Vope {
-            u: GenericArray::generate(|l| {
-                GenericArray::generate(|i| u[l][f(i) % N::to_usize()].clone())
+            u: GenericArray::<GenericArray<T, M>, K>::generate(|l| {
+                GenericArray::<T, M>::generate(|i| u[l][f(i) % N::to_usize()].clone())
             }),
-            v: GenericArray::generate(|i| v[f(i) % N::to_usize()].clone()),
+            v: GenericArray::<T, M>::generate(|i| v[f(i) % N::to_usize()].clone()),
         }
     }
 }
@@ -140,13 +140,13 @@ where
     {
         let Vope { u, v } = self;
         Vope {
-            u: GenericArray::generate(|l| {
-                GenericArray::generate(|i| {
+            u: GenericArray::<GenericArray<T, N>, K>::generate(|l| {
+                GenericArray::<T, N>::generate(|i| {
                     let Bit(b) = u[l][i].clone();
                     f(b)
                 })
             }),
-            v: GenericArray::generate(|i| {
+            v: GenericArray::<T, N>::generate(|i| {
                 let Bit(b) = v[i].clone();
                 f(b)
             }),

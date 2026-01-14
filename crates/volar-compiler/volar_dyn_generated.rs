@@ -18,33 +18,6 @@ pub fn ilog2(x: usize) -> u32 {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct DeltaDyn<T: > {
-    pub n: usize,
-    pub delta: Vec<T>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct QDyn<T: > {
-    pub n: usize,
-    pub q: Vec<T>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct ABODyn<B: ByteBlockEncrypt, D: Digest> {
-    pub k: usize,
-    pub commit: Vec<u8>,
-    pub per_byte: Vec<Vec<u8>>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct ABOOpeningDyn<B: ByteBlockEncrypt, D: Digest> {
-    pub t: usize,
-    pub u: usize,
-    pub bad: Vec<u64>,
-    pub openings: Vec<Vec<Vec<u8>>>,
-}
-
-#[derive(Clone, Debug, Default)]
 pub struct PolyDyn<T: > {
     pub n: usize,
     pub c0: T,
@@ -72,48 +45,10 @@ pub struct VopeDyn<N: VoleArray, T: > {
     pub v: Vec<T>,
 }
 
-
-impl<T> DeltaDyn<T> {
-    pub fn remap(&self, m: usize, f: _) -> DeltaDyn<T> {
-        let n = self.n;
-        let Self { delta: delta } = self;
-        DeltaDyn { delta: (0..n).map(|i| delta[(f(i) % n)].clone()).collect(), n: n }
-    }
-    pub fn rotate_left(&self, n: usize) -> Self {
-        let n = self.n;
-        self.remap(|a| a.wrapping_sub(n))
-    }
-    pub fn rotate_right(&self, n: usize) -> Self {
-        let n = self.n;
-        self.remap(|a| a.wrapping_add(n))
-    }
-    pub fn r#static<U>(&self, val: Vec<U>) -> QDyn<OutputDyn> {
-        let n = self.n;
-        QDyn { q: (0..n).map(|i| (val[i].clone() * self.delta[i].clone())).collect(), n: n }
-    }
-}
-
-impl<T> QDyn<T> {
-    pub fn remap(&self, m: usize, f: _) -> QDyn<T> {
-        let n = self.n;
-        let Self { q: q } = self;
-        QDyn { q: (0..n).map(|i| q[(f(i) % n)].clone()).collect(), n: n }
-    }
-    pub fn rotate_left(&self, n: usize) -> Self {
-        let n = self.n;
-        self.remap(|a| a.wrapping_sub(n))
-    }
-    pub fn rotate_right(&self, n: usize) -> Self {
-        let n = self.n;
-        self.remap(|a| a.wrapping_add(n))
-    }
-}
-
-
 impl<T> PolyDyn<T> {
-    pub fn get_qs_pool<Q, A>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: PolyInputPoolDyn<QDyn<Q>, >, reduction: usize) -> QDyn<A> {
+    pub fn get_qs_pool<Q: Clone + Mul, A: Add>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: PolyInputPoolDyn<QDyn<Q>, >, reduction: usize) -> QDyn<A> {
         let n = self.n;
-        QDyn { q: (0..n).map(|i| {
+        QDyn { q: (0..m).map(|i| {
     let _ = self.c0.clone().into();
     for _ in 0..n {
     sum = (root.delta[i].clone() * sum);
@@ -124,11 +59,11 @@ impl<T> PolyDyn<T> {
     sum = (sum + b);
 };
     sum
-}).collect(), n: n }
+}).collect() }
     }
-    pub fn get_qs<Q, A>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: Vec<Vec<QDyn<Q>>>, reduction: usize) -> QDyn<A> {
+    pub fn get_qs<Q: Clone + Mul, A: Add>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: Vec<Vec<QDyn<Q>>>, reduction: usize) -> QDyn<A> {
         let n = self.n;
-        QDyn { q: (0..n).map(|i| {
+        QDyn { q: (0..m).map(|i| {
     let _ = self.c0.clone().into();
     for _ in 0..n {
     sum = (root.delta[i].clone() * sum);
@@ -139,12 +74,12 @@ impl<T> PolyDyn<T> {
     sum = (sum + b);
 };
     sum
-}).collect(), n: n }
+}).collect() }
     }
-    pub fn apply_pool<M, O>(&self, x: usize, x2: usize, xs: usize, s: usize, voles: &'a PolyInputPoolDyn<VopeDyn<M, T, >, >) -> VopeDyn<M, O, > {
+    pub fn apply_pool<M, O: Mul + Add + Default + Clone>(&self, x: usize, x2: usize, xs: usize, s: usize, voles: &'a PolyInputPoolDyn<VopeDyn<M, T, >, >) -> VopeDyn<M, O, > {
         let n = self.n;
-        let v = (0..n).map(|i| {
-    let mut sum = Vec::new();
+        let v = (0..m).map(|i| {
+    let mut sum = O::new();
     for k in 0..n {
     let _ = self.c1[k].clone().into();
     todo!();
@@ -153,9 +88,9 @@ impl<T> PolyDyn<T> {
     let _ = self.c0.clone().into();
     (sum + c0)
 }).collect();
-        let u = (0..n).map(|l| {
-    (0..n).map(|i| {
-    let mut sum = Vec::new();
+        let u = (0..xs).map(|l| {
+    (0..m).map(|i| {
+    let mut sum = O::new();
     for k in 0..n {
     for n in 0..x {
     let _ = self.c1[k].clone().into();
@@ -171,10 +106,10 @@ impl<T> PolyDyn<T> {
 }).collect();
         return VopeDyn { u: u, v: v, k: k };
     }
-    pub fn apply<M, O>(&self, x: usize, x2: usize, xs: usize, s: usize, voles: Vec<Vec<VopeDyn<M, T, >>>) -> VopeDyn<M, O, > {
+    pub fn apply<M, O: Mul + Add + Default + Clone>(&self, x: usize, x2: usize, xs: usize, s: usize, voles: Vec<Vec<VopeDyn<M, T, >>>) -> VopeDyn<M, O, > {
         let n = self.n;
-        let v = (0..n).map(|i| {
-    let mut sum = Vec::new();
+        let v = (0..m).map(|i| {
+    let mut sum = O::new();
     for k in 0..n {
     let _ = self.c1[k].clone().into();
     todo!();
@@ -183,9 +118,9 @@ impl<T> PolyDyn<T> {
     let _ = self.c0.clone().into();
     (sum + c0)
 }).collect();
-        let u = (0..n).map(|l| {
-    (0..n).map(|i| {
-    let mut sum = Vec::new();
+        let u = (0..xs).map(|l| {
+    (0..m).map(|i| {
+    let mut sum = O::new();
     for k in 0..n {
     for n in 0..x {
     let _ = self.c1[k].clone().into();
@@ -204,21 +139,21 @@ impl<T> PolyDyn<T> {
 }
 
 impl<N, T> VopeDyn<N, T> {
-    pub fn mul_generalized<K2>(&self, other: &'a VopeDyn<N, T, K2>) -> VopeDyn<N, T, OutputDyn> {
+    pub fn mul_generalized<K2: Add>(&self, other: &'a VopeDyn<N, T, K2>) -> VopeDyn<N, T, OutputDyn> {
         let k = self.k;
         let mut res_u = Vec::new();
         let mut res_v = Vec::new();
-        for i in 0..=compile_error!("to_usize receiver should be length type param, got K")compile_error!("Unhandled path call: ["K", "to_usize"]") {
-    for j in 0..=compile_error!("to_usize receiver should be length type param, got K2")compile_error!("Unhandled path call: ["K2", "to_usize"]") {
+        for i in 0..=k {
+    for j in 0..=k2 {
     let k = (i + j);
     let a_coeff = todo!();
     let b_coeff = todo!();
     if (k == 0) {
-    for lane in 0..compile_error!("to_usize receiver should be length type param, got N")compile_error!("Unhandled path call: ["N", "to_usize"]") {
+    for lane in 0..n {
     res_v[lane] = (res_v[lane].clone() + (a_coeff[lane].clone() * b_coeff[lane].clone()));
 }
 } else {
-    for lane in 0..compile_error!("to_usize receiver should be length type param, got N")compile_error!("Unhandled path call: ["N", "to_usize"]") {
+    for lane in 0..n {
     res_u[(k - 1)][lane] = (res_u[(k - 1)][lane].clone() + (a_coeff[lane].clone() * b_coeff[lane].clone()));
 }
 }
@@ -228,29 +163,33 @@ impl<N, T> VopeDyn<N, T> {
     }
 }
 
-impl<N> VopeDyn<N, BitsInBytes> {
+impl<N: VoleArray> VopeDyn<N, BitsInBytes> {
     pub fn rotate_left_bits(&self, n: usize) -> Self {
         let k = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
-        VopeDyn { u: (0..n).map(|l| (0..n).map(|i| {
+        VopeDyn { u: (0..k).map(|l| {
+    (0..n).map(|i| {
     let BitsInBytes(b) = u[l][i].clone();
-    let BitsInBytes(next) = u[l][((i + 1) % compile_error!("to_usize receiver should be length type param, got N")compile_error!("Unhandled path call: ["N", "to_usize"]"))].clone();
+    let BitsInBytes(next) = u[l][((i + 1) % n)].clone();
     BitsInBytes((b.shl((n as u32)) | next.shr((8 - (n as u32)))))
-}).collect()).collect(), v: (0..n).map(|i| {
+}).collect()
+}).collect(), v: (0..n).map(|i| {
     let BitsInBytes(b) = v[i].clone();
-    let BitsInBytes(next) = v[((i + 1) % compile_error!("to_usize receiver should be length type param, got N")compile_error!("Unhandled path call: ["N", "to_usize"]"))].clone();
+    let BitsInBytes(next) = v[((i + 1) % n)].clone();
     BitsInBytes((b.shl((n as u32)) | next.shr((8 - (n as u32)))))
 }).collect(), k: k }
     }
     pub fn rotate_right_bits(&self, n: usize) -> Self {
         let k = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
-        VopeDyn { u: (0..n).map(|l| (0..n).map(|i| {
-    let BitsInBytes(prev) = u[l][(((i + compile_error!("to_usize receiver should be length type param, got N")compile_error!("Unhandled path call: ["N", "to_usize"]")) - 1) % compile_error!("to_usize receiver should be length type param, got N")compile_error!("Unhandled path call: ["N", "to_usize"]"))].clone();
+        VopeDyn { u: (0..k).map(|l| {
+    (0..n).map(|i| {
+    let BitsInBytes(prev) = u[l][(((i + n) - 1) % n)].clone();
     let BitsInBytes(b) = u[l][i].clone();
     BitsInBytes((prev.shl((8 - (n as u32))) | b.shr((n as u32))))
-}).collect()).collect(), v: (0..n).map(|i| {
-    let BitsInBytes(prev) = v[(((i + compile_error!("to_usize receiver should be length type param, got N")compile_error!("Unhandled path call: ["N", "to_usize"]")) - 1) % compile_error!("to_usize receiver should be length type param, got N")compile_error!("Unhandled path call: ["N", "to_usize"]"))].clone();
+}).collect()
+}).collect(), v: (0..n).map(|i| {
+    let BitsInBytes(prev) = v[(((i + n) - 1) % n)].clone();
     let BitsInBytes(b) = v[i].clone();
     BitsInBytes((prev.shl((8 - (n as u32))) | b.shr((n as u32))))
 }).collect(), k: k }
@@ -258,39 +197,45 @@ impl<N> VopeDyn<N, BitsInBytes> {
     pub fn bit(&self, n: u8) -> VopeDyn<N, Bit, > {
         let k = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
-        VopeDyn { u: (0..n).map(|l| (0..n).map(|i| {
+        VopeDyn { u: (0..k).map(|l| {
+    (0..n).map(|i| {
     let BitsInBytes(b) = u[l][i].clone();
     Bit((((b >> n) & 1) != 0))
-}).collect()).collect(), v: (0..n).map(|i| {
+}).collect()
+}).collect(), v: (0..n).map(|i| {
     let BitsInBytes(b) = v[i].clone();
     Bit((((b >> n) & 1) != 0))
 }).collect(), k: k }
     }
 }
 
-impl<N> VopeDyn<N, BitsInBytes64> {
+impl<N: VoleArray> VopeDyn<N, BitsInBytes64> {
     pub fn rotate_left_bits(&self, n: usize) -> Self {
         let k = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
-        VopeDyn { u: (0..n).map(|l| (0..n).map(|i| {
+        VopeDyn { u: (0..k).map(|l| {
+    (0..n).map(|i| {
     let BitsInBytes64(b) = u[l][i].clone();
-    let BitsInBytes64(next) = u[l][((i + 1) % compile_error!("to_usize receiver should be length type param, got N")compile_error!("Unhandled path call: ["N", "to_usize"]"))].clone();
+    let BitsInBytes64(next) = u[l][((i + 1) % n)].clone();
     BitsInBytes64((b.shl((n as u32)) | next.shr((64 - (n as u32)))))
-}).collect()).collect(), v: (0..n).map(|i| {
+}).collect()
+}).collect(), v: (0..n).map(|i| {
     let BitsInBytes64(b) = v[i].clone();
-    let BitsInBytes64(next) = v[((i + 1) % compile_error!("to_usize receiver should be length type param, got N")compile_error!("Unhandled path call: ["N", "to_usize"]"))].clone();
+    let BitsInBytes64(next) = v[((i + 1) % n)].clone();
     BitsInBytes64((b.shl((n as u32)) | next.shr((64 - (n as u32)))))
 }).collect(), k: k }
     }
     pub fn rotate_right_bits(&self, n: usize) -> Self {
         let k = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
-        VopeDyn { u: (0..n).map(|l| (0..n).map(|i| {
-    let BitsInBytes64(prev) = u[l][(((i + compile_error!("to_usize receiver should be length type param, got N")compile_error!("Unhandled path call: ["N", "to_usize"]")) - 1) % compile_error!("to_usize receiver should be length type param, got N")compile_error!("Unhandled path call: ["N", "to_usize"]"))].clone();
+        VopeDyn { u: (0..k).map(|l| {
+    (0..n).map(|i| {
+    let BitsInBytes64(prev) = u[l][(((i + n) - 1) % n)].clone();
     let BitsInBytes64(b) = u[l][i].clone();
     BitsInBytes64((prev.shl((64 - (n as u32))) | b.shr((n as u32))))
-}).collect()).collect(), v: (0..n).map(|i| {
-    let BitsInBytes64(prev) = v[(((i + compile_error!("to_usize receiver should be length type param, got N")compile_error!("Unhandled path call: ["N", "to_usize"]")) - 1) % compile_error!("to_usize receiver should be length type param, got N")compile_error!("Unhandled path call: ["N", "to_usize"]"))].clone();
+}).collect()
+}).collect(), v: (0..n).map(|i| {
+    let BitsInBytes64(prev) = v[(((i + n) - 1) % n)].clone();
     let BitsInBytes64(b) = v[i].clone();
     BitsInBytes64((prev.shl((64 - (n as u32))) | b.shr((n as u32))))
 }).collect(), k: k }
@@ -298,53 +243,55 @@ impl<N> VopeDyn<N, BitsInBytes64> {
     pub fn bit(&self, n: u8) -> VopeDyn<N, Bit, > {
         let k = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
-        VopeDyn { u: (0..n).map(|l| (0..n).map(|i| {
+        VopeDyn { u: (0..k).map(|l| {
+    (0..n).map(|i| {
     let BitsInBytes64(b) = u[l][i].clone();
     Bit((((b >> n) & 1) != 0))
-}).collect()).collect(), v: (0..n).map(|i| {
+}).collect()
+}).collect(), v: (0..n).map(|i| {
     let BitsInBytes64(b) = v[i].clone();
     Bit((((b >> n) & 1) != 0))
 }).collect(), k: k }
     }
 }
 
-impl<N, T> VopeDyn<N, T> {
+impl<N: VoleArray, T: Clone> VopeDyn<N, T> {
     pub fn clone(&self) -> Self {
         let k = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
-        VopeDyn { u: (0..n).map(|l| (0..n).map(|i| u[l][i].clone()).collect()).collect(), v: (0..n).map(|i| v[i].clone()).collect(), k: k }
+        VopeDyn { u: (0..k).map(|l| {
+    (0..n).map(|i| u[l][i].clone()).collect()
+}).collect(), v: (0..n).map(|i| v[i].clone()).collect(), k: k }
     }
 }
 
-impl<T> QDyn<T> {
+impl<T: Clone> QDyn<N, T> {
     pub fn clone(&self) -> Self {
-        let n = self.n;
         let QDyn { q: q, .. } = self;
-        QDyn { q: (0..n).map(|i| q[i].clone()).collect(), n: n }
+        QDyn { q: (0..n).map(|i| q[i].clone()).collect() }
     }
 }
 
-impl<T> DeltaDyn<T> {
+impl<T: Clone> DeltaDyn<N, T> {
     pub fn clone(&self) -> Self {
-        let n = self.n;
         let DeltaDyn { delta: delta, .. } = self;
-        DeltaDyn { delta: (0..n).map(|i| delta[i].clone()).collect(), n: n }
+        DeltaDyn { delta: (0..n).map(|i| delta[i].clone()).collect() }
     }
 }
 
-impl<N, T> VopeDyn<N, T> {
+impl<N: VoleArray, T: PartialEq> VopeDyn<N, T> {
     pub fn eq(&self, other: &'a Self) -> bool {
         let k = self.k;
         let VopeDyn { u: u1, v: v1, .. } = self;
         let VopeDyn { u: u2, v: v2, .. } = other;
         for l in 0..k {
-    for i in 0..compile_error!("to_usize receiver should be length type param, got N")compile_error!("Unhandled path call: ["N", "to_usize"]") {
+    for i in 0..n {
     if (u1[l][i] != u2[l][i]) {
     return false;
 }
 }
 };
-        for i in 0..compile_error!("to_usize receiver should be length type param, got N")compile_error!("Unhandled path call: ["N", "to_usize"]") {
+        for i in 0..n {
     if (v1[i] != v2[i]) {
     return false;
 }
@@ -353,9 +300,8 @@ impl<N, T> VopeDyn<N, T> {
     }
 }
 
-impl<T> QDyn<T> {
+impl<T: PartialEq> QDyn<N, T> {
     pub fn eq(&self, other: &'a Self) -> bool {
-        let n = self.n;
         let QDyn { q: q1, .. } = self;
         let QDyn { q: q2, .. } = other;
         for i in 0..n {
@@ -367,9 +313,8 @@ impl<T> QDyn<T> {
     }
 }
 
-impl<T> DeltaDyn<T> {
+impl<T: PartialEq> DeltaDyn<N, T> {
     pub fn eq(&self, other: &'a Self) -> bool {
-        let n = self.n;
         let DeltaDyn { delta: d1, .. } = self;
         let DeltaDyn { delta: d2, .. } = other;
         for i in 0..n {
@@ -381,148 +326,32 @@ impl<T> DeltaDyn<T> {
     }
 }
 
-impl<N, T> VopeDyn<N, T> {
+impl<N: VoleArray, T: Eq> VopeDyn<N, T> {
 }
 
-impl<T> QDyn<T> {
+impl<T: Eq> QDyn<N, T> {
 }
 
-impl<T> DeltaDyn<T> {
+impl<T: Eq> DeltaDyn<N, T> {
 }
 
-impl QDyn<BitsInBytes> {
-    pub fn rotate_left_bits(&self, n: usize) -> Self {
-        let n = self.n;
-        let QDyn { q: q, .. } = self;
-        QDyn { q: (0..n).map(|i| {
-    let BitsInBytes(b) = q[i].clone();
-    let BitsInBytes(next) = q[((i + 1) % n)].clone();
-    BitsInBytes((b.shl((n as u32)) | next.shr((8 - (n as u32)))))
-}).collect(), n: n }
-    }
-    pub fn rotate_right_bits(&self, n: usize) -> Self {
-        let n = self.n;
-        let QDyn { q: q, .. } = self;
-        QDyn { q: (0..n).map(|i| {
-    let BitsInBytes(prev) = q[(((i + n) - 1) % n)].clone();
-    let BitsInBytes(b) = q[i].clone();
-    BitsInBytes((prev.shl((8 - (n as u32))) | b.shr((n as u32))))
-}).collect(), n: n }
-    }
-    pub fn bit(&self, n: u8) -> QDyn<Bit> {
-        let n = self.n;
-        let QDyn { q: q, .. } = self;
-        QDyn { q: (0..n).map(|i| {
-    let BitsInBytes(b) = q[i].clone();
-    Bit((((b >> n) & 1) != 0))
-}).collect(), n: n }
-    }
-}
-
-impl QDyn<BitsInBytes64> {
-    pub fn rotate_left_bits(&self, n: usize) -> Self {
-        let n = self.n;
-        let QDyn { q: q, .. } = self;
-        QDyn { q: (0..n).map(|i| {
-    let BitsInBytes64(b) = q[i].clone();
-    let BitsInBytes64(next) = q[((i + 1) % n)].clone();
-    BitsInBytes64((b.shl((n as u32)) | next.shr((64 - (n as u32)))))
-}).collect(), n: n }
-    }
-    pub fn rotate_right_bits(&self, n: usize) -> Self {
-        let n = self.n;
-        let QDyn { q: q, .. } = self;
-        QDyn { q: (0..n).map(|i| {
-    let BitsInBytes64(prev) = q[(((i + n) - 1) % n)].clone();
-    let BitsInBytes64(b) = q[i].clone();
-    BitsInBytes64((prev.shl((64 - (n as u32))) | b.shr((n as u32))))
-}).collect(), n: n }
-    }
-    pub fn bit(&self, n: u8) -> QDyn<Bit> {
-        let n = self.n;
-        let QDyn { q: q, .. } = self;
-        QDyn { q: (0..n).map(|i| {
-    let BitsInBytes64(b) = q[i].clone();
-    Bit((((b >> n) & 1) != 0))
-}).collect(), n: n }
-    }
-}
-
-impl DeltaDyn<BitsInBytes> {
-    pub fn rotate_left_bits(&self, n: usize) -> Self {
-        let n = self.n;
-        let DeltaDyn { delta: delta, .. } = self;
-        DeltaDyn { delta: (0..n).map(|i| {
-    let BitsInBytes(b) = delta[i].clone();
-    let BitsInBytes(next) = delta[((i + 1) % n)].clone();
-    BitsInBytes((b.shl((n as u32)) | next.shr((8 - (n as u32)))))
-}).collect(), n: n }
-    }
-    pub fn rotate_right_bits(&self, n: usize) -> Self {
-        let n = self.n;
-        let DeltaDyn { delta: delta, .. } = self;
-        DeltaDyn { delta: (0..n).map(|i| {
-    let BitsInBytes(prev) = delta[(((i + n) - 1) % n)].clone();
-    let BitsInBytes(b) = delta[i].clone();
-    BitsInBytes((prev.shl((8 - (n as u32))) | b.shr((n as u32))))
-}).collect(), n: n }
-    }
-    pub fn bit(&self, n: u8) -> DeltaDyn<Bit> {
-        let n = self.n;
-        let DeltaDyn { delta: delta, .. } = self;
-        DeltaDyn { delta: (0..n).map(|i| {
-    let BitsInBytes(b) = delta[i].clone();
-    Bit((((b >> n) & 1) != 0))
-}).collect(), n: n }
-    }
-}
-
-impl DeltaDyn<BitsInBytes64> {
-    pub fn rotate_left_bits(&self, n: usize) -> Self {
-        let n = self.n;
-        let DeltaDyn { delta: delta, .. } = self;
-        DeltaDyn { delta: (0..n).map(|i| {
-    let BitsInBytes64(b) = delta[i].clone();
-    let BitsInBytes64(next) = delta[((i + 1) % n)].clone();
-    BitsInBytes64((b.shl((n as u32)) | next.shr((64 - (n as u32)))))
-}).collect(), n: n }
-    }
-    pub fn rotate_right_bits(&self, n: usize) -> Self {
-        let n = self.n;
-        let DeltaDyn { delta: delta, .. } = self;
-        DeltaDyn { delta: (0..n).map(|i| {
-    let BitsInBytes64(prev) = delta[(((i + n) - 1) % n)].clone();
-    let BitsInBytes64(b) = delta[i].clone();
-    BitsInBytes64((prev.shl((64 - (n as u32))) | b.shr((n as u32))))
-}).collect(), n: n }
-    }
-    pub fn bit(&self, n: u8) -> DeltaDyn<Bit> {
-        let n = self.n;
-        let DeltaDyn { delta: delta, .. } = self;
-        DeltaDyn { delta: (0..n).map(|i| {
-    let BitsInBytes64(b) = delta[i].clone();
-    Bit((((b >> n) & 1) != 0))
-}).collect(), n: n }
-    }
-}
-
-impl<N, T> VopeDyn<N, T, usize> {
+impl<N: VoleArray, T> VopeDyn<N, T, usize> {
     pub fn constant(v: Vec<T>) -> Self {
         VopeDyn { u: (0..n).map(|_| todo!()).collect(), v: v, k: k }
     }
 }
 
-impl<N, T, U> VopeDyn<N, T> {
+impl<N: VoleArray + VoleArray + VoleArray, T: Add + Clone, U: Clone> VopeDyn<N, T> {
     pub fn add(self, rhs: VopeDyn<N, U, >) -> OutputDyn {
         let k = self.k;
         VopeDyn { u: self.u.iter().zip(rhs.u.iter()).map(|(a, b)| a.iter().zip(b.iter()).map(|(a, b)| (a + b)).collect()).collect(), v: self.v.iter().zip(rhs.v.iter()).map(|(a, b)| (a + b)).collect(), k: k }
     }
 }
 
-impl<N, T, U, O> VopeDyn<N, T> {
+impl<N: VoleArray + VoleArray + VoleArray + Mul, T: BitXor + Clone, U: Clone, O> VopeDyn<N, T> {
     pub fn bitxor(self, rhs: Vec<U>) -> OutputDyn {
         let k = self.k;
-        VopeDyn { u: (0..n).map(|i| {
+        VopeDyn { u: (0..k).map(|i| {
     (0..n).map(|j| {
     let _ = self.u[i][j].clone().bitxor(rhs[((i * k) + j)].clone());
     o
@@ -531,7 +360,7 @@ impl<N, T, U, O> VopeDyn<N, T> {
     }
 }
 
-impl<N, T, U, O> VopeDyn<N, T> {
+impl<N: VoleArray + VoleArray + VoleArray + VoleArray, T: Mul + Into<O> + Clone, U: Mul + Clone, O: Add> VopeDyn<N, T> {
     pub fn mul(self, rhs: DeltaDyn<N, U>) -> OutputDyn {
         let k = self.k;
         QDyn { q: self.u.iter().enumerate().fold(self.v.clone().iter().map(|a| a.into()).collect(), |a, (i, b)| {
@@ -543,16 +372,16 @@ impl<N, T, U, O> VopeDyn<N, T> {
     let _ = (b.clone() * x);
     (m + a)
 }).collect()
-}), n: n }
+}) }
     }
 }
 
-impl<N, T> VopeDyn<N, T> {
+impl<N: VoleArray, T> VopeDyn<N, T> {
     pub fn expand(&self, l: usize) -> VopeDyn<N, T, > {
         let k = self.k;
         let Self { u: u, v: v } = self;
-        VopeDyn { u: (0..n).map(|l| {
-    (0..n).map(|i| u.get(l).map_or(Vec::new(), |a| a[i].clone())).collect()
+        VopeDyn { u: (0..l).map(|l| {
+    (0..n).map(|i| u.get(l).map_or(T::new(), |a| a[i].clone())).collect()
 }).collect(), v: v.clone(), k: k }
     }
     pub fn rotate_left(&self, n: usize) -> Self {
@@ -563,12 +392,12 @@ impl<N, T> VopeDyn<N, T> {
         let k = self.k;
         self.remap(|a| a.wrapping_add(n))
     }
-    pub fn remap<M>(&self, f: _) -> VopeDyn<M, T, > {
+    pub fn remap<M: VoleArray>(&self, f: _) -> VopeDyn<M, T, > {
         let k = self.k;
         let Self { u: u, v: v } = self;
-        VopeDyn { u: (0..n).map(|l| {
-    (0..n).map(|i| u[l][(f(i) % compile_error!("to_usize receiver should be length type param, got N")compile_error!("Unhandled path call: ["N", "to_usize"]"))].clone()).collect()
-}).collect(), v: (0..n).map(|i| v[(f(i) % compile_error!("to_usize receiver should be length type param, got N")compile_error!("Unhandled path call: ["N", "to_usize"]"))].clone()).collect(), k: k }
+        VopeDyn { u: (0..k).map(|l| {
+    (0..m).map(|i| u[l][(f(i) % n)].clone()).collect()
+}).collect(), v: (0..m).map(|i| v[(f(i) % n)].clone()).collect(), k: k }
     }
 }
 
@@ -576,7 +405,7 @@ impl<N> VopeDyn<N, Bit> {
     pub fn scale<T>(self, f: _) -> VopeDyn<N, T, K> {
         let k = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
-        VopeDyn { u: (0..n).map(|l| {
+        VopeDyn { u: (0..k).map(|l| {
     (0..n).map(|i| {
     let Bit(b) = u[l][i].clone();
     f(b)
@@ -586,125 +415,5 @@ impl<N> VopeDyn<N, Bit> {
     f(b)
 }).collect(), k: k }
     }
-}
-
-impl<B, D> ABODyn<B, D> {
-    pub fn open(&self, t: usize, u: usize, bad: Vec<u64>, rand: &'a _) -> ABOOpeningDyn<B, D, > {
-        let k = self.k;
-        ABOOpeningDyn { bad: bad.clone(), openings: (0..n).map(|i| {
-    let bad = bad.clone();
-    (0..n).map(|j| {
-    let i2 = (i | ((j as usize) << ilog2(t)));
-    if bad.contains(&(i2 as u64)) {
-    let h = compile_error!("Unhandled path call: ["CommitmentCore", "commit"]");
-    (0..n).map(|j| h.as_ref().get(j).cloned().unwrap_or_default()).collect()
-} else {
-    (0..n).map(|j| {
-    self.per_byte[i2].get(j).cloned().unwrap_or_default()
-}).collect()
-}
-}).collect()
-}).collect(), t: t, u: u }
-    }
-}
-
-impl<B, D> ABOOpeningDyn<B, D> {
-    pub fn validate(&self, commit: &'a Vec<u8>, rand: &'a _) -> bool {
-        let t = self.t;
-        let u = self.u;
-        let mut h = compile_error!("Unhandled path call: ["D", "new"]");
-        for i in 0..t {
-    for b in 0..u {
-    let i2 = (i | ((b as usize) << ilog2(t)));
-    if self.bad.contains(&(i2 as u64)) {
-    h.update(&self.openings[i][b][(0 + compile_error!("Unhandled path call: ["D", "OutputSize", "to_usize"]"))]);
-} else {
-    h.update(&compile_error!("Unhandled path call: ["CommitmentCore", "commit"]"));
-}
-}
-};
-        (h.finalize().as_slice() == commit.as_slice())
-    }
-    pub fn to_vole_material<N>(&self) -> Vec<VopeDyn<BlockSizeDyn, u8>> {
-        let t = self.t;
-        let u = self.u;
-        compile_error!("Unhandled path call: ["core", "array", "from_fn"]")
-    }
-    pub fn to_vole_material_typenum(&self, n: usize) -> Vec<VopeDyn<BlockSizeDyn, u8>> {
-        let t = self.t;
-        let u = self.u;
-        (0..n).map(|i| {
-    let s = &self.openings[i];
-    create_vole_from_material(s)
-}).collect()
-    }
-    pub fn to_vole_material_expanded<N, X>(&self, f: _) -> Vec<VopeDyn<BlockSizeDyn, u8>> {
-        let t = self.t;
-        let u = self.u;
-        compile_error!("Unhandled path call: ["core", "array", "from_fn"]")
-    }
-    pub fn to_vole_material_typenum_expanded<X>(&self, n: usize, f: _) -> Vec<VopeDyn<BlockSizeDyn, u8>> {
-        let t = self.t;
-        let u = self.u;
-        (0..n).map(|i| {
-    let s = &self.openings[i];
-    create_vole_from_material_expanded(s, &mut f)
-}).collect()
-    }
-}
-
-impl<B, D> ABODyn<B, D> {
-    pub fn to_vole_material<N>(&self) -> Vec<VopeDyn<BlockSizeDyn, u8>> {
-        let k = self.k;
-        compile_error!("Unhandled path call: ["core", "array", "from_fn"]")
-    }
-    pub fn to_vole_material_typenum(&self, n: usize) -> Vec<VopeDyn<BlockSizeDyn, u8>> {
-        let k = self.k;
-        (0..n).map(|i| {
-    let s = &self.per_byte[((i * n) + 0)][(0 + n)];
-    create_vole_from_material(s)
-}).collect()
-    }
-    pub fn to_vole_material_expanded<N, X>(&self, f: _) -> Vec<VopeDyn<BlockSizeDyn, u8>> {
-        let k = self.k;
-        compile_error!("Unhandled path call: ["core", "array", "from_fn"]")
-    }
-    pub fn to_vole_material_typenum_expanded<X>(&self, n: usize, f: _) -> Vec<VopeDyn<BlockSizeDyn, u8>> {
-        let k = self.k;
-        (0..n).map(|i| {
-    let s = &self.per_byte[((i * n) + 0)][(0 + n)];
-    create_vole_from_material_expanded(s, &mut f)
-}).collect()
-    }
-}
-
-pub fn create_vole_from_material<B>(s: &'a Vec<_>) -> VopeDyn<BlockSizeDyn, u8> {
-    let _ = s.iter().fold(Vec::new(), |a, b| {
-    a.iter().zip((0..n).map(|i| b[i]).collect().iter()).map(|(a, b)| a.bitxor(b)).collect()
-});
-    let _ = s.iter().enumerate().fold(Vec::new(), |a, (i, b)| {
-    a.iter().zip((0..n).map(|i| b[i]).collect().iter()).map(|(a, b)| {
-    a.bitxor(b).bitxor((i as u8))
-}).collect()
-});
-    VopeDyn { u: (0..n).map(|_| u.clone()).collect(), v: v, k: k }
-}
-
-pub fn create_vole_from_material_expanded<B, X>(s: &'a Vec<_>, f: _) -> VopeDyn<BlockSizeDyn, u8> {
-    let _ = s.iter().iter().map(|b| f(&b[(0 + compile_error!("Unhandled path call: ["B", "BlockSize", "to_usize"]"))])).collect().fold(Vec::new(), |a, b| {
-    a.iter().zip((0..n).map(|i| b.as_ref()[i]).collect().iter()).map(|(a, b)| {
-    a.bitxor(b)
-}).collect()
-});
-    let _ = s.iter().iter().map(|b| f(&b[(0 + compile_error!("Unhandled path call: ["B", "BlockSize", "to_usize"]"))])).collect().enumerate().fold(Vec::new(), |a, (i, b)| {
-    a.iter().zip((0..n).map(|i| b.as_ref()[i]).collect().iter()).map(|(a, b)| {
-    a.bitxor(b).bitxor((i as u8))
-}).collect()
-});
-    VopeDyn { u: (0..n).map(|_| u.clone()).collect(), v: v, k: k }
-}
-
-pub fn double<B>(a: Vec<u8>) -> Vec<Vec<u8>> {
-    return compile_error!("Unhandled path call: ["core", "array", "from_fn"]");
 }
 

@@ -101,6 +101,15 @@ fn test_specialize_volar_spec() {
             TraitKind::External { path } => {
                 println!("  External: {}", path.join("::"));
             }
+            TraitKind::Into(ty) => {
+                println!("  Into: {:?}", ty);
+            }
+            TraitKind::AsRef(ty) => {
+                println!("  AsRef: {:?}", ty);
+            }
+            TraitKind::Expand(ty) => {
+                println!("  Expand: {:?}", ty);
+            }
         }
     }
 

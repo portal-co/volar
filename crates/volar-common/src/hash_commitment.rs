@@ -21,17 +21,19 @@ impl<D: Digest> PartialEq for CommitmentCore<D> {
     }
 }
 impl<D: Digest> Eq for CommitmentCore<D> {}
-impl<D: Digest> CommitmentCore<D> {
-    pub fn commit(message: &impl AsRef<[u8]>, rand: &impl AsRef<[u8]>) -> Self {
-        let mut hasher = D::new();
-        hasher.update(message.as_ref());
-        hasher.update(rand.as_ref());
-        CommitmentCore(hasher.finalize())
-    }
+pub fn commit<D: Digest>(message: &impl AsRef<[u8]>, rand: &impl AsRef<[u8]>) -> CommitmentCore<D> {
+    let mut hasher = D::new();
+    hasher.update(message.as_ref());
+    hasher.update(rand.as_ref());
+    CommitmentCore(hasher.finalize())
 }
 impl<D: Digest> CommitmentCore<D> {
-    pub fn validate(&self, opened_message: &impl AsRef<[u8]>, opened_rand: &impl AsRef<[u8]>) -> bool {
-        let recomputed: CommitmentCore<D> = CommitmentCore::commit(opened_message, opened_rand);
+    pub fn validate(
+        &self,
+        opened_message: &impl AsRef<[u8]>,
+        opened_rand: &impl AsRef<[u8]>,
+    ) -> bool {
+        let recomputed: CommitmentCore<D> = commit::<D>(opened_message, opened_rand);
         &recomputed.0 == &self.0
     }
 }

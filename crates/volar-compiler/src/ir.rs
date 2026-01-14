@@ -6,10 +6,20 @@
 use core::fmt;
 
 #[cfg(feature = "std")]
-use std::{string::{String, ToString}, vec::Vec, boxed::Box, format};
+use std::{
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
 
 #[cfg(not(feature = "std"))]
-use alloc::{string::{String, ToString}, vec::Vec, boxed::Box, format};
+use alloc::{
+    boxed::Box,
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
 
 use thiserror::Error;
 
@@ -149,7 +159,13 @@ pub enum ArrayLength {
 /// Typenum constants commonly used
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TypeNumConst {
-    U0, U1, U2, U8, U16, U32, U64,
+    U0,
+    U1,
+    U2,
+    U8,
+    U16,
+    U32,
+    U64,
 }
 
 impl TypeNumConst {
@@ -253,11 +269,25 @@ impl fmt::Display for StructKind {
 /// Standard mathematical traits
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MathTrait {
-    Add, Sub, Mul, Div, Rem,
-    BitAnd, BitOr, BitXor, Shl, Shr,
-    Neg, Not,
-    PartialEq, Eq, PartialOrd, Ord,
-    Clone, Copy, Default,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    Neg,
+    Not,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Clone,
+    Copy,
+    Default,
     Unsigned,
 }
 
@@ -326,10 +356,13 @@ impl CryptoTrait {
 }
 
 /// Unified trait classification
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TraitKind {
     Math(MathTrait),
     Crypto(CryptoTrait),
+    Into(Box<IrType>),
+    AsRef(Box<IrType>),
+    Expand(Box<IrType>),
     External { path: Vec<String> },
     Custom(String),
 }
@@ -343,7 +376,9 @@ impl TraitKind {
             return Self::Crypto(crypto);
         }
         if segments.len() > 1 {
-            return Self::External { path: segments.to_vec() };
+            return Self::External {
+                path: segments.to_vec(),
+            };
         }
         Self::Custom(segments.last().cloned().unwrap_or_default())
     }
@@ -356,6 +391,24 @@ impl fmt::Display for TraitKind {
             Self::Crypto(c) => write!(f, "{:?}", c),
             Self::External { path } => write!(f, "{}", path.join("::")),
             Self::Custom(name) => write!(f, "{}", name),
+            Self::Into(ty) => {
+                write!(f, "Into<")?;
+                // write!(f, "{}", ty)?;
+                todo!("Implement Display for IrType");
+                write!(f, ">")
+            }
+            Self::AsRef(ty) => {
+                write!(f, "AsRef<")?;
+                // write!(f, "{}", ty)?;
+                todo!("Implement Display for IrType");
+                write!(f, ">")
+            }
+            Self::Expand(ty) => {
+                write!(f, "FnMut(&[u8]) -> ")?;
+                // write!(f, "{}", ty)?;
+                todo!("Implement Display for IrType");
+                write!(f, "")
+            }
         }
     }
 }
@@ -363,7 +416,8 @@ impl fmt::Display for TraitKind {
 /// VOLE-specific method names
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VoleMethod {
-    Remap, RotateLeft,
+    Remap,
+    RotateLeft,
 }
 
 impl VoleMethod {
@@ -379,7 +433,13 @@ impl VoleMethod {
 /// Cryptographic method names
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CryptoMethod {
-    EncryptBlock, GenAbo, Open, Validate, Commit, Update, Finalize,
+    EncryptBlock,
+    GenAbo,
+    Open,
+    Validate,
+    Commit,
+    Update,
+    Finalize,
 }
 
 impl CryptoMethod {
@@ -408,17 +468,19 @@ pub enum MethodKind {
 
 impl MethodKind {
     pub fn from_str(s: &str) -> Self {
-        if let Some(v) = VoleMethod::try_from_str(s) { return Self::Vole(v); }
-        if let Some(c) = CryptoMethod::try_from_str(s) { return Self::Crypto(c); }
-        
+        if let Some(v) = VoleMethod::try_from_str(s) {
+            return Self::Vole(v);
+        }
+        if let Some(c) = CryptoMethod::try_from_str(s) {
+            return Self::Crypto(c);
+        }
+
         match s {
             "clone" | "default" | "into" | "from" | "as_ref" | "as_slice" | "get" | "len"
             | "is_empty" | "contains" | "unwrap" | "unwrap_or" | "unwrap_or_default" | "expect"
-            | "to_usize" | "to_string"
-            | "as_ptr" | "wrapping_add" | "wrapping_sub" | "checked_add" | "checked_sub"
-            | "saturating_add" | "saturating_sub" | "bitxor" | "deref" | "map" | "fold" | "iter" => {
-                Self::Std(s.to_string())
-            }
+            | "to_usize" | "to_string" | "as_ptr" | "wrapping_add" | "wrapping_sub"
+            | "checked_add" | "checked_sub" | "saturating_add" | "saturating_sub" | "bitxor"
+            | "deref" | "map" | "fold" | "iter" => Self::Std(s.to_string()),
             _ => Self::Unknown(s.to_string()),
         }
     }
@@ -629,7 +691,10 @@ pub enum IrType {
     TypeParam(String),
     Tuple(Vec<IrType>),
     Unit,
-    Reference { mutable: bool, elem: Box<IrType> },
+    Reference {
+        mutable: bool,
+        elem: Box<IrType>,
+    },
     Projection {
         base: Box<IrType>,
         assoc: AssociatedType,
@@ -644,6 +709,9 @@ pub enum IrType {
     },
     Never,
     Infer,
+    Param {
+        path: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -843,14 +911,33 @@ impl fmt::Display for IrLit {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SpecBinOp {
-    Add, Sub, Mul, Div, Rem,
-    BitAnd, BitOr, BitXor, Shl, Shr,
-    Eq, Ne, Lt, Le, Gt, Ge,
-    And, Or,
-    Range, RangeInclusive,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
+    Range,
+    RangeInclusive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SpecUnaryOp {
-    Neg, Not, Deref, Ref, RefMut,
+    Neg,
+    Not,
+    Deref,
+    Ref,
+    RefMut,
 }

@@ -5,10 +5,11 @@ impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::BlockSiz
                 GenericArray<GenericArray<u8, <B::BlockSize as Max<D::OutputSize>>::Output>, U>,
             > + ArrayLength<u64>,
         U: ArrayLength<GenericArray<u8, <B::BlockSize as Max<D::OutputSize>>::Output>>,
+        R: AsRef<[u8]>,
     >(
         &self,
         bad: GenericArray<u64, T>,
-        rand: &impl AsRef<[u8]>,
+        rand: &R,
     ) -> ABOOpening<B, D, T, U>
     where
         B::BlockSize: Max<D::OutputSize>,
@@ -22,7 +23,7 @@ impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::BlockSiz
                 GenericArray::generate(move |j| {
                     let i2 = i | ((j as usize) << T::to_usize().ilog2());
                     if bad.contains(&(i2 as u64)) {
-                        let h = CommitmentCore::<D>::commit(&self.per_byte[i2], rand);
+                        let h = commit::<D>(&self.per_byte[i2], rand);
                         GenericArray::generate(|j| h.as_ref().get(j).cloned().unwrap_or_default())
                     } else {
                         GenericArray::generate(|j| {
@@ -42,26 +43,26 @@ impl<
     U: ArrayLength<GenericArray<u8, <B::BlockSize as Max<D::OutputSize>>::Output>>,
 > ABOOpening<B, D, T, U>
 {
-    pub fn validate(
+    pub fn validate<R: AsRef<[u8]>>(
         &self,
-        commit: &GenericArray<u8, D::OutputSize>,
-        rand: &impl AsRef<[u8]>,
+        commit_: &GenericArray<u8, D::OutputSize>,
+        rand: &R,
     ) -> bool {
         let mut h = D::new();
         for i in 0..T::to_usize() {
             for b in 0..U::to_usize() {
                 let i2 = i | ((b as usize) << T::to_usize().ilog2());
                 if self.bad.contains(&(i2 as u64)) {
-                    h.update(&self.openings[i][b][..(D::OutputSize::to_usize())]);
+                    h.update(&self.openings[i][b][..(<D::OutputSize as Unsigned>::to_usize())]);
                 } else {
-                    h.update(&CommitmentCore::<D>::commit(
-                        &&self.openings[i][b][..(B::BlockSize::to_usize())],
+                    h.update(&commit::<D>(
+                        &&self.openings[i][b][..(<B::BlockSize as Unsigned>::to_usize())],
                         rand,
                     ));
                 }
             }
         }
-        h.finalize().as_slice() == commit.as_slice()
+        h.finalize().as_slice() == commit_.as_slice()
     }
     pub fn to_vole_material<const N: usize>(&self) -> [Vope<B::BlockSize, u8>; N]
     where
@@ -83,9 +84,9 @@ impl<
             create_vole_from_material::<B>(s)
         })
     }
-    pub fn to_vole_material_expanded<const N: usize, X: AsRef<[u8]>>(
+    pub fn to_vole_material_expanded<const N: usize, X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(
         &self,
-        mut f: impl FnMut(&[u8]) -> X,
+        mut f: F,
     ) -> [Vope<B::BlockSize, u8>; N]
     where
         B::BlockSize: VoleArray<u8>,
@@ -98,9 +99,10 @@ impl<
     pub fn to_vole_material_typenum_expanded<
         N: ArrayLength<Vope<B::BlockSize, u8>>,
         X: AsRef<[u8]>,
+        F: FnMut(&[u8]) -> X,
     >(
         &self,
-        mut f: impl FnMut(&[u8]) -> X,
+        mut f: F,
     ) -> GenericArray<Vope<B::BlockSize, u8>, N>
     where
         B::BlockSize: VoleArray<u8>,

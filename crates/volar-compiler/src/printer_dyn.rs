@@ -105,12 +105,7 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
                         p.name.clone(),
                         p.bounds
                             .iter()
-                            .map(|b| match &b.trait_kind {
-                                TraitKind::Crypto(c) => format!("{:?}", c),
-                                TraitKind::Math(math_trait) => todo!(),
-                                TraitKind::External { path } => todo!(),
-                                TraitKind::Custom(_) => todo!(),
-                            })
+                            .map(|b| bname(b))
                             .collect::<Vec<_>>()
                             .join(" + "),
                     )),
@@ -278,7 +273,61 @@ fn write_struct_dyn(out: &mut String, s: &IrStruct, struct_info: &BTreeMap<Strin
         writeln!(out, "}}").unwrap();
     }
 }
-
+fn bname(b: &IrTraitBound) -> String {
+    match &b.trait_kind {
+        TraitKind::Crypto(c) => format!("{:?}", c),
+        TraitKind::Math(math_trait) => format!("{:?}", math_trait),
+        TraitKind::External { path } => format!(
+            "compile_error!(\"External trait bounds not supported in dyn code: {:?}\")",
+            path
+        ),
+        TraitKind::Custom(path) => format!(
+            "compile_error!(\"External trait bounds not supported in dyn code: {}\")",
+            path
+        ),
+        TraitKind::Into(t) => format!(
+            "Into<{}>",
+            match &**t {
+                IrType::TypeParam(t) => t.clone(),
+                a => format!("compile_error!(\"Into bounds not supported in dyn code {a:?}\")"),
+            }
+        ),
+        TraitKind::AsRef(t) => format!(
+            "AsRef<{}>",
+            match &**t {
+                IrType::TypeParam(t) => t.clone(),
+                IrType::Array {
+                    kind: ArrayKind::Slice,
+                    elem,
+                    len,
+                } => match &**elem {
+                    IrType::Primitive(PrimitiveType::U8) => "[u8]".to_string(),
+                    a => format!(
+                        "compile_error!(\"AsRef bounds with slice elem not supported in dyn code {a:?}\")"
+                    ),
+                },
+                a => format!("compile_error!(\"AsRef bounds not supported in dyn code {a:?}\")"),
+            }
+        ),
+        TraitKind::Expand(t) => format!(
+            "FnMut(&[u8]) -> {}",
+            match &**t {
+                IrType::TypeParam(t) => t.clone(),
+                a => format!("compile_error!(\"Expand bounds not supported in dyn code {a:?}\")"),
+            }
+        ),
+    }
+}
+fn pname(p: &IrGenericParam) -> String {
+    match &*p.bounds {
+        [] => p.name.clone(),
+        x => format!(
+            "{}: {}",
+            p.name,
+            x.iter().map(|b| bname(b)).collect::<Vec<_>>().join(" + ")
+        ),
+    }
+}
 fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, StructInfo>) {
     let generics = i
         .generics
@@ -327,7 +376,7 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
         let c = classify_generic(p);
         cur_params.insert(p.name.clone(), (format!(""), c.clone()));
         if c != GenericKind::Length && !info.length_witnesses.contains(&p.name.to_lowercase()) {
-            impl_type_params.push(p.name.clone());
+            impl_type_params.push(pname(p));
         }
     }
 
@@ -391,7 +440,7 @@ fn write_function_dyn(
         cur_params.insert(p.name.clone(), (format!(""), k.clone()));
         match k {
             GenericKind::Length => length_params.push(p.name.clone()),
-            _ => type_params.push(p.name.clone()),
+            _ => type_params.push(pname(p)),
         }
     }
 
@@ -515,6 +564,11 @@ fn write_type_dyn(
                 }
                 write!(out, ">").unwrap();
             }
+        }
+
+        IrType::Param { path } => {
+            let full_path = path.join("::");
+            write!(out, "<{} as typenum::Unsigned>::USIZE", full_path).unwrap();
         }
 
         IrType::TypeParam(p) => {
@@ -685,16 +739,11 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             // Handle GenericArray::default() -> Vec::new()
             if let IrExpr::Path { segments, .. } = func.as_ref() {
                 if let [receiver, path] = &segments[..] {
-                    if path == "default" && args.is_empty() {
-                        write!(out, "Vec::new()").unwrap();
-                        return;
-                    }
-                    if path == "generate" && args.len() == 1 {
-                        // GenericArray::generate(|i| ...) -> (0..n).map(|i| ...).collect()
-                        // We need the length from context, but for now use a placeholder
-                        write!(out, "(0..n).map(").unwrap();
-                        write_expr_dyn(out, &args[0], ctx);
-                        write!(out, ").collect()").unwrap();
+                    if (path == "default" || path == "new") && args.is_empty() {
+                        write!(out, "{}::new()", match &**receiver{
+                            "GenericArray" => "Vec",
+                            a => a,
+                        }).unwrap();
                         return;
                     }
                     if path == "to_usize" {
@@ -708,17 +757,9 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                             return;
                         }
                         // GenericArray::to_usize() -> n
-                        if is_length_type_param!(receiver) {
-                            write!(out, "{}", receiver.to_lowercase()).unwrap();
-                            return;
-                        } else {
-                            write!(
-                                out,
-                                "compile_error!(\"to_usize receiver should be length type param, got {}\")",
-                                receiver
-                            )
-                            .unwrap();
-                        }
+
+                        write!(out, "{}", receiver.to_lowercase()).unwrap();
+                        return;
                     }
                 }
                 // todo!("Handle other path calls: {segments:?}");

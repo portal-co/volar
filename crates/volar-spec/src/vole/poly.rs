@@ -29,7 +29,7 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
         T: Clone + Into<A>,
     {
         super::Q {
-            q: GenericArray::generate(|i| {
+            q: GenericArray::<A, M>::generate(|i| {
                 let mut sum: A = self.c0.clone().into();
                 for _ in 0..N::to_usize() {
                     sum = root.delta[i].clone() * sum;
@@ -63,7 +63,7 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
         T: Clone + Into<A>,
     {
         super::Q {
-            q: GenericArray::generate(|i| {
+            q: GenericArray::<A, M>::generate(|i| {
                 let mut sum: A = self.c0.clone().into();
                 for _ in 0..N::to_usize() {
                     sum = root.delta[i].clone() * sum;
@@ -97,7 +97,7 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
         T: Into<O> + Clone,
         M: VoleArray<T> + VoleArray<O>,
     {
-        let v = GenericArray::generate(|i| {
+        let v = GenericArray::<O, M>::generate(|i| {
             // core::array::from_fn(|j| {
             let mut sum = O::default();
             for k in 0..N::to_usize() {
@@ -111,8 +111,8 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
             sum + c0
             // })
         });
-        let u = GenericArray::generate(|l| {
-            GenericArray::generate(|i| {
+        let u = GenericArray::<GenericArray<O, M>, XS>::generate(|l| {
+            GenericArray::<O, M>::generate(|i| {
                 // core::array::from_fn(|j| {
                 let mut sum = O::default();
                 for k in 0..N::to_usize() {
@@ -153,7 +153,7 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
         T: Into<O> + Clone,
         M: VoleArray<T> + VoleArray<O>,
     {
-        let v = GenericArray::generate(|i| {
+        let v = GenericArray::<O, M>::generate(|i| {
             // core::array::from_fn(|j| {
             let mut sum = O::default();
             for k in 0..N::to_usize() {
@@ -167,8 +167,8 @@ impl<N: ArrayLength<T>, T> Poly<N, T> {
             sum + c0
             // })
         });
-        let u = GenericArray::generate(|l| {
-            GenericArray::generate(|i| {
+        let u = GenericArray::<GenericArray<O, M>, XS>::generate(|l| {
+            GenericArray::<O, M>::generate(|i| {
                 // core::array::from_fn(|j| {
                 let mut sum = O::default();
                 for k in 0..N::to_usize() {
