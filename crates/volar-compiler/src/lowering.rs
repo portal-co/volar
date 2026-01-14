@@ -32,7 +32,7 @@ impl TypeContext {
 
                 for item in &imp.items {
                     if let IrImplItem::AssociatedType { name, ty } = item {
-                        ctx.assoc_types.insert((_self_ty.clone(), *name), ty.clone());
+                        ctx.assoc_types.insert((_self_ty.clone(), name.clone()), ty.clone());
                     }
                 }
             }
@@ -64,12 +64,12 @@ impl TypeContext {
                 let sub_base = self.substitute(base, mapping);
                 let base_str = type_to_string(&sub_base);
 
-                if let Some(resolved) = self.assoc_types.get(&(base_str, *assoc)) {
+                if let Some(resolved) = self.assoc_types.get(&(base_str, assoc.clone())) {
                     resolved.clone()
                 } else {
                     IrType::Projection {
                         base: Box::new(sub_base),
-                        assoc: *assoc,
+                        assoc: assoc.clone(),
                     }
                 }
             }

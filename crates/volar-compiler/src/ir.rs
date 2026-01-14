@@ -413,9 +413,14 @@ impl MethodKind {
 }
 
 /// Associated type names in traits
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AssociatedType {
-    Output, Key, BlockSize, OutputSize, TotalLoopCount, Custom(&'static str),
+    Output,
+    Key,
+    BlockSize,
+    OutputSize,
+    TotalLoopCount,
+    Other(String),
 }
 
 impl AssociatedType {
@@ -426,7 +431,7 @@ impl AssociatedType {
             "BlockSize" => Self::BlockSize,
             "OutputSize" => Self::OutputSize,
             "TotalLoopCount" => Self::TotalLoopCount,
-            _ => Self::Output, // Should probably be more robust
+            _ => Self::Other(s.to_string()),
         }
     }
 }
@@ -721,10 +726,6 @@ pub enum IrExpr {
         ret_type: Option<Box<IrType>>,
         body: Box<IrExpr>,
     },
-    Ref {
-        mutable: bool,
-        expr: Box<IrExpr>,
-    },
     Cast {
         expr: Box<IrExpr>,
         ty: Box<IrType>,
@@ -812,15 +813,16 @@ impl fmt::Display for IrLit {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SpecBinOp {
     Add, Sub, Mul, Div, Rem,
     BitAnd, BitOr, BitXor, Shl, Shr,
     Eq, Ne, Lt, Le, Gt, Ge,
     And, Or,
+    Range, RangeInclusive,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SpecUnaryOp {
-    Neg, Not, Deref,
+    Neg, Not, Deref, Ref, RefMut,
 }

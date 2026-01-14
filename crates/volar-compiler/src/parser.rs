@@ -412,7 +412,7 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
             index: Box::new(convert_expr(&i.index)?),
         }),
         Expr::Range(r) => Ok(IrExpr::Binary {
-            op: SpecBinOp::Add, // Placeholder, need better representation for naked ranges
+            op: if matches!(r.limits, syn::RangeLimits::Closed(_)) { SpecBinOp::RangeInclusive } else { SpecBinOp::Range },
             left: Box::new(r.start.as_ref().map(|e| convert_expr(e)).transpose()?.unwrap_or(IrExpr::Lit(IrLit::Int(0)))),
             right: Box::new(r.end.as_ref().map(|e| convert_expr(e)).transpose()?.unwrap_or(IrExpr::Lit(IrLit::Int(0)))),
         }),
@@ -437,8 +437,8 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
             ret_type: None,
             body: Box::new(convert_expr(&c.body)?),
         }),
-        Expr::Reference(r) => Ok(IrExpr::Ref {
-            mutable: r.mutability.is_some(),
+        Expr::Reference(r) => Ok(IrExpr::Unary {
+            op: if r.mutability.is_some() { SpecUnaryOp::RefMut } else { SpecUnaryOp::Ref },
             expr: Box::new(convert_expr(&r.expr)?),
         }),
         Expr::Cast(c) => Ok(IrExpr::Cast {
@@ -611,11 +611,21 @@ fn convert_bin_op(op: syn::BinOp) -> SpecBinOp {
         syn::BinOp::Sub(_) => SpecBinOp::Sub,
         syn::BinOp::Mul(_) => SpecBinOp::Mul,
         syn::BinOp::Div(_) => SpecBinOp::Div,
+        syn::BinOp::Rem(_) => SpecBinOp::Rem,
+        syn::BinOp::BitAnd(_) => SpecBinOp::BitAnd,
+        syn::BinOp::BitOr(_) => SpecBinOp::BitOr,
         syn::BinOp::BitXor(_) => SpecBinOp::BitXor,
+        syn::BinOp::Shl(_) => SpecBinOp::Shl,
+        syn::BinOp::Shr(_) => SpecBinOp::Shr,
         syn::BinOp::Eq(_) => SpecBinOp::Eq,
+        syn::BinOp::Ne(_) => SpecBinOp::Ne,
+        syn::BinOp::Lt(_) => SpecBinOp::Lt,
+        syn::BinOp::Le(_) => SpecBinOp::Le,
+        syn::BinOp::Gt(_) => SpecBinOp::Gt,
+        syn::BinOp::Ge(_) => SpecBinOp::Ge,
         syn::BinOp::And(_) => SpecBinOp::And,
         syn::BinOp::Or(_) => SpecBinOp::Or,
-        _ => SpecBinOp::Add,
+        _ => SpecBinOp::Add, // Fallback for things like AddAssign which we handle via Assign + Binary
     }
 }
 
