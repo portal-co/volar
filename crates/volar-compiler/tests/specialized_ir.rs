@@ -107,8 +107,8 @@ fn test_specialize_volar_spec() {
             TraitKind::AsRef(ty) => {
                 println!("  AsRef: {:?}", ty);
             }
-            TraitKind::Expand(ty) => {
-                println!("  Expand: {:?}", ty);
+            TraitKind::Fn(inp, ty) => {
+                println!("  Fn-like trait: {:?} -> {:?}", inp, ty);
             }
         }
     }

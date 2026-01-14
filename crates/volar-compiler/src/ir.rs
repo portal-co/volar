@@ -362,7 +362,8 @@ pub enum TraitKind {
     Crypto(CryptoTrait),
     Into(Box<IrType>),
     AsRef(Box<IrType>),
-    Expand(Box<IrType>),
+    /// Fn-like trait: input variant and output type
+    Fn(FnInput, Box<IrType>),
     External { path: Vec<String> },
     Custom(String),
 }
@@ -397,11 +398,21 @@ impl fmt::Display for TraitKind {
             Self::AsRef(ty) => {
                 write!(f, "AsRef<{}>", ty)
             }
-            Self::Expand(ty) => {
-                write!(f, "FnMut(&[u8]) -> {}", ty)
+            Self::Fn(input, ty) => {
+                match input {
+                    FnInput::BytesSlice => write!(f, "FnMut(FnInput<'_>) -> {}", ty),
+                    FnInput::Size => write!(f, "FnMut(FnInput<'_>) -> {}", ty),
+                }
             }
         }
     }
+}
+
+/// Input kinds allowed for generated Fn-like traits
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum FnInput {
+    BytesSlice,
+    Size,
 }
 
 /// VOLE-specific method names

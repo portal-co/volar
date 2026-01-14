@@ -460,8 +460,54 @@ fn convert_trait_bound(b: &syn::TraitBound) -> Result<IrTraitBound> {
         }
         Some("FnMut") => {
             if let syn::PathArguments::Parenthesized(args) = &last_segment.arguments {
+                // We support a single input which must be either `&[u8]` or `usize`.
+                let input_kind = if args.inputs.len() == 1 {
+                    match &args.inputs.first().unwrap() {
+                        syn::Type::Reference(r) => {
+                            // check for &[u8]
+                            if let syn::Type::Slice(s) = &*r.elem {
+                                if let syn::Type::Path(p) = &*s.elem {
+                                    if let Some(ident) = p.path.segments.last() {
+                                        if ident.ident == "u8" {
+                                            Some(crate::ir::FnInput::BytesSlice)
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        }
+                        syn::Type::Path(p) => {
+                            if let Some(ident) = p.path.segments.last() {
+                                if ident.ident == "usize" {
+                                    Some(crate::ir::FnInput::Size)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
                 match &args.output {
-                    syn::ReturnType::Type(_, ty) => TraitKind::Expand(Box::new(convert_type(ty)?)),
+                    syn::ReturnType::Type(_, ty) => {
+                        if let Some(inp) = input_kind {
+                            TraitKind::Fn(inp, Box::new(convert_type(ty)?))
+                        } else {
+                            TraitKind::from_path(&path_names)
+                        }
+                    }
                     _ => TraitKind::from_path(&path_names),
                 }
             } else {

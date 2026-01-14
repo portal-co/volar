@@ -392,10 +392,7 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
     )
     .unwrap();
     writeln!(out).unwrap();
-    // Input enum for generic `Fn`-style trait bounds (used by `Expand`)
-    writeln!(out, "/// Input enum for generated Fn-like traits").unwrap();
-    writeln!(out, "pub enum FnInput<'a> {{ Bytes(&'a [u8]), Size(usize) }}").unwrap();
-    writeln!(out).unwrap();
+
 
     // Helper function
     writeln!(out, "/// Compute integer log2").unwrap();
@@ -594,9 +591,13 @@ fn bname(
         TraitKind::AsRef(t) => {
             return format!("AsRef<{}>", type_to_string(&**t, cur_params, struct_info));
         }
-        TraitKind::Expand(t) => {
+        TraitKind::Fn(i, t) => {
             return format!(
-                "FnMut(FnInput<'_>) -> {}",
+                "FnMut({}) -> {}",
+                match i {
+                    FnInput::BytesSlice => "&[u8]",
+                    FnInput::Size => "usize",
+                },
                 type_to_string(&**t, cur_params, struct_info)
             );
         }
