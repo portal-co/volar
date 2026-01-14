@@ -226,6 +226,8 @@ struct StructInfo {
     type_params: Vec<(String, String)>,
     /// Original generics in declaration order with their kind (Length/Crypto/Type) and param kind
     orig_generics: Vec<(String, GenericKind, IrGenericParamKind)>,
+    /// Whether a manual `Clone` impl exists for this struct
+    manual_clone: bool,
 }
 
 // Crypto-detection helpers: these are used to decide when associated numeric
@@ -341,6 +343,19 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
         struct_info.insert(s.kind.to_string(), info);
     }
 
+    // Mark structs that have manual impls for common derived traits (Clone)
+    for im in &module.impls {
+        if let IrType::Struct { kind, .. } = &im.self_ty {
+            if let Some(tr) = &im.trait_ {
+                if format!("{}", tr.kind) == "Clone" {
+                    if let Some(entry) = struct_info.get_mut(&kind.to_string()) {
+                        entry.manual_clone = true;
+                    }
+                }
+            }
+        }
+    }
+
     let mut out = String::new();
 
     // File header
@@ -428,13 +443,18 @@ fn write_struct_dyn(out: &mut String, s: &IrStruct, struct_info: &BTreeMap<Strin
     }
     let name = format!("{}Dyn", s.kind);
 
-    // Derive common traits (no Default for structs with references)
+    // Derive common traits (no Default for structs with references).
+    // Avoid deriving `Clone` when a manual `Clone` impl exists for the struct.
     let has_refs = info.lifetimes.len() > 0;
-    if has_refs {
-        writeln!(out, "#[derive(Clone, Debug)]").unwrap();
-    } else {
-        writeln!(out, "#[derive(Clone, Debug, Default)]").unwrap();
+    let mut derives: Vec<&str> = Vec::new();
+    if !info.manual_clone {
+        derives.push("Clone");
     }
+    derives.push("Debug");
+    if !has_refs {
+        derives.push("Default");
+    }
+    writeln!(out, "#[derive({})]", derives.join(", ")).unwrap();
     write!(out, "pub struct {}", name).unwrap();
 
     // Generic parameters: lifetimes first, then type params
@@ -735,35 +755,56 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
         write!(out, "<{}>", impl_type_params.join(", ")).unwrap();
     }
 
-    write!(out, " {}", dyn_name).unwrap();
+    // If this impl references a trait, emit a trait impl header: `impl<...> Trait<Args> for Type<...>`
+    if let Some(tr) = &i.trait_ {
+        // format trait name and type args
+        let mut trait_name = format!("{}", tr.kind);
+        if !tr.type_args.is_empty() {
+            let mut ta_parts: Vec<String> = Vec::new();
+            for ta in &tr.type_args {
+                let mut s = String::new();
+                write_type_dyn(&mut s, ta, &cur_params, struct_info);
+                ta_parts.push(s);
+            }
+            trait_name = format!("{}<{}>", trait_name, ta_parts.join(", "));
+        }
 
-    // Use concrete types if available, otherwise use type params from struct
-    if !concrete_type_args.is_empty() {
-        write!(out, "<{}>", concrete_type_args.join(", ")).unwrap();
-    } else if !info.type_params.is_empty() {
-        write!(
-            out,
-            "<{}>",
-            info.type_params
-                .iter()
-                .map(|(n, b)| {
-                    if !b.is_empty() {
-                        format!("{}: {}", n, b)
-                    } else {
-                        n.clone()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-        .unwrap();
+        write!(out, " {} for {}", trait_name, dyn_name).unwrap();
+
+        // append self-type generic args
+        if !concrete_type_args.is_empty() {
+            write!(out, "<{}>", concrete_type_args.join(", ")).unwrap();
+        } else if !info.type_params.is_empty() {
+            write!(out, "<{}>",
+                info.type_params
+                    .iter()
+                    .map(|(n, b)| if !b.is_empty() { format!("{}: {}", n, b) } else { n.clone() })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+            .unwrap();
+        }
+    } else {
+        // inherent impl (no trait)
+        write!(out, " {}", dyn_name).unwrap();
+        if !concrete_type_args.is_empty() {
+            write!(out, "<{}>", concrete_type_args.join(", ")).unwrap();
+        } else if !info.type_params.is_empty() {
+            write!(out, "<{}>",
+                info.type_params
+                    .iter()
+                    .map(|(n, b)| if !b.is_empty() { format!("{}: {}", n, b) } else { n.clone() })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+            .unwrap();
+        }
     }
 
     // Emit a `where` clause derived from the original impl where-predicates
     // (still emit even if we merged some bounds above). This helps preserve
     // more complex predicates (projections, external targets) that can't be
     // folded into individual generic bounds.
-    let mut where_parts: Vec<String> = Vec::new();
     for wp in &i.where_clause {
         match wp {
             IrWherePredicate::TypeBound { ty, bounds } => {
@@ -829,8 +870,24 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
     writeln!(out, " {{").unwrap();
 
     for item in &i.items {
-        if let IrImplItem::Method(f) = item {
-            write_function_dyn(out, f, 1, Some(&self_name), &cur_params, struct_info);
+        match item {
+            IrImplItem::Method(f) => {
+                write_function_dyn(out, f, 1, Some(&self_name), &cur_params, struct_info);
+            }
+            IrImplItem::AssociatedType { name, ty } => {
+                // emit associated type binding inside trait impls
+                let an = match name {
+                    AssociatedType::Output => "Output".to_string(),
+                    AssociatedType::Key => "Key".to_string(),
+                    AssociatedType::BlockSize => "BlockSize".to_string(),
+                    AssociatedType::OutputSize => "OutputSize".to_string(),
+                    AssociatedType::TotalLoopCount => "TotalLoopCount".to_string(),
+                    AssociatedType::Other(s) => s.clone(),
+                };
+                write!(out, "    type {} = ", an).unwrap();
+                write_type_dyn(out, ty, &cur_params, struct_info);
+                writeln!(out, ";").unwrap();
+            }
         }
     }
 

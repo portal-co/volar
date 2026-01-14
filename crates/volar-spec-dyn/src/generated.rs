@@ -39,7 +39,7 @@ pub struct BitVoleDyn<T> {
     pub v: Vec<T>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct VopeDyn<T> {
     pub n: usize,
     pub k: usize,
@@ -289,7 +289,7 @@ impl VopeDyn<BitsInBytes64> {
     }
 }
 
-impl<T: Clone> VopeDyn<T> {
+impl<T: Clone> Clone for VopeDyn<T> {
     pub fn clone(&self) -> Self {
         let n = self.n;
         let k = self.k;
@@ -300,21 +300,21 @@ impl<T: Clone> VopeDyn<T> {
     }
 }
 
-impl<T: Clone> QDyn<T> {
+impl<T: Clone> Clone for QDyn<T> {
     pub fn clone(&self) -> Self {
         let QDyn { q: q, .. } = self;
         QDyn { q: (0..n).map(|i| q[i].clone()).collect() }
     }
 }
 
-impl<T: Clone> DeltaDyn<T> {
+impl<T: Clone> Clone for DeltaDyn<T> {
     pub fn clone(&self) -> Self {
         let DeltaDyn { delta: delta, .. } = self;
         DeltaDyn { delta: (0..n).map(|i| delta[i].clone()).collect() }
     }
 }
 
-impl<T: PartialEq> VopeDyn<T> {
+impl<T: PartialEq> PartialEq for VopeDyn<T> {
     pub fn eq(&self, other: &'a Self) -> bool {
         let n = self.n;
         let k = self.k;
@@ -336,7 +336,7 @@ impl<T: PartialEq> VopeDyn<T> {
     }
 }
 
-impl<T: PartialEq> QDyn<T> {
+impl<T: PartialEq> PartialEq for QDyn<T> {
     pub fn eq(&self, other: &'a Self) -> bool {
         let QDyn { q: q1, .. } = self;
         let QDyn { q: q2, .. } = other;
@@ -349,7 +349,7 @@ impl<T: PartialEq> QDyn<T> {
     }
 }
 
-impl<T: PartialEq> DeltaDyn<T> {
+impl<T: PartialEq> PartialEq for DeltaDyn<T> {
     pub fn eq(&self, other: &'a Self) -> bool {
         let DeltaDyn { delta: d1, .. } = self;
         let DeltaDyn { delta: d2, .. } = other;
@@ -362,13 +362,13 @@ impl<T: PartialEq> DeltaDyn<T> {
     }
 }
 
-impl<T: Eq> VopeDyn<T> {
+impl<T: Eq> Eq for VopeDyn<T> {
 }
 
-impl<T: Eq> QDyn<T> {
+impl<T: Eq> Eq for QDyn<T> {
 }
 
-impl<T: Eq> DeltaDyn<T> {
+impl<T: Eq> Eq for DeltaDyn<T> {
 }
 
 impl QDyn<BitsInBytes> {
@@ -482,7 +482,8 @@ impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 479: T
     }
 }
 
-impl<T: Add<U> + Clone, U: Clone> VopeDyn<T> {
+impl<T: Add<U> + Clone, U: Clone> Add<VopeDyn<U>> for VopeDyn<T> {
+    type Output = VopeDyn<OutputDyn>;
     pub fn add(self, rhs: VopeDyn<U>) -> OutputDyn {
         let n = self.n;
         let k = self.k;
@@ -490,8 +491,9 @@ impl<T: Add<U> + Clone, U: Clone> VopeDyn<T> {
     }
 }
 
-impl<T: BitXor<U, Output = O> + Clone + Into<O>, U: Clone, O> VopeDyn<T> where T: Into<O>// UNCONSTRAINED GENERICS at generated.rs line 494: O
+impl<T: BitXor<U, Output = O> + Clone + Into<O>, U: Clone, O> BitXor<Vec<U>> for VopeDyn<T> where T: Into<O>// UNCONSTRAINED GENERICS at generated.rs line 495: O
  {
+    type Output = VopeDyn<O>;
     pub fn bitxor(self, rhs: Vec<U>) -> OutputDyn {
         let n = self.n;
         let k = self.k;
@@ -504,7 +506,8 @@ impl<T: BitXor<U, Output = O> + Clone + Into<O>, U: Clone, O> VopeDyn<T> where T
     }
 }
 
-impl<T: Mul<U, Output = O> + Into<O> + Clone, U: Mul<U, Output = U> + Clone, O: Add<O, Output = O>> VopeDyn<T> {
+impl<T: Mul<U, Output = O> + Into<O> + Clone, U: Mul<U, Output = U> + Clone, O: Add<O, Output = O>> Mul<DeltaDyn<U>> for VopeDyn<T> {
+    type Output = QDyn<O>;
     pub fn mul(self, rhs: DeltaDyn<U>) -> OutputDyn {
         let n = self.n;
         let k = self.k;
@@ -521,7 +524,7 @@ impl<T: Mul<U, Output = O> + Into<O> + Clone, U: Mul<U, Output = U> + Clone, O: 
     }
 }
 
-impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 525: T
+impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 528: T
  {
     pub fn expand where T: Clone + Default(&self, l: usize) -> VopeDyn<T> {
         let n = self.n;
@@ -552,7 +555,7 @@ impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 525: T
 }
 
 impl VopeDyn<Bit> where N: VoleArray<Bit>, K: ArrayLength<Vec<Bit>> {
-    pub fn scale<T> where N: VoleArray<T>, K: ArrayLength<Vec<T>>// UNCONSTRAINED GENERICS at generated.rs line 556: T
+    pub fn scale<T> where N: VoleArray<T>, K: ArrayLength<Vec<T>>// UNCONSTRAINED GENERICS at generated.rs line 559: T
 (self, f: compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Custom("Fn"), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<N, T, K> {
         let n = self.n;
         let k = self.k;
