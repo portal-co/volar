@@ -55,7 +55,7 @@ fn classify_generic(param: &IrGenericParam, all_params: &[IrGenericParam]) -> Ge
                 // If the Rhs or Output is a length, this is a length
                 for arg in &bound.type_args {
                     if let IrType::TypeParam(name) = arg {
-                        if is_likely_length_param(name, all_params) {
+                        if is_length_param(name, all_params) {
                             return GenericKind::Length;
                         }
                     }
@@ -63,7 +63,7 @@ fn classify_generic(param: &IrGenericParam, all_params: &[IrGenericParam]) -> Ge
                 for (name, ty) in &bound.assoc_bindings {
                     if *name == AssociatedType::Output {
                         if let IrType::TypeParam(target_name) = ty {
-                            if is_likely_length_param(target_name, all_params) {
+                            if is_length_param(target_name, all_params) {
                                 return GenericKind::Length;
                             }
                         }
@@ -77,7 +77,7 @@ fn classify_generic(param: &IrGenericParam, all_params: &[IrGenericParam]) -> Ge
     GenericKind::Type
 }
 
-fn is_likely_length_param(name: &str, all_params: &[IrGenericParam]) -> bool {
+fn is_length_param(name: &str, all_params: &[IrGenericParam]) -> bool {
     // Check if it's already explicitly marked as length
     for p in all_params {
         if p.name == name {
@@ -88,14 +88,7 @@ fn is_likely_length_param(name: &str, all_params: &[IrGenericParam]) -> bool {
             }
         }
     }
-    
-    // Heuristics
-    if name.len() == 1 && matches!(name.chars().next().unwrap(), 'N' | 'M' | 'K' | 'L' | 'S' | 'X') {
-        return true;
-    }
-    if name.len() == 2 && name.chars().next().unwrap().is_ascii_uppercase() && name.chars().nth(1).unwrap().is_ascii_digit() {
-        return true;
-    }
+
     
     false
 }
