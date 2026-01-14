@@ -95,7 +95,7 @@ fn test_parse_volar_spec_combined() {
             println!("\nStructs found:");
             for s in &module.structs {
                 let generics: Vec<_> = s.generics.iter().map(|g| &g.name).collect();
-                println!("  {} <{}>", s.name, generics.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
+                println!("  {:?} <{}>", s.kind, generics.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
             }
 
             // Print impl blocks
@@ -103,7 +103,7 @@ fn test_parse_volar_spec_combined() {
             for imp in &module.impls {
                 let self_ty = type_to_string(&imp.self_ty);
                 if let Some(trait_ref) = &imp.trait_ {
-                    println!("  {} for {}", trait_ref.path.join("::"), self_ty);
+                    println!("  {:?} for {}", trait_ref.kind, self_ty);
                 } else {
                     println!("  impl {}", self_ty);
                 }
@@ -131,7 +131,7 @@ pub struct Q<N: ArrayLength<T>, T> {
     assert_eq!(module.structs.len(), 2);
     
     let delta = &module.structs[0];
-    assert_eq!(delta.name, "Delta");
+    assert!(matches!(delta.kind, volar_compiler::StructKind::Delta));
     assert_eq!(delta.generics.len(), 2);
     assert_eq!(delta.generics[0].name, "N");
     assert_eq!(delta.generics[1].name, "T");
@@ -155,7 +155,7 @@ pub struct Vope<N: VoleArray<T>, T, K: ArrayLength<GenericArray<T, N>> = U1> {
     assert_eq!(module.structs.len(), 1);
     
     let vope = &module.structs[0];
-    assert_eq!(vope.name, "Vope");
+    assert!(matches!(vope.kind, volar_compiler::StructKind::Vope));
     assert_eq!(vope.generics.len(), 3);
     assert_eq!(vope.fields.len(), 2);
 }
@@ -190,7 +190,7 @@ impl<
     assert!(imp.trait_.is_some());
     
     let trait_ref = imp.trait_.as_ref().unwrap();
-    assert_eq!(trait_ref.path.last().unwrap(), "Add");
+    assert!(matches!(trait_ref.kind, volar_compiler::TraitKind::Math(volar_compiler::MathTrait::Add)));
     
     // Check we have the Output associated type and add method
     let mut has_output = false;
@@ -198,7 +198,7 @@ impl<
     for item in &imp.items {
         match item {
             volar_compiler::IrImplItem::AssociatedType { name, .. } => {
-                if name == "Output" {
+                if matches!(name, volar_compiler::AssociatedType::Output) {
                     has_output = true;
                 }
             }

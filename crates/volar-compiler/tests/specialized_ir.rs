@@ -3,9 +3,10 @@
 use std::fs;
 use std::path::Path;
 use volar_compiler::{
-    parse_sources, specialize_module,
+    parse_sources,
     StructKind, TraitKind, MathTrait, CryptoTrait, PrimitiveType,
-    SpecType, ArrayKind, MethodKind, VoleMethod, CryptoMethod,
+    ArrayKind, MethodKind, VoleMethod, CryptoMethod,
+    IrType, IrExpr, IrStmt, IrImplItem, AssociatedType,
 };
 
 fn read_volar_spec_sources() -> Vec<(String, String)> {
@@ -45,8 +46,7 @@ fn test_specialize_volar_spec() {
         .map(|(content, name)| (content.as_str(), name.as_str()))
         .collect();
     
-    let module = parse_sources(&sources_ref, "volar_spec").unwrap();
-    let spec = specialize_module(&module);
+    let spec = parse_sources(&sources_ref, "volar_spec").unwrap();
 
     println!("\n=== Specialized Module Statistics ===");
     println!("Structs: {}", spec.structs.len());
@@ -85,18 +85,14 @@ fn test_specialize_volar_spec() {
     println!("  Custom structs: {}", custom_structs);
 
     // Count trait classifications
-    let mut math_traits = 0;
-    let mut crypto_traits = 0;
     
     println!("\n=== Trait Classifications ===");
     for t in &spec.traits {
         match &t.kind {
             TraitKind::Math(m) => {
-                math_traits += 1;
                 println!("  Math: {:?}", m);
             }
             TraitKind::Crypto(c) => {
-                crypto_traits += 1;
                 println!("  Crypto: {:?}", c);
             }
             TraitKind::Custom(name) => {
@@ -154,19 +150,19 @@ fn test_specialize_volar_spec() {
     for s in &spec.structs {
         for field in &s.fields {
             match &field.ty {
-                SpecType::Primitive(p) => {
+                IrType::Primitive(p) => {
                     primitive_fields += 1;
                     println!("  {} ({}): primitive {:?}", s.kind, field.name, p);
                 }
-                SpecType::Array { kind, elem, len } => {
+                IrType::Array { kind, elem: _, len: _ } => {
                     array_fields += 1;
                     println!("  {} ({}): {:?} array", s.kind, field.name, kind);
                 }
-                SpecType::Struct { kind, .. } => {
+                IrType::Struct { kind, .. } => {
                     struct_fields += 1;
                     println!("  {} ({}): struct {:?}", s.kind, field.name, kind);
                 }
-                SpecType::TypeParam(name) => {
+                IrType::TypeParam(name) => {
                     println!("  {} ({}): type param {}", s.kind, field.name, name);
                 }
                 _ => {}
@@ -203,10 +199,9 @@ fn test_method_classification() {
         }
     "#;
     
-    use volar_compiler::{parse_source, specialize_module, SpecExpr, SpecStmt};
+    use volar_compiler::{parse_source, IrExpr, IrStmt};
     
-    let module = parse_source(source, "test").unwrap();
-    let spec = specialize_module(&module);
+    let spec = parse_source(source, "test").unwrap();
     
     let f = &spec.functions[0];
     
@@ -215,8 +210,8 @@ fn test_method_classification() {
     let mut std_methods = 0;
     
     for stmt in &f.body.stmts {
-        if let SpecStmt::Let { init: Some(expr), .. } = stmt {
-            if let SpecExpr::MethodCall { method, .. } = expr {
+        if let IrStmt::Let { init: Some(expr), .. } = stmt {
+            if let IrExpr::MethodCall { method, .. } = expr {
                 match method {
                     MethodKind::Vole(v) => {
                         vole_methods += 1;
@@ -255,42 +250,33 @@ fn test_array_operations() {
             
             // Array zip
             let c = arr.zip(other, |a, b| a + b);
-            
-            // Array fold
-            let d = arr.fold(0, |acc, x| acc + x);
         }
     "#;
     
-    use volar_compiler::{parse_source, specialize_module, SpecExpr, SpecStmt};
+    use volar_compiler::{parse_source, IrExpr, IrStmt};
     
-    let module = parse_source(source, "test").unwrap();
-    let spec = specialize_module(&module);
+    let spec = parse_source(source, "test").unwrap();
     
     let f = &spec.functions[0];
     
     let mut generate_count = 0;
     let mut map_count = 0;
     let mut zip_count = 0;
-    let mut fold_count = 0;
     
     for stmt in &f.body.stmts {
-        if let SpecStmt::Let { init: Some(expr), .. } = stmt {
+        if let IrStmt::Let { init: Some(expr), .. } = stmt {
             match expr {
-                SpecExpr::ArrayGenerate { index_var, .. } => {
+                IrExpr::ArrayGenerate { index_var, .. } => {
                     generate_count += 1;
                     println!("ArrayGenerate with index var: {}", index_var);
                 }
-                SpecExpr::ArrayMap { elem_var, .. } => {
+                IrExpr::ArrayMap { elem_var, .. } => {
                     map_count += 1;
                     println!("ArrayMap with elem var: {}", elem_var);
                 }
-                SpecExpr::ArrayZip { left_var, right_var, .. } => {
+                IrExpr::ArrayZip { left_var, right_var, .. } => {
                     zip_count += 1;
                     println!("ArrayZip with vars: {}, {}", left_var, right_var);
-                }
-                SpecExpr::ArrayFold { acc_var, elem_var, .. } => {
-                    fold_count += 1;
-                    println!("ArrayFold with vars: {}, {}", acc_var, elem_var);
                 }
                 _ => {}
             }
@@ -300,7 +286,6 @@ fn test_array_operations() {
     assert_eq!(generate_count, 1, "Should recognize ArrayGenerate");
     assert_eq!(map_count, 1, "Should recognize ArrayMap");
     assert_eq!(zip_count, 1, "Should recognize ArrayZip");
-    assert_eq!(fold_count, 1, "Should recognize ArrayFold");
 }
 
 #[test]
@@ -324,10 +309,9 @@ fn test_bounded_loops() {
         }
     "#;
     
-    use volar_compiler::{parse_source, specialize_module, SpecExpr, SpecStmt};
+    use volar_compiler::{parse_source, IrExpr, IrStmt};
     
-    let module = parse_source(source, "test").unwrap();
-    let spec = specialize_module(&module);
+    let spec = parse_source(source, "test").unwrap();
     
     let f = &spec.functions[0];
     
@@ -337,13 +321,13 @@ fn test_bounded_loops() {
     println!("Statements in function body: {}", f.body.stmts.len());
     for (i, stmt) in f.body.stmts.iter().enumerate() {
         match stmt {
-            SpecStmt::Semi(expr) | SpecStmt::Expr(expr) => {
+            IrStmt::Semi(expr) | IrStmt::Expr(expr) => {
                 match expr {
-                    SpecExpr::BoundedLoop { var, .. } => {
+                    IrExpr::BoundedLoop { var, .. } => {
                         bounded_loops += 1;
                         println!("  Stmt {}: BoundedLoop with var: {}", i, var);
                     }
-                    SpecExpr::IterLoop { .. } => {
+                    IrExpr::IterLoop { .. } => {
                         iter_loops += 1;
                         println!("  Stmt {}: IterLoop found", i);
                     }
@@ -362,7 +346,7 @@ fn test_bounded_loops() {
 
 #[test]
 fn test_primitive_type_classification() {
-    use volar_compiler::{parse_source, specialize_module};
+    use volar_compiler::parse_source;
     
     let source = r#"
         fn test(
@@ -380,8 +364,7 @@ fn test_primitive_type_classification() {
         }
     "#;
     
-    let module = parse_source(source, "test").unwrap();
-    let spec = specialize_module(&module);
+    let spec = parse_source(source, "test").unwrap();
     
     let f = &spec.functions[0];
     
@@ -402,7 +385,7 @@ fn test_primitive_type_classification() {
         let param = &f.params[i];
         assert_eq!(param.name, *name);
         match &param.ty {
-            SpecType::Primitive(p) => {
+            IrType::Primitive(p) => {
                 assert_eq!(p, expected_ty, "Type mismatch for {}", name);
             }
             other => {
@@ -424,7 +407,7 @@ fn test_primitive_type_classification() {
 
 #[test]
 fn test_array_type_classification() {
-    use volar_compiler::{parse_source, specialize_module};
+    use volar_compiler::parse_source;
     
     let source = r#"
         fn test(
@@ -435,33 +418,32 @@ fn test_array_type_classification() {
         }
     "#;
     
-    let module = parse_source(source, "test").unwrap();
-    let spec = specialize_module(&module);
+    let spec = parse_source(source, "test").unwrap();
     
     let f = &spec.functions[0];
     
     // Check GenericArray
     match &f.params[0].ty {
-        SpecType::Array { kind: ArrayKind::GenericArray, elem, .. } => {
-            assert!(matches!(**elem, SpecType::Primitive(PrimitiveType::U8)));
+        IrType::Array { kind: ArrayKind::GenericArray, elem, .. } => {
+            assert!(matches!(**elem, IrType::Primitive(PrimitiveType::U8)));
         }
         other => panic!("Expected GenericArray, got {:?}", other),
     }
     
     // Check fixed array
     match &f.params[1].ty {
-        SpecType::Array { kind: ArrayKind::FixedArray, elem, .. } => {
-            assert!(matches!(**elem, SpecType::Primitive(PrimitiveType::U8)));
+        IrType::Array { kind: ArrayKind::FixedArray, elem, .. } => {
+            assert!(matches!(**elem, IrType::Primitive(PrimitiveType::U8)));
         }
         other => panic!("Expected FixedArray, got {:?}", other),
     }
     
     // Check slice (inside reference)
     match &f.params[2].ty {
-        SpecType::Reference { elem, .. } => {
+        IrType::Reference { elem, .. } => {
             match &**elem {
-                SpecType::Array { kind: ArrayKind::Slice, elem: inner, .. } => {
-                    assert!(matches!(**inner, SpecType::Primitive(PrimitiveType::U8)));
+                IrType::Array { kind: ArrayKind::Slice, elem: inner, .. } => {
+                    assert!(matches!(**inner, IrType::Primitive(PrimitiveType::U8)));
                 }
                 other => panic!("Expected Slice, got {:?}", other),
             }

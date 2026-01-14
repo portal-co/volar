@@ -1,38 +1,424 @@
-//! Intermediate Representation for volar-spec code.
+//! Specialized IR types for volar-spec.
 //!
-//! This IR is designed to capture the semantics of the Rust code in volar-spec
-//! while being easy to transpile to other languages or compile to templates.
+//! This module provides the unified intermediate representation for volar-spec,
+//! incorporating domain-specific knowledge about cryptography, math, and VOLE.
 
-/// A unique identifier for types in the IR
+use std::fmt;
+
+// ============================================================================
+// PRIMITIVE TYPES
+// ============================================================================
+
+/// Primitive scalar types used in volar-spec
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TypeId(pub usize);
+pub enum PrimitiveType {
+    /// Boolean type
+    Bool,
+    /// Unsigned 8-bit integer
+    U8,
+    /// Unsigned 32-bit integer
+    U32,
+    /// Unsigned 64-bit integer
+    U64,
+    /// Unsigned pointer-sized integer
+    Usize,
+    /// Signed 128-bit integer (for literals)
+    I128,
+    /// Single bit field element
+    Bit,
+    /// 8-bit Galois field element (GF(2^8) for AES)
+    Galois,
+    /// 64-bit Galois field element
+    Galois64,
+    /// 8-bit packed bits (used for SIMD-like operations)
+    BitsInBytes,
+    /// 64-bit packed bits
+    BitsInBytes64,
+}
 
-/// A unique identifier for functions/methods in the IR
+impl PrimitiveType {
+    /// Try to parse a primitive type from a string
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "bool" => Some(Self::Bool),
+            "u8" => Some(Self::U8),
+            "u32" => Some(Self::U32),
+            "u64" => Some(Self::U64),
+            "usize" => Some(Self::Usize),
+            "i128" => Some(Self::I128),
+            "Bit" => Some(Self::Bit),
+            "Galois" => Some(Self::Galois),
+            "Galois64" => Some(Self::Galois64),
+            "BitsInBytes" => Some(Self::BitsInBytes),
+            "BitsInBytes64" => Some(Self::BitsInBytes64),
+            _ => None,
+        }
+    }
+
+    /// Get the bit width of this type
+    pub fn bit_width(&self) -> usize {
+        match self {
+            Self::Bool | Self::Bit => 1,
+            Self::U8 | Self::Galois | Self::BitsInBytes => 8,
+            Self::U32 => 32,
+            Self::U64 | Self::Galois64 | Self::BitsInBytes64 => 64,
+            Self::Usize => std::mem::size_of::<usize>() * 8,
+            Self::I128 => 128,
+        }
+    }
+
+    /// Check if this is a field element type
+    pub fn is_field_element(&self) -> bool {
+        matches!(
+            self,
+            Self::Bit | Self::Galois | Self::Galois64 | Self::BitsInBytes | Self::BitsInBytes64
+        )
+    }
+}
+
+impl fmt::Display for PrimitiveType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bool => write!(f, "bool"),
+            Self::U8 => write!(f, "u8"),
+            Self::U32 => write!(f, "u32"),
+            Self::U64 => write!(f, "u64"),
+            Self::Usize => write!(f, "usize"),
+            Self::I128 => write!(f, "i128"),
+            Self::Bit => write!(f, "Bit"),
+            Self::Galois => write!(f, "Galois"),
+            Self::Galois64 => write!(f, "Galois64"),
+            Self::BitsInBytes => write!(f, "BitsInBytes"),
+            Self::BitsInBytes64 => write!(f, "BitsInBytes64"),
+        }
+    }
+}
+
+// ============================================================================
+// ARRAY TYPES
+// ============================================================================
+
+/// Known array types in volar-spec
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FuncId(pub usize);
+pub enum ArrayKind {
+    /// `GenericArray<T, N>`
+    GenericArray,
+    /// `[T; N]`
+    FixedArray,
+    /// `[T]` slice
+    Slice,
+}
 
-/// A unique identifier for variables in the IR
+/// Array length representation
+#[derive(Debug, Clone, PartialEq)]
+pub enum ArrayLength {
+    /// Constant size
+    Const(usize),
+    /// Typenum constant (U32, etc.)
+    TypeNum(TypeNumConst),
+    /// Generic type parameter (N, etc.)
+    TypeParam(String),
+    /// Computed expression
+    Computed(Box<IrExpr>),
+}
+
+/// Typenum constants commonly used
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct VarId(pub usize);
+pub enum TypeNumConst {
+    U0, U1, U2, U8, U16, U32, U64,
+}
 
-/// A unique identifier for struct definitions
+impl TypeNumConst {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "U0" => Some(Self::U0),
+            "U1" => Some(Self::U1),
+            "U2" => Some(Self::U2),
+            "U8" => Some(Self::U8),
+            "U16" => Some(Self::U16),
+            "U32" => Some(Self::U32),
+            "U64" => Some(Self::U64),
+            _ => None,
+        }
+    }
+
+    pub fn to_usize(&self) -> usize {
+        match self {
+            Self::U0 => 0,
+            Self::U1 => 1,
+            Self::U2 => 2,
+            Self::U8 => 8,
+            Self::U16 => 16,
+            Self::U32 => 32,
+            Self::U64 => 64,
+        }
+    }
+}
+
+// ============================================================================
+// STRUCT & ENUM KINDS
+// ============================================================================
+
+/// Known struct types in volar-spec
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum StructKind {
+    /// VOLE Delta
+    Delta,
+    /// VOLE Q
+    Q,
+    /// VOLE Vope (Vole Opaque)
+    Vope,
+    /// VOLE BitVole
+    BitVole,
+    /// Cryptographic Commitment
+    ABO,
+    /// ABO Opening
+    ABOOpening,
+    /// Core commitment data
+    CommitmentCore,
+    /// Polynomial
+    Poly,
+    /// Input pool for polynomial evaluation
+    PolyInputPool,
+    /// GenericArray (used as a struct kind sometimes)
+    GenericArray,
+    /// A custom struct
+    Custom(String),
+}
+
+impl StructKind {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "Delta" => Self::Delta,
+            "Q" => Self::Q,
+            "Vope" => Self::Vope,
+            "BitVole" => Self::BitVole,
+            "ABO" => Self::ABO,
+            "ABOOpening" => Self::ABOOpening,
+            "CommitmentCore" => Self::CommitmentCore,
+            "Poly" => Self::Poly,
+            "PolyInputPool" => Self::PolyInputPool,
+            "GenericArray" => Self::GenericArray,
+            other => Self::Custom(other.to_string()),
+        }
+    }
+}
+
+impl fmt::Display for StructKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Delta => write!(f, "Delta"),
+            Self::Q => write!(f, "Q"),
+            Self::Vope => write!(f, "Vope"),
+            Self::BitVole => write!(f, "BitVole"),
+            Self::ABO => write!(f, "ABO"),
+            Self::ABOOpening => write!(f, "ABOOpening"),
+            Self::CommitmentCore => write!(f, "CommitmentCore"),
+            Self::Poly => write!(f, "Poly"),
+            Self::PolyInputPool => write!(f, "PolyInputPool"),
+            Self::GenericArray => write!(f, "GenericArray"),
+            Self::Custom(name) => write!(f, "{}", name),
+        }
+    }
+}
+
+// ============================================================================
+// TRAIT & METHOD KINDS
+// ============================================================================
+
+/// Standard mathematical traits
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StructId(pub usize);
+pub enum MathTrait {
+    Add, Sub, Mul, Div, Rem,
+    BitAnd, BitOr, BitXor, Shl, Shr,
+    Neg, Not,
+    PartialEq, Eq, PartialOrd, Ord,
+    Clone, Copy, Default,
+}
 
-/// A unique identifier for trait definitions
+impl MathTrait {
+    pub fn from_path(segments: &[String]) -> Option<Self> {
+        let name = segments.last()?;
+        match name.as_str() {
+            "Add" => Some(Self::Add),
+            "Sub" => Some(Self::Sub),
+            "Mul" => Some(Self::Mul),
+            "Div" => Some(Self::Div),
+            "Rem" => Some(Self::Rem),
+            "BitAnd" => Some(Self::BitAnd),
+            "BitOr" => Some(Self::BitOr),
+            "BitXor" => Some(Self::BitXor),
+            "Shl" => Some(Self::Shl),
+            "Shr" => Some(Self::Shr),
+            "Neg" => Some(Self::Neg),
+            "Not" => Some(Self::Not),
+            "PartialEq" => Some(Self::PartialEq),
+            "Eq" => Some(Self::Eq),
+            "PartialOrd" => Some(Self::PartialOrd),
+            "Ord" => Some(Self::Ord),
+            "Clone" => Some(Self::Clone),
+            "Copy" => Some(Self::Copy),
+            "Default" => Some(Self::Default),
+            _ => None,
+        }
+    }
+}
+
+/// Cryptographic and domain-specific traits
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TraitId(pub usize);
+pub enum CryptoTrait {
+    /// Symmetric encryption block
+    BlockEncrypt,
+    /// Symmetric cipher
+    BlockCipher,
+    /// Cryptographic digest
+    Digest,
+    /// Array length tag
+    ArrayLength,
+    /// Array specialized for VOLE
+    VoleArray,
+    /// Encryption on byte blocks
+    ByteBlockEncrypt,
+}
 
-/// A unique identifier for impl blocks
+impl CryptoTrait {
+    pub fn from_path(segments: &[String]) -> Option<Self> {
+        let name = segments.last()?;
+        match name.as_str() {
+            "BlockEncrypt" => Some(Self::BlockEncrypt),
+            "BlockCipher" => Some(Self::BlockCipher),
+            "Digest" => Some(Self::Digest),
+            "ArrayLength" => Some(Self::ArrayLength),
+            "VoleArray" => Some(Self::VoleArray),
+            "ByteBlockEncrypt" => Some(Self::ByteBlockEncrypt),
+            _ => None,
+        }
+    }
+}
+
+/// Unified trait classification
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TraitKind {
+    Math(MathTrait),
+    Crypto(CryptoTrait),
+    External { path: Vec<String> },
+    Custom(String),
+}
+
+impl TraitKind {
+    pub fn from_path(segments: &[String]) -> Self {
+        if let Some(math) = MathTrait::from_path(segments) {
+            return Self::Math(math);
+        }
+        if let Some(crypto) = CryptoTrait::from_path(segments) {
+            return Self::Crypto(crypto);
+        }
+        if segments.len() > 1 {
+            return Self::External { path: segments.to_vec() };
+        }
+        Self::Custom(segments.last().cloned().unwrap_or_default())
+    }
+}
+
+impl fmt::Display for TraitKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Math(m) => write!(f, "{:?}", m),
+            Self::Crypto(c) => write!(f, "{:?}", c),
+            Self::External { path } => write!(f, "{}", path.join("::")),
+            Self::Custom(name) => write!(f, "{}", name),
+        }
+    }
+}
+
+/// VOLE-specific method names
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ImplId(pub usize);
+pub enum VoleMethod {
+    Remap, RotateLeft,
+}
 
-/// A unique identifier for generic type parameters
+impl VoleMethod {
+    pub fn try_from_str(s: &str) -> Option<Self> {
+        match s {
+            "remap" => Some(Self::Remap),
+            "rotate_left" => Some(Self::RotateLeft),
+            _ => None,
+        }
+    }
+}
+
+/// Cryptographic method names
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct GenericParamId(pub usize);
+pub enum CryptoMethod {
+    EncryptBlock, GenAbo, Open, Validate, Commit, Update, Finalize,
+}
 
-/// The root IR module containing all definitions
-#[derive(Debug, Clone, Default)]
+impl CryptoMethod {
+    pub fn try_from_str(s: &str) -> Option<Self> {
+        match s {
+            "encrypt_block" => Some(Self::EncryptBlock),
+            "gen_abo" => Some(Self::GenAbo),
+            "open" => Some(Self::Open),
+            "validate" => Some(Self::Validate),
+            "commit" => Some(Self::Commit),
+            "update" => Some(Self::Update),
+            "finalize" => Some(Self::Finalize),
+            _ => None,
+        }
+    }
+}
+
+/// Unified method classification
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MethodKind {
+    Vole(VoleMethod),
+    Crypto(CryptoMethod),
+    Std(String),
+    Unknown(String),
+}
+
+impl MethodKind {
+    pub fn from_str(s: &str) -> Self {
+        if let Some(v) = VoleMethod::try_from_str(s) { return Self::Vole(v); }
+        if let Some(c) = CryptoMethod::try_from_str(s) { return Self::Crypto(c); }
+        
+        match s {
+            "clone" | "default" | "into" | "from" | "as_ref" | "as_slice" | "get" | "len"
+            | "is_empty" | "contains" | "unwrap" | "unwrap_or" | "unwrap_or_default" | "expect"
+            | "to_usize" | "to_string"
+            | "as_ptr" | "wrapping_add" | "wrapping_sub" | "checked_add" | "checked_sub"
+            | "saturating_add" | "saturating_sub" | "bitxor" | "deref" | "map" | "fold" | "iter" => {
+                Self::Std(s.to_string())
+            }
+            _ => Self::Unknown(s.to_string()),
+        }
+    }
+}
+
+/// Associated type names in traits
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AssociatedType {
+    Output, Key, BlockSize, OutputSize, TotalLoopCount, Custom(&'static str),
+}
+
+impl AssociatedType {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "Output" => Self::Output,
+            "Key" => Self::Key,
+            "BlockSize" => Self::BlockSize,
+            "OutputSize" => Self::OutputSize,
+            "TotalLoopCount" => Self::TotalLoopCount,
+            _ => Self::Output, // Should probably be more robust
+        }
+    }
+}
+
+// ============================================================================
+// MAIN IR DATA STRUCTURES
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct IrModule {
     pub name: String,
     pub structs: Vec<IrStruct>,
@@ -40,103 +426,36 @@ pub struct IrModule {
     pub impls: Vec<IrImpl>,
     pub functions: Vec<IrFunction>,
     pub type_aliases: Vec<IrTypeAlias>,
-    pub uses: Vec<IrUse>,
+    pub uses: Vec<String>,
 }
 
-/// A use/import statement
-#[derive(Debug, Clone)]
-pub struct IrUse {
-    pub path: Vec<String>,
-    pub alias: Option<String>,
-    pub glob: bool,
-}
-
-/// A type alias definition
-#[derive(Debug, Clone)]
-pub struct IrTypeAlias {
-    pub name: String,
-    pub generics: Vec<IrGenericParam>,
-    pub ty: IrType,
-}
-
-/// A struct definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IrStruct {
-    pub name: String,
+    pub kind: StructKind,
     pub generics: Vec<IrGenericParam>,
     pub fields: Vec<IrField>,
     pub is_tuple: bool,
 }
 
-/// A struct field
-#[derive(Debug, Clone)]
-pub struct IrField {
-    pub name: String,
-    pub ty: IrType,
-    pub visibility: Visibility,
-}
-
-/// Visibility modifier
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Visibility {
-    Public,
-    Private,
-    Crate,
-}
-
-/// A trait definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IrTrait {
-    pub name: String,
+    pub kind: TraitKind,
     pub generics: Vec<IrGenericParam>,
     pub super_traits: Vec<IrTraitBound>,
     pub items: Vec<IrTraitItem>,
 }
 
-/// An item within a trait definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum IrTraitItem {
-    Method(IrMethodSignature),
+    Method(IrMethodSig),
     AssociatedType {
-        name: String,
+        name: AssociatedType,
         bounds: Vec<IrTraitBound>,
         default: Option<IrType>,
     },
-    Const {
-        name: String,
-        ty: IrType,
-        default: Option<IrExpr>,
-    },
 }
 
-/// A method signature (without body)
-#[derive(Debug, Clone)]
-pub struct IrMethodSignature {
-    pub name: String,
-    pub generics: Vec<IrGenericParam>,
-    pub receiver: Option<IrReceiver>,
-    pub params: Vec<IrParam>,
-    pub return_type: Option<IrType>,
-    pub where_clause: Vec<IrWherePredicate>,
-}
-
-/// The receiver of a method (self, &self, &mut self)
-#[derive(Debug, Clone)]
-pub enum IrReceiver {
-    Value,
-    Ref,
-    RefMut,
-}
-
-/// A function parameter
-#[derive(Debug, Clone)]
-pub struct IrParam {
-    pub name: String,
-    pub ty: IrType,
-}
-
-/// An impl block
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IrImpl {
     pub generics: Vec<IrGenericParam>,
     pub trait_: Option<IrTraitRef>,
@@ -145,30 +464,29 @@ pub struct IrImpl {
     pub items: Vec<IrImplItem>,
 }
 
-/// A reference to a trait
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IrTraitRef {
-    pub path: Vec<String>,
+    pub kind: TraitKind,
     pub type_args: Vec<IrType>,
 }
 
-/// An item within an impl block
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum IrImplItem {
     Method(IrFunction),
-    AssociatedType {
-        name: String,
-        ty: IrType,
-    },
-    Const {
-        name: String,
-        ty: IrType,
-        value: IrExpr,
-    },
+    AssociatedType { name: AssociatedType, ty: IrType },
 }
 
-/// A function definition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrMethodSig {
+    pub name: String,
+    pub generics: Vec<IrGenericParam>,
+    pub receiver: Option<IrReceiver>,
+    pub params: Vec<IrParam>,
+    pub return_type: Option<IrType>,
+    pub where_clause: Vec<IrWherePredicate>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct IrFunction {
     pub name: String,
     pub generics: Vec<IrGenericParam>,
@@ -179,319 +497,274 @@ pub struct IrFunction {
     pub body: IrBlock,
 }
 
-/// A generic type parameter
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrParam {
+    pub name: String,
+    pub ty: IrType,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrField {
+    pub name: String,
+    pub ty: IrType,
+    pub public: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct IrGenericParam {
     pub name: String,
     pub bounds: Vec<IrTraitBound>,
     pub default: Option<IrType>,
 }
 
-/// A trait bound
-#[derive(Debug, Clone)]
-pub struct IrTraitBound {
-    pub path: Vec<String>,
-    pub type_args: Vec<IrType>,
-    pub assoc_type_bindings: Vec<(String, IrType)>,
-}
-
-/// A where clause predicate
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum IrWherePredicate {
     TypeBound {
         ty: IrType,
         bounds: Vec<IrTraitBound>,
     },
-    Lifetime {
-        name: String,
-        bounds: Vec<String>,
-    },
 }
 
-/// Type representation in the IR
-#[derive(Debug, Clone)]
-pub enum IrType {
-    /// A named type (could be a struct, primitive, or type parameter)
-    Path {
-        segments: Vec<String>,
-        type_args: Vec<IrType>,
-    },
-    /// A reference type
-    Reference {
-        mutable: bool,
-        elem: Box<IrType>,
-    },
-    /// A slice type [T]
-    Slice(Box<IrType>),
-    /// An array type [T; N]
-    Array {
-        elem: Box<IrType>,
-        len: Box<IrExpr>,
-    },
-    /// A tuple type (T1, T2, ...)
-    Tuple(Vec<IrType>),
-    /// A function pointer type
-    FnPtr {
-        params: Vec<IrType>,
-        ret: Box<IrType>,
-    },
-    /// An impl Trait type
-    ImplTrait(Vec<IrTraitBound>),
-    /// A dyn Trait type
-    DynTrait(Vec<IrTraitBound>),
-    /// The unit type ()
-    Unit,
-    /// The never type !
-    Never,
-    /// Inferred type _
-    Infer,
-    /// Associated type projection (T::Assoc)
-    Projection {
-        base: Box<IrType>,
-        assoc: String,
-        type_args: Vec<IrType>,
-    },
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IrReceiver {
+    Value,
+    Ref,
+    RefMut,
 }
 
-/// A block of statements
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrTypeAlias {
+    pub name: String,
+    pub generics: Vec<IrGenericParam>,
+    pub target: IrType,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct IrBlock {
     pub stmts: Vec<IrStmt>,
     pub expr: Option<Box<IrExpr>>,
 }
 
-/// A statement
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum IrStmt {
-    /// A let binding
     Let {
         pattern: IrPattern,
         ty: Option<IrType>,
         init: Option<IrExpr>,
     },
-    /// An expression statement
-    Expr(IrExpr),
-    /// A semicolon-terminated expression
     Semi(IrExpr),
-    /// An item definition (nested function, struct, etc.)
-    Item(IrItemStmt),
+    Expr(IrExpr),
 }
 
-/// An item that can appear as a statement
-#[derive(Debug, Clone)]
-pub enum IrItemStmt {
-    Fn(IrFunction),
-    Struct(IrStruct),
-    Const {
-        name: String,
-        ty: IrType,
-        value: IrExpr,
-    },
-}
-
-/// A pattern for destructuring
-#[derive(Debug, Clone)]
-pub enum IrPattern {
-    /// A simple identifier binding
-    Ident {
-        mutable: bool,
-        name: String,
-        subpat: Option<Box<IrPattern>>,
-    },
-    /// A tuple pattern (a, b, c)
-    Tuple(Vec<IrPattern>),
-    /// A struct pattern Struct { field: pat, .. }
-    Struct {
-        path: Vec<String>,
-        fields: Vec<(String, IrPattern)>,
-        rest: bool,
-    },
-    /// A tuple struct pattern TupleStruct(a, b)
-    TupleStruct {
-        path: Vec<String>,
-        elems: Vec<IrPattern>,
-    },
-    /// A slice pattern [a, b, ..]
-    Slice(Vec<IrPattern>),
-    /// A wildcard pattern _
-    Wild,
-    /// A literal pattern
-    Lit(IrLit),
-    /// A reference pattern &pat or &mut pat
-    Ref {
-        mutable: bool,
-        pat: Box<IrPattern>,
-    },
-    /// An or pattern a | b
-    Or(Vec<IrPattern>),
-    /// A rest pattern ..
-    Rest,
-}
-
-/// An expression
-#[derive(Debug, Clone)]
-pub enum IrExpr {
-    /// A literal value
-    Lit(IrLit),
-    /// A variable or path reference
-    Path {
-        segments: Vec<String>,
-        type_args: Vec<IrType>,
-    },
-    /// A binary operation
-    Binary {
-        op: IrBinOp,
-        left: Box<IrExpr>,
-        right: Box<IrExpr>,
-    },
-    /// A unary operation
-    Unary {
-        op: IrUnaryOp,
-        expr: Box<IrExpr>,
-    },
-    /// A function or method call
-    Call {
-        func: Box<IrExpr>,
-        args: Vec<IrExpr>,
-    },
-    /// A method call
-    MethodCall {
-        receiver: Box<IrExpr>,
-        method: String,
-        type_args: Vec<IrType>,
-        args: Vec<IrExpr>,
-    },
-    /// Field access
-    Field {
-        base: Box<IrExpr>,
-        field: String,
-    },
-    /// Index access
-    Index {
-        base: Box<IrExpr>,
-        index: Box<IrExpr>,
-    },
-    /// A struct expression
-    Struct {
-        path: Vec<String>,
-        fields: Vec<(String, IrExpr)>,
-        rest: Option<Box<IrExpr>>,
-    },
-    /// A tuple expression
-    Tuple(Vec<IrExpr>),
-    /// An array expression
-    Array(Vec<IrExpr>),
-    /// An array repeat expression [expr; len]
-    Repeat {
-        elem: Box<IrExpr>,
-        len: Box<IrExpr>,
-    },
-    /// A block expression
-    Block(IrBlock),
-    /// An if expression
-    If {
-        cond: Box<IrExpr>,
-        then_branch: IrBlock,
-        else_branch: Option<Box<IrExpr>>,
-    },
-    /// A match expression
-    Match {
-        expr: Box<IrExpr>,
-        arms: Vec<IrMatchArm>,
-    },
-    /// A for loop
-    ForLoop {
-        pattern: IrPattern,
-        iter: Box<IrExpr>,
-        body: IrBlock,
-    },
-    /// A while loop
-    While {
-        cond: Box<IrExpr>,
-        body: IrBlock,
-    },
-    /// A loop
-    Loop {
-        body: IrBlock,
-    },
-    /// A break expression
-    Break(Option<Box<IrExpr>>),
-    /// A continue expression
-    Continue,
-    /// A return expression
-    Return(Option<Box<IrExpr>>),
-    /// A closure
-    Closure {
-        params: Vec<IrClosureParam>,
-        ret_type: Option<Box<IrType>>,
-        body: Box<IrExpr>,
-    },
-    /// A reference expression &expr or &mut expr
-    Ref {
-        mutable: bool,
-        expr: Box<IrExpr>,
-    },
-    /// A dereference expression *expr
-    Deref(Box<IrExpr>),
-    /// A cast expression expr as Type
-    Cast {
-        expr: Box<IrExpr>,
-        ty: Box<IrType>,
-    },
-    /// A range expression
-    Range {
-        start: Option<Box<IrExpr>>,
-        end: Option<Box<IrExpr>>,
-        inclusive: bool,
-    },
-    /// An assignment expression
-    Assign {
-        left: Box<IrExpr>,
-        right: Box<IrExpr>,
-    },
-    /// A compound assignment expression (+=, -=, etc.)
-    AssignOp {
-        op: IrBinOp,
-        left: Box<IrExpr>,
-        right: Box<IrExpr>,
-    },
-    /// A try expression (?)
-    Try(Box<IrExpr>),
-    /// An await expression
-    Await(Box<IrExpr>),
-    /// Macro invocation (stored as the macro name and tokens)
-    Macro {
-        path: Vec<String>,
-        tokens: String,
-    },
-    /// Parenthesized expression
-    Paren(Box<IrExpr>),
-    /// Unsafe block
-    Unsafe(IrBlock),
-    /// Let expression (let pat = expr)
-    Let {
-        pattern: IrPattern,
-        expr: Box<IrExpr>,
-    },
-}
-
-/// A closure parameter
-#[derive(Debug, Clone)]
-pub struct IrClosureParam {
-    pub pattern: IrPattern,
-    pub ty: Option<IrType>,
-}
-
-/// A match arm
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IrMatchArm {
     pub pattern: IrPattern,
     pub guard: Option<IrExpr>,
     pub body: IrExpr,
 }
 
-/// A literal value
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrClosureParam {
+    pub pattern: IrPattern,
+    pub ty: Option<IrType>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum IrType {
+    Primitive(PrimitiveType),
+    Array {
+        kind: ArrayKind,
+        elem: Box<IrType>,
+        len: ArrayLength,
+    },
+    Struct {
+        kind: StructKind,
+        type_args: Vec<IrType>,
+    },
+    TypeParam(String),
+    Tuple(Vec<IrType>),
+    Unit,
+    Reference { mutable: bool, elem: Box<IrType> },
+    Projection {
+        base: Box<IrType>,
+        assoc: AssociatedType,
+    },
+    ImplTrait(Vec<IrTraitBound>),
+    FnPtr {
+        params: Vec<IrType>,
+        ret: Box<IrType>,
+    },
+    Never,
+    Infer,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrTraitBound {
+    pub trait_kind: TraitKind,
+    pub type_args: Vec<IrType>,
+    pub assoc_bindings: Vec<(AssociatedType, IrType)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum IrExpr {
+    Lit(IrLit),
+    Var(String),
+    Path {
+        segments: Vec<String>,
+        type_args: Vec<IrType>,
+    },
+    Binary {
+        op: SpecBinOp,
+        left: Box<IrExpr>,
+        right: Box<IrExpr>,
+    },
+    Unary {
+        op: SpecUnaryOp,
+        expr: Box<IrExpr>,
+    },
+    MethodCall {
+        receiver: Box<IrExpr>,
+        method: MethodKind,
+        type_args: Vec<IrType>,
+        args: Vec<IrExpr>,
+    },
+    Call {
+        func: Box<IrExpr>,
+        args: Vec<IrExpr>,
+    },
+    Field {
+        base: Box<IrExpr>,
+        field: String,
+    },
+    Index {
+        base: Box<IrExpr>,
+        index: Box<IrExpr>,
+    },
+    StructExpr {
+        kind: StructKind,
+        type_args: Vec<IrType>,
+        fields: Vec<(String, IrExpr)>,
+        rest: Option<Box<IrExpr>>,
+    },
+    Tuple(Vec<IrExpr>),
+    Array(Vec<IrExpr>),
+    Repeat {
+        elem: Box<IrExpr>,
+        len: Box<IrExpr>,
+    },
+    ArrayGenerate {
+        elem_ty: Option<Box<IrType>>,
+        len: ArrayLength,
+        index_var: String,
+        body: Box<IrExpr>,
+    },
+    ArrayMap {
+        array: Box<IrExpr>,
+        elem_var: String,
+        body: Box<IrExpr>,
+    },
+    ArrayZip {
+        left: Box<IrExpr>,
+        right: Box<IrExpr>,
+        left_var: String,
+        right_var: String,
+        body: Box<IrExpr>,
+    },
+    ArrayFold {
+        array: Box<IrExpr>,
+        init: Box<IrExpr>,
+        acc_var: String,
+        elem_var: String,
+        body: Box<IrExpr>,
+    },
+    BoundedLoop {
+        var: String,
+        start: Box<IrExpr>,
+        end: Box<IrExpr>,
+        inclusive: bool,
+        body: IrBlock,
+    },
+    IterLoop {
+        pattern: IrPattern,
+        collection: Box<IrExpr>,
+        body: IrBlock,
+    },
+    Block(IrBlock),
+    If {
+        cond: Box<IrExpr>,
+        then_branch: IrBlock,
+        else_branch: Option<Box<IrExpr>>,
+    },
+    Match {
+        expr: Box<IrExpr>,
+        arms: Vec<IrMatchArm>,
+    },
+    Closure {
+        params: Vec<IrClosureParam>,
+        ret_type: Option<Box<IrType>>,
+        body: Box<IrExpr>,
+    },
+    Ref {
+        mutable: bool,
+        expr: Box<IrExpr>,
+    },
+    Cast {
+        expr: Box<IrExpr>,
+        ty: Box<IrType>,
+    },
+    Return(Option<Box<IrExpr>>),
+    Break(Option<Box<IrExpr>>),
+    Continue,
+    Assign {
+        left: Box<IrExpr>,
+        right: Box<IrExpr>,
+    },
+    AssignOp {
+        op: SpecBinOp,
+        left: Box<IrExpr>,
+        right: Box<IrExpr>,
+    },
+    Range {
+        start: Option<Box<IrExpr>>,
+        end: Option<Box<IrExpr>>,
+        inclusive: bool,
+    },
+    Macro {
+        name: String,
+        tokens: String,
+    },
+    Try(Box<IrExpr>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum IrPattern {
+    Ident {
+        mutable: bool,
+        name: String,
+        subpat: Option<Box<IrPattern>>,
+    },
+    Tuple(Vec<IrPattern>),
+    Struct {
+        kind: StructKind,
+        fields: Vec<(String, IrPattern)>,
+        rest: bool,
+    },
+    TupleStruct {
+        kind: StructKind,
+        elems: Vec<IrPattern>,
+    },
+    Slice(Vec<IrPattern>),
+    Wild,
+    Lit(IrLit),
+    Ref {
+        mutable: bool,
+        pat: Box<IrPattern>,
+    },
+    Or(Vec<IrPattern>),
+    Rest,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum IrLit {
     Int(i128),
     Float(f64),
@@ -502,92 +775,35 @@ pub enum IrLit {
     Byte(u8),
 }
 
-/// Binary operators
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IrBinOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Rem,
-    BitAnd,
-    BitOr,
-    BitXor,
-    Shl,
-    Shr,
-    Eq,
-    Ne,
-    Lt,
-    Le,
-    Gt,
-    Ge,
-    And,
-    Or,
-}
-
-/// Unary operators
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IrUnaryOp {
-    Neg,
-    Not,
-    Deref,
-}
-
-impl IrModule {
-    pub fn new(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            ..Default::default()
+impl IrLit {
+    pub fn to_string(&self) -> String {
+        match self {
+            Self::Int(n) => n.to_string(),
+            Self::Float(f) => f.to_string(),
+            Self::Bool(b) => b.to_string(),
+            Self::Char(c) => format!("'{}'", c),
+            Self::Str(s) => format!("\"{}\"", s),
+            Self::ByteStr(bs) => format!("b\"{:?}\"", bs),
+            Self::Byte(b) => format!("b'{}'", b),
         }
-    }
-
-    pub fn add_struct(&mut self, s: IrStruct) -> StructId {
-        let id = StructId(self.structs.len());
-        self.structs.push(s);
-        id
-    }
-
-    pub fn add_trait(&mut self, t: IrTrait) -> TraitId {
-        let id = TraitId(self.traits.len());
-        self.traits.push(t);
-        id
-    }
-
-    pub fn add_impl(&mut self, i: IrImpl) -> ImplId {
-        let id = ImplId(self.impls.len());
-        self.impls.push(i);
-        id
-    }
-
-    pub fn add_function(&mut self, f: IrFunction) -> FuncId {
-        let id = FuncId(self.functions.len());
-        self.functions.push(f);
-        id
     }
 }
 
-impl IrType {
-    /// Create a simple path type from a single name
-    pub fn simple(name: impl Into<String>) -> Self {
-        Self::Path {
-            segments: vec![name.into()],
-            type_args: vec![],
-        }
+impl fmt::Display for IrLit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.to_string())
     }
+}
 
-    /// Create a generic type with type arguments
-    pub fn generic(name: impl Into<String>, args: Vec<IrType>) -> Self {
-        Self::Path {
-            segments: vec![name.into()],
-            type_args: args,
-        }
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SpecBinOp {
+    Add, Sub, Mul, Div, Rem,
+    BitAnd, BitOr, BitXor, Shl, Shr,
+    Eq, Ne, Lt, Le, Gt, Ge,
+    And, Or,
+}
 
-    /// Create a reference type
-    pub fn reference(mutable: bool, elem: IrType) -> Self {
-        Self::Reference {
-            mutable,
-            elem: Box::new(elem),
-        }
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SpecUnaryOp {
+    Neg, Not, Deref,
 }

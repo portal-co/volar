@@ -3,9 +3,10 @@
 use std::fs;
 use std::path::Path;
 use volar_compiler::{
-    parse_sources, print_module, specialize_module,
+    parse_sources, print_module,
     TypeContext, OperatorAnalysis, type_to_string,
-    StructKind, TraitKind, MathTrait, SpecType, ArrayKind,
+    StructKind, TraitKind, MathTrait, ArrayKind,
+    IrType, IrExpr, IrStmt, IrImplItem, AssociatedType,
 };
 
 fn main() {
@@ -44,7 +45,7 @@ fn main() {
 
     match parse_sources(&sources_ref, "volar_spec") {
         Ok(module) => {
-            println!("\n=== Generic IR Module Statistics ===");
+            println!("\n=== IR Module Statistics ===");
             println!("Structs: {}", module.structs.len());
             println!("Traits: {}", module.traits.len());
             println!("Impls: {}", module.impls.len());
@@ -71,12 +72,8 @@ fn main() {
             println!("Trait implementations: {}", type_ctx.trait_impls.len());
             println!("Associated types: {}", type_ctx.assoc_types.len());
 
-            // Now specialize the IR
-            println!("\n=== Specializing IR ===");
-            let spec_module = specialize_module(&module);
-            
             println!("\n=== Specialized Struct Classifications ===");
-            for s in &spec_module.structs {
+            for s in &module.structs {
                 let classification = match &s.kind {
                     StructKind::Delta | StructKind::Q | StructKind::Vope | StructKind::BitVole => "VOLE",
                     StructKind::ABO | StructKind::ABOOpening | StructKind::CommitmentCore => "Crypto",
@@ -88,11 +85,11 @@ fn main() {
                 // Show field types
                 for field in &s.fields {
                     let ty_desc = match &field.ty {
-                        SpecType::Primitive(p) => format!("primitive {:?}", p),
-                        SpecType::Array { kind: ArrayKind::GenericArray, .. } => "GenericArray".to_string(),
-                        SpecType::Array { kind: ArrayKind::FixedArray, .. } => "fixed array".to_string(),
-                        SpecType::TypeParam(name) => format!("type param {}", name),
-                        SpecType::Struct { kind, .. } => format!("struct {:?}", kind),
+                        IrType::Primitive(p) => format!("primitive {:?}", p),
+                        IrType::Array { kind: ArrayKind::GenericArray, .. } => "GenericArray".to_string(),
+                        IrType::Array { kind: ArrayKind::FixedArray, .. } => "fixed array".to_string(),
+                        IrType::TypeParam(name) => format!("type param {}", name),
+                        IrType::Struct { kind, .. } => format!("struct {:?}", kind),
                         _ => "other".to_string(),
                     };
                     println!("    {}: {}", field.name, ty_desc);
@@ -104,18 +101,18 @@ fn main() {
             let mut crypto_count = 0;
             let mut inherent_count = 0;
             
-            for imp in &spec_module.impls {
+            for imp in &module.impls {
                 match &imp.trait_ {
                     Some(tr) => match &tr.kind {
                         TraitKind::Math(m) => {
                             math_count += 1;
                             if matches!(m, MathTrait::Add | MathTrait::Sub | MathTrait::Mul | MathTrait::BitXor) {
-                                println!("  Math op: {:?} for {:?}", m, imp.self_ty.as_struct());
+                                println!("  Math op: {:?} for {:?}", m, type_to_string(&imp.self_ty));
                             }
                         }
                         TraitKind::Crypto(c) => {
                             crypto_count += 1;
-                            println!("  Crypto: {:?} for {:?}", c, imp.self_ty.as_struct());
+                            println!("  Crypto: {:?} for {:?}", c, type_to_string(&imp.self_ty));
                         }
                         _ => {}
                     },
@@ -132,50 +129,54 @@ fn main() {
             // Count total loop constructs
             println!("\n=== Total (Bounded) Loop Analysis ===");
             
-            use volar_compiler::SpecExpr;
-            
-            fn count_loops_in_expr(expr: &SpecExpr, counts: &mut (usize, usize, usize, usize, usize, usize)) {
+            fn count_loops_in_expr(expr: &IrExpr, counts: &mut (usize, usize, usize, usize, usize, usize)) {
                 match expr {
-                    SpecExpr::ArrayGenerate { body, .. } => {
+                    IrExpr::ArrayGenerate { body, .. } => {
                         counts.0 += 1;
                         count_loops_in_expr(body, counts);
                     }
-                    SpecExpr::ArrayMap { body, array, .. } => {
+                    IrExpr::ArrayMap { body, array, .. } => {
                         counts.1 += 1;
                         count_loops_in_expr(body, counts);
                         count_loops_in_expr(array, counts);
                     }
-                    SpecExpr::ArrayZip { body, left, right, .. } => {
+                    IrExpr::ArrayZip { body, left, right, .. } => {
                         counts.2 += 1;
                         count_loops_in_expr(body, counts);
                         count_loops_in_expr(left, counts);
                         count_loops_in_expr(right, counts);
                     }
-                    SpecExpr::ArrayFold { body, array, init, .. } => {
+                    IrExpr::ArrayFold { body, array, init, .. } => {
                         counts.3 += 1;
                         count_loops_in_expr(body, counts);
                         count_loops_in_expr(array, counts);
                         count_loops_in_expr(init, counts);
                     }
-                    SpecExpr::BoundedLoop { body, .. } => {
+                    IrExpr::BoundedLoop { body, .. } => {
                         counts.4 += 1;
                         for stmt in &body.stmts {
-                            if let volar_compiler::SpecStmt::Semi(e) | volar_compiler::SpecStmt::Expr(e) = stmt {
+                            if let IrStmt::Semi(e) | IrStmt::Expr(e) = stmt {
                                 count_loops_in_expr(e, counts);
                             }
                         }
+                        if let Some(e) = &body.expr {
+                            count_loops_in_expr(e, counts);
+                        }
                     }
-                    SpecExpr::IterLoop { body, .. } => {
+                    IrExpr::IterLoop { body, .. } => {
                         counts.5 += 1;
                         for stmt in &body.stmts {
-                            if let volar_compiler::SpecStmt::Semi(e) | volar_compiler::SpecStmt::Expr(e) = stmt {
+                            if let IrStmt::Semi(e) | IrStmt::Expr(e) = stmt {
                                 count_loops_in_expr(e, counts);
                             }
                         }
+                        if let Some(e) = &body.expr {
+                            count_loops_in_expr(e, counts);
+                        }
                     }
-                    SpecExpr::Block(block) => {
+                    IrExpr::Block(block) => {
                         for stmt in &block.stmts {
-                            if let volar_compiler::SpecStmt::Semi(e) | volar_compiler::SpecStmt::Expr(e) = stmt {
+                            if let IrStmt::Semi(e) | IrStmt::Expr(e) = stmt {
                                 count_loops_in_expr(e, counts);
                             }
                         }
@@ -183,31 +184,45 @@ fn main() {
                             count_loops_in_expr(e, counts);
                         }
                     }
-                    SpecExpr::MethodCall { receiver, args, .. } => {
+                    IrExpr::MethodCall { receiver, args, .. } => {
                         count_loops_in_expr(receiver, counts);
                         for arg in args {
                             count_loops_in_expr(arg, counts);
                         }
                     }
-                    SpecExpr::Call { func, args, .. } => {
+                    IrExpr::Call { func, args, .. } => {
                         count_loops_in_expr(func, counts);
                         for arg in args {
                             count_loops_in_expr(arg, counts);
                         }
                     }
-                    SpecExpr::Closure { body, .. } => {
+                    IrExpr::Closure { body, .. } => {
                         count_loops_in_expr(body, counts);
+                    }
+                    IrExpr::If { cond, then_branch, else_branch } => {
+                        count_loops_in_expr(cond, counts);
+                        for stmt in &then_branch.stmts {
+                            if let IrStmt::Semi(e) | IrStmt::Expr(e) = stmt {
+                                count_loops_in_expr(e, counts);
+                            }
+                        }
+                        if let Some(e) = &then_branch.expr {
+                            count_loops_in_expr(e, counts);
+                        }
+                        if let Some(eb) = else_branch {
+                            count_loops_in_expr(eb, counts);
+                        }
                     }
                     _ => {}
                 }
             }
             
             let mut counts = (0, 0, 0, 0, 0, 0);
-            for imp in &spec_module.impls {
+            for imp in &module.impls {
                 for item in &imp.items {
-                    if let volar_compiler::SpecImplItem::Method(f) = item {
+                    if let IrImplItem::Method(f) = item {
                         for stmt in &f.body.stmts {
-                            if let volar_compiler::SpecStmt::Semi(e) | volar_compiler::SpecStmt::Expr(e) = stmt {
+                            if let IrStmt::Semi(e) | IrStmt::Expr(e) = stmt {
                                 count_loops_in_expr(e, &mut counts);
                             }
                         }
@@ -217,9 +232,9 @@ fn main() {
                     }
                 }
             }
-            for f in &spec_module.functions {
+            for f in &module.functions {
                 for stmt in &f.body.stmts {
-                    if let volar_compiler::SpecStmt::Semi(e) | volar_compiler::SpecStmt::Expr(e) = stmt {
+                    if let IrStmt::Semi(e) | IrStmt::Expr(e) = stmt {
                         count_loops_in_expr(e, &mut counts);
                     }
                 }
@@ -237,8 +252,8 @@ fn main() {
             println!("\n  Total bounded loops: {} (all loops are provably terminating)", 
                      counts.0 + counts.1 + counts.2 + counts.3 + counts.4 + counts.5);
 
-            // Print the generic IR (truncated)
-            println!("\n=== Generic IR Output (truncated) ===");
+            // Print the IR (truncated)
+            println!("\n=== IR Output (truncated) ===");
             let printed = print_module(&module);
             
             if printed.len() > 2000 {
