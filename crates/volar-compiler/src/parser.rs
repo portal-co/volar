@@ -350,7 +350,7 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                 });
             }
             
-            if p.path.segments.len() == 1 && type_args.is_empty() {
+            if p.path.segments.len() == 1 && type_args.is_empty() && name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false){
                 // Potential type param
                 return Ok(IrType::TypeParam(name));
             }

@@ -258,6 +258,7 @@ pub enum MathTrait {
     Neg, Not,
     PartialEq, Eq, PartialOrd, Ord,
     Clone, Copy, Default,
+    Unsigned,
 }
 
 impl MathTrait {
@@ -283,6 +284,7 @@ impl MathTrait {
             "Clone" => Some(Self::Clone),
             "Copy" => Some(Self::Copy),
             "Default" => Some(Self::Default),
+            "Unsigned" => Some(Self::Unsigned),
             _ => None,
         }
     }

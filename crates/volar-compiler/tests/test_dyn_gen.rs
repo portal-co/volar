@@ -33,18 +33,18 @@ fn test_generate_dyn_module() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let dyn_code = print_module_rust_dyn(&combined_ir);
-    
+
     // Write to volar-spec-dyn/src/generated.rs
     let generated_path = Path::new("../volar-spec-dyn/src/generated.rs");
     fs::write(&generated_path, &dyn_code)?;
-    
+
     println!("Generated {} bytes of dynamic code", dyn_code.len());
     println!("Written to: {:?}", generated_path);
-    
+
     // Also write a standalone copy for debugging
     let debug_path = Path::new("volar_dyn_generated.rs");
     fs::write(&debug_path, &dyn_code)?;
-    
+
     Ok(())
 }
 
@@ -53,20 +53,22 @@ fn test_generate_dyn_module() -> Result<(), Box<dyn std::error::Error>> {
 fn test_generated_dyn_compiles() -> Result<(), Box<dyn std::error::Error>> {
     // First generate the code
     test_generate_dyn_module()?;
-    
+
     // Now try to build volar-spec-dyn
     let output = std::process::Command::new("cargo")
         .arg("build")
         .arg("-p")
         .arg("volar-spec-dyn")
-        .current_dir("../..")  // workspace root
+        .arg("--features")
+        .arg("generated")
+        .current_dir("../..") // workspace root
         .output()?;
 
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!("Build output:\n{}", stdout);
+    eprintln!("Build errors:\n{}", stderr);
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        eprintln!("Build output:\n{}", stdout);
-        eprintln!("Build errors:\n{}", stderr);
         return Err(format!("volar-spec-dyn build failed").into());
     }
 
