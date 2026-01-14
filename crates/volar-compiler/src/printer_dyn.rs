@@ -12,6 +12,7 @@ use std::{
     collections::BTreeMap,
     format,
     string::{String, ToString},
+    vec,
     vec::Vec,
 };
 
@@ -20,6 +21,7 @@ use alloc::{
     collections::BTreeMap,
     format,
     string::{String, ToString},
+    vec,
     vec::Vec,
 };
 
@@ -38,45 +40,40 @@ enum GenericKind {
     Type,
 }
 
+/// Check if a trait bound indicates a length parameter
+fn is_length_bound(bound: &IrTraitBound) -> bool {
+    matches!(
+        &bound.trait_kind,
+        TraitKind::Crypto(CryptoTrait::ArrayLength)
+            | TraitKind::Crypto(CryptoTrait::VoleArray)
+            | TraitKind::Math(MathTrait::Unsigned)
+    )
+}
+
+/// Check if a trait bound indicates a crypto parameter
+fn is_crypto_bound(bound: &IrTraitBound) -> bool {
+    matches!(
+        &bound.trait_kind,
+        TraitKind::Crypto(CryptoTrait::BlockCipher)
+            | TraitKind::Crypto(CryptoTrait::Digest)
+            | TraitKind::Crypto(CryptoTrait::Rng)
+            | TraitKind::Crypto(CryptoTrait::ByteBlockEncrypt)
+    )
+}
+
+/// Check if a trait bound is a math operation that might indicate length when its args are lengths
+fn is_math_op_bound(bound: &IrTraitBound) -> bool {
+    matches!(
+        &bound.trait_kind,
+        TraitKind::Math(MathTrait::Add)
+            | TraitKind::Math(MathTrait::Sub)
+            | TraitKind::Math(MathTrait::Mul)
+            | TraitKind::Math(MathTrait::Div)
+    )
+}
+
 /// Analyze a generic parameter to determine its kind
 fn classify_generic(param: &IrGenericParam, all_params: &[&[IrGenericParam]]) -> GenericKind {
-    // Helper: check whether a given `IrType` refers (directly or indirectly) to a length-type parameter.
-    fn type_refers_to_length(
-        ty: &IrType,
-        all_params: &[&[IrGenericParam]],
-        visited: &mut Vec<String>,
-    ) -> bool {
-        match ty {
-            IrType::TypeParam(name) => is_length_name(name, all_params, visited),
-            IrType::Struct { type_args, .. } => {
-                for ta in type_args {
-                    if type_refers_to_length(ta, all_params, visited) {
-                        return true;
-                    }
-                }
-                false
-            }
-            IrType::Projection { base, assoc: _ } => {
-                // For projections like `<B as _>::BlockSize`, check the base type
-                type_refers_to_length(base, all_params, visited)
-            }
-            IrType::Param { path } => {
-                // For paths like `N::Something`, treat the first segment as a type param name
-                if let Some(first) = path.first() {
-                    return is_length_name(first, all_params, visited);
-                }
-                false
-            }
-            IrType::Array { elem, .. }
-            | IrType::Vector { elem }
-            | IrType::Reference { elem, .. } => type_refers_to_length(elem, all_params, visited),
-            IrType::Tuple(elems) => elems
-                .iter()
-                .any(|e| type_refers_to_length(e, all_params, visited)),
-            _ => false,
-        }
-    }
-
     // Helper: find a generic param definition by name across the provided generic sets.
     fn find_param<'a>(
         name: &str,
@@ -92,7 +89,52 @@ fn classify_generic(param: &IrGenericParam, all_params: &[&[IrGenericParam]]) ->
         None
     }
 
-    // Recursive search by param name to determine if it is a length. Uses `visited` to avoid cycles.
+    // Check if a type refers to a length parameter (recursive)
+    fn type_refers_to_length(
+        ty: &IrType,
+        all_params: &[&[IrGenericParam]],
+        visited: &mut Vec<String>,
+    ) -> bool {
+        match ty {
+            IrType::TypeParam(name) => is_length_name(name, all_params, visited),
+            IrType::Struct { type_args, .. } => type_args
+                .iter()
+                .any(|ta| type_refers_to_length(ta, all_params, visited)),
+            IrType::Projection { base, .. } => type_refers_to_length(base, all_params, visited),
+            IrType::Param { path } => path
+                .first()
+                .map(|s| is_length_name(s, all_params, visited))
+                .unwrap_or(false),
+            IrType::Array { elem, .. }
+            | IrType::Vector { elem }
+            | IrType::Reference { elem, .. } => type_refers_to_length(elem, all_params, visited),
+            IrType::Tuple(elems) => elems
+                .iter()
+                .any(|e| type_refers_to_length(e, all_params, visited)),
+            _ => false,
+        }
+    }
+
+    // Check if a bound's type args or associated bindings refer to length params
+    fn bound_args_refer_to_length(
+        bound: &IrTraitBound,
+        all_params: &[&[IrGenericParam]],
+        visited: &mut Vec<String>,
+    ) -> bool {
+        for arg in &bound.type_args {
+            if type_refers_to_length(arg, all_params, visited) {
+                return true;
+            }
+        }
+        for (_name, ty) in &bound.assoc_bindings {
+            if type_refers_to_length(ty, all_params, visited) {
+                return true;
+            }
+        }
+        false
+    }
+
+    // Recursive check if a parameter name represents a length
     fn is_length_name(
         name: &str,
         all_params: &[&[IrGenericParam]],
@@ -105,30 +147,15 @@ fn classify_generic(param: &IrGenericParam, all_params: &[&[IrGenericParam]]) ->
 
         if let Some(p) = find_param(name, all_params) {
             for bound in &p.bounds {
-                match &bound.trait_kind {
-                    TraitKind::Crypto(CryptoTrait::ArrayLength)
-                    | TraitKind::Math(MathTrait::Unsigned) => {
+                // Direct length bounds
+                if is_length_bound(bound) {
+                    return true;
+                }
+                // Math ops where args are lengths -> this param is length
+                if is_math_op_bound(bound) {
+                    if bound_args_refer_to_length(bound, all_params, visited) {
                         return true;
                     }
-                    TraitKind::Math(m)
-                        if matches!(
-                            m,
-                            MathTrait::Add | MathTrait::Sub | MathTrait::Mul | MathTrait::Div
-                        ) =>
-                    {
-                        // If any type-arg or associated binding refers to a length, treat this as length
-                        for arg in &bound.type_args {
-                            if type_refers_to_length(arg, all_params, visited) {
-                                return true;
-                            }
-                        }
-                        for (_n, ty) in &bound.assoc_bindings {
-                            if type_refers_to_length(ty, all_params, visited) {
-                                return true;
-                            }
-                        }
-                    }
-                    _ => {}
                 }
             }
         }
@@ -136,42 +163,26 @@ fn classify_generic(param: &IrGenericParam, all_params: &[&[IrGenericParam]]) ->
         false
     }
 
-    // First pass: check this param's own bounds for explicit indications
+    // Check this param's bounds
     for bound in &param.bounds {
-        match &bound.trait_kind {
-            TraitKind::Crypto(CryptoTrait::ArrayLength) | TraitKind::Math(MathTrait::Unsigned) => {
+        // Direct length indicators
+        if is_length_bound(bound) {
+            return GenericKind::Length;
+        }
+        // Crypto indicators
+        if is_crypto_bound(bound) {
+            return GenericKind::Crypto;
+        }
+        // Math ops - if args refer to lengths, this is a length
+        if is_math_op_bound(bound) {
+            let mut visited = vec![param.name.clone()];
+            if bound_args_refer_to_length(bound, all_params, &mut visited) {
                 return GenericKind::Length;
             }
-            TraitKind::Crypto(CryptoTrait::BlockCipher)
-            | TraitKind::Crypto(CryptoTrait::Digest)
-            | TraitKind::Crypto(CryptoTrait::Rng)
-            | TraitKind::Crypto(CryptoTrait::ByteBlockEncrypt) => return GenericKind::Crypto,
-            // VoleArray behaves like a length (wraps ArrayLength)
-            TraitKind::Crypto(CryptoTrait::VoleArray) => return GenericKind::Length,
-            TraitKind::Math(m)
-                if matches!(
-                    m,
-                    MathTrait::Add | MathTrait::Sub | MathTrait::Mul | MathTrait::Div
-                ) =>
-            {
-                // If any referenced type in the bound refers to a length, classify as Length
-                let mut visited = Vec::new();
-                for arg in &bound.type_args {
-                    if type_refers_to_length(arg, all_params, &mut visited) {
-                        return GenericKind::Length;
-                    }
-                }
-                for (_n, ty) in &bound.assoc_bindings {
-                    if type_refers_to_length(ty, all_params, &mut visited) {
-                        return GenericKind::Length;
-                    }
-                }
-            }
-            _ => {}
         }
     }
 
-    // Final pass: recursively search any param this param might alias to (by name)
+    // Recursive check via param name
     let mut visited = Vec::new();
     if is_length_name(&param.name, all_params, &mut visited) {
         return GenericKind::Length;
@@ -764,15 +775,22 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
     }
 
     // helper: check whether a trait bound uses any length parameter (in type_args or assoc_bindings)
+    // or if the bound itself indicates a length constraint (VoleArray, ArrayLength, etc.)
     fn bound_uses_length(
         b: &IrTraitBound,
         cur_params: &BTreeMap<String, (String, GenericKind)>,
     ) -> bool {
+        // Check if this bound itself is a length-indicating bound
+        if is_length_bound(b) {
+            return true;
+        }
+        // Check type args
         for ta in &b.type_args {
             if type_refers_to_length_in_cur(ta, cur_params) {
                 return true;
             }
         }
+        // Check associated bindings
         for (_name, ty) in &b.assoc_bindings {
             if type_refers_to_length_in_cur(ty, cur_params) {
                 return true;
@@ -1176,17 +1194,24 @@ fn write_function_dyn(
         }
 
         // helper: check whether a trait bound uses any length parameter in the function context
+        // or if the bound itself indicates a length constraint (VoleArray, ArrayLength, etc.)
         fn bound_uses_length_func(
             b: &IrTraitBound,
             cur_params: &BTreeMap<String, (String, GenericKind)>,
             struct_info: &BTreeMap<String, StructInfo>,
             self_struct: Option<&str>,
         ) -> bool {
+            // Check if this bound itself is a length-indicating bound
+            if is_length_bound(b) {
+                return true;
+            }
+            // Check type args
             for ta in &b.type_args {
                 if type_refers_to_length_in_cur_func(ta, cur_params, struct_info, self_struct) {
                     return true;
                 }
             }
+            // Check associated bindings
             for (_name, ty) in &b.assoc_bindings {
                 if type_refers_to_length_in_cur_func(ty, cur_params, struct_info, self_struct) {
                     return true;
