@@ -4,6 +4,23 @@
 //! incorporating domain-specific knowledge about cryptography, math, and VOLE.
 
 use std::fmt;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum CompilerError {
+    #[error("Parse error: {0}")]
+    ParseError(String),
+    #[error("Unsupported construct: {0}")]
+    Unsupported(String),
+    #[error("Specialization error: {0}")]
+    SpecializationError(String),
+    #[error("Unbounded loop detected: only total (bounded) loops are allowed")]
+    UnboundedLoop,
+    #[error("Invalid type: {0}")]
+    InvalidType(String),
+}
+
+pub type Result<T> = std::result::Result<T, CompilerError>;
 
 // ============================================================================
 // PRIMITIVE TYPES
