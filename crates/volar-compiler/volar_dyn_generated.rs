@@ -87,7 +87,7 @@ impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 51: T
     sum
 }).collect() }
     }
-    pub fn apply_pool<M, O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, x: usize, x2: usize, xs: usize, s: usize, voles: &'a PolyInputPoolDyn<VopeDyn<T>>) -> VopeDyn<O> where T: Into<O> + Clone {
+    pub fn apply_pool<O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, m: usize, x: usize, x2: usize, xs: usize, s: usize, voles: &'a PolyInputPoolDyn<VopeDyn<T>>) -> VopeDyn<O> where T: Into<O> + Clone {
         let n = self.n;
         let v = (0..m).map(|i| {
     let mut sum = O::new();
@@ -125,7 +125,7 @@ impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 51: T
 }).collect();
         return VopeDyn { u: u, v: v, n: n, k: k };
     }
-    pub fn apply<M, O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, x: usize, x2: usize, xs: usize, s: usize, voles: Vec<Vec<VopeDyn<T>>>) -> VopeDyn<O> where T: Into<O> + Clone {
+    pub fn apply<O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, m: usize, x: usize, x2: usize, xs: usize, s: usize, voles: Vec<Vec<VopeDyn<T>>>) -> VopeDyn<O> where T: Into<O> + Clone {
         let n = self.n;
         let v = (0..m).map(|i| {
     let mut sum = O::new();
@@ -166,7 +166,7 @@ impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 51: T
 }
 
 impl<T: Add<Output = T> + Mul<Output = T> + Default + Clone + Add<Output = T> + Mul<Output = T> + Default + Clone> VopeDyn<T> where T: Add<Output = T> + Mul<Output = T> + Default + Clone {
-    pub fn mul_generalized<K2: Add<>>(&self, other: &'a VopeDyn<T>) -> VopeDyn<T> {
+    pub fn mul_generalized(&self, k2: usize, other: &'a VopeDyn<T>) -> VopeDyn<T> {
         let n = self.n;
         let k = self.k;
         let mut res_u = Vec::new();

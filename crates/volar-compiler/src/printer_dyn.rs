@@ -426,7 +426,7 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
 
     // Generate free functions
     for f in &module.functions {
-        write_function_dyn(&mut out, f, 0, None, &BTreeMap::new(), &struct_info, None);
+        write_function_dyn(&mut out, f, 0, None, &BTreeMap::new(), &struct_info, None, None);
         writeln!(out).unwrap();
     }
 
@@ -984,6 +984,7 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
                     &cur_params,
                     struct_info,
                     i.trait_.as_ref(),
+                    Some(&augmented_generics),
                 );
             }
             IrImplItem::AssociatedType { name, ty } => {
@@ -1014,6 +1015,7 @@ fn write_function_dyn(
     cur_params: &BTreeMap<String, (String, GenericKind)>,
     struct_info: &BTreeMap<String, StructInfo>,
     trait_ref: Option<&IrTraitRef>,
+    impl_generics: Option<&[IrGenericParam]>,
 ) {
     let indent = "    ".repeat(level);
 
@@ -1022,15 +1024,42 @@ fn write_function_dyn(
     let mut type_params = Vec::new();
     let mut cur_params = cur_params.clone();
 
+    // Build the list of all params for classification: function generics + impl generics
+    let empty_generics: Vec<IrGenericParam> = Vec::new();
+    let impl_gen_slice = impl_generics.unwrap_or(&empty_generics);
+    
+    // First pass: augment function generics with their where-clause bounds
+    fn augment_fn_generics(
+        generics: &[IrGenericParam],
+        where_clause: &[IrWherePredicate],
+    ) -> Vec<IrGenericParam> {
+        let mut result = generics.to_vec();
+        for pred in where_clause {
+            if let IrWherePredicate::TypeBound { ty, bounds } = pred {
+                if let IrType::TypeParam(name) = ty {
+                    for param in &mut result {
+                        if &param.name == name {
+                            param.bounds.extend(bounds.clone());
+                        }
+                    }
+                }
+            }
+        }
+        result
+    }
+    
+    let augmented_fn_generics = augment_fn_generics(&f.generics, &f.where_clause);
+    
     // First pass: add ALL function generics to cur_params so bounds can reference each other
-    for p in &f.generics {
-        let k = classify_generic(p, &[&f.generics]);
+    // Use both impl generics and function generics for classification
+    for p in &augmented_fn_generics {
+        let k = classify_generic(p, &[&augmented_fn_generics, impl_gen_slice]);
         cur_params.insert(p.name.clone(), (format!(""), k.clone()));
     }
     
     // Second pass: now format the type params with all generics visible
-    for p in &f.generics {
-        let k = classify_generic(p, &[&f.generics]);
+    for p in &augmented_fn_generics {
+        let k = classify_generic(p, &[&augmented_fn_generics, impl_gen_slice]);
         match k {
             GenericKind::Length => length_params.push(p.name.clone()),
             _ => type_params.push(pname(p, &cur_params, struct_info)),
@@ -1058,8 +1087,8 @@ fn write_function_dyn(
     if !f.where_clause.is_empty() {
         // Build map of typeparam -> bounds
         let mut fn_bounds: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for tp in &f.generics {
-            let k = classify_generic(tp, &[&f.generics]);
+        for tp in &augmented_fn_generics {
+            let k = classify_generic(tp, &[&augmented_fn_generics, impl_gen_slice]);
             if k != GenericKind::Length {
                 fn_bounds.insert(
                     tp.name.clone(),
@@ -1089,8 +1118,7 @@ fn write_function_dyn(
             }
         }
         // Rebuild type_params list replacing entries with bounds from fn_bounds
-        type_params = f
-            .generics
+        type_params = augmented_fn_generics
             .iter()
             .filter_map(|tp| {
                 if let Some(bounds) = fn_bounds.get(&tp.name) {
@@ -1243,8 +1271,8 @@ fn write_function_dyn(
 
         // Detect unconstrained generics at function level and record them for
         // deferred emission alongside the where-clause.
-        for tp in &f.generics {
-            let k = classify_generic(tp, &[&f.generics]);
+        for tp in &augmented_fn_generics {
+            let k = classify_generic(tp, &[&augmented_fn_generics, impl_gen_slice]);
             if k != GenericKind::Length {
                 let existing = fn_bounds
                     .get(&tp.name)
