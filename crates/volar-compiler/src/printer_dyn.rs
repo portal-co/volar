@@ -41,7 +41,11 @@ enum GenericKind {
 /// Analyze a generic parameter to determine its kind
 fn classify_generic(param: &IrGenericParam, all_params: &[&[IrGenericParam]]) -> GenericKind {
     // Helper: check whether a given `IrType` refers (directly or indirectly) to a length-type parameter.
-    fn type_refers_to_length(ty: &IrType, all_params: &[&[IrGenericParam]], visited: &mut Vec<String>) -> bool {
+    fn type_refers_to_length(
+        ty: &IrType,
+        all_params: &[&[IrGenericParam]],
+        visited: &mut Vec<String>,
+    ) -> bool {
         match ty {
             IrType::TypeParam(name) => is_length_name(name, all_params, visited),
             IrType::Struct { type_args, .. } => {
@@ -52,16 +56,21 @@ fn classify_generic(param: &IrGenericParam, all_params: &[&[IrGenericParam]]) ->
                 }
                 false
             }
-            IrType::Array { elem, .. } | IrType::Vector { elem } | IrType::Reference { elem, .. } => {
-                type_refers_to_length(elem, all_params, visited)
-            }
-            IrType::Tuple(elems) => elems.iter().any(|e| type_refers_to_length(e, all_params, visited)),
+            IrType::Array { elem, .. }
+            | IrType::Vector { elem }
+            | IrType::Reference { elem, .. } => type_refers_to_length(elem, all_params, visited),
+            IrType::Tuple(elems) => elems
+                .iter()
+                .any(|e| type_refers_to_length(e, all_params, visited)),
             _ => false,
         }
     }
 
     // Helper: find a generic param definition by name across the provided generic sets.
-    fn find_param<'a>(name: &str, all_params: &'a [&'a [IrGenericParam]]) -> Option<&'a IrGenericParam> {
+    fn find_param<'a>(
+        name: &str,
+        all_params: &'a [&'a [IrGenericParam]],
+    ) -> Option<&'a IrGenericParam> {
         for set in all_params {
             for p in *set {
                 if p.name == name {
@@ -73,7 +82,11 @@ fn classify_generic(param: &IrGenericParam, all_params: &[&[IrGenericParam]]) ->
     }
 
     // Recursive search by param name to determine if it is a length. Uses `visited` to avoid cycles.
-    fn is_length_name(name: &str, all_params: &[&[IrGenericParam]], visited: &mut Vec<String>) -> bool {
+    fn is_length_name(
+        name: &str,
+        all_params: &[&[IrGenericParam]],
+        visited: &mut Vec<String>,
+    ) -> bool {
         if visited.contains(&name.to_string()) {
             return false;
         }
@@ -82,10 +95,16 @@ fn classify_generic(param: &IrGenericParam, all_params: &[&[IrGenericParam]]) ->
         if let Some(p) = find_param(name, all_params) {
             for bound in &p.bounds {
                 match &bound.trait_kind {
-                    TraitKind::Crypto(CryptoTrait::ArrayLength) | TraitKind::Math(MathTrait::Unsigned) => {
+                    TraitKind::Crypto(CryptoTrait::ArrayLength)
+                    | TraitKind::Math(MathTrait::Unsigned) => {
                         return true;
                     }
-                    TraitKind::Math(m) if matches!(m, MathTrait::Add | MathTrait::Sub | MathTrait::Mul | MathTrait::Div) => {
+                    TraitKind::Math(m)
+                        if matches!(
+                            m,
+                            MathTrait::Add | MathTrait::Sub | MathTrait::Mul | MathTrait::Div
+                        ) =>
+                    {
                         // If any type-arg or associated binding refers to a length, treat this as length
                         for arg in &bound.type_args {
                             if type_refers_to_length(arg, all_params, visited) {
@@ -117,7 +136,12 @@ fn classify_generic(param: &IrGenericParam, all_params: &[&[IrGenericParam]]) ->
             | TraitKind::Crypto(CryptoTrait::Rng)
             | TraitKind::Crypto(CryptoTrait::ByteBlockEncrypt)
             | TraitKind::Crypto(CryptoTrait::VoleArray) => return GenericKind::Crypto,
-            TraitKind::Math(m) if matches!(m, MathTrait::Add | MathTrait::Sub | MathTrait::Mul | MathTrait::Div) => {
+            TraitKind::Math(m)
+                if matches!(
+                    m,
+                    MathTrait::Add | MathTrait::Sub | MathTrait::Mul | MathTrait::Div
+                ) =>
+            {
                 // If any referenced type in the bound refers to a length, classify as Length
                 let mut visited = Vec::new();
                 for arg in &bound.type_args {
@@ -149,14 +173,17 @@ fn is_length_param(name: &str, all_params: &[IrGenericParam]) -> bool {
     for p in all_params {
         if p.name == name {
             for bound in &p.bounds {
-                if matches!(bound.trait_kind, TraitKind::Crypto(CryptoTrait::ArrayLength) | TraitKind::Math(MathTrait::Unsigned)) {
+                if matches!(
+                    bound.trait_kind,
+                    TraitKind::Crypto(CryptoTrait::ArrayLength)
+                        | TraitKind::Math(MathTrait::Unsigned)
+                ) {
                     return true;
                 }
             }
         }
     }
 
-    
     false
 }
 
@@ -373,7 +400,49 @@ fn write_struct_dyn(out: &mut String, s: &IrStruct, struct_info: &BTreeMap<Strin
     }
 }
 fn bname(b: &IrTraitBound) -> String {
-    format!("{}", b)
+    match &b.trait_kind {
+        TraitKind::Crypto(c) => format!("{:?}", c),
+        TraitKind::Math(math_trait) => format!("{:?}", math_trait),
+        TraitKind::External { path } => format!(
+            "compile_error!(\"External trait bounds not supported in dyn code: {:?}\")",
+            path
+        ),
+        TraitKind::Custom(path) => format!(
+            "compile_error!(\"External trait bounds not supported in dyn code: {}\")",
+            path
+        ),
+        TraitKind::Into(t) => format!(
+            "Into<{}>",
+            match &**t {
+                IrType::TypeParam(t) => t.clone(),
+                a => format!("compile_error!(\"Into bounds not supported in dyn code {a:?}\")"),
+            }
+        ),
+        TraitKind::AsRef(t) => format!(
+            "AsRef<{}>",
+            match &**t {
+                IrType::TypeParam(t) => t.clone(),
+                IrType::Array {
+                    kind: ArrayKind::Slice,
+                    elem,
+                    len,
+                } => match &**elem {
+                    IrType::Primitive(PrimitiveType::U8) => "[u8]".to_string(),
+                    a => format!(
+                        "compile_error!(\"AsRef bounds with slice elem not supported in dyn code {a:?}\")"
+                    ),
+                },
+                a => format!("compile_error!(\"AsRef bounds not supported in dyn code {a:?}\")"),
+            }
+        ),
+        TraitKind::Expand(t) => format!(
+            "FnMut(&[u8]) -> {}",
+            match &**t {
+                IrType::TypeParam(t) => t.clone(),
+                a => format!("compile_error!(\"Expand bounds not supported in dyn code {a:?}\")"),
+            }
+        ),
+    }
 }
 fn pname(p: &IrGenericParam) -> String {
     match &*p.bounds {
@@ -389,7 +458,12 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
     let generics = i
         .generics
         .iter()
-        .map(|p| (p.name.clone(), (format!(""), classify_generic(p, &[&i.generics]))))
+        .map(|p| {
+            (
+                p.name.clone(),
+                (format!(""), classify_generic(p, &[&i.generics])),
+            )
+        })
         .collect::<BTreeMap<_, _>>();
     let (self_name, concrete_type_args) = match &i.self_ty {
         IrType::Struct { kind, type_args } => {
