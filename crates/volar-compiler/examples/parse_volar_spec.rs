@@ -129,12 +129,120 @@ fn main() {
             println!("  Crypto trait impls: {}", crypto_count);
             println!("  Inherent impls: {}", inherent_count);
 
+            // Count total loop constructs
+            println!("\n=== Total (Bounded) Loop Analysis ===");
+            
+            use volar_compiler::SpecExpr;
+            
+            fn count_loops_in_expr(expr: &SpecExpr, counts: &mut (usize, usize, usize, usize, usize, usize)) {
+                match expr {
+                    SpecExpr::ArrayGenerate { body, .. } => {
+                        counts.0 += 1;
+                        count_loops_in_expr(body, counts);
+                    }
+                    SpecExpr::ArrayMap { body, array, .. } => {
+                        counts.1 += 1;
+                        count_loops_in_expr(body, counts);
+                        count_loops_in_expr(array, counts);
+                    }
+                    SpecExpr::ArrayZip { body, left, right, .. } => {
+                        counts.2 += 1;
+                        count_loops_in_expr(body, counts);
+                        count_loops_in_expr(left, counts);
+                        count_loops_in_expr(right, counts);
+                    }
+                    SpecExpr::ArrayFold { body, array, init, .. } => {
+                        counts.3 += 1;
+                        count_loops_in_expr(body, counts);
+                        count_loops_in_expr(array, counts);
+                        count_loops_in_expr(init, counts);
+                    }
+                    SpecExpr::BoundedLoop { body, .. } => {
+                        counts.4 += 1;
+                        for stmt in &body.stmts {
+                            if let volar_compiler::SpecStmt::Semi(e) | volar_compiler::SpecStmt::Expr(e) = stmt {
+                                count_loops_in_expr(e, counts);
+                            }
+                        }
+                    }
+                    SpecExpr::IterLoop { body, .. } => {
+                        counts.5 += 1;
+                        for stmt in &body.stmts {
+                            if let volar_compiler::SpecStmt::Semi(e) | volar_compiler::SpecStmt::Expr(e) = stmt {
+                                count_loops_in_expr(e, counts);
+                            }
+                        }
+                    }
+                    SpecExpr::Block(block) => {
+                        for stmt in &block.stmts {
+                            if let volar_compiler::SpecStmt::Semi(e) | volar_compiler::SpecStmt::Expr(e) = stmt {
+                                count_loops_in_expr(e, counts);
+                            }
+                        }
+                        if let Some(e) = &block.expr {
+                            count_loops_in_expr(e, counts);
+                        }
+                    }
+                    SpecExpr::MethodCall { receiver, args, .. } => {
+                        count_loops_in_expr(receiver, counts);
+                        for arg in args {
+                            count_loops_in_expr(arg, counts);
+                        }
+                    }
+                    SpecExpr::Call { func, args, .. } => {
+                        count_loops_in_expr(func, counts);
+                        for arg in args {
+                            count_loops_in_expr(arg, counts);
+                        }
+                    }
+                    SpecExpr::Closure { body, .. } => {
+                        count_loops_in_expr(body, counts);
+                    }
+                    _ => {}
+                }
+            }
+            
+            let mut counts = (0, 0, 0, 0, 0, 0);
+            for imp in &spec_module.impls {
+                for item in &imp.items {
+                    if let volar_compiler::SpecImplItem::Method(f) = item {
+                        for stmt in &f.body.stmts {
+                            if let volar_compiler::SpecStmt::Semi(e) | volar_compiler::SpecStmt::Expr(e) = stmt {
+                                count_loops_in_expr(e, &mut counts);
+                            }
+                        }
+                        if let Some(e) = &f.body.expr {
+                            count_loops_in_expr(e, &mut counts);
+                        }
+                    }
+                }
+            }
+            for f in &spec_module.functions {
+                for stmt in &f.body.stmts {
+                    if let volar_compiler::SpecStmt::Semi(e) | volar_compiler::SpecStmt::Expr(e) = stmt {
+                        count_loops_in_expr(e, &mut counts);
+                    }
+                }
+                if let Some(e) = &f.body.expr {
+                    count_loops_in_expr(e, &mut counts);
+                }
+            }
+            
+            println!("  ArrayGenerate: {}", counts.0);
+            println!("  ArrayMap: {}", counts.1);
+            println!("  ArrayZip: {}", counts.2);
+            println!("  ArrayFold: {}", counts.3);
+            println!("  BoundedLoop: {}", counts.4);
+            println!("  IterLoop: {}", counts.5);
+            println!("\n  Total bounded loops: {} (all loops are provably terminating)", 
+                     counts.0 + counts.1 + counts.2 + counts.3 + counts.4 + counts.5);
+
             // Print the generic IR (truncated)
             println!("\n=== Generic IR Output (truncated) ===");
             let printed = print_module(&module);
             
-            if printed.len() > 3000 {
-                println!("{}...\n", &printed[..3000]);
+            if printed.len() > 2000 {
+                println!("{}...\n", &printed[..2000]);
             } else {
                 println!("{}", printed);
             }

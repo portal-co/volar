@@ -191,8 +191,6 @@ fn test_method_classification() {
             // VOLE methods
             let a = delta.remap(|i| i);
             let b = vope.rotate_left(1);
-            let c = arr.zip(other, f);
-            let d = gen.generate(|i| i);
             
             // Crypto methods
             let e = cipher.encrypt_block(&mut block);
@@ -240,9 +238,126 @@ fn test_method_classification() {
         }
     }
     
-    assert!(vole_methods >= 4, "Should recognize VOLE methods");
+    assert!(vole_methods >= 2, "Should recognize VOLE methods (remap, rotate_left)");
     assert!(crypto_methods >= 3, "Should recognize crypto methods");
     assert!(std_methods >= 2, "Should recognize standard methods");
+}
+
+#[test]
+fn test_array_operations() {
+    let source = r#"
+        fn test() {
+            // Array generate
+            let a = GenericArray::generate(|i| i * 2);
+            
+            // Array map
+            let b = arr.map(|x| x + 1);
+            
+            // Array zip
+            let c = arr.zip(other, |a, b| a + b);
+            
+            // Array fold
+            let d = arr.fold(0, |acc, x| acc + x);
+        }
+    "#;
+    
+    use volar_compiler::{parse_source, specialize_module, SpecExpr, SpecStmt};
+    
+    let module = parse_source(source, "test").unwrap();
+    let spec = specialize_module(&module);
+    
+    let f = &spec.functions[0];
+    
+    let mut generate_count = 0;
+    let mut map_count = 0;
+    let mut zip_count = 0;
+    let mut fold_count = 0;
+    
+    for stmt in &f.body.stmts {
+        if let SpecStmt::Let { init: Some(expr), .. } = stmt {
+            match expr {
+                SpecExpr::ArrayGenerate { index_var, .. } => {
+                    generate_count += 1;
+                    println!("ArrayGenerate with index var: {}", index_var);
+                }
+                SpecExpr::ArrayMap { elem_var, .. } => {
+                    map_count += 1;
+                    println!("ArrayMap with elem var: {}", elem_var);
+                }
+                SpecExpr::ArrayZip { left_var, right_var, .. } => {
+                    zip_count += 1;
+                    println!("ArrayZip with vars: {}, {}", left_var, right_var);
+                }
+                SpecExpr::ArrayFold { acc_var, elem_var, .. } => {
+                    fold_count += 1;
+                    println!("ArrayFold with vars: {}, {}", acc_var, elem_var);
+                }
+                _ => {}
+            }
+        }
+    }
+    
+    assert_eq!(generate_count, 1, "Should recognize ArrayGenerate");
+    assert_eq!(map_count, 1, "Should recognize ArrayMap");
+    assert_eq!(zip_count, 1, "Should recognize ArrayZip");
+    assert_eq!(fold_count, 1, "Should recognize ArrayFold");
+}
+
+#[test]
+fn test_bounded_loops() {
+    let source = r#"
+        fn test() {
+            // Range loop (bounded) - with semicolon to make it a statement
+            for i in 0..10 {
+                x = i;
+            };
+            
+            // Range loop with expression end
+            for j in 0..N::to_usize() {
+                y = j;
+            };
+            
+            // Iteration over collection (bounded)
+            for item in arr.iter() {
+                z = item;
+            };
+        }
+    "#;
+    
+    use volar_compiler::{parse_source, specialize_module, SpecExpr, SpecStmt};
+    
+    let module = parse_source(source, "test").unwrap();
+    let spec = specialize_module(&module);
+    
+    let f = &spec.functions[0];
+    
+    let mut bounded_loops = 0;
+    let mut iter_loops = 0;
+    
+    println!("Statements in function body: {}", f.body.stmts.len());
+    for (i, stmt) in f.body.stmts.iter().enumerate() {
+        match stmt {
+            SpecStmt::Semi(expr) | SpecStmt::Expr(expr) => {
+                match expr {
+                    SpecExpr::BoundedLoop { var, .. } => {
+                        bounded_loops += 1;
+                        println!("  Stmt {}: BoundedLoop with var: {}", i, var);
+                    }
+                    SpecExpr::IterLoop { .. } => {
+                        iter_loops += 1;
+                        println!("  Stmt {}: IterLoop found", i);
+                    }
+                    _ => {
+                        println!("  Stmt {}: Other expr", i);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    assert!(bounded_loops >= 2, "Should recognize BoundedLoop (for i in 0..N), found {}", bounded_loops);
+    assert!(iter_loops >= 1, "Should recognize IterLoop (for item in arr.iter()), found {}", iter_loops);
 }
 
 #[test]

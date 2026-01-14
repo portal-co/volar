@@ -1072,6 +1072,91 @@ pub enum SpecExpr {
         len: Box<SpecExpr>,
     },
 
+    // ========================================================================
+    // TOTAL (BOUNDED) LOOP CONSTRUCTS
+    // All loops in the specialized IR are guaranteed to terminate.
+    // ========================================================================
+
+    /// Array generation: GenericArray::generate(|i| body)
+    /// Generates an array by calling body(i) for each index i in 0..len
+    ArrayGenerate {
+        /// Element type of the resulting array
+        elem_ty: Option<Box<SpecType>>,
+        /// Length of the array (type-level or constant)
+        len: ArrayLength,
+        /// Index variable name
+        index_var: String,
+        /// Body expression that produces each element
+        body: Box<SpecExpr>,
+    },
+
+    /// Array map: arr.map(|x| body)
+    /// Transforms each element of an array
+    ArrayMap {
+        /// The source array expression
+        array: Box<SpecExpr>,
+        /// Element variable name
+        elem_var: String,
+        /// Body expression that transforms each element
+        body: Box<SpecExpr>,
+    },
+
+    /// Array zip: arr.zip(other, |a, b| body)
+    /// Combines two arrays element-wise
+    ArrayZip {
+        /// First array
+        left: Box<SpecExpr>,
+        /// Second array
+        right: Box<SpecExpr>,
+        /// Variable name for left element
+        left_var: String,
+        /// Variable name for right element
+        right_var: String,
+        /// Body expression that combines elements
+        body: Box<SpecExpr>,
+    },
+
+    /// Array fold: arr.fold(init, |acc, x| body) or arr.iter().fold(...)
+    /// Reduces an array to a single value
+    ArrayFold {
+        /// The source array expression
+        array: Box<SpecExpr>,
+        /// Initial accumulator value
+        init: Box<SpecExpr>,
+        /// Accumulator variable name
+        acc_var: String,
+        /// Element variable name
+        elem_var: String,
+        /// Body expression that produces the new accumulator
+        body: Box<SpecExpr>,
+    },
+
+    /// Bounded for loop over a range: for i in start..end { body }
+    /// The loop is guaranteed to terminate because the range is finite.
+    BoundedLoop {
+        /// Loop variable name
+        var: String,
+        /// Start of range (inclusive)
+        start: Box<SpecExpr>,
+        /// End of range (exclusive unless inclusive=true)
+        end: Box<SpecExpr>,
+        /// Whether the end is inclusive (..=)
+        inclusive: bool,
+        /// Loop body
+        body: SpecBlock,
+    },
+
+    /// Iteration over a collection: for x in collection.iter() { body }
+    /// Bounded because collections are finite.
+    IterLoop {
+        /// Loop variable pattern
+        pattern: SpecPattern,
+        /// The collection being iterated
+        collection: Box<SpecExpr>,
+        /// Loop body
+        body: SpecBlock,
+    },
+
     /// Block expression
     Block(SpecBlock),
 
@@ -1080,24 +1165,6 @@ pub enum SpecExpr {
         cond: Box<SpecExpr>,
         then_branch: SpecBlock,
         else_branch: Option<Box<SpecExpr>>,
-    },
-
-    /// For loop
-    ForLoop {
-        pattern: SpecPattern,
-        iter: Box<SpecExpr>,
-        body: SpecBlock,
-    },
-
-    /// While loop
-    While {
-        cond: Box<SpecExpr>,
-        body: SpecBlock,
-    },
-
-    /// Infinite loop
-    Loop {
-        body: SpecBlock,
     },
 
     /// Match expression

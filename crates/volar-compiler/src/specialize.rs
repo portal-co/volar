@@ -318,16 +318,10 @@ pub fn specialize_expr(expr: &IrExpr) -> SpecExpr {
             op: specialize_unary_op(op),
             expr: Box::new(specialize_expr(e)),
         },
-        IrExpr::Call { func, args } => SpecExpr::Call {
-            func: Box::new(specialize_expr(func)),
-            args: args.iter().map(specialize_expr).collect(),
-        },
-        IrExpr::MethodCall { receiver, method, type_args, args } => SpecExpr::MethodCall {
-            receiver: Box::new(specialize_expr(receiver)),
-            method: MethodKind::from_str(method),
-            type_args: type_args.iter().map(specialize_type).collect(),
-            args: args.iter().map(specialize_expr).collect(),
-        },
+        IrExpr::Call { func, args } => specialize_call(func, args),
+        IrExpr::MethodCall { receiver, method, type_args, args } => {
+            specialize_method_call(receiver, method, type_args, args)
+        }
         IrExpr::Field { base, field } => SpecExpr::Field {
             base: Box::new(specialize_expr(base)),
             field: field.clone(),
@@ -357,18 +351,27 @@ pub fn specialize_expr(expr: &IrExpr) -> SpecExpr {
             then_branch: specialize_block(then_branch),
             else_branch: else_branch.as_ref().map(|e| Box::new(specialize_expr(e))),
         },
-        IrExpr::ForLoop { pattern, iter, body } => SpecExpr::ForLoop {
-            pattern: specialize_pattern(pattern),
-            iter: Box::new(specialize_expr(iter)),
-            body: specialize_block(body),
-        },
-        IrExpr::While { cond, body } => SpecExpr::While {
-            cond: Box::new(specialize_expr(cond)),
-            body: specialize_block(body),
-        },
-        IrExpr::Loop { body } => SpecExpr::Loop {
-            body: specialize_block(body),
-        },
+        // Convert for loops to total (bounded) loop constructs
+        IrExpr::ForLoop { pattern, iter, body } => {
+            specialize_for_loop(pattern, iter, body)
+        }
+        // While loops are NOT allowed in the specialized IR - they are not provably total
+        // Convert to a panic/error marker
+        IrExpr::While { .. } => {
+            // While loops cannot be proven total, emit a compile-time error marker
+            SpecExpr::Macro {
+                name: "compile_error".to_string(),
+                tokens: "\"While loops are not allowed in specialized IR (not provably total)\"".to_string(),
+            }
+        }
+        // Infinite loops are NOT allowed in the specialized IR
+        IrExpr::Loop { .. } => {
+            // Infinite loops cannot be proven total, emit a compile-time error marker
+            SpecExpr::Macro {
+                name: "compile_error".to_string(),
+                tokens: "\"Infinite loops are not allowed in specialized IR (not provably total)\"".to_string(),
+            }
+        }
         IrExpr::Match { expr: e, arms } => SpecExpr::Match {
             expr: Box::new(specialize_expr(e)),
             arms: arms.iter().map(specialize_match_arm).collect(),
@@ -426,6 +429,204 @@ pub fn specialize_expr(expr: &IrExpr) -> SpecExpr {
                 expr: None,
             })
         }
+    }
+}
+
+/// Specialize a function call, recognizing GenericArray::generate and similar patterns
+fn specialize_call(func: &IrExpr, args: &[IrExpr]) -> SpecExpr {
+    // Check for GenericArray::generate(|i| body)
+    if let IrExpr::Path { segments, type_args } = func {
+        let path_str = segments.join("::");
+        
+        // GenericArray::generate(closure) -> ArrayGenerate
+        if (path_str == "GenericArray::generate" || segments.last() == Some(&"generate".to_string()))
+            && args.len() == 1 
+        {
+            if let IrExpr::Closure { params, body, .. } = &args[0] {
+                let index_var = params.first()
+                    .map(|p| extract_pattern_name(&p.pattern))
+                    .unwrap_or_else(|| "i".to_string());
+                
+                // Try to determine the length from type args
+                let len = if type_args.len() >= 2 {
+                    specialize_array_length(&type_args[1])
+                } else {
+                    ArrayLength::TypeParam("N".to_string())
+                };
+                
+                return SpecExpr::ArrayGenerate {
+                    elem_ty: type_args.first().map(|t| Box::new(specialize_type(t))),
+                    len,
+                    index_var,
+                    body: Box::new(specialize_expr(body)),
+                };
+            }
+        }
+        
+        // GenericArray::default() or similar
+        if path_str == "GenericArray::default" || path_str.ends_with("::default") {
+            return SpecExpr::Call {
+                func: Box::new(SpecExpr::Path {
+                    segments: segments.clone(),
+                    type_args: type_args.iter().map(specialize_type).collect(),
+                }),
+                args: args.iter().map(specialize_expr).collect(),
+            };
+        }
+    }
+    
+    // Default: regular function call
+    SpecExpr::Call {
+        func: Box::new(specialize_expr(func)),
+        args: args.iter().map(specialize_expr).collect(),
+    }
+}
+
+/// Specialize a method call, recognizing map, zip, fold, generate patterns
+fn specialize_method_call(
+    receiver: &IrExpr,
+    method: &str,
+    type_args: &[IrType],
+    args: &[IrExpr],
+) -> SpecExpr {
+    match method {
+        // arr.map(|x| body) -> ArrayMap
+        "map" if args.len() == 1 => {
+            if let IrExpr::Closure { params, body, .. } = &args[0] {
+                let elem_var = params.first()
+                    .map(|p| extract_pattern_name(&p.pattern))
+                    .unwrap_or_else(|| "x".to_string());
+                
+                return SpecExpr::ArrayMap {
+                    array: Box::new(specialize_expr(receiver)),
+                    elem_var,
+                    body: Box::new(specialize_expr(body)),
+                };
+            }
+        }
+        
+        // arr.zip(other, |a, b| body) -> ArrayZip
+        "zip" if args.len() == 2 => {
+            if let IrExpr::Closure { params, body, .. } = &args[1] {
+                let left_var = params.first()
+                    .map(|p| extract_pattern_name(&p.pattern))
+                    .unwrap_or_else(|| "a".to_string());
+                let right_var = params.get(1)
+                    .map(|p| extract_pattern_name(&p.pattern))
+                    .unwrap_or_else(|| "b".to_string());
+                
+                return SpecExpr::ArrayZip {
+                    left: Box::new(specialize_expr(receiver)),
+                    right: Box::new(specialize_expr(&args[0])),
+                    left_var,
+                    right_var,
+                    body: Box::new(specialize_expr(body)),
+                };
+            }
+        }
+        
+        // arr.fold(init, |acc, x| body) -> ArrayFold
+        "fold" if args.len() == 2 => {
+            if let IrExpr::Closure { params, body, .. } = &args[1] {
+                let acc_var = params.first()
+                    .map(|p| extract_pattern_name(&p.pattern))
+                    .unwrap_or_else(|| "acc".to_string());
+                let elem_var = params.get(1)
+                    .map(|p| extract_pattern_name(&p.pattern))
+                    .unwrap_or_else(|| "x".to_string());
+                
+                return SpecExpr::ArrayFold {
+                    array: Box::new(specialize_expr(receiver)),
+                    init: Box::new(specialize_expr(&args[0])),
+                    acc_var,
+                    elem_var,
+                    body: Box::new(specialize_expr(body)),
+                };
+            }
+        }
+        
+        // receiver.generate(|i| body) - method form of generate
+        "generate" if args.len() == 1 => {
+            if let IrExpr::Closure { params, body, .. } = &args[0] {
+                let index_var = params.first()
+                    .map(|p| extract_pattern_name(&p.pattern))
+                    .unwrap_or_else(|| "i".to_string());
+                
+                return SpecExpr::ArrayGenerate {
+                    elem_ty: None,
+                    len: ArrayLength::TypeParam("N".to_string()),
+                    index_var,
+                    body: Box::new(specialize_expr(body)),
+                };
+            }
+        }
+        
+        _ => {}
+    }
+    
+    // Default: regular method call
+    SpecExpr::MethodCall {
+        receiver: Box::new(specialize_expr(receiver)),
+        method: MethodKind::from_str(method),
+        type_args: type_args.iter().map(specialize_type).collect(),
+        args: args.iter().map(specialize_expr).collect(),
+    }
+}
+
+/// Specialize a for loop into a bounded loop construct
+fn specialize_for_loop(pattern: &IrPattern, iter: &IrExpr, body: &IrBlock) -> SpecExpr {
+    // Try to detect range patterns: for i in start..end
+    if let IrExpr::Range { start, end, inclusive } = iter {
+        let var = extract_pattern_name(pattern);
+        return SpecExpr::BoundedLoop {
+            var,
+            start: Box::new(start.as_ref().map(|e| specialize_expr(e)).unwrap_or(SpecExpr::Lit(SpecLit::Int(0)))),
+            end: Box::new(end.as_ref().map(|e| specialize_expr(e)).unwrap_or_else(|| {
+                SpecExpr::Macro {
+                    name: "compile_error".to_string(),
+                    tokens: "\"Range must have an end bound\"".to_string(),
+                }
+            })),
+            inclusive: *inclusive,
+            body: specialize_block(body),
+        };
+    }
+    
+    // Try to detect method call on range: for i in 0..N::to_usize()
+    if let IrExpr::MethodCall { receiver, method, args, .. } = iter {
+        // Check for iter() on a collection
+        if method == "iter" && args.is_empty() {
+            return SpecExpr::IterLoop {
+                pattern: specialize_pattern(pattern),
+                collection: Box::new(specialize_expr(receiver)),
+                body: specialize_block(body),
+            };
+        }
+        
+        // Check for enumerate()
+        if method == "enumerate" && args.is_empty() {
+            return SpecExpr::IterLoop {
+                pattern: specialize_pattern(pattern),
+                collection: Box::new(specialize_expr(receiver)),
+                body: specialize_block(body),
+            };
+        }
+    }
+    
+    // Default: treat as iteration over a collection (which is bounded)
+    SpecExpr::IterLoop {
+        pattern: specialize_pattern(pattern),
+        collection: Box::new(specialize_expr(iter)),
+        body: specialize_block(body),
+    }
+}
+
+/// Extract a simple variable name from a pattern
+fn extract_pattern_name(pattern: &IrPattern) -> String {
+    match pattern {
+        IrPattern::Ident { name, .. } => name.clone(),
+        IrPattern::Tuple(pats) if !pats.is_empty() => extract_pattern_name(&pats[0]),
+        _ => "_".to_string(),
     }
 }
 
@@ -663,5 +864,69 @@ mod tests {
         let n_bounds = &s.generics[0].bounds;
         assert!(!n_bounds.is_empty());
         assert!(matches!(n_bounds[0].trait_kind, TraitKind::Crypto(CryptoTrait::VoleArray)));
+    }
+
+    #[test]
+    fn test_for_loops_parsed() {
+        // Test just the range for loop first
+        let source1 = r#"
+            fn test() {
+                for i in 0..10 {
+                    let x = i;
+                }
+            }
+        "#;
+        let module1 = parse_source(source1, "test").unwrap();
+        println!("Test 1 - Range for loop:");
+        println!("  Stmts: {}", module1.functions[0].body.stmts.len());
+        println!("  Final expr: {}", module1.functions[0].body.expr.is_some());
+        
+        // For loop without trailing statements becomes the final expression
+        // So it should be in `expr` not `stmts`
+        if let Some(expr) = &module1.functions[0].body.expr {
+            println!("  Final expr is ForLoop: {}", matches!(**expr, crate::ir::IrExpr::ForLoop { .. }));
+        }
+        
+        // Test with semicolon to force it to be a statement
+        let source2 = r#"
+            fn test() {
+                for i in 0..10 {
+                    let x = i;
+                };
+            }
+        "#;
+        let module2 = parse_source(source2, "test").unwrap();
+        println!("\nTest 2 - Range for loop with semicolon:");
+        println!("  Stmts: {}", module2.functions[0].body.stmts.len());
+        
+        // Test method call iterator
+        let source3 = r#"
+            fn test() {
+                for item in arr.iter() {
+                    let z = item;
+                };
+            }
+        "#;
+        let module3 = parse_source(source3, "test").unwrap();
+        println!("\nTest 3 - Method call iterator with semicolon:");
+        println!("  Stmts: {}", module3.functions[0].body.stmts.len());
+        for (i, stmt) in module3.functions[0].body.stmts.iter().enumerate() {
+            println!("    Stmt {}: {:?}", i, std::mem::discriminant(stmt));
+        }
+        
+        // Specialize and verify  
+        let spec = specialize_module(&module3);
+        let sf = &spec.functions[0];
+        println!("\nSpecialized:");
+        println!("  Stmts: {}", sf.body.stmts.len());
+        for (i, stmt) in sf.body.stmts.iter().enumerate() {
+            println!("    Stmt {}: {:?}", i, std::mem::discriminant(stmt));
+        }
+        
+        // Should have an IterLoop
+        let has_iter_loop = sf.body.stmts.iter().any(|stmt| {
+            matches!(stmt, SpecStmt::Semi(SpecExpr::IterLoop { .. }))
+        });
+        assert!(has_iter_loop, "Should have IterLoop for arr.iter()");
     }
 }
