@@ -683,6 +683,37 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
     // generics will instead be emitted in the `where` clause so the other
     // generic becomes constrained by a predicate and is allowed on impl.
     let mut where_parts: Vec<String> = Vec::new();
+    // Helper: determine whether a type refers to any length generic in cur_params
+    fn type_refers_to_length_in_cur(
+        ty: &IrType,
+        cur_params: &BTreeMap<String, (String, GenericKind)>,
+    ) -> bool {
+        match ty {
+            IrType::TypeParam(n) => cur_params
+                .get(n)
+                .map(|(_, k)| *k == GenericKind::Length)
+                .unwrap_or(false),
+            IrType::Struct { type_args, .. } => type_args
+                .iter()
+                .any(|ta| type_refers_to_length_in_cur(ta, cur_params)),
+            IrType::Projection { base, assoc: _ } => {
+                type_refers_to_length_in_cur(base, cur_params)
+            }
+            IrType::Param { path } => path
+                .first()
+                .map(|s| cur_params.get(s).map(|(_, k)| *k == GenericKind::Length).unwrap_or(false))
+                .unwrap_or(false),
+            IrType::Array { elem, .. }
+            | IrType::Vector { elem }
+            | IrType::Reference { elem, .. } => {
+                type_refers_to_length_in_cur(elem, cur_params)
+            }
+            IrType::Tuple(elems) => elems
+                .iter()
+                .any(|e| type_refers_to_length_in_cur(e, cur_params)),
+            _ => false,
+        }
+    }
     // helper: check whether a type refers to some generic other than `self_name`
     fn type_refers_to_other(
         ty: &IrType,
@@ -814,15 +845,9 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
     for wp in &i.where_clause {
         match wp {
             IrWherePredicate::TypeBound { ty, bounds } => {
-                // Skip length-type params in where clause emission
-                if let IrType::TypeParam(name) = ty {
-                    if cur_params
-                        .get(name)
-                        .map(|(_, k)| *k == GenericKind::Length)
-                        .unwrap_or(false)
-                    {
-                        continue;
-                    }
+                // Skip predicates that refer to length parameters anywhere
+                if type_refers_to_length_in_cur(ty, &cur_params) {
+                    continue;
                 }
                 // Format the left-hand type
                 let mut lhs = String::new();
@@ -994,17 +1019,43 @@ fn write_function_dyn(
             .collect();
 
         // Build deferred where parts
+        // Helper: check whether a type refers to any length generic
+        fn type_refers_to_length_in_cur_func(
+            ty: &IrType,
+            cur_params: &BTreeMap<String, (String, GenericKind)>,
+        ) -> bool {
+            match ty {
+                IrType::TypeParam(n) => cur_params
+                    .get(n)
+                    .map(|(_, k)| *k == GenericKind::Length)
+                    .unwrap_or(false),
+                IrType::Struct { type_args, .. } => type_args
+                    .iter()
+                    .any(|ta| type_refers_to_length_in_cur_func(ta, cur_params)),
+                IrType::Projection { base, assoc: _ } => {
+                    type_refers_to_length_in_cur_func(base, cur_params)
+                }
+                IrType::Param { path } => path
+                    .first()
+                    .map(|s| cur_params.get(s).map(|(_, k)| *k == GenericKind::Length).unwrap_or(false))
+                    .unwrap_or(false),
+                IrType::Array { elem, .. }
+                | IrType::Vector { elem }
+                | IrType::Reference { elem, .. } => {
+                    type_refers_to_length_in_cur_func(elem, cur_params)
+                }
+                IrType::Tuple(elems) => elems
+                    .iter()
+                    .any(|e| type_refers_to_length_in_cur_func(e, cur_params)),
+                _ => false,
+            }
+        }
+
         for wp in &f.where_clause {
             if let IrWherePredicate::TypeBound { ty, bounds } = wp {
-                // Skip length params
-                if let IrType::TypeParam(name) = ty {
-                    if cur_params
-                        .get(name)
-                        .map(|(_, k)| *k == GenericKind::Length)
-                        .unwrap_or(false)
-                    {
-                        continue;
-                    }
+                // Skip any predicate that mentions length params
+                if type_refers_to_length_in_cur_func(ty, &cur_params) {
+                    continue;
                 }
                 let mut lhs = String::new();
                 write_type_dyn(&mut lhs, ty, &cur_params, struct_info);
