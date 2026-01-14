@@ -212,3 +212,14 @@ dependencies = [
  "volar-common",
  "volar-primitives",
 ]
+
+[[package]]
+name = "volar-spec-dyn"
+version = "0.1.0"
+dependencies = [
+ "cipher",
+ "digest",
+ "rand",
+ "volar-common",
+ "volar-primitives",
+]

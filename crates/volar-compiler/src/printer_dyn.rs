@@ -1,440 +1,520 @@
+//! Dynamic IR Printer
+//! 
+//! This module transforms the IR to produce dynamic Rust code where:
+//! - Type-level length parameters (N: ArrayLength, etc.) become runtime `usize` fields
+//! - `GenericArray<T, N>` becomes `Vec<T>`
+//! - Struct names get a `Dyn` suffix
+//! - Cipher and hash generics (B: BlockCipher, D: Digest) remain as generic type parameters
+
 use core::fmt::Write;
 #[cfg(feature = "std")]
-use std::{collections::{BTreeMap, BTreeSet}, string::{String, ToString}, vec::Vec, format};
+use std::{collections::BTreeMap, string::{String, ToString}, vec::Vec, format};
 
 #[cfg(not(feature = "std"))]
-use alloc::{collections::{BTreeMap, BTreeSet}, string::{String, ToString}, vec::Vec, format};
+use alloc::{collections::BTreeMap, string::{String, ToString}, vec::Vec, format};
+
+use crate::ir::{IrGenericParamKind, *};
 
 use crate::ir::*;
 
+/// Classification of generic parameters
+#[derive(Debug, Clone, PartialEq)]
+enum GenericKind {
+    /// Length/size parameter - becomes runtime usize
+    Length,
+    /// Crypto trait (BlockCipher, Digest) - remains generic
+    Crypto,
+    /// Regular type parameter - remains generic  
+    Type,
+}
+
+/// Analyze a generic parameter to determine its kind
+fn classify_generic(param: &IrGenericParam) -> GenericKind {
+    // Check bounds for crypto traits
+    for bound in &param.bounds {
+        match &bound.trait_kind {
+            TraitKind::Crypto(CryptoTrait::ArrayLength) => return GenericKind::Length,
+            TraitKind::Crypto(CryptoTrait::BlockCipher) |
+            TraitKind::Crypto(CryptoTrait::Digest) |
+            TraitKind::Crypto(CryptoTrait::Rng) => return GenericKind::Crypto,
+            _ => {}
+        }
+    }
+    
+    // Heuristic: single uppercase letters that commonly represent lengths
+    let name = &param.name;
+    if name.len() == 1 {
+        let c = name.chars().next().unwrap();
+        if matches!(c, 'N' | 'M' | 'K' | 'L' | 'S' | 'X') {
+            return GenericKind::Length;
+        }
+    }
+    
+    // Two-char identifiers like K2, N1
+    if name.len() == 2 && name.chars().next().unwrap().is_ascii_uppercase() 
+        && name.chars().nth(1).unwrap().is_ascii_digit() {
+        return GenericKind::Length;
+    }
+    
+    GenericKind::Type
+}
+
+/// Check if a type parameter name represents a length
+fn is_length_type_param(name: &str) -> bool {
+    if name.len() == 1 {
+        let c = name.chars().next().unwrap();
+        return matches!(c, 'N' | 'M' | 'K' | 'L' | 'S' | 'X');
+    }
+    if name.len() == 2 && name.chars().next().unwrap().is_ascii_uppercase() 
+        && name.chars().nth(1).unwrap().is_ascii_digit() {
+        return true;
+    }
+    false
+}
+
+/// Information about a struct's witness fields
+#[derive(Debug, Clone, Default)]
+struct StructInfo {
+    /// Names of lifetime parameters
+    lifetimes: Vec<String>,
+    /// Names of length witness fields (lowercase)
+    length_witnesses: Vec<String>,
+    /// Names of type parameters that remain generic
+    type_params: Vec<String>,
+}
+
+/// Main entry point for generating dynamic Rust code
 pub fn print_module_rust_dyn(module: &IrModule) -> String {
-    let mut struct_witnesses = BTreeMap::new();
+    // First pass: collect struct information
+    let mut struct_info: BTreeMap<String, StructInfo> = BTreeMap::new();
+    
     for s in &module.structs {
-        let mut witnesses = Vec::new();
+        let mut info = StructInfo::default();
         for p in &s.generics {
-            if is_length_param(p, &s.fields) {
-                witnesses.push(p.name.clone());
+            if p.kind == IrGenericParamKind::Lifetime {
+                info.lifetimes.push(format!("'{}", p.name));
+            } else {
+                match classify_generic(p) {
+                    GenericKind::Length => info.length_witnesses.push(p.name.to_lowercase()),
+                    GenericKind::Crypto | GenericKind::Type => info.type_params.push(p.name.clone()),
+                }
             }
         }
-        struct_witnesses.insert(s.kind.to_string(), witnesses);
+        struct_info.insert(s.kind.to_string(), info);
     }
-
+    
     let mut out = String::new();
-    writeln!(out, "#![allow(unused_variables, dead_code, unused_mut, unused_imports)]").unwrap();
+    
+    // File header
+    writeln!(out, "//! Auto-generated dynamic types from volar-spec").unwrap();
+    writeln!(out, "//! Type-level lengths have been converted to runtime usize witnesses").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "#![allow(unused_variables, dead_code, unused_mut, unused_imports, non_snake_case)]").unwrap();
+    writeln!(out).unwrap();
+    
+    // Imports
+    writeln!(out, "extern crate alloc;").unwrap();
     writeln!(out, "use alloc::vec::Vec;").unwrap();
     writeln!(out, "use alloc::vec;").unwrap();
-    writeln!(out, "use core::ops::{{Add, Sub, Mul, Div, Rem, BitAnd, BitOr, BitXor, Neg, Not}};").unwrap();
+    writeln!(out, "use core::ops::{{Add, Sub, Mul, Div, BitAnd, BitOr, BitXor}};").unwrap();
     writeln!(out).unwrap();
-
-    // Mock Bit and other types if not present
-    writeln!(out, "#[derive(Clone, Copy, Default, Debug, PartialEq)] pub struct Bit(pub bool);").unwrap();
-    writeln!(out, "impl core::ops::BitXor for Bit {{ type Output = Self; fn bitxor(self, rhs: Self) -> Self {{ Bit(self.0 ^ rhs.0) }} }}").unwrap();
-    writeln!(out, "pub type Galois = u8;").unwrap();
-    writeln!(out, "pub type Galois64 = u64;").unwrap();
-    writeln!(out, "#[derive(Clone, Copy, Default, Debug, PartialEq)] pub struct BitsInBytes(pub u8);").unwrap();
-    writeln!(out, "#[derive(Clone, Copy, Default, Debug, PartialEq)] pub struct BitsInBytes64(pub u64);").unwrap();
-    writeln!(out, "impl core::ops::BitXor for BitsInBytes {{ type Output = Self; fn bitxor(self, rhs: Self) -> Self {{ BitsInBytes(self.0 ^ rhs.0) }} }}").unwrap();
-    writeln!(out, "impl core::ops::BitXor for BitsInBytes64 {{ type Output = Self; fn bitxor(self, rhs: Self) -> Self {{ BitsInBytes64(self.0 ^ rhs.0) }} }}").unwrap();
-    writeln!(out, "impl BitsInBytes {{ pub fn shl(self, n: u32) -> u8 {{ self.0 << n }} pub fn shr(self, n: u32) -> u8 {{ self.0 >> n }} }}").unwrap();
-    writeln!(out, "impl BitsInBytes64 {{ pub fn shl(self, n: u32) -> u64 {{ self.0 << n }} pub fn shr(self, n: u32) -> u64 {{ self.0 >> n }} }}").unwrap();
-    writeln!(out, "impl core::ops::Shl<u32> for BitsInBytes {{ type Output = Self; fn shl(self, rhs: u32) -> Self {{ BitsInBytes(self.0 << rhs) }} }}").unwrap();
-    writeln!(out, "impl core::ops::Shr<u32> for BitsInBytes {{ type Output = Self; fn shr(self, rhs: u32) -> Self {{ BitsInBytes(self.0 >> rhs) }} }}").unwrap();
-    writeln!(out, "impl core::ops::Shl<u32> for BitsInBytes64 {{ type Output = Self; fn shl(self, rhs: u32) -> Self {{ BitsInBytes64(self.0 << rhs) }} }}").unwrap();
-    writeln!(out, "impl core::ops::Shr<u32> for BitsInBytes64 {{ type Output = Self; fn shr(self, rhs: u32) -> Self {{ BitsInBytes64(self.0 >> rhs) }} }}").unwrap();
-    writeln!(out, "impl core::ops::Shl<u32> for Bit {{ type Output = Self; fn shl(self, rhs: u32) -> Self {{ self }} }}").unwrap();
-    writeln!(out, "impl core::ops::Shr<u32> for Bit {{ type Output = Self; fn shr(self, rhs: u32) -> Self {{ self }} }}").unwrap();
-    writeln!(out, "impl core::ops::BitAnd<usize> for BitsInBytes {{ type Output = usize; fn bitand(self, rhs: usize) -> usize {{ (self.0 as usize) & rhs }} }}").unwrap();
-    writeln!(out, "impl core::ops::BitAnd<usize> for BitsInBytes64 {{ type Output = usize; fn bitand(self, rhs: usize) -> usize {{ (self.0 as usize) & rhs }} }}").unwrap();
-    writeln!(out, "impl core::ops::Shr<usize> for BitsInBytes {{ type Output = usize; fn shr(self, rhs: usize) -> usize {{ (self.0 as usize) >> rhs }} }}").unwrap();
-    writeln!(out, "impl core::ops::Shr<usize> for BitsInBytes64 {{ type Output = usize; fn shr(self, rhs: usize) -> usize {{ (self.0 as usize) >> rhs }} }}").unwrap();
-    writeln!(out, "pub struct GenericArray;").unwrap();
-    writeln!(out, "impl GenericArray {{ pub fn default<T: Default>() -> Vec<T> {{ Vec::new() }} pub fn generate<T, F: FnMut(usize) -> T>(n: usize, mut f: F) -> Vec<T> {{ (0..n).map(f).collect() }} }}").unwrap();
-    writeln!(out, "pub struct CommitmentCore;").unwrap();
-    writeln!(out, "impl CommitmentCore {{ pub fn commit<T>(_: T, _: &u64) -> Vec<u8> {{ Vec::new() }} }}").unwrap();
-    writeln!(out, "pub fn ilog2(x: usize) -> u32 {{ (usize::BITS - x.leading_zeros() - 1) }}").unwrap();
-    writeln!(out, "pub trait New {{ fn new() -> Self; }}").unwrap();
-    writeln!(out, "impl New for u8 {{ fn new() -> Self {{ 0 }} }}").unwrap();
-    writeln!(out, "impl New for u64 {{ fn new() -> Self {{ 0 }} }}").unwrap();
-    writeln!(out, "impl New for Bit {{ fn new() -> Self {{ Bit(false) }} }}").unwrap();
-    writeln!(out, "impl New for BitsInBytes {{ fn new() -> Self {{ BitsInBytes(0) }} }}").unwrap();
-    writeln!(out, "impl New for BitsInBytes64 {{ fn new() -> Self {{ BitsInBytes64(0) }} }}").unwrap();
-    writeln!(out, "pub trait DefaultNew: Default {{ fn new() -> Self {{ Self::default() }} }}").unwrap();
-    writeln!(out, "impl<T: Default> DefaultNew for T {{}}").unwrap();
-    writeln!(out, "pub trait ToUsize {{ fn to_usize(&self) -> usize; }}").unwrap();
-    writeln!(out, "impl ToUsize for usize {{ fn to_usize(&self) -> usize {{ *self }} }}").unwrap();
-    writeln!(out, "pub struct BlockSizeDyn;").unwrap();
-    writeln!(out, "pub struct OutputSizeDyn;").unwrap();
-    writeln!(out, "impl BlockSizeDyn {{ pub fn to_usize(&self) -> usize {{ 16 }} }}").unwrap();
-    writeln!(out, "impl OutputSizeDyn {{ pub fn to_usize(&self) -> usize {{ 16 }} }}").unwrap();
-    writeln!(out, "impl Default for BlockSizeDyn {{ fn default() -> Self {{ BlockSizeDyn }} }}").unwrap();
-    writeln!(out, "impl Default for OutputSizeDyn {{ fn default() -> Self {{ OutputSizeDyn }} }}").unwrap();
-    writeln!(out, "pub struct B; impl B {{ pub fn from<T>(_: T) -> usize {{ 0 }} pub const BlockSize: BlockSizeDyn = BlockSizeDyn; }}").unwrap();
-    writeln!(out, "pub struct D; impl D {{ pub fn new() -> Self {{ D }} pub fn to_usize(&self) -> usize {{ 0 }} pub fn finalize(&self) -> Vec<u8> {{ Vec::new() }} pub fn update(&mut self, _: &[u8]) {{}} pub const OutputSize: OutputSizeDyn = OutputSizeDyn; }}").unwrap();
-    writeln!(out, "pub trait DefaultVal {{ fn default_val() -> Self; }}").unwrap();
-    writeln!(out, "impl DefaultVal for u8 {{ fn default_val() -> Self {{ 0 }} }}").unwrap();
-    writeln!(out, "impl DefaultVal for u64 {{ fn default_val() -> Self {{ 0 }} }}").unwrap();
-    writeln!(out, "impl DefaultVal for Bit {{ fn default_val() -> Self {{ Bit(false) }} }}").unwrap();
-    writeln!(out, "impl DefaultVal for BitsInBytes {{ fn default_val() -> Self {{ BitsInBytes(0) }} }}").unwrap();
-    writeln!(out, "impl DefaultVal for BitsInBytes64 {{ fn default_val() -> Self {{ BitsInBytes64(0) }} }}").unwrap();
-    writeln!(out, "impl<T: DefaultVal> DefaultVal for Vec<T> {{ fn default_val() -> Self {{ Vec::new() }} }}").unwrap();
-    writeln!(out, "impl<T> core::ops::Add<T> for PolyDyn<T> where T: core::ops::Add<Output=T> + Clone {{ type Output = Self; fn add(self, rhs: T) -> Self {{ todo!() }} }}").unwrap();
-    writeln!(out, "impl<T> core::ops::Mul<T> for PolyDyn<T> where T: core::ops::Mul<Output=T> + Clone {{ type Output = Self; fn mul(self, rhs: T) -> Self {{ todo!() }} }}").unwrap();
-    writeln!(out, "impl<T> core::ops::Add<Self> for VopeDyn<T> where T: core::ops::Add<Output=T> + Clone {{ type Output = Self; fn add(self, rhs: Self) -> Self {{ todo!() }} }}").unwrap();
-    writeln!(out, "impl<T> core::ops::Sub<Self> for VopeDyn<T> where T: core::ops::Sub<Output=T> + Clone {{ type Output = Self; fn sub(self, rhs: Self) -> Self {{ todo!() }} }}").unwrap();
-    writeln!(out, "impl<T> core::ops::Mul<T> for VopeDyn<T> where T: core::ops::Mul<Output=T> + Clone {{ type Output = Self; fn mul(self, rhs: T) -> Self {{ todo!() }} }}").unwrap();
-    writeln!(out, "pub type OutputDyn = Vec<u8>;").unwrap();
-    writeln!(out, "pub type Q = u8;").unwrap();
-    writeln!(out, "pub type A = u8;").unwrap();
-    writeln!(out, "pub type Delta = u8;").unwrap();
-
-    writeln!(out, "pub struct PolyInputPoolDyn<'a, T> {{").unwrap();
-    writeln!(out, "    pub t: usize,").unwrap();
-    writeln!(out, "    pub n: usize,").unwrap();
-    writeln!(out, "    pub x: usize,").unwrap();
-    writeln!(out, "    pub inputs: &'a Vec<T>,").unwrap();
-    writeln!(out, "    pub indices: Vec<Vec<usize>>,").unwrap();
+    
+    // Re-export primitives
+    writeln!(out, "// Primitive field types from volar-primitives").unwrap();
+    writeln!(out, "pub use volar_primitives::{{Bit, BitsInBytes, BitsInBytes64, Galois, Galois64}};").unwrap();
+    writeln!(out).unwrap();
+    
+    // Helper function
+    writeln!(out, "/// Compute integer log2").unwrap();
+    writeln!(out, "#[inline]").unwrap();
+    writeln!(out, "pub fn ilog2(x: usize) -> u32 {{").unwrap();
+    writeln!(out, "    usize::BITS - x.leading_zeros() - 1").unwrap();
     writeln!(out, "}}").unwrap();
-
+    writeln!(out).unwrap();
+    
+    // Generate structs
     for s in &module.structs {
-        if s.kind.to_string() == "PolyInputPool" { continue; }
-        write_struct_dyn(&mut out, s);
+        write_struct_dyn(&mut out, s, &struct_info);
         writeln!(out).unwrap();
     }
-
+    
+    // Generate impls
     for i in &module.impls {
-        write_impl_dyn(&mut out, i, &struct_witnesses);
+        write_impl_dyn(&mut out, i, &struct_info);
         writeln!(out).unwrap();
     }
-
+    
+    // Generate free functions
     for f in &module.functions {
-        write_function_dyn(&mut out, f, 0, &IrType::Unit, &struct_witnesses);
+        write_function_dyn(&mut out, f, 0, None, &struct_info);
         writeln!(out).unwrap();
     }
-
+    
     out
 }
 
-fn write_struct_dyn(out: &mut String, s: &IrStruct) {
+fn write_struct_dyn(out: &mut String, s: &IrStruct, struct_info: &BTreeMap<String, StructInfo>) {
+    let info = struct_info.get(&s.kind.to_string()).cloned().unwrap_or_default();
     let name = format!("{}Dyn", s.kind);
-    write!(out, "#[derive(Clone, Debug, Default)]\npub struct {}", name).unwrap();
     
-    let mut type_params = Vec::new();
-    let mut length_params = Vec::new();
-    
-    for p in &s.generics {
-        if is_length_param(p, &s.fields) {
-            length_params.push(p.name.clone());
-        } else if p.kind == IrGenericParamKind::Type {
-            type_params.push(p.name.clone());
-        }
+    // Derive common traits (no Default for structs with references)
+    let has_refs = info.lifetimes.len() > 0;
+    if has_refs {
+        writeln!(out, "#[derive(Clone, Debug)]").unwrap();
+    } else {
+        writeln!(out, "#[derive(Clone, Debug, Default)]").unwrap();
     }
-
-    if !type_params.is_empty() {
-        write!(out, "<{}>", type_params.join(", ")).unwrap();
+    write!(out, "pub struct {}", name).unwrap();
+    
+    // Generic parameters: lifetimes first, then type params
+    let mut all_generics = Vec::new();
+    all_generics.extend(info.lifetimes.clone());
+    all_generics.extend(info.type_params.clone());
+    
+    if !all_generics.is_empty() {
+        write!(out, "<{}>", all_generics.join(", ")).unwrap();
     }
     
     if s.is_tuple {
+        // Tuple struct
         write!(out, "(").unwrap();
-        for lp in &length_params {
-            write!(out, "pub usize, ").unwrap();
+        // First: length witnesses
+        for (i, _) in info.length_witnesses.iter().enumerate() {
+            if i > 0 { write!(out, ", ").unwrap(); }
+            write!(out, "pub usize").unwrap();
         }
+        // Then: actual fields
         for (i, f) in s.fields.iter().enumerate() {
-            if i > 0 || !length_params.is_empty() { write!(out, ", ").unwrap(); }
-            write_type_dyn(out, &f.ty);
+            if i > 0 || !info.length_witnesses.is_empty() { 
+                write!(out, ", ").unwrap(); 
+            }
+            write!(out, "pub ").unwrap();
+            write_type_dyn(out, &f.ty, struct_info);
         }
         writeln!(out, ");").unwrap();
     } else {
+        // Named struct
         writeln!(out, " {{").unwrap();
-        for lp in &length_params {
-            writeln!(out, "    pub {}: usize,", lp.to_lowercase()).unwrap();
+        
+        // Length witness fields first
+        for w in &info.length_witnesses {
+            writeln!(out, "    pub {}: usize,", w).unwrap();
         }
         
+        // Regular fields
         for f in &s.fields {
             write!(out, "    pub {}: ", f.name).unwrap();
-            write_type_dyn(out, &f.ty);
+            write_type_dyn(out, &f.ty, struct_info);
             writeln!(out, ",").unwrap();
         }
+        
         writeln!(out, "}}").unwrap();
     }
 }
 
-fn is_length_param(p: &IrGenericParam, fields: &[IrField]) -> bool {
-    for bound in &p.bounds {
-        if matches!(bound.trait_kind, TraitKind::Crypto(CryptoTrait::ArrayLength)) {
-            return true;
+fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, StructInfo>) {
+    let (self_name, concrete_type_args) = match &i.self_ty {
+        IrType::Struct { kind, type_args } => {
+            // Collect concrete types from the impl
+            let mut concrete = Vec::new();
+            for arg in type_args {
+                match arg {
+                    IrType::TypeParam(p) if !is_length_type_param(p) => {
+                        // This is a generic type param, not concrete
+                    }
+                    IrType::TypeParam(p) if is_length_type_param(p) => {
+                        // Length param, skip
+                    }
+                    IrType::Primitive(_) | IrType::Struct { .. } => {
+                        let mut s = String::new();
+                        write_type_dyn(&mut s, arg, struct_info);
+                        concrete.push(s);
+                    }
+                    _ => {}
+                }
+            }
+            (kind.to_string(), concrete)
         }
-    }
-    for field in fields {
-        if type_uses_as_len(&field.ty, &p.name) {
-            return true;
-        }
-    }
-    is_likely_len_param(&p.name)
-}
-
-fn is_likely_len_param(name: &str) -> bool {
-    matches!(name, "N" | "M" | "K" | "L" | "B" | "D" | "X" | "U" | "S" | "T" | "K2" if name.len() <= 2) || 
-    name.starts_with('N') && name.chars().nth(1).map_or(false, |c| c.is_ascii_digit())
-}
-
-fn type_uses_as_len(ty: &IrType, name: &str) -> bool {
-    match ty {
-        IrType::Array { len: ArrayLength::TypeParam(p), .. } if p == name => true,
-        IrType::Array { elem, .. } => type_uses_as_len(elem, name),
-        IrType::Struct { type_args, .. } => type_args.iter().any(|arg| type_uses_as_len(arg, name)),
-        IrType::Tuple(elems) => elems.iter().any(|e| type_uses_as_len(e, name)),
-        IrType::Reference { elem, .. } => type_uses_as_len(elem, name),
-        _ => false,
-    }
-}
-
-fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_witnesses: &BTreeMap<String, Vec<String>>) {
-    let self_name = match &i.self_ty {
-        IrType::Struct { kind, .. } => format!("{}Dyn", kind),
         _ => return,
     };
-
-    write!(out, "impl").unwrap();
-    let mut type_params = Vec::new();
+    
+    let info = struct_info.get(&self_name).cloned().unwrap_or_default();
+    let dyn_name = format!("{}Dyn", self_name);
+    
+    // Collect type params for this impl (excluding length params)
+    let mut impl_type_params = Vec::new();
     for p in &i.generics {
-         if p.kind == IrGenericParamKind::Type && !is_likely_len_param(&p.name) {
-             type_params.push(p.name.clone());
-         }
-    }
-    if !type_params.is_empty() {
-        write!(out, "<{}>", type_params.join(", ")).unwrap();
-    }
-
-    write!(out, " {}", self_name).unwrap();
-    if !type_params.is_empty() {
-        write!(out, "<{}>", type_params.join(", ")).unwrap();
-    }
-
-    writeln!(out, " {{").unwrap();
-    for item in &i.items {
-        match item {
-            IrImplItem::Method(f) => write_function_dyn(out, f, 1, &i.self_ty, struct_witnesses),
-            _ => {}
+        if classify_generic(p) != GenericKind::Length {
+            impl_type_params.push(p.name.clone());
         }
     }
+    
+    write!(out, "impl").unwrap();
+    if !impl_type_params.is_empty() {
+        write!(out, "<{}>", impl_type_params.join(", ")).unwrap();
+    }
+    
+    write!(out, " {}", dyn_name).unwrap();
+    
+    // Use concrete types if available, otherwise use type params from struct
+    if !concrete_type_args.is_empty() {
+        write!(out, "<{}>", concrete_type_args.join(", ")).unwrap();
+    } else if !info.type_params.is_empty() {
+        write!(out, "<{}>", info.type_params.join(", ")).unwrap();
+    }
+    
+    writeln!(out, " {{").unwrap();
+    
+    for item in &i.items {
+        if let IrImplItem::Method(f) = item {
+            write_function_dyn(out, f, 1, Some(&self_name), struct_info);
+        }
+    }
+    
     writeln!(out, "}}").unwrap();
 }
 
-fn write_function_dyn(out: &mut String, f: &IrFunction, level: usize, self_ty: &IrType, struct_witnesses: &BTreeMap<String, Vec<String>>) {
+fn write_function_dyn(
+    out: &mut String, 
+    f: &IrFunction, 
+    level: usize, 
+    self_struct: Option<&str>,
+    struct_info: &BTreeMap<String, StructInfo>,
+) {
     let indent = "    ".repeat(level);
-    write!(out, "{}pub fn {}(", indent, f.name).unwrap();
     
-    let mut len_params_in_func = Vec::new();
+    // Collect length params that need to be passed as usize arguments
+    let mut length_params = Vec::new();
+    let mut type_params = Vec::new();
+    
     for p in &f.generics {
-        if is_likely_len_param(&p.name) {
-            len_params_in_func.push(p.name.clone());
+        match classify_generic(p) {
+            GenericKind::Length => length_params.push(p.name.clone()),
+            _ => type_params.push(p.name.clone()),
         }
     }
-
+    
+    write!(out, "{}pub fn {}", indent, f.name).unwrap();
+    
+    // Generic type parameters (non-length)
+    if !type_params.is_empty() {
+        write!(out, "<{}>", type_params.join(", ")).unwrap();
+    }
+    
+    write!(out, "(").unwrap();
+    
+    let mut param_count = 0;
+    
+    // Receiver
     if let Some(r) = f.receiver {
         match r {
             IrReceiver::Value => write!(out, "self").unwrap(),
             IrReceiver::Ref => write!(out, "&self").unwrap(),
             IrReceiver::RefMut => write!(out, "&mut self").unwrap(),
         }
+        param_count += 1;
     }
-
-    for (i, lp) in len_params_in_func.iter().enumerate() {
-        if i > 0 || f.receiver.is_some() { write!(out, ", ").unwrap(); }
-        write!(out, "{}_len: usize", lp.to_lowercase()).unwrap();
+    
+    // Length parameters as usize
+    for lp in &length_params {
+        if param_count > 0 { write!(out, ", ").unwrap(); }
+        write!(out, "{}: usize", lp.to_lowercase()).unwrap();
+        param_count += 1;
     }
-
-    for (i, p) in f.params.iter().enumerate() {
-        if i > 0 || f.receiver.is_some() || !len_params_in_func.is_empty() { write!(out, ", ").unwrap(); }
+    
+    // Regular parameters
+    for p in &f.params {
+        if param_count > 0 { write!(out, ", ").unwrap(); }
         write!(out, "{}: ", p.name).unwrap();
-        write_type_dyn(out, &p.ty);
+        write_type_dyn(out, &p.ty, struct_info);
+        param_count += 1;
     }
+    
     write!(out, ")").unwrap();
+    
+    // Return type
     if let Some(ret) = &f.return_type {
         write!(out, " -> ").unwrap();
-        write_type_dyn(out, ret);
+        write_type_dyn(out, ret, struct_info);
     }
-    writeln!(out).unwrap();
-
-    let indent_body = "    ".repeat(level + 1);
-    writeln!(out, "{}{{", indent).unwrap();
-
-    // Unpack witnesses from self
+    
+    writeln!(out, " {{").unwrap();
+    
+    let body_indent = "    ".repeat(level + 1);
+    
+    // Unpack length witnesses from self if this is a method
     if f.receiver.is_some() {
-        if let IrType::Struct { kind, .. } = self_ty {
-            if let Some(witnesses) = struct_witnesses.get(&kind.to_string()) {
-                for w in witnesses {
-                    writeln!(out, "{}let {} = self.{};", indent_body, w.to_lowercase(), w.to_lowercase()).unwrap();
+        if let Some(struct_name) = self_struct {
+            if let Some(info) = struct_info.get(struct_name) {
+                for w in &info.length_witnesses {
+                    writeln!(out, "{}let {} = self.{};", body_indent, w, w).unwrap();
                 }
             }
         }
     }
-
-    // Heuristic: for many cryptographic functions, 'n' is a standard parameter name for Vec length
-    // If n is used in the body but not defined, we might need to derive it
-    // But for now, let's just make sure n, t, k etc. are available if they are struct fields
-
-    // Unpack witnesses from arguments
-    for (i, lp) in len_params_in_func.iter().enumerate() {
-        writeln!(out, "{}let {} = {}_len;", indent_body, lp.to_lowercase(), lp.to_lowercase()).unwrap();
-    }
-
+    
+    // Function body
+    let ctx = ExprContext {
+        struct_info,
+        has_self: f.receiver.is_some(),
+        self_struct,
+    };
+    
     for stmt in &f.body.stmts {
-        write_stmt_dyn(out, stmt, level + 1, struct_witnesses);
+        write_stmt_dyn(out, stmt, level + 1, &ctx);
     }
+    
     if let Some(e) = &f.body.expr {
-        write!(out, "{}    ", indent).unwrap();
-        if let IrExpr::Var(v) = e.as_ref() {
-            if v == "sum" {
-                write!(out, "sum").unwrap();
-            } else {
-                write_expr_dyn(out, e, struct_witnesses);
-            }
-        } else {
-            write_expr_dyn(out, e, struct_witnesses);
-        }
+        write!(out, "{}", body_indent).unwrap();
+        write_expr_dyn(out, e, &ctx);
         writeln!(out).unwrap();
     }
+    
     writeln!(out, "{}}}", indent).unwrap();
 }
 
-fn write_type_dyn(out: &mut String, ty: &IrType) {
+fn write_type_dyn(out: &mut String, ty: &IrType, struct_info: &BTreeMap<String, StructInfo>) {
     match ty {
         IrType::Primitive(p) => write!(out, "{}", p).unwrap(),
+        
         IrType::Array { elem, .. } | IrType::Vector { elem } => {
+            // GenericArray<T, N> -> Vec<T>
             write!(out, "Vec<").unwrap();
-            write_type_dyn(out, elem);
+            write_type_dyn(out, elem, struct_info);
             write!(out, ">").unwrap();
         }
+        
         IrType::Struct { kind, type_args } => {
-            if kind.to_string() == "PolyInputPool" {
-                write!(out, "PolyInputPoolDyn<'_").unwrap();
-            } else {
-                write!(out, "{}Dyn", kind).unwrap();
-            }
-            let mut filtered_args = Vec::new();
-            for arg in type_args {
-                if let IrType::TypeParam(n) = arg {
-                    if is_likely_len_param(n) { continue; }
-                }
-                filtered_args.push(arg);
-            }
-            if !filtered_args.is_empty() {
-                if kind.to_string() == "PolyInputPool" {
-                    write!(out, ", ").unwrap();
-                } else {
-                    write!(out, "<").unwrap();
-                }
-                for (i, arg) in filtered_args.iter().enumerate() {
+            // Add Dyn suffix to struct names
+            write!(out, "{}Dyn", kind).unwrap();
+            
+            // Filter out length type params
+            let filtered: Vec<_> = type_args.iter()
+                .filter(|arg| {
+                    if let IrType::TypeParam(n) = arg {
+                        !is_length_type_param(n)
+                    } else {
+                        true
+                    }
+                })
+                .collect();
+            
+            if !filtered.is_empty() {
+                write!(out, "<").unwrap();
+                for (i, arg) in filtered.iter().enumerate() {
                     if i > 0 { write!(out, ", ").unwrap(); }
-                    write_type_dyn(out, arg);
+                    write_type_dyn(out, arg, struct_info);
                 }
-                write!(out, ">").unwrap();
-            } else if kind.to_string() == "PolyInputPool" {
                 write!(out, ">").unwrap();
             }
         }
-        IrType::TypeParam(p) => write!(out, "{}", p).unwrap(),
+        
+        IrType::TypeParam(p) => {
+            // Length params shouldn't appear in types after transformation
+            if is_length_type_param(p) {
+                write!(out, "usize").unwrap();
+            } else {
+                write!(out, "{}", p).unwrap();
+            }
+        }
+        
         IrType::Tuple(elems) => {
             write!(out, "(").unwrap();
             for (i, elem) in elems.iter().enumerate() {
                 if i > 0 { write!(out, ", ").unwrap(); }
-                write_type_dyn(out, elem);
+                write_type_dyn(out, elem, struct_info);
             }
             write!(out, ")").unwrap();
         }
+        
         IrType::Unit => write!(out, "()").unwrap(),
-        IrType::Reference { mutable, elem } => {
-            write!(out, "&{}", if *mutable { "mut " } else { "" }).unwrap();
-            write_type_dyn(out, elem);
+        
+        IrType::Reference { mutable, elem, .. } => {
+            // For struct fields, we need a lifetime - use 'a as default
+            write!(out, "&'a {}", if *mutable { "mut " } else { "" }).unwrap();
+            write_type_dyn(out, elem, struct_info);
         }
+        
         _ => write!(out, "_").unwrap(),
     }
 }
 
-fn write_stmt_dyn(out: &mut String, stmt: &IrStmt, level: usize, struct_witnesses: &BTreeMap<String, Vec<String>>) {
+/// Context for expression generation
+struct ExprContext<'a> {
+    struct_info: &'a BTreeMap<String, StructInfo>,
+    has_self: bool,
+    self_struct: Option<&'a str>,
+}
+
+fn write_stmt_dyn(out: &mut String, stmt: &IrStmt, level: usize, ctx: &ExprContext) {
     let indent = "    ".repeat(level);
+    
     match stmt {
         IrStmt::Let { pattern, ty, init } => {
-            let mut pat_str = String::new();
-            write_pattern_dyn(&mut pat_str, pattern);
+            write!(out, "{}let ", indent).unwrap();
             
-            if pat_str == "_" {
-                write!(out, "{}let ", indent).unwrap();
-            } else {
-                write!(out, "{}let mut ", indent).unwrap();
+            // Only add mut for simple ident patterns, not for destructuring
+            let needs_mut = match pattern {
+                IrPattern::Ident { mutable, .. } => *mutable,
+                IrPattern::Wild => false,
+                // For struct/tuple patterns, don't add outer mut
+                _ => false,
+            };
+            
+            if needs_mut {
+                write!(out, "mut ").unwrap();
             }
-            write!(out, "{}", pat_str).unwrap();
+            
+            write_pattern_dyn(out, pattern);
             
             if let Some(t) = ty {
                 write!(out, ": ").unwrap();
-                write_type_dyn(out, t);
+                write_type_dyn(out, t, ctx.struct_info);
             }
+            
             if let Some(i) = init {
                 write!(out, " = ").unwrap();
-                write_expr_dyn(out, i, struct_witnesses);
+                write_expr_dyn(out, i, ctx);
             }
+            
             writeln!(out, ";").unwrap();
         }
+        
         IrStmt::Semi(e) => {
             write!(out, "{}", indent).unwrap();
-            write_expr_dyn(out, e, struct_witnesses);
+            write_expr_dyn(out, e, ctx);
             writeln!(out, ";").unwrap();
         }
+        
         IrStmt::Expr(e) => {
             write!(out, "{}", indent).unwrap();
-            write_expr_dyn(out, e, struct_witnesses);
+            write_expr_dyn(out, e, ctx);
             writeln!(out).unwrap();
         }
     }
 }
 
-fn write_expr_dyn(out: &mut String, expr: &IrExpr, struct_witnesses: &BTreeMap<String, Vec<String>>) {
+fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
     match expr {
         IrExpr::Lit(l) => write!(out, "{}", l).unwrap(),
+        
         IrExpr::Var(v) => {
-            if is_likely_len_param(v) {
+            // Length params should be lowercase local variables
+            if is_length_type_param(v) {
                 write!(out, "{}", v.to_lowercase()).unwrap();
-            } else if matches!(v.as_str(), "delta" | "q" | "u" | "v" | "c0" | "c1" | "indices" | "inputs" | "commit" | "per_byte" | "bad" | "openings") {
-                write!(out, "self.{}", v).unwrap();
-            } else if matches!(v.as_str(), "BlockSize" | "OutputSize") {
-                write!(out, "16").unwrap(); // Default mock constants
-            } else if v == "sum" || v == "i" || v == "j" || v == "k" || v == "m" || v == "l" || v == "n" || v == "o" || v == "a" || v == "next" || v == "prev" || v == "u1" || v == "u2" || v == "v1" || v == "v2" || v == "q1" || v == "q2" || v == "d1" || v == "d2" {
-                write!(out, "{}", v).unwrap();
             } else {
                 write!(out, "{}", v).unwrap();
             }
         }
+        
         IrExpr::Binary { op, left, right } => {
-            let mut left_str = String::new();
-            write_expr_dyn(&mut left_str, left, struct_witnesses);
-            let mut right_str = String::new();
-            write_expr_dyn(&mut right_str, right, struct_witnesses);
-
-            if *op == SpecBinOp::Shl && left_str.contains(" as ") {
-                write!(out, "(({}) << {})", left_str, right_str).unwrap();
-            } else {
-                write!(out, "({} {} {})", left_str, match op {
-                    SpecBinOp::Add => "+",
-                    SpecBinOp::Sub => "-",
-                    SpecBinOp::Mul => "*",
-                    SpecBinOp::Div => "/",
-                    SpecBinOp::Rem => "%",
-                    SpecBinOp::BitAnd => "&",
-                    SpecBinOp::BitOr => "|",
-                    SpecBinOp::BitXor => "^",
-                    SpecBinOp::Shl => "<<",
-                    SpecBinOp::Shr => ">>",
-                    SpecBinOp::Eq => "==",
-                    SpecBinOp::Ne => "!=",
-                    SpecBinOp::Lt => "<",
-                    SpecBinOp::Le => "<=",
-                    SpecBinOp::Gt => ">",
-                    SpecBinOp::Ge => ">=",
-                    _ => "+", // Fallback
-                }, right_str).unwrap();
-            }
+            write!(out, "(").unwrap();
+            write_expr_dyn(out, left, ctx);
+            write!(out, " {} ", bin_op_str(*op)).unwrap();
+            write_expr_dyn(out, right, ctx);
+            write!(out, ")").unwrap();
         }
+        
         IrExpr::Unary { op, expr } => {
             match op {
                 SpecUnaryOp::Neg => write!(out, "-").unwrap(),
@@ -443,215 +523,278 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, struct_witnesses: &BTreeMap<S
                 SpecUnaryOp::Ref => write!(out, "&").unwrap(),
                 SpecUnaryOp::RefMut => write!(out, "&mut ").unwrap(),
             }
-            write_expr_dyn(out, expr, struct_witnesses);
+            write_expr_dyn(out, expr, ctx);
         }
+        
         IrExpr::Call { func, args } => {
+            // Check if this is a call to a length param (like N() -> n)
             if let IrExpr::Var(v) = func.as_ref() {
-                if is_likely_len_param(v) {
+                if is_length_type_param(v) && args.is_empty() {
                     write!(out, "{}", v.to_lowercase()).unwrap();
-                } else if v == "ilog2" {
-                    write!(out, "ilog2(").unwrap();
-                    for (i, arg) in args.iter().enumerate() {
-                        if i > 0 { write!(out, ", ").unwrap(); }
-                        write_expr_dyn(out, arg, struct_witnesses);
-                    }
-                    write!(out, ")").unwrap();
-                } else {
-                    write_expr_dyn(out, func, struct_witnesses);
-                    write!(out, "(").unwrap();
-                    for (i, arg) in args.iter().enumerate() {
-                        if i > 0 { write!(out, ", ").unwrap(); }
-                        write_expr_dyn(out, arg, struct_witnesses);
-                    }
-                    write!(out, ")").unwrap();
+                    return;
                 }
-            } else {
-                write_expr_dyn(out, func, struct_witnesses);
-                write!(out, "(").unwrap();
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 { write!(out, ", ").unwrap(); }
-                    write_expr_dyn(out, arg, struct_witnesses);
-                }
-                write!(out, ")").unwrap();
             }
+            
+            // Handle GenericArray::default() -> Vec::new()
+            if let IrExpr::Path { segments, .. } = func.as_ref() {
+                if segments.len() == 2 && segments[0] == "GenericArray" {
+                    if segments[1] == "default" && args.is_empty() {
+                        write!(out, "Vec::new()").unwrap();
+                        return;
+                    }
+                    if segments[1] == "generate" && args.len() == 1 {
+                        // GenericArray::generate(|i| ...) -> (0..n).map(|i| ...).collect()
+                        // We need the length from context, but for now use a placeholder
+                        write!(out, "(0..n).map(").unwrap();
+                        write_expr_dyn(out, &args[0], ctx);
+                        write!(out, ").collect()").unwrap();
+                        return;
+                    }
+                }
+                
+                // Handle N::to_usize() called as a function
+                if segments.len() == 2 && segments[1] == "to_usize" && is_length_type_param(&segments[0]) && args.is_empty() {
+                    write!(out, "{}", segments[0].to_lowercase()).unwrap();
+                    return;
+                }
+            }
+            
+            write_expr_dyn(out, func, ctx);
+            write!(out, "(").unwrap();
+            for (i, arg) in args.iter().enumerate() {
+                if i > 0 { write!(out, ", ").unwrap(); }
+                write_expr_dyn(out, arg, ctx);
+            }
+            write!(out, ")").unwrap();
         }
+        
         IrExpr::MethodCall { receiver, method, args, .. } => {
             let method_name = match method {
                 MethodKind::Std(s) => s.clone(),
                 MethodKind::Vole(v) => match v {
-                     VoleMethod::Remap => "remap".to_string(),
-                     VoleMethod::RotateLeft => "rotate_left".to_string(),
+                    VoleMethod::Remap => "remap".to_string(),
+                    VoleMethod::RotateLeft => "rotate_left".to_string(),
                 },
                 MethodKind::Crypto(c) => format!("{:?}", c).to_lowercase(),
                 MethodKind::Unknown(s) => s.clone(),
             };
             
+            // Special case: to_usize() on a type becomes just the variable
             if method_name == "to_usize" {
-                write_expr_dyn(out, receiver, struct_witnesses);
-            } else if method_name == "ilog2" {
-                write!(out, "ilog2(").unwrap();
-                write_expr_dyn(out, receiver, struct_witnesses);
-                write!(out, ")").unwrap();
-            } else {
-                write_expr_dyn(out, receiver, struct_witnesses);
-                write!(out, ".{}(", method_name).unwrap();
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 { write!(out, ", ").unwrap(); }
-                    write_expr_dyn(out, arg, struct_witnesses);
+                // Check if receiver is a path to a length type param
+                if let IrExpr::Path { segments, .. } = receiver.as_ref() {
+                    if segments.len() == 1 && is_length_type_param(&segments[0]) {
+                        write!(out, "{}", segments[0].to_lowercase()).unwrap();
+                        return;
+                    }
                 }
-                write!(out, ")").unwrap();
+                // Otherwise just emit the receiver
+                write_expr_dyn(out, receiver, ctx);
+                return;
             }
+            
+            // Handle ilog2 on type params: N::to_usize().ilog2() -> ilog2(n)
+            if method_name == "ilog2" {
+                write!(out, "ilog2(").unwrap();
+                write_expr_dyn(out, receiver, ctx);
+                write!(out, ")").unwrap();
+                return;
+            }
+            
+            write_expr_dyn(out, receiver, ctx);
+            write!(out, ".{}(", method_name).unwrap();
+            for (i, arg) in args.iter().enumerate() {
+                if i > 0 { write!(out, ", ").unwrap(); }
+                write_expr_dyn(out, arg, ctx);
+            }
+            write!(out, ")").unwrap();
         }
+        
         IrExpr::Field { base, field } => {
-            write_expr_dyn(out, base, struct_witnesses);
+            write_expr_dyn(out, base, ctx);
             write!(out, ".{}", field).unwrap();
         }
+        
         IrExpr::Index { base, index } => {
-            write_expr_dyn(out, base, struct_witnesses);
+            write_expr_dyn(out, base, ctx);
             write!(out, "[").unwrap();
-            write_expr_dyn(out, index, struct_witnesses);
+            write_expr_dyn(out, index, ctx);
             write!(out, "]").unwrap();
         }
+        
         IrExpr::Block(b) => {
             writeln!(out, "{{").unwrap();
             for stmt in &b.stmts {
-                write_stmt_dyn(out, stmt, 1, struct_witnesses);
+                write_stmt_dyn(out, stmt, 1, ctx);
             }
             if let Some(e) = &b.expr {
                 write!(out, "    ").unwrap();
-                write_expr_dyn(out, e, struct_witnesses);
+                write_expr_dyn(out, e, ctx);
                 writeln!(out).unwrap();
             }
             write!(out, "}}").unwrap();
         }
+        
         IrExpr::ArrayGenerate { index_var, body, len, .. } => {
-            let n = match len {
+            let len_str = match len {
                 ArrayLength::Const(n) => n.to_string(),
                 ArrayLength::TypeNum(tn) => tn.to_usize().to_string(),
                 ArrayLength::TypeParam(p) => p.to_lowercase(),
                 ArrayLength::Computed(e) => {
                     let mut s = String::new();
-                    write_expr_dyn(&mut s, e, struct_witnesses);
+                    write_expr_dyn(&mut s, e, ctx);
                     s
                 }
             };
-            write!(out, "(0..{}).map(|{}| ", n, index_var).unwrap();
-            write_expr_dyn(out, body, struct_witnesses);
+            write!(out, "(0..{}).map(|{}| ", len_str, index_var).unwrap();
+            write_expr_dyn(out, body, ctx);
             write!(out, ").collect()").unwrap();
         }
+        
         IrExpr::ArrayMap { array, elem_var, body } => {
-            write_expr_dyn(out, array, struct_witnesses);
+            write_expr_dyn(out, array, ctx);
             write!(out, ".iter().map(|{}| ", elem_var).unwrap();
-            write_expr_dyn(out, body, struct_witnesses);
+            write_expr_dyn(out, body, ctx);
             write!(out, ").collect()").unwrap();
         }
+        
         IrExpr::ArrayZip { left, right, left_var, right_var, body } => {
-            write_expr_dyn(out, left, struct_witnesses);
+            write_expr_dyn(out, left, ctx);
             write!(out, ".iter().zip(").unwrap();
-            write_expr_dyn(out, right, struct_witnesses);
+            write_expr_dyn(out, right, ctx);
             write!(out, ".iter()).map(|({}, {})| ", left_var, right_var).unwrap();
-            write_expr_dyn(out, body, struct_witnesses);
+            write_expr_dyn(out, body, ctx);
             write!(out, ").collect()").unwrap();
         }
+        
         IrExpr::ArrayFold { array, init, acc_var, elem_var, body } => {
-            write_expr_dyn(out, array, struct_witnesses);
+            write_expr_dyn(out, array, ctx);
             write!(out, ".iter().fold(").unwrap();
-            write_expr_dyn(out, init, struct_witnesses);
+            write_expr_dyn(out, init, ctx);
             write!(out, ", |{}, {}| ", acc_var, elem_var).unwrap();
-            write_expr_dyn(out, body, struct_witnesses);
+            write_expr_dyn(out, body, ctx);
             write!(out, ")").unwrap();
         }
+        
         IrExpr::BoundedLoop { var, start, end, inclusive, body } => {
             write!(out, "for {} in ", var).unwrap();
-            write_expr_dyn(out, start, struct_witnesses);
-            write!(out, "{} ", if *inclusive { "..=" } else { ".." }).unwrap();
-            write_expr_dyn(out, end, struct_witnesses);
+            write_expr_dyn(out, start, ctx);
+            write!(out, "{}", if *inclusive { "..=" } else { ".." }).unwrap();
+            write_expr_dyn(out, end, ctx);
             writeln!(out, " {{").unwrap();
             for stmt in &body.stmts {
-                write_stmt_dyn(out, stmt, 1, struct_witnesses);
+                write_stmt_dyn(out, stmt, 1, ctx);
             }
             if let Some(e) = &body.expr {
                 write!(out, "    ").unwrap();
-                write_expr_dyn(out, e, struct_witnesses);
+                write_expr_dyn(out, e, ctx);
                 writeln!(out).unwrap();
             }
             write!(out, "}}").unwrap();
         }
+        
         IrExpr::If { cond, then_branch, else_branch } => {
             write!(out, "if ").unwrap();
-            write_expr_dyn(out, cond, struct_witnesses);
+            write_expr_dyn(out, cond, ctx);
             writeln!(out, " {{").unwrap();
             for stmt in &then_branch.stmts {
-                write_stmt_dyn(out, stmt, 1, struct_witnesses);
+                write_stmt_dyn(out, stmt, 1, ctx);
             }
             if let Some(e) = &then_branch.expr {
                 write!(out, "    ").unwrap();
-                write_expr_dyn(out, e, struct_witnesses);
+                write_expr_dyn(out, e, ctx);
                 writeln!(out).unwrap();
             }
             write!(out, "}}").unwrap();
             if let Some(eb) = else_branch {
                 write!(out, " else ").unwrap();
-                write_expr_dyn(out, eb, struct_witnesses);
+                write_expr_dyn(out, eb, ctx);
             }
         }
+        
         IrExpr::Match { expr, arms } => {
             write!(out, "match ").unwrap();
-            write_expr_dyn(out, expr, struct_witnesses);
+            write_expr_dyn(out, expr, ctx);
             writeln!(out, " {{").unwrap();
             for arm in arms {
                 write!(out, "    ").unwrap();
                 write_pattern_dyn(out, &arm.pattern);
                 write!(out, " => ").unwrap();
-                write_expr_dyn(out, &arm.body, struct_witnesses);
+                write_expr_dyn(out, &arm.body, ctx);
                 writeln!(out, ",").unwrap();
             }
             write!(out, "}}").unwrap();
         }
+        
         IrExpr::Return(e) => {
             write!(out, "return").unwrap();
             if let Some(e) = e {
                 write!(out, " ").unwrap();
-                write_expr_dyn(out, e, struct_witnesses);
+                write_expr_dyn(out, e, ctx);
             }
         }
+        
         IrExpr::Break(e) => {
             write!(out, "break").unwrap();
             if let Some(e) = e {
                 write!(out, " ").unwrap();
-                write_expr_dyn(out, e, struct_witnesses);
+                write_expr_dyn(out, e, ctx);
             }
         }
+        
         IrExpr::Continue => write!(out, "continue").unwrap(),
+        
         IrExpr::Assign { left, right } => {
-            write_expr_dyn(out, left, struct_witnesses);
+            write_expr_dyn(out, left, ctx);
             write!(out, " = ").unwrap();
-            write_expr_dyn(out, right, struct_witnesses);
+            write_expr_dyn(out, right, ctx);
         }
+        
         IrExpr::AssignOp { op, left, right } => {
-            write_expr_dyn(out, left, struct_witnesses);
-            write!(out, " {} = ", match op {
-                SpecBinOp::Add => "+",
-                SpecBinOp::Sub => "-",
-                SpecBinOp::Mul => "*",
-                SpecBinOp::Div => "/",
-                SpecBinOp::Rem => "%",
-                SpecBinOp::BitAnd => "&",
-                SpecBinOp::BitOr => "|",
-                SpecBinOp::BitXor => "^",
-                SpecBinOp::Shl => "<<",
-                SpecBinOp::Shr => ">>",
-                _ => "+",
-            }).unwrap();
-            write_expr_dyn(out, right, struct_witnesses);
+            write_expr_dyn(out, left, ctx);
+            write!(out, " {}= ", bin_op_str(*op)).unwrap();
+            write_expr_dyn(out, right, ctx);
         }
+        
         IrExpr::Path { segments, .. } => {
-            if segments.len() == 2 && is_likely_len_param(&segments[0]) && segments[1] == "to_usize" {
-                write!(out, "{}", segments[0].to_lowercase()).unwrap();
-            } else {
-                write!(out, "{}", segments.join("::")).unwrap();
+            // Handle GenericArray paths
+            if segments.len() >= 1 && segments[0] == "GenericArray" {
+                if segments.len() == 2 && segments[1] == "default" {
+                    write!(out, "Vec::new").unwrap();
+                    return;
+                } else if segments.len() == 2 && segments[1] == "generate" {
+                    // Will be handled in Call
+                    write!(out, "todo_generate").unwrap();
+                    return;
+                }
             }
+            
+            // Handle paths like N::to_usize() -> n
+            if segments.len() >= 1 && is_length_type_param(&segments[0]) {
+                if segments.len() == 1 {
+                    write!(out, "{}", segments[0].to_lowercase()).unwrap();
+                    return;
+                }
+                if segments.len() == 2 && segments[1] == "to_usize" {
+                    write!(out, "{}", segments[0].to_lowercase()).unwrap();
+                    return;
+                }
+            }
+            
+            // Handle associated constants like B::BlockSize, D::OutputSize
+            if segments.len() == 2 {
+                let type_name = &segments[0];
+                let assoc = &segments[1];
+                if assoc == "BlockSize" || assoc == "OutputSize" {
+                    // These are typically cipher/hash sizes - emit as runtime lookup
+                    write!(out, "{}::{}", type_name, assoc).unwrap();
+                    return;
+                }
+            }
+            
+            write!(out, "{}", segments.join("::")).unwrap();
         }
+        
         IrExpr::Closure { params, body, .. } => {
             write!(out, "|").unwrap();
             for (i, p) in params.iter().enumerate() {
@@ -659,56 +802,62 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, struct_witnesses: &BTreeMap<S
                 write_pattern_dyn(out, &p.pattern);
             }
             write!(out, "| ").unwrap();
-            write_expr_dyn(out, body, struct_witnesses);
+            write_expr_dyn(out, body, ctx);
         }
+        
         IrExpr::Cast { expr, ty } => {
-            write_expr_dyn(out, expr, struct_witnesses);
+            // Add parens around casts for operator precedence safety
+            write!(out, "(").unwrap();
+            write_expr_dyn(out, expr, ctx);
             write!(out, " as ").unwrap();
-            write_type_dyn(out, ty);
+            write_type_dyn(out, ty, ctx.struct_info);
+            write!(out, ")").unwrap();
         }
+        
         IrExpr::Try(e) => {
-            write_expr_dyn(out, e, struct_witnesses);
+            write_expr_dyn(out, e, ctx);
             write!(out, "?").unwrap();
         }
+        
         IrExpr::Tuple(elems) => {
             write!(out, "(").unwrap();
             for (i, e) in elems.iter().enumerate() {
                 if i > 0 { write!(out, ", ").unwrap(); }
-                write_expr_dyn(out, e, struct_witnesses);
+                write_expr_dyn(out, e, ctx);
             }
             write!(out, ")").unwrap();
         }
+        
         IrExpr::Array(elems) => {
             write!(out, "vec![").unwrap();
             for (i, e) in elems.iter().enumerate() {
                 if i > 0 { write!(out, ", ").unwrap(); }
-                write_expr_dyn(out, e, struct_witnesses);
+                write_expr_dyn(out, e, ctx);
             }
             write!(out, "]").unwrap();
         }
+        
         IrExpr::StructExpr { kind, fields, .. } => {
             write!(out, "{}Dyn {{ ", kind).unwrap();
             
-            let mut field_names: BTreeSet<_> = fields.iter().map(|(n, _)| n.clone()).collect();
+            // Write explicit fields
             for (i, (name, val)) in fields.iter().enumerate() {
                 if i > 0 { write!(out, ", ").unwrap(); }
                 write!(out, "{}: ", name).unwrap();
-                write_expr_dyn(out, val, struct_witnesses);
+                write_expr_dyn(out, val, ctx);
             }
             
-            if let Some(witnesses) = struct_witnesses.get(&kind.to_string()) {
-                for w in witnesses {
-                    let w_low = w.to_lowercase();
-                    if !field_names.contains(&w_low) {
-                        if !fields.is_empty() || !field_names.is_empty() { write!(out, ", ").unwrap(); }
-                        write!(out, "{}: {}", w_low, w_low).unwrap();
-                        field_names.insert(w_low);
-                    }
+            // Add length witnesses if needed
+            if let Some(info) = ctx.struct_info.get(&kind.to_string()) {
+                for (i, w) in info.length_witnesses.iter().enumerate() {
+                    if !fields.is_empty() || i > 0 { write!(out, ", ").unwrap(); }
+                    write!(out, "{}: {}", w, w).unwrap();
                 }
             }
             
             write!(out, " }}").unwrap();
         }
+        
         _ => write!(out, "todo!()").unwrap(),
     }
 }
@@ -725,7 +874,86 @@ fn write_pattern_dyn(out: &mut String, pat: &IrPattern) {
             }
             write!(out, ")").unwrap();
         }
+        IrPattern::TupleStruct { kind, elems } => {
+            // Don't add Dyn suffix to primitive wrapper types
+            let kind_str = kind.to_string();
+            // Handle Self pattern specially - it will be transformed at a higher level
+            if kind_str == "Self" {
+                write!(out, "Self(").unwrap();
+            } else if matches!(kind_str.as_str(), "BitsInBytes" | "BitsInBytes64" | "Bit" | "Galois" | "Galois64" | "Some" | "None" | "Ok" | "Err") {
+                write!(out, "{}(", kind).unwrap();
+            } else {
+                write!(out, "{}Dyn(", kind).unwrap();
+            }
+            for (i, p) in elems.iter().enumerate() {
+                if i > 0 { write!(out, ", ").unwrap(); }
+                write_pattern_dyn(out, p);
+            }
+            write!(out, ")").unwrap();
+        }
+        IrPattern::Struct { kind, fields, rest } => {
+            // Don't add Dyn suffix to primitive wrapper types or Self
+            let kind_str = kind.to_string();
+            if kind_str == "Self" {
+                write!(out, "Self {{ ").unwrap();
+            } else if matches!(kind_str.as_str(), "BitsInBytes" | "BitsInBytes64" | "Bit" | "Galois" | "Galois64") {
+                write!(out, "{} {{ ", kind).unwrap();
+            } else {
+                write!(out, "{}Dyn {{ ", kind).unwrap();
+            }
+            for (i, (name, p)) in fields.iter().enumerate() {
+                if i > 0 { write!(out, ", ").unwrap(); }
+                write!(out, "{}: ", name).unwrap();
+                write_pattern_dyn(out, p);
+            }
+            // Always add .. for Dyn structs since they have extra witness fields
+            if *rest || (kind_str != "Self" && !matches!(kind_str.as_str(), "BitsInBytes" | "BitsInBytes64" | "Bit" | "Galois" | "Galois64")) {
+                if !fields.is_empty() { write!(out, ", ").unwrap(); }
+                write!(out, "..").unwrap();
+            }
+            write!(out, " }}").unwrap();
+        }
+        IrPattern::Ref { mutable, pat } => {
+            write!(out, "&{}", if *mutable { "mut " } else { "" }).unwrap();
+            write_pattern_dyn(out, pat);
+        }
+        IrPattern::Slice(pats) => {
+            write!(out, "[").unwrap();
+            for (i, p) in pats.iter().enumerate() {
+                if i > 0 { write!(out, ", ").unwrap(); }
+                write_pattern_dyn(out, p);
+            }
+            write!(out, "]").unwrap();
+        }
         IrPattern::Lit(l) => write!(out, "{}", l).unwrap(),
-        _ => write!(out, "_").unwrap(),
+        IrPattern::Or(pats) => {
+            for (i, p) in pats.iter().enumerate() {
+                if i > 0 { write!(out, " | ").unwrap(); }
+                write_pattern_dyn(out, p);
+            }
+        }
+        IrPattern::Rest => write!(out, "..").unwrap(),
+    }
+}
+
+fn bin_op_str(op: SpecBinOp) -> &'static str {
+    match op {
+        SpecBinOp::Add => "+",
+        SpecBinOp::Sub => "-",
+        SpecBinOp::Mul => "*",
+        SpecBinOp::Div => "/",
+        SpecBinOp::Rem => "%",
+        SpecBinOp::BitAnd => "&",
+        SpecBinOp::BitOr => "|",
+        SpecBinOp::BitXor => "^",
+        SpecBinOp::Shl => "<<",
+        SpecBinOp::Shr => ">>",
+        SpecBinOp::Eq => "==",
+        SpecBinOp::Ne => "!=",
+        SpecBinOp::Lt => "<",
+        SpecBinOp::Le => "<=",
+        SpecBinOp::Gt => ">",
+        SpecBinOp::Ge => ">=",
+        _ => "+",
     }
 }

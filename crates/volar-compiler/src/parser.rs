@@ -621,8 +621,51 @@ fn convert_pattern(pat: &Pat) -> IrPattern {
             subpat: pi.subpat.as_ref().map(|(_, p)| Box::new(convert_pattern(p))),
         },
         Pat::Wild(_) => IrPattern::Wild,
+        Pat::Tuple(pt) => IrPattern::Tuple(pt.elems.iter().map(convert_pattern).collect()),
+        Pat::TupleStruct(pts) => {
+            let path_str = path_to_string(&pts.path);
+            let kind = StructKind::from_str(&path_str);
+            IrPattern::TupleStruct {
+                kind,
+                elems: pts.elems.iter().map(convert_pattern).collect(),
+            }
+        }
+        Pat::Struct(ps) => {
+            let path_str = path_to_string(&ps.path);
+            let kind = StructKind::from_str(&path_str);
+            let fields = ps.fields.iter().map(|f| {
+                let name = match &f.member {
+                    syn::Member::Named(id) => id.to_string(),
+                    syn::Member::Unnamed(idx) => idx.index.to_string(),
+                };
+                (name, convert_pattern(&f.pat))
+            }).collect();
+            IrPattern::Struct {
+                kind,
+                fields,
+                rest: ps.rest.is_some(),
+            }
+        }
+        Pat::Slice(ps) => IrPattern::Slice(ps.elems.iter().map(convert_pattern).collect()),
+        Pat::Lit(pl) => {
+            if let Ok(lit) = convert_lit(&pl.lit) {
+                IrPattern::Lit(lit)
+            } else {
+                IrPattern::Wild
+            }
+        }
+        Pat::Reference(pr) => IrPattern::Ref {
+            mutable: pr.mutability.is_some(),
+            pat: Box::new(convert_pattern(&pr.pat)),
+        },
+        Pat::Or(po) => IrPattern::Or(po.cases.iter().map(convert_pattern).collect()),
+        Pat::Rest(_) => IrPattern::Rest,
         _ => IrPattern::Wild,
     }
+}
+
+fn path_to_string(path: &syn::Path) -> String {
+    path.segments.iter().map(|s| s.ident.to_string()).collect::<Vec<_>>().join("::")
 }
 
 fn extract_pat_name(pat: &Pat) -> String {

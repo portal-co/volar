@@ -303,6 +303,8 @@ pub enum CryptoTrait {
     VoleArray,
     /// Encryption on byte blocks
     ByteBlockEncrypt,
+    /// Random number generator
+    Rng,
 }
 
 impl CryptoTrait {
@@ -315,6 +317,7 @@ impl CryptoTrait {
             "ArrayLength" => Some(Self::ArrayLength),
             "VoleArray" => Some(Self::VoleArray),
             "ByteBlockEncrypt" => Some(Self::ByteBlockEncrypt),
+            "Rng" | "RngCore" | "CryptoRng" => Some(Self::Rng),
             _ => None,
         }
     }
@@ -836,7 +839,7 @@ impl fmt::Display for IrLit {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SpecBinOp {
     Add, Sub, Mul, Div, Rem,
     BitAnd, BitOr, BitXor, Shl, Shr,
@@ -845,7 +848,7 @@ pub enum SpecBinOp {
     Range, RangeInclusive,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SpecUnaryOp {
     Neg, Not, Deref, Ref, RefMut,
 }

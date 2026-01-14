@@ -2,8 +2,9 @@ use std::fs;
 use std::path::Path;
 use volar_compiler::{parser::parse_source, printer_dyn::print_module_rust_dyn};
 
+/// Test that generates dynamic code and writes it to volar-spec-dyn for compilation
 #[test]
-fn test_generated_dyn_compiles() -> Result<(), Box<dyn std::error::Error>> {
+fn test_generate_dyn_module() -> Result<(), Box<dyn std::error::Error>> {
     let spec_dir = Path::new("../volar-spec/src");
     let mut files = Vec::new();
     collect_files(spec_dir, &mut files)?;
@@ -26,34 +27,50 @@ fn test_generated_dyn_compiles() -> Result<(), Box<dyn std::error::Error>> {
                 combined_ir.uses.extend(module.uses);
             }
             Err(e) => {
-                eprintln!("Error parsing {:?}: {}", file, e);
+                eprintln!("Warning: Error parsing {:?}: {}", file, e);
             }
         }
     }
 
     let dyn_code = print_module_rust_dyn(&combined_ir);
     
-    // Write to a file for compilation check and inspection
-    let test_file = Path::new("volar_dyn_generated.rs");
-    fs::write(&test_file, &dyn_code)?;
+    // Write to volar-spec-dyn/src/generated.rs
+    let generated_path = Path::new("../volar-spec-dyn/src/generated.rs");
+    fs::write(&generated_path, &dyn_code)?;
+    
+    println!("Generated {} bytes of dynamic code", dyn_code.len());
+    println!("Written to: {:?}", generated_path);
+    
+    // Also write a standalone copy for debugging
+    let debug_path = Path::new("volar_dyn_generated.rs");
+    fs::write(&debug_path, &dyn_code)?;
+    
+    Ok(())
+}
 
-    // Use rustc to check if it compiles
-    let output = std::process::Command::new("rustc")
-        .arg("--crate-type")
-        .arg("lib")
-        .arg("--emit")
-        .arg("dep-info,metadata")
-        .arg("-o")
-        .arg("target/volar_dyn_test.rmeta")
-        .arg(&test_file)
+/// Test that the generated code compiles with the volar-spec-dyn crate
+#[test]
+fn test_generated_dyn_compiles() -> Result<(), Box<dyn std::error::Error>> {
+    // First generate the code
+    test_generate_dyn_module()?;
+    
+    // Now try to build volar-spec-dyn
+    let output = std::process::Command::new("cargo")
+        .arg("build")
+        .arg("-p")
+        .arg("volar-spec-dyn")
+        .current_dir("../..")  // workspace root
         .output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("Compilation failed:\n{}", stderr);
-        return Err(format!("Compilation failed").into());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        eprintln!("Build output:\n{}", stdout);
+        eprintln!("Build errors:\n{}", stderr);
+        return Err(format!("volar-spec-dyn build failed").into());
     }
 
+    println!("volar-spec-dyn compiled successfully!");
     Ok(())
 }
 
