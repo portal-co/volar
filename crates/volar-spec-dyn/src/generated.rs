@@ -8,6 +8,12 @@ use alloc::vec::Vec;
 use alloc::vec;
 use core::ops::{Add, Sub, Mul, Div, BitAnd, BitOr, BitXor, Shl, Shr};
 use typenum::Unsigned;
+use cipher::BlockEncrypt;
+use digest::Digest;
+
+/// Block cipher that can encrypt blocks and be created from a 32-byte key
+pub trait ByteBlockEncrypt: BlockEncrypt + From<[u8; 32]> {}
+impl<T: BlockEncrypt + From<[u8; 32]>> ByteBlockEncrypt for T {}
 
 // Primitive field types from volar-primitives
 pub use volar_primitives::{Bit, BitsInBytes, BitsInBytes64, Galois, Galois64};
@@ -35,6 +41,7 @@ pub struct ABODyn<B: ByteBlockEncrypt, D: Digest> {
     pub k: usize,
     pub commit: Vec<u8>,
     pub per_byte: Vec<Vec<u8>>,
+    _phantom: core::marker::PhantomData<(B, D)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -43,6 +50,7 @@ pub struct ABOOpeningDyn<B: ByteBlockEncrypt, D: Digest> {
     pub u: usize,
     pub bad: Vec<u64>,
     pub openings: Vec<Vec<Vec<u8>>>,
+    _phantom: core::marker::PhantomData<(B, D)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -56,7 +64,7 @@ pub struct PolyDyn<T> {
 pub struct PolyInputPoolDyn<'a, T> {
     pub n: usize,
     pub x: usize,
-    pub inputs: &'a Vec<T>,
+    pub inputs: &Vec<T>,
     pub indices: Vec<Vec<usize>>,
 }
 
@@ -76,7 +84,7 @@ pub struct VopeDyn<T> {
 }
 
 
-impl<T> DeltaDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 80: T
+impl<T> DeltaDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 88: T
  {
     pub fn remap<F: FnMut(usize) -> usize>(&self, m: usize, f: F) -> DeltaDyn<T> where T: Clone {
         let n = self.n;
@@ -91,14 +99,14 @@ impl<T> DeltaDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 80: T
         let n = self.n;
         self.remap(|a| a.wrapping_add(n))
     }
-    pub fn r#static<U: Mul<T, Output = O>, O>(&self, val: Vec<U>) -> QDyn<O> where T: Clone// UNCONSTRAINED GENERICS at generated.rs line 95: O
+    pub fn r#static<U: Mul<T, Output = O>, O>(&self, val: Vec<U>) -> QDyn<O> where T: Clone// UNCONSTRAINED GENERICS at generated.rs line 103: O
  {
         let n = self.n;
         QDyn { q: (0..n).map(|i| (val[i].clone() * self.delta[i].clone())).collect(), n: n }
     }
 }
 
-impl<T> QDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 102: T
+impl<T> QDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 110: T
  {
     pub fn remap<F: FnMut(usize) -> usize>(&self, m: usize, f: F) -> QDyn<T> where T: Clone {
         let n = self.n;
@@ -116,7 +124,7 @@ impl<T> QDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 102: T
 }
 
 
-impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 120: T
+impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 128: T
  {
     pub fn get_qs_pool<Q: Clone + Mul<A, Output = A>, A: Add<A, Output = A>>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: PolyInputPoolDyn<QDyn<Q>>, reduction: usize) -> QDyn<A> where T: Clone + Into<A> {
         let n = self.n;
@@ -156,7 +164,7 @@ impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 120: T
     sum
 }).collect(), n: n }
     }
-    pub fn apply_pool<O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, m: usize, x: usize, x2: usize, xs: usize, s: usize, voles: &'a PolyInputPoolDyn<VopeDyn<T>>) -> VopeDyn<O> where T: Into<O> + Clone {
+    pub fn apply_pool<O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, m: usize, x: usize, x2: usize, xs: usize, s: usize, voles: &PolyInputPoolDyn<VopeDyn<T>>) -> VopeDyn<O> where T: Into<O> + Clone {
         let n = self.n;
         let v = (0..m).map(|i| {
     let mut sum = O::new();
@@ -235,7 +243,7 @@ impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 120: T
 }
 
 impl<T: Add<Output = T> + Mul<Output = T> + Default + Clone + Add<Output = T> + Mul<Output = T> + Default + Clone> VopeDyn<T> where T: Add<Output = T> + Mul<Output = T> + Default + Clone {
-    pub fn mul_generalized(&self, k2: usize, other: &'a VopeDyn<T>) -> VopeDyn<T> {
+    pub fn mul_generalized(&self, k2: usize, other: &VopeDyn<T>) -> VopeDyn<T> {
         let n = self.n;
         let k = self.k;
         let mut res_u = Vec::new();
@@ -243,8 +251,8 @@ impl<T: Add<Output = T> + Mul<Output = T> + Default + Clone + Add<Output = T> + 
         for i in 0..=k {
     for j in 0..=k2 {
     let k = (i + j);
-    let a_coeff = compile_error!("Unsupported expression Macro { name: "get_coeff", tokens: "& self . v , & self . u , i" }");
-    let b_coeff = compile_error!("Unsupported expression Macro { name: "get_coeff", tokens: "& other . v , & other . u , j" }");
+    let a_coeff = compile_error!("Unsupported expression: Macro { name: 'get_coeff', tokens: '& self . v , & self . u , i' }");
+    let b_coeff = compile_error!("Unsupported expression: Macro { name: 'get_coeff', tokens: '& other . v , & other . u , j' }");
     if (k == 0) {
     for lane in 0..n {
     res_v[lane] = (res_v[lane].clone() + (a_coeff[lane].clone() * b_coeff[lane].clone()));
@@ -386,7 +394,7 @@ impl<T: Clone> Clone for DeltaDyn<T> {
 }
 
 impl<T: PartialEq> PartialEq for VopeDyn<T> {
-    fn eq(&self, other: &'a Self) -> bool {
+    fn eq(&self, other: &Self) -> bool {
         let n = self.n;
         let k = self.k;
         let VopeDyn { u: u1, v: v1, .. } = self;
@@ -408,7 +416,7 @@ impl<T: PartialEq> PartialEq for VopeDyn<T> {
 }
 
 impl<T: PartialEq> PartialEq for QDyn<T> {
-    fn eq(&self, other: &'a Self) -> bool {
+    fn eq(&self, other: &Self) -> bool {
         let n = self.n;
         let QDyn { q: q1, .. } = self;
         let QDyn { q: q2, .. } = other;
@@ -422,7 +430,7 @@ impl<T: PartialEq> PartialEq for QDyn<T> {
 }
 
 impl<T: PartialEq> PartialEq for DeltaDyn<T> {
-    fn eq(&self, other: &'a Self) -> bool {
+    fn eq(&self, other: &Self) -> bool {
         let n = self.n;
         let DeltaDyn { delta: d1, .. } = self;
         let DeltaDyn { delta: d2, .. } = other;
@@ -560,14 +568,14 @@ impl DeltaDyn<BitsInBytes64> {
     }
 }
 
-impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 564: T
+impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 572: T
  {
     pub fn constant(v: Vec<T>) -> Self {
-        VopeDyn { u: (0..n).map(|_| compile_error!("Unsupported expression Macro { name: "unreachable", tokens: "" }")).collect(), v: v, n: n, k: k }
+        VopeDyn { u: (0..n).map(|_| compile_error!("Unsupported expression: Macro { name: 'unreachable', tokens: '' }")).collect(), v: v, n: n, k: k }
     }
 }
 
-impl<T: Add<U, Output = O> + Clone, U: Clone, O> Add<VopeDyn<U>> for VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 571: O
+impl<T: Add<U, Output = O> + Clone, U: Clone, O> Add<VopeDyn<U>> for VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 579: O
  {
     type Output = VopeDyn<O>;
     fn add(self, rhs: VopeDyn<U>) -> Self::Output {
@@ -577,7 +585,7 @@ impl<T: Add<U, Output = O> + Clone, U: Clone, O> Add<VopeDyn<U>> for VopeDyn<T>/
     }
 }
 
-impl<T: BitXor<U, Output = O> + Clone + Into<O> + Into<O>, U: Clone, O> BitXor<Vec<U>> for VopeDyn<T> where T: Into<O>// UNCONSTRAINED GENERICS at generated.rs line 581: O
+impl<T: BitXor<U, Output = O> + Clone + Into<O> + Into<O>, U: Clone, O> BitXor<Vec<U>> for VopeDyn<T> where T: Into<O>// UNCONSTRAINED GENERICS at generated.rs line 589: O
  {
     type Output = VopeDyn<O>;
     fn bitxor(self, rhs: Vec<U>) -> Self::Output {
@@ -610,7 +618,7 @@ impl<T: Mul<U, Output = O> + Into<O> + Clone, U: Mul<U, Output = U> + Clone, O: 
     }
 }
 
-impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 614: T
+impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 622: T
  {
     pub fn expand(&self, l: usize) -> VopeDyn<T> where T: Clone + Default {
         let n = self.n;
@@ -641,7 +649,7 @@ impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 614: T
 }
 
 impl VopeDyn<Bit> {
-    pub fn scale<T>(self, f: compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Custom("Fn"), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 645: T
+    pub fn scale<T>(self, f: compile_error!("Unsupported type: Existential { bounds: [IrTraitBound { trait_kind: Custom('Fn'), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 653: T
  {
         let n = self.n;
         let k = self.k;
@@ -659,7 +667,7 @@ impl VopeDyn<Bit> {
 }
 
 impl<B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
-    pub fn open<R: AsRef<Vec<u8>>>(&self, t: usize, u: usize, bad: Vec<u64>, rand: &'a R) -> ABOOpeningDyn<B, D> where <B as cipher::BlockSizeUser>::BlockSize: compile_error!("External trait bounds not supported in dyn code: Max") {
+    pub fn open<R: AsRef<Vec<u8>>>(&self, t: usize, u: usize, bad: Vec<u64>, rand: &R) -> ABOOpeningDyn<B, D> where <B as cipher::BlockSizeUser>::BlockSize: compile_error!("External trait bounds not supported in dyn code: Max") {
         let k = self.k;
         ABOOpeningDyn { bad: bad.clone(), openings: (0..t).map(|i| {
     let bad = bad.clone();
@@ -679,7 +687,7 @@ impl<B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
 }
 
 impl<B: ByteBlockEncrypt, D: Digest> ABOOpeningDyn<B, D> {
-    pub fn validate<R: AsRef<Vec<u8>>>(&self, commit_: &'a Vec<u8>, rand: &'a R) -> bool {
+    pub fn validate<R: AsRef<Vec<u8>>>(&self, commit_: &Vec<u8>, rand: &R) -> bool {
         let t = self.t;
         let u = self.u;
         let mut h = D::new();
@@ -687,15 +695,15 @@ impl<B: ByteBlockEncrypt, D: Digest> ABOOpeningDyn<B, D> {
     for b in 0..u {
     let i2 = (i | ((b as usize) << ilog2(t)));
     if self.bad.contains(&(i2 as u64)) {
-    h.update(&self.openings[i][b][(0 + unsigned)]);
+    h.update(&self.openings[i][b][(0 .. unsigned)]);
 } else {
-    h.update(&commit(&&self.openings[i][b][(0 + unsigned)], rand));
+    h.update(&commit(&&self.openings[i][b][(0 .. unsigned)], rand));
 }
 }
 };
         (h.finalize().as_slice() == commit_.as_slice())
     }
-    pub fn to_vole_material<N>(&self) -> Vec<VopeDyn<u8>>// UNCONSTRAINED GENERICS at generated.rs line 699: N
+    pub fn to_vole_material<N>(&self) -> Vec<VopeDyn<u8>>// UNCONSTRAINED GENERICS at generated.rs line 707: N
  {
         let t = self.t;
         let u = self.u;
@@ -712,7 +720,7 @@ impl<B: ByteBlockEncrypt, D: Digest> ABOOpeningDyn<B, D> {
     create_vole_from_material(s)
 }).collect()
     }
-    pub fn to_vole_material_expanded<N, X: AsRef<Vec<u8>>, F: FnMut(&[u8]) -> X>(&self, f: F) -> Vec<VopeDyn<u8>>// UNCONSTRAINED GENERICS at generated.rs line 716: N
+    pub fn to_vole_material_expanded<N, X: AsRef<Vec<u8>>, F: FnMut(&[u8]) -> X>(&self, f: F) -> Vec<VopeDyn<u8>>// UNCONSTRAINED GENERICS at generated.rs line 724: N
  {
         let t = self.t;
         let u = self.u;
@@ -732,39 +740,39 @@ impl<B: ByteBlockEncrypt, D: Digest> ABOOpeningDyn<B, D> {
 }
 
 impl<B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
-    pub fn to_vole_material<N>(&self) -> Vec<VopeDyn<u8>>// UNCONSTRAINED GENERICS at generated.rs line 736: N
+    pub fn to_vole_material<N>(&self) -> Vec<VopeDyn<u8>>// UNCONSTRAINED GENERICS at generated.rs line 744: N
  {
         let k = self.k;
         (0..n).map(|i| {
-    let s = &self.per_byte[((i * N) + 0)][(0 + N)];
+    let s = &self.per_byte[((i * N) .. 0)][(0 .. N)];
     create_vole_from_material(s)
 }).collect()
     }
     pub fn to_vole_material_typenum(&self, n: usize) -> Vec<VopeDyn<u8>> {
         let k = self.k;
         (0..n).map(|i| {
-    let s = &self.per_byte[((i * n) + 0)][(0 + n)];
+    let s = &self.per_byte[((i * n) .. 0)][(0 .. n)];
     create_vole_from_material(s)
 }).collect()
     }
-    pub fn to_vole_material_expanded<N, X: AsRef<Vec<u8>>, F: FnMut(&[u8]) -> X>(&self, f: F) -> Vec<VopeDyn<u8>>// UNCONSTRAINED GENERICS at generated.rs line 751: N
+    pub fn to_vole_material_expanded<N, X: AsRef<Vec<u8>>, F: FnMut(&[u8]) -> X>(&self, f: F) -> Vec<VopeDyn<u8>>// UNCONSTRAINED GENERICS at generated.rs line 759: N
  {
         let k = self.k;
         (0..n).map(|i| {
-    let s = &self.per_byte[((i * N) + 0)][(0 + N)];
+    let s = &self.per_byte[((i * N) .. 0)][(0 .. N)];
     create_vole_from_material_expanded(s, &mut f)
 }).collect()
     }
     pub fn to_vole_material_typenum_expanded<X: AsRef<Vec<u8>>, F: FnMut(&[u8]) -> X>(&self, n: usize, f: F) -> Vec<VopeDyn<u8>> {
         let k = self.k;
         (0..n).map(|i| {
-    let s = &self.per_byte[((i * n) + 0)][(0 + n)];
+    let s = &self.per_byte[((i * n) .. 0)][(0 .. n)];
     create_vole_from_material_expanded(s, &mut f)
 }).collect()
     }
 }
 
-pub fn create_vole_from_material<B: ByteBlockEncrypt>(s: &'a Vec<compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Custom("Deref"), type_args: [], assoc_bindings: [(Other("Target"), Array { kind: Slice, elem: Primitive(U8), len: Const(0) })] }] }")>) -> VopeDyn<u8> {
+pub fn create_vole_from_material<B: ByteBlockEncrypt>(s: &Vec<compile_error!("Unsupported type: Existential { bounds: [IrTraitBound { trait_kind: Custom('Deref'), type_args: [], assoc_bindings: [(Other('Target'), Array { kind: Slice, elem: Primitive(U8), len: Const(0) })] }] }")>) -> VopeDyn<u8> {
     let u: Vec<u8> = s.iter().fold(Vec::new(), |a, b| {
     a.iter().zip((0..<B::BlockSize as typenum::Unsigned>::USIZE).map(|i| b[i]).collect().iter()).map(|(a, b)| a.bitxor(b)).collect()
 });
@@ -774,13 +782,13 @@ pub fn create_vole_from_material<B: ByteBlockEncrypt>(s: &'a Vec<compile_error!(
     VopeDyn { u: (0..n).map(|_| u.clone()).collect(), v: v, n: n, k: k }
 }
 
-pub fn create_vole_from_material_expanded<B: ByteBlockEncrypt, X: AsRef<Vec<u8>>>(s: &'a Vec<compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Custom("Deref"), type_args: [], assoc_bindings: [(Other("Target"), Array { kind: Slice, elem: Primitive(U8), len: Const(0) })] }] }")>, f: compile_error!("Unsupported type Existential { bounds: [IrTraitBound { trait_kind: Fn(BytesSlice, TypeParam("X")), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<u8> {
-    let u: Vec<u8> = s.iter().iter().map(|b| f(&b[(0 + unsigned)])).collect().fold(Vec::new(), |a, b| {
+pub fn create_vole_from_material_expanded<B: ByteBlockEncrypt, X: AsRef<Vec<u8>>>(s: &Vec<compile_error!("Unsupported type: Existential { bounds: [IrTraitBound { trait_kind: Custom('Deref'), type_args: [], assoc_bindings: [(Other('Target'), Array { kind: Slice, elem: Primitive(U8), len: Const(0) })] }] }")>, f: compile_error!("Unsupported type: Existential { bounds: [IrTraitBound { trait_kind: Fn(BytesSlice, TypeParam('X')), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<u8> {
+    let u: Vec<u8> = s.iter().iter().map(|b| f(&b[(0 .. unsigned)])).collect().fold(Vec::new(), |a, b| {
     a.iter().zip((0..<B::BlockSize as typenum::Unsigned>::USIZE).map(|i| b.as_ref()[i]).collect().iter()).map(|(a, b)| {
     a.bitxor(b)
 }).collect()
 });
-    let v: Vec<u8> = s.iter().iter().map(|b| f(&b[(0 + unsigned)])).collect().enumerate().fold(Vec::new(), |a, (i, b)| {
+    let v: Vec<u8> = s.iter().iter().map(|b| f(&b[(0 .. unsigned)])).collect().enumerate().fold(Vec::new(), |a, (i, b)| {
     a.iter().zip((0..<B::BlockSize as typenum::Unsigned>::USIZE).map(|i| b.as_ref()[i]).collect().iter()).map(|(a, b)| {
     a.bitxor(b).bitxor((i as u8))
 }).collect()
@@ -791,7 +799,7 @@ pub fn create_vole_from_material_expanded<B: ByteBlockEncrypt, X: AsRef<Vec<u8>>
 pub fn double<B: ByteBlockEncrypt>(a: Vec<u8>) -> Vec<Vec<u8>> {
     return (0..n).map(|i| {
     let mut out = a.clone();
-    let mut b = compile_error!("Unhandled path call: ["B", "from"]");
+    let mut b = compile_error!("Unhandled path call: ['B', 'from']");
     b.encryptblock(&mut out);
     out
 }).collect();

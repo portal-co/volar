@@ -394,6 +394,14 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
     )
     .unwrap();
     writeln!(out, "use typenum::Unsigned;").unwrap();
+    writeln!(out, "use cipher::BlockEncrypt;").unwrap();
+    writeln!(out, "use digest::Digest;").unwrap();
+    writeln!(out).unwrap();
+
+    // ByteBlockEncrypt trait (from volar-spec)
+    writeln!(out, "/// Block cipher that can encrypt blocks and be created from a 32-byte key").unwrap();
+    writeln!(out, "pub trait ByteBlockEncrypt: BlockEncrypt + From<[u8; 32]> {{}}").unwrap();
+    writeln!(out, "impl<T: BlockEncrypt + From<[u8; 32]>> ByteBlockEncrypt for T {{}}").unwrap();
     writeln!(out).unwrap();
 
     // Re-export primitives
@@ -534,6 +542,19 @@ fn write_struct_dyn(out: &mut String, s: &IrStruct, struct_info: &BTreeMap<Strin
             writeln!(out, ",").unwrap();
         }
 
+        // Add PhantomData for crypto type parameters that might not be used in fields
+        // to avoid "type parameter is never used" errors
+        let crypto_params: Vec<_> = info.orig_generics.iter()
+            .filter(|(_, kind, pk)| *kind == GenericKind::Crypto && *pk != IrGenericParamKind::Lifetime)
+            .collect();
+        if !crypto_params.is_empty() {
+            let phantoms = crypto_params.iter()
+                .map(|(name, _, _)| name.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(out, "    _phantom: core::marker::PhantomData<({})>,", phantoms).unwrap();
+        }
+
         writeln!(out, "}}").unwrap();
     }
 }
@@ -588,13 +609,16 @@ fn bname(
         TraitKind::Math(math_trait) => {
             with_args_and_assoc(format!("{:?}", math_trait), b, cur_params, struct_info)
         }
-        TraitKind::External { path } => format!(
-            "compile_error!(\"External trait bounds not supported in dyn code: {:?}\")",
-            path
-        ),
+        TraitKind::External { path } => {
+            let msg = format!("{:?}", path).replace('"', "'");
+            format!(
+                "compile_error!(\"External trait bounds not supported in dyn code: {}\")",
+                msg
+            )
+        }
         TraitKind::Custom(path) => format!(
             "compile_error!(\"External trait bounds not supported in dyn code: {}\")",
-            path
+            path.replace('"', "'")
         ),
         TraitKind::Into(t) => {
             return format!("Into<{}>", type_to_string(&**t, cur_params, struct_info));
@@ -1510,8 +1534,8 @@ fn write_type_dyn(
         IrType::Unit => write!(out, "()").unwrap(),
 
         IrType::Reference { mutable, elem, .. } => {
-            // For struct fields, we need a lifetime - use 'a as default
-            write!(out, "&'a {}", if *mutable { "mut " } else { "" }).unwrap();
+            // Use anonymous lifetime for simpler code
+            write!(out, "&{}", if *mutable { "mut " } else { "" }).unwrap();
             return write_type_dyn(out, elem, cur_params, struct_info);
         }
 
@@ -1540,7 +1564,10 @@ fn write_type_dyn(
             write!(out, " as {}>::{}", trait_name, assoc_name).unwrap();
         }
 
-        ty => write!(out, "compile_error!(\"Unsupported type {ty:?}\")").unwrap(),
+        ty => {
+            let msg = format!("{ty:?}").replace('"', "'");
+            write!(out, "compile_error!(\"Unsupported type: {}\")", msg).unwrap();
+        }
     }
     return true;
 }
@@ -1716,10 +1743,11 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                     }
                 }
                 // todo!("Handle other path calls: {segments:?}");
+                let msg = format!("{:?}", segments).replace('"', "'");
                 write!(
                     out,
-                    "compile_error!(\"Unhandled path call: {:?}\")",
-                    segments
+                    "compile_error!(\"Unhandled path call: {}\")",
+                    msg
                 )
                 .unwrap();
                 return;
@@ -2094,7 +2122,25 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             write!(out, "}}").unwrap();
         }
 
-        e => write!(out, "compile_error!(\"Unsupported expression {e:?}\")").unwrap(),
+        IrExpr::Range { start, end, inclusive } => {
+            // Handle range expressions: x..y, x..=y, ..y, x..
+            if let Some(s) = start {
+                write_expr_dyn(out, s, ctx);
+            }
+            if *inclusive {
+                write!(out, "..=").unwrap();
+            } else {
+                write!(out, "..").unwrap();
+            }
+            if let Some(e) = end {
+                write_expr_dyn(out, e, ctx);
+            }
+        }
+
+        e => {
+            let msg = format!("{e:?}").replace('"', "'");
+            write!(out, "compile_error!(\"Unsupported expression: {}\")", msg).unwrap();
+        }
     }
 }
 
@@ -2227,6 +2273,8 @@ fn bin_op_str(op: SpecBinOp) -> &'static str {
         SpecBinOp::Le => "<=",
         SpecBinOp::Gt => ">",
         SpecBinOp::Ge => ">=",
+        SpecBinOp::Range => "..",
+        SpecBinOp::RangeInclusive => "..=",
         _ => "+",
     }
 }
