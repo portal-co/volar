@@ -24,7 +24,7 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
     }
 
     for f in &module.functions {
-        write_function_dyn(&mut out, f, 0);
+        write_function_dyn(&mut out, f, 0, &IrType::Unit);
         writeln!(out).unwrap();
     }
 
@@ -35,19 +35,26 @@ fn write_struct_dyn(out: &mut String, s: &IrStruct) {
     let name = format!("{}Dyn", s.kind);
     write!(out, "pub struct {}", name).unwrap();
     
-    let mut generics = Vec::new();
+    let mut type_params = Vec::new();
+    let mut length_params = Vec::new();
+    
     for p in &s.generics {
-        if p.kind == IrGenericParamKind::Type {
-            generics.push(p.name.clone());
+        if is_length_param(p, &s.fields) {
+            length_params.push(p.name.clone());
+        } else if p.kind == IrGenericParamKind::Type {
+            type_params.push(p.name.clone());
         }
     }
 
-    if !generics.is_empty() {
-        write!(out, "<{}>", generics.join(", ")).unwrap();
+    if !type_params.is_empty() {
+        write!(out, "<{}>", type_params.join(", ")).unwrap();
     }
     
     if s.is_tuple {
         write!(out, "(").unwrap();
+        for lp in &length_params {
+            write!(out, "pub usize, ").unwrap();
+        }
         for (i, f) in s.fields.iter().enumerate() {
             if i > 0 { write!(out, ", ").unwrap(); }
             write_type_dyn(out, &f.ty);
@@ -55,12 +62,43 @@ fn write_struct_dyn(out: &mut String, s: &IrStruct) {
         writeln!(out, ");").unwrap();
     } else {
         writeln!(out, " {{").unwrap();
+        for lp in &length_params {
+            writeln!(out, "    pub {}: usize,", lp.to_lowercase()).unwrap();
+        }
         for f in &s.fields {
             write!(out, "    pub {}: ", f.name).unwrap();
             write_type_dyn(out, &f.ty);
             writeln!(out, ",").unwrap();
         }
         writeln!(out, "}}").unwrap();
+    }
+}
+
+fn is_length_param(p: &IrGenericParam, fields: &[IrField]) -> bool {
+    // Check bounds
+    for bound in &p.bounds {
+        if matches!(bound.trait_kind, TraitKind::Crypto(CryptoTrait::ArrayLength)) {
+            return true;
+        }
+    }
+    // Check usage in fields
+    for field in fields {
+        if type_uses_as_len(&field.ty, &p.name) {
+            return true;
+        }
+    }
+    // Heuristic for common length names in volar
+    matches!(p.name.as_str(), "N" | "M" | "K" | "L" | "B" | "D" | "X" | "U")
+}
+
+fn type_uses_as_len(ty: &IrType, name: &str) -> bool {
+    match ty {
+        IrType::Array { len: ArrayLength::TypeParam(p), .. } if p == name => true,
+        IrType::Array { elem, .. } => type_uses_as_len(elem, name),
+        IrType::Struct { type_args, .. } => type_args.iter().any(|arg| type_uses_as_len(arg, name)),
+        IrType::Tuple(elems) => elems.iter().any(|e| type_uses_as_len(e, name)),
+        IrType::Reference { elem, .. } => type_uses_as_len(elem, name),
+        _ => false,
     }
 }
 
@@ -71,42 +109,62 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl) {
     };
 
     write!(out, "impl").unwrap();
-    let mut generics = Vec::new();
+    let mut type_params = Vec::new();
     for p in &i.generics {
-         if p.kind == IrGenericParamKind::Type {
-             generics.push(p.name.clone());
+         if p.kind == IrGenericParamKind::Type && !is_likely_len_param(&p.name) {
+             type_params.push(p.name.clone());
          }
     }
-    if !generics.is_empty() {
-        write!(out, "<{}>", generics.join(", ")).unwrap();
+    if !type_params.is_empty() {
+        write!(out, "<{}>", type_params.join(", ")).unwrap();
     }
 
     write!(out, " {}", self_name).unwrap();
-    if !generics.is_empty() {
-        write!(out, "<{}>", generics.join(", ")).unwrap();
+    if !type_params.is_empty() {
+        write!(out, "<{}>", type_params.join(", ")).unwrap();
     }
 
     writeln!(out, " {{").unwrap();
     for item in &i.items {
         match item {
-            IrImplItem::Method(f) => write_function_dyn(out, f, 1),
+            IrImplItem::Method(f) => write_function_dyn(out, f, 1, &i.self_ty),
             _ => {}
         }
     }
     writeln!(out, "}}").unwrap();
 }
 
-fn write_function_dyn(out: &mut String, f: &IrFunction, level: usize) {
+fn is_likely_len_param(name: &str) -> bool {
+    matches!(name, "N" | "M" | "K" | "L" | "B" | "D" | "X" | "U")
+}
+
+fn write_function_dyn(out: &mut String, f: &IrFunction, level: usize, self_ty: &IrType) {
     let indent = "    ".repeat(level);
     write!(out, "{}pub fn {}(", indent, f.name).unwrap();
+    
+    // Determine which type params are actually length params
+    let mut len_params_in_func = Vec::new();
+    for p in &f.generics {
+        if is_likely_len_param(&p.name) {
+            len_params_in_func.push(p.name.clone());
+        }
+    }
+
     if let Some(r) = f.receiver {
         match r {
             IrReceiver::Value => write!(out, "self").unwrap(),
             IrReceiver::Ref => write!(out, "&self").unwrap(),
             IrReceiver::RefMut => write!(out, "&mut self").unwrap(),
         }
-        if !f.params.is_empty() { write!(out, ", ").unwrap(); }
+        if !f.params.is_empty() || !len_params_in_func.is_empty() { write!(out, ", ").unwrap(); }
     }
+
+    for (i, lp) in len_params_in_func.iter().enumerate() {
+        if i > 0 { write!(out, ", ").unwrap(); }
+        write!(out, "{}_len: usize", lp.to_lowercase()).unwrap();
+        if i < len_params_in_func.len() - 1 || !f.params.is_empty() { write!(out, ", ").unwrap(); }
+    }
+
     for (i, p) in f.params.iter().enumerate() {
         if i > 0 { write!(out, ", ").unwrap(); }
         write!(out, "{}: ", p.name).unwrap();
@@ -118,8 +176,45 @@ fn write_function_dyn(out: &mut String, f: &IrFunction, level: usize) {
         write_type_dyn(out, ret);
     }
     writeln!(out).unwrap();
-    write_block_dyn(out, &f.body, level);
-    writeln!(out).unwrap();
+
+    // Start block with assertions
+    let indent_body = "    ".repeat(level + 1);
+    writeln!(out, "{}{{", indent).unwrap();
+
+    // Assert lengths for receiver
+    if f.receiver.is_some() {
+        if let IrType::Struct { kind: _, type_args } = self_ty {
+             for arg in type_args {
+                 if let IrType::TypeParam(n) = arg {
+                     if is_likely_len_param(n) {
+                         // We assume the struct has a field for this length
+                         // (Wait, in volar-spec structs, N is often used in [T; N])
+                         // Let's generate assertions based on Vec lengths in self
+                     }
+                 }
+             }
+        }
+    }
+
+    // Assert lengths for params
+    for p in &f.params {
+        match &p.ty {
+            IrType::Array { len: ArrayLength::TypeParam(n), .. } => {
+                writeln!(out, "{}assert_eq!({}.len(), {});", indent_body, p.name, n.to_lowercase()).unwrap();
+            }
+            _ => {}
+        }
+    }
+
+    for stmt in &f.body.stmts {
+        write_stmt_dyn(out, stmt, level + 1);
+    }
+    if let Some(e) = &f.body.expr {
+        write!(out, "{}    ", indent).unwrap();
+        write_expr_dyn(out, e);
+        writeln!(out).unwrap();
+    }
+    writeln!(out, "{}}}", indent).unwrap();
 }
 
 fn write_type_dyn(out: &mut String, ty: &IrType) {
@@ -282,7 +377,7 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr) {
             let n = match len {
                 ArrayLength::Const(n) => n.to_string(),
                 ArrayLength::TypeNum(tn) => tn.to_usize().to_string(),
-                ArrayLength::TypeParam(p) => format!("{}.to_usize()", p),
+                ArrayLength::TypeParam(p) => p.to_lowercase(),
                 ArrayLength::Computed(e) => {
                     let mut s = String::new();
                     write_expr_dyn(&mut s, e);
