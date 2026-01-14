@@ -299,14 +299,14 @@ impl<T: Clone> VopeDyn<T> {
     }
 }
 
-impl<T: Clone> QDyn<N, T> {
+impl<T: Clone> QDyn<T> {
     pub fn clone(&self) -> Self {
         let QDyn { q: q, .. } = self;
         QDyn { q: (0..n).map(|i| q[i].clone()).collect() }
     }
 }
 
-impl<T: Clone> DeltaDyn<N, T> {
+impl<T: Clone> DeltaDyn<T> {
     pub fn clone(&self) -> Self {
         let DeltaDyn { delta: delta, .. } = self;
         DeltaDyn { delta: (0..n).map(|i| delta[i].clone()).collect() }
@@ -335,7 +335,7 @@ impl<T: PartialEq> VopeDyn<T> {
     }
 }
 
-impl<T: PartialEq> QDyn<N, T> {
+impl<T: PartialEq> QDyn<T> {
     pub fn eq(&self, other: &'a Self) -> bool {
         let QDyn { q: q1, .. } = self;
         let QDyn { q: q2, .. } = other;
@@ -348,7 +348,7 @@ impl<T: PartialEq> QDyn<N, T> {
     }
 }
 
-impl<T: PartialEq> DeltaDyn<N, T> {
+impl<T: PartialEq> DeltaDyn<T> {
     pub fn eq(&self, other: &'a Self) -> bool {
         let DeltaDyn { delta: d1, .. } = self;
         let DeltaDyn { delta: d2, .. } = other;
@@ -364,13 +364,13 @@ impl<T: PartialEq> DeltaDyn<N, T> {
 impl<T: Eq> VopeDyn<T> {
 }
 
-impl<T: Eq> QDyn<N, T> {
+impl<T: Eq> QDyn<T> {
 }
 
-impl<T: Eq> DeltaDyn<N, T> {
+impl<T: Eq> DeltaDyn<T> {
 }
 
-impl QDyn<N, BitsInBytes> {
+impl QDyn<BitsInBytes> {
     pub fn rotate_left_bits(&self, n: usize) -> Self {
         let QDyn { q: q, .. } = self;
         QDyn { q: (0..n).map(|i| {
@@ -396,7 +396,7 @@ impl QDyn<N, BitsInBytes> {
     }
 }
 
-impl QDyn<N, BitsInBytes64> {
+impl QDyn<BitsInBytes64> {
     pub fn rotate_left_bits(&self, n: usize) -> Self {
         let QDyn { q: q, .. } = self;
         QDyn { q: (0..n).map(|i| {
@@ -422,7 +422,7 @@ impl QDyn<N, BitsInBytes64> {
     }
 }
 
-impl DeltaDyn<N, BitsInBytes> {
+impl DeltaDyn<BitsInBytes> {
     pub fn rotate_left_bits(&self, n: usize) -> Self {
         let DeltaDyn { delta: delta, .. } = self;
         DeltaDyn { delta: (0..n).map(|i| {
@@ -448,7 +448,7 @@ impl DeltaDyn<N, BitsInBytes> {
     }
 }
 
-impl DeltaDyn<N, BitsInBytes64> {
+impl DeltaDyn<BitsInBytes64> {
     pub fn rotate_left_bits(&self, n: usize) -> Self {
         let DeltaDyn { delta: delta, .. } = self;
         DeltaDyn { delta: (0..n).map(|i| {
@@ -474,7 +474,7 @@ impl DeltaDyn<N, BitsInBytes64> {
     }
 }
 
-impl<T> VopeDyn<T, usize> {
+impl<T> VopeDyn<T> {
     pub fn constant(v: Vec<T>) -> Self {
         VopeDyn { u: (0..n).map(|_| compile_error!("Unsupported expression Macro { name: "unreachable", tokens: "" }")).collect(), v: v, n: n, k: k }
     }

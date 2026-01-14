@@ -224,6 +224,8 @@ struct StructInfo {
     length_witnesses: Vec<String>,
     /// Names of type parameters that remain generic
     type_params: Vec<(String, String)>,
+    /// Original generics in declaration order with their kind (Length/Crypto/Type) and param kind
+    orig_generics: Vec<(String, GenericKind, IrGenericParamKind)>,
 }
 
 // Crypto-detection helpers: these are used to decide when associated numeric
@@ -284,22 +286,39 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
     let mut struct_info: BTreeMap<String, StructInfo> = BTreeMap::new();
 
     for s in &module.structs {
-        
         let mut info = StructInfo::default();
+        // Build a local cur_params map for this struct so bounds can be
+        // formatted in the context of the struct's own generics.
+        let mut cur_for_struct: BTreeMap<String, (String, GenericKind)> = BTreeMap::new();
         for p in &s.generics {
+            let kind = if p.kind == IrGenericParamKind::Lifetime {
+                // lifetimes are represented separately
+                GenericKind::Type
+            } else {
+                classify_generic(p, &[&s.generics])
+            };
+            // record original generic ordering and kinds
+            info.orig_generics.push((p.name.clone(), kind.clone(), p.kind.clone()));
+
             if p.kind == IrGenericParamKind::Lifetime {
                 info.lifetimes.push(format!("'{}", p.name));
+                // also insert into cur map so bounds can reference lifetimes
+                cur_for_struct.insert(p.name.clone(), (format!(""), kind.clone()));
             } else {
-                match classify_generic(p, &[&s.generics]) {
+                // Insert a placeholder so bname/pname can inspect kinds
+                cur_for_struct.insert(p.name.clone(), (format!(""), kind.clone()));
+                match kind {
                     GenericKind::Length => info.length_witnesses.push(p.name.to_lowercase()),
-                    GenericKind::Crypto | GenericKind::Type => info.type_params.push((
-                        p.name.clone(),
-                        p.bounds
-                            .iter()
-                            .map(|b| bname(b, &BTreeMap::new(), &struct_info))
-                            .collect::<Vec<_>>()
-                            .join(" + "),
-                    )),
+                    GenericKind::Crypto | GenericKind::Type => {
+                        info.type_params.push((
+                            p.name.clone(),
+                            p.bounds
+                                .iter()
+                                .map(|b| bname(b, &cur_for_struct, &struct_info))
+                                .collect::<Vec<_>>()
+                                .join(" + "),
+                        ));
+                    }
                 }
             }
         }
@@ -569,29 +588,21 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
         .collect::<BTreeMap<_, _>>();
     let (self_name, concrete_type_args) = match &i.self_ty {
         IrType::Struct { kind, type_args } => {
-            // Collect concrete types from the impl
+            // Collect concrete types from the impl, aligning with the struct's original generics
+            let info_local = struct_info.get(&kind.to_string()).cloned().unwrap_or_default();
             let mut concrete = Vec::new();
-            for arg in type_args {
-                match arg {
-                    IrType::TypeParam(p) => match struct_info.get(&kind.to_string()) {
-                        Some(info) => {
-                            // Check if this type param is a length witness
-                            if info.length_witnesses.contains(&p.to_lowercase()) {
-                                // Skip length params
-                            } else {
-                                concrete.push(p.clone());
-                            }
-                        }
-                        None => {
-                            concrete.push(p.clone());
-                        }
-                    },
-                    IrType::Primitive(_) | IrType::Struct { .. } => {
-                        let mut s = String::new();
-                        write_type_dyn(&mut s, arg, &generics, struct_info);
-                        concrete.push(s);
+            for (idx, arg) in type_args.iter().enumerate() {
+                if let Some((_, gkind, param_kind)) = info_local.orig_generics.get(idx) {
+                    if *param_kind == IrGenericParamKind::Lifetime {
+                        continue;
                     }
-                    _ => {}
+                    if *gkind == GenericKind::Length {
+                        continue;
+                    }
+                }
+                let mut s = String::new();
+                if write_type_dyn(&mut s, arg, &generics, struct_info) {
+                    concrete.push(s);
                 }
             }
             (kind.to_string(), concrete)
