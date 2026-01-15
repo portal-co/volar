@@ -99,7 +99,7 @@ impl<T> DeltaDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 88: T
         let n = self.n;
         self.remap(|a| a.wrapping_add(n))
     }
-    pub fn r#static<U: Mul<T, Output = O>, O>(&self, val: Vec<U>) -> QDyn<O> where T: Clone// UNCONSTRAINED GENERICS at generated.rs line 103: O
+    pub fn r#static<U: Mul<T, Output = O> + Clone, O>(&self, val: Vec<U>) -> QDyn<O> where T: Clone// UNCONSTRAINED GENERICS at generated.rs line 103: O
  {
         let n = self.n;
         QDyn { q: (0..n).map(|i| (val[i].clone() * self.delta[i].clone())).collect(), n: n }
@@ -695,9 +695,9 @@ impl<B: ByteBlockEncrypt, D: Digest> ABOOpeningDyn<B, D> {
     for b in 0..u {
     let i2 = (i | ((b as usize) << ilog2(t)));
     if self.bad.contains(&(i2 as u64)) {
-    h.update(&self.openings[i][b][(0 .. unsigned)]);
+    h.update(&self.openings[i][b][(0 .. <D::OutputSize as typenum::Unsigned>::USIZE)]);
 } else {
-    h.update(&commit(&&self.openings[i][b][(0 .. unsigned)], rand));
+    h.update(&commit(&&self.openings[i][b][(0 .. <B::BlockSize as typenum::Unsigned>::USIZE)], rand));
 }
 }
 };
@@ -783,12 +783,12 @@ pub fn create_vole_from_material<B: ByteBlockEncrypt>(s: &Vec<compile_error!("Un
 }
 
 pub fn create_vole_from_material_expanded<B: ByteBlockEncrypt, X: AsRef<Vec<u8>>>(s: &Vec<compile_error!("Unsupported type: Existential { bounds: [IrTraitBound { trait_kind: Custom('Deref'), type_args: [], assoc_bindings: [(Other('Target'), Array { kind: Slice, elem: Primitive(U8), len: Const(0) })] }] }")>, f: compile_error!("Unsupported type: Existential { bounds: [IrTraitBound { trait_kind: Fn(BytesSlice, TypeParam('X')), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<u8> {
-    let u: Vec<u8> = s.iter().iter().map(|b| f(&b[(0 .. unsigned)])).collect().fold(Vec::new(), |a, b| {
+    let u: Vec<u8> = s.iter().iter().map(|b| f(&b[(0 .. <B::BlockSize as typenum::Unsigned>::USIZE)])).collect().fold(Vec::new(), |a, b| {
     a.iter().zip((0..<B::BlockSize as typenum::Unsigned>::USIZE).map(|i| b.as_ref()[i]).collect().iter()).map(|(a, b)| {
     a.bitxor(b)
 }).collect()
 });
-    let v: Vec<u8> = s.iter().iter().map(|b| f(&b[(0 .. unsigned)])).collect().enumerate().fold(Vec::new(), |a, (i, b)| {
+    let v: Vec<u8> = s.iter().iter().map(|b| f(&b[(0 .. <B::BlockSize as typenum::Unsigned>::USIZE)])).collect().enumerate().fold(Vec::new(), |a, (i, b)| {
     a.iter().zip((0..<B::BlockSize as typenum::Unsigned>::USIZE).map(|i| b.as_ref()[i]).collect().iter()).map(|(a, b)| {
     a.bitxor(b).bitxor((i as u8))
 }).collect()

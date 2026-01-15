@@ -782,6 +782,49 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
     match expr {
         Expr::Lit(l) => Ok(IrExpr::Lit(convert_lit(&l.lit)?)),
         Expr::Path(p) => {
+            // Handle qualified paths like `<D::OutputSize as Unsigned>::to_usize()`
+            if p.qself.is_some() {
+                // Try to convert the qself base type into a readable segment like "D::OutputSize"
+                let q = p.qself.as_ref().unwrap();
+                let base_ir = convert_type(&q.ty)?;
+                let base_str = match base_ir {
+                    IrType::TypeParam(name) => name,
+                    IrType::Projection { base, assoc } => {
+                        let base_name = match *base {
+                            IrType::TypeParam(n) => n,
+                            IrType::Struct { kind, .. } => kind.to_string(),
+                            IrType::Param { path } => path.join("::"),
+                            _ => "Self".to_string(),
+                        };
+                        let assoc_name = match assoc {
+                            AssociatedType::Output => "Output".to_string(),
+                            AssociatedType::Key => "Key".to_string(),
+                            AssociatedType::BlockSize => "BlockSize".to_string(),
+                            AssociatedType::OutputSize => "OutputSize".to_string(),
+                            AssociatedType::TotalLoopCount => "TotalLoopCount".to_string(),
+                            AssociatedType::Other(s) => s.clone(),
+                        };
+                        format!("{}::{}", base_name, assoc_name)
+                    }
+                    IrType::Struct { kind, .. } => kind.to_string(),
+                    IrType::Param { path } => path.join("::"),
+                    _ => "Self".to_string(),
+                };
+                // The remaining path segments (after the qualified `<...>::`) are in p.path.segments
+                let last = p
+                    .path
+                    .segments
+                    .last()
+                    .ok_or_else(|| CompilerError::ParseError("Empty qualified path".to_string()))?;
+                let mut segments: Vec<String> = Vec::new();
+                segments.push(base_str);
+                segments.push(last.ident.to_string());
+                return Ok(IrExpr::Path {
+                    segments,
+                    type_args: Vec::new(),
+                });
+            }
+
             let segments: Vec<String> = p
                 .path
                 .segments

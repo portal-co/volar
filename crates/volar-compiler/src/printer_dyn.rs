@@ -1736,9 +1736,15 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                             .unwrap();
                             return;
                         }
-                        // GenericArray::to_usize() -> n
-
-                        write!(out, "{}", receiver.to_lowercase()).unwrap();
+                        // If the receiver is a plain type param (e.g., `N::to_usize()`),
+                        // emit the lowercase witness variable. If the receiver is an
+                        // associated type like `D::OutputSize::to_usize()` (contains
+                        // "::"), emit the typenum constant `::<... as typenum::Unsigned>::USIZE`.
+                        if receiver.contains("::") {
+                            write!(out, "<{} as typenum::Unsigned>::USIZE", receiver).unwrap();
+                        } else {
+                            write!(out, "{}", receiver.to_lowercase()).unwrap();
+                        }
                         return;
                     }
                 }
