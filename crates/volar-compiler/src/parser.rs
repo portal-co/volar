@@ -929,26 +929,10 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
             base: Box::new(convert_expr(&i.expr)?),
             index: Box::new(convert_expr(&i.index)?),
         }),
-        Expr::Range(r) => Ok(IrExpr::Binary {
-            op: if matches!(r.limits, syn::RangeLimits::Closed(_)) {
-                SpecBinOp::RangeInclusive
-            } else {
-                SpecBinOp::Range
-            },
-            left: Box::new(
-                r.start
-                    .as_ref()
-                    .map(|e| convert_expr(e))
-                    .transpose()?
-                    .unwrap_or(IrExpr::Lit(IrLit::Int(0))),
-            ),
-            right: Box::new(
-                r.end
-                    .as_ref()
-                    .map(|e| convert_expr(e))
-                    .transpose()?
-                    .unwrap_or(IrExpr::Lit(IrLit::Int(0))),
-            ),
+        Expr::Range(r) => Ok(IrExpr::Range {
+            start: r.start.as_ref().map(|e| convert_expr(e)).transpose()?.map(Box::new),
+            end: r.end.as_ref().map(|e| convert_expr(e)).transpose()?.map(Box::new),
+            inclusive: matches!(r.limits, syn::RangeLimits::Closed(_)),
         }),
         Expr::Paren(p) => convert_expr(&p.expr),
         Expr::Block(b) => Ok(IrExpr::Block(convert_block(&b.block)?)),
