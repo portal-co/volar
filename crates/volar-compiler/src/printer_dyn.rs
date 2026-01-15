@@ -1029,9 +1029,12 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
                 let bstr = bounds
                     .iter()
                     .map(|b| bname(b, &cur_params, struct_info))
+                    .filter(|s| !s.starts_with("compile_error!"))
                     .collect::<Vec<_>>()
                     .join(" + ");
-                where_parts.push(format!("{}: {}", lhs, bstr));
+                if !bstr.is_empty() {
+                    where_parts.push(format!("{}: {}", lhs, bstr));
+                }
             }
         }
     }
@@ -1398,9 +1401,12 @@ fn write_function_dyn(
                 let bstr = bounds
                     .iter()
                     .map(|b| bname(b, &cur_params, struct_info))
+                    .filter(|s| !s.starts_with("compile_error!"))
                     .collect::<Vec<_>>()
                     .join(" + ");
-                deferred_where_parts.push(format!("{}: {}", lhs, bstr));
+                if !bstr.is_empty() {
+                    deferred_where_parts.push(format!("{}: {}", lhs, bstr));
+                }
             }
         }
 
@@ -2060,6 +2066,12 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                     {
                         write!(out, "::<{}>", b_name).unwrap();
                     }
+                } else if name == "commit" {
+                    if let Some((d_name, _)) = ctx.cur_params.iter().find(|(n, (_, k))| *k == GenericKind::Crypto && n.starts_with('D'))
+                        .or_else(|| ctx.cur_params.iter().find(|(_, (_, k))| *k == GenericKind::Crypto)) 
+                    {
+                        write!(out, "::<{}>", d_name).unwrap();
+                    }
                 }
             }
 
@@ -2211,7 +2223,13 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                     write!(out, ", ").unwrap();
                 }
                 if method_name == "encrypt_block" {
-                    write!(out, "cipher::Block::<_>::from_mut_slice(").unwrap();
+                    let mut b_name = "_".to_string();
+                    if let Some((name, _)) = ctx.cur_params.iter().find(|(n, (_, k))| *k == GenericKind::Crypto && n.starts_with('B'))
+                        .or_else(|| ctx.cur_params.iter().find(|(_, (_, k))| *k == GenericKind::Crypto))
+                    {
+                        b_name = name.clone();
+                    }
+                    write!(out, "cipher::Block::<{}>::from_mut_slice(", b_name).unwrap();
                     write_expr_dyn(out, arg, ctx);
                     write!(out, ")").unwrap();
                 } else if (method_name == "remap" || method_name == "generate") && i == 0 {
@@ -2542,6 +2560,28 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             write!(out, ")").unwrap();
         }
 
+        IrExpr::Repeat { elem, len } => {
+            // If len is a literal integer, use fixed array syntax
+            let is_const = match len.as_ref() {
+                IrExpr::Lit(IrLit::Int(_)) => true,
+                _ => false,
+            };
+
+            if is_const {
+                write!(out, "[").unwrap();
+                write_expr_dyn(out, elem, ctx);
+                write!(out, "; ").unwrap();
+                write_expr_dyn(out, len, ctx);
+                write!(out, "]").unwrap();
+            } else {
+                write!(out, "vec![").unwrap();
+                write_expr_dyn(out, elem, ctx);
+                write!(out, "; ").unwrap();
+                write_expr_dyn(out, len, ctx);
+                write!(out, "]").unwrap();
+            }
+        }
+
         IrExpr::Array(elems) => {
             write!(out, "vec![").unwrap();
             for (i, e) in elems.iter().enumerate() {
@@ -2571,6 +2611,7 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             }
 
             // Add length witnesses if needed
+            let mut witness_count = 0;
             if let Some(info) = ctx.struct_info.get(&kind.to_string()) {
                 let mut effective_type_args = type_args.clone();
                 if effective_type_args.is_empty() {
@@ -2592,7 +2633,7 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                     .filter(|(_, _, pk)| *pk != IrGenericParamKind::Lifetime)
                     .collect();
 
-                let mut witness_count = 0;
+                
                 for (idx, (gen_name, gkind, _)) in non_lifetime_generics.iter().enumerate() {
                     if *gkind == GenericKind::Length {
                         if !fields.is_empty() || witness_count > 0 {
@@ -2610,6 +2651,23 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                         }
                         witness_count += 1;
                     }
+                }
+            }
+
+            // Add PhantomData if needed
+            if let Some(info) = ctx.struct_info.get(&kind.to_string()) {
+                let crypto_params: Vec<_> = info
+                    .orig_generics
+                    .iter()
+                    .filter(|(_, kind, pk)| {
+                        *kind == GenericKind::Crypto && *pk != IrGenericParamKind::Lifetime
+                    })
+                    .collect();
+                if !crypto_params.is_empty() {
+                    if !fields.is_empty() || witness_count > 0 {
+                        write!(out, ", ").unwrap();
+                    }
+                    write!(out, "_phantom: core::marker::PhantomData").unwrap();
                 }
             }
 
@@ -2660,9 +2718,39 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             }
         }
 
-        e => {
-            let msg = format!("{e:?}").replace('"', "'");
-            write!(out, "compile_error!(\"Unsupported expression: {}\")", msg).unwrap();
+        IrExpr::Macro { name, tokens } => {
+            if name == "unreachable" {
+                write!(out, "unreachable!()").unwrap();
+            } else if name == "get_coeff" {
+                // Tokens: "& self . v , & self . u , i"
+                if tokens.contains("self . v") && tokens.contains("self . u") {
+                    let idx = tokens.rsplit(',').next().unwrap().trim();
+                    write!(
+                        out,
+                        "(if {} == 0 {{ &self.v }} else {{ &self.u[{} - 1] }})",
+                        idx, idx
+                    )
+                    .unwrap();
+                } else if tokens.contains("other . v") && tokens.contains("other . u") {
+                    let idx = tokens.rsplit(',').next().unwrap().trim();
+                    write!(
+                        out,
+                        "(if {} == 0 {{ &other.v }} else {{ &other.u[{} - 1] }})",
+                        idx, idx
+                    )
+                    .unwrap();
+                } else {
+                    write!(
+                        out,
+                        "compile_error!(\"Unsupported get_coeff tokens: {}\")",
+                        tokens
+                    )
+                    .unwrap();
+                }
+            } else {
+                let msg = format!("{name:?}").replace('"', "'");
+                write!(out, "compile_error!(\"Unsupported macro: {}\")", msg).unwrap();
+            }
         }
     }
 }

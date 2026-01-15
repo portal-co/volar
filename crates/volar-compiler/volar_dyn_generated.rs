@@ -95,11 +95,11 @@ impl<T> DeltaDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 90: T
     }
     pub fn rotate_left(&self, mut n: usize) -> Self where T: Clone {
         let n = self.n;
-        self.remap(|a: usize| a.wrapping_sub(n))
+        self.remap(n, |a: usize| a.wrapping_sub(n))
     }
     pub fn rotate_right(&self, mut n: usize) -> Self where T: Clone {
         let n = self.n;
-        self.remap(|a: usize| a.wrapping_add(n))
+        self.remap(n, |a: usize| a.wrapping_add(n))
     }
     pub fn r#static<U: Mul<T, Output = O> + Clone, O>(&self, mut val: Vec<U>) -> QDyn<O> where T: Clone// UNCONSTRAINED GENERICS at generated.rs line 105: O
  {
@@ -117,11 +117,11 @@ impl<T> QDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 112: T
     }
     pub fn rotate_left(&self, mut n: usize) -> Self where T: Clone {
         let n = self.n;
-        self.remap(|a: usize| a.wrapping_sub(n))
+        self.remap(n, |a: usize| a.wrapping_sub(n))
     }
     pub fn rotate_right(&self, mut n: usize) -> Self where T: Clone {
         let n = self.n;
-        self.remap(|a: usize| a.wrapping_add(n))
+        self.remap(n, |a: usize| a.wrapping_add(n))
     }
 }
 
@@ -253,8 +253,8 @@ impl<T: Add<Output = T> + Mul<Output = T> + Default + Clone + Add<Output = T> + 
         for i in 0..=k {
     for j in 0..=k2 {
     let k = (i + j);
-    let a_coeff = compile_error!("Unsupported expression: Macro { name: 'get_coeff', tokens: '& self . v , & self . u , i' }");
-    let b_coeff = compile_error!("Unsupported expression: Macro { name: 'get_coeff', tokens: '& other . v , & other . u , j' }");
+    let a_coeff = (if i == 0 { &self.v } else { &self.u[i - 1] });
+    let b_coeff = (if j == 0 { &other.v } else { &other.u[j - 1] });
     if (k == 0) {
     for lane in 0..n {
     res_v[lane] = (res_v[lane].clone() + (a_coeff[lane].clone() * b_coeff[lane].clone()));
@@ -573,7 +573,7 @@ impl DeltaDyn<BitsInBytes64> {
 impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 574: T
  {
     pub fn constant(n: usize, mut v: Vec<T>) -> Self {
-        VopeDyn { u: (0..0).map(|_| compile_error!("Unsupported expression: Macro { name: 'unreachable', tokens: '' }")).collect::<Vec<_>>(), v: v, n: n, k: 1 }
+        VopeDyn { u: (0..0).map(|_| unreachable!()).collect::<Vec<_>>(), v: v, n: n, k: 1 }
     }
 }
 
@@ -633,12 +633,12 @@ impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 624: T
     pub fn rotate_left(&self, mut n: usize) -> Self where T: Clone {
         let n = self.n;
         let k = self.k;
-        self.remap(|a: usize| a.wrapping_sub(n))
+        self.remap(n, |a: usize| a.wrapping_sub(n))
     }
     pub fn rotate_right(&self, mut n: usize) -> Self where T: Clone {
         let n = self.n;
         let k = self.k;
-        self.remap(|a: usize| a.wrapping_add(n))
+        self.remap(n, |a: usize| a.wrapping_add(n))
     }
     pub fn remap<F: FnMut(usize) -> usize>(&self, m: usize, mut f: F) -> VopeDyn<T> where T: Clone {
         let n = self.n;
@@ -669,14 +669,14 @@ impl VopeDyn<Bit> {
 }
 
 impl<B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
-    pub fn open<R: AsRef<[u8]>>(&self, t: usize, u: usize, mut bad: Vec<u64>, mut rand: &R) -> ABOOpeningDyn<B, D> where <B as cipher::BlockSizeUser>::BlockSize: compile_error!("External trait bounds not supported in dyn code: Max") {
+    pub fn open<R: AsRef<[u8]>>(&self, t: usize, u: usize, mut bad: Vec<u64>, mut rand: &R) -> ABOOpeningDyn<B, D> {
         let k = self.k;
         ABOOpeningDyn { bad: bad.clone(), openings: (0..t).map(|i| {
     let bad = bad.clone();
     (0..u).map(|j| {
     let i2 = (i | ((j as usize) << ilog2(t)));
     if bad.contains(&(i2 as u64)) {
-    let h = commit(&self.per_byte[i2], rand);
+    let h = commit::<D>(&self.per_byte[i2], rand);
     (0..self::output).map(|j| h.as_ref().get(j).cloned().unwrap_or_default()).collect::<Vec<_>>()
 } else {
     (0..self::output).map(|j| {
@@ -684,7 +684,7 @@ impl<B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
 }).collect::<Vec<_>>()
 }
 }).collect::<Vec<_>>()
-}).collect::<Vec<_>>(), t: t, u: u }
+}).collect::<Vec<_>>(), t: t, u: u, _phantom: core::marker::PhantomData }
     }
 }
 
@@ -699,7 +699,7 @@ impl<B: ByteBlockEncrypt, D: Digest> ABOOpeningDyn<B, D> {
     if self.bad.contains(&(i2 as u64)) {
     h.update(&self.openings[i][b][(0 .. <D::OutputSize as typenum::Unsigned>::USIZE)]);
 } else {
-    h.update(&commit(&&self.openings[i][b][(0 .. <B::BlockSize as typenum::Unsigned>::USIZE)], rand));
+    h.update(&commit::<D>(&&self.openings[i][b][(0 .. <B::BlockSize as typenum::Unsigned>::USIZE)], rand));
 }
 }
 };
@@ -793,8 +793,8 @@ pub fn create_vole_from_material_expanded<B: ByteBlockEncrypt, X: AsRef<[u8]>, Y
 pub fn double<B: ByteBlockEncrypt>(mut a: Vec<u8>) -> Vec<Vec<u8>> {
     return (0..2).map(|i| {
     let mut out = a.clone();
-    let mut b = B::from(compile_error!("Unsupported expression: Repeat { elem: Cast { expr: Var('i'), ty: Primitive(U8) }, len: Lit(Int(32)) }"));
-    b.encrypt_block(cipher::Block::<_>::from_mut_slice(&mut out));
+    let mut b = B::from([(i as u8); 32]);
+    b.encrypt_block(cipher::Block::<B>::from_mut_slice(&mut out));
     out
 }).collect::<Vec<_>>();
 }
