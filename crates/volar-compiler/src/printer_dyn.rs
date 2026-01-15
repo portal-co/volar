@@ -2370,6 +2370,19 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
 
             // Add length witnesses if needed
             if let Some(info) = ctx.struct_info.get(&kind.to_string()) {
+                let mut effective_type_args = type_args.clone();
+                if effective_type_args.is_empty() {
+                    if let Some(IrType::Struct {
+                        kind: ret_kind,
+                        type_args: ret_args,
+                    }) = ctx.return_type
+                    {
+                        if ret_kind.to_string() == kind.to_string() {
+                            effective_type_args = ret_args.clone();
+                        }
+                    }
+                }
+
                 // Map witnesses to type_args
                 let non_lifetime_generics: Vec<_> = info
                     .orig_generics
@@ -2385,7 +2398,7 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                         }
                         let wname = gen_name.to_lowercase();
                         write!(out, "{}: ", wname).unwrap();
-                        if let Some(arg) = type_args.get(idx) {
+                        if let Some(arg) = effective_type_args.get(idx) {
                             write!(out, "{}", type_to_runtime_usize(arg, ctx)).unwrap();
                         } else {
                             // Fallback to local variable with same name if type arg missing

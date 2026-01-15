@@ -222,13 +222,7 @@ fn convert_impl(i: &syn::ItemImpl) -> Result<IrImpl> {
                                 Some(
                                     args.args
                                         .iter()
-                                        .map(|arg| {
-                                            if let syn::GenericArgument::Type(ty) = arg {
-                                                Ok(Some(convert_type(ty)?))
-                                            } else {
-                                                Ok(None)
-                                            }
-                                        })
+                                        .map(convert_generic_arg)
                                         .collect::<Result<Vec<Option<_>>>>(),
                                 )
                             } else {
@@ -579,6 +573,21 @@ fn convert_receiver(r: &syn::Receiver) -> IrReceiver {
         }
     } else {
         IrReceiver::Value
+    }
+}
+
+fn convert_generic_arg(arg: &syn::GenericArgument) -> Result<Option<IrType>> {
+    match arg {
+        syn::GenericArgument::Type(ty) => Ok(Some(convert_type(ty)?)),
+        syn::GenericArgument::Const(c) => {
+            if let syn::Expr::Lit(l) = c {
+                if let syn::Lit::Int(i) = &l.lit {
+                    return Ok(Some(IrType::TypeParam(i.base10_digits().to_string())));
+                }
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
     }
 }
 
