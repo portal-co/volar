@@ -2020,7 +2020,13 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                 if i > 0 {
                     write!(out, ", ").unwrap();
                 }
-                write_expr_dyn(out, arg, ctx);
+                if method_name == "encrypt_block" {
+                    write!(out, "cipher::Block::<_>::from_mut_slice(").unwrap();
+                    write_expr_dyn(out, arg, ctx);
+                    write!(out, ")").unwrap();
+                } else {
+                    write_expr_dyn(out, arg, ctx);
+                }
             }
             write!(out, ")").unwrap();
         }

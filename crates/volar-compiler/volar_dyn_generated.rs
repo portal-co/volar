@@ -169,7 +169,7 @@ impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 130: T
     pub fn apply_pool<O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, m: usize, x: usize, x2: usize, xs: usize, s: usize, mut voles: &PolyInputPoolDyn<VopeDyn<T>>) -> VopeDyn<O> where T: Into<O> + Clone {
         let n = self.n;
         let v = (0..m).map(|i| {
-    let mut sum = O::new();
+    let mut sum = O::default();
     for k in 0..n {
     let mut b: O = self.c1[k].clone().into();
     for v in &voles.indices {
@@ -182,7 +182,7 @@ impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 130: T
 }).collect::<Vec<_>>();
         let u = (0..xs).map(|l| {
     (0..m).map(|i| {
-    let mut sum = O::new();
+    let mut sum = O::default();
     for k in 0..n {
     for n in 0..x {
     let mut b: O = self.c1[k].clone().into();
@@ -207,7 +207,7 @@ impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 130: T
     pub fn apply<O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, m: usize, x: usize, x2: usize, xs: usize, s: usize, mut voles: Vec<Vec<VopeDyn<T>>>) -> VopeDyn<O> where T: Into<O> + Clone {
         let n = self.n;
         let v = (0..m).map(|i| {
-    let mut sum = O::new();
+    let mut sum = O::default();
     for k in 0..n {
     let mut b: O = self.c1[k].clone().into();
     for v in &voles {
@@ -220,7 +220,7 @@ impl<T> PolyDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 130: T
 }).collect::<Vec<_>>();
         let u = (0..xs).map(|l| {
     (0..m).map(|i| {
-    let mut sum = O::new();
+    let mut sum = O::default();
     for k in 0..n {
     for n in 0..x {
     let mut b: O = self.c1[k].clone().into();
@@ -627,7 +627,7 @@ impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 624: T
         let k = self.k;
         let Self { u: u, v: v, .. } = self;
         VopeDyn { u: (0..l).map(|l| {
-    (0..n).map(|i| u.get(l).map_or(T::new(), |a| a[i].clone())).collect::<Vec<_>>()
+    (0..n).map(|i| u.get(l).map_or(T::default(), |a| a[i].clone())).collect::<Vec<_>>()
 }).collect::<Vec<_>>(), v: v.clone(), n: n, k: k }
     }
     pub fn rotate_left(&self, mut n: usize) -> Self where T: Clone {
@@ -651,7 +651,7 @@ impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 624: T
 }
 
 impl VopeDyn<Bit> {
-    pub fn scale<T>(self, mut f: compile_error!("Unsupported type: Existential { bounds: [IrTraitBound { trait_kind: Custom('Fn'), type_args: [], assoc_bindings: [] }] }")) -> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 655: T
+    pub fn scale<T>(self, mut f: impl compile_error!("External trait bounds not supported in dyn code: Fn")) -> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 655: T
  {
         let n = self.n;
         let k = self.k;
@@ -692,7 +692,7 @@ impl<B: ByteBlockEncrypt, D: Digest> ABOOpeningDyn<B, D> {
     pub fn validate<R: AsRef<[u8]>>(&self, mut commit_: &Vec<u8>, mut rand: &R) -> bool {
         let t = self.t;
         let u = self.u;
-        let mut h = D::new();
+        let mut h = D::default();
         for i in 0..t {
     for b in 0..u {
     let i2 = (i | ((b as usize) << ilog2(t)));
@@ -794,7 +794,7 @@ pub fn double<B: ByteBlockEncrypt>(mut a: Vec<u8>) -> Vec<Vec<u8>> {
     return (0..n).map(|i| {
     let mut out = a.clone();
     let mut b = B::from(compile_error!("Unsupported expression: Repeat { elem: Cast { expr: Var('i'), ty: Primitive(U8) }, len: Lit(Int(32)) }"));
-    b.encrypt_block(&mut out);
+    b.encrypt_block(cipher::Block::<_>::from_mut_slice(&mut out));
     out
 }).collect::<Vec<_>>();
 }
