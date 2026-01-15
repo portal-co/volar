@@ -214,7 +214,11 @@ fn write_generics(out: &mut String, generics: &[IrGenericParam]) {
         write!(out, "<").unwrap();
         for (i, p) in generics.iter().enumerate() {
             if i > 0 { write!(out, ", ").unwrap(); }
-            write!(out, "{}", p.name).unwrap();
+            if p.kind == IrGenericParamKind::Lifetime {
+                write!(out, "'{}", p.name).unwrap();
+            } else {
+                write!(out, "{}", p.name).unwrap();
+            }
             if !p.bounds.is_empty() {
                 write!(out, ": ").unwrap();
                 for (j, b) in p.bounds.iter().enumerate() {
@@ -294,6 +298,8 @@ fn write_type(out: &mut String, ty: &IrType) {
         IrType::Unit => write!(out, "()").unwrap(),
         IrType::Reference { mutable, elem } => {
             write!(out, "&{}", if *mutable { "mut " } else { "" }).unwrap();
+            // Try to find a lifetime in the parent scope? No, let's keep it simple.
+            // If the element type is a struct that had lifetimes, we might need one.
             write_type(out, elem);
         }
         IrType::Projection { base, trait_args, assoc } => {

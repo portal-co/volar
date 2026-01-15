@@ -266,6 +266,19 @@ fn lower_struct_dyn(s: &IrStruct, ctx: &LoweringContext) -> IrStruct {
     let info = ctx.struct_info.get(&s.kind.to_string()).unwrap();
     let mut fields = Vec::new();
 
+    let mut generics = lower_generics_dyn(&s.generics, &[]);
+    if !info.lifetimes.is_empty() {
+        // Find existing lifetimes and re-add them
+        for lt in &info.lifetimes {
+            generics.insert(0, IrGenericParam {
+                name: lt.clone(),
+                kind: IrGenericParamKind::Lifetime,
+                bounds: Vec::new(),
+                default: None,
+            });
+        }
+    }
+
     // Add length witnesses as public fields
     for w in &info.length_witnesses {
         fields.push(IrField {
@@ -286,7 +299,7 @@ fn lower_struct_dyn(s: &IrStruct, ctx: &LoweringContext) -> IrStruct {
 
     IrStruct {
         kind: StructKind::from_str(&format!("{}Dyn", s.kind)),
-        generics: lower_generics_dyn(&s.generics, &[]),
+        generics,
         fields,
         is_tuple: s.is_tuple,
     }
@@ -365,7 +378,7 @@ fn lower_function_dyn(
         let kind = classify_generic(p, &[&fn_gen, impl_gen]);
         if kind == GenericKind::Length {
             let name = p.name.to_lowercase();
-            if !params.iter().any(|p| p.name == name) {
+            if !params.iter().any(|param: &IrParam| param.name == name) {
                 params.push(IrParam {
                     name,
                     ty: IrType::Primitive(PrimitiveType::Usize),
@@ -380,7 +393,7 @@ fn lower_function_dyn(
             let kind = classify_generic(p, &[impl_gen]);
             if kind == GenericKind::Length {
                 let name = p.name.to_lowercase();
-                if !params.iter().any(|p| p.name == name) {
+                if !params.iter().any(|param: &IrParam| param.name == name) {
                     params.push(IrParam {
                         name,
                         ty: IrType::Primitive(PrimitiveType::Usize),
@@ -435,7 +448,7 @@ fn lower_generics_dyn(generics: &[IrGenericParam], extra_ctx: &[IrGenericParam])
     generics.iter()
         .filter(|p| {
             let kind = classify_generic(p, &[generics, extra_ctx]);
-            p.kind != IrGenericParamKind::Lifetime && kind != GenericKind::Length
+            kind != GenericKind::Length
         })
         .map(|p| {
             let mut p = p.clone();

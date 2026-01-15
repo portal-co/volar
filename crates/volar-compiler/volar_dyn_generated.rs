@@ -59,7 +59,7 @@ pub struct PolyDyn<T> {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct PolyInputPoolDyn<T> {
+pub struct PolyInputPoolDyn<'a, 'a, T> {
     pub n: usize,
     pub x: usize,
     pub inputs: &[T],
