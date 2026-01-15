@@ -219,7 +219,7 @@ fn write_type(out: &mut String, ty: &IrType) {
             write!(out, "&{}", if *mutable { "mut " } else { "" }).unwrap();
             write_type(out, elem);
         }
-        IrType::Projection { base, assoc } => {
+        IrType::Projection { base, assoc, .. } => {
             write!(out, "<").unwrap();
             write_type(out, base);
             write!(out, " as _>::{:?}", assoc).unwrap();

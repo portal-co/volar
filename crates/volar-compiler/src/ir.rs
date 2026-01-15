@@ -398,12 +398,11 @@ impl fmt::Display for TraitKind {
             Self::AsRef(ty) => {
                 write!(f, "AsRef<{}>", ty)
             }
-            Self::Fn(input, ty) => {
-                match input {
-                    FnInput::BytesSlice => write!(f, "FnMut(FnInput<'_>) -> {}", ty),
-                    FnInput::Size => write!(f, "FnMut(FnInput<'_>) -> {}", ty),
-                }
-            }
+            Self::Fn(input, ty) => match input {
+                FnInput::BytesSlice => write!(f, "FnMut(&[u8]) -> {}", ty),
+                FnInput::Size => write!(f, "FnMut(usize) -> {}", ty),
+                FnInput::Bool => write!(f, "FnMut(bool) -> {}", ty),
+            },
         }
     }
 }
@@ -413,6 +412,7 @@ impl fmt::Display for TraitKind {
 pub enum FnInput {
     BytesSlice,
     Size,
+    Bool,
 }
 
 /// VOLE-specific method names
@@ -698,6 +698,7 @@ pub enum IrType {
     },
     Projection {
         base: Box<IrType>,
+        trait_args: Vec<IrType>,
         assoc: AssociatedType,
     },
     /// Existential type (impl Trait)
@@ -759,7 +760,7 @@ impl fmt::Display for IrType {
             Self::Reference { mutable, elem } => {
                 write!(f, "&{}{}", if *mutable { "mut " } else { "" }, elem)
             }
-            Self::Projection { base, assoc } => {
+            Self::Projection { base, assoc, .. } => {
                 write!(f, "<{} as _>::{:?}", base, assoc)
             }
             Self::Existential { bounds } => {

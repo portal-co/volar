@@ -691,6 +691,7 @@ fn bname(
                 match i {
                     FnInput::BytesSlice => "&[u8]",
                     FnInput::Size => "usize",
+                    FnInput::Bool => "bool",
                 },
                 type_to_string(&**t, cur_params, struct_info)
             );
@@ -816,7 +817,7 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
             IrType::Struct { type_args, .. } => type_args
                 .iter()
                 .any(|ta| type_refers_to_length_in_cur(ta, cur_params)),
-            IrType::Projection { base, assoc: _ } => type_refers_to_length_in_cur(base, cur_params),
+            IrType::Projection { base, .. } => type_refers_to_length_in_cur(base, cur_params),
             IrType::Param { path } => path
                 .first()
                 .map(|s| {
@@ -846,7 +847,7 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
             IrType::Struct { type_args, .. } => type_args
                 .iter()
                 .any(|ta| type_refers_to_other(ta, cur_params, self_name)),
-            IrType::Projection { base, assoc: _ } => {
+            IrType::Projection { base, .. } => {
                 type_refers_to_other(base, cur_params, self_name)
             }
             IrType::Param { path } => path
@@ -1170,6 +1171,18 @@ fn write_function_dyn(
         }
     }
 
+    // If this is a static method (no receiver), we also need impl-level length parameters as arguments
+    if f.receiver.is_none() {
+        for p in impl_gen_slice {
+            let k = classify_generic(p, &[impl_gen_slice]);
+            if k == GenericKind::Length {
+                if !length_params.contains(&p.name) {
+                    length_params.push(p.name.clone());
+                }
+            }
+        }
+    }
+
     // Trait impl methods are not `pub` in impl blocks.
     if trait_ref.is_some() {
         write!(out, "{}fn {}", indent, f.name).unwrap();
@@ -1311,7 +1324,7 @@ fn write_function_dyn(
                         })
                     }
                 }
-                IrType::Projection { base, assoc: _ } => {
+                IrType::Projection { base, .. } => {
                     type_refers_to_length_in_cur_func(base, cur_params, struct_info, self_struct)
                 }
                 IrType::Param { path } => path
@@ -1668,7 +1681,11 @@ fn write_type_dyn(out: &mut String, ty: &IrType, ctx: &TypeContext) -> bool {
             return write_type_dyn(out, elem, ctx);
         }
 
-        IrType::Projection { base, assoc } => {
+        IrType::Projection {
+            base,
+            trait_args,
+            assoc,
+        } => {
             // For associated types like <T as Add>::Output, emit the full qualified path
             // In dynamic code, we keep the same structure
             write!(out, "<").unwrap();
@@ -1690,7 +1707,18 @@ fn write_type_dyn(out: &mut String, ty: &IrType, ctx: &TypeContext) -> bool {
                 AssociatedType::TotalLoopCount => "TotalLoopCount",
                 AssociatedType::Other(name) => name,
             };
-            write!(out, " as {}>::{}", trait_name, assoc_name).unwrap();
+            write!(out, " as {}", trait_name).unwrap();
+            if !trait_args.is_empty() {
+                write!(out, "<").unwrap();
+                for (i, arg) in trait_args.iter().enumerate() {
+                    if i > 0 {
+                        write!(out, ", ").unwrap();
+                    }
+                    write_type_dyn(out, arg, ctx);
+                }
+                write!(out, ">").unwrap();
+            }
+            write!(out, ">::{}", assoc_name).unwrap();
         }
 
         IrType::Existential { bounds } => {
@@ -1758,15 +1786,29 @@ fn type_to_runtime_usize(ty: &IrType, ctx: &ExprContext) -> String {
                 full_path.to_lowercase()
             }
         }
-        IrType::Projection { .. } => {
-            let mut s = String::new();
-            let type_ctx = TypeContext {
-                cur_params: ctx.cur_params,
-                struct_info: ctx.struct_info,
-                lifetime: None,
-            };
-            write_type_dyn(&mut s, ty, &type_ctx);
-            format!("<{} as typenum::Unsigned>::USIZE", s)
+        IrType::Projection {
+            base,
+            trait_args,
+            assoc,
+        } => {
+            if matches!(assoc, AssociatedType::Output) {
+                let base_val = type_to_runtime_usize(base, ctx);
+                if trait_args.is_empty() {
+                    return base_val;
+                }
+                let arg_val = type_to_runtime_usize(&trait_args[0], ctx);
+                // Heuristic: most math projections in volar-spec are Add
+                format!("({} + {})", base_val, arg_val)
+            } else {
+                let mut s = String::new();
+                let type_ctx = TypeContext {
+                    cur_params: ctx.cur_params,
+                    struct_info: ctx.struct_info,
+                    lifetime: None,
+                };
+                write_type_dyn(&mut s, ty, &type_ctx);
+                format!("<{} as typenum::Unsigned>::USIZE", s)
+            }
         }
         _ => {
             let mut s = String::new();
@@ -1940,7 +1982,12 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                             .unwrap_or(false)
                         {
                             // Likely a type parameter like `O::new()`
-                            write!(out, "{}::default()", receiver).unwrap();
+                            let kind = ctx.cur_params.get(receiver).map(|(_, k)| k.clone()).unwrap_or(GenericKind::Type);
+                            if kind == GenericKind::Crypto {
+                                write!(out, "{}::new()", receiver).unwrap();
+                            } else {
+                                write!(out, "{}::default()", receiver).unwrap();
+                            }
                         } else {
                             write!(out, "{}", receiver).unwrap();
                             if let Some(a) = type_args.get(0) {
@@ -2147,6 +2194,18 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             }
 
             write!(out, ".{}(", method_name).unwrap();
+
+            if method_name == "remap" && args.len() == 1 {
+                // Supply missing length parameter
+                let mut m_str = "n".to_string();
+                if let Some(IrType::Struct { type_args, .. }) = ctx.return_type {
+                    if let Some(arg) = type_args.get(0) {
+                        m_str = type_to_runtime_usize(arg, ctx);
+                    }
+                }
+                write!(out, "{}, ", m_str).unwrap();
+            }
+
             for (i, arg) in args.iter().enumerate() {
                 if i > 0 {
                     write!(out, ", ").unwrap();
@@ -2155,6 +2214,25 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                     write!(out, "cipher::Block::<_>::from_mut_slice(").unwrap();
                     write_expr_dyn(out, arg, ctx);
                     write!(out, ")").unwrap();
+                } else if (method_name == "remap" || method_name == "generate") && i == 0 {
+                    // Annotate closure parameter as usize for remap/generate
+                    if let IrExpr::Closure { params, body, .. } = arg {
+                        write!(out, "|").unwrap();
+                        for (j, p) in params.iter().enumerate() {
+                            if j > 0 {
+                                write!(out, ", ").unwrap();
+                            }
+                            let pname = match &p.pattern {
+                                IrPattern::Ident { name, .. } => name.clone(),
+                                _ => "_".to_string(),
+                            };
+                            write!(out, "{}: usize", pname).unwrap();
+                        }
+                        write!(out, "| ").unwrap();
+                        write_expr_dyn(out, body, ctx);
+                    } else {
+                        write_expr_dyn(out, arg, ctx);
+                    }
                 } else {
                     write_expr_dyn(out, arg, ctx);
                 }
@@ -2205,7 +2283,7 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             body,
         } => {
             write_expr_dyn(out, array, ctx);
-            write!(out, ".clone().into_iter().map(|{}| ", elem_var).unwrap();
+            write!(out, ".into_iter().map(|{}| ", elem_var).unwrap();
             write_expr_dyn(out, body, ctx);
             write!(out, ").collect::<Vec<_>>()").unwrap();
         }
@@ -2218,11 +2296,11 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             body,
         } => {
             write_expr_dyn(out, left, ctx);
-            write!(out, ".clone().into_iter().zip(").unwrap();
+            write!(out, ".into_iter().zip(").unwrap();
             write_expr_dyn(out, right, ctx);
             write!(
                 out,
-                ".clone().into_iter()).map(|({}, {})| ",
+                ".into_iter()).map(|({}, {})| ",
                 left_var, right_var
             )
             .unwrap();

@@ -64,7 +64,7 @@ impl TypeContext {
                 kind: kind.clone(),
                 type_args: type_args.iter().map(|t| self.substitute(t, mapping)).collect(),
             },
-            IrType::Projection { base, assoc } => {
+            IrType::Projection { base, assoc, .. } => {
                 let sub_base = self.substitute(base, mapping);
                 let base_str = type_to_string(&sub_base);
 
@@ -73,6 +73,7 @@ impl TypeContext {
                 } else {
                     IrType::Projection {
                         base: Box::new(sub_base),
+                        trait_args: Vec::new(),
                         assoc: assoc.clone(),
                     }
                 }
@@ -122,7 +123,7 @@ pub fn type_to_string(ty: &IrType) -> String {
         IrType::Reference { mutable, elem } => {
             format!("&{}{}", if *mutable { "mut " } else { "" }, type_to_string(elem))
         }
-        IrType::Projection { base, assoc } => {
+        IrType::Projection { base, assoc, .. } => {
             format!("<{} as _>::{:?}", type_to_string(base), assoc)
         }
         _ => "_".to_string(),

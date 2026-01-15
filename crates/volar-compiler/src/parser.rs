@@ -481,6 +481,8 @@ fn convert_trait_bound(b: &syn::TraitBound) -> Result<IrTraitBound> {
                             if let Some(ident) = p.path.segments.last() {
                                 if ident.ident == "usize" {
                                     Some(crate::ir::FnInput::Size)
+                                } else if ident.ident == "bool" {
+                                    Some(crate::ir::FnInput::Bool)
                                 } else {
                                     None
                                 }
@@ -600,12 +602,25 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                 // Convert the base type (the T in <T as Trait>)
                 let base = convert_type(&qself.ty)?;
 
+                // The trait arguments are in the segment at qself.position
+                let mut trait_args = Vec::new();
+                if let Some(segment) = p.path.segments.get(qself.position) {
+                    if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                        for arg in &args.args {
+                            if let Some(ty) = convert_generic_arg(arg)? {
+                                trait_args.push(ty);
+                            }
+                        }
+                    }
+                }
+
                 // The associated type name is the last segment
                 if let Some(last) = p.path.segments.last() {
                     let assoc_name = last.ident.to_string();
                     let assoc = AssociatedType::from_str(&assoc_name);
                     return Ok(IrType::Projection {
                         base: Box::new(base),
+                        trait_args,
                         assoc,
                     });
                 }
@@ -631,6 +646,7 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                     let assoc = AssociatedType::from_str(&second_name);
                     return Ok(IrType::Projection {
                         base: Box::new(IrType::TypeParam(first_name)),
+                        trait_args: Vec::new(),
                         assoc,
                     });
                 }
@@ -751,7 +767,7 @@ fn convert_array_length_from_type(ty: &IrType) -> Result<ArrayLength> {
         IrType::Primitive(_) => Ok(ArrayLength::TypeNum(TypeNumConst::U8)), // Simplified
         IrType::TypeParam(name) => Ok(ArrayLength::TypeParam(name.clone())),
         IrType::Struct { kind, .. } => Ok(ArrayLength::TypeParam(kind.to_string())), // Common for GenericArray<T, BlockSize>
-        IrType::Projection { base, assoc } => {
+        IrType::Projection { base, assoc, .. } => {
             // Handle projections like Self::BlockSize, T::Output, <T as Trait>::Output
             // Convert to a type param string representation
             let base_str = match base.as_ref() {
@@ -799,7 +815,7 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                 let base_ir = convert_type(&q.ty)?;
                 let base_str = match base_ir {
                     IrType::TypeParam(name) => name,
-                    IrType::Projection { base, assoc } => {
+                    IrType::Projection { base, assoc, .. } => {
                         let base_name = match *base {
                             IrType::TypeParam(n) => n,
                             IrType::Struct { kind, .. } => kind.to_string(),
@@ -1085,7 +1101,7 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
                 let len = if params.len() >= 2 {
                     match &params[1] {
                         IrType::TypeParam(name) => ArrayLength::TypeParam(name.clone()),
-                        IrType::Projection { base, assoc } => {
+                        IrType::Projection { base, assoc, .. } => {
                             let base_str = match base.as_ref() {
                                 IrType::TypeParam(name) => name.clone(),
                                 _ => "Self".to_string(),
@@ -1121,7 +1137,7 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
                 let len = if params.len() >= 2 {
                     match &params[1] {
                         IrType::TypeParam(name) => ArrayLength::TypeParam(name.clone()),
-                        IrType::Projection { base, assoc } => {
+                        IrType::Projection { base, assoc, .. } => {
                             let base_str = match base.as_ref() {
                                 IrType::TypeParam(name) => name.clone(),
                                 _ => "Self".to_string(),
