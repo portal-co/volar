@@ -79,7 +79,7 @@ fn test_parse_volar_spec_combined() {
             println!("  Impls: {}", module.impls.len());
             println!("  Functions: {}", module.functions.len());
             println!("  Type aliases: {}", module.type_aliases.len());
-            println!("  Uses: {}", module.uses.len());
+            // println!("  Uses: {}", module.uses.len());
 
             // Analyze operators
             let op_analysis = OperatorAnalysis::from_module(&module);

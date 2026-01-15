@@ -524,7 +524,6 @@ pub struct IrModule {
     pub impls: Vec<IrImpl>,
     pub functions: Vec<IrFunction>,
     pub type_aliases: Vec<IrTypeAlias>,
-    pub uses: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -39,7 +39,7 @@ pub fn parse_sources(sources: &[(&str, &str)], module_name: &str) -> Result<IrMo
                 Item::Impl(i) => module.impls.push(convert_impl(i)?),
                 Item::Fn(f) => module.functions.push(convert_function(f)?),
                 Item::Type(t) => module.type_aliases.push(convert_type_alias(t)?),
-                Item::Use(_) => { /* TODO: track uses if needed */ }
+                Item::Use(u) => {}
                 _ => {}
             }
         }

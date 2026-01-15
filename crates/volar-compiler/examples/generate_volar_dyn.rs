@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 combined_ir.impls.extend(module.impls);
                 combined_ir.functions.extend(module.functions);
                 combined_ir.type_aliases.extend(module.type_aliases);
-                combined_ir.uses.extend(module.uses);
+                // combined_ir.uses.extend(module.uses);
             }
             Err(e) => {
                 eprintln!("Error parsing {:?}: {}", file, e);

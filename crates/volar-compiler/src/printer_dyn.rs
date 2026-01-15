@@ -74,6 +74,10 @@ fn is_math_op_bound(bound: &IrTraitBound) -> bool {
 
 /// Analyze a generic parameter to determine its kind
 fn classify_generic(param: &IrGenericParam, all_params: &[&[IrGenericParam]]) -> GenericKind {
+    if param.kind == IrGenericParamKind::Const {
+        return GenericKind::Length;
+    }
+
     // Helper: find a generic param definition by name across the provided generic sets.
     fn find_param<'a>(
         name: &str,
@@ -396,6 +400,10 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
     writeln!(out, "use typenum::Unsigned;").unwrap();
     writeln!(out, "use cipher::BlockEncrypt;").unwrap();
     writeln!(out, "use digest::Digest;").unwrap();
+    writeln!(out, "use volar_common::commit;").unwrap();
+    writeln!(out).unwrap();
+
+    
     writeln!(out).unwrap();
 
     // ByteBlockEncrypt trait (from volar-spec)
@@ -1797,8 +1805,8 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                             .map(|c| c.is_uppercase())
                             .unwrap_or(false)
                         {
-                            // Likely a type parameter like `O::new()` -> use Default::default()
-                            write!(out, "Default::default()").unwrap();
+                            // Likely a type parameter like `O::new()`
+                            write!(out, "{}::new()", receiver).unwrap();
                         } else {
                             write!(out, "{}", receiver).unwrap();
                             if let Some(a) = type_args.get(0) {
@@ -2203,6 +2211,16 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             }
 
             write!(out, "{}", segments.join("::")).unwrap();
+            if !type_args.is_empty() {
+                write!(out, "::<").unwrap();
+                for (i, arg) in type_args.iter().enumerate() {
+                    if i > 0 {
+                        write!(out, ", ").unwrap();
+                    }
+                    write_type_dyn(out, arg, ctx.cur_params, ctx.struct_info);
+                }
+                write!(out, ">").unwrap();
+            }
         }
 
         IrExpr::Closure { params, body, .. } => {
