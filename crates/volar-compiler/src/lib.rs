@@ -33,6 +33,7 @@ pub mod parser;
 pub mod lowering;
 pub mod printer;
 pub mod printer_dyn;
+pub mod lowering_dyn;
 
 pub use ir::*;
 #[cfg(feature = "parsing")]
