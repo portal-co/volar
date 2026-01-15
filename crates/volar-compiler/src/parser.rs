@@ -649,8 +649,8 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                 return Ok(IrType::Primitive(prim));
             }
 
-            if let Some(_) = TypeNumConst::from_str(&name) {
-                return Ok(IrType::Primitive(PrimitiveType::Usize));
+            if let Some(tn) = TypeNumConst::from_str(&name) {
+                return Ok(IrType::TypeParam(name));
             }
 
             let type_args = if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
@@ -1001,28 +1001,45 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
             left: Box::new(convert_expr(&a.left)?),
             right: Box::new(convert_expr(&a.right)?),
         }),
-        Expr::Struct(s) => Ok(IrExpr::StructExpr {
-            kind: StructKind::from_str(&s.path.segments.last().unwrap().ident.to_string()),
-            type_args: Vec::new(),
-            fields: s
-                .fields
-                .iter()
-                .map(|f| {
-                    Ok((
-                        match &f.member {
-                            syn::Member::Named(i) => i.to_string(),
-                            syn::Member::Unnamed(i) => i.index.to_string(),
-                        },
-                        convert_expr(&f.expr)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>>>()?,
-            rest: s
-                .rest
-                .as_ref()
-                .map(|e| Ok::<_, CompilerError>(Box::new(convert_expr(e)?)))
-                .transpose()?,
-        }),
+        Expr::Struct(s) => {
+            let last = s.path.segments.last().unwrap();
+            let type_args = if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
+                args.args
+                    .iter()
+                    .filter_map(|arg| {
+                        if let syn::GenericArgument::Type(ty) = arg {
+                            Some(convert_type(ty))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            } else {
+                Vec::new()
+            };
+            Ok(IrExpr::StructExpr {
+                kind: StructKind::from_str(&last.ident.to_string()),
+                type_args,
+                fields: s
+                    .fields
+                    .iter()
+                    .map(|f| {
+                        Ok((
+                            match &f.member {
+                                syn::Member::Named(i) => i.to_string(),
+                                syn::Member::Unnamed(i) => i.index.to_string(),
+                            },
+                            convert_expr(&f.expr)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+                rest: s
+                    .rest
+                    .as_ref()
+                    .map(|e| Ok::<_, CompilerError>(Box::new(convert_expr(e)?)))
+                    .transpose()?,
+            })
+        }
         Expr::Repeat(r) => Ok(IrExpr::Repeat {
             elem: Box::new(convert_expr(&r.expr)?),
             len: Box::new(convert_expr(&r.len)?),

@@ -400,7 +400,7 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
     writeln!(out, "use typenum::Unsigned;").unwrap();
     writeln!(out, "use cipher::BlockEncrypt;").unwrap();
     writeln!(out, "use digest::Digest;").unwrap();
-    writeln!(out, "use volar_common::commit;").unwrap();
+    writeln!(out, "use volar_common::hash_commitment::commit;").unwrap();
     writeln!(out).unwrap();
 
     
@@ -1464,6 +1464,7 @@ fn write_function_dyn(
         has_self: f.receiver.is_some(),
         self_struct,
         cur_params: &cur_params,
+        return_type: f.return_type.as_ref(),
     };
 
     for stmt in &f.body.stmts {
@@ -1653,6 +1654,10 @@ fn array_length_to_runtime(len: &ArrayLength, ctx: &ExprContext) -> String {
         ArrayLength::Const(n) => n.to_string(),
         ArrayLength::TypeNum(tn) => tn.to_usize().to_string(),
         ArrayLength::TypeParam(p) => {
+            // Handle TypeNum constants like "U1", "U8", etc.
+            if let Some(tn) = TypeNumConst::from_str(&p) {
+                return tn.to_usize().to_string();
+            }
             // Handle projections like "B::BlockSize" or "D::OutputSize"
             if let Some((type_name, assoc)) = p.split_once("::") {
                 if assoc == "BlockSize" || assoc == "OutputSize" {
@@ -1671,12 +1676,39 @@ fn array_length_to_runtime(len: &ArrayLength, ctx: &ExprContext) -> String {
     }
 }
 
+fn type_to_runtime_usize(ty: &IrType, ctx: &ExprContext) -> String {
+    match ty {
+        IrType::TypeParam(p) => {
+            if let Some(tn) = TypeNumConst::from_str(p) {
+                tn.to_usize().to_string()
+            } else {
+                p.to_lowercase()
+            }
+        }
+        IrType::Param { path } => {
+            let full_path = path.join("::");
+            if full_path.contains("BlockSize") || full_path.contains("OutputSize") {
+                format!("<{} as typenum::Unsigned>::USIZE", full_path)
+            } else {
+                full_path.to_lowercase()
+            }
+        }
+        _ => {
+            let mut s = String::new();
+            write_type_dyn(&mut s, ty, ctx.cur_params, ctx.struct_info);
+            format!("/* {} */", s); // Fallback for debugging
+            "0".to_string() // Dummy value, hopefully not hit often
+        }
+    }
+}
+
 /// Context for expression generation
 struct ExprContext<'a> {
     struct_info: &'a BTreeMap<String, StructInfo>,
     cur_params: &'a BTreeMap<String, (String, GenericKind)>,
     has_self: bool,
     self_struct: Option<&'a str>,
+    return_type: Option<&'a IrType>,
 }
 
 fn write_stmt_dyn(out: &mut String, stmt: &IrStmt, level: usize, ctx: &ExprContext) {
@@ -2319,7 +2351,12 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             write!(out, "]").unwrap();
         }
 
-        IrExpr::StructExpr { kind, fields, .. } => {
+        IrExpr::StructExpr {
+            kind,
+            fields,
+            type_args,
+            ..
+        } => {
             write!(out, "{}Dyn {{ ", kind).unwrap();
 
             // Write explicit fields
@@ -2333,11 +2370,29 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
 
             // Add length witnesses if needed
             if let Some(info) = ctx.struct_info.get(&kind.to_string()) {
-                for (i, w) in info.length_witnesses.iter().enumerate() {
-                    if !fields.is_empty() || i > 0 {
-                        write!(out, ", ").unwrap();
+                // Map witnesses to type_args
+                let non_lifetime_generics: Vec<_> = info
+                    .orig_generics
+                    .iter()
+                    .filter(|(_, _, pk)| *pk != IrGenericParamKind::Lifetime)
+                    .collect();
+
+                let mut witness_count = 0;
+                for (idx, (gen_name, gkind, _)) in non_lifetime_generics.iter().enumerate() {
+                    if *gkind == GenericKind::Length {
+                        if !fields.is_empty() || witness_count > 0 {
+                            write!(out, ", ").unwrap();
+                        }
+                        let wname = gen_name.to_lowercase();
+                        write!(out, "{}: ", wname).unwrap();
+                        if let Some(arg) = type_args.get(idx) {
+                            write!(out, "{}", type_to_runtime_usize(arg, ctx)).unwrap();
+                        } else {
+                            // Fallback to local variable with same name if type arg missing
+                            write!(out, "{}", wname).unwrap();
+                        }
+                        witness_count += 1;
                     }
-                    write!(out, "{}: {}", w, w).unwrap();
                 }
             }
 
