@@ -18,7 +18,10 @@ impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::BlockSiz
     {
         ABOOpening {
             bad: bad.clone(),
-            openings: GenericArray::<GenericArray<GenericArray<u8, <B::BlockSize as Max<D::OutputSize>>::Output>, U>, T>::generate(move |i| {
+            openings: GenericArray::<
+                GenericArray<GenericArray<u8, <B::BlockSize as Max<D::OutputSize>>::Output>, U>,
+                T,
+            >::generate(move |i| {
                 let bad = bad.clone();
                 GenericArray::<GenericArray<u8, <B::BlockSize as Max<D::OutputSize>>::Output>, U>::generate(move |j| {
                     let i2 = i | ((j as usize) << T::to_usize().ilog2());
@@ -70,7 +73,7 @@ impl<
     {
         core::array::from_fn(|i| {
             let s = &self.openings[i];
-            create_vole_from_material::<B>(s)
+            create_vole_from_material::<B, _>(s)
         })
     }
     pub fn to_vole_material_typenum<N: ArrayLength<Vope<B::BlockSize, u8>>>(
@@ -81,7 +84,7 @@ impl<
     {
         GenericArray::<Vope<B::BlockSize, u8>, N>::generate(|i| {
             let s = &self.openings[i];
-            create_vole_from_material::<B>(s)
+            create_vole_from_material::<B, _>(s)
         })
     }
     pub fn to_vole_material_expanded<const N: usize, X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(
@@ -93,7 +96,7 @@ impl<
     {
         core::array::from_fn(|i| {
             let s = &self.openings[i];
-            create_vole_from_material_expanded::<B, X>(s, &mut f)
+            create_vole_from_material_expanded::<B, X, _, _>(s, &mut f)
         })
     }
     pub fn to_vole_material_typenum_expanded<
@@ -109,7 +112,7 @@ impl<
     {
         GenericArray::<Vope<B::BlockSize, u8>, N>::generate(|i| {
             let s = &self.openings[i];
-            create_vole_from_material_expanded::<B, X>(s, &mut f)
+            create_vole_from_material_expanded::<B, X, _, _>(s, &mut f)
         })
     }
 }

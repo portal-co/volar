@@ -399,9 +399,21 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
     writeln!(out).unwrap();
 
     // ByteBlockEncrypt trait (from volar-spec)
-    writeln!(out, "/// Block cipher that can encrypt blocks and be created from a 32-byte key").unwrap();
-    writeln!(out, "pub trait ByteBlockEncrypt: BlockEncrypt + From<[u8; 32]> {{}}").unwrap();
-    writeln!(out, "impl<T: BlockEncrypt + From<[u8; 32]>> ByteBlockEncrypt for T {{}}").unwrap();
+    writeln!(
+        out,
+        "/// Block cipher that can encrypt blocks and be created from a 32-byte key"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "pub trait ByteBlockEncrypt: BlockEncrypt + From<[u8; 32]> {{}}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "impl<T: BlockEncrypt + From<[u8; 32]>> ByteBlockEncrypt for T {{}}"
+    )
+    .unwrap();
     writeln!(out).unwrap();
 
     // Re-export primitives
@@ -435,7 +447,16 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
 
     // Generate free functions
     for f in &module.functions {
-        write_function_dyn(&mut out, f, 0, None, &BTreeMap::new(), &struct_info, None, None);
+        write_function_dyn(
+            &mut out,
+            f,
+            0,
+            None,
+            &BTreeMap::new(),
+            &struct_info,
+            None,
+            None,
+        );
         writeln!(out).unwrap();
     }
 
@@ -544,15 +565,25 @@ fn write_struct_dyn(out: &mut String, s: &IrStruct, struct_info: &BTreeMap<Strin
 
         // Add PhantomData for crypto type parameters that might not be used in fields
         // to avoid "type parameter is never used" errors
-        let crypto_params: Vec<_> = info.orig_generics.iter()
-            .filter(|(_, kind, pk)| *kind == GenericKind::Crypto && *pk != IrGenericParamKind::Lifetime)
+        let crypto_params: Vec<_> = info
+            .orig_generics
+            .iter()
+            .filter(|(_, kind, pk)| {
+                *kind == GenericKind::Crypto && *pk != IrGenericParamKind::Lifetime
+            })
             .collect();
         if !crypto_params.is_empty() {
-            let phantoms = crypto_params.iter()
+            let phantoms = crypto_params
+                .iter()
                 .map(|(name, _, _)| name.clone())
                 .collect::<Vec<_>>()
                 .join(", ");
-            writeln!(out, "    _phantom: core::marker::PhantomData<({})>,", phantoms).unwrap();
+            writeln!(
+                out,
+                "    _phantom: core::marker::PhantomData<({})>,",
+                phantoms
+            )
+            .unwrap();
         }
 
         writeln!(out, "}}").unwrap();
@@ -1052,7 +1083,7 @@ fn write_function_dyn(
     // Build the list of all params for classification: function generics + impl generics
     let empty_generics: Vec<IrGenericParam> = Vec::new();
     let impl_gen_slice = impl_generics.unwrap_or(&empty_generics);
-    
+
     // First pass: augment function generics with their where-clause bounds
     fn augment_fn_generics(
         generics: &[IrGenericParam],
@@ -1072,16 +1103,16 @@ fn write_function_dyn(
         }
         result
     }
-    
+
     let augmented_fn_generics = augment_fn_generics(&f.generics, &f.where_clause);
-    
+
     // First pass: add ALL function generics to cur_params so bounds can reference each other
     // Use both impl generics and function generics for classification
     for p in &augmented_fn_generics {
         let k = classify_generic(p, &[&augmented_fn_generics, impl_gen_slice]);
         cur_params.insert(p.name.clone(), (format!(""), k.clone()));
     }
-    
+
     // Second pass: now format the type params with all generics visible
     for p in &augmented_fn_generics {
         let k = classify_generic(p, &[&augmented_fn_generics, impl_gen_slice]);
@@ -1197,28 +1228,38 @@ fn write_function_dyn(
                             // If the original generic at this index is a length,
                             // then the type argument refers to a length when the
                             // argument itself refers to a length.
-                                    if let Some((_, gkind, _)) = info.orig_generics.get(idx) {
-                                        if *gkind == GenericKind::Length {
-                                            if type_refers_to_length_in_cur_func(
-                                                ta,
-                                                cur_params,
-                                                struct_info,
-                                                self_struct,
-                                            ) {
-                                                return true;
-                                            }
+                            if let Some((_, gkind, _)) = info.orig_generics.get(idx) {
+                                if *gkind == GenericKind::Length {
+                                    if type_refers_to_length_in_cur_func(
+                                        ta,
+                                        cur_params,
+                                        struct_info,
+                                        self_struct,
+                                    ) {
+                                        return true;
+                                    }
                                     // continue checking other args
                                     continue;
                                 }
                             }
-                            if type_refers_to_length_in_cur_func(ta, cur_params, struct_info, self_struct) {
+                            if type_refers_to_length_in_cur_func(
+                                ta,
+                                cur_params,
+                                struct_info,
+                                self_struct,
+                            ) {
                                 return true;
                             }
                         }
                         false
                     } else {
                         type_args.iter().any(|ta| {
-                            type_refers_to_length_in_cur_func(ta, cur_params, struct_info, self_struct)
+                            type_refers_to_length_in_cur_func(
+                                ta,
+                                cur_params,
+                                struct_info,
+                                self_struct,
+                            )
                         })
                     }
                 }
@@ -1239,9 +1280,9 @@ fn write_function_dyn(
                 | IrType::Reference { elem, .. } => {
                     type_refers_to_length_in_cur_func(elem, cur_params, struct_info, self_struct)
                 }
-                IrType::Tuple(elems) => elems
-                    .iter()
-                    .any(|e| type_refers_to_length_in_cur_func(e, cur_params, struct_info, self_struct)),
+                IrType::Tuple(elems) => elems.iter().any(|e| {
+                    type_refers_to_length_in_cur_func(e, cur_params, struct_info, self_struct)
+                }),
                 _ => false,
             }
         }
@@ -1280,7 +1321,10 @@ fn write_function_dyn(
                     continue;
                 }
                 // Also skip if any bound uses length parameters
-                if bounds.iter().any(|b| bound_uses_length_func(b, &cur_params, struct_info, self_struct)) {
+                if bounds
+                    .iter()
+                    .any(|b| bound_uses_length_func(b, &cur_params, struct_info, self_struct))
+                {
                     continue;
                 }
                 let mut lhs = String::new();
@@ -1549,7 +1593,7 @@ fn write_type_dyn(
                 AssociatedType::Output => "core::ops::Add",
                 AssociatedType::Key => "cipher::KeyInit",
                 AssociatedType::BlockSize => "cipher::BlockSizeUser",
-                AssociatedType::OutputSize => "digest::OutputSizeUser", 
+                AssociatedType::OutputSize => "digest::OutputSizeUser",
                 AssociatedType::TotalLoopCount => "TotalLoopCount",
                 AssociatedType::Other(name) => name,
             };
@@ -1712,18 +1756,42 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             }
 
             // Handle GenericArray::default() -> Vec::new()
-            if let IrExpr::Path { segments, .. } = func.as_ref() {
+            if let IrExpr::Path {
+                segments,
+                type_args,
+                ..
+            } = func.as_ref()
+            {
                 if let [receiver, path] = &segments[..] {
                     if (path == "default" || path == "new") && args.is_empty() {
                         // For GenericArray::new/default -> Vec::new().
                         // For generic type parameters calling `new()`, prefer `Default::default()`.
                         if *receiver == "GenericArray" {
-                            write!(out, "Vec::new()").unwrap();
-                        } else if receiver.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                            write!(out, "Vec").unwrap();
+                            if let Some(a) = type_args.get(0) {
+                                write!(out, "::<").unwrap();
+                                write_type_dyn(out, a, ctx.cur_params, ctx.struct_info);
+                                write!(out, ">").unwrap();
+                            } else {
+                                write!(out, "<compile_error!(\"type not found a\")>").unwrap();
+                            }
+                            write!(out, "::new()").unwrap();
+                        } else if receiver
+                            .chars()
+                            .next()
+                            .map(|c| c.is_uppercase())
+                            .unwrap_or(false)
+                        {
                             // Likely a type parameter like `O::new()` -> use Default::default()
                             write!(out, "Default::default()").unwrap();
                         } else {
-                            write!(out, "{}::new()", receiver).unwrap();
+                            write!(out, "{}", receiver).unwrap();
+                            if let Some(a) = type_args.get(0) {
+                                write!(out, "::<").unwrap();
+                                write_type_dyn(out, a, ctx.cur_params, ctx.struct_info);
+                                write!(out, ">").unwrap();
+                            }
+                            write!(out, "::new()").unwrap();
                         }
                         return;
                     }
@@ -1751,12 +1819,7 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                 }
                 // todo!("Handle other path calls: {segments:?}");
                 let msg = format!("{:?}", segments).replace('"', "'");
-                write!(
-                    out,
-                    "compile_error!(\"Unhandled path call: {}\")",
-                    msg
-                )
-                .unwrap();
+                write!(out, "compile_error!(\"Unhandled path call: {}\")", msg).unwrap();
                 return;
             } else {
                 write_expr_dyn(out, func, ctx);
@@ -1885,7 +1948,7 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             let len_str = array_length_to_runtime(len, ctx);
             write!(out, "(0..{}).map(|{}| ", len_str, index_var).unwrap();
             write_expr_dyn(out, body, ctx);
-            write!(out, ").collect()").unwrap();
+            write!(out, ").collect::<Vec<_>>()").unwrap();
         }
 
         IrExpr::ArrayMap {
@@ -1894,9 +1957,9 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             body,
         } => {
             write_expr_dyn(out, array, ctx);
-            write!(out, ".iter().map(|{}| ", elem_var).unwrap();
+            write!(out, ".clone().into_iter().map(|{}| ", elem_var).unwrap();
             write_expr_dyn(out, body, ctx);
-            write!(out, ").collect()").unwrap();
+            write!(out, ").collect::<Vec<_>>()").unwrap();
         }
 
         IrExpr::ArrayZip {
@@ -1907,11 +1970,16 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             body,
         } => {
             write_expr_dyn(out, left, ctx);
-            write!(out, ".iter().zip(").unwrap();
+            write!(out, ".clone().into_iter().zip(").unwrap();
             write_expr_dyn(out, right, ctx);
-            write!(out, ".iter()).map(|({}, {})| ", left_var, right_var).unwrap();
+            write!(
+                out,
+                ".clone().into_iter()).map(|({}, {})| ",
+                left_var, right_var
+            )
+            .unwrap();
             write_expr_dyn(out, body, ctx);
-            write!(out, ").collect()").unwrap();
+            write!(out, ").collect::<Vec<_>>()").unwrap();
         }
 
         IrExpr::ArrayFold {
@@ -2019,11 +2087,23 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             write_expr_dyn(out, right, ctx);
         }
 
-        IrExpr::Path { segments, .. } => {
+        IrExpr::Path {
+            segments,
+            type_args,
+            ..
+        } => {
             // Handle GenericArray paths
             if segments.len() >= 1 && segments[0] == "GenericArray" {
                 if segments.len() == 2 && segments[1] == "default" {
-                    write!(out, "Vec::new").unwrap();
+                    write!(out, "Vec").unwrap();
+                    if let Some(a) = type_args.get(0) {
+                        write!(out, "::<").unwrap();
+                        write_type_dyn(out, a, ctx.cur_params, ctx.struct_info);
+                        write!(out, ">").unwrap();
+                    } else {
+                        write!(out, "<compile_error!(\"type not found b\")>").unwrap();
+                    }
+                    write!(out, "::new").unwrap();
                     return;
                 } else if segments.len() == 2 && segments[1] == "generate" {
                     // Will be handled in Call
@@ -2157,7 +2237,11 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             write!(out, "}}").unwrap();
         }
 
-        IrExpr::Range { start, end, inclusive } => {
+        IrExpr::Range {
+            start,
+            end,
+            inclusive,
+        } => {
             // Handle range expressions: x..y, x..=y, ..y, x..
             if let Some(s) = start {
                 write_expr_dyn(out, s, ctx);

@@ -590,7 +590,7 @@ fn convert_type(ty: &Type) -> Result<IrType> {
             if let Some(qself) = &p.qself {
                 // Convert the base type (the T in <T as Trait>)
                 let base = convert_type(&qself.ty)?;
-                
+
                 // The associated type name is the last segment
                 if let Some(last) = p.path.segments.last() {
                     let assoc_name = last.ident.to_string();
@@ -601,7 +601,7 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                     });
                 }
             }
-            
+
             // Check for associated type path like T::Output
             // These have multiple segments where the first is a type param
             if p.path.segments.len() == 2 && p.qself.is_none() {
@@ -609,11 +609,15 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                 let second = &p.path.segments[1];
                 let first_name = first.ident.to_string();
                 let second_name = second.ident.to_string();
-                
+
                 // Check if first segment looks like a type parameter (single uppercase letter or PascalCase)
                 // and second segment is an associated type name
-                if first.arguments.is_empty() 
-                    && first_name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+                if first.arguments.is_empty()
+                    && first_name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_uppercase())
+                        .unwrap_or(false)
                 {
                     let assoc = AssociatedType::from_str(&second_name);
                     return Ok(IrType::Projection {
@@ -622,7 +626,7 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                     });
                 }
             }
-            
+
             let last = p
                 .path
                 .segments
@@ -759,7 +763,10 @@ fn convert_array_length_from_type(ty: &IrType) -> Result<ArrayLength> {
                 AssociatedType::TotalLoopCount => "TotalLoopCount",
                 AssociatedType::Other(name) => name,
             };
-            Ok(ArrayLength::TypeParam(format!("{}::{}", base_str, assoc_str)))
+            Ok(ArrayLength::TypeParam(format!(
+                "{}::{}",
+                base_str, assoc_str
+            )))
         }
         _ => Err(CompilerError::InvalidType(format!(
             "Invalid array length type: {:?}",
@@ -811,17 +818,38 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                     _ => "Self".to_string(),
                 };
                 // The remaining path segments (after the qualified `<...>::`) are in p.path.segments
-                let last = p
-                    .path
-                    .segments
-                    .last()
-                    .ok_or_else(|| CompilerError::ParseError("Empty qualified path".to_string()))?;
+                let last =
+                    p.path.segments.last().ok_or_else(|| {
+                        CompilerError::ParseError("Empty qualified path".to_string())
+                    })?;
                 let mut segments: Vec<String> = Vec::new();
                 segments.push(base_str);
                 segments.push(last.ident.to_string());
                 return Ok(IrExpr::Path {
                     segments,
-                    type_args: Vec::new(),
+                    type_args: p
+                        .path
+                        .segments
+                        .iter()
+                        .flat_map(|s| {
+                            if let PathArguments::AngleBracketed(args) = &s.arguments {
+                                args.args
+                                    .iter()
+                                    .filter_map(|arg| {
+                                        if let syn::GenericArgument::Type(ty) = arg {
+                                            Some(convert_type(ty))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect::<Result<Vec<_>>>()
+                                    .ok()
+                            } else {
+                                None
+                            }
+                        })
+                        .flatten()
+                        .collect(),
                 });
             }
 
@@ -836,7 +864,29 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
             } else {
                 Ok(IrExpr::Path {
                     segments,
-                    type_args: Vec::new(),
+                    type_args: p
+                        .path
+                        .segments
+                        .iter()
+                        .flat_map(|s| {
+                            if let PathArguments::AngleBracketed(args) = &s.arguments {
+                                args.args
+                                    .iter()
+                                    .filter_map(|arg| {
+                                        if let syn::GenericArgument::Type(ty) = arg {
+                                            Some(convert_type(ty))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect::<Result<Vec<_>>>()
+                                    .ok()
+                            } else {
+                                None
+                            }
+                        })
+                        .flatten()
+                        .collect(),
                 })
             }
         }
@@ -1086,7 +1136,7 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
                             };
                             let assoc_str = match assoc {
                                 AssociatedType::Output => "Output",
-                                AssociatedType::BlockSize => "BlockSize", 
+                                AssociatedType::BlockSize => "BlockSize",
                                 AssociatedType::OutputSize => "OutputSize",
                                 AssociatedType::Other(name) => name,
                                 _ => "Output",

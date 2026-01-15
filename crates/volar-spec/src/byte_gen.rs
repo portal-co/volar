@@ -45,14 +45,14 @@ pub trait ByteBlockEncrypt: BlockEncrypt + From<[u8; 32]> {
     }
 }
 impl<T: BlockEncrypt + From<[u8; 32]>> ByteBlockEncrypt for T {}
-pub fn create_vole_from_material<B: ByteBlockEncrypt<BlockSize: VoleArray<u8>>>(
-    s: &[impl Deref<Target = [u8]>],
+pub fn create_vole_from_material<B: ByteBlockEncrypt<BlockSize: VoleArray<u8>>, X: AsRef<[u8]>>(
+    s: &[X],
 ) -> Vope<B::BlockSize, u8> {
     let u: GenericArray<u8, B::BlockSize> =
         s.iter()
             .fold(GenericArray::<u8, B::BlockSize>::default(), |a, b| {
                 a.zip(
-                    GenericArray::<u8, B::BlockSize>::generate(|i| b[i]),
+                    GenericArray::<u8, B::BlockSize>::generate(|i| b.as_ref()[i]),
                     |a, b| a.bitxor(b),
                 )
             });
@@ -61,7 +61,7 @@ pub fn create_vole_from_material<B: ByteBlockEncrypt<BlockSize: VoleArray<u8>>>(
             .enumerate()
             .fold(GenericArray::<u8, B::BlockSize>::default(), |a, (i, b)| {
                 a.zip(
-                    GenericArray::<u8, B::BlockSize>::generate(|i| b[i]),
+                    GenericArray::<u8, B::BlockSize>::generate(|i| b.as_ref()[i]),
                     |a, b| a.bitxor(b).bitxor(i as u8),
                 )
             });
@@ -73,26 +73,30 @@ pub fn create_vole_from_material<B: ByteBlockEncrypt<BlockSize: VoleArray<u8>>>(
 pub fn create_vole_from_material_expanded<
     B: ByteBlockEncrypt<BlockSize: VoleArray<u8>>,
     X: AsRef<[u8]>,
+    Y: AsRef<[u8]>,
+    F: FnMut(&[u8]) -> X,
 >(
-    s: &[impl Deref<Target = [u8]>],
-    mut f: impl FnMut(&[u8]) -> X,
+    s: &[Y],
+    mut f: F
 ) -> Vope<B::BlockSize, u8> {
     let u: GenericArray<u8, B::BlockSize> = s
         .iter()
-        .map(|b| f(&b[..(<B::BlockSize as Unsigned>::to_usize())]))
+        .map(|b| f(&b.as_ref()[..(<B::BlockSize as Unsigned>::to_usize())]))
         .fold(GenericArray::<u8, B::BlockSize>::default(), |a, b| {
-            a.zip(GenericArray::<u8, B::BlockSize>::generate(|i| b.as_ref()[i]), |a, b| {
-                a.bitxor(b)
-            })
+            a.zip(
+                GenericArray::<u8, B::BlockSize>::generate(|i| b.as_ref()[i]),
+                |a, b| a.bitxor(b),
+            )
         });
     let v: GenericArray<u8, B::BlockSize> = s
         .iter()
-        .map(|b| f(&b[..(<B::BlockSize as Unsigned>::to_usize())]))
+        .map(|b| f(&b.as_ref()[..(<B::BlockSize as Unsigned>::to_usize())]))
         .enumerate()
         .fold(GenericArray::<u8, B::BlockSize>::default(), |a, (i, b)| {
-            a.zip(GenericArray::<u8, B::BlockSize>::generate(|i| b.as_ref()[i]), |a, b| {
-                a.bitxor(b).bitxor(i as u8)
-            })
+            a.zip(
+                GenericArray::<u8, B::BlockSize>::generate(|i| b.as_ref()[i]),
+                |a, b| a.bitxor(b).bitxor(i as u8),
+            )
         });
     Vope {
         u: GenericArray::<GenericArray<u8, B::BlockSize>, U1>::generate(|_| u.clone()),
@@ -122,7 +126,7 @@ pub mod verifier;
 pub fn double<B: ByteBlockEncrypt>(
     a: GenericArray<u8, B::BlockSize>,
 ) -> [GenericArray<u8, B::BlockSize>; 2] {
-    return core::array::from_fn::<GenericArray<u8, B::BlockSize>,2,_>(|i| {
+    return core::array::from_fn::<GenericArray<u8, B::BlockSize>, 2, _>(|i| {
         let mut out = a.clone();
         let mut b = B::from([(i as u8); 32]);
         b.encrypt_block(&mut out);
