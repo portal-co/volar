@@ -27,6 +27,7 @@ pub fn print_module(module: &IrModule) -> String {
     writeln!(out, "use alloc::vec::Vec;").unwrap();
     writeln!(out, "use alloc::vec;").unwrap();
     writeln!(out, "use core::ops::{{Add, Sub, Mul, Div, BitAnd, BitOr, BitXor, Shl, Shr}};").unwrap();
+    writeln!(out, "use core::marker::PhantomData;").unwrap();
     writeln!(out, "use typenum::Unsigned;").unwrap();
     writeln!(out, "use cipher::BlockEncrypt;").unwrap();
     writeln!(out, "use digest::Digest;").unwrap();
@@ -73,7 +74,7 @@ pub fn print_module(module: &IrModule) -> String {
 }
 
 fn write_struct(out: &mut String, s: &IrStruct, _level: usize) {
-    writeln!(out, "#[derive(Clone, Debug, Default)]").unwrap();
+    writeln!(out, "#[derive(Debug, Default)]").unwrap();
     write!(out, "pub struct {}", s.kind).unwrap();
     write_generics(out, &s.generics);
     
@@ -132,27 +133,21 @@ fn write_impl(out: &mut String, i: &IrImpl, _level: usize) {
     write!(out, "impl ").unwrap();
     write_generics(out, &i.generics);
     if let Some(t) = &i.trait_ {
-        write!(out, " {} for ", t.kind).unwrap();
+        write!(out, " {}", t.kind).unwrap();
+        if !t.type_args.is_empty() {
+            write!(out, "<").unwrap();
+            for (idx, arg) in t.type_args.iter().enumerate() {
+                if idx > 0 { write!(out, ", ").unwrap(); }
+                write_type(out, arg);
+            }
+            write!(out, ">").unwrap();
+        }
+        write!(out, " for ").unwrap();
     } else {
         write!(out, " ").unwrap();
     }
     write_type(out, &i.self_ty);
-    if !i.where_clause.is_empty() {
-        write!(out, " where ").unwrap();
-        for (idx, wp) in i.where_clause.iter().enumerate() {
-            if idx > 0 { write!(out, ", ").unwrap(); }
-            match wp {
-                IrWherePredicate::TypeBound { ty, bounds } => {
-                    write_type(out, ty);
-                    write!(out, ": ").unwrap();
-                    for (j, b) in bounds.iter().enumerate() {
-                        if j > 0 { write!(out, " + ").unwrap(); }
-                        write_trait_bound(out, b);
-                    }
-                }
-            }
-        }
-    }
+    write_where_clause(out, &i.where_clause);
     writeln!(out, " {{").unwrap();
     for item in &i.items {
         match item {
@@ -170,10 +165,12 @@ fn write_impl(out: &mut String, i: &IrImpl, _level: usize) {
 fn write_function(out: &mut String, f: &IrFunction, level: usize, is_trait_item: bool) {
     let indent = "    ".repeat(level);
     if !is_trait_item {
-        write!(out, "{}pub fn {}(", indent, f.name).unwrap();
+        write!(out, "{}pub fn {}", indent, f.name).unwrap();
     } else {
-        write!(out, "{}fn {}(", indent, f.name).unwrap();
+        write!(out, "{}fn {}", indent, f.name).unwrap();
     }
+    write_generics(out, &f.generics);
+    write!(out, "(").unwrap();
     if let Some(r) = f.receiver {
         write_receiver(out, r);
         if !f.params.is_empty() { write!(out, ", ").unwrap(); }
@@ -188,22 +185,7 @@ fn write_function(out: &mut String, f: &IrFunction, level: usize, is_trait_item:
         write!(out, " -> ").unwrap();
         write_type(out, ret);
     }
-    if !f.where_clause.is_empty() {
-        write!(out, " where ").unwrap();
-        for (idx, wp) in f.where_clause.iter().enumerate() {
-            if idx > 0 { write!(out, ", ").unwrap(); }
-            match wp {
-                IrWherePredicate::TypeBound { ty, bounds } => {
-                    write_type(out, ty);
-                    write!(out, ": ").unwrap();
-                    for (j, b) in bounds.iter().enumerate() {
-                        if j > 0 { write!(out, " + ").unwrap(); }
-                        write_trait_bound(out, b);
-                    }
-                }
-            }
-        }
-    }
+    write_where_clause(out, &f.where_clause);
     writeln!(out).unwrap();
     write_block(out, &f.body, level);
     writeln!(out).unwrap();
@@ -228,6 +210,25 @@ fn write_generics(out: &mut String, generics: &[IrGenericParam]) {
             }
         }
         write!(out, ">").unwrap();
+    }
+}
+
+fn write_where_clause(out: &mut String, where_clause: &[IrWherePredicate]) {
+    if !where_clause.is_empty() {
+        write!(out, " where ").unwrap();
+        for (idx, wp) in where_clause.iter().enumerate() {
+            if idx > 0 { write!(out, ", ").unwrap(); }
+            match wp {
+                IrWherePredicate::TypeBound { ty, bounds } => {
+                    write_type(out, ty);
+                    write!(out, ": ").unwrap();
+                    for (j, b) in bounds.iter().enumerate() {
+                        if j > 0 { write!(out, " + ").unwrap(); }
+                        write_trait_bound(out, b);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -298,14 +299,20 @@ fn write_type(out: &mut String, ty: &IrType) {
         IrType::Unit => write!(out, "()").unwrap(),
         IrType::Reference { mutable, elem } => {
             write!(out, "&{}", if *mutable { "mut " } else { "" }).unwrap();
-            // Try to find a lifetime in the parent scope? No, let's keep it simple.
-            // If the element type is a struct that had lifetimes, we might need one.
             write_type(out, elem);
         }
-        IrType::Projection { base, trait_args, assoc } => {
+        IrType::Projection { base, trait_path, trait_args, assoc } => {
+            // For simple Self::Output cases, just use Self::AssocType
+            if let IrType::TypeParam(p) = base.as_ref() {
+                if p == "Self" && trait_args.is_empty() {
+                    write!(out, "Self::{:?}", assoc).unwrap();
+                    return;
+                }
+            }
             write!(out, "<").unwrap();
             write_type(out, base);
-            write!(out, " as _").unwrap();
+            let trait_name = trait_path.as_deref().unwrap_or("_");
+            write!(out, " as {}", trait_name).unwrap();
             if !trait_args.is_empty() {
                 write!(out, "<").unwrap();
                 for (i, arg) in trait_args.iter().enumerate() {
@@ -384,7 +391,18 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
             write_expr(out, receiver);
             let name = match method {
                 MethodKind::Std(s) => s.clone(),
-                MethodKind::Crypto(c) => format!("{:?}", c).to_lowercase(),
+                MethodKind::Crypto(c) => {
+                    // Convert CamelCase to snake_case
+                    let debug_name = format!("{:?}", c);
+                    let mut snake = String::new();
+                    for (i, ch) in debug_name.chars().enumerate() {
+                        if ch.is_uppercase() && i > 0 {
+                            snake.push('_');
+                        }
+                        snake.push(ch.to_ascii_lowercase());
+                    }
+                    snake
+                }
                 MethodKind::Vole(v) => format!("{:?}", v).to_lowercase(),
                 MethodKind::Unknown(s) => s.clone(),
             };
@@ -599,7 +617,12 @@ fn bin_op_str(op: SpecBinOp) -> &'static str {
 
 fn write_pattern(out: &mut String, pat: &IrPattern) {
     match pat {
-        IrPattern::Ident { name, .. } => write!(out, "{}", name).unwrap(),
+        IrPattern::Ident { mutable, name, .. } => {
+            if *mutable {
+                write!(out, "mut ").unwrap();
+            }
+            write!(out, "{}", name).unwrap();
+        }
         IrPattern::Wild => write!(out, "_").unwrap(),
         IrPattern::Tuple(elems) => {
             write!(out, "(").unwrap();

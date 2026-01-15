@@ -704,6 +704,8 @@ pub enum IrType {
     },
     Projection {
         base: Box<IrType>,
+        /// The trait for the projection (e.g., "BlockEncrypt" for <B as BlockEncrypt>::BlockSize)
+        trait_path: Option<String>,
         trait_args: Vec<IrType>,
         assoc: AssociatedType,
     },
@@ -766,8 +768,9 @@ impl fmt::Display for IrType {
             Self::Reference { mutable, elem } => {
                 write!(f, "&{}{}", if *mutable { "mut " } else { "" }, elem)
             }
-            Self::Projection { base, assoc, .. } => {
-                write!(f, "<{} as _>::{:?}", base, assoc)
+            Self::Projection { base, assoc, trait_path, .. } => {
+                let trait_name = trait_path.as_deref().unwrap_or("_");
+                write!(f, "<{} as {}>::{:?}", base, trait_name, assoc)
             }
             Self::Existential { bounds } => {
                 write!(f, "impl ")?;

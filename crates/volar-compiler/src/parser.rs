@@ -618,8 +618,20 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                 if let Some(last) = p.path.segments.last() {
                     let assoc_name = last.ident.to_string();
                     let assoc = AssociatedType::from_str(&assoc_name);
+                    
+                    // Extract trait path - it's the segment at qself.position
+                    let trait_path = if qself.position < p.path.segments.len() {
+                        Some(p.path.segments[qself.position].ident.to_string())
+                    } else if p.path.segments.len() > 1 {
+                        // Fallback: use second-to-last segment
+                        Some(p.path.segments[p.path.segments.len() - 2].ident.to_string())
+                    } else {
+                        None
+                    };
+                    
                     return Ok(IrType::Projection {
                         base: Box::new(base),
+                        trait_path,
                         trait_args,
                         assoc,
                     });
@@ -646,6 +658,7 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                     let assoc = AssociatedType::from_str(&second_name);
                     return Ok(IrType::Projection {
                         base: Box::new(IrType::TypeParam(first_name)),
+                        trait_path: None,  // Simple T::Assoc doesn't have explicit trait
                         trait_args: Vec::new(),
                         assoc,
                     });

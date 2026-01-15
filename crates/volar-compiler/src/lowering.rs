@@ -64,7 +64,7 @@ impl TypeContext {
                 kind: kind.clone(),
                 type_args: type_args.iter().map(|t| self.substitute(t, mapping)).collect(),
             },
-            IrType::Projection { base, assoc, .. } => {
+            IrType::Projection { base, assoc, trait_path, .. } => {
                 let sub_base = self.substitute(base, mapping);
                 let base_str = type_to_string(&sub_base);
 
@@ -73,6 +73,7 @@ impl TypeContext {
                 } else {
                     IrType::Projection {
                         base: Box::new(sub_base),
+                        trait_path: trait_path.clone(),
                         trait_args: Vec::new(),
                         assoc: assoc.clone(),
                     }
