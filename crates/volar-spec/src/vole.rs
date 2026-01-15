@@ -42,7 +42,7 @@ impl<N: ArrayLength<T>, T> Delta<N, T> {
     {
         self.remap(|a| a.wrapping_add(n))
     }
-    pub fn r#static<U: Mul<T, Output = O>, O>(&self, val: GenericArray<U, N>) -> Q<N, O>
+    pub fn r#static<U: Mul<T, Output = O> + Clone, O>(&self, val: GenericArray<U, N>) -> Q<N, O>
     where
         T: Clone,
         N: ArrayLength<O> + ArrayLength<U>,
