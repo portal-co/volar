@@ -376,6 +376,70 @@ fn write_stmt(out: &mut String, stmt: &IrStmt, level: usize) {
     }
 }
 
+/// Write an expression as part of an iterator chain (without final .collect())
+fn write_expr_chainable(out: &mut String, expr: &IrExpr) {
+    match expr {
+        IrExpr::ArrayMap { array, elem_var, body } => {
+            write_expr_chainable(out, array);
+            write!(out, ".map(|{}| ", elem_var).unwrap();
+            write_expr(out, body);
+            write!(out, ")").unwrap();
+        }
+        IrExpr::ArrayZip { left, right, left_var, right_var, body } => {
+            write_expr_chainable(out, left);
+            write!(out, ".zip(").unwrap();
+            write_expr(out, right);
+            write!(out, ").map(|({}, {})| ", left_var, right_var).unwrap();
+            write_expr(out, body);
+            write!(out, ")").unwrap();
+        }
+        IrExpr::MethodCall { receiver, method, args, .. } => {
+            let name = match method {
+                MethodKind::Std(s) => s.clone(),
+                MethodKind::Crypto(c) => {
+                    let debug_name = format!("{:?}", c);
+                    let mut snake = String::new();
+                    for (i, ch) in debug_name.chars().enumerate() {
+                        if ch.is_uppercase() && i > 0 { snake.push('_'); }
+                        snake.push(ch.to_ascii_lowercase());
+                    }
+                    snake
+                }
+                MethodKind::Vole(v) => format!("{:?}", v).to_lowercase(),
+                MethodKind::Unknown(s) => s.clone(),
+            };
+            
+            // Iterator-sourcing methods: take collection, produce iterator
+            let is_iter_source = matches!(name.as_str(), "iter" | "into_iter" | "chars" | "bytes");
+            // Iterator-transforming methods: take iterator, produce iterator
+            let is_iter_transform = matches!(name.as_str(), "enumerate" | "filter" | "take" | "skip" | "map" | "flat_map" | "filter_map");
+            
+            if is_iter_source {
+                // Use normal expr for receiver (it's a collection)
+                write_expr(out, receiver);
+            } else if is_iter_transform {
+                // Chain from previous iterator
+                write_expr_chainable(out, receiver);
+            } else {
+                // Also chain for unknown methods in iterator context
+                write_expr_chainable(out, receiver);
+            }
+            
+            write!(out, ".{}(", name).unwrap();
+            for (i, arg) in args.iter().enumerate() {
+                if i > 0 { write!(out, ", ").unwrap(); }
+                write_expr(out, arg);
+            }
+            write!(out, ")").unwrap();
+        }
+        // For other expressions, use into_iter() to make them iterable
+        _ => {
+            write_expr(out, expr);
+            write!(out, ".into_iter()").unwrap();
+        }
+    }
+}
+
 fn write_expr(out: &mut String, expr: &IrExpr) {
     match expr {
         IrExpr::Lit(l) => write!(out, "{}", l).unwrap(),
@@ -388,7 +452,6 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
             write!(out, ")").unwrap();
         }
         IrExpr::MethodCall { receiver, method, args, .. } => {
-            write_expr(out, receiver);
             let name = match method {
                 MethodKind::Std(s) => s.clone(),
                 MethodKind::Crypto(c) => {
@@ -406,6 +469,15 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
                 MethodKind::Vole(v) => format!("{:?}", v).to_lowercase(),
                 MethodKind::Unknown(s) => s.clone(),
             };
+            
+            // For iterator-consuming methods like fold, enumerate, the receiver is an iterator chain
+            let is_iter_consumer = matches!(name.as_str(), "fold" | "enumerate" | "filter" | "take" | "skip" | "chain" | "flat_map" | "filter_map");
+            if is_iter_consumer {
+                write_expr_chainable(out, receiver);
+            } else {
+                write_expr(out, receiver);
+            }
+            
             write!(out, ".{}(", name).unwrap();
             for (i, arg) in args.iter().enumerate() {
                 if i > 0 { write!(out, ", ").unwrap(); }
@@ -457,22 +529,26 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
             write_block(out, body, 0);
         }
         IrExpr::ArrayMap { array, elem_var, body } => {
-            write_expr(out, array);
-            write!(out, ".into_iter().map(|{}| ", elem_var).unwrap();
+            // Write the map part without collect - caller decides whether to collect
+            write_expr_chainable(out, array);
+            write!(out, ".map(|{}| ", elem_var).unwrap();
             write_expr(out, body);
-            write!(out, ").collect::<Vec<_>>()").unwrap();
+            write!(out, ")").unwrap();
+            // Only add collect if this is not part of a larger chain
+            // For now, always add collect (callers like ArrayFold should use write_expr_chainable)
+            write!(out, ".collect::<Vec<_>>()").unwrap();
         }
         IrExpr::ArrayZip { left, right, left_var, right_var, body } => {
-            write_expr(out, left);
-            write!(out, ".into_iter().zip(").unwrap();
+            write_expr_chainable(out, left);
+            write!(out, ".zip(").unwrap();
             write_expr(out, right);
             write!(out, ").map(|({}, {})| ", left_var, right_var).unwrap();
             write_expr(out, body);
             write!(out, ").collect::<Vec<_>>()").unwrap();
         }
         IrExpr::ArrayFold { array, init, acc_var, elem_var, body } => {
-            write_expr(out, array);
-            write!(out, ".iter().fold(").unwrap();
+            write_expr_chainable(out, array);
+            write!(out, ".fold(").unwrap();
             write_expr(out, init);
             write!(out, ", |{}, {}| ", acc_var, elem_var).unwrap();
             write_expr(out, body);

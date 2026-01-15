@@ -351,7 +351,7 @@ fn lower_struct_dyn(s: &IrStruct, ctx: &LoweringContext) -> IrStruct {
     for f in s.fields.iter() {
         fields.push(IrField {
             name: f.name.clone(),
-            ty: lower_type_dyn(&f.ty, ctx, &[]),
+            ty: lower_type_dyn_for_field(&f.ty, ctx, &[]),
             public: f.public,
         });
     }
@@ -554,13 +554,31 @@ fn lower_function_dyn(
         }
     }
 
+    // Combine impl generics and function generics for where clause context
+    // Only include params that would survive lowering (non-Length, non-Lifetime)
+    let mut combined_gen: Vec<IrGenericParam> = Vec::new();
+    for p in fn_gen.iter() {
+        let kind = classify_generic(p, &[&fn_gen, impl_gen]);
+        if p.kind != IrGenericParamKind::Lifetime && kind != GenericKind::Length {
+            combined_gen.push(p.clone());
+        }
+    }
+    for p in impl_gen {
+        let kind = classify_generic(p, &[impl_gen, &fn_gen]);
+        if p.kind != IrGenericParamKind::Lifetime && kind != GenericKind::Length {
+            if !combined_gen.iter().any(|cp| cp.name == p.name) {
+                combined_gen.push(p.clone());
+            }
+        }
+    }
+
     IrFunction {
         name: f.name.clone(),
         generics: lower_generics_dyn(&f.generics, impl_gen),
         receiver: f.receiver,
         params,
         return_type: f.return_type.as_ref().map(|rt| lower_type_dyn(rt, ctx, &fn_gen)),
-        where_clause: lower_where_clause_dyn(&f.where_clause, ctx, &fn_gen),
+        where_clause: lower_where_clause_dyn(&f.where_clause, ctx, &combined_gen),
         body,
     }
 }
@@ -586,17 +604,25 @@ fn lower_trait_bound_dyn(b: &IrTraitBound, _generics: &[IrGenericParam], _extra_
 }
 
 fn lower_type_dyn(ty: &IrType, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) -> IrType {
+    lower_type_dyn_inner(ty, ctx, fn_gen, false)
+}
+
+fn lower_type_dyn_for_field(ty: &IrType, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) -> IrType {
+    lower_type_dyn_inner(ty, ctx, fn_gen, true)
+}
+
+fn lower_type_dyn_inner(ty: &IrType, ctx: &LoweringContext, fn_gen: &[IrGenericParam], in_struct_field: bool) -> IrType {
     match ty {
         IrType::Array { kind, elem, len } => {
             if *kind == ArrayKind::Slice {
                 IrType::Array {
                     kind: *kind,
-                    elem: Box::new(lower_type_dyn(elem, ctx, fn_gen)),
+                    elem: Box::new(lower_type_dyn_inner(elem, ctx, fn_gen, in_struct_field)),
                     len: len.clone(),
                 }
             } else {
                 IrType::Vector {
-                    elem: Box::new(lower_type_dyn(elem, ctx, fn_gen)),
+                    elem: Box::new(lower_type_dyn_inner(elem, ctx, fn_gen, in_struct_field)),
                 }
             }
         }
@@ -612,10 +638,10 @@ fn lower_type_dyn(ty: &IrType, ctx: &LoweringContext, fn_gen: &[IrGenericParam])
                     if let Some((_, gkind, _)) = non_lifetime_generics.get(idx) {
                         if *gkind == GenericKind::Length { continue; }
                     }
-                    lowered_args.push(lower_type_dyn(arg, ctx, fn_gen));
+                    lowered_args.push(lower_type_dyn_inner(arg, ctx, fn_gen, in_struct_field));
                 }
             } else {
-                lowered_args = type_args.iter().map(|ta| lower_type_dyn(ta, ctx, fn_gen)).collect();
+                lowered_args = type_args.iter().map(|ta| lower_type_dyn_inner(ta, ctx, fn_gen, in_struct_field)).collect();
             }
             
             let new_kind = if kind_str == "GenericArray" || kind_str == "Option" || kind_str == "Result" || kind_str == "Box" || kind_str == "Vec" {
@@ -630,12 +656,20 @@ fn lower_type_dyn(ty: &IrType, ctx: &LoweringContext, fn_gen: &[IrGenericParam])
             }
         }
         IrType::Reference { mutable, elem } => {
+            // In struct fields, convert &[T] to Vec<T> to avoid lifetime issues
+            if in_struct_field {
+                if let IrType::Array { kind: ArrayKind::Slice, elem: inner, .. } = elem.as_ref() {
+                    return IrType::Vector {
+                        elem: Box::new(lower_type_dyn_inner(inner, ctx, fn_gen, in_struct_field)),
+                    };
+                }
+            }
             IrType::Reference {
                 mutable: *mutable,
-                elem: Box::new(lower_type_dyn(elem, ctx, fn_gen)),
+                elem: Box::new(lower_type_dyn_inner(elem, ctx, fn_gen, in_struct_field)),
             }
         }
-        IrType::Tuple(elems) => IrType::Tuple(elems.iter().map(|e| lower_type_dyn(e, ctx, fn_gen)).collect()),
+        IrType::Tuple(elems) => IrType::Tuple(elems.iter().map(|e| lower_type_dyn_inner(e, ctx, fn_gen, in_struct_field)).collect()),
         IrType::TypeParam(p) => {
             IrType::TypeParam(p.clone())
         }
@@ -644,6 +678,12 @@ fn lower_type_dyn(ty: &IrType, ctx: &LoweringContext, fn_gen: &[IrGenericParam])
 }
 
 fn lower_where_clause_dyn(wc: &[IrWherePredicate], ctx: &LoweringContext, fn_gen: &[IrGenericParam]) -> Vec<IrWherePredicate> {
+    // Collect all known type params from fn_gen
+    let known_params: Vec<String> = fn_gen.iter()
+        .filter(|p| p.kind != IrGenericParamKind::Lifetime)
+        .map(|p| p.name.clone())
+        .collect();
+    
     wc.iter().filter_map(|wp| {
         match wp {
             IrWherePredicate::TypeBound { ty, bounds } => {
@@ -655,6 +695,10 @@ fn lower_where_clause_dyn(wc: &[IrWherePredicate], ctx: &LoweringContext, fn_gen
                         if !p.starts_with('T') && !p.starts_with('B') && !p.starts_with('D') {
                             return None;
                         }
+                    }
+                    // Skip if the type param is not in known params (undefined)
+                    if !known_params.contains(p) {
+                        return None;
                     }
                 }
                 
@@ -669,6 +713,10 @@ fn lower_where_clause_dyn(wc: &[IrWherePredicate], ctx: &LoweringContext, fn_gen
                 // Check if any bound references undefined types
                 for b in &bounds {
                     if has_unresolved_projection_in_bound(b) {
+                        return None;
+                    }
+                    // Also check for undefined type params in bounds
+                    if has_undefined_type_params_in_bound(b, &known_params) {
                         return None;
                     }
                 }
@@ -695,6 +743,43 @@ fn has_unresolved_projection(ty: &IrType) -> bool {
 
 fn has_unresolved_projection_in_bound(b: &IrTraitBound) -> bool {
     b.type_args.iter().any(has_unresolved_projection)
+}
+
+fn has_undefined_type_params_in_bound(b: &IrTraitBound, known_params: &[String]) -> bool {
+    for arg in &b.type_args {
+        if has_undefined_type_param(arg, known_params) {
+            return true;
+        }
+    }
+    // Check Output type in associated type bindings if any
+    // The output type is embedded in IrTraitBound via special handling
+    false
+}
+
+fn has_undefined_type_param(ty: &IrType, known_params: &[String]) -> bool {
+    match ty {
+        IrType::TypeParam(p) => {
+            // Single uppercase letter that's not a known param
+            if p.len() == 1 && p.chars().next().unwrap().is_uppercase() {
+                !known_params.contains(p)
+            } else {
+                false
+            }
+        }
+        IrType::Struct { type_args, .. } => {
+            type_args.iter().any(|a| has_undefined_type_param(a, known_params))
+        }
+        IrType::Reference { elem, .. } | IrType::Vector { elem } => {
+            has_undefined_type_param(elem, known_params)
+        }
+        IrType::Tuple(elems) => {
+            elems.iter().any(|e| has_undefined_type_param(e, known_params))
+        }
+        IrType::Array { elem, .. } => {
+            has_undefined_type_param(elem, known_params)
+        }
+        _ => false,
+    }
 }
 
 fn lower_block_dyn(block: &IrBlock, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) -> IrBlock {
@@ -795,8 +880,12 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 type_args = Vec::new();
             }
             if segments.len() == 2 && segments[1] == "to_usize" {
-                if segments[0].len() == 1 && segments[0].chars().next().unwrap().is_uppercase() {
-                    return IrExpr::Var(segments[0].to_lowercase());
+                // Check if first segment is a length param (single uppercase letter, or uppercase+digit like K2)
+                let first = &segments[0];
+                let is_length_param = first.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) &&
+                    first.chars().all(|c| c.is_uppercase() || c.is_ascii_digit());
+                if is_length_param {
+                    return IrExpr::Var(first.to_lowercase());
                 }
             }
             IrExpr::Path {
@@ -843,11 +932,14 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             let args: Vec<IrExpr> = args.iter().map(|a| lower_expr_dyn(a, ctx, fn_gen)).collect();
             let mut func = lower_expr_dyn(func, ctx, fn_gen);
 
-            // If the func is a single lowercase letter (from a length param), 
+            // If the func is a lowercased length param (like n, k, k2), 
             // and there are no args, just return the variable
             if args.is_empty() {
                 if let IrExpr::Var(name) = &func {
-                    if name.len() == 1 && name.chars().next().unwrap().is_lowercase() {
+                    // Check if it looks like a lowercased length param
+                    let is_length_var = name.chars().next().map(|c| c.is_lowercase()).unwrap_or(false) &&
+                        name.chars().all(|c| c.is_lowercase() || c.is_ascii_digit());
+                    if is_length_var {
                         return func;
                     }
                 }
