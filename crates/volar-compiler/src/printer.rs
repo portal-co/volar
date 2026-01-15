@@ -466,8 +466,8 @@ fn write_expr_chainable(out: &mut String, expr: &IrExpr) {
             args,
             ..
         } => {
-            let name = match method {
-                MethodKind::Std(s) => s.clone(),
+            let (name, is_iter_source, is_iter_transform) = match method {
+                MethodKind::Std(s) => (s.clone(), false, false),
                 MethodKind::Crypto(c) => {
                     let debug_name = format!("{:?}", c);
                     let mut snake = String::new();
@@ -477,28 +477,38 @@ fn write_expr_chainable(out: &mut String, expr: &IrExpr) {
                         }
                         snake.push(ch.to_ascii_lowercase());
                     }
-                    snake
+                    (snake, false, false)
                 }
-                MethodKind::Vole(v) => format!("{:?}", v).to_lowercase(),
-                MethodKind::Unknown(s) => s.clone(),
+                MethodKind::Vole(v) => (format!("{:?}", v).to_lowercase(), false, false),
+                MethodKind::Iter(im) => {
+                    let name = match im {
+                        crate::ir::IterMethod::Iter => "iter",
+                        crate::ir::IterMethod::IntoIter => "into_iter",
+                        crate::ir::IterMethod::Chars => "chars",
+                        crate::ir::IterMethod::Bytes => "bytes",
+                        crate::ir::IterMethod::Enumerate => "enumerate",
+                        crate::ir::IterMethod::Filter => "filter",
+                        crate::ir::IterMethod::Take => "take",
+                        crate::ir::IterMethod::Skip => "skip",
+                        crate::ir::IterMethod::Map => "map",
+                        crate::ir::IterMethod::FlatMap => "flat_map",
+                        crate::ir::IterMethod::FilterMap => "filter_map",
+                        crate::ir::IterMethod::Fold => "fold",
+                        crate::ir::IterMethod::Chain => "chain",
+                    }
+                    .to_string();
+                    let is_source = matches!(im, crate::ir::IterMethod::Iter | crate::ir::IterMethod::IntoIter | crate::ir::IterMethod::Chars | crate::ir::IterMethod::Bytes);
+                    let is_transform = matches!(im, crate::ir::IterMethod::Enumerate | crate::ir::IterMethod::Filter | crate::ir::IterMethod::Take | crate::ir::IterMethod::Skip | crate::ir::IterMethod::Map | crate::ir::IterMethod::FlatMap | crate::ir::IterMethod::FilterMap);
+                    (name, is_source, is_transform)
+                }
+                MethodKind::Unknown(s) => (s.clone(), false, true),
             };
 
-            // Iterator-sourcing methods: take collection, produce iterator
-            let is_iter_source = matches!(name.as_str(), "iter" | "into_iter" | "chars" | "bytes");
-            // Iterator-transforming methods: take iterator, produce iterator
-            let is_iter_transform = matches!(
-                name.as_str(),
-                "enumerate" | "filter" | "take" | "skip" | "map" | "flat_map" | "filter_map"
-            );
-
             if is_iter_source {
-                // Use normal expr for receiver (it's a collection)
                 write_expr(out, receiver);
             } else if is_iter_transform {
-                // Chain from previous iterator
                 write_expr_chainable(out, receiver);
             } else {
-                // Also chain for unknown methods in iterator context
                 write_expr_chainable(out, receiver);
             }
 
@@ -536,10 +546,9 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
             args,
             ..
         } => {
-            let name = match method {
-                MethodKind::Std(s) => s.clone(),
+            let (name, is_iter_consumer) = match method {
+                MethodKind::Std(s) => (s.clone(), false),
                 MethodKind::Crypto(c) => {
-                    // Convert CamelCase to snake_case
                     let debug_name = format!("{:?}", c);
                     let mut snake = String::new();
                     for (i, ch) in debug_name.chars().enumerate() {
@@ -548,24 +557,32 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
                         }
                         snake.push(ch.to_ascii_lowercase());
                     }
-                    snake
+                    (snake, false)
                 }
-                MethodKind::Vole(v) => format!("{:?}", v).to_lowercase(),
-                MethodKind::Unknown(s) => s.clone(),
+                MethodKind::Vole(v) => (format!("{:?}", v).to_lowercase(), false),
+                MethodKind::Iter(im) => {
+                    let name = match im {
+                        crate::ir::IterMethod::Iter => "iter",
+                        crate::ir::IterMethod::IntoIter => "into_iter",
+                        crate::ir::IterMethod::Chars => "chars",
+                        crate::ir::IterMethod::Bytes => "bytes",
+                        crate::ir::IterMethod::Enumerate => "enumerate",
+                        crate::ir::IterMethod::Filter => "filter",
+                        crate::ir::IterMethod::Take => "take",
+                        crate::ir::IterMethod::Skip => "skip",
+                        crate::ir::IterMethod::Map => "map",
+                        crate::ir::IterMethod::FlatMap => "flat_map",
+                        crate::ir::IterMethod::FilterMap => "filter_map",
+                        crate::ir::IterMethod::Fold => "fold",
+                        crate::ir::IterMethod::Chain => "chain",
+                    }
+                    .to_string();
+                    let is_consumer = matches!(im, crate::ir::IterMethod::Fold | crate::ir::IterMethod::Enumerate | crate::ir::IterMethod::Filter | crate::ir::IterMethod::Take | crate::ir::IterMethod::Skip | crate::ir::IterMethod::Chain | crate::ir::IterMethod::FlatMap | crate::ir::IterMethod::FilterMap);
+                    (name, is_consumer)
+                }
+                MethodKind::Unknown(s) => (s.clone(), false),
             };
 
-            // For iterator-consuming methods like fold, enumerate, the receiver is an iterator chain
-            let is_iter_consumer = matches!(
-                name.as_str(),
-                "fold"
-                    | "enumerate"
-                    | "filter"
-                    | "take"
-                    | "skip"
-                    | "chain"
-                    | "flat_map"
-                    | "filter_map"
-            );
             if is_iter_consumer {
                 write_expr_chainable(out, receiver);
             } else {

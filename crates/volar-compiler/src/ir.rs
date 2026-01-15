@@ -37,6 +37,45 @@ pub enum CompilerError {
     InvalidType(String),
 }
 
+/// Iterator-related method names used throughout transforms
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IterMethod {
+    Iter,
+    IntoIter,
+    Chars,
+    Bytes,
+    Enumerate,
+    Filter,
+    Take,
+    Skip,
+    Map,
+    FlatMap,
+    FilterMap,
+    Fold,
+    Chain,
+}
+
+impl IterMethod {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "iter" => Some(Self::Iter),
+            "into_iter" => Some(Self::IntoIter),
+            "chars" => Some(Self::Chars),
+            "bytes" => Some(Self::Bytes),
+            "enumerate" => Some(Self::Enumerate),
+            "filter" => Some(Self::Filter),
+            "take" => Some(Self::Take),
+            "skip" => Some(Self::Skip),
+            "map" => Some(Self::Map),
+            "flat_map" => Some(Self::FlatMap),
+            "filter_map" => Some(Self::FilterMap),
+            "fold" => Some(Self::Fold),
+            "chain" => Some(Self::Chain),
+            _ => None,
+        }
+    }
+}
+
 pub type Result<T> = core::result::Result<T, CompilerError>;
 
 // ============================================================================
@@ -479,6 +518,8 @@ pub enum MethodKind {
     Vole(VoleMethod),
     Crypto(CryptoMethod),
     Std(String),
+    /// Iterator-related methods (map, filter, iter, into_iter, etc.)
+    Iter(IterMethod),
     Unknown(String),
 }
 
@@ -491,14 +532,22 @@ impl MethodKind {
             return Self::Crypto(c);
         }
 
+        // Common std-like methods
         match s {
             "clone" | "default" | "into" | "from" | "as_ref" | "as_slice" | "get" | "len"
             | "is_empty" | "contains" | "unwrap" | "unwrap_or" | "unwrap_or_default" | "expect"
             | "to_usize" | "to_string" | "as_ptr" | "wrapping_add" | "wrapping_sub"
             | "checked_add" | "checked_sub" | "saturating_add" | "saturating_sub" | "bitxor"
-            | "deref" | "map" | "fold" | "iter" => Self::Std(s.to_string()),
-            _ => Self::Unknown(s.to_string()),
+            | "deref" => return Self::Std(s.to_string()),
+            _ => {}
         }
+
+        // Iterator methods
+        if let Some(im) = IterMethod::from_str(s) {
+            return Self::Iter(im);
+        }
+
+        Self::Unknown(s.to_string())
     }
 }
 

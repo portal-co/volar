@@ -3,10 +3,8 @@
 use std::fs;
 use std::path::Path;
 use volar_compiler::{
-    parse_sources,
-    StructKind, TraitKind, MathTrait, CryptoTrait, PrimitiveType,
-    ArrayKind, MethodKind, VoleMethod, CryptoMethod,
-    IrType, IrExpr, IrStmt, IrImplItem, AssociatedType,
+    ArrayKind, AssociatedType, CryptoMethod, CryptoTrait, IrExpr, IrImplItem, IrStmt, IrType,
+    MathTrait, MethodKind, PrimitiveType, StructKind, TraitKind, VoleMethod, parse_sources,
 };
 
 fn read_volar_spec_sources() -> Vec<(String, String)> {
@@ -45,7 +43,7 @@ fn test_specialize_volar_spec() {
         .iter()
         .map(|(content, name)| (content.as_str(), name.as_str()))
         .collect();
-    
+
     let spec = parse_sources(&sources_ref, "volar_spec").unwrap();
 
     println!("\n=== Specialized Module Statistics ===");
@@ -58,7 +56,7 @@ fn test_specialize_volar_spec() {
     let mut vole_structs = 0;
     let mut crypto_structs = 0;
     let mut custom_structs = 0;
-    
+
     println!("\n=== Struct Classifications ===");
     for s in &spec.structs {
         match &s.kind {
@@ -79,13 +77,13 @@ fn test_specialize_volar_spec() {
             }
         }
     }
-    
+
     println!("\n  VOLE structs: {}", vole_structs);
     println!("  Crypto structs: {}", crypto_structs);
     println!("  Custom structs: {}", custom_structs);
 
     // Count trait classifications
-    
+
     println!("\n=== Trait Classifications ===");
     for t in &spec.traits {
         match &t.kind {
@@ -118,7 +116,7 @@ fn test_specialize_volar_spec() {
     let mut crypto_impls = 0;
     let mut std_impls = 0;
     let mut inherent_impls = 0;
-    
+
     println!("\n=== Impl Block Classifications ===");
     for imp in &spec.impls {
         match &imp.trait_ {
@@ -144,7 +142,7 @@ fn test_specialize_volar_spec() {
             }
         }
     }
-    
+
     println!("\n  Math trait impls: {}", math_impls);
     println!("  Crypto trait impls: {}", crypto_impls);
     println!("  Standard trait impls: {}", std_impls);
@@ -155,7 +153,7 @@ fn test_specialize_volar_spec() {
     let mut primitive_fields = 0;
     let mut array_fields = 0;
     let mut struct_fields = 0;
-    
+
     for s in &spec.structs {
         for field in &s.fields {
             match &field.ty {
@@ -163,7 +161,11 @@ fn test_specialize_volar_spec() {
                     primitive_fields += 1;
                     println!("  {} ({}): primitive {:?}", s.kind, field.name, p);
                 }
-                IrType::Array { kind, elem: _, len: _ } => {
+                IrType::Array {
+                    kind,
+                    elem: _,
+                    len: _,
+                } => {
                     array_fields += 1;
                     println!("  {} ({}): {:?} array", s.kind, field.name, kind);
                 }
@@ -178,15 +180,24 @@ fn test_specialize_volar_spec() {
             }
         }
     }
-    
+
     println!("\n  Primitive fields: {}", primitive_fields);
     println!("  Array fields: {}", array_fields);
     println!("  Struct fields: {}", struct_fields);
 
     // Verify expected classifications
-    assert!(vole_structs >= 4, "Should have at least 4 VOLE structs (Delta, Q, Vope, BitVole)");
-    assert!(crypto_structs >= 2, "Should have at least 2 crypto structs (ABO, ABOOpening)");
-    assert!(math_impls >= 3, "Should have at least 3 math trait impls (Add, Mul, BitXor)");
+    assert!(
+        vole_structs >= 4,
+        "Should have at least 4 VOLE structs (Delta, Q, Vope, BitVole)"
+    );
+    assert!(
+        crypto_structs >= 2,
+        "Should have at least 2 crypto structs (ABO, ABOOpening)"
+    );
+    assert!(
+        math_impls >= 3,
+        "Should have at least 3 math trait impls (Add, Mul, BitXor)"
+    );
 }
 
 #[test]
@@ -207,19 +218,23 @@ fn test_method_classification() {
             let i = y.into();
         }
     "#;
-    
-    use volar_compiler::{parse_source, IrExpr, IrStmt};
-    
+
+    use volar_compiler::{IrExpr, IrStmt, parse_source};
+
     let spec = parse_source(source, "test").unwrap();
-    
+
     let f = &spec.functions[0];
-    
+
     let mut vole_methods = 0;
     let mut crypto_methods = 0;
     let mut std_methods = 0;
-    
+    let mut iter_methods = 0;
+
     for stmt in &f.body.stmts {
-        if let IrStmt::Let { init: Some(expr), .. } = stmt {
+        if let IrStmt::Let {
+            init: Some(expr), ..
+        } = stmt
+        {
             if let IrExpr::MethodCall { method, .. } = expr {
                 match method {
                     MethodKind::Vole(v) => {
@@ -234,6 +249,10 @@ fn test_method_classification() {
                         std_methods += 1;
                         println!("Std method: {}", s);
                     }
+                    MethodKind::Iter(i) => {
+                        iter_methods += 1;
+                        println!("Iter method: {:?}", i);
+                    }
                     MethodKind::Unknown(u) => {
                         println!("Unknown method: {}", u);
                     }
@@ -241,8 +260,11 @@ fn test_method_classification() {
             }
         }
     }
-    
-    assert!(vole_methods >= 2, "Should recognize VOLE methods (remap, rotate_left)");
+
+    assert!(
+        vole_methods >= 2,
+        "Should recognize VOLE methods (remap, rotate_left)"
+    );
     assert!(crypto_methods >= 3, "Should recognize crypto methods");
     assert!(std_methods >= 2, "Should recognize standard methods");
 }
@@ -261,19 +283,22 @@ fn test_array_operations() {
             let c = arr.zip(other, |a, b| a + b);
         }
     "#;
-    
-    use volar_compiler::{parse_source, IrExpr, IrStmt};
-    
+
+    use volar_compiler::{IrExpr, IrStmt, parse_source};
+
     let spec = parse_source(source, "test").unwrap();
-    
+
     let f = &spec.functions[0];
-    
+
     let mut generate_count = 0;
     let mut map_count = 0;
     let mut zip_count = 0;
-    
+
     for stmt in &f.body.stmts {
-        if let IrStmt::Let { init: Some(expr), .. } = stmt {
+        if let IrStmt::Let {
+            init: Some(expr), ..
+        } = stmt
+        {
             match expr {
                 IrExpr::ArrayGenerate { index_var, .. } => {
                     generate_count += 1;
@@ -283,7 +308,11 @@ fn test_array_operations() {
                     map_count += 1;
                     println!("ArrayMap with elem var: {}", elem_var);
                 }
-                IrExpr::ArrayZip { left_var, right_var, .. } => {
+                IrExpr::ArrayZip {
+                    left_var,
+                    right_var,
+                    ..
+                } => {
                     zip_count += 1;
                     println!("ArrayZip with vars: {}, {}", left_var, right_var);
                 }
@@ -291,7 +320,7 @@ fn test_array_operations() {
             }
         }
     }
-    
+
     assert_eq!(generate_count, 1, "Should recognize ArrayGenerate");
     assert_eq!(map_count, 1, "Should recognize ArrayMap");
     assert_eq!(zip_count, 1, "Should recognize ArrayZip");
@@ -317,46 +346,52 @@ fn test_bounded_loops() {
             };
         }
     "#;
-    
-    use volar_compiler::{parse_source, IrExpr, IrStmt};
-    
+
+    use volar_compiler::{IrExpr, IrStmt, parse_source};
+
     let spec = parse_source(source, "test").unwrap();
-    
+
     let f = &spec.functions[0];
-    
+
     let mut bounded_loops = 0;
     let mut iter_loops = 0;
-    
+
     println!("Statements in function body: {}", f.body.stmts.len());
     for (i, stmt) in f.body.stmts.iter().enumerate() {
         match stmt {
-            IrStmt::Semi(expr) | IrStmt::Expr(expr) => {
-                match expr {
-                    IrExpr::BoundedLoop { var, .. } => {
-                        bounded_loops += 1;
-                        println!("  Stmt {}: BoundedLoop with var: {}", i, var);
-                    }
-                    IrExpr::IterLoop { .. } => {
-                        iter_loops += 1;
-                        println!("  Stmt {}: IterLoop found", i);
-                    }
-                    _ => {
-                        println!("  Stmt {}: Other expr", i);
-                    }
+            IrStmt::Semi(expr) | IrStmt::Expr(expr) => match expr {
+                IrExpr::BoundedLoop { var, .. } => {
+                    bounded_loops += 1;
+                    println!("  Stmt {}: BoundedLoop with var: {}", i, var);
                 }
-            }
+                IrExpr::IterLoop { .. } => {
+                    iter_loops += 1;
+                    println!("  Stmt {}: IterLoop found", i);
+                }
+                _ => {
+                    println!("  Stmt {}: Other expr", i);
+                }
+            },
             _ => {}
         }
     }
-    
-    assert!(bounded_loops >= 2, "Should recognize BoundedLoop (for i in 0..N), found {}", bounded_loops);
-    assert!(iter_loops >= 1, "Should recognize IterLoop (for item in arr.iter()), found {}", iter_loops);
+
+    assert!(
+        bounded_loops >= 2,
+        "Should recognize BoundedLoop (for i in 0..N), found {}",
+        bounded_loops
+    );
+    assert!(
+        iter_loops >= 1,
+        "Should recognize IterLoop (for item in arr.iter()), found {}",
+        iter_loops
+    );
 }
 
 #[test]
 fn test_primitive_type_classification() {
     use volar_compiler::parse_source;
-    
+
     let source = r#"
         fn test(
             a: u8,
@@ -372,11 +407,11 @@ fn test_primitive_type_classification() {
         ) {
         }
     "#;
-    
+
     let spec = parse_source(source, "test").unwrap();
-    
+
     let f = &spec.functions[0];
-    
+
     let expected = [
         ("a", PrimitiveType::U8),
         ("b", PrimitiveType::U32),
@@ -389,7 +424,7 @@ fn test_primitive_type_classification() {
         ("i", PrimitiveType::BitsInBytes),
         ("j", PrimitiveType::BitsInBytes64),
     ];
-    
+
     for (i, (name, expected_ty)) in expected.iter().enumerate() {
         let param = &f.params[i];
         assert_eq!(param.name, *name);
@@ -402,22 +437,35 @@ fn test_primitive_type_classification() {
             }
         }
     }
-    
+
     // Check field element classification
-    for prim in [PrimitiveType::Bit, PrimitiveType::Galois, PrimitiveType::Galois64, 
-                 PrimitiveType::BitsInBytes, PrimitiveType::BitsInBytes64] {
-        assert!(prim.is_field_element(), "{:?} should be a field element", prim);
+    for prim in [
+        PrimitiveType::Bit,
+        PrimitiveType::Galois,
+        PrimitiveType::Galois64,
+        PrimitiveType::BitsInBytes,
+        PrimitiveType::BitsInBytes64,
+    ] {
+        assert!(
+            prim.is_field_element(),
+            "{:?} should be a field element",
+            prim
+        );
     }
-    
+
     for prim in [PrimitiveType::U8, PrimitiveType::U32, PrimitiveType::Bool] {
-        assert!(!prim.is_field_element(), "{:?} should not be a field element", prim);
+        assert!(
+            !prim.is_field_element(),
+            "{:?} should not be a field element",
+            prim
+        );
     }
 }
 
 #[test]
 fn test_array_type_classification() {
     use volar_compiler::parse_source;
-    
+
     let source = r#"
         fn test(
             a: GenericArray<u8, N>,
@@ -426,37 +474,47 @@ fn test_array_type_classification() {
         ) {
         }
     "#;
-    
+
     let spec = parse_source(source, "test").unwrap();
-    
+
     let f = &spec.functions[0];
-    
+
     // Check GenericArray
     match &f.params[0].ty {
-        IrType::Array { kind: ArrayKind::GenericArray, elem, .. } => {
+        IrType::Array {
+            kind: ArrayKind::GenericArray,
+            elem,
+            ..
+        } => {
             assert!(matches!(**elem, IrType::Primitive(PrimitiveType::U8)));
         }
         other => panic!("Expected GenericArray, got {:?}", other),
     }
-    
+
     // Check fixed array
     match &f.params[1].ty {
-        IrType::Array { kind: ArrayKind::FixedArray, elem, .. } => {
+        IrType::Array {
+            kind: ArrayKind::FixedArray,
+            elem,
+            ..
+        } => {
             assert!(matches!(**elem, IrType::Primitive(PrimitiveType::U8)));
         }
         other => panic!("Expected FixedArray, got {:?}", other),
     }
-    
+
     // Check slice (inside reference)
     match &f.params[2].ty {
-        IrType::Reference { elem, .. } => {
-            match &**elem {
-                IrType::Array { kind: ArrayKind::Slice, elem: inner, .. } => {
-                    assert!(matches!(**inner, IrType::Primitive(PrimitiveType::U8)));
-                }
-                other => panic!("Expected Slice, got {:?}", other),
+        IrType::Reference { elem, .. } => match &**elem {
+            IrType::Array {
+                kind: ArrayKind::Slice,
+                elem: inner,
+                ..
+            } => {
+                assert!(matches!(**inner, IrType::Primitive(PrimitiveType::U8)));
             }
-        }
+            other => panic!("Expected Slice, got {:?}", other),
+        },
         other => panic!("Expected Reference, got {:?}", other),
     }
 }
