@@ -64,7 +64,7 @@ pub struct PolyDyn<T> {
 pub struct PolyInputPoolDyn<'a, T> {
     pub n: usize,
     pub x: usize,
-    pub inputs: &Vec<T>,
+    pub inputs: &[T],
     pub indices: Vec<Vec<usize>>,
 }
 
@@ -667,7 +667,7 @@ impl VopeDyn<Bit> {
 }
 
 impl<B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
-    pub fn open<R: AsRef<Vec<u8>>>(&self, t: usize, u: usize, mut bad: Vec<u64>, mut rand: &R) -> ABOOpeningDyn<B, D> where <B as cipher::BlockSizeUser>::BlockSize: compile_error!("External trait bounds not supported in dyn code: Max") {
+    pub fn open<R: AsRef<[u8]>>(&self, t: usize, u: usize, mut bad: Vec<u64>, mut rand: &R) -> ABOOpeningDyn<B, D> where <B as cipher::BlockSizeUser>::BlockSize: compile_error!("External trait bounds not supported in dyn code: Max") {
         let k = self.k;
         ABOOpeningDyn { bad: bad.clone(), openings: (0..t).map(|i| {
     let bad = bad.clone();
@@ -687,7 +687,7 @@ impl<B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
 }
 
 impl<B: ByteBlockEncrypt, D: Digest> ABOOpeningDyn<B, D> {
-    pub fn validate<R: AsRef<Vec<u8>>>(&self, mut commit_: &Vec<u8>, mut rand: &R) -> bool {
+    pub fn validate<R: AsRef<[u8]>>(&self, mut commit_: &Vec<u8>, mut rand: &R) -> bool {
         let t = self.t;
         let u = self.u;
         let mut h = Default::default();
@@ -720,7 +720,7 @@ impl<B: ByteBlockEncrypt, D: Digest> ABOOpeningDyn<B, D> {
     create_vole_from_material(s)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_expanded<N, X: AsRef<Vec<u8>>, F: FnMut(&[u8]) -> X>(&self, mut f: F) -> Vec<VopeDyn<u8>>// UNCONSTRAINED GENERICS at generated.rs line 724: N
+    pub fn to_vole_material_expanded<N, X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut f: F) -> Vec<VopeDyn<u8>>// UNCONSTRAINED GENERICS at generated.rs line 724: N
  {
         let t = self.t;
         let u = self.u;
@@ -729,7 +729,7 @@ impl<B: ByteBlockEncrypt, D: Digest> ABOOpeningDyn<B, D> {
     create_vole_from_material_expanded(s, &mut f)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_typenum_expanded<X: AsRef<Vec<u8>>, F: FnMut(&[u8]) -> X>(&self, n: usize, mut f: F) -> Vec<VopeDyn<u8>> {
+    pub fn to_vole_material_typenum_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, n: usize, mut f: F) -> Vec<VopeDyn<u8>> {
         let t = self.t;
         let u = self.u;
         (0..n).map(|i| {
@@ -755,7 +755,7 @@ impl<B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
     create_vole_from_material(s)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_expanded<N, X: AsRef<Vec<u8>>, F: FnMut(&[u8]) -> X>(&self, mut f: F) -> Vec<VopeDyn<u8>>// UNCONSTRAINED GENERICS at generated.rs line 759: N
+    pub fn to_vole_material_expanded<N, X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut f: F) -> Vec<VopeDyn<u8>>// UNCONSTRAINED GENERICS at generated.rs line 759: N
  {
         let k = self.k;
         (0..n).map(|i| {
@@ -763,7 +763,7 @@ impl<B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
     create_vole_from_material_expanded(s, &mut f)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_typenum_expanded<X: AsRef<Vec<u8>>, F: FnMut(&[u8]) -> X>(&self, n: usize, mut f: F) -> Vec<VopeDyn<u8>> {
+    pub fn to_vole_material_typenum_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, n: usize, mut f: F) -> Vec<VopeDyn<u8>> {
         let k = self.k;
         (0..n).map(|i| {
     let s = &self.per_byte[((i * n) .. 0)][(0 .. n)];
@@ -772,7 +772,7 @@ impl<B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
     }
 }
 
-pub fn create_vole_from_material<B: ByteBlockEncrypt, X: AsRef<Vec<u8>>>(mut s: &Vec<X>) -> VopeDyn<u8> {
+pub fn create_vole_from_material<B: ByteBlockEncrypt, X: AsRef<[u8]>>(mut s: &[X]) -> VopeDyn<u8> {
     let u: Vec<u8> = s.iter().fold(Vec::<u8>::new(), |a, b| {
     a.clone().into_iter().zip((0..<B::BlockSize as typenum::Unsigned>::USIZE).map(|i| b.as_ref()[i]).collect::<Vec<_>>().clone().into_iter()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
 });
@@ -782,11 +782,11 @@ pub fn create_vole_from_material<B: ByteBlockEncrypt, X: AsRef<Vec<u8>>>(mut s: 
     VopeDyn { u: (0..n).map(|_| u.clone()).collect::<Vec<_>>(), v: v, n: n, k: k }
 }
 
-pub fn create_vole_from_material_expanded<B: ByteBlockEncrypt, X: AsRef<Vec<u8>>, Y: AsRef<Vec<u8>>, F: FnMut(&[u8]) -> X>(mut s: &Vec<Y>, mut f: F) -> VopeDyn<u8> {
-    let u: Vec<u8> = s.iter().clone().into_iter().map(|b| f(&b.as_ref()[(0 .. <B::BlockSize as typenum::Unsigned>::USIZE)])).collect::<Vec<_>>().fold(Vec::<u8>::new(), |a, b| {
+pub fn create_vole_from_material_expanded<B: ByteBlockEncrypt, X: AsRef<[u8]>, Y: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(mut s: &[Y], mut f: F) -> VopeDyn<u8> {
+    let u: Vec<u8> = s.iter().clone().into_iter().map(|b| f(&b.as_ref()[(0 .. <B::BlockSize as typenum::Unsigned>::USIZE)])).collect::<Vec<_>>().into_iter().fold(Vec::<u8>::new(), |a, b| {
     a.clone().into_iter().zip((0..<B::BlockSize as typenum::Unsigned>::USIZE).map(|i| b.as_ref()[i]).collect::<Vec<_>>().clone().into_iter()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
 });
-    let v: Vec<u8> = s.iter().clone().into_iter().map(|b| f(&b.as_ref()[(0 .. <B::BlockSize as typenum::Unsigned>::USIZE)])).collect::<Vec<_>>().enumerate().fold(Vec::<u8>::new(), |a, (i, b)| {
+    let v: Vec<u8> = s.iter().clone().into_iter().map(|b| f(&b.as_ref()[(0 .. <B::BlockSize as typenum::Unsigned>::USIZE)])).collect::<Vec<_>>().into_iter().enumerate().fold(Vec::<u8>::new(), |a, (i, b)| {
     a.clone().into_iter().zip((0..<B::BlockSize as typenum::Unsigned>::USIZE).map(|i| b.as_ref()[i]).collect::<Vec<_>>().clone().into_iter()).map(|(a, b)| a.bitxor(b).bitxor((i as u8))).collect::<Vec<_>>()
 });
     VopeDyn { u: (0..n).map(|_| u.clone()).collect::<Vec<_>>(), v: v, n: n, k: k }

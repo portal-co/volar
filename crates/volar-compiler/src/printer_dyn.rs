@@ -1480,8 +1480,23 @@ fn write_type_dyn(
     match ty {
         IrType::Primitive(p) => write!(out, "{}", p).unwrap(),
 
-        IrType::Array { elem, .. } | IrType::Vector { elem } => {
-            // GenericArray<T, N> -> Vec<T>
+        IrType::Array { kind, elem, .. } => {
+            match kind {
+                ArrayKind::Slice => {
+                    write!(out, "[").unwrap();
+                    write_type_dyn(out, elem, cur_params, struct_info);
+                    write!(out, "]").unwrap();
+                }
+                _ => {
+                    // GenericArray<T, N> -> Vec<T>
+                    write!(out, "Vec<").unwrap();
+                    write_type_dyn(out, elem, cur_params, struct_info);
+                    write!(out, ">").unwrap();
+                }
+            }
+        }
+
+        IrType::Vector { elem } => {
             write!(out, "Vec<").unwrap();
             write_type_dyn(out, elem, cur_params, struct_info);
             write!(out, ">").unwrap();
@@ -1903,7 +1918,53 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                 return;
             }
 
+            let is_iterator_method = matches!(
+                method_name.as_str(),
+                "map" | "fold" | "enumerate" | "zip" | "filter" | "any" | "all" | "find"
+            );
+
+            let receiver_is_iterator = match receiver.as_ref() {
+                IrExpr::MethodCall { method, .. } => {
+                    let name = match method {
+                        MethodKind::Std(s) => s.as_str(),
+                        MethodKind::Vole(VoleMethod::Remap) => "remap",
+                        MethodKind::Vole(VoleMethod::RotateLeft) => "rotate_left",
+                        MethodKind::Crypto(c) => "", // Not standard iterator methods
+                        MethodKind::Unknown(s) => s.as_str(),
+                    };
+                    matches!(
+                        name,
+                        "map"
+                            | "filter"
+                            | "enumerate"
+                            | "zip"
+                            | "take"
+                            | "skip"
+                            | "iter"
+                            | "into_iter"
+                    )
+                }
+                _ => false,
+            };
+
+            let receiver_is_vec = match receiver.as_ref() {
+                IrExpr::ArrayMap { .. }
+                | IrExpr::ArrayZip { .. }
+                | IrExpr::ArrayGenerate { .. }
+                | IrExpr::Array(_) => true,
+                _ => false,
+            };
+
             write_expr_dyn(out, receiver, ctx);
+
+            if is_iterator_method {
+                if receiver_is_vec {
+                    write!(out, ".into_iter()").unwrap();
+                } else if !receiver_is_iterator {
+                    write!(out, ".clone().into_iter()").unwrap();
+                }
+            }
+
             write!(out, ".{}(", method_name).unwrap();
             for (i, arg) in args.iter().enumerate() {
                 if i > 0 {
