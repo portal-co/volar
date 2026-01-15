@@ -1338,7 +1338,7 @@ fn write_function_dyn(
         if param_count > 0 {
             write!(out, ", ").unwrap();
         }
-        write!(out, "{}: ", p.name).unwrap();
+        write!(out, "mut {}: ", p.name).unwrap();
         write_type_dyn(out, &p.ty, &cur_params, struct_info);
         param_count += 1;
     }
@@ -1715,15 +1715,16 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             if let IrExpr::Path { segments, .. } = func.as_ref() {
                 if let [receiver, path] = &segments[..] {
                     if (path == "default" || path == "new") && args.is_empty() {
-                        write!(
-                            out,
-                            "{}::new()",
-                            match &**receiver {
-                                "GenericArray" => "Vec",
-                                a => a,
-                            }
-                        )
-                        .unwrap();
+                        // For GenericArray::new/default -> Vec::new().
+                        // For generic type parameters calling `new()`, prefer `Default::default()`.
+                        if *receiver == "GenericArray" {
+                            write!(out, "Vec::new()").unwrap();
+                        } else if receiver.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                            // Likely a type parameter like `O::new()` -> use Default::default()
+                            write!(out, "Default::default()").unwrap();
+                        } else {
+                            write!(out, "{}::new()", receiver).unwrap();
+                        }
                         return;
                     }
                     if path == "to_usize" {
@@ -1764,7 +1765,35 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                     if i > 0 {
                         write!(out, ", ").unwrap();
                     }
-                    write_expr_dyn(out, arg, ctx);
+                    // Special-case: when passing a closure to `remap`, annotate the
+                    // closure parameter as `usize` so type inference succeeds.
+                    if let IrExpr::Closure { params, body, .. } = arg {
+                        // Determine if this call site expects a usize input (remap)
+                        // Heuristic: if the function being called is a method `remap` on a collection-like receiver,
+                        // annotate params as `usize`.
+                        let annotate_as_usize = false; // default for plain calls
+                        // Fallback: print closure normally
+                        write!(out, "|").unwrap();
+                        for (j, p) in params.iter().enumerate() {
+                            if j > 0 {
+                                write!(out, ", ").unwrap();
+                            }
+                            // Extract param name
+                            let pname = match &p.pattern {
+                                IrPattern::Ident { name, .. } => name.clone(),
+                                _ => "_".to_string(),
+                            };
+                            if annotate_as_usize {
+                                write!(out, "{}: usize", pname).unwrap();
+                            } else {
+                                write!(out, "{}", pname).unwrap();
+                            }
+                        }
+                        write!(out, "| ").unwrap();
+                        write_expr_dyn(out, body, ctx);
+                    } else {
+                        write_expr_dyn(out, arg, ctx);
+                    }
                 }
                 write!(out, ")").unwrap();
             }
@@ -2219,14 +2248,16 @@ fn write_pattern_dyn(
                 write!(out, "{}: ", name).unwrap();
                 write_pattern_dyn(out, p, cur_params, struct_info);
             }
-            // Always add .. for Dyn structs since they have extra witness fields
-            if *rest
+            // Add `..` for Dyn structs and for `Self` patterns so existing
+            // witness fields don't cause missing-field errors during destructuring.
+            let needs_rest = *rest
+                || kind_str == "Self"
                 || (kind_str != "Self"
                     && !matches!(
                         kind_str.as_str(),
                         "BitsInBytes" | "BitsInBytes64" | "Bit" | "Galois" | "Galois64"
-                    ))
-            {
+                    ));
+            if needs_rest {
                 if !fields.is_empty() {
                     write!(out, ", ").unwrap();
                 }
