@@ -677,9 +677,9 @@ impl<B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
     let i2 = (i | ((j as usize) << ilog2(t)));
     if bad.contains(&(i2 as u64)) {
     let h = commit::<D>(&self.per_byte[i2], rand);
-    (0..self::output).map(|j| h.as_ref().get(j).cloned().unwrap_or_default()).collect::<Vec<_>>()
+    (0..32).map(|j| h.as_ref().get(j).cloned().unwrap_or_default()).collect::<Vec<_>>()
 } else {
-    (0..self::output).map(|j| {
+    (0..32).map(|j| {
     self.per_byte[i2].get(j).cloned().unwrap_or_default()
 }).collect::<Vec<_>>()
 }

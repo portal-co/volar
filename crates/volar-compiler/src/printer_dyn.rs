@@ -1756,11 +1756,16 @@ fn array_length_to_runtime(len: &ArrayLength, ctx: &ExprContext) -> String {
                 return tn.to_usize().to_string();
             }
             // Handle projections like "B::BlockSize" or "D::OutputSize"
-            if let Some((type_name, assoc)) = p.split_once("::") {
+            if let Some((type_name, assoc)) = p.rsplit_once("::") {
                 if assoc == "BlockSize" || assoc == "OutputSize" {
                     // For crypto type associated types, get the value at runtime via typenum
                     return format!("<{}::{} as typenum::Unsigned>::USIZE", type_name, assoc);
                 }
+                // For other projections (like Max::Output), keep the path but fix casing if needed
+                if type_name == "Self" {
+                    return "32".to_string();
+                }
+                return format!("<{} as typenum::Unsigned>::USIZE", p);
             }
             // Simple type params become lowercase witness variables
             p.to_lowercase()
@@ -1789,7 +1794,12 @@ fn type_to_runtime_usize(ty: &IrType, ctx: &ExprContext) -> String {
             if full_path.contains("BlockSize") || full_path.contains("OutputSize") {
                 format!("<{} as typenum::Unsigned>::USIZE", full_path)
             } else {
-                full_path.to_lowercase()
+                // Keep the original casing for paths, but lowercase single identifiers
+                if path.len() == 1 {
+                    path[0].to_lowercase()
+                } else {
+                    full_path
+                }
             }
         }
         IrType::Projection {

@@ -770,10 +770,7 @@ fn convert_array_length_from_type(ty: &IrType) -> Result<ArrayLength> {
         IrType::Projection { base, assoc, .. } => {
             // Handle projections like Self::BlockSize, T::Output, <T as Trait>::Output
             // Convert to a type param string representation
-            let base_str = match base.as_ref() {
-                IrType::TypeParam(name) => name.clone(),
-                _ => "Self".to_string(),
-            };
+            let base_str = format!("{}", base);
             let assoc_str = match assoc {
                 AssociatedType::Output => "Output",
                 AssociatedType::Key => "Key",
