@@ -733,9 +733,9 @@ impl <B: ByteBlockEncrypt, D: Digest> ABOOpeningDyn<B, D> {
     for b in 0.. u{
     let i2 = (i | ((b as usize) << t.ilog2()));
     if self.bad.contains(&(i2 as u64)){
-    h.update(&self.openings[i][b][(0 + D::OutputSize::to_usize())]);
+    h.update(&self.openings[i][b][..D::OutputSize::to_usize()]);
 } else {
-    h.update(&commit(&&self.openings[i][b][(0 + B::BlockSize::to_usize())], rand));
+    h.update(&commit(&&self.openings[i][b][..B::BlockSize::to_usize()], rand));
 }
 }
 };
@@ -784,7 +784,7 @@ impl <B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
     {
         let k: usize = self.k;
         (0..n).map(|i| {
-    let s = &self.per_byte[((i * n) + 0)][(0 + n)];
+    let s = &self.per_byte[(i * N)..][..N];
     create_vole_from_material(s)
 }).collect::<Vec<_>>()
     }
@@ -792,7 +792,7 @@ impl <B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
     {
         let k: usize = self.k;
         (0..n).map(|i| {
-    let s = &self.per_byte[((i * n) + 0)][(0 + n)];
+    let s = &self.per_byte[(i * N::to_usize())..][..N::to_usize()];
     create_vole_from_material(s)
 }).collect::<Vec<_>>()
     }
@@ -800,7 +800,7 @@ impl <B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
     {
         let k: usize = self.k;
         (0..n).map(|i| {
-    let s = &self.per_byte[((i * n) + 0)][(0 + n)];
+    let s = &self.per_byte[(i * N)..][..N];
     create_vole_from_material_expanded(s, &mut f)
 }).collect::<Vec<_>>()
     }
@@ -808,7 +808,7 @@ impl <B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
     {
         let k: usize = self.k;
         (0..n).map(|i| {
-    let s = &self.per_byte[((i * n) + 0)][(0 + n)];
+    let s = &self.per_byte[(i * N::to_usize())..][..N::to_usize()];
     create_vole_from_material_expanded(s, &mut f)
 }).collect::<Vec<_>>()
     }
@@ -827,10 +827,10 @@ pub fn create_vole_from_material<B: ByteBlockEncrypt, X: AsRef<[u8]>>(mut s: &[X
 
 pub fn create_vole_from_material_expanded<B: ByteBlockEncrypt, X: AsRef<[u8]>, Y: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(mut s: &[Y], mut f: F) -> VopeDyn<u8>
 {
-    let u: Vec<u8> = s.iter().map(|b| f(&b.as_ref()[(0 + B::BlockSize::to_usize())])).fold(Vec::new(), |a, b| {
+    let u: Vec<u8> = s.iter().map(|b| f(&b.as_ref()[..B::BlockSize::to_usize()])).fold(Vec::new(), |a, b| {
     a.into_iter().zip((0..<B::BlockSize as typenum::Unsigned>::USIZE).map(|i| b.as_ref()[i]).collect::<Vec<_>>()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
 });
-    let v: Vec<u8> = s.iter().map(|b| f(&b.as_ref()[(0 + B::BlockSize::to_usize())])).enumerate().fold(Vec::new(), |a, (i, b)| {
+    let v: Vec<u8> = s.iter().map(|b| f(&b.as_ref()[..B::BlockSize::to_usize()])).enumerate().fold(Vec::new(), |a, (i, b)| {
     a.into_iter().zip((0..<B::BlockSize as typenum::Unsigned>::USIZE).map(|i| b.as_ref()[i]).collect::<Vec<_>>()).map(|(a, b)| a.bitxor(b).bitxor((i as u8))).collect::<Vec<_>>()
 });
     VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<_>>(), v: v, n: 0, k: 1 }

@@ -1040,8 +1040,6 @@ pub enum SpecBinOp {
     Ge,
     And,
     Or,
-    Range,
-    RangeInclusive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
