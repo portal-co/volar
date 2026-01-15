@@ -685,6 +685,113 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
             }
         }
+        IrExpr::Field { base, field } => {
+            IrExpr::Field {
+                base: Box::new(lower_expr_dyn(base, ctx, fn_gen)),
+                field: field.clone(),
+            }
+        }
+        IrExpr::Index { base, index } => {
+            IrExpr::Index {
+                base: Box::new(lower_expr_dyn(base, ctx, fn_gen)),
+                index: Box::new(lower_expr_dyn(index, ctx, fn_gen)),
+            }
+        }
+        IrExpr::Unary { op, expr } => {
+            IrExpr::Unary {
+                op: *op,
+                expr: Box::new(lower_expr_dyn(expr, ctx, fn_gen)),
+            }
+        }
+        IrExpr::Block(b) => {
+            IrExpr::Block(lower_block_dyn(b, ctx, fn_gen))
+        }
+        IrExpr::If { cond, then_branch, else_branch } => {
+            IrExpr::If {
+                cond: Box::new(lower_expr_dyn(cond, ctx, fn_gen)),
+                then_branch: lower_block_dyn(then_branch, ctx, fn_gen),
+                else_branch: else_branch.as_ref().map(|eb| Box::new(lower_expr_dyn(eb, ctx, fn_gen))),
+            }
+        }
+        IrExpr::BoundedLoop { var, start, end, inclusive, body } => {
+            IrExpr::BoundedLoop {
+                var: var.clone(),
+                start: Box::new(lower_expr_dyn(start, ctx, fn_gen)),
+                end: Box::new(lower_expr_dyn(end, ctx, fn_gen)),
+                inclusive: *inclusive,
+                body: lower_block_dyn(body, ctx, fn_gen),
+            }
+        }
+        IrExpr::IterLoop { pattern, collection, body } => {
+            IrExpr::IterLoop {
+                pattern: pattern.clone(), // TODO lower pattern
+                collection: Box::new(lower_expr_dyn(collection, ctx, fn_gen)),
+                body: lower_block_dyn(body, ctx, fn_gen),
+            }
+        }
+        IrExpr::ArrayMap { array, elem_var, body } => {
+            IrExpr::ArrayMap {
+                array: Box::new(lower_expr_dyn(array, ctx, fn_gen)),
+                elem_var: elem_var.clone(),
+                body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+            }
+        }
+        IrExpr::ArrayZip { left, right, left_var, right_var, body } => {
+            IrExpr::ArrayZip {
+                left: Box::new(lower_expr_dyn(left, ctx, fn_gen)),
+                right: Box::new(lower_expr_dyn(right, ctx, fn_gen)),
+                left_var: left_var.clone(),
+                right_var: right_var.clone(),
+                body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+            }
+        }
+        IrExpr::ArrayFold { array, init, acc_var, elem_var, body } => {
+            IrExpr::ArrayFold {
+                array: Box::new(lower_expr_dyn(array, ctx, fn_gen)),
+                init: Box::new(lower_expr_dyn(init, ctx, fn_gen)),
+                acc_var: acc_var.clone(),
+                elem_var: elem_var.clone(),
+                body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+            }
+        }
+        IrExpr::Match { expr, arms } => {
+            IrExpr::Match {
+                expr: Box::new(lower_expr_dyn(expr, ctx, fn_gen)),
+                arms: arms.iter().map(|arm| IrMatchArm {
+                    pattern: arm.pattern.clone(), // TODO lower pattern
+                    guard: arm.guard.as_ref().map(|g| lower_expr_dyn(g, ctx, fn_gen)),
+                    body: lower_expr_dyn(&arm.body, ctx, fn_gen),
+                }).collect(),
+            }
+        }
+        IrExpr::Closure { params, ret_type, body } => {
+            IrExpr::Closure {
+                params: params.clone(), // TODO lower patterns/types
+                ret_type: ret_type.as_ref().map(|rt| Box::new(lower_type_dyn(rt, ctx, fn_gen))),
+                body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+            }
+        }
+        IrExpr::Cast { expr, ty } => {
+            IrExpr::Cast {
+                expr: Box::new(lower_expr_dyn(expr, ctx, fn_gen)),
+                ty: Box::new(lower_type_dyn(ty, ctx, fn_gen)),
+            }
+        }
+        IrExpr::Return(e) => {
+            IrExpr::Return(e.as_ref().map(|expr| Box::new(lower_expr_dyn(expr, ctx, fn_gen))))
+        }
+        IrExpr::Tuple(elems) => {
+            IrExpr::Tuple(elems.iter().map(|e| lower_expr_dyn(e, ctx, fn_gen)).collect())
+        }
+        IrExpr::Array(elems) => {
+            IrExpr::Array(elems.iter().map(|e| lower_expr_dyn(e, ctx, fn_gen)).collect())
+        }
+        IrExpr::Repeat { elem, len } => {
+            IrExpr::Repeat {
+                elem: Box::new(lower_expr_dyn(elem, ctx, fn_gen)),
+                len: Box::new(lower_expr_dyn(len, ctx, fn_gen)),
+            }
+        }
         _ => e.clone(),
     }
 }
