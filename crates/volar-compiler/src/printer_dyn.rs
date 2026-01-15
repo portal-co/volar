@@ -241,6 +241,8 @@ struct StructInfo {
     type_params: Vec<(String, String)>,
     /// Original generics in declaration order with their kind (Length/Crypto/Type) and param kind
     orig_generics: Vec<(String, GenericKind, IrGenericParamKind)>,
+    /// Defaults for generics (None if no default)
+    generic_defaults: Vec<Option<IrType>>,
     /// Whether a manual `Clone` impl exists for this struct
     manual_clone: bool,
 }
@@ -332,6 +334,7 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
             // record original generic ordering and kinds
             info.orig_generics
                 .push((p.name.clone(), kind.clone(), p.kind.clone()));
+            info.generic_defaults.push(p.default.clone());
 
             if p.kind == IrGenericParamKind::Lifetime {
                 info.lifetimes.push(format!("'{}", p.name));
@@ -1681,6 +1684,8 @@ fn type_to_runtime_usize(ty: &IrType, ctx: &ExprContext) -> String {
         IrType::TypeParam(p) => {
             if let Some(tn) = TypeNumConst::from_str(p) {
                 tn.to_usize().to_string()
+            } else if p.chars().all(|c| c.is_ascii_digit()) {
+                p.clone()
             } else {
                 p.to_lowercase()
             }
@@ -1693,11 +1698,15 @@ fn type_to_runtime_usize(ty: &IrType, ctx: &ExprContext) -> String {
                 full_path.to_lowercase()
             }
         }
+        IrType::Projection { .. } => {
+            let mut s = String::new();
+            write_type_dyn(&mut s, ty, ctx.cur_params, ctx.struct_info);
+            format!("<{} as typenum::Unsigned>::USIZE", s)
+        }
         _ => {
             let mut s = String::new();
             write_type_dyn(&mut s, ty, ctx.cur_params, ctx.struct_info);
-            format!("/* {} */", s); // Fallback for debugging
-            "0".to_string() // Dummy value, hopefully not hit often
+            "0".to_string() // Dummy value
         }
     }
 }
@@ -2400,6 +2409,8 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                         write!(out, "{}: ", wname).unwrap();
                         if let Some(arg) = effective_type_args.get(idx) {
                             write!(out, "{}", type_to_runtime_usize(arg, ctx)).unwrap();
+                        } else if let Some(Some(default_ty)) = info.generic_defaults.get(idx) {
+                            write!(out, "{}", type_to_runtime_usize(default_ty, ctx)).unwrap();
                         } else {
                             // Fallback to local variable with same name if type arg missing
                             write!(out, "{}", wname).unwrap();

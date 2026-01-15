@@ -665,13 +665,7 @@ fn convert_type(ty: &Type) -> Result<IrType> {
             let type_args = if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
                 args.args
                     .iter()
-                    .map(|arg| {
-                        if let syn::GenericArgument::Type(ty) = arg {
-                            Ok(Some(convert_type(ty)?))
-                        } else {
-                            Ok(None)
-                        }
-                    })
+                    .map(convert_generic_arg)
                     .collect::<Result<Vec<Option<_>>>>()?
                     .into_iter()
                     .flatten()
@@ -844,20 +838,12 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                             if let PathArguments::AngleBracketed(args) = &s.arguments {
                                 args.args
                                     .iter()
-                                    .filter_map(|arg| {
-                                        if let syn::GenericArgument::Type(ty) = arg {
-                                            Some(convert_type(ty))
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .collect::<Result<Vec<_>>>()
-                                    .ok()
+                                    .filter_map(|arg| convert_generic_arg(arg).ok().flatten())
+                                    .collect::<Vec<_>>()
                             } else {
-                                None
+                                Vec::new()
                             }
                         })
-                        .flatten()
                         .collect(),
                 });
             }
@@ -881,20 +867,12 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                             if let PathArguments::AngleBracketed(args) = &s.arguments {
                                 args.args
                                     .iter()
-                                    .filter_map(|arg| {
-                                        if let syn::GenericArgument::Type(ty) = arg {
-                                            Some(convert_type(ty))
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .collect::<Result<Vec<_>>>()
-                                    .ok()
+                                    .filter_map(|arg| convert_generic_arg(arg).ok().flatten())
+                                    .collect::<Vec<_>>()
                             } else {
-                                None
+                                Vec::new()
                             }
                         })
-                        .flatten()
                         .collect(),
                 })
             }
@@ -1015,14 +993,8 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
             let type_args = if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
                 args.args
                     .iter()
-                    .filter_map(|arg| {
-                        if let syn::GenericArgument::Type(ty) = arg {
-                            Some(convert_type(ty))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Result<Vec<_>>>()?
+                    .filter_map(|arg| convert_generic_arg(arg).ok().flatten())
+                    .collect::<Vec<_>>()
             } else {
                 Vec::new()
             };
@@ -1091,13 +1063,7 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
                     Some(
                         args.args
                             .iter()
-                            .map(|arg| {
-                                if let syn::GenericArgument::Type(ty) = arg {
-                                    Ok(Some(convert_type(ty)?))
-                                } else {
-                                    Ok(None)
-                                }
-                            })
+                            .map(convert_generic_arg)
                             .collect::<Result<Vec<Option<_>>>>(),
                     )
                 } else {

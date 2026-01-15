@@ -266,7 +266,7 @@ impl<T: Add<Output = T> + Mul<Output = T> + Default + Clone + Add<Output = T> + 
 }
 }
 };
-        VopeDyn { u: res_u, v: res_v, n: n, k: 0 }
+        VopeDyn { u: res_u, v: res_v, n: n, k: << as core::ops::Add>::Output as typenum::Unsigned>::USIZE }
     }
 }
 
@@ -285,7 +285,7 @@ impl VopeDyn<BitsInBytes> {
     let BitsInBytes(b) = v[i].clone();
     let BitsInBytes(next) = v[((i + 1) % n)].clone();
     BitsInBytes((b.shl((n as u32)) | next.shr((8 - (n as u32)))))
-}).collect::<Vec<_>>(), n: n, k: k }
+}).collect::<Vec<_>>(), n: n, k: 1 }
     }
     pub fn rotate_right_bits(&self, mut n: usize) -> Self {
         let n = self.n;
@@ -301,7 +301,7 @@ impl VopeDyn<BitsInBytes> {
     let BitsInBytes(prev) = v[(((i + n) - 1) % n)].clone();
     let BitsInBytes(b) = v[i].clone();
     BitsInBytes((prev.shl((8 - (n as u32))) | b.shr((n as u32))))
-}).collect::<Vec<_>>(), n: n, k: k }
+}).collect::<Vec<_>>(), n: n, k: 1 }
     }
     pub fn bit(&self, mut n: u8) -> VopeDyn<Bit> {
         let n = self.n;
@@ -334,7 +334,7 @@ impl VopeDyn<BitsInBytes64> {
     let BitsInBytes64(b) = v[i].clone();
     let BitsInBytes64(next) = v[((i + 1) % n)].clone();
     BitsInBytes64((b.shl((n as u32)) | next.shr((64 - (n as u32)))))
-}).collect::<Vec<_>>(), n: n, k: k }
+}).collect::<Vec<_>>(), n: n, k: 1 }
     }
     pub fn rotate_right_bits(&self, mut n: usize) -> Self {
         let n = self.n;
@@ -350,7 +350,7 @@ impl VopeDyn<BitsInBytes64> {
     let BitsInBytes64(prev) = v[(((i + n) - 1) % n)].clone();
     let BitsInBytes64(b) = v[i].clone();
     BitsInBytes64((prev.shl((64 - (n as u32))) | b.shr((n as u32))))
-}).collect::<Vec<_>>(), n: n, k: k }
+}).collect::<Vec<_>>(), n: n, k: 1 }
     }
     pub fn bit(&self, mut n: u8) -> VopeDyn<Bit> {
         let n = self.n;
@@ -375,7 +375,7 @@ impl<T: Clone> Clone for VopeDyn<T> {
         let VopeDyn { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {
     (0..n).map(|i| u[l][i].clone()).collect::<Vec<_>>()
-}).collect::<Vec<_>>(), v: (0..n).map(|i| v[i].clone()).collect::<Vec<_>>(), n: n, k: k }
+}).collect::<Vec<_>>(), v: (0..n).map(|i| v[i].clone()).collect::<Vec<_>>(), n: n, k: 1 }
     }
 }
 
@@ -573,7 +573,7 @@ impl DeltaDyn<BitsInBytes64> {
 impl<T> VopeDyn<T>// UNCONSTRAINED GENERICS at generated.rs line 574: T
  {
     pub fn constant(mut v: Vec<T>) -> Self {
-        VopeDyn { u: (0..0).map(|_| compile_error!("Unsupported expression: Macro { name: 'unreachable', tokens: '' }")).collect::<Vec<_>>(), v: v, n: n, k: k }
+        VopeDyn { u: (0..0).map(|_| compile_error!("Unsupported expression: Macro { name: 'unreachable', tokens: '' }")).collect::<Vec<_>>(), v: v, n: n, k: 1 }
     }
 }
 
@@ -583,7 +583,7 @@ impl<T: Add<U, Output = O> + Clone, U: Clone, O> Add<VopeDyn<U>> for VopeDyn<T>/
     fn add(self, mut rhs: VopeDyn<U>) -> Self::Output {
         let n = self.n;
         let k = self.k;
-        VopeDyn { u: self.u.clone().into_iter().zip(rhs.u.clone().into_iter()).map(|(a, b)| a.clone().into_iter().zip(b.clone().into_iter()).map(|(a, b)| (a + b)).collect::<Vec<_>>()).collect::<Vec<_>>(), v: self.v.clone().into_iter().zip(rhs.v.clone().into_iter()).map(|(a, b)| (a + b)).collect::<Vec<_>>(), n: n, k: k }
+        VopeDyn { u: self.u.clone().into_iter().zip(rhs.u.clone().into_iter()).map(|(a, b)| a.clone().into_iter().zip(b.clone().into_iter()).map(|(a, b)| (a + b)).collect::<Vec<_>>()).collect::<Vec<_>>(), v: self.v.clone().into_iter().zip(rhs.v.clone().into_iter()).map(|(a, b)| (a + b)).collect::<Vec<_>>(), n: n, k: 1 }
     }
 }
 
@@ -598,7 +598,7 @@ impl<T: BitXor<U, Output = O> + Clone + Into<O> + Into<O>, U: Clone, O> BitXor<V
     let o: O = self.u[i][j].clone().bitxor(rhs[((i * k) + j)].clone());
     o
 }).collect::<Vec<_>>()
-}).collect::<Vec<_>>(), v: self.v.clone().into_iter().map(|a| a.into()).collect::<Vec<_>>(), n: n, k: k }
+}).collect::<Vec<_>>(), v: self.v.clone().into_iter().map(|a| a.into()).collect::<Vec<_>>(), n: n, k: 1 }
     }
 }
 
@@ -777,7 +777,7 @@ pub fn create_vole_from_material<B: ByteBlockEncrypt, X: AsRef<[u8]>>(mut s: &[X
     let v: Vec<u8> = s.iter().enumerate().fold(Vec::<u8>::new(), |a, (i, b)| {
     a.clone().into_iter().zip((0..<B::BlockSize as typenum::Unsigned>::USIZE).map(|i| b.as_ref()[i]).collect::<Vec<_>>().clone().into_iter()).map(|(a, b)| a.bitxor(b).bitxor((i as u8))).collect::<Vec<_>>()
 });
-    VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<_>>(), v: v, n: 0, k: k }
+    VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<_>>(), v: v, n: <<B as cipher::BlockSizeUser>::BlockSize as typenum::Unsigned>::USIZE, k: 1 }
 }
 
 pub fn create_vole_from_material_expanded<B: ByteBlockEncrypt, X: AsRef<[u8]>, Y: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(mut s: &[Y], mut f: F) -> VopeDyn<u8> {
@@ -787,11 +787,11 @@ pub fn create_vole_from_material_expanded<B: ByteBlockEncrypt, X: AsRef<[u8]>, Y
     let v: Vec<u8> = s.iter().clone().into_iter().map(|b| f(&b.as_ref()[(0 .. <B::BlockSize as typenum::Unsigned>::USIZE)])).collect::<Vec<_>>().into_iter().enumerate().fold(Vec::<u8>::new(), |a, (i, b)| {
     a.clone().into_iter().zip((0..<B::BlockSize as typenum::Unsigned>::USIZE).map(|i| b.as_ref()[i]).collect::<Vec<_>>().clone().into_iter()).map(|(a, b)| a.bitxor(b).bitxor((i as u8))).collect::<Vec<_>>()
 });
-    VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<_>>(), v: v, n: 0, k: k }
+    VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<_>>(), v: v, n: <<B as cipher::BlockSizeUser>::BlockSize as typenum::Unsigned>::USIZE, k: 1 }
 }
 
 pub fn double<B: ByteBlockEncrypt>(mut a: Vec<u8>) -> Vec<Vec<u8>> {
-    return (0..n).map(|i| {
+    return (0..2).map(|i| {
     let mut out = a.clone();
     let mut b = B::from(compile_error!("Unsupported expression: Repeat { elem: Cast { expr: Var('i'), ty: Primitive(U8) }, len: Lit(Int(32)) }"));
     b.encrypt_block(cipher::Block::<_>::from_mut_slice(&mut out));
