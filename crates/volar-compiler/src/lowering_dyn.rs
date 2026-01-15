@@ -1068,7 +1068,12 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                             if segments.len() == 2 && segments[1] == "OutputSize" =>
                         {
                             return IrExpr::TypenumUsize {
-                                tokens: format!("{}::{}", segments[0], segments[1]),
+                                ty: Box::new(IrType::Projection {
+                                    base: Box::new(IrType::TypeParam(segments[0].clone())),
+                                    trait_path: None,
+                                    trait_args: Vec::new(),
+                                    assoc: AssociatedType::from_str(&segments[1]),
+                                }),
                             };
                         }
                         _ => {}
@@ -1438,7 +1443,12 @@ fn lower_array_length(len: &ArrayLength) -> ArrayLength {
     match len {
         ArrayLength::Projection { r#type, field } => {
             ArrayLength::Computed(Box::new(IrExpr::TypenumUsize {
-                tokens: format!("{}::{}", r#type, field),
+                ty: Box::new(IrType::Projection {
+                    base: Box::new((**r#type).clone()),
+                    trait_path: None,
+                    trait_args: Vec::new(),
+                    assoc: AssociatedType::from_str(field),
+                }),
             }))
         }
         ArrayLength::TypeParam(p) => {
@@ -1449,7 +1459,23 @@ fn lower_array_length(len: &ArrayLength) -> ArrayLength {
                 // This is a type projection like B::BlockSize
                 // Keep as computed expression that uses typenum_usize macro
                 ArrayLength::Computed(Box::new(IrExpr::TypenumUsize {
-                    tokens: p.clone(),
+                    ty: Box::new(if p.contains("::") {
+                        // If it's a projection like B::BlockSize, construct Projection
+                        let parts: Vec<String> = p.split("::").map(|s| s.to_string()).collect();
+                        if parts.len() == 2 && parts[0].chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                            IrType::Projection {
+                                base: Box::new(IrType::TypeParam(parts[0].clone())),
+                                trait_path: None,
+                                trait_args: Vec::new(),
+                                assoc: AssociatedType::from_str(&parts[1]),
+                            }
+                        } else {
+                            IrType::Param { path: parts }
+                        }
+                    } else {
+                        // Fallback: treat as a Param path (shouldn't normally happen)
+                        IrType::Param { path: vec![p.clone()] }
+                    })
                 }))
             } else {
                 // Otherwise lowercase it to a runtime variable

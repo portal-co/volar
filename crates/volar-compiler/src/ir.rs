@@ -969,7 +969,7 @@ pub enum IrExpr {
         inclusive: bool,
     },
     TypenumUsize {
-        tokens: String,
+        ty: Box<IrType>,
     },
     Unreachable,
     Try(Box<IrExpr>),

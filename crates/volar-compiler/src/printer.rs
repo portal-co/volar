@@ -832,12 +832,12 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
                 write_expr(out, e);
             }
         }
-        IrExpr::TypenumUsize { tokens } => {
-            write!(out, "<{} as typenum::Unsigned>::USIZE", tokens).unwrap();
+        IrExpr::TypenumUsize { ty } => {
+            write!(out, "<").unwrap();
+            write_type(out, ty);
+            write!(out, " as typenum::Unsigned>::USIZE").unwrap();
         }
-        IrExpr::Unreachable => {
-            write!(out, "unreachable!()").unwrap();
-        }
+        IrExpr::Unreachable => write!(out, "unreachable!()").unwrap(),
         _ => {
             let msg = format!("{:?}", expr).replace('"', "'");
             write!(

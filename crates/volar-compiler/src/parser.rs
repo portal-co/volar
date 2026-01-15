@@ -1047,12 +1047,19 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
         )),
         Expr::Macro(m) => {
             let name = m.mac.path.segments.last().unwrap().ident.to_string();
-            let tokens = m.mac.tokens.to_string();
-            match name.as_str() {
-                "typenum_usize" => Ok(IrExpr::TypenumUsize { tokens }),
-                "unreachable" => Ok(IrExpr::Unreachable),
-                other => Err(CompilerError::Unsupported(format!("macro: {}", other))),
+            if name == "unreachable" {
+                return Ok(IrExpr::Unreachable);
             }
+            // For typenum_usize, parse the token stream as a type and convert it
+            if name == "typenum_usize" {
+                let parsed_ty: Type = syn::parse2(m.mac.tokens.clone()).map_err(|e| {
+                    CompilerError::ParseError(format!("Failed to parse typenum_usize tokens: {}", e))
+                })?;
+                let ir_ty = convert_type(&parsed_ty)?;
+                return Ok(IrExpr::TypenumUsize { ty: Box::new(ir_ty) });
+            }
+
+            Err(CompilerError::Unsupported(format!("macro: {}", name)))
         }
         _ => Err(CompilerError::Unsupported(format!("{:?}", expr))),
     }
