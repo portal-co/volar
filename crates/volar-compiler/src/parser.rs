@@ -1045,10 +1045,15 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                 .map(convert_expr)
                 .collect::<Result<Vec<_>>>()?,
         )),
-        Expr::Macro(m) => Ok(IrExpr::Macro {
-            name: m.mac.path.segments.last().unwrap().ident.to_string(),
-            tokens: m.mac.tokens.to_string(),
-        }),
+        Expr::Macro(m) => {
+            let name = m.mac.path.segments.last().unwrap().ident.to_string();
+            let tokens = m.mac.tokens.to_string();
+            match name.as_str() {
+                "typenum_usize" => Ok(IrExpr::TypenumUsize { tokens }),
+                "unreachable" => Ok(IrExpr::Unreachable),
+                other => Err(CompilerError::Unsupported(format!("macro: {}", other))),
+            }
+        }
         _ => Err(CompilerError::Unsupported(format!("{:?}", expr))),
     }
 }

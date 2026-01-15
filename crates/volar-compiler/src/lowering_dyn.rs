@@ -1067,8 +1067,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                         IrExpr::Path { segments, .. }
                             if segments.len() == 2 && segments[1] == "OutputSize" =>
                         {
-                            return IrExpr::Macro {
-                                name: "typenum_usize".to_string(),
+                            return IrExpr::TypenumUsize {
                                 tokens: format!("{}::{}", segments[0], segments[1]),
                             };
                         }
@@ -1415,10 +1414,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             left: Box::new(lower_expr_dyn(left, ctx, fn_gen)),
             right: Box::new(lower_expr_dyn(right, ctx, fn_gen)),
         },
-        IrExpr::Macro { name, tokens } if name == "unreachable" => IrExpr::Macro {
-            name: name.clone(),
-            tokens: tokens.clone(),
-        },
+        IrExpr::Unreachable => IrExpr::Unreachable,
         IrExpr::Range {
             start,
             end,
@@ -1441,8 +1437,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
 fn lower_array_length(len: &ArrayLength) -> ArrayLength {
     match len {
         ArrayLength::Projection { r#type, field } => {
-            ArrayLength::Computed(Box::new(IrExpr::Macro {
-                name: "typenum_usize".to_string(),
+            ArrayLength::Computed(Box::new(IrExpr::TypenumUsize {
                 tokens: format!("{}::{}", r#type, field),
             }))
         }
@@ -1453,8 +1448,7 @@ fn lower_array_length(len: &ArrayLength) -> ArrayLength {
             } else if p.contains("::") {
                 // This is a type projection like B::BlockSize
                 // Keep as computed expression that uses typenum_usize macro
-                ArrayLength::Computed(Box::new(IrExpr::Macro {
-                    name: "typenum_usize".to_string(),
+                ArrayLength::Computed(Box::new(IrExpr::TypenumUsize {
                     tokens: p.clone(),
                 }))
             } else {

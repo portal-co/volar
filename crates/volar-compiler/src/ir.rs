@@ -968,10 +968,10 @@ pub enum IrExpr {
         end: Option<Box<IrExpr>>,
         inclusive: bool,
     },
-    Macro {
-        name: String,
+    TypenumUsize {
         tokens: String,
     },
+    Unreachable,
     Try(Box<IrExpr>),
 }
 
