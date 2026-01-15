@@ -226,6 +226,12 @@ pub enum StructKind {
     Custom(String),
 }
 
+impl Default for StructKind {
+    fn default() -> Self {
+        Self::Custom("Unknown".to_string())
+    }
+}
+
 impl StructKind {
     pub fn from_str(s: &str) -> Self {
         match s {
