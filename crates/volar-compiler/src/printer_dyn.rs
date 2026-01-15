@@ -1631,6 +1631,14 @@ fn write_type_dyn(
             write!(out, " as {}>::{}", trait_name, assoc_name).unwrap();
         }
 
+        IrType::Existential { bounds } => {
+            write!(out, "impl ").unwrap();
+            for (i, b) in bounds.iter().enumerate() {
+                if i > 0 { write!(out, " + ").unwrap(); }
+                write!(out, "{}", bname(b, cur_params, struct_info)).unwrap();
+            }
+        }
+
         ty => {
             let msg = format!("{ty:?}").replace('"', "'");
             write!(out, "compile_error!(\"Unsupported type: {}\")", msg).unwrap();
@@ -1806,7 +1814,7 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                             .unwrap_or(false)
                         {
                             // Likely a type parameter like `O::new()`
-                            write!(out, "{}::new()", receiver).unwrap();
+                            write!(out, "{}::default()", receiver).unwrap();
                         } else {
                             write!(out, "{}", receiver).unwrap();
                             if let Some(a) = type_args.get(0) {
@@ -1840,13 +1848,44 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                         return;
                     }
                 }
-                // todo!("Handle other path calls: {segments:?}");
-                let msg = format!("{:?}", segments).replace('"', "'");
-                write!(out, "compile_error!(\"Unhandled path call: {}\")", msg).unwrap();
-                return;
-            } else {
-                write_expr_dyn(out, func, ctx);
-                write!(out, "(").unwrap();
+            }
+
+            write_expr_dyn(out, func, ctx);
+
+            // Special case: propagate crypto parameters for known free functions if missing
+            let (name, is_free_func) = match func.as_ref() {
+                IrExpr::Var(v) => (v.as_str(), true),
+                IrExpr::Path { segments, .. } => (segments.last().map(|s| s.as_str()).unwrap_or(""), segments.len() == 1),
+                _ => ("", false),
+            };
+            let has_type_args = match func.as_ref() {
+                IrExpr::Path { type_args, .. } => !type_args.is_empty(),
+                _ => false,
+            };
+
+            if is_free_func && !has_type_args {
+                if name == "create_vole_from_material" {
+                    if let Some((b_name, _)) = ctx.cur_params.iter().find(|(n, (_, k))| *k == GenericKind::Crypto && n.starts_with('B'))
+                        .or_else(|| ctx.cur_params.iter().find(|(_, (_, k))| *k == GenericKind::Crypto)) 
+                    {
+                        write!(out, "::<{}, _>", b_name).unwrap();
+                    }
+                } else if name == "create_vole_from_material_expanded" {
+                    if let Some((b_name, _)) = ctx.cur_params.iter().find(|(n, (_, k))| *k == GenericKind::Crypto && n.starts_with('B'))
+                        .or_else(|| ctx.cur_params.iter().find(|(_, (_, k))| *k == GenericKind::Crypto)) 
+                    {
+                        write!(out, "::<{}, _, _, _>", b_name).unwrap();
+                    }
+                } else if name == "double" {
+                    if let Some((b_name, _)) = ctx.cur_params.iter().find(|(n, (_, k))| *k == GenericKind::Crypto && n.starts_with('B'))
+                        .or_else(|| ctx.cur_params.iter().find(|(_, (_, k))| *k == GenericKind::Crypto)) 
+                    {
+                        write!(out, "::<{}>", b_name).unwrap();
+                    }
+                }
+            }
+
+            write!(out, "(").unwrap();
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         write!(out, ", ").unwrap();
@@ -1882,7 +1921,6 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                     }
                 }
                 write!(out, ")").unwrap();
-            }
         }
 
         IrExpr::MethodCall {
@@ -1897,7 +1935,11 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                     VoleMethod::Remap => "remap".to_string(),
                     VoleMethod::RotateLeft => "rotate_left".to_string(),
                 },
-                MethodKind::Crypto(c) => format!("{:?}", c).to_lowercase(),
+                MethodKind::Crypto(c) => match c {
+                    CryptoMethod::EncryptBlock => "encrypt_block".to_string(),
+                    CryptoMethod::GenAbo => "gen_abo".to_string(),
+                    _ => format!("{:?}", c).to_lowercase(),
+                },
                 MethodKind::Unknown(s) => s.clone(),
             };
 
