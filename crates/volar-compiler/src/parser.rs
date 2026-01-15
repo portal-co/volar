@@ -452,7 +452,7 @@ fn convert_trait_bound(b: &syn::TraitBound) -> Result<IrTraitBound> {
                 TraitKind::from_path(&path_names)
             }
         }
-        Some("FnMut") => {
+        Some("FnMut") | Some("Fn") => {
             if let syn::PathArguments::Parenthesized(args) = &last_segment.arguments {
                 // We support a single input which must be either `&[u8]` or `usize`.
                 let input_kind = if args.inputs.len() == 1 {

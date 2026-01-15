@@ -66,7 +66,7 @@ pub struct PolyDyn<T> {
 pub struct PolyInputPoolDyn<'a, T> {
     pub n: usize,
     pub x: usize,
-    pub inputs: &[T],
+    pub inputs: &'a [T],
     pub indices: Vec<Vec<usize>>,
 }
 

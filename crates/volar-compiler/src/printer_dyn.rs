@@ -549,13 +549,19 @@ fn write_struct_dyn(out: &mut String, s: &IrStruct, struct_info: &BTreeMap<Strin
             }
             write!(out, "pub usize").unwrap();
         }
+        let struct_lt = info.lifetimes.first().map(|s| s.as_str());
+        let type_ctx = TypeContext {
+            cur_params: &cur_params,
+            struct_info,
+            lifetime: struct_lt,
+        };
         // Then: actual fields
         for (i, f) in s.fields.iter().enumerate() {
             if i > 0 || !info.length_witnesses.is_empty() {
                 write!(out, ", ").unwrap();
             }
             write!(out, "pub ").unwrap();
-            write_type_dyn(out, &f.ty, &cur_params, struct_info);
+            write_type_dyn(out, &f.ty, &type_ctx);
         }
         writeln!(out, ");").unwrap();
     } else {
@@ -568,9 +574,15 @@ fn write_struct_dyn(out: &mut String, s: &IrStruct, struct_info: &BTreeMap<Strin
         }
 
         // Regular fields
+        let struct_lt = info.lifetimes.first().map(|s| s.as_str());
+        let type_ctx = TypeContext {
+            cur_params: &cur_params,
+            struct_info,
+            lifetime: struct_lt,
+        };
         for f in &s.fields {
             write!(out, "    pub {}: ", f.name).unwrap();
-            write_type_dyn(out, &f.ty, &cur_params, struct_info);
+            write_type_dyn(out, &f.ty, &type_ctx);
             writeln!(out, ",").unwrap();
         }
 
@@ -612,7 +624,12 @@ fn bname(
         struct_info: &BTreeMap<String, StructInfo>,
     ) -> String {
         let mut s = String::new();
-        write_type_dyn(&mut s, ty, cur_params, struct_info);
+        let type_ctx = TypeContext {
+            cur_params,
+            struct_info,
+            lifetime: None,
+        };
+        write_type_dyn(&mut s, ty, &type_ctx);
         s
     }
 
@@ -747,7 +764,12 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
                     }
                 }
                 let mut s = String::new();
-                if write_type_dyn(&mut s, arg, &generics, struct_info) {
+                let type_ctx = TypeContext {
+                    cur_params: &generics,
+                    struct_info,
+                    lifetime: None,
+                };
+                if write_type_dyn(&mut s, arg, &type_ctx) {
                     concrete.push(s);
                 }
             }
@@ -923,7 +945,12 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
             let mut ta_parts: Vec<String> = Vec::new();
             for ta in &tr.type_args {
                 let mut s = String::new();
-                write_type_dyn(&mut s, ta, &cur_params, struct_info);
+                let type_ctx = TypeContext {
+                    cur_params: &cur_params,
+                    struct_info,
+                    lifetime: None,
+                };
+                write_type_dyn(&mut s, ta, &type_ctx);
                 ta_parts.push(s);
             }
             trait_name = format!("{}<{}>", trait_name, ta_parts.join(", "));
@@ -991,7 +1018,12 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
                 }
                 // Format the left-hand type
                 let mut lhs = String::new();
-                write_type_dyn(&mut lhs, ty, &cur_params, struct_info);
+                let type_ctx = TypeContext {
+                    cur_params: &cur_params,
+                    struct_info,
+                    lifetime: None,
+                };
+                write_type_dyn(&mut lhs, ty, &type_ctx);
                 // Format bounds
                 let bstr = bounds
                     .iter()
@@ -1065,7 +1097,12 @@ fn write_impl_dyn(out: &mut String, i: &IrImpl, struct_info: &BTreeMap<String, S
                     AssociatedType::Other(s) => s.clone(),
                 };
                 write!(out, "    type {} = ", an).unwrap();
-                write_type_dyn(out, ty, &cur_params, struct_info);
+                let type_ctx = TypeContext {
+                    cur_params: &cur_params,
+                    struct_info,
+                    lifetime: None,
+                };
+                write_type_dyn(out, ty, &type_ctx);
                 writeln!(out, ";").unwrap();
             }
         }
@@ -1339,7 +1376,12 @@ fn write_function_dyn(
                     continue;
                 }
                 let mut lhs = String::new();
-                write_type_dyn(&mut lhs, ty, &cur_params, struct_info);
+                let type_ctx = TypeContext {
+                    cur_params: &cur_params,
+                    struct_info,
+                    lifetime: None,
+                };
+                write_type_dyn(&mut lhs, ty, &type_ctx);
                 let bstr = bounds
                     .iter()
                     .map(|b| bname(b, &cur_params, struct_info))
@@ -1394,7 +1436,12 @@ fn write_function_dyn(
             write!(out, ", ").unwrap();
         }
         write!(out, "mut {}: ", p.name).unwrap();
-        write_type_dyn(out, &p.ty, &cur_params, struct_info);
+        let type_ctx = TypeContext {
+            cur_params: &cur_params,
+            struct_info,
+            lifetime: None,
+        };
+        write_type_dyn(out, &p.ty, &type_ctx);
         param_count += 1;
     }
 
@@ -1426,7 +1473,12 @@ fn write_function_dyn(
         }
         if !emitted {
             write!(out, " -> ").unwrap();
-            write_type_dyn(out, ret, &cur_params, struct_info);
+            let type_ctx = TypeContext {
+                cur_params: &cur_params,
+                struct_info,
+                lifetime: None,
+            };
+            write_type_dyn(out, ret, &type_ctx);
         }
     }
 
@@ -1483,34 +1535,37 @@ fn write_function_dyn(
     writeln!(out, "{}}}", indent).unwrap();
 }
 
-fn write_type_dyn(
-    out: &mut String,
-    ty: &IrType,
-    cur_params: &BTreeMap<String, (String, GenericKind)>,
-    struct_info: &BTreeMap<String, StructInfo>,
-) -> bool {
+/// Context for type generation
+struct TypeContext<'a> {
+    cur_params: &'a BTreeMap<String, (String, GenericKind)>,
+    struct_info: &'a BTreeMap<String, StructInfo>,
+    lifetime: Option<&'a str>,
+}
+
+fn write_type_dyn(out: &mut String, ty: &IrType, ctx: &TypeContext) -> bool {
+    let cur_params = ctx.cur_params;
+    let struct_info = ctx.struct_info;
+
     match ty {
         IrType::Primitive(p) => write!(out, "{}", p).unwrap(),
 
-        IrType::Array { kind, elem, .. } => {
-            match kind {
-                ArrayKind::Slice => {
-                    write!(out, "[").unwrap();
-                    write_type_dyn(out, elem, cur_params, struct_info);
-                    write!(out, "]").unwrap();
-                }
-                _ => {
-                    // GenericArray<T, N> -> Vec<T>
-                    write!(out, "Vec<").unwrap();
-                    write_type_dyn(out, elem, cur_params, struct_info);
-                    write!(out, ">").unwrap();
-                }
+        IrType::Array { kind, elem, .. } => match kind {
+            ArrayKind::Slice => {
+                write!(out, "[").unwrap();
+                write_type_dyn(out, elem, ctx);
+                write!(out, "]").unwrap();
             }
-        }
+            _ => {
+                // GenericArray<T, N> -> Vec<T>
+                write!(out, "Vec<").unwrap();
+                write_type_dyn(out, elem, ctx);
+                write!(out, ">").unwrap();
+            }
+        },
 
         IrType::Vector { elem } => {
             write!(out, "Vec<").unwrap();
-            write_type_dyn(out, elem, cur_params, struct_info);
+            write_type_dyn(out, elem, ctx);
             write!(out, ">").unwrap();
         }
 
@@ -1541,7 +1596,7 @@ fn write_type_dyn(
                         }
                     }
                     let mut s = String::new();
-                    if write_type_dyn(&mut s, arg, &cur_params, struct_info) {
+                    if write_type_dyn(&mut s, arg, ctx) {
                         parts.push(s);
                     }
                 }
@@ -1553,7 +1608,7 @@ fn write_type_dyn(
                 let mut parts: Vec<String> = Vec::new();
                 for arg in type_args.iter() {
                     let mut s = String::new();
-                    if write_type_dyn(&mut s, arg, &cur_params, struct_info) {
+                    if write_type_dyn(&mut s, arg, ctx) {
                         parts.push(s);
                     }
                 }
@@ -1595,7 +1650,7 @@ fn write_type_dyn(
             let mut parts: Vec<String> = Vec::new();
             for elem in elems.iter() {
                 let mut s = String::new();
-                if write_type_dyn(&mut s, elem, cur_params, struct_info) {
+                if write_type_dyn(&mut s, elem, ctx) {
                     parts.push(s);
                 }
             }
@@ -1605,16 +1660,19 @@ fn write_type_dyn(
         IrType::Unit => write!(out, "()").unwrap(),
 
         IrType::Reference { mutable, elem, .. } => {
-            // Use anonymous lifetime for simpler code
-            write!(out, "&{}", if *mutable { "mut " } else { "" }).unwrap();
-            return write_type_dyn(out, elem, cur_params, struct_info);
+            if let Some(lt) = ctx.lifetime {
+                write!(out, "&{} {}", lt, if *mutable { "mut " } else { "" }).unwrap();
+            } else {
+                write!(out, "&{}", if *mutable { "mut " } else { "" }).unwrap();
+            }
+            return write_type_dyn(out, elem, ctx);
         }
 
         IrType::Projection { base, assoc } => {
             // For associated types like <T as Add>::Output, emit the full qualified path
             // In dynamic code, we keep the same structure
             write!(out, "<").unwrap();
-            write_type_dyn(out, base, cur_params, struct_info);
+            write_type_dyn(out, base, ctx);
             // Infer the trait from the associated type
             let trait_name = match assoc {
                 AssociatedType::Output => "core::ops::Add",
@@ -1638,7 +1696,9 @@ fn write_type_dyn(
         IrType::Existential { bounds } => {
             write!(out, "impl ").unwrap();
             for (i, b) in bounds.iter().enumerate() {
-                if i > 0 { write!(out, " + ").unwrap(); }
+                if i > 0 {
+                    write!(out, " + ").unwrap();
+                }
                 write!(out, "{}", bname(b, cur_params, struct_info)).unwrap();
             }
         }
@@ -1700,12 +1760,22 @@ fn type_to_runtime_usize(ty: &IrType, ctx: &ExprContext) -> String {
         }
         IrType::Projection { .. } => {
             let mut s = String::new();
-            write_type_dyn(&mut s, ty, ctx.cur_params, ctx.struct_info);
+            let type_ctx = TypeContext {
+                cur_params: ctx.cur_params,
+                struct_info: ctx.struct_info,
+                lifetime: None,
+            };
+            write_type_dyn(&mut s, ty, &type_ctx);
             format!("<{} as typenum::Unsigned>::USIZE", s)
         }
         _ => {
             let mut s = String::new();
-            write_type_dyn(&mut s, ty, ctx.cur_params, ctx.struct_info);
+            let type_ctx = TypeContext {
+                cur_params: ctx.cur_params,
+                struct_info: ctx.struct_info,
+                lifetime: None,
+            };
+            write_type_dyn(&mut s, ty, &type_ctx);
             "0".to_string() // Dummy value
         }
     }
@@ -1739,11 +1809,21 @@ fn write_stmt_dyn(out: &mut String, stmt: &IrStmt, level: usize, ctx: &ExprConte
                 write!(out, "mut ").unwrap();
             }
 
-            write_pattern_dyn(out, pattern, ctx.cur_params, ctx.struct_info);
+            let type_ctx = TypeContext {
+                cur_params: ctx.cur_params,
+                struct_info: ctx.struct_info,
+                lifetime: None,
+            };
+            write_pattern_dyn(out, pattern, &type_ctx);
 
             if let Some(t) = ty {
                 write!(out, ": ").unwrap();
-                write_type_dyn(out, t, ctx.cur_params, ctx.struct_info);
+                let type_ctx = TypeContext {
+                    cur_params: ctx.cur_params,
+                    struct_info: ctx.struct_info,
+                    lifetime: None,
+                };
+                write_type_dyn(out, t, &type_ctx);
             }
 
             if let Some(i) = init {
@@ -1842,7 +1922,12 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                             write!(out, "Vec").unwrap();
                             if let Some(a) = type_args.get(0) {
                                 write!(out, "::<").unwrap();
-                                write_type_dyn(out, a, ctx.cur_params, ctx.struct_info);
+                                let type_ctx = TypeContext {
+                                    cur_params: ctx.cur_params,
+                                    struct_info: ctx.struct_info,
+                                    lifetime: None,
+                                };
+                                write_type_dyn(out, a, &type_ctx);
                                 write!(out, ">").unwrap();
                             } else {
                                 write!(out, "<compile_error!(\"type not found a\")>").unwrap();
@@ -1860,7 +1945,12 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                             write!(out, "{}", receiver).unwrap();
                             if let Some(a) = type_args.get(0) {
                                 write!(out, "::<").unwrap();
-                                write_type_dyn(out, a, ctx.cur_params, ctx.struct_info);
+                                let type_ctx = TypeContext {
+                                    cur_params: ctx.cur_params,
+                                    struct_info: ctx.struct_info,
+                                    lifetime: None,
+                                };
+                                write_type_dyn(out, a, &type_ctx);
                                 write!(out, ">").unwrap();
                             }
                             write!(out, "::new()").unwrap();
@@ -2207,7 +2297,12 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             writeln!(out, " {{").unwrap();
             for arm in arms {
                 write!(out, "    ").unwrap();
-                write_pattern_dyn(out, &arm.pattern, ctx.cur_params, ctx.struct_info);
+                let type_ctx = TypeContext {
+                    cur_params: ctx.cur_params,
+                    struct_info: ctx.struct_info,
+                    lifetime: None,
+                };
+                write_pattern_dyn(out, &arm.pattern, &type_ctx);
                 write!(out, " => ").unwrap();
                 write_expr_dyn(out, &arm.body, ctx);
                 writeln!(out, ",").unwrap();
@@ -2256,7 +2351,12 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
                     write!(out, "Vec").unwrap();
                     if let Some(a) = type_args.get(0) {
                         write!(out, "::<").unwrap();
-                        write_type_dyn(out, a, ctx.cur_params, ctx.struct_info);
+                        let type_ctx = TypeContext {
+                            cur_params: ctx.cur_params,
+                            struct_info: ctx.struct_info,
+                            lifetime: None,
+                        };
+                        write_type_dyn(out, a, &type_ctx);
                         write!(out, ">").unwrap();
                     } else {
                         write!(out, "<compile_error!(\"type not found b\")>").unwrap();
@@ -2302,11 +2402,16 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             write!(out, "{}", segments.join("::")).unwrap();
             if !type_args.is_empty() {
                 write!(out, "::<").unwrap();
+                let type_ctx = TypeContext {
+                    cur_params: ctx.cur_params,
+                    struct_info: ctx.struct_info,
+                    lifetime: None,
+                };
                 for (i, arg) in type_args.iter().enumerate() {
                     if i > 0 {
                         write!(out, ", ").unwrap();
                     }
-                    write_type_dyn(out, arg, ctx.cur_params, ctx.struct_info);
+                    write_type_dyn(out, arg, &type_ctx);
                 }
                 write!(out, ">").unwrap();
             }
@@ -2314,11 +2419,16 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
 
         IrExpr::Closure { params, body, .. } => {
             write!(out, "|").unwrap();
+            let type_ctx = TypeContext {
+                cur_params: ctx.cur_params,
+                struct_info: ctx.struct_info,
+                lifetime: None,
+            };
             for (i, p) in params.iter().enumerate() {
                 if i > 0 {
                     write!(out, ", ").unwrap();
                 }
-                write_pattern_dyn(out, &p.pattern, ctx.cur_params, ctx.struct_info);
+                write_pattern_dyn(out, &p.pattern, &type_ctx);
             }
             write!(out, "| ").unwrap();
             write_expr_dyn(out, body, ctx);
@@ -2329,7 +2439,12 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             write!(out, "(").unwrap();
             write_expr_dyn(out, expr, ctx);
             write!(out, " as ").unwrap();
-            write_type_dyn(out, ty, ctx.cur_params, ctx.struct_info);
+            let type_ctx = TypeContext {
+                cur_params: ctx.cur_params,
+                struct_info: ctx.struct_info,
+                lifetime: None,
+            };
+            write_type_dyn(out, ty, &type_ctx);
             write!(out, ")").unwrap();
         }
 
@@ -2428,7 +2543,12 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
             body,
         } => {
             write!(out, "for ").unwrap();
-            write_pattern_dyn(out, pattern, ctx.cur_params, ctx.struct_info);
+            let type_ctx = TypeContext {
+                cur_params: ctx.cur_params,
+                struct_info: ctx.struct_info,
+                lifetime: None,
+            };
+            write_pattern_dyn(out, pattern, &type_ctx);
             write!(out, " in ").unwrap();
             write_expr_dyn(out, collection, ctx);
             writeln!(out, " {{").unwrap();
@@ -2469,12 +2589,9 @@ fn write_expr_dyn(out: &mut String, expr: &IrExpr, ctx: &ExprContext) {
     }
 }
 
-fn write_pattern_dyn(
-    out: &mut String,
-    pat: &IrPattern,
-    cur_params: &BTreeMap<String, (String, GenericKind)>,
-    struct_info: &BTreeMap<String, StructInfo>,
-) {
+fn write_pattern_dyn(out: &mut String, pat: &IrPattern, ctx: &TypeContext) {
+    let cur_params = ctx.cur_params;
+    let struct_info = ctx.struct_info;
     match pat {
         IrPattern::Ident { name, .. } => write!(out, "{}", name).unwrap(),
         IrPattern::Wild => write!(out, "_").unwrap(),
@@ -2484,7 +2601,7 @@ fn write_pattern_dyn(
                 if i > 0 {
                     write!(out, ", ").unwrap();
                 }
-                write_pattern_dyn(out, p, cur_params, struct_info);
+                write_pattern_dyn(out, p, ctx);
             }
             write!(out, ")").unwrap();
         }
@@ -2514,7 +2631,7 @@ fn write_pattern_dyn(
                 if i > 0 {
                     write!(out, ", ").unwrap();
                 }
-                write_pattern_dyn(out, p, cur_params, struct_info);
+                write_pattern_dyn(out, p, ctx);
             }
             write!(out, ")").unwrap();
         }
@@ -2536,7 +2653,7 @@ fn write_pattern_dyn(
                     write!(out, ", ").unwrap();
                 }
                 write!(out, "{}: ", name).unwrap();
-                write_pattern_dyn(out, p, cur_params, struct_info);
+                write_pattern_dyn(out, p, ctx);
             }
             // Add `..` for Dyn structs and for `Self` patterns so existing
             // witness fields don't cause missing-field errors during destructuring.
@@ -2557,7 +2674,7 @@ fn write_pattern_dyn(
         }
         IrPattern::Ref { mutable, pat } => {
             write!(out, "&{}", if *mutable { "mut " } else { "" }).unwrap();
-            write_pattern_dyn(out, pat, cur_params, struct_info);
+            write_pattern_dyn(out, pat, ctx);
         }
         IrPattern::Slice(pats) => {
             write!(out, "[").unwrap();
@@ -2565,7 +2682,7 @@ fn write_pattern_dyn(
                 if i > 0 {
                     write!(out, ", ").unwrap();
                 }
-                write_pattern_dyn(out, p, cur_params, struct_info);
+                write_pattern_dyn(out, p, ctx);
             }
             write!(out, "]").unwrap();
         }
@@ -2575,7 +2692,7 @@ fn write_pattern_dyn(
                 if i > 0 {
                     write!(out, " | ").unwrap();
                 }
-                write_pattern_dyn(out, p, cur_params, struct_info);
+                write_pattern_dyn(out, p, ctx);
             }
         }
         IrPattern::Rest => write!(out, "..").unwrap(),
