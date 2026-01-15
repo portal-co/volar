@@ -518,8 +518,6 @@ pub enum MethodKind {
     Vole(VoleMethod),
     Crypto(CryptoMethod),
     Std(String),
-    /// Iterator-related methods (map, filter, iter, into_iter, etc.)
-    Iter(IterMethod),
     Unknown(String),
 }
 
@@ -540,11 +538,6 @@ impl MethodKind {
             | "checked_add" | "checked_sub" | "saturating_add" | "saturating_sub" | "bitxor"
             | "deref" => return Self::Std(s.to_string()),
             _ => {}
-        }
-
-        // Iterator methods
-        if let Some(im) = IterMethod::from_str(s) {
-            return Self::Iter(im);
         }
 
         Self::Unknown(s.to_string())
@@ -964,6 +957,48 @@ pub enum IrExpr {
     },
     ArrayFold {
         array: Box<IrExpr>,
+        init: Box<IrExpr>,
+        acc_var: String,
+        elem_var: String,
+        body: Box<IrExpr>,
+    },
+    // Iterator-style expressions (not method calls) for easier transforms
+    IterSource {
+        collection: Box<IrExpr>,
+        method: IterMethod,
+    },
+    IterEnumerate {
+        iter: Box<IrExpr>,
+    },
+    IterFilter {
+        iter: Box<IrExpr>,
+        elem_var: String,
+        body: Box<IrExpr>,
+    },
+    IterTake {
+        iter: Box<IrExpr>,
+        count: Box<IrExpr>,
+    },
+    IterSkip {
+        iter: Box<IrExpr>,
+        count: Box<IrExpr>,
+    },
+    IterChain {
+        left: Box<IrExpr>,
+        right: Box<IrExpr>,
+    },
+    IterFlatMap {
+        iter: Box<IrExpr>,
+        elem_var: String,
+        body: Box<IrExpr>,
+    },
+    IterFilterMap {
+        iter: Box<IrExpr>,
+        elem_var: String,
+        body: Box<IrExpr>,
+    },
+    IterFold {
+        iter: Box<IrExpr>,
         init: Box<IrExpr>,
         acc_var: String,
         elem_var: String,

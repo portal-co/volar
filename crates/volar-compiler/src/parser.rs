@@ -1200,6 +1200,77 @@ fn convert_method_call(receiver: &Expr, method: &str, args: &[&Expr]) -> Result<
                 });
             }
         }
+        "fold" if args.len() == 2 => {
+            // fold(init, |acc, x| ...)
+            if let Expr::Closure(c) = args[1] {
+                return Ok(IrExpr::ArrayFold {
+                    array: Box::new(convert_expr(receiver)?),
+                    init: Box::new(convert_expr(args[0])?),
+                    acc_var: extract_pat_name(&c.inputs[0]),
+                    elem_var: extract_pat_name(&c.inputs[1]),
+                    body: Box::new(convert_expr(&c.body)?),
+                });
+            }
+        }
+        "enumerate" if args.is_empty() => {
+            return Ok(IrExpr::IterEnumerate { iter: Box::new(convert_expr(receiver)?) });
+        }
+        "filter" if args.len() == 1 => {
+            if let Expr::Closure(c) = args[0] {
+                return Ok(IrExpr::IterFilter {
+                    iter: Box::new(convert_expr(receiver)?),
+                    elem_var: extract_pat_name(&c.inputs[0]),
+                    body: Box::new(convert_expr(&c.body)?),
+                });
+            }
+        }
+        "take" if args.len() == 1 => {
+            return Ok(IrExpr::IterTake {
+                iter: Box::new(convert_expr(receiver)?),
+                count: Box::new(convert_expr(args[0])?),
+            });
+        }
+        "skip" if args.len() == 1 => {
+            return Ok(IrExpr::IterSkip {
+                iter: Box::new(convert_expr(receiver)?),
+                count: Box::new(convert_expr(args[0])?),
+            });
+        }
+        "chain" if args.len() == 1 => {
+            return Ok(IrExpr::IterChain {
+                left: Box::new(convert_expr(receiver)?),
+                right: Box::new(convert_expr(args[0])?),
+            });
+        }
+        "flat_map" if args.len() == 1 => {
+            if let Expr::Closure(c) = args[0] {
+                return Ok(IrExpr::IterFlatMap {
+                    iter: Box::new(convert_expr(receiver)?),
+                    elem_var: extract_pat_name(&c.inputs[0]),
+                    body: Box::new(convert_expr(&c.body)?),
+                });
+            }
+        }
+        "filter_map" if args.len() == 1 => {
+            if let Expr::Closure(c) = args[0] {
+                return Ok(IrExpr::IterFilterMap {
+                    iter: Box::new(convert_expr(receiver)?),
+                    elem_var: extract_pat_name(&c.inputs[0]),
+                    body: Box::new(convert_expr(&c.body)?),
+                });
+            }
+        }
+        "iter" | "into_iter" | "chars" | "bytes" if args.is_empty() => {
+            // Source iterator methods
+            let method = match method {
+                "iter" => crate::ir::IterMethod::Iter,
+                "into_iter" => crate::ir::IterMethod::IntoIter,
+                "chars" => crate::ir::IterMethod::Chars,
+                "bytes" => crate::ir::IterMethod::Bytes,
+                _ => crate::ir::IterMethod::Iter,
+            };
+            return Ok(IrExpr::IterSource { collection: Box::new(convert_expr(receiver)?), method });
+        }
         _ => {}
     }
     Ok(IrExpr::MethodCall {

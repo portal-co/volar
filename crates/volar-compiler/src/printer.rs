@@ -436,13 +436,60 @@ fn write_stmt(out: &mut String, stmt: &IrStmt, level: usize) {
 /// Write an expression as part of an iterator chain (without final .collect())
 fn write_expr_chainable(out: &mut String, expr: &IrExpr) {
     match expr {
-        IrExpr::ArrayMap {
-            array,
-            elem_var,
-            body,
-        } => {
+        IrExpr::ArrayMap { array, elem_var, body } => {
             write_expr_chainable(out, array);
             write!(out, ".map(|{}| ", elem_var).unwrap();
+            write_expr(out, body);
+            write!(out, ")").unwrap();
+        }
+        IrExpr::IterSource { collection, method } => {
+            write_expr_chainable(out, collection);
+            let mname = match method {
+                crate::ir::IterMethod::Iter => "iter",
+                crate::ir::IterMethod::IntoIter => "into_iter",
+                crate::ir::IterMethod::Chars => "chars",
+                crate::ir::IterMethod::Bytes => "bytes",
+                _ => "iter",
+            };
+            write!(out, ".{}()", mname).unwrap();
+        }
+        IrExpr::IterEnumerate { iter } => {
+            write_expr_chainable(out, iter);
+            write!(out, ".enumerate()").unwrap();
+        }
+        IrExpr::IterFilter { iter, elem_var, body } => {
+            write_expr_chainable(out, iter);
+            write!(out, ".filter(|{}| ", elem_var).unwrap();
+            write_expr(out, body);
+            write!(out, ")").unwrap();
+        }
+        IrExpr::IterTake { iter, count } => {
+            write_expr_chainable(out, iter);
+            write!(out, ".take(").unwrap();
+            write_expr(out, count);
+            write!(out, ")").unwrap();
+        }
+        IrExpr::IterSkip { iter, count } => {
+            write_expr_chainable(out, iter);
+            write!(out, ".skip(").unwrap();
+            write_expr(out, count);
+            write!(out, ")").unwrap();
+        }
+        IrExpr::IterChain { left, right } => {
+            write_expr_chainable(out, left);
+            write!(out, ".chain(").unwrap();
+            write_expr(out, right);
+            write!(out, ")").unwrap();
+        }
+        IrExpr::IterFlatMap { iter, elem_var, body } => {
+            write_expr_chainable(out, iter);
+            write!(out, ".flat_map(|{}| ", elem_var).unwrap();
+            write_expr(out, body);
+            write!(out, ")").unwrap();
+        }
+        IrExpr::IterFilterMap { iter, elem_var, body } => {
+            write_expr_chainable(out, iter);
+            write!(out, ".filter_map(|{}| ", elem_var).unwrap();
             write_expr(out, body);
             write!(out, ")").unwrap();
         }
@@ -480,27 +527,27 @@ fn write_expr_chainable(out: &mut String, expr: &IrExpr) {
                     (snake, false, false)
                 }
                 MethodKind::Vole(v) => (format!("{:?}", v).to_lowercase(), false, false),
-                MethodKind::Iter(im) => {
-                    let name = match im {
-                        crate::ir::IterMethod::Iter => "iter",
-                        crate::ir::IterMethod::IntoIter => "into_iter",
-                        crate::ir::IterMethod::Chars => "chars",
-                        crate::ir::IterMethod::Bytes => "bytes",
-                        crate::ir::IterMethod::Enumerate => "enumerate",
-                        crate::ir::IterMethod::Filter => "filter",
-                        crate::ir::IterMethod::Take => "take",
-                        crate::ir::IterMethod::Skip => "skip",
-                        crate::ir::IterMethod::Map => "map",
-                        crate::ir::IterMethod::FlatMap => "flat_map",
-                        crate::ir::IterMethod::FilterMap => "filter_map",
-                        crate::ir::IterMethod::Fold => "fold",
-                        crate::ir::IterMethod::Chain => "chain",
-                    }
-                    .to_string();
-                    let is_source = matches!(im, crate::ir::IterMethod::Iter | crate::ir::IterMethod::IntoIter | crate::ir::IterMethod::Chars | crate::ir::IterMethod::Bytes);
-                    let is_transform = matches!(im, crate::ir::IterMethod::Enumerate | crate::ir::IterMethod::Filter | crate::ir::IterMethod::Take | crate::ir::IterMethod::Skip | crate::ir::IterMethod::Map | crate::ir::IterMethod::FlatMap | crate::ir::IterMethod::FilterMap);
-                    (name, is_source, is_transform)
-                }
+                // MethodKind::Iter(im) => {
+                //     let name = match im {
+                //         crate::ir::IterMethod::Iter => "iter",
+                //         crate::ir::IterMethod::IntoIter => "into_iter",
+                //         crate::ir::IterMethod::Chars => "chars",
+                //         crate::ir::IterMethod::Bytes => "bytes",
+                //         crate::ir::IterMethod::Enumerate => "enumerate",
+                //         crate::ir::IterMethod::Filter => "filter",
+                //         crate::ir::IterMethod::Take => "take",
+                //         crate::ir::IterMethod::Skip => "skip",
+                //         crate::ir::IterMethod::Map => "map",
+                //         crate::ir::IterMethod::FlatMap => "flat_map",
+                //         crate::ir::IterMethod::FilterMap => "filter_map",
+                //         crate::ir::IterMethod::Fold => "fold",
+                //         crate::ir::IterMethod::Chain => "chain",
+                //     }
+                //     .to_string();
+                //     let is_source = matches!(im, crate::ir::IterMethod::Iter | crate::ir::IterMethod::IntoIter | crate::ir::IterMethod::Chars | crate::ir::IterMethod::Bytes);
+                //     let is_transform = matches!(im, crate::ir::IterMethod::Enumerate | crate::ir::IterMethod::Filter | crate::ir::IterMethod::Take | crate::ir::IterMethod::Skip | crate::ir::IterMethod::Map | crate::ir::IterMethod::FlatMap | crate::ir::IterMethod::FilterMap);
+                //     (name, is_source, is_transform)
+                // }
                 MethodKind::Unknown(s) => (s.clone(), false, true),
             };
 
@@ -560,26 +607,26 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
                     (snake, false)
                 }
                 MethodKind::Vole(v) => (format!("{:?}", v).to_lowercase(), false),
-                MethodKind::Iter(im) => {
-                    let name = match im {
-                        crate::ir::IterMethod::Iter => "iter",
-                        crate::ir::IterMethod::IntoIter => "into_iter",
-                        crate::ir::IterMethod::Chars => "chars",
-                        crate::ir::IterMethod::Bytes => "bytes",
-                        crate::ir::IterMethod::Enumerate => "enumerate",
-                        crate::ir::IterMethod::Filter => "filter",
-                        crate::ir::IterMethod::Take => "take",
-                        crate::ir::IterMethod::Skip => "skip",
-                        crate::ir::IterMethod::Map => "map",
-                        crate::ir::IterMethod::FlatMap => "flat_map",
-                        crate::ir::IterMethod::FilterMap => "filter_map",
-                        crate::ir::IterMethod::Fold => "fold",
-                        crate::ir::IterMethod::Chain => "chain",
-                    }
-                    .to_string();
-                    let is_consumer = matches!(im, crate::ir::IterMethod::Fold | crate::ir::IterMethod::Enumerate | crate::ir::IterMethod::Filter | crate::ir::IterMethod::Take | crate::ir::IterMethod::Skip | crate::ir::IterMethod::Chain | crate::ir::IterMethod::FlatMap | crate::ir::IterMethod::FilterMap);
-                    (name, is_consumer)
-                }
+                // MethodKind::Iter(im) => {
+                //     let name = match im {
+                //         crate::ir::IterMethod::Iter => "iter",
+                //         crate::ir::IterMethod::IntoIter => "into_iter",
+                //         crate::ir::IterMethod::Chars => "chars",
+                //         crate::ir::IterMethod::Bytes => "bytes",
+                //         crate::ir::IterMethod::Enumerate => "enumerate",
+                //         crate::ir::IterMethod::Filter => "filter",
+                //         crate::ir::IterMethod::Take => "take",
+                //         crate::ir::IterMethod::Skip => "skip",
+                //         crate::ir::IterMethod::Map => "map",
+                //         crate::ir::IterMethod::FlatMap => "flat_map",
+                //         crate::ir::IterMethod::FilterMap => "filter_map",
+                //         crate::ir::IterMethod::Fold => "fold",
+                //         crate::ir::IterMethod::Chain => "chain",
+                //     }
+                //     .to_string();
+                //     let is_consumer = matches!(im, crate::ir::IterMethod::Fold | crate::ir::IterMethod::Enumerate | crate::ir::IterMethod::Filter | crate::ir::IterMethod::Take | crate::ir::IterMethod::Skip | crate::ir::IterMethod::Chain | crate::ir::IterMethod::FlatMap | crate::ir::IterMethod::FilterMap);
+                //     (name, is_consumer)
+                // }
                 MethodKind::Unknown(s) => (s.clone(), false),
             };
 
@@ -699,43 +746,49 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
             write_expr(out, body);
             write!(out, ")").unwrap();
         }
-        IrExpr::ArrayGenerate {
-            index_var,
+        IrExpr::IterFold {
+            iter,
+            init,
+            acc_var,
+            elem_var,
             body,
-            len,
-            ..
         } => {
-            let len_str = match len {
-                ArrayLength::Const(n) => n.to_string(),
-                ArrayLength::TypeNum(tn) => tn.to_usize().to_string(),
-                ArrayLength::TypeParam(p) => p.to_lowercase(),
-                ArrayLength::Computed(e) => {
-                    let mut s = String::new();
-                    write_expr(&mut s, e);
-                    s
-                }
-                ArrayLength::Projection { r#type, field } => {
-                    let mut s = String::new();
-                    write_type(&mut s, r#type);
-                    write!(s, "::{:?}", field).unwrap();
-                    s
-                }
-            };
-            write!(out, "(0..{}).map(|{}| ", len_str, index_var).unwrap();
+            write_expr_chainable(out, iter);
+            write!(out, ".fold(").unwrap();
+            write_expr(out, init);
+            write!(out, ", |{}, {}| ", acc_var, elem_var).unwrap();
             write_expr(out, body);
-            write!(out, ").collect::<Vec<_>>()").unwrap();
+            write!(out, ")").unwrap();
         }
-        IrExpr::Unary { op, expr } => {
-            match op {
-                SpecUnaryOp::Neg => write!(out, "-").unwrap(),
-                SpecUnaryOp::Not => write!(out, "!").unwrap(),
-                SpecUnaryOp::Deref => write!(out, "*").unwrap(),
-                SpecUnaryOp::Ref => write!(out, "&").unwrap(),
-                SpecUnaryOp::RefMut => write!(out, "&mut ").unwrap(),
+        IrExpr::MethodCall { receiver, method, args, .. } => {
+            // Non-iterator method calls; print receiver normally then call
+            write_expr(out, receiver);
+            let name = match method {
+                MethodKind::Std(s) => s.clone(),
+                MethodKind::Crypto(c) => {
+                    let debug_name = format!("{:?}", c);
+                    let mut snake = String::new();
+                    for (i, ch) in debug_name.chars().enumerate() {
+                        if ch.is_uppercase() && i > 0 {
+                            snake.push('_');
+                        }
+                        snake.push(ch.to_ascii_lowercase());
+                    }
+                    snake
+                }
+                MethodKind::Vole(v) => format!("{:?}", v).to_lowercase(),
+                MethodKind::Unknown(s) => s.clone(),
+            };
+            write!(out, ".{}(", name).unwrap();
+            for (i, arg) in args.iter().enumerate() {
+                if i > 0 {
+                    write!(out, ", ").unwrap();
+                }
+                write_expr(out, arg);
             }
-            write_expr(out, expr);
+            write!(out, ")").unwrap();
         }
-        IrExpr::Path {
+          IrExpr::Path {
             segments,
             type_args,
         } => {
