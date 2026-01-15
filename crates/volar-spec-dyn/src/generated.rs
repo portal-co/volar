@@ -258,8 +258,16 @@ impl <T: Add<Output = T> + Mul<Output = T> + Default + Clone> VopeDyn<T> where T
         for i in 0..= k{
     for j in 0..= k2{
     let k = (i + j);
-    let a_coeff = get_coeff!(& self . v , & self . u , i);
-    let b_coeff = get_coeff!(& other . v , & other . u , j);
+    let a_coeff = if (i == 0){
+    &self.v
+} else {
+    &self.u[(i - 1)]
+};
+    let b_coeff = if (j == 0){
+    &other.v
+} else {
+    &other.u[(j - 1)]
+};
     if (k == 0){
     for lane in 0.. n{
     res_v[lane] = (res_v[lane].clone() + (a_coeff[lane].clone() * b_coeff[lane].clone()));
@@ -784,7 +792,7 @@ impl <B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
     {
         let k: usize = self.k;
         (0..n).map(|i| {
-    let s = &self.per_byte[(i * N)..][..N];
+    let s = &self.per_byte[(i * n)..][..n];
     create_vole_from_material(s)
 }).collect::<Vec<_>>()
     }
@@ -792,7 +800,7 @@ impl <B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
     {
         let k: usize = self.k;
         (0..n).map(|i| {
-    let s = &self.per_byte[(i * N::to_usize())..][..N::to_usize()];
+    let s = &self.per_byte[(i * n)..][..n];
     create_vole_from_material(s)
 }).collect::<Vec<_>>()
     }
@@ -800,7 +808,7 @@ impl <B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
     {
         let k: usize = self.k;
         (0..n).map(|i| {
-    let s = &self.per_byte[(i * N)..][..N];
+    let s = &self.per_byte[(i * n)..][..n];
     create_vole_from_material_expanded(s, &mut f)
 }).collect::<Vec<_>>()
     }
@@ -808,7 +816,7 @@ impl <B: ByteBlockEncrypt, D: Digest> ABODyn<B, D> {
     {
         let k: usize = self.k;
         (0..n).map(|i| {
-    let s = &self.per_byte[(i * N::to_usize())..][..N::to_usize()];
+    let s = &self.per_byte[(i * n)..][..n];
     create_vole_from_material_expanded(s, &mut f)
 }).collect::<Vec<_>>()
     }

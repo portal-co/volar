@@ -5,30 +5,16 @@
 
 use crate::ir::*;
 
-#[cfg(feature = "std")]
-use std::string::String;
 #[cfg(not(feature = "std"))]
 use alloc::string::String;
+#[cfg(feature = "std")]
+use std::string::String;
 
 #[cfg(feature = "std")]
-use std::{
-    boxed::Box,
-    collections::BTreeMap,
-    string::ToString,
-    vec,
-    vec::Vec,
-    format,
-};
+use std::{boxed::Box, collections::BTreeMap, format, string::ToString, vec, vec::Vec};
 
 #[cfg(not(feature = "std"))]
-use alloc::{
-    boxed::Box,
-    collections::BTreeMap,
-    string::ToString,
-    vec,
-    vec::Vec,
-    format,
-};
+use alloc::{boxed::Box, collections::BTreeMap, format, string::ToString, vec, vec::Vec};
 
 /// Classification of generic parameters
 #[derive(Debug, Clone, PartialEq)]
@@ -73,15 +59,16 @@ impl LoweringContext {
         for s in &module.structs {
             let mut info = StructInfo::default();
             info.kind = s.kind.clone();
-            
+
             for p in &s.generics {
                 let kind = if p.kind == IrGenericParamKind::Lifetime {
                     GenericKind::Type
                 } else {
                     classify_generic(p, &[&s.generics])
                 };
-                
-                info.orig_generics.push((p.name.clone(), kind.clone(), p.kind.clone()));
+
+                info.orig_generics
+                    .push((p.name.clone(), kind.clone(), p.kind.clone()));
                 info.generic_defaults.push(p.default.clone());
 
                 if p.kind == IrGenericParamKind::Lifetime {
@@ -97,21 +84,25 @@ impl LoweringContext {
             }
             struct_info.insert(s.kind.to_string(), info);
         }
-        
+
         // Pass 2: Determine which structs need phantom data
         for s in &module.structs {
             let kind_str = s.kind.to_string();
             if let Some(info) = struct_info.get_mut(&kind_str) {
                 // Collect type params used in fields
-                let used_type_params: Vec<String> = s.fields.iter()
+                let used_type_params: Vec<String> = s
+                    .fields
+                    .iter()
                     .flat_map(|f| collect_type_params(&f.ty))
                     .collect();
-                
+
                 // Check if any type params are unused
-                let unused_params: Vec<_> = info.type_params.iter()
+                let unused_params: Vec<_> = info
+                    .type_params
+                    .iter()
                     .filter(|(name, _)| !used_type_params.contains(name))
                     .collect();
-                
+
                 info.needs_phantom = !unused_params.is_empty();
             }
         }
@@ -217,11 +208,7 @@ fn find_param<'a>(
     None
 }
 
-fn is_length_name(
-    name: &str,
-    all_params: &[&[IrGenericParam]],
-    visited: &mut Vec<String>,
-) -> bool {
+fn is_length_name(name: &str, all_params: &[&[IrGenericParam]], visited: &mut Vec<String>) -> bool {
     if visited.contains(&name.to_string()) {
         return false;
     }
@@ -259,9 +246,9 @@ fn type_refers_to_length(
             .first()
             .map(|s| is_length_name(s, all_params, visited))
             .unwrap_or(false),
-        IrType::Array { elem, .. }
-        | IrType::Vector { elem }
-        | IrType::Reference { elem, .. } => type_refers_to_length(elem, all_params, visited),
+        IrType::Array { elem, .. } | IrType::Vector { elem } | IrType::Reference { elem, .. } => {
+            type_refers_to_length(elem, all_params, visited)
+        }
         IrType::Tuple(elems) => elems
             .iter()
             .any(|e| type_refers_to_length(e, all_params, visited)),
@@ -297,7 +284,9 @@ pub fn lower_module_dyn(module: &IrModule) -> IrModule {
     }
 
     for f in &module.functions {
-        lowered.functions.push(lower_function_dyn(f, &ctx, None, None, &BTreeMap::new()));
+        lowered
+            .functions
+            .push(lower_function_dyn(f, &ctx, None, None, &BTreeMap::new()));
     }
 
     lowered
@@ -357,23 +346,29 @@ fn lower_struct_dyn(s: &IrStruct, ctx: &LoweringContext) -> IrStruct {
     }
 
     // Check for unused type params and add PhantomData
-    let used_type_params: Vec<String> = fields.iter()
+    let used_type_params: Vec<String> = fields
+        .iter()
         .flat_map(|f| collect_type_params(&f.ty))
         .collect();
-    
+
     let mut phantom_types = Vec::new();
     for g in &generics {
         if g.kind == IrGenericParamKind::Type && !used_type_params.contains(&g.name) {
             phantom_types.push(g.name.clone());
         }
     }
-    
+
     if !phantom_types.is_empty() {
         // Create PhantomData<(T1, T2, ...)> field
         let phantom_ty = if phantom_types.len() == 1 {
             IrType::TypeParam(phantom_types[0].clone())
         } else {
-            IrType::Tuple(phantom_types.iter().map(|n| IrType::TypeParam(n.clone())).collect())
+            IrType::Tuple(
+                phantom_types
+                    .iter()
+                    .map(|n| IrType::TypeParam(n.clone()))
+                    .collect(),
+            )
         };
         fields.push(IrField {
             name: "_phantom".to_string(),
@@ -398,7 +393,9 @@ fn collect_type_params(ty: &IrType) -> Vec<String> {
         IrType::TypeParam(name) => vec![name.clone()],
         IrType::Vector { elem } => collect_type_params(elem),
         IrType::Array { elem, .. } => collect_type_params(elem),
-        IrType::Struct { type_args, .. } => type_args.iter().flat_map(collect_type_params).collect(),
+        IrType::Struct { type_args, .. } => {
+            type_args.iter().flat_map(collect_type_params).collect()
+        }
         IrType::Reference { elem, .. } => collect_type_params(elem),
         IrType::Tuple(elems) => elems.iter().flat_map(collect_type_params).collect(),
         _ => Vec::new(),
@@ -411,7 +408,7 @@ fn lower_impl_dyn(im: &IrImpl, ctx: &LoweringContext) -> IrImpl {
         IrType::Struct { kind, .. } => kind.to_string(),
         _ => String::new(),
     };
-    
+
     // Extract constant witness values from self_ty (e.g., K=U0 in impl Vope<N, T, U0>)
     let constant_witnesses = extract_constant_witnesses(&im.self_ty, ctx);
 
@@ -419,7 +416,10 @@ fn lower_impl_dyn(im: &IrImpl, ctx: &LoweringContext) -> IrImpl {
     // Add where-clause bounds to impl_gen for classification
     for wp in &im.where_clause {
         match wp {
-            IrWherePredicate::TypeBound { ty: IrType::TypeParam(name), bounds } => {
+            IrWherePredicate::TypeBound {
+                ty: IrType::TypeParam(name),
+                bounds,
+            } => {
                 if let Some(p) = impl_gen.iter_mut().find(|p| &p.name == name) {
                     p.bounds.extend(bounds.clone());
                 }
@@ -431,7 +431,13 @@ fn lower_impl_dyn(im: &IrImpl, ctx: &LoweringContext) -> IrImpl {
     for item in &im.items {
         match item {
             IrImplItem::Method(f) => {
-                items.push(IrImplItem::Method(lower_function_dyn(f, ctx, Some(&self_kind), Some(&impl_gen), &constant_witnesses)));
+                items.push(IrImplItem::Method(lower_function_dyn(
+                    f,
+                    ctx,
+                    Some(&self_kind),
+                    Some(&impl_gen),
+                    &constant_witnesses,
+                )));
             }
             IrImplItem::AssociatedType { name, ty } => {
                 items.push(IrImplItem::AssociatedType {
@@ -445,8 +451,12 @@ fn lower_impl_dyn(im: &IrImpl, ctx: &LoweringContext) -> IrImpl {
     IrImpl {
         generics: lower_generics_dyn(&impl_gen, &[]),
         trait_: im.trait_.as_ref().map(|tr| IrTraitRef {
-            kind: tr.kind.clone(), 
-            type_args: tr.type_args.iter().map(|ta| lower_type_dyn(ta, ctx, &impl_gen)).collect(),
+            kind: tr.kind.clone(),
+            type_args: tr
+                .type_args
+                .iter()
+                .map(|ta| lower_type_dyn(ta, ctx, &impl_gen))
+                .collect(),
         }),
         self_ty: lower_type_dyn(&im.self_ty, ctx, &impl_gen),
         where_clause: lower_where_clause_dyn(&im.where_clause, ctx, &impl_gen),
@@ -464,11 +474,14 @@ fn lower_function_dyn(
     let mut params = Vec::new();
     let empty_gen = Vec::new();
     let impl_gen = impl_generics.unwrap_or(&empty_gen);
-    
+
     let mut fn_gen = f.generics.clone();
     for wp in &f.where_clause {
         match wp {
-            IrWherePredicate::TypeBound { ty: IrType::TypeParam(name), bounds } => {
+            IrWherePredicate::TypeBound {
+                ty: IrType::TypeParam(name),
+                bounds,
+            } => {
                 if let Some(p) = fn_gen.iter_mut().find(|p| &p.name == name) {
                     p.bounds.extend(bounds.clone());
                 }
@@ -523,7 +536,11 @@ fn lower_function_dyn(
                 let mut unpacks = Vec::new();
                 for w in &info.length_witnesses {
                     unpacks.push(IrStmt::Let {
-                        pattern: IrPattern::Ident { mutable: false, name: w.clone(), subpat: None },
+                        pattern: IrPattern::Ident {
+                            mutable: false,
+                            name: w.clone(),
+                            subpat: None,
+                        },
                         ty: Some(IrType::Primitive(PrimitiveType::Usize)),
                         init: Some(IrExpr::Field {
                             base: Box::new(IrExpr::Var("self".to_string())),
@@ -543,7 +560,11 @@ fn lower_function_dyn(
                 // Only add if not already a parameter
                 if !params.iter().any(|p| &p.name == name) {
                     bindings.push(IrStmt::Let {
-                        pattern: IrPattern::Ident { mutable: false, name: name.clone(), subpat: None },
+                        pattern: IrPattern::Ident {
+                            mutable: false,
+                            name: name.clone(),
+                            subpat: None,
+                        },
                         ty: Some(IrType::Primitive(PrimitiveType::Usize)),
                         init: Some(IrExpr::Lit(IrLit::Int(*value as i128))),
                     });
@@ -577,28 +598,50 @@ fn lower_function_dyn(
         generics: lower_generics_dyn(&f.generics, impl_gen),
         receiver: f.receiver,
         params,
-        return_type: f.return_type.as_ref().map(|rt| lower_type_dyn(rt, ctx, &fn_gen)),
+        return_type: f
+            .return_type
+            .as_ref()
+            .map(|rt| lower_type_dyn(rt, ctx, &fn_gen)),
         where_clause: lower_where_clause_dyn(&f.where_clause, ctx, &combined_gen),
         body,
     }
 }
 
-fn lower_generics_dyn(generics: &[IrGenericParam], extra_ctx: &[IrGenericParam]) -> Vec<IrGenericParam> {
-    generics.iter()
+fn lower_generics_dyn(
+    generics: &[IrGenericParam],
+    extra_ctx: &[IrGenericParam],
+) -> Vec<IrGenericParam> {
+    generics
+        .iter()
         .filter(|p| {
             let kind = classify_generic(p, &[generics, extra_ctx]);
             p.kind != IrGenericParamKind::Lifetime && kind != GenericKind::Length
         })
         .map(|p| {
             let mut p = p.clone();
-            p.bounds = p.bounds.iter().filter_map(|b| lower_trait_bound_dyn(b, generics, extra_ctx)).collect();
+            p.bounds = p
+                .bounds
+                .iter()
+                .filter_map(|b| lower_trait_bound_dyn(b, generics, extra_ctx))
+                .collect();
             p
         })
         .collect()
 }
 
-fn lower_trait_bound_dyn(b: &IrTraitBound, _generics: &[IrGenericParam], _extra_ctx: &[IrGenericParam]) -> Option<IrTraitBound> {
-    if is_length_bound(b) { return None; } match &b.trait_kind { TraitKind::Math(MathTrait::Unsigned) => return None, TraitKind::Crypto(CryptoTrait::ArrayLength | CryptoTrait::VoleArray) => return None, _ => {} }
+fn lower_trait_bound_dyn(
+    b: &IrTraitBound,
+    _generics: &[IrGenericParam],
+    _extra_ctx: &[IrGenericParam],
+) -> Option<IrTraitBound> {
+    if is_length_bound(b) {
+        return None;
+    }
+    match &b.trait_kind {
+        TraitKind::Math(MathTrait::Unsigned) => return None,
+        TraitKind::Crypto(CryptoTrait::ArrayLength | CryptoTrait::VoleArray) => return None,
+        _ => {}
+    }
     let b = b.clone();
     Some(b)
 }
@@ -607,11 +650,20 @@ fn lower_type_dyn(ty: &IrType, ctx: &LoweringContext, fn_gen: &[IrGenericParam])
     lower_type_dyn_inner(ty, ctx, fn_gen, false)
 }
 
-fn lower_type_dyn_for_field(ty: &IrType, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) -> IrType {
+fn lower_type_dyn_for_field(
+    ty: &IrType,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+) -> IrType {
     lower_type_dyn_inner(ty, ctx, fn_gen, true)
 }
 
-fn lower_type_dyn_inner(ty: &IrType, ctx: &LoweringContext, fn_gen: &[IrGenericParam], in_struct_field: bool) -> IrType {
+fn lower_type_dyn_inner(
+    ty: &IrType,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+    in_struct_field: bool,
+) -> IrType {
     match ty {
         IrType::Array { kind, elem, len } => {
             if *kind == ArrayKind::Slice {
@@ -630,21 +682,33 @@ fn lower_type_dyn_inner(ty: &IrType, ctx: &LoweringContext, fn_gen: &[IrGenericP
             let mut lowered_args = Vec::new();
             let kind_str = kind.to_string();
             if let Some(info) = ctx.struct_info.get(&kind_str) {
-                let non_lifetime_generics: Vec<_> = info.orig_generics.iter()
+                let non_lifetime_generics: Vec<_> = info
+                    .orig_generics
+                    .iter()
                     .filter(|(_, _, pk)| *pk != IrGenericParamKind::Lifetime)
                     .collect();
-                
+
                 for (idx, arg) in type_args.iter().enumerate() {
                     if let Some((_, gkind, _)) = non_lifetime_generics.get(idx) {
-                        if *gkind == GenericKind::Length { continue; }
+                        if *gkind == GenericKind::Length {
+                            continue;
+                        }
                     }
                     lowered_args.push(lower_type_dyn_inner(arg, ctx, fn_gen, in_struct_field));
                 }
             } else {
-                lowered_args = type_args.iter().map(|ta| lower_type_dyn_inner(ta, ctx, fn_gen, in_struct_field)).collect();
+                lowered_args = type_args
+                    .iter()
+                    .map(|ta| lower_type_dyn_inner(ta, ctx, fn_gen, in_struct_field))
+                    .collect();
             }
-            
-            let new_kind = if kind_str == "GenericArray" || kind_str == "Option" || kind_str == "Result" || kind_str == "Box" || kind_str == "Vec" {
+
+            let new_kind = if kind_str == "GenericArray"
+                || kind_str == "Option"
+                || kind_str == "Result"
+                || kind_str == "Box"
+                || kind_str == "Vec"
+            {
                 kind.clone()
             } else {
                 StructKind::from_str(&format!("{}Dyn", kind))
@@ -658,7 +722,12 @@ fn lower_type_dyn_inner(ty: &IrType, ctx: &LoweringContext, fn_gen: &[IrGenericP
         IrType::Reference { mutable, elem } => {
             // In struct fields, convert &[T] to Vec<T> to avoid lifetime issues
             if in_struct_field {
-                if let IrType::Array { kind: ArrayKind::Slice, elem: inner, .. } = elem.as_ref() {
+                if let IrType::Array {
+                    kind: ArrayKind::Slice,
+                    elem: inner,
+                    ..
+                } = elem.as_ref()
+                {
                     return IrType::Vector {
                         elem: Box::new(lower_type_dyn_inner(inner, ctx, fn_gen, in_struct_field)),
                     };
@@ -669,65 +738,77 @@ fn lower_type_dyn_inner(ty: &IrType, ctx: &LoweringContext, fn_gen: &[IrGenericP
                 elem: Box::new(lower_type_dyn_inner(elem, ctx, fn_gen, in_struct_field)),
             }
         }
-        IrType::Tuple(elems) => IrType::Tuple(elems.iter().map(|e| lower_type_dyn_inner(e, ctx, fn_gen, in_struct_field)).collect()),
-        IrType::TypeParam(p) => {
-            IrType::TypeParam(p.clone())
-        }
+        IrType::Tuple(elems) => IrType::Tuple(
+            elems
+                .iter()
+                .map(|e| lower_type_dyn_inner(e, ctx, fn_gen, in_struct_field))
+                .collect(),
+        ),
+        IrType::TypeParam(p) => IrType::TypeParam(p.clone()),
         _ => ty.clone(),
     }
 }
 
-fn lower_where_clause_dyn(wc: &[IrWherePredicate], ctx: &LoweringContext, fn_gen: &[IrGenericParam]) -> Vec<IrWherePredicate> {
+fn lower_where_clause_dyn(
+    wc: &[IrWherePredicate],
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+) -> Vec<IrWherePredicate> {
     // Collect all known type params from fn_gen
-    let known_params: Vec<String> = fn_gen.iter()
+    let known_params: Vec<String> = fn_gen
+        .iter()
         .filter(|p| p.kind != IrGenericParamKind::Lifetime)
         .map(|p| p.name.clone())
         .collect();
-    
-    wc.iter().filter_map(|wp| {
-        match wp {
-            IrWherePredicate::TypeBound { ty, bounds } => {
-                let ty = lower_type_dyn(ty, ctx, fn_gen);
-                
-                // Skip predicates for type params that look like lengths
-                if let IrType::TypeParam(p) = &ty {
-                    if p.len() == 1 && p.chars().next().unwrap().is_uppercase() {
-                        if !p.starts_with('T') && !p.starts_with('B') && !p.starts_with('D') {
+
+    wc.iter()
+        .filter_map(|wp| {
+            match wp {
+                IrWherePredicate::TypeBound { ty, bounds } => {
+                    let ty = lower_type_dyn(ty, ctx, fn_gen);
+
+                    // Skip predicates for type params that look like lengths
+                    if let IrType::TypeParam(p) = &ty {
+                        if p.len() == 1 && p.chars().next().unwrap().is_uppercase() {
+                            if !p.starts_with('T') && !p.starts_with('B') && !p.starts_with('D') {
+                                return None;
+                            }
+                        }
+                        // Skip if the type param is not in known params (undefined)
+                        if !known_params.contains(p) {
                             return None;
                         }
                     }
-                    // Skip if the type param is not in known params (undefined)
-                    if !known_params.contains(p) {
+
+                    // Skip predicates with projections that have unknown traits
+                    if has_unresolved_projection(&ty) {
                         return None;
                     }
-                }
-                
-                // Skip predicates with projections that have unknown traits
-                if has_unresolved_projection(&ty) {
-                    return None;
-                }
-                
-                let bounds: Vec<_> = bounds.iter().filter_map(|b| lower_trait_bound_dyn(b, fn_gen, &[])).collect();
-                if bounds.is_empty() { return None; }
-                
-                // Check if any bound references undefined types
-                for b in &bounds {
-                    if has_unresolved_projection_in_bound(b) {
+
+                    let bounds: Vec<_> = bounds
+                        .iter()
+                        .filter_map(|b| lower_trait_bound_dyn(b, fn_gen, &[]))
+                        .collect();
+                    if bounds.is_empty() {
                         return None;
                     }
-                    // Also check for undefined type params in bounds
-                    if has_undefined_type_params_in_bound(b, &known_params) {
-                        return None;
+
+                    // Check if any bound references undefined types
+                    for b in &bounds {
+                        if has_unresolved_projection_in_bound(b) {
+                            return None;
+                        }
+                        // Also check for undefined type params in bounds
+                        if has_undefined_type_params_in_bound(b, &known_params) {
+                            return None;
+                        }
                     }
+
+                    Some(IrWherePredicate::TypeBound { ty, bounds })
                 }
-                
-                Some(IrWherePredicate::TypeBound {
-                    ty,
-                    bounds,
-                })
             }
-        }
-    }).collect()
+        })
+        .collect()
 }
 
 fn has_unresolved_projection(ty: &IrType) -> bool {
@@ -766,26 +847,31 @@ fn has_undefined_type_param(ty: &IrType, known_params: &[String]) -> bool {
                 false
             }
         }
-        IrType::Struct { type_args, .. } => {
-            type_args.iter().any(|a| has_undefined_type_param(a, known_params))
-        }
+        IrType::Struct { type_args, .. } => type_args
+            .iter()
+            .any(|a| has_undefined_type_param(a, known_params)),
         IrType::Reference { elem, .. } | IrType::Vector { elem } => {
             has_undefined_type_param(elem, known_params)
         }
-        IrType::Tuple(elems) => {
-            elems.iter().any(|e| has_undefined_type_param(e, known_params))
-        }
-        IrType::Array { elem, .. } => {
-            has_undefined_type_param(elem, known_params)
-        }
+        IrType::Tuple(elems) => elems
+            .iter()
+            .any(|e| has_undefined_type_param(e, known_params)),
+        IrType::Array { elem, .. } => has_undefined_type_param(elem, known_params),
         _ => false,
     }
 }
 
 fn lower_block_dyn(block: &IrBlock, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) -> IrBlock {
     IrBlock {
-        stmts: block.stmts.iter().map(|s| lower_stmt_dyn(s, ctx, fn_gen)).collect(),
-        expr: block.expr.as_ref().map(|e| Box::new(lower_expr_dyn(e, ctx, fn_gen))),
+        stmts: block
+            .stmts
+            .iter()
+            .map(|s| lower_stmt_dyn(s, ctx, fn_gen))
+            .collect(),
+        expr: block
+            .expr
+            .as_ref()
+            .map(|e| Box::new(lower_expr_dyn(e, ctx, fn_gen))),
     }
 }
 
@@ -803,14 +889,20 @@ fn lower_stmt_dyn(s: &IrStmt, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
 
 fn lower_pattern_dyn(p: &IrPattern, ctx: &LoweringContext) -> IrPattern {
     match p {
-        IrPattern::Ident { mutable, name, subpat } => IrPattern::Ident {
+        IrPattern::Ident {
+            mutable,
+            name,
+            subpat,
+        } => IrPattern::Ident {
             mutable: *mutable,
             name: name.clone(),
-            subpat: subpat.as_ref().map(|sp| Box::new(lower_pattern_dyn(sp, ctx))),
+            subpat: subpat
+                .as_ref()
+                .map(|sp| Box::new(lower_pattern_dyn(sp, ctx))),
         },
-        IrPattern::Tuple(elems) => IrPattern::Tuple(
-            elems.iter().map(|e| lower_pattern_dyn(e, ctx)).collect()
-        ),
+        IrPattern::Tuple(elems) => {
+            IrPattern::Tuple(elems.iter().map(|e| lower_pattern_dyn(e, ctx)).collect())
+        }
         IrPattern::Struct { kind, fields, rest } => {
             let kind_str = kind.to_string();
             // Only rename if it's one of our structs, also handle Self
@@ -825,7 +917,10 @@ fn lower_pattern_dyn(p: &IrPattern, ctx: &LoweringContext) -> IrPattern {
             };
             IrPattern::Struct {
                 kind: new_kind,
-                fields: fields.iter().map(|(n, p)| (n.clone(), lower_pattern_dyn(p, ctx))).collect(),
+                fields: fields
+                    .iter()
+                    .map(|(n, p)| (n.clone(), lower_pattern_dyn(p, ctx)))
+                    .collect(),
                 rest: needs_rest,
             }
         }
@@ -842,25 +937,29 @@ fn lower_pattern_dyn(p: &IrPattern, ctx: &LoweringContext) -> IrPattern {
                 elems: elems.iter().map(|e| lower_pattern_dyn(e, ctx)).collect(),
             }
         }
-        IrPattern::Slice(elems) => IrPattern::Slice(
-            elems.iter().map(|e| lower_pattern_dyn(e, ctx)).collect()
-        ),
+        IrPattern::Slice(elems) => {
+            IrPattern::Slice(elems.iter().map(|e| lower_pattern_dyn(e, ctx)).collect())
+        }
         IrPattern::Ref { mutable, pat } => IrPattern::Ref {
             mutable: *mutable,
             pat: Box::new(lower_pattern_dyn(pat, ctx)),
         },
-        IrPattern::Or(pats) => IrPattern::Or(
-            pats.iter().map(|p| lower_pattern_dyn(p, ctx)).collect()
-        ),
+        IrPattern::Or(pats) => {
+            IrPattern::Or(pats.iter().map(|p| lower_pattern_dyn(p, ctx)).collect())
+        }
         _ => p.clone(),
     }
 }
 
 fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) -> IrExpr {
     match e {
+        IrExpr::Lit(_) => e.clone(),
         IrExpr::Var(v) => {
             if v.len() == 1 && v.chars().next().unwrap().is_uppercase() {
-                if !v.starts_with('T') && !v.starts_with('B') && !v.starts_with('D') {
+                if fn_gen
+                    .iter()
+                    .any(|p| p.name == *v && classify_generic(p, &[fn_gen]) == GenericKind::Length)
+                {
                     return IrExpr::Var(v.to_lowercase());
                 }
             }
@@ -869,28 +968,43 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             }
             e.clone()
         }
-        IrExpr::Path { segments, type_args } => {
+        IrExpr::Path {
+            segments,
+            type_args,
+        } => {
             let mut segments = segments.clone();
             let mut type_args = type_args.clone();
             if segments.len() > 0 && segments[0] == "GenericArray" {
                 segments[0] = "Vec".to_string();
             }
-            if segments.len() == 2 && segments[0] == "Vec" && (segments[1] == "default" || segments[1] == "generate") {
+            if segments.len() == 2
+                && segments[0] == "Vec"
+                && (segments[1] == "default" || segments[1] == "generate")
+            {
                 segments[1] = "new".to_string();
                 type_args = Vec::new();
             }
             if segments.len() == 2 && segments[1] == "to_usize" {
                 // Check if first segment is a length param (single uppercase letter, or uppercase+digit like K2)
                 let first = &segments[0];
-                let is_length_param = first.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) &&
-                    first.chars().all(|c| c.is_uppercase() || c.is_ascii_digit());
+                let is_length_param = first
+                    .chars()
+                    .next()
+                    .map(|c| c.is_uppercase())
+                    .unwrap_or(false)
+                    && first
+                        .chars()
+                        .all(|c| c.is_uppercase() || c.is_ascii_digit());
                 if is_length_param {
                     return IrExpr::Var(first.to_lowercase());
                 }
             }
             IrExpr::Path {
                 segments,
-                type_args: type_args.iter().map(|ta| lower_type_dyn(ta, ctx, fn_gen)).collect(),
+                type_args: type_args
+                    .iter()
+                    .map(|ta| lower_type_dyn(ta, ctx, fn_gen))
+                    .collect(),
             }
         }
         IrExpr::Binary { op, left, right } => IrExpr::Binary {
@@ -898,10 +1012,18 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             left: Box::new(lower_expr_dyn(left, ctx, fn_gen)),
             right: Box::new(lower_expr_dyn(right, ctx, fn_gen)),
         },
-        IrExpr::MethodCall { receiver, method, type_args, args } => {
+        IrExpr::MethodCall {
+            receiver,
+            method,
+            type_args,
+            args,
+        } => {
             let method = method.clone();
-            let mut args: Vec<IrExpr> = args.iter().map(|a| lower_expr_dyn(a, ctx, fn_gen)).collect();
-            
+            let mut args: Vec<IrExpr> = args
+                .iter()
+                .map(|a| lower_expr_dyn(a, ctx, fn_gen))
+                .collect();
+
             if let MethodKind::Vole(VoleMethod::Remap) = method {
                 if args.len() == 1 {
                     args.insert(0, IrExpr::Var("n".to_string()));
@@ -911,11 +1033,18 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             if let MethodKind::Std(name) = &method {
                 if name == "to_usize" {
                     match receiver.as_ref() {
-                        IrExpr::Var(v) if v.len() == 1 && v.chars().next().unwrap().is_uppercase() => {
+                        IrExpr::Var(v)
+                            if v.len() == 1 && v.chars().next().unwrap().is_uppercase() =>
+                        {
                             return IrExpr::Var(v.to_lowercase());
                         }
-                        IrExpr::Path { segments, .. } if segments.len() == 2 && segments[1] == "OutputSize" => {
-                            return IrExpr::Macro { name: "typenum_usize".to_string(), tokens: format!("{}::{}", segments[0], segments[1]) };
+                        IrExpr::Path { segments, .. }
+                            if segments.len() == 2 && segments[1] == "OutputSize" =>
+                        {
+                            return IrExpr::Macro {
+                                name: "typenum_usize".to_string(),
+                                tokens: format!("{}::{}", segments[0], segments[1]),
+                            };
                         }
                         _ => {}
                     }
@@ -924,21 +1053,31 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             IrExpr::MethodCall {
                 receiver: Box::new(lower_expr_dyn(receiver, ctx, fn_gen)),
                 method,
-                type_args: type_args.iter().map(|ta| lower_type_dyn(ta, ctx, fn_gen)).collect(),
+                type_args: type_args
+                    .iter()
+                    .map(|ta| lower_type_dyn(ta, ctx, fn_gen))
+                    .collect(),
                 args,
             }
         }
         IrExpr::Call { func, args } => {
-            let args: Vec<IrExpr> = args.iter().map(|a| lower_expr_dyn(a, ctx, fn_gen)).collect();
+            let args: Vec<IrExpr> = args
+                .iter()
+                .map(|a| lower_expr_dyn(a, ctx, fn_gen))
+                .collect();
             let mut func = lower_expr_dyn(func, ctx, fn_gen);
 
-            // If the func is a lowercased length param (like n, k, k2), 
+            // If the func is a lowercased length param (like n, k, k2),
             // and there are no args, just return the variable
             if args.is_empty() {
                 if let IrExpr::Var(name) = &func {
                     // Check if it looks like a lowercased length param
-                    let is_length_var = name.chars().next().map(|c| c.is_lowercase()).unwrap_or(false) &&
-                        name.chars().all(|c| c.is_lowercase() || c.is_ascii_digit());
+                    let is_length_var = name
+                        .chars()
+                        .next()
+                        .map(|c| c.is_lowercase())
+                        .unwrap_or(false)
+                        && name.chars().all(|c| c.is_lowercase() || c.is_ascii_digit());
                     if is_length_var {
                         return func;
                     }
@@ -947,13 +1086,28 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
 
             let mut new_func = None;
             if let IrExpr::Var(name) = &func {
-                if name == "create_vole_from_material" || name == "create_vole_from_material_expanded" || name == "double" {
-                    if let Some(b_param) = fn_gen.iter().find(|p| classify_generic(p, &[fn_gen]) == GenericKind::Crypto && p.name.starts_with('B')) {
-                        new_func = Some(IrExpr::Path { segments: vec![name.clone()], type_args: vec![IrType::TypeParam(b_param.name.clone())] });
+                if name == "create_vole_from_material"
+                    || name == "create_vole_from_material_expanded"
+                    || name == "double"
+                {
+                    if let Some(b_param) = fn_gen.iter().find(|p| {
+                        classify_generic(p, &[fn_gen]) == GenericKind::Crypto
+                            && p.name.starts_with('B')
+                    }) {
+                        new_func = Some(IrExpr::Path {
+                            segments: vec![name.clone()],
+                            type_args: vec![IrType::TypeParam(b_param.name.clone())],
+                        });
                     }
                 } else if name == "commit" {
-                    if let Some(d_param) = fn_gen.iter().find(|p| classify_generic(p, &[fn_gen]) == GenericKind::Crypto && p.name.starts_with('D')) {
-                        new_func = Some(IrExpr::Path { segments: vec![name.clone()], type_args: vec![IrType::TypeParam(d_param.name.clone())] });
+                    if let Some(d_param) = fn_gen.iter().find(|p| {
+                        classify_generic(p, &[fn_gen]) == GenericKind::Crypto
+                            && p.name.starts_with('D')
+                    }) {
+                        new_func = Some(IrExpr::Path {
+                            segments: vec![name.clone()],
+                            type_args: vec![IrType::TypeParam(d_param.name.clone())],
+                        });
                     }
                 }
             }
@@ -966,7 +1120,12 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 args,
             }
         }
-        IrExpr::StructExpr { kind, type_args, fields, rest } => {
+        IrExpr::StructExpr {
+            kind,
+            type_args,
+            fields,
+            rest,
+        } => {
             let kind_str = kind.to_string();
             let new_kind = if kind_str == "Option" || kind_str == "Result" {
                 kind.clone()
@@ -976,12 +1135,15 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 kind.clone()
             };
 
-            let mut lowered_fields: Vec<_> = fields.iter().map(|(n, v)| (n.clone(), lower_expr_dyn(v, ctx, fn_gen))).collect();
-            
+            let mut lowered_fields: Vec<_> = fields
+                .iter()
+                .map(|(n, v)| (n.clone(), lower_expr_dyn(v, ctx, fn_gen)))
+                .collect();
+
             if let Some(info) = ctx.struct_info.get(&kind_str) {
                 // Map from witness name to the corresponding type arg if it's a typenum constant
                 let mut witness_values: BTreeMap<String, Option<usize>> = BTreeMap::new();
-                
+
                 // Build mapping of witness name -> typenum value from type_args
                 let mut type_arg_idx = 0;
                 for (name, gkind, pkind) in &info.orig_generics {
@@ -1001,14 +1163,16 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     }
                     type_arg_idx += 1;
                 }
-                
+
                 for w in &info.length_witnesses {
                     if !lowered_fields.iter().any(|(n, _)| n == w) {
                         let value = if let Some(Some(val)) = witness_values.get(w) {
                             IrExpr::Lit(IrLit::Int(*val as i128))
                         } else {
                             // Check if there's a default value for this witness
-                            let default_val = info.orig_generics.iter()
+                            let default_val = info
+                                .orig_generics
+                                .iter()
                                 .position(|(name, gkind, _)| {
                                     *gkind == GenericKind::Length && name.to_lowercase() == *w
                                 })
@@ -1020,7 +1184,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                                         None
                                     }
                                 });
-                            
+
                             if let Some(def) = default_val {
                                 IrExpr::Lit(IrLit::Int(def as i128))
                             } else {
@@ -1032,141 +1196,199 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                         lowered_fields.push((w.clone(), value));
                     }
                 }
-                
+
                 // Add PhantomData if the struct has unused type params
                 if info.needs_phantom && !lowered_fields.iter().any(|(n, _)| n == "_phantom") {
                     // Add _phantom: PhantomData
-                    lowered_fields.push(("_phantom".to_string(), IrExpr::Path {
-                        segments: vec!["PhantomData".to_string()],
-                        type_args: Vec::new(),
-                    }));
+                    lowered_fields.push((
+                        "_phantom".to_string(),
+                        IrExpr::Path {
+                            segments: vec!["PhantomData".to_string()],
+                            type_args: Vec::new(),
+                        },
+                    ));
                 }
             }
 
             IrExpr::StructExpr {
                 kind: new_kind,
-                type_args: type_args.iter().map(|ta| lower_type_dyn(ta, ctx, fn_gen)).collect(),
+                type_args: type_args
+                    .iter()
+                    .map(|ta| lower_type_dyn(ta, ctx, fn_gen))
+                    .collect(),
                 fields: lowered_fields,
-                rest: rest.as_ref().map(|r| Box::new(lower_expr_dyn(r, ctx, fn_gen))),
+                rest: rest
+                    .as_ref()
+                    .map(|r| Box::new(lower_expr_dyn(r, ctx, fn_gen))),
             }
         }
-        IrExpr::ArrayGenerate { elem_ty, len, index_var, body } => {
+        IrExpr::ArrayGenerate {
+            elem_ty,
+            len,
+            index_var,
+            body,
+        } => {
             let lowered_len = lower_array_length(len);
             IrExpr::ArrayGenerate {
-                elem_ty: elem_ty.as_ref().map(|t| Box::new(lower_type_dyn(t, ctx, fn_gen))),
+                elem_ty: elem_ty
+                    .as_ref()
+                    .map(|t| Box::new(lower_type_dyn(t, ctx, fn_gen))),
                 len: lowered_len,
                 index_var: index_var.clone(),
                 body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
             }
         }
-        IrExpr::Field { base, field } => {
-            IrExpr::Field {
-                base: Box::new(lower_expr_dyn(base, ctx, fn_gen)),
-                field: field.clone(),
-            }
-        }
-        IrExpr::Index { base, index } => {
-            IrExpr::Index {
-                base: Box::new(lower_expr_dyn(base, ctx, fn_gen)),
-                index: Box::new(lower_expr_dyn(index, ctx, fn_gen)),
-            }
-        }
-        IrExpr::Unary { op, expr } => {
-            IrExpr::Unary {
-                op: *op,
-                expr: Box::new(lower_expr_dyn(expr, ctx, fn_gen)),
-            }
-        }
-        IrExpr::Block(b) => {
-            IrExpr::Block(lower_block_dyn(b, ctx, fn_gen))
-        }
-        IrExpr::If { cond, then_branch, else_branch } => {
-            IrExpr::If {
-                cond: Box::new(lower_expr_dyn(cond, ctx, fn_gen)),
-                then_branch: lower_block_dyn(then_branch, ctx, fn_gen),
-                else_branch: else_branch.as_ref().map(|eb| Box::new(lower_expr_dyn(eb, ctx, fn_gen))),
-            }
-        }
-        IrExpr::BoundedLoop { var, start, end, inclusive, body } => {
-            IrExpr::BoundedLoop {
-                var: var.clone(),
-                start: Box::new(lower_expr_dyn(start, ctx, fn_gen)),
-                end: Box::new(lower_expr_dyn(end, ctx, fn_gen)),
-                inclusive: *inclusive,
-                body: lower_block_dyn(body, ctx, fn_gen),
-            }
-        }
-        IrExpr::IterLoop { pattern, collection, body } => {
-            IrExpr::IterLoop {
-                pattern: lower_pattern_dyn(pattern, ctx),
-                collection: Box::new(lower_expr_dyn(collection, ctx, fn_gen)),
-                body: lower_block_dyn(body, ctx, fn_gen),
-            }
-        }
-        IrExpr::ArrayMap { array, elem_var, body } => {
-            IrExpr::ArrayMap {
-                array: Box::new(lower_expr_dyn(array, ctx, fn_gen)),
-                elem_var: elem_var.clone(),
-                body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
-            }
-        }
-        IrExpr::ArrayZip { left, right, left_var, right_var, body } => {
-            IrExpr::ArrayZip {
-                left: Box::new(lower_expr_dyn(left, ctx, fn_gen)),
-                right: Box::new(lower_expr_dyn(right, ctx, fn_gen)),
-                left_var: left_var.clone(),
-                right_var: right_var.clone(),
-                body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
-            }
-        }
-        IrExpr::ArrayFold { array, init, acc_var, elem_var, body } => {
-            IrExpr::ArrayFold {
-                array: Box::new(lower_expr_dyn(array, ctx, fn_gen)),
-                init: Box::new(lower_expr_dyn(init, ctx, fn_gen)),
-                acc_var: acc_var.clone(),
-                elem_var: elem_var.clone(),
-                body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
-            }
-        }
-        IrExpr::Match { expr, arms } => {
-            IrExpr::Match {
-                expr: Box::new(lower_expr_dyn(expr, ctx, fn_gen)),
-                arms: arms.iter().map(|arm| IrMatchArm {
+        IrExpr::Field { base, field } => IrExpr::Field {
+            base: Box::new(lower_expr_dyn(base, ctx, fn_gen)),
+            field: field.clone(),
+        },
+        IrExpr::Index { base, index } => IrExpr::Index {
+            base: Box::new(lower_expr_dyn(base, ctx, fn_gen)),
+            index: Box::new(lower_expr_dyn(index, ctx, fn_gen)),
+        },
+        IrExpr::Unary { op, expr } => IrExpr::Unary {
+            op: *op,
+            expr: Box::new(lower_expr_dyn(expr, ctx, fn_gen)),
+        },
+        IrExpr::Block(b) => IrExpr::Block(lower_block_dyn(b, ctx, fn_gen)),
+        IrExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => IrExpr::If {
+            cond: Box::new(lower_expr_dyn(cond, ctx, fn_gen)),
+            then_branch: lower_block_dyn(then_branch, ctx, fn_gen),
+            else_branch: else_branch
+                .as_ref()
+                .map(|eb| Box::new(lower_expr_dyn(eb, ctx, fn_gen))),
+        },
+        IrExpr::BoundedLoop {
+            var,
+            start,
+            end,
+            inclusive,
+            body,
+        } => IrExpr::BoundedLoop {
+            var: var.clone(),
+            start: Box::new(lower_expr_dyn(start, ctx, fn_gen)),
+            end: Box::new(lower_expr_dyn(end, ctx, fn_gen)),
+            inclusive: *inclusive,
+            body: lower_block_dyn(body, ctx, fn_gen),
+        },
+        IrExpr::IterLoop {
+            pattern,
+            collection,
+            body,
+        } => IrExpr::IterLoop {
+            pattern: lower_pattern_dyn(pattern, ctx),
+            collection: Box::new(lower_expr_dyn(collection, ctx, fn_gen)),
+            body: lower_block_dyn(body, ctx, fn_gen),
+        },
+        IrExpr::ArrayMap {
+            array,
+            elem_var,
+            body,
+        } => IrExpr::ArrayMap {
+            array: Box::new(lower_expr_dyn(array, ctx, fn_gen)),
+            elem_var: elem_var.clone(),
+            body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+        },
+        IrExpr::ArrayZip {
+            left,
+            right,
+            left_var,
+            right_var,
+            body,
+        } => IrExpr::ArrayZip {
+            left: Box::new(lower_expr_dyn(left, ctx, fn_gen)),
+            right: Box::new(lower_expr_dyn(right, ctx, fn_gen)),
+            left_var: left_var.clone(),
+            right_var: right_var.clone(),
+            body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+        },
+        IrExpr::ArrayFold {
+            array,
+            init,
+            acc_var,
+            elem_var,
+            body,
+        } => IrExpr::ArrayFold {
+            array: Box::new(lower_expr_dyn(array, ctx, fn_gen)),
+            init: Box::new(lower_expr_dyn(init, ctx, fn_gen)),
+            acc_var: acc_var.clone(),
+            elem_var: elem_var.clone(),
+            body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+        },
+        IrExpr::Match { expr, arms } => IrExpr::Match {
+            expr: Box::new(lower_expr_dyn(expr, ctx, fn_gen)),
+            arms: arms
+                .iter()
+                .map(|arm| IrMatchArm {
                     pattern: lower_pattern_dyn(&arm.pattern, ctx),
                     guard: arm.guard.as_ref().map(|g| lower_expr_dyn(g, ctx, fn_gen)),
                     body: lower_expr_dyn(&arm.body, ctx, fn_gen),
-                }).collect(),
-            }
-        }
-        IrExpr::Closure { params, ret_type, body } => {
-            IrExpr::Closure {
-                params: params.clone(),
-                ret_type: ret_type.as_ref().map(|rt| Box::new(lower_type_dyn(rt, ctx, fn_gen))),
-                body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
-            }
-        }
-        IrExpr::Cast { expr, ty } => {
-            IrExpr::Cast {
-                expr: Box::new(lower_expr_dyn(expr, ctx, fn_gen)),
-                ty: Box::new(lower_type_dyn(ty, ctx, fn_gen)),
-            }
-        }
-        IrExpr::Return(e) => {
-            IrExpr::Return(e.as_ref().map(|expr| Box::new(lower_expr_dyn(expr, ctx, fn_gen))))
-        }
-        IrExpr::Tuple(elems) => {
-            IrExpr::Tuple(elems.iter().map(|e| lower_expr_dyn(e, ctx, fn_gen)).collect())
-        }
-        IrExpr::Array(elems) => {
-            IrExpr::Array(elems.iter().map(|e| lower_expr_dyn(e, ctx, fn_gen)).collect())
-        }
-        IrExpr::Repeat { elem, len } => {
-            IrExpr::Repeat {
-                elem: Box::new(lower_expr_dyn(elem, ctx, fn_gen)),
-                len: Box::new(lower_expr_dyn(len, ctx, fn_gen)),
-            }
-        }
-        _ => e.clone(),
+                })
+                .collect(),
+        },
+        IrExpr::Closure {
+            params,
+            ret_type,
+            body,
+        } => IrExpr::Closure {
+            params: params.clone(),
+            ret_type: ret_type
+                .as_ref()
+                .map(|rt| Box::new(lower_type_dyn(rt, ctx, fn_gen))),
+            body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+        },
+        IrExpr::Cast { expr, ty } => IrExpr::Cast {
+            expr: Box::new(lower_expr_dyn(expr, ctx, fn_gen)),
+            ty: Box::new(lower_type_dyn(ty, ctx, fn_gen)),
+        },
+        IrExpr::Return(e) => IrExpr::Return(
+            e.as_ref()
+                .map(|expr| Box::new(lower_expr_dyn(expr, ctx, fn_gen))),
+        ),
+        IrExpr::Tuple(elems) => IrExpr::Tuple(
+            elems
+                .iter()
+                .map(|e| lower_expr_dyn(e, ctx, fn_gen))
+                .collect(),
+        ),
+        IrExpr::Array(elems) => IrExpr::Array(
+            elems
+                .iter()
+                .map(|e| lower_expr_dyn(e, ctx, fn_gen))
+                .collect(),
+        ),
+        IrExpr::Repeat { elem, len } => IrExpr::Repeat {
+            elem: Box::new(lower_expr_dyn(elem, ctx, fn_gen)),
+            len: Box::new(lower_expr_dyn(len, ctx, fn_gen)),
+        },
+        IrExpr::Assign { left, right } => IrExpr::Assign {
+            left: Box::new(lower_expr_dyn(left, ctx, fn_gen)),
+            right: Box::new(lower_expr_dyn(right, ctx, fn_gen)),
+        },
+        IrExpr::Macro { name, tokens } if name == "unreachable" => IrExpr::Macro {
+            name: name.clone(),
+            tokens: tokens.clone(),
+        },
+        IrExpr::Range {
+            start,
+            end,
+            inclusive,
+        } => IrExpr::Range {
+            start: match start.as_ref() {
+                None => None,
+                Some(a) => Some(Box::new(lower_expr_dyn(a, ctx, fn_gen))),
+            },
+            end: match end.as_ref() {
+                None => None,
+                Some(a) => Some(Box::new(lower_expr_dyn(a, ctx, fn_gen))),
+            },
+            inclusive: *inclusive,
+        },
+        e => todo!("error: lower_expr_dyn not implemented for {:?}", e),
     }
 }
 

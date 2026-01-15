@@ -16,19 +16,13 @@ where
         let mut res_u = GenericArray::<GenericArray<T, N>, K2::Output>::default();
         let mut res_v = GenericArray::<T, N>::default();
 
-        macro_rules! get_coeff {
-            ($v:expr, $u:expr, $idx:expr) => {
-                if $idx == 0 { $v } else { &$u[$idx - 1] }
-            };
-        }
-
         // 2. Perform SIMD Convolution
         // Degree of self is K, degree of other is K2. Max index is K+K2.
         for i in 0..=(K::to_usize()) {
             for j in 0..=(K2::to_usize()) {
                 let k = i + j;
-                let a_coeff = get_coeff!(&self.v, &self.u, i);
-                let b_coeff = get_coeff!(&other.v, &other.u, j);
+                let a_coeff = if i == 0 { &self.v } else { &self.u[i - 1] };
+                let b_coeff = if j == 0 { &other.v } else { &other.u[j - 1] };
 
                 if k == 0 {
                     // Resulting offset (degree 0)
