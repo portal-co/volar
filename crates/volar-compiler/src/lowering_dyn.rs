@@ -527,7 +527,15 @@ fn lower_function_dyn(
         });
     }
 
-    let mut body = lower_block_dyn(&f.body, ctx, &fn_gen);
+    let mut body = lower_block_dyn(
+        &f.body,
+        ctx,
+        &fn_gen
+            .iter()
+            .cloned()
+            .chain(impl_gen.iter().cloned())
+            .collect::<Vec<_>>(),
+    );
 
     // Unpack witnesses in methods
     if f.receiver.is_some() {
@@ -666,7 +674,13 @@ fn lower_type_dyn_inner(
 ) -> IrType {
     match ty {
         IrType::Array { kind, elem, len } => {
-            if *kind == ArrayKind::Slice {
+            if *kind == ArrayKind::Slice
+                || (*kind == ArrayKind::FixedArray
+                    && match len {
+                        ArrayLength::Computed(_) => false,
+                        _ => true,
+                    })
+            {
                 IrType::Array {
                     kind: *kind,
                     elem: Box::new(lower_type_dyn_inner(elem, ctx, fn_gen, in_struct_field)),
@@ -982,7 +996,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 && (segments[1] == "default" || segments[1] == "generate")
             {
                 segments[1] = "new".to_string();
-                type_args = Vec::new();
+                type_args = vec![type_args[0].clone()];
             }
             if segments.len() == 2 && segments[1] == "to_usize" {
                 // Check if first segment is a length param (single uppercase letter, or uppercase+digit like K2)
@@ -1027,6 +1041,18 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             if let MethodKind::Vole(VoleMethod::Remap) = method {
                 if args.len() == 1 {
                     args.insert(0, IrExpr::Var("n".to_string()));
+                }
+            }
+
+            if let MethodKind::Crypto(CryptoMethod::EncryptBlock) = method {
+                if let Some(a) = args.get(0).cloned() {
+                    args[0] = IrExpr::Call {
+                        func: Box::new(IrExpr::Path {
+                            segments: vec!["Block".to_string(), "from_mut_slice".to_string()],
+                            type_args: vec![IrType::TypeParam("B".to_string())],
+                        }),
+                        args: vec![a],
+                    };
                 }
             }
 
@@ -1096,8 +1122,23 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     }) {
                         new_func = Some(IrExpr::Path {
                             segments: vec![name.clone()],
-                            type_args: vec![IrType::TypeParam(b_param.name.clone())],
+                            type_args: [IrType::TypeParam(b_param.name.clone())]
+                                .into_iter()
+                                .chain(vec![
+                                    IrType::Infer;
+                                    match &**name {
+                                        "create_vole_from_material" => 1,
+                                        "create_vole_from_material_expanded" => 3,
+                                        _ => 0,
+                                    }
+                                ])
+                                .collect(),
                         });
+                    } else {
+                        todo!(
+                            "error: could not find B generic parameter for function {} (fn_gen: {fn_gen:?})",
+                            name
+                        );
                     }
                 } else if name == "commit" {
                     if let Some(d_param) = fn_gen.iter().find(|p| {
@@ -1108,6 +1149,11 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                             segments: vec![name.clone()],
                             type_args: vec![IrType::TypeParam(d_param.name.clone())],
                         });
+                    } else {
+                        todo!(
+                            "error: could not find D generic parameter for function {} (fn_gen: {fn_gen:?})",
+                            name
+                        );
                     }
                 }
             }
@@ -1394,6 +1440,12 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
 
 fn lower_array_length(len: &ArrayLength) -> ArrayLength {
     match len {
+        ArrayLength::Projection { r#type, field } => {
+            ArrayLength::Computed(Box::new(IrExpr::Macro {
+                name: "typenum_usize".to_string(),
+                tokens: format!("{}::{}", r#type, field),
+            }))
+        }
         ArrayLength::TypeParam(p) => {
             // Check if this is a typenum constant
             if let Some(tn) = TypeNumConst::from_str(p) {

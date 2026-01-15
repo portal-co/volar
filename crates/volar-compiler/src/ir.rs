@@ -152,6 +152,12 @@ pub enum ArrayLength {
     TypeNum(TypeNumConst),
     /// Generic type parameter (N, etc.)
     TypeParam(String),
+
+    Projection {
+        r#type: Box<IrType>,
+        field: String,
+    },
+
     /// Computed expression
     Computed(Box<IrExpr>),
 }
@@ -370,7 +376,9 @@ pub enum TraitKind {
     AsRef(Box<IrType>),
     /// Fn-like trait: input variant and output type
     Fn(FnInput, Box<IrType>),
-    External { path: Vec<String> },
+    External {
+        path: Vec<String>,
+    },
     Custom(String),
 }
 
@@ -735,6 +743,9 @@ impl fmt::Display for IrType {
                     ArrayLength::TypeNum(tn) => write!(f, "{:?}", tn)?,
                     ArrayLength::TypeParam(p) => write!(f, "{}", p)?,
                     ArrayLength::Computed(_) => write!(f, "_")?,
+                    ArrayLength::Projection { r#type, field } => {
+                        write!(f, "<{}>::{}", r#type, field)?;
+                    }
                 }
                 write!(f, "]")
             }
@@ -768,7 +779,12 @@ impl fmt::Display for IrType {
             Self::Reference { mutable, elem } => {
                 write!(f, "&{}{}", if *mutable { "mut " } else { "" }, elem)
             }
-            Self::Projection { base, assoc, trait_path, .. } => {
+            Self::Projection {
+                base,
+                assoc,
+                trait_path,
+                ..
+            } => {
                 let trait_name = trait_path.as_deref().unwrap_or("_");
                 write!(f, "<{} as {}>::{:?}", base, trait_name, assoc)
             }

@@ -1,6 +1,7 @@
 //! Parser module for converting Rust source code directly into specialized IR.
 
 use crate::ir::*;
+use std::borrow::ToOwned;
 #[cfg(feature = "std")]
 use std::{
     boxed::Box,
@@ -792,10 +793,7 @@ fn convert_array_length_from_type(ty: &IrType) -> Result<ArrayLength> {
                 AssociatedType::TotalLoopCount => "TotalLoopCount",
                 AssociatedType::Other(name) => name,
             };
-            Ok(ArrayLength::TypeParam(format!(
-                "{}::{}",
-                base_str, assoc_str
-            )))
+            Ok(ArrayLength::Projection { r#type: base.clone(), field: assoc_str.to_owned() })
         }
         _ => Err(CompilerError::InvalidType(format!(
             "Invalid array length type: {:?}",

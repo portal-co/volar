@@ -1,46 +1,70 @@
 use core::fmt::Write;
 #[cfg(feature = "std")]
+use std::format;
+#[cfg(feature = "std")]
 use std::string::{String, ToString};
 #[cfg(feature = "std")]
 use std::vec::Vec;
-#[cfg(feature = "std")]
-use std::format;
 
+#[cfg(not(feature = "std"))]
+use alloc::format;
 #[cfg(not(feature = "std"))]
 use alloc::string::{String, ToString};
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
-#[cfg(not(feature = "std"))]
-use alloc::format;
 
 use crate::ir::*;
 
 pub fn print_module(module: &IrModule) -> String {
     let mut out = String::new();
-    
+
     // File header for Rust
     writeln!(out, "//! Auto-generated dynamic types from volar-spec").unwrap();
-    writeln!(out, "//! Type-level lengths have been converted to runtime usize witnesses").unwrap();
+    writeln!(
+        out,
+        "//! Type-level lengths have been converted to runtime usize witnesses"
+    )
+    .unwrap();
     writeln!(out).unwrap();
     writeln!(out, "#![allow(unused_variables, dead_code, unused_mut, unused_imports, non_snake_case, unused_parens)]").unwrap();
     writeln!(out, "extern crate alloc;").unwrap();
     writeln!(out, "use alloc::vec::Vec;").unwrap();
     writeln!(out, "use alloc::vec;").unwrap();
-    writeln!(out, "use core::ops::{{Add, Sub, Mul, Div, BitAnd, BitOr, BitXor, Shl, Shr}};").unwrap();
+    writeln!(
+        out,
+        "use core::ops::{{Add, Sub, Mul, Div, BitAnd, BitOr, BitXor, Shl, Shr}};"
+    )
+    .unwrap();
     writeln!(out, "use core::marker::PhantomData;").unwrap();
     writeln!(out, "use typenum::Unsigned;").unwrap();
-    writeln!(out, "use cipher::BlockEncrypt;").unwrap();
+    writeln!(out, "use cipher::{{BlockEncrypt, Block}};").unwrap();
     writeln!(out, "use digest::Digest;").unwrap();
     writeln!(out, "use volar_common::hash_commitment::commit;").unwrap();
     writeln!(out).unwrap();
-    
-    writeln!(out, "/// Block cipher that can encrypt blocks and be created from a 32-byte key").unwrap();
-    writeln!(out, "pub trait ByteBlockEncrypt: BlockEncrypt + From<[u8; 32]> {{}}").unwrap();
-    writeln!(out, "impl<T: BlockEncrypt + From<[u8; 32]>> ByteBlockEncrypt for T {{}}").unwrap();
+
+    writeln!(
+        out,
+        "/// Block cipher that can encrypt blocks and be created from a 32-byte key"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "pub trait ByteBlockEncrypt: BlockEncrypt + From<[u8; 32]> {{}}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "impl<T: BlockEncrypt + From<[u8; 32]>> ByteBlockEncrypt for T {{}}"
+    )
+    .unwrap();
     writeln!(out).unwrap();
-    
+
     writeln!(out, "// Primitive field types from volar-primitives").unwrap();
-    writeln!(out, "pub use volar_primitives::{{Bit, BitsInBytes, BitsInBytes64, Galois, Galois64}};").unwrap();
+    writeln!(
+        out,
+        "pub use volar_primitives::{{Bit, BitsInBytes, BitsInBytes64, Galois, Galois64}};"
+    )
+    .unwrap();
     writeln!(out).unwrap();
 
     writeln!(out, "/// Compute integer log2").unwrap();
@@ -77,11 +101,13 @@ fn write_struct(out: &mut String, s: &IrStruct, _level: usize) {
     writeln!(out, "#[derive(Debug, Default)]").unwrap();
     write!(out, "pub struct {}", s.kind).unwrap();
     write_generics(out, &s.generics);
-    
+
     if s.is_tuple {
         write!(out, "(").unwrap();
         for (i, f) in s.fields.iter().enumerate() {
-            if i > 0 { write!(out, ", ").unwrap(); }
+            if i > 0 {
+                write!(out, ", ").unwrap();
+            }
             write!(out, "pub ").unwrap();
             write_type(out, &f.ty);
         }
@@ -107,10 +133,14 @@ fn write_trait(out: &mut String, t: &IrTrait, _level: usize) {
                 write!(out, "    fn {}(", m.name).unwrap();
                 if let Some(r) = m.receiver {
                     write_receiver(out, r);
-                    if !m.params.is_empty() { write!(out, ", ").unwrap(); }
+                    if !m.params.is_empty() {
+                        write!(out, ", ").unwrap();
+                    }
                 }
                 for (i, p) in m.params.iter().enumerate() {
-                    if i > 0 { write!(out, ", ").unwrap(); }
+                    if i > 0 {
+                        write!(out, ", ").unwrap();
+                    }
                     write!(out, "{}: ", p.name).unwrap();
                     write_type(out, &p.ty);
                 }
@@ -137,7 +167,9 @@ fn write_impl(out: &mut String, i: &IrImpl, _level: usize) {
         if !t.type_args.is_empty() {
             write!(out, "<").unwrap();
             for (idx, arg) in t.type_args.iter().enumerate() {
-                if idx > 0 { write!(out, ", ").unwrap(); }
+                if idx > 0 {
+                    write!(out, ", ").unwrap();
+                }
                 write_type(out, arg);
             }
             write!(out, ">").unwrap();
@@ -173,10 +205,14 @@ fn write_function(out: &mut String, f: &IrFunction, level: usize, is_trait_item:
     write!(out, "(").unwrap();
     if let Some(r) = f.receiver {
         write_receiver(out, r);
-        if !f.params.is_empty() { write!(out, ", ").unwrap(); }
+        if !f.params.is_empty() {
+            write!(out, ", ").unwrap();
+        }
     }
     for (i, p) in f.params.iter().enumerate() {
-        if i > 0 { write!(out, ", ").unwrap(); }
+        if i > 0 {
+            write!(out, ", ").unwrap();
+        }
         write!(out, "mut {}: ", p.name).unwrap();
         write_type(out, &p.ty);
     }
@@ -195,7 +231,9 @@ fn write_generics(out: &mut String, generics: &[IrGenericParam]) {
     if !generics.is_empty() {
         write!(out, "<").unwrap();
         for (i, p) in generics.iter().enumerate() {
-            if i > 0 { write!(out, ", ").unwrap(); }
+            if i > 0 {
+                write!(out, ", ").unwrap();
+            }
             if p.kind == IrGenericParamKind::Lifetime {
                 write!(out, "'{}", p.name).unwrap();
             } else {
@@ -204,7 +242,9 @@ fn write_generics(out: &mut String, generics: &[IrGenericParam]) {
             if !p.bounds.is_empty() {
                 write!(out, ": ").unwrap();
                 for (j, b) in p.bounds.iter().enumerate() {
-                    if j > 0 { write!(out, " + ").unwrap(); }
+                    if j > 0 {
+                        write!(out, " + ").unwrap();
+                    }
                     write_trait_bound(out, b);
                 }
             }
@@ -217,13 +257,17 @@ fn write_where_clause(out: &mut String, where_clause: &[IrWherePredicate]) {
     if !where_clause.is_empty() {
         write!(out, " where ").unwrap();
         for (idx, wp) in where_clause.iter().enumerate() {
-            if idx > 0 { write!(out, ", ").unwrap(); }
+            if idx > 0 {
+                write!(out, ", ").unwrap();
+            }
             match wp {
                 IrWherePredicate::TypeBound { ty, bounds } => {
                     write_type(out, ty);
                     write!(out, ": ").unwrap();
                     for (j, b) in bounds.iter().enumerate() {
-                        if j > 0 { write!(out, " + ").unwrap(); }
+                        if j > 0 {
+                            write!(out, " + ").unwrap();
+                        }
                         write_trait_bound(out, b);
                     }
                 }
@@ -281,7 +325,9 @@ fn write_type(out: &mut String, ty: &IrType) {
             if !type_args.is_empty() {
                 write!(out, "<").unwrap();
                 for (i, arg) in type_args.iter().enumerate() {
-                    if i > 0 { write!(out, ", "); }
+                    if i > 0 {
+                        write!(out, ", ");
+                    }
                     write_type(out, arg);
                 }
                 write!(out, ">").unwrap();
@@ -291,7 +337,9 @@ fn write_type(out: &mut String, ty: &IrType) {
         IrType::Tuple(elems) => {
             write!(out, "(").unwrap();
             for (i, elem) in elems.iter().enumerate() {
-                if i > 0 { write!(out, ", "); }
+                if i > 0 {
+                    write!(out, ", ");
+                }
                 write_type(out, elem);
             }
             write!(out, ")").unwrap();
@@ -301,7 +349,12 @@ fn write_type(out: &mut String, ty: &IrType) {
             write!(out, "&{}", if *mutable { "mut " } else { "" }).unwrap();
             write_type(out, elem);
         }
-        IrType::Projection { base, trait_path, trait_args, assoc } => {
+        IrType::Projection {
+            base,
+            trait_path,
+            trait_args,
+            assoc,
+        } => {
             // For simple Self::Output cases, just use Self::AssocType
             if let IrType::TypeParam(p) = base.as_ref() {
                 if p == "Self" && trait_args.is_empty() {
@@ -316,7 +369,9 @@ fn write_type(out: &mut String, ty: &IrType) {
             if !trait_args.is_empty() {
                 write!(out, "<").unwrap();
                 for (i, arg) in trait_args.iter().enumerate() {
-                    if i > 0 { write!(out, ", "); }
+                    if i > 0 {
+                        write!(out, ", ");
+                    }
                     write_type(out, arg);
                 }
                 write!(out, ">").unwrap();
@@ -326,7 +381,9 @@ fn write_type(out: &mut String, ty: &IrType) {
         IrType::Existential { bounds } => {
             write!(out, "impl ").unwrap();
             for (i, b) in bounds.iter().enumerate() {
-                if i > 0 { write!(out, " + "); }
+                if i > 0 {
+                    write!(out, " + ");
+                }
                 write_trait_bound(out, b);
             }
         }
@@ -379,13 +436,23 @@ fn write_stmt(out: &mut String, stmt: &IrStmt, level: usize) {
 /// Write an expression as part of an iterator chain (without final .collect())
 fn write_expr_chainable(out: &mut String, expr: &IrExpr) {
     match expr {
-        IrExpr::ArrayMap { array, elem_var, body } => {
+        IrExpr::ArrayMap {
+            array,
+            elem_var,
+            body,
+        } => {
             write_expr_chainable(out, array);
             write!(out, ".map(|{}| ", elem_var).unwrap();
             write_expr(out, body);
             write!(out, ")").unwrap();
         }
-        IrExpr::ArrayZip { left, right, left_var, right_var, body } => {
+        IrExpr::ArrayZip {
+            left,
+            right,
+            left_var,
+            right_var,
+            body,
+        } => {
             write_expr_chainable(out, left);
             write!(out, ".zip(").unwrap();
             write_expr(out, right);
@@ -393,14 +460,21 @@ fn write_expr_chainable(out: &mut String, expr: &IrExpr) {
             write_expr(out, body);
             write!(out, ")").unwrap();
         }
-        IrExpr::MethodCall { receiver, method, args, .. } => {
+        IrExpr::MethodCall {
+            receiver,
+            method,
+            args,
+            ..
+        } => {
             let name = match method {
                 MethodKind::Std(s) => s.clone(),
                 MethodKind::Crypto(c) => {
                     let debug_name = format!("{:?}", c);
                     let mut snake = String::new();
                     for (i, ch) in debug_name.chars().enumerate() {
-                        if ch.is_uppercase() && i > 0 { snake.push('_'); }
+                        if ch.is_uppercase() && i > 0 {
+                            snake.push('_');
+                        }
                         snake.push(ch.to_ascii_lowercase());
                     }
                     snake
@@ -408,12 +482,15 @@ fn write_expr_chainable(out: &mut String, expr: &IrExpr) {
                 MethodKind::Vole(v) => format!("{:?}", v).to_lowercase(),
                 MethodKind::Unknown(s) => s.clone(),
             };
-            
+
             // Iterator-sourcing methods: take collection, produce iterator
             let is_iter_source = matches!(name.as_str(), "iter" | "into_iter" | "chars" | "bytes");
             // Iterator-transforming methods: take iterator, produce iterator
-            let is_iter_transform = matches!(name.as_str(), "enumerate" | "filter" | "take" | "skip" | "map" | "flat_map" | "filter_map");
-            
+            let is_iter_transform = matches!(
+                name.as_str(),
+                "enumerate" | "filter" | "take" | "skip" | "map" | "flat_map" | "filter_map"
+            );
+
             if is_iter_source {
                 // Use normal expr for receiver (it's a collection)
                 write_expr(out, receiver);
@@ -424,10 +501,12 @@ fn write_expr_chainable(out: &mut String, expr: &IrExpr) {
                 // Also chain for unknown methods in iterator context
                 write_expr_chainable(out, receiver);
             }
-            
+
             write!(out, ".{}(", name).unwrap();
             for (i, arg) in args.iter().enumerate() {
-                if i > 0 { write!(out, ", ").unwrap(); }
+                if i > 0 {
+                    write!(out, ", ").unwrap();
+                }
                 write_expr(out, arg);
             }
             write!(out, ")").unwrap();
@@ -451,7 +530,12 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
             write_expr(out, right);
             write!(out, ")").unwrap();
         }
-        IrExpr::MethodCall { receiver, method, args, .. } => {
+        IrExpr::MethodCall {
+            receiver,
+            method,
+            args,
+            ..
+        } => {
             let name = match method {
                 MethodKind::Std(s) => s.clone(),
                 MethodKind::Crypto(c) => {
@@ -469,18 +553,30 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
                 MethodKind::Vole(v) => format!("{:?}", v).to_lowercase(),
                 MethodKind::Unknown(s) => s.clone(),
             };
-            
+
             // For iterator-consuming methods like fold, enumerate, the receiver is an iterator chain
-            let is_iter_consumer = matches!(name.as_str(), "fold" | "enumerate" | "filter" | "take" | "skip" | "chain" | "flat_map" | "filter_map");
+            let is_iter_consumer = matches!(
+                name.as_str(),
+                "fold"
+                    | "enumerate"
+                    | "filter"
+                    | "take"
+                    | "skip"
+                    | "chain"
+                    | "flat_map"
+                    | "filter_map"
+            );
             if is_iter_consumer {
                 write_expr_chainable(out, receiver);
             } else {
                 write_expr(out, receiver);
             }
-            
+
             write!(out, ".{}(", name).unwrap();
             for (i, arg) in args.iter().enumerate() {
-                if i > 0 { write!(out, ", ").unwrap(); }
+                if i > 0 {
+                    write!(out, ", ").unwrap();
+                }
                 write_expr(out, arg);
             }
             write!(out, ")").unwrap();
@@ -489,7 +585,9 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
             write_expr(out, func);
             write!(out, "(").unwrap();
             for (i, arg) in args.iter().enumerate() {
-                if i > 0 { write!(out, ", ").unwrap(); }
+                if i > 0 {
+                    write!(out, ", ").unwrap();
+                }
                 write_expr(out, arg);
             }
             write!(out, ")").unwrap();
@@ -505,7 +603,11 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
             write!(out, "]").unwrap();
         }
         IrExpr::Block(b) => write_block(out, b, 0),
-        IrExpr::If { cond, then_branch, else_branch } => {
+        IrExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             write!(out, "if ").unwrap();
             write_expr(out, cond);
             write_block(out, then_branch, 0);
@@ -514,21 +616,35 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
                 write_expr(out, eb);
             }
         }
-        IrExpr::BoundedLoop { var, start, end, inclusive, body } => {
+        IrExpr::BoundedLoop {
+            var,
+            start,
+            end,
+            inclusive,
+            body,
+        } => {
             write!(out, "for {} in ", var).unwrap();
             write_expr(out, start);
             write!(out, "{} ", if *inclusive { "..=" } else { ".." }).unwrap();
             write_expr(out, end);
             write_block(out, body, 0);
         }
-        IrExpr::IterLoop { pattern, collection, body } => {
+        IrExpr::IterLoop {
+            pattern,
+            collection,
+            body,
+        } => {
             write!(out, "for ").unwrap();
             write_pattern(out, pattern);
             write!(out, " in ").unwrap();
             write_expr(out, collection);
             write_block(out, body, 0);
         }
-        IrExpr::ArrayMap { array, elem_var, body } => {
+        IrExpr::ArrayMap {
+            array,
+            elem_var,
+            body,
+        } => {
             // Write the map part without collect - caller decides whether to collect
             write_expr_chainable(out, array);
             write!(out, ".map(|{}| ", elem_var).unwrap();
@@ -538,7 +654,13 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
             // For now, always add collect (callers like ArrayFold should use write_expr_chainable)
             write!(out, ".collect::<Vec<_>>()").unwrap();
         }
-        IrExpr::ArrayZip { left, right, left_var, right_var, body } => {
+        IrExpr::ArrayZip {
+            left,
+            right,
+            left_var,
+            right_var,
+            body,
+        } => {
             write_expr_chainable(out, left);
             write!(out, ".zip(").unwrap();
             write_expr(out, right);
@@ -546,7 +668,13 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
             write_expr(out, body);
             write!(out, ").collect::<Vec<_>>()").unwrap();
         }
-        IrExpr::ArrayFold { array, init, acc_var, elem_var, body } => {
+        IrExpr::ArrayFold {
+            array,
+            init,
+            acc_var,
+            elem_var,
+            body,
+        } => {
             write_expr_chainable(out, array);
             write!(out, ".fold(").unwrap();
             write_expr(out, init);
@@ -554,7 +682,12 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
             write_expr(out, body);
             write!(out, ")").unwrap();
         }
-        IrExpr::ArrayGenerate { index_var, body, len, .. } => {
+        IrExpr::ArrayGenerate {
+            index_var,
+            body,
+            len,
+            ..
+        } => {
             let len_str = match len {
                 ArrayLength::Const(n) => n.to_string(),
                 ArrayLength::TypeNum(tn) => tn.to_usize().to_string(),
@@ -562,6 +695,12 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
                 ArrayLength::Computed(e) => {
                     let mut s = String::new();
                     write_expr(&mut s, e);
+                    s
+                }
+                ArrayLength::Projection { r#type, field } => {
+                    let mut s = String::new();
+                    write_type(&mut s, r#type);
+                    write!(s, "::{:?}", field).unwrap();
                     s
                 }
             };
@@ -579,30 +718,62 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
             }
             write_expr(out, expr);
         }
-        IrExpr::Path { segments, type_args } => {
-            write!(out, "{}", segments.join("::")).unwrap();
-            if !type_args.is_empty() {
-                write!(out, "::<").unwrap();
-                for (i, arg) in type_args.iter().enumerate() {
-                    if i > 0 { write!(out, ", "); }
-                    write_type(out, arg);
+        IrExpr::Path {
+            segments,
+            type_args,
+        } => {
+            if let Some("new" | "from_mut_slice") = segments.last().as_deref().map(|a| &**a) {
+                let l = segments.last().unwrap();
+                let segments = &segments[..segments.len() - 1];
+                write!(out, "{}", segments.join("::")).unwrap();
+                if !type_args.is_empty() {
+                    write!(out, "::<").unwrap();
+                    for (i, arg) in type_args.iter().enumerate() {
+                        if i > 0 {
+                            write!(out, ", ");
+                        }
+                        write_type(out, arg);
+                    }
+                    write!(out, ">").unwrap();
                 }
-                write!(out, ">").unwrap();
+                write!(out, "::{}", l).unwrap();
+            } else {
+                write!(out, "{}", segments.join("::")).unwrap();
+                if !type_args.is_empty() {
+                    write!(out, "::<").unwrap();
+                    for (i, arg) in type_args.iter().enumerate() {
+                        if i > 0 {
+                            write!(out, ", ");
+                        }
+                        write_type(out, arg);
+                    }
+                    write!(out, ">").unwrap();
+                }
             }
         }
         IrExpr::Closure { params, body, .. } => {
             write!(out, "|").unwrap();
             for (i, p) in params.iter().enumerate() {
-                if i > 0 { write!(out, ", "); }
+                if i > 0 {
+                    write!(out, ", ");
+                }
                 write_pattern(out, &p.pattern);
             }
             write!(out, "| ").unwrap();
             write_expr(out, body);
         }
-        IrExpr::Range { start, end, inclusive } => {
-            if let Some(s) = start { write_expr(out, s); }
+        IrExpr::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            if let Some(s) = start {
+                write_expr(out, s);
+            }
             write!(out, "{}", if *inclusive { "..=" } else { ".." }).unwrap();
-            if let Some(e) = end { write_expr(out, e); }
+            if let Some(e) = end {
+                write_expr(out, e);
+            }
         }
         IrExpr::Assign { left, right } => {
             write_expr(out, left);
@@ -612,7 +783,9 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
         IrExpr::StructExpr { kind, fields, .. } => {
             write!(out, "{} {{ ", kind).unwrap();
             for (i, (name, val)) in fields.iter().enumerate() {
-                if i > 0 { write!(out, ", ").unwrap(); }
+                if i > 0 {
+                    write!(out, ", ").unwrap();
+                }
                 write!(out, "{}: ", name).unwrap();
                 write_expr(out, val);
             }
@@ -621,7 +794,9 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
         IrExpr::Tuple(elems) => {
             write!(out, "(").unwrap();
             for (i, e) in elems.iter().enumerate() {
-                if i > 0 { write!(out, ", ").unwrap(); }
+                if i > 0 {
+                    write!(out, ", ").unwrap();
+                }
                 write_expr(out, e);
             }
             write!(out, ")").unwrap();
@@ -629,13 +804,15 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
         IrExpr::Array(elems) => {
             write!(out, "vec![").unwrap();
             for (i, e) in elems.iter().enumerate() {
-                if i > 0 { write!(out, ", ").unwrap(); }
+                if i > 0 {
+                    write!(out, ", ").unwrap();
+                }
                 write_expr(out, e);
             }
             write!(out, "]").unwrap();
         }
         IrExpr::Repeat { elem, len } => {
-            write!(out, "vec![").unwrap();
+            write!(out, "[").unwrap();
             write_expr(out, elem);
             write!(out, "; ").unwrap();
             write_expr(out, len);
@@ -664,7 +841,12 @@ fn write_expr(out: &mut String, expr: &IrExpr) {
         }
         _ => {
             let msg = format!("{:?}", expr).replace('"', "'");
-            write!(out, "compile_error!(\"Unsupported expression in printer: {}\")", msg).unwrap();
+            write!(
+                out,
+                "compile_error!(\"Unsupported expression in printer: {}\")",
+                msg
+            )
+            .unwrap();
         }
     }
 }
@@ -703,7 +885,9 @@ fn write_pattern(out: &mut String, pat: &IrPattern) {
         IrPattern::Tuple(elems) => {
             write!(out, "(").unwrap();
             for (i, p) in elems.iter().enumerate() {
-                if i > 0 { write!(out, ", "); }
+                if i > 0 {
+                    write!(out, ", ");
+                }
                 write_pattern(out, p);
             }
             write!(out, ")").unwrap();
@@ -711,7 +895,9 @@ fn write_pattern(out: &mut String, pat: &IrPattern) {
         IrPattern::TupleStruct { kind, elems } => {
             write!(out, "{}(", kind).unwrap();
             for (i, p) in elems.iter().enumerate() {
-                if i > 0 { write!(out, ", "); }
+                if i > 0 {
+                    write!(out, ", ");
+                }
                 write_pattern(out, p);
             }
             write!(out, ")").unwrap();
@@ -719,12 +905,16 @@ fn write_pattern(out: &mut String, pat: &IrPattern) {
         IrPattern::Struct { kind, fields, rest } => {
             write!(out, "{} {{ ", kind).unwrap();
             for (i, (name, p)) in fields.iter().enumerate() {
-                if i > 0 { write!(out, ", "); }
+                if i > 0 {
+                    write!(out, ", ");
+                }
                 write!(out, "{}: ", name).unwrap();
                 write_pattern(out, p);
             }
             if *rest {
-                if !fields.is_empty() { write!(out, ", "); }
+                if !fields.is_empty() {
+                    write!(out, ", ");
+                }
                 write!(out, "..").unwrap();
             }
             write!(out, " }}").unwrap();

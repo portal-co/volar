@@ -6,32 +6,31 @@ impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::BlockSiz
             > + ArrayLength<u64>,
         U: ArrayLength<GenericArray<u8, <B::BlockSize as Max<D::OutputSize>>::Output>>,
         R: AsRef<[u8]>,
+        M: ArrayLength<u8>,
     >(
         &self,
         bad: GenericArray<u64, T>,
         rand: &R,
     ) -> ABOOpening<B, D, T, U>
     where
-        B::BlockSize: Max<D::OutputSize>,
-        <B::BlockSize as Max<D::OutputSize>>::Output: ArrayLength<u8>,
+        B::BlockSize: Max<D::OutputSize, Output = M>,
         T: Mul<U, Output = K>,
     {
         ABOOpening {
             bad: bad.clone(),
-            openings: GenericArray::<
-                GenericArray<GenericArray<u8, <B::BlockSize as Max<D::OutputSize>>::Output>, U>,
-                T,
-            >::generate(move |i| {
+            openings: GenericArray::<GenericArray<GenericArray<u8, M>, U>, T>::generate(move |i| {
                 let bad = bad.clone();
-                GenericArray::<GenericArray<u8, <B::BlockSize as Max<D::OutputSize>>::Output>, U>::generate(move |j| {
+                GenericArray::<GenericArray<u8, M>, U>::generate(move |j| {
                     let i2 = i | ((j as usize) << T::to_usize().ilog2());
                     if bad.contains(&(i2 as u64)) {
                         let h = commit::<D>(&self.per_byte[i2], rand);
-                        GenericArray::<u8, <B::BlockSize as Max<D::OutputSize>>::Output>::generate(|j| h.as_ref().get(j).cloned().unwrap_or_default())
+                        GenericArray::<u8, M>::generate(
+                            |j| h.as_ref().get(j).cloned().unwrap_or_default(),
+                        )
                     } else {
-                        GenericArray::<u8, <B::BlockSize as Max<D::OutputSize>>::Output>::generate(|j| {
-                            self.per_byte[i2].get(j).cloned().unwrap_or_default()
-                        })
+                        GenericArray::<u8, M>::generate(
+                            |j| self.per_byte[i2].get(j).cloned().unwrap_or_default(),
+                        )
                     }
                 })
             }),
