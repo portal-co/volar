@@ -24,13 +24,13 @@ impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSi
                     let i2 = i | ((j as usize) << T::to_usize().ilog2());
                     if bad.contains(&(i2 as u64)) {
                         let h = commit::<D>(&self.per_byte[i2], rand);
-                        GenericArray::<u8, M>::generate(
-                            |j| h.as_ref().get(j).cloned().unwrap_or_default(),
-                        )
+                        GenericArray::<u8, M>::generate(|j| {
+                            h.as_ref().get(j).cloned().unwrap_or_default()
+                        })
                     } else {
-                        GenericArray::<u8, M>::generate(
-                            |j| self.per_byte[i2].get(j).cloned().unwrap_or_default(),
-                        )
+                        GenericArray::<u8, M>::generate(|j| {
+                            self.per_byte[i2].get(j).cloned().unwrap_or_default()
+                        })
                     }
                 })
             }),
@@ -40,8 +40,9 @@ impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSi
 impl<
     B: ByteBlockEncrypt<OutputSize: Unsigned + Max<D::OutputSize, Output: ArrayLength<u8>>>,
     D: Digest<OutputSize: Unsigned>,
-    T: ArrayLength<GenericArray<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>, U>>
-        + ArrayLength<u64>,
+    T: ArrayLength<
+            GenericArray<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>, U>,
+        > + ArrayLength<u64>,
     U: ArrayLength<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>>,
 > ABOOpening<B, D, T, U>
 {
@@ -112,6 +113,25 @@ impl<
         GenericArray::<Vope<B::OutputSize, u8>, N>::generate(|i| {
             let s = &self.openings[i];
             create_vole_from_material_expanded::<B, X, _, _>(s, &mut f)
+        })
+    }
+    pub fn to_sub_abo_typenum<
+        C: Digest,
+        K: ArrayLength<ABO<B, C, K2>>,
+        K2: ArrayLength<GenericArray<u8, B::OutputSize>>,
+    >(
+        &self,
+        rand: &impl AsRef<[u8]>,
+    ) -> GenericArray<ABO<B, C, K2>, K>
+    where
+        B::OutputSize: VoleArray<u8>,
+        B: ByteBlockEncrypt,
+        T: Mul<U, Output = K>,
+    {
+        GenericArray::<ABO<B, C, K2>, K>::generate(|i| {
+            let s = self.openings[i / T::to_usize()][i % T::to_usize()].clone();
+            let s = &s[..(<B::OutputSize as Unsigned>::to_usize())];
+            B::gen_abo(GenericArray::<u8, B::OutputSize>::generate(|i| s[i]), rand)
         })
     }
 }
