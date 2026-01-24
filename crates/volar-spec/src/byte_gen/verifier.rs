@@ -1,10 +1,10 @@
 use super::*;
-impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::BlockSize>>> ABO<B, D, K> {
+impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSize>>> ABO<B, D, K> {
     pub fn open<
         T: ArrayLength<
-                GenericArray<GenericArray<u8, <B::BlockSize as Max<D::OutputSize>>::Output>, U>,
+                GenericArray<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>, U>,
             > + ArrayLength<u64>,
-        U: ArrayLength<GenericArray<u8, <B::BlockSize as Max<D::OutputSize>>::Output>>,
+        U: ArrayLength<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>>,
         R: AsRef<[u8]>,
         M: ArrayLength<u8>,
     >(
@@ -13,7 +13,7 @@ impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::BlockSiz
         rand: &R,
     ) -> ABOOpening<B, D, T, U>
     where
-        B::BlockSize: Max<D::OutputSize, Output = M>,
+        B::OutputSize: Max<D::OutputSize, Output = M>,
         T: Mul<U, Output = K>,
     {
         ABOOpening {
@@ -38,11 +38,11 @@ impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::BlockSiz
     }
 }
 impl<
-    B: ByteBlockEncrypt<BlockSize: Unsigned + Max<D::OutputSize, Output: ArrayLength<u8>>>,
+    B: ByteBlockEncrypt<OutputSize: Unsigned + Max<D::OutputSize, Output: ArrayLength<u8>>>,
     D: Digest<OutputSize: Unsigned>,
-    T: ArrayLength<GenericArray<GenericArray<u8, <B::BlockSize as Max<D::OutputSize>>::Output>, U>>
+    T: ArrayLength<GenericArray<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>, U>>
         + ArrayLength<u64>,
-    U: ArrayLength<GenericArray<u8, <B::BlockSize as Max<D::OutputSize>>::Output>>,
+    U: ArrayLength<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>>,
 > ABOOpening<B, D, T, U>
 {
     pub fn validate<R: AsRef<[u8]>>(
@@ -58,7 +58,7 @@ impl<
                     h.update(&self.openings[i][b][..(<D::OutputSize as Unsigned>::to_usize())]);
                 } else {
                     h.update(&commit::<D>(
-                        &&self.openings[i][b][..(<B::BlockSize as Unsigned>::to_usize())],
+                        &&self.openings[i][b][..(<B::OutputSize as Unsigned>::to_usize())],
                         rand,
                     ));
                 }
@@ -66,22 +66,22 @@ impl<
         }
         h.finalize().as_slice() == commit_.as_slice()
     }
-    pub fn to_vole_material<const N: usize>(&self) -> [Vope<B::BlockSize, u8>; N]
+    pub fn to_vole_material<const N: usize>(&self) -> [Vope<B::OutputSize, u8>; N]
     where
-        B::BlockSize: VoleArray<u8>,
+        B::OutputSize: VoleArray<u8>,
     {
         core::array::from_fn(|i| {
             let s = &self.openings[i];
             create_vole_from_material::<B, _>(s)
         })
     }
-    pub fn to_vole_material_typenum<N: ArrayLength<Vope<B::BlockSize, u8>>>(
+    pub fn to_vole_material_typenum<N: ArrayLength<Vope<B::OutputSize, u8>>>(
         &self,
-    ) -> GenericArray<Vope<B::BlockSize, u8>, N>
+    ) -> GenericArray<Vope<B::OutputSize, u8>, N>
     where
-        B::BlockSize: VoleArray<u8>,
+        B::OutputSize: VoleArray<u8>,
     {
-        GenericArray::<Vope<B::BlockSize, u8>, N>::generate(|i| {
+        GenericArray::<Vope<B::OutputSize, u8>, N>::generate(|i| {
             let s = &self.openings[i];
             create_vole_from_material::<B, _>(s)
         })
@@ -89,9 +89,9 @@ impl<
     pub fn to_vole_material_expanded<const N: usize, X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(
         &self,
         mut f: F,
-    ) -> [Vope<B::BlockSize, u8>; N]
+    ) -> [Vope<B::OutputSize, u8>; N]
     where
-        B::BlockSize: VoleArray<u8>,
+        B::OutputSize: VoleArray<u8>,
     {
         core::array::from_fn(|i| {
             let s = &self.openings[i];
@@ -99,17 +99,17 @@ impl<
         })
     }
     pub fn to_vole_material_typenum_expanded<
-        N: ArrayLength<Vope<B::BlockSize, u8>>,
+        N: ArrayLength<Vope<B::OutputSize, u8>>,
         X: AsRef<[u8]>,
         F: FnMut(&[u8]) -> X,
     >(
         &self,
         mut f: F,
-    ) -> GenericArray<Vope<B::BlockSize, u8>, N>
+    ) -> GenericArray<Vope<B::OutputSize, u8>, N>
     where
-        B::BlockSize: VoleArray<u8>,
+        B::OutputSize: VoleArray<u8>,
     {
-        GenericArray::<Vope<B::BlockSize, u8>, N>::generate(|i| {
+        GenericArray::<Vope<B::OutputSize, u8>, N>::generate(|i| {
             let s = &self.openings[i];
             create_vole_from_material_expanded::<B, X, _, _>(s, &mut f)
         })
