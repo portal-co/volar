@@ -51,19 +51,4 @@ impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSi
             create_vole_from_material_expanded::<B, X, _, _>(s, &mut f)
         })
     }
-
-    pub fn to_sub_abo_typenum<C: Digest, K2: ArrayLength<GenericArray<u8, B::OutputSize>>>(
-        &self,
-        rand: &impl AsRef<[u8]>,
-    ) -> GenericArray<ABO<B, C, K2>, K>
-    where
-        B::OutputSize: VoleArray<u8>,
-        K: ArrayLength<ABO<B, C, K2>>,
-        B: ByteBlockEncrypt,
-    {
-        GenericArray::<ABO<B, C, K2>, K>::generate(|i| {
-            let s = self.per_byte[i].clone();
-            B::gen_abo(s, rand)
-        })
-    }
 }
