@@ -130,4 +130,10 @@ pub fn double<B: ByteBlockEncrypt>(
     let v = B::digest(&a);
     [v.clone(), v.zip(a, |x, y| x ^ y)]
 }
-pub type ByteId = [bool; 5];
+pub struct BSplit<
+    B: ByteBlockEncrypt,
+    D: Digest<OutputSize: Logarithm2<Output: ArrayLength<[GenericArray<u8, B::OutputSize>; 2]>>>,
+> {
+    pub split:
+        GenericArray<[GenericArray<u8, B::OutputSize>; 2], <D::OutputSize as Logarithm2>::Output>,
+}

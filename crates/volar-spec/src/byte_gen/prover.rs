@@ -51,4 +51,39 @@ impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSi
             create_vole_from_material_expanded::<B, X, _, _>(s, &mut f)
         })
     }
+    pub fn split_bit_typenum<N: ArrayLength<BSplit<B, D>>>(&self) -> GenericArray<BSplit<B, D>, N>
+    where
+        B::OutputSize: VoleArray<u8>,
+        D: Digest<
+            OutputSize: Logarithm2<Output: ArrayLength<[GenericArray<u8, B::OutputSize>; 2]>>,
+        >,
+    {
+        GenericArray::<BSplit<B, D>, N>::generate(|i| {
+            let s = &self.per_byte[(i * N::to_usize())..][..N::to_usize()];
+            BSplit {
+                split: GenericArray::<
+                    [GenericArray<u8, B::OutputSize>; 2],
+                    <D::OutputSize as Logarithm2>::Output,
+                >::generate(|j| {
+                    core::array::from_fn(|b| {
+                        s.iter()
+                            .enumerate()
+                            .filter_map(|(a, c)| {
+                                if a >> j & 1 == b {
+                                    Some(c.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .fold(GenericArray::<u8, B::OutputSize>::default(), |a, b| {
+                                a.zip(
+                                    GenericArray::<u8, B::OutputSize>::generate(|i| b.as_ref()[i]),
+                                    |a, b| a.bitxor(b),
+                                )
+                            })
+                    })
+                }),
+            }
+        })
+    }
 }
