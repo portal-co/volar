@@ -15,36 +15,40 @@ use crate::{
     vole::{VoleArray, vope::Vope},
 };
 use volar_common::hash_commitment::commit;
-pub trait ByteBlockEncrypt: Digest {
-    fn gen_abo<D: Digest, K: ArrayLength<GenericArray<u8, Self::OutputSize>>>(
-        a: GenericArray<u8, Self::OutputSize>,
-        rand: &impl AsRef<[u8]>,
-    ) -> ABO<Self, D, K> where Self: Sized {
-        let mut h = D::new();
-        let mut per_byte = GenericArray::default();
-        for i in 0..K::to_usize() {
-            // let id: ByteId = core::array::from_fn(|j| ((i >> j) & 1) != 0);
-            let core = (0..K::to_usize().ilog2()).fold(a.clone(), |mut acc, b| {
-                if (i >> b) & 1 != 0 {
-                    let doubled = double::<Self>(acc);
-                    acc = doubled[1].clone();
-                } else {
-                    let doubled = double::<Self>(acc);
-                    acc = doubled[0].clone();
-                }
-                acc
-            });
+pub trait ByteBlockEncrypt {
+    type OutputSize: ArrayLength<u8>;
+    fn double(a: GenericArray<u8, Self::OutputSize>) -> [GenericArray<u8, Self::OutputSize>; 2];
+}
+pub fn gen_abo<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSize>>>(
+    a: GenericArray<u8, B::OutputSize>,
+    rand: &impl AsRef<[u8]>,
+) -> ABO<B, D, K>
+where
+    B: Sized,
+{
+    let mut h = D::new();
+    let mut per_byte = GenericArray::default();
+    for i in 0..K::to_usize() {
+        // let id: ByteId = core::array::from_fn(|j| ((i >> j) & 1) != 0);
+        let core = (0..K::to_usize().ilog2()).fold(a.clone(), |mut acc, b| {
+            if (i >> b) & 1 != 0 {
+                let doubled = B::double(acc);
+                acc = doubled[1].clone();
+            } else {
+                let doubled = B::double(acc);
+                acc = doubled[0].clone();
+            }
+            acc
+        });
 
-            h.update(&commit::<D>(&core, rand));
-            per_byte[i] = core;
-        }
-        ABO::<Self, D, K> {
-            commit: h.finalize(),
-            per_byte,
-        }
+        h.update(&commit::<D>(&core, rand));
+        per_byte[i] = core;
+    }
+    ABO::<B, D, K> {
+        commit: h.finalize(),
+        per_byte,
     }
 }
-impl<T: Digest> ByteBlockEncrypt for T {}
 pub fn create_vole_from_material<B: ByteBlockEncrypt<OutputSize: VoleArray<u8>>, X: AsRef<[u8]>>(
     s: &[X],
 ) -> Vope<B::OutputSize, u8> {
@@ -124,12 +128,8 @@ pub struct ABOOpening<
 
 pub mod prover;
 pub mod verifier;
-pub fn double<B: ByteBlockEncrypt>(
-    a: GenericArray<u8, B::OutputSize>,
-) -> [GenericArray<u8, B::OutputSize>; 2] {
-    let v = B::digest(&a);
-    [v.clone(), v.zip(a, |x, y| x ^ y)]
-}
+pub mod impls;
+
 pub struct BSplit<
     B: ByteBlockEncrypt,
     D: Digest<OutputSize: Logarithm2<Output: ArrayLength<[GenericArray<u8, B::OutputSize>; 2]>>>,
