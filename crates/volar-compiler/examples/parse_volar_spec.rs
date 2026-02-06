@@ -132,31 +132,46 @@ fn main() {
             // Count total loop constructs
             println!("\n=== Total (Bounded) Loop Analysis ===");
             
-            fn count_loops_in_expr(expr: &IrExpr, counts: &mut (usize, usize, usize, usize, usize, usize)) {
+            fn count_loops_in_expr(expr: &IrExpr, counts: &mut (usize, usize, usize, usize, usize)) {
                 match expr {
                     IrExpr::ArrayGenerate { body, .. } => {
                         counts.0 += 1;
                         count_loops_in_expr(body, counts);
                     }
-                    IrExpr::ArrayMap { body, array, .. } => {
+                    IrExpr::IterPipeline(chain) => {
                         counts.1 += 1;
-                        count_loops_in_expr(body, counts);
-                        count_loops_in_expr(array, counts);
-                    }
-                    IrExpr::ArrayZip { body, left, right, .. } => {
-                        counts.2 += 1;
-                        count_loops_in_expr(body, counts);
-                        count_loops_in_expr(left, counts);
-                        count_loops_in_expr(right, counts);
-                    }
-                    IrExpr::ArrayFold { body, array, init, .. } => {
-                        counts.3 += 1;
-                        count_loops_in_expr(body, counts);
-                        count_loops_in_expr(array, counts);
-                        count_loops_in_expr(init, counts);
+                        // Walk into chain step/terminal bodies
+                        match &chain.source {
+                            volar_compiler::IterChainSource::Method { collection, .. } => {
+                                count_loops_in_expr(collection, counts);
+                            }
+                            volar_compiler::IterChainSource::Range { start, end, .. } => {
+                                count_loops_in_expr(start, counts);
+                                count_loops_in_expr(end, counts);
+                            }
+                            volar_compiler::IterChainSource::Zip { .. } => {}
+                        }
+                        for step in &chain.steps {
+                            match step {
+                                volar_compiler::IterStep::Map { body, .. }
+                                | volar_compiler::IterStep::Filter { body, .. }
+                                | volar_compiler::IterStep::FilterMap { body, .. }
+                                | volar_compiler::IterStep::FlatMap { body, .. } => {
+                                    count_loops_in_expr(body, counts);
+                                }
+                                _ => {}
+                            }
+                        }
+                        match &chain.terminal {
+                            volar_compiler::IterTerminal::Fold { init, body, .. } => {
+                                count_loops_in_expr(init, counts);
+                                count_loops_in_expr(body, counts);
+                            }
+                            _ => {}
+                        }
                     }
                     IrExpr::BoundedLoop { body, .. } => {
-                        counts.4 += 1;
+                        counts.2 += 1;
                         for stmt in &body.stmts {
                             if let IrStmt::Semi(e) | IrStmt::Expr(e) = stmt {
                                 count_loops_in_expr(e, counts);
@@ -166,8 +181,9 @@ fn main() {
                             count_loops_in_expr(e, counts);
                         }
                     }
-                    IrExpr::IterLoop { body, .. } => {
-                        counts.5 += 1;
+                    IrExpr::IterLoop { body, collection, .. } => {
+                        counts.3 += 1;
+                        count_loops_in_expr(collection, counts);
                         for stmt in &body.stmts {
                             if let IrStmt::Semi(e) | IrStmt::Expr(e) = stmt {
                                 count_loops_in_expr(e, counts);
@@ -220,7 +236,7 @@ fn main() {
                 }
             }
             
-            let mut counts = (0, 0, 0, 0, 0, 0);
+            let mut counts = (0, 0, 0, 0, 0);
             for imp in &module.impls {
                 for item in &imp.items {
                     if let IrImplItem::Method(f) = item {
@@ -247,13 +263,12 @@ fn main() {
             }
             
             println!("  ArrayGenerate: {}", counts.0);
-            println!("  ArrayMap: {}", counts.1);
-            println!("  ArrayZip: {}", counts.2);
-            println!("  ArrayFold: {}", counts.3);
-            println!("  BoundedLoop: {}", counts.4);
-            println!("  IterLoop: {}", counts.5);
+            println!("  IterPipeline: {}", counts.1);
+            println!("  BoundedLoop: {}", counts.2);
+            println!("  IterLoop: {}", counts.3);
+            println!("  Total: {}", counts.4);
             println!("\n  Total bounded loops: {} (all loops are provably terminating)", 
-                     counts.0 + counts.1 + counts.2 + counts.3 + counts.4 + counts.5);
+                     counts.0 + counts.1 + counts.2 + counts.3 + counts.4);
 
             // Print the IR (truncated)
             println!("\n=== IR Output (truncated) ===");
