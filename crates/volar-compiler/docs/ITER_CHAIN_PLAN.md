@@ -1,6 +1,6 @@
 # Iterator Chain Refactor & printer_dyn Removal Plan
 
-**Status**: Draft → Revised per feedback
+**Status**: Phases 1-3 complete. Phase 4 (lowering) next.
 
 ## Problem Statement
 

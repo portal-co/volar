@@ -101,6 +101,16 @@ pub struct ExprChainWriter<'a> {
     pub expr: &'a IrExpr,
 }
 
+/// Writes a flat `IrIterChain` as Rust method-chain syntax.
+pub struct IterChainWriter<'a> {
+    pub chain: &'a IrIterChain,
+}
+
+/// Writes the source part of an iterator chain.
+struct IterChainSourceWriter<'a> {
+    pub source: &'a IterChainSource,
+}
+
 pub struct PatternWriter<'a> {
     pub pat: &'a IrPattern,
 }
@@ -568,6 +578,114 @@ impl<'a> RustBackend for StmtWriter<'a> {
     }
 }
 
+// ============================================================================
+// Iterator chain printing
+// ============================================================================
+
+impl<'a> RustBackend for IterChainSourceWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.source {
+            IterChainSource::Method { collection, method } => {
+                ExprWriter { expr: collection }.fmt(f)?;
+                let mname = match method {
+                    IterMethod::Iter => "iter",
+                    IterMethod::IntoIter => "into_iter",
+                    IterMethod::Chars => "chars",
+                    IterMethod::Bytes => "bytes",
+                    _ => "iter",
+                };
+                write!(f, ".{}()", mname)?;
+            }
+            IterChainSource::Range { start, end, inclusive } => {
+                write!(f, "(")?;
+                ExprWriter { expr: start }.fmt(f)?;
+                write!(f, "{}", if *inclusive { "..=" } else { ".." })?;
+                ExprWriter { expr: end }.fmt(f)?;
+                write!(f, ")")?;
+            }
+            IterChainSource::Zip { left, right } => {
+                IterChainWriter { chain: left }.fmt_no_terminal(f)?;
+                write!(f, ".zip(")?;
+                IterChainWriter { chain: right }.fmt_no_terminal(f)?;
+                write!(f, ")")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'a> IterChainWriter<'a> {
+    /// Write source + steps, but NOT the terminal.
+    fn fmt_no_terminal(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        IterChainSourceWriter { source: &self.chain.source }.fmt(f)?;
+        for step in &self.chain.steps {
+            match step {
+                IterStep::Map { var, body } => {
+                    write!(f, ".map(|{}| ", var)?;
+                    ExprWriter { expr: body }.fmt(f)?;
+                    write!(f, ")")?;
+                }
+                IterStep::Filter { var, body } => {
+                    write!(f, ".filter(|{}| ", var)?;
+                    ExprWriter { expr: body }.fmt(f)?;
+                    write!(f, ")")?;
+                }
+                IterStep::FilterMap { var, body } => {
+                    write!(f, ".filter_map(|{}| ", var)?;
+                    ExprWriter { expr: body }.fmt(f)?;
+                    write!(f, ")")?;
+                }
+                IterStep::FlatMap { var, body } => {
+                    write!(f, ".flat_map(|{}| ", var)?;
+                    ExprWriter { expr: body }.fmt(f)?;
+                    write!(f, ")")?;
+                }
+                IterStep::Enumerate => {
+                    write!(f, ".enumerate()")?;
+                }
+                IterStep::Take { count } => {
+                    write!(f, ".take(")?;
+                    ExprWriter { expr: count }.fmt(f)?;
+                    write!(f, ")")?;
+                }
+                IterStep::Skip { count } => {
+                    write!(f, ".skip(")?;
+                    ExprWriter { expr: count }.fmt(f)?;
+                    write!(f, ")")?;
+                }
+                IterStep::Chain { other } => {
+                    write!(f, ".chain(")?;
+                    IterChainWriter { chain: other }.fmt_no_terminal(f)?;
+                    write!(f, ")")?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<'a> RustBackend for IterChainWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.fmt_no_terminal(f)?;
+        match &self.chain.terminal {
+            IterTerminal::Collect => {
+                write!(f, ".collect::<Vec<_>>()")?;
+            }
+            IterTerminal::Fold { init, acc_var, elem_var, body } => {
+                write!(f, ".fold(")?;
+                ExprWriter { expr: init }.fmt(f)?;
+                write!(f, ", |{}, {}| ", acc_var, elem_var)?;
+                ExprWriter { expr: body }.fmt(f)?;
+                write!(f, ")")?;
+            }
+            IterTerminal::Lazy => {
+                // No terminal — the chain is consumed by something else (e.g. for-in loop)
+            }
+        }
+        Ok(())
+    }
+}
+
 impl<'a> RustBackend for ExprChainWriter<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.expr {
@@ -674,6 +792,9 @@ impl<'a> RustBackend for ExprChainWriter<'a> {
                     ExprWriter { expr: arg }.fmt(f)?;
                 }
                 write!(f, ")")?;
+            }
+            IrExpr::IterPipeline(chain) => {
+                IterChainWriter { chain }.fmt_no_terminal(f)?;
             }
             _ => {
                 ExprWriter { expr: self.expr }.fmt(f)?;
@@ -839,6 +960,9 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 write!(f, ", |{}, {}| ", acc_var, elem_var)?;
                 ExprWriter { expr: body }.fmt(f)?;
                 write!(f, ")")?;
+            }
+            IrExpr::IterPipeline(chain) => {
+                IterChainWriter { chain }.fmt(f)?;
             }
             IrExpr::Path {
                 segments,

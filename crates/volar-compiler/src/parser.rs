@@ -1208,90 +1208,402 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
     })
 }
 
-fn convert_method_call(receiver: &Expr, method: &str, args: &[&Expr]) -> Result<IrExpr> {
+// ============================================================================
+// Iterator chain builder — walks raw syn AST to produce flat IrIterChain
+// ============================================================================
+
+/// The result of peeling one layer off an iterator chain.
+/// Contains the accumulated steps (outermost first, reversed later) and the source.
+struct PeeledChain {
+    source: crate::ir::IterChainSource,
+    /// Steps collected from innermost to outermost (push order).
+    steps: Vec<crate::ir::IterStep>,
+}
+
+/// Try to peel a syn expression into an iterator chain source + steps.
+/// Returns `None` if the expression is not an iterator chain (no source found).
+fn peel_iter_chain(syn_expr: &Expr) -> Result<Option<PeeledChain>> {
+    match syn_expr {
+        Expr::MethodCall(m) => {
+            let method_name = m.method.to_string();
+            let args: Vec<&Expr> = m.args.iter().collect();
+            match method_name.as_str() {
+                // Source methods — these are the base of the chain
+                "iter" | "into_iter" | "chars" | "bytes" if args.is_empty() => {
+                    let method = match method_name.as_str() {
+                        "iter" => crate::ir::IterMethod::Iter,
+                        "into_iter" => crate::ir::IterMethod::IntoIter,
+                        "chars" => crate::ir::IterMethod::Chars,
+                        "bytes" => crate::ir::IterMethod::Bytes,
+                        _ => crate::ir::IterMethod::Iter,
+                    };
+                    Ok(Some(PeeledChain {
+                        source: crate::ir::IterChainSource::Method {
+                            collection: Box::new(convert_expr(&m.receiver)?),
+                            method,
+                        },
+                        steps: Vec::new(),
+                    }))
+                }
+                // Intermediate steps — peel the receiver and push a step
+                "enumerate" if args.is_empty() => {
+                    let inner = peel_iter_chain(&m.receiver)?;
+                    Ok(inner.map(|mut p| {
+                        p.steps.push(crate::ir::IterStep::Enumerate);
+                        p
+                    }))
+                }
+                "map" if args.len() == 1 => {
+                    if let Expr::Closure(c) = args[0] {
+                        let inner = peel_iter_chain(&m.receiver)?;
+                        if let Some(mut p) = inner {
+                            p.steps.push(crate::ir::IterStep::Map {
+                                var: extract_pat_name(&c.inputs[0]),
+                                body: Box::new(convert_expr(&c.body)?),
+                            });
+                            return Ok(Some(p));
+                        }
+                    }
+                    Ok(None)
+                }
+                "filter" if args.len() == 1 => {
+                    if let Expr::Closure(c) = args[0] {
+                        let inner = peel_iter_chain(&m.receiver)?;
+                        if let Some(mut p) = inner {
+                            p.steps.push(crate::ir::IterStep::Filter {
+                                var: extract_pat_name(&c.inputs[0]),
+                                body: Box::new(convert_expr(&c.body)?),
+                            });
+                            return Ok(Some(p));
+                        }
+                    }
+                    Ok(None)
+                }
+                "filter_map" if args.len() == 1 => {
+                    if let Expr::Closure(c) = args[0] {
+                        let inner = peel_iter_chain(&m.receiver)?;
+                        if let Some(mut p) = inner {
+                            p.steps.push(crate::ir::IterStep::FilterMap {
+                                var: extract_pat_name(&c.inputs[0]),
+                                body: Box::new(convert_expr(&c.body)?),
+                            });
+                            return Ok(Some(p));
+                        }
+                    }
+                    Ok(None)
+                }
+                "flat_map" if args.len() == 1 => {
+                    if let Expr::Closure(c) = args[0] {
+                        let inner = peel_iter_chain(&m.receiver)?;
+                        if let Some(mut p) = inner {
+                            p.steps.push(crate::ir::IterStep::FlatMap {
+                                var: extract_pat_name(&c.inputs[0]),
+                                body: Box::new(convert_expr(&c.body)?),
+                            });
+                            return Ok(Some(p));
+                        }
+                    }
+                    Ok(None)
+                }
+                "take" if args.len() == 1 => {
+                    let inner = peel_iter_chain(&m.receiver)?;
+                    if let Some(mut p) = inner {
+                        p.steps.push(crate::ir::IterStep::Take {
+                            count: Box::new(convert_expr(args[0])?),
+                        });
+                        return Ok(Some(p));
+                    }
+                    Ok(None)
+                }
+                "skip" if args.len() == 1 => {
+                    let inner = peel_iter_chain(&m.receiver)?;
+                    if let Some(mut p) = inner {
+                        p.steps.push(crate::ir::IterStep::Skip {
+                            count: Box::new(convert_expr(args[0])?),
+                        });
+                        return Ok(Some(p));
+                    }
+                    Ok(None)
+                }
+                "chain" if args.len() == 1 => {
+                    let inner = peel_iter_chain(&m.receiver)?;
+                    if let Some(mut p) = inner {
+                        // Try to peel the chain argument as an iterator chain
+                        let other = match peel_iter_chain(args[0])? {
+                            Some(other_p) => crate::ir::IrIterChain {
+                                source: other_p.source,
+                                steps: other_p.steps,
+                                terminal: crate::ir::IterTerminal::Lazy,
+                            },
+                            None => {
+                                // Not a chain — wrap as IntoIter on the expression
+                                crate::ir::IrIterChain {
+                                    source: crate::ir::IterChainSource::Method {
+                                        collection: Box::new(convert_expr(args[0])?),
+                                        method: crate::ir::IterMethod::IntoIter,
+                                    },
+                                    steps: Vec::new(),
+                                    terminal: crate::ir::IterTerminal::Lazy,
+                                }
+                            }
+                        };
+                        p.steps.push(crate::ir::IterStep::Chain {
+                            other: Box::new(other),
+                        });
+                        return Ok(Some(p));
+                    }
+                    Ok(None)
+                }
+                // zip — creates a Zip source from two chains
+                "zip" if args.len() == 1 => {
+                    // The receiver is the left chain, arg is the right
+                    let left = peel_iter_chain(&m.receiver)?;
+                    if let Some(left_p) = left {
+                        let right = match peel_iter_chain(args[0])? {
+                            Some(right_p) => crate::ir::IrIterChain {
+                                source: right_p.source,
+                                steps: right_p.steps,
+                                terminal: crate::ir::IterTerminal::Lazy,
+                            },
+                            None => crate::ir::IrIterChain {
+                                source: crate::ir::IterChainSource::Method {
+                                    collection: Box::new(convert_expr(args[0])?),
+                                    method: crate::ir::IterMethod::IntoIter,
+                                },
+                                steps: Vec::new(),
+                                terminal: crate::ir::IterTerminal::Lazy,
+                            },
+                        };
+                        let left_chain = crate::ir::IrIterChain {
+                            source: left_p.source,
+                            steps: left_p.steps,
+                            terminal: crate::ir::IterTerminal::Lazy,
+                        };
+                        return Ok(Some(PeeledChain {
+                            source: crate::ir::IterChainSource::Zip {
+                                left: Box::new(left_chain),
+                                right: Box::new(right),
+                            },
+                            steps: Vec::new(),
+                        }));
+                    }
+                    Ok(None)
+                }
+                // Terminal methods — if receiver peels, produce a chain with terminal.
+                // These are handled by try_build_iter_chain, not here.
+                // fold/collect are terminals and should not appear as intermediate steps.
+                _ => Ok(None),
+            }
+        }
+        Expr::Range(r) => {
+            // A range is an iterator source
+            let start = r
+                .start
+                .as_ref()
+                .map(|e| convert_expr(e))
+                .transpose()?
+                .unwrap_or(IrExpr::Lit(IrLit::Int(0)));
+            let end = r
+                .end
+                .as_ref()
+                .map(|e| convert_expr(e))
+                .transpose()?
+                .unwrap_or(IrExpr::Lit(IrLit::Int(0)));
+            Ok(Some(PeeledChain {
+                source: crate::ir::IterChainSource::Range {
+                    start: Box::new(start),
+                    end: Box::new(end),
+                    inclusive: matches!(r.limits, syn::RangeLimits::Closed(_)),
+                },
+                steps: Vec::new(),
+            }))
+        }
+        // Parenthesized expressions — unwrap
+        Expr::Paren(p) => peel_iter_chain(&p.expr),
+        _ => Ok(None),
+    }
+}
+
+/// Try to build a complete `IrIterChain` from the current method call context.
+/// Returns `None` if the expression is not an iterator chain.
+fn try_build_iter_chain(receiver: &Expr, method: &str, args: &[&Expr]) -> Result<Option<crate::ir::IrIterChain>> {
     match method {
-        "map" if args.len() == 1 => {
-            if let Expr::Closure(c) = args[0] {
-                return Ok(IrExpr::ArrayMap {
-                    array: Box::new(convert_expr(receiver)?),
-                    elem_var: extract_pat_name(&c.inputs[0]),
-                    body: Box::new(convert_expr(&c.body)?),
-                });
-            }
-        }
-        "zip" if args.len() == 2 => {
-            if let Expr::Closure(c) = args[1] {
-                return Ok(IrExpr::ArrayZip {
-                    left: Box::new(convert_expr(receiver)?),
-                    right: Box::new(convert_expr(args[0])?),
-                    left_var: extract_pat_name(&c.inputs[0]),
-                    right_var: extract_pat_name(&c.inputs[1]),
-                    body: Box::new(convert_expr(&c.body)?),
-                });
-            }
-        }
         "fold" if args.len() == 2 => {
-            // fold(init, |acc, x| ...)
             if let Expr::Closure(c) = args[1] {
-                return Ok(IrExpr::ArrayFold {
-                    array: Box::new(convert_expr(receiver)?),
-                    init: Box::new(convert_expr(args[0])?),
-                    acc_var: extract_pat_name(&c.inputs[0]),
-                    elem_var: extract_pat_name(&c.inputs[1]),
-                    body: Box::new(convert_expr(&c.body)?),
-                });
+                let peeled = peel_iter_chain(receiver)?;
+                if let Some(p) = peeled {
+                    return Ok(Some(crate::ir::IrIterChain {
+                        source: p.source,
+                        steps: p.steps,
+                        terminal: crate::ir::IterTerminal::Fold {
+                            init: Box::new(convert_expr(args[0])?),
+                            acc_var: extract_pat_name(&c.inputs[0]),
+                            elem_var: extract_pat_name(&c.inputs[1]),
+                            body: Box::new(convert_expr(&c.body)?),
+                        },
+                    }));
+                }
             }
+            Ok(None)
         }
-        "enumerate" if args.is_empty() => {
-            return Ok(IrExpr::IterEnumerate { iter: Box::new(convert_expr(receiver)?) });
+        "collect" if args.is_empty() => {
+            let peeled = peel_iter_chain(receiver)?;
+            Ok(peeled.map(|p| crate::ir::IrIterChain {
+                source: p.source,
+                steps: p.steps,
+                terminal: crate::ir::IterTerminal::Collect,
+            }))
         }
-        "filter" if args.len() == 1 => {
-            if let Expr::Closure(c) = args[0] {
-                return Ok(IrExpr::IterFilter {
-                    iter: Box::new(convert_expr(receiver)?),
-                    elem_var: extract_pat_name(&c.inputs[0]),
-                    body: Box::new(convert_expr(&c.body)?),
-                });
+        // map/filter/etc. that don't have a terminal — they produce a lazy chain
+        "map" | "filter" | "filter_map" | "flat_map" | "enumerate" | "take" | "skip" | "chain" | "zip" => {
+            // Reconstruct the full call as an Expr::MethodCall to let peel_iter_chain handle it
+            // We can't do that easily without owning the syn tree, so instead we peel the receiver
+            // and add this step manually.
+            let peeled = peel_iter_chain(receiver)?;
+            if let Some(mut p) = peeled {
+                match method {
+                    "map" if args.len() == 1 => {
+                        if let Expr::Closure(c) = args[0] {
+                            p.steps.push(crate::ir::IterStep::Map {
+                                var: extract_pat_name(&c.inputs[0]),
+                                body: Box::new(convert_expr(&c.body)?),
+                            });
+                            return Ok(Some(crate::ir::IrIterChain {
+                                source: p.source,
+                                steps: p.steps,
+                                terminal: crate::ir::IterTerminal::Lazy,
+                            }));
+                        }
+                    }
+                    "filter" if args.len() == 1 => {
+                        if let Expr::Closure(c) = args[0] {
+                            p.steps.push(crate::ir::IterStep::Filter {
+                                var: extract_pat_name(&c.inputs[0]),
+                                body: Box::new(convert_expr(&c.body)?),
+                            });
+                            return Ok(Some(crate::ir::IrIterChain {
+                                source: p.source,
+                                steps: p.steps,
+                                terminal: crate::ir::IterTerminal::Lazy,
+                            }));
+                        }
+                    }
+                    "filter_map" if args.len() == 1 => {
+                        if let Expr::Closure(c) = args[0] {
+                            p.steps.push(crate::ir::IterStep::FilterMap {
+                                var: extract_pat_name(&c.inputs[0]),
+                                body: Box::new(convert_expr(&c.body)?),
+                            });
+                            return Ok(Some(crate::ir::IrIterChain {
+                                source: p.source,
+                                steps: p.steps,
+                                terminal: crate::ir::IterTerminal::Lazy,
+                            }));
+                        }
+                    }
+                    "flat_map" if args.len() == 1 => {
+                        if let Expr::Closure(c) = args[0] {
+                            p.steps.push(crate::ir::IterStep::FlatMap {
+                                var: extract_pat_name(&c.inputs[0]),
+                                body: Box::new(convert_expr(&c.body)?),
+                            });
+                            return Ok(Some(crate::ir::IrIterChain {
+                                source: p.source,
+                                steps: p.steps,
+                                terminal: crate::ir::IterTerminal::Lazy,
+                            }));
+                        }
+                    }
+                    "enumerate" if args.is_empty() => {
+                        p.steps.push(crate::ir::IterStep::Enumerate);
+                        return Ok(Some(crate::ir::IrIterChain {
+                            source: p.source,
+                            steps: p.steps,
+                            terminal: crate::ir::IterTerminal::Lazy,
+                        }));
+                    }
+                    "take" if args.len() == 1 => {
+                        p.steps.push(crate::ir::IterStep::Take {
+                            count: Box::new(convert_expr(args[0])?),
+                        });
+                        return Ok(Some(crate::ir::IrIterChain {
+                            source: p.source,
+                            steps: p.steps,
+                            terminal: crate::ir::IterTerminal::Lazy,
+                        }));
+                    }
+                    "skip" if args.len() == 1 => {
+                        p.steps.push(crate::ir::IterStep::Skip {
+                            count: Box::new(convert_expr(args[0])?),
+                        });
+                        return Ok(Some(crate::ir::IrIterChain {
+                            source: p.source,
+                            steps: p.steps,
+                            terminal: crate::ir::IterTerminal::Lazy,
+                        }));
+                    }
+                    "chain" if args.len() == 1 => {
+                        let other = match peel_iter_chain(args[0])? {
+                            Some(other_p) => crate::ir::IrIterChain {
+                                source: other_p.source,
+                                steps: other_p.steps,
+                                terminal: crate::ir::IterTerminal::Lazy,
+                            },
+                            None => crate::ir::IrIterChain {
+                                source: crate::ir::IterChainSource::Method {
+                                    collection: Box::new(convert_expr(args[0])?),
+                                    method: crate::ir::IterMethod::IntoIter,
+                                },
+                                steps: Vec::new(),
+                                terminal: crate::ir::IterTerminal::Lazy,
+                            },
+                        };
+                        p.steps.push(crate::ir::IterStep::Chain {
+                            other: Box::new(other),
+                        });
+                        return Ok(Some(crate::ir::IrIterChain {
+                            source: p.source,
+                            steps: p.steps,
+                            terminal: crate::ir::IterTerminal::Lazy,
+                        }));
+                    }
+                    "zip" if args.len() == 1 => {
+                        let right = match peel_iter_chain(args[0])? {
+                            Some(right_p) => crate::ir::IrIterChain {
+                                source: right_p.source,
+                                steps: right_p.steps,
+                                terminal: crate::ir::IterTerminal::Lazy,
+                            },
+                            None => crate::ir::IrIterChain {
+                                source: crate::ir::IterChainSource::Method {
+                                    collection: Box::new(convert_expr(args[0])?),
+                                    method: crate::ir::IterMethod::IntoIter,
+                                },
+                                steps: Vec::new(),
+                                terminal: crate::ir::IterTerminal::Lazy,
+                            },
+                        };
+                        let left_chain = crate::ir::IrIterChain {
+                            source: p.source,
+                            steps: p.steps,
+                            terminal: crate::ir::IterTerminal::Lazy,
+                        };
+                        return Ok(Some(crate::ir::IrIterChain {
+                            source: crate::ir::IterChainSource::Zip {
+                                left: Box::new(left_chain),
+                                right: Box::new(right),
+                            },
+                            steps: Vec::new(),
+                            terminal: crate::ir::IterTerminal::Lazy,
+                        }));
+                    }
+                    _ => {}
+                }
             }
+            Ok(None)
         }
-        "take" if args.len() == 1 => {
-            return Ok(IrExpr::IterTake {
-                iter: Box::new(convert_expr(receiver)?),
-                count: Box::new(convert_expr(args[0])?),
-            });
-        }
-        "skip" if args.len() == 1 => {
-            return Ok(IrExpr::IterSkip {
-                iter: Box::new(convert_expr(receiver)?),
-                count: Box::new(convert_expr(args[0])?),
-            });
-        }
-        "chain" if args.len() == 1 => {
-            return Ok(IrExpr::IterChain {
-                left: Box::new(convert_expr(receiver)?),
-                right: Box::new(convert_expr(args[0])?),
-            });
-        }
-        "flat_map" if args.len() == 1 => {
-            if let Expr::Closure(c) = args[0] {
-                return Ok(IrExpr::IterFlatMap {
-                    iter: Box::new(convert_expr(receiver)?),
-                    elem_var: extract_pat_name(&c.inputs[0]),
-                    body: Box::new(convert_expr(&c.body)?),
-                });
-            }
-        }
-        "filter_map" if args.len() == 1 => {
-            if let Expr::Closure(c) = args[0] {
-                return Ok(IrExpr::IterFilterMap {
-                    iter: Box::new(convert_expr(receiver)?),
-                    elem_var: extract_pat_name(&c.inputs[0]),
-                    body: Box::new(convert_expr(&c.body)?),
-                });
-            }
-        }
+        // iter/into_iter/etc. as bare source (no steps or terminal)
         "iter" | "into_iter" | "chars" | "bytes" if args.is_empty() => {
-            // Source iterator methods
             let method = match method {
                 "iter" => crate::ir::IterMethod::Iter,
                 "into_iter" => crate::ir::IterMethod::IntoIter,
@@ -1299,10 +1611,40 @@ fn convert_method_call(receiver: &Expr, method: &str, args: &[&Expr]) -> Result<
                 "bytes" => crate::ir::IterMethod::Bytes,
                 _ => crate::ir::IterMethod::Iter,
             };
-            return Ok(IrExpr::IterSource { collection: Box::new(convert_expr(receiver)?), method });
+            Ok(Some(crate::ir::IrIterChain {
+                source: crate::ir::IterChainSource::Method {
+                    collection: Box::new(convert_expr(receiver)?),
+                    method,
+                },
+                steps: Vec::new(),
+                terminal: crate::ir::IterTerminal::Lazy,
+            }))
         }
-        _ => {}
+        _ => Ok(None),
     }
+}
+
+fn convert_method_call(receiver: &Expr, method: &str, args: &[&Expr]) -> Result<IrExpr> {
+    // First, try to build a flat iterator chain
+    if let Some(chain) = try_build_iter_chain(receiver, method, args)? {
+        return Ok(IrExpr::IterPipeline(chain));
+    }
+
+    // Special case: zip with 2 args (receiver.zip(other, |a, b| body)) — volar-spec style
+    // This is NOT Rust's std zip; it's a custom zip-with-map.
+    if method == "zip" && args.len() == 2 {
+        if let Expr::Closure(c) = args[1] {
+            return Ok(IrExpr::ArrayZip {
+                left: Box::new(convert_expr(receiver)?),
+                right: Box::new(convert_expr(args[0])?),
+                left_var: extract_pat_name(&c.inputs[0]),
+                right_var: extract_pat_name(&c.inputs[1]),
+                body: Box::new(convert_expr(&c.body)?),
+            });
+        }
+    }
+
+    // Default: generic method call
     Ok(IrExpr::MethodCall {
         receiver: Box::new(convert_expr(receiver)?),
         method: MethodKind::from_str(method),

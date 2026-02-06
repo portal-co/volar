@@ -78,6 +78,84 @@ impl IterMethod {
     }
 }
 
+// ============================================================================
+// ITERATOR CHAIN (flat representation of iterator pipelines)
+// ============================================================================
+
+/// A complete iterator pipeline: source → steps → terminal.
+///
+/// This replaces the old nested `Iter*` / `Array{Map,Zip,Fold}` expression
+/// variants with a single flat structure that is easy to analyze and
+/// backend-neutral.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrIterChain {
+    /// Where the data comes from
+    pub source: IterChainSource,
+    /// Zero or more intermediate transformations, in order
+    pub steps: Vec<IterStep>,
+    /// How the pipeline terminates
+    pub terminal: IterTerminal,
+}
+
+/// The data source for an iterator chain.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IterChainSource {
+    /// `expr.iter()`, `expr.into_iter()`, `expr.chars()`, `expr.bytes()`
+    Method {
+        collection: Box<IrExpr>,
+        method: IterMethod,
+    },
+    /// A range expression used as an iterator: `start..end` or `start..=end`
+    Range {
+        start: Box<IrExpr>,
+        end: Box<IrExpr>,
+        inclusive: bool,
+    },
+    /// Zipping two iterator chains: `a.iter().zip(b.iter())`
+    Zip {
+        left: Box<IrIterChain>,
+        right: Box<IrIterChain>,
+    },
+}
+
+/// An intermediate transformation step in an iterator pipeline.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IterStep {
+    /// `.map(|var| body)`
+    Map { var: String, body: Box<IrExpr> },
+    /// `.filter(|var| body)`
+    Filter { var: String, body: Box<IrExpr> },
+    /// `.filter_map(|var| body)`
+    FilterMap { var: String, body: Box<IrExpr> },
+    /// `.flat_map(|var| body)`
+    FlatMap { var: String, body: Box<IrExpr> },
+    /// `.enumerate()`
+    Enumerate,
+    /// `.take(count)`
+    Take { count: Box<IrExpr> },
+    /// `.skip(count)`
+    Skip { count: Box<IrExpr> },
+    /// `.chain(other)` — appends another iterator chain.
+    Chain { other: Box<IrIterChain> },
+}
+
+/// How an iterator pipeline terminates.
+#[derive(Debug, Clone, PartialEq)]
+pub enum IterTerminal {
+    /// `.collect()` — materializes into a `Vec` (or other container).
+    Collect,
+    /// `.fold(init, |acc, elem| body)`
+    Fold {
+        init: Box<IrExpr>,
+        acc_var: String,
+        elem_var: String,
+        body: Box<IrExpr>,
+    },
+    /// No terminal — the chain is still lazy (e.g. used as the `collection`
+    /// of a `for`-in loop, or passed to another consumer).
+    Lazy,
+}
+
 pub type Result<T> = core::result::Result<T, CompilerError>;
 
 // ============================================================================
@@ -916,6 +994,9 @@ pub enum IrExpr {
         index_var: String,
         body: Box<IrExpr>,
     },
+    /// A flat iterator pipeline (source → steps → terminal).
+    /// Replaces old nested Iter*/Array{Map,Zip,Fold} variants.
+    IterPipeline(IrIterChain),
     ArrayMap {
         array: Box<IrExpr>,
         elem_var: String,
