@@ -257,6 +257,8 @@ pub enum ArrayLength {
     Projection {
         r#type: Box<IrType>,
         field: String,
+        /// Optional trait path for qualified projections like `<T as Logarithm2>::Output`
+        trait_path: Option<String>,
     },
 }
 
@@ -363,6 +365,7 @@ pub enum MathTrait {
     Copy,
     Default,
     Unsigned,
+    Logarithm2,
 }
 
 impl MathTrait {
@@ -389,6 +392,7 @@ impl MathTrait {
             "Copy" => Some(Self::Copy),
             "Default" => Some(Self::Default),
             "Unsigned" => Some(Self::Unsigned),
+            "Logarithm2" => Some(Self::Logarithm2),
             _ => None,
         }
     }
@@ -755,7 +759,7 @@ impl fmt::Display for IrType {
                     ArrayLength::Const(n) => write!(f, "{}", n)?,
                     ArrayLength::TypeNum(tn) => write!(f, "{:?}", tn)?,
                     ArrayLength::TypeParam(p) => write!(f, "{}", p)?,
-                    ArrayLength::Projection { r#type, field } => {
+                    ArrayLength::Projection { r#type, field, .. } => {
                         write!(f, "<{}>::{}", r#type, field)?;
                     }
                 }
@@ -1540,6 +1544,7 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
                         len: ArrayLength::Projection {
                             r#type: Box::new(IrType::TypeParam("Self".into())),
                             field: "OutputSize".into(),
+                            trait_path: None,
                         },
                     }),
                     where_clause: vec![],

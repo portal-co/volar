@@ -1619,8 +1619,8 @@ fn lower_iter_terminal_dyn(
 
 fn lower_array_length(len: &ArrayLength, fn_gen: &[IrGenericParam], ctx: &LoweringContext) -> ArrayLength {
     match len {
-        ArrayLength::Projection { r#type, field } => {
-            resolve_projection_as_length(r#type, field, fn_gen, ctx)
+        ArrayLength::Projection { r#type, field, trait_path } => {
+            resolve_projection_as_length(r#type, field, trait_path.as_deref(), fn_gen, ctx)
         }
         ArrayLength::TypeParam(p) => {
             // Check if this is a typenum constant
@@ -1633,6 +1633,7 @@ fn lower_array_length(len: &ArrayLength, fn_gen: &[IrGenericParam], ctx: &Loweri
                     resolve_projection_as_length(
                         &IrType::TypeParam(parts[0].to_string()),
                         parts[1],
+                        None,
                         fn_gen,
                         ctx,
                     )
@@ -1662,6 +1663,7 @@ fn lower_array_length(len: &ArrayLength, fn_gen: &[IrGenericParam], ctx: &Loweri
 fn resolve_projection_as_length(
     base_ty: &IrType,
     field: &str,
+    trait_path: Option<&str>,
     fn_gen: &[IrGenericParam],
     ctx: &LoweringContext,
 ) -> ArrayLength {
@@ -1683,6 +1685,7 @@ fn resolve_projection_as_length(
                 ArrayLength::Projection {
                     r#type: Box::new(base_ty.clone()),
                     field: field.to_string(),
+                    trait_path: trait_path.map(|s| s.to_string()),
                 }
             }
         }
@@ -1691,6 +1694,7 @@ fn resolve_projection_as_length(
             ArrayLength::Projection {
                 r#type: Box::new(base_ty.clone()),
                 field: field.to_string(),
+                trait_path: trait_path.map(|s| s.to_string()),
             }
         }
         _ => {
@@ -1706,8 +1710,19 @@ fn resolve_projection_as_length(
 /// `ArrayLength` domain), this produces proper `IrExpr` nodes — including
 /// `IrExpr::Binary` for arithmetic projections like `K2: Add<K>` → `k2 + k`.
 fn array_length_to_expr(len: &ArrayLength, fn_gen: &[IrGenericParam], ctx: &LoweringContext) -> IrExpr {
-    // First, try arithmetic resolution for projections on length params
-    if let ArrayLength::Projection { r#type, field } = len {
+    // Handle Logarithm2 projections: <X as Logarithm2>::Output → ilog2(X_expr)
+    if let ArrayLength::Projection { r#type, field, trait_path } = len {
+        if trait_path.as_deref() == Some("Logarithm2") && field == "Output" {
+            // Convert the base type to a length expression, then wrap in ilog2()
+            let inner_len = convert_array_length_from_type_for_lowering(r#type);
+            let inner_expr = array_length_to_expr(&inner_len, fn_gen, ctx);
+            return IrExpr::Call {
+                func: Box::new(IrExpr::Path { segments: vec!["ilog2".to_string()], type_args: vec![] }),
+                args: vec![inner_expr],
+            };
+        }
+
+        // Try arithmetic resolution for projections on length params
         if let Some(expr) = resolve_projection_as_expr(r#type, field, fn_gen, ctx) {
             return expr;
         }
@@ -1735,6 +1750,30 @@ fn array_length_to_expr(len: &ArrayLength, fn_gen: &[IrGenericParam], ctx: &Lowe
         ArrayLength::TypeParam(p) => IrExpr::Var(p.clone()),
         // Projections stay as LengthOf — printed as <<T>::Assoc as Unsigned>::to_usize()
         _ => IrExpr::LengthOf(lowered),
+    }
+}
+
+/// Convert an IrType to an ArrayLength for use in lowering.
+/// This handles type params, projections (D::OutputSize), and typenum constants.
+fn convert_array_length_from_type_for_lowering(ty: &IrType) -> ArrayLength {
+    match ty {
+        IrType::TypeParam(name) => ArrayLength::TypeParam(name.clone()),
+        IrType::Projection { base, assoc, trait_path, .. } => {
+            let field = match assoc {
+                AssociatedType::Output => "Output",
+                AssociatedType::OutputSize => "OutputSize",
+                AssociatedType::BlockSize => "BlockSize",
+                AssociatedType::Key => "Key",
+                AssociatedType::TotalLoopCount => "TotalLoopCount",
+                AssociatedType::Other(name) => name,
+            };
+            ArrayLength::Projection {
+                r#type: base.clone(),
+                field: field.to_string(),
+                trait_path: trait_path.clone(),
+            }
+        }
+        _ => ArrayLength::TypeParam("N".to_string()),
     }
 }
 
@@ -1801,14 +1840,14 @@ fn type_to_length_ir_expr(ty: &IrType, fn_gen: &[IrGenericParam], ctx: &Lowering
                 Some(IrExpr::Var(validate_ident(&p.to_lowercase())))
             }
         }
-        IrType::Projection { base, assoc, .. } => {
+        IrType::Projection { base, assoc, trait_path, .. } => {
             let field_name = assoc.to_string();
             // Try arithmetic resolution first
             if let Some(expr) = resolve_projection_as_expr(base, &field_name, fn_gen, ctx) {
                 return Some(expr);
             }
             // Fall back to LengthOf for static projections
-            let lowered = resolve_projection_as_length(base, &field_name, fn_gen, ctx);
+            let lowered = resolve_projection_as_length(base, &field_name, trait_path.as_deref(), fn_gen, ctx);
             match lowered {
                 ArrayLength::Const(n) => Some(IrExpr::Lit(IrLit::Int(n as i128))),
                 ArrayLength::TypeParam(s) => Some(IrExpr::Var(s)),
@@ -1959,6 +1998,7 @@ mod tests {
         let len = ArrayLength::Projection {
             r#type: Box::new(IrType::TypeParam("B".to_string())),
             field: "OutputSize".to_string(),
+            trait_path: None,
         };
         let result = lower_array_length(&len, &gens, &ctx);
         assert!(matches!(result, ArrayLength::Projection { .. }));
@@ -1976,6 +2016,7 @@ mod tests {
         let len = ArrayLength::Projection {
             r#type: Box::new(IrType::TypeParam("K2".to_string())),
             field: "Output".to_string(),
+            trait_path: None,
         };
         let result = lower_array_length(&len, &gens, &ctx);
         assert_eq!(result, ArrayLength::TypeParam("k2_output".to_string()));
@@ -1987,6 +2028,7 @@ mod tests {
         let len = ArrayLength::Projection {
             r#type: Box::new(IrType::TypeParam("Self".to_string())),
             field: "Output".to_string(),
+            trait_path: None,
         };
         let result = lower_array_length(&len, &[], &ctx);
         assert_eq!(result, ArrayLength::TypeParam("self_output".to_string()));
@@ -2014,6 +2056,7 @@ mod tests {
         let len = ArrayLength::Projection {
             r#type: Box::new(nested_base),
             field: "Output".to_string(),
+            trait_path: None,
         };
         let result = lower_array_length(&len, &gens, &ctx);
         assert!(matches!(result, ArrayLength::Projection { .. }));
@@ -2046,6 +2089,7 @@ mod tests {
             &ArrayLength::Projection {
                 r#type: Box::new(IrType::TypeParam("B".to_string())),
                 field: "OutputSize".to_string(),
+                trait_path: None,
             },
             &gens,
             &ctx,
@@ -2065,6 +2109,7 @@ mod tests {
             &ArrayLength::Projection {
                 r#type: Box::new(IrType::TypeParam("K2".to_string())),
                 field: "Output".to_string(),
+                trait_path: None,
             },
             &gens,
             &ctx,
@@ -2081,6 +2126,7 @@ mod tests {
             &ArrayLength::Projection {
                 r#type: Box::new(IrType::TypeParam("N".to_string())),
                 field: "Output".to_string(),
+                trait_path: None,
             },
             &gens,
             &ctx,
@@ -2100,6 +2146,7 @@ mod tests {
             &ArrayLength::Projection {
                 r#type: Box::new(IrType::TypeParam("N".to_string())),
                 field: "Output".to_string(),
+                trait_path: None,
             },
             &gens,
             &ctx,
@@ -2116,6 +2163,7 @@ mod tests {
             &ArrayLength::Projection {
                 r#type: Box::new(IrType::TypeParam("K".to_string())),
                 field: "Output".to_string(),
+                trait_path: None,
             },
             &gens,
             &ctx,
@@ -2171,6 +2219,7 @@ mod tests {
         let expr = IrExpr::LengthOf(ArrayLength::Projection {
             r#type: Box::new(IrType::TypeParam("B".to_string())),
             field: "OutputSize".to_string(),
+            trait_path: None,
         });
         let result = lower_expr_dyn(&expr, &ctx, &gens);
         assert!(matches!(result, IrExpr::LengthOf(ArrayLength::Projection { .. })));
@@ -2186,6 +2235,7 @@ mod tests {
         let expr = IrExpr::LengthOf(ArrayLength::Projection {
             r#type: Box::new(IrType::TypeParam("K2".to_string())),
             field: "Output".to_string(),
+            trait_path: None,
         });
         let result = lower_expr_dyn(&expr, &ctx, &gens);
         assert_binary_var_var(&result, "k2", SpecBinOp::Add, "k");
@@ -2250,6 +2300,7 @@ mod tests {
             len: ArrayLength::Projection {
                 r#type: Box::new(IrType::TypeParam("K2".to_string())),
                 field: "Output".to_string(),
+                trait_path: None,
             },
             index_var: "j".to_string(),
             body: Box::new(IrExpr::Var("j".to_string())),
@@ -2365,6 +2416,7 @@ mod tests {
             len: ArrayLength::Projection {
                 r#type: Box::new(IrType::TypeParam("B".to_string())),
                 field: "OutputSize".to_string(),
+                trait_path: None,
             },
         };
         let result = lower_expr_dyn(&expr, &ctx, &gens);

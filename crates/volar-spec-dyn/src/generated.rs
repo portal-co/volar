@@ -647,7 +647,7 @@ impl <T: Mul<U, Output = O> + Into<O> + Clone, U: Mul<U, Output = U> + Clone, O:
     {
         let n: usize = self.n;
         let k: usize = self.k;
-        QDyn { q: self.u.iter().enumerate().fold(self.v.clone().into_iter().map(|a| a.into()).collect::<Vec<_>>(), |a, _| {
+        QDyn { q: self.u.iter().enumerate().fold(self.v.clone().into_iter().map(|a| a.into()).collect::<Vec<_>>(), |a, (i, b)| {
     a.into_iter().zip(b.into_iter()).map(|(a, b)| {
     let mut x = rhs.delta[i].clone();
     for _ in 0.. i{
@@ -796,7 +796,7 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
     let s = &self.openings[i];
     BSplitDyn { split: (0..self_output).map(|j| {
     (0..n).map(|b| {
-    s.iter().enumerate().filter_map(|_| {
+    s.iter().enumerate().filter_map(|(a, c)| {
     if (((a >> j) & 1) == b){
     Some(c.clone())
 } else {
@@ -851,7 +851,7 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
     let s = &self.per_byte[(i * n)..][..n];
     BSplitDyn { split: (0..self_output).map(|j| {
     (0..n).map(|b| {
-    s.iter().enumerate().filter_map(|_| {
+    s.iter().enumerate().filter_map(|(a, c)| {
     if (((a >> j) & 1) == b){
     Some(c.clone())
 } else {
@@ -892,7 +892,7 @@ pub fn create_vole_from_material<B: LengthDoubler, X: AsRef<[u8]>>(mut s: &[X]) 
     let u: Vec<u8> = s.iter().fold((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|_| <u8>::default()).collect::<Vec<_>>(), |a, b| {
     a.into_iter().zip((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
 });
-    let v: Vec<u8> = s.iter().enumerate().fold((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|_| <u8>::default()).collect::<Vec<_>>(), |a, _| {
+    let v: Vec<u8> = s.iter().enumerate().fold((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|_| <u8>::default()).collect::<Vec<_>>(), |a, (i, b)| {
     a.into_iter().zip((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b).bitxor((i as u8))).collect::<Vec<_>>()
 });
     VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<_>>(), v: v, n: 0, k: 1 }
@@ -903,7 +903,7 @@ pub fn create_vole_from_material_expanded<B: LengthDoubler, X: AsRef<[u8]>, Y: A
     let u: Vec<u8> = s.iter().map(|b| f(&b.as_ref()[..<<B>::OutputSize as Unsigned>::to_usize()])).fold((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|_| <u8>::default()).collect::<Vec<_>>(), |a, b| {
     a.into_iter().zip((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
 });
-    let v: Vec<u8> = s.iter().map(|b| f(&b.as_ref()[..<<B>::OutputSize as Unsigned>::to_usize()])).enumerate().fold((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|_| <u8>::default()).collect::<Vec<_>>(), |a, _| {
+    let v: Vec<u8> = s.iter().map(|b| f(&b.as_ref()[..<<B>::OutputSize as Unsigned>::to_usize()])).enumerate().fold((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|_| <u8>::default()).collect::<Vec<_>>(), |a, (i, b)| {
     a.into_iter().zip((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b).bitxor((i as u8))).collect::<Vec<_>>()
 });
     VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<_>>(), v: v, n: 0, k: 1 }

@@ -781,7 +781,7 @@ fn convert_array_length_from_type(ty: &IrType) -> Result<ArrayLength> {
         IrType::Primitive(_) => Ok(ArrayLength::TypeNum(TypeNumConst::U8)), // Simplified
         IrType::TypeParam(name) => Ok(ArrayLength::TypeParam(name.clone())),
         IrType::Struct { kind, .. } => Ok(ArrayLength::TypeParam(kind.to_string())), // Common for GenericArray<T, BlockSize>
-        IrType::Projection { base, assoc, .. } => {
+        IrType::Projection { base, assoc, trait_path, .. } => {
             // Handle projections like Self::BlockSize, T::Output, <T as Trait>::Output
             // Convert to a type param string representation
             let base_str = format!("{}", base);
@@ -793,7 +793,7 @@ fn convert_array_length_from_type(ty: &IrType) -> Result<ArrayLength> {
                 AssociatedType::TotalLoopCount => "TotalLoopCount",
                 AssociatedType::Other(name) => name,
             };
-            Ok(ArrayLength::Projection { r#type: base.clone(), field: assoc_str.to_owned() })
+            Ok(ArrayLength::Projection { r#type: base.clone(), field: assoc_str.to_owned(), trait_path: trait_path.clone() })
         }
         _ => Err(CompilerError::InvalidType(format!(
             "Invalid array length type: {:?}",
@@ -1113,11 +1113,7 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
 fn type_to_array_length(ty: &IrType) -> ArrayLength {
     match ty {
         IrType::TypeParam(name) => ArrayLength::TypeParam(name.clone()),
-        IrType::Projection { base, assoc, .. } => {
-            let base_str = match base.as_ref() {
-                IrType::TypeParam(name) => name.clone(),
-                _ => "Self".to_string(),
-            };
+        IrType::Projection { base, assoc, trait_path, .. } => {
             let assoc_str = match assoc {
                 AssociatedType::Output => "Output",
                 AssociatedType::BlockSize => "BlockSize",
@@ -1126,8 +1122,9 @@ fn type_to_array_length(ty: &IrType) -> ArrayLength {
                 _ => "Output",
             };
             ArrayLength::Projection {
-                r#type: Box::new(IrType::TypeParam(base_str)),
+                r#type: base.clone(),
                 field: assoc_str.to_string(),
+                trait_path: trait_path.clone(),
             }
         }
         _ => ArrayLength::TypeParam("N".to_string()),
@@ -1892,10 +1889,30 @@ fn path_to_string(path: &syn::Path) -> String {
 }
 
 fn extract_pat_name(pat: &Pat) -> String {
-    if let Pat::Ident(pi) = pat {
-        pi.ident.to_string()
-    } else {
-        "_".to_string()
+    match pat {
+        Pat::Ident(pi) => pi.ident.to_string(),
+        Pat::Tuple(t) => {
+            let names: Vec<String> = t.elems.iter().map(|p| extract_pat_name(p)).collect();
+            format!("({})", names.join(", "))
+        }
+        Pat::TupleStruct(ts) => {
+            let names: Vec<String> = ts.elems.iter().map(|p| extract_pat_name(p)).collect();
+            let path = ts.path.segments.iter()
+                .map(|s| s.ident.to_string())
+                .collect::<Vec<_>>()
+                .join("::");
+            format!("{}({})", path, names.join(", "))
+        }
+        Pat::Wild(_) => "_".to_string(),
+        Pat::Reference(r) => {
+            let inner = extract_pat_name(&r.pat);
+            if r.mutability.is_some() {
+                format!("ref mut {}", inner)
+            } else {
+                format!("&{}", inner)
+            }
+        }
+        _ => "_".to_string(),
     }
 }
 
