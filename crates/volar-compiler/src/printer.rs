@@ -1093,39 +1093,75 @@ fn bin_op_str(op: SpecBinOp) -> &'static str {
 ///
 /// This preserves backward compatibility with the old `print_module` API.
 pub fn print_module(module: &IrModule) -> String {
+    print_module_with_deps(module, &[])
+}
+
+/// Render a module with the standard preamble plus data-driven dependency imports.
+pub fn print_module_with_deps(module: &IrModule, deps: &[crate::manifest::TypeManifest]) -> String {
     let mut out = String::new();
-    write_preamble(&mut out);
+    let _ = write!(out, "{}", DisplayRust(DynPreambleWriter { deps }));
     let _ = write!(out, "{}", DisplayRust(ModuleWriter { module }));
     out
 }
 
-/// Write the standard Rust preamble (imports, helpers) to a string.
-fn write_preamble(out: &mut String) {
-    // File header for Rust
-    let _ = writeln!(out, "//! Auto-generated dynamic types from volar-spec");
-    let _ = writeln!(
-        out,
-        "//! Type-level lengths have been converted to runtime usize witnesses"
-    );
-    let _ = writeln!(out);
-    let _ = writeln!(out, "#![allow(unused_variables, dead_code, unused_mut, unused_imports, non_snake_case, unused_parens)]");
-    let _ = writeln!(out, "extern crate alloc;");
-    let _ = writeln!(out, "use alloc::vec::Vec;");
-    let _ = writeln!(out, "use alloc::vec;");
-    let _ = writeln!(
-        out,
-        "use core::ops::{{Add, Sub, Mul, Div, BitAnd, BitOr, BitXor, Shl, Shr}};"
-    );
-    let _ = writeln!(out, "use core::marker::PhantomData;");
-    let _ = writeln!(out, "use typenum::Unsigned;");
-    let _ = writeln!(out, "use cipher::{{BlockEncrypt, Block}};");
-    let _ = writeln!(out, "use digest::Digest;");
-    let _ = writeln!(out, "use volar_common::hash_commitment::commit;");
-    let _ = writeln!(out);
-    let _ = writeln!(out, "/// Compute integer log2");
-    let _ = writeln!(out, "#[inline]");
-    let _ = writeln!(out, "pub fn ilog2(x: usize) -> u32 {{");
-    let _ = writeln!(out, "    usize::BITS - x.leading_zeros() - 1");
-    let _ = writeln!(out, "}}");
-    let _ = writeln!(out);
+/// Data-driven preamble writer.
+///
+/// Generates standard imports plus `pub use` statements for dependency
+/// types/traits based on manifests.
+pub struct DynPreambleWriter<'a> {
+    pub deps: &'a [crate::manifest::TypeManifest],
+}
+
+impl<'a> RustBackend for DynPreambleWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // File header
+        writeln!(f, "//! Auto-generated dynamic types from volar-spec")?;
+        writeln!(
+            f,
+            "//! Type-level lengths have been converted to runtime usize witnesses"
+        )?;
+        writeln!(f)?;
+        writeln!(f, "#![allow(unused_variables, dead_code, unused_mut, unused_imports, non_snake_case, unused_parens)]")?;
+        writeln!(f, "extern crate alloc;")?;
+        writeln!(f, "use alloc::vec::Vec;")?;
+        writeln!(f, "use alloc::vec;")?;
+        writeln!(
+            f,
+            "use core::ops::{{Add, Sub, Mul, Div, BitAnd, BitOr, BitXor, Shl, Shr}};"
+        )?;
+        writeln!(f, "use core::marker::PhantomData;")?;
+        writeln!(f, "use typenum::Unsigned;")?;
+        writeln!(f, "use cipher::{{BlockEncrypt, Block}};")?;
+        writeln!(f, "use digest::Digest;")?;
+        writeln!(f, "use volar_common::hash_commitment::commit;")?;
+        writeln!(f)?;
+
+        // Dependency re-exports
+        for dep in self.deps {
+            let crate_ident = dep.crate_name.replace('-', "_");
+            // Collect struct names and trait names from the manifest
+            let mut type_names: Vec<String> = Vec::new();
+            for s in &dep.module.structs {
+                type_names.push(s.kind.to_string());
+            }
+            for t in &dep.module.traits {
+                type_names.push(t.kind.to_string());
+            }
+            if !type_names.is_empty() {
+                writeln!(f, "pub use {}::{{{}}};", crate_ident, type_names.join(", "))?;
+            }
+        }
+        if !self.deps.is_empty() {
+            writeln!(f)?;
+        }
+
+        // Helper functions
+        writeln!(f, "/// Compute integer log2")?;
+        writeln!(f, "#[inline]")?;
+        writeln!(f, "pub fn ilog2(x: usize) -> u32 {{")?;
+        writeln!(f, "    usize::BITS - x.leading_zeros() - 1")?;
+        writeln!(f, "}}")?;
+        writeln!(f)?;
+        Ok(())
+    }
 }

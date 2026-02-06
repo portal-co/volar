@@ -1050,6 +1050,36 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
             if name == "unreachable" {
                 return Ok(IrExpr::Unreachable);
             }
+            if name == "todo" || name == "unimplemented" {
+                // Treat as a placeholder expression
+                let mut segs = Vec::new();
+                segs.push(format!("{}!", name));
+                return Ok(IrExpr::Call {
+                    func: Box::new(IrExpr::Path {
+                        segments: segs,
+                        type_args: Vec::new(),
+                    }),
+                    args: Vec::new(),
+                });
+            }
+            // For vec!, parse as an array literal
+            if name == "vec" {
+                let tokens = m.mac.tokens.clone();
+                // Wrap in brackets and parse as ExprArray
+                let bracketed = proc_macro2::TokenStream::from_iter([
+                    proc_macro2::TokenTree::Group(proc_macro2::Group::new(
+                        proc_macro2::Delimiter::Bracket,
+                        tokens,
+                    )),
+                ]);
+                let as_array: syn::Result<syn::ExprArray> = syn::parse2(bracketed);
+                if let Ok(arr) = as_array {
+                    let ir_elems = arr.elems.iter().map(convert_expr).collect::<Result<Vec<_>>>()?;
+                    return Ok(IrExpr::Array(ir_elems));
+                }
+                // Fallback: empty vec
+                return Ok(IrExpr::Array(Vec::new()));
+            }
             // For typenum_usize, parse the token stream as a type and convert it
             if name == "typenum_usize" {
                 let parsed_ty: Type = syn::parse2(m.mac.tokens.clone()).map_err(|e| {
