@@ -1078,14 +1078,25 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     }
                 }
             }
-            IrExpr::MethodCall {
+            let lowered = IrExpr::MethodCall {
                 receiver: Box::new(lower_expr_dyn(receiver, ctx, fn_gen)),
-                method,
+                method: method.clone(),
                 type_args: type_args
                     .iter()
                     .map(|ta| lower_type_dyn(ta, ctx, fn_gen))
                     .collect(),
                 args,
+            };
+            // Digest::finalize() returns GenericArray → wrap with .to_vec()
+            if matches!(&method, MethodKind::Unknown(n) if n == "finalize") {
+                IrExpr::MethodCall {
+                    receiver: Box::new(lowered),
+                    method: MethodKind::Std("to_vec".to_string()),
+                    type_args: vec![],
+                    args: vec![],
+                }
+            } else {
+                lowered
             }
         }
         IrExpr::Call { func, args } => {
@@ -1113,10 +1124,42 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             }
 
             let mut new_func = None;
-            if let IrExpr::Var(name) = &func {
-                if name == "create_vole_from_material"
+            // Check for type-param static method calls like B::double(x)
+            // These need special wrapping for Vec<u8> ↔ GenericArray bridging
+            let func_name = match &func {
+                IrExpr::Var(name) => Some(name.clone()),
+                IrExpr::Path { segments, .. } if segments.len() >= 1 => {
+                    Some(segments.last().unwrap().clone())
+                }
+                _ => None,
+            };
+            let func_qualifier = match &func {
+                IrExpr::Path { segments, .. } if segments.len() == 2 => {
+                    Some(segments[0].clone())
+                }
+                _ => None,
+            };
+            if let Some(name) = &func_name {
+                // B::double(x) → double_vec::<B>(x) — bridges Vec<u8> ↔ GenericArray
+                if name == "double" {
+                    if let Some(qual) = &func_qualifier {
+                        // Use the qualifier as the type param (e.g., B::double → double_vec::<B>)
+                        new_func = Some(IrExpr::Path {
+                            segments: vec!["double_vec".to_string()],
+                            type_args: vec![IrType::TypeParam(qual.clone())],
+                        });
+                    } else if let Some(b_param) = fn_gen.iter().find(|p| {
+                        p.name.starts_with('B')
+                            && p.bounds.iter().any(|b| matches!(&b.trait_kind,
+                                TraitKind::Custom(n) if n == "LengthDoubler" || n == "BlockEncrypt" || n == "BlockCipher"))
+                    }) {
+                        new_func = Some(IrExpr::Path {
+                            segments: vec!["double_vec".to_string()],
+                            type_args: vec![IrType::TypeParam(b_param.name.clone())],
+                        });
+                    }
+                } else if name == "create_vole_from_material"
                     || name == "create_vole_from_material_expanded"
-                    || name == "double"
                 {
                     if let Some(b_param) = fn_gen.iter().find(|p| {
                         p.name.starts_with('B')
@@ -1323,7 +1366,29 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
         }
         // ArrayDefault → IterPipeline: (0..len).map(|_| T::default()).collect()
         IrExpr::ArrayDefault { elem_ty, len } => {
-            let len_expr = array_length_to_expr(len, fn_gen, ctx);
+            // Resolve placeholder "N" when GenericArray::default() had no turbofish
+            let resolved_len = match len {
+                ArrayLength::TypeParam(p) if p == "N" => {
+                    // Check if "N" matches any actual length generic
+                    let has_n = fn_gen.iter().any(|g| g.name == "N" &&
+                        classify_generic_with_aliases(g, &[fn_gen], &ctx.aliases()) == GenericKind::Length);
+                    if !has_n {
+                        // Placeholder — find the most likely length generic
+                        let length_gens: Vec<_> = fn_gen.iter()
+                            .filter(|g| classify_generic_with_aliases(g, &[fn_gen], &ctx.aliases()) == GenericKind::Length)
+                            .collect();
+                        if length_gens.len() == 1 {
+                            ArrayLength::TypeParam(length_gens[0].name.clone())
+                        } else {
+                            len.clone()
+                        }
+                    } else {
+                        len.clone()
+                    }
+                }
+                _ => len.clone(),
+            };
+            let len_expr = array_length_to_expr(&resolved_len, fn_gen, ctx);
             let default_body = IrExpr::DefaultValue {
                 ty: elem_ty.as_ref().map(|t| Box::new(lower_type_dyn(t, ctx, fn_gen))),
             };

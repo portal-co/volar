@@ -13,11 +13,20 @@ use digest::Digest;
 use volar_common::hash_commitment::commit;
 use volar_common::length_doubling::LengthDoubler;
 use volar_primitives::{Bit, BitsInBytes, BitsInBytes64, Galois, Galois64};
+use generic_array::GenericArray;
 
 /// Compute integer log2
 #[inline]
 pub fn ilog2(x: usize) -> u32 {
     usize::BITS - x.leading_zeros() - 1
+}
+
+/// Bridge: call LengthDoubler::double on a Vec<u8>, converting to/from GenericArray
+#[inline]
+pub fn double_vec<B: LengthDoubler>(v: Vec<u8>) -> [Vec<u8>; 2] {
+    let ga = generic_array::GenericArray::from_exact_iter(v.into_iter()).expect("double_vec: length mismatch");
+    let [a, b] = B::double(ga);
+    [a.to_vec(), b.to_vec()]
 }
 
 #[derive(Debug, Default)]
@@ -750,7 +759,7 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
 }
 }
 };
-        (h.finalize().as_slice() == commit_.as_slice())
+        (h.finalize().to_vec().as_slice() == commit_.as_slice())
     }
     pub fn to_vole_material(&self, mut n: usize) -> Vec<VopeDyn<u8>>
     {
@@ -869,14 +878,14 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
 pub fn gen_abo<B: LengthDoubler, D: Digest>(mut k: usize, mut a: Vec<u8>, mut rand: &impl AsRef<[u8]>) -> ABODyn<B, D> where B: Sized
 {
     let mut h = D::new();
-    let mut per_byte = (0..n).map(|_| Default::default()).collect::<Vec<_>>();
+    let mut per_byte = (0..k).map(|_| Default::default()).collect::<Vec<_>>();
     for i in 0.. k{
     let core = (0..k.ilog2()).fold(a.clone(), |acc, b| {
     if (((i >> b) & 1) != 0){
-    let doubled = B::double(acc);
+    let doubled = double_vec::<B>(acc);
     acc = doubled[1].clone();
 } else {
-    let doubled = B::double(acc);
+    let doubled = double_vec::<B>(acc);
     acc = doubled[0].clone();
 };
     acc
@@ -884,7 +893,7 @@ pub fn gen_abo<B: LengthDoubler, D: Digest>(mut k: usize, mut a: Vec<u8>, mut ra
     h.update(&commit::<D>(&core, rand));
     per_byte[i] = core;
 };
-    ABODyn { commit: h.finalize(), per_byte: per_byte, k: 0, _phantom: PhantomData }
+    ABODyn { commit: h.finalize().to_vec(), per_byte: per_byte, k: 0, _phantom: PhantomData }
 }
 
 pub fn create_vole_from_material<B: LengthDoubler, X: AsRef<[u8]>>(mut s: &[X]) -> VopeDyn<u8>
