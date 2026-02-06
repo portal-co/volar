@@ -1330,24 +1330,63 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
         IrExpr::IterPipeline(chain) => {
             IrExpr::IterPipeline(lower_iter_chain_dyn(chain, ctx, fn_gen))
         },
-        IrExpr::RawMap { receiver, elem_var, body } => IrExpr::RawMap {
-            receiver: Box::new(lower_expr_dyn(receiver, ctx, fn_gen)),
-            elem_var: elem_var.clone(),
-            body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+        // RawMap → receiver.into_iter().map(|var| body).collect()
+        IrExpr::RawMap { receiver, elem_var, body } => {
+            IrExpr::IterPipeline(crate::ir::IrIterChain {
+                source: crate::ir::IterChainSource::Method {
+                    collection: Box::new(lower_expr_dyn(receiver, ctx, fn_gen)),
+                    method: crate::ir::IterMethod::IntoIter,
+                },
+                steps: vec![crate::ir::IterStep::Map {
+                    var: elem_var.clone(),
+                    body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+                }],
+                terminal: crate::ir::IterTerminal::Collect,
+            })
         },
-        IrExpr::RawZip { left, right, left_var, right_var, body } => IrExpr::RawZip {
-            left: Box::new(lower_expr_dyn(left, ctx, fn_gen)),
-            right: Box::new(lower_expr_dyn(right, ctx, fn_gen)),
-            left_var: left_var.clone(),
-            right_var: right_var.clone(),
-            body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+        // RawZip → left.into_iter().zip(right.into_iter()).map(|(a,b)| body).collect()
+        IrExpr::RawZip { left, right, left_var, right_var, body } => {
+            IrExpr::IterPipeline(crate::ir::IrIterChain {
+                source: crate::ir::IterChainSource::Zip {
+                    left: Box::new(crate::ir::IrIterChain {
+                        source: crate::ir::IterChainSource::Method {
+                            collection: Box::new(lower_expr_dyn(left, ctx, fn_gen)),
+                            method: crate::ir::IterMethod::IntoIter,
+                        },
+                        steps: Vec::new(),
+                        terminal: crate::ir::IterTerminal::Lazy,
+                    }),
+                    right: Box::new(crate::ir::IrIterChain {
+                        source: crate::ir::IterChainSource::Method {
+                            collection: Box::new(lower_expr_dyn(right, ctx, fn_gen)),
+                            method: crate::ir::IterMethod::IntoIter,
+                        },
+                        steps: Vec::new(),
+                        terminal: crate::ir::IterTerminal::Lazy,
+                    }),
+                },
+                steps: vec![crate::ir::IterStep::Map {
+                    var: format!("({}, {})", left_var, right_var),
+                    body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+                }],
+                terminal: crate::ir::IterTerminal::Collect,
+            })
         },
-        IrExpr::RawFold { receiver, init, acc_var, elem_var, body } => IrExpr::RawFold {
-            receiver: Box::new(lower_expr_dyn(receiver, ctx, fn_gen)),
-            init: Box::new(lower_expr_dyn(init, ctx, fn_gen)),
-            acc_var: acc_var.clone(),
-            elem_var: elem_var.clone(),
-            body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+        // RawFold → receiver.into_iter().fold(init, |acc, elem| body)
+        IrExpr::RawFold { receiver, init, acc_var, elem_var, body } => {
+            IrExpr::IterPipeline(crate::ir::IrIterChain {
+                source: crate::ir::IterChainSource::Method {
+                    collection: Box::new(lower_expr_dyn(receiver, ctx, fn_gen)),
+                    method: crate::ir::IterMethod::IntoIter,
+                },
+                steps: Vec::new(),
+                terminal: crate::ir::IterTerminal::Fold {
+                    init: Box::new(lower_expr_dyn(init, ctx, fn_gen)),
+                    acc_var: acc_var.clone(),
+                    elem_var: elem_var.clone(),
+                    body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+                },
+            })
         },
         IrExpr::Match { expr, arms } => IrExpr::Match {
             expr: Box::new(lower_expr_dyn(expr, ctx, fn_gen)),
