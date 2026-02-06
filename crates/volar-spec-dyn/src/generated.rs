@@ -84,22 +84,6 @@ pub struct VopeDyn<T> {
     pub v: Vec<T>,
 }
 
-#[derive(Debug, Default)]
-pub struct ViaDigestPuncturableRandomizerDyn<D: Digest> {
-    pub digest: PhantomDataDyn<D>,
-}
-
-#[derive(Debug, Default)]
-pub struct CommitmentCoreDyn<D: Digest>(pub Vec<u8>, pub PhantomData<D>);
-
-pub trait LengthDoubler {
-    type OutputSize: Unsigned;
-    fn double(a: Vec<u8>) -> Vec<Vec<u8>>;
-}
-
-pub trait PuncturableLengthDoubler: LengthDoubler {
-}
-
 impl <T> DeltaDyn<T> {
     pub fn remap<F: FnMut(usize) -> usize>(&self, mut m: usize, mut f: F) -> DeltaDyn<T> where T: Clone
     {
@@ -269,7 +253,7 @@ impl <T: Add<Output = T> + Mul<Output = T> + Default + Clone> VopeDyn<T> where T
     {
         let n: usize = self.n;
         let k: usize = self.k;
-        let mut res_u = (0..(k2 + k)).map(|_| Vec::<T>::default()).collect::<Vec<_>>();
+        let mut res_u = (0..(k2 + k)).map(|_| Vec<T>::default()).collect::<Vec<_>>();
         let mut res_v = (0..n).map(|_| T::default()).collect::<Vec<_>>();
         for i in 0..= k{
     for j in 0..= k2{
@@ -881,57 +865,6 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
     }
 }
 
-impl <D: Digest> LengthDoubler for ViaDigestPuncturableRandomizerDyn<D> {
-    type OutputSize = <D as _>::OutputSize;
-    fn double(mut a: Vec<u8>) -> Vec<Vec<u8>>
-    {
-        let v = D::digest(&a);
-        vec![v.clone(), v.into_iter().zip(a.into_iter()).map(|(x, y)| (x ^ y)).collect::<Vec<_>>()]
-    }
-}
-
-impl <D: Digest> PuncturableLengthDoubler for ViaDigestPuncturableRandomizerDyn<D> {
-}
-
-impl <D: Digest> AsRef<[u8]> for CommitmentCoreDyn<D> {
-    fn as_ref(&self) -> &[u8]
-    {
-        &self.0
-    }
-}
-
-impl <D: Digest> Default for CommitmentCoreDyn<D> {
-    fn default() -> Self
-    {
-        CommitmentCoreDyn((0..n).map(|_| Default::default()).collect::<Vec<_>>(), PhantomData)
-    }
-}
-
-impl <D: Digest> Clone for CommitmentCoreDyn<D> {
-    fn clone(&self) -> Self
-    {
-        CommitmentCoreDyn(self.0.clone(), PhantomData)
-    }
-}
-
-impl <D: Digest> PartialEq for CommitmentCoreDyn<D> {
-    fn eq(&self, mut other: &Self) -> bool
-    {
-        (self.0.as_slice() == other.0.as_slice())
-    }
-}
-
-impl <D: Digest> Eq for CommitmentCoreDyn<D> {
-}
-
-impl <D: Digest> CommitmentCoreDyn<D> {
-    pub fn validate(&self, mut opened_message: &impl AsRef<[u8]>, mut opened_rand: &impl AsRef<[u8]>) -> bool
-    {
-        let recomputed: CommitmentCoreDyn<D> = commit::<D>(opened_message, opened_rand);
-        (&recomputed.0 == &self.0)
-    }
-}
-
 pub fn gen_abo<B: LengthDoubler, D: Digest>(mut k: usize, mut a: Vec<u8>, mut rand: &impl AsRef<[u8]>) -> ABODyn<B, D> where B: Sized
 {
     let mut h = D::new();
@@ -973,13 +906,5 @@ pub fn create_vole_from_material_expanded<B: LengthDoubler, X: AsRef<[u8]>, Y: A
     a.into_iter().zip((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b).bitxor((i as u8))).collect::<Vec<_>>()
 });
     VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<_>>(), v: v, n: 0, k: 1 }
-}
-
-pub fn commit<D: Digest>(mut message: &impl AsRef<[u8]>, mut rand: &impl AsRef<[u8]>) -> CommitmentCoreDyn<D>
-{
-    let mut hasher = D::new();
-    hasher.update(message.as_ref());
-    hasher.update(rand.as_ref());
-    CommitmentCoreDyn(hasher.finalize(), PhantomData)
 }
 

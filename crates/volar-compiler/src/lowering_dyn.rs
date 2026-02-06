@@ -1620,7 +1620,7 @@ fn lower_iter_terminal_dyn(
 fn lower_array_length(len: &ArrayLength, fn_gen: &[IrGenericParam], ctx: &LoweringContext) -> ArrayLength {
     match len {
         ArrayLength::Projection { r#type, field } => {
-            resolve_projection_length(r#type, field, fn_gen, ctx)
+            resolve_projection_as_length(r#type, field, fn_gen, ctx)
         }
         ArrayLength::TypeParam(p) => {
             // Check if this is a typenum constant
@@ -1630,7 +1630,7 @@ fn lower_array_length(len: &ArrayLength, fn_gen: &[IrGenericParam], ctx: &Loweri
                 // Path like B::BlockSize → parse as projection
                 let parts: Vec<&str> = p.split("::").collect();
                 if parts.len() == 2 {
-                    resolve_projection_length(
+                    resolve_projection_as_length(
                         &IrType::TypeParam(parts[0].to_string()),
                         parts[1],
                         fn_gen,
@@ -1649,18 +1649,17 @@ fn lower_array_length(len: &ArrayLength, fn_gen: &[IrGenericParam], ctx: &Loweri
     }
 }
 
-/// Resolve a projection `<base_ty>::field` into a lowered ArrayLength.
+/// Resolve a projection `<base_ty>::field` that can stay as an `ArrayLength`.
 ///
-/// For **length** generics (N, K, K2, etc.) with arithmetic trait bounds
-/// like `K2: Add<K>`, the `Output` associated type is resolved into an
-/// arithmetic expression over the runtime witness variables: `k2 + k`.
+/// For type-param projections on type generics (e.g. `B::OutputSize`), keeps
+/// the projection for compile-time resolution.
 ///
-/// For **type** generics (B, D, etc.) whose associated type is a length
-/// (e.g., `B::OutputSize` where `B: LengthDoubler`), the projection is
-/// kept as-is and resolved at compile time via the type system.
+/// For Self projections, returns a runtime variable.
 ///
-/// For **Self** projections, the result is a runtime variable.
-fn resolve_projection_length(
+/// For length-param projections where arithmetic *could* apply, still returns
+/// a variable name (the caller should use `array_length_to_expr` to get the
+/// full `IrExpr::Binary`).
+fn resolve_projection_as_length(
     base_ty: &IrType,
     field: &str,
     fn_gen: &[IrGenericParam],
@@ -1668,24 +1667,17 @@ fn resolve_projection_length(
 ) -> ArrayLength {
     match base_ty {
         IrType::TypeParam(p) if p == "Self" => {
-            // Self projections → runtime variable (struct doesn't carry trait impls)
-            ArrayLength::TypeParam(format!("self_{}", field.to_lowercase()))
+            ArrayLength::TypeParam(validate_ident(&format!("self_{}", field.to_lowercase())))
         }
         IrType::TypeParam(p) => {
             let param = fn_gen.iter().find(|g| &g.name == p);
             let is_length = param.map_or(false, |g| {
                 classify_generic_with_aliases(g, &[fn_gen], &ctx.aliases()) == GenericKind::Length
             });
-            if is_length && field == "Output" {
-                // Try to resolve via arithmetic trait bounds: Add, Sub, Mul → binary expr
-                if let Some(resolved) = resolve_arithmetic_output(p, param.unwrap(), fn_gen, ctx) {
-                    return resolved;
-                }
-                // Fallback: runtime variable
-                ArrayLength::TypeParam(format!("{}_{}", p.to_lowercase(), field.to_lowercase()))
-            } else if is_length {
-                // Non-Output assoc type on length param → runtime variable
-                ArrayLength::TypeParam(format!("{}_{}", p.to_lowercase(), field.to_lowercase()))
+            if is_length {
+                // Length param projection — return as variable name.
+                // Arithmetic resolution happens in array_length_to_expr().
+                ArrayLength::TypeParam(validate_ident(&format!("{}_{}", p.to_lowercase(), field.to_lowercase())))
             } else {
                 // Type param → keep as compile-time projection
                 ArrayLength::Projection {
@@ -1694,80 +1686,49 @@ fn resolve_projection_length(
                 }
             }
         }
-        // Nested projection, e.g. <D::OutputSize as Logarithm2>::Output
-        // For now, keep as-is (compile-time) — exotic cases
         IrType::Projection { .. } => {
+            // Nested projection — keep as-is for compile-time resolution
             ArrayLength::Projection {
                 r#type: Box::new(base_ty.clone()),
                 field: field.to_string(),
             }
         }
         _ => {
-            // Fallback
-            ArrayLength::TypeParam(format!("len_{}", field.to_lowercase()))
+            ArrayLength::TypeParam(validate_ident(&format!("len_{}", field.to_lowercase())))
         }
-    }
-}
-
-/// Given a length param `P` with bound `P: Add<Rhs>` (or Sub, Mul),
-/// resolve `P::Output` to `p OP rhs_lowered`.
-fn resolve_arithmetic_output(
-    param_name: &str,
-    param: &IrGenericParam,
-    fn_gen: &[IrGenericParam],
-    ctx: &LoweringContext,
-) -> Option<ArrayLength> {
-    for bound in &param.bounds {
-        let op = match &bound.trait_kind {
-            TraitKind::Math(MathTrait::Add) => "+",
-            TraitKind::Math(MathTrait::Sub) => "-",
-            TraitKind::Math(MathTrait::Mul) => "*",
-            _ => continue,
-        };
-        // The first type_arg is the RHS
-        if let Some(rhs_ty) = bound.type_args.first() {
-            let rhs = type_to_length_expr(rhs_ty, fn_gen, ctx)?;
-            let lhs = param_name.to_lowercase();
-            return Some(ArrayLength::TypeParam(format!("({} {} {})", lhs, op, rhs)));
-        }
-    }
-    None
-}
-
-/// Convert a type used as an arithmetic operand into a lowered length expression string.
-/// Returns `None` if the type can't be resolved to a length expression.
-fn type_to_length_expr(ty: &IrType, fn_gen: &[IrGenericParam], ctx: &LoweringContext) -> Option<String> {
-    match ty {
-        IrType::TypeParam(p) => {
-            // Check if it's a typenum constant
-            if let Some(tn) = TypeNumConst::from_str(p) {
-                Some(tn.to_usize().to_string())
-            } else {
-                // Lowercase the param name (it should be a length witness)
-                Some(p.to_lowercase())
-            }
-        }
-        IrType::Projection { base, assoc, .. } => {
-            // Nested projection like <K2 as Add<K>>::Output → resolve recursively
-            let field_name = assoc.to_string();
-            let resolved = resolve_projection_length(base, &field_name, fn_gen, ctx);
-            match resolved {
-                ArrayLength::Const(n) => Some(n.to_string()),
-                ArrayLength::TypeParam(s) => Some(s),
-                _ => None,
-            }
-        }
-        _ => None,
     }
 }
 
 /// Convert an `ArrayLength` into a runtime `IrExpr` representing a `usize` value.
 ///
-/// - `Const(n)` → `Lit(n)`
-/// - `TypeParam("k")` → `Var("k")` (already lowercased by `lower_array_length`)
-/// - `TypeParam("(k2 + k)")` → `Var("(k2 + k)")` (arithmetic expression)
-/// - `Projection { type, field }` → `LengthOf(Projection { .. })` (compile-time resolution)
+/// This is the primary entry point for converting type-level lengths into
+/// runtime expressions. Unlike `lower_array_length` (which stays in the
+/// `ArrayLength` domain), this produces proper `IrExpr` nodes — including
+/// `IrExpr::Binary` for arithmetic projections like `K2: Add<K>` → `k2 + k`.
 fn array_length_to_expr(len: &ArrayLength, fn_gen: &[IrGenericParam], ctx: &LoweringContext) -> IrExpr {
+    // First, try arithmetic resolution for projections on length params
+    if let ArrayLength::Projection { r#type, field } = len {
+        if let Some(expr) = resolve_projection_as_expr(r#type, field, fn_gen, ctx) {
+            return expr;
+        }
+    }
+    // Also handle "K::Output" in TypeParam form
+    if let ArrayLength::TypeParam(p) = len {
+        if p.contains("::") {
+            let parts: Vec<&str> = p.split("::").collect();
+            if parts.len() == 2 {
+                if let Some(expr) = resolve_projection_as_expr(
+                    &IrType::TypeParam(parts[0].to_string()),
+                    parts[1],
+                    fn_gen,
+                    ctx,
+                ) {
+                    return expr;
+                }
+            }
+        }
+    }
+    // Fall back to lower_array_length → convert to expr
     let lowered = lower_array_length(len, fn_gen, ctx);
     match &lowered {
         ArrayLength::Const(n) => IrExpr::Lit(IrLit::Int(*n as i128)),
@@ -1776,6 +1737,101 @@ fn array_length_to_expr(len: &ArrayLength, fn_gen: &[IrGenericParam], ctx: &Lowe
         _ => IrExpr::LengthOf(lowered),
     }
 }
+
+/// Try to resolve a projection `<base_ty>::field` into an `IrExpr`.
+///
+/// Returns `Some(IrExpr::Binary { .. })` for arithmetic projections on length
+/// params (e.g., `K2: Add<K>` → `Binary { Var("k2"), Add, Var("k") }`).
+///
+/// Returns `None` if this isn't an arithmetic projection — the caller should
+/// fall back to `lower_array_length`.
+fn resolve_projection_as_expr(
+    base_ty: &IrType,
+    field: &str,
+    fn_gen: &[IrGenericParam],
+    ctx: &LoweringContext,
+) -> Option<IrExpr> {
+    let p = match base_ty {
+        IrType::TypeParam(p) if p != "Self" => p,
+        _ => return None,
+    };
+    let param = fn_gen.iter().find(|g| &g.name == p)?;
+    let is_length = classify_generic_with_aliases(param, &[fn_gen], &ctx.aliases()) == GenericKind::Length;
+    if !is_length || field != "Output" {
+        return None;
+    }
+    resolve_arithmetic_output_expr(p, param, fn_gen, ctx)
+}
+
+/// Given a length param `P` with bound `P: Add<Rhs>` (or Sub, Mul),
+/// resolve `P::Output` to `Binary { Var("p"), op, rhs_expr }`.
+fn resolve_arithmetic_output_expr(
+    param_name: &str,
+    param: &IrGenericParam,
+    fn_gen: &[IrGenericParam],
+    ctx: &LoweringContext,
+) -> Option<IrExpr> {
+    for bound in &param.bounds {
+        let op = match &bound.trait_kind {
+            TraitKind::Math(MathTrait::Add) => SpecBinOp::Add,
+            TraitKind::Math(MathTrait::Sub) => SpecBinOp::Sub,
+            TraitKind::Math(MathTrait::Mul) => SpecBinOp::Mul,
+            _ => continue,
+        };
+        if let Some(rhs_ty) = bound.type_args.first() {
+            let rhs = type_to_length_ir_expr(rhs_ty, fn_gen, ctx)?;
+            let lhs = IrExpr::Var(validate_ident(&param_name.to_lowercase()));
+            return Some(IrExpr::Binary {
+                left: Box::new(lhs),
+                op,
+                right: Box::new(rhs),
+            });
+        }
+    }
+    None
+}
+
+/// Convert a type used as an arithmetic operand into a runtime `IrExpr`.
+fn type_to_length_ir_expr(ty: &IrType, fn_gen: &[IrGenericParam], ctx: &LoweringContext) -> Option<IrExpr> {
+    match ty {
+        IrType::TypeParam(p) => {
+            if let Some(tn) = TypeNumConst::from_str(p) {
+                Some(IrExpr::Lit(IrLit::Int(tn.to_usize() as i128)))
+            } else {
+                Some(IrExpr::Var(validate_ident(&p.to_lowercase())))
+            }
+        }
+        IrType::Projection { base, assoc, .. } => {
+            let field_name = assoc.to_string();
+            // Try arithmetic resolution first
+            if let Some(expr) = resolve_projection_as_expr(base, &field_name, fn_gen, ctx) {
+                return Some(expr);
+            }
+            // Fall back to LengthOf for static projections
+            let lowered = resolve_projection_as_length(base, &field_name, fn_gen, ctx);
+            match lowered {
+                ArrayLength::Const(n) => Some(IrExpr::Lit(IrLit::Int(n as i128))),
+                ArrayLength::TypeParam(s) => Some(IrExpr::Var(s)),
+                _ => Some(IrExpr::LengthOf(lowered)),
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Validate that a string is a valid Rust identifier (or parenthesized expression).
+/// Panics if the string contains characters that could be injected code.
+fn validate_ident(s: &str) -> String {
+    // Allow lowercase alphanumeric, underscores
+    if s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !s.is_empty() {
+        s.to_string()
+    } else {
+        panic!("Invalid identifier in lowering: {:?}. \
+                This usually means an expression was incorrectly stuffed into a name. \
+                Use proper IrExpr nodes instead.", s);
+    }
+}
+
 
 
 
@@ -1851,7 +1907,33 @@ mod tests {
         }
     }
 
-    // ---- lower_array_length tests ----
+    /// Helper to assert an IrExpr is Binary { Var(lhs), op, Var(rhs) }
+    fn assert_binary_var_var(expr: &IrExpr, expected_lhs: &str, expected_op: SpecBinOp, expected_rhs: &str) {
+        match expr {
+            IrExpr::Binary { left, op, right } => {
+                assert_eq!(*op, expected_op);
+                assert_eq!(**left, IrExpr::Var(expected_lhs.to_string()));
+                assert_eq!(**right, IrExpr::Var(expected_rhs.to_string()));
+            }
+            other => panic!("Expected Binary, got {:?}", other),
+        }
+    }
+
+    /// Helper to assert an IrExpr is Binary { Var(lhs), op, Lit(rhs) }
+    fn assert_binary_var_lit(expr: &IrExpr, expected_lhs: &str, expected_op: SpecBinOp, expected_rhs: i128) {
+        match expr {
+            IrExpr::Binary { left, op, right } => {
+                assert_eq!(*op, expected_op);
+                assert_eq!(**left, IrExpr::Var(expected_lhs.to_string()));
+                assert_eq!(**right, IrExpr::Lit(IrLit::Int(expected_rhs)));
+            }
+            other => panic!("Expected Binary, got {:?}", other),
+        }
+    }
+
+    // ================================================================
+    // lower_array_length tests
+    // ================================================================
 
     #[test]
     fn test_lower_typenum_const() {
@@ -1872,7 +1954,6 @@ mod tests {
 
     #[test]
     fn test_lower_projection_on_type_param_kept_static() {
-        // B: LengthDoubler → B::OutputSize stays as a Projection
         let ctx = empty_ctx();
         let gens = vec![type_param("B", vec![custom_bound("LengthDoubler")])];
         let len = ArrayLength::Projection {
@@ -1880,13 +1961,13 @@ mod tests {
             field: "OutputSize".to_string(),
         };
         let result = lower_array_length(&len, &gens, &ctx);
-        // Should stay as Projection (resolved at compile time)
         assert!(matches!(result, ArrayLength::Projection { .. }));
     }
 
     #[test]
-    fn test_lower_projection_add_output() {
-        // K2: Add<K> → K2::Output = (k2 + k)
+    fn test_lower_projection_add_output_stays_typeparam() {
+        // lower_array_length does NOT resolve arithmetic — it returns a variable name.
+        // Arithmetic resolution only happens in array_length_to_expr.
         let ctx = empty_ctx();
         let gens = vec![
             length_param("K", vec![]),
@@ -1897,37 +1978,7 @@ mod tests {
             field: "Output".to_string(),
         };
         let result = lower_array_length(&len, &gens, &ctx);
-        assert_eq!(result, ArrayLength::TypeParam("(k2 + k)".to_string()));
-    }
-
-    #[test]
-    fn test_lower_projection_sub_output() {
-        // N: Sub<U1> → N::Output = (n - u1)
-        let ctx = empty_ctx();
-        let gens = vec![length_param("N", vec![sub_bound("U1")])];
-        let len = ArrayLength::Projection {
-            r#type: Box::new(IrType::TypeParam("N".to_string())),
-            field: "Output".to_string(),
-        };
-        let result = lower_array_length(&len, &gens, &ctx);
-        // U1 is a typenum constant = 1
-        assert_eq!(result, ArrayLength::TypeParam("(n - 1)".to_string()));
-    }
-
-    #[test]
-    fn test_lower_projection_mul_output() {
-        // N: Mul<K> → N::Output = (n * k)
-        let ctx = empty_ctx();
-        let gens = vec![
-            length_param("N", vec![mul_bound("K")]),
-            length_param("K", vec![]),
-        ];
-        let len = ArrayLength::Projection {
-            r#type: Box::new(IrType::TypeParam("N".to_string())),
-            field: "Output".to_string(),
-        };
-        let result = lower_array_length(&len, &gens, &ctx);
-        assert_eq!(result, ArrayLength::TypeParam("(n * k)".to_string()));
+        assert_eq!(result, ArrayLength::TypeParam("k2_output".to_string()));
     }
 
     #[test]
@@ -1943,7 +1994,6 @@ mod tests {
 
     #[test]
     fn test_lower_path_notation_b_outputsize() {
-        // "B::OutputSize" in TypeParam form → should resolve like Projection
         let ctx = empty_ctx();
         let gens = vec![type_param("B", vec![custom_bound("LengthDoubler")])];
         let len = ArrayLength::TypeParam("B::OutputSize".to_string());
@@ -1951,73 +2001,8 @@ mod tests {
         assert!(matches!(result, ArrayLength::Projection { .. }));
     }
 
-    // ---- resolve_arithmetic_output tests ----
-
-    #[test]
-    fn test_resolve_no_arithmetic_bound() {
-        // K with no arithmetic bounds → None
-        let ctx = empty_ctx();
-        let param = length_param("K", vec![]);
-        let result = resolve_arithmetic_output("K", &param, &[param.clone()], &ctx);
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_resolve_add_with_typenum_rhs() {
-        // K: Add<U1> → (k + 1)
-        let ctx = empty_ctx();
-        let param = length_param("K", vec![IrTraitBound {
-            trait_kind: TraitKind::Math(MathTrait::Add),
-            type_args: vec![IrType::TypeParam("U1".to_string())],
-            assoc_bindings: Vec::new(),
-        }]);
-        let result = resolve_arithmetic_output("K", &param, &[param.clone()], &ctx);
-        assert_eq!(result, Some(ArrayLength::TypeParam("(k + 1)".to_string())));
-    }
-
-    // ---- LengthOf expr lowering integration ----
-
-    #[test]
-    fn test_lower_lengthof_projection_type_param() {
-        // LengthOf(Projection { B, OutputSize }) with B: LengthDoubler (type param)
-        // → stays as LengthOf(Projection) for compile-time resolution
-        let ctx = empty_ctx();
-        let gens = vec![type_param("B", vec![custom_bound("LengthDoubler")])];
-        let expr = IrExpr::LengthOf(ArrayLength::Projection {
-            r#type: Box::new(IrType::TypeParam("B".to_string())),
-            field: "OutputSize".to_string(),
-        });
-        let result = lower_expr_dyn(&expr, &ctx, &gens);
-        assert!(matches!(result, IrExpr::LengthOf(ArrayLength::Projection { .. })));
-    }
-
-    #[test]
-    fn test_lower_lengthof_add_output() {
-        // LengthOf(Projection { K2, Output }) with K2: Unsigned + Add<K> → Var("(k2 + k)")
-        let ctx = empty_ctx();
-        let gens = vec![
-            length_param("K", vec![]),
-            length_param("K2", vec![add_bound("K")]),
-        ];
-        let expr = IrExpr::LengthOf(ArrayLength::Projection {
-            r#type: Box::new(IrType::TypeParam("K2".to_string())),
-            field: "Output".to_string(),
-        });
-        let result = lower_expr_dyn(&expr, &ctx, &gens);
-        assert_eq!(result, IrExpr::Var("(k2 + k)".to_string()));
-    }
-
-    #[test]
-    fn test_lower_lengthof_const() {
-        let ctx = empty_ctx();
-        let expr = IrExpr::LengthOf(ArrayLength::TypeParam("U16".to_string()));
-        let result = lower_expr_dyn(&expr, &ctx, &[]);
-        assert_eq!(result, IrExpr::Lit(IrLit::Int(16)));
-    }
-
     #[test]
     fn test_lower_nested_projection_kept_static() {
-        // <D::OutputSize as Logarithm2>::Output → kept as Projection (exotic, compile-time)
         let ctx = empty_ctx();
         let gens = vec![type_param("D", vec![custom_bound("Digest")])];
         let nested_base = IrType::Projection {
@@ -2031,24 +2016,192 @@ mod tests {
             field: "Output".to_string(),
         };
         let result = lower_array_length(&len, &gens, &ctx);
-        // Should stay as a Projection (compile-time resolution)
         assert!(matches!(result, ArrayLength::Projection { .. }));
     }
 
+    // ================================================================
+    // array_length_to_expr tests (arithmetic resolution)
+    // ================================================================
+
     #[test]
-    fn test_lower_typenum_rhs_in_arithmetic() {
-        // K: Mul<U2> → K::Output = (k * 2)
+    fn test_expr_const() {
         let ctx = empty_ctx();
-        let gens = vec![length_param("K", vec![mul_bound("U2")])];
-        let len = ArrayLength::Projection {
-            r#type: Box::new(IrType::TypeParam("K".to_string())),
-            field: "Output".to_string(),
-        };
-        let result = lower_array_length(&len, &gens, &ctx);
-        assert_eq!(result, ArrayLength::TypeParam("(k * 2)".to_string()));
+        let result = array_length_to_expr(&ArrayLength::TypeParam("U16".to_string()), &[], &ctx);
+        assert_eq!(result, IrExpr::Lit(IrLit::Int(16)));
     }
 
-    // ---- ArrayGenerate → IterPipeline ----
+    #[test]
+    fn test_expr_length_param() {
+        let ctx = empty_ctx();
+        let gens = vec![length_param("N", vec![])];
+        let result = array_length_to_expr(&ArrayLength::TypeParam("N".to_string()), &gens, &ctx);
+        assert_eq!(result, IrExpr::Var("n".to_string()));
+    }
+
+    #[test]
+    fn test_expr_type_projection() {
+        let ctx = empty_ctx();
+        let gens = vec![type_param("B", vec![custom_bound("LengthDoubler")])];
+        let result = array_length_to_expr(
+            &ArrayLength::Projection {
+                r#type: Box::new(IrType::TypeParam("B".to_string())),
+                field: "OutputSize".to_string(),
+            },
+            &gens,
+            &ctx,
+        );
+        assert!(matches!(result, IrExpr::LengthOf(ArrayLength::Projection { .. })));
+    }
+
+    #[test]
+    fn test_expr_add_output() {
+        // K2: Add<K> → K2::Output = Binary(Var("k2"), Add, Var("k"))
+        let ctx = empty_ctx();
+        let gens = vec![
+            length_param("K", vec![]),
+            length_param("K2", vec![add_bound("K")]),
+        ];
+        let result = array_length_to_expr(
+            &ArrayLength::Projection {
+                r#type: Box::new(IrType::TypeParam("K2".to_string())),
+                field: "Output".to_string(),
+            },
+            &gens,
+            &ctx,
+        );
+        assert_binary_var_var(&result, "k2", SpecBinOp::Add, "k");
+    }
+
+    #[test]
+    fn test_expr_sub_typenum() {
+        // N: Sub<U1> → N::Output = Binary(Var("n"), Sub, Lit(1))
+        let ctx = empty_ctx();
+        let gens = vec![length_param("N", vec![sub_bound("U1")])];
+        let result = array_length_to_expr(
+            &ArrayLength::Projection {
+                r#type: Box::new(IrType::TypeParam("N".to_string())),
+                field: "Output".to_string(),
+            },
+            &gens,
+            &ctx,
+        );
+        assert_binary_var_lit(&result, "n", SpecBinOp::Sub, 1);
+    }
+
+    #[test]
+    fn test_expr_mul_output() {
+        // N: Mul<K> → N::Output = Binary(Var("n"), Mul, Var("k"))
+        let ctx = empty_ctx();
+        let gens = vec![
+            length_param("N", vec![mul_bound("K")]),
+            length_param("K", vec![]),
+        ];
+        let result = array_length_to_expr(
+            &ArrayLength::Projection {
+                r#type: Box::new(IrType::TypeParam("N".to_string())),
+                field: "Output".to_string(),
+            },
+            &gens,
+            &ctx,
+        );
+        assert_binary_var_var(&result, "n", SpecBinOp::Mul, "k");
+    }
+
+    #[test]
+    fn test_expr_mul_typenum() {
+        // K: Mul<U2> → K::Output = Binary(Var("k"), Mul, Lit(2))
+        let ctx = empty_ctx();
+        let gens = vec![length_param("K", vec![mul_bound("U2")])];
+        let result = array_length_to_expr(
+            &ArrayLength::Projection {
+                r#type: Box::new(IrType::TypeParam("K".to_string())),
+                field: "Output".to_string(),
+            },
+            &gens,
+            &ctx,
+        );
+        assert_binary_var_lit(&result, "k", SpecBinOp::Mul, 2);
+    }
+
+    #[test]
+    fn test_expr_path_notation_add() {
+        // "K2::Output" in TypeParam form with K2: Add<K>
+        let ctx = empty_ctx();
+        let gens = vec![
+            length_param("K", vec![]),
+            length_param("K2", vec![add_bound("K")]),
+        ];
+        let result = array_length_to_expr(
+            &ArrayLength::TypeParam("K2::Output".to_string()),
+            &gens,
+            &ctx,
+        );
+        assert_binary_var_var(&result, "k2", SpecBinOp::Add, "k");
+    }
+
+    // ================================================================
+    // resolve_arithmetic_output_expr tests
+    // ================================================================
+
+    #[test]
+    fn test_resolve_no_arithmetic_bound() {
+        let ctx = empty_ctx();
+        let param = length_param("K", vec![]);
+        let result = resolve_arithmetic_output_expr("K", &param, &[param.clone()], &ctx);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_add_with_typenum_rhs() {
+        let ctx = empty_ctx();
+        let param = length_param("K", vec![add_bound("U1")]);
+        let result = resolve_arithmetic_output_expr("K", &param, &[param.clone()], &ctx);
+        let expr = result.unwrap();
+        assert_binary_var_lit(&expr, "k", SpecBinOp::Add, 1);
+    }
+
+    // ================================================================
+    // LengthOf expr lowering
+    // ================================================================
+
+    #[test]
+    fn test_lower_lengthof_projection_type_param() {
+        let ctx = empty_ctx();
+        let gens = vec![type_param("B", vec![custom_bound("LengthDoubler")])];
+        let expr = IrExpr::LengthOf(ArrayLength::Projection {
+            r#type: Box::new(IrType::TypeParam("B".to_string())),
+            field: "OutputSize".to_string(),
+        });
+        let result = lower_expr_dyn(&expr, &ctx, &gens);
+        assert!(matches!(result, IrExpr::LengthOf(ArrayLength::Projection { .. })));
+    }
+
+    #[test]
+    fn test_lower_lengthof_add_output() {
+        let ctx = empty_ctx();
+        let gens = vec![
+            length_param("K", vec![]),
+            length_param("K2", vec![add_bound("K")]),
+        ];
+        let expr = IrExpr::LengthOf(ArrayLength::Projection {
+            r#type: Box::new(IrType::TypeParam("K2".to_string())),
+            field: "Output".to_string(),
+        });
+        let result = lower_expr_dyn(&expr, &ctx, &gens);
+        assert_binary_var_var(&result, "k2", SpecBinOp::Add, "k");
+    }
+
+    #[test]
+    fn test_lower_lengthof_const() {
+        let ctx = empty_ctx();
+        let expr = IrExpr::LengthOf(ArrayLength::TypeParam("U16".to_string()));
+        let result = lower_expr_dyn(&expr, &ctx, &[]);
+        assert_eq!(result, IrExpr::Lit(IrLit::Int(16)));
+    }
+
+    // ================================================================
+    // ArrayGenerate → IterPipeline
+    // ================================================================
 
     #[test]
     fn test_array_generate_becomes_iter_pipeline() {
@@ -2106,7 +2259,7 @@ mod tests {
             IrExpr::IterPipeline(chain) => {
                 match &chain.source {
                     IterChainSource::Range { end, .. } => {
-                        assert_eq!(**end, IrExpr::Var("(k2 + k)".to_string()));
+                        assert_binary_var_var(end, "k2", SpecBinOp::Add, "k");
                     }
                     other => panic!("Expected Range source, got {:?}", other),
                 }
@@ -2138,7 +2291,9 @@ mod tests {
         }
     }
 
-    // ---- ArrayDefault → IterPipeline ----
+    // ================================================================
+    // ArrayDefault → IterPipeline with DefaultValue
+    // ================================================================
 
     #[test]
     fn test_array_default_becomes_iter_pipeline() {
@@ -2162,22 +2317,40 @@ mod tests {
                 match &chain.steps[0] {
                     IterStep::Map { var, body } => {
                         assert_eq!(var, "_");
-                        match body.as_ref() {
-                            IrExpr::Call { func, args } => {
-                                assert!(args.is_empty());
-                                match func.as_ref() {
-                                    IrExpr::Path { segments, .. } => {
-                                        assert_eq!(segments, &["Default", "default"]);
-                                    }
-                                    other => panic!("Expected Path func, got {:?}", other),
-                                }
-                            }
-                            other => panic!("Expected Call body, got {:?}", other),
-                        }
+                        assert!(matches!(body.as_ref(), IrExpr::DefaultValue { ty: None }));
                     }
                     other => panic!("Expected Map step, got {:?}", other),
                 }
                 assert_eq!(chain.terminal, IterTerminal::Collect);
+            }
+            other => panic!("Expected IterPipeline, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_array_default_with_typed_elem() {
+        let ctx = empty_ctx();
+        let gens = vec![length_param("N", vec![])];
+        let expr = IrExpr::ArrayDefault {
+            elem_ty: Some(Box::new(IrType::Primitive(PrimitiveType::U8))),
+            len: ArrayLength::TypeParam("N".to_string()),
+        };
+        let result = lower_expr_dyn(&expr, &ctx, &gens);
+        match result {
+            IrExpr::IterPipeline(chain) => {
+                assert_eq!(chain.steps.len(), 1);
+                match &chain.steps[0] {
+                    IterStep::Map { var, body } => {
+                        assert_eq!(var, "_");
+                        match body.as_ref() {
+                            IrExpr::DefaultValue { ty: Some(t) } => {
+                                assert_eq!(**t, IrType::Primitive(PrimitiveType::U8));
+                            }
+                            other => panic!("Expected DefaultValue with type, got {:?}", other),
+                        }
+                    }
+                    other => panic!("Expected Map step, got {:?}", other),
+                }
             }
             other => panic!("Expected IterPipeline, got {:?}", other),
         }
@@ -2208,140 +2381,39 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_array_default_with_typed_elem() {
-        // ArrayDefault { elem_ty: Some(u8), len: N }
-        // → body should be u8::default()
-        let ctx = empty_ctx();
-        let gens = vec![length_param("N", vec![])];
-        let expr = IrExpr::ArrayDefault {
-            elem_ty: Some(Box::new(IrType::Primitive(PrimitiveType::U8))),
-            len: ArrayLength::TypeParam("N".to_string()),
-        };
-        let result = lower_expr_dyn(&expr, &ctx, &gens);
-        match result {
-            IrExpr::IterPipeline(chain) => {
-                assert_eq!(chain.steps.len(), 1);
-                match &chain.steps[0] {
-                    IterStep::Map { var, body } => {
-                        assert_eq!(var, "_");
-                        match body.as_ref() {
-                            IrExpr::Call { func, args } => {
-                                assert!(args.is_empty());
-                                match func.as_ref() {
-                                    IrExpr::Path { segments, .. } => {
-                                        assert_eq!(segments, &["u8", "default"]);
-                                    }
-                                    other => panic!("Expected Path func, got {:?}", other),
-                                }
-                            }
-                            other => panic!("Expected Call body, got {:?}", other),
-                        }
-                    }
-                    other => panic!("Expected Map step, got {:?}", other),
-                }
-            }
-            other => panic!("Expected IterPipeline, got {:?}", other),
-        }
-    }
-
-    // ---- array_length_to_expr ----
+    // ================================================================
+    // validate_ident tests
+    // ================================================================
 
     #[test]
-    fn test_array_length_to_expr_const() {
-        let ctx = empty_ctx();
-        let result = array_length_to_expr(
-            &ArrayLength::TypeParam("U16".to_string()),
-            &[],
-            &ctx,
-        );
-        assert_eq!(result, IrExpr::Lit(IrLit::Int(16)));
+    fn test_validate_ident_simple() {
+        assert_eq!(validate_ident("n"), "n");
+        assert_eq!(validate_ident("k2"), "k2");
+        assert_eq!(validate_ident("self_output"), "self_output");
+        assert_eq!(validate_ident("b_outputsize"), "b_outputsize");
     }
 
     #[test]
-    fn test_array_length_to_expr_param() {
-        let ctx = empty_ctx();
-        let gens = vec![length_param("N", vec![])];
-        let result = array_length_to_expr(
-            &ArrayLength::TypeParam("N".to_string()),
-            &gens,
-            &ctx,
-        );
-        assert_eq!(result, IrExpr::Var("n".to_string()));
+    #[should_panic(expected = "Invalid identifier")]
+    fn test_validate_ident_rejects_parens() {
+        validate_ident("(k2 + k)");
     }
 
     #[test]
-    fn test_array_length_to_expr_projection() {
-        let ctx = empty_ctx();
-        let gens = vec![type_param("B", vec![custom_bound("LengthDoubler")])];
-        let result = array_length_to_expr(
-            &ArrayLength::Projection {
-                r#type: Box::new(IrType::TypeParam("B".to_string())),
-                field: "OutputSize".to_string(),
-            },
-            &gens,
-            &ctx,
-        );
-        assert!(matches!(result, IrExpr::LengthOf(ArrayLength::Projection { .. })));
+    #[should_panic(expected = "Invalid identifier")]
+    fn test_validate_ident_rejects_spaces() {
+        validate_ident("k2 + k");
     }
 
     #[test]
-    fn test_array_length_to_expr_arithmetic() {
-        let ctx = empty_ctx();
-        let gens = vec![
-            length_param("K", vec![]),
-            length_param("K2", vec![add_bound("K")]),
-        ];
-        let result = array_length_to_expr(
-            &ArrayLength::Projection {
-                r#type: Box::new(IrType::TypeParam("K2".to_string())),
-                field: "Output".to_string(),
-            },
-            &gens,
-            &ctx,
-        );
-        assert_eq!(result, IrExpr::Var("(k2 + k)".to_string()));
-    }
-
-    // ---- type_to_path_segment ----
-
-    #[test]
-    fn test_type_to_path_segment_primitive() {
-        assert_eq!(type_to_path_segment(&IrType::Primitive(PrimitiveType::U8)), "u8");
-        assert_eq!(type_to_path_segment(&IrType::Primitive(PrimitiveType::Bool)), "bool");
+    #[should_panic(expected = "Invalid identifier")]
+    fn test_validate_ident_rejects_empty() {
+        validate_ident("");
     }
 
     #[test]
-    fn test_type_to_path_segment_type_param() {
-        assert_eq!(type_to_path_segment(&IrType::TypeParam("T".to_string())), "T");
-    }
-
-    #[test]
-    fn test_type_to_path_segment_vector() {
-        let ty = IrType::Vector { elem: Box::new(IrType::Primitive(PrimitiveType::U8)) };
-        assert_eq!(type_to_path_segment(&ty), "Vec::<u8>");
-    }
-
-    #[test]
-    fn test_type_to_path_segment_struct_no_args() {
-        let ty = IrType::Struct {
-            kind: StructKind::Custom("Foo".to_string()),
-            type_args: Vec::new(),
-        };
-        assert_eq!(type_to_path_segment(&ty), "Foo");
-    }
-
-    #[test]
-    fn test_type_to_path_segment_struct_with_args() {
-        let ty = IrType::Struct {
-            kind: StructKind::Custom("Foo".to_string()),
-            type_args: vec![IrType::TypeParam("T".to_string()), IrType::Primitive(PrimitiveType::U8)],
-        };
-        assert_eq!(type_to_path_segment(&ty), "Foo::<T, u8>");
-    }
-
-    #[test]
-    fn test_type_to_path_segment_unit() {
-        assert_eq!(type_to_path_segment(&IrType::Unit), "()");
+    #[should_panic(expected = "Invalid identifier")]
+    fn test_validate_ident_rejects_colons() {
+        validate_ident("B::OutputSize");
     }
 }
