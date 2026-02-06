@@ -980,9 +980,9 @@ fn test_preamble_no_byte_block_encrypt() {
         !printed.contains("ByteBlockEncrypt"),
         "Preamble should not contain ByteBlockEncrypt"
     );
-    // volar_primitives re-export should NOT appear
+    // volar_primitives types are imported for now (Bit, BitsInBytes, etc.)
     assert!(
-        !printed.contains("volar_primitives"),
-        "Preamble should not contain hardcoded volar_primitives import"
+        printed.contains("volar_primitives"),
+        "Preamble should contain volar_primitives import for primitive types"
     );
 }

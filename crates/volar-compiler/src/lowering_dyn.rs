@@ -197,6 +197,19 @@ pub fn lower_module_dyn(module: &IrModule) -> IrModule {
         lowered.structs.push(lower_struct_dyn(s, &ctx));
     }
 
+    // Emit custom traits (LengthDoubler, PuncturableLengthDoubler, VoleArray, etc.)
+    for t in &module.traits {
+        if let TraitKind::Custom(_) = &t.kind {
+            // Skip VoleArray — it's just an alias for ArrayLength
+            if let TraitKind::Custom(name) = &t.kind {
+                if name == "VoleArray" {
+                    continue;
+                }
+            }
+            lowered.traits.push(lower_trait_dyn(t, &ctx));
+        }
+    }
+
     for im in &module.impls {
         // Skip blanket impls for marker/alias traits that don't apply in dynamic context
         if let Some(tr) = &im.trait_ {
@@ -251,6 +264,58 @@ fn extract_constant_witnesses(ty: &IrType, ctx: &LoweringContext) -> BTreeMap<St
         }
     }
     result
+}
+
+fn lower_trait_dyn(t: &crate::ir::IrTrait, ctx: &LoweringContext) -> crate::ir::IrTrait {
+    use crate::ir::{IrTrait, IrTraitItem, IrMethodSig};
+    let empty_gen: Vec<IrGenericParam> = Vec::new();
+    IrTrait {
+        kind: t.kind.clone(),
+        generics: lower_generics_dyn(&t.generics, &[], ctx),
+        super_traits: t
+            .super_traits
+            .iter()
+            .filter_map(|st| lower_trait_bound_dyn(st, &empty_gen, &empty_gen))
+            .collect(),
+        items: t
+            .items
+            .iter()
+            .map(|item| match item {
+                IrTraitItem::Method(sig) => IrTraitItem::Method(IrMethodSig {
+                    name: sig.name.clone(),
+                    generics: lower_generics_dyn(&sig.generics, &t.generics, ctx),
+                    receiver: sig.receiver.clone(),
+                    params: sig
+                        .params
+                        .iter()
+                        .map(|p| IrParam {
+                            name: p.name.clone(),
+                            ty: lower_type_dyn(&p.ty, ctx, &empty_gen),
+                        })
+                        .collect(),
+                    return_type: sig
+                        .return_type
+                        .as_ref()
+                        .map(|rt| lower_type_dyn(rt, ctx, &empty_gen)),
+                    where_clause: Vec::new(),
+                }),
+                IrTraitItem::AssociatedType {
+                    name,
+                    bounds,
+                    default,
+                } => IrTraitItem::AssociatedType {
+                    name: name.clone(),
+                    bounds: bounds
+                        .iter()
+                        .filter_map(|b| lower_trait_bound_dyn(b, &empty_gen, &empty_gen))
+                        .collect(),
+                    default: default
+                        .as_ref()
+                        .map(|d| lower_type_dyn(d, ctx, &empty_gen)),
+                },
+            })
+            .collect(),
+    }
 }
 
 fn lower_struct_dyn(s: &IrStruct, ctx: &LoweringContext) -> IrStruct {

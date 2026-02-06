@@ -12,7 +12,6 @@ use cipher::{BlockEncrypt, Block};
 use digest::Digest;
 use volar_common::hash_commitment::commit;
 use volar_primitives::{Bit, BitsInBytes, BitsInBytes64, Galois, Galois64};
-use volar_spec::byte_gen::LengthDoubler;
 
 /// Compute integer log2
 #[inline]
@@ -71,23 +70,31 @@ pub struct PolyInputPoolDyn<T> {
 }
 
 #[derive(Debug, Default)]
-pub struct BitVoleDyn<N, T> {
+pub struct BitVoleDyn<T> {
+    pub n: usize,
     pub u: Vec<Bit>,
     pub v: Vec<T>,
-    pub _phantom: PhantomData<N>,
 }
 
 #[derive(Debug, Default)]
-pub struct VopeDyn<N, T> {
+pub struct VopeDyn<T> {
+    pub n: usize,
     pub k: usize,
     pub u: Vec<Vec<T>>,
     pub v: Vec<T>,
-    pub _phantom: PhantomData<N>,
 }
 
 #[derive(Debug, Default)]
 pub struct ViaDigestPuncturableRandomizerDyn<D: Digest> {
     pub digest: D,
+}
+
+pub trait LengthDoubler {
+    type OutputSize;
+    fn double(a: Vec<u8>) -> Vec<Vec<u8>>;
+}
+
+pub trait PuncturableLengthDoubler: LengthDoubler {
 }
 
 impl <T> DeltaDyn<T> {
@@ -174,7 +181,7 @@ impl <T> PolyDyn<T> {
     sum
 }).collect::<Vec<_>>(), n: 0 }
     }
-    pub fn apply_pool<M, O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, mut x: usize, mut x2: usize, mut xs: usize, mut s: usize, mut voles: &PolyInputPoolDyn<VopeDyn<M, T>>) -> VopeDyn<M, O> where T: Into<O> + Clone
+    pub fn apply_pool<M, O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, mut m: usize, mut x: usize, mut x2: usize, mut xs: usize, mut s: usize, mut voles: &PolyInputPoolDyn<VopeDyn<T>>) -> VopeDyn<O> where T: Into<O> + Clone
     {
         let n: usize = self.n;
         let v = (0..m).map(|i| {
@@ -211,9 +218,9 @@ impl <T> PolyDyn<T> {
     sum
 }).collect::<Vec<_>>()
 }).collect::<Vec<_>>();
-        return VopeDyn { u: u, v: v, k: 1, _phantom: PhantomData };
+        return VopeDyn { u: u, v: v, n: 0, k: 1 };
     }
-    pub fn apply<M, O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, mut x: usize, mut x2: usize, mut xs: usize, mut s: usize, mut voles: Vec<Vec<VopeDyn<M, T>>>) -> VopeDyn<M, O> where T: Into<O> + Clone
+    pub fn apply<M, O: Mul<O, Output = O> + Add<O, Output = O> + Default + Clone>(&self, mut m: usize, mut x: usize, mut x2: usize, mut xs: usize, mut s: usize, mut voles: Vec<Vec<VopeDyn<T>>>) -> VopeDyn<O> where T: Into<O> + Clone
     {
         let n: usize = self.n;
         let v = (0..m).map(|i| {
@@ -250,13 +257,14 @@ impl <T> PolyDyn<T> {
     sum
 }).collect::<Vec<_>>()
 }).collect::<Vec<_>>();
-        return VopeDyn { u: u, v: v, k: 1, _phantom: PhantomData };
+        return VopeDyn { u: u, v: v, n: 0, k: 1 };
     }
 }
 
-impl <N, T: Add<Output = T> + Mul<Output = T> + Default + Clone> VopeDyn<N, T> where T: Add<Output = T> + Mul<Output = T> + Default + Clone {
-    pub fn mul_generalized(&self, mut k2: usize, mut other: &VopeDyn<N, T>) -> VopeDyn<N, T>
+impl <T: Add<Output = T> + Mul<Output = T> + Default + Clone> VopeDyn<T> where T: Add<Output = T> + Mul<Output = T> + Default + Clone {
+    pub fn mul_generalized(&self, mut k2: usize, mut other: &VopeDyn<T>) -> VopeDyn<T>
     {
+        let n: usize = self.n;
         let k: usize = self.k;
         let mut res_u = vec![Vec<T>::default(); k2_output];
         let mut res_v = vec![T::default(); n];
@@ -284,13 +292,14 @@ impl <N, T: Add<Output = T> + Mul<Output = T> + Default + Clone> VopeDyn<N, T> w
 }
 }
 };
-        VopeDyn { u: res_u, v: res_v, k: 1, _phantom: PhantomData }
+        VopeDyn { u: res_u, v: res_v, n: 0, k: 1 }
     }
 }
 
-impl <N> VopeDyn<N, BitsInBytes> {
+impl  VopeDyn<BitsInBytes> {
     pub fn rotate_left_bits(&self, mut n: usize) -> Self
     {
+        let n: usize = self.n;
         let k: usize = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {
@@ -303,10 +312,11 @@ impl <N> VopeDyn<N, BitsInBytes> {
     let BitsInBytes(b) = v[i].clone();
     let BitsInBytes(next) = v[((i + 1) % n)].clone();
     BitsInBytes((b.shl((n as u32)) | next.shr((8 - (n as u32)))))
-}).collect::<Vec<_>>(), k: 1, _phantom: PhantomData }
+}).collect::<Vec<_>>(), n: 0, k: 1 }
     }
     pub fn rotate_right_bits(&self, mut n: usize) -> Self
     {
+        let n: usize = self.n;
         let k: usize = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {
@@ -319,10 +329,11 @@ impl <N> VopeDyn<N, BitsInBytes> {
     let BitsInBytes(prev) = v[(((i + n) - 1) % n)].clone();
     let BitsInBytes(b) = v[i].clone();
     BitsInBytes((prev.shl((8 - (n as u32))) | b.shr((n as u32))))
-}).collect::<Vec<_>>(), k: 1, _phantom: PhantomData }
+}).collect::<Vec<_>>(), n: 0, k: 1 }
     }
-    pub fn bit(&self, mut n: u8) -> VopeDyn<N, Bit>
+    pub fn bit(&self, mut n: u8) -> VopeDyn<Bit>
     {
+        let n: usize = self.n;
         let k: usize = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {
@@ -333,13 +344,14 @@ impl <N> VopeDyn<N, BitsInBytes> {
 }).collect::<Vec<_>>(), v: (0..n).map(|i| {
     let BitsInBytes(b) = v[i].clone();
     Bit((((b >> n) & 1) != 0))
-}).collect::<Vec<_>>(), k: 1, _phantom: PhantomData }
+}).collect::<Vec<_>>(), n: 0, k: 1 }
     }
 }
 
-impl <N> VopeDyn<N, BitsInBytes64> {
+impl  VopeDyn<BitsInBytes64> {
     pub fn rotate_left_bits(&self, mut n: usize) -> Self
     {
+        let n: usize = self.n;
         let k: usize = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {
@@ -352,10 +364,11 @@ impl <N> VopeDyn<N, BitsInBytes64> {
     let BitsInBytes64(b) = v[i].clone();
     let BitsInBytes64(next) = v[((i + 1) % n)].clone();
     BitsInBytes64((b.shl((n as u32)) | next.shr((64 - (n as u32)))))
-}).collect::<Vec<_>>(), k: 1, _phantom: PhantomData }
+}).collect::<Vec<_>>(), n: 0, k: 1 }
     }
     pub fn rotate_right_bits(&self, mut n: usize) -> Self
     {
+        let n: usize = self.n;
         let k: usize = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {
@@ -368,10 +381,11 @@ impl <N> VopeDyn<N, BitsInBytes64> {
     let BitsInBytes64(prev) = v[(((i + n) - 1) % n)].clone();
     let BitsInBytes64(b) = v[i].clone();
     BitsInBytes64((prev.shl((64 - (n as u32))) | b.shr((n as u32))))
-}).collect::<Vec<_>>(), k: 1, _phantom: PhantomData }
+}).collect::<Vec<_>>(), n: 0, k: 1 }
     }
-    pub fn bit(&self, mut n: u8) -> VopeDyn<N, Bit>
+    pub fn bit(&self, mut n: u8) -> VopeDyn<Bit>
     {
+        let n: usize = self.n;
         let k: usize = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {
@@ -382,18 +396,19 @@ impl <N> VopeDyn<N, BitsInBytes64> {
 }).collect::<Vec<_>>(), v: (0..n).map(|i| {
     let BitsInBytes64(b) = v[i].clone();
     Bit((((b >> n) & 1) != 0))
-}).collect::<Vec<_>>(), k: 1, _phantom: PhantomData }
+}).collect::<Vec<_>>(), n: 0, k: 1 }
     }
 }
 
-impl <N, T: Clone> Clone for VopeDyn<N, T> {
+impl <T: Clone> Clone for VopeDyn<T> {
     fn clone(&self) -> Self
     {
+        let n: usize = self.n;
         let k: usize = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {
     (0..n).map(|i| u[l][i].clone()).collect::<Vec<_>>()
-}).collect::<Vec<_>>(), v: (0..n).map(|i| v[i].clone()).collect::<Vec<_>>(), k: 1, _phantom: PhantomData }
+}).collect::<Vec<_>>(), v: (0..n).map(|i| v[i].clone()).collect::<Vec<_>>(), n: 0, k: 1 }
     }
 }
 
@@ -415,9 +430,10 @@ impl <T: Clone> Clone for DeltaDyn<T> {
     }
 }
 
-impl <N, T: PartialEq> PartialEq for VopeDyn<N, T> {
+impl <T: PartialEq> PartialEq for VopeDyn<T> {
     fn eq(&self, mut other: &Self) -> bool
     {
+        let n: usize = self.n;
         let k: usize = self.k;
         let VopeDyn { u: u1, v: v1, .. } = self;
         let VopeDyn { u: u2, v: v2, .. } = other;
@@ -467,7 +483,7 @@ impl <T: PartialEq> PartialEq for DeltaDyn<T> {
     }
 }
 
-impl <N, T: Eq> Eq for VopeDyn<N, T> {
+impl <T: Eq> Eq for VopeDyn<T> {
 }
 
 impl <T: Eq> Eq for QDyn<T> {
@@ -604,41 +620,44 @@ impl  DeltaDyn<BitsInBytes64> {
     }
 }
 
-impl <N, T> VopeDyn<N, T> {
-    pub fn constant(mut v: Vec<T>) -> Self
+impl <T> VopeDyn<T> {
+    pub fn constant(mut n: usize, mut v: Vec<T>) -> Self
     {
         let k: usize = 0;
-        VopeDyn { u: (0..0).map(|_| unreachable!()).collect::<Vec<_>>(), v: v, k: 1, _phantom: PhantomData }
+        VopeDyn { u: (0..0).map(|_| unreachable!()).collect::<Vec<_>>(), v: v, n: 0, k: 1 }
     }
 }
 
-impl <N, T: Add<U, Output = O> + Clone, U: Clone, O> Add<VopeDyn<N, U>> for VopeDyn<N, T> {
-    type Output = VopeDyn<N, O>;
-    fn add(self, mut rhs: VopeDyn<N, U>) -> Self::Output
+impl <T: Add<U, Output = O> + Clone, U: Clone, O> Add<VopeDyn<U>> for VopeDyn<T> {
+    type Output = VopeDyn<O>;
+    fn add(self, mut rhs: VopeDyn<U>) -> Self::Output
     {
+        let n: usize = self.n;
         let k: usize = self.k;
-        VopeDyn { u: self.u.zip(rhs.u, |a, b| a.zip(b, |a, b| (a + b))), v: self.v.zip(rhs.v, |a, b| (a + b)), k: 1, _phantom: PhantomData }
+        VopeDyn { u: self.u.zip(rhs.u, |a, b| a.zip(b, |a, b| (a + b))), v: self.v.zip(rhs.v, |a, b| (a + b)), n: 0, k: 1 }
     }
 }
 
-impl <T: BitXor<U, Output = O> + Clone + Into<O>, U: Clone, O> BitXor<Vec<U>> for VopeDyn<N, T> where T: Into<O> {
-    type Output = VopeDyn<N, O>;
+impl <T: BitXor<U, Output = O> + Clone + Into<O>, U: Clone, O> BitXor<Vec<U>> for VopeDyn<T> where T: Into<O> {
+    type Output = VopeDyn<O>;
     fn bitxor(self, mut rhs: Vec<U>) -> Self::Output
     {
+        let n: usize = self.n;
         let k: usize = self.k;
         VopeDyn { u: (0..k).map(|i| {
     (0..n).map(|j| {
     let o: O = self.u[i][j].clone().bitxor(rhs[((i * k) + j)].clone());
     o
 }).collect::<Vec<_>>()
-}).collect::<Vec<_>>(), v: self.v.map(|a| a.into()), k: 1, _phantom: PhantomData }
+}).collect::<Vec<_>>(), v: self.v.map(|a| a.into()), n: 0, k: 1 }
     }
 }
 
-impl <N, T: Mul<U, Output = O> + Into<O> + Clone, U: Mul<U, Output = U> + Clone, O: Add<O, Output = O>> Mul<DeltaDyn<U>> for VopeDyn<N, T> {
+impl <T: Mul<U, Output = O> + Into<O> + Clone, U: Mul<U, Output = U> + Clone, O: Add<O, Output = O>> Mul<DeltaDyn<U>> for VopeDyn<T> {
     type Output = QDyn<O>;
     fn mul(self, mut rhs: DeltaDyn<U>) -> Self::Output
     {
+        let n: usize = self.n;
         let k: usize = self.k;
         QDyn { q: self.u.iter().enumerate().fold(self.v.clone().map(|a| a.into()), |a, _| {
     a.zip(b, |a, b| {
@@ -653,38 +672,43 @@ impl <N, T: Mul<U, Output = O> + Into<O> + Clone, U: Mul<U, Output = U> + Clone,
     }
 }
 
-impl <N, T> VopeDyn<N, T> {
-    pub fn expand(&self, mut l: usize) -> VopeDyn<N, T> where T: Clone + Default
+impl <T> VopeDyn<T> {
+    pub fn expand(&self, mut l: usize) -> VopeDyn<T> where T: Clone + Default
     {
+        let n: usize = self.n;
         let k: usize = self.k;
         let Self { u: u, v: v, .. } = self;
         VopeDyn { u: (0..l).map(|l| {
     (0..n).map(|i| u.get(l).map_or(T::default(), |a| a[i].clone())).collect::<Vec<_>>()
-}).collect::<Vec<_>>(), v: v.clone(), k: 1, _phantom: PhantomData }
+}).collect::<Vec<_>>(), v: v.clone(), n: 0, k: 1 }
     }
     pub fn rotate_left(&self, mut n: usize) -> Self where T: Clone
     {
+        let n: usize = self.n;
         let k: usize = self.k;
         self.remap(n, |a| a.wrapping_sub(n))
     }
     pub fn rotate_right(&self, mut n: usize) -> Self where T: Clone
     {
+        let n: usize = self.n;
         let k: usize = self.k;
         self.remap(n, |a| a.wrapping_add(n))
     }
-    pub fn remap<M, F: FnMut(usize) -> usize>(&self, mut f: F) -> VopeDyn<M, T> where T: Clone
+    pub fn remap<F: FnMut(usize) -> usize>(&self, mut m: usize, mut f: F) -> VopeDyn<T> where T: Clone
     {
+        let n: usize = self.n;
         let k: usize = self.k;
         let Self { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {
     (0..m).map(|i| u[l][(f(i) % n)].clone()).collect::<Vec<_>>()
-}).collect::<Vec<_>>(), v: (0..m).map(|i| v[(f(i) % n)].clone()).collect::<Vec<_>>(), k: 1, _phantom: PhantomData }
+}).collect::<Vec<_>>(), v: (0..m).map(|i| v[(f(i) % n)].clone()).collect::<Vec<_>>(), n: 0, k: 1 }
     }
 }
 
-impl <N> VopeDyn<N, Bit> {
-    pub fn scale<T>(self, mut f: impl FnMut(bool) -> T) -> VopeDyn<N, T>
+impl  VopeDyn<Bit> {
+    pub fn scale<T>(self, mut f: impl FnMut(bool) -> T) -> VopeDyn<T>
     {
+        let n: usize = self.n;
         let k: usize = self.k;
         let VopeDyn { u: u, v: v, .. } = self;
         VopeDyn { u: (0..k).map(|l| {
@@ -695,7 +719,7 @@ impl <N> VopeDyn<N, Bit> {
 }).collect::<Vec<_>>(), v: (0..n).map(|i| {
     let Bit(b) = v[i].clone();
     f(b)
-}).collect::<Vec<_>>(), k: 1, _phantom: PhantomData }
+}).collect::<Vec<_>>(), n: 0, k: 1 }
     }
 }
 
@@ -752,7 +776,7 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
 };
         (h.finalize().as_slice() == commit_.as_slice())
     }
-    pub fn to_vole_material(&self, mut n: usize) -> Vec<VopeDyn<<B as _>::OutputSize, u8>>
+    pub fn to_vole_material(&self, mut n: usize) -> Vec<VopeDyn<u8>>
     {
         let t: usize = self.t;
         let u: usize = self.u;
@@ -761,7 +785,7 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
     create_vole_from_material::<B, _>(s)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_typenum(&self, mut n: usize) -> Vec<VopeDyn<<B as _>::OutputSize, u8>>
+    pub fn to_vole_material_typenum(&self, mut n: usize) -> Vec<VopeDyn<u8>>
     {
         let t: usize = self.t;
         let u: usize = self.u;
@@ -770,7 +794,7 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
     create_vole_from_material::<B, _>(s)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<<B as _>::OutputSize, u8>>
+    pub fn to_vole_material_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<u8>>
     {
         let t: usize = self.t;
         let u: usize = self.u;
@@ -779,7 +803,7 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
     create_vole_from_material_expanded::<B, _, _, _>(s, compile_error!("Unsupported expression in printer: Unary { op: RefMut, expr: Var('f') }"))
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_typenum_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<<B as _>::OutputSize, u8>>
+    pub fn to_vole_material_typenum_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<u8>>
     {
         let t: usize = self.t;
         let u: usize = self.u;
@@ -812,7 +836,7 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
 }
 
 impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
-    pub fn to_vole_material(&self, mut n: usize) -> Vec<VopeDyn<<B as _>::OutputSize, u8>>
+    pub fn to_vole_material(&self, mut n: usize) -> Vec<VopeDyn<u8>>
     {
         let k: usize = self.k;
         (0..n).map(|i| {
@@ -820,7 +844,7 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
     create_vole_from_material::<B, _>(s)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_typenum(&self, mut n: usize) -> Vec<VopeDyn<<B as _>::OutputSize, u8>>
+    pub fn to_vole_material_typenum(&self, mut n: usize) -> Vec<VopeDyn<u8>>
     {
         let k: usize = self.k;
         (0..n).map(|i| {
@@ -828,7 +852,7 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
     create_vole_from_material::<B, _>(s)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<<B as _>::OutputSize, u8>>
+    pub fn to_vole_material_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<u8>>
     {
         let k: usize = self.k;
         (0..n).map(|i| {
@@ -836,7 +860,7 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
     create_vole_from_material_expanded::<B, _, _, _>(s, compile_error!("Unsupported expression in printer: Unary { op: RefMut, expr: Var('f') }"))
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_typenum_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<<B as _>::OutputSize, u8>>
+    pub fn to_vole_material_typenum_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<u8>>
     {
         let k: usize = self.k;
         (0..n).map(|i| {
@@ -887,7 +911,7 @@ pub fn gen_abo<B: LengthDoubler, D: Digest>(mut k: usize, mut a: Vec<u8>, mut ra
     ABODyn { commit: h.finalize(), per_byte: per_byte, k: 0, _phantom: PhantomData }
 }
 
-pub fn create_vole_from_material<B: LengthDoubler, X: AsRef<[u8]>>(mut s: &[X]) -> VopeDyn<<B as _>::OutputSize, u8>
+pub fn create_vole_from_material<B: LengthDoubler, X: AsRef<[u8]>>(mut s: &[X]) -> VopeDyn<u8>
 {
     let u: Vec<u8> = s.iter().fold(vec![u8::default(); b_outputsize], |a, b| {
     a.zip((0..b_outputsize).map(|i| b.as_ref()[i]).collect::<Vec<_>>(), |a, b| a.bitxor(b))
@@ -895,10 +919,10 @@ pub fn create_vole_from_material<B: LengthDoubler, X: AsRef<[u8]>>(mut s: &[X]) 
     let v: Vec<u8> = s.iter().enumerate().fold(vec![u8::default(); b_outputsize], |a, _| {
     a.zip((0..b_outputsize).map(|i| b.as_ref()[i]).collect::<Vec<_>>(), |a, b| a.bitxor(b).bitxor((i as u8)))
 });
-    VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<_>>(), v: v, k: 1, _phantom: PhantomData }
+    VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<_>>(), v: v, n: 0, k: 1 }
 }
 
-pub fn create_vole_from_material_expanded<B: LengthDoubler, X: AsRef<[u8]>, Y: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(mut s: &[Y], mut f: F) -> VopeDyn<<B as _>::OutputSize, u8>
+pub fn create_vole_from_material_expanded<B: LengthDoubler, X: AsRef<[u8]>, Y: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(mut s: &[Y], mut f: F) -> VopeDyn<u8>
 {
     let u: Vec<u8> = s.iter().map(|b| f(compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Index { base: MethodCall { receiver: Var('b'), method: Std('as_ref'), type_args: [], args: [] }, index: Range { start: None, end: Some(Var('b_outputsize')), inclusive: false } } }"))).fold(vec![u8::default(); b_outputsize], |a, b| {
     a.zip((0..b_outputsize).map(|i| b.as_ref()[i]).collect::<Vec<_>>(), |a, b| a.bitxor(b))
@@ -906,6 +930,6 @@ pub fn create_vole_from_material_expanded<B: LengthDoubler, X: AsRef<[u8]>, Y: A
     let v: Vec<u8> = s.iter().map(|b| f(compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Index { base: MethodCall { receiver: Var('b'), method: Std('as_ref'), type_args: [], args: [] }, index: Range { start: None, end: Some(Var('b_outputsize')), inclusive: false } } }"))).enumerate().fold(vec![u8::default(); b_outputsize], |a, _| {
     a.zip((0..b_outputsize).map(|i| b.as_ref()[i]).collect::<Vec<_>>(), |a, b| a.bitxor(b).bitxor((i as u8)))
 });
-    VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<_>>(), v: v, k: 1, _phantom: PhantomData }
+    VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<_>>(), v: v, n: 0, k: 1 }
 }
 
