@@ -269,7 +269,7 @@ impl <T: Add<Output = T> + Mul<Output = T> + Default + Clone> VopeDyn<T> where T
     {
         let n: usize = self.n;
         let k: usize = self.k;
-        let mut res_u = vec![Vec<T>::default(); k2_output];
+        let mut res_u = vec![Vec<T>::default(); (k2 + k)];
         let mut res_v = vec![T::default(); n];
         for i in 0..= k{
     for j in 0..= k2{

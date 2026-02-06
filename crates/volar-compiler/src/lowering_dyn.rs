@@ -2176,3 +2176,273 @@ fn collect_var_refs_matching_chain(chain: &crate::ir::IrIterChain, known: &BTree
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::*;
+
+    /// Helper: create a Length generic param with given bounds
+    fn length_param(name: &str, bounds: Vec<IrTraitBound>) -> IrGenericParam {
+        IrGenericParam {
+            name: name.to_string(),
+            kind: IrGenericParamKind::Type,
+            bounds: {
+                let mut b = vec![IrTraitBound {
+                    trait_kind: TraitKind::Math(MathTrait::Unsigned),
+                    type_args: Vec::new(),
+                    assoc_bindings: Vec::new(),
+                }];
+                b.extend(bounds);
+                b
+            },
+            default: None,
+        }
+    }
+
+    /// Helper: create a Type generic param
+    fn type_param(name: &str, bounds: Vec<IrTraitBound>) -> IrGenericParam {
+        IrGenericParam {
+            name: name.to_string(),
+            kind: IrGenericParamKind::Type,
+            bounds,
+            default: None,
+        }
+    }
+
+    fn empty_ctx() -> LoweringContext {
+        LoweringContext {
+            struct_info: BTreeMap::new(),
+            length_aliases: Vec::new(),
+        }
+    }
+
+    fn add_bound(rhs: &str) -> IrTraitBound {
+        IrTraitBound {
+            trait_kind: TraitKind::Math(MathTrait::Add),
+            type_args: vec![IrType::TypeParam(rhs.to_string())],
+            assoc_bindings: Vec::new(),
+        }
+    }
+
+    fn sub_bound(rhs: &str) -> IrTraitBound {
+        IrTraitBound {
+            trait_kind: TraitKind::Math(MathTrait::Sub),
+            type_args: vec![IrType::TypeParam(rhs.to_string())],
+            assoc_bindings: Vec::new(),
+        }
+    }
+
+    fn mul_bound(rhs: &str) -> IrTraitBound {
+        IrTraitBound {
+            trait_kind: TraitKind::Math(MathTrait::Mul),
+            type_args: vec![IrType::TypeParam(rhs.to_string())],
+            assoc_bindings: Vec::new(),
+        }
+    }
+
+    fn custom_bound(name: &str) -> IrTraitBound {
+        IrTraitBound {
+            trait_kind: TraitKind::Custom(name.to_string()),
+            type_args: Vec::new(),
+            assoc_bindings: Vec::new(),
+        }
+    }
+
+    // ---- lower_array_length tests ----
+
+    #[test]
+    fn test_lower_typenum_const() {
+        let ctx = empty_ctx();
+        let len = ArrayLength::TypeParam("U16".to_string());
+        let result = lower_array_length(&len, &[], &ctx);
+        assert_eq!(result, ArrayLength::Const(16));
+    }
+
+    #[test]
+    fn test_lower_length_param_simple() {
+        let ctx = empty_ctx();
+        let gens = vec![length_param("N", vec![])];
+        let len = ArrayLength::TypeParam("N".to_string());
+        let result = lower_array_length(&len, &gens, &ctx);
+        assert_eq!(result, ArrayLength::TypeParam("n".to_string()));
+    }
+
+    #[test]
+    fn test_lower_projection_on_type_param_kept_static() {
+        // B: LengthDoubler → B::OutputSize stays as a Projection
+        let ctx = empty_ctx();
+        let gens = vec![type_param("B", vec![custom_bound("LengthDoubler")])];
+        let len = ArrayLength::Projection {
+            r#type: Box::new(IrType::TypeParam("B".to_string())),
+            field: "OutputSize".to_string(),
+        };
+        let result = lower_array_length(&len, &gens, &ctx);
+        // Should stay as Projection (resolved at compile time)
+        assert!(matches!(result, ArrayLength::Projection { .. }));
+    }
+
+    #[test]
+    fn test_lower_projection_add_output() {
+        // K2: Add<K> → K2::Output = (k2 + k)
+        let ctx = empty_ctx();
+        let gens = vec![
+            length_param("K", vec![]),
+            length_param("K2", vec![add_bound("K")]),
+        ];
+        let len = ArrayLength::Projection {
+            r#type: Box::new(IrType::TypeParam("K2".to_string())),
+            field: "Output".to_string(),
+        };
+        let result = lower_array_length(&len, &gens, &ctx);
+        assert_eq!(result, ArrayLength::TypeParam("(k2 + k)".to_string()));
+    }
+
+    #[test]
+    fn test_lower_projection_sub_output() {
+        // N: Sub<U1> → N::Output = (n - u1)
+        let ctx = empty_ctx();
+        let gens = vec![length_param("N", vec![sub_bound("U1")])];
+        let len = ArrayLength::Projection {
+            r#type: Box::new(IrType::TypeParam("N".to_string())),
+            field: "Output".to_string(),
+        };
+        let result = lower_array_length(&len, &gens, &ctx);
+        // U1 is a typenum constant = 1
+        assert_eq!(result, ArrayLength::TypeParam("(n - 1)".to_string()));
+    }
+
+    #[test]
+    fn test_lower_projection_mul_output() {
+        // N: Mul<K> → N::Output = (n * k)
+        let ctx = empty_ctx();
+        let gens = vec![
+            length_param("N", vec![mul_bound("K")]),
+            length_param("K", vec![]),
+        ];
+        let len = ArrayLength::Projection {
+            r#type: Box::new(IrType::TypeParam("N".to_string())),
+            field: "Output".to_string(),
+        };
+        let result = lower_array_length(&len, &gens, &ctx);
+        assert_eq!(result, ArrayLength::TypeParam("(n * k)".to_string()));
+    }
+
+    #[test]
+    fn test_lower_self_projection() {
+        let ctx = empty_ctx();
+        let len = ArrayLength::Projection {
+            r#type: Box::new(IrType::TypeParam("Self".to_string())),
+            field: "Output".to_string(),
+        };
+        let result = lower_array_length(&len, &[], &ctx);
+        assert_eq!(result, ArrayLength::TypeParam("self_output".to_string()));
+    }
+
+    #[test]
+    fn test_lower_path_notation_b_outputsize() {
+        // "B::OutputSize" in TypeParam form → should resolve like Projection
+        let ctx = empty_ctx();
+        let gens = vec![type_param("B", vec![custom_bound("LengthDoubler")])];
+        let len = ArrayLength::TypeParam("B::OutputSize".to_string());
+        let result = lower_array_length(&len, &gens, &ctx);
+        assert!(matches!(result, ArrayLength::Projection { .. }));
+    }
+
+    // ---- resolve_arithmetic_output tests ----
+
+    #[test]
+    fn test_resolve_no_arithmetic_bound() {
+        // K with no arithmetic bounds → None
+        let ctx = empty_ctx();
+        let param = length_param("K", vec![]);
+        let result = resolve_arithmetic_output("K", &param, &[param.clone()], &ctx);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_add_with_typenum_rhs() {
+        // K: Add<U1> → (k + 1)
+        let ctx = empty_ctx();
+        let param = length_param("K", vec![IrTraitBound {
+            trait_kind: TraitKind::Math(MathTrait::Add),
+            type_args: vec![IrType::TypeParam("U1".to_string())],
+            assoc_bindings: Vec::new(),
+        }]);
+        let result = resolve_arithmetic_output("K", &param, &[param.clone()], &ctx);
+        assert_eq!(result, Some(ArrayLength::TypeParam("(k + 1)".to_string())));
+    }
+
+    // ---- LengthOf expr lowering integration ----
+
+    #[test]
+    fn test_lower_lengthof_projection_type_param() {
+        // LengthOf(Projection { B, OutputSize }) with B: LengthDoubler (type param)
+        // → stays as LengthOf(Projection) for compile-time resolution
+        let ctx = empty_ctx();
+        let gens = vec![type_param("B", vec![custom_bound("LengthDoubler")])];
+        let expr = IrExpr::LengthOf(ArrayLength::Projection {
+            r#type: Box::new(IrType::TypeParam("B".to_string())),
+            field: "OutputSize".to_string(),
+        });
+        let result = lower_expr_dyn(&expr, &ctx, &gens);
+        assert!(matches!(result, IrExpr::LengthOf(ArrayLength::Projection { .. })));
+    }
+
+    #[test]
+    fn test_lower_lengthof_add_output() {
+        // LengthOf(Projection { K2, Output }) with K2: Unsigned + Add<K> → Var("(k2 + k)")
+        let ctx = empty_ctx();
+        let gens = vec![
+            length_param("K", vec![]),
+            length_param("K2", vec![add_bound("K")]),
+        ];
+        let expr = IrExpr::LengthOf(ArrayLength::Projection {
+            r#type: Box::new(IrType::TypeParam("K2".to_string())),
+            field: "Output".to_string(),
+        });
+        let result = lower_expr_dyn(&expr, &ctx, &gens);
+        assert_eq!(result, IrExpr::Var("(k2 + k)".to_string()));
+    }
+
+    #[test]
+    fn test_lower_lengthof_const() {
+        let ctx = empty_ctx();
+        let expr = IrExpr::LengthOf(ArrayLength::TypeParam("U16".to_string()));
+        let result = lower_expr_dyn(&expr, &ctx, &[]);
+        assert_eq!(result, IrExpr::Lit(IrLit::Int(16)));
+    }
+
+    #[test]
+    fn test_lower_nested_projection_kept_static() {
+        // <D::OutputSize as Logarithm2>::Output → kept as Projection (exotic, compile-time)
+        let ctx = empty_ctx();
+        let gens = vec![type_param("D", vec![custom_bound("Digest")])];
+        let nested_base = IrType::Projection {
+            base: Box::new(IrType::TypeParam("D".to_string())),
+            trait_path: Some("Digest".to_string()),
+            trait_args: Vec::new(),
+            assoc: AssociatedType::OutputSize,
+        };
+        let len = ArrayLength::Projection {
+            r#type: Box::new(nested_base),
+            field: "Output".to_string(),
+        };
+        let result = lower_array_length(&len, &gens, &ctx);
+        // Should stay as a Projection (compile-time resolution)
+        assert!(matches!(result, ArrayLength::Projection { .. }));
+    }
+
+    #[test]
+    fn test_lower_typenum_rhs_in_arithmetic() {
+        // K: Mul<U2> → K::Output = (k * 2)
+        let ctx = empty_ctx();
+        let gens = vec![length_param("K", vec![mul_bound("U2")])];
+        let len = ArrayLength::Projection {
+            r#type: Box::new(IrType::TypeParam("K".to_string())),
+            field: "Output".to_string(),
+        };
+        let result = lower_array_length(&len, &gens, &ctx);
+        assert_eq!(result, ArrayLength::TypeParam("(k * 2)".to_string()));
+    }
+}
