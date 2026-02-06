@@ -1235,40 +1235,8 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             collection: Box::new(lower_expr_dyn(collection, ctx, fn_gen)),
             body: lower_block_dyn(body, ctx, fn_gen),
         },
-        IrExpr::ArrayMap {
-            array,
-            elem_var,
-            body,
-        } => IrExpr::ArrayMap {
-            array: Box::new(lower_expr_dyn(array, ctx, fn_gen)),
-            elem_var: elem_var.clone(),
-            body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
-        },
-        IrExpr::ArrayZip {
-            left,
-            right,
-            left_var,
-            right_var,
-            body,
-        } => IrExpr::ArrayZip {
-            left: Box::new(lower_expr_dyn(left, ctx, fn_gen)),
-            right: Box::new(lower_expr_dyn(right, ctx, fn_gen)),
-            left_var: left_var.clone(),
-            right_var: right_var.clone(),
-            body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
-        },
-        IrExpr::ArrayFold {
-            array,
-            init,
-            acc_var,
-            elem_var,
-            body,
-        } => IrExpr::ArrayFold {
-            array: Box::new(lower_expr_dyn(array, ctx, fn_gen)),
-            init: Box::new(lower_expr_dyn(init, ctx, fn_gen)),
-            acc_var: acc_var.clone(),
-            elem_var: elem_var.clone(),
-            body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+        IrExpr::IterPipeline(chain) => {
+            IrExpr::IterPipeline(lower_iter_chain_dyn(chain, ctx, fn_gen))
         },
         IrExpr::Match { expr, arms } => IrExpr::Match {
             expr: Box::new(lower_expr_dyn(expr, ctx, fn_gen)),
@@ -1337,6 +1305,105 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             inclusive: *inclusive,
         },
         e => todo!("error: lower_expr_dyn not implemented for {:?}", e),
+    }
+}
+
+fn lower_iter_chain_dyn(
+    chain: &IrIterChain,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+) -> IrIterChain {
+    IrIterChain {
+        source: lower_iter_chain_source_dyn(&chain.source, ctx, fn_gen),
+        steps: chain
+            .steps
+            .iter()
+            .map(|s| lower_iter_step_dyn(s, ctx, fn_gen))
+            .collect(),
+        terminal: lower_iter_terminal_dyn(&chain.terminal, ctx, fn_gen),
+    }
+}
+
+fn lower_iter_chain_source_dyn(
+    source: &IterChainSource,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+) -> IterChainSource {
+    match source {
+        IterChainSource::Method { collection, method } => IterChainSource::Method {
+            collection: Box::new(lower_expr_dyn(collection, ctx, fn_gen)),
+            method: *method,
+        },
+        IterChainSource::Range {
+            start,
+            end,
+            inclusive,
+        } => IterChainSource::Range {
+            start: Box::new(lower_expr_dyn(start, ctx, fn_gen)),
+            end: Box::new(lower_expr_dyn(end, ctx, fn_gen)),
+            inclusive: *inclusive,
+        },
+        IterChainSource::Zip { left, right } => IterChainSource::Zip {
+            left: Box::new(lower_iter_chain_dyn(left, ctx, fn_gen)),
+            right: Box::new(lower_iter_chain_dyn(right, ctx, fn_gen)),
+        },
+    }
+}
+
+fn lower_iter_step_dyn(
+    step: &IterStep,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+) -> IterStep {
+    match step {
+        IterStep::Map { var, body } => IterStep::Map {
+            var: var.clone(),
+            body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+        },
+        IterStep::Filter { var, body } => IterStep::Filter {
+            var: var.clone(),
+            body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+        },
+        IterStep::FilterMap { var, body } => IterStep::FilterMap {
+            var: var.clone(),
+            body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+        },
+        IterStep::FlatMap { var, body } => IterStep::FlatMap {
+            var: var.clone(),
+            body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+        },
+        IterStep::Enumerate => IterStep::Enumerate,
+        IterStep::Take { count } => IterStep::Take {
+            count: Box::new(lower_expr_dyn(count, ctx, fn_gen)),
+        },
+        IterStep::Skip { count } => IterStep::Skip {
+            count: Box::new(lower_expr_dyn(count, ctx, fn_gen)),
+        },
+        IterStep::Chain { other } => IterStep::Chain {
+            other: Box::new(lower_iter_chain_dyn(other, ctx, fn_gen)),
+        },
+    }
+}
+
+fn lower_iter_terminal_dyn(
+    terminal: &IterTerminal,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+) -> IterTerminal {
+    match terminal {
+        IterTerminal::Collect => IterTerminal::Collect,
+        IterTerminal::Fold {
+            init,
+            acc_var,
+            elem_var,
+            body,
+        } => IterTerminal::Fold {
+            init: Box::new(lower_expr_dyn(init, ctx, fn_gen)),
+            acc_var: acc_var.clone(),
+            elem_var: elem_var.clone(),
+            body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+        },
+        IterTerminal::Lazy => IterTerminal::Lazy,
     }
 }
 

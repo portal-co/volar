@@ -312,13 +312,12 @@ fn test_array_operations() {
                         println!("MethodCall map");
                     }
                 }
-                IrExpr::ArrayZip {
-                    left_var,
-                    right_var,
-                    ..
-                } => {
-                    zip_count += 1;
-                    println!("ArrayZip with vars: {}, {}", left_var, right_var);
+                IrExpr::IterPipeline(chain) => {
+                    // arr.zip(other, |a, b| a + b) becomes IterPipeline with Zip source
+                    if matches!(&chain.source, volar_compiler::IterChainSource::Zip { .. }) {
+                        zip_count += 1;
+                        println!("IterPipeline Zip");
+                    }
                 }
                 _ => {}
             }
@@ -327,7 +326,7 @@ fn test_array_operations() {
 
     assert_eq!(generate_count, 1, "Should recognize ArrayGenerate");
     assert_eq!(method_map_count, 1, "Should recognize non-iterator map as MethodCall");
-    assert_eq!(zip_count, 1, "Should recognize ArrayZip");
+    assert_eq!(zip_count, 1, "Should recognize Zip as IterPipeline");
 }
 
 #[test]

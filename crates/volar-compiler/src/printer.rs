@@ -592,7 +592,6 @@ impl<'a> RustBackend for IterChainSourceWriter<'a> {
                     IterMethod::IntoIter => "into_iter",
                     IterMethod::Chars => "chars",
                     IterMethod::Bytes => "bytes",
-                    _ => "iter",
                 };
                 write!(f, ".{}()", mname)?;
             }
@@ -689,93 +688,6 @@ impl<'a> RustBackend for IterChainWriter<'a> {
 impl<'a> RustBackend for ExprChainWriter<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.expr {
-            IrExpr::ArrayMap {
-                array,
-                elem_var,
-                body,
-            } => {
-                ExprChainWriter { expr: array }.fmt(f)?;
-                write!(f, ".map(|{}| ", elem_var)?;
-                ExprWriter { expr: body }.fmt(f)?;
-                write!(f, ")")?;
-            }
-            IrExpr::IterSource { collection, method } => {
-                ExprChainWriter { expr: collection }.fmt(f)?;
-                let mname = match method {
-                    IterMethod::Iter => "iter",
-                    IterMethod::IntoIter => "into_iter",
-                    IterMethod::Chars => "chars",
-                    IterMethod::Bytes => "bytes",
-                    _ => "iter",
-                };
-                write!(f, ".{}()", mname)?;
-            }
-            IrExpr::IterEnumerate { iter } => {
-                ExprChainWriter { expr: iter }.fmt(f)?;
-                write!(f, ".enumerate()")?;
-            }
-            IrExpr::IterFilter {
-                iter,
-                elem_var,
-                body,
-            } => {
-                ExprChainWriter { expr: iter }.fmt(f)?;
-                write!(f, ".filter(|{}| ", elem_var)?;
-                ExprWriter { expr: body }.fmt(f)?;
-                write!(f, ")")?;
-            }
-            IrExpr::IterTake { iter, count } => {
-                ExprChainWriter { expr: iter }.fmt(f)?;
-                write!(f, ".take(")?;
-                ExprWriter { expr: count }.fmt(f)?;
-                write!(f, ")")?;
-            }
-            IrExpr::IterSkip { iter, count } => {
-                ExprChainWriter { expr: iter }.fmt(f)?;
-                write!(f, ".skip(")?;
-                ExprWriter { expr: count }.fmt(f)?;
-                write!(f, ")")?;
-            }
-            IrExpr::IterChain { left, right } => {
-                ExprChainWriter { expr: left }.fmt(f)?;
-                write!(f, ".chain(")?;
-                ExprWriter { expr: right }.fmt(f)?;
-                write!(f, ")")?;
-            }
-            IrExpr::IterFlatMap {
-                iter,
-                elem_var,
-                body,
-            } => {
-                ExprChainWriter { expr: iter }.fmt(f)?;
-                write!(f, ".flat_map(|{}| ", elem_var)?;
-                ExprWriter { expr: body }.fmt(f)?;
-                write!(f, ")")?;
-            }
-            IrExpr::IterFilterMap {
-                iter,
-                elem_var,
-                body,
-            } => {
-                ExprChainWriter { expr: iter }.fmt(f)?;
-                write!(f, ".filter_map(|{}| ", elem_var)?;
-                ExprWriter { expr: body }.fmt(f)?;
-                write!(f, ")")?;
-            }
-            IrExpr::ArrayZip {
-                left,
-                right,
-                left_var,
-                right_var,
-                body,
-            } => {
-                ExprChainWriter { expr: left }.fmt(f)?;
-                write!(f, ".zip(")?;
-                ExprWriter { expr: right }.fmt(f)?;
-                write!(f, ").map(|({}, {})| ", left_var, right_var)?;
-                ExprWriter { expr: body }.fmt(f)?;
-                write!(f, ")")?;
-            }
             IrExpr::MethodCall {
                 receiver,
                 method,
@@ -908,58 +820,6 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     level: 0,
                 }
                 .fmt(f)?;
-            }
-            IrExpr::ArrayMap {
-                array,
-                elem_var,
-                body,
-            } => {
-                ExprChainWriter { expr: array }.fmt(f)?;
-                write!(f, ".map(|{}| ", elem_var)?;
-                ExprWriter { expr: body }.fmt(f)?;
-                write!(f, ").collect::<Vec<_>>()")?;
-            }
-            IrExpr::ArrayZip {
-                left,
-                right,
-                left_var,
-                right_var,
-                body,
-            } => {
-                ExprChainWriter { expr: left }.fmt(f)?;
-                write!(f, ".zip(")?;
-                ExprWriter { expr: right }.fmt(f)?;
-                write!(f, ").map(|({}, {})| ", left_var, right_var)?;
-                ExprWriter { expr: body }.fmt(f)?;
-                write!(f, ").collect::<Vec<_>>()")?;
-            }
-            IrExpr::ArrayFold {
-                array,
-                init,
-                acc_var,
-                elem_var,
-                body,
-            } => {
-                ExprChainWriter { expr: array }.fmt(f)?;
-                write!(f, ".fold(")?;
-                ExprWriter { expr: init }.fmt(f)?;
-                write!(f, ", |{}, {}| ", acc_var, elem_var)?;
-                ExprWriter { expr: body }.fmt(f)?;
-                write!(f, ")")?;
-            }
-            IrExpr::IterFold {
-                iter,
-                init,
-                acc_var,
-                elem_var,
-                body,
-            } => {
-                ExprChainWriter { expr: iter }.fmt(f)?;
-                write!(f, ".fold(")?;
-                ExprWriter { expr: init }.fmt(f)?;
-                write!(f, ", |{}, {}| ", acc_var, elem_var)?;
-                ExprWriter { expr: body }.fmt(f)?;
-                write!(f, ")")?;
             }
             IrExpr::IterPipeline(chain) => {
                 IterChainWriter { chain }.fmt(f)?;

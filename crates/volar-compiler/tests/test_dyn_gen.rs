@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::Path;
-use volar_compiler::{parser::parse_source, printer_dyn::print_module_rust_dyn};
+use volar_compiler::{parser::parse_source, print_module_rust_dyn};
 
 /// Test that generates dynamic code and writes it to volar-spec-dyn for compilation
 #[test]

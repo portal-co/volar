@@ -39,22 +39,13 @@ pub enum CompilerError {
     InvalidType(String),
 }
 
-/// Iterator-related method names used throughout transforms
+/// Iterator source methods — how we obtain an iterator from a collection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IterMethod {
     Iter,
     IntoIter,
     Chars,
     Bytes,
-    Enumerate,
-    Filter,
-    Take,
-    Skip,
-    Map,
-    FlatMap,
-    FilterMap,
-    Fold,
-    Chain,
 }
 
 impl IterMethod {
@@ -64,15 +55,6 @@ impl IterMethod {
             "into_iter" => Some(Self::IntoIter),
             "chars" => Some(Self::Chars),
             "bytes" => Some(Self::Bytes),
-            "enumerate" => Some(Self::Enumerate),
-            "filter" => Some(Self::Filter),
-            "take" => Some(Self::Take),
-            "skip" => Some(Self::Skip),
-            "map" => Some(Self::Map),
-            "flat_map" => Some(Self::FlatMap),
-            "filter_map" => Some(Self::FilterMap),
-            "fold" => Some(Self::Fold),
-            "chain" => Some(Self::Chain),
             _ => None,
         }
     }
@@ -997,67 +979,6 @@ pub enum IrExpr {
     /// A flat iterator pipeline (source → steps → terminal).
     /// Replaces old nested Iter*/Array{Map,Zip,Fold} variants.
     IterPipeline(IrIterChain),
-    ArrayMap {
-        array: Box<IrExpr>,
-        elem_var: String,
-        body: Box<IrExpr>,
-    },
-    ArrayZip {
-        left: Box<IrExpr>,
-        right: Box<IrExpr>,
-        left_var: String,
-        right_var: String,
-        body: Box<IrExpr>,
-    },
-    ArrayFold {
-        array: Box<IrExpr>,
-        init: Box<IrExpr>,
-        acc_var: String,
-        elem_var: String,
-        body: Box<IrExpr>,
-    },
-    // Iterator-style expressions (not method calls) for easier transforms
-    IterSource {
-        collection: Box<IrExpr>,
-        method: IterMethod,
-    },
-    IterEnumerate {
-        iter: Box<IrExpr>,
-    },
-    IterFilter {
-        iter: Box<IrExpr>,
-        elem_var: String,
-        body: Box<IrExpr>,
-    },
-    IterTake {
-        iter: Box<IrExpr>,
-        count: Box<IrExpr>,
-    },
-    IterSkip {
-        iter: Box<IrExpr>,
-        count: Box<IrExpr>,
-    },
-    IterChain {
-        left: Box<IrExpr>,
-        right: Box<IrExpr>,
-    },
-    IterFlatMap {
-        iter: Box<IrExpr>,
-        elem_var: String,
-        body: Box<IrExpr>,
-    },
-    IterFilterMap {
-        iter: Box<IrExpr>,
-        elem_var: String,
-        body: Box<IrExpr>,
-    },
-    IterFold {
-        iter: Box<IrExpr>,
-        init: Box<IrExpr>,
-        acc_var: String,
-        elem_var: String,
-        body: Box<IrExpr>,
-    },
     BoundedLoop {
         var: String,
         start: Box<IrExpr>,

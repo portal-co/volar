@@ -8,6 +8,7 @@ use std::{
     collections::{HashMap, HashSet},
     format,
     string::{String, ToString},
+    vec,
     vec::Vec,
 };
 
@@ -1632,15 +1633,40 @@ fn convert_method_call(receiver: &Expr, method: &str, args: &[&Expr]) -> Result<
 
     // Special case: zip with 2 args (receiver.zip(other, |a, b| body)) — volar-spec style
     // This is NOT Rust's std zip; it's a custom zip-with-map.
+    // We model it as: IterPipeline { source: Zip { left, right }, steps: [Map], terminal: Collect }
     if method == "zip" && args.len() == 2 {
         if let Expr::Closure(c) = args[1] {
-            return Ok(IrExpr::ArrayZip {
-                left: Box::new(convert_expr(receiver)?),
-                right: Box::new(convert_expr(args[0])?),
-                left_var: extract_pat_name(&c.inputs[0]),
-                right_var: extract_pat_name(&c.inputs[1]),
-                body: Box::new(convert_expr(&c.body)?),
-            });
+            let left_var = extract_pat_name(&c.inputs[0]);
+            let right_var = extract_pat_name(&c.inputs[1]);
+            // Build a Zip source from the receiver and first arg as IntoIter chains
+            let left_chain = crate::ir::IrIterChain {
+                source: crate::ir::IterChainSource::Method {
+                    collection: Box::new(convert_expr(receiver)?),
+                    method: crate::ir::IterMethod::IntoIter,
+                },
+                steps: Vec::new(),
+                terminal: crate::ir::IterTerminal::Lazy,
+            };
+            let right_chain = crate::ir::IrIterChain {
+                source: crate::ir::IterChainSource::Method {
+                    collection: Box::new(convert_expr(args[0])?),
+                    method: crate::ir::IterMethod::IntoIter,
+                },
+                steps: Vec::new(),
+                terminal: crate::ir::IterTerminal::Lazy,
+            };
+            let map_var = format!("({}, {})", left_var, right_var);
+            return Ok(IrExpr::IterPipeline(crate::ir::IrIterChain {
+                source: crate::ir::IterChainSource::Zip {
+                    left: Box::new(left_chain),
+                    right: Box::new(right_chain),
+                },
+                steps: vec![crate::ir::IterStep::Map {
+                    var: map_var,
+                    body: Box::new(convert_expr(&c.body)?),
+                }],
+                terminal: crate::ir::IterTerminal::Collect,
+            }));
         }
     }
 

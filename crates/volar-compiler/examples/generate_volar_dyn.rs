@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::Path;
-use volar_compiler::{parser::parse_source, printer_dyn::print_module_rust_dyn};
+use volar_compiler::{parser::parse_source, print_module_rust_dyn};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let spec_dir = Path::new("../../crates/volar-spec/src");
