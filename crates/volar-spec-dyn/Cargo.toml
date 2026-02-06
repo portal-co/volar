@@ -11,6 +11,7 @@ cipher.workspace = true
 rand.workspace = true
 digest.workspace = true
 typenum.workspace = true
+generic-array.workspace = true
 volar-primitives = { path = "../volar-primitives" }
 volar-common = { path = "../volar-common" }
 

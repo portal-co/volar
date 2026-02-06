@@ -226,6 +226,7 @@ version = "0.1.0"
 dependencies = [
  "cipher",
  "digest",
+ "generic-array",
  "rand",
  "typenum",
  "volar-common",

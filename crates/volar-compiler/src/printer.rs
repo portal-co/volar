@@ -673,7 +673,7 @@ impl<'a> RustBackend for IterChainWriter<'a> {
             IterTerminal::Fold { init, acc_var, elem_var, body } => {
                 write!(f, ".fold(")?;
                 ExprWriter { expr: init }.fmt(f)?;
-                write!(f, ", |{}, {}| ", acc_var, elem_var)?;
+                write!(f, ", |mut {}, {}| ", acc_var, elem_var)?;
                 ExprWriter { expr: body }.fmt(f)?;
                 write!(f, ")")?;
             }
@@ -849,7 +849,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 ExprWriter { expr: receiver }.fmt(f)?;
                 write!(f, ".fold(")?;
                 ExprWriter { expr: init }.fmt(f)?;
-                write!(f, ", |{}, {}| ", acc_var, elem_var)?;
+                write!(f, ", |mut {}, {}| ", acc_var, elem_var)?;
                 ExprWriter { expr: body }.fmt(f)?;
                 write!(f, ")")?;
             }
