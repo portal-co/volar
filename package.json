@@ -1,0 +1,9 @@
+{
+    "name": "@portal-solutions/volar",
+    "workspaces": [
+        "packages/volar-runtime"
+    ],
+    "devDependencies": {
+        "zshy": "^0.7.0"
+    }
+}

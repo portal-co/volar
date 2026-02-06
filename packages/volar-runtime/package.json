@@ -1,0 +1,8 @@
+{
+    "name": "@portal-solutions/volar-runtime",
+    "zshy": "index.ts",
+    "type": "module",
+    "scripts": {
+        "build": "npx zshy -c ../../tsconfig.json"
+    }
+}
