@@ -643,7 +643,7 @@ impl <T: Add<U, Output = O> + Clone, U: Clone, O> Add<VopeDyn<U>> for VopeDyn<T>
 
 impl <T: BitXor<U, Output = O> + Clone + Into<O>, U: Clone, O> BitXor<Vec<U>> for VopeDyn<T> where T: Into<O> {
     type Output = VopeDyn<O>;
-    fn bitxor(self, mut n_output: usize, mut rhs: Vec<U>) -> Self::Output
+    fn bitxor(self, mut rhs: Vec<U>) -> Self::Output
     {
         let n: usize = self.n;
         let k: usize = self.k;
@@ -767,7 +767,7 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
 };
         (h.finalize().as_slice() == commit_.as_slice())
     }
-    pub fn to_vole_material(&self, mut n: usize) -> Vec<VopeDyn<u8>>
+    pub fn to_vole_material(&self, mut n: usize, mut b_outputsize: usize) -> Vec<VopeDyn<u8>>
     {
         let t: usize = self.t;
         let u: usize = self.u;
@@ -776,7 +776,7 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
     create_vole_from_material::<B, _>(b_outputsize, s)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_typenum(&self, mut n: usize) -> Vec<VopeDyn<u8>>
+    pub fn to_vole_material_typenum(&self, mut n: usize, mut b_outputsize: usize) -> Vec<VopeDyn<u8>>
     {
         let t: usize = self.t;
         let u: usize = self.u;
@@ -785,7 +785,7 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
     create_vole_from_material::<B, _>(b_outputsize, s)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<u8>>
+    pub fn to_vole_material_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F, mut b_outputsize: usize) -> Vec<VopeDyn<u8>>
     {
         let t: usize = self.t;
         let u: usize = self.u;
@@ -794,7 +794,7 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
     create_vole_from_material_expanded::<B, _, _, _>(b_outputsize, s, &mut f)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_typenum_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<u8>>
+    pub fn to_vole_material_typenum_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F, mut b_outputsize: usize) -> Vec<VopeDyn<u8>>
     {
         let t: usize = self.t;
         let u: usize = self.u;
@@ -827,7 +827,7 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
 }
 
 impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
-    pub fn to_vole_material(&self, mut n: usize) -> Vec<VopeDyn<u8>>
+    pub fn to_vole_material(&self, mut n: usize, mut b_outputsize: usize) -> Vec<VopeDyn<u8>>
     {
         let k: usize = self.k;
         (0..n).map(|i| {
@@ -835,7 +835,7 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
     create_vole_from_material::<B, _>(b_outputsize, s)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_typenum(&self, mut n: usize) -> Vec<VopeDyn<u8>>
+    pub fn to_vole_material_typenum(&self, mut n: usize, mut b_outputsize: usize) -> Vec<VopeDyn<u8>>
     {
         let k: usize = self.k;
         (0..n).map(|i| {
@@ -843,7 +843,7 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
     create_vole_from_material::<B, _>(b_outputsize, s)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<u8>>
+    pub fn to_vole_material_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F, mut b_outputsize: usize) -> Vec<VopeDyn<u8>>
     {
         let k: usize = self.k;
         (0..n).map(|i| {
@@ -851,7 +851,7 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
     create_vole_from_material_expanded::<B, _, _, _>(b_outputsize, s, &mut f)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_typenum_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<u8>>
+    pub fn to_vole_material_typenum_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F, mut b_outputsize: usize) -> Vec<VopeDyn<u8>>
     {
         let k: usize = self.k;
         (0..n).map(|i| {
@@ -883,7 +883,7 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
 
 impl <D: Digest> LengthDoubler for ViaDigestPuncturableRandomizerDyn<D> {
     type OutputSize = <D as _>::OutputSize;
-    fn double(mut d_outputsize: usize, mut a: Vec<u8>) -> Vec<Vec<u8>>
+    fn double(mut a: Vec<u8>) -> Vec<Vec<u8>>
     {
         let v = D::digest(&a);
         vec![v.clone(), v.into_iter().zip(a.into_iter()).map(|(x, y)| (x ^ y)).collect::<Vec<_>>()]
@@ -903,14 +903,14 @@ impl <D: Digest> AsRef<[u8]> for CommitmentCoreDyn<D> {
 impl <D: Digest> Default for CommitmentCoreDyn<D> {
     fn default() -> Self
     {
-        CommitmentCore(vec![Default::default(); n])
+        CommitmentCoreDyn(vec![Default::default(); n])
     }
 }
 
 impl <D: Digest> Clone for CommitmentCoreDyn<D> {
     fn clone(&self) -> Self
     {
-        CommitmentCore(self.0.clone())
+        CommitmentCoreDyn(self.0.clone())
     }
 }
 
@@ -932,7 +932,7 @@ impl <D: Digest> CommitmentCoreDyn<D> {
     }
 }
 
-pub fn gen_abo<B: LengthDoubler, D: Digest>(mut k: usize, mut b_outputsize: usize, mut a: Vec<u8>, mut rand: &impl AsRef<[u8]>) -> ABODyn<B, D> where B: Sized
+pub fn gen_abo<B: LengthDoubler, D: Digest>(mut k: usize, mut b_outputsize: usize, mut a: Vec<u8>, mut rand: &impl AsRef<[u8]>, mut d_outputsize: usize) -> ABODyn<B, D> where B: Sized
 {
     let mut h = D::new();
     let mut per_byte = vec![Default::default(); n];
@@ -980,6 +980,6 @@ pub fn commit<D: Digest>(mut message: &impl AsRef<[u8]>, mut rand: &impl AsRef<[
     let mut hasher = D::new();
     hasher.update(message.as_ref());
     hasher.update(rand.as_ref());
-    CommitmentCore(hasher.finalize())
+    CommitmentCoreDyn(hasher.finalize())
 }
 

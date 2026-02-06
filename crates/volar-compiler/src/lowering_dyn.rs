@@ -256,7 +256,7 @@ pub fn lower_module_dyn(module: &IrModule) -> IrModule {
     for f in &module.functions {
         lowered
             .functions
-            .push(lower_function_dyn(f, &ctx, None, None, &BTreeMap::new()));
+            .push(lower_function_dyn(f, &ctx, None, None, &BTreeMap::new(), false));
     }
 
     lowered
@@ -459,6 +459,7 @@ fn lower_impl_dyn(im: &IrImpl, ctx: &LoweringContext) -> IrImpl {
                     Some(&self_kind),
                     Some(&impl_gen),
                     &constant_witnesses,
+                    im.trait_.is_some(),
                 )));
             }
             IrImplItem::AssociatedType { name, ty } => {
@@ -492,6 +493,7 @@ fn lower_function_dyn(
     self_struct: Option<&str>,
     impl_generics: Option<&[IrGenericParam]>,
     constant_witnesses: &BTreeMap<String, usize>,
+    is_trait_impl: bool,
 ) -> IrFunction {
     let mut params = Vec::new();
     let empty_gen = Vec::new();
@@ -512,22 +514,24 @@ fn lower_function_dyn(
         }
     }
 
-    // Length generics become parameters
-    for p in &fn_gen {
-        let kind = classify_generic_with_aliases(p, &[&fn_gen, impl_gen], &ctx.aliases());
-        if kind == GenericKind::Length {
-            let name = p.name.to_lowercase();
-            if !params.iter().any(|param: &IrParam| param.name == name) {
-                params.push(IrParam {
-                    name,
-                    ty: IrType::Primitive(PrimitiveType::Usize),
-                });
+    // Length generics become parameters (skip for trait impl methods — values from self)
+    if !is_trait_impl {
+        for p in &fn_gen {
+            let kind = classify_generic_with_aliases(p, &[&fn_gen, impl_gen], &ctx.aliases());
+            if kind == GenericKind::Length {
+                let name = p.name.to_lowercase();
+                if !params.iter().any(|param: &IrParam| param.name == name) {
+                    params.push(IrParam {
+                        name,
+                        ty: IrType::Primitive(PrimitiveType::Usize),
+                    });
+                }
             }
         }
     }
 
     // Static methods also need impl-level length params
-    if f.receiver.is_none() {
+    if f.receiver.is_none() && !is_trait_impl {
         for p in impl_gen {
             let kind = classify_generic_with_aliases(p, &[impl_gen], &ctx.aliases());
             if kind == GenericKind::Length {
@@ -543,13 +547,16 @@ fn lower_function_dyn(
     }
 
     // Inject projection witness parameters (e.g., b_outputsize: usize from B::OutputSize)
-    let proj_witnesses = collect_projection_witnesses_fn(f);
-    for name in &proj_witnesses {
-        if !params.iter().any(|p: &IrParam| &p.name == name) {
-            params.push(IrParam {
-                name: name.clone(),
-                ty: IrType::Primitive(PrimitiveType::Usize),
-            });
+    // Skip for trait impl methods — the trait signature is fixed.
+    if !is_trait_impl {
+        let proj_witnesses = collect_projection_witnesses_fn(f);
+        for name in &proj_witnesses {
+            if !params.iter().any(|p: &IrParam| &p.name == name) {
+                params.push(IrParam {
+                    name: name.clone(),
+                    ty: IrType::Primitive(PrimitiveType::Usize),
+                });
+            }
         }
     }
 
@@ -637,28 +644,31 @@ fn lower_function_dyn(
     // Post-lowering: scan lowered body for projection witness variables that aren't
     // already defined as params. This handles methods that call functions with
     // projection witness params — the callee's witnesses get passed through.
-    let all_witness_names: BTreeSet<String> = ctx
-        .fn_projection_witnesses
-        .values()
-        .flat_map(|ws| ws.iter().cloned())
-        .collect();
-    let mut referenced_witnesses = BTreeSet::new();
-    collect_var_refs_matching(&body, &all_witness_names, &mut referenced_witnesses);
-    for w in &referenced_witnesses {
-        if !params.iter().any(|p: &IrParam| &p.name == w) {
-            // Check if it's available from self (struct witness field)
-            let available_from_self = if let Some(sname) = self_struct {
-                ctx.struct_info
-                    .get(sname)
-                    .map_or(false, |info| info.length_witnesses.contains(w))
-            } else {
-                false
-            };
-            if !available_from_self {
-                params.push(IrParam {
-                    name: w.clone(),
-                    ty: IrType::Primitive(PrimitiveType::Usize),
-                });
+    // Skip for trait impl methods — the trait signature is fixed.
+    if !is_trait_impl {
+        let all_witness_names: BTreeSet<String> = ctx
+            .fn_projection_witnesses
+            .values()
+            .flat_map(|ws| ws.iter().cloned())
+            .collect();
+        let mut referenced_witnesses = BTreeSet::new();
+        collect_var_refs_matching(&body, &all_witness_names, &mut referenced_witnesses);
+        for w in &referenced_witnesses {
+            if !params.iter().any(|p: &IrParam| &p.name == w) {
+                // Check if it's available from self (struct witness field)
+                let available_from_self = if let Some(sname) = self_struct {
+                    ctx.struct_info
+                        .get(sname)
+                        .map_or(false, |info| info.length_witnesses.contains(w))
+                } else {
+                    false
+                };
+                if !available_from_self {
+                    params.push(IrParam {
+                        name: w.clone(),
+                        ty: IrType::Primitive(PrimitiveType::Usize),
+                    });
+                }
             }
         }
     }
@@ -1223,6 +1233,27 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 }
             }
             final_args.extend(args);
+
+            // Rename tuple struct constructors (e.g., CommitmentCore → CommitmentCoreDyn)
+            let func_name = match &func {
+                IrExpr::Path { segments, .. } => segments.last().map(|s| s.clone()),
+                IrExpr::Var(n) => Some(n.clone()),
+                _ => None,
+            };
+            if let Some(ref name) = func_name {
+                if ctx.struct_info.contains_key(name.as_str()) {
+                    let dyn_name = format!("{}Dyn", name);
+                    match &mut func {
+                        IrExpr::Path { segments, .. } => {
+                            if let Some(last) = segments.last_mut() {
+                                *last = dyn_name;
+                            }
+                        }
+                        IrExpr::Var(n) => *n = dyn_name,
+                        _ => {}
+                    }
+                }
+            }
 
             IrExpr::Call {
                 func: Box::new(func),
@@ -1926,4 +1957,171 @@ fn collect_projection_witnesses_fn(f: &IrFunction) -> BTreeSet<String> {
     }
     collect_projection_witnesses_block(&f.body, &mut out);
     out
+}
+
+/// Collect `Var` names from a lowered IrBlock that match a set of known witness names.
+fn collect_var_refs_matching(block: &IrBlock, known: &BTreeSet<String>, out: &mut BTreeSet<String>) {
+    for stmt in &block.stmts {
+        match stmt {
+            IrStmt::Let { init: Some(e), .. } | IrStmt::Expr(e) | IrStmt::Semi(e) => {
+                collect_var_refs_matching_expr(e, known, out);
+            }
+            _ => {}
+        }
+    }
+    if let Some(e) = &block.expr {
+        collect_var_refs_matching_expr(e, known, out);
+    }
+}
+
+fn collect_var_refs_matching_expr(expr: &IrExpr, known: &BTreeSet<String>, out: &mut BTreeSet<String>) {
+    match expr {
+        IrExpr::Var(name) => {
+            if known.contains(name) {
+                out.insert(name.clone());
+            }
+        }
+        IrExpr::Call { func, args } => {
+            collect_var_refs_matching_expr(func, known, out);
+            for a in args {
+                collect_var_refs_matching_expr(a, known, out);
+            }
+        }
+        IrExpr::MethodCall { receiver, args, .. } => {
+            collect_var_refs_matching_expr(receiver, known, out);
+            for a in args {
+                collect_var_refs_matching_expr(a, known, out);
+            }
+        }
+        IrExpr::Binary { left, right, .. } => {
+            collect_var_refs_matching_expr(left, known, out);
+            collect_var_refs_matching_expr(right, known, out);
+        }
+        IrExpr::Unary { expr, .. } => {
+            collect_var_refs_matching_expr(expr, known, out);
+        }
+        IrExpr::Field { base, .. } => {
+            collect_var_refs_matching_expr(base, known, out);
+        }
+        IrExpr::Index { base, index } => {
+            collect_var_refs_matching_expr(base, known, out);
+            collect_var_refs_matching_expr(index, known, out);
+        }
+        IrExpr::If { cond, then_branch, else_branch } => {
+            collect_var_refs_matching_expr(cond, known, out);
+            collect_var_refs_matching(then_branch, known, out);
+            if let Some(e) = else_branch {
+                collect_var_refs_matching_expr(e, known, out);
+            }
+        }
+        IrExpr::Block(b) => {
+            collect_var_refs_matching(b, known, out);
+        }
+        IrExpr::BoundedLoop { body, .. } => {
+            collect_var_refs_matching(body, known, out);
+        }
+        IrExpr::IterLoop { collection, body, .. } => {
+            collect_var_refs_matching_expr(collection, known, out);
+            collect_var_refs_matching(body, known, out);
+        }
+        IrExpr::Closure { body, .. } => {
+            collect_var_refs_matching_expr(body, known, out);
+        }
+        IrExpr::Assign { left, right } => {
+            collect_var_refs_matching_expr(left, known, out);
+            collect_var_refs_matching_expr(right, known, out);
+        }
+        IrExpr::StructExpr { fields, .. } => {
+            for (_, e) in fields {
+                collect_var_refs_matching_expr(e, known, out);
+            }
+        }
+        IrExpr::Tuple(elems) | IrExpr::Array(elems) => {
+            for e in elems {
+                collect_var_refs_matching_expr(e, known, out);
+            }
+        }
+        IrExpr::Cast { expr, .. } => {
+            collect_var_refs_matching_expr(expr, known, out);
+        }
+        IrExpr::Return(Some(e)) => {
+            collect_var_refs_matching_expr(e, known, out);
+        }
+        IrExpr::Range { start, end, .. } => {
+            if let Some(s) = start { collect_var_refs_matching_expr(s, known, out); }
+            if let Some(e) = end { collect_var_refs_matching_expr(e, known, out); }
+        }
+        IrExpr::Repeat { elem, len } => {
+            collect_var_refs_matching_expr(elem, known, out);
+            collect_var_refs_matching_expr(len, known, out);
+        }
+        IrExpr::IterPipeline(chain) => {
+            collect_var_refs_matching_chain(chain, known, out);
+        }
+        IrExpr::Match { expr, arms } => {
+            collect_var_refs_matching_expr(expr, known, out);
+            for arm in arms {
+                collect_var_refs_matching_expr(&arm.body, known, out);
+            }
+        }
+        IrExpr::ArrayGenerate { body, .. } => {
+            collect_var_refs_matching_expr(body, known, out);
+        }
+        IrExpr::RawMap { receiver, body, .. } => {
+            collect_var_refs_matching_expr(receiver, known, out);
+            collect_var_refs_matching_expr(body, known, out);
+        }
+        IrExpr::RawZip { left, right, body, .. } => {
+            collect_var_refs_matching_expr(left, known, out);
+            collect_var_refs_matching_expr(right, known, out);
+            collect_var_refs_matching_expr(body, known, out);
+        }
+        IrExpr::RawFold { receiver, init, body, .. } => {
+            collect_var_refs_matching_expr(receiver, known, out);
+            collect_var_refs_matching_expr(init, known, out);
+            collect_var_refs_matching_expr(body, known, out);
+        }
+        _ => {}
+    }
+}
+
+fn collect_var_refs_matching_chain(chain: &crate::ir::IrIterChain, known: &BTreeSet<String>, out: &mut BTreeSet<String>) {
+    match &chain.source {
+        crate::ir::IterChainSource::Method { collection, .. } => {
+            collect_var_refs_matching_expr(collection, known, out);
+        }
+        crate::ir::IterChainSource::Zip { left, right } => {
+            collect_var_refs_matching_chain(left, known, out);
+            collect_var_refs_matching_chain(right, known, out);
+        }
+        crate::ir::IterChainSource::Range { start, end, .. } => {
+            collect_var_refs_matching_expr(start, known, out);
+            collect_var_refs_matching_expr(end, known, out);
+        }
+    }
+    for step in &chain.steps {
+        match step {
+            crate::ir::IterStep::Map { body, .. }
+            | crate::ir::IterStep::Filter { body, .. }
+            | crate::ir::IterStep::FilterMap { body, .. }
+            | crate::ir::IterStep::FlatMap { body, .. } => {
+                collect_var_refs_matching_expr(body, known, out);
+            }
+            crate::ir::IterStep::Take { count }
+            | crate::ir::IterStep::Skip { count } => {
+                collect_var_refs_matching_expr(count, known, out);
+            }
+            crate::ir::IterStep::Chain { other } => {
+                collect_var_refs_matching_chain(other, known, out);
+            }
+            crate::ir::IterStep::Enumerate => {}
+        }
+    }
+    match &chain.terminal {
+        crate::ir::IterTerminal::Fold { init, body, .. } => {
+            collect_var_refs_matching_expr(init, known, out);
+            collect_var_refs_matching_expr(body, known, out);
+        }
+        _ => {}
+    }
 }
