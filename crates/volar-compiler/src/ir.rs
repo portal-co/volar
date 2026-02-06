@@ -913,6 +913,18 @@ pub enum IrExpr {
         index_var: String,
         body: Box<IrExpr>,
     },
+    /// `GenericArray::<T, N>::default()` or `Vec::default()` — produces a
+    /// zero-filled / default-filled array of the given element type and length.
+    /// In dyn lowering this becomes `vec![T::default(); n]`.
+    ArrayDefault {
+        elem_ty: Option<Box<IrType>>,
+        len: ArrayLength,
+    },
+    /// Witness expression that converts a type-level length to a runtime `usize`.
+    /// For simple length params like `N`, lowering produces `Var("n")`.
+    /// For projections like `<B as LengthDoubler>::OutputSize`, lowering produces
+    /// a runtime expression that reads the length from context.
+    LengthOf(ArrayLength),
     /// A flat iterator pipeline (source → steps → terminal).
     /// Replaces old nested Iter*/Array{Map,Zip,Fold} variants.
     IterPipeline(IrIterChain),

@@ -1109,15 +1109,51 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
     }
 }
 
+/// Convert an `IrType` (from type parameters) into an `ArrayLength`.
+fn type_to_array_length(ty: &IrType) -> ArrayLength {
+    match ty {
+        IrType::TypeParam(name) => ArrayLength::TypeParam(name.clone()),
+        IrType::Projection { base, assoc, .. } => {
+            let base_str = match base.as_ref() {
+                IrType::TypeParam(name) => name.clone(),
+                _ => "Self".to_string(),
+            };
+            let assoc_str = match assoc {
+                AssociatedType::Output => "Output",
+                AssociatedType::BlockSize => "BlockSize",
+                AssociatedType::OutputSize => "OutputSize",
+                AssociatedType::Other(name) => name,
+                _ => "Output",
+            };
+            ArrayLength::Projection {
+                r#type: Box::new(IrType::TypeParam(base_str)),
+                field: assoc_str.to_string(),
+            }
+        }
+        _ => ArrayLength::TypeParam("N".to_string()),
+    }
+}
+
+/// Extract (elem_ty, len) from type parameters on GenericArray-style constructors.
+fn extract_array_type_params(params: &[IrType]) -> (Option<Box<IrType>>, ArrayLength) {
+    let elem_ty = params.first().cloned().map(Box::new);
+    let len = if params.len() >= 2 {
+        type_to_array_length(&params[1])
+    } else {
+        ArrayLength::TypeParam("N".to_string()) // Placeholder for inferred
+    };
+    (elem_ty, len)
+}
+
 fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
     if let Expr::Path(p) = func {
-        let path_str = p
+        let segments: Vec<String> = p
             .path
             .segments
             .iter()
             .map(|s| s.ident.to_string())
-            .collect::<Vec<_>>()
-            .join("::");
+            .collect();
+        let path_str = segments.join("::");
         let params = p
             .path
             .segments
@@ -1139,35 +1175,17 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
             .flatten()
             .flatten()
             .collect::<Vec<_>>();
-        if (path_str == "GenericArray::generate" || path_str.ends_with("::generate"))
-            && args.len() == 1
-        {
+
+        // GenericArray::generate(|i| body) or Type::generate(|i| body)
+        if segments.last().map(|s| s.as_str()) == Some("generate") && args.len() == 1 {
             if let Expr::Closure(c) = args[0] {
-                // Type parameters may be inferred or come from complex paths
-                // Try to extract what we can
-                let elem_ty = params.get(0).cloned().map(Box::new);
-                let len = if params.len() >= 2 {
-                    match &params[1] {
-                        IrType::TypeParam(name) => ArrayLength::TypeParam(name.clone()),
-                        IrType::Projection { base, assoc, .. } => {
-                            let base_str = match base.as_ref() {
-                                IrType::TypeParam(name) => name.clone(),
-                                _ => "Self".to_string(),
-                            };
-                            let assoc_str = match assoc {
-                                AssociatedType::Output => "Output",
-                                AssociatedType::BlockSize => "BlockSize",
-                                AssociatedType::OutputSize => "OutputSize",
-                                AssociatedType::Other(name) => name,
-                                _ => "Output",
-                            };
-                            ArrayLength::TypeParam(format!("{}::{}", base_str, assoc_str))
-                        }
-                        _ => ArrayLength::TypeParam("N".to_string()),
-                    }
-                } else {
-                    ArrayLength::TypeParam("N".to_string()) // Placeholder for inferred
-                };
+                if params.is_empty() {
+                    return Err(CompilerError::ParseError(format!(
+                        "{}::generate() requires explicit type parameters <T, N>",
+                        segments[..segments.len() - 1].join("::")
+                    )));
+                }
+                let (elem_ty, len) = extract_array_type_params(&params);
                 return Ok(IrExpr::ArrayGenerate {
                     elem_ty,
                     len,
@@ -1176,34 +1194,13 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
                 });
             }
         }
+
+        // core::array::from_fn(|i| body)
         if (path_str == "core::array::from_fn" || path_str.ends_with("::from_fn"))
             && args.len() == 1
         {
             if let Expr::Closure(c) = args[0] {
-                // Type parameters may be inferred or come from complex paths
-                let elem_ty = params.get(0).cloned().map(Box::new);
-                let len = if params.len() >= 2 {
-                    match &params[1] {
-                        IrType::TypeParam(name) => ArrayLength::TypeParam(name.clone()),
-                        IrType::Projection { base, assoc, .. } => {
-                            let base_str = match base.as_ref() {
-                                IrType::TypeParam(name) => name.clone(),
-                                _ => "Self".to_string(),
-                            };
-                            let assoc_str = match assoc {
-                                AssociatedType::Output => "Output",
-                                AssociatedType::BlockSize => "BlockSize",
-                                AssociatedType::OutputSize => "OutputSize",
-                                AssociatedType::Other(name) => name,
-                                _ => "Output",
-                            };
-                            ArrayLength::TypeParam(format!("{}::{}", base_str, assoc_str))
-                        }
-                        _ => ArrayLength::TypeParam("N".to_string()),
-                    }
-                } else {
-                    ArrayLength::TypeParam("N".to_string()) // Placeholder for inferred
-                };
+                let (elem_ty, len) = extract_array_type_params(&params);
                 return Ok(IrExpr::ArrayGenerate {
                     elem_ty,
                     len,
@@ -1212,7 +1209,57 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
                 });
             }
         }
+
+        // GenericArray::<T, N>::default() — array filled with default values
+        if segments.last().map(|s| s.as_str()) == Some("default")
+            && args.is_empty()
+            && segments.len() >= 2
+            && segments[0] != "O" // O::default() is a scalar default, not array
+        {
+            let prefix = &segments[..segments.len() - 1];
+            if prefix == ["GenericArray"]
+                || prefix.iter().any(|s| s == "GenericArray" || s == "Vec")
+            {
+                let (elem_ty, len) = extract_array_type_params(&params);
+                return Ok(IrExpr::ArrayDefault {
+                    elem_ty,
+                    len,
+                });
+            }
+        }
+
+        // N::to_usize() — length parameter witness
+        if segments.last().map(|s| s.as_str()) == Some("to_usize")
+            && args.is_empty()
+            && segments.len() == 2
+        {
+            let first = &segments[0];
+            // Uppercase single-letter or letter+digits → length param
+            let is_length_param = first
+                .chars()
+                .next()
+                .map(|c| c.is_uppercase())
+                .unwrap_or(false)
+                && first.len() <= 3;
+            if is_length_param {
+                return Ok(IrExpr::LengthOf(ArrayLength::TypeParam(first.clone())));
+            }
+        }
     }
+
+    // <B::OutputSize as Unsigned>::to_usize() — qualified path to_usize
+    if let Expr::Path(p) = func {
+        if let Some(qself) = &p.qself {
+            if let Some(last) = p.path.segments.last() {
+                if last.ident == "to_usize" && args.is_empty() {
+                    let base_ty = convert_type(&qself.ty)?;
+                    let len = type_to_array_length(&base_ty);
+                    return Ok(IrExpr::LengthOf(len));
+                }
+            }
+        }
+    }
+
     Ok(IrExpr::Call {
         func: Box::new(convert_expr(func)?),
         args: args

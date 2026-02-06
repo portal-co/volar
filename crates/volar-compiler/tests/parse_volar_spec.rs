@@ -224,7 +224,7 @@ impl<N: ArrayLength<T>, T> Delta<N, T> {
     {
         let Self { delta } = self;
         Delta {
-            delta: GenericArray::generate(|i| delta[f(i) % N::to_usize()].clone()),
+            delta: GenericArray::<T, M>::generate(|i| delta[f(i) % N::to_usize()].clone()),
         }
     }
 }

@@ -973,6 +973,47 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 write!(f, " as typenum::Unsigned>::USIZE")?;
             }
             IrExpr::Unreachable => write!(f, "unreachable!()")?,
+            IrExpr::ArrayDefault { elem_ty, len } => {
+                // GenericArray::<T, N>::default() → vec![T::default(); n]
+                write!(f, "vec![")?;
+                if let Some(ty) = elem_ty {
+                    TypeWriter { ty }.fmt(f)?;
+                    write!(f, "::default()")?;
+                } else {
+                    write!(f, "Default::default()")?;
+                }
+                write!(f, "; ")?;
+                match len {
+                    ArrayLength::Const(n) => write!(f, "{}", n)?,
+                    ArrayLength::TypeParam(p) => write!(f, "{}", p.to_lowercase())?,
+                    ArrayLength::Projection { r#type, field } => {
+                        write!(f, "todo!(\"projection length\")")?;
+                    }
+                    _ => write!(f, "todo!(\"length\")")?,
+                }
+                write!(f, "]")?;
+            }
+            IrExpr::LengthOf(len) => {
+                match len {
+                    ArrayLength::Const(n) => write!(f, "{}", n)?,
+                    ArrayLength::TypeParam(p) => write!(f, "{}", p.to_lowercase())?,
+                    ArrayLength::Projection { r#type, field } => {
+                        write!(f, "todo!(\"projection length\")")?;
+                    }
+                    _ => write!(f, "todo!(\"length\")")?,
+                }
+            }
+            IrExpr::ArrayGenerate { elem_ty, len, index_var, body } => {
+                write!(f, "(0..")?;
+                match len {
+                    ArrayLength::Const(n) => write!(f, "{}", n)?,
+                    ArrayLength::TypeParam(p) => write!(f, "{}", p.to_lowercase())?,
+                    _ => write!(f, "todo!(\"length\")")?,
+                }
+                write!(f, ").map(|{}| ", index_var)?;
+                ExprWriter { expr: body }.fmt(f)?;
+                write!(f, ").collect::<Vec<_>>()")?;
+            }
             _ => {
                 let msg = format!("{:?}", self.expr).replace('"', "'");
                 write!(

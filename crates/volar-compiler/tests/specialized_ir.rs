@@ -261,7 +261,7 @@ fn test_array_operations() {
     let source = r#"
         fn test() {
             // Array generate
-            let a = GenericArray::generate(|i| i * 2);
+            let a = GenericArray::<u32, U4>::generate(|i| i * 2);
             
             // Array map
             let b = arr.map(|x| x + 1);

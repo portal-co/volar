@@ -882,31 +882,8 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             type_args,
         } => {
             let mut segments = segments.clone();
-            let mut type_args = type_args.clone();
             if segments.len() > 0 && segments[0] == "GenericArray" {
                 segments[0] = "Vec".to_string();
-            }
-            if segments.len() == 2
-                && segments[0] == "Vec"
-                && (segments[1] == "default" || segments[1] == "generate")
-            {
-                segments[1] = "new".to_string();
-                type_args = vec![type_args[0].clone()];
-            }
-            if segments.len() == 2 && segments[1] == "to_usize" {
-                // Check if first segment is a length param (single uppercase letter, or uppercase+digit like K2)
-                let first = &segments[0];
-                let is_length_param = first
-                    .chars()
-                    .next()
-                    .map(|c| c.is_uppercase())
-                    .unwrap_or(false)
-                    && first
-                        .chars()
-                        .all(|c| c.is_uppercase() || c.is_ascii_digit());
-                if is_length_param {
-                    return IrExpr::Var(first.to_lowercase());
-                }
             }
             IrExpr::Path {
                 segments,
@@ -1185,6 +1162,23 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 len: lowered_len,
                 index_var: index_var.clone(),
                 body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+            }
+        }
+        IrExpr::ArrayDefault { elem_ty, len } => {
+            let lowered_len = lower_array_length(len);
+            IrExpr::ArrayDefault {
+                elem_ty: elem_ty
+                    .as_ref()
+                    .map(|t| Box::new(lower_type_dyn(t, ctx, fn_gen))),
+                len: lowered_len,
+            }
+        }
+        IrExpr::LengthOf(len) => {
+            let lowered = lower_array_length(len);
+            match &lowered {
+                ArrayLength::Const(n) => IrExpr::Lit(crate::ir::IrLit::Int(*n as i128)),
+                ArrayLength::TypeParam(p) => IrExpr::Var(p.clone()),
+                _ => IrExpr::LengthOf(lowered),
             }
         }
         IrExpr::Field { base, field } => IrExpr::Field {
