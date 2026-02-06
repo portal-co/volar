@@ -38,6 +38,7 @@ pub mod const_analysis;
 pub mod parser;
 pub mod lowering;
 pub mod printer;
+pub mod printer_ts;
 pub mod lowering_dyn;
 pub mod manifest;
 
@@ -59,4 +60,18 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
 pub fn print_module_rust_dyn_with_deps(module: &IrModule, deps: &[manifest::TypeManifest]) -> String {
     let lowered = lowering_dyn::lower_module_dyn(module);
     printer::print_module_with_deps(&lowered, deps)
+}
+
+/// Generate TypeScript code by lowering type-level lengths to runtime witnesses.
+pub fn print_module_typescript(module: &IrModule) -> String {
+    let lowered = lowering_dyn::lower_module_dyn(module);
+    printer_ts::print_module_ts(&lowered)
+}
+
+/// Generate TypeScript code with dependency manifests providing context.
+pub fn print_module_typescript_with_deps(module: &IrModule, deps: &[manifest::TypeManifest]) -> String {
+    // TODO: pass deps through to lowering once lower_module_dyn_with_deps exists
+    let _ = deps;
+    let lowered = lowering_dyn::lower_module_dyn(module);
+    printer_ts::print_module_ts(&lowered)
 }
