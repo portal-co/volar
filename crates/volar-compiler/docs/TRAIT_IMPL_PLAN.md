@@ -14,166 +14,191 @@ Today, the IR classifies traits into a fixed taxonomy: `MathTrait` (Add, Mul, �
 | # | Feature | Status | Where |
 |---|---------|--------|-------|
 | 1 | Associated types | Partially parsed, need full IR definition support | `IrTraitItem::AssociatedType`, `IrImplItem::AssociatedType` |
-| 2 | Associated constants (type-level via `typenum`) | Not yet represented | New `IrTraitItem::AssociatedConst`, `IrImplItem::AssociatedConst` |
+| 2 | Associated constants (type-level via `typenum`) | Not yet represented | Reuse extracted constant analysis |
 | 3 | Methods (generic, `self`/no-receiver, any args) | Parsed, need richer classification in custom traits | `IrTraitItem::Method`, `IrImplItem::Method` |
 | 4 | Trait-level generics | Parsed into `IrTrait.generics` | Already works but needs testing/validation |
-| 5 | Custom trait definitions | `TraitKind::Custom(String)` exists but is a black box | New `IrTraitDef` or enriched `IrTrait` |
-| 6 | Built-in trait special treatment | `MathTrait` enum recognizes them, but their *structure* is implicit | New `BuiltinTraitInfo` or canonical `IrTrait` for each |
+| 5 | Custom trait definitions | `TraitKind::Custom(String)` exists but is a black box | Extend `TypeContext` with `TraitRegistry` |
+| 6 | Built-in trait special treatment | `MathTrait` enum recognizes them, but their *structure* is implicit | Canonical `IrTrait` defs registered in `TypeContext` |
+
+---
 
 ## Design
 
 ### 1. Associated Types (enrichment of existing)
 
-**Current state**: `IrTraitItem::AssociatedType { name, bounds, default }` and `IrImplItem::AssociatedType { name, ty }` already exist and are parsed. The `AssociatedType` enum captures known names (`Output`, `Key`, `BlockSize`, …).
+**Current state**: `IrTraitItem::AssociatedType { name, bounds, default }` and `IrImplItem::AssociatedType { name, ty }` already exist and are parsed. The `AssociatedType` enum captures known names (`Output`, `Key`, `BlockSize`, …) plus `Other(String)` for custom names. ✅
 
 **Changes needed**:
-- Add `AssociatedType::Custom(String)` → **already exists** as `Other(String)`.  ✅ No change needed.
-- Ensure the parser correctly extracts bounds on associated types (e.g., `type OutputSize: ArrayLength<u8>;`). → Already handled in `convert_trait_item`. ✅
-- Ensure the printer (`write_trait`, `write_impl`) faithfully round-trips associated type declarations with their bounds. → Needs fix: currently prints `type {:?};` using Debug, should print `type Name: Bound1 + Bound2;` properly.
+- Printer currently uses `{:?}` (Debug) for `AssociatedType` names in `write_trait` and `write_impl`. Fix to emit proper string names and include bounds.
 
 **Action items**:
-- [ ] Fix `write_trait` in `printer.rs` to print associated type names as strings (not Debug format) and include bounds.
-- [ ] Fix `write_impl` in `printer.rs` to print associated type names as strings.
-- [ ] Add round-trip test: parse a trait with bounded associated types, print it, and verify.
+- [ ] Add `impl fmt::Display for AssociatedType` to `ir.rs`.
+- [ ] Fix `write_trait` in `printer.rs` to print `type Name: Bound1 + Bound2;` (with optional default).
+- [ ] Fix `write_impl` in `printer.rs` to print `type Name = Ty;`.
+- [ ] Add round-trip test: parse a trait with bounded associated types, print it, verify.
 
-### 2. Associated Constants (type-level via `typenum`)
+### 2. Associated Constants (type-level via `typenum`) — piggyback on extracted constant analysis
 
-**Current state**: Not represented. In `volar-spec`, type-level constants are modeled via `typenum` associated types (e.g., `type OutputSize: ArrayLength<u8>`), not Rust `const` items. However, for backend targets (C, HDL), these are logically *compile-time integer constants*.
+**Current state**: `lowering_dyn.rs` already has `classify_generic()`, `GenericKind`, `is_length_bound()`, etc. that determine whether a type parameter represents a type-level constant (i.e., `GenericKind::Length`). This same logic applies to associated types: if a trait's associated type has bounds like `ArrayLength<u8>` or `Unsigned`, it is logically a type-level constant.
 
-**Design choice**: Represent them as a new IR node that explicitly marks an associated type as a **type-level constant** when its bounds indicate it is one (i.e., bounded by `ArrayLength`, `Unsigned`, or is a `typenum` const).
+**Key insight from feedback**: Rather than adding new `AssociatedConst` IR variants, we **extract the existing constant-classification logic** out of `lowering_dyn.rs` into a standalone, reusable analysis. Both features (detecting length generics for the dyn lowering, and detecting type-level constants in trait associated types) use the same underlying analysis. The `IrTraitItem::AssociatedType` variant stays as-is in the IR; the *interpretation* of whether it's a type-level constant lives in a separate analysis result struct.
+
+**New module**: `src/const_analysis.rs`
 
 ```rust
-// New variant in IrTraitItem
-pub enum IrTraitItem {
-    Method(IrMethodSig),
-    AssociatedType {
-        name: AssociatedType,
-        bounds: Vec<IrTraitBound>,
-        default: Option<IrType>,
-    },
-    /// Type-level constant (typenum-style associated type that resolves to a usize)
-    AssociatedConst {
-        name: AssociatedType,
-        /// The typenum bound that makes this a constant (e.g., ArrayLength, Unsigned)
-        const_kind: TypeLevelConstKind,
-        /// Additional bounds beyond the const kind
-        bounds: Vec<IrTraitBound>,
-        default: Option<IrType>,
-    },
-}
+//! Constant analysis: classifies generics and associated types as type-level constants.
+//!
+//! Extracted from lowering_dyn so it can be reused for trait associated type
+//! classification without polluting the IR with lowering-specific concerns.
 
-/// Classification of type-level constants
+/// Classification of a generic parameter or associated type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum TypeLevelConstKind {
-    /// Bounded by `ArrayLength<T>` — an array size
-    ArrayLength(Option<Box<IrType>>),
-    /// Bounded by `Unsigned` — a generic unsigned integer
-    Unsigned,
+pub enum GenericKind {
+    /// Type-level constant (length/size) — becomes runtime usize in dyn lowering
+    Length,
+    /// Crypto trait parameter (BlockCipher, Digest) — remains generic
+    Crypto,
+    /// Regular type parameter — remains generic
+    Type,
+}
+
+/// Results of constant analysis over an IrModule.
+/// Kept separate from TypeContext to avoid mixing analysis results with
+/// type resolution state.
+#[derive(Debug, Clone, Default)]
+pub struct ConstAnalysis {
+    /// For each struct: which generics are lengths, which are types, etc.
+    pub struct_generics: BTreeMap<String, Vec<(String, GenericKind, IrGenericParamKind)>>,
+
+    /// For each trait: which associated types are type-level constants.
+    /// Key: (trait_name, assoc_type_name) → GenericKind
+    /// If the value is GenericKind::Length, the associated type is a type-level constant.
+    pub trait_assoc_kinds: BTreeMap<(String, String), GenericKind>,
+
+    /// For each impl block's associated type assignments:
+    /// Key: (self_ty_string, assoc_type_name) → GenericKind (inherited from trait)
+    pub impl_assoc_kinds: BTreeMap<(String, String), GenericKind>,
+}
+
+impl ConstAnalysis {
+    pub fn from_module(module: &IrModule) -> Self { ... }
+
+    /// Is this associated type a type-level constant in the given trait?
+    pub fn is_type_level_const(&self, trait_name: &str, assoc_name: &str) -> bool {
+        self.trait_assoc_kinds
+            .get(&(trait_name.to_string(), assoc_name.to_string()))
+            .map(|k| *k == GenericKind::Length)
+            .unwrap_or(false)
+    }
+}
+
+// Extracted from lowering_dyn.rs — these become pub functions in this module:
+pub fn classify_generic(param: &IrGenericParam, all_params: &[&[IrGenericParam]]) -> GenericKind { ... }
+pub fn is_length_bound(bound: &IrTraitBound) -> bool { ... }
+pub fn is_crypto_bound(bound: &IrTraitBound) -> bool { ... }
+pub fn is_fn_bound(bound: &IrTraitBound) -> bool { ... }
+fn is_math_op_bound(bound: &IrTraitBound) -> bool { ... }
+fn is_length_name(name: &str, all_params: &[&[IrGenericParam]], visited: &mut Vec<String>) -> bool { ... }
+fn type_refers_to_length(ty: &IrType, all_params: &[&[IrGenericParam]], visited: &mut Vec<String>) -> bool { ... }
+
+/// Classify an associated type's bounds to determine if it's a type-level constant.
+pub fn classify_assoc_type_bounds(bounds: &[IrTraitBound]) -> GenericKind {
+    for bound in bounds {
+        if is_length_bound(bound) {
+            return GenericKind::Length;
+        }
+        if is_crypto_bound(bound) {
+            return GenericKind::Crypto;
+        }
+    }
+    GenericKind::Type
 }
 ```
 
-Similarly for impl items:
-
-```rust
-pub enum IrImplItem {
-    Method(IrFunction),
-    AssociatedType { name: AssociatedType, ty: IrType },
-    /// Constant value for a type-level constant
-    AssociatedConst {
-        name: AssociatedType,
-        const_kind: TypeLevelConstKind,
-        /// The concrete typenum type (e.g., `U32`)
-        ty: IrType,
-    },
-}
-```
-
-**Detection logic** (in parser, post-parse, or as an analysis pass):
-- When parsing `IrTraitItem::AssociatedType`, check if any bound is `ArrayLength<_>` or `Unsigned`.
-- If so, emit `AssociatedConst` instead of `AssociatedType`.
-- In impl blocks, the corresponding `type OutputSize = D::OutputSize;` becomes `AssociatedConst` when the trait item it satisfies is a const.
+**How this solves features 2 and 3 together**:
+- `lowering_dyn.rs` calls `ConstAnalysis::from_module()` and uses it instead of inline classification. The `StructInfo`, `LoweringContext`, and dyn-specific lowering logic stay in `lowering_dyn.rs`, but the pure analysis functions move out.
+- Trait/impl associated type classification falls out naturally: `ConstAnalysis` walks `IrModule.traits`, calling `classify_assoc_type_bounds()` on each `IrTraitItem::AssociatedType`, and records the results. Then when processing impls, it inherits the classification from the trait.
+- Backends (C, HDL) can query `ConstAnalysis` to decide how to codegen an associated type without ever touching dyn-lowering code.
 
 **Action items**:
-- [ ] Add `TypeLevelConstKind` enum to `ir.rs`.
-- [ ] Add `IrTraitItem::AssociatedConst` and `IrImplItem::AssociatedConst` variants.
-- [ ] Add classification function `fn classify_assoc_type(bounds: &[IrTraitBound]) -> Option<TypeLevelConstKind>`.
-- [ ] Modify parser's `convert_trait_item` to classify and emit the right variant.
-- [ ] Modify parser's `convert_impl_item` to match (needs trait context or post-parse fixup).
-- [ ] Update printer to emit these correctly.
-- [ ] Update lowering/lowering_dyn to handle the new variants.
-- [ ] Add tests.
+- [ ] Create `src/const_analysis.rs`.
+- [ ] Move `GenericKind`, `classify_generic`, `is_length_bound`, `is_crypto_bound`, `is_fn_bound`, `is_math_op_bound`, `is_length_name`, `type_refers_to_length` from `lowering_dyn.rs` → `const_analysis.rs`.
+- [ ] Add `classify_assoc_type_bounds()` function.
+- [ ] Add `ConstAnalysis` struct with `from_module()` constructor.
+- [ ] Refactor `lowering_dyn.rs` to `use crate::const_analysis::*` instead of inline functions.
+- [ ] Add `pub mod const_analysis;` to `lib.rs`.
+- [ ] Add tests: verify `LengthDoubler::OutputSize` classified as `Length`, `Add::Output` classified as `Type`.
+- [ ] Verify existing tests still pass after extraction.
 
 ### 3. Methods (generic, `self`/no-receiver, any args)
 
 **Current state**: Already well-supported. `IrMethodSig` captures generics, receiver, params, return type, where clauses. `IrFunction` (used in impl items) captures the body too. Totality is enforced by rejecting `while`/`loop` in `convert_expr`.
 
-**Changes needed**:
-- Validate that method generics' where-clauses are preserved through the full pipeline (parse → lower → print).
-- Ensure methods without a receiver (static/associated functions) in trait definitions are handled — currently `IrMethodSig.receiver` is `Option<IrReceiver>`, which is correct.
-
 **Action items**:
 - [ ] Add test for trait with generic method (e.g., `fn remap<M, F>(&self, f: F) -> Self where F: FnMut(usize) -> usize`).
-- [ ] Add test for trait with static method (no receiver).
+- [ ] Add test for trait with static method (no receiver, e.g., `fn double(a: Array) -> [Array; 2]`).
 - [ ] Verify round-trip through printer.
 
 ### 4. Trait-Level Generics
 
-**Current state**: `IrTrait.generics: Vec<IrGenericParam>` is populated by the parser. `IrGenericParam` captures name, kind (Type/Const/Lifetime), bounds, and default.
-
-**Changes needed**: Mostly validation. Trait-level generics appear in `volar-spec` as e.g., `trait VoleArray<T>: ArrayLength<T>` and in built-in traits as `trait Add<Rhs = Self>`.
+**Current state**: `IrTrait.generics: Vec<IrGenericParam>` is populated by the parser. Trait-level generics appear in `volar-spec` as e.g., `trait VoleArray<T>: ArrayLength<T>` and in built-in traits as `trait Add<Rhs = Self>`.
 
 **Action items**:
 - [ ] Add test for parsing `trait Add<Rhs = Self> { type Output; fn add(self, rhs: Rhs) -> Self::Output; }`.
 - [ ] Verify default type parameters (`Rhs = Self`) are preserved in `IrGenericParam.default`.
 - [ ] Verify supertraits are captured in `IrTrait.super_traits`.
 
-### 5. Custom Trait Definitions
+### 5. Custom Trait Definitions — extend `TypeContext`
 
-**Current state**: `TraitKind::Custom(String)` is used for any trait not recognized as `MathTrait` or `CryptoTrait`. The `IrTrait` struct stores the full definition (generics, supertraits, items). The issue is that `TraitKind::Custom(String)` carries only a name—it's not linked back to its `IrTrait` definition.
+**Current state**: `TypeContext` in `lowering.rs` already holds `traits: BTreeMap<String, IrTrait>` populated from `IrModule.traits`. It also holds `assoc_types` for resolution. The gap: no lookup by `TraitKind`, no validation that impls satisfy trait requirements, and no built-in trait definitions.
 
-**Design**: We do NOT need to change `TraitKind` — it's a *classification key*, not a definition. The definitions live in `IrModule.traits`. What we need is:
-
-1. A **trait registry** that maps `TraitKind` → `&IrTrait` for lookups.
-2. When an `IrImpl` references `TraitKind::Custom("LengthDoubler")`, lowering/codegen should be able to look up the full trait definition to know what associated types/consts/methods it expects.
+**Design**: Extend `TypeContext` with trait registry methods. `ConstAnalysis` stays in its own struct — `TypeContext` can *hold* a `ConstAnalysis` reference or take it as a parameter, but the constant analysis results are never stored inside `TypeContext` fields.
 
 ```rust
-// In lowering.rs or a new resolution module
-pub struct TraitRegistry {
-    /// Maps trait name → trait definition
-    pub defs: BTreeMap<String, IrTrait>,
-}
+// Extended TypeContext in lowering.rs
+impl TypeContext {
+    /// Look up a trait definition by TraitKind
+    pub fn lookup_trait(&self, kind: &TraitKind) -> Option<&IrTrait> {
+        let name = match kind {
+            TraitKind::Math(m) => format!("{:?}", m),
+            TraitKind::Crypto(c) => format!("{:?}", c),
+            TraitKind::Custom(n) => n.clone(),
+            TraitKind::External { path } => path.join("::"),
+            TraitKind::Into(_) => "Into".to_string(),
+            TraitKind::AsRef(_) => "AsRef".to_string(),
+            TraitKind::Fn(_, _) => "Fn".to_string(),
+        };
+        self.traits.get(&name)
+    }
 
-impl TraitRegistry {
-    pub fn from_module(module: &IrModule) -> Self { ... }
-    
-    /// Look up a trait by its TraitKind
-    pub fn lookup(&self, kind: &TraitKind) -> Option<&IrTrait> { ... }
-    
-    /// Get the expected associated types/consts for a trait
-    pub fn expected_items(&self, kind: &TraitKind) -> Vec<&IrTraitItem> { ... }
+    /// Get the expected trait items (associated types, methods) for a trait.
+    pub fn trait_items(&self, kind: &TraitKind) -> Option<&[IrTraitItem]> {
+        self.lookup_trait(kind).map(|t| t.items.as_slice())
+    }
+
+    /// Validate that an impl block satisfies all required trait items.
+    pub fn validate_impl(&self, imp: &IrImpl) -> Vec<String> {
+        // Returns a list of missing/mismatched items
+        ...
+    }
 }
 ```
 
 **Action items**:
-- [ ] Add `TraitRegistry` to `lowering.rs` (or new `resolution.rs` module).
-- [ ] Populate it from `IrModule.traits`.
-- [ ] Integrate with `TypeContext` (which already partially does this via `traits: BTreeMap<String, IrTrait>`).
-- [ ] Add validation: every `IrImpl` for a custom trait must satisfy all trait items (associated types defined, methods implemented).
-- [ ] Add test: define `LengthDoubler` trait, implement it, verify registry lookup works.
+- [ ] Add `lookup_trait()` and `trait_items()` methods to `TypeContext`.
+- [ ] Add `validate_impl()` method (returns `Vec<String>` of errors, not hard failure).
+- [ ] Register built-in trait definitions (see feature 6) in `TypeContext::from_module()`.
+- [ ] Add test: define `LengthDoubler` trait, implement it, verify `lookup_trait` works.
+- [ ] Add test: verify `validate_impl` catches a missing associated type.
 
 ### 6. Built-in Trait Special Treatment
 
-**Current state**: `MathTrait` and `CryptoTrait` enums recognize built-in traits by name, but their *structure* (what associated types they have, what methods, what generics) is implicit—hardcoded knowledge scattered through the codebase.
+**Current state**: `MathTrait` and `CryptoTrait` enums recognize built-in traits by name, but their *structure* is implicit—hardcoded knowledge scattered through the codebase.
 
-**Design**: Create canonical `IrTrait` definitions for each built-in trait, stored in the `TraitRegistry`. These serve as the single source of truth for:
-- What `Add<Rhs>` looks like: one generic param `Rhs` (default `Self`), one associated type `Output`, one method `fn add(self, rhs: Rhs) -> Self::Output`.
-- What `Clone` looks like: no generics, no associated types, one method `fn clone(&self) -> Self`.
-- What `BlockEncrypt` looks like: associated type `BlockSize`, method `fn encrypt_block(&self, block: &mut Block<Self>)`.
-
-This lets backends query the trait structure uniformly without hardcoding.
+**Design**: Create canonical `IrTrait` definitions for each built-in trait. These are constructed once and registered into `TypeContext.traits` during `from_module()`. This makes them available to `lookup_trait()`, `validate_impl()`, and backend codegen uniformly.
 
 ```rust
-// New in ir.rs or resolution.rs
+// New in ir.rs
 pub fn builtin_trait_defs() -> Vec<IrTrait> {
     vec![
         // Add<Rhs = Self> { type Output; fn add(self, rhs: Rhs) -> Self::Output; }
@@ -210,77 +235,154 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
                 }),
             ],
         },
-        // ... Sub, Mul, Div, BitAnd, BitOr, BitXor, Shl, Shr, Neg, Not similarly
-        // ... Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord
-        // ... BlockEncrypt, Digest, etc.
+        // Sub, Mul, Div, Rem: same shape as Add with respective method names
+        // BitAnd, BitOr, BitXor, Shl, Shr: same shape as Add
+        // Neg, Not: unary — no Rhs generic, no params besides self
+        // PartialEq<Rhs = Self> { fn eq(&self, other: &Rhs) -> bool; }
+        // Eq: no items, supertrait PartialEq
+        // PartialOrd, Ord: similarly
+        // Clone { fn clone(&self) -> Self; }
+        // Copy: marker, supertrait Clone
+        // Default { fn default() -> Self; }  — no receiver!
+        // BlockEncrypt { type BlockSize; fn encrypt_block(&self, block: &mut Block<Self>); }
+        // Digest { type OutputSize; fn new() -> Self; fn update(&mut self, data: &[u8]); fn finalize(self) -> ...; }
+        // ArrayLength<T> — marker with no items (type-level constant)
     ]
+}
+
+/// Map a binary operator to its corresponding math trait.
+impl SpecBinOp {
+    pub fn to_math_trait(&self) -> Option<MathTrait> {
+        match self {
+            Self::Add => Some(MathTrait::Add),
+            Self::Sub => Some(MathTrait::Sub),
+            Self::Mul => Some(MathTrait::Mul),
+            Self::Div => Some(MathTrait::Div),
+            Self::Rem => Some(MathTrait::Rem),
+            Self::BitAnd => Some(MathTrait::BitAnd),
+            Self::BitOr => Some(MathTrait::BitOr),
+            Self::BitXor => Some(MathTrait::BitXor),
+            Self::Shl => Some(MathTrait::Shl),
+            Self::Shr => Some(MathTrait::Shr),
+            Self::Eq => Some(MathTrait::PartialEq),
+            Self::Ne => Some(MathTrait::PartialEq), // negated
+            Self::Lt | Self::Le | Self::Gt | Self::Ge => Some(MathTrait::PartialOrd),
+            _ => None,
+        }
+    }
+}
+
+/// Map a math trait to its canonical binary operator (for backends).
+impl MathTrait {
+    pub fn to_bin_op(&self) -> Option<SpecBinOp> {
+        match self {
+            Self::Add => Some(SpecBinOp::Add),
+            Self::Sub => Some(SpecBinOp::Sub),
+            Self::Mul => Some(SpecBinOp::Mul),
+            Self::Div => Some(SpecBinOp::Div),
+            Self::Rem => Some(SpecBinOp::Rem),
+            Self::BitAnd => Some(SpecBinOp::BitAnd),
+            Self::BitOr => Some(SpecBinOp::BitOr),
+            Self::BitXor => Some(SpecBinOp::BitXor),
+            Self::Shl => Some(SpecBinOp::Shl),
+            Self::Shr => Some(SpecBinOp::Shr),
+            _ => None,
+        }
+    }
 }
 ```
 
-**Why this matters for non-Rust targets**: When compiling `a + b` where `a: T` and `T: Add<U, Output = O>`, a C backend needs to know that `+` maps to `Add::add`, and that the output type is `O`. An HDL backend might map `BitXor` to a gate. Having the canonical definition in the IR makes this uniform.
-
 **Action items**:
-- [ ] Define `builtin_trait_defs()` returning canonical `IrTrait` for all `MathTrait` and `CryptoTrait` variants.
-- [ ] Auto-register these in `TraitRegistry`.
-- [ ] Add a mapping function: `SpecBinOp → MathTrait` (e.g., `SpecBinOp::Add → MathTrait::Add`).
-- [ ] Add a mapping function: `MathTrait → SpecBinOp` (inverse, for backends that want to desugar trait calls to operators).
-- [ ] Add test: look up `Add` trait definition, verify it has `Output` and `add` method.
+- [ ] Add `builtin_trait_defs()` to `ir.rs`.
+- [ ] Add `SpecBinOp::to_math_trait()` and `MathTrait::to_bin_op()` to `ir.rs`.
+- [ ] Register built-in defs in `TypeContext::from_module()` (insert into `self.traits` if not already present from user code).
+- [ ] Add test: look up `Add` trait definition from `TypeContext`, verify it has `Output` and `add` method.
+- [ ] Add test: `SpecBinOp::Add.to_math_trait() == Some(MathTrait::Add)` and back.
+
+---
 
 ## Implementation Order
 
 ```
-Phase 1: Foundation (IR changes)
-  1a. Add TypeLevelConstKind, IrTraitItem::AssociatedConst, IrImplItem::AssociatedConst
-  1b. Add TraitRegistry to lowering.rs
-  1c. Add builtin_trait_defs() and register them
-  1d. Fix associated type printing (Debug → proper names + bounds)
+Phase 1: Extract constant analysis (enables features 2 + 3, unblocks everything)
+  1a. Create src/const_analysis.rs
+  1b. Move classify_generic, is_length_bound, etc. from lowering_dyn.rs
+  1c. Add classify_assoc_type_bounds() and ConstAnalysis struct
+  1d. Refactor lowering_dyn.rs to use const_analysis
+  1e. Verify all existing tests pass
 
-Phase 2: Parser updates
-  2a. Classify associated types as consts when bounded by ArrayLength/Unsigned
-  2b. (Impl items need trait-context for classification — use post-parse fixup via TraitRegistry)
+Phase 2: IR enrichment (features 1, 6)
+  2a. Add Display for AssociatedType
+  2b. Fix printer for associated types (names + bounds, not Debug)
+  2c. Add builtin_trait_defs() to ir.rs
+  2d. Add SpecBinOp ↔ MathTrait mappings
 
-Phase 3: Lowering & printer updates
-  3a. Handle AssociatedConst in lowering_dyn (these become runtime usize witnesses)
-  3b. Handle AssociatedConst in printer (print as `type Name = ...;` for Rust, or `const size_t name = ...;` for C)
-  3c. Ensure round-trip fidelity for custom traits
+Phase 3: TypeContext extension (feature 5)
+  3a. Add lookup_trait(), trait_items() to TypeContext
+  3b. Register builtin_trait_defs() in TypeContext::from_module()
+  3c. Add validate_impl() method
 
-Phase 4: Testing
-  4a. Unit tests for each feature
-  4b. Integration test: parse volar-spec, verify LengthDoubler is a custom trait with AssociatedConst
-  4c. Integration test: parse volar-spec, verify Add<Vope<...>> impls have Output type resolved
-  4d. Round-trip test: parse → print → re-parse → compare
+Phase 4: Testing (features 3, 4 + integration)
+  4a. Unit tests for const_analysis (struct generics, trait assoc types)
+  4b. Tests for trait-level generics (defaults, supertraits)
+  4c. Tests for methods (generic, static, receiver variants)
+  4d. Integration test: parse volar-spec, verify LengthDoubler is custom trait
+      with OutputSize classified as Length by ConstAnalysis
+  4e. Integration test: parse volar-spec, verify Add impls have Output resolved
+  4f. Round-trip test: parse → print → re-parse → compare
 ```
+
+## Architecture Diagram
+
+```
+                        ┌──────────────┐
+                        │  IrModule    │
+                        │  (ir.rs)     │
+                        └──────┬───────┘
+                               │
+                    ┌──────────┼──────────┐
+                    │          │          │
+                    ▼          ▼          ▼
+           ┌───────────┐ ┌──────────┐ ┌──────────────┐
+           │ TypeContext│ │ Const    │ │ Lowering     │
+           │(lowering) │ │ Analysis │ │ Dyn          │
+           │           │ │(separate │ │(lowering_dyn)│
+           │• traits   │ │ struct)  │ │              │
+           │• assoc_ty │ │          │ │• uses Const  │
+           │• lookup() │ │• generic │ │  Analysis    │
+           │• validate│ │  kinds   │ │• StructInfo  │
+           │           │ │• assoc   │ │              │
+           │• builtin  │ │  kinds   │ │              │
+           │  defs     │ │          │ │              │
+           └───────────┘ └──────────┘ └──────────────┘
+                │                │              │
+                │                │              │
+                ▼                ▼              ▼
+           ┌─────────┐    ┌──────────┐   ┌──────────┐
+           │ Printer  │    │ C/HDL    │   │ Printer  │
+           │(printer) │    │ backends │   │ Dyn      │
+           └─────────┘    │ (future) │   └──────────┘
+                          └──────────┘
+```
+
+Key separation: `ConstAnalysis` is a pure analysis result struct. `TypeContext` holds type resolution state and trait definitions (including builtins). `LoweringDyn` consumes both but owns neither.
 
 ## Totality Invariant
 
-All methods in trait definitions and implementations must be **total**. This is already enforced by `convert_expr` rejecting `while`/`loop`. The new trait infrastructure does not weaken this:
+All methods in trait definitions and implementations must be **total**. This is already enforced by `convert_expr` rejecting `while`/`loop`. The new infrastructure does not weaken this:
 - `IrMethodSig` (trait items) has no body — totality is only enforced at impl time.
 - `IrFunction` (impl items) goes through `convert_block` → `convert_expr`, which rejects unbounded loops.
-- Type-level constants (`AssociatedConst`) are values, not computations — trivially total.
+- Type-level constants are *values* (resolved via `ConstAnalysis`), not computations — trivially total.
 
 ## Files Changed
 
 | File | Changes |
 |------|---------|
-| `src/ir.rs` | Add `TypeLevelConstKind`, `AssociatedConst` variants, `builtin_trait_defs()`, `SpecBinOp ↔ MathTrait` mappings |
-| `src/parser.rs` | Classify associated types as consts during parsing |
-| `src/lowering.rs` | Add `TraitRegistry`, integrate with `TypeContext` |
-| `src/lowering_dyn.rs` | Handle `AssociatedConst` in lowering |
-| `src/printer.rs` | Fix associated type printing, handle `AssociatedConst` |
-| `src/printer_dyn.rs` | No changes expected (delegates to `printer.rs`) |
-| `tests/` | New test file `tests/traits_and_impls.rs` |
-
-## Open Questions
-
-1. **Should `AssociatedConst` be a separate variant or a flag on `AssociatedType`?**
-   - Separate variant: clearer, but more match arms everywhere.
-   - Flag: `AssociatedType { ..., is_type_level_const: Option<TypeLevelConstKind> }` — fewer changes but muddier semantics.
-   - **Recommendation**: Separate variant. The semantic difference is real (affects codegen), and the additional match arms are manageable.
-
-2. **Should `TraitRegistry` be a standalone struct or merged into `TypeContext`?**
-   - `TypeContext` already has `traits: BTreeMap<String, IrTrait>`. We could just extend it.
-   - **Recommendation**: Extend `TypeContext` with the lookup methods. Add `builtin_trait_defs()` to its constructor. Keeps things centralized.
-
-3. **Post-parse fixup vs. parser-time classification for impl `AssociatedConst`?**
-   - At parse time, we don't know which trait is being implemented when we see `type OutputSize = D::OutputSize;` inside an `impl` block. We'd need to look up the trait.
-   - **Recommendation**: Two-pass. Parse as `AssociatedType` first. Then run a fixup pass using `TraitRegistry` to reclassify impl items that correspond to trait `AssociatedConst` items. This keeps the parser simple and the logic in one place.
+| **`src/const_analysis.rs`** | **New.** `GenericKind`, `ConstAnalysis`, extracted classification functions, `classify_assoc_type_bounds()`. |
+| `src/ir.rs` | Add `Display for AssociatedType`, `builtin_trait_defs()`, `SpecBinOp::to_math_trait()`, `MathTrait::to_bin_op()`. |
+| `src/lowering.rs` | Extend `TypeContext` with `lookup_trait()`, `trait_items()`, `validate_impl()`. Register builtins in `from_module()`. |
+| `src/lowering_dyn.rs` | Remove extracted functions, `use crate::const_analysis::*`. `StructInfo` and `LoweringContext` stay here. |
+| `src/printer.rs` | Fix associated type printing (use `Display` instead of `Debug`), handle bounds. |
+| `src/lib.rs` | Add `pub mod const_analysis;`. |
+| `src/printer_dyn.rs` | No changes expected (delegates to `printer.rs`). |
+| `tests/traits_and_impls.rs` | **New.** Tests for all 6 features. |
