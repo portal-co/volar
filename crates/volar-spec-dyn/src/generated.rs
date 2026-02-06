@@ -11,6 +11,8 @@ use typenum::Unsigned;
 use cipher::{BlockEncrypt, Block};
 use digest::Digest;
 use volar_common::hash_commitment::commit;
+use volar_primitives::{Bit, BitsInBytes, BitsInBytes64, Galois, Galois64};
+use volar_spec::byte_gen::LengthDoubler;
 
 /// Compute integer log2
 #[inline]

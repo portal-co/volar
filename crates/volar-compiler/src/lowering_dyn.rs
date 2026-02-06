@@ -39,6 +39,8 @@ pub struct StructInfo {
 /// Context for lowering
 pub struct LoweringContext {
     pub struct_info: BTreeMap<String, StructInfo>,
+    /// Trait names that are length aliases (e.g., VoleArray: ArrayLength).
+    pub length_aliases: Vec<String>,
 }
 
 impl LoweringContext {
@@ -53,6 +55,30 @@ impl LoweringContext {
     /// dynamic code that references them.
     pub fn new_with_deps(module: &IrModule, deps: &[crate::manifest::TypeManifest]) -> Self {
         let mut struct_info = BTreeMap::new();
+
+        // Discover length-alias traits (e.g., VoleArray: ArrayLength → length alias).
+        // Fixed-point iteration to handle transitive chains.
+        let mut length_aliases: Vec<String> = Vec::new();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for t in &module.traits {
+                if let TraitKind::Custom(name) = &t.kind {
+                    if length_aliases.contains(name) {
+                        continue;
+                    }
+                    let aliases_ref: Vec<&str> = length_aliases.iter().map(|s| s.as_str()).collect();
+                    let is_alias = t.super_traits.iter().any(|st| {
+                        crate::const_analysis::is_length_bound_with_aliases(st, &aliases_ref)
+                    });
+                    if is_alias {
+                        length_aliases.push(name.clone());
+                        changed = true;
+                    }
+                }
+            }
+        }
+        let aliases_ref: Vec<&str> = length_aliases.iter().map(|s| s.as_str()).collect();
 
         // Register dependency structs first
         for dep in deps {

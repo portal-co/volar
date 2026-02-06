@@ -1177,6 +1177,7 @@ impl<'a> RustBackend for DynPreambleWriter<'a> {
         writeln!(f, "use cipher::{{BlockEncrypt, Block}};")?;
         writeln!(f, "use digest::Digest;")?;
         writeln!(f, "use volar_common::hash_commitment::commit;")?;
+        writeln!(f, "use volar_primitives::{{Bit, BitsInBytes, BitsInBytes64, Galois, Galois64}};")?;
         writeln!(f)?;
 
         // Dependency re-exports
