@@ -44,6 +44,13 @@ pub struct LoweringContext {
 }
 
 impl LoweringContext {
+    /// Get length aliases as string slices for use with `classify_generic_with_aliases`.
+    fn aliases(&self) -> Vec<&str> {
+        self.length_aliases.iter().map(|s| s.as_str()).collect()
+    }
+}
+
+impl LoweringContext {
     pub fn new(module: &IrModule) -> Self {
         Self::new_with_deps(module, &[])
     }
@@ -89,7 +96,7 @@ impl LoweringContext {
                     let kind = if p.kind == IrGenericParamKind::Lifetime {
                         GenericKind::Type
                     } else {
-                        classify_generic(p, &[&s.generics])
+                        classify_generic_with_aliases(p, &[&s.generics], &aliases_ref)
                     };
                     info.orig_generics
                         .push((p.name.clone(), kind.clone(), p.kind.clone()));
@@ -119,7 +126,7 @@ impl LoweringContext {
                 let kind = if p.kind == IrGenericParamKind::Lifetime {
                     GenericKind::Type
                 } else {
-                    classify_generic(p, &[&s.generics])
+                    classify_generic_with_aliases(p, &[&s.generics], &aliases_ref)
                 };
 
                 info.orig_generics
@@ -175,7 +182,7 @@ impl LoweringContext {
             }
         }
 
-        Self { struct_info }
+        Self { struct_info, length_aliases }
     }
 }
 
@@ -251,7 +258,7 @@ fn lower_struct_dyn(s: &IrStruct, ctx: &LoweringContext) -> IrStruct {
     let mut fields = Vec::new();
 
     // Don't add lifetimes since we convert &[T] to Vec<T>
-    let generics = lower_generics_dyn(&s.generics, &[]);
+    let generics = lower_generics_dyn(&s.generics, &[], ctx);
 
     // Add length witnesses as public fields
     for w in &info.length_witnesses {
@@ -375,7 +382,7 @@ fn lower_impl_dyn(im: &IrImpl, ctx: &LoweringContext) -> IrImpl {
     }
 
     IrImpl {
-        generics: lower_generics_dyn(&impl_gen, &[]),
+        generics: lower_generics_dyn(&impl_gen, &[], ctx),
         trait_: im.trait_.as_ref().map(|tr| IrTraitRef {
             kind: tr.kind.clone(),
             type_args: tr
@@ -418,7 +425,7 @@ fn lower_function_dyn(
 
     // Length generics become parameters
     for p in &fn_gen {
-        let kind = classify_generic(p, &[&fn_gen, impl_gen]);
+        let kind = classify_generic_with_aliases(p, &[&fn_gen, impl_gen], &ctx.aliases());
         if kind == GenericKind::Length {
             let name = p.name.to_lowercase();
             if !params.iter().any(|param: &IrParam| param.name == name) {
@@ -433,7 +440,7 @@ fn lower_function_dyn(
     // Static methods also need impl-level length params
     if f.receiver.is_none() {
         for p in impl_gen {
-            let kind = classify_generic(p, &[impl_gen]);
+            let kind = classify_generic_with_aliases(p, &[impl_gen], &ctx.aliases());
             if kind == GenericKind::Length {
                 let name = p.name.to_lowercase();
                 if !params.iter().any(|param: &IrParam| param.name == name) {
@@ -513,13 +520,13 @@ fn lower_function_dyn(
     // Only include params that would survive lowering (non-Length, non-Lifetime)
     let mut combined_gen: Vec<IrGenericParam> = Vec::new();
     for p in fn_gen.iter() {
-        let kind = classify_generic(p, &[&fn_gen, impl_gen]);
+        let kind = classify_generic_with_aliases(p, &[&fn_gen, impl_gen], &ctx.aliases());
         if p.kind != IrGenericParamKind::Lifetime && kind != GenericKind::Length {
             combined_gen.push(p.clone());
         }
     }
     for p in impl_gen {
-        let kind = classify_generic(p, &[impl_gen, &fn_gen]);
+        let kind = classify_generic_with_aliases(p, &[impl_gen, &fn_gen], &ctx.aliases());
         if p.kind != IrGenericParamKind::Lifetime && kind != GenericKind::Length {
             if !combined_gen.iter().any(|cp| cp.name == p.name) {
                 combined_gen.push(p.clone());
@@ -529,7 +536,7 @@ fn lower_function_dyn(
 
     IrFunction {
         name: f.name.clone(),
-        generics: lower_generics_dyn(&f.generics, impl_gen),
+        generics: lower_generics_dyn(&f.generics, impl_gen, ctx),
         receiver: f.receiver,
         params,
         return_type: f
@@ -544,11 +551,13 @@ fn lower_function_dyn(
 fn lower_generics_dyn(
     generics: &[IrGenericParam],
     extra_ctx: &[IrGenericParam],
+    ctx: &LoweringContext,
 ) -> Vec<IrGenericParam> {
+    let aliases = ctx.aliases();
     generics
         .iter()
         .filter(|p| {
-            let kind = classify_generic(p, &[generics, extra_ctx]);
+            let kind = classify_generic_with_aliases(p, &[generics, extra_ctx], &aliases);
             p.kind != IrGenericParamKind::Lifetime && kind != GenericKind::Length
         })
         .map(|p| {
@@ -893,7 +902,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             if v.len() == 1 && v.chars().next().unwrap().is_uppercase() {
                 if fn_gen
                     .iter()
-                    .any(|p| p.name == *v && classify_generic(p, &[fn_gen]) == GenericKind::Length)
+                    .any(|p| p.name == *v && classify_generic_with_aliases(p, &[fn_gen], &ctx.aliases()) == GenericKind::Length)
                 {
                     return IrExpr::Var(v.to_lowercase());
                 }
