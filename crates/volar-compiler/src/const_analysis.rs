@@ -99,7 +99,8 @@ pub fn is_length_bound(bound: &IrTraitBound) -> bool {
 pub fn is_crypto_bound(bound: &IrTraitBound) -> bool {
     matches!(
         &bound.trait_kind,
-        TraitKind::Crypto(CryptoTrait::BlockCipher)
+        TraitKind::Crypto(CryptoTrait::BlockEncrypt)
+            | TraitKind::Crypto(CryptoTrait::BlockCipher)
             | TraitKind::Crypto(CryptoTrait::Digest)
             | TraitKind::Crypto(CryptoTrait::Rng)
             | TraitKind::Crypto(CryptoTrait::ByteBlockEncrypt)

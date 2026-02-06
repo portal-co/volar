@@ -20,11 +20,19 @@ impl TypeContext {
     pub fn from_module(module: &IrModule) -> Self {
         let mut ctx = Self::default();
 
+        // Register built-in trait definitions first (user-defined traits with
+        // the same name will override these, which is fine for custom impls)
+        for builtin in builtin_trait_defs() {
+            let name = builtin.kind.to_string();
+            ctx.traits.insert(name, builtin);
+        }
+
         for s in &module.structs {
             ctx.structs.insert(s.kind.to_string(), s.clone());
         }
 
         for t in &module.traits {
+            // User-defined traits override builtins
             ctx.traits.insert(t.kind.to_string(), t.clone());
         }
 
@@ -43,6 +51,72 @@ impl TypeContext {
         }
 
         ctx
+    }
+
+    /// Look up a trait definition by its `TraitKind`.
+    pub fn lookup_trait(&self, kind: &TraitKind) -> Option<&IrTrait> {
+        let name = kind.to_string();
+        self.traits.get(&name)
+    }
+
+    /// Get the expected trait items (associated types, methods) for a trait.
+    pub fn trait_items(&self, kind: &TraitKind) -> Option<&[IrTraitItem]> {
+        self.lookup_trait(kind).map(|t| t.items.as_slice())
+    }
+
+    /// Validate that an impl block satisfies all required trait items.
+    ///
+    /// Returns a list of error descriptions. Empty means valid.
+    pub fn validate_impl(&self, imp: &IrImpl) -> Vec<String> {
+        let mut errors = Vec::new();
+
+        let trait_ref = match &imp.trait_ {
+            Some(tr) => tr,
+            None => return errors, // Inherent impl, nothing to validate
+        };
+
+        let trait_def = match self.lookup_trait(&trait_ref.kind) {
+            Some(t) => t,
+            None => {
+                // Unknown trait — can't validate, not an error per se
+                return errors;
+            }
+        };
+
+        // Check that all required associated types are provided
+        for item in &trait_def.items {
+            match item {
+                IrTraitItem::AssociatedType { name, default, .. } => {
+                    if default.is_some() {
+                        continue; // Has a default, not required
+                    }
+                    let found = imp.items.iter().any(|ii| {
+                        matches!(ii, IrImplItem::AssociatedType { name: n, .. } if n == name)
+                    });
+                    if !found {
+                        errors.push(format!(
+                            "missing associated type `{}` in impl {} for {}",
+                            name, trait_ref.kind, imp.self_ty
+                        ));
+                    }
+                }
+                IrTraitItem::Method(sig) => {
+                    // Check that all required methods are implemented
+                    // (methods without a default body in the trait are required)
+                    let found = imp.items.iter().any(|ii| {
+                        matches!(ii, IrImplItem::Method(f) if f.name == sig.name)
+                    });
+                    if !found {
+                        errors.push(format!(
+                            "missing method `{}` in impl {} for {}",
+                            sig.name, trait_ref.kind, imp.self_ty
+                        ));
+                    }
+                }
+            }
+        }
+
+        errors
     }
 
     /// Substitute type parameters with concrete types
