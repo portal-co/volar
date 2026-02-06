@@ -997,8 +997,11 @@ impl<'a> RustBackend for ExprWriter<'a> {
             }
             IrExpr::DefaultValue { ty } => {
                 if let Some(t) = ty {
+                    // Use disambiguation syntax <T>::default() to handle
+                    // types with angle brackets like Vec<T>
+                    write!(f, "<")?;
                     TypeWriter { ty: t }.fmt(f)?;
-                    write!(f, "::default()")?;
+                    write!(f, ">::default()")?;
                 } else {
                     write!(f, "Default::default()")?;
                 }
@@ -1232,6 +1235,7 @@ impl<'a> RustBackend for DynPreambleWriter<'a> {
         writeln!(f, "use cipher::{{BlockEncrypt, Block}};")?;
         writeln!(f, "use digest::Digest;")?;
         writeln!(f, "use volar_common::hash_commitment::commit;")?;
+        writeln!(f, "use volar_common::length_doubling::LengthDoubler;")?;
         writeln!(f, "use volar_primitives::{{Bit, BitsInBytes, BitsInBytes64, Galois, Galois64}};")?;
         writeln!(f)?;
 
