@@ -29,7 +29,7 @@ fn test_classify_struct_generics() {
     assert_eq!(generics.len(), 3);
     assert_eq!(generics[0], ("N".into(), GenericKind::Length, IrGenericParamKind::Type));
     assert_eq!(generics[1], ("T".into(), GenericKind::Type, IrGenericParamKind::Type));
-    assert_eq!(generics[2], ("B".into(), GenericKind::Crypto, IrGenericParamKind::Type));
+    assert_eq!(generics[2], ("B".into(), GenericKind::Type, IrGenericParamKind::Type));
 }
 
 #[test]
@@ -373,7 +373,7 @@ fn test_type_context_has_builtins() {
         "TypeContext should have Clone"
     );
     assert!(
-        ctx.lookup_trait(&TraitKind::Crypto(volar_compiler::CryptoTrait::Digest))
+        ctx.lookup_trait(&TraitKind::Custom("Digest".into()))
             .is_some(),
         "TypeContext should have Digest"
     );
@@ -615,10 +615,10 @@ fn test_trait_with_generic_supertrait() {
     assert_eq!(t.generics.len(), 1);
     assert_eq!(t.generics[0].name, "T");
     assert_eq!(t.super_traits.len(), 1);
-    // ArrayLength is recognized as CryptoTrait
+    // ArrayLength is recognized as Custom trait
     assert_eq!(
         t.super_traits[0].trait_kind,
-        TraitKind::Crypto(volar_compiler::CryptoTrait::ArrayLength)
+        TraitKind::Custom("ArrayLength".into())
     );
     // With type arg T
     assert_eq!(t.super_traits[0].type_args.len(), 1);

@@ -113,9 +113,9 @@ fn main() {
                                 println!("  Math op: {:?} for {:?}", m, type_to_string(&imp.self_ty));
                             }
                         }
-                        TraitKind::Crypto(c) => {
+                        TraitKind::Custom(name) => {
                             crypto_count += 1;
-                            println!("  Crypto: {:?} for {:?}", c, type_to_string(&imp.self_ty));
+                            println!("  Custom: {} for {:?}", name, type_to_string(&imp.self_ty));
                         }
                         _ => {}
                     },

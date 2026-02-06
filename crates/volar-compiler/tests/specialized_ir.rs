@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 use volar_compiler::{
-    ArrayKind, AssociatedType, CryptoMethod, CryptoTrait, IrExpr, IrImplItem, IrStmt, IrType,
+    ArrayKind, AssociatedType, IrExpr, IrImplItem, IrStmt, IrType,
     MathTrait, MethodKind, PrimitiveType, StructKind, TraitKind, VoleMethod, parse_sources,
 };
 
@@ -94,11 +94,8 @@ fn test_specialize_volar_spec() {
             TraitKind::Math(m) => {
                 println!("  Math: {:?}", m);
             }
-            TraitKind::Crypto(c) => {
-                println!("  Crypto: {:?}", c);
-            }
             TraitKind::Custom(name) => {
-                println!("  Custom: {}", name);
+                println!("  Custom/Domain: {}", name);
             }
             TraitKind::External { path } => {
                 println!("  External: {}", path.join("::"));
@@ -117,7 +114,7 @@ fn test_specialize_volar_spec() {
 
     // Count impl block trait kinds
     let mut math_impls = 0;
-    let mut crypto_impls = 0;
+    let mut custom_impls = 0;
     let mut std_impls = 0;
     let mut inherent_impls = 0;
 
@@ -129,13 +126,9 @@ fn test_specialize_volar_spec() {
                     math_impls += 1;
                     println!("  Math impl: {:?}", m);
                 }
-                TraitKind::Crypto(c) => {
-                    crypto_impls += 1;
-                    println!("  Crypto impl: {:?}", c);
-                }
                 TraitKind::Custom(name) => {
-                    std_impls += 1;
-                    println!("  Std impl: {}", name);
+                    custom_impls += 1;
+                    println!("  Custom impl: {}", name);
                 }
                 _ => {
                     std_impls += 1;
@@ -148,7 +141,7 @@ fn test_specialize_volar_spec() {
     }
 
     println!("\n  Math trait impls: {}", math_impls);
-    println!("  Crypto trait impls: {}", crypto_impls);
+    println!("  Custom trait impls: {}", custom_impls);
     println!("  Standard trait impls: {}", std_impls);
     println!("  Inherent impls: {}", inherent_impls);
 
@@ -230,7 +223,6 @@ fn test_method_classification() {
     let f = &spec.functions[0];
 
     let mut vole_methods = 0;
-    let mut crypto_methods = 0;
     let mut std_methods = 0;
     let mut iter_methods = 0;
 
@@ -244,10 +236,6 @@ fn test_method_classification() {
                     MethodKind::Vole(v) => {
                         vole_methods += 1;
                         println!("VOLE method: {:?}", v);
-                    }
-                    MethodKind::Crypto(c) => {
-                        crypto_methods += 1;
-                        println!("Crypto method: {:?}", c);
                     }
                     MethodKind::Std(s) => {
                         std_methods += 1;
@@ -265,7 +253,6 @@ fn test_method_classification() {
         vole_methods >= 2,
         "Should recognize VOLE methods (remap, rotate_left)"
     );
-    assert!(crypto_methods >= 3, "Should recognize crypto methods");
     assert!(std_methods >= 2, "Should recognize standard methods");
 }
 
