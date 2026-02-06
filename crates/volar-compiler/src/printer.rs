@@ -789,6 +789,12 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 write!(f, ")")?;
             }
             IrExpr::Field { base, field } => {
+                debug_assert!(
+                    field.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                        || field.parse::<usize>().is_ok(),
+                    "Field name is not a valid ident or index: {:?}",
+                    field
+                );
                 ExprWriter { expr: base }.fmt(f)?;
                 write!(f, ".{}", field)?;
             }
@@ -827,6 +833,11 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 inclusive,
                 body,
             } => {
+                debug_assert!(
+                    var.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                    "BoundedLoop var is not a valid ident: {:?}",
+                    var
+                );
                 write!(f, "for {} in ", var)?;
                 ExprWriter { expr: start }.fmt(f)?;
                 write!(f, "{} ", if *inclusive { "..=" } else { ".." })?;
@@ -891,6 +902,11 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 segments,
                 type_args,
             } => {
+                debug_assert!(
+                    segments.iter().all(|s| s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '!')),
+                    "Path segments contain non-ident strings: {:?}",
+                    segments
+                );
                 // When path has 2+ segments and type_args, put turbofish on
                 // the type prefix (e.g. AsRef::<[u8]>::as_ref, Vec::<u8>::new).
                 if segments.len() >= 2 && !type_args.is_empty() {
@@ -1067,6 +1083,11 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     }
                     _ => write!(f, "todo!(\"length\")")?,
                 }
+                debug_assert!(
+                    index_var.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                    "ArrayGenerate index_var is not a valid ident: {:?}",
+                    index_var
+                );
                 write!(f, ").map(|{}| ", index_var)?;
                 ExprWriter { expr: body }.fmt(f)?;
                 write!(f, ").collect::<Vec<_>>()")?;
@@ -1193,11 +1214,17 @@ impl RustBackend for ReceiverWriter {
 // ============================================================================
 
 fn method_name(method: &MethodKind) -> String {
-    match method {
+    let name = match method {
         MethodKind::Std(s) => s.clone(),
         MethodKind::Vole(v) => format!("{:?}", v).to_lowercase(),
         MethodKind::Unknown(s) => s.clone(),
-    }
+    };
+    debug_assert!(
+        name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+        "Method name is not a valid ident: {:?}",
+        name
+    );
+    name
 }
 
 fn bin_op_str(op: SpecBinOp) -> &'static str {
