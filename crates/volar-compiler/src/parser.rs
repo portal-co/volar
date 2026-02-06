@@ -1322,7 +1322,7 @@ fn peel_iter_chain(syn_expr: &Expr) -> Result<Option<PeeledChain>> {
                         let inner = peel_iter_chain(&m.receiver)?;
                         if let Some(mut p) = inner {
                             p.steps.push(crate::ir::IterStep::Map {
-                                var: extract_pat_name(&c.inputs[0]),
+                                var: extract_ir_pattern(&c.inputs[0]),
                                 body: Box::new(convert_expr(&c.body)?),
                             });
                             return Ok(Some(p));
@@ -1335,7 +1335,7 @@ fn peel_iter_chain(syn_expr: &Expr) -> Result<Option<PeeledChain>> {
                         let inner = peel_iter_chain(&m.receiver)?;
                         if let Some(mut p) = inner {
                             p.steps.push(crate::ir::IterStep::Filter {
-                                var: extract_pat_name(&c.inputs[0]),
+                                var: extract_ir_pattern(&c.inputs[0]),
                                 body: Box::new(convert_expr(&c.body)?),
                             });
                             return Ok(Some(p));
@@ -1348,7 +1348,7 @@ fn peel_iter_chain(syn_expr: &Expr) -> Result<Option<PeeledChain>> {
                         let inner = peel_iter_chain(&m.receiver)?;
                         if let Some(mut p) = inner {
                             p.steps.push(crate::ir::IterStep::FilterMap {
-                                var: extract_pat_name(&c.inputs[0]),
+                                var: extract_ir_pattern(&c.inputs[0]),
                                 body: Box::new(convert_expr(&c.body)?),
                             });
                             return Ok(Some(p));
@@ -1361,7 +1361,7 @@ fn peel_iter_chain(syn_expr: &Expr) -> Result<Option<PeeledChain>> {
                         let inner = peel_iter_chain(&m.receiver)?;
                         if let Some(mut p) = inner {
                             p.steps.push(crate::ir::IterStep::FlatMap {
-                                var: extract_pat_name(&c.inputs[0]),
+                                var: extract_ir_pattern(&c.inputs[0]),
                                 body: Box::new(convert_expr(&c.body)?),
                             });
                             return Ok(Some(p));
@@ -1501,8 +1501,8 @@ fn try_build_iter_chain(receiver: &Expr, method: &str, args: &[&Expr]) -> Result
                         steps: p.steps,
                         terminal: crate::ir::IterTerminal::Fold {
                             init: Box::new(convert_expr(args[0])?),
-                            acc_var: extract_pat_name(&c.inputs[0]),
-                            elem_var: extract_pat_name(&c.inputs[1]),
+                            acc_var: extract_ir_pattern(&c.inputs[0]),
+                            elem_var: extract_ir_pattern(&c.inputs[1]),
                             body: Box::new(convert_expr(&c.body)?),
                         },
                     }));
@@ -1529,7 +1529,7 @@ fn try_build_iter_chain(receiver: &Expr, method: &str, args: &[&Expr]) -> Result
                     "map" if args.len() == 1 => {
                         if let Expr::Closure(c) = args[0] {
                             p.steps.push(crate::ir::IterStep::Map {
-                                var: extract_pat_name(&c.inputs[0]),
+                                var: extract_ir_pattern(&c.inputs[0]),
                                 body: Box::new(convert_expr(&c.body)?),
                             });
                             return Ok(Some(crate::ir::IrIterChain {
@@ -1542,7 +1542,7 @@ fn try_build_iter_chain(receiver: &Expr, method: &str, args: &[&Expr]) -> Result
                     "filter" if args.len() == 1 => {
                         if let Expr::Closure(c) = args[0] {
                             p.steps.push(crate::ir::IterStep::Filter {
-                                var: extract_pat_name(&c.inputs[0]),
+                                var: extract_ir_pattern(&c.inputs[0]),
                                 body: Box::new(convert_expr(&c.body)?),
                             });
                             return Ok(Some(crate::ir::IrIterChain {
@@ -1555,7 +1555,7 @@ fn try_build_iter_chain(receiver: &Expr, method: &str, args: &[&Expr]) -> Result
                     "filter_map" if args.len() == 1 => {
                         if let Expr::Closure(c) = args[0] {
                             p.steps.push(crate::ir::IterStep::FilterMap {
-                                var: extract_pat_name(&c.inputs[0]),
+                                var: extract_ir_pattern(&c.inputs[0]),
                                 body: Box::new(convert_expr(&c.body)?),
                             });
                             return Ok(Some(crate::ir::IrIterChain {
@@ -1568,7 +1568,7 @@ fn try_build_iter_chain(receiver: &Expr, method: &str, args: &[&Expr]) -> Result
                     "flat_map" if args.len() == 1 => {
                         if let Expr::Closure(c) = args[0] {
                             p.steps.push(crate::ir::IterStep::FlatMap {
-                                var: extract_pat_name(&c.inputs[0]),
+                                var: extract_ir_pattern(&c.inputs[0]),
                                 body: Box::new(convert_expr(&c.body)?),
                             });
                             return Ok(Some(crate::ir::IrIterChain {
@@ -1697,8 +1697,8 @@ fn convert_method_call(receiver: &Expr, method: &str, args: &[&Expr]) -> Result<
     // Non-iterator .zip(other, |a, b| body) — GenericArray style
     if method == "zip" && args.len() == 2 {
         if let Expr::Closure(c) = args[1] {
-            let left_var = extract_pat_name(&c.inputs[0]);
-            let right_var = extract_pat_name(&c.inputs[1]);
+            let left_var = extract_ir_pattern(&c.inputs[0]);
+            let right_var = extract_ir_pattern(&c.inputs[1]);
             return Ok(IrExpr::RawZip {
                 left: Box::new(convert_expr(receiver)?),
                 right: Box::new(convert_expr(args[0])?),
@@ -1715,7 +1715,7 @@ fn convert_method_call(receiver: &Expr, method: &str, args: &[&Expr]) -> Result<
             if c.inputs.len() == 1 {
                 return Ok(IrExpr::RawMap {
                     receiver: Box::new(convert_expr(receiver)?),
-                    elem_var: extract_pat_name(&c.inputs[0]),
+                    elem_var: extract_ir_pattern(&c.inputs[0]),
                     body: Box::new(convert_expr(&c.body)?),
                 });
             }
@@ -1729,8 +1729,8 @@ fn convert_method_call(receiver: &Expr, method: &str, args: &[&Expr]) -> Result<
                 return Ok(IrExpr::RawFold {
                     receiver: Box::new(convert_expr(receiver)?),
                     init: Box::new(convert_expr(args[0])?),
-                    acc_var: extract_pat_name(&c.inputs[0]),
-                    elem_var: extract_pat_name(&c.inputs[1]),
+                    acc_var: extract_ir_pattern(&c.inputs[0]),
+                    elem_var: extract_ir_pattern(&c.inputs[1]),
                     body: Box::new(convert_expr(&c.body)?),
                 });
             }
@@ -1919,6 +1919,26 @@ fn extract_pat_name(pat: &Pat) -> String {
             }
         }
         _ => "_".to_string(),
+    }
+}
+
+/// Convert a `syn::Pat` to an `IrPattern`.
+fn extract_ir_pattern(pat: &Pat) -> IrPattern {
+    match pat {
+        Pat::Ident(pi) => IrPattern::Ident {
+            mutable: pi.mutability.is_some(),
+            name: pi.ident.to_string(),
+            subpat: None,
+        },
+        Pat::Tuple(t) => {
+            IrPattern::Tuple(t.elems.iter().map(extract_ir_pattern).collect())
+        }
+        Pat::Wild(_) => IrPattern::Wild,
+        Pat::Reference(r) => {
+            // References in closure patterns are rare but handle them
+            extract_ir_pattern(&r.pat)
+        }
+        _ => IrPattern::Wild,
     }
 }
 

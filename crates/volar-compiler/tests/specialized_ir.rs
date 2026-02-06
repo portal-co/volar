@@ -293,11 +293,11 @@ fn test_array_operations() {
                 }
                 IrExpr::RawMap { elem_var, .. } => {
                     method_map_count += 1;
-                    println!("RawMap with var: {}", elem_var);
+                    println!("RawMap with var: {:?}", elem_var);
                 }
                 IrExpr::RawZip { left_var, right_var, .. } => {
                     zip_count += 1;
-                    println!("RawZip with vars: {}, {}", left_var, right_var);
+                    println!("RawZip with vars: {:?}, {:?}", left_var, right_var);
                 }
                 _ => {}
             }
@@ -530,8 +530,8 @@ fn test_iter_chain_simple_fold() {
             assert!(chain.steps.is_empty(), "No intermediate steps");
             match &chain.terminal {
                 IterTerminal::Fold { acc_var, elem_var, .. } => {
-                    assert_eq!(acc_var, "acc");
-                    assert_eq!(elem_var, "elem");
+                    assert_eq!(*acc_var, IrPattern::ident("acc"));
+                    assert_eq!(*elem_var, IrPattern::ident("elem"));
                 }
                 other => panic!("Expected Fold terminal, got {:?}", other),
             }
@@ -562,11 +562,11 @@ fn test_iter_chain_enumerate_filter_map_fold() {
         assert_eq!(chain.steps.len(), 2);
         assert!(matches!(&chain.steps[0], IterStep::Enumerate));
         match &chain.steps[1] {
-            IterStep::FilterMap { var, .. } => assert_eq!(var, "a"),
+            IterStep::FilterMap { var, .. } => assert_eq!(*var, IrPattern::ident("a")),
             other => panic!("Expected FilterMap, got {:?}", other),
         }
         // Terminal: fold
-        assert!(matches!(&chain.terminal, IterTerminal::Fold { acc_var, elem_var, .. } if acc_var == "a" && elem_var == "b"));
+        assert!(matches!(&chain.terminal, IterTerminal::Fold { acc_var, elem_var, .. } if *acc_var == IrPattern::ident("a") && *elem_var == IrPattern::ident("b")));
     } else {
         panic!("Expected IterPipeline");
     }
@@ -588,7 +588,7 @@ fn test_iter_chain_map_collect() {
         assert!(matches!(&chain.source, IterChainSource::Method { method: IterMethod::Iter, .. }));
         assert_eq!(chain.steps.len(), 1);
         match &chain.steps[0] {
-            IterStep::Map { var, .. } => assert_eq!(var, "i"),
+            IterStep::Map { var, .. } => assert_eq!(*var, IrPattern::ident("i")),
             other => panic!("Expected Map step, got {:?}", other),
         }
         assert!(matches!(&chain.terminal, IterTerminal::Collect));

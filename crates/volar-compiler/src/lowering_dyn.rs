@@ -997,7 +997,10 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 }
             }
             if v == "GenericArray" {
-                return IrExpr::Var("Vec".to_string());
+                return IrExpr::Path {
+                    segments: vec!["Vec".to_string()],
+                    type_args: vec![],
+                };
             }
             e.clone()
         }
@@ -1096,13 +1099,17 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     args: vec![],
                 }
             } else if matches!(&method, MethodKind::Std(n) if n == "as_ref") {
-                // Disambiguate as_ref() → emit raw code via Var hack:
-                // We need AsRef::<[u8]>::as_ref(&x) to avoid ambiguity
+                // Disambiguate as_ref() → AsRef::<[u8]>::as_ref(&x)
                 let lowered_receiver = lower_expr_dyn(receiver, ctx, fn_gen);
-                // Create: AsRef::<[u8]>::as_ref(&receiver)
-                // Using Var as raw code snippet for the function path
                 IrExpr::Call {
-                    func: Box::new(IrExpr::Var("AsRef::<[u8]>::as_ref".to_string())),
+                    func: Box::new(IrExpr::Path {
+                        segments: vec!["AsRef".to_string(), "as_ref".to_string()],
+                        type_args: vec![IrType::Array {
+                            kind: ArrayKind::Slice,
+                            elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
+                            len: ArrayLength::TypeParam("_".to_string()),
+                        }],
+                    }),
                     args: vec![IrExpr::Unary {
                         op: crate::ir::SpecUnaryOp::Ref,
                         expr: Box::new(lowered_receiver),
@@ -1244,7 +1251,10 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     }
                     // For tuple struct constructors, append PhantomData if needed
                     if info.needs_phantom {
-                        final_args.push(IrExpr::Var("PhantomData".to_string()));
+                        final_args.push(IrExpr::Path {
+                            segments: vec!["PhantomData".to_string()],
+                            type_args: vec![],
+                        });
                     }
                 }
             }
@@ -1375,7 +1385,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     inclusive: false,
                 },
                 steps: vec![IterStep::Map {
-                    var: index_var.clone(),
+                    var: IrPattern::ident(index_var.clone()),
                     body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
                 }],
                 terminal,
@@ -1420,7 +1430,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     inclusive: false,
                 },
                 steps: vec![IterStep::Map {
-                    var: "_".to_string(),
+                    var: IrPattern::Wild,
                     body: Box::new(default_body),
                 }],
                 terminal,
@@ -1512,7 +1522,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     }),
                 },
                 steps: vec![crate::ir::IterStep::Map {
-                    var: format!("({}, {})", left_var, right_var),
+                    var: IrPattern::Tuple(vec![left_var.clone(), right_var.clone()]),
                     body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
                 }],
                 terminal: crate::ir::IterTerminal::Collect,
@@ -2364,7 +2374,7 @@ mod tests {
                 assert_eq!(chain.steps.len(), 1);
                 match &chain.steps[0] {
                     IterStep::Map { var, body } => {
-                        assert_eq!(var, "i");
+                        assert_eq!(*var, IrPattern::ident("i"));
                         assert_eq!(**body, IrExpr::Var("i".to_string()));
                     }
                     other => panic!("Expected Map step, got {:?}", other),
@@ -2454,7 +2464,7 @@ mod tests {
                 assert_eq!(chain.steps.len(), 1);
                 match &chain.steps[0] {
                     IterStep::Map { var, body } => {
-                        assert_eq!(var, "_");
+                        assert_eq!(*var, IrPattern::Wild);
                         assert!(matches!(body.as_ref(), IrExpr::DefaultValue { ty: None }));
                     }
                     other => panic!("Expected Map step, got {:?}", other),
@@ -2479,7 +2489,7 @@ mod tests {
                 assert_eq!(chain.steps.len(), 1);
                 match &chain.steps[0] {
                     IterStep::Map { var, body } => {
-                        assert_eq!(var, "_");
+                        assert_eq!(*var, IrPattern::Wild);
                         match body.as_ref() {
                             IrExpr::DefaultValue { ty: Some(t) } => {
                                 assert_eq!(**t, IrType::Primitive(PrimitiveType::U8));

@@ -104,13 +104,13 @@ pub enum IterChainSource {
 #[derive(Debug, Clone, PartialEq)]
 pub enum IterStep {
     /// `.map(|var| body)`
-    Map { var: String, body: Box<IrExpr> },
+    Map { var: IrPattern, body: Box<IrExpr> },
     /// `.filter(|var| body)`
-    Filter { var: String, body: Box<IrExpr> },
+    Filter { var: IrPattern, body: Box<IrExpr> },
     /// `.filter_map(|var| body)`
-    FilterMap { var: String, body: Box<IrExpr> },
+    FilterMap { var: IrPattern, body: Box<IrExpr> },
     /// `.flat_map(|var| body)`
-    FlatMap { var: String, body: Box<IrExpr> },
+    FlatMap { var: IrPattern, body: Box<IrExpr> },
     /// `.enumerate()`
     Enumerate,
     /// `.take(count)`
@@ -131,8 +131,8 @@ pub enum IterTerminal {
     /// `.fold(init, |acc, elem| body)`
     Fold {
         init: Box<IrExpr>,
-        acc_var: String,
-        elem_var: String,
+        acc_var: IrPattern,
+        elem_var: IrPattern,
         body: Box<IrExpr>,
     },
     /// No terminal — the chain is still lazy (e.g. used as the `collection`
@@ -946,7 +946,7 @@ pub enum IrExpr {
     /// Length-preserving; bounded by the receiver's length.
     RawMap {
         receiver: Box<IrExpr>,
-        elem_var: String,
+        elem_var: IrPattern,
         body: Box<IrExpr>,
     },
 
@@ -955,8 +955,8 @@ pub enum IrExpr {
     RawZip {
         left: Box<IrExpr>,
         right: Box<IrExpr>,
-        left_var: String,
-        right_var: String,
+        left_var: IrPattern,
+        right_var: IrPattern,
         body: Box<IrExpr>,
     },
 
@@ -965,8 +965,8 @@ pub enum IrExpr {
     RawFold {
         receiver: Box<IrExpr>,
         init: Box<IrExpr>,
-        acc_var: String,
-        elem_var: String,
+        acc_var: IrPattern,
+        elem_var: IrPattern,
         body: Box<IrExpr>,
     },
 
@@ -1051,6 +1051,17 @@ pub enum IrPattern {
     },
     Or(Vec<IrPattern>),
     Rest,
+}
+
+impl IrPattern {
+    /// Convenience: create an `Ident` pattern from a string.
+    pub fn ident(name: impl Into<String>) -> Self {
+        IrPattern::Ident {
+            mutable: false,
+            name: name.into(),
+            subpat: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

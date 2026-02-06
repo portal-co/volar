@@ -620,22 +620,30 @@ impl<'a> IterChainWriter<'a> {
         for step in &self.chain.steps {
             match step {
                 IterStep::Map { var, body } => {
-                    write!(f, ".map(|{}| ", var)?;
+                    write!(f, ".map(|")?;
+                    PatternWriter { pat: var }.fmt(f)?;
+                    write!(f, "| ")?;
                     ExprWriter { expr: body }.fmt(f)?;
                     write!(f, ")")?;
                 }
                 IterStep::Filter { var, body } => {
-                    write!(f, ".filter(|{}| ", var)?;
+                    write!(f, ".filter(|")?;
+                    PatternWriter { pat: var }.fmt(f)?;
+                    write!(f, "| ")?;
                     ExprWriter { expr: body }.fmt(f)?;
                     write!(f, ")")?;
                 }
                 IterStep::FilterMap { var, body } => {
-                    write!(f, ".filter_map(|{}| ", var)?;
+                    write!(f, ".filter_map(|")?;
+                    PatternWriter { pat: var }.fmt(f)?;
+                    write!(f, "| ")?;
                     ExprWriter { expr: body }.fmt(f)?;
                     write!(f, ")")?;
                 }
                 IterStep::FlatMap { var, body } => {
-                    write!(f, ".flat_map(|{}| ", var)?;
+                    write!(f, ".flat_map(|")?;
+                    PatternWriter { pat: var }.fmt(f)?;
+                    write!(f, "| ")?;
                     ExprWriter { expr: body }.fmt(f)?;
                     write!(f, ")")?;
                 }
@@ -678,7 +686,11 @@ impl<'a> RustBackend for IterChainWriter<'a> {
             IterTerminal::Fold { init, acc_var, elem_var, body } => {
                 write!(f, ".fold(")?;
                 ExprWriter { expr: init }.fmt(f)?;
-                write!(f, ", |mut {}, {}| ", acc_var, elem_var)?;
+                write!(f, ", |mut ")?;
+                PatternWriter { pat: acc_var }.fmt(f)?;
+                write!(f, ", ")?;
+                PatternWriter { pat: elem_var }.fmt(f)?;
+                write!(f, "| ")?;
                 ExprWriter { expr: body }.fmt(f)?;
                 write!(f, ")")?;
             }
@@ -838,7 +850,9 @@ impl<'a> RustBackend for ExprWriter<'a> {
             }
             IrExpr::RawMap { receiver, elem_var, body } => {
                 ExprWriter { expr: receiver }.fmt(f)?;
-                write!(f, ".map(|{}| ", elem_var)?;
+                write!(f, ".map(|")?;
+                PatternWriter { pat: elem_var }.fmt(f)?;
+                write!(f, "| ")?;
                 ExprWriter { expr: body }.fmt(f)?;
                 write!(f, ")")?;
             }
@@ -846,7 +860,11 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 ExprWriter { expr: left }.fmt(f)?;
                 write!(f, ".zip(")?;
                 ExprWriter { expr: right }.fmt(f)?;
-                write!(f, ", |{}, {}| ", left_var, right_var)?;
+                write!(f, ", |")?;
+                PatternWriter { pat: left_var }.fmt(f)?;
+                write!(f, ", ")?;
+                PatternWriter { pat: right_var }.fmt(f)?;
+                write!(f, "| ")?;
                 ExprWriter { expr: body }.fmt(f)?;
                 write!(f, ")")?;
             }
@@ -854,7 +872,11 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 ExprWriter { expr: receiver }.fmt(f)?;
                 write!(f, ".fold(")?;
                 ExprWriter { expr: init }.fmt(f)?;
-                write!(f, ", |mut {}, {}| ", acc_var, elem_var)?;
+                write!(f, ", |mut ")?;
+                PatternWriter { pat: acc_var }.fmt(f)?;
+                write!(f, ", ")?;
+                PatternWriter { pat: elem_var }.fmt(f)?;
+                write!(f, "| ")?;
                 ExprWriter { expr: body }.fmt(f)?;
                 write!(f, ")")?;
             }
@@ -862,7 +884,9 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 segments,
                 type_args,
             } => {
-                if let Some("new" | "from_mut_slice") = segments.last().map(|a| a.as_str()) {
+                // When path has 2+ segments and type_args, put turbofish on
+                // the type prefix (e.g. AsRef::<[u8]>::as_ref, Vec::<u8>::new).
+                if segments.len() >= 2 && !type_args.is_empty() {
                     let l = segments.last().unwrap();
                     let prefix = &segments[..segments.len() - 1];
                     write!(f, "{}", prefix.join("::"))?;
