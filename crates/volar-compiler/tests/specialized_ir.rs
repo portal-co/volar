@@ -291,20 +291,13 @@ fn test_array_operations() {
                     generate_count += 1;
                     println!("ArrayGenerate with index var: {}", index_var);
                 }
-                IrExpr::MethodCall { method, .. } => {
-                    // arr.map(|x| x + 1) is a non-iterator map (GenericArray style)
-                    let name = format!("{:?}", method);
-                    if name.contains("map") || name.contains("Map") {
-                        method_map_count += 1;
-                        println!("MethodCall map");
-                    }
+                IrExpr::RawMap { elem_var, .. } => {
+                    method_map_count += 1;
+                    println!("RawMap with var: {}", elem_var);
                 }
-                IrExpr::IterPipeline(chain) => {
-                    // arr.zip(other, |a, b| a + b) becomes IterPipeline with Zip source
-                    if matches!(&chain.source, volar_compiler::IterChainSource::Zip { .. }) {
-                        zip_count += 1;
-                        println!("IterPipeline Zip");
-                    }
+                IrExpr::RawZip { left_var, right_var, .. } => {
+                    zip_count += 1;
+                    println!("RawZip with vars: {}, {}", left_var, right_var);
                 }
                 _ => {}
             }
@@ -312,8 +305,8 @@ fn test_array_operations() {
     }
 
     assert_eq!(generate_count, 1, "Should recognize ArrayGenerate");
-    assert_eq!(method_map_count, 1, "Should recognize non-iterator map as MethodCall");
-    assert_eq!(zip_count, 1, "Should recognize Zip as IterPipeline");
+    assert_eq!(method_map_count, 1, "Should recognize non-iterator map as RawMap");
+    assert_eq!(zip_count, 1, "Should recognize zip as RawZip");
 }
 
 #[test]
@@ -605,7 +598,7 @@ fn test_iter_chain_map_collect() {
 }
 
 #[test]
-fn test_non_iterator_map_is_method_call() {
+fn test_non_iterator_map_is_raw_map() {
     use volar_compiler::parse_source;
 
     let source = r#"
@@ -617,9 +610,9 @@ fn test_non_iterator_map_is_method_call() {
     let f = &module.functions[0];
 
     if let IrStmt::Let { init: Some(expr), .. } = &f.body.stmts[0] {
-        // No .iter() → not an iter chain → should be MethodCall
-        assert!(matches!(expr, IrExpr::MethodCall { .. }),
-            "arr.map() without .iter() should be MethodCall, got {:?}", expr);
+        // No .iter() → not an iter chain → should be RawMap
+        assert!(matches!(expr, IrExpr::RawMap { .. }),
+            "arr.map() without .iter() should be RawMap, got {:?}", expr);
     } else {
         panic!("Expected Let statement");
     }

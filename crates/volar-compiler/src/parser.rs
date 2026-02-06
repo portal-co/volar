@@ -8,7 +8,6 @@ use std::{
     collections::{HashMap, HashSet},
     format,
     string::{String, ToString},
-    vec,
     vec::Vec,
 };
 
@@ -809,7 +808,21 @@ fn convert_array_length_from_syn_expr(expr: &syn::Expr) -> Result<ArrayLength> {
             lit: syn::Lit::Int(n),
             ..
         }) => Ok(ArrayLength::Const(n.base10_parse().unwrap_or(0))),
-        _ => Ok(ArrayLength::Computed(Box::new(convert_expr(expr)?))),
+        syn::Expr::Path(p) => {
+            let name = p
+                .path
+                .segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .collect::<Vec<_>>()
+                .join("::");
+            Ok(ArrayLength::TypeParam(name))
+        }
+        _ => {
+            // Fallback: stringify the expression as a TypeParam
+            let s = quote::quote!(#expr).to_string();
+            Ok(ArrayLength::TypeParam(s))
+        }
     }
 }
 
@@ -1631,42 +1644,46 @@ fn convert_method_call(receiver: &Expr, method: &str, args: &[&Expr]) -> Result<
         return Ok(IrExpr::IterPipeline(chain));
     }
 
-    // Special case: zip with 2 args (receiver.zip(other, |a, b| body)) — volar-spec style
-    // This is NOT Rust's std zip; it's a custom zip-with-map.
-    // We model it as: IterPipeline { source: Zip { left, right }, steps: [Map], terminal: Collect }
+    // Non-iterator .zip(other, |a, b| body) — GenericArray style
     if method == "zip" && args.len() == 2 {
         if let Expr::Closure(c) = args[1] {
             let left_var = extract_pat_name(&c.inputs[0]);
             let right_var = extract_pat_name(&c.inputs[1]);
-            // Build a Zip source from the receiver and first arg as IntoIter chains
-            let left_chain = crate::ir::IrIterChain {
-                source: crate::ir::IterChainSource::Method {
-                    collection: Box::new(convert_expr(receiver)?),
-                    method: crate::ir::IterMethod::IntoIter,
-                },
-                steps: Vec::new(),
-                terminal: crate::ir::IterTerminal::Lazy,
-            };
-            let right_chain = crate::ir::IrIterChain {
-                source: crate::ir::IterChainSource::Method {
-                    collection: Box::new(convert_expr(args[0])?),
-                    method: crate::ir::IterMethod::IntoIter,
-                },
-                steps: Vec::new(),
-                terminal: crate::ir::IterTerminal::Lazy,
-            };
-            let map_var = format!("({}, {})", left_var, right_var);
-            return Ok(IrExpr::IterPipeline(crate::ir::IrIterChain {
-                source: crate::ir::IterChainSource::Zip {
-                    left: Box::new(left_chain),
-                    right: Box::new(right_chain),
-                },
-                steps: vec![crate::ir::IterStep::Map {
-                    var: map_var,
+            return Ok(IrExpr::RawZip {
+                left: Box::new(convert_expr(receiver)?),
+                right: Box::new(convert_expr(args[0])?),
+                left_var,
+                right_var,
+                body: Box::new(convert_expr(&c.body)?),
+            });
+        }
+    }
+
+    // Non-iterator .map(|x| body) — GenericArray / [T; N] style
+    if method == "map" && args.len() == 1 {
+        if let Expr::Closure(c) = args[0] {
+            if c.inputs.len() == 1 {
+                return Ok(IrExpr::RawMap {
+                    receiver: Box::new(convert_expr(receiver)?),
+                    elem_var: extract_pat_name(&c.inputs[0]),
                     body: Box::new(convert_expr(&c.body)?),
-                }],
-                terminal: crate::ir::IterTerminal::Collect,
-            }));
+                });
+            }
+        }
+    }
+
+    // Non-iterator .fold(init, |acc, elem| body) — GenericArray style
+    if method == "fold" && args.len() == 2 {
+        if let Expr::Closure(c) = args[1] {
+            if c.inputs.len() == 2 {
+                return Ok(IrExpr::RawFold {
+                    receiver: Box::new(convert_expr(receiver)?),
+                    init: Box::new(convert_expr(args[0])?),
+                    acc_var: extract_pat_name(&c.inputs[0]),
+                    elem_var: extract_pat_name(&c.inputs[1]),
+                    body: Box::new(convert_expr(&c.body)?),
+                });
+            }
         }
     }
 

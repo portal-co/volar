@@ -258,9 +258,6 @@ pub enum ArrayLength {
         r#type: Box<IrType>,
         field: String,
     },
-
-    /// Computed expression
-    Computed(Box<IrExpr>),
 }
 
 /// Typenum constants commonly used
@@ -758,7 +755,6 @@ impl fmt::Display for IrType {
                     ArrayLength::Const(n) => write!(f, "{}", n)?,
                     ArrayLength::TypeNum(tn) => write!(f, "{:?}", tn)?,
                     ArrayLength::TypeParam(p) => write!(f, "{}", p)?,
-                    ArrayLength::Computed(_) => write!(f, "_")?,
                     ArrayLength::Projection { r#type, field } => {
                         write!(f, "<{}>::{}", r#type, field)?;
                     }
@@ -920,6 +916,36 @@ pub enum IrExpr {
     /// A flat iterator pipeline (source → steps → terminal).
     /// Replaces old nested Iter*/Array{Map,Zip,Fold} variants.
     IterPipeline(IrIterChain),
+
+    /// Non-iterator element-wise map: `receiver.map(|var| body)`
+    /// Used for GenericArray::map and [T; N]::map.
+    /// Length-preserving; bounded by the receiver's length.
+    RawMap {
+        receiver: Box<IrExpr>,
+        elem_var: String,
+        body: Box<IrExpr>,
+    },
+
+    /// Non-iterator element-wise zip-with-map: `receiver.zip(other, |a, b| body)`
+    /// Used for GenericArray::zip. Length-preserving; bounded.
+    RawZip {
+        left: Box<IrExpr>,
+        right: Box<IrExpr>,
+        left_var: String,
+        right_var: String,
+        body: Box<IrExpr>,
+    },
+
+    /// Non-iterator fold over array: `receiver.fold(init, |acc, elem| body)`
+    /// When applied directly on GenericArray/[T;N] (no .iter() prefix).
+    RawFold {
+        receiver: Box<IrExpr>,
+        init: Box<IrExpr>,
+        acc_var: String,
+        elem_var: String,
+        body: Box<IrExpr>,
+    },
+
     BoundedLoop {
         var: String,
         start: Box<IrExpr>,

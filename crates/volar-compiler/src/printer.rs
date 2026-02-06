@@ -708,6 +708,13 @@ impl<'a> RustBackend for ExprChainWriter<'a> {
             IrExpr::IterPipeline(chain) => {
                 IterChainWriter { chain }.fmt_no_terminal(f)?;
             }
+            IrExpr::RawMap { .. }
+            | IrExpr::RawZip { .. }
+            | IrExpr::RawFold { .. } => {
+                // In chain context, emit the raw op then .into_iter()
+                ExprWriter { expr: self.expr }.fmt(f)?;
+                write!(f, ".into_iter()")?;
+            }
             _ => {
                 ExprWriter { expr: self.expr }.fmt(f)?;
                 write!(f, ".into_iter()")?;
@@ -823,6 +830,28 @@ impl<'a> RustBackend for ExprWriter<'a> {
             }
             IrExpr::IterPipeline(chain) => {
                 IterChainWriter { chain }.fmt(f)?;
+            }
+            IrExpr::RawMap { receiver, elem_var, body } => {
+                ExprWriter { expr: receiver }.fmt(f)?;
+                write!(f, ".map(|{}| ", elem_var)?;
+                ExprWriter { expr: body }.fmt(f)?;
+                write!(f, ")")?;
+            }
+            IrExpr::RawZip { left, right, left_var, right_var, body } => {
+                ExprWriter { expr: left }.fmt(f)?;
+                write!(f, ".zip(")?;
+                ExprWriter { expr: right }.fmt(f)?;
+                write!(f, ", |{}, {}| ", left_var, right_var)?;
+                ExprWriter { expr: body }.fmt(f)?;
+                write!(f, ")")?;
+            }
+            IrExpr::RawFold { receiver, init, acc_var, elem_var, body } => {
+                ExprWriter { expr: receiver }.fmt(f)?;
+                write!(f, ".fold(")?;
+                ExprWriter { expr: init }.fmt(f)?;
+                write!(f, ", |{}, {}| ", acc_var, elem_var)?;
+                ExprWriter { expr: body }.fmt(f)?;
+                write!(f, ")")?;
             }
             IrExpr::Path {
                 segments,

@@ -1,5 +1,7 @@
 # TRAIT_UNIFY_AND_RAW_OPS_PLAN.md
 
+**Status**: All phases complete.
+
 **Goal**: Three cleanups:
 
 1. **Collapse `CryptoTrait` and `GenericKind::Crypto`** — all traits become `TraitKind::Custom(String)` or `TraitKind::Math(MathTrait)`. Classification uses predicate functions that inspect the builtin trait definitions, not hardcoded string lists. `GenericKind` reduces to `{ Length, Type }`.

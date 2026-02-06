@@ -575,13 +575,7 @@ fn lower_type_dyn_inner(
 ) -> IrType {
     match ty {
         IrType::Array { kind, elem, len } => {
-            if *kind == ArrayKind::Slice
-                || (*kind == ArrayKind::FixedArray
-                    && match len {
-                        ArrayLength::Computed(_) => false,
-                        _ => true,
-                    })
-            {
+            if *kind == ArrayKind::Slice || *kind == ArrayKind::FixedArray {
                 IrType::Array {
                     kind: *kind,
                     elem: Box::new(lower_type_dyn_inner(elem, ctx, fn_gen, in_struct_field)),
@@ -1242,6 +1236,25 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
         IrExpr::IterPipeline(chain) => {
             IrExpr::IterPipeline(lower_iter_chain_dyn(chain, ctx, fn_gen))
         },
+        IrExpr::RawMap { receiver, elem_var, body } => IrExpr::RawMap {
+            receiver: Box::new(lower_expr_dyn(receiver, ctx, fn_gen)),
+            elem_var: elem_var.clone(),
+            body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+        },
+        IrExpr::RawZip { left, right, left_var, right_var, body } => IrExpr::RawZip {
+            left: Box::new(lower_expr_dyn(left, ctx, fn_gen)),
+            right: Box::new(lower_expr_dyn(right, ctx, fn_gen)),
+            left_var: left_var.clone(),
+            right_var: right_var.clone(),
+            body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+        },
+        IrExpr::RawFold { receiver, init, acc_var, elem_var, body } => IrExpr::RawFold {
+            receiver: Box::new(lower_expr_dyn(receiver, ctx, fn_gen)),
+            init: Box::new(lower_expr_dyn(init, ctx, fn_gen)),
+            acc_var: acc_var.clone(),
+            elem_var: elem_var.clone(),
+            body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+        },
         IrExpr::Match { expr, arms } => IrExpr::Match {
             expr: Box::new(lower_expr_dyn(expr, ctx, fn_gen)),
             arms: arms
@@ -1414,48 +1427,31 @@ fn lower_iter_terminal_dyn(
 fn lower_array_length(len: &ArrayLength) -> ArrayLength {
     match len {
         ArrayLength::Projection { r#type, field } => {
-            ArrayLength::Computed(Box::new(IrExpr::TypenumUsize {
-                ty: Box::new(IrType::Projection {
-                    base: Box::new((**r#type).clone()),
-                    trait_path: None,
-                    trait_args: Vec::new(),
-                    assoc: AssociatedType::from_str(field),
-                }),
-            }))
+            // Type-level projection like <B>::OutputSize → becomes a runtime variable name
+            let base_name = match r#type.as_ref() {
+                IrType::TypeParam(p) => p.to_lowercase(),
+                _ => "len".to_string(),
+            };
+            ArrayLength::TypeParam(format!("{}_{}", base_name, field.to_lowercase()))
         }
         ArrayLength::TypeParam(p) => {
             // Check if this is a typenum constant
             if let Some(tn) = TypeNumConst::from_str(p) {
                 ArrayLength::Const(tn.to_usize())
             } else if p.contains("::") {
-                // This is a type projection like B::BlockSize
-                // Keep as computed expression that uses typenum_usize macro
-                ArrayLength::Computed(Box::new(IrExpr::TypenumUsize {
-                    ty: Box::new(if p.contains("::") {
-                        // If it's a projection like B::BlockSize, construct Projection
-                        let parts: Vec<String> = p.split("::").map(|s| s.to_string()).collect();
-                        if parts.len() == 2 && parts[0].chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
-                            IrType::Projection {
-                                base: Box::new(IrType::TypeParam(parts[0].clone())),
-                                trait_path: None,
-                                trait_args: Vec::new(),
-                                assoc: AssociatedType::from_str(&parts[1]),
-                            }
-                        } else {
-                            IrType::Param { path: parts }
-                        }
-                    } else {
-                        // Fallback: treat as a Param path (shouldn't normally happen)
-                        IrType::Param { path: vec![p.clone()] }
-                    })
-                }))
+                // Path like B::BlockSize → runtime variable
+                let parts: Vec<&str> = p.split("::").collect();
+                if parts.len() == 2 {
+                    ArrayLength::TypeParam(format!("{}_{}", parts[0].to_lowercase(), parts[1].to_lowercase()))
+                } else {
+                    ArrayLength::TypeParam(p.to_lowercase())
+                }
             } else {
                 // Otherwise lowercase it to a runtime variable
                 ArrayLength::TypeParam(p.to_lowercase())
             }
         }
         ArrayLength::TypeNum(tn) => ArrayLength::Const(tn.to_usize()),
-        ArrayLength::Computed(e) => len.clone(), // Keep as-is for now
         ArrayLength::Const(_) => len.clone(),
     }
 }
