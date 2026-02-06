@@ -269,8 +269,8 @@ impl <T: Add<Output = T> + Mul<Output = T> + Default + Clone> VopeDyn<T> where T
     {
         let n: usize = self.n;
         let k: usize = self.k;
-        let mut res_u = vec![Vec<T>::default(); (k2 + k)];
-        let mut res_v = vec![T::default(); n];
+        let mut res_u = (0..(k2 + k)).map(|_| Vec::<T>::default()).collect::<Vec<_>>();
+        let mut res_v = (0..n).map(|_| T::default()).collect::<Vec<_>>();
         for i in 0..= k{
     for j in 0..= k2{
     let k = (i + j);
@@ -817,7 +817,7 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
 } else {
     None
 }
-}).fold(vec![u8::default(); <<B>::OutputSize as Unsigned>::to_usize()], |a, b| {
+}).fold((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|_| u8::default()).collect::<Vec<_>>(), |a, b| {
     a.into_iter().zip((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
 })
 }).collect::<Vec<_>>()
@@ -872,7 +872,7 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
 } else {
     None
 }
-}).fold(vec![u8::default(); <<B>::OutputSize as Unsigned>::to_usize()], |a, b| {
+}).fold((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|_| u8::default()).collect::<Vec<_>>(), |a, b| {
     a.into_iter().zip((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
 })
 }).collect::<Vec<_>>()
@@ -903,7 +903,7 @@ impl <D: Digest> AsRef<[u8]> for CommitmentCoreDyn<D> {
 impl <D: Digest> Default for CommitmentCoreDyn<D> {
     fn default() -> Self
     {
-        CommitmentCoreDyn(vec![Default::default(); n], PhantomData)
+        CommitmentCoreDyn((0..n).map(|_| Default::default()).collect::<Vec<_>>(), PhantomData)
     }
 }
 
@@ -935,7 +935,7 @@ impl <D: Digest> CommitmentCoreDyn<D> {
 pub fn gen_abo<B: LengthDoubler, D: Digest>(mut k: usize, mut a: Vec<u8>, mut rand: &impl AsRef<[u8]>) -> ABODyn<B, D> where B: Sized
 {
     let mut h = D::new();
-    let mut per_byte = vec![Default::default(); n];
+    let mut per_byte = (0..n).map(|_| Default::default()).collect::<Vec<_>>();
     for i in 0.. k{
     let core = (0..k.ilog2()).fold(a.clone(), |acc, b| {
     if (((i >> b) & 1) != 0){
@@ -955,10 +955,10 @@ pub fn gen_abo<B: LengthDoubler, D: Digest>(mut k: usize, mut a: Vec<u8>, mut ra
 
 pub fn create_vole_from_material<B: LengthDoubler, X: AsRef<[u8]>>(mut s: &[X]) -> VopeDyn<u8>
 {
-    let u: Vec<u8> = s.iter().fold(vec![u8::default(); <<B>::OutputSize as Unsigned>::to_usize()], |a, b| {
+    let u: Vec<u8> = s.iter().fold((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|_| u8::default()).collect::<Vec<_>>(), |a, b| {
     a.into_iter().zip((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
 });
-    let v: Vec<u8> = s.iter().enumerate().fold(vec![u8::default(); <<B>::OutputSize as Unsigned>::to_usize()], |a, _| {
+    let v: Vec<u8> = s.iter().enumerate().fold((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|_| u8::default()).collect::<Vec<_>>(), |a, _| {
     a.into_iter().zip((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b).bitxor((i as u8))).collect::<Vec<_>>()
 });
     VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<_>>(), v: v, n: 0, k: 1 }
@@ -966,10 +966,10 @@ pub fn create_vole_from_material<B: LengthDoubler, X: AsRef<[u8]>>(mut s: &[X]) 
 
 pub fn create_vole_from_material_expanded<B: LengthDoubler, X: AsRef<[u8]>, Y: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(mut s: &[Y], mut f: F) -> VopeDyn<u8>
 {
-    let u: Vec<u8> = s.iter().map(|b| f(&b.as_ref()[..<<B>::OutputSize as Unsigned>::to_usize()])).fold(vec![u8::default(); <<B>::OutputSize as Unsigned>::to_usize()], |a, b| {
+    let u: Vec<u8> = s.iter().map(|b| f(&b.as_ref()[..<<B>::OutputSize as Unsigned>::to_usize()])).fold((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|_| u8::default()).collect::<Vec<_>>(), |a, b| {
     a.into_iter().zip((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
 });
-    let v: Vec<u8> = s.iter().map(|b| f(&b.as_ref()[..<<B>::OutputSize as Unsigned>::to_usize()])).enumerate().fold(vec![u8::default(); <<B>::OutputSize as Unsigned>::to_usize()], |a, _| {
+    let v: Vec<u8> = s.iter().map(|b| f(&b.as_ref()[..<<B>::OutputSize as Unsigned>::to_usize()])).enumerate().fold((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|_| u8::default()).collect::<Vec<_>>(), |a, _| {
     a.into_iter().zip((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b).bitxor((i as u8))).collect::<Vec<_>>()
 });
     VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<_>>(), v: v, n: 0, k: 1 }

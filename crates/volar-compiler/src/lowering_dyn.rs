@@ -1300,40 +1300,62 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     .map(|r| Box::new(lower_expr_dyn(r, ctx, fn_gen))),
             }
         }
+        // ArrayGenerate → IterPipeline: (0..len).map(|index_var| body).collect()
         IrExpr::ArrayGenerate {
-            elem_ty,
+            elem_ty: _,
             len,
             index_var,
             body,
         } => {
-            let lowered_len = lower_array_length(len, fn_gen, ctx);
-            IrExpr::ArrayGenerate {
-                elem_ty: elem_ty
-                    .as_ref()
-                    .map(|t| Box::new(lower_type_dyn(t, ctx, fn_gen))),
-                len: lowered_len,
-                index_var: index_var.clone(),
-                body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
-            }
+            let len_expr = array_length_to_expr(len, fn_gen, ctx);
+            IrExpr::IterPipeline(IrIterChain {
+                source: IterChainSource::Range {
+                    start: Box::new(IrExpr::Lit(IrLit::Int(0))),
+                    end: Box::new(len_expr),
+                    inclusive: false,
+                },
+                steps: vec![IterStep::Map {
+                    var: index_var.clone(),
+                    body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
+                }],
+                terminal: IterTerminal::Collect,
+            })
         }
+        // ArrayDefault → IterPipeline: (0..len).map(|_| T::default()).collect()
         IrExpr::ArrayDefault { elem_ty, len } => {
-            let lowered_len = lower_array_length(len, fn_gen, ctx);
-            IrExpr::ArrayDefault {
-                elem_ty: elem_ty
-                    .as_ref()
-                    .map(|t| Box::new(lower_type_dyn(t, ctx, fn_gen))),
-                len: lowered_len,
-            }
+            let len_expr = array_length_to_expr(len, fn_gen, ctx);
+            let default_body = if let Some(ty) = elem_ty {
+                let lowered_ty = lower_type_dyn(ty, ctx, fn_gen);
+                IrExpr::Call {
+                    func: Box::new(IrExpr::Path {
+                        segments: vec![type_to_path_segment(&lowered_ty), "default".to_string()],
+                        type_args: Vec::new(),
+                    }),
+                    args: Vec::new(),
+                }
+            } else {
+                IrExpr::Call {
+                    func: Box::new(IrExpr::Path {
+                        segments: vec!["Default".to_string(), "default".to_string()],
+                        type_args: Vec::new(),
+                    }),
+                    args: Vec::new(),
+                }
+            };
+            IrExpr::IterPipeline(IrIterChain {
+                source: IterChainSource::Range {
+                    start: Box::new(IrExpr::Lit(IrLit::Int(0))),
+                    end: Box::new(len_expr),
+                    inclusive: false,
+                },
+                steps: vec![IterStep::Map {
+                    var: "_".to_string(),
+                    body: Box::new(default_body),
+                }],
+                terminal: IterTerminal::Collect,
+            })
         }
-        IrExpr::LengthOf(len) => {
-            let lowered = lower_array_length(len, fn_gen, ctx);
-            match &lowered {
-                ArrayLength::Const(n) => IrExpr::Lit(crate::ir::IrLit::Int(*n as i128)),
-                ArrayLength::TypeParam(p) => IrExpr::Var(p.clone()),
-                // Projections stay as LengthOf — printed as <T>::Assoc::to_usize()
-                _ => IrExpr::LengthOf(lowered),
-            }
-        }
+        IrExpr::LengthOf(len) => array_length_to_expr(len, fn_gen, ctx),
         IrExpr::Field { base, field } => IrExpr::Field {
             base: Box::new(lower_expr_dyn(base, ctx, fn_gen)),
             field: field.clone(),
@@ -1754,6 +1776,59 @@ fn type_to_length_expr(ty: &IrType, fn_gen: &[IrGenericParam], ctx: &LoweringCon
     }
 }
 
+/// Convert an `ArrayLength` into a runtime `IrExpr` representing a `usize` value.
+///
+/// - `Const(n)` → `Lit(n)`
+/// - `TypeParam("k")` → `Var("k")` (already lowercased by `lower_array_length`)
+/// - `TypeParam("(k2 + k)")` → `Var("(k2 + k)")` (arithmetic expression)
+/// - `Projection { type, field }` → `LengthOf(Projection { .. })` (compile-time resolution)
+fn array_length_to_expr(len: &ArrayLength, fn_gen: &[IrGenericParam], ctx: &LoweringContext) -> IrExpr {
+    let lowered = lower_array_length(len, fn_gen, ctx);
+    match &lowered {
+        ArrayLength::Const(n) => IrExpr::Lit(IrLit::Int(*n as i128)),
+        ArrayLength::TypeParam(p) => IrExpr::Var(p.clone()),
+        // Projections stay as LengthOf — printed as <<T>::Assoc as Unsigned>::to_usize()
+        _ => IrExpr::LengthOf(lowered),
+    }
+}
+
+/// Convert an `IrType` to a string suitable for use as a path segment
+/// (e.g. in `T::default()`). For primitives this is just the type name;
+/// for generic types like `Vec<u8>` we produce `Vec::<u8>` turbofish form;
+/// for type params we use the param name directly.
+fn type_to_path_segment(ty: &IrType) -> String {
+    match ty {
+        IrType::Primitive(p) => format!("{}", p),
+        IrType::TypeParam(name) => name.clone(),
+        IrType::Vector { elem } => format!("Vec::<{}>", type_to_path_segment(elem)),
+        IrType::Struct { kind, type_args } => {
+            let base = format!("{}", kind);
+            if type_args.is_empty() {
+                base.to_string()
+            } else {
+                let args: Vec<String> = type_args.iter().map(|t| type_to_path_segment(t)).collect();
+                format!("{}::<{}>", base, args.join(", "))
+            }
+        }
+        IrType::Tuple(elems) => {
+            let parts: Vec<String> = elems.iter().map(|t| type_to_path_segment(t)).collect();
+            format!("({})", parts.join(", "))
+        }
+        IrType::Reference { mutable, elem } => {
+            if *mutable {
+                format!("&mut {}", type_to_path_segment(elem))
+            } else {
+                format!("&{}", type_to_path_segment(elem))
+            }
+        }
+        IrType::Array { elem, len, .. } => format!("[{}; {:?}]", type_to_path_segment(elem), len),
+        IrType::Param { path } => path.join("::"),
+        IrType::Unit => "()".to_string(),
+        // Fallback: use Display for anything else
+        _ => format!("{}", ty),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2021,5 +2096,302 @@ mod tests {
         };
         let result = lower_array_length(&len, &gens, &ctx);
         assert_eq!(result, ArrayLength::TypeParam("(k * 2)".to_string()));
+    }
+
+    // ---- ArrayGenerate → IterPipeline ----
+
+    #[test]
+    fn test_array_generate_becomes_iter_pipeline() {
+        let ctx = empty_ctx();
+        let gens = vec![length_param("N", vec![])];
+        let expr = IrExpr::ArrayGenerate {
+            elem_ty: None,
+            len: ArrayLength::TypeParam("N".to_string()),
+            index_var: "i".to_string(),
+            body: Box::new(IrExpr::Var("i".to_string())),
+        };
+        let result = lower_expr_dyn(&expr, &ctx, &gens);
+        match result {
+            IrExpr::IterPipeline(chain) => {
+                match &chain.source {
+                    IterChainSource::Range { start, end, inclusive } => {
+                        assert_eq!(**start, IrExpr::Lit(IrLit::Int(0)));
+                        assert_eq!(**end, IrExpr::Var("n".to_string()));
+                        assert!(!inclusive);
+                    }
+                    other => panic!("Expected Range source, got {:?}", other),
+                }
+                assert_eq!(chain.steps.len(), 1);
+                match &chain.steps[0] {
+                    IterStep::Map { var, body } => {
+                        assert_eq!(var, "i");
+                        assert_eq!(**body, IrExpr::Var("i".to_string()));
+                    }
+                    other => panic!("Expected Map step, got {:?}", other),
+                }
+                assert_eq!(chain.terminal, IterTerminal::Collect);
+            }
+            other => panic!("Expected IterPipeline, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_array_generate_with_add_projection_len() {
+        let ctx = empty_ctx();
+        let gens = vec![
+            length_param("K", vec![]),
+            length_param("K2", vec![add_bound("K")]),
+        ];
+        let expr = IrExpr::ArrayGenerate {
+            elem_ty: None,
+            len: ArrayLength::Projection {
+                r#type: Box::new(IrType::TypeParam("K2".to_string())),
+                field: "Output".to_string(),
+            },
+            index_var: "j".to_string(),
+            body: Box::new(IrExpr::Var("j".to_string())),
+        };
+        let result = lower_expr_dyn(&expr, &ctx, &gens);
+        match result {
+            IrExpr::IterPipeline(chain) => {
+                match &chain.source {
+                    IterChainSource::Range { end, .. } => {
+                        assert_eq!(**end, IrExpr::Var("(k2 + k)".to_string()));
+                    }
+                    other => panic!("Expected Range source, got {:?}", other),
+                }
+            }
+            other => panic!("Expected IterPipeline, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_array_generate_with_const_len() {
+        let ctx = empty_ctx();
+        let expr = IrExpr::ArrayGenerate {
+            elem_ty: None,
+            len: ArrayLength::TypeParam("U16".to_string()),
+            index_var: "i".to_string(),
+            body: Box::new(IrExpr::Var("i".to_string())),
+        };
+        let result = lower_expr_dyn(&expr, &ctx, &[]);
+        match result {
+            IrExpr::IterPipeline(chain) => {
+                match &chain.source {
+                    IterChainSource::Range { end, .. } => {
+                        assert_eq!(**end, IrExpr::Lit(IrLit::Int(16)));
+                    }
+                    other => panic!("Expected Range source, got {:?}", other),
+                }
+            }
+            other => panic!("Expected IterPipeline, got {:?}", other),
+        }
+    }
+
+    // ---- ArrayDefault → IterPipeline ----
+
+    #[test]
+    fn test_array_default_becomes_iter_pipeline() {
+        let ctx = empty_ctx();
+        let gens = vec![length_param("N", vec![])];
+        let expr = IrExpr::ArrayDefault {
+            elem_ty: None,
+            len: ArrayLength::TypeParam("N".to_string()),
+        };
+        let result = lower_expr_dyn(&expr, &ctx, &gens);
+        match result {
+            IrExpr::IterPipeline(chain) => {
+                match &chain.source {
+                    IterChainSource::Range { start, end, .. } => {
+                        assert_eq!(**start, IrExpr::Lit(IrLit::Int(0)));
+                        assert_eq!(**end, IrExpr::Var("n".to_string()));
+                    }
+                    other => panic!("Expected Range source, got {:?}", other),
+                }
+                assert_eq!(chain.steps.len(), 1);
+                match &chain.steps[0] {
+                    IterStep::Map { var, body } => {
+                        assert_eq!(var, "_");
+                        match body.as_ref() {
+                            IrExpr::Call { func, args } => {
+                                assert!(args.is_empty());
+                                match func.as_ref() {
+                                    IrExpr::Path { segments, .. } => {
+                                        assert_eq!(segments, &["Default", "default"]);
+                                    }
+                                    other => panic!("Expected Path func, got {:?}", other),
+                                }
+                            }
+                            other => panic!("Expected Call body, got {:?}", other),
+                        }
+                    }
+                    other => panic!("Expected Map step, got {:?}", other),
+                }
+                assert_eq!(chain.terminal, IterTerminal::Collect);
+            }
+            other => panic!("Expected IterPipeline, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_array_default_with_projection_len() {
+        let ctx = empty_ctx();
+        let gens = vec![type_param("B", vec![custom_bound("LengthDoubler")])];
+        let expr = IrExpr::ArrayDefault {
+            elem_ty: None,
+            len: ArrayLength::Projection {
+                r#type: Box::new(IrType::TypeParam("B".to_string())),
+                field: "OutputSize".to_string(),
+            },
+        };
+        let result = lower_expr_dyn(&expr, &ctx, &gens);
+        match result {
+            IrExpr::IterPipeline(chain) => {
+                match &chain.source {
+                    IterChainSource::Range { end, .. } => {
+                        assert!(matches!(end.as_ref(), IrExpr::LengthOf(ArrayLength::Projection { .. })));
+                    }
+                    other => panic!("Expected Range source, got {:?}", other),
+                }
+            }
+            other => panic!("Expected IterPipeline, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_array_default_with_typed_elem() {
+        // ArrayDefault { elem_ty: Some(u8), len: N }
+        // → body should be u8::default()
+        let ctx = empty_ctx();
+        let gens = vec![length_param("N", vec![])];
+        let expr = IrExpr::ArrayDefault {
+            elem_ty: Some(Box::new(IrType::Primitive(PrimitiveType::U8))),
+            len: ArrayLength::TypeParam("N".to_string()),
+        };
+        let result = lower_expr_dyn(&expr, &ctx, &gens);
+        match result {
+            IrExpr::IterPipeline(chain) => {
+                assert_eq!(chain.steps.len(), 1);
+                match &chain.steps[0] {
+                    IterStep::Map { var, body } => {
+                        assert_eq!(var, "_");
+                        match body.as_ref() {
+                            IrExpr::Call { func, args } => {
+                                assert!(args.is_empty());
+                                match func.as_ref() {
+                                    IrExpr::Path { segments, .. } => {
+                                        assert_eq!(segments, &["u8", "default"]);
+                                    }
+                                    other => panic!("Expected Path func, got {:?}", other),
+                                }
+                            }
+                            other => panic!("Expected Call body, got {:?}", other),
+                        }
+                    }
+                    other => panic!("Expected Map step, got {:?}", other),
+                }
+            }
+            other => panic!("Expected IterPipeline, got {:?}", other),
+        }
+    }
+
+    // ---- array_length_to_expr ----
+
+    #[test]
+    fn test_array_length_to_expr_const() {
+        let ctx = empty_ctx();
+        let result = array_length_to_expr(
+            &ArrayLength::TypeParam("U16".to_string()),
+            &[],
+            &ctx,
+        );
+        assert_eq!(result, IrExpr::Lit(IrLit::Int(16)));
+    }
+
+    #[test]
+    fn test_array_length_to_expr_param() {
+        let ctx = empty_ctx();
+        let gens = vec![length_param("N", vec![])];
+        let result = array_length_to_expr(
+            &ArrayLength::TypeParam("N".to_string()),
+            &gens,
+            &ctx,
+        );
+        assert_eq!(result, IrExpr::Var("n".to_string()));
+    }
+
+    #[test]
+    fn test_array_length_to_expr_projection() {
+        let ctx = empty_ctx();
+        let gens = vec![type_param("B", vec![custom_bound("LengthDoubler")])];
+        let result = array_length_to_expr(
+            &ArrayLength::Projection {
+                r#type: Box::new(IrType::TypeParam("B".to_string())),
+                field: "OutputSize".to_string(),
+            },
+            &gens,
+            &ctx,
+        );
+        assert!(matches!(result, IrExpr::LengthOf(ArrayLength::Projection { .. })));
+    }
+
+    #[test]
+    fn test_array_length_to_expr_arithmetic() {
+        let ctx = empty_ctx();
+        let gens = vec![
+            length_param("K", vec![]),
+            length_param("K2", vec![add_bound("K")]),
+        ];
+        let result = array_length_to_expr(
+            &ArrayLength::Projection {
+                r#type: Box::new(IrType::TypeParam("K2".to_string())),
+                field: "Output".to_string(),
+            },
+            &gens,
+            &ctx,
+        );
+        assert_eq!(result, IrExpr::Var("(k2 + k)".to_string()));
+    }
+
+    // ---- type_to_path_segment ----
+
+    #[test]
+    fn test_type_to_path_segment_primitive() {
+        assert_eq!(type_to_path_segment(&IrType::Primitive(PrimitiveType::U8)), "u8");
+        assert_eq!(type_to_path_segment(&IrType::Primitive(PrimitiveType::Bool)), "bool");
+    }
+
+    #[test]
+    fn test_type_to_path_segment_type_param() {
+        assert_eq!(type_to_path_segment(&IrType::TypeParam("T".to_string())), "T");
+    }
+
+    #[test]
+    fn test_type_to_path_segment_vector() {
+        let ty = IrType::Vector { elem: Box::new(IrType::Primitive(PrimitiveType::U8)) };
+        assert_eq!(type_to_path_segment(&ty), "Vec::<u8>");
+    }
+
+    #[test]
+    fn test_type_to_path_segment_struct_no_args() {
+        let ty = IrType::Struct {
+            kind: StructKind::Custom("Foo".to_string()),
+            type_args: Vec::new(),
+        };
+        assert_eq!(type_to_path_segment(&ty), "Foo");
+    }
+
+    #[test]
+    fn test_type_to_path_segment_struct_with_args() {
+        let ty = IrType::Struct {
+            kind: StructKind::Custom("Foo".to_string()),
+            type_args: vec![IrType::TypeParam("T".to_string()), IrType::Primitive(PrimitiveType::U8)],
+        };
+        assert_eq!(type_to_path_segment(&ty), "Foo::<T, u8>");
+    }
+
+    #[test]
+    fn test_type_to_path_segment_unit() {
+        assert_eq!(type_to_path_segment(&IrType::Unit), "()");
     }
 }
