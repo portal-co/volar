@@ -18,15 +18,48 @@ pub struct TypeContext {
 
 impl TypeContext {
     pub fn from_module(module: &IrModule) -> Self {
+        Self::from_module_with_deps(module, &[])
+    }
+
+    /// Build a type context from a module and its dependency manifests.
+    ///
+    /// Registration order:
+    /// 1. Built-in trait definitions
+    /// 2. Dependency manifests (earlier deps take precedence on conflict)
+    /// 3. Module's own definitions (override everything)
+    pub fn from_module_with_deps(module: &IrModule, deps: &[crate::manifest::TypeManifest]) -> Self {
         let mut ctx = Self::default();
 
-        // Register built-in trait definitions first (user-defined traits with
-        // the same name will override these, which is fine for custom impls)
+        // Register built-in trait definitions first
         for builtin in builtin_trait_defs() {
             let name = builtin.kind.to_string();
             ctx.traits.insert(name, builtin);
         }
 
+        // Register dependency manifests
+        for dep in deps {
+            for s in &dep.module.structs {
+                ctx.structs.entry(s.kind.to_string()).or_insert_with(|| s.clone());
+            }
+            for t in &dep.module.traits {
+                // Dep traits override builtins but not later deps
+                ctx.traits.entry(t.kind.to_string()).or_insert_with(|| t.clone());
+            }
+            for imp in &dep.module.impls {
+                ctx.trait_impls.push(imp.clone());
+                if let Some(_trait_ref) = &imp.trait_ {
+                    let _self_ty = type_to_string(&imp.self_ty);
+                    for item in &imp.items {
+                        if let IrImplItem::AssociatedType { name, ty } = item {
+                            ctx.assoc_types.entry((_self_ty.clone(), name.clone()))
+                                .or_insert_with(|| ty.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Register module's own definitions (override deps)
         for s in &module.structs {
             ctx.structs.insert(s.kind.to_string(), s.clone());
         }

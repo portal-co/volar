@@ -35,6 +35,7 @@ pub mod lowering;
 pub mod printer;
 pub mod printer_dyn;
 pub mod lowering_dyn;
+pub mod manifest;
 
 pub use ir::*;
 pub use const_analysis::*;
@@ -43,3 +44,4 @@ pub use parser::*;
 pub use lowering::*;
 pub use printer::*;
 pub use printer_dyn::*;
+pub use manifest::*;

@@ -43,9 +43,48 @@ pub struct LoweringContext {
 
 impl LoweringContext {
     pub fn new(module: &IrModule) -> Self {
+        Self::new_with_deps(module, &[])
+    }
+
+    /// Build lowering context from a module and its dependency manifests.
+    ///
+    /// Dependency structs are registered so that lowering can see their
+    /// generic structure (lengths vs type params, etc.) when generating
+    /// dynamic code that references them.
+    pub fn new_with_deps(module: &IrModule, deps: &[crate::manifest::TypeManifest]) -> Self {
         let mut struct_info = BTreeMap::new();
 
-        // Pass 1: Basic info
+        // Register dependency structs first
+        for dep in deps {
+            for s in &dep.module.structs {
+                let mut info = StructInfo::default();
+                info.kind = s.kind.clone();
+                for p in &s.generics {
+                    let kind = if p.kind == IrGenericParamKind::Lifetime {
+                        GenericKind::Type
+                    } else {
+                        classify_generic(p, &[&s.generics])
+                    };
+                    info.orig_generics
+                        .push((p.name.clone(), kind.clone(), p.kind.clone()));
+                    info.generic_defaults.push(p.default.clone());
+                    if p.kind == IrGenericParamKind::Lifetime {
+                        info.lifetimes.push(p.name.clone());
+                    } else {
+                        match kind {
+                            GenericKind::Length => info.length_witnesses.push(p.name.to_lowercase()),
+                            GenericKind::Crypto | GenericKind::Type => {
+                                info.type_params.push((p.name.clone(), p.bounds.clone()));
+                            }
+                        }
+                    }
+                }
+                // Don't overwrite if already registered by an earlier dep
+                struct_info.entry(s.kind.to_string()).or_insert(info);
+            }
+        }
+
+        // Pass 1: Basic info from the module's own structs (overrides deps)
         for s in &module.structs {
             let mut info = StructInfo::default();
             info.kind = s.kind.clone();
