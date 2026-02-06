@@ -397,40 +397,10 @@ impl MathTrait {
     }
 }
 
-/// Cryptographic and domain-specific traits
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CryptoTrait {
-    /// Symmetric encryption block
-    BlockEncrypt,
-    /// Symmetric cipher
-    BlockCipher,
-    /// Cryptographic digest
-    Digest,
-    /// Array length tag
-    ArrayLength,
-    /// Random number generator
-    Rng,
-}
-
-impl CryptoTrait {
-    pub fn from_path(segments: &[String]) -> Option<Self> {
-        let name = segments.last()?;
-        match name.as_str() {
-            "BlockEncrypt" => Some(Self::BlockEncrypt),
-            "BlockCipher" => Some(Self::BlockCipher),
-            "Digest" => Some(Self::Digest),
-            "ArrayLength" => Some(Self::ArrayLength),
-            "Rng" | "RngCore" | "CryptoRng" => Some(Self::Rng),
-            _ => None,
-        }
-    }
-}
-
 /// Unified trait classification
 #[derive(Debug, Clone, PartialEq)]
 pub enum TraitKind {
     Math(MathTrait),
-    Crypto(CryptoTrait),
     Into(Box<IrType>),
     AsRef(Box<IrType>),
     /// Fn-like trait: input variant and output type
@@ -446,15 +416,18 @@ impl TraitKind {
         if let Some(math) = MathTrait::from_path(segments) {
             return Self::Math(math);
         }
-        if let Some(crypto) = CryptoTrait::from_path(segments) {
-            return Self::Crypto(crypto);
-        }
+        // Normalize Rng aliases
+        let last = segments.last().cloned().unwrap_or_default();
+        let name = match last.as_str() {
+            "RngCore" | "CryptoRng" => "Rng".to_string(),
+            _ => last,
+        };
         if segments.len() > 1 {
             return Self::External {
                 path: segments.to_vec(),
             };
         }
-        Self::Custom(segments.last().cloned().unwrap_or_default())
+        Self::Custom(name)
     }
 }
 
@@ -462,7 +435,6 @@ impl fmt::Display for TraitKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Math(m) => write!(f, "{:?}", m),
-            Self::Crypto(c) => write!(f, "{:?}", c),
             Self::External { path } => write!(f, "{}", path.join("::")),
             Self::Custom(name) => write!(f, "{}", name),
             Self::Into(ty) => {
@@ -505,38 +477,10 @@ impl VoleMethod {
     }
 }
 
-/// Cryptographic method names
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CryptoMethod {
-    EncryptBlock,
-    GenAbo,
-    Open,
-    Validate,
-    Commit,
-    Update,
-    Finalize,
-}
-
-impl CryptoMethod {
-    pub fn try_from_str(s: &str) -> Option<Self> {
-        match s {
-            "encrypt_block" => Some(Self::EncryptBlock),
-            "gen_abo" => Some(Self::GenAbo),
-            "open" => Some(Self::Open),
-            "validate" => Some(Self::Validate),
-            "commit" => Some(Self::Commit),
-            "update" => Some(Self::Update),
-            "finalize" => Some(Self::Finalize),
-            _ => None,
-        }
-    }
-}
-
 /// Unified method classification
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MethodKind {
     Vole(VoleMethod),
-    Crypto(CryptoMethod),
     Std(String),
     Unknown(String),
 }
@@ -545,9 +489,6 @@ impl MethodKind {
     pub fn from_str(s: &str) -> Self {
         if let Some(v) = VoleMethod::try_from_str(s) {
             return Self::Vole(v);
-        }
-        if let Some(c) = CryptoMethod::try_from_str(s) {
-            return Self::Crypto(c);
         }
 
         // Common std-like methods
@@ -1468,7 +1409,7 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         // --- Crypto traits ---
         // BlockEncrypt
         IrTrait {
-            kind: TraitKind::Crypto(CryptoTrait::BlockEncrypt),
+            kind: TraitKind::Custom("BlockEncrypt".into()),
             generics: vec![],
             super_traits: vec![],
             items: vec![
@@ -1498,7 +1439,7 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         },
         // BlockCipher
         IrTrait {
-            kind: TraitKind::Crypto(CryptoTrait::BlockCipher),
+            kind: TraitKind::Custom("BlockCipher".into()),
             generics: vec![],
             super_traits: vec![],
             items: vec![IrTraitItem::AssociatedType {
@@ -1509,7 +1450,7 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         },
         // Digest
         IrTrait {
-            kind: TraitKind::Crypto(CryptoTrait::Digest),
+            kind: TraitKind::Custom("Digest".into()),
             generics: vec![],
             super_traits: vec![],
             items: vec![
@@ -1563,7 +1504,7 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         },
         // ArrayLength<T> — marker/type-level constant
         IrTrait {
-            kind: TraitKind::Crypto(CryptoTrait::ArrayLength),
+            kind: TraitKind::Custom("ArrayLength".into()),
             generics: vec![IrGenericParam {
                 name: "T".into(),
                 kind: IrGenericParamKind::Type,
@@ -1575,7 +1516,7 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         },
         // Rng — minimal definition
         IrTrait {
-            kind: TraitKind::Crypto(CryptoTrait::Rng),
+            kind: TraitKind::Custom("Rng".into()),
             generics: vec![],
             super_traits: vec![],
             items: vec![],

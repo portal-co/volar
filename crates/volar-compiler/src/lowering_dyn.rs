@@ -27,7 +27,7 @@ pub struct StructInfo {
     pub length_witnesses: Vec<String>,
     /// Names of type parameters that remain generic (name, bounds_string)
     pub type_params: Vec<(String, Vec<IrTraitBound>)>,
-    /// Original generics in declaration order with their kind (Length/Crypto/Type) and param kind
+    /// Original generics in declaration order with their kind (Length/Type) and param kind
     pub orig_generics: Vec<(String, GenericKind, IrGenericParamKind)>,
     /// Defaults for generics (None if no default)
     pub generic_defaults: Vec<Option<IrType>>,
@@ -73,7 +73,7 @@ impl LoweringContext {
                     } else {
                         match kind {
                             GenericKind::Length => info.length_witnesses.push(p.name.to_lowercase()),
-                            GenericKind::Crypto | GenericKind::Type => {
+                            GenericKind::Type => {
                                 info.type_params.push((p.name.clone(), p.bounds.clone()));
                             }
                         }
@@ -105,7 +105,7 @@ impl LoweringContext {
                 } else {
                     match kind {
                         GenericKind::Length => info.length_witnesses.push(p.name.to_lowercase()),
-                        GenericKind::Crypto | GenericKind::Type => {
+                        GenericKind::Type => {
                             info.type_params.push((p.name.clone(), p.bounds.clone()));
                         }
                     }
@@ -547,7 +547,7 @@ fn lower_trait_bound_dyn(
     }
     match &b.trait_kind {
         TraitKind::Math(MathTrait::Unsigned) => return None,
-        TraitKind::Crypto(CryptoTrait::ArrayLength) => return None,
+        TraitKind::Custom(name) if name == "ArrayLength" => return None,
         TraitKind::Custom(name) if name == "VoleArray" => return None,
         _ => {}
     }
@@ -945,15 +945,17 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 }
             }
 
-            if let MethodKind::Crypto(CryptoMethod::EncryptBlock) = method {
-                if let Some(a) = args.get(0).cloned() {
-                    args[0] = IrExpr::Call {
-                        func: Box::new(IrExpr::Path {
-                            segments: vec!["Block".to_string(), "from_mut_slice".to_string()],
-                            type_args: vec![IrType::TypeParam("B".to_string())],
-                        }),
-                        args: vec![a],
-                    };
+            if let MethodKind::Unknown(ref name) = method {
+                if name == "encrypt_block" {
+                    if let Some(a) = args.get(0).cloned() {
+                        args[0] = IrExpr::Call {
+                            func: Box::new(IrExpr::Path {
+                                segments: vec!["Block".to_string(), "from_mut_slice".to_string()],
+                                type_args: vec![IrType::TypeParam("B".to_string())],
+                            }),
+                            args: vec![a],
+                        };
+                    }
                 }
             }
 
@@ -1022,8 +1024,9 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     || name == "double"
                 {
                     if let Some(b_param) = fn_gen.iter().find(|p| {
-                        classify_generic(p, &[fn_gen]) == GenericKind::Crypto
-                            && p.name.starts_with('B')
+                        p.name.starts_with('B')
+                            && p.bounds.iter().any(|b| matches!(&b.trait_kind,
+                                TraitKind::Custom(n) if n == "LengthDoubler" || n == "BlockEncrypt" || n == "BlockCipher"))
                     }) {
                         new_func = Some(IrExpr::Path {
                             segments: vec![name.clone()],
@@ -1047,8 +1050,9 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     }
                 } else if name == "commit" {
                     if let Some(d_param) = fn_gen.iter().find(|p| {
-                        classify_generic(p, &[fn_gen]) == GenericKind::Crypto
-                            && p.name.starts_with('D')
+                        p.name.starts_with('D')
+                            && p.bounds.iter().any(|b| matches!(&b.trait_kind,
+                                TraitKind::Custom(n) if n == "Digest"))
                     }) {
                         new_func = Some(IrExpr::Path {
                             segments: vec![name.clone()],

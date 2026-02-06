@@ -1031,17 +1031,6 @@ impl RustBackend for ReceiverWriter {
 fn method_name(method: &MethodKind) -> String {
     match method {
         MethodKind::Std(s) => s.clone(),
-        MethodKind::Crypto(c) => {
-            let debug_name = format!("{:?}", c);
-            let mut snake = String::new();
-            for (i, ch) in debug_name.chars().enumerate() {
-                if ch.is_uppercase() && i > 0 {
-                    snake.push('_');
-                }
-                snake.push(ch.to_ascii_lowercase());
-            }
-            snake
-        }
         MethodKind::Vole(v) => format!("{:?}", v).to_lowercase(),
         MethodKind::Unknown(s) => s.clone(),
     }

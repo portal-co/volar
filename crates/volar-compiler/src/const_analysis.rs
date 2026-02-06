@@ -33,8 +33,6 @@ use alloc::{
 pub enum GenericKind {
     /// Type-level constant (length/size) — becomes runtime usize in dyn lowering
     Length,
-    /// Crypto trait parameter (BlockCipher, Digest) — remains generic
-    Crypto,
     /// Regular type parameter — remains generic
     Type,
 }
@@ -54,9 +52,6 @@ pub fn classify_generic(param: &IrGenericParam, all_params: &[&[IrGenericParam]]
         if is_length_bound(bound) {
             return GenericKind::Length;
         }
-        if is_crypto_bound(bound) {
-            return GenericKind::Crypto;
-        }
         // Fn/FnMut/FnOnce bounds indicate a closure type parameter, not a length
         if is_fn_bound(bound) {
             return GenericKind::Type;
@@ -69,15 +64,7 @@ pub fn classify_generic(param: &IrGenericParam, all_params: &[&[IrGenericParam]]
         return GenericKind::Length;
     }
 
-    // If the param has *any* bounds (that aren't length-related), it's a type param
-    // This catches cases like U: Mul<T, Output = O> + Clone
-    if !param.bounds.is_empty() {
-        return GenericKind::Type;
-    }
-
-    // Default: assume it's a type parameter
-    // We no longer use the aggressive single-letter heuristic since it causes
-    // false positives (e.g., F, U, O, A, Q are often type params, not lengths)
+    // Default: type parameter (includes crypto traits, custom traits, etc.)
     GenericKind::Type
 }
 
@@ -87,16 +74,13 @@ pub fn classify_generic(param: &IrGenericParam, all_params: &[&[IrGenericParam]]
 
 /// Returns true if the trait bound indicates a type-level length/size.
 ///
-/// Recognises `ArrayLength`, `Unsigned`, and custom traits whose supertrait
-/// chain includes `ArrayLength` (e.g., `VoleArray<T>: ArrayLength<T>`).
-/// The latter requires the module's trait definitions to be passed in;
-/// for the standalone predicate we only check the built-in names.
+/// Recognises `ArrayLength` and `Unsigned`.
 pub fn is_length_bound(bound: &IrTraitBound) -> bool {
-    matches!(
-        &bound.trait_kind,
-        TraitKind::Crypto(CryptoTrait::ArrayLength)
-            | TraitKind::Math(MathTrait::Unsigned)
-    )
+    match &bound.trait_kind {
+        TraitKind::Math(MathTrait::Unsigned) => true,
+        TraitKind::Custom(name) => name == "ArrayLength",
+        _ => false,
+    }
 }
 
 /// Returns true if the trait bound indicates a type-level length/size,
@@ -112,17 +96,6 @@ pub fn is_length_bound_with_aliases(bound: &IrTraitBound, length_alias_traits: &
         return length_alias_traits.contains(&name.as_str());
     }
     false
-}
-
-/// Returns true if the trait bound indicates a crypto-domain trait.
-pub fn is_crypto_bound(bound: &IrTraitBound) -> bool {
-    matches!(
-        &bound.trait_kind,
-        TraitKind::Crypto(CryptoTrait::BlockEncrypt)
-            | TraitKind::Crypto(CryptoTrait::BlockCipher)
-            | TraitKind::Crypto(CryptoTrait::Digest)
-            | TraitKind::Crypto(CryptoTrait::Rng)
-    )
 }
 
 /// Returns true if the trait bound is an Fn-like trait (Fn, FnMut, FnOnce).
@@ -225,9 +198,6 @@ pub fn classify_assoc_type_bounds(bounds: &[IrTraitBound]) -> GenericKind {
         if is_length_bound(bound) {
             return GenericKind::Length;
         }
-        if is_crypto_bound(bound) {
-            return GenericKind::Crypto;
-        }
     }
     GenericKind::Type
 }
@@ -240,9 +210,6 @@ pub fn classify_assoc_type_bounds_with_aliases(
     for bound in bounds {
         if is_length_bound_with_aliases(bound, length_aliases) {
             return GenericKind::Length;
-        }
-        if is_crypto_bound(bound) {
-            return GenericKind::Crypto;
         }
     }
     GenericKind::Type
@@ -261,9 +228,6 @@ pub fn classify_generic_with_aliases(
     for bound in &param.bounds {
         if is_length_bound_with_aliases(bound, length_aliases) {
             return GenericKind::Length;
-        }
-        if is_crypto_bound(bound) {
-            return GenericKind::Crypto;
         }
         if is_fn_bound(bound) {
             return GenericKind::Type;
