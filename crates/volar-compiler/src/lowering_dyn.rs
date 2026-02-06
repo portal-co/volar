@@ -1095,6 +1095,19 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     type_args: vec![],
                     args: vec![],
                 }
+            } else if matches!(&method, MethodKind::Std(n) if n == "as_ref") {
+                // Disambiguate as_ref() → emit raw code via Var hack:
+                // We need AsRef::<[u8]>::as_ref(&x) to avoid ambiguity
+                let lowered_receiver = lower_expr_dyn(receiver, ctx, fn_gen);
+                // Create: AsRef::<[u8]>::as_ref(&receiver)
+                // Using Var as raw code snippet for the function path
+                IrExpr::Call {
+                    func: Box::new(IrExpr::Var("AsRef::<[u8]>::as_ref".to_string())),
+                    args: vec![IrExpr::Unary {
+                        op: crate::ir::SpecUnaryOp::Ref,
+                        expr: Box::new(lowered_receiver),
+                    }],
+                }
             } else {
                 lowered
             }
@@ -1418,23 +1431,9 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             base: Box::new(lower_expr_dyn(base, ctx, fn_gen)),
             field: field.clone(),
         },
-        IrExpr::Index { base, index } => {
-            // Simplify x.as_ref()[i] → x[i] in dyn context
-            // Vec<T> supports direct indexing, so as_ref() is unnecessary
-            // and would cause ambiguous AsRef<T> resolution
-            let lowered_base = match base.as_ref() {
-                IrExpr::MethodCall { receiver, method, args, .. }
-                    if matches!(method, MethodKind::Std(n) if n == "as_ref")
-                    && args.is_empty() =>
-                {
-                    lower_expr_dyn(receiver, ctx, fn_gen)
-                }
-                _ => lower_expr_dyn(base, ctx, fn_gen),
-            };
-            IrExpr::Index {
-                base: Box::new(lowered_base),
-                index: Box::new(lower_expr_dyn(index, ctx, fn_gen)),
-            }
+        IrExpr::Index { base, index } => IrExpr::Index {
+            base: Box::new(lower_expr_dyn(base, ctx, fn_gen)),
+            index: Box::new(lower_expr_dyn(index, ctx, fn_gen)),
         },
         IrExpr::Unary { op, expr } => IrExpr::Unary {
             op: *op,
