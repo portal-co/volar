@@ -21,8 +21,8 @@ macro_rules! u8_field {
 macro_rules! bool_field {
     ($($a:ident)*) => {
         $(
-            #[repr(transparent)] 
-            #[derive(Clone,Copy, Debug, PartialEq, Eq,PartialOrd, Ord, Hash,Default)] 
+            #[repr(transparent)]
+            #[derive(Clone,Copy, Debug, PartialEq, Eq,PartialOrd, Ord, Hash,Default)]
             pub struct $a(pub bool);
             impl BitXor<u8> for $a{
                 type Output = Self;
@@ -150,5 +150,21 @@ impl Sub<Galois64> for Galois64 {
     type Output = Galois64;
     fn sub(self, rhs: Galois64) -> Self::Output {
         Galois64(self.0 ^ rhs.0)
+    }
+}
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd)]
+pub struct Tropical<T>(pub T);
+impl<T: Ord> Add<Tropical<T>> for Tropical<T> {
+    type Output = Tropical<T>;
+
+    fn add(self, rhs: Tropical<T>) -> Self::Output {
+        Tropical(self.0.min(rhs.0))
+    }
+}
+impl<T: Add<U>, U> Mul<Tropical<U>> for Tropical<T> {
+    type Output = Tropical<<T as Add<U>>::Output>;
+
+    fn mul(self, rhs: Tropical<U>) -> Self::Output {
+        Tropical(self.0 + rhs.0)
     }
 }
