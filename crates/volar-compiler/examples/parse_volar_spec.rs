@@ -75,9 +75,12 @@ fn main() {
             println!("\n=== Specialized Struct Classifications ===");
             for s in &module.structs {
                 let classification = match &s.kind {
-                    StructKind::Delta | StructKind::Q | StructKind::Vope | StructKind::BitVole => "VOLE",
-                    StructKind::ABO | StructKind::ABOOpening | StructKind::CommitmentCore => "Crypto",
-                    StructKind::Poly | StructKind::PolyInputPool => "Polynomial",
+                    StructKind::Custom(name) => match name.as_str() {
+                        "Delta" | "Q" | "Vope" | "BitVole" => "VOLE",
+                        "ABO" | "ABOOpening" | "CommitmentCore" => "Crypto",
+                        "Poly" | "PolyInputPool" => "Polynomial",
+                        _ => "Other",
+                    },
                     _ => "Other",
                 };
                 println!("  {:?}: {} ({} fields)", s.kind, classification, s.fields.len());

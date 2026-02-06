@@ -249,27 +249,9 @@ impl TypeNumConst {
 /// Known struct types in volar-spec
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum StructKind {
-    /// VOLE Delta
-    Delta,
-    /// VOLE Q
-    Q,
-    /// VOLE Vope (Vole Opaque)
-    Vope,
-    /// VOLE BitVole
-    BitVole,
-    /// Cryptographic Commitment
-    ABO,
-    /// ABO Opening
-    ABOOpening,
-    /// Core commitment data
-    CommitmentCore,
-    /// Polynomial
-    Poly,
-    /// Input pool for polynomial evaluation
-    PolyInputPool,
-    /// GenericArray (used as a struct kind sometimes)
+    /// GenericArray — special semantics in lowering (type-level-sized array)
     GenericArray,
-    /// A custom struct
+    /// Any named struct
     Custom(String),
 }
 
@@ -282,15 +264,6 @@ impl Default for StructKind {
 impl StructKind {
     pub fn from_str(s: &str) -> Self {
         match s {
-            "Delta" => Self::Delta,
-            "Q" => Self::Q,
-            "Vope" => Self::Vope,
-            "BitVole" => Self::BitVole,
-            "ABO" => Self::ABO,
-            "ABOOpening" => Self::ABOOpening,
-            "CommitmentCore" => Self::CommitmentCore,
-            "Poly" => Self::Poly,
-            "PolyInputPool" => Self::PolyInputPool,
             "GenericArray" => Self::GenericArray,
             other => Self::Custom(other.to_string()),
         }
@@ -300,15 +273,6 @@ impl StructKind {
 impl fmt::Display for StructKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Delta => write!(f, "Delta"),
-            Self::Q => write!(f, "Q"),
-            Self::Vope => write!(f, "Vope"),
-            Self::BitVole => write!(f, "BitVole"),
-            Self::ABO => write!(f, "ABO"),
-            Self::ABOOpening => write!(f, "ABOOpening"),
-            Self::CommitmentCore => write!(f, "CommitmentCore"),
-            Self::Poly => write!(f, "Poly"),
-            Self::PolyInputPool => write!(f, "PolyInputPool"),
             Self::GenericArray => write!(f, "GenericArray"),
             Self::Custom(name) => write!(f, "{}", name),
         }
@@ -384,10 +348,6 @@ pub enum CryptoTrait {
     Digest,
     /// Array length tag
     ArrayLength,
-    /// Array specialized for VOLE
-    VoleArray,
-    /// Encryption on byte blocks
-    ByteBlockEncrypt,
     /// Random number generator
     Rng,
 }
@@ -400,8 +360,6 @@ impl CryptoTrait {
             "BlockCipher" => Some(Self::BlockCipher),
             "Digest" => Some(Self::Digest),
             "ArrayLength" => Some(Self::ArrayLength),
-            "VoleArray" => Some(Self::VoleArray),
-            "ByteBlockEncrypt" => Some(Self::ByteBlockEncrypt),
             "Rng" | "RngCore" | "CryptoRng" => Some(Self::Rng),
             _ => None,
         }
@@ -1611,33 +1569,6 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
                 default: None,
             }],
             super_traits: vec![],
-            items: vec![],
-        },
-        // VoleArray<T>: ArrayLength<T>
-        IrTrait {
-            kind: TraitKind::Crypto(CryptoTrait::VoleArray),
-            generics: vec![IrGenericParam {
-                name: "T".into(),
-                kind: IrGenericParamKind::Type,
-                bounds: vec![],
-                default: None,
-            }],
-            super_traits: vec![IrTraitBound {
-                trait_kind: TraitKind::Crypto(CryptoTrait::ArrayLength),
-                type_args: vec![IrType::TypeParam("T".into())],
-                assoc_bindings: vec![],
-            }],
-            items: vec![],
-        },
-        // ByteBlockEncrypt: BlockEncrypt
-        IrTrait {
-            kind: TraitKind::Crypto(CryptoTrait::ByteBlockEncrypt),
-            generics: vec![],
-            super_traits: vec![IrTraitBound {
-                trait_kind: TraitKind::Crypto(CryptoTrait::BlockEncrypt),
-                type_args: vec![],
-                assoc_bindings: vec![],
-            }],
             items: vec![],
         },
         // Rng — minimal definition

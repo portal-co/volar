@@ -126,16 +126,19 @@ pub fn lower_module_dyn(module: &IrModule) -> IrModule {
     }
 
     for im in &module.impls {
-        // Skip ByteBlockEncrypt blanket impl (it's in the header)
+        // Skip blanket impls for marker/alias traits that don't apply in dynamic context
         if let Some(tr) = &im.trait_ {
-            if let TraitKind::Crypto(CryptoTrait::ByteBlockEncrypt) = &tr.kind {
+            if let TraitKind::Custom(name) = &tr.kind {
+                // Skip blanket impls where self_ty is a type param (e.g., impl<T: ...> Foo for T)
                 if let IrType::TypeParam(_) = &im.self_ty {
+                    if name == "ByteBlockEncrypt" {
+                        continue;
+                    }
+                }
+                // Skip marker trait impls (VoleArray is an alias for ArrayLength)
+                if name == "VoleArray" {
                     continue;
                 }
-            }
-            // Skip VoleArray trait impl (it's a marker trait that doesn't apply in dynamic context)
-            if let TraitKind::Crypto(CryptoTrait::VoleArray) = &tr.kind {
-                continue;
             }
         }
         lowered.impls.push(lower_impl_dyn(im, &ctx));
@@ -505,7 +508,8 @@ fn lower_trait_bound_dyn(
     }
     match &b.trait_kind {
         TraitKind::Math(MathTrait::Unsigned) => return None,
-        TraitKind::Crypto(CryptoTrait::ArrayLength | CryptoTrait::VoleArray) => return None,
+        TraitKind::Crypto(CryptoTrait::ArrayLength) => return None,
+        TraitKind::Custom(name) if name == "VoleArray" => return None,
         _ => {}
     }
     let b = b.clone();

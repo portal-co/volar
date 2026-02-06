@@ -131,7 +131,7 @@ pub struct Q<N: ArrayLength<T>, T> {
     assert_eq!(module.structs.len(), 2);
     
     let delta = &module.structs[0];
-    assert!(matches!(delta.kind, volar_compiler::StructKind::Delta));
+    assert!(matches!(delta.kind, volar_compiler::StructKind::Custom(ref n) if n == "Delta"));
     assert_eq!(delta.generics.len(), 2);
     assert_eq!(delta.generics[0].name, "N");
     assert_eq!(delta.generics[1].name, "T");
@@ -155,7 +155,7 @@ pub struct Vope<N: VoleArray<T>, T, K: ArrayLength<GenericArray<T, N>> = U1> {
     assert_eq!(module.structs.len(), 1);
     
     let vope = &module.structs[0];
-    assert!(matches!(vope.kind, volar_compiler::StructKind::Vope));
+    assert!(matches!(vope.kind, volar_compiler::StructKind::Custom(ref n) if n == "Vope"));
     assert_eq!(vope.generics.len(), 3);
     assert_eq!(vope.fields.len(), 2);
 }

@@ -1,4 +1,5 @@
-use core::fmt::Write;
+use core::fmt::{self, Write};
+
 #[cfg(feature = "std")]
 use std::format;
 #[cfg(feature = "std")]
@@ -15,922 +16,1050 @@ use alloc::vec::Vec;
 
 use crate::ir::*;
 
-pub fn print_module(module: &IrModule) -> String {
-    let mut out = String::new();
+// ============================================================================
+// TRAIT + DISPLAY ADAPTER
+// ============================================================================
 
-    // File header for Rust
-    writeln!(out, "//! Auto-generated dynamic types from volar-spec").unwrap();
-    writeln!(
-        out,
-        "//! Type-level lengths have been converted to runtime usize witnesses"
-    )
-    .unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "#![allow(unused_variables, dead_code, unused_mut, unused_imports, non_snake_case, unused_parens)]").unwrap();
-    writeln!(out, "extern crate alloc;").unwrap();
-    writeln!(out, "use alloc::vec::Vec;").unwrap();
-    writeln!(out, "use alloc::vec;").unwrap();
-    writeln!(
-        out,
-        "use core::ops::{{Add, Sub, Mul, Div, BitAnd, BitOr, BitXor, Shl, Shr}};"
-    )
-    .unwrap();
-    writeln!(out, "use core::marker::PhantomData;").unwrap();
-    writeln!(out, "use typenum::Unsigned;").unwrap();
-    writeln!(out, "use cipher::{{BlockEncrypt, Block}};").unwrap();
-    writeln!(out, "use digest::Digest;").unwrap();
-    writeln!(out, "use volar_common::hash_commitment::commit;").unwrap();
-    writeln!(out).unwrap();
-
-    writeln!(
-        out,
-        "/// Block cipher that can encrypt blocks and be created from a 32-byte key"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "pub trait ByteBlockEncrypt: BlockEncrypt + From<[u8; 32]> {{}}"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "impl<T: BlockEncrypt + From<[u8; 32]>> ByteBlockEncrypt for T {{}}"
-    )
-    .unwrap();
-    writeln!(out).unwrap();
-
-    writeln!(out, "// Primitive field types from volar-primitives").unwrap();
-    writeln!(
-        out,
-        "pub use volar_primitives::{{Bit, BitsInBytes, BitsInBytes64, Galois, Galois64}};"
-    )
-    .unwrap();
-    writeln!(out).unwrap();
-
-    writeln!(out, "/// Compute integer log2").unwrap();
-    writeln!(out, "#[inline]").unwrap();
-    writeln!(out, "pub fn ilog2(x: usize) -> u32 {{").unwrap();
-    writeln!(out, "    usize::BITS - x.leading_zeros() - 1").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-
-    for s in &module.structs {
-        write_struct(&mut out, s, 0);
-        writeln!(out).unwrap();
-    }
-
-    for t in &module.traits {
-        write_trait(&mut out, t, 0);
-        writeln!(out).unwrap();
-    }
-
-    for i in &module.impls {
-        write_impl(&mut out, i, 0);
-        writeln!(out).unwrap();
-    }
-
-    for f in &module.functions {
-        write_function(&mut out, f, 0, false);
-        writeln!(out).unwrap();
-    }
-
-    out
+/// Backend trait for rendering IR nodes to Rust source text.
+///
+/// Implementors hold a reference to an IR node plus any extra context
+/// (indentation, config, deps) and write themselves via `fmt`.
+pub trait RustBackend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
 }
 
-fn write_struct(out: &mut String, s: &IrStruct, _level: usize) {
-    writeln!(out, "#[derive(Debug, Default)]").unwrap();
-    write!(out, "pub struct {}", s.kind).unwrap();
-    write_generics(out, &s.generics);
+/// Display adapter — wraps any `RustBackend` to implement `core::fmt::Display`.
+///
+/// Usage: `format!("{}", DisplayRust(SomeWriter { ... }))`
+pub struct DisplayRust<T: RustBackend>(pub T);
 
-    if s.is_tuple {
-        write!(out, "(").unwrap();
-        for (i, f) in s.fields.iter().enumerate() {
-            if i > 0 {
-                write!(out, ", ").unwrap();
-            }
-            write!(out, "pub ").unwrap();
-            write_type(out, &f.ty);
-        }
-        writeln!(out, ");").unwrap();
-    } else {
-        writeln!(out, " {{").unwrap();
-        for f in &s.fields {
-            write!(out, "    pub {}: ", f.name).unwrap();
-            write_type(out, &f.ty);
-            writeln!(out, ",").unwrap();
-        }
-        writeln!(out, "}}").unwrap();
+impl<T: RustBackend> fmt::Display for DisplayRust<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
     }
 }
 
-fn write_trait(out: &mut String, t: &IrTrait, _level: usize) {
-    write!(out, "pub trait {}", t.kind).unwrap();
-    write_generics(out, &t.generics);
-    writeln!(out, " {{").unwrap();
-    for item in &t.items {
-        match item {
-            IrTraitItem::Method(m) => {
-                write!(out, "    fn {}(", m.name).unwrap();
-                if let Some(r) = m.receiver {
-                    write_receiver(out, r);
-                    if !m.params.is_empty() {
-                        write!(out, ", ").unwrap();
-                    }
-                }
-                for (i, p) in m.params.iter().enumerate() {
-                    if i > 0 {
-                        write!(out, ", ").unwrap();
-                    }
-                    write!(out, "{}: ", p.name).unwrap();
-                    write_type(out, &p.ty);
-                }
-                write!(out, ")").unwrap();
-                if let Some(ret) = &m.return_type {
-                    write!(out, " -> ").unwrap();
-                    write_type(out, ret);
-                }
-                writeln!(out, ";").unwrap();
+// ============================================================================
+// WRITER STRUCTS
+// ============================================================================
+
+/// Renders an `IrModule` body (structs, traits, impls, functions) without preamble.
+pub struct ModuleWriter<'a> {
+    pub module: &'a IrModule,
+}
+
+pub struct StructWriter<'a> {
+    pub s: &'a IrStruct,
+}
+
+pub struct TraitWriter<'a> {
+    pub t: &'a IrTrait,
+}
+
+pub struct ImplWriter<'a> {
+    pub i: &'a IrImpl,
+}
+
+pub struct FunctionWriter<'a> {
+    pub f: &'a IrFunction,
+    pub level: usize,
+    pub is_trait_item: bool,
+}
+
+pub struct GenericsWriter<'a> {
+    pub generics: &'a [IrGenericParam],
+}
+
+pub struct WhereClauseWriter<'a> {
+    pub where_clause: &'a [IrWherePredicate],
+}
+
+pub struct TraitBoundWriter<'a> {
+    pub bound: &'a IrTraitBound,
+}
+
+pub struct TypeWriter<'a> {
+    pub ty: &'a IrType,
+}
+
+pub struct BlockWriter<'a> {
+    pub block: &'a IrBlock,
+    pub level: usize,
+}
+
+pub struct StmtWriter<'a> {
+    pub stmt: &'a IrStmt,
+    pub level: usize,
+}
+
+pub struct ExprWriter<'a> {
+    pub expr: &'a IrExpr,
+}
+
+/// Writes an expression as part of an iterator chain (without final `.collect()`).
+pub struct ExprChainWriter<'a> {
+    pub expr: &'a IrExpr,
+}
+
+pub struct PatternWriter<'a> {
+    pub pat: &'a IrPattern,
+}
+
+pub struct ReceiverWriter {
+    pub r: IrReceiver,
+}
+
+// ============================================================================
+// IMPLEMENTATIONS
+// ============================================================================
+
+impl<'a> RustBackend for ModuleWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for s in &self.module.structs {
+            StructWriter { s }.fmt(f)?;
+            writeln!(f)?;
+        }
+        for t in &self.module.traits {
+            TraitWriter { t }.fmt(f)?;
+            writeln!(f)?;
+        }
+        for i in &self.module.impls {
+            ImplWriter { i }.fmt(f)?;
+            writeln!(f)?;
+        }
+        for func in &self.module.functions {
+            FunctionWriter {
+                f: func,
+                level: 0,
+                is_trait_item: false,
             }
-            IrTraitItem::AssociatedType { name, bounds, default } => {
-                write!(out, "    type {}", name).unwrap();
-                if !bounds.is_empty() {
-                    write!(out, ": ").unwrap();
-                    for (j, b) in bounds.iter().enumerate() {
-                        if j > 0 {
-                            write!(out, " + ").unwrap();
+            .fmt(f)?;
+            writeln!(f)?;
+        }
+        Ok(())
+    }
+}
+
+impl<'a> RustBackend for StructWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "#[derive(Debug, Default)]")?;
+        write!(f, "pub struct {}", self.s.kind)?;
+        GenericsWriter {
+            generics: &self.s.generics,
+        }
+        .fmt(f)?;
+
+        if self.s.is_tuple {
+            write!(f, "(")?;
+            for (i, field) in self.s.fields.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "pub ")?;
+                TypeWriter { ty: &field.ty }.fmt(f)?;
+            }
+            writeln!(f, ");")?;
+        } else {
+            writeln!(f, " {{")?;
+            for field in &self.s.fields {
+                write!(f, "    pub {}: ", field.name)?;
+                TypeWriter { ty: &field.ty }.fmt(f)?;
+                writeln!(f, ",")?;
+            }
+            writeln!(f, "}}")?;
+        }
+        Ok(())
+    }
+}
+
+impl<'a> RustBackend for TraitWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "pub trait {}", self.t.kind)?;
+        GenericsWriter {
+            generics: &self.t.generics,
+        }
+        .fmt(f)?;
+        if !self.t.super_traits.is_empty() {
+            write!(f, ": ")?;
+            for (j, st) in self.t.super_traits.iter().enumerate() {
+                if j > 0 {
+                    write!(f, " + ")?;
+                }
+                TraitBoundWriter { bound: st }.fmt(f)?;
+            }
+        }
+        writeln!(f, " {{")?;
+        for item in &self.t.items {
+            match item {
+                IrTraitItem::Method(m) => {
+                    write!(f, "    fn {}", m.name)?;
+                    GenericsWriter {
+                        generics: &m.generics,
+                    }
+                    .fmt(f)?;
+                    write!(f, "(")?;
+                    if let Some(r) = m.receiver {
+                        ReceiverWriter { r }.fmt(f)?;
+                        if !m.params.is_empty() {
+                            write!(f, ", ")?;
                         }
-                        write_trait_bound(out, b);
                     }
+                    for (i, p) in m.params.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}: ", p.name)?;
+                        TypeWriter { ty: &p.ty }.fmt(f)?;
+                    }
+                    write!(f, ")")?;
+                    if let Some(ret) = &m.return_type {
+                        write!(f, " -> ")?;
+                        TypeWriter { ty: ret }.fmt(f)?;
+                    }
+                    writeln!(f, ";")?;
                 }
-                if let Some(def) = default {
-                    write!(out, " = ").unwrap();
-                    write_type(out, def);
+                IrTraitItem::AssociatedType {
+                    name,
+                    bounds,
+                    default,
+                } => {
+                    write!(f, "    type {}", name)?;
+                    if !bounds.is_empty() {
+                        write!(f, ": ")?;
+                        for (j, b) in bounds.iter().enumerate() {
+                            if j > 0 {
+                                write!(f, " + ")?;
+                            }
+                            TraitBoundWriter { bound: b }.fmt(f)?;
+                        }
+                    }
+                    if let Some(def) = default {
+                        write!(f, " = ")?;
+                        TypeWriter { ty: def }.fmt(f)?;
+                    }
+                    writeln!(f, ";")?;
                 }
-                writeln!(out, ";").unwrap();
             }
         }
+        writeln!(f, "}}")?;
+        Ok(())
     }
-    writeln!(out, "}}").unwrap();
 }
 
-fn write_impl(out: &mut String, i: &IrImpl, _level: usize) {
-    write!(out, "impl ").unwrap();
-    write_generics(out, &i.generics);
-    if let Some(t) = &i.trait_ {
-        write!(out, " {}", t.kind).unwrap();
-        if !t.type_args.is_empty() {
-            write!(out, "<").unwrap();
-            for (idx, arg) in t.type_args.iter().enumerate() {
+impl<'a> RustBackend for ImplWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "impl ")?;
+        GenericsWriter {
+            generics: &self.i.generics,
+        }
+        .fmt(f)?;
+        if let Some(t) = &self.i.trait_ {
+            write!(f, " {}", t.kind)?;
+            if !t.type_args.is_empty() {
+                write!(f, "<")?;
+                for (idx, arg) in t.type_args.iter().enumerate() {
+                    if idx > 0 {
+                        write!(f, ", ")?;
+                    }
+                    TypeWriter { ty: arg }.fmt(f)?;
+                }
+                write!(f, ">")?;
+            }
+            write!(f, " for ")?;
+        } else {
+            write!(f, " ")?;
+        }
+        TypeWriter { ty: &self.i.self_ty }.fmt(f)?;
+        WhereClauseWriter {
+            where_clause: &self.i.where_clause,
+        }
+        .fmt(f)?;
+        writeln!(f, " {{")?;
+        for item in &self.i.items {
+            match item {
+                IrImplItem::Method(func) => FunctionWriter {
+                    f: func,
+                    level: 1,
+                    is_trait_item: self.i.trait_.is_some(),
+                }
+                .fmt(f)?,
+                IrImplItem::AssociatedType { name, ty } => {
+                    write!(f, "    type {} = ", name)?;
+                    TypeWriter { ty }.fmt(f)?;
+                    writeln!(f, ";")?;
+                }
+            }
+        }
+        writeln!(f, "}}")?;
+        Ok(())
+    }
+}
+
+impl<'a> RustBackend for FunctionWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let indent = "    ".repeat(self.level);
+        if !self.is_trait_item {
+            write!(f, "{}pub fn {}", indent, self.f.name)?;
+        } else {
+            write!(f, "{}fn {}", indent, self.f.name)?;
+        }
+        GenericsWriter {
+            generics: &self.f.generics,
+        }
+        .fmt(f)?;
+        write!(f, "(")?;
+        if let Some(r) = self.f.receiver {
+            ReceiverWriter { r }.fmt(f)?;
+            if !self.f.params.is_empty() {
+                write!(f, ", ")?;
+            }
+        }
+        for (i, p) in self.f.params.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "mut {}: ", p.name)?;
+            TypeWriter { ty: &p.ty }.fmt(f)?;
+        }
+        write!(f, ")")?;
+        if let Some(ret) = &self.f.return_type {
+            write!(f, " -> ")?;
+            TypeWriter { ty: ret }.fmt(f)?;
+        }
+        WhereClauseWriter {
+            where_clause: &self.f.where_clause,
+        }
+        .fmt(f)?;
+        writeln!(f)?;
+        BlockWriter {
+            block: &self.f.body,
+            level: self.level,
+        }
+        .fmt(f)?;
+        writeln!(f)?;
+        Ok(())
+    }
+}
+
+impl<'a> RustBackend for GenericsWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.generics.is_empty() {
+            write!(f, "<")?;
+            for (i, p) in self.generics.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                if p.kind == IrGenericParamKind::Lifetime {
+                    write!(f, "'{}", p.name)?;
+                } else {
+                    write!(f, "{}", p.name)?;
+                }
+                if !p.bounds.is_empty() {
+                    write!(f, ": ")?;
+                    for (j, b) in p.bounds.iter().enumerate() {
+                        if j > 0 {
+                            write!(f, " + ")?;
+                        }
+                        TraitBoundWriter { bound: b }.fmt(f)?;
+                    }
+                }
+            }
+            write!(f, ">")?;
+        }
+        Ok(())
+    }
+}
+
+impl<'a> RustBackend for WhereClauseWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if !self.where_clause.is_empty() {
+            write!(f, " where ")?;
+            for (idx, wp) in self.where_clause.iter().enumerate() {
                 if idx > 0 {
-                    write!(out, ", ").unwrap();
+                    write!(f, ", ")?;
                 }
-                write_type(out, arg);
-            }
-            write!(out, ">").unwrap();
-        }
-        write!(out, " for ").unwrap();
-    } else {
-        write!(out, " ").unwrap();
-    }
-    write_type(out, &i.self_ty);
-    write_where_clause(out, &i.where_clause);
-    writeln!(out, " {{").unwrap();
-    for item in &i.items {
-        match item {
-            IrImplItem::Method(f) => write_function(out, f, 1, i.trait_.is_some()),
-            IrImplItem::AssociatedType { name, ty } => {
-                write!(out, "    type {} = ", name).unwrap();
-                write_type(out, ty);
-                writeln!(out, ";").unwrap();
-            }
-        }
-    }
-    writeln!(out, "}}").unwrap();
-}
-
-fn write_function(out: &mut String, f: &IrFunction, level: usize, is_trait_item: bool) {
-    let indent = "    ".repeat(level);
-    if !is_trait_item {
-        write!(out, "{}pub fn {}", indent, f.name).unwrap();
-    } else {
-        write!(out, "{}fn {}", indent, f.name).unwrap();
-    }
-    write_generics(out, &f.generics);
-    write!(out, "(").unwrap();
-    if let Some(r) = f.receiver {
-        write_receiver(out, r);
-        if !f.params.is_empty() {
-            write!(out, ", ").unwrap();
-        }
-    }
-    for (i, p) in f.params.iter().enumerate() {
-        if i > 0 {
-            write!(out, ", ").unwrap();
-        }
-        write!(out, "mut {}: ", p.name).unwrap();
-        write_type(out, &p.ty);
-    }
-    write!(out, ")").unwrap();
-    if let Some(ret) = &f.return_type {
-        write!(out, " -> ").unwrap();
-        write_type(out, ret);
-    }
-    write_where_clause(out, &f.where_clause);
-    writeln!(out).unwrap();
-    write_block(out, &f.body, level);
-    writeln!(out).unwrap();
-}
-
-fn write_generics(out: &mut String, generics: &[IrGenericParam]) {
-    if !generics.is_empty() {
-        write!(out, "<").unwrap();
-        for (i, p) in generics.iter().enumerate() {
-            if i > 0 {
-                write!(out, ", ").unwrap();
-            }
-            if p.kind == IrGenericParamKind::Lifetime {
-                write!(out, "'{}", p.name).unwrap();
-            } else {
-                write!(out, "{}", p.name).unwrap();
-            }
-            if !p.bounds.is_empty() {
-                write!(out, ": ").unwrap();
-                for (j, b) in p.bounds.iter().enumerate() {
-                    if j > 0 {
-                        write!(out, " + ").unwrap();
-                    }
-                    write_trait_bound(out, b);
-                }
-            }
-        }
-        write!(out, ">").unwrap();
-    }
-}
-
-fn write_where_clause(out: &mut String, where_clause: &[IrWherePredicate]) {
-    if !where_clause.is_empty() {
-        write!(out, " where ").unwrap();
-        for (idx, wp) in where_clause.iter().enumerate() {
-            if idx > 0 {
-                write!(out, ", ").unwrap();
-            }
-            match wp {
-                IrWherePredicate::TypeBound { ty, bounds } => {
-                    write_type(out, ty);
-                    write!(out, ": ").unwrap();
-                    for (j, b) in bounds.iter().enumerate() {
-                        if j > 0 {
-                            write!(out, " + ").unwrap();
+                match wp {
+                    IrWherePredicate::TypeBound { ty, bounds } => {
+                        TypeWriter { ty }.fmt(f)?;
+                        write!(f, ": ")?;
+                        for (j, b) in bounds.iter().enumerate() {
+                            if j > 0 {
+                                write!(f, " + ")?;
+                            }
+                            TraitBoundWriter { bound: b }.fmt(f)?;
                         }
-                        write_trait_bound(out, b);
                     }
                 }
             }
         }
+        Ok(())
     }
 }
 
-fn write_trait_bound(out: &mut String, bound: &IrTraitBound) {
-    match &bound.trait_kind {
-        TraitKind::Into(ty) => {
-            write!(out, "Into<").unwrap();
-            write_type(out, ty);
-            write!(out, ">").unwrap();
+impl<'a> RustBackend for TraitBoundWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.bound.trait_kind {
+            TraitKind::Into(ty) => {
+                write!(f, "Into<")?;
+                TypeWriter { ty }.fmt(f)?;
+                write!(f, ">")?;
+            }
+            TraitKind::AsRef(ty) => {
+                write!(f, "AsRef<")?;
+                TypeWriter { ty }.fmt(f)?;
+                write!(f, ">")?;
+            }
+            TraitKind::Fn(inp, ty) => {
+                let inp_str = match inp {
+                    FnInput::BytesSlice => "&[u8]",
+                    FnInput::Size => "usize",
+                    FnInput::Bool => "bool",
+                };
+                write!(f, "FnMut({}) -> ", inp_str)?;
+                TypeWriter { ty }.fmt(f)?;
+            }
+            _ => write!(f, "{}", self.bound)?,
         }
-        TraitKind::AsRef(ty) => {
-            write!(out, "AsRef<").unwrap();
-            write_type(out, ty);
-            write!(out, ">").unwrap();
-        }
-        TraitKind::Fn(inp, ty) => {
-            let inp_str = match inp {
-                FnInput::BytesSlice => "&[u8]",
-                FnInput::Size => "usize",
-                FnInput::Bool => "bool",
-            };
-            write!(out, "FnMut({}) -> ", inp_str).unwrap();
-            write_type(out, ty);
-        }
-        _ => write!(out, "{}", bound).unwrap(),
+        Ok(())
     }
 }
 
-fn write_type(out: &mut String, ty: &IrType) {
-    match ty {
-        IrType::Primitive(p) => write!(out, "{}", p).unwrap(),
-        IrType::Vector { elem } => {
-            write!(out, "Vec<").unwrap();
-            write_type(out, elem);
-            write!(out, ">").unwrap();
-        }
-        IrType::Array { kind, elem, len } => {
-            if *kind == ArrayKind::Slice {
-                write!(out, "[").unwrap();
-                write_type(out, elem);
-                write!(out, "]").unwrap();
-            } else {
-                write!(out, "Vec<").unwrap();
-                write_type(out, elem);
-                write!(out, ">").unwrap();
+impl<'a> RustBackend for TypeWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.ty {
+            IrType::Primitive(p) => write!(f, "{}", p)?,
+            IrType::Vector { elem } => {
+                write!(f, "Vec<")?;
+                TypeWriter { ty: elem }.fmt(f)?;
+                write!(f, ">")?;
             }
-        }
-        IrType::Struct { kind, type_args } => {
-            write!(out, "{}", kind).unwrap();
-            if !type_args.is_empty() {
-                write!(out, "<").unwrap();
-                for (i, arg) in type_args.iter().enumerate() {
-                    if i > 0 {
-                        write!(out, ", ");
-                    }
-                    write_type(out, arg);
-                }
-                write!(out, ">").unwrap();
-            }
-        }
-        IrType::TypeParam(p) => write!(out, "{}", p).unwrap(),
-        IrType::Tuple(elems) => {
-            write!(out, "(").unwrap();
-            for (i, elem) in elems.iter().enumerate() {
-                if i > 0 {
-                    write!(out, ", ");
-                }
-                write_type(out, elem);
-            }
-            write!(out, ")").unwrap();
-        }
-        IrType::Unit => write!(out, "()").unwrap(),
-        IrType::Reference { mutable, elem } => {
-            write!(out, "&{}", if *mutable { "mut " } else { "" }).unwrap();
-            write_type(out, elem);
-        }
-        IrType::Projection {
-            base,
-            trait_path,
-            trait_args,
-            assoc,
-        } => {
-            // For simple Self::Output cases, just use Self::AssocType
-            if let IrType::TypeParam(p) = base.as_ref() {
-                if p == "Self" && trait_args.is_empty() {
-                    write!(out, "Self::{}", assoc).unwrap();
-                    return;
+            IrType::Array { kind, elem, len: _ } => {
+                if *kind == ArrayKind::Slice {
+                    write!(f, "[")?;
+                    TypeWriter { ty: elem }.fmt(f)?;
+                    write!(f, "]")?;
+                } else {
+                    write!(f, "Vec<")?;
+                    TypeWriter { ty: elem }.fmt(f)?;
+                    write!(f, ">")?;
                 }
             }
-            write!(out, "<").unwrap();
-            write_type(out, base);
-            let trait_name = trait_path.as_deref().unwrap_or("_");
-            write!(out, " as {}", trait_name).unwrap();
-            if !trait_args.is_empty() {
-                write!(out, "<").unwrap();
-                for (i, arg) in trait_args.iter().enumerate() {
-                    if i > 0 {
-                        write!(out, ", ");
-                    }
-                    write_type(out, arg);
-                }
-                write!(out, ">").unwrap();
-            }
-            write!(out, ">::{}", assoc).unwrap();
-        }
-        IrType::Existential { bounds } => {
-            write!(out, "impl ").unwrap();
-            for (i, b) in bounds.iter().enumerate() {
-                if i > 0 {
-                    write!(out, " + ");
-                }
-                write_trait_bound(out, b);
-            }
-        }
-        _ => write!(out, "_").unwrap(),
-    }
-}
-
-fn write_block(out: &mut String, block: &IrBlock, level: usize) {
-    let indent = "    ".repeat(level);
-    writeln!(out, "{}{{", indent).unwrap();
-    for stmt in &block.stmts {
-        write_stmt(out, stmt, level + 1);
-    }
-    if let Some(e) = &block.expr {
-        write!(out, "{}    ", indent).unwrap();
-        write_expr(out, e);
-        writeln!(out).unwrap();
-    }
-    write!(out, "{}}}", indent).unwrap();
-}
-
-fn write_stmt(out: &mut String, stmt: &IrStmt, level: usize) {
-    let indent = "    ".repeat(level);
-    write!(out, "{}", indent).unwrap();
-    match stmt {
-        IrStmt::Let { pattern, ty, init } => {
-            write!(out, "let ").unwrap();
-            write_pattern(out, pattern);
-            if let Some(t) = ty {
-                write!(out, ": ").unwrap();
-                write_type(out, t);
-            }
-            if let Some(i) = init {
-                write!(out, " = ").unwrap();
-                write_expr(out, i);
-            }
-            writeln!(out, ";").unwrap();
-        }
-        IrStmt::Semi(e) => {
-            write_expr(out, e);
-            writeln!(out, ";").unwrap();
-        }
-        IrStmt::Expr(e) => {
-            write_expr(out, e);
-            writeln!(out).unwrap();
-        }
-    }
-}
-
-/// Write an expression as part of an iterator chain (without final .collect())
-fn write_expr_chainable(out: &mut String, expr: &IrExpr) {
-    match expr {
-        IrExpr::ArrayMap { array, elem_var, body } => {
-            write_expr_chainable(out, array);
-            write!(out, ".map(|{}| ", elem_var).unwrap();
-            write_expr(out, body);
-            write!(out, ")").unwrap();
-        }
-        IrExpr::IterSource { collection, method } => {
-            write_expr_chainable(out, collection);
-            let mname = match method {
-                crate::ir::IterMethod::Iter => "iter",
-                crate::ir::IterMethod::IntoIter => "into_iter",
-                crate::ir::IterMethod::Chars => "chars",
-                crate::ir::IterMethod::Bytes => "bytes",
-                _ => "iter",
-            };
-            write!(out, ".{}()", mname).unwrap();
-        }
-        IrExpr::IterEnumerate { iter } => {
-            write_expr_chainable(out, iter);
-            write!(out, ".enumerate()").unwrap();
-        }
-        IrExpr::IterFilter { iter, elem_var, body } => {
-            write_expr_chainable(out, iter);
-            write!(out, ".filter(|{}| ", elem_var).unwrap();
-            write_expr(out, body);
-            write!(out, ")").unwrap();
-        }
-        IrExpr::IterTake { iter, count } => {
-            write_expr_chainable(out, iter);
-            write!(out, ".take(").unwrap();
-            write_expr(out, count);
-            write!(out, ")").unwrap();
-        }
-        IrExpr::IterSkip { iter, count } => {
-            write_expr_chainable(out, iter);
-            write!(out, ".skip(").unwrap();
-            write_expr(out, count);
-            write!(out, ")").unwrap();
-        }
-        IrExpr::IterChain { left, right } => {
-            write_expr_chainable(out, left);
-            write!(out, ".chain(").unwrap();
-            write_expr(out, right);
-            write!(out, ")").unwrap();
-        }
-        IrExpr::IterFlatMap { iter, elem_var, body } => {
-            write_expr_chainable(out, iter);
-            write!(out, ".flat_map(|{}| ", elem_var).unwrap();
-            write_expr(out, body);
-            write!(out, ")").unwrap();
-        }
-        IrExpr::IterFilterMap { iter, elem_var, body } => {
-            write_expr_chainable(out, iter);
-            write!(out, ".filter_map(|{}| ", elem_var).unwrap();
-            write_expr(out, body);
-            write!(out, ")").unwrap();
-        }
-        IrExpr::ArrayZip {
-            left,
-            right,
-            left_var,
-            right_var,
-            body,
-        } => {
-            write_expr_chainable(out, left);
-            write!(out, ".zip(").unwrap();
-            write_expr(out, right);
-            write!(out, ").map(|({}, {})| ", left_var, right_var).unwrap();
-            write_expr(out, body);
-            write!(out, ")").unwrap();
-        }
-        IrExpr::MethodCall {
-            receiver,
-            method,
-            args,
-            ..
-        } => {
-            let (name, is_iter_source, is_iter_transform) = match method {
-                MethodKind::Std(s) => (s.clone(), false, false),
-                MethodKind::Crypto(c) => {
-                    let debug_name = format!("{:?}", c);
-                    let mut snake = String::new();
-                    for (i, ch) in debug_name.chars().enumerate() {
-                        if ch.is_uppercase() && i > 0 {
-                            snake.push('_');
-                        }
-                        snake.push(ch.to_ascii_lowercase());
-                    }
-                    (snake, false, false)
-                }
-                MethodKind::Vole(v) => (format!("{:?}", v).to_lowercase(), false, false),
-                // MethodKind::Iter(im) => {
-                //     let name = match im {
-                //         crate::ir::IterMethod::Iter => "iter",
-                //         crate::ir::IterMethod::IntoIter => "into_iter",
-                //         crate::ir::IterMethod::Chars => "chars",
-                //         crate::ir::IterMethod::Bytes => "bytes",
-                //         crate::ir::IterMethod::Enumerate => "enumerate",
-                //         crate::ir::IterMethod::Filter => "filter",
-                //         crate::ir::IterMethod::Take => "take",
-                //         crate::ir::IterMethod::Skip => "skip",
-                //         crate::ir::IterMethod::Map => "map",
-                //         crate::ir::IterMethod::FlatMap => "flat_map",
-                //         crate::ir::IterMethod::FilterMap => "filter_map",
-                //         crate::ir::IterMethod::Fold => "fold",
-                //         crate::ir::IterMethod::Chain => "chain",
-                //     }
-                //     .to_string();
-                //     let is_source = matches!(im, crate::ir::IterMethod::Iter | crate::ir::IterMethod::IntoIter | crate::ir::IterMethod::Chars | crate::ir::IterMethod::Bytes);
-                //     let is_transform = matches!(im, crate::ir::IterMethod::Enumerate | crate::ir::IterMethod::Filter | crate::ir::IterMethod::Take | crate::ir::IterMethod::Skip | crate::ir::IterMethod::Map | crate::ir::IterMethod::FlatMap | crate::ir::IterMethod::FilterMap);
-                //     (name, is_source, is_transform)
-                // }
-                MethodKind::Unknown(s) => (s.clone(), false, true),
-            };
-
-            if is_iter_source {
-                write_expr(out, receiver);
-            } else if is_iter_transform {
-                write_expr_chainable(out, receiver);
-            } else {
-                write_expr_chainable(out, receiver);
-            }
-
-            write!(out, ".{}(", name).unwrap();
-            for (i, arg) in args.iter().enumerate() {
-                if i > 0 {
-                    write!(out, ", ").unwrap();
-                }
-                write_expr(out, arg);
-            }
-            write!(out, ")").unwrap();
-        }
-        // For other expressions, use into_iter() to make them iterable
-        _ => {
-            write_expr(out, expr);
-            write!(out, ".into_iter()").unwrap();
-        }
-    }
-}
-
-fn write_expr(out: &mut String, expr: &IrExpr) {
-    match expr {
-        IrExpr::Lit(l) => write!(out, "{}", l).unwrap(),
-        IrExpr::Var(v) => write!(out, "{}", v).unwrap(),
-        IrExpr::Binary { op, left, right } => {
-            write!(out, "(").unwrap();
-            write_expr(out, left);
-            write!(out, " {} ", bin_op_str(*op)).unwrap();
-            write_expr(out, right);
-            write!(out, ")").unwrap();
-        }
-        IrExpr::MethodCall {
-            receiver,
-            method,
-            args,
-            ..
-        } => {
-            let (name, is_iter_consumer) = match method {
-                MethodKind::Std(s) => (s.clone(), false),
-                MethodKind::Crypto(c) => {
-                    let debug_name = format!("{:?}", c);
-                    let mut snake = String::new();
-                    for (i, ch) in debug_name.chars().enumerate() {
-                        if ch.is_uppercase() && i > 0 {
-                            snake.push('_');
-                        }
-                        snake.push(ch.to_ascii_lowercase());
-                    }
-                    (snake, false)
-                }
-                MethodKind::Vole(v) => (format!("{:?}", v).to_lowercase(), false),
-                // MethodKind::Iter(im) => {
-                //     let name = match im {
-                //         crate::ir::IterMethod::Iter => "iter",
-                //         crate::ir::IterMethod::IntoIter => "into_iter",
-                //         crate::ir::IterMethod::Chars => "chars",
-                //         crate::ir::IterMethod::Bytes => "bytes",
-                //         crate::ir::IterMethod::Enumerate => "enumerate",
-                //         crate::ir::IterMethod::Filter => "filter",
-                //         crate::ir::IterMethod::Take => "take",
-                //         crate::ir::IterMethod::Skip => "skip",
-                //         crate::ir::IterMethod::Map => "map",
-                //         crate::ir::IterMethod::FlatMap => "flat_map",
-                //         crate::ir::IterMethod::FilterMap => "filter_map",
-                //         crate::ir::IterMethod::Fold => "fold",
-                //         crate::ir::IterMethod::Chain => "chain",
-                //     }
-                //     .to_string();
-                //     let is_consumer = matches!(im, crate::ir::IterMethod::Fold | crate::ir::IterMethod::Enumerate | crate::ir::IterMethod::Filter | crate::ir::IterMethod::Take | crate::ir::IterMethod::Skip | crate::ir::IterMethod::Chain | crate::ir::IterMethod::FlatMap | crate::ir::IterMethod::FilterMap);
-                //     (name, is_consumer)
-                // }
-                MethodKind::Unknown(s) => (s.clone(), false),
-            };
-
-            if is_iter_consumer {
-                write_expr_chainable(out, receiver);
-            } else {
-                write_expr(out, receiver);
-            }
-
-            write!(out, ".{}(", name).unwrap();
-            for (i, arg) in args.iter().enumerate() {
-                if i > 0 {
-                    write!(out, ", ").unwrap();
-                }
-                write_expr(out, arg);
-            }
-            write!(out, ")").unwrap();
-        }
-        IrExpr::Call { func, args } => {
-            write_expr(out, func);
-            write!(out, "(").unwrap();
-            for (i, arg) in args.iter().enumerate() {
-                if i > 0 {
-                    write!(out, ", ").unwrap();
-                }
-                write_expr(out, arg);
-            }
-            write!(out, ")").unwrap();
-        }
-        IrExpr::Field { base, field } => {
-            write_expr(out, base);
-            write!(out, ".{}", field).unwrap();
-        }
-        IrExpr::Index { base, index } => {
-            write_expr(out, base);
-            write!(out, "[").unwrap();
-            write_expr(out, index);
-            write!(out, "]").unwrap();
-        }
-        IrExpr::Block(b) => write_block(out, b, 0),
-        IrExpr::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => {
-            write!(out, "if ").unwrap();
-            write_expr(out, cond);
-            write_block(out, then_branch, 0);
-            if let Some(eb) = else_branch {
-                write!(out, " else ").unwrap();
-                write_expr(out, eb);
-            }
-        }
-        IrExpr::BoundedLoop {
-            var,
-            start,
-            end,
-            inclusive,
-            body,
-        } => {
-            write!(out, "for {} in ", var).unwrap();
-            write_expr(out, start);
-            write!(out, "{} ", if *inclusive { "..=" } else { ".." }).unwrap();
-            write_expr(out, end);
-            write_block(out, body, 0);
-        }
-        IrExpr::IterLoop {
-            pattern,
-            collection,
-            body,
-        } => {
-            write!(out, "for ").unwrap();
-            write_pattern(out, pattern);
-            write!(out, " in ").unwrap();
-            write_expr(out, collection);
-            write_block(out, body, 0);
-        }
-        IrExpr::ArrayMap {
-            array,
-            elem_var,
-            body,
-        } => {
-            // Write the map part without collect - caller decides whether to collect
-            write_expr_chainable(out, array);
-            write!(out, ".map(|{}| ", elem_var).unwrap();
-            write_expr(out, body);
-            write!(out, ")").unwrap();
-            // Only add collect if this is not part of a larger chain
-            // For now, always add collect (callers like ArrayFold should use write_expr_chainable)
-            write!(out, ".collect::<Vec<_>>()").unwrap();
-        }
-        IrExpr::ArrayZip {
-            left,
-            right,
-            left_var,
-            right_var,
-            body,
-        } => {
-            write_expr_chainable(out, left);
-            write!(out, ".zip(").unwrap();
-            write_expr(out, right);
-            write!(out, ").map(|({}, {})| ", left_var, right_var).unwrap();
-            write_expr(out, body);
-            write!(out, ").collect::<Vec<_>>()").unwrap();
-        }
-        IrExpr::ArrayFold {
-            array,
-            init,
-            acc_var,
-            elem_var,
-            body,
-        } => {
-            write_expr_chainable(out, array);
-            write!(out, ".fold(").unwrap();
-            write_expr(out, init);
-            write!(out, ", |{}, {}| ", acc_var, elem_var).unwrap();
-            write_expr(out, body);
-            write!(out, ")").unwrap();
-        }
-        IrExpr::IterFold {
-            iter,
-            init,
-            acc_var,
-            elem_var,
-            body,
-        } => {
-            write_expr_chainable(out, iter);
-            write!(out, ".fold(").unwrap();
-            write_expr(out, init);
-            write!(out, ", |{}, {}| ", acc_var, elem_var).unwrap();
-            write_expr(out, body);
-            write!(out, ")").unwrap();
-        }
-        IrExpr::MethodCall { receiver, method, args, .. } => {
-            // Non-iterator method calls; print receiver normally then call
-            write_expr(out, receiver);
-            let name = match method {
-                MethodKind::Std(s) => s.clone(),
-                MethodKind::Crypto(c) => {
-                    let debug_name = format!("{:?}", c);
-                    let mut snake = String::new();
-                    for (i, ch) in debug_name.chars().enumerate() {
-                        if ch.is_uppercase() && i > 0 {
-                            snake.push('_');
-                        }
-                        snake.push(ch.to_ascii_lowercase());
-                    }
-                    snake
-                }
-                MethodKind::Vole(v) => format!("{:?}", v).to_lowercase(),
-                MethodKind::Unknown(s) => s.clone(),
-            };
-            write!(out, ".{}(", name).unwrap();
-            for (i, arg) in args.iter().enumerate() {
-                if i > 0 {
-                    write!(out, ", ").unwrap();
-                }
-                write_expr(out, arg);
-            }
-            write!(out, ")").unwrap();
-        }
-          IrExpr::Path {
-            segments,
-            type_args,
-        } => {
-            if let Some("new" | "from_mut_slice") = segments.last().as_deref().map(|a| &**a) {
-                let l = segments.last().unwrap();
-                let segments = &segments[..segments.len() - 1];
-                write!(out, "{}", segments.join("::")).unwrap();
+            IrType::Struct { kind, type_args } => {
+                write!(f, "{}", kind)?;
                 if !type_args.is_empty() {
-                    write!(out, "::<").unwrap();
+                    write!(f, "<")?;
                     for (i, arg) in type_args.iter().enumerate() {
                         if i > 0 {
-                            write!(out, ", ");
+                            write!(f, ", ")?;
                         }
-                        write_type(out, arg);
+                        TypeWriter { ty: arg }.fmt(f)?;
                     }
-                    write!(out, ">").unwrap();
+                    write!(f, ">")?;
                 }
-                write!(out, "::{}", l).unwrap();
-            } else {
-                write!(out, "{}", segments.join("::")).unwrap();
-                if !type_args.is_empty() {
-                    write!(out, "::<").unwrap();
-                    for (i, arg) in type_args.iter().enumerate() {
+            }
+            IrType::TypeParam(p) => write!(f, "{}", p)?,
+            IrType::Tuple(elems) => {
+                write!(f, "(")?;
+                for (i, elem) in elems.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    TypeWriter { ty: elem }.fmt(f)?;
+                }
+                write!(f, ")")?;
+            }
+            IrType::Unit => write!(f, "()")?,
+            IrType::Reference { mutable, elem } => {
+                write!(f, "&{}", if *mutable { "mut " } else { "" })?;
+                TypeWriter { ty: elem }.fmt(f)?;
+            }
+            IrType::Projection {
+                base,
+                trait_path,
+                trait_args,
+                assoc,
+            } => {
+                if let IrType::TypeParam(p) = base.as_ref() {
+                    if p == "Self" && trait_args.is_empty() {
+                        write!(f, "Self::{}", assoc)?;
+                        return Ok(());
+                    }
+                }
+                write!(f, "<")?;
+                TypeWriter { ty: base }.fmt(f)?;
+                let trait_name = trait_path.as_deref().unwrap_or("_");
+                write!(f, " as {}", trait_name)?;
+                if !trait_args.is_empty() {
+                    write!(f, "<")?;
+                    for (i, arg) in trait_args.iter().enumerate() {
                         if i > 0 {
-                            write!(out, ", ");
+                            write!(f, ", ")?;
                         }
-                        write_type(out, arg);
+                        TypeWriter { ty: arg }.fmt(f)?;
                     }
-                    write!(out, ">").unwrap();
+                    write!(f, ">")?;
+                }
+                write!(f, ">::{}", assoc)?;
+            }
+            IrType::Existential { bounds } => {
+                write!(f, "impl ")?;
+                for (i, b) in bounds.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " + ")?;
+                    }
+                    TraitBoundWriter { bound: b }.fmt(f)?;
                 }
             }
+            _ => write!(f, "_")?,
         }
-        IrExpr::Closure { params, body, .. } => {
-            write!(out, "|").unwrap();
-            for (i, p) in params.iter().enumerate() {
-                if i > 0 {
-                    write!(out, ", ");
+        Ok(())
+    }
+}
+
+impl<'a> RustBackend for BlockWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let indent = "    ".repeat(self.level);
+        writeln!(f, "{}{{", indent)?;
+        for stmt in &self.block.stmts {
+            StmtWriter {
+                stmt,
+                level: self.level + 1,
+            }
+            .fmt(f)?;
+        }
+        if let Some(e) = &self.block.expr {
+            write!(f, "{}    ", indent)?;
+            ExprWriter { expr: e }.fmt(f)?;
+            writeln!(f)?;
+        }
+        write!(f, "{}}}", indent)?;
+        Ok(())
+    }
+}
+
+impl<'a> RustBackend for StmtWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let indent = "    ".repeat(self.level);
+        write!(f, "{}", indent)?;
+        match self.stmt {
+            IrStmt::Let { pattern, ty, init } => {
+                write!(f, "let ")?;
+                PatternWriter { pat: pattern }.fmt(f)?;
+                if let Some(t) = ty {
+                    write!(f, ": ")?;
+                    TypeWriter { ty: t }.fmt(f)?;
                 }
-                write_pattern(out, &p.pattern);
-            }
-            write!(out, "| ").unwrap();
-            write_expr(out, body);
-        }
-        IrExpr::Range {
-            start,
-            end,
-            inclusive,
-        } => {
-            if let Some(s) = start {
-                write_expr(out, s);
-            }
-            write!(out, "{}", if *inclusive { "..=" } else { ".." }).unwrap();
-            if let Some(e) = end {
-                write_expr(out, e);
-            }
-        }
-        IrExpr::Assign { left, right } => {
-            write_expr(out, left);
-            write!(out, " = ").unwrap();
-            write_expr(out, right);
-        }
-        IrExpr::StructExpr { kind, fields, .. } => {
-            write!(out, "{} {{ ", kind).unwrap();
-            for (i, (name, val)) in fields.iter().enumerate() {
-                if i > 0 {
-                    write!(out, ", ").unwrap();
+                if let Some(i) = init {
+                    write!(f, " = ")?;
+                    ExprWriter { expr: i }.fmt(f)?;
                 }
-                write!(out, "{}: ", name).unwrap();
-                write_expr(out, val);
+                writeln!(f, ";")?;
             }
-            write!(out, " }}").unwrap();
+            IrStmt::Semi(e) => {
+                ExprWriter { expr: e }.fmt(f)?;
+                writeln!(f, ";")?;
+            }
+            IrStmt::Expr(e) => {
+                ExprWriter { expr: e }.fmt(f)?;
+                writeln!(f)?;
+            }
         }
-        IrExpr::Tuple(elems) => {
-            write!(out, "(").unwrap();
-            for (i, e) in elems.iter().enumerate() {
-                if i > 0 {
-                    write!(out, ", ").unwrap();
+        Ok(())
+    }
+}
+
+impl<'a> RustBackend for ExprChainWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.expr {
+            IrExpr::ArrayMap {
+                array,
+                elem_var,
+                body,
+            } => {
+                ExprChainWriter { expr: array }.fmt(f)?;
+                write!(f, ".map(|{}| ", elem_var)?;
+                ExprWriter { expr: body }.fmt(f)?;
+                write!(f, ")")?;
+            }
+            IrExpr::IterSource { collection, method } => {
+                ExprChainWriter { expr: collection }.fmt(f)?;
+                let mname = match method {
+                    IterMethod::Iter => "iter",
+                    IterMethod::IntoIter => "into_iter",
+                    IterMethod::Chars => "chars",
+                    IterMethod::Bytes => "bytes",
+                    _ => "iter",
+                };
+                write!(f, ".{}()", mname)?;
+            }
+            IrExpr::IterEnumerate { iter } => {
+                ExprChainWriter { expr: iter }.fmt(f)?;
+                write!(f, ".enumerate()")?;
+            }
+            IrExpr::IterFilter {
+                iter,
+                elem_var,
+                body,
+            } => {
+                ExprChainWriter { expr: iter }.fmt(f)?;
+                write!(f, ".filter(|{}| ", elem_var)?;
+                ExprWriter { expr: body }.fmt(f)?;
+                write!(f, ")")?;
+            }
+            IrExpr::IterTake { iter, count } => {
+                ExprChainWriter { expr: iter }.fmt(f)?;
+                write!(f, ".take(")?;
+                ExprWriter { expr: count }.fmt(f)?;
+                write!(f, ")")?;
+            }
+            IrExpr::IterSkip { iter, count } => {
+                ExprChainWriter { expr: iter }.fmt(f)?;
+                write!(f, ".skip(")?;
+                ExprWriter { expr: count }.fmt(f)?;
+                write!(f, ")")?;
+            }
+            IrExpr::IterChain { left, right } => {
+                ExprChainWriter { expr: left }.fmt(f)?;
+                write!(f, ".chain(")?;
+                ExprWriter { expr: right }.fmt(f)?;
+                write!(f, ")")?;
+            }
+            IrExpr::IterFlatMap {
+                iter,
+                elem_var,
+                body,
+            } => {
+                ExprChainWriter { expr: iter }.fmt(f)?;
+                write!(f, ".flat_map(|{}| ", elem_var)?;
+                ExprWriter { expr: body }.fmt(f)?;
+                write!(f, ")")?;
+            }
+            IrExpr::IterFilterMap {
+                iter,
+                elem_var,
+                body,
+            } => {
+                ExprChainWriter { expr: iter }.fmt(f)?;
+                write!(f, ".filter_map(|{}| ", elem_var)?;
+                ExprWriter { expr: body }.fmt(f)?;
+                write!(f, ")")?;
+            }
+            IrExpr::ArrayZip {
+                left,
+                right,
+                left_var,
+                right_var,
+                body,
+            } => {
+                ExprChainWriter { expr: left }.fmt(f)?;
+                write!(f, ".zip(")?;
+                ExprWriter { expr: right }.fmt(f)?;
+                write!(f, ").map(|({}, {})| ", left_var, right_var)?;
+                ExprWriter { expr: body }.fmt(f)?;
+                write!(f, ")")?;
+            }
+            IrExpr::MethodCall {
+                receiver,
+                method,
+                args,
+                ..
+            } => {
+                let name = method_name(method);
+                ExprChainWriter { expr: receiver }.fmt(f)?;
+                write!(f, ".{}(", name)?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    ExprWriter { expr: arg }.fmt(f)?;
                 }
-                write_expr(out, e);
+                write!(f, ")")?;
             }
-            write!(out, ")").unwrap();
+            _ => {
+                ExprWriter { expr: self.expr }.fmt(f)?;
+                write!(f, ".into_iter()")?;
+            }
         }
-        IrExpr::Array(elems) => {
-            write!(out, "vec![").unwrap();
-            for (i, e) in elems.iter().enumerate() {
-                if i > 0 {
-                    write!(out, ", ").unwrap();
+        Ok(())
+    }
+}
+
+impl<'a> RustBackend for ExprWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.expr {
+            IrExpr::Lit(l) => write!(f, "{}", l)?,
+            IrExpr::Var(v) => write!(f, "{}", v)?,
+            IrExpr::Binary { op, left, right } => {
+                write!(f, "(")?;
+                ExprWriter { expr: left }.fmt(f)?;
+                write!(f, " {} ", bin_op_str(*op))?;
+                ExprWriter { expr: right }.fmt(f)?;
+                write!(f, ")")?;
+            }
+            IrExpr::MethodCall {
+                receiver,
+                method,
+                args,
+                ..
+            } => {
+                let name = method_name(method);
+                ExprWriter { expr: receiver }.fmt(f)?;
+                write!(f, ".{}(", name)?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    ExprWriter { expr: arg }.fmt(f)?;
                 }
-                write_expr(out, e);
+                write!(f, ")")?;
             }
-            write!(out, "]").unwrap();
-        }
-        IrExpr::Repeat { elem, len } => {
-            write!(out, "[").unwrap();
-            write_expr(out, elem);
-            write!(out, "; ").unwrap();
-            write_expr(out, len);
-            write!(out, "]").unwrap();
-        }
-        IrExpr::Cast { expr, ty } => {
-            write!(out, "(").unwrap();
-            write_expr(out, expr);
-            write!(out, " as ").unwrap();
-            write_type(out, ty);
-            write!(out, ")").unwrap();
-        }
-        IrExpr::Return(e) => {
-            write!(out, "return").unwrap();
-            if let Some(e) = e {
-                write!(out, " ").unwrap();
-                write_expr(out, e);
+            IrExpr::Call { func, args } => {
+                ExprWriter { expr: func }.fmt(f)?;
+                write!(f, "(")?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    ExprWriter { expr: arg }.fmt(f)?;
+                }
+                write!(f, ")")?;
+            }
+            IrExpr::Field { base, field } => {
+                ExprWriter { expr: base }.fmt(f)?;
+                write!(f, ".{}", field)?;
+            }
+            IrExpr::Index { base, index } => {
+                ExprWriter { expr: base }.fmt(f)?;
+                write!(f, "[")?;
+                ExprWriter { expr: index }.fmt(f)?;
+                write!(f, "]")?;
+            }
+            IrExpr::Block(b) => BlockWriter {
+                block: b,
+                level: 0,
+            }
+            .fmt(f)?,
+            IrExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                write!(f, "if ")?;
+                ExprWriter { expr: cond }.fmt(f)?;
+                BlockWriter {
+                    block: then_branch,
+                    level: 0,
+                }
+                .fmt(f)?;
+                if let Some(eb) = else_branch {
+                    write!(f, " else ")?;
+                    ExprWriter { expr: eb }.fmt(f)?;
+                }
+            }
+            IrExpr::BoundedLoop {
+                var,
+                start,
+                end,
+                inclusive,
+                body,
+            } => {
+                write!(f, "for {} in ", var)?;
+                ExprWriter { expr: start }.fmt(f)?;
+                write!(f, "{} ", if *inclusive { "..=" } else { ".." })?;
+                ExprWriter { expr: end }.fmt(f)?;
+                BlockWriter {
+                    block: body,
+                    level: 0,
+                }
+                .fmt(f)?;
+            }
+            IrExpr::IterLoop {
+                pattern,
+                collection,
+                body,
+            } => {
+                write!(f, "for ")?;
+                PatternWriter { pat: pattern }.fmt(f)?;
+                write!(f, " in ")?;
+                ExprWriter { expr: collection }.fmt(f)?;
+                BlockWriter {
+                    block: body,
+                    level: 0,
+                }
+                .fmt(f)?;
+            }
+            IrExpr::ArrayMap {
+                array,
+                elem_var,
+                body,
+            } => {
+                ExprChainWriter { expr: array }.fmt(f)?;
+                write!(f, ".map(|{}| ", elem_var)?;
+                ExprWriter { expr: body }.fmt(f)?;
+                write!(f, ").collect::<Vec<_>>()")?;
+            }
+            IrExpr::ArrayZip {
+                left,
+                right,
+                left_var,
+                right_var,
+                body,
+            } => {
+                ExprChainWriter { expr: left }.fmt(f)?;
+                write!(f, ".zip(")?;
+                ExprWriter { expr: right }.fmt(f)?;
+                write!(f, ").map(|({}, {})| ", left_var, right_var)?;
+                ExprWriter { expr: body }.fmt(f)?;
+                write!(f, ").collect::<Vec<_>>()")?;
+            }
+            IrExpr::ArrayFold {
+                array,
+                init,
+                acc_var,
+                elem_var,
+                body,
+            } => {
+                ExprChainWriter { expr: array }.fmt(f)?;
+                write!(f, ".fold(")?;
+                ExprWriter { expr: init }.fmt(f)?;
+                write!(f, ", |{}, {}| ", acc_var, elem_var)?;
+                ExprWriter { expr: body }.fmt(f)?;
+                write!(f, ")")?;
+            }
+            IrExpr::IterFold {
+                iter,
+                init,
+                acc_var,
+                elem_var,
+                body,
+            } => {
+                ExprChainWriter { expr: iter }.fmt(f)?;
+                write!(f, ".fold(")?;
+                ExprWriter { expr: init }.fmt(f)?;
+                write!(f, ", |{}, {}| ", acc_var, elem_var)?;
+                ExprWriter { expr: body }.fmt(f)?;
+                write!(f, ")")?;
+            }
+            IrExpr::Path {
+                segments,
+                type_args,
+            } => {
+                if let Some("new" | "from_mut_slice") = segments.last().map(|a| a.as_str()) {
+                    let l = segments.last().unwrap();
+                    let prefix = &segments[..segments.len() - 1];
+                    write!(f, "{}", prefix.join("::"))?;
+                    if !type_args.is_empty() {
+                        write!(f, "::<")?;
+                        for (i, arg) in type_args.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            TypeWriter { ty: arg }.fmt(f)?;
+                        }
+                        write!(f, ">")?;
+                    }
+                    write!(f, "::{}", l)?;
+                } else {
+                    write!(f, "{}", segments.join("::"))?;
+                    if !type_args.is_empty() {
+                        write!(f, "::<")?;
+                        for (i, arg) in type_args.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            TypeWriter { ty: arg }.fmt(f)?;
+                        }
+                        write!(f, ">")?;
+                    }
+                }
+            }
+            IrExpr::Closure { params, body, .. } => {
+                write!(f, "|")?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    PatternWriter { pat: &p.pattern }.fmt(f)?;
+                }
+                write!(f, "| ")?;
+                ExprWriter { expr: body }.fmt(f)?;
+            }
+            IrExpr::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                if let Some(s) = start {
+                    ExprWriter { expr: s }.fmt(f)?;
+                }
+                write!(f, "{}", if *inclusive { "..=" } else { ".." })?;
+                if let Some(e) = end {
+                    ExprWriter { expr: e }.fmt(f)?;
+                }
+            }
+            IrExpr::Assign { left, right } => {
+                ExprWriter { expr: left }.fmt(f)?;
+                write!(f, " = ")?;
+                ExprWriter { expr: right }.fmt(f)?;
+            }
+            IrExpr::StructExpr { kind, fields, .. } => {
+                write!(f, "{} {{ ", kind)?;
+                for (i, (name, val)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: ", name)?;
+                    ExprWriter { expr: val }.fmt(f)?;
+                }
+                write!(f, " }}")?;
+            }
+            IrExpr::Tuple(elems) => {
+                write!(f, "(")?;
+                for (i, e) in elems.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    ExprWriter { expr: e }.fmt(f)?;
+                }
+                write!(f, ")")?;
+            }
+            IrExpr::Array(elems) => {
+                write!(f, "vec![")?;
+                for (i, e) in elems.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    ExprWriter { expr: e }.fmt(f)?;
+                }
+                write!(f, "]")?;
+            }
+            IrExpr::Repeat { elem, len } => {
+                write!(f, "[")?;
+                ExprWriter { expr: elem }.fmt(f)?;
+                write!(f, "; ")?;
+                ExprWriter { expr: len }.fmt(f)?;
+                write!(f, "]")?;
+            }
+            IrExpr::Cast { expr, ty } => {
+                write!(f, "(")?;
+                ExprWriter { expr }.fmt(f)?;
+                write!(f, " as ")?;
+                TypeWriter { ty }.fmt(f)?;
+                write!(f, ")")?;
+            }
+            IrExpr::Return(e) => {
+                write!(f, "return")?;
+                if let Some(e) = e {
+                    write!(f, " ")?;
+                    ExprWriter { expr: e }.fmt(f)?;
+                }
+            }
+            IrExpr::TypenumUsize { ty } => {
+                write!(f, "<")?;
+                TypeWriter { ty }.fmt(f)?;
+                write!(f, " as typenum::Unsigned>::USIZE")?;
+            }
+            IrExpr::Unreachable => write!(f, "unreachable!()")?,
+            _ => {
+                let msg = format!("{:?}", self.expr).replace('"', "'");
+                write!(
+                    f,
+                    "compile_error!(\"Unsupported expression in printer: {}\")",
+                    msg
+                )?;
             }
         }
-        IrExpr::TypenumUsize { ty } => {
-            write!(out, "<").unwrap();
-            write_type(out, ty);
-            write!(out, " as typenum::Unsigned>::USIZE").unwrap();
+        Ok(())
+    }
+}
+
+impl<'a> RustBackend for PatternWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.pat {
+            IrPattern::Ident { mutable, name, .. } => {
+                if *mutable {
+                    write!(f, "mut ")?;
+                }
+                write!(f, "{}", name)?;
+            }
+            IrPattern::Wild => write!(f, "_")?,
+            IrPattern::Tuple(elems) => {
+                write!(f, "(")?;
+                for (i, p) in elems.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    PatternWriter { pat: p }.fmt(f)?;
+                }
+                write!(f, ")")?;
+            }
+            IrPattern::TupleStruct { kind, elems } => {
+                write!(f, "{}(", kind)?;
+                for (i, p) in elems.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    PatternWriter { pat: p }.fmt(f)?;
+                }
+                write!(f, ")")?;
+            }
+            IrPattern::Struct {
+                kind,
+                fields,
+                rest,
+            } => {
+                write!(f, "{} {{ ", kind)?;
+                for (i, (name, p)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: ", name)?;
+                    PatternWriter { pat: p }.fmt(f)?;
+                }
+                if *rest {
+                    if !fields.is_empty() {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "..")?;
+                }
+                write!(f, " }}")?;
+            }
+            _ => write!(f, "..")?,
         }
-        IrExpr::Unreachable => write!(out, "unreachable!()").unwrap(),
-        _ => {
-            let msg = format!("{:?}", expr).replace('"', "'");
-            write!(
-                out,
-                "compile_error!(\"Unsupported expression in printer: {}\")",
-                msg
-            )
-            .unwrap();
+        Ok(())
+    }
+}
+
+impl RustBackend for ReceiverWriter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.r {
+            IrReceiver::Value => write!(f, "self"),
+            IrReceiver::Ref => write!(f, "&self"),
+            IrReceiver::RefMut => write!(f, "&mut self"),
         }
+    }
+}
+
+// ============================================================================
+// HELPERS
+// ============================================================================
+
+fn method_name(method: &MethodKind) -> String {
+    match method {
+        MethodKind::Std(s) => s.clone(),
+        MethodKind::Crypto(c) => {
+            let debug_name = format!("{:?}", c);
+            let mut snake = String::new();
+            for (i, ch) in debug_name.chars().enumerate() {
+                if ch.is_uppercase() && i > 0 {
+                    snake.push('_');
+                }
+                snake.push(ch.to_ascii_lowercase());
+            }
+            snake
+        }
+        MethodKind::Vole(v) => format!("{:?}", v).to_lowercase(),
+        MethodKind::Unknown(s) => s.clone(),
     }
 }
 
@@ -956,60 +1085,47 @@ fn bin_op_str(op: SpecBinOp) -> &'static str {
     }
 }
 
-fn write_pattern(out: &mut String, pat: &IrPattern) {
-    match pat {
-        IrPattern::Ident { mutable, name, .. } => {
-            if *mutable {
-                write!(out, "mut ").unwrap();
-            }
-            write!(out, "{}", name).unwrap();
-        }
-        IrPattern::Wild => write!(out, "_").unwrap(),
-        IrPattern::Tuple(elems) => {
-            write!(out, "(").unwrap();
-            for (i, p) in elems.iter().enumerate() {
-                if i > 0 {
-                    write!(out, ", ");
-                }
-                write_pattern(out, p);
-            }
-            write!(out, ")").unwrap();
-        }
-        IrPattern::TupleStruct { kind, elems } => {
-            write!(out, "{}(", kind).unwrap();
-            for (i, p) in elems.iter().enumerate() {
-                if i > 0 {
-                    write!(out, ", ");
-                }
-                write_pattern(out, p);
-            }
-            write!(out, ")").unwrap();
-        }
-        IrPattern::Struct { kind, fields, rest } => {
-            write!(out, "{} {{ ", kind).unwrap();
-            for (i, (name, p)) in fields.iter().enumerate() {
-                if i > 0 {
-                    write!(out, ", ");
-                }
-                write!(out, "{}: ", name).unwrap();
-                write_pattern(out, p);
-            }
-            if *rest {
-                if !fields.is_empty() {
-                    write!(out, ", ");
-                }
-                write!(out, "..").unwrap();
-            }
-            write!(out, " }}").unwrap();
-        }
-        _ => write!(out, "..").unwrap(),
-    }
+// ============================================================================
+// CONVENIENCE API
+// ============================================================================
+
+/// Render a full module with the standard preamble as a String.
+///
+/// This preserves backward compatibility with the old `print_module` API.
+pub fn print_module(module: &IrModule) -> String {
+    let mut out = String::new();
+    write_preamble(&mut out);
+    let _ = write!(out, "{}", DisplayRust(ModuleWriter { module }));
+    out
 }
 
-fn write_receiver(out: &mut String, r: IrReceiver) {
-    match r {
-        IrReceiver::Value => write!(out, "self").unwrap(),
-        IrReceiver::Ref => write!(out, "&self").unwrap(),
-        IrReceiver::RefMut => write!(out, "&mut self").unwrap(),
-    }
+/// Write the standard Rust preamble (imports, helpers) to a string.
+fn write_preamble(out: &mut String) {
+    // File header for Rust
+    let _ = writeln!(out, "//! Auto-generated dynamic types from volar-spec");
+    let _ = writeln!(
+        out,
+        "//! Type-level lengths have been converted to runtime usize witnesses"
+    );
+    let _ = writeln!(out);
+    let _ = writeln!(out, "#![allow(unused_variables, dead_code, unused_mut, unused_imports, non_snake_case, unused_parens)]");
+    let _ = writeln!(out, "extern crate alloc;");
+    let _ = writeln!(out, "use alloc::vec::Vec;");
+    let _ = writeln!(out, "use alloc::vec;");
+    let _ = writeln!(
+        out,
+        "use core::ops::{{Add, Sub, Mul, Div, BitAnd, BitOr, BitXor, Shl, Shr}};"
+    );
+    let _ = writeln!(out, "use core::marker::PhantomData;");
+    let _ = writeln!(out, "use typenum::Unsigned;");
+    let _ = writeln!(out, "use cipher::{{BlockEncrypt, Block}};");
+    let _ = writeln!(out, "use digest::Digest;");
+    let _ = writeln!(out, "use volar_common::hash_commitment::commit;");
+    let _ = writeln!(out);
+    let _ = writeln!(out, "/// Compute integer log2");
+    let _ = writeln!(out, "#[inline]");
+    let _ = writeln!(out, "pub fn ilog2(x: usize) -> u32 {{");
+    let _ = writeln!(out, "    usize::BITS - x.leading_zeros() - 1");
+    let _ = writeln!(out, "}}");
+    let _ = writeln!(out);
 }

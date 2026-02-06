@@ -4,10 +4,10 @@
 use std::fs;
 use std::path::Path;
 use volar_compiler::{
-    AssociatedType, ConstAnalysis, GenericKind, IrGenericParamKind, IrImpl, IrImplItem,
-    IrMethodSig, IrTrait, IrTraitItem, IrTraitRef, IrType, MathTrait, PrimitiveType, SpecBinOp,
-    SpecUnaryOp, StructKind, TraitKind, TypeContext, builtin_trait_defs, parse_source,
-    parse_sources,
+    AssociatedType, ConstAnalysis, DisplayRust, ExprWriter, GenericKind, IrGenericParamKind,
+    IrImpl, IrImplItem, IrMethodSig, IrTrait, IrTraitItem, IrTraitRef, IrType, MathTrait,
+    ModuleWriter, PrimitiveType, RustBackend, SpecBinOp, SpecUnaryOp, StructKind, TraitKind,
+    TypeContext, TypeWriter, builtin_trait_defs, parse_source, parse_sources,
 };
 
 // ============================================================================
@@ -855,5 +855,134 @@ fn test_volar_spec_type_context_validates_impls() {
     println!(
         "Validated {} custom trait impls, {} errors",
         total_validated, total_errors
+    );
+}
+
+// ============================================================================
+// RustBackend / DisplayRust tests
+// ============================================================================
+
+#[test]
+fn test_display_rust_type_writer() {
+    let ty = IrType::Primitive(PrimitiveType::U8);
+    let s = format!("{}", DisplayRust(TypeWriter { ty: &ty }));
+    assert_eq!(s, "u8");
+}
+
+#[test]
+fn test_display_rust_generic_type() {
+    let ty = IrType::Struct {
+        kind: StructKind::Custom("Vec".into()),
+        type_args: vec![IrType::Primitive(PrimitiveType::U8)],
+    };
+    let s = format!("{}", DisplayRust(TypeWriter { ty: &ty }));
+    assert_eq!(s, "Vec<u8>");
+}
+
+#[test]
+fn test_display_rust_module_writer() {
+    let source = r#"
+        pub struct Foo { pub x: u8 }
+    "#;
+    let module = parse_source(source, "test").unwrap();
+    let s = format!("{}", DisplayRust(ModuleWriter { module: &module }));
+    assert!(s.contains("pub struct Foo"));
+    assert!(s.contains("pub x: u8"));
+}
+
+#[test]
+fn test_display_rust_expr_writer() {
+    let expr = volar_compiler::IrExpr::Lit(volar_compiler::IrLit::Int(42));
+    let s = format!("{}", DisplayRust(ExprWriter { expr: &expr }));
+    assert_eq!(s, "42");
+}
+
+#[test]
+fn test_print_module_backward_compat() {
+    let source = r#"
+        pub struct Bar { pub y: bool }
+    "#;
+    let module = parse_source(source, "test").unwrap();
+    let printed = volar_compiler::print_module(&module);
+    // Should contain the preamble
+    assert!(printed.contains("Auto-generated"));
+    assert!(printed.contains("extern crate alloc"));
+    // And the struct
+    assert!(printed.contains("pub struct Bar"));
+}
+
+#[test]
+fn test_module_writer_no_preamble() {
+    let source = r#"
+        pub struct Baz { pub z: u32 }
+    "#;
+    let module = parse_source(source, "test").unwrap();
+    let s = format!("{}", DisplayRust(ModuleWriter { module: &module }));
+    // Should NOT contain the preamble
+    assert!(!s.contains("Auto-generated"));
+    assert!(!s.contains("extern crate"));
+    // But should contain the struct
+    assert!(s.contains("pub struct Baz"));
+}
+
+#[test]
+fn test_length_alias_discovery() {
+    let source = r#"
+        pub trait VoleArray<T>: ArrayLength<T> {}
+        pub struct Foo<N: VoleArray<u8>> { pub data: GenericArray<u8, N> }
+    "#;
+    let module = parse_source(source, "test").unwrap();
+    let analysis = ConstAnalysis::from_module(&module);
+
+    // VoleArray should be discovered as a length alias
+    assert!(
+        analysis.length_alias_traits.contains(&"VoleArray".to_string()),
+        "VoleArray should be a length alias, got: {:?}",
+        analysis.length_alias_traits
+    );
+
+    // N: VoleArray<u8> should be classified as Length
+    let generics = analysis.struct_generics.get("Foo").unwrap();
+    assert_eq!(generics.len(), 1);
+    assert_eq!(
+        generics[0],
+        ("N".into(), GenericKind::Length, IrGenericParamKind::Type),
+        "N bound by VoleArray should be Length"
+    );
+}
+
+#[test]
+fn test_transitive_length_alias() {
+    let source = r#"
+        pub trait BigArray<T>: ArrayLength<T> {}
+        pub trait HugeArray<T>: BigArray<T> {}
+        pub struct Bar<N: HugeArray<u8>> { pub data: GenericArray<u8, N> }
+    "#;
+    let module = parse_source(source, "test").unwrap();
+    let analysis = ConstAnalysis::from_module(&module);
+
+    assert!(analysis.length_alias_traits.contains(&"BigArray".to_string()));
+    assert!(analysis.length_alias_traits.contains(&"HugeArray".to_string()));
+
+    let generics = analysis.struct_generics.get("Bar").unwrap();
+    assert_eq!(
+        generics[0],
+        ("N".into(), GenericKind::Length, IrGenericParamKind::Type),
+    );
+}
+
+#[test]
+fn test_preamble_no_byte_block_encrypt() {
+    let module = volar_compiler::IrModule::default();
+    let printed = volar_compiler::print_module(&module);
+    // ByteBlockEncrypt should NOT appear in the preamble anymore
+    assert!(
+        !printed.contains("ByteBlockEncrypt"),
+        "Preamble should not contain ByteBlockEncrypt"
+    );
+    // volar_primitives re-export should NOT appear
+    assert!(
+        !printed.contains("volar_primitives"),
+        "Preamble should not contain hardcoded volar_primitives import"
     );
 }

@@ -60,17 +60,21 @@ fn test_specialize_volar_spec() {
     println!("\n=== Struct Classifications ===");
     for s in &spec.structs {
         match &s.kind {
-            StructKind::Delta | StructKind::Q | StructKind::Vope | StructKind::BitVole => {
-                vole_structs += 1;
-                println!("  VOLE: {:?}", s.kind);
-            }
-            StructKind::ABO | StructKind::ABOOpening | StructKind::CommitmentCore => {
-                crypto_structs += 1;
-                println!("  Crypto: {:?}", s.kind);
-            }
             StructKind::Custom(name) => {
-                custom_structs += 1;
-                println!("  Custom: {}", name);
+                match name.as_str() {
+                    "Delta" | "Q" | "Vope" | "BitVole" => {
+                        vole_structs += 1;
+                        println!("  VOLE: {}", name);
+                    }
+                    "ABO" | "ABOOpening" | "CommitmentCore" => {
+                        crypto_structs += 1;
+                        println!("  Crypto: {}", name);
+                    }
+                    _ => {
+                        custom_structs += 1;
+                        println!("  Custom: {}", name);
+                    }
+                }
             }
             other => {
                 println!("  Other: {:?}", other);
