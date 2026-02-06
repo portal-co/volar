@@ -9,3 +9,4 @@ impl<D: Digest> LengthDoubler for ViaDigestPuncturableRandomizer<D> {
         [v.clone(), v.zip(a, |x, y| x ^ y)]
     }
 }
+impl<D: Digest> PuncturableLengthDoubler for ViaDigestPuncturableRandomizer<D> {}

@@ -19,6 +19,9 @@ pub trait LengthDoubler {
     type OutputSize: ArrayLength<u8>;
     fn double(a: GenericArray<u8, Self::OutputSize>) -> [GenericArray<u8, Self::OutputSize>; 2];
 }
+pub trait PuncturableLengthDoubler: LengthDoubler{
+    
+}
 pub fn gen_abo<B: LengthDoubler, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSize>>>(
     a: GenericArray<u8, B::OutputSize>,
     rand: &impl AsRef<[u8]>,
