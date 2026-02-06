@@ -920,6 +920,12 @@ pub enum IrExpr {
         elem_ty: Option<Box<IrType>>,
         len: ArrayLength,
     },
+    /// Calls `T::default()` for a given type. Emitted by dyn lowering when
+    /// generating default-filled arrays via IterPipeline. The printer emits
+    /// `<ty>::default()` (or `Default::default()` if `ty` is `None`).
+    DefaultValue {
+        ty: Option<Box<IrType>>,
+    },
     /// Witness expression that converts a type-level length to a runtime `usize`.
     /// For simple length params like `N`, lowering produces `Var("n")`.
     /// For projections like `<B as LengthDoubler>::OutputSize`, lowering produces

@@ -1324,23 +1324,8 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
         // ArrayDefault → IterPipeline: (0..len).map(|_| T::default()).collect()
         IrExpr::ArrayDefault { elem_ty, len } => {
             let len_expr = array_length_to_expr(len, fn_gen, ctx);
-            let default_body = if let Some(ty) = elem_ty {
-                let lowered_ty = lower_type_dyn(ty, ctx, fn_gen);
-                IrExpr::Call {
-                    func: Box::new(IrExpr::Path {
-                        segments: vec![type_to_path_segment(&lowered_ty), "default".to_string()],
-                        type_args: Vec::new(),
-                    }),
-                    args: Vec::new(),
-                }
-            } else {
-                IrExpr::Call {
-                    func: Box::new(IrExpr::Path {
-                        segments: vec!["Default".to_string(), "default".to_string()],
-                        type_args: Vec::new(),
-                    }),
-                    args: Vec::new(),
-                }
+            let default_body = IrExpr::DefaultValue {
+                ty: elem_ty.as_ref().map(|t| Box::new(lower_type_dyn(t, ctx, fn_gen))),
             };
             IrExpr::IterPipeline(IrIterChain {
                 source: IterChainSource::Range {
@@ -1792,42 +1777,7 @@ fn array_length_to_expr(len: &ArrayLength, fn_gen: &[IrGenericParam], ctx: &Lowe
     }
 }
 
-/// Convert an `IrType` to a string suitable for use as a path segment
-/// (e.g. in `T::default()`). For primitives this is just the type name;
-/// for generic types like `Vec<u8>` we produce `Vec::<u8>` turbofish form;
-/// for type params we use the param name directly.
-fn type_to_path_segment(ty: &IrType) -> String {
-    match ty {
-        IrType::Primitive(p) => format!("{}", p),
-        IrType::TypeParam(name) => name.clone(),
-        IrType::Vector { elem } => format!("Vec::<{}>", type_to_path_segment(elem)),
-        IrType::Struct { kind, type_args } => {
-            let base = format!("{}", kind);
-            if type_args.is_empty() {
-                base.to_string()
-            } else {
-                let args: Vec<String> = type_args.iter().map(|t| type_to_path_segment(t)).collect();
-                format!("{}::<{}>", base, args.join(", "))
-            }
-        }
-        IrType::Tuple(elems) => {
-            let parts: Vec<String> = elems.iter().map(|t| type_to_path_segment(t)).collect();
-            format!("({})", parts.join(", "))
-        }
-        IrType::Reference { mutable, elem } => {
-            if *mutable {
-                format!("&mut {}", type_to_path_segment(elem))
-            } else {
-                format!("&{}", type_to_path_segment(elem))
-            }
-        }
-        IrType::Array { elem, len, .. } => format!("[{}; {:?}]", type_to_path_segment(elem), len),
-        IrType::Param { path } => path.join("::"),
-        IrType::Unit => "()".to_string(),
-        // Fallback: use Display for anything else
-        _ => format!("{}", ty),
-    }
-}
+
 
 #[cfg(test)]
 mod tests {

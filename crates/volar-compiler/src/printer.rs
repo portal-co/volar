@@ -995,6 +995,14 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 }
                 write!(f, "]")?;
             }
+            IrExpr::DefaultValue { ty } => {
+                if let Some(t) = ty {
+                    TypeWriter { ty: t }.fmt(f)?;
+                    write!(f, "::default()")?;
+                } else {
+                    write!(f, "Default::default()")?;
+                }
+            }
             IrExpr::LengthOf(len) => {
                 match len {
                     ArrayLength::Const(n) => write!(f, "{}", n)?,
