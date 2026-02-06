@@ -2,7 +2,7 @@ use core::ops::{BitXor, Deref};
 
 use super::*;
 
-impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSize>>> ABO<B, D, K> {
+impl<B: LengthDoubler, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSize>>> ABO<B, D, K> {
     pub fn to_vole_material<const N: usize>(&self) -> [Vope<B::OutputSize, u8>; N]
     where
         B::OutputSize: VoleArray<u8>,

@@ -15,11 +15,11 @@ use crate::{
     vole::{VoleArray, vope::Vope},
 };
 use volar_common::hash_commitment::commit;
-pub trait ByteBlockEncrypt {
+pub trait LengthDoubler {
     type OutputSize: ArrayLength<u8>;
     fn double(a: GenericArray<u8, Self::OutputSize>) -> [GenericArray<u8, Self::OutputSize>; 2];
 }
-pub fn gen_abo<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSize>>>(
+pub fn gen_abo<B: LengthDoubler, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSize>>>(
     a: GenericArray<u8, B::OutputSize>,
     rand: &impl AsRef<[u8]>,
 ) -> ABO<B, D, K>
@@ -49,7 +49,7 @@ where
         per_byte,
     }
 }
-pub fn create_vole_from_material<B: ByteBlockEncrypt<OutputSize: VoleArray<u8>>, X: AsRef<[u8]>>(
+pub fn create_vole_from_material<B: LengthDoubler<OutputSize: VoleArray<u8>>, X: AsRef<[u8]>>(
     s: &[X],
 ) -> Vope<B::OutputSize, u8> {
     let u: GenericArray<u8, B::OutputSize> =
@@ -75,7 +75,7 @@ pub fn create_vole_from_material<B: ByteBlockEncrypt<OutputSize: VoleArray<u8>>,
     }
 }
 pub fn create_vole_from_material_expanded<
-    B: ByteBlockEncrypt<OutputSize: VoleArray<u8>>,
+    B: LengthDoubler<OutputSize: VoleArray<u8>>,
     X: AsRef<[u8]>,
     Y: AsRef<[u8]>,
     F: FnMut(&[u8]) -> X,
@@ -107,12 +107,12 @@ pub fn create_vole_from_material_expanded<
         v,
     }
 }
-pub struct ABO<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSize>>> {
+pub struct ABO<B: LengthDoubler, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSize>>> {
     pub commit: GenericArray<u8, D::OutputSize>,
     pub per_byte: GenericArray<GenericArray<u8, B::OutputSize>, K>,
 }
 pub struct ABOOpening<
-    B: ByteBlockEncrypt<OutputSize: Max<D::OutputSize, Output: ArrayLength<u8>>>,
+    B: LengthDoubler<OutputSize: Max<D::OutputSize, Output: ArrayLength<u8>>>,
     D: Digest,
     T: ArrayLength<
             GenericArray<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>, U>,
@@ -131,7 +131,7 @@ pub mod verifier;
 pub mod impls;
 
 pub struct BSplit<
-    B: ByteBlockEncrypt,
+    B: LengthDoubler,
     D: Digest<OutputSize: Logarithm2<Output: ArrayLength<[GenericArray<u8, B::OutputSize>; 2]>>>,
 > {
     pub split:

@@ -1,5 +1,5 @@
 use super::*;
-impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSize>>> ABO<B, D, K> {
+impl<B: LengthDoubler, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSize>>> ABO<B, D, K> {
     pub fn open<
         T: ArrayLength<
                 GenericArray<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>, U>,
@@ -38,7 +38,7 @@ impl<B: ByteBlockEncrypt, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSi
     }
 }
 impl<
-    B: ByteBlockEncrypt<OutputSize: Unsigned + Max<D::OutputSize, Output: ArrayLength<u8>>>,
+    B: LengthDoubler<OutputSize: Unsigned + Max<D::OutputSize, Output: ArrayLength<u8>>>,
     D: Digest<OutputSize: Unsigned>,
     T: ArrayLength<
             GenericArray<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>, U>,
