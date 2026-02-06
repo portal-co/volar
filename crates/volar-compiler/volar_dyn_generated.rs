@@ -93,7 +93,7 @@ pub struct ViaDigestPuncturableRandomizerDyn<D: Digest> {
 pub struct CommitmentCoreDyn<D: Digest>(pub Vec<u8>, pub PhantomData<D>);
 
 pub trait LengthDoubler {
-    type OutputSize;
+    type OutputSize: Unsigned;
     fn double(a: Vec<u8>) -> Vec<Vec<u8>>;
 }
 
@@ -265,7 +265,7 @@ impl <T> PolyDyn<T> {
 }
 
 impl <T: Add<Output = T> + Mul<Output = T> + Default + Clone> VopeDyn<T> where T: Add<Output = T> + Mul<Output = T> + Default + Clone {
-    pub fn mul_generalized(&self, mut k2: usize, mut k2_output: usize, mut other: &VopeDyn<T>) -> VopeDyn<T>
+    pub fn mul_generalized(&self, mut k2: usize, mut other: &VopeDyn<T>) -> VopeDyn<T>
     {
         let n: usize = self.n;
         let k: usize = self.k;
@@ -750,7 +750,7 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
 }
 
 impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
-    pub fn validate<R: AsRef<[u8]>>(&self, mut b_outputsize: usize, mut d_outputsize: usize, mut commit_: &Vec<u8>, mut rand: &R) -> bool
+    pub fn validate<R: AsRef<[u8]>>(&self, mut commit_: &Vec<u8>, mut rand: &R) -> bool
     {
         let t: usize = self.t;
         let u: usize = self.u;
@@ -759,51 +759,51 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
     for b in 0.. u{
     let i2 = (i | ((b as usize) << t.ilog2()));
     if self.bad.contains(&(i2 as u64)){
-    h.update(&self.openings[i][b][..d_outputsize]);
+    h.update(&self.openings[i][b][..<<D>::OutputSize as Unsigned>::to_usize()]);
 } else {
-    h.update(&commit::<D>(&&self.openings[i][b][..b_outputsize], rand));
+    h.update(&commit::<D>(&&self.openings[i][b][..<<B>::OutputSize as Unsigned>::to_usize()], rand));
 }
 }
 };
         (h.finalize().as_slice() == commit_.as_slice())
     }
-    pub fn to_vole_material(&self, mut n: usize, mut b_outputsize: usize) -> Vec<VopeDyn<u8>>
+    pub fn to_vole_material(&self, mut n: usize) -> Vec<VopeDyn<u8>>
     {
         let t: usize = self.t;
         let u: usize = self.u;
         (0..n).map(|i| {
     let s = &self.openings[i];
-    create_vole_from_material::<B, _>(b_outputsize, s)
+    create_vole_from_material::<B, _>(s)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_typenum(&self, mut n: usize, mut b_outputsize: usize) -> Vec<VopeDyn<u8>>
+    pub fn to_vole_material_typenum(&self, mut n: usize) -> Vec<VopeDyn<u8>>
     {
         let t: usize = self.t;
         let u: usize = self.u;
         (0..n).map(|i| {
     let s = &self.openings[i];
-    create_vole_from_material::<B, _>(b_outputsize, s)
+    create_vole_from_material::<B, _>(s)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F, mut b_outputsize: usize) -> Vec<VopeDyn<u8>>
+    pub fn to_vole_material_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<u8>>
     {
         let t: usize = self.t;
         let u: usize = self.u;
         (0..n).map(|i| {
     let s = &self.openings[i];
-    create_vole_from_material_expanded::<B, _, _, _>(b_outputsize, s, &mut f)
+    create_vole_from_material_expanded::<B, _, _, _>(s, &mut f)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_typenum_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F, mut b_outputsize: usize) -> Vec<VopeDyn<u8>>
+    pub fn to_vole_material_typenum_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<u8>>
     {
         let t: usize = self.t;
         let u: usize = self.u;
         (0..n).map(|i| {
     let s = &self.openings[i];
-    create_vole_from_material_expanded::<B, _, _, _>(b_outputsize, s, &mut f)
+    create_vole_from_material_expanded::<B, _, _, _>(s, &mut f)
 }).collect::<Vec<_>>()
     }
-    pub fn split_bit_typenum(&self, mut n: usize, mut b_outputsize: usize, mut self_output: usize) -> Vec<BSplitDyn<B, D>> where D: Digest
+    pub fn split_bit_typenum(&self, mut n: usize) -> Vec<BSplitDyn<B, D>> where D: Digest
     {
         let t: usize = self.t;
         let u: usize = self.u;
@@ -817,8 +817,8 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
 } else {
     None
 }
-}).fold(vec![u8::default(); b_outputsize], |a, b| {
-    a.into_iter().zip((0..b_outputsize).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
+}).fold(vec![u8::default(); <<B>::OutputSize as Unsigned>::to_usize()], |a, b| {
+    a.into_iter().zip((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
 })
 }).collect::<Vec<_>>()
 }).collect::<Vec<_>>(), _phantom: PhantomData }
@@ -827,39 +827,39 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
 }
 
 impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
-    pub fn to_vole_material(&self, mut n: usize, mut b_outputsize: usize) -> Vec<VopeDyn<u8>>
+    pub fn to_vole_material(&self, mut n: usize) -> Vec<VopeDyn<u8>>
     {
         let k: usize = self.k;
         (0..n).map(|i| {
     let s = &self.per_byte[(i * n)..][..n];
-    create_vole_from_material::<B, _>(b_outputsize, s)
+    create_vole_from_material::<B, _>(s)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_typenum(&self, mut n: usize, mut b_outputsize: usize) -> Vec<VopeDyn<u8>>
+    pub fn to_vole_material_typenum(&self, mut n: usize) -> Vec<VopeDyn<u8>>
     {
         let k: usize = self.k;
         (0..n).map(|i| {
     let s = &self.per_byte[(i * n)..][..n];
-    create_vole_from_material::<B, _>(b_outputsize, s)
+    create_vole_from_material::<B, _>(s)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F, mut b_outputsize: usize) -> Vec<VopeDyn<u8>>
+    pub fn to_vole_material_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<u8>>
     {
         let k: usize = self.k;
         (0..n).map(|i| {
     let s = &self.per_byte[(i * n)..][..n];
-    create_vole_from_material_expanded::<B, _, _, _>(b_outputsize, s, &mut f)
+    create_vole_from_material_expanded::<B, _, _, _>(s, &mut f)
 }).collect::<Vec<_>>()
     }
-    pub fn to_vole_material_typenum_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F, mut b_outputsize: usize) -> Vec<VopeDyn<u8>>
+    pub fn to_vole_material_typenum_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<u8>>
     {
         let k: usize = self.k;
         (0..n).map(|i| {
     let s = &self.per_byte[(i * n)..][..n];
-    create_vole_from_material_expanded::<B, _, _, _>(b_outputsize, s, &mut f)
+    create_vole_from_material_expanded::<B, _, _, _>(s, &mut f)
 }).collect::<Vec<_>>()
     }
-    pub fn split_bit_typenum(&self, mut n: usize, mut b_outputsize: usize, mut self_output: usize) -> Vec<BSplitDyn<B, D>> where D: Digest
+    pub fn split_bit_typenum(&self, mut n: usize) -> Vec<BSplitDyn<B, D>> where D: Digest
     {
         let k: usize = self.k;
         (0..n).map(|i| {
@@ -872,8 +872,8 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
 } else {
     None
 }
-}).fold(vec![u8::default(); b_outputsize], |a, b| {
-    a.into_iter().zip((0..b_outputsize).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
+}).fold(vec![u8::default(); <<B>::OutputSize as Unsigned>::to_usize()], |a, b| {
+    a.into_iter().zip((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
 })
 }).collect::<Vec<_>>()
 }).collect::<Vec<_>>(), _phantom: PhantomData }
@@ -903,14 +903,14 @@ impl <D: Digest> AsRef<[u8]> for CommitmentCoreDyn<D> {
 impl <D: Digest> Default for CommitmentCoreDyn<D> {
     fn default() -> Self
     {
-        CommitmentCoreDyn(vec![Default::default(); n])
+        CommitmentCoreDyn(vec![Default::default(); n], PhantomData)
     }
 }
 
 impl <D: Digest> Clone for CommitmentCoreDyn<D> {
     fn clone(&self) -> Self
     {
-        CommitmentCoreDyn(self.0.clone())
+        CommitmentCoreDyn(self.0.clone(), PhantomData)
     }
 }
 
@@ -932,17 +932,17 @@ impl <D: Digest> CommitmentCoreDyn<D> {
     }
 }
 
-pub fn gen_abo<B: LengthDoubler, D: Digest>(mut k: usize, mut b_outputsize: usize, mut a: Vec<u8>, mut rand: &impl AsRef<[u8]>, mut d_outputsize: usize) -> ABODyn<B, D> where B: Sized
+pub fn gen_abo<B: LengthDoubler, D: Digest>(mut k: usize, mut a: Vec<u8>, mut rand: &impl AsRef<[u8]>) -> ABODyn<B, D> where B: Sized
 {
     let mut h = D::new();
     let mut per_byte = vec![Default::default(); n];
     for i in 0.. k{
     let core = (0..k.ilog2()).fold(a.clone(), |acc, b| {
     if (((i >> b) & 1) != 0){
-    let doubled = B::double(d_outputsize, acc);
+    let doubled = B::double(acc);
     acc = doubled[1].clone();
 } else {
-    let doubled = B::double(d_outputsize, acc);
+    let doubled = B::double(acc);
     acc = doubled[0].clone();
 };
     acc
@@ -953,24 +953,24 @@ pub fn gen_abo<B: LengthDoubler, D: Digest>(mut k: usize, mut b_outputsize: usiz
     ABODyn { commit: h.finalize(), per_byte: per_byte, k: 0, _phantom: PhantomData }
 }
 
-pub fn create_vole_from_material<B: LengthDoubler, X: AsRef<[u8]>>(mut b_outputsize: usize, mut s: &[X]) -> VopeDyn<u8>
+pub fn create_vole_from_material<B: LengthDoubler, X: AsRef<[u8]>>(mut s: &[X]) -> VopeDyn<u8>
 {
-    let u: Vec<u8> = s.iter().fold(vec![u8::default(); b_outputsize], |a, b| {
-    a.into_iter().zip((0..b_outputsize).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
+    let u: Vec<u8> = s.iter().fold(vec![u8::default(); <<B>::OutputSize as Unsigned>::to_usize()], |a, b| {
+    a.into_iter().zip((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
 });
-    let v: Vec<u8> = s.iter().enumerate().fold(vec![u8::default(); b_outputsize], |a, _| {
-    a.into_iter().zip((0..b_outputsize).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b).bitxor((i as u8))).collect::<Vec<_>>()
+    let v: Vec<u8> = s.iter().enumerate().fold(vec![u8::default(); <<B>::OutputSize as Unsigned>::to_usize()], |a, _| {
+    a.into_iter().zip((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b).bitxor((i as u8))).collect::<Vec<_>>()
 });
     VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<_>>(), v: v, n: 0, k: 1 }
 }
 
-pub fn create_vole_from_material_expanded<B: LengthDoubler, X: AsRef<[u8]>, Y: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(mut b_outputsize: usize, mut s: &[Y], mut f: F) -> VopeDyn<u8>
+pub fn create_vole_from_material_expanded<B: LengthDoubler, X: AsRef<[u8]>, Y: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(mut s: &[Y], mut f: F) -> VopeDyn<u8>
 {
-    let u: Vec<u8> = s.iter().map(|b| f(&b.as_ref()[..b_outputsize])).fold(vec![u8::default(); b_outputsize], |a, b| {
-    a.into_iter().zip((0..b_outputsize).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
+    let u: Vec<u8> = s.iter().map(|b| f(&b.as_ref()[..<<B>::OutputSize as Unsigned>::to_usize()])).fold(vec![u8::default(); <<B>::OutputSize as Unsigned>::to_usize()], |a, b| {
+    a.into_iter().zip((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
 });
-    let v: Vec<u8> = s.iter().map(|b| f(&b.as_ref()[..b_outputsize])).enumerate().fold(vec![u8::default(); b_outputsize], |a, _| {
-    a.into_iter().zip((0..b_outputsize).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b).bitxor((i as u8))).collect::<Vec<_>>()
+    let v: Vec<u8> = s.iter().map(|b| f(&b.as_ref()[..<<B>::OutputSize as Unsigned>::to_usize()])).enumerate().fold(vec![u8::default(); <<B>::OutputSize as Unsigned>::to_usize()], |a, _| {
+    a.into_iter().zip((0..<<B>::OutputSize as Unsigned>::to_usize()).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b).bitxor((i as u8))).collect::<Vec<_>>()
 });
     VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<_>>(), v: v, n: 0, k: 1 }
 }
@@ -980,6 +980,6 @@ pub fn commit<D: Digest>(mut message: &impl AsRef<[u8]>, mut rand: &impl AsRef<[
     let mut hasher = D::new();
     hasher.update(message.as_ref());
     hasher.update(rand.as_ref());
-    CommitmentCoreDyn(hasher.finalize())
+    CommitmentCoreDyn(hasher.finalize(), PhantomData)
 }
 

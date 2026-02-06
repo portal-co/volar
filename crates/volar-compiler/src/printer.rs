@@ -987,7 +987,9 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     ArrayLength::Const(n) => write!(f, "{}", n)?,
                     ArrayLength::TypeParam(p) => write!(f, "{}", p.to_lowercase())?,
                     ArrayLength::Projection { r#type, field } => {
-                        write!(f, "todo!(\"projection length\")")?;
+                        write!(f, "<<")?;
+                        TypeWriter { ty: r#type }.fmt(f)?;
+                        write!(f, ">::{} as Unsigned>::to_usize()", field)?;
                     }
                     _ => write!(f, "todo!(\"length\")")?,
                 }
@@ -998,7 +1000,10 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     ArrayLength::Const(n) => write!(f, "{}", n)?,
                     ArrayLength::TypeParam(p) => write!(f, "{}", p.to_lowercase())?,
                     ArrayLength::Projection { r#type, field } => {
-                        write!(f, "todo!(\"projection length\")")?;
+                        // Emit <<T>::Assoc as Unsigned>::to_usize() for compile-time resolution
+                        write!(f, "<<")?;
+                        TypeWriter { ty: r#type }.fmt(f)?;
+                        write!(f, ">::{} as Unsigned>::to_usize()", field)?;
                     }
                     _ => write!(f, "todo!(\"length\")")?,
                 }
@@ -1008,6 +1013,11 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 match len {
                     ArrayLength::Const(n) => write!(f, "{}", n)?,
                     ArrayLength::TypeParam(p) => write!(f, "{}", p.to_lowercase())?,
+                    ArrayLength::Projection { r#type, field } => {
+                        write!(f, "<<")?;
+                        TypeWriter { ty: r#type }.fmt(f)?;
+                        write!(f, ">::{} as Unsigned>::to_usize()", field)?;
+                    }
                     _ => write!(f, "todo!(\"length\")")?,
                 }
                 write!(f, ").map(|{}| ", index_var)?;

@@ -41,9 +41,6 @@ pub struct LoweringContext {
     pub struct_info: BTreeMap<String, StructInfo>,
     /// Trait names that are length aliases (e.g., VoleArray: ArrayLength).
     pub length_aliases: Vec<String>,
-    /// Projection witness params injected per function, keyed by function name.
-    /// E.g., "create_vole_from_material" → ["b_outputsize"]
-    pub fn_projection_witnesses: BTreeMap<String, Vec<String>>,
 }
 
 impl LoweringContext {
@@ -327,15 +324,31 @@ fn lower_trait_dyn(t: &crate::ir::IrTrait, ctx: &LoweringContext) -> crate::ir::
                     name,
                     bounds,
                     default,
-                } => IrTraitItem::AssociatedType {
-                    name: name.clone(),
-                    bounds: bounds
+                } => {
+                    // For associated types that had length bounds (ArrayLength, Unsigned),
+                    // keep Unsigned so that ::to_usize() works at projection sites.
+                    let had_length_bound = bounds.iter().any(|b| {
+                        is_length_bound(b) || matches!(&b.trait_kind, TraitKind::Math(MathTrait::Unsigned))
+                            || matches!(&b.trait_kind, TraitKind::Custom(n) if n == "ArrayLength")
+                    });
+                    let mut new_bounds: Vec<_> = bounds
                         .iter()
                         .filter_map(|b| lower_trait_bound_dyn(b, &empty_gen, &empty_gen))
-                        .collect(),
-                    default: default
-                        .as_ref()
-                        .map(|d| lower_type_dyn(d, ctx, &empty_gen)),
+                        .collect();
+                    if had_length_bound && !new_bounds.iter().any(|b| matches!(&b.trait_kind, TraitKind::Math(MathTrait::Unsigned))) {
+                        new_bounds.push(IrTraitBound {
+                            trait_kind: TraitKind::Math(MathTrait::Unsigned),
+                            type_args: Vec::new(),
+                            assoc_bindings: Vec::new(),
+                        });
+                    }
+                    IrTraitItem::AssociatedType {
+                        name: name.clone(),
+                        bounds: new_bounds,
+                        default: default
+                            .as_ref()
+                            .map(|d| lower_type_dyn(d, ctx, &empty_gen)),
+                    }
                 },
             })
             .collect(),
@@ -546,19 +559,8 @@ fn lower_function_dyn(
         }
     }
 
-    // Inject projection witness parameters (e.g., b_outputsize: usize from B::OutputSize)
-    // Skip for trait impl methods — the trait signature is fixed.
-    if !is_trait_impl {
-        let proj_witnesses = collect_projection_witnesses_fn(f);
-        for name in &proj_witnesses {
-            if !params.iter().any(|p: &IrParam| &p.name == name) {
-                params.push(IrParam {
-                    name: name.clone(),
-                    ty: IrType::Primitive(PrimitiveType::Usize),
-                });
-            }
-        }
-    }
+    // (Projection witnesses like B::OutputSize are kept static — resolved at
+    // compile time from type params, not injected as runtime params.)
 
     for p in &f.params {
         params.push(IrParam {
@@ -641,37 +643,6 @@ fn lower_function_dyn(
         }
     }
 
-    // Post-lowering: scan lowered body for projection witness variables that aren't
-    // already defined as params. This handles methods that call functions with
-    // projection witness params — the callee's witnesses get passed through.
-    // Skip for trait impl methods — the trait signature is fixed.
-    if !is_trait_impl {
-        let all_witness_names: BTreeSet<String> = ctx
-            .fn_projection_witnesses
-            .values()
-            .flat_map(|ws| ws.iter().cloned())
-            .collect();
-        let mut referenced_witnesses = BTreeSet::new();
-        collect_var_refs_matching(&body, &all_witness_names, &mut referenced_witnesses);
-        for w in &referenced_witnesses {
-            if !params.iter().any(|p: &IrParam| &p.name == w) {
-                // Check if it's available from self (struct witness field)
-                let available_from_self = if let Some(sname) = self_struct {
-                    ctx.struct_info
-                        .get(sname)
-                        .map_or(false, |info| info.length_witnesses.contains(w))
-                } else {
-                    false
-                };
-                if !available_from_self {
-                    params.push(IrParam {
-                        name: w.clone(),
-                        ty: IrType::Primitive(PrimitiveType::Usize),
-                    });
-                }
-            }
-        }
-    }
 
     IrFunction {
         name: f.name.clone(),
@@ -1215,33 +1186,17 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 func = nf;
             }
 
-            // Prepend projection witness arguments for known callee functions
-            let callee_name = match &func {
-                IrExpr::Var(name) => Some(name.as_str()),
-                IrExpr::Path { segments, .. } => segments.last().map(|s| s.as_str()),
-                _ => None,
-            };
-            let mut final_args = Vec::new();
-            if let Some(name) = callee_name {
-                if let Some(witnesses) = ctx.fn_projection_witnesses.get(name) {
-                    for w in witnesses {
-                        // Only prepend if not already present as an argument
-                        if !final_args.iter().any(|a| matches!(a, IrExpr::Var(v) if v == w)) {
-                            final_args.push(IrExpr::Var(w.clone()));
-                        }
-                    }
-                }
-            }
-            final_args.extend(args);
+            let mut final_args = args;
 
             // Rename tuple struct constructors (e.g., CommitmentCore → CommitmentCoreDyn)
+            // and append PhantomData if the struct needs it
             let func_name = match &func {
                 IrExpr::Path { segments, .. } => segments.last().map(|s| s.clone()),
                 IrExpr::Var(n) => Some(n.clone()),
                 _ => None,
             };
             if let Some(ref name) = func_name {
-                if ctx.struct_info.contains_key(name.as_str()) {
+                if let Some(info) = ctx.struct_info.get(name.as_str()) {
                     let dyn_name = format!("{}Dyn", name);
                     match &mut func {
                         IrExpr::Path { segments, .. } => {
@@ -1251,6 +1206,10 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                         }
                         IrExpr::Var(n) => *n = dyn_name,
                         _ => {}
+                    }
+                    // For tuple struct constructors, append PhantomData if needed
+                    if info.needs_phantom {
+                        final_args.push(IrExpr::Var("PhantomData".to_string()));
                     }
                 }
             }
@@ -1368,7 +1327,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             index_var,
             body,
         } => {
-            let lowered_len = lower_array_length(len);
+            let lowered_len = lower_array_length(len, fn_gen, ctx);
             IrExpr::ArrayGenerate {
                 elem_ty: elem_ty
                     .as_ref()
@@ -1379,7 +1338,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             }
         }
         IrExpr::ArrayDefault { elem_ty, len } => {
-            let lowered_len = lower_array_length(len);
+            let lowered_len = lower_array_length(len, fn_gen, ctx);
             IrExpr::ArrayDefault {
                 elem_ty: elem_ty
                     .as_ref()
@@ -1388,10 +1347,11 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             }
         }
         IrExpr::LengthOf(len) => {
-            let lowered = lower_array_length(len);
+            let lowered = lower_array_length(len, fn_gen, ctx);
             match &lowered {
                 ArrayLength::Const(n) => IrExpr::Lit(crate::ir::IrLit::Int(*n as i128)),
                 ArrayLength::TypeParam(p) => IrExpr::Var(p.clone()),
+                // Projections stay as LengthOf — printed as <T>::Assoc::to_usize()
                 _ => IrExpr::LengthOf(lowered),
             }
         }
@@ -1671,25 +1631,52 @@ fn lower_iter_terminal_dyn(
     }
 }
 
-fn lower_array_length(len: &ArrayLength) -> ArrayLength {
+fn lower_array_length(len: &ArrayLength, fn_gen: &[IrGenericParam], ctx: &LoweringContext) -> ArrayLength {
     match len {
         ArrayLength::Projection { r#type, field } => {
-            // Type-level projection like <B>::OutputSize → becomes a runtime variable name
-            let base_name = match r#type.as_ref() {
-                IrType::TypeParam(p) => p.to_lowercase(),
-                _ => "len".to_string(),
-            };
-            ArrayLength::TypeParam(format!("{}_{}", base_name, field.to_lowercase()))
+            // Check if the base type param is a Length generic (→ runtime var)
+            // or a Type generic (→ keep as static projection)
+            match r#type.as_ref() {
+                IrType::TypeParam(p) => {
+                    // "Self" projections are always runtime (the struct doesn't carry trait impls)
+                    if p == "Self" {
+                        return ArrayLength::TypeParam(format!("self_{}", field.to_lowercase()));
+                    }
+                    let is_length = fn_gen.iter().any(|g| &g.name == p
+                        && classify_generic_with_aliases(g, &[fn_gen], &ctx.aliases()) == GenericKind::Length);
+                    if is_length {
+                        // Length param → runtime variable
+                        ArrayLength::TypeParam(format!("{}_{}", p.to_lowercase(), field.to_lowercase()))
+                    } else {
+                        // Type param with associated type → keep as projection (resolved at compile time)
+                        len.clone()
+                    }
+                }
+                _ => {
+                    // Non-type-param projection → runtime variable fallback
+                    ArrayLength::TypeParam(format!("len_{}", field.to_lowercase()))
+                }
+            }
         }
         ArrayLength::TypeParam(p) => {
             // Check if this is a typenum constant
             if let Some(tn) = TypeNumConst::from_str(p) {
                 ArrayLength::Const(tn.to_usize())
             } else if p.contains("::") {
-                // Path like B::BlockSize → runtime variable
+                // Path like B::BlockSize → check if B is a Length or Type param
                 let parts: Vec<&str> = p.split("::").collect();
                 if parts.len() == 2 {
-                    ArrayLength::TypeParam(format!("{}_{}", parts[0].to_lowercase(), parts[1].to_lowercase()))
+                    let is_length = fn_gen.iter().any(|g| g.name == parts[0]
+                        && classify_generic_with_aliases(g, &[fn_gen], &ctx.aliases()) == GenericKind::Length);
+                    if is_length {
+                        ArrayLength::TypeParam(format!("{}_{}", parts[0].to_lowercase(), parts[1].to_lowercase()))
+                    } else {
+                        // Keep as projection on type param
+                        ArrayLength::Projection {
+                            r#type: Box::new(IrType::TypeParam(parts[0].to_string())),
+                            field: parts[1].to_string(),
+                        }
+                    }
                 } else {
                     ArrayLength::TypeParam(p.to_lowercase())
                 }
