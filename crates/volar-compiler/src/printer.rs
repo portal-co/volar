@@ -1014,6 +1014,43 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 ExprWriter { expr: body }.fmt(f)?;
                 write!(f, ").collect::<Vec<_>>()")?;
             }
+            IrExpr::Unary { op, expr } => {
+                match op {
+                    SpecUnaryOp::Neg => {
+                        write!(f, "-")?;
+                        ExprWriter { expr }.fmt(f)?;
+                    }
+                    SpecUnaryOp::Not => {
+                        write!(f, "!")?;
+                        ExprWriter { expr }.fmt(f)?;
+                    }
+                    SpecUnaryOp::Deref => {
+                        write!(f, "*")?;
+                        ExprWriter { expr }.fmt(f)?;
+                    }
+                    SpecUnaryOp::Ref => {
+                        write!(f, "&")?;
+                        ExprWriter { expr }.fmt(f)?;
+                    }
+                    SpecUnaryOp::RefMut => {
+                        write!(f, "&mut ")?;
+                        ExprWriter { expr }.fmt(f)?;
+                    }
+                }
+            }
+            IrExpr::Match { expr, arms } => {
+                write!(f, "match ")?;
+                ExprWriter { expr }.fmt(f)?;
+                writeln!(f, " {{")?;
+                for arm in arms {
+                    write!(f, "    ")?;
+                    PatternWriter { pat: &arm.pattern }.fmt(f)?;
+                    write!(f, " => ")?;
+                    ExprWriter { expr: &arm.body }.fmt(f)?;
+                    writeln!(f, ",")?;
+                }
+                write!(f, "}}")?;
+            }
             _ => {
                 let msg = format!("{:?}", self.expr).replace('"', "'");
                 write!(

@@ -28,6 +28,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut files = Vec::new();
     collect_files(&spec_dir, &mut files)?;
+
+    // Also parse volar-common sources for shared trait definitions
+    let common_dir = spec_dir.parent().unwrap().parent().unwrap().join("volar-common/src");
+    if common_dir.is_dir() {
+        collect_files(&common_dir, &mut files)?;
+        eprintln!("Including volar-common from: {:?}", common_dir);
+    }
     eprintln!("Found {} source files", files.len());
 
     let mut combined_ir = volar_compiler::IrModule {

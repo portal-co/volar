@@ -707,11 +707,11 @@ fn test_math_trait_method_names() {
 // ============================================================================
 
 fn read_volar_spec_sources() -> Vec<(String, String)> {
-    let base_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .unwrap()
-        .join("volar-spec")
-        .join("src");
+        .unwrap();
+    let spec_path = crate_dir.join("volar-spec").join("src");
+    let common_path = crate_dir.join("volar-common").join("src");
 
     let mut sources = Vec::new();
 
@@ -731,7 +731,10 @@ fn read_volar_spec_sources() -> Vec<(String, String)> {
         }
     }
 
-    collect_rs_files(&base_path, &mut sources);
+    collect_rs_files(&spec_path, &mut sources);
+    if common_path.is_dir() {
+        collect_rs_files(&common_path, &mut sources);
+    }
     sources
 }
 

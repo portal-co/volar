@@ -12,10 +12,10 @@ use alloc::string::String;
 use std::string::String;
 
 #[cfg(feature = "std")]
-use std::{boxed::Box, collections::BTreeMap, format, string::ToString, vec, vec::Vec};
+use std::{boxed::Box, collections::{BTreeMap, BTreeSet}, format, string::ToString, vec, vec::Vec};
 
 #[cfg(not(feature = "std"))]
-use alloc::{boxed::Box, collections::BTreeMap, format, string::ToString, vec, vec::Vec};
+use alloc::{boxed::Box, collections::{BTreeMap, BTreeSet}, format, string::ToString, vec, vec::Vec};
 
 /// Information about a struct's witness fields
 #[derive(Debug, Clone, Default)]
@@ -41,6 +41,9 @@ pub struct LoweringContext {
     pub struct_info: BTreeMap<String, StructInfo>,
     /// Trait names that are length aliases (e.g., VoleArray: ArrayLength).
     pub length_aliases: Vec<String>,
+    /// Projection witness params injected per function, keyed by function name.
+    /// E.g., "create_vole_from_material" → ["b_outputsize"]
+    pub fn_projection_witnesses: BTreeMap<String, Vec<String>>,
 }
 
 impl LoweringContext {
@@ -182,7 +185,28 @@ impl LoweringContext {
             }
         }
 
-        Self { struct_info, length_aliases }
+        // Pre-compute projection witnesses for all functions (free functions and impl methods)
+        let mut fn_projection_witnesses = BTreeMap::new();
+        for f in &module.functions {
+            let witnesses = collect_projection_witnesses_fn(f);
+            if !witnesses.is_empty() {
+                fn_projection_witnesses
+                    .insert(f.name.clone(), witnesses.into_iter().collect());
+            }
+        }
+        for im in &module.impls {
+            for item in &im.items {
+                if let IrImplItem::Method(f) = item {
+                    let witnesses = collect_projection_witnesses_fn(f);
+                    if !witnesses.is_empty() {
+                        fn_projection_witnesses
+                            .insert(f.name.clone(), witnesses.into_iter().collect());
+                    }
+                }
+            }
+        }
+
+        Self { struct_info, length_aliases, fn_projection_witnesses }
     }
 }
 
@@ -518,6 +542,17 @@ fn lower_function_dyn(
         }
     }
 
+    // Inject projection witness parameters (e.g., b_outputsize: usize from B::OutputSize)
+    let proj_witnesses = collect_projection_witnesses_fn(f);
+    for name in &proj_witnesses {
+        if !params.iter().any(|p: &IrParam| &p.name == name) {
+            params.push(IrParam {
+                name: name.clone(),
+                ty: IrType::Primitive(PrimitiveType::Usize),
+            });
+        }
+    }
+
     for p in &f.params {
         params.push(IrParam {
             name: p.name.clone(),
@@ -595,6 +630,35 @@ fn lower_function_dyn(
         if p.kind != IrGenericParamKind::Lifetime && kind != GenericKind::Length {
             if !combined_gen.iter().any(|cp| cp.name == p.name) {
                 combined_gen.push(p.clone());
+            }
+        }
+    }
+
+    // Post-lowering: scan lowered body for projection witness variables that aren't
+    // already defined as params. This handles methods that call functions with
+    // projection witness params — the callee's witnesses get passed through.
+    let all_witness_names: BTreeSet<String> = ctx
+        .fn_projection_witnesses
+        .values()
+        .flat_map(|ws| ws.iter().cloned())
+        .collect();
+    let mut referenced_witnesses = BTreeSet::new();
+    collect_var_refs_matching(&body, &all_witness_names, &mut referenced_witnesses);
+    for w in &referenced_witnesses {
+        if !params.iter().any(|p: &IrParam| &p.name == w) {
+            // Check if it's available from self (struct witness field)
+            let available_from_self = if let Some(sname) = self_struct {
+                ctx.struct_info
+                    .get(sname)
+                    .map_or(false, |info| info.length_witnesses.contains(w))
+            } else {
+                false
+            };
+            if !available_from_self {
+                params.push(IrParam {
+                    name: w.clone(),
+                    ty: IrType::Primitive(PrimitiveType::Usize),
+                });
             }
         }
     }
@@ -1141,9 +1205,28 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 func = nf;
             }
 
+            // Prepend projection witness arguments for known callee functions
+            let callee_name = match &func {
+                IrExpr::Var(name) => Some(name.as_str()),
+                IrExpr::Path { segments, .. } => segments.last().map(|s| s.as_str()),
+                _ => None,
+            };
+            let mut final_args = Vec::new();
+            if let Some(name) = callee_name {
+                if let Some(witnesses) = ctx.fn_projection_witnesses.get(name) {
+                    for w in witnesses {
+                        // Only prepend if not already present as an argument
+                        if !final_args.iter().any(|a| matches!(a, IrExpr::Var(v) if v == w)) {
+                            final_args.push(IrExpr::Var(w.clone()));
+                        }
+                    }
+                }
+            }
+            final_args.extend(args);
+
             IrExpr::Call {
                 func: Box::new(func),
-                args,
+                args: final_args,
             }
         }
         IrExpr::StructExpr {
@@ -1587,4 +1670,260 @@ fn lower_array_length(len: &ArrayLength) -> ArrayLength {
         ArrayLength::TypeNum(tn) => ArrayLength::Const(tn.to_usize()),
         ArrayLength::Const(_) => len.clone(),
     }
+}
+
+// ============================================================================
+// PROJECTION WITNESS COLLECTION
+// ============================================================================
+
+/// Compute the runtime witness name for an ArrayLength::Projection.
+fn projection_witness_name(len: &ArrayLength) -> Option<String> {
+    match len {
+        ArrayLength::Projection { r#type, field } => {
+            let base = match r#type.as_ref() {
+                IrType::TypeParam(p) => p.to_lowercase(),
+                _ => return None,
+            };
+            Some(format!("{}_{}", base, field.to_lowercase()))
+        }
+        ArrayLength::TypeParam(p) if p.contains("::") => {
+            let parts: Vec<&str> = p.split("::").collect();
+            if parts.len() == 2 {
+                Some(format!("{}_{}", parts[0].to_lowercase(), parts[1].to_lowercase()))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Collect all projection-derived witness names from expressions.
+fn collect_projection_witnesses_expr(expr: &IrExpr, out: &mut BTreeSet<String>) {
+    match expr {
+        IrExpr::LengthOf(len) => {
+            if let Some(name) = projection_witness_name(len) {
+                out.insert(name);
+            }
+        }
+        IrExpr::ArrayDefault { len, .. } => {
+            if let Some(name) = projection_witness_name(len) {
+                out.insert(name);
+            }
+        }
+        IrExpr::ArrayGenerate { len, body, .. } => {
+            if let Some(name) = projection_witness_name(len) {
+                out.insert(name);
+            }
+            collect_projection_witnesses_expr(body, out);
+        }
+        IrExpr::Repeat { elem, len } => {
+            collect_projection_witnesses_expr(elem, out);
+            collect_projection_witnesses_expr(len, out);
+        }
+        IrExpr::Binary { left, right, .. } => {
+            collect_projection_witnesses_expr(left, out);
+            collect_projection_witnesses_expr(right, out);
+        }
+        IrExpr::Unary { expr, .. } => {
+            collect_projection_witnesses_expr(expr, out);
+        }
+        IrExpr::Call { args, .. } => {
+            for a in args {
+                collect_projection_witnesses_expr(a, out);
+            }
+        }
+        IrExpr::MethodCall { receiver, args, .. } => {
+            collect_projection_witnesses_expr(receiver, out);
+            for a in args {
+                collect_projection_witnesses_expr(a, out);
+            }
+        }
+        IrExpr::Field { base, .. } => {
+            collect_projection_witnesses_expr(base, out);
+        }
+        IrExpr::Index { base, index } => {
+            collect_projection_witnesses_expr(base, out);
+            collect_projection_witnesses_expr(index, out);
+        }
+        IrExpr::If { cond, then_branch, else_branch } => {
+            collect_projection_witnesses_expr(cond, out);
+            collect_projection_witnesses_block(then_branch, out);
+            if let Some(e) = else_branch {
+                collect_projection_witnesses_expr(e, out);
+            }
+        }
+        IrExpr::Block(b) => {
+            collect_projection_witnesses_block(b, out);
+        }
+        IrExpr::BoundedLoop { body, .. } => {
+            collect_projection_witnesses_block(body, out);
+        }
+        IrExpr::IterLoop { collection, body, .. } => {
+            collect_projection_witnesses_expr(collection, out);
+            collect_projection_witnesses_block(body, out);
+        }
+        IrExpr::Closure { body, .. } => {
+            collect_projection_witnesses_expr(body, out);
+        }
+        IrExpr::Assign { left, right } => {
+            collect_projection_witnesses_expr(left, out);
+            collect_projection_witnesses_expr(right, out);
+        }
+        IrExpr::StructExpr { fields, .. } => {
+            for (_, e) in fields {
+                collect_projection_witnesses_expr(e, out);
+            }
+        }
+        IrExpr::Tuple(elems) | IrExpr::Array(elems) => {
+            for e in elems {
+                collect_projection_witnesses_expr(e, out);
+            }
+        }
+        IrExpr::Cast { expr, .. } => {
+            collect_projection_witnesses_expr(expr, out);
+        }
+        IrExpr::Return(Some(e)) => {
+            collect_projection_witnesses_expr(e, out);
+        }
+        IrExpr::Range { start, end, .. } => {
+            if let Some(s) = start {
+                collect_projection_witnesses_expr(s, out);
+            }
+            if let Some(e) = end {
+                collect_projection_witnesses_expr(e, out);
+            }
+        }
+        IrExpr::RawMap { receiver, body, .. } => {
+            collect_projection_witnesses_expr(receiver, out);
+            collect_projection_witnesses_expr(body, out);
+        }
+        IrExpr::RawZip { left, right, body, .. } => {
+            collect_projection_witnesses_expr(left, out);
+            collect_projection_witnesses_expr(right, out);
+            collect_projection_witnesses_expr(body, out);
+        }
+        IrExpr::RawFold { receiver, init, body, .. } => {
+            collect_projection_witnesses_expr(receiver, out);
+            collect_projection_witnesses_expr(init, out);
+            collect_projection_witnesses_expr(body, out);
+        }
+        IrExpr::IterPipeline(chain) => {
+            collect_projection_witnesses_chain(chain, out);
+        }
+        IrExpr::Match { expr, arms } => {
+            collect_projection_witnesses_expr(expr, out);
+            for arm in arms {
+                collect_projection_witnesses_expr(&arm.body, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_projection_witnesses_chain(chain: &crate::ir::IrIterChain, out: &mut BTreeSet<String>) {
+    match &chain.source {
+        crate::ir::IterChainSource::Method { collection, .. } => {
+            collect_projection_witnesses_expr(collection, out);
+        }
+        crate::ir::IterChainSource::Zip { left, right } => {
+            collect_projection_witnesses_chain(left, out);
+            collect_projection_witnesses_chain(right, out);
+        }
+        crate::ir::IterChainSource::Range { start, end, .. } => {
+            collect_projection_witnesses_expr(start, out);
+            collect_projection_witnesses_expr(end, out);
+        }
+    }
+    for step in &chain.steps {
+        match step {
+            crate::ir::IterStep::Map { body, .. }
+            | crate::ir::IterStep::Filter { body, .. }
+            | crate::ir::IterStep::FilterMap { body, .. }
+            | crate::ir::IterStep::FlatMap { body, .. } => {
+                collect_projection_witnesses_expr(body, out);
+            }
+            crate::ir::IterStep::Take { count }
+            | crate::ir::IterStep::Skip { count } => {
+                collect_projection_witnesses_expr(count, out);
+            }
+            crate::ir::IterStep::Chain { other } => {
+                collect_projection_witnesses_chain(other, out);
+            }
+            crate::ir::IterStep::Enumerate => {}
+        }
+    }
+    match &chain.terminal {
+        crate::ir::IterTerminal::Fold { init, body, .. } => {
+            collect_projection_witnesses_expr(init, out);
+            collect_projection_witnesses_expr(body, out);
+        }
+        _ => {}
+    }
+}
+
+/// Collect all projection-derived witness names from types (array lengths).
+fn collect_projection_witnesses_type(ty: &IrType, out: &mut BTreeSet<String>) {
+    match ty {
+        IrType::Array { len, elem, .. } => {
+            if let Some(name) = projection_witness_name(len) {
+                out.insert(name);
+            }
+            collect_projection_witnesses_type(elem, out);
+        }
+        IrType::Vector { elem } | IrType::Reference { elem, .. } => {
+            collect_projection_witnesses_type(elem, out);
+        }
+        IrType::Tuple(elems) => {
+            for e in elems {
+                collect_projection_witnesses_type(e, out);
+            }
+        }
+        IrType::Struct { type_args, .. } => {
+            for a in type_args {
+                collect_projection_witnesses_type(a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Collect all projection-derived witness names from a statement.
+fn collect_projection_witnesses_stmt(stmt: &IrStmt, out: &mut BTreeSet<String>) {
+    match stmt {
+        IrStmt::Let { ty, init, .. } => {
+            if let Some(t) = ty {
+                collect_projection_witnesses_type(t, out);
+            }
+            if let Some(e) = init {
+                collect_projection_witnesses_expr(e, out);
+            }
+        }
+        IrStmt::Expr(e) | IrStmt::Semi(e) => {
+            collect_projection_witnesses_expr(e, out);
+        }
+    }
+}
+
+/// Collect projection witness names from a block.
+fn collect_projection_witnesses_block(block: &IrBlock, out: &mut BTreeSet<String>) {
+    for stmt in &block.stmts {
+        collect_projection_witnesses_stmt(stmt, out);
+    }
+    if let Some(e) = &block.expr {
+        collect_projection_witnesses_expr(e, out);
+    }
+}
+
+/// Collect all projection witness names from a function (params, return type, body).
+fn collect_projection_witnesses_fn(f: &IrFunction) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for p in &f.params {
+        collect_projection_witnesses_type(&p.ty, &mut out);
+    }
+    if let Some(rt) = &f.return_type {
+        collect_projection_witnesses_type(rt, &mut out);
+    }
+    collect_projection_witnesses_block(&f.body, &mut out);
+    out
 }

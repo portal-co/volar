@@ -86,8 +86,11 @@ pub struct VopeDyn<T> {
 
 #[derive(Debug, Default)]
 pub struct ViaDigestPuncturableRandomizerDyn<D: Digest> {
-    pub digest: D,
+    pub digest: PhantomDataDyn<D>,
 }
+
+#[derive(Debug, Default)]
+pub struct CommitmentCoreDyn<D: Digest>(pub Vec<u8>, pub PhantomData<D>);
 
 pub trait LengthDoubler {
     type OutputSize;
@@ -188,7 +191,7 @@ impl <T> PolyDyn<T> {
     let mut sum = O::default();
     for k in 0.. n{
     let mut b: O = self.c1[k].clone().into();
-    for v in compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Field { base: Var('voles'), field: 'indices' } }"){
+    for v in &voles.indices{
     b = (b * voles.inputs[v[k]].v[i].clone().into());
 };
     sum = (sum + b);
@@ -227,7 +230,7 @@ impl <T> PolyDyn<T> {
     let mut sum = O::default();
     for k in 0.. n{
     let mut b: O = self.c1[k].clone().into();
-    for v in compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Var('voles') }"){
+    for v in &voles{
     b = (b * v[k].v[i].clone().into());
 };
     sum = (sum + b);
@@ -262,7 +265,7 @@ impl <T> PolyDyn<T> {
 }
 
 impl <T: Add<Output = T> + Mul<Output = T> + Default + Clone> VopeDyn<T> where T: Add<Output = T> + Mul<Output = T> + Default + Clone {
-    pub fn mul_generalized(&self, mut k2: usize, mut other: &VopeDyn<T>) -> VopeDyn<T>
+    pub fn mul_generalized(&self, mut k2: usize, mut k2_output: usize, mut other: &VopeDyn<T>) -> VopeDyn<T>
     {
         let n: usize = self.n;
         let k: usize = self.k;
@@ -272,14 +275,14 @@ impl <T: Add<Output = T> + Mul<Output = T> + Default + Clone> VopeDyn<T> where T
     for j in 0..= k2{
     let k = (i + j);
     let a_coeff = if (i == 0){
-    compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Field { base: Var('self'), field: 'v' } }")
+    &self.v
 } else {
-    compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Index { base: Field { base: Var('self'), field: 'u' }, index: Binary { op: Sub, left: Var('i'), right: Lit(Int(1)) } } }")
+    &self.u[(i - 1)]
 };
     let b_coeff = if (j == 0){
-    compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Field { base: Var('other'), field: 'v' } }")
+    &other.v
 } else {
-    compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Index { base: Field { base: Var('other'), field: 'u' }, index: Binary { op: Sub, left: Var('j'), right: Lit(Int(1)) } } }")
+    &other.u[(j - 1)]
 };
     if (k == 0){
     for lane in 0.. n{
@@ -640,7 +643,7 @@ impl <T: Add<U, Output = O> + Clone, U: Clone, O> Add<VopeDyn<U>> for VopeDyn<T>
 
 impl <T: BitXor<U, Output = O> + Clone + Into<O>, U: Clone, O> BitXor<Vec<U>> for VopeDyn<T> where T: Into<O> {
     type Output = VopeDyn<O>;
-    fn bitxor(self, mut rhs: Vec<U>) -> Self::Output
+    fn bitxor(self, mut n_output: usize, mut rhs: Vec<U>) -> Self::Output
     {
         let n: usize = self.n;
         let k: usize = self.k;
@@ -723,18 +726,6 @@ impl  VopeDyn<Bit> {
     }
 }
 
-impl <D: Digest> LengthDoubler for ViaDigestPuncturableRandomizerDyn<D> {
-    type OutputSize = <D as _>::OutputSize;
-    fn double(mut a: Vec<u8>) -> Vec<Vec<u8>>
-    {
-        let v = D::digest(compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Var('a') }"));
-        vec![v.clone(), v.into_iter().zip(a.into_iter()).map(|(x, y)| (x ^ y)).collect::<Vec<_>>()]
-    }
-}
-
-impl <D: Digest> PuncturableLengthDoubler for ViaDigestPuncturableRandomizerDyn<D> {
-}
-
 impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
     pub fn open<R: AsRef<[u8]>>(&self, mut t: usize, mut u: usize, mut m: usize, mut bad: Vec<u64>, mut rand: &R) -> ABOOpeningDyn<B, D>
     {
@@ -743,8 +734,8 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
     let bad = bad.clone();
     (0..u).map(|j| {
     let i2 = (i | ((j as usize) << t.ilog2()));
-    if bad.contains(compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Cast { expr: Var('i2'), ty: Primitive(U64) } }")){
-    let h = commit::<D>(compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Index { base: Field { base: Var('self'), field: 'per_byte' }, index: Var('i2') } }"), rand);
+    if bad.contains(&(i2 as u64)){
+    let h = commit::<D>(&self.per_byte[i2], rand);
     (0..m).map(|j| {
     h.as_ref().get(j).cloned().unwrap_or_default()
 }).collect::<Vec<_>>()
@@ -759,7 +750,7 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
 }
 
 impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
-    pub fn validate<R: AsRef<[u8]>>(&self, mut commit_: &Vec<u8>, mut rand: &R) -> bool
+    pub fn validate<R: AsRef<[u8]>>(&self, mut b_outputsize: usize, mut d_outputsize: usize, mut commit_: &Vec<u8>, mut rand: &R) -> bool
     {
         let t: usize = self.t;
         let u: usize = self.u;
@@ -767,10 +758,10 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
         for i in 0.. t{
     for b in 0.. u{
     let i2 = (i | ((b as usize) << t.ilog2()));
-    if self.bad.contains(compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Cast { expr: Var('i2'), ty: Primitive(U64) } }")){
-    h.update(compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Index { base: Index { base: Index { base: Field { base: Var('self'), field: 'openings' }, index: Var('i') }, index: Var('b') }, index: Range { start: None, end: Some(Var('d_outputsize')), inclusive: false } } }"));
+    if self.bad.contains(&(i2 as u64)){
+    h.update(&self.openings[i][b][..d_outputsize]);
 } else {
-    h.update(compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Call { func: Path { segments: ['commit'], type_args: [TypeParam('D')] }, args: [Unary { op: Ref, expr: Unary { op: Ref, expr: Index { base: Index { base: Index { base: Field { base: Var('self'), field: 'openings' }, index: Var('i') }, index: Var('b') }, index: Range { start: None, end: Some(Var('b_outputsize')), inclusive: false } } } }, Var('rand')] } }"));
+    h.update(&commit::<D>(&&self.openings[i][b][..b_outputsize], rand));
 }
 }
 };
@@ -781,8 +772,8 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
         let t: usize = self.t;
         let u: usize = self.u;
         (0..n).map(|i| {
-    let s = compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Index { base: Field { base: Var('self'), field: 'openings' }, index: Var('i') } }");
-    create_vole_from_material::<B, _>(s)
+    let s = &self.openings[i];
+    create_vole_from_material::<B, _>(b_outputsize, s)
 }).collect::<Vec<_>>()
     }
     pub fn to_vole_material_typenum(&self, mut n: usize) -> Vec<VopeDyn<u8>>
@@ -790,8 +781,8 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
         let t: usize = self.t;
         let u: usize = self.u;
         (0..n).map(|i| {
-    let s = compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Index { base: Field { base: Var('self'), field: 'openings' }, index: Var('i') } }");
-    create_vole_from_material::<B, _>(s)
+    let s = &self.openings[i];
+    create_vole_from_material::<B, _>(b_outputsize, s)
 }).collect::<Vec<_>>()
     }
     pub fn to_vole_material_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<u8>>
@@ -799,8 +790,8 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
         let t: usize = self.t;
         let u: usize = self.u;
         (0..n).map(|i| {
-    let s = compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Index { base: Field { base: Var('self'), field: 'openings' }, index: Var('i') } }");
-    create_vole_from_material_expanded::<B, _, _, _>(s, compile_error!("Unsupported expression in printer: Unary { op: RefMut, expr: Var('f') }"))
+    let s = &self.openings[i];
+    create_vole_from_material_expanded::<B, _, _, _>(b_outputsize, s, &mut f)
 }).collect::<Vec<_>>()
     }
     pub fn to_vole_material_typenum_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<u8>>
@@ -808,16 +799,16 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
         let t: usize = self.t;
         let u: usize = self.u;
         (0..n).map(|i| {
-    let s = compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Index { base: Field { base: Var('self'), field: 'openings' }, index: Var('i') } }");
-    create_vole_from_material_expanded::<B, _, _, _>(s, compile_error!("Unsupported expression in printer: Unary { op: RefMut, expr: Var('f') }"))
+    let s = &self.openings[i];
+    create_vole_from_material_expanded::<B, _, _, _>(b_outputsize, s, &mut f)
 }).collect::<Vec<_>>()
     }
-    pub fn split_bit_typenum(&self, mut n: usize) -> Vec<BSplitDyn<B, D>> where D: Digest
+    pub fn split_bit_typenum(&self, mut n: usize, mut b_outputsize: usize, mut self_output: usize) -> Vec<BSplitDyn<B, D>> where D: Digest
     {
         let t: usize = self.t;
         let u: usize = self.u;
         (0..n).map(|i| {
-    let s = compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Index { base: Field { base: Var('self'), field: 'openings' }, index: Var('i') } }");
+    let s = &self.openings[i];
     BSplitDyn { split: (0..self_output).map(|j| {
     (0..n).map(|b| {
     s.iter().enumerate().filter_map(|_| {
@@ -840,39 +831,39 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
     {
         let k: usize = self.k;
         (0..n).map(|i| {
-    let s = compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Index { base: Index { base: Field { base: Var('self'), field: 'per_byte' }, index: Range { start: Some(Binary { op: Mul, left: Var('i'), right: Var('n') }), end: None, inclusive: false } }, index: Range { start: None, end: Some(Var('n')), inclusive: false } } }");
-    create_vole_from_material::<B, _>(s)
+    let s = &self.per_byte[(i * n)..][..n];
+    create_vole_from_material::<B, _>(b_outputsize, s)
 }).collect::<Vec<_>>()
     }
     pub fn to_vole_material_typenum(&self, mut n: usize) -> Vec<VopeDyn<u8>>
     {
         let k: usize = self.k;
         (0..n).map(|i| {
-    let s = compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Index { base: Index { base: Field { base: Var('self'), field: 'per_byte' }, index: Range { start: Some(Binary { op: Mul, left: Var('i'), right: Var('n') }), end: None, inclusive: false } }, index: Range { start: None, end: Some(Var('n')), inclusive: false } } }");
-    create_vole_from_material::<B, _>(s)
+    let s = &self.per_byte[(i * n)..][..n];
+    create_vole_from_material::<B, _>(b_outputsize, s)
 }).collect::<Vec<_>>()
     }
     pub fn to_vole_material_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<u8>>
     {
         let k: usize = self.k;
         (0..n).map(|i| {
-    let s = compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Index { base: Index { base: Field { base: Var('self'), field: 'per_byte' }, index: Range { start: Some(Binary { op: Mul, left: Var('i'), right: Var('n') }), end: None, inclusive: false } }, index: Range { start: None, end: Some(Var('n')), inclusive: false } } }");
-    create_vole_from_material_expanded::<B, _, _, _>(s, compile_error!("Unsupported expression in printer: Unary { op: RefMut, expr: Var('f') }"))
+    let s = &self.per_byte[(i * n)..][..n];
+    create_vole_from_material_expanded::<B, _, _, _>(b_outputsize, s, &mut f)
 }).collect::<Vec<_>>()
     }
     pub fn to_vole_material_typenum_expanded<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(&self, mut n: usize, mut f: F) -> Vec<VopeDyn<u8>>
     {
         let k: usize = self.k;
         (0..n).map(|i| {
-    let s = compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Index { base: Index { base: Field { base: Var('self'), field: 'per_byte' }, index: Range { start: Some(Binary { op: Mul, left: Var('i'), right: Var('n') }), end: None, inclusive: false } }, index: Range { start: None, end: Some(Var('n')), inclusive: false } } }");
-    create_vole_from_material_expanded::<B, _, _, _>(s, compile_error!("Unsupported expression in printer: Unary { op: RefMut, expr: Var('f') }"))
+    let s = &self.per_byte[(i * n)..][..n];
+    create_vole_from_material_expanded::<B, _, _, _>(b_outputsize, s, &mut f)
 }).collect::<Vec<_>>()
     }
-    pub fn split_bit_typenum(&self, mut n: usize) -> Vec<BSplitDyn<B, D>> where D: Digest
+    pub fn split_bit_typenum(&self, mut n: usize, mut b_outputsize: usize, mut self_output: usize) -> Vec<BSplitDyn<B, D>> where D: Digest
     {
         let k: usize = self.k;
         (0..n).map(|i| {
-    let s = compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Index { base: Index { base: Field { base: Var('self'), field: 'per_byte' }, index: Range { start: Some(Binary { op: Mul, left: Var('i'), right: Var('n') }), end: None, inclusive: false } }, index: Range { start: None, end: Some(Var('n')), inclusive: false } } }");
+    let s = &self.per_byte[(i * n)..][..n];
     BSplitDyn { split: (0..self_output).map(|j| {
     (0..n).map(|b| {
     s.iter().enumerate().filter_map(|_| {
@@ -890,28 +881,79 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
     }
 }
 
-pub fn gen_abo<B: LengthDoubler, D: Digest>(mut k: usize, mut a: Vec<u8>, mut rand: &impl AsRef<[u8]>) -> ABODyn<B, D> where B: Sized
+impl <D: Digest> LengthDoubler for ViaDigestPuncturableRandomizerDyn<D> {
+    type OutputSize = <D as _>::OutputSize;
+    fn double(mut d_outputsize: usize, mut a: Vec<u8>) -> Vec<Vec<u8>>
+    {
+        let v = D::digest(&a);
+        vec![v.clone(), v.into_iter().zip(a.into_iter()).map(|(x, y)| (x ^ y)).collect::<Vec<_>>()]
+    }
+}
+
+impl <D: Digest> PuncturableLengthDoubler for ViaDigestPuncturableRandomizerDyn<D> {
+}
+
+impl <D: Digest> AsRef<[u8]> for CommitmentCoreDyn<D> {
+    fn as_ref(&self) -> &[u8]
+    {
+        &self.0
+    }
+}
+
+impl <D: Digest> Default for CommitmentCoreDyn<D> {
+    fn default() -> Self
+    {
+        CommitmentCore(vec![Default::default(); n])
+    }
+}
+
+impl <D: Digest> Clone for CommitmentCoreDyn<D> {
+    fn clone(&self) -> Self
+    {
+        CommitmentCore(self.0.clone())
+    }
+}
+
+impl <D: Digest> PartialEq for CommitmentCoreDyn<D> {
+    fn eq(&self, mut other: &Self) -> bool
+    {
+        (self.0.as_slice() == other.0.as_slice())
+    }
+}
+
+impl <D: Digest> Eq for CommitmentCoreDyn<D> {
+}
+
+impl <D: Digest> CommitmentCoreDyn<D> {
+    pub fn validate(&self, mut opened_message: &impl AsRef<[u8]>, mut opened_rand: &impl AsRef<[u8]>) -> bool
+    {
+        let recomputed: CommitmentCoreDyn<D> = commit::<D>(opened_message, opened_rand);
+        (&recomputed.0 == &self.0)
+    }
+}
+
+pub fn gen_abo<B: LengthDoubler, D: Digest>(mut k: usize, mut b_outputsize: usize, mut a: Vec<u8>, mut rand: &impl AsRef<[u8]>) -> ABODyn<B, D> where B: Sized
 {
     let mut h = D::new();
     let mut per_byte = vec![Default::default(); n];
     for i in 0.. k{
     let core = (0..k.ilog2()).fold(a.clone(), |acc, b| {
     if (((i >> b) & 1) != 0){
-    let doubled = B::double(acc);
+    let doubled = B::double(d_outputsize, acc);
     acc = doubled[1].clone();
 } else {
-    let doubled = B::double(acc);
+    let doubled = B::double(d_outputsize, acc);
     acc = doubled[0].clone();
 };
     acc
 });
-    h.update(compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Call { func: Path { segments: ['commit'], type_args: [TypeParam('D')] }, args: [Unary { op: Ref, expr: Var('core') }, Var('rand')] } }"));
+    h.update(&commit::<D>(&core, rand));
     per_byte[i] = core;
 };
     ABODyn { commit: h.finalize(), per_byte: per_byte, k: 0, _phantom: PhantomData }
 }
 
-pub fn create_vole_from_material<B: LengthDoubler, X: AsRef<[u8]>>(mut s: &[X]) -> VopeDyn<u8>
+pub fn create_vole_from_material<B: LengthDoubler, X: AsRef<[u8]>>(mut b_outputsize: usize, mut s: &[X]) -> VopeDyn<u8>
 {
     let u: Vec<u8> = s.iter().fold(vec![u8::default(); b_outputsize], |a, b| {
     a.into_iter().zip((0..b_outputsize).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
@@ -922,14 +964,22 @@ pub fn create_vole_from_material<B: LengthDoubler, X: AsRef<[u8]>>(mut s: &[X]) 
     VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<_>>(), v: v, n: 0, k: 1 }
 }
 
-pub fn create_vole_from_material_expanded<B: LengthDoubler, X: AsRef<[u8]>, Y: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(mut s: &[Y], mut f: F) -> VopeDyn<u8>
+pub fn create_vole_from_material_expanded<B: LengthDoubler, X: AsRef<[u8]>, Y: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(mut b_outputsize: usize, mut s: &[Y], mut f: F) -> VopeDyn<u8>
 {
-    let u: Vec<u8> = s.iter().map(|b| f(compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Index { base: MethodCall { receiver: Var('b'), method: Std('as_ref'), type_args: [], args: [] }, index: Range { start: None, end: Some(Var('b_outputsize')), inclusive: false } } }"))).fold(vec![u8::default(); b_outputsize], |a, b| {
+    let u: Vec<u8> = s.iter().map(|b| f(&b.as_ref()[..b_outputsize])).fold(vec![u8::default(); b_outputsize], |a, b| {
     a.into_iter().zip((0..b_outputsize).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b)).collect::<Vec<_>>()
 });
-    let v: Vec<u8> = s.iter().map(|b| f(compile_error!("Unsupported expression in printer: Unary { op: Ref, expr: Index { base: MethodCall { receiver: Var('b'), method: Std('as_ref'), type_args: [], args: [] }, index: Range { start: None, end: Some(Var('b_outputsize')), inclusive: false } } }"))).enumerate().fold(vec![u8::default(); b_outputsize], |a, _| {
+    let v: Vec<u8> = s.iter().map(|b| f(&b.as_ref()[..b_outputsize])).enumerate().fold(vec![u8::default(); b_outputsize], |a, _| {
     a.into_iter().zip((0..b_outputsize).map(|i| b.as_ref()[i]).collect::<Vec<_>>().into_iter()).map(|(a, b)| a.bitxor(b).bitxor((i as u8))).collect::<Vec<_>>()
 });
     VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<_>>(), v: v, n: 0, k: 1 }
+}
+
+pub fn commit<D: Digest>(mut message: &impl AsRef<[u8]>, mut rand: &impl AsRef<[u8]>) -> CommitmentCoreDyn<D>
+{
+    let mut hasher = D::new();
+    hasher.update(message.as_ref());
+    hasher.update(rand.as_ref());
+    CommitmentCore(hasher.finalize())
 }
 
