@@ -1538,7 +1538,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 steps: Vec::new(),
                 terminal: crate::ir::IterTerminal::Fold {
                     init: Box::new(lower_expr_dyn(init, ctx, fn_gen)),
-                    acc_var: acc_var.clone(),
+                    acc_var: acc_var.clone().as_mut(),
                     elem_var: elem_var.clone(),
                     body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
                 },
@@ -1706,7 +1706,7 @@ fn lower_iter_terminal_dyn(
             body,
         } => IterTerminal::Fold {
             init: Box::new(lower_expr_dyn(init, ctx, fn_gen)),
-            acc_var: acc_var.clone(),
+            acc_var: acc_var.clone().as_mut(),
             elem_var: elem_var.clone(),
             body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
         },

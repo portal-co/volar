@@ -1062,6 +1062,18 @@ impl IrPattern {
             subpat: None,
         }
     }
+
+    /// Return a copy with the outermost binding marked `mut`.
+    pub fn as_mut(self) -> Self {
+        match self {
+            IrPattern::Ident { name, subpat, .. } => IrPattern::Ident {
+                mutable: true,
+                name,
+                subpat,
+            },
+            other => other, // can't meaningfully add mut to Wild/Tuple/etc.
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -686,7 +686,7 @@ impl<'a> RustBackend for IterChainWriter<'a> {
             IterTerminal::Fold { init, acc_var, elem_var, body } => {
                 write!(f, ".fold(")?;
                 ExprWriter { expr: init }.fmt(f)?;
-                write!(f, ", |mut ")?;
+                write!(f, ", |")?;
                 PatternWriter { pat: acc_var }.fmt(f)?;
                 write!(f, ", ")?;
                 PatternWriter { pat: elem_var }.fmt(f)?;
@@ -745,7 +745,14 @@ impl<'a> RustBackend for ExprWriter<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.expr {
             IrExpr::Lit(l) => write!(f, "{}", l)?,
-            IrExpr::Var(v) => write!(f, "{}", v)?,
+            IrExpr::Var(v) => {
+                debug_assert!(
+                    v == "self" || v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                    "IrExpr::Var contains non-ident string {:?}. Use Path, Call, or other IR nodes.",
+                    v
+                );
+                write!(f, "{}", v)?;
+            }
             IrExpr::Binary { op, left, right } => {
                 write!(f, "(")?;
                 ExprWriter { expr: left }.fmt(f)?;
@@ -872,7 +879,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 ExprWriter { expr: receiver }.fmt(f)?;
                 write!(f, ".fold(")?;
                 ExprWriter { expr: init }.fmt(f)?;
-                write!(f, ", |mut ")?;
+                write!(f, ", |")?;
                 PatternWriter { pat: acc_var }.fmt(f)?;
                 write!(f, ", ")?;
                 PatternWriter { pat: elem_var }.fmt(f)?;

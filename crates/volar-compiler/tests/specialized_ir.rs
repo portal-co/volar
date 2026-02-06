@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 use volar_compiler::{
-    ArrayKind, AssociatedType, IrExpr, IrImplItem, IrStmt, IrType,
+    ArrayKind, AssociatedType, IrExpr, IrImplItem, IrPattern, IrStmt, IrType,
     MathTrait, MethodKind, PrimitiveType, StructKind, TraitKind, VoleMethod, parse_sources,
 };
 
@@ -508,7 +508,7 @@ fn test_array_type_classification() {
 
 #[test]
 fn test_iter_chain_simple_fold() {
-    use volar_compiler::{parse_source, IrIterChain, IterChainSource, IterStep, IterTerminal, IterMethod};
+    use volar_compiler::{parse_source, IrIterChain, IrPattern, IterChainSource, IterStep, IterTerminal, IterMethod};
 
     let source = r#"
         fn test() {
@@ -545,7 +545,7 @@ fn test_iter_chain_simple_fold() {
 
 #[test]
 fn test_iter_chain_enumerate_filter_map_fold() {
-    use volar_compiler::{parse_source, IterChainSource, IterStep, IterTerminal, IterMethod};
+    use volar_compiler::{parse_source, IrPattern, IterChainSource, IterStep, IterTerminal, IterMethod};
 
     let source = r#"
         fn test() {
@@ -574,7 +574,7 @@ fn test_iter_chain_enumerate_filter_map_fold() {
 
 #[test]
 fn test_iter_chain_map_collect() {
-    use volar_compiler::{parse_source, IterChainSource, IterStep, IterTerminal, IterMethod};
+    use volar_compiler::{parse_source, IrPattern, IterChainSource, IterStep, IterTerminal, IterMethod};
 
     let source = r#"
         fn test() {
