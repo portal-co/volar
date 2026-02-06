@@ -151,8 +151,22 @@ fn write_trait(out: &mut String, t: &IrTrait, _level: usize) {
                 }
                 writeln!(out, ";").unwrap();
             }
-            IrTraitItem::AssociatedType { name, .. } => {
-                writeln!(out, "    type {:?};", name).unwrap();
+            IrTraitItem::AssociatedType { name, bounds, default } => {
+                write!(out, "    type {}", name).unwrap();
+                if !bounds.is_empty() {
+                    write!(out, ": ").unwrap();
+                    for (j, b) in bounds.iter().enumerate() {
+                        if j > 0 {
+                            write!(out, " + ").unwrap();
+                        }
+                        write_trait_bound(out, b);
+                    }
+                }
+                if let Some(def) = default {
+                    write!(out, " = ").unwrap();
+                    write_type(out, def);
+                }
+                writeln!(out, ";").unwrap();
             }
         }
     }
@@ -185,7 +199,7 @@ fn write_impl(out: &mut String, i: &IrImpl, _level: usize) {
         match item {
             IrImplItem::Method(f) => write_function(out, f, 1, i.trait_.is_some()),
             IrImplItem::AssociatedType { name, ty } => {
-                write!(out, "    type {:?} = ", name).unwrap();
+                write!(out, "    type {} = ", name).unwrap();
                 write_type(out, ty);
                 writeln!(out, ";").unwrap();
             }
@@ -358,7 +372,7 @@ fn write_type(out: &mut String, ty: &IrType) {
             // For simple Self::Output cases, just use Self::AssocType
             if let IrType::TypeParam(p) = base.as_ref() {
                 if p == "Self" && trait_args.is_empty() {
-                    write!(out, "Self::{:?}", assoc).unwrap();
+                    write!(out, "Self::{}", assoc).unwrap();
                     return;
                 }
             }
@@ -376,7 +390,7 @@ fn write_type(out: &mut String, ty: &IrType) {
                 }
                 write!(out, ">").unwrap();
             }
-            write!(out, ">::{:?}", assoc).unwrap();
+            write!(out, ">::{}", assoc).unwrap();
         }
         IrType::Existential { bounds } => {
             write!(out, "impl ").unwrap();

@@ -3,6 +3,7 @@
 //! This module transforms the specialized volar-spec IR into a dynamic IR
 //! where type-level lengths become runtime usize witnesses.
 
+use crate::const_analysis::*;
 use crate::ir::*;
 
 #[cfg(not(feature = "std"))]
@@ -15,17 +16,6 @@ use std::{boxed::Box, collections::BTreeMap, format, string::ToString, vec, vec:
 
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, collections::BTreeMap, format, string::ToString, vec, vec::Vec};
-
-/// Classification of generic parameters
-#[derive(Debug, Clone, PartialEq)]
-pub enum GenericKind {
-    /// Length/size parameter - becomes runtime usize
-    Length,
-    /// Crypto trait (BlockCipher, Digest) - remains generic
-    Crypto,
-    /// Regular type parameter - remains generic  
-    Type,
-}
 
 /// Information about a struct's witness fields
 #[derive(Debug, Clone, Default)]
@@ -121,138 +111,6 @@ impl LoweringContext {
         }
 
         Self { struct_info }
-    }
-}
-
-pub fn classify_generic(param: &IrGenericParam, all_params: &[&[IrGenericParam]]) -> GenericKind {
-    if param.kind == IrGenericParamKind::Const {
-        return GenericKind::Length;
-    }
-
-    // Direct indicators in bounds
-    for bound in &param.bounds {
-        if is_length_bound(bound) {
-            return GenericKind::Length;
-        }
-        if is_crypto_bound(bound) {
-            return GenericKind::Crypto;
-        }
-        // Fn/FnMut/FnOnce bounds indicate a closure type parameter, not a length
-        if is_fn_bound(bound) {
-            return GenericKind::Type;
-        }
-    }
-
-    // Recursive check via param name
-    let mut visited = Vec::new();
-    if is_length_name(&param.name, all_params, &mut visited) {
-        return GenericKind::Length;
-    }
-
-    // If the param has *any* bounds (that aren't length-related), it's a type param
-    // This catches cases like U: Mul<T, Output = O> + Clone
-    if !param.bounds.is_empty() {
-        return GenericKind::Type;
-    }
-
-    // Default: assume it's a type parameter
-    // We no longer use the aggressive single-letter heuristic since it causes
-    // false positives (e.g., F, U, O, A, Q are often type params, not lengths)
-    GenericKind::Type
-}
-
-fn is_length_bound(bound: &IrTraitBound) -> bool {
-    matches!(
-        &bound.trait_kind,
-        TraitKind::Crypto(CryptoTrait::ArrayLength)
-            | TraitKind::Crypto(CryptoTrait::VoleArray)
-            | TraitKind::Math(MathTrait::Unsigned)
-    )
-}
-
-fn is_crypto_bound(bound: &IrTraitBound) -> bool {
-    matches!(
-        &bound.trait_kind,
-        TraitKind::Crypto(CryptoTrait::BlockCipher)
-            | TraitKind::Crypto(CryptoTrait::Digest)
-            | TraitKind::Crypto(CryptoTrait::Rng)
-            | TraitKind::Crypto(CryptoTrait::ByteBlockEncrypt)
-    )
-}
-
-fn is_fn_bound(bound: &IrTraitBound) -> bool {
-    matches!(&bound.trait_kind, TraitKind::Fn(_, _))
-}
-
-fn is_math_op_bound(bound: &IrTraitBound) -> bool {
-    matches!(
-        &bound.trait_kind,
-        TraitKind::Math(MathTrait::Add)
-            | TraitKind::Math(MathTrait::Sub)
-            | TraitKind::Math(MathTrait::Mul)
-            | TraitKind::Math(MathTrait::Div)
-    )
-}
-
-fn find_param<'a>(
-    name: &str,
-    all_params: &'a [&'a [IrGenericParam]],
-) -> Option<&'a IrGenericParam> {
-    for set in all_params {
-        for p in *set {
-            if p.name == name {
-                return Some(p);
-            }
-        }
-    }
-    None
-}
-
-fn is_length_name(name: &str, all_params: &[&[IrGenericParam]], visited: &mut Vec<String>) -> bool {
-    if visited.contains(&name.to_string()) {
-        return false;
-    }
-    visited.push(name.to_string());
-
-    if let Some(p) = find_param(name, all_params) {
-        for bound in &p.bounds {
-            if is_length_bound(bound) {
-                return true;
-            }
-            if is_math_op_bound(bound) {
-                for arg in &bound.type_args {
-                    if type_refers_to_length(arg, all_params, visited) {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-    false
-}
-
-fn type_refers_to_length(
-    ty: &IrType,
-    all_params: &[&[IrGenericParam]],
-    visited: &mut Vec<String>,
-) -> bool {
-    match ty {
-        IrType::TypeParam(name) => is_length_name(name, all_params, visited),
-        IrType::Struct { type_args, .. } => type_args
-            .iter()
-            .any(|ta| type_refers_to_length(ta, all_params, visited)),
-        IrType::Projection { base, .. } => type_refers_to_length(base, all_params, visited),
-        IrType::Param { path } => path
-            .first()
-            .map(|s| is_length_name(s, all_params, visited))
-            .unwrap_or(false),
-        IrType::Array { elem, .. } | IrType::Vector { elem } | IrType::Reference { elem, .. } => {
-            type_refers_to_length(elem, all_params, visited)
-        }
-        IrType::Tuple(elems) => elems
-            .iter()
-            .any(|e| type_refers_to_length(e, all_params, visited)),
-        _ => false,
     }
 }
 

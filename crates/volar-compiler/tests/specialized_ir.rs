@@ -249,10 +249,6 @@ fn test_method_classification() {
                         std_methods += 1;
                         println!("Std method: {}", s);
                     }
-                    MethodKind::Iter(i) => {
-                        iter_methods += 1;
-                        println!("Iter method: {:?}", i);
-                    }
                     MethodKind::Unknown(u) => {
                         println!("Unknown method: {}", u);
                     }

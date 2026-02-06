@@ -28,6 +28,7 @@ extern crate std;
 extern crate alloc;
 
 pub mod ir;
+pub mod const_analysis;
 #[cfg(feature = "parsing")]
 pub mod parser;
 pub mod lowering;
@@ -36,6 +37,7 @@ pub mod printer_dyn;
 pub mod lowering_dyn;
 
 pub use ir::*;
+pub use const_analysis::*;
 #[cfg(feature = "parsing")]
 pub use parser::*;
 pub use lowering::*;

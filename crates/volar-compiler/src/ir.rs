@@ -10,6 +10,7 @@ use std::{
     boxed::Box,
     format,
     string::{String, ToString},
+    vec,
     vec::Vec,
 };
 
@@ -18,6 +19,7 @@ use alloc::{
     boxed::Box,
     format,
     string::{String, ToString},
+    vec,
     vec::Vec,
 };
 
@@ -568,6 +570,19 @@ impl AssociatedType {
     }
 }
 
+impl fmt::Display for AssociatedType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Output => write!(f, "Output"),
+            Self::Key => write!(f, "Key"),
+            Self::BlockSize => write!(f, "BlockSize"),
+            Self::OutputSize => write!(f, "OutputSize"),
+            Self::TotalLoopCount => write!(f, "TotalLoopCount"),
+            Self::Other(name) => write!(f, "{}", name),
+        }
+    }
+}
+
 // ============================================================================
 // MAIN IR DATA STRUCTURES
 // ============================================================================
@@ -828,7 +843,7 @@ impl fmt::Display for IrType {
                 ..
             } => {
                 let trait_name = trait_path.as_deref().unwrap_or("_");
-                write!(f, "<{} as {}>::{:?}", base, trait_name, assoc)
+                write!(f, "<{} as {}>::{}", base, trait_name, assoc)
             }
             Self::Existential { bounds } => {
                 write!(f, "impl ")?;
@@ -836,7 +851,7 @@ impl fmt::Display for IrType {
                     if i > 0 {
                         write!(f, " + ")?;
                     }
-                    write!(f, "{:?}", bound)?; // Using Debug for now as we don't have Display for IrTraitBound yet
+                    write!(f, "{}", bound)?; // IrTraitBound has Display impl
                 }
                 Ok(())
             }
@@ -881,7 +896,7 @@ impl fmt::Display for IrTraitBound {
                 if !first {
                     write!(f, ", ")?;
                 }
-                write!(f, "{:?} = {}", name, ty)?;
+                write!(f, "{} = {}", name, ty)?;
                 first = false;
             }
             write!(f, ">")?;
@@ -1149,4 +1164,488 @@ pub enum SpecUnaryOp {
     Deref,
     Ref,
     RefMut,
+}
+
+// ============================================================================
+// OPERATOR ↔ TRAIT MAPPINGS
+// ============================================================================
+
+impl SpecBinOp {
+    /// Map a binary operator to its corresponding math trait.
+    pub fn to_math_trait(&self) -> Option<MathTrait> {
+        match self {
+            Self::Add => Some(MathTrait::Add),
+            Self::Sub => Some(MathTrait::Sub),
+            Self::Mul => Some(MathTrait::Mul),
+            Self::Div => Some(MathTrait::Div),
+            Self::Rem => Some(MathTrait::Rem),
+            Self::BitAnd => Some(MathTrait::BitAnd),
+            Self::BitOr => Some(MathTrait::BitOr),
+            Self::BitXor => Some(MathTrait::BitXor),
+            Self::Shl => Some(MathTrait::Shl),
+            Self::Shr => Some(MathTrait::Shr),
+            Self::Eq | Self::Ne => Some(MathTrait::PartialEq),
+            Self::Lt | Self::Le | Self::Gt | Self::Ge => Some(MathTrait::PartialOrd),
+            _ => None,
+        }
+    }
+}
+
+impl MathTrait {
+    /// Map a math trait to its canonical binary operator (for backends).
+    pub fn to_bin_op(&self) -> Option<SpecBinOp> {
+        match self {
+            Self::Add => Some(SpecBinOp::Add),
+            Self::Sub => Some(SpecBinOp::Sub),
+            Self::Mul => Some(SpecBinOp::Mul),
+            Self::Div => Some(SpecBinOp::Div),
+            Self::Rem => Some(SpecBinOp::Rem),
+            Self::BitAnd => Some(SpecBinOp::BitAnd),
+            Self::BitOr => Some(SpecBinOp::BitOr),
+            Self::BitXor => Some(SpecBinOp::BitXor),
+            Self::Shl => Some(SpecBinOp::Shl),
+            Self::Shr => Some(SpecBinOp::Shr),
+            _ => None,
+        }
+    }
+
+    /// Method name for this trait (e.g., "add" for Add, "bitxor" for BitXor).
+    pub fn method_name(&self) -> Option<&'static str> {
+        match self {
+            Self::Add => Some("add"),
+            Self::Sub => Some("sub"),
+            Self::Mul => Some("mul"),
+            Self::Div => Some("div"),
+            Self::Rem => Some("rem"),
+            Self::BitAnd => Some("bitand"),
+            Self::BitOr => Some("bitor"),
+            Self::BitXor => Some("bitxor"),
+            Self::Shl => Some("shl"),
+            Self::Shr => Some("shr"),
+            Self::Neg => Some("neg"),
+            Self::Not => Some("not"),
+            Self::PartialEq => Some("eq"),
+            Self::PartialOrd => Some("partial_cmp"),
+            Self::Clone => Some("clone"),
+            Self::Default => Some("default"),
+            _ => None,
+        }
+    }
+}
+
+impl SpecUnaryOp {
+    /// Map a unary operator to its corresponding math trait.
+    pub fn to_math_trait(&self) -> Option<MathTrait> {
+        match self {
+            Self::Neg => Some(MathTrait::Neg),
+            Self::Not => Some(MathTrait::Not),
+            _ => None,
+        }
+    }
+}
+
+// ============================================================================
+// BUILT-IN TRAIT DEFINITIONS
+// ============================================================================
+
+/// Helper to build a binary operator trait definition (Add, Sub, Mul, etc.).
+///
+/// All binary op traits share the same shape:
+/// ```ignore
+/// trait Op<Rhs = Self> {
+///     type Output;
+///     fn op(self, rhs: Rhs) -> Self::Output;
+/// }
+/// ```
+fn builtin_binop_trait(math: MathTrait) -> IrTrait {
+    let trait_name = format!("{:?}", math);
+    let method = math.method_name().unwrap_or("op");
+    IrTrait {
+        kind: TraitKind::Math(math),
+        generics: vec![IrGenericParam {
+            name: "Rhs".into(),
+            kind: IrGenericParamKind::Type,
+            bounds: vec![],
+            default: Some(IrType::TypeParam("Self".into())),
+        }],
+        super_traits: vec![],
+        items: vec![
+            IrTraitItem::AssociatedType {
+                name: AssociatedType::Output,
+                bounds: vec![],
+                default: None,
+            },
+            IrTraitItem::Method(IrMethodSig {
+                name: method.into(),
+                generics: vec![],
+                receiver: Some(IrReceiver::Value),
+                params: vec![IrParam {
+                    name: "rhs".into(),
+                    ty: IrType::TypeParam("Rhs".into()),
+                }],
+                return_type: Some(IrType::Projection {
+                    base: Box::new(IrType::TypeParam("Self".into())),
+                    trait_path: Some(trait_name),
+                    trait_args: vec![],
+                    assoc: AssociatedType::Output,
+                }),
+                where_clause: vec![],
+            }),
+        ],
+    }
+}
+
+/// Helper to build a unary operator trait definition (Neg, Not).
+///
+/// ```ignore
+/// trait Op {
+///     type Output;
+///     fn op(self) -> Self::Output;
+/// }
+/// ```
+fn builtin_unary_trait(math: MathTrait) -> IrTrait {
+    let trait_name = format!("{:?}", math);
+    let method = math.method_name().unwrap_or("op");
+    IrTrait {
+        kind: TraitKind::Math(math),
+        generics: vec![],
+        super_traits: vec![],
+        items: vec![
+            IrTraitItem::AssociatedType {
+                name: AssociatedType::Output,
+                bounds: vec![],
+                default: None,
+            },
+            IrTraitItem::Method(IrMethodSig {
+                name: method.into(),
+                generics: vec![],
+                receiver: Some(IrReceiver::Value),
+                params: vec![],
+                return_type: Some(IrType::Projection {
+                    base: Box::new(IrType::TypeParam("Self".into())),
+                    trait_path: Some(trait_name),
+                    trait_args: vec![],
+                    assoc: AssociatedType::Output,
+                }),
+                where_clause: vec![],
+            }),
+        ],
+    }
+}
+
+/// Canonical definitions for all built-in traits recognized by the IR.
+///
+/// These provide the single source of truth for trait structure (generics,
+/// associated types, methods) so that backends can query them uniformly
+/// without hardcoding.
+pub fn builtin_trait_defs() -> Vec<IrTrait> {
+    vec![
+        // Binary operator traits: Add, Sub, Mul, Div, Rem, BitAnd, BitOr, BitXor, Shl, Shr
+        builtin_binop_trait(MathTrait::Add),
+        builtin_binop_trait(MathTrait::Sub),
+        builtin_binop_trait(MathTrait::Mul),
+        builtin_binop_trait(MathTrait::Div),
+        builtin_binop_trait(MathTrait::Rem),
+        builtin_binop_trait(MathTrait::BitAnd),
+        builtin_binop_trait(MathTrait::BitOr),
+        builtin_binop_trait(MathTrait::BitXor),
+        builtin_binop_trait(MathTrait::Shl),
+        builtin_binop_trait(MathTrait::Shr),
+        // Unary operator traits: Neg, Not
+        builtin_unary_trait(MathTrait::Neg),
+        builtin_unary_trait(MathTrait::Not),
+        // PartialEq<Rhs = Self>
+        IrTrait {
+            kind: TraitKind::Math(MathTrait::PartialEq),
+            generics: vec![IrGenericParam {
+                name: "Rhs".into(),
+                kind: IrGenericParamKind::Type,
+                bounds: vec![],
+                default: Some(IrType::TypeParam("Self".into())),
+            }],
+            super_traits: vec![],
+            items: vec![IrTraitItem::Method(IrMethodSig {
+                name: "eq".into(),
+                generics: vec![],
+                receiver: Some(IrReceiver::Ref),
+                params: vec![IrParam {
+                    name: "other".into(),
+                    ty: IrType::Reference {
+                        mutable: false,
+                        elem: Box::new(IrType::TypeParam("Rhs".into())),
+                    },
+                }],
+                return_type: Some(IrType::Primitive(PrimitiveType::Bool)),
+                where_clause: vec![],
+            })],
+        },
+        // Eq: marker trait, supertrait PartialEq
+        IrTrait {
+            kind: TraitKind::Math(MathTrait::Eq),
+            generics: vec![],
+            super_traits: vec![IrTraitBound {
+                trait_kind: TraitKind::Math(MathTrait::PartialEq),
+                type_args: vec![],
+                assoc_bindings: vec![],
+            }],
+            items: vec![],
+        },
+        // PartialOrd<Rhs = Self>: supertrait PartialEq
+        IrTrait {
+            kind: TraitKind::Math(MathTrait::PartialOrd),
+            generics: vec![IrGenericParam {
+                name: "Rhs".into(),
+                kind: IrGenericParamKind::Type,
+                bounds: vec![],
+                default: Some(IrType::TypeParam("Self".into())),
+            }],
+            super_traits: vec![IrTraitBound {
+                trait_kind: TraitKind::Math(MathTrait::PartialEq),
+                type_args: vec![IrType::TypeParam("Rhs".into())],
+                assoc_bindings: vec![],
+            }],
+            items: vec![IrTraitItem::Method(IrMethodSig {
+                name: "partial_cmp".into(),
+                generics: vec![],
+                receiver: Some(IrReceiver::Ref),
+                params: vec![IrParam {
+                    name: "other".into(),
+                    ty: IrType::Reference {
+                        mutable: false,
+                        elem: Box::new(IrType::TypeParam("Rhs".into())),
+                    },
+                }],
+                return_type: Some(IrType::Struct {
+                    kind: StructKind::Custom("Option".into()),
+                    type_args: vec![IrType::Struct {
+                        kind: StructKind::Custom("Ordering".into()),
+                        type_args: vec![],
+                    }],
+                }),
+                where_clause: vec![],
+            })],
+        },
+        // Ord: supertrait PartialOrd + Eq
+        IrTrait {
+            kind: TraitKind::Math(MathTrait::Ord),
+            generics: vec![],
+            super_traits: vec![
+                IrTraitBound {
+                    trait_kind: TraitKind::Math(MathTrait::Eq),
+                    type_args: vec![],
+                    assoc_bindings: vec![],
+                },
+                IrTraitBound {
+                    trait_kind: TraitKind::Math(MathTrait::PartialOrd),
+                    type_args: vec![],
+                    assoc_bindings: vec![],
+                },
+            ],
+            items: vec![IrTraitItem::Method(IrMethodSig {
+                name: "cmp".into(),
+                generics: vec![],
+                receiver: Some(IrReceiver::Ref),
+                params: vec![IrParam {
+                    name: "other".into(),
+                    ty: IrType::Reference {
+                        mutable: false,
+                        elem: Box::new(IrType::TypeParam("Self".into())),
+                    },
+                }],
+                return_type: Some(IrType::Struct {
+                    kind: StructKind::Custom("Ordering".into()),
+                    type_args: vec![],
+                }),
+                where_clause: vec![],
+            })],
+        },
+        // Clone
+        IrTrait {
+            kind: TraitKind::Math(MathTrait::Clone),
+            generics: vec![],
+            super_traits: vec![],
+            items: vec![IrTraitItem::Method(IrMethodSig {
+                name: "clone".into(),
+                generics: vec![],
+                receiver: Some(IrReceiver::Ref),
+                params: vec![],
+                return_type: Some(IrType::TypeParam("Self".into())),
+                where_clause: vec![],
+            })],
+        },
+        // Copy: marker trait, supertrait Clone
+        IrTrait {
+            kind: TraitKind::Math(MathTrait::Copy),
+            generics: vec![],
+            super_traits: vec![IrTraitBound {
+                trait_kind: TraitKind::Math(MathTrait::Clone),
+                type_args: vec![],
+                assoc_bindings: vec![],
+            }],
+            items: vec![],
+        },
+        // Default — static method, no receiver
+        IrTrait {
+            kind: TraitKind::Math(MathTrait::Default),
+            generics: vec![],
+            super_traits: vec![],
+            items: vec![IrTraitItem::Method(IrMethodSig {
+                name: "default".into(),
+                generics: vec![],
+                receiver: None,
+                params: vec![],
+                return_type: Some(IrType::TypeParam("Self".into())),
+                where_clause: vec![],
+            })],
+        },
+        // Unsigned — marker trait for typenum
+        IrTrait {
+            kind: TraitKind::Math(MathTrait::Unsigned),
+            generics: vec![],
+            super_traits: vec![],
+            items: vec![],
+        },
+        // --- Crypto traits ---
+        // BlockEncrypt
+        IrTrait {
+            kind: TraitKind::Crypto(CryptoTrait::BlockEncrypt),
+            generics: vec![],
+            super_traits: vec![],
+            items: vec![
+                IrTraitItem::AssociatedType {
+                    name: AssociatedType::BlockSize,
+                    bounds: vec![],
+                    default: None,
+                },
+                IrTraitItem::Method(IrMethodSig {
+                    name: "encrypt_block".into(),
+                    generics: vec![],
+                    receiver: Some(IrReceiver::Ref),
+                    params: vec![IrParam {
+                        name: "block".into(),
+                        ty: IrType::Reference {
+                            mutable: true,
+                            elem: Box::new(IrType::Struct {
+                                kind: StructKind::Custom("Block".into()),
+                                type_args: vec![IrType::TypeParam("Self".into())],
+                            }),
+                        },
+                    }],
+                    return_type: None,
+                    where_clause: vec![],
+                }),
+            ],
+        },
+        // BlockCipher
+        IrTrait {
+            kind: TraitKind::Crypto(CryptoTrait::BlockCipher),
+            generics: vec![],
+            super_traits: vec![],
+            items: vec![IrTraitItem::AssociatedType {
+                name: AssociatedType::BlockSize,
+                bounds: vec![],
+                default: None,
+            }],
+        },
+        // Digest
+        IrTrait {
+            kind: TraitKind::Crypto(CryptoTrait::Digest),
+            generics: vec![],
+            super_traits: vec![],
+            items: vec![
+                IrTraitItem::AssociatedType {
+                    name: AssociatedType::OutputSize,
+                    bounds: vec![],
+                    default: None,
+                },
+                IrTraitItem::Method(IrMethodSig {
+                    name: "new".into(),
+                    generics: vec![],
+                    receiver: None,
+                    params: vec![],
+                    return_type: Some(IrType::TypeParam("Self".into())),
+                    where_clause: vec![],
+                }),
+                IrTraitItem::Method(IrMethodSig {
+                    name: "update".into(),
+                    generics: vec![],
+                    receiver: Some(IrReceiver::RefMut),
+                    params: vec![IrParam {
+                        name: "data".into(),
+                        ty: IrType::Reference {
+                            mutable: false,
+                            elem: Box::new(IrType::Array {
+                                kind: ArrayKind::Slice,
+                                elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
+                                len: ArrayLength::Const(0),
+                            }),
+                        },
+                    }],
+                    return_type: None,
+                    where_clause: vec![],
+                }),
+                IrTraitItem::Method(IrMethodSig {
+                    name: "finalize".into(),
+                    generics: vec![],
+                    receiver: Some(IrReceiver::Value),
+                    params: vec![],
+                    return_type: Some(IrType::Array {
+                        kind: ArrayKind::GenericArray,
+                        elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
+                        len: ArrayLength::Projection {
+                            r#type: Box::new(IrType::TypeParam("Self".into())),
+                            field: "OutputSize".into(),
+                        },
+                    }),
+                    where_clause: vec![],
+                }),
+            ],
+        },
+        // ArrayLength<T> — marker/type-level constant
+        IrTrait {
+            kind: TraitKind::Crypto(CryptoTrait::ArrayLength),
+            generics: vec![IrGenericParam {
+                name: "T".into(),
+                kind: IrGenericParamKind::Type,
+                bounds: vec![],
+                default: None,
+            }],
+            super_traits: vec![],
+            items: vec![],
+        },
+        // VoleArray<T>: ArrayLength<T>
+        IrTrait {
+            kind: TraitKind::Crypto(CryptoTrait::VoleArray),
+            generics: vec![IrGenericParam {
+                name: "T".into(),
+                kind: IrGenericParamKind::Type,
+                bounds: vec![],
+                default: None,
+            }],
+            super_traits: vec![IrTraitBound {
+                trait_kind: TraitKind::Crypto(CryptoTrait::ArrayLength),
+                type_args: vec![IrType::TypeParam("T".into())],
+                assoc_bindings: vec![],
+            }],
+            items: vec![],
+        },
+        // ByteBlockEncrypt: BlockEncrypt
+        IrTrait {
+            kind: TraitKind::Crypto(CryptoTrait::ByteBlockEncrypt),
+            generics: vec![],
+            super_traits: vec![IrTraitBound {
+                trait_kind: TraitKind::Crypto(CryptoTrait::BlockEncrypt),
+                type_args: vec![],
+                assoc_bindings: vec![],
+            }],
+            items: vec![],
+        },
+        // Rng — minimal definition
+        IrTrait {
+            kind: TraitKind::Crypto(CryptoTrait::Rng),
+            generics: vec![],
+            super_traits: vec![],
+            items: vec![],
+        },
+    ]
 }
