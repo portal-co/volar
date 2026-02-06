@@ -182,28 +182,7 @@ impl LoweringContext {
             }
         }
 
-        // Pre-compute projection witnesses for all functions (free functions and impl methods)
-        let mut fn_projection_witnesses = BTreeMap::new();
-        for f in &module.functions {
-            let witnesses = collect_projection_witnesses_fn(f);
-            if !witnesses.is_empty() {
-                fn_projection_witnesses
-                    .insert(f.name.clone(), witnesses.into_iter().collect());
-            }
-        }
-        for im in &module.impls {
-            for item in &im.items {
-                if let IrImplItem::Method(f) = item {
-                    let witnesses = collect_projection_witnesses_fn(f);
-                    if !witnesses.is_empty() {
-                        fn_projection_witnesses
-                            .insert(f.name.clone(), witnesses.into_iter().collect());
-                    }
-                }
-            }
-        }
-
-        Self { struct_info, length_aliases, fn_projection_witnesses }
+        Self { struct_info, length_aliases }
     }
 }
 
@@ -1634,49 +1613,22 @@ fn lower_iter_terminal_dyn(
 fn lower_array_length(len: &ArrayLength, fn_gen: &[IrGenericParam], ctx: &LoweringContext) -> ArrayLength {
     match len {
         ArrayLength::Projection { r#type, field } => {
-            // Check if the base type param is a Length generic (→ runtime var)
-            // or a Type generic (→ keep as static projection)
-            match r#type.as_ref() {
-                IrType::TypeParam(p) => {
-                    // "Self" projections are always runtime (the struct doesn't carry trait impls)
-                    if p == "Self" {
-                        return ArrayLength::TypeParam(format!("self_{}", field.to_lowercase()));
-                    }
-                    let is_length = fn_gen.iter().any(|g| &g.name == p
-                        && classify_generic_with_aliases(g, &[fn_gen], &ctx.aliases()) == GenericKind::Length);
-                    if is_length {
-                        // Length param → runtime variable
-                        ArrayLength::TypeParam(format!("{}_{}", p.to_lowercase(), field.to_lowercase()))
-                    } else {
-                        // Type param with associated type → keep as projection (resolved at compile time)
-                        len.clone()
-                    }
-                }
-                _ => {
-                    // Non-type-param projection → runtime variable fallback
-                    ArrayLength::TypeParam(format!("len_{}", field.to_lowercase()))
-                }
-            }
+            resolve_projection_length(r#type, field, fn_gen, ctx)
         }
         ArrayLength::TypeParam(p) => {
             // Check if this is a typenum constant
             if let Some(tn) = TypeNumConst::from_str(p) {
                 ArrayLength::Const(tn.to_usize())
             } else if p.contains("::") {
-                // Path like B::BlockSize → check if B is a Length or Type param
+                // Path like B::BlockSize → parse as projection
                 let parts: Vec<&str> = p.split("::").collect();
                 if parts.len() == 2 {
-                    let is_length = fn_gen.iter().any(|g| g.name == parts[0]
-                        && classify_generic_with_aliases(g, &[fn_gen], &ctx.aliases()) == GenericKind::Length);
-                    if is_length {
-                        ArrayLength::TypeParam(format!("{}_{}", parts[0].to_lowercase(), parts[1].to_lowercase()))
-                    } else {
-                        // Keep as projection on type param
-                        ArrayLength::Projection {
-                            r#type: Box::new(IrType::TypeParam(parts[0].to_string())),
-                            field: parts[1].to_string(),
-                        }
-                    }
+                    resolve_projection_length(
+                        &IrType::TypeParam(parts[0].to_string()),
+                        parts[1],
+                        fn_gen,
+                        ctx,
+                    )
                 } else {
                     ArrayLength::TypeParam(p.to_lowercase())
                 }
@@ -1687,6 +1639,118 @@ fn lower_array_length(len: &ArrayLength, fn_gen: &[IrGenericParam], ctx: &Loweri
         }
         ArrayLength::TypeNum(tn) => ArrayLength::Const(tn.to_usize()),
         ArrayLength::Const(_) => len.clone(),
+    }
+}
+
+/// Resolve a projection `<base_ty>::field` into a lowered ArrayLength.
+///
+/// For **length** generics (N, K, K2, etc.) with arithmetic trait bounds
+/// like `K2: Add<K>`, the `Output` associated type is resolved into an
+/// arithmetic expression over the runtime witness variables: `k2 + k`.
+///
+/// For **type** generics (B, D, etc.) whose associated type is a length
+/// (e.g., `B::OutputSize` where `B: LengthDoubler`), the projection is
+/// kept as-is and resolved at compile time via the type system.
+///
+/// For **Self** projections, the result is a runtime variable.
+fn resolve_projection_length(
+    base_ty: &IrType,
+    field: &str,
+    fn_gen: &[IrGenericParam],
+    ctx: &LoweringContext,
+) -> ArrayLength {
+    match base_ty {
+        IrType::TypeParam(p) if p == "Self" => {
+            // Self projections → runtime variable (struct doesn't carry trait impls)
+            ArrayLength::TypeParam(format!("self_{}", field.to_lowercase()))
+        }
+        IrType::TypeParam(p) => {
+            let param = fn_gen.iter().find(|g| &g.name == p);
+            let is_length = param.map_or(false, |g| {
+                classify_generic_with_aliases(g, &[fn_gen], &ctx.aliases()) == GenericKind::Length
+            });
+            if is_length && field == "Output" {
+                // Try to resolve via arithmetic trait bounds: Add, Sub, Mul → binary expr
+                if let Some(resolved) = resolve_arithmetic_output(p, param.unwrap(), fn_gen, ctx) {
+                    return resolved;
+                }
+                // Fallback: runtime variable
+                ArrayLength::TypeParam(format!("{}_{}", p.to_lowercase(), field.to_lowercase()))
+            } else if is_length {
+                // Non-Output assoc type on length param → runtime variable
+                ArrayLength::TypeParam(format!("{}_{}", p.to_lowercase(), field.to_lowercase()))
+            } else {
+                // Type param → keep as compile-time projection
+                ArrayLength::Projection {
+                    r#type: Box::new(base_ty.clone()),
+                    field: field.to_string(),
+                }
+            }
+        }
+        // Nested projection, e.g. <D::OutputSize as Logarithm2>::Output
+        // For now, keep as-is (compile-time) — exotic cases
+        IrType::Projection { .. } => {
+            ArrayLength::Projection {
+                r#type: Box::new(base_ty.clone()),
+                field: field.to_string(),
+            }
+        }
+        _ => {
+            // Fallback
+            ArrayLength::TypeParam(format!("len_{}", field.to_lowercase()))
+        }
+    }
+}
+
+/// Given a length param `P` with bound `P: Add<Rhs>` (or Sub, Mul),
+/// resolve `P::Output` to `p OP rhs_lowered`.
+fn resolve_arithmetic_output(
+    param_name: &str,
+    param: &IrGenericParam,
+    fn_gen: &[IrGenericParam],
+    ctx: &LoweringContext,
+) -> Option<ArrayLength> {
+    for bound in &param.bounds {
+        let op = match &bound.trait_kind {
+            TraitKind::Math(MathTrait::Add) => "+",
+            TraitKind::Math(MathTrait::Sub) => "-",
+            TraitKind::Math(MathTrait::Mul) => "*",
+            _ => continue,
+        };
+        // The first type_arg is the RHS
+        if let Some(rhs_ty) = bound.type_args.first() {
+            let rhs = type_to_length_expr(rhs_ty, fn_gen, ctx)?;
+            let lhs = param_name.to_lowercase();
+            return Some(ArrayLength::TypeParam(format!("({} {} {})", lhs, op, rhs)));
+        }
+    }
+    None
+}
+
+/// Convert a type used as an arithmetic operand into a lowered length expression string.
+/// Returns `None` if the type can't be resolved to a length expression.
+fn type_to_length_expr(ty: &IrType, fn_gen: &[IrGenericParam], ctx: &LoweringContext) -> Option<String> {
+    match ty {
+        IrType::TypeParam(p) => {
+            // Check if it's a typenum constant
+            if let Some(tn) = TypeNumConst::from_str(p) {
+                Some(tn.to_usize().to_string())
+            } else {
+                // Lowercase the param name (it should be a length witness)
+                Some(p.to_lowercase())
+            }
+        }
+        IrType::Projection { base, assoc, .. } => {
+            // Nested projection like <K2 as Add<K>>::Output → resolve recursively
+            let field_name = assoc.to_string();
+            let resolved = resolve_projection_length(base, &field_name, fn_gen, ctx);
+            match resolved {
+                ArrayLength::Const(n) => Some(n.to_string()),
+                ArrayLength::TypeParam(s) => Some(s),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 
