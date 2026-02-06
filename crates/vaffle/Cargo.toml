@@ -1,0 +1,10 @@
+[package]
+name = "vaffle"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+
+[dependencies]
+volar-ir = { version = "0.1.0", path = "../volar-ir" }
