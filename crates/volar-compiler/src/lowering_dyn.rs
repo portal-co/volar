@@ -1345,12 +1345,16 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
         }
         // ArrayGenerate → IterPipeline: (0..len).map(|index_var| body).collect()
         IrExpr::ArrayGenerate {
-            elem_ty: _,
+            elem_ty,
             len,
             index_var,
             body,
         } => {
             let len_expr = array_length_to_expr(len, fn_gen, ctx);
+            let terminal = match elem_ty {
+                Some(ty) => IterTerminal::CollectTyped(lower_type_dyn(ty, ctx, fn_gen)),
+                None => IterTerminal::Collect,
+            };
             IrExpr::IterPipeline(IrIterChain {
                 source: IterChainSource::Range {
                     start: Box::new(IrExpr::Lit(IrLit::Int(0))),
@@ -1361,7 +1365,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     var: index_var.clone(),
                     body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
                 }],
-                terminal: IterTerminal::Collect,
+                terminal,
             })
         }
         // ArrayDefault → IterPipeline: (0..len).map(|_| T::default()).collect()
@@ -1392,6 +1396,10 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             let default_body = IrExpr::DefaultValue {
                 ty: elem_ty.as_ref().map(|t| Box::new(lower_type_dyn(t, ctx, fn_gen))),
             };
+            let terminal = match elem_ty.as_ref() {
+                Some(ty) => IterTerminal::CollectTyped(lower_type_dyn(ty, ctx, fn_gen)),
+                None => IterTerminal::Collect,
+            };
             IrExpr::IterPipeline(IrIterChain {
                 source: IterChainSource::Range {
                     start: Box::new(IrExpr::Lit(IrLit::Int(0))),
@@ -1402,7 +1410,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     var: "_".to_string(),
                     body: Box::new(default_body),
                 }],
-                terminal: IterTerminal::Collect,
+                terminal,
             })
         }
         IrExpr::LengthOf(len) => array_length_to_expr(len, fn_gen, ctx),
@@ -1410,9 +1418,23 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             base: Box::new(lower_expr_dyn(base, ctx, fn_gen)),
             field: field.clone(),
         },
-        IrExpr::Index { base, index } => IrExpr::Index {
-            base: Box::new(lower_expr_dyn(base, ctx, fn_gen)),
-            index: Box::new(lower_expr_dyn(index, ctx, fn_gen)),
+        IrExpr::Index { base, index } => {
+            // Simplify x.as_ref()[i] → x[i] in dyn context
+            // Vec<T> supports direct indexing, so as_ref() is unnecessary
+            // and would cause ambiguous AsRef<T> resolution
+            let lowered_base = match base.as_ref() {
+                IrExpr::MethodCall { receiver, method, args, .. }
+                    if matches!(method, MethodKind::Std(n) if n == "as_ref")
+                    && args.is_empty() =>
+                {
+                    lower_expr_dyn(receiver, ctx, fn_gen)
+                }
+                _ => lower_expr_dyn(base, ctx, fn_gen),
+            };
+            IrExpr::Index {
+                base: Box::new(lowered_base),
+                index: Box::new(lower_expr_dyn(index, ctx, fn_gen)),
+            }
         },
         IrExpr::Unary { op, expr } => IrExpr::Unary {
             op: *op,
@@ -1667,6 +1689,7 @@ fn lower_iter_terminal_dyn(
 ) -> IterTerminal {
     match terminal {
         IterTerminal::Collect => IterTerminal::Collect,
+        IterTerminal::CollectTyped(ty) => IterTerminal::CollectTyped(lower_type_dyn(ty, ctx, fn_gen)),
         IterTerminal::Fold {
             init,
             acc_var,

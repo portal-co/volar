@@ -126,6 +126,8 @@ pub enum IterStep {
 pub enum IterTerminal {
     /// `.collect()` — materializes into a `Vec` (or other container).
     Collect,
+    /// `.collect::<Vec<T>>()` — typed collect for disambiguation
+    CollectTyped(IrType),
     /// `.fold(init, |acc, elem| body)`
     Fold {
         init: Box<IrExpr>,

@@ -670,6 +670,11 @@ impl<'a> RustBackend for IterChainWriter<'a> {
             IterTerminal::Collect => {
                 write!(f, ".collect::<Vec<_>>()")?;
             }
+            IterTerminal::CollectTyped(ty) => {
+                write!(f, ".collect::<Vec<")?;
+                TypeWriter { ty }.fmt(f)?;
+                write!(f, ">>()")?;
+            }
             IterTerminal::Fold { init, acc_var, elem_var, body } => {
                 write!(f, ".fold(")?;
                 ExprWriter { expr: init }.fmt(f)?;
