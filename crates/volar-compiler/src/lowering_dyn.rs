@@ -2468,4 +2468,37 @@ mod tests {
     fn test_validate_ident_rejects_colons() {
         validate_ident("B::OutputSize");
     }
+
+    #[test]
+    fn test_logarithm2_projection_becomes_ilog2() {
+        let ctx = empty_ctx();
+        let gens = vec![type_param("D", vec![custom_bound("Digest")])];
+        // <D::OutputSize as Logarithm2>::Output
+        let len = ArrayLength::Projection {
+            r#type: Box::new(IrType::Projection {
+                base: Box::new(IrType::TypeParam("D".to_string())),
+                trait_path: None,
+                trait_args: Vec::new(),
+                assoc: AssociatedType::OutputSize,
+            }),
+            field: "Output".to_string(),
+            trait_path: Some("Logarithm2".to_string()),
+        };
+        let result = array_length_to_expr(&len, &gens, &ctx);
+        // Should be Call(ilog2, [LengthOf(<D>::OutputSize)])
+        match &result {
+            IrExpr::Call { func, args } => {
+                match func.as_ref() {
+                    IrExpr::Path { segments, .. } => {
+                        assert_eq!(segments, &["ilog2".to_string()]);
+                    }
+                    other => panic!("Expected Path func, got {:?}", other),
+                }
+                assert_eq!(args.len(), 1);
+                // The inner arg should be LengthOf for D::OutputSize
+                assert!(matches!(&args[0], IrExpr::LengthOf(ArrayLength::Projection { .. })));
+            }
+            other => panic!("Expected Call(ilog2), got {:?}", other),
+        }
+    }
 }

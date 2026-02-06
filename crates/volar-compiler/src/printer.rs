@@ -1237,6 +1237,7 @@ impl<'a> RustBackend for DynPreambleWriter<'a> {
         writeln!(f, "use volar_common::hash_commitment::commit;")?;
         writeln!(f, "use volar_common::length_doubling::LengthDoubler;")?;
         writeln!(f, "use volar_primitives::{{Bit, BitsInBytes, BitsInBytes64, Galois, Galois64}};")?;
+        writeln!(f, "use generic_array::GenericArray;")?;
         writeln!(f)?;
 
         // Dependency re-exports
@@ -1263,6 +1264,14 @@ impl<'a> RustBackend for DynPreambleWriter<'a> {
         writeln!(f, "#[inline]")?;
         writeln!(f, "pub fn ilog2(x: usize) -> u32 {{")?;
         writeln!(f, "    usize::BITS - x.leading_zeros() - 1")?;
+        writeln!(f, "}}")?;
+        writeln!(f)?;
+        writeln!(f, "/// Bridge: call LengthDoubler::double on a Vec<u8>, converting to/from GenericArray")?;
+        writeln!(f, "#[inline]")?;
+        writeln!(f, "pub fn double_vec<B: LengthDoubler>(v: Vec<u8>) -> [Vec<u8>; 2] {{")?;
+        writeln!(f, "    let ga = generic_array::GenericArray::from_exact_iter(v.into_iter()).expect(\"double_vec: length mismatch\");")?;
+        writeln!(f, "    let [a, b] = B::double(ga);")?;
+        writeln!(f, "    [a.to_vec(), b.to_vec()]")?;
         writeln!(f, "}}")?;
         writeln!(f)?;
         Ok(())

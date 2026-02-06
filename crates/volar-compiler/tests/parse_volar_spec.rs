@@ -248,3 +248,47 @@ impl<N: ArrayLength<T>, T> Delta<N, T> {
         panic!("Expected a method");
     }
 }
+
+#[test]
+fn test_parse_logarithm2_projection_in_generate() {
+    let source = r#"
+use generic_array::{GenericArray, ArrayLength};
+use typenum::Logarithm2;
+
+struct Foo;
+
+impl Foo {
+    pub fn bar(&self) -> Vec<u8> {
+        GenericArray::<u8, <typenum::U32 as Logarithm2>::Output>::generate(|j| {
+            j as u8
+        })
+    }
+}
+    "#;
+
+    let module = parse_source(source, "log2_test").unwrap();
+    assert_eq!(module.impls.len(), 1);
+    
+    let imp = &module.impls[0];
+    assert_eq!(imp.items.len(), 1);
+    
+    if let volar_compiler::ir::IrImplItem::Method(f) = &imp.items[0] {
+        assert_eq!(f.name, "bar");
+        let tail = f.body.expr.as_ref().expect("body should have tail expression");
+        match tail.as_ref() {
+            volar_compiler::ir::IrExpr::ArrayGenerate { len, .. } => {
+                match len {
+                    volar_compiler::ir::ArrayLength::Projection { field, trait_path, .. } => {
+                        assert_eq!(field, "Output");
+                        assert_eq!(trait_path.as_deref(), Some("Logarithm2"),
+                            "Expected trait_path=Some(\"Logarithm2\"), got {:?}", trait_path);
+                    }
+                    other => panic!("Expected ArrayLength::Projection, got {:?}", other),
+                }
+            }
+            other => panic!("Expected ArrayGenerate expr, got {:?}", other),
+        }
+    } else {
+        panic!("Expected a method");
+    }
+}

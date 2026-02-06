@@ -794,7 +794,7 @@ impl <B: LengthDoubler, D: Digest> ABOOpeningDyn<B, D> {
         let u: usize = self.u;
         (0..n).map(|i| {
     let s = &self.openings[i];
-    BSplitDyn { split: (0..self_output).map(|j| {
+    BSplitDyn { split: (0..ilog2(<<D>::OutputSize as Unsigned>::to_usize())).map(|j| {
     (0..n).map(|b| {
     s.iter().enumerate().filter_map(|(a, c)| {
     if (((a >> j) & 1) == b){
@@ -849,7 +849,7 @@ impl <B: LengthDoubler, D: Digest> ABODyn<B, D> {
         let k: usize = self.k;
         (0..n).map(|i| {
     let s = &self.per_byte[(i * n)..][..n];
-    BSplitDyn { split: (0..self_output).map(|j| {
+    BSplitDyn { split: (0..ilog2(<<D>::OutputSize as Unsigned>::to_usize())).map(|j| {
     (0..n).map(|b| {
     s.iter().enumerate().filter_map(|(a, c)| {
     if (((a >> j) & 1) == b){

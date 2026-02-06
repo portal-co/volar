@@ -603,9 +603,11 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                 // Convert the base type (the T in <T as Trait>)
                 let base = convert_type(&qself.ty)?;
 
-                // The trait arguments are in the segment at qself.position
+                // The trait arguments are in the segment at qself.position - 1
+                // (the last segment of the trait path in <T as Trait<Args>>::Assoc)
                 let mut trait_args = Vec::new();
-                if let Some(segment) = p.path.segments.get(qself.position) {
+                let trait_seg_idx = if qself.position > 0 { qself.position - 1 } else { 0 };
+                if let Some(segment) = p.path.segments.get(trait_seg_idx) {
                     if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                         for arg in &args.args {
                             if let Some(ty) = convert_generic_arg(arg)? {
@@ -620,9 +622,13 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                     let assoc_name = last.ident.to_string();
                     let assoc = AssociatedType::from_str(&assoc_name);
                     
-                    // Extract trait path - it's the segment at qself.position
-                    let trait_path = if qself.position < p.path.segments.len() {
-                        Some(p.path.segments[qself.position].ident.to_string())
+                    // Extract trait path - in syn, qself.position points to one
+                    // past the last segment of the trait path.
+                    // E.g., for `<T as Trait>::Output`:
+                    //   path.segments = [Trait, Output], qself.position = 1
+                    // So the trait is at segments[qself.position - 1].
+                    let trait_path = if qself.position > 0 && qself.position <= p.path.segments.len() {
+                        Some(p.path.segments[qself.position - 1].ident.to_string())
                     } else if p.path.segments.len() > 1 {
                         // Fallback: use second-to-last segment
                         Some(p.path.segments[p.path.segments.len() - 2].ident.to_string())
