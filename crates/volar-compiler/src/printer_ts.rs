@@ -42,14 +42,347 @@ use alloc::collections::BTreeMap;
 use crate::ir::*;
 
 // ============================================================================
+// WITNESS ANALYSIS — collect runtime witnesses needed per function
+// ============================================================================
+//
+// Rust trait bounds carry type-level information (associated types, constructors,
+// default values) that vanish in TypeScript.  We recover them as explicit runtime
+// values passed through a `ctx` object.
+//
+// For each function / method we scan the IR body and collect `WitnessKind`s:
+//   - Projection { type_param, field } — e.g. `B::OutputSize` → `ctx.B_OutputSize`
+//   - Constructor { type_param }       — e.g. `D::new()`      → `ctx.newD()`
+//   - Default { type_param }           — e.g. `O::default()`  → `ctx.defaultO()`
+//
+// Functions that need witnesses get `ctx: { B_OutputSize: number, … }` prepended
+// to their parameter list.  Callers forward their own `ctx`.
+
+/// A single runtime witness that a function body requires.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum WitnessKind {
+    /// `<T>::OutputSize` or `<T as Trait>::Assoc` — a numeric constant
+    Projection { type_param: String, field: String },
+    /// `T::new()` — a factory call (typically `Digest::new`)
+    Constructor { type_param: String },
+    /// `T::default()` — produce the zero / identity element for a type param
+    Default { type_param: String },
+}
+
+/// The set of witnesses needed by one function (or one merged method).
+#[derive(Debug, Clone, Default)]
+struct WitnessNeeds {
+    needs: Vec<WitnessKind>,
+}
+
+impl WitnessNeeds {
+    fn is_empty(&self) -> bool { self.needs.is_empty() }
+
+    fn add(&mut self, kind: WitnessKind) {
+        if !self.needs.contains(&kind) {
+            self.needs.push(kind);
+        }
+    }
+
+    fn merge(&mut self, other: &WitnessNeeds) {
+        for k in &other.needs {
+            self.add(k.clone());
+        }
+    }
+
+    /// Sort for deterministic output.
+    fn sorted(&mut self) {
+        self.needs.sort();
+    }
+}
+
+/// Recursively scan an expression for witness requirements.
+fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics: &[String]) {
+    match expr {
+        // DefaultValue with a type-param type → need a default witness
+        IrExpr::DefaultValue { ty: Some(ty) } => {
+            if let IrType::TypeParam(name) = ty.as_ref() {
+                if declared_generics.contains(name) || is_crypto_type_param(name) {
+                    out.add(WitnessKind::Default { type_param: name.clone() });
+                }
+            }
+        }
+        // LengthOf with a Projection → need a projection witness
+        IrExpr::LengthOf(len) => {
+            scan_array_length_witnesses(len, out);
+        }
+        // ArrayDefault may contain a projection in its length
+        IrExpr::ArrayDefault { len, elem_ty: _, .. } => {
+            scan_array_length_witnesses(len, out);
+        }
+        // ArrayGenerate may contain a projection in its length
+        IrExpr::ArrayGenerate { len, index_var: _, body, .. } => {
+            scan_array_length_witnesses(len, out);
+            scan_expr_witnesses(body, out, declared_generics);
+        }
+        // TypenumUsize with a Projection type
+        IrExpr::TypenumUsize { ty } => {
+            if let IrType::Projection { base, assoc, .. } = ty.as_ref() {
+                if let IrType::TypeParam(name) = base.as_ref() {
+                    out.add(WitnessKind::Projection {
+                        type_param: name.clone(),
+                        field: format!("{}", assoc),
+                    });
+                }
+            }
+        }
+        // Call to T::new() or T::default()
+        IrExpr::Call { func, args } => {
+            if let IrExpr::Path { segments, .. } = func.as_ref() {
+                if segments.len() == 2 {
+                    let type_name = &segments[0];
+                    let method = &segments[1];
+                    if method == "new" && (declared_generics.contains(type_name) || is_crypto_type_param(type_name)) {
+                        out.add(WitnessKind::Constructor { type_param: type_name.clone() });
+                    } else if method == "default" && (declared_generics.contains(type_name) || is_crypto_type_param(type_name)) {
+                        out.add(WitnessKind::Default { type_param: type_name.clone() });
+                    }
+                }
+            }
+            scan_expr_witnesses(func, out, declared_generics);
+            for a in args {
+                scan_expr_witnesses(a, out, declared_generics);
+            }
+        }
+        // Recurse into all sub-expressions
+        IrExpr::Binary { left, right, .. } | IrExpr::Assign { left, right } => {
+            scan_expr_witnesses(left, out, declared_generics);
+            scan_expr_witnesses(right, out, declared_generics);
+        }
+        IrExpr::AssignOp { left, right, .. } => {
+            scan_expr_witnesses(left, out, declared_generics);
+            scan_expr_witnesses(right, out, declared_generics);
+        }
+        IrExpr::Unary { expr, .. } | IrExpr::Return(Some(expr)) | IrExpr::Cast { expr, .. } | IrExpr::Try(expr) => {
+            scan_expr_witnesses(expr, out, declared_generics);
+        }
+        IrExpr::MethodCall { receiver, args, .. } => {
+            scan_expr_witnesses(receiver, out, declared_generics);
+            for a in args {
+                scan_expr_witnesses(a, out, declared_generics);
+            }
+        }
+        IrExpr::Field { base, .. } => scan_expr_witnesses(base, out, declared_generics),
+        IrExpr::Index { base, index } => {
+            scan_expr_witnesses(base, out, declared_generics);
+            scan_expr_witnesses(index, out, declared_generics);
+        }
+        IrExpr::StructExpr { fields, rest, .. } => {
+            for (_, e) in fields {
+                scan_expr_witnesses(e, out, declared_generics);
+            }
+            if let Some(r) = rest {
+                scan_expr_witnesses(r, out, declared_generics);
+            }
+        }
+        IrExpr::Tuple(es) | IrExpr::Array(es) => {
+            for e in es { scan_expr_witnesses(e, out, declared_generics); }
+        }
+        IrExpr::Repeat { elem, len } => {
+            scan_expr_witnesses(elem, out, declared_generics);
+            scan_expr_witnesses(len, out, declared_generics);
+        }
+        IrExpr::Block(b) => scan_block_witnesses(b, out, declared_generics),
+        IrExpr::If { cond, then_branch, else_branch } => {
+            scan_expr_witnesses(cond, out, declared_generics);
+            scan_block_witnesses(then_branch, out, declared_generics);
+            if let Some(eb) = else_branch { scan_expr_witnesses(eb, out, declared_generics); }
+        }
+        IrExpr::BoundedLoop { start, end, body, .. } => {
+            scan_expr_witnesses(start, out, declared_generics);
+            scan_expr_witnesses(end, out, declared_generics);
+            scan_block_witnesses(body, out, declared_generics);
+        }
+        IrExpr::IterLoop { collection, body, .. } => {
+            scan_expr_witnesses(collection, out, declared_generics);
+            scan_block_witnesses(body, out, declared_generics);
+        }
+        IrExpr::Closure { body, .. } => scan_expr_witnesses(body, out, declared_generics),
+        IrExpr::Range { start, end, .. } => {
+            if let Some(s) = start { scan_expr_witnesses(s, out, declared_generics); }
+            if let Some(e) = end { scan_expr_witnesses(e, out, declared_generics); }
+        }
+        IrExpr::Match { expr, arms } => {
+            scan_expr_witnesses(expr, out, declared_generics);
+            for arm in arms { scan_expr_witnesses(&arm.body, out, declared_generics); }
+        }
+        IrExpr::IterPipeline(chain) => scan_iter_chain_witnesses(chain, out, declared_generics),
+        IrExpr::RawMap { receiver, body, .. } => {
+            scan_expr_witnesses(receiver, out, declared_generics);
+            scan_expr_witnesses(body, out, declared_generics);
+        }
+        IrExpr::RawZip { left, right, body, .. } => {
+            scan_expr_witnesses(left, out, declared_generics);
+            scan_expr_witnesses(right, out, declared_generics);
+            scan_expr_witnesses(body, out, declared_generics);
+        }
+        IrExpr::RawFold { receiver, init, body, .. } => {
+            scan_expr_witnesses(receiver, out, declared_generics);
+            scan_expr_witnesses(init, out, declared_generics);
+            scan_expr_witnesses(body, out, declared_generics);
+        }
+        _ => {} // Lit, Var, Path, Break, Continue, Unreachable, etc.
+    }
+}
+
+fn scan_block_witnesses(block: &IrBlock, out: &mut WitnessNeeds, declared_generics: &[String]) {
+    for stmt in &block.stmts {
+        match stmt {
+            IrStmt::Let { init: Some(e), .. } | IrStmt::Semi(e) | IrStmt::Expr(e) => {
+                scan_expr_witnesses(e, out, declared_generics);
+            }
+            _ => {}
+        }
+    }
+    if let Some(e) = &block.expr {
+        scan_expr_witnesses(e, out, declared_generics);
+    }
+}
+
+fn scan_iter_chain_witnesses(chain: &IrIterChain, out: &mut WitnessNeeds, declared_generics: &[String]) {
+    match &chain.source {
+        IterChainSource::Method { collection, .. } => {
+            scan_expr_witnesses(collection, out, declared_generics);
+        }
+        IterChainSource::Range { start, end, .. } => {
+            scan_expr_witnesses(start, out, declared_generics);
+            scan_expr_witnesses(end, out, declared_generics);
+        }
+        IterChainSource::Zip { left, right } => {
+            scan_iter_chain_witnesses(left, out, declared_generics);
+            scan_iter_chain_witnesses(right, out, declared_generics);
+        }
+    }
+    for step in &chain.steps {
+        match step {
+            IterStep::Map { body, .. }
+            | IterStep::Filter { body, .. }
+            | IterStep::FilterMap { body, .. }
+            | IterStep::FlatMap { body, .. } => {
+                scan_expr_witnesses(body, out, declared_generics);
+            }
+            IterStep::Take { count } | IterStep::Skip { count } => {
+                scan_expr_witnesses(count, out, declared_generics);
+            }
+            IterStep::Chain { other } => scan_iter_chain_witnesses(other, out, declared_generics),
+            IterStep::Enumerate => {}
+        }
+    }
+    match &chain.terminal {
+        IterTerminal::Fold { init, body, .. } => {
+            scan_expr_witnesses(init, out, declared_generics);
+            scan_expr_witnesses(body, out, declared_generics);
+        }
+        IterTerminal::Collect | IterTerminal::CollectTyped(_) | IterTerminal::Lazy => {}
+    }
+}
+
+fn scan_array_length_witnesses(len: &ArrayLength, out: &mut WitnessNeeds) {
+    if let ArrayLength::Projection { r#type, field, .. } = len {
+        if let IrType::TypeParam(name) = r#type.as_ref() {
+            out.add(WitnessKind::Projection {
+                type_param: name.clone(),
+                field: field.clone(),
+            });
+        }
+    }
+}
+
+/// Compute witness needs for a function.
+fn compute_function_witnesses(func: &IrFunction) -> WitnessNeeds {
+    let declared: Vec<String> = func.generics.iter().map(|g| g.name.clone()).collect();
+    let mut needs = WitnessNeeds::default();
+    scan_block_witnesses(&func.body, &mut needs, &declared);
+    needs.sorted();
+    needs
+}
+
+/// Compute merged witness needs for a set of method variants.
+fn compute_merged_witnesses(variants: &[ImplMethod<'_>]) -> WitnessNeeds {
+    let mut needs = WitnessNeeds::default();
+    for v in variants {
+        needs.merge(&compute_function_witnesses(v.func));
+    }
+    needs.sorted();
+    needs
+}
+
+/// Returns true if a name is a type parameter that typically comes from a crypto
+/// trait bound (Digest, LengthDoubler, etc.) and might need witnesses.
+fn is_crypto_type_param(name: &str) -> bool {
+    matches!(name, "B" | "D" | "O" | "T" | "A" | "Q" | "M" | "U" | "R" | "X" | "Y")
+}
+
+/// Get the TypeScript parameter name for a witness in the `ctx` object.
+fn witness_ctx_field(kind: &WitnessKind) -> String {
+    match kind {
+        WitnessKind::Projection { type_param, field } => format!("{}_{}", type_param, field),
+        WitnessKind::Constructor { type_param } => format!("new{}", type_param),
+        WitnessKind::Default { type_param } => format!("default{}", type_param),
+    }
+}
+
+/// Get the TypeScript type for a witness field.
+fn witness_ctx_type(kind: &WitnessKind) -> &'static str {
+    match kind {
+        WitnessKind::Projection { .. } => "number",
+        WitnessKind::Constructor { .. } => "() => any",
+        WitnessKind::Default { .. } => "() => any",
+    }
+}
+
+/// Write the `ctx` parameter type inline: `ctx: { B_OutputSize: number, newD: () => any }`
+fn write_ctx_param(needs: &WitnessNeeds, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    write!(f, "ctx: {{ ")?;
+    for (i, kind) in needs.needs.iter().enumerate() {
+        if i > 0 { write!(f, ", ")?; }
+        write!(f, "{}: {}", witness_ctx_field(kind), witness_ctx_type(kind))?;
+    }
+    write!(f, " }}")
+}
+
+/// Build a map from internal function names to their witness needs.
+/// Used so that callers know they must forward `ctx` when calling these functions.
+fn build_module_witness_map(module: &IrModule) -> BTreeMap<String, WitnessNeeds> {
+    let mut map = BTreeMap::new();
+    for func in &module.functions {
+        let needs = compute_function_witnesses(func);
+        if !needs.is_empty() {
+            let name = if func.name.starts_with("r#") { func.name[2..].to_string() } else { func.name.clone() };
+            map.insert(name, needs);
+        }
+    }
+    // Also scan impl methods
+    for imp in &module.impls {
+        for item in &imp.items {
+            if let IrImplItem::Method(func) = item {
+                let needs = compute_function_witnesses(func);
+                if !needs.is_empty() {
+                    let class_name = self_ty_name(&imp.self_ty);
+                    let method_name = ts_method_name(&func.name, imp.trait_.as_ref());
+                    let key = format!("{}.{}", class_name, method_name);
+                    map.insert(key, needs);
+                }
+            }
+        }
+    }
+    map
+}
+
+// ============================================================================
 // PUBLIC API
 // ============================================================================
 
 /// Render an `IrModule` as a complete TypeScript source file.
 pub fn print_module_ts(module: &IrModule) -> String {
+    let witness_map = build_module_witness_map(module);
     let mut out = String::new();
     let _ = write!(out, "{}", TsFmt(TsPreambleWriter));
-    let _ = write!(out, "{}", TsFmt(TsModuleWriter { module }));
+    let _ = write!(out, "{}", TsFmt(TsModuleWriter { module, witness_map: &witness_map }));
     out
 }
 
@@ -258,6 +591,7 @@ impl TsBackend for TsPreambleWriter {
 
 struct TsModuleWriter<'a> {
     module: &'a IrModule,
+    witness_map: &'a BTreeMap<String, WitnessNeeds>,
 }
 
 impl<'a> TsBackend for TsModuleWriter<'a> {
@@ -273,13 +607,14 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
         for s in &self.module.structs {
             let name = s.kind.to_string();
             let impls = impl_groups.remove(&name).unwrap_or_default();
-            TsClassWriter { s, impls: &impls }.fmt(f)?;
+            TsClassWriter { s, impls: &impls, witness_map: self.witness_map }.fmt(f)?;
             writeln!(f)?;
         }
 
         // Emit standalone functions
         for func in &self.module.functions {
-            TsFunctionWriter { func, indent: 0 }.fmt(f)?;
+            let needs = compute_function_witnesses(func);
+            TsFunctionWriter { func, indent: 0, witness_needs: &needs, witness_map: self.witness_map }.fmt(f)?;
             writeln!(f)?;
         }
 
@@ -289,7 +624,8 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
             for imp in impls {
                 for item in &imp.items {
                     if let IrImplItem::Method(func) = item {
-                        TsFunctionWriter { func, indent: 0 }.fmt(f)?;
+                        let needs = compute_function_witnesses(func);
+                        TsFunctionWriter { func, indent: 0, witness_needs: &needs, witness_map: self.witness_map }.fmt(f)?;
                         writeln!(f)?;
                     }
                 }
@@ -307,6 +643,7 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
 struct TsClassWriter<'a> {
     s: &'a IrStruct,
     impls: &'a [&'a IrImpl],
+    witness_map: &'a BTreeMap<String, WitnessNeeds>,
 }
 
 impl<'a> TsBackend for TsClassWriter<'a> {
@@ -348,16 +685,20 @@ impl<'a> TsBackend for TsClassWriter<'a> {
         // Emit unique methods
         for im in &analysis.unique_methods {
             writeln!(f)?;
-            TsMethodWriter { func: im.func, imp: im.imp, indent: 1 }.fmt(f)?;
+            let needs = compute_function_witnesses(im.func);
+            TsMethodWriter { func: im.func, imp: im.imp, indent: 1, witness_needs: &needs, witness_map: self.witness_map }.fmt(f)?;
         }
 
         // Emit merged methods (runtime dispatch)
         for mm in &analysis.merged_methods {
             writeln!(f)?;
+            let needs = compute_merged_witnesses(&mm.variants);
             TsMergedMethodWriter {
                 merged: mm,
                 struct_fields: &self.s.fields,
                 indent: 1,
+                witness_needs: &needs,
+                witness_map: self.witness_map,
             }.fmt(f)?;
         }
 
@@ -374,6 +715,8 @@ struct TsMethodWriter<'a> {
     func: &'a IrFunction,
     imp: &'a IrImpl,
     indent: usize,
+    witness_needs: &'a WitnessNeeds,
+    witness_map: &'a BTreeMap<String, WitnessNeeds>,
 }
 
 impl<'a> TsMethodWriter<'a> {
@@ -398,10 +741,18 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
         TsGenericsWriter { generics: &self.func.generics, used_only: Some(&used_params) }.fmt(f)?;
 
         write!(f, "(")?;
-        for (i, p) in params.iter().enumerate() {
-            if i > 0 {
+        let mut first_param = true;
+        // Emit ctx parameter if we have witness needs
+        if !self.witness_needs.is_empty() {
+            write_ctx_param(self.witness_needs, f)?;
+            first_param = false;
+        }
+        let params: Vec<&IrParam> = self.func.params.iter().collect();
+        for p in params.iter() {
+            if !first_param {
                 write!(f, ", ")?;
             }
+            first_param = false;
             write!(f, "{}: ", ts_param_name(&p.name))?;
             write_param_type(p, &self.func.generics, f)?;
         }
@@ -413,7 +764,7 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
         }
 
         writeln!(f)?;
-        TsBlockWriter { block: &self.func.body, indent: self.indent }.fmt(f)?;
+        TsBlockWriter { block: &self.func.body, indent: self.indent, witness_map: self.witness_map }.fmt(f)?;
         writeln!(f)?;
         Ok(())
     }
