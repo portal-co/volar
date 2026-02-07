@@ -1579,15 +1579,24 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 emit_method_call(receiver, method, args, f, cx)?;
             }
             IrExpr::Call { func, args } => {
+                // Check for Some(x)/None via Path or Var
                 if let IrExpr::Path { segments, .. } = func.as_ref() {
-                    // Some(x) → x
                     if segments.len() == 1 && segments[0] == "Some" && args.len() == 1 {
                         return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
                     }
-                    // None → undefined
                     if segments.len() == 1 && segments[0] == "None" && args.is_empty() {
                         return write!(f, "undefined");
                     }
+                }
+                if let IrExpr::Var(v) = func.as_ref() {
+                    if v == "Some" && args.len() == 1 {
+                        return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
+                    }
+                    if v == "None" && args.is_empty() {
+                        return write!(f, "undefined");
+                    }
+                }
+                if let IrExpr::Path { segments, .. } = func.as_ref() {
                     // T::new() → ctx.newT()  (constructor witness)
                     if segments.len() == 2 && segments[1] == "new" {
                         let type_name = &segments[0];
