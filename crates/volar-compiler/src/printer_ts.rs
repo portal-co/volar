@@ -313,24 +313,34 @@ impl<'a> TsBackend for TsClassWriter<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = self.s.kind.to_string();
         let struct_generics = &self.s.generics;
+        let used_params = struct_used_type_params(self.s);
 
         write!(f, "export class {}", name)?;
-        TsGenericsWriter { generics: struct_generics }.fmt(f)?;
+        TsGenericsWriter { generics: struct_generics, used_only: Some(&used_params) }.fmt(f)?;
         writeln!(f, " {{")?;
 
-        // Constructor with non-phantom fields
+        // Constructor with non-phantom fields — takes an initializer object
         let fields: Vec<&IrField> = self.s.fields.iter()
             .filter(|field| !is_phantom_field(field))
             .collect();
 
-        writeln!(f, "  constructor(")?;
+        // Declare fields
+        for field in &fields {
+            write!(f, "  {}: ", field.name)?;
+            TsTypeWriter { ty: &field.ty }.fmt(f)?;
+            writeln!(f, ";")?;
+        }
+        writeln!(f)?;
+        writeln!(f, "  constructor(init: {{ ")?;
         for (i, field) in fields.iter().enumerate() {
-            let comma = if i + 1 < fields.len() { "," } else { "," };
-            write!(f, "    public {}: ", field.name)?;
+            let comma = if i + 1 < fields.len() { "," } else { "" };
+            write!(f, "    {}: ", field.name)?;
             TsTypeWriter { ty: &field.ty }.fmt(f)?;
             writeln!(f, "{}", comma)?;
         }
-        writeln!(f, "  ) {{}}")?;
+        writeln!(f, "  }}) {{")?;
+        writeln!(f, "    Object.assign(this, init);")?;
+        writeln!(f, "  }}")?;
 
         // Run analysis to detect overlapping methods
         let analysis = analyze_class_impls(self.impls);
@@ -384,10 +394,10 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
             write!(f, "{}{}", ind, name)?;
         }
 
-        TsGenericsWriter { generics: &self.func.generics }.fmt(f)?;
+        let used_params = function_used_type_params(self.func);
+        TsGenericsWriter { generics: &self.func.generics, used_only: Some(&used_params) }.fmt(f)?;
 
         write!(f, "(")?;
-        let params: Vec<&IrParam> = self.func.params.iter().collect();
         for (i, p) in params.iter().enumerate() {
             if i > 0 {
                 write!(f, ", ")?;
@@ -452,7 +462,7 @@ impl<'a> TsBackend for TsMergedMethodWriter<'a> {
             })
             .map(|p| (*p).clone())
             .collect();
-        TsGenericsWriter { generics: &generics_owned }.fmt(f)?;
+        TsGenericsWriter { generics: &generics_owned, used_only: None }.fmt(f)?;
 
         // Parameters — use the broadest signature (first variant's params)
         write!(f, "(")?;
@@ -531,7 +541,8 @@ impl<'a> TsBackend for TsFunctionWriter<'a> {
         let ind = "  ".repeat(self.indent);
         let name = if self.func.name.starts_with("r#") { &self.func.name[2..] } else { &self.func.name };
         write!(f, "{}export function {}", ind, name)?;
-        TsGenericsWriter { generics: &self.func.generics }.fmt(f)?;
+        let used_params = function_used_type_params(self.func);
+        TsGenericsWriter { generics: &self.func.generics, used_only: Some(&used_params) }.fmt(f)?;
         write!(f, "(")?;
         for (i, p) in self.func.params.iter().enumerate() {
             if i > 0 {
@@ -558,6 +569,8 @@ impl<'a> TsBackend for TsFunctionWriter<'a> {
 
 struct TsGenericsWriter<'a> {
     generics: &'a [IrGenericParam],
+    /// If Some, only emit params whose names are in this set.
+    used_only: Option<&'a [String]>,
 }
 
 impl<'a> TsBackend for TsGenericsWriter<'a> {
@@ -572,6 +585,10 @@ impl<'a> TsBackend for TsGenericsWriter<'a> {
                 }
                 if p.bounds.iter().any(|b| matches!(&b.trait_kind, TraitKind::AsRef(..))) {
                     return false;
+                }
+                // If we have a used_only filter, check membership
+                if let Some(used) = self.used_only {
+                    return used.contains(&p.name);
                 }
                 true
             })
@@ -959,11 +976,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 let real_fields: Vec<&(String, IrExpr)> = fields.iter()
                     .filter(|(n, _)| !n.starts_with("_phantom"))
                     .collect();
-                // Use Object.assign pattern to handle field ordering:
-                // new ClassName(Object.assign(new ClassName(0 as any,...), {f1: v1, f2: v2}))
-                // Simpler: emit as positional but we need the right order.
-                // Since we can't look up the struct here, emit a helper:
-                write!(f, "Object.assign(Object.create({}.prototype), {{ ", name)?;
+                write!(f, "new {}({{ ", name)?;
                 for (i, (field_name, val)) in real_fields.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -1891,4 +1904,101 @@ impl<'a> TsBackend for TsTypeRefWriter<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         TsTypeWriter { ty: self.ty }.fmt(f)
     }
+}
+
+// ============================================================================
+// TYPE PARAMETER USAGE ANALYSIS
+// ============================================================================
+
+/// Returns the set of type parameter names that are actually referenced
+/// in a list of types (used to prune unused generics).
+fn collect_type_param_refs(types: &[&IrType]) -> Vec<String> {
+    let mut refs = Vec::new();
+    for ty in types {
+        collect_type_param_refs_inner(ty, &mut refs);
+    }
+    refs.sort();
+    refs.dedup();
+    refs
+}
+
+fn collect_type_param_refs_inner(ty: &IrType, refs: &mut Vec<String>) {
+    match ty {
+        IrType::TypeParam(p) => {
+            if p != "Self" {
+                refs.push(p.clone());
+            }
+        }
+        IrType::Vector { elem } | IrType::Reference { elem, .. } => {
+            collect_type_param_refs_inner(elem, refs);
+        }
+        IrType::Array { elem, .. } => {
+            collect_type_param_refs_inner(elem, refs);
+        }
+        IrType::Struct { type_args, .. } => {
+            for arg in type_args {
+                collect_type_param_refs_inner(arg, refs);
+            }
+        }
+        IrType::Tuple(elems) => {
+            for e in elems {
+                collect_type_param_refs_inner(e, refs);
+            }
+        }
+        IrType::FnPtr { params, ret } => {
+            for p in params {
+                collect_type_param_refs_inner(p, refs);
+            }
+            collect_type_param_refs_inner(ret, refs);
+        }
+        IrType::Existential { bounds } => {
+            for b in bounds {
+                match &b.trait_kind {
+                    TraitKind::Fn(_, ret) => collect_type_param_refs_inner(ret, refs),
+                    TraitKind::AsRef(inner) => collect_type_param_refs_inner(inner, refs),
+                    _ => {}
+                }
+            }
+        }
+        IrType::Projection { base, .. } => {
+            collect_type_param_refs_inner(base, refs);
+        }
+        _ => {}
+    }
+}
+
+/// Collect type params used in parameter types and return type of a function.
+fn function_used_type_params(func: &IrFunction) -> Vec<String> {
+    let mut types: Vec<&IrType> = func.params.iter().map(|p| &p.ty).collect();
+    if let Some(ret) = &func.return_type {
+        types.push(ret);
+    }
+    collect_type_param_refs(&types)
+}
+
+/// Collect type params used in struct field types.
+fn struct_used_type_params(s: &IrStruct) -> Vec<String> {
+    let types: Vec<&IrType> = s.fields.iter()
+        .filter(|f| !is_phantom_field(f))
+        .map(|f| &f.ty)
+        .collect();
+    collect_type_param_refs(&types)
+}
+
+/// Filter generics to only those actually used.
+fn filter_used_generics<'a>(generics: &'a [IrGenericParam], used: &[String]) -> Vec<&'a IrGenericParam> {
+    generics.iter()
+        .filter(|g| {
+            if g.kind != IrGenericParamKind::Type {
+                return false;
+            }
+            if g.bounds.iter().any(|b| matches!(&b.trait_kind, TraitKind::Fn(..))) {
+                return false;
+            }
+            if g.bounds.iter().any(|b| matches!(&b.trait_kind, TraitKind::AsRef(..))) {
+                return false;
+            }
+            used.contains(&g.name)
+        })
+        .collect()
 }
