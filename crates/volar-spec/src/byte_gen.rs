@@ -24,7 +24,7 @@ where
     B: Sized,
 {
     let mut h = D::new();
-    let mut per_byte = GenericArray::default();
+    let mut per_byte = GenericArray::<GenericArray<u8, B::OutputSize>, K>::default();
     for i in 0..K::to_usize() {
         // let id: ByteId = core::array::from_fn(|j| ((i >> j) & 1) != 0);
         let core = (0..K::to_usize().ilog2()).fold(a.clone(), |mut acc, b| {

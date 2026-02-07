@@ -1233,15 +1233,11 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
                         len,
                     })),
                     None => {
-                        // Bare GenericArray::default() without turbofish —
-                        // preserve the length but leave elem unknown. We wrap
-                        // in Array with a placeholder elem type so that
-                        // downstream passes can still see the length.
-                        Some(Box::new(IrType::Array {
-                            kind: ArrayKind::GenericArray,
-                            elem: Box::new(IrType::Infer),
-                            len,
-                        }))
+                        return Err(CompilerError::InvalidType(format!(
+                            "Bare `{}::default()` without turbofish type parameters. \
+                             Add explicit types, e.g. `GenericArray::<ElemType, LenType>::default()`.",
+                            prefix.join("::")
+                        )));
                     }
                 };
                 return Ok(IrExpr::DefaultValue { ty: array_ty });

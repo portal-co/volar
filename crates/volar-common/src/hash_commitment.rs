@@ -7,7 +7,7 @@ impl<D: Digest> AsRef<[u8]> for CommitmentCore<D> {
 }
 impl<D: Digest> Default for CommitmentCore<D> {
     fn default() -> Self {
-        CommitmentCore(GenericArray::default())
+        CommitmentCore(GenericArray::<u8, D::OutputSize>::default())
     }
 }
 impl<D: Digest> Clone for CommitmentCore<D> {

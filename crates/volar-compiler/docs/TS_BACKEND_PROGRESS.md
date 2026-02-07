@@ -6,14 +6,19 @@
 
 ## Error Inventory
 
-### TS2322 — Type Assignment (4 errors)
+### TS2322 — Type Assignment (3 errors)
 
 | Line(s) | Description | Root Cause |
 |---------|-------------|------------|
 | 646, 653 | `VopeDyn<unknown>` not assignable to `number` | Math-trait `Add::Output`/`Mul::Output` projection resolves to `number` after erasing the associated type, but the method actually returns `VopeDyn`. The witness system doesn't yet rewrite trait-method return types to match the struct's own type. |
 | 712 | `QDyn<unknown>` not assignable to `number` | Same issue — `Add::Output` for `QDyn` resolves to `number` instead of `QDyn`. |
-| 749 | `any` not assignable to `never` | An assignment target's type narrows to `never` because the array element type is inferred as `never` (empty array literal typed too narrowly). |
-| 917 | `undefined[]` not assignable to `number[][]` | `Array(n).fill(undefined)` used to initialize a 2D array — TS infers `undefined[]` instead of `number[][]`. The IR's `ArrayDefault` should emit a properly-typed default. |
+| 749 | `any` not assignable to `never` | An assignment target's type narrows to `never` because the array element type is inferred as `never` (empty array literal typed too narrowly). Now exposed by recursive `DefaultValue` lowering correctly producing `[]` instead of `undefined` — the TS type narrowing on `res_u[k][lane] = ...` triggers a `never` assignment. |
+
+### TS2304 — Cannot find name (1 error, NEW)
+
+| Line(s) | Description | Root Cause |
+|---------|-------------|------------|
+| 729 | `Cannot find name 'ctx'` | `VopeDyn.mul_generalized()` method body contains `GenericArray::<T, N>::default()` which the recursive `DefaultValue` lowering correctly expands to `ctx.defaultT()`. But methods don't receive `ctx` — only free functions do. Need method-level witness propagation (store default-value factories on the struct instance or receive them as method parameters). |
 
 ### TS2345 — Argument Type Mismatch (2 errors)
 
@@ -25,6 +30,13 @@
 
 ✅ **Solved** — the `deshadow` analysis pass (see below) now renames shadowed
 bindings before TS emission.  `let x = f(x)` becomes `const x_1 = f(x)`.
+
+### TS2322 — `undefined[]` not assignable to `number[][]`
+
+✅ **Solved** — unified `ArrayDefault`/`DefaultValue` with recursive lowering
+now produces `[]` (empty vec) instead of `undefined` for nested array defaults.
+The parser now rejects bare `GenericArray::default()` without turbofish as a
+hard error, requiring explicit type annotations in the Rust source.
 
 ## Features Needed to Reach Zero Errors
 
@@ -44,50 +56,78 @@ This requires extending the witness/type-resolution system with a
 **Estimated effort:** ~2 hours (extend `resolve_return_type` in printer_ts.rs
 to check the impl's `self_ty` when the return is `Output`).
 
-### 2. Typed array defaults (fixes 1 error)
+### 2. Method-level witness propagation (fixes 1 error)
 
-`ArrayDefault { elem_ty: Some(Array(...)), len }` currently emits
-`Array(len).fill(undefined)`.  For nested arrays it should emit
-`Array(len).fill(null).map(() => [])` or use a typed fill.
+`VopeDyn.mul_generalized()` calls `GenericArray::<T, N>::default()` which needs
+`T::default()` at runtime. Currently the recursive `DefaultValue` lowering emits
+`ctx.defaultT()`, but `ctx` is only available in free functions.
 
-**Estimated effort:** ~1 hour (special-case nested-array defaults in
-`TsExprWriter::ArrayDefault`).
+Options:
+- Store default-value factories on struct instances (e.g. `this._defaultT`)
+- Pass witnesses as method parameters
+- Inline the default-value expression where the struct fields provide enough info
+
+**Estimated effort:** ~2 hours.
 
 ### 3. `number[]` → `Uint8Array` coercion (fixes 2 errors)
 
-Two call sites pass `number[]` where `Uint8Array` is expected.  This is a
-type-level mismatch from iterator pipelines producing `number[]` while the
-runtime `asRefU8()` and `Digest.update()` expect `Uint8Array`.
+Two call sites pass `number[]` where `Uint8Array` is expected.
 
 Options:
 - Wrap pipeline results in `new Uint8Array([...])` at the call site
 - Change the runtime to accept `number[] | Uint8Array`
 - Emit `Uint8Array.from(...)` in the pipeline terminal
 
-**Estimated effort:** ~1 hour (add a coercion helper or widen the
-runtime signatures).
+**Estimated effort:** ~1 hour.
 
 ### 4. Narrow empty-array assignment (fixes 1 error)
 
 `res_u[k][lane] = fieldAdd(...)` where `res_u` is typed `number[][]` but
-initialized with `Array(n).fill(0)` inside a map that returns `number[]`.
-TS narrows the outer array element to `never` because of conflicting
-inference.  Fix: add explicit type annotation on the `let res_u: number[][] = ...`
-declaration.
+TS narrows the element to `never` due to `[]` initialization.  Fix: add
+explicit type annotation or use typed initialization.
 
-**Estimated effort:** ~30 min (emit `: number[][]` type annotation on
-specific `Let` patterns with known nested-array types).
+**Estimated effort:** ~30 min.
 
 ## Completed Analyses & Passes
 
 | Pass | Module | Purpose |
 |------|--------|---------|
 | **Deshadow** | `deshadow.rs` | Renames `let x = f(x)` self-shadows to `const x_1 = f(x)`. Reusable `deshadow_block()` API with `pattern_names()` helper. 7 unit tests. |
-| **Witness analysis** | `printer_ts.rs` | Scans functions for `DefaultValue`, `LengthOf`, `TypenumUsize`, constructor/default calls on type params. Builds `ctx` parameter with runtime witnesses. |
+| **Recursive DefaultValue** | `lowering_dyn.rs` | Unified `ArrayDefault` + `DefaultValue` into a single recursive `lower_default_value()`. Arrays expand to `IterPipeline(0..N).map(_ => default(elem))`. Primitives → `Lit(0)`, type params → `ctx.defaultT()`, vectors → `DefaultValue(Vec)` → `[]`. Hard error on `Infer` types. |
+| **IR Dumper** | `dump_ir.rs` | Human-readable IR dump. `dump_module()` produces concise pseudocode for all structs, traits, impls, and functions. Used via `--dump-ir` / `--dump-ir-dyn` flags in `generate_volar_ts`. |
+| **Witness analysis** | `printer_ts.rs` | Scans functions for `DefaultValue`, `LengthOf`, `TypenumUsize`, constructor/default calls on type params. Builds `ctx` parameter with runtime witnesses. Extended to recursively scan array types for nested default/length witnesses. |
 | **Type-param erasure** | `printer_ts.rs` | Classifies type params as "surviving" (kept as TS generics) vs "erased" (emitted as `any`). Handles transitive Fn-bound returns. |
 | **Unused type-param pruning** | `printer_ts.rs` | `struct_used_type_params()` / `function_used_type_params()` scan types for `TypeParam` references, prune unused ones from signatures. |
 | **Transitive witness propagation** | `printer_ts.rs` | Fixpoint loop in `build_module_witness_map()` — if function A calls function B that needs witnesses, A inherits B's witnesses. |
 | **Parameter-field conflict rename** | `lowering_dyn.rs` | When injected field bindings (`const n = this.n`) collide with parameter names, the parameter is renamed to `n_param` with full body rewrite. |
+
+## Early Error Detection
+
+The compiler now rejects ambiguous type-inference cases at parse time:
+
+- **Bare `GenericArray::default()`** without turbofish → `InvalidType` error
+  with message: *"Add explicit types, e.g. `GenericArray::<ElemType, LenType>::default()`."*
+- **`IrType::Infer` in `DefaultValue`** at dyn-lowering time → panic with
+  message explaining the need for explicit type annotations
+
+These errors prevent silently-wrong codegen (e.g. `undefined` instead of `[]`)
+and surface the fix needed in the Rust source.
+
+## IR Dump Tool
+
+Use `--dump-ir` and/or `--dump-ir-dyn` with the generator:
+
+```bash
+cargo run --example generate_volar_ts --features parsing -- --dump-ir --dump-ir-dyn
+```
+
+This produces:
+- `ir_dump.txt` — parsed IR (pre-lowering), showing the raw AST from Rust source
+- `ir_dump_dyn.txt` — dyn-lowered IR (post-lowering), showing the IR as fed to the TS printer
+
+**TypeScript `[T; N]` representation trick:** `T[] & {length: N}` where `N extends number`.
+This can express fixed-length arrays in TypeScript's type system, useful for
+future IR manipulation and testing.
 
 ## Future Refactors
 
@@ -126,8 +166,8 @@ specific `Let` patterns with known nested-array types).
 
 8. **Const-generic length propagation** — Currently lengths are either
    `number` (runtime) or erased.  A future pass could track which `number`
-   variables represent array lengths and use TypeScript tuple types
-   (`[number, number, ...]`) for fixed-size arrays, improving type safety.
+   variables represent array lengths and use TypeScript intersection types
+   (`T[] & { length: N }`) for fixed-size arrays, improving type safety.
 
 9. **Integration test harness** — Generate TS, compile with `tsc --strict`
    (no `@ts-nocheck`), and assert zero errors.  Run as a Rust integration test
@@ -159,9 +199,9 @@ specific `Let` patterns with known nested-array types).
 
 | Suite | Count |
 |-------|-------|
-| Compiler lib tests | 40 (incl. 7 deshadow) |
+| Compiler lib tests | 41 (incl. 7 deshadow, 1 should_panic) |
 | Parse volar-spec | 15 |
 | Specialized IR | 7 |
 | Traits and impls | 13 |
 | Manifest | 45 |
-| **Total** | **120** |
+| **Total** | **121** |

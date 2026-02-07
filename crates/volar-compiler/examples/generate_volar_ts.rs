@@ -14,13 +14,18 @@ use volar_compiler::{parser::parse_source, print_module_typescript};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
 
-    let spec_dir = args
-        .get(1)
-        .map(PathBuf::from)
+    // Check for --dump-ir or --dump-ir-dyn flags
+    let dump_ir = args.iter().any(|a| a == "--dump-ir");
+    let dump_ir_dyn = args.iter().any(|a| a == "--dump-ir-dyn");
+    let positional: Vec<&String> = args[1..].iter().filter(|a| !a.starts_with("--")).collect();
+
+    let spec_dir = positional
+        .first()
+        .map(|s| PathBuf::from(s.as_str()))
         .unwrap_or_else(|| PathBuf::from("../../crates/volar-spec/src"));
-    let output_path = args
-        .get(2)
-        .map(PathBuf::from)
+    let output_path = positional
+        .get(1)
+        .map(|s| PathBuf::from(s.as_str()))
         .unwrap_or_else(|| PathBuf::from("../../packages/volar-runtime/src/generated.ts"));
 
     eprintln!("Reading volar-spec from: {:?}", spec_dir);
@@ -70,7 +75,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         parse_errors,
     );
 
+    // --dump-ir: dump the parsed (pre-lowering) IR
+    if dump_ir {
+        let dump = volar_compiler::dump_ir::dump_module(&combined_ir);
+        let dump_path = Path::new("ir_dump.txt");
+        fs::write(dump_path, &dump)?;
+        eprintln!("IR dump ({} bytes) → {:?}", dump.len(), dump_path);
+    }
+
     let ts_code = print_module_typescript(&combined_ir);
+
+    // --dump-ir-dyn: dump the dyn-lowered IR (post-lowering, pre-TS-printing)
+    if dump_ir_dyn {
+        let lowered = volar_compiler::lowering_dyn::lower_module_dyn(&combined_ir);
+        let dump = volar_compiler::dump_ir::dump_module(&lowered);
+        let dump_path = Path::new("ir_dump_dyn.txt");
+        fs::write(dump_path, &dump)?;
+        eprintln!("Dyn-lowered IR dump ({} bytes) → {:?}", dump.len(), dump_path);
+    }
 
     // Ensure output directory exists
     if let Some(parent) = output_path.parent() {

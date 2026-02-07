@@ -1975,8 +1975,11 @@ fn lower_default_value(
     fn_gen: &[IrGenericParam],
 ) -> IrExpr {
     let Some(ty) = ty else {
-        // No type info at all — best-effort: emit 0
-        return IrExpr::Lit(IrLit::Int(0));
+        panic!(
+            "DefaultValue with no type information (bare `GenericArray::default()` without \
+             turbofish?). Add explicit type parameters to the source, e.g. \
+             `GenericArray::<T, N>::default()`."
+        );
     };
 
     match ty {
@@ -2078,10 +2081,12 @@ fn lower_default_value(
         }
 
         IrType::Infer => {
-            // Unknown element type — best-effort: emit 0
-            // This happens for bare GenericArray::default() without turbofish.
-            // A smarter pass could infer from struct-field usage.
-            IrExpr::Lit(IrLit::Int(0))
+            panic!(
+                "DefaultValue with inferred element type (`IrType::Infer`). This typically \
+                 comes from bare `GenericArray::default()` without turbofish. Add explicit \
+                 type parameters to the Rust source, e.g. \
+                 `GenericArray::<ElemType, LenType>::default()`."
+            );
         }
 
         _ => {
@@ -2736,13 +2741,29 @@ mod tests {
     // ================================================================
 
     #[test]
-    fn test_array_default_becomes_iter_pipeline() {
+    #[should_panic(expected = "DefaultValue with inferred element type")]
+    fn test_array_default_infer_panics() {
         let ctx = empty_ctx();
         let gens = vec![length_param("N", vec![])];
         let expr = IrExpr::DefaultValue {
             ty: Some(Box::new(IrType::Array {
                 kind: ArrayKind::GenericArray,
                 elem: Box::new(IrType::Infer),
+                len: ArrayLength::TypeParam("N".to_string()),
+            })),
+        };
+        // Should panic because Infer element type is not allowed
+        let _ = lower_expr_dyn(&expr, &ctx, &gens);
+    }
+
+    #[test]
+    fn test_array_default_becomes_iter_pipeline() {
+        let ctx = empty_ctx();
+        let gens = vec![length_param("N", vec![])];
+        let expr = IrExpr::DefaultValue {
+            ty: Some(Box::new(IrType::Array {
+                kind: ArrayKind::GenericArray,
+                elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
                 len: ArrayLength::TypeParam("N".to_string()),
             })),
         };
@@ -2760,7 +2781,7 @@ mod tests {
                 match &chain.steps[0] {
                     IterStep::Map { var, body } => {
                         assert_eq!(*var, IrPattern::Wild);
-                        // Infer element type → lowered to Lit(0) as best-effort
+                        // u8 element type → lowered to Lit(0)
                         assert_eq!(**body, IrExpr::Lit(IrLit::Int(0)));
                     }
                     other => panic!("Expected Map step, got {:?}", other),
@@ -2806,7 +2827,7 @@ mod tests {
         let expr = IrExpr::DefaultValue {
             ty: Some(Box::new(IrType::Array {
                 kind: ArrayKind::GenericArray,
-                elem: Box::new(IrType::Infer),
+                elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
                 len: ArrayLength::Projection {
                     r#type: Box::new(IrType::TypeParam("B".to_string())),
                     field: "OutputSize".to_string(),

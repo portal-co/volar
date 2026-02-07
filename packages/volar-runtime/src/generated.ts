@@ -900,7 +900,7 @@ export class VopeDyn<T> {
 export function gen_abo<B, D>(ctx: { newD: () => any }, k: number, a: number[], rand: readonly number[]): ABODyn<B, D>
 {
   let h = ctx.newD();
-  let per_byte = Array.from({length: k - 0}, (_, __i) => __i + 0).map((_: any) => 0);
+  let per_byte = Array.from({length: k - 0}, (_, __i) => __i + 0).map((_: any) => []);
   for (let i = 0; i < k; i++)   {
     const core = Array.from({length: ilog2(k) - 0}, (_, __i) => __i + 0).reduce((acc: any, b: any) => (() => {
   if ((fieldBitand(fieldShr(i, b), 1) !== 0))   {
