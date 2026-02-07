@@ -303,9 +303,9 @@ export class ABODyn<B, D> {
   return Array.from({length: n - 0}, (_, __i) => __i + 0).map((b) => (() => {
   return s.map((val, i) => [i, val] as [number, typeof val]).map(([a, c]) => (() => {
   return (() => { if ((fieldBitand(fieldShr(a, j), 1) === b)) {
-  return Some(structuredClone(c));
+  return structuredClone(c);
 } else {
-  return None;
+  return undefined;
 } })();
 })()).filter((__x) => __x !== undefined).reduce((a, b) => (() => {
   return a.map((__a, __i) => [__a, Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i) => asRefU8(b)[i])[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldBitxor(a, b));
@@ -377,9 +377,9 @@ export class ABOOpeningDyn<B, D> {
   return Array.from({length: n - 0}, (_, __i) => __i + 0).map((b) => (() => {
   return s.map((val, i) => [i, val] as [number, typeof val]).map(([a, c]) => (() => {
   return (() => { if ((fieldBitand(fieldShr(a, j), 1) === b)) {
-  return Some(structuredClone(c));
+  return structuredClone(c);
 } else {
-  return None;
+  return undefined;
 } })();
 })()).filter((__x) => __x !== undefined).reduce((a, b) => (() => {
   return a.map((__a, __i) => [__a, Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i) => asRefU8(b)[i])[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldBitxor(a, b));

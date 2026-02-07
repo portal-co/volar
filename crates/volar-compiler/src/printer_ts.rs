@@ -1542,7 +1542,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
         match self.expr {
             IrExpr::Lit(l) => ts_literal(l, f)?,
             IrExpr::Var(v) => {
-                let name = if v == "self" { "this" } else { v.as_str() };
+                let name = if v == "self" { "this" } else if v == "None" { "undefined" } else { v.as_str() };
                 write!(f, "{}", name)?;
             }
             IrExpr::Binary { op, left, right } => {

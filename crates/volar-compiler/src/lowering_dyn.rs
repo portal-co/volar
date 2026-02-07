@@ -563,7 +563,17 @@ fn lower_function_dyn(
         if let Some(sname) = self_struct {
             if let Some(info) = ctx.struct_info.get(sname) {
                 let mut unpacks = Vec::new();
+                // Collect param names to detect conflicts with field bindings
+                let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
                 for w in &info.length_witnesses {
+                    // If a field binding would shadow a parameter, rename the parameter
+                    if let Some(param) = params.iter_mut().find(|p| &p.name == w) {
+                        let renamed = format!("{}_param", w);
+                        let old_name = param.name.clone();
+                        param.name = renamed.clone();
+                        // Rewrite references in the body from old_name to renamed
+                        rename_var_in_block(&mut body, &old_name, &renamed);
+                    }
                     unpacks.push(IrStmt::Let {
                         pattern: IrPattern::Ident {
                             mutable: false,
