@@ -5,21 +5,22 @@
  * Something that can be cloned (deep copy).
  */
 export interface Cloneable {
-  clone(): this;
+  clone(): Cloneable;
 }
 
 /**
  * A field element that supports arithmetic operations.
+ * All methods return the same concrete type (FieldElement).
  */
 export interface FieldElement extends Cloneable {
-  add(rhs: this): this;
-  sub(rhs: this): this;
-  mul(rhs: this): this;
-  bitxor(rhs: this): this;
-  bitor(rhs: this): this;
-  bitand(rhs: this): this;
-  shl(n: number): this;
-  shr(n: number): this;
+  add(rhs: FieldElement): FieldElement;
+  sub(rhs: FieldElement): FieldElement;
+  mul(rhs: FieldElement): FieldElement;
+  bitxor(rhs: FieldElement): FieldElement;
+  bitor(rhs: FieldElement): FieldElement;
+  bitand(rhs: FieldElement): FieldElement;
+  shl(n: number): FieldElement;
+  shr(n: number): FieldElement;
   into<T>(): T;
 }
 

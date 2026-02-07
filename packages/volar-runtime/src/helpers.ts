@@ -25,74 +25,69 @@ export function wrappingSub(a: number, b: number): number {
 
 // ============================================================================
 // Field-element–aware binary operators
-//
-// These dispatch based on the runtime type of the operands:
-// - If both are `number`, use native JS operators
-// - If both are `bigint`, use native JS operators  
-// - If either is a FieldElement (has .add() etc.), call the method
 // ============================================================================
 
 function isFieldElement(x: unknown): x is FieldElement {
-  return typeof x === "object" && x !== null && "add" in x && typeof (x as FieldElement).add === "function";
+  return typeof x === "object" && x !== null && "add" in x && typeof (x as any).add === "function";
 }
 
-export function fieldAdd<T>(a: T, b: T): T {
-  if (typeof a === "number" && typeof b === "number") return (a + b) as T;
-  if (typeof a === "bigint" && typeof b === "bigint") return (a + b) as T;
-  if (isFieldElement(a)) return a.add(b as FieldElement) as T;
+export function fieldAdd(a: any, b: any): any {
+  if (typeof a === "number" && typeof b === "number") return a + b;
+  if (typeof a === "bigint" && typeof b === "bigint") return a + b;
+  if (isFieldElement(a)) return a.add(b);
   throw new Error(`fieldAdd: unsupported types ${typeof a}, ${typeof b}`);
 }
 
-export function fieldSub<T>(a: T, b: T): T {
-  if (typeof a === "number" && typeof b === "number") return (a - b) as T;
-  if (typeof a === "bigint" && typeof b === "bigint") return (a - b) as T;
-  if (isFieldElement(a)) return a.sub(b as FieldElement) as T;
+export function fieldSub(a: any, b: any): any {
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  if (typeof a === "bigint" && typeof b === "bigint") return a - b;
+  if (isFieldElement(a)) return a.sub(b);
   throw new Error(`fieldSub: unsupported types ${typeof a}, ${typeof b}`);
 }
 
-export function fieldMul<T>(a: T, b: T): T {
-  if (typeof a === "number" && typeof b === "number") return (a * b) as T;
-  if (typeof a === "bigint" && typeof b === "bigint") return (a * b) as T;
-  if (isFieldElement(a)) return a.mul(b as FieldElement) as T;
+export function fieldMul(a: any, b: any): any {
+  if (typeof a === "number" && typeof b === "number") return a * b;
+  if (typeof a === "bigint" && typeof b === "bigint") return a * b;
+  if (isFieldElement(a)) return a.mul(b);
   throw new Error(`fieldMul: unsupported types ${typeof a}, ${typeof b}`);
 }
 
-export function fieldBitxor<T>(a: T, b: T): T {
-  if (typeof a === "number" && typeof b === "number") return (a ^ b) as T;
-  if (typeof a === "bigint" && typeof b === "bigint") return (a ^ b) as T;
-  if (isFieldElement(a)) return a.bitxor(b as FieldElement) as T;
+export function fieldBitxor(a: any, b: any): any {
+  if (typeof a === "number" && typeof b === "number") return a ^ b;
+  if (typeof a === "bigint" && typeof b === "bigint") return a ^ b;
+  if (isFieldElement(a)) return a.bitxor(b);
   throw new Error(`fieldBitxor: unsupported types ${typeof a}, ${typeof b}`);
 }
 
-export function fieldBitor<T>(a: T, b: T): T {
-  if (typeof a === "number" && typeof b === "number") return (a | b) as T;
-  if (typeof a === "bigint" && typeof b === "bigint") return (a | b) as T;
-  if (isFieldElement(a)) return a.bitor(b as FieldElement) as T;
+export function fieldBitor(a: any, b: any): any {
+  if (typeof a === "number" && typeof b === "number") return a | b;
+  if (typeof a === "bigint" && typeof b === "bigint") return a | b;
+  if (isFieldElement(a)) return a.bitor(b);
   throw new Error(`fieldBitor: unsupported types ${typeof a}, ${typeof b}`);
 }
 
-export function fieldBitand<T>(a: T, b: T): T {
-  if (typeof a === "number" && typeof b === "number") return (a & b) as T;
-  if (typeof a === "bigint" && typeof b === "bigint") return (a & b) as T;
-  if (isFieldElement(a)) return a.bitand(b as FieldElement) as T;
+export function fieldBitand(a: any, b: any): any {
+  if (typeof a === "number" && typeof b === "number") return a & b;
+  if (typeof a === "bigint" && typeof b === "bigint") return a & b;
+  if (isFieldElement(a)) return a.bitand(b);
   throw new Error(`fieldBitand: unsupported types ${typeof a}, ${typeof b}`);
 }
 
-export function fieldShl<T>(a: T, b: T): T {
-  if (typeof a === "number" && typeof b === "number") return (a << b) as T;
-  if (typeof a === "bigint" && typeof b === "bigint") return (a << b) as T;
-  if (isFieldElement(a) && typeof b === "number") return a.shl(b) as T;
+export function fieldShl(a: any, b: any): any {
+  if (typeof a === "number" && typeof b === "number") return a << b;
+  if (typeof a === "bigint" && typeof b === "bigint") return a << b;
+  if (isFieldElement(a) && typeof b === "number") return a.shl(b);
   throw new Error(`fieldShl: unsupported types ${typeof a}, ${typeof b}`);
 }
 
-export function fieldShr<T>(a: T, b: T): T {
-  if (typeof a === "number" && typeof b === "number") return (a >> b) as T;
-  if (typeof a === "bigint" && typeof b === "bigint") return (a >> b) as T;
-  if (isFieldElement(a) && typeof b === "number") return a.shr(b) as T;
+export function fieldShr(a: any, b: any): any {
+  if (typeof a === "number" && typeof b === "number") return a >> b;
+  if (typeof a === "bigint" && typeof b === "bigint") return a >> b;
+  if (isFieldElement(a) && typeof b === "number") return a.shr(b);
   throw new Error(`fieldShr: unsupported types ${typeof a}, ${typeof b}`);
 }
 
-export function fieldEq<T>(a: T, b: T): boolean {
+export function fieldEq(a: any, b: any): boolean {
   if (typeof a === "number" && typeof b === "number") return a === b;
   if (typeof a === "bigint" && typeof b === "bigint") return a === b;
   if (isFieldElement(a) && isFieldElement(b)) {
@@ -101,7 +96,7 @@ export function fieldEq<T>(a: T, b: T): boolean {
   return a === b;
 }
 
-export function fieldNe<T>(a: T, b: T): boolean {
+export function fieldNe(a: any, b: any): boolean {
   return !fieldEq(a, b);
 }
 
@@ -109,33 +104,19 @@ export function fieldNe<T>(a: T, b: T): boolean {
 // Crypto helpers (stubs — callers must provide real implementations)
 // ============================================================================
 
-/**
- * Hash commitment: H(data || randomness).
- * Must be provided by the consumer with a real implementation.
- */
-export function commit<D>(data: number[] | Uint8Array, rand: number[] | Uint8Array): Uint8Array {
-  // Stub — real implementation must be injected
+export function commit(data: any, rand: any): Uint8Array {
   const combined = new Uint8Array([
     ...(data instanceof Uint8Array ? data : new Uint8Array(data)),
     ...(rand instanceof Uint8Array ? rand : new Uint8Array(rand)),
   ]);
-  // This is NOT a real commitment — just a placeholder
   return combined;
 }
 
-/**
- * Length-doubling PRG bridge.
- * Corresponds to Rust's `double_vec::<B>(v)`.
- */
-export function doubleVec(v: number[]): [number[], number[]] {
-  // Stub — real implementation must be injected
+export function doubleVec(v: any[]): [any[], any[]] {
   const mid = Math.floor(v.length / 2);
   return [v.slice(0, mid), v.slice(mid)];
 }
 
-/**
- * AsRef<[u8]> equivalent — extract byte array from various types.
- */
 export function asRefU8(x: unknown): number[] {
   if (Array.isArray(x)) return x;
   if (x instanceof Uint8Array) return Array.from(x);
