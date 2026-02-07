@@ -919,16 +919,15 @@ pub enum IrExpr {
         index_var: String,
         body: Box<IrExpr>,
     },
-    /// `GenericArray::<T, N>::default()` or `Vec::default()` — produces a
-    /// zero-filled / default-filled array of the given element type and length.
-    /// In dyn lowering this becomes `vec![T::default(); n]`.
-    ArrayDefault {
-        elem_ty: Option<Box<IrType>>,
-        len: ArrayLength,
-    },
-    /// Calls `T::default()` for a given type. Emitted by dyn lowering when
-    /// generating default-filled arrays via IterPipeline. The printer emits
-    /// `<ty>::default()` (or `Default::default()` if `ty` is `None`).
+    /// Calls `T::default()` for a given type.
+    ///
+    /// When `ty` is an array/vector type (e.g. `Array { elem: u8, len: N }`),
+    /// dyn lowering expands this recursively:
+    ///   `DefaultValue { ty: Array<T, N> }`
+    ///   → `IterPipeline(0..N).map(_ => DefaultValue { ty: T })`
+    ///
+    /// The Rust printer emits `<T>::default()` or `vec![<T>::default(); N]`.
+    /// The TS printer handles leaf defaults (primitives, type params).
     DefaultValue {
         ty: Option<Box<IrType>>,
     },

@@ -1025,35 +1025,37 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 write!(f, " as typenum::Unsigned>::USIZE")?;
             }
             IrExpr::Unreachable => write!(f, "unreachable!()")?,
-            IrExpr::ArrayDefault { elem_ty, len } => {
-                // GenericArray::<T, N>::default() → vec![T::default(); n]
-                write!(f, "vec![")?;
-                if let Some(ty) = elem_ty {
-                    TypeWriter { ty }.fmt(f)?;
-                    write!(f, "::default()")?;
-                } else {
-                    write!(f, "Default::default()")?;
-                }
-                write!(f, "; ")?;
-                match len {
-                    ArrayLength::Const(n) => write!(f, "{}", n)?,
-                    ArrayLength::TypeParam(p) => write!(f, "{}", p.to_lowercase())?,
-                    ArrayLength::Projection { r#type, field, .. } => {
-                        write!(f, "<<")?;
-                        TypeWriter { ty: r#type }.fmt(f)?;
-                        write!(f, ">::{} as Unsigned>::to_usize()", field)?;
-                    }
-                    _ => write!(f, "todo!(\"length\")")?,
-                }
-                write!(f, "]")?;
-            }
             IrExpr::DefaultValue { ty } => {
                 if let Some(t) = ty {
-                    // Use disambiguation syntax <T>::default() to handle
-                    // types with angle brackets like Vec<T>
-                    write!(f, "<")?;
-                    TypeWriter { ty: t }.fmt(f)?;
-                    write!(f, ">::default()")?;
+                    // Array/Vector types: vec![<elem>::default(); len]
+                    if let IrType::Array { elem, len, .. } = t.as_ref() {
+                        write!(f, "vec![")?;
+                        if matches!(elem.as_ref(), &IrType::Infer) {
+                            write!(f, "Default::default()")?;
+                        } else {
+                            write!(f, "<")?;
+                            TypeWriter { ty: elem }.fmt(f)?;
+                            write!(f, ">::default()")?;
+                        }
+                        write!(f, "; ")?;
+                        match len {
+                            ArrayLength::Const(n) => write!(f, "{}", n)?,
+                            ArrayLength::TypeParam(p) => write!(f, "{}", p.to_lowercase())?,
+                            ArrayLength::Projection { r#type, field, .. } => {
+                                write!(f, "<<")?;
+                                TypeWriter { ty: r#type }.fmt(f)?;
+                                write!(f, ">::{} as Unsigned>::to_usize()", field)?;
+                            }
+                            _ => write!(f, "todo!(\"length\")")?,
+                        }
+                        write!(f, "]")?;
+                    } else {
+                        // Use disambiguation syntax <T>::default() to handle
+                        // types with angle brackets like Vec<T>
+                        write!(f, "<")?;
+                        TypeWriter { ty: t }.fmt(f)?;
+                        write!(f, ">::default()")?;
+                    }
                 } else {
                     write!(f, "Default::default()")?;
                 }

@@ -99,20 +99,26 @@ impl WitnessNeeds {
 /// Recursively scan an expression for witness requirements.
 fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics: &[String]) {
     match expr {
-        // DefaultValue with a type-param type → need a default witness
+        // DefaultValue with a type-param type → need a default witness.
+        // DefaultValue with an Array type → scan the length for projections,
+        // and recursively scan the element type for default witnesses.
         IrExpr::DefaultValue { ty: Some(ty) } => {
-            if let IrType::TypeParam(name) = ty.as_ref() {
-                if declared_generics.contains(name) || is_crypto_type_param(name) {
-                    out.add(WitnessKind::Default { type_param: name.clone() });
+            match ty.as_ref() {
+                IrType::TypeParam(name) => {
+                    if declared_generics.contains(name) || is_crypto_type_param(name) {
+                        out.add(WitnessKind::Default { type_param: name.clone() });
+                    }
                 }
+                IrType::Array { len, elem, .. } => {
+                    scan_array_length_witnesses(len, out);
+                    // Recursively check element type for defaults
+                    scan_type_for_default_witnesses(elem, out, declared_generics);
+                }
+                _ => {}
             }
         }
         // LengthOf with a Projection → need a projection witness
         IrExpr::LengthOf(len) => {
-            scan_array_length_witnesses(len, out);
-        }
-        // ArrayDefault may contain a projection in its length
-        IrExpr::ArrayDefault { len, elem_ty: _, .. } => {
             scan_array_length_witnesses(len, out);
         }
         // ArrayGenerate may contain a projection in its length
@@ -290,6 +296,24 @@ fn scan_array_length_witnesses(len: &ArrayLength, out: &mut WitnessNeeds) {
                 field: field.clone(),
             });
         }
+    }
+}
+
+/// Recursively scan a type for default-witness requirements.
+/// Used when `DefaultValue { ty: Array<T, N> }` has a nested element type
+/// that itself requires a default witness (e.g. `T` is a type param).
+fn scan_type_for_default_witnesses(ty: &IrType, out: &mut WitnessNeeds, declared_generics: &[String]) {
+    match ty {
+        IrType::TypeParam(name) => {
+            if declared_generics.contains(name) || is_crypto_type_param(name) {
+                out.add(WitnessKind::Default { type_param: name.clone() });
+            }
+        }
+        IrType::Array { elem, len, .. } => {
+            scan_array_length_witnesses(len, out);
+            scan_type_for_default_witnesses(elem, out, declared_generics);
+        }
+        _ => {}
     }
 }
 
@@ -1951,24 +1975,26 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 }
             }
             IrExpr::Unreachable => write!(f, "(() => {{ throw new Error(\"unreachable\"); }})()")?,
-            IrExpr::ArrayDefault { elem_ty, len } => {
-                write!(f, "Array.from({{length: ")?;
-                ts_length(len, f, cx)?;
-                write!(f, "}}, () => ")?;
-                if let Some(ty) = elem_ty {
-                    ts_default_value(ty, f)?;
-                } else {
-                    write!(f, "undefined")?;
-                }
-                write!(f, ")")?;
-            }
             IrExpr::DefaultValue { ty } => {
                 if let Some(t) = ty {
-                    if let IrType::TypeParam(name) = t.as_ref() {
-                        // Type-param default → use witness
-                        write!(f, "ctx.default{}()", name)?;
-                    } else {
-                        ts_default_value(t, f)?;
+                    match t.as_ref() {
+                        IrType::TypeParam(name) => {
+                            // Type-param default → use witness
+                            write!(f, "ctx.default{}()", name)?;
+                        }
+                        IrType::Array { len, elem, .. } => {
+                            // Array default → Array.from({length: N}, () => default(elem))
+                            // This handles the case where dyn-lowering didn't expand it,
+                            // or when the TS printer is used directly.
+                            write!(f, "Array.from({{length: ")?;
+                            ts_length(len, f, cx)?;
+                            write!(f, "}}, () => ")?;
+                            ts_default_value(elem, f, cx)?;
+                            write!(f, ")")?;
+                        }
+                        _ => {
+                            ts_default_value(t, f, cx)?;
+                        }
                     }
                 } else {
                     write!(f, "undefined")?;
@@ -2512,7 +2538,7 @@ fn ts_length(len: &ArrayLength, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) 
     }
 }
 
-fn ts_default_value(ty: &IrType, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn ts_default_value(ty: &IrType, f: &mut fmt::Formatter<'_>, cx: &TsContext) -> fmt::Result {
     match ty {
         IrType::Primitive(p) => match p {
             PrimitiveType::Bool => write!(f, "false"),
@@ -2524,7 +2550,20 @@ fn ts_default_value(ty: &IrType, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             PrimitiveType::BitsInBytes => write!(f, "BitsInBytes.default()"),
             PrimitiveType::BitsInBytes64 => write!(f, "BitsInBytes64.default()"),
         },
-        IrType::Vector { .. } | IrType::Array { .. } => write!(f, "[]"),
+        IrType::Array { elem, len, .. } => {
+            // Recursive: Array.from({length: N}, () => default(elem))
+            write!(f, "Array.from({{length: ")?;
+            ts_length(len, f, cx)?;
+            write!(f, "}}, () => ")?;
+            ts_default_value(elem, f, cx)?;
+            write!(f, ")")
+        }
+        IrType::Vector { .. } => write!(f, "[]"),
+        IrType::TypeParam(name) => {
+            // Type-param default → use witness
+            write!(f, "ctx.default{}()", name)
+        }
+        IrType::Infer => write!(f, "undefined"),
         _ => write!(f, "undefined /* default for {:?} */", ty),
     }
 }

@@ -1214,6 +1214,8 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
         }
 
         // GenericArray::<T, N>::default() — array filled with default values
+        // Unified into DefaultValue with an Array type so that dyn-lowering
+        // can recursively expand nested defaults.
         if segments.last().map(|s| s.as_str()) == Some("default")
             && args.is_empty()
             && segments.len() >= 2
@@ -1224,10 +1226,25 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
                 || prefix.iter().any(|s| s == "GenericArray" || s == "Vec")
             {
                 let (elem_ty, len) = extract_array_type_params(&params);
-                return Ok(IrExpr::ArrayDefault {
-                    elem_ty,
-                    len,
-                });
+                let array_ty = match elem_ty {
+                    Some(elem) => Some(Box::new(IrType::Array {
+                        kind: ArrayKind::GenericArray,
+                        elem,
+                        len,
+                    })),
+                    None => {
+                        // Bare GenericArray::default() without turbofish —
+                        // preserve the length but leave elem unknown. We wrap
+                        // in Array with a placeholder elem type so that
+                        // downstream passes can still see the length.
+                        Some(Box::new(IrType::Array {
+                            kind: ArrayKind::GenericArray,
+                            elem: Box::new(IrType::Infer),
+                            len,
+                        }))
+                    }
+                };
+                return Ok(IrExpr::DefaultValue { ty: array_ty });
             }
         }
 

@@ -164,7 +164,6 @@ fn expr_refs_any(expr: &IrExpr, names: &HashSet<String>) -> bool {
         IrExpr::Lit(_)
         | IrExpr::Path { .. }
         | IrExpr::DefaultValue { .. }
-        | IrExpr::ArrayDefault { .. }
         | IrExpr::LengthOf(_)
         | IrExpr::TypenumUsize { .. }
         | IrExpr::Return(None)
@@ -454,7 +453,6 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
         IrExpr::Lit(_)
         | IrExpr::Path { .. }
         | IrExpr::DefaultValue { .. }
-        | IrExpr::ArrayDefault { .. }
         | IrExpr::LengthOf(_)
         | IrExpr::TypenumUsize { .. }
         | IrExpr::Return(None)
@@ -744,7 +742,6 @@ fn deshadow_expr(expr: &mut IrExpr, scope: &mut HashSet<String>) {
         | IrExpr::Lit(_)
         | IrExpr::Path { .. }
         | IrExpr::DefaultValue { .. }
-        | IrExpr::ArrayDefault { .. }
         | IrExpr::LengthOf(_)
         | IrExpr::TypenumUsize { .. }
         | IrExpr::Return(None)

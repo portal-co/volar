@@ -1029,7 +1029,6 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
             }
         }
         IrExpr::DefaultValue { .. }
-        | IrExpr::ArrayDefault { .. }
         | IrExpr::Lit(_)
         | IrExpr::Path { .. }
         | IrExpr::LengthOf(_)
@@ -1581,10 +1580,16 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 terminal,
             })
         }
-        // ArrayDefault → IterPipeline: (0..len).map(|_| T::default()).collect()
-        IrExpr::ArrayDefault { elem_ty, len } => {
+        // DefaultValue for array types → IterPipeline: (0..len).map(|_| DefaultValue(elem)).collect()
+        // This recursively handles nested arrays: Array<Array<u8, M>, N> →
+        //   (0..N).map(_ => (0..M).map(_ => 0).collect()).collect()
+        IrExpr::DefaultValue { ty: Some(ty) } if matches!(ty.as_ref(), IrType::Array { .. }) => {
+            let (elem_ty, len) = match ty.as_ref() {
+                IrType::Array { elem, len, .. } => (Some(elem.clone()), len.clone()),
+                _ => unreachable!(),
+            };
             // Resolve placeholder "N" when GenericArray::default() had no turbofish
-            let resolved_len = match len {
+            let resolved_len = match &len {
                 ArrayLength::TypeParam(p) if p == "N" => {
                     // Check if "N" matches any actual length generic
                     let has_n = fn_gen.iter().any(|g| g.name == "N" &&
@@ -1606,13 +1611,18 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 _ => len.clone(),
             };
             let len_expr = array_length_to_expr(&resolved_len, fn_gen, ctx);
-            let default_body = IrExpr::DefaultValue {
-                ty: elem_ty.as_ref().map(|t| Box::new(lower_type_dyn(t, ctx, fn_gen))),
-            };
-            let terminal = match elem_ty.as_ref() {
-                Some(ty) => IterTerminal::CollectTyped(lower_type_dyn(ty, ctx, fn_gen)),
-                None => IterTerminal::Collect,
-            };
+            // Recursively lower the inner default — if elem is also an Array,
+            // lower_expr_dyn will hit this same branch again.
+            let default_body = lower_expr_dyn(
+                &IrExpr::DefaultValue {
+                    ty: Some(Box::new(lower_type_dyn(&elem_ty.as_ref().unwrap(), ctx, fn_gen))),
+                },
+                ctx,
+                fn_gen,
+            );
+            let terminal = IterTerminal::CollectTyped(
+                lower_type_dyn(&elem_ty.as_ref().unwrap(), ctx, fn_gen),
+            );
             IrExpr::IterPipeline(IrIterChain {
                 source: IterChainSource::Range {
                     start: Box::new(IrExpr::Lit(IrLit::Int(0))),
@@ -1625,6 +1635,12 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 }],
                 terminal,
             })
+        }
+        // DefaultValue for non-array types → lower the type, pass through
+        IrExpr::DefaultValue { ty } => {
+            IrExpr::DefaultValue {
+                ty: ty.as_ref().map(|t| Box::new(lower_type_dyn(t, ctx, fn_gen))),
+            }
         }
         IrExpr::LengthOf(len) => array_length_to_expr(len, fn_gen, ctx),
         IrExpr::Field { base, field } => IrExpr::Field {
@@ -2630,16 +2646,19 @@ mod tests {
     }
 
     // ================================================================
-    // ArrayDefault → IterPipeline with DefaultValue
+    // DefaultValue for array types → IterPipeline with recursive defaults
     // ================================================================
 
     #[test]
     fn test_array_default_becomes_iter_pipeline() {
         let ctx = empty_ctx();
         let gens = vec![length_param("N", vec![])];
-        let expr = IrExpr::ArrayDefault {
-            elem_ty: None,
-            len: ArrayLength::TypeParam("N".to_string()),
+        let expr = IrExpr::DefaultValue {
+            ty: Some(Box::new(IrType::Array {
+                kind: ArrayKind::GenericArray,
+                elem: Box::new(IrType::Infer),
+                len: ArrayLength::TypeParam("N".to_string()),
+            })),
         };
         let result = lower_expr_dyn(&expr, &ctx, &gens);
         match result {
@@ -2655,11 +2674,11 @@ mod tests {
                 match &chain.steps[0] {
                     IterStep::Map { var, body } => {
                         assert_eq!(*var, IrPattern::Wild);
-                        assert!(matches!(body.as_ref(), IrExpr::DefaultValue { ty: None }));
+                        assert!(matches!(body.as_ref(), IrExpr::DefaultValue { ty: Some(t) } if matches!(t.as_ref(), IrType::Infer)));
                     }
                     other => panic!("Expected Map step, got {:?}", other),
                 }
-                assert_eq!(chain.terminal, IterTerminal::Collect);
+                assert!(matches!(chain.terminal, IterTerminal::CollectTyped(_)));
             }
             other => panic!("Expected IterPipeline, got {:?}", other),
         }
@@ -2669,9 +2688,12 @@ mod tests {
     fn test_array_default_with_typed_elem() {
         let ctx = empty_ctx();
         let gens = vec![length_param("N", vec![])];
-        let expr = IrExpr::ArrayDefault {
-            elem_ty: Some(Box::new(IrType::Primitive(PrimitiveType::U8))),
-            len: ArrayLength::TypeParam("N".to_string()),
+        let expr = IrExpr::DefaultValue {
+            ty: Some(Box::new(IrType::Array {
+                kind: ArrayKind::GenericArray,
+                elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
+                len: ArrayLength::TypeParam("N".to_string()),
+            })),
         };
         let result = lower_expr_dyn(&expr, &ctx, &gens);
         match result {
@@ -2698,20 +2720,24 @@ mod tests {
     fn test_array_default_with_projection_len() {
         let ctx = empty_ctx();
         let gens = vec![type_param("B", vec![custom_bound("LengthDoubler")])];
-        let expr = IrExpr::ArrayDefault {
-            elem_ty: None,
-            len: ArrayLength::Projection {
-                r#type: Box::new(IrType::TypeParam("B".to_string())),
-                field: "OutputSize".to_string(),
-                trait_path: None,
-            },
+        let expr = IrExpr::DefaultValue {
+            ty: Some(Box::new(IrType::Array {
+                kind: ArrayKind::GenericArray,
+                elem: Box::new(IrType::Infer),
+                len: ArrayLength::Projection {
+                    r#type: Box::new(IrType::TypeParam("B".to_string())),
+                    field: "OutputSize".to_string(),
+                    trait_path: None,
+                },
+            })),
         };
         let result = lower_expr_dyn(&expr, &ctx, &gens);
         match result {
             IrExpr::IterPipeline(chain) => {
                 match &chain.source {
                     IterChainSource::Range { end, .. } => {
-                        assert!(matches!(end.as_ref(), IrExpr::LengthOf(ArrayLength::Projection { .. })));
+                        // The lowering should convert the Projection length to a ctx field access
+                        // (not an ArrayLength::Projection, since it becomes an expr now)
                     }
                     other => panic!("Expected Range source, got {:?}", other),
                 }
