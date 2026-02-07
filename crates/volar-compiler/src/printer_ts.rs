@@ -317,6 +317,12 @@ fn is_crypto_type_param(name: &str) -> bool {
     matches!(name, "B" | "D" | "O" | "T" | "A" | "Q" | "M" | "U" | "R" | "X" | "Y")
 }
 
+/// Primitive field-element classes that are tuple structs in Rust
+/// and need `new` in TypeScript.
+fn is_primitive_class(name: &str) -> bool {
+    matches!(name, "Bit" | "Galois" | "Galois64" | "BitsInBytes" | "BitsInBytes64")
+}
+
 /// Get the TypeScript parameter name for a witness in the `ctx` object.
 fn witness_ctx_field(kind: &WitnessKind) -> String {
     match kind {
@@ -843,7 +849,7 @@ impl TsBackend for TsPreambleWriter {
         writeln!(f, "  wrappingAdd,")?;
         writeln!(f, "  wrappingSub,")?;
         writeln!(f, "  asRefU8,")?;
-        writeln!(f, "}} from \"volar-runtime\";")?;
+        writeln!(f, "}} from \"./index\";")?;
         writeln!(f)?;
         Ok(())
     }
@@ -1594,6 +1600,13 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     if v == "None" && args.is_empty() {
                         return write!(f, "undefined");
                     }
+                    // Tuple struct constructors → new ClassName(init)
+                    // Bit(x), BitsInBytes(x), etc. are tuple structs
+                    if is_primitive_class(v) && args.len() == 1 {
+                        write!(f, "new {}(", v)?;
+                        TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+                        return write!(f, ")");
+                    }
                 }
                 if let IrExpr::Path { segments, .. } = func.as_ref() {
                     // T::new() → ctx.newT()  (constructor witness)
@@ -1643,10 +1656,31 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 write!(f, ".{}", field)?;
             }
             IrExpr::Index { base, index } => {
-                TsExprWriter { expr: base }.ts_fmt(f, cx)?;
-                write!(f, "[")?;
-                TsExprWriter { expr: index }.ts_fmt(f, cx)?;
-                write!(f, "]")?;
+                // TODO: Slice operations should be represented as a dedicated
+                // IrExpr::Slice variant in the IR rather than Index+Range.
+                // For now, detect Index with a Range index and emit .slice().
+                if let IrExpr::Range { start, end, inclusive } = index.as_ref() {
+                    TsExprWriter { expr: base }.ts_fmt(f, cx)?;
+                    write!(f, ".slice(")?;
+                    if let Some(s) = start {
+                        TsExprWriter { expr: s }.ts_fmt(f, cx)?;
+                    } else {
+                        write!(f, "0")?;
+                    }
+                    if let Some(e) = end {
+                        write!(f, ", ")?;
+                        TsExprWriter { expr: e }.ts_fmt(f, cx)?;
+                        if *inclusive {
+                            write!(f, " + 1")?;
+                        }
+                    }
+                    write!(f, ")")?;
+                } else {
+                    TsExprWriter { expr: base }.ts_fmt(f, cx)?;
+                    write!(f, "[")?;
+                    TsExprWriter { expr: index }.ts_fmt(f, cx)?;
+                    write!(f, "]")?;
+                }
             }
             IrExpr::Path { segments, .. } => {
                 emit_path(segments, f)?;
@@ -1748,7 +1782,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
                 write!(f, ".map((")?;
                 TsPatternWriter { pat: elem_var }.ts_fmt(f, cx)?;
-                write!(f, ") => ")?;
+                write!(f, ": any) => ")?;
                 TsExprWriter { expr: body }.ts_fmt(f, cx)?;
                 write!(f, ")")?;
             }
@@ -2142,28 +2176,28 @@ impl<'a> TsBackend for TsIterChainWriter<'a> {
                 IterStep::Map { var, body } => {
                     write!(f, ".map((")?;
                     TsPatternWriter { pat: var }.ts_fmt(f, cx)?;
-                    write!(f, ") => ")?;
+                    write!(f, ": any) => ")?;
                     TsExprWriter { expr: body }.ts_fmt(f, cx)?;
                     write!(f, ")")?;
                 }
                 IterStep::Filter { var, body } => {
                     write!(f, ".filter((")?;
                     TsPatternWriter { pat: var }.ts_fmt(f, cx)?;
-                    write!(f, ") => ")?;
+                    write!(f, ": any) => ")?;
                     TsExprWriter { expr: body }.ts_fmt(f, cx)?;
                     write!(f, ")")?;
                 }
                 IterStep::FilterMap { var, body } => {
                     write!(f, ".map((")?;
                     TsPatternWriter { pat: var }.ts_fmt(f, cx)?;
-                    write!(f, ") => ")?;
+                    write!(f, ": any) => ")?;
                     TsExprWriter { expr: body }.ts_fmt(f, cx)?;
                     write!(f, ").filter((__x: any) => __x !== undefined)")?;
                 }
                 IterStep::FlatMap { var, body } => {
                     write!(f, ".flatMap((")?;
                     TsPatternWriter { pat: var }.ts_fmt(f, cx)?;
-                    write!(f, ") => ")?;
+                    write!(f, ": any) => ")?;
                     TsExprWriter { expr: body }.ts_fmt(f, cx)?;
                     write!(f, ")")?;
                 }
@@ -2249,7 +2283,7 @@ impl<'a> TsBackend for TsIterSourceWriter<'a> {
                 TsIterChainWriter { chain: left }.ts_fmt(f, cx)?;
                 write!(f, ".map((__a: any, __i: number) => [__a, ")?;
                 TsIterChainWriter { chain: right }.ts_fmt(f, cx)?;
-                write!(f, "[__i]] as [typeof __a, unknown])")?;
+                write!(f, "[__i]] as [typeof __a, any])")?;
             }
         }
         Ok(())
