@@ -317,9 +317,18 @@ fn scan_type_for_default_witnesses(ty: &IrType, out: &mut WitnessNeeds, declared
     }
 }
 
-/// Compute witness needs for a function.
-fn compute_function_witnesses(func: &IrFunction) -> WitnessNeeds {
-    let declared: Vec<String> = func.generics.iter().map(|g| g.name.clone()).collect();
+/// Compute witness needs for a function (or method).
+///
+/// `extra_generics` should include impl-level generics when scanning a method,
+/// so that type params declared on the impl (not just the method) are recognised
+/// as needing witnesses.
+fn compute_function_witnesses(func: &IrFunction, extra_generics: &[&IrGenericParam]) -> WitnessNeeds {
+    let mut declared: Vec<String> = func.generics.iter().map(|g| g.name.clone()).collect();
+    for g in extra_generics {
+        if !declared.contains(&g.name) {
+            declared.push(g.name.clone());
+        }
+    }
     let mut needs = WitnessNeeds::default();
     scan_block_witnesses(&func.body, &mut needs, &declared);
     needs.sorted();
@@ -330,7 +339,8 @@ fn compute_function_witnesses(func: &IrFunction) -> WitnessNeeds {
 fn compute_merged_witnesses(variants: &[ImplMethod<'_>]) -> WitnessNeeds {
     let mut needs = WitnessNeeds::default();
     for v in variants {
-        needs.merge(&compute_function_witnesses(v.func));
+        let impl_generics: Vec<&IrGenericParam> = v.imp.generics.iter().collect();
+        needs.merge(&compute_function_witnesses(v.func, &impl_generics));
     }
     needs.sorted();
     needs
@@ -383,16 +393,17 @@ fn build_module_witness_map(module: &IrModule) -> BTreeMap<String, WitnessNeeds>
 
     // First pass: direct witness needs
     for func in &module.functions {
-        let needs = compute_function_witnesses(func);
+        let needs = compute_function_witnesses(func, &[]);
         if !needs.is_empty() {
             let name = if func.name.starts_with("r#") { func.name[2..].to_string() } else { func.name.clone() };
             map.insert(name, needs);
         }
     }
     for imp in &module.impls {
+        let impl_generics: Vec<&IrGenericParam> = imp.generics.iter().collect();
         for item in &imp.items {
             if let IrImplItem::Method(func) = item {
-                let needs = compute_function_witnesses(func);
+                let needs = compute_function_witnesses(func, &impl_generics);
                 if !needs.is_empty() {
                     let class_name = self_ty_name(&imp.self_ty);
                     let method_name = ts_method_name(&func.name, imp.trait_.as_ref());

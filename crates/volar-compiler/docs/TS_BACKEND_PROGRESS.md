@@ -1,7 +1,7 @@
 # TypeScript Backend Progress
 
 > Last updated: 2026-02-06
-> Strict-mode errors: **7** (down from ~131 initial)
+> Strict-mode errors: **6** (down from ~131 initial)
 > With `@ts-nocheck`: **0**
 
 ## Error Inventory
@@ -14,11 +14,14 @@
 | 712 | `QDyn<unknown>` not assignable to `number` | Same issue — `Add::Output` for `QDyn` resolves to `number` instead of `QDyn`. |
 | 749 | `any` not assignable to `never` | An assignment target's type narrows to `never` because the array element type is inferred as `never` (empty array literal typed too narrowly). Now exposed by recursive `DefaultValue` lowering correctly producing `[]` instead of `undefined` — the TS type narrowing on `res_u[k][lane] = ...` triggers a `never` assignment. |
 
-### TS2304 — Cannot find name (1 error, NEW)
+### TS2304 — Cannot find name `ctx`
 
-| Line(s) | Description | Root Cause |
-|---------|-------------|------------|
-| 729 | `Cannot find name 'ctx'` | `VopeDyn.mul_generalized()` method body contains `GenericArray::<T, N>::default()` which the recursive `DefaultValue` lowering correctly expands to `ctx.defaultT()`. But methods don't receive `ctx` — only free functions do. Need method-level witness propagation (store default-value factories on the struct instance or receive them as method parameters). |
+✅ **Solved** — `compute_function_witnesses` now includes impl-level generics
+when scanning method bodies, so type params declared on the struct/impl (not
+just the method) are recognised as needing witnesses.  `lower_default_value`
+in dyn lowering no longer emits `ctx.defaultT()` directly — it keeps
+`DefaultValue { TypeParam("T") }` as a backend-agnostic IR node, and the TS
+printer's witness system emits the `ctx` parameter and references.
 
 ### TS2345 — Argument Type Mismatch (2 errors)
 
@@ -56,18 +59,11 @@ This requires extending the witness/type-resolution system with a
 **Estimated effort:** ~2 hours (extend `resolve_return_type` in printer_ts.rs
 to check the impl's `self_ty` when the return is `Output`).
 
-### 2. Method-level witness propagation (fixes 1 error)
+### 2. ~~Method-level witness propagation~~ ✅ DONE
 
-`VopeDyn.mul_generalized()` calls `GenericArray::<T, N>::default()` which needs
-`T::default()` at runtime. Currently the recursive `DefaultValue` lowering emits
-`ctx.defaultT()`, but `ctx` is only available in free functions.
-
-Options:
-- Store default-value factories on struct instances (e.g. `this._defaultT`)
-- Pass witnesses as method parameters
-- Inline the default-value expression where the struct fields provide enough info
-
-**Estimated effort:** ~2 hours.
+Methods now receive `ctx` just like free functions.  `compute_function_witnesses`
+includes impl-level generics, and dyn lowering keeps `DefaultValue` as a
+backend-agnostic IR node.
 
 ### 3. `number[]` → `Uint8Array` coercion (fixes 2 errors)
 

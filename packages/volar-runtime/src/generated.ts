@@ -722,7 +722,7 @@ export class VopeDyn<T> {
 })(), structuredClone(this.v).map((a: any) => a)), n: 0 });
   }
 
-  mul_generalized(k2: number, other: VopeDyn<any>): VopeDyn<any>
+  mul_generalized(ctx: { defaultT: () => any }, k2: number, other: VopeDyn<any>): VopeDyn<any>
   {
     const n: number = this.n;
     const k: number = this.k;

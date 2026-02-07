@@ -2070,13 +2070,11 @@ fn lower_default_value(
         }
 
         IrType::TypeParam(name) => {
-            // Type-param default → witness call: ctx.defaultT()
-            IrExpr::Call {
-                func: Box::new(IrExpr::Field {
-                    base: Box::new(IrExpr::Var("ctx".to_string())),
-                    field: format!("default{}", name),
-                }),
-                args: vec![],
+            // Keep as DefaultValue — the TS backend's witness system will emit
+            // `ctx.defaultT()` at print time.  Dyn lowering is backend-agnostic
+            // and should not bake in `ctx` references.
+            IrExpr::DefaultValue {
+                ty: Some(Box::new(IrType::TypeParam(name.clone()))),
             }
         }
 
