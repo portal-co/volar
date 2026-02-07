@@ -34,6 +34,7 @@ use alloc::string::String;
 
 pub mod ir;
 pub mod const_analysis;
+pub mod deshadow;
 #[cfg(feature = "parsing")]
 pub mod parser;
 pub mod lowering;

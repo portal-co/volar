@@ -278,10 +278,10 @@ export class ABODyn<B, D> {
   {
     const k: number = this.k;
     return new ABOOpeningDyn({ bad: structuredClone(bad), openings: Array.from({length: t - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const bad = structuredClone(bad);
+  const bad_1 = structuredClone(bad);
   return Array.from({length: u - 0}, (_, __i) => __i + 0).map((j: any) => (() => {
   const i2 = fieldBitor(i, fieldShl(Number(j), ilog2(t)));
-  return (() => { if (bad.includes(BigInt(i2))) {
+  return (() => { if (bad_1.includes(BigInt(i2))) {
   const h = commit(this.per_byte[i2], rand);
   return Array.from({length: m - 0}, (_, __i) => __i + 0).map((j: any) => (() => {
   return (asRefU8(h)?.[j] ?? 0);
@@ -494,10 +494,10 @@ export class PolyDyn<T> {
     for (let n = 0; n < x; n++)     {
       let b: any = structuredClone(this.c1[k]);
       for (let m = 0; m < s; m++)       {
-        const l = fieldAdd(fieldMul(l, s), m);
+        const l_1 = fieldAdd(fieldMul(l, s), m);
         for (const [idx, v] of voles.map((val: any, i: number) => [i, val] as [number, typeof val]))         {
           b = fieldMul(b, (() => { if ((idx === n)) {
-  return structuredClone(v[k].u[l][i]);
+  return structuredClone(v[k].u[l_1][i]);
 } else {
   return structuredClone(v[k].v[i]);
 } })());
@@ -534,10 +534,10 @@ export class PolyDyn<T> {
     for (let n = 0; n < x; n++)     {
       let b: any = structuredClone(this.c1[k]);
       for (let m = 0; m < s; m++)       {
-        const l = fieldAdd(fieldMul(l, s), m);
+        const l_1 = fieldAdd(fieldMul(l, s), m);
         for (const [idx, v] of voles.indices.map((val: any, i: number) => [i, val] as [number, typeof val]))         {
           b = fieldMul(b, (() => { if ((idx === n)) {
-  return structuredClone(voles.inputs[v[k]].u[l][i]);
+  return structuredClone(voles.inputs[v[k]].u[l_1][i]);
 } else {
   return structuredClone(voles.inputs[v[k]].v[i]);
 } })());

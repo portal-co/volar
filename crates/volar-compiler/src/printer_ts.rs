@@ -40,6 +40,7 @@ use alloc::format;
 use alloc::collections::BTreeMap;
 
 use crate::ir::*;
+use crate::deshadow::deshadow_block;
 
 // ============================================================================
 // WITNESS ANALYSIS — collect runtime witnesses needed per function
@@ -556,14 +557,50 @@ fn collect_call_targets_chain(chain: &IrIterChain, targets: &mut Vec<String>) {
 // ============================================================================
 
 /// Render an `IrModule` as a complete TypeScript source file.
+///
+/// Clones the module and applies a deshadowing pass to all function/method
+/// bodies before emitting.  The deshadow pass turns Rust-legal `let x = f(x)`
+/// shadows into TS-legal `const x_1 = f(x)`.
 pub fn print_module_ts(module: &IrModule) -> String {
-    let witness_map = build_module_witness_map(module);
-    let erased = collect_erased_type_params(module);
+    let mut module = module.clone();
+    deshadow_module(&mut module);
+
+    let witness_map = build_module_witness_map(&module);
+    let erased = collect_erased_type_params(&module);
     let cx = TsContext { witness_map: &witness_map, erased_type_params: erased };
     let mut out = String::new();
     let _ = write!(out, "{}", TsFmt(TsPreambleWriter, &cx));
-    let _ = write!(out, "{}", TsFmt(TsModuleWriter { module }, &cx));
+    let _ = write!(out, "{}", TsFmt(TsModuleWriter { module: &module }, &cx));
     out
+}
+
+/// Apply deshadowing to every function and method body in the module.
+fn deshadow_module(module: &mut IrModule) {
+    use std::collections::HashSet;
+
+    // Top-level functions
+    for func in &mut module.functions {
+        let mut outer: HashSet<String> = HashSet::new();
+        for p in &func.params {
+            outer.insert(p.name.clone());
+        }
+        deshadow_block(&mut func.body, &outer);
+    }
+
+    // Impl methods
+    for imp in &mut module.impls {
+        for item in &mut imp.items {
+            if let IrImplItem::Method(method) = item {
+                let mut outer: HashSet<String> = HashSet::new();
+                // `self` is always in scope for methods
+                outer.insert("self".to_string());
+                for p in &method.params {
+                    outer.insert(p.name.clone());
+                }
+                deshadow_block(&mut method.body, &outer);
+            }
+        }
+    }
 }
 
 // ============================================================================

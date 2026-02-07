@@ -3,6 +3,8 @@
     "zshy": "index.ts",
     "type": "module",
     "scripts": {
-        "build": "npx zshy -c ../../tsconfig.json"
+        "build": "npx zshy -c ../../tsconfig.json",
+        "typecheck": "./scripts/typecheck-strict.sh",
+        "typecheck:count": "./scripts/typecheck-strict.sh --count"
     }
 }
