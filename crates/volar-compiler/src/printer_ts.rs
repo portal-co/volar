@@ -761,7 +761,7 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
             }
             first_param = false;
             write!(f, "{}: ", ts_param_name(&p.name))?;
-            write_param_type(p, &self.func.generics, f)?;
+            write_param_type(p, &self.func.generics, f, cx)?;
         }
         write!(f, ")")?;
 
@@ -825,13 +825,19 @@ impl<'a> TsBackend for TsMergedMethodWriter<'a> {
 
         // Parameters — use the broadest signature (first variant's params)
         write!(f, "(")?;
+        let mut first_param = true;
+        if !self.witness_needs.is_empty() {
+            write_ctx_param(self.witness_needs, f)?;
+            first_param = false;
+        }
         let params: Vec<&IrParam> = first.func.params.iter().collect();
-        for (i, p) in params.iter().enumerate() {
-            if i > 0 {
+        for p in params.iter() {
+            if !first_param {
                 write!(f, ", ")?;
             }
+            first_param = false;
             write!(f, "{}: ", ts_param_name(&p.name))?;
-            write_param_type(p, &first.func.generics, f)?;
+            write_param_type(p, &first.func.generics, f, cx)?;
         }
         write!(f, ")")?;
 
@@ -904,12 +910,18 @@ impl<'a> TsBackend for TsFunctionWriter<'a> {
         let used_params = function_used_type_params(self.func);
         TsGenericsWriter { generics: &self.func.generics, used_only: Some(&used_params) }.ts_fmt(f, cx)?;
         write!(f, "(")?;
-        for (i, p) in self.func.params.iter().enumerate() {
-            if i > 0 {
+        let mut first_param = true;
+        if !self.witness_needs.is_empty() {
+            write_ctx_param(self.witness_needs, f)?;
+            first_param = false;
+        }
+        for p in self.func.params.iter() {
+            if !first_param {
                 write!(f, ", ")?;
             }
+            first_param = false;
             write!(f, "{}: ", ts_param_name(&p.name))?;
-            write_param_type(p, &self.func.generics, f)?;
+            write_param_type(p, &self.func.generics, f, cx)?;
         }
         write!(f, ")")?;
         if let Some(ret) = &self.func.return_type {
@@ -1114,7 +1126,7 @@ impl<'a> TsBackend for TsBlockWriter<'a> {
             if is_statement_like(e) {
                 // Emit as a statement — do NOT prefix with `return`
                 write!(f, "{}", inner)?;
-                emit_statement_expr(e, self.indent + 1, f)?;
+                emit_statement_expr(e, self.indent + 1, f, cx)?;
                 writeln!(f)?;
             } else {
                 write!(f, "{}return ", inner)?;
@@ -1129,7 +1141,7 @@ impl<'a> TsBackend for TsBlockWriter<'a> {
 
 /// Emit an expression that is statement-like (loop, assignment, etc.) as a
 /// proper statement. This avoids `return for(...)` in the output.
-fn emit_statement_expr(e: &IrExpr, indent: usize, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn emit_statement_expr(e: &IrExpr, indent: usize, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
     match e {
         IrExpr::BoundedLoop { var, start, end, inclusive, body } => {
             write!(f, "for (let {} = ", var)?;
@@ -1159,7 +1171,7 @@ fn emit_statement_expr(e: &IrExpr, indent: usize, f: &mut fmt::Formatter<'_>) ->
                         TsBlockWriter { block: b, indent }.ts_fmt(f, cx)?;
                     }
                     other if is_statement_like(other) => {
-                        emit_statement_expr(other, indent, f)?;
+                        emit_statement_expr(other, indent, f, cx)?;
                     }
                     other => {
                         write!(f, "{{ ")?;
@@ -1225,7 +1237,7 @@ impl<'a> TsBackend for TsStmtWriter<'a> {
                 // Statement-like expressions get special treatment
                 if is_statement_like(e) {
                     write!(f, "{}", ind)?;
-                    emit_statement_expr(e, self.indent, f)?;
+                    emit_statement_expr(e, self.indent, f, cx)?;
                     writeln!(f)?;
                 } else {
                     write!(f, "{}", ind)?;
@@ -1236,7 +1248,7 @@ impl<'a> TsBackend for TsStmtWriter<'a> {
             IrStmt::Expr(e) => {
                 if is_statement_like(e) {
                     write!(f, "{}", ind)?;
-                    emit_statement_expr(e, self.indent, f)?;
+                    emit_statement_expr(e, self.indent, f, cx)?;
                     writeln!(f)?;
                 } else {
                     write!(f, "{}", ind)?;
@@ -1296,16 +1308,48 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 }
             }
             IrExpr::MethodCall { receiver, method, args, .. } => {
-                emit_method_call(receiver, method, args, f)?;
+                emit_method_call(receiver, method, args, f, cx)?;
             }
             IrExpr::Call { func, args } => {
-                // Check for Some(x) → x and None → undefined
                 if let IrExpr::Path { segments, .. } = func.as_ref() {
+                    // Some(x) → x
                     if segments.len() == 1 && segments[0] == "Some" && args.len() == 1 {
                         return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
                     }
+                    // None → undefined
                     if segments.len() == 1 && segments[0] == "None" && args.is_empty() {
                         return write!(f, "undefined");
+                    }
+                    // T::new() → ctx.newT()  (constructor witness)
+                    if segments.len() == 2 && segments[1] == "new" {
+                        let type_name = &segments[0];
+                        if is_crypto_type_param(type_name) {
+                            write!(f, "ctx.new{}(", type_name)?;
+                            for (i, arg) in args.iter().enumerate() {
+                                if i > 0 { write!(f, ", ")?; }
+                                TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+                            }
+                            return write!(f, ")");
+                        }
+                    }
+                    // T::default() → ctx.defaultT()  (default witness)
+                    if segments.len() == 2 && segments[1] == "default" {
+                        let type_name = &segments[0];
+                        if is_crypto_type_param(type_name) {
+                            return write!(f, "ctx.default{}()", type_name);
+                        }
+                    }
+                    // Check if target is an internal function that needs ctx forwarding
+                    if segments.len() == 1 {
+                        let target_name = &segments[0];
+                        if cx.witness_map.contains_key(target_name.as_str()) {
+                            write!(f, "{}(ctx", target_name)?;
+                            for arg in args {
+                                write!(f, ", ")?;
+                                TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+                            }
+                            return write!(f, ")");
+                        }
                     }
                 }
                 TsExprWriter { expr: func }.ts_fmt(f, cx)?;
@@ -1393,7 +1437,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         }
                         IrExpr::If { .. } => {
                             // Nested if-else — recurse but strip IIFE wrapper
-                            emit_if_chain(eb, f)?;
+                            emit_if_chain(eb, f, cx)?;
                         }
                         _ => {
                             write!(f, "{{ return ")?;
@@ -1540,14 +1584,29 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 }
             }
             IrExpr::TypenumUsize { ty } => {
-                write!(f, "/* <")?;
-                TsTypeWriter { ty }.ts_fmt(f, cx)?;
-                write!(f, " as Unsigned>.USIZE */")?;
+                // If this is a projection on a type param, use the witness
+                if let IrType::Projection { base, assoc, .. } = ty.as_ref() {
+                    if let IrType::TypeParam(name) = base.as_ref() {
+                        let key = witness_ctx_field(&WitnessKind::Projection {
+                            type_param: name.clone(),
+                            field: format!("{}", assoc),
+                        });
+                        write!(f, "ctx.{}", key)?;
+                    } else {
+                        write!(f, "/* <")?;
+                        TsTypeWriter { ty }.ts_fmt(f, cx)?;
+                        write!(f, " as Unsigned>.USIZE */")?;
+                    }
+                } else {
+                    write!(f, "/* <")?;
+                    TsTypeWriter { ty }.ts_fmt(f, cx)?;
+                    write!(f, " as Unsigned>.USIZE */")?;
+                }
             }
             IrExpr::Unreachable => write!(f, "(() => {{ throw new Error(\"unreachable\"); }})()")?,
             IrExpr::ArrayDefault { elem_ty, len } => {
                 write!(f, "Array.from({{length: ")?;
-                ts_length(len, f)?;
+                ts_length(len, f, cx)?;
                 write!(f, "}}, () => ")?;
                 if let Some(ty) = elem_ty {
                     ts_default_value(ty, f)?;
@@ -1558,17 +1617,22 @@ impl<'a> TsBackend for TsExprWriter<'a> {
             }
             IrExpr::DefaultValue { ty } => {
                 if let Some(t) = ty {
-                    ts_default_value(t, f)?;
+                    if let IrType::TypeParam(name) = t.as_ref() {
+                        // Type-param default → use witness
+                        write!(f, "ctx.default{}()", name)?;
+                    } else {
+                        ts_default_value(t, f)?;
+                    }
                 } else {
                     write!(f, "undefined")?;
                 }
             }
             IrExpr::LengthOf(len) => {
-                ts_length(len, f)?;
+                ts_length(len, f, cx)?;
             }
             IrExpr::ArrayGenerate { len, index_var, body, .. } => {
                 write!(f, "Array.from({{length: ")?;
-                ts_length(len, f)?;
+                ts_length(len, f, cx)?;
                 write!(f, "}}, (_, {}) => ", index_var)?;
                 TsExprWriter { expr: body }.ts_fmt(f, cx)?;
                 write!(f, ")")?;
@@ -1609,7 +1673,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
 
 /// Emit an `if` chain without the outer IIFE wrapper.
 /// Used for `else if` chains inside an already-open IIFE.
-fn emit_if_chain(expr: &IrExpr, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn emit_if_chain(expr: &IrExpr, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
     if let IrExpr::If { cond, then_branch, else_branch } = expr {
         write!(f, "if (")?;
         TsExprWriter { expr: cond }.ts_fmt(f, cx)?;
@@ -1622,7 +1686,7 @@ fn emit_if_chain(expr: &IrExpr, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                     TsBlockWriter { block: b, indent: 0 }.ts_fmt(f, cx)?;
                 }
                 IrExpr::If { .. } => {
-                    emit_if_chain(eb, f)?;
+                    emit_if_chain(eb, f, cx)?;
                 }
                 _ => {
                     write!(f, "{{ return ")?;
@@ -1636,7 +1700,7 @@ fn emit_if_chain(expr: &IrExpr, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 }
 
 /// Emit a method call expression with smart translation.
-fn emit_method_call(receiver: &IrExpr, method: &MethodKind, args: &[IrExpr], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn emit_method_call(receiver: &IrExpr, method: &MethodKind, args: &[IrExpr], f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
     let name = ts_method_call_name(method);
     match name.as_str() {
         "wrapping_add" if args.len() == 1 => {
@@ -2079,14 +2143,23 @@ fn ts_literal(l: &IrLit, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     }
 }
 
-fn ts_length(len: &ArrayLength, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn ts_length(len: &ArrayLength, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
     match len {
         ArrayLength::Const(n) => write!(f, "{}", n),
         ArrayLength::TypeParam(p) => write!(f, "{}", p.to_lowercase()),
         ArrayLength::Projection { r#type, field, .. } => {
-            write!(f, "/* ")?;
-            TsTypeWriter { ty: r#type }.ts_fmt(f, cx)?;
-            write!(f, "::{} */ 0", field)
+            // Use ctx witness for type-param projections
+            if let IrType::TypeParam(name) = r#type.as_ref() {
+                let key = witness_ctx_field(&WitnessKind::Projection {
+                    type_param: name.clone(),
+                    field: field.clone(),
+                });
+                write!(f, "ctx.{}", key)
+            } else {
+                write!(f, "/* ")?;
+                TsTypeWriter { ty: r#type }.ts_fmt(f, cx)?;
+                write!(f, "::{} */ 0", field)
+            }
         }
         ArrayLength::TypeNum(tn) => write!(f, "{}", tn.to_usize()),
     }
@@ -2232,7 +2305,7 @@ fn resolve_fn_generic(type_name: &str, generics: &[IrGenericParam]) -> Option<St
 }
 
 /// Write a parameter's type, resolving Fn-bounded generics inline.
-fn write_param_type(p: &IrParam, generics: &[IrGenericParam], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn write_param_type(p: &IrParam, generics: &[IrGenericParam], f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
     if let IrType::TypeParam(tp) = &p.ty {
         if let Some(fn_type) = resolve_fn_generic(tp, generics) {
             return write!(f, "{}", fn_type);
