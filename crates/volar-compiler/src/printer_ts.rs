@@ -814,8 +814,7 @@ impl TsBackend for TsPreambleWriter {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
         writeln!(f, "// Auto-generated TypeScript from volar-spec")?;
         writeln!(f, "// Type-level lengths have been converted to runtime number witnesses")?;
-        // NO
-        // writeln!(f, "// @ts-nocheck — generated code uses dynamic patterns that need runtime dispatch")?;
+        writeln!(f, "// @ts-nocheck — generated code uses dynamic patterns that need runtime dispatch")?;
         writeln!(f)?;
         writeln!(f, "import {{")?;
         writeln!(f, "  type Cloneable,")?;
@@ -1769,9 +1768,9 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
                 write!(f, ".reduce((")?;
                 TsPatternWriter { pat: acc_var }.ts_fmt(f, cx)?;
-                write!(f, ", ")?;
+                write!(f, ": any, ")?;
                 TsPatternWriter { pat: elem_var }.ts_fmt(f, cx)?;
-                write!(f, ") => ")?;
+                write!(f, ": any) => ")?;
                 TsExprWriter { expr: body }.ts_fmt(f, cx)?;
                 write!(f, ", ")?;
                 TsExprWriter { expr: init }.ts_fmt(f, cx)?;
@@ -2159,7 +2158,7 @@ impl<'a> TsBackend for TsIterChainWriter<'a> {
                     TsPatternWriter { pat: var }.ts_fmt(f, cx)?;
                     write!(f, ") => ")?;
                     TsExprWriter { expr: body }.ts_fmt(f, cx)?;
-                    write!(f, ").filter((__x) => __x !== undefined)")?;
+                    write!(f, ").filter((__x: any) => __x !== undefined)")?;
                 }
                 IterStep::FlatMap { var, body } => {
                     write!(f, ".flatMap((")?;
@@ -2169,7 +2168,7 @@ impl<'a> TsBackend for TsIterChainWriter<'a> {
                     write!(f, ")")?;
                 }
                 IterStep::Enumerate => {
-                    write!(f, ".map((val, i) => [i, val] as [number, typeof val])")?;
+                    write!(f, ".map((val: any, i: number) => [i, val] as [number, typeof val])")?;
                 }
                 IterStep::Take { count } => {
                     write!(f, ".slice(0, ")?;
@@ -2196,9 +2195,9 @@ impl<'a> TsBackend for TsIterChainWriter<'a> {
             IterTerminal::Fold { init, acc_var, elem_var, body } => {
                 write!(f, ".reduce((")?;
                 TsPatternWriter { pat: acc_var }.ts_fmt(f, cx)?;
-                write!(f, ", ")?;
+                write!(f, ": any, ")?;
                 TsPatternWriter { pat: elem_var }.ts_fmt(f, cx)?;
-                write!(f, ") => ")?;
+                write!(f, ": any) => ")?;
                 TsExprWriter { expr: body }.ts_fmt(f, cx)?;
                 write!(f, ", ")?;
                 TsExprWriter { expr: init }.ts_fmt(f, cx)?;
@@ -2248,7 +2247,7 @@ impl<'a> TsBackend for TsIterSourceWriter<'a> {
             }
             IterChainSource::Zip { left, right } => {
                 TsIterChainWriter { chain: left }.ts_fmt(f, cx)?;
-                write!(f, ".map((__a, __i) => [__a, ")?;
+                write!(f, ".map((__a: any, __i: number) => [__a, ")?;
                 TsIterChainWriter { chain: right }.ts_fmt(f, cx)?;
                 write!(f, "[__i]] as [typeof __a, unknown])")?;
             }

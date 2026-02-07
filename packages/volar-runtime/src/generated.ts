@@ -68,16 +68,16 @@ export class DeltaDyn<T> {
     return new DeltaDyn({ delta: Array.from({length: m - 0}, (_, __i) => __i + 0).map((i) => structuredClone(delta[(f(i) % n)])), n: 0 });
   }
 
-  rotate_left(n: number): any
+  rotate_left(n_param: number): any
   {
     const n: number = this.n;
-    return this.remap(n, (a) => wrappingSub(a, n));
+    return this.remap(this.n, (a) => wrappingSub(a, n_param));
   }
 
-  rotate_right(n: number): any
+  rotate_right(n_param: number): any
   {
     const n: number = this.n;
-    return this.remap(n, (a) => wrappingAdd(a, n));
+    return this.remap(this.n, (a) => wrappingAdd(a, n_param));
   }
 
   static_<U, O>(val: any[]): QDyn<any>
@@ -86,63 +86,63 @@ export class DeltaDyn<T> {
     return new QDyn({ q: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => fieldMul(structuredClone(val[i]), structuredClone(this.delta[i]))), n: 0 });
   }
 
-  bit(n: number): DeltaDyn<Bit>
+  bit(n_param: number): DeltaDyn<Bit>
   {
     if (this.delta[0] instanceof BitsInBytes) {
       const n: number = this.n;
       const { delta } = this;
-      return new DeltaDyn({ delta: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
+      return new DeltaDyn({ delta: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
   const b = structuredClone(delta[i]);
-  return Bit((fieldBitand(fieldShr(b, n), 1) !== 0));
+  return Bit((fieldBitand(fieldShr(b, n_param), 1) !== 0));
 })()), n: 0 });
     } else {
       const n: number = this.n;
       const { delta } = this;
-      return new DeltaDyn({ delta: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
+      return new DeltaDyn({ delta: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
   const b = structuredClone(delta[i]);
-  return Bit((fieldBitand(fieldShr(b, n), 1) !== 0));
+  return Bit((fieldBitand(fieldShr(b, n_param), 1) !== 0));
 })()), n: 0 });
     }
   }
 
-  rotate_left_bits(n: number): any
+  rotate_left_bits(n_param: number): any
   {
     if (this.delta[0] instanceof BitsInBytes) {
       const n: number = this.n;
       const { delta } = this;
-      return new DeltaDyn({ delta: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
+      return new DeltaDyn({ delta: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
   const b = structuredClone(delta[i]);
-  const next = structuredClone(delta[(fieldAdd(i, 1) % n)]);
-  return BitsInBytes(fieldBitor(fieldShl(b, Number(n)), fieldShr(next, fieldSub(8, Number(n)))));
+  const next = structuredClone(delta[(fieldAdd(i, 1) % n_param)]);
+  return BitsInBytes(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(8, Number(n_param)))));
 })()), n: 0 });
     } else {
       const n: number = this.n;
       const { delta } = this;
-      return new DeltaDyn({ delta: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
+      return new DeltaDyn({ delta: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
   const b = structuredClone(delta[i]);
-  const next = structuredClone(delta[(fieldAdd(i, 1) % n)]);
-  return BitsInBytes64(fieldBitor(fieldShl(b, Number(n)), fieldShr(next, fieldSub(64, Number(n)))));
+  const next = structuredClone(delta[(fieldAdd(i, 1) % n_param)]);
+  return BitsInBytes64(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(64, Number(n_param)))));
 })()), n: 0 });
     }
   }
 
-  rotate_right_bits(n: number): any
+  rotate_right_bits(n_param: number): any
   {
     if (this.delta[0] instanceof BitsInBytes) {
       const n: number = this.n;
       const { delta } = this;
-      return new DeltaDyn({ delta: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
-  const prev = structuredClone(delta[(fieldSub(fieldAdd(i, n), 1) % n)]);
+      return new DeltaDyn({ delta: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
+  const prev = structuredClone(delta[(fieldSub(fieldAdd(i, n_param), 1) % n_param)]);
   const b = structuredClone(delta[i]);
-  return BitsInBytes(fieldBitor(fieldShl(prev, fieldSub(8, Number(n))), fieldShr(b, Number(n))));
+  return BitsInBytes(fieldBitor(fieldShl(prev, fieldSub(8, Number(n_param))), fieldShr(b, Number(n_param))));
 })()), n: 0 });
     } else {
       const n: number = this.n;
       const { delta } = this;
-      return new DeltaDyn({ delta: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
-  const prev = structuredClone(delta[(fieldSub(fieldAdd(i, n), 1) % n)]);
+      return new DeltaDyn({ delta: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
+  const prev = structuredClone(delta[(fieldSub(fieldAdd(i, n_param), 1) % n_param)]);
   const b = structuredClone(delta[i]);
-  return BitsInBytes64(fieldBitor(fieldShl(prev, fieldSub(64, Number(n))), fieldShr(b, Number(n))));
+  return BitsInBytes64(fieldBitor(fieldShl(prev, fieldSub(64, Number(n_param))), fieldShr(b, Number(n_param))));
 })()), n: 0 });
     }
   }
@@ -186,75 +186,75 @@ export class QDyn<T> {
     return new QDyn({ q: Array.from({length: m - 0}, (_, __i) => __i + 0).map((i) => structuredClone(q[(f(i) % n)])), n: 0 });
   }
 
-  rotate_left(n: number): any
+  rotate_left(n_param: number): any
   {
     const n: number = this.n;
-    return this.remap(n, (a) => wrappingSub(a, n));
+    return this.remap(this.n, (a) => wrappingSub(a, n_param));
   }
 
-  rotate_right(n: number): any
+  rotate_right(n_param: number): any
   {
     const n: number = this.n;
-    return this.remap(n, (a) => wrappingAdd(a, n));
+    return this.remap(this.n, (a) => wrappingAdd(a, n_param));
   }
 
-  bit(n: number): QDyn<Bit>
+  bit(n_param: number): QDyn<Bit>
   {
     if (this.q[0] instanceof BitsInBytes) {
       const n: number = this.n;
       const { q } = this;
-      return new QDyn({ q: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
+      return new QDyn({ q: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
   const b = structuredClone(q[i]);
-  return Bit((fieldBitand(fieldShr(b, n), 1) !== 0));
+  return Bit((fieldBitand(fieldShr(b, n_param), 1) !== 0));
 })()), n: 0 });
     } else {
       const n: number = this.n;
       const { q } = this;
-      return new QDyn({ q: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
+      return new QDyn({ q: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
   const b = structuredClone(q[i]);
-  return Bit((fieldBitand(fieldShr(b, n), 1) !== 0));
+  return Bit((fieldBitand(fieldShr(b, n_param), 1) !== 0));
 })()), n: 0 });
     }
   }
 
-  rotate_left_bits(n: number): any
+  rotate_left_bits(n_param: number): any
   {
     if (this.q[0] instanceof BitsInBytes) {
       const n: number = this.n;
       const { q } = this;
-      return new QDyn({ q: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
+      return new QDyn({ q: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
   const b = structuredClone(q[i]);
-  const next = structuredClone(q[(fieldAdd(i, 1) % n)]);
-  return BitsInBytes(fieldBitor(fieldShl(b, Number(n)), fieldShr(next, fieldSub(8, Number(n)))));
+  const next = structuredClone(q[(fieldAdd(i, 1) % n_param)]);
+  return BitsInBytes(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(8, Number(n_param)))));
 })()), n: 0 });
     } else {
       const n: number = this.n;
       const { q } = this;
-      return new QDyn({ q: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
+      return new QDyn({ q: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
   const b = structuredClone(q[i]);
-  const next = structuredClone(q[(fieldAdd(i, 1) % n)]);
-  return BitsInBytes64(fieldBitor(fieldShl(b, Number(n)), fieldShr(next, fieldSub(64, Number(n)))));
+  const next = structuredClone(q[(fieldAdd(i, 1) % n_param)]);
+  return BitsInBytes64(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(64, Number(n_param)))));
 })()), n: 0 });
     }
   }
 
-  rotate_right_bits(n: number): any
+  rotate_right_bits(n_param: number): any
   {
     if (this.q[0] instanceof BitsInBytes) {
       const n: number = this.n;
       const { q } = this;
-      return new QDyn({ q: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
-  const prev = structuredClone(q[(fieldSub(fieldAdd(i, n), 1) % n)]);
+      return new QDyn({ q: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
+  const prev = structuredClone(q[(fieldSub(fieldAdd(i, n_param), 1) % n_param)]);
   const b = structuredClone(q[i]);
-  return BitsInBytes(fieldBitor(fieldShl(prev, fieldSub(8, Number(n))), fieldShr(b, Number(n))));
+  return BitsInBytes(fieldBitor(fieldShl(prev, fieldSub(8, Number(n_param))), fieldShr(b, Number(n_param))));
 })()), n: 0 });
     } else {
       const n: number = this.n;
       const { q } = this;
-      return new QDyn({ q: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
-  const prev = structuredClone(q[(fieldSub(fieldAdd(i, n), 1) % n)]);
+      return new QDyn({ q: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
+  const prev = structuredClone(q[(fieldSub(fieldAdd(i, n_param), 1) % n_param)]);
   const b = structuredClone(q[i]);
-  return BitsInBytes64(fieldBitor(fieldShl(prev, fieldSub(64, Number(n))), fieldShr(b, Number(n))));
+  return BitsInBytes64(fieldBitor(fieldShl(prev, fieldSub(64, Number(n_param))), fieldShr(b, Number(n_param))));
 })()), n: 0 });
     }
   }
@@ -301,14 +301,14 @@ export class ABODyn<B, D> {
   const s = this.per_byte[Array.from({length: 0 - fieldMul(i, n)}, (_, i) => i + fieldMul(i, n))][Array.from({length: n}, (_, i) => i)];
   return new BSplitDyn({ split: Array.from({length: ilog2(ctx.D_OutputSize) - 0}, (_, __i) => __i + 0).map((j) => (() => {
   return Array.from({length: n - 0}, (_, __i) => __i + 0).map((b) => (() => {
-  return s.map((val, i) => [i, val] as [number, typeof val]).map(([a, c]) => (() => {
+  return s.map((val: any, i: number) => [i, val] as [number, typeof val]).map(([a, c]) => (() => {
   return (() => { if ((fieldBitand(fieldShr(a, j), 1) === b)) {
   return structuredClone(c);
 } else {
   return undefined;
 } })();
-})()).filter((__x) => __x !== undefined).reduce((a, b) => (() => {
-  return a.map((__a, __i) => [__a, Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i) => asRefU8(b)[i])[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldBitxor(a, b));
+})()).filter((__x: any) => __x !== undefined).reduce((a: any, b: any) => (() => {
+  return a.map((__a: any, __i: number) => [__a, Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i) => asRefU8(b)[i])[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldBitxor(a, b));
 })(), Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((_) => 0));
 })());
 })()) });
@@ -375,14 +375,14 @@ export class ABOOpeningDyn<B, D> {
   const s = this.openings[i];
   return new BSplitDyn({ split: Array.from({length: ilog2(ctx.D_OutputSize) - 0}, (_, __i) => __i + 0).map((j) => (() => {
   return Array.from({length: n - 0}, (_, __i) => __i + 0).map((b) => (() => {
-  return s.map((val, i) => [i, val] as [number, typeof val]).map(([a, c]) => (() => {
+  return s.map((val: any, i: number) => [i, val] as [number, typeof val]).map(([a, c]) => (() => {
   return (() => { if ((fieldBitand(fieldShr(a, j), 1) === b)) {
   return structuredClone(c);
 } else {
   return undefined;
 } })();
-})()).filter((__x) => __x !== undefined).reduce((a, b) => (() => {
-  return a.map((__a, __i) => [__a, Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i) => asRefU8(b)[i])[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldBitxor(a, b));
+})()).filter((__x: any) => __x !== undefined).reduce((a: any, b: any) => (() => {
+  return a.map((__a: any, __i: number) => [__a, Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i) => asRefU8(b)[i])[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldBitxor(a, b));
 })(), Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((_) => 0));
 })());
 })()) });
@@ -494,7 +494,7 @@ export class PolyDyn<T> {
       let b: any = structuredClone(this.c1[k]);
       for (let m = 0; m < s; m++)       {
         const l = fieldAdd(fieldMul(l, s), m);
-        for (const [idx, v] of voles.map((val, i) => [i, val] as [number, typeof val]))         {
+        for (const [idx, v] of voles.map((val: any, i: number) => [i, val] as [number, typeof val]))         {
           b = fieldMul(b, (() => { if ((idx === n)) {
   return structuredClone(v[k].u[l][i]);
 } else {
@@ -534,7 +534,7 @@ export class PolyDyn<T> {
       let b: any = structuredClone(this.c1[k]);
       for (let m = 0; m < s; m++)       {
         const l = fieldAdd(fieldMul(l, s), m);
-        for (const [idx, v] of voles.indices.map((val, i) => [i, val] as [number, typeof val]))         {
+        for (const [idx, v] of voles.indices.map((val: any, i: number) => [i, val] as [number, typeof val]))         {
           b = fieldMul(b, (() => { if ((idx === n)) {
   return structuredClone(voles.inputs[v[k]].u[l][i]);
 } else {
@@ -643,7 +643,7 @@ export class VopeDyn<T> {
   {
     const n: number = this.n;
     const k: number = this.k;
-    return new VopeDyn({ u: this.u.map((__a, __i) => [__a, rhs.u[__i]] as [typeof __a, unknown]).map(([a, b]) => a.map((__a, __i) => [__a, b[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldAdd(a, b))), v: this.v.map((__a, __i) => [__a, rhs.v[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldAdd(a, b)), n: 0, k: 1 });
+    return new VopeDyn({ u: this.u.map((__a: any, __i: number) => [__a, rhs.u[__i]] as [typeof __a, unknown]).map(([a, b]) => a.map((__a: any, __i: number) => [__a, b[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldAdd(a, b))), v: this.v.map((__a: any, __i: number) => [__a, rhs.v[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldAdd(a, b)), n: 0, k: 1 });
   }
 
   bitxor(rhs: any[]): number /* any::Output */
@@ -709,8 +709,8 @@ export class VopeDyn<T> {
   {
     const n: number = this.n;
     const k: number = this.k;
-    return new QDyn({ q: this.u.map((val, i) => [i, val] as [number, typeof val]).reduce((a, [i, b]) => (() => {
-  return a.map((__a, __i) => [__a, b[__i]] as [typeof __a, unknown]).map(([a, b]) => (() => {
+    return new QDyn({ q: this.u.map((val: any, i: number) => [i, val] as [number, typeof val]).reduce((a: any, [i, b]: any) => (() => {
+  return a.map((__a: any, __i: number) => [__a, b[__i]] as [typeof __a, unknown]).map(([a, b]) => (() => {
   let x = structuredClone(rhs.delta[i]);
   for (let _ = 0; _ < i; _++)   {
     x = fieldMul(x, structuredClone(rhs.delta[i]));
@@ -764,18 +764,18 @@ export class VopeDyn<T> {
 })()), v: Array.from({length: m - 0}, (_, __i) => __i + 0).map((i) => structuredClone(v[(f(i) % n)])), n: 0, k: 1 });
   }
 
-  rotate_left(n: number): any
+  rotate_left(n_param: number): any
   {
     const n: number = this.n;
     const k: number = this.k;
-    return this.remap(n, (a) => wrappingSub(a, n));
+    return this.remap(this.n, (a) => wrappingSub(a, n_param));
   }
 
-  rotate_right(n: number): any
+  rotate_right(n_param: number): any
   {
     const n: number = this.n;
     const k: number = this.k;
-    return this.remap(n, (a) => wrappingAdd(a, n));
+    return this.remap(this.n, (a) => wrappingAdd(a, n_param));
   }
 
   scale<T>(f: (arg: boolean) => any): VopeDyn<any>
@@ -794,103 +794,103 @@ export class VopeDyn<T> {
 })()), n: 0, k: 1 });
   }
 
-  bit(n: number): VopeDyn<Bit>
+  bit(n_param: number): VopeDyn<Bit>
   {
     if (this.u[0] instanceof BitsInBytes) {
       const n: number = this.n;
       const k: number = this.k;
       const { u, v } = this;
       return new VopeDyn({ u: Array.from({length: k - 0}, (_, __i) => __i + 0).map((l) => (() => {
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
+  return Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
   const b = structuredClone(u[l][i]);
-  return Bit((fieldBitand(fieldShr(b, n), 1) !== 0));
+  return Bit((fieldBitand(fieldShr(b, n_param), 1) !== 0));
 })());
-})()), v: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
+})()), v: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
   const b = structuredClone(v[i]);
-  return Bit((fieldBitand(fieldShr(b, n), 1) !== 0));
+  return Bit((fieldBitand(fieldShr(b, n_param), 1) !== 0));
 })()), n: 0, k: 1 });
     } else {
       const n: number = this.n;
       const k: number = this.k;
       const { u, v } = this;
       return new VopeDyn({ u: Array.from({length: k - 0}, (_, __i) => __i + 0).map((l) => (() => {
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
+  return Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
   const b = structuredClone(u[l][i]);
-  return Bit((fieldBitand(fieldShr(b, n), 1) !== 0));
+  return Bit((fieldBitand(fieldShr(b, n_param), 1) !== 0));
 })());
-})()), v: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
+})()), v: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
   const b = structuredClone(v[i]);
-  return Bit((fieldBitand(fieldShr(b, n), 1) !== 0));
+  return Bit((fieldBitand(fieldShr(b, n_param), 1) !== 0));
 })()), n: 0, k: 1 });
     }
   }
 
-  rotate_left_bits(n: number): any
+  rotate_left_bits(n_param: number): any
   {
     if (this.u[0] instanceof BitsInBytes) {
       const n: number = this.n;
       const k: number = this.k;
       const { u, v } = this;
       return new VopeDyn({ u: Array.from({length: k - 0}, (_, __i) => __i + 0).map((l) => (() => {
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
+  return Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
   const b = structuredClone(u[l][i]);
-  const next = structuredClone(u[l][(fieldAdd(i, 1) % n)]);
-  return BitsInBytes(fieldBitor(fieldShl(b, Number(n)), fieldShr(next, fieldSub(8, Number(n)))));
+  const next = structuredClone(u[l][(fieldAdd(i, 1) % n_param)]);
+  return BitsInBytes(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(8, Number(n_param)))));
 })());
-})()), v: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
+})()), v: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
   const b = structuredClone(v[i]);
-  const next = structuredClone(v[(fieldAdd(i, 1) % n)]);
-  return BitsInBytes(fieldBitor(fieldShl(b, Number(n)), fieldShr(next, fieldSub(8, Number(n)))));
+  const next = structuredClone(v[(fieldAdd(i, 1) % n_param)]);
+  return BitsInBytes(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(8, Number(n_param)))));
 })()), n: 0, k: 1 });
     } else {
       const n: number = this.n;
       const k: number = this.k;
       const { u, v } = this;
       return new VopeDyn({ u: Array.from({length: k - 0}, (_, __i) => __i + 0).map((l) => (() => {
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
+  return Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
   const b = structuredClone(u[l][i]);
-  const next = structuredClone(u[l][(fieldAdd(i, 1) % n)]);
-  return BitsInBytes64(fieldBitor(fieldShl(b, Number(n)), fieldShr(next, fieldSub(64, Number(n)))));
+  const next = structuredClone(u[l][(fieldAdd(i, 1) % n_param)]);
+  return BitsInBytes64(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(64, Number(n_param)))));
 })());
-})()), v: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
+})()), v: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
   const b = structuredClone(v[i]);
-  const next = structuredClone(v[(fieldAdd(i, 1) % n)]);
-  return BitsInBytes64(fieldBitor(fieldShl(b, Number(n)), fieldShr(next, fieldSub(64, Number(n)))));
+  const next = structuredClone(v[(fieldAdd(i, 1) % n_param)]);
+  return BitsInBytes64(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(64, Number(n_param)))));
 })()), n: 0, k: 1 });
     }
   }
 
-  rotate_right_bits(n: number): any
+  rotate_right_bits(n_param: number): any
   {
     if (this.u[0] instanceof BitsInBytes) {
       const n: number = this.n;
       const k: number = this.k;
       const { u, v } = this;
       return new VopeDyn({ u: Array.from({length: k - 0}, (_, __i) => __i + 0).map((l) => (() => {
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
-  const prev = structuredClone(u[l][(fieldSub(fieldAdd(i, n), 1) % n)]);
+  return Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
+  const prev = structuredClone(u[l][(fieldSub(fieldAdd(i, n_param), 1) % n_param)]);
   const b = structuredClone(u[l][i]);
-  return BitsInBytes(fieldBitor(fieldShl(prev, fieldSub(8, Number(n))), fieldShr(b, Number(n))));
+  return BitsInBytes(fieldBitor(fieldShl(prev, fieldSub(8, Number(n_param))), fieldShr(b, Number(n_param))));
 })());
-})()), v: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
-  const prev = structuredClone(v[(fieldSub(fieldAdd(i, n), 1) % n)]);
+})()), v: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
+  const prev = structuredClone(v[(fieldSub(fieldAdd(i, n_param), 1) % n_param)]);
   const b = structuredClone(v[i]);
-  return BitsInBytes(fieldBitor(fieldShl(prev, fieldSub(8, Number(n))), fieldShr(b, Number(n))));
+  return BitsInBytes(fieldBitor(fieldShl(prev, fieldSub(8, Number(n_param))), fieldShr(b, Number(n_param))));
 })()), n: 0, k: 1 });
     } else {
       const n: number = this.n;
       const k: number = this.k;
       const { u, v } = this;
       return new VopeDyn({ u: Array.from({length: k - 0}, (_, __i) => __i + 0).map((l) => (() => {
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
-  const prev = structuredClone(u[l][(fieldSub(fieldAdd(i, n), 1) % n)]);
+  return Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
+  const prev = structuredClone(u[l][(fieldSub(fieldAdd(i, n_param), 1) % n_param)]);
   const b = structuredClone(u[l][i]);
-  return BitsInBytes64(fieldBitor(fieldShl(prev, fieldSub(64, Number(n))), fieldShr(b, Number(n))));
+  return BitsInBytes64(fieldBitor(fieldShl(prev, fieldSub(64, Number(n_param))), fieldShr(b, Number(n_param))));
 })());
-})()), v: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
-  const prev = structuredClone(v[(fieldSub(fieldAdd(i, n), 1) % n)]);
+})()), v: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i) => (() => {
+  const prev = structuredClone(v[(fieldSub(fieldAdd(i, n_param), 1) % n_param)]);
   const b = structuredClone(v[i]);
-  return BitsInBytes64(fieldBitor(fieldShl(prev, fieldSub(64, Number(n))), fieldShr(b, Number(n))));
+  return BitsInBytes64(fieldBitor(fieldShl(prev, fieldSub(64, Number(n_param))), fieldShr(b, Number(n_param))));
 })()), n: 0, k: 1 });
     }
   }
@@ -901,7 +901,7 @@ export function gen_abo<B, D>(ctx: { newD: () => any }, k: number, a: number[], 
   let h = ctx.newD();
   let per_byte = Array.from({length: k - 0}, (_, __i) => __i + 0).map((_) => undefined);
   for (let i = 0; i < k; i++)   {
-    const core = Array.from({length: ilog2(k) - 0}, (_, __i) => __i + 0).reduce((acc, b) => (() => {
+    const core = Array.from({length: ilog2(k) - 0}, (_, __i) => __i + 0).reduce((acc: any, b: any) => (() => {
   if ((fieldBitand(fieldShr(i, b), 1) !== 0))   {
     const doubled = doubleVec(acc);
     acc = structuredClone(doubled[1]);
@@ -919,22 +919,22 @@ export function gen_abo<B, D>(ctx: { newD: () => any }, k: number, a: number[], 
 
 export function create_vole_from_material(ctx: { B_OutputSize: number }, s: readonly any[]): VopeDyn<number>
 {
-  const u: number[] = s.reduce((a, b) => (() => {
-  return a.map((__a, __i) => [__a, Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i) => asRefU8(b)[i])[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldBitxor(a, b));
+  const u: number[] = s.reduce((a: any, b: any) => (() => {
+  return a.map((__a: any, __i: number) => [__a, Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i) => asRefU8(b)[i])[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldBitxor(a, b));
 })(), Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((_) => 0));
-  const v: number[] = s.map((val, i) => [i, val] as [number, typeof val]).reduce((a, [i, b]) => (() => {
-  return a.map((__a, __i) => [__a, Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i) => asRefU8(b)[i])[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldBitxor(fieldBitxor(a, b), ((i) & 0xFF)));
+  const v: number[] = s.map((val: any, i: number) => [i, val] as [number, typeof val]).reduce((a: any, [i, b]: any) => (() => {
+  return a.map((__a: any, __i: number) => [__a, Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i) => asRefU8(b)[i])[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldBitxor(fieldBitxor(a, b), ((i) & 0xFF)));
 })(), Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((_) => 0));
   return new VopeDyn({ u: Array.from({length: 1 - 0}, (_, __i) => __i + 0).map((_) => structuredClone(u)), v: v, n: 0, k: 1 });
 }
 
 export function create_vole_from_material_expanded(ctx: { B_OutputSize: number }, s: readonly any[], f: (arg: Uint8Array) => any): VopeDyn<number>
 {
-  const u: number[] = s.map((b) => f(asRefU8(b)[Array.from({length: ctx.B_OutputSize}, (_, i) => i)])).reduce((a, b) => (() => {
-  return a.map((__a, __i) => [__a, Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i) => asRefU8(b)[i])[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldBitxor(a, b));
+  const u: number[] = s.map((b) => f(asRefU8(b)[Array.from({length: ctx.B_OutputSize}, (_, i) => i)])).reduce((a: any, b: any) => (() => {
+  return a.map((__a: any, __i: number) => [__a, Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i) => asRefU8(b)[i])[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldBitxor(a, b));
 })(), Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((_) => 0));
-  const v: number[] = s.map((b) => f(asRefU8(b)[Array.from({length: ctx.B_OutputSize}, (_, i) => i)])).map((val, i) => [i, val] as [number, typeof val]).reduce((a, [i, b]) => (() => {
-  return a.map((__a, __i) => [__a, Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i) => asRefU8(b)[i])[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldBitxor(fieldBitxor(a, b), ((i) & 0xFF)));
+  const v: number[] = s.map((b) => f(asRefU8(b)[Array.from({length: ctx.B_OutputSize}, (_, i) => i)])).map((val: any, i: number) => [i, val] as [number, typeof val]).reduce((a: any, [i, b]: any) => (() => {
+  return a.map((__a: any, __i: number) => [__a, Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i) => asRefU8(b)[i])[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldBitxor(fieldBitxor(a, b), ((i) & 0xFF)));
 })(), Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((_) => 0));
   return new VopeDyn({ u: Array.from({length: 1 - 0}, (_, __i) => __i + 0).map((_) => structuredClone(u)), v: v, n: 0, k: 1 });
 }

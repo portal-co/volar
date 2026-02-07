@@ -904,6 +904,183 @@ fn has_undefined_type_param(ty: &IrType, known_params: &[String]) -> bool {
     }
 }
 
+/// Rename all occurrences of `Var(old)` to `Var(new_name)` in a block, recursively.
+/// Also renames references in IrPattern::Ident if they match.
+fn rename_var_in_block(block: &mut IrBlock, old: &str, new_name: &str) {
+    for stmt in &mut block.stmts {
+        rename_var_in_stmt(stmt, old, new_name);
+    }
+    if let Some(e) = &mut block.expr {
+        rename_var_in_expr(e, old, new_name);
+    }
+}
+
+fn rename_var_in_stmt(stmt: &mut IrStmt, old: &str, new_name: &str) {
+    match stmt {
+        IrStmt::Let { pattern, init, .. } => {
+            // Don't rename the binding itself — if the let introduces a new var
+            // with the same name, it shadows.
+            if let Some(e) = init {
+                rename_var_in_expr(e, old, new_name);
+            }
+        }
+        IrStmt::Semi(e) | IrStmt::Expr(e) => {
+            rename_var_in_expr(e, old, new_name);
+        }
+    }
+}
+
+fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
+    match expr {
+        IrExpr::Var(v) => {
+            if v == old { *v = new_name.to_string(); }
+        }
+        IrExpr::Binary { left, right, .. } => {
+            rename_var_in_expr(left, old, new_name);
+            rename_var_in_expr(right, old, new_name);
+        }
+        IrExpr::Unary { expr: e, .. } => {
+            rename_var_in_expr(e, old, new_name);
+        }
+        IrExpr::Field { base, .. } => {
+            rename_var_in_expr(base, old, new_name);
+        }
+        IrExpr::Index { base, index } => {
+            rename_var_in_expr(base, old, new_name);
+            rename_var_in_expr(index, old, new_name);
+        }
+        IrExpr::Call { func, args } => {
+            rename_var_in_expr(func, old, new_name);
+            for a in args { rename_var_in_expr(a, old, new_name); }
+        }
+        IrExpr::MethodCall { receiver, args, .. } => {
+            rename_var_in_expr(receiver, old, new_name);
+            for a in args { rename_var_in_expr(a, old, new_name); }
+        }
+        IrExpr::Block(b) => {
+            rename_var_in_block(b, old, new_name);
+        }
+        IrExpr::If { cond, then_branch, else_branch } => {
+            rename_var_in_expr(cond, old, new_name);
+            rename_var_in_block(then_branch, old, new_name);
+            if let Some(eb) = else_branch { rename_var_in_expr(eb, old, new_name); }
+        }
+        IrExpr::StructExpr { fields, rest, .. } => {
+            for (_, e) in fields { rename_var_in_expr(e, old, new_name); }
+            if let Some(r) = rest { rename_var_in_expr(r, old, new_name); }
+        }
+        IrExpr::Array(elems) | IrExpr::Tuple(elems) => {
+            for e in elems { rename_var_in_expr(e, old, new_name); }
+        }
+        IrExpr::Cast { expr: e, .. } | IrExpr::Try(e) => {
+            rename_var_in_expr(e, old, new_name);
+        }
+        IrExpr::Return(Some(e)) | IrExpr::Break(Some(e)) => {
+            rename_var_in_expr(e, old, new_name);
+        }
+        IrExpr::Closure { body, .. } => {
+            rename_var_in_expr(body, old, new_name);
+        }
+        IrExpr::Assign { left, right } | IrExpr::AssignOp { left, right, .. } => {
+            rename_var_in_expr(left, old, new_name);
+            rename_var_in_expr(right, old, new_name);
+        }
+        IrExpr::Range { start, end, .. } => {
+            if let Some(s) = start { rename_var_in_expr(s, old, new_name); }
+            if let Some(e) = end { rename_var_in_expr(e, old, new_name); }
+        }
+        IrExpr::IterPipeline(chain) => {
+            rename_var_in_iter_chain(chain, old, new_name);
+        }
+        IrExpr::ArrayGenerate { body, .. } => {
+            rename_var_in_expr(body, old, new_name);
+        }
+        IrExpr::BoundedLoop { start, end, body, .. } => {
+            rename_var_in_expr(start, old, new_name);
+            rename_var_in_expr(end, old, new_name);
+            rename_var_in_block(body, old, new_name);
+        }
+        IrExpr::IterLoop { collection, body, .. } => {
+            rename_var_in_expr(collection, old, new_name);
+            rename_var_in_block(body, old, new_name);
+        }
+        IrExpr::Repeat { elem, len } => {
+            rename_var_in_expr(elem, old, new_name);
+            rename_var_in_expr(len, old, new_name);
+        }
+        IrExpr::RawMap { receiver, body, .. } => {
+            rename_var_in_expr(receiver, old, new_name);
+            rename_var_in_expr(body, old, new_name);
+        }
+        IrExpr::RawZip { left, right, body, .. } => {
+            rename_var_in_expr(left, old, new_name);
+            rename_var_in_expr(right, old, new_name);
+            rename_var_in_expr(body, old, new_name);
+        }
+        IrExpr::RawFold { receiver, init, body, .. } => {
+            rename_var_in_expr(receiver, old, new_name);
+            rename_var_in_expr(init, old, new_name);
+            rename_var_in_expr(body, old, new_name);
+        }
+        IrExpr::Match { expr: scrutinee, arms } => {
+            rename_var_in_expr(scrutinee, old, new_name);
+            for arm in arms {
+                rename_var_in_expr(&mut arm.body, old, new_name);
+            }
+        }
+        IrExpr::DefaultValue { .. }
+        | IrExpr::ArrayDefault { .. }
+        | IrExpr::Lit(_)
+        | IrExpr::Path { .. }
+        | IrExpr::LengthOf(_)
+        | IrExpr::TypenumUsize { .. }
+        | IrExpr::Return(None)
+        | IrExpr::Break(None)
+        | IrExpr::Continue
+        | IrExpr::Unreachable => {}
+    }
+}
+
+fn rename_var_in_iter_chain(chain: &mut IrIterChain, old: &str, new_name: &str) {
+    match &mut chain.source {
+        IterChainSource::Method { collection, .. } => {
+            rename_var_in_expr(collection, old, new_name);
+        }
+        IterChainSource::Range { start, end, .. } => {
+            rename_var_in_expr(start, old, new_name);
+            rename_var_in_expr(end, old, new_name);
+        }
+        IterChainSource::Zip { left, right } => {
+            rename_var_in_iter_chain(left, old, new_name);
+            rename_var_in_iter_chain(right, old, new_name);
+        }
+    }
+    for step in &mut chain.steps {
+        match step {
+            IterStep::Map { body, .. }
+            | IterStep::Filter { body, .. }
+            | IterStep::FilterMap { body, .. }
+            | IterStep::FlatMap { body, .. } => {
+                rename_var_in_expr(body, old, new_name);
+            }
+            IterStep::Take { count } | IterStep::Skip { count } => {
+                rename_var_in_expr(count, old, new_name);
+            }
+            IterStep::Chain { other } => {
+                rename_var_in_iter_chain(other, old, new_name);
+            }
+            IterStep::Enumerate => {}
+        }
+    }
+    match &mut chain.terminal {
+        IterTerminal::Fold { init, body, .. } => {
+            rename_var_in_expr(init, old, new_name);
+            rename_var_in_expr(body, old, new_name);
+        }
+        IterTerminal::Collect | IterTerminal::CollectTyped(_) | IterTerminal::Lazy => {}
+    }
+}
+
 fn lower_block_dyn(block: &IrBlock, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) -> IrBlock {
     IrBlock {
         stmts: block
@@ -1049,7 +1226,10 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
 
             if let MethodKind::Vole(VoleMethod::Remap) = method {
                 if args.len() == 1 {
-                    args.insert(0, IrExpr::Var("n".to_string()));
+                    args.insert(0, IrExpr::Field {
+                        base: Box::new(IrExpr::Var("self".to_string())),
+                        field: "n".to_string(),
+                    });
                 }
             }
 
@@ -2607,5 +2787,53 @@ mod tests {
             }
             other => panic!("Expected Call(ilog2), got {:?}", other),
         }
+    }
+}
+
+#[cfg(test)]
+mod rename_tests {
+    use super::*;
+    use crate::ir::*;
+    
+    #[test]
+    fn rename_var_in_closure() {
+        let mut block = IrBlock {
+            stmts: vec![IrStmt::Expr(IrExpr::MethodCall {
+                receiver: Box::new(IrExpr::Var("self".to_string())),
+                method: MethodKind::Unknown("remap".to_string()),
+                type_args: vec![],
+                args: vec![
+                    IrExpr::Field {
+                        base: Box::new(IrExpr::Var("self".to_string())),
+                        field: "n".to_string(),
+                    },
+                    IrExpr::Closure {
+                        params: vec![IrClosureParam {
+                            pattern: IrPattern::ident("a"),
+                            ty: None,
+                        }],
+                        ret_type: None,
+                        body: Box::new(IrExpr::MethodCall {
+                            receiver: Box::new(IrExpr::Var("a".to_string())),
+                            method: MethodKind::Unknown("wrapping_sub".to_string()),
+                            type_args: vec![],
+                            args: vec![IrExpr::Var("n".to_string())],
+                        }),
+                    },
+                ],
+            })],
+            expr: None,
+        };
+        rename_var_in_block(&mut block, "n", "n_param");
+        // Check that Var("n") in the closure body was renamed
+        if let IrStmt::Expr(IrExpr::MethodCall { args, .. }) = &block.stmts[0] {
+            if let IrExpr::Closure { body, .. } = &args[1] {
+                if let IrExpr::MethodCall { args: inner_args, .. } = body.as_ref() {
+                    assert_eq!(inner_args[0], IrExpr::Var("n_param".to_string()));
+                    return;
+                }
+            }
+        }
+        panic!("Could not find renamed var in closure body");
     }
 }
