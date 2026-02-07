@@ -1580,67 +1580,10 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 terminal,
             })
         }
-        // DefaultValue for array types → IterPipeline: (0..len).map(|_| DefaultValue(elem)).collect()
-        // This recursively handles nested arrays: Array<Array<u8, M>, N> →
-        //   (0..N).map(_ => (0..M).map(_ => 0).collect()).collect()
-        IrExpr::DefaultValue { ty: Some(ty) } if matches!(ty.as_ref(), IrType::Array { .. }) => {
-            let (elem_ty, len) = match ty.as_ref() {
-                IrType::Array { elem, len, .. } => (Some(elem.clone()), len.clone()),
-                _ => unreachable!(),
-            };
-            // Resolve placeholder "N" when GenericArray::default() had no turbofish
-            let resolved_len = match &len {
-                ArrayLength::TypeParam(p) if p == "N" => {
-                    // Check if "N" matches any actual length generic
-                    let has_n = fn_gen.iter().any(|g| g.name == "N" &&
-                        classify_generic_with_aliases(g, &[fn_gen], &ctx.aliases()) == GenericKind::Length);
-                    if !has_n {
-                        // Placeholder — find the most likely length generic
-                        let length_gens: Vec<_> = fn_gen.iter()
-                            .filter(|g| classify_generic_with_aliases(g, &[fn_gen], &ctx.aliases()) == GenericKind::Length)
-                            .collect();
-                        if length_gens.len() == 1 {
-                            ArrayLength::TypeParam(length_gens[0].name.clone())
-                        } else {
-                            len.clone()
-                        }
-                    } else {
-                        len.clone()
-                    }
-                }
-                _ => len.clone(),
-            };
-            let len_expr = array_length_to_expr(&resolved_len, fn_gen, ctx);
-            // Recursively lower the inner default — if elem is also an Array,
-            // lower_expr_dyn will hit this same branch again.
-            let default_body = lower_expr_dyn(
-                &IrExpr::DefaultValue {
-                    ty: Some(Box::new(lower_type_dyn(&elem_ty.as_ref().unwrap(), ctx, fn_gen))),
-                },
-                ctx,
-                fn_gen,
-            );
-            let terminal = IterTerminal::CollectTyped(
-                lower_type_dyn(&elem_ty.as_ref().unwrap(), ctx, fn_gen),
-            );
-            IrExpr::IterPipeline(IrIterChain {
-                source: IterChainSource::Range {
-                    start: Box::new(IrExpr::Lit(IrLit::Int(0))),
-                    end: Box::new(len_expr),
-                    inclusive: false,
-                },
-                steps: vec![IterStep::Map {
-                    var: IrPattern::Wild,
-                    body: Box::new(default_body),
-                }],
-                terminal,
-            })
-        }
-        // DefaultValue for non-array types → lower the type, pass through
+        // DefaultValue → recursively expand into concrete expressions.
+        // No DefaultValue nodes should survive past dyn-lowering.
         IrExpr::DefaultValue { ty } => {
-            IrExpr::DefaultValue {
-                ty: ty.as_ref().map(|t| Box::new(lower_type_dyn(t, ctx, fn_gen))),
-            }
+            lower_default_value(ty.as_deref(), ctx, fn_gen)
         }
         IrExpr::LengthOf(len) => array_length_to_expr(len, fn_gen, ctx),
         IrExpr::Field { base, field } => IrExpr::Field {
@@ -2009,6 +1952,149 @@ fn resolve_projection_as_length(
 /// Convert an `ArrayLength` into a runtime `IrExpr` representing a `usize` value.
 ///
 /// This is the primary entry point for converting type-level lengths into
+/// Recursively lower a `DefaultValue` into concrete expressions.
+///
+/// This is the heart of the unified default-value lowering. Instead of leaving
+/// `DefaultValue` nodes for the printer to interpret, we expand them here:
+///
+/// - `Array<T, N>` → `IterPipeline(0..N_expr).map(_ => lower_default_value(T))`
+/// - `Primitive(u8/u32/usize)` → `Lit(0)`
+/// - `Primitive(u64/i128)` → `Lit(0n)`
+/// - `Primitive(Bool)` → `Lit(false)`
+/// - `Primitive(Bit/Galois/...)` → `MethodCall(ClassName, "default", [])`
+/// - `TypeParam(T)` → `Call(Field(ctx, "defaultT"), [])`  (witness)
+/// - `Infer` / `None` → `Lit(0)` (best-effort fallback)
+/// - `Vector<T>` → `Lit([])` (empty vec)
+///
+/// For arrays, the length is resolved through the same witness machinery as
+/// everywhere else (`array_length_to_expr`), and `N` placeholders are resolved
+/// to the unique length generic when unambiguous.
+fn lower_default_value(
+    ty: Option<&IrType>,
+    ctx: &LoweringContext,
+    fn_gen: &[IrGenericParam],
+) -> IrExpr {
+    let Some(ty) = ty else {
+        // No type info at all — best-effort: emit 0
+        return IrExpr::Lit(IrLit::Int(0));
+    };
+
+    match ty {
+        IrType::Primitive(p) => match p {
+            PrimitiveType::Bool => IrExpr::Lit(IrLit::Bool(false)),
+            PrimitiveType::U8 | PrimitiveType::U32 | PrimitiveType::Usize => {
+                IrExpr::Lit(IrLit::Int(0))
+            }
+            PrimitiveType::U64 | PrimitiveType::I128 => {
+                // 0n for bigint — use Int(0), the fold accumulator context
+                // will handle bigint coercion at the call site.
+                IrExpr::Lit(IrLit::Int(0))
+            }
+            PrimitiveType::Bit
+            | PrimitiveType::Galois
+            | PrimitiveType::Galois64
+            | PrimitiveType::BitsInBytes
+            | PrimitiveType::BitsInBytes64 => {
+                // Emit `Bit.default()` etc.
+                IrExpr::MethodCall {
+                    receiver: Box::new(IrExpr::Path {
+                        segments: vec![format!("{}", p)],
+                        type_args: vec![],
+                    }),
+                    method: MethodKind::Std("default".to_string()),
+                    args: vec![],
+                    type_args: vec![],
+                }
+            }
+        },
+
+        IrType::Array { elem, len, .. } => {
+            // Resolve placeholder "N" when GenericArray::default() had no turbofish
+            let resolved_len = match len {
+                ArrayLength::TypeParam(p) if p == "N" => {
+                    let has_n = fn_gen.iter().any(|g| {
+                        g.name == "N"
+                            && classify_generic_with_aliases(g, &[fn_gen], &ctx.aliases())
+                                == GenericKind::Length
+                    });
+                    if !has_n {
+                        let length_gens: Vec<_> = fn_gen
+                            .iter()
+                            .filter(|g| {
+                                classify_generic_with_aliases(g, &[fn_gen], &ctx.aliases())
+                                    == GenericKind::Length
+                            })
+                            .collect();
+                        if length_gens.len() == 1 {
+                            ArrayLength::TypeParam(length_gens[0].name.clone())
+                        } else {
+                            len.clone()
+                        }
+                    } else {
+                        len.clone()
+                    }
+                }
+                _ => len.clone(),
+            };
+            let len_expr = array_length_to_expr(&resolved_len, fn_gen, ctx);
+
+            // Recurse: lower the element default
+            let lowered_elem_ty = lower_type_dyn(elem, ctx, fn_gen);
+            let default_body = lower_default_value(Some(&lowered_elem_ty), ctx, fn_gen);
+            let terminal = IterTerminal::CollectTyped(lowered_elem_ty);
+
+            IrExpr::IterPipeline(IrIterChain {
+                source: IterChainSource::Range {
+                    start: Box::new(IrExpr::Lit(IrLit::Int(0))),
+                    end: Box::new(len_expr),
+                    inclusive: false,
+                },
+                steps: vec![IterStep::Map {
+                    var: IrPattern::Wild,
+                    body: Box::new(default_body),
+                }],
+                terminal,
+            })
+        }
+
+        IrType::Vector { elem } => {
+            // Empty vec default → DefaultValue so the TS printer emits `[]`
+            IrExpr::DefaultValue {
+                ty: Some(Box::new(IrType::Vector {
+                    elem: Box::new(lower_type_dyn(elem, ctx, fn_gen)),
+                })),
+            }
+        }
+
+        IrType::TypeParam(name) => {
+            // Type-param default → witness call: ctx.defaultT()
+            IrExpr::Call {
+                func: Box::new(IrExpr::Field {
+                    base: Box::new(IrExpr::Var("ctx".to_string())),
+                    field: format!("default{}", name),
+                }),
+                args: vec![],
+            }
+        }
+
+        IrType::Infer => {
+            // Unknown element type — best-effort: emit 0
+            // This happens for bare GenericArray::default() without turbofish.
+            // A smarter pass could infer from struct-field usage.
+            IrExpr::Lit(IrLit::Int(0))
+        }
+
+        _ => {
+            // Fallback for other types (structs, tuples, etc.)
+            // Leave as DefaultValue for the printer to handle
+            IrExpr::DefaultValue {
+                ty: Some(Box::new(lower_type_dyn(ty, ctx, fn_gen))),
+            }
+        }
+    }
+}
+
+/// Convert an `ArrayLength` to a runtime expression. Handles type-param lengths,
 /// runtime expressions. Unlike `lower_array_length` (which stays in the
 /// `ArrayLength` domain), this produces proper `IrExpr` nodes — including
 /// `IrExpr::Binary` for arithmetic projections like `K2: Add<K>` → `k2 + k`.
@@ -2674,7 +2760,8 @@ mod tests {
                 match &chain.steps[0] {
                     IterStep::Map { var, body } => {
                         assert_eq!(*var, IrPattern::Wild);
-                        assert!(matches!(body.as_ref(), IrExpr::DefaultValue { ty: Some(t) } if matches!(t.as_ref(), IrType::Infer)));
+                        // Infer element type → lowered to Lit(0) as best-effort
+                        assert_eq!(**body, IrExpr::Lit(IrLit::Int(0)));
                     }
                     other => panic!("Expected Map step, got {:?}", other),
                 }
@@ -2702,12 +2789,8 @@ mod tests {
                 match &chain.steps[0] {
                     IterStep::Map { var, body } => {
                         assert_eq!(*var, IrPattern::Wild);
-                        match body.as_ref() {
-                            IrExpr::DefaultValue { ty: Some(t) } => {
-                                assert_eq!(**t, IrType::Primitive(PrimitiveType::U8));
-                            }
-                            other => panic!("Expected DefaultValue with type, got {:?}", other),
-                        }
+                        // u8 element type → lowered to Lit(0)
+                        assert_eq!(**body, IrExpr::Lit(IrLit::Int(0)));
                     }
                     other => panic!("Expected Map step, got {:?}", other),
                 }
