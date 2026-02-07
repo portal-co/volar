@@ -216,7 +216,8 @@ impl TsBackend for TsPreambleWriter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "// Auto-generated TypeScript from volar-spec")?;
         writeln!(f, "// Type-level lengths have been converted to runtime number witnesses")?;
-        writeln!(f, "// @ts-nocheck — generated code uses dynamic patterns that need runtime dispatch")?;
+        // NO
+        // writeln!(f, "// @ts-nocheck — generated code uses dynamic patterns that need runtime dispatch")?;
         writeln!(f)?;
         writeln!(f, "import {{")?;
         writeln!(f, "  type Cloneable,")?;
