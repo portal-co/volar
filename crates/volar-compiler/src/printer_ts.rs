@@ -391,14 +391,14 @@ pub fn print_module_ts(module: &IrModule) -> String {
 // ============================================================================
 
 trait TsBackend {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result;
 }
 
 struct TsFmt<T: TsBackend>(T);
 
 impl<T: TsBackend> fmt::Display for TsFmt<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        self.0.ts_fmt(f)
     }
 }
 
@@ -546,7 +546,7 @@ fn is_statement_like(expr: &IrExpr) -> bool {
 struct TsPreambleWriter;
 
 impl TsBackend for TsPreambleWriter {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "// Auto-generated TypeScript from volar-spec")?;
         writeln!(f, "// Type-level lengths have been converted to runtime number witnesses")?;
         // NO
@@ -595,7 +595,7 @@ struct TsModuleWriter<'a> {
 }
 
 impl<'a> TsBackend for TsModuleWriter<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Group impl items by self_ty struct name so we can merge into class bodies.
         let mut impl_groups: BTreeMap<String, Vec<&IrImpl>> = BTreeMap::new();
         for imp in &self.module.impls {
@@ -607,14 +607,14 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
         for s in &self.module.structs {
             let name = s.kind.to_string();
             let impls = impl_groups.remove(&name).unwrap_or_default();
-            TsClassWriter { s, impls: &impls, witness_map: self.witness_map }.fmt(f)?;
+            TsClassWriter { s, impls: &impls, witness_map: self.witness_map }.ts_fmt(f)?;
             writeln!(f)?;
         }
 
         // Emit standalone functions
         for func in &self.module.functions {
             let needs = compute_function_witnesses(func);
-            TsFunctionWriter { func, indent: 0, witness_needs: &needs, witness_map: self.witness_map }.fmt(f)?;
+            TsFunctionWriter { func, indent: 0, witness_needs: &needs, witness_map: self.witness_map }.ts_fmt(f)?;
             writeln!(f)?;
         }
 
@@ -625,7 +625,7 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
                 for item in &imp.items {
                     if let IrImplItem::Method(func) = item {
                         let needs = compute_function_witnesses(func);
-                        TsFunctionWriter { func, indent: 0, witness_needs: &needs, witness_map: self.witness_map }.fmt(f)?;
+                        TsFunctionWriter { func, indent: 0, witness_needs: &needs, witness_map: self.witness_map }.ts_fmt(f)?;
                         writeln!(f)?;
                     }
                 }
@@ -647,13 +647,13 @@ struct TsClassWriter<'a> {
 }
 
 impl<'a> TsBackend for TsClassWriter<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = self.s.kind.to_string();
         let struct_generics = &self.s.generics;
         let used_params = struct_used_type_params(self.s);
 
         write!(f, "export class {}", name)?;
-        TsGenericsWriter { generics: struct_generics, used_only: Some(&used_params) }.fmt(f)?;
+        TsGenericsWriter { generics: struct_generics, used_only: Some(&used_params) }.ts_fmt(f)?;
         writeln!(f, " {{")?;
 
         // Constructor with non-phantom fields — takes an initializer object
@@ -664,7 +664,7 @@ impl<'a> TsBackend for TsClassWriter<'a> {
         // Declare fields
         for field in &fields {
             write!(f, "  {}: ", field.name)?;
-            TsTypeWriter { ty: &field.ty }.fmt(f)?;
+            TsTypeWriter { ty: &field.ty }.ts_fmt(f)?;
             writeln!(f, ";")?;
         }
         writeln!(f)?;
@@ -672,7 +672,7 @@ impl<'a> TsBackend for TsClassWriter<'a> {
         for (i, field) in fields.iter().enumerate() {
             let comma = if i + 1 < fields.len() { "," } else { "" };
             write!(f, "    {}: ", field.name)?;
-            TsTypeWriter { ty: &field.ty }.fmt(f)?;
+            TsTypeWriter { ty: &field.ty }.ts_fmt(f)?;
             writeln!(f, "{}", comma)?;
         }
         writeln!(f, "  }}) {{")?;
@@ -686,7 +686,7 @@ impl<'a> TsBackend for TsClassWriter<'a> {
         for im in &analysis.unique_methods {
             writeln!(f)?;
             let needs = compute_function_witnesses(im.func);
-            TsMethodWriter { func: im.func, imp: im.imp, indent: 1, witness_needs: &needs, witness_map: self.witness_map }.fmt(f)?;
+            TsMethodWriter { func: im.func, imp: im.imp, indent: 1, witness_needs: &needs, witness_map: self.witness_map }.ts_fmt(f)?;
         }
 
         // Emit merged methods (runtime dispatch)
@@ -699,7 +699,7 @@ impl<'a> TsBackend for TsClassWriter<'a> {
                 indent: 1,
                 witness_needs: &needs,
                 witness_map: self.witness_map,
-            }.fmt(f)?;
+            }.ts_fmt(f)?;
         }
 
         writeln!(f, "}}")?;
@@ -726,7 +726,7 @@ impl<'a> TsMethodWriter<'a> {
 }
 
 impl<'a> TsBackend for TsMethodWriter<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ind = "  ".repeat(self.indent);
         let name = ts_method_name(&self.func.name, self.imp.trait_.as_ref());
 
@@ -738,7 +738,7 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
         }
 
         let used_params = function_used_type_params(self.func);
-        TsGenericsWriter { generics: &self.func.generics, used_only: Some(&used_params) }.fmt(f)?;
+        TsGenericsWriter { generics: &self.func.generics, used_only: Some(&used_params) }.ts_fmt(f)?;
 
         write!(f, "(")?;
         let mut first_param = true;
@@ -760,11 +760,11 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
 
         if let Some(ret) = &self.func.return_type {
             write!(f, ": ")?;
-            TsTypeWriter { ty: ret }.fmt(f)?;
+            TsTypeWriter { ty: ret }.ts_fmt(f)?;
         }
 
         writeln!(f)?;
-        TsBlockWriter { block: &self.func.body, indent: self.indent, witness_map: self.witness_map }.fmt(f)?;
+        TsBlockWriter { block: &self.func.body, indent: self.indent, witness_map: self.witness_map }.ts_fmt(f)?;
         writeln!(f)?;
         Ok(())
     }
@@ -781,7 +781,7 @@ struct TsMergedMethodWriter<'a> {
 }
 
 impl<'a> TsBackend for TsMergedMethodWriter<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ind = "  ".repeat(self.indent);
         let ind2 = "  ".repeat(self.indent + 1);
 
@@ -813,7 +813,7 @@ impl<'a> TsBackend for TsMergedMethodWriter<'a> {
             })
             .map(|p| (*p).clone())
             .collect();
-        TsGenericsWriter { generics: &generics_owned, used_only: None }.fmt(f)?;
+        TsGenericsWriter { generics: &generics_owned, used_only: None }.ts_fmt(f)?;
 
         // Parameters — use the broadest signature (first variant's params)
         write!(f, "(")?;
@@ -830,7 +830,7 @@ impl<'a> TsBackend for TsMergedMethodWriter<'a> {
         // Return type — use first variant's
         if let Some(ret) = &first.func.return_type {
             write!(f, ": ")?;
-            TsTypeWriter { ty: ret }.fmt(f)?;
+            TsTypeWriter { ty: ret }.ts_fmt(f)?;
         }
 
         writeln!(f)?;
@@ -857,16 +857,16 @@ impl<'a> TsBackend for TsMergedMethodWriter<'a> {
             let body = &variant.func.body;
             let inner_ind = "  ".repeat(self.indent + 2);
             for stmt in &body.stmts {
-                TsStmtWriter { stmt, indent: self.indent + 2 }.fmt(f)?;
+                TsStmtWriter { stmt, indent: self.indent + 2 }.ts_fmt(f)?;
             }
             if let Some(tail) = &body.expr {
                 if is_statement_like(tail) {
                     write!(f, "{}", inner_ind)?;
-                    TsExprWriter { expr: tail }.fmt(f)?;
+                    TsExprWriter { expr: tail }.ts_fmt(f)?;
                     writeln!(f, ";")?;
                 } else {
                     write!(f, "{}return ", inner_ind)?;
-                    TsExprWriter { expr: tail }.fmt(f)?;
+                    TsExprWriter { expr: tail }.ts_fmt(f)?;
                     writeln!(f, ";")?;
                 }
             }
@@ -888,12 +888,12 @@ struct TsFunctionWriter<'a> {
 }
 
 impl<'a> TsBackend for TsFunctionWriter<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ind = "  ".repeat(self.indent);
         let name = if self.func.name.starts_with("r#") { &self.func.name[2..] } else { &self.func.name };
         write!(f, "{}export function {}", ind, name)?;
         let used_params = function_used_type_params(self.func);
-        TsGenericsWriter { generics: &self.func.generics, used_only: Some(&used_params) }.fmt(f)?;
+        TsGenericsWriter { generics: &self.func.generics, used_only: Some(&used_params) }.ts_fmt(f)?;
         write!(f, "(")?;
         for (i, p) in self.func.params.iter().enumerate() {
             if i > 0 {
@@ -905,10 +905,10 @@ impl<'a> TsBackend for TsFunctionWriter<'a> {
         write!(f, ")")?;
         if let Some(ret) = &self.func.return_type {
             write!(f, ": ")?;
-            TsTypeWriter { ty: ret }.fmt(f)?;
+            TsTypeWriter { ty: ret }.ts_fmt(f)?;
         }
         writeln!(f)?;
-        TsBlockWriter { block: &self.func.body, indent: self.indent }.fmt(f)?;
+        TsBlockWriter { block: &self.func.body, indent: self.indent }.ts_fmt(f)?;
         writeln!(f)?;
         Ok(())
     }
@@ -925,7 +925,7 @@ struct TsGenericsWriter<'a> {
 }
 
 impl<'a> TsBackend for TsGenericsWriter<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let type_params: Vec<&IrGenericParam> = self.generics.iter()
             .filter(|p| {
                 if p.kind != IrGenericParamKind::Type {
@@ -968,20 +968,20 @@ struct TsTypeWriter<'a> {
 }
 
 impl<'a> TsBackend for TsTypeWriter<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.ty {
             IrType::Primitive(p) => write!(f, "{}", ts_primitive(p))?,
             IrType::Vector { elem } => {
-                TsTypeWriter { ty: elem }.fmt(f)?;
+                TsTypeWriter { ty: elem }.ts_fmt(f)?;
                 write!(f, "[]")?;
             }
             IrType::Array { kind, elem, .. } => {
                 if *kind == ArrayKind::Slice {
                     write!(f, "readonly ")?;
-                    TsTypeWriter { ty: elem }.fmt(f)?;
+                    TsTypeWriter { ty: elem }.ts_fmt(f)?;
                     write!(f, "[]")?;
                 } else {
-                    TsTypeWriter { ty: elem }.fmt(f)?;
+                    TsTypeWriter { ty: elem }.ts_fmt(f)?;
                     write!(f, "[]")?;
                 }
             }
@@ -989,7 +989,7 @@ impl<'a> TsBackend for TsTypeWriter<'a> {
                 let name = kind.to_string();
                 if name == "Option" && type_args.len() == 1 {
                     write!(f, "(")?;
-                    TsTypeWriter { ty: &type_args[0] }.fmt(f)?;
+                    TsTypeWriter { ty: &type_args[0] }.ts_fmt(f)?;
                     write!(f, " | undefined)")?;
                     return Ok(());
                 }
@@ -1000,7 +1000,7 @@ impl<'a> TsBackend for TsTypeWriter<'a> {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
-                        TsTypeWriter { ty: arg }.fmt(f)?;
+                        TsTypeWriter { ty: arg }.ts_fmt(f)?;
                     }
                     write!(f, ">")?;
                 }
@@ -1022,17 +1022,17 @@ impl<'a> TsBackend for TsTypeWriter<'a> {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    TsTypeWriter { ty: elem }.fmt(f)?;
+                    TsTypeWriter { ty: elem }.ts_fmt(f)?;
                 }
                 write!(f, "]")?;
             }
             IrType::Unit => write!(f, "void")?,
             IrType::Reference { elem, .. } => {
-                TsTypeWriter { ty: elem }.fmt(f)?;
+                TsTypeWriter { ty: elem }.ts_fmt(f)?;
             }
             IrType::Projection { base, assoc, .. } => {
                 write!(f, "number /* ")?;
-                TsTypeWriter { ty: base }.fmt(f)?;
+                TsTypeWriter { ty: base }.ts_fmt(f)?;
                 write!(f, "::{} */", assoc)?;
             }
             IrType::Existential { bounds } => {
@@ -1045,11 +1045,11 @@ impl<'a> TsBackend for TsTypeWriter<'a> {
                                 FnInput::Bool => "boolean",
                             };
                             write!(f, "(arg: {}) => ", param_ty)?;
-                            TsTypeWriter { ty: ret }.fmt(f)?;
+                            TsTypeWriter { ty: ret }.ts_fmt(f)?;
                             return Ok(());
                         }
                         TraitKind::AsRef(ty) => {
-                            TsTypeWriter { ty }.fmt(f)?;
+                            TsTypeWriter { ty }.ts_fmt(f)?;
                             return Ok(());
                         }
                         _ => {}
@@ -1071,10 +1071,10 @@ impl<'a> TsBackend for TsTypeWriter<'a> {
                         write!(f, ", ")?;
                     }
                     write!(f, "arg{}: ", i)?;
-                    TsTypeWriter { ty: p }.fmt(f)?;
+                    TsTypeWriter { ty: p }.ts_fmt(f)?;
                 }
                 write!(f, ") => ")?;
-                TsTypeWriter { ty: ret }.fmt(f)?;
+                TsTypeWriter { ty: ret }.ts_fmt(f)?;
             }
             IrType::Never => write!(f, "never")?,
             IrType::Infer => write!(f, "unknown")?,
@@ -1094,11 +1094,11 @@ struct TsBlockWriter<'a> {
 }
 
 impl<'a> TsBackend for TsBlockWriter<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ind = "  ".repeat(self.indent);
         writeln!(f, "{}{{", ind)?;
         for stmt in &self.block.stmts {
-            TsStmtWriter { stmt, indent: self.indent + 1 }.fmt(f)?;
+            TsStmtWriter { stmt, indent: self.indent + 1 }.ts_fmt(f)?;
         }
         if let Some(e) = &self.block.expr {
             let inner = "  ".repeat(self.indent + 1);
@@ -1109,7 +1109,7 @@ impl<'a> TsBackend for TsBlockWriter<'a> {
                 writeln!(f)?;
             } else {
                 write!(f, "{}return ", inner)?;
-                TsExprWriter { expr: e }.fmt(f)?;
+                TsExprWriter { expr: e }.ts_fmt(f)?;
                 writeln!(f, ";")?;
             }
         }
@@ -1124,60 +1124,60 @@ fn emit_statement_expr(e: &IrExpr, indent: usize, f: &mut fmt::Formatter<'_>) ->
     match e {
         IrExpr::BoundedLoop { var, start, end, inclusive, body } => {
             write!(f, "for (let {} = ", var)?;
-            TsExprWriter { expr: start }.fmt(f)?;
+            TsExprWriter { expr: start }.ts_fmt(f)?;
             write!(f, "; {} {} ", var, if *inclusive { "<=" } else { "<" })?;
-            TsExprWriter { expr: end }.fmt(f)?;
+            TsExprWriter { expr: end }.ts_fmt(f)?;
             write!(f, "; {}++) ", var)?;
-            TsBlockWriter { block: body, indent }.fmt(f)?;
+            TsBlockWriter { block: body, indent }.ts_fmt(f)?;
         }
         IrExpr::IterLoop { pattern, collection, body } => {
             write!(f, "for (const ")?;
-            TsPatternWriter { pat: pattern }.fmt(f)?;
+            TsPatternWriter { pat: pattern }.ts_fmt(f)?;
             write!(f, " of ")?;
-            TsExprWriter { expr: collection }.fmt(f)?;
+            TsExprWriter { expr: collection }.ts_fmt(f)?;
             write!(f, ") ")?;
-            TsBlockWriter { block: body, indent }.fmt(f)?;
+            TsBlockWriter { block: body, indent }.ts_fmt(f)?;
         }
         IrExpr::If { cond, then_branch, else_branch } => {
             write!(f, "if (")?;
-            TsExprWriter { expr: cond }.fmt(f)?;
+            TsExprWriter { expr: cond }.ts_fmt(f)?;
             write!(f, ") ")?;
-            TsBlockWriter { block: then_branch, indent }.fmt(f)?;
+            TsBlockWriter { block: then_branch, indent }.ts_fmt(f)?;
             if let Some(eb) = else_branch {
                 write!(f, " else ")?;
                 match eb.as_ref() {
                     IrExpr::Block(b) => {
-                        TsBlockWriter { block: b, indent }.fmt(f)?;
+                        TsBlockWriter { block: b, indent }.ts_fmt(f)?;
                     }
                     other if is_statement_like(other) => {
                         emit_statement_expr(other, indent, f)?;
                     }
                     other => {
                         write!(f, "{{ ")?;
-                        TsExprWriter { expr: other }.fmt(f)?;
+                        TsExprWriter { expr: other }.ts_fmt(f)?;
                         write!(f, "; }}")?;
                     }
                 }
             }
         }
         IrExpr::Block(b) => {
-            TsBlockWriter { block: b, indent }.fmt(f)?;
+            TsBlockWriter { block: b, indent }.ts_fmt(f)?;
         }
         IrExpr::Assign { left, right } => {
-            TsExprWriter { expr: left }.fmt(f)?;
+            TsExprWriter { expr: left }.ts_fmt(f)?;
             write!(f, " = ")?;
-            TsExprWriter { expr: right }.fmt(f)?;
+            TsExprWriter { expr: right }.ts_fmt(f)?;
             write!(f, ";")?;
         }
         IrExpr::AssignOp { op, left, right } => {
-            TsExprWriter { expr: left }.fmt(f)?;
+            TsExprWriter { expr: left }.ts_fmt(f)?;
             write!(f, " {}= ", ts_bin_op(*op))?;
-            TsExprWriter { expr: right }.fmt(f)?;
+            TsExprWriter { expr: right }.ts_fmt(f)?;
             write!(f, ";")?;
         }
         other => {
             // Fallback: just emit as expression statement
-            TsExprWriter { expr: other }.fmt(f)?;
+            TsExprWriter { expr: other }.ts_fmt(f)?;
             write!(f, ";")?;
         }
     }
@@ -1194,21 +1194,21 @@ struct TsStmtWriter<'a> {
 }
 
 impl<'a> TsBackend for TsStmtWriter<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let ind = "  ".repeat(self.indent);
         match self.stmt {
             IrStmt::Let { pattern, ty, init } => {
                 let is_mutable = pattern_is_mutable(pattern);
                 let kw = if is_mutable { "let" } else { "const" };
                 write!(f, "{}{} ", ind, kw)?;
-                TsPatternWriter { pat: pattern }.fmt(f)?;
+                TsPatternWriter { pat: pattern }.ts_fmt(f)?;
                 if let Some(t) = ty {
                     write!(f, ": ")?;
-                    TsTypeWriter { ty: t }.fmt(f)?;
+                    TsTypeWriter { ty: t }.ts_fmt(f)?;
                 }
                 if let Some(i) = init {
                     write!(f, " = ")?;
-                    TsExprWriter { expr: i }.fmt(f)?;
+                    TsExprWriter { expr: i }.ts_fmt(f)?;
                 }
                 writeln!(f, ";")?;
             }
@@ -1220,7 +1220,7 @@ impl<'a> TsBackend for TsStmtWriter<'a> {
                     writeln!(f)?;
                 } else {
                     write!(f, "{}", ind)?;
-                    TsExprWriter { expr: e }.fmt(f)?;
+                    TsExprWriter { expr: e }.ts_fmt(f)?;
                     writeln!(f, ";")?;
                 }
             }
@@ -1231,7 +1231,7 @@ impl<'a> TsBackend for TsStmtWriter<'a> {
                     writeln!(f)?;
                 } else {
                     write!(f, "{}", ind)?;
-                    TsExprWriter { expr: e }.fmt(f)?;
+                    TsExprWriter { expr: e }.ts_fmt(f)?;
                     writeln!(f, ";")?;
                 }
             }
@@ -1249,7 +1249,7 @@ struct TsExprWriter<'a> {
 }
 
 impl<'a> TsBackend for TsExprWriter<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.expr {
             IrExpr::Lit(l) => ts_literal(l, f)?,
             IrExpr::Var(v) => {
@@ -1259,15 +1259,15 @@ impl<'a> TsBackend for TsExprWriter<'a> {
             IrExpr::Binary { op, left, right } => {
                 if let Some(helper) = bin_op_helper(*op) {
                     write!(f, "{}(", helper)?;
-                    TsExprWriter { expr: left }.fmt(f)?;
+                    TsExprWriter { expr: left }.ts_fmt(f)?;
                     write!(f, ", ")?;
-                    TsExprWriter { expr: right }.fmt(f)?;
+                    TsExprWriter { expr: right }.ts_fmt(f)?;
                     write!(f, ")")?;
                 } else {
                     write!(f, "(")?;
-                    TsExprWriter { expr: left }.fmt(f)?;
+                    TsExprWriter { expr: left }.ts_fmt(f)?;
                     write!(f, " {} ", ts_bin_op(*op))?;
-                    TsExprWriter { expr: right }.fmt(f)?;
+                    TsExprWriter { expr: right }.ts_fmt(f)?;
                     write!(f, ")")?;
                 }
             }
@@ -1275,14 +1275,14 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 match op {
                     SpecUnaryOp::Neg => {
                         write!(f, "-")?;
-                        TsExprWriter { expr }.fmt(f)?;
+                        TsExprWriter { expr }.ts_fmt(f)?;
                     }
                     SpecUnaryOp::Not => {
                         write!(f, "!")?;
-                        TsExprWriter { expr }.fmt(f)?;
+                        TsExprWriter { expr }.ts_fmt(f)?;
                     }
                     SpecUnaryOp::Deref | SpecUnaryOp::Ref | SpecUnaryOp::RefMut => {
-                        TsExprWriter { expr }.fmt(f)?;
+                        TsExprWriter { expr }.ts_fmt(f)?;
                     }
                 }
             }
@@ -1293,30 +1293,30 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 // Check for Some(x) → x and None → undefined
                 if let IrExpr::Path { segments, .. } = func.as_ref() {
                     if segments.len() == 1 && segments[0] == "Some" && args.len() == 1 {
-                        return TsExprWriter { expr: &args[0] }.fmt(f);
+                        return TsExprWriter { expr: &args[0] }.ts_fmt(f);
                     }
                     if segments.len() == 1 && segments[0] == "None" && args.is_empty() {
                         return write!(f, "undefined");
                     }
                 }
-                TsExprWriter { expr: func }.fmt(f)?;
+                TsExprWriter { expr: func }.ts_fmt(f)?;
                 write!(f, "(")?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    TsExprWriter { expr: arg }.fmt(f)?;
+                    TsExprWriter { expr: arg }.ts_fmt(f)?;
                 }
                 write!(f, ")")?;
             }
             IrExpr::Field { base, field } => {
-                TsExprWriter { expr: base }.fmt(f)?;
+                TsExprWriter { expr: base }.ts_fmt(f)?;
                 write!(f, ".{}", field)?;
             }
             IrExpr::Index { base, index } => {
-                TsExprWriter { expr: base }.fmt(f)?;
+                TsExprWriter { expr: base }.ts_fmt(f)?;
                 write!(f, "[")?;
-                TsExprWriter { expr: index }.fmt(f)?;
+                TsExprWriter { expr: index }.ts_fmt(f)?;
                 write!(f, "]")?;
             }
             IrExpr::Path { segments, .. } => {
@@ -1333,7 +1333,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         write!(f, ", ")?;
                     }
                     write!(f, "{}: ", field_name)?;
-                    TsExprWriter { expr: val }.fmt(f)?;
+                    TsExprWriter { expr: val }.ts_fmt(f)?;
                 }
                 write!(f, " }})")?;
             }
@@ -1343,7 +1343,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    TsExprWriter { expr: e }.fmt(f)?;
+                    TsExprWriter { expr: e }.ts_fmt(f)?;
                 }
                 write!(f, "]")?;
             }
@@ -1353,34 +1353,34 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    TsExprWriter { expr: e }.fmt(f)?;
+                    TsExprWriter { expr: e }.ts_fmt(f)?;
                 }
                 write!(f, "]")?;
             }
             IrExpr::Repeat { elem, len } => {
                 write!(f, "Array.from({{length: ")?;
-                TsExprWriter { expr: len }.fmt(f)?;
+                TsExprWriter { expr: len }.ts_fmt(f)?;
                 write!(f, "}}, () => ")?;
-                TsExprWriter { expr: elem }.fmt(f)?;
+                TsExprWriter { expr: elem }.ts_fmt(f)?;
                 write!(f, ")")?;
             }
             IrExpr::Block(b) => {
                 // Expression-position block → IIFE
                 write!(f, "(() => ")?;
-                TsBlockWriter { block: b, indent: 0 }.fmt(f)?;
+                TsBlockWriter { block: b, indent: 0 }.ts_fmt(f)?;
                 write!(f, ")()")?;
             }
             IrExpr::If { cond, then_branch, else_branch } => {
                 // If in expression position → IIFE with if/else
                 write!(f, "(() => {{ if (")?;
-                TsExprWriter { expr: cond }.fmt(f)?;
+                TsExprWriter { expr: cond }.ts_fmt(f)?;
                 write!(f, ") ")?;
-                TsBlockWriter { block: then_branch, indent: 0 }.fmt(f)?;
+                TsBlockWriter { block: then_branch, indent: 0 }.ts_fmt(f)?;
                 if let Some(eb) = else_branch {
                     write!(f, " else ")?;
                     match eb.as_ref() {
                         IrExpr::Block(b) => {
-                            TsBlockWriter { block: b, indent: 0 }.fmt(f)?;
+                            TsBlockWriter { block: b, indent: 0 }.ts_fmt(f)?;
                         }
                         IrExpr::If { .. } => {
                             // Nested if-else — recurse but strip IIFE wrapper
@@ -1388,7 +1388,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         }
                         _ => {
                             write!(f, "{{ return ")?;
-                            TsExprWriter { expr: eb }.fmt(f)?;
+                            TsExprWriter { expr: eb }.ts_fmt(f)?;
                             write!(f, "; }}")?;
                         }
                     }
@@ -1398,53 +1398,53 @@ impl<'a> TsBackend for TsExprWriter<'a> {
             // Loops as expressions — wrap in IIFE when they appear in expr context
             IrExpr::BoundedLoop { var, start, end, inclusive, body } => {
                 write!(f, "for (let {} = ", var)?;
-                TsExprWriter { expr: start }.fmt(f)?;
+                TsExprWriter { expr: start }.ts_fmt(f)?;
                 write!(f, "; {} {} ", var, if *inclusive { "<=" } else { "<" })?;
-                TsExprWriter { expr: end }.fmt(f)?;
+                TsExprWriter { expr: end }.ts_fmt(f)?;
                 write!(f, "; {}++) ", var)?;
-                TsBlockWriter { block: body, indent: 0 }.fmt(f)?;
+                TsBlockWriter { block: body, indent: 0 }.ts_fmt(f)?;
             }
             IrExpr::IterLoop { pattern, collection, body } => {
                 write!(f, "for (const ")?;
-                TsPatternWriter { pat: pattern }.fmt(f)?;
+                TsPatternWriter { pat: pattern }.ts_fmt(f)?;
                 write!(f, " of ")?;
-                TsExprWriter { expr: collection }.fmt(f)?;
+                TsExprWriter { expr: collection }.ts_fmt(f)?;
                 write!(f, ") ")?;
-                TsBlockWriter { block: body, indent: 0 }.fmt(f)?;
+                TsBlockWriter { block: body, indent: 0 }.ts_fmt(f)?;
             }
             IrExpr::IterPipeline(chain) => {
-                TsIterChainWriter { chain }.fmt(f)?;
+                TsIterChainWriter { chain }.ts_fmt(f)?;
             }
             IrExpr::RawMap { receiver, elem_var, body } => {
-                TsExprWriter { expr: receiver }.fmt(f)?;
+                TsExprWriter { expr: receiver }.ts_fmt(f)?;
                 write!(f, ".map((")?;
-                TsPatternWriter { pat: elem_var }.fmt(f)?;
+                TsPatternWriter { pat: elem_var }.ts_fmt(f)?;
                 write!(f, ") => ")?;
-                TsExprWriter { expr: body }.fmt(f)?;
+                TsExprWriter { expr: body }.ts_fmt(f)?;
                 write!(f, ")")?;
             }
             IrExpr::RawZip { left, right, left_var, right_var, body } => {
-                TsExprWriter { expr: left }.fmt(f)?;
+                TsExprWriter { expr: left }.ts_fmt(f)?;
                 write!(f, ".map((")?;
-                TsPatternWriter { pat: left_var }.fmt(f)?;
+                TsPatternWriter { pat: left_var }.ts_fmt(f)?;
                 write!(f, ", __i) => {{ const ")?;
-                TsPatternWriter { pat: right_var }.fmt(f)?;
+                TsPatternWriter { pat: right_var }.ts_fmt(f)?;
                 write!(f, " = ")?;
-                TsExprWriter { expr: right }.fmt(f)?;
+                TsExprWriter { expr: right }.ts_fmt(f)?;
                 write!(f, "[__i]; return ")?;
-                TsExprWriter { expr: body }.fmt(f)?;
+                TsExprWriter { expr: body }.ts_fmt(f)?;
                 write!(f, "; }})")?;
             }
             IrExpr::RawFold { receiver, init, acc_var, elem_var, body } => {
-                TsExprWriter { expr: receiver }.fmt(f)?;
+                TsExprWriter { expr: receiver }.ts_fmt(f)?;
                 write!(f, ".reduce((")?;
-                TsPatternWriter { pat: acc_var }.fmt(f)?;
+                TsPatternWriter { pat: acc_var }.ts_fmt(f)?;
                 write!(f, ", ")?;
-                TsPatternWriter { pat: elem_var }.fmt(f)?;
+                TsPatternWriter { pat: elem_var }.ts_fmt(f)?;
                 write!(f, ") => ")?;
-                TsExprWriter { expr: body }.fmt(f)?;
+                TsExprWriter { expr: body }.ts_fmt(f)?;
                 write!(f, ", ")?;
-                TsExprWriter { expr: init }.fmt(f)?;
+                TsExprWriter { expr: init }.ts_fmt(f)?;
                 write!(f, ")")?;
             }
             IrExpr::Closure { params, body, .. } => {
@@ -1453,19 +1453,19 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    TsPatternWriter { pat: &p.pattern }.fmt(f)?;
+                    TsPatternWriter { pat: &p.pattern }.ts_fmt(f)?;
                     if let Some(t) = &p.ty {
                         write!(f, ": ")?;
-                        TsTypeWriter { ty: t }.fmt(f)?;
+                        TsTypeWriter { ty: t }.ts_fmt(f)?;
                     }
                 }
                 write!(f, ") => ")?;
-                TsExprWriter { expr: body }.fmt(f)?;
+                TsExprWriter { expr: body }.ts_fmt(f)?;
             }
             IrExpr::Range { start, end, inclusive } => {
                 write!(f, "Array.from({{length: ")?;
                 if let Some(e) = end {
-                    TsExprWriter { expr: e }.fmt(f)?;
+                    TsExprWriter { expr: e }.ts_fmt(f)?;
                     if *inclusive {
                         write!(f, " + 1")?;
                     }
@@ -1474,65 +1474,65 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 }
                 if let Some(s) = start {
                     write!(f, " - ")?;
-                    TsExprWriter { expr: s }.fmt(f)?;
+                    TsExprWriter { expr: s }.ts_fmt(f)?;
                     write!(f, "}}, (_, i) => i + ")?;
-                    TsExprWriter { expr: s }.fmt(f)?;
+                    TsExprWriter { expr: s }.ts_fmt(f)?;
                 } else {
                     write!(f, "}}, (_, i) => i")?;
                 }
                 write!(f, ")")?;
             }
             IrExpr::Assign { left, right } => {
-                TsExprWriter { expr: left }.fmt(f)?;
+                TsExprWriter { expr: left }.ts_fmt(f)?;
                 write!(f, " = ")?;
-                TsExprWriter { expr: right }.fmt(f)?;
+                TsExprWriter { expr: right }.ts_fmt(f)?;
             }
             IrExpr::AssignOp { op, left, right } => {
-                TsExprWriter { expr: left }.fmt(f)?;
+                TsExprWriter { expr: left }.ts_fmt(f)?;
                 write!(f, " {}= ", ts_bin_op(*op))?;
-                TsExprWriter { expr: right }.fmt(f)?;
+                TsExprWriter { expr: right }.ts_fmt(f)?;
             }
             IrExpr::Return(e) => {
                 write!(f, "return")?;
                 if let Some(e) = e {
                     write!(f, " ")?;
-                    TsExprWriter { expr: e }.fmt(f)?;
+                    TsExprWriter { expr: e }.ts_fmt(f)?;
                 }
             }
             IrExpr::Cast { expr, ty } => {
                 match ty.as_ref() {
                     IrType::Primitive(PrimitiveType::U32) => {
                         write!(f, "Number(")?;
-                        TsExprWriter { expr }.fmt(f)?;
+                        TsExprWriter { expr }.ts_fmt(f)?;
                         write!(f, ")")?;
                     }
                     IrType::Primitive(PrimitiveType::U64) => {
                         write!(f, "BigInt(")?;
-                        TsExprWriter { expr }.fmt(f)?;
+                        TsExprWriter { expr }.ts_fmt(f)?;
                         write!(f, ")")?;
                     }
                     IrType::Primitive(PrimitiveType::U8) => {
                         write!(f, "((")?;
-                        TsExprWriter { expr }.fmt(f)?;
+                        TsExprWriter { expr }.ts_fmt(f)?;
                         write!(f, ") & 0xFF)")?;
                     }
                     IrType::Primitive(PrimitiveType::Usize) => {
                         write!(f, "Number(")?;
-                        TsExprWriter { expr }.fmt(f)?;
+                        TsExprWriter { expr }.ts_fmt(f)?;
                         write!(f, ")")?;
                     }
                     _ => {
                         write!(f, "(")?;
-                        TsExprWriter { expr }.fmt(f)?;
+                        TsExprWriter { expr }.ts_fmt(f)?;
                         write!(f, " as unknown as ")?;
-                        TsTypeWriter { ty }.fmt(f)?;
+                        TsTypeWriter { ty }.ts_fmt(f)?;
                         write!(f, ")")?;
                     }
                 }
             }
             IrExpr::TypenumUsize { ty } => {
                 write!(f, "/* <")?;
-                TsTypeWriter { ty }.fmt(f)?;
+                TsTypeWriter { ty }.ts_fmt(f)?;
                 write!(f, " as Unsigned>.USIZE */")?;
             }
             IrExpr::Unreachable => write!(f, "(() => {{ throw new Error(\"unreachable\"); }})()")?,
@@ -1561,13 +1561,13 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 write!(f, "Array.from({{length: ")?;
                 ts_length(len, f)?;
                 write!(f, "}}, (_, {}) => ", index_var)?;
-                TsExprWriter { expr: body }.fmt(f)?;
+                TsExprWriter { expr: body }.ts_fmt(f)?;
                 write!(f, ")")?;
             }
             IrExpr::Match { expr, arms } => {
                 write!(f, "(() => {{ ")?;
                 write!(f, "const __match = ")?;
-                TsExprWriter { expr }.fmt(f)?;
+                TsExprWriter { expr }.ts_fmt(f)?;
                 write!(f, "; ")?;
                 for (i, arm) in arms.iter().enumerate() {
                     if i > 0 {
@@ -1580,7 +1580,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     } else {
                         write!(f, "{{ return ")?;
                     }
-                    TsExprWriter { expr: &arm.body }.fmt(f)?;
+                    TsExprWriter { expr: &arm.body }.ts_fmt(f)?;
                     write!(f, "; }}")?;
                 }
                 write!(f, " }})()")?;
@@ -1588,7 +1588,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
             IrExpr::Break(_) => write!(f, "break")?,
             IrExpr::Continue => write!(f, "continue")?,
             IrExpr::Try(e) => {
-                TsExprWriter { expr: e }.fmt(f)?;
+                TsExprWriter { expr: e }.ts_fmt(f)?;
             }
             _ => {
                 write!(f, "undefined /* unsupported: {:?} */", std::any::type_name::<IrExpr>())?;
@@ -1603,21 +1603,21 @@ impl<'a> TsBackend for TsExprWriter<'a> {
 fn emit_if_chain(expr: &IrExpr, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     if let IrExpr::If { cond, then_branch, else_branch } = expr {
         write!(f, "if (")?;
-        TsExprWriter { expr: cond }.fmt(f)?;
+        TsExprWriter { expr: cond }.ts_fmt(f)?;
         write!(f, ") ")?;
-        TsBlockWriter { block: then_branch, indent: 0 }.fmt(f)?;
+        TsBlockWriter { block: then_branch, indent: 0 }.ts_fmt(f)?;
         if let Some(eb) = else_branch {
             write!(f, " else ")?;
             match eb.as_ref() {
                 IrExpr::Block(b) => {
-                    TsBlockWriter { block: b, indent: 0 }.fmt(f)?;
+                    TsBlockWriter { block: b, indent: 0 }.ts_fmt(f)?;
                 }
                 IrExpr::If { .. } => {
                     emit_if_chain(eb, f)?;
                 }
                 _ => {
                     write!(f, "{{ return ")?;
-                    TsExprWriter { expr: eb }.fmt(f)?;
+                    TsExprWriter { expr: eb }.ts_fmt(f)?;
                     write!(f, "; }}")?;
                 }
             }
@@ -1632,124 +1632,124 @@ fn emit_method_call(receiver: &IrExpr, method: &MethodKind, args: &[IrExpr], f: 
     match name.as_str() {
         "wrapping_add" if args.len() == 1 => {
             write!(f, "wrappingAdd(")?;
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, ", ")?;
-            TsExprWriter { expr: &args[0] }.fmt(f)?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f)?;
             write!(f, ")")
         }
         "wrapping_sub" if args.len() == 1 => {
             write!(f, "wrappingSub(")?;
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, ", ")?;
-            TsExprWriter { expr: &args[0] }.fmt(f)?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f)?;
             write!(f, ")")
         }
         "ilog2" if args.is_empty() => {
             write!(f, "ilog2(")?;
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, ")")
         }
         "clone" if args.is_empty() => {
             write!(f, "structuredClone(")?;
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, ")")
         }
         "into" if args.is_empty() => {
-            TsExprWriter { expr: receiver }.fmt(f)
+            TsExprWriter { expr: receiver }.ts_fmt(f)
         }
         "cloned" if args.is_empty() => {
-            TsExprWriter { expr: receiver }.fmt(f)
+            TsExprWriter { expr: receiver }.ts_fmt(f)
         }
         "to_vec" if args.is_empty() => {
             write!(f, "[...")?;
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, "]")
         }
         "as_slice" if args.is_empty() => {
-            TsExprWriter { expr: receiver }.fmt(f)
+            TsExprWriter { expr: receiver }.ts_fmt(f)
         }
         "len" if args.is_empty() => {
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, ".length")
         }
         "contains" if args.len() == 1 => {
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, ".includes(")?;
-            TsExprWriter { expr: &args[0] }.fmt(f)?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f)?;
             write!(f, ")")
         }
         "get" if args.len() == 1 => {
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, "?.[")?;
-            TsExprWriter { expr: &args[0] }.fmt(f)?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f)?;
             write!(f, "]")
         }
         "unwrap_or_default" if args.is_empty() => {
             write!(f, "(")?;
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, " ?? 0)")
         }
         "map_or" if args.len() == 2 => {
             // Option.map_or(default, f) → (x != null ? f(x) : default)
             write!(f, "((")?;
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, ") != null ? (")?;
-            TsExprWriter { expr: &args[1] }.fmt(f)?;
+            TsExprWriter { expr: &args[1] }.ts_fmt(f)?;
             write!(f, ")(")?;
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, ") : (")?;
-            TsExprWriter { expr: &args[0] }.fmt(f)?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f)?;
             write!(f, "))")
         }
         "update" if args.len() == 1 => {
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, ".update(")?;
-            TsExprWriter { expr: &args[0] }.fmt(f)?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f)?;
             write!(f, ")")
         }
         "finalize" if args.is_empty() => {
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, ".finalize()")
         }
         "bitxor" if args.len() == 1 => {
             write!(f, "fieldBitxor(")?;
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, ", ")?;
-            TsExprWriter { expr: &args[0] }.fmt(f)?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f)?;
             write!(f, ")")
         }
         "shl" if args.len() == 1 => {
             write!(f, "fieldShl(")?;
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, ", ")?;
-            TsExprWriter { expr: &args[0] }.fmt(f)?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f)?;
             write!(f, ")")
         }
         "shr" if args.len() == 1 => {
             write!(f, "fieldShr(")?;
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, ", ")?;
-            TsExprWriter { expr: &args[0] }.fmt(f)?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f)?;
             write!(f, ")")
         }
         "at" | "valueOf" if args.len() == 1 => {
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, "[(")?;
-            TsExprWriter { expr: &args[0] }.fmt(f)?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f)?;
             write!(f, ")]")
         }
         "at" if args.is_empty() => {
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, ".at(0)")
         }
         _ => {
-            TsExprWriter { expr: receiver }.fmt(f)?;
+            TsExprWriter { expr: receiver }.ts_fmt(f)?;
             write!(f, ".{}(", name)?;
             for (i, arg) in args.iter().enumerate() {
                 if i > 0 {
                     write!(f, ", ")?;
                 }
-                TsExprWriter { expr: arg }.fmt(f)?;
+                TsExprWriter { expr: arg }.ts_fmt(f)?;
             }
             write!(f, ")")
         }
@@ -1785,37 +1785,37 @@ struct TsIterChainWriter<'a> {
 }
 
 impl<'a> TsBackend for TsIterChainWriter<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        TsIterSourceWriter { source: &self.chain.source }.fmt(f)?;
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TsIterSourceWriter { source: &self.chain.source }.ts_fmt(f)?;
 
         for step in &self.chain.steps {
             match step {
                 IterStep::Map { var, body } => {
                     write!(f, ".map((")?;
-                    TsPatternWriter { pat: var }.fmt(f)?;
+                    TsPatternWriter { pat: var }.ts_fmt(f)?;
                     write!(f, ") => ")?;
-                    TsExprWriter { expr: body }.fmt(f)?;
+                    TsExprWriter { expr: body }.ts_fmt(f)?;
                     write!(f, ")")?;
                 }
                 IterStep::Filter { var, body } => {
                     write!(f, ".filter((")?;
-                    TsPatternWriter { pat: var }.fmt(f)?;
+                    TsPatternWriter { pat: var }.ts_fmt(f)?;
                     write!(f, ") => ")?;
-                    TsExprWriter { expr: body }.fmt(f)?;
+                    TsExprWriter { expr: body }.ts_fmt(f)?;
                     write!(f, ")")?;
                 }
                 IterStep::FilterMap { var, body } => {
                     write!(f, ".map((")?;
-                    TsPatternWriter { pat: var }.fmt(f)?;
+                    TsPatternWriter { pat: var }.ts_fmt(f)?;
                     write!(f, ") => ")?;
-                    TsExprWriter { expr: body }.fmt(f)?;
+                    TsExprWriter { expr: body }.ts_fmt(f)?;
                     write!(f, ").filter((__x) => __x !== undefined)")?;
                 }
                 IterStep::FlatMap { var, body } => {
                     write!(f, ".flatMap((")?;
-                    TsPatternWriter { pat: var }.fmt(f)?;
+                    TsPatternWriter { pat: var }.ts_fmt(f)?;
                     write!(f, ") => ")?;
-                    TsExprWriter { expr: body }.fmt(f)?;
+                    TsExprWriter { expr: body }.ts_fmt(f)?;
                     write!(f, ")")?;
                 }
                 IterStep::Enumerate => {
@@ -1823,17 +1823,17 @@ impl<'a> TsBackend for TsIterChainWriter<'a> {
                 }
                 IterStep::Take { count } => {
                     write!(f, ".slice(0, ")?;
-                    TsExprWriter { expr: count }.fmt(f)?;
+                    TsExprWriter { expr: count }.ts_fmt(f)?;
                     write!(f, ")")?;
                 }
                 IterStep::Skip { count } => {
                     write!(f, ".slice(")?;
-                    TsExprWriter { expr: count }.fmt(f)?;
+                    TsExprWriter { expr: count }.ts_fmt(f)?;
                     write!(f, ")")?;
                 }
                 IterStep::Chain { other } => {
                     write!(f, ".concat(")?;
-                    TsIterChainWriter { chain: other }.fmt(f)?;
+                    TsIterChainWriter { chain: other }.ts_fmt(f)?;
                     write!(f, ")")?;
                 }
             }
@@ -1845,13 +1845,13 @@ impl<'a> TsBackend for TsIterChainWriter<'a> {
             }
             IterTerminal::Fold { init, acc_var, elem_var, body } => {
                 write!(f, ".reduce((")?;
-                TsPatternWriter { pat: acc_var }.fmt(f)?;
+                TsPatternWriter { pat: acc_var }.ts_fmt(f)?;
                 write!(f, ", ")?;
-                TsPatternWriter { pat: elem_var }.fmt(f)?;
+                TsPatternWriter { pat: elem_var }.ts_fmt(f)?;
                 write!(f, ") => ")?;
-                TsExprWriter { expr: body }.fmt(f)?;
+                TsExprWriter { expr: body }.ts_fmt(f)?;
                 write!(f, ", ")?;
-                TsExprWriter { expr: init }.fmt(f)?;
+                TsExprWriter { expr: init }.ts_fmt(f)?;
                 write!(f, ")")?;
             }
             IterTerminal::Lazy => {}
@@ -1866,40 +1866,40 @@ struct TsIterSourceWriter<'a> {
 }
 
 impl<'a> TsBackend for TsIterSourceWriter<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.source {
             IterChainSource::Method { collection, method } => {
                 match method {
                     IterMethod::Iter | IterMethod::IntoIter => {
-                        TsExprWriter { expr: collection }.fmt(f)?;
+                        TsExprWriter { expr: collection }.ts_fmt(f)?;
                     }
                     IterMethod::Chars => {
-                        TsExprWriter { expr: collection }.fmt(f)?;
+                        TsExprWriter { expr: collection }.ts_fmt(f)?;
                         write!(f, ".split(\"\")")?;
                     }
                     IterMethod::Bytes => {
                         write!(f, "Array.from(")?;
-                        TsExprWriter { expr: collection }.fmt(f)?;
+                        TsExprWriter { expr: collection }.ts_fmt(f)?;
                         write!(f, ")")?;
                     }
                 }
             }
             IterChainSource::Range { start, end, inclusive } => {
                 write!(f, "Array.from({{length: ")?;
-                TsExprWriter { expr: end }.fmt(f)?;
+                TsExprWriter { expr: end }.ts_fmt(f)?;
                 if *inclusive {
                     write!(f, " + 1")?;
                 }
                 write!(f, " - ")?;
-                TsExprWriter { expr: start }.fmt(f)?;
+                TsExprWriter { expr: start }.ts_fmt(f)?;
                 write!(f, "}}, (_, __i) => __i + ")?;
-                TsExprWriter { expr: start }.fmt(f)?;
+                TsExprWriter { expr: start }.ts_fmt(f)?;
                 write!(f, ")")?;
             }
             IterChainSource::Zip { left, right } => {
-                TsIterChainWriter { chain: left }.fmt(f)?;
+                TsIterChainWriter { chain: left }.ts_fmt(f)?;
                 write!(f, ".map((__a, __i) => [__a, ")?;
-                TsIterChainWriter { chain: right }.fmt(f)?;
+                TsIterChainWriter { chain: right }.ts_fmt(f)?;
                 write!(f, "[__i]] as [typeof __a, unknown])")?;
             }
         }
@@ -1916,7 +1916,7 @@ struct TsPatternWriter<'a> {
 }
 
 impl<'a> TsBackend for TsPatternWriter<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.pat {
             IrPattern::Ident { name, .. } => {
                 write!(f, "{}", name)?;
@@ -1928,20 +1928,20 @@ impl<'a> TsBackend for TsPatternWriter<'a> {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    TsPatternWriter { pat: p }.fmt(f)?;
+                    TsPatternWriter { pat: p }.ts_fmt(f)?;
                 }
                 write!(f, "]")?;
             }
             IrPattern::TupleStruct { kind, elems } => {
                 if elems.len() == 1 {
-                    TsPatternWriter { pat: &elems[0] }.fmt(f)?;
+                    TsPatternWriter { pat: &elems[0] }.ts_fmt(f)?;
                 } else {
                     write!(f, "/* {}(...) */ [", kind)?;
                     for (i, p) in elems.iter().enumerate() {
                         if i > 0 {
                             write!(f, ", ")?;
                         }
-                        TsPatternWriter { pat: p }.fmt(f)?;
+                        TsPatternWriter { pat: p }.ts_fmt(f)?;
                     }
                     write!(f, "]")?;
                 }
@@ -1957,11 +1957,11 @@ impl<'a> TsBackend for TsPatternWriter<'a> {
                             write!(f, "{}", name)?;
                         } else {
                             write!(f, "{}: ", name)?;
-                            TsPatternWriter { pat: p }.fmt(f)?;
+                            TsPatternWriter { pat: p }.ts_fmt(f)?;
                         }
                     } else {
                         write!(f, "{}: ", name)?;
-                        TsPatternWriter { pat: p }.fmt(f)?;
+                        TsPatternWriter { pat: p }.ts_fmt(f)?;
                     }
                 }
                 if *rest {
@@ -1971,14 +1971,14 @@ impl<'a> TsBackend for TsPatternWriter<'a> {
                 write!(f, " }}")?;
             }
             IrPattern::Ref { pat, .. } => {
-                TsPatternWriter { pat }.fmt(f)?;
+                TsPatternWriter { pat }.ts_fmt(f)?;
             }
             IrPattern::Lit(l) => {
                 ts_literal(l, f)?;
             }
             IrPattern::Or(pats) => {
                 if let Some(first) = pats.first() {
-                    TsPatternWriter { pat: first }.fmt(f)?;
+                    TsPatternWriter { pat: first }.ts_fmt(f)?;
                 }
             }
             IrPattern::Slice(pats) => {
@@ -1987,7 +1987,7 @@ impl<'a> TsBackend for TsPatternWriter<'a> {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    TsPatternWriter { pat: p }.fmt(f)?;
+                    TsPatternWriter { pat: p }.ts_fmt(f)?;
                 }
                 write!(f, "]")?;
             }
@@ -2076,7 +2076,7 @@ fn ts_length(len: &ArrayLength, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         ArrayLength::TypeParam(p) => write!(f, "{}", p.to_lowercase()),
         ArrayLength::Projection { r#type, field, .. } => {
             write!(f, "/* ")?;
-            TsTypeWriter { ty: r#type }.fmt(f)?;
+            TsTypeWriter { ty: r#type }.ts_fmt(f)?;
             write!(f, "::{} */ 0", field)
         }
         ArrayLength::TypeNum(tn) => write!(f, "{}", tn.to_usize()),
@@ -2229,7 +2229,7 @@ fn write_param_type(p: &IrParam, generics: &[IrGenericParam], f: &mut fmt::Forma
         if let Some(b) = bounds.first() {
             match &b.trait_kind {
                 TraitKind::AsRef(inner) => {
-                    return TsTypeWriter { ty: inner }.fmt(f);
+                    return TsTypeWriter { ty: inner }.ts_fmt(f);
                 }
                 TraitKind::Fn(input, ret) => {
                     let param_ty = match input {
@@ -2238,13 +2238,13 @@ fn write_param_type(p: &IrParam, generics: &[IrGenericParam], f: &mut fmt::Forma
                         FnInput::Bool => "boolean",
                     };
                     write!(f, "(arg: {}) => ", param_ty)?;
-                    return TsTypeWriter { ty: ret }.fmt(f);
+                    return TsTypeWriter { ty: ret }.ts_fmt(f);
                 }
                 _ => {}
             }
         }
     }
-    TsTypeWriter { ty: &p.ty }.fmt(f)
+    TsTypeWriter { ty: &p.ty }.ts_fmt(f)
 }
 
 struct TsTypeRefWriter<'a> {
@@ -2252,8 +2252,8 @@ struct TsTypeRefWriter<'a> {
 }
 
 impl<'a> TsBackend for TsTypeRefWriter<'a> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        TsTypeWriter { ty: self.ty }.fmt(f)
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        TsTypeWriter { ty: self.ty }.ts_fmt(f)
     }
 }
 
