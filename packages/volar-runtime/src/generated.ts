@@ -31,12 +31,12 @@ import {
 } from "volar-runtime";
 
 export class DeltaDyn<T> {
-  n: number;
-  delta: T[];
+  n!: number;
+  delta!: any[];
 
   constructor(init: { 
     n: number,
-    delta: T[]
+    delta: any[]
   }) {
     Object.assign(this, init);
   }
@@ -61,7 +61,7 @@ export class DeltaDyn<T> {
     return true;
   }
 
-  remap(m: number, f: (arg: number) => number): DeltaDyn<T>
+  remap(m: number, f: (arg: number) => number): DeltaDyn<any>
   {
     const n: number = this.n;
     const { delta } = this;
@@ -80,7 +80,7 @@ export class DeltaDyn<T> {
     return this.remap(n, (a) => wrappingAdd(a, n));
   }
 
-  static_<U, O>(val: U[]): QDyn<O>
+  static_<U, O>(val: any[]): QDyn<any>
   {
     const n: number = this.n;
     return new QDyn({ q: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => fieldMul(structuredClone(val[i]), structuredClone(this.delta[i]))), n: 0 });
@@ -149,12 +149,12 @@ export class DeltaDyn<T> {
 }
 
 export class QDyn<T> {
-  n: number;
-  q: T[];
+  n!: number;
+  q!: any[];
 
   constructor(init: { 
     n: number,
-    q: T[]
+    q: any[]
   }) {
     Object.assign(this, init);
   }
@@ -179,7 +179,7 @@ export class QDyn<T> {
     return true;
   }
 
-  remap(m: number, f: (arg: number) => number): QDyn<T>
+  remap(m: number, f: (arg: number) => number): QDyn<any>
   {
     const n: number = this.n;
     const { q } = this;
@@ -260,10 +260,10 @@ export class QDyn<T> {
   }
 }
 
-export class ABODyn {
-  k: number;
-  commit: number[];
-  per_byte: number[][];
+export class ABODyn<B, D> {
+  k!: number;
+  commit!: number[];
+  per_byte!: number[][];
 
   constructor(init: { 
     k: number,
@@ -273,7 +273,7 @@ export class ABODyn {
     Object.assign(this, init);
   }
 
-  open(t: number, u: number, m: number, bad: bigint[], rand: R): ABOOpeningDyn<B, D>
+  open(t: number, u: number, m: number, bad: bigint[], rand: any): ABOOpeningDyn<B, D>
   {
     const k: number = this.k;
     return new ABOOpeningDyn({ bad: structuredClone(bad), openings: Array.from({length: t - 0}, (_, __i) => __i + 0).map((i) => (() => {
@@ -315,7 +315,7 @@ export class ABODyn {
 })());
   }
 
-  to_vole_material(n: number): VopeDyn<number>[]
+  to_vole_material(ctx: { B_OutputSize: number }, n: number): VopeDyn<number>[]
   {
     const k: number = this.k;
     return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
@@ -324,7 +324,7 @@ export class ABODyn {
 })());
   }
 
-  to_vole_material_expanded(n: number, f: (arg: Uint8Array) => X): VopeDyn<number>[]
+  to_vole_material_expanded(ctx: { B_OutputSize: number }, n: number, f: (arg: Uint8Array) => any): VopeDyn<number>[]
   {
     const k: number = this.k;
     return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
@@ -333,7 +333,7 @@ export class ABODyn {
 })());
   }
 
-  to_vole_material_typenum(n: number): VopeDyn<number>[]
+  to_vole_material_typenum(ctx: { B_OutputSize: number }, n: number): VopeDyn<number>[]
   {
     const k: number = this.k;
     return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
@@ -342,7 +342,7 @@ export class ABODyn {
 })());
   }
 
-  to_vole_material_typenum_expanded(n: number, f: (arg: Uint8Array) => X): VopeDyn<number>[]
+  to_vole_material_typenum_expanded(ctx: { B_OutputSize: number }, n: number, f: (arg: Uint8Array) => any): VopeDyn<number>[]
   {
     const k: number = this.k;
     return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => (() => {
@@ -352,11 +352,11 @@ export class ABODyn {
   }
 }
 
-export class ABOOpeningDyn {
-  t: number;
-  u: number;
-  bad: bigint[];
-  openings: number[][][];
+export class ABOOpeningDyn<B, D> {
+  t!: number;
+  u!: number;
+  bad!: bigint[];
+  openings!: number[][][];
 
   constructor(init: { 
     t: number,
@@ -389,7 +389,7 @@ export class ABOOpeningDyn {
 })());
   }
 
-  to_vole_material(n: number): VopeDyn<number>[]
+  to_vole_material(ctx: { B_OutputSize: number }, n: number): VopeDyn<number>[]
   {
     const t: number = this.t;
     const u: number = this.u;
@@ -399,7 +399,7 @@ export class ABOOpeningDyn {
 })());
   }
 
-  to_vole_material_expanded(n: number, f: (arg: Uint8Array) => X): VopeDyn<number>[]
+  to_vole_material_expanded(ctx: { B_OutputSize: number }, n: number, f: (arg: Uint8Array) => any): VopeDyn<number>[]
   {
     const t: number = this.t;
     const u: number = this.u;
@@ -409,7 +409,7 @@ export class ABOOpeningDyn {
 })());
   }
 
-  to_vole_material_typenum(n: number): VopeDyn<number>[]
+  to_vole_material_typenum(ctx: { B_OutputSize: number }, n: number): VopeDyn<number>[]
   {
     const t: number = this.t;
     const u: number = this.u;
@@ -419,7 +419,7 @@ export class ABOOpeningDyn {
 })());
   }
 
-  to_vole_material_typenum_expanded(n: number, f: (arg: Uint8Array) => X): VopeDyn<number>[]
+  to_vole_material_typenum_expanded(ctx: { B_OutputSize: number }, n: number, f: (arg: Uint8Array) => any): VopeDyn<number>[]
   {
     const t: number = this.t;
     const u: number = this.u;
@@ -429,7 +429,7 @@ export class ABOOpeningDyn {
 })());
   }
 
-  validate(ctx: { B_OutputSize: number, D_OutputSize: number, newD: () => any }, commit_: number[], rand: R): boolean
+  validate(ctx: { B_OutputSize: number, D_OutputSize: number, newD: () => any }, commit_: number[], rand: any): boolean
   {
     const t: number = this.t;
     const u: number = this.u;
@@ -448,8 +448,8 @@ export class ABOOpeningDyn {
   }
 }
 
-export class BSplitDyn {
-  split: number[][][];
+export class BSplitDyn<B, D> {
+  split!: number[][][];
 
   constructor(init: { 
     split: number[][][]
@@ -459,31 +459,31 @@ export class BSplitDyn {
 }
 
 export class PolyDyn<T> {
-  n: number;
-  c0: T;
-  c1: T[];
+  n!: number;
+  c0!: any;
+  c1!: any[];
 
   constructor(init: { 
     n: number,
-    c0: T,
-    c1: T[]
+    c0: any,
+    c1: any[]
   }) {
     Object.assign(this, init);
   }
 
-  apply<O>(ctx: { defaultO: () => any }, m: number, x: number, x2: number, xs: number, s: number, voles: VopeDyn<T>[][]): VopeDyn<O>
+  apply<O>(ctx: { defaultO: () => any }, m: number, x: number, x2: number, xs: number, s: number, voles: VopeDyn<any>[][]): VopeDyn<any>
   {
     const n: number = this.n;
     const v = Array.from({length: m - 0}, (_, __i) => __i + 0).map((i) => (() => {
   let sum = ctx.defaultO();
   for (let k = 0; k < n; k++)   {
-    let b: O = structuredClone(this.c1[k]);
+    let b: any = structuredClone(this.c1[k]);
     for (const v of voles)     {
       b = fieldMul(b, structuredClone(v[k].v[i]));
     }
     sum = fieldAdd(sum, b);
   }
-  const c0: O = structuredClone(this.c0);
+  const c0: any = structuredClone(this.c0);
   return fieldAdd(sum, c0);
 })());
     const u = Array.from({length: xs - 0}, (_, __i) => __i + 0).map((l) => (() => {
@@ -491,7 +491,7 @@ export class PolyDyn<T> {
   let sum = ctx.defaultO();
   for (let k = 0; k < n; k++)   {
     for (let n = 0; n < x; n++)     {
-      let b: O = structuredClone(this.c1[k]);
+      let b: any = structuredClone(this.c1[k]);
       for (let m = 0; m < s; m++)       {
         const l = fieldAdd(fieldMul(l, s), m);
         for (const [idx, v] of voles.map((val, i) => [i, val] as [number, typeof val]))         {
@@ -511,19 +511,19 @@ export class PolyDyn<T> {
     return new VopeDyn({ u: u, v: v, n: 0, k: 1 });
   }
 
-  apply_pool<O>(ctx: { defaultO: () => any }, m: number, x: number, x2: number, xs: number, s: number, voles: PolyInputPoolDyn<VopeDyn<T>>): VopeDyn<O>
+  apply_pool<O>(ctx: { defaultO: () => any }, m: number, x: number, x2: number, xs: number, s: number, voles: PolyInputPoolDyn<VopeDyn<any>>): VopeDyn<any>
   {
     const n: number = this.n;
     const v = Array.from({length: m - 0}, (_, __i) => __i + 0).map((i) => (() => {
   let sum = ctx.defaultO();
   for (let k = 0; k < n; k++)   {
-    let b: O = structuredClone(this.c1[k]);
+    let b: any = structuredClone(this.c1[k]);
     for (const v of voles.indices)     {
       b = fieldMul(b, structuredClone(voles.inputs[v[k]].v[i]));
     }
     sum = fieldAdd(sum, b);
   }
-  const c0: O = structuredClone(this.c0);
+  const c0: any = structuredClone(this.c0);
   return fieldAdd(sum, c0);
 })());
     const u = Array.from({length: xs - 0}, (_, __i) => __i + 0).map((l) => (() => {
@@ -531,7 +531,7 @@ export class PolyDyn<T> {
   let sum = ctx.defaultO();
   for (let k = 0; k < n; k++)   {
     for (let n = 0; n < x; n++)     {
-      let b: O = structuredClone(this.c1[k]);
+      let b: any = structuredClone(this.c1[k]);
       for (let m = 0; m < s; m++)       {
         const l = fieldAdd(fieldMul(l, s), m);
         for (const [idx, v] of voles.indices.map((val, i) => [i, val] as [number, typeof val]))         {
@@ -551,16 +551,16 @@ export class PolyDyn<T> {
     return new VopeDyn({ u: u, v: v, n: 0, k: 1 });
   }
 
-  get_qs<Q, A>(m: number, x: number, root: DeltaDyn<Q>, inputs: QDyn<Q>[][], reduction: number): QDyn<A>
+  get_qs<Q, A>(m: number, x: number, root: DeltaDyn<any>, inputs: QDyn<any>[][], reduction: number): QDyn<any>
   {
     const n: number = this.n;
     return new QDyn({ q: Array.from({length: m - 0}, (_, __i) => __i + 0).map((i) => (() => {
-  let sum: A = structuredClone(this.c0);
+  let sum: any = structuredClone(this.c0);
   for (let _ = 0; _ < n; _++)   {
     sum = fieldMul(structuredClone(root.delta[i]), sum);
   }
   for (let j = 0; j < n; j++)   {
-    let b: A = structuredClone(this.c1[j]);
+    let b: any = structuredClone(this.c1[j]);
     for (const i2 of inputs)     {
       for (let _ = 0; _ < reduction; _++)       {
         b = fieldMul(structuredClone(i2[j].q[i]), b);
@@ -572,16 +572,16 @@ export class PolyDyn<T> {
 })()), n: 0 });
   }
 
-  get_qs_pool<Q, A>(m: number, x: number, root: DeltaDyn<Q>, inputs: PolyInputPoolDyn<QDyn<Q>>, reduction: number): QDyn<A>
+  get_qs_pool<Q, A>(m: number, x: number, root: DeltaDyn<any>, inputs: PolyInputPoolDyn<QDyn<any>>, reduction: number): QDyn<any>
   {
     const n: number = this.n;
     return new QDyn({ q: Array.from({length: m - 0}, (_, __i) => __i + 0).map((i) => (() => {
-  let sum: A = structuredClone(this.c0);
+  let sum: any = structuredClone(this.c0);
   for (let _ = 0; _ < n; _++)   {
     sum = fieldMul(structuredClone(root.delta[i]), sum);
   }
   for (let j = 0; j < n; j++)   {
-    let b: A = structuredClone(this.c1[j]);
+    let b: any = structuredClone(this.c1[j]);
     for (const i2 of inputs.indices)     {
       for (let _ = 0; _ < reduction; _++)       {
         b = fieldMul(structuredClone(inputs.inputs[i2[j]].q[i]), b);
@@ -595,15 +595,15 @@ export class PolyDyn<T> {
 }
 
 export class PolyInputPoolDyn<T> {
-  n: number;
-  x: number;
-  inputs: T[];
-  indices: number[][];
+  n!: number;
+  x!: number;
+  inputs!: any[];
+  indices!: number[][];
 
   constructor(init: { 
     n: number,
     x: number,
-    inputs: T[],
+    inputs: any[],
     indices: number[][]
   }) {
     Object.assign(this, init);
@@ -611,48 +611,48 @@ export class PolyInputPoolDyn<T> {
 }
 
 export class BitVoleDyn<T> {
-  n: number;
-  u: Bit[];
-  v: T[];
+  n!: number;
+  u!: Bit[];
+  v!: any[];
 
   constructor(init: { 
     n: number,
     u: Bit[],
-    v: T[]
+    v: any[]
   }) {
     Object.assign(this, init);
   }
 }
 
 export class VopeDyn<T> {
-  n: number;
-  k: number;
-  u: T[][];
-  v: T[];
+  n!: number;
+  k!: number;
+  u!: any[][];
+  v!: any[];
 
   constructor(init: { 
     n: number,
     k: number,
-    u: T[][],
-    v: T[]
+    u: any[][],
+    v: any[]
   }) {
     Object.assign(this, init);
   }
 
-  add(rhs: VopeDyn<U>): number /* any::Output */
+  add(rhs: VopeDyn<any>): number /* any::Output */
   {
     const n: number = this.n;
     const k: number = this.k;
     return new VopeDyn({ u: this.u.map((__a, __i) => [__a, rhs.u[__i]] as [typeof __a, unknown]).map(([a, b]) => a.map((__a, __i) => [__a, b[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldAdd(a, b))), v: this.v.map((__a, __i) => [__a, rhs.v[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldAdd(a, b)), n: 0, k: 1 });
   }
 
-  bitxor(rhs: U[]): number /* any::Output */
+  bitxor(rhs: any[]): number /* any::Output */
   {
     const n: number = this.n;
     const k: number = this.k;
     return new VopeDyn({ u: Array.from({length: k - 0}, (_, __i) => __i + 0).map((i) => (() => {
   return Array.from({length: n - 0}, (_, __i) => __i + 0).map((j) => (() => {
-  const o: O = fieldBitxor(structuredClone(this.u[i][j]), structuredClone(rhs[fieldAdd(fieldMul(i, k), j)]));
+  const o: any = fieldBitxor(structuredClone(this.u[i][j]), structuredClone(rhs[fieldAdd(fieldMul(i, k), j)]));
   return o;
 })());
 })()), v: this.v.map((a) => a), n: 0, k: 1 });
@@ -668,7 +668,7 @@ export class VopeDyn<T> {
 })()), v: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i) => structuredClone(v[i])), n: 0, k: 1 });
   }
 
-  static constant(n: number, v: T[]): any
+  static constant(n: number, v: any[]): any
   {
     const k: number = 0;
     return new VopeDyn({ u: Array.from({length: 0 - 0}, (_, __i) => __i + 0).map((_) => (() => { throw new Error("unreachable"); })()), v: v, n: 0, k: 1 });
@@ -695,7 +695,7 @@ export class VopeDyn<T> {
     return true;
   }
 
-  expand(ctx: { defaultT: () => any }, l: number): VopeDyn<T>
+  expand(ctx: { defaultT: () => any }, l: number): VopeDyn<any>
   {
     const n: number = this.n;
     const k: number = this.k;
@@ -705,7 +705,7 @@ export class VopeDyn<T> {
 })()), v: structuredClone(v), n: 0, k: 1 });
   }
 
-  mul(rhs: DeltaDyn<U>): number /* any::Output */
+  mul(rhs: DeltaDyn<any>): number /* any::Output */
   {
     const n: number = this.n;
     const k: number = this.k;
@@ -715,13 +715,13 @@ export class VopeDyn<T> {
   for (let _ = 0; _ < i; _++)   {
     x = fieldMul(x, structuredClone(rhs.delta[i]));
   }
-  const m: O = fieldMul(structuredClone(b), x);
+  const m: any = fieldMul(structuredClone(b), x);
   return fieldAdd(m, a);
 })());
 })(), structuredClone(this.v).map((a) => a)), n: 0 });
   }
 
-  mul_generalized(ctx: { defaultT: () => any }, k2: number, other: VopeDyn<T>): VopeDyn<T>
+  mul_generalized(ctx: { defaultT: () => any }, k2: number, other: VopeDyn<any>): VopeDyn<any>
   {
     const n: number = this.n;
     const k: number = this.k;
@@ -754,7 +754,7 @@ export class VopeDyn<T> {
     return new VopeDyn({ u: res_u, v: res_v, n: 0, k: 1 });
   }
 
-  remap(m: number, f: (arg: number) => number): VopeDyn<T>
+  remap(m: number, f: (arg: number) => number): VopeDyn<any>
   {
     const n: number = this.n;
     const k: number = this.k;
@@ -778,7 +778,7 @@ export class VopeDyn<T> {
     return this.remap(n, (a) => wrappingAdd(a, n));
   }
 
-  scale<T>(f: (arg: boolean) => T): VopeDyn<T>
+  scale<T>(f: (arg: boolean) => any): VopeDyn<any>
   {
     const n: number = this.n;
     const k: number = this.k;
@@ -917,7 +917,7 @@ export function gen_abo<B, D>(ctx: { newD: () => any }, k: number, a: number[], 
   return new ABODyn({ commit: [...h.finalize()], per_byte: per_byte, k: 0 });
 }
 
-export function create_vole_from_material(ctx: { B_OutputSize: number }, s: readonly X[]): VopeDyn<number>
+export function create_vole_from_material(ctx: { B_OutputSize: number }, s: readonly any[]): VopeDyn<number>
 {
   const u: number[] = s.reduce((a, b) => (() => {
   return a.map((__a, __i) => [__a, Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i) => asRefU8(b)[i])[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldBitxor(a, b));
@@ -928,7 +928,7 @@ export function create_vole_from_material(ctx: { B_OutputSize: number }, s: read
   return new VopeDyn({ u: Array.from({length: 1 - 0}, (_, __i) => __i + 0).map((_) => structuredClone(u)), v: v, n: 0, k: 1 });
 }
 
-export function create_vole_from_material_expanded(ctx: { B_OutputSize: number }, s: readonly Y[], f: (arg: Uint8Array) => X): VopeDyn<number>
+export function create_vole_from_material_expanded(ctx: { B_OutputSize: number }, s: readonly any[], f: (arg: Uint8Array) => any): VopeDyn<number>
 {
   const u: number[] = s.map((b) => f(asRefU8(b)[Array.from({length: ctx.B_OutputSize}, (_, i) => i)])).reduce((a, b) => (() => {
   return a.map((__a, __i) => [__a, Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i) => asRefU8(b)[i])[__i]] as [typeof __a, unknown]).map(([a, b]) => fieldBitxor(a, b));

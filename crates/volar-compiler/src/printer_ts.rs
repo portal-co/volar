@@ -349,6 +349,8 @@ fn write_ctx_param(needs: &WitnessNeeds, f: &mut fmt::Formatter<'_>) -> fmt::Res
 /// Used so that callers know they must forward `ctx` when calling these functions.
 fn build_module_witness_map(module: &IrModule) -> BTreeMap<String, WitnessNeeds> {
     let mut map = BTreeMap::new();
+
+    // First pass: direct witness needs
     for func in &module.functions {
         let needs = compute_function_witnesses(func);
         if !needs.is_empty() {
@@ -356,7 +358,6 @@ fn build_module_witness_map(module: &IrModule) -> BTreeMap<String, WitnessNeeds>
             map.insert(name, needs);
         }
     }
-    // Also scan impl methods
     for imp in &module.impls {
         for item in &imp.items {
             if let IrImplItem::Method(func) = item {
@@ -370,7 +371,178 @@ fn build_module_witness_map(module: &IrModule) -> BTreeMap<String, WitnessNeeds>
             }
         }
     }
+
+    // Second pass: transitive closure — if a function body calls another function
+    // that needs witnesses, the caller also needs those witnesses (so it can
+    // forward `ctx`).  We iterate until no new needs are added.
+    //
+    // Collect all (name, body) pairs for scanning.
+    let mut all_funcs: Vec<(String, &IrBlock)> = Vec::new();
+    for func in &module.functions {
+        let name = if func.name.starts_with("r#") { func.name[2..].to_string() } else { func.name.clone() };
+        all_funcs.push((name, &func.body));
+    }
+    for imp in &module.impls {
+        for item in &imp.items {
+            if let IrImplItem::Method(func) = item {
+                let class_name = self_ty_name(&imp.self_ty);
+                let method_name = ts_method_name(&func.name, imp.trait_.as_ref());
+                let key = format!("{}.{}", class_name, method_name);
+                all_funcs.push((key, &func.body));
+            }
+        }
+    }
+
+    loop {
+        let mut changed = false;
+        for (caller_name, body) in &all_funcs {
+            let callee_names = collect_call_targets(body);
+            let mut extra = WitnessNeeds::default();
+            for callee in &callee_names {
+                if let Some(callee_needs) = map.get(callee.as_str()) {
+                    extra.merge(callee_needs);
+                }
+            }
+            if extra.is_empty() { continue; }
+            let entry = map.entry(caller_name.clone()).or_default();
+            let before = entry.needs.len();
+            entry.merge(&extra);
+            entry.sorted();
+            if entry.needs.len() > before {
+                changed = true;
+            }
+        }
+        if !changed { break; }
+    }
+
     map
+}
+
+/// Collect the simple names of all functions called in a block (non-method calls only).
+fn collect_call_targets(block: &IrBlock) -> Vec<String> {
+    let mut targets = Vec::new();
+    collect_call_targets_block(block, &mut targets);
+    targets
+}
+
+fn collect_call_targets_block(block: &IrBlock, targets: &mut Vec<String>) {
+    for stmt in &block.stmts {
+        match stmt {
+            IrStmt::Let { init: Some(e), .. } | IrStmt::Semi(e) | IrStmt::Expr(e) => {
+                collect_call_targets_expr(e, targets);
+            }
+            _ => {}
+        }
+    }
+    if let Some(e) = &block.expr {
+        collect_call_targets_expr(e, targets);
+    }
+}
+
+fn collect_call_targets_expr(expr: &IrExpr, targets: &mut Vec<String>) {
+    match expr {
+        IrExpr::Call { func, args } => {
+            if let IrExpr::Path { segments, .. } = func.as_ref() {
+                if segments.len() == 1 {
+                    targets.push(segments[0].clone());
+                }
+            }
+            collect_call_targets_expr(func, targets);
+            for a in args { collect_call_targets_expr(a, targets); }
+        }
+        IrExpr::Binary { left, right, .. } | IrExpr::Assign { left, right } | IrExpr::AssignOp { left, right, .. } => {
+            collect_call_targets_expr(left, targets);
+            collect_call_targets_expr(right, targets);
+        }
+        IrExpr::Unary { expr, .. } | IrExpr::Return(Some(expr)) | IrExpr::Cast { expr, .. } | IrExpr::Try(expr) | IrExpr::Field { base: expr, .. } => {
+            collect_call_targets_expr(expr, targets);
+        }
+        IrExpr::MethodCall { receiver, args, .. } => {
+            collect_call_targets_expr(receiver, targets);
+            for a in args { collect_call_targets_expr(a, targets); }
+        }
+        IrExpr::Index { base, index } => {
+            collect_call_targets_expr(base, targets);
+            collect_call_targets_expr(index, targets);
+        }
+        IrExpr::StructExpr { fields, rest, .. } => {
+            for (_, e) in fields { collect_call_targets_expr(e, targets); }
+            if let Some(r) = rest { collect_call_targets_expr(r, targets); }
+        }
+        IrExpr::Tuple(es) | IrExpr::Array(es) => {
+            for e in es { collect_call_targets_expr(e, targets); }
+        }
+        IrExpr::Repeat { elem, len } => {
+            collect_call_targets_expr(elem, targets);
+            collect_call_targets_expr(len, targets);
+        }
+        IrExpr::Block(b) => collect_call_targets_block(b, targets),
+        IrExpr::If { cond, then_branch, else_branch } => {
+            collect_call_targets_expr(cond, targets);
+            collect_call_targets_block(then_branch, targets);
+            if let Some(eb) = else_branch { collect_call_targets_expr(eb, targets); }
+        }
+        IrExpr::BoundedLoop { start, end, body, .. } => {
+            collect_call_targets_expr(start, targets);
+            collect_call_targets_expr(end, targets);
+            collect_call_targets_block(body, targets);
+        }
+        IrExpr::IterLoop { collection, body, .. } => {
+            collect_call_targets_expr(collection, targets);
+            collect_call_targets_block(body, targets);
+        }
+        IrExpr::Closure { body, .. } => collect_call_targets_expr(body, targets),
+        IrExpr::Range { start, end, .. } => {
+            if let Some(s) = start { collect_call_targets_expr(s, targets); }
+            if let Some(e) = end { collect_call_targets_expr(e, targets); }
+        }
+        IrExpr::Match { expr, arms } => {
+            collect_call_targets_expr(expr, targets);
+            for arm in arms { collect_call_targets_expr(&arm.body, targets); }
+        }
+        IrExpr::IterPipeline(chain) => collect_call_targets_chain(chain, targets),
+        IrExpr::RawMap { receiver, body, .. } | IrExpr::RawFold { receiver, body, .. } => {
+            collect_call_targets_expr(receiver, targets);
+            collect_call_targets_expr(body, targets);
+        }
+        IrExpr::RawZip { left, right, body, .. } => {
+            collect_call_targets_expr(left, targets);
+            collect_call_targets_expr(right, targets);
+            collect_call_targets_expr(body, targets);
+        }
+        _ => {}
+    }
+}
+
+fn collect_call_targets_chain(chain: &IrIterChain, targets: &mut Vec<String>) {
+    match &chain.source {
+        IterChainSource::Method { collection, .. } => collect_call_targets_expr(collection, targets),
+        IterChainSource::Range { start, end, .. } => {
+            collect_call_targets_expr(start, targets);
+            collect_call_targets_expr(end, targets);
+        }
+        IterChainSource::Zip { left, right } => {
+            collect_call_targets_chain(left, targets);
+            collect_call_targets_chain(right, targets);
+        }
+    }
+    for step in &chain.steps {
+        match step {
+            IterStep::Map { body, .. } | IterStep::Filter { body, .. } | IterStep::FilterMap { body, .. } | IterStep::FlatMap { body, .. } => {
+                collect_call_targets_expr(body, targets);
+            }
+            IterStep::Take { count } | IterStep::Skip { count } => collect_call_targets_expr(count, targets),
+            IterStep::Chain { other } => collect_call_targets_chain(other, targets),
+            IterStep::Enumerate => {}
+        }
+    }
+    match &chain.terminal {
+        IterTerminal::Fold { init, body, .. } => {
+            collect_call_targets_expr(init, targets);
+            collect_call_targets_expr(body, targets);
+        }
+        _ => {}
+    }
 }
 
 // ============================================================================
@@ -380,7 +552,8 @@ fn build_module_witness_map(module: &IrModule) -> BTreeMap<String, WitnessNeeds>
 /// Render an `IrModule` as a complete TypeScript source file.
 pub fn print_module_ts(module: &IrModule) -> String {
     let witness_map = build_module_witness_map(module);
-    let cx = TsContext { witness_map: &witness_map };
+    let erased = collect_erased_type_params(module);
+    let cx = TsContext { witness_map: &witness_map, erased_type_params: erased };
     let mut out = String::new();
     let _ = write!(out, "{}", TsFmt(TsPreambleWriter, &cx));
     let _ = write!(out, "{}", TsFmt(TsModuleWriter { module }, &cx));
@@ -395,6 +568,87 @@ pub fn print_module_ts(module: &IrModule) -> String {
 struct TsContext<'a> {
     /// Per-function witness needs keyed by `"functionName"` or `"ClassName.methodName"`.
     witness_map: &'a BTreeMap<String, WitnessNeeds>,
+    /// Type parameter names that have been erased (Fn-bounded, AsRef-bounded, etc.)
+    /// and should be printed as `any` in type positions.
+    erased_type_params: Vec<String>,
+}
+
+/// Collect type parameter names that are erased in TS (Fn-bounded, AsRef-bounded)
+/// across the entire module.  These will be printed as `any`.
+fn collect_erased_type_params(module: &IrModule) -> Vec<String> {
+    // First, collect all type-param names that would survive into TS generics
+    // (type-kind, no Fn/AsRef/Math/Into bounds).
+    let mut surviving = Vec::new();
+    let mut all_seen = Vec::new();
+
+    let classify = |g: &IrGenericParam, surviving: &mut Vec<String>, all_seen: &mut Vec<String>| {
+        if g.kind != IrGenericParamKind::Type { return; }
+        if !all_seen.contains(&g.name) {
+            all_seen.push(g.name.clone());
+        }
+        let is_filtered = g.bounds.iter().any(|b| {
+            matches!(&b.trait_kind,
+                TraitKind::Fn(..) | TraitKind::AsRef(..) | TraitKind::Math(..) | TraitKind::Into(..)
+            )
+        });
+        // Also consider boundless single-letter params that look like
+        // associated-type outputs (O, A, U, M, Q, R, X, Y).
+        let is_assoc_output = g.bounds.is_empty() && is_crypto_type_param(&g.name);
+        if !is_filtered && !is_assoc_output {
+            if !surviving.contains(&g.name) {
+                surviving.push(g.name.clone());
+            }
+        }
+    };
+
+    for s in &module.structs {
+        for g in &s.generics {
+            classify(g, &mut surviving, &mut all_seen);
+        }
+    }
+    for func in &module.functions {
+        for g in &func.generics {
+            classify(g, &mut surviving, &mut all_seen);
+        }
+    }
+    for imp in &module.impls {
+        for item in &imp.items {
+            if let IrImplItem::Method(func) = item {
+                for g in &func.generics {
+                    classify(g, &mut surviving, &mut all_seen);
+                }
+            }
+        }
+    }
+
+    // Also collect type params referenced inside Fn bounds' return types
+    // (e.g. F: FnMut(&[u8]) -> X means X is an indirect type param)
+    let mut add_fn_return_params = |generics: &[IrGenericParam], all_seen: &mut Vec<String>| {
+        for g in generics {
+            for b in &g.bounds {
+                if let TraitKind::Fn(_, ret) = &b.trait_kind {
+                    if let IrType::TypeParam(name) = ret.as_ref() {
+                        if !all_seen.contains(name) {
+                            all_seen.push(name.clone());
+                        }
+                    }
+                }
+            }
+        }
+    };
+    for func in &module.functions {
+        add_fn_return_params(&func.generics, &mut all_seen);
+    }
+    for imp in &module.impls {
+        for item in &imp.items {
+            if let IrImplItem::Method(func) = item {
+                add_fn_return_params(&func.generics, &mut all_seen);
+            }
+        }
+    }
+
+    // Erased = seen but not surviving
+    all_seen.into_iter().filter(|name| !surviving.contains(name)).collect()
 }
 
 // ============================================================================
@@ -623,8 +877,10 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
 
         // Emit standalone functions
         for func in &self.module.functions {
-            let needs = compute_function_witnesses(func);
-            TsFunctionWriter { func, indent: 0, witness_needs: &needs }.ts_fmt(f, cx)?;
+            let fn_name = if func.name.starts_with("r#") { func.name[2..].to_string() } else { func.name.clone() };
+            let empty = WitnessNeeds::default();
+            let needs = cx.witness_map.get(&fn_name).unwrap_or(&empty);
+            TsFunctionWriter { func, indent: 0, witness_needs: needs }.ts_fmt(f, cx)?;
             writeln!(f)?;
         }
 
@@ -634,8 +890,11 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
             for imp in impls {
                 for item in &imp.items {
                     if let IrImplItem::Method(func) = item {
-                        let needs = compute_function_witnesses(func);
-                        TsFunctionWriter { func, indent: 0, witness_needs: &needs }.ts_fmt(f, cx)?;
+                        let fn_name = if func.name.starts_with("r#") { func.name[2..].to_string() } else { func.name.clone() };
+                        let key = format!("{}.{}", name, fn_name);
+                        let empty = WitnessNeeds::default();
+                        let needs = cx.witness_map.get(&key).unwrap_or(&empty);
+                        TsFunctionWriter { func, indent: 0, witness_needs: needs }.ts_fmt(f, cx)?;
                         writeln!(f)?;
                     }
                 }
@@ -662,7 +921,8 @@ impl<'a> TsBackend for TsClassWriter<'a> {
         let used_params = struct_used_type_params(self.s);
 
         write!(f, "export class {}", name)?;
-        TsGenericsWriter { generics: struct_generics, used_only: Some(&used_params) }.ts_fmt(f, cx)?;
+        // Don't prune class-level type params — methods may reference them
+        TsGenericsWriter { generics: struct_generics, used_only: None }.ts_fmt(f, cx)?;
         writeln!(f, " {{")?;
 
         // Constructor with non-phantom fields — takes an initializer object
@@ -670,9 +930,9 @@ impl<'a> TsBackend for TsClassWriter<'a> {
             .filter(|field| !is_phantom_field(field))
             .collect();
 
-        // Declare fields
+        // Declare fields with definite assignment assertion (assigned via Object.assign)
         for field in &fields {
-            write!(f, "  {}: ", field.name)?;
+            write!(f, "  {}!: ", field.name)?;
             TsTypeWriter { ty: &field.ty }.ts_fmt(f, cx)?;
             writeln!(f, ";")?;
         }
@@ -692,16 +952,29 @@ impl<'a> TsBackend for TsClassWriter<'a> {
         let analysis = analyze_class_impls(self.impls);
 
         // Emit unique methods
+        let class_name = name.clone();
         for im in &analysis.unique_methods {
             writeln!(f)?;
-            let needs = compute_function_witnesses(im.func);
-            TsMethodWriter { func: im.func, imp: im.imp, indent: 1, witness_needs: &needs }.ts_fmt(f, cx)?;
+            let method_name = ts_method_name(&im.func.name, im.imp.trait_.as_ref());
+            let key = format!("{}.{}", class_name, method_name);
+            let empty = WitnessNeeds::default();
+            let needs = cx.witness_map.get(&key).unwrap_or(&empty);
+            TsMethodWriter { func: im.func, imp: im.imp, indent: 1, witness_needs: needs }.ts_fmt(f, cx)?;
         }
 
         // Emit merged methods (runtime dispatch)
         for mm in &analysis.merged_methods {
             writeln!(f)?;
-            let needs = compute_merged_witnesses(&mm.variants);
+            // Merge witness needs from all variants (including transitive)
+            let mut needs = WitnessNeeds::default();
+            for v in &mm.variants {
+                let method_name = ts_method_name(&v.func.name, v.imp.trait_.as_ref());
+                let key = format!("{}.{}", class_name, method_name);
+                if let Some(v_needs) = cx.witness_map.get(&key) {
+                    needs.merge(v_needs);
+                }
+            }
+            needs.sorted();
             TsMergedMethodWriter {
                 merged: mm,
                 struct_fields: &self.s.fields,
@@ -727,9 +1000,6 @@ struct TsMethodWriter<'a> {
 }
 
 impl<'a> TsMethodWriter<'a> {
-    fn resolve_fn_type(&self, type_name: &str) -> Option<String> {
-        resolve_fn_generic(type_name, &self.func.generics)
-    }
 }
 
 impl<'a> TsBackend for TsMethodWriter<'a> {
@@ -1028,10 +1298,8 @@ impl<'a> TsBackend for TsTypeWriter<'a> {
             }
             IrType::TypeParam(p) => {
                 if p == "Self" {
-                    // TypeScript's polymorphic `this` is too strict for our use.
-                    // We'd need the enclosing class name, but in a type-writer we
-                    // don't have that context.  Emit `any` as a safe fallback —
-                    // callers that need precision should cast.
+                    write!(f, "any")?;
+                } else if cx.erased_type_params.contains(p) {
                     write!(f, "any")?;
                 } else {
                     write!(f, "{}", p)?;
@@ -2274,7 +2542,7 @@ fn ts_pattern_condition(pat: &IrPattern, match_var: &str, f: &mut fmt::Formatter
     }
 }
 
-fn resolve_fn_generic(type_name: &str, generics: &[IrGenericParam]) -> Option<String> {
+fn resolve_fn_generic(type_name: &str, generics: &[IrGenericParam], cx: &TsContext<'_>) -> Option<String> {
     for g in generics {
         if g.name == type_name {
             for b in &g.bounds {
@@ -2285,15 +2553,11 @@ fn resolve_fn_generic(type_name: &str, generics: &[IrGenericParam]) -> Option<St
                             FnInput::Size => "number",
                             FnInput::Bool => "boolean",
                         };
-                        let dummy_map = BTreeMap::new();
-                        let dummy_cx = TsContext { witness_map: &dummy_map };
-                        let ret_str = format!("{}", TsFmt(TsTypeRefWriter { ty: ret }, &dummy_cx));
+                        let ret_str = format!("{}", TsFmt(TsTypeRefWriter { ty: ret }, cx));
                         return Some(format!("(arg: {}) => {}", param_ty, ret_str));
                     }
                     TraitKind::AsRef(inner) => {
-                        let dummy_map = BTreeMap::new();
-                        let dummy_cx = TsContext { witness_map: &dummy_map };
-                        let inner_str = format!("{}", TsFmt(TsTypeRefWriter { ty: inner }, &dummy_cx));
+                        let inner_str = format!("{}", TsFmt(TsTypeRefWriter { ty: inner }, cx));
                         return Some(inner_str);
                     }
                     _ => {}
@@ -2307,7 +2571,7 @@ fn resolve_fn_generic(type_name: &str, generics: &[IrGenericParam]) -> Option<St
 /// Write a parameter's type, resolving Fn-bounded generics inline.
 fn write_param_type(p: &IrParam, generics: &[IrGenericParam], f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
     if let IrType::TypeParam(tp) = &p.ty {
-        if let Some(fn_type) = resolve_fn_generic(tp, generics) {
+        if let Some(fn_type) = resolve_fn_generic(tp, generics, cx) {
             return write!(f, "{}", fn_type);
         }
     }
