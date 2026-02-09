@@ -3,6 +3,21 @@ use super::*;
 pub struct IRBlockId(pub u32);
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct IRBlocks(pub Vec<IRBlock>);
+impl IRBlocks {
+    pub fn is_movfuscated(&self) -> bool {
+        return self.0.len() == 1;
+    }
+    pub fn is_circuit(&self) -> bool {
+        return self.is_movfuscated()
+            && match self.0[0].terminator {
+                IRTerminator::Jmp {
+                    func: IRBlockTargetId::Return,
+                    ..
+                } => true,
+                _ => false,
+            };
+    }
+}
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct IRBlock {
     pub params: Vec<IRTypeId>,
