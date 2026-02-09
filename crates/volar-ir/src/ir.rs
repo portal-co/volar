@@ -1,6 +1,6 @@
 use super::*;
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct IRBlockId(pub usize);
+pub struct IRBlockId(pub u32);
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct IRBlocks(pub Vec<IRBlock>);
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -10,7 +10,7 @@ pub struct IRBlock {
     pub terminator: IRTerminator,
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct IRTypeId(pub usize);
+pub struct IRTypeId(pub u32);
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct IRTypes(pub Vec<IRType>);
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -23,7 +23,7 @@ pub enum IRType {
     Block { params: Vec<IRTypeId> },
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct IRVarId(pub usize);
+pub struct IRVarId(pub u32);
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum IRStmt<Var = IRVarId, Addr = Var> {
     StorageRead {
