@@ -8,16 +8,16 @@
 //!   `dump_module(&module)` → `String`
 
 #[cfg(feature = "std")]
-use std::string::{String, ToString};
-#[cfg(feature = "std")]
 use std::format;
+#[cfg(feature = "std")]
+use std::string::{String, ToString};
 #[cfg(feature = "std")]
 use std::vec::Vec;
 
 #[cfg(not(feature = "std"))]
-use alloc::string::{String, ToString};
-#[cfg(not(feature = "std"))]
 use alloc::format;
+#[cfg(not(feature = "std"))]
+use alloc::string::{String, ToString};
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
@@ -57,7 +57,13 @@ pub fn dump_module(module: &IrModule) -> String {
 
     // Type aliases
     for alias in &module.type_aliases {
-        let _ = writeln!(out, "type {}{} = {}", alias.name, fmt_generics(&alias.generics), alias.target);
+        let _ = writeln!(
+            out,
+            "type {}{} = {}",
+            alias.name,
+            fmt_generics(&alias.generics),
+            alias.target
+        );
     }
 
     out
@@ -261,9 +267,15 @@ fn dump_stmt(out: &mut String, stmt: &IrStmt, level: usize) {
 
 fn fmt_pattern(pat: &IrPattern) -> String {
     match pat {
-        IrPattern::Ident { name, mutable, subpat } => {
+        IrPattern::Ident {
+            name,
+            mutable,
+            subpat,
+        } => {
             let mut s = String::new();
-            if *mutable { s.push_str("mut "); }
+            if *mutable {
+                s.push_str("mut ");
+            }
             s.push_str(name);
             if let Some(sub) = subpat {
                 s.push_str(" @ ");
@@ -347,7 +359,12 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             }
             let _ = write!(out, ")");
         }
-        IrExpr::MethodCall { receiver, method, args, .. } => {
+        IrExpr::MethodCall {
+            receiver,
+            method,
+            args,
+            ..
+        } => {
             dump_expr(out, receiver, level);
             let _ = write!(out, ".{:?}(", method);
             for (i, arg) in args.iter().enumerate() {
@@ -374,7 +391,11 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             indent(out, level);
             let _ = write!(out, "}}");
         }
-        IrExpr::If { cond, then_branch, else_branch } => {
+        IrExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             let _ = write!(out, "if ");
             dump_expr(out, cond, level);
             let _ = writeln!(out, " {{");
@@ -404,7 +425,11 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             let _ = write!(out, " {:?}= ", op);
             dump_expr(out, right, level);
         }
-        IrExpr::Range { start, end, inclusive } => {
+        IrExpr::Range {
+            start,
+            end,
+            inclusive,
+        } => {
             if let Some(s) = start {
                 dump_expr(out, s, level);
             }
@@ -417,15 +442,22 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             dump_expr(out, inner, level);
             let _ = write!(out, " as {}", ty);
         }
-        IrExpr::Closure { params, body, ret_type } => {
-            let ps: Vec<String> = params.iter().map(|p| {
-                let pat_str = fmt_pattern(&p.pattern);
-                if let Some(t) = &p.ty {
-                    format!("{}: {}", pat_str, t)
-                } else {
-                    pat_str
-                }
-            }).collect();
+        IrExpr::Closure {
+            params,
+            body,
+            ret_type,
+        } => {
+            let ps: Vec<String> = params
+                .iter()
+                .map(|p| {
+                    let pat_str = fmt_pattern(&p.pattern);
+                    if let Some(t) = &p.ty {
+                        format!("{}: {}", pat_str, t)
+                    } else {
+                        pat_str
+                    }
+                })
+                .collect();
             let _ = write!(out, "|{}|", ps.join(", "));
             if let Some(rt) = ret_type {
                 let _ = write!(out, " -> {} ", rt);
@@ -434,7 +466,12 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             }
             dump_expr(out, body, level);
         }
-        IrExpr::StructExpr { kind, type_args, fields, rest } => {
+        IrExpr::StructExpr {
+            kind,
+            type_args,
+            fields,
+            rest,
+        } => {
             let _ = write!(out, "{}", kind);
             if !type_args.is_empty() {
                 let args: Vec<String> = type_args.iter().map(|t| format!("{}", t)).collect();
@@ -464,14 +501,23 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             }
             let _ = write!(out, ")");
         }
-        IrExpr::Path { segments, type_args } => {
+        IrExpr::Path {
+            segments,
+            type_args,
+        } => {
             let _ = write!(out, "{}", segments.join("::"));
             if !type_args.is_empty() {
                 let args: Vec<String> = type_args.iter().map(|t| format!("{}", t)).collect();
                 let _ = write!(out, "::<{}>", args.join(", "));
             }
         }
-        IrExpr::BoundedLoop { var, start, end, inclusive, body } => {
+        IrExpr::BoundedLoop {
+            var,
+            start,
+            end,
+            inclusive,
+            body,
+        } => {
             let _ = write!(out, "for {} in ", var);
             dump_expr(out, start, level);
             let _ = write!(out, "{}", if *inclusive { "..=" } else { ".." });
@@ -484,7 +530,10 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
         IrExpr::IterPipeline(chain) => {
             dump_iter_chain(out, chain, level);
         }
-        IrExpr::Match { expr: scrutinee, arms } => {
+        IrExpr::Match {
+            expr: scrutinee,
+            arms,
+        } => {
             let _ = write!(out, "match ");
             dump_expr(out, scrutinee, level);
             let _ = writeln!(out, " {{");
@@ -502,20 +551,23 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             indent(out, level);
             let _ = write!(out, "}}");
         }
-        IrExpr::DefaultValue { ty } => {
-            match ty {
-                Some(t) => {
-                    let _ = write!(out, "DefaultValue({})", t);
-                }
-                None => {
-                    let _ = write!(out, "DefaultValue(?)");
-                }
+        IrExpr::DefaultValue { ty } => match ty {
+            Some(t) => {
+                let _ = write!(out, "DefaultValue({})", t);
             }
-        }
+            None => {
+                let _ = write!(out, "DefaultValue(?)");
+            }
+        },
         IrExpr::LengthOf(len) => {
             let _ = write!(out, "LengthOf({:?})", len);
         }
-        IrExpr::ArrayGenerate { elem_ty, len, index_var, body } => {
+        IrExpr::ArrayGenerate {
+            elem_ty,
+            len,
+            index_var,
+            body,
+        } => {
             let ty_str = elem_ty
                 .as_ref()
                 .map(|t| format!("<{}>", t))
@@ -538,7 +590,9 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
         IrExpr::Array(elems) => {
             let _ = write!(out, "[");
             for (i, e) in elems.iter().enumerate() {
-                if i > 0 { let _ = write!(out, ", "); }
+                if i > 0 {
+                    let _ = write!(out, ", ");
+                }
                 dump_expr(out, e, level);
             }
             let _ = write!(out, "]");
@@ -550,29 +604,59 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             dump_expr(out, len, level);
             let _ = write!(out, "]");
         }
-        IrExpr::RawMap { receiver, elem_var, body } => {
+        IrExpr::RawMap {
+            receiver,
+            elem_var,
+            body,
+        } => {
             dump_expr(out, receiver, level);
             let _ = write!(out, ".raw_map(|{}| ", fmt_pattern(elem_var));
             dump_expr(out, body, level);
             let _ = write!(out, ")");
         }
-        IrExpr::RawZip { left, right, left_var, right_var, body } => {
+        IrExpr::RawZip {
+            left,
+            right,
+            left_var,
+            right_var,
+            body,
+        } => {
             dump_expr(out, left, level);
             let _ = write!(out, ".raw_zip(");
             dump_expr(out, right, level);
-            let _ = write!(out, ", |{}, {}| ", fmt_pattern(left_var), fmt_pattern(right_var));
+            let _ = write!(
+                out,
+                ", |{}, {}| ",
+                fmt_pattern(left_var),
+                fmt_pattern(right_var)
+            );
             dump_expr(out, body, level);
             let _ = write!(out, ")");
         }
-        IrExpr::RawFold { receiver, init, acc_var, elem_var, body } => {
+        IrExpr::RawFold {
+            receiver,
+            init,
+            acc_var,
+            elem_var,
+            body,
+        } => {
             dump_expr(out, receiver, level);
             let _ = write!(out, ".raw_fold(");
             dump_expr(out, init, level);
-            let _ = write!(out, ", |{}, {}| ", fmt_pattern(acc_var), fmt_pattern(elem_var));
+            let _ = write!(
+                out,
+                ", |{}, {}| ",
+                fmt_pattern(acc_var),
+                fmt_pattern(elem_var)
+            );
             dump_expr(out, body, level);
             let _ = write!(out, ")");
         }
-        IrExpr::IterLoop { pattern, collection, body } => {
+        IrExpr::IterLoop {
+            pattern,
+            collection,
+            body,
+        } => {
             let _ = write!(out, "for {} in ", fmt_pattern(pattern));
             dump_expr(out, collection, level);
             let _ = writeln!(out, " {{");
@@ -602,7 +686,11 @@ fn dump_iter_chain(out: &mut String, chain: &IrIterChain, level: usize) {
             dump_expr(out, collection, level);
             let _ = write!(out, ".{:?}()", method);
         }
-        IterChainSource::Range { start, end, inclusive } => {
+        IterChainSource::Range {
+            start,
+            end,
+            inclusive,
+        } => {
             let _ = write!(out, "(");
             dump_expr(out, start, level);
             let _ = write!(out, "{}", if *inclusive { "..=" } else { ".." });
@@ -669,10 +757,20 @@ fn dump_iter_chain(out: &mut String, chain: &IrIterChain, level: usize) {
         IterTerminal::CollectTyped(ty) => {
             let _ = write!(out, ".collect::<Vec<{}>>() ", ty);
         }
-        IterTerminal::Fold { init, acc_var, elem_var, body } => {
+        IterTerminal::Fold {
+            init,
+            acc_var,
+            elem_var,
+            body,
+        } => {
             let _ = write!(out, ".fold(");
             dump_expr(out, init, level);
-            let _ = write!(out, ", |{}, {}| ", fmt_pattern(acc_var), fmt_pattern(elem_var));
+            let _ = write!(
+                out,
+                ", |{}, {}| ",
+                fmt_pattern(acc_var),
+                fmt_pattern(elem_var)
+            );
             dump_expr(out, body, level);
             let _ = write!(out, ")");
         }

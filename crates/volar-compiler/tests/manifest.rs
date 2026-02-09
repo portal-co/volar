@@ -2,9 +2,9 @@
 
 use std::fs;
 use volar_compiler::{
-    parse_source, emit_manifest, is_manifest, TypeManifest, MANIFEST_MARKER,
-    TypeContext, IrType, PrimitiveType, StructKind,
-    print_module_with_deps, DynPreambleWriter, DisplayRust, RustBackend,
+    DisplayRust, DynPreambleWriter, IrType, MANIFEST_MARKER, PrimitiveType, RustBackend,
+    StructKind, TypeContext, TypeManifest, emit_manifest, is_manifest, parse_source,
+    print_module_with_deps,
 };
 
 #[cfg(feature = "parsing")]
@@ -17,11 +17,15 @@ use volar_compiler::parse_manifest;
 #[test]
 fn test_parse_volar_primitives_source() {
     let source = include_str!("../data/volar_primitives_expanded.rs");
-    let module = parse_source(source, "volar_primitives")
-        .expect("parse volar-primitives");
+    let module = parse_source(source, "volar_primitives").expect("parse volar-primitives");
 
     // 6 structs: Bit, Galois, BitsInBytes, Galois64, BitsInBytes64, Tropical
-    assert_eq!(module.structs.len(), 6, "expected 6 structs, got {}", module.structs.len());
+    assert_eq!(
+        module.structs.len(),
+        6,
+        "expected 6 structs, got {}",
+        module.structs.len()
+    );
 
     // 1 trait: Invert
     assert_eq!(module.traits.len(), 1);
@@ -30,23 +34,44 @@ fn test_parse_volar_primitives_source() {
     // Many impls: 4 per field type (Add, Mul, Sub, BitXor<u8>) + 1 Invert + 2 Tropical
     // Bit: 4, Galois: 4 + Invert = 5, BitsInBytes: 4, Galois64: 4, BitsInBytes64: 4, Tropical: 2
     // Total: 4 + 5 + 4 + 4 + 4 + 2 = 23
-    assert_eq!(module.impls.len(), 23, "expected 23 impls, got {}", module.impls.len());
+    assert_eq!(
+        module.impls.len(),
+        23,
+        "expected 23 impls, got {}",
+        module.impls.len()
+    );
 
     // Verify struct fields
-    let bit = module.structs.iter().find(|s| s.kind.to_string() == "Bit").unwrap();
+    let bit = module
+        .structs
+        .iter()
+        .find(|s| s.kind.to_string() == "Bit")
+        .unwrap();
     assert!(bit.is_tuple);
     assert_eq!(bit.fields.len(), 1);
     assert_eq!(bit.fields[0].ty, IrType::Primitive(PrimitiveType::Bool));
 
-    let galois = module.structs.iter().find(|s| s.kind.to_string() == "Galois").unwrap();
+    let galois = module
+        .structs
+        .iter()
+        .find(|s| s.kind.to_string() == "Galois")
+        .unwrap();
     assert!(galois.is_tuple);
     assert_eq!(galois.fields[0].ty, IrType::Primitive(PrimitiveType::U8));
 
-    let galois64 = module.structs.iter().find(|s| s.kind.to_string() == "Galois64").unwrap();
+    let galois64 = module
+        .structs
+        .iter()
+        .find(|s| s.kind.to_string() == "Galois64")
+        .unwrap();
     assert!(galois64.is_tuple);
     assert_eq!(galois64.fields[0].ty, IrType::Primitive(PrimitiveType::U64));
 
-    let tropical = module.structs.iter().find(|s| s.kind.to_string() == "Tropical").unwrap();
+    let tropical = module
+        .structs
+        .iter()
+        .find(|s| s.kind.to_string() == "Tropical")
+        .unwrap();
     assert!(tropical.is_tuple);
     assert_eq!(tropical.generics.len(), 1);
     assert_eq!(tropical.generics[0].name, "T");
@@ -85,7 +110,12 @@ fn test_manifest_round_trip_simple() {
         }
     "#;
     let module = parse_source(source, "test").unwrap();
-    let bytes = emit_manifest(&module, "my-crate", "1.2.3", &["dep-a".into(), "dep-b".into()]);
+    let bytes = emit_manifest(
+        &module,
+        "my-crate",
+        "1.2.3",
+        &["dep-a".into(), "dep-b".into()],
+    );
 
     let manifest = parse_manifest(&bytes).expect("parse manifest");
     assert_eq!(manifest.crate_name, "my-crate");
@@ -103,7 +133,15 @@ fn test_manifest_round_trip_simple() {
 
     // Impl preserved
     assert_eq!(manifest.module.impls.len(), 1);
-    assert_eq!(manifest.module.impls[0].trait_.as_ref().unwrap().kind.to_string(), "Bar");
+    assert_eq!(
+        manifest.module.impls[0]
+            .trait_
+            .as_ref()
+            .unwrap()
+            .kind
+            .to_string(),
+        "Bar"
+    );
 }
 
 #[test]
@@ -121,7 +159,10 @@ fn test_manifest_round_trip_primitives() {
     assert_eq!(manifest.module.impls.len(), module.impls.len());
 
     // Verify specific structs survived round-trip
-    let names: Vec<String> = manifest.module.structs.iter()
+    let names: Vec<String> = manifest
+        .module
+        .structs
+        .iter()
         .map(|s| s.kind.to_string())
         .collect();
     assert!(names.contains(&"Bit".to_string()));
@@ -150,11 +191,18 @@ fn test_manifest_bodies_are_stripped() {
     let module = parse_source(source, "test").unwrap();
     let bytes = emit_manifest(&module, "test", "0.1.0", &[]);
 
-    // The emitted text (after 0xFF) should contain "todo!()" 
+    // The emitted text (after 0xFF) should contain "todo!()"
     let text = core::str::from_utf8(&bytes[1..]).unwrap();
-    assert!(text.contains("todo!()"), "manifest should have todo!() bodies, got:\n{}", text);
+    assert!(
+        text.contains("todo!()"),
+        "manifest should have todo!() bodies, got:\n{}",
+        text
+    );
     // Should NOT contain the original body expressions
-    assert!(!text.contains("y * 2"), "manifest should not have original body");
+    assert!(
+        !text.contains("y * 2"),
+        "manifest should not have original body"
+    );
 }
 
 // ============================================================================
@@ -179,15 +227,27 @@ fn test_type_context_with_primitives_dep() {
     let ctx = TypeContext::from_module_with_deps(&module, &[prim_manifest]);
 
     // Galois should be known
-    assert!(ctx.structs.contains_key("Galois"), "Galois should be in context");
+    assert!(
+        ctx.structs.contains_key("Galois"),
+        "Galois should be in context"
+    );
     assert!(ctx.structs.contains_key("Bit"), "Bit should be in context");
-    assert!(ctx.structs.contains_key("BitsInBytes64"), "BitsInBytes64 should be in context");
+    assert!(
+        ctx.structs.contains_key("BitsInBytes64"),
+        "BitsInBytes64 should be in context"
+    );
 
     // The downstream struct should also be known
-    assert!(ctx.structs.contains_key("MyStruct"), "MyStruct should be in context");
+    assert!(
+        ctx.structs.contains_key("MyStruct"),
+        "MyStruct should be in context"
+    );
 
     // Invert trait should be known
-    assert!(ctx.traits.contains_key("Invert"), "Invert should be in context");
+    assert!(
+        ctx.traits.contains_key("Invert"),
+        "Invert should be in context"
+    );
 
     // Built-in traits should also be present
     assert!(ctx.traits.contains_key("Add"), "Add should be in context");
@@ -204,11 +264,21 @@ fn test_type_context_dep_impls_registered() {
     let ctx = TypeContext::from_module_with_deps(&module, &[prim_manifest]);
 
     // Should have trait impls from the dep
-    let add_impls: Vec<_> = ctx.trait_impls.iter()
-        .filter(|imp| imp.trait_.as_ref().map_or(false, |t| t.kind.to_string() == "Add"))
+    let add_impls: Vec<_> = ctx
+        .trait_impls
+        .iter()
+        .filter(|imp| {
+            imp.trait_
+                .as_ref()
+                .map_or(false, |t| t.kind.to_string() == "Add")
+        })
         .collect();
     // At least: Bit+Bit, Galois+Galois, BitsInBytes+BitsInBytes, Galois64+Galois64, BitsInBytes64+BitsInBytes64, Tropical
-    assert!(add_impls.len() >= 6, "expected >=6 Add impls, got {}", add_impls.len());
+    assert!(
+        add_impls.len() >= 6,
+        "expected >=6 Add impls, got {}",
+        add_impls.len()
+    );
 }
 
 #[test]
@@ -227,7 +297,11 @@ fn test_module_overrides_dep_struct() {
 
     // Module's definition should win
     let galois = ctx.structs.get("Galois").unwrap();
-    assert_eq!(galois.fields.len(), 2, "module's Galois should have 2 fields");
+    assert_eq!(
+        galois.fields.len(),
+        2,
+        "module's Galois should have 2 fields"
+    );
     assert!(!galois.is_tuple, "module's Galois should not be tuple");
 }
 
@@ -238,7 +312,10 @@ fn test_module_overrides_dep_struct() {
 #[test]
 fn test_preamble_no_deps_has_no_pub_use() {
     let preamble = format!("{}", DisplayRust(DynPreambleWriter { deps: &[] }));
-    assert!(!preamble.contains("pub use"), "no deps = no pub use statements");
+    assert!(
+        !preamble.contains("pub use"),
+        "no deps = no pub use statements"
+    );
     // Should still have standard imports
     assert!(preamble.contains("use alloc::vec::Vec"));
     assert!(preamble.contains("fn ilog2"));
@@ -251,15 +328,29 @@ fn test_preamble_with_primitives_dep() {
     let prim_bytes = emit_manifest(&prim_module, "volar-primitives", "0.1.0", &[]);
     let prim_manifest = parse_manifest(&prim_bytes).unwrap();
 
-    let preamble = format!("{}", DisplayRust(DynPreambleWriter { deps: &[prim_manifest] }));
+    let preamble = format!(
+        "{}",
+        DisplayRust(DynPreambleWriter {
+            deps: &[prim_manifest]
+        })
+    );
 
     // Should have pub use for primitives types
-    assert!(preamble.contains("pub use volar_primitives::"), "should import from volar_primitives");
+    assert!(
+        preamble.contains("pub use volar_primitives::"),
+        "should import from volar_primitives"
+    );
     assert!(preamble.contains("Bit"), "should import Bit");
     assert!(preamble.contains("Galois"), "should import Galois");
     assert!(preamble.contains("Galois64"), "should import Galois64");
-    assert!(preamble.contains("BitsInBytes"), "should import BitsInBytes");
-    assert!(preamble.contains("BitsInBytes64"), "should import BitsInBytes64");
+    assert!(
+        preamble.contains("BitsInBytes"),
+        "should import BitsInBytes"
+    );
+    assert!(
+        preamble.contains("BitsInBytes64"),
+        "should import BitsInBytes64"
+    );
     assert!(preamble.contains("Tropical"), "should import Tropical");
     assert!(preamble.contains("Invert"), "should import Invert trait");
 }

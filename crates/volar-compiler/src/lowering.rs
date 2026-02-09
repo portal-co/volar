@@ -2,10 +2,22 @@
 
 use crate::ir::*;
 #[cfg(feature = "std")]
-use std::{collections::{BTreeMap, BTreeSet}, string::{String, ToString}, vec::Vec, boxed::Box, format};
+use std::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
 
 #[cfg(not(feature = "std"))]
-use alloc::{collections::{BTreeMap, BTreeSet}, string::{String, ToString}, vec::Vec, boxed::Box, format};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
 
 /// Context for type resolution and analysis
 #[derive(Debug, Clone, Default)]
@@ -27,7 +39,10 @@ impl TypeContext {
     /// 1. Built-in trait definitions
     /// 2. Dependency manifests (earlier deps take precedence on conflict)
     /// 3. Module's own definitions (override everything)
-    pub fn from_module_with_deps(module: &IrModule, deps: &[crate::manifest::TypeManifest]) -> Self {
+    pub fn from_module_with_deps(
+        module: &IrModule,
+        deps: &[crate::manifest::TypeManifest],
+    ) -> Self {
         let mut ctx = Self::default();
 
         // Register built-in trait definitions first
@@ -39,11 +54,15 @@ impl TypeContext {
         // Register dependency manifests
         for dep in deps {
             for s in &dep.module.structs {
-                ctx.structs.entry(s.kind.to_string()).or_insert_with(|| s.clone());
+                ctx.structs
+                    .entry(s.kind.to_string())
+                    .or_insert_with(|| s.clone());
             }
             for t in &dep.module.traits {
                 // Dep traits override builtins but not later deps
-                ctx.traits.entry(t.kind.to_string()).or_insert_with(|| t.clone());
+                ctx.traits
+                    .entry(t.kind.to_string())
+                    .or_insert_with(|| t.clone());
             }
             for imp in &dep.module.impls {
                 ctx.trait_impls.push(imp.clone());
@@ -51,7 +70,8 @@ impl TypeContext {
                     let _self_ty = type_to_string(&imp.self_ty);
                     for item in &imp.items {
                         if let IrImplItem::AssociatedType { name, ty } = item {
-                            ctx.assoc_types.entry((_self_ty.clone(), name.clone()))
+                            ctx.assoc_types
+                                .entry((_self_ty.clone(), name.clone()))
                                 .or_insert_with(|| ty.clone());
                         }
                     }
@@ -77,7 +97,8 @@ impl TypeContext {
 
                 for item in &imp.items {
                     if let IrImplItem::AssociatedType { name, ty } = item {
-                        ctx.assoc_types.insert((_self_ty.clone(), name.clone()), ty.clone());
+                        ctx.assoc_types
+                            .insert((_self_ty.clone(), name.clone()), ty.clone());
                     }
                 }
             }
@@ -123,9 +144,9 @@ impl TypeContext {
                     if default.is_some() {
                         continue; // Has a default, not required
                     }
-                    let found = imp.items.iter().any(|ii| {
-                        matches!(ii, IrImplItem::AssociatedType { name: n, .. } if n == name)
-                    });
+                    let found = imp.items.iter().any(
+                        |ii| matches!(ii, IrImplItem::AssociatedType { name: n, .. } if n == name),
+                    );
                     if !found {
                         errors.push(format!(
                             "missing associated type `{}` in impl {} for {}",
@@ -136,9 +157,10 @@ impl TypeContext {
                 IrTraitItem::Method(sig) => {
                     // Check that all required methods are implemented
                     // (methods without a default body in the trait are required)
-                    let found = imp.items.iter().any(|ii| {
-                        matches!(ii, IrImplItem::Method(f) if f.name == sig.name)
-                    });
+                    let found = imp
+                        .items
+                        .iter()
+                        .any(|ii| matches!(ii, IrImplItem::Method(f) if f.name == sig.name));
                     if !found {
                         errors.push(format!(
                             "missing method `{}` in impl {} for {}",
@@ -169,9 +191,17 @@ impl TypeContext {
             },
             IrType::Struct { kind, type_args } => IrType::Struct {
                 kind: kind.clone(),
-                type_args: type_args.iter().map(|t| self.substitute(t, mapping)).collect(),
+                type_args: type_args
+                    .iter()
+                    .map(|t| self.substitute(t, mapping))
+                    .collect(),
             },
-            IrType::Projection { base, assoc, trait_path, .. } => {
+            IrType::Projection {
+                base,
+                assoc,
+                trait_path,
+                ..
+            } => {
                 let sub_base = self.substitute(base, mapping);
                 let base_str = type_to_string(&sub_base);
 
@@ -218,7 +248,11 @@ pub fn type_to_string(ty: &IrType) -> String {
             }
         }
         IrType::TypeParam(name) => name.clone(),
-        IrType::Array { kind: _, elem, len: _ } => format!("[{}; _]", type_to_string(elem)),
+        IrType::Array {
+            kind: _,
+            elem,
+            len: _,
+        } => format!("[{}; _]", type_to_string(elem)),
         IrType::Tuple(elems) => format!(
             "({})",
             elems
@@ -229,7 +263,11 @@ pub fn type_to_string(ty: &IrType) -> String {
         ),
         IrType::Unit => "()".to_string(),
         IrType::Reference { mutable, elem } => {
-            format!("&{}{}", if *mutable { "mut " } else { "" }, type_to_string(elem))
+            format!(
+                "&{}{}",
+                if *mutable { "mut " } else { "" },
+                type_to_string(elem)
+            )
         }
         IrType::Projection { base, assoc, .. } => {
             format!("<{} as _>::{:?}", type_to_string(base), assoc)
@@ -312,8 +350,12 @@ fn collect_type_refs_in_block(block: &IrBlock, refs: &mut BTreeSet<String>) {
     for stmt in &block.stmts {
         match stmt {
             IrStmt::Let { ty, init, .. } => {
-                if let Some(t) = ty { collect_type_refs_in_type(t, refs); }
-                if let Some(i) = init { collect_type_refs_in_expr(i, refs); }
+                if let Some(t) = ty {
+                    collect_type_refs_in_type(t, refs);
+                }
+                if let Some(i) = init {
+                    collect_type_refs_in_expr(i, refs);
+                }
             }
             IrStmt::Semi(e) | IrStmt::Expr(e) => collect_type_refs_in_expr(e, refs),
         }
@@ -331,11 +373,15 @@ fn collect_type_refs_in_expr(expr: &IrExpr, refs: &mut BTreeSet<String>) {
         }
         IrExpr::MethodCall { receiver, args, .. } => {
             collect_type_refs_in_expr(receiver, refs);
-            for arg in args { collect_type_refs_in_expr(arg, refs); }
+            for arg in args {
+                collect_type_refs_in_expr(arg, refs);
+            }
         }
         IrExpr::Call { func, args } => {
             collect_type_refs_in_expr(func, refs);
-            for arg in args { collect_type_refs_in_expr(arg, refs); }
+            for arg in args {
+                collect_type_refs_in_expr(arg, refs);
+            }
         }
         IrExpr::Block(b) => collect_type_refs_in_block(b, refs),
         _ => {}
@@ -346,12 +392,16 @@ fn collect_type_refs_in_type(ty: &IrType, refs: &mut BTreeSet<String>) {
     match ty {
         IrType::Struct { kind, type_args } => {
             refs.insert(kind.to_string());
-            for arg in type_args { collect_type_refs_in_type(arg, refs); }
+            for arg in type_args {
+                collect_type_refs_in_type(arg, refs);
+            }
         }
         IrType::Array { elem, .. } => collect_type_refs_in_type(elem, refs),
         IrType::Reference { elem, .. } => collect_type_refs_in_type(elem, refs),
         IrType::Tuple(elems) => {
-            for e in elems { collect_type_refs_in_type(e, refs); }
+            for e in elems {
+                collect_type_refs_in_type(e, refs);
+            }
         }
         _ => {}
     }

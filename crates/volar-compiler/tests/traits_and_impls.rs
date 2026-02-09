@@ -27,9 +27,18 @@ fn test_classify_struct_generics() {
 
     let generics = analysis.struct_generics.get("Foo").unwrap();
     assert_eq!(generics.len(), 3);
-    assert_eq!(generics[0], ("N".into(), GenericKind::Length, IrGenericParamKind::Type));
-    assert_eq!(generics[1], ("T".into(), GenericKind::Type, IrGenericParamKind::Type));
-    assert_eq!(generics[2], ("B".into(), GenericKind::Type, IrGenericParamKind::Type));
+    assert_eq!(
+        generics[0],
+        ("N".into(), GenericKind::Length, IrGenericParamKind::Type)
+    );
+    assert_eq!(
+        generics[1],
+        ("T".into(), GenericKind::Type, IrGenericParamKind::Type)
+    );
+    assert_eq!(
+        generics[2],
+        ("B".into(), GenericKind::Type, IrGenericParamKind::Type)
+    );
 }
 
 #[test]
@@ -124,10 +133,7 @@ fn test_associated_type_display() {
     assert_eq!(format!("{}", AssociatedType::Key), "Key");
     assert_eq!(format!("{}", AssociatedType::BlockSize), "BlockSize");
     assert_eq!(format!("{}", AssociatedType::OutputSize), "OutputSize");
-    assert_eq!(
-        format!("{}", AssociatedType::Other("Foo".into())),
-        "Foo"
-    );
+    assert_eq!(format!("{}", AssociatedType::Other("Foo".into())), "Foo");
 }
 
 #[test]
@@ -291,10 +297,7 @@ fn test_builtin_clone_trait_structure() {
             assert_eq!(sig.name, "clone");
             assert_eq!(sig.receiver, Some(volar_compiler::IrReceiver::Ref));
             assert!(sig.params.is_empty());
-            assert_eq!(
-                sig.return_type,
-                Some(IrType::TypeParam("Self".into()))
-            );
+            assert_eq!(sig.return_type, Some(IrType::TypeParam("Self".into())));
         }
         other => panic!("Expected Method, got {:?}", other),
     }
@@ -369,7 +372,8 @@ fn test_type_context_has_builtins() {
         "TypeContext should have Add"
     );
     assert!(
-        ctx.lookup_trait(&TraitKind::Math(MathTrait::Clone)).is_some(),
+        ctx.lookup_trait(&TraitKind::Math(MathTrait::Clone))
+            .is_some(),
         "TypeContext should have Clone"
     );
     assert!(
@@ -453,10 +457,7 @@ fn test_validate_impl_missing_method() {
     let ctx = TypeContext::from_module(&module);
 
     let errors = ctx.validate_impl(&module.impls[0]);
-    assert!(
-        !errors.is_empty(),
-        "Should detect missing method compute"
-    );
+    assert!(!errors.is_empty(), "Should detect missing method compute");
     assert!(
         errors[0].contains("compute"),
         "Error should mention compute, got: {}",
@@ -507,10 +508,7 @@ fn test_trait_with_generic_method() {
     match &t.items[0] {
         IrTraitItem::Method(sig) => {
             assert_eq!(sig.name, "remap");
-            assert_eq!(
-                sig.receiver,
-                Some(volar_compiler::IrReceiver::Ref)
-            );
+            assert_eq!(sig.receiver, Some(volar_compiler::IrReceiver::Ref));
             assert_eq!(sig.generics.len(), 2, "Should have M and F generics");
             assert_eq!(sig.generics[0].name, "M");
             assert_eq!(sig.generics[1].name, "F");
@@ -707,9 +705,7 @@ fn test_math_trait_method_names() {
 // ============================================================================
 
 fn read_volar_spec_sources() -> Vec<(String, String)> {
-    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap();
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let spec_path = crate_dir.join("volar-spec").join("src");
     let common_path = crate_dir.join("volar-common").join("src");
 
@@ -763,9 +759,10 @@ fn test_volar_spec_length_doubler_is_custom_trait() {
     });
     assert!(has_output_size, "LengthDoubler should have OutputSize");
 
-    let has_double = ld.items.iter().any(|item| {
-        matches!(item, IrTraitItem::Method(sig) if sig.name == "double")
-    });
+    let has_double = ld
+        .items
+        .iter()
+        .any(|item| matches!(item, IrTraitItem::Method(sig) if sig.name == "double"));
     assert!(has_double, "LengthDoubler should have double method");
 }
 
@@ -846,7 +843,10 @@ fn test_volar_spec_type_context_validates_impls() {
                 let errors = ctx.validate_impl(imp);
                 total_validated += 1;
                 if !errors.is_empty() {
-                    println!("Validation errors for impl {} for {}:", tr.kind, imp.self_ty);
+                    println!(
+                        "Validation errors for impl {} for {}:",
+                        tr.kind, imp.self_ty
+                    );
                     for e in &errors {
                         println!("  - {}", e);
                     }
@@ -939,7 +939,9 @@ fn test_length_alias_discovery() {
 
     // VoleArray should be discovered as a length alias
     assert!(
-        analysis.length_alias_traits.contains(&"VoleArray".to_string()),
+        analysis
+            .length_alias_traits
+            .contains(&"VoleArray".to_string()),
         "VoleArray should be a length alias, got: {:?}",
         analysis.length_alias_traits
     );
@@ -964,8 +966,16 @@ fn test_transitive_length_alias() {
     let module = parse_source(source, "test").unwrap();
     let analysis = ConstAnalysis::from_module(&module);
 
-    assert!(analysis.length_alias_traits.contains(&"BigArray".to_string()));
-    assert!(analysis.length_alias_traits.contains(&"HugeArray".to_string()));
+    assert!(
+        analysis
+            .length_alias_traits
+            .contains(&"BigArray".to_string())
+    );
+    assert!(
+        analysis
+            .length_alias_traits
+            .contains(&"HugeArray".to_string())
+    );
 
     let generics = analysis.struct_generics.get("Bar").unwrap();
     assert_eq!(

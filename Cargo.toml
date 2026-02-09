@@ -1,6 +1,15 @@
 [workspace]
-members=["crates/volar-spec", "crates/volar-primitives", "crates/volar-common","crates/volar-dyn", "crates/volar-ir", "crates/volar-compiler", "crates/volar-spec-dyn", "crates/vaffle"]
-resolver="3"
+members = [
+    "crates/volar-spec",
+    "crates/volar-primitives",
+    "crates/volar-common",
+    "crates/volar-dyn",
+    "crates/volar-ir",
+    "crates/volar-compiler",
+    "crates/volar-spec-dyn",
+    "crates/vaffle",
+]
+resolver = "3"
 
 [workspace.package]
 license = "CC0-1.0 AND MIT AND Apache-2.0"
@@ -10,6 +19,8 @@ repository = "https://github.com/portal-co/volar.git"
 
 digest = { version = "0.10.7", default-features = false }
 cipher = { version = "0.4.4", default-features = false }
-rand =   { version = "0.9.2", default-features = false}
+rand = { version = "0.9.2", default-features = false }
 typenum = { version = "1.17", default-features = false }
 generic-array = { version = "0.14", default-features = false }
+
+portal-pc-waffle-ir = { version = "0.6.0-alpha.1", git = "https://github.com/portal-co/waffle-" }

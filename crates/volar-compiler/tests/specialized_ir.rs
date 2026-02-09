@@ -3,8 +3,8 @@
 use std::fs;
 use std::path::Path;
 use volar_compiler::{
-    ArrayKind, AssociatedType, IrExpr, IrImplItem, IrPattern, IrStmt, IrType,
-    MathTrait, MethodKind, PrimitiveType, StructKind, TraitKind, VoleMethod, parse_sources,
+    ArrayKind, AssociatedType, IrExpr, IrImplItem, IrPattern, IrStmt, IrType, MathTrait,
+    MethodKind, PrimitiveType, StructKind, TraitKind, VoleMethod, parse_sources,
 };
 
 fn read_volar_spec_sources() -> Vec<(String, String)> {
@@ -60,22 +60,20 @@ fn test_specialize_volar_spec() {
     println!("\n=== Struct Classifications ===");
     for s in &spec.structs {
         match &s.kind {
-            StructKind::Custom(name) => {
-                match name.as_str() {
-                    "Delta" | "Q" | "Vope" | "BitVole" => {
-                        vole_structs += 1;
-                        println!("  VOLE: {}", name);
-                    }
-                    "ABO" | "ABOOpening" | "CommitmentCore" => {
-                        crypto_structs += 1;
-                        println!("  Crypto: {}", name);
-                    }
-                    _ => {
-                        custom_structs += 1;
-                        println!("  Custom: {}", name);
-                    }
+            StructKind::Custom(name) => match name.as_str() {
+                "Delta" | "Q" | "Vope" | "BitVole" => {
+                    vole_structs += 1;
+                    println!("  VOLE: {}", name);
                 }
-            }
+                "ABO" | "ABOOpening" | "CommitmentCore" => {
+                    crypto_structs += 1;
+                    println!("  Crypto: {}", name);
+                }
+                _ => {
+                    custom_structs += 1;
+                    println!("  Custom: {}", name);
+                }
+            },
             other => {
                 println!("  Other: {:?}", other);
             }
@@ -295,7 +293,11 @@ fn test_array_operations() {
                     method_map_count += 1;
                     println!("RawMap with var: {:?}", elem_var);
                 }
-                IrExpr::RawZip { left_var, right_var, .. } => {
+                IrExpr::RawZip {
+                    left_var,
+                    right_var,
+                    ..
+                } => {
                     zip_count += 1;
                     println!("RawZip with vars: {:?}, {:?}", left_var, right_var);
                 }
@@ -305,7 +307,10 @@ fn test_array_operations() {
     }
 
     assert_eq!(generate_count, 1, "Should recognize ArrayGenerate");
-    assert_eq!(method_map_count, 1, "Should recognize non-iterator map as RawMap");
+    assert_eq!(
+        method_map_count, 1,
+        "Should recognize non-iterator map as RawMap"
+    );
     assert_eq!(zip_count, 1, "Should recognize zip as RawZip");
 }
 
@@ -508,7 +513,9 @@ fn test_array_type_classification() {
 
 #[test]
 fn test_iter_chain_simple_fold() {
-    use volar_compiler::{parse_source, IrIterChain, IrPattern, IterChainSource, IterStep, IterTerminal, IterMethod};
+    use volar_compiler::{
+        IrIterChain, IrPattern, IterChainSource, IterMethod, IterStep, IterTerminal, parse_source,
+    };
 
     let source = r#"
         fn test() {
@@ -518,7 +525,10 @@ fn test_iter_chain_simple_fold() {
     let module = parse_source(source, "test").unwrap();
     let f = &module.functions[0];
 
-    if let IrStmt::Let { init: Some(expr), .. } = &f.body.stmts[0] {
+    if let IrStmt::Let {
+        init: Some(expr), ..
+    } = &f.body.stmts[0]
+    {
         if let IrExpr::IterPipeline(chain) = expr {
             // Source should be Method { collection: arr, method: Iter }
             match &chain.source {
@@ -529,7 +539,9 @@ fn test_iter_chain_simple_fold() {
             }
             assert!(chain.steps.is_empty(), "No intermediate steps");
             match &chain.terminal {
-                IterTerminal::Fold { acc_var, elem_var, .. } => {
+                IterTerminal::Fold {
+                    acc_var, elem_var, ..
+                } => {
                     assert_eq!(*acc_var, IrPattern::ident("acc"));
                     assert_eq!(*elem_var, IrPattern::ident("elem"));
                 }
@@ -545,7 +557,9 @@ fn test_iter_chain_simple_fold() {
 
 #[test]
 fn test_iter_chain_enumerate_filter_map_fold() {
-    use volar_compiler::{parse_source, IrPattern, IterChainSource, IterStep, IterTerminal, IterMethod};
+    use volar_compiler::{
+        IrPattern, IterChainSource, IterMethod, IterStep, IterTerminal, parse_source,
+    };
 
     let source = r#"
         fn test() {
@@ -555,9 +569,19 @@ fn test_iter_chain_enumerate_filter_map_fold() {
     let module = parse_source(source, "test").unwrap();
     let f = &module.functions[0];
 
-    if let IrStmt::Let { init: Some(IrExpr::IterPipeline(chain)), .. } = &f.body.stmts[0] {
+    if let IrStmt::Let {
+        init: Some(IrExpr::IterPipeline(chain)),
+        ..
+    } = &f.body.stmts[0]
+    {
         // Source
-        assert!(matches!(&chain.source, IterChainSource::Method { method: IterMethod::Iter, .. }));
+        assert!(matches!(
+            &chain.source,
+            IterChainSource::Method {
+                method: IterMethod::Iter,
+                ..
+            }
+        ));
         // Steps: enumerate, filter_map
         assert_eq!(chain.steps.len(), 2);
         assert!(matches!(&chain.steps[0], IterStep::Enumerate));
@@ -566,7 +590,9 @@ fn test_iter_chain_enumerate_filter_map_fold() {
             other => panic!("Expected FilterMap, got {:?}", other),
         }
         // Terminal: fold
-        assert!(matches!(&chain.terminal, IterTerminal::Fold { acc_var, elem_var, .. } if *acc_var == IrPattern::ident("a") && *elem_var == IrPattern::ident("b")));
+        assert!(
+            matches!(&chain.terminal, IterTerminal::Fold { acc_var, elem_var, .. } if *acc_var == IrPattern::ident("a") && *elem_var == IrPattern::ident("b"))
+        );
     } else {
         panic!("Expected IterPipeline");
     }
@@ -574,7 +600,9 @@ fn test_iter_chain_enumerate_filter_map_fold() {
 
 #[test]
 fn test_iter_chain_map_collect() {
-    use volar_compiler::{parse_source, IrPattern, IterChainSource, IterStep, IterTerminal, IterMethod};
+    use volar_compiler::{
+        IrPattern, IterChainSource, IterMethod, IterStep, IterTerminal, parse_source,
+    };
 
     let source = r#"
         fn test() {
@@ -584,8 +612,18 @@ fn test_iter_chain_map_collect() {
     let module = parse_source(source, "test").unwrap();
     let f = &module.functions[0];
 
-    if let IrStmt::Let { init: Some(IrExpr::IterPipeline(chain)), .. } = &f.body.stmts[0] {
-        assert!(matches!(&chain.source, IterChainSource::Method { method: IterMethod::Iter, .. }));
+    if let IrStmt::Let {
+        init: Some(IrExpr::IterPipeline(chain)),
+        ..
+    } = &f.body.stmts[0]
+    {
+        assert!(matches!(
+            &chain.source,
+            IterChainSource::Method {
+                method: IterMethod::Iter,
+                ..
+            }
+        ));
         assert_eq!(chain.steps.len(), 1);
         match &chain.steps[0] {
             IterStep::Map { var, .. } => assert_eq!(*var, IrPattern::ident("i")),
@@ -609,10 +647,16 @@ fn test_non_iterator_map_is_raw_map() {
     let module = parse_source(source, "test").unwrap();
     let f = &module.functions[0];
 
-    if let IrStmt::Let { init: Some(expr), .. } = &f.body.stmts[0] {
+    if let IrStmt::Let {
+        init: Some(expr), ..
+    } = &f.body.stmts[0]
+    {
         // No .iter() → not an iter chain → should be RawMap
-        assert!(matches!(expr, IrExpr::RawMap { .. }),
-            "arr.map() without .iter() should be RawMap, got {:?}", expr);
+        assert!(
+            matches!(expr, IrExpr::RawMap { .. }),
+            "arr.map() without .iter() should be RawMap, got {:?}",
+            expr
+        );
     } else {
         panic!("Expected Let statement");
     }
@@ -620,7 +664,7 @@ fn test_non_iterator_map_is_raw_map() {
 
 #[test]
 fn test_iter_chain_range_fold() {
-    use volar_compiler::{parse_source, IterChainSource, IterTerminal};
+    use volar_compiler::{IterChainSource, IterTerminal, parse_source};
 
     let source = r#"
         fn test() {
@@ -630,8 +674,18 @@ fn test_iter_chain_range_fold() {
     let module = parse_source(source, "test").unwrap();
     let f = &module.functions[0];
 
-    if let IrStmt::Let { init: Some(IrExpr::IterPipeline(chain)), .. } = &f.body.stmts[0] {
-        assert!(matches!(&chain.source, IterChainSource::Range { inclusive: false, .. }));
+    if let IrStmt::Let {
+        init: Some(IrExpr::IterPipeline(chain)),
+        ..
+    } = &f.body.stmts[0]
+    {
+        assert!(matches!(
+            &chain.source,
+            IterChainSource::Range {
+                inclusive: false,
+                ..
+            }
+        ));
         assert!(chain.steps.is_empty());
         assert!(matches!(&chain.terminal, IterTerminal::Fold { .. }));
     } else {
@@ -641,7 +695,7 @@ fn test_iter_chain_range_fold() {
 
 #[test]
 fn test_iter_chain_for_loop_uses_lazy_chain() {
-    use volar_compiler::{parse_source, IterChainSource, IterStep, IterTerminal, IterMethod};
+    use volar_compiler::{IterChainSource, IterMethod, IterStep, IterTerminal, parse_source};
 
     let source = r#"
         fn test() {
@@ -656,12 +710,21 @@ fn test_iter_chain_for_loop_uses_lazy_chain() {
     // Should be IterLoop with collection = IterPipeline(Lazy chain)
     if let IrStmt::Semi(IrExpr::IterLoop { collection, .. }) = &f.body.stmts[0] {
         if let IrExpr::IterPipeline(chain) = collection.as_ref() {
-            assert!(matches!(&chain.source, IterChainSource::Method { method: IterMethod::Iter, .. }));
+            assert!(matches!(
+                &chain.source,
+                IterChainSource::Method {
+                    method: IterMethod::Iter,
+                    ..
+                }
+            ));
             assert_eq!(chain.steps.len(), 1);
             assert!(matches!(&chain.steps[0], IterStep::Enumerate));
             assert!(matches!(&chain.terminal, IterTerminal::Lazy));
         } else {
-            panic!("Expected IterPipeline as for-loop collection, got {:?}", collection);
+            panic!(
+                "Expected IterPipeline as for-loop collection, got {:?}",
+                collection
+            );
         }
     } else {
         panic!("Expected IterLoop statement");
@@ -683,8 +746,20 @@ fn test_iter_chain_printer_round_trip() {
     let output = print_module(&module);
 
     // Verify the printed output contains expected method chains
-    assert!(output.contains(".iter().map(|x|"), "Should print iter().map(): {}", output);
-    assert!(output.contains(".collect::<Vec<_>>()"), "Should print collect: {}", output);
-    assert!(output.contains(".enumerate().filter_map(|a|"), "Should print enumerate().filter_map(): {}", output);
+    assert!(
+        output.contains(".iter().map(|x|"),
+        "Should print iter().map(): {}",
+        output
+    );
+    assert!(
+        output.contains(".collect::<Vec<_>>()"),
+        "Should print collect: {}",
+        output
+    );
+    assert!(
+        output.contains(".enumerate().filter_map(|a|"),
+        "Should print enumerate().filter_map(): {}",
+        output
+    );
     assert!(output.contains(".fold("), "Should print fold: {}", output);
 }

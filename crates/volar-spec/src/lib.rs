@@ -6,6 +6,6 @@ use digest::Digest;
 use cipher::generic_array::{functional::FunctionalSequence, sequence::GenericSequence};
 
 pub use volar_common::hash_commitment as simple;
-pub mod vole;
 pub mod byte_gen;
+pub mod vole;
 pub use volar_primitives as field;

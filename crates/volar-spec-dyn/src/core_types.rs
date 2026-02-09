@@ -1,5 +1,5 @@
 //! Core dynamic type definitions
-//! 
+//!
 //! These are manually written reference implementations of the dynamic types.
 
 use alloc::vec::Vec;
@@ -27,7 +27,7 @@ pub struct QDyn<T> {
 /// Dynamic version of Poly type
 #[derive(Clone, Debug, Default)]
 pub struct PolyDyn<T> {
-    pub m: usize,  // number of coefficients
+    pub m: usize, // number of coefficients
     pub c0: T,
     pub c1: Vec<T>,
 }
@@ -42,9 +42,9 @@ pub struct BitVoleDyn<T> {
 /// Dynamic version of Vope - stores multiple length witnesses
 #[derive(Clone, Debug, Default)]
 pub struct VopeDyn<T> {
-    pub n: usize,  // outer dimension
-    pub t: usize,  // inner dimension per layer  
-    pub k: usize,  // number of layers
+    pub n: usize, // outer dimension
+    pub t: usize, // inner dimension per layer
+    pub k: usize, // number of layers
     pub u: Vec<Vec<T>>,
     pub v: Vec<T>,
 }
@@ -61,17 +61,25 @@ pub struct PolyInputPoolDyn<'a, T> {
 // Helper trait for types that can provide their length
 pub trait HasLen {
     fn len(&self) -> usize;
-    fn is_empty(&self) -> bool { self.len() == 0 }
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl<T> HasLen for DeltaDyn<T> {
-    fn len(&self) -> usize { self.n }
+    fn len(&self) -> usize {
+        self.n
+    }
 }
 
 impl<T> HasLen for QDyn<T> {
-    fn len(&self) -> usize { self.n }
+    fn len(&self) -> usize {
+        self.n
+    }
 }
 
 impl<T> HasLen for VopeDyn<T> {
-    fn len(&self) -> usize { self.n }
+    fn len(&self) -> usize {
+        self.n
+    }
 }

@@ -49,7 +49,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let name = file.file_stem().unwrap().to_str().unwrap();
         match parse_source(&content, name) {
             Ok(module) => {
-                eprintln!("  Parsed {:?}: {} structs, {} impls, {} fns",
+                eprintln!(
+                    "  Parsed {:?}: {} structs, {} impls, {} fns",
                     file.file_name().unwrap(),
                     module.structs.len(),
                     module.impls.len(),

@@ -27,30 +27,30 @@ extern crate std;
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
-#[cfg(feature = "std")]
-use std::string::String;
 #[cfg(not(feature = "std"))]
 use alloc::string::String;
+#[cfg(feature = "std")]
+use std::string::String;
 
-pub mod ir;
 pub mod const_analysis;
 pub mod deshadow;
 pub mod dump_ir;
-#[cfg(feature = "parsing")]
-pub mod parser;
+pub mod ir;
 pub mod lowering;
-pub mod printer;
-pub mod printer_ts;
 pub mod lowering_dyn;
 pub mod manifest;
+#[cfg(feature = "parsing")]
+pub mod parser;
+pub mod printer;
+pub mod printer_ts;
 
-pub use ir::*;
 pub use const_analysis::*;
+pub use ir::*;
+pub use lowering::*;
+pub use manifest::*;
 #[cfg(feature = "parsing")]
 pub use parser::*;
-pub use lowering::*;
 pub use printer::*;
-pub use manifest::*;
 
 /// Generate dynamic Rust code by lowering type-level lengths to runtime witnesses.
 pub fn print_module_rust_dyn(module: &IrModule) -> String {
@@ -59,7 +59,10 @@ pub fn print_module_rust_dyn(module: &IrModule) -> String {
 }
 
 /// Generate dynamic Rust code with dependency manifests providing context.
-pub fn print_module_rust_dyn_with_deps(module: &IrModule, deps: &[manifest::TypeManifest]) -> String {
+pub fn print_module_rust_dyn_with_deps(
+    module: &IrModule,
+    deps: &[manifest::TypeManifest],
+) -> String {
     let lowered = lowering_dyn::lower_module_dyn(module);
     printer::print_module_with_deps(&lowered, deps)
 }
@@ -71,7 +74,10 @@ pub fn print_module_typescript(module: &IrModule) -> String {
 }
 
 /// Generate TypeScript code with dependency manifests providing context.
-pub fn print_module_typescript_with_deps(module: &IrModule, deps: &[manifest::TypeManifest]) -> String {
+pub fn print_module_typescript_with_deps(
+    module: &IrModule,
+    deps: &[manifest::TypeManifest],
+) -> String {
     // TODO: pass deps through to lowering once lower_module_dyn_with_deps exists
     let _ = deps;
     let lowered = lowering_dyn::lower_module_dyn(module);

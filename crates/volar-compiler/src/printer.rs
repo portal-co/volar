@@ -279,7 +279,10 @@ impl<'a> RustBackend for ImplWriter<'a> {
         } else {
             write!(f, " ")?;
         }
-        TypeWriter { ty: &self.i.self_ty }.fmt(f)?;
+        TypeWriter {
+            ty: &self.i.self_ty,
+        }
+        .fmt(f)?;
         WhereClauseWriter {
             where_clause: &self.i.where_clause,
         }
@@ -595,7 +598,11 @@ impl<'a> RustBackend for IterChainSourceWriter<'a> {
                 };
                 write!(f, ".{}()", mname)?;
             }
-            IterChainSource::Range { start, end, inclusive } => {
+            IterChainSource::Range {
+                start,
+                end,
+                inclusive,
+            } => {
                 write!(f, "(")?;
                 ExprWriter { expr: start }.fmt(f)?;
                 write!(f, "{}", if *inclusive { "..=" } else { ".." })?;
@@ -616,7 +623,10 @@ impl<'a> RustBackend for IterChainSourceWriter<'a> {
 impl<'a> IterChainWriter<'a> {
     /// Write source + steps, but NOT the terminal.
     fn fmt_no_terminal(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        IterChainSourceWriter { source: &self.chain.source }.fmt(f)?;
+        IterChainSourceWriter {
+            source: &self.chain.source,
+        }
+        .fmt(f)?;
         for step in &self.chain.steps {
             match step {
                 IterStep::Map { var, body } => {
@@ -683,7 +693,12 @@ impl<'a> RustBackend for IterChainWriter<'a> {
                 TypeWriter { ty }.fmt(f)?;
                 write!(f, ">>()")?;
             }
-            IterTerminal::Fold { init, acc_var, elem_var, body } => {
+            IterTerminal::Fold {
+                init,
+                acc_var,
+                elem_var,
+                body,
+            } => {
                 write!(f, ".fold(")?;
                 ExprWriter { expr: init }.fmt(f)?;
                 write!(f, ", |")?;
@@ -725,9 +740,7 @@ impl<'a> RustBackend for ExprChainWriter<'a> {
             IrExpr::IterPipeline(chain) => {
                 IterChainWriter { chain }.fmt_no_terminal(f)?;
             }
-            IrExpr::RawMap { .. }
-            | IrExpr::RawZip { .. }
-            | IrExpr::RawFold { .. } => {
+            IrExpr::RawMap { .. } | IrExpr::RawZip { .. } | IrExpr::RawFold { .. } => {
                 // In chain context, emit the raw op then .into_iter()
                 ExprWriter { expr: self.expr }.fmt(f)?;
                 write!(f, ".into_iter()")?;
@@ -804,11 +817,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 ExprWriter { expr: index }.fmt(f)?;
                 write!(f, "]")?;
             }
-            IrExpr::Block(b) => BlockWriter {
-                block: b,
-                level: 0,
-            }
-            .fmt(f)?,
+            IrExpr::Block(b) => BlockWriter { block: b, level: 0 }.fmt(f)?,
             IrExpr::If {
                 cond,
                 then_branch,
@@ -866,7 +875,11 @@ impl<'a> RustBackend for ExprWriter<'a> {
             IrExpr::IterPipeline(chain) => {
                 IterChainWriter { chain }.fmt(f)?;
             }
-            IrExpr::RawMap { receiver, elem_var, body } => {
+            IrExpr::RawMap {
+                receiver,
+                elem_var,
+                body,
+            } => {
                 ExprWriter { expr: receiver }.fmt(f)?;
                 write!(f, ".map(|")?;
                 PatternWriter { pat: elem_var }.fmt(f)?;
@@ -874,7 +887,13 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 ExprWriter { expr: body }.fmt(f)?;
                 write!(f, ")")?;
             }
-            IrExpr::RawZip { left, right, left_var, right_var, body } => {
+            IrExpr::RawZip {
+                left,
+                right,
+                left_var,
+                right_var,
+                body,
+            } => {
                 ExprWriter { expr: left }.fmt(f)?;
                 write!(f, ".zip(")?;
                 ExprWriter { expr: right }.fmt(f)?;
@@ -886,7 +905,13 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 ExprWriter { expr: body }.fmt(f)?;
                 write!(f, ")")?;
             }
-            IrExpr::RawFold { receiver, init, acc_var, elem_var, body } => {
+            IrExpr::RawFold {
+                receiver,
+                init,
+                acc_var,
+                elem_var,
+                body,
+            } => {
                 ExprWriter { expr: receiver }.fmt(f)?;
                 write!(f, ".fold(")?;
                 ExprWriter { expr: init }.fmt(f)?;
@@ -903,7 +928,9 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 type_args,
             } => {
                 debug_assert!(
-                    segments.iter().all(|s| s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '!')),
+                    segments.iter().all(|s| s
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '!')),
                     "Path segments contain non-ident strings: {:?}",
                     segments
                 );
@@ -1073,7 +1100,12 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     _ => write!(f, "todo!(\"length\")")?,
                 }
             }
-            IrExpr::ArrayGenerate { elem_ty, len, index_var, body } => {
+            IrExpr::ArrayGenerate {
+                elem_ty,
+                len,
+                index_var,
+                body,
+            } => {
                 write!(f, "(0..")?;
                 match len {
                     ArrayLength::Const(n) => write!(f, "{}", n)?,
@@ -1086,7 +1118,9 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     _ => write!(f, "todo!(\"length\")")?,
                 }
                 debug_assert!(
-                    index_var.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                    index_var
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_'),
                     "ArrayGenerate index_var is not a valid ident: {:?}",
                     index_var
                 );
@@ -1094,30 +1128,28 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 ExprWriter { expr: body }.fmt(f)?;
                 write!(f, ").collect::<Vec<_>>()")?;
             }
-            IrExpr::Unary { op, expr } => {
-                match op {
-                    SpecUnaryOp::Neg => {
-                        write!(f, "-")?;
-                        ExprWriter { expr }.fmt(f)?;
-                    }
-                    SpecUnaryOp::Not => {
-                        write!(f, "!")?;
-                        ExprWriter { expr }.fmt(f)?;
-                    }
-                    SpecUnaryOp::Deref => {
-                        write!(f, "*")?;
-                        ExprWriter { expr }.fmt(f)?;
-                    }
-                    SpecUnaryOp::Ref => {
-                        write!(f, "&")?;
-                        ExprWriter { expr }.fmt(f)?;
-                    }
-                    SpecUnaryOp::RefMut => {
-                        write!(f, "&mut ")?;
-                        ExprWriter { expr }.fmt(f)?;
-                    }
+            IrExpr::Unary { op, expr } => match op {
+                SpecUnaryOp::Neg => {
+                    write!(f, "-")?;
+                    ExprWriter { expr }.fmt(f)?;
                 }
-            }
+                SpecUnaryOp::Not => {
+                    write!(f, "!")?;
+                    ExprWriter { expr }.fmt(f)?;
+                }
+                SpecUnaryOp::Deref => {
+                    write!(f, "*")?;
+                    ExprWriter { expr }.fmt(f)?;
+                }
+                SpecUnaryOp::Ref => {
+                    write!(f, "&")?;
+                    ExprWriter { expr }.fmt(f)?;
+                }
+                SpecUnaryOp::RefMut => {
+                    write!(f, "&mut ")?;
+                    ExprWriter { expr }.fmt(f)?;
+                }
+            },
             IrExpr::Match { expr, arms } => {
                 write!(f, "match ")?;
                 ExprWriter { expr }.fmt(f)?;
@@ -1174,11 +1206,7 @@ impl<'a> RustBackend for PatternWriter<'a> {
                 }
                 write!(f, ")")?;
             }
-            IrPattern::Struct {
-                kind,
-                fields,
-                rest,
-            } => {
+            IrPattern::Struct { kind, fields, rest } => {
                 write!(f, "{} {{ ", kind)?;
                 for (i, (name, p)) in fields.iter().enumerate() {
                     if i > 0 {
@@ -1287,7 +1315,10 @@ impl<'a> RustBackend for DynPreambleWriter<'a> {
             "//! Type-level lengths have been converted to runtime usize witnesses"
         )?;
         writeln!(f)?;
-        writeln!(f, "#![allow(unused_variables, dead_code, unused_mut, unused_imports, non_snake_case, unused_parens)]")?;
+        writeln!(
+            f,
+            "#![allow(unused_variables, dead_code, unused_mut, unused_imports, non_snake_case, unused_parens)]"
+        )?;
         writeln!(f, "extern crate alloc;")?;
         writeln!(f, "use alloc::vec::Vec;")?;
         writeln!(f, "use alloc::vec;")?;
@@ -1301,7 +1332,10 @@ impl<'a> RustBackend for DynPreambleWriter<'a> {
         writeln!(f, "use digest::Digest;")?;
         writeln!(f, "use volar_common::hash_commitment::commit;")?;
         writeln!(f, "use volar_common::length_doubling::LengthDoubler;")?;
-        writeln!(f, "use volar_primitives::{{Bit, BitsInBytes, BitsInBytes64, Galois, Galois64}};")?;
+        writeln!(
+            f,
+            "use volar_primitives::{{Bit, BitsInBytes, BitsInBytes64, Galois, Galois64}};"
+        )?;
         writeln!(f, "use generic_array::GenericArray;")?;
         writeln!(f)?;
 
@@ -1331,10 +1365,19 @@ impl<'a> RustBackend for DynPreambleWriter<'a> {
         writeln!(f, "    usize::BITS - x.leading_zeros() - 1")?;
         writeln!(f, "}}")?;
         writeln!(f)?;
-        writeln!(f, "/// Bridge: call LengthDoubler::double on a Vec<u8>, converting to/from GenericArray")?;
+        writeln!(
+            f,
+            "/// Bridge: call LengthDoubler::double on a Vec<u8>, converting to/from GenericArray"
+        )?;
         writeln!(f, "#[inline]")?;
-        writeln!(f, "pub fn double_vec<B: LengthDoubler>(v: Vec<u8>) -> [Vec<u8>; 2] {{")?;
-        writeln!(f, "    let ga = generic_array::GenericArray::from_exact_iter(v.into_iter()).expect(\"double_vec: length mismatch\");")?;
+        writeln!(
+            f,
+            "pub fn double_vec<B: LengthDoubler>(v: Vec<u8>) -> [Vec<u8>; 2] {{"
+        )?;
+        writeln!(
+            f,
+            "    let ga = generic_array::GenericArray::from_exact_iter(v.into_iter()).expect(\"double_vec: length mismatch\");"
+        )?;
         writeln!(f, "    let [a, b] = B::double(ga);")?;
         writeln!(f, "    [a.to_vec(), b.to_vec()]")?;
         writeln!(f, "}}")?;

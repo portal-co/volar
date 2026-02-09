@@ -61,6 +61,9 @@ impl<T: Clone> VopeDyn<T> {
             }
             u_out.push(row);
         }
-        VopeDyn { u: u_out, v: self.v.clone() }
+        VopeDyn {
+            u: u_out,
+            v: self.v.clone(),
+        }
     }
 }

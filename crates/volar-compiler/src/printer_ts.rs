@@ -22,25 +22,25 @@
 use core::fmt::{self, Write};
 
 #[cfg(feature = "std")]
-use std::string::{String, ToString};
-#[cfg(feature = "std")]
-use std::vec::Vec;
+use std::collections::BTreeMap;
 #[cfg(feature = "std")]
 use std::format;
 #[cfg(feature = "std")]
-use std::collections::BTreeMap;
+use std::string::{String, ToString};
+#[cfg(feature = "std")]
+use std::vec::Vec;
 
+#[cfg(not(feature = "std"))]
+use alloc::collections::BTreeMap;
+#[cfg(not(feature = "std"))]
+use alloc::format;
 #[cfg(not(feature = "std"))]
 use alloc::string::{String, ToString};
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
-#[cfg(not(feature = "std"))]
-use alloc::format;
-#[cfg(not(feature = "std"))]
-use alloc::collections::BTreeMap;
 
-use crate::ir::*;
 use crate::deshadow::deshadow_block;
+use crate::ir::*;
 
 // ============================================================================
 // WITNESS ANALYSIS — collect runtime witnesses needed per function
@@ -76,7 +76,9 @@ struct WitnessNeeds {
 }
 
 impl WitnessNeeds {
-    fn is_empty(&self) -> bool { self.needs.is_empty() }
+    fn is_empty(&self) -> bool {
+        self.needs.is_empty()
+    }
 
     fn add(&mut self, kind: WitnessKind) {
         if !self.needs.contains(&kind) {
@@ -106,7 +108,9 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
             match ty.as_ref() {
                 IrType::TypeParam(name) => {
                     if declared_generics.contains(name) || is_crypto_type_param(name) {
-                        out.add(WitnessKind::Default { type_param: name.clone() });
+                        out.add(WitnessKind::Default {
+                            type_param: name.clone(),
+                        });
                     }
                 }
                 IrType::Array { len, elem, .. } => {
@@ -122,7 +126,12 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
             scan_array_length_witnesses(len, out);
         }
         // ArrayGenerate may contain a projection in its length
-        IrExpr::ArrayGenerate { len, index_var: _, body, .. } => {
+        IrExpr::ArrayGenerate {
+            len,
+            index_var: _,
+            body,
+            ..
+        } => {
             scan_array_length_witnesses(len, out);
             scan_expr_witnesses(body, out, declared_generics);
         }
@@ -143,10 +152,20 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
                 if segments.len() == 2 {
                     let type_name = &segments[0];
                     let method = &segments[1];
-                    if method == "new" && (declared_generics.contains(type_name) || is_crypto_type_param(type_name)) {
-                        out.add(WitnessKind::Constructor { type_param: type_name.clone() });
-                    } else if method == "default" && (declared_generics.contains(type_name) || is_crypto_type_param(type_name)) {
-                        out.add(WitnessKind::Default { type_param: type_name.clone() });
+                    if method == "new"
+                        && (declared_generics.contains(type_name)
+                            || is_crypto_type_param(type_name))
+                    {
+                        out.add(WitnessKind::Constructor {
+                            type_param: type_name.clone(),
+                        });
+                    } else if method == "default"
+                        && (declared_generics.contains(type_name)
+                            || is_crypto_type_param(type_name))
+                    {
+                        out.add(WitnessKind::Default {
+                            type_param: type_name.clone(),
+                        });
                     }
                 }
             }
@@ -164,7 +183,10 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
             scan_expr_witnesses(left, out, declared_generics);
             scan_expr_witnesses(right, out, declared_generics);
         }
-        IrExpr::Unary { expr, .. } | IrExpr::Return(Some(expr)) | IrExpr::Cast { expr, .. } | IrExpr::Try(expr) => {
+        IrExpr::Unary { expr, .. }
+        | IrExpr::Return(Some(expr))
+        | IrExpr::Cast { expr, .. }
+        | IrExpr::Try(expr) => {
             scan_expr_witnesses(expr, out, declared_generics);
         }
         IrExpr::MethodCall { receiver, args, .. } => {
@@ -187,47 +209,72 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
             }
         }
         IrExpr::Tuple(es) | IrExpr::Array(es) => {
-            for e in es { scan_expr_witnesses(e, out, declared_generics); }
+            for e in es {
+                scan_expr_witnesses(e, out, declared_generics);
+            }
         }
         IrExpr::Repeat { elem, len } => {
             scan_expr_witnesses(elem, out, declared_generics);
             scan_expr_witnesses(len, out, declared_generics);
         }
         IrExpr::Block(b) => scan_block_witnesses(b, out, declared_generics),
-        IrExpr::If { cond, then_branch, else_branch } => {
+        IrExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             scan_expr_witnesses(cond, out, declared_generics);
             scan_block_witnesses(then_branch, out, declared_generics);
-            if let Some(eb) = else_branch { scan_expr_witnesses(eb, out, declared_generics); }
+            if let Some(eb) = else_branch {
+                scan_expr_witnesses(eb, out, declared_generics);
+            }
         }
-        IrExpr::BoundedLoop { start, end, body, .. } => {
+        IrExpr::BoundedLoop {
+            start, end, body, ..
+        } => {
             scan_expr_witnesses(start, out, declared_generics);
             scan_expr_witnesses(end, out, declared_generics);
             scan_block_witnesses(body, out, declared_generics);
         }
-        IrExpr::IterLoop { collection, body, .. } => {
+        IrExpr::IterLoop {
+            collection, body, ..
+        } => {
             scan_expr_witnesses(collection, out, declared_generics);
             scan_block_witnesses(body, out, declared_generics);
         }
         IrExpr::Closure { body, .. } => scan_expr_witnesses(body, out, declared_generics),
         IrExpr::Range { start, end, .. } => {
-            if let Some(s) = start { scan_expr_witnesses(s, out, declared_generics); }
-            if let Some(e) = end { scan_expr_witnesses(e, out, declared_generics); }
+            if let Some(s) = start {
+                scan_expr_witnesses(s, out, declared_generics);
+            }
+            if let Some(e) = end {
+                scan_expr_witnesses(e, out, declared_generics);
+            }
         }
         IrExpr::Match { expr, arms } => {
             scan_expr_witnesses(expr, out, declared_generics);
-            for arm in arms { scan_expr_witnesses(&arm.body, out, declared_generics); }
+            for arm in arms {
+                scan_expr_witnesses(&arm.body, out, declared_generics);
+            }
         }
         IrExpr::IterPipeline(chain) => scan_iter_chain_witnesses(chain, out, declared_generics),
         IrExpr::RawMap { receiver, body, .. } => {
             scan_expr_witnesses(receiver, out, declared_generics);
             scan_expr_witnesses(body, out, declared_generics);
         }
-        IrExpr::RawZip { left, right, body, .. } => {
+        IrExpr::RawZip {
+            left, right, body, ..
+        } => {
             scan_expr_witnesses(left, out, declared_generics);
             scan_expr_witnesses(right, out, declared_generics);
             scan_expr_witnesses(body, out, declared_generics);
         }
-        IrExpr::RawFold { receiver, init, body, .. } => {
+        IrExpr::RawFold {
+            receiver,
+            init,
+            body,
+            ..
+        } => {
             scan_expr_witnesses(receiver, out, declared_generics);
             scan_expr_witnesses(init, out, declared_generics);
             scan_expr_witnesses(body, out, declared_generics);
@@ -250,7 +297,11 @@ fn scan_block_witnesses(block: &IrBlock, out: &mut WitnessNeeds, declared_generi
     }
 }
 
-fn scan_iter_chain_witnesses(chain: &IrIterChain, out: &mut WitnessNeeds, declared_generics: &[String]) {
+fn scan_iter_chain_witnesses(
+    chain: &IrIterChain,
+    out: &mut WitnessNeeds,
+    declared_generics: &[String],
+) {
     match &chain.source {
         IterChainSource::Method { collection, .. } => {
             scan_expr_witnesses(collection, out, declared_generics);
@@ -302,11 +353,17 @@ fn scan_array_length_witnesses(len: &ArrayLength, out: &mut WitnessNeeds) {
 /// Recursively scan a type for default-witness requirements.
 /// Used when `DefaultValue { ty: Array<T, N> }` has a nested element type
 /// that itself requires a default witness (e.g. `T` is a type param).
-fn scan_type_for_default_witnesses(ty: &IrType, out: &mut WitnessNeeds, declared_generics: &[String]) {
+fn scan_type_for_default_witnesses(
+    ty: &IrType,
+    out: &mut WitnessNeeds,
+    declared_generics: &[String],
+) {
     match ty {
         IrType::TypeParam(name) => {
             if declared_generics.contains(name) || is_crypto_type_param(name) {
-                out.add(WitnessKind::Default { type_param: name.clone() });
+                out.add(WitnessKind::Default {
+                    type_param: name.clone(),
+                });
             }
         }
         IrType::Array { elem, len, .. } => {
@@ -322,7 +379,10 @@ fn scan_type_for_default_witnesses(ty: &IrType, out: &mut WitnessNeeds, declared
 /// `extra_generics` should include impl-level generics when scanning a method,
 /// so that type params declared on the impl (not just the method) are recognised
 /// as needing witnesses.
-fn compute_function_witnesses(func: &IrFunction, extra_generics: &[&IrGenericParam]) -> WitnessNeeds {
+fn compute_function_witnesses(
+    func: &IrFunction,
+    extra_generics: &[&IrGenericParam],
+) -> WitnessNeeds {
     let mut declared: Vec<String> = func.generics.iter().map(|g| g.name.clone()).collect();
     for g in extra_generics {
         if !declared.contains(&g.name) {
@@ -349,13 +409,19 @@ fn compute_merged_witnesses(variants: &[ImplMethod<'_>]) -> WitnessNeeds {
 /// Returns true if a name is a type parameter that typically comes from a crypto
 /// trait bound (Digest, LengthDoubler, etc.) and might need witnesses.
 fn is_crypto_type_param(name: &str) -> bool {
-    matches!(name, "B" | "D" | "O" | "T" | "A" | "Q" | "M" | "U" | "R" | "X" | "Y")
+    matches!(
+        name,
+        "B" | "D" | "O" | "T" | "A" | "Q" | "M" | "U" | "R" | "X" | "Y"
+    )
 }
 
 /// Primitive field-element classes that are tuple structs in Rust
 /// and need `new` in TypeScript.
 fn is_primitive_class(name: &str) -> bool {
-    matches!(name, "Bit" | "Galois" | "Galois64" | "BitsInBytes" | "BitsInBytes64")
+    matches!(
+        name,
+        "Bit" | "Galois" | "Galois64" | "BitsInBytes" | "BitsInBytes64"
+    )
 }
 
 /// Get the TypeScript parameter name for a witness in the `ctx` object.
@@ -380,7 +446,9 @@ fn witness_ctx_type(kind: &WitnessKind) -> &'static str {
 fn write_ctx_param(needs: &WitnessNeeds, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     write!(f, "ctx: {{ ")?;
     for (i, kind) in needs.needs.iter().enumerate() {
-        if i > 0 { write!(f, ", ")?; }
+        if i > 0 {
+            write!(f, ", ")?;
+        }
         write!(f, "{}: {}", witness_ctx_field(kind), witness_ctx_type(kind))?;
     }
     write!(f, " }}")
@@ -395,7 +463,11 @@ fn build_module_witness_map(module: &IrModule) -> BTreeMap<String, WitnessNeeds>
     for func in &module.functions {
         let needs = compute_function_witnesses(func, &[]);
         if !needs.is_empty() {
-            let name = if func.name.starts_with("r#") { func.name[2..].to_string() } else { func.name.clone() };
+            let name = if func.name.starts_with("r#") {
+                func.name[2..].to_string()
+            } else {
+                func.name.clone()
+            };
             map.insert(name, needs);
         }
     }
@@ -421,7 +493,11 @@ fn build_module_witness_map(module: &IrModule) -> BTreeMap<String, WitnessNeeds>
     // Collect all (name, body) pairs for scanning.
     let mut all_funcs: Vec<(String, &IrBlock)> = Vec::new();
     for func in &module.functions {
-        let name = if func.name.starts_with("r#") { func.name[2..].to_string() } else { func.name.clone() };
+        let name = if func.name.starts_with("r#") {
+            func.name[2..].to_string()
+        } else {
+            func.name.clone()
+        };
         all_funcs.push((name, &func.body));
     }
     for imp in &module.impls {
@@ -445,7 +521,9 @@ fn build_module_witness_map(module: &IrModule) -> BTreeMap<String, WitnessNeeds>
                     extra.merge(callee_needs);
                 }
             }
-            if extra.is_empty() { continue; }
+            if extra.is_empty() {
+                continue;
+            }
             let entry = map.entry(caller_name.clone()).or_default();
             let before = entry.needs.len();
             entry.merge(&extra);
@@ -454,7 +532,9 @@ fn build_module_witness_map(module: &IrModule) -> BTreeMap<String, WitnessNeeds>
                 changed = true;
             }
         }
-        if !changed { break; }
+        if !changed {
+            break;
+        }
     }
 
     map
@@ -490,64 +570,98 @@ fn collect_call_targets_expr(expr: &IrExpr, targets: &mut Vec<String>) {
                 }
             }
             collect_call_targets_expr(func, targets);
-            for a in args { collect_call_targets_expr(a, targets); }
+            for a in args {
+                collect_call_targets_expr(a, targets);
+            }
         }
-        IrExpr::Binary { left, right, .. } | IrExpr::Assign { left, right } | IrExpr::AssignOp { left, right, .. } => {
+        IrExpr::Binary { left, right, .. }
+        | IrExpr::Assign { left, right }
+        | IrExpr::AssignOp { left, right, .. } => {
             collect_call_targets_expr(left, targets);
             collect_call_targets_expr(right, targets);
         }
-        IrExpr::Unary { expr, .. } | IrExpr::Return(Some(expr)) | IrExpr::Cast { expr, .. } | IrExpr::Try(expr) | IrExpr::Field { base: expr, .. } => {
+        IrExpr::Unary { expr, .. }
+        | IrExpr::Return(Some(expr))
+        | IrExpr::Cast { expr, .. }
+        | IrExpr::Try(expr)
+        | IrExpr::Field { base: expr, .. } => {
             collect_call_targets_expr(expr, targets);
         }
         IrExpr::MethodCall { receiver, args, .. } => {
             collect_call_targets_expr(receiver, targets);
-            for a in args { collect_call_targets_expr(a, targets); }
+            for a in args {
+                collect_call_targets_expr(a, targets);
+            }
         }
         IrExpr::Index { base, index } => {
             collect_call_targets_expr(base, targets);
             collect_call_targets_expr(index, targets);
         }
         IrExpr::StructExpr { fields, rest, .. } => {
-            for (_, e) in fields { collect_call_targets_expr(e, targets); }
-            if let Some(r) = rest { collect_call_targets_expr(r, targets); }
+            for (_, e) in fields {
+                collect_call_targets_expr(e, targets);
+            }
+            if let Some(r) = rest {
+                collect_call_targets_expr(r, targets);
+            }
         }
         IrExpr::Tuple(es) | IrExpr::Array(es) => {
-            for e in es { collect_call_targets_expr(e, targets); }
+            for e in es {
+                collect_call_targets_expr(e, targets);
+            }
         }
         IrExpr::Repeat { elem, len } => {
             collect_call_targets_expr(elem, targets);
             collect_call_targets_expr(len, targets);
         }
         IrExpr::Block(b) => collect_call_targets_block(b, targets),
-        IrExpr::If { cond, then_branch, else_branch } => {
+        IrExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             collect_call_targets_expr(cond, targets);
             collect_call_targets_block(then_branch, targets);
-            if let Some(eb) = else_branch { collect_call_targets_expr(eb, targets); }
+            if let Some(eb) = else_branch {
+                collect_call_targets_expr(eb, targets);
+            }
         }
-        IrExpr::BoundedLoop { start, end, body, .. } => {
+        IrExpr::BoundedLoop {
+            start, end, body, ..
+        } => {
             collect_call_targets_expr(start, targets);
             collect_call_targets_expr(end, targets);
             collect_call_targets_block(body, targets);
         }
-        IrExpr::IterLoop { collection, body, .. } => {
+        IrExpr::IterLoop {
+            collection, body, ..
+        } => {
             collect_call_targets_expr(collection, targets);
             collect_call_targets_block(body, targets);
         }
         IrExpr::Closure { body, .. } => collect_call_targets_expr(body, targets),
         IrExpr::Range { start, end, .. } => {
-            if let Some(s) = start { collect_call_targets_expr(s, targets); }
-            if let Some(e) = end { collect_call_targets_expr(e, targets); }
+            if let Some(s) = start {
+                collect_call_targets_expr(s, targets);
+            }
+            if let Some(e) = end {
+                collect_call_targets_expr(e, targets);
+            }
         }
         IrExpr::Match { expr, arms } => {
             collect_call_targets_expr(expr, targets);
-            for arm in arms { collect_call_targets_expr(&arm.body, targets); }
+            for arm in arms {
+                collect_call_targets_expr(&arm.body, targets);
+            }
         }
         IrExpr::IterPipeline(chain) => collect_call_targets_chain(chain, targets),
         IrExpr::RawMap { receiver, body, .. } | IrExpr::RawFold { receiver, body, .. } => {
             collect_call_targets_expr(receiver, targets);
             collect_call_targets_expr(body, targets);
         }
-        IrExpr::RawZip { left, right, body, .. } => {
+        IrExpr::RawZip {
+            left, right, body, ..
+        } => {
             collect_call_targets_expr(left, targets);
             collect_call_targets_expr(right, targets);
             collect_call_targets_expr(body, targets);
@@ -558,7 +672,9 @@ fn collect_call_targets_expr(expr: &IrExpr, targets: &mut Vec<String>) {
 
 fn collect_call_targets_chain(chain: &IrIterChain, targets: &mut Vec<String>) {
     match &chain.source {
-        IterChainSource::Method { collection, .. } => collect_call_targets_expr(collection, targets),
+        IterChainSource::Method { collection, .. } => {
+            collect_call_targets_expr(collection, targets)
+        }
         IterChainSource::Range { start, end, .. } => {
             collect_call_targets_expr(start, targets);
             collect_call_targets_expr(end, targets);
@@ -570,10 +686,15 @@ fn collect_call_targets_chain(chain: &IrIterChain, targets: &mut Vec<String>) {
     }
     for step in &chain.steps {
         match step {
-            IterStep::Map { body, .. } | IterStep::Filter { body, .. } | IterStep::FilterMap { body, .. } | IterStep::FlatMap { body, .. } => {
+            IterStep::Map { body, .. }
+            | IterStep::Filter { body, .. }
+            | IterStep::FilterMap { body, .. }
+            | IterStep::FlatMap { body, .. } => {
                 collect_call_targets_expr(body, targets);
             }
-            IterStep::Take { count } | IterStep::Skip { count } => collect_call_targets_expr(count, targets),
+            IterStep::Take { count } | IterStep::Skip { count } => {
+                collect_call_targets_expr(count, targets)
+            }
             IterStep::Chain { other } => collect_call_targets_chain(other, targets),
             IterStep::Enumerate => {}
         }
@@ -602,7 +723,10 @@ pub fn print_module_ts(module: &IrModule) -> String {
 
     let witness_map = build_module_witness_map(&module);
     let erased = collect_erased_type_params(&module);
-    let cx = TsContext { witness_map: &witness_map, erased_type_params: erased };
+    let cx = TsContext {
+        witness_map: &witness_map,
+        erased_type_params: erased,
+    };
     let mut out = String::new();
     let _ = write!(out, "{}", TsFmt(TsPreambleWriter, &cx));
     let _ = write!(out, "{}", TsFmt(TsModuleWriter { module: &module }, &cx));
@@ -660,13 +784,19 @@ fn collect_erased_type_params(module: &IrModule) -> Vec<String> {
     let mut all_seen = Vec::new();
 
     let classify = |g: &IrGenericParam, surviving: &mut Vec<String>, all_seen: &mut Vec<String>| {
-        if g.kind != IrGenericParamKind::Type { return; }
+        if g.kind != IrGenericParamKind::Type {
+            return;
+        }
         if !all_seen.contains(&g.name) {
             all_seen.push(g.name.clone());
         }
         let is_filtered = g.bounds.iter().any(|b| {
-            matches!(&b.trait_kind,
-                TraitKind::Fn(..) | TraitKind::AsRef(..) | TraitKind::Math(..) | TraitKind::Into(..)
+            matches!(
+                &b.trait_kind,
+                TraitKind::Fn(..)
+                    | TraitKind::AsRef(..)
+                    | TraitKind::Math(..)
+                    | TraitKind::Into(..)
             )
         });
         // Also consider boundless single-letter params that look like
@@ -726,7 +856,10 @@ fn collect_erased_type_params(module: &IrModule) -> Vec<String> {
     }
 
     // Erased = seen but not surviving
-    all_seen.into_iter().filter(|name| !surviving.contains(name)).collect()
+    all_seen
+        .into_iter()
+        .filter(|name| !surviving.contains(name))
+        .collect()
 }
 
 // ============================================================================
@@ -808,10 +941,16 @@ fn analyze_class_impls<'a>(impls: &[&'a IrImpl]) -> ClassAnalysis<'a> {
             // Check if they actually differ by type specialization
             // If all come from the same generic impl (no concrete type args),
             // just take the first one.
-            let has_specialization = methods.iter()
-                .any(|m| m.self_type_args.iter().any(|t| !matches!(t, IrType::TypeParam(_))));
+            let has_specialization = methods.iter().any(|m| {
+                m.self_type_args
+                    .iter()
+                    .any(|t| !matches!(t, IrType::TypeParam(_)))
+            });
             if has_specialization {
-                merged_methods.push(MergedMethod { name, variants: methods });
+                merged_methods.push(MergedMethod {
+                    name,
+                    variants: methods,
+                });
             } else {
                 // All generic — just take the first
                 unique_methods.push(methods.into_iter().next().unwrap());
@@ -819,7 +958,10 @@ fn analyze_class_impls<'a>(impls: &[&'a IrImpl]) -> ClassAnalysis<'a> {
         }
     }
 
-    ClassAnalysis { unique_methods, merged_methods }
+    ClassAnalysis {
+        unique_methods,
+        merged_methods,
+    }
 }
 
 /// For a concrete type arg, return the runtime check expression.
@@ -837,7 +979,9 @@ fn runtime_type_check(ty: &IrType, struct_fields: &[IrField]) -> Option<String> 
 
     // Find the first field that uses the type parameter T to check against
     for field in struct_fields {
-        if is_phantom_field(field) { continue; }
+        if is_phantom_field(field) {
+            continue;
+        }
         match &field.ty {
             // Vec<T> field — check first element
             IrType::Vector { .. } => {
@@ -845,7 +989,10 @@ fn runtime_type_check(ty: &IrType, struct_fields: &[IrField]) -> Option<String> 
             }
             // Vec<Vec<T>> field — check first element of first element
             IrType::Array { elem, .. } if matches!(elem.as_ref(), IrType::Vector { .. }) => {
-                return Some(format!("this.{}[0]?.[0] instanceof {}", field.name, class_name));
+                return Some(format!(
+                    "this.{}[0]?.[0] instanceof {}",
+                    field.name, class_name
+                ));
             }
             _ => {}
         }
@@ -866,17 +1013,23 @@ fn is_statement_like(expr: &IrExpr) -> bool {
     match expr {
         IrExpr::BoundedLoop { .. } | IrExpr::IterLoop { .. } => true,
         // An `if` without an else branch, or where branches are statement-like
-        IrExpr::If { else_branch: None, .. } => true,
-        IrExpr::If { then_branch, else_branch: Some(eb), .. } => {
+        IrExpr::If {
+            else_branch: None, ..
+        } => true,
+        IrExpr::If {
+            then_branch,
+            else_branch: Some(eb),
+            ..
+        } => {
             // If the then-branch's tail expression is statement-like, the whole if is
-            let then_is_stmt = then_branch.expr.as_ref()
+            let then_is_stmt = then_branch
+                .expr
+                .as_ref()
                 .map_or(true, |e| is_statement_like(e));
             let else_is_stmt = is_statement_like(eb);
             then_is_stmt && else_is_stmt
         }
-        IrExpr::Block(b) => {
-            b.expr.as_ref().map_or(true, |e| is_statement_like(e))
-        }
+        IrExpr::Block(b) => b.expr.as_ref().map_or(true, |e| is_statement_like(e)),
         IrExpr::Assign { .. } | IrExpr::AssignOp { .. } => true,
         _ => false,
     }
@@ -891,8 +1044,14 @@ struct TsPreambleWriter;
 impl TsBackend for TsPreambleWriter {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
         writeln!(f, "// Auto-generated TypeScript from volar-spec")?;
-        writeln!(f, "// Type-level lengths have been converted to runtime number witnesses")?;
-        writeln!(f, "// @ts-nocheck — generated code uses dynamic patterns that need runtime dispatch")?;
+        writeln!(
+            f,
+            "// Type-level lengths have been converted to runtime number witnesses"
+        )?;
+        writeln!(
+            f,
+            "// @ts-nocheck — generated code uses dynamic patterns that need runtime dispatch"
+        )?;
         writeln!(f)?;
         writeln!(f, "import {{")?;
         writeln!(f, "  type Cloneable,")?;
@@ -954,10 +1113,19 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
 
         // Emit standalone functions
         for func in &self.module.functions {
-            let fn_name = if func.name.starts_with("r#") { func.name[2..].to_string() } else { func.name.clone() };
+            let fn_name = if func.name.starts_with("r#") {
+                func.name[2..].to_string()
+            } else {
+                func.name.clone()
+            };
             let empty = WitnessNeeds::default();
             let needs = cx.witness_map.get(&fn_name).unwrap_or(&empty);
-            TsFunctionWriter { func, indent: 0, witness_needs: needs }.ts_fmt(f, cx)?;
+            TsFunctionWriter {
+                func,
+                indent: 0,
+                witness_needs: needs,
+            }
+            .ts_fmt(f, cx)?;
             writeln!(f)?;
         }
 
@@ -967,11 +1135,20 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
             for imp in impls {
                 for item in &imp.items {
                     if let IrImplItem::Method(func) = item {
-                        let fn_name = if func.name.starts_with("r#") { func.name[2..].to_string() } else { func.name.clone() };
+                        let fn_name = if func.name.starts_with("r#") {
+                            func.name[2..].to_string()
+                        } else {
+                            func.name.clone()
+                        };
                         let key = format!("{}.{}", name, fn_name);
                         let empty = WitnessNeeds::default();
                         let needs = cx.witness_map.get(&key).unwrap_or(&empty);
-                        TsFunctionWriter { func, indent: 0, witness_needs: needs }.ts_fmt(f, cx)?;
+                        TsFunctionWriter {
+                            func,
+                            indent: 0,
+                            witness_needs: needs,
+                        }
+                        .ts_fmt(f, cx)?;
                         writeln!(f)?;
                     }
                 }
@@ -999,11 +1176,18 @@ impl<'a> TsBackend for TsClassWriter<'a> {
 
         write!(f, "export class {}", name)?;
         // Don't prune class-level type params — methods may reference them
-        TsGenericsWriter { generics: struct_generics, used_only: None }.ts_fmt(f, cx)?;
+        TsGenericsWriter {
+            generics: struct_generics,
+            used_only: None,
+        }
+        .ts_fmt(f, cx)?;
         writeln!(f, " {{")?;
 
         // Constructor with non-phantom fields — takes an initializer object
-        let fields: Vec<&IrField> = self.s.fields.iter()
+        let fields: Vec<&IrField> = self
+            .s
+            .fields
+            .iter()
             .filter(|field| !is_phantom_field(field))
             .collect();
 
@@ -1036,7 +1220,13 @@ impl<'a> TsBackend for TsClassWriter<'a> {
             let key = format!("{}.{}", class_name, method_name);
             let empty = WitnessNeeds::default();
             let needs = cx.witness_map.get(&key).unwrap_or(&empty);
-            TsMethodWriter { func: im.func, imp: im.imp, indent: 1, witness_needs: needs }.ts_fmt(f, cx)?;
+            TsMethodWriter {
+                func: im.func,
+                imp: im.imp,
+                indent: 1,
+                witness_needs: needs,
+            }
+            .ts_fmt(f, cx)?;
         }
 
         // Emit merged methods (runtime dispatch)
@@ -1057,7 +1247,8 @@ impl<'a> TsBackend for TsClassWriter<'a> {
                 struct_fields: &self.s.fields,
                 indent: 1,
                 witness_needs: &needs,
-            }.ts_fmt(f, cx)?;
+            }
+            .ts_fmt(f, cx)?;
         }
 
         writeln!(f, "}}")?;
@@ -1076,8 +1267,7 @@ struct TsMethodWriter<'a> {
     witness_needs: &'a WitnessNeeds,
 }
 
-impl<'a> TsMethodWriter<'a> {
-}
+impl<'a> TsMethodWriter<'a> {}
 
 impl<'a> TsBackend for TsMethodWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
@@ -1092,7 +1282,11 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
         }
 
         let used_params = function_used_type_params(self.func);
-        TsGenericsWriter { generics: &self.func.generics, used_only: Some(&used_params) }.ts_fmt(f, cx)?;
+        TsGenericsWriter {
+            generics: &self.func.generics,
+            used_only: Some(&used_params),
+        }
+        .ts_fmt(f, cx)?;
 
         write!(f, "(")?;
         let mut first_param = true;
@@ -1118,7 +1312,11 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
         }
 
         writeln!(f)?;
-        TsBlockWriter { block: &self.func.body, indent: self.indent }.ts_fmt(f, cx)?;
+        TsBlockWriter {
+            block: &self.func.body,
+            indent: self.indent,
+        }
+        .ts_fmt(f, cx)?;
         writeln!(f)?;
         Ok(())
     }
@@ -1160,15 +1358,26 @@ impl<'a> TsBackend for TsMergedMethodWriter<'a> {
             }
         }
         // Filter for the generics writer
-        let generics_owned: Vec<IrGenericParam> = all_generics.iter()
+        let generics_owned: Vec<IrGenericParam> = all_generics
+            .iter()
             .filter(|p| {
                 p.kind == IrGenericParamKind::Type
-                    && !p.bounds.iter().any(|b| matches!(&b.trait_kind, TraitKind::Fn(..)))
-                    && !p.bounds.iter().any(|b| matches!(&b.trait_kind, TraitKind::AsRef(..)))
+                    && !p
+                        .bounds
+                        .iter()
+                        .any(|b| matches!(&b.trait_kind, TraitKind::Fn(..)))
+                    && !p
+                        .bounds
+                        .iter()
+                        .any(|b| matches!(&b.trait_kind, TraitKind::AsRef(..)))
             })
             .map(|p| (*p).clone())
             .collect();
-        TsGenericsWriter { generics: &generics_owned, used_only: None }.ts_fmt(f, cx)?;
+        TsGenericsWriter {
+            generics: &generics_owned,
+            used_only: None,
+        }
+        .ts_fmt(f, cx)?;
 
         // Parameters — use the broadest signature (first variant's params)
         write!(f, "(")?;
@@ -1200,8 +1409,7 @@ impl<'a> TsBackend for TsMergedMethodWriter<'a> {
         // Emit if/else chain for each variant
         for (i, variant) in self.merged.variants.iter().enumerate() {
             let check = if let Some(ty) = variant.self_type_args.first() {
-                runtime_type_check(ty, self.struct_fields)
-                    .unwrap_or_else(|| "true".to_string())
+                runtime_type_check(ty, self.struct_fields).unwrap_or_else(|| "true".to_string())
             } else {
                 "true".to_string()
             };
@@ -1218,7 +1426,11 @@ impl<'a> TsBackend for TsMergedMethodWriter<'a> {
             let body = &variant.func.body;
             let inner_ind = "  ".repeat(self.indent + 2);
             for stmt in &body.stmts {
-                TsStmtWriter { stmt, indent: self.indent + 2 }.ts_fmt(f, cx)?;
+                TsStmtWriter {
+                    stmt,
+                    indent: self.indent + 2,
+                }
+                .ts_fmt(f, cx)?;
             }
             if let Some(tail) = &body.expr {
                 if is_statement_like(tail) {
@@ -1252,10 +1464,18 @@ struct TsFunctionWriter<'a> {
 impl<'a> TsBackend for TsFunctionWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
         let ind = "  ".repeat(self.indent);
-        let name = if self.func.name.starts_with("r#") { &self.func.name[2..] } else { &self.func.name };
+        let name = if self.func.name.starts_with("r#") {
+            &self.func.name[2..]
+        } else {
+            &self.func.name
+        };
         write!(f, "{}export function {}", ind, name)?;
         let used_params = function_used_type_params(self.func);
-        TsGenericsWriter { generics: &self.func.generics, used_only: Some(&used_params) }.ts_fmt(f, cx)?;
+        TsGenericsWriter {
+            generics: &self.func.generics,
+            used_only: Some(&used_params),
+        }
+        .ts_fmt(f, cx)?;
         write!(f, "(")?;
         let mut first_param = true;
         if !self.witness_needs.is_empty() {
@@ -1276,7 +1496,11 @@ impl<'a> TsBackend for TsFunctionWriter<'a> {
             TsTypeWriter { ty: ret }.ts_fmt(f, cx)?;
         }
         writeln!(f)?;
-        TsBlockWriter { block: &self.func.body, indent: self.indent }.ts_fmt(f, cx)?;
+        TsBlockWriter {
+            block: &self.func.body,
+            indent: self.indent,
+        }
+        .ts_fmt(f, cx)?;
         writeln!(f)?;
         Ok(())
     }
@@ -1294,15 +1518,23 @@ struct TsGenericsWriter<'a> {
 
 impl<'a> TsBackend for TsGenericsWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
-        let type_params: Vec<&IrGenericParam> = self.generics.iter()
+        let type_params: Vec<&IrGenericParam> = self
+            .generics
+            .iter()
             .filter(|p| {
                 if p.kind != IrGenericParamKind::Type {
                     return false;
                 }
-                if p.bounds.iter().any(|b| matches!(&b.trait_kind, TraitKind::Fn(..))) {
+                if p.bounds
+                    .iter()
+                    .any(|b| matches!(&b.trait_kind, TraitKind::Fn(..)))
+                {
                     return false;
                 }
-                if p.bounds.iter().any(|b| matches!(&b.trait_kind, TraitKind::AsRef(..))) {
+                if p.bounds
+                    .iter()
+                    .any(|b| matches!(&b.trait_kind, TraitKind::AsRef(..)))
+                {
                     return false;
                 }
                 // If we have a used_only filter, check membership
@@ -1464,7 +1696,11 @@ impl<'a> TsBackend for TsBlockWriter<'a> {
         let ind = "  ".repeat(self.indent);
         writeln!(f, "{}{{", ind)?;
         for stmt in &self.block.stmts {
-            TsStmtWriter { stmt, indent: self.indent + 1 }.ts_fmt(f, cx)?;
+            TsStmtWriter {
+                stmt,
+                indent: self.indent + 1,
+            }
+            .ts_fmt(f, cx)?;
         }
         if let Some(e) = &self.block.expr {
             let inner = "  ".repeat(self.indent + 1);
@@ -1486,29 +1722,60 @@ impl<'a> TsBackend for TsBlockWriter<'a> {
 
 /// Emit an expression that is statement-like (loop, assignment, etc.) as a
 /// proper statement. This avoids `return for(...)` in the output.
-fn emit_statement_expr(e: &IrExpr, indent: usize, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
+fn emit_statement_expr(
+    e: &IrExpr,
+    indent: usize,
+    f: &mut fmt::Formatter<'_>,
+    cx: &TsContext<'_>,
+) -> fmt::Result {
     match e {
-        IrExpr::BoundedLoop { var, start, end, inclusive, body } => {
+        IrExpr::BoundedLoop {
+            var,
+            start,
+            end,
+            inclusive,
+            body,
+        } => {
             write!(f, "for (let {} = ", var)?;
             TsExprWriter { expr: start }.ts_fmt(f, cx)?;
             write!(f, "; {} {} ", var, if *inclusive { "<=" } else { "<" })?;
             TsExprWriter { expr: end }.ts_fmt(f, cx)?;
             write!(f, "; {}++) ", var)?;
-            TsBlockWriter { block: body, indent }.ts_fmt(f, cx)?;
+            TsBlockWriter {
+                block: body,
+                indent,
+            }
+            .ts_fmt(f, cx)?;
         }
-        IrExpr::IterLoop { pattern, collection, body } => {
+        IrExpr::IterLoop {
+            pattern,
+            collection,
+            body,
+        } => {
             write!(f, "for (const ")?;
             TsPatternWriter { pat: pattern }.ts_fmt(f, cx)?;
             write!(f, " of ")?;
             TsExprWriter { expr: collection }.ts_fmt(f, cx)?;
             write!(f, ") ")?;
-            TsBlockWriter { block: body, indent }.ts_fmt(f, cx)?;
+            TsBlockWriter {
+                block: body,
+                indent,
+            }
+            .ts_fmt(f, cx)?;
         }
-        IrExpr::If { cond, then_branch, else_branch } => {
+        IrExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             write!(f, "if (")?;
             TsExprWriter { expr: cond }.ts_fmt(f, cx)?;
             write!(f, ") ")?;
-            TsBlockWriter { block: then_branch, indent }.ts_fmt(f, cx)?;
+            TsBlockWriter {
+                block: then_branch,
+                indent,
+            }
+            .ts_fmt(f, cx)?;
             if let Some(eb) = else_branch {
                 write!(f, " else ")?;
                 match eb.as_ref() {
@@ -1619,7 +1886,13 @@ impl<'a> TsBackend for TsExprWriter<'a> {
         match self.expr {
             IrExpr::Lit(l) => ts_literal(l, f)?,
             IrExpr::Var(v) => {
-                let name = if v == "self" { "this" } else if v == "None" { "undefined" } else { v.as_str() };
+                let name = if v == "self" {
+                    "this"
+                } else if v == "None" {
+                    "undefined"
+                } else {
+                    v.as_str()
+                };
                 write!(f, "{}", name)?;
             }
             IrExpr::Binary { op, left, right } => {
@@ -1637,22 +1910,25 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     write!(f, ")")?;
                 }
             }
-            IrExpr::Unary { op, expr } => {
-                match op {
-                    SpecUnaryOp::Neg => {
-                        write!(f, "-")?;
-                        TsExprWriter { expr }.ts_fmt(f, cx)?;
-                    }
-                    SpecUnaryOp::Not => {
-                        write!(f, "!")?;
-                        TsExprWriter { expr }.ts_fmt(f, cx)?;
-                    }
-                    SpecUnaryOp::Deref | SpecUnaryOp::Ref | SpecUnaryOp::RefMut => {
-                        TsExprWriter { expr }.ts_fmt(f, cx)?;
-                    }
+            IrExpr::Unary { op, expr } => match op {
+                SpecUnaryOp::Neg => {
+                    write!(f, "-")?;
+                    TsExprWriter { expr }.ts_fmt(f, cx)?;
                 }
-            }
-            IrExpr::MethodCall { receiver, method, args, .. } => {
+                SpecUnaryOp::Not => {
+                    write!(f, "!")?;
+                    TsExprWriter { expr }.ts_fmt(f, cx)?;
+                }
+                SpecUnaryOp::Deref | SpecUnaryOp::Ref | SpecUnaryOp::RefMut => {
+                    TsExprWriter { expr }.ts_fmt(f, cx)?;
+                }
+            },
+            IrExpr::MethodCall {
+                receiver,
+                method,
+                args,
+                ..
+            } => {
                 emit_method_call(receiver, method, args, f, cx)?;
             }
             IrExpr::Call { func, args } => {
@@ -1687,7 +1963,9 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         if is_crypto_type_param(type_name) {
                             write!(f, "ctx.new{}(", type_name)?;
                             for (i, arg) in args.iter().enumerate() {
-                                if i > 0 { write!(f, ", ")?; }
+                                if i > 0 {
+                                    write!(f, ", ")?;
+                                }
                                 TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
                             }
                             return write!(f, ")");
@@ -1731,7 +2009,12 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 // TODO: Slice operations should be represented as a dedicated
                 // IrExpr::Slice variant in the IR rather than Index+Range.
                 // For now, detect Index with a Range index and emit .slice().
-                if let IrExpr::Range { start, end, inclusive } = index.as_ref() {
+                if let IrExpr::Range {
+                    start,
+                    end,
+                    inclusive,
+                } = index.as_ref()
+                {
                     TsExprWriter { expr: base }.ts_fmt(f, cx)?;
                     write!(f, ".slice(")?;
                     if let Some(s) = start {
@@ -1759,7 +2042,8 @@ impl<'a> TsBackend for TsExprWriter<'a> {
             }
             IrExpr::StructExpr { kind, fields, .. } => {
                 let name = kind.to_string();
-                let real_fields: Vec<&(String, IrExpr)> = fields.iter()
+                let real_fields: Vec<&(String, IrExpr)> = fields
+                    .iter()
                     .filter(|(n, _)| !n.starts_with("_phantom"))
                     .collect();
                 write!(f, "new {}({{ ", name)?;
@@ -1802,20 +2086,36 @@ impl<'a> TsBackend for TsExprWriter<'a> {
             IrExpr::Block(b) => {
                 // Expression-position block → IIFE
                 write!(f, "(() => ")?;
-                TsBlockWriter { block: b, indent: 0 }.ts_fmt(f, cx)?;
+                TsBlockWriter {
+                    block: b,
+                    indent: 0,
+                }
+                .ts_fmt(f, cx)?;
                 write!(f, ")()")?;
             }
-            IrExpr::If { cond, then_branch, else_branch } => {
+            IrExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
                 // If in expression position → IIFE with if/else
                 write!(f, "(() => {{ if (")?;
                 TsExprWriter { expr: cond }.ts_fmt(f, cx)?;
                 write!(f, ") ")?;
-                TsBlockWriter { block: then_branch, indent: 0 }.ts_fmt(f, cx)?;
+                TsBlockWriter {
+                    block: then_branch,
+                    indent: 0,
+                }
+                .ts_fmt(f, cx)?;
                 if let Some(eb) = else_branch {
                     write!(f, " else ")?;
                     match eb.as_ref() {
                         IrExpr::Block(b) => {
-                            TsBlockWriter { block: b, indent: 0 }.ts_fmt(f, cx)?;
+                            TsBlockWriter {
+                                block: b,
+                                indent: 0,
+                            }
+                            .ts_fmt(f, cx)?;
                         }
                         IrExpr::If { .. } => {
                             // Nested if-else — recurse but strip IIFE wrapper
@@ -1831,26 +2131,48 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 write!(f, " }})()")?;
             }
             // Loops as expressions — wrap in IIFE when they appear in expr context
-            IrExpr::BoundedLoop { var, start, end, inclusive, body } => {
+            IrExpr::BoundedLoop {
+                var,
+                start,
+                end,
+                inclusive,
+                body,
+            } => {
                 write!(f, "for (let {} = ", var)?;
                 TsExprWriter { expr: start }.ts_fmt(f, cx)?;
                 write!(f, "; {} {} ", var, if *inclusive { "<=" } else { "<" })?;
                 TsExprWriter { expr: end }.ts_fmt(f, cx)?;
                 write!(f, "; {}++) ", var)?;
-                TsBlockWriter { block: body, indent: 0 }.ts_fmt(f, cx)?;
+                TsBlockWriter {
+                    block: body,
+                    indent: 0,
+                }
+                .ts_fmt(f, cx)?;
             }
-            IrExpr::IterLoop { pattern, collection, body } => {
+            IrExpr::IterLoop {
+                pattern,
+                collection,
+                body,
+            } => {
                 write!(f, "for (const ")?;
                 TsPatternWriter { pat: pattern }.ts_fmt(f, cx)?;
                 write!(f, " of ")?;
                 TsExprWriter { expr: collection }.ts_fmt(f, cx)?;
                 write!(f, ") ")?;
-                TsBlockWriter { block: body, indent: 0 }.ts_fmt(f, cx)?;
+                TsBlockWriter {
+                    block: body,
+                    indent: 0,
+                }
+                .ts_fmt(f, cx)?;
             }
             IrExpr::IterPipeline(chain) => {
                 TsIterChainWriter { chain }.ts_fmt(f, cx)?;
             }
-            IrExpr::RawMap { receiver, elem_var, body } => {
+            IrExpr::RawMap {
+                receiver,
+                elem_var,
+                body,
+            } => {
                 TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
                 write!(f, ".map((")?;
                 TsPatternWriter { pat: elem_var }.ts_fmt(f, cx)?;
@@ -1858,7 +2180,13 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 TsExprWriter { expr: body }.ts_fmt(f, cx)?;
                 write!(f, ")")?;
             }
-            IrExpr::RawZip { left, right, left_var, right_var, body } => {
+            IrExpr::RawZip {
+                left,
+                right,
+                left_var,
+                right_var,
+                body,
+            } => {
                 TsExprWriter { expr: left }.ts_fmt(f, cx)?;
                 write!(f, ".map((")?;
                 TsPatternWriter { pat: left_var }.ts_fmt(f, cx)?;
@@ -1870,7 +2198,13 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 TsExprWriter { expr: body }.ts_fmt(f, cx)?;
                 write!(f, "; }})")?;
             }
-            IrExpr::RawFold { receiver, init, acc_var, elem_var, body } => {
+            IrExpr::RawFold {
+                receiver,
+                init,
+                acc_var,
+                elem_var,
+                body,
+            } => {
                 TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
                 write!(f, ".reduce((")?;
                 TsPatternWriter { pat: acc_var }.ts_fmt(f, cx)?;
@@ -1897,7 +2231,11 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 write!(f, ") => ")?;
                 TsExprWriter { expr: body }.ts_fmt(f, cx)?;
             }
-            IrExpr::Range { start, end, inclusive } => {
+            IrExpr::Range {
+                start,
+                end,
+                inclusive,
+            } => {
                 write!(f, "Array.from({{length: ")?;
                 if let Some(e) = end {
                     TsExprWriter { expr: e }.ts_fmt(f, cx)?;
@@ -1934,37 +2272,35 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     TsExprWriter { expr: e }.ts_fmt(f, cx)?;
                 }
             }
-            IrExpr::Cast { expr, ty } => {
-                match ty.as_ref() {
-                    IrType::Primitive(PrimitiveType::U32) => {
-                        write!(f, "Number(")?;
-                        TsExprWriter { expr }.ts_fmt(f, cx)?;
-                        write!(f, ")")?;
-                    }
-                    IrType::Primitive(PrimitiveType::U64) => {
-                        write!(f, "BigInt(")?;
-                        TsExprWriter { expr }.ts_fmt(f, cx)?;
-                        write!(f, ")")?;
-                    }
-                    IrType::Primitive(PrimitiveType::U8) => {
-                        write!(f, "((")?;
-                        TsExprWriter { expr }.ts_fmt(f, cx)?;
-                        write!(f, ") & 0xFF)")?;
-                    }
-                    IrType::Primitive(PrimitiveType::Usize) => {
-                        write!(f, "Number(")?;
-                        TsExprWriter { expr }.ts_fmt(f, cx)?;
-                        write!(f, ")")?;
-                    }
-                    _ => {
-                        write!(f, "(")?;
-                        TsExprWriter { expr }.ts_fmt(f, cx)?;
-                        write!(f, " as unknown as ")?;
-                        TsTypeWriter { ty }.ts_fmt(f, cx)?;
-                        write!(f, ")")?;
-                    }
+            IrExpr::Cast { expr, ty } => match ty.as_ref() {
+                IrType::Primitive(PrimitiveType::U32) => {
+                    write!(f, "Number(")?;
+                    TsExprWriter { expr }.ts_fmt(f, cx)?;
+                    write!(f, ")")?;
                 }
-            }
+                IrType::Primitive(PrimitiveType::U64) => {
+                    write!(f, "BigInt(")?;
+                    TsExprWriter { expr }.ts_fmt(f, cx)?;
+                    write!(f, ")")?;
+                }
+                IrType::Primitive(PrimitiveType::U8) => {
+                    write!(f, "((")?;
+                    TsExprWriter { expr }.ts_fmt(f, cx)?;
+                    write!(f, ") & 0xFF)")?;
+                }
+                IrType::Primitive(PrimitiveType::Usize) => {
+                    write!(f, "Number(")?;
+                    TsExprWriter { expr }.ts_fmt(f, cx)?;
+                    write!(f, ")")?;
+                }
+                _ => {
+                    write!(f, "(")?;
+                    TsExprWriter { expr }.ts_fmt(f, cx)?;
+                    write!(f, " as unknown as ")?;
+                    TsTypeWriter { ty }.ts_fmt(f, cx)?;
+                    write!(f, ")")?;
+                }
+            },
             IrExpr::TypenumUsize { ty } => {
                 // If this is a projection on a type param, use the witness
                 if let IrType::Projection { base, assoc, .. } = ty.as_ref() {
@@ -2014,7 +2350,12 @@ impl<'a> TsBackend for TsExprWriter<'a> {
             IrExpr::LengthOf(len) => {
                 ts_length(len, f, cx)?;
             }
-            IrExpr::ArrayGenerate { len, index_var, body, .. } => {
+            IrExpr::ArrayGenerate {
+                len,
+                index_var,
+                body,
+                ..
+            } => {
                 write!(f, "Array.from({{length: ")?;
                 ts_length(len, f, cx)?;
                 write!(f, "}}, (_, {}) => ", index_var)?;
@@ -2048,7 +2389,11 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 TsExprWriter { expr: e }.ts_fmt(f, cx)?;
             }
             _ => {
-                write!(f, "undefined /* unsupported: {:?} */", std::any::type_name::<IrExpr>())?;
+                write!(
+                    f,
+                    "undefined /* unsupported: {:?} */",
+                    std::any::type_name::<IrExpr>()
+                )?;
             }
         }
         Ok(())
@@ -2058,16 +2403,29 @@ impl<'a> TsBackend for TsExprWriter<'a> {
 /// Emit an `if` chain without the outer IIFE wrapper.
 /// Used for `else if` chains inside an already-open IIFE.
 fn emit_if_chain(expr: &IrExpr, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
-    if let IrExpr::If { cond, then_branch, else_branch } = expr {
+    if let IrExpr::If {
+        cond,
+        then_branch,
+        else_branch,
+    } = expr
+    {
         write!(f, "if (")?;
         TsExprWriter { expr: cond }.ts_fmt(f, cx)?;
         write!(f, ") ")?;
-        TsBlockWriter { block: then_branch, indent: 0 }.ts_fmt(f, cx)?;
+        TsBlockWriter {
+            block: then_branch,
+            indent: 0,
+        }
+        .ts_fmt(f, cx)?;
         if let Some(eb) = else_branch {
             write!(f, " else ")?;
             match eb.as_ref() {
                 IrExpr::Block(b) => {
-                    TsBlockWriter { block: b, indent: 0 }.ts_fmt(f, cx)?;
+                    TsBlockWriter {
+                        block: b,
+                        indent: 0,
+                    }
+                    .ts_fmt(f, cx)?;
                 }
                 IrExpr::If { .. } => {
                     emit_if_chain(eb, f, cx)?;
@@ -2084,7 +2442,13 @@ fn emit_if_chain(expr: &IrExpr, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) 
 }
 
 /// Emit a method call expression with smart translation.
-fn emit_method_call(receiver: &IrExpr, method: &MethodKind, args: &[IrExpr], f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
+fn emit_method_call(
+    receiver: &IrExpr,
+    method: &MethodKind,
+    args: &[IrExpr],
+    f: &mut fmt::Formatter<'_>,
+    cx: &TsContext<'_>,
+) -> fmt::Result {
     let name = ts_method_call_name(method);
     match name.as_str() {
         "wrapping_add" if args.len() == 1 => {
@@ -2111,20 +2475,14 @@ fn emit_method_call(receiver: &IrExpr, method: &MethodKind, args: &[IrExpr], f: 
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ")")
         }
-        "into" if args.is_empty() => {
-            TsExprWriter { expr: receiver }.ts_fmt(f, cx)
-        }
-        "cloned" if args.is_empty() => {
-            TsExprWriter { expr: receiver }.ts_fmt(f, cx)
-        }
+        "into" if args.is_empty() => TsExprWriter { expr: receiver }.ts_fmt(f, cx),
+        "cloned" if args.is_empty() => TsExprWriter { expr: receiver }.ts_fmt(f, cx),
         "to_vec" if args.is_empty() => {
             write!(f, "[...")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, "]")
         }
-        "as_slice" if args.is_empty() => {
-            TsExprWriter { expr: receiver }.ts_fmt(f, cx)
-        }
+        "as_slice" if args.is_empty() => TsExprWriter { expr: receiver }.ts_fmt(f, cx),
         "len" if args.is_empty() => {
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ".length")
@@ -2243,7 +2601,10 @@ struct TsIterChainWriter<'a> {
 
 impl<'a> TsBackend for TsIterChainWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
-        TsIterSourceWriter { source: &self.chain.source }.ts_fmt(f, cx)?;
+        TsIterSourceWriter {
+            source: &self.chain.source,
+        }
+        .ts_fmt(f, cx)?;
 
         for step in &self.chain.steps {
             match step {
@@ -2276,7 +2637,10 @@ impl<'a> TsBackend for TsIterChainWriter<'a> {
                     write!(f, ")")?;
                 }
                 IterStep::Enumerate => {
-                    write!(f, ".map((val: any, i: number) => [i, val] as [number, typeof val])")?;
+                    write!(
+                        f,
+                        ".map((val: any, i: number) => [i, val] as [number, typeof val])"
+                    )?;
                 }
                 IterStep::Take { count } => {
                     write!(f, ".slice(0, ")?;
@@ -2300,7 +2664,12 @@ impl<'a> TsBackend for TsIterChainWriter<'a> {
             IterTerminal::Collect | IterTerminal::CollectTyped(_) => {
                 // Identity — .map()/.filter() already produce arrays in JS
             }
-            IterTerminal::Fold { init, acc_var, elem_var, body } => {
+            IterTerminal::Fold {
+                init,
+                acc_var,
+                elem_var,
+                body,
+            } => {
                 write!(f, ".reduce((")?;
                 TsPatternWriter { pat: acc_var }.ts_fmt(f, cx)?;
                 write!(f, ": any, ")?;
@@ -2325,23 +2694,25 @@ struct TsIterSourceWriter<'a> {
 impl<'a> TsBackend for TsIterSourceWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
         match self.source {
-            IterChainSource::Method { collection, method } => {
-                match method {
-                    IterMethod::Iter | IterMethod::IntoIter => {
-                        TsExprWriter { expr: collection }.ts_fmt(f, cx)?;
-                    }
-                    IterMethod::Chars => {
-                        TsExprWriter { expr: collection }.ts_fmt(f, cx)?;
-                        write!(f, ".split(\"\")")?;
-                    }
-                    IterMethod::Bytes => {
-                        write!(f, "Array.from(")?;
-                        TsExprWriter { expr: collection }.ts_fmt(f, cx)?;
-                        write!(f, ")")?;
-                    }
+            IterChainSource::Method { collection, method } => match method {
+                IterMethod::Iter | IterMethod::IntoIter => {
+                    TsExprWriter { expr: collection }.ts_fmt(f, cx)?;
                 }
-            }
-            IterChainSource::Range { start, end, inclusive } => {
+                IterMethod::Chars => {
+                    TsExprWriter { expr: collection }.ts_fmt(f, cx)?;
+                    write!(f, ".split(\"\")")?;
+                }
+                IterMethod::Bytes => {
+                    write!(f, "Array.from(")?;
+                    TsExprWriter { expr: collection }.ts_fmt(f, cx)?;
+                    write!(f, ")")?;
+                }
+            },
+            IterChainSource::Range {
+                start,
+                end,
+                inclusive,
+            } => {
                 write!(f, "Array.from({{length: ")?;
                 TsExprWriter { expr: end }.ts_fmt(f, cx)?;
                 if *inclusive {
@@ -2581,29 +2952,27 @@ fn ts_default_value(ty: &IrType, f: &mut fmt::Formatter<'_>, cx: &TsContext) -> 
 
 fn ts_method_call_name(method: &MethodKind) -> String {
     match method {
-        MethodKind::Std(s) => {
-            match s.as_str() {
-                "clone" => "clone".to_string(),
-                "into" => "into".to_string(),
-                "len" => "length".to_string(),
-                "is_empty" => "length === 0 ? true : false; /* ".to_string(),
-                "contains" => "includes".to_string(),
-                "unwrap" | "unwrap_or_default" => "unwrap_or_default".to_string(),
-                "as_ref" => "valueOf".to_string(),
-                "as_slice" => "slice".to_string(),
-                "get" => "get".to_string(),
-                "to_usize" | "to_string" => s.clone(),
-                "wrapping_add" => "wrapping_add".to_string(),
-                "wrapping_sub" => "wrapping_sub".to_string(),
-                "ilog2" => "ilog2".to_string(),
-                "bitxor" => "bitxor".to_string(),
-                "shl" => "shl".to_string(),
-                "shr" => "shr".to_string(),
-                "map_or" => "map_or".to_string(),
-                "deref" => "valueOf".to_string(),
-                _ => s.clone(),
-            }
-        }
+        MethodKind::Std(s) => match s.as_str() {
+            "clone" => "clone".to_string(),
+            "into" => "into".to_string(),
+            "len" => "length".to_string(),
+            "is_empty" => "length === 0 ? true : false; /* ".to_string(),
+            "contains" => "includes".to_string(),
+            "unwrap" | "unwrap_or_default" => "unwrap_or_default".to_string(),
+            "as_ref" => "valueOf".to_string(),
+            "as_slice" => "slice".to_string(),
+            "get" => "get".to_string(),
+            "to_usize" | "to_string" => s.clone(),
+            "wrapping_add" => "wrapping_add".to_string(),
+            "wrapping_sub" => "wrapping_sub".to_string(),
+            "ilog2" => "ilog2".to_string(),
+            "bitxor" => "bitxor".to_string(),
+            "shl" => "shl".to_string(),
+            "shr" => "shr".to_string(),
+            "map_or" => "map_or".to_string(),
+            "deref" => "valueOf".to_string(),
+            _ => s.clone(),
+        },
         MethodKind::Vole(v) => format!("{:?}", v).to_lowercase(),
         MethodKind::Unknown(s) => s.clone(),
     }
@@ -2622,7 +2991,11 @@ fn ts_method_name(rust_name: &str, trait_ref: Option<&IrTraitRef>) -> String {
             _ => {}
         }
     }
-    let name = if rust_name.starts_with("r#") { &rust_name[2..] } else { rust_name };
+    let name = if rust_name.starts_with("r#") {
+        &rust_name[2..]
+    } else {
+        rust_name
+    };
     match name {
         "static" => "static_".to_string(),
         "delete" => "delete_".to_string(),
@@ -2659,7 +3032,11 @@ fn self_ty_name(ty: &IrType) -> String {
     }
 }
 
-fn ts_pattern_condition(pat: &IrPattern, match_var: &str, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn ts_pattern_condition(
+    pat: &IrPattern,
+    match_var: &str,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
     match pat {
         IrPattern::Lit(l) => {
             write!(f, "{} === ", match_var)?;
@@ -2671,7 +3048,11 @@ fn ts_pattern_condition(pat: &IrPattern, match_var: &str, f: &mut fmt::Formatter
     }
 }
 
-fn resolve_fn_generic(type_name: &str, generics: &[IrGenericParam], cx: &TsContext<'_>) -> Option<String> {
+fn resolve_fn_generic(
+    type_name: &str,
+    generics: &[IrGenericParam],
+    cx: &TsContext<'_>,
+) -> Option<String> {
     for g in generics {
         if g.name == type_name {
             for b in &g.bounds {
@@ -2698,7 +3079,12 @@ fn resolve_fn_generic(type_name: &str, generics: &[IrGenericParam], cx: &TsConte
 }
 
 /// Write a parameter's type, resolving Fn-bounded generics inline.
-fn write_param_type(p: &IrParam, generics: &[IrGenericParam], f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
+fn write_param_type(
+    p: &IrParam,
+    generics: &[IrGenericParam],
+    f: &mut fmt::Formatter<'_>,
+    cx: &TsContext<'_>,
+) -> fmt::Result {
     if let IrType::TypeParam(tp) = &p.ty {
         if let Some(fn_type) = resolve_fn_generic(tp, generics, cx) {
             return write!(f, "{}", fn_type);
@@ -2808,7 +3194,9 @@ fn function_used_type_params(func: &IrFunction) -> Vec<String> {
 
 /// Collect type params used in struct field types.
 fn struct_used_type_params(s: &IrStruct) -> Vec<String> {
-    let types: Vec<&IrType> = s.fields.iter()
+    let types: Vec<&IrType> = s
+        .fields
+        .iter()
         .filter(|f| !is_phantom_field(f))
         .map(|f| &f.ty)
         .collect();
@@ -2816,16 +3204,26 @@ fn struct_used_type_params(s: &IrStruct) -> Vec<String> {
 }
 
 /// Filter generics to only those actually used.
-fn filter_used_generics<'a>(generics: &'a [IrGenericParam], used: &[String]) -> Vec<&'a IrGenericParam> {
-    generics.iter()
+fn filter_used_generics<'a>(
+    generics: &'a [IrGenericParam],
+    used: &[String],
+) -> Vec<&'a IrGenericParam> {
+    generics
+        .iter()
         .filter(|g| {
             if g.kind != IrGenericParamKind::Type {
                 return false;
             }
-            if g.bounds.iter().any(|b| matches!(&b.trait_kind, TraitKind::Fn(..))) {
+            if g.bounds
+                .iter()
+                .any(|b| matches!(&b.trait_kind, TraitKind::Fn(..)))
+            {
                 return false;
             }
-            if g.bounds.iter().any(|b| matches!(&b.trait_kind, TraitKind::AsRef(..))) {
+            if g.bounds
+                .iter()
+                .any(|b| matches!(&b.trait_kind, TraitKind::AsRef(..)))
+            {
                 return false;
             }
             used.contains(&g.name)

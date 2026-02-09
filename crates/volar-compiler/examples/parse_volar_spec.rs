@@ -3,10 +3,8 @@
 use std::fs;
 use std::path::Path;
 use volar_compiler::{
-    parse_sources, print_module,
-    TypeContext, OperatorAnalysis, type_to_string,
-    StructKind, TraitKind, MathTrait, ArrayKind,
-    IrType, IrExpr, IrStmt, IrImplItem, AssociatedType,
+    ArrayKind, AssociatedType, IrExpr, IrImplItem, IrStmt, IrType, MathTrait, OperatorAnalysis,
+    StructKind, TraitKind, TypeContext, parse_sources, print_module, type_to_string,
 };
 
 fn main() {
@@ -37,7 +35,7 @@ fn main() {
     collect_rs_files(&base_path, &mut sources);
 
     println!("Found {} source files in volar-spec", sources.len());
-    
+
     let sources_ref: Vec<(&str, &str)> = sources
         .iter()
         .map(|(content, name)| (content.as_str(), name.as_str()))
@@ -83,14 +81,25 @@ fn main() {
                     },
                     _ => "Other",
                 };
-                println!("  {:?}: {} ({} fields)", s.kind, classification, s.fields.len());
-                
+                println!(
+                    "  {:?}: {} ({} fields)",
+                    s.kind,
+                    classification,
+                    s.fields.len()
+                );
+
                 // Show field types
                 for field in &s.fields {
                     let ty_desc = match &field.ty {
                         IrType::Primitive(p) => format!("primitive {:?}", p),
-                        IrType::Array { kind: ArrayKind::GenericArray, .. } => "GenericArray".to_string(),
-                        IrType::Array { kind: ArrayKind::FixedArray, .. } => "fixed array".to_string(),
+                        IrType::Array {
+                            kind: ArrayKind::GenericArray,
+                            ..
+                        } => "GenericArray".to_string(),
+                        IrType::Array {
+                            kind: ArrayKind::FixedArray,
+                            ..
+                        } => "fixed array".to_string(),
                         IrType::TypeParam(name) => format!("type param {}", name),
                         IrType::Struct { kind, .. } => format!("struct {:?}", kind),
                         _ => "other".to_string(),
@@ -98,19 +107,29 @@ fn main() {
                     println!("    {}: {}", field.name, ty_desc);
                 }
             }
-            
+
             println!("\n=== Specialized Trait Impl Classifications ===");
             let mut math_count = 0;
             let mut crypto_count = 0;
             let mut inherent_count = 0;
-            
+
             for imp in &module.impls {
                 match &imp.trait_ {
                     Some(tr) => match &tr.kind {
                         TraitKind::Math(m) => {
                             math_count += 1;
-                            if matches!(m, MathTrait::Add | MathTrait::Sub | MathTrait::Mul | MathTrait::BitXor) {
-                                println!("  Math op: {:?} for {:?}", m, type_to_string(&imp.self_ty));
+                            if matches!(
+                                m,
+                                MathTrait::Add
+                                    | MathTrait::Sub
+                                    | MathTrait::Mul
+                                    | MathTrait::BitXor
+                            ) {
+                                println!(
+                                    "  Math op: {:?} for {:?}",
+                                    m,
+                                    type_to_string(&imp.self_ty)
+                                );
                             }
                         }
                         TraitKind::Custom(name) => {
@@ -124,15 +143,18 @@ fn main() {
                     }
                 }
             }
-            
+
             println!("\n  Math trait impls: {}", math_count);
             println!("  Crypto trait impls: {}", crypto_count);
             println!("  Inherent impls: {}", inherent_count);
 
             // Count total loop constructs
             println!("\n=== Total (Bounded) Loop Analysis ===");
-            
-            fn count_loops_in_expr(expr: &IrExpr, counts: &mut (usize, usize, usize, usize, usize)) {
+
+            fn count_loops_in_expr(
+                expr: &IrExpr,
+                counts: &mut (usize, usize, usize, usize, usize),
+            ) {
                 match expr {
                     IrExpr::ArrayGenerate { body, .. } => {
                         counts.0 += 1;
@@ -181,7 +203,9 @@ fn main() {
                             count_loops_in_expr(e, counts);
                         }
                     }
-                    IrExpr::IterLoop { body, collection, .. } => {
+                    IrExpr::IterLoop {
+                        body, collection, ..
+                    } => {
                         counts.3 += 1;
                         count_loops_in_expr(collection, counts);
                         for stmt in &body.stmts {
@@ -218,7 +242,11 @@ fn main() {
                     IrExpr::Closure { body, .. } => {
                         count_loops_in_expr(body, counts);
                     }
-                    IrExpr::If { cond, then_branch, else_branch } => {
+                    IrExpr::If {
+                        cond,
+                        then_branch,
+                        else_branch,
+                    } => {
                         count_loops_in_expr(cond, counts);
                         for stmt in &then_branch.stmts {
                             if let IrStmt::Semi(e) | IrStmt::Expr(e) = stmt {
@@ -235,7 +263,7 @@ fn main() {
                     _ => {}
                 }
             }
-            
+
             let mut counts = (0, 0, 0, 0, 0);
             for imp in &module.impls {
                 for item in &imp.items {
@@ -261,19 +289,21 @@ fn main() {
                     count_loops_in_expr(e, &mut counts);
                 }
             }
-            
+
             println!("  ArrayGenerate: {}", counts.0);
             println!("  IterPipeline: {}", counts.1);
             println!("  BoundedLoop: {}", counts.2);
             println!("  IterLoop: {}", counts.3);
             println!("  Total: {}", counts.4);
-            println!("\n  Total bounded loops: {} (all loops are provably terminating)", 
-                     counts.0 + counts.1 + counts.2 + counts.3 + counts.4);
+            println!(
+                "\n  Total bounded loops: {} (all loops are provably terminating)",
+                counts.0 + counts.1 + counts.2 + counts.3 + counts.4
+            );
 
             // Print the IR (truncated)
             println!("\n=== IR Output (truncated) ===");
             let printed = print_module(&module);
-            
+
             if printed.len() > 2000 {
                 println!("{}...\n", &printed[..2000]);
             } else {

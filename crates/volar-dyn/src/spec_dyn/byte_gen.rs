@@ -4,8 +4,8 @@ use super::*;
 use alloc::vec::Vec;
 use core::ops::Deref;
 
-use digest::Digest;
 use cipher::BlockEncrypt;
+use digest::Digest;
 
 use volar_common::hash_commitment::{CommitmentCore, commit};
 
@@ -13,7 +13,10 @@ use super::vole::VopeDyn;
 
 /// Create a dynamic `VopeDyn` from a slice of byte-like inputs, mirroring
 /// `create_vole_from_material` in `byte_gen.rs` but using `Vec`.
-pub fn create_vole_from_material_dyn(s: &[impl Deref<Target = [u8]>], block_size: usize) -> VopeDyn<u8> {
+pub fn create_vole_from_material_dyn(
+    s: &[impl Deref<Target = [u8]>],
+    block_size: usize,
+) -> VopeDyn<u8> {
     let mut u_core = vec![0u8; block_size];
     for b in s {
         let slice = &b[..core::cmp::min(block_size, b.len())];
@@ -98,11 +101,14 @@ pub fn gen_abo_dyn<B: ByteBlockEncryptDyn, D: Digest>(
     }
 
     let commit = h.finalize();
-    ABODyn { commit: commit.as_slice().to_vec(), per_byte }
+    ABODyn {
+        commit: commit.as_slice().to_vec(),
+        per_byte,
+    }
 }
 
 /// Expanded variant that applies a function `f` to each input before folding.
-pub fn create_vole_from_material_expanded_dyn< X: AsRef<[u8]> , F: FnMut(&[u8]) -> X>(
+pub fn create_vole_from_material_expanded_dyn<X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(
     s: &[impl Deref<Target = [u8]>],
     block_size: usize,
     mut f: F,

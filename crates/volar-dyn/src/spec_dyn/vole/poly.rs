@@ -16,7 +16,12 @@ impl<T> PolyDyn<T>
 where
     T: Clone + Default + Add<T, Output = T> + Mul<T, Output = T>,
 {
-    pub fn get_qs_pool(&self, root: DeltaDyn<T>, inputs: PolyInputPool<'_, T>, reduction: usize) -> QDyn<T> {
+    pub fn get_qs_pool(
+        &self,
+        root: DeltaDyn<T>,
+        inputs: PolyInputPool<'_, T>,
+        reduction: usize,
+    ) -> QDyn<T> {
         let n = root.delta.len();
         let mut out = Vec::with_capacity(n);
         for i in 0..n {

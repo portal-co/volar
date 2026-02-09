@@ -25,13 +25,16 @@ impl<N: ArrayLength<BitsInBytes>> Q<N, BitsInBytes> {
             }),
         }
     }
-    pub fn bit(&self, n: u8) -> Q<N,Bit> where N: ArrayLength<Bit>{
+    pub fn bit(&self, n: u8) -> Q<N, Bit>
+    where
+        N: ArrayLength<Bit>,
+    {
         let Q { q } = self;
         Q {
-            q: GenericArray::<Bit, N>::generate(|i|{
+            q: GenericArray::<Bit, N>::generate(|i| {
                 let BitsInBytes(b) = q[i].clone();
                 Bit((b >> n) & 1 != 0)
-            })
+            }),
         }
     }
 }
@@ -56,13 +59,16 @@ impl<N: ArrayLength<BitsInBytes64>> Q<N, BitsInBytes64> {
             }),
         }
     }
-    pub fn bit(&self, n: u8) -> Q<N,Bit> where N: ArrayLength<Bit>{
+    pub fn bit(&self, n: u8) -> Q<N, Bit>
+    where
+        N: ArrayLength<Bit>,
+    {
         let Q { q } = self;
         Q {
-            q: GenericArray::<Bit, N>::generate(|i|{
+            q: GenericArray::<Bit, N>::generate(|i| {
                 let BitsInBytes64(b) = q[i].clone();
                 Bit((b >> n) & 1 != 0)
-            })
+            }),
         }
     }
 }
@@ -88,13 +94,16 @@ impl<N: ArrayLength<BitsInBytes>> Delta<N, BitsInBytes> {
             }),
         }
     }
-    pub fn bit(&self, n: u8) -> Delta<N,Bit> where N: ArrayLength<Bit>{
+    pub fn bit(&self, n: u8) -> Delta<N, Bit>
+    where
+        N: ArrayLength<Bit>,
+    {
         let Delta { delta } = self;
         Delta {
-            delta: GenericArray::<Bit, N>::generate(|i|{
+            delta: GenericArray::<Bit, N>::generate(|i| {
                 let BitsInBytes(b) = delta[i].clone();
                 Bit((b >> n) & 1 != 0)
-            })
+            }),
         }
     }
 }
@@ -119,13 +128,16 @@ impl<N: ArrayLength<BitsInBytes64>> Delta<N, BitsInBytes64> {
             }),
         }
     }
-    pub fn bit(&self, n: u8) -> Delta<N,Bit> where N: ArrayLength<Bit>{
+    pub fn bit(&self, n: u8) -> Delta<N, Bit>
+    where
+        N: ArrayLength<Bit>,
+    {
         let Delta { delta } = self;
         Delta {
-            delta: GenericArray::<Bit, N>::generate(|i|{
+            delta: GenericArray::<Bit, N>::generate(|i| {
                 let BitsInBytes64(b) = delta[i].clone();
                 Bit((b >> n) & 1 != 0)
-            })
+            }),
         }
     }
 }

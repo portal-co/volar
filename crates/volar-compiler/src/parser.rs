@@ -606,7 +606,11 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                 // The trait arguments are in the segment at qself.position - 1
                 // (the last segment of the trait path in <T as Trait<Args>>::Assoc)
                 let mut trait_args = Vec::new();
-                let trait_seg_idx = if qself.position > 0 { qself.position - 1 } else { 0 };
+                let trait_seg_idx = if qself.position > 0 {
+                    qself.position - 1
+                } else {
+                    0
+                };
                 if let Some(segment) = p.path.segments.get(trait_seg_idx) {
                     if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                         for arg in &args.args {
@@ -621,21 +625,22 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                 if let Some(last) = p.path.segments.last() {
                     let assoc_name = last.ident.to_string();
                     let assoc = AssociatedType::from_str(&assoc_name);
-                    
+
                     // Extract trait path - in syn, qself.position points to one
                     // past the last segment of the trait path.
                     // E.g., for `<T as Trait>::Output`:
                     //   path.segments = [Trait, Output], qself.position = 1
                     // So the trait is at segments[qself.position - 1].
-                    let trait_path = if qself.position > 0 && qself.position <= p.path.segments.len() {
-                        Some(p.path.segments[qself.position - 1].ident.to_string())
-                    } else if p.path.segments.len() > 1 {
-                        // Fallback: use second-to-last segment
-                        Some(p.path.segments[p.path.segments.len() - 2].ident.to_string())
-                    } else {
-                        None
-                    };
-                    
+                    let trait_path =
+                        if qself.position > 0 && qself.position <= p.path.segments.len() {
+                            Some(p.path.segments[qself.position - 1].ident.to_string())
+                        } else if p.path.segments.len() > 1 {
+                            // Fallback: use second-to-last segment
+                            Some(p.path.segments[p.path.segments.len() - 2].ident.to_string())
+                        } else {
+                            None
+                        };
+
                     return Ok(IrType::Projection {
                         base: Box::new(base),
                         trait_path,
@@ -665,7 +670,7 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                     let assoc = AssociatedType::from_str(&second_name);
                     return Ok(IrType::Projection {
                         base: Box::new(IrType::TypeParam(first_name)),
-                        trait_path: None,  // Simple T::Assoc doesn't have explicit trait
+                        trait_path: None, // Simple T::Assoc doesn't have explicit trait
                         trait_args: Vec::new(),
                         assoc,
                     });
@@ -787,7 +792,12 @@ fn convert_array_length_from_type(ty: &IrType) -> Result<ArrayLength> {
         IrType::Primitive(_) => Ok(ArrayLength::TypeNum(TypeNumConst::U8)), // Simplified
         IrType::TypeParam(name) => Ok(ArrayLength::TypeParam(name.clone())),
         IrType::Struct { kind, .. } => Ok(ArrayLength::TypeParam(kind.to_string())), // Common for GenericArray<T, BlockSize>
-        IrType::Projection { base, assoc, trait_path, .. } => {
+        IrType::Projection {
+            base,
+            assoc,
+            trait_path,
+            ..
+        } => {
             // Handle projections like Self::BlockSize, T::Output, <T as Trait>::Output
             // Convert to a type param string representation
             let base_str = format!("{}", base);
@@ -799,7 +809,11 @@ fn convert_array_length_from_type(ty: &IrType) -> Result<ArrayLength> {
                 AssociatedType::TotalLoopCount => "TotalLoopCount",
                 AssociatedType::Other(name) => name,
             };
-            Ok(ArrayLength::Projection { r#type: base.clone(), field: assoc_str.to_owned(), trait_path: trait_path.clone() })
+            Ok(ArrayLength::Projection {
+                r#type: base.clone(),
+                field: assoc_str.to_owned(),
+                trait_path: trait_path.clone(),
+            })
         }
         _ => Err(CompilerError::InvalidType(format!(
             "Invalid array length type: {:?}",
@@ -948,8 +962,18 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
             index: Box::new(convert_expr(&i.index)?),
         }),
         Expr::Range(r) => Ok(IrExpr::Range {
-            start: r.start.as_ref().map(|e| convert_expr(e)).transpose()?.map(Box::new),
-            end: r.end.as_ref().map(|e| convert_expr(e)).transpose()?.map(Box::new),
+            start: r
+                .start
+                .as_ref()
+                .map(|e| convert_expr(e))
+                .transpose()?
+                .map(Box::new),
+            end: r
+                .end
+                .as_ref()
+                .map(|e| convert_expr(e))
+                .transpose()?
+                .map(Box::new),
             inclusive: matches!(r.limits, syn::RangeLimits::Closed(_)),
         }),
         Expr::Paren(p) => convert_expr(&p.expr),
@@ -1086,15 +1110,17 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
             if name == "vec" {
                 let tokens = m.mac.tokens.clone();
                 // Wrap in brackets and parse as ExprArray
-                let bracketed = proc_macro2::TokenStream::from_iter([
-                    proc_macro2::TokenTree::Group(proc_macro2::Group::new(
-                        proc_macro2::Delimiter::Bracket,
-                        tokens,
-                    )),
-                ]);
+                let bracketed =
+                    proc_macro2::TokenStream::from_iter([proc_macro2::TokenTree::Group(
+                        proc_macro2::Group::new(proc_macro2::Delimiter::Bracket, tokens),
+                    )]);
                 let as_array: syn::Result<syn::ExprArray> = syn::parse2(bracketed);
                 if let Ok(arr) = as_array {
-                    let ir_elems = arr.elems.iter().map(convert_expr).collect::<Result<Vec<_>>>()?;
+                    let ir_elems = arr
+                        .elems
+                        .iter()
+                        .map(convert_expr)
+                        .collect::<Result<Vec<_>>>()?;
                     return Ok(IrExpr::Array(ir_elems));
                 }
                 // Fallback: empty vec
@@ -1103,10 +1129,15 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
             // For typenum_usize, parse the token stream as a type and convert it
             if name == "typenum_usize" {
                 let parsed_ty: Type = syn::parse2(m.mac.tokens.clone()).map_err(|e| {
-                    CompilerError::ParseError(format!("Failed to parse typenum_usize tokens: {}", e))
+                    CompilerError::ParseError(format!(
+                        "Failed to parse typenum_usize tokens: {}",
+                        e
+                    ))
                 })?;
                 let ir_ty = convert_type(&parsed_ty)?;
-                return Ok(IrExpr::TypenumUsize { ty: Box::new(ir_ty) });
+                return Ok(IrExpr::TypenumUsize {
+                    ty: Box::new(ir_ty),
+                });
             }
 
             Err(CompilerError::Unsupported(format!("macro: {}", name)))
@@ -1119,7 +1150,12 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
 fn type_to_array_length(ty: &IrType) -> ArrayLength {
     match ty {
         IrType::TypeParam(name) => ArrayLength::TypeParam(name.clone()),
-        IrType::Projection { base, assoc, trait_path, .. } => {
+        IrType::Projection {
+            base,
+            assoc,
+            trait_path,
+            ..
+        } => {
             let assoc_str = match assoc {
                 AssociatedType::Output => "Output",
                 AssociatedType::BlockSize => "BlockSize",
@@ -1219,7 +1255,8 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
         if segments.last().map(|s| s.as_str()) == Some("default")
             && args.is_empty()
             && segments.len() >= 2
-            && segments[0] != "O" // O::default() is a scalar default, not array
+            && segments[0] != "O"
+        // O::default() is a scalar default, not array
         {
             let prefix = &segments[..segments.len() - 1];
             if prefix == ["GenericArray"]
@@ -1503,7 +1540,11 @@ fn peel_iter_chain(syn_expr: &Expr) -> Result<Option<PeeledChain>> {
 
 /// Try to build a complete `IrIterChain` from the current method call context.
 /// Returns `None` if the expression is not an iterator chain.
-fn try_build_iter_chain(receiver: &Expr, method: &str, args: &[&Expr]) -> Result<Option<crate::ir::IrIterChain>> {
+fn try_build_iter_chain(
+    receiver: &Expr,
+    method: &str,
+    args: &[&Expr],
+) -> Result<Option<crate::ir::IrIterChain>> {
     match method {
         "fold" if args.len() == 2 => {
             if let Expr::Closure(c) = args[1] {
@@ -1532,7 +1573,8 @@ fn try_build_iter_chain(receiver: &Expr, method: &str, args: &[&Expr]) -> Result
             }))
         }
         // map/filter/etc. that don't have a terminal — they produce a lazy chain
-        "map" | "filter" | "filter_map" | "flat_map" | "enumerate" | "take" | "skip" | "chain" | "zip" => {
+        "map" | "filter" | "filter_map" | "flat_map" | "enumerate" | "take" | "skip" | "chain"
+        | "zip" => {
             // Reconstruct the full call as an Expr::MethodCall to let peel_iter_chain handle it
             // We can't do that easily without owning the syn tree, so instead we peel the receiver
             // and add this step manually.
@@ -1916,7 +1958,10 @@ fn extract_pat_name(pat: &Pat) -> String {
         }
         Pat::TupleStruct(ts) => {
             let names: Vec<String> = ts.elems.iter().map(|p| extract_pat_name(p)).collect();
-            let path = ts.path.segments.iter()
+            let path = ts
+                .path
+                .segments
+                .iter()
                 .map(|s| s.ident.to_string())
                 .collect::<Vec<_>>()
                 .join("::");
@@ -1943,9 +1988,7 @@ fn extract_ir_pattern(pat: &Pat) -> IrPattern {
             name: pi.ident.to_string(),
             subpat: None,
         },
-        Pat::Tuple(t) => {
-            IrPattern::Tuple(t.elems.iter().map(extract_ir_pattern).collect())
-        }
+        Pat::Tuple(t) => IrPattern::Tuple(t.elems.iter().map(extract_ir_pattern).collect()),
         Pat::Wild(_) => IrPattern::Wild,
         Pat::Reference(r) => {
             // References in closure patterns are rare but handle them

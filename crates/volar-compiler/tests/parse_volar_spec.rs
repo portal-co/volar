@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::path::Path;
-use volar_compiler::{parse_source, parse_sources, TypeContext, OperatorAnalysis, type_to_string};
+use volar_compiler::{OperatorAnalysis, TypeContext, parse_source, parse_sources, type_to_string};
 
 fn read_volar_spec_sources() -> Vec<(String, String)> {
     let base_path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -36,7 +36,7 @@ fn read_volar_spec_sources() -> Vec<(String, String)> {
 #[test]
 fn test_parse_volar_spec() {
     let sources = read_volar_spec_sources();
-    
+
     // Ensure we found source files
     assert!(!sources.is_empty(), "Should find volar-spec source files");
     println!("Found {} source files", sources.len());
@@ -65,12 +65,12 @@ fn test_parse_volar_spec() {
 #[test]
 fn test_parse_volar_spec_combined() {
     let sources = read_volar_spec_sources();
-    
+
     let sources_ref: Vec<(&str, &str)> = sources
         .iter()
         .map(|(content, name)| (content.as_str(), name.as_str()))
         .collect();
-    
+
     match parse_sources(&sources_ref, "volar_spec") {
         Ok(module) => {
             println!("Combined module statistics:");
@@ -95,7 +95,15 @@ fn test_parse_volar_spec_combined() {
             println!("\nStructs found:");
             for s in &module.structs {
                 let generics: Vec<_> = s.generics.iter().map(|g| &g.name).collect();
-                println!("  {:?} <{}>", s.kind, generics.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
+                println!(
+                    "  {:?} <{}>",
+                    s.kind,
+                    generics
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
             }
 
             // Print impl blocks
@@ -127,9 +135,9 @@ pub struct Q<N: ArrayLength<T>, T> {
     "#;
 
     let module = parse_source(source, "vole").unwrap();
-    
+
     assert_eq!(module.structs.len(), 2);
-    
+
     let delta = &module.structs[0];
     assert!(matches!(delta.kind, volar_compiler::StructKind::Custom(ref n) if n == "Delta"));
     assert_eq!(delta.generics.len(), 2);
@@ -151,9 +159,9 @@ pub struct Vope<N: VoleArray<T>, T, K: ArrayLength<GenericArray<T, N>> = U1> {
     "#;
 
     let module = parse_source(source, "vope").unwrap();
-    
+
     assert_eq!(module.structs.len(), 1);
-    
+
     let vope = &module.structs[0];
     assert!(matches!(vope.kind, volar_compiler::StructKind::Custom(ref n) if n == "Vope"));
     assert_eq!(vope.generics.len(), 3);
@@ -183,15 +191,18 @@ impl<
     "#;
 
     let module = parse_source(source, "add_impl").unwrap();
-    
+
     assert_eq!(module.impls.len(), 1);
-    
+
     let imp = &module.impls[0];
     assert!(imp.trait_.is_some());
-    
+
     let trait_ref = imp.trait_.as_ref().unwrap();
-    assert!(matches!(trait_ref.kind, volar_compiler::TraitKind::Math(volar_compiler::MathTrait::Add)));
-    
+    assert!(matches!(
+        trait_ref.kind,
+        volar_compiler::TraitKind::Math(volar_compiler::MathTrait::Add)
+    ));
+
     // Check we have the Output associated type and add method
     let mut has_output = false;
     let mut has_add = false;
@@ -231,12 +242,12 @@ impl<N: ArrayLength<T>, T> Delta<N, T> {
     "#;
 
     let module = parse_source(source, "remap").unwrap();
-    
+
     assert_eq!(module.impls.len(), 1);
-    
+
     let imp = &module.impls[0];
     assert_eq!(imp.items.len(), 1);
-    
+
     if let volar_compiler::IrImplItem::Method(f) = &imp.items[0] {
         assert_eq!(f.name, "remap");
         assert_eq!(f.generics.len(), 1);
@@ -268,24 +279,32 @@ impl Foo {
 
     let module = parse_source(source, "log2_test").unwrap();
     assert_eq!(module.impls.len(), 1);
-    
+
     let imp = &module.impls[0];
     assert_eq!(imp.items.len(), 1);
-    
+
     if let volar_compiler::ir::IrImplItem::Method(f) = &imp.items[0] {
         assert_eq!(f.name, "bar");
-        let tail = f.body.expr.as_ref().expect("body should have tail expression");
+        let tail = f
+            .body
+            .expr
+            .as_ref()
+            .expect("body should have tail expression");
         match tail.as_ref() {
-            volar_compiler::ir::IrExpr::ArrayGenerate { len, .. } => {
-                match len {
-                    volar_compiler::ir::ArrayLength::Projection { field, trait_path, .. } => {
-                        assert_eq!(field, "Output");
-                        assert_eq!(trait_path.as_deref(), Some("Logarithm2"),
-                            "Expected trait_path=Some(\"Logarithm2\"), got {:?}", trait_path);
-                    }
-                    other => panic!("Expected ArrayLength::Projection, got {:?}", other),
+            volar_compiler::ir::IrExpr::ArrayGenerate { len, .. } => match len {
+                volar_compiler::ir::ArrayLength::Projection {
+                    field, trait_path, ..
+                } => {
+                    assert_eq!(field, "Output");
+                    assert_eq!(
+                        trait_path.as_deref(),
+                        Some("Logarithm2"),
+                        "Expected trait_path=Some(\"Logarithm2\"), got {:?}",
+                        trait_path
+                    );
                 }
-            }
+                other => panic!("Expected ArrayLength::Projection, got {:?}", other),
+            },
             other => panic!("Expected ArrayGenerate expr, got {:?}", other),
         }
     } else {

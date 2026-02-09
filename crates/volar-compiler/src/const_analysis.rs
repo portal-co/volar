@@ -293,11 +293,15 @@ impl ConstAnalysis {
                     if result.length_alias_traits.contains(name) {
                         continue;
                     }
-                    let aliases_ref: Vec<&str> =
-                        result.length_alias_traits.iter().map(|s| s.as_str()).collect();
-                    let is_alias = t.super_traits.iter().any(|st| {
-                        is_length_bound_with_aliases(st, &aliases_ref)
-                    });
+                    let aliases_ref: Vec<&str> = result
+                        .length_alias_traits
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect();
+                    let is_alias = t
+                        .super_traits
+                        .iter()
+                        .any(|st| is_length_bound_with_aliases(st, &aliases_ref));
                     if is_alias {
                         result.length_alias_traits.push(name.clone());
                         changed = true;
@@ -306,8 +310,11 @@ impl ConstAnalysis {
             }
         }
 
-        let aliases_ref: Vec<&str> =
-            result.length_alias_traits.iter().map(|s| s.as_str()).collect();
+        let aliases_ref: Vec<&str> = result
+            .length_alias_traits
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
 
         // Pass 1: classify struct generics
         for s in &module.structs {

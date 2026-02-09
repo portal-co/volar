@@ -6,8 +6,6 @@ use core::ops::{Add, Mul};
 
 use cipher::consts::{U1, U8};
 
-
-
 /// Dynamic Delta equivalent of `Delta<N, T>` (from `volar-spec/src/vole.rs`).
 /// Original: `pub struct Delta<N: ArrayLength<T>, T> { pub delta: GenericArray<T, N> }`
 pub struct DeltaDyn<T> {
@@ -72,12 +70,12 @@ impl<T: Clone> QDyn<T> {
     }
 }
 
+pub mod field_rotate;
+pub mod impls;
+pub mod poly;
 /// Dynamic Vope equivalent.
 /// Original: `pub struct Vope<N: VoleArray<T>, T, K: ArrayLength<GenericArray<T, N>> = U1> { u, v }`
 // `VopeDyn` implementation is moved to `spec_dyn/vole/vope.rs` to mirror the
 // module layout in `volar-spec`.
 pub mod vope;
-pub mod field_rotate;
-pub mod impls;
-pub mod poly;
 pub use vope::VopeDyn;

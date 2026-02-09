@@ -18,31 +18,31 @@
 use core::fmt::{self, Write};
 
 #[cfg(feature = "std")]
-use std::string::{String, ToString};
-#[cfg(feature = "std")]
-use std::vec::Vec;
+use std::boxed::Box;
 #[cfg(feature = "std")]
 use std::format;
 #[cfg(feature = "std")]
-use std::boxed::Box;
+use std::string::{String, ToString};
 #[cfg(feature = "std")]
 use std::vec;
+#[cfg(feature = "std")]
+use std::vec::Vec;
 
-#[cfg(not(feature = "std"))]
-use alloc::string::{String, ToString};
-#[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
-#[cfg(not(feature = "std"))]
-use alloc::format;
 #[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
 #[cfg(not(feature = "std"))]
+use alloc::format;
+#[cfg(not(feature = "std"))]
+use alloc::string::{String, ToString};
+#[cfg(not(feature = "std"))]
 use alloc::vec;
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
 
 use crate::ir::*;
 use crate::printer::{
-    DisplayRust, ExprWriter, FunctionWriter, GenericsWriter, ImplWriter, RustBackend,
-    StructWriter, TraitWriter, TypeWriter, WhereClauseWriter,
+    DisplayRust, ExprWriter, FunctionWriter, GenericsWriter, ImplWriter, RustBackend, StructWriter,
+    TraitWriter, TypeWriter, WhereClauseWriter,
 };
 
 /// First byte of every `.volar.d` file — invalid UTF-8 poison pill.
@@ -133,7 +133,11 @@ struct ManifestModuleWriter<'a> {
 impl<'a> RustBackend for ManifestModuleWriter<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Header comments (after 0xFF, which is prepended separately)
-        writeln!(f, "//! @volar-manifest {} {}", self.crate_name, self.version)?;
+        writeln!(
+            f,
+            "//! @volar-manifest {} {}",
+            self.crate_name, self.version
+        )?;
         if !self.deps.is_empty() {
             writeln!(f, "//! @volar-deps [{}]", self.deps.join(", "))?;
         }

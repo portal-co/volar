@@ -13,8 +13,8 @@
 //! The pass is idempotent and can be applied to any `IrBlock`.
 
 use crate::ir::{
-    IrBlock, IrClosureParam, IrExpr, IrIterChain, IrPattern, IrStmt,
-    IterChainSource, IterStep, IterTerminal,
+    IrBlock, IrClosureParam, IrExpr, IrIterChain, IrPattern, IrStmt, IterChainSource, IterStep,
+    IterTerminal,
 };
 
 #[cfg(feature = "std")]
@@ -103,9 +103,7 @@ fn expr_refs_any(expr: &IrExpr, names: &HashSet<String>) -> bool {
         | IrExpr::Return(Some(e))
         | IrExpr::Break(Some(e)) => expr_refs_any(e, names),
         IrExpr::Field { base, .. } => expr_refs_any(base, names),
-        IrExpr::Index { base, index } => {
-            expr_refs_any(base, names) || expr_refs_any(index, names)
-        }
+        IrExpr::Index { base, index } => expr_refs_any(base, names) || expr_refs_any(index, names),
         IrExpr::Call { func, args } => {
             expr_refs_any(func, names) || args.iter().any(|a| expr_refs_any(a, names))
         }
@@ -113,10 +111,16 @@ fn expr_refs_any(expr: &IrExpr, names: &HashSet<String>) -> bool {
             expr_refs_any(receiver, names) || args.iter().any(|a| expr_refs_any(a, names))
         }
         IrExpr::Block(b) => block_refs_any(b, names),
-        IrExpr::If { cond, then_branch, else_branch } => {
+        IrExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             expr_refs_any(cond, names)
                 || block_refs_any(then_branch, names)
-                || else_branch.as_ref().map_or(false, |e| expr_refs_any(e, names))
+                || else_branch
+                    .as_ref()
+                    .map_or(false, |e| expr_refs_any(e, names))
         }
         IrExpr::StructExpr { fields, rest, .. } => {
             fields.iter().any(|(_, e)| expr_refs_any(e, names))
@@ -132,32 +136,42 @@ fn expr_refs_any(expr: &IrExpr, names: &HashSet<String>) -> bool {
         }
         IrExpr::IterPipeline(chain) => iter_chain_refs_any(chain, names),
         IrExpr::ArrayGenerate { body, .. } => expr_refs_any(body, names),
-        IrExpr::BoundedLoop { start, end, body, .. } => {
-            expr_refs_any(start, names)
-                || expr_refs_any(end, names)
-                || block_refs_any(body, names)
+        IrExpr::BoundedLoop {
+            start, end, body, ..
+        } => {
+            expr_refs_any(start, names) || expr_refs_any(end, names) || block_refs_any(body, names)
         }
-        IrExpr::IterLoop { collection, body, .. } => {
-            expr_refs_any(collection, names) || block_refs_any(body, names)
-        }
-        IrExpr::Repeat { elem, len } => {
-            expr_refs_any(elem, names) || expr_refs_any(len, names)
-        }
+        IrExpr::IterLoop {
+            collection, body, ..
+        } => expr_refs_any(collection, names) || block_refs_any(body, names),
+        IrExpr::Repeat { elem, len } => expr_refs_any(elem, names) || expr_refs_any(len, names),
         IrExpr::RawMap { receiver, body, .. } => {
             expr_refs_any(receiver, names) || expr_refs_any(body, names)
         }
-        IrExpr::RawZip { left, right, body, .. } => {
+        IrExpr::RawZip {
+            left, right, body, ..
+        } => {
             expr_refs_any(left, names) || expr_refs_any(right, names) || expr_refs_any(body, names)
         }
-        IrExpr::RawFold { receiver, init, body, .. } => {
+        IrExpr::RawFold {
+            receiver,
+            init,
+            body,
+            ..
+        } => {
             expr_refs_any(receiver, names)
                 || expr_refs_any(init, names)
                 || expr_refs_any(body, names)
         }
-        IrExpr::Match { expr: scrutinee, arms } => {
+        IrExpr::Match {
+            expr: scrutinee,
+            arms,
+        } => {
             expr_refs_any(scrutinee, names)
                 || arms.iter().any(|arm| {
-                    arm.guard.as_ref().map_or(false, |g| expr_refs_any(g, names))
+                    arm.guard
+                        .as_ref()
+                        .map_or(false, |g| expr_refs_any(g, names))
                         || expr_refs_any(&arm.body, names)
                 })
         }
@@ -168,7 +182,8 @@ fn expr_refs_any(expr: &IrExpr, names: &HashSet<String>) -> bool {
         | IrExpr::TypenumUsize { .. }
         | IrExpr::Return(None)
         | IrExpr::Break(None)
-        | IrExpr::Continue | IrExpr::Unreachable => false,
+        | IrExpr::Continue
+        | IrExpr::Unreachable => false,
     }
 }
 
@@ -221,7 +236,9 @@ fn iter_chain_refs_any(chain: &IrIterChain, names: &HashSet<String>) -> bool {
                     return true;
                 }
             }
-            IterStep::Enumerate | IterStep::Take { .. } | IterStep::Skip { .. }
+            IterStep::Enumerate
+            | IterStep::Take { .. }
+            | IterStep::Skip { .. }
             | IterStep::Chain { .. } => {}
         }
     }
@@ -350,7 +367,11 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
             }
         }
         IrExpr::Block(b) => rename_var_in_block(b, old, new_name),
-        IrExpr::If { cond, then_branch, else_branch } => {
+        IrExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             rename_var_in_expr(cond, old, new_name);
             rename_var_in_block(then_branch, old, new_name);
             if let Some(eb) = else_branch {
@@ -388,19 +409,31 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
             }
         }
         IrExpr::IterPipeline(chain) => rename_var_in_iter_chain(chain, old, new_name),
-        IrExpr::ArrayGenerate { index_var, body, .. } => {
+        IrExpr::ArrayGenerate {
+            index_var, body, ..
+        } => {
             if index_var != old {
                 rename_var_in_expr(body, old, new_name);
             }
         }
-        IrExpr::BoundedLoop { var, start, end, body, .. } => {
+        IrExpr::BoundedLoop {
+            var,
+            start,
+            end,
+            body,
+            ..
+        } => {
             rename_var_in_expr(start, old, new_name);
             rename_var_in_expr(end, old, new_name);
             if var != old {
                 rename_var_in_block(body, old, new_name);
             }
         }
-        IrExpr::IterLoop { pattern, collection, body } => {
+        IrExpr::IterLoop {
+            pattern,
+            collection,
+            body,
+        } => {
             rename_var_in_expr(collection, old, new_name);
             let loop_binds = pattern_names(pattern).iter().any(|n| n == old);
             if !loop_binds {
@@ -411,14 +444,24 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
             rename_var_in_expr(elem, old, new_name);
             rename_var_in_expr(len, old, new_name);
         }
-        IrExpr::RawMap { receiver, elem_var, body } => {
+        IrExpr::RawMap {
+            receiver,
+            elem_var,
+            body,
+        } => {
             rename_var_in_expr(receiver, old, new_name);
             let rebinds = pattern_names(elem_var).iter().any(|n| n == old);
             if !rebinds {
                 rename_var_in_expr(body, old, new_name);
             }
         }
-        IrExpr::RawZip { left, right, left_var, right_var, body } => {
+        IrExpr::RawZip {
+            left,
+            right,
+            left_var,
+            right_var,
+            body,
+        } => {
             rename_var_in_expr(left, old, new_name);
             rename_var_in_expr(right, old, new_name);
             let l_binds = pattern_names(left_var);
@@ -428,7 +471,13 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
                 rename_var_in_expr(body, old, new_name);
             }
         }
-        IrExpr::RawFold { receiver, init, acc_var, elem_var, body } => {
+        IrExpr::RawFold {
+            receiver,
+            init,
+            acc_var,
+            elem_var,
+            body,
+        } => {
             rename_var_in_expr(receiver, old, new_name);
             rename_var_in_expr(init, old, new_name);
             let a_binds = pattern_names(acc_var);
@@ -438,7 +487,10 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
                 rename_var_in_expr(body, old, new_name);
             }
         }
-        IrExpr::Match { expr: scrutinee, arms } => {
+        IrExpr::Match {
+            expr: scrutinee,
+            arms,
+        } => {
             rename_var_in_expr(scrutinee, old, new_name);
             for arm in arms {
                 let arm_binds = pattern_names(&arm.pattern).iter().any(|n| n == old);
@@ -457,7 +509,8 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
         | IrExpr::TypenumUsize { .. }
         | IrExpr::Return(None)
         | IrExpr::Break(None)
-        | IrExpr::Continue | IrExpr::Unreachable => {}
+        | IrExpr::Continue
+        | IrExpr::Unreachable => {}
     }
 }
 
@@ -486,13 +539,20 @@ fn rename_var_in_iter_chain(chain: &mut IrIterChain, old: &str, new_name: &str) 
                     rename_var_in_expr(body, old, new_name);
                 }
             }
-            IterStep::Enumerate | IterStep::Take { .. } | IterStep::Skip { .. }
+            IterStep::Enumerate
+            | IterStep::Take { .. }
+            | IterStep::Skip { .. }
             | IterStep::Chain { .. } => {}
         }
     }
     match &mut chain.terminal {
         IterTerminal::Collect | IterTerminal::CollectTyped(_) | IterTerminal::Lazy => {}
-        IterTerminal::Fold { acc_var, elem_var, init, body } => {
+        IterTerminal::Fold {
+            acc_var,
+            elem_var,
+            init,
+            body,
+        } => {
             rename_var_in_expr(init, old, new_name);
             let a_binds = pattern_names(acc_var);
             let e_binds = pattern_names(elem_var);
@@ -538,8 +598,7 @@ fn deshadow_stmts(
             for name in &bound {
                 if scope.contains(name) {
                     let refs_name = if let Some(e) = init.as_ref() {
-                        let check_set: HashSet<String> =
-                            core::iter::once(name.clone()).collect();
+                        let check_set: HashSet<String> = core::iter::once(name.clone()).collect();
                         expr_refs_any(e, &check_set)
                     } else {
                         false
@@ -602,7 +661,11 @@ fn deshadow_expr(expr: &mut IrExpr, scope: &mut HashSet<String>) {
             let inner = scope.clone();
             deshadow_block(b, &inner);
         }
-        IrExpr::If { cond, then_branch, else_branch } => {
+        IrExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             deshadow_expr(cond, scope);
             let then_scope = scope.clone();
             deshadow_block(then_branch, &then_scope);
@@ -610,14 +673,24 @@ fn deshadow_expr(expr: &mut IrExpr, scope: &mut HashSet<String>) {
                 deshadow_expr(eb, scope);
             }
         }
-        IrExpr::BoundedLoop { var, start, end, body, .. } => {
+        IrExpr::BoundedLoop {
+            var,
+            start,
+            end,
+            body,
+            ..
+        } => {
             deshadow_expr(start, scope);
             deshadow_expr(end, scope);
             let mut inner = scope.clone();
             inner.insert(var.clone());
             deshadow_block(body, &inner);
         }
-        IrExpr::IterLoop { pattern, collection, body } => {
+        IrExpr::IterLoop {
+            pattern,
+            collection,
+            body,
+        } => {
             deshadow_expr(collection, scope);
             let mut inner = scope.clone();
             for n in pattern_names(pattern) {
@@ -684,7 +757,9 @@ fn deshadow_expr(expr: &mut IrExpr, scope: &mut HashSet<String>) {
             }
         }
         IrExpr::IterPipeline(chain) => deshadow_iter_chain(chain, scope),
-        IrExpr::ArrayGenerate { index_var, body, .. } => {
+        IrExpr::ArrayGenerate {
+            index_var, body, ..
+        } => {
             let mut inner = scope.clone();
             inner.insert(index_var.clone());
             deshadow_expr(body, &mut inner);
@@ -693,7 +768,11 @@ fn deshadow_expr(expr: &mut IrExpr, scope: &mut HashSet<String>) {
             deshadow_expr(elem, scope);
             deshadow_expr(len, scope);
         }
-        IrExpr::RawMap { receiver, elem_var, body } => {
+        IrExpr::RawMap {
+            receiver,
+            elem_var,
+            body,
+        } => {
             deshadow_expr(receiver, scope);
             let mut inner = scope.clone();
             for n in pattern_names(elem_var) {
@@ -701,7 +780,13 @@ fn deshadow_expr(expr: &mut IrExpr, scope: &mut HashSet<String>) {
             }
             deshadow_expr(body, &mut inner);
         }
-        IrExpr::RawZip { left, right, left_var, right_var, body } => {
+        IrExpr::RawZip {
+            left,
+            right,
+            left_var,
+            right_var,
+            body,
+        } => {
             deshadow_expr(left, scope);
             deshadow_expr(right, scope);
             let mut inner = scope.clone();
@@ -713,7 +798,13 @@ fn deshadow_expr(expr: &mut IrExpr, scope: &mut HashSet<String>) {
             }
             deshadow_expr(body, &mut inner);
         }
-        IrExpr::RawFold { receiver, init, acc_var, elem_var, body } => {
+        IrExpr::RawFold {
+            receiver,
+            init,
+            acc_var,
+            elem_var,
+            body,
+        } => {
             deshadow_expr(receiver, scope);
             deshadow_expr(init, scope);
             let mut inner = scope.clone();
@@ -725,7 +816,10 @@ fn deshadow_expr(expr: &mut IrExpr, scope: &mut HashSet<String>) {
             }
             deshadow_expr(body, &mut inner);
         }
-        IrExpr::Match { expr: scrutinee, arms } => {
+        IrExpr::Match {
+            expr: scrutinee,
+            arms,
+        } => {
             deshadow_expr(scrutinee, scope);
             for arm in arms {
                 let mut inner = scope.clone();
@@ -746,7 +840,8 @@ fn deshadow_expr(expr: &mut IrExpr, scope: &mut HashSet<String>) {
         | IrExpr::TypenumUsize { .. }
         | IrExpr::Return(None)
         | IrExpr::Break(None)
-        | IrExpr::Continue | IrExpr::Unreachable => {}
+        | IrExpr::Continue
+        | IrExpr::Unreachable => {}
     }
 }
 
@@ -774,13 +869,20 @@ fn deshadow_iter_chain(chain: &mut IrIterChain, scope: &mut HashSet<String>) {
                 }
                 deshadow_expr(body, &mut inner);
             }
-            IterStep::Enumerate | IterStep::Take { .. } | IterStep::Skip { .. }
+            IterStep::Enumerate
+            | IterStep::Take { .. }
+            | IterStep::Skip { .. }
             | IterStep::Chain { .. } => {}
         }
     }
     match &mut chain.terminal {
         IterTerminal::Collect | IterTerminal::CollectTyped(_) | IterTerminal::Lazy => {}
-        IterTerminal::Fold { acc_var, elem_var, init, body } => {
+        IterTerminal::Fold {
+            acc_var,
+            elem_var,
+            init,
+            body,
+        } => {
             deshadow_expr(init, scope);
             let mut inner = scope.clone();
             for n in pattern_names(acc_var) {
@@ -797,7 +899,7 @@ fn deshadow_iter_chain(chain: &mut IrIterChain, scope: &mut HashSet<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{SpecBinOp, IrLit};
+    use crate::ir::{IrLit, SpecBinOp};
 
     fn var(name: &str) -> IrExpr {
         IrExpr::Var(name.to_string())
@@ -838,7 +940,12 @@ mod tests {
         deshadow_block(&mut block, &outer);
 
         // The second let should be renamed to x_1
-        if let IrStmt::Let { pattern: IrPattern::Ident { name, .. }, init, .. } = &block.stmts[1] {
+        if let IrStmt::Let {
+            pattern: IrPattern::Ident { name, .. },
+            init,
+            ..
+        } = &block.stmts[1]
+        {
             assert_eq!(name, "x_1");
             // The init should still reference the OLD x (not renamed)
             if let Some(IrExpr::Binary { left, .. }) = init {
@@ -865,7 +972,11 @@ mod tests {
         let outer = HashSet::new();
         deshadow_block(&mut block, &outer);
 
-        if let IrStmt::Let { pattern: IrPattern::Ident { name, .. }, .. } = &block.stmts[1] {
+        if let IrStmt::Let {
+            pattern: IrPattern::Ident { name, .. },
+            ..
+        } = &block.stmts[1]
+        {
             assert_eq!(name, "y"); // unchanged
         } else {
             panic!("expected let");
@@ -884,7 +995,11 @@ mod tests {
         deshadow_block(&mut block, &outer);
 
         // No rename needed — the init doesn't reference `x`
-        if let IrStmt::Let { pattern: IrPattern::Ident { name, .. }, .. } = &block.stmts[1] {
+        if let IrStmt::Let {
+            pattern: IrPattern::Ident { name, .. },
+            ..
+        } = &block.stmts[1]
+        {
             assert_eq!(name, "x"); // unchanged
         } else {
             panic!("expected let");
@@ -910,7 +1025,12 @@ mod tests {
         let outer: HashSet<String> = ["bad".to_string()].into_iter().collect();
         deshadow_block(&mut block, &outer);
 
-        if let IrStmt::Let { pattern: IrPattern::Ident { name, .. }, init, .. } = &block.stmts[0] {
+        if let IrStmt::Let {
+            pattern: IrPattern::Ident { name, .. },
+            init,
+            ..
+        } = &block.stmts[0]
+        {
             assert_eq!(name, "bad_1");
             // init should still reference `bad` (the param)
             if let Some(IrExpr::Call { args, .. }) = init {
@@ -950,11 +1070,19 @@ mod tests {
             .collect();
         deshadow_block(&mut block, &outer);
 
-        if let IrStmt::Let { pattern: IrPattern::Ident { name, .. }, init, .. } = &block.stmts[0] {
+        if let IrStmt::Let {
+            pattern: IrPattern::Ident { name, .. },
+            init,
+            ..
+        } = &block.stmts[0]
+        {
             assert_eq!(name, "l_1");
             // Init references old `l`
             if let Some(IrExpr::Call { args, .. }) = init {
-                if let IrExpr::Call { args: inner_args, .. } = &args[0] {
+                if let IrExpr::Call {
+                    args: inner_args, ..
+                } = &args[0]
+                {
                     assert_eq!(inner_args[0], var("l"));
                 }
             }
@@ -1021,12 +1149,20 @@ mod tests {
         deshadow_block(&mut block, &outer);
 
         // Second let: x → x_1
-        if let IrStmt::Let { pattern: IrPattern::Ident { name, .. }, .. } = &block.stmts[1] {
+        if let IrStmt::Let {
+            pattern: IrPattern::Ident { name, .. },
+            ..
+        } = &block.stmts[1]
+        {
             assert_eq!(name, "x_1");
         }
         // Third let was renamed x→x_1 by the first pass, so it's now
         // `let x_1 = x_1 + 1` which shadows x_1 → becomes x_2
-        if let IrStmt::Let { pattern: IrPattern::Ident { name, .. }, .. } = &block.stmts[2] {
+        if let IrStmt::Let {
+            pattern: IrPattern::Ident { name, .. },
+            ..
+        } = &block.stmts[2]
+        {
             assert_eq!(name, "x_2");
         }
         assert_eq!(block.stmts[3], IrStmt::Semi(var("x_2")));

@@ -33,20 +33,20 @@ where
                     // degree 0: accumulate into res_v
                     if i == 0 && j == 0 {
                         for lane in 0..n {
-                            res_v[lane] = res_v[lane].clone()
-                                + self.v[lane].clone() * other.v[lane].clone();
+                            res_v[lane] =
+                                res_v[lane].clone() + self.v[lane].clone() * other.v[lane].clone();
                         }
                     } else if i == 0 {
                         let b_coeff = &other.u[j - 1];
                         for lane in 0..n {
-                            res_v[lane] = res_v[lane].clone()
-                                + self.v[lane].clone() * b_coeff[lane].clone();
+                            res_v[lane] =
+                                res_v[lane].clone() + self.v[lane].clone() * b_coeff[lane].clone();
                         }
                     } else if j == 0 {
                         let a_coeff = &self.u[i - 1];
                         for lane in 0..n {
-                            res_v[lane] = res_v[lane].clone()
-                                + a_coeff[lane].clone() * other.v[lane].clone();
+                            res_v[lane] =
+                                res_v[lane].clone() + a_coeff[lane].clone() * other.v[lane].clone();
                         }
                     }
                 } else {

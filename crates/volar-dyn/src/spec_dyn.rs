@@ -12,7 +12,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::Mul;
-pub mod vole;
 pub mod byte_gen;
-pub use vole::*;
+pub mod vole;
 pub use byte_gen::*;
+pub use vole::*;

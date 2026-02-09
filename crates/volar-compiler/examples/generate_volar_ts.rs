@@ -91,7 +91,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let dump = volar_compiler::dump_ir::dump_module(&lowered);
         let dump_path = Path::new("ir_dump_dyn.txt");
         fs::write(dump_path, &dump)?;
-        eprintln!("Dyn-lowered IR dump ({} bytes) → {:?}", dump.len(), dump_path);
+        eprintln!(
+            "Dyn-lowered IR dump ({} bytes) → {:?}",
+            dump.len(),
+            dump_path
+        );
     }
 
     // Ensure output directory exists

@@ -123,9 +123,9 @@ pub struct ABOOpening<
     >,
 }
 
+pub mod impls;
 pub mod prover;
 pub mod verifier;
-pub mod impls;
 
 pub struct BSplit<
     B: LengthDoubler,
