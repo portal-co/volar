@@ -17,6 +17,7 @@ impl<K: ArrayLength<Item>, N: ArrayLength<GenericArray<Item, K>>> SatProblem<K, 
     pub fn seal<D: Digest>(
         &self,
         mut seed: GenericArray<u8, D::OutputSize>,
+        waste: &[u8],
     ) -> SealedSatProblem<K, N, D>
     where
         K: ArrayLength<GenericArray<u8, D::OutputSize>>,
@@ -28,7 +29,12 @@ impl<K: ArrayLength<Item>, N: ArrayLength<GenericArray<Item, K>>> SatProblem<K, 
             root
         });
         let troot = seed.clone();
-        seed = D::digest(seed);
+        seed = {
+            let mut digest = D::new();
+            digest.update(&seed);
+            digest.update(waste);
+            digest.finalize()
+        };
         SealedSatProblem {
             sealed_clauses: GenericArray::generate(|i| {
                 let clause = self.clauses[i].clone();
@@ -40,7 +46,12 @@ impl<K: ArrayLength<Item>, N: ArrayLength<GenericArray<Item, K>>> SatProblem<K, 
                         let root = roots[i.target].clone().zip(p.clone(), |a, b| a.bitxor(b));
                         if i.negated {
                             let trash = seed.clone();
-                            seed = seed.clone().zip(D::digest(&seed), |a, b| a.bitxor(b));
+                            seed = {
+                                let mut digest = D::new();
+                                digest.update(&seed);
+                                digest.update(waste);
+                                digest.finalize()
+                            };
                             return trash;
                         } else {
                             root
@@ -54,7 +65,12 @@ impl<K: ArrayLength<Item>, N: ArrayLength<GenericArray<Item, K>>> SatProblem<K, 
                             return q;
                         } else {
                             let trash = seed.clone();
-                            seed = seed.clone().zip(D::digest(&seed), |a, b| a.bitxor(b));
+                            seed = {
+                                let mut digest = D::new();
+                                digest.update(&seed);
+                                digest.update(waste);
+                                digest.finalize()
+                            };
                             return trash;
                         }
                     }),
