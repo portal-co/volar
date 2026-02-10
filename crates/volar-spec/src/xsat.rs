@@ -38,8 +38,13 @@ impl<K: ArrayLength<Item>, N: ArrayLength<GenericArray<Item, K>>> SatProblem<K, 
         SealedSatProblem {
             sealed_clauses: GenericArray::<OutClause<D, K>, N>::generate(|i| {
                 let clause = self.clauses[i].clone();
-                let mut p = seed.clone().map(|a| a ^ 0xff);
-                seed = seed.clone().zip(D::digest(&seed), |a, b| a.bitxor(b));
+                let mut p = seed.clone();
+                seed = {
+                    let mut digest = D::new();
+                    digest.update(&seed);
+                    digest.update(waste);
+                    digest.finalize()
+                };
 
                 OutClause {
                     ixor_roots: clause.clone().map(|i| {
