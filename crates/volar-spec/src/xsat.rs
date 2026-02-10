@@ -85,7 +85,7 @@ impl<
                     .clone()
                     .zip(iclause, |a, b| {
                         if targets[b.target] {
-                            GenericArray::generate(|_| 0)
+                            GenericArray::default()
                         } else {
                             a
                         }
@@ -101,10 +101,10 @@ impl<
                             if take(&mut seal) {
                                 a
                             } else {
-                                GenericArray::generate(|_| 0)
+                                GenericArray::default()
                             }
                         } else {
-                            GenericArray::generate(|_| 0)
+                            GenericArray::default()
                         }
                     })
                     .iter()
