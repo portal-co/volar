@@ -8,4 +8,5 @@ use cipher::generic_array::{functional::FunctionalSequence, sequence::GenericSeq
 pub use volar_common::hash_commitment as simple;
 pub mod byte_gen;
 pub mod vole;
+pub mod xsat;
 pub use volar_primitives as field;
