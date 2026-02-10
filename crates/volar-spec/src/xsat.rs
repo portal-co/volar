@@ -21,7 +21,7 @@ impl<K: ArrayLength<Item>, N: ArrayLength<GenericArray<Item, K>>> SatProblem<K, 
     ) -> SealedSatProblem<K, N, D>
     where
         K: ArrayLength<GenericArray<u8, D::OutputSize>>,
-        N: ArrayLength<OutClause<D, K>> + ArrayLength<GenericArray<u8, D::OutputSize>>,
+        N: ArrayLength<OutClause<D, K, N>> + ArrayLength<GenericArray<u8, D::OutputSize>>,
     {
         let roots = self.clauses.clone().map(|a| {
             let root = seed.clone();
@@ -36,7 +36,7 @@ impl<K: ArrayLength<Item>, N: ArrayLength<GenericArray<Item, K>>> SatProblem<K, 
             digest.finalize()
         };
         SealedSatProblem {
-            sealed_clauses: GenericArray::<OutClause<D, K>, N>::generate(|i| {
+            sealed_clauses: GenericArray::<OutClause<D, K, N>, N>::generate(|i| {
                 let clause = self.clauses[i].clone();
                 let mut p = seed.clone();
                 seed = {
@@ -45,6 +45,8 @@ impl<K: ArrayLength<Item>, N: ArrayLength<GenericArray<Item, K>>> SatProblem<K, 
                     digest.update(waste);
                     digest.finalize()
                 };
+
+                let mut cells = GenericArray::<GenericArray<u8, D::OutputSize>, N>::default();
 
                 OutClause {
                     ixor_roots: clause.clone().map(|i| {
@@ -64,21 +66,25 @@ impl<K: ArrayLength<Item>, N: ArrayLength<GenericArray<Item, K>>> SatProblem<K, 
                     }),
                     xor_roots: clause.clone().map(|i| {
                         let root = roots[i.target].clone().zip(p.clone(), |a, b| a.bitxor(b));
+                        let trash = seed.clone();
+                        seed = {
+                            let mut digest = D::new();
+                            digest.update(&seed);
+                            digest.update(waste);
+                            digest.finalize()
+                        };
                         if i.negated {
                             let q = p.clone();
                             p = p.clone().zip(D::digest(&p), |a, b| a.bitxor(b));
-                            return q;
+                            cells[i.target] = cells[i.target]
+                                .clone()
+                                .zip(trash.clone(), |a, b| a.bitxor(b));
+                            return q.zip(trash, |a, b| a.bitxor(b));
                         } else {
-                            let trash = seed.clone();
-                            seed = {
-                                let mut digest = D::new();
-                                digest.update(&seed);
-                                digest.update(waste);
-                                digest.finalize()
-                            };
                             return trash;
                         }
                     }),
+                    cells,
                     target: p,
                 }
             }),
@@ -88,7 +94,9 @@ impl<K: ArrayLength<Item>, N: ArrayLength<GenericArray<Item, K>>> SatProblem<K, 
 }
 impl<
     K: ArrayLength<Item> + ArrayLength<GenericArray<u8, D::OutputSize>>,
-    N: ArrayLength<OutClause<D, K>> + ArrayLength<GenericArray<Item, K>>,
+    N: ArrayLength<OutClause<D, K, N>>
+        + ArrayLength<GenericArray<Item, K>>
+        + ArrayLength<GenericArray<u8, D::OutputSize>>,
     D: Digest,
 > SealedSatProblem<K, N, D>
 {
@@ -110,7 +118,7 @@ impl<
                             if targets[b.target] {
                                 GenericArray::<u8, D::OutputSize>::default()
                             } else {
-                                a
+                                a.zip(clause.cells[b.target].clone(), |a, b| a.bitxor(b))
                             }
                         })
                         .iter()
@@ -140,18 +148,23 @@ impl<
 }
 pub struct SealedSatProblem<
     K: ArrayLength<Item> + ArrayLength<GenericArray<u8, D::OutputSize>>,
-    N: ArrayLength<OutClause<D, K>>,
+    N: ArrayLength<OutClause<D, K, N>> + ArrayLength<GenericArray<u8, D::OutputSize>>,
     D: Digest,
 > {
-    pub sealed_clauses: GenericArray<OutClause<D, K>, N>,
+    pub sealed_clauses: GenericArray<OutClause<D, K, N>, N>,
     pub troot: GenericArray<u8, D::OutputSize>,
 }
-pub struct OutClause<D: Digest, K: ArrayLength<Item> + ArrayLength<GenericArray<u8, D::OutputSize>>>
-{
+pub struct OutClause<
+    D: Digest,
+    K: ArrayLength<Item> + ArrayLength<GenericArray<u8, D::OutputSize>>,
+    N: ArrayLength<GenericArray<u8, D::OutputSize>>,
+> {
     /// The i-th element is the root of the i-th variable if it appears non-negated, and a random value if it appears negated.
     pub xor_roots: GenericArray<GenericArray<u8, D::OutputSize>, K>,
     /// The i-th element is the root of the i-th variable if it appears negated, and a random value if it appears non-negated.
     pub ixor_roots: GenericArray<GenericArray<u8, D::OutputSize>, K>,
+
+    pub cells: GenericArray<GenericArray<u8, D::OutputSize>, N>,
 
     pub target: GenericArray<u8, D::OutputSize>,
 }
