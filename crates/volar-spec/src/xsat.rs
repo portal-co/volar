@@ -36,7 +36,7 @@ impl<K: ArrayLength<Item>, N: ArrayLength<GenericArray<Item, K>>> SatProblem<K, 
             digest.finalize()
         };
         SealedSatProblem {
-            sealed_clauses: GenericArray::generate(|i| {
+            sealed_clauses: GenericArray::<OutClause<D, K>, N>::generate(|i| {
                 let clause = self.clauses[i].clone();
                 let mut p = seed.clone().map(|a| a ^ 0xff);
                 seed = seed.clone().zip(D::digest(&seed), |a, b| a.bitxor(b));
@@ -95,38 +95,41 @@ impl<
         self.sealed_clauses
             .iter()
             .zip(sat.clauses.iter())
-            .fold(GenericArray::default(), |a, (clause, iclause)| {
-                let target = clause
-                    .xor_roots
-                    .clone()
-                    .zip(iclause, |a, b| {
-                        if targets[b.target] {
-                            GenericArray::default()
-                        } else {
-                            a
-                        }
-                    })
-                    .iter()
-                    .fold(clause.target.clone(), |a, b| a.zip(b, |a, b| a.bitxor(b)));
-                let mut seal = true;
-                let target = clause
-                    .ixor_roots
-                    .clone()
-                    .zip(iclause, |a, b| {
-                        if targets[b.target] {
-                            if take(&mut seal) {
-                                a
+            .fold(
+                GenericArray::<u8, D::OutputSize>::default(),
+                |a, (clause, iclause)| {
+                    let target = clause
+                        .xor_roots
+                        .clone()
+                        .zip(iclause, |a, b| {
+                            if targets[b.target] {
+                                GenericArray::<u8, D::OutputSize>::default()
                             } else {
-                                GenericArray::default()
+                                a
                             }
-                        } else {
-                            GenericArray::default()
-                        }
-                    })
-                    .iter()
-                    .fold(target, |a, b| a.zip(b, |a, b| a.bitxor(b)));
-                a.zip(target, |a: u8, b: u8| a.bitxor(b))
-            })
+                        })
+                        .iter()
+                        .fold(clause.target.clone(), |a, b| a.zip(b, |a, b| a.bitxor(b)));
+                    let mut seal = true;
+                    let target = clause
+                        .ixor_roots
+                        .clone()
+                        .zip(iclause, |a, b| {
+                            if targets[b.target] {
+                                if take(&mut seal) {
+                                    a
+                                } else {
+                                    GenericArray::<u8, D::OutputSize>::default()
+                                }
+                            } else {
+                                GenericArray::<u8, D::OutputSize>::default()
+                            }
+                        })
+                        .iter()
+                        .fold(target, |a, b| a.zip(b, |a, b| a.bitxor(b)));
+                    a.zip(target, |a: u8, b: u8| a.bitxor(b))
+                },
+            )
             .zip(self.troot.clone(), |a, b| a.bitxor(b))
     }
 }
