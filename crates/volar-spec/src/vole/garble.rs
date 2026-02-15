@@ -58,7 +58,7 @@ impl<N: VoleArray<u8>> Eval<N> {
     pub fn and_via_table<D: Digest<OutputSize = N>>(
         &self,
         other: &Eval<N>,
-        table: &[GenericArray<u8, N>; 4],
+        table: &GarbleTable<N>,
     ) -> Eval<N> {
         let index = (if self.target[0] & 1 == 1 { 1 } else { 0 })
             | (if other.target[0] & 1 == 1 { 2 } else { 0 });
@@ -69,11 +69,13 @@ impl<N: VoleArray<u8>> Eval<N> {
                 d.update(&other.target);
                 d.finalize()
             }
-            .zip(table[index].clone(), |a, b| a ^ b),
+            .zip(table.table[index].clone(), |a, b| a ^ b),
         }
     }
 }
-
+pub struct GarbleTable<N: VoleArray<u8>> {
+    pub table: [GenericArray<u8, N>; 4],
+}
 pub struct GlobalSecret<N: VoleArray<u8>> {
     secret: GenericArray<u8, N>,
 }
@@ -97,7 +99,7 @@ impl<N: VoleArray<u8>> GlobalSecret<N> {
         &self,
         a: &Garble<N>,
         b: &Garble<N>,
-    ) -> [GenericArray<u8, N>; 4] {
+    ) -> GarbleTable<N> {
         let mut table = core::array::from_fn(|_| GenericArray::<u8, N>::default());
         for i in 0..4 {
             let av = (i & 1) != 0;
@@ -110,7 +112,7 @@ impl<N: VoleArray<u8>> GlobalSecret<N> {
                 (if a.base[0] & 1 != 1 { 1 } else { 0 }) | (if b.base[0] & 1 != 1 { 2 } else { 0 });
             table[index] = table[index].clone().zip(target, |a, b| a ^ b);
         }
-        table
+        GarbleTable { table }
     }
 }
 impl<N: VoleArray<u8>> BitXor<Eval<N>> for Eval<N> {
