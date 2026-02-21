@@ -41,8 +41,8 @@ use alloc::vec::Vec;
 
 use crate::ir::*;
 use crate::printer::{
-    DisplayRust, ExprWriter, FunctionWriter, GenericsWriter, ImplWriter, RustBackend, StructWriter,
-    TraitWriter, TypeWriter, WhereClauseWriter,
+    DisplayRust, GenericsWriter, ImplWriter, RustBackend, StructWriter, TraitWriter, TypeWriter,
+    WhereClauseWriter,
 };
 
 /// First byte of every `.volar.d` file — invalid UTF-8 poison pill.

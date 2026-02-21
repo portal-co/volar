@@ -13,17 +13,15 @@
 //! The pass is idempotent and can be applied to any `IrBlock`.
 
 use crate::ir::{
-    IrBlock, IrClosureParam, IrExpr, IrIterChain, IrPattern, IrStmt, IterChainSource, IterStep,
-    IterTerminal,
+    IrBlock, IrExpr, IrIterChain, IrPattern, IrStmt, IterChainSource, IterStep, IterTerminal,
 };
 
 #[cfg(feature = "std")]
 use std::{
     boxed::Box,
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     format,
     string::{String, ToString},
-    vec,
     vec::Vec,
 };
 

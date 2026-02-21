@@ -578,7 +578,7 @@ fn lower_function_dyn(
             if let Some(info) = ctx.struct_info.get(sname) {
                 let mut unpacks = Vec::new();
                 // Collect param names to detect conflicts with field bindings
-                let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+                let _param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
                 for w in &info.length_witnesses {
                     // If a field binding would shadow a parameter, rename the parameter
                     if let Some(param) = params.iter_mut().find(|p| &p.name == w) {
@@ -930,7 +930,9 @@ fn rename_var_in_block(block: &mut IrBlock, old: &str, new_name: &str) {
 
 fn rename_var_in_stmt(stmt: &mut IrStmt, old: &str, new_name: &str) {
     match stmt {
-        IrStmt::Let { pattern, init, .. } => {
+        IrStmt::Let {
+            pattern: _, init, ..
+        } => {
             // Don't rename the binding itself — if the let introduces a new var
             // with the same name, it shadows.
             if let Some(e) = init {

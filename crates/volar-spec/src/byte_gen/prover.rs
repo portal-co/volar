@@ -1,4 +1,4 @@
-use core::ops::{BitXor, Deref};
+use core::ops::BitXor;
 
 use super::*;
 

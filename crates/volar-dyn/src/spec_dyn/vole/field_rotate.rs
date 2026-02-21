@@ -14,7 +14,7 @@ impl QDyn<u8> {
         for i in 0..len {
             let b = q[i];
             let next = q[(i + 1) % len];
-            out.push(((b << (n as u8)) | (next >> (8 - n as u8))));
+            out.push((b << (n as u8)) | (next >> (8 - n as u8)));
         }
         QDyn { q: out }
     }
@@ -25,7 +25,7 @@ impl QDyn<u8> {
         for i in 0..len {
             let prev = q[(i + len - 1) % len];
             let b = q[i];
-            out.push(((prev << (8 - n as u8)) | (b >> (n as u8))));
+            out.push((prev << (8 - n as u8)) | (b >> (n as u8)));
         }
         QDyn { q: out }
     }
@@ -48,7 +48,7 @@ impl DeltaDyn<u8> {
         for i in 0..len {
             let b = d[i];
             let next = d[(i + 1) % len];
-            out.push(((b << (n as u8)) | (next >> (8 - n as u8))));
+            out.push((b << (n as u8)) | (next >> (8 - n as u8)));
         }
         DeltaDyn { delta: out }
     }
@@ -59,7 +59,7 @@ impl DeltaDyn<u8> {
         for i in 0..len {
             let prev = d[(i + len - 1) % len];
             let b = d[i];
-            out.push(((prev << (8 - n as u8)) | (b >> (n as u8))));
+            out.push((prev << (8 - n as u8)) | (b >> (n as u8)));
         }
         DeltaDyn { delta: out }
     }

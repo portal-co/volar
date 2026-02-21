@@ -1,21 +1,15 @@
-use core::{
-    array,
-    ops::{BitXor, Deref, Mul},
-};
+use core::ops::{BitXor, Mul};
 
 use cipher::{
-    BlockEncrypt, Unsigned,
-    consts::{U1, U8},
+    Unsigned,
+    consts::U1,
     typenum::{Logarithm2, Max},
 };
 
 use super::*;
-use crate::{
-    simple::CommitmentCore,
-    vole::{VoleArray, vope::Vope},
-};
+use crate::vole::{VoleArray, vope::Vope};
 use volar_common::hash_commitment::commit;
-pub(crate) use volar_common::length_doubling::{LengthDoubler, PuncturableLengthDoubler};
+pub(crate) use volar_common::length_doubling::LengthDoubler;
 pub fn gen_abo<B: LengthDoubler, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSize>>>(
     a: GenericArray<u8, B::OutputSize>,
     rand: &impl AsRef<[u8]>,

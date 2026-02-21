@@ -23,7 +23,7 @@ impl<K: ArrayLength<Item>, N: ArrayLength<GenericArray<Item, K>>> SatProblem<K, 
         K: ArrayLength<GenericArray<u8, D::OutputSize>>,
         N: ArrayLength<OutClause<D, K, N>> + ArrayLength<GenericArray<u8, D::OutputSize>>,
     {
-        let roots = self.clauses.clone().map(|a| {
+        let roots = self.clauses.clone().map(|_a| {
             let root = seed.clone();
             seed = seed.clone().zip(D::digest(&seed), |a, b| a.bitxor(b));
             root
@@ -65,7 +65,7 @@ impl<K: ArrayLength<Item>, N: ArrayLength<GenericArray<Item, K>>> SatProblem<K, 
                         }
                     }),
                     xor_roots: clause.clone().map(|i| {
-                        let root = roots[i.target].clone().zip(p.clone(), |a, b| a.bitxor(b));
+                        let _root = roots[i.target].clone().zip(p.clone(), |a, b| a.bitxor(b));
                         let trash = seed.clone();
                         seed = {
                             let mut digest = D::new();

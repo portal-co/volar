@@ -1,9 +1,6 @@
-use core::{
-    mem::MaybeUninit,
-    ops::{Add, BitXor, Mul, Sub},
-};
+use core::ops::{Add, BitXor, Mul};
 
-use cipher::consts::{U1, U8};
+use cipher::consts::U1;
 use rand::distr::Distribution;
 
 use super::*;

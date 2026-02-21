@@ -1,6 +1,6 @@
 use core::ops::Div;
 
-use cipher::{Unsigned, consts::U2};
+use cipher::Unsigned;
 
 use super::*;
 

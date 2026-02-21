@@ -831,7 +831,7 @@ fn collect_erased_type_params(module: &IrModule) -> Vec<String> {
 
     // Also collect type params referenced inside Fn bounds' return types
     // (e.g. F: FnMut(&[u8]) -> X means X is an indirect type param)
-    let mut add_fn_return_params = |generics: &[IrGenericParam], all_seen: &mut Vec<String>| {
+    let add_fn_return_params = |generics: &[IrGenericParam], all_seen: &mut Vec<String>| {
         for g in generics {
             for b in &g.bounds {
                 if let TraitKind::Fn(_, ret) = &b.trait_kind {
@@ -1042,7 +1042,7 @@ fn is_statement_like(expr: &IrExpr) -> bool {
 struct TsPreambleWriter;
 
 impl TsBackend for TsPreambleWriter {
-    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, _cx: &TsContext<'_>) -> fmt::Result {
         writeln!(f, "// Auto-generated TypeScript from volar-spec")?;
         writeln!(
             f,
@@ -1172,7 +1172,7 @@ impl<'a> TsBackend for TsClassWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
         let name = self.s.kind.to_string();
         let struct_generics = &self.s.generics;
-        let used_params = struct_used_type_params(self.s);
+        let _used_params = struct_used_type_params(self.s);
 
         write!(f, "export class {}", name)?;
         // Don't prune class-level type params — methods may reference them
@@ -1517,7 +1517,7 @@ struct TsGenericsWriter<'a> {
 }
 
 impl<'a> TsBackend for TsGenericsWriter<'a> {
-    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, _cx: &TsContext<'_>) -> fmt::Result {
         let type_params: Vec<&IrGenericParam> = self
             .generics
             .iter()

@@ -6,7 +6,7 @@ use cipher::{
 };
 use digest::Digest;
 
-use crate::vole::{Delta, Q, VoleArray, Vope};
+use crate::vole::VoleArray;
 
 pub struct Eval<N: VoleArray<u8>> {
     pub target: GenericArray<u8, N>,

@@ -1101,7 +1101,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 }
             }
             IrExpr::ArrayGenerate {
-                elem_ty,
+                elem_ty: _,
                 len,
                 index_var,
                 body,

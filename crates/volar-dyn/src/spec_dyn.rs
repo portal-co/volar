@@ -10,8 +10,6 @@
 //! - crates/volar-spec/src/byte_gen.rs
 //!
 use alloc::vec;
-use alloc::vec::Vec;
-use core::ops::Mul;
 pub mod byte_gen;
 pub mod vole;
 pub use byte_gen::*;

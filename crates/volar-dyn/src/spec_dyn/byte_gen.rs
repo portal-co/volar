@@ -7,7 +7,7 @@ use core::ops::Deref;
 use cipher::BlockEncrypt;
 use digest::Digest;
 
-use volar_common::hash_commitment::{CommitmentCore, commit};
+use volar_common::hash_commitment::commit;
 
 use super::vole::VopeDyn;
 
@@ -59,7 +59,7 @@ pub trait ByteBlockEncryptDyn {
 
 /// Dynamic version of `double` from `byte_gen.rs`.
 pub fn double_dyn<B: ByteBlockEncryptDyn>(a: &[u8]) -> [Vec<u8>; 2] {
-    let block_size = a.len();
+    let _block_size = a.len();
     let mut out0 = a.to_vec();
     let mut out1 = a.to_vec();
 

@@ -1,4 +1,4 @@
-use core::ops::{BitAnd, BitOr, Shl, Shr};
+use core::ops::{Shl, Shr};
 
 use crate::field::{Bit, BitsInBytes, BitsInBytes64};
 

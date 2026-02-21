@@ -4,8 +4,6 @@ use super::*;
 use alloc::vec::Vec;
 use core::ops::{Add, Mul};
 
-use cipher::consts::{U1, U8};
-
 /// Dynamic Delta equivalent of `Delta<N, T>` (from `volar-spec/src/vole.rs`).
 /// Original: `pub struct Delta<N: ArrayLength<T>, T> { pub delta: GenericArray<T, N> }`
 pub struct DeltaDyn<T> {

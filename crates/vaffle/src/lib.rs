@@ -1,4 +1,3 @@
 #![no_std]
 
-use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 extern crate alloc;
