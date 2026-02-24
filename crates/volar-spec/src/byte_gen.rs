@@ -10,32 +10,40 @@ use super::*;
 use crate::vole::{VoleArray, vope::Vope};
 use volar_common::hash_commitment::commit;
 pub(crate) use volar_common::length_doubling::LengthDoubler;
-pub fn gen_abo<B: LengthDoubler, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSize>>>(
+pub fn gen_abo<
+    B: LengthDoubler,
+    D: Digest,
+    K: ArrayLength<GenericArray<u8, B::OutputSize>>,
+    N: ArrayLength<GenericArray<GenericArray<u8, B::OutputSize>, K>>,
+>(
     a: GenericArray<u8, B::OutputSize>,
     rand: &impl AsRef<[u8]>,
-) -> ABO<B, D, K>
+) -> ABO<B, D, K, N>
 where
     B: Sized,
 {
     let mut h = D::new();
-    let mut per_byte = GenericArray::<GenericArray<u8, B::OutputSize>, K>::default();
-    for i in 0..K::to_usize() {
-        // let id: ByteId = core::array::from_fn(|j| ((i >> j) & 1) != 0);
-        let core = (0..K::to_usize().ilog2()).fold(a.clone(), |mut acc, b| {
-            if (i >> b) & 1 != 0 {
-                let doubled = B::double(acc);
-                acc = doubled[1].clone();
-            } else {
-                let doubled = B::double(acc);
-                acc = doubled[0].clone();
-            }
-            acc
-        });
+    let per_byte = GenericArray::generate(|ni| {
+        let mut per_byte = GenericArray::<GenericArray<u8, B::OutputSize>, K>::default();
+        for i in 0..K::to_usize() {
+            // let id: ByteId = core::array::from_fn(|j| ((i >> j) & 1) != 0);
+            let core = (0..K::to_usize().ilog2()).fold(a.clone(), |mut acc, b| {
+                if (i >> b) & 1 != 0 {
+                    let doubled = B::double(acc);
+                    acc = doubled[1].clone();
+                } else {
+                    let doubled = B::double(acc);
+                    acc = doubled[0].clone();
+                }
+                acc
+            });
 
-        h.update(&commit::<D>(&core, rand));
-        per_byte[i] = core;
-    }
-    ABO::<B, D, K> {
+            h.update(&commit::<D>(&core, rand));
+            per_byte[i] = core;
+        }
+        return per_byte;
+    });
+    ABO::<B, D, K, N> {
         commit: h.finalize(),
         per_byte,
     }
@@ -98,9 +106,14 @@ pub fn create_vole_from_material_expanded<
         v,
     }
 }
-pub struct ABO<B: LengthDoubler, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSize>>> {
+pub struct ABO<
+    B: LengthDoubler,
+    D: Digest,
+    K: ArrayLength<GenericArray<u8, B::OutputSize>>,
+    N: ArrayLength<GenericArray<GenericArray<u8, B::OutputSize>, K>>,
+> {
     pub commit: GenericArray<u8, D::OutputSize>,
-    pub per_byte: GenericArray<GenericArray<u8, B::OutputSize>, K>,
+    pub per_byte: GenericArray<GenericArray<GenericArray<u8, B::OutputSize>, K>, N>,
 }
 pub struct ABOOpening<
     B: LengthDoubler<OutputSize: Max<D::OutputSize, Output: ArrayLength<u8>>>,
@@ -109,12 +122,13 @@ pub struct ABOOpening<
             GenericArray<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>, U>,
         > + ArrayLength<u64>,
     U: ArrayLength<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>>,
+    N: ArrayLength<GenericArray<GenericArray<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>, U>, T>>,
 > {
     pub bad: GenericArray<u64, T>,
-    pub openings: GenericArray<
+    pub openings: GenericArray<GenericArray<
         GenericArray<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>, U>,
         T,
-    >,
+    >, N>,
 }
 
 pub mod impls;

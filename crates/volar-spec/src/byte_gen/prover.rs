@@ -2,36 +2,36 @@ use core::ops::BitXor;
 
 use super::*;
 
-impl<B: LengthDoubler, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSize>>> ABO<B, D, K> {
-    pub fn to_vole_material<const N: usize>(&self) -> [Vope<B::OutputSize, u8>; N]
+impl<B: LengthDoubler, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSize>>, NParties: ArrayLength<GenericArray<GenericArray<u8, B::OutputSize>, K>>> ABO<B, D, K, NParties> {
+    pub fn to_vole_material<const N: usize>(&self,target: usize) -> [Vope<B::OutputSize, u8>; N]
     where
         B::OutputSize: VoleArray<u8>,
     {
         core::array::from_fn(|i| {
-            let s = &self.per_byte[(i * N)..][..N];
+            let s = &self.per_byte[target][(i * N)..][..N];
             create_vole_from_material::<B, _>(s)
         })
     }
     pub fn to_vole_material_typenum<N: ArrayLength<Vope<B::OutputSize, u8>>>(
-        &self,
+        &self,target: usize
     ) -> GenericArray<Vope<B::OutputSize, u8>, N>
     where
         B::OutputSize: VoleArray<u8>,
     {
         GenericArray::<Vope<B::OutputSize, u8>, N>::generate(|i| {
-            let s = &self.per_byte[(i * N::to_usize())..][..N::to_usize()];
+            let s = &self.per_byte[target][(i * N::to_usize())..][..N::to_usize()];
             create_vole_from_material::<B, _>(s)
         })
     }
     pub fn to_vole_material_expanded<const N: usize, X: AsRef<[u8]>, F: FnMut(&[u8]) -> X>(
-        &self,
+        &self,target: usize,
         mut f: F,
     ) -> [Vope<B::OutputSize, u8>; N]
     where
         B::OutputSize: VoleArray<u8>,
     {
         core::array::from_fn(|i| {
-            let s = &self.per_byte[(i * N)..][..N];
+            let s = &self.per_byte[target][(i * N)..][..N];
             create_vole_from_material_expanded::<B, X, _, _>(s, &mut f)
         })
     }
@@ -40,18 +40,18 @@ impl<B: LengthDoubler, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSize>
         X: AsRef<[u8]>,
         F: FnMut(&[u8]) -> X,
     >(
-        &self,
+        &self,target: usize,
         mut f: F,
     ) -> GenericArray<Vope<B::OutputSize, u8>, N>
     where
         B::OutputSize: VoleArray<u8>,
     {
         GenericArray::<Vope<B::OutputSize, u8>, N>::generate(|i| {
-            let s = &self.per_byte[(i * N::to_usize())..][..N::to_usize()];
+            let s = &self.per_byte[target][(i * N::to_usize())..][..N::to_usize()];
             create_vole_from_material_expanded::<B, X, _, _>(s, &mut f)
         })
     }
-    pub fn split_bit_typenum<N: ArrayLength<BSplit<B, D>>>(&self) -> GenericArray<BSplit<B, D>, N>
+    pub fn split_bit_typenum<N: ArrayLength<BSplit<B, D>>>(&self,target: usize) -> GenericArray<BSplit<B, D>, N>
     where
         B::OutputSize: VoleArray<u8>,
         D: Digest<
@@ -59,7 +59,7 @@ impl<B: LengthDoubler, D: Digest, K: ArrayLength<GenericArray<u8, B::OutputSize>
         >,
     {
         GenericArray::<BSplit<B, D>, N>::generate(|i| {
-            let s = &self.per_byte[(i * N::to_usize())..][..N::to_usize()];
+            let s = &self.per_byte[target][(i * N::to_usize())..][..N::to_usize()];
             BSplit {
                 split: GenericArray::<
                     [GenericArray<u8, B::OutputSize>; 2],

@@ -9,5 +9,6 @@ pub use volar_common::hash_commitment as simple;
 pub mod byte_gen;
 pub mod garble;
 pub mod vole;
+pub mod mpc;
 // pub mod xsat;
 pub use volar_primitives as field;
