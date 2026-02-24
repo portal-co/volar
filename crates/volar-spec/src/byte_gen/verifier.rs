@@ -69,16 +69,31 @@ impl<
 {
     pub fn validate<'a, R: AsRef<[u8]>>(
         this: GenericArray<&'a Self, NOthers>,
+        me: &'a ABO<B, D, <T as Mul<U>>::Output, NOthers>,
         commit_: GenericArray<&'a GenericArray<u8, D::OutputSize>, NOthers>,
         rand: &R,
     ) -> bool
     where
-        NOthers: ArrayLength<&'a GenericArray<u8, D::OutputSize>> + ArrayLength<&'a Self>,
+        NOthers: ArrayLength<&'a GenericArray<u8, D::OutputSize>>
+            + ArrayLength<&'a Self>
+            + ArrayLength<GenericArray<GenericArray<u8, B::OutputSize>, <T as Mul<U>>::Output>>,
+        T: Mul<U, Output: ArrayLength<GenericArray<u8, B::OutputSize>>>,
     {
         commit_.iter().enumerate().all(|(ci, commit_)| {
             let mut h = D::new();
+            if ci != 0 {
+                for i in 0..T::to_usize() {
+                    for b in 0..U::to_usize() {
+                        let i2 = i | ((b as usize) << T::to_usize().ilog2());
+                        h.update(&commit::<D>(
+                            &me.per_byte[ci][i2],
+                            rand,
+                        ));
+                    }
+                }
+            }
             for (idx, this) in this.iter().enumerate() {
-                if idx == ci {
+                if idx + 1 == ci {
                     continue;
                 }
                 for i in 0..T::to_usize() {
