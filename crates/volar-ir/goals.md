@@ -1,3 +1,5 @@
+> See [`docs/ir-lowering.md`](../../docs/ir-lowering.md) for full IR pipeline documentation.
+
 # IR
 
 WAFFLE

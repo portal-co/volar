@@ -1,7 +1,3 @@
-> **Superseded.** This file has been moved to [`docs/DOC.md`](docs/DOC.md).
-> New documentation lives in [`docs/`](docs/). See [`docs/spec.md`](docs/spec.md)
-> for the expanded VOLE core documentation.
-
 # Core Components
 
 ## VOLEs

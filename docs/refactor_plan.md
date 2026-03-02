@@ -1,6 +1,3 @@
-> **Superseded.** Moved to [`docs/refactor_plan.md`](docs/refactor_plan.md).
-> The IrModule dynamic lowering refactor is complete. See [`docs/compiler.md`](docs/compiler.md).
-
 # Refactoring Plan: Intermediate Dynamic IR Transformation
 
 Currently, `printer_dyn.rs` performs a direct transformation from the specialized `volar-spec` IR to dynamic Rust code. This makes it difficult to target other languages or perform further optimizations. The goal is to refactor this into a two-stage process:
