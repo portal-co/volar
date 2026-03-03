@@ -1,3 +1,7 @@
+// @reliability: normal
+//! @ai: none
+// Volar IR: SSA block-based IR for VOLE-based computations.
+// Pure data structure definitions; no cryptographic claims.
 use super::*;
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct IRBlockId(pub u32);

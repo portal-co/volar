@@ -1,3 +1,7 @@
+// @reliability: normal
+//! @ai: assisted
+// Standard hash commitment: commit(data, nonce) = H(data || nonce).
+
 use super::*;
 pub struct CommitmentCore<D: Digest>(GenericArray<u8, D::OutputSize>);
 impl<D: Digest> AsRef<[u8]> for CommitmentCore<D> {

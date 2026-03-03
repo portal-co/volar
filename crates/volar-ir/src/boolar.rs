@@ -1,3 +1,7 @@
+// @reliability: normal
+//! @ai: none
+// Boolar IR: boolean circuit IR (AND/XOR/NOT basis).
+// Pure data structure definitions; no cryptographic claims.
 use super::{ir::*, *};
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct BIrBlocks(pub Vec<BIrBlock>);

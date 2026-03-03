@@ -1,3 +1,7 @@
+// @reliability: normal
+//! @ai: supervised
+// Field element types for GF(2), GF(2^8), GF(2^64), and packed variants.
+// Based on standard carry-less multiplication over binary fields.
 #![no_std]
 
 use core::ops::{Add, BitAnd, BitXor, BitXorAssign, Mul, Shl, ShlAssign, ShrAssign, Sub};

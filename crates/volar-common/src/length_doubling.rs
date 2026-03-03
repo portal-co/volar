@@ -1,3 +1,7 @@
+// @reliability: normal
+//! @ai: assisted
+// LengthDoubler trait: AES-based PRG that doubles output size at each step.
+// Used as the PRF backbone for ABO generation and VOLE randomness.
 use core::marker::PhantomData;
 
 use super::*;

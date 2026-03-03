@@ -15,10 +15,25 @@ Vector Oblivious Linear Evaluation (VOLE). It provides:
 
 ---
 
+## Code Reliability at a Glance
+
+Every source file carries a `// @reliability:` marker and an `//! @ai:` marker.
+See [reliability.md](reliability.md) for the full policy.
+
+| Level | Extension | Compiled | Meaning |
+|---|---|---|---|
+| **Normal** | `.rs` | ✅ Always | Established constructions, proven security |
+| **Hazmat** | `.rs` | ✅ Always | Proven but requires expert use; misuse breaks security |
+| **Experimental** | `.rs` | ✅ `volar_experimental` feature | Novel; designed for review, not yet trusted |
+| **Insecure** | `.rs.insecure` | ❌ Never | Known/suspected broken; research record only |
+
+---
+
 ## Document Index
 
 | Document | Description |
 |---|---|
+| [reliability.md](reliability.md) | **Code reliability levels** — definitions, markers, AI labels, promotion/demotion protocol |
 | [overview.md](overview.md) | Architecture overview — workspace layout, crate dependency graph, compilation pipeline |
 | [spec.md](spec.md) | `volar-spec` — ZK, MPC, and garbled circuit specifications |
 | [ir-lowering.md](ir-lowering.md) | IR lowering pipeline — `volar-ir`, Volar IR, Boolar IR, movfuscation |

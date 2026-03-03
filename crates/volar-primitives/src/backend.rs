@@ -1,3 +1,7 @@
+// @reliability: normal
+//! @ai: supervised
+// Generic carry-less field multiplication backend (shift-and-XOR).
+// Works for any integer word size via the FieldMulBackend trait.
 use core::mem::size_of_val;
 use core::ops::{BitAnd, BitXor, BitXorAssign, Shl, ShlAssign, ShrAssign};
 

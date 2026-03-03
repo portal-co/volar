@@ -1,3 +1,8 @@
+// @reliability: normal
+//! @ai: assisted
+// Core VOLE types: Delta (verifier global secret), Q (verifier share),
+// VoleArray trait, and rotation/remap operations.
+// Based on the standard VOLE relation: u·Δ + v = q over binary extension fields.
 use core::ops::{Add, BitXor, Mul};
 
 use cipher::consts::U1;

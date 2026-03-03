@@ -1,12 +1,16 @@
 # The `.insecure` File Extension
 
+> This document covers the **Insecure** reliability level in detail.
+> For the full four-level reliability system (Normal, Hazmat, Experimental,
+> Insecure) including source markers, AI markers, and the promotion/demotion
+> protocol, see [reliability.md](reliability.md).
+
 ## Purpose
 
-Files with the `.insecure` extension contain **cryptographically broken or
-unproven constructions** that are kept in the repository for research,
-experimentation, or as a record of approaches that were attempted but not
-validated. They are **never compiled** as part of any crate and must not be
-imported or depended upon by production code.
+The `.insecure` extension is **Level 4** in the Volar reliability system.
+Files at this level contain cryptographically broken or unproven constructions
+kept as a research record. They are never compiled and must not be imported or
+depended upon by production code.
 
 The extension serves as an explicit, machine-checkable signal:
 - It cannot be accidentally included via `mod foo;` (Rust only recognizes `.rs`).
@@ -21,15 +25,21 @@ The extension serves as an explicit, machine-checkable signal:
    declaration or `include!` macro.
 2. **Never copy code from an `.insecure` file to a `.rs` file** without a
    full security review and explicit sign-off.
-3. **Document why the construction is insecure** in a comment at the top of
-   the `.insecure` file.
+3. **Document why the construction is insecure** with `// @insecure-reason:`
+   at the top of the `.insecure` file.
 4. **Leave `.insecure` files in the repository.** They are a research record;
    deleting them loses context. Use `git log` and the comment header to
    understand their history.
+5. **The only valid promotions** are to the Experimental level via a documented
+   rework (not a rename), or to deprecated/removed if the line of work is
+   definitively abandoned. See [reliability.md — Insecure → Experimental](reliability.md#insecure--experimental-rework).
 
 ---
 
 ## Current `.insecure` Files
+
+See also the [Current Insecure Files table in reliability.md](reliability.md#current-insecure-files)
+for a quick-reference summary.
 
 ### `crates/volar-spec/src/xsat.rs.insecure`
 
@@ -278,14 +288,20 @@ until a construction with a proper security proof is identified.
 
 ## Future `.insecure` Candidates
 
-The following constructions may be added to `.insecure` files as work progresses:
+These constructions are currently at the **Experimental** level but may be
+demoted to Insecure if a fundamental flaw is found:
 
-- **Preprocessing-phase protocols** that assume honest behavior from a
-  semi-honest majority without yet having a full malicious-security argument.
-- **Interactive proofs** whose soundness relies on a specific field size before
-  the soundness error analysis is written down.
-- **Optimized variants** of core protocols where an optimization introduces
-  a subtle bias or leakage that has not been ruled out.
+- **Preprocessing-phase protocols** (`byte_gen/prover.rs`, `byte_gen/verifier.rs`)
+  that assume honest behavior from a semi-honest majority — the `cda059c`
+  commit (`actually unsound, oops`) already shows one soundness regression and
+  recovery cycle.
+- **Garbled circuits** (`garble.rs`) — the half-gate construction is standard,
+  but the VOLE-specific binding has not been reviewed.
+- **MPC types** (`mpc.rs`) — minimal stub; semantics not yet defined.
+
+New constructions should be introduced at the Experimental level, not added
+directly as `.insecure` files. See [reliability.md](reliability.md) for
+the correct introduction protocol.
 
 ---
 

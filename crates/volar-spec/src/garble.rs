@@ -1,3 +1,10 @@
+// @reliability: experimental
+// @experimental-status: design
+// @experimental-since: 929a03c (experiment: garbling)
+//! @ai: assisted
+// Half-gate garbled circuit scheme over VOLE types.
+// The half-gate construction (Zahur-Rosulek-Evans 2015) is standard, but the
+// VOLE-specific binding has not been reviewed. Do not use in production.
 use core::ops::{BitXor, Div};
 
 use cipher::{

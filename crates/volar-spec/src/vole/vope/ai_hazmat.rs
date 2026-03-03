@@ -1,3 +1,26 @@
+// @reliability: hazmat
+// @hazmat-reason: multiplying VOLE polynomials is only sound inside a
+//   Quicksilver-style constraint check; using this outside that context
+//   breaks the zero-knowledge property of the enclosing proof.
+//! @ai: assisted
+//! # Safety
+//!
+//! `mul_generalized` computes the degree-(K+K₂) product of two `Vope`s via
+//! SIMD convolution over their coefficient arrays.
+//!
+//! **Correct usage:** Call this only when constructing a Quicksilver
+//! multiplication check gate, where the product's consistency with the VOLE
+//! correlation is immediately verified by the verifier. The product itself
+//! is not a valid standalone VOLE commitment.
+//!
+//! **Incorrect usage:** Using the returned `Vope` as a wire value in a
+//! circuit, or passing it to `* delta` without the surrounding check,
+//! produces a value that is algebraically correct but cryptographically
+//! unsound — the verifier cannot distinguish a cheating prover from an
+//! honest one.
+//!
+//! // SAFETY(hazmat): all call sites in this crate invoke mul_generalized
+//! // exclusively within a constraint-check context.
 use super::*;
 impl<N, T, K> Vope<N, T, K>
 where

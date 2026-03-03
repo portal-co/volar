@@ -1,3 +1,10 @@
+// @reliability: experimental
+// @experimental-status: review-pending
+// @experimental-since: 263eab1 (fix name)
+//! @ai: assisted
+// Prover-side byte generation (ABO prover protocol).
+// Revised after cda059c (actually unsound, oops). The current construction
+// has not been independently verified for soundness.
 use core::ops::BitXor;
 
 use super::*;

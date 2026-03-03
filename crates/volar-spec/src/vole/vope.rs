@@ -1,3 +1,7 @@
+// @reliability: normal
+//! @ai: assisted
+// Vope<N, T, K>: polynomial VOLE — a degree-K polynomial in Δ over vectors of length N.
+// Evaluation at Δ yields a Q<N, T>. See vope/ai_hazmat.rs for degree-K multiplication.
 use cipher::consts::U0;
 
 use crate::field::Bit;

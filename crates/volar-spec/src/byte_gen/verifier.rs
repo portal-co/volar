@@ -1,3 +1,10 @@
+// @reliability: experimental
+// @experimental-status: review-pending
+// @experimental-since: 263eab1 (fix name)
+//! @ai: assisted
+// Verifier-side byte generation (ABO verifier protocol).
+// Last structural change: 58e8f84 (experiment: improve mpc compatibility).
+// Revised after cda059c (actually unsound, oops). Not independently verified.
 use super::*;
 impl<
     B: LengthDoubler,

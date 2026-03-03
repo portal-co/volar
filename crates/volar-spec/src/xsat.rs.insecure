@@ -1,3 +1,10 @@
+// @reliability: insecure
+// @insecure-reason: hash-based witness encryption is information-theoretically
+//   impossible — open() is a public deterministic function any party can
+//   evaluate, and the cells[] structure directly leaks the satisfying
+//   assignment. See docs/insecure.md for full analysis.
+// @insecure-since: bf2e4b9 (experiment: deprecate xsat)
+//! @ai: assisted
 use core::{mem::take, ops::BitXor};
 
 use cipher::{
