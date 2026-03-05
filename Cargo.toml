@@ -1,13 +1,13 @@
 [workspace]
 members = [
-    "crates/volar-spec",
-    "crates/volar-primitives",
-    "crates/volar-common",
-    "crates/volar-dyn",
-    "crates/volar-ir",
-    "crates/volar-compiler",
-    "crates/volar-spec-dyn",
-    "crates/vaffle",
+    "crates/spec/volar-spec",
+    "crates/spec/volar-primitives",
+    "crates/spec/volar-common",
+    "crates/spec/volar-dyn",
+    "crates/spec/volar-spec-dyn",
+    "crates/ir/volar-ir",
+    "crates/ir/vaffle",
+    "crates/compiler/volar-compiler",
 ]
 resolver = "3"
 

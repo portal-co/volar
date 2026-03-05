@@ -3,9 +3,9 @@
 //! Usage:
 //!   cargo run --example generate_volar_ts --features parsing [-- [SPEC_DIR] [OUTPUT_PATH]]
 //!
-//! Defaults:
-//!   SPEC_DIR   = ../../crates/volar-spec/src
-//!   OUTPUT_PATH = ../../packages/volar-runtime/src/generated.ts
+//! Defaults (relative to workspace root):
+//!   SPEC_DIR    = crates/spec/volar-spec/src
+//!   OUTPUT_PATH = packages/volar-runtime/src/generated.ts
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let spec_dir = positional
         .first()
         .map(|s| PathBuf::from(s.as_str()))
-        .unwrap_or_else(|| PathBuf::from("../../crates/volar-spec/src"));
+        .unwrap_or_else(|| PathBuf::from("crates/spec/volar-spec/src"));
     let output_path = positional
         .get(1)
         .map(|s| PathBuf::from(s.as_str()))

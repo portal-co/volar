@@ -1,4 +1,4 @@
-//! Dynamic (heap-allocated) versions of key pieces from `crates/volar-spec`.
+//! Dynamic (heap-allocated) versions of key pieces from `crates/spec/volar-spec`.
 //!
 //! This file re-implements selected types and helpers from the original
 //! `volar-spec` crate using dynamic allocation (`Vec`) instead of
@@ -6,8 +6,8 @@
 //! semantics while removing the compile-time size requirements.
 //!
 //! Original sources cited (kept here for clarity):
-//! - crates/volar-spec/src/vole.rs
-//! - crates/volar-spec/src/byte_gen.rs
+//! - crates/spec/volar-spec/src/vole.rs
+//! - crates/spec/volar-spec/src/byte_gen.rs
 //!
 use alloc::vec;
 pub mod byte_gen;

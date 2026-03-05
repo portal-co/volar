@@ -3,9 +3,9 @@
 //! Usage:
 //!   cargo run --example generate_volar_dyn --features parsing [-- [SPEC_DIR] [OUTPUT_PATH]]
 //!
-//! Defaults:
-//!   SPEC_DIR   = ../../crates/volar-spec/src
-//!   OUTPUT_PATH = ../../crates/volar-spec-dyn/src/generated.rs
+//! Defaults (relative to workspace root):
+//!   SPEC_DIR    = crates/spec/volar-spec/src
+//!   OUTPUT_PATH = crates/spec/volar-spec-dyn/src/generated.rs
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,11 +17,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let spec_dir = args
         .get(1)
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("../../crates/volar-spec/src"));
+        .unwrap_or_else(|| PathBuf::from("crates/spec/volar-spec/src"));
     let output_path = args
         .get(2)
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("../../crates/volar-spec-dyn/src/generated.rs"));
+        .unwrap_or_else(|| PathBuf::from("crates/spec/volar-spec-dyn/src/generated.rs"));
 
     eprintln!("Reading volar-spec from: {:?}", spec_dir);
     eprintln!("Writing output to: {:?}", output_path);

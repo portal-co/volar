@@ -1,5 +1,5 @@
 [package]
-name = "volar-dyn"
+name = "volar-spec"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
@@ -11,4 +11,4 @@ cipher.workspace = true
 rand.workspace = true
 digest.workspace = true
 volar-primitives = { path = "../volar-primitives" }
-volar-common = {path = "../volar-common"}
+volar-common = { path = "../volar-common" }

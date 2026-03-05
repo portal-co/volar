@@ -18,16 +18,19 @@ The project also supports **multi-party computation (MPC)** and
 ```
 volar/
 ├── crates/
-│   ├── volar-primitives/   Field element types and arithmetic
-│   ├── volar-common/       Hash commitments, length-doubling utilities
-│   ├── volar-spec/         Cryptographic protocol specifications (ZK, MPC, garbled)
-│   ├── volar-spec-dyn/     Auto-generated dynamic version of volar-spec
-│   ├── volar-compiler/     Compiler: parser → IR → lowering → printers
-│   ├── volar-ir/           Low-level circuit IR (Volar IR, Boolar IR)
-│   ├── volar-dyn/          Runtime dynamic bindings (generated from volar-spec)
-│   └── vaffle/             WAFFLE-to-VAFFLE intermediate layer (stub)
-├── docs/                   This documentation
-└── packages/               npm packages (volar-runtime TypeScript)
+│   ├── spec/
+│   │   ├── volar-primitives/   Field element types and arithmetic
+│   │   ├── volar-common/       Hash commitments, length-doubling utilities
+│   │   ├── volar-spec/         Cryptographic protocol specifications (ZK, MPC, garbled)
+│   │   ├── volar-spec-dyn/     Auto-generated dynamic version of volar-spec
+│   │   └── volar-dyn/          Runtime dynamic bindings (generated from volar-spec)
+│   ├── ir/
+│   │   ├── volar-ir/           Low-level circuit IR (Volar IR, Boolar IR)
+│   │   └── vaffle/             WAFFLE-to-VAFFLE intermediate layer (stub)
+│   └── compiler/
+│       └── volar-compiler/     Compiler: parser → IR → lowering → printers
+├── docs/                       This documentation
+└── packages/                   npm packages (volar-runtime TypeScript)
 ```
 
 ---
