@@ -9,8 +9,11 @@ use volar_compiler::{
 
 fn main() {
     let base_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
+        .parent()  // crates/compiler
         .unwrap()
+        .parent()  // crates
+        .unwrap()
+        .join("spec")
         .join("volar-spec")
         .join("src");
 

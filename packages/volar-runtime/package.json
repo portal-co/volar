@@ -3,6 +3,7 @@
     "zshy": "index.ts",
     "type": "module",
     "scripts": {
+        "generate": "cd ../.. && cargo generate-ts",
         "build": "npx zshy -c ../../tsconfig.json",
         "typecheck": "./scripts/typecheck-strict.sh",
         "typecheck:count": "./scripts/typecheck-strict.sh --count"

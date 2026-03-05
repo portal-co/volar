@@ -1,0 +1,20 @@
+[alias]
+# Generate dynamic Rust into crates/spec/volar-spec-dyn/src/generated.rs
+generate-spec = [
+    "run",
+    "--package", "volar-compiler",
+    "--bin", "volar-codegen",
+    "--features", "parsing",
+    "--",
+    "dyn",
+]
+
+# Generate TypeScript into packages/volar-runtime/src/generated.ts
+generate-ts = [
+    "run",
+    "--package", "volar-compiler",
+    "--bin", "volar-codegen",
+    "--features", "parsing",
+    "--",
+    "ts",
+]
