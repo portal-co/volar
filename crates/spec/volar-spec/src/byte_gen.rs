@@ -10,6 +10,31 @@ use super::*;
 use crate::vole::{VoleArray, vope::Vope};
 use volar_common::hash_commitment::commit;
 pub(crate) use volar_common::length_doubling::LengthDoubler;
+
+/// Resolves a party index into [`ABO::per_byte`] or [`ABOOpening::openings`].
+///
+/// Without the `multi_party` feature only [`U1`] satisfies this bound,
+/// so the shared prover/verifier methods in [`impls`] are restricted to the
+/// 2-party case.  With `multi_party` all `N: `[`Unsigned`] satisfy it,
+/// enabling the full N-party protocol.
+pub trait PartyIndex {
+    fn party_index(requested: usize) -> usize;
+}
+
+/// 2-party: always index 0; the argument is ignored.
+#[cfg(not(feature = "multi_party"))]
+impl PartyIndex for U1 {
+    #[inline]
+    fn party_index(_: usize) -> usize { 0 }
+}
+
+/// N-party: return the requested index directly.
+#[cfg(feature = "multi_party")]
+impl<N: Unsigned> PartyIndex for N {
+    #[inline]
+    fn party_index(requested: usize) -> usize { requested }
+}
+
 pub fn gen_abo<
     B: LengthDoubler,
     D: Digest,
@@ -131,10 +156,7 @@ pub struct ABOOpening<
     >, N>,
 }
 
-pub mod impls;
-#[cfg(feature = "multi_party")]
 pub mod prover;
-#[cfg(feature = "multi_party")]
 pub mod verifier;
 
 pub struct BSplit<
