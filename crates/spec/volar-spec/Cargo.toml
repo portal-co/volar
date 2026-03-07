@@ -6,6 +6,9 @@ license.workspace = true
 description.workspace = true
 repository.workspace = true
 
+[features]
+multi_party = []
+
 [dependencies]
 cipher.workspace = true
 rand.workspace = true

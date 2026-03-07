@@ -132,7 +132,9 @@ pub struct ABOOpening<
 }
 
 pub mod impls;
+#[cfg(feature = "multi_party")]
 pub mod prover;
+#[cfg(feature = "multi_party")]
 pub mod verifier;
 
 pub struct BSplit<
