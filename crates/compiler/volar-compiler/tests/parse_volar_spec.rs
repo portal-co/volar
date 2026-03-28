@@ -8,6 +8,9 @@ fn read_volar_spec_sources() -> Vec<(String, String)> {
     let base_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
+        .parent()
+        .unwrap()
+        .join("spec")
         .join("volar-spec")
         .join("src");
 
