@@ -13,23 +13,23 @@ pub mod field_rotate;
 mod impls;
 pub mod poly;
 
-pub trait VoleArray<T>: ArrayLength<T> {}
-impl<T, X: ArrayLength<T>> VoleArray<T> for X {}
+pub trait VoleArray<T>: ArraySize {}
+impl<T, X: ArraySize> VoleArray<T> for X {}
 
-pub struct Delta<N: ArrayLength<T>, T> {
-    pub delta: GenericArray<T, N>,
+pub struct Delta<N: ArraySize, T> {
+    pub delta: Array<T, N>,
 }
-pub struct Q<N: ArrayLength<T>, T> {
-    pub q: GenericArray<T, N>,
+pub struct Q<N: ArraySize, T> {
+    pub q: Array<T, N>,
 }
-impl<N: ArrayLength<T>, T> Delta<N, T> {
-    pub fn remap<M: ArrayLength<T>, F: FnMut(usize) -> usize>(&self, mut f: F) -> Delta<M, T>
+impl<N: ArraySize, T> Delta<N, T> {
+    pub fn remap<M: ArraySize, F: FnMut(usize) -> usize>(&self, mut f: F) -> Delta<M, T>
     where
         T: Clone,
     {
         let Self { delta } = self;
         Delta {
-            delta: GenericArray::<T, M>::generate(|i| delta[f(i) % N::to_usize()].clone()),
+            delta: Array::<T, M>::from_fn(|i| delta[f(i) % N::USIZE].clone()),
         }
     }
     pub fn rotate_left(&self, n: usize) -> Self
@@ -44,24 +44,23 @@ impl<N: ArrayLength<T>, T> Delta<N, T> {
     {
         self.remap(|a| a.wrapping_add(n))
     }
-    pub fn r#static<U: Mul<T, Output = O> + Clone, O>(&self, val: GenericArray<U, N>) -> Q<N, O>
+    pub fn r#static<U: Mul<T, Output = O> + Clone, O>(&self, val: Array<U, N>) -> Q<N, O>
     where
         T: Clone,
-        N: ArrayLength<O> + ArrayLength<U>,
     {
         Q {
-            q: GenericArray::<O, N>::generate(|i| val[i].clone() * self.delta[i].clone()),
+            q: Array::<O, N>::from_fn(|i| val[i].clone() * self.delta[i].clone()),
         }
     }
 }
-impl<N: ArrayLength<T>, T> Q<N, T> {
-    pub fn remap<M: ArrayLength<T>, F: FnMut(usize) -> usize>(&self, mut f: F) -> Q<M, T>
+impl<N: ArraySize, T> Q<N, T> {
+    pub fn remap<M: ArraySize, F: FnMut(usize) -> usize>(&self, mut f: F) -> Q<M, T>
     where
         T: Clone,
     {
         let Self { q } = self;
         Q {
-            q: GenericArray::<T, M>::generate(|i| q[f(i) % N::to_usize()].clone()),
+            q: Array::<T, M>::from_fn(|i| q[f(i) % N::USIZE].clone()),
         }
     }
     pub fn rotate_left(&self, n: usize) -> Self

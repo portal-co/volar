@@ -15,10 +15,8 @@
 use core::ops::BitXor;
 
 use cipher::{
-    ArrayLength, Unsigned,
     consts::U1,
-    generic_array::{functional::FunctionalSequence, sequence::GenericSequence},
-    typenum::{Logarithm2, Max},
+    typenum::{Logarithm2, Max, Unsigned},
 };
 use digest::Digest;
 
@@ -33,49 +31,39 @@ use volar_common::hash_commitment::commit;
 impl<
     B: LengthDoubler,
     D: Digest,
-    K: ArrayLength<GenericArray<u8, B::OutputSize>>,
-    N: ArrayLength<GenericArray<GenericArray<u8, B::OutputSize>, K>>,
+    K: ArraySize,
+    N: ArraySize,
 > ABO<B, D, K, N>
 {
     /// Generate an [`ABOOpening`] for each party; bad positions are replaced
     /// with hash commitments, revealing the rest directly.
     pub fn open<
-        T: ArrayLength<
-                GenericArray<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>, U>,
-            > + ArrayLength<u64>,
-        U: ArrayLength<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>>,
+        T: ArraySize,
+        U: ArraySize,
         R: AsRef<[u8]>,
-        M: ArrayLength<u8>,
+        M: ArraySize,
     >(
         &self,
-        bad: GenericArray<u64, T>,
+        bad: Array<u64, T>,
         rand: &R,
     ) -> ABOOpening<B, D, T, U, N>
     where
         B::OutputSize: Max<D::OutputSize, Output = M>,
         T: Mul<U, Output = K>,
-        N: ArrayLength<
-            GenericArray<
-                GenericArray<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>, U>,
-                T,
-            >,
-        >,
     {
         ABOOpening {
             bad: bad.clone(),
-            openings: GenericArray::generate(move |ni| {
+            openings: Array::<Array<Array<Array<u8, M>, U>, T>, N>::from_fn(move |ni| {
                 let bad = bad.clone();
-                GenericArray::<GenericArray<GenericArray<u8, M>, U>, T>::generate(move |i| {
+                Array::<Array<Array<u8, M>, U>, T>::from_fn(move |i| {
                     let bad = bad.clone();
-                    GenericArray::<GenericArray<u8, M>, U>::generate(move |j| {
-                        let i2 = i | ((j as usize) << T::to_usize().ilog2());
+                    Array::<Array<u8, M>, U>::from_fn(move |j| {
+                        let i2 = i | ((j as usize) << T::USIZE.ilog2());
                         if bad.contains(&(i2 as u64)) {
                             let h = commit::<D>(&self.per_byte[ni][i2], rand);
-                            GenericArray::<u8, M>::generate(|j| {
-                                h.as_ref().get(j).cloned().unwrap_or_default()
-                            })
+                            Array::<u8, M>::from_fn(|j| h.as_ref().get(j).cloned().unwrap_or_default())
                         } else {
-                            GenericArray::<u8, M>::generate(|j| {
+                            Array::<u8, M>::from_fn(|j| {
                                 self.per_byte[ni][i2].get(j).cloned().unwrap_or_default()
                             })
                         }
@@ -93,8 +81,8 @@ impl<
 impl<
     B: LengthDoubler,
     D: Digest,
-    K: ArrayLength<GenericArray<u8, B::OutputSize>>,
-    N: ArrayLength<GenericArray<GenericArray<u8, B::OutputSize>, K>> + PartyIndex,
+    K: ArraySize,
+    N: ArraySize + PartyIndex,
 > ABO<B, D, K, N>
 {
     pub fn to_vole_material<const M: usize>(&self, target: usize) -> [Vope<B::OutputSize, u8>; M]
@@ -107,15 +95,15 @@ impl<
         })
     }
 
-    pub fn to_vole_material_typenum<M: ArrayLength<Vope<B::OutputSize, u8>>>(
+    pub fn to_vole_material_typenum<M: ArraySize>(
         &self,
         target: usize,
-    ) -> GenericArray<Vope<B::OutputSize, u8>, M>
+    ) -> Array<Vope<B::OutputSize, u8>, M>
     where
         B::OutputSize: VoleArray<u8>,
     {
-        GenericArray::<Vope<B::OutputSize, u8>, M>::generate(|i| {
-            let s = &self.per_byte[N::party_index(target)][(i * M::to_usize())..][..M::to_usize()];
+        Array::<Vope<B::OutputSize, u8>, M>::from_fn(|i| {
+            let s = &self.per_byte[N::party_index(target)][(i * M::USIZE)..][..M::USIZE];
             create_vole_from_material::<B, _>(s)
         })
     }
@@ -135,40 +123,40 @@ impl<
     }
 
     pub fn to_vole_material_typenum_expanded<
-        M: ArrayLength<Vope<B::OutputSize, u8>>,
+        M: ArraySize,
         X: AsRef<[u8]>,
         F: FnMut(&[u8]) -> X,
     >(
         &self,
         target: usize,
         mut f: F,
-    ) -> GenericArray<Vope<B::OutputSize, u8>, M>
+    ) -> Array<Vope<B::OutputSize, u8>, M>
     where
         B::OutputSize: VoleArray<u8>,
     {
-        GenericArray::<Vope<B::OutputSize, u8>, M>::generate(|i| {
-            let s = &self.per_byte[N::party_index(target)][(i * M::to_usize())..][..M::to_usize()];
+        Array::<Vope<B::OutputSize, u8>, M>::from_fn(|i| {
+            let s = &self.per_byte[N::party_index(target)][(i * M::USIZE)..][..M::USIZE];
             create_vole_from_material_expanded::<B, X, _, _>(s, &mut f)
         })
     }
 
-    pub fn split_bit_typenum<M: ArrayLength<BSplit<B, D>>>(
+    pub fn split_bit_typenum<M: ArraySize>(
         &self,
         target: usize,
-    ) -> GenericArray<BSplit<B, D>, M>
+    ) -> Array<BSplit<B, D>, M>
     where
         B::OutputSize: VoleArray<u8>,
         D: Digest<
-            OutputSize: Logarithm2<Output: ArrayLength<[GenericArray<u8, B::OutputSize>; 2]>>,
+            OutputSize: Logarithm2<Output: ArraySize>,
         >,
     {
-        GenericArray::<BSplit<B, D>, M>::generate(|i| {
-            let s = &self.per_byte[N::party_index(target)][(i * M::to_usize())..][..M::to_usize()];
+        Array::<BSplit<B, D>, M>::from_fn(|i| {
+            let s = &self.per_byte[N::party_index(target)][(i * M::USIZE)..][..M::USIZE];
             BSplit {
-                split: GenericArray::<
-                    [GenericArray<u8, B::OutputSize>; 2],
+                split: Array::<
+                    [Array<u8, B::OutputSize>; 2],
                     <D::OutputSize as Logarithm2>::Output,
-                >::generate(|j| {
+                >::from_fn(|j| {
                     core::array::from_fn(|b| {
                         s.iter()
                             .enumerate()
@@ -179,11 +167,8 @@ impl<
                                     None
                                 }
                             })
-                            .fold(GenericArray::<u8, B::OutputSize>::default(), |a, b| {
-                                a.zip(
-                                    GenericArray::<u8, B::OutputSize>::generate(|i| b.as_ref()[i]),
-                                    |a, b| a.bitxor(b),
-                                )
+                            .fold(Array::<u8, B::OutputSize>::default(), |a, b| {
+                                Array::<u8, B::OutputSize>::from_fn(|i| a[i].bitxor(b[i]))
                             })
                     })
                 }),

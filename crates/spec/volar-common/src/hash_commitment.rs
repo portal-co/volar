@@ -3,7 +3,7 @@
 // Standard hash commitment: commit(data, nonce) = H(data || nonce).
 
 use super::*;
-pub struct CommitmentCore<D: Digest>(GenericArray<u8, D::OutputSize>);
+pub struct CommitmentCore<D: Digest>(Array<u8, D::OutputSize>);
 impl<D: Digest> AsRef<[u8]> for CommitmentCore<D> {
     fn as_ref(&self) -> &[u8] {
         &self.0
@@ -11,7 +11,7 @@ impl<D: Digest> AsRef<[u8]> for CommitmentCore<D> {
 }
 impl<D: Digest> Default for CommitmentCore<D> {
     fn default() -> Self {
-        CommitmentCore(GenericArray::<u8, D::OutputSize>::default())
+        CommitmentCore(Array::<u8, D::OutputSize>::default())
     }
 }
 impl<D: Digest> Clone for CommitmentCore<D> {

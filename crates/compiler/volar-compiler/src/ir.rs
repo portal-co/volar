@@ -325,7 +325,7 @@ impl Default for StructKind {
 impl StructKind {
     pub fn from_str(s: &str) -> Self {
         match s {
-            "GenericArray" => Self::GenericArray,
+            "GenericArray" | "Array" => Self::GenericArray,
             other => Self::Custom(other.to_string()),
         }
     }
@@ -334,7 +334,7 @@ impl StructKind {
 impl fmt::Display for StructKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::GenericArray => write!(f, "GenericArray"),
+            Self::GenericArray => write!(f, "Array"),
             Self::Custom(name) => write!(f, "{}", name),
         }
     }

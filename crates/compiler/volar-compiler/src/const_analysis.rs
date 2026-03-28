@@ -74,11 +74,11 @@ pub fn classify_generic(param: &IrGenericParam, all_params: &[&[IrGenericParam]]
 
 /// Returns true if the trait bound indicates a type-level length/size.
 ///
-/// Recognises `ArrayLength` and `Unsigned`.
+/// Recognises `ArrayLength`, `ArraySize`, and `Unsigned`.
 pub fn is_length_bound(bound: &IrTraitBound) -> bool {
     match &bound.trait_kind {
         TraitKind::Math(MathTrait::Unsigned) => true,
-        TraitKind::Custom(name) => name == "ArrayLength",
+        TraitKind::Custom(name) => name == "ArrayLength" || name == "ArraySize",
         _ => false,
     }
 }

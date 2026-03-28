@@ -13,5 +13,6 @@ multi_party = []
 cipher.workspace = true
 rand.workspace = true
 digest.workspace = true
+hybrid-array.workspace = true
 volar-primitives = { path = "../volar-primitives" }
 volar-common = { path = "../volar-common" }

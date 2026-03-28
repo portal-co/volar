@@ -1,9 +1,8 @@
 use core::ops::{BitXor, Mul};
 
 use cipher::{
-    Unsigned,
     consts::U1,
-    typenum::{Logarithm2, Max},
+    typenum::{Logarithm2, Max, Unsigned},
 };
 
 use super::*;
@@ -38,21 +37,20 @@ impl<N: Unsigned> PartyIndex for N {
 pub fn gen_abo<
     B: LengthDoubler,
     D: Digest,
-    K: ArrayLength<GenericArray<u8, B::OutputSize>>,
-    N: ArrayLength<GenericArray<GenericArray<u8, B::OutputSize>, K>>,
+    K: ArraySize,
+    N: ArraySize,
 >(
-    a: GenericArray<u8, B::OutputSize>,
+    a: Array<u8, B::OutputSize>,
     rand: &impl AsRef<[u8]>,
 ) -> ABO<B, D, K, N>
 where
     B: Sized,
 {
     let mut h = D::new();
-    let per_byte = GenericArray::generate(|ni| {
-        let mut per_byte = GenericArray::<GenericArray<u8, B::OutputSize>, K>::default();
-        for i in 0..K::to_usize() {
-            // let id: ByteId = core::array::from_fn(|j| ((i >> j) & 1) != 0);
-            let core = (0..K::to_usize().ilog2()).fold(a.clone(), |mut acc, b| {
+    let per_byte = Array::<Array<Array<u8, B::OutputSize>, K>, N>::from_fn(|_ni| {
+        let mut per_byte = Array::<Array<u8, B::OutputSize>, K>::default();
+        for i in 0..K::USIZE {
+            let core = (0..K::USIZE.ilog2()).fold(a.clone(), |mut acc, b| {
                 if (i >> b) & 1 != 0 {
                     let doubled = B::double(acc);
                     acc = doubled[1].clone();
@@ -76,25 +74,19 @@ where
 pub fn create_vole_from_material<B: LengthDoubler<OutputSize: VoleArray<u8>>, X: AsRef<[u8]>>(
     s: &[X],
 ) -> Vope<B::OutputSize, u8> {
-    let u: GenericArray<u8, B::OutputSize> =
+    let u: Array<u8, B::OutputSize> =
         s.iter()
-            .fold(GenericArray::<u8, B::OutputSize>::default(), |a, b| {
-                a.zip(
-                    GenericArray::<u8, B::OutputSize>::generate(|i| b.as_ref()[i]),
-                    |a, b| a.bitxor(b),
-                )
+            .fold(Array::<u8, B::OutputSize>::default(), |a, b| {
+                Array::<u8, B::OutputSize>::from_fn(|i| a[i].bitxor(b.as_ref()[i]))
             });
-    let v: GenericArray<u8, B::OutputSize> =
+    let v: Array<u8, B::OutputSize> =
         s.iter()
             .enumerate()
-            .fold(GenericArray::<u8, B::OutputSize>::default(), |a, (i, b)| {
-                a.zip(
-                    GenericArray::<u8, B::OutputSize>::generate(|i| b.as_ref()[i]),
-                    |a, b| a.bitxor(b).bitxor(i as u8),
-                )
+            .fold(Array::<u8, B::OutputSize>::default(), |a, (i, b)| {
+                Array::<u8, B::OutputSize>::from_fn(|j| a[j].bitxor(b.as_ref()[j]).bitxor(i as u8))
             });
     Vope {
-        u: GenericArray::<GenericArray<u8, B::OutputSize>, U1>::generate(|_| u.clone()),
+        u: Array::<Array<u8, B::OutputSize>, U1>::from_fn(|_| u.clone()),
         v,
     }
 }
@@ -107,51 +99,43 @@ pub fn create_vole_from_material_expanded<
     s: &[Y],
     mut f: F,
 ) -> Vope<B::OutputSize, u8> {
-    let u: GenericArray<u8, B::OutputSize> = s
+    let u: Array<u8, B::OutputSize> = s
         .iter()
-        .map(|b| f(&b.as_ref()[..(<B::OutputSize as Unsigned>::to_usize())]))
-        .fold(GenericArray::<u8, B::OutputSize>::default(), |a, b| {
-            a.zip(
-                GenericArray::<u8, B::OutputSize>::generate(|i| b.as_ref()[i]),
-                |a, b| a.bitxor(b),
-            )
+        .map(|b| f(&b.as_ref()[..(<B::OutputSize as Unsigned>::USIZE)]))
+        .fold(Array::<u8, B::OutputSize>::default(), |a, b| {
+            Array::<u8, B::OutputSize>::from_fn(|i| a[i].bitxor(b.as_ref()[i]))
         });
-    let v: GenericArray<u8, B::OutputSize> = s
+    let v: Array<u8, B::OutputSize> = s
         .iter()
-        .map(|b| f(&b.as_ref()[..(<B::OutputSize as Unsigned>::to_usize())]))
+        .map(|b| f(&b.as_ref()[..(<B::OutputSize as Unsigned>::USIZE)]))
         .enumerate()
-        .fold(GenericArray::<u8, B::OutputSize>::default(), |a, (i, b)| {
-            a.zip(
-                GenericArray::<u8, B::OutputSize>::generate(|i| b.as_ref()[i]),
-                |a, b| a.bitxor(b).bitxor(i as u8),
-            )
+        .fold(Array::<u8, B::OutputSize>::default(), |a, (i, b)| {
+            Array::<u8, B::OutputSize>::from_fn(|j| a[j].bitxor(b.as_ref()[j]).bitxor(i as u8))
         });
     Vope {
-        u: GenericArray::<GenericArray<u8, B::OutputSize>, U1>::generate(|_| u.clone()),
+        u: Array::<Array<u8, B::OutputSize>, U1>::from_fn(|_| u.clone()),
         v,
     }
 }
 pub struct ABO<
     B: LengthDoubler,
     D: Digest,
-    K: ArrayLength<GenericArray<u8, B::OutputSize>>,
-    N: ArrayLength<GenericArray<GenericArray<u8, B::OutputSize>, K>>,
+    K: ArraySize,
+    N: ArraySize,
 > {
-    pub commit: GenericArray<u8, D::OutputSize>,
-    pub per_byte: GenericArray<GenericArray<GenericArray<u8, B::OutputSize>, K>, N>,
+    pub commit: Array<u8, D::OutputSize>,
+    pub per_byte: Array<Array<Array<u8, B::OutputSize>, K>, N>,
 }
 pub struct ABOOpening<
-    B: LengthDoubler<OutputSize: Max<D::OutputSize, Output: ArrayLength<u8>>>,
+    B: LengthDoubler<OutputSize: Max<D::OutputSize, Output: ArraySize>>,
     D: Digest,
-    T: ArrayLength<
-            GenericArray<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>, U>,
-        > + ArrayLength<u64>,
-    U: ArrayLength<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>>,
-    N: ArrayLength<GenericArray<GenericArray<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>, U>, T>>,
+    T: ArraySize,
+    U: ArraySize,
+    N: ArraySize,
 > {
-    pub bad: GenericArray<u64, T>,
-    pub openings: GenericArray<GenericArray<
-        GenericArray<GenericArray<u8, <B::OutputSize as Max<D::OutputSize>>::Output>, U>,
+    pub bad: Array<u64, T>,
+    pub openings: Array<Array<
+        Array<Array<u8, <B::OutputSize as Max<D::OutputSize>>::Output>, U>,
         T,
     >, N>,
 }
@@ -161,8 +145,8 @@ pub mod verifier;
 
 pub struct BSplit<
     B: LengthDoubler,
-    D: Digest<OutputSize: Logarithm2<Output: ArrayLength<[GenericArray<u8, B::OutputSize>; 2]>>>,
+    D: Digest<OutputSize: Logarithm2<Output: ArraySize>>,
 > {
     pub split:
-        GenericArray<[GenericArray<u8, B::OutputSize>; 2], <D::OutputSize as Logarithm2>::Output>,
+        Array<[Array<u8, B::OutputSize>; 2], <D::OutputSize as Logarithm2>::Output>,
 }

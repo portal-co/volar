@@ -10,3 +10,4 @@ repository.workspace = true
 cipher.workspace = true
 rand.workspace = true
 digest.workspace = true
+hybrid-array.workspace = true

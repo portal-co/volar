@@ -1328,7 +1328,7 @@ impl<'a> RustBackend for DynPreambleWriter<'a> {
         )?;
         writeln!(f, "use core::marker::PhantomData;")?;
         writeln!(f, "use typenum::Unsigned;")?;
-        writeln!(f, "use cipher::{{BlockEncrypt, Block}};")?;
+        writeln!(f, "use cipher::BlockCipherEncrypt;")?;
         writeln!(f, "use digest::Digest;")?;
         writeln!(f, "use volar_common::hash_commitment::commit;")?;
         writeln!(f, "use volar_common::length_doubling::LengthDoubler;")?;
@@ -1336,7 +1336,7 @@ impl<'a> RustBackend for DynPreambleWriter<'a> {
             f,
             "use volar_primitives::{{Bit, BitsInBytes, BitsInBytes64, Galois, Galois64}};"
         )?;
-        writeln!(f, "use generic_array::GenericArray;")?;
+        writeln!(f, "use hybrid_array::Array;")?;
         writeln!(f)?;
 
         // Dependency re-exports
@@ -1367,7 +1367,7 @@ impl<'a> RustBackend for DynPreambleWriter<'a> {
         writeln!(f)?;
         writeln!(
             f,
-            "/// Bridge: call LengthDoubler::double on a Vec<u8>, converting to/from GenericArray"
+            "/// Bridge: call LengthDoubler::double on a Vec<u8>, converting to/from Array"
         )?;
         writeln!(f, "#[inline]")?;
         writeln!(
@@ -1376,9 +1376,9 @@ impl<'a> RustBackend for DynPreambleWriter<'a> {
         )?;
         writeln!(
             f,
-            "    let ga = generic_array::GenericArray::from_exact_iter(v.into_iter()).expect(\"double_vec: length mismatch\");"
+            "    let arr = hybrid_array::Array::try_from(v.as_slice()).expect(\"double_vec: length mismatch\");"
         )?;
-        writeln!(f, "    let [a, b] = B::double(ga);")?;
+        writeln!(f, "    let [a, b] = B::double(arr);")?;
         writeln!(f, "    [a.to_vec(), b.to_vec()]")?;
         writeln!(f, "}}")?;
         writeln!(f)?;

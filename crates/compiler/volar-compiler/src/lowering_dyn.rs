@@ -760,6 +760,7 @@ fn lower_type_dyn_inner(
             }
 
             let new_kind = if kind_str == "GenericArray"
+                || kind_str == "Array"
                 || kind_str == "Option"
                 || kind_str == "Result"
                 || kind_str == "Box"
@@ -1234,7 +1235,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     return IrExpr::Var(v.to_lowercase());
                 }
             }
-            if v == "GenericArray" {
+            if v == "GenericArray" || v == "Array" {
                 return IrExpr::Path {
                     segments: vec!["Vec".to_string()],
                     type_args: vec![],
@@ -1247,7 +1248,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             type_args,
         } => {
             let mut segments = segments.clone();
-            if segments.len() > 0 && segments[0] == "GenericArray" {
+            if segments.len() > 0 && (segments[0] == "GenericArray" || segments[0] == "Array") {
                 segments[0] = "Vec".to_string();
             }
             IrExpr::Path {

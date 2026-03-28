@@ -8,12 +8,11 @@ use alloc::vec;
 use core::ops::{Add, Sub, Mul, Div, BitAnd, BitOr, BitXor, Shl, Shr};
 use core::marker::PhantomData;
 use typenum::Unsigned;
-use cipher::{BlockEncrypt, Block};
 use digest::Digest;
 use volar_common::hash_commitment::commit;
 use volar_common::length_doubling::LengthDoubler;
 use volar_primitives::{Bit, BitsInBytes, BitsInBytes64, Galois, Galois64};
-use generic_array::GenericArray;
+use hybrid_array::Array;
 
 /// Compute integer log2
 #[inline]
@@ -21,11 +20,11 @@ pub fn ilog2(x: usize) -> u32 {
     usize::BITS - x.leading_zeros() - 1
 }
 
-/// Bridge: call LengthDoubler::double on a Vec<u8>, converting to/from GenericArray
+/// Bridge: call LengthDoubler::double on a Vec<u8>, converting to/from Array
 #[inline]
 pub fn double_vec<B: LengthDoubler>(v: Vec<u8>) -> [Vec<u8>; 2] {
-    let ga = generic_array::GenericArray::from_exact_iter(v.into_iter()).expect("double_vec: length mismatch");
-    let [a, b] = B::double(ga);
+    let arr = Array::try_from(v.as_slice()).expect("double_vec: length mismatch");
+    let [a, b] = B::double(arr);
     [a.to_vec(), b.to_vec()]
 }
 

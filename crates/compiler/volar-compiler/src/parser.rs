@@ -715,7 +715,7 @@ fn convert_type(ty: &Type) -> Result<IrType> {
                 Vec::new()
             };
 
-            if name == "GenericArray" && type_args.len() >= 2 {
+            if (name == "GenericArray" || name == "Array") && type_args.len() >= 2 {
                 return Ok(IrType::Array {
                     kind: ArrayKind::GenericArray,
                     elem: Box::new(type_args[0].clone()),
@@ -1260,7 +1260,8 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
         {
             let prefix = &segments[..segments.len() - 1];
             if prefix == ["GenericArray"]
-                || prefix.iter().any(|s| s == "GenericArray" || s == "Vec")
+                || prefix == ["Array"]
+                || prefix.iter().any(|s| s == "GenericArray" || s == "Array" || s == "Vec")
             {
                 let (elem_ty, len) = extract_array_type_params(&params);
                 let array_ty = match elem_ty {
@@ -1272,7 +1273,7 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
                     None => {
                         return Err(CompilerError::InvalidType(format!(
                             "Bare `{}::default()` without turbofish type parameters. \
-                             Add explicit types, e.g. `GenericArray::<ElemType, LenType>::default()`.",
+                             Add explicit types, e.g. `Array::<ElemType, LenType>::default()`.",
                             prefix.join("::")
                         )));
                     }

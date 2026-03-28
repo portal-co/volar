@@ -26,36 +26,36 @@ impl<N, T, K> Vope<N, T, K>
 where
     N: VoleArray<T>,
     T: Add<Output = T> + Mul<Output = T> + Default + Clone, // T is the extension field (e.g. GF(2^128))
-    K: ArrayLength<GenericArray<T, N>>,
+    K: ArraySize,
 {
     /// Multiplies this Vope with another, returning a Vope of degree K1 + K2.
     /// This represents the algebraic product in the context of Delta.
     pub fn mul_generalized<K2: Add<K>>(&self, other: &Vope<N, T, K2>) -> Vope<N, T, K2::Output>
     where
-        K2: ArrayLength<GenericArray<T, N>>,
-        K2::Output: ArrayLength<GenericArray<T, N>>, // KRes must be K + K2
+        K2: ArraySize,
+        K2::Output: ArraySize, // KRes must be K + K2
     {
         // 1. Initialize result with zeros
-        let mut res_u = GenericArray::<GenericArray<T, N>, K2::Output>::default();
-        let mut res_v = GenericArray::<T, N>::default();
+        let mut res_u = Array::<Array<T, N>, K2::Output>::default();
+        let mut res_v = Array::<T, N>::default();
 
         // 2. Perform SIMD Convolution
         // Degree of self is K, degree of other is K2. Max index is K+K2.
-        for i in 0..=(K::to_usize()) {
-            for j in 0..=(K2::to_usize()) {
+        for i in 0..=(K::USIZE) {
+            for j in 0..=(K2::USIZE) {
                 let k = i + j;
                 let a_coeff = if i == 0 { &self.v } else { &self.u[i - 1] };
                 let b_coeff = if j == 0 { &other.v } else { &other.u[j - 1] };
 
                 if k == 0 {
                     // Resulting offset (degree 0)
-                    for lane in 0..N::to_usize() {
+                    for lane in 0..N::USIZE {
                         res_v[lane] =
                             res_v[lane].clone() + a_coeff[lane].clone() * b_coeff[lane].clone();
                     }
                 } else {
                     // Resulting higher degree coefficients
-                    for lane in 0..N::to_usize() {
+                    for lane in 0..N::USIZE {
                         res_u[k - 1][lane] = res_u[k - 1][lane].clone()
                             + a_coeff[lane].clone() * b_coeff[lane].clone();
                     }

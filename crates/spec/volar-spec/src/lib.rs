@@ -1,9 +1,7 @@
 #![no_std]
 
-use cipher::{ArrayLength, generic_array::GenericArray};
 use digest::Digest;
-
-use cipher::generic_array::{functional::FunctionalSequence, sequence::GenericSequence};
+pub use hybrid_array::{Array, ArraySize};
 
 pub use volar_common::hash_commitment as simple;
 pub mod byte_gen;

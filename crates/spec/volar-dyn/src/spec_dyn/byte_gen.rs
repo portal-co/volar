@@ -4,7 +4,6 @@ use super::*;
 use alloc::vec::Vec;
 use core::ops::Deref;
 
-use cipher::BlockEncrypt;
 use digest::Digest;
 
 use volar_common::hash_commitment::commit;
