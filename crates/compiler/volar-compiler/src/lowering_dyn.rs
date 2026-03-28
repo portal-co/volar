@@ -1247,6 +1247,30 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             segments,
             type_args,
         } => {
+            // X::USIZE — lower to the runtime length witness (works for both simple
+            // type-params like K::USIZE and qualified projections like D::OutputSize::USIZE
+            // which the parser encodes as segments = ["D::OutputSize", "USIZE"]).
+            if segments.len() == 2 && segments[1] == "USIZE" && type_args.is_empty() {
+                let qual = &segments[0];
+                // Simple type param: K::USIZE → k
+                if fn_gen.iter().any(|p| {
+                    p.name == *qual
+                        && classify_generic_with_aliases(p, &[fn_gen], &ctx.aliases())
+                            == GenericKind::Length
+                }) {
+                    return IrExpr::Var(qual.to_lowercase());
+                }
+                // Qualified projection: "D::OutputSize" → use array_length_to_expr
+                // infrastructure which handles TypeParam("D::OutputSize") via
+                // resolve_projection_as_expr.
+                if qual.contains("::") {
+                    return array_length_to_expr(
+                        &ArrayLength::TypeParam(qual.clone()),
+                        fn_gen,
+                        ctx,
+                    );
+                }
+            }
             let mut segments = segments.clone();
             if segments.len() > 0 && (segments[0] == "GenericArray" || segments[0] == "Array") {
                 segments[0] = "Vec".to_string();
@@ -1808,6 +1832,32 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             right: Box::new(lower_expr_dyn(right, ctx, fn_gen)),
         },
         IrExpr::Unreachable => IrExpr::Unreachable,
+        IrExpr::Continue => IrExpr::Continue,
+        IrExpr::Break(e) => IrExpr::Break(
+            e.as_ref()
+                .map(|ex| Box::new(lower_expr_dyn(ex, ctx, fn_gen))),
+        ),
+        IrExpr::AssignOp { op, left, right } => IrExpr::AssignOp {
+            op: *op,
+            left: Box::new(lower_expr_dyn(left, ctx, fn_gen)),
+            right: Box::new(lower_expr_dyn(right, ctx, fn_gen)),
+        },
+        IrExpr::Try(e) => IrExpr::Try(Box::new(lower_expr_dyn(e, ctx, fn_gen))),
+        // TypenumUsize: lower the type; if it's a length TypeParam, emit the witness var.
+        IrExpr::TypenumUsize { ty } => {
+            if let IrType::TypeParam(name) = ty.as_ref() {
+                if fn_gen.iter().any(|p| {
+                    p.name == *name
+                        && classify_generic_with_aliases(p, &[fn_gen], &ctx.aliases())
+                            == GenericKind::Length
+                }) {
+                    return IrExpr::Var(name.to_lowercase());
+                }
+            }
+            IrExpr::TypenumUsize {
+                ty: Box::new(lower_type_dyn(ty, ctx, fn_gen)),
+            }
+        }
         IrExpr::Range {
             start,
             end,

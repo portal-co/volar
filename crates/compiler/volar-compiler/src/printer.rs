@@ -1046,6 +1046,23 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     ExprWriter { expr: e }.fmt(f)?;
                 }
             }
+            IrExpr::Break(e) => {
+                write!(f, "break")?;
+                if let Some(e) = e {
+                    write!(f, " ")?;
+                    ExprWriter { expr: e }.fmt(f)?;
+                }
+            }
+            IrExpr::Continue => write!(f, "continue")?,
+            IrExpr::AssignOp { op, left, right } => {
+                ExprWriter { expr: left }.fmt(f)?;
+                write!(f, " {}= ", bin_op_str(*op))?;
+                ExprWriter { expr: right }.fmt(f)?;
+            }
+            IrExpr::Try(e) => {
+                ExprWriter { expr: e }.fmt(f)?;
+                write!(f, "?")?;
+            }
             IrExpr::TypenumUsize { ty } => {
                 write!(f, "<")?;
                 TypeWriter { ty }.fmt(f)?;
