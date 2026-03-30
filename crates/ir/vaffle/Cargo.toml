@@ -7,4 +7,5 @@ description.workspace = true
 repository.workspace = true
 
 [dependencies]
-volar-ir = { version = "0.1.0", path = "../volar-ir" }
+volar-ir.workspace = true
+volar-ir-common.workspace = true

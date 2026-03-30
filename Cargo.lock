@@ -562,6 +562,7 @@ name = "vaffle"
 version = "0.1.0"
 dependencies = [
  "volar-ir",
+ "volar-ir-common",
 ]
 
 [[package]]
@@ -609,6 +610,13 @@ dependencies = [
 
 [[package]]
 name = "volar-ir"
+version = "0.1.0"
+dependencies = [
+ "volar-ir-common",
+]
+
+[[package]]
+name = "volar-ir-common"
 version = "0.1.0"
 
 [[package]]

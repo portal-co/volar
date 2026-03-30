@@ -7,7 +7,7 @@ members = [
     "crates/spec/volar-spec-dyn",
     "crates/ir/volar-ir",
     "crates/ir/vaffle",
-    "crates/compiler/volar-compiler", "crates/compiler/ephemera", "crates/compiler/volar-compiler-common",
+    "crates/compiler/volar-compiler", "crates/compiler/ephemera", "crates/compiler/volar-compiler-common", "crates/ir/volar-ir-common",
 ]
 resolver = "3"
 
@@ -18,6 +18,7 @@ repository = "https://github.com/portal-co/volar.git"
 [workspace.dependencies]
 volar-ir = {path="crates/ir/volar-ir", version = "0.1.0"}
 vaffle = {path="crates/ir/vaffle", version = "0.1.0"}
+volar-ir-common = {path="crates/ir/volar-ir-common", version = "0.1.0"}
 
 digest = { version = "0.11.2", default-features = false }
 cipher = { version = "0.5.1", default-features = false }

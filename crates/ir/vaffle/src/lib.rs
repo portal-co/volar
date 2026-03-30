@@ -1,6 +1,7 @@
 #![no_std]
 
 use alloc::{collections::btree_map::BTreeMap, string::String, vec::Vec};
+use volar_ir_common::Type;
 
 extern crate alloc;
 pub struct Module {
@@ -20,15 +21,7 @@ pub struct SigDecl {
     pub params: Vec<Type>,
     pub results: Vec<Type>,
 }
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-#[non_exhaustive]
-pub enum Type {
-    _32,
-    _64,
-    _16,
-    _8,
-    AES8,
-}
+
 pub enum FuncDecl {
     Import {
         module: String,
@@ -56,6 +49,16 @@ pub enum Terminator {
     Return { values: Vec<ValueId> },
     Jump(Target),
     ReturnCall { func: FuncId, args: Vec<ValueId> },
+    IfNonzero {
+        cond: ValueId,
+        then_target: Target,
+        else_target: Target,
+    },
+    Table{
+        index: ValueId,
+        targets: Vec<Target>,
+        default_target: Target,
+    },
 }
 pub enum Value {
     Param {
