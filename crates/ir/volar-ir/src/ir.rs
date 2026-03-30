@@ -1,5 +1,7 @@
 // @reliability: normal
 //! @ai: none
+use volar_ir_common::Constant;
+
 // Volar IR: SSA block-based IR for VOLE-based computations.
 // Pure data structure definitions; no cryptographic claims.
 use super::*;
@@ -54,7 +56,7 @@ pub enum IRStmt<Var = IRVarId, Addr = Var> {
         ty: IRTypeId,
         addr: Addr,
     },
-    Const(Vec<u8>, IRTypeId),
+    Const(Constant, IRTypeId),
     Transmute {
         src: Var,
         src_ty: IRTypeId,
@@ -62,7 +64,7 @@ pub enum IRStmt<Var = IRVarId, Addr = Var> {
     },
     Poly {
         coeffs: BTreeMap<Vec<Var>, u8>,
-        constant: Vec<u8>,
+        constant: Constant,
     },
     Rol {
         src: Var,
@@ -96,6 +98,11 @@ pub enum IRTerminator {
         false_block: IRBlockTargetId,
         false_args: Vec<IRVarId>,
     },
+    JumpTable{
+        index: IRVarId,
+        cases: BTreeMap<Constant, (IRBlockTargetId, Vec<IRVarId>)>,
+        // no default; must be exhaustive
+    }
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum IRBlockTargetId {

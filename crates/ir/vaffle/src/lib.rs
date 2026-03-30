@@ -1,7 +1,7 @@
 #![no_std]
 
 use alloc::{collections::btree_map::BTreeMap, string::String, vec::Vec};
-use volar_ir_common::Type;
+use volar_ir_common::{Constant, Type};
 
 extern crate alloc;
 pub struct Module {
@@ -77,9 +77,9 @@ pub enum Value {
     Shuffle{
         result_bits: [(u8, ValueId); 256]
     },
-    Const([u128; 2], Type),
+    Const(Constant, Type),
     Poly{
         coeffs: BTreeMap<Vec<ValueId>, u8>,
-        constant: [u128; 2],
+        constant: Constant,
     }
 }
