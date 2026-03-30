@@ -14,6 +14,6 @@ cipher.workspace = true
 rand.workspace = true
 digest.workspace = true
 hybrid-array.workspace = true
-elliptic-curve.workspace = true
+elliptic-curve = {workspace = true,features = ["arithmetic"]}
 volar-primitives = { path = "../volar-primitives" }
 volar-common = { path = "../volar-common" }
