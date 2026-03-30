@@ -74,4 +74,12 @@ pub enum Value {
         value: ValueId,
         idx: usize,
     },
+    Shuffle{
+        result_bits: [(u8, ValueId); 256]
+    },
+    Const([u128; 2], Type),
+    Poly{
+        coeffs: BTreeMap<Vec<ValueId>, u8>,
+        constant: [u128; 2],
+    }
 }
