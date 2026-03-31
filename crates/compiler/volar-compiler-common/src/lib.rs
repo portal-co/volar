@@ -27,6 +27,13 @@ pub trait Transferrable<S, Context> {
         stitcher: &mut S,
         context: Context,
     ) -> Result<(Self::Output, Self::NewContext), Self::Error>;
+    fn reverse(
+        this: Self::Output,
+        stitcher: &mut S,
+        context: Self::NewContext,
+    ) -> Result<(Self, Context), Self::Error>
+    where
+        Self: Sized;
 }
 impl<S, Context, T: Transferrable<S, Context>, U: Transferrable<S, T::NewContext, Error = T::Error>>
     Transferrable<S, Context> for (T, U)
@@ -43,5 +50,18 @@ impl<S, Context, T: Transferrable<S, Context>, U: Transferrable<S, T::NewContext
         let (a_out, a_ctx) = a.transfer(stitcher, context)?;
         let (b_out, b_ctx) = b.transfer(stitcher, a_ctx)?;
         Ok(((a_out, b_out), b_ctx))
+    }
+    fn reverse(
+        this: Self::Output,
+        stitcher: &mut S,
+        context: Self::NewContext,
+    ) -> Result<(Self, Context), Self::Error>
+    where
+        Self: Sized,
+    {
+        let (a_out, b_out) = this;
+        let (b, b_ctx) = U::reverse(b_out, stitcher, context)?;
+        let (a, a_ctx) = T::reverse(a_out, stitcher, b_ctx)?;
+        Ok(((a, b), a_ctx))
     }
 }
