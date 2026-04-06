@@ -650,6 +650,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "volar-weaver"
+version = "0.1.0"
+dependencies = [
+ "portal-pc-waffle-ir",
+ "vaffle",
+ "volar-compiler",
+ "volar-compiler-common",
+ "volar-ir",
+]
+
+[[package]]
 name = "wasm-encoder"
 version = "0.241.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -3,14 +3,14 @@
 use core::error::Error;
 extern crate alloc;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum Import {
+pub enum Import<Types> {
     Action {
-        num_inputs: usize,
-        num_outputs: usize,
+        num_inputs: Types,
+        num_outputs: Types,
     },
     Oracle {
-        num_inputs: usize,
-        num_outputs: usize,
+        num_inputs: Types,
+        num_outputs: Types,
     },
 }
 pub trait Stitcher<Target, Context> {

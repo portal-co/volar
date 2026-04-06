@@ -1,0 +1,14 @@
+[package]
+name = "volar-weaver"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+
+[dependencies]
+volar-compiler = {path="../volar-compiler"}
+volar-compiler-common ={path="../volar-compiler-common"}
+volar-ir.workspace = true
+vaffle.workspace = true
+portal-pc-waffle-ir.workspace = true

@@ -7,7 +7,7 @@ members = [
     "crates/spec/volar-spec-dyn",
     "crates/ir/volar-ir",
     "crates/ir/vaffle",
-    "crates/compiler/volar-compiler", "crates/compiler/ephemera", "crates/compiler/volar-compiler-common", "crates/ir/volar-ir-common",
+    "crates/compiler/volar-compiler", "crates/compiler/ephemera", "crates/compiler/volar-compiler-common", "crates/ir/volar-ir-common", "crates/compiler/volar-weaver",
 ]
 resolver = "3"
 
