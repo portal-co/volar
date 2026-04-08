@@ -13,9 +13,11 @@ use digest::Digest;
 use crate::vole::VoleArray;
 use hybrid_array::{Array, ArraySize};
 
+#[derive(Clone)]
 pub struct Eval<N: VoleArray<u8>> {
     pub target: Array<u8, N>,
 }
+#[derive(Clone)]
 pub struct Garble<N: VoleArray<u8>> {
     pub base: Array<u8, N>,
 }
@@ -78,9 +80,11 @@ impl<N: VoleArray<u8>> Eval<N> {
         }
     }
 }
+#[derive(Clone)]
 pub struct GarbleTable<N: VoleArray<u8>> {
     pub table: [Array<u8, N>; 4],
 }
+#[derive(Clone)]
 pub struct GlobalSecret<N: VoleArray<u8>> {
     secret: Array<u8, N>,
 }

@@ -724,11 +724,22 @@ impl<'a> RustBackend for ExprChainWriter<'a> {
                 receiver,
                 method,
                 args,
-                ..
+                type_args,
             } => {
                 let name = method_name(method);
                 ExprChainWriter { expr: receiver }.fmt(f)?;
-                write!(f, ".{}(", name)?;
+                write!(f, ".{}", name)?;
+                if !type_args.is_empty() {
+                    write!(f, "::<")?;
+                    for (i, arg) in type_args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        TypeWriter { ty: arg }.fmt(f)?;
+                    }
+                    write!(f, ">")?;
+                }
+                write!(f, "(")?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -777,11 +788,22 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 receiver,
                 method,
                 args,
-                ..
+                type_args,
             } => {
                 let name = method_name(method);
                 ExprWriter { expr: receiver }.fmt(f)?;
-                write!(f, ".{}(", name)?;
+                write!(f, ".{}", name)?;
+                if !type_args.is_empty() {
+                    write!(f, "::<")?;
+                    for (i, arg) in type_args.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        TypeWriter { ty: arg }.fmt(f)?;
+                    }
+                    write!(f, ">")?;
+                }
+                write!(f, "(")?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
