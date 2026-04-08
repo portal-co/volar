@@ -33,7 +33,9 @@ use volar_compiler::linkage::LinkedSpec;
 use volar_ir::{
     boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTerminator},
     ir::{IRBlockTargetId, IRVarId},
+    lower_to_circuit::lower_to_circuit,
 };
+pub use volar_ir::lower_to_circuit::LoweringMode;
 
 // ============================================================================
 // Type helpers
@@ -620,6 +622,46 @@ fn build_return(
 }
 
 // ============================================================================
+// Bounded (movfuscated) weaving wrappers
+// ============================================================================
+
+/// Weave a bounded movfuscated Boolar circuit into a garbled-circuit **evaluator**.
+///
+/// Applies `lower_to_circuit(circuit, limit, mode)` to flatten any self-loop into
+/// a plain circuit, then delegates to [`weave_evaluator`].
+///
+/// # Panics
+/// Inherits all panics from [`lower_to_circuit`] (back-edges to non-zero blocks, Dyn dispatch).
+pub fn weave_evaluator_bounded(
+    circuit: &BIrBlocks,
+    name: &str,
+    limit: u32,
+    mode: LoweringMode,
+    linkage: Option<&LinkageSystem>,
+) -> IrModule {
+    let lowered = lower_to_circuit(circuit, limit, mode);
+    weave_evaluator(&lowered, name, linkage)
+}
+
+/// Weave a bounded movfuscated Boolar circuit into a garbled-circuit **garbler**.
+///
+/// Applies `lower_to_circuit(circuit, limit, mode)` first, then delegates to
+/// [`weave_garbler`].
+///
+/// # Panics
+/// Inherits all panics from [`lower_to_circuit`].
+pub fn weave_garbler_bounded(
+    circuit: &BIrBlocks,
+    name: &str,
+    limit: u32,
+    mode: LoweringMode,
+    linkage: Option<&LinkageSystem>,
+) -> IrModule {
+    let lowered = lower_to_circuit(circuit, limit, mode);
+    weave_garbler(&lowered, name, linkage)
+}
+
+// ============================================================================
 // Weaver-specific printer helper
 // ============================================================================
 
@@ -698,7 +740,7 @@ mod tests {
     use super::*;
     use volar_ir::{
         boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
-        ir::{IRBlockTargetId, IRVarId},
+        ir::{IRBlockId, IRBlockTargetId, IRVarId},
     };
 
     /// Workspace root derived from `CARGO_MANIFEST_DIR` at compile time.
@@ -781,6 +823,49 @@ mod tests {
                 test_name, code, stderr
             );
         }
+    }
+
+    /// Single-bit self-loop: params=1, stmts=[One], CondJmp → Return or Block(0).
+    fn build_simple_loop() -> BIrBlocks {
+        BIrBlocks(vec![BIrBlock {
+            params: 1,
+            stmts: vec![BIrStmt::One], // IRVarId(1) = constant 1
+            terminator: BIrTerminator::CondJmp {
+                val: IRVarId(0),
+                then_target: BIrTarget {
+                    block: IRBlockTargetId::Return,
+                    args: vec![IRVarId(0)],
+                },
+                else_target: BIrTarget {
+                    block: IRBlockTargetId::Block(IRBlockId(0)),
+                    args: vec![IRVarId(1)],
+                },
+            },
+        }])
+    }
+
+    #[test]
+    fn test_weave_evaluator_bounded_unconditional_compiles() {
+        let circuit = build_simple_loop();
+        let module = weave_evaluator_bounded(&circuit, "loop_eval", 4, LoweringMode::Unconditional, None);
+        let code = print_weaved_module(&module, false);
+        run_compile_check(&code, "bounded_eval_uncond");
+    }
+
+    #[test]
+    fn test_weave_evaluator_bounded_with_flag_compiles() {
+        let circuit = build_simple_loop();
+        let module = weave_evaluator_bounded(&circuit, "loop_eval_flag", 4, LoweringMode::WithTerminationFlag, None);
+        let code = print_weaved_module(&module, false);
+        run_compile_check(&code, "bounded_eval_flag");
+    }
+
+    #[test]
+    fn test_weave_garbler_bounded_compiles() {
+        let circuit = build_simple_loop();
+        let module = weave_garbler_bounded(&circuit, "loop_garble", 4, LoweringMode::Unconditional, None);
+        let code = print_weaved_module(&module, false);
+        run_compile_check(&code, "bounded_garbler");
     }
 
     #[test]
