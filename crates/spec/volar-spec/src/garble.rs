@@ -60,7 +60,7 @@ impl<N: VoleArray<u8>> Eval<N> {
             }),
         }
     }
-    pub fn and_via_table<D: Digest<OutputSize = N>>(
+    pub fn and_via_table<D: Digest>(
         &self,
         other: &Eval<N>,
         table: &GarbleTable<N>,
@@ -99,7 +99,7 @@ impl<N: VoleArray<u8>> GlobalSecret<N> {
             }),
         }
     }
-    pub fn gen_and_table<D: Digest<OutputSize = N>>(
+    pub fn gen_and_table<D: Digest>(
         &self,
         a: &Garble<N>,
         b: &Garble<N>,
