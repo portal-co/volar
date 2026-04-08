@@ -20,11 +20,16 @@ use alloc::{
     vec::Vec,
 };
 
-use volar_compiler::ir::{
-    IrBlock, IrClosureParam, IrExpr, IrFunction, IrGenericParam,
-    IrGenericParamKind, IrModule, IrParam, IrPattern, IrStmt, IrTraitBound, IrType, MethodKind,
-    SpecBinOp, SpecUnaryOp, StructKind, TraitKind,
+use volar_compiler::{
+    ir::{
+        IrBlock, IrClosureParam, IrExpr, IrFunction, IrGenericParam,
+        IrGenericParamKind, IrModule, IrParam, IrPattern, IrStmt, IrTraitBound, IrType, MethodKind,
+        SpecBinOp, SpecUnaryOp, StructKind, TraitKind,
+    },
+    linkage::LinkageSystem,
 };
+#[cfg(feature = "linking")]
+use volar_compiler::linkage::LinkedSpec;
 use volar_ir::{
     boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTerminator},
     ir::{IRBlockTargetId, IRVarId},
@@ -217,7 +222,7 @@ fn expand_ors(block: &BIrBlock) -> Vec<(IRVarId, BIrStmt)> {
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_evaluator(circuit: &BIrBlocks, name: &str) -> IrModule {
+pub fn weave_evaluator(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSystem>) -> IrModule {
     assert!(
         circuit.is_circuit(),
         "weave_evaluator: circuit must satisfy is_circuit() (single block with Return terminator)"
@@ -348,14 +353,18 @@ pub fn weave_evaluator(circuit: &BIrBlocks, name: &str) -> IrModule {
         },
     };
 
-    IrModule {
+    let mut module = IrModule {
         name: "weaved".into(),
         functions: vec![func],
         structs: vec![],
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],
+    };
+    if let Some(ls) = linkage {
+        ls.apply(&mut module);
     }
+    module
 }
 
 // ============================================================================
@@ -377,7 +386,7 @@ pub fn weave_evaluator(circuit: &BIrBlocks, name: &str) -> IrModule {
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_garbler(circuit: &BIrBlocks, name: &str) -> IrModule {
+pub fn weave_garbler(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSystem>) -> IrModule {
     assert!(
         circuit.is_circuit(),
         "weave_garbler: circuit must satisfy is_circuit() (single block with Return terminator)"
@@ -512,10 +521,14 @@ pub fn weave_garbler(circuit: &BIrBlocks, name: &str) -> IrModule {
                     args: vec![var(&table_var)],
                 }));
 
-                // Result wire false-label for AND: placeholder (all-zeros).
-                // TODO: compute the proper AND result garble once garble.rs exposes
-                // a method to derive the result wire label from the gate table.
-                garble_struct(array_default())
+                // Result wire false-label: wire_a.and_result::<D>(&wire_b)
+                // = H(a.base || b.base), consistent with and_via_table on the evaluator side.
+                IrExpr::MethodCall {
+                    receiver: alloc::boxed::Box::new(var(&name_a)),
+                    method: MethodKind::Std("and_result".into()),
+                    type_args: vec![IrType::TypeParam("D".into())],
+                    args: vec![ref_expr(var(&name_b))],
+                }
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
@@ -546,14 +559,18 @@ pub fn weave_garbler(circuit: &BIrBlocks, name: &str) -> IrModule {
         },
     };
 
-    IrModule {
+    let mut module = IrModule {
         name: "weaved_garbler".into(),
         functions: vec![func],
         structs: vec![],
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],
+    };
+    if let Some(ls) = linkage {
+        ls.apply(&mut module);
     }
+    module
 }
 
 // ============================================================================
@@ -606,34 +623,67 @@ fn build_return(
 // Weaver-specific printer helper
 // ============================================================================
 
-/// Render a weaved `IrModule` to Rust source with a garble-specific preamble.
+/// Render a weaved `IrModule` to Rust source.
 ///
-/// Generates a self-contained Rust source file that imports all types needed by
-/// the weaved evaluator/garbler functions.
-pub fn print_weaved_module(module: &IrModule) -> String {
+/// When `self_contained` is `false` (the default for externally-linked output),
+/// the preamble imports types from `volar_spec::garble`. When `self_contained`
+/// is `true` (used after [`LinkageSystem::apply`] has merged the spec into the
+/// module), those imports are omitted — all required types are already present
+/// in the module body.
+pub fn print_weaved_module(module: &IrModule, self_contained: bool) -> String {
     use volar_compiler::printer::{DisplayRust, ModuleWriter};
     use alloc::fmt::Write as _;
 
     let mut out = String::new();
-    // Write the module body (no preamble).
+    // Write the module body (no doc preamble).
     let _ = write!(out, "{}", DisplayRust(ModuleWriter { module }));
 
-    // Prepend garble-specific preamble.
-    let preamble = concat!(
-        "#![allow(unused_variables, dead_code, unused_mut, unused_imports, non_snake_case, unused_parens)]\n",
-        "extern crate alloc;\n",
-        "use alloc::vec::Vec;\n",
-        "use alloc::vec;\n",
-        "use core::ops::{BitXor};\n",
-        "use hybrid_array::{Array, ArraySize};\n",
-        "use digest::Digest;\n",
-        "use volar_spec::garble::{Eval, Garble, GarbleTable, GlobalSecret};\n",
-        "\n",
-    );
+    let preamble: &str = if self_contained {
+        concat!(
+            "#![allow(unused_variables, dead_code, unused_mut, unused_imports, non_snake_case, unused_parens)]\n",
+            "extern crate alloc;\n",
+            "use alloc::vec::Vec;\n",
+            "use alloc::vec;\n",
+            "use core::ops::{BitXor, Div};\n",
+            "use hybrid_array::{Array, ArraySize};\n",
+            "use digest::Digest;\n",
+            "\n",
+        )
+    } else {
+        concat!(
+            "#![allow(unused_variables, dead_code, unused_mut, unused_imports, non_snake_case, unused_parens)]\n",
+            "extern crate alloc;\n",
+            "use alloc::vec::Vec;\n",
+            "use alloc::vec;\n",
+            "use core::ops::{BitXor};\n",
+            "use hybrid_array::{Array, ArraySize};\n",
+            "use digest::Digest;\n",
+            "use volar_spec::garble::{Eval, Garble, GarbleTable, GlobalSecret};\n",
+            "\n",
+        )
+    };
+
     let mut full = String::with_capacity(preamble.len() + out.len());
     full.push_str(preamble);
     full.push_str(&out);
     full
+}
+
+/// Parse the `garble.rs` spec source and return a [`LinkedSpec`] ready for use
+/// with [`LinkageSystem::add`].
+///
+/// This embeds `volar-spec/src/garble.rs` at compile time, so the weaver crate
+/// does not need a runtime path to the spec. Requires the `linking` feature.
+#[cfg(feature = "linking")]
+pub fn garble_linked_spec() -> LinkedSpec {
+    use volar_compiler::parser::parse_sources;
+    let source = include_str!("../../../spec/volar-spec/src/garble.rs");
+    let module = parse_sources(&[("garble.rs", source)], "garble")
+        .expect("garble_linked_spec: failed to parse garble.rs");
+    LinkedSpec {
+        name: "garble".into(),
+        module,
+    }
 }
 
 // ============================================================================
@@ -736,16 +786,16 @@ mod tests {
     #[test]
     fn test_weave_evaluator_compiles() {
         let circuit = build_xor_and_circuit();
-        let module = weave_evaluator(&circuit, "test_circuit");
-        let code = print_weaved_module(&module);
+        let module = weave_evaluator(&circuit, "test_circuit", None);
+        let code = print_weaved_module(&module, false);
         run_compile_check(&code, "evaluator");
     }
 
     #[test]
     fn test_weave_garbler_compiles() {
         let circuit = build_xor_and_circuit();
-        let module = weave_garbler(&circuit, "test_circuit");
-        let code = print_weaved_module(&module);
+        let module = weave_garbler(&circuit, "test_circuit", None);
+        let code = print_weaved_module(&module, false);
         run_compile_check(&code, "garbler");
     }
 }

@@ -22,6 +22,26 @@ pub struct Garble<N: VoleArray<u8>> {
     pub base: Array<u8, N>,
 }
 impl<N: VoleArray<u8>> Garble<N> {
+    /// False-label for a constant-zero wire (all-zero bytes).
+    pub fn zero() -> Self {
+        Garble { base: Array::<u8, N>::default() }
+    }
+
+    /// Derive the AND gate output wire's false-label from the two input false-labels.
+    ///
+    /// Under the current scheme `C_false = H(self.base || b.base)`, which is what
+    /// the evaluator computes when holding both false-labels (`and_via_table` with
+    /// false inputs). Call as `wire_a.and_result::<D>(&wire_b)`.
+    pub fn and_result<D: Digest>(&self, b: &Garble<N>) -> Self {
+        let mut d = D::new();
+        d.update(&self.base);
+        d.update(&b.base);
+        let hash = d.finalize();
+        Garble {
+            base: Array::<u8, N>::from_fn(|i| hash[i]),
+        }
+    }
+
     pub fn share(&self, target: &Array<u8, N>) -> Eval<N> {
         Eval {
             target: Array::<u8, N>::from_fn(|i| self.base[i] ^ target[i]),
@@ -44,6 +64,11 @@ impl<N: VoleArray<u8>> Garble<N> {
     }
 }
 impl<N: VoleArray<u8>> Eval<N> {
+    /// Evaluator label for a constant-zero wire (all-zero bytes, same as the false-label).
+    pub fn zero() -> Self {
+        Eval { target: Array::<u8, N>::default() }
+    }
+
     pub fn open(&self, garble: &Garble<N>) -> Array<u8, N> {
         Array::<u8, N>::from_fn(|i| self.target[i] ^ garble.base[i])
     }
@@ -103,6 +128,20 @@ impl<N: VoleArray<u8>> GlobalSecret<N> {
             }),
         }
     }
+    /// Evaluator label for the constant-one wire: `encode(Garble::zero(), true) = Δ`.
+    pub fn one_wire_eval(&self) -> Eval<N> {
+        self.encode(&Garble::zero(), true)
+    }
+
+    /// NOT of a garbler wire label: flip the false-label by XOR-ing with Δ.
+    ///
+    /// If `a` encodes bit `v`, `not_garble(a)` encodes bit `!v`.
+    pub fn not_garble(&self, a: &Garble<N>) -> Garble<N> {
+        Garble {
+            base: Array::<u8, N>::from_fn(|i| a.base[i] ^ self.secret[i]),
+        }
+    }
+
     pub fn gen_and_table<D: Digest>(
         &self,
         a: &Garble<N>,

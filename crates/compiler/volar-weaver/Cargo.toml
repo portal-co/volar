@@ -6,6 +6,10 @@ license.workspace = true
 description.workspace = true
 repository.workspace = true
 
+[features]
+# Enable parsing-based spec linkage (makes weave output self-contained).
+linking = ["volar-compiler/parsing"]
+
 [dependencies]
 volar-compiler = {path="../volar-compiler"}
 volar-compiler-common ={path="../volar-compiler-common"}

@@ -36,6 +36,7 @@ pub mod const_analysis;
 pub mod deshadow;
 pub mod dump_ir;
 pub mod ir;
+pub mod linkage;
 pub mod lowering;
 pub mod lowering_dyn;
 pub mod manifest;
@@ -46,6 +47,7 @@ pub mod printer_ts;
 
 pub use const_analysis::*;
 pub use ir::*;
+pub use linkage::*;
 pub use lowering::*;
 pub use manifest::*;
 #[cfg(feature = "parsing")]
