@@ -587,7 +587,7 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             dump_expr(out, inner, level);
             let _ = write!(out, "?");
         }
-        IrExpr::Array(elems) => {
+        IrExpr::Array(elems) | IrExpr::FixedArray(elems) => {
             let _ = write!(out, "[");
             for (i, e) in elems.iter().enumerate() {
                 if i > 0 {

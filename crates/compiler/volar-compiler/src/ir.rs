@@ -909,6 +909,8 @@ pub enum IrExpr {
     },
     Tuple(Vec<IrExpr>),
     Array(Vec<IrExpr>),
+    /// A fixed-size array literal `[a, b, c]` (as opposed to `Array`, which prints as `vec![...]`).
+    FixedArray(Vec<IrExpr>),
     Repeat {
         elem: Box<IrExpr>,
         len: Box<IrExpr>,

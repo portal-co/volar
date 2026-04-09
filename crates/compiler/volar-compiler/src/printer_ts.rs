@@ -208,7 +208,7 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
                 scan_expr_witnesses(r, out, declared_generics);
             }
         }
-        IrExpr::Tuple(es) | IrExpr::Array(es) => {
+        IrExpr::Tuple(es) | IrExpr::Array(es) | IrExpr::FixedArray(es) => {
             for e in es {
                 scan_expr_witnesses(e, out, declared_generics);
             }
@@ -605,7 +605,7 @@ fn collect_call_targets_expr(expr: &IrExpr, targets: &mut Vec<String>) {
                 collect_call_targets_expr(r, targets);
             }
         }
-        IrExpr::Tuple(es) | IrExpr::Array(es) => {
+        IrExpr::Tuple(es) | IrExpr::Array(es) | IrExpr::FixedArray(es) => {
             for e in es {
                 collect_call_targets_expr(e, targets);
             }
@@ -2066,7 +2066,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 }
                 write!(f, "]")?;
             }
-            IrExpr::Array(elems) => {
+            IrExpr::Array(elems) | IrExpr::FixedArray(elems) => {
                 write!(f, "[")?;
                 for (i, e) in elems.iter().enumerate() {
                     if i > 0 {

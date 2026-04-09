@@ -1047,6 +1047,16 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 }
                 write!(f, "]")?;
             }
+            IrExpr::FixedArray(elems) => {
+                write!(f, "[")?;
+                for (i, e) in elems.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    ExprWriter { expr: e }.fmt(f)?;
+                }
+                write!(f, "]")?;
+            }
             IrExpr::Repeat { elem, len } => {
                 write!(f, "[")?;
                 ExprWriter { expr: elem }.fmt(f)?;

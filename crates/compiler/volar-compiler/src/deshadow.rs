@@ -125,7 +125,7 @@ fn expr_refs_any(expr: &IrExpr, names: &HashSet<String>) -> bool {
             fields.iter().any(|(_, e)| expr_refs_any(e, names))
                 || rest.as_ref().map_or(false, |r| expr_refs_any(r, names))
         }
-        IrExpr::Array(elems) | IrExpr::Tuple(elems) => {
+        IrExpr::Array(elems) | IrExpr::Tuple(elems) | IrExpr::FixedArray(elems) => {
             elems.iter().any(|e| expr_refs_any(e, names))
         }
         IrExpr::Closure { body, .. } => expr_refs_any(body, names),
@@ -385,7 +385,7 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
                 rename_var_in_expr(r, old, new_name);
             }
         }
-        IrExpr::Array(elems) | IrExpr::Tuple(elems) => {
+        IrExpr::Array(elems) | IrExpr::Tuple(elems) | IrExpr::FixedArray(elems) => {
             for e in elems {
                 rename_var_in_expr(e, old, new_name);
             }
@@ -742,7 +742,7 @@ fn deshadow_expr(expr: &mut IrExpr, scope: &mut HashSet<String>) {
                 deshadow_expr(r, scope);
             }
         }
-        IrExpr::Array(elems) | IrExpr::Tuple(elems) => {
+        IrExpr::Array(elems) | IrExpr::Tuple(elems) | IrExpr::FixedArray(elems) => {
             for e in elems {
                 deshadow_expr(e, scope);
             }

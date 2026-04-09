@@ -586,17 +586,26 @@ fn global_secret_type() -> IrType {
     }
 }
 
-fn garbled_circuit_type() -> IrType {
+/// `GarbledCircuit<N, I, A>` — const-generic params as literal `TypeParam` strings.
+fn garbled_circuit_type(num_inputs: usize, num_and: usize) -> IrType {
     IrType::Struct {
         kind: StructKind::Custom("GarbledCircuit".into()),
-        type_args: vec![IrType::TypeParam("N".into())],
+        type_args: vec![
+            IrType::TypeParam("N".into()),
+            IrType::TypeParam(format!("{}", num_inputs)),
+            IrType::TypeParam(format!("{}", num_and)),
+        ],
     }
 }
 
-fn eval_setup_type() -> IrType {
+/// `EvalSetup<N, A>` — const-generic `A` as a literal `TypeParam` string.
+fn eval_setup_type(num_and: usize) -> IrType {
     IrType::Struct {
         kind: StructKind::Custom("EvalSetup".into()),
-        type_args: vec![IrType::TypeParam("N".into())],
+        type_args: vec![
+            IrType::TypeParam("N".into()),
+            IrType::TypeParam(format!("{}", num_and)),
+        ],
     }
 }
 
@@ -647,47 +656,18 @@ pub fn weave_into_gc(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSy
         });
     }
 
+    // Count AND gates now so we can compute the return type and build FixedArrays.
+    let and_count = expanded
+        .iter()
+        .filter(|(_, s)| matches!(s, BIrStmt::And(..)))
+        .count();
+
     let mut stmts: Vec<IrStmt> = Vec::new();
     let mut table_counter: usize = 0;
 
-    // `let mut input_labels: Vec<Garble<N>> = Vec::new();`
-    stmts.push(IrStmt::Let {
-        pattern: IrPattern::Ident { mutable: true, name: "input_labels".into(), subpat: None },
-        ty: Some(IrType::Vector { elem: alloc::boxed::Box::new(garble_type()) }),
-        init: Some(IrExpr::Call {
-            func: alloc::boxed::Box::new(IrExpr::Path {
-                segments: vec!["Vec".into(), "new".into()],
-                type_args: vec![],
-            }),
-            args: vec![],
-        }),
-    });
-
-    // Push a clone of each input param into input_labels.
-    for i in 0..num_params {
-        stmts.push(IrStmt::Semi(IrExpr::MethodCall {
-            receiver: alloc::boxed::Box::new(var("input_labels")),
-            method: MethodKind::Std("push".into()),
-            type_args: vec![],
-            args: vec![clone_expr(var(&format!("input_{}", i)))],
-        }));
-    }
-
-    // `let mut tables: Vec<GarbleTable<N>> = Vec::new();`
-    stmts.push(IrStmt::Let {
-        pattern: IrPattern::Ident { mutable: true, name: "tables".into(), subpat: None },
-        ty: Some(IrType::Vector { elem: alloc::boxed::Box::new(garble_table_type()) }),
-        init: Some(IrExpr::Call {
-            func: alloc::boxed::Box::new(IrExpr::Path {
-                segments: vec!["Vec".into(), "new".into()],
-                type_args: vec![],
-            }),
-            args: vec![],
-        }),
-    });
-
-    // Gate loop — identical to weave_garbler except:
-    // - `and_result` receiver is cloned to avoid moving reused wires.
+    // Gate loop — same logic as weave_garbler except:
+    // - `and_result` receiver is cloned to avoid moving a potentially reused wire.
+    // - No Vec push; table vars are collected by name and assembled into a FixedArray.
     for (result_id, stmt) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
 
@@ -747,13 +727,6 @@ pub fn weave_into_gc(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSy
                     }),
                 });
 
-                stmts.push(IrStmt::Semi(IrExpr::MethodCall {
-                    receiver: alloc::boxed::Box::new(var("tables")),
-                    method: MethodKind::Std("push".into()),
-                    type_args: vec![],
-                    args: vec![var(&table_var)],
-                }));
-
                 // Clone receiver to avoid moving a potentially reused wire.
                 IrExpr::MethodCall {
                     receiver: alloc::boxed::Box::new(clone_expr(var(&name_a))),
@@ -774,15 +747,25 @@ pub fn weave_into_gc(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSy
         var_names.insert(result_id.0, let_name);
     }
 
-    // Return GarbledCircuit { secret, input_labels, tables, output_label }.
+    // Build fixed-size array literals for the struct fields.
+    // Input labels: [input_0, input_1, …] — params are never moved in the gate loop.
+    let input_labels_expr = IrExpr::FixedArray(
+        (0..num_params).map(|i| var(&format!("input_{}", i))).collect(),
+    );
+    // Tables: [table_0, table_1, …] — each table var is defined above and used once here.
+    let tables_expr = IrExpr::FixedArray(
+        (0..and_count).map(|k| var(&format!("table_{}", k))).collect(),
+    );
+
+    // Return GarbledCircuit<N, I, A> { secret, input_labels, tables, output_label }.
     let (output_garble_expr, _) = build_return(block, &var_names, garble_type());
     let ret_expr = IrExpr::StructExpr {
         kind: StructKind::Custom("GarbledCircuit".into()),
         type_args: vec![],
         fields: vec![
             ("secret".into(), var("secret")),
-            ("input_labels".into(), var("input_labels")),
-            ("tables".into(), var("tables")),
+            ("input_labels".into(), input_labels_expr),
+            ("tables".into(), tables_expr),
             ("output_label".into(), output_garble_expr),
         ],
         rest: None,
@@ -793,7 +776,7 @@ pub fn weave_into_gc(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSy
         generics: generic_params(),
         receiver: None,
         params,
-        return_type: Some(garbled_circuit_type()),
+        return_type: Some(garbled_circuit_type(num_params, and_count)),
         where_clause: vec![],
         body: IrBlock {
             stmts,
@@ -847,16 +830,22 @@ pub fn weave_eval_from_setup(
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
 
+    // Count AND gates to compute the concrete EvalSetup<N, A> parameter type.
+    let and_count = expanded
+        .iter()
+        .filter(|(_, s)| matches!(s, BIrStmt::And(..)))
+        .count();
+
     let mut var_names: BTreeMap<u32, String> = BTreeMap::new();
     for i in 0..num_params {
         var_names.insert(i as u32, format!("input_{}", i));
     }
 
-    // Parameters: setup (ref), then input_i (ref).
+    // Parameters: setup: &EvalSetup<N, A> (concrete A), then input_i: &Eval<N>.
     let mut params: Vec<IrParam> = Vec::new();
     params.push(IrParam {
         name: "setup".into(),
-        ty: ref_to(eval_setup_type()),
+        ty: ref_to(eval_setup_type(and_count)),
     });
     for i in 0..num_params {
         params.push(IrParam {

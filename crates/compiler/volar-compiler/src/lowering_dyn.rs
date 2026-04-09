@@ -1001,7 +1001,7 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
                 rename_var_in_expr(r, old, new_name);
             }
         }
-        IrExpr::Array(elems) | IrExpr::Tuple(elems) => {
+        IrExpr::Array(elems) | IrExpr::Tuple(elems) | IrExpr::FixedArray(elems) => {
             for e in elems {
                 rename_var_in_expr(e, old, new_name);
             }
@@ -1818,6 +1818,12 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 .collect(),
         ),
         IrExpr::Array(elems) => IrExpr::Array(
+            elems
+                .iter()
+                .map(|e| lower_expr_dyn(e, ctx, fn_gen))
+                .collect(),
+        ),
+        IrExpr::FixedArray(elems) => IrExpr::FixedArray(
             elems
                 .iter()
                 .map(|e| lower_expr_dyn(e, ctx, fn_gen))
