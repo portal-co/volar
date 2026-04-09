@@ -5,6 +5,7 @@
 // Half-gate garbled circuit scheme over VOLE types.
 // The half-gate construction (Zahur-Rosulek-Evans 2015) is standard, but the
 // VOLE-specific binding has not been reviewed. Do not use in production.
+use alloc::vec::Vec;
 use core::ops::{BitXor, Div};
 
 use cipher::consts::U8;
@@ -147,17 +148,26 @@ impl<N: VoleArray<u8>> GlobalSecret<N> {
         a: &Garble<N>,
         b: &Garble<N>,
     ) -> GarbleTable<N> {
+        // False-label of the result wire: H(a.base || b.base).
+        // This is consistent with what the evaluator computes from the (0,0) label pair.
+        let result_base = a.and_result::<D>(b);
         let mut table = core::array::from_fn(|_| Array::<u8, N>::default());
         for i in 0..4 {
             let av = (i & 1) != 0;
             let bv = (i & 2) != 0;
+            let ea = self.encode(a, av);
+            let eb = self.encode(b, bv);
+            // Row index = color bits of the evaluator's labels for this input combination.
+            // The evaluator selects the same row during eval, so the entry cancels correctly.
+            let row = ((ea.target[0] & 1) as usize) | (((eb.target[0] & 1) as usize) << 1);
+            // Result label for this combination: encode(result_wire, av AND bv).
+            let result_label = self.encode(&result_base, av & bv);
             let mut d = D::new();
-            d.update(&self.encode(a, av).target);
-            d.update(&self.encode(b, bv).target);
-            let target = d.finalize();
-            let index =
-                (if a.base[0] & 1 != 1 { 1 } else { 0 }) | (if b.base[0] & 1 != 1 { 2 } else { 0 });
-            table[index] = Array::<u8, N>::from_fn(|j| table[index][j] ^ target[j]);
+            d.update(&ea.target);
+            d.update(&eb.target);
+            let hash = d.finalize();
+            // T[row] = H(ea || eb) XOR result_label; evaluator recovers result_label by XOR.
+            table[row] = Array::<u8, N>::from_fn(|j| hash[j] ^ result_label.target[j]);
         }
         GarbleTable { table }
     }
@@ -169,5 +179,65 @@ impl<N: VoleArray<u8>> BitXor<Eval<N>> for Eval<N> {
         return Eval {
             target: Array::<u8, N>::from_fn(|i| self.target[i] ^ rhs.target[i]),
         };
+    }
+}
+
+// ============================================================================
+// Multi-evaluation types
+// ============================================================================
+
+/// Garbler-private state for a garbled circuit instance.
+///
+/// Captures a complete garbling — the global secret, all input wire false-labels,
+/// all AND-gate tables, and the output wire false-label — so the circuit can be
+/// evaluated multiple times with different inputs without re-garbling.
+///
+/// The tables depend only on the fixed wire labels, not on input bit values,
+/// so they are valid for all evaluations against this garbling instance.
+#[derive(Clone)]
+pub struct GarbledCircuit<N: VoleArray<u8>> {
+    pub secret: GlobalSecret<N>,
+    pub input_labels: Vec<Garble<N>>,
+    pub tables: Vec<GarbleTable<N>>,
+    pub output_label: Garble<N>,
+}
+
+impl<N: VoleArray<u8>> GarbledCircuit<N> {
+    /// Encode a set of input bit values into evaluator labels using the stored
+    /// false-labels. Call this once per evaluation; the tables are reused unchanged.
+    pub fn encode_inputs(&self, bits: &[bool]) -> Vec<Eval<N>> {
+        bits.iter()
+            .zip(&self.input_labels)
+            .map(|(&bit, label)| self.secret.encode(label, bit))
+            .collect()
+    }
+
+    /// Extract the evaluator-visible subset of this garbling: the one-wire,
+    /// tables, and output label. Share this with the evaluator once; reuse it
+    /// across all evaluations.
+    pub fn eval_setup(&self) -> EvalSetup<N> {
+        EvalSetup {
+            one_wire: self.secret.one_wire_eval(),
+            tables: self.tables.clone(),
+            output_label: self.output_label.clone(),
+        }
+    }
+}
+
+/// The evaluator-visible subset of a garbled circuit: everything needed to
+/// evaluate but nothing that reveals the garbler's secret.
+#[derive(Clone)]
+pub struct EvalSetup<N: VoleArray<u8>> {
+    pub one_wire: Eval<N>,
+    pub tables: Vec<GarbleTable<N>>,
+    pub output_label: Garble<N>,
+}
+
+impl<N: VoleArray<u8>> EvalSetup<N> {
+    /// Recover the output bit value from the evaluator's output label.
+    pub fn recover_output(&self, result: &Eval<N>) -> bool {
+        // The color bit (LSB of first byte) encodes the wire value.
+        // Δ[0] & 1 == 1 is guaranteed by GlobalSecret::new, so (Δ·v)[0] & 1 == v.
+        result.open(&self.output_label)[0] & 1 != 0
     }
 }
