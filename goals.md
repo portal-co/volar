@@ -5,5 +5,18 @@
   - [ ] VOLE-in-the-head proofs
 - [ ] implement encryption
   - [ ] garbled circuits
+- [ ] LIR (low-level IR target) — compiler IR → native-like code
+  - [x] `LirTarget` trait (SSA with block parameters, integer types, arithmetic, control flow)
+  - [x] `CBackend` (C99 emitter for testing)
+  - [x] `BIrBlocks` / `IRBlocks` → `LirTarget` lowering (scalar types)
+  - [x] `IrModule` → `LirTarget` lowering (primitive types, binary/unary ops, if/else)
+  - [ ] array types and indexing in `LirType` + lowering passes
+  - [ ] struct/tuple types (product types) and field access in `LirType` + lowering passes
+  - [ ] generic monomorphization before `IrModule` → LIR lowering
+  - [ ] memory operations (load/store) in `LirTarget`
+  - [ ] function calls in `LirTarget`
+  - [ ] loop lowering in `volar-lir-codegen` (`BoundedLoop`, `IterLoop`)
+  - [ ] `StorageRead` / `StorageWrite` in `lower_ir` (requires memory ops above)
+  - [ ] multi-element vector types in `IRBlocks` lowering (`Vec(n, Galois)`, nested vecs)
 
 Prefer dynamically creating subgoals to handling entire goals at a time; AI agents, add this to files and memory.

@@ -1,0 +1,15 @@
+[package]
+name = "volar-c-backend"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+
+[dependencies]
+volar-lir = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+volar-lir-codegen = { path = "../volar-lir-codegen" }
+volar-compiler = { path = "../volar-compiler" }
