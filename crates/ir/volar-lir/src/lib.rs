@@ -1,38 +1,35 @@
 // @reliability: normal
 //! `LirTarget` — low-level IR builder trait with block parameters.
 //!
-//! Backends implementing this trait receive a stream of builder calls and
-//! produce whatever output format they target (C text, machine code, etc.).
+//! Backends receive a stream of builder calls and produce whatever output
+//! format they target (C text, machine code, etc.).
 //!
 //! # Block-parameter SSA
 //!
-//! Control-flow join points are represented by block parameters (like
-//! Cranelift, MLIR, Swift SIL) rather than phi-nodes (LLVM). A phi-node
-//! `%v = phi [%a, bb0], [%b, bb1]` becomes: block `bb_join(p0)` with
-//! `jump bb_join(%a)` from `bb0` and `jump bb_join(%b)` from `bb1`.
+//! Control-flow join points are block parameters (Cranelift / MLIR style).
+//! A phi-node `%v = phi [%a, bb0], [%b, bb1]` becomes: block `bb_join(p0)`
+//! with `jump bb_join(%a)` from `bb0` and `jump bb_join(%b)` from `bb1`.
 //!
-//! # Builder sequence
+//! # Types
 //!
-//! ```text
-//! let (entry, params) = target.begin_function("add", &[LirType::U32, LirType::U32], Some(LirType::U32));
-//! target.switch_to_block(entry);
-//! let sum = target.add(params[0], params[1]);
-//! target.ret(Some(sum));
-//! target.end_function();
-//! ```
+//! `LirType` is `Clone` (not `Copy`) because `Arr` contains a boxed element
+//! type. Use `.clone()` when you need multiple copies.
 
 #![no_std]
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::{boxed::Box, string::String, vec::Vec};
 
 // ============================================================================
 // Types
 // ============================================================================
 
-/// Integer/boolean types supported by LIR.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+/// Integer/boolean/aggregate types supported by LIR.
+///
+/// Note: `Clone`, not `Copy` — `Arr` boxes its element type.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum LirType {
+    // ---- Scalars ------------------------------------------------------------
     Bool,
     I8,
     U8,
@@ -42,24 +39,56 @@ pub enum LirType {
     U32,
     I64,
     U64,
+    // ---- Aggregates ---------------------------------------------------------
+    /// Fixed-size homogeneous array: `[elem; len]`.
+    Arr(Box<LirType>, usize),
+    /// Named struct registered via `LirTarget::define_struct`.
+    Struct(StructId),
 }
 
 impl LirType {
-    /// Bit width of this type.
-    pub fn bit_width(self) -> u32 {
+    /// Bit width for scalar types. Panics on `Arr`/`Struct`.
+    pub fn bit_width(&self) -> u32 {
         match self {
             LirType::Bool => 1,
             LirType::I8 | LirType::U8 => 8,
             LirType::I16 | LirType::U16 => 16,
             LirType::I32 | LirType::U32 => 32,
             LirType::I64 | LirType::U64 => 64,
+            LirType::Arr(elem, len) => elem.bit_width() * (*len as u32),
+            LirType::Struct(_) => panic!("bit_width not defined for Struct"),
         }
     }
 
-    /// Whether this type is signed.
-    pub fn is_signed(self) -> bool {
+    /// Whether this scalar type is signed. Panics on aggregates.
+    pub fn is_signed(&self) -> bool {
         matches!(self, LirType::I8 | LirType::I16 | LirType::I32 | LirType::I64)
     }
+
+    /// Returns true if this is a scalar (non-aggregate) type.
+    pub fn is_scalar(&self) -> bool {
+        !matches!(self, LirType::Arr(_, _) | LirType::Struct(_))
+    }
+}
+
+// ============================================================================
+// Struct definitions
+// ============================================================================
+
+pub type StructId = u32;
+
+/// One field in a struct definition.
+#[derive(Clone, Debug)]
+pub struct FieldDef {
+    pub name: String,
+    pub ty: LirType,
+}
+
+/// A named struct with an ordered list of fields.
+#[derive(Clone, Debug)]
+pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<FieldDef>,
 }
 
 // ============================================================================
@@ -86,24 +115,23 @@ pub enum IcmpPred {
 
 /// Builder trait for a low-level SSA IR with block parameters.
 ///
-/// All methods take `&mut self` so the backend can accumulate state.
-/// The caller is responsible for maintaining well-formedness:
+/// All methods take `&mut self`. The caller must maintain well-formedness:
 /// - Call `switch_to_block` before emitting instructions or a terminator.
-/// - Every block must end with exactly one terminator call.
-/// - Call `end_function` after the last block's terminator.
+/// - Every block must end with exactly one terminator.
+/// - Call `end_function` after the last terminator.
 pub trait LirTarget {
-    /// An SSA value produced by an instruction or a block parameter.
     type Value: Copy + Eq + core::fmt::Debug;
-
-    /// A basic block identifier.
     type Block: Copy + Eq + core::fmt::Debug;
+
+    // ---- Type registration --------------------------------------------------
+
+    /// Register a struct definition. Must be called before any use of the
+    /// returned `StructId` in `LirType::Struct(id)` or `struct_new`.
+    /// Can be called at any point (before or during functions).
+    fn define_struct(&mut self, def: StructDef) -> StructId;
 
     // ---- Function management ------------------------------------------------
 
-    /// Start a new function.
-    ///
-    /// Returns the entry block and the `Value`s for each parameter in order.
-    /// The caller should call `switch_to_block(entry_block)` before emitting.
     fn begin_function(
         &mut self,
         name: &str,
@@ -111,22 +139,12 @@ pub trait LirTarget {
         ret: Option<LirType>,
     ) -> (Self::Block, Vec<Self::Value>);
 
-    /// Finish the current function. Must be called after the last block's terminator.
     fn end_function(&mut self);
 
     // ---- Block management ---------------------------------------------------
 
-    /// Create a new (empty) block in the current function.
-    ///
-    /// Not the insertion point until `switch_to_block` is called.
     fn create_block(&mut self) -> Self::Block;
-
-    /// Add a parameter to `block` and return its `Value`.
-    ///
-    /// Must be called before any instructions are emitted into `block`.
     fn add_block_param(&mut self, block: Self::Block, ty: LirType) -> Self::Value;
-
-    /// Set `block` as the current insertion point.
     fn switch_to_block(&mut self, block: Self::Block);
 
     // ---- Constants ----------------------------------------------------------
@@ -158,14 +176,11 @@ pub trait LirTarget {
 
     // ---- Conversions --------------------------------------------------------
 
-    /// Zero-extend `val` to `dst_ty`.
     fn zext(&mut self, val: Self::Value, dst_ty: LirType) -> Self::Value;
-    /// Sign-extend `val` to `dst_ty`.
     fn sext(&mut self, val: Self::Value, dst_ty: LirType) -> Self::Value;
-    /// Truncate `val` to `dst_ty`.
     fn trunc(&mut self, val: Self::Value, dst_ty: LirType) -> Self::Value;
 
-    // ---- Select (ternary mux) -----------------------------------------------
+    // ---- Select -------------------------------------------------------------
 
     /// `cond ? then_val : else_val`. `cond` must be `LirType::Bool`.
     fn select(
@@ -175,15 +190,41 @@ pub trait LirTarget {
         else_val: Self::Value,
     ) -> Self::Value;
 
+    // ---- Array operations ---------------------------------------------------
+
+    /// Construct a fixed-size array from elements (all same type).
+    fn arr_new(&mut self, elem_ty: LirType, elems: &[Self::Value]) -> Self::Value;
+
+    /// Load one element at a runtime index; returns the element value.
+    fn arr_get(&mut self, arr: Self::Value, idx: Self::Value) -> Self::Value;
+
+    /// Return a new array with the element at `idx` replaced by `val` (functional update).
+    fn arr_set(&mut self, arr: Self::Value, idx: Self::Value, val: Self::Value) -> Self::Value;
+
+    // ---- Struct operations --------------------------------------------------
+
+    /// Construct a struct from field values in declaration order.
+    fn struct_new(&mut self, id: StructId, fields: &[Self::Value]) -> Self::Value;
+
+    /// Extract one field by its declaration-order index.
+    fn struct_get(&mut self, val: Self::Value, field_idx: usize) -> Self::Value;
+
+    // ---- Extern calls -------------------------------------------------------
+
+    /// Call an external function by name.
+    ///
+    /// Returns `Some(value)` if `ret_ty` is `Some`, `None` for void calls.
+    fn call_extern(
+        &mut self,
+        name: &str,
+        ret_ty: Option<LirType>,
+        args: &[Self::Value],
+    ) -> Option<Self::Value>;
+
     // ---- Terminators --------------------------------------------------------
 
-    /// Unconditional jump to `target` with `args` bound to its block parameters.
     fn jump(&mut self, target: Self::Block, args: &[Self::Value]);
 
-    /// Conditional branch.
-    ///
-    /// If `cond` (Bool) is true, jump to `then_block` with `then_args`;
-    /// otherwise jump to `else_block` with `else_args`.
     fn branch(
         &mut self,
         cond: Self::Value,
@@ -193,6 +234,5 @@ pub trait LirTarget {
         else_args: &[Self::Value],
     );
 
-    /// Return from the current function.
     fn ret(&mut self, val: Option<Self::Value>);
 }

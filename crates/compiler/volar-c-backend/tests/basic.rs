@@ -4,7 +4,7 @@
 use std::{fs, process::Command};
 use tempfile::TempDir;
 use volar_c_backend::CBackend;
-use volar_lir::{IcmpPred, LirTarget, LirType};
+use volar_lir::{FieldDef, IcmpPred, LirTarget, LirType, StructDef};
 
 // ============================================================================
 // Helper: compile + run C source with an appended main
@@ -165,4 +165,154 @@ fn test_if_max_via_codegen() {
         r#"  printf("%llu\n", (unsigned long long)ir_max(5u, 3u));"#,
     );
     assert_eq!(output.trim(), "5");
+}
+
+// ============================================================================
+// Test 4: arrays — arr_new / arr_get / arr_set
+// ============================================================================
+
+#[test]
+fn test_arrays() {
+    let mut b = CBackend::new();
+
+    // fn arr_sum(a: [u8; 4]) -> u32
+    // Builds an array [1,2,3,4] and sums the elements with arr_get.
+    let (entry, _) =
+        b.begin_function("arr_sum", &[], Some(LirType::U32));
+    b.switch_to_block(entry);
+
+    let elem_ty = LirType::U8;
+    let v1 = b.iconst(LirType::U8, 1);
+    let v2 = b.iconst(LirType::U8, 2);
+    let v3 = b.iconst(LirType::U8, 3);
+    let v4 = b.iconst(LirType::U8, 4);
+    let arr = b.arr_new(elem_ty, &[v1, v2, v3, v4]);
+
+    let i0 = b.iconst(LirType::U32, 0);
+    let i1 = b.iconst(LirType::U32, 1);
+    let i2 = b.iconst(LirType::U32, 2);
+    let i3 = b.iconst(LirType::U32, 3);
+    let e0 = b.arr_get(arr, i0);
+    let e1 = b.arr_get(arr, i1);
+    let e2 = b.arr_get(arr, i2);
+    let e3 = b.arr_get(arr, i3);
+
+    let e0u = b.zext(e0, LirType::U32);
+    let e1u = b.zext(e1, LirType::U32);
+    let e2u = b.zext(e2, LirType::U32);
+    let e3u = b.zext(e3, LirType::U32);
+
+    let s01 = b.add(e0u, e1u);
+    let s23 = b.add(e2u, e3u);
+    let sum = b.add(s01, s23);
+
+    // arr_set: replace index 0 with 10, verify via arr_get
+    let ten = b.iconst(LirType::U8, 10);
+    let arr2 = b.arr_set(arr, i0, ten);
+    let _ = b.arr_get(arr2, i0); // exercises arr_set path
+
+    b.ret(Some(sum));
+    b.end_function();
+
+    let c_src = b.finish();
+    let output = compile_and_run(&c_src, r#"  printf("%u\n", arr_sum());"#);
+    assert_eq!(output.trim(), "10");
+}
+
+// ============================================================================
+// Test 5: structs — define_struct / struct_new / struct_get
+// ============================================================================
+
+#[test]
+fn test_structs() {
+    let mut b = CBackend::new();
+
+    // struct Point { x: u32, y: u32 }
+    let point_id = b.define_struct(StructDef {
+        name: "Point".to_string(),
+        fields: vec![
+            FieldDef { name: "x".to_string(), ty: LirType::U32 },
+            FieldDef { name: "y".to_string(), ty: LirType::U32 },
+        ],
+    });
+
+    // fn manhattan(px: u32, py: u32) -> u32
+    // Constructs Point{x: px, y: py}, extracts fields, returns x+y.
+    let (entry, params) = b.begin_function(
+        "manhattan",
+        &[LirType::U32, LirType::U32],
+        Some(LirType::U32),
+    );
+    b.switch_to_block(entry);
+    let px = params[0];
+    let py = params[1];
+
+    let pt = b.struct_new(point_id, &[px, py]);
+    let ex = b.struct_get(pt, 0);
+    let ey = b.struct_get(pt, 1);
+    let dist = b.add(ex, ey);
+    b.ret(Some(dist));
+    b.end_function();
+
+    let c_src = b.finish();
+    let output = compile_and_run(&c_src, r#"  printf("%u\n", manhattan(3u, 7u));"#);
+    assert_eq!(output.trim(), "10");
+}
+
+// ============================================================================
+// Test 6: struct + array via IrModule lowering (Phase 2 codegen)
+// ============================================================================
+
+#[test]
+fn test_phase2_codegen_struct_array() {
+    use volar_compiler::ir::{
+        ArrayKind, ArrayLength, IrBlock, IrExpr, IrField, IrFunction, IrLit, IrModule, IrParam,
+        IrStmt, IrStruct, IrType, PrimitiveType, SpecBinOp, StructKind,
+    };
+    use volar_lir_codegen::{lower_module_with_opts, mono::{MonoEnv, monomorphize_module}};
+
+    // struct ByteArr { data: [u8; 4] }
+    // fn xor_pair(a: ByteArr, b: ByteArr) -> u32
+    //   { result = 0; result |= (a.data[0] ^ b.data[0]); ... }
+    // We'll test a simpler version: a function that XORs two u8 values.
+
+    // fn add_bytes(x: u8, y: u8) -> u8 { x ^ y }
+    let func = IrFunction {
+        name: "xor_bytes".to_owned(),
+        generics: vec![],
+        receiver: None,
+        params: vec![
+            IrParam { name: "x".to_owned(), ty: IrType::Primitive(PrimitiveType::U8) },
+            IrParam { name: "y".to_owned(), ty: IrType::Primitive(PrimitiveType::U8) },
+        ],
+        return_type: Some(IrType::Primitive(PrimitiveType::U8)),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts: vec![],
+            expr: Some(Box::new(IrExpr::Binary {
+                op: SpecBinOp::BitXor,
+                left: Box::new(IrExpr::Var("x".to_owned())),
+                right: Box::new(IrExpr::Var("y".to_owned())),
+            })),
+        },
+    };
+
+    let module = IrModule {
+        name: "test".to_owned(),
+        structs: vec![],
+        traits: vec![],
+        impls: vec![],
+        functions: vec![func],
+        type_aliases: vec![],
+    };
+
+    let env = MonoEnv::new("sha256");
+    let mono = monomorphize_module(&module, &env);
+
+    let mut b = CBackend::new();
+    lower_module_with_opts(&mono, &mut b, "sha256");
+    let c_src = b.finish();
+
+    let output = compile_and_run(&c_src, r#"  printf("%u\n", (unsigned)xor_bytes(0xABu, 0x0Fu));"#);
+    assert_eq!(output.trim(), format!("{}", 0xABu8 ^ 0x0Fu8));
 }

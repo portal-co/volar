@@ -298,7 +298,7 @@ fn lower_ir_stmt<T: LirTarget>(
             if n_mod == 0 {
                 return sv;
             }
-            let shift_l = target.iconst(lir_ty, n_mod as i64);
+            let shift_l = target.iconst(lir_ty.clone(), n_mod as i64);
             let shift_r = target.iconst(lir_ty, (width - n_mod) as i64);
             let left = target.shl(sv, shift_l);
             let right = target.lshr(sv, shift_r);
@@ -312,7 +312,7 @@ fn lower_ir_stmt<T: LirTarget>(
             if n_mod == 0 {
                 return sv;
             }
-            let shift_r = target.iconst(lir_ty, n_mod as i64);
+            let shift_r = target.iconst(lir_ty.clone(), n_mod as i64);
             let shift_l = target.iconst(lir_ty, (width - n_mod) as i64);
             let right = target.lshr(sv, shift_r);
             let left = target.shl(sv, shift_l);
@@ -321,11 +321,11 @@ fn lower_ir_stmt<T: LirTarget>(
         IRStmt::Merge { parts, ty } => {
             let dst_lir = ir_type_to_lir(&types.0[ty.0 as usize]);
             let elem_bits = dst_lir.bit_width() / parts.len() as u32;
-            let mut acc = target.iconst(dst_lir, 0);
+            let mut acc = target.iconst(dst_lir.clone(), 0);
             for (i, part_id) in parts.iter().enumerate() {
                 let part = vals[part_id.0 as usize];
-                let ext = target.zext(part, dst_lir);
-                let shift = target.iconst(dst_lir, (i as u32 * elem_bits) as i64);
+                let ext = target.zext(part, dst_lir.clone());
+                let shift = target.iconst(dst_lir.clone(), (i as u32 * elem_bits) as i64);
                 let shifted = target.shl(ext, shift);
                 acc = target.or(acc, shifted);
             }
@@ -338,11 +338,11 @@ fn lower_ir_stmt<T: LirTarget>(
             // Determine element width from src type (assume Bool = 1 bit).
             let src_bits = 1u32; // conservative: treat as 1-bit element
             let total_bits = dst_lir.bit_width();
-            let ext = target.zext(sv, dst_lir);
+            let ext = target.zext(sv, dst_lir.clone());
             let mut acc = ext;
             let mut pos = src_bits;
             while pos < total_bits {
-                let shift = target.iconst(dst_lir, pos as i64);
+                let shift = target.iconst(dst_lir.clone(), pos as i64);
                 let shifted = target.shl(ext, shift);
                 acc = target.or(acc, shifted);
                 pos += src_bits;
