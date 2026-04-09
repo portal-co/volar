@@ -10,13 +10,19 @@
   - [x] `CBackend` (C99 emitter for testing)
   - [x] `BIrBlocks` / `IRBlocks` → `LirTarget` lowering (scalar types)
   - [x] `IrModule` → `LirTarget` lowering (primitive types, binary/unary ops, if/else)
-  - [ ] array types and indexing in `LirType` + lowering passes
-  - [ ] struct/tuple types (product types) and field access in `LirType` + lowering passes
-  - [ ] generic monomorphization before `IrModule` → LIR lowering
+  - [x] array types (`LirType::Arr`) + `arr_new`/`arr_get`/`arr_set` in `LirTarget` and `CBackend`
+  - [x] struct types (`LirType::Struct`, `StructDef`) + `define_struct`/`struct_new`/`struct_get`
+  - [x] extern calls (`call_extern`) in `LirTarget` and `CBackend`
+  - [x] generic monomorphization (`volar-lir-codegen/src/mono.rs`) — `MonoEnv`, const-param substitution
+  - [x] struct registry (`volar-lir-codegen/src/structs.rs`) — IrModule.structs → define_struct
+  - [x] `Field`, `Index`, `StructExpr`, `FixedArray` lowering in `volar-lir-codegen`
+  - [x] `ArrayGenerate`, `RawMap`, `RawZip` unrolling in `volar-lir-codegen`
+  - [x] `BoundedLoop` lowering (loop-header block params: counter + limit)
+  - [x] `.clone()` method call (identity), crypto method calls (→ `call_extern`)
+  - [ ] `Vec<T>` / heap allocation in `LirTarget` (blocks garbler lowering)
   - [ ] memory operations (load/store) in `LirTarget`
-  - [ ] function calls in `LirTarget`
-  - [ ] loop lowering in `volar-lir-codegen` (`BoundedLoop`, `IterLoop`)
   - [ ] `StorageRead` / `StorageWrite` in `lower_ir` (requires memory ops above)
   - [ ] multi-element vector types in `IRBlocks` lowering (`Vec(n, Galois)`, nested vecs)
+  - [ ] `IterLoop` over non-array collections
 
 Prefer dynamically creating subgoals to handling entire goals at a time; AI agents, add this to files and memory.

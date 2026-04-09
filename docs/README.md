@@ -38,6 +38,8 @@ See [reliability.md](reliability.md) for the full policy.
 | [spec.md](spec.md) | `volar-spec` — ZK, MPC, and garbled circuit specifications |
 | [ir-lowering.md](ir-lowering.md) | IR lowering pipeline — `volar-ir`, Volar IR, Boolar IR, movfuscation |
 | [compiler.md](compiler.md) | `volar-compiler` — parser, IR, lowering passes, printers |
+| [garbling-pipeline.md](garbling-pipeline.md) | Garbling pipeline — `volar-weaver`, evaluator/garbler generation, gate-to-IrExpr mapping |
+| [lir.md](lir.md) | LIR — `LirTarget` trait, C backend, IrModule lowering, monomorphization, loop unrolling |
 | [insecure.md](insecure.md) | The `.insecure` file extension — policy and current insecure constructions |
 
 ### Compiler sub-documents (migrated from `crates/volar-compiler/docs/`)

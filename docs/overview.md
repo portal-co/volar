@@ -26,9 +26,13 @@ volar/
 │   │   └── volar-dyn/          Runtime dynamic bindings (generated from volar-spec)
 │   ├── ir/
 │   │   ├── volar-ir/           Low-level circuit IR (Volar IR, Boolar IR)
+│   │   ├── volar-lir/          LirTarget trait + LirType (no_std)
 │   │   └── vaffle/             WAFFLE-to-VAFFLE intermediate layer (stub)
 │   └── compiler/
-│       └── volar-compiler/     Compiler: parser → IR → lowering → printers
+│       ├── volar-compiler/     Compiler: parser → IR → lowering → printers
+│       ├── volar-weaver/       BIrBlocks → IrModule (garbler/evaluator generation)
+│       ├── volar-lir-codegen/  IrModule → LirTarget lowering (mono, structs, loops)
+│       └── volar-c-backend/    LirTarget → C99 source (for testing)
 ├── docs/                       This documentation
 └── packages/                   npm packages (volar-runtime TypeScript)
 ```
