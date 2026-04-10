@@ -29,7 +29,9 @@ pub fn lower_biir<T: LirTarget>(blocks: &BIrBlocks, name: &str, target: &mut T) 
     // For blocks beyond the first we pre-allocate after begin_function.
 
     let input_tys: Vec<LirType> = (0..num_inputs).map(|_| LirType::Bool).collect();
-    let (entry_handle, entry_params) = target.begin_function(name, &input_tys, Some(LirType::U64));
+    let (entry_handle, entry_param_groups) = target.begin_function(name, &input_tys, Some(LirType::U64));
+    // Each param is scalar (Bool), so each group has exactly one value.
+    let entry_params: Vec<T::Value> = entry_param_groups.into_iter().map(|g| g[0]).collect();
     block_handles.push(entry_handle);
 
     // Pre-create handles for all blocks after the entry.
@@ -136,7 +138,7 @@ fn lower_biir_jump<T: LirTarget>(
         IRBlockTargetId::Return => {
             let args: Vec<T::Value> = tgt.args.iter().map(|id| vals[id.0 as usize]).collect();
             let ret_val = pack_bits_to_u64(&args, target);
-            target.ret(Some(ret_val));
+            target.ret(&[ret_val]);
         }
         IRBlockTargetId::Block(id) => {
             let args: Vec<T::Value> = tgt.args.iter().map(|id| vals[id.0 as usize]).collect();
@@ -203,7 +205,9 @@ pub fn lower_ir<T: LirTarget>(
     // For simplicity, assume single-output; we'll pack multi-output below.
     let ret_ty = Some(LirType::U64);
 
-    let (entry_handle, entry_params) = target.begin_function(name, &input_tys, ret_ty);
+    let (entry_handle, entry_param_groups) = target.begin_function(name, &input_tys, ret_ty);
+    // All params are scalar types, so each group has exactly one value.
+    let entry_params: Vec<T::Value> = entry_param_groups.into_iter().map(|g| g[0]).collect();
 
     let mut block_handles: Vec<T::Block> = vec![entry_handle];
     for _ in 1..blocks.0.len() {
@@ -367,7 +371,7 @@ fn lower_ir_terminator<T: LirTarget>(
             match func {
                 IRBlockTargetId::Return => {
                     let ret = pack_bits_to_u64(&arg_vals, target);
-                    target.ret(Some(ret));
+                    target.ret(&[ret]);
                 }
                 IRBlockTargetId::Block(id) => {
                     target.jump(block_handles[id.0 as usize], &arg_vals);

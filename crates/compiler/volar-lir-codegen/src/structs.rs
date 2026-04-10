@@ -213,3 +213,79 @@ pub fn struct_c_name(ir_struct: &IrStruct) -> String {
     // For now just use the kind name; extend to include size suffix if needed.
     kind_name(&ir_struct.kind)
 }
+
+// ============================================================================
+// Flattening utilities
+// ============================================================================
+
+impl StructRegistry {
+    /// Return the LirTypes of all fields in declaration order.
+    pub fn field_types(&self, id: StructId) -> &[LirType] {
+        for entry in self.by_name.values() {
+            if entry.id == id {
+                return &entry.field_types;
+            }
+        }
+        panic!("StructId {id} not in registry")
+    }
+}
+
+/// Number of scalars needed to represent `ty` when fully flattened.
+///
+/// - Scalar types → 1
+/// - `Arr(elem, n)` → n × flatten_count(elem)
+/// - `Struct(id)` → sum of flatten_count for each field
+pub fn flatten_count(ty: &LirType, registry: &StructRegistry) -> usize {
+    match ty {
+        LirType::Arr(elem, n) => n * flatten_count(elem, registry),
+        LirType::Struct(id) => registry
+            .field_types(*id)
+            .iter()
+            .map(|ft| flatten_count(ft, registry))
+            .sum(),
+        _ => 1,
+    }
+}
+
+/// Ordered list of scalar `LirType`s that make up the flattened representation of `ty`.
+///
+/// E.g. `Struct(Eval<16>)` where `Eval { base: [u8; 16] }` → `[U8; 16]`.
+pub fn flatten_scalar_types(ty: &LirType, registry: &StructRegistry) -> Vec<LirType> {
+    match ty {
+        LirType::Arr(elem, n) => {
+            let elem_scalars = flatten_scalar_types(elem, registry);
+            elem_scalars.iter().cloned().cycle().take(elem_scalars.len() * n).collect()
+        }
+        LirType::Struct(id) => registry
+            .field_types(*id)
+            .iter()
+            .flat_map(|ft| flatten_scalar_types(ft, registry))
+            .collect(),
+        scalar => vec![scalar.clone()],
+    }
+}
+
+/// Scalar offset (in elements) of `field_idx` within a flattened struct.
+///
+/// This is the number of scalars contributed by fields `0..field_idx`.
+pub fn struct_field_scalar_offset(
+    registry: &StructRegistry,
+    id: StructId,
+    field_idx: usize,
+) -> usize {
+    registry
+        .field_types(id)
+        .iter()
+        .take(field_idx)
+        .map(|ft| flatten_count(ft, registry))
+        .sum()
+}
+
+/// Number of scalars contributed by `field_idx` within a flattened struct.
+pub fn struct_field_scalar_width(
+    registry: &StructRegistry,
+    id: StructId,
+    field_idx: usize,
+) -> usize {
+    flatten_count(&registry.field_types(id)[field_idx], registry)
+}

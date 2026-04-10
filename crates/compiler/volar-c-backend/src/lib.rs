@@ -276,6 +276,108 @@ impl Default for CBackend {
 }
 
 // ============================================================================
+// Aggregate pack / unpack helpers
+// ============================================================================
+
+impl CBackend {
+    /// Recursively unpack an aggregate `CValue` into leaf scalar `CValue`s.
+    ///
+    /// If `to_preamble` is true, emits declarations to the function preamble
+    /// (used when unpacking function parameters at function entry).  Otherwise
+    /// emits to the body (used when unpacking extern call return values).
+    fn unpack_to_scalars(&mut self, agg: CValue, ty: &LirType, to_preamble: bool) -> Vec<CValue> {
+        match ty.clone() {
+            LirType::Arr(elem, n) => {
+                let elem_c = self.type_to_c(&elem);
+                let agg_name = self.state().name_of(agg).to_owned();
+                let mut result = Vec::new();
+                for i in 0..n {
+                    let expr = format!("{agg_name}.data[{i}]");
+                    let id = self.state().next_value;
+                    if to_preamble {
+                        writeln!(self.state().preamble, "  {elem_c} v{id} = {expr};").unwrap();
+                    } else {
+                        writeln!(self.state().body, "  {elem_c} v{id} = {expr};").unwrap();
+                    }
+                    let child = self.state().alloc_value(*elem.clone(), elem_c.clone(), format!("v{id}"));
+                    let mut children = self.unpack_to_scalars(child, &elem, to_preamble);
+                    result.append(&mut children);
+                }
+                result
+            }
+            LirType::Struct(id) => {
+                let field_tys: Vec<LirType> = self.struct_defs[id as usize].fields.iter().map(|f| f.ty.clone()).collect();
+                let field_names: Vec<String> = self.struct_defs[id as usize].fields.iter().map(|f| f.name.clone()).collect();
+                let agg_name = self.state().name_of(agg).to_owned();
+                let mut result = Vec::new();
+                for (fname, fty) in field_names.iter().zip(field_tys.iter()) {
+                    let fc = self.type_to_c(fty);
+                    let expr = format!("{agg_name}.{fname}");
+                    let vid = self.state().next_value;
+                    if to_preamble {
+                        writeln!(self.state().preamble, "  {fc} v{vid} = {expr};").unwrap();
+                    } else {
+                        writeln!(self.state().body, "  {fc} v{vid} = {expr};").unwrap();
+                    }
+                    let child = self.state().alloc_value(fty.clone(), fc.clone(), format!("v{vid}"));
+                    let mut children = self.unpack_to_scalars(child, fty, to_preamble);
+                    result.append(&mut children);
+                }
+                result
+            }
+            // Already a scalar — return as-is.
+            _ => vec![agg],
+        }
+    }
+
+    /// Recursively pack a flat slice of scalars into the given aggregate `LirType`.
+    ///
+    /// `offset` is advanced by the number of scalars consumed.  Emits
+    /// construction instructions to the body.
+    fn pack_scalars(&mut self, ty: &LirType, scalars: &[CValue], offset: &mut usize) -> CValue {
+        match ty.clone() {
+            LirType::Arr(elem, n) => {
+                let packed_elems: Vec<CValue> = (0..n)
+                    .map(|_| self.pack_scalars(&elem, scalars, offset))
+                    .collect();
+                let arr_ty = LirType::Arr(elem.clone(), n);
+                self.register_array_typedef(&arr_ty);
+                let type_name = arr_typedef_name(&elem, n);
+                let elem_names: Vec<String> = packed_elems.iter()
+                    .map(|&v| self.state().name_of(v).to_owned())
+                    .collect();
+                let data_init = elem_names.join(", ");
+                let expr = format!("({type_name}){{ .data = {{ {data_init} }} }}");
+                self.state().emit_instr(arr_ty, type_name, &expr)
+            }
+            LirType::Struct(id) => {
+                let field_tys: Vec<LirType> = self.struct_defs[id as usize].fields.iter().map(|f| f.ty.clone()).collect();
+                let field_names: Vec<String> = self.struct_defs[id as usize].fields.iter().map(|f| f.name.clone()).collect();
+                let struct_name = self.struct_names[id as usize].clone();
+                let packed_fields: Vec<CValue> = field_tys.iter()
+                    .map(|fty| self.pack_scalars(fty, scalars, offset))
+                    .collect();
+                let val_names: Vec<String> = packed_fields.iter()
+                    .map(|&v| self.state().name_of(v).to_owned())
+                    .collect();
+                let init = field_names.iter().zip(val_names.iter())
+                    .map(|(fname, vname)| format!(".{fname} = {vname}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let expr = format!("({struct_name}){{ {init} }}");
+                self.state().emit_instr(LirType::Struct(id), struct_name, &expr)
+            }
+            // Scalar — consume one value from the flat list.
+            _ => {
+                let val = scalars[*offset];
+                *offset += 1;
+                val
+            }
+        }
+    }
+}
+
+// ============================================================================
 // LirTarget impl
 // ============================================================================
 
@@ -296,7 +398,7 @@ impl LirTarget for CBackend {
         }
 
         // Render the typedef.
-        let mut s = format!("typedef struct {{\n");
+        let mut s = "typedef struct {\n".to_string();
         for field in &def.fields {
             let c_type = self.type_to_c(&field.ty);
             writeln!(s, "  {c_type} {};", field.name).unwrap();
@@ -309,14 +411,27 @@ impl LirTarget for CBackend {
         id
     }
 
+    // ---- Value type query ---------------------------------------------------
+
+    fn value_scalar_type(&self, val: CValue) -> LirType {
+        self.current.as_ref().expect("value_scalar_type: not inside a function")
+            .value_type[val.0 as usize].clone()
+    }
+
     // ---- Function management ------------------------------------------------
 
+    /// Begin a new C function.
+    ///
+    /// `params` may contain aggregate types (`Arr`/`Struct`).  Each aggregate
+    /// parameter becomes one C function parameter (for ABI compatibility) and
+    /// is then immediately unpacked into scalar locals in the preamble.
+    /// Returns one `Vec<CValue>` per parameter containing the flat scalars.
     fn begin_function(
         &mut self,
         name: &str,
         params: &[LirType],
         ret: Option<LirType>,
-    ) -> (CBlock, Vec<CValue>) {
+    ) -> (CBlock, Vec<Vec<CValue>>) {
         assert!(self.current.is_none(), "begin_function called while inside a function");
 
         // Register array typedefs for param and return types.
@@ -327,7 +442,6 @@ impl LirTarget for CBackend {
             self.register_array_typedef(ty);
         }
 
-        // Pre-compute C type strings for parameters.
         let param_ctypes: Vec<String> = params.iter().map(|ty| self.type_to_c(ty)).collect();
 
         let mut state = FunctionState {
@@ -336,7 +450,6 @@ impl LirTarget for CBackend {
             func_param_count: params.len(),
             preamble: String::new(),
             body: String::new(),
-            // Entry block (block 0) has no block-param pre-declarations.
             blocks: vec![BlockMeta { param_count: 0, param_base: 0 }],
             value_name: Vec::new(),
             value_ctype: Vec::new(),
@@ -346,8 +459,9 @@ impl LirTarget for CBackend {
             current_block: None,
         };
 
-        // Allocate values for function parameters: v0, v1, ...
-        let param_vals: Vec<CValue> = params
+        // Allocate one value per parameter for the C function signature.
+        // These are the aggregate values as seen by the C ABI.
+        let agg_params: Vec<CValue> = params
             .iter()
             .zip(param_ctypes.iter())
             .enumerate()
@@ -357,13 +471,20 @@ impl LirTarget for CBackend {
             .collect();
 
         self.current = Some(state);
-        (CBlock(0), param_vals)
+
+        // Unpack each aggregate param to scalars, emitting into the preamble.
+        let param_val_groups: Vec<Vec<CValue>> = agg_params
+            .iter()
+            .zip(params.iter())
+            .map(|(&agg, ty)| self.unpack_to_scalars(agg, ty, true))
+            .collect();
+
+        (CBlock(0), param_val_groups)
     }
 
     fn end_function(&mut self) {
         let state = self.current.take().expect("end_function called outside a function");
 
-        // Compute return type C string after taking state (self.current is None again).
         let ret_cty = state
             .ret_ty
             .as_ref()
@@ -511,122 +632,53 @@ impl LirTarget for CBackend {
         self.state().emit_instr(ty, c_type, &expr)
     }
 
-    // ---- Array operations ---------------------------------------------------
-
-    fn arr_new(&mut self, elem_ty: LirType, elems: &[CValue]) -> CValue {
-        let len = elems.len();
-        let arr_ty = LirType::Arr(Box::new(elem_ty.clone()), len);
-        self.register_array_typedef(&arr_ty);
-        let type_name = arr_typedef_name(&elem_ty, len);
-
-        let elem_names: Vec<String> =
-            elems.iter().map(|&v| self.state().name_of(v).to_owned()).collect();
-        let data_init = elem_names.join(", ");
-        let expr = format!("({type_name}){{ .data = {{ {data_init} }} }}");
-        self.state().emit_instr(arr_ty, type_name, &expr)
-    }
-
-    fn arr_get(&mut self, arr: CValue, idx: CValue) -> CValue {
-        let arr_ty = self.state().type_of(arr).clone();
-        let (elem_ty, _len) = match arr_ty {
-            LirType::Arr(ref elem, len) => (*elem.clone(), len),
-            _ => panic!("arr_get: expected Arr type, got {:?}", arr_ty),
-        };
-        let elem_c = self.type_to_c(&elem_ty);
-        let arr_name = self.state().name_of(arr).to_owned();
-        let idx_name = self.state().name_of(idx).to_owned();
-        let expr = format!("{arr_name}.data[{idx_name}]");
-        self.state().emit_instr(elem_ty, elem_c, &expr)
-    }
-
-    fn arr_set(&mut self, arr: CValue, idx: CValue, val: CValue) -> CValue {
-        let arr_ty = self.state().type_of(arr).clone();
-        let type_name = self.type_to_c(&arr_ty);
-        let arr_name = self.state().name_of(arr).to_owned();
-        let idx_name = self.state().name_of(idx).to_owned();
-        let val_name = self.state().name_of(val).to_owned();
-
-        // Functional update: copy + mutate.
-        let id = self.state().next_value;
-        let result_name = format!("v{id}");
-        writeln!(self.state().body, "  {type_name} {result_name} = {arr_name};").unwrap();
-        writeln!(self.state().body, "  {result_name}.data[{idx_name}] = {val_name};").unwrap();
-        self.state().alloc_value(arr_ty, type_name, result_name)
-    }
-
-    // ---- Struct operations --------------------------------------------------
-
-    fn struct_new(&mut self, id: StructId, fields: &[CValue]) -> CValue {
-        let struct_name = self.struct_names[id as usize].clone();
-        // Collect field names before borrowing state.
-        let field_names: Vec<String> =
-            self.struct_defs[id as usize].fields.iter().map(|f| f.name.clone()).collect();
-        assert_eq!(fields.len(), field_names.len(), "struct_new: field count mismatch");
-
-        let val_names: Vec<String> =
-            fields.iter().map(|&v| self.state().name_of(v).to_owned()).collect();
-
-        let init = field_names
-            .iter()
-            .zip(val_names.iter())
-            .map(|(fname, vname)| format!(".{fname} = {vname}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let expr = format!("({struct_name}){{ {init} }}");
-        let ty = LirType::Struct(id);
-        self.state().emit_instr(ty, struct_name, &expr)
-    }
-
-    fn struct_get(&mut self, val: CValue, field_idx: usize) -> CValue {
-        let struct_ty = self.state().type_of(val).clone();
-        let struct_id = match struct_ty {
-            LirType::Struct(id) => id,
-            _ => panic!("struct_get: expected Struct type, got {:?}", struct_ty),
-        };
-        let field = &self.struct_defs[struct_id as usize].fields[field_idx];
-        let field_name = field.name.clone();
-        let field_ty = field.ty.clone();
-        let field_ctype = self.type_to_c(&field_ty);
-        let val_name = self.state().name_of(val).to_owned();
-        let expr = format!("{val_name}.{field_name}");
-        self.state().emit_instr(field_ty, field_ctype, &expr)
-    }
-
     // ---- Extern calls -------------------------------------------------------
 
+    /// Call an external C function.
+    ///
+    /// `arg_tys` gives the ABI (possibly aggregate) type for each logical arg.
+    /// `args` is the flat scalar list.  The backend packs scalars into C
+    /// aggregates before the call and unpacks the return value afterwards.
     fn call_extern(
         &mut self,
         name: &str,
-        ret_ty: Option<LirType>,
+        arg_tys: &[LirType],
         args: &[CValue],
-    ) -> Option<CValue> {
-        // Collect argument info before any mutable borrows.
-        let arg_names: Vec<String> =
-            args.iter().map(|&v| self.state().name_of(v).to_owned()).collect();
-        let arg_tys: Vec<LirType> =
-            args.iter().map(|&v| self.state().type_of(v).clone()).collect();
+        ret_ty: Option<LirType>,
+    ) -> Vec<CValue> {
+        // Pack flat scalars into C aggregate arguments.
+        let mut offset = 0usize;
+        let packed_args: Vec<CValue> = arg_tys.iter()
+            .map(|ty| self.pack_scalars(ty, args, &mut offset))
+            .collect();
 
+        // Build the extern declaration using the aggregate C types.
         let arg_c_tys: Vec<String> = arg_tys.iter().map(|ty| self.type_to_c(ty)).collect();
-        let ret_c_ty = ret_ty
-            .as_ref()
-            .map(|ty| self.type_to_c(ty))
-            .unwrap_or_else(|| "void".to_string());
-
-        // Accumulate extern declaration (deduplicate by string).
+        let ret_c_ty = ret_ty.as_ref().map(|ty| self.type_to_c(ty)).unwrap_or_else(|| "void".to_string());
         let params_str = arg_c_tys.join(", ");
         let extern_decl = format!("extern {ret_c_ty} {name}({params_str});\n");
         if !self.extern_decls.contains(&extern_decl) {
             self.extern_decls.push(extern_decl);
         }
 
-        let args_str = arg_names.join(", ");
-        if let Some(ret_ty) = ret_ty {
-            let c_type = self.type_to_c(&ret_ty);
-            let expr = format!("{name}({args_str})");
-            Some(self.state().emit_instr(ret_ty, c_type, &expr))
-        } else {
-            writeln!(self.state().body, "  {name}({args_str});").unwrap();
-            None
+        let packed_names: Vec<String> = packed_args.iter()
+            .map(|&v| self.state().name_of(v).to_owned())
+            .collect();
+        let args_str = packed_names.join(", ");
+
+        match ret_ty {
+            Some(ret) => {
+                // Emit the call, capturing the return value as an aggregate.
+                let c_type = self.type_to_c(&ret);
+                let expr = format!("{name}({args_str})");
+                let agg_result = self.state().emit_instr(ret.clone(), c_type, &expr);
+                // Unpack the aggregate return into flat scalars.
+                self.unpack_to_scalars(agg_result, &ret, false)
+            }
+            None => {
+                writeln!(self.state().body, "  {name}({args_str});").unwrap();
+                vec![]
+            }
         }
     }
 
@@ -690,14 +742,32 @@ impl LirTarget for CBackend {
         writeln!(self.state().body, "  }}").unwrap();
     }
 
-    fn ret(&mut self, val: Option<CValue>) {
-        match val {
-            Some(v) => {
-                let name = self.state().name_of(v).to_owned();
-                writeln!(self.state().body, "  return {name};").unwrap();
-            }
+    /// Emit a return.  `vals` is the flat scalar list.
+    ///
+    /// If the function's declared return type is an aggregate, the scalars are
+    /// packed back into the C struct/array before `return`.
+    fn ret(&mut self, vals: &[CValue]) {
+        if vals.is_empty() {
+            writeln!(self.state().body, "  return;").unwrap();
+            return;
+        }
+        let ret_ty = self.state().ret_ty.clone();
+        match ret_ty {
             None => {
                 writeln!(self.state().body, "  return;").unwrap();
+            }
+            Some(ty) if ty.is_scalar() => {
+                // Single scalar return — emit directly.
+                assert_eq!(vals.len(), 1, "ret: scalar return type but {} values", vals.len());
+                let name = self.state().name_of(vals[0]).to_owned();
+                writeln!(self.state().body, "  return {name};").unwrap();
+            }
+            Some(ty) => {
+                // Aggregate return — pack scalars back into the C type.
+                let mut offset = 0usize;
+                let packed = self.pack_scalars(&ty.clone(), vals, &mut offset);
+                let name = self.state().name_of(packed).to_owned();
+                writeln!(self.state().body, "  return {name};").unwrap();
             }
         }
     }

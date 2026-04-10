@@ -132,12 +132,17 @@ pub trait LirTarget {
 
     // ---- Function management ------------------------------------------------
 
+    /// Begin a new function.
+    ///
+    /// `params` holds the ABI type for each parameter (may be aggregate).
+    /// Returns the entry block and one `Vec<Self::Value>` per parameter — each
+    /// inner vec is the flat scalar values that represent that parameter.
     fn begin_function(
         &mut self,
         name: &str,
         params: &[LirType],
         ret: Option<LirType>,
-    ) -> (Self::Block, Vec<Self::Value>);
+    ) -> (Self::Block, Vec<Vec<Self::Value>>);
 
     fn end_function(&mut self);
 
@@ -190,36 +195,31 @@ pub trait LirTarget {
         else_val: Self::Value,
     ) -> Self::Value;
 
-    // ---- Array operations ---------------------------------------------------
+    // ---- Value type query ---------------------------------------------------
 
-    /// Construct a fixed-size array from elements (all same type).
-    fn arr_new(&mut self, elem_ty: LirType, elems: &[Self::Value]) -> Self::Value;
-
-    /// Load one element at a runtime index; returns the element value.
-    fn arr_get(&mut self, arr: Self::Value, idx: Self::Value) -> Self::Value;
-
-    /// Return a new array with the element at `idx` replaced by `val` (functional update).
-    fn arr_set(&mut self, arr: Self::Value, idx: Self::Value, val: Self::Value) -> Self::Value;
-
-    // ---- Struct operations --------------------------------------------------
-
-    /// Construct a struct from field values in declaration order.
-    fn struct_new(&mut self, id: StructId, fields: &[Self::Value]) -> Self::Value;
-
-    /// Extract one field by its declaration-order index.
-    fn struct_get(&mut self, val: Self::Value, field_idx: usize) -> Self::Value;
+    /// Return the scalar `LirType` of a previously-emitted value.
+    ///
+    /// Used by the lowering pass to recover types for join-block parameters
+    /// (e.g. in `lower_if`) without threading type information through every
+    /// `lower_expr` return.  Panics if `val` was not produced by this target.
+    fn value_scalar_type(&self, val: Self::Value) -> LirType;
 
     // ---- Extern calls -------------------------------------------------------
 
     /// Call an external function by name.
     ///
-    /// Returns `Some(value)` if `ret_ty` is `Some`, `None` for void calls.
+    /// `arg_tys` holds the ABI type for each *logical* argument (may be
+    /// `Arr`/`Struct`).  `args` is the flat list of scalars whose total count
+    /// equals `sum(flatten_count(arg_tys[i]))`.  `ret_ty` is the ABI return
+    /// type (may be aggregate).  Returns the flat scalar list for the return
+    /// value (empty for void).
     fn call_extern(
         &mut self,
         name: &str,
-        ret_ty: Option<LirType>,
+        arg_tys: &[LirType],
         args: &[Self::Value],
-    ) -> Option<Self::Value>;
+        ret_ty: Option<LirType>,
+    ) -> Vec<Self::Value>;
 
     // ---- Terminators --------------------------------------------------------
 
@@ -234,5 +234,7 @@ pub trait LirTarget {
         else_args: &[Self::Value],
     );
 
-    fn ret(&mut self, val: Option<Self::Value>);
+    /// Emit a return.  `vals` is the flat scalar list for the return value
+    /// (empty slice for void functions).
+    fn ret(&mut self, vals: &[Self::Value]);
 }
