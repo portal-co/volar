@@ -812,64 +812,11 @@ pub fn weave_vole_verifier_bounded(
 // Printer
 // ============================================================================
 
-/// Preamble helper functions for the VOLE weave.
-///
-/// These are raw Rust strings (NOT generated through the IR), so they may
-/// use any Rust features, including mutable bindings and `for` loops.
-const VOLE_HELPERS: &str = r#"
-fn vole_and_prover_step<N, T>(
-    vope_a: Vope<N, T, U1>,
-    vope_b: Vope<N, T, U1>,
-) -> (Vope<N, T, U1>, Array<T, N>)
-where
-    N: VoleArray<T>,
-    T: Clone + core::ops::Add<Output = T> + core::ops::Mul<Output = T> + Default,
-{
-    // u_c = u_a * u_b  (AND of the bit values in the extension field)
-    let u_c_inner = Array::<T, N>::from_fn(|i| {
-        vope_a.u[0][i].clone() * vope_b.u[0][i].clone()
-    });
-    let u_c = Array::<Array<T, N>, U1>::from_fn(|_| u_c_inner.clone());
-    // v_c = v_a * u_b + u_a * v_b  (cross-term)
-    let v_c = Array::<T, N>::from_fn(|i| {
-        vope_a.v[i].clone() * vope_b.u[0][i].clone()
-            + vope_b.v[i].clone() * vope_a.u[0][i].clone()
-    });
-    // hat = v_a * v_b  (product of constant terms; sent to verifier as V̂)
-    let hat = Array::<T, N>::from_fn(|i| {
-        vope_a.v[i].clone() * vope_b.v[i].clone()
-    });
-    (Vope { u: u_c, v: v_c }, hat)
-}
-
-fn vole_and_verifier_check<N, T>(
-    delta: &Delta<N, T>,
-    q_a: &Q<N, T>,
-    q_b: &Q<N, T>,
-    q_and: &Q<N, T>,
-    hat: &Array<T, N>,
-) -> (Q<N, T>, bool)
-where
-    N: ArraySize,
-    T: Clone + core::ops::Add<Output = T> + core::ops::Mul<Output = T> + PartialEq + Default,
-{
-    // Check: K_a * K_b + hat == K_c * delta  (element-wise)
-    let mut ok = true;
-    for i in 0..N::USIZE {
-        let lhs = q_a.q[i].clone() * q_b.q[i].clone() + hat[i].clone();
-        let rhs = q_and.q[i].clone() * delta.delta[i].clone();
-        ok = ok && (lhs == rhs);
-    }
-    (Q { q: q_and.q.clone() }, ok)
-}
-"#;
-
 /// Render a weaved VOLE `IrModule` to Rust source.
 ///
-/// The preamble includes:
-/// - Standard `#![allow(...)]` / `extern crate alloc` / imports.
-/// - VOLE-specific imports (`Delta`, `Q`, `Vope`, `U1`, `VoleArray`).
-/// - The two helper functions (`vole_and_prover_step`, `vole_and_verifier_check`).
+/// The preamble brings in the VOLE AND gate primitives from
+/// `volar_spec::vole::prove` — the implementation that was formerly
+/// embedded as a raw string is now the authoritative spec.
 pub fn print_weaved_vole_module(module: &IrModule) -> String {
     use volar_compiler::printer::{DisplayRust, ModuleWriter};
     use alloc::fmt::Write as _;
@@ -886,13 +833,12 @@ pub fn print_weaved_vole_module(module: &IrModule) -> String {
         "use hybrid_array::{Array, ArraySize};\n",
         "use cipher::consts::U1;\n",
         "use volar_spec::vole::{Delta, Q, Vope, VoleArray};\n",
+        "use volar_spec::vole::prove::{vole_and_prover_step, vole_and_verifier_check};\n",
         "\n",
     );
 
-    let mut out = String::with_capacity(preamble.len() + VOLE_HELPERS.len() + body.len());
+    let mut out = String::with_capacity(preamble.len() + body.len());
     out.push_str(preamble);
-    out.push_str(VOLE_HELPERS);
-    out.push('\n');
     out.push_str(&body);
     out
 }

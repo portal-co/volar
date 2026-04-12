@@ -79,3 +79,4 @@ impl<N: ArraySize, T> Q<N, T> {
 pub mod vope;
 pub use vope::Vope;
 pub mod garble;
+pub mod prove;

@@ -314,3 +314,87 @@ impl Foo {
         panic!("Expected a method");
     }
 }
+
+#[test]
+#[cfg(feature = "parsing")]
+fn test_prove_module_static_print_roundtrip() {
+    use std::process::Command;
+    use std::fs;
+
+    let prove_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent().unwrap()
+        .parent().unwrap()
+        .join("spec/volar-spec/src/vole/prove.rs");
+    let prove_src = fs::read_to_string(&prove_path)
+        .expect("prove.rs should exist");
+    let prove_src = prove_src.as_str();
+    let module = volar_compiler::parse_source(prove_src, "prove")
+        .expect("prove.rs should parse in the total-Rust subset");
+
+    assert_eq!(module.functions.len(), 2, "Expected vole_and_prover_step and vole_and_verifier_check");
+    assert!(module.functions.iter().any(|f| f.name == "vole_and_prover_step"));
+    assert!(module.functions.iter().any(|f| f.name == "vole_and_verifier_check"));
+
+    // Print the module body using the static (non-dyn) printer
+    use volar_compiler::printer::{DisplayRust, ModuleWriter};
+    let body = format!("{}", DisplayRust(ModuleWriter { module: &module }));
+    assert!(body.contains("Array::<T, N>::from_fn"), "Should use static from_fn form, got:\n{}", body);
+    assert!(body.contains("Array::<Array<T, N>, U1>::from_fn"), "Should handle nested array elem_ty, got:\n{}", body);
+    assert!(body.contains("N::USIZE"), "BoundedLoop end should be N::USIZE, got:\n{}", body);
+
+    // Build a temp crate and cargo-check it
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(3)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+
+    let tmp = std::env::temp_dir().join("volar_prove_print_roundtrip");
+    let src = tmp.join("src");
+    fs::create_dir_all(&src).unwrap();
+
+    let code = format!(
+        "#![allow(unused, non_snake_case)]\n\
+         extern crate alloc;\n\
+         use alloc::vec::Vec;\n\
+         use core::ops::{{Add, Mul}};\n\
+         use hybrid_array::{{Array, ArraySize}};\n\
+         use cipher::consts::U1;\n\
+         use volar_spec::vole::{{Delta, Q, Vope, VoleArray}};\n\
+         \n\
+         {body}\n",
+        body = body,
+    );
+
+    let cargo_toml = format!(
+        "[package]\nname = \"prove-roundtrip\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\
+         [lib]\npath = \"src/lib.rs\"\n\
+         [dependencies]\n\
+         volar-spec = {{ path = \"{root}/crates/spec/volar-spec\" }}\n\
+         hybrid-array = \"0.4.8\"\n\
+         cipher = {{ version = \"0.5.1\", default-features = false }}\n\
+         typenum = {{ version = \"1.17\", default-features = false }}\n",
+        root = root,
+    );
+
+    fs::write(tmp.join("Cargo.toml"), &cargo_toml).unwrap();
+    fs::write(src.join("lib.rs"), &code).unwrap();
+
+    let out = Command::new("cargo")
+        .args(["check", "--quiet"])
+        .current_dir(&tmp)
+        .env("CARGO_TARGET_DIR", tmp.join("target").to_str().unwrap())
+        .output()
+        .expect("cargo check");
+
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let _ = fs::remove_dir_all(&tmp);
+
+    assert!(
+        out.status.success(),
+        "Static print of prove.rs failed to compile:\n--- code ---\n{}\n--- stderr ---\n{}",
+        code,
+        stderr
+    );
+}

@@ -446,15 +446,29 @@ impl<'a> RustBackend for TypeWriter<'a> {
                 TypeWriter { ty: elem }.fmt(f)?;
                 write!(f, ">")?;
             }
-            IrType::Array { kind, elem, len: _ } => {
-                if *kind == ArrayKind::Slice {
-                    write!(f, "[")?;
-                    TypeWriter { ty: elem }.fmt(f)?;
-                    write!(f, "]")?;
-                } else {
-                    write!(f, "Vec<")?;
-                    TypeWriter { ty: elem }.fmt(f)?;
-                    write!(f, ">")?;
+            IrType::Array { kind, elem, len } => {
+                match kind {
+                    ArrayKind::Slice => {
+                        write!(f, "[")?;
+                        TypeWriter { ty: elem }.fmt(f)?;
+                        write!(f, "]")?;
+                    }
+                    ArrayKind::FixedArray => {
+                        write!(f, "[")?;
+                        TypeWriter { ty: elem }.fmt(f)?;
+                        write!(f, "; ")?;
+                        let len_ty = array_length_as_static_type(len);
+                        TypeWriter { ty: &len_ty }.fmt(f)?;
+                        write!(f, "]")?;
+                    }
+                    ArrayKind::GenericArray => {
+                        write!(f, "Array<")?;
+                        TypeWriter { ty: elem }.fmt(f)?;
+                        write!(f, ", ")?;
+                        let len_ty = array_length_as_static_type(len);
+                        TypeWriter { ty: &len_ty }.fmt(f)?;
+                        write!(f, ">")?;
+                    }
                 }
             }
             IrType::Struct { kind, type_args } => {
@@ -1139,33 +1153,23 @@ impl<'a> RustBackend for ExprWriter<'a> {
             IrExpr::LengthOf(len) => {
                 match len {
                     ArrayLength::Const(n) => write!(f, "{}", n)?,
-                    ArrayLength::TypeParam(p) => write!(f, "{}", p.to_lowercase())?,
+                    ArrayLength::TypeParam(p) => write!(f, "{}::USIZE", p)?,
                     ArrayLength::Projection { r#type, field, .. } => {
                         // Emit <<T>::Assoc as Unsigned>::to_usize() for compile-time resolution
                         write!(f, "<<")?;
                         TypeWriter { ty: r#type }.fmt(f)?;
                         write!(f, ">::{} as Unsigned>::to_usize()", field)?;
                     }
-                    _ => write!(f, "todo!(\"length\")")?,
+                    _ => write!(f, "0")?,
                 }
             }
             IrExpr::ArrayGenerate {
-                elem_ty: _,
+                elem_ty,
                 len,
                 index_var,
                 body,
             } => {
-                write!(f, "(0..")?;
-                match len {
-                    ArrayLength::Const(n) => write!(f, "{}", n)?,
-                    ArrayLength::TypeParam(p) => write!(f, "{}", p.to_lowercase())?,
-                    ArrayLength::Projection { r#type, field, .. } => {
-                        write!(f, "<<")?;
-                        TypeWriter { ty: r#type }.fmt(f)?;
-                        write!(f, ">::{} as Unsigned>::to_usize()", field)?;
-                    }
-                    _ => write!(f, "todo!(\"length\")")?,
-                }
+                // Static form: Array::<ElemTy, Len>::from_fn(|index_var| body)
                 debug_assert!(
                     index_var
                         .chars()
@@ -1173,9 +1177,17 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     "ArrayGenerate index_var is not a valid ident: {:?}",
                     index_var
                 );
-                write!(f, ").map(|{}| ", index_var)?;
+                write!(f, "Array::<")?;
+                match elem_ty {
+                    Some(ty) => TypeWriter { ty }.fmt(f)?,
+                    None => write!(f, "_")?,
+                }
+                write!(f, ", ")?;
+                let len_ty = array_length_as_static_type(len);
+                TypeWriter { ty: &len_ty }.fmt(f)?;
+                write!(f, ">::from_fn(|{}| ", index_var)?;
                 ExprWriter { expr: body }.fmt(f)?;
-                write!(f, ").collect::<Vec<_>>()")?;
+                write!(f, ")")?;
             }
             IrExpr::Unary { op, expr } => match op {
                 SpecUnaryOp::Neg => {
@@ -1304,6 +1316,32 @@ fn method_name(method: &MethodKind) -> String {
         name
     );
     name
+}
+
+/// Convert an `ArrayLength` to an `IrType` suitable for use as a static type argument
+/// (e.g. inside `Array<Elem, Len>` or `Array::<Elem, Len>::from_fn(...)`).
+///
+/// - `TypeParam("N")` → `TypeParam("N")` (preserves case — the static name).
+/// - `Const(n)` → `TypeParam("typenum::U{n}")` (approximation for small literals).
+/// - `TypeNum(tn)` → `TypeParam("{tn:?}")` (e.g. `U8`, `U16`).
+/// - `Projection { type, field }` → `Projection { ... }` (e.g. `<T as Trait>::Assoc`).
+fn array_length_as_static_type(len: &ArrayLength) -> IrType {
+    match len {
+        ArrayLength::TypeParam(name) => IrType::TypeParam(name.clone()),
+        ArrayLength::Const(n) => IrType::TypeParam(format!("typenum::U{}", n)),
+        ArrayLength::TypeNum(tn) => IrType::TypeParam(format!("{:?}", tn)),
+        ArrayLength::Projection {
+            r#type,
+            field,
+            trait_path,
+        } => IrType::Projection {
+            base: r#type.clone(),
+            trait_path: trait_path.clone(),
+            trait_args: Vec::new(),
+            assoc: AssociatedType::from_str(field),
+        },
+        _ => IrType::TypeParam("_".to_string()),
+    }
 }
 
 fn bin_op_str(op: SpecBinOp) -> &'static str {
