@@ -13,7 +13,7 @@ This repo is an attempt to build a usable VOLEitH library in Rust, with a compil
 ```
 crates/
   spec/
-    volar-primitives/   Field element types: Bit, Galois (GF(2^8)), Galois64, BitsInBytes, etc.
+    volar-primitives/   Field element types: Bit, Galois (GF(2^8)), Galois64, Galois128, Galois256, etc.
     volar-common/       Shared primitives: hash commitments, length-doubling PRG
     volar-spec/         Core VOLE types and protocols (static, typenum-length-parameterized)
     volar-dyn/          Dynamic (heap-allocated, runtime-sized) mirror of volar-spec
@@ -23,11 +23,12 @@ crates/
     vaffle/             Stub crate; placeholder for WAFFLE→VAFFLE translation (not implemented)
   compiler/
     volar-compiler/     Parses volar-spec Rust source via syn, emits dynamic Rust or TypeScript
+    volar-weaver/       BIrBlocks → garbled-circuit and VOLE ZK proof code generation
 ```
 
 ## What is implemented
 
-**volar-primitives**: Field element types with arithmetic. GF(2^8) (`Galois`) uses the AES reduction polynomial `x^8 + x^4 + x^3 + x + 1`, including field inversion. `BitsInBytes` and `BitsInBytes64` are packed bit representations for SIMD-style operations. A `Tropical` semiring is also present.
+**volar-primitives**: Field element types with arithmetic. GF(2^8) (`Galois`) uses the AES reduction polynomial `x^8 + x^4 + x^3 + x + 1`. GF(2^64) (`Galois64`), GF(2^128) (`Galois128`, GCM polynomial), and GF(2^256) (`Galois256`) are also provided. All Galois types support field inversion via Itoh–Tsujii addition-chain exponentiation. `BitsInBytes` and `BitsInBytes64` are packed bit representations for SIMD-style operations. A `Tropical` semiring is also present. The field operations (`gf_mul_*`, `gf_invert_*`) are written in the total-Rust subset and are compilable by `volar-compiler` for TypeScript transpilation.
 
 **volar-common**: `hash_commitment` (commit-open via `H(message || nonce)`). `length_doubling` (a digest-based PRG that doubles its output at each step, used as the PRF backbone for ABO generation).
 
@@ -37,7 +38,8 @@ crates/
 - `BitVole<N, T>`: a VOLE where `u` is a bit vector and `v` is an extension-field vector, representing the subfield VOLE over GF(2).
 - `field_rotate`: bit-level rotation and extraction operations on `BitsInBytes`/`BitsInBytes64` arrays. Used for the Galois extension lifting technique (mapping bit-commitments into GF(2^k) for AES-like operations).
 - `byte_gen` (ABO protocol): prover and verifier sides of an "almost bit OT" generation protocol, built on the length-doubling PRG and hash commitments. The `gen_abo` function generates the material; prover and verifier each have methods to convert it to VOLE material (`to_vole_material*`) or bit-split material (`split_bit_typenum`). Both 2-party and N-party (`multi_party` feature) variants are implemented, but the N-party protocol has a note that it was revised after a discovered soundness bug and has not been independently verified.
-- `garble`: a half-gate garbled circuit scheme over VOLE types (Zahur-Rosulek-Evans 2015). Marked experimental; the VOLE-specific binding has not been reviewed.
+- `garble`: a half-gate garbled circuit scheme over VOLE types (Zahur-Rosulek-Evans 2015). The weaver generates evaluator, garbler, GarbledCircuit, and EvalSetup code from boolean circuits, returning fixed-size arrays.
+- `prove`: Quicksilver-style VOLE AND gate primitives (`vole_and_prover_step`, `vole_and_verifier_check`). Written in the total-Rust subset, parseable by the compiler. The weaver generates prover and verifier circuit functions using these primitives.
 - `mpc`: stub only — `AllParties` and `OtherParties` type skeletons with no protocol semantics.
 
 **volar-dyn**: A dynamic (heap-allocated) re-implementation of `volar-spec` types, replacing `GenericArray<T, N>` with `Vec<T>` plus a runtime length witness. Manually written; intended as a reference.
@@ -62,12 +64,14 @@ The `volar-codegen` binary drives this pipeline. The manifest system captures st
 
 - Construction of commitments from witness/secret data
 - Consistency checks (alternative/supplement to the Hypercube technique)
-- IR proving (single round or multiple rounds)
+- Multi-round interactive proofs
 - WAFFLE-to-VAFFLE translation
 - Volar IR movfuscation pass
 - Succinct proofs
 - MPC protocol (only type stubs exist)
 - Nested proving/verification
+- VOLE setup (OT-based correlation generation)
+- Batched Quicksilver verification (random-challenge version)
 
 ## Technical notes
 

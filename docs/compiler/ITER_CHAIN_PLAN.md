@@ -1,5 +1,8 @@
 # Iterator Chain Refactor & printer_dyn Removal Plan
 
+> **Status: COMPLETE.** All 7 phases shipped. This document is retained as a
+> historical record. No action items remain.
+
 **Status**: All 7 phases complete.
 
 ## Problem Statement

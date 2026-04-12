@@ -164,57 +164,20 @@ Returns `(wire_output, all_ok)`.
 
 ---
 
-## Helper Functions (Preamble)
+## Helper Functions
 
-The printer emits two helper functions before the weaved circuit code:
+The AND gate primitives live in `volar-spec/src/vole/prove.rs` and are
+imported by the weaver's print preamble:
 
 ```rust
-fn vole_and_prover_step<N, T>(
-    vope_a: Vope<N, T, U1>,
-    vope_b: Vope<N, T, U1>,
-) -> (Vope<N, T, U1>, Array<T, N>)
-where
-    N: VoleArray<T>,
-    T: Clone + Add<Output = T> + Mul<Output = T> + Default,
-{
-    let u_c_inner = Array::<T, N>::from_fn(|i| {
-        vope_a.u[0][i].clone() * vope_b.u[0][i].clone()
-    });
-    let u_c = Array::<Array<T, N>, U1>::from_fn(|_| u_c_inner.clone());
-    let v_c = Array::<T, N>::from_fn(|i| {
-        vope_a.v[i].clone() * vope_b.u[0][i].clone()
-            + vope_b.v[i].clone() * vope_a.u[0][i].clone()
-    });
-    let hat = Array::<T, N>::from_fn(|i| {
-        vope_a.v[i].clone() * vope_b.v[i].clone()
-    });
-    (Vope { u: u_c, v: v_c }, hat)
-}
-
-fn vole_and_verifier_check<N, T>(
-    delta: &Delta<N, T>,
-    q_a: &Q<N, T>,
-    q_b: &Q<N, T>,
-    q_and: &Q<N, T>,
-    hat: &Array<T, N>,
-) -> (Q<N, T>, bool)
-where
-    N: ArraySize,
-    T: Clone + Add<Output = T> + Mul<Output = T> + PartialEq + Default,
-{
-    let mut ok = true;
-    for i in 0..N::USIZE {
-        let lhs = q_a.q[i].clone() * q_b.q[i].clone() + hat[i].clone();
-        let rhs = q_and.q[i].clone() * delta.delta[i].clone();
-        ok = ok && (lhs == rhs);
-    }
-    (Q { q: q_and.q.clone() }, ok)
-}
+use volar_spec::vole::prove::{vole_and_prover_step, vole_and_verifier_check};
 ```
 
-These functions are emitted as raw Rust strings in the preamble (they are not
-generated through the IR machinery). They are not in the total-Rust subset and
-must not be parsed by `volar-compiler`.
+These functions are in the total-Rust subset and are parseable by
+`volar-compiler` (verified by `test_prove_module_static_print_roundtrip`).
+
+See `volar-spec/src/vole/prove.rs` for the implementations and security
+rationale.
 
 ---
 
@@ -227,10 +190,11 @@ must not be parsed by `volar-compiler`.
 
 ## Printer
 
-`print_weaved_vole_module(module, self_contained) -> String` emits:
+`print_weaved_vole_module(module) -> String` emits:
 1. The standard `#![allow(...)]`, `extern crate alloc`, imports.
 2. VOLE-specific imports: `volar_spec::vole::{Delta, Q, Vope}`, typenum `U1`.
-3. The two helper functions.
+3. Import of `vole_and_prover_step` / `vole_and_verifier_check` from
+   `volar_spec::vole::prove`.
 4. The IR-generated circuit body.
 
 ---

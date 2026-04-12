@@ -9,9 +9,12 @@ Vector Oblivious Linear Evaluation (VOLE). It provides:
   definitions written in a total subset of Rust.
 - A compiler (`volar-compiler`) that parses these specifications and lowers them
   through a purpose-built IR to dynamic Rust and TypeScript.
-- Field-element primitives (`volar-primitives`) for GF(2), GF(2⁸), and GF(2⁶⁴).
+- Field-element primitives (`volar-primitives`) for GF(2), GF(2⁸), GF(2⁶⁴),
+  GF(2¹²⁸), and GF(2²⁵⁶), with Itoh–Tsujii inversion.
 - A proof-system IR (`volar-ir`) for representing circuits before and after
   movfuscation.
+- A weaver (`volar-weaver`) that generates garbled-circuit and VOLE ZK proof
+  code from boolean circuits.
 
 ---
 
@@ -38,8 +41,10 @@ See [reliability.md](reliability.md) for the full policy.
 | [spec.md](spec.md) | `volar-spec` — ZK, MPC, and garbled circuit specifications |
 | [ir-lowering.md](ir-lowering.md) | IR lowering pipeline — `volar-ir`, Volar IR, Boolar IR, movfuscation |
 | [compiler.md](compiler.md) | `volar-compiler` — parser, IR, lowering passes, printers |
-| [garbling-pipeline.md](garbling-pipeline.md) | Garbling pipeline — `volar-weaver`, evaluator/garbler generation, gate-to-IrExpr mapping |
+| [garbling-pipeline.md](garbling-pipeline.md) | Garbling & VOLE pipeline — `volar-weaver`, evaluator/garbler/prover/verifier generation |
+| [vole-weaving.md](vole-weaving.md) | VOLE weaving design — Quicksilver AND check, prover/verifier code generation |
 | [lir.md](lir.md) | LIR — `LirTarget` trait, C backend, IrModule lowering, monomorphization, loop unrolling |
+| [primitives-compiler-plan.md](primitives-compiler-plan.md) | Primitives compiler integration plan (Phase 1/3/4 complete, Phase 2 deferred) |
 | [insecure.md](insecure.md) | The `.insecure` file extension — policy and current insecure constructions |
 
 ### Compiler sub-documents (migrated from `crates/volar-compiler/docs/`)

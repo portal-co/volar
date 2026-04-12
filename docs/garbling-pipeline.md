@@ -4,6 +4,10 @@ The garbling pipeline turns a boolean circuit (`BIrBlocks`) into a pair of
 spec-level functions — an **evaluator** and a **garbler** — expressed as
 `IrModule` IR that can be compiled to Rust, TypeScript, or C.
 
+Additionally, a **VOLE proving/verifying** pipeline generates Quicksilver-style
+ZK proof functions from the same circuits.  See [vole-weaving.md](vole-weaving.md)
+for details.
+
 ---
 
 ## Overview
@@ -18,7 +22,7 @@ BIrBlocks (boolean circuit with AND / XOR / NOT gates)
 IrModule (evaluator)                               IrModule (garbler)
   generic: <N: ArraySize, D: Digest>                 generic: <N: ArraySize, D: Digest>
   params: one_wire, tables, inputs                   params: one_wire, inputs
-  output: Eval<N>                                    output: (Vec<GarbleTable<N>>, Garble<N>)
+  output: Eval<N>                                    output: ([GarbleTable<N>; A], Garble<N>)
 ```
 
 Both variants are generic over:
@@ -90,17 +94,15 @@ fn garble_and<N: ArraySize, D: Digest>(
     one_wire: &Garble<N>,
     input_0:  &Garble<N>,
     input_1:  &Garble<N>,
-) -> (Vec<GarbleTable<N>>, Garble<N>)
+) -> ([GarbleTable<N>; 1], Garble<N>)
 {
-    let mut tables: Vec<GarbleTable<N>> = Vec::new();
     // XOR gate: element-wise XOR of base shares
     let wire_0_xor_1 = Garble {
         base: Array::from_fn(|j| input_0.base[j] ^ input_1.base[j])
     };
-    // AND gate: generate table, push it
+    // AND gate: generate table
     let (table_0, wire_2) = one_wire.clone().gen_and_table::<D>(&input_0, &input_1);
-    tables.push(table_0);
-    (tables, wire_2)
+    ([table_0], wire_2)
 }
 ```
 
@@ -112,8 +114,9 @@ fn garble_and<N: ArraySize, D: Digest>(
 | `And(a, b)` | `one_wire.clone().gen_and_table::<D>(&a, &b)` → `(GarbleTable<N>, Garble<N>)` |
 | `Not(a)` | `a.clone()` XOR with `one_wire` |
 
-The garbler is blocked at the LIR lowering level because `Vec<GarbleTable<N>>`
-requires heap allocation. Only the evaluator is lowerable to C today.
+The garbler is blocked at the LIR lowering level because fixed-size arrays
+of `GarbleTable<N>` require static array support in LIR (the evaluator
+already lowers to C).
 
 ---
 
@@ -210,8 +213,5 @@ correct and easily verified.
 
 | Feature | Blocker |
 |---|---|
-| Full garbler lowering | `Vec<T>` requires heap allocation; LIR has no malloc |
-| Tuple returns `(Vec<GarbleTable<N>>, Garble<N>)` | Also blocked by `Vec<T>` |
-| `GarbledCircuit`, `EvalSetup` structs | Have `Vec` fields |
 | `D` as a `LirType` | D is a trait parameter; modeled only as an extern name suffix |
 | Non-SHA-256 hash functions | Needs different `MonoEnv::hash_suffix` + matching stubs |

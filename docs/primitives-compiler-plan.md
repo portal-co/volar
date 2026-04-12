@@ -1,5 +1,10 @@
 # Plan: Compiling `volar-primitives` Through `volar-compiler`
 
+> **Phase 1 (manifest), Phase 3 (TS backend), and Phase 4 (integration) are
+> COMPLETE.** Phase 2 (registry-driven primitives) is deferred — the hard-coded
+> `PrimitiveType` enum works and new types are rare enough that manual
+> registration is acceptable for now.
+
 ## Problem
 
 `volar-primitives` defines the field element types (`Bit`, `Galois`, `Galois64`,

@@ -19,7 +19,7 @@ The project also supports **multi-party computation (MPC)** and
 volar/
 ├── crates/
 │   ├── spec/
-│   │   ├── volar-primitives/   Field element types and arithmetic
+│   │   ├── volar-primitives/   Field element types (GF(2), GF(2^8/64/128/256)) and arithmetic
 │   │   ├── volar-common/       Hash commitments, length-doubling utilities
 │   │   ├── volar-spec/         Cryptographic protocol specifications (ZK, MPC, garbled)
 │   │   ├── volar-spec-dyn/     Auto-generated dynamic version of volar-spec
@@ -30,7 +30,7 @@ volar/
 │   │   └── vaffle/             WAFFLE-to-VAFFLE intermediate layer (stub)
 │   └── compiler/
 │       ├── volar-compiler/     Compiler: parser → IR → lowering → printers
-│       ├── volar-weaver/       BIrBlocks → IrModule (garbler/evaluator generation)
+│       ├── volar-weaver/       BIrBlocks → IrModule (garbler/evaluator + VOLE prover/verifier)
 │       ├── volar-lir-codegen/  IrModule → LirTarget lowering (mono, structs, loops)
 │       └── volar-c-backend/    LirTarget → C99 source (for testing)
 ├── docs/                       This documentation
@@ -42,7 +42,7 @@ volar/
 ## Crate Dependency Graph
 
 ```
-volar-primitives     (field elements: Bit, Galois, BitsInBytes, …)
+volar-primitives     (field elements: Bit, Galois, Galois64, Galois128, Galois256, …)
       │
 volar-common         (hash_commitment, length_doubling::LengthDoubler)
       │

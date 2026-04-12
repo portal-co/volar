@@ -1,5 +1,8 @@
 # TRAIT_UNIFY_AND_RAW_OPS_PLAN.md
 
+> **Status: COMPLETE.** All phases shipped. This document is retained as a
+> historical record. No action items remain.
+
 **Status**: All phases complete.
 
 **Goal**: Three cleanups:
