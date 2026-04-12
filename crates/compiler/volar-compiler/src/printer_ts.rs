@@ -2837,6 +2837,8 @@ fn ts_primitive(p: &PrimitiveType) -> &'static str {
         PrimitiveType::Bit => "Bit",
         PrimitiveType::Galois => "Galois",
         PrimitiveType::Galois64 => "Galois64",
+        PrimitiveType::Galois128 => "Galois128",
+        PrimitiveType::Galois256 => "Galois256",
         PrimitiveType::BitsInBytes => "BitsInBytes",
         PrimitiveType::BitsInBytes64 => "BitsInBytes64",
     }
@@ -2929,6 +2931,8 @@ fn ts_default_value(ty: &IrType, f: &mut fmt::Formatter<'_>, cx: &TsContext) -> 
             PrimitiveType::Bit => write!(f, "Bit.default()"),
             PrimitiveType::Galois => write!(f, "Galois.default()"),
             PrimitiveType::Galois64 => write!(f, "Galois64.default()"),
+            PrimitiveType::Galois128 => write!(f, "Galois128.default()"),
+            PrimitiveType::Galois256 => write!(f, "Galois256.default()"),
             PrimitiveType::BitsInBytes => write!(f, "BitsInBytes.default()"),
             PrimitiveType::BitsInBytes64 => write!(f, "BitsInBytes64.default()"),
         },

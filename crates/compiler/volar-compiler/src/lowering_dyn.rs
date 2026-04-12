@@ -2126,6 +2126,8 @@ fn lower_default_value(
             PrimitiveType::Bit
             | PrimitiveType::Galois
             | PrimitiveType::Galois64
+            | PrimitiveType::Galois128
+            | PrimitiveType::Galois256
             | PrimitiveType::BitsInBytes
             | PrimitiveType::BitsInBytes64 => {
                 // Emit `Bit.default()` etc.

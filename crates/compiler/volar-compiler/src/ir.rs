@@ -171,6 +171,10 @@ pub enum PrimitiveType {
     BitsInBytes,
     /// 64-bit packed bits
     BitsInBytes64,
+    /// 128-bit Galois field element (GF(2^128), GCM polynomial)
+    Galois128,
+    /// 256-bit Galois field element (GF(2^256))
+    Galois256,
 }
 
 impl PrimitiveType {
@@ -186,6 +190,8 @@ impl PrimitiveType {
             "Bit" => Some(Self::Bit),
             "Galois" => Some(Self::Galois),
             "Galois64" => Some(Self::Galois64),
+            "Galois128" => Some(Self::Galois128),
+            "Galois256" => Some(Self::Galois256),
             "BitsInBytes" => Some(Self::BitsInBytes),
             "BitsInBytes64" => Some(Self::BitsInBytes64),
             _ => None,
@@ -200,7 +206,8 @@ impl PrimitiveType {
             Self::U32 => 32,
             Self::U64 | Self::Galois64 | Self::BitsInBytes64 => 64,
             Self::Usize => std::mem::size_of::<usize>() * 8,
-            Self::I128 => 128,
+            Self::I128 | Self::Galois128 => 128,
+            Self::Galois256 => 256,
         }
     }
 
@@ -208,7 +215,8 @@ impl PrimitiveType {
     pub fn is_field_element(&self) -> bool {
         matches!(
             self,
-            Self::Bit | Self::Galois | Self::Galois64 | Self::BitsInBytes | Self::BitsInBytes64
+            Self::Bit | Self::Galois | Self::Galois64 | Self::Galois128 | Self::Galois256
+            | Self::BitsInBytes | Self::BitsInBytes64
         )
     }
 }
@@ -225,6 +233,8 @@ impl fmt::Display for PrimitiveType {
             Self::Bit => write!(f, "Bit"),
             Self::Galois => write!(f, "Galois"),
             Self::Galois64 => write!(f, "Galois64"),
+            Self::Galois128 => write!(f, "Galois128"),
+            Self::Galois256 => write!(f, "Galois256"),
             Self::BitsInBytes => write!(f, "BitsInBytes"),
             Self::BitsInBytes64 => write!(f, "BitsInBytes64"),
         }
