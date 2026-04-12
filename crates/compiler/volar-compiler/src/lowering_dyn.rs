@@ -2118,7 +2118,7 @@ fn lower_default_value(
             PrimitiveType::U8 | PrimitiveType::U32 | PrimitiveType::Usize => {
                 IrExpr::Lit(IrLit::Int(0))
             }
-            PrimitiveType::U64 | PrimitiveType::I128 => {
+            PrimitiveType::U64 | PrimitiveType::I128 | PrimitiveType::U128 => {
                 // 0n for bigint — use Int(0), the fold accumulator context
                 // will handle bigint coercion at the call site.
                 IrExpr::Lit(IrLit::Int(0))

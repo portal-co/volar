@@ -935,11 +935,21 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                 })
             }
         }
-        Expr::Binary(b) => Ok(IrExpr::Binary {
-            op: convert_bin_op(b.op),
-            left: Box::new(convert_expr(&b.left)?),
-            right: Box::new(convert_expr(&b.right)?),
-        }),
+        Expr::Binary(b) => {
+            if let Some(base_op) = assign_op_base(&b.op) {
+                Ok(IrExpr::AssignOp {
+                    op: base_op,
+                    left: Box::new(convert_expr(&b.left)?),
+                    right: Box::new(convert_expr(&b.right)?),
+                })
+            } else {
+                Ok(IrExpr::Binary {
+                    op: convert_bin_op(b.op),
+                    left: Box::new(convert_expr(&b.left)?),
+                    right: Box::new(convert_expr(&b.right)?),
+                })
+            }
+        }
         Expr::Unary(u) => Ok(IrExpr::Unary {
             op: convert_unary_op(u.op),
             expr: Box::new(convert_expr(&u.expr)?),
@@ -2015,6 +2025,25 @@ fn convert_lit(lit: &syn::Lit) -> Result<IrLit> {
         syn::Lit::ByteStr(bs) => Ok(IrLit::ByteStr(bs.value())),
         syn::Lit::Char(c) => Ok(IrLit::Char(c.value())),
         _ => Err(CompilerError::Unsupported(format!("Literal: {:?}", lit))),
+    }
+}
+
+/// If `op` is a compound-assignment operator (e.g. `BitXorAssign`),
+/// return the corresponding base `SpecBinOp` (e.g. `BitXor`).
+/// Returns `None` for non-assignment operators.
+fn assign_op_base(op: &syn::BinOp) -> Option<SpecBinOp> {
+    match op {
+        syn::BinOp::AddAssign(_) => Some(SpecBinOp::Add),
+        syn::BinOp::SubAssign(_) => Some(SpecBinOp::Sub),
+        syn::BinOp::MulAssign(_) => Some(SpecBinOp::Mul),
+        syn::BinOp::DivAssign(_) => Some(SpecBinOp::Div),
+        syn::BinOp::RemAssign(_) => Some(SpecBinOp::Rem),
+        syn::BinOp::BitAndAssign(_) => Some(SpecBinOp::BitAnd),
+        syn::BinOp::BitOrAssign(_) => Some(SpecBinOp::BitOr),
+        syn::BinOp::BitXorAssign(_) => Some(SpecBinOp::BitXor),
+        syn::BinOp::ShlAssign(_) => Some(SpecBinOp::Shl),
+        syn::BinOp::ShrAssign(_) => Some(SpecBinOp::Shr),
+        _ => None,
     }
 }
 

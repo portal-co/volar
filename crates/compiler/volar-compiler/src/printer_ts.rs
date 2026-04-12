@@ -2833,7 +2833,7 @@ fn ts_primitive(p: &PrimitiveType) -> &'static str {
     match p {
         PrimitiveType::Bool => "boolean",
         PrimitiveType::U8 | PrimitiveType::U32 | PrimitiveType::Usize => "number",
-        PrimitiveType::U64 | PrimitiveType::I128 => "bigint",
+        PrimitiveType::U64 | PrimitiveType::I128 | PrimitiveType::U128 => "bigint",
         PrimitiveType::Bit => "Bit",
         PrimitiveType::Galois => "Galois",
         PrimitiveType::Galois64 => "Galois64",
@@ -2927,7 +2927,7 @@ fn ts_default_value(ty: &IrType, f: &mut fmt::Formatter<'_>, cx: &TsContext) -> 
         IrType::Primitive(p) => match p {
             PrimitiveType::Bool => write!(f, "false"),
             PrimitiveType::U8 | PrimitiveType::U32 | PrimitiveType::Usize => write!(f, "0"),
-            PrimitiveType::U64 | PrimitiveType::I128 => write!(f, "0n"),
+            PrimitiveType::U64 | PrimitiveType::I128 | PrimitiveType::U128 => write!(f, "0n"),
             PrimitiveType::Bit => write!(f, "Bit.default()"),
             PrimitiveType::Galois => write!(f, "Galois.default()"),
             PrimitiveType::Galois64 => write!(f, "Galois64.default()"),

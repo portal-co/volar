@@ -35,6 +35,7 @@ use volar_compiler::{
     IrModule,
     dump_ir::dump_module,
     lowering_dyn::lower_module_dyn,
+    manifest::emit_manifest,
     parser::parse_source,
     print_module_rust_dyn,
     print_module_typescript,
@@ -48,12 +49,14 @@ use volar_compiler::{
 enum Target {
     Ts,
     Dyn,
+    Manifest,
 }
 
 impl Target {
     fn default_spec_dir(self) -> &'static str {
         match self {
             Target::Ts | Target::Dyn => "crates/spec/volar-spec/src",
+            Target::Manifest => "crates/spec/volar-primitives/src",
         }
     }
 
@@ -61,6 +64,7 @@ impl Target {
         match self {
             Target::Ts => "packages/volar-runtime/src/generated.ts",
             Target::Dyn => "crates/spec/volar-spec-dyn/src/generated.rs",
+            Target::Manifest => "crates/spec/volar-primitives/volar-primitives.volar.d",
         }
     }
 
@@ -68,6 +72,7 @@ impl Target {
         match self {
             Target::Ts => "volar_ts",
             Target::Dyn => "volar_dyn",
+            Target::Manifest => "volar_primitives",
         }
     }
 }
@@ -95,7 +100,8 @@ fn parse_args() -> Result<Config, Box<dyn std::error::Error>> {
     let target = match target_str.as_str() {
         "ts" => Target::Ts,
         "dyn" => Target::Dyn,
-        other => return Err(format!("Unknown target {:?}. Expected 'ts' or 'dyn'.", other).into()),
+        "manifest" => Target::Manifest,
+        other => return Err(format!("Unknown target {:?}. Expected 'ts', 'dyn', or 'manifest'.", other).into()),
     };
 
     // Parse remaining arguments.
@@ -260,6 +266,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 write_dump(Path::new("ir_dump_dyn.txt"), &dump_module(&lowered))?;
             }
             write_file(&cfg.out, &code)?;
+        }
+
+        Target::Manifest => {
+            let manifest_bytes = emit_manifest(
+                &module,
+                cfg.target.module_name(),
+                "0.1.0",
+                &[],
+            );
+            if let Some(parent) = cfg.out.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&cfg.out, &manifest_bytes)?;
+            eprintln!(
+                "[volar-codegen] wrote {} byte manifest \u{2192} {:?}",
+                manifest_bytes.len(),
+                cfg.out,
+            );
         }
     }
 
