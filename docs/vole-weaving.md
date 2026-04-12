@@ -109,9 +109,9 @@ fn vole_prove_<name><N: ArraySize, T>(
     vope_input_0: Vope<N, T, U1>, // prover's committed wire for input 0
     vope_input_1: Vope<N, T, U1>,
     ...
-) -> (Vope<N, T, U1>, Vec<Array<T, N>>)
-//    ^^^                ^^^
-//    output wire        V̂ per AND gate (in circuit order)
+) -> (Vope<N, T, U1>, [Array<T, N>; AND_COUNT])
+//    ^^^                ^^^^^^^^^^^^^^^^^^^^
+//    output wire        V̂ per AND gate (fixed-size, in circuit order)
 where
     N: VoleArray<T>,
     T: Clone + Add<Output = T> + Mul<Output = T> + Default,
@@ -124,9 +124,9 @@ Gate lowering:
 | One  | `vope_one.clone()` |
 | Xor(a,b) | `wire_a.clone() + wire_b.clone()` |
 | Not(a) | `wire_a.clone() + vope_one.clone()` |
-| And(a,b) | `let (wire_c, hat) = vole_and_prover_step::<N,T>(wire_a.clone(), wire_b.clone()); hats.push(hat);` |
+| And(a,b) | `let (wire_c, hat) = vole_and_prover_step::<N,T>(wire_a.clone(), wire_b.clone());` |
 
-Returns `(wire_output, hats)`.
+Returns `(wire_output, [hat_0, hat_1, ...])` (fixed-size array).
 
 ### Verifier: `vole_verify_<name>`
 

@@ -94,10 +94,12 @@ fn array_t_n() -> IrType {
     }
 }
 
-/// `Vec<Array<T, N>>` — list of AND gate hats (prover output).
-fn vec_array_t_n() -> IrType {
-    IrType::Vector {
+/// `[Array<T, N>; AND_COUNT]` — fixed-size hat array returned by the prover.
+fn hat_array_type(and_count: usize) -> IrType {
+    IrType::Array {
+        kind: volar_compiler::ir::ArrayKind::FixedArray,
         elem: Box::new(array_t_n()),
+        len: volar_compiler::ir::ArrayLength::Const(and_count),
     }
 }
 
@@ -292,7 +294,7 @@ fn q_struct(body: IrExpr) -> IrExpr {
 // ============================================================================
 
 /// Emit `let (_wire_k, _hat_k) = vole_and_prover_step::<N, T>(wire_a.clone(), wire_b.clone());`
-/// followed by `hats.push(_hat_k);` and set `wire_k = _wire_k`.
+/// The hat variable is left in scope for the caller to collect into a `FixedArray`.
 fn emit_prover_and_gate(
     name_a: &str,
     name_b: &str,
@@ -321,14 +323,6 @@ fn emit_prover_and_gate(
             ],
         }),
     });
-
-    // hats.push(hat_k);
-    stmts.push(IrStmt::Semi(IrExpr::MethodCall {
-        receiver: Box::new(var("hats")),
-        method: MethodKind::Std("push".into()),
-        type_args: vec![],
-        args: vec![var(hat_name)],
-    }));
 }
 
 /// Emit `let (_wire_k, _ok_k) = vole_and_verifier_check::<N, T>(delta, &wire_a, &wire_b, &q_and_k, &hat_k);`
@@ -433,30 +427,18 @@ pub fn weave_vole_prover(
         });
     }
 
-    // Return type: (Vope<N, T, U1>, Vec<Array<T, N>>)
-    let ret_type = IrType::Tuple(vec![vope_type(), vec_array_t_n()]);
+    // Return type: (Vope<N, T, U1>, [Array<T, N>; AND_COUNT]) — AND_COUNT known at weave time.
+    let and_count = expanded
+        .iter()
+        .filter(|(_, s)| matches!(s, BIrStmt::And(..)))
+        .count();
+    let ret_type = IrType::Tuple(vec![vope_type(), hat_array_type(and_count)]);
 
     let (generics, where_clause) = prover_generics_and_where();
 
     let mut stmts: Vec<IrStmt> = Vec::new();
     let mut and_counter: usize = 0;
-
-    // `let mut hats: Vec<Array<T, N>> = Vec::new();`
-    stmts.push(IrStmt::Let {
-        pattern: IrPattern::Ident {
-            mutable: true,
-            name: "hats".into(),
-            subpat: None,
-        },
-        ty: Some(vec_array_t_n()),
-        init: Some(IrExpr::Call {
-            func: Box::new(IrExpr::Path {
-                segments: vec!["Vec".into(), "new".into()],
-                type_args: vec![],
-            }),
-            args: vec![],
-        }),
-    });
+    let mut hat_names: Vec<String> = Vec::new();
 
     for (result_id, stmt) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
@@ -522,6 +504,7 @@ pub fn weave_vole_prover(
                 let name_b = var_names[&b.0].clone();
                 let hat_name = format!("hat_{}", and_counter);
                 and_counter += 1;
+                hat_names.push(hat_name.clone());
                 emit_prover_and_gate(&name_a, &name_b, &let_name, &hat_name, &mut stmts);
             }
 
@@ -531,9 +514,10 @@ pub fn weave_vole_prover(
         var_names.insert(result_id.0, let_name);
     }
 
-    // Return (output_wire, hats).
+    // Return (output_wire, [hat_0, hat_1, ...]).
     let (output_expr, _) = build_return(block, &var_names, vope_type());
-    let ret_expr = IrExpr::Tuple(vec![output_expr, var("hats")]);
+    let hats_expr = IrExpr::FixedArray(hat_names.iter().map(|h| var(h)).collect());
+    let ret_expr = IrExpr::Tuple(vec![output_expr, hats_expr]);
 
     let func = IrFunction {
         name: format!("vole_prove_{}", name),
@@ -884,5 +868,23 @@ mod tests {
         let module = weave_vole_verifier_bounded(&circuit, "loop_vole", 4, LoweringMode::Unconditional, None);
         let code = print_weaved_vole_module(&module);
         run_compile_check(&code, "vole_verifier_bounded");
+    }
+
+    #[test]
+    fn test_vole_prover_returns_fixed_array() {
+        let circuit = crate::tests_common::build_xor_and_circuit();
+        let module = weave_vole_prover(&circuit, "test_circuit", None);
+        let code = print_weaved_vole_module(&module);
+        // xor_and has 1 AND gate → return type must be `[Array<T, N>; 1]`
+        assert!(
+            code.contains("[Array<T, N>; 1]"),
+            "Expected fixed-size hat array in return type, got:\n{}",
+            code
+        );
+        assert!(
+            !code.contains("Vec<"),
+            "Should not contain Vec in generated VOLE prover:\n{}",
+            code
+        );
     }
 }

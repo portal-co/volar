@@ -454,14 +454,15 @@ impl<'a> RustBackend for TypeWriter<'a> {
                         write!(f, "]")?;
                     }
                     ArrayKind::FixedArray => {
+                        // `[T; n]` — length is a const *expression* (integer), not a typenum type.
                         write!(f, "[")?;
                         TypeWriter { ty: elem }.fmt(f)?;
                         write!(f, "; ")?;
-                        let len_ty = array_length_as_static_type(len);
-                        TypeWriter { ty: &len_ty }.fmt(f)?;
+                        fmt_fixed_array_len(f, len)?;
                         write!(f, "]")?;
                     }
                     ArrayKind::GenericArray => {
+                        // `Array<T, N>` — length is a typenum type-level constant.
                         write!(f, "Array<")?;
                         TypeWriter { ty: elem }.fmt(f)?;
                         write!(f, ", ")?;
@@ -1316,6 +1317,26 @@ fn method_name(method: &MethodKind) -> String {
         name
     );
     name
+}
+
+/// Format an `ArrayLength` as a Rust const *expression* — suitable for
+/// use as the size in `[T; n]` fixed-array types.
+///
+/// - `Const(n)` → integer literal `n`.
+/// - `TypeParam(p)` → bare ident `p` (valid when `p` is a `const` generic).
+/// - Projection → `<<T>::Assoc as Unsigned>::USIZE`.
+fn fmt_fixed_array_len(f: &mut fmt::Formatter<'_>, len: &ArrayLength) -> fmt::Result {
+    match len {
+        ArrayLength::Const(n) => write!(f, "{}", n),
+        ArrayLength::TypeParam(p) => write!(f, "{}", p),
+        ArrayLength::TypeNum(tn) => write!(f, "{:?}::USIZE", tn),
+        ArrayLength::Projection { r#type, field, .. } => {
+            write!(f, "<<")?;
+            TypeWriter { ty: r#type }.fmt(f)?;
+            write!(f, ">::{} as Unsigned>::USIZE", field)
+        }
+        _ => write!(f, "0"),
+    }
 }
 
 /// Convert an `ArrayLength` to an `IrType` suitable for use as a static type argument

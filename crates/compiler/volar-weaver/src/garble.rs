@@ -287,7 +287,7 @@ pub fn weave_evaluator(circuit: &BIrBlocks, name: &str, linkage: Option<&Linkage
 ///     secret: &GlobalSecret<N>,
 ///     input_0: &Garble<N>,   // garbler's false-label for input bit 0
 ///     ...
-/// ) -> (Vec<GarbleTable<N>>, Garble<N>)
+/// ) -> ([GarbleTable<N>; AND_COUNT], Garble<N>)
 /// ```
 ///
 /// # Panics
@@ -319,33 +319,24 @@ pub fn weave_garbler(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSy
         });
     }
 
+    // Count AND gates up front so we can build a fixed-size table array in the return type.
+    let and_count = expanded
+        .iter()
+        .filter(|(_, s)| matches!(s, BIrStmt::And(..)))
+        .count();
+
     let ret_type = IrType::Tuple(vec![
-        IrType::Vector {
+        IrType::Array {
+            kind: volar_compiler::ir::ArrayKind::FixedArray,
             elem: Box::new(garble_table_type()),
+            len: volar_compiler::ir::ArrayLength::Const(and_count),
         },
         garble_type(),
     ]);
 
     let mut stmts: Vec<IrStmt> = Vec::new();
     let mut table_counter: usize = 0;
-
-    stmts.push(IrStmt::Let {
-        pattern: IrPattern::Ident {
-            mutable: true,
-            name: "tables".into(),
-            subpat: None,
-        },
-        ty: Some(IrType::Vector {
-            elem: Box::new(garble_table_type()),
-        }),
-        init: Some(IrExpr::Call {
-            func: Box::new(IrExpr::Path {
-                segments: vec!["Vec".into(), "new".into()],
-                type_args: vec![],
-            }),
-            args: vec![],
-        }),
-    });
+    let mut table_names: Vec<String> = Vec::new();
 
     for (result_id, stmt) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
@@ -391,6 +382,7 @@ pub fn weave_garbler(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSy
                 let name_b = var_names[&b.0].clone();
                 let table_var = format!("table_{}", table_counter);
                 table_counter += 1;
+                table_names.push(table_var.clone());
 
                 stmts.push(IrStmt::Let {
                     pattern: IrPattern::ident(&table_var),
@@ -405,13 +397,6 @@ pub fn weave_garbler(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSy
                         ],
                     }),
                 });
-
-                stmts.push(IrStmt::Semi(IrExpr::MethodCall {
-                    receiver: Box::new(var("tables")),
-                    method: MethodKind::Std("push".into()),
-                    type_args: vec![],
-                    args: vec![var(&table_var)],
-                }));
 
                 IrExpr::MethodCall {
                     receiver: Box::new(var(&name_a)),
@@ -433,7 +418,8 @@ pub fn weave_garbler(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSy
     }
 
     let (output_garble_expr, _) = build_return(block, &var_names, garble_type());
-    let ret_expr = IrExpr::Tuple(vec![var("tables"), output_garble_expr]);
+    let tables_expr = IrExpr::FixedArray(table_names.iter().map(|t| var(t)).collect());
+    let ret_expr = IrExpr::Tuple(vec![tables_expr, output_garble_expr]);
 
     let func = IrFunction {
         name: format!("{}_garble", name),
@@ -943,6 +929,17 @@ mod tests {
         let circuit = build_xor_and_circuit();
         let module = weave_garbler(&circuit, "test_circuit", None);
         let code = print_weaved_module(&module, false);
+        // xor_and has 1 AND gate → return type must be `[GarbleTable<N>; 1]`, not Vec
+        assert!(
+            code.contains("[GarbleTable<N>; 1]"),
+            "Expected fixed-size table array in return type, got:\n{}",
+            code
+        );
+        assert!(
+            !code.contains("Vec<GarbleTable"),
+            "Should not contain Vec<GarbleTable in generated garbler:\n{}",
+            code
+        );
         run_compile_check(&code, "garbler");
     }
 
