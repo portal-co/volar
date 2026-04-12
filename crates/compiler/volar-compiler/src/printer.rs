@@ -1324,7 +1324,8 @@ fn bin_op_str(op: SpecBinOp) -> &'static str {
         SpecBinOp::Le => "<=",
         SpecBinOp::Gt => ">",
         SpecBinOp::Ge => ">=",
-        _ => "+",
+        SpecBinOp::And => "&&",
+        SpecBinOp::Or => "||",
     }
 }
 
