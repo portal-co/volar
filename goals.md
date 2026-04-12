@@ -5,6 +5,9 @@
   - [ ] VOLE-in-the-head proofs
 - [ ] implement encryption
   - [ ] garbled circuits
+- [ ] full compile and link
+  - [ ] primitives compile
+  - [ ] primitives can link to spec
 - [ ] LIR (low-level IR target) — compiler IR → native-like code
   - [x] `LirTarget` trait (SSA with block parameters, integer types, arithmetic, control flow)
   - [x] `CBackend` (C99 emitter for testing)
