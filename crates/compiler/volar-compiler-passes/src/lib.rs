@@ -14,11 +14,9 @@ use alloc::string::String;
 use std::string::String;
 
 pub mod const_analysis;
-pub mod deshadow;
 pub mod dump_ir;
 pub mod lowering;
 pub mod lowering_dyn;
-pub mod printer_ts;
 
 pub use const_analysis::*;
 pub use lowering::*;
@@ -41,7 +39,7 @@ pub fn print_module_rust_dyn_with_deps(
 /// Generate TypeScript code by lowering type-level lengths to runtime witnesses.
 pub fn print_module_typescript(module: &volar_compiler::ir::IrModule) -> String {
     let lowered = lowering_dyn::lower_module_dyn(module);
-    crate::printer_ts::print_module_ts(&lowered)
+    volar_compiler::printer_ts::print_module_ts(&lowered)
 }
 
 /// Generate TypeScript code with dependency manifests providing context.
@@ -51,5 +49,5 @@ pub fn print_module_typescript_with_deps(
 ) -> String {
     let _ = deps;
     let lowered = lowering_dyn::lower_module_dyn(module);
-    crate::printer_ts::print_module_ts(&lowered)
+    volar_compiler::printer_ts::print_module_ts(&lowered)
 }

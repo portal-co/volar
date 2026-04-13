@@ -473,7 +473,7 @@ fn test_primitives_ts_transpile() {
 
     // Dyn-lower and print to TypeScript
     let dyn_module = volar_compiler_passes::lowering_dyn::lower_module_dyn(&module);
-    let ts_out = volar_compiler_passes::printer_ts::print_module_ts(&dyn_module);
+    let ts_out = volar_compiler::printer_ts::print_module_ts(&dyn_module);
 
     // Basic sanity: TS output should contain the field functions
     assert!(ts_out.contains("gf_mul_u8"), "TS should contain gf_mul_u8:\n{}", &ts_out[..500.min(ts_out.len())]);

@@ -40,7 +40,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use crate::deshadow::deshadow_block;
-use volar_compiler::ir::*;
+use crate::ir::*;
 
 // ============================================================================
 // WITNESS ANALYSIS — collect runtime witnesses needed per function

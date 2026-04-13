@@ -27,12 +27,14 @@ extern crate std;
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
+pub mod deshadow;
 pub mod ir;
 pub mod linkage;
 pub mod manifest;
 #[cfg(feature = "parsing")]
 pub mod parser;
 pub mod printer;
+pub mod printer_ts;
 
 pub use ir::*;
 pub use linkage::*;

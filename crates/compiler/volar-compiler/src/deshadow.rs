@@ -12,7 +12,7 @@
 //!
 //! The pass is idempotent and can be applied to any `IrBlock`.
 
-use volar_compiler::ir::{
+use crate::ir::{
     IrBlock, IrExpr, IrIterChain, IrPattern, IrStmt, IterChainSource, IterStep, IterTerminal,
 };
 
@@ -898,7 +898,7 @@ fn deshadow_iter_chain(chain: &mut IrIterChain, scope: &mut HashSet<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use volar_compiler::ir::{IrLit, SpecBinOp};
+    use crate::ir::{IrLit, SpecBinOp};
 
     fn var(name: &str) -> IrExpr {
         IrExpr::Var(name.to_string())
