@@ -1,0 +1,12 @@
+[package]
+name = "volar-ir-passes"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+
+[dependencies]
+volar-ir.workspace = true
+volar-lir.workspace = true
+volar-ir-common.workspace = true

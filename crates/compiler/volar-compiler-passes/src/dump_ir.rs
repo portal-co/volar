@@ -23,7 +23,7 @@ use alloc::vec::Vec;
 
 use core::fmt::Write;
 
-use crate::ir::*;
+use volar_compiler::ir::*;
 
 /// Dump an entire module to a human-readable string.
 pub fn dump_module(module: &IrModule) -> String {

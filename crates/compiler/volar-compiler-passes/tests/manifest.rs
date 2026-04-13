@@ -3,9 +3,10 @@
 use std::fs;
 use volar_compiler::{
     DisplayRust, DynPreambleWriter, IrType, MANIFEST_MARKER, PrimitiveType, RustBackend,
-    StructKind, TypeContext, TypeManifest, emit_manifest, is_manifest, parse_source,
+    StructKind, TypeManifest, emit_manifest, is_manifest, parse_source,
     print_module_with_deps,
 };
+use volar_compiler_passes::TypeContext;
 
 #[cfg(feature = "parsing")]
 use volar_compiler::parse_manifest;

@@ -4,7 +4,7 @@
 //! where type-level lengths become runtime usize witnesses.
 
 use crate::const_analysis::*;
-use crate::ir::*;
+use volar_compiler::ir::*;
 
 #[cfg(not(feature = "std"))]
 use alloc::string::String;
@@ -60,7 +60,7 @@ impl LoweringContext {
     /// Dependency structs are registered so that lowering can see their
     /// generic structure (lengths vs type params, etc.) when generating
     /// dynamic code that references them.
-    pub fn new_with_deps(module: &IrModule, deps: &[crate::manifest::TypeManifest]) -> Self {
+    pub fn new_with_deps(module: &IrModule, deps: &[volar_compiler::manifest::TypeManifest]) -> Self {
         let mut struct_info = BTreeMap::new();
 
         // Discover length-alias traits (e.g., VoleArray: ArrayLength → length alias).
@@ -277,8 +277,8 @@ fn extract_constant_witnesses(ty: &IrType, ctx: &LoweringContext) -> BTreeMap<St
     result
 }
 
-fn lower_trait_dyn(t: &crate::ir::IrTrait, ctx: &LoweringContext) -> crate::ir::IrTrait {
-    use crate::ir::{IrMethodSig, IrTrait, IrTraitItem};
+fn lower_trait_dyn(t: &volar_compiler::ir::IrTrait, ctx: &LoweringContext) -> volar_compiler::ir::IrTrait {
+    use volar_compiler::ir::{IrMethodSig, IrTrait, IrTraitItem};
     let empty_gen: Vec<IrGenericParam> = Vec::new();
     IrTrait {
         kind: t.kind.clone(),
@@ -1380,7 +1380,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                         }],
                     }),
                     args: vec![IrExpr::Unary {
-                        op: crate::ir::SpecUnaryOp::Ref,
+                        op: volar_compiler::ir::SpecUnaryOp::Ref,
                         expr: Box::new(lowered_receiver),
                     }],
                 }
@@ -1718,16 +1718,16 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             receiver,
             elem_var,
             body,
-        } => IrExpr::IterPipeline(crate::ir::IrIterChain {
-            source: crate::ir::IterChainSource::Method {
+        } => IrExpr::IterPipeline(volar_compiler::ir::IrIterChain {
+            source: volar_compiler::ir::IterChainSource::Method {
                 collection: Box::new(lower_expr_dyn(receiver, ctx, fn_gen)),
-                method: crate::ir::IterMethod::IntoIter,
+                method: volar_compiler::ir::IterMethod::IntoIter,
             },
-            steps: vec![crate::ir::IterStep::Map {
+            steps: vec![volar_compiler::ir::IterStep::Map {
                 var: elem_var.clone(),
                 body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
             }],
-            terminal: crate::ir::IterTerminal::Collect,
+            terminal: volar_compiler::ir::IterTerminal::Collect,
         }),
         // RawZip → left.into_iter().zip(right.into_iter()).map(|(a,b)| body).collect()
         IrExpr::RawZip {
@@ -1736,30 +1736,30 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             left_var,
             right_var,
             body,
-        } => IrExpr::IterPipeline(crate::ir::IrIterChain {
-            source: crate::ir::IterChainSource::Zip {
-                left: Box::new(crate::ir::IrIterChain {
-                    source: crate::ir::IterChainSource::Method {
+        } => IrExpr::IterPipeline(volar_compiler::ir::IrIterChain {
+            source: volar_compiler::ir::IterChainSource::Zip {
+                left: Box::new(volar_compiler::ir::IrIterChain {
+                    source: volar_compiler::ir::IterChainSource::Method {
                         collection: Box::new(lower_expr_dyn(left, ctx, fn_gen)),
-                        method: crate::ir::IterMethod::IntoIter,
+                        method: volar_compiler::ir::IterMethod::IntoIter,
                     },
                     steps: Vec::new(),
-                    terminal: crate::ir::IterTerminal::Lazy,
+                    terminal: volar_compiler::ir::IterTerminal::Lazy,
                 }),
-                right: Box::new(crate::ir::IrIterChain {
-                    source: crate::ir::IterChainSource::Method {
+                right: Box::new(volar_compiler::ir::IrIterChain {
+                    source: volar_compiler::ir::IterChainSource::Method {
                         collection: Box::new(lower_expr_dyn(right, ctx, fn_gen)),
-                        method: crate::ir::IterMethod::IntoIter,
+                        method: volar_compiler::ir::IterMethod::IntoIter,
                     },
                     steps: Vec::new(),
-                    terminal: crate::ir::IterTerminal::Lazy,
+                    terminal: volar_compiler::ir::IterTerminal::Lazy,
                 }),
             },
-            steps: vec![crate::ir::IterStep::Map {
+            steps: vec![volar_compiler::ir::IterStep::Map {
                 var: IrPattern::Tuple(vec![left_var.clone(), right_var.clone()]),
                 body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
             }],
-            terminal: crate::ir::IterTerminal::Collect,
+            terminal: volar_compiler::ir::IterTerminal::Collect,
         }),
         // RawFold → receiver.into_iter().fold(init, |acc, elem| body)
         IrExpr::RawFold {
@@ -1768,13 +1768,13 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             acc_var,
             elem_var,
             body,
-        } => IrExpr::IterPipeline(crate::ir::IrIterChain {
-            source: crate::ir::IterChainSource::Method {
+        } => IrExpr::IterPipeline(volar_compiler::ir::IrIterChain {
+            source: volar_compiler::ir::IterChainSource::Method {
                 collection: Box::new(lower_expr_dyn(receiver, ctx, fn_gen)),
-                method: crate::ir::IterMethod::IntoIter,
+                method: volar_compiler::ir::IterMethod::IntoIter,
             },
             steps: Vec::new(),
-            terminal: crate::ir::IterTerminal::Fold {
+            terminal: volar_compiler::ir::IterTerminal::Fold {
                 init: Box::new(lower_expr_dyn(init, ctx, fn_gen)),
                 acc_var: acc_var.clone().as_mut(),
                 elem_var: elem_var.clone(),
@@ -2429,7 +2429,7 @@ fn validate_ident(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::*;
+    use volar_compiler::ir::*;
 
     /// Helper: create a Length generic param with given bounds
     fn length_param(name: &str, bounds: Vec<IrTraitBound>) -> IrGenericParam {
@@ -3100,7 +3100,7 @@ mod tests {
 #[cfg(test)]
 mod rename_tests {
     use super::*;
-    use crate::ir::*;
+    use volar_compiler::ir::*;
 
     #[test]
     fn rename_var_in_closure() {

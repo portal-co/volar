@@ -59,7 +59,7 @@ use alloc::{vec, vec::Vec};
 use alloc::collections::BTreeMap;
 use volar_ir_common::Constant;
 
-use crate::{
+use volar_ir::{
     boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
     ir::{
         IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypeId,
@@ -1217,8 +1217,8 @@ pub fn movfuscate_ir(blocks: &IRBlocks, types: &mut IRTypes) -> IRBlocks {
 mod tests {
     extern crate std;
     use super::*;
-    use crate::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
-    use crate::ir::{
+    use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
+    use volar_ir::ir::{
         IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypeId,
         IRTypes, IRVarId,
     };

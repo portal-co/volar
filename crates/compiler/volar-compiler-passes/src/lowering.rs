@@ -1,6 +1,6 @@
 //! Specialized analysis and transformation of the unified IR.
 
-use crate::ir::*;
+use volar_compiler::ir::*;
 #[cfg(feature = "std")]
 use std::{
     boxed::Box,
@@ -41,7 +41,7 @@ impl TypeContext {
     /// 3. Module's own definitions (override everything)
     pub fn from_module_with_deps(
         module: &IrModule,
-        deps: &[crate::manifest::TypeManifest],
+        deps: &[volar_compiler::manifest::TypeManifest],
     ) -> Self {
         let mut ctx = Self::default();
 

@@ -32,11 +32,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use volar_compiler::{
-    IrModule,
-    dump_ir::dump_module,
-    lowering_dyn::lower_module_dyn,
+    ir::IrModule,
     manifest::emit_manifest,
     parser::parse_source,
+};
+use volar_compiler_passes::{
+    dump_ir::dump_module,
+    lowering_dyn::lower_module_dyn,
     print_module_rust_dyn,
     print_module_typescript,
 };

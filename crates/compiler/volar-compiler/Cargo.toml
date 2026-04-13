@@ -11,11 +11,6 @@ default = ["std"]
 std = []
 parsing = ["dep:syn", "dep:quote", "dep:proc-macro2", "std"]
 
-[[bin]]
-name = "volar-codegen"
-path = "src/bin/volar_codegen.rs"
-required-features = ["parsing"]
-
 [dependencies]
 syn = { version = "2.0", features = ["full", "parsing", "extra-traits"], optional = true }
 quote = { version = "1.0", optional = true }

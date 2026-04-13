@@ -6,7 +6,7 @@
 //! consumed by multiple passes (dyn lowering, trait analysis, future backends)
 //! without coupling them together.
 
-use crate::ir::*;
+use volar_compiler::ir::*;
 
 #[cfg(feature = "std")]
 use std::{

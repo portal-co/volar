@@ -4,11 +4,12 @@
 use std::fs;
 use std::path::Path;
 use volar_compiler::{
-    AssociatedType, ConstAnalysis, DisplayRust, ExprWriter, GenericKind, IrGenericParamKind,
+    AssociatedType, DisplayRust, ExprWriter, IrGenericParamKind,
     IrImpl, IrImplItem, IrMethodSig, IrTrait, IrTraitItem, IrTraitRef, IrType, MathTrait,
     ModuleWriter, PrimitiveType, RustBackend, SpecBinOp, SpecUnaryOp, StructKind, TraitKind,
-    TypeContext, TypeWriter, builtin_trait_defs, parse_source, parse_sources,
+    TypeWriter, builtin_trait_defs, parse_source, parse_sources,
 };
+use volar_compiler_passes::{ConstAnalysis, GenericKind, TypeContext};
 
 // ============================================================================
 // Phase 1: const_analysis tests

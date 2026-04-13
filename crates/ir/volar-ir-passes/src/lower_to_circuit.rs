@@ -25,7 +25,7 @@
 //! - Each output bit requires 1 AND + 2 XOR per MUX level.
 //! - The done-OR cascade adds 4 gates (NOT, NOT, AND, NOT) per additional iteration.
 
-use super::{
+use volar_ir::{
     boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
     ir::{IRBlockId, IRBlockTargetId, IRVarId},
 };
@@ -353,8 +353,8 @@ impl Emitter {
 mod tests {
     extern crate std;
     use super::*;
-    use crate::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
-    use crate::ir::{IRBlockId, IRBlockTargetId, IRVarId};
+    use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
+    use volar_ir::ir::{IRBlockId, IRBlockTargetId, IRVarId};
 
     /// Single-bit self-loop: params=1, stmts=[One], CondJmp(param[0] → Return, else Block(0) with One).
     ///

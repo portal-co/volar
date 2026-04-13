@@ -4,7 +4,7 @@
 use alloc::{vec, vec::Vec};
 use volar_lir::{LirTarget, LirType};
 
-use crate::{
+use volar_ir::{
     boolar::{BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
     ir::{IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypes},
 };

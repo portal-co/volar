@@ -30,7 +30,7 @@ use volar_compiler::{
 #[cfg(feature = "linking")]
 use volar_compiler::linkage::LinkedSpec;
 use volar_ir::boolar::{BIrBlocks, BIrStmt};
-pub use volar_ir::lower_to_circuit::LoweringMode;
+pub use volar_ir_passes::lower_to_circuit::LoweringMode;
 
 use crate::{
     array_default, array_from_fn, base_index, build_return, clone_expr, expand_ors, ref_expr, var,
@@ -778,7 +778,7 @@ pub fn weave_evaluator_bounded(
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule {
-    use volar_ir::lower_to_circuit::lower_to_circuit;
+    use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
     weave_evaluator(&lowered, name, linkage)
 }
@@ -791,7 +791,7 @@ pub fn weave_garbler_bounded(
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule {
-    use volar_ir::lower_to_circuit::lower_to_circuit;
+    use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
     weave_garbler(&lowered, name, linkage)
 }
@@ -804,7 +804,7 @@ pub fn weave_into_gc_bounded(
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule {
-    use volar_ir::lower_to_circuit::lower_to_circuit;
+    use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
     weave_into_gc(&lowered, name, linkage)
 }
@@ -817,7 +817,7 @@ pub fn weave_eval_from_setup_bounded(
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule {
-    use volar_ir::lower_to_circuit::lower_to_circuit;
+    use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
     weave_eval_from_setup(&lowered, name, linkage)
 }

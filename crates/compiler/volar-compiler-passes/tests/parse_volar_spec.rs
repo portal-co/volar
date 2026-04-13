@@ -2,7 +2,8 @@
 
 use std::fs;
 use std::path::Path;
-use volar_compiler::{OperatorAnalysis, TypeContext, parse_source, parse_sources, type_to_string};
+use volar_compiler::{parse_source, parse_sources};
+use volar_compiler_passes::{OperatorAnalysis, TypeContext, type_to_string};
 
 fn read_volar_spec_sources() -> Vec<(String, String)> {
     let base_path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -471,8 +472,8 @@ fn test_primitives_ts_transpile() {
     assert!(rust_out.contains("fn gf_invert_u128"), "Should contain gf_invert_u128");
 
     // Dyn-lower and print to TypeScript
-    let dyn_module = volar_compiler::lowering_dyn::lower_module_dyn(&module);
-    let ts_out = volar_compiler::printer_ts::print_module_ts(&dyn_module);
+    let dyn_module = volar_compiler_passes::lowering_dyn::lower_module_dyn(&module);
+    let ts_out = volar_compiler_passes::printer_ts::print_module_ts(&dyn_module);
 
     // Basic sanity: TS output should contain the field functions
     assert!(ts_out.contains("gf_mul_u8"), "TS should contain gf_mul_u8:\n{}", &ts_out[..500.min(ts_out.len())]);

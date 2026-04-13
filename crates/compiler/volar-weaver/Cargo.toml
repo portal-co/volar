@@ -14,5 +14,6 @@ linking = ["volar-compiler/parsing"]
 volar-compiler = {path="../volar-compiler"}
 volar-compiler-common ={path="../volar-compiler-common"}
 volar-ir.workspace = true
+volar-ir-passes = {path="../../ir/volar-ir-passes"}
 vaffle.workspace = true
 portal-pc-waffle-ir.workspace = true

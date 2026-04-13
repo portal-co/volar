@@ -1,0 +1,25 @@
+[package]
+name = "volar-compiler-passes"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+
+[features]
+default = ["std"]
+std = ["volar-compiler/std"]
+parsing = ["volar-compiler/parsing"]
+
+[[bin]]
+name = "volar-codegen"
+path = "src/bin/volar_codegen.rs"
+required-features = ["parsing"]
+
+[dependencies]
+volar-compiler = { path = "../volar-compiler" }
+thiserror = "1.0"
+
+[dev-dependencies]
+volar-compiler = { path = "../volar-compiler", features = ["parsing"] }
+volar-compiler-passes = { path = ".", features = ["parsing"] }

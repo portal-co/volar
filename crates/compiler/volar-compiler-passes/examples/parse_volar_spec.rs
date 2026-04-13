@@ -3,9 +3,10 @@
 use std::fs;
 use std::path::Path;
 use volar_compiler::{
-    ArrayKind, AssociatedType, IrExpr, IrImplItem, IrStmt, IrType, MathTrait, OperatorAnalysis,
-    StructKind, TraitKind, TypeContext, parse_sources, print_module, type_to_string,
+    ArrayKind, AssociatedType, IrExpr, IrImplItem, IrStmt, IrType, MathTrait,
+    StructKind, TraitKind, parse_sources, print_module,
 };
+use volar_compiler_passes::{OperatorAnalysis, TypeContext, type_to_string};
 
 fn main() {
     let base_path = Path::new(env!("CARGO_MANIFEST_DIR"))

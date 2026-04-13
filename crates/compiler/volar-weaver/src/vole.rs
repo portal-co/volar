@@ -46,11 +46,9 @@ use volar_compiler::{
     },
     linkage::LinkageSystem,
 };
-use volar_ir::{
-    boolar::{BIrBlocks, BIrStmt},
-    lower_to_circuit::lower_to_circuit,
-};
-pub use volar_ir::lower_to_circuit::LoweringMode;
+use volar_ir::boolar::{BIrBlocks, BIrStmt};
+use volar_ir_passes::lower_to_circuit::lower_to_circuit;
+pub use volar_ir_passes::lower_to_circuit::LoweringMode;
 
 use crate::{array_default, build_return, clone_expr, expand_ors, ref_expr, var};
 
