@@ -186,7 +186,7 @@ pub fn lower_function<T: LirTarget>(func: &IrFunction, target: &mut T) {
     lower_function_with_registry(func, target, &empty_registry, "", &[]);
 }
 
-fn lower_function_with_registry<T: LirTarget>(
+pub fn lower_function_with_registry<T: LirTarget>(
     func: &IrFunction,
     target: &mut T,
     registry: &StructRegistry,

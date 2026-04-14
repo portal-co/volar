@@ -10,3 +10,5 @@ repository.workspace = true
 volar-ir.workspace = true
 volar-ir-common.workspace = true
 volar-lir.workspace = true
+volar-lir-codegen  = { path = "../../compiler/volar-lir-codegen" }
+volar-compiler     = { path = "../../compiler/volar-compiler" }

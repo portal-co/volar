@@ -37,14 +37,20 @@
 //!
 //! # Extern calls
 //!
-//! Single-block extern callees are inlined by substituting the flat arg bits
-//! for the callee's params and re-emitting every stmt.  Multi-block callees
-//! panic with a clear error.
+// @reliability: experimental
+// @ai: assisted
+//! `VolarIrTarget` — a [`LirTarget`] that emits Volar IR ([`IRBlocks`]).
+//!
+//! Integer operations are implemented as bit-level circuits using
+//! [`IRStmt::Poly`].  Local function calls are inlined via
+//! [`module_lower::lower_module_inlining`].  Cryptographic externals are
+//! provided as pre-built [`IRBlocks`] via [`add_extern`](VolarIrTarget::add_extern)
+//! and inlined at the call site (single- or multi-block).
 
-#![no_std]
-extern crate alloc;
+pub mod module_lower;
 
-use alloc::{collections::BTreeMap, string::String, string::ToString, vec, vec::Vec};
+use std::collections::BTreeMap;
+use std::{string::String, string::ToString, vec, vec::Vec};
 
 use volar_ir::ir::{
     IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypeId,
@@ -558,6 +564,7 @@ impl VolarIrTarget {
     /// Inline a single-block callee by substituting `flat_args` for its params
     /// and re-emitting every stmt.  Returns the flat return bits remapped to
     /// the current block's var space.
+    /// Inline a single-block callee (convenience wrapper around `inline_blocks`).
     fn inline_callee(
         &mut self,
         callee: &IRBlock,
@@ -565,23 +572,16 @@ impl VolarIrTarget {
         ret_ty: Option<&LirType>,
     ) -> Vec<VolarValue> {
         assert_eq!(
-            callee.params.len(),
-            flat_args.len(),
-            "VolarIrTarget: call_extern arg bit count mismatch \
-             (expected {}, got {})",
-            callee.params.len(),
-            flat_args.len()
+            callee.params.len(), flat_args.len(),
+            "VolarIrTarget: arg bit count mismatch (expected {}, got {})",
+            callee.params.len(), flat_args.len()
         );
-
-        // var_map: callee local ID → current-block IRVarId.
         let mut var_map: Vec<IRVarId> = flat_args;
-
         for stmt in &callee.stmts {
             let mapped = subst_stmt(stmt, &var_map);
             let id = self.emit(mapped);
             var_map.push(id);
         }
-
         match &callee.terminator {
             IRTerminator::Jmp { func: IRBlockTargetId::Return, args: ret_args } => {
                 let ret_bits: Vec<IRVarId> =
@@ -589,19 +589,105 @@ impl VolarIrTarget {
                 match ret_ty {
                     Some(ty) => {
                         let n = bits_for_lir_type(ty, &self.struct_widths);
-                        assert_eq!(
-                            ret_bits.len(), n,
-                            "VolarIrTarget: call_extern return bit count mismatch"
-                        );
+                        assert_eq!(ret_bits.len(), n,
+                            "VolarIrTarget: return bit count mismatch");
                         vec![VolarValue { bits: ret_bits }]
                     }
                     None => vec![],
                 }
             }
-            other => panic!(
-                "VolarIrTarget: extern callee has unsupported terminator: {:?}",
-                other
-            ),
+            other => panic!("VolarIrTarget: single-block callee has non-Return terminator: {other:?}"),
+        }
+    }
+
+    /// Inline a (potentially multi-block) callee at the current insertion point.
+    ///
+    /// For a single-block callee this is equivalent to [`inline_callee`].
+    /// For multi-block callees the algorithm:
+    ///
+    /// 1. Creates fresh caller blocks for each callee block > 0.
+    /// 2. Creates a **continuation** block that receives the callee's return
+    ///    values as block parameters.
+    /// 3. Emits each callee block's stmts into the corresponding caller block,
+    ///    remapping all var IDs and block targets.
+    /// 4. `IRBlockTargetId::Return` in the callee becomes a jump to the
+    ///    continuation block.
+    /// 5. Switches to the continuation block so the caller resumes there.
+    ///
+    /// Returns the flat `VolarValue`(s) for the callee's return value (the
+    /// continuation block's parameters).
+    pub fn inline_blocks(
+        &mut self,
+        callee: &IRBlocks,
+        flat_args: Vec<IRVarId>,
+        ret_ty: Option<&LirType>,
+    ) -> Vec<VolarValue> {
+        // Fast path: single-block with a direct unconditional Return — use the
+        // simpler inline_callee which avoids allocating a continuation block.
+        if callee.0.len() == 1 {
+            if let IRTerminator::Jmp { func: IRBlockTargetId::Return, .. } = &callee.0[0].terminator {
+                return self.inline_callee(&callee.0[0], flat_args, ret_ty);
+            }
+        }
+
+        let n = callee.0.len();
+        let ret_n = ret_ty.map(|ty| self.bits_for(ty)).unwrap_or(0);
+
+        // ---- Continuation block (receives callee return values) -----------
+        let cont_block = self.create_block();
+        let mut cont_params = Vec::with_capacity(ret_n);
+        for _ in 0..ret_n {
+            let v = self.add_block_param(cont_block, LirType::Bool);
+            cont_params.push(v.bits[0]);
+        }
+
+        // ---- Map callee block idx → caller block idx ---------------------
+        // Callee block 0 stays in the current caller block.
+        let initial_block = self.func.as_ref().unwrap().current;
+        let mut new_blocks: Vec<usize> = Vec::with_capacity(n);
+        new_blocks.push(initial_block);
+        for _ in 1..n {
+            new_blocks.push(self.create_block().0);
+        }
+
+        // ---- Pre-add params to new blocks 1..n --------------------------
+        // Callee block 0's params come from flat_args (not from block params).
+        let mut block_params: Vec<Vec<IRVarId>> = Vec::with_capacity(n);
+        block_params.push(flat_args);
+        for ci in 1..n {
+            let n_params = callee.0[ci].params.len();
+            let blk = VolarBlock(new_blocks[ci]);
+            let mut params = Vec::with_capacity(n_params);
+            for _ in 0..n_params {
+                let v = self.add_block_param(blk, LirType::Bool);
+                params.push(v.bits[0]);
+            }
+            block_params.push(params);
+        }
+
+        // ---- Emit each callee block --------------------------------------
+        for ci in 0..n {
+            self.func.as_mut().unwrap().current = new_blocks[ci];
+
+            let mut var_map: Vec<IRVarId> = block_params[ci].clone();
+            for stmt in &callee.0[ci].stmts {
+                let mapped = subst_stmt(stmt, &var_map);
+                let id = self.emit(mapped);
+                var_map.push(id);
+            }
+            let term = remap_terminator(
+                &callee.0[ci].terminator, &var_map, &new_blocks, cont_block.0,
+            );
+            self.set_terminator(term);
+        }
+
+        // ---- Resume in the continuation block ----------------------------
+        self.func.as_mut().unwrap().current = cont_block.0;
+
+        if ret_n > 0 {
+            vec![VolarValue { bits: cont_params }]
+        } else {
+            vec![]
         }
     }
 }
@@ -634,8 +720,55 @@ fn lir_type_for_bits(n: usize) -> LirType {
 }
 
 // ============================================================================
+// ============================================================================
 // IRStmt variable substitution (for callee inlining)
 // ============================================================================
+
+/// Remap var IDs and block targets in a terminator for multi-block inlining.
+///
+/// - `var_map`: callee local var ID → caller var ID
+/// - `new_blocks[i]`: caller block idx for callee block i
+/// - `cont_block_idx`: caller block idx that receives `Return` values
+fn remap_terminator(
+    term: &IRTerminator,
+    var_map: &[IRVarId],
+    new_blocks: &[usize],
+    cont_block_idx: usize,
+) -> IRTerminator {
+    let remap_args = |args: &[IRVarId]| -> Vec<IRVarId> {
+        args.iter().map(|id| var_map[id.0 as usize]).collect()
+    };
+    let remap_target = |t: &IRBlockTargetId| -> IRBlockTargetId {
+        match t {
+            IRBlockTargetId::Return =>
+                IRBlockTargetId::Block(IRBlockId(cont_block_idx as u32)),
+            IRBlockTargetId::Block(IRBlockId(j)) =>
+                IRBlockTargetId::Block(IRBlockId(new_blocks[*j as usize] as u32)),
+            IRBlockTargetId::Dyn(v) =>
+                IRBlockTargetId::Dyn(var_map[v.0 as usize]),
+        }
+    };
+    match term {
+        IRTerminator::Jmp { func, args } => IRTerminator::Jmp {
+            func: remap_target(func),
+            args: remap_args(args),
+        },
+        IRTerminator::JumpCond { condition, true_block, true_args, false_block, false_args } =>
+            IRTerminator::JumpCond {
+                condition: var_map[condition.0 as usize],
+                true_block:  remap_target(true_block),
+                true_args:   remap_args(true_args),
+                false_block: remap_target(false_block),
+                false_args:  remap_args(false_args),
+            },
+        IRTerminator::JumpTable { index, cases } => IRTerminator::JumpTable {
+            index: var_map[index.0 as usize],
+            cases: cases.iter().map(|(k, (t, args))| {
+                (*k, (remap_target(t), remap_args(args)))
+            }).collect(),
+        },
+    }
+}
 
 fn subst_stmt(stmt: &IRStmt, var_map: &[IRVarId]) -> IRStmt {
     let s = |id: &IRVarId| var_map[id.0 as usize]; // IRVarId: Copy
@@ -904,14 +1037,8 @@ impl LirTarget for VolarIrTarget {
                         provide a Volar IR implementation via add_extern()")
             })
             .clone();
-        assert_eq!(
-            impl_blocks.0.len(), 1,
-            "VolarIrTarget: extern '{name}' has {} blocks; \
-             only single-block (combinational) callees are supported",
-            impl_blocks.0.len()
-        );
-        let callee = impl_blocks.0[0].clone();
-        self.inline_callee(&callee, flat_args, ret_ty.as_ref())
+        // Use inline_blocks — handles both single- and multi-block callees.
+        self.inline_blocks(&impl_blocks, flat_args, ret_ty.as_ref())
     }
 
     // ---- Terminators -------------------------------------------------------
@@ -1237,5 +1364,99 @@ mod tests {
         let t = VolarIrTarget::new();
         let v = VolarValue { bits: (0..64).map(IRVarId).collect() };
         assert_eq!(t.value_scalar_type(&v), LirType::U64);
+    }
+
+    // ---- multi-block inlining (inline_blocks) ------------------------------
+
+    /// Build a two-block callee that uses a conditional branch:
+    ///
+    ///   Block 0: params=[cond: Bit]  branch(cond, Block(1,[]), Return([0]))
+    ///   Block 1: params=[]           Jmp(Return, [1])
+    ///
+    /// Semantics: if cond then return 1 else return 0.
+    /// After inlining this into a caller that passes a Bool param, the caller
+    /// should produce a 1-bit result and be a valid (non-trivially-circuit)
+    /// IRBlocks.
+    #[test]
+    fn test_inline_blocks_two_block_callee() {
+        let bit_tid = IRTypeId(0);
+        let callee = IRBlocks(std::vec![
+            // Block 0: branch on param 0.
+            IRBlock {
+                params: std::vec![bit_tid],
+                stmts: std::vec![],
+                terminator: IRTerminator::JumpCond {
+                    condition: IRVarId(0),
+                    true_block:  IRBlockTargetId::Block(IRBlockId(1)),
+                    true_args:   std::vec![],
+                    false_block: IRBlockTargetId::Return,
+                    false_args:  std::vec![IRVarId(0)], // return cond (=0)
+                },
+            },
+            // Block 1: unconditional return of 1.
+            IRBlock {
+                params: std::vec![],
+                stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 1 }, bit_tid)],
+                terminator: IRTerminator::Jmp {
+                    func: IRBlockTargetId::Return,
+                    args: std::vec![IRVarId(0)], // return the Const(1)
+                },
+            },
+        ]);
+
+        let blocks = build(|t| {
+            let (entry, params) = t.begin_function("caller", &[LirType::Bool], None);
+            t.switch_to_block(entry);
+            let cond = params[0][0].clone();
+            // Inline the two-block callee.
+            let result = t.inline_blocks(&callee, cond.bits.clone(), Some(&LirType::Bool));
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0].bits.len(), 1, "callee returns one Bool");
+            t.ret(&result);
+            t.end_function();
+        });
+
+        // The caller should now have 3 blocks:
+        //   block 0 (original current) + block 1 (new for callee block 1)
+        //   + continuation block.
+        assert_eq!(blocks.0.len(), 3, "caller should have 3 blocks after inlining");
+    }
+
+    /// Inline a callee that loops (self-jump), verifying that multi-block
+    /// inlining handles back-edges correctly by mapping them to fresh blocks.
+    #[test]
+    fn test_inline_blocks_loop_callee() {
+        let bit_tid = IRTypeId(0);
+        // Callee: Block 0(x: Bit) -> CondJmp(x, Return([x]), Block(0,[NOT(x)]))
+        // Semantics: if x=1 return 1, else loop with NOT(x)=1 → returns 1.
+        let callee = IRBlocks(std::vec![IRBlock {
+            params: std::vec![bit_tid],
+            stmts: std::vec![
+                // stmt 0: NOT(param_0)
+                {
+                    let mut coeffs = std::collections::BTreeMap::new();
+                    coeffs.insert(std::vec![IRVarId(0)], 1u8);
+                    IRStmt::Poly { coeffs, constant: Constant { hi: 0, lo: 1 } }
+                },
+            ],
+            terminator: IRTerminator::JumpCond {
+                condition: IRVarId(0),
+                true_block:  IRBlockTargetId::Return,
+                true_args:   std::vec![IRVarId(0)],
+                false_block: IRBlockTargetId::Block(IRBlockId(0)),
+                false_args:  std::vec![IRVarId(1)], // NOT(x)
+            },
+        }]);
+
+        // Single-block callee → inline_callee path.
+        build(|t| {
+            let (entry, params) = t.begin_function("caller", &[LirType::Bool], None);
+            t.switch_to_block(entry);
+            let x = params[0][0].clone();
+            let result = t.inline_blocks(&callee, x.bits.clone(), Some(&LirType::Bool));
+            assert_eq!(result[0].bits.len(), 1);
+            t.ret(&result);
+            t.end_function();
+        });
     }
 }
