@@ -120,8 +120,8 @@ pub enum IcmpPred {
 /// - Every block must end with exactly one terminator.
 /// - Call `end_function` after the last terminator.
 pub trait LirTarget {
-    type Value: Copy + Eq + core::fmt::Debug;
-    type Block: Copy + Eq + core::fmt::Debug;
+    type Value: Clone + Eq + core::fmt::Debug;
+    type Block: Clone + Eq + core::fmt::Debug;
 
     // ---- Type registration --------------------------------------------------
 
@@ -202,7 +202,7 @@ pub trait LirTarget {
     /// Used by the lowering pass to recover types for join-block parameters
     /// (e.g. in `lower_if`) without threading type information through every
     /// `lower_expr` return.  Panics if `val` was not produced by this target.
-    fn value_scalar_type(&self, val: Self::Value) -> LirType;
+    fn value_scalar_type(&self, val: &Self::Value) -> LirType;
 
     // ---- Extern calls -------------------------------------------------------
 

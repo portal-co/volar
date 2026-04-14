@@ -5,7 +5,7 @@ use volar_ir_common::Constant;
 // Volar IR: SSA block-based IR for VOLE-based computations.
 // Pure data structure definitions; no cryptographic claims.
 use super::*;
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct IRBlockId(pub u32);
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct IRBlocks(pub Vec<IRBlock>);
@@ -30,7 +30,7 @@ pub struct IRBlock {
     pub stmts: Vec<IRStmt>,
     pub terminator: IRTerminator,
 }
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct IRTypeId(pub u32);
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct IRTypes(pub Vec<IRType>);
@@ -43,7 +43,7 @@ pub enum IRType {
     Galois64,
     Block { params: Vec<IRTypeId> },
 }
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct IRVarId(pub u32);
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum IRStmt<Var = IRVarId, Addr = Var> {

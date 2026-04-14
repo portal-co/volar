@@ -25,9 +25,8 @@ use structs::{
 };
 
 // Unwrap a single-element Vec into a scalar, panicking if the vec has != 1 element.
-fn into_scalar<V: Copy>(vals: Vec<V>, context: &str) -> V {
-    assert_eq!(vals.len(), 1, "expected scalar at {context}, got {} values", vals.len());
-    vals[0]
+fn into_scalar<V: Clone>(vals: Vec<V>, context: &str) -> V {
+    vals.into_iter().next().unwrap_or_else(|| panic!("expected scalar at {context}, got 0 values"))
 }
 
 // ============================================================================
@@ -202,7 +201,7 @@ fn lower_function_with_registry<T: LirTarget>(
     let ret_ty = func.return_type.as_ref().map(|t| registry.ir_type_to_lir(t));
 
     let (entry, param_val_groups) = target.begin_function(&func.name, &param_lir_tys, ret_ty);
-    target.switch_to_block(entry);
+    target.switch_to_block(entry.clone());
 
     // Each group is the flat scalar values for that parameter.
     let named_params: Vec<(String, Vec<T::Value>, IrType)> = func
@@ -444,29 +443,29 @@ fn lower_if<T: LirTarget>(
     let else_block = ctx.target.create_block();
 
     // Branch to then/else — join block created lazily below.
-    ctx.target.branch(cond_val, then_block, &[], else_block, &[]);
+    ctx.target.branch(cond_val, then_block.clone(), &[], else_block.clone(), &[]);
 
     // Lower the then-branch first so we discover N (the result scalar count).
-    ctx.target.switch_to_block(then_block);
+    ctx.target.switch_to_block(then_block.clone());
     ctx.current_block = then_block;
     let then_vals = lower_block(then_branch, ctx);
     let n = then_vals.len();
 
     // Recover the scalar LirType of each then-value to use as join-block param types.
     let scalar_tys: Vec<LirType> = then_vals.iter()
-        .map(|&v| ctx.target.value_scalar_type(v))
+        .map(|v| ctx.target.value_scalar_type(v))
         .collect();
 
     // Create the join block now that we know N.
     let join_block = ctx.target.create_block();
     let join_params: Vec<T::Value> = scalar_tys.iter()
-        .map(|ty| ctx.target.add_block_param(join_block, ty.clone()))
+        .map(|ty| ctx.target.add_block_param(join_block.clone(), ty.clone()))
         .collect();
 
-    ctx.target.jump(join_block, &then_vals);
+    ctx.target.jump(join_block.clone(), &then_vals);
 
     // Lower the else-branch.
-    ctx.target.switch_to_block(else_block);
+    ctx.target.switch_to_block(else_block.clone());
     ctx.current_block = else_block;
     let else_vals: Vec<T::Value> = if let Some(else_expr) = else_branch {
         lower_expr(else_expr, ctx)
@@ -478,9 +477,9 @@ fn lower_if<T: LirTarget>(
         else_vals.len(), n,
         "if/else branches produce different numbers of scalars ({n} vs {})", else_vals.len()
     );
-    ctx.target.jump(join_block, &else_vals);
+    ctx.target.jump(join_block.clone(), &else_vals);
 
-    ctx.target.switch_to_block(join_block);
+    ctx.target.switch_to_block(join_block.clone());
     ctx.current_block = join_block;
     join_params
 }
@@ -679,11 +678,11 @@ fn lower_index<T: LirTarget>(
     // Build a select mux tree for each scalar position within the element.
     // result[j] = select chain over arr_vals[0*ew+j], arr_vals[1*ew+j], ...
     (0..elem_width).map(|j| {
-        let mut result = arr_vals[j]; // element 0's j-th scalar
+        let mut result = arr_vals[j].clone(); // element 0's j-th scalar
         for k in 1..n {
             let k_val = ctx.target.iconst(LirType::U64, k as i64);
-            let cond = ctx.target.icmp(IcmpPred::Eq, idx_val, k_val);
-            result = ctx.target.select(cond, arr_vals[k * elem_width + j], result);
+            let cond = ctx.target.icmp(IcmpPred::Eq, idx_val.clone(), k_val);
+            result = ctx.target.select(cond, arr_vals[k * elem_width + j].clone(), result);
         }
         result
     }).collect()
@@ -726,8 +725,8 @@ fn lower_bounded_loop<T: LirTarget>(
     let body_block = ctx.target.create_block();
     let done_block = ctx.target.create_block();
 
-    let counter = ctx.target.add_block_param(loop_header, LirType::U64);
-    let limit = ctx.target.add_block_param(loop_header, LirType::U64);
+    let counter = ctx.target.add_block_param(loop_header.clone(), LirType::U64);
+    let limit = ctx.target.add_block_param(loop_header.clone(), LirType::U64);
 
     // Before block: compute start and end.
     let start_val = into_scalar(lower_expr(start, ctx), "loop start");
@@ -740,26 +739,26 @@ fn lower_bounded_loop<T: LirTarget>(
     };
     // Ensure values are U64 (the loop uses U64 counters).
     let start_u64 = ctx.target.zext(start_val, LirType::U64);
-    ctx.target.jump(loop_header, &[start_u64, limit_val]);
+    ctx.target.jump(loop_header.clone(), &[start_u64, limit_val.clone()]);
 
     // Loop header.
-    ctx.target.switch_to_block(loop_header);
-    ctx.current_block = loop_header;
-    let cmp = ctx.target.icmp(IcmpPred::Ult, counter, limit);
-    ctx.target.branch(cmp, body_block, &[], done_block, &[]);
+    ctx.target.switch_to_block(loop_header.clone());
+    ctx.current_block = loop_header.clone();
+    let cmp = ctx.target.icmp(IcmpPred::Ult, counter.clone(), limit.clone());
+    ctx.target.branch(cmp, body_block.clone(), &[], done_block.clone(), &[]);
 
     // Body block.
-    ctx.target.switch_to_block(body_block);
+    ctx.target.switch_to_block(body_block.clone());
     ctx.current_block = body_block;
-    ctx.env.insert(var.to_owned(), vec![counter]);
+    ctx.env.insert(var.to_owned(), vec![counter.clone()]);
     ctx.env_types.insert(var.to_owned(), IrType::Primitive(PrimitiveType::Usize));
     lower_block(body, ctx);
     let one = ctx.target.iconst(LirType::U64, 1);
     let next = ctx.target.add(counter, one);
-    ctx.target.jump(loop_header, &[next, limit]);
+    ctx.target.jump(loop_header, &[next, limit_val]);
 
     // Done block.
-    ctx.target.switch_to_block(done_block);
+    ctx.target.switch_to_block(done_block.clone());
     ctx.current_block = done_block;
 
     // Clean up loop variable from env.

@@ -413,7 +413,7 @@ impl LirTarget for CBackend {
 
     // ---- Value type query ---------------------------------------------------
 
-    fn value_scalar_type(&self, val: CValue) -> LirType {
+    fn value_scalar_type(&self, val: &CValue) -> LirType {
         self.current.as_ref().expect("value_scalar_type: not inside a function")
             .value_type[val.0 as usize].clone()
     }
