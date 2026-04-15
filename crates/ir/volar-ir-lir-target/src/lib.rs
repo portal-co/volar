@@ -56,7 +56,7 @@ use volar_ir::ir::{
     IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypeId,
     IRTypes, IRVarId,
 };
-use volar_ir_common::Constant;
+use volar_ir_common::{Constant, IrType, Type};
 use volar_lir::{IcmpPred, LirTarget, LirType, StructDef, StructId};
 
 // ============================================================================
@@ -142,7 +142,7 @@ impl VolarIrTarget {
     pub fn new() -> Self {
         let bit_tid = IRTypeId(0);
         VolarIrTarget {
-            types: IRTypes(vec![IRType::Bit]),
+            types: IRTypes(std::vec![IrType::Primitive(Type::Bit)]),
             bit_tid,
             struct_widths: vec![],
             externs: BTreeMap::new(),

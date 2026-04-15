@@ -57,7 +57,7 @@
 
 use alloc::{vec, vec::Vec};
 use alloc::collections::BTreeMap;
-use volar_ir_common::Constant;
+use volar_ir_common::{Constant, Type};
 
 use volar_ir::{
     boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
@@ -670,8 +670,8 @@ fn subst_ir(stmt: &IRStmt, var_map: &[u32]) -> IRStmt {
 ///
 /// Panics if two non-Bit types are incompatible (different non-Bit type IDs).
 fn promote_type(a: &IRTypeId, b: &IRTypeId, ir_types: &[IRType]) -> IRTypeId {
-    let a_is_bit = matches!(ir_types[a.0 as usize], IRType::Bit);
-    let b_is_bit = matches!(ir_types[b.0 as usize], IRType::Bit);
+    let a_is_bit = matches!(ir_types[a.0 as usize], IRType::Primitive(Type::Bit));
+    let b_is_bit = matches!(ir_types[b.0 as usize], IRType::Primitive(Type::Bit));
     if a_is_bit {
         b.clone()
     } else if b_is_bit {
@@ -1446,16 +1446,7 @@ pub fn movfuscate_biir(blocks: &BIrBlocks) -> BIrBlocks {
 /// absent.  Single-block input is returned unchanged.
 pub fn movfuscate_ir(blocks: &IRBlocks, types: &mut IRTypes) -> IRBlocks {
     // Ensure IRType::Bit is present in the types table.
-    let bit_type_id = types
-        .0
-        .iter()
-        .position(|t| matches!(t, IRType::Bit))
-        .map(|i| IRTypeId(i as u32))
-        .unwrap_or_else(|| {
-            let id = types.0.len();
-            types.0.push(IRType::Bit);
-            IRTypeId(id as u32)
-        });
+    let bit_type_id = types.intern(IRType::Primitive(Type::Bit));
 
     let ir_types = types.0.clone();
 
@@ -1686,7 +1677,7 @@ mod tests {
     // =========================================================================
 
     fn bit_types() -> IRTypes {
-        IRTypes(std::vec![IRType::Bit])
+        IRTypes(std::vec![IRType::Primitive(Type::Bit)])
     }
 
     fn two_block_ir_bit() -> (IRBlocks, IRTypes) {
@@ -1738,7 +1729,7 @@ mod tests {
         let result = movfuscate_ir(&blocks, &mut types);
         assert_eq!(result.0[0].params.len(), 2); // pc(1) + state(1)
         for tid in &result.0[0].params {
-            assert!(matches!(types.0[tid.0 as usize], IRType::Bit));
+            assert!(matches!(types.0[tid.0 as usize], IRType::Primitive(Type::Bit)));
         }
     }
 
@@ -1768,7 +1759,7 @@ mod tests {
     ///   Block 1 (1 param `x: G8`): Jmp(Return, [x])
     fn two_block_ir_g8() -> (IRBlocks, IRTypes) {
         // types[0] = Bit, types[1] = Galois8AES
-        let types = IRTypes(std::vec![IRType::Bit, IRType::Galois8AES]);
+        let types = IRTypes(std::vec![IRType::Primitive(Type::Bit), IRType::Primitive(Type::AES8)]);
         let g8 = IRTypeId(1);
         let blocks = IRBlocks(std::vec![
             IRBlock {
@@ -1806,12 +1797,12 @@ mod tests {
         assert_eq!(result.0[0].params.len(), 2);
         // First param (PC) must be Bit
         assert!(
-            matches!(types.0[result.0[0].params[0].0 as usize], IRType::Bit),
+            matches!(types.0[result.0[0].params[0].0 as usize], IRType::Primitive(Type::Bit)),
             "PC param must be Bit"
         );
         // Second param (state slot 0) must be Galois8AES
         assert!(
-            matches!(types.0[result.0[0].params[1].0 as usize], IRType::Galois8AES),
+            matches!(types.0[result.0[0].params[1].0 as usize], IRType::Primitive(Type::AES8)),
             "state slot 0 must be Galois8AES"
         );
     }
@@ -1867,7 +1858,7 @@ mod tests {
     ///   Block 1: params (x: G8);         Jmp(Return, [x])
     #[test]
     fn test_ir_mixed_types_two_block() {
-        let mut types = IRTypes(std::vec![IRType::Bit, IRType::Galois8AES]);
+        let mut types = IRTypes(std::vec![IRType::Primitive(Type::Bit), IRType::Primitive(Type::AES8)]);
         let bit = IRTypeId(0);
         let g8 = IRTypeId(1);
 
@@ -1900,9 +1891,9 @@ mod tests {
 
         // Param types: [Bit (PC), G8 (slot 0), Bit (slot 1)]
         let p = &result.0[0].params;
-        assert!(matches!(types.0[p[0].0 as usize], IRType::Bit), "PC slot");
-        assert!(matches!(types.0[p[1].0 as usize], IRType::Galois8AES), "state slot 0");
-        assert!(matches!(types.0[p[2].0 as usize], IRType::Bit), "state slot 1");
+        assert!(matches!(types.0[p[0].0 as usize], IRType::Primitive(Type::Bit)), "PC slot");
+        assert!(matches!(types.0[p[1].0 as usize], IRType::Primitive(Type::AES8)), "state slot 0");
+        assert!(matches!(types.0[p[2].0 as usize], IRType::Primitive(Type::Bit)), "state slot 1");
 
         match &result.0[0].terminator {
             IRTerminator::JumpCond { true_args, false_args, .. } => {
@@ -1921,7 +1912,7 @@ mod tests {
     fn test_ir_poly_body_subst_correct() {
         // Block 0 (a: G8): c = Poly{[a]:1, constant:0} (= identity); Jmp(B1,[c])
         // Block 1 (x: G8): Jmp(Return,[x])
-        let mut types = IRTypes(std::vec![IRType::Bit, IRType::Galois8AES]);
+        let mut types = IRTypes(std::vec![IRType::Primitive(Type::Bit), IRType::Primitive(Type::AES8)]);
         let g8 = IRTypeId(1);
         let mut coeffs = BTreeMap::new();
         coeffs.insert(std::vec![IRVarId(0)], 1u8);
@@ -1970,7 +1961,7 @@ mod tests {
     /// The caller initialises state0 with the binary encoding of block 1 (= 1).
     /// Execution: B0 active → next_pc = [state0] → B1 active → done.
     fn two_block_dyn_param() -> (IRBlocks, IRTypes) {
-        let mut types = IRTypes(std::vec![IRType::Bit]);
+        let mut types = IRTypes(std::vec![IRType::Primitive(Type::Bit)]);
         let bit = IRTypeId(0);
         // Register IRType::Block{[]} and get its type ID.
         let block_ty_id = IRTypeId(types.0.len() as u32);
@@ -2016,7 +2007,7 @@ mod tests {
         // Both combined params must be Bit.
         for tid in &result.0[0].params {
             assert!(
-                matches!(types.0[tid.0 as usize], IRType::Bit),
+                matches!(types.0[tid.0 as usize], IRType::Primitive(Type::Bit)),
                 "all combined params must be Bit"
             );
         }
@@ -2047,7 +2038,7 @@ mod tests {
     /// - Block 0: params=[], stmts=[c=Const(1,Block{[]})], Jmp(Dyn(c),[])
     /// - Block 1: params=[], Jmp(Return,[])
     fn two_block_dyn_const() -> (IRBlocks, IRTypes) {
-        let mut types = IRTypes(std::vec![IRType::Bit]);
+        let mut types = IRTypes(std::vec![IRType::Primitive(Type::Bit)]);
         let block_ty_id = IRTypeId(types.0.len() as u32);
         types.0.push(IRType::Block { params: std::vec![] });
 
@@ -2090,7 +2081,7 @@ mod tests {
         // Both blocks have no params → state_width = 0; pc_width = 1.
         // Combined params: [pc0: Bit] only.
         assert_eq!(result.0[0].params.len(), 1, "only the PC bit");
-        assert!(matches!(types.0[result.0[0].params[0].0 as usize], IRType::Bit));
+        assert!(matches!(types.0[result.0[0].params[0].0 as usize], IRType::Primitive(Type::Bit)));
     }
 
     #[test]
@@ -2122,7 +2113,7 @@ mod tests {
     /// After movfuscation the combined block should return the value that was
     /// passed as `one` = 1 (via state slot 0).
     fn two_block_dyn_with_args() -> (IRBlocks, IRTypes) {
-        let mut types = IRTypes(std::vec![IRType::Bit]);
+        let mut types = IRTypes(std::vec![IRType::Primitive(Type::Bit)]);
         let bit = IRTypeId(0);
         let block_ty_id = IRTypeId(types.0.len() as u32);
         types.0.push(IRType::Block { params: std::vec![bit.clone()] });
@@ -2169,7 +2160,7 @@ mod tests {
         // Combined params: [pc0: Bit, state0: Bit].
         assert_eq!(result.0[0].params.len(), 2, "pc(1) + state(1)");
         for tid in &result.0[0].params {
-            assert!(matches!(types.0[tid.0 as usize], IRType::Bit));
+            assert!(matches!(types.0[tid.0 as usize], IRType::Primitive(Type::Bit)));
         }
     }
 
@@ -2199,7 +2190,7 @@ mod tests {
     /// - Block 1: params=[cont: Block{[]}], Jmp(Dyn(cont), [])
     /// - Block 2: params=[cont: Block{[]}], Jmp(Return, [])
     fn three_block_pass_block_arg() -> (IRBlocks, IRTypes) {
-        let mut types = IRTypes(std::vec![IRType::Bit]);
+        let mut types = IRTypes(std::vec![IRType::Primitive(Type::Bit)]);
         let block_ty_id = IRTypeId(types.0.len() as u32);
         types.0.push(IRType::Block { params: std::vec![] });
 
@@ -2256,7 +2247,7 @@ mod tests {
         // Combined params: [pc0: Bit, pc1: Bit, state0: Bit, state1: Bit] = 4.
         assert_eq!(result.0[0].params.len(), 4, "pc(2) + state(2 Bit for Block)");
         for tid in &result.0[0].params {
-            assert!(matches!(types.0[tid.0 as usize], IRType::Bit));
+            assert!(matches!(types.0[tid.0 as usize], IRType::Primitive(Type::Bit)));
         }
     }
 

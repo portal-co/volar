@@ -8,6 +8,7 @@ use volar_ir::{
     boolar::{BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
     ir::{IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypes},
 };
+use volar_ir_common::Type;
 
 // ============================================================================
 // BIrBlocks → LirTarget
@@ -244,9 +245,13 @@ pub fn lower_ir<T: LirTarget>(
 
 fn ir_type_to_lir(ty: &IRType) -> LirType {
     match ty {
-        IRType::Bit => LirType::Bool,
-        IRType::Galois8AES => LirType::U8,
-        IRType::Galois64 => LirType::U64,
+        IRType::Primitive(Type::Bit) => LirType::Bool,
+        IRType::Primitive(Type::AES8) => LirType::U8,
+        IRType::Primitive(Type::Galois64) => LirType::U64,
+        IRType::Primitive(Type::_8) => LirType::U8,
+        IRType::Primitive(Type::_16) => LirType::U16,
+        IRType::Primitive(Type::_32) => LirType::U32,
+        IRType::Primitive(Type::_64) => LirType::U64,
         IRType::Vec(n, _elem) if *n <= 8 => LirType::U8,
         IRType::Vec(n, _elem) if *n <= 16 => LirType::U16,
         IRType::Vec(n, _elem) if *n <= 32 => LirType::U32,
