@@ -5,7 +5,8 @@
 This document describes the design and implementation of VOLE proving and verifying
 passes in `volar-weaver`. These passes lower a boolean circuit (`BIrBlocks`) into
 an `IrModule` implementing a one-round interactive ZK proof based on the Quicksilver
-VOLE-in-the-head (VOLEitH) protocol.
+VOLE-in-the-head (VOLEitH) protocol — one of the ZK constructions currently
+implemented in volar.
 
 The garble passes already in `volar-weaver` are moved to a `garble` submodule as
 part of this refactor. The new `vole` submodule adds `weave_vole_prover` and

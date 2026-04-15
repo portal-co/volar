@@ -1,20 +1,23 @@
 # Volar Documentation
 
-**VOLE-in-the-head computations for a cloud world.**
+**Program-related cryptography, implemented and refined in the open.**
 
-Volar is a cryptographic library and compiler toolchain built around
-Vector Oblivious Linear Evaluation (VOLE). It provides:
+Volar is a cryptographic library and compiler toolchain whose goal is to increase adoption of zero-knowledge proofs, garbled circuits, multi-party computation, and related techniques by implementing them in auditable Rust and compiling them to other targets. It provides:
 
 - A specification layer (`volar-spec`) with type-checked cryptographic protocol
-  definitions written in a total subset of Rust.
+  definitions written in a total subset of Rust. Current protocols: VOLE-based ZK
+  (Quicksilver-style) and garbled circuits (half-gate scheme).
 - A compiler (`volar-compiler`) that parses these specifications and lowers them
-  through a purpose-built IR to dynamic Rust and TypeScript.
+  through a purpose-built IR to dynamic Rust and TypeScript, enabling the same
+  cryptographic kernel to run in browsers and servers without re-implementation drift.
 - Field-element primitives (`volar-primitives`) for GF(2), GF(2⁸), GF(2⁶⁴),
   GF(2¹²⁸), and GF(2²⁵⁶), with Itoh–Tsujii inversion.
 - A proof-system IR (`volar-ir`) for representing circuits before and after
-  movfuscation.
+  movfuscation — designed to be protocol-agnostic.
 - A weaver (`volar-weaver`) that generates garbled-circuit and VOLE ZK proof
   code from boolean circuits.
+- A public reliability system for tracking which constructions are established,
+  which are experimental, and which are broken — so trust can be assigned accurately.
 
 ---
 

@@ -5,9 +5,16 @@ It defines cryptographic protocols in a total, generic subset of Rust that
 can be read by both the Rust compiler (for correctness checking and testing)
 and by `volar-compiler` (for transpilation to dynamic Rust or TypeScript).
 
+Currently implemented protocols:
+- **VOLE-based ZK proofs** (Quicksilver-style VOLEitH): `vole.rs`, `byte_gen.rs`
+- **Garbled circuits** (half-gate scheme): `garble.rs`
+- **MPC types**: `mpc.rs` (type-level skeleton only; semantics TBD)
+
 All code in this crate uses `#![no_std]` and must stay within the
 [total fragment](compiler.md#totality) accepted by the compiler: no unbounded
-loops, no recursion, no `while` or bare `loop`.
+loops, no recursion, no `while` or bare `loop`. This constraint is not specific
+to any one protocol — it is what allows `volar-compiler` to lower any spec
+crate to TypeScript or other targets.
 
 ---
 
@@ -262,7 +269,7 @@ the other, which is the basis for punctured PRF-based VOLE.
 | `BitsInBytes` | `u8` | GF(2)⁸ packed | SIMD 8-lane bit field; add=XOR, mul=AND |
 | `Galois64` | `u64` | GF(2⁶⁴) | 64-bit extension field |
 | `BitsInBytes64` | `u64` | GF(2)⁶⁴ packed | SIMD 64-lane bit field |
-| `Galois128` | `u128` | GF(2¹²⁸) | GCM polynomial; used as VOLEitH extension field |
+| `Galois128` | `u128` | GF(2¹²⁸) | GCM polynomial; used as the VOLE extension field in the current ZK construction |
 | `Galois256` | `[u64; 4]` | GF(2²⁵⁶) | 256-bit extension field |
 | `Tropical<T>` | any `T` | Tropical semiring | add=min, mul=add |
 
@@ -284,7 +291,7 @@ a generic `backend::field_mul<T>` for Rust-only use.
 | Feature | Status |
 |---|---|
 | VOLE primitives (Delta, Q, Vope) | ✅ Complete |
-| Garbled circuits | ✅ Complete |
+| Garbled circuits (half-gate) | ✅ Complete |
 | Byte generation (ABO, LengthDoubler) | ✅ Complete |
 | VOLE ZK proving (Quicksilver AND check) | ✅ Complete (`vole::prove`) |
 | VOLE weaver (prover + verifier code gen) | ✅ Complete (`volar-weaver/vole.rs`) |
@@ -293,3 +300,5 @@ a generic `backend::field_mul<T>` for Rust-only use.
 | MPC types (AllParties, OtherParties) | 🔲 Stub - semantics TBD |
 | Consistency checks | 🔲 Planned |
 | Succinct proofs | 🔲 Planned |
+| Other ZK schemes (STARKs, sigma protocols, …) | 🔲 Future |
+| Full MPC protocol | 🔲 Future |

@@ -1,15 +1,31 @@
 # Volar Agent Context
 
-## Core Architecture
+## Project Mission
 
-A VOLE-based ZK system utilizing Subfield VOLE over GF(2) for bit-level operations, authenticated by an extension field GF(2^128) with a global secret Δ.
+Volar's goal is to increase adoption of **program-related cryptography** — zero-knowledge proofs, garbled circuits, multi-party computation, and the primitives that underpin them — by implementing it in auditable Rust, compiling it to other targets (TypeScript, C), and developing it publicly with rigorous reliability tracking.
 
-**Commitment Structure:** `Vope<N, T, K>` representing a vector of N authenticated values as polynomials of degree K in Δ.
+The current implementation focus is VOLE-based ZK proofs and garbled circuits. These were chosen because they share a clean common substrate (VOLE correlations, boolean circuits, binary extension-field arithmetic) that the compiler and IR were designed around. Other schemes and protocols will follow as the infrastructure matures.
 
-**Methodology:**
-1. Bit-slicing: Extensive use of bitwise shuffling and SIMD parallelization over GF(2).
-2. Galois Extension Lifting: Mapping bit-commitments into GF(2^k) (like AES's GF(256)) via linear basis transformations to perform field-specific operations (e.g., S-Box inversions).
-3. Constraint Logic: Using Quicksilver-style algebraic checks where the product of two polynomials is verified against a claimed result by ensuring the resulting high-degree polynomial vanishes.
+When deciding what to implement or how to design a component, prefer choices that:
+- Are useful to the broadest set of program-related cryptography applications (not just the current VOLEitH construction).
+- Keep the IR, compiler, and spec layer general enough to support future protocols.
+- Follow the reliability system: new cryptographic constructions start at Experimental, not Normal.
+
+## Current Implementation Architecture
+
+The live cryptographic kernel (`volar-spec`) implements two constructions:
+
+**VOLE-based ZK (Quicksilver-style VOLEitH):**
+- Subfield VOLE over GF(2) for bit-level operations, authenticated by an extension field GF(2^128) with a global secret Δ.
+- Commitment structure: `Vope<N, T, K>` — a vector of N authenticated values as polynomials of degree K in Δ.
+- Bit-slicing via `BitsInBytes`/`BitsInBytes64` for SIMD-style parallelization over GF(2).
+- Galois Extension Lifting: mapping bit-commitments into GF(2^k) (like AES's GF(256)) via linear basis transformations to perform field-specific operations (e.g., S-Box inversions).
+- Quicksilver-style algebraic AND checks: the product of two VOLE polynomials is verified against a claimed result by ensuring the resulting high-degree polynomial vanishes.
+
+**Garbled circuits:**
+- Half-gate scheme (Zahur-Rosulek-Evans 2015) over VOLE wire labels.
+- `GlobalSecret<N>`, `Garble<N>`, `Eval<N>`, `GarbleTable<N>` types.
+- Weaver generates both garbler and evaluator variants from boolean circuits.
 
 ## Compiler IR Genericity Invariant
 

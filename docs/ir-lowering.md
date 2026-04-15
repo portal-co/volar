@@ -1,7 +1,11 @@
 # IR Lowering Pipeline
 
-This document describes the low-level proof-system IR defined in `volar-ir`
-(`crates/volar-ir`) and its place in the full compilation pipeline.
+This document describes the low-level circuit IR defined in `volar-ir`
+(`crates/volar-ir`) and its place in the full compilation pipeline. The IR
+is designed to be protocol-agnostic: the same `Volar IR` and `Boolar IR`
+structures serve both the ZK proof path and the garbled circuit path, and
+are intended to support additional protocols (other ZK schemes, MPC, etc.)
+as they are added.
 
 ---
 
@@ -37,10 +41,12 @@ Movfuscated Volar IR
                                   Boolean circuit
 ```
 
-The `volar-ir` crate defines the two lowest-level IRs: **Volar IR** (for VOLE-based
-computations over field types) and **Boolar IR** (for boolean circuits). The
-WAFFLE → VAFFLE → Volar IR lowering is the responsibility of the `vaffle` crate
-and future work; `volar-ir` focuses on the structures these lowerings produce.
+The `volar-ir` crate defines the two lowest-level IRs: **Volar IR** (for
+field-level computations — currently VOLE-based, but designed to be
+protocol-agnostic) and **Boolar IR** (for boolean circuits, consumed by both
+the garbling pipeline and the ZK proof path). The WAFFLE → VAFFLE → Volar IR
+lowering is the responsibility of the `vaffle` crate and future work; `volar-ir`
+focuses on the structures these lowerings produce.
 
 ---
 
@@ -201,6 +207,9 @@ include:
 - A booleanization pass (Volar IR → Boolar IR).
 - A ZK proof generator (Movfuscated Volar IR → proof transcript).
 - Peephole optimizations for Boolar IR.
+- Protocol-specific backends beyond ZK (e.g. MPC, threshold protocols).
 
 These are planned in the roadmap; the `vaffle` crate stub will handle the
-WAFFLE → VAFFLE → Volar IR path.
+WAFFLE → VAFFLE → Volar IR path. The IR node set (`IRStmt`, `Poly`, etc.) is
+currently shaped around VOLE semantics; generalizing it to support other
+protocol backends cleanly is a known future design task.

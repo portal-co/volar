@@ -1,5 +1,10 @@
 # Volar Goals
 
+Volar's overall goal is to increase adoption of program-related cryptography by
+implementing it, compiling it to other targets, and developing it publicly.
+The task list below tracks progress toward that goal within the current
+implementation focus (VOLE-based ZK, garbled circuits, compiler toolchain).
+
 ## Completed
 
 - [x] LIR (low-level IR target) — compiler IR → native-like code
@@ -55,6 +60,9 @@
 - [ ] MPC protocol (beyond type stubs)
 - [ ] VOLE setup (OT-based correlation generation)
 - [ ] batched Quicksilver verification (random-challenge version)
+- [ ] additional ZK proof schemes (non-VOLE-based)
+- [ ] additional garbled circuit schemes
+- [ ] services / integrations that embed these protocols (e.g. threshold signing, private queries)
 
 ## LIR Remaining
 

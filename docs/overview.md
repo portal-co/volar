@@ -2,14 +2,18 @@
 
 ## Project Goal
 
-Volar implements **VOLE-in-the-head** (VOLEitH) — a zero-knowledge proof
-technique based on Vector Oblivious Linear Evaluation over GF(2). The system
-allows a prover to convince a verifier that they know a secret satisfying some
-predicate, without revealing the secret, using cheap VOLE correlations as the
-cryptographic backbone.
+Volar's goal is to increase adoption of **program-related cryptography** —
+zero-knowledge proofs, garbled circuits, multi-party computation, and the
+field-arithmetic primitives that underpin them — by implementing these
+techniques in auditable Rust, compiling them to other targets (TypeScript, C),
+and developing and refining them publicly with a rigorous reliability system.
 
-The project also supports **multi-party computation (MPC)** and
-**garbled circuits** through the same VOLE-based primitives.
+The current implementation focus is **VOLE-based zero-knowledge proofs**
+(Quicksilver-style VOLEitH) and **garbled circuits** (half-gate scheme).
+These were chosen because they share a clean common substrate — VOLE
+correlations, boolean circuits, binary extension-field arithmetic — that the
+compiler and IR were designed around. Other ZK schemes, MPC protocols, and
+related constructions will follow as the infrastructure matures.
 
 ---
 
@@ -110,6 +114,8 @@ See [ir-lowering.md](ir-lowering.md) for details.
 
 ## Key Cryptographic Relationships
 
+### VOLE (current primary substrate)
+
 VOLE satisfies the relation:
 
 ```
@@ -117,11 +123,19 @@ u · Δ + v = q
 ```
 
 where Δ is the verifier's global secret, and (u, v) / q are the prover's and
-verifier's shares respectively. Volar encodes all protocol operations as
-algebraic manipulations over VOLE correlations.
+verifier's shares respectively. The current ZK proof construction encodes all
+proof operations as algebraic manipulations over VOLE correlations.
 
 The `Vope<N, T, K>` type in `volar-spec` represents a polynomial of degree K
 in Δ whose coefficients are vectors of length N with element type T. This
-generalizes scalar VOLE to polynomial VOLE.
+generalizes scalar VOLE to polynomial VOLE, enabling Quicksilver-style AND
+gate checks.
+
+### Garbled circuits (current secondary construction)
+
+The garbled circuit layer uses the same VOLE wire-label types (`Garble<N>`,
+`Eval<N>`, `GarbleTable<N>`) and shares the boolean circuit IR (`BIrBlocks`)
+with the ZK proof path. XOR gates are free; AND gates require one pre-computed
+`GarbleTable<N>`.
 
 See [spec.md](spec.md) for the full specification-layer documentation.

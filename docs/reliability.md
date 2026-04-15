@@ -1,6 +1,9 @@
 # Code Reliability Levels
 
-Volar uses a four-tier reliability classification for all source code and documentation.
+Volar develops and refines program-related cryptography publicly. A core part
+of that mission is being transparent about how much each piece of code can be
+trusted. Volar uses a four-tier reliability classification for all source code
+and documentation.
 The tier determines:
 - Whether the file is compiled as part of any crate.
 - What source-level markers must appear.
@@ -19,8 +22,9 @@ faithfully, have been reviewed against the specification, and have passing
 tests. No novel cryptographic claims are made.
 
 **Examples:** `volar-primitives` (standard field arithmetic), `volar-common`
-(standard hash commitments and PRG doubling), `volar-compiler` (a compiler —
-no cryptographic claims of its own), `volar-ir` (circuit IR data structures).
+(standard hash commitments and PRG doubling), `volar-compiler` (a compiler and
+transpiler — enables cross-target deployment of spec-layer protocols; no
+cryptographic claims of its own), `volar-ir` (circuit IR data structures).
 
 **File extension:** `.rs` (normal Rust source; compiled as part of the crate).
 
