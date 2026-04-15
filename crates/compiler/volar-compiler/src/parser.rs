@@ -360,6 +360,7 @@ fn convert_impl_item(item: &syn::ImplItem) -> Result<Option<IrImplItem>> {
                 .transpose()?
                 .unwrap_or_default(),
             body: convert_block(&m.block)?,
+            external_kind: parse_external_kind(&m.attrs),
         }))),
         syn::ImplItem::Type(ty) => Ok(Some(IrImplItem::AssociatedType {
             name: AssociatedType::from_str(&ty.ident.to_string()),
@@ -370,6 +371,7 @@ fn convert_impl_item(item: &syn::ImplItem) -> Result<Option<IrImplItem>> {
 }
 
 fn convert_function(f: &syn::ItemFn) -> Result<IrFunction> {
+    let external_kind = parse_external_kind(&f.attrs);
     Ok(IrFunction {
         name: f.sig.ident.to_string(),
         generics: f
@@ -416,7 +418,19 @@ fn convert_function(f: &syn::ItemFn) -> Result<IrFunction> {
             .transpose()?
             .unwrap_or_default(),
         body: convert_block(&f.block)?,
+        external_kind,
     })
+}
+
+/// Scan attributes for `#[oracle]`, `#[action]`, or `#[rng]`.
+/// These may be attached by external proc-macros or written directly.
+fn parse_external_kind(attrs: &[syn::Attribute]) -> ExternalKind {
+    for attr in attrs {
+        if attr.path().is_ident("oracle") { return ExternalKind::Oracle; }
+        if attr.path().is_ident("action") { return ExternalKind::Action; }
+        if attr.path().is_ident("rng")    { return ExternalKind::Rng; }
+    }
+    ExternalKind::Normal
 }
 
 fn convert_type_alias(t: &syn::ItemType) -> Result<IrTypeAlias> {

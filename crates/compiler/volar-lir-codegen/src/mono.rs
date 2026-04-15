@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 use volar_compiler::ir::{
-    ArrayLength, IrBlock, IrExpr, IrField, IrFunction, IrModule, IrParam, IrStmt, IrStruct,
+    ArrayLength, ExternalKind, IrBlock, IrExpr, IrField, IrFunction, IrModule, IrParam, IrStmt, IrStruct,
     IrType,
 };
 
@@ -106,6 +106,7 @@ pub fn monomorphize_function(func: &IrFunction, env: &MonoEnv) -> IrFunction {
         return_type: func.return_type.as_ref().map(|t| mono_type(t, env)),
         where_clause: func.where_clause.clone(),
         body: mono_block(&func.body, env),
+        external_kind: func.external_kind,
     }
 }
 

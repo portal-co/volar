@@ -197,7 +197,7 @@ pub fn lower_ir<T: LirTarget>(
     name: &str,
     target: &mut T,
 ) {
-    let entry = &blocks.0[0];
+    let entry = &blocks.blocks[0];
 
     // Map entry block param types to LirType.
     let input_tys: Vec<LirType> = entry.params.iter().map(|tid| ir_type_to_lir(&types.0[tid.0 as usize])).collect();
@@ -211,15 +211,15 @@ pub fn lower_ir<T: LirTarget>(
     let entry_params: Vec<T::Value> = entry_param_groups.into_iter().map(|g| g.into_iter().next().unwrap()).collect();
 
     let mut block_handles: Vec<T::Block> = vec![entry_handle];
-    for _ in 1..blocks.0.len() {
+    for _ in 1..blocks.blocks.len() {
         block_handles.push(target.create_block());
     }
 
     // vals_per_block: for each block, vec of (var_id → value) in order
-    let mut vals_per_block: Vec<Vec<T::Value>> = Vec::with_capacity(blocks.0.len());
+    let mut vals_per_block: Vec<Vec<T::Value>> = Vec::with_capacity(blocks.blocks.len());
     vals_per_block.push(entry_params);
 
-    for (bi, block) in blocks.0.iter().enumerate().skip(1) {
+    for (bi, block) in blocks.blocks.iter().enumerate().skip(1) {
         let mut bv: Vec<T::Value> = Vec::new();
         for tid in &block.params {
             let lir_ty = ir_type_to_lir(&types.0[tid.0 as usize]);
@@ -228,7 +228,7 @@ pub fn lower_ir<T: LirTarget>(
         vals_per_block.push(bv);
     }
 
-    for (bi, block) in blocks.0.iter().enumerate() {
+    for (bi, block) in blocks.blocks.iter().enumerate() {
         target.switch_to_block(block_handles[bi].clone());
 
         for stmt in &block.stmts {
@@ -361,6 +361,18 @@ fn lower_ir_stmt<T: LirTarget>(
         }
         IRStmt::Shuffle { .. } => {
             unimplemented!("Shuffle lowering to LirTarget is not yet implemented")
+        }
+        // ---- External access primitives (stubs) ----------------------------
+        // Full implementation requires the deferred-value strategy described in
+        // the external-primitives plan (docs/external-primitives-plan.md §7.2).
+        IRStmt::OracleCall { .. } | IRStmt::OracleOutput { .. } => {
+            unimplemented!("OracleCall/OracleOutput lowering to LirTarget not yet implemented")
+        }
+        IRStmt::ActionCall { .. } | IRStmt::ActionOutput { .. } => {
+            unimplemented!("ActionCall/ActionOutput lowering to LirTarget not yet implemented")
+        }
+        IRStmt::Rng { .. } => {
+            unimplemented!("Rng lowering to LirTarget not yet implemented")
         }
     }
 }

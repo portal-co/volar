@@ -163,6 +163,10 @@ pub struct CBackend {
     extern_decls: Vec<String>,
     /// Next StructId to assign.
     next_struct_id: StructId,
+    /// Name of the C function to call for `Rng` stmts.
+    /// Expected signature: `void rng_fn(void *out, size_t len);`
+    /// Default: `"volar_rng"`.
+    pub rng_fn: String,
 }
 
 impl CBackend {
@@ -177,7 +181,14 @@ impl CBackend {
             array_typedef_set: BTreeSet::new(),
             extern_decls: Vec::new(),
             next_struct_id: 0,
+            rng_fn: "volar_rng".to_string(),
         }
+    }
+
+    /// Set the C function name used for `Rng` stmts.
+    pub fn with_rng_fn(mut self, name: impl Into<String>) -> Self {
+        self.rng_fn = name.into();
+        self
     }
 
     /// Finalize and return the complete C source.
@@ -770,6 +781,52 @@ impl LirTarget for CBackend {
                 writeln!(self.state().body, "  return {name};").unwrap();
             }
         }
+    }
+
+    // ---- External access primitives ----------------------------------------
+
+    fn oracle(
+        &mut self,
+        name: &str,
+        arg_tys: &[LirType],
+        args: &[CValue],
+        ret_tys: &[LirType],
+    ) -> Vec<CValue> {
+        // Treat oracle as a plain extern call. Single-output for now.
+        let ret_ty = ret_tys.first().cloned();
+        self.call_extern(&format!("oracle_{name}"), arg_tys, args, ret_ty)
+    }
+
+    fn action(
+        &mut self,
+        name: &str,
+        guard: CValue,
+        arg_tys: &[LirType],
+        args: &[CValue],
+        fallbacks: &[CValue],
+        ret_tys: &[LirType],
+    ) -> Vec<CValue> {
+        // Call the action unconditionally, then select between result and fallback.
+        let ret_ty = ret_tys.first().cloned();
+        let action_result = self.call_extern(&format!("action_{name}"), arg_tys, args, ret_ty);
+        // For each result scalar: output = guard ? action_result : fallback
+        action_result
+            .iter()
+            .zip(fallbacks.iter())
+            .map(|(r, f)| self.select(guard.clone(), r.clone(), f.clone()))
+            .collect()
+    }
+
+    fn rng(&mut self, ty: LirType) -> CValue {
+        let c_ty = lir_type_to_c_free(&ty, &self.struct_names);
+        let rng_fn = self.rng_fn.clone();
+        // Emit: `<c_ty> vN; <rng_fn>(&vN, sizeof(<c_ty>));`
+        let state = self.current.as_mut().unwrap();
+        let id = state.next_value;
+        let var_name = format!("v{id}");
+        writeln!(state.body, "  {c_ty} {var_name};").unwrap();
+        writeln!(state.body, "  {rng_fn}(&{var_name}, sizeof({c_ty}));").unwrap();
+        state.alloc_value(ty, c_ty, var_name)
     }
 }
 

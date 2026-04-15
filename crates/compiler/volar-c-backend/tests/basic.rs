@@ -116,6 +116,7 @@ fn test_countdown() {
 #[test]
 fn test_if_max_via_codegen() {
     use volar_compiler::ir::{
+        ExternalKind,
         IrBlock, IrExpr, IrFunction, IrParam, IrType, PrimitiveType,
         SpecBinOp,
     };
@@ -146,6 +147,7 @@ fn test_if_max_via_codegen() {
                 else_branch: Some(Box::new(IrExpr::Var("b".to_owned()))),
             })),
         },
+        external_kind: ExternalKind::Normal,
     };
 
     let mut b = CBackend::new();
@@ -172,6 +174,7 @@ fn test_if_max_via_codegen() {
 #[test]
 fn test_array_splat() {
     use volar_compiler::ir::{
+        ExternalKind,
         ArrayKind, ArrayLength, IrBlock, IrExpr, IrFunction, IrLit, IrModule, IrParam,
         IrType, PrimitiveType, SpecBinOp,
     };
@@ -214,6 +217,7 @@ fn test_array_splat() {
         return_type: Some(IrType::Primitive(PrimitiveType::U32)),
         where_clause: vec![],
         body: IrBlock { stmts: vec![], expr: Some(Box::new(body_expr)) },
+        external_kind: ExternalKind::Normal,
     };
 
     let module = IrModule {
@@ -253,6 +257,7 @@ fn test_array_splat() {
 #[test]
 fn test_struct_splat() {
     use volar_compiler::ir::{
+        ExternalKind,
         IrBlock, IrExpr, IrField, IrFunction, IrModule, IrParam, IrStruct, IrType,
         PrimitiveType, SpecBinOp, StructKind,
     };
@@ -297,6 +302,7 @@ fn test_struct_splat() {
                 }),
             })),
         },
+        external_kind: ExternalKind::Normal,
     };
 
     let module = IrModule {
@@ -330,6 +336,7 @@ fn test_struct_splat() {
 #[test]
 fn test_phase2_codegen_struct_array() {
     use volar_compiler::ir::{
+        ExternalKind,
         IrBlock, IrExpr, IrFunction, IrModule, IrParam,
         IrType, PrimitiveType, SpecBinOp,
     };
@@ -354,6 +361,7 @@ fn test_phase2_codegen_struct_array() {
                 right: Box::new(IrExpr::Var("y".to_owned())),
             })),
         },
+        external_kind: ExternalKind::Normal,
     };
 
     let module = IrModule {

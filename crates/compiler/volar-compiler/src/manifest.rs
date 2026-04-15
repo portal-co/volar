@@ -88,6 +88,7 @@ fn strip_bodies(module: &IrModule) -> IrModule {
             return_type: f.return_type.clone(),
             where_clause: f.where_clause.clone(),
             body: stub_block.clone(),
+            external_kind: f.external_kind,
         }
     };
 

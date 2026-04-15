@@ -148,6 +148,36 @@ impl Default for TypeTable {
 }
 
 // ============================================================================
+// External-primitive declarations (shared by Volar IR and VAFFLE)
+// ============================================================================
+
+/// Declaration of a named pure oracle.
+///
+/// An oracle is a deterministic external function evaluated by all parties.
+/// Its implementation is provided by the execution environment at protocol time.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct OracleDecl {
+    pub name: alloc::string::String,
+    /// Parameter types in order.
+    pub params: alloc::vec::Vec<TypeId>,
+    /// Return types in order (length ≥ 1).
+    pub results: alloc::vec::Vec<TypeId>,
+}
+
+/// Declaration of a named conditional action.
+///
+/// An action is a side-effectful external function invoked by one party
+/// (prover / evaluator) only when a boolean guard is 1.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct ActionDecl {
+    pub name: alloc::string::String,
+    /// Parameter types in order.
+    pub params: alloc::vec::Vec<TypeId>,
+    /// Return types in order (length ≥ 1).
+    pub results: alloc::vec::Vec<TypeId>,
+}
+
+// ============================================================================
 // Shared statement type
 // ============================================================================
 
@@ -226,6 +256,77 @@ pub enum Stmt<Var, Addr = Var> {
     /// from bit `bit_idx` of `var`.  Length equals the output bit-width.
     Shuffle {
         result_bits: Vec<(u8, Var)>,
+        ty: TypeId,
+    },
+
+    // ---- External access primitives ----------------------------------------
+
+    /// Invoke a named pure oracle, producing a multi-output aggregate result.
+    ///
+    /// The result type is `IrType::Tuple(output_tys)`, pre-interned as
+    /// `result_ty`.  Project individual outputs with [`OracleOutput`].
+    ///
+    /// **Ordering**: an `OracleCall` is pure and may be reordered or CSE'd
+    /// freely.  It may only be DCE'd when every corresponding `OracleOutput`
+    /// is also DCE'd.
+    OracleCall {
+        name: alloc::string::String,
+        args: Vec<Var>,
+        /// Return type of each output, in declaration order.  Non-empty.
+        output_tys: Vec<TypeId>,
+        /// Pre-interned `TypeId` of `IrType::Tuple(output_tys)`.
+        /// Stored at construction time so type inference never mutates the table.
+        result_ty: TypeId,
+    },
+
+    /// Project output `idx` from an [`OracleCall`] result var.
+    ///
+    /// `call` must be the SSA var produced by an `OracleCall` in the same block.
+    /// `ty` must equal `oracle_call.output_tys[idx]`.
+    OracleOutput {
+        call: Var,
+        idx: usize,
+        ty: TypeId,
+    },
+
+    /// Conditionally invoke a named impure action, producing a multi-output aggregate result.
+    ///
+    /// The result type is `IrType::Tuple(output_tys)`, pre-interned as `result_ty`.
+    /// Output `i` is `action(args)[i]` when `guard != 0`, `fallbacks[i]` otherwise.
+    /// Project individual outputs with [`ActionOutput`].
+    ///
+    /// **Ordering**: an `ActionCall` has side effects and must not be
+    /// reordered, CSE'd, or DCE'd.  All `ActionOutput` projections from it
+    /// are kept alive as long as the call itself is live.
+    ActionCall {
+        name: alloc::string::String,
+        guard: Var,
+        args: Vec<Var>,
+        /// Fallback vars — one per output (typed as `output_tys[i]`).  Used
+        /// when `guard = 0` and the action is not invoked.
+        fallbacks: Vec<Var>,
+        /// Return type of each output, in declaration order.  Non-empty.
+        output_tys: Vec<TypeId>,
+        /// Pre-interned `TypeId` of `IrType::Tuple(output_tys)`.
+        result_ty: TypeId,
+    },
+
+    /// Project output `idx` from an [`ActionCall`] result var.
+    ///
+    /// `call` must be the SSA var produced by an `ActionCall` in the same block.
+    /// `ty` must equal `action_call.output_tys[idx]`.
+    ActionOutput {
+        call: Var,
+        idx: usize,
+        ty: TypeId,
+    },
+
+    /// Produce a fresh random value drawn uniformly from the type’s domain.
+    ///
+    /// Each occurrence is an independent sample.  Optimisers must **not**
+    /// deduplicate, CSE, or reorder `Rng` stmts.  An `Rng` may be DCE'd
+    /// only when its output is demonstrably unused.
+    Rng {
         ty: TypeId,
     },
 }

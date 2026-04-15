@@ -1,7 +1,7 @@
 #![no_std]
 
 use alloc::{collections::btree_map::BTreeMap, string::String, vec::Vec};
-use volar_ir_common::{Constant, IrType, Stmt, Type, TypeId, TypeTable};
+use volar_ir_common::{Constant, IrType, OracleDecl, ActionDecl, Stmt, Type, TypeId, TypeTable};
 
 extern crate alloc;
 
@@ -12,9 +12,12 @@ extern crate alloc;
 /// this module index into.  Construct it with [`TypeTable::new`] and use
 /// [`TypeTable::intern`] / [`TypeTable::primitive`] to populate it.
 pub struct Module {
-    /// Shared type intern table.  All [`TypeId`]s in this module are
-    /// valid indices into this table.
+    /// Shared type intern table.
     pub types: TypeTable,
+    /// Declared pure oracles available in this module.
+    pub oracles: Vec<OracleDecl>,
+    /// Declared conditional actions available in this module.
+    pub actions: Vec<ActionDecl>,
     pub funcs: Vec<FuncDecl>,
     pub sigs: Vec<SigDecl>,
     pub exports: BTreeMap<String, FuncId>,

@@ -24,27 +24,45 @@ pub use volar_ir_common::IrType as IRType;
 /// Re-export the type intern table.
 pub use volar_ir_common::TypeTable as IRTypes;
 
+/// Re-export oracle/action declaration types so callers only need `volar_ir`.
+pub use volar_ir_common::{ActionDecl, OracleDecl};
+
 // ============================================================================
 // Blocks and control flow
 // ============================================================================
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct IRBlockId(pub u32);
+
+/// A complete Volar IR circuit module — a set of blocks with their
+/// oracle and action declarations.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct IRBlocks(pub Vec<IRBlock>);
+pub struct IRBlocks {
+    /// Oracles declared for this circuit (resolved by the execution environment).
+    pub oracles: Vec<OracleDecl>,
+    /// Actions declared for this circuit (resolved by the execution environment).
+    pub actions: Vec<ActionDecl>,
+    /// The blocks of the circuit, in order.  Block 0 is the entry.
+    pub blocks: Vec<IRBlock>,
+}
 impl IRBlocks {
+    /// Construct an `IRBlocks` with no oracle or action declarations.
+    pub fn new(blocks: Vec<IRBlock>) -> Self {
+        IRBlocks { oracles: alloc::vec![], actions: alloc::vec![], blocks }
+    }
+
     pub fn is_movfuscated(&self) -> bool {
-        return self.0.len() == 1;
+        self.blocks.len() == 1
     }
     pub fn is_circuit(&self) -> bool {
-        return self.is_movfuscated()
-            && match self.0[0].terminator {
+        self.is_movfuscated()
+            && match self.blocks[0].terminator {
                 IRTerminator::Jmp {
                     func: IRBlockTargetId::Return,
                     ..
                 } => true,
                 _ => false,
-            };
+            }
     }
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]

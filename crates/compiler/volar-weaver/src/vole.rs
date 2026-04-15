@@ -40,7 +40,7 @@ use alloc::{
 
 use volar_compiler::{
     ir::{
-        AssociatedType, IrBlock, IrExpr, IrFunction, IrGenericParam, IrGenericParamKind,
+        AssociatedType, ExternalKind, IrBlock, IrExpr, IrFunction, IrGenericParam, IrGenericParamKind,
         IrModule, IrParam, IrPattern, IrStmt, IrTraitBound, IrType, IrWherePredicate,
         MethodKind, SpecBinOp, StructKind, TraitKind,
     },
@@ -528,6 +528,7 @@ pub fn weave_vole_prover(
             stmts,
             expr: Some(Box::new(ret_expr)),
         },
+        external_kind: ExternalKind::Normal,
     };
 
     let mut module = IrModule {
@@ -746,6 +747,7 @@ pub fn weave_vole_verifier(
             stmts,
             expr: Some(Box::new(ret_expr)),
         },
+        external_kind: ExternalKind::Normal,
     };
 
     let mut module = IrModule {

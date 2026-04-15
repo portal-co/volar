@@ -21,7 +21,7 @@ use alloc::{
 
 use volar_compiler::{
     ir::{
-        IrBlock, IrExpr, IrFunction, IrGenericParam,
+        ExternalKind, IrBlock, IrExpr, IrFunction, IrGenericParam,
         IrGenericParamKind, IrLit, IrModule, IrParam, IrPattern, IrStmt, IrTraitBound, IrType,
         MethodKind, SpecBinOp, StructKind, TraitKind,
     },
@@ -259,6 +259,7 @@ pub fn weave_evaluator(circuit: &BIrBlocks, name: &str, linkage: Option<&Linkage
             stmts,
             expr: Some(Box::new(ret_expr)),
         },
+        external_kind: ExternalKind::Normal,
     };
 
     let mut module = IrModule {
@@ -432,6 +433,7 @@ pub fn weave_garbler(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSy
             stmts,
             expr: Some(Box::new(ret_expr)),
         },
+        external_kind: ExternalKind::Normal,
     };
 
     let mut module = IrModule {
@@ -601,6 +603,7 @@ pub fn weave_into_gc(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSy
             stmts,
             expr: Some(Box::new(ret_expr)),
         },
+        external_kind: ExternalKind::Normal,
     };
 
     let mut module = IrModule {
@@ -750,6 +753,7 @@ pub fn weave_eval_from_setup(
             stmts,
             expr: Some(Box::new(ret_expr)),
         },
+        external_kind: ExternalKind::Normal,
     };
 
     let mut module = IrModule {

@@ -54,7 +54,7 @@ use std::{string::String, string::ToString, vec, vec::Vec};
 
 use volar_ir::ir::{
     IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypeId,
-    IRTypes, IRVarId,
+    IRTypes, IRVarId, OracleDecl, ActionDecl,
 };
 use volar_ir_common::{Constant, IrType, Type as NativeType};
 use volar_lir::{IcmpPred, LirTarget, LirType, StructDef, StructId};
@@ -135,6 +135,11 @@ pub struct VolarIrTarget {
     /// External single-block implementations (name → IRBlocks).
     externs: BTreeMap<String, IRBlocks>,
 
+    /// Oracle declarations accumulated since the last `end_function`.
+    pending_oracles: Vec<OracleDecl>,
+    /// Action declarations accumulated since the last `end_function`.
+    pending_actions: Vec<ActionDecl>,
+
     /// State for the function currently being built.
     func: Option<FuncBuilder>,
 
@@ -152,6 +157,8 @@ impl VolarIrTarget {
             bit_tid,
             struct_widths: vec![],
             externs: BTreeMap::new(),
+            pending_oracles: vec![],
+            pending_actions: vec![],
             func: None,
             completed: vec![],
         }
@@ -167,6 +174,16 @@ impl VolarIrTarget {
         self.externs.insert(name.into(), blocks);
     }
 
+    /// Register an oracle declaration for the next completed function.
+    pub fn register_oracle(&mut self, decl: OracleDecl) {
+        self.pending_oracles.push(decl);
+    }
+
+    /// Register an action declaration for the next completed function.
+    pub fn register_action(&mut self, decl: ActionDecl) {
+        self.pending_actions.push(decl);
+    }
+
     /// Drain and return all completed `(name, IRBlocks)` pairs.
     pub fn take_completed(&mut self) -> Vec<(String, IRBlocks)> {
         let mut out = Vec::new();
@@ -177,6 +194,20 @@ impl VolarIrTarget {
     /// Intern an `IrType` into the shared type table, returning its `IRTypeId`.
     fn intern_type(&mut self, ty: IrType) -> IRTypeId {
         self.types.intern(ty)
+    }
+
+    /// Map a `LirType` to an interned `IRTypeId` in the types table.
+    fn lir_to_ir_type(&mut self, ty: &LirType) -> IRTypeId {
+        match ty {
+            LirType::Bool => self.bit_tid,
+            LirType::Native(t) => self.types.intern(IrType::Primitive(*t)),
+            _ => {
+                // For non-native multi-bit types, fall back to the bit type.
+                // Full support for U8/U16/etc. requires an IrType per LIR type;
+                // for now the oracle/action output is a single IR var.
+                self.bit_tid
+            }
+        }
     }
 
     // ---- Low-level emitters ------------------------------------------------
@@ -581,13 +612,13 @@ impl VolarIrTarget {
     ) -> Vec<VolarValue> {
         // Fast path: single-block with a direct unconditional Return — use the
         // simpler inline_callee which avoids allocating a continuation block.
-        if callee.0.len() == 1 {
-            if let IRTerminator::Jmp { func: IRBlockTargetId::Return, .. } = &callee.0[0].terminator {
-                return self.inline_callee(&callee.0[0], flat_args, ret_ty);
+        if callee.blocks.len() == 1 {
+            if let IRTerminator::Jmp { func: IRBlockTargetId::Return, .. } = &callee.blocks[0].terminator {
+                return self.inline_callee(&callee.blocks[0], flat_args, ret_ty);
             }
         }
 
-        let n = callee.0.len();
+        let n = callee.blocks.len();
         let ret_n = ret_ty.map(|ty| self.bits_for(ty)).unwrap_or(0);
 
         // ---- Continuation block (receives callee return values) -----------
@@ -618,7 +649,7 @@ impl VolarIrTarget {
         let mut block_params: Vec<Vec<IRVarId>> = Vec::with_capacity(n);
         block_params.push(flat_args);
         for ci in 1..n {
-            let n_params = callee.0[ci].params.len();
+            let n_params = callee.blocks[ci].params.len();
             let blk = VolarBlock(new_blocks[ci]);
             let mut params = Vec::with_capacity(n_params);
             for _ in 0..n_params {
@@ -633,13 +664,13 @@ impl VolarIrTarget {
             self.func.as_mut().unwrap().current = new_blocks[ci];
 
             let mut var_map: Vec<IRVarId> = block_params[ci].clone();
-            for stmt in &callee.0[ci].stmts {
+            for stmt in &callee.blocks[ci].stmts {
                 let mapped = subst_stmt(stmt, &var_map);
                 let id = self.emit(mapped);
                 var_map.push(id);
             }
             let term = remap_terminator(
-                &callee.0[ci].terminator, &var_map, &new_blocks, cont_block.0,
+                &callee.blocks[ci].terminator, &var_map, &new_blocks, cont_block.0,
             );
             self.set_terminator(term);
         }
@@ -770,6 +801,26 @@ fn subst_stmt(stmt: &IRStmt, var_map: &[IRVarId]) -> IRStmt {
             result_bits: result_bits.iter().map(|(b, id)| (*b, s(id))).collect(),
             ty: ty.clone(),
         },
+        IRStmt::OracleCall { name, args, output_tys, result_ty } => IRStmt::OracleCall {
+            name: name.clone(),
+            args: args.iter().map(s).collect(),
+            output_tys: output_tys.clone(),
+            result_ty: result_ty.clone(),
+        },
+        IRStmt::OracleOutput { call, idx, ty } =>
+            IRStmt::OracleOutput { call: s(call), idx: *idx, ty: ty.clone() },
+        IRStmt::ActionCall { name, guard, args, fallbacks, output_tys, result_ty } =>
+            IRStmt::ActionCall {
+                name: name.clone(),
+                guard: s(guard),
+                args: args.iter().map(s).collect(),
+                fallbacks: fallbacks.iter().map(s).collect(),
+                output_tys: output_tys.clone(),
+                result_ty: result_ty.clone(),
+            },
+        IRStmt::ActionOutput { call, idx, ty } =>
+            IRStmt::ActionOutput { call: s(call), idx: *idx, ty: ty.clone() },
+        IRStmt::Rng { ty } => IRStmt::Rng { ty: ty.clone() },
     }
 }
 
@@ -836,7 +887,9 @@ impl LirTarget for VolarIrTarget {
                 terminator: b.terminator.expect("VolarIrTarget: block missing terminator"),
             })
             .collect();
-        self.completed.push((func.name, IRBlocks(blocks)));
+        let oracles = core::mem::take(&mut self.pending_oracles);
+        let actions = core::mem::take(&mut self.pending_actions);
+        self.completed.push((func.name, IRBlocks { oracles, actions, blocks }));
     }
 
     // ---- Block management --------------------------------------------------
@@ -1033,6 +1086,79 @@ impl LirTarget for VolarIrTarget {
             args: flat,
         });
     }
+
+    // ---- External access primitives ----------------------------------------
+
+    fn oracle(
+        &mut self,
+        name: &str,
+        _arg_tys: &[LirType],
+        args: &[VolarValue],
+        ret_tys: &[LirType],
+    ) -> Vec<VolarValue> {
+        let flat_args = Self::flatten(args);
+        let output_tys: Vec<IRTypeId> = ret_tys.iter().map(|t| self.lir_to_ir_type(t)).collect();
+        let result_ty = self.types.intern(volar_ir_common::IrType::Tuple(
+            output_tys.clone(),
+        ));
+        let call_var = self.emit(IRStmt::OracleCall {
+            name: name.into(),
+            args: flat_args,
+            output_tys: output_tys.clone(),
+            result_ty,
+        });
+        let mut result = Vec::new();
+        for (i, t) in ret_tys.iter().enumerate() {
+            let out = self.emit(IRStmt::OracleOutput {
+                call: call_var,
+                idx: i,
+                ty: output_tys[i],
+            });
+            result.push(VolarValue { bits: vec![out], ty: t.clone() });
+        }
+        result
+    }
+
+    fn action(
+        &mut self,
+        name: &str,
+        guard: VolarValue,
+        _arg_tys: &[LirType],
+        args: &[VolarValue],
+        fallbacks: &[VolarValue],
+        ret_tys: &[LirType],
+    ) -> Vec<VolarValue> {
+        let flat_args = Self::flatten(args);
+        let flat_fallbacks: Vec<IRVarId> = Self::flatten(fallbacks);
+        let output_tys: Vec<IRTypeId> = ret_tys.iter().map(|t| self.lir_to_ir_type(t)).collect();
+        let result_ty = self.types.intern(volar_ir_common::IrType::Tuple(
+            output_tys.clone(),
+        ));
+        let call_var = self.emit(IRStmt::ActionCall {
+            name: name.into(),
+            guard: guard.bits[0],
+            args: flat_args,
+            fallbacks: flat_fallbacks,
+            output_tys: output_tys.clone(),
+            result_ty,
+        });
+        let mut result = Vec::new();
+        for (i, t) in ret_tys.iter().enumerate() {
+            let out = self.emit(IRStmt::ActionOutput {
+                call: call_var,
+                idx: i,
+                ty: output_tys[i],
+            });
+            result.push(VolarValue { bits: vec![out], ty: t.clone() });
+        }
+        result
+    }
+
+    fn rng(&mut self, ty: LirType) -> VolarValue {
+        let ir_ty = self.lir_to_ir_type(&ty);
+        let id = self.emit(IRStmt::Rng { ty: ir_ty });
+        VolarValue { bits: vec![id], ty }
+    }
 }
 
 // ============================================================================
@@ -1076,7 +1202,7 @@ mod tests {
             t.end_function();
         });
         // Entry block has 8 Bit params.
-        assert_eq!(blocks.0[0].params.len(), 8);
+        assert_eq!(blocks.blocks[0].params.len(), 8);
     }
 
     // ---- bitwise -----------------------------------------------------------
@@ -1284,7 +1410,7 @@ mod tests {
         // Build a trivial extern: the identity function on 1 Bit.
         // params=[Bit], stmts=[], return [param0].
         let bit_tid = IRTypeId(0);
-        let extern_impl = IRBlocks(std::vec![IRBlock {
+        let extern_impl = IRBlocks::new(std::vec![IRBlock {
             params: std::vec![bit_tid.clone()],
             stmts: std::vec![],
             terminator: IRTerminator::Jmp {
@@ -1337,7 +1463,7 @@ mod tests {
     #[test]
     fn test_inline_blocks_two_block_callee() {
         let bit_tid = IRTypeId(0);
-        let callee = IRBlocks(std::vec![
+        let callee = IRBlocks::new(std::vec![
             // Block 0: branch on param 0.
             IRBlock {
                 params: std::vec![bit_tid],
@@ -1376,7 +1502,7 @@ mod tests {
         // The caller should now have 3 blocks:
         //   block 0 (original current) + block 1 (new for callee block 1)
         //   + continuation block.
-        assert_eq!(blocks.0.len(), 3, "caller should have 3 blocks after inlining");
+        assert_eq!(blocks.blocks.len(), 3, "caller should have 3 blocks after inlining");
     }
 
     /// Inline a callee that loops (self-jump), verifying that multi-block
@@ -1386,7 +1512,7 @@ mod tests {
         let bit_tid = IRTypeId(0);
         // Callee: Block 0(x: Bit) -> CondJmp(x, Return([x]), Block(0,[NOT(x)]))
         // Semantics: if x=1 return 1, else loop with NOT(x)=1 → returns 1.
-        let callee = IRBlocks(std::vec![IRBlock {
+        let callee = IRBlocks::new(std::vec![IRBlock {
             params: std::vec![bit_tid],
             stmts: std::vec![
                 // stmt 0: NOT(param_0)

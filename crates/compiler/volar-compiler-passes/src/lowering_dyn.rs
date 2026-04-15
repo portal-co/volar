@@ -658,6 +658,7 @@ fn lower_function_dyn(
             .map(|rt| lower_type_dyn(rt, ctx, &fn_gen)),
         where_clause: lower_where_clause_dyn(&f.where_clause, ctx, &combined_gen),
         body,
+        external_kind: f.external_kind,
     }
 }
 

@@ -636,6 +636,23 @@ pub struct IrMethodSig {
     pub where_clause: Vec<IrWherePredicate>,
 }
 
+/// Indicates whether a function is a normal body, an oracle, an action, or an RNG.
+///
+/// Recognised by the parser from `#[oracle]`, `#[action]`, and `#[rng]` attributes
+/// on function items.  External proc-macros may attach these attributes to library
+/// functions without modifying Volar source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExternalKind {
+    /// A regular function with a body.
+    Normal,
+    /// A named pure oracle (deterministic, no side effects).
+    Oracle,
+    /// A named conditional action (impure, guard-conditional).
+    Action,
+    /// A random-number generator stub.
+    Rng,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct IrFunction {
     pub name: String,
@@ -645,6 +662,9 @@ pub struct IrFunction {
     pub return_type: Option<IrType>,
     pub where_clause: Vec<IrWherePredicate>,
     pub body: IrBlock,
+    /// What kind of external primitive this function represents.
+    /// Default: `ExternalKind::Normal`.
+    pub external_kind: ExternalKind,
 }
 
 #[derive(Debug, Clone, PartialEq)]

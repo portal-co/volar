@@ -249,4 +249,39 @@ pub trait LirTarget {
     /// Emit a return.  `vals` is the flat scalar list for the return value
     /// (empty slice for void functions).
     fn ret(&mut self, vals: &[Self::Value]);
+
+    // ---- External access primitives ----------------------------------------
+
+    /// Invoke a named pure oracle, returning all outputs as a flat scalar list.
+    ///
+    /// `ret_tys` holds the [`LirType`] of each output (length ≥ 1).
+    /// Returns the concatenation of `flatten(output_i)` for each `i`.
+    /// Callers split using `flatten_count(&ret_tys[i])`.
+    fn oracle(
+        &mut self,
+        name: &str,
+        arg_tys: &[LirType],
+        args: &[Self::Value],
+        ret_tys: &[LirType],
+    ) -> Vec<Self::Value>;
+
+    /// Invoke a named conditional action, returning all outputs as a flat
+    /// scalar list.
+    ///
+    /// `guard` must be `LirType::Bool`.  `fallbacks` is the flat concatenation
+    /// of all outputs' fallback scalar values.  `ret_tys` holds the [`LirType`]
+    /// of each output (length ≥ 1).  The action executes iff `guard = 1`.
+    fn action(
+        &mut self,
+        name: &str,
+        guard: Self::Value,
+        arg_tys: &[LirType],
+        args: &[Self::Value],
+        fallbacks: &[Self::Value],
+        ret_tys: &[LirType],
+    ) -> Vec<Self::Value>;
+
+    /// Generate a fresh random value of `ty`.  Each call is an independent
+    /// sample; implementations must not alias results.
+    fn rng(&mut self, ty: LirType) -> Self::Value;
 }
