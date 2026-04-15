@@ -1,7 +1,7 @@
 // @reliability: normal
 //! Lowering passes from the circuit IRs (`BIrBlocks`, `IRBlocks`) to `LirTarget`.
 
-use alloc::{vec, vec::Vec};
+use alloc::{collections::BTreeMap, vec, vec::Vec};
 use volar_lir::{LirTarget, LirType};
 
 use volar_ir::{
@@ -231,9 +231,75 @@ pub fn lower_ir<T: LirTarget>(
     for (bi, block) in blocks.blocks.iter().enumerate() {
         target.switch_to_block(block_handles[bi].clone());
 
+        // Side table for multi-output call results (OracleCall / ActionCall).
+        // Keyed by the *Call stmt's var index within this block.
+        let mut multi_results: BTreeMap<usize, Vec<T::Value>> = BTreeMap::new();
+
         for stmt in &block.stmts {
-            let v = lower_ir_stmt(stmt, &vals_per_block[bi], types, target);
-            vals_per_block[bi].push(v);
+            let var_idx = vals_per_block[bi].len(); // index of this stmt's result
+            match stmt {
+                // ---- Oracle: emit target.oracle(), stash results ------------
+                IRStmt::OracleCall { name, args, output_tys, .. } => {
+                    let arg_vals: Vec<T::Value> = args.iter()
+                        .map(|id| vals_per_block[bi][id.0 as usize].clone())
+                        .collect();
+                    let arg_lir_tys: Vec<LirType> = args.iter()
+                        .map(|_| LirType::U64) // conservative; full impl should track types
+                        .collect();
+                    let ret_tys: Vec<LirType> = output_tys.iter()
+                        .map(|tid| ir_type_to_lir(&types.0[tid.0 as usize]))
+                        .collect();
+                    let results = target.oracle(name, &arg_lir_tys, &arg_vals, &ret_tys);
+                    multi_results.insert(var_idx, results);
+                    // Push a dummy placeholder for the tuple-typed call var.
+                    vals_per_block[bi].push(target.iconst(LirType::Bool, 0));
+                }
+                IRStmt::OracleOutput { call, idx, .. } => {
+                    let call_idx = call.0 as usize;
+                    let results = multi_results.get(&call_idx).expect(
+                        "OracleOutput: no stashed results for OracleCall"
+                    );
+                    vals_per_block[bi].push(results[*idx].clone());
+                }
+                // ---- Action: emit target.action(), stash results -----------
+                IRStmt::ActionCall { name, guard, args, fallbacks, output_tys, .. } => {
+                    let guard_val = vals_per_block[bi][guard.0 as usize].clone();
+                    let arg_vals: Vec<T::Value> = args.iter()
+                        .map(|id| vals_per_block[bi][id.0 as usize].clone())
+                        .collect();
+                    let fallback_vals: Vec<T::Value> = fallbacks.iter()
+                        .map(|id| vals_per_block[bi][id.0 as usize].clone())
+                        .collect();
+                    let arg_lir_tys: Vec<LirType> = args.iter()
+                        .map(|_| LirType::U64)
+                        .collect();
+                    let ret_tys: Vec<LirType> = output_tys.iter()
+                        .map(|tid| ir_type_to_lir(&types.0[tid.0 as usize]))
+                        .collect();
+                    let results = target.action(
+                        name, guard_val, &arg_lir_tys, &arg_vals, &fallback_vals, &ret_tys,
+                    );
+                    multi_results.insert(var_idx, results);
+                    vals_per_block[bi].push(target.iconst(LirType::Bool, 0));
+                }
+                IRStmt::ActionOutput { call, idx, .. } => {
+                    let call_idx = call.0 as usize;
+                    let results = multi_results.get(&call_idx).expect(
+                        "ActionOutput: no stashed results for ActionCall"
+                    );
+                    vals_per_block[bi].push(results[*idx].clone());
+                }
+                // ---- Rng: emit target.rng() --------------------------------
+                IRStmt::Rng { ty } => {
+                    let lir_ty = ir_type_to_lir(&types.0[ty.0 as usize]);
+                    vals_per_block[bi].push(target.rng(lir_ty));
+                }
+                // ---- All other stmts: existing lowering --------------------
+                other => {
+                    let v = lower_ir_stmt(other, &vals_per_block[bi], types, target);
+                    vals_per_block[bi].push(v);
+                }
+            }
         }
 
         let block_vals = vals_per_block[bi].clone();

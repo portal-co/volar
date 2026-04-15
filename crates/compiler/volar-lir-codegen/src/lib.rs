@@ -12,10 +12,12 @@
 pub mod mono;
 pub mod structs;
 
+use std::sync::LazyLock;
+
 use std::collections::BTreeMap;
 use volar_compiler::ir::{
-    ArrayLength, IrBlock, IrClosureParam, IrExpr, IrFunction, IrLit, IrModule, IrPattern, IrStmt,
-    IrType, MethodKind, PrimitiveType, SpecBinOp, SpecUnaryOp, StructKind,
+    ArrayLength, ExternalKind, IrBlock, IrClosureParam, IrExpr, IrFunction, IrLit, IrModule,
+    IrPattern, IrStmt, IrType, MethodKind, PrimitiveType, SpecBinOp, SpecUnaryOp, StructKind,
 };
 use volar_lir::{IcmpPred, LirTarget, LirType};
 
@@ -59,6 +61,20 @@ fn const_len(len: &ArrayLength) -> usize {
 }
 
 // ============================================================================
+// External-function dispatch info
+// ============================================================================
+
+/// Metadata for a function annotated `#[oracle]`, `#[action]`, or `#[rng]`.
+/// Built once per module and consulted at each call site during lowering.
+struct ExternalFnInfo {
+    kind: ExternalKind,
+    /// LIR types of the declared parameters (for arg-type passing to `LirTarget`).
+    param_tys: Vec<LirType>,
+    /// LIR return type (single element; multi-output uses multiple entries).
+    return_type: Option<LirType>,
+}
+
+// ============================================================================
 // Lowering context
 // ============================================================================
 
@@ -76,6 +92,9 @@ struct LowerCtx<'t, T: LirTarget> {
     hash_suffix: String,
     /// Original IrModule struct defs (for field type lookup).
     module_structs: &'t [volar_compiler::ir::IrStruct],
+    /// Functions annotated `#[oracle]`, `#[action]`, or `#[rng]`.
+    /// Populated from the module at `lower_module_with_opts` time.
+    external_fns: &'t BTreeMap<String, ExternalFnInfo>,
 }
 
 impl<'t, T: LirTarget> LowerCtx<'t, T> {
@@ -93,7 +112,7 @@ impl<'t, T: LirTarget> LowerCtx<'t, T> {
             env.insert(name.clone(), vals);
             env_types.insert(name, ty);
         }
-        LowerCtx { target, env, env_types, current_block: entry, registry, hash_suffix, module_structs }
+        LowerCtx { target, env, env_types, current_block: entry, registry, hash_suffix, module_structs, external_fns: &EMPTY_EXTERNAL_FNS }
     }
 
     /// Infer the IrType of an expression using env_types and module struct defs.
@@ -154,6 +173,9 @@ fn extract_struct_kind(ty: &IrType) -> Option<&StructKind> {
     }
 }
 
+static EMPTY_EXTERNAL_FNS: LazyLock<BTreeMap<String, ExternalFnInfo>> =
+    LazyLock::new(BTreeMap::new);
+
 // ============================================================================
 // Public API
 // ============================================================================
@@ -173,9 +195,73 @@ pub fn lower_module_with_opts<T: LirTarget>(
     hash_suffix: &str,
 ) {
     let registry = structs::build_struct_registry(module, target);
+
+    // Build a lookup table for oracle/action/rng functions.
+    let external_fns: BTreeMap<String, ExternalFnInfo> = module
+        .functions
+        .iter()
+        .filter(|f| f.external_kind != ExternalKind::Normal)
+        .map(|f| {
+            let param_tys = f.params.iter().map(|p| registry.ir_type_to_lir(&p.ty)).collect();
+            let return_type = f.return_type.as_ref().map(|t| registry.ir_type_to_lir(t));
+            (f.name.clone(), ExternalFnInfo {
+                kind: f.external_kind,
+                param_tys,
+                return_type,
+            })
+        })
+        .collect();
+
+    // Lower only normal (non-external) function bodies.
     for func in &module.functions {
-        lower_function_with_registry(func, target, &registry, hash_suffix, &module.structs);
+        if func.external_kind != ExternalKind::Normal {
+            continue;
+        }
+        lower_function_in_module(
+            func, target, &registry, hash_suffix, &module.structs, &external_fns,
+        );
     }
+}
+
+/// Internal: lower a function with full module context (external-fn dispatch).
+fn lower_function_in_module<T: LirTarget>(
+    func: &IrFunction,
+    target: &mut T,
+    registry: &StructRegistry,
+    hash_suffix: &str,
+    module_structs: &[volar_compiler::ir::IrStruct],
+    external_fns: &BTreeMap<String, ExternalFnInfo>,
+) {
+    let param_lir_tys: Vec<LirType> = func
+        .params
+        .iter()
+        .map(|p| registry.ir_type_to_lir(&p.ty))
+        .collect();
+    let ret_ty = func.return_type.as_ref().map(|t| registry.ir_type_to_lir(t));
+
+    let (entry, param_val_groups) = target.begin_function(&func.name, &param_lir_tys, ret_ty);
+    target.switch_to_block(entry.clone());
+
+    let named_params: Vec<(String, Vec<T::Value>, IrType)> = func
+        .params
+        .iter()
+        .zip(param_val_groups.into_iter())
+        .map(|(p, vals)| (p.name.clone(), vals, p.ty.clone()))
+        .collect();
+
+    let mut ctx = LowerCtx::new(
+        target,
+        entry,
+        named_params,
+        registry,
+        hash_suffix.to_owned(),
+        module_structs,
+    );
+    ctx.external_fns = external_fns;
+
+    let tail_vals = lower_block(&func.body, &mut ctx);
+    ctx.target.ret(&tail_vals);
+    ctx.target.end_function();
 }
 
 /// Lower a single `IrFunction` to `target` (no struct support).
@@ -851,7 +937,68 @@ fn lower_call<T: LirTarget>(func: &IrExpr, args: &[IrExpr], ctx: &mut LowerCtx<T
         other => unimplemented!("lower_call: non-path func {:?}", other),
     };
 
-    // Collect ABI types and flat scalars for all arguments.
+    // ---- Dispatch oracle / action / rng ------------------------------------
+    if let Some(info) = ctx.external_fns.get(&func_name) {
+        return match info.kind {
+            ExternalKind::Oracle => {
+                // Oracle: all call-site args are the actual function args.
+                let mut arg_tys: Vec<LirType> = Vec::new();
+                let mut flat_args: Vec<T::Value> = Vec::new();
+                for a in args {
+                    let a_ir_ty = ctx.infer_type(a);
+                    let a_lir_ty = a_ir_ty.as_ref()
+                        .map(|t| ctx.registry.ir_type_to_lir(t))
+                        .unwrap_or(LirType::U64);
+                    arg_tys.push(a_lir_ty);
+                    flat_args.extend(lower_expr(a, ctx));
+                }
+                let ret_tys: Vec<LirType> = info.return_type.iter().cloned().collect();
+                ctx.target.oracle(&func_name, &arg_tys, &flat_args, &ret_tys)
+            }
+            ExternalKind::Action => {
+                // Action calling convention:
+                //   args[0]            = guard (Bool)
+                //   args[1..1+n_params] = declared function params
+                //   args[1+n_params..]  = fallback value(s)
+                let n_params = info.param_tys.len();
+                assert!(
+                    args.len() >= 2 + n_params,
+                    "action '{func_name}' call: expected guard + {n_params} args + fallback, got {} args",
+                    args.len()
+                );
+
+                let guard_vals = lower_expr(&args[0], ctx);
+                let guard = guard_vals.into_iter().next().expect("action guard must be a scalar");
+
+                let mut arg_tys: Vec<LirType> = Vec::new();
+                let mut flat_args: Vec<T::Value> = Vec::new();
+                for a in &args[1..1 + n_params] {
+                    let a_ir_ty = ctx.infer_type(a);
+                    let a_lir_ty = a_ir_ty.as_ref()
+                        .map(|t| ctx.registry.ir_type_to_lir(t))
+                        .unwrap_or(LirType::U64);
+                    arg_tys.push(a_lir_ty);
+                    flat_args.extend(lower_expr(a, ctx));
+                }
+
+                let mut flat_fallbacks: Vec<T::Value> = Vec::new();
+                for a in &args[1 + n_params..] {
+                    flat_fallbacks.extend(lower_expr(a, ctx));
+                }
+
+                let ret_tys: Vec<LirType> = info.return_type.iter().cloned().collect();
+                ctx.target.action(&func_name, guard, &arg_tys, &flat_args, &flat_fallbacks, &ret_tys)
+            }
+            ExternalKind::Rng => {
+                // Rng: no arguments, return type from declaration.
+                let ret_ty = info.return_type.clone().unwrap_or(LirType::U64);
+                vec![ctx.target.rng(ret_ty)]
+            }
+            ExternalKind::Normal => unreachable!(),
+        };
+    }
+
+    // ---- Default: call_extern ----------------------------------------------
     let mut arg_tys: Vec<LirType> = Vec::new();
     let mut flat_args: Vec<T::Value> = Vec::new();
     for a in args {

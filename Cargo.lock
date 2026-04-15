@@ -1043,10 +1043,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[patch.unused]]
-name = "portal-pc-asm-common"
-version = "0.1.1"
-
-[[patch.unused]]
 name = "portal-pc-waffle"
 version = "0.6.0-alpha.1"
 
@@ -1167,6 +1163,10 @@ name = "yecta"
 version = "0.1.0"
 
 [[patch.unused]]
+name = "portal-solutions-swibb"
+version = "0.6.0-alpha.1"
+
+[[patch.unused]]
 name = "dreamcomp-ir-plugin-host"
 version = "0.1.0"
 
@@ -1255,14 +1255,6 @@ name = "portal-solutions-asm-x86-64-shim"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-solutions-swibb"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "pit-core"
-version = "0.5.0-alpha.1"
-
-[[patch.unused]]
 name = "portal-jsc-common"
 version = "0.8.0-pre.11"
 
@@ -1297,3 +1289,11 @@ version = "0.8.0-pre.11"
 [[patch.unused]]
 name = "portal-jsc-swc-util"
 version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "pit-core"
+version = "0.5.0-alpha.1"
+
+[[patch.unused]]
+name = "portal-pc-asm-common"
+version = "0.1.1"
