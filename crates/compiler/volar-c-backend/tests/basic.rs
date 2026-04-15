@@ -267,6 +267,7 @@ fn test_struct_splat() {
             IrField { name: "y".to_owned(), ty: IrType::Primitive(PrimitiveType::U32), public: true },
         ],
         is_tuple: false,
+        native_volar_type: None,
     };
 
     let point_ty = IrType::Struct {

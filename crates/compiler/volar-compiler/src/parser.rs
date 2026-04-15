@@ -54,8 +54,10 @@ pub fn parse_source(source: &str, name: &str) -> Result<IrModule> {
 }
 
 fn convert_struct(s: &syn::ItemStruct) -> Result<IrStruct> {
+    let native_volar_type = parse_native_volar_type(&s.attrs);
     Ok(IrStruct {
         kind: StructKind::from_str(&s.ident.to_string()),
+        native_volar_type,
         generics: s
             .generics
             .params
@@ -77,6 +79,56 @@ fn convert_struct(s: &syn::ItemStruct) -> Result<IrStruct> {
         },
         is_tuple: matches!(s.fields, syn::Fields::Unnamed(_)),
     })
+}
+
+/// Scan `attrs` for a `/// @volar-native: <TypeName>` doc comment.
+///
+/// Doc comments are lowered by the Rust compiler to `#[doc = " text"]`
+/// attributes.  We look for any doc string containing `@volar-native:`
+/// and return the corresponding [`volar_ir_common::Type`] if recognised.
+///
+/// Accepted type names (case-sensitive):
+/// `Bit`, `AES8`, `Galois8`, `Galois64`, `_8`, `_16`, `_32`, `_64`,
+/// `_128`, `_256`.
+fn parse_native_volar_type(attrs: &[syn::Attribute]) -> Option<volar_ir_common::Type> {
+    for attr in attrs {
+        if !attr.path().is_ident("doc") {
+            continue;
+        }
+        let doc_text: String = match &attr.meta {
+            syn::Meta::NameValue(nv) => {
+                if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) = &nv.value {
+                    s.value()
+                } else {
+                    continue;
+                }
+            }
+            _ => continue,
+        };
+        let text = doc_text.trim();
+        if let Some(rest) = text.strip_prefix("@volar-native:") {
+            let type_name = rest.trim();
+            return volar_native_type_from_str(type_name);
+        }
+    }
+    None
+}
+
+/// Map a `@volar-native:` annotation value to a [`volar_ir_common::Type`].
+fn volar_native_type_from_str(s: &str) -> Option<volar_ir_common::Type> {
+    use volar_ir_common::Type;
+    match s {
+        "Bit"               => Some(Type::Bit),
+        "AES8" | "Galois8"  => Some(Type::AES8),
+        "Galois64"          => Some(Type::Galois64),
+        "_8"  | "U8"        => Some(Type::_8),
+        "_16" | "U16"       => Some(Type::_16),
+        "_32" | "U32"       => Some(Type::_32),
+        "_64" | "U64"       => Some(Type::_64),
+        "_128"| "U128"      => Some(Type::_128),
+        "_256"              => Some(Type::_256),
+        _                   => None,
+    }
 }
 
 fn convert_field(f: &syn::Field) -> Result<IrField> {

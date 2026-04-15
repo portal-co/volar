@@ -7,3 +7,4 @@ description.workspace = true
 repository.workspace = true
 
 [dependencies]
+volar-ir-common.workspace = true

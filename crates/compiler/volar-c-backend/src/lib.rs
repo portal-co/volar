@@ -791,6 +791,8 @@ fn lir_type_to_c_free(ty: &LirType, struct_names: &[String]) -> String {
         LirType::U64 => "uint64_t".to_string(),
         LirType::Arr(elem, len) => arr_typedef_name(elem, *len),
         LirType::Struct(id) => struct_names[*id as usize].clone(),
+        // Native field elements are exposed as their closest C integer type.
+        LirType::Native(t) => native_type_to_c(*t).to_string(),
     }
 }
 
@@ -808,6 +810,7 @@ fn lir_type_suffix(ty: &LirType) -> String {
         LirType::U64 => "U64".to_string(),
         LirType::Arr(elem, len) => format!("Arr_{}_{}", lir_type_suffix(elem), len),
         LirType::Struct(id) => format!("S{id}"),
+        LirType::Native(t) => format!("Native_{t:?}"),
     }
 }
 
@@ -824,6 +827,37 @@ fn signed_variant(ty: &LirType) -> &'static str {
         LirType::I16 | LirType::U16 => "int16_t",
         LirType::I32 | LirType::U32 => "int32_t",
         LirType::I64 | LirType::U64 => "int64_t",
+        LirType::Native(t) => native_type_signed(*t),
         LirType::Arr(_, _) | LirType::Struct(_) => panic!("signed_variant: aggregate type"),
+    }
+}
+
+/// Map a [`NativeType`] to its unsigned C integer type string.
+fn native_type_to_c(t: volar_ir_common::Type) -> &'static str {
+    use volar_ir_common::Type;
+    match t {
+        Type::Bit => "bool",
+        Type::_8 | Type::AES8 => "uint8_t",
+        Type::_16 => "uint16_t",
+        Type::_32 => "uint32_t",
+        Type::_64 | Type::Galois64 => "uint64_t",
+        Type::_128 => "__uint128_t",
+        Type::_256 => "uint64_t", // no native 256-bit C integer; use u64 placeholder
+        _ => "uint64_t",           // future primitive types: conservative fallback
+    }
+}
+
+/// Signed C integer for a native type (used in arithmetic-shift casts).
+fn native_type_signed(t: volar_ir_common::Type) -> &'static str {
+    use volar_ir_common::Type;
+    match t {
+        Type::Bit => "int8_t",
+        Type::_8 | Type::AES8 => "int8_t",
+        Type::_16 => "int16_t",
+        Type::_32 => "int32_t",
+        Type::_64 | Type::Galois64 => "int64_t",
+        Type::_128 => "__int128_t",
+        Type::_256 => "int64_t",
+        _ => "int64_t",
     }
 }

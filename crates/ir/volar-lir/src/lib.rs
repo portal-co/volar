@@ -19,6 +19,7 @@
 extern crate alloc;
 
 use alloc::{boxed::Box, string::String, vec::Vec};
+use volar_ir_common::Type as NativeType;
 
 // ============================================================================
 // Types
@@ -44,6 +45,17 @@ pub enum LirType {
     Arr(Box<LirType>, usize),
     /// Named struct registered via `LirTarget::define_struct`.
     Struct(StructId),
+    /// An opaque Volar-IR-native field element, treated as a **single** value
+    /// in both the LirTarget API and (for `VolarIrTarget`) the resulting IR.
+    ///
+    /// `VolarIrTarget` represents this as one `IRVarId` whose `IrType` is
+    /// `IrType::Primitive(t)` — **not** as N individual `Bit` vars.  Other
+    /// backends (e.g. C) can map it to the closest integer type or a custom
+    /// field-element struct.
+    ///
+    /// Arithmetic on `Native` values in `VolarIrTarget` emits `IRStmt::Poly`
+    /// with the native type, giving correct GF-field semantics automatically.
+    Native(NativeType),
 }
 
 impl LirType {
@@ -57,6 +69,7 @@ impl LirType {
             LirType::I64 | LirType::U64 => 64,
             LirType::Arr(elem, len) => elem.bit_width() * (*len as u32),
             LirType::Struct(_) => panic!("bit_width not defined for Struct"),
+            LirType::Native(_) => panic!("bit_width not meaningful for Native field elements"),
         }
     }
 
@@ -65,7 +78,6 @@ impl LirType {
         matches!(self, LirType::I8 | LirType::I16 | LirType::I32 | LirType::I64)
     }
 
-    /// Returns true if this is a scalar (non-aggregate) type.
     pub fn is_scalar(&self) -> bool {
         !matches!(self, LirType::Arr(_, _) | LirType::Struct(_))
     }

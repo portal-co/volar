@@ -56,24 +56,30 @@ use volar_ir::ir::{
     IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypeId,
     IRTypes, IRVarId,
 };
-use volar_ir_common::{Constant, IrType, Type};
+use volar_ir_common::{Constant, IrType, Type as NativeType};
 use volar_lir::{IcmpPred, LirTarget, LirType, StructDef, StructId};
 
 // ============================================================================
 // Public types
 // ============================================================================
 
-/// A SSA value in `VolarIrTarget`: a flat list of block-local `Bit` var IDs,
-/// one per bit (LSB at index 0).
+/// A SSA value in `VolarIrTarget`: a flat list of block-local `IRVarId`s.
 ///
-/// Values are only valid in the block where they were created.  The caller
-/// must uphold the SSA discipline: use a value only in the block that
-/// produced it, or pass it as a jump argument (where it becomes a fresh
-/// param in the target block).
+/// For standard integer types (`U8`, `U32`, …) there is one `Bit`-typed
+/// `IRVarId` per bit (LSB at index 0).  For [`LirType::Native`] types there
+/// is exactly **one** `IRVarId` whose `IrType` is the corresponding
+/// `IrType::Primitive(t)` — it is **not** decomposed into bits.
+///
+/// The `ty` field carries the authoritative [`LirType`] for this value group,
+/// which is needed to distinguish `LirType::Bool` (1 `Bit` var) from
+/// `LirType::Native(Type::Bit)` (1 native var) and to round-trip correctly
+/// through `value_scalar_type` → `add_block_param`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VolarValue {
-    /// Block-local [`IRVarId`]s, one per bit (LSB at index 0).
+    /// Block-local [`IRVarId`]s representing this value.
     pub bits: Vec<IRVarId>,
+    /// The [`LirType`] of this value group.
+    pub ty: LirType,
 }
 
 /// A block handle in `VolarIrTarget`: index into the current function's block
@@ -142,7 +148,7 @@ impl VolarIrTarget {
     pub fn new() -> Self {
         let bit_tid = IRTypeId(0);
         VolarIrTarget {
-            types: IRTypes(std::vec![IrType::Primitive(Type::Bit)]),
+            types: IRTypes(std::vec![IrType::Primitive(NativeType::Bit)]),
             bit_tid,
             struct_widths: vec![],
             externs: BTreeMap::new(),
@@ -166,6 +172,11 @@ impl VolarIrTarget {
         let mut out = Vec::new();
         core::mem::swap(&mut out, &mut self.completed);
         out
+    }
+
+    /// Intern an `IrType` into the shared type table, returning its `IRTypeId`.
+    fn intern_type(&mut self, ty: IrType) -> IRTypeId {
+        self.types.intern(ty)
     }
 
     // ---- Low-level emitters ------------------------------------------------
@@ -289,19 +300,18 @@ impl VolarIrTarget {
     }
 
     fn add_impl(&mut self, a: &VolarValue, b: &VolarValue) -> VolarValue {
-        VolarValue { bits: self.add_with_carry_in(&a.bits, &b.bits, false) }
+        VolarValue { bits: self.add_with_carry_in(&a.bits, &b.bits, false), ty: a.ty.clone() }
     }
 
     fn sub_impl(&mut self, a: &VolarValue, b: &VolarValue) -> VolarValue {
-        // a − b = a + ~b + 1 (two's complement)
         let not_b = self.not_vec(&b.bits);
-        VolarValue { bits: self.add_with_carry_in(&a.bits, &not_b, true) }
+        VolarValue { bits: self.add_with_carry_in(&a.bits, &not_b, true), ty: a.ty.clone() }
     }
 
     fn negate_impl(&mut self, val: &VolarValue) -> VolarValue {
         let not_bits = self.not_vec(&val.bits);
         let zeros: Vec<IRVarId> = (0..val.bits.len()).map(|_| self.bit_const(false)).collect();
-        VolarValue { bits: self.add_with_carry_in(&not_bits, &zeros, true) }
+        VolarValue { bits: self.add_with_carry_in(&not_bits, &zeros, true), ty: val.ty.clone() }
     }
 
     /// Two's-complement absolute value: select(MSB, −val, val).
@@ -312,7 +322,7 @@ impl VolarIrTarget {
         let bits = val.bits.iter().zip(&neg.bits)
             .map(|(&pos, &neg_b)| self.select_bit(sign, neg_b, pos))
             .collect();
-        VolarValue { bits }
+        VolarValue { bits, ty: val.ty.clone() }
     }
 
     /// n×n-bit shift-and-add multiplier.  Lower n bits of the full product.
@@ -320,19 +330,14 @@ impl VolarIrTarget {
         let n = a.bits.len();
         let mut acc: Vec<IRVarId> = (0..n).map(|_| self.bit_const(false)).collect();
         for i in 0..n {
-            // Partial product shifted left by i: pp[k] = a[i] & b[k−i] if k≥i, else 0.
             let pp: Vec<IRVarId> = (0..n)
                 .map(|k| {
-                    if k < i {
-                        self.bit_const(false)
-                    } else {
-                        self.and_bit(a.bits[i], b.bits[k - i])
-                    }
+                    if k < i { self.bit_const(false) } else { self.and_bit(a.bits[i], b.bits[k - i]) }
                 })
                 .collect();
             acc = self.add_with_carry_in(&acc, &pp, false);
         }
-        VolarValue { bits: acc }
+        VolarValue { bits: acc, ty: a.ty.clone() }
     }
 
     /// Restoring long-division: returns the quotient of `a / b`.
@@ -340,22 +345,13 @@ impl VolarIrTarget {
     /// For n-bit operands, O(n²) `Poly` stmts.
     fn udiv_impl(&mut self, a: &VolarValue, b: &VolarValue) -> VolarValue {
         let n = a.bits.len();
-        // n-bit remainder register, initialised to 0.
         let mut r: Vec<IRVarId> = (0..n).map(|_| self.bit_const(false)).collect();
         let mut q_bits: Vec<IRVarId> = (0..n).map(|_| self.bit_const(false)).collect();
-
         for i in (0..n).rev() {
-            // Shift r left by 1 and bring in a[i] as the new LSB.
-            // new_r[0] = a[i], new_r[k+1] = old_r[k] for k in 0..n−1.
             let mut new_r = Vec::with_capacity(n);
             new_r.push(a.bits[i]);
-            for k in 0..n - 1 {
-                new_r.push(r[k]);
-            }
+            for k in 0..n - 1 { new_r.push(r[k]); }
             r = new_r;
-
-            // Compute r − b via a full subtractor chain.
-            // borrow_out = majority(NOT(r[k]), b[k], borrow_in).
             let mut borrow = self.bit_const(false);
             let mut diff = Vec::with_capacity(n);
             for k in 0..n {
@@ -365,35 +361,27 @@ impl VolarIrTarget {
                 diff.push(d);
                 borrow = new_borrow;
             }
-
-            // no_borrow = NOT(final_borrow): r ≥ b, so quotient bit = 1.
             let no_borrow = self.not_bit(borrow);
             q_bits[i] = no_borrow;
-
-            // r = select(no_borrow, diff, r).
             let r_copy = r.clone();
             r = self.select_vec(no_borrow, &diff, &r_copy);
         }
-
-        VolarValue { bits: q_bits }
+        VolarValue { bits: q_bits, ty: a.ty.clone() }
     }
 
     fn sdiv_impl(&mut self, a: &VolarValue, b: &VolarValue) -> VolarValue {
         let n = a.bits.len();
         let sign_a = a.bits[n - 1];
         let sign_b = b.bits[n - 1];
-
         let abs_a = self.abs_impl(a);
         let abs_b = self.abs_impl(b);
         let abs_q = self.udiv_impl(&abs_a, &abs_b);
-
-        // Negate if signs differ.
         let signs_differ = self.xor_bit(sign_a, sign_b);
         let neg_q = self.negate_impl(&abs_q);
         let bits = abs_q.bits.iter().zip(&neg_q.bits)
             .map(|(&pq, &nq)| self.select_bit(signs_differ, nq, pq))
             .collect();
-        VolarValue { bits }
+        VolarValue { bits, ty: a.ty.clone() }
     }
 
     // ---- Barrel shifters ---------------------------------------------------
@@ -416,18 +404,12 @@ impl VolarIrTarget {
         for k in 0..stages {
             let step = 1usize << k;
             let sb = shift.bits[k];
-            cur = (0..n)
-                .map(|j| {
-                    if j < step {
-                        let z = self.bit_const(false);
-                        self.select_bit(sb, z, cur[j])
-                    } else {
-                        self.select_bit(sb, cur[j - step], cur[j])
-                    }
-                })
-                .collect();
+            cur = (0..n).map(|j| {
+                if j < step { let z = self.bit_const(false); self.select_bit(sb, z, cur[j]) }
+                else { self.select_bit(sb, cur[j - step], cur[j]) }
+            }).collect();
         }
-        VolarValue { bits: cur }
+        VolarValue { bits: cur, ty: val.ty.clone() }
     }
 
     fn lshr_impl(&mut self, val: &VolarValue, shift: &VolarValue) -> VolarValue {
@@ -437,77 +419,55 @@ impl VolarIrTarget {
         for k in 0..stages {
             let step = 1usize << k;
             let sb = shift.bits[k];
-            cur = (0..n)
-                .map(|j| {
-                    if j + step >= n {
-                        let z = self.bit_const(false);
-                        self.select_bit(sb, z, cur[j])
-                    } else {
-                        self.select_bit(sb, cur[j + step], cur[j])
-                    }
-                })
-                .collect();
+            cur = (0..n).map(|j| {
+                if j + step >= n { let z = self.bit_const(false); self.select_bit(sb, z, cur[j]) }
+                else { self.select_bit(sb, cur[j + step], cur[j]) }
+            }).collect();
         }
-        VolarValue { bits: cur }
+        VolarValue { bits: cur, ty: val.ty.clone() }
     }
 
     fn ashr_impl(&mut self, val: &VolarValue, shift: &VolarValue) -> VolarValue {
         let n = val.bits.len();
-        let sign = val.bits[n - 1]; // sign bit never changes
+        let sign = val.bits[n - 1];
         let stages = Self::barrel_stages(n, shift.bits.len());
         let mut cur = val.bits.clone();
         for k in 0..stages {
             let step = 1usize << k;
             let sb = shift.bits[k];
-            cur = (0..n)
-                .map(|j| {
-                    if j + step >= n {
-                        self.select_bit(sb, sign, cur[j])
-                    } else {
-                        self.select_bit(sb, cur[j + step], cur[j])
-                    }
-                })
-                .collect();
+            cur = (0..n).map(|j| {
+                if j + step >= n { self.select_bit(sb, sign, cur[j]) }
+                else { self.select_bit(sb, cur[j + step], cur[j]) }
+            }).collect();
         }
-        VolarValue { bits: cur }
+        VolarValue { bits: cur, ty: val.ty.clone() }
     }
 
     // ---- Comparisons -------------------------------------------------------
 
     fn icmp_eq(&mut self, a: &VolarValue, b: &VolarValue) -> VolarValue {
-        // AND of NOT(XOR(ai, bi)) for each bit pair.
         let n = a.bits.len();
-        let mut xors: Vec<IRVarId> = (0..n).map(|i| self.xor_bit(a.bits[i], b.bits[i])).collect();
+        let xors: Vec<IRVarId> = (0..n).map(|i| self.xor_bit(a.bits[i], b.bits[i])).collect();
         let not_xors: Vec<IRVarId> = (0..n).map(|i| self.not_bit(xors[i])).collect();
-        let result = if n == 0 {
-            self.bit_const(true) // vacuously equal
-        } else {
+        let result = if n == 0 { self.bit_const(true) } else {
             let mut acc = not_xors[0];
-            for i in 1..n {
-                acc = self.and_bit(acc, not_xors[i]);
-            }
+            for i in 1..n { acc = self.and_bit(acc, not_xors[i]); }
             acc
         };
-        VolarValue { bits: vec![result] }
+        VolarValue { bits: vec![result], ty: LirType::Bool }
     }
 
     fn icmp_ne(&mut self, a: &VolarValue, b: &VolarValue) -> VolarValue {
-        // OR of XOR(ai, bi) for each bit pair.
         let n = a.bits.len();
         let xors: Vec<IRVarId> = (0..n).map(|i| self.xor_bit(a.bits[i], b.bits[i])).collect();
-        let result = if n == 0 {
-            self.bit_const(false)
-        } else {
+        let result = if n == 0 { self.bit_const(false) } else {
             let mut acc = xors[0];
-            for i in 1..n {
-                acc = self.or_bit(acc, xors[i]);
-            }
+            for i in 1..n { acc = self.or_bit(acc, xors[i]); }
             acc
         };
-        VolarValue { bits: vec![result] }
+        VolarValue { bits: vec![result], ty: LirType::Bool }
     }
 
-    /// Unsigned a < b: final borrow out of the ripple subtractor.
     fn icmp_ult(&mut self, a: &VolarValue, b: &VolarValue) -> VolarValue {
         let n = a.bits.len();
         let mut borrow = self.bit_const(false);
@@ -515,33 +475,30 @@ impl VolarIrTarget {
             let not_ai = self.not_bit(a.bits[i]);
             borrow = self.carry_bit(not_ai, b.bits[i], borrow);
         }
-        VolarValue { bits: vec![borrow] }
+        VolarValue { bits: vec![borrow], ty: LirType::Bool }
     }
 
     fn icmp_ule(&mut self, a: &VolarValue, b: &VolarValue) -> VolarValue {
-        // a ≤ b iff NOT(b < a)
         let gt = self.icmp_ult(b, a);
-        VolarValue { bits: vec![self.not_bit(gt.bits[0])] }
+        VolarValue { bits: vec![self.not_bit(gt.bits[0])], ty: LirType::Bool }
     }
 
     fn icmp_slt(&mut self, a: &VolarValue, b: &VolarValue) -> VolarValue {
         let n = a.bits.len();
         let sign_a = a.bits[n - 1];
         let sign_b = b.bits[n - 1];
-        // slt = (a<0 ∧ b≥0) ∨ (same_sign ∧ ult(a,b))
         let not_sign_b = self.not_bit(sign_b);
         let a_neg_b_pos = self.and_bit(sign_a, not_sign_b);
         let ult = self.icmp_ult(a, b).bits[0];
         let signs_xor = self.xor_bit(sign_a, sign_b);
         let signs_eq = self.not_bit(signs_xor);
         let same_sign_lt = self.and_bit(signs_eq, ult);
-        VolarValue { bits: vec![self.or_bit(a_neg_b_pos, same_sign_lt)] }
+        VolarValue { bits: vec![self.or_bit(a_neg_b_pos, same_sign_lt)], ty: LirType::Bool }
     }
 
     fn icmp_sle(&mut self, a: &VolarValue, b: &VolarValue) -> VolarValue {
-        // a ≤ b (signed) iff NOT(b < a signed)
         let sgt = self.icmp_slt(b, a);
-        VolarValue { bits: vec![self.not_bit(sgt.bits[0])] }
+        VolarValue { bits: vec![self.not_bit(sgt.bits[0])], ty: LirType::Bool }
     }
 
     // ---- Helpers -----------------------------------------------------------
@@ -591,7 +548,7 @@ impl VolarIrTarget {
                         let n = bits_for_lir_type(ty, &self.struct_widths);
                         assert_eq!(ret_bits.len(), n,
                             "VolarIrTarget: return bit count mismatch");
-                        vec![VolarValue { bits: ret_bits }]
+                        vec![VolarValue { bits: ret_bits, ty: ty.clone() }]
                     }
                     None => vec![],
                 }
@@ -636,8 +593,14 @@ impl VolarIrTarget {
         // ---- Continuation block (receives callee return values) -----------
         let cont_block = self.create_block();
         let mut cont_params = Vec::with_capacity(ret_n);
+        // For Native return types add one native-typed param; for all other
+        // types (including multi-bit) add Bool params (one per bit).
+        let cont_param_ty = ret_ty
+            .filter(|t| matches!(t, LirType::Native(_)))
+            .cloned()
+            .unwrap_or(LirType::Bool);
         for _ in 0..ret_n {
-            let v = self.add_block_param(cont_block, LirType::Bool);
+            let v = self.add_block_param(cont_block, cont_param_ty.clone());
             cont_params.push(v.bits[0]);
         }
 
@@ -685,7 +648,8 @@ impl VolarIrTarget {
         self.func.as_mut().unwrap().current = cont_block.0;
 
         if ret_n > 0 {
-            vec![VolarValue { bits: cont_params }]
+            let ret_lir_ty = ret_ty.cloned().unwrap_or(LirType::Bool);
+            vec![VolarValue { bits: cont_params, ty: ret_lir_ty }]
         } else {
             vec![]
         }
@@ -705,6 +669,8 @@ fn bits_for_lir_type(ty: &LirType, struct_widths: &[usize]) -> usize {
         LirType::I64 | LirType::U64 => 64,
         LirType::Arr(elem, n) => n * bits_for_lir_type(elem, struct_widths),
         LirType::Struct(id) => struct_widths[*id as usize],
+        // Native field elements occupy exactly one IRVarId slot (not N bits).
+        LirType::Native(_) => 1,
     }
 }
 
@@ -838,14 +804,23 @@ impl LirTarget for VolarIrTarget {
         let mut groups: Vec<Vec<VolarValue>> = Vec::new();
 
         for ty in params {
-            let n = bits_for_lir_type(ty, &self.struct_widths);
-            let start = block.params.len() as u32;
-            for _ in 0..n {
-                block.params.push(self.bit_tid.clone());
+            if let LirType::Native(native_ty) = ty {
+                // One native-typed IRVarId, not N Bit vars.
+                let type_id = self.types.intern(IrType::Primitive(*native_ty));
+                let id = block.params.len() as u32;
+                block.params.push(type_id);
+                groups.push(vec![VolarValue { bits: vec![IRVarId(id)], ty: ty.clone() }]);
+            } else {
+                let n = bits_for_lir_type(ty, &self.struct_widths);
+                let start = block.params.len() as u32;
+                for _ in 0..n {
+                    block.params.push(self.bit_tid.clone());
+                }
+                groups.push(vec![VolarValue {
+                    bits: (start..start + n as u32).map(IRVarId).collect(),
+                    ty: ty.clone(),
+                }]);
             }
-            groups.push(vec![VolarValue {
-                bits: (start..start + n as u32).map(IRVarId).collect(),
-            }]);
         }
 
         self.func = Some(FuncBuilder { name: name.to_string(), blocks: vec![block], current: 0 });
@@ -874,6 +849,14 @@ impl LirTarget for VolarIrTarget {
     }
 
     fn add_block_param(&mut self, block: VolarBlock, ty: LirType) -> VolarValue {
+        if let LirType::Native(native_ty) = &ty {
+            let type_id = self.types.intern(IrType::Primitive(*native_ty));
+            let f = self.func.as_mut().unwrap();
+            let blk = &mut f.blocks[block.0];
+            let id = blk.params.len() as u32;
+            blk.params.push(type_id);
+            return VolarValue { bits: vec![IRVarId(id)], ty };
+        }
         let n = bits_for_lir_type(&ty, &self.struct_widths);
         let f = self.func.as_mut().unwrap();
         let blk = &mut f.blocks[block.0];
@@ -881,7 +864,7 @@ impl LirTarget for VolarIrTarget {
         for _ in 0..n {
             blk.params.push(self.bit_tid.clone());
         }
-        VolarValue { bits: (start..start + n as u32).map(IRVarId).collect() }
+        VolarValue { bits: (start..start + n as u32).map(IRVarId).collect(), ty }
     }
 
     fn switch_to_block(&mut self, block: VolarBlock) {
@@ -891,64 +874,48 @@ impl LirTarget for VolarIrTarget {
     // ---- Constants ---------------------------------------------------------
 
     fn iconst(&mut self, ty: LirType, val: i64) -> VolarValue {
+        if let LirType::Native(native_ty) = &ty {
+            let type_id = self.types.intern(IrType::Primitive(*native_ty));
+            let id = self.emit(IRStmt::Const(
+                Constant { hi: 0, lo: val as u128 },
+                type_id,
+            ));
+            return VolarValue { bits: vec![id], ty };
+        }
         let n = bits_for_lir_type(&ty, &self.struct_widths);
         let bits: Vec<IRVarId> = (0..n)
             .map(|i| self.bit_const((val >> i) & 1 != 0))
             .collect();
-        VolarValue { bits }
+        VolarValue { bits, ty }
     }
 
     // ---- Arithmetic --------------------------------------------------------
 
-    fn add(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
-        self.add_impl(&lhs, &rhs)
-    }
-
-    fn sub(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
-        self.sub_impl(&lhs, &rhs)
-    }
-
-    fn mul(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
-        self.mul_impl(&lhs, &rhs)
-    }
-
-    fn udiv(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
-        self.udiv_impl(&lhs, &rhs)
-    }
-
-    fn sdiv(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
-        self.sdiv_impl(&lhs, &rhs)
-    }
-
-    // ---- Bitwise -----------------------------------------------------------
+    fn add(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue { self.add_impl(&lhs, &rhs) }
+    fn sub(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue { self.sub_impl(&lhs, &rhs) }
+    fn mul(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue { self.mul_impl(&lhs, &rhs) }
+    fn udiv(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue { self.udiv_impl(&lhs, &rhs) }
+    fn sdiv(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue { self.sdiv_impl(&lhs, &rhs) }
 
     fn and(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
-        VolarValue { bits: self.and_vec(&lhs.bits, &rhs.bits) }
+        let ty = lhs.ty.clone();
+        VolarValue { bits: self.and_vec(&lhs.bits, &rhs.bits), ty }
     }
-
     fn or(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
-        VolarValue { bits: self.or_vec(&lhs.bits, &rhs.bits) }
+        let ty = lhs.ty.clone();
+        VolarValue { bits: self.or_vec(&lhs.bits, &rhs.bits), ty }
     }
-
     fn xor(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
-        VolarValue { bits: self.xor_vec(&lhs.bits, &rhs.bits) }
+        let ty = lhs.ty.clone();
+        VolarValue { bits: self.xor_vec(&lhs.bits, &rhs.bits), ty }
     }
-
     fn not(&mut self, val: VolarValue) -> VolarValue {
-        VolarValue { bits: self.not_vec(&val.bits) }
+        let ty = val.ty.clone();
+        VolarValue { bits: self.not_vec(&val.bits), ty }
     }
-
-    fn shl(&mut self, val: VolarValue, shift: VolarValue) -> VolarValue {
-        self.shl_impl(&val, &shift)
-    }
-
-    fn lshr(&mut self, val: VolarValue, shift: VolarValue) -> VolarValue {
-        self.lshr_impl(&val, &shift)
-    }
-
-    fn ashr(&mut self, val: VolarValue, shift: VolarValue) -> VolarValue {
-        self.ashr_impl(&val, &shift)
-    }
+    fn shl(&mut self, val: VolarValue, shift: VolarValue) -> VolarValue { self.shl_impl(&val, &shift) }
+    fn lshr(&mut self, val: VolarValue, shift: VolarValue) -> VolarValue { self.lshr_impl(&val, &shift) }
+    fn ashr(&mut self, val: VolarValue, shift: VolarValue) -> VolarValue { self.ashr_impl(&val, &shift) }
 
     // ---- Comparisons -------------------------------------------------------
 
@@ -972,54 +939,40 @@ impl LirTarget for VolarIrTarget {
     fn zext(&mut self, val: VolarValue, dst_ty: LirType) -> VolarValue {
         let dst_n = bits_for_lir_type(&dst_ty, &self.struct_widths);
         let mut bits = val.bits;
-        while bits.len() < dst_n {
-            let z = self.bit_const(false);
-            bits.push(z);
-        }
-        VolarValue { bits }
+        while bits.len() < dst_n { let z = self.bit_const(false); bits.push(z); }
+        VolarValue { bits, ty: dst_ty }
     }
-
     fn sext(&mut self, val: VolarValue, dst_ty: LirType) -> VolarValue {
         let dst_n = bits_for_lir_type(&dst_ty, &self.struct_widths);
         let sign = *val.bits.last().expect("sext of zero-bit value");
         let mut bits = val.bits;
-        // Reuse the same sign-bit IRVarId for all extended positions.
         bits.resize(dst_n, sign);
-        VolarValue { bits }
+        VolarValue { bits, ty: dst_ty }
     }
-
     fn trunc(&mut self, val: VolarValue, dst_ty: LirType) -> VolarValue {
         let dst_n = bits_for_lir_type(&dst_ty, &self.struct_widths);
-        VolarValue { bits: val.bits[..dst_n].to_vec() }
+        VolarValue { bits: val.bits[..dst_n].to_vec(), ty: dst_ty }
     }
 
     // ---- Select ------------------------------------------------------------
 
     fn select(&mut self, cond: VolarValue, then_val: VolarValue, else_val: VolarValue) -> VolarValue {
         let cond_bit = cond.bits[0];
+        let ty = then_val.ty.clone();
         let bits = self.select_vec(cond_bit, &then_val.bits, &else_val.bits);
-        VolarValue { bits }
+        VolarValue { bits, ty }
     }
 
     // ---- Type query --------------------------------------------------------
 
+    /// Return the [`LirType`] of a previously-emitted value.
+    ///
+    /// For `VolarIrTarget` all type information is stored directly in
+    /// `VolarValue::ty`, so this is a trivial projection.  The `ty` field is
+    /// set correctly at every construction site, including for
+    /// [`LirType::Native`] values that cannot be inferred from `bits.len()`.
     fn value_scalar_type(&self, val: &VolarValue) -> LirType {
-        // Try standard widths first, then registered structs.
-        match val.bits.len() {
-            1  => LirType::Bool,
-            8  => LirType::U8,
-            16 => LirType::U16,
-            32 => LirType::U32,
-            64 => LirType::U64,
-            n  => {
-                for (id, &w) in self.struct_widths.iter().enumerate() {
-                    if w == n {
-                        return LirType::Struct(id as StructId);
-                    }
-                }
-                panic!("VolarIrTarget: no LirType for {n}-bit value")
-            }
-        }
+        val.ty.clone()
     }
 
     // ---- Extern calls ------------------------------------------------------
@@ -1359,14 +1312,14 @@ mod tests {
     #[test]
     fn test_value_scalar_type_bool() {
         let t = VolarIrTarget::new();
-        let v = VolarValue { bits: std::vec![IRVarId(0)] };
+        let v = VolarValue { bits: std::vec![IRVarId(0)], ty: LirType::Bool };
         assert_eq!(t.value_scalar_type(&v), LirType::Bool);
     }
 
     #[test]
     fn test_value_scalar_type_u64() {
         let t = VolarIrTarget::new();
-        let v = VolarValue { bits: (0..64).map(IRVarId).collect() };
+        let v = VolarValue { bits: (0..64).map(IRVarId).collect(), ty: LirType::U64 };
         assert_eq!(t.value_scalar_type(&v), LirType::U64);
     }
 

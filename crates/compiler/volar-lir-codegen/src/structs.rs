@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use volar_compiler::ir::{ArrayLength, IrModule, IrStruct, IrType, PrimitiveType, StructKind};
+use volar_ir_common::Type as NativeType;
 use volar_lir::{FieldDef, LirTarget, LirType, StructDef, StructId};
 
 // ============================================================================
@@ -18,6 +19,10 @@ use volar_lir::{FieldDef, LirTarget, LirType, StructDef, StructId};
 pub struct StructRegistry {
     /// kind name (e.g., "Eval", "Garble") → entry
     by_name: BTreeMap<String, StructEntry>,
+    /// kind name → native Volar type, for structs annotated `@volar-native:`.
+    /// These structs are **not** registered as LIR structs; instead they map
+    /// to `LirType::Native(t)` in all type-conversion contexts.
+    native_types: BTreeMap<String, NativeType>,
 }
 
 struct StructEntry {
@@ -30,12 +35,22 @@ struct StructEntry {
 
 impl StructRegistry {
     fn new() -> Self {
-        StructRegistry { by_name: BTreeMap::new() }
+        StructRegistry { by_name: BTreeMap::new(), native_types: BTreeMap::new() }
     }
 
     /// An empty registry (no structs registered). Used when no struct types are needed.
     pub fn empty() -> Self {
         Self::new()
+    }
+
+    /// Return `true` if `kind` was annotated `@volar-native:`.
+    pub fn is_native(&self, kind: &StructKind) -> bool {
+        self.native_types.contains_key(&kind_name(kind))
+    }
+
+    /// Return the `NativeType` for a native-annotated struct, if any.
+    pub fn native_type_for(&self, kind: &StructKind) -> Option<NativeType> {
+        self.native_types.get(&kind_name(kind)).copied()
     }
 
     /// Look up the `StructId` for a struct by its kind name.
@@ -111,6 +126,13 @@ pub fn build_struct_registry<T: LirTarget>(module: &IrModule, target: &mut T) ->
 
         let name = kind_name(&ir_struct.kind);
 
+        // Structs annotated `@volar-native:` are emitted as a single native
+        // field-element value.  Record them but do NOT register as LIR structs.
+        if let Some(native_ty) = ir_struct.native_volar_type {
+            registry.native_types.insert(name, native_ty);
+            continue;
+        }
+
         // Map field types to LirType using the partially-built registry.
         let lir_fields: Vec<(String, LirType)> = ir_struct
             .fields
@@ -166,6 +188,10 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
         }
 
         IrType::Struct { kind, .. } => {
+            // Native-annotated structs map to LirType::Native instead of LirType::Struct.
+            if let Some(native_ty) = registry.native_types.get(&kind_name(kind)).copied() {
+                return LirType::Native(native_ty);
+            }
             let id = registry.id_for(kind).unwrap_or_else(|| {
                 panic!("struct '{:?}' not in registry — was define_struct called?", kind)
             });

@@ -579,6 +579,12 @@ pub struct IrStruct {
     pub generics: Vec<IrGenericParam>,
     pub fields: Vec<IrField>,
     pub is_tuple: bool,
+    /// If the struct carries a `/// @volar-native: <Type>` doc comment, this
+    /// field records the target Volar IR primitive type.  The LIR lowering
+    /// pipeline maps such structs to [`LirType::Native`] and `VolarIrTarget`
+    /// emits a single field-element `IRVarId` rather than decomposing the
+    /// struct into individual bits.
+    pub native_volar_type: Option<volar_ir_common::Type>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
