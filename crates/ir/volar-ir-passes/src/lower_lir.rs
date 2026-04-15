@@ -354,6 +354,9 @@ fn lower_ir_stmt<T: LirTarget>(
         IRStmt::StorageRead { .. } | IRStmt::StorageWrite { .. } => {
             unimplemented!("StorageRead/Write require memory ops not yet in LirTarget")
         }
+        IRStmt::Shuffle { .. } => {
+            unimplemented!("Shuffle lowering to LirTarget is not yet implemented")
+        }
     }
 }
 

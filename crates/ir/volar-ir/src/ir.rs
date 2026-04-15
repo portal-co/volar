@@ -45,46 +45,13 @@ pub enum IRType {
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct IRVarId(pub u32);
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub enum IRStmt<Var = IRVarId, Addr = Var> {
-    StorageRead {
-        ty: IRTypeId,
-        addr: Addr,
-    },
-    StorageWrite {
-        src: Var,
-        ty: IRTypeId,
-        addr: Addr,
-    },
-    Const(Constant, IRTypeId),
-    Transmute {
-        src: Var,
-        src_ty: IRTypeId,
-        dst_ty: IRTypeId,
-    },
-    Poly {
-        coeffs: BTreeMap<Vec<Var>, u8>,
-        constant: Constant,
-    },
-    Rol {
-        src: Var,
-        ty: IRTypeId,
-        n: usize,
-    },
-    Ror {
-        src: Var,
-        ty: IRTypeId,
-        n: usize,
-    },
-    Merge {
-        parts: Vec<Var>,
-        ty: IRTypeId,
-    },
-    Splat {
-        src: Var,
-        ty: IRTypeId,
-    },
-}
+/// Statement type for Volar IR blocks.
+///
+/// This is a specialisation of the shared [`volar_ir_common::Stmt`] with
+/// `IRTypeId` as the type annotation.  All operations — including
+/// [`Shuffle`](volar_ir_common::Stmt::Shuffle) — are defined once in
+/// `volar-ir-common` so that VAFFLE and Volar IR can never drift apart.
+pub type IRStmt<Var = IRVarId, Addr = Var> = volar_ir_common::Stmt<Var, Addr, IRTypeId>;
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum IRTerminator {
     Jmp {

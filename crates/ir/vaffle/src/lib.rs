@@ -1,7 +1,7 @@
 #![no_std]
 
 use alloc::{collections::btree_map::BTreeMap, string::String, vec::Vec};
-use volar_ir_common::{Constant, Type};
+use volar_ir_common::{Constant, Stmt, Type};
 
 extern crate alloc;
 pub struct Module {
@@ -54,12 +54,20 @@ pub enum Terminator {
         then_target: Target,
         else_target: Target,
     },
-    Table{
+    Table {
         index: ValueId,
         targets: Vec<Target>,
         default_target: Target,
     },
 }
+
+/// A value in a VAFFLE function body.
+///
+/// Structural values (`Param`, `Call`, `Output`) describe where a value comes
+/// from in the dataflow graph.  Pure computational results are expressed as
+/// `Op`, whose payload is the shared [`Stmt`] type.  This means VAFFLE and
+/// Volar IR share a single definition of every operation — including
+/// [`Shuffle`](volar_ir_common::Stmt::Shuffle) — so the two can never drift.
 pub enum Value {
     Param {
         block: BlockId,
@@ -70,16 +78,11 @@ pub enum Value {
         func: FuncId,
         args: Vec<ValueId>,
     },
+    /// Select one output from a multi-result call by index.
     Output {
         value: ValueId,
         idx: usize,
     },
-    Shuffle{
-        result_bits: [(u8, ValueId); 256]
-    },
-    Const(Constant, Type),
-    Poly{
-        coeffs: BTreeMap<Vec<ValueId>, u8>,
-        constant: Constant,
-    }
+    /// A pure computation (constant, polynomial, shuffle, rotate, merge, …).
+    Op(Stmt<ValueId>),
 }

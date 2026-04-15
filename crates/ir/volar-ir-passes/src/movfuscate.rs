@@ -656,6 +656,10 @@ fn subst_ir(stmt: &IRStmt, var_map: &[u32]) -> IRStmt {
             IRStmt::Merge { parts: parts.iter().map(s).collect(), ty: ty.clone() }
         }
         IRStmt::Splat { src, ty } => IRStmt::Splat { src: s(src), ty: ty.clone() },
+        IRStmt::Shuffle { result_bits, ty } => IRStmt::Shuffle {
+            result_bits: result_bits.iter().map(|(b, v)| (*b, s(v))).collect(),
+            ty: ty.clone(),
+        },
     }
 }
 
@@ -720,6 +724,8 @@ fn infer_stmt_result_type(
         | IRStmt::Splat { ty, .. } => ty.clone(),
         // StorageWrite has no meaningful result; use Bit as a placeholder.
         IRStmt::StorageWrite { .. } => bit_type_id.clone(),
+        // Shuffle carries its result type explicitly.
+        IRStmt::Shuffle { ty, .. } => ty.clone(),
     }
 }
 

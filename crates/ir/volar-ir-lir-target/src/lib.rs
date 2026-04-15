@@ -800,6 +800,10 @@ fn subst_stmt(stmt: &IRStmt, var_map: &[IRVarId]) -> IRStmt {
         IRStmt::StorageWrite { src, ty, addr } => {
             IRStmt::StorageWrite { src: s(src), ty: ty.clone(), addr: s(addr) }
         }
+        IRStmt::Shuffle { result_bits, ty } => IRStmt::Shuffle {
+            result_bits: result_bits.iter().map(|(b, id)| (*b, s(id))).collect(),
+            ty: ty.clone(),
+        },
     }
 }
 
