@@ -9,3 +9,8 @@ repository.workspace = true
 [dependencies]
 volar-ir.workspace = true
 volar-ir-common.workspace = true
+volar-lir.workspace = true
+
+[dependencies.portal-pc-waffle-ir]
+version = "0.6.0-alpha.1"
+git = "https://github.com/portal-co/waffle-"

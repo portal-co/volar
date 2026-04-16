@@ -57,7 +57,12 @@ use volar_ir::ir::{
     IRTypes, IRVarId, OracleDecl, ActionDecl,
 };
 use volar_ir_common::{Constant, IrType, Type as NativeType};
-use volar_lir::{IcmpPred, LirTarget, LirType, StructDef, StructId};
+use volar_lir::{BitCircuitBuilder, IcmpPred, LirTarget, LirType, StructDef, StructId};
+use volar_lir::circuits::{
+    bc_abs, bc_add, bc_and_vec, bc_ashr, bc_eq, bc_lshr, bc_mul, bc_ne, bc_neg,
+    bc_not_vec, bc_or_vec, bc_sdiv, bc_select_vec, bc_shl, bc_sle, bc_slt,
+    bc_sub, bc_udiv, bc_ule, bc_ult, bc_xor_vec,
+};
 
 // ============================================================================
 // Public types
@@ -688,8 +693,43 @@ impl VolarIrTarget {
 }
 
 // ============================================================================
-// Type helpers
+// BitCircuitBuilder implementation for VolarIrTarget
 // ============================================================================
+
+impl BitCircuitBuilder for VolarIrTarget {
+    type Bit = IRVarId;
+
+    fn bc_const(&mut self, val: bool) -> IRVarId {
+        self.bit_const(val)
+    }
+
+    fn bc_poly(
+        &mut self,
+        coeffs: std::collections::BTreeMap<Vec<IRVarId>, u8>,
+        constant: u128,
+    ) -> IRVarId {
+        self.emit(IRStmt::Poly {
+            coeffs,
+            constant: Constant { hi: 0, lo: constant },
+        })
+    }
+
+    /// Override with the optimized 3-variable degree-2 Poly (1 stmt vs 5).
+    fn bc_carry3(&mut self, a: IRVarId, b: IRVarId, c: IRVarId) -> IRVarId {
+        self.carry_bit(a, b, c)
+    }
+
+    // The remaining bc_xor / bc_and / bc_not / bc_or / bc_select use the
+    // existing optimized helpers (which carry idempotency short-circuits).
+    fn bc_xor(&mut self, a: IRVarId, b: IRVarId) -> IRVarId { self.xor_bit(a, b) }
+    fn bc_and(&mut self, a: IRVarId, b: IRVarId) -> IRVarId { self.and_bit(a, b) }
+    fn bc_not(&mut self, a: IRVarId)             -> IRVarId { self.not_bit(a) }
+    fn bc_or (&mut self, a: IRVarId, b: IRVarId) -> IRVarId { self.or_bit(a, b) }
+    fn bc_select(&mut self, cond: IRVarId, a: IRVarId, b: IRVarId) -> IRVarId {
+        self.select_bit(cond, a, b)
+    }
+}
+
 
 fn bits_for_lir_type(ty: &LirType, struct_widths: &[usize]) -> usize {
     match ty {
@@ -942,49 +982,74 @@ impl LirTarget for VolarIrTarget {
         VolarValue { bits, ty }
     }
 
-    // ---- Arithmetic --------------------------------------------------------
+    // ---- Arithmetic (delegated to generic BitCircuitBuilder algorithms) -----
 
-    fn add(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue { self.add_impl(&lhs, &rhs) }
-    fn sub(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue { self.sub_impl(&lhs, &rhs) }
-    fn mul(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue { self.mul_impl(&lhs, &rhs) }
-    fn udiv(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue { self.udiv_impl(&lhs, &rhs) }
-    fn sdiv(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue { self.sdiv_impl(&lhs, &rhs) }
+    fn add(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
+        let ty = lhs.ty.clone();
+        VolarValue { bits: bc_add(self, &lhs.bits, &rhs.bits, false), ty }
+    }
+    fn sub(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
+        let ty = lhs.ty.clone();
+        VolarValue { bits: bc_sub(self, &lhs.bits, &rhs.bits), ty }
+    }
+    fn mul(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
+        let ty = lhs.ty.clone();
+        VolarValue { bits: bc_mul(self, &lhs.bits, &rhs.bits), ty }
+    }
+    fn udiv(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
+        let ty = lhs.ty.clone();
+        VolarValue { bits: bc_udiv(self, &lhs.bits, &rhs.bits), ty }
+    }
+    fn sdiv(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
+        let ty = lhs.ty.clone();
+        VolarValue { bits: bc_sdiv(self, &lhs.bits, &rhs.bits), ty }
+    }
 
     fn and(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
         let ty = lhs.ty.clone();
-        VolarValue { bits: self.and_vec(&lhs.bits, &rhs.bits), ty }
+        VolarValue { bits: bc_and_vec(self, &lhs.bits, &rhs.bits), ty }
     }
     fn or(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
         let ty = lhs.ty.clone();
-        VolarValue { bits: self.or_vec(&lhs.bits, &rhs.bits), ty }
+        VolarValue { bits: bc_or_vec(self, &lhs.bits, &rhs.bits), ty }
     }
     fn xor(&mut self, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
         let ty = lhs.ty.clone();
-        VolarValue { bits: self.xor_vec(&lhs.bits, &rhs.bits), ty }
+        VolarValue { bits: bc_xor_vec(self, &lhs.bits, &rhs.bits), ty }
     }
     fn not(&mut self, val: VolarValue) -> VolarValue {
         let ty = val.ty.clone();
-        VolarValue { bits: self.not_vec(&val.bits), ty }
+        VolarValue { bits: bc_not_vec(self, &val.bits), ty }
     }
-    fn shl(&mut self, val: VolarValue, shift: VolarValue) -> VolarValue { self.shl_impl(&val, &shift) }
-    fn lshr(&mut self, val: VolarValue, shift: VolarValue) -> VolarValue { self.lshr_impl(&val, &shift) }
-    fn ashr(&mut self, val: VolarValue, shift: VolarValue) -> VolarValue { self.ashr_impl(&val, &shift) }
+    fn shl(&mut self, val: VolarValue, shift: VolarValue) -> VolarValue {
+        let ty = val.ty.clone();
+        VolarValue { bits: bc_shl(self, &val.bits, &shift.bits), ty }
+    }
+    fn lshr(&mut self, val: VolarValue, shift: VolarValue) -> VolarValue {
+        let ty = val.ty.clone();
+        VolarValue { bits: bc_lshr(self, &val.bits, &shift.bits), ty }
+    }
+    fn ashr(&mut self, val: VolarValue, shift: VolarValue) -> VolarValue {
+        let ty = val.ty.clone();
+        VolarValue { bits: bc_ashr(self, &val.bits, &shift.bits), ty }
+    }
 
     // ---- Comparisons -------------------------------------------------------
 
     fn icmp(&mut self, pred: IcmpPred, lhs: VolarValue, rhs: VolarValue) -> VolarValue {
-        match pred {
-            IcmpPred::Eq  => self.icmp_eq(&lhs, &rhs),
-            IcmpPred::Ne  => self.icmp_ne(&lhs, &rhs),
-            IcmpPred::Ult => self.icmp_ult(&lhs, &rhs),
-            IcmpPred::Ule => self.icmp_ule(&lhs, &rhs),
-            IcmpPred::Ugt => self.icmp_ult(&rhs, &lhs),   // a > b ↔ b < a
-            IcmpPred::Uge => self.icmp_ule(&rhs, &lhs),   // a ≥ b ↔ b ≤ a
-            IcmpPred::Slt => self.icmp_slt(&lhs, &rhs),
-            IcmpPred::Sle => self.icmp_sle(&lhs, &rhs),
-            IcmpPred::Sgt => self.icmp_slt(&rhs, &lhs),   // a > b ↔ b < a (signed)
-            IcmpPred::Sge => self.icmp_sle(&rhs, &lhs),   // a ≥ b ↔ b ≤ a (signed)
-        }
+        let bit = match pred {
+            IcmpPred::Eq  => bc_eq(self, &lhs.bits, &rhs.bits),
+            IcmpPred::Ne  => bc_ne(self, &lhs.bits, &rhs.bits),
+            IcmpPred::Ult => bc_ult(self, &lhs.bits, &rhs.bits),
+            IcmpPred::Ule => bc_ule(self, &lhs.bits, &rhs.bits),
+            IcmpPred::Ugt => bc_ult(self, &rhs.bits, &lhs.bits),
+            IcmpPred::Uge => bc_ule(self, &rhs.bits, &lhs.bits),
+            IcmpPred::Slt => bc_slt(self, &lhs.bits, &rhs.bits),
+            IcmpPred::Sle => bc_sle(self, &lhs.bits, &rhs.bits),
+            IcmpPred::Sgt => bc_slt(self, &rhs.bits, &lhs.bits),
+            IcmpPred::Sge => bc_sle(self, &rhs.bits, &lhs.bits),
+        };
+        VolarValue { bits: vec![bit], ty: LirType::Bool }
     }
 
     // ---- Conversions -------------------------------------------------------

@@ -21,6 +21,9 @@ extern crate alloc;
 use alloc::{boxed::Box, string::String, vec::Vec};
 use volar_ir_common::Type as NativeType;
 
+pub mod circuits;
+pub use circuits::BitCircuitBuilder;
+
 // ============================================================================
 // Types
 // ============================================================================
