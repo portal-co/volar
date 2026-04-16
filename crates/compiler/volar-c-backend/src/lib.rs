@@ -568,7 +568,12 @@ impl LirTarget for CBackend {
     fn and(&mut self, lhs: CValue, rhs: CValue) -> CValue { self.binop(lhs, "&", rhs) }
     fn or(&mut self, lhs: CValue, rhs: CValue) -> CValue { self.binop(lhs, "|", rhs) }
     fn xor(&mut self, lhs: CValue, rhs: CValue) -> CValue { self.binop(lhs, "^", rhs) }
-    fn not(&mut self, val: CValue) -> CValue { self.unop("~", val) }
+    fn not(&mut self, val: CValue) -> CValue {
+        let ty = self.state().type_of(val).clone();
+        // For bools, use logical `!`; for integers, use bitwise `~`.
+        let op = if ty == LirType::Bool { "!" } else { "~" };
+        self.unop(op, val)
+    }
     fn shl(&mut self, val: CValue, shift: CValue) -> CValue { self.binop(val, "<<", shift) }
     fn lshr(&mut self, val: CValue, shift: CValue) -> CValue { self.binop(val, ">>", shift) }
 
