@@ -4,8 +4,8 @@
 //!
 //! # `BitCircuitBuilder`
 //!
-//! A trait with two required primitives — [`bc_const`](BitCircuitBuilder::bc_const)
-//! and [`bc_poly`](BitCircuitBuilder::bc_poly) — from which every other bit
+//! A trait with two required primitives - [`bc_const`](BitCircuitBuilder::bc_const)
+//! and [`bc_poly`](BitCircuitBuilder::bc_poly) - from which every other bit
 //! operation and every arithmetic algorithm is derived by default impls.
 //! Backends may override individual operations for efficiency (e.g.,
 //! `VolarIrTarget` overrides [`bc_carry3`](BitCircuitBuilder::bc_carry3) with
@@ -28,12 +28,12 @@ use alloc::{collections::BTreeMap, vec, vec::Vec};
 ///
 /// Implementors supply two required methods:
 ///
-/// * [`bc_const`](Self::bc_const) — emit a constant-0 or constant-1 bit.
-/// * [`bc_poly`](Self::bc_poly) — emit a GF(2) multivariate polynomial stmt
+/// * [`bc_const`](Self::bc_const) - emit a constant-0 or constant-1 bit.
+/// * [`bc_poly`](Self::bc_poly) - emit a GF(2) multivariate polynomial stmt
 ///   and return the SSA variable holding its result.
 ///
-/// Everything else — XOR, AND, NOT, OR, MUX, carry, and all integer arithmetic
-/// algorithms — is derived from these two via default implementations.
+/// Everything else - XOR, AND, NOT, OR, MUX, carry, and all integer arithmetic
+/// algorithms - is derived from these two via default implementations.
 pub trait BitCircuitBuilder {
     /// The SSA variable type for a single GF(2) bit.
     ///
@@ -59,7 +59,7 @@ pub trait BitCircuitBuilder {
 
     // ---- Derived single-bit ops (may be overridden for efficiency) ----------
 
-    /// `a XOR b` — `Poly { {[a]:1, [b]:1}, constant:0 }`.
+    /// `a XOR b` - `Poly { {[a]:1, [b]:1}, constant:0 }`.
     fn bc_xor(&mut self, a: Self::Bit, b: Self::Bit) -> Self::Bit {
         let mut c = BTreeMap::new();
         c.insert(vec![a], 1u8);
@@ -67,7 +67,7 @@ pub trait BitCircuitBuilder {
         self.bc_poly(c, 0)
     }
 
-    /// `a AND b` — `Poly { {[a,b]:1}, constant:0 }`.
+    /// `a AND b` - `Poly { {[a,b]:1}, constant:0 }`.
     fn bc_and(&mut self, a: Self::Bit, b: Self::Bit) -> Self::Bit {
         let mut key = vec![a, b];
         key.sort();
@@ -76,14 +76,14 @@ pub trait BitCircuitBuilder {
         self.bc_poly(c, 0)
     }
 
-    /// `NOT a` — `Poly { {[a]:1}, constant:1 }` (i.e. `1 + a` in GF(2)).
+    /// `NOT a` - `Poly { {[a]:1}, constant:1 }` (i.e. `1 + a` in GF(2)).
     fn bc_not(&mut self, a: Self::Bit) -> Self::Bit {
         let mut c = BTreeMap::new();
         c.insert(vec![a], 1u8);
         self.bc_poly(c, 1)
     }
 
-    /// `a OR b` — De Morgan: `NOT(NOT(a) AND NOT(b))`.
+    /// `a OR b` - De Morgan: `NOT(NOT(a) AND NOT(b))`.
     fn bc_or(&mut self, a: Self::Bit, b: Self::Bit) -> Self::Bit {
         let na = self.bc_not(a);
         let nb = self.bc_not(b);
@@ -116,7 +116,7 @@ pub trait BitCircuitBuilder {
 }
 
 // ============================================================================
-// Arithmetic algorithms — all generic over B: BitCircuitBuilder
+// Arithmetic algorithms - all generic over B: BitCircuitBuilder
 // ============================================================================
 
 /// Ripple-carry adder: `a + x + carry_in`.  Overflow is silently discarded.
@@ -435,8 +435,8 @@ use volar_ir_common::{StorageId, TypeId};
 /// The address is always a **multi-bit integer** passed as `&[Self::Bit]`
 /// (LSB first, the same representation used throughout the bit-circuit layer).
 /// Each backend's [`compose_address`](StorageEmitter::compose_address) packages
-/// these bits into a single SSA var of type `Vec(N, Bit)` — a properly-typed
-/// wide address — before emitting the storage stmt.
+/// these bits into a single SSA var of type `Vec(N, Bit)` - a properly-typed
+/// wide address - before emitting the storage stmt.
 ///
 /// # Address type
 ///
@@ -486,7 +486,7 @@ pub trait StorageEmitter: BitCircuitBuilder {
 ///
 /// The constant offset is tracked symbolically: `sp.advance(4)` never emits
 /// any gates.  Only [`materialize`](StackPtr::materialize) composes the
-/// two halves into a concrete address (via [`bc_add`]) — and when the offset
+/// two halves into a concrete address (via [`bc_add`]) - and when the offset
 /// is zero, even that is a no-op.
 ///
 /// # Constant folding
@@ -509,7 +509,7 @@ impl<Bit: Clone + Ord> StackPtr<Bit> {
     }
 
     /// Create a fully-constant stack pointer.  All bits are emitted as
-    /// `bc_const` — maximally foldable.
+    /// `bc_const` - maximally foldable.
     pub fn from_const<B: BitCircuitBuilder<Bit = Bit>>(b: &mut B, val: u64, width: usize) -> Self {
         let base = (0..width).map(|i| b.bc_const((val >> i) & 1 != 0)).collect();
         StackPtr { base, offset: 0 }
@@ -566,17 +566,36 @@ impl<Bit: Clone + Ord> StackPtr<Bit> {
 // Frame layout + call convention helpers
 // ============================================================================
 
-/// Layout of one function's stack frame.
+/// Layout of one function’s stack frame.
 ///
 /// All offsets are in *storage slots* (one slot = one `StorageRead`/`Write`).
-/// A `Bit`-typed value occupies 1 slot; a 32-bit integer occupies 32 slots.
+///
+/// # Type-keyed storage
+///
+/// Storages are addressed by `(StorageId, TypeId, addr)`.  The `Block`-typed
+/// continuation slot lives in a separate type lane from the `Bit`-typed
+/// parameter and spill slots, so it can share address 0 with a `Bit` param
+/// without collision.  This means the continuation costs **zero frame space**.
+///
+/// # Spill slots
+///
+/// For recursive calls, values that are live across a call must be written
+/// to the frame before the call and reloaded afterward.  `spill_base` is the
+/// first Bit-slot after the params/ret; `n_spill` is the number of Bit-slots
+/// reserved (one per VAFFLE value in the function body).
 #[derive(Clone, Debug)]
 pub struct FrameLayout {
     /// `(slot_offset, slot_count, type_id)` for each parameter, in order.
     pub params: Vec<(u64, u64, TypeId)>,
     /// `(slot_offset, slot_count, type_id)` for the return value, if any.
     pub ret: Option<(u64, u64, TypeId)>,
-    /// Total frame size in storage slots.
+    /// `TypeId` of the `Block`-typed continuation (e.g. `IRType::Block { params: [Bit × (SP_BITS + ret_count)] }`).
+    /// Stored at address `sp` in the `Block`-typed lane (costs 0 Bit slots).
+    pub cont_ty: Option<TypeId>,
+    /// Offset and count of caller-save spill slots (all `Bit`-typed).
+    pub spill_base: u64,
+    pub n_spill: u64,
+    /// Total frame size in `Bit`-typed storage slots (params + ret + spills).
     pub size: u64,
     /// Which storage space the frame lives in.
     pub storage: StorageId,
@@ -664,4 +683,66 @@ pub fn frame_read_ret<B: StorageEmitter>(
             }).collect()
         }
     }
+}
+
+// ---- Continuation (Block-typed, lives in a separate type lane) -------------
+
+/// Write a continuation block-reference to the frame.
+///
+/// The continuation is stored at address `sp` in the **Block-typed** lane of
+/// the storage, which is disjoint from the Bit-typed lane.  This costs zero
+/// Bit-slots in the frame.
+pub fn frame_write_cont<B: StorageEmitter>(
+    b: &mut B,
+    sp: &StackPtr<B::Bit>,
+    layout: &FrameLayout,
+    cont_var: B::Bit,
+) {
+    if let Some(cont_ty) = layout.cont_ty {
+        let addr = sp.materialize(b);
+        b.emit_write(layout.storage, cont_var, cont_ty, &addr);
+    }
+}
+
+/// Read the continuation block-reference back from the frame.
+pub fn frame_read_cont<B: StorageEmitter>(
+    b: &mut B,
+    sp: &StackPtr<B::Bit>,
+    layout: &FrameLayout,
+) -> Option<B::Bit> {
+    layout.cont_ty.map(|cont_ty| {
+        let addr = sp.materialize(b);
+        b.emit_read(layout.storage, cont_ty, &addr)
+    })
+}
+
+// ---- Spill / reload (for values live across a call) ------------------------
+
+/// Write a single value to spill slot `idx` in the frame.
+pub fn frame_spill<B: StorageEmitter>(
+    b: &mut B,
+    sp: &StackPtr<B::Bit>,
+    layout: &FrameLayout,
+    idx: u64,
+    val: B::Bit,
+    ty: TypeId,
+) {
+    let mut slot_sp = sp.clone();
+    slot_sp.advance(layout.spill_base + idx);
+    let addr = slot_sp.materialize(b);
+    b.emit_write(layout.storage, val, ty, &addr);
+}
+
+/// Read a value back from spill slot `idx` in the frame.
+pub fn frame_reload<B: StorageEmitter>(
+    b: &mut B,
+    sp: &StackPtr<B::Bit>,
+    layout: &FrameLayout,
+    idx: u64,
+    ty: TypeId,
+) -> B::Bit {
+    let mut slot_sp = sp.clone();
+    slot_sp.advance(layout.spill_base + idx);
+    let addr = slot_sp.materialize(b);
+    b.emit_read(layout.storage, ty, &addr)
 }
