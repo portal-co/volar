@@ -57,7 +57,7 @@
 
 use alloc::{vec, vec::Vec};
 use alloc::collections::BTreeMap;
-use volar_ir_common::{Constant, Type};
+use volar_ir_common::{Constant, StorageId, Type};
 
 use volar_ir::{
     boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
@@ -797,6 +797,8 @@ struct IrCtx {
     stmts: Vec<IRStmt>,
     next_id: u32,
     bit_type_id: IRTypeId,
+    /// `Vec(pc_width, Bit)` — the type used for block-references in storage.
+    vec_pc_type_id: IRTypeId,
     /// Types of all vars emitted so far (params + stmts).
     var_types: Vec<IRTypeId>,
     /// Clone of the types table used for type inference.
@@ -822,6 +824,7 @@ impl IrCtx {
     fn new(
         first_id: u32,
         bit_type_id: IRTypeId,
+        vec_pc_type_id: IRTypeId,
         combined_param_types: Vec<IRTypeId>,
         ir_types: Vec<IRType>,
         pc_width: usize,
@@ -831,6 +834,7 @@ impl IrCtx {
             stmts: Vec::new(),
             next_id: first_id,
             bit_type_id,
+            vec_pc_type_id,
             var_types,
             ir_types,
             combined_param_types,
@@ -1209,6 +1213,84 @@ impl MovfuscCtx for IrCtx {
                 }
             }
 
+            // ---- StorageWrite with a Block-typed source --------------------
+            // The source var lives in `block_var_to_bits`; merge its PC bits
+            // into a Vec(pc_width, Bit) and write to storage ID 2n (even).
+            // Non-Block StorageWrite remaps to storage ID 2n+1 (odd).
+            if let IRStmt::StorageWrite { storage, src, ty, addr } = &mapped {
+                let src_u32 = src.0;
+                if let Some((bits, _sig)) = self.block_var_to_bits.get(&src_u32).cloned() {
+                    // Block-typed write: merge PC bits into Vec and store in even lane.
+                    let parts: Vec<IRVarId> = bits.iter().map(|&b| IRVarId(b)).collect();
+                    let merged = self.push_typed(
+                        IRStmt::Merge { parts, ty: self.vec_pc_type_id },
+                        self.vec_pc_type_id,
+                    );
+                    let new_storage = StorageId(storage.0 * 2);
+                    let id = self.push_typed(
+                        IRStmt::StorageWrite { storage: new_storage, src: IRVarId(merged), ty: self.vec_pc_type_id, addr: *addr },
+                        self.bit_type_id,
+                    );
+                    var_map.push(id);
+                    continue;
+                } else {
+                    // Non-block write: remap to odd storage lane.
+                    let new_storage = StorageId(storage.0 * 2 + 1);
+                    let res_ty = infer_stmt_result_type(&mapped, &self.var_types, &self.ir_types, &self.bit_type_id);
+                    let id = self.push_typed(
+                        IRStmt::StorageWrite { storage: new_storage, src: *src, ty: *ty, addr: *addr },
+                        res_ty,
+                    );
+                    var_map.push(id);
+                    continue;
+                }
+            }
+
+            // ---- StorageRead: if result type is Block, decompose Vec into PC bits.
+            // Block-typed reads come from even storage IDs; others from odd.
+            if let IRStmt::StorageRead { storage, ty, addr } = &mapped {
+                let ty_idx = ty.0 as usize;
+                if matches!(self.ir_types[ty_idx], IRType::Block { .. }) {
+                    // Read Vec(pc_width, Bit) from even lane.
+                    let new_storage = StorageId(storage.0 * 2);
+                    let merged = self.push_typed(
+                        IRStmt::StorageRead { storage: new_storage, ty: self.vec_pc_type_id, addr: *addr },
+                        self.vec_pc_type_id,
+                    );
+                    // Decompose Vec back into individual Bit vars via Shuffle.
+                    let bits: Vec<u32> = (0..self.pc_width)
+                        .map(|j| {
+                            let shuffled = self.push_typed(
+                                IRStmt::Shuffle {
+                                    result_bits: vec![(j as u8, IRVarId(merged))],
+                                    ty: self.bit_type_id,
+                                },
+                                self.bit_type_id,
+                            );
+                            shuffled
+                        })
+                        .collect();
+                    let sig = match &self.ir_types[ty_idx] {
+                        IRType::Block { params } => params.clone(),
+                        _ => unreachable!(),
+                    };
+                    let rep = if !bits.is_empty() { bits[0] } else { self.emit_zero_bit() };
+                    self.block_var_to_bits.insert(orig_var_id, (bits, sig));
+                    var_map.push(rep);
+                    continue;
+                } else {
+                    // Non-block read: remap to odd storage lane.
+                    let new_storage = StorageId(storage.0 * 2 + 1);
+                    let res_ty = infer_stmt_result_type(&mapped, &self.var_types, &self.ir_types, &self.bit_type_id);
+                    let id = self.push_typed(
+                        IRStmt::StorageRead { storage: new_storage, ty: *ty, addr: *addr },
+                        res_ty,
+                    );
+                    var_map.push(id);
+                    continue;
+                }
+            }
+
             // Ordinary stmt — infer type and emit.
             let ty = infer_stmt_result_type(
                 &mapped,
@@ -1475,12 +1557,16 @@ pub fn movfuscate_ir(blocks: &IRBlocks, types: &mut IRTypes) -> IRBlocks {
     // Ensure IRType::Bit is present in the types table.
     let bit_type_id = types.intern(IRType::Primitive(Type::Bit));
 
-    let ir_types = types.0.clone();
-
-    // pc_width must be known before computing slot types so Block params can
-    // be expanded to the right number of Bit slots.
+    // Intern Vec(pc_width, Bit) for block-reference storage.
     let n = blocks.blocks.len();
     let pc_width = pc_bits_needed(n);
+    let vec_pc_type_id = if pc_width > 0 {
+        types.intern(IRType::Vec(pc_width, bit_type_id))
+    } else {
+        bit_type_id
+    };
+
+    let ir_types = types.0.clone();
 
     // Compute per-slot types from the original blocks, expanding Block params.
     let state_slot_types =
@@ -1498,6 +1584,7 @@ pub fn movfuscate_ir(blocks: &IRBlocks, types: &mut IRTypes) -> IRBlocks {
     let ctx = IrCtx::new(
         combined_params as u32,
         bit_type_id,
+        vec_pc_type_id,
         combined_param_types,
         ir_types,
         pc_width,
