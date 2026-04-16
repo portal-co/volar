@@ -20,7 +20,7 @@ impl<T: Clone, U: Clone, N: ArraySize, M: ArraySize> LweSample<T, U, N, M> {
         T: Mul<S, Output = A>,
     {
         Self {
-            b: Array::from_fn(|i| {
+            b: Array::<U, M>::from_fn(|i| {
                 s.iter()
                     .enumerate()
                     .map(|(a, b)| matrix[i][a].clone() * b.clone())
