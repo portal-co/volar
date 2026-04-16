@@ -9,5 +9,6 @@ pub mod garble;
 pub mod vole;
 pub mod curve;
 pub mod mpc;
+pub mod lwe;
 // pub mod xsat;
 pub use volar_primitives as field;
