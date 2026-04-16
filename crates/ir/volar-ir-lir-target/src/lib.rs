@@ -61,7 +61,7 @@ use volar_lir::{BitCircuitBuilder, IcmpPred, LirTarget, LirType, StructDef, Stru
 use volar_lir::circuits::{
     bc_abs, bc_add, bc_and_vec, bc_ashr, bc_eq, bc_lshr, bc_mul, bc_ne, bc_neg,
     bc_not_vec, bc_or_vec, bc_sdiv, bc_select_vec, bc_shl, bc_sle, bc_slt,
-    bc_sub, bc_udiv, bc_ule, bc_ult, bc_xor_vec,
+    bc_sub, bc_udiv, bc_ule, bc_ult, bc_xor_vec, StorageEmitter,
 };
 
 // ============================================================================
@@ -730,6 +730,29 @@ impl BitCircuitBuilder for VolarIrTarget {
     }
 }
 
+impl StorageEmitter for VolarIrTarget {
+    fn compose_address(&mut self, bits: &[IRVarId]) -> IRVarId {
+        if bits.len() == 1 {
+            return bits[0];
+        }
+        // Intern IRType::Vec(N, bit_tid) for the address width.
+        let n = bits.len();
+        let bit_tid = self.bit_tid;
+        let vec_ty = self.types.intern(IrType::Vec(n, bit_tid));
+        self.emit(IRStmt::Merge { parts: bits.to_vec(), ty: vec_ty })
+    }
+
+    fn emit_read(&mut self, storage: volar_ir_common::StorageId, ty: volar_ir_common::TypeId, addr_bits: &[IRVarId]) -> IRVarId {
+        let addr = self.compose_address(addr_bits);
+        self.emit(IRStmt::StorageRead { storage, ty, addr })
+    }
+
+    fn emit_write(&mut self, storage: volar_ir_common::StorageId, src: IRVarId, ty: volar_ir_common::TypeId, addr_bits: &[IRVarId]) {
+        let addr = self.compose_address(addr_bits);
+        self.emit(IRStmt::StorageWrite { storage, src, ty, addr });
+    }
+}
+
 
 fn bits_for_lir_type(ty: &LirType, struct_widths: &[usize]) -> usize {
     match ty {
@@ -831,11 +854,11 @@ fn subst_stmt(stmt: &IRStmt, var_map: &[IRVarId]) -> IRStmt {
             IRStmt::Merge { parts: parts.iter().map(s).collect(), ty: ty.clone() }
         }
         IRStmt::Splat { src, ty } => IRStmt::Splat { src: s(src), ty: ty.clone() },
-        IRStmt::StorageRead { ty, addr } => {
-            IRStmt::StorageRead { ty: ty.clone(), addr: s(addr) }
+        IRStmt::StorageRead { storage, ty, addr } => {
+            IRStmt::StorageRead { storage: *storage, ty: ty.clone(), addr: s(addr) }
         }
-        IRStmt::StorageWrite { src, ty, addr } => {
-            IRStmt::StorageWrite { src: s(src), ty: ty.clone(), addr: s(addr) }
+        IRStmt::StorageWrite { storage, src, ty, addr } => {
+            IRStmt::StorageWrite { storage: *storage, src: s(src), ty: ty.clone(), addr: s(addr) }
         }
         IRStmt::Shuffle { result_bits, ty } => IRStmt::Shuffle {
             result_bits: result_bits.iter().map(|(b, id)| (*b, s(id))).collect(),

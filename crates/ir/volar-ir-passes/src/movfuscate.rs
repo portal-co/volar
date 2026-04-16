@@ -631,9 +631,9 @@ impl MovfuscCtx for BIrCtx {
 fn subst_ir(stmt: &IRStmt, var_map: &[u32]) -> IRStmt {
     let s = |id: &IRVarId| IRVarId(var_map[id.0 as usize]);
     match stmt {
-        IRStmt::StorageRead { ty, addr } => IRStmt::StorageRead { ty: ty.clone(), addr: s(addr) },
-        IRStmt::StorageWrite { src, ty, addr } => {
-            IRStmt::StorageWrite { src: s(src), ty: ty.clone(), addr: s(addr) }
+        IRStmt::StorageRead { storage, ty, addr } => IRStmt::StorageRead { storage: *storage, ty: ty.clone(), addr: s(addr) },
+        IRStmt::StorageWrite { storage, src, ty, addr } => {
+            IRStmt::StorageWrite { storage: *storage, src: s(src), ty: ty.clone(), addr: s(addr) }
         }
         IRStmt::Const(c, ty) => IRStmt::Const(*c, ty.clone()),
         IRStmt::Transmute { src, src_ty, dst_ty } => {

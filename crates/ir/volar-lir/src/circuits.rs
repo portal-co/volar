@@ -423,3 +423,245 @@ pub fn bc_select_vec<B: BitCircuitBuilder>(
         .map(|(ai, xi)| b.bc_select(cond.clone(), ai.clone(), xi.clone()))
         .collect()
 }
+
+// ============================================================================
+// Storage emission trait (for StorageRead / StorageWrite)
+// ============================================================================
+
+use volar_ir_common::{StorageId, TypeId};
+
+/// Trait for targets that can emit `StorageRead` and `StorageWrite` stmts.
+///
+/// The address is always a **multi-bit integer** passed as `&[Self::Bit]`
+/// (LSB first, the same representation used throughout the bit-circuit layer).
+/// Each backend's [`compose_address`](StorageEmitter::compose_address) packages
+/// these bits into a single SSA var of type `Vec(N, Bit)` — a properly-typed
+/// wide address — before emitting the storage stmt.
+///
+/// # Address type
+///
+/// Storage addresses use `IrType::Vec(N, bit_tid)` so that the Volar IR type
+/// system tracks the address width explicitly.  When the `StackPtr` base and
+/// offset are both compile-time constants, the emitted `Merge` constant-folds
+/// through `bc_const` and the resulting address var is also a constant.
+pub trait StorageEmitter: BitCircuitBuilder {
+    /// Compose N bit-circuit vars into a single SSA var of type `Vec(N, Bit)`.
+    ///
+    /// This is a required method so each backend can intern the appropriate
+    /// `Vec(N, bit_tid)` type in its own type table and emit a `Merge` stmt
+    /// (or equivalent) that records the output type.
+    ///
+    /// For N = 1, backends may return the single bit directly.
+    fn compose_address(&mut self, bits: &[Self::Bit]) -> Self::Bit;
+
+    /// Emit `StorageRead` with a wide address.
+    ///
+    /// `addr_bits` is the full N-bit address produced by
+    /// [`StackPtr::materialize`].  The implementation calls
+    /// [`compose_address`](Self::compose_address) to package it, then emits
+    /// the read stmt.
+    fn emit_read(
+        &mut self,
+        storage: StorageId,
+        ty: TypeId,
+        addr_bits: &[Self::Bit],
+    ) -> Self::Bit;
+
+    /// Emit `StorageWrite` with a wide address.
+    fn emit_write(
+        &mut self,
+        storage: StorageId,
+        src: Self::Bit,
+        ty: TypeId,
+        addr_bits: &[Self::Bit],
+    );
+}
+
+// ============================================================================
+// Stack pointer with constant-offset folding
+// ============================================================================
+
+/// A stack pointer decomposed into a bit-circuit base and an accumulated
+/// compile-time constant offset.
+///
+/// The constant offset is tracked symbolically: `sp.advance(4)` never emits
+/// any gates.  Only [`materialize`](StackPtr::materialize) composes the
+/// two halves into a concrete address (via [`bc_add`]) — and when the offset
+/// is zero, even that is a no-op.
+///
+/// # Constant folding
+///
+/// When the base itself is constant (all bits were created via `bc_const`),
+/// `bc_add` in the circuit backend will produce constants for every bit of the
+/// result, achieving full compile-time folding of `const_base + const_offset`.
+#[derive(Clone, Debug)]
+pub struct StackPtr<Bit: Clone> {
+    /// Base address bits, LSB first.
+    base: Vec<Bit>,
+    /// Compile-time constant offset accumulated since the last materialisation.
+    offset: u64,
+}
+
+impl<Bit: Clone + Ord> StackPtr<Bit> {
+    /// Create a stack pointer from an existing set of address bits.
+    pub fn new(base: Vec<Bit>) -> Self {
+        StackPtr { base, offset: 0 }
+    }
+
+    /// Create a fully-constant stack pointer.  All bits are emitted as
+    /// `bc_const` — maximally foldable.
+    pub fn from_const<B: BitCircuitBuilder<Bit = Bit>>(b: &mut B, val: u64, width: usize) -> Self {
+        let base = (0..width).map(|i| b.bc_const((val >> i) & 1 != 0)).collect();
+        StackPtr { base, offset: 0 }
+    }
+
+    /// Advance by a compile-time constant.  **No gates emitted.**
+    pub fn advance(&mut self, n: u64) {
+        self.offset = self.offset.wrapping_add(n);
+    }
+
+    /// Retreat by a compile-time constant.  **No gates emitted.**
+    pub fn retreat(&mut self, n: u64) {
+        self.offset = self.offset.wrapping_sub(n);
+    }
+
+    /// Advance by a variable (circuit-time) amount.  Materialises the current
+    /// pointer, adds `amount`, and resets the constant offset to 0.
+    pub fn advance_var<B: BitCircuitBuilder<Bit = Bit>>(        &mut self,
+        b: &mut B,
+        amount: &[Bit],
+    ) {
+        let current = self.materialize(b);
+        self.base = bc_add(b, &current, amount, false);
+        self.offset = 0;
+    }
+
+    /// Produce the concrete address bits: `base + offset`.
+    ///
+    /// When `offset == 0` this returns the base directly (zero cost).
+    /// When `offset != 0` it emits one `bc_add` with a constant operand.
+    pub fn materialize<B: BitCircuitBuilder<Bit = Bit>>(&self, b: &mut B) -> Vec<Bit> {
+        if self.offset == 0 {
+            return self.base.clone();
+        }
+        let w = self.base.len();
+        let offset_bits: Vec<Bit> = (0..w)
+            .map(|i| b.bc_const((self.offset >> i) & 1 != 0))
+            .collect();
+        bc_add(b, &self.base, &offset_bits, false)
+    }
+
+    /// Snapshot the current pointer state (for passing to callees).
+    pub fn snapshot(&self) -> Self {
+        self.clone()
+    }
+
+    /// Bit width of the pointer.
+    pub fn width(&self) -> usize {
+        self.base.len()
+    }
+}
+
+// ============================================================================
+// Frame layout + call convention helpers
+// ============================================================================
+
+/// Layout of one function's stack frame.
+///
+/// All offsets are in *storage slots* (one slot = one `StorageRead`/`Write`).
+/// A `Bit`-typed value occupies 1 slot; a 32-bit integer occupies 32 slots.
+#[derive(Clone, Debug)]
+pub struct FrameLayout {
+    /// `(slot_offset, slot_count, type_id)` for each parameter, in order.
+    pub params: Vec<(u64, u64, TypeId)>,
+    /// `(slot_offset, slot_count, type_id)` for the return value, if any.
+    pub ret: Option<(u64, u64, TypeId)>,
+    /// Total frame size in storage slots.
+    pub size: u64,
+    /// Which storage space the frame lives in.
+    pub storage: StorageId,
+}
+
+/// Write argument bits into a stack frame via `StorageWrite`.
+///
+/// For each parameter `i`, writes `args[i][j]` to slot `sp + param_offset + j`.
+/// The address is the full N-bit value from [`StackPtr::materialize`],
+/// passed directly to [`StorageEmitter::emit_write`] which composes it
+/// into a `Vec(N, Bit)` typed var internally.
+pub fn frame_push_args<B: StorageEmitter>(
+    b: &mut B,
+    sp: &StackPtr<B::Bit>,
+    layout: &FrameLayout,
+    args: &[Vec<B::Bit>],
+) {
+    for (i, (param_off, slot_count, ty)) in layout.params.iter().enumerate() {
+        let mut slot_sp = sp.clone();
+        slot_sp.advance(*param_off);
+        for j in 0..(*slot_count as usize) {
+            let mut addr_sp = slot_sp.clone();
+            addr_sp.advance(j as u64);
+            let addr = addr_sp.materialize(b);
+            b.emit_write(layout.storage, args[i][j].clone(), *ty, &addr);
+        }
+    }
+}
+
+/// Read argument bits from a stack frame via `StorageRead`.
+///
+/// Returns one `Vec<Bit>` per parameter.
+pub fn frame_read_args<B: StorageEmitter>(
+    b: &mut B,
+    sp: &StackPtr<B::Bit>,
+    layout: &FrameLayout,
+) -> Vec<Vec<B::Bit>> {
+    layout.params.iter().map(|(param_off, slot_count, ty)| {
+        let mut slot_sp = sp.clone();
+        slot_sp.advance(*param_off);
+        (0..(*slot_count as usize)).map(|j| {
+            let mut addr_sp = slot_sp.clone();
+            addr_sp.advance(j as u64);
+            let addr = addr_sp.materialize(b);
+            b.emit_read(layout.storage, *ty, &addr)
+        }).collect()
+    }).collect()
+}
+
+/// Write return-value bits into a stack frame.
+pub fn frame_write_ret<B: StorageEmitter>(
+    b: &mut B,
+    sp: &StackPtr<B::Bit>,
+    layout: &FrameLayout,
+    ret_bits: &[B::Bit],
+) {
+    if let Some((ret_off, slot_count, ty)) = &layout.ret {
+        let mut slot_sp = sp.clone();
+        slot_sp.advance(*ret_off);
+        for j in 0..(*slot_count as usize) {
+            let mut addr_sp = slot_sp.clone();
+            addr_sp.advance(j as u64);
+            let addr = addr_sp.materialize(b);
+            b.emit_write(layout.storage, ret_bits[j].clone(), *ty, &addr);
+        }
+    }
+}
+
+/// Read return-value bits from a stack frame.
+pub fn frame_read_ret<B: StorageEmitter>(
+    b: &mut B,
+    sp: &StackPtr<B::Bit>,
+    layout: &FrameLayout,
+) -> Vec<B::Bit> {
+    match &layout.ret {
+        None => vec![],
+        Some((ret_off, slot_count, ty)) => {
+            let mut slot_sp = sp.clone();
+            slot_sp.advance(*ret_off);
+            (0..(*slot_count as usize)).map(|j| {
+                let mut addr_sp = slot_sp.clone();
+                addr_sp.advance(j as u64);
+                let addr = addr_sp.materialize(b);
+                b.emit_read(layout.storage, *ty, &addr)
+            }).collect()
+        }
+    }
+}

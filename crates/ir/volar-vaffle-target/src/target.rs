@@ -21,7 +21,7 @@ use volar_lir::{
     circuits::{
         bc_abs, bc_add, bc_and_vec, bc_ashr, bc_eq, bc_lshr, bc_mul, bc_ne, bc_neg,
         bc_not_vec, bc_or_vec, bc_sdiv, bc_select_vec, bc_shl, bc_sle, bc_slt,
-        bc_sub, bc_udiv, bc_ule, bc_ult, bc_xor_vec,
+        bc_sub, bc_udiv, bc_ule, bc_ult, bc_xor_vec, StorageEmitter,
     },
     BitCircuitBuilder, IcmpPred, LirTarget, LirType, StructDef, StructId,
 };
@@ -210,6 +210,31 @@ impl BitCircuitBuilder for VaffleTarget {
         let mut coeffs = BTreeMap::new();
         coeffs.insert(ab, 1u8); coeffs.insert(ac, 1u8); coeffs.insert(bc_, 1u8);
         self.bc_poly(coeffs, 0)
+    }
+}
+
+impl StorageEmitter for VaffleTarget {
+    fn compose_address(&mut self, bits: &[ValueId]) -> ValueId {
+        if bits.len() == 1 {
+            return bits[0];
+        }
+        let n = bits.len();
+        let bit_tid = self.bit_tid();
+        let vec_ty = self.intern_type(IrType::Vec(n, bit_tid));
+        let v = Value::Op(Stmt::Merge { parts: bits.to_vec(), ty: vec_ty });
+        self.fb().emit_value(v)
+    }
+
+    fn emit_read(&mut self, storage: volar_ir_common::StorageId, ty: volar_ir_common::TypeId, addr_bits: &[ValueId]) -> ValueId {
+        let addr = self.compose_address(addr_bits);
+        let v = Value::Op(Stmt::StorageRead { storage, ty, addr });
+        self.fb().emit_value(v)
+    }
+
+    fn emit_write(&mut self, storage: volar_ir_common::StorageId, src: ValueId, ty: volar_ir_common::TypeId, addr_bits: &[ValueId]) {
+        let addr = self.compose_address(addr_bits);
+        let v = Value::Op(Stmt::StorageWrite { storage, src, ty, addr });
+        self.fb().emit_value(v);
     }
 }
 

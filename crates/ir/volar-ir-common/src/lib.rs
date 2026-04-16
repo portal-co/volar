@@ -181,6 +181,21 @@ pub struct ActionDecl {
 // Shared statement type
 // ============================================================================
 
+/// Identifies one of potentially many independent storage spaces.
+///
+/// `StorageId(0)` is the "default" storage.  Higher IDs may be used for
+/// separate stacks, heaps, or per-type scratch spaces.  The execution
+/// environment maps each `StorageId` to a concrete address space.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct StorageId(pub u32);
+
+impl StorageId {
+    /// The default / "main" storage space.
+    pub const DEFAULT: StorageId = StorageId(0);
+    /// A dedicated call-stack storage space.
+    pub const STACK: StorageId = StorageId(1);
+}
+
 /// Shared computational statement type for Volar IR and VAFFLE.
 ///
 /// Generic over two parameters:
@@ -202,11 +217,13 @@ pub struct ActionDecl {
 pub enum Stmt<Var, Addr = Var> {
     /// Load a value from a storage location addressed by `addr`.
     StorageRead {
+        storage: StorageId,
         ty: TypeId,
         addr: Addr,
     },
     /// Write `src` to the storage location addressed by `addr`.
     StorageWrite {
+        storage: StorageId,
         src: Var,
         ty: TypeId,
         addr: Addr,
