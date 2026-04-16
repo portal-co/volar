@@ -5,10 +5,6 @@ use volar_ir_common::{Constant, IrType, OracleDecl, ActionDecl, Stmt, Type, Type
 
 extern crate alloc;
 
-pub mod target;
-pub mod waffle_lower;
-pub use target::{VaffleTarget, VaffleValue, VaffleBlock};
-
 /// A VAFFLE module: the top-level container for types, signatures, functions,
 /// and the symbol table.
 ///

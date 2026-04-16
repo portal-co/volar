@@ -30,8 +30,8 @@ use portal_pc_waffle_ir::{
 
 use volar_lir::{BitCircuitBuilder, IcmpPred, LirTarget, LirType};
 
-use super::target::{bits_for_lir_type, VaffleBlock, VaffleTarget, VaffleValue};
-use super::ValueId;
+use crate::target::{bits_for_lir_type, VaffleBlock, VaffleTarget, VaffleValue};
+use vaffle::ValueId;
 
 // ============================================================================
 // Error

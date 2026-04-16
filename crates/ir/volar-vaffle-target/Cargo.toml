@@ -1,5 +1,5 @@
 [package]
-name = "vaffle"
+name = "volar-vaffle-target"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
@@ -7,4 +7,7 @@ description.workspace = true
 repository.workspace = true
 
 [dependencies]
+vaffle.workspace = true
 volar-ir-common.workspace = true
+volar-lir.workspace = true
+portal-pc-waffle-ir.workspace = true

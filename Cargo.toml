@@ -9,6 +9,7 @@ members = [
     "crates/ir/volar-ir-passes",
     "crates/ir/volar-ir-lir-target",
     "crates/ir/vaffle",
+    "crates/ir/volar-vaffle-target",
     "crates/compiler/volar-compiler",
     "crates/compiler/volar-compiler-passes",
     "crates/compiler/ephemera",
@@ -30,8 +31,11 @@ volar-ir = {path="crates/ir/volar-ir", version = "0.1.0"}
 volar-ir-passes = {path="crates/ir/volar-ir-passes", version = "0.1.0"}
 volar-lir = {path="crates/ir/volar-lir", version = "0.1.0"}
 vaffle = {path="crates/ir/vaffle", version = "0.1.0"}
+volar-vaffle-target = {path="crates/ir/volar-vaffle-target", version = "0.1.0"}
 volar-ir-common = {path="crates/ir/volar-ir-common", version = "0.1.0"}
 volar-compiler-passes = {path="crates/compiler/volar-compiler-passes", version = "0.1.0"}
+
+portal-pc-waffle-ir = { version = "0.6.0-alpha.1", git = "https://github.com/portal-co/waffle-" }
 
 digest = { version = "0.11.2", default-features = false }
 cipher = { version = "0.5.1", default-features = false }
@@ -41,5 +45,3 @@ hybrid-array = { version = "0.4.8", default-features = false }
 elliptic-curve = { version = "0.13.8", default-features = false }
 ff = { version = "0.13.1", default-features = false }
 group = { version = "0.13.0", default-features = false }
-
-portal-pc-waffle-ir = { version = "0.6.0-alpha.1", git = "https://github.com/portal-co/waffle-" }

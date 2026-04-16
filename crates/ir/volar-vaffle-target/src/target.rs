@@ -26,7 +26,7 @@ use volar_lir::{
     BitCircuitBuilder, IcmpPred, LirTarget, LirType, StructDef, StructId,
 };
 
-use super::{
+use vaffle::{
     Block, BlockId, FuncBody, FuncDecl, FuncId, Module, SigDecl, SigId,
     Target, Terminator, Value, ValueId,
 };
