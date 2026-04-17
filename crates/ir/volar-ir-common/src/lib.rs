@@ -194,6 +194,10 @@ impl StorageId {
     pub const DEFAULT: StorageId = StorageId(0);
     /// A dedicated call-stack storage space.
     pub const STACK: StorageId = StorageId(1);
+    /// Base ID for WASM linear memories.  Memory `i` uses `StorageId(MEMORY_BASE + i)`.
+    pub const MEMORY_BASE: u32 = 16;
+    /// Convenience: StorageId for WASM memory index `i`.
+    pub const fn memory(i: u32) -> StorageId { StorageId(Self::MEMORY_BASE + i) }
 }
 
 /// Shared computational statement type for Volar IR and VAFFLE.

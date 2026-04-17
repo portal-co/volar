@@ -7,12 +7,14 @@
 //!   and conversions.
 //! - **Branches**: `Br`, `CondBr`, `Return`.
 //! - **Direct calls**: `Operator::Call { function_index }`.
+//! - **Linear memory**: `I32Load`, `I32Store`, etc. via byte-addressed
+//!   storage (one 8-bit cell per byte, `StorageId::memory(idx)`).
 //!
 //! All integer values are bit-decomposed via `BitCircuitBuilder`, sharing
 //! the same GF(2) Poly circuits as `VolarIrTarget`.
 //!
 //! # Errors
-//! `UnsupportedOp` is returned for floats, memory, tables, globals, indirect
+//! `UnsupportedOp` is returned for floats, tables, globals, indirect
 //! calls, SIMD, and atomics.  The module-level helper skips those functions.
 
 use alloc::{
@@ -24,11 +26,13 @@ use alloc::{
 
 use portal_pc_waffle_ir::{
     entity::EntityRef, // for .index() on Func/Block/etc.
-    FuncDecl, FunctionBody, Module as WModule, Operator, SignatureData, Terminator,
+    FuncDecl, FunctionBody, MemoryArg, Module as WModule, Operator, SignatureData, Terminator,
     Type as WType, Value as WValue, ValueDef,
 };
 
+use volar_ir_common::StorageId;
 use volar_lir::{BitCircuitBuilder, IcmpPred, LirTarget, LirType};
+use volar_lir::circuits::StorageEmitter;
 
 use crate::target::{bits_for_lir_type, VaffleBlock, VaffleTarget, VaffleValue};
 use vaffle::ValueId;
@@ -293,6 +297,86 @@ fn lower_op(
 
         Operator::Nop => return Ok(None),
 
+        // ---- Memory loads (byte-addressed storage) ---------------------
+        Operator::I32Load { memory } => {
+            lower_mem_load(tgt, memory, &get(0)?, 4, LirType::U32, false)
+        }
+        Operator::I64Load { memory } => {
+            lower_mem_load(tgt, memory, &get(0)?, 8, LirType::U64, false)
+        }
+        Operator::I32Load8U { memory } => {
+            lower_mem_load(tgt, memory, &get(0)?, 1, LirType::U32, false)
+        }
+        Operator::I32Load8S { memory } => {
+            lower_mem_load(tgt, memory, &get(0)?, 1, LirType::U32, true)
+        }
+        Operator::I32Load16U { memory } => {
+            lower_mem_load(tgt, memory, &get(0)?, 2, LirType::U32, false)
+        }
+        Operator::I32Load16S { memory } => {
+            lower_mem_load(tgt, memory, &get(0)?, 2, LirType::U32, true)
+        }
+        Operator::I64Load8U { memory } => {
+            lower_mem_load(tgt, memory, &get(0)?, 1, LirType::U64, false)
+        }
+        Operator::I64Load8S { memory } => {
+            lower_mem_load(tgt, memory, &get(0)?, 1, LirType::U64, true)
+        }
+        Operator::I64Load16U { memory } => {
+            lower_mem_load(tgt, memory, &get(0)?, 2, LirType::U64, false)
+        }
+        Operator::I64Load16S { memory } => {
+            lower_mem_load(tgt, memory, &get(0)?, 2, LirType::U64, true)
+        }
+        Operator::I64Load32U { memory } => {
+            lower_mem_load(tgt, memory, &get(0)?, 4, LirType::U64, false)
+        }
+        Operator::I64Load32S { memory } => {
+            lower_mem_load(tgt, memory, &get(0)?, 4, LirType::U64, true)
+        }
+
+        // ---- Memory stores ---------------------------------------------
+        Operator::I32Store { memory } => {
+            lower_mem_store(tgt, memory, &get(0)?, &get(1)?, 4);
+            return Ok(None);
+        }
+        Operator::I64Store { memory } => {
+            lower_mem_store(tgt, memory, &get(0)?, &get(1)?, 8);
+            return Ok(None);
+        }
+        Operator::I32Store8 { memory } => {
+            lower_mem_store(tgt, memory, &get(0)?, &get(1)?, 1);
+            return Ok(None);
+        }
+        Operator::I32Store16 { memory } => {
+            lower_mem_store(tgt, memory, &get(0)?, &get(1)?, 2);
+            return Ok(None);
+        }
+        Operator::I64Store8 { memory } => {
+            lower_mem_store(tgt, memory, &get(0)?, &get(1)?, 1);
+            return Ok(None);
+        }
+        Operator::I64Store16 { memory } => {
+            lower_mem_store(tgt, memory, &get(0)?, &get(1)?, 2);
+            return Ok(None);
+        }
+        Operator::I64Store32 { memory } => {
+            lower_mem_store(tgt, memory, &get(0)?, &get(1)?, 4);
+            return Ok(None);
+        }
+
+        // ---- Memory size/grow (stubs returning constant) ----------------
+        Operator::MemorySize { .. } => {
+            // In the ZK/MPC context, memory size is fixed at compile time.
+            // Return 0 pages as a placeholder; real programs should not
+            // depend on dynamic memory growth.
+            tgt.iconst(LirType::U32, 0)
+        }
+        Operator::MemoryGrow { .. } => {
+            // memory.grow always fails (returns -1) in the circuit model.
+            tgt.iconst(LirType::U32, -1i32 as i64)
+        }
+
         other => return Err(UnsupportedOp(alloc::format!("{other:?}"))),
     }))
 }
@@ -360,6 +444,173 @@ fn lower_term(
 }
 
 // ============================================================================
+// Memory helpers
+// ============================================================================
+
+/// Address width for WASM memory byte addresses (i32 addresses = 32 bits).
+#[allow(dead_code)]
+const MEM_ADDR_BITS: usize = 32;
+
+/// Compute effective byte address = base_addr + static_offset.
+///
+/// `base` is the i32 address from the WASM operand stack (32 bits).
+/// `offset` is the static offset from the `MemoryArg`.
+/// Returns the 32-bit effective address as a bit vector.
+fn effective_addr(
+    tgt: &mut VaffleTarget,
+    base: &VaffleValue,
+    offset: u64,
+) -> VaffleValue {
+    if offset == 0 {
+        return base.clone();
+    }
+    let off = tgt.iconst(LirType::U32, offset as i64);
+    tgt.add(base.clone(), off)
+}
+
+/// Read `n_bytes` consecutive bytes from memory storage starting at
+/// `byte_addr`, returning a flat bit vector (LSB first, little-endian).
+///
+/// Each byte is a separate `StorageRead` from `StorageId::memory(mem_idx)`.
+/// The returned `VaffleValue` has `n_bytes * 8` bits.
+fn mem_load_bytes(
+    tgt: &mut VaffleTarget,
+    mem_idx: u32,
+    byte_addr: &VaffleValue,
+    n_bytes: usize,
+) -> VaffleValue {
+    let storage = StorageId::memory(mem_idx);
+    let byte_tid = tgt.byte_tid();
+    let bit_tid = tgt.bit_tid();
+    let mut all_bits: Vec<ValueId> = Vec::with_capacity(n_bytes * 8);
+
+    for byte_i in 0..n_bytes {
+        // Compute address for this byte.
+        let addr_val = if byte_i == 0 {
+            byte_addr.clone()
+        } else {
+            let off = tgt.iconst(LirType::U32, byte_i as i64);
+            tgt.add(byte_addr.clone(), off)
+        };
+
+        // StorageRead: reads one byte (Vec(8, Bit)) from memory.
+        let byte_var = tgt.emit_read(storage, byte_tid, &addr_val.bits);
+
+        // Decompose the byte into 8 individual bits via Shuffle.
+        for bit_j in 0..8u8 {
+            let bit_var = {
+                let v = vaffle::Value::Op(volar_ir_common::Stmt::Shuffle {
+                    result_bits: vec![(bit_j, byte_var)],
+                    ty: bit_tid,
+                });
+                tgt.fb().emit_value(v)
+            };
+            all_bits.push(bit_var);
+        }
+    }
+
+    let ty = match n_bytes {
+        1 => LirType::U8,
+        2 => LirType::U16,
+        4 => LirType::U32,
+        8 => LirType::U64,
+        _ => LirType::U32,
+    };
+    VaffleValue { bits: all_bits, ty }
+}
+
+/// Write `n_bytes` bytes of `value` (little-endian, LSB first) to memory
+/// storage starting at `byte_addr`.
+fn mem_store_bytes(
+    tgt: &mut VaffleTarget,
+    mem_idx: u32,
+    byte_addr: &VaffleValue,
+    value: &VaffleValue,
+    n_bytes: usize,
+) {
+    let storage = StorageId::memory(mem_idx);
+    let byte_tid = tgt.byte_tid();
+
+    for byte_i in 0..n_bytes {
+        // Compute address for this byte.
+        let addr_val = if byte_i == 0 {
+            byte_addr.clone()
+        } else {
+            let off = tgt.iconst(LirType::U32, byte_i as i64);
+            tgt.add(byte_addr.clone(), off)
+        };
+
+        // Extract 8 bits for this byte.
+        let base = byte_i * 8;
+        let bits: Vec<ValueId> = (0..8)
+            .map(|j| {
+                if base + j < value.bits.len() {
+                    value.bits[base + j]
+                } else {
+                    tgt.bc_const(false) // zero-pad
+                }
+            })
+            .collect();
+
+        // Merge 8 bits into a byte-typed value.
+        let byte_var = tgt.compose_address(&bits); // compose_address creates Merge → Vec(8, Bit)
+        // Actually compose_address creates Vec(N, Bit) where N = bits.len().
+        // For 8 bits this gives us Vec(8, Bit) = byte_tid. Perfect.
+
+        tgt.emit_write(storage, byte_var, byte_tid, &addr_val.bits);
+    }
+}
+
+/// Lower a WAFFLE memory load operator.
+///
+/// Returns the loaded value as a `VaffleValue` with the appropriate type.
+fn lower_mem_load(
+    tgt: &mut VaffleTarget,
+    memory: &MemoryArg,
+    base: &VaffleValue,
+    load_bytes: usize,
+    result_ty: LirType,
+    sign_extend: bool,
+) -> VaffleValue {
+    let mem_idx = memory.memory.index() as u32;
+    let addr = effective_addr(tgt, base, memory.offset);
+    let loaded = mem_load_bytes(tgt, mem_idx, &addr, load_bytes);
+
+    // Extend to the target width if needed.
+    let target_bits = bits_for_lir_type(&result_ty, &[]);
+    if loaded.bits.len() == target_bits {
+        VaffleValue { bits: loaded.bits, ty: result_ty }
+    } else if sign_extend {
+        tgt.sext(loaded, result_ty)
+    } else {
+        tgt.zext(loaded, result_ty)
+    }
+}
+
+/// Lower a WAFFLE memory store operator.
+fn lower_mem_store(
+    tgt: &mut VaffleTarget,
+    memory: &MemoryArg,
+    base: &VaffleValue,
+    value: &VaffleValue,
+    store_bytes: usize,
+) {
+    let mem_idx = memory.memory.index() as u32;
+    let addr = effective_addr(tgt, base, memory.offset);
+    // Truncate to the store width if needed.
+    let store_bits = store_bytes * 8;
+    let truncated = if value.bits.len() > store_bits {
+        VaffleValue {
+            bits: value.bits[..store_bits].to_vec(),
+            ty: value.ty.clone(),
+        }
+    } else {
+        value.clone()
+    };
+    mem_store_bytes(tgt, mem_idx, &addr, &truncated, store_bytes);
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -377,5 +628,343 @@ fn callee_name(wasm: &WModule, fid: portal_pc_waffle_ir::Func) -> String {
         FuncDecl::Body(_, name, _) => name.clone(),
         FuncDecl::Import(_, name)  => name.clone(),
         _ => alloc::format!("func_{}", fid.index()),
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use std::vec;
+
+    use super::*;
+    use portal_pc_waffle_ir::{
+        BlockTarget, Memory, MemoryData,
+        Module as WModule, Operator, Signature, SignatureData,
+        Terminator as WTerminator, Type as WType,
+    };
+    use portal_pc_waffle_ir::entity::EntityVec;
+    use volar_ir_common::Stmt;
+
+    /// Build a minimal WAFFLE module with one memory and a function that
+    /// does `i32.store(addr=param0, val=param1)` then `i32.load(addr=param0) → return`.
+    fn build_store_load_module() -> WModule<'static> {
+        let mut sigs: EntityVec<Signature, SignatureData> = EntityVec::default();
+        let sig = sigs.push(SignatureData::Func {
+            params: vec![WType::I32, WType::I32],
+            returns: vec![WType::I32],
+            shared: false,
+        });
+
+        let mut memories: EntityVec<Memory, MemoryData> = EntityVec::default();
+        memories.push(MemoryData {
+            initial_pages: 1,
+            maximum_pages: None,
+            segments: vec![],
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
+
+        let mut module = WModule {
+            orig_bytes: None,
+            funcs: EntityVec::default(),
+            signatures: sigs,
+            globals: EntityVec::default(),
+            tables: EntityVec::default(),
+            imports: vec![],
+            exports: vec![],
+            memories,
+            control_tags: EntityVec::default(),
+            start_func: None,
+            debug: Default::default(),
+            debug_map: Default::default(),
+            custom_sections: Default::default(),
+        };
+
+        let mut body = portal_pc_waffle_ir::FunctionBody::new(&module, sig);
+        let entry = body.entry;
+
+        // param0 = address, param1 = value
+        let param0 = body.blocks[entry].params[0].1;
+        let param1 = body.blocks[entry].params[1].1;
+
+        let mem_arg = MemoryArg {
+            align: 2,
+            offset: 0,
+            memory: Memory::from(0u32),
+        };
+
+        // i32.store param0, param1
+        body.add_op(
+            entry,
+            Operator::I32Store { memory: mem_arg.clone() },
+            &[param0, param1],
+            &[],
+        );
+
+        // loaded = i32.load param0
+        let loaded = body.add_op(
+            entry,
+            Operator::I32Load { memory: mem_arg },
+            &[param0],
+            &[WType::I32],
+        );
+
+        // return loaded
+        body.set_terminator(
+            entry,
+            WTerminator::Return { values: vec![loaded] },
+        );
+
+        module.funcs.push(portal_pc_waffle_ir::FuncDecl::Body(
+            sig, "store_load".into(), body,
+        ));
+
+        module
+    }
+
+    #[test]
+    fn test_memory_store_load_lowering() {
+        let wasm = build_store_load_module();
+        let mut target = VaffleTarget::new();
+
+        let errors = lower_waffle_module(&wasm, &mut target);
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+        // Should have one function in the module.
+        assert_eq!(target.module.funcs.len(), 1);
+
+        // Check that StorageRead and StorageWrite ops are present in the VAFFLE.
+        let func = &target.module.funcs[0];
+        let body = match func {
+            vaffle::FuncDecl::Body(b) => b,
+            _ => panic!("expected function body"),
+        };
+
+        let mut has_read = false;
+        let mut has_write = false;
+        for val in &body.values {
+            if let vaffle::Value::Op(stmt) = val {
+                match stmt {
+                    Stmt::StorageRead { storage, .. } => {
+                        assert_eq!(storage.0, StorageId::MEMORY_BASE);
+                        has_read = true;
+                    }
+                    Stmt::StorageWrite { storage, .. } => {
+                        assert_eq!(storage.0, StorageId::MEMORY_BASE);
+                        has_write = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert!(has_write, "VAFFLE should contain StorageWrite for i32.store");
+        assert!(has_read, "VAFFLE should contain StorageRead for i32.load");
+    }
+
+    /// Build a module with i32.store8 + i32.load8_u to test sub-word memory access.
+    fn build_byte_store_load_module() -> WModule<'static> {
+        let mut sigs: EntityVec<Signature, SignatureData> = EntityVec::default();
+        let sig = sigs.push(SignatureData::Func {
+            params: vec![WType::I32, WType::I32],
+            returns: vec![WType::I32],
+            shared: false,
+        });
+
+        let mut memories: EntityVec<Memory, MemoryData> = EntityVec::default();
+        memories.push(MemoryData {
+            initial_pages: 1,
+            maximum_pages: None,
+            segments: vec![],
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
+
+        let mut module = WModule {
+            orig_bytes: None,
+            funcs: EntityVec::default(),
+            signatures: sigs,
+            globals: EntityVec::default(),
+            tables: EntityVec::default(),
+            imports: vec![],
+            exports: vec![],
+            memories,
+            control_tags: EntityVec::default(),
+            start_func: None,
+            debug: Default::default(),
+            debug_map: Default::default(),
+            custom_sections: Default::default(),
+        };
+
+        let mut body = portal_pc_waffle_ir::FunctionBody::new(&module, sig);
+        let entry = body.entry;
+        let param0 = body.blocks[entry].params[0].1;
+        let param1 = body.blocks[entry].params[1].1;
+
+        let mem_arg = MemoryArg {
+            align: 0,
+            offset: 0,
+            memory: Memory::from(0u32),
+        };
+
+        // i32.store8 param0, param1
+        body.add_op(
+            entry,
+            Operator::I32Store8 { memory: mem_arg.clone() },
+            &[param0, param1],
+            &[],
+        );
+
+        // loaded = i32.load8_u param0
+        let loaded = body.add_op(
+            entry,
+            Operator::I32Load8U { memory: mem_arg },
+            &[param0],
+            &[WType::I32],
+        );
+
+        body.set_terminator(entry, WTerminator::Return { values: vec![loaded] });
+
+        module.funcs.push(portal_pc_waffle_ir::FuncDecl::Body(
+            sig, "byte_store_load".into(), body,
+        ));
+
+        module
+    }
+
+    #[test]
+    fn test_byte_memory_access() {
+        let wasm = build_byte_store_load_module();
+        let mut target = VaffleTarget::new();
+        let errors = lower_waffle_module(&wasm, &mut target);
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+        let func = &target.module.funcs[0];
+        let body = match func {
+            vaffle::FuncDecl::Body(b) => b,
+            _ => panic!("expected function body"),
+        };
+
+        // i32.store8 writes 1 byte, i32.load8_u reads 1 byte.
+        // Each should produce exactly 1 StorageWrite / 1 StorageRead.
+        let writes: Vec<_> = body.values.iter()
+            .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageWrite { .. })))
+            .collect();
+        let reads: Vec<_> = body.values.iter()
+            .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageRead { .. })))
+            .collect();
+        assert_eq!(writes.len(), 1, "store8 should produce exactly 1 StorageWrite");
+        assert_eq!(reads.len(), 1, "load8_u should produce exactly 1 StorageRead");
+    }
+
+    #[test]
+    fn test_i32_store_produces_4_byte_writes() {
+        let wasm = build_store_load_module();
+        let mut target = VaffleTarget::new();
+        let errors = lower_waffle_module(&wasm, &mut target);
+        assert!(errors.is_empty());
+
+        let body = match &target.module.funcs[0] {
+            vaffle::FuncDecl::Body(b) => b,
+            _ => panic!(),
+        };
+
+        // i32.store writes 4 bytes → 4 StorageWrite ops.
+        let writes: Vec<_> = body.values.iter()
+            .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageWrite { .. })))
+            .collect();
+        assert_eq!(writes.len(), 4, "i32.store should produce 4 StorageWrite ops (one per byte)");
+
+        // i32.load reads 4 bytes → 4 StorageRead ops.
+        let reads: Vec<_> = body.values.iter()
+            .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageRead { .. })))
+            .collect();
+        assert_eq!(reads.len(), 4, "i32.load should produce 4 StorageRead ops (one per byte)");
+    }
+
+    /// Test that MemoryArg.offset is applied correctly.
+    fn build_offset_load_module() -> WModule<'static> {
+        let mut sigs: EntityVec<Signature, SignatureData> = EntityVec::default();
+        let sig = sigs.push(SignatureData::Func {
+            params: vec![WType::I32],
+            returns: vec![WType::I32],
+            shared: false,
+        });
+
+        let mut memories: EntityVec<Memory, MemoryData> = EntityVec::default();
+        memories.push(MemoryData {
+            initial_pages: 1,
+            maximum_pages: None,
+            segments: vec![],
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
+
+        let mut module = WModule {
+            orig_bytes: None,
+            funcs: EntityVec::default(),
+            signatures: sigs,
+            globals: EntityVec::default(),
+            tables: EntityVec::default(),
+            imports: vec![],
+            exports: vec![],
+            memories,
+            control_tags: EntityVec::default(),
+            start_func: None,
+            debug: Default::default(),
+            debug_map: Default::default(),
+            custom_sections: Default::default(),
+        };
+
+        let mut body = portal_pc_waffle_ir::FunctionBody::new(&module, sig);
+        let entry = body.entry;
+        let param0 = body.blocks[entry].params[0].1;
+
+        let mem_arg = MemoryArg {
+            align: 2,
+            offset: 16, // static offset of 16 bytes
+            memory: Memory::from(0u32),
+        };
+
+        let loaded = body.add_op(
+            entry,
+            Operator::I32Load { memory: mem_arg },
+            &[param0],
+            &[WType::I32],
+        );
+
+        body.set_terminator(entry, WTerminator::Return { values: vec![loaded] });
+
+        module.funcs.push(portal_pc_waffle_ir::FuncDecl::Body(
+            sig, "offset_load".into(), body,
+        ));
+
+        module
+    }
+
+    #[test]
+    fn test_offset_load_lowering() {
+        let wasm = build_offset_load_module();
+        let mut target = VaffleTarget::new();
+        let errors = lower_waffle_module(&wasm, &mut target);
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+        // The function should have produced VAFFLE with storage reads.
+        // The offset computation happens via add circuits, but the key
+        // property is that it lowers without error.
+        let body = match &target.module.funcs[0] {
+            vaffle::FuncDecl::Body(b) => b,
+            _ => panic!(),
+        };
+        let reads: Vec<_> = body.values.iter()
+            .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageRead { .. })))
+            .collect();
+        assert_eq!(reads.len(), 4, "i32.load with offset should produce 4 reads");
     }
 }

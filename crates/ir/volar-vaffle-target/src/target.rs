@@ -62,7 +62,7 @@ struct BlockBuilder {
     terminator: Option<Terminator>,
 }
 
-struct FuncBuilder {
+pub(crate) struct FuncBuilder {
     name: String,
     sig_id: SigId,
     blocks: Vec<BlockBuilder>,
@@ -87,7 +87,7 @@ impl FuncBuilder {
         ValueId(self.all_values.len())
     }
 
-    fn emit_value(&mut self, val: Value) -> ValueId {
+    pub(crate) fn emit_value(&mut self, val: Value) -> ValueId {
         let id = self.next_value_id();
         self.all_values.push(val);
         self.blocks[self.current].stmts.push(id);
@@ -132,7 +132,13 @@ impl VaffleTarget {
         }
     }
 
-    fn bit_tid(&mut self) -> TypeId { self.module.types.bit() }
+    pub(crate) fn bit_tid(&mut self) -> TypeId { self.module.types.bit() }
+
+    /// Intern (or retrieve) the byte type `Vec(8, Bit)` used for memory storage cells.
+    pub(crate) fn byte_tid(&mut self) -> TypeId {
+        let bit = self.bit_tid();
+        self.intern_type(IrType::Vec(8, bit))
+    }
 
     fn intern_type(&mut self, ty: IrType) -> TypeId { self.module.types.intern(ty) }
 
@@ -140,7 +146,7 @@ impl VaffleTarget {
         bits_for_lir_type(ty, &self.struct_widths)
     }
 
-    fn fb(&mut self) -> &mut FuncBuilder {
+    pub(crate) fn fb(&mut self) -> &mut FuncBuilder {
         self.func.as_mut().expect("VaffleTarget: no function in progress")
     }
 
