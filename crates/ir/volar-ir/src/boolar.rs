@@ -3,9 +3,15 @@
 // Boolar IR: boolean circuit IR (AND/XOR/NOT basis).
 // Pure data structure definitions; no cryptographic claims.
 use super::{ir::*, *};
+
+/// A complete Boolar circuit — a set of boolean-gate blocks.
+///
+/// The type parameter `P` is an optional per-statement provenance annotation.
+/// Use `P = ()` (the default) when provenance is not needed.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct BIrBlocks(pub Vec<BIrBlock>);
-impl BIrBlocks {
+pub struct BIrBlocks<P: Clone + Default = ()>(pub Vec<BIrBlock<P>>);
+
+impl<P: Clone + Default> BIrBlocks<P> {
     pub fn is_movfuscated(&self) -> bool {
         return self.0.len() == 1;
     }
@@ -20,12 +26,34 @@ impl BIrBlocks {
             };
     }
 }
+
+/// A single block in a Boolar circuit.
+///
+/// The type parameter `P` is an optional per-statement provenance annotation
+/// (parallel to `stmts`).  Use `P = ()` when provenance is not needed.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct BIrBlock {
+pub struct BIrBlock<P: Clone + Default = ()> {
     pub params: u32,
     pub stmts: Vec<BIrStmt>,
+    /// Per-statement provenance, same length as `stmts`.
+    /// Index `i` is the provenance of `stmts[i]`.
+    pub stmt_provs: Vec<P>,
     pub terminator: BIrTerminator,
 }
+
+impl<P: Clone + Default> BIrBlock<P> {
+    /// Append a statement with an explicit provenance annotation.
+    pub fn push_stmt(&mut self, stmt: BIrStmt, prov: P) {
+        self.stmts.push(stmt);
+        self.stmt_provs.push(prov);
+    }
+
+    /// Append a statement using `P::default()` as the provenance.
+    pub fn push_stmt_default(&mut self, stmt: BIrStmt) {
+        self.push_stmt(stmt, P::default());
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum BIrStmt {
     Zero,

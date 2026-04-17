@@ -115,6 +115,7 @@ fn biir_identity() -> BIrBlocks {
     BIrBlocks(vec![BIrBlock {
         params: 1,
         stmts: vec![],
+        stmt_provs: vec![],
         terminator: BIrTerminator::Jmp(BIrTarget {
             block: IRBlockTargetId::Return,
             args: vec![IRVarId(0)],
@@ -127,6 +128,7 @@ fn biir_not() -> BIrBlocks {
     BIrBlocks(vec![BIrBlock {
         params: 1,
         stmts: vec![BIrStmt::Not(IRVarId(0))],
+        stmt_provs: vec![],
         terminator: BIrTerminator::Jmp(BIrTarget {
             block: IRBlockTargetId::Return,
             args: vec![IRVarId(1)],
@@ -139,6 +141,7 @@ fn biir_and() -> BIrBlocks {
     BIrBlocks(vec![BIrBlock {
         params: 2,
         stmts: vec![BIrStmt::And(IRVarId(0), IRVarId(1))],
+        stmt_provs: vec![],
         terminator: BIrTerminator::Jmp(BIrTarget {
             block: IRBlockTargetId::Return,
             args: vec![IRVarId(2)],
@@ -151,6 +154,7 @@ fn biir_xor() -> BIrBlocks {
     BIrBlocks(vec![BIrBlock {
         params: 2,
         stmts: vec![BIrStmt::Xor(IRVarId(0), IRVarId(1))],
+        stmt_provs: vec![],
         terminator: BIrTerminator::Jmp(BIrTarget {
             block: IRBlockTargetId::Return,
             args: vec![IRVarId(2)],
@@ -166,6 +170,7 @@ fn biir_half_adder() -> BIrBlocks {
             BIrStmt::Xor(IRVarId(0), IRVarId(1)), // var 2 = sum
             BIrStmt::And(IRVarId(0), IRVarId(1)), // var 3 = carry
         ],
+        stmt_provs: vec![],
         terminator: BIrTerminator::Jmp(BIrTarget {
             block: IRBlockTargetId::Return,
             args: vec![IRVarId(2), IRVarId(3)], // [sum, carry] packed LSB-first
@@ -179,6 +184,7 @@ fn biir_two_block_not() -> BIrBlocks {
         BIrBlock {
             params: 1,
             stmts: vec![],
+            stmt_provs: vec![],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Block(IRBlockId(1)),
                 args: vec![IRVarId(0)],
@@ -187,6 +193,7 @@ fn biir_two_block_not() -> BIrBlocks {
         BIrBlock {
             params: 1,
             stmts: vec![BIrStmt::Not(IRVarId(0))],
+            stmt_provs: vec![],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Return,
                 args: vec![IRVarId(1)],
@@ -201,6 +208,7 @@ fn biir_self_loop() -> BIrBlocks {
     BIrBlocks(vec![BIrBlock {
         params: 1,
         stmts: vec![BIrStmt::One], // var 1 = constant 1
+        stmt_provs: vec![],
         terminator: BIrTerminator::CondJmp {
             val: IRVarId(0),
             then_target: BIrTarget {
@@ -239,6 +247,7 @@ fn ir_xor() -> (IRBlocks, IRTypes) {
             coeffs,
             constant: Constant { hi: 0, lo: 0 },
         }],
+        stmt_provs: vec![],
         terminator: IRTerminator::Jmp {
             func: IRBlockTargetId::Return,
             args: vec![IRVarId(2)],
@@ -260,6 +269,7 @@ fn ir_and() -> (IRBlocks, IRTypes) {
             coeffs,
             constant: Constant { hi: 0, lo: 0 },
         }],
+        stmt_provs: vec![],
         terminator: IRTerminator::Jmp {
             func: IRBlockTargetId::Return,
             args: vec![IRVarId(2)],
@@ -279,6 +289,7 @@ fn ir_not() -> (IRBlocks, IRTypes) {
             coeffs,
             constant: Constant { hi: 0, lo: 1 },
         }],
+        stmt_provs: vec![],
         terminator: IRTerminator::Jmp {
             func: IRBlockTargetId::Return,
             args: vec![IRVarId(1)],
@@ -456,7 +467,7 @@ fn compiler_oracle_dispatch() {
                 }],
                 return_type: Some(IrType::Primitive(PrimitiveType::U64)),
                 where_clause: vec![],
-                body: IrBlock { stmts: vec![], expr: None },
+                body: IrBlock { stmts: vec![], stmt_provs: vec![], expr: None },
                 external_kind: ExternalKind::Oracle,
             },
             IrFunction {
@@ -471,6 +482,7 @@ fn compiler_oracle_dispatch() {
                 where_clause: vec![],
                 body: IrBlock {
                     stmts: vec![],
+                    stmt_provs: vec![],
                     expr: Some(Box::new(IrExpr::Call {
                         func: Box::new(IrExpr::Var("double".to_owned())),
                         args: vec![IrExpr::Var("x".to_owned())],
@@ -517,7 +529,7 @@ fn compiler_rng_dispatch() {
                 params: vec![],
                 return_type: Some(IrType::Primitive(PrimitiveType::U64)),
                 where_clause: vec![],
-                body: IrBlock { stmts: vec![], expr: None },
+                body: IrBlock { stmts: vec![], stmt_provs: vec![], expr: None },
                 external_kind: ExternalKind::Rng,
             },
             IrFunction {
@@ -529,6 +541,7 @@ fn compiler_rng_dispatch() {
                 where_clause: vec![],
                 body: IrBlock {
                     stmts: vec![],
+                    stmt_provs: vec![],
                     expr: Some(Box::new(IrExpr::Call {
                         func: Box::new(IrExpr::Var("get_rand".to_owned())),
                         args: vec![],

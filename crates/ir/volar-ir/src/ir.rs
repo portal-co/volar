@@ -40,18 +40,22 @@ pub struct IRBlockId(pub u32);
 
 /// A complete Volar IR circuit module — a set of blocks with their
 /// oracle and action declarations.
+///
+/// The type parameter `P` is an optional provenance annotation.  Each
+/// statement in each block carries a `P` value recording where it originated.
+/// Use `P = ()` (the default) when provenance is not needed.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct IRBlocks {
+pub struct IRBlocks<P: Clone + Default = ()> {
     /// Oracles declared for this circuit (resolved by the execution environment).
     pub oracles: Vec<OracleDecl>,
     /// Actions declared for this circuit (resolved by the execution environment).
     pub actions: Vec<ActionDecl>,
     /// The blocks of the circuit, in order.  Block 0 is the entry.
-    pub blocks: Vec<IRBlock>,
+    pub blocks: Vec<IRBlock<P>>,
 }
-impl IRBlocks {
+impl<P: Clone + Default> IRBlocks<P> {
     /// Construct an `IRBlocks` with no oracle or action declarations.
-    pub fn new(blocks: Vec<IRBlock>) -> Self {
+    pub fn new(blocks: Vec<IRBlock<P>>) -> Self {
         IRBlocks { oracles: alloc::vec![], actions: alloc::vec![], blocks }
     }
 
@@ -69,11 +73,35 @@ impl IRBlocks {
             }
     }
 }
+
+/// A single block in a Volar IR circuit.
+///
+/// The type parameter `P` is an optional per-statement provenance annotation
+/// (parallel to `stmts`).  Use `P = ()` when provenance is not needed.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct IRBlock {
+pub struct IRBlock<P: Clone + Default = ()> {
     pub params: Vec<IRTypeId>,
     pub stmts: Vec<IRStmt>,
+    /// Per-statement provenance, same length as `stmts`.
+    /// Index `i` is the provenance of `stmts[i]`.
+    pub stmt_provs: Vec<P>,
     pub terminator: IRTerminator,
+}
+
+impl<P: Clone + Default> IRBlock<P> {
+    /// Append a statement with an explicit provenance annotation.
+    /// Returns the [`IRVarId`] for this statement (= index in the block's var space).
+    pub fn push_stmt(&mut self, stmt: IRStmt, prov: P) -> IRVarId {
+        let id = IRVarId(self.params.len() as u32 + self.stmts.len() as u32);
+        self.stmts.push(stmt);
+        self.stmt_provs.push(prov);
+        id
+    }
+
+    /// Append a statement using `P::default()` as the provenance.
+    pub fn push_stmt_default(&mut self, stmt: IRStmt) -> IRVarId {
+        self.push_stmt(stmt, P::default())
+    }
 }
 
 // ============================================================================

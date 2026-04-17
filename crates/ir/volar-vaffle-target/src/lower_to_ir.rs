@@ -101,7 +101,7 @@ impl BlockEmitter {
         id
     }
     fn finish(self, terminator: IRTerminator) -> IRBlock {
-        IRBlock { params: self.params, stmts: self.stmts, terminator }
+        IRBlock { params: self.params, stmts: self.stmts, stmt_provs: vec![], terminator }
     }
 }
 
@@ -293,7 +293,7 @@ impl<'m> LowerCtx<'m> {
             }));
             // Dummy exit block.
             self.blocks.push(IRBlock {
-                params: vec![], stmts: vec![],
+                params: vec![], stmts: vec![], stmt_provs: vec![],
                 terminator: IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![] },
             });
             return;
@@ -330,6 +330,7 @@ impl<'m> LowerCtx<'m> {
         self.blocks.push(IRBlock {
             params: exit_params,
             stmts: vec![],
+            stmt_provs: vec![],
             terminator: IRTerminator::Jmp {
                 func: IRBlockTargetId::Return, args: ret_args,
             },

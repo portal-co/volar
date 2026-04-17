@@ -391,20 +391,22 @@ fn subst_biir(stmt: &BIrStmt, var_map: &[u32]) -> BIrStmt {
     }
 }
 
-struct BIrCtx {
+struct BIrCtx<P: Clone + Default = ()> {
     stmts: Vec<BIrStmt>,
+    stmt_provs: Vec<P>,
     next_id: u32,
 }
 
-impl BIrCtx {
+impl<P: Clone + Default> BIrCtx<P> {
     fn new(first_id: u32) -> Self {
-        Self { stmts: Vec::new(), next_id: first_id }
+        Self { stmts: Vec::new(), stmt_provs: Vec::new(), next_id: first_id }
     }
 
-    fn push(&mut self, stmt: BIrStmt) -> u32 {
+    fn push(&mut self, stmt: BIrStmt, prov: P) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
         self.stmts.push(stmt);
+        self.stmt_provs.push(prov);
         id
     }
 
@@ -445,20 +447,21 @@ impl BIrCtx {
     }
 }
 
-impl MovfuscCtx for BIrCtx {
-    type Blocks = BIrBlocks;
+
+impl<P: Clone + Default> MovfuscCtx for BIrCtx<P> {
+    type Blocks = BIrBlocks<P>;
     /// All BIr slots are `Bit`; no type information needed.
     type SlotTy = ();
 
-    fn num_blocks(blocks: &BIrBlocks) -> usize {
+    fn num_blocks(blocks: &BIrBlocks<P>) -> usize {
         blocks.0.len()
     }
 
-    fn block_param_count(blocks: &BIrBlocks, i: usize) -> usize {
+    fn block_param_count(blocks: &BIrBlocks<P>, i: usize) -> usize {
         blocks.0[i].params as usize
     }
 
-    fn return_val_width(blocks: &BIrBlocks) -> usize {
+    fn return_val_width(blocks: &BIrBlocks<P>) -> usize {
         for block in &blocks.0 {
             match &block.terminator {
                 BIrTerminator::Jmp(t) if matches!(t.block, IRBlockTargetId::Return) => {
@@ -483,29 +486,29 @@ impl MovfuscCtx for BIrCtx {
     // Bit ops ----------------------------------------------------------------
 
     fn emit_zero_bit(&mut self) -> u32 {
-        self.push(BIrStmt::Zero)
+        self.push(BIrStmt::Zero, P::default())
     }
 
     fn emit_one_bit(&mut self) -> u32 {
-        self.push(BIrStmt::One)
+        self.push(BIrStmt::One, P::default())
     }
 
     fn emit_and_bit(&mut self, a: u32, b: u32) -> u32 {
         if a == b {
             return a; // idempotent
         }
-        self.push(BIrStmt::And(IRVarId(a), IRVarId(b)))
+        self.push(BIrStmt::And(IRVarId(a), IRVarId(b)), P::default())
     }
 
     fn emit_xor_bit(&mut self, a: u32, b: u32) -> u32 {
         if a == b {
-            return self.push(BIrStmt::Zero);
+            return self.push(BIrStmt::Zero, P::default());
         }
-        self.push(BIrStmt::Xor(IRVarId(a), IRVarId(b)))
+        self.push(BIrStmt::Xor(IRVarId(a), IRVarId(b)), P::default())
     }
 
     fn emit_not(&mut self, a: u32) -> u32 {
-        self.push(BIrStmt::Not(IRVarId(a)))
+        self.push(BIrStmt::Not(IRVarId(a)), P::default())
     }
 
     // Slot ops (SlotTy = ()) = Bit ops --------------------------------------
@@ -526,7 +529,7 @@ impl MovfuscCtx for BIrCtx {
 
     fn emit_block_stmts(
         &mut self,
-        blocks: &BIrBlocks,
+        blocks: &BIrBlocks<P>,
         block_idx: usize,
         state_vars: &[u32],
     ) -> Vec<u32> {
@@ -534,9 +537,10 @@ impl MovfuscCtx for BIrCtx {
         let p = block.params as usize;
         let mut var_map: Vec<u32> = Vec::with_capacity(p + block.stmts.len());
         var_map.extend_from_slice(&state_vars[..p]);
-        for stmt in &block.stmts {
+        for (i, stmt) in block.stmts.iter().enumerate() {
+            let prov = block.stmt_provs.get(i).cloned().unwrap_or_default();
             let mapped = subst_biir(stmt, &var_map);
-            let id = self.push(mapped);
+            let id = self.push(mapped, prov);
             var_map.push(id);
         }
         var_map
@@ -544,7 +548,7 @@ impl MovfuscCtx for BIrCtx {
 
     fn emit_block_terminator(
         &mut self,
-        blocks: &BIrBlocks,
+        blocks: &BIrBlocks<P>,
         block_idx: usize,
         block_vals: &[u32],
         pc_width: usize,
@@ -603,10 +607,11 @@ impl MovfuscCtx for BIrCtx {
         done_var: u32,
         loop_vars: Vec<u32>,
         ret_vars: Vec<u32>,
-    ) -> BIrBlocks {
+    ) -> BIrBlocks<P> {
         BIrBlocks(vec![BIrBlock {
             params: combined_params as u32,
             stmts: self.stmts,
+            stmt_provs: self.stmt_provs,
             terminator: BIrTerminator::CondJmp {
                 val: IRVarId(done_var),
                 then_target: BIrTarget {
@@ -758,8 +763,8 @@ fn infer_stmt_result_type(
 
 // ---- Pre-pass: infer all variable types in a block (static, before emission)
 
-fn infer_block_var_types(
-    block: &IRBlock,
+fn infer_block_var_types<P: Clone + Default>(
+    block: &IRBlock<P>,
     ir_types: &[IRType],
     bit_type_id: &IRTypeId,
 ) -> Vec<IRTypeId> {
@@ -793,8 +798,13 @@ fn param_to_slot_map(params: &[IRTypeId], ir_types: &[IRType], pc_width: usize) 
     map
 }
 
-struct IrCtx {
+struct IrCtx<P: Clone + Default = ()> {
     stmts: Vec<IRStmt>,
+    stmt_provs: Vec<P>,
+    /// Provenance to attach to the next emitted stmt (consumed on `push_typed`).
+    /// Set to `P::default()` after each consumption, so synthetic stmts always
+    /// carry a default provenance unless explicitly staged here first.
+    pending_prov: P,
     next_id: u32,
     bit_type_id: IRTypeId,
     /// `Vec(pc_width, Bit)` — the type used for block-references in storage.
@@ -820,7 +830,7 @@ struct IrCtx {
     block_var_to_bits: BTreeMap<u32, (Vec<u32>, Vec<IRTypeId>)>,
 }
 
-impl IrCtx {
+impl<P: Clone + Default> IrCtx<P> {
     fn new(
         first_id: u32,
         bit_type_id: IRTypeId,
@@ -832,6 +842,8 @@ impl IrCtx {
         let var_types = combined_param_types.clone();
         Self {
             stmts: Vec::new(),
+            stmt_provs: Vec::new(),
+            pending_prov: P::default(),
             next_id: first_id,
             bit_type_id,
             vec_pc_type_id,
@@ -898,11 +910,17 @@ impl IrCtx {
     }
 
     /// Emit a stmt and record its result type.
+    ///
+    /// Consumes `self.pending_prov` (resetting it to `P::default()`) so that
+    /// source stmts staged via `pending_prov = prov` carry the right provenance,
+    /// while all synthetic stmts automatically get `P::default()`.
     fn push_typed(&mut self, stmt: IRStmt, result_type: IRTypeId) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
         self.stmts.push(stmt);
         self.var_types.push(result_type);
+        let prov = core::mem::replace(&mut self.pending_prov, P::default());
+        self.stmt_provs.push(prov);
         id
     }
 
@@ -934,7 +952,7 @@ impl IrCtx {
         pc_width: usize,
         state_slot_types: &[IRTypeId],
         return_slot_types: &[IRTypeId],
-        blocks: &IRBlocks,
+        blocks: &IRBlocks<P>,
     ) -> (u32, Vec<u32>, Vec<u32>, Vec<u32>) {
         let ret_width = return_slot_types.len();
         match target_block {
@@ -1020,19 +1038,19 @@ impl IrCtx {
     }
 }
 
-impl MovfuscCtx for IrCtx {
-    type Blocks = IRBlocks;
+impl<P: Clone + Default> MovfuscCtx for IrCtx<P> {
+    type Blocks = IRBlocks<P>;
     type SlotTy = IRTypeId;
 
-    fn num_blocks(blocks: &IRBlocks) -> usize {
+    fn num_blocks(blocks: &IRBlocks<P>) -> usize {
         blocks.blocks.len()
     }
 
-    fn block_param_count(blocks: &IRBlocks, i: usize) -> usize {
+    fn block_param_count(blocks: &IRBlocks<P>, i: usize) -> usize {
         blocks.blocks[i].params.len()
     }
 
-    fn return_val_width(blocks: &IRBlocks) -> usize {
+    fn return_val_width(blocks: &IRBlocks<P>) -> usize {
         for block in &blocks.blocks {
             match &block.terminator {
                 IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => {
@@ -1146,7 +1164,7 @@ impl MovfuscCtx for IrCtx {
 
     fn emit_block_stmts(
         &mut self,
-        blocks: &IRBlocks,
+        blocks: &IRBlocks<P>,
         block_idx: usize,
         state_vars: &[u32],
     ) -> Vec<u32> {
@@ -1183,6 +1201,8 @@ impl MovfuscCtx for IrCtx {
 
         // Emit stmts with substitution, handling Block-typed Const specially.
         for (stmt_idx, stmt) in block.stmts.iter().enumerate() {
+            // Stage this stmt's source provenance; `push_typed` will consume it.
+            self.pending_prov = block.stmt_provs.get(stmt_idx).cloned().unwrap_or_default();
             let mapped = subst_ir(stmt, &var_map);
             let orig_var_id = (p + stmt_idx) as u32;
 
@@ -1306,7 +1326,7 @@ impl MovfuscCtx for IrCtx {
 
     fn emit_block_terminator(
         &mut self,
-        blocks: &IRBlocks,
+        blocks: &IRBlocks<P>,
         block_idx: usize,
         block_vals: &[u32],
         pc_width: usize,
@@ -1389,11 +1409,12 @@ impl MovfuscCtx for IrCtx {
         done_var: u32,
         loop_vars: Vec<u32>,
         ret_vars: Vec<u32>,
-    ) -> IRBlocks {
+    ) -> IRBlocks<P> {
         IRBlocks::new(vec![IRBlock {
             // Combined block's params: [Bit×pc_width, state_slot_types…]
             params: self.combined_param_types,
             stmts: self.stmts,
+            stmt_provs: self.stmt_provs,
             terminator: IRTerminator::JumpCond {
                 condition: IRVarId(done_var),
                 true_block: IRBlockTargetId::Return,
@@ -1419,8 +1440,8 @@ impl MovfuscCtx for IrCtx {
 /// Non-`Block` types must additionally be identical.
 /// Mixing `Block` and plain `Bit` is allowed when `pc_width == 1` (both
 /// expand to exactly one `Bit` slot).
-fn compute_expanded_state_slot_types(
-    blocks: &IRBlocks,
+fn compute_expanded_state_slot_types<P: Clone + Default>(
+    blocks: &IRBlocks<P>,
     ir_types: &[IRType],
     bit_type_id: &IRTypeId,
     pc_width: usize,
@@ -1488,8 +1509,8 @@ fn compute_expanded_state_slot_types(
 /// `Return` terminator found in the module.
 ///
 /// `Block`-typed return values are expanded to `pc_width` `Bit` slots each.
-fn compute_return_slot_types(
-    blocks: &IRBlocks,
+fn compute_return_slot_types<P: Clone + Default>(
+    blocks: &IRBlocks<P>,
     ir_types: &[IRType],
     bit_type_id: &IRTypeId,
     pc_width: usize,
@@ -1532,14 +1553,16 @@ fn compute_return_slot_types(
 ///
 /// All slot types are `Bit` (the only type in Boolar IR).
 /// Single-block input is returned unchanged.
-pub fn movfuscate_biir(blocks: &BIrBlocks) -> BIrBlocks {
+/// Source statement provenances are carried through; synthetic dispatch gates
+/// receive `P::default()`.
+pub fn movfuscate_biir<P: Clone + Default>(blocks: &BIrBlocks<P>) -> BIrBlocks<P> {
     let n = blocks.0.len();
     let pc_width = pc_bits_needed(n);
     let state_width = blocks.0.iter().map(|b| b.params as usize).max().unwrap_or(0);
     let combined_params = pc_width + state_width;
-    let ctx = BIrCtx::new(combined_params as u32);
+    let ctx = BIrCtx::<P>::new(combined_params as u32);
     let state_slot_types = vec![(); state_width];
-    let ret_width = BIrCtx::return_val_width(blocks);
+    let ret_width = BIrCtx::<P>::return_val_width(blocks);
     let return_slot_types = vec![(); ret_width];
     movfuscate(ctx, blocks, state_slot_types, return_slot_types)
 }
@@ -1553,7 +1576,7 @@ pub fn movfuscate_biir(blocks: &BIrBlocks) -> BIrBlocks {
 ///
 /// `types` is used for type inference; an `IRType::Bit` entry is added if
 /// absent.  Single-block input is returned unchanged.
-pub fn movfuscate_ir(blocks: &IRBlocks, types: &mut IRTypes) -> IRBlocks {
+pub fn movfuscate_ir<P: Clone + Default>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> IRBlocks<P> {
     // Ensure IRType::Bit is present in the types table.
     let bit_type_id = types.intern(IRType::Primitive(Type::Bit));
 
@@ -1581,7 +1604,7 @@ pub fn movfuscate_ir(blocks: &IRBlocks, types: &mut IRTypes) -> IRBlocks {
         .collect();
 
     let combined_params = pc_width + state_slot_types.len();
-    let ctx = IrCtx::new(
+    let ctx = IrCtx::<P>::new(
         combined_params as u32,
         bit_type_id,
         vec_pc_type_id,
@@ -1633,6 +1656,7 @@ mod tests {
             BIrBlock {
                 params: 1,
                 stmts: std::vec![BIrStmt::Not(IRVarId(0))],
+                stmt_provs: std::vec![()],
                 terminator: BIrTerminator::CondJmp {
                     val: IRVarId(1),
                     then_target: BIrTarget {
@@ -1648,6 +1672,7 @@ mod tests {
             BIrBlock {
                 params: 1,
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: BIrTerminator::Jmp(BIrTarget {
                     block: IRBlockTargetId::Return,
                     args: std::vec![IRVarId(0)],
@@ -1661,6 +1686,7 @@ mod tests {
         let single = BIrBlocks(std::vec![BIrBlock {
             params: 2,
             stmts: std::vec![BIrStmt::And(IRVarId(0), IRVarId(1))],
+            stmt_provs: std::vec![()],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Return,
                 args: std::vec![IRVarId(2)],
@@ -1710,6 +1736,7 @@ mod tests {
             BIrBlock {
                 params: 1,
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: BIrTerminator::Jmp(BIrTarget {
                     block: IRBlockTargetId::Block(IRBlockId(1)),
                     args: std::vec![IRVarId(0)],
@@ -1718,6 +1745,7 @@ mod tests {
             BIrBlock {
                 params: 1,
                 stmts: std::vec![BIrStmt::Not(IRVarId(0))],
+                stmt_provs: std::vec![()],
                 terminator: BIrTerminator::Jmp(BIrTarget {
                     block: IRBlockTargetId::Block(IRBlockId(2)),
                     args: std::vec![IRVarId(1)],
@@ -1726,6 +1754,7 @@ mod tests {
             BIrBlock {
                 params: 1,
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: BIrTerminator::Jmp(BIrTarget {
                     block: IRBlockTargetId::Return,
                     args: std::vec![IRVarId(0)],
@@ -1749,6 +1778,7 @@ mod tests {
         let blocks = BIrBlocks(std::vec![BIrBlock {
             params: 1,
             stmts: std::vec![BIrStmt::Not(IRVarId(0))],
+            stmt_provs: std::vec![()],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Block(IRBlockId(0)),
                 args: std::vec![IRVarId(1)],
@@ -1763,6 +1793,7 @@ mod tests {
         let make_pass = |dst: u32| BIrBlock {
             params: 1,
             stmts: std::vec![],
+            stmt_provs: std::vec![],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Block(IRBlockId(dst)),
                 args: std::vec![IRVarId(0)],
@@ -1775,6 +1806,7 @@ mod tests {
             BIrBlock {
                 params: 1,
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: BIrTerminator::Jmp(BIrTarget {
                     block: IRBlockTargetId::Return,
                     args: std::vec![IRVarId(0)],
@@ -1800,6 +1832,7 @@ mod tests {
             IRBlock {
                 params: std::vec![IRTypeId(0)],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: IRTerminator::Jmp {
                     func: IRBlockTargetId::Block(IRBlockId(1)),
                     args: std::vec![IRVarId(0)],
@@ -1808,6 +1841,7 @@ mod tests {
             IRBlock {
                 params: std::vec![IRTypeId(0)],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: IRTerminator::Jmp {
                     func: IRBlockTargetId::Return,
                     args: std::vec![IRVarId(0)],
@@ -1823,6 +1857,7 @@ mod tests {
         let blocks = IRBlocks::new(std::vec![IRBlock {
             params: std::vec![IRTypeId(0)],
             stmts: std::vec![],
+            stmt_provs: std::vec![],
             terminator: IRTerminator::Jmp {
                 func: IRBlockTargetId::Return,
                 args: std::vec![IRVarId(0)],
@@ -1879,6 +1914,7 @@ mod tests {
             IRBlock {
                 params: std::vec![g8.clone()],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: IRTerminator::Jmp {
                     func: IRBlockTargetId::Block(IRBlockId(1)),
                     args: std::vec![IRVarId(0)],
@@ -1887,6 +1923,7 @@ mod tests {
             IRBlock {
                 params: std::vec![g8.clone()],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: IRTerminator::Jmp {
                     func: IRBlockTargetId::Return,
                     args: std::vec![IRVarId(0)],
@@ -1980,6 +2017,7 @@ mod tests {
             IRBlock {
                 params: std::vec![g8.clone(), bit.clone()],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: IRTerminator::JumpCond {
                     condition: IRVarId(1), // b
                     true_block: IRBlockTargetId::Block(IRBlockId(1)),
@@ -1991,6 +2029,7 @@ mod tests {
             IRBlock {
                 params: std::vec![g8.clone()],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: IRTerminator::Jmp {
                     func: IRBlockTargetId::Return,
                     args: std::vec![IRVarId(0)],
@@ -2037,6 +2076,7 @@ mod tests {
                     coeffs,
                     constant: Constant { hi: 0, lo: 0 },
                 }],
+                stmt_provs: std::vec![()],
                 terminator: IRTerminator::Jmp {
                     func: IRBlockTargetId::Block(IRBlockId(1)),
                     args: std::vec![IRVarId(1)], // the Poly result
@@ -2045,6 +2085,7 @@ mod tests {
             IRBlock {
                 params: std::vec![g8.clone()],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: IRTerminator::Jmp {
                     func: IRBlockTargetId::Return,
                     args: std::vec![IRVarId(0)],
@@ -2086,6 +2127,7 @@ mod tests {
             IRBlock {
                 params: std::vec![block_ty_id.clone()],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: IRTerminator::Jmp {
                     func: IRBlockTargetId::Dyn(IRVarId(0)), // cont
                     args: std::vec![],
@@ -2095,6 +2137,7 @@ mod tests {
             IRBlock {
                 params: std::vec![block_ty_id.clone()],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: IRTerminator::Jmp {
                     func: IRBlockTargetId::Return,
                     args: std::vec![],
@@ -2165,6 +2208,7 @@ mod tests {
                         block_ty_id.clone(),
                     ),
                 ],
+                stmt_provs: std::vec![()],
                 terminator: IRTerminator::Jmp {
                     func: IRBlockTargetId::Dyn(IRVarId(0)), // c (stmt result)
                     args: std::vec![],
@@ -2173,6 +2217,7 @@ mod tests {
             IRBlock {
                 params: std::vec![],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: IRTerminator::Jmp {
                     func: IRBlockTargetId::Return,
                     args: std::vec![],
@@ -2242,6 +2287,7 @@ mod tests {
                     // stmt 1: one = Const(1, Bit)
                     IRStmt::Const(Constant { hi: 0, lo: 1 }, bit.clone()),
                 ],
+                stmt_provs: std::vec![(), ()],
                 terminator: IRTerminator::Jmp {
                     func: IRBlockTargetId::Dyn(IRVarId(0)), // c
                     args: std::vec![IRVarId(1)],            // one
@@ -2251,6 +2297,7 @@ mod tests {
             IRBlock {
                 params: std::vec![bit.clone()],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: IRTerminator::Jmp {
                     func: IRBlockTargetId::Return,
                     args: std::vec![IRVarId(0)],
@@ -2315,6 +2362,7 @@ mod tests {
                 stmts: std::vec![
                     IRStmt::Const(Constant { hi: 0, lo: 2 }, block_ty_id.clone()),
                 ],
+                stmt_provs: std::vec![()],
                 terminator: IRTerminator::Jmp {
                     func: IRBlockTargetId::Block(IRBlockId(1)),
                     args: std::vec![IRVarId(0)], // pass the Block ref
@@ -2324,6 +2372,7 @@ mod tests {
             IRBlock {
                 params: std::vec![block_ty_id.clone()],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: IRTerminator::Jmp {
                     func: IRBlockTargetId::Dyn(IRVarId(0)),
                     args: std::vec![],
@@ -2333,6 +2382,7 @@ mod tests {
             IRBlock {
                 params: std::vec![block_ty_id.clone()],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: IRTerminator::Jmp {
                     func: IRBlockTargetId::Return,
                     args: std::vec![],

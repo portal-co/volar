@@ -14,12 +14,15 @@ use volar_ir_common::Type;
 // BIrBlocks → LirTarget
 // ============================================================================
 
-/// Lower a boolean circuit (`BIrBlocks`) to any `LirTarget`.
+/// Lower a boolean circuit (`BIrBlocks<P>`) to any `LirTarget<P>`.
 ///
 /// All values are `LirType::Bool`. The entry block's parameter count determines
 /// the function signature. Multiple outputs are packed into a `U64` via
 /// shl/or/zext; a single output is returned directly.
-pub fn lower_biir<T: LirTarget>(blocks: &BIrBlocks, name: &str, target: &mut T) {
+///
+/// Before each statement, `target.set_prov(prov)` is called with that
+/// statement's provenance from `block.stmt_provs`.
+pub fn lower_biir<P: Clone + Default, T: LirTarget<P>>(blocks: &BIrBlocks<P>, name: &str, target: &mut T) {
     let entry_block = &blocks.0[0];
     let num_inputs = entry_block.params as usize;
 
@@ -60,7 +63,10 @@ pub fn lower_biir<T: LirTarget>(blocks: &BIrBlocks, name: &str, target: &mut T) 
 
         let vals = &mut vals_per_block[bi];
         // Reserve space for stmt results.
-        for stmt in &block.stmts {
+        for (si, stmt) in block.stmts.iter().enumerate() {
+            if let Some(prov) = block.stmt_provs.get(si) {
+                target.set_prov(prov.clone());
+            }
             let v = lower_biir_stmt(stmt, vals, target);
             vals.push(v);
         }
@@ -75,7 +81,7 @@ pub fn lower_biir<T: LirTarget>(blocks: &BIrBlocks, name: &str, target: &mut T) 
     target.end_function();
 }
 
-fn lower_biir_stmt<T: LirTarget>(stmt: &BIrStmt, vals: &[T::Value], target: &mut T) -> T::Value {
+fn lower_biir_stmt<P: Clone + Default, T: LirTarget<P>>(stmt: &BIrStmt, vals: &[T::Value], target: &mut T) -> T::Value {
     match stmt {
         BIrStmt::Zero => target.iconst(LirType::Bool, 0),
         BIrStmt::One => target.iconst(LirType::Bool, 1),
@@ -101,7 +107,7 @@ fn lower_biir_stmt<T: LirTarget>(stmt: &BIrStmt, vals: &[T::Value], target: &mut
     }
 }
 
-fn lower_biir_terminator<T: LirTarget>(
+fn lower_biir_terminator<P: Clone + Default, T: LirTarget<P>>(
     term: &BIrTerminator,
     vals: &[T::Value],
     block_handles: &[T::Block],
@@ -117,8 +123,8 @@ fn lower_biir_terminator<T: LirTarget>(
             else_target,
         } => {
             let cond = vals[val.0 as usize].clone();
-            let (then_block, then_args) = resolve_biir_target::<T>(then_target, vals, block_handles);
-            let (else_block, else_args) = resolve_biir_target::<T>(else_target, vals, block_handles);
+            let (then_block, then_args) = resolve_biir_target::<P, T>(then_target, vals, block_handles);
+            let (else_block, else_args) = resolve_biir_target::<P, T>(else_target, vals, block_handles);
             match (then_block, else_block) {
                 (Some(tb), Some(eb)) => {
                     target.branch(cond, tb, &then_args, eb, &else_args);
@@ -129,7 +135,7 @@ fn lower_biir_terminator<T: LirTarget>(
     }
 }
 
-fn lower_biir_jump<T: LirTarget>(
+fn lower_biir_jump<P: Clone + Default, T: LirTarget<P>>(
     tgt: &BIrTarget,
     vals: &[T::Value],
     block_handles: &[T::Block],
@@ -149,7 +155,7 @@ fn lower_biir_jump<T: LirTarget>(
     }
 }
 
-fn resolve_biir_target<T: LirTarget>(
+fn resolve_biir_target<P: Clone + Default, T: LirTarget<P>>(
     tgt: &BIrTarget,
     vals: &[T::Value],
     block_handles: &[T::Block],
@@ -164,7 +170,7 @@ fn resolve_biir_target<T: LirTarget>(
 
 /// Pack a slice of Bool values into a single U64 via shl/or/zext.
 /// For a single value, just zext it.
-fn pack_bits_to_u64<T: LirTarget>(bits: &[T::Value], target: &mut T) -> T::Value {
+fn pack_bits_to_u64<P: Clone + Default, T: LirTarget<P>>(bits: &[T::Value], target: &mut T) -> T::Value {
     if bits.is_empty() {
         return target.iconst(LirType::U64, 0);
     }
@@ -191,8 +197,8 @@ fn pack_bits_to_u64<T: LirTarget>(bits: &[T::Value], target: &mut T) -> T::Value
 /// `Galois64` → `U64`, `Vec(n≤64, Bit)` → smallest fitting unsigned integer.
 /// Tuple, nested-vec, multi-element Galois vecs, StorageRead/Write, and
 /// dynamic targets are `unimplemented!()`.
-pub fn lower_ir<T: LirTarget>(
-    blocks: &IRBlocks,
+pub fn lower_ir<P: Clone + Default, T: LirTarget<P>>(
+    blocks: &IRBlocks<P>,
     types: &IRTypes,
     name: &str,
     target: &mut T,
@@ -235,7 +241,10 @@ pub fn lower_ir<T: LirTarget>(
         // Keyed by the *Call stmt's var index within this block.
         let mut multi_results: BTreeMap<usize, Vec<T::Value>> = BTreeMap::new();
 
-        for stmt in &block.stmts {
+        for (si, stmt) in block.stmts.iter().enumerate() {
+            if let Some(prov) = block.stmt_provs.get(si) {
+                target.set_prov(prov.clone());
+            }
             let var_idx = vals_per_block[bi].len(); // index of this stmt's result
             match stmt {
                 // ---- Oracle: emit target.oracle(), stash results ------------
@@ -326,7 +335,7 @@ fn ir_type_to_lir(ty: &IRType) -> LirType {
     }
 }
 
-fn lower_ir_stmt<T: LirTarget>(
+fn lower_ir_stmt<P: Clone + Default, T: LirTarget<P>>(
     stmt: &IRStmt,
     vals: &[T::Value],
     types: &IRTypes,
@@ -443,7 +452,7 @@ fn lower_ir_stmt<T: LirTarget>(
     }
 }
 
-fn lower_ir_terminator<T: LirTarget>(
+fn lower_ir_terminator<P: Clone + Default, T: LirTarget<P>>(
     term: &IRTerminator,
     vals: &[T::Value],
     block_handles: &[T::Block],

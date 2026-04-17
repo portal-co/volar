@@ -70,70 +70,70 @@ impl IterMethod {
 /// variants with a single flat structure that is easy to analyze and
 /// backend-neutral.
 #[derive(Debug, Clone, PartialEq)]
-pub struct IrIterChain {
+pub struct IrIterChain<P: Clone + Default = ()> {
     /// Where the data comes from
-    pub source: IterChainSource,
+    pub source: IterChainSource<P>,
     /// Zero or more intermediate transformations, in order
-    pub steps: Vec<IterStep>,
+    pub steps: Vec<IterStep<P>>,
     /// How the pipeline terminates
-    pub terminal: IterTerminal,
+    pub terminal: IterTerminal<P>,
 }
 
 /// The data source for an iterator chain.
 #[derive(Debug, Clone, PartialEq)]
-pub enum IterChainSource {
+pub enum IterChainSource<P: Clone + Default = ()> {
     /// `expr.iter()`, `expr.into_iter()`, `expr.chars()`, `expr.bytes()`
     Method {
-        collection: Box<IrExpr>,
+        collection: Box<IrExpr<P>>,
         method: IterMethod,
     },
     /// A range expression used as an iterator: `start..end` or `start..=end`
     Range {
-        start: Box<IrExpr>,
-        end: Box<IrExpr>,
+        start: Box<IrExpr<P>>,
+        end: Box<IrExpr<P>>,
         inclusive: bool,
     },
     /// Zipping two iterator chains: `a.iter().zip(b.iter())`
     Zip {
-        left: Box<IrIterChain>,
-        right: Box<IrIterChain>,
+        left: Box<IrIterChain<P>>,
+        right: Box<IrIterChain<P>>,
     },
 }
 
 /// An intermediate transformation step in an iterator pipeline.
 #[derive(Debug, Clone, PartialEq)]
-pub enum IterStep {
+pub enum IterStep<P: Clone + Default = ()> {
     /// `.map(|var| body)`
-    Map { var: IrPattern, body: Box<IrExpr> },
+    Map { var: IrPattern, body: Box<IrExpr<P>> },
     /// `.filter(|var| body)`
-    Filter { var: IrPattern, body: Box<IrExpr> },
+    Filter { var: IrPattern, body: Box<IrExpr<P>> },
     /// `.filter_map(|var| body)`
-    FilterMap { var: IrPattern, body: Box<IrExpr> },
+    FilterMap { var: IrPattern, body: Box<IrExpr<P>> },
     /// `.flat_map(|var| body)`
-    FlatMap { var: IrPattern, body: Box<IrExpr> },
+    FlatMap { var: IrPattern, body: Box<IrExpr<P>> },
     /// `.enumerate()`
     Enumerate,
     /// `.take(count)`
-    Take { count: Box<IrExpr> },
+    Take { count: Box<IrExpr<P>> },
     /// `.skip(count)`
-    Skip { count: Box<IrExpr> },
+    Skip { count: Box<IrExpr<P>> },
     /// `.chain(other)` — appends another iterator chain.
-    Chain { other: Box<IrIterChain> },
+    Chain { other: Box<IrIterChain<P>> },
 }
 
 /// How an iterator pipeline terminates.
 #[derive(Debug, Clone, PartialEq)]
-pub enum IterTerminal {
+pub enum IterTerminal<P: Clone + Default = ()> {
     /// `.collect()` — materializes into a `Vec` (or other container).
     Collect,
     /// `.collect::<Vec<T>>()` — typed collect for disambiguation
     CollectTyped(IrType),
     /// `.fold(init, |acc, elem| body)`
     Fold {
-        init: Box<IrExpr>,
+        init: Box<IrExpr<P>>,
         acc_var: IrPattern,
         elem_var: IrPattern,
-        body: Box<IrExpr>,
+        body: Box<IrExpr<P>>,
     },
     /// No terminal — the chain is still lazy (e.g. used as the `collection`
     /// of a `for`-in loop, or passed to another consumer).
@@ -564,12 +564,12 @@ impl fmt::Display for AssociatedType {
 // ============================================================================
 
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct IrModule {
+pub struct IrModule<P: Clone + Default = ()> {
     pub name: String,
     pub structs: Vec<IrStruct>,
     pub traits: Vec<IrTrait>,
-    pub impls: Vec<IrImpl>,
-    pub functions: Vec<IrFunction>,
+    pub impls: Vec<IrImpl<P>>,
+    pub functions: Vec<IrFunction<P>>,
     pub type_aliases: Vec<IrTypeAlias>,
 }
 
@@ -606,12 +606,12 @@ pub enum IrTraitItem {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct IrImpl {
+pub struct IrImpl<P: Clone + Default = ()> {
     pub generics: Vec<IrGenericParam>,
     pub trait_: Option<IrTraitRef>,
     pub self_ty: IrType,
     pub where_clause: Vec<IrWherePredicate>,
-    pub items: Vec<IrImplItem>,
+    pub items: Vec<IrImplItem<P>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -621,8 +621,8 @@ pub struct IrTraitRef {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum IrImplItem {
-    Method(IrFunction),
+pub enum IrImplItem<P: Clone + Default = ()> {
+    Method(IrFunction<P>),
     AssociatedType { name: AssociatedType, ty: IrType },
 }
 
@@ -654,14 +654,14 @@ pub enum ExternalKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct IrFunction {
+pub struct IrFunction<P: Clone + Default = ()> {
     pub name: String,
     pub generics: Vec<IrGenericParam>,
     pub receiver: Option<IrReceiver>,
     pub params: Vec<IrParam>,
     pub return_type: Option<IrType>,
     pub where_clause: Vec<IrWherePredicate>,
-    pub body: IrBlock,
+    pub body: IrBlock<P>,
     /// What kind of external primitive this function represents.
     /// Default: `ExternalKind::Normal`.
     pub external_kind: ExternalKind,
@@ -718,27 +718,28 @@ pub struct IrTypeAlias {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct IrBlock {
-    pub stmts: Vec<IrStmt>,
-    pub expr: Option<Box<IrExpr>>,
+pub struct IrBlock<P: Clone + Default = ()> {
+    pub stmts: Vec<IrStmt<P>>,
+    pub stmt_provs: Vec<P>,
+    pub expr: Option<Box<IrExpr<P>>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum IrStmt {
+pub enum IrStmt<P: Clone + Default = ()> {
     Let {
         pattern: IrPattern,
         ty: Option<IrType>,
-        init: Option<IrExpr>,
+        init: Option<IrExpr<P>>,
     },
-    Semi(IrExpr),
-    Expr(IrExpr),
+    Semi(IrExpr<P>),
+    Expr(IrExpr<P>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct IrMatchArm {
+pub struct IrMatchArm<P: Clone + Default = ()> {
     pub pattern: IrPattern,
-    pub guard: Option<IrExpr>,
-    pub body: IrExpr,
+    pub guard: Option<IrExpr<P>>,
+    pub body: IrExpr<P>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -907,7 +908,7 @@ impl fmt::Display for IrTraitBound {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum IrExpr {
+pub enum IrExpr<P: Clone + Default = ()> {
     Lit(IrLit),
     Var(String),
     Path {
@@ -916,50 +917,50 @@ pub enum IrExpr {
     },
     Binary {
         op: SpecBinOp,
-        left: Box<IrExpr>,
-        right: Box<IrExpr>,
+        left: Box<IrExpr<P>>,
+        right: Box<IrExpr<P>>,
     },
     Unary {
         op: SpecUnaryOp,
-        expr: Box<IrExpr>,
+        expr: Box<IrExpr<P>>,
     },
     MethodCall {
-        receiver: Box<IrExpr>,
+        receiver: Box<IrExpr<P>>,
         method: MethodKind,
         type_args: Vec<IrType>,
-        args: Vec<IrExpr>,
+        args: Vec<IrExpr<P>>,
     },
     Call {
-        func: Box<IrExpr>,
-        args: Vec<IrExpr>,
+        func: Box<IrExpr<P>>,
+        args: Vec<IrExpr<P>>,
     },
     Field {
-        base: Box<IrExpr>,
+        base: Box<IrExpr<P>>,
         field: String,
     },
     Index {
-        base: Box<IrExpr>,
-        index: Box<IrExpr>,
+        base: Box<IrExpr<P>>,
+        index: Box<IrExpr<P>>,
     },
     StructExpr {
         kind: StructKind,
         type_args: Vec<IrType>,
-        fields: Vec<(String, IrExpr)>,
-        rest: Option<Box<IrExpr>>,
+        fields: Vec<(String, IrExpr<P>)>,
+        rest: Option<Box<IrExpr<P>>>,
     },
-    Tuple(Vec<IrExpr>),
-    Array(Vec<IrExpr>),
+    Tuple(Vec<IrExpr<P>>),
+    Array(Vec<IrExpr<P>>),
     /// A fixed-size array literal `[a, b, c]` (as opposed to `Array`, which prints as `vec![...]`).
-    FixedArray(Vec<IrExpr>),
+    FixedArray(Vec<IrExpr<P>>),
     Repeat {
-        elem: Box<IrExpr>,
-        len: Box<IrExpr>,
+        elem: Box<IrExpr<P>>,
+        len: Box<IrExpr<P>>,
     },
     ArrayGenerate {
         elem_ty: Option<Box<IrType>>,
         len: ArrayLength,
         index_var: String,
-        body: Box<IrExpr>,
+        body: Box<IrExpr<P>>,
     },
     /// Calls `T::default()` for a given type.
     ///
@@ -980,90 +981,90 @@ pub enum IrExpr {
     LengthOf(ArrayLength),
     /// A flat iterator pipeline (source → steps → terminal).
     /// Replaces old nested Iter*/Array{Map,Zip,Fold} variants.
-    IterPipeline(IrIterChain),
+    IterPipeline(IrIterChain<P>),
 
     /// Non-iterator element-wise map: `receiver.map(|var| body)`
     /// Used for GenericArray::map and [T; N]::map.
     /// Length-preserving; bounded by the receiver's length.
     RawMap {
-        receiver: Box<IrExpr>,
+        receiver: Box<IrExpr<P>>,
         elem_var: IrPattern,
-        body: Box<IrExpr>,
+        body: Box<IrExpr<P>>,
     },
 
     /// Non-iterator element-wise zip-with-map: `receiver.zip(other, |a, b| body)`
     /// Used for GenericArray::zip. Length-preserving; bounded.
     RawZip {
-        left: Box<IrExpr>,
-        right: Box<IrExpr>,
+        left: Box<IrExpr<P>>,
+        right: Box<IrExpr<P>>,
         left_var: IrPattern,
         right_var: IrPattern,
-        body: Box<IrExpr>,
+        body: Box<IrExpr<P>>,
     },
 
     /// Non-iterator fold over array: `receiver.fold(init, |acc, elem| body)`
     /// When applied directly on GenericArray/[T;N] (no .iter() prefix).
     RawFold {
-        receiver: Box<IrExpr>,
-        init: Box<IrExpr>,
+        receiver: Box<IrExpr<P>>,
+        init: Box<IrExpr<P>>,
         acc_var: IrPattern,
         elem_var: IrPattern,
-        body: Box<IrExpr>,
+        body: Box<IrExpr<P>>,
     },
 
     BoundedLoop {
         var: String,
-        start: Box<IrExpr>,
-        end: Box<IrExpr>,
+        start: Box<IrExpr<P>>,
+        end: Box<IrExpr<P>>,
         inclusive: bool,
-        body: IrBlock,
+        body: IrBlock<P>,
     },
     IterLoop {
         pattern: IrPattern,
-        collection: Box<IrExpr>,
-        body: IrBlock,
+        collection: Box<IrExpr<P>>,
+        body: IrBlock<P>,
     },
-    Block(IrBlock),
+    Block(IrBlock<P>),
     If {
-        cond: Box<IrExpr>,
-        then_branch: IrBlock,
-        else_branch: Option<Box<IrExpr>>,
+        cond: Box<IrExpr<P>>,
+        then_branch: IrBlock<P>,
+        else_branch: Option<Box<IrExpr<P>>>,
     },
     Match {
-        expr: Box<IrExpr>,
-        arms: Vec<IrMatchArm>,
+        expr: Box<IrExpr<P>>,
+        arms: Vec<IrMatchArm<P>>,
     },
     Closure {
         params: Vec<IrClosureParam>,
         ret_type: Option<Box<IrType>>,
-        body: Box<IrExpr>,
+        body: Box<IrExpr<P>>,
     },
     Cast {
-        expr: Box<IrExpr>,
+        expr: Box<IrExpr<P>>,
         ty: Box<IrType>,
     },
-    Return(Option<Box<IrExpr>>),
-    Break(Option<Box<IrExpr>>),
+    Return(Option<Box<IrExpr<P>>>),
+    Break(Option<Box<IrExpr<P>>>),
     Continue,
     Assign {
-        left: Box<IrExpr>,
-        right: Box<IrExpr>,
+        left: Box<IrExpr<P>>,
+        right: Box<IrExpr<P>>,
     },
     AssignOp {
         op: SpecBinOp,
-        left: Box<IrExpr>,
-        right: Box<IrExpr>,
+        left: Box<IrExpr<P>>,
+        right: Box<IrExpr<P>>,
     },
     Range {
-        start: Option<Box<IrExpr>>,
-        end: Option<Box<IrExpr>>,
+        start: Option<Box<IrExpr<P>>>,
+        end: Option<Box<IrExpr<P>>>,
         inclusive: bool,
     },
     TypenumUsize {
         ty: Box<IrType>,
     },
     Unreachable,
-    Try(Box<IrExpr>),
+    Try(Box<IrExpr<P>>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

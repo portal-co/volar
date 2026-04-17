@@ -146,7 +146,7 @@ fn garble_struct(base_expr: IrExpr) -> IrExpr {
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_evaluator(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSystem>) -> IrModule {
+pub fn weave_evaluator<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule {
     assert!(
         circuit.is_circuit(),
         "weave_evaluator: circuit must satisfy is_circuit() (single block with Return terminator)"
@@ -257,6 +257,7 @@ pub fn weave_evaluator(circuit: &BIrBlocks, name: &str, linkage: Option<&Linkage
         where_clause: vec![],
         body: IrBlock {
             stmts,
+            stmt_provs: vec![],
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -293,7 +294,7 @@ pub fn weave_evaluator(circuit: &BIrBlocks, name: &str, linkage: Option<&Linkage
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_garbler(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSystem>) -> IrModule {
+pub fn weave_garbler<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule {
     assert!(
         circuit.is_circuit(),
         "weave_garbler: circuit must satisfy is_circuit() (single block with Return terminator)"
@@ -431,6 +432,7 @@ pub fn weave_garbler(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSy
         where_clause: vec![],
         body: IrBlock {
             stmts,
+            stmt_provs: vec![],
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -459,7 +461,7 @@ pub fn weave_garbler(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSy
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_into_gc(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSystem>) -> IrModule {
+pub fn weave_into_gc<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule {
     assert!(
         circuit.is_circuit(),
         "weave_into_gc: circuit must satisfy is_circuit() (single block with Return terminator)"
@@ -601,6 +603,7 @@ pub fn weave_into_gc(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSy
         where_clause: vec![],
         body: IrBlock {
             stmts,
+            stmt_provs: vec![],
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -629,8 +632,8 @@ pub fn weave_into_gc(circuit: &BIrBlocks, name: &str, linkage: Option<&LinkageSy
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_eval_from_setup(
-    circuit: &BIrBlocks,
+pub fn weave_eval_from_setup<P: Clone + Default>(
+    circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule {
@@ -751,6 +754,7 @@ pub fn weave_eval_from_setup(
         where_clause: vec![],
         body: IrBlock {
             stmts,
+            stmt_provs: vec![],
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -775,8 +779,8 @@ pub fn weave_eval_from_setup(
 // ============================================================================
 
 /// Weave a bounded movfuscated Boolar circuit into a garbled-circuit **evaluator**.
-pub fn weave_evaluator_bounded(
-    circuit: &BIrBlocks,
+pub fn weave_evaluator_bounded<P: Clone + Default>(
+    circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
@@ -788,8 +792,8 @@ pub fn weave_evaluator_bounded(
 }
 
 /// Weave a bounded movfuscated Boolar circuit into a garbled-circuit **garbler**.
-pub fn weave_garbler_bounded(
-    circuit: &BIrBlocks,
+pub fn weave_garbler_bounded<P: Clone + Default>(
+    circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
@@ -801,8 +805,8 @@ pub fn weave_garbler_bounded(
 }
 
 /// Weave a bounded movfuscated Boolar circuit into a `GarbledCircuit`-returning function.
-pub fn weave_into_gc_bounded(
-    circuit: &BIrBlocks,
+pub fn weave_into_gc_bounded<P: Clone + Default>(
+    circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
@@ -814,8 +818,8 @@ pub fn weave_into_gc_bounded(
 }
 
 /// Weave a bounded movfuscated Boolar circuit into an `EvalSetup`-based evaluator.
-pub fn weave_eval_from_setup_bounded(
-    circuit: &BIrBlocks,
+pub fn weave_eval_from_setup_bounded<P: Clone + Default>(
+    circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,

@@ -134,9 +134,26 @@ pub enum IcmpPred {
 /// - Call `switch_to_block` before emitting instructions or a terminator.
 /// - Every block must end with exactly one terminator.
 /// - Call `end_function` after the last terminator.
-pub trait LirTarget {
+///
+/// # Provenance
+///
+/// The optional `Prov` type parameter allows callers to attach provenance
+/// annotations to emitted instructions.  Call [`set_prov`](LirTarget::set_prov)
+/// before emitting one or more instructions; each instruction inherits the
+/// most recently set provenance.  Backends that do not track provenance use
+/// the default `Prov = ()` and the no-op default impl of `set_prov`.
+pub trait LirTarget<Prov: Clone + Default = ()> {
     type Value: Clone + Eq + core::fmt::Debug;
     type Block: Clone + Eq + core::fmt::Debug;
+
+    /// Set the provenance context for subsequently emitted instructions.
+    ///
+    /// Each call overrides the previous value.  Instructions emitted after
+    /// this call (and before the next `set_prov`) are tagged with `prov`.
+    ///
+    /// The default implementation is a no-op — backends that do not track
+    /// provenance need not override this.
+    fn set_prov(&mut self, _prov: Prov) {}
 
     // ---- Type registration --------------------------------------------------
 

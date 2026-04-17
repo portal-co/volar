@@ -96,15 +96,16 @@ pub struct VolarBlock(pub usize);
 // Internal builders
 // ============================================================================
 
-struct BlockBuilder {
+struct BlockBuilder<P: Clone + Default = ()> {
     params: Vec<IRTypeId>,
     stmts: Vec<IRStmt>,
+    stmt_provs: Vec<P>,
     terminator: Option<IRTerminator>,
 }
 
-impl BlockBuilder {
+impl<P: Clone + Default> BlockBuilder<P> {
     fn new() -> Self {
-        BlockBuilder { params: vec![], stmts: vec![], terminator: None }
+        BlockBuilder { params: vec![], stmts: vec![], stmt_provs: vec![], terminator: None }
     }
 
     /// Next local var ID = params.len() + stmts.len().
@@ -113,9 +114,9 @@ impl BlockBuilder {
     }
 }
 
-struct FuncBuilder {
+struct FuncBuilder<P: Clone + Default = ()> {
     name: String,
-    blocks: Vec<BlockBuilder>,
+    blocks: Vec<BlockBuilder<P>>,
     /// Index of the block currently being emitted.
     current: usize,
 }
@@ -129,7 +130,12 @@ struct FuncBuilder {
 /// Integer operations are implemented as bit-level circuits.
 /// Cryptographic operations are provided as pre-built [`IRBlocks`] via
 /// [`add_extern`](Self::add_extern) and inlined at each call site.
-pub struct VolarIrTarget {
+///
+/// The type parameter `P` is an optional provenance annotation for emitted
+/// statements.  Call [`set_prov`](volar_lir::LirTarget::set_prov) before
+/// emitting instructions; each instruction is tagged with the most recently
+/// set provenance.  Use `P = ()` (the default) when provenance is not needed.
+pub struct VolarIrTarget<P: Clone + Default = ()> {
     /// Shared IR types table.  Always contains [`IRType::Bit`] at index 0.
     pub types: IRTypes,
     bit_tid: IRTypeId,
@@ -138,21 +144,25 @@ pub struct VolarIrTarget {
     struct_widths: Vec<usize>,
 
     /// External single-block implementations (name → IRBlocks).
-    externs: BTreeMap<String, IRBlocks>,
+    /// Externally-provided circuit fragments carry no provenance (`P = ()`).
+    externs: BTreeMap<String, IRBlocks<()>>,
 
     /// Oracle declarations accumulated since the last `end_function`.
     pending_oracles: Vec<OracleDecl>,
     /// Action declarations accumulated since the last `end_function`.
     pending_actions: Vec<ActionDecl>,
 
+    /// Provenance to attach to the next emitted statement.
+    current_prov: P,
+
     /// State for the function currently being built.
-    func: Option<FuncBuilder>,
+    func: Option<FuncBuilder<P>>,
 
     /// Completed `(name, IRBlocks)` pairs, in order of `end_function` calls.
-    pub completed: Vec<(String, IRBlocks)>,
+    pub completed: Vec<(String, IRBlocks<P>)>,
 }
 
-impl VolarIrTarget {
+impl<P: Clone + Default> VolarIrTarget<P> {
     /// Create a new target.  A fresh `IRTypes` is initialised with
     /// [`IRType::Bit`] at type-ID 0.
     pub fn new() -> Self {
@@ -164,6 +174,7 @@ impl VolarIrTarget {
             externs: BTreeMap::new(),
             pending_oracles: vec![],
             pending_actions: vec![],
+            current_prov: P::default(),
             func: None,
             completed: vec![],
         }
@@ -175,7 +186,10 @@ impl VolarIrTarget {
     /// combinational circuit).  Its params must equal the flat bit count of
     /// the ABI arguments, and its `Return` args the flat bit count of the
     /// return type.
-    pub fn add_extern(&mut self, name: impl Into<String>, blocks: IRBlocks) {
+    ///
+    /// Externally-provided circuit fragments carry no provenance (`IRBlocks<()>`).
+    /// When inlined, re-emitted statements inherit the caller's `current_prov`.
+    pub fn add_extern(&mut self, name: impl Into<String>, blocks: IRBlocks<()>) {
         self.externs.insert(name.into(), blocks);
     }
 
@@ -189,8 +203,8 @@ impl VolarIrTarget {
         self.pending_actions.push(decl);
     }
 
-    /// Drain and return all completed `(name, IRBlocks)` pairs.
-    pub fn take_completed(&mut self) -> Vec<(String, IRBlocks)> {
+    /// Drain and return all completed `(name, IRBlocks<P>)` pairs.
+    pub fn take_completed(&mut self) -> Vec<(String, IRBlocks<P>)> {
         let mut out = Vec::new();
         core::mem::swap(&mut out, &mut self.completed);
         out
@@ -221,6 +235,7 @@ impl VolarIrTarget {
         let f = self.func.as_mut().unwrap();
         let blk = &mut f.blocks[f.current];
         let id = blk.next_local_id();
+        blk.stmt_provs.push(self.current_prov.clone());
         blk.stmts.push(stmt);
         IRVarId(id)
     }
@@ -560,7 +575,7 @@ impl VolarIrTarget {
     /// Inline a single-block callee (convenience wrapper around `inline_blocks`).
     fn inline_callee(
         &mut self,
-        callee: &IRBlock,
+        callee: &IRBlock<()>,
         flat_args: Vec<IRVarId>,
         ret_ty: Option<&LirType>,
     ) -> Vec<VolarValue> {
@@ -611,7 +626,7 @@ impl VolarIrTarget {
     /// continuation block's parameters).
     pub fn inline_blocks(
         &mut self,
-        callee: &IRBlocks,
+        callee: &IRBlocks<()>,
         flat_args: Vec<IRVarId>,
         ret_ty: Option<&LirType>,
     ) -> Vec<VolarValue> {
@@ -696,7 +711,7 @@ impl VolarIrTarget {
 // BitCircuitBuilder implementation for VolarIrTarget
 // ============================================================================
 
-impl BitCircuitBuilder for VolarIrTarget {
+impl<P: Clone + Default> BitCircuitBuilder for VolarIrTarget<P> {
     type Bit = IRVarId;
 
     fn bc_const(&mut self, val: bool) -> IRVarId {
@@ -730,7 +745,7 @@ impl BitCircuitBuilder for VolarIrTarget {
     }
 }
 
-impl StorageEmitter for VolarIrTarget {
+impl<P: Clone + Default> StorageEmitter for VolarIrTarget<P> {
     fn compose_address(&mut self, bits: &[IRVarId]) -> IRVarId {
         if bits.len() == 1 {
             return bits[0];
@@ -891,9 +906,13 @@ fn subst_stmt(stmt: &IRStmt, var_map: &[IRVarId]) -> IRStmt {
 // LirTarget implementation
 // ============================================================================
 
-impl LirTarget for VolarIrTarget {
+impl<P: Clone + Default> LirTarget<P> for VolarIrTarget<P> {
     type Value = VolarValue;
     type Block = VolarBlock;
+
+    fn set_prov(&mut self, prov: P) {
+        self.current_prov = prov;
+    }
 
     // ---- Struct registration -----------------------------------------------
 
@@ -947,6 +966,7 @@ impl LirTarget for VolarIrTarget {
             .map(|b| IRBlock {
                 params: b.params,
                 stmts: b.stmts,
+                stmt_provs: b.stmt_provs,
                 terminator: b.terminator.expect("VolarIrTarget: block missing terminator"),
             })
             .collect();
@@ -960,7 +980,7 @@ impl LirTarget for VolarIrTarget {
     fn create_block(&mut self) -> VolarBlock {
         let f = self.func.as_mut().unwrap();
         let idx = f.blocks.len();
-        f.blocks.push(BlockBuilder::new());
+        f.blocks.push(BlockBuilder::<P>::new());
         VolarBlock(idx)
     }
 
@@ -1259,8 +1279,8 @@ mod tests {
     use super::*;
     use volar_lir::{LirTarget, LirType, IcmpPred};
 
-    /// Run a single-function VolarIrTarget and return its `IRBlocks`.
-    fn build(f: impl FnOnce(&mut VolarIrTarget)) -> IRBlocks {
+    /// Run a single-function VolarIrTarget and return its `IRBlocks<()>`.
+    fn build(f: impl FnOnce(&mut VolarIrTarget<()>)) -> IRBlocks<()> {
         let mut t = VolarIrTarget::new();
         f(&mut t);
         let (_, blocks) = t.completed.into_iter().next().unwrap();
@@ -1501,6 +1521,7 @@ mod tests {
         let extern_impl = IRBlocks::new(std::vec![IRBlock {
             params: std::vec![bit_tid.clone()],
             stmts: std::vec![],
+            stmt_provs: std::vec![],
             terminator: IRTerminator::Jmp {
                 func: IRBlockTargetId::Return,
                 args: std::vec![IRVarId(0)],
@@ -1556,6 +1577,7 @@ mod tests {
             IRBlock {
                 params: std::vec![bit_tid],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: IRTerminator::JumpCond {
                     condition: IRVarId(0),
                     true_block:  IRBlockTargetId::Block(IRBlockId(1)),
@@ -1568,6 +1590,7 @@ mod tests {
             IRBlock {
                 params: std::vec![],
                 stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 1 }, bit_tid)],
+                stmt_provs: std::vec![()],
                 terminator: IRTerminator::Jmp {
                     func: IRBlockTargetId::Return,
                     args: std::vec![IRVarId(0)], // return the Const(1)
@@ -1610,6 +1633,7 @@ mod tests {
                     IRStmt::Poly { coeffs, constant: Constant { hi: 0, lo: 1 } }
                 },
             ],
+            stmt_provs: std::vec![()],
             terminator: IRTerminator::JumpCond {
                 condition: IRVarId(0),
                 true_block:  IRBlockTargetId::Return,

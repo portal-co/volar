@@ -134,6 +134,7 @@ fn test_if_max_via_codegen() {
         where_clause: vec![],
         body: IrBlock {
             stmts: vec![],
+            stmt_provs: vec![],
             expr: Some(Box::new(IrExpr::If {
                 cond: Box::new(IrExpr::Binary {
                     op: SpecBinOp::Gt,
@@ -142,6 +143,7 @@ fn test_if_max_via_codegen() {
                 }),
                 then_branch: IrBlock {
                     stmts: vec![],
+                    stmt_provs: vec![],
                     expr: Some(Box::new(IrExpr::Var("a".to_owned()))),
                 },
                 else_branch: Some(Box::new(IrExpr::Var("b".to_owned()))),
@@ -216,7 +218,7 @@ fn test_array_splat() {
         params: vec![IrParam { name: "a".to_owned(), ty: arr_ty }],
         return_type: Some(IrType::Primitive(PrimitiveType::U32)),
         where_clause: vec![],
-        body: IrBlock { stmts: vec![], expr: Some(Box::new(body_expr)) },
+        body: IrBlock { stmts: vec![], stmt_provs: vec![], expr: Some(Box::new(body_expr)) },
         external_kind: ExternalKind::Normal,
     };
 
@@ -290,6 +292,7 @@ fn test_struct_splat() {
         where_clause: vec![],
         body: IrBlock {
             stmts: vec![],
+            stmt_provs: vec![],
             expr: Some(Box::new(IrExpr::Binary {
                 op: SpecBinOp::Add,
                 left: Box::new(IrExpr::Field {
@@ -355,6 +358,7 @@ fn test_phase2_codegen_struct_array() {
         where_clause: vec![],
         body: IrBlock {
             stmts: vec![],
+            stmt_provs: vec![],
             expr: Some(Box::new(IrExpr::Binary {
                 op: SpecBinOp::BitXor,
                 left: Box::new(IrExpr::Var("x".to_owned())),

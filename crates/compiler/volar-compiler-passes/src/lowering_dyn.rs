@@ -1141,6 +1141,7 @@ fn lower_block_dyn(block: &IrBlock, ctx: &LoweringContext, fn_gen: &[IrGenericPa
             .iter()
             .map(|s| lower_stmt_dyn(s, ctx, fn_gen))
             .collect(),
+        stmt_provs: Vec::new(),
         expr: block
             .expr
             .as_ref()
@@ -3131,6 +3132,7 @@ mod rename_tests {
                     },
                 ],
             })],
+            stmt_provs: Vec::new(),
             expr: None,
         };
         rename_var_in_block(&mut block, "n", "n_param");

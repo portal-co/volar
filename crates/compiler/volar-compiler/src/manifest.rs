@@ -70,6 +70,7 @@ pub struct TypeManifest {
 fn strip_bodies(module: &IrModule) -> IrModule {
     let stub_block = IrBlock {
         stmts: Vec::new(),
+        stmt_provs: Vec::new(),
         expr: Some(Box::new(IrExpr::Call {
             func: Box::new(IrExpr::Path {
                 segments: vec!["todo!".into()],

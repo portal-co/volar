@@ -933,6 +933,7 @@ mod tests {
                 ),
                 IrStmt::Semi(var("x")), // should reference x_1
             ],
+            stmt_provs: Vec::new(),
             expr: None,
         };
         let outer = HashSet::new();
@@ -966,6 +967,7 @@ mod tests {
         // let y = x;  // no shadow
         let mut block = IrBlock {
             stmts: vec![let_stmt("x", lit_int(1)), let_stmt("y", var("x"))],
+            stmt_provs: Vec::new(),
             expr: None,
         };
         let outer = HashSet::new();
@@ -988,6 +990,7 @@ mod tests {
         // let x = 2;  // shadows but doesn't reference old x
         let mut block = IrBlock {
             stmts: vec![let_stmt("x", lit_int(1)), let_stmt("x", lit_int(2))],
+            stmt_provs: Vec::new(),
             expr: None,
         };
         let outer = HashSet::new();
@@ -1019,6 +1022,7 @@ mod tests {
                 ),
                 IrStmt::Semi(var("bad")), // should become bad_1
             ],
+            stmt_provs: Vec::new(),
             expr: None,
         };
         let outer: HashSet<String> = ["bad".to_string()].into_iter().collect();
@@ -1062,6 +1066,7 @@ mod tests {
                 ),
                 IrStmt::Semi(var("l")), // should become l_1
             ],
+            stmt_provs: Vec::new(),
             expr: None,
         };
         let outer: HashSet<String> = ["l".to_string(), "s".to_string(), "m".to_string()]
@@ -1106,6 +1111,7 @@ mod tests {
                     },
                 ),
             ],
+            stmt_provs: Vec::new(),
             expr: Some(Box::new(var("x"))),
         };
         let outer = HashSet::new();
@@ -1142,6 +1148,7 @@ mod tests {
                 ),
                 IrStmt::Semi(var("x")),
             ],
+            stmt_provs: Vec::new(),
             expr: None,
         };
         let outer = HashSet::new();

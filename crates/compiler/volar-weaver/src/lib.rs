@@ -65,7 +65,7 @@ pub use vole::{
 ///
 /// Returns a flat list of `(result_var_id, stmt)` pairs with no `Or` gates.
 /// Synthetic var IDs start above the existing SSA range.
-pub(crate) fn expand_ors(block: &BIrBlock) -> Vec<(IRVarId, BIrStmt)> {
+pub(crate) fn expand_ors<P: Clone + Default>(block: &BIrBlock<P>) -> Vec<(IRVarId, BIrStmt)> {
     let num_params = block.params as u32;
     let num_stmts = block.stmts.len() as u32;
     let mut next_synthetic = num_params + num_stmts;
@@ -100,8 +100,8 @@ pub(crate) fn expand_ors(block: &BIrBlock) -> Vec<(IRVarId, BIrStmt)> {
 ///
 /// For single-output circuits returns `(Var(wire_N), T)`.
 /// For multi-output returns `(Tuple([...]), Tuple([T; n]))`.
-pub(crate) fn build_return(
-    block: &BIrBlock,
+pub(crate) fn build_return<P: Clone + Default>(
+    block: &BIrBlock<P>,
     var_names: &BTreeMap<u32, String>,
     elem_ty: IrType,
 ) -> (IrExpr, IrType) {
@@ -242,6 +242,7 @@ pub(crate) mod tests_common {
                 BIrStmt::Xor(IRVarId(0), IRVarId(1)),
                 BIrStmt::And(IRVarId(0), IRVarId(2)),
             ],
+            stmt_provs: vec![(), ()],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Return,
                 args: vec![IRVarId(3)],
@@ -254,6 +255,7 @@ pub(crate) mod tests_common {
         BIrBlocks(vec![BIrBlock {
             params: 2,
             stmts: vec![BIrStmt::And(IRVarId(0), IRVarId(1))],
+            stmt_provs: vec![()],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Return,
                 args: vec![IRVarId(2)],
@@ -266,6 +268,7 @@ pub(crate) mod tests_common {
         BIrBlocks(vec![BIrBlock {
             params: 1,
             stmts: vec![BIrStmt::One],
+            stmt_provs: vec![()],
             terminator: BIrTerminator::CondJmp {
                 val: IRVarId(0),
                 then_target: BIrTarget {

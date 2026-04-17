@@ -165,6 +165,7 @@ fn mono_len(len: &ArrayLength, env: &MonoEnv) -> ArrayLength {
 fn mono_block(block: &volar_compiler::ir::IrBlock, env: &MonoEnv) -> volar_compiler::ir::IrBlock {
     volar_compiler::ir::IrBlock {
         stmts: block.stmts.iter().map(|s| mono_stmt(s, env)).collect(),
+        stmt_provs: Vec::new(),
         expr: block.expr.as_ref().map(|e| Box::new(mono_expr(e, env))),
     }
 }

@@ -398,8 +398,8 @@ fn emit_verifier_and_gate(
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_vole_prover(
-    circuit: &BIrBlocks,
+pub fn weave_vole_prover<P: Clone + Default>(
+    circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule {
@@ -531,6 +531,7 @@ pub fn weave_vole_prover(
         where_clause,
         body: IrBlock {
             stmts,
+            stmt_provs: vec![],
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -577,8 +578,8 @@ pub fn weave_vole_prover(
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_vole_verifier(
-    circuit: &BIrBlocks,
+pub fn weave_vole_verifier<P: Clone + Default>(
+    circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule {
@@ -750,6 +751,7 @@ pub fn weave_vole_verifier(
         where_clause,
         body: IrBlock {
             stmts,
+            stmt_provs: vec![],
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -774,8 +776,8 @@ pub fn weave_vole_verifier(
 // ============================================================================
 
 /// Weave a bounded movfuscated Boolar circuit into a VOLE **prover**.
-pub fn weave_vole_prover_bounded(
-    circuit: &BIrBlocks,
+pub fn weave_vole_prover_bounded<P: Clone + Default>(
+    circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
@@ -786,8 +788,8 @@ pub fn weave_vole_prover_bounded(
 }
 
 /// Weave a bounded movfuscated Boolar circuit into a VOLE **verifier**.
-pub fn weave_vole_verifier_bounded(
-    circuit: &BIrBlocks,
+pub fn weave_vole_verifier_bounded<P: Clone + Default>(
+    circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
@@ -1819,6 +1821,7 @@ pub fn weave_vole_prover_ir_with_mode(
         where_clause,
         body: IrBlock {
             stmts: ctx.stmts,
+            stmt_provs: vec![],
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -1916,6 +1919,7 @@ pub fn weave_vole_verifier_ir_with_mode(
         where_clause,
         body: IrBlock {
             stmts: ctx.stmts,
+            stmt_provs: vec![],
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,

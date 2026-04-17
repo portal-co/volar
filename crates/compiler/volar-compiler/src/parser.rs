@@ -1943,7 +1943,7 @@ fn convert_block(block: &syn::Block) -> Result<IrBlock> {
             _ => {}
         }
     }
-    Ok(IrBlock { stmts, expr })
+    Ok(IrBlock { stmts, stmt_provs: Vec::new(), expr })
 }
 
 fn convert_match_arm(arm: &syn::Arm) -> Result<IrMatchArm> {
