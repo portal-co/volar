@@ -52,6 +52,23 @@ impl<P: Clone + Default> BIrBlock<P> {
     pub fn push_stmt_default(&mut self, stmt: BIrStmt) {
         self.push_stmt(stmt, P::default());
     }
+
+    /// Map provenance annotations using a [`ProvenanceHandler`].
+    pub fn map_prov_with_handler<H: volar_provenance::ProvenanceHandler<P>>(self, handler: &H) -> BIrBlock<H::Output> {
+        BIrBlock {
+            params: self.params,
+            stmts: self.stmts,
+            stmt_provs: self.stmt_provs.into_iter().map(|p| handler.map(&p)).collect(),
+            terminator: self.terminator,
+        }
+    }
+}
+
+impl<P: Clone + Default> BIrBlocks<P> {
+    /// Map provenance annotations using a [`ProvenanceHandler`].
+    pub fn map_prov_with_handler<H: volar_provenance::ProvenanceHandler<P>>(self, handler: &H) -> BIrBlocks<H::Output> {
+        BIrBlocks(self.0.into_iter().map(|b| b.map_prov_with_handler(handler)).collect())
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]

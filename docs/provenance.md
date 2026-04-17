@@ -22,6 +22,9 @@ When `P` is a meaningful type (e.g. a source location, gate ID, or
 user-defined tag), each statement in every block carries a `P` value
 recording its origin.
 
+The handler trait and built-in implementations live in the **`volar-provenance`**
+crate (re-exported by `volar-ir` and `volar-weaver` for convenience).
+
 ## Provenance through the pipeline
 
 ```
@@ -35,9 +38,23 @@ IRBlocks<P>  /  BIrBlocks<P>
   ↓  movfuscate / lower_to_circuit
 BIrBlocks<P>                // provenance preserved through transforms
   ↓  weave
-IrModule<Q>                 // P → Q via Into<Q>
+IrModule<Q>                 // P → Q via ProvenanceHandler
   ↓  print
 Rust source                 // provenance discarded (metadata only)
+```
+
+### LIR lowering
+
+`lower_biir` and `lower_ir` forward provenance from the circuit IR into
+`LirTarget::set_prov`.  The `*_with_handler` variants map provenance at
+the boundary:
+
+```rust
+// Same provenance type on both sides (default)
+lower_biir(&blocks, "fn", &mut target);
+
+// Map circuit provenance to a different LIR target type
+lower_biir_with_handler(&blocks, "fn", &mut target, &MapProvenance(|p| ...));
 ```
 
 ### Weaving
@@ -78,17 +95,32 @@ OR → NOT+AND+NOT via De Morgan, or an AND gate producing both a table
 computation and a wire result), all generated statements inherit the
 provenance of the original gate.
 
-### `map_prov`
+### `map_prov` and `map_prov_with_handler`
 
 After weaving, you can re-map provenance on any IR node:
 
 ```rust
-let module: IrModule<CircuitProv> = weave_garbler(&circuit, "c", None);
+// Closure-based (compiler IR)
 let mapped: IrModule<AppProv> = module.map_prov(|cp| AppProv::from(cp));
+
+// Handler-based (circuit IR)
+let mapped: BIrBlocks<AppProv> = blocks.map_prov_with_handler(&my_handler);
+let mapped: IRBlocks<AppProv>  = ir.map_prov_with_handler(&my_handler);
 ```
 
 `map_prov` is available on `IrModule`, `IrFunction`, `IrBlock`, `IrImpl`,
-`IrStmt`, `IrExpr`, and all nested IR types.
+`IrStmt`, `IrExpr`, and all nested compiler IR types.  `map_prov_with_handler`
+is available on `BIrBlocks`, `BIrBlock`, `IRBlocks`, and `IRBlock`.
+
+## Crate structure
+
+| Crate | Role |
+|-------|------|
+| `volar-provenance` | `ProvenanceHandler` trait + `NoProvenance`, `KeepProvenance`, `MapProvenance` |
+| `volar-ir` | Re-exports provenance types; `map_prov_with_handler` on `BIrBlocks`/`IRBlocks` |
+| `volar-ir-passes` | `lower_biir_with_handler`, `lower_ir_with_handler` |
+| `volar-compiler` | `map_prov` on all compiler IR types |
+| `volar-weaver` | Re-exports provenance types; `*_with_handler` weaving functions |
 
 ## The `ProvenanceHandler` trait
 

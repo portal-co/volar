@@ -1,0 +1,9 @@
+[package]
+name = "volar-provenance"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Provenance handler trait for Volar IR pipelines"
+repository.workspace = true
+
+[dependencies]

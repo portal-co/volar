@@ -102,6 +102,27 @@ impl<P: Clone + Default> IRBlock<P> {
     pub fn push_stmt_default(&mut self, stmt: IRStmt) -> IRVarId {
         self.push_stmt(stmt, P::default())
     }
+
+    /// Map provenance annotations using a [`ProvenanceHandler`].
+    pub fn map_prov_with_handler<H: volar_provenance::ProvenanceHandler<P>>(self, handler: &H) -> IRBlock<H::Output> {
+        IRBlock {
+            params: self.params,
+            stmts: self.stmts,
+            stmt_provs: self.stmt_provs.into_iter().map(|p| handler.map(&p)).collect(),
+            terminator: self.terminator,
+        }
+    }
+}
+
+impl<P: Clone + Default> IRBlocks<P> {
+    /// Map provenance annotations using a [`ProvenanceHandler`].
+    pub fn map_prov_with_handler<H: volar_provenance::ProvenanceHandler<P>>(self, handler: &H) -> IRBlocks<H::Output> {
+        IRBlocks {
+            oracles: self.oracles,
+            actions: self.actions,
+            blocks: self.blocks.into_iter().map(|b| b.map_prov_with_handler(handler)).collect(),
+        }
+    }
 }
 
 // ============================================================================

@@ -13,6 +13,7 @@ linking = ["volar-compiler/parsing"]
 [dependencies]
 volar-compiler = {path="../volar-compiler"}
 volar-compiler-common ={path="../volar-compiler-common"}
+volar-provenance.workspace = true
 volar-ir.workspace = true
 volar-ir-passes = {path="../../ir/volar-ir-passes"}
 vaffle.workspace = true

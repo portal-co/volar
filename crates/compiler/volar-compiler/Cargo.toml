@@ -18,6 +18,7 @@ proc-macro2 = { version = "1.0", optional = true }
 thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"], optional = true }
 volar-ir-common.workspace = true
+volar-provenance.workspace = true
 
 [dev-dependencies]
 volar-compiler = { path = ".", features = ["parsing"] }

@@ -15,6 +15,7 @@ members = [
     "crates/compiler/ephemera",
     "crates/compiler/volar-compiler-common",
     "crates/ir/volar-ir-common",
+    "crates/ir/volar-provenance",
     "crates/compiler/volar-weaver",
     "crates/ir/volar-lir",
     "crates/compiler/volar-lir-codegen",
@@ -33,6 +34,7 @@ volar-lir = {path="crates/ir/volar-lir", version = "0.1.0"}
 vaffle = {path="crates/ir/vaffle", version = "0.1.0"}
 volar-vaffle-target = {path="crates/ir/volar-vaffle-target", version = "0.1.0"}
 volar-ir-common = {path="crates/ir/volar-ir-common", version = "0.1.0"}
+volar-provenance = {path="crates/ir/volar-provenance", version = "0.1.0"}
 volar-compiler-passes = {path="crates/compiler/volar-compiler-passes", version = "0.1.0"}
 
 portal-pc-waffle-ir = { version = "0.6.0-alpha.1", git = "https://github.com/portal-co/waffle-" }
