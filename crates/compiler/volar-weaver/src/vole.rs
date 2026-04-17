@@ -906,6 +906,79 @@ pub fn weave_vole_verifier_bounded(
 /// Maps `(StorageId.0, TypeId.0)` → cell count.
 pub type StorageSizes = alloc::collections::BTreeMap<(u32, u32), usize>;
 
+/// How storage operations are authenticated in the VOLE proof.
+#[derive(Clone, Debug)]
+pub enum StorageMode {
+    /// MUX/demux tree: O(N) AND gates per access, fully in-circuit.
+    /// Every cell is a VOLE-authenticated wire; the verifier holds N Q values.
+    Tree(StorageSizes),
+
+    /// External commitment: **0 AND gates** for storage access.
+    ///
+    /// Reads are oracle parameters (fresh VOLE-authenticated values provided
+    /// by the prover).  Writes are no-ops in the circuit.  The returned
+    /// [`MemoryTrace`] records every access so that an external checker can
+    /// verify memory consistency against a commitment (Merkle tree, KZG,
+    /// or the multiset argument described below).
+    ///
+    /// # Verifier storage: O(1)
+    ///
+    /// The verifier no longer maintains per-cell Q values.  It only needs
+    /// the random challenge `r` and a running hash/product commitment
+    /// (one T-element) for the multiset check.
+    ///
+    /// # External multiset memory check (offline memory checking)
+    ///
+    /// After the VOLE proof, the verifier performs a separate check:
+    ///
+    /// 1. **Encode** each memory op as `h = addr·r + value·r² + timestamp·r³`
+    ///    where `r` is a random challenge and all multiplications are
+    ///    by public field constants (free on VOLE-authenticated values).
+    ///
+    /// 2. **Accumulate** into two multiset hashes:
+    ///    - `H_produce`: init entries (addr, 0, 0) + write entries (addr, new, t)
+    ///    - `H_consume`: overwritten entries (addr, old, t_old) + final state
+    ///
+    /// 3. **Check** `H_produce == H_consume`.  By Schwartz-Zippel over |T|,
+    ///    a cheating prover passes with probability ≤ M/|T| (negligible for
+    ///    M ≪ 2¹²⁸).
+    ///
+    /// The encoding step uses only public-scalar × authenticated-value
+    /// multiplications (free in VOLE) and additions (free), so the
+    /// multiset check adds **zero AND gates**.
+    ///
+    /// # Cost comparison (N cells, M accesses, K addr bits)
+    ///
+    /// | Mode       | AND gates | Verifier state | Extra VOLE correlations |
+    /// |------------|-----------|----------------|------------------------|
+    /// | Tree       | O(M·N)    | O(N) Q-values  | 0                      |
+    /// | Commitment | **0**     | **O(1)**       | 1 per read             |
+    Commitment,
+}
+
+/// One entry in the memory access trace (for external verification).
+#[derive(Clone, Debug)]
+pub struct MemoryTraceEntry {
+    /// Circuit variable ID of the address (Merge result or scalar).
+    pub addr_var: u32,
+    /// Circuit variable ID of the value.
+    pub value_var: u32,
+    pub storage_id: u32,
+    pub type_id: u32,
+    pub is_write: bool,
+    pub timestamp: u32,
+}
+
+/// Full memory access trace returned alongside the proof in
+/// [`StorageMode::Commitment`] mode.
+///
+/// The external verifier uses this trace plus the random challenge `r` to
+/// perform the multiset consistency check.
+#[derive(Clone, Debug, Default)]
+pub struct MemoryTrace {
+    pub entries: Vec<MemoryTraceEntry>,
+}
+
 /// Wire representation inside the VOLE IR weaver.
 #[derive(Clone)]
 enum WireRepr {
@@ -929,8 +1002,12 @@ fn cir_type_width(ty: &CirTyId, types: &CirTypes) -> usize {
 fn count_ir_ands(
     block: &CirBlock,
     types: &CirTypes,
-    storage_sizes: &StorageSizes,
+    mode: &StorageMode,
 ) -> usize {
+    let storage_sizes = match mode {
+        StorageMode::Tree(ss) => ss,
+        StorageMode::Commitment => return count_ir_ands_no_storage(block, types),
+    };
     let mut var_types: Vec<CirTyId> = block.params.clone();
     let bit_tid = CirTyId(0); // by convention, index 0 = Bit
     let mut count: usize = 0;
@@ -976,6 +1053,26 @@ fn count_ir_ands(
     count
 }
 
+/// AND count for commitment mode: only Poly stmts contribute.
+fn count_ir_ands_no_storage(block: &CirBlock, types: &CirTypes) -> usize {
+    let mut count = 0;
+    for stmt in &block.stmts {
+        if let Stmt::Poly { coeffs, .. } = stmt {
+            for (mono, coeff) in coeffs {
+                if *coeff % 2 == 1 && mono.len() >= 2 {
+                    count += mono.len() - 1;
+                }
+            }
+        }
+    }
+    count
+}
+
+/// Count storage reads in the circuit (for oracle parameter sizing).
+fn count_storage_reads(block: &CirBlock) -> usize {
+    block.stmts.iter().filter(|s| matches!(s, Stmt::StorageRead { .. })).count()
+}
+
 /// Context for emitting VOLE-authenticated wire computations.
 struct VoleIrCtx {
     stmts: Vec<IrStmt>,
@@ -983,8 +1080,14 @@ struct VoleIrCtx {
     and_counter: usize,
     hat_names: Vec<String>,
     ok_names: Vec<String>,
-    /// Current var name for each storage cell.
+    /// Current var name for each storage cell (Tree mode only).
     stor: alloc::collections::BTreeMap<(u32, u32, usize), String>,
+    /// Counter for oracle-read parameters (Commitment mode).
+    oracle_counter: usize,
+    /// Memory trace (Commitment mode).
+    trace: MemoryTrace,
+    /// Running timestamp for memory operations.
+    mem_timestamp: u32,
     is_prover: bool,
 }
 
@@ -997,6 +1100,9 @@ impl VoleIrCtx {
             hat_names: Vec::new(),
             ok_names: Vec::new(),
             stor: alloc::collections::BTreeMap::new(),
+            oracle_counter: 0,
+            trace: MemoryTrace::default(),
+            mem_timestamp: 0,
             is_prover,
         }
     }
@@ -1406,6 +1512,60 @@ impl VoleIrCtx {
         }
     }
 
+    // ---- Commitment-mode storage (0 AND gates) ----------------------------
+
+    /// Commitment-mode read: use an oracle parameter as the value.
+    fn emit_storage_read_committed(
+        &mut self,
+        out_name: &str,
+        var_id: u32,
+        storage_id: u32,
+        type_id: u32,
+        addr_var: &CirVar,
+        types: &CirTypes,
+        val_ty: &CirTyId,
+    ) {
+        let param_name = format!("oracle_rd_{}", self.oracle_counter);
+        self.oracle_counter += 1;
+
+        // The value is just a clone of the oracle parameter (0 AND gates).
+        self.stmts.push(IrStmt::Let {
+            pattern: IrPattern::ident(out_name),
+            ty: None,
+            init: Some(clone_expr(var(&param_name))),
+        });
+
+        self.trace.entries.push(MemoryTraceEntry {
+            addr_var: addr_var.0,
+            value_var: var_id,
+            storage_id,
+            type_id,
+            is_write: false,
+            timestamp: self.mem_timestamp,
+        });
+        self.mem_timestamp += 1;
+    }
+
+    /// Commitment-mode write: record in trace, no circuit gates.
+    fn emit_storage_write_committed(
+        &mut self,
+        _out_name: &str,
+        storage_id: u32,
+        type_id: u32,
+        src_var: &CirVar,
+        addr_var: &CirVar,
+    ) {
+        self.trace.entries.push(MemoryTraceEntry {
+            addr_var: addr_var.0,
+            value_var: src_var.0,
+            storage_id,
+            type_id,
+            is_write: true,
+            timestamp: self.mem_timestamp,
+        });
+        self.mem_timestamp += 1;
+    }
+
     // ---- Merge / Shuffle (structural, free) --------------------------------
 
     fn emit_merge(&mut self, out_id: u32, parts: &[CirVar]) {
@@ -1448,7 +1608,7 @@ impl VoleIrCtx {
         &mut self,
         block: &CirBlock,
         types: &CirTypes,
-        storage_sizes: &StorageSizes,
+        mode: &StorageMode,
     ) {
         let p = block.params.len();
 
@@ -1458,13 +1618,15 @@ impl VoleIrCtx {
             self.wires.insert(i as u32, WireRepr::Scalar(name));
         }
 
-        // Initialize storage cells to zero.
-        for (&(sid, tid), &count) in storage_sizes {
+        // Initialize storage cells to zero (Tree mode only).
+        if let StorageMode::Tree(storage_sizes) = mode {
+            for (&(sid, tid), &count) in storage_sizes {
             for ci in 0..count {
                 let name = format!("_sinit_{}_{}_{}", sid, tid, ci);
                 self.emit_zero(&name);
                 self.stor.insert((sid, tid, ci), name);
             }
+        }
         }
 
         // Process stmts.
@@ -1505,21 +1667,41 @@ impl VoleIrCtx {
                 }
 
                 Stmt::StorageRead { storage, ty, addr } => {
-                    self.emit_storage_read(&out_name, storage.0, ty.0, addr, types, ty);
-                    let w = cir_type_width(ty, types);
-                    if w == 1 {
-                        self.wires.insert(var_id, WireRepr::Scalar(out_name));
-                    } else {
-                        let bits: Vec<String> = (0..w).map(|j| format!("{}_{}", out_name, j)).collect();
-                        self.wires.insert(var_id, WireRepr::Vec(bits));
+                    match mode {
+                        StorageMode::Tree(_) => {
+                            self.emit_storage_read(&out_name, storage.0, ty.0, addr, types, ty);
+                            let w = cir_type_width(ty, types);
+                            if w == 1 {
+                                self.wires.insert(var_id, WireRepr::Scalar(out_name));
+                            } else {
+                                let bits: Vec<String> = (0..w).map(|j| format!("{}_{}", out_name, j)).collect();
+                                self.wires.insert(var_id, WireRepr::Vec(bits));
+                            }
+                        }
+                        StorageMode::Commitment => {
+                            self.emit_storage_read_committed(
+                                &out_name, var_id, storage.0, ty.0, addr, types, ty,
+                            );
+                            self.wires.insert(var_id, WireRepr::Scalar(out_name));
+                        }
                     }
                 }
 
                 Stmt::StorageWrite { storage, src, ty, addr } => {
-                    self.emit_storage_write(storage.0, ty.0, src, addr, types, ty);
-                    // Write produces no meaningful result; register a zero.
-                    self.emit_zero(&out_name);
-                    self.wires.insert(var_id, WireRepr::Scalar(out_name));
+                    match mode {
+                        StorageMode::Tree(_) => {
+                            self.emit_storage_write(storage.0, ty.0, src, addr, types, ty);
+                            self.emit_zero(&out_name);
+                            self.wires.insert(var_id, WireRepr::Scalar(out_name));
+                        }
+                        StorageMode::Commitment => {
+                            self.emit_storage_write_committed(
+                                &out_name, storage.0, ty.0, src, addr,
+                            );
+                            self.emit_zero(&out_name);
+                            self.wires.insert(var_id, WireRepr::Scalar(out_name));
+                        }
+                    }
                 }
 
                 Stmt::Transmute { src, .. } => {
@@ -1567,9 +1749,7 @@ impl VoleIrCtx {
 
 /// Weave a single-block Volar IR circuit into a VOLE **prover** `IrModule`.
 ///
-/// The circuit must satisfy `is_circuit()` (single block, `Jmp(Return)`).
-/// `storage_sizes` maps each `(StorageId.0, TypeId.0)` pair to the number of
-/// cells in that oblivious storage space.
+/// Uses [`StorageMode::Tree`] for backward compatibility.
 pub fn weave_vole_prover_ir(
     circuit: &IRBlocks,
     types: &CirTypes,
@@ -1577,26 +1757,46 @@ pub fn weave_vole_prover_ir(
     storage_sizes: &StorageSizes,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule {
+    let mode = StorageMode::Tree(storage_sizes.clone());
+    weave_vole_prover_ir_with_mode(circuit, types, name, &mode, linkage).0
+}
+
+/// Weave a single-block Volar IR circuit into a VOLE **prover** `IrModule`,
+/// with configurable [`StorageMode`].
+///
+/// Returns `(IrModule, MemoryTrace)`.  In [`StorageMode::Tree`] the trace is
+/// empty.  In [`StorageMode::Commitment`] the trace records every read/write
+/// for external verification.
+pub fn weave_vole_prover_ir_with_mode(
+    circuit: &IRBlocks,
+    types: &CirTypes,
+    name: &str,
+    mode: &StorageMode,
+    linkage: Option<&LinkageSystem>,
+) -> (IrModule, MemoryTrace) {
     assert!(circuit.is_circuit(), "weave_vole_prover_ir: circuit must satisfy is_circuit()");
     let block = &circuit.blocks[0];
     let num_params = block.params.len();
-    let and_count = count_ir_ands(block, types, storage_sizes);
+    let and_count = count_ir_ands(block, types, mode);
+    let num_oracle_reads = if matches!(mode, StorageMode::Commitment) {
+        count_storage_reads(block)
+    } else { 0 };
     let (generics, where_clause) = prover_generics_and_where();
 
-    // Build function params: vope_one, then one per circuit input.
     let mut params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
     for i in 0..num_params {
         params.push(IrParam { name: format!("w_{}", i), ty: vope_type() });
     }
+    // Oracle read parameters (Commitment mode).
+    for i in 0..num_oracle_reads {
+        params.push(IrParam { name: format!("oracle_rd_{}", i), ty: vope_type() });
+    }
 
-    // Return type: (Vope, [Array<T,N>; AND_COUNT])  or  ((Vope, ...), [...])
     let ret_type = IrType::Tuple(vec![vope_type(), hat_array_type(and_count)]);
 
-    // Generate body.
     let mut ctx = VoleIrCtx::new(true);
-    ctx.emit_circuit(block, types, storage_sizes);
+    ctx.emit_circuit(block, types, mode);
 
-    // Build return expr.
     let ret_args = match &block.terminator {
         IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
         _ => panic!("expected Jmp(Return)"),
@@ -1608,6 +1808,7 @@ pub fn weave_vole_prover_ir(
     };
     let hats_expr = IrExpr::FixedArray(ctx.hat_names.iter().map(|h| var(h)).collect());
     let ret_expr = IrExpr::Tuple(vec![output_expr, hats_expr]);
+    let trace = ctx.trace.clone();
 
     let func = IrFunction {
         name: format!("vole_prove_ir_{}", name),
@@ -1629,14 +1830,12 @@ pub fn weave_vole_prover_ir(
         structs: vec![], traits: vec![], impls: vec![], type_aliases: vec![],
     };
     if let Some(ls) = linkage { ls.apply(&mut module); }
-    module
+    (module, trace)
 }
 
 /// Weave a single-block Volar IR circuit into a VOLE **verifier** `IrModule`.
 ///
-/// Analogous to [`weave_vole_prover_ir`] but generates the verifier side:
-/// each AND gate consumes a pre-assigned `Q<N,T>` share and a prover-sent
-/// `hat` value, checking the Quicksilver relation.
+/// Uses [`StorageMode::Tree`] for backward compatibility.
 pub fn weave_vole_verifier_ir(
     circuit: &IRBlocks,
     types: &CirTypes,
@@ -1644,13 +1843,28 @@ pub fn weave_vole_verifier_ir(
     storage_sizes: &StorageSizes,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule {
+    let mode = StorageMode::Tree(storage_sizes.clone());
+    weave_vole_verifier_ir_with_mode(circuit, types, name, &mode, linkage).0
+}
+
+/// Weave a single-block Volar IR circuit into a VOLE **verifier** `IrModule`,
+/// with configurable [`StorageMode`].
+pub fn weave_vole_verifier_ir_with_mode(
+    circuit: &IRBlocks,
+    types: &CirTypes,
+    name: &str,
+    mode: &StorageMode,
+    linkage: Option<&LinkageSystem>,
+) -> (IrModule, MemoryTrace) {
     assert!(circuit.is_circuit(), "weave_vole_verifier_ir: circuit must satisfy is_circuit()");
     let block = &circuit.blocks[0];
     let num_params = block.params.len();
-    let and_count = count_ir_ands(block, types, storage_sizes);
+    let and_count = count_ir_ands(block, types, mode);
+    let num_oracle_reads = if matches!(mode, StorageMode::Commitment) {
+        count_storage_reads(block)
+    } else { 0 };
     let (generics, where_clause) = verifier_generics_and_where();
 
-    // Params: delta, (q_and_k, hat_k) pairs, q_one, input Q shares.
     let mut params: Vec<IrParam> = vec![
         IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
     ];
@@ -1658,10 +1872,13 @@ pub fn weave_vole_verifier_ir(
         params.push(IrParam { name: format!("q_and_{}", k), ty: q_type() });
         params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
     }
-    // q_one: the verifier's Q for the committed-one wire.
     params.push(IrParam { name: "q_one".into(), ty: q_type() });
     for i in 0..num_params {
         params.push(IrParam { name: format!("w_{}", i), ty: q_type() });
+    }
+    // Oracle read parameters (Commitment mode).
+    for i in 0..num_oracle_reads {
+        params.push(IrParam { name: format!("oracle_rd_{}", i), ty: q_type() });
     }
 
     let ret_type = IrType::Tuple(vec![
@@ -1669,19 +1886,15 @@ pub fn weave_vole_verifier_ir(
         IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool),
     ]);
 
-    // Generate body.
     let mut ctx = VoleIrCtx::new(false);
-
-    // `let mut all_ok: bool = true;`
     ctx.stmts.push(IrStmt::Let {
         pattern: IrPattern::Ident { mutable: true, name: "all_ok".into(), subpat: None },
         ty: None,
         init: Some(IrExpr::Lit(volar_compiler::ir::IrLit::Bool(true))),
     });
 
-    ctx.emit_circuit(block, types, storage_sizes);
+    ctx.emit_circuit(block, types, mode);
 
-    // Build return.
     let ret_args = match &block.terminator {
         IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
         _ => panic!("expected Jmp(Return)"),
@@ -1692,6 +1905,7 @@ pub fn weave_vole_verifier_ir(
         IrExpr::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect())
     };
     let ret_expr = IrExpr::Tuple(vec![output_expr, var("all_ok")]);
+    let trace = ctx.trace.clone();
 
     let func = IrFunction {
         name: format!("vole_verify_ir_{}", name),
@@ -1713,7 +1927,7 @@ pub fn weave_vole_verifier_ir(
         structs: vec![], traits: vec![], impls: vec![], type_aliases: vec![],
     };
     if let Some(ls) = linkage { ls.apply(&mut module); }
-    module
+    (module, trace)
 }
 
 // ============================================================================
@@ -1936,5 +2150,51 @@ mod tests {
         let module = weave_vole_verifier_ir(&circuit, &types, "storage", &ss, None);
         let code = print_weaved_vole_module(&module);
         run_compile_check(&code, "vole_ir_verifier_stor");
+    }
+
+    // ---- Commitment-mode tests -------------------------------------------
+
+    #[test]
+    fn test_weave_vole_ir_prover_committed() {
+        let (circuit, types, _ss) = build_ir_storage_circuit();
+        let mode = StorageMode::Commitment;
+        let (module, trace) = weave_vole_prover_ir_with_mode(
+            &circuit, &types, "committed", &mode, None,
+        );
+        let code = print_weaved_vole_module(&module);
+        run_compile_check(&code, "vole_ir_prover_commit");
+        // Commitment mode should produce a non-empty trace.
+        assert!(
+            !trace.entries.is_empty(),
+            "Commitment mode must produce a memory trace",
+        );
+        // The trace should have 1 write + 1 read = 2 entries.
+        assert_eq!(trace.entries.len(), 2);
+        assert!(trace.entries[0].is_write);
+        assert!(!trace.entries[1].is_write);
+    }
+
+    #[test]
+    fn test_weave_vole_ir_verifier_committed() {
+        let (circuit, types, _ss) = build_ir_storage_circuit();
+        let mode = StorageMode::Commitment;
+        let (module, trace) = weave_vole_verifier_ir_with_mode(
+            &circuit, &types, "committed", &mode, None,
+        );
+        let code = print_weaved_vole_module(&module);
+        run_compile_check(&code, "vole_ir_verifier_commit");
+        assert_eq!(trace.entries.len(), 2);
+    }
+
+    #[test]
+    fn test_commitment_mode_zero_ands() {
+        let (circuit, types, ss) = build_ir_storage_circuit();
+        let block = &circuit.blocks[0];
+        // Tree mode: should have AND gates for storage.
+        let tree_ands = count_ir_ands(block, &types, &StorageMode::Tree(ss));
+        assert!(tree_ands > 0, "Tree mode should have AND gates");
+        // Commitment mode: 0 AND gates for storage.
+        let commit_ands = count_ir_ands(block, &types, &StorageMode::Commitment);
+        assert_eq!(commit_ands, 0, "Commitment mode should have 0 AND gates");
     }
 }

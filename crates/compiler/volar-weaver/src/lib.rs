@@ -52,7 +52,9 @@ pub use garble::garble_linked_spec;
 pub use vole::{
     print_weaved_vole_module, weave_vole_prover, weave_vole_prover_bounded,
     weave_vole_verifier, weave_vole_verifier_bounded,
-    weave_vole_prover_ir, weave_vole_verifier_ir, StorageSizes,
+    weave_vole_prover_ir, weave_vole_verifier_ir,
+    weave_vole_prover_ir_with_mode, weave_vole_verifier_ir_with_mode,
+    StorageSizes, StorageMode, MemoryTrace, MemoryTraceEntry,
 };
 
 // ============================================================================
