@@ -11,19 +11,20 @@ impl<T: Clone, U: Clone, N: ArraySize, M: ArraySize> LweSample<T, U, N, M> {
     pub fn new(matrix: Array<Array<T, N>, M>, b: Array<U, M>) -> Self {
         Self { matrix, b }
     }
-    pub fn sample<S: Clone, A: Add<P, Output = U> + Add<A, Output = A> + Default, P: Clone>(
+    pub fn sample<
+        S: Clone + Mul<T, Output = A>,
+        A: Add<P, Output = U> + Add<A, Output = A> + Default,
+        P: Clone,
+    >(
         matrix: Array<Array<T, N>, M>,
         s: Array<S, N>,
         e: Array<P, M>,
-    ) -> Self
-    where
-        T: Mul<S, Output = A>,
-    {
+    ) -> Self {
         Self {
             b: Array::<U, M>::from_fn(|i| {
                 s.iter()
                     .enumerate()
-                    .map(|(a, b)| matrix[i][a].clone() * b.clone())
+                    .map(|(a, b)| b.clone() * matrix[i][a].clone())
                     .fold(A::default(), |a, b| a + b)
                     + e[i].clone()
             }),
