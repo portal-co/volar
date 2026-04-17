@@ -815,24 +815,52 @@ pub fn weave_vole_verifier_bounded(
 // implement reads and writes via **oblivious linear scan** (OLS) so that the
 // proof reveals nothing about which address was accessed.
 //
-// ## Oblivious read: result = Σ_i  sel_i · cell_i
+// ## Oblivious read: MUX-tree selection
 //
-// For each cell i we compute a one-hot selector:
+// Instead of a linear scan with one-hot selectors (O(N × addr_width) ANDs),
+// we use a **binary MUX tree** that recursively halves the candidate set:
 //
-//     match_bit_j  = addr[j]  ⊕  i_j  ⊕  1          (free, XOR + NOT)
-//     sel_i        = ∏_j match_bit_j                  ((addr_width - 1) AND gates)
-//     selected_i   = sel_i · cell_i                   (1 AND gate)
-//     result      += selected_i                       (free, XOR / add)
+// ```text
+// mux_tree([c0..c3], [a0,a1]):
+//   left  = MUX(a0, c0, c1)         // 1 AND
+//   right = MUX(a0, c2, c3)         // 1 AND
+//   result = MUX(a1, left, right)   // 1 AND
+//   total: 3 = N − 1 ANDs  (vs  N × addr_width = 4 × 2 = 8 ANDs linear)
+// ```
 //
-// Exactly one sel_i equals 1 (the one matching the real address); all others
-// are 0.  Therefore `result = cell[addr]` correctly.
+// At each level the most-significant remaining address bit selects between
+// two subtrees.  MUX(sel, a, b) = sel·(a ⊕ b) ⊕ a  costs 1 AND + 2 free XOR.
+// The full tree has N_pad − 1 MUX nodes (N_pad = next power of 2 ≥ N),
+// each costing V AND gates for V-bit values.
 //
-// ## Oblivious write: cell_i′ = MUX(sel_i, new, cell_i)
+//   **read cost:  (N_pad − 1) × V  AND gates**
 //
-//     MUX(s, a, b) = s·(a ⊕ b) ⊕ b                  (1 AND + 2 XOR)
+// ## Oblivious write: demux-tree + per-cell MUX
 //
-// For the matching cell, sel = 1 so cell′ = new.  For all others, sel = 0 so
-// cell′ = cell.  The storage state is updated in-place.
+// A **demux tree** produces N one-hot selectors from K address bits by
+// iteratively splitting:
+//
+// ```text
+// level 0: s[0]=NOT(a0), s[1]=a0              0 ANDs
+// level 1: s[0..3] = AND each prev × {NOT(a1), a1}   4 ANDs
+// level 2: ...                                        8 ANDs
+//   total: 2N − 4  ANDs
+// ```
+//
+// Each cell is then updated by a single MUX:  cell′ = MUX(sel, new, old).
+//
+//   **write cost:  (2N_pad − 4) + N × V  AND gates**
+//
+// ## Improvement over linear scan
+//
+// | N | K  | V | linear read | tree read | linear write | tree write |
+// |---|----|---|-------------|-----------|--------------|------------|
+// | 4 | 16 | 1 |    64       |     3     |     64       |      8     |
+// | 16| 16 | 1 |   256       |    15     |    256       |     44     |
+// |256|  8 | 1 |  2048       |   255     |   2048       |    764     |
+//
+// The tree is asymptotically O(N) regardless of address width K, whereas
+// the linear scan is O(N·K).
 //
 // ## Why the prover cannot cheat
 //
@@ -868,11 +896,10 @@ pub fn weave_vole_verifier_bounded(
 //
 // ## Cost
 //
-//   read  :  cell_count × (addr_width − 1  + value_width)  AND gates
-//   write :  cell_count × (addr_width − 1  + value_width)  AND gates  (MUX)
+//   read  :  (N_pad − 1) × value_width  AND gates  (MUX tree)
+//   write :  (2·N_pad − 4 + N × value_width)  AND gates  (demux + MUX)
 //
-// For addr_width = 1 the (addr_width − 1) term vanishes: sel_i is a single
-// (possibly negated) address bit and requires no AND.
+// where N_pad = next power of 2 ≥ N.  Both are O(N), independent of K.
 //
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -925,19 +952,19 @@ fn count_ir_ands(
             Stmt::StorageRead { storage, ty, addr } => {
                 let key = (storage.0, ty.0);
                 let n = *storage_sizes.get(&key).unwrap_or(&0);
-                let aw = cir_type_width(&var_types[addr.0 as usize], types);
                 let vw = cir_type_width(&ty, types);
-                let match_ands = aw.saturating_sub(1);
-                count += n * (match_ands + vw);
+                let n_pad = n.next_power_of_two();
+                // MUX tree: (N_pad - 1) × V ANDs
+                count += n_pad.saturating_sub(1) * vw;
                 ty.clone()
             }
             Stmt::StorageWrite { storage, ty, addr, .. } => {
                 let key = (storage.0, ty.0);
                 let n = *storage_sizes.get(&key).unwrap_or(&0);
-                let aw = cir_type_width(&var_types[addr.0 as usize], types);
                 let vw = cir_type_width(&ty, types);
-                let match_ands = aw.saturating_sub(1);
-                count += n * (match_ands + vw);
+                let n_pad = n.next_power_of_two();
+                // Demux tree: 2·N_pad - 4 ANDs + per-cell MUX: N × V ANDs
+                count += (2 * n_pad).saturating_sub(4) + n * vw;
                 bit_tid
             }
             Stmt::Rng { ty } => ty.clone(),
@@ -1179,49 +1206,93 @@ impl VoleIrCtx {
         }
     }
 
-    // ---- Oblivious storage access -----------------------------------------
+    // ---- Oblivious storage access (tree-based) ---------------------------
 
-    /// Compute a one-hot selector for `cell_idx` against address bits `addr`.
-    ///
-    /// Returns the wire name of the selector (1 iff addr == cell_idx).
-    fn emit_addr_match(&mut self, addr: &[String], cell_idx: usize) -> String {
-        let mut bits: Vec<String> = Vec::with_capacity(addr.len());
-        for (j, addr_bit) in addr.iter().enumerate() {
-            let expected = (cell_idx >> j) & 1;
-            let name = format!("_am_{}_{}", cell_idx, j);
-            if expected == 1 {
-                // match when addr[j] == 1 → match_bit = addr[j]
-                self.stmts.push(IrStmt::Let {
-                    pattern: IrPattern::ident(&name),
-                    ty: None,
-                    init: Some(clone_expr(var(addr_bit))),
-                });
-            } else {
-                // match when addr[j] == 0 → match_bit = NOT(addr[j])
-                self.emit_not(&name, addr_bit);
-            }
-            bits.push(name);
-        }
-
-        if bits.is_empty() {
-            // 0-bit address → single cell, always selected.
-            let name = format!("_sel_{}", cell_idx);
-            self.emit_one(&name);
-            return name;
-        }
-        if bits.len() == 1 {
-            return bits.into_iter().next().unwrap();
-        }
-
-        // Chain of ANDs: sel = AND(bits[0], bits[1], ...)
-        let mut acc = bits[0].clone();
-        for k in 1..bits.len() {
-            acc = self.emit_and(&acc, &bits[k]);
-        }
-        acc
+    /// Effective address width: ceil(log₂(cell_count)).
+    fn effective_addr_width(cell_count: usize) -> usize {
+        if cell_count <= 1 { return 0; }
+        usize::BITS as usize - (cell_count - 1).leading_zeros() as usize
     }
 
-    /// Oblivious read: result = Σ_i sel_i · cell_i.
+    /// MUX(sel, when_0, when_1) = sel·(a⊕b) ⊕ a.  Cost: 1 AND + 2 free XOR.
+    fn emit_mux(&mut self, sel: &str, when_0: &str, when_1: &str) -> String {
+        let id = self.and_counter;
+        let diff = format!("_mxd_{}", id);
+        self.emit_xor(&diff, when_0, when_1);
+        let masked = self.emit_and(sel, &diff);
+        let out = format!("_mxr_{}", id);
+        self.emit_xor(&out, &masked, when_0);
+        out
+    }
+
+    /// MUX tree read for 1-bit values.
+    ///
+    /// Recursively halves the cell array using the MSB of `addr_bits`.
+    /// Cost: (N_pad − 1) AND gates where N_pad = next_power_of_2(cells.len()).
+    fn mux_tree_read(
+        &mut self,
+        cells: &[String],
+        addr_bits: &[String],
+        tag: &str,
+    ) -> String {
+        match cells.len() {
+            0 => {
+                let z = format!("_mtz_{}", tag);
+                self.emit_zero(&z);
+                z
+            }
+            1 => cells[0].clone(),
+            _ => {
+                let n_pad = cells.len().next_power_of_two();
+                let mid = n_pad / 2;
+                let left = if mid <= cells.len() { &cells[..mid] } else { cells };
+                let right = if mid < cells.len() { &cells[mid..] } else { &[] as &[String] };
+                let rest = &addr_bits[..addr_bits.len() - 1];
+                let left_r = self.mux_tree_read(left, rest, &format!("{}l", tag));
+                let right_r = self.mux_tree_read(right, rest, &format!("{}r", tag));
+                let sel = &addr_bits[addr_bits.len() - 1];
+                self.emit_mux(sel, &left_r, &right_r)
+            }
+        }
+    }
+
+    /// Demux tree: produce N_pad one-hot selectors from K address bits.
+    ///
+    /// The output vector is indexed by cell index: `result[i] = (addr == i)`.
+    /// Cost: 2·N_pad − 4 AND gates (0 for N_pad ≤ 2).
+    fn demux_tree(&mut self, addr_bits: &[String], tag: &str) -> Vec<String> {
+        if addr_bits.is_empty() {
+            let name = format!("_dm1_{}", tag);
+            self.emit_one(&name);
+            return vec![name];
+        }
+        // Base case: 1 bit → 2 selectors, 0 ANDs.
+        let not_name = format!("_dmn_{}_{}", tag, 0);
+        self.emit_not(&not_name, &addr_bits[0]);
+        let mut sels = vec![not_name, addr_bits[0].clone()];
+
+        // Iteratively expand: at each level j, double the selector count.
+        for j in 1..addr_bits.len() {
+            let bit = &addr_bits[j];
+            let not_bit = format!("_dmn_{}_{}", tag, j);
+            self.emit_not(&not_bit, bit);
+            let prev = core::mem::take(&mut sels);
+            let prev_len = prev.len();
+            // First half: each prev × NOT(bit)  → a_j = 0
+            for (k, p) in prev.iter().enumerate() {
+                let s = self.emit_and(p, &not_bit);
+                sels.push(s);
+            }
+            // Second half: each prev × bit  → a_j = 1
+            for (k, p) in prev.iter().enumerate() {
+                let s = self.emit_and(p, bit);
+                sels.push(s);
+            }
+        }
+        sels
+    }
+
+    /// Oblivious read via MUX tree.
     fn emit_storage_read(
         &mut self,
         out_name: &str,
@@ -1231,78 +1302,55 @@ impl VoleIrCtx {
         types: &CirTypes,
         val_ty: &CirTyId,
     ) {
-        let key = (storage_id, type_id);
         let cell_count = self.stor.keys()
             .filter(|(s, t, _)| *s == storage_id && *t == type_id)
             .count();
+        let vw = cir_type_width(val_ty, types);
         if cell_count == 0 {
-            // No cells → read zero.
-            let vw = cir_type_width(val_ty, types);
             if vw == 1 {
                 self.emit_zero(out_name);
-                return;
+            } else {
+                let parts: Vec<String> = (0..vw).map(|j| {
+                    let n = format!("{}_z{}", out_name, j);
+                    self.emit_zero(&n);
+                    n
+                }).collect();
+                // placeholder — will be overwritten by wires.insert in caller
             }
-            let parts: Vec<String> = (0..vw).map(|j| {
-                let n = format!("{}_z{}", out_name, j);
-                self.emit_zero(&n);
-                n
-            }).collect();
-            self.wires.insert(u32::MAX, WireRepr::Vec(parts.clone())); // temp
             return;
         }
 
-        let addr_bits: Vec<String> = match &self.wires[&addr_var.0] {
+        let full_addr: Vec<String> = match &self.wires[&addr_var.0] {
             WireRepr::Scalar(s) => vec![s.clone()],
             WireRepr::Vec(v) => v.clone(),
         };
+        let aw = Self::effective_addr_width(cell_count);
+        let addr_bits: Vec<String> = full_addr[..aw].to_vec();
 
-        let vw = cir_type_width(val_ty, types);
-
-        // For each value-bit position, accumulate across all cells.
+        // For each value-bit position, build a MUX tree over all cells.
         let mut result_bits: Vec<String> = Vec::with_capacity(vw);
         for vb in 0..vw {
-            let mut acc: Option<String> = None;
-            for ci in 0..cell_count {
-                let sel = self.emit_addr_match(&addr_bits, ci);
-                let cell_name = self.stor[&(storage_id, type_id, ci)].clone();
-                // For Vec-typed cells, cell_name is the scalar at bit vb.
-                let cell_bit = if vw == 1 {
-                    cell_name
-                } else {
-                    format!("{}_{}", cell_name, vb)
-                };
-                let selected = self.emit_and(&sel, &cell_bit);
-                acc = Some(match acc {
-                    None => selected,
-                    Some(prev) => {
-                        let xn = format!("_sr_{}_{}_{}", out_name, vb, ci);
-                        self.emit_xor(&xn, &prev, &selected);
-                        xn
-                    }
-                });
-            }
+            let cells: Vec<String> = (0..cell_count).map(|ci| {
+                let cn = self.stor[&(storage_id, type_id, ci)].clone();
+                if vw == 1 { cn } else { format!("{}_{}", cn, vb) }
+            }).collect();
+            let tag = format!("sr_{}_{}", out_name, vb);
+            let r = self.mux_tree_read(&cells, &addr_bits, &tag);
             let bit_name = if vw == 1 {
                 out_name.to_string()
             } else {
                 format!("{}_{}", out_name, vb)
             };
-            // Clone the accumulated result to the output name.
             self.stmts.push(IrStmt::Let {
                 pattern: IrPattern::ident(&bit_name),
                 ty: None,
-                init: Some(clone_expr(var(&acc.unwrap()))),
+                init: Some(clone_expr(var(&r))),
             });
             result_bits.push(bit_name);
         }
-
-        if vw == 1 {
-            // Scalar result already named `out_name`.
-        } else {
-            self.wires.insert(u32::MAX, WireRepr::Vec(result_bits)); // placeholder
-        }
     }
 
-    /// Oblivious write: cell_i′ = MUX(sel_i, new, cell_i) for all i.
+    /// Oblivious write via demux tree + per-cell MUX.
     fn emit_storage_write(
         &mut self,
         storage_id: u32,
@@ -1317,10 +1365,12 @@ impl VoleIrCtx {
             .count();
         if cell_count == 0 { return; }
 
-        let addr_bits: Vec<String> = match &self.wires[&addr_var.0] {
+        let full_addr: Vec<String> = match &self.wires[&addr_var.0] {
             WireRepr::Scalar(s) => vec![s.clone()],
             WireRepr::Vec(v) => v.clone(),
         };
+        let aw = Self::effective_addr_width(cell_count);
+        let addr_bits: Vec<String> = full_addr[..aw].to_vec();
 
         let vw = cir_type_width(val_ty, types);
         let src_bits: Vec<String> = if vw == 1 {
@@ -1329,29 +1379,28 @@ impl VoleIrCtx {
             self.vec_parts(src_var).to_vec()
         };
 
+        // Build one-hot selectors via demux tree.
+        let tag = format!("sw_{}", self.and_counter);
+        let sels = self.demux_tree(&addr_bits, &tag);
+
+        // Per-cell MUX: cell' = MUX(sel[ci], src, old_cell)
         for ci in 0..cell_count {
-            let sel = self.emit_addr_match(&addr_bits, ci);
+            let sel = if ci < sels.len() { &sels[ci] } else {
+                // Cells beyond the demux range are never addressed; skip.
+                continue;
+            };
             for vb in 0..vw {
                 let old_cell = if vw == 1 {
                     self.stor[&(storage_id, type_id, ci)].clone()
                 } else {
                     format!("{}_{}", self.stor[&(storage_id, type_id, ci)], vb)
                 };
-                // MUX(sel, new, old) = sel·(new ⊕ old) ⊕ old
-                let diff_name = format!("_sw_d_{}_{}_{}", ci, vb, self.and_counter);
-                self.emit_xor(&diff_name, &src_bits[vb], &old_cell);
-                let masked = self.emit_and(&sel, &diff_name);
-                let new_cell = format!("_sc_{}_{}_{}", storage_id, ci, vb);
-                self.emit_xor(&new_cell, &masked, &old_cell);
-                // Update storage state.
+                let new_cell = self.emit_mux(sel, &old_cell, &src_bits[vb]);
                 if vw == 1 {
                     self.stor.insert((storage_id, type_id, ci), new_cell);
-                } else {
-                    // For Vec-typed storage, update the bit name.
-                    // The overall cell name is updated for bit 0.
-                    if vb == 0 {
-                        self.stor.insert((storage_id, type_id, ci), format!("_sc_{}_{}_{}", storage_id, ci, 0));
-                    }
+                } else if vb == 0 {
+                    self.stor.insert((storage_id, type_id, ci),
+                        format!("_sc_{}_{}_{}", storage_id, ci, 0));
                 }
             }
         }
