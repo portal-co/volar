@@ -118,7 +118,7 @@ fn generic_params() -> Vec<IrGenericParam> {
 }
 
 /// `Garble { base: {base_expr} }`
-fn garble_struct(base_expr: IrExpr) -> IrExpr {
+fn garble_struct<P: Clone + Default>(base_expr: IrExpr<P>) -> IrExpr<P> {
     IrExpr::StructExpr {
         kind: StructKind::Custom("Garble".into()),
         type_args: vec![],
@@ -146,7 +146,12 @@ fn garble_struct(base_expr: IrExpr) -> IrExpr {
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_evaluator<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule {
+pub fn weave_evaluator<P, Q>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule<Q>
+where
+    P: Clone + Default + Into<Q>,
+    Q: Clone + Default,
+    (): Into<Q>,
+{
     assert!(
         circuit.is_circuit(),
         "weave_evaluator: circuit must satisfy is_circuit() (single block with Return terminator)"
@@ -158,7 +163,7 @@ pub fn weave_evaluator<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, l
 
     let and_count = expanded
         .iter()
-        .filter(|(_, s)| matches!(s, BIrStmt::And(..)))
+        .filter(|(_, s, _)| matches!(s, BIrStmt::And(..)))
         .count();
 
     let mut var_names = alloc::collections::BTreeMap::<u32, String>::new();
@@ -184,11 +189,13 @@ pub fn weave_evaluator<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, l
         });
     }
 
-    let mut stmts: Vec<IrStmt> = Vec::new();
+    let mut stmts: Vec<IrStmt<Q>> = Vec::new();
+    let mut stmt_provs: Vec<Q> = Vec::new();
     let mut and_counter: usize = 0;
 
-    for (result_id, stmt) in &expanded {
+    for (result_id, stmt, prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
+        let q: Q = prov.clone().into();
 
         let init_expr = match stmt {
             BIrStmt::Zero => IrExpr::StructExpr {
@@ -243,6 +250,7 @@ pub fn weave_evaluator<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, l
             ty: None,
             init: Some(init_expr),
         });
+        stmt_provs.push(q);
         var_names.insert(result_id.0, let_name);
     }
 
@@ -257,7 +265,7 @@ pub fn weave_evaluator<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, l
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs: vec![],
+            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -294,7 +302,12 @@ pub fn weave_evaluator<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, l
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_garbler<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule {
+pub fn weave_garbler<P, Q>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule<Q>
+where
+    P: Clone + Default + Into<Q>,
+    Q: Clone + Default,
+    (): Into<Q>,
+{
     assert!(
         circuit.is_circuit(),
         "weave_garbler: circuit must satisfy is_circuit() (single block with Return terminator)"
@@ -324,7 +337,7 @@ pub fn weave_garbler<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, lin
     // Count AND gates up front so we can build a fixed-size table array in the return type.
     let and_count = expanded
         .iter()
-        .filter(|(_, s)| matches!(s, BIrStmt::And(..)))
+        .filter(|(_, s, _)| matches!(s, BIrStmt::And(..)))
         .count();
 
     let ret_type = IrType::Tuple(vec![
@@ -336,12 +349,14 @@ pub fn weave_garbler<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, lin
         garble_type(),
     ]);
 
-    let mut stmts: Vec<IrStmt> = Vec::new();
+    let mut stmts: Vec<IrStmt<Q>> = Vec::new();
+    let mut stmt_provs: Vec<Q> = Vec::new();
     let mut table_counter: usize = 0;
     let mut table_names: Vec<String> = Vec::new();
 
-    for (result_id, stmt) in &expanded {
+    for (result_id, stmt, prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
+        let q: Q = prov.clone().into();
 
         let garble_expr = match stmt {
             BIrStmt::Zero | BIrStmt::One => garble_struct(array_default()),
@@ -399,6 +414,7 @@ pub fn weave_garbler<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, lin
                         ],
                     }),
                 });
+                stmt_provs.push(q.clone());
 
                 IrExpr::MethodCall {
                     receiver: Box::new(var(&name_a)),
@@ -416,6 +432,7 @@ pub fn weave_garbler<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, lin
             ty: None,
             init: Some(garble_expr),
         });
+        stmt_provs.push(q);
         var_names.insert(result_id.0, let_name);
     }
 
@@ -432,7 +449,7 @@ pub fn weave_garbler<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, lin
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs: vec![],
+            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -461,7 +478,12 @@ pub fn weave_garbler<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, lin
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_into_gc<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule {
+pub fn weave_into_gc<P, Q>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule<Q>
+where
+    P: Clone + Default + Into<Q>,
+    Q: Clone + Default,
+    (): Into<Q>,
+{
     assert!(
         circuit.is_circuit(),
         "weave_into_gc: circuit must satisfy is_circuit() (single block with Return terminator)"
@@ -490,14 +512,16 @@ pub fn weave_into_gc<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, lin
 
     let and_count = expanded
         .iter()
-        .filter(|(_, s)| matches!(s, BIrStmt::And(..)))
+        .filter(|(_, s, _)| matches!(s, BIrStmt::And(..)))
         .count();
 
-    let mut stmts: Vec<IrStmt> = Vec::new();
+    let mut stmts: Vec<IrStmt<Q>> = Vec::new();
+    let mut stmt_provs: Vec<Q> = Vec::new();
     let mut table_counter: usize = 0;
 
-    for (result_id, stmt) in &expanded {
+    for (result_id, stmt, prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
+        let q: Q = prov.clone().into();
 
         let garble_expr = match stmt {
             BIrStmt::Zero | BIrStmt::One => garble_struct(array_default()),
@@ -554,6 +578,7 @@ pub fn weave_into_gc<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, lin
                         ],
                     }),
                 });
+                stmt_provs.push(q.clone());
 
                 IrExpr::MethodCall {
                     receiver: Box::new(clone_expr(var(&name_a))),
@@ -571,6 +596,7 @@ pub fn weave_into_gc<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, lin
             ty: None,
             init: Some(garble_expr),
         });
+        stmt_provs.push(q);
         var_names.insert(result_id.0, let_name);
     }
 
@@ -603,7 +629,7 @@ pub fn weave_into_gc<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, lin
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs: vec![],
+            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -632,11 +658,16 @@ pub fn weave_into_gc<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, lin
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_eval_from_setup<P: Clone + Default>(
+pub fn weave_eval_from_setup<P, Q>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<Q>
+where
+    P: Clone + Default + Into<Q>,
+    Q: Clone + Default,
+    (): Into<Q>,
+{
     assert!(
         circuit.is_circuit(),
         "weave_eval_from_setup: circuit must satisfy is_circuit()"
@@ -648,7 +679,7 @@ pub fn weave_eval_from_setup<P: Clone + Default>(
 
     let and_count = expanded
         .iter()
-        .filter(|(_, s)| matches!(s, BIrStmt::And(..)))
+        .filter(|(_, s, _)| matches!(s, BIrStmt::And(..)))
         .count();
 
     let mut var_names = alloc::collections::BTreeMap::<u32, String>::new();
@@ -668,24 +699,26 @@ pub fn weave_eval_from_setup<P: Clone + Default>(
         });
     }
 
-    let setup_one_wire = || IrExpr::Field {
+    let setup_one_wire = || -> IrExpr<Q> { IrExpr::Field {
         base: Box::new(var("setup")),
         field: "one_wire".into(),
-    };
+    } };
 
-    let setup_table = |k: usize| IrExpr::Index {
+    let setup_table = |k: usize| -> IrExpr<Q> { IrExpr::Index {
         base: Box::new(IrExpr::Field {
             base: Box::new(var("setup")),
             field: "tables".into(),
         }),
         index: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
-    };
+    } };
 
-    let mut stmts: Vec<IrStmt> = Vec::new();
+    let mut stmts: Vec<IrStmt<Q>> = Vec::new();
+    let mut stmt_provs: Vec<Q> = Vec::new();
     let mut and_counter: usize = 0;
 
-    for (result_id, stmt) in &expanded {
+    for (result_id, stmt, prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
+        let q: Q = prov.clone().into();
 
         let init_expr = match stmt {
             BIrStmt::Zero => IrExpr::StructExpr {
@@ -740,6 +773,7 @@ pub fn weave_eval_from_setup<P: Clone + Default>(
             ty: None,
             init: Some(init_expr),
         });
+        stmt_provs.push(q);
         var_names.insert(result_id.0, let_name);
     }
 
@@ -754,7 +788,7 @@ pub fn weave_eval_from_setup<P: Clone + Default>(
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs: vec![],
+            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -779,52 +813,72 @@ pub fn weave_eval_from_setup<P: Clone + Default>(
 // ============================================================================
 
 /// Weave a bounded movfuscated Boolar circuit into a garbled-circuit **evaluator**.
-pub fn weave_evaluator_bounded<P: Clone + Default>(
+pub fn weave_evaluator_bounded<P, Q>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<Q>
+where
+    P: Clone + Default + Into<Q>,
+    Q: Clone + Default,
+    (): Into<Q>,
+{
     use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
     weave_evaluator(&lowered, name, linkage)
 }
 
 /// Weave a bounded movfuscated Boolar circuit into a garbled-circuit **garbler**.
-pub fn weave_garbler_bounded<P: Clone + Default>(
+pub fn weave_garbler_bounded<P, Q>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<Q>
+where
+    P: Clone + Default + Into<Q>,
+    Q: Clone + Default,
+    (): Into<Q>,
+{
     use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
     weave_garbler(&lowered, name, linkage)
 }
 
 /// Weave a bounded movfuscated Boolar circuit into a `GarbledCircuit`-returning function.
-pub fn weave_into_gc_bounded<P: Clone + Default>(
+pub fn weave_into_gc_bounded<P, Q>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<Q>
+where
+    P: Clone + Default + Into<Q>,
+    Q: Clone + Default,
+    (): Into<Q>,
+{
     use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
     weave_into_gc(&lowered, name, linkage)
 }
 
 /// Weave a bounded movfuscated Boolar circuit into an `EvalSetup`-based evaluator.
-pub fn weave_eval_from_setup_bounded<P: Clone + Default>(
+pub fn weave_eval_from_setup_bounded<P, Q>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<Q>
+where
+    P: Clone + Default + Into<Q>,
+    Q: Clone + Default,
+    (): Into<Q>,
+{
     use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
     weave_eval_from_setup(&lowered, name, linkage)

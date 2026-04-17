@@ -48,12 +48,18 @@ impl LinkageSystem {
     ///
     /// Items are appended in the order they were added; no deduplication is
     /// performed. Call this once before rendering the target module.
-    pub fn apply(&self, target: &mut IrModule) {
+    ///
+    /// The linked spec declarations carry `()` provenance, which is converted
+    /// to `Q` via `Into<Q>` (trivially satisfied when `Q = ()`).
+    pub fn apply<Q: Clone + Default>(&self, target: &mut IrModule<Q>)
+    where
+        (): Into<Q>,
+    {
         for spec in &self.specs {
             target.structs.extend(spec.module.structs.iter().cloned());
             target.traits.extend(spec.module.traits.iter().cloned());
-            target.impls.extend(spec.module.impls.iter().cloned());
-            target.functions.extend(spec.module.functions.iter().cloned());
+            target.impls.extend(spec.module.impls.iter().cloned().map(|i| i.map_prov(&|_| Q::default())));
+            target.functions.extend(spec.module.functions.iter().cloned().map(|f| f.map_prov(&|_| Q::default())));
             target.type_aliases.extend(spec.module.type_aliases.iter().cloned());
         }
     }

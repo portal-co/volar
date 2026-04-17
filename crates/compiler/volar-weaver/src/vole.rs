@@ -226,7 +226,7 @@ fn verifier_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredicate>)
 // ============================================================================
 
 /// `Array::<T, N>::from_fn(|{idx}| {body})`
-fn array_t_from_fn(idx: &str, body: IrExpr) -> IrExpr {
+fn array_t_from_fn<P: Clone + Default>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
     IrExpr::Call {
         func: Box::new(IrExpr::Path {
             segments: vec!["Array".into(), "from_fn".into()],
@@ -247,7 +247,7 @@ fn array_t_from_fn(idx: &str, body: IrExpr) -> IrExpr {
 }
 
 /// `Array::<T, N>::default()` — the zero vector in the extension field.
-fn array_t_default() -> IrExpr {
+fn array_t_default<P: Clone + Default>() -> IrExpr<P> {
     IrExpr::Call {
         func: Box::new(IrExpr::Path {
             segments: vec!["Array".into(), "default".into()],
@@ -261,7 +261,7 @@ fn array_t_default() -> IrExpr {
 }
 
 /// `wire.q[i]` — the verifier's Q share lane.
-fn q_index(wire_name: &str, idx: &str) -> IrExpr {
+fn q_index<P: Clone + Default>(wire_name: &str, idx: &str) -> IrExpr<P> {
     IrExpr::Index {
         base: Box::new(IrExpr::Field {
             base: Box::new(var(wire_name)),
@@ -272,7 +272,7 @@ fn q_index(wire_name: &str, idx: &str) -> IrExpr {
 }
 
 /// `delta.delta[i]`
-fn delta_index(idx: &str) -> IrExpr {
+fn delta_index<P: Clone + Default>(idx: &str) -> IrExpr<P> {
     IrExpr::Index {
         base: Box::new(IrExpr::Field {
             base: Box::new(var("delta")),
@@ -283,7 +283,7 @@ fn delta_index(idx: &str) -> IrExpr {
 }
 
 /// `Q { q: {body} }`
-fn q_struct(body: IrExpr) -> IrExpr {
+fn q_struct<P: Clone + Default>(body: IrExpr<P>) -> IrExpr<P> {
     IrExpr::StructExpr {
         kind: StructKind::Custom("Q".into()),
         type_args: vec![],
@@ -298,12 +298,12 @@ fn q_struct(body: IrExpr) -> IrExpr {
 
 /// Emit `let (_wire_k, _hat_k) = vole_and_prover_step::<N, T>(wire_a.clone(), wire_b.clone());`
 /// The hat variable is left in scope for the caller to collect into a `FixedArray`.
-fn emit_prover_and_gate(
+fn emit_prover_and_gate<P: Clone + Default>(
     name_a: &str,
     name_b: &str,
     wire_name: &str,
     hat_name: &str,
-    stmts: &mut Vec<IrStmt>,
+    stmts: &mut Vec<IrStmt<P>>,
 ) {
     // let (wire_k, hat_k) = vole_and_prover_step::<N, T>(wire_a.clone(), wire_b.clone());
     stmts.push(IrStmt::Let {
@@ -330,14 +330,14 @@ fn emit_prover_and_gate(
 
 /// Emit `let (_wire_k, _ok_k) = vole_and_verifier_check::<N, T>(delta, &wire_a, &wire_b, &q_and_k, &hat_k);`
 /// followed by `all_ok = all_ok && _ok_k;`.
-fn emit_verifier_and_gate(
+fn emit_verifier_and_gate<P: Clone + Default>(
     name_a: &str,
     name_b: &str,
     wire_name: &str,
     ok_name: &str,
     q_and_name: &str,
     hat_name: &str,
-    stmts: &mut Vec<IrStmt>,
+    stmts: &mut Vec<IrStmt<P>>,
 ) {
     // let (wire_k, ok_k) = vole_and_verifier_check::<N, T>(delta, &wire_a, &wire_b, &q_and_k, &hat_k);
     stmts.push(IrStmt::Let {
@@ -398,11 +398,16 @@ fn emit_verifier_and_gate(
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_vole_prover<P: Clone + Default>(
+pub fn weave_vole_prover<P, Q>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<Q>
+where
+    P: Clone + Default + Into<Q>,
+    Q: Clone + Default,
+    (): Into<Q>,
+{
     assert!(
         circuit.is_circuit(),
         "weave_vole_prover: circuit must satisfy is_circuit()"
@@ -433,18 +438,20 @@ pub fn weave_vole_prover<P: Clone + Default>(
     // Return type: (Vope<N, T, U1>, [Array<T, N>; AND_COUNT]) — AND_COUNT known at weave time.
     let and_count = expanded
         .iter()
-        .filter(|(_, s)| matches!(s, BIrStmt::And(..)))
+        .filter(|(_, s, _)| matches!(s, BIrStmt::And(..)))
         .count();
     let ret_type = IrType::Tuple(vec![vope_type(), hat_array_type(and_count)]);
 
     let (generics, where_clause) = prover_generics_and_where();
 
-    let mut stmts: Vec<IrStmt> = Vec::new();
+    let mut stmts: Vec<IrStmt<Q>> = Vec::new();
+    let mut stmt_provs: Vec<Q> = Vec::new();
     let mut and_counter: usize = 0;
     let mut hat_names: Vec<String> = Vec::new();
 
-    for (result_id, stmt) in &expanded {
+    for (result_id, stmt, prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
+        let q: Q = prov.clone().into();
 
         match stmt {
             BIrStmt::Zero => {
@@ -456,27 +463,27 @@ pub fn weave_vole_prover<P: Clone + Default>(
                         kind: StructKind::Custom("Vope".into()),
                         type_args: vec![],
                         fields: vec![
-                            ("u".into(), array_default()),  // Array<Array<T,N>,U1>::default()
+                            ("u".into(), array_default()),
                             ("v".into(), array_t_default()),
                         ],
                         rest: None,
                     }),
                 });
+                stmt_provs.push(q.clone());
             }
 
             BIrStmt::One => {
-                // vope_one.clone()
                 stmts.push(IrStmt::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
                     init: Some(clone_expr(var("vope_one"))),
                 });
+                stmt_provs.push(q.clone());
             }
 
             BIrStmt::Xor(a, b) => {
                 let name_a = var_names[&a.0].clone();
                 let name_b = var_names[&b.0].clone();
-                // wire_a.clone() + wire_b.clone()  (uses Add impl on Vope)
                 stmts.push(IrStmt::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
@@ -486,11 +493,11 @@ pub fn weave_vole_prover<P: Clone + Default>(
                         right: Box::new(clone_expr(var(&name_b))),
                     }),
                 });
+                stmt_provs.push(q.clone());
             }
 
             BIrStmt::Not(a) => {
                 let name_a = var_names[&a.0].clone();
-                // wire_a.clone() + vope_one.clone()  (XOR with public 1)
                 stmts.push(IrStmt::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
@@ -500,6 +507,7 @@ pub fn weave_vole_prover<P: Clone + Default>(
                         right: Box::new(clone_expr(var("vope_one"))),
                     }),
                 });
+                stmt_provs.push(q.clone());
             }
 
             BIrStmt::And(a, b) => {
@@ -509,6 +517,8 @@ pub fn weave_vole_prover<P: Clone + Default>(
                 and_counter += 1;
                 hat_names.push(hat_name.clone());
                 emit_prover_and_gate(&name_a, &name_b, &let_name, &hat_name, &mut stmts);
+                // AND gate emits 1 stmt (let (wire, hat) = ...)
+                stmt_provs.push(q.clone());
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
@@ -531,7 +541,7 @@ pub fn weave_vole_prover<P: Clone + Default>(
         where_clause,
         body: IrBlock {
             stmts,
-            stmt_provs: vec![],
+            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -578,11 +588,16 @@ pub fn weave_vole_prover<P: Clone + Default>(
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_vole_verifier<P: Clone + Default>(
+pub fn weave_vole_verifier<P, Q>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<Q>
+where
+    P: Clone + Default + Into<Q>,
+    Q: Clone + Default,
+    (): Into<Q>,
+{
     assert!(
         circuit.is_circuit(),
         "weave_vole_verifier: circuit must satisfy is_circuit()"
@@ -594,7 +609,7 @@ pub fn weave_vole_verifier<P: Clone + Default>(
 
     let and_count = expanded
         .iter()
-        .filter(|(_, s)| matches!(s, BIrStmt::And(..)))
+        .filter(|(_, s, _)| matches!(s, BIrStmt::And(..)))
         .count();
 
     let mut var_names = alloc::collections::BTreeMap::<u32, String>::new();
@@ -639,10 +654,10 @@ pub fn weave_vole_verifier<P: Clone + Default>(
 
     let (generics, where_clause) = verifier_generics_and_where();
 
-    let mut stmts: Vec<IrStmt> = Vec::new();
+    let mut stmts: Vec<IrStmt<Q>> = Vec::new();
+    let mut stmt_provs: Vec<Q> = Vec::new();
     let mut and_counter: usize = 0;
 
-    // `let mut all_ok: bool = true;`
     stmts.push(IrStmt::Let {
         pattern: IrPattern::Ident {
             mutable: true,
@@ -652,22 +667,23 @@ pub fn weave_vole_verifier<P: Clone + Default>(
         ty: None,
         init: Some(IrExpr::Lit(volar_compiler::ir::IrLit::Bool(true))),
     });
+    stmt_provs.push(Q::default());
 
-    for (result_id, stmt) in &expanded {
+    for (result_id, stmt, prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
+        let q: Q = prov.clone().into();
 
         match stmt {
             BIrStmt::Zero => {
-                // Q { q: Array::<T, N>::default() }
                 stmts.push(IrStmt::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
                     init: Some(q_struct(array_t_default())),
                 });
+                stmt_provs.push(q.clone());
             }
 
             BIrStmt::One => {
-                // Q { q: delta.delta.clone() }
                 stmts.push(IrStmt::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
@@ -681,6 +697,7 @@ pub fn weave_vole_verifier<P: Clone + Default>(
                         args: vec![],
                     })),
                 });
+                stmt_provs.push(q.clone());
             }
 
             BIrStmt::Xor(a, b) => {
@@ -699,11 +716,11 @@ pub fn weave_vole_verifier<P: Clone + Default>(
                         },
                     ))),
                 });
+                stmt_provs.push(q.clone());
             }
 
             BIrStmt::Not(a) => {
                 let name_a = var_names[&a.0].clone();
-                // Q { q: Array::from_fn(|i| q_a.q[i].clone() + delta.delta[i].clone()) }
                 stmts.push(IrStmt::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
@@ -716,6 +733,7 @@ pub fn weave_vole_verifier<P: Clone + Default>(
                         },
                     ))),
                 });
+                stmt_provs.push(q.clone());
             }
 
             BIrStmt::And(a, b) => {
@@ -730,6 +748,9 @@ pub fn weave_vole_verifier<P: Clone + Default>(
                     &q_and_name, &hat_name,
                     &mut stmts,
                 );
+                // AND gate emits 2 stmts (let (wire, ok) = ...; all_ok = ...)
+                stmt_provs.push(q.clone());
+                stmt_provs.push(q.clone());
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
@@ -751,7 +772,7 @@ pub fn weave_vole_verifier<P: Clone + Default>(
         where_clause,
         body: IrBlock {
             stmts,
-            stmt_provs: vec![],
+            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -776,25 +797,35 @@ pub fn weave_vole_verifier<P: Clone + Default>(
 // ============================================================================
 
 /// Weave a bounded movfuscated Boolar circuit into a VOLE **prover**.
-pub fn weave_vole_prover_bounded<P: Clone + Default>(
+pub fn weave_vole_prover_bounded<P, Q>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<Q>
+where
+    P: Clone + Default + Into<Q>,
+    Q: Clone + Default,
+    (): Into<Q>,
+{
     let lowered = lower_to_circuit(circuit, limit, mode);
     weave_vole_prover(&lowered, name, linkage)
 }
 
 /// Weave a bounded movfuscated Boolar circuit into a VOLE **verifier**.
-pub fn weave_vole_verifier_bounded<P: Clone + Default>(
+pub fn weave_vole_verifier_bounded<P, Q>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<Q>
+where
+    P: Clone + Default + Into<Q>,
+    Q: Clone + Default,
+    (): Into<Q>,
+{
     let lowered = lower_to_circuit(circuit, limit, mode);
     weave_vole_verifier(&lowered, name, linkage)
 }
@@ -2045,6 +2076,7 @@ mod tests {
         let block = CirBlock {
             params: std::vec![bit],
             stmts: std::vec![],
+            stmt_provs: std::vec![],
             terminator: IRTerminator::Jmp {
                 func: IRBlockTargetId::Return,
                 args: std::vec![CirVar(0)],
@@ -2064,6 +2096,7 @@ mod tests {
             stmts: std::vec![
                 Stmt::Poly { coeffs, constant: CirConst { hi: 0, lo: 0 } },
             ],
+            stmt_provs: std::vec![()],
             terminator: IRTerminator::Jmp {
                 func: IRBlockTargetId::Return,
                 args: std::vec![CirVar(2)],
@@ -2094,6 +2127,7 @@ mod tests {
                     addr: CirVar(1),
                 },
             ],
+            stmt_provs: std::vec![(), ()],
             terminator: IRTerminator::Jmp {
                 func: IRBlockTargetId::Return,
                 args: std::vec![CirVar(3)],

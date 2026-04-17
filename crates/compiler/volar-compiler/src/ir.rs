@@ -1639,3 +1639,216 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         },
     ]
 }
+
+// ============================================================================
+// Provenance mapping
+// ============================================================================
+
+impl<P: Clone + Default> IrExpr<P> {
+    /// Map provenance annotations from `P` to `Q`.
+    ///
+    /// Provenance only appears inside nested `IrBlock<P>` values (e.g.
+    /// `BoundedLoop`, `IterLoop`, `Block`, `If`).  Leaf expression
+    /// variants are structurally identical regardless of `P`.
+    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IrExpr<Q> {
+        match self {
+            IrExpr::Lit(l) => IrExpr::Lit(l),
+            IrExpr::Var(v) => IrExpr::Var(v),
+            IrExpr::Path { segments, type_args } => IrExpr::Path { segments, type_args },
+            IrExpr::Binary { op, left, right } =>
+                IrExpr::Binary { op, left: Box::new(left.map_prov(f)), right: Box::new(right.map_prov(f)) },
+            IrExpr::Unary { op, expr } =>
+                IrExpr::Unary { op, expr: Box::new(expr.map_prov(f)) },
+            IrExpr::MethodCall { receiver, method, type_args, args } =>
+                IrExpr::MethodCall { receiver: Box::new(receiver.map_prov(f)), method, type_args, args: args.into_iter().map(|a| a.map_prov(f)).collect() },
+            IrExpr::Call { func, args } =>
+                IrExpr::Call { func: Box::new(func.map_prov(f)), args: args.into_iter().map(|a| a.map_prov(f)).collect() },
+            IrExpr::Field { base, field } =>
+                IrExpr::Field { base: Box::new(base.map_prov(f)), field },
+            IrExpr::Index { base, index } =>
+                IrExpr::Index { base: Box::new(base.map_prov(f)), index: Box::new(index.map_prov(f)) },
+            IrExpr::StructExpr { kind, type_args, fields, rest } =>
+                IrExpr::StructExpr { kind, type_args, fields: fields.into_iter().map(|(n, e)| (n, e.map_prov(f))).collect(), rest: rest.map(|r| Box::new(r.map_prov(f))) },
+            IrExpr::Tuple(es) => IrExpr::Tuple(es.into_iter().map(|e| e.map_prov(f)).collect()),
+            IrExpr::Array(es) => IrExpr::Array(es.into_iter().map(|e| e.map_prov(f)).collect()),
+            IrExpr::FixedArray(es) => IrExpr::FixedArray(es.into_iter().map(|e| e.map_prov(f)).collect()),
+            IrExpr::Repeat { elem, len } =>
+                IrExpr::Repeat { elem: Box::new(elem.map_prov(f)), len: Box::new(len.map_prov(f)) },
+            IrExpr::ArrayGenerate { elem_ty, len, index_var, body } =>
+                IrExpr::ArrayGenerate { elem_ty, len, index_var, body: Box::new(body.map_prov(f)) },
+            IrExpr::DefaultValue { ty } => IrExpr::DefaultValue { ty },
+            IrExpr::LengthOf(l) => IrExpr::LengthOf(l),
+            IrExpr::IterPipeline(chain) => IrExpr::IterPipeline(chain.map_prov(f)),
+            IrExpr::RawMap { receiver, elem_var, body } =>
+                IrExpr::RawMap { receiver: Box::new(receiver.map_prov(f)), elem_var, body: Box::new(body.map_prov(f)) },
+            IrExpr::RawZip { left, right, left_var, right_var, body } =>
+                IrExpr::RawZip { left: Box::new(left.map_prov(f)), right: Box::new(right.map_prov(f)), left_var, right_var, body: Box::new(body.map_prov(f)) },
+            IrExpr::RawFold { receiver, init, acc_var, elem_var, body } =>
+                IrExpr::RawFold { receiver: Box::new(receiver.map_prov(f)), init: Box::new(init.map_prov(f)), acc_var, elem_var, body: Box::new(body.map_prov(f)) },
+            IrExpr::BoundedLoop { var, start, end, inclusive, body } =>
+                IrExpr::BoundedLoop { var, start: Box::new(start.map_prov(f)), end: Box::new(end.map_prov(f)), inclusive, body: body.map_prov(f) },
+            IrExpr::IterLoop { pattern, collection, body } =>
+                IrExpr::IterLoop { pattern, collection: Box::new(collection.map_prov(f)), body: body.map_prov(f) },
+            IrExpr::Block(b) => IrExpr::Block(b.map_prov(f)),
+            IrExpr::If { cond, then_branch, else_branch } =>
+                IrExpr::If { cond: Box::new(cond.map_prov(f)), then_branch: then_branch.map_prov(f), else_branch: else_branch.map(|e| Box::new(e.map_prov(f))) },
+            IrExpr::Match { expr, arms } =>
+                IrExpr::Match { expr: Box::new(expr.map_prov(f)), arms: arms.into_iter().map(|a| a.map_prov(f)).collect() },
+            IrExpr::Closure { params, ret_type, body } =>
+                IrExpr::Closure { params, ret_type, body: Box::new(body.map_prov(f)) },
+            IrExpr::Cast { expr, ty } => IrExpr::Cast { expr: Box::new(expr.map_prov(f)), ty },
+            IrExpr::Return(e) => IrExpr::Return(e.map(|e| Box::new(e.map_prov(f)))),
+            IrExpr::Break(e) => IrExpr::Break(e.map(|e| Box::new(e.map_prov(f)))),
+            IrExpr::Continue => IrExpr::Continue,
+            IrExpr::Assign { left, right } =>
+                IrExpr::Assign { left: Box::new(left.map_prov(f)), right: Box::new(right.map_prov(f)) },
+            IrExpr::AssignOp { op, left, right } =>
+                IrExpr::AssignOp { op, left: Box::new(left.map_prov(f)), right: Box::new(right.map_prov(f)) },
+            IrExpr::Range { start, end, inclusive } =>
+                IrExpr::Range { start: start.map(|e| Box::new(e.map_prov(f))), end: end.map(|e| Box::new(e.map_prov(f))), inclusive },
+            IrExpr::TypenumUsize { ty } => IrExpr::TypenumUsize { ty },
+            IrExpr::Unreachable => IrExpr::Unreachable,
+            IrExpr::Try(e) => IrExpr::Try(Box::new(e.map_prov(f))),
+        }
+    }
+}
+
+impl<P: Clone + Default> IrIterChain<P> {
+    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IrIterChain<Q> {
+        IrIterChain {
+            source: self.source.map_prov(f),
+            steps: self.steps.into_iter().map(|s| s.map_prov(f)).collect(),
+            terminal: self.terminal.map_prov(f),
+        }
+    }
+}
+
+impl<P: Clone + Default> IterChainSource<P> {
+    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IterChainSource<Q> {
+        match self {
+            IterChainSource::Method { collection, method } =>
+                IterChainSource::Method { collection: Box::new(collection.map_prov(f)), method },
+            IterChainSource::Range { start, end, inclusive } =>
+                IterChainSource::Range { start: Box::new(start.map_prov(f)), end: Box::new(end.map_prov(f)), inclusive },
+            IterChainSource::Zip { left, right } =>
+                IterChainSource::Zip { left: Box::new(left.map_prov(f)), right: Box::new(right.map_prov(f)) },
+        }
+    }
+}
+
+impl<P: Clone + Default> IterStep<P> {
+    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IterStep<Q> {
+        match self {
+            IterStep::Map { var, body } => IterStep::Map { var, body: Box::new(body.map_prov(f)) },
+            IterStep::Filter { var, body } => IterStep::Filter { var, body: Box::new(body.map_prov(f)) },
+            IterStep::FilterMap { var, body } => IterStep::FilterMap { var, body: Box::new(body.map_prov(f)) },
+            IterStep::FlatMap { var, body } => IterStep::FlatMap { var, body: Box::new(body.map_prov(f)) },
+            IterStep::Enumerate => IterStep::Enumerate,
+            IterStep::Take { count } => IterStep::Take { count: Box::new(count.map_prov(f)) },
+            IterStep::Skip { count } => IterStep::Skip { count: Box::new(count.map_prov(f)) },
+            IterStep::Chain { other } => IterStep::Chain { other: Box::new(other.map_prov(f)) },
+        }
+    }
+}
+
+impl<P: Clone + Default> IterTerminal<P> {
+    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IterTerminal<Q> {
+        match self {
+            IterTerminal::Collect => IterTerminal::Collect,
+            IterTerminal::CollectTyped(ty) => IterTerminal::CollectTyped(ty),
+            IterTerminal::Fold { init, acc_var, elem_var, body } =>
+                IterTerminal::Fold { init: Box::new(init.map_prov(f)), acc_var, elem_var, body: Box::new(body.map_prov(f)) },
+            IterTerminal::Lazy => IterTerminal::Lazy,
+        }
+    }
+}
+
+impl<P: Clone + Default> IrMatchArm<P> {
+    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IrMatchArm<Q> {
+        IrMatchArm {
+            pattern: self.pattern,
+            guard: self.guard.map(|g| g.map_prov(f)),
+            body: self.body.map_prov(f),
+        }
+    }
+}
+
+impl<P: Clone + Default> IrStmt<P> {
+    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IrStmt<Q> {
+        match self {
+            IrStmt::Let { pattern, ty, init } =>
+                IrStmt::Let { pattern, ty, init: init.map(|e| e.map_prov(f)) },
+            IrStmt::Semi(e) => IrStmt::Semi(e.map_prov(f)),
+            IrStmt::Expr(e) => IrStmt::Expr(e.map_prov(f)),
+        }
+    }
+}
+
+impl<P: Clone + Default> IrBlock<P> {
+    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IrBlock<Q> {
+        IrBlock {
+            stmts: self.stmts.into_iter().map(|s| s.map_prov(f)).collect(),
+            stmt_provs: self.stmt_provs.into_iter().map(|p| f(p)).collect(),
+            expr: self.expr.map(|e| Box::new(e.map_prov(f))),
+        }
+    }
+}
+
+impl<P: Clone + Default> IrFunction<P> {
+    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IrFunction<Q> {
+        IrFunction {
+            name: self.name,
+            generics: self.generics,
+            receiver: self.receiver,
+            params: self.params,
+            return_type: self.return_type,
+            where_clause: self.where_clause,
+            body: self.body.map_prov(f),
+            external_kind: self.external_kind,
+        }
+    }
+}
+
+impl<P: Clone + Default> IrImplItem<P> {
+    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IrImplItem<Q> {
+        match self {
+            IrImplItem::Method(func) => IrImplItem::Method(func.map_prov(f)),
+            IrImplItem::AssociatedType { name, ty } => IrImplItem::AssociatedType { name, ty },
+        }
+    }
+}
+
+impl<P: Clone + Default> IrImpl<P> {
+    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IrImpl<Q> {
+        IrImpl {
+            generics: self.generics,
+            trait_: self.trait_,
+            self_ty: self.self_ty,
+            where_clause: self.where_clause,
+            items: self.items.into_iter().map(|i| i.map_prov(f)).collect(),
+        }
+    }
+}
+
+impl<P: Clone + Default> IrModule<P> {
+    /// Transform all provenance annotations in this module from `P` to `Q`.
+    ///
+    /// This is the primary mechanism for integrating provenance across
+    /// compilation stages.  For example, converting circuit-level provenance
+    /// into the weaver's output provenance:
+    ///
+    /// ```ignore
+    /// let module: IrModule<CircuitProv> = weave(...);
+    /// let mapped: IrModule<AppProv> = module.map_prov(|cp| AppProv::from(cp));
+    /// ```
+    pub fn map_prov<Q: Clone + Default>(self, f: impl Fn(P) -> Q) -> IrModule<Q> {
+        IrModule {
+            name: self.name,
+            structs: self.structs,
+            traits: self.traits,
+            impls: self.impls.into_iter().map(|i| i.map_prov(&f)).collect(),
+            functions: self.functions.into_iter().map(|func| func.map_prov(&f)).collect(),
+            type_aliases: self.type_aliases,
+        }
+    }
+}
