@@ -33,7 +33,7 @@
 use alloc::{
     boxed::Box,
     format,
-    string::String,
+    string::{String, ToString},
     vec,
     vec::Vec,
 };
@@ -47,6 +47,11 @@ use volar_compiler::{
     linkage::LinkageSystem,
 };
 use volar_ir::boolar::{BIrBlocks, BIrStmt};
+use volar_ir::ir::{
+    IRBlocks, IRBlock as CirBlock, IRBlockTargetId, IRTerminator,
+    IRType as CircuitIrType, IRTypeId as CirTyId, IRTypes as CirTypes,
+    IRVarId as CirVar, PrimType, Stmt, StorageId,
+};
 use volar_ir_passes::lower_to_circuit::lower_to_circuit;
 pub use volar_ir_passes::lower_to_circuit::LoweringMode;
 
@@ -793,6 +798,876 @@ pub fn weave_vole_verifier_bounded(
 }
 
 // ============================================================================
+// Volar IR (IRBlocks) VOLE weaving — with authenticated storage
+// ============================================================================
+//
+// # Soundness of VOLE-authenticated oblivious storage
+//
+// ## Setting
+//
+// Each wire w in the circuit carries bit value x_w authenticated by the VOLE
+// relation K_w = M_w + x_w · Δ (over the extension field T).  The prover holds
+// (x_w, M_w) as `Vope<N,T,U1>`; the verifier holds K_w as `Q<N,T>` and the
+// global secret Δ as `Delta<N,T>`.
+//
+// Storage introduces mutable state: an array of cells indexed by a *dynamic*
+// (circuit-computed) address.  Each cell holds one authenticated bit.  We
+// implement reads and writes via **oblivious linear scan** (OLS) so that the
+// proof reveals nothing about which address was accessed.
+//
+// ## Oblivious read: result = Σ_i  sel_i · cell_i
+//
+// For each cell i we compute a one-hot selector:
+//
+//     match_bit_j  = addr[j]  ⊕  i_j  ⊕  1          (free, XOR + NOT)
+//     sel_i        = ∏_j match_bit_j                  ((addr_width - 1) AND gates)
+//     selected_i   = sel_i · cell_i                   (1 AND gate)
+//     result      += selected_i                       (free, XOR / add)
+//
+// Exactly one sel_i equals 1 (the one matching the real address); all others
+// are 0.  Therefore `result = cell[addr]` correctly.
+//
+// ## Oblivious write: cell_i′ = MUX(sel_i, new, cell_i)
+//
+//     MUX(s, a, b) = s·(a ⊕ b) ⊕ b                  (1 AND + 2 XOR)
+//
+// For the matching cell, sel = 1 so cell′ = new.  For all others, sel = 0 so
+// cell′ = cell.  The storage state is updated in-place.
+//
+// ## Why the prover cannot cheat
+//
+// 1. **VOLE binding**: every wire (including every storage cell and address
+//    bit) is authenticated.  Changing the bit value x_w to x_w′ ≠ x_w
+//    without updating M_w makes K_w ≠ M_w + x_w′ · Δ; the Quicksilver AND
+//    check will detect the inconsistency with overwhelming probability in |T|.
+//
+// 2. **Gate correctness**: each AND in the oblivious scan is checked by the
+//    standard Quicksilver relation.  A prover that substitutes a wrong
+//    product produces a hat value that violates the verifier's check equation
+//    K_a · K_b + hat ≟ K_c · Δ .
+//
+// 3. **Read integrity**: because the one-hot selector and the accumulation
+//    are computed entirely with checked AND + free XOR, the result wire is
+//    bound to the contents of the addressed cell.  Any attempt to return a
+//    different value requires forging an AND, which is caught by (2).
+//
+// 4. **Write integrity**: the MUX updates every cell through a checked AND.
+//    Skipping a cell (i.e., not executing its MUX) would require omitting
+//    circuit gates, which would change the hat count and cause the verifier
+//    to reject.  Forging the MUX AND is caught by (2).
+//
+// 5. **Storage persistence**: between unrolled loop iterations, the cell
+//    wires produced by the previous iteration are carried forward as the
+//    next iteration's initial state.  They remain VOLE-authenticated; the
+//    same binding argument applies.
+//
+// 6. **Address privacy**: the verifier sees only Q shares and hats, which
+//    are masked by random M values from the VOLE setup.  Under the
+//    standard VOLE-ZK simulation argument, the verifier's view is
+//    indistinguishable from a simulation that never sees the address.
+//
+// ## Cost
+//
+//   read  :  cell_count × (addr_width − 1  + value_width)  AND gates
+//   write :  cell_count × (addr_width − 1  + value_width)  AND gates  (MUX)
+//
+// For addr_width = 1 the (addr_width − 1) term vanishes: sel_i is a single
+// (possibly negated) address bit and requires no AND.
+//
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Maps `(StorageId.0, TypeId.0)` → cell count.
+pub type StorageSizes = alloc::collections::BTreeMap<(u32, u32), usize>;
+
+/// Wire representation inside the VOLE IR weaver.
+#[derive(Clone)]
+enum WireRepr {
+    /// Single authenticated bit.
+    Scalar(String),
+    /// Vector of authenticated bits (produced by `Merge`).
+    Vec(Vec<String>),
+}
+
+/// Width of a circuit type in bits (1 for Bit, K for Vec(K, Bit)).
+fn cir_type_width(ty: &CirTyId, types: &CirTypes) -> usize {
+    match &types.0[ty.0 as usize] {
+        CircuitIrType::Primitive(PrimType::Bit) => 1,
+        CircuitIrType::Vec(k, _inner) => *k,
+        other => panic!("unsupported type in VOLE IR weaving: {:?}", other),
+    }
+}
+
+/// Pre-scan a circuit block to count total AND gates (for sizing the hat
+/// array / verifier Q-share parameters).
+fn count_ir_ands(
+    block: &CirBlock,
+    types: &CirTypes,
+    storage_sizes: &StorageSizes,
+) -> usize {
+    let mut var_types: Vec<CirTyId> = block.params.clone();
+    let bit_tid = CirTyId(0); // by convention, index 0 = Bit
+    let mut count: usize = 0;
+
+    for stmt in &block.stmts {
+        let result_ty: CirTyId = match stmt {
+            Stmt::Const(_, ty) => ty.clone(),
+            Stmt::Poly { coeffs, .. } => {
+                for (mono, coeff) in coeffs {
+                    if *coeff % 2 == 1 && mono.len() >= 2 {
+                        count += mono.len() - 1;
+                    }
+                }
+                bit_tid
+            }
+            Stmt::Merge { ty, .. } | Stmt::Splat { ty, .. }
+            | Stmt::Rol { ty, .. } | Stmt::Ror { ty, .. }
+            | Stmt::Shuffle { ty, .. } | Stmt::Transmute { dst_ty: ty, .. } => ty.clone(),
+            Stmt::StorageRead { storage, ty, addr } => {
+                let key = (storage.0, ty.0);
+                let n = *storage_sizes.get(&key).unwrap_or(&0);
+                let aw = cir_type_width(&var_types[addr.0 as usize], types);
+                let vw = cir_type_width(&ty, types);
+                let match_ands = aw.saturating_sub(1);
+                count += n * (match_ands + vw);
+                ty.clone()
+            }
+            Stmt::StorageWrite { storage, ty, addr, .. } => {
+                let key = (storage.0, ty.0);
+                let n = *storage_sizes.get(&key).unwrap_or(&0);
+                let aw = cir_type_width(&var_types[addr.0 as usize], types);
+                let vw = cir_type_width(&ty, types);
+                let match_ands = aw.saturating_sub(1);
+                count += n * (match_ands + vw);
+                bit_tid
+            }
+            Stmt::Rng { ty } => ty.clone(),
+            Stmt::OracleCall { result_ty, .. } | Stmt::ActionCall { result_ty, .. } => result_ty.clone(),
+            Stmt::OracleOutput { ty, .. } | Stmt::ActionOutput { ty, .. } => ty.clone(),
+        };
+        var_types.push(result_ty);
+    }
+    count
+}
+
+/// Context for emitting VOLE-authenticated wire computations.
+struct VoleIrCtx {
+    stmts: Vec<IrStmt>,
+    wires: alloc::collections::BTreeMap<u32, WireRepr>,
+    and_counter: usize,
+    hat_names: Vec<String>,
+    ok_names: Vec<String>,
+    /// Current var name for each storage cell.
+    stor: alloc::collections::BTreeMap<(u32, u32, usize), String>,
+    is_prover: bool,
+}
+
+impl VoleIrCtx {
+    fn new(is_prover: bool) -> Self {
+        VoleIrCtx {
+            stmts: Vec::new(),
+            wires: alloc::collections::BTreeMap::new(),
+            and_counter: 0,
+            hat_names: Vec::new(),
+            ok_names: Vec::new(),
+            stor: alloc::collections::BTreeMap::new(),
+            is_prover,
+        }
+    }
+
+    /// Get scalar wire name for a var id.
+    fn scalar(&self, v: &CirVar) -> &str {
+        match &self.wires[&v.0] {
+            WireRepr::Scalar(s) => s,
+            WireRepr::Vec(_) => panic!("expected scalar wire for v{}", v.0),
+        }
+    }
+
+    /// Get vec wire names for a var id.
+    fn vec_parts(&self, v: &CirVar) -> &[String] {
+        match &self.wires[&v.0] {
+            WireRepr::Vec(v) => v,
+            WireRepr::Scalar(_) => panic!("expected vec wire"),
+        }
+    }
+
+    // ---- Primitive wire operations ----------------------------------------
+
+    /// Emit a zero-valued wire (prover: Vope::default, verifier: Q::default).
+    fn emit_zero(&mut self, name: &str) {
+        if self.is_prover {
+            // Vope { u: Array::<Array<T,N>, U1>::default(), v: Array::<T,N>::default() }
+            let u_default = IrExpr::Call {
+                func: Box::new(IrExpr::Path {
+                    segments: vec!["Array".into(), "default".into()],
+                    type_args: vec![
+                        IrType::Struct {
+                            kind: StructKind::Custom("Array".into()),
+                            type_args: vec![
+                                IrType::TypeParam("T".into()),
+                                IrType::TypeParam("N".into()),
+                            ],
+                        },
+                        IrType::Struct {
+                            kind: StructKind::Custom("U1".into()),
+                            type_args: vec![],
+                        },
+                    ],
+                }),
+                args: vec![],
+            };
+            self.stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(name),
+                ty: None,
+                init: Some(IrExpr::StructExpr {
+                    kind: StructKind::Custom("Vope".into()),
+                    type_args: vec![],
+                    fields: vec![
+                        ("u".into(), u_default),
+                        ("v".into(), array_t_default()),
+                    ],
+                    rest: None,
+                }),
+            });
+        } else {
+            self.stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(name),
+                ty: None,
+                init: Some(q_struct(array_t_default())),
+            });
+        }
+    }
+
+    /// Emit a one-valued wire (clone of the committed-one wire).
+    fn emit_one(&mut self, name: &str) {
+        let src = if self.is_prover { "vope_one" } else { "q_one" };
+        self.stmts.push(IrStmt::Let {
+            pattern: IrPattern::ident(name),
+            ty: None,
+            init: Some(clone_expr(var(src))),
+        });
+    }
+
+    /// Emit XOR (free: prover a + b, verifier element-wise).
+    fn emit_xor(&mut self, out: &str, a: &str, b: &str) {
+        if self.is_prover {
+            self.stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(out),
+                ty: None,
+                init: Some(IrExpr::Binary {
+                    op: SpecBinOp::Add,
+                    left: Box::new(clone_expr(var(a))),
+                    right: Box::new(clone_expr(var(b))),
+                }),
+            });
+        } else {
+            // Q { q: Array::from_fn(|i| a.q[i].clone() + b.q[i].clone()) }
+            self.stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(out),
+                ty: None,
+                init: Some(q_struct(array_t_from_fn(
+                    "i",
+                    IrExpr::Binary {
+                        op: SpecBinOp::Add,
+                        left: Box::new(clone_expr(q_index(a, "i"))),
+                        right: Box::new(clone_expr(q_index(b, "i"))),
+                    },
+                ))),
+            });
+        }
+    }
+
+    /// Emit AND gate.  Returns the name of the output wire.
+    fn emit_and(&mut self, a: &str, b: &str) -> String {
+        let wire_name = format!("and_w_{}", self.and_counter);
+        if self.is_prover {
+            let hat_name = format!("hat_{}", self.and_counter);
+            self.hat_names.push(hat_name.clone());
+            emit_prover_and_gate(a, b, &wire_name, &hat_name, &mut self.stmts);
+        } else {
+            let ok_name = format!("ok_{}", self.and_counter);
+            let q_and_name = format!("q_and_{}", self.and_counter);
+            let hat_name = format!("hat_{}", self.and_counter);
+            self.ok_names.push(ok_name.clone());
+            emit_verifier_and_gate(
+                a, b, &wire_name, &ok_name,
+                &q_and_name, &hat_name, &mut self.stmts,
+            );
+        }
+        self.and_counter += 1;
+        wire_name
+    }
+
+    /// Emit NOT (free: a + one).
+    fn emit_not(&mut self, out: &str, a: &str) {
+        let one = if self.is_prover { "vope_one" } else { "q_one" };
+        self.emit_xor(out, a, one);
+    }
+
+    // ---- Poly (generalised gate) ------------------------------------------
+
+    fn emit_poly(
+        &mut self,
+        out_name: &str,
+        coeffs: &alloc::collections::BTreeMap<Vec<CirVar>, u8>,
+        constant: &volar_ir::ir::Constant,
+    ) {
+        // Collect terms with odd coefficients.
+        let mut term_names: Vec<String> = Vec::new();
+
+        // Constant term.
+        if constant.lo & 1 == 1 {
+            let cname = format!("{}_cst", out_name);
+            self.emit_one(&cname);
+            term_names.push(cname);
+        }
+
+        for (mono, &coeff) in coeffs {
+            if coeff % 2 == 0 { continue; }
+            match mono.len() {
+                0 => {
+                    // degree-0 monomial with coeff 1 → another constant 1
+                    let cname = format!("{}_c0", out_name);
+                    self.emit_one(&cname);
+                    term_names.push(cname);
+                }
+                1 => {
+                    // degree-1: just the wire itself (clone)
+                    term_names.push(self.scalar(&mono[0]).to_string());
+                }
+                _ => {
+                    // degree ≥ 2: chain of ANDs
+                    let mut acc = self.scalar(&mono[0]).to_string();
+                    for k in 1..mono.len() {
+                        let b = self.scalar(&mono[k]).to_string();
+                        acc = self.emit_and(&acc, &b);
+                    }
+                    term_names.push(acc);
+                }
+            }
+        }
+
+        // XOR all terms together.
+        match term_names.len() {
+            0 => self.emit_zero(out_name),
+            1 => {
+                // Just clone the single term.
+                self.stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(out_name),
+                    ty: None,
+                    init: Some(clone_expr(var(&term_names[0]))),
+                });
+            }
+            _ => {
+                let first = term_names[0].clone();
+                let tmp0 = format!("{}_xor0", out_name);
+                self.stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&tmp0),
+                    ty: None,
+                    init: Some(clone_expr(var(&first))),
+                });
+                let mut acc = tmp0;
+                for (i, tn) in term_names[1..].iter().enumerate() {
+                    let next = if i == term_names.len() - 2 {
+                        out_name.to_string()
+                    } else {
+                        format!("{}_xor{}", out_name, i + 1)
+                    };
+                    self.emit_xor(&next, &acc, tn);
+                    acc = next;
+                }
+            }
+        }
+    }
+
+    // ---- Oblivious storage access -----------------------------------------
+
+    /// Compute a one-hot selector for `cell_idx` against address bits `addr`.
+    ///
+    /// Returns the wire name of the selector (1 iff addr == cell_idx).
+    fn emit_addr_match(&mut self, addr: &[String], cell_idx: usize) -> String {
+        let mut bits: Vec<String> = Vec::with_capacity(addr.len());
+        for (j, addr_bit) in addr.iter().enumerate() {
+            let expected = (cell_idx >> j) & 1;
+            let name = format!("_am_{}_{}", cell_idx, j);
+            if expected == 1 {
+                // match when addr[j] == 1 → match_bit = addr[j]
+                self.stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&name),
+                    ty: None,
+                    init: Some(clone_expr(var(addr_bit))),
+                });
+            } else {
+                // match when addr[j] == 0 → match_bit = NOT(addr[j])
+                self.emit_not(&name, addr_bit);
+            }
+            bits.push(name);
+        }
+
+        if bits.is_empty() {
+            // 0-bit address → single cell, always selected.
+            let name = format!("_sel_{}", cell_idx);
+            self.emit_one(&name);
+            return name;
+        }
+        if bits.len() == 1 {
+            return bits.into_iter().next().unwrap();
+        }
+
+        // Chain of ANDs: sel = AND(bits[0], bits[1], ...)
+        let mut acc = bits[0].clone();
+        for k in 1..bits.len() {
+            acc = self.emit_and(&acc, &bits[k]);
+        }
+        acc
+    }
+
+    /// Oblivious read: result = Σ_i sel_i · cell_i.
+    fn emit_storage_read(
+        &mut self,
+        out_name: &str,
+        storage_id: u32,
+        type_id: u32,
+        addr_var: &CirVar,
+        types: &CirTypes,
+        val_ty: &CirTyId,
+    ) {
+        let key = (storage_id, type_id);
+        let cell_count = self.stor.keys()
+            .filter(|(s, t, _)| *s == storage_id && *t == type_id)
+            .count();
+        if cell_count == 0 {
+            // No cells → read zero.
+            let vw = cir_type_width(val_ty, types);
+            if vw == 1 {
+                self.emit_zero(out_name);
+                return;
+            }
+            let parts: Vec<String> = (0..vw).map(|j| {
+                let n = format!("{}_z{}", out_name, j);
+                self.emit_zero(&n);
+                n
+            }).collect();
+            self.wires.insert(u32::MAX, WireRepr::Vec(parts.clone())); // temp
+            return;
+        }
+
+        let addr_bits: Vec<String> = match &self.wires[&addr_var.0] {
+            WireRepr::Scalar(s) => vec![s.clone()],
+            WireRepr::Vec(v) => v.clone(),
+        };
+
+        let vw = cir_type_width(val_ty, types);
+
+        // For each value-bit position, accumulate across all cells.
+        let mut result_bits: Vec<String> = Vec::with_capacity(vw);
+        for vb in 0..vw {
+            let mut acc: Option<String> = None;
+            for ci in 0..cell_count {
+                let sel = self.emit_addr_match(&addr_bits, ci);
+                let cell_name = self.stor[&(storage_id, type_id, ci)].clone();
+                // For Vec-typed cells, cell_name is the scalar at bit vb.
+                let cell_bit = if vw == 1 {
+                    cell_name
+                } else {
+                    format!("{}_{}", cell_name, vb)
+                };
+                let selected = self.emit_and(&sel, &cell_bit);
+                acc = Some(match acc {
+                    None => selected,
+                    Some(prev) => {
+                        let xn = format!("_sr_{}_{}_{}", out_name, vb, ci);
+                        self.emit_xor(&xn, &prev, &selected);
+                        xn
+                    }
+                });
+            }
+            let bit_name = if vw == 1 {
+                out_name.to_string()
+            } else {
+                format!("{}_{}", out_name, vb)
+            };
+            // Clone the accumulated result to the output name.
+            self.stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(&bit_name),
+                ty: None,
+                init: Some(clone_expr(var(&acc.unwrap()))),
+            });
+            result_bits.push(bit_name);
+        }
+
+        if vw == 1 {
+            // Scalar result already named `out_name`.
+        } else {
+            self.wires.insert(u32::MAX, WireRepr::Vec(result_bits)); // placeholder
+        }
+    }
+
+    /// Oblivious write: cell_i′ = MUX(sel_i, new, cell_i) for all i.
+    fn emit_storage_write(
+        &mut self,
+        storage_id: u32,
+        type_id: u32,
+        src_var: &CirVar,
+        addr_var: &CirVar,
+        types: &CirTypes,
+        val_ty: &CirTyId,
+    ) {
+        let cell_count = self.stor.keys()
+            .filter(|(s, t, _)| *s == storage_id && *t == type_id)
+            .count();
+        if cell_count == 0 { return; }
+
+        let addr_bits: Vec<String> = match &self.wires[&addr_var.0] {
+            WireRepr::Scalar(s) => vec![s.clone()],
+            WireRepr::Vec(v) => v.clone(),
+        };
+
+        let vw = cir_type_width(val_ty, types);
+        let src_bits: Vec<String> = if vw == 1 {
+            vec![self.scalar(src_var).to_string()]
+        } else {
+            self.vec_parts(src_var).to_vec()
+        };
+
+        for ci in 0..cell_count {
+            let sel = self.emit_addr_match(&addr_bits, ci);
+            for vb in 0..vw {
+                let old_cell = if vw == 1 {
+                    self.stor[&(storage_id, type_id, ci)].clone()
+                } else {
+                    format!("{}_{}", self.stor[&(storage_id, type_id, ci)], vb)
+                };
+                // MUX(sel, new, old) = sel·(new ⊕ old) ⊕ old
+                let diff_name = format!("_sw_d_{}_{}_{}", ci, vb, self.and_counter);
+                self.emit_xor(&diff_name, &src_bits[vb], &old_cell);
+                let masked = self.emit_and(&sel, &diff_name);
+                let new_cell = format!("_sc_{}_{}_{}", storage_id, ci, vb);
+                self.emit_xor(&new_cell, &masked, &old_cell);
+                // Update storage state.
+                if vw == 1 {
+                    self.stor.insert((storage_id, type_id, ci), new_cell);
+                } else {
+                    // For Vec-typed storage, update the bit name.
+                    // The overall cell name is updated for bit 0.
+                    if vb == 0 {
+                        self.stor.insert((storage_id, type_id, ci), format!("_sc_{}_{}_{}", storage_id, ci, 0));
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- Merge / Shuffle (structural, free) --------------------------------
+
+    fn emit_merge(&mut self, out_id: u32, parts: &[CirVar]) {
+        let names: Vec<String> = parts.iter().map(|v| self.scalar(v).to_string()).collect();
+        self.wires.insert(out_id, WireRepr::Vec(names));
+        // No runtime code emitted — purely a tracking operation.
+    }
+
+    fn emit_shuffle(&mut self, out_name: &str, out_id: u32, result_bits: &[(u8, CirVar)]) {
+        if result_bits.len() == 1 {
+            let (bit_idx, src_var) = &result_bits[0];
+            let src_parts = self.vec_parts(src_var);
+            let src_name = &src_parts[*bit_idx as usize];
+            self.stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(out_name),
+                ty: None,
+                init: Some(clone_expr(var(src_name))),
+            });
+            self.wires.insert(out_id, WireRepr::Scalar(out_name.to_string()));
+        } else {
+            // Multi-bit shuffle → Vec result.
+            let names: Vec<String> = result_bits.iter().enumerate().map(|(i, (bit_idx, src_var))| {
+                let src_parts = self.vec_parts(src_var);
+                let src_name = &src_parts[*bit_idx as usize];
+                let n = format!("{}_{}", out_name, i);
+                self.stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&n),
+                    ty: None,
+                    init: Some(clone_expr(var(src_name))),
+                });
+                n
+            }).collect();
+            self.wires.insert(out_id, WireRepr::Vec(names));
+        }
+    }
+
+    // ---- Main dispatch -----------------------------------------------------
+
+    fn emit_circuit(
+        &mut self,
+        block: &CirBlock,
+        types: &CirTypes,
+        storage_sizes: &StorageSizes,
+    ) {
+        let p = block.params.len();
+
+        // Register input wires.
+        for i in 0..p {
+            let name = format!("w_{}", i);
+            self.wires.insert(i as u32, WireRepr::Scalar(name));
+        }
+
+        // Initialize storage cells to zero.
+        for (&(sid, tid), &count) in storage_sizes {
+            for ci in 0..count {
+                let name = format!("_sinit_{}_{}_{}", sid, tid, ci);
+                self.emit_zero(&name);
+                self.stor.insert((sid, tid, ci), name);
+            }
+        }
+
+        // Process stmts.
+        for (si, stmt) in block.stmts.iter().enumerate() {
+            let var_id = (p + si) as u32;
+            let out_name = format!("w_{}", var_id);
+
+            match stmt {
+                Stmt::Const(c, ty) => {
+                    let w = cir_type_width(ty, types);
+                    if w == 1 {
+                        if c.lo & 1 == 1 { self.emit_one(&out_name); }
+                        else { self.emit_zero(&out_name); }
+                        self.wires.insert(var_id, WireRepr::Scalar(out_name));
+                    } else {
+                        let mut bits = Vec::with_capacity(w);
+                        for j in 0..w {
+                            let n = format!("{}_{}", out_name, j);
+                            if (c.lo >> j) & 1 == 1 { self.emit_one(&n); }
+                            else { self.emit_zero(&n); }
+                            bits.push(n);
+                        }
+                        self.wires.insert(var_id, WireRepr::Vec(bits));
+                    }
+                }
+
+                Stmt::Poly { coeffs, constant } => {
+                    self.emit_poly(&out_name, coeffs, constant);
+                    self.wires.insert(var_id, WireRepr::Scalar(out_name));
+                }
+
+                Stmt::Merge { parts, .. } => {
+                    self.emit_merge(var_id, parts);
+                }
+
+                Stmt::Shuffle { result_bits, .. } => {
+                    self.emit_shuffle(&out_name, var_id, result_bits);
+                }
+
+                Stmt::StorageRead { storage, ty, addr } => {
+                    self.emit_storage_read(&out_name, storage.0, ty.0, addr, types, ty);
+                    let w = cir_type_width(ty, types);
+                    if w == 1 {
+                        self.wires.insert(var_id, WireRepr::Scalar(out_name));
+                    } else {
+                        let bits: Vec<String> = (0..w).map(|j| format!("{}_{}", out_name, j)).collect();
+                        self.wires.insert(var_id, WireRepr::Vec(bits));
+                    }
+                }
+
+                Stmt::StorageWrite { storage, src, ty, addr } => {
+                    self.emit_storage_write(storage.0, ty.0, src, addr, types, ty);
+                    // Write produces no meaningful result; register a zero.
+                    self.emit_zero(&out_name);
+                    self.wires.insert(var_id, WireRepr::Scalar(out_name));
+                }
+
+                Stmt::Transmute { src, .. } => {
+                    // Reinterpret — same bits, different type label.
+                    self.wires.insert(var_id, self.wires[&src.0].clone());
+                }
+
+                Stmt::Splat { src, ty } => {
+                    let w = cir_type_width(ty, types);
+                    let s = self.scalar(src).to_string();
+                    let bits: Vec<String> = (0..w).map(|j| {
+                        let n = format!("{}_{}", out_name, j);
+                        self.stmts.push(IrStmt::Let {
+                            pattern: IrPattern::ident(&n),
+                            ty: None,
+                            init: Some(clone_expr(var(&s))),
+                        });
+                        n
+                    }).collect();
+                    self.wires.insert(var_id, WireRepr::Vec(bits));
+                }
+
+                Stmt::Rol { src, ty, n } => {
+                    let parts = self.vec_parts(src).to_vec();
+                    let w = parts.len();
+                    let rotated: Vec<String> = (0..w).map(|j| parts[(j + w - *n) % w].clone()).collect();
+                    self.wires.insert(var_id, WireRepr::Vec(rotated));
+                }
+                Stmt::Ror { src, ty, n } => {
+                    let parts = self.vec_parts(src).to_vec();
+                    let w = parts.len();
+                    let rotated: Vec<String> = (0..w).map(|j| parts[(j + *n) % w].clone()).collect();
+                    self.wires.insert(var_id, WireRepr::Vec(rotated));
+                }
+
+                Stmt::Rng { .. }
+                | Stmt::OracleCall { .. } | Stmt::OracleOutput { .. }
+                | Stmt::ActionCall { .. } | Stmt::ActionOutput { .. } => {
+                    panic!("VOLE IR weaving does not yet support external primitives");
+                }
+            }
+        }
+    }
+}
+
+/// Weave a single-block Volar IR circuit into a VOLE **prover** `IrModule`.
+///
+/// The circuit must satisfy `is_circuit()` (single block, `Jmp(Return)`).
+/// `storage_sizes` maps each `(StorageId.0, TypeId.0)` pair to the number of
+/// cells in that oblivious storage space.
+pub fn weave_vole_prover_ir(
+    circuit: &IRBlocks,
+    types: &CirTypes,
+    name: &str,
+    storage_sizes: &StorageSizes,
+    linkage: Option<&LinkageSystem>,
+) -> IrModule {
+    assert!(circuit.is_circuit(), "weave_vole_prover_ir: circuit must satisfy is_circuit()");
+    let block = &circuit.blocks[0];
+    let num_params = block.params.len();
+    let and_count = count_ir_ands(block, types, storage_sizes);
+    let (generics, where_clause) = prover_generics_and_where();
+
+    // Build function params: vope_one, then one per circuit input.
+    let mut params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
+    for i in 0..num_params {
+        params.push(IrParam { name: format!("w_{}", i), ty: vope_type() });
+    }
+
+    // Return type: (Vope, [Array<T,N>; AND_COUNT])  or  ((Vope, ...), [...])
+    let ret_type = IrType::Tuple(vec![vope_type(), hat_array_type(and_count)]);
+
+    // Generate body.
+    let mut ctx = VoleIrCtx::new(true);
+    ctx.emit_circuit(block, types, storage_sizes);
+
+    // Build return expr.
+    let ret_args = match &block.terminator {
+        IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+        _ => panic!("expected Jmp(Return)"),
+    };
+    let output_expr = if ret_args.len() == 1 {
+        clone_expr(var(ctx.scalar(&ret_args[0])))
+    } else {
+        IrExpr::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect())
+    };
+    let hats_expr = IrExpr::FixedArray(ctx.hat_names.iter().map(|h| var(h)).collect());
+    let ret_expr = IrExpr::Tuple(vec![output_expr, hats_expr]);
+
+    let func = IrFunction {
+        name: format!("vole_prove_ir_{}", name),
+        generics,
+        receiver: None,
+        params,
+        return_type: Some(ret_type),
+        where_clause,
+        body: IrBlock {
+            stmts: ctx.stmts,
+            expr: Some(Box::new(ret_expr)),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    let mut module = IrModule {
+        name: "weaved_vole_ir_prover".into(),
+        functions: vec![func],
+        structs: vec![], traits: vec![], impls: vec![], type_aliases: vec![],
+    };
+    if let Some(ls) = linkage { ls.apply(&mut module); }
+    module
+}
+
+/// Weave a single-block Volar IR circuit into a VOLE **verifier** `IrModule`.
+///
+/// Analogous to [`weave_vole_prover_ir`] but generates the verifier side:
+/// each AND gate consumes a pre-assigned `Q<N,T>` share and a prover-sent
+/// `hat` value, checking the Quicksilver relation.
+pub fn weave_vole_verifier_ir(
+    circuit: &IRBlocks,
+    types: &CirTypes,
+    name: &str,
+    storage_sizes: &StorageSizes,
+    linkage: Option<&LinkageSystem>,
+) -> IrModule {
+    assert!(circuit.is_circuit(), "weave_vole_verifier_ir: circuit must satisfy is_circuit()");
+    let block = &circuit.blocks[0];
+    let num_params = block.params.len();
+    let and_count = count_ir_ands(block, types, storage_sizes);
+    let (generics, where_clause) = verifier_generics_and_where();
+
+    // Params: delta, (q_and_k, hat_k) pairs, q_one, input Q shares.
+    let mut params: Vec<IrParam> = vec![
+        IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
+    ];
+    for k in 0..and_count {
+        params.push(IrParam { name: format!("q_and_{}", k), ty: q_type() });
+        params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
+    }
+    // q_one: the verifier's Q for the committed-one wire.
+    params.push(IrParam { name: "q_one".into(), ty: q_type() });
+    for i in 0..num_params {
+        params.push(IrParam { name: format!("w_{}", i), ty: q_type() });
+    }
+
+    let ret_type = IrType::Tuple(vec![
+        q_type(),
+        IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool),
+    ]);
+
+    // Generate body.
+    let mut ctx = VoleIrCtx::new(false);
+
+    // `let mut all_ok: bool = true;`
+    ctx.stmts.push(IrStmt::Let {
+        pattern: IrPattern::Ident { mutable: true, name: "all_ok".into(), subpat: None },
+        ty: None,
+        init: Some(IrExpr::Lit(volar_compiler::ir::IrLit::Bool(true))),
+    });
+
+    ctx.emit_circuit(block, types, storage_sizes);
+
+    // Build return.
+    let ret_args = match &block.terminator {
+        IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+        _ => panic!("expected Jmp(Return)"),
+    };
+    let output_expr = if ret_args.len() == 1 {
+        clone_expr(var(ctx.scalar(&ret_args[0])))
+    } else {
+        IrExpr::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect())
+    };
+    let ret_expr = IrExpr::Tuple(vec![output_expr, var("all_ok")]);
+
+    let func = IrFunction {
+        name: format!("vole_verify_ir_{}", name),
+        generics,
+        receiver: None,
+        params,
+        return_type: Some(ret_type),
+        where_clause,
+        body: IrBlock {
+            stmts: ctx.stmts,
+            expr: Some(Box::new(ret_expr)),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    let mut module = IrModule {
+        name: "weaved_vole_ir_verifier".into(),
+        functions: vec![func],
+        structs: vec![], traits: vec![], impls: vec![], type_aliases: vec![],
+    };
+    if let Some(ls) = linkage { ls.apply(&mut module); }
+    module
+}
+
+// ============================================================================
 // Printer
 // ============================================================================
 
@@ -886,5 +1761,131 @@ mod tests {
             "Should not contain Vec in generated VOLE prover:\n{}",
             code
         );
+    }
+
+    // ---- Volar IR weaver tests ---------------------------------------------
+
+    use volar_ir::ir::{
+        IRBlocks, IRBlock as CirBlock, IRBlockTargetId, IRTerminator,
+        IRTypes as CirTypes, IRVarId as CirVar, Stmt, StorageId,
+    };
+    use volar_ir::ir::{Constant as CirConst, IRType as CircuitIrType, PrimType as PrimTy, IRTypeId as CirTyId};
+
+    /// Build a trivial single-block IR circuit: params=[Bit], return param[0].
+    fn build_ir_identity_circuit() -> (IRBlocks, CirTypes) {
+        let mut types = CirTypes::new();
+        let bit = types.intern(CircuitIrType::Primitive(PrimTy::Bit));
+        let block = CirBlock {
+            params: std::vec![bit],
+            stmts: std::vec![],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: std::vec![CirVar(0)],
+            },
+        };
+        (IRBlocks::new(std::vec![block]), types)
+    }
+
+    /// Build a circuit that ANDs two inputs: Poly { {[0,1]: 1}, 0 }.
+    fn build_ir_and_circuit() -> (IRBlocks, CirTypes) {
+        let mut types = CirTypes::new();
+        let bit = types.intern(CircuitIrType::Primitive(PrimTy::Bit));
+        let mut coeffs = alloc::collections::BTreeMap::new();
+        coeffs.insert(std::vec![CirVar(0), CirVar(1)], 1u8);
+        let block = CirBlock {
+            params: std::vec![bit, bit],
+            stmts: std::vec![
+                Stmt::Poly { coeffs, constant: CirConst { hi: 0, lo: 0 } },
+            ],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: std::vec![CirVar(2)],
+            },
+        };
+        (IRBlocks::new(std::vec![block]), types)
+    }
+
+    /// Build a circuit with storage: write input to cell, read it back.
+    fn build_ir_storage_circuit() -> (IRBlocks, CirTypes, StorageSizes) {
+        let mut types = CirTypes::new();
+        let bit = types.intern(CircuitIrType::Primitive(PrimTy::Bit)); // 0
+        // The address is just a single bit (1-bit address, 2 cells).
+        let block = CirBlock {
+            params: std::vec![bit, bit], // param 0 = value, param 1 = addr
+            stmts: std::vec![
+                // stmt 0 (var 2): write value to storage
+                Stmt::StorageWrite {
+                    storage: StorageId(0),
+                    src: CirVar(0),
+                    ty: CirTyId(0),
+                    addr: CirVar(1),
+                },
+                // stmt 1 (var 3): read back from storage at same address
+                Stmt::StorageRead {
+                    storage: StorageId(0),
+                    ty: CirTyId(0),
+                    addr: CirVar(1),
+                },
+            ],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: std::vec![CirVar(3)],
+            },
+        };
+        let mut ss = StorageSizes::new();
+        ss.insert((0, 0), 2); // StorageId(0), TypeId(0) → 2 cells
+        (IRBlocks::new(std::vec![block]), types, ss)
+    }
+
+    #[test]
+    fn test_weave_vole_ir_prover_identity() {
+        let (circuit, types) = build_ir_identity_circuit();
+        let ss = StorageSizes::new();
+        let module = weave_vole_prover_ir(&circuit, &types, "identity", &ss, None);
+        let code = print_weaved_vole_module(&module);
+        run_compile_check(&code, "vole_ir_prover_id");
+    }
+
+    #[test]
+    fn test_weave_vole_ir_verifier_identity() {
+        let (circuit, types) = build_ir_identity_circuit();
+        let ss = StorageSizes::new();
+        let module = weave_vole_verifier_ir(&circuit, &types, "identity", &ss, None);
+        let code = print_weaved_vole_module(&module);
+        run_compile_check(&code, "vole_ir_verifier_id");
+    }
+
+    #[test]
+    fn test_weave_vole_ir_prover_and() {
+        let (circuit, types) = build_ir_and_circuit();
+        let ss = StorageSizes::new();
+        let module = weave_vole_prover_ir(&circuit, &types, "and_gate", &ss, None);
+        let code = print_weaved_vole_module(&module);
+        run_compile_check(&code, "vole_ir_prover_and");
+    }
+
+    #[test]
+    fn test_weave_vole_ir_verifier_and() {
+        let (circuit, types) = build_ir_and_circuit();
+        let ss = StorageSizes::new();
+        let module = weave_vole_verifier_ir(&circuit, &types, "and_gate", &ss, None);
+        let code = print_weaved_vole_module(&module);
+        run_compile_check(&code, "vole_ir_verifier_and");
+    }
+
+    #[test]
+    fn test_weave_vole_ir_prover_storage() {
+        let (circuit, types, ss) = build_ir_storage_circuit();
+        let module = weave_vole_prover_ir(&circuit, &types, "storage", &ss, None);
+        let code = print_weaved_vole_module(&module);
+        run_compile_check(&code, "vole_ir_prover_stor");
+    }
+
+    #[test]
+    fn test_weave_vole_ir_verifier_storage() {
+        let (circuit, types, ss) = build_ir_storage_circuit();
+        let module = weave_vole_verifier_ir(&circuit, &types, "storage", &ss, None);
+        let code = print_weaved_vole_module(&module);
+        run_compile_check(&code, "vole_ir_verifier_stor");
     }
 }

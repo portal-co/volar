@@ -1,10 +1,14 @@
 // @reliability: normal
 //! @ai: none
-use volar_ir_common::Constant;
 
 // Volar IR: SSA block-based IR for VOLE-based computations.
 // Pure data structure definitions; no cryptographic claims.
 use super::*;
+
+pub use volar_ir_common::{Constant, StorageId, Type as PrimType};
+/// Re-export the shared `Stmt` enum so downstream crates can pattern-match
+/// on `IRStmt` variants without depending on `volar-ir-common` directly.
+pub use volar_ir_common::Stmt;
 
 // ============================================================================
 // Type system — unified with VAFFLE via volar_ir_common
