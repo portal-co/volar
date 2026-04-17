@@ -33,7 +33,8 @@ use volar_ir::boolar::{BIrBlocks, BIrStmt};
 pub use volar_ir_passes::lower_to_circuit::LoweringMode;
 
 use crate::{
-    array_default, array_from_fn, base_index, build_return, clone_expr, expand_ors, ref_expr, var,
+    array_default, array_from_fn, base_index, build_return, clone_expr, expand_ors,
+    ref_expr, var, NoProvenance, ProvenanceHandler,
 };
 
 // ============================================================================
@@ -146,11 +147,24 @@ fn garble_struct<P: Clone + Default>(base_expr: IrExpr<P>) -> IrExpr<P> {
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_evaluator<P, Q>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule<Q>
+/// Backwards-compatible evaluator weave — discards provenance.
+///
+/// See [`weave_evaluator_with_handler`] for the provenance-preserving variant.
+pub fn weave_evaluator<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule {
+    weave_evaluator_with_handler(circuit, name, linkage, &NoProvenance)
+}
+
+/// Weave a single-block boolean circuit into a garbled-circuit **evaluator** `IrModule`,
+/// using `handler` to map input provenance into the output IR.
+pub fn weave_evaluator_with_handler<P, H>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+    handler: &H,
+) -> IrModule<H::Output>
 where
-    P: Clone + Default + Into<Q>,
-    Q: Clone + Default,
-    (): Into<Q>,
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
 {
     assert!(
         circuit.is_circuit(),
@@ -189,13 +203,13 @@ where
         });
     }
 
-    let mut stmts: Vec<IrStmt<Q>> = Vec::new();
-    let mut stmt_provs: Vec<Q> = Vec::new();
+    let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
+    let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut and_counter: usize = 0;
 
     for (result_id, stmt, prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
-        let q: Q = prov.clone().into();
+        let q = handler.map(prov);
 
         let init_expr = match stmt {
             BIrStmt::Zero => IrExpr::StructExpr {
@@ -302,11 +316,17 @@ where
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_garbler<P, Q>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule<Q>
+/// Backwards-compatible garbler weave — discards provenance.
+pub fn weave_garbler<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule {
+    weave_garbler_with_handler(circuit, name, linkage, &NoProvenance)
+}
+
+/// Weave a single-block boolean circuit into a garbled-circuit **garbler** `IrModule`,
+/// using `handler` to map input provenance into the output IR.
+pub fn weave_garbler_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>, handler: &H) -> IrModule<H::Output>
 where
-    P: Clone + Default + Into<Q>,
-    Q: Clone + Default,
-    (): Into<Q>,
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
 {
     assert!(
         circuit.is_circuit(),
@@ -349,14 +369,14 @@ where
         garble_type(),
     ]);
 
-    let mut stmts: Vec<IrStmt<Q>> = Vec::new();
-    let mut stmt_provs: Vec<Q> = Vec::new();
+    let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
+    let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut table_counter: usize = 0;
     let mut table_names: Vec<String> = Vec::new();
 
     for (result_id, stmt, prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
-        let q: Q = prov.clone().into();
+        let q = handler.map(prov);
 
         let garble_expr = match stmt {
             BIrStmt::Zero | BIrStmt::One => garble_struct(array_default()),
@@ -478,11 +498,17 @@ where
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_into_gc<P, Q>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule<Q>
+/// Backwards-compatible GarbledCircuit weave — discards provenance.
+pub fn weave_into_gc<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule {
+    weave_into_gc_with_handler(circuit, name, linkage, &NoProvenance)
+}
+
+/// Weave a single-block boolean circuit into a `GarbledCircuit`-returning function,
+/// using `handler` to map input provenance into the output IR.
+pub fn weave_into_gc_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>, handler: &H) -> IrModule<H::Output>
 where
-    P: Clone + Default + Into<Q>,
-    Q: Clone + Default,
-    (): Into<Q>,
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
 {
     assert!(
         circuit.is_circuit(),
@@ -515,13 +541,13 @@ where
         .filter(|(_, s, _)| matches!(s, BIrStmt::And(..)))
         .count();
 
-    let mut stmts: Vec<IrStmt<Q>> = Vec::new();
-    let mut stmt_provs: Vec<Q> = Vec::new();
+    let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
+    let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut table_counter: usize = 0;
 
     for (result_id, stmt, prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
-        let q: Q = prov.clone().into();
+        let q = handler.map(prov);
 
         let garble_expr = match stmt {
             BIrStmt::Zero | BIrStmt::One => garble_struct(array_default()),
@@ -658,15 +684,26 @@ where
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_eval_from_setup<P, Q>(
+/// Backwards-compatible EvalSetup weave — discards provenance.
+pub fn weave_eval_from_setup<P: Clone + Default>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<Q>
+) -> IrModule {
+    weave_eval_from_setup_with_handler(circuit, name, linkage, &NoProvenance)
+}
+
+/// Weave a single-block boolean circuit into an EvalSetup-based evaluator,
+/// using `handler` to map input provenance into the output IR.
+pub fn weave_eval_from_setup_with_handler<P, H>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+    handler: &H,
+) -> IrModule<H::Output>
 where
-    P: Clone + Default + Into<Q>,
-    Q: Clone + Default,
-    (): Into<Q>,
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
 {
     assert!(
         circuit.is_circuit(),
@@ -699,12 +736,12 @@ where
         });
     }
 
-    let setup_one_wire = || -> IrExpr<Q> { IrExpr::Field {
+    let setup_one_wire = || -> IrExpr<H::Output> { IrExpr::Field {
         base: Box::new(var("setup")),
         field: "one_wire".into(),
     } };
 
-    let setup_table = |k: usize| -> IrExpr<Q> { IrExpr::Index {
+    let setup_table = |k: usize| -> IrExpr<H::Output> { IrExpr::Index {
         base: Box::new(IrExpr::Field {
             base: Box::new(var("setup")),
             field: "tables".into(),
@@ -712,13 +749,13 @@ where
         index: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
     } };
 
-    let mut stmts: Vec<IrStmt<Q>> = Vec::new();
-    let mut stmt_provs: Vec<Q> = Vec::new();
+    let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
+    let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut and_counter: usize = 0;
 
     for (result_id, stmt, prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
-        let q: Q = prov.clone().into();
+        let q = handler.map(prov);
 
         let init_expr = match stmt {
             BIrStmt::Zero => IrExpr::StructExpr {
@@ -812,76 +849,120 @@ where
 // Bounded (movfuscated) weaving wrappers
 // ============================================================================
 
-/// Weave a bounded movfuscated Boolar circuit into a garbled-circuit **evaluator**.
-pub fn weave_evaluator_bounded<P, Q>(
+/// Backwards-compatible bounded evaluator weave — discards provenance.
+pub fn weave_evaluator_bounded<P: Clone + Default>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<Q>
-where
-    P: Clone + Default + Into<Q>,
-    Q: Clone + Default,
-    (): Into<Q>,
-{
-    use volar_ir_passes::lower_to_circuit::lower_to_circuit;
-    let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_evaluator(&lowered, name, linkage)
+) -> IrModule {
+    weave_evaluator_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
 }
 
-/// Weave a bounded movfuscated Boolar circuit into a garbled-circuit **garbler**.
-pub fn weave_garbler_bounded<P, Q>(
+/// Bounded evaluator weave with provenance handler.
+pub fn weave_evaluator_bounded_with_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<Q>
+    handler: &H,
+) -> IrModule<H::Output>
 where
-    P: Clone + Default + Into<Q>,
-    Q: Clone + Default,
-    (): Into<Q>,
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
 {
     use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_garbler(&lowered, name, linkage)
+    weave_evaluator_with_handler(&lowered, name, linkage, handler)
 }
 
-/// Weave a bounded movfuscated Boolar circuit into a `GarbledCircuit`-returning function.
-pub fn weave_into_gc_bounded<P, Q>(
+/// Backwards-compatible bounded garbler weave — discards provenance.
+pub fn weave_garbler_bounded<P: Clone + Default>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<Q>
-where
-    P: Clone + Default + Into<Q>,
-    Q: Clone + Default,
-    (): Into<Q>,
-{
-    use volar_ir_passes::lower_to_circuit::lower_to_circuit;
-    let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_into_gc(&lowered, name, linkage)
+) -> IrModule {
+    weave_garbler_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
 }
 
-/// Weave a bounded movfuscated Boolar circuit into an `EvalSetup`-based evaluator.
-pub fn weave_eval_from_setup_bounded<P, Q>(
+/// Bounded garbler weave with provenance handler.
+pub fn weave_garbler_bounded_with_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<Q>
+    handler: &H,
+) -> IrModule<H::Output>
 where
-    P: Clone + Default + Into<Q>,
-    Q: Clone + Default,
-    (): Into<Q>,
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
 {
     use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_eval_from_setup(&lowered, name, linkage)
+    weave_garbler_with_handler(&lowered, name, linkage, handler)
+}
+
+/// Backwards-compatible bounded GarbledCircuit weave — discards provenance.
+pub fn weave_into_gc_bounded<P: Clone + Default>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    limit: u32,
+    mode: LoweringMode,
+    linkage: Option<&LinkageSystem>,
+) -> IrModule {
+    weave_into_gc_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
+}
+
+/// Bounded GarbledCircuit weave with provenance handler.
+pub fn weave_into_gc_bounded_with_handler<P, H>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    limit: u32,
+    mode: LoweringMode,
+    linkage: Option<&LinkageSystem>,
+    handler: &H,
+) -> IrModule<H::Output>
+where
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
+{
+    use volar_ir_passes::lower_to_circuit::lower_to_circuit;
+    let lowered = lower_to_circuit(circuit, limit, mode);
+    weave_into_gc_with_handler(&lowered, name, linkage, handler)
+}
+
+/// Backwards-compatible bounded EvalSetup weave — discards provenance.
+pub fn weave_eval_from_setup_bounded<P: Clone + Default>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    limit: u32,
+    mode: LoweringMode,
+    linkage: Option<&LinkageSystem>,
+) -> IrModule {
+    weave_eval_from_setup_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
+}
+
+/// Bounded EvalSetup weave with provenance handler.
+pub fn weave_eval_from_setup_bounded_with_handler<P, H>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    limit: u32,
+    mode: LoweringMode,
+    linkage: Option<&LinkageSystem>,
+    handler: &H,
+) -> IrModule<H::Output>
+where
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
+{
+    use volar_ir_passes::lower_to_circuit::lower_to_circuit;
+    let lowered = lower_to_circuit(circuit, limit, mode);
+    weave_eval_from_setup_with_handler(&lowered, name, linkage, handler)
 }
 
 // ============================================================================

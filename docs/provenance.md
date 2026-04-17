@@ -43,19 +43,34 @@ Rust source                 // provenance discarded (metadata only)
 ### Weaving
 
 All weaving functions accept an input circuit `BIrBlocks<P>` and produce
-an output `IrModule<Q>` where `P: Into<Q>`.  This allows flexible
-provenance mapping:
+an output `IrModule<Q>` where a `ProvenanceHandler<P>` maps `P → Q`.
+
+The plain function names (`weave_evaluator`, `weave_garbler`, …) discard
+provenance and return `IrModule<()>`.  The `*_with_handler` variants
+accept a handler:
 
 ```rust
-// Identity: keep the same provenance type
-let module: IrModule<MyProv> = weave_evaluator(&circuit, "name", None);
+use volar_weaver::{weave_evaluator, weave_evaluator_with_handler};
+use volar_weaver::{KeepProvenance, MapProvenance, NoProvenance};
 
-// Erase: discard provenance (default when P = ())
-let module: IrModule<()> = weave_evaluator(&circuit, "name", None);
+// Erase provenance (backwards-compatible, default)
+let module: IrModule = weave_evaluator(&circuit, "name", None);
 
-// Convert: map to a different type
-// (requires MyProv: Into<AppProv>)
-let module: IrModule<AppProv> = weave_evaluator(&circuit, "name", None);
+// Keep provenance unchanged
+let module = weave_evaluator_with_handler(&circuit, "name", None, &KeepProvenance);
+
+// Map to a different type
+let handler = MapProvenance(|p: &MyProv| p.line_number);
+let module = weave_evaluator_with_handler(&circuit, "name", None, &handler);
+
+// Custom handler
+struct MyHandler;
+impl ProvenanceHandler<GateProv> for MyHandler {
+    type Output = AppProv;
+    fn map(&self, p: &GateProv) -> AppProv { AppProv::from(p) }
+    fn synthetic(&self) -> AppProv { AppProv::unknown() }
+}
+let module = weave_evaluator_with_handler(&circuit, "name", None, &MyHandler);
 ```
 
 When a single source gate expands into multiple output statements (e.g.
@@ -74,6 +89,30 @@ let mapped: IrModule<AppProv> = module.map_prov(|cp| AppProv::from(cp));
 
 `map_prov` is available on `IrModule`, `IrFunction`, `IrBlock`, `IrImpl`,
 `IrStmt`, `IrExpr`, and all nested IR types.
+
+## The `ProvenanceHandler` trait
+
+The handler trait controls how input provenance flows into the output:
+
+```rust
+pub trait ProvenanceHandler<P: Clone + Default> {
+    /// Output provenance type.
+    type Output: Clone + Default;
+
+    /// Map an input gate's provenance to the output.
+    fn map(&self, prov: &P) -> Self::Output;
+
+    /// Provenance for synthetic (non-gate) statements.
+    /// Defaults to `Self::Output::default()`.
+    fn synthetic(&self) -> Self::Output { Default::default() }
+}
+```
+
+| Built-in handler | Output | Behaviour |
+|------------------|--------|-----------|
+| `NoProvenance` | `()` | Discards everything (used by plain wrappers) |
+| `KeepProvenance` | `P` | Clones input provenance unchanged |
+| `MapProvenance(\|p\| …)` | `Q` | Applies a closure `Fn(&P) -> Q` |
 
 ## App integration example
 
@@ -137,8 +176,10 @@ circuit IR.
   (the vec stores nothing meaningful but maintains the length invariant).
 - **No runtime effect**: provenance is compile-time / tooling metadata.
   The Rust printer ignores `stmt_provs` entirely.
-- **`Into`-based mapping**: the `P: Into<Q>` constraint is the standard
-  Rust conversion trait.  It enables both identity mappings (`P = Q`)
-  and lossy projections (`P → ()`).  The `(): Into<Q>` bound on weaving
-  functions ensures that synthetic statements (setup code, return
-  expressions) can always produce a default `Q`.
+- **Handler trait over `Into`**: the `ProvenanceHandler` trait replaces a
+  raw `P: Into<Q>` bound.  This gives callers a `synthetic()` hook for
+  boilerplate statements, avoids the awkward `(): Into<Q>` bound, and
+  allows stateful handlers (e.g. one that interns provenance values).
+- **Backwards compatibility**: the plain function names (`weave_evaluator`,
+  etc.) use `NoProvenance` internally and return `IrModule<()>`, so
+  existing call sites compile without changes.

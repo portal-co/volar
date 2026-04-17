@@ -55,7 +55,7 @@ use volar_ir::ir::{
 use volar_ir_passes::lower_to_circuit::lower_to_circuit;
 pub use volar_ir_passes::lower_to_circuit::LoweringMode;
 
-use crate::{array_default, build_return, clone_expr, expand_ors, ref_expr, var};
+use crate::{array_default, build_return, clone_expr, expand_ors, ref_expr, var, NoProvenance, ProvenanceHandler};
 
 // ============================================================================
 // VOLE-specific type helpers
@@ -398,15 +398,26 @@ fn emit_verifier_and_gate<P: Clone + Default>(
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_vole_prover<P, Q>(
+/// Backwards-compatible VOLE prover weave — discards provenance.
+pub fn weave_vole_prover<P: Clone + Default>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<Q>
+) -> IrModule {
+    weave_vole_prover_with_handler(circuit, name, linkage, &NoProvenance)
+}
+
+/// Weave a single-block boolean circuit into a VOLE **prover** `IrModule`,
+/// using `handler` to map input provenance into the output IR.
+pub fn weave_vole_prover_with_handler<P, H>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+    handler: &H,
+) -> IrModule<H::Output>
 where
-    P: Clone + Default + Into<Q>,
-    Q: Clone + Default,
-    (): Into<Q>,
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
 {
     assert!(
         circuit.is_circuit(),
@@ -444,14 +455,14 @@ where
 
     let (generics, where_clause) = prover_generics_and_where();
 
-    let mut stmts: Vec<IrStmt<Q>> = Vec::new();
-    let mut stmt_provs: Vec<Q> = Vec::new();
+    let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
+    let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut and_counter: usize = 0;
     let mut hat_names: Vec<String> = Vec::new();
 
     for (result_id, stmt, prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
-        let q: Q = prov.clone().into();
+        let q = handler.map(prov);
 
         match stmt {
             BIrStmt::Zero => {
@@ -588,15 +599,26 @@ where
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_vole_verifier<P, Q>(
+/// Backwards-compatible VOLE verifier weave — discards provenance.
+pub fn weave_vole_verifier<P: Clone + Default>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<Q>
+) -> IrModule {
+    weave_vole_verifier_with_handler(circuit, name, linkage, &NoProvenance)
+}
+
+/// Weave a single-block boolean circuit into a VOLE **verifier** `IrModule`,
+/// using `handler` to map input provenance into the output IR.
+pub fn weave_vole_verifier_with_handler<P, H>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+    handler: &H,
+) -> IrModule<H::Output>
 where
-    P: Clone + Default + Into<Q>,
-    Q: Clone + Default,
-    (): Into<Q>,
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
 {
     assert!(
         circuit.is_circuit(),
@@ -654,8 +676,8 @@ where
 
     let (generics, where_clause) = verifier_generics_and_where();
 
-    let mut stmts: Vec<IrStmt<Q>> = Vec::new();
-    let mut stmt_provs: Vec<Q> = Vec::new();
+    let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
+    let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut and_counter: usize = 0;
 
     stmts.push(IrStmt::Let {
@@ -667,11 +689,11 @@ where
         ty: None,
         init: Some(IrExpr::Lit(volar_compiler::ir::IrLit::Bool(true))),
     });
-    stmt_provs.push(Q::default());
+    stmt_provs.push(H::Output::default());
 
     for (result_id, stmt, prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
-        let q: Q = prov.clone().into();
+        let q = handler.map(prov);
 
         match stmt {
             BIrStmt::Zero => {
@@ -796,38 +818,60 @@ where
 // Bounded wrappers
 // ============================================================================
 
-/// Weave a bounded movfuscated Boolar circuit into a VOLE **prover**.
-pub fn weave_vole_prover_bounded<P, Q>(
+/// Backwards-compatible bounded VOLE prover weave.
+pub fn weave_vole_prover_bounded<P: Clone + Default>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<Q>
-where
-    P: Clone + Default + Into<Q>,
-    Q: Clone + Default,
-    (): Into<Q>,
-{
-    let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_vole_prover(&lowered, name, linkage)
+) -> IrModule {
+    weave_vole_prover_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
 }
 
-/// Weave a bounded movfuscated Boolar circuit into a VOLE **verifier**.
-pub fn weave_vole_verifier_bounded<P, Q>(
+/// Bounded VOLE prover weave with provenance handler.
+pub fn weave_vole_prover_bounded_with_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<Q>
+    handler: &H,
+) -> IrModule<H::Output>
 where
-    P: Clone + Default + Into<Q>,
-    Q: Clone + Default,
-    (): Into<Q>,
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_vole_verifier(&lowered, name, linkage)
+    weave_vole_prover_with_handler(&lowered, name, linkage, handler)
+}
+
+/// Backwards-compatible bounded VOLE verifier weave.
+pub fn weave_vole_verifier_bounded<P: Clone + Default>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    limit: u32,
+    mode: LoweringMode,
+    linkage: Option<&LinkageSystem>,
+) -> IrModule {
+    weave_vole_verifier_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
+}
+
+/// Bounded VOLE verifier weave with provenance handler.
+pub fn weave_vole_verifier_bounded_with_handler<P, H>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    limit: u32,
+    mode: LoweringMode,
+    linkage: Option<&LinkageSystem>,
+    handler: &H,
+) -> IrModule<H::Output>
+where
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
+{
+    let lowered = lower_to_circuit(circuit, limit, mode);
+    weave_vole_verifier_with_handler(&lowered, name, linkage, handler)
 }
 
 // ============================================================================
