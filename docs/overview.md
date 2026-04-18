@@ -30,6 +30,7 @@ volar/
 │   │   └── volar-dyn/          Runtime dynamic bindings (generated from volar-spec)
 │   ├── ir/
 │   │   ├── volar-ir/           Low-level circuit IR (Volar IR, Boolar IR)
+│   │   ├── volar-ir-config/    IrLoweringConfig — configurable lowering parameters
 │   │   ├── volar-lir/          LirTarget trait + LirType (no_std)
 │   │   └── vaffle/             WAFFLE-to-VAFFLE intermediate layer (stub)
 │   └── compiler/

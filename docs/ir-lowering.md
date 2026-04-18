@@ -74,14 +74,37 @@ An `IRBlocks` is either:
 
 ```rust
 pub enum IRType {
-    Bit,                            // GF(2) element
+    Primitive(PrimType),            // scalar or packed bitvector
     Vec(usize, IRTypeId),           // fixed-length vector of another type
     Tuple(Vec<IRTypeId>),           // product type
-    Galois8AES,                     // GF(2⁸) with AES polynomial
-    Galois64,                       // GF(2⁶⁴)
     Block { params: Vec<IRTypeId> }, // first-class block (closure)
 }
+
+pub enum PrimType {
+    Bit,     // GF(2) — 1 wire
+    _8,      // packed 8-bit bitvector — 8 wires
+    _16,     // packed 16-bit bitvector — 16 wires
+    _32,     // packed 32-bit bitvector — 32 wires
+    _64,     // packed 64-bit bitvector — 64 wires
+    _128,    // packed 128-bit bitvector — 128 wires (LIR: unimplemented)
+    _256,    // packed 256-bit bitvector — 256 wires (LIR: unimplemented)
+    AES8,    // GF(2⁸) with AES polynomial — 8 wires (FHE CFG: deferred)
+    Galois64, // GF(2⁶⁴) — 64 wires (FHE CFG: deferred)
+}
 ```
+
+**Taxonomy for backends:**
+
+| Variant | Kind | Wire count | FHE CFG weaving |
+|---|---|---|---|
+| `Primitive(Bit)` | 1-bit GF(2) | 1 | Full |
+| `Vec(N, Bit)` | packed bitvector | N | Full (`[wire; N]`) |
+| `Primitive(_8/_16/_32/_64)` | packed bitvector | 8/16/32/64 | Full (`[wire; W]`) |
+| `Primitive(_128/_256)` | packed bitvector | 128/256 | LIR: `unimplemented!`; FHE: `[wire; W]` |
+| `Primitive(AES8)` | GF(256) field element | 8 | Deferred |
+| `Primitive(Galois64)` | GF(2^64) field element | 64 | Deferred |
+
+`ir_type_bit_width(ty_id, types)` computes the total wire count for any supported type.
 
 Types are interned via `IRTypeId` (a `u32` index into an `IRTypes` table).
 Variables are similarly interned via `IRVarId`.
@@ -94,7 +117,7 @@ Variables are similarly interned via `IRVarId`.
 | `StorageWrite { src, ty, addr }` | Write a typed value to a storage cell |
 | `Const(bytes, ty)` | Inject a compile-time constant |
 | `Transmute { src, src_ty, dst_ty }` | Reinterpret bits between compatible types |
-| `Poly { coeffs, constant }` | Evaluate a multilinear polynomial over variables; coefficients are GF(2⁸) bytes |
+| `Poly { ty, coeffs, constant }` | Evaluate a multilinear polynomial over variables; output type is `ty` |
 | `Rol { src, ty, n }` | Rotate-left by n bits |
 | `Ror { src, ty, n }` | Rotate-right by n bits |
 | `Merge { parts, ty }` | Concatenate multiple values into one typed value |
@@ -104,6 +127,13 @@ Variables are similarly interned via `IRVarId`.
 polynomial evaluation over the wire variables. The `coeffs` map is a sparse
 monomial encoding: `BTreeMap<Vec<Var>, u8>` maps each monomial (product of
 variable IDs) to its GF(2⁸) coefficient.
+
+**`Poly` output-type semantics (`ty` field):**
+
+- **`ty = Bit`**: standard GF(2) gate — all coefficient variables are `Bit`-typed. This is the original and most common case.
+- **`ty = T` (bitvector or field element)**: at most one `T`-typed variable per monomial; all other variables in that monomial are `Bit`-typed selectors. The polynomial result has type `T`.
+
+Always supply `ty` explicitly when constructing `Poly` nodes; `ir_stmt_output_ty` now returns `Some(*ty)` for `Poly`.
 
 ### Terminators
 

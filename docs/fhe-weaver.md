@@ -39,11 +39,28 @@ pub trait FheScheme {
 
     // ── Signature / type ──────────────────────────────────────────────────────
 
-    /// The Rust type of an owned gate-output wire.
+    /// The Rust type of an owned gate-output wire (single bit).
     fn wire_type(&self) -> IrType;
 
     /// The Rust type of a circuit input parameter (default: `wire_type`).
     fn input_type(&self) -> IrType { self.wire_type() }
+
+    /// The encrypted Rust type for a circuit-level `IRTypeId`.
+    ///
+    /// - `Bit` → `wire_type()` (single ciphertext).
+    /// - `Vec(N, Bit)` or packed bitvector of width W → `[wire_type(); W]`.
+    /// - Field elements (`AES8`, `Galois64`) → unsupported; panics.
+    ///
+    /// Default implementation uses `ir_type_bit_width`.
+    fn wire_type_for_ir(&self, ir_ty: IRTypeId, types: &IRTypes) -> IrType { .. }
+
+    /// The cleartext (public) Rust type for a circuit-level `IRTypeId`.
+    ///
+    /// - `Bit` → `bool`.
+    /// - Multi-bit → `[bool; W]`.
+    ///
+    /// Default implementation uses `ir_type_bit_width`.
+    fn public_type_for_ir(&self, ir_ty: IRTypeId, types: &IRTypes) -> IrType { .. }
 
     /// Additional function parameters prepended before the circuit inputs.
     fn extra_params(&self) -> Vec<IrParam>;
@@ -62,6 +79,18 @@ pub trait FheScheme {
     fn emit_not<Q: Clone + Default>(&self, a: IrExpr<Q>) -> IrExpr<Q>;
     /// `gate_idx` is the 0-based count of AND gates emitted so far.
     fn emit_and<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>, gate_idx: usize) -> IrExpr<Q>;
+
+    // ── Public-to-encrypted promotion ─────────────────────────────────────────
+
+    /// Lift a cleartext (public) value to the scheme's wire type.
+    ///
+    /// `width` is the number of wire bits:
+    /// - `width == 1`: `expr` is `bool`; wrap it in a single encryption call.
+    /// - `width > 1`: `expr` is `[bool; width]`; encrypt each element to produce
+    ///   `[wire_type(); width]`.
+    ///
+    /// Default: identity (for schemes where public values are already wire-typed).
+    fn promote_to_wire<Q: Clone + Default>(&self, expr: IrExpr<Q>, width: usize) -> IrExpr<Q> { expr }
 
     // ── External primitives (default: panic) ──────────────────────────────────
 
