@@ -308,8 +308,31 @@ separately in the `lower_to_ir.rs` module header but summarised here:
 
 ## Bit Packing in LIR Lowering
 
-The VAFFLE → Volar IR lowering (`lower_to_ir`) packs individual GF(2) bits
-into `Vec(PACK_W, Bit)` words (`PACK_W = 64` by default) at every boundary:
+The bit-packing infrastructure lives in `volar-lir/src/circuits.rs` and is
+available to **every `StorageEmitter` backend**, not just VAFFLE.  The VAFFLE
+→ Volar IR lowering (`lower_to_ir`) is the first consumer, but any backend
+that decomposes values into individual bits can use the same functions.
+
+### API (`volar-lir::circuits`)
+
+| Symbol | Kind | Description |
+|---|---|---|
+| `PACK_W` | `const usize = 64` | Bits per packed word |
+| `n_packs(n)` | `fn` | `⌈n / PACK_W⌉` |
+| `pack_bits(b, bits, pack_w)` | `fn` | Merge bits into packed words via `compose_pack` |
+| `unpack_words(b, words, n, pack_w)` | `fn` | Extract bits from packed words via `extract_bit` |
+| `StorageEmitter::compose_pack` | trait method | Merge N bits into `Vec(N, Bit)` (default: delegates to `compose_address`) |
+| `StorageEmitter::extract_bit` | trait method | Extract one bit from a packed word (required) |
+
+All symbols are re-exported from `volar_lir`.
+
+### `StorageEmitter` implementations
+
+| Backend | `compose_pack` | `extract_bit` |
+|---|---|---|
+| `BlockEmitter` (VAFFLE lowering) | `Merge { ty: PACK_TID }` | `Shuffle { ty: BIT_TID }` |
+| `VaffleTarget` | `Merge { ty: Vec(N, Bit) }` | `Shuffle { ty: Bit }` |
+| `VolarIrTarget` | `Merge { ty: Vec(N, Bit) }` | `Shuffle { ty: Bit }` |
 
 | Boundary | Before packing | After packing (PACK_W=64) |
 |---|---|---|

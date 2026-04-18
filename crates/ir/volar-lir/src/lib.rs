@@ -22,7 +22,7 @@ use alloc::{boxed::Box, string::String, vec::Vec};
 use volar_ir_common::Type as NativeType;
 
 pub mod circuits;
-pub use circuits::{BitCircuitBuilder, StorageEmitter, StackPtr, FrameLayout};
+pub use circuits::{BitCircuitBuilder, StorageEmitter, StackPtr, FrameLayout, PACK_W, n_packs, pack_bits, unpack_words};
 
 // ============================================================================
 // Types

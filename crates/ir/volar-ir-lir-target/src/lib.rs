@@ -751,11 +751,14 @@ impl<P: Clone + Default> StorageEmitter for VolarIrTarget<P> {
         if bits.len() == 1 {
             return bits[0];
         }
-        // Intern IRType::Vec(N, bit_tid) for the address width.
         let n = bits.len();
         let bit_tid = self.bit_tid;
         let vec_ty = self.types.intern(IrType::Vec(n, bit_tid));
         self.emit(IRStmt::Merge { parts: bits.to_vec(), ty: vec_ty })
+    }
+
+    fn extract_bit(&mut self, word: IRVarId, idx: u8) -> IRVarId {
+        self.emit(IRStmt::Shuffle { result_bits: vec![(idx, word)], ty: self.bit_tid })
     }
 
     fn emit_read(&mut self, storage: volar_ir_common::StorageId, ty: volar_ir_common::TypeId, addr_bits: &[IRVarId]) -> IRVarId {

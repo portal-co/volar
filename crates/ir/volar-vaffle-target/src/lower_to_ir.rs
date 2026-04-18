@@ -67,6 +67,7 @@ use volar_lir::circuits::{
     frame_push_args, frame_read_args, frame_write_cont, frame_read_cont,
     frame_write_ret, frame_spill, frame_reload,
     BitCircuitBuilder, StorageEmitter,
+    PACK_W, n_packs, pack_bits, unpack_words,
 };
 
 /// Width of the stack-pointer address in bits.
@@ -78,7 +79,7 @@ pub const SP_BITS: usize = 16;
 /// Choosing 64 means that a 128-bit parameter occupies 2 packed block
 /// params instead of 128 individual `Bit` params, and spilling 200
 /// values costs 4 storage ops instead of 200.
-pub const PACK_W: usize = 64;
+// Re-exported from volar_lir::circuits::PACK_W.
 
 // ============================================================================
 // Public entry point
@@ -130,45 +131,9 @@ impl BlockEmitter {
         IRBlock { params: self.params, stmts: self.stmts, stmt_provs: vec![], terminator }
     }
 
-    // ---- Packing helpers ---------------------------------------------------
-
-    /// Pack `bits` into `ceil(bits.len() / PACK_W)` words of type `PACK_TID`.
-    ///
-    /// Short final words are zero-padded.
-    fn pack_bits(&mut self, bits: &[IRVarId]) -> Vec<IRVarId> {
-        bits.chunks(PACK_W)
-            .map(|chunk| {
-                let mut parts: Vec<IRVarId> = chunk.to_vec();
-                while parts.len() < PACK_W {
-                    parts.push(self.bc_const(false));
-                }
-                self.emit(IRStmt::Merge { parts, ty: PACK_TID })
-            })
-            .collect()
-    }
-
-    /// Unpack `words` (each `Vec(PACK_W, Bit)`) back into `n` individual
-    /// `Bit`-typed vars, discarding padding.
-    fn unpack_words(&mut self, words: &[IRVarId], n: usize) -> Vec<IRVarId> {
-        let mut out = Vec::with_capacity(n);
-        for (wi, &word) in words.iter().enumerate() {
-            let base = wi * PACK_W;
-            let end = (base + PACK_W).min(n);
-            for bit_j in base..end {
-                let local_j = (bit_j - base) as u8;
-                let v = self.emit(IRStmt::Shuffle {
-                    result_bits: vec![(local_j, word)],
-                    ty: BIT_TID,
-                });
-                out.push(v);
-            }
-        }
-        out
-    }
-
     /// Number of packed words needed for `n` bits.
     fn n_packs(n: usize) -> usize {
-        (n + PACK_W - 1) / PACK_W
+        volar_lir::n_packs(n)
     }
 }
 
@@ -194,6 +159,13 @@ impl StorageEmitter for BlockEmitter {
     fn compose_address(&mut self, bits: &[IRVarId]) -> IRVarId {
         if bits.len() == 1 { return bits[0]; }
         self.emit(IRStmt::Merge { parts: bits.to_vec(), ty: ADDR_TID })
+    }
+    fn compose_pack(&mut self, bits: &[IRVarId]) -> IRVarId {
+        if bits.len() == 1 { return bits[0]; }
+        self.emit(IRStmt::Merge { parts: bits.to_vec(), ty: PACK_TID })
+    }
+    fn extract_bit(&mut self, word: IRVarId, idx: u8) -> IRVarId {
+        self.emit(IRStmt::Shuffle { result_bits: vec![(idx, word)], ty: BIT_TID })
     }
     fn emit_read(&mut self, storage: StorageId, ty: TypeId, addr_bits: &[IRVarId]) -> IRVarId {
         let addr = self.compose_address(addr_bits);
@@ -390,7 +362,7 @@ impl<'m> LowerCtx<'m> {
         let new_sp_bits = new_sp.materialize(&mut em);
 
         // Pack SP bits into words for the jump.
-        let sp_words = em.pack_bits(&new_sp_bits);
+        let sp_words = pack_bits(&mut em, &new_sp_bits, PACK_W);
 
         let entry_target = IRBlockId(info.entry_block as u32);
         self.blocks.push(em.finish(IRTerminator::Jmp {
@@ -411,7 +383,7 @@ impl<'m> LowerCtx<'m> {
         // Unpack return words to bits and return them.
         let ret_word_ids: Vec<IRVarId> = (sp_packs as u32 .. (sp_packs + ret_packs) as u32)
             .map(IRVarId).collect();
-        let ret_bits = exit_em.unpack_words(&ret_word_ids, n_ret_bits);
+        let ret_bits = unpack_words(&mut exit_em, &ret_word_ids, n_ret_bits, PACK_W);
 
         self.blocks.push(exit_em.finish(IRTerminator::Jmp {
             func: IRBlockTargetId::Return, args: ret_bits,
@@ -444,7 +416,7 @@ impl<'m> LowerCtx<'m> {
 
             // Unpack SP from packed words.
             let sp_word_ids: Vec<IRVarId> = (0..sp_packs as u32).map(IRVarId).collect();
-            let sp_bits: Vec<IRVarId> = em.unpack_words(&sp_word_ids, SP_BITS);
+            let sp_bits: Vec<IRVarId> = unpack_words(&mut em, &sp_word_ids, SP_BITS, PACK_W);
 
             let mut frame_sp = StackPtr::new(sp_bits.clone());
             frame_sp.retreat(own_layout.size);
@@ -460,7 +432,7 @@ impl<'m> LowerCtx<'m> {
                 let sig = &self.module.sigs[body.sig.0];
                 let n_params = sig.params.len();
                 let all_words: Vec<IRVarId> = arg_words.into_iter().flat_map(|w| w).collect();
-                let all_bits = em.unpack_words(&all_words, n_params);
+                let all_bits = unpack_words(&mut em, &all_words, n_params, PACK_W);
                 for (pi, &bit) in all_bits.iter().enumerate() {
                     if pi < vaffle_block.params.len() {
                         val_map.insert(vaffle_block.params[pi].0.0, bit);
@@ -520,7 +492,7 @@ impl<'m> LowerCtx<'m> {
                             let spill_bits: Vec<IRVarId> = spill_keys.iter()
                                 .map(|k| val_map[k])
                                 .collect();
-                            let spill_words = current_em.pack_bits(&spill_bits);
+                            let spill_words = pack_bits(&mut current_em, &spill_bits, PACK_W);
                             for (wi, &word) in spill_words.iter().enumerate() {
                                 frame_spill(&mut current_em, &current_frame_sp,
                                     &own_layout, wi as u64, word, PACK_TID);
@@ -530,7 +502,7 @@ impl<'m> LowerCtx<'m> {
                             let arg_bits: Vec<IRVarId> = call_args.iter()
                                 .map(|vid| val_map[&vid.0])
                                 .collect();
-                            let arg_words = current_em.pack_bits(&arg_bits);
+                            let arg_words = pack_bits(&mut current_em, &arg_bits, PACK_W);
                             let arg_word_vecs: Vec<Vec<IRVarId>> = arg_words.iter()
                                 .map(|&w| vec![w])
                                 .collect();
@@ -552,7 +524,7 @@ impl<'m> LowerCtx<'m> {
                             let mut new_sp = StackPtr::new(current_sp_bits.clone());
                             new_sp.advance(cl.size);
                             let new_sp_bits = new_sp.materialize(&mut current_em);
-                            let sp_words = current_em.pack_bits(&new_sp_bits);
+                            let sp_words = pack_bits(&mut current_em, &new_sp_bits, PACK_W);
 
                             let callee_entry = IRBlockId(callee_info.entry_block as u32);
                             let block = current_em.finish(IRTerminator::Jmp {
@@ -573,13 +545,13 @@ impl<'m> LowerCtx<'m> {
 
                             // Unpack SP.
                             let cont_sp_word_ids: Vec<IRVarId> = (0..sp_packs as u32).map(IRVarId).collect();
-                            let cont_sp_bits = cont_em.unpack_words(&cont_sp_word_ids, SP_BITS);
+                            let cont_sp_bits = unpack_words(&mut cont_em, &cont_sp_word_ids, SP_BITS, PACK_W);
 
                             // Unpack return value.
                             if n_ret_bits_orig > 0 {
                                 let ret_word_ids: Vec<IRVarId> = (sp_packs as u32..(sp_packs + ret_packs) as u32)
                                     .map(IRVarId).collect();
-                                let ret_bits = cont_em.unpack_words(&ret_word_ids, n_ret_bits_orig);
+                                let ret_bits = unpack_words(&mut cont_em, &ret_word_ids, n_ret_bits_orig, PACK_W);
                                 val_map.insert(call_vid.0, ret_bits[0]);
                             }
 
@@ -593,7 +565,7 @@ impl<'m> LowerCtx<'m> {
                                     &own_layout, wi as u64, PACK_TID);
                                 reloaded_words.push(w);
                             }
-                            let reloaded_bits = cont_em.unpack_words(&reloaded_words, spill_keys.len());
+                            let reloaded_bits = unpack_words(&mut cont_em, &reloaded_words, spill_keys.len(), PACK_W);
                             for (ki, &key) in spill_keys.iter().enumerate() {
                                 if key == call_vid.0 { continue; }
                                 val_map.insert(key, reloaded_bits[ki]);
@@ -645,7 +617,7 @@ impl<'m> LowerCtx<'m> {
             Terminator::Return { values } => {
                 let ret_bits: Vec<IRVarId> = values.iter().map(|v| s(v)).collect();
                 // Write packed return value.
-                let ret_words = em.pack_bits(&ret_bits);
+                let ret_words = pack_bits(em, &ret_bits, PACK_W);
                 // frame_write_ret expects one value per ret slot;
                 // our layout has ceil(ret_bits/PACK_W) slots of PACK_TID.
                 frame_write_ret(em, frame_sp, own_layout, &ret_words);
@@ -658,7 +630,7 @@ impl<'m> LowerCtx<'m> {
                 let retreated_bits = retreated_sp.materialize(em);
 
                 // Pack SP + ret words for the Dyn jump.
-                let sp_words = em.pack_bits(&retreated_bits);
+                let sp_words = pack_bits(em, &retreated_bits, PACK_W);
                 let mut dyn_args = sp_words;
                 dyn_args.extend(ret_words);
 
@@ -670,7 +642,7 @@ impl<'m> LowerCtx<'m> {
             Terminator::Jump(target) => {
                 let ir_block = IRBlockId((entry_off + target.block.0) as u32);
                 // Pack SP, append unpacked VAFFLE block args (internal).
-                let sp_words = em.pack_bits(sp_bits);
+                let sp_words = pack_bits(em, sp_bits, PACK_W);
                 let mut args: Vec<IRVarId> = sp_words;
                 args.extend(target.args.iter().map(|v| s(v)));
                 IRTerminator::Jmp { func: IRBlockTargetId::Block(ir_block), args }
@@ -678,7 +650,7 @@ impl<'m> LowerCtx<'m> {
             Terminator::IfNonzero { cond, then_target, else_target } => {
                 let then_block = IRBlockId((entry_off + then_target.block.0) as u32);
                 let else_block = IRBlockId((entry_off + else_target.block.0) as u32);
-                let sp_words = em.pack_bits(sp_bits);
+                let sp_words = pack_bits(em, sp_bits, PACK_W);
                 let mut then_args: Vec<IRVarId> = sp_words.clone();
                 then_args.extend(then_target.args.iter().map(|v| s(v)));
                 let mut else_args: Vec<IRVarId> = sp_words;

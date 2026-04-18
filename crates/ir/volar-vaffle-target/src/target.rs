@@ -301,6 +301,12 @@ impl StorageEmitter for VaffleTarget {
         self.fb().emit_value(v)
     }
 
+    fn extract_bit(&mut self, word: ValueId, idx: u8) -> ValueId {
+        let bit_tid = self.bit_tid();
+        let v = Value::Op(Stmt::Shuffle { result_bits: vec![(idx, word)], ty: bit_tid });
+        self.fb().emit_value(v)
+    }
+
     fn emit_read(&mut self, storage: volar_ir_common::StorageId, ty: volar_ir_common::TypeId, addr_bits: &[ValueId]) -> ValueId {
         let addr = self.compose_address(addr_bits);
         let v = Value::Op(Stmt::StorageRead { storage, ty, addr });

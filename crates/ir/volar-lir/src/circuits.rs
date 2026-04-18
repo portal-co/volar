@@ -475,6 +475,86 @@ pub trait StorageEmitter: BitCircuitBuilder {
         ty: TypeId,
         addr_bits: &[Self::Bit],
     );
+
+    /// Compose N bit-circuit vars into a packed word of type `Vec(N, Bit)`.
+    ///
+    /// Semantically identical to [`compose_address`](Self::compose_address)
+    /// but used for general bit-packing (parameters, spill/reload, returns)
+    /// rather than for storage addresses.  Backends may share the
+    /// implementation.
+    ///
+    /// For N = 1, backends may return the single bit directly.
+    fn compose_pack(&mut self, bits: &[Self::Bit]) -> Self::Bit {
+        self.compose_address(bits)
+    }
+
+    /// Extract a single bit from a packed word.
+    ///
+    /// `word` is a `Vec(N, Bit)` value produced by
+    /// [`compose_pack`](Self::compose_pack) or
+    /// [`compose_address`](Self::compose_address).  Returns the bit at
+    /// position `idx` (0-indexed, LSB first) as a `Bit`-typed var.
+    ///
+    /// Backends typically implement this via a `Shuffle` or equivalent
+    /// bit-select instruction.
+    fn extract_bit(&mut self, word: Self::Bit, idx: u8) -> Self::Bit;
+}
+
+// ============================================================================
+// Bit packing — generic over any StorageEmitter
+// ============================================================================
+
+/// Default pack width: 64 bits per packed word.
+///
+/// This controls how many individual `Bit`-typed values are merged into a
+/// single `Vec(PACK_W, Bit)` word at block-parameter boundaries,
+/// spill/reload slots, and frame argument slots.
+pub const PACK_W: usize = 64;
+
+/// Number of packed words needed to hold `n` bits at [`PACK_W`].
+#[inline]
+pub fn n_packs(n: usize) -> usize {
+    (n + PACK_W - 1) / PACK_W
+}
+
+/// Pack `bits` into `ceil(bits.len() / pack_w)` words via
+/// [`StorageEmitter::compose_pack`].
+///
+/// Short final chunks are zero-padded to `pack_w` bits.
+pub fn pack_bits<B: StorageEmitter>(
+    b: &mut B,
+    bits: &[B::Bit],
+    pack_w: usize,
+) -> Vec<B::Bit> {
+    bits.chunks(pack_w)
+        .map(|chunk| {
+            let mut parts: Vec<B::Bit> = chunk.to_vec();
+            while parts.len() < pack_w {
+                parts.push(b.bc_const(false));
+            }
+            b.compose_pack(&parts)
+        })
+        .collect()
+}
+
+/// Unpack `words` back into `n` individual `Bit`-typed vars via
+/// [`StorageEmitter::extract_bit`], discarding padding.
+pub fn unpack_words<B: StorageEmitter>(
+    b: &mut B,
+    words: &[B::Bit],
+    n: usize,
+    pack_w: usize,
+) -> Vec<B::Bit> {
+    let mut out = Vec::with_capacity(n);
+    for (wi, word) in words.iter().enumerate() {
+        let base = wi * pack_w;
+        let end = (base + pack_w).min(n);
+        for bit_j in base..end {
+            let local_j = (bit_j - base) as u8;
+            out.push(b.extract_bit(word.clone(), local_j));
+        }
+    }
+    out
 }
 
 // ============================================================================
