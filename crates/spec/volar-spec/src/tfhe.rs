@@ -149,6 +149,15 @@ pub fn tfhe_trivial_one<const N_LWE: usize>() -> LweCiphertext<N_LWE> {
     LweCiphertext { a: [0u32; N_LWE], b: Q4 }
 }
 
+/// Return a trivial encryption of a cleartext boolean `b`.
+///
+/// Equivalent to `if b { tfhe_trivial_one() } else { tfhe_trivial_zero() }`.
+/// Used to promote public (cleartext) values into the ciphertext domain when
+/// they must be passed to gates that require `LweCiphertext` operands.
+pub fn tfhe_trivial_encrypt<const N_LWE: usize>(b: bool) -> LweCiphertext<N_LWE> {
+    if b { tfhe_trivial_one() } else { tfhe_trivial_zero() }
+}
+
 /// XOR gate — free: `ct_xor = ct_a + ct_b` (componentwise wrapping addition).
 pub fn tfhe_xor<const N_LWE: usize>(
     a: LweCiphertext<N_LWE>,

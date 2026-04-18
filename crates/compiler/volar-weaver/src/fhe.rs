@@ -40,7 +40,7 @@
 
 use alloc::{
     boxed::Box,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     format,
     string::String,
     vec,
@@ -52,7 +52,7 @@ use volar_compiler::{
         ArrayKind, ArrayLength,
         ExternalKind, IrBlock, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump, IrCfgModule,
         IrCfgTerminator, IrExpr, IrFunction, IrGenericParam, IrGenericParamKind, IrLit, IrModule,
-        IrParam, IrPattern, IrStmt, IrTraitBound, IrType, StructKind, TraitKind,
+        IrParam, IrPattern, IrStmt, IrTraitBound, IrType, SpecBinOp, StructKind, TraitKind,
     },
     linkage::LinkageSystem,
 };
@@ -271,6 +271,7 @@ pub trait FheScheme {
         var_map: &BTreeMap<u32, String>,
         type_map: &BTreeMap<u32, IRTypeId>,
         types: &IRTypes,
+        public_set: &PublicSet,
     ) -> Option<IrExpr> {
         None
     }
@@ -1095,6 +1096,43 @@ fn weave_fhe_cfg<S: FheScheme>(
                 IRStmt::Transmute { src, .. } => {
                     public_set.propagate_if_all_public(&[*src], IRVarId(result_ir_vid));
                 }
+                // Single-input ops: public if the source is public.
+                IRStmt::Rol { src, .. }
+                | IRStmt::Ror { src, .. }
+                | IRStmt::Splat { src, .. } => {
+                    public_set.propagate_if_all_public(&[*src], IRVarId(result_ir_vid));
+                }
+                // Multi-input ops: public if ALL inputs are public.
+                IRStmt::Merge { parts, .. } => {
+                    public_set.propagate_if_all_public(parts, IRVarId(result_ir_vid));
+                }
+                IRStmt::Shuffle { result_bits, .. } => {
+                    let vars: Vec<IRVarId> = result_bits.iter().map(|(_, v)| *v).collect();
+                    public_set.propagate_if_all_public(&vars, IRVarId(result_ir_vid));
+                }
+                IRStmt::Poly { coeffs, .. } => {
+                    // Collect the unique set of variables referenced by this polynomial.
+                    let vars: Vec<IRVarId> = coeffs
+                        .keys()
+                        .flat_map(|monomial| monomial.iter().copied())
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect();
+                    // Public if there are no variables (constant polynomial) or all are public.
+                    if vars.is_empty() {
+                        public_set.mark_public(IRVarId(result_ir_vid));
+                    } else {
+                        public_set.propagate_if_all_public(&vars, IRVarId(result_ir_vid));
+                    }
+                }
+                // ActionCall with _pub suffix → result is public cleartext.
+                IRStmt::ActionCall { name, .. } if name.ends_with("_pub") => {
+                    public_set.mark_public(IRVarId(result_ir_vid));
+                }
+                // ActionOutput from a public ActionCall result → also public.
+                IRStmt::ActionOutput { call, .. } => {
+                    public_set.propagate_if_all_public(&[*call], IRVarId(result_ir_vid));
+                }
                 _ => {}
             }
 
@@ -1152,7 +1190,7 @@ fn weave_fhe_cfg<S: FheScheme>(
             }
 
             let init_expr = scheme
-                .emit_ir_stmt(ir_stmt, &var_map, &type_map, types)
+                .emit_ir_stmt(ir_stmt, &var_map, &type_map, types, &public_set)
                 .unwrap_or_else(|| {
                     panic!(
                         "weave_fhe_cfg: scheme cannot handle IRStmt variant in block {} stmt {}: {:?}. \
@@ -1292,10 +1330,22 @@ fn map_ir_terminator<S: FheScheme>(
                 args: args
                     .iter()
                     .map(|id| {
-                        var(var_map
+                        let name = var_map
                             .get(&id.0)
                             .map(|s| s.as_str())
-                            .unwrap_or("__unknown"))
+                            .unwrap_or("__unknown");
+                        // Block params are always LweCiphertext; promote public vars.
+                        if public_set.is_public(*id) {
+                            IrExpr::Call {
+                                func: Box::new(IrExpr::Path {
+                                    segments: vec!["tfhe_trivial_encrypt".into()],
+                                    type_args: vec![],
+                                }),
+                                args: vec![var(name)],
+                            }
+                        } else {
+                            var(name)
+                        }
                     })
                     .collect(),
             };
@@ -1330,10 +1380,22 @@ fn map_ir_terminator<S: FheScheme>(
                         args: args
                             .iter()
                             .map(|id| {
-                                var(var_map
+                                let name = var_map
                                     .get(&id.0)
                                     .map(|s| s.as_str())
-                                    .unwrap_or("__unknown"))
+                                    .unwrap_or("__unknown");
+                                // Block params are always LweCiphertext; promote public vars.
+                                if public_set.is_public(*id) {
+                                    IrExpr::Call {
+                                        func: Box::new(IrExpr::Path {
+                                            segments: vec!["tfhe_trivial_encrypt".into()],
+                                            type_args: vec![],
+                                        }),
+                                        args: vec![var(name)],
+                                    }
+                                } else {
+                                    var(name)
+                                }
                             })
                             .collect(),
                     }
@@ -1382,13 +1444,27 @@ fn map_ir_terminator<S: FheScheme>(
                 let f_name = var_map.get(&f_id.0).cloned()
                     .unwrap_or_else(|| format!("var_{}", f_id.0));
 
+                // Helper: produce an LweCiphertext expr for a var, lifting public ones.
+                let lift_to_ct = |vid: &IRVarId, name: &str| -> IrExpr {
+                    if public_set.is_public(*vid) {
+                        IrExpr::Call {
+                            func: Box::new(IrExpr::Path {
+                                segments: vec!["tfhe_trivial_encrypt".into()],
+                                type_args: vec![],
+                            }),
+                            args: vec![var(name)],
+                        }
+                    } else {
+                        clone_expr(var(name))
+                    }
+                };
+
                 // Determine width of this argument; emit per-bit CMUX if > 1.
                 let width = var_bit_width(*t_id, type_map, types);
                 let merged_name = format!("__cmux_arg_{}_{}", bidx, i);
 
                 if width == 1 {
                     // Single-bit CMUX.
-                    // tfhe_cmux(cond.clone(), t.clone(), f.clone(), bk)
                     let cmux_expr: IrExpr = IrExpr::Call {
                         func: Box::new(IrExpr::Path {
                             segments: vec!["tfhe_cmux".into()],
@@ -1396,8 +1472,8 @@ fn map_ir_terminator<S: FheScheme>(
                         }),
                         args: vec![
                             clone_expr(var(&cond_name)),
-                            clone_expr(var(&t_name)),
-                            clone_expr(var(&f_name)),
+                            lift_to_ct(t_id, &t_name),
+                            lift_to_ct(f_id, &f_name),
                             var("bk"),
                         ],
                     };
@@ -1408,6 +1484,16 @@ fn map_ir_terminator<S: FheScheme>(
                     });
                 } else {
                     // Multi-bit: element-wise CMUX → fixed array.
+                    // Public multi-bit vars are [bool; N]; they can't be indexed as LweCiphertext.
+                    // We only support encrypting single-bit public vars in the CMUX path.
+                    if public_set.is_public(*t_id) || public_set.is_public(*f_id) {
+                        panic!(
+                            "weave_fhe_cfg block {bidx}: cannot CMUX-merge a multi-bit public \
+                             variable (arg {i}). Multi-bit public vars cannot be trivially \
+                             encrypted element-wise in the CMUX path. Restructure the circuit \
+                             to avoid multi-bit public block arguments under encrypted conditions."
+                        );
+                    }
                     let bit_exprs: Vec<IrExpr> = (0..width)
                         .map(|bit| {
                             IrExpr::Call {
@@ -1858,6 +1944,7 @@ impl FheScheme for TfheScheme {
         var_map: &BTreeMap<u32, String>,
         type_map: &BTreeMap<u32, IRTypeId>,
         types: &IRTypes,
+        public_set: &PublicSet,
     ) -> Option<IrExpr> {
         use volar_ir::ir::Stmt;
 
@@ -1909,17 +1996,13 @@ impl FheScheme for TfheScheme {
 
         match stmt {
             // ── Const ─────────────────────────────────────────────────────────
-            // Emit trivial encryptions of each constant bit.
+            // Emit cleartext bool literal(s).  Constants are always public;
+            // they are promoted to LweCiphertext at use sites where needed.
             Stmt::Const(constant, ty_id) => {
-                let width = if let Some(&tid) = type_map.get(&u32::MAX) { // unused; we use ty_id directly
-                    let _ = tid;
-                    ir_type_bit_width(*ty_id, types)
-                } else {
-                    ir_type_bit_width(*ty_id, types)
-                };
+                let width = ir_type_bit_width(*ty_id, types);
                 if width == 1 {
                     let bit = (constant.lo & 1) != 0;
-                    Some(trivial(bit))
+                    Some(IrExpr::Lit(IrLit::Bool(bit)))
                 } else {
                     let elems: Vec<IrExpr> = (0..width)
                         .map(|i| {
@@ -1928,7 +2011,7 @@ impl FheScheme for TfheScheme {
                             } else {
                                 (constant.hi >> (i - 128)) & 1 != 0
                             };
-                            trivial(bit)
+                            IrExpr::Lit(IrLit::Bool(bit))
                         })
                         .collect();
                     Some(IrExpr::FixedArray(elems))
@@ -1944,44 +2027,99 @@ impl FheScheme for TfheScheme {
 
             // ── Poly ──────────────────────────────────────────────────────────
             // GF(2) multivariate polynomial.  Output is always single-bit.
-            // Variables in monomials must be single-bit LweCiphertexts.
+            // Variables in monomials must be single-bit values.
+            //
+            // Three paths:
+            //   1. All variables are public → emit bool arithmetic (BitXor/BitAnd).
+            //   2. Mixed (some public, some encrypted) → lift public vars via
+            //      tfhe_trivial_encrypt, then use TFHE gates.
+            //   3. All encrypted → use TFHE gates directly (original path).
             Stmt::Poly { coeffs, constant } => {
-                // Start accumulator from the degree-0 constant bit.
                 let const_bit = (constant.lo & 1) != 0;
-                let mut acc: IrExpr = trivial(const_bit);
 
-                for (monomial, &coeff) in coeffs.iter() {
-                    if coeff == 0 { continue; }
-                    // Build AND-chain for this monomial.
-                    let mut term: IrExpr<()> = match monomial.as_slice() {
-                        [] => trivial(true), // empty product = 1
-                        [first, rest @ ..] => {
-                            let w = var_bit_width(*first, type_map, types);
-                            if w != 1 {
-                                panic!(
-                                    "emit_ir_stmt: Poly references a {}-bit variable {:?}; \
-                                     only single-bit variables are supported in the CFG path Poly handler.",
-                                    w, first
-                                );
-                            }
-                            let mut t: IrExpr = clone_expr(var(&vname(first)));
-                            for v in rest {
-                                let wv = var_bit_width(*v, type_map, types);
-                                if wv != 1 {
-                                    panic!(
-                                        "emit_ir_stmt: Poly references a {}-bit variable {:?}; \
-                                         only single-bit variables are supported.",
-                                        wv, v
-                                    );
+                // Determine if every variable in the polynomial is public.
+                let all_public = coeffs
+                    .keys()
+                    .flat_map(|m| m.iter())
+                    .all(|v| public_set.is_public(*v));
+
+                if all_public {
+                    // ── All-public: bool arithmetic ──────────────────────────
+                    let mut acc: IrExpr = IrExpr::Lit(IrLit::Bool(const_bit));
+                    for (monomial, &coeff) in coeffs.iter() {
+                        if coeff == 0 { continue; }
+                        let term: IrExpr = match monomial.as_slice() {
+                            [] => IrExpr::Lit(IrLit::Bool(true)), // empty product = 1
+                            [first, rest @ ..] => {
+                                let mut t: IrExpr = clone_expr(var(&vname(first)));
+                                for v in rest {
+                                    t = IrExpr::Binary {
+                                        op: SpecBinOp::BitAnd,
+                                        left: Box::new(t),
+                                        right: Box::new(clone_expr(var(&vname(v)))),
+                                    };
                                 }
-                                t = and2(t, clone_expr(var(&vname(v))));
+                                t
                             }
-                            t
+                        };
+                        acc = IrExpr::Binary {
+                            op: SpecBinOp::BitXor,
+                            left: Box::new(acc),
+                            right: Box::new(term),
+                        };
+                    }
+                    Some(acc)
+                } else {
+                    // ── Mixed or all-encrypted: TFHE gates ───────────────────
+                    // Public variables are promoted via tfhe_trivial_encrypt.
+                    let lift = |vid: &IRVarId| -> IrExpr {
+                        let name = vname(vid);
+                        if public_set.is_public(*vid) {
+                            IrExpr::Call {
+                                func: Box::new(IrExpr::Path {
+                                    segments: vec!["tfhe_trivial_encrypt".into()],
+                                    type_args: vec![],
+                                }),
+                                args: vec![var(&name)],
+                            }
+                        } else {
+                            clone_expr(var(&name))
                         }
                     };
-                    acc = xor2(acc, term);
+
+                    let mut acc: IrExpr = trivial(const_bit);
+                    for (monomial, &coeff) in coeffs.iter() {
+                        if coeff == 0 { continue; }
+                        let term: IrExpr = match monomial.as_slice() {
+                            [] => trivial(true), // empty product = 1
+                            [first, rest @ ..] => {
+                                let w = var_bit_width(*first, type_map, types);
+                                if w != 1 {
+                                    panic!(
+                                        "emit_ir_stmt: Poly references a {}-bit variable {:?}; \
+                                         only single-bit variables are supported in the CFG path Poly handler.",
+                                        w, first
+                                    );
+                                }
+                                let mut t: IrExpr = lift(first);
+                                for v in rest {
+                                    let wv = var_bit_width(*v, type_map, types);
+                                    if wv != 1 {
+                                        panic!(
+                                            "emit_ir_stmt: Poly references a {}-bit variable {:?}; \
+                                             only single-bit variables are supported.",
+                                            wv, v
+                                        );
+                                    }
+                                    t = and2(t, lift(v));
+                                }
+                                t
+                            }
+                        };
+                        acc = xor2(acc, term);
+                    }
+                    Some(acc)
                 }
-                Some(acc)
             }
 
             // ── Rol / Ror ─────────────────────────────────────────────────────
@@ -2063,10 +2201,9 @@ impl FheScheme for TfheScheme {
             }
 
             // ── OracleCall / OracleOutput / ActionCall / ActionOutput / Rng ──
-            // Not yet supported in the CFG TFHE path.  These require either
-            // TFHE-specific circuit structure (e.g. PBS lookup tables) or
-            // side-effecting homomorphic operations that are deferred to future
-            // work.
+            // OracleCall/OracleOutput are not yet supported.
+            // ActionCall/ActionOutput with a `_pub` suffix are supported:
+            // the action is a plain Rust function returning a tuple.
             Stmt::OracleCall { name, .. } => {
                 panic!(
                     "TfheScheme CFG path: OracleCall '{}' is not yet supported. \
@@ -2078,14 +2215,69 @@ impl FheScheme for TfheScheme {
             Stmt::OracleOutput { .. } => {
                 panic!("TfheScheme CFG path: OracleOutput is not yet supported.")
             }
+            Stmt::ActionCall { name, guard, args, fallbacks, .. }
+                if name.ends_with("_pub") =>
+            {
+                // Guard must be a public cleartext bool.
+                if !public_set.is_public(*guard) {
+                    panic!(
+                        "TfheScheme CFG path: ActionCall '{}': guard var {:?} is not public. \
+                         _pub actions require a cleartext guard condition.",
+                        name, guard
+                    );
+                }
+                let guard_name = vname(guard);
+
+                // Build the argument list for the function call.
+                let arg_exprs: Vec<IrExpr> = args
+                    .iter()
+                    .map(|a| clone_expr(var(&vname(a))))
+                    .collect();
+
+                // Function call expression: name(arg0, arg1, ...)
+                // Convention: the function returns a tuple (T0, T1, ...) matching output_tys.
+                let call_expr: IrExpr = IrExpr::Call {
+                    func: Box::new(IrExpr::Path {
+                        segments: vec![name.clone()],
+                        type_args: vec![],
+                    }),
+                    args: arg_exprs,
+                };
+
+                // Fallback tuple: (fb0, fb1, ...).
+                let fallback_tuple: IrExpr = IrExpr::Tuple(
+                    fallbacks.iter().map(|f| clone_expr(var(&vname(f)))).collect(),
+                );
+
+                // Emit: if guard { call } else { fallback_tuple }
+                let then_block = IrBlock {
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    expr: Some(Box::new(call_expr)),
+                };
+                Some(IrExpr::If {
+                    cond: Box::new(var(&guard_name)),
+                    then_branch: then_block,
+                    else_branch: Some(Box::new(fallback_tuple)),
+                })
+            }
             Stmt::ActionCall { name, .. } => {
                 panic!(
-                    "TfheScheme CFG path: ActionCall '{}' is not yet supported.",
+                    "TfheScheme CFG path: ActionCall '{}' is not yet supported. \
+                     Only actions whose name ends with '_pub' are handled in the CFG path.",
                     name
                 )
             }
+            Stmt::ActionOutput { call, idx, .. } if public_set.is_public(*call) => {
+                // Project field `idx` from the tuple produced by the ActionCall.
+                let call_name = vname(call);
+                Some(IrExpr::Field {
+                    base: Box::new(var(&call_name)),
+                    field: format!("{}", idx),
+                })
+            }
             Stmt::ActionOutput { .. } => {
-                panic!("TfheScheme CFG path: ActionOutput is not yet supported.")
+                panic!("TfheScheme CFG path: ActionOutput from a non-public ActionCall is not yet supported.")
             }
             Stmt::Rng { name, .. } => {
                 panic!(
@@ -2265,7 +2457,8 @@ mod tests {
         // `code` starts with `#![allow(...)]` (from self_contained=true); the
         // use statements must come after that inner attribute.
         let uses = "use volar_spec::tfhe::{BootstrappingKey, LweCiphertext, \
-                    tfhe_gate_bootstrapping_and, tfhe_xor, tfhe_trivial_zero, tfhe_cmux};\n";
+                    tfhe_gate_bootstrapping_and, tfhe_xor, tfhe_trivial_zero, \
+                    tfhe_trivial_one, tfhe_trivial_encrypt, tfhe_cmux};\n";
         let with_imports = if let Some(newline) = code.find('\n') {
             let (head, tail) = code.split_at(newline + 1);
             format!("{head}{uses}{tail}")
@@ -2331,7 +2524,172 @@ mod tests {
         run_compile_check_tfhe_cfg(&code, "tfhe_cfg_enc_cmux");
     }
 
-    /// Build a flat circuit with a 2-cell storage (1-bit values).
+    #[test]
+    fn test_tfhe_cfg_const_emits_bool_literal() {
+        // Circuit: single block, params=[], var_0 = Const(1, Bit), Return var_0.
+        // Expected: generated code contains `true` or `false` as bool literal,
+        // NOT `tfhe_trivial_one()` or `tfhe_trivial_zero()`.
+        let mut types = IRTypes::new();
+        let bit = types.intern(IRType::Primitive(PrimType::Bit));
+        let one = Constant { hi: 0, lo: 1 };
+        let block = IRBlock {
+            params: vec![],
+            stmts: vec![IRStmt_::Const(one, bit)],
+            stmt_provs: vec![()],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: vec![IRVarId(0)],
+            },
+        };
+        let circuit = IRBlocks::new(vec![block]);
+        let scheme = TfheScheme::cfg();
+        let output = weave_fhe(&circuit, &types, &scheme, "const_bool", None, None);
+        let module = match output {
+            FheOutput::Cfg(m) => m,
+            _ => panic!("expected FheOutput::Cfg"),
+        };
+        let code = print_fhe_cfg_module(&module, true);
+        assert!(
+            code.contains("true") || code.contains("false"),
+            "Const should emit a bool literal:\n{code}"
+        );
+        assert!(
+            !code.contains("tfhe_trivial_one") && !code.contains("tfhe_trivial_zero"),
+            "Const should NOT emit trivial encryption:\n{code}"
+        );
+    }
+
+    #[test]
+    fn test_tfhe_cfg_all_public_poly_emits_bool_arithmetic() {
+        // Circuit: block, params=[], c0 = Const(1), c1 = Const(0),
+        // var_2 = Poly(c0 * c1), Return var_2.
+        // All vars are public → generated code uses `^` / `&`, not tfhe_xor/and.
+        let mut types = IRTypes::new();
+        let bit = types.intern(IRType::Primitive(PrimType::Bit));
+        let one = Constant { hi: 0, lo: 1 };
+        let zero = Constant { hi: 0, lo: 0 };
+        let mut coeffs = BTreeMap::new();
+        // monomial: var_0 AND var_1 (coefficient 1)
+        coeffs.insert(vec![IRVarId(0), IRVarId(1)], 1u8);
+        let block = IRBlock {
+            params: vec![],
+            stmts: vec![
+                IRStmt_::Const(one,  bit), // var_0 = 1 (public)
+                IRStmt_::Const(zero, bit), // var_1 = 0 (public)
+                IRStmt_::Poly { coeffs, constant: Constant { hi: 0, lo: 0 } },
+            ],
+            stmt_provs: vec![(), (), ()],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: vec![IRVarId(2)],
+            },
+        };
+        let circuit = IRBlocks::new(vec![block]);
+        let scheme = TfheScheme::cfg();
+        let output = weave_fhe(&circuit, &types, &scheme, "pub_poly", None, None);
+        let module = match output {
+            FheOutput::Cfg(m) => m,
+            _ => panic!("expected FheOutput::Cfg"),
+        };
+        let code = print_fhe_cfg_module(&module, true);
+        assert!(
+            !code.contains("tfhe_xor") && !code.contains("tfhe_gate_bootstrapping_and"),
+            "all-public Poly should NOT use TFHE gates:\n{code}"
+        );
+        assert!(
+            !code.contains("tfhe_trivial_one") && !code.contains("tfhe_trivial_zero"),
+            "all-public Poly should NOT use trivial encryptions:\n{code}"
+        );
+    }
+
+    #[test]
+    fn test_tfhe_cfg_mixed_poly_wraps_public_in_trivial_encrypt() {
+        // Circuit: params=[Bit], var_1 = Const(1, Bit), var_2 = Poly(input_0 * var_1).
+        // input_0 is encrypted; var_1 is public → var_1 must be wrapped in
+        // tfhe_trivial_encrypt before the AND gate.
+        let mut types = IRTypes::new();
+        let bit = types.intern(IRType::Primitive(PrimType::Bit));
+        let one = Constant { hi: 0, lo: 1 };
+        let mut coeffs = BTreeMap::new();
+        // monomial: var_0 (encrypted input) AND var_1 (public const)
+        coeffs.insert(vec![IRVarId(0), IRVarId(1)], 1u8);
+        let block = IRBlock {
+            params: vec![bit],
+            stmts: vec![
+                IRStmt_::Const(one, bit), // var_1 = true (public)
+                IRStmt_::Poly { coeffs, constant: Constant { hi: 0, lo: 0 } },
+            ],
+            stmt_provs: vec![(), ()],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: vec![IRVarId(2)],
+            },
+        };
+        let circuit = IRBlocks::new(vec![block]);
+        let scheme = TfheScheme::cfg();
+        let output = weave_fhe(&circuit, &types, &scheme, "mixed_poly", None, None);
+        let module = match output {
+            FheOutput::Cfg(m) => m,
+            _ => panic!("expected FheOutput::Cfg"),
+        };
+        let code = print_fhe_cfg_module(&module, true);
+        assert!(
+            code.contains("tfhe_trivial_encrypt"),
+            "mixed Poly should wrap public var with tfhe_trivial_encrypt:\n{code}"
+        );
+        assert!(
+            code.contains("tfhe_gate_bootstrapping_and"),
+            "mixed Poly should use TFHE AND gate:\n{code}"
+        );
+        run_compile_check_tfhe_cfg(&code, "tfhe_cfg_mixed_poly");
+    }
+
+    #[test]
+    fn test_tfhe_cfg_public_var_promoted_at_jmp_site() {
+        // Two-block circuit where Block 0 passes a Const (public) as a jump arg.
+        // Block 1's param is LweCiphertext, so the public value must be promoted
+        // via tfhe_trivial_encrypt at the jump site.
+        //
+        // Block 0: params=[Bit]
+        //   var_1 = Const(0, Bit)  // public
+        //   Jmp → Block(1)[var_1]
+        // Block 1: params=[Bit]
+        //   Return blk1_p0
+        let mut types = IRTypes::new();
+        let bit = types.intern(IRType::Primitive(PrimType::Bit));
+        let zero = Constant { hi: 0, lo: 0 };
+        let block0 = IRBlock {
+            params: vec![bit],
+            stmts: vec![IRStmt_::Const(zero, bit)],
+            stmt_provs: vec![()],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Block(IRBlockId(1)),
+                args: vec![IRVarId(1)], // public Const passed as block arg
+            },
+        };
+        let block1 = IRBlock {
+            params: vec![bit],
+            stmts: vec![],
+            stmt_provs: vec![],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: vec![IRVarId(0)],
+            },
+        };
+        let circuit = IRBlocks::new(vec![block0, block1]);
+        let scheme = TfheScheme::cfg();
+        let output = weave_fhe(&circuit, &types, &scheme, "pub_jmp_promote", None, None);
+        let module = match output {
+            FheOutput::Cfg(m) => m,
+            _ => panic!("expected FheOutput::Cfg"),
+        };
+        let code = print_fhe_cfg_module(&module, true);
+        assert!(
+            code.contains("tfhe_trivial_encrypt"),
+            "public var passed to block jump should be promoted via tfhe_trivial_encrypt:\n{code}"
+        );
+        run_compile_check_tfhe_cfg(&code, "tfhe_cfg_pub_jmp_promote");
+    }
     ///
     /// ```text
     /// params: 2 (input_0, input_1)
