@@ -153,7 +153,7 @@ fn eval_ir_stmt(stmt: &IRStmt, types: &IRTypes, vars: &BTreeMap<u32, IrValue>) -
             let dst_w = bit_width(*dst_ty, types);
             transmute_bits(&src_val, dst_w)
         }
-        Stmt::Poly { coeffs, constant } => {
+        Stmt::Poly { coeffs, constant, .. } => {
             // Determine the output width from the first monomial's first var,
             // or from a constant-only poly (width = 1 bit as default).
             let width = if let Some((key, _)) = coeffs.iter().next() {
@@ -461,6 +461,7 @@ mod tests {
         let mut coeffs = std::collections::BTreeMap::new();
         coeffs.insert(vec![v0, v1], 1u8);
         let stmt = Stmt::Poly {
+            ty: bit,
             coeffs,
             constant: zero_const(),
         };
@@ -488,6 +489,7 @@ mod tests {
         coeffs.insert(vec![v0], 1u8);
         coeffs.insert(vec![v1], 1u8);
         let stmt = Stmt::Poly {
+            ty: bit,
             coeffs,
             constant: zero_const(),
         };

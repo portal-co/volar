@@ -257,7 +257,7 @@ impl<P: Clone + Default> VolarIrTarget<P> {
         let mut coeffs = BTreeMap::new();
         coeffs.insert(vec![a], 1u8);
         coeffs.insert(vec![b], 1u8);
-        self.emit(IRStmt::Poly { coeffs, constant: Constant { hi: 0, lo: 0 } })
+        self.emit(IRStmt::Poly { ty: self.bit_tid, coeffs, constant: Constant { hi: 0, lo: 0 } })
     }
 
     fn and_bit(&mut self, a: IRVarId, b: IRVarId) -> IRVarId {
@@ -268,13 +268,13 @@ impl<P: Clone + Default> VolarIrTarget<P> {
         key.sort();
         let mut coeffs = BTreeMap::new();
         coeffs.insert(key, 1u8);
-        self.emit(IRStmt::Poly { coeffs, constant: Constant { hi: 0, lo: 0 } })
+        self.emit(IRStmt::Poly { ty: self.bit_tid, coeffs, constant: Constant { hi: 0, lo: 0 } })
     }
 
     fn not_bit(&mut self, a: IRVarId) -> IRVarId {
         let mut coeffs = BTreeMap::new();
         coeffs.insert(vec![a], 1u8);
-        self.emit(IRStmt::Poly { coeffs, constant: Constant { hi: 0, lo: 1 } })
+        self.emit(IRStmt::Poly { ty: self.bit_tid, coeffs, constant: Constant { hi: 0, lo: 1 } })
     }
 
     fn or_bit(&mut self, a: IRVarId, b: IRVarId) -> IRVarId {
@@ -302,7 +302,7 @@ impl<P: Clone + Default> VolarIrTarget<P> {
         coeffs.insert(ab, 1u8);
         coeffs.insert(ac, 1u8);
         coeffs.insert(bc, 1u8);
-        self.emit(IRStmt::Poly { coeffs, constant: Constant { hi: 0, lo: 0 } })
+        self.emit(IRStmt::Poly { ty: self.bit_tid, coeffs, constant: Constant { hi: 0, lo: 0 } })
     }
 
     /// MUX: `select(cond, a, b) = AND(cond, XOR(a,b)) XOR b`.
@@ -725,6 +725,7 @@ impl<P: Clone + Default> BitCircuitBuilder for VolarIrTarget<P> {
         constant: u128,
     ) -> IRVarId {
         self.emit(IRStmt::Poly {
+            ty: self.bit_tid,
             coeffs,
             constant: Constant { hi: 0, lo: constant },
         })
@@ -854,7 +855,8 @@ fn subst_stmt(stmt: &IRStmt, var_map: &[IRVarId]) -> IRStmt {
     let s = |id: &IRVarId| var_map[id.0 as usize]; // IRVarId: Copy
     match stmt {
         IRStmt::Const(c, ty) => IRStmt::Const(*c, ty.clone()),
-        IRStmt::Poly { coeffs, constant } => IRStmt::Poly {
+        IRStmt::Poly { ty, coeffs, constant } => IRStmt::Poly {
+            ty: *ty,
             coeffs: coeffs
                 .iter()
                 .map(|(vars, &coeff)| {
@@ -1639,7 +1641,7 @@ mod tests {
                 {
                     let mut coeffs = std::collections::BTreeMap::new();
                     coeffs.insert(std::vec![IRVarId(0)], 1u8);
-                    IRStmt::Poly { coeffs, constant: Constant { hi: 0, lo: 1 } }
+                    IRStmt::Poly { ty: bit_tid, coeffs, constant: Constant { hi: 0, lo: 1 } }
                 },
             ],
             stmt_provs: std::vec![()],

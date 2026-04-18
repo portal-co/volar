@@ -1997,7 +1997,7 @@ impl VoleIrCtx {
                     }
                 }
 
-                Stmt::Poly { coeffs, constant } => {
+                Stmt::Poly { coeffs, constant, .. } => {
                     self.emit_poly(&out_name, coeffs, constant);
                     self.wires.insert(var_id, WireRepr::Scalar(out_name));
                 }
@@ -2548,7 +2548,7 @@ mod tests {
         let block = CirBlock {
             params: std::vec![bit, bit],
             stmts: std::vec![
-                Stmt::Poly { coeffs, constant: CirConst { hi: 0, lo: 0 } },
+                Stmt::Poly { ty: bit, coeffs, constant: CirConst { hi: 0, lo: 0 } },
             ],
             stmt_provs: std::vec![()],
             terminator: IRTerminator::Jmp {

@@ -43,6 +43,9 @@ implementation focus (VOLE-based ZK, garbled circuits, compiler toolchain).
   - [x] `IrType::Array { FixedArray }` → `[T; n]` (was `[T; typenum::Un]`)
 - [x] compiler: compound assignment parsing (`^=`, `<<=`, `>>=` → `AssignOp`)
 - [x] compiler: `u128` as primitive type
+- [x] IR lowering config (`volar-ir-config` crate) — `IrLoweringConfig` struct with word/pointer width, configurable per lowering target; `lower_ir` keeps backward-compatible default
+- [x] `Poly` statement generalized: `ty: TypeId` field carries the output type (Bit for GF(2) gate, or any bitvector/field element); all construction and match sites updated
+- [x] FHE CFG weaver: typed block parameters — `wire_type_for_ir` / `public_type_for_ir` trait methods replace hardcoded `wire_ty`; return type derived from circuit structure; `promote_to_wire` extended with `width` argument for multi-bit public→encrypted promotion
 
 ## In Progress
 
@@ -77,6 +80,9 @@ implementation focus (VOLE-based ZK, garbled circuits, compiler toolchain).
   - [ ] ABI optimization in `lower_lir.rs`: when `stack_alloc_ext()` is `Some`, pass large struct arguments by pointer instead of flat scalar expansion
 - [ ] `StorageRead` / `StorageWrite` in `lower_ir`
 - [ ] multi-element vector types in `IRBlocks` lowering
+  - [x] `IrType::Vec(N, T)` bit-width computation via `ir_type_bits` helper (fixes Splat and Poly lowering in LIR)
+  - [ ] `PrimType::_128` / `PrimType::_256` multi-word primitive support in LIR (currently `unimplemented!`)
+  - [ ] field element types (`PrimType::AES8`, `PrimType::Galois64`) in FHE CFG weaving (deferred)
 - [ ] `IterLoop` over non-array collections
 
 Prefer dynamically creating subgoals to handling entire goals at a time; AI agents, add this to files and memory.

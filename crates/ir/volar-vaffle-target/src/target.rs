@@ -246,7 +246,9 @@ impl BitCircuitBuilder for VaffleTarget {
     }
 
     fn bc_poly(&mut self, coeffs: BTreeMap<Vec<ValueId>, u8>, constant: u128) -> ValueId {
+        let bit_tid = self.bit_tid();
         let v = Value::Op(Stmt::Poly {
+            ty: bit_tid,
             coeffs,
             constant: Constant { hi: 0, lo: constant },
         });

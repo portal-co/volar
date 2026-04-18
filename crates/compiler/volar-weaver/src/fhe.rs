@@ -161,6 +161,44 @@ pub trait FheScheme {
         self.wire_type()
     }
 
+    /// The encrypted Rust type for a circuit-level [`IRTypeId`].
+    ///
+    /// - `Bit` → `wire_type()` (single ciphertext).
+    /// - `Vec(N, Bit)` or packed bitvector of width W → `[wire_type(); W]`.
+    /// - Field elements (`AES8`, `Galois64`) → unsupported; panics.
+    ///
+    /// Default implementation uses `ir_type_bit_width` to compute W.
+    fn wire_type_for_ir(&self, ir_ty: IRTypeId, types: &IRTypes) -> IrType {
+        let w = ir_type_bit_width(ir_ty, types);
+        if w == 1 {
+            self.wire_type()
+        } else {
+            IrType::Array {
+                kind: ArrayKind::FixedArray,
+                elem: Box::new(self.wire_type()),
+                len: ArrayLength::Const(w),
+            }
+        }
+    }
+
+    /// The cleartext (public) Rust type for a circuit-level [`IRTypeId`].
+    ///
+    /// - `Bit` → `bool`.
+    /// - `Vec(N, Bit)` or packed bitvector of width W → `[bool; W]`.
+    fn public_type_for_ir(&self, ir_ty: IRTypeId, types: &IRTypes) -> IrType {
+        let bool_ty = IrType::Primitive(PrimitiveType::Bool);
+        let w = ir_type_bit_width(ir_ty, types);
+        if w == 1 {
+            bool_ty
+        } else {
+            IrType::Array {
+                kind: ArrayKind::FixedArray,
+                elem: Box::new(bool_ty),
+                len: ArrayLength::Const(w),
+            }
+        }
+    }
+
     /// Additional function parameters prepended before the circuit inputs.
     ///
     /// Examples: public key (`pk`), bootstrapping key (`bk`), global secret Δ.
@@ -350,9 +388,15 @@ pub trait FheScheme {
     /// `bool`) must be passed to a position that expects an encrypted wire
     /// (e.g., `LweCiphertext<N_LWE>`).
     ///
+    /// `width` is the number of wire bits the value represents:
+    /// - `width == 1`: the expression has type `bool`; wrap it in a single
+    ///   encryption call.
+    /// - `width > 1`: the expression has type `[bool; width]`; wrap each
+    ///   element individually to produce `[wire_type(); width]`.
+    ///
     /// Default: returns `expr` unchanged (identity — for schemes where public
     /// values already have the wire type, or where no promotion is needed).
-    fn promote_to_wire<Q: Clone + Default>(&self, expr: IrExpr<Q>) -> IrExpr<Q> {
+    fn promote_to_wire<Q: Clone + Default>(&self, expr: IrExpr<Q>, _width: usize) -> IrExpr<Q> {
         expr
     }
 }
@@ -1092,8 +1136,10 @@ fn ir_stmt_output_ty(stmt: &IRStmt) -> Option<IRTypeId> {
         Stmt::OracleOutput { ty, .. }
         | Stmt::ActionOutput { ty, .. } => Some(*ty),
         Stmt::Rng { ty, .. }         => Some(*ty),
-        // Poly output is always a single bit; StorageWrite result is a dummy zero.
-        Stmt::Poly { .. } | Stmt::StorageWrite { .. } => None,
+        // Poly output type is now carried in the ty field.
+        Stmt::Poly { ty, .. } => Some(*ty),
+        // StorageWrite result is a dummy zero (no typed output).
+        Stmt::StorageWrite { .. } => None,
     }
 }
 
@@ -1279,6 +1325,46 @@ fn analyze_cfg_publicity<S: FheScheme>(
     CfgPublicityAnalysis { block_param_public }
 }
 
+/// Compute the emitted return type for a CFG function.
+///
+/// Scans all blocks for a `Return` terminator and derives the output type
+/// from the returned variable types.  All return values are assumed to be
+/// lifted to the wire type (public values are promoted before returning).
+///
+/// Returns `None` (→ `()`) if no `Return` terminator is found.
+fn cfg_return_type<S: FheScheme>(blocks: &IRBlocks, types: &IRTypes, scheme: &S) -> Option<IrType> {
+    use volar_ir::ir::IRTerminator;
+    /// Look up the `IRTypeId` of a variable by its index within a block.
+    fn block_var_ty(block: &volar_ir::ir::IRBlock, var_id: IRVarId) -> Option<IRTypeId> {
+        let idx = var_id.0 as usize;
+        if idx < block.params.len() {
+            return Some(block.params[idx]);
+        }
+        let stmt_idx = idx - block.params.len();
+        block.stmts.get(stmt_idx).and_then(ir_stmt_output_ty)
+    }
+
+    for block in &blocks.blocks {
+        let ret_args = match &block.terminator {
+            IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+            _ => continue,
+        };
+        if ret_args.is_empty() {
+            return Some(IrType::Tuple(vec![]));
+        }
+        if ret_args.len() == 1 {
+            let ty_id = block_var_ty(block, ret_args[0])?;
+            return Some(scheme.wire_type_for_ir(ty_id, types));
+        }
+        let tys: Vec<IrType> = ret_args
+            .iter()
+            .filter_map(|&v| block_var_ty(block, v).map(|t| scheme.wire_type_for_ir(t, types)))
+            .collect();
+        return Some(IrType::Tuple(tys));
+    }
+    None
+}
+
 fn weave_fhe_cfg<S: FheScheme>(
     blocks: &IRBlocks,
     types: &IRTypes,
@@ -1305,7 +1391,7 @@ fn weave_fhe_cfg<S: FheScheme>(
             .params
             .iter()
             .enumerate()
-            .map(|(pidx, _ty)| {
+            .map(|(pidx, ty_id)| {
                 let is_pub = analysis.block_param_public
                     .get(bidx)
                     .and_then(|v| v.get(pidx))
@@ -1313,7 +1399,11 @@ fn weave_fhe_cfg<S: FheScheme>(
                     .unwrap_or(false);
                 IrParam {
                     name: format!("blk{}_p{}", bidx, pidx),
-                    ty: if is_pub { bool_ty.clone() } else { wire_ty.clone() },
+                    ty: if is_pub {
+                        scheme.public_type_for_ir(*ty_id, types)
+                    } else {
+                        scheme.wire_type_for_ir(*ty_id, types)
+                    },
                 }
             })
             .collect();
@@ -1462,14 +1552,14 @@ fn weave_fhe_cfg<S: FheScheme>(
         });
     }
 
-    let return_type = Some(wire_ty.clone());
+    let return_type = cfg_return_type(blocks, types, scheme);
 
     let mut func_params: Vec<IrParam> = scheme.extra_params();
     if let Some(entry) = blocks.blocks.first() {
-        for i in 0..entry.params.len() {
+        for (i, ty_id) in entry.params.iter().enumerate() {
             func_params.push(IrParam {
                 name: format!("input_{}", i),
-                ty: wire_ty.clone(),
+                ty: scheme.wire_type_for_ir(*ty_id, types),
             });
         }
     }
@@ -1561,7 +1651,8 @@ fn map_ir_terminator<S: FheScheme>(
             .unwrap_or(false);
         if src_public && !tgt_public {
             // Target expects encrypted wire; promote the cleartext value.
-            scheme.promote_to_wire(var(&name))
+            let width = var_bit_width(*id, type_map, types);
+            scheme.promote_to_wire(var(&name), width)
         } else {
             var(&name)
         }
@@ -1569,13 +1660,14 @@ fn map_ir_terminator<S: FheScheme>(
 
     match term {
         IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => {
-            // Function return type is wire_ty (encrypted). Promote public vars.
+            // Function return type is wire type (encrypted). Promote public vars.
             let output_exprs: Vec<IrExpr> = args
                 .iter()
                 .map(|id| {
                     let name = resolve(id);
                     if public_set.is_public(*id) {
-                        scheme.promote_to_wire(var(&name))
+                        let width = var_bit_width(*id, type_map, types);
+                        scheme.promote_to_wire(var(&name), width)
                     } else {
                         var(&name)
                     }
@@ -1675,9 +1767,10 @@ fn map_ir_terminator<S: FheScheme>(
                     .unwrap_or_else(|| format!("var_{}", f_id.0));
 
                 // Helper: produce an encrypted wire expr for a var, lifting public ones.
+                // In the single-bit CMUX path this is always width=1.
                 let lift_to_ct = |vid: &IRVarId, name: &str| -> IrExpr {
                     if public_set.is_public(*vid) {
-                        scheme.promote_to_wire(var(name))
+                        scheme.promote_to_wire(var(name), 1)
                     } else {
                         clone_expr(var(name))
                     }
@@ -2137,14 +2230,31 @@ impl FheScheme for TfheScheme {
         None
     }
 
-    fn promote_to_wire<Q: Clone + Default>(&self, expr: IrExpr<Q>) -> IrExpr<Q> {
-        // Lift a cleartext bool to LweCiphertext<N_LWE>.
-        IrExpr::Call {
-            func: Box::new(IrExpr::Path {
-                segments: vec!["tfhe_trivial_encrypt".into()],
-                type_args: vec![],
-            }),
-            args: vec![expr],
+    fn promote_to_wire<Q: Clone + Default>(&self, expr: IrExpr<Q>, width: usize) -> IrExpr<Q> {
+        // Lift a cleartext value to LweCiphertext<N_LWE>.
+        let encrypt = |e: IrExpr<Q>| -> IrExpr<Q> {
+            IrExpr::Call {
+                func: Box::new(IrExpr::Path {
+                    segments: vec!["tfhe_trivial_encrypt".into()],
+                    type_args: vec![],
+                }),
+                args: vec![e],
+            }
+        };
+        if width <= 1 {
+            encrypt(expr)
+        } else {
+            // [bool; width] → [LweCiphertext; width]: encrypt each element.
+            IrExpr::FixedArray(
+                (0..width)
+                    .map(|bit| {
+                        encrypt(IrExpr::Index {
+                            base: Box::new(expr.clone()),
+                            index: Box::new(IrExpr::Lit(IrLit::Int(bit as i128))),
+                        })
+                    })
+                    .collect(),
+            )
         }
     }
 
@@ -2296,7 +2406,7 @@ impl FheScheme for TfheScheme {
             //   2. Mixed (some public, some encrypted) → lift public vars via
             //      tfhe_trivial_encrypt, then use TFHE gates.
             //   3. All encrypted → use TFHE gates directly (original path).
-            Stmt::Poly { coeffs, constant } => {
+            Stmt::Poly { coeffs, constant, .. } => {
                 let const_bit = (constant.lo & 1) != 0;
 
                 // Determine if every variable in the polynomial is public.
@@ -2618,7 +2728,7 @@ mod tests {
         coeffs.insert(vec![IRVarId(0), IRVarId(1)], 1u8);
         let block = IRBlock {
             params: vec![bit, bit],
-            stmts: vec![IRStmt_::Poly { coeffs, constant: Constant { hi: 0, lo: 0 } }],
+            stmts: vec![IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } }],
             stmt_provs: vec![()],
             terminator: IRTerminator::Jmp {
                 func: IRBlockTargetId::Return,
@@ -2832,7 +2942,7 @@ mod tests {
             stmts: vec![
                 IRStmt_::Const(one,  bit), // var_0 = 1 (public)
                 IRStmt_::Const(zero, bit), // var_1 = 0 (public)
-                IRStmt_::Poly { coeffs, constant: Constant { hi: 0, lo: 0 } },
+                IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } },
             ],
             stmt_provs: vec![(), (), ()],
             terminator: IRTerminator::Jmp {
@@ -2873,7 +2983,7 @@ mod tests {
             params: vec![bit],
             stmts: vec![
                 IRStmt_::Const(one, bit), // var_1 = true (public)
-                IRStmt_::Poly { coeffs, constant: Constant { hi: 0, lo: 0 } },
+                IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } },
             ],
             stmt_provs: vec![(), ()],
             terminator: IRTerminator::Jmp {

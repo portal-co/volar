@@ -256,12 +256,23 @@ pub enum Stmt<Var, Addr = Var> {
         src_ty: TypeId,
         dst_ty: TypeId,
     },
-    /// GF(2) multivariate polynomial over variables.
+    /// Multivariate polynomial over variables.
     ///
     /// Each `(monomial, coeff)` contributes `coeff * product(monomial)` to
     /// the sum; `constant` is the degree-0 term.  Monomial keys must be
-    /// sorted.  All arithmetic is mod 2.
+    /// sorted.
+    ///
+    /// # Type semantics
+    /// * If `ty` resolves to `Bit`: all variables must be `Bit`; arithmetic
+    ///   is GF(2) (mod 2 on every coefficient bit).
+    /// * If `ty` resolves to a bitvector or field element `T`: at most one
+    ///   variable across all monomials may have type `T` (the "non-Bit slot");
+    ///   all other variables in that monomial must be `Bit` and act as GF(2)
+    ///   selectors.  The constant term occupies the lowest `bits(T)` bits of
+    ///   `constant`.  Mixing two distinct non-GF(2) field types is prohibited.
     Poly {
+        /// Output (and dominant operand) type.
+        ty: TypeId,
         coeffs: BTreeMap<Vec<Var>, u8>,
         constant: Constant,
     },

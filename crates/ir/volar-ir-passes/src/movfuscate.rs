@@ -670,7 +670,8 @@ fn subst_ir(stmt: &IRStmt, var_map: &[u32]) -> IRStmt {
         IRStmt::Transmute { src, src_ty, dst_ty } => {
             IRStmt::Transmute { src: s(src), src_ty: src_ty.clone(), dst_ty: dst_ty.clone() }
         }
-        IRStmt::Poly { coeffs, constant } => IRStmt::Poly {
+        IRStmt::Poly { ty, coeffs, constant } => IRStmt::Poly {
+            ty: *ty,
             coeffs: coeffs
                 .iter()
                 .map(|(vars, &coeff)| {
@@ -960,7 +961,7 @@ impl<P: Clone + Default> IrCtx<P> {
             &self.bit_type_id,
         );
         self.push_typed(
-            IRStmt::Poly { coeffs, constant: Constant { hi: 0, lo: constant_lo } },
+            IRStmt::Poly { ty: result_type, coeffs, constant: Constant { hi: 0, lo: constant_lo } },
             result_type,
         )
     }
@@ -1164,7 +1165,7 @@ impl<P: Clone + Default> MovfuscCtx for IrCtx<P> {
         coeffs.insert(key, 1u8);
         let t = ty.clone();
         self.push_typed(
-            IRStmt::Poly { coeffs, constant: Constant { hi: 0, lo: 0 } },
+            IRStmt::Poly { ty: t, coeffs, constant: Constant { hi: 0, lo: 0 } },
             t,
         )
     }
@@ -1181,7 +1182,7 @@ impl<P: Clone + Default> MovfuscCtx for IrCtx<P> {
         coeffs.insert(vec![IRVarId(b)], 1);
         let t = ty.clone();
         self.push_typed(
-            IRStmt::Poly { coeffs, constant: Constant { hi: 0, lo: 0 } },
+            IRStmt::Poly { ty: t, coeffs, constant: Constant { hi: 0, lo: 0 } },
             t,
         )
     }
@@ -2105,6 +2106,7 @@ mod tests {
             IRBlock {
                 params: std::vec![g8.clone()],
                 stmts: std::vec![IRStmt::Poly {
+                    ty: g8,
                     coeffs,
                     constant: Constant { hi: 0, lo: 0 },
                 }],

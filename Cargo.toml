@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/spec/volar-spec",
+    "crates/ir/volar-ir-config",
     "crates/spec/volar-primitives",
     "crates/spec/volar-common",
     "crates/spec/volar-dyn",
@@ -29,6 +30,7 @@ license = "CC0-1.0 AND MIT AND Apache-2.0"
 description = "VOLE-in-the-head computations for a cloud world"
 repository = "https://github.com/portal-co/volar.git"
 [workspace.dependencies]
+volar-ir-config = {path="crates/ir/volar-ir-config", version = "0.1.0"}
 volar-ir = {path="crates/ir/volar-ir", version = "0.1.0"}
 volar-ir-passes = {path="crates/ir/volar-ir-passes", version = "0.1.0"}
 volar-lir = {path="crates/ir/volar-lir", version = "0.1.0"}

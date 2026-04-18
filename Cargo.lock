@@ -949,6 +949,10 @@ name = "volar-ir-common"
 version = "0.1.0"
 
 [[package]]
+name = "volar-ir-config"
+version = "0.1.0"
+
+[[package]]
 name = "volar-ir-lir-target"
 version = "0.1.0"
 dependencies = [
@@ -965,6 +969,7 @@ version = "0.1.0"
 dependencies = [
  "volar-ir",
  "volar-ir-common",
+ "volar-ir-config",
  "volar-lir",
  "volar-provenance",
 ]
@@ -1258,8 +1263,124 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[patch.unused]]
+name = "dex-bytecode"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "osctx"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-dex"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-link-core"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-linker"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-memory"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-mips"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-module-builder"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-module-target"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-object"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-ordering"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-powerpc"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-reach"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-riscv"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-schedule"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-traps"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-wasm-helpers"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-x86_64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "wasm-layout"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "yecta"
+version = "0.1.0"
+
+[[patch.unused]]
 name = "pit-core"
 version = "0.5.0-alpha.1"
+
+[[patch.unused]]
+name = "portal-solutions-asm-aarch64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-jvm"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-regalloc"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-riscv64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-semantics"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-x86-64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-x86-64-shim"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-swibb"
+version = "0.6.0-alpha.1"
+
+[[patch.unused]]
+name = "portal-pc-asm-common"
+version = "0.1.1"
 
 [[patch.unused]]
 name = "portal-pc-waffle"
@@ -1395,120 +1516,4 @@ version = "0.1.0"
 
 [[patch.unused]]
 name = "dreamcompiler-minibc-interp"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "dex-bytecode"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "osctx"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-dex"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-link-core"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-linker"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-memory"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-mips"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-module-builder"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-module-target"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-object"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-ordering"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-powerpc"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-reach"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-riscv"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-schedule"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-traps"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-wasm-helpers"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-x86_64"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "wasm-layout"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "yecta"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-pc-asm-common"
-version = "0.1.1"
-
-[[patch.unused]]
-name = "portal-solutions-swibb"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-solutions-asm-aarch64"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-jvm"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-regalloc"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-riscv64"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-semantics"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-x86-64"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-x86-64-shim"
 version = "0.1.0"

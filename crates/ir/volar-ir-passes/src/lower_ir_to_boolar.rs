@@ -161,7 +161,7 @@ fn lower_stmt<P: Clone + Default>(
         }
 
         // ---- GF(2) polynomial ----------------------------------------------
-        IRStmt::Poly { coeffs, constant } => {
+        IRStmt::Poly { coeffs, constant, .. } => {
             let w = infer_poly_width(coeffs, var_bits);
             let bits: Vec<IRVarId> = (0..w)
                 .map(|j| lower_poly_bit(coeffs, constant, j, var_bits, emitter, prov.clone()))

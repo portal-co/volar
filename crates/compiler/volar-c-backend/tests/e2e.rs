@@ -244,6 +244,7 @@ fn ir_xor() -> (IRBlocks, IRTypes) {
     let blocks = IRBlocks::new(vec![IRBlock {
         params: vec![bit_tid(), bit_tid()],
         stmts: vec![IRStmt::Poly {
+            ty: bit_tid(),
             coeffs,
             constant: Constant { hi: 0, lo: 0 },
         }],
@@ -266,6 +267,7 @@ fn ir_and() -> (IRBlocks, IRTypes) {
     let blocks = IRBlocks::new(vec![IRBlock {
         params: vec![bit_tid(), bit_tid()],
         stmts: vec![IRStmt::Poly {
+            ty: bit_tid(),
             coeffs,
             constant: Constant { hi: 0, lo: 0 },
         }],
@@ -286,6 +288,7 @@ fn ir_not() -> (IRBlocks, IRTypes) {
     let blocks = IRBlocks::new(vec![IRBlock {
         params: vec![bit_tid()],
         stmts: vec![IRStmt::Poly {
+            ty: bit_tid(),
             coeffs,
             constant: Constant { hi: 0, lo: 1 },
         }],

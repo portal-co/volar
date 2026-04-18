@@ -2,6 +2,7 @@
 //! Lowering passes from the circuit IRs (`BIrBlocks`, `IRBlocks`) to `LirTarget`.
 
 use alloc::{collections::BTreeMap, vec, vec::Vec};
+use volar_ir_config::IrLoweringConfig;
 use volar_lir::{LirTarget, LirType};
 use volar_provenance::ProvenanceHandler;
 
@@ -228,7 +229,7 @@ pub fn lower_ir<P: Clone + Default, T: LirTarget<P>>(
     name: &str,
     target: &mut T,
 ) {
-    lower_ir_with_handler(blocks, types, name, target, &volar_provenance::KeepProvenance)
+    lower_ir_with_handler(blocks, types, name, target, &volar_provenance::KeepProvenance, &IrLoweringConfig::default())
 }
 
 /// Lower typed Volar IR (`IRBlocks<P>`) to any `LirTarget<H::Output>`
@@ -239,6 +240,7 @@ pub fn lower_ir_with_handler<P, T, H>(
     name: &str,
     target: &mut T,
     handler: &H,
+    config: &IrLoweringConfig,
 ) where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
@@ -247,7 +249,7 @@ pub fn lower_ir_with_handler<P, T, H>(
     let entry = &blocks.blocks[0];
 
     // Map entry block param types to LirType.
-    let input_tys: Vec<LirType> = entry.params.iter().map(|tid| ir_type_to_lir(&types.0[tid.0 as usize])).collect();
+    let input_tys: Vec<LirType> = entry.params.iter().map(|tid| ir_type_to_lir(&types.0[tid.0 as usize], types)).collect();
 
     // Determine return type from the return terminator's args.
     // For simplicity, assume single-output; we'll pack multi-output below.
@@ -269,7 +271,7 @@ pub fn lower_ir_with_handler<P, T, H>(
     for (bi, block) in blocks.blocks.iter().enumerate().skip(1) {
         let mut bv: Vec<T::Value> = Vec::new();
         for tid in &block.params {
-            let lir_ty = ir_type_to_lir(&types.0[tid.0 as usize]);
+            let lir_ty = ir_type_to_lir(&types.0[tid.0 as usize], types);
             bv.push(target.add_block_param(block_handles[bi].clone(), lir_ty));
         }
         vals_per_block.push(bv);
@@ -297,7 +299,7 @@ pub fn lower_ir_with_handler<P, T, H>(
                         .map(|_| LirType::U64) // conservative; full impl should track types
                         .collect();
                     let ret_tys: Vec<LirType> = output_tys.iter()
-                        .map(|tid| ir_type_to_lir(&types.0[tid.0 as usize]))
+                        .map(|tid| ir_type_to_lir(&types.0[tid.0 as usize], types))
                         .collect();
                     let results = target.oracle(name, &arg_lir_tys, &arg_vals, &ret_tys);
                     multi_results.insert(var_idx, results);
@@ -324,7 +326,7 @@ pub fn lower_ir_with_handler<P, T, H>(
                         .map(|_| LirType::U64)
                         .collect();
                     let ret_tys: Vec<LirType> = output_tys.iter()
-                        .map(|tid| ir_type_to_lir(&types.0[tid.0 as usize]))
+                        .map(|tid| ir_type_to_lir(&types.0[tid.0 as usize], types))
                         .collect();
                     let results = target.action(
                         name, guard_val, &arg_lir_tys, &arg_vals, &fallback_vals, &ret_tys,
@@ -341,7 +343,7 @@ pub fn lower_ir_with_handler<P, T, H>(
                 }
                 // ---- Rng: emit target.rng() --------------------------------
                 IRStmt::Rng { name: _, ty } => {
-                    let lir_ty = ir_type_to_lir(&types.0[ty.0 as usize]);
+                    let lir_ty = ir_type_to_lir(&types.0[ty.0 as usize], types);
                     vals_per_block[bi].push(target.rng(lir_ty));
                 }
                 // ---- All other stmts: existing lowering --------------------
@@ -359,20 +361,36 @@ pub fn lower_ir_with_handler<P, T, H>(
     target.end_function();
 }
 
-fn ir_type_to_lir(ty: &IRType) -> LirType {
+/// Compute the bit-width of an IR type.  Recurses into `Vec` element types.
+fn ir_type_bits(ty: &IRType, types: &IRTypes) -> u32 {
     match ty {
-        IRType::Primitive(Type::Bit) => LirType::Bool,
-        IRType::Primitive(Type::AES8) => LirType::U8,
-        IRType::Primitive(Type::Galois64) => LirType::U64,
-        IRType::Primitive(Type::_8) => LirType::U8,
-        IRType::Primitive(Type::_16) => LirType::U16,
-        IRType::Primitive(Type::_32) => LirType::U32,
-        IRType::Primitive(Type::_64) => LirType::U64,
-        IRType::Vec(n, _elem) if *n <= 8 => LirType::U8,
-        IRType::Vec(n, _elem) if *n <= 16 => LirType::U16,
-        IRType::Vec(n, _elem) if *n <= 32 => LirType::U32,
-        IRType::Vec(n, _elem) if *n <= 64 => LirType::U64,
-        other => unimplemented!("ir_type_to_lir: unsupported type {:?}", other),
+        IRType::Primitive(Type::Bit) => 1,
+        IRType::Primitive(Type::_8) | IRType::Primitive(Type::AES8) => 8,
+        IRType::Primitive(Type::_16) => 16,
+        IRType::Primitive(Type::_32) => 32,
+        IRType::Primitive(Type::_64) | IRType::Primitive(Type::Galois64) => 64,
+        IRType::Primitive(Type::_128) => 128,
+        IRType::Primitive(Type::_256) => 256,
+        IRType::Vec(n, elem_tid) => {
+            (*n as u32) * ir_type_bits(&types.0[elem_tid.0 as usize], types)
+        }
+        other => unimplemented!("ir_type_bits: unsupported type {:?}", other),
+    }
+}
+
+fn ir_type_to_lir(ty: &IRType, types: &IRTypes) -> LirType {
+    let bits = ir_type_bits(ty, types);
+    match bits {
+        1 => LirType::Bool,
+        2..=8 => LirType::U8,
+        9..=16 => LirType::U16,
+        17..=32 => LirType::U32,
+        33..=64 => LirType::U64,
+        w => unimplemented!(
+            "ir_type_to_lir: {}-bit type {:?} exceeds 64-bit word; \
+             multi-word lowering is not yet implemented",
+            w, ty
+        ),
     }
 }
 
@@ -384,13 +402,13 @@ fn lower_ir_stmt<Q: Clone + Default, T: LirTarget<Q>>(
 ) -> T::Value {
     match stmt {
         IRStmt::Const(c, tid) => {
-            let lir_ty = ir_type_to_lir(&types.0[tid.0 as usize]);
+            let lir_ty = ir_type_to_lir(&types.0[tid.0 as usize], types);
             target.iconst(lir_ty, c.lo as i64)
         }
         IRStmt::Transmute { src, src_ty, dst_ty } => {
             let sv = vals[src.0 as usize].clone();
-            let src_lir = ir_type_to_lir(&types.0[src_ty.0 as usize]);
-            let dst_lir = ir_type_to_lir(&types.0[dst_ty.0 as usize]);
+            let src_lir = ir_type_to_lir(&types.0[src_ty.0 as usize], types);
+            let dst_lir = ir_type_to_lir(&types.0[dst_ty.0 as usize], types);
             if dst_lir.bit_width() > src_lir.bit_width() {
                 target.zext(sv, dst_lir)
             } else if dst_lir.bit_width() < src_lir.bit_width() {
@@ -399,9 +417,10 @@ fn lower_ir_stmt<Q: Clone + Default, T: LirTarget<Q>>(
                 sv
             }
         }
-        IRStmt::Poly { coeffs, constant } => {
-            // Only GF(2) (Bit) is supported: add=XOR, mul=AND.
-            let mut acc = target.iconst(LirType::Bool, (constant.lo & 1) as i64);
+        IRStmt::Poly { ty, coeffs, constant } => {
+            // Use the declared output type to determine LIR type.
+            let lir_ty = ir_type_to_lir(&types.0[ty.0 as usize], types);
+            let mut acc = target.iconst(lir_ty, (constant.lo & 1) as i64);
             for (vars, &coeff) in coeffs {
                 if coeff == 0 {
                     continue;
@@ -417,7 +436,7 @@ fn lower_ir_stmt<Q: Clone + Default, T: LirTarget<Q>>(
         }
         IRStmt::Rol { src, ty, n } => {
             let sv = vals[src.0 as usize].clone();
-            let lir_ty = ir_type_to_lir(&types.0[ty.0 as usize]);
+            let lir_ty = ir_type_to_lir(&types.0[ty.0 as usize], types);
             let width = lir_ty.bit_width();
             let n_mod = (*n as u32) % width;
             if n_mod == 0 {
@@ -431,7 +450,7 @@ fn lower_ir_stmt<Q: Clone + Default, T: LirTarget<Q>>(
         }
         IRStmt::Ror { src, ty, n } => {
             let sv = vals[src.0 as usize].clone();
-            let lir_ty = ir_type_to_lir(&types.0[ty.0 as usize]);
+            let lir_ty = ir_type_to_lir(&types.0[ty.0 as usize], types);
             let width = lir_ty.bit_width();
             let n_mod = (*n as u32) % width;
             if n_mod == 0 {
@@ -444,7 +463,7 @@ fn lower_ir_stmt<Q: Clone + Default, T: LirTarget<Q>>(
             target.or(right, left)
         }
         IRStmt::Merge { parts, ty } => {
-            let dst_lir = ir_type_to_lir(&types.0[ty.0 as usize]);
+            let dst_lir = ir_type_to_lir(&types.0[ty.0 as usize], types);
             let elem_bits = dst_lir.bit_width() / parts.len() as u32;
             let mut acc = target.iconst(dst_lir.clone(), 0);
             for (i, part_id) in parts.iter().enumerate() {
@@ -457,9 +476,17 @@ fn lower_ir_stmt<Q: Clone + Default, T: LirTarget<Q>>(
             acc
         }
         IRStmt::Splat { src, ty } => {
-            let dst_lir = ir_type_to_lir(&types.0[ty.0 as usize]);
+            let dst_lir = ir_type_to_lir(&types.0[ty.0 as usize], types);
             let sv = vals[src.0 as usize].clone();
-            let src_bits = 1u32;
+            // Compute source element bit-width from the Vec's element type.
+            // For Vec(n, elem_ty): src_bits = bits(elem_ty).
+            // For non-Vec dst, fall back to 1-bit broadcast.
+            let src_bits = match &types.0[ty.0 as usize] {
+                IRType::Vec(_, elem_tid) => {
+                    ir_type_bits(&types.0[elem_tid.0 as usize], types)
+                }
+                _ => 1,
+            };
             let total_bits = dst_lir.bit_width();
             let ext = target.zext(sv, dst_lir.clone());
             let mut acc = ext.clone();

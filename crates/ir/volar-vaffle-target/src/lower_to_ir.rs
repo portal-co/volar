@@ -143,7 +143,7 @@ impl BitCircuitBuilder for BlockEmitter {
         self.emit(IRStmt::Const(Constant { hi: 0, lo: val as u128 }, BIT_TID))
     }
     fn bc_poly(&mut self, coeffs: BTreeMap<Vec<IRVarId>, u8>, constant: u128) -> IRVarId {
-        self.emit(IRStmt::Poly { coeffs, constant: Constant { hi: 0, lo: constant } })
+        self.emit(IRStmt::Poly { ty: BIT_TID, coeffs, constant: Constant { hi: 0, lo: constant } })
     }
     fn bc_carry3(&mut self, a: IRVarId, b: IRVarId, c: IRVarId) -> IRVarId {
         let mut ab = vec![a, b]; ab.sort();
@@ -703,7 +703,8 @@ fn translate_stmt(
     let s = |vid: &ValueId| val_map.get(&vid.0).copied().unwrap_or(IRVarId(0));
     match stmt {
         volar_ir_common::Stmt::Const(c, ty) => IRStmt::Const(*c, *ty),
-        volar_ir_common::Stmt::Poly { coeffs, constant } => IRStmt::Poly {
+        volar_ir_common::Stmt::Poly { ty, coeffs, constant } => IRStmt::Poly {
+            ty: *ty,
             coeffs: coeffs.iter().map(|(vars, &coeff)| {
                 let mut nv: Vec<IRVarId> = vars.iter().map(s).collect();
                 nv.sort();

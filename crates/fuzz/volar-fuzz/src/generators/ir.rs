@@ -125,7 +125,7 @@ pub fn interpret_ir(
 
             // Mask constant to the output width so it stays in-range.
             let c = mask_const(Constant { lo: c_lo, hi: c_hi }, v0_w);
-            (Stmt::Poly { coeffs, constant: c }, v0_tid, v0_w)
+            (Stmt::Poly { ty: v0_tid, coeffs, constant: c }, v0_tid, v0_w)
         } else {
             // ── Rol / Ror ────────────────────────────────────────────────────
             let v_idx = (a as usize) % n_vars;

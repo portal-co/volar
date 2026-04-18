@@ -54,3 +54,44 @@ These variants must be co-designed so their protocols are compatible (same table
 ## Reliability Tags
 
 Files tagged `// @reliability: experimental` contain unreviewed cryptographic code. New code depending on these must not be deployed without separate review. The `@ai: none` or `@ai: assisted` tags indicate the level of AI involvement in that file.
+
+## IR Type Taxonomy
+
+When working with `IRType` (in `volar-ir`), use this taxonomy to decide how to handle each variant:
+
+| Variant | Kind | Bit-width | FHE CFG support |
+|---|---|---|---|
+| `Primitive(Bit)` | 1-bit GF(2) | 1 | Full |
+| `Vec(N, Bit)` | packed bitvector | N | Full (`[wire; N]`) |
+| `Primitive(_8/_16/_32/_64)` | packed bitvector | 8/16/32/64 | Full (`[wire; W]`) |
+| `Primitive(_128/_256)` | packed bitvector | 128/256 | LIR: `unimplemented!`; FHE: `[wire; W]` |
+| `Primitive(AES8)` | GF(256) field element | 8 | Deferred |
+| `Primitive(Galois64)` | GF(2^64) field element | 64 | Deferred |
+
+- `ir_type_bit_width(ty_id, types)` computes the wire count for any supported type.
+- `FheScheme::wire_type_for_ir` / `public_type_for_ir` convert an `IRTypeId` to the appropriate compiler `IrType` for generated code.
+- Unsupported types (AES8, Galois64 in FHE CFG path; _128/_256 in LIR) panic with an explicit message — do not silently emit wrong code.
+
+## `Poly` Statement Semantics
+
+`IRStmt::Poly { ty, coeffs, constant }` represents a multilinear polynomial over GF(2) with a typed output:
+
+- **`ty = Bit`**: standard GF(2) gate — all coefficient variables are `Bit`-typed. This is the original and most common case.
+- **`ty = T` (bitvector or field element)**: at most one `T`-typed variable per monomial; all other variables in that monomial are `Bit`-typed selectors. The polynomial result has type `T`.
+
+When constructing `Poly` nodes, always supply the `ty` field explicitly. Do not use `ir_stmt_output_ty`'s old fallback (it now returns `Some(*ty)` for `Poly`).
+
+## `IrLoweringConfig`
+
+`volar_ir_config::IrLoweringConfig` configures target-specific parameters for `lower_ir`:
+
+```rust
+pub struct IrLoweringConfig {
+    pub word_bits: usize,       // native word size (default 64)
+    pub pointer_bits: usize,    // pointer size (default 64)
+    pub aggregate_byval_limit: usize, // max struct size for by-value ABI (default 128)
+    pub native_aggregates: bool,      // use struct-typed LIR values (default false)
+}
+```
+
+`lower_ir` uses `IrLoweringConfig::default()` for backward compatibility. Pass a custom config via `lower_ir_with_handler` when targeting a different ABI.
