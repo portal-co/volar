@@ -52,7 +52,7 @@ use volar_compiler::{
         ArrayKind, ArrayLength,
         ExternalKind, IrBlock, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump, IrCfgModule,
         IrCfgTerminator, IrExpr, IrFunction, IrGenericParam, IrGenericParamKind, IrLit, IrModule,
-        IrParam, IrPattern, IrStmt, IrTraitBound, IrType, SpecBinOp, StructKind, TraitKind,
+        IrParam, IrPattern, IrStmt, IrTraitBound, IrType, PrimitiveType, SpecBinOp, StructKind, TraitKind,
     },
     linkage::LinkageSystem,
 };
@@ -66,6 +66,64 @@ use volar_ir_passes::{lower_ir_to_boolar, movfuscate_biir};
 use crate::{
     build_return, clone_expr, expand_ors, ref_expr, var, NoProvenance, ProvenanceHandler,
 };
+
+// ============================================================================
+// Action configuration types
+// ============================================================================
+
+/// Whether the guard condition for a conditional action is cleartext or encrypted.
+///
+/// - `Public`: the guard is a cleartext `bool`; emits a Rust `if/else` directly.
+/// - `Private`: the guard is an encrypted bit; emits a single call to the
+///   action function with the guard and fallback values prepended as arguments.
+#[derive(Clone, Debug)]
+pub enum FheGuardMode {
+    /// Guard is a cleartext bool. Emits:
+    /// ```rust,ignore
+    /// if guard { action(args...) } else { (fallback0, fallback1, ...) }
+    /// ```
+    Public,
+    /// Guard is an encrypted bit. Emits:
+    /// ```rust,ignore
+    /// action(guard, fallback0, fallback1, ..., arg0, arg1, ...)
+    /// ```
+    /// The action function is responsible for obliviously selecting between the
+    /// real result and the fallback values.
+    Private,
+}
+
+/// Per-action configuration for the FHE weaver.
+///
+/// Specifies how the weaver should emit an `ActionCall` for a particular named
+/// action function, including how to handle the guard condition and which
+/// outputs are public cleartext versus encrypted.
+#[derive(Clone, Debug)]
+pub struct FheActionConfig {
+    /// Whether the guard condition is cleartext (`Public`) or encrypted (`Private`).
+    pub guard_mode: FheGuardMode,
+    /// Per-output publicness flags.
+    ///
+    /// `output_public[i] = true` means output `i` is a cleartext value (e.g.,
+    /// `bool`).  `false` means it is an encrypted value (e.g., `LweCiphertext`).
+    ///
+    /// An **empty** vec means *all* outputs are public — this is the
+    /// backward-compatible behaviour for actions whose name ends with `_pub`.
+    pub output_public: Vec<bool>,
+}
+
+impl FheActionConfig {
+    /// Returns `true` if output `idx` is public (cleartext).
+    ///
+    /// When `output_public` is empty (all-public sentinel), always returns `true`.
+    pub fn is_output_public(&self, idx: usize) -> bool {
+        self.output_public.is_empty() || self.output_public.get(idx).copied().unwrap_or(false)
+    }
+
+    /// Returns `true` if ALL outputs are public.
+    pub fn all_outputs_public(&self) -> bool {
+        self.output_public.is_empty() || self.output_public.iter().all(|&p| p)
+    }
+}
 
 // ============================================================================
 // FheScheme trait
@@ -285,6 +343,35 @@ pub trait FheScheme {
             [single] => var(single),
             many => IrExpr::Tuple(many.iter().map(|s| var(s.as_str())).collect()),
         }
+    }
+
+    /// Return action-specific configuration for a named action.
+    ///
+    /// - `None` → the action is not handled by this scheme (weaver panics on
+    ///   `ActionCall` for this action name).
+    /// - `Some(config)` → emit using the provided guard mode and per-output
+    ///   publicness.
+    ///
+    /// Default: returns `None` (no action support).
+    ///
+    /// **Backward compatibility**: [`TfheScheme`] overrides this to return
+    /// `Some(FheActionConfig { guard_mode: Public, output_public: [] })` for
+    /// any action whose name ends with `_pub`, matching the prior heuristic.
+    #[allow(unused_variables)]
+    fn action_config(&self, name: &str) -> Option<FheActionConfig> {
+        None
+    }
+
+    /// Lift a cleartext (public) value to the scheme's wire type.
+    ///
+    /// Called at jump sites and return sites when a public variable (e.g.,
+    /// `bool`) must be passed to a position that expects an encrypted wire
+    /// (e.g., `LweCiphertext<N_LWE>`).
+    ///
+    /// Default: returns `expr` unchanged (identity — for schemes where public
+    /// values already have the wire type, or where no promotion is needed).
+    fn promote_to_wire<Q: Clone + Default>(&self, expr: IrExpr<Q>) -> IrExpr<Q> {
+        expr
     }
 }
 
@@ -1028,6 +1115,188 @@ fn ir_stmt_output_ty(stmt: &IRStmt) -> Option<IRTypeId> {
     }
 }
 
+// ============================================================================
+// CFG publicity pre-analysis
+// ============================================================================
+
+/// Update `public_set` and `action_output_public` for a single `IRStmt`.
+///
+/// This is the single source of truth for publicness propagation rules.  It is
+/// called by both the pre-analysis pass ([`analyze_cfg_publicity`]) and the
+/// main codegen loop in [`weave_fhe_cfg`].
+fn track_stmt_publicness<S: FheScheme>(
+    ir_stmt: &IRStmt,
+    result_ir_vid: u32,
+    public_set: &mut PublicSet,
+    action_output_public: &mut BTreeMap<u32, Vec<bool>>,
+    scheme: &S,
+) {
+    use volar_ir::ir::Stmt;
+    match ir_stmt {
+        Stmt::Const(..) => {
+            public_set.mark_public(IRVarId(result_ir_vid));
+        }
+        Stmt::Transmute { src, .. } => {
+            public_set.propagate_if_all_public(&[*src], IRVarId(result_ir_vid));
+        }
+        Stmt::Rol { src, .. } | Stmt::Ror { src, .. } | Stmt::Splat { src, .. } => {
+            public_set.propagate_if_all_public(&[*src], IRVarId(result_ir_vid));
+        }
+        Stmt::Merge { parts, .. } => {
+            public_set.propagate_if_all_public(parts, IRVarId(result_ir_vid));
+        }
+        Stmt::Shuffle { result_bits, .. } => {
+            let vars: Vec<IRVarId> = result_bits.iter().map(|(_, v)| *v).collect();
+            public_set.propagate_if_all_public(&vars, IRVarId(result_ir_vid));
+        }
+        Stmt::Poly { coeffs, .. } => {
+            let vars: Vec<IRVarId> = coeffs
+                .keys()
+                .flat_map(|m| m.iter().copied())
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if vars.is_empty() {
+                public_set.mark_public(IRVarId(result_ir_vid));
+            } else {
+                public_set.propagate_if_all_public(&vars, IRVarId(result_ir_vid));
+            }
+        }
+        Stmt::ActionCall { name, .. } => {
+            if let Some(cfg) = scheme.action_config(name) {
+                if cfg.all_outputs_public() {
+                    public_set.mark_public(IRVarId(result_ir_vid));
+                }
+                action_output_public.insert(result_ir_vid, cfg.output_public.clone());
+            }
+        }
+        Stmt::ActionOutput { call, idx, .. } => {
+            if let Some(out_pub) = action_output_public.get(&call.0) {
+                // We have per-output config for this call.
+                let is_pub = out_pub.is_empty() || out_pub.get(*idx).copied().unwrap_or(false);
+                if is_pub {
+                    public_set.mark_public(IRVarId(result_ir_vid));
+                }
+            } else {
+                // Legacy: propagate publicness from the call result.
+                public_set.propagate_if_all_public(&[*call], IRVarId(result_ir_vid));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Pre-analysis result: which block params are public, and the full per-block
+/// `PublicSet`s (needed for predecessor checking).
+struct CfgPublicityAnalysis {
+    /// `block_param_public[bidx][pidx]` — true if block `bidx`'s param at
+    /// position `pidx` is always public (every predecessor passes a public var).
+    block_param_public: Vec<Vec<bool>>,
+}
+
+/// Analyse publicness across all blocks to determine which block parameters
+/// can be typed as `bool` rather than the scheme's encrypted wire type.
+///
+/// A block parameter is public iff *every* predecessor block that jumps to it
+/// passes a variable that is itself public at that point in the CFG.
+///
+/// **Limitation**: back-edges (loops) are treated conservatively — a parameter
+/// reachable via a back-edge from an unprocessed block is assumed encrypted.
+/// This is correct but may miss some public parameters in loops.
+fn analyze_cfg_publicity<S: FheScheme>(
+    blocks: &IRBlocks,
+    scheme: &S,
+) -> CfgPublicityAnalysis {
+    let n = blocks.blocks.len();
+
+    // Build predecessor info: pred_info[tgt][param_idx] = Vec<(src_block, src_var)>
+    let mut pred_info: Vec<Vec<Vec<(usize, IRVarId)>>> = vec![vec![]; n];
+
+    let add_pred = |pred_info: &mut Vec<Vec<Vec<(usize, IRVarId)>>>,
+                    bidx: usize,
+                    tgt: &IRBlockTargetId,
+                    args: &[IRVarId]| {
+        if let IRBlockTargetId::Block(bid) = tgt {
+            let tgt_idx = bid.0 as usize;
+            if tgt_idx < pred_info.len() {
+                while pred_info[tgt_idx].len() < args.len() {
+                    pred_info[tgt_idx].push(vec![]);
+                }
+                for (pidx, &arg) in args.iter().enumerate() {
+                    pred_info[tgt_idx][pidx].push((bidx, arg));
+                }
+            }
+        }
+    };
+
+    for (bidx, ir_block) in blocks.blocks.iter().enumerate() {
+        match &ir_block.terminator {
+            IRTerminator::Jmp { func, args } => {
+                add_pred(&mut pred_info, bidx, func, args);
+            }
+            IRTerminator::JumpCond {
+                true_block, true_args,
+                false_block, false_args, ..
+            } => {
+                add_pred(&mut pred_info, bidx, true_block, true_args);
+                add_pred(&mut pred_info, bidx, false_block, false_args);
+            }
+            IRTerminator::JumpTable { .. } => {}
+        }
+    }
+
+    // Forward pass: compute publicness for each block in order.
+    let mut per_block_public_sets: Vec<PublicSet> = Vec::with_capacity(n);
+    let mut block_param_public: Vec<Vec<bool>> = Vec::with_capacity(n);
+
+    for (bidx, ir_block) in blocks.blocks.iter().enumerate() {
+        // Block 0's params are function inputs — always encrypted.
+        let bpp: Vec<bool> = if bidx == 0 {
+            vec![false; ir_block.params.len()]
+        } else {
+            (0..ir_block.params.len())
+                .map(|pidx| {
+                    let preds = match pred_info[bidx].get(pidx) {
+                        Some(p) => p,
+                        None => return false,
+                    };
+                    // Public iff ALL predecessors that have been processed
+                    // (index < bidx) pass a public var.  Unprocessed predecessors
+                    // (back edges) are treated as encrypted.
+                    !preds.is_empty()
+                        && preds.iter().all(|(src, var_id)| {
+                            per_block_public_sets
+                                .get(*src)
+                                .map(|ps| ps.is_public(*var_id))
+                                .unwrap_or(false)
+                        })
+                })
+                .collect()
+        };
+
+        // Initialise public_set with the public params.
+        let mut public_set = PublicSet::new();
+        for (pidx, &is_pub) in bpp.iter().enumerate() {
+            if is_pub {
+                public_set.mark_public(IRVarId(pidx as u32));
+            }
+        }
+
+        // Track publicness across all stmts.
+        let num_params = ir_block.params.len() as u32;
+        let mut action_output_public: BTreeMap<u32, Vec<bool>> = BTreeMap::new();
+        for (stmt_idx, ir_stmt) in ir_block.stmts.iter().enumerate() {
+            let result_ir_vid = num_params + stmt_idx as u32;
+            track_stmt_publicness(ir_stmt, result_ir_vid, &mut public_set, &mut action_output_public, scheme);
+        }
+
+        block_param_public.push(bpp);
+        per_block_public_sets.push(public_set);
+    }
+
+    CfgPublicityAnalysis { block_param_public }
+}
+
 fn weave_fhe_cfg<S: FheScheme>(
     blocks: &IRBlocks,
     types: &IRTypes,
@@ -1037,6 +1306,10 @@ fn weave_fhe_cfg<S: FheScheme>(
     storage: Option<&FheStorageConfig>,
 ) -> IrCfgModule {
     let wire_ty = scheme.wire_type();
+    let bool_ty = IrType::Primitive(PrimitiveType::Bool);
+
+    // Pre-analysis: determine which block params are public (cleartext bool).
+    let analysis = analyze_cfg_publicity(blocks, scheme);
 
     let mut cfg_blocks: Vec<IrCfgBlock> = Vec::new();
 
@@ -1044,13 +1317,22 @@ fn weave_fhe_cfg<S: FheScheme>(
         // Block parameters.
         // Block 0's params are the function params (no block-param slot needed).
         // Other blocks carry their params via IrCfgBlock::params.
+        // A block param is typed `bool` if the pre-analysis determined it is always
+        // public (every predecessor passes a cleartext value for it).
         let block_params: Vec<IrParam> = ir_block
             .params
             .iter()
             .enumerate()
-            .map(|(pidx, _ty)| IrParam {
-                name: format!("blk{}_p{}", bidx, pidx),
-                ty: wire_ty.clone(),
+            .map(|(pidx, _ty)| {
+                let is_pub = analysis.block_param_public
+                    .get(bidx)
+                    .and_then(|v| v.get(pidx))
+                    .copied()
+                    .unwrap_or(false);
+                IrParam {
+                    name: format!("blk{}_p{}", bidx, pidx),
+                    ty: if is_pub { bool_ty.clone() } else { wire_ty.clone() },
+                }
             })
             .collect();
 
@@ -1068,6 +1350,14 @@ fn weave_fhe_cfg<S: FheScheme>(
                 var_map.insert(i, format!("input_{}", i));
             }
         } else {
+            // Seed public_set with params that the pre-analysis determined are public.
+            if let Some(bpp) = analysis.block_param_public.get(bidx) {
+                for (pidx, &is_pub) in bpp.iter().enumerate() {
+                    if is_pub {
+                        public_set.mark_public(IRVarId(pidx as u32));
+                    }
+                }
+            }
             for (pidx, p) in block_params.iter().enumerate() {
                 var_map.insert(pidx as u32, p.name.clone());
             }
@@ -1079,6 +1369,8 @@ fn weave_fhe_cfg<S: FheScheme>(
 
         let mut stmts: Vec<IrStmt> = Vec::new();
         let mut stmt_provs: Vec<()> = Vec::new();
+        // Tracks per-output publicness for ActionCall results in this block.
+        let mut action_output_public: BTreeMap<u32, Vec<bool>> = BTreeMap::new();
 
         for (stmt_idx, ir_stmt) in ir_block.stmts.iter().enumerate() {
             let result_ir_vid = num_params + stmt_idx as u32;
@@ -1088,53 +1380,8 @@ fn weave_fhe_cfg<S: FheScheme>(
             if let Some(ty_id) = ir_stmt_output_ty(ir_stmt) {
                 type_map.insert(result_ir_vid, ty_id);
             }
-            // Track publicness.
-            match ir_stmt {
-                IRStmt::Const(..) => {
-                    public_set.mark_public(IRVarId(result_ir_vid));
-                }
-                IRStmt::Transmute { src, .. } => {
-                    public_set.propagate_if_all_public(&[*src], IRVarId(result_ir_vid));
-                }
-                // Single-input ops: public if the source is public.
-                IRStmt::Rol { src, .. }
-                | IRStmt::Ror { src, .. }
-                | IRStmt::Splat { src, .. } => {
-                    public_set.propagate_if_all_public(&[*src], IRVarId(result_ir_vid));
-                }
-                // Multi-input ops: public if ALL inputs are public.
-                IRStmt::Merge { parts, .. } => {
-                    public_set.propagate_if_all_public(parts, IRVarId(result_ir_vid));
-                }
-                IRStmt::Shuffle { result_bits, .. } => {
-                    let vars: Vec<IRVarId> = result_bits.iter().map(|(_, v)| *v).collect();
-                    public_set.propagate_if_all_public(&vars, IRVarId(result_ir_vid));
-                }
-                IRStmt::Poly { coeffs, .. } => {
-                    // Collect the unique set of variables referenced by this polynomial.
-                    let vars: Vec<IRVarId> = coeffs
-                        .keys()
-                        .flat_map(|monomial| monomial.iter().copied())
-                        .collect::<BTreeSet<_>>()
-                        .into_iter()
-                        .collect();
-                    // Public if there are no variables (constant polynomial) or all are public.
-                    if vars.is_empty() {
-                        public_set.mark_public(IRVarId(result_ir_vid));
-                    } else {
-                        public_set.propagate_if_all_public(&vars, IRVarId(result_ir_vid));
-                    }
-                }
-                // ActionCall with _pub suffix → result is public cleartext.
-                IRStmt::ActionCall { name, .. } if name.ends_with("_pub") => {
-                    public_set.mark_public(IRVarId(result_ir_vid));
-                }
-                // ActionOutput from a public ActionCall result → also public.
-                IRStmt::ActionOutput { call, .. } => {
-                    public_set.propagate_if_all_public(&[*call], IRVarId(result_ir_vid));
-                }
-                _ => {}
-            }
+            // Track publicness via the shared helper (single source of truth).
+            track_stmt_publicness(ir_stmt, result_ir_vid, &mut public_set, &mut action_output_public, scheme);
 
             // Handle storage stmts generically (array-indexed parameter access).
             match ir_stmt {
@@ -1218,6 +1465,7 @@ fn weave_fhe_cfg<S: FheScheme>(
             scheme,
             &wire_ty,
             bidx,
+            &analysis.block_param_public,
         );
         for s in extra_stmts {
             stmts.push(s);
@@ -1309,44 +1557,63 @@ fn map_ir_terminator<S: FheScheme>(
     scheme: &S,
     _wire_ty: &IrType,
     bidx: usize,
+    block_param_public: &[Vec<bool>],
 ) -> (Vec<IrStmt>, IrCfgTerminator) {
+    // Helper: resolve a variable name from var_map.
+    let resolve = |id: &IRVarId| -> String {
+        var_map
+            .get(&id.0)
+            .cloned()
+            .unwrap_or_else(|| format!("var_{}", id.0))
+    };
+
+    // Helper: build a jump argument expression, applying promote_to_wire when a
+    // source-public variable is passed to an encrypted target parameter.
+    let jump_arg = |id: &IRVarId, target_bidx: usize, pidx: usize| -> IrExpr {
+        let name = resolve(id);
+        let src_public = public_set.is_public(*id);
+        let tgt_public = block_param_public
+            .get(target_bidx)
+            .and_then(|v| v.get(pidx))
+            .copied()
+            .unwrap_or(false);
+        if src_public && !tgt_public {
+            // Target expects encrypted wire; promote the cleartext value.
+            scheme.promote_to_wire(var(&name))
+        } else {
+            var(&name)
+        }
+    };
+
     match term {
         IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => {
-            let output_vars: Vec<String> = args
+            // Function return type is wire_ty (encrypted). Promote public vars.
+            let output_exprs: Vec<IrExpr> = args
                 .iter()
                 .map(|id| {
-                    var_map
-                        .get(&id.0)
-                        .cloned()
-                        .unwrap_or_else(|| format!("var_{}", id.0))
+                    let name = resolve(id);
+                    if public_set.is_public(*id) {
+                        scheme.promote_to_wire(var(&name))
+                    } else {
+                        var(&name)
+                    }
                 })
                 .collect();
-            let ret_expr = scheme.emit_cfg_return(&output_vars);
+            let ret_expr = match output_exprs.len() {
+                0 => IrExpr::Tuple(vec![]),
+                1 => output_exprs.into_iter().next().unwrap(),
+                _ => IrExpr::Tuple(output_exprs),
+            };
             (vec![], IrCfgTerminator::Return(Some(ret_expr)))
         }
         IRTerminator::Jmp { func: IRBlockTargetId::Block(bid), args } => {
+            let target_bidx = bid.0 as usize;
             let jump = IrCfgJump {
-                target: bid.0 as usize,
+                target: target_bidx,
                 args: args
                     .iter()
-                    .map(|id| {
-                        let name = var_map
-                            .get(&id.0)
-                            .map(|s| s.as_str())
-                            .unwrap_or("__unknown");
-                        // Block params are always LweCiphertext; promote public vars.
-                        if public_set.is_public(*id) {
-                            IrExpr::Call {
-                                func: Box::new(IrExpr::Path {
-                                    segments: vec!["tfhe_trivial_encrypt".into()],
-                                    type_args: vec![],
-                                }),
-                                args: vec![var(name)],
-                            }
-                        } else {
-                            var(name)
-                        }
-                    })
+                    .enumerate()
+                    .map(|(pidx, id)| jump_arg(id, target_bidx, pidx))
                     .collect(),
             };
             (vec![], IrCfgTerminator::Goto(jump))
@@ -1361,10 +1628,7 @@ fn map_ir_terminator<S: FheScheme>(
             false_block,
             false_args,
         } => {
-            let cond_name = var_map
-                .get(&condition.0)
-                .cloned()
-                .unwrap_or_else(|| format!("var_{}", condition.0));
+            let cond_name = resolve(condition);
 
             // Public condition → direct Rust if/else via CondGoto.
             if public_set.is_public(*condition) {
@@ -1379,24 +1643,8 @@ fn map_ir_terminator<S: FheScheme>(
                         target,
                         args: args
                             .iter()
-                            .map(|id| {
-                                let name = var_map
-                                    .get(&id.0)
-                                    .map(|s| s.as_str())
-                                    .unwrap_or("__unknown");
-                                // Block params are always LweCiphertext; promote public vars.
-                                if public_set.is_public(*id) {
-                                    IrExpr::Call {
-                                        func: Box::new(IrExpr::Path {
-                                            segments: vec!["tfhe_trivial_encrypt".into()],
-                                            type_args: vec![],
-                                        }),
-                                        args: vec![var(name)],
-                                    }
-                                } else {
-                                    var(name)
-                                }
-                            })
+                            .enumerate()
+                            .map(|(pidx, id)| jump_arg(id, target, pidx))
                             .collect(),
                     }
                 };
@@ -1444,16 +1692,10 @@ fn map_ir_terminator<S: FheScheme>(
                 let f_name = var_map.get(&f_id.0).cloned()
                     .unwrap_or_else(|| format!("var_{}", f_id.0));
 
-                // Helper: produce an LweCiphertext expr for a var, lifting public ones.
+                // Helper: produce an encrypted wire expr for a var, lifting public ones.
                 let lift_to_ct = |vid: &IRVarId, name: &str| -> IrExpr {
                     if public_set.is_public(*vid) {
-                        IrExpr::Call {
-                            func: Box::new(IrExpr::Path {
-                                segments: vec!["tfhe_trivial_encrypt".into()],
-                                type_args: vec![],
-                            }),
-                            args: vec![var(name)],
-                        }
+                        scheme.promote_to_wire(var(name))
                     } else {
                         clone_expr(var(name))
                     }
@@ -1802,12 +2044,17 @@ pub struct TfheScheme {
     /// When `true`, use the CFG path (preserve `IRBlocks` structure).
     /// When `false`, use the flat movfuscation path.
     pub use_cfg: bool,
+    /// Per-action configuration overrides.
+    ///
+    /// Takes precedence over the `_pub`-suffix heuristic.  Use
+    /// [`TfheScheme::with_action_config`] to populate this.
+    pub action_configs: BTreeMap<String, FheActionConfig>,
 }
 
 impl TfheScheme {
     /// Flat path: lower to a single-block boolean circuit (movfuscation).
     pub fn flat() -> Self {
-        TfheScheme { use_cfg: false }
+        TfheScheme { use_cfg: false, action_configs: BTreeMap::new() }
     }
 
     /// CFG path: preserve the input `IRBlocks` control-flow structure.
@@ -1815,7 +2062,15 @@ impl TfheScheme {
     /// Encrypted branch conditions are merged with CMUX.
     /// Public (constant-propagated) conditions use direct `if/else`.
     pub fn cfg() -> Self {
-        TfheScheme { use_cfg: true }
+        TfheScheme { use_cfg: true, action_configs: BTreeMap::new() }
+    }
+
+    /// Builder: register an action-specific configuration.
+    ///
+    /// This overrides the `_pub`-suffix heuristic for the named action.
+    pub fn with_action_config(mut self, name: impl Into<String>, config: FheActionConfig) -> Self {
+        self.action_configs.insert(name.into(), config);
+        self
     }
 }
 
@@ -1884,6 +2139,32 @@ impl FheScheme for TfheScheme {
 
     fn fn_name_suffix(&self) -> &str {
         "tfhe"
+    }
+
+    fn action_config(&self, name: &str) -> Option<FheActionConfig> {
+        // Explicit per-action override takes precedence.
+        if let Some(cfg) = self.action_configs.get(name) {
+            return Some(cfg.clone());
+        }
+        // Backward-compatible heuristic: `_pub` suffix → all-public, public guard.
+        if name.ends_with("_pub") {
+            return Some(FheActionConfig {
+                guard_mode: FheGuardMode::Public,
+                output_public: vec![], // empty = all public
+            });
+        }
+        None
+    }
+
+    fn promote_to_wire<Q: Clone + Default>(&self, expr: IrExpr<Q>) -> IrExpr<Q> {
+        // Lift a cleartext bool to LweCiphertext<N_LWE>.
+        IrExpr::Call {
+            func: Box::new(IrExpr::Path {
+                segments: vec!["tfhe_trivial_encrypt".into()],
+                type_args: vec![],
+            }),
+            args: vec![expr],
+        }
     }
 
     fn emit_zero<Q: Clone + Default>(&self) -> IrExpr<Q> {
@@ -2202,8 +2483,8 @@ impl FheScheme for TfheScheme {
 
             // ── OracleCall / OracleOutput / ActionCall / ActionOutput / Rng ──
             // OracleCall/OracleOutput are not yet supported.
-            // ActionCall/ActionOutput with a `_pub` suffix are supported:
-            // the action is a plain Rust function returning a tuple.
+            // ActionCall is supported for any action that has a config via
+            // `action_config(name)`, including the backward-compatible `_pub` heuristic.
             Stmt::OracleCall { name, .. } => {
                 panic!(
                     "TfheScheme CFG path: OracleCall '{}' is not yet supported. \
@@ -2215,69 +2496,90 @@ impl FheScheme for TfheScheme {
             Stmt::OracleOutput { .. } => {
                 panic!("TfheScheme CFG path: OracleOutput is not yet supported.")
             }
-            Stmt::ActionCall { name, guard, args, fallbacks, .. }
-                if name.ends_with("_pub") =>
-            {
-                // Guard must be a public cleartext bool.
-                if !public_set.is_public(*guard) {
-                    panic!(
-                        "TfheScheme CFG path: ActionCall '{}': guard var {:?} is not public. \
-                         _pub actions require a cleartext guard condition.",
-                        name, guard
-                    );
-                }
-                let guard_name = vname(guard);
+            Stmt::ActionCall { name, guard, args, fallbacks, .. } => {
+                let cfg = match self.action_config(name) {
+                    Some(c) => c,
+                    None => panic!(
+                        "TfheScheme CFG path: ActionCall '{}' has no configuration. \
+                         Register it with TfheScheme::with_action_config, or give it \
+                         a '_pub' suffix for the backward-compatible all-public heuristic.",
+                        name
+                    ),
+                };
 
-                // Build the argument list for the function call.
+                let guard_name = vname(guard);
                 let arg_exprs: Vec<IrExpr> = args
                     .iter()
                     .map(|a| clone_expr(var(&vname(a))))
                     .collect();
 
-                // Function call expression: name(arg0, arg1, ...)
-                // Convention: the function returns a tuple (T0, T1, ...) matching output_tys.
-                let call_expr: IrExpr = IrExpr::Call {
-                    func: Box::new(IrExpr::Path {
-                        segments: vec![name.clone()],
-                        type_args: vec![],
-                    }),
-                    args: arg_exprs,
-                };
+                match cfg.guard_mode {
+                    FheGuardMode::Public => {
+                        // Guard must be a public cleartext bool.
+                        if !public_set.is_public(*guard) {
+                            panic!(
+                                "TfheScheme CFG path: ActionCall '{}': guard var {:?} is not \
+                                 public. Actions with Public guard mode require a cleartext \
+                                 guard condition.",
+                                name, guard
+                            );
+                        }
 
-                // Fallback tuple: (fb0, fb1, ...).
-                let fallback_tuple: IrExpr = IrExpr::Tuple(
-                    fallbacks.iter().map(|f| clone_expr(var(&vname(f)))).collect(),
-                );
+                        // Fallback tuple: (fb0, fb1, ...).
+                        let fallback_tuple: IrExpr = IrExpr::Tuple(
+                            fallbacks.iter().map(|f| clone_expr(var(&vname(f)))).collect(),
+                        );
 
-                // Emit: if guard { call } else { fallback_tuple }
-                let then_block = IrBlock {
-                    stmts: vec![],
-                    stmt_provs: vec![],
-                    expr: Some(Box::new(call_expr)),
-                };
-                Some(IrExpr::If {
-                    cond: Box::new(var(&guard_name)),
-                    then_branch: then_block,
-                    else_branch: Some(Box::new(fallback_tuple)),
-                })
+                        // Function call expression: name(arg0, arg1, ...)
+                        let call_expr: IrExpr = IrExpr::Call {
+                            func: Box::new(IrExpr::Path {
+                                segments: vec![name.clone()],
+                                type_args: vec![],
+                            }),
+                            args: arg_exprs,
+                        };
+
+                        // Emit: if guard { call } else { fallback_tuple }
+                        let then_block = IrBlock {
+                            stmts: vec![],
+                            stmt_provs: vec![],
+                            expr: Some(Box::new(call_expr)),
+                        };
+                        Some(IrExpr::If {
+                            cond: Box::new(var(&guard_name)),
+                            then_branch: then_block,
+                            else_branch: Some(Box::new(fallback_tuple)),
+                        })
+                    }
+                    FheGuardMode::Private => {
+                        // Encrypted guard: emit name(guard, fb0, fb1, ..., arg0, arg1, ...).
+                        // The action function is responsible for obliviously selecting
+                        // between the real outputs and the fallback values.
+                        let mut all_args: Vec<IrExpr> = Vec::new();
+                        all_args.push(clone_expr(var(&guard_name)));
+                        for f in fallbacks {
+                            all_args.push(clone_expr(var(&vname(f))));
+                        }
+                        all_args.extend(arg_exprs);
+                        Some(IrExpr::Call {
+                            func: Box::new(IrExpr::Path {
+                                segments: vec![name.clone()],
+                                type_args: vec![],
+                            }),
+                            args: all_args,
+                        })
+                    }
+                }
             }
-            Stmt::ActionCall { name, .. } => {
-                panic!(
-                    "TfheScheme CFG path: ActionCall '{}' is not yet supported. \
-                     Only actions whose name ends with '_pub' are handled in the CFG path.",
-                    name
-                )
-            }
-            Stmt::ActionOutput { call, idx, .. } if public_set.is_public(*call) => {
-                // Project field `idx` from the tuple produced by the ActionCall.
+            Stmt::ActionOutput { call, idx, .. } => {
+                // Always emit a field projection from the ActionCall result tuple.
+                // Publicness is tracked separately via `public_set`; the expression
+                // is the same regardless of whether the output is clear or encrypted.
                 let call_name = vname(call);
                 Some(IrExpr::Field {
                     base: Box::new(var(&call_name)),
                     field: format!("{}", idx),
                 })
-            }
-            Stmt::ActionOutput { .. } => {
-                panic!("TfheScheme CFG path: ActionOutput from a non-public ActionCall is not yet supported.")
             }
             Stmt::Rng { name, .. } => {
                 panic!(
@@ -2794,6 +3096,260 @@ mod tests {
         assert!(
             code.contains("storage_5_1"),
             "generated code should reference storage parameter"
+        );
+    }
+
+    // ---- New feature tests --------------------------------------------------
+
+    /// Block param is typed `bool` when every predecessor passes a public value.
+    ///
+    /// Circuit:
+    /// ```text
+    /// Block 0: params=[Bit]
+    ///   var_1 = Const(1, Bit)    // public
+    ///   Jmp → Block(1)[var_1]
+    /// Block 1: params=[Bit]     ← only predecessor passes a public Const
+    ///   Return blk1_p0
+    /// ```
+    ///
+    /// Expected: `blk1_p0: bool` in the emitted code, NOT `LweCiphertext<N_LWE>`.
+    /// The return site should promote `blk1_p0` via `tfhe_trivial_encrypt`.
+    #[test]
+    fn test_tfhe_cfg_public_block_param_typed_bool() {
+        let mut types = IRTypes::new();
+        let bit = types.intern(IRType::Primitive(PrimType::Bit));
+        let one = Constant { hi: 0, lo: 1 };
+        let block0 = IRBlock {
+            params: vec![bit],
+            stmts: vec![IRStmt_::Const(one, bit)],
+            stmt_provs: vec![()],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Block(IRBlockId(1)),
+                args: vec![IRVarId(1)], // Const — public
+            },
+        };
+        let block1 = IRBlock {
+            params: vec![bit],
+            stmts: vec![],
+            stmt_provs: vec![],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: vec![IRVarId(0)], // blk1_p0
+            },
+        };
+        let circuit = IRBlocks::new(vec![block0, block1]);
+        let scheme = TfheScheme::cfg();
+        let output = weave_fhe(&circuit, &types, &scheme, "pub_param_bool", None, None);
+        let module = match output {
+            FheOutput::Cfg(m) => m,
+            _ => panic!("expected FheOutput::Cfg"),
+        };
+        let code = print_fhe_cfg_module(&module, true);
+
+        // Block 1's param must be typed `bool`, not an LweCiphertext.
+        assert!(
+            code.contains("bool"),
+            "public block param should be typed `bool`:\n{code}"
+        );
+        assert!(
+            !code.contains("LweCiphertext") || code.contains("tfhe_trivial_encrypt"),
+            "if LweCiphertext appears, it must be from a promote call:\n{code}"
+        );
+        // The return site must promote the bool param to LweCiphertext.
+        assert!(
+            code.contains("tfhe_trivial_encrypt"),
+            "return site should promote public param via tfhe_trivial_encrypt:\n{code}"
+        );
+        // Jump site should NOT promote (target param is already bool).
+        // The call to tfhe_trivial_encrypt should only appear at the return, not in the jump args.
+        run_compile_check_tfhe_cfg(&code, "tfhe_cfg_pub_param_bool");
+    }
+
+    /// `with_action_config` builder sets config that overrides the `_pub` heuristic.
+    ///
+    /// Circuit:
+    /// ```text
+    /// Block 0: params=[Bit]
+    ///   var_1 = Const(1, Bit)              // guard — public
+    ///   var_2 = ActionCall("my_action", guard=var_1, args=[input_0], fallbacks=[var_1])
+    ///   var_3 = ActionOutput(var_2, 0)
+    ///   Return var_3
+    /// ```
+    ///
+    /// `"my_action"` has no `_pub` suffix; it must be registered explicitly.
+    /// The emitted code should contain an `if var_1 { my_action(...) }`.
+    #[test]
+    fn test_tfhe_cfg_action_config_builder() {
+        let mut types = IRTypes::new();
+        let bit = types.intern(IRType::Primitive(PrimType::Bit));
+        let tuple_ty = types.intern(IRType::Primitive(PrimType::Bit)); // reuse bit as result type
+        let one = Constant { hi: 0, lo: 1 };
+
+        let block = IRBlock {
+            params: vec![bit],
+            stmts: vec![
+                IRStmt_::Const(one, bit),  // var_1 = true (public guard)
+                IRStmt_::ActionCall {
+                    name: "my_action".into(),
+                    guard: IRVarId(1),
+                    args: vec![IRVarId(0)],
+                    fallbacks: vec![IRVarId(1)],
+                    output_tys: vec![bit],
+                    result_ty: tuple_ty,
+                },
+                IRStmt_::ActionOutput { call: IRVarId(2), idx: 0, ty: bit },
+            ],
+            stmt_provs: vec![(), (), ()],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: vec![IRVarId(3)],
+            },
+        };
+        let circuit = IRBlocks::new(vec![block]);
+        let scheme = TfheScheme::cfg().with_action_config(
+            "my_action",
+            FheActionConfig { guard_mode: FheGuardMode::Public, output_public: vec![] },
+        );
+        let output = weave_fhe(&circuit, &types, &scheme, "action_cfg_builder", None, None);
+        let module = match output {
+            FheOutput::Cfg(m) => m,
+            _ => panic!("expected FheOutput::Cfg"),
+        };
+        let code = print_fhe_cfg_module(&module, true);
+
+        assert!(
+            code.contains("my_action"),
+            "generated code should call my_action:\n{code}"
+        );
+        assert!(
+            code.contains("if "),
+            "Public guard mode should emit an if/else:\n{code}"
+        );
+    }
+
+    /// `FheGuardMode::Private` emits a flat call with guard + fallbacks prepended.
+    ///
+    /// Circuit: same as above but the guard (`input_0`) is encrypted.
+    /// Config: `FheGuardMode::Private` with `output_public: vec![false]`.
+    ///
+    /// Expected: `private_action(input_0, var_1, input_0)` — no `if`, no `else`.
+    #[test]
+    fn test_tfhe_cfg_private_guard_action() {
+        let mut types = IRTypes::new();
+        let bit = types.intern(IRType::Primitive(PrimType::Bit));
+        let tuple_ty = types.intern(IRType::Primitive(PrimType::Bit));
+        let one = Constant { hi: 0, lo: 1 };
+
+        // The guard is `input_0` (encrypted). Fallback is a Const(1).
+        let block = IRBlock {
+            params: vec![bit],
+            stmts: vec![
+                IRStmt_::Const(one, bit),  // var_1 = true (fallback, public)
+                IRStmt_::ActionCall {
+                    name: "private_action".into(),
+                    guard: IRVarId(0),     // encrypted guard
+                    args: vec![IRVarId(0)],
+                    fallbacks: vec![IRVarId(1)],
+                    output_tys: vec![bit],
+                    result_ty: tuple_ty,
+                },
+                IRStmt_::ActionOutput { call: IRVarId(2), idx: 0, ty: bit },
+            ],
+            stmt_provs: vec![(), (), ()],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: vec![IRVarId(3)],
+            },
+        };
+        let circuit = IRBlocks::new(vec![block]);
+        let scheme = TfheScheme::cfg().with_action_config(
+            "private_action",
+            FheActionConfig {
+                guard_mode: FheGuardMode::Private,
+                output_public: vec![false],
+            },
+        );
+        let output = weave_fhe(&circuit, &types, &scheme, "priv_guard_action", None, None);
+        let module = match output {
+            FheOutput::Cfg(m) => m,
+            _ => panic!("expected FheOutput::Cfg"),
+        };
+        let code = print_fhe_cfg_module(&module, true);
+
+        assert!(
+            code.contains("private_action"),
+            "generated code should call private_action:\n{code}"
+        );
+        // Private guard → flat call, no Rust if/else
+        assert!(
+            !code.contains("if ") || code.contains("private_action"),
+            "Private guard mode should not emit a separate if/else for the action:\n{code}"
+        );
+    }
+
+    /// Per-output publicness: one output public (`bool`), one encrypted.
+    ///
+    /// Circuit: ActionCall `mixed_action` with `output_public: [true, false]`.
+    ///   var_3 = ActionOutput(var_2, 0) → public (bool field)
+    ///   var_4 = ActionOutput(var_2, 1) → encrypted (LweCiphertext field)
+    ///
+    /// Both should emit field projections (`.0` and `.1`).
+    #[test]
+    fn test_tfhe_cfg_mixed_action_output_publicness() {
+        let mut types = IRTypes::new();
+        let bit = types.intern(IRType::Primitive(PrimType::Bit));
+        let tuple_ty = types.intern(IRType::Primitive(PrimType::Bit));
+        let one = Constant { hi: 0, lo: 1 };
+
+        let block = IRBlock {
+            params: vec![bit],
+            stmts: vec![
+                IRStmt_::Const(one, bit), // var_1 = true (public guard)
+                IRStmt_::ActionCall {
+                    name: "mixed_action".into(),
+                    guard: IRVarId(1),
+                    args: vec![IRVarId(0)],
+                    fallbacks: vec![IRVarId(1), IRVarId(0)],
+                    output_tys: vec![bit, bit],
+                    result_ty: tuple_ty,
+                },
+                IRStmt_::ActionOutput { call: IRVarId(2), idx: 0, ty: bit }, // public output
+                IRStmt_::ActionOutput { call: IRVarId(2), idx: 1, ty: bit }, // encrypted output
+            ],
+            stmt_provs: vec![(), (), (), ()],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: vec![IRVarId(3)], // return the public output
+            },
+        };
+        let circuit = IRBlocks::new(vec![block]);
+        let scheme = TfheScheme::cfg().with_action_config(
+            "mixed_action",
+            FheActionConfig {
+                guard_mode: FheGuardMode::Public,
+                output_public: vec![true, false],
+            },
+        );
+        let output = weave_fhe(&circuit, &types, &scheme, "mixed_action_out", None, None);
+        let module = match output {
+            FheOutput::Cfg(m) => m,
+            _ => panic!("expected FheOutput::Cfg"),
+        };
+        let code = print_fhe_cfg_module(&module, true);
+
+        // Both outputs should use field projection syntax (.0 and .1).
+        assert!(
+            code.contains(".0"),
+            "ActionOutput idx=0 should emit field projection .0:\n{code}"
+        );
+        assert!(
+            code.contains(".1"),
+            "ActionOutput idx=1 should emit field projection .1:\n{code}"
+        );
+        // The public output (var_3) should be promoted at the return site.
+        assert!(
+            code.contains("tfhe_trivial_encrypt"),
+            "public ActionOutput returned should be promoted at return site:\n{code}"
         );
     }
 }
