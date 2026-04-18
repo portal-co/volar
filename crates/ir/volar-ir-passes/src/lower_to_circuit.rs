@@ -240,7 +240,9 @@ fn process_terminator<P: Clone + Default>(
                     (not_val, result_v, next_v)
                 }
 
-                // Both targets return — done = 1, result = mux(val, then, else).
+                // Both targets return — done = 1 always, result = mux(val, then, else).
+                // next_v uses current_state as a don't-care placeholder so that
+                // subsequent (dead) unrolled iterations still have a valid var_map.
                 (IRBlockTargetId::Return, IRBlockTargetId::Return) => {
                     let one_id = emitter.emit(BIrStmt::One, P::default());
                     let then_v: Vec<u32> = then_target.args.iter().map(lookup).collect();
@@ -255,7 +257,7 @@ fn process_terminator<P: Clone + Default>(
                         .zip(else_v.iter())
                         .map(|(&a, &b)| emit_mux(emitter, val_cv, a, b))
                         .collect();
-                    (one_id, result_v.clone(), result_v)
+                    (one_id, result_v, current_state.to_vec())
                 }
 
                 (IRBlockTargetId::Block(IRBlockId(a)), IRBlockTargetId::Block(IRBlockId(b))) => {

@@ -1,0 +1,16 @@
+[package]
+name = "volar-fuzz"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Fuzzing and property-testing harness for volar IR passes"
+repository.workspace = true
+
+[dependencies]
+volar-ir.workspace = true
+volar-ir-passes.workspace = true
+volar-ir-common.workspace = true
+arbitrary = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+proptest = "1"

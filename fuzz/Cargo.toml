@@ -1,0 +1,35 @@
+[package]
+name = "volar-fuzz-targets"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+volar-fuzz = { path = "../crates/fuzz/volar-fuzz" }
+volar-ir-passes = { path = "../crates/ir/volar-ir-passes" }
+
+# Cargo-fuzz requires a separate workspace so it does not inherit
+# workspace settings from the main Cargo.toml.
+[workspace]
+
+[[bin]]
+name = "fuzz_biir_movfuscate"
+path = "fuzz_targets/fuzz_biir_movfuscate.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_biir_lower_to_circuit"
+path = "fuzz_targets/fuzz_biir_lower_to_circuit.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_lower_ir_to_boolar"
+path = "fuzz_targets/fuzz_lower_ir_to_boolar.rs"
+test = false
+doc = false

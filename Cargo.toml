@@ -20,6 +20,7 @@ members = [
     "crates/ir/volar-lir",
     "crates/compiler/volar-lir-codegen",
     "crates/compiler/volar-c-backend",
+    "crates/fuzz/volar-fuzz",
 ]
 resolver = "3"
 
