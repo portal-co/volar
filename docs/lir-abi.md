@@ -306,6 +306,49 @@ separately in the `lower_to_ir.rs` module header but summarised here:
 
 ---
 
+## Bit Packing in LIR Lowering
+
+The VAFFLE → Volar IR lowering (`lower_to_ir`) packs individual GF(2) bits
+into `Vec(PACK_W, Bit)` words (`PACK_W = 64` by default) at every boundary:
+
+| Boundary | Before packing | After packing (PACK_W=64) |
+|---|---|---|
+| Block params (SP) | 16 `Bit` params | 1 `Vec(64, Bit)` param |
+| Jump args (SP) | 16 `Bit` args | 1 packed word |
+| Spill N values | N `StorageWrite` ops | ⌈N/64⌉ ops |
+| Reload N values | N `StorageRead` ops | ⌈N/64⌉ ops |
+| Frame args (K params) | K storage ops | ⌈K/64⌉ ops |
+| Frame return (R bits) | R storage ops | ⌈R/64⌉ ops |
+| Continuation params | SP_BITS + R individual | ⌈SP_BITS/64⌉ + ⌈R/64⌉ words |
+
+### Pack / unpack mechanism
+
+**Packing** (`Merge`): concatenates up to `PACK_W` individual `Bit`-typed
+vars into a single `Vec(PACK_W, Bit)` value.  Short final chunks are
+zero-padded.
+
+**Unpacking** (`Shuffle`): extracts individual bits from a packed word.
+Each `Shuffle { result_bits: [(j, word)], ty: Bit }` selects bit `j`
+from `word`.
+
+### Impact
+
+For a function with 128 parameters and 3 call sites, each spilling 200
+values:
+
+| Metric | Unpacked | Packed (W=64) | Reduction |
+|---|---|---|---|
+| Block params per block | 16 (SP) | 1 | 16× |
+| Spill ops per call | 200 | 4 | 50× |
+| Reload ops per cont. | 200 | 4 | 50× |
+| Frame arg ops | 128 | 2 | 64× |
+| Jump arg count | 16 | 1 | 16× |
+
+The `Merge`/`Shuffle` instructions themselves are cheap in the GF(2)
+circuit model (they are structural, not computational).
+
+---
+
 ## Target Capability Matrix
 
 | Capability | `VolarIrTarget` | `VaffleTarget` (default) | `VaffleTarget` (optimized) | `CBackend` |
