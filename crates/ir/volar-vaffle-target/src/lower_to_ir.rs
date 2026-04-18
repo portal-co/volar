@@ -49,7 +49,7 @@
 //! 3. Continues with remaining stmts.
 
 use alloc::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     vec,
     vec::Vec,
 };
@@ -61,7 +61,7 @@ use volar_ir::ir::{
     IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator,
     IRTypeId, IRTypes, IRVarId, OracleDecl, ActionDecl,
 };
-use volar_ir_common::{Constant, IrType, StorageId, Type, TypeId};
+use volar_ir_common::{Constant, IrType, Stmt, StorageId, Type, TypeId};
 use volar_lir::circuits::{
     bc_add, FrameLayout, StackPtr,
     frame_push_args, frame_read_args, frame_write_cont, frame_read_cont,
@@ -486,9 +486,20 @@ impl<'m> LowerCtx<'m> {
                             let callee_info = &self.func_info[callee_idx];
                             let cl = callee_info.callee_layout.clone();
 
-                            // 1. Packed spill: collect all defined values,
-                            //    pack into words, write to spill slots.
-                            let spill_keys: Vec<usize> = val_map.keys().copied().collect();
+                            // 1. Selective spill: collect only values that are
+                            //    actually used after this call (in the
+                            //    remaining stmts or the block terminator).
+                            //    StackAlloc addresses are compile-time
+                            //    constants and never need to be spilled.
+                            let future_uses = collect_uses(
+                                body, after_call, &vaffle_block.terminator,
+                            );
+                            let spill_keys: Vec<usize> = val_map.keys().copied()
+                                .filter(|k| future_uses.contains(k))
+                                .filter(|k| !matches!(
+                                    &body.values[*k], Value::StackAlloc { .. }
+                                ))
+                                .collect();
                             let spill_bits: Vec<IRVarId> = spill_keys.iter()
                                 .map(|k| val_map[k])
                                 .collect();
@@ -695,6 +706,105 @@ fn find_call<'a>(
     (stmts, None, &[])
 }
 
+/// Collect all `ValueId.0` indices that appear as *operands* in the given
+/// slice of statement `ValueId`s and in `term`.
+///
+/// These are the values that must be *live* (available in `val_map`) after a
+/// call site that precedes `stmt_ids` in the same block.  Only operand
+/// references are collected — the defining occurrence of a value is not.
+fn collect_uses(
+    body: &FuncBody,
+    stmt_ids: &[ValueId],
+    term: &Terminator,
+) -> BTreeSet<usize> {
+    let mut uses = BTreeSet::new();
+    for &vid in stmt_ids {
+        collect_value_uses(&body.values[vid.0], &mut uses);
+    }
+    collect_terminator_uses(term, &mut uses);
+    uses
+}
+
+fn collect_value_uses(val: &Value, out: &mut BTreeSet<usize>) {
+    match val {
+        Value::Op(stmt) => collect_stmt_uses(stmt, out),
+        Value::Call { args, .. } => {
+            for a in args { out.insert(a.0); }
+        }
+        Value::Output { value, .. } => { out.insert(value.0); }
+        Value::PtrLoad { ptr, .. } => { out.insert(ptr.0); }
+        Value::PtrStore { ptr, val } => {
+            out.insert(ptr.0);
+            out.insert(val.0);
+        }
+        Value::PtrOffset { ptr, idx, .. } => {
+            out.insert(ptr.0);
+            out.insert(idx.0);
+        }
+        // Defining occurrences — no operands to record.
+        Value::Param { .. } | Value::StackAlloc { .. } => {}
+    }
+}
+
+fn collect_stmt_uses(stmt: &Stmt<ValueId>, out: &mut BTreeSet<usize>) {
+    match stmt {
+        Stmt::Const(..) | Stmt::Rng { .. } => {}
+        Stmt::Poly { coeffs, .. } => {
+            for vars in coeffs.keys() {
+                for v in vars { out.insert(v.0); }
+            }
+        }
+        Stmt::Merge { parts, .. } => {
+            for p in parts { out.insert(p.0); }
+        }
+        Stmt::Splat { src, .. } => { out.insert(src.0); }
+        Stmt::Transmute { src, .. } => { out.insert(src.0); }
+        Stmt::Rol { src, .. } | Stmt::Ror { src, .. } => { out.insert(src.0); }
+        Stmt::Shuffle { result_bits, .. } => {
+            for (_, v) in result_bits { out.insert(v.0); }
+        }
+        Stmt::StorageRead { addr, .. } => { out.insert(addr.0); }
+        Stmt::StorageWrite { src, addr, .. } => {
+            out.insert(src.0);
+            out.insert(addr.0);
+        }
+        Stmt::OracleCall { args, .. } => {
+            for a in args { out.insert(a.0); }
+        }
+        Stmt::OracleOutput { call, .. } => { out.insert(call.0); }
+        Stmt::ActionCall { guard, args, fallbacks, .. } => {
+            out.insert(guard.0);
+            for a in args { out.insert(a.0); }
+            for f in fallbacks { out.insert(f.0); }
+        }
+        Stmt::ActionOutput { call, .. } => { out.insert(call.0); }
+    }
+}
+
+fn collect_terminator_uses(term: &Terminator, out: &mut BTreeSet<usize>) {
+    match term {
+        Terminator::Return { values } => {
+            for v in values { out.insert(v.0); }
+        }
+        Terminator::Jump(target) => {
+            for v in &target.args { out.insert(v.0); }
+        }
+        Terminator::ReturnCall { args, .. } => {
+            for a in args { out.insert(a.0); }
+        }
+        Terminator::IfNonzero { cond, then_target, else_target } => {
+            out.insert(cond.0);
+            for v in &then_target.args { out.insert(v.0); }
+            for v in &else_target.args { out.insert(v.0); }
+        }
+        Terminator::Table { index, targets, default_target } => {
+            out.insert(index.0);
+            for t in targets { for v in &t.args { out.insert(v.0); } }
+            for v in &default_target.args { out.insert(v.0); }
+        }
+    }
+}
+
 /// Translate a VAFFLE `Stmt<ValueId>` to an `IRStmt<IRVarId>` using `val_map`.
 fn translate_stmt(
     stmt: &volar_ir_common::Stmt<ValueId>,
@@ -850,7 +960,12 @@ mod tests {
         assert!(has_shuffle, "function entry should contain Shuffle (unpack) stmts");
     }
 
-    /// Verify that spill/reload uses packed words when there is a call.
+    /// Verify that spill/reload uses packed words, and that only values that
+    /// are actually live after a call are spilled (not all values in val_map).
+    ///
+    /// Scenario: func0 calls func1 with its only param and immediately returns
+    /// the result.  At the call site the param is consumed as a call argument;
+    /// it is *not* referenced after the call.  So zero values should be spilled.
     #[test]
     fn test_packed_spill_reload() {
         use vaffle::*;
@@ -879,7 +994,8 @@ mod tests {
             entry: BlockId(0),
         };
 
-        // func0: call func1 with its param
+        // func0: call func1 with its param, return result.
+        // The param (ValueId(0)) is NOT used after the call — so zero spills.
         let mut vals0 = std::vec::Vec::new();
         vals0.push(Value::Param { block: BlockId(0), ty: bit_tid, idx: 0 });
         vals0.push(Value::Call { func: FuncId(1), args: std::vec![ValueId(0)] });
@@ -907,16 +1023,132 @@ mod tests {
             exports: alloc::collections::BTreeMap::new(),
         };
 
-        let (ir_blocks, ir_types) = lower_vaffle_to_ir(&module);
+        let (ir_blocks, _ir_types) = lower_vaffle_to_ir(&module);
 
-        // The lowering should succeed and produce blocks.
         assert!(
             ir_blocks.blocks.len() >= 4,
             "expected ≥4 blocks (entry + exit + func0 + func1), got {}",
             ir_blocks.blocks.len()
         );
 
-        // Spill writes should use PACK_TID (packed words), not BIT_TID.
+        // With selective spilling, the number of STACK+PACK_TID StorageWrites
+        // should equal the number from arg-pushes and ret-writes only (the
+        // frame protocol), with zero additional writes from spills.
+        //
+        // Concretely: func0 pushes 1 call-arg word and writes 1 ret word;
+        // func1 writes 1 ret word → 3 total.  Before this optimisation there
+        // would have been extra spill writes on top of that.  We verify that
+        // the total does not exceed 3 (i.e. no spill writes were added).
+        let stack_pack_writes: std::vec::Vec<_> = ir_blocks.blocks.iter()
+            .flat_map(|b| b.stmts.iter())
+            .filter(|s| matches!(s, IRStmt::StorageWrite { storage, ty, .. }
+                if *storage == StorageId::STACK && *ty == PACK_TID))
+            .collect();
+        assert!(
+            stack_pack_writes.len() <= 3,
+            "expected at most 3 STACK+PACK_TID writes (arg + 2 rets); \
+             got {} — likely a regression adding unnecessary spill writes",
+            stack_pack_writes.len()
+        );
+    }
+
+    /// Verify that a value which IS live across a call gets spilled and
+    /// reloaded using packed words.
+    ///
+    /// Scenario: func0 has a local value `local` (NOT an arg to the call) that
+    /// is used AFTER the call returns.  At the call site `local` must be
+    /// spilled; the reload should use PACK_TID-typed StorageRead.
+    #[test]
+    fn test_selective_spill() {
+        use vaffle::*;
+        use volar_ir_common::{Stmt, Constant};
+
+        let mut types = volar_ir_common::TypeTable::new();
+        let bit_tid = types.intern(volar_ir_common::IrType::Primitive(
+            volar_ir_common::Type::Bit,
+        ));
+
+        // sig0: (bit) -> bit
+        // sig1: (bit) -> bit  (identity)
+        let sig0 = SigDecl { params: vec![bit_tid], results: vec![bit_tid] };
+        let sig1 = SigDecl { params: vec![bit_tid], results: vec![bit_tid] };
+
+        // func1: identity — return its param.
+        let mut vals1 = std::vec::Vec::new();
+        vals1.push(Value::Param { block: BlockId(0), ty: bit_tid, idx: 0 });
+        let body1 = FuncBody {
+            sig: SigId(1),
+            blocks: std::vec![Block {
+                params: std::vec![(ValueId(0), bit_tid)],
+                stmts: std::vec![],
+                terminator: Terminator::Return { values: std::vec![ValueId(0)] },
+            }],
+            values: vals1,
+            entry: BlockId(0),
+        };
+
+        // func0:
+        //   param   = ValueId(0)   (bit input)
+        //   local   = ValueId(1)   = const 1  (NOT used as call arg)
+        //   call    = ValueId(2)   = call func1(param)
+        //   out     = ValueId(3)   = Output(call, 0)
+        //   xor_res = ValueId(4)   = local XOR out   (uses local AFTER the call)
+        //   return xor_res
+        //
+        // At the call site, `local` is in val_map and is referenced by
+        // ValueId(4) which comes after the call → `local` IS live → must spill.
+        let mut vals0 = std::vec::Vec::new();
+        vals0.push(Value::Param { block: BlockId(0), ty: bit_tid, idx: 0 });  // 0
+        vals0.push(Value::Op(Stmt::Const(                                      // 1 = local
+            Constant { hi: 0, lo: 1 }, bit_tid,
+        )));
+        vals0.push(Value::Call { func: FuncId(1), args: std::vec![ValueId(0)] }); // 2
+        vals0.push(Value::Output { value: ValueId(2), idx: 0 });               // 3 = out
+        {
+            // xor_res = local XOR out  (degree-1 polynomial: local + out)
+            let mut coeffs = alloc::collections::BTreeMap::new();
+            coeffs.insert(std::vec![ValueId(1)], 1u8);
+            coeffs.insert(std::vec![ValueId(3)], 1u8);
+            vals0.push(Value::Op(Stmt::Poly {                                  // 4 = xor_res
+                ty: bit_tid,
+                coeffs,
+                constant: volar_ir_common::Constant { hi: 0, lo: 0 },
+            }));
+        }
+
+        let body0 = FuncBody {
+            sig: SigId(0),
+            blocks: std::vec![Block {
+                params: std::vec![(ValueId(0), bit_tid)],
+                stmts: std::vec![ValueId(1), ValueId(2), ValueId(3), ValueId(4)],
+                terminator: Terminator::Return { values: std::vec![ValueId(4)] },
+            }],
+            values: vals0,
+            entry: BlockId(0),
+        };
+
+        let module = vaffle::Module {
+            types,
+            oracles: std::vec![],
+            actions: std::vec![],
+            funcs: std::vec![
+                vaffle::FuncDecl::Body(body0),
+                vaffle::FuncDecl::Body(body1),
+            ],
+            sigs: std::vec![sig0, sig1],
+            exports: alloc::collections::BTreeMap::new(),
+        };
+
+        let (ir_blocks, _ir_types) = lower_vaffle_to_ir(&module);
+
+        assert!(
+            ir_blocks.blocks.len() >= 4,
+            "expected ≥4 IR blocks, got {}",
+            ir_blocks.blocks.len()
+        );
+
+        // `local` (ValueId(1)) is live across the call → at least one
+        // PACK_TID-typed StorageWrite to STACK must appear (the spill).
         let spill_writes: std::vec::Vec<_> = ir_blocks.blocks.iter()
             .flat_map(|b| b.stmts.iter())
             .filter(|s| matches!(s, IRStmt::StorageWrite { storage, ty, .. }
@@ -924,10 +1156,11 @@ mod tests {
             .collect();
         assert!(
             !spill_writes.is_empty(),
-            "spill should use PACK_TID-typed StorageWrite"
+            "`local` is live across the call and must be spilled (PACK_TID StorageWrite)"
         );
 
-        // Reload reads should also use PACK_TID.
+        // Matching reload: PACK_TID-typed StorageRead from STACK in the
+        // continuation block.
         let reload_reads: std::vec::Vec<_> = ir_blocks.blocks.iter()
             .flat_map(|b| b.stmts.iter())
             .filter(|s| matches!(s, IRStmt::StorageRead { storage, ty, .. }
@@ -935,7 +1168,7 @@ mod tests {
             .collect();
         assert!(
             !reload_reads.is_empty(),
-            "reload should use PACK_TID-typed StorageRead"
+            "spilled `local` must be reloaded (PACK_TID StorageRead)"
         );
     }
 }
