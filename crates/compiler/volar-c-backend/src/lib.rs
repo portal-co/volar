@@ -24,7 +24,7 @@ use std::{
     string::String,
     vec::Vec,
 };
-use volar_lir::{IcmpPred, LirTarget, LirType, StackAllocExt, StructDef, StructId};
+use volar_lir::{IcmpPred, LirTarget, LirType, LirAbi, StackAllocExt, StructDef, StructId};
 
 // ============================================================================
 // Handles
@@ -836,6 +836,10 @@ impl LirTarget for CBackend {
 
     fn stack_alloc_ext(&mut self) -> Option<&mut dyn StackAllocExt<Value = CValue>> {
         Some(self)
+    }
+
+    fn abi(&self) -> LirAbi {
+        LirAbi::C_NATIVE
     }
 }
 

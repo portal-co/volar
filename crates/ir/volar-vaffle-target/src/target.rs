@@ -23,7 +23,7 @@ use volar_lir::{
         bc_not_vec, bc_or_vec, bc_sdiv, bc_select_vec, bc_shl, bc_sle, bc_slt,
         bc_sub, bc_udiv, bc_ule, bc_ult, bc_xor_vec, StorageEmitter,
     },
-    BitCircuitBuilder, IcmpPred, LirTarget, LirType, StackAllocExt, StructDef, StructId,
+    BitCircuitBuilder, IcmpPred, LirTarget, LirType, LirAbi, StackAllocExt, StructDef, StructId,
 };
 
 use vaffle::{
@@ -543,6 +543,10 @@ impl LirTarget for VaffleTarget {
     fn stack_alloc_ext(&mut self) -> Option<&mut dyn StackAllocExt<Value = Self::Value>> {
         Some(self)
     }
+
+    fn abi(&self) -> LirAbi {
+        LirAbi::CIRCUIT
+    }
 }
 
 // ============================================================================
@@ -827,5 +831,14 @@ mod tests {
     #[test]
     fn test_bits_for_lir_type_ptr() {
         assert_eq!(bits_for_lir_type(&LirType::Ptr(alloc::boxed::Box::new(LirType::U32)), &[]), PTR_BITS);
+    }
+
+    #[test]
+    fn test_vaffle_target_abi_is_circuit() {
+        let t = VaffleTarget::new();
+        let abi = t.abi();
+        assert!(!abi.native_aggregates);
+        assert_eq!(abi.aggregate_byval_limit, usize::MAX);
+        assert!(!abi.pass_by_ptr(1_000_000));
     }
 }

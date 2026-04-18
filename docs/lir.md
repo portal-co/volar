@@ -393,3 +393,11 @@ cargo test -p volar-c-backend
 | Multi-element `Vec(n, Galois)` in `lower_ir` | Needs aggregate IR type support |
 | `Array::from_fn` in raw `IrExpr` (non-`ArrayGenerate`) | Use `lowering_dyn` first |
 | Signed-compare predicates on aggregate types | Panics; scalars only |
+
+---
+
+## See Also
+
+- [LIR ABI](lir-abi.md) — calling conventions, type passing, per-target
+  policies, and the `LirAbi` configuration struct.
+| Signed-compare predicates on aggregate types | Panics; scalars only |

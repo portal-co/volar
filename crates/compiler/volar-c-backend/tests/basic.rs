@@ -387,3 +387,26 @@ fn test_phase2_codegen_struct_array() {
     let output = compile_and_run(&c_src, r#"  printf("%u\n", (unsigned)xor_bytes(0xABu, 0x0Fu));"#);
     assert_eq!(output.trim(), format!("{}", 0xABu8 ^ 0x0Fu8));
 }
+
+// ============================================================================
+// LirAbi tests
+// ============================================================================
+
+#[test]
+fn test_c_backend_abi_is_c_native() {
+    use volar_lir::LirAbi;
+    let b = CBackend::new();
+    let abi = b.abi();
+    assert!(abi.native_aggregates, "CBackend must report native_aggregates = true");
+    assert_eq!(abi.aggregate_byval_limit, LirAbi::C_NATIVE.aggregate_byval_limit);
+}
+
+#[test]
+fn test_c_backend_pass_by_ptr_threshold() {
+    let b = CBackend::new();
+    let abi = b.abi();
+    // Below threshold: inline
+    assert!(!abi.pass_by_ptr(64));
+    // Above threshold: by pointer
+    assert!(abi.pass_by_ptr(65));
+}

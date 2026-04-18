@@ -19,7 +19,7 @@ use volar_compiler::ir::{
     ArrayLength, ExternalKind, IrBlock, IrClosureParam, IrExpr, IrFunction, IrLit, IrModule,
     IrPattern, IrStmt, IrType, MethodKind, PrimitiveType, SpecBinOp, SpecUnaryOp, StructKind,
 };
-use volar_lir::{IcmpPred, LirTarget, LirType};
+use volar_lir::{IcmpPred, LirTarget, LirType, LirAbi};
 
 use structs::{
     StructRegistry, flatten_count, flatten_scalar_types,
@@ -74,6 +74,15 @@ struct ExternalFnInfo {
     return_type: Option<LirType>,
 }
 
+/// Signature metadata for any function in the module (normal or external).
+/// Used to infer return types at call sites.
+struct FuncSigInfo {
+    /// LIR types of the declared parameters.
+    param_tys: Vec<LirType>,
+    /// LIR return type.
+    return_type: Option<LirType>,
+}
+
 // ============================================================================
 // Lowering context
 // ============================================================================
@@ -95,6 +104,9 @@ struct LowerCtx<'t, T: LirTarget> {
     /// Functions annotated `#[oracle]`, `#[action]`, or `#[rng]`.
     /// Populated from the module at `lower_module_with_opts` time.
     external_fns: &'t BTreeMap<String, ExternalFnInfo>,
+    /// Signatures of all functions in the module (for return-type inference
+    /// at call sites).  Populated by `lower_module_with_opts`.
+    func_sigs: &'t BTreeMap<String, FuncSigInfo>,
 }
 
 impl<'t, T: LirTarget> LowerCtx<'t, T> {
@@ -112,7 +124,7 @@ impl<'t, T: LirTarget> LowerCtx<'t, T> {
             env.insert(name.clone(), vals);
             env_types.insert(name, ty);
         }
-        LowerCtx { target, env, env_types, current_block: entry, registry, hash_suffix, module_structs, external_fns: &EMPTY_EXTERNAL_FNS }
+        LowerCtx { target, env, env_types, current_block: entry, registry, hash_suffix, module_structs, external_fns: &EMPTY_EXTERNAL_FNS, func_sigs: &EMPTY_FUNC_SIGS }
     }
 
     /// Infer the IrType of an expression using env_types and module struct defs.
@@ -175,6 +187,8 @@ fn extract_struct_kind(ty: &IrType) -> Option<&StructKind> {
 
 static EMPTY_EXTERNAL_FNS: LazyLock<BTreeMap<String, ExternalFnInfo>> =
     LazyLock::new(BTreeMap::new);
+static EMPTY_FUNC_SIGS: LazyLock<BTreeMap<String, FuncSigInfo>> =
+    LazyLock::new(BTreeMap::new);
 
 // ============================================================================
 // Public API
@@ -212,13 +226,26 @@ pub fn lower_module_with_opts<T: LirTarget>(
         })
         .collect();
 
+    // Build a signature table for ALL functions (for return-type inference at
+    // call sites).  This enables `lower_call` to pass the correct `ret_ty`
+    // to `call_extern` instead of `None`.
+    let func_sigs: BTreeMap<String, FuncSigInfo> = module
+        .functions
+        .iter()
+        .map(|f| {
+            let param_tys = f.params.iter().map(|p| registry.ir_type_to_lir(&p.ty)).collect();
+            let return_type = f.return_type.as_ref().map(|t| registry.ir_type_to_lir(t));
+            (f.name.clone(), FuncSigInfo { param_tys, return_type })
+        })
+        .collect();
+
     // Lower only normal (non-external) function bodies.
     for func in &module.functions {
         if func.external_kind != ExternalKind::Normal {
             continue;
         }
         lower_function_in_module(
-            func, target, &registry, hash_suffix, &module.structs, &external_fns,
+            func, target, &registry, hash_suffix, &module.structs, &external_fns, &func_sigs,
         );
     }
 }
@@ -231,6 +258,7 @@ fn lower_function_in_module<T: LirTarget>(
     hash_suffix: &str,
     module_structs: &[volar_compiler::ir::IrStruct],
     external_fns: &BTreeMap<String, ExternalFnInfo>,
+    func_sigs: &BTreeMap<String, FuncSigInfo>,
 ) {
     let param_lir_tys: Vec<LirType> = func
         .params
@@ -258,6 +286,7 @@ fn lower_function_in_module<T: LirTarget>(
         module_structs,
     );
     ctx.external_fns = external_fns;
+    ctx.func_sigs = func_sigs;
 
     let tail_vals = lower_block(&func.body, &mut ctx);
     ctx.target.ret(&tail_vals);
@@ -328,7 +357,15 @@ fn lower_stmt<T: LirTarget>(stmt: &IrStmt, ctx: &mut LowerCtx<T>) {
     match stmt {
         IrStmt::Let { pattern, ty, init } => {
             if let Some(init_expr) = init {
-                let vals = lower_expr(init_expr, ctx);
+                // When the init expression is a literal and we have a type
+                // annotation, pass the type hint so the literal gets the
+                // correct narrow type (e.g. U8 instead of U64).
+                let vals = match init_expr {
+                    IrExpr::Lit(lit) => {
+                        vec![lower_lit(lit, ctx, ty.as_ref())]
+                    }
+                    _ => lower_expr(init_expr, ctx),
+                };
                 if let IrPattern::Ident { name, .. } = pattern {
                     let ir_ty = ty.clone().or_else(|| ctx.infer_type(init_expr));
                     if let Some(ir_ty) = ir_ty {
@@ -363,7 +400,7 @@ fn bind_pattern<T: LirTarget>(pattern: &IrPattern, vals: Vec<T::Value>, ctx: &mu
 /// Aggregate-typed expressions return multiple scalars (array = N elems, struct = all fields).
 fn lower_expr<T: LirTarget>(expr: &IrExpr, ctx: &mut LowerCtx<T>) -> Vec<T::Value> {
     match expr {
-        IrExpr::Lit(lit) => vec![lower_lit(lit, ctx)],
+        IrExpr::Lit(lit) => vec![lower_lit(lit, ctx, None)],
 
         IrExpr::Var(name) => ctx
             .env
@@ -460,9 +497,17 @@ fn lower_expr<T: LirTarget>(expr: &IrExpr, ctx: &mut LowerCtx<T>) -> Vec<T::Valu
 // Literal lowering
 // ============================================================================
 
-fn lower_lit<T: LirTarget>(lit: &IrLit, ctx: &mut LowerCtx<T>) -> T::Value {
+fn lower_lit<T: LirTarget>(lit: &IrLit, ctx: &mut LowerCtx<T>, hint: Option<&IrType>) -> T::Value {
     match lit {
-        IrLit::Int(n) => ctx.target.iconst(LirType::U64, *n as i64),
+        IrLit::Int(n) => {
+            let lir_ty = hint
+                .and_then(|ty| match ty {
+                    IrType::Primitive(p) => Some(primitive_to_lir(*p)),
+                    _ => None,
+                })
+                .unwrap_or(LirType::U64);
+            ctx.target.iconst(lir_ty, *n as i64)
+        }
         IrLit::Bool(b) => ctx.target.iconst(LirType::Bool, *b as i64),
         IrLit::Float(_) => unimplemented!("float literals not supported in LIR"),
         other => unimplemented!("lower_lit: unsupported literal {:?}", other),
@@ -505,7 +550,8 @@ fn lower_unop<T: LirTarget>(op: SpecUnaryOp, v: T::Value, ctx: &mut LowerCtx<T>)
     match op {
         SpecUnaryOp::Not => ctx.target.not(v),
         SpecUnaryOp::Neg => {
-            let zero = ctx.target.iconst(LirType::U64, 0);
+            let ty = ctx.target.value_scalar_type(&v);
+            let zero = ctx.target.iconst(ty, 0);
             ctx.target.sub(zero, v)
         }
         // References / dereferences are transparent in value-semantics LIR.
@@ -999,6 +1045,11 @@ fn lower_call<T: LirTarget>(func: &IrExpr, args: &[IrExpr], ctx: &mut LowerCtx<T
     }
 
     // ---- Default: call_extern ----------------------------------------------
+    // Look up the called function's signature for return-type inference.
+    // Without this, intra-module calls would discard their return value.
+    let ret_ty = ctx.func_sigs.get(&func_name)
+        .and_then(|sig| sig.return_type.clone());
+
     let mut arg_tys: Vec<LirType> = Vec::new();
     let mut flat_args: Vec<T::Value> = Vec::new();
     for a in args {
@@ -1010,5 +1061,5 @@ fn lower_call<T: LirTarget>(func: &IrExpr, args: &[IrExpr], ctx: &mut LowerCtx<T
         flat_args.extend(lower_expr(a, ctx));
     }
 
-    ctx.target.call_extern(&func_name, &arg_tys, &flat_args, None)
+    ctx.target.call_extern(&func_name, &arg_tys, &flat_args, ret_ty)
 }

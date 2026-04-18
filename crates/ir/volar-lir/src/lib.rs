@@ -95,6 +95,82 @@ impl LirType {
 }
 
 // ============================================================================
+// ABI policy
+// ============================================================================
+
+/// ABI policy for a [`LirTarget`] backend.
+///
+/// Controls how values are passed between functions — inline vs. by-pointer,
+/// aggregate packing thresholds, and whether the backend supports native
+/// aggregate passing (structs/arrays as single C values).
+///
+/// Each [`LirTarget`] implementation returns its preferred ABI via
+/// [`LirTarget::abi`].  The compiler codegen layer
+/// (`volar-lir-codegen`) queries this to make passing-convention decisions.
+///
+/// # Variants
+///
+/// | Constant       | Backend          | Aggregates           | Pointer passing  |
+/// |----------------|------------------|----------------------|------------------|
+/// | `CIRCUIT`      | VolarIrTarget, VaffleTarget | Flattened to bits | N/A          |
+/// | `C_NATIVE`     | CBackend         | Native C structs     | Above threshold  |
+/// | `DEFAULT`      | Fallback         | Flattened to scalars | Disabled         |
+#[derive(Clone, Debug)]
+pub struct LirAbi {
+    /// Maximum number of flat scalars to pass inline (by value) at a call
+    /// site.  Aggregates whose [`flatten_count`] exceeds this are passed
+    /// via `StackAllocExt` (alloca + pointer) when the backend supports it.
+    ///
+    /// Set to `usize::MAX` to disable pointer-passing entirely.
+    pub aggregate_byval_limit: usize,
+
+    /// Whether the backend can accept and return aggregate types directly
+    /// in its native calling convention (e.g. C passes `struct` by value).
+    ///
+    /// When `true`, the codegen layer may skip flattening for types below
+    /// the `aggregate_byval_limit` and rely on the backend's own
+    /// pack/unpack logic (see `CBackend::pack_scalars`).
+    pub native_aggregates: bool,
+}
+
+impl LirAbi {
+    /// ABI for circuit backends (`VolarIrTarget`, `VaffleTarget`).
+    ///
+    /// Everything is decomposed to GF(2) bits; there is no concept of
+    /// aggregate passing or pointer indirection.  `aggregate_byval_limit`
+    /// is `usize::MAX` so the codegen layer never attempts pointer-passing.
+    pub const CIRCUIT: LirAbi = LirAbi {
+        aggregate_byval_limit: usize::MAX,
+        native_aggregates: false,
+    };
+
+    /// ABI for the C backend.
+    ///
+    /// Aggregates up to 64 flat scalars are passed by value as C structs.
+    /// Larger aggregates are passed by pointer via `StackAllocExt` when
+    /// available.
+    pub const C_NATIVE: LirAbi = LirAbi {
+        aggregate_byval_limit: 64,
+        native_aggregates: true,
+    };
+
+    /// Default ABI: unlimited inline passing, no native aggregates.
+    pub const DEFAULT: LirAbi = LirAbi {
+        aggregate_byval_limit: usize::MAX,
+        native_aggregates: false,
+    };
+
+    /// Whether `scalar_count` exceeds the inline-passing limit.
+    ///
+    /// Returns `true` when the aggregate should be passed by pointer
+    /// (assuming the backend has `StackAllocExt` support).
+    #[inline]
+    pub fn pass_by_ptr(&self, scalar_count: usize) -> bool {
+        scalar_count > self.aggregate_byval_limit
+    }
+}
+
+// ============================================================================
 // Stack allocation extension trait
 // ============================================================================
 
@@ -360,5 +436,17 @@ pub trait LirTarget<Prov: Clone + Default = ()> {
     /// (e.g. passing large structs by pointer in the C ABI).
     fn stack_alloc_ext(&mut self) -> Option<&mut dyn StackAllocExt<Value = Self::Value>> {
         None
+    }
+
+    /// Return the ABI policy for this target.
+    ///
+    /// The compiler codegen layer (`volar-lir-codegen`) queries this to
+    /// decide aggregate passing conventions, pointer-passing thresholds,
+    /// and other target-specific calling convention details.
+    ///
+    /// The default returns [`LirAbi::DEFAULT`].  Override in backends with
+    /// specialised ABIs (e.g. `CBackend` returns [`LirAbi::C_NATIVE`]).
+    fn abi(&self) -> LirAbi {
+        LirAbi::DEFAULT
     }
 }

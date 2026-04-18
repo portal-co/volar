@@ -57,7 +57,7 @@ use volar_ir::ir::{
     IRTypes, IRVarId, OracleDecl, ActionDecl,
 };
 use volar_ir_common::{Constant, IrType, Type as NativeType};
-use volar_lir::{BitCircuitBuilder, IcmpPred, LirTarget, LirType, StructDef, StructId};
+use volar_lir::{BitCircuitBuilder, IcmpPred, LirTarget, LirType, LirAbi, StructDef, StructId};
 use volar_lir::circuits::{
     bc_abs, bc_add, bc_and_vec, bc_ashr, bc_eq, bc_lshr, bc_mul, bc_ne, bc_neg,
     bc_not_vec, bc_or_vec, bc_sdiv, bc_select_vec, bc_shl, bc_sle, bc_slt,
@@ -1269,6 +1269,10 @@ impl<P: Clone + Default> LirTarget<P> for VolarIrTarget<P> {
         let id = self.emit(IRStmt::Rng { name: "rng".into(), ty: ir_ty });
         VolarValue { bits: vec![id], ty }
     }
+
+    fn abi(&self) -> LirAbi {
+        LirAbi::CIRCUIT
+    }
 }
 
 // ============================================================================
@@ -1685,5 +1689,14 @@ mod tests {
         // bits_for_lir_type is private, but begin_function exercises the same
         // path when it processes the parameter list.
         t.begin_function("f", &[LirType::Ptr(std::boxed::Box::new(LirType::U32))], None);
+    }
+
+    #[test]
+    fn test_volar_ir_target_abi_is_circuit() {
+        let t = VolarIrTarget::<()>::new();
+        let abi = t.abi();
+        assert!(!abi.native_aggregates);
+        assert_eq!(abi.aggregate_byval_limit, usize::MAX);
+        assert!(!abi.pass_by_ptr(1_000_000));
     }
 }
