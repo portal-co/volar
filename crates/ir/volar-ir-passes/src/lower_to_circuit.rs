@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn test_already_circuit_passthrough() {
         // A circuit should be returned unchanged.
-        let circuit = BIrBlocks(std::vec![BIrBlock {
+        let circuit: BIrBlocks<()> = BIrBlocks(std::vec![BIrBlock {
             params: 1,
             stmts: std::vec![],
             stmt_provs: std::vec![],
@@ -515,7 +515,7 @@ mod tests {
     #[test]
     fn test_lower_both_return_condjmp() {
         // CondJmp where both targets return: always done, result = mux(val, then, else).
-        let blocks = BIrBlocks(std::vec![BIrBlock {
+        let blocks: BIrBlocks<()> = BIrBlocks(std::vec![BIrBlock {
             params: 2, // two input bits: selector and value
             stmts: std::vec![],
             stmt_provs: std::vec![],

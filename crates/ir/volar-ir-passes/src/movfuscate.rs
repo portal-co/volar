@@ -1816,7 +1816,7 @@ mod tests {
 
     #[test]
     fn test_biir_four_block_pc_width() {
-        let make_pass = |dst: u32| BIrBlock {
+        let make_pass = |dst: u32| BIrBlock::<()> {
             params: 1,
             stmts: std::vec![],
             stmt_provs: std::vec![],
@@ -1880,7 +1880,7 @@ mod tests {
     #[test]
     fn test_ir_bit_single_block_passthrough() {
         let mut types = bit_types();
-        let blocks = IRBlocks::new(std::vec![IRBlock {
+        let blocks: IRBlocks<()> = IRBlocks::new(std::vec![IRBlock {
             params: std::vec![IRTypeId(0)],
             stmts: std::vec![],
             stmt_provs: std::vec![],
@@ -2039,7 +2039,7 @@ mod tests {
         let bit = IRTypeId(0);
         let g8 = IRTypeId(1);
 
-        let blocks = IRBlocks::new(std::vec![
+        let blocks: IRBlocks<()> = IRBlocks::new(std::vec![
             IRBlock {
                 params: std::vec![g8.clone(), bit.clone()],
                 stmts: std::vec![],

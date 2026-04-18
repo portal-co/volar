@@ -1548,14 +1548,14 @@ mod tests {
 
     #[test]
     fn test_value_scalar_type_bool() {
-        let t = VolarIrTarget::new();
+        let t = VolarIrTarget::<()>::new();
         let v = VolarValue { bits: std::vec![IRVarId(0)], ty: LirType::Bool };
         assert_eq!(t.value_scalar_type(&v), LirType::Bool);
     }
 
     #[test]
     fn test_value_scalar_type_u64() {
-        let t = VolarIrTarget::new();
+        let t = VolarIrTarget::<()>::new();
         let v = VolarValue { bits: (0..64).map(IRVarId).collect(), ty: LirType::U64 };
         assert_eq!(t.value_scalar_type(&v), LirType::U64);
     }
@@ -1655,5 +1655,35 @@ mod tests {
             t.ret(&result);
             t.end_function();
         });
+    }
+
+    // ---- StackAllocExt -------------------------------------------------
+
+    #[test]
+    fn test_stack_alloc_ext_returns_none() {
+        let mut t = VolarIrTarget::<()>::new();
+        assert!(
+            t.stack_alloc_ext().is_none(),
+            "VolarIrTarget has no memory model and must return None from stack_alloc_ext"
+        );
+    }
+
+    #[test]
+    fn test_lir_type_ptr_is_constructable() {
+        // Confirm the Ptr variant exists and wraps an inner type correctly.
+        let ty = LirType::Ptr(std::boxed::Box::new(LirType::U32));
+        match &ty {
+            LirType::Ptr(inner) => assert_eq!(**inner, LirType::U32),
+            _ => panic!("expected LirType::Ptr"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "VolarIrTarget: LirType::Ptr is not supported")]
+    fn test_bits_for_ptr_panics() {
+        let mut t = VolarIrTarget::<()>::new();
+        // bits_for_lir_type is private, but begin_function exercises the same
+        // path when it processes the parameter list.
+        t.begin_function("f", &[LirType::Ptr(std::boxed::Box::new(LirType::U32))], None);
     }
 }
