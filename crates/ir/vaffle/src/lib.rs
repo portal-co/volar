@@ -114,4 +114,38 @@ pub enum Value {
     /// Type annotations in the inner [`Stmt`] reference the same
     /// [`Module::types`] table as the rest of the module.
     Op(Stmt<ValueId>),
+    /// Allocate `count` elements of `elem_ty` on the function's stack frame.
+    ///
+    /// Returns a pointer (address bits) into `StorageId::STACK`.  The
+    /// allocated region is valid for the lifetime of the enclosing function
+    /// call.  `base_slot` is the compile-time slot offset assigned by the
+    /// target when the allocation was emitted.
+    StackAlloc {
+        elem_ty: TypeId,
+        count: usize,
+        /// The first stack-storage slot assigned to this allocation.
+        base_slot: u64,
+    },
+    /// Load a value through a stack pointer.
+    ///
+    /// `ptr` is a stack address (as emitted by `StackAlloc` or `PtrOffset`).
+    /// `pointee_ty` is the type of the loaded value.
+    PtrLoad {
+        ptr: ValueId,
+        pointee_ty: TypeId,
+    },
+    /// Store `val` through a stack pointer.  No result value.
+    PtrStore {
+        ptr: ValueId,
+        val: ValueId,
+    },
+    /// Element-wise pointer offset: `ptr + idx` elements (not bytes).
+    ///
+    /// `elem_bits` is the element width in storage slots so the lowering
+    /// can compute the byte offset without re-inspecting the type table.
+    PtrOffset {
+        ptr: ValueId,
+        idx: ValueId,
+        elem_bits: usize,
+    },
 }

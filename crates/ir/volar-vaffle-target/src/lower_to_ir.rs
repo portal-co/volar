@@ -395,10 +395,37 @@ impl<'m> LowerCtx<'m> {
 
                 // Emit stmts before the call.
                 for &svid in before_call {
-                    if let Value::Op(stmt) = &body.values[svid.0] {
-                        let ir_stmt = translate_stmt(stmt, &val_map);
-                        let id = current_em.emit(ir_stmt);
-                        val_map.insert(svid.0, id);
+                    match &body.values[svid.0] {
+                        Value::Op(stmt) => {
+                            let ir_stmt = translate_stmt(stmt, &val_map);
+                            let id = current_em.emit(ir_stmt);
+                            val_map.insert(svid.0, id);
+                        }
+                        Value::StackAlloc { elem_ty, count, base_slot } => {
+                            // Emit a constant address for the alloca's base slot.
+                            let addr = current_em.emit(IRStmt::Const(
+                                Constant { hi: 0, lo: *base_slot as u128 }, BIT_TID,
+                            ));
+                            val_map.insert(svid.0, addr);
+                        }
+                        Value::PtrLoad { ptr, pointee_ty } => {
+                            // PtrLoad is a marker; the actual reads were
+                            // already emitted as StorageRead ops.  Map it
+                            // to the pointer's IR var for downstream refs.
+                            let s = val_map.get(&ptr.0).copied().unwrap_or(IRVarId(0));
+                            val_map.insert(svid.0, s);
+                        }
+                        Value::PtrStore { .. } => {
+                            // PtrStore is a marker; actual writes were
+                            // emitted as StorageWrite ops.  No result.
+                        }
+                        Value::PtrOffset { ptr, idx, elem_bits } => {
+                            // PtrOffset is a marker; the actual add was
+                            // emitted inline.  Map to the idx's IR var.
+                            let s = val_map.get(&idx.0).copied().unwrap_or(IRVarId(0));
+                            val_map.insert(svid.0, s);
+                        }
+                        _ => {}
                     }
                 }
 
@@ -641,5 +668,54 @@ fn translate_stmt(
                 output_tys: output_tys.clone(), result_ty: *result_ty },
         volar_ir_common::Stmt::ActionOutput { call, idx, ty } =>
             IRStmt::ActionOutput { call: s(call), idx: *idx, ty: *ty },
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+    use crate::target::VaffleTarget;
+    use volar_lir::{LirTarget, LirType, StackAllocExt};
+
+    #[test]
+    fn test_lower_vaffle_with_stack_alloc() {
+        let mut t = VaffleTarget::new();
+        let (entry, params) = t.begin_function("test_alloc", &[LirType::U32], Some(LirType::U32));
+        t.switch_to_block(entry);
+
+        let input = params[0][0].clone();
+
+        // Allocate, store the input, load it back.
+        let ptr = t.alloca(LirType::U32, 1);
+        t.ptr_store(ptr.clone(), input);
+        let loaded = t.ptr_load(ptr, LirType::U32);
+
+        t.ret(&[loaded]);
+        t.end_function();
+
+        // Lower to IR — this should not panic.
+        let (ir_blocks, ir_types) = lower_vaffle_to_ir(&t.module);
+
+        // Should have at least the entry block, exit continuation, and function blocks.
+        assert!(
+            ir_blocks.blocks.len() >= 3,
+            "expected at least 3 IR blocks, got {}",
+            ir_blocks.blocks.len()
+        );
+
+        // Verify that STACK StorageRead/Write appear in the lowered IR.
+        let has_stack_ops = ir_blocks.blocks.iter().any(|block| {
+            block.stmts.iter().any(|stmt| matches!(
+                stmt,
+                IRStmt::StorageRead { storage, .. } | IRStmt::StorageWrite { storage, .. }
+                    if *storage == StorageId::STACK
+            ))
+        });
+        assert!(has_stack_ops, "lowered IR should contain STACK storage ops");
     }
 }

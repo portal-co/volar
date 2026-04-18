@@ -15,7 +15,7 @@ use alloc::{
 };
 
 use volar_ir_common::{
-    ActionDecl, Constant, IrType, OracleDecl, Stmt, Type, TypeId, TypeTable,
+    ActionDecl, Constant, IrType, OracleDecl, Stmt, StorageId, Type, TypeId, TypeTable,
 };
 use volar_lir::{
     circuits::{
@@ -23,7 +23,7 @@ use volar_lir::{
         bc_not_vec, bc_or_vec, bc_sdiv, bc_select_vec, bc_shl, bc_sle, bc_slt,
         bc_sub, bc_udiv, bc_ule, bc_ult, bc_xor_vec, StorageEmitter,
     },
-    BitCircuitBuilder, IcmpPred, LirTarget, LirType, StructDef, StructId,
+    BitCircuitBuilder, IcmpPred, LirTarget, LirType, StackAllocExt, StructDef, StructId,
 };
 
 use vaffle::{
@@ -69,6 +69,8 @@ pub(crate) struct FuncBuilder {
     current: usize,
     all_values: Vec<Value>,
     bit_tid: TypeId,
+    /// Next free stack-storage slot for `StackAlloc` within this function.
+    next_stack_slot: u64,
 }
 
 impl FuncBuilder {
@@ -80,6 +82,7 @@ impl FuncBuilder {
             current: 0,
             all_values: vec![],
             bit_tid,
+            next_stack_slot: 0,
         }
     }
 
@@ -157,6 +160,33 @@ impl VaffleTarget {
 
     pub fn register_oracle(&mut self, decl: OracleDecl) { self.module.oracles.push(decl); }
     pub fn register_action(&mut self, decl: ActionDecl) { self.module.actions.push(decl); }
+
+    /// Convert a `LirType` to a `TypeId` in the module's type table.
+    pub(crate) fn lir_type_to_tid(&mut self, ty: &LirType) -> TypeId {
+        match ty {
+            LirType::Bool => self.bit_tid(),
+            LirType::I8 | LirType::U8  => self.intern_type(IrType::Primitive(Type::_8)),
+            LirType::I16 | LirType::U16 => self.intern_type(IrType::Primitive(Type::_16)),
+            LirType::I32 | LirType::U32 => self.intern_type(IrType::Primitive(Type::_32)),
+            LirType::I64 | LirType::U64 => self.intern_type(IrType::Primitive(Type::_64)),
+            LirType::Native(t) => self.intern_type(IrType::Primitive(*t)),
+            LirType::Arr(elem, n) => {
+                let elem_tid = self.lir_type_to_tid(elem);
+                self.intern_type(IrType::Vec(*n, elem_tid))
+            }
+            _ => self.bit_tid(), // fallback for Struct/Ptr
+        }
+    }
+
+    /// Pad or truncate a `VaffleValue` to exactly `PTR_BITS` bits.
+    pub(crate) fn pad_to_ptr_bits(&mut self, val: VaffleValue) -> Vec<ValueId> {
+        let mut bits = val.bits;
+        while bits.len() < PTR_BITS {
+            bits.push(self.bc_const(false));
+        }
+        bits.truncate(PTR_BITS);
+        bits
+    }
 }
 
 impl Default for VaffleTarget {
@@ -509,11 +539,139 @@ impl LirTarget for VaffleTarget {
         let cur = fb.current;
         fb.blocks[cur].terminator = Some(Terminator::Return { values: flat });
     }
+
+    fn stack_alloc_ext(&mut self) -> Option<&mut dyn StackAllocExt<Value = Self::Value>> {
+        Some(self)
+    }
+}
+
+// ============================================================================
+// StackAllocExt — stack allocation via StorageId::STACK
+// ============================================================================
+
+impl StackAllocExt for VaffleTarget {
+    type Value = VaffleValue;
+
+    fn alloca(&mut self, elem_ty: LirType, count: usize) -> VaffleValue {
+        let elem_bits = bits_for_lir_type(&elem_ty, &self.struct_widths);
+        let total_slots = (elem_bits * count) as u64;
+        let base_slot = self.fb().next_stack_slot;
+        self.fb().next_stack_slot += total_slots;
+
+        // Intern the pointee type so we can record it in the VAFFLE value.
+        let elem_tid = self.lir_type_to_tid(&elem_ty);
+
+        // Emit the StackAlloc value node.
+        let alloc_val = Value::StackAlloc {
+            elem_ty: elem_tid,
+            count,
+            base_slot,
+        };
+        let _alloc_vid = self.fb().emit_value(alloc_val);
+
+        // The pointer is the constant address `base_slot`, bit-decomposed.
+        let addr_bits: Vec<ValueId> = (0..PTR_BITS)
+            .map(|i| self.bc_const((base_slot >> i) & 1 != 0))
+            .collect();
+        VaffleValue {
+            bits: addr_bits,
+            ty: LirType::Ptr(alloc::boxed::Box::new(elem_ty)),
+        }
+    }
+
+    fn ptr_load(&mut self, ptr: VaffleValue, ty: LirType) -> VaffleValue {
+        let n = bits_for_lir_type(&ty, &self.struct_widths);
+        let bit_tid = self.bit_tid();
+        let storage = StorageId::STACK;
+
+        // Read `n` individual bit-slots from STACK storage.
+        let mut bits = Vec::with_capacity(n);
+        for i in 0..n {
+            let mut addr_bits = ptr.bits.clone();
+            if i > 0 {
+                // offset = ptr + i
+                let off = self.iconst(LirType::U32, i as i64);
+                let padded = self.pad_to_ptr_bits(off);
+                addr_bits = bc_add(self, &addr_bits, &padded, false);
+            }
+            let v = self.emit_read(storage, bit_tid, &addr_bits);
+            bits.push(v);
+        }
+
+        // Record the PtrLoad in the VAFFLE value stream for the lowering pass.
+        let pointee_tid = self.lir_type_to_tid(&ty);
+        let load_val = Value::PtrLoad {
+            ptr: ptr.bits[0], // representative (the actual addr is in the storage reads above)
+            pointee_ty: pointee_tid,
+        };
+        let _load_vid = self.fb().emit_value(load_val);
+
+        VaffleValue { bits, ty }
+    }
+
+    fn ptr_store(&mut self, ptr: VaffleValue, val: VaffleValue) {
+        let n = val.bits.len();
+        let bit_tid = self.bit_tid();
+        let storage = StorageId::STACK;
+
+        for i in 0..n {
+            let mut addr_bits = ptr.bits.clone();
+            if i > 0 {
+                let off = self.iconst(LirType::U32, i as i64);
+                let padded = self.pad_to_ptr_bits(off);
+                addr_bits = bc_add(self, &addr_bits, &padded, false);
+            }
+            self.emit_write(storage, val.bits[i], bit_tid, &addr_bits);
+        }
+
+        // Record the PtrStore for the VAFFLE lowering.
+        let store_val = Value::PtrStore {
+            ptr: ptr.bits[0],
+            val: val.bits[0],
+        };
+        let _store_vid = self.fb().emit_value(store_val);
+    }
+
+    fn ptr_offset(&mut self, ptr: VaffleValue, idx: VaffleValue) -> VaffleValue {
+        let pointee_ty = match &ptr.ty {
+            LirType::Ptr(inner) => inner.as_ref().clone(),
+            other => other.clone(),
+        };
+        let elem_bits = bits_for_lir_type(&pointee_ty, &self.struct_widths);
+
+        // offset_slots = idx * elem_bits
+        let scale = self.iconst(LirType::U32, elem_bits as i64);
+        let scaled_idx = self.mul(idx, scale);
+
+        // Pad to pointer width and add.
+        let padded = self.pad_to_ptr_bits(scaled_idx);
+        let new_bits = bc_add(self, &ptr.bits, &padded, false);
+
+        // Record the PtrOffset for the VAFFLE lowering.
+        let offset_val = Value::PtrOffset {
+            ptr: ptr.bits[0],
+            idx: new_bits[0], // representative
+            elem_bits,
+        };
+        let _offset_vid = self.fb().emit_value(offset_val);
+
+        VaffleValue {
+            bits: new_bits,
+            ty: ptr.ty.clone(),
+        }
+    }
 }
 
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/// Width of a stack pointer / alloca address in bits.
+///
+/// This determines how many `ValueId` bits a `LirType::Ptr(_)` value carries.
+/// 32 bits allows addressing up to 4 billion storage slots per function frame,
+/// which is more than enough for any realistic circuit.
+pub const PTR_BITS: usize = 32;
 
 pub(crate) fn bits_for_lir_type(ty: &LirType, struct_widths: &[usize]) -> usize {
     match ty {
@@ -525,6 +683,149 @@ pub(crate) fn bits_for_lir_type(ty: &LirType, struct_widths: &[usize]) -> usize 
         LirType::Arr(elem, n) => n * bits_for_lir_type(elem, struct_widths),
         LirType::Struct(id) => struct_widths[*id as usize],
         LirType::Native(_) => 1,
-        LirType::Ptr(_) => panic!("VaffleTarget: LirType::Ptr is not supported (circuit backends have no memory model)"),
+        LirType::Ptr(_) => PTR_BITS,
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+    use volar_ir_common::Stmt;
+
+    #[test]
+    fn test_stack_alloc_ext_available() {
+        let mut t = VaffleTarget::new();
+        let (_entry, _params) = t.begin_function("test", &[LirType::U32], None);
+        assert!(
+            t.stack_alloc_ext().is_some(),
+            "VaffleTarget must return Some from stack_alloc_ext"
+        );
+        t.ret(&[]);
+        t.end_function();
+    }
+
+    #[test]
+    fn test_alloca_produces_stack_alloc_value() {
+        let mut t = VaffleTarget::new();
+        let (entry, _params) = t.begin_function("test", &[], None);
+        t.switch_to_block(entry);
+
+        let ptr = t.alloca(LirType::U32, 4);
+
+        // The returned value should be a Ptr type with PTR_BITS bits.
+        assert_eq!(ptr.bits.len(), PTR_BITS);
+        assert!(matches!(ptr.ty, LirType::Ptr(_)));
+
+        t.ret(&[]);
+        t.end_function();
+
+        // The function body should contain a StackAlloc value.
+        let body = match &t.module.funcs[0] {
+            vaffle::FuncDecl::Body(b) => b,
+            _ => panic!("expected function body"),
+        };
+        let has_stack_alloc = body.values.iter().any(|v| matches!(v, Value::StackAlloc { .. }));
+        assert!(has_stack_alloc, "VAFFLE should contain a StackAlloc value");
+    }
+
+    #[test]
+    fn test_ptr_store_and_load_round_trip() {
+        let mut t = VaffleTarget::new();
+        let (entry, _params) = t.begin_function("test", &[], Some(LirType::U32));
+        t.switch_to_block(entry);
+
+        // Allocate 1 element of U32.
+        let ptr = t.alloca(LirType::U32, 1);
+
+        // Store a constant.
+        let val = t.iconst(LirType::U32, 42);
+        t.ptr_store(ptr.clone(), val);
+
+        // Load it back.
+        let loaded = t.ptr_load(ptr, LirType::U32);
+        assert_eq!(loaded.bits.len(), 32);
+        assert_eq!(loaded.ty, LirType::U32);
+
+        t.ret(&[loaded]);
+        t.end_function();
+
+        // Should have StorageRead and StorageWrite with STACK storage.
+        let body = match &t.module.funcs[0] {
+            vaffle::FuncDecl::Body(b) => b,
+            _ => panic!("expected function body"),
+        };
+        let has_stack_write = body.values.iter().any(|v| matches!(
+            v, Value::Op(Stmt::StorageWrite { storage, .. }) if *storage == StorageId::STACK
+        ));
+        let has_stack_read = body.values.iter().any(|v| matches!(
+            v, Value::Op(Stmt::StorageRead { storage, .. }) if *storage == StorageId::STACK
+        ));
+        assert!(has_stack_write, "ptr_store should emit StorageWrite to STACK");
+        assert!(has_stack_read, "ptr_load should emit StorageRead from STACK");
+    }
+
+    #[test]
+    fn test_ptr_offset_element_scaling() {
+        let mut t = VaffleTarget::new();
+        let (entry, _params) = t.begin_function("test", &[], None);
+        t.switch_to_block(entry);
+
+        // Allocate 4 elements of U32 (32 bits each).
+        let ptr = t.alloca(LirType::U32, 4);
+        let idx = t.iconst(LirType::U32, 2);
+        let offset_ptr = t.ptr_offset(ptr.clone(), idx);
+
+        // The offset pointer should still be a Ptr type.
+        assert!(matches!(offset_ptr.ty, LirType::Ptr(_)));
+        assert_eq!(offset_ptr.bits.len(), PTR_BITS);
+
+        // There should be a PtrOffset value in the body.
+        t.ret(&[]);
+        t.end_function();
+
+        let body = match &t.module.funcs[0] {
+            vaffle::FuncDecl::Body(b) => b,
+            _ => panic!("expected function body"),
+        };
+        let has_ptr_offset = body.values.iter().any(|v| matches!(v, Value::PtrOffset { elem_bits: 32, .. }));
+        assert!(has_ptr_offset, "VAFFLE should contain a PtrOffset with elem_bits=32");
+    }
+
+    #[test]
+    fn test_multiple_allocas_non_overlapping() {
+        let mut t = VaffleTarget::new();
+        let (entry, _params) = t.begin_function("test", &[], None);
+        t.switch_to_block(entry);
+
+        let ptr1 = t.alloca(LirType::U32, 2); // 64 slots
+        let ptr2 = t.alloca(LirType::U8, 4);  // 32 slots
+
+        t.ret(&[]);
+        t.end_function();
+
+        // Extract the base_slot from the StackAlloc values.
+        let body = match &t.module.funcs[0] {
+            vaffle::FuncDecl::Body(b) => b,
+            _ => panic!("expected function body"),
+        };
+        let allocs: std::vec::Vec<_> = body.values.iter().filter_map(|v| match v {
+            Value::StackAlloc { base_slot, count, .. } => Some((*base_slot, *count)),
+            _ => None,
+        }).collect();
+        assert_eq!(allocs.len(), 2);
+        // First alloc at slot 0, size = 32*2 = 64 slots.
+        assert_eq!(allocs[0].0, 0);
+        // Second alloc at slot 64.
+        assert_eq!(allocs[1].0, 64);
+    }
+
+    #[test]
+    fn test_bits_for_lir_type_ptr() {
+        assert_eq!(bits_for_lir_type(&LirType::Ptr(alloc::boxed::Box::new(LirType::U32)), &[]), PTR_BITS);
     }
 }
