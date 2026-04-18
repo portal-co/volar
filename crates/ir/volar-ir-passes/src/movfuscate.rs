@@ -1264,8 +1264,14 @@ impl<P: Clone + Default> MovfuscCtx for IrCtx<P> {
             // into a Vec(pc_width, Bit) and write to storage ID 2n (even).
             // Non-Block StorageWrite remaps to storage ID 2n+1 (odd).
             if let IRStmt::StorageWrite { storage, src, ty, addr } = &mapped {
-                let src_u32 = src.0;
-                if let Some((bits, _sig)) = self.block_var_to_bits.get(&src_u32).cloned() {
+                // `src` is the post-substitution combined-block var ID.
+                // `block_var_to_bits` is keyed by *original* IR var IDs, so
+                // we must look up via the pre-substitution src from `stmt`.
+                let orig_src_id = match stmt {
+                    IRStmt::StorageWrite { src, .. } => src.0,
+                    _ => unreachable!(),
+                };
+                if let Some((bits, _sig)) = self.block_var_to_bits.get(&orig_src_id).cloned() {
                     // Block-typed write: merge PC bits into Vec and store in even lane.
                     let parts: Vec<IRVarId> = bits.iter().map(|&b| IRVarId(b)).collect();
                     let merged = self.push_typed(
@@ -2452,5 +2458,200 @@ mod tests {
             }
             other => panic!("expected JumpCond, got {:?}", other),
         }
+    }
+
+    // =========================================================================
+    // IRBlocks movfuscation — block storage (StorageRead/StorageWrite lane split)
+    // =========================================================================
+
+    /// Build a 2-block circuit with a non-Block `StorageWrite` in block 0:
+    ///
+    /// - Block 0: params=[addr: Bit],
+    ///            stmts=[_w = StorageWrite(storage=5, src=addr, ty=Bit, addr=addr)],
+    ///            Jmp(Block(1), [addr])
+    /// - Block 1: params=[x: Bit], Jmp(Return, [x])
+    ///
+    /// After movfuscation, the StorageWrite storage ID must be remapped to the
+    /// odd lane: `5 * 2 + 1 = 11`.
+    fn two_block_nonblock_storage_write() -> (IRBlocks, IRTypes) {
+        let types = IRTypes(std::vec![IRType::Primitive(Type::Bit)]);
+        let bit = IRTypeId(0);
+        let storage_in = StorageId(5);
+        let blocks = IRBlocks::new(std::vec![
+            IRBlock {
+                params: std::vec![bit.clone()],
+                stmts: std::vec![IRStmt::StorageWrite {
+                    storage: storage_in,
+                    src: IRVarId(0),
+                    ty: bit.clone(),
+                    addr: IRVarId(0),
+                }],
+                stmt_provs: std::vec![()],
+                terminator: IRTerminator::Jmp {
+                    func: IRBlockTargetId::Block(IRBlockId(1)),
+                    args: std::vec![IRVarId(0)],
+                },
+            },
+            IRBlock {
+                params: std::vec![bit.clone()],
+                stmts: std::vec![],
+                stmt_provs: std::vec![],
+                terminator: IRTerminator::Jmp {
+                    func: IRBlockTargetId::Return,
+                    args: std::vec![IRVarId(0)],
+                },
+            },
+        ]);
+        (blocks, types)
+    }
+
+    #[test]
+    fn test_storage_write_nonblock_uses_odd_lane() {
+        let (blocks, mut types) = two_block_nonblock_storage_write();
+        let result = movfuscate_ir(&blocks, &mut types);
+        assert!(result.is_movfuscated());
+        // Find the StorageWrite in the combined block and verify it got the odd lane ID.
+        let odd_lane = StorageId(5 * 2 + 1);
+        let has_write = result.blocks[0].stmts.iter().any(|s| {
+            matches!(s, IRStmt::StorageWrite { storage, .. } if *storage == odd_lane)
+        });
+        assert!(has_write, "non-Block StorageWrite must be remapped to odd lane 11");
+        // Verify the original even ID 10 does not appear.
+        let no_even = !result.blocks[0].stmts.iter().any(|s| {
+            matches!(s, IRStmt::StorageWrite { storage, .. } if *storage == StorageId(5 * 2))
+        });
+        assert!(no_even, "even lane must not be used for non-Block write");
+    }
+
+    /// Build a 2-block circuit with a non-Block `StorageRead` in block 0:
+    ///
+    /// - Block 0: params=[addr: Bit],
+    ///            stmts=[v = StorageRead(storage=3, ty=Bit, addr=addr)],
+    ///            Jmp(Block(1), [v])
+    /// - Block 1: params=[x: Bit], Jmp(Return, [x])
+    ///
+    /// After movfuscation, StorageRead must be remapped to odd lane: `3*2+1 = 7`.
+    fn two_block_nonblock_storage_read() -> (IRBlocks, IRTypes) {
+        let types = IRTypes(std::vec![IRType::Primitive(Type::Bit)]);
+        let bit = IRTypeId(0);
+        let blocks = IRBlocks::new(std::vec![
+            IRBlock {
+                params: std::vec![bit.clone()],
+                stmts: std::vec![IRStmt::StorageRead {
+                    storage: StorageId(3),
+                    ty: bit.clone(),
+                    addr: IRVarId(0),
+                }],
+                stmt_provs: std::vec![()],
+                terminator: IRTerminator::Jmp {
+                    func: IRBlockTargetId::Block(IRBlockId(1)),
+                    args: std::vec![IRVarId(1)], // the read result
+                },
+            },
+            IRBlock {
+                params: std::vec![bit.clone()],
+                stmts: std::vec![],
+                stmt_provs: std::vec![],
+                terminator: IRTerminator::Jmp {
+                    func: IRBlockTargetId::Return,
+                    args: std::vec![IRVarId(0)],
+                },
+            },
+        ]);
+        (blocks, types)
+    }
+
+    #[test]
+    fn test_storage_read_nonblock_uses_odd_lane() {
+        let (blocks, mut types) = two_block_nonblock_storage_read();
+        let result = movfuscate_ir(&blocks, &mut types);
+        assert!(result.is_movfuscated());
+        let odd_lane = StorageId(3 * 2 + 1);
+        let has_read = result.blocks[0].stmts.iter().any(|s| {
+            matches!(s, IRStmt::StorageRead { storage, .. } if *storage == odd_lane)
+        });
+        assert!(has_read, "non-Block StorageRead must be remapped to odd lane 7");
+        let no_even = !result.blocks[0].stmts.iter().any(|s| {
+            matches!(s, IRStmt::StorageRead { storage, .. } if *storage == StorageId(3 * 2))
+        });
+        assert!(no_even, "even lane must not be used for non-Block read");
+    }
+
+    /// Block-typed StorageWrite uses the even lane.
+    ///
+    /// - Block 0: params=[addr: Bit],
+    ///            stmts=[c = Const(1, Block{[]}), _w = StorageWrite(storage=2, src=c, ...)],
+    ///            Jmp(Dyn(c), [])
+    /// - Block 1: params=[cont: Block{[]}], Jmp(Return, [])
+    ///
+    /// After movfuscation, the StorageWrite must:
+    ///   1. Use even storage lane: `2 * 2 = 4`.
+    ///   2. Be preceded by a Merge stmt (to pack the PC bits).
+    fn two_block_block_storage_write() -> (IRBlocks, IRTypes) {
+        let mut types = IRTypes(std::vec![IRType::Primitive(Type::Bit)]);
+        let bit = IRTypeId(0);
+        let block_ty = IRTypeId(types.0.len() as u32);
+        types.0.push(IRType::Block { params: std::vec![] });
+
+        let blocks = IRBlocks::new(std::vec![
+            IRBlock {
+                params: std::vec![bit.clone()],
+                stmts: std::vec![
+                    // stmt 0: c = Const(1, Block{[]})
+                    IRStmt::Const(Constant { hi: 0, lo: 1 }, block_ty.clone()),
+                    // stmt 1: _w = StorageWrite(storage=2, src=c, ty=Block{[]}, addr=addr)
+                    IRStmt::StorageWrite {
+                        storage: StorageId(2),
+                        src: IRVarId(1), // c (var 1, since params=[bit] → var 0 = addr, var 1 = c)
+                        ty: block_ty.clone(),
+                        addr: IRVarId(0),
+                    },
+                ],
+                stmt_provs: std::vec![(), ()],
+                terminator: IRTerminator::Jmp {
+                    func: IRBlockTargetId::Dyn(IRVarId(1)), // c
+                    args: std::vec![],
+                },
+            },
+            IRBlock {
+                params: std::vec![block_ty.clone()],
+                stmts: std::vec![],
+                stmt_provs: std::vec![],
+                terminator: IRTerminator::Jmp {
+                    func: IRBlockTargetId::Return,
+                    args: std::vec![],
+                },
+            },
+        ]);
+        (blocks, types)
+    }
+
+    #[test]
+    fn test_storage_write_block_uses_even_lane() {
+        let (blocks, mut types) = two_block_block_storage_write();
+        let result = movfuscate_ir(&blocks, &mut types);
+        assert!(result.is_movfuscated());
+        // Even lane: 2 * 2 = 4.
+        let even_lane = StorageId(2 * 2);
+        let has_even_write = result.blocks[0].stmts.iter().any(|s| {
+            matches!(s, IRStmt::StorageWrite { storage, .. } if *storage == even_lane)
+        });
+        assert!(has_even_write, "Block-typed StorageWrite must use even lane 4");
+        // Odd lane must not appear for this write.
+        let no_odd = !result.blocks[0].stmts.iter().any(|s| {
+            matches!(s, IRStmt::StorageWrite { storage, .. } if *storage == StorageId(2 * 2 + 1))
+        });
+        assert!(no_odd, "odd lane must not be used for Block-typed write");
+    }
+
+    #[test]
+    fn test_storage_write_block_emits_merge_stmt() {
+        let (blocks, mut types) = two_block_block_storage_write();
+        let result = movfuscate_ir(&blocks, &mut types);
+        // A Merge stmt must appear to pack the Block's PC bits into a Vec.
+        let has_merge = result.blocks[0].stmts.iter().any(|s| {
+            matches!(s, IRStmt::Merge { .. })
+        });
+        assert!(has_merge, "Block-typed StorageWrite must emit a Merge stmt to pack PC bits");
     }
 }

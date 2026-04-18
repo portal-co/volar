@@ -96,3 +96,88 @@ where
         (self.0)(prov)
     }
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+
+    // ---- NoProvenance -------------------------------------------------------
+
+    #[test]
+    fn no_provenance_map_returns_unit() {
+        let h = NoProvenance;
+        assert_eq!(h.map(&42u32), ());
+        assert_eq!(h.map(&"hello"), ());
+    }
+
+    #[test]
+    fn no_provenance_synthetic_returns_unit() {
+        let h = NoProvenance;
+        assert_eq!(<NoProvenance as ProvenanceHandler<u32>>::synthetic(&h), ());
+    }
+
+    // ---- KeepProvenance -----------------------------------------------------
+
+    #[test]
+    fn keep_provenance_map_clones_value() {
+        let h = KeepProvenance;
+        assert_eq!(h.map(&7u32), 7u32);
+        assert_eq!(h.map(&100u32), 100u32);
+    }
+
+    #[test]
+    fn keep_provenance_synthetic_returns_default() {
+        let h = KeepProvenance;
+        let synthetic: u32 = h.synthetic();
+        assert_eq!(synthetic, u32::default());
+    }
+
+    #[test]
+    fn keep_provenance_map_preserves_string() {
+        let h = KeepProvenance;
+        let s = std::string::String::from("abc");
+        assert_eq!(h.map(&s), s);
+    }
+
+    // ---- MapProvenance ------------------------------------------------------
+
+    #[test]
+    fn map_provenance_applies_closure() {
+        let h = MapProvenance(|x: &u32| *x * 2);
+        assert_eq!(h.map(&3u32), 6u32);
+        assert_eq!(h.map(&0u32), 0u32);
+    }
+
+    #[test]
+    fn map_provenance_synthetic_returns_output_default() {
+        let h = MapProvenance(|x: &u32| *x * 2);
+        // synthetic() returns Q::default() = 0u32
+        assert_eq!(h.synthetic(), 0u32);
+    }
+
+    #[test]
+    fn map_provenance_type_conversion() {
+        // Map u32 → bool: non-zero becomes true.
+        let h = MapProvenance(|x: &u32| *x != 0);
+        assert_eq!(h.map(&0u32), false);
+        assert_eq!(h.map(&1u32), true);
+        assert_eq!(h.map(&99u32), true);
+    }
+
+    // ---- Trait object usage -------------------------------------------------
+
+    #[test]
+    fn provenance_handler_via_trait_object() {
+        // Verify the trait is object-safe by using it via a reference.
+        fn run(handler: &dyn ProvenanceHandler<u32, Output = ()>, val: u32) {
+            let _ = handler.map(&val);
+            let _ = handler.synthetic();
+        }
+        run(&NoProvenance, 42);
+    }
+}

@@ -1738,3 +1738,291 @@ fn write_jump_setup(f: &mut fmt::Formatter<'_>, jump: &IrCfgJump, indent: &str) 
     writeln!(f, "{}__state = {};", indent, jump.target)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    #[allow(unused_imports)]
+    use std::prelude::rust_2021::*;
+    use std::format;
+    use std::string::{String, ToString};
+    use std::vec;
+    use std::vec::Vec;
+    use super::*;
+    use crate::ir::{
+        ExternalKind, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump, IrCfgTerminator, IrExpr,
+        IrLit, IrParam, IrType, PrimitiveType,
+    };
+
+    fn minimal_cfg_fn(name: &str, blocks: Vec<IrCfgBlock>) -> IrCfgFunction {
+        IrCfgFunction {
+            name: name.to_string(),
+            generics: vec![],
+            receiver: None,
+            params: vec![],
+            return_type: None,
+            where_clause: vec![],
+            external_kind: ExternalKind::Normal,
+            body: IrCfgBody { blocks },
+        }
+    }
+
+    fn render(func: &IrCfgFunction) -> String {
+        format!("{}", DisplayRust(CfgFunctionWriter { func, level: 0 }))
+    }
+
+    // ── Single-block fast path ────────────────────────────────────────────────
+
+    #[test]
+    fn single_block_return_none_no_state_machine() {
+        let func = minimal_cfg_fn(
+            "foo",
+            vec![IrCfgBlock {
+                params: vec![],
+                stmts: vec![],
+                stmt_provs: vec![],
+                terminator: IrCfgTerminator::Return(None),
+            }],
+        );
+        let out = render(&func);
+        assert!(out.contains("pub fn foo()"), "missing signature: {}", out);
+        assert!(
+            !out.contains("__state"),
+            "single-block should not emit state machine: {}",
+            out
+        );
+        assert!(!out.contains("loop {"), "should not emit loop: {}", out);
+    }
+
+    #[test]
+    fn single_block_return_expr_no_state_machine() {
+        let func = minimal_cfg_fn(
+            "bar",
+            vec![IrCfgBlock {
+                params: vec![],
+                stmts: vec![],
+                stmt_provs: vec![],
+                terminator: IrCfgTerminator::Return(Some(IrExpr::Lit(IrLit::Bool(true)))),
+            }],
+        );
+        let out = render(&func);
+        assert!(out.contains("true"), "missing return value: {}", out);
+        assert!(!out.contains("__state"), "should not emit state machine: {}", out);
+    }
+
+    // ── Multi-block: state-machine structure ──────────────────────────────────
+
+    #[test]
+    fn multi_block_emits_state_machine_skeleton() {
+        let func = minimal_cfg_fn(
+            "state_fn",
+            vec![
+                IrCfgBlock {
+                    params: vec![],
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: vec![] }),
+                },
+                IrCfgBlock {
+                    params: vec![],
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    terminator: IrCfgTerminator::Return(None),
+                },
+            ],
+        );
+        let out = render(&func);
+        assert!(out.contains("let mut __state: usize = 0;"), "missing __state decl: {}", out);
+        assert!(out.contains("loop {"), "missing loop: {}", out);
+        assert!(out.contains("match __state {"), "missing match: {}", out);
+        assert!(out.contains("_ => unreachable!(),"), "missing unreachable arm: {}", out);
+    }
+
+    #[test]
+    fn multi_block_goto_sets_state_and_continues() {
+        let func = minimal_cfg_fn(
+            "goto_fn",
+            vec![
+                IrCfgBlock {
+                    params: vec![],
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: vec![] }),
+                },
+                IrCfgBlock {
+                    params: vec![],
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    terminator: IrCfgTerminator::Return(None),
+                },
+            ],
+        );
+        let out = render(&func);
+        assert!(out.contains("__state = 1;"), "expected __state = 1: {}", out);
+        assert!(out.contains("continue;"), "expected continue: {}", out);
+    }
+
+    #[test]
+    fn multi_block_return_in_arm() {
+        let func = minimal_cfg_fn(
+            "ret_fn",
+            vec![
+                IrCfgBlock {
+                    params: vec![],
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: vec![] }),
+                },
+                IrCfgBlock {
+                    params: vec![],
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    terminator: IrCfgTerminator::Return(Some(IrExpr::Lit(IrLit::Int(42)))),
+                },
+            ],
+        );
+        let out = render(&func);
+        assert!(out.contains("return 42;"), "expected return 42: {}", out);
+    }
+
+    // ── Block params: Option slot declaration ─────────────────────────────────
+
+    #[test]
+    fn block_params_declare_option_slots() {
+        let func = minimal_cfg_fn(
+            "param_fn",
+            vec![
+                IrCfgBlock {
+                    params: vec![],
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    terminator: IrCfgTerminator::Goto(IrCfgJump {
+                        target: 1,
+                        args: vec![IrExpr::Lit(IrLit::Bool(false))],
+                    }),
+                },
+                IrCfgBlock {
+                    params: vec![IrParam {
+                        name: "x".to_string(),
+                        ty: IrType::Primitive(PrimitiveType::Bool),
+                    }],
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    terminator: IrCfgTerminator::Return(None),
+                },
+            ],
+        );
+        let out = render(&func);
+        assert!(
+            out.contains("let mut __b1_p0: Option<bool> = None;"),
+            "missing Option slot decl: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn jump_args_loaded_into_option_slots() {
+        let func = minimal_cfg_fn(
+            "arg_fn",
+            vec![
+                IrCfgBlock {
+                    params: vec![],
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    terminator: IrCfgTerminator::Goto(IrCfgJump {
+                        target: 1,
+                        args: vec![IrExpr::Var("val".to_string())],
+                    }),
+                },
+                IrCfgBlock {
+                    params: vec![IrParam {
+                        name: "y".to_string(),
+                        ty: IrType::Primitive(PrimitiveType::Bool),
+                    }],
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    terminator: IrCfgTerminator::Return(None),
+                },
+            ],
+        );
+        let out = render(&func);
+        assert!(
+            out.contains("__b1_p0 = Some(val);"),
+            "expected slot assignment: {}",
+            out
+        );
+    }
+
+    #[test]
+    fn block_params_taken_at_arm_entry() {
+        let func = minimal_cfg_fn(
+            "take_fn",
+            vec![
+                IrCfgBlock {
+                    params: vec![],
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    terminator: IrCfgTerminator::Goto(IrCfgJump {
+                        target: 1,
+                        args: vec![IrExpr::Lit(IrLit::Int(0))],
+                    }),
+                },
+                IrCfgBlock {
+                    params: vec![IrParam {
+                        name: "acc".to_string(),
+                        ty: IrType::Primitive(PrimitiveType::U32),
+                    }],
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    terminator: IrCfgTerminator::Return(None),
+                },
+            ],
+        );
+        let out = render(&func);
+        assert!(
+            out.contains("let mut acc = __b1_p0.take().unwrap();"),
+            "expected take().unwrap() binding: {}",
+            out
+        );
+    }
+
+    // ── CondGoto ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn cond_goto_emits_if_else_structure() {
+        let func = minimal_cfg_fn(
+            "cond_fn",
+            vec![
+                IrCfgBlock {
+                    params: vec![],
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    terminator: IrCfgTerminator::CondGoto {
+                        cond: IrExpr::Var("flag".to_string()),
+                        then_: IrCfgJump { target: 1, args: vec![] },
+                        else_: IrCfgJump { target: 2, args: vec![] },
+                    },
+                },
+                IrCfgBlock {
+                    params: vec![],
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    terminator: IrCfgTerminator::Return(None),
+                },
+                IrCfgBlock {
+                    params: vec![],
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    terminator: IrCfgTerminator::Return(None),
+                },
+            ],
+        );
+        let out = render(&func);
+        assert!(out.contains("if flag {"), "expected if cond: {}", out);
+        assert!(out.contains("} else {"), "expected else: {}", out);
+        // both branches set __state
+        assert!(out.contains("__state = 1;"), "expected __state = 1: {}", out);
+        assert!(out.contains("__state = 2;"), "expected __state = 2: {}", out);
+        assert!(out.contains("continue;"), "expected continue: {}", out);
+    }
+}

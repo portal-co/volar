@@ -537,3 +537,246 @@ impl<P: Clone + Default> Emitter<P> {
         id
     }
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+    use std::collections::BTreeMap as StdBTreeMap;
+    use volar_ir::ir::{
+        IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRType, IRTypes, IRVarId, PrimType,
+    };
+    use volar_ir_common::{Constant, TypeTable};
+
+    // -- Helpers -------------------------------------------------------------
+
+    /// Zero constant (all bits 0).
+    fn zero_const() -> Constant {
+        Constant { lo: 0, hi: 0 }
+    }
+
+    /// Build a minimal single-block `IRBlocks` that takes `n_params` Bit params
+    /// and immediately returns them, alongside an `IRTypes` table that only
+    /// contains `Bit`.
+    fn make_passthrough(n_params: usize) -> (IRBlocks<()>, IRTypes) {
+        let mut types = TypeTable::new();
+        let bit_id = types.bit();
+
+        let params: std::vec::Vec<_> = (0..n_params).map(|_| bit_id).collect();
+        let args: std::vec::Vec<IRVarId> = (0..n_params as u32).map(IRVarId).collect();
+
+        let block = IRBlock {
+            params,
+            stmts: std::vec![],
+            stmt_provs: std::vec![],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args,
+            },
+        };
+        (IRBlocks::new(std::vec![block]), types)
+    }
+
+    // -- ir_type_bits ---------------------------------------------------------
+
+    #[test]
+    fn type_bits_bit() {
+        let types = TypeTable::new();
+        assert_eq!(ir_type_bits(&IRType::Primitive(PrimType::Bit), &types), 1);
+    }
+
+    #[test]
+    fn type_bits_primitives() {
+        let types = TypeTable::new();
+        assert_eq!(ir_type_bits(&IRType::Primitive(PrimType::_8), &types), 8);
+        assert_eq!(ir_type_bits(&IRType::Primitive(PrimType::_16), &types), 16);
+        assert_eq!(ir_type_bits(&IRType::Primitive(PrimType::_32), &types), 32);
+        assert_eq!(ir_type_bits(&IRType::Primitive(PrimType::_64), &types), 64);
+        assert_eq!(ir_type_bits(&IRType::Primitive(PrimType::_128), &types), 128);
+        assert_eq!(ir_type_bits(&IRType::Primitive(PrimType::_256), &types), 256);
+        assert_eq!(ir_type_bits(&IRType::Primitive(PrimType::AES8), &types), 8);
+        assert_eq!(ir_type_bits(&IRType::Primitive(PrimType::Galois64), &types), 64);
+    }
+
+    #[test]
+    fn type_bits_vec() {
+        let mut types = TypeTable::new();
+        let bit_id = types.bit();
+        let vec4 = IRType::Vec(4, bit_id);
+        assert_eq!(ir_type_bits(&vec4, &types), 4);
+        let vec8 = IRType::Vec(8, bit_id);
+        assert_eq!(ir_type_bits(&vec8, &types), 8);
+    }
+
+    #[test]
+    fn type_bits_tuple() {
+        let mut types = TypeTable::new();
+        let bit_id = types.bit();
+        let u8_id = types.primitive(PrimType::_8);
+        // Tuple(Bit, _8) = 1 + 8 = 9
+        let tuple = IRType::Tuple(std::vec![bit_id, u8_id]);
+        assert_eq!(ir_type_bits(&tuple, &types), 9);
+    }
+
+    // -- Param expansion ------------------------------------------------------
+
+    #[test]
+    fn passthrough_zero_params() {
+        let (blocks, types) = make_passthrough(0);
+        let lowered = lower_ir_to_boolar::<()>(&blocks, &types);
+        assert_eq!(lowered.0.len(), 1);
+        let b = &lowered.0[0];
+        assert_eq!(b.params, 0);
+        assert_eq!(b.stmts.len(), 0);
+    }
+
+    #[test]
+    fn passthrough_three_bit_params() {
+        let (blocks, types) = make_passthrough(3);
+        let lowered = lower_ir_to_boolar::<()>(&blocks, &types);
+        let b = &lowered.0[0];
+        // 3 Bit params → 3 Boolar params.
+        assert_eq!(b.params, 3);
+        assert_eq!(b.stmts.len(), 0);
+    }
+
+    #[test]
+    fn u8_param_expands_to_eight_bits() {
+        let mut types = TypeTable::new();
+        let u8_id = types.primitive(PrimType::_8);
+
+        let block = IRBlock {
+            params: std::vec![u8_id],
+            stmts: std::vec![],
+            stmt_provs: std::vec![],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: std::vec![IRVarId(0)],
+            },
+        };
+        let blocks = IRBlocks::<()>::new(std::vec![block]);
+        let lowered = lower_ir_to_boolar::<()>(&blocks, &types);
+        // One u8 param → 8 Boolar bit params.
+        assert_eq!(lowered.0[0].params, 8);
+    }
+
+    // -- Const statement ------------------------------------------------------
+
+    #[test]
+    fn const_zero_bit_emits_zero_stmt() {
+        let mut types = TypeTable::new();
+        let bit_id = types.bit();
+
+        let mut block = IRBlock::<()> {
+            params: std::vec![],
+            stmts: std::vec![],
+            stmt_provs: std::vec![],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: std::vec![IRVarId(0)],
+            },
+        };
+        block.push_stmt_default(volar_ir::ir::IRStmt::Const(zero_const(), bit_id));
+
+        let blocks = IRBlocks::new(std::vec![block]);
+        let lowered = lower_ir_to_boolar::<()>(&blocks, &types);
+        let b = &lowered.0[0];
+        // 1-bit const zero → exactly one BIrStmt::Zero.
+        assert_eq!(b.stmts.len(), 1);
+        assert_eq!(b.stmts[0], BIrStmt::Zero);
+    }
+
+    #[test]
+    fn const_u8_emits_eight_stmts() {
+        let mut types = TypeTable::new();
+        let u8_id = types.primitive(PrimType::_8);
+
+        let mut block = IRBlock::<()> {
+            params: std::vec![],
+            stmts: std::vec![],
+            stmt_provs: std::vec![],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: std::vec![IRVarId(0)],
+            },
+        };
+        // Const = 0b00000001 (value 1, bit 0 = One, rest = Zero).
+        let c = Constant { lo: 1, hi: 0 };
+        block.push_stmt_default(volar_ir::ir::IRStmt::Const(c, u8_id));
+
+        let blocks = IRBlocks::new(std::vec![block]);
+        let lowered = lower_ir_to_boolar::<()>(&blocks, &types);
+        let b = &lowered.0[0];
+        assert_eq!(b.stmts.len(), 8);
+        // LSB first: bit 0 = 1 → One.
+        assert_eq!(b.stmts[0], BIrStmt::One);
+        // All remaining bits are 0 → Zero.
+        for stmt in &b.stmts[1..] {
+            assert_eq!(*stmt, BIrStmt::Zero);
+        }
+    }
+
+    // -- Transmute (identity) -------------------------------------------------
+
+    #[test]
+    fn transmute_aliases_existing_bits() {
+        let mut types = TypeTable::new();
+        let bit_id = types.bit();
+        let u8_src = types.primitive(PrimType::_8);
+        let u8_dst = types.primitive(PrimType::_8);
+
+        // Block: param0 = _8, stmt0 = Const(1, _8), stmt1 = Transmute(stmt0).
+        let c = Constant { lo: 1, hi: 0 };
+        let block = IRBlock::<()> {
+            params: std::vec![bit_id], // 1 bit param so var ids start right
+            stmts: std::vec![
+                volar_ir::ir::IRStmt::Const(c, u8_src),
+                volar_ir::ir::IRStmt::Transmute {
+                    src: IRVarId(1), // var 1 = the Const above (params=1 so param is var 0)
+                    src_ty: u8_src,
+                    dst_ty: u8_dst,
+                },
+            ],
+            stmt_provs: std::vec![(), ()],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: std::vec![IRVarId(2)], // return the transmuted value
+            },
+        };
+        let blocks = IRBlocks::new(std::vec![block]);
+        let lowered = lower_ir_to_boolar::<()>(&blocks, &types);
+        let b = &lowered.0[0];
+        // Transmute emits zero new stmts; only the 8 from the Const.
+        assert_eq!(b.stmts.len(), 8);
+    }
+
+    // -- Provenance threading -------------------------------------------------
+
+    #[test]
+    fn provenance_is_threaded_through() {
+        // Use u32 as provenance.
+        let mut types = TypeTable::new();
+        let bit_id = types.bit();
+
+        let c = Constant { lo: 0, hi: 0 };
+        let block = IRBlock::<u32> {
+            params: std::vec![bit_id],
+            stmts: std::vec![volar_ir::ir::IRStmt::Const(c, bit_id)],
+            stmt_provs: std::vec![42u32],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: std::vec![IRVarId(0)],
+            },
+        };
+        let blocks = IRBlocks::new(std::vec![block]);
+        let lowered = lower_ir_to_boolar::<u32>(&blocks, &types);
+        let b = &lowered.0[0];
+        // The single Const(Bit, 0) emits one Zero stmt with provenance 42.
+        assert_eq!(b.stmt_provs.len(), 1);
+        assert_eq!(b.stmt_provs[0], 42u32);
+    }
+}
