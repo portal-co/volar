@@ -59,10 +59,17 @@ pub enum LirType {
     /// Arithmetic on `Native` values in `VolarIrTarget` emits `IRStmt::Poly`
     /// with the native type, giving correct GF-field semantics automatically.
     Native(NativeType),
+    /// A typed pointer to a value of the inner type.
+    ///
+    /// Only meaningful in backends that return `Some` from
+    /// [`LirTarget::stack_alloc_ext`] (e.g. `CBackend`).  Circuit backends
+    /// (`VolarIrTarget`, `VaffleTarget`) have no memory model and will panic
+    /// if they encounter a `Ptr` type.
+    Ptr(Box<LirType>),
 }
 
 impl LirType {
-    /// Bit width for scalar types. Panics on `Arr`/`Struct`.
+    /// Bit width for scalar types. Panics on `Arr`/`Struct`/`Ptr`.
     pub fn bit_width(&self) -> u32 {
         match self {
             LirType::Bool => 1,
@@ -73,6 +80,7 @@ impl LirType {
             LirType::Arr(elem, len) => elem.bit_width() * (*len as u32),
             LirType::Struct(_) => panic!("bit_width not defined for Struct"),
             LirType::Native(_) => panic!("bit_width not meaningful for Native field elements"),
+            LirType::Ptr(_) => panic!("bit_width not meaningful for Ptr (target-dependent size)"),
         }
     }
 
@@ -84,6 +92,43 @@ impl LirType {
     pub fn is_scalar(&self) -> bool {
         !matches!(self, LirType::Arr(_, _) | LirType::Struct(_))
     }
+}
+
+// ============================================================================
+// Stack allocation extension trait
+// ============================================================================
+
+/// Extension trait for backends that support stack allocation and pointer
+/// operations.
+///
+/// Access via [`LirTarget::stack_alloc_ext`], which returns `None` for
+/// backends without a memory model (e.g. `VolarIrTarget`, `VaffleTarget`).
+/// `CBackend` returns `Some(self)`.
+///
+/// # Pointer type
+///
+/// `alloca` returns a [`LirType::Ptr`] value.  Pointer arithmetic and
+/// dereferencing use element indices, not byte offsets, so callers do not need
+/// to know the element size.
+pub trait StackAllocExt {
+    type Value: Clone + Eq + core::fmt::Debug;
+
+    /// Allocate a stack region for `count` elements of `elem_ty`.
+    ///
+    /// Returns a value of type `LirType::Ptr(Box::new(elem_ty))`.
+    /// The region is live for the duration of the enclosing function.
+    fn alloca(&mut self, elem_ty: LirType, count: usize) -> Self::Value;
+
+    /// Load through a typed pointer. `ty` must match the pointee type.
+    fn ptr_load(&mut self, ptr: Self::Value, ty: LirType) -> Self::Value;
+
+    /// Store `val` through `ptr`. Returns `()` — emitted as a bare statement.
+    fn ptr_store(&mut self, ptr: Self::Value, val: Self::Value);
+
+    /// Element-wise pointer offset: `ptr + idx` elements (not bytes).
+    ///
+    /// Returns a pointer of the same type as `ptr`.
+    fn ptr_offset(&mut self, ptr: Self::Value, idx: Self::Value) -> Self::Value;
 }
 
 // ============================================================================
@@ -304,4 +349,16 @@ pub trait LirTarget<Prov: Clone + Default = ()> {
     /// Generate a fresh random value of `ty`.  Each call is an independent
     /// sample; implementations must not alias results.
     fn rng(&mut self, ty: LirType) -> Self::Value;
+
+    /// Return a mutable reference to the [`StackAllocExt`] implementation for
+    /// this backend, if it supports stack allocation and pointer operations.
+    ///
+    /// Circuit backends (`VolarIrTarget`, `VaffleTarget`) return `None`.
+    /// `CBackend` returns `Some(self)`.
+    ///
+    /// Callers should check for `Some` before using pointer-based patterns
+    /// (e.g. passing large structs by pointer in the C ABI).
+    fn stack_alloc_ext(&mut self) -> Option<&mut dyn StackAllocExt<Value = Self::Value>> {
+        None
+    }
 }

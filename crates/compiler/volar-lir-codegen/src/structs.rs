@@ -273,6 +273,8 @@ pub fn flatten_count(ty: &LirType, registry: &StructRegistry) -> usize {
             .iter()
             .map(|ft| flatten_count(ft, registry))
             .sum(),
+        // Ptr is a single scalar (one machine-word address).
+        LirType::Ptr(_) => 1,
         _ => 1,
     }
 }
@@ -291,6 +293,8 @@ pub fn flatten_scalar_types(ty: &LirType, registry: &StructRegistry) -> Vec<LirT
             .iter()
             .flat_map(|ft| flatten_scalar_types(ft, registry))
             .collect(),
+        // Ptr is a single scalar (one machine-word address).
+        LirType::Ptr(_) => vec![ty.clone()],
         scalar => vec![scalar.clone()],
     }
 }

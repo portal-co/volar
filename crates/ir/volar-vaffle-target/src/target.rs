@@ -525,5 +525,6 @@ pub(crate) fn bits_for_lir_type(ty: &LirType, struct_widths: &[usize]) -> usize 
         LirType::Arr(elem, n) => n * bits_for_lir_type(elem, struct_widths),
         LirType::Struct(id) => struct_widths[*id as usize],
         LirType::Native(_) => 1,
+        LirType::Ptr(_) => panic!("VaffleTarget: LirType::Ptr is not supported (circuit backends have no memory model)"),
     }
 }

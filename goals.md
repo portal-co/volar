@@ -73,6 +73,8 @@ implementation focus (VOLE-based ZK, garbled circuits, compiler toolchain).
 ## LIR Remaining
 
 - [ ] memory operations (load/store) in `LirTarget`
+  - [ ] `LirType::Ptr` + `StackAllocExt` trait (`alloca`, `ptr_load`, `ptr_store`, `ptr_offset`) — opt-in via `LirTarget::stack_alloc_ext()`
+  - [ ] ABI optimization in `lower_lir.rs`: when `stack_alloc_ext()` is `Some`, pass large struct arguments by pointer instead of flat scalar expansion
 - [ ] `StorageRead` / `StorageWrite` in `lower_ir`
 - [ ] multi-element vector types in `IRBlocks` lowering
 - [ ] `IterLoop` over non-array collections

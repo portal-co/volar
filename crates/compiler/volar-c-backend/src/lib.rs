@@ -24,7 +24,7 @@ use std::{
     string::String,
     vec::Vec,
 };
-use volar_lir::{IcmpPred, LirTarget, LirType, StructDef, StructId};
+use volar_lir::{IcmpPred, LirTarget, LirType, StackAllocExt, StructDef, StructId};
 
 // ============================================================================
 // Handles
@@ -833,6 +833,75 @@ impl LirTarget for CBackend {
         writeln!(state.body, "  {rng_fn}(&{var_name}, sizeof({c_ty}));").unwrap();
         state.alloc_value(ty, c_ty, var_name)
     }
+
+    fn stack_alloc_ext(&mut self) -> Option<&mut dyn StackAllocExt<Value = CValue>> {
+        Some(self)
+    }
+}
+
+// ============================================================================
+// StackAllocExt impl
+// ============================================================================
+
+impl StackAllocExt for CBackend {
+    type Value = CValue;
+
+    /// Allocate a stack region for `count` elements of `elem_ty`.
+    ///
+    /// Emits into the function preamble (so the array has function scope):
+    /// ```c
+    /// T slot_vN[count];
+    /// T* vN = slot_vN;
+    /// ```
+    /// Returns the pointer value `vN` of type `LirType::Ptr(elem_ty)`.
+    fn alloca(&mut self, elem_ty: LirType, count: usize) -> CValue {
+        let elem_c = lir_type_to_c_free(&elem_ty, &self.struct_names);
+        let ptr_c = format!("{elem_c}*");
+        let ptr_ty = LirType::Ptr(Box::new(elem_ty));
+
+        let state = self.current.as_mut().expect("CBackend::alloca: not inside a function");
+        let id = state.next_value;
+        let slot_name = format!("slot_v{id}");
+        let ptr_name = format!("v{id}");
+
+        // Emit array declaration and pointer initialisation into the preamble
+        // so the array lives for the entire function (C99 VLA-free version).
+        writeln!(state.preamble, "  {elem_c} {slot_name}[{count}];").unwrap();
+        writeln!(state.preamble, "  {ptr_c} {ptr_name} = {slot_name};").unwrap();
+
+        state.alloc_value(ptr_ty, ptr_c, ptr_name)
+    }
+
+    /// Load through a typed pointer.
+    ///
+    /// Emits: `ty vN = *ptr;`
+    fn ptr_load(&mut self, ptr: CValue, ty: LirType) -> CValue {
+        let ptr_name = self.state().name_of(ptr).to_owned();
+        let c_type = self.type_to_c(&ty);
+        let expr = format!("*{ptr_name}");
+        self.state().emit_instr(ty, c_type, &expr)
+    }
+
+    /// Store `val` through `ptr`.
+    ///
+    /// Emits: `*ptr = val;`
+    fn ptr_store(&mut self, ptr: CValue, val: CValue) {
+        let ptr_name = self.state().name_of(ptr).to_owned();
+        let val_name = self.state().name_of(val).to_owned();
+        writeln!(self.state().body, "  *{ptr_name} = {val_name};").unwrap();
+    }
+
+    /// Element-wise pointer offset.
+    ///
+    /// Emits: `T* vN = ptr + idx;`
+    fn ptr_offset(&mut self, ptr: CValue, idx: CValue) -> CValue {
+        let ty = self.state().type_of(ptr).clone();
+        let c_type = self.type_to_c(&ty);
+        let ptr_name = self.state().name_of(ptr).to_owned();
+        let idx_name = self.state().name_of(idx).to_owned();
+        let expr = format!("{ptr_name} + {idx_name}");
+        self.state().emit_instr(ty, c_type, &expr)
+    }
 }
 
 // ============================================================================
@@ -855,6 +924,8 @@ fn lir_type_to_c_free(ty: &LirType, struct_names: &[String]) -> String {
         LirType::Struct(id) => struct_names[*id as usize].clone(),
         // Native field elements are exposed as their closest C integer type.
         LirType::Native(t) => native_type_to_c(*t).to_string(),
+        // Pointer: emit as `inner_type*`.
+        LirType::Ptr(inner) => format!("{}*", lir_type_to_c_free(inner, struct_names)),
     }
 }
 
@@ -873,6 +944,7 @@ fn lir_type_suffix(ty: &LirType) -> String {
         LirType::Arr(elem, len) => format!("Arr_{}_{}", lir_type_suffix(elem), len),
         LirType::Struct(id) => format!("S{id}"),
         LirType::Native(t) => format!("Native_{t:?}"),
+        LirType::Ptr(inner) => format!("Ptr_{}", lir_type_suffix(inner)),
     }
 }
 
@@ -891,6 +963,7 @@ fn signed_variant(ty: &LirType) -> &'static str {
         LirType::I64 | LirType::U64 => "int64_t",
         LirType::Native(t) => native_type_signed(*t),
         LirType::Arr(_, _) | LirType::Struct(_) => panic!("signed_variant: aggregate type"),
+        LirType::Ptr(_) => panic!("signed_variant: Ptr has no signed variant"),
     }
 }
 

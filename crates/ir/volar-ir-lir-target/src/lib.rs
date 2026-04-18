@@ -220,6 +220,7 @@ impl<P: Clone + Default> VolarIrTarget<P> {
         match ty {
             LirType::Bool => self.bit_tid,
             LirType::Native(t) => self.types.intern(IrType::Primitive(*t)),
+            LirType::Ptr(_) => panic!("VolarIrTarget: LirType::Ptr is not supported (circuit backends have no memory model)"),
             _ => {
                 // For non-native multi-bit types, fall back to the bit type.
                 // Full support for U8/U16/etc. requires an IrType per LIR type;
@@ -780,6 +781,7 @@ fn bits_for_lir_type(ty: &LirType, struct_widths: &[usize]) -> usize {
         LirType::Struct(id) => struct_widths[*id as usize],
         // Native field elements occupy exactly one IRVarId slot (not N bits).
         LirType::Native(_) => 1,
+        LirType::Ptr(_) => panic!("VolarIrTarget: LirType::Ptr is not supported (circuit backends have no memory model)"),
     }
 }
 
