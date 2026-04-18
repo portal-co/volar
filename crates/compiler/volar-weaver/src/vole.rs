@@ -428,12 +428,39 @@ where
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
 
+    // Pre-scan for external primitives (oracle calls, action calls, RNG sources).
+    // Build index maps from result-var → external-primitive index before the main loop.
+    let mut oracle_handle_map = alloc::collections::BTreeMap::<u32, usize>::new();
+    let mut oracle_bit_counts: Vec<usize> = Vec::new();
+    let mut action_handle_map = alloc::collections::BTreeMap::<u32, usize>::new();
+    let mut action_bit_counts: Vec<usize> = Vec::new();
+    let mut rng_var_map = alloc::collections::BTreeMap::<u32, usize>::new();
+    for (result_id, stmt, _) in &expanded {
+        match stmt {
+            BIrStmt::OracleCall { num_bits, .. } => {
+                let k = oracle_bit_counts.len();
+                oracle_handle_map.insert(result_id.0, k);
+                oracle_bit_counts.push(*num_bits);
+            }
+            BIrStmt::ActionCall { num_bits, .. } => {
+                let k = action_bit_counts.len();
+                action_handle_map.insert(result_id.0, k);
+                action_bit_counts.push(*num_bits);
+            }
+            BIrStmt::Rng { .. } => {
+                let r = rng_var_map.len();
+                rng_var_map.insert(result_id.0, r);
+            }
+            _ => {}
+        }
+    }
+
     let mut var_names = alloc::collections::BTreeMap::<u32, String>::new();
     for i in 0..num_params {
         var_names.insert(i as u32, format!("vope_input_{}", i));
     }
 
-    // Build parameter list: vope_one, then vope_input_i.
+    // Build parameter list: vope_one, then vope_input_i, then external primitive params.
     let mut params: Vec<IrParam> = Vec::new();
     params.push(IrParam {
         name: "vope_one".into(),
@@ -442,6 +469,31 @@ where
     for i in 0..num_params {
         params.push(IrParam {
             name: format!("vope_input_{}", i),
+            ty: vope_type(),
+        });
+    }
+    // Oracle output bit commitments (one Vope per output bit, per oracle call).
+    for (k, &num_bits) in oracle_bit_counts.iter().enumerate() {
+        for j in 0..num_bits {
+            params.push(IrParam {
+                name: format!("vope_oracle_{}_bit_{}", k, j),
+                ty: vope_type(),
+            });
+        }
+    }
+    // Action output bit commitments.
+    for (k, &num_bits) in action_bit_counts.iter().enumerate() {
+        for j in 0..num_bits {
+            params.push(IrParam {
+                name: format!("vope_action_{}_bit_{}", k, j),
+                ty: vope_type(),
+            });
+        }
+    }
+    // RNG bit commitments (one Vope per RNG sample).
+    for r in 0..rng_var_map.len() {
+        params.push(IrParam {
+            name: format!("vope_rng_{}", r),
             ty: vope_type(),
         });
     }
@@ -533,6 +585,57 @@ where
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
+
+            BIrStmt::OracleCall { .. } => {
+                // Handle-only: individual output bits are projected via OracleBit.
+                let k = oracle_handle_map[&result_id.0];
+                var_names.insert(result_id.0, format!("oracle_handle_{}", k));
+                continue;
+            }
+
+            BIrStmt::OracleBit { call, bit } => {
+                let k = oracle_handle_map[&call.0];
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&let_name),
+                    ty: None,
+                    init: Some(clone_expr(var(&format!("vope_oracle_{}_bit_{}", k, bit)))),
+                });
+                stmt_provs.push(q.clone());
+            }
+
+            BIrStmt::ActionCall { .. } => {
+                // Handle-only: individual output bits are projected via ActionBit.
+                let k = action_handle_map[&result_id.0];
+                var_names.insert(result_id.0, format!("action_handle_{}", k));
+                continue;
+            }
+
+            BIrStmt::ActionBit { call, bit } => {
+                let k = action_handle_map[&call.0];
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&let_name),
+                    ty: None,
+                    init: Some(clone_expr(var(&format!("vope_action_{}_bit_{}", k, bit)))),
+                });
+                stmt_provs.push(q.clone());
+            }
+
+            BIrStmt::Rng { .. } => {
+                let r = rng_var_map[&result_id.0];
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&let_name),
+                    ty: None,
+                    init: Some(clone_expr(var(&format!("vope_rng_{}", r)))),
+                });
+                stmt_provs.push(q.clone());
+            }
+
+            BIrStmt::StorageRead { .. } | BIrStmt::StorageWrite { .. } => {
+                unimplemented!(
+                    "StorageRead/Write not supported in BIrBlocks VOLE weavers; \
+                     use IRBlocks-based weavers (weave_vole_prover_ir) instead"
+                )
+            }
         }
 
         var_names.insert(result_id.0, let_name);
@@ -634,6 +737,32 @@ where
         .filter(|(_, s, _)| matches!(s, BIrStmt::And(..)))
         .count();
 
+    // Pre-scan for external primitives (oracle calls, action calls, RNG sources).
+    let mut oracle_handle_map = alloc::collections::BTreeMap::<u32, usize>::new();
+    let mut oracle_bit_counts: Vec<usize> = Vec::new();
+    let mut action_handle_map = alloc::collections::BTreeMap::<u32, usize>::new();
+    let mut action_bit_counts: Vec<usize> = Vec::new();
+    let mut rng_var_map = alloc::collections::BTreeMap::<u32, usize>::new();
+    for (result_id, stmt, _) in &expanded {
+        match stmt {
+            BIrStmt::OracleCall { num_bits, .. } => {
+                let k = oracle_bit_counts.len();
+                oracle_handle_map.insert(result_id.0, k);
+                oracle_bit_counts.push(*num_bits);
+            }
+            BIrStmt::ActionCall { num_bits, .. } => {
+                let k = action_bit_counts.len();
+                action_handle_map.insert(result_id.0, k);
+                action_bit_counts.push(*num_bits);
+            }
+            BIrStmt::Rng { .. } => {
+                let r = rng_var_map.len();
+                rng_var_map.insert(result_id.0, r);
+            }
+            _ => {}
+        }
+    }
+
     let mut var_names = alloc::collections::BTreeMap::<u32, String>::new();
     for i in 0..num_params {
         var_names.insert(i as u32, format!("q_input_{}", i));
@@ -664,6 +793,31 @@ where
     for i in 0..num_params {
         params.push(IrParam {
             name: format!("q_input_{}", i),
+            ty: q_type(),
+        });
+    }
+    // Oracle output Q shares (one Q per output bit, per oracle call).
+    for (k, &num_bits) in oracle_bit_counts.iter().enumerate() {
+        for j in 0..num_bits {
+            params.push(IrParam {
+                name: format!("q_oracle_{}_bit_{}", k, j),
+                ty: q_type(),
+            });
+        }
+    }
+    // Action output Q shares.
+    for (k, &num_bits) in action_bit_counts.iter().enumerate() {
+        for j in 0..num_bits {
+            params.push(IrParam {
+                name: format!("q_action_{}_bit_{}", k, j),
+                ty: q_type(),
+            });
+        }
+    }
+    // RNG Q shares (one per RNG sample).
+    for r in 0..rng_var_map.len() {
+        params.push(IrParam {
+            name: format!("q_rng_{}", r),
             ty: q_type(),
         });
     }
@@ -776,6 +930,55 @@ where
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
+
+            BIrStmt::OracleCall { .. } => {
+                let k = oracle_handle_map[&result_id.0];
+                var_names.insert(result_id.0, format!("oracle_handle_{}", k));
+                continue;
+            }
+
+            BIrStmt::OracleBit { call, bit } => {
+                let k = oracle_handle_map[&call.0];
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&let_name),
+                    ty: None,
+                    init: Some(clone_expr(var(&format!("q_oracle_{}_bit_{}", k, bit)))),
+                });
+                stmt_provs.push(q.clone());
+            }
+
+            BIrStmt::ActionCall { .. } => {
+                let k = action_handle_map[&result_id.0];
+                var_names.insert(result_id.0, format!("action_handle_{}", k));
+                continue;
+            }
+
+            BIrStmt::ActionBit { call, bit } => {
+                let k = action_handle_map[&call.0];
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&let_name),
+                    ty: None,
+                    init: Some(clone_expr(var(&format!("q_action_{}_bit_{}", k, bit)))),
+                });
+                stmt_provs.push(q.clone());
+            }
+
+            BIrStmt::Rng { .. } => {
+                let r = rng_var_map[&result_id.0];
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&let_name),
+                    ty: None,
+                    init: Some(clone_expr(var(&format!("q_rng_{}", r)))),
+                });
+                stmt_provs.push(q.clone());
+            }
+
+            BIrStmt::StorageRead { .. } | BIrStmt::StorageWrite { .. } => {
+                unimplemented!(
+                    "StorageRead/Write not supported in BIrBlocks VOLE weavers; \
+                     use IRBlocks-based weavers (weave_vole_verifier_ir) instead"
+                )
+            }
         }
 
         var_names.insert(result_id.0, let_name);
@@ -1121,7 +1324,7 @@ fn count_ir_ands(
                 count += (2 * n_pad).saturating_sub(4) + n * vw;
                 bit_tid
             }
-            Stmt::Rng { ty } => ty.clone(),
+            Stmt::Rng { ty, .. } => ty.clone(),
             Stmt::OracleCall { result_ty, .. } | Stmt::ActionCall { result_ty, .. } => result_ty.clone(),
             Stmt::OracleOutput { ty, .. } | Stmt::ActionOutput { ty, .. } => ty.clone(),
         };
@@ -1150,6 +1353,52 @@ fn count_storage_reads(block: &CirBlock) -> usize {
     block.stmts.iter().filter(|s| matches!(s, Stmt::StorageRead { .. })).count()
 }
 
+/// Per-oracle-call bit layout: total committed bits across all outputs.
+struct ExternalCallBits {
+    /// Total bits across all outputs of this call.
+    total_bits: usize,
+}
+
+/// Counts of bits needed for external oracle/action/rng primitives in a circuit.
+struct ExternalBitCounts {
+    /// One entry per `OracleCall` stmt, in encounter order.
+    oracle_calls: Vec<ExternalCallBits>,
+    /// One entry per `ActionCall` stmt, in encounter order.
+    action_calls: Vec<ExternalCallBits>,
+    /// Width of each `Rng` stmt encountered, in encounter order.
+    rng_widths: Vec<usize>,
+}
+
+/// Scan the circuit block and compute how many committed bits are needed for
+/// each external oracle call, action call, and rng statement.
+///
+/// The order of the scan must match the order that [`VoleIrCtx::emit_circuit`]
+/// processes statements, so that indices align.
+fn count_external_primitives(block: &CirBlock, types: &CirTypes) -> ExternalBitCounts {
+    let mut oracle_calls = Vec::new();
+    let mut action_calls = Vec::new();
+    let mut rng_widths = Vec::new();
+
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::OracleCall { output_tys, .. } => {
+                let total_bits: usize = output_tys.iter().map(|ty| cir_type_width(ty, types)).sum();
+                oracle_calls.push(ExternalCallBits { total_bits });
+            }
+            Stmt::ActionCall { output_tys, .. } => {
+                let total_bits: usize = output_tys.iter().map(|ty| cir_type_width(ty, types)).sum();
+                action_calls.push(ExternalCallBits { total_bits });
+            }
+            Stmt::Rng { ty, .. } => {
+                rng_widths.push(cir_type_width(ty, types));
+            }
+            _ => {}
+        }
+    }
+
+    ExternalBitCounts { oracle_calls, action_calls, rng_widths }
+}
+
 /// Context for emitting VOLE-authenticated wire computations.
 struct VoleIrCtx {
     stmts: Vec<IrStmt>,
@@ -1166,6 +1415,17 @@ struct VoleIrCtx {
     /// Running timestamp for memory operations.
     mem_timestamp: u32,
     is_prover: bool,
+    // ---- External primitive tracking (oracle calls, action calls, RNG) --------
+    /// var_id of OracleCall → (oracle_index, per-output bit offsets).
+    ext_oracle_map: alloc::collections::BTreeMap<u32, (usize, Vec<usize>)>,
+    /// var_id of ActionCall → (action_index, per-output bit offsets).
+    ext_action_map: alloc::collections::BTreeMap<u32, (usize, Vec<usize>)>,
+    /// Index of the next OracleCall encountered (distinct from oracle_counter for storage reads).
+    ext_oracle_counter: usize,
+    /// Index of the next ActionCall encountered.
+    ext_action_counter: usize,
+    /// Index of the next Rng stmt encountered.
+    ext_rng_counter: usize,
 }
 
 impl VoleIrCtx {
@@ -1181,6 +1441,11 @@ impl VoleIrCtx {
             trace: MemoryTrace::default(),
             mem_timestamp: 0,
             is_prover,
+            ext_oracle_map: alloc::collections::BTreeMap::new(),
+            ext_action_map: alloc::collections::BTreeMap::new(),
+            ext_oracle_counter: 0,
+            ext_action_counter: 0,
+            ext_rng_counter: 0,
         }
     }
 
@@ -1814,10 +2079,119 @@ impl VoleIrCtx {
                     self.wires.insert(var_id, WireRepr::Vec(rotated));
                 }
 
-                Stmt::Rng { .. }
-                | Stmt::OracleCall { .. } | Stmt::OracleOutput { .. }
-                | Stmt::ActionCall { .. } | Stmt::ActionOutput { .. } => {
-                    panic!("VOLE IR weaving does not yet support external primitives");
+                Stmt::Rng { ty, .. } => {
+                    let r = self.ext_rng_counter;
+                    self.ext_rng_counter += 1;
+                    let w = cir_type_width(ty, types);
+                    let prefix = if self.is_prover { "vope" } else { "q" };
+                    if w == 1 {
+                        let param_name = format!("{}_ext_rng_{}_bit_0", prefix, r);
+                        self.stmts.push(IrStmt::Let {
+                            pattern: IrPattern::ident(&out_name),
+                            ty: None,
+                            init: Some(clone_expr(var(&param_name))),
+                        });
+                        self.wires.insert(var_id, WireRepr::Scalar(out_name));
+                    } else {
+                        let bits: Vec<String> = (0..w).map(|j| {
+                            let n = format!("{}_{}", out_name, j);
+                            let param_name = format!("{}_ext_rng_{}_bit_{}", prefix, r, j);
+                            self.stmts.push(IrStmt::Let {
+                                pattern: IrPattern::ident(&n),
+                                ty: None,
+                                init: Some(clone_expr(var(&param_name))),
+                            });
+                            n
+                        }).collect();
+                        self.wires.insert(var_id, WireRepr::Vec(bits));
+                    }
+                }
+
+                Stmt::OracleCall { output_tys, .. } => {
+                    let k = self.ext_oracle_counter;
+                    self.ext_oracle_counter += 1;
+                    // Compute per-output bit offsets.
+                    let mut offset = 0usize;
+                    let mut bit_offsets = Vec::with_capacity(output_tys.len());
+                    for ty in output_tys {
+                        bit_offsets.push(offset);
+                        offset += cir_type_width(ty, types);
+                    }
+                    self.ext_oracle_map.insert(var_id, (k, bit_offsets));
+                    // Store a placeholder wire — never dereferenced for code gen.
+                    let handle_name = format!("_oracle_handle_{}", k);
+                    self.wires.insert(var_id, WireRepr::Scalar(handle_name));
+                    // No stmts emitted for the call itself.
+                }
+
+                Stmt::OracleOutput { call, idx, ty } => {
+                    let (k, bit_offsets) = self.ext_oracle_map[&call.0].clone();
+                    let base = bit_offsets[*idx];
+                    let w = cir_type_width(ty, types);
+                    let prefix = if self.is_prover { "vope" } else { "q" };
+                    if w == 1 {
+                        let param_name = format!("{}_ext_oracle_{}_bit_{}", prefix, k, base);
+                        self.stmts.push(IrStmt::Let {
+                            pattern: IrPattern::ident(&out_name),
+                            ty: None,
+                            init: Some(clone_expr(var(&param_name))),
+                        });
+                        self.wires.insert(var_id, WireRepr::Scalar(out_name));
+                    } else {
+                        let bits: Vec<String> = (0..w).map(|j| {
+                            let n = format!("{}_{}", out_name, j);
+                            let param_name = format!("{}_ext_oracle_{}_bit_{}", prefix, k, base + j);
+                            self.stmts.push(IrStmt::Let {
+                                pattern: IrPattern::ident(&n),
+                                ty: None,
+                                init: Some(clone_expr(var(&param_name))),
+                            });
+                            n
+                        }).collect();
+                        self.wires.insert(var_id, WireRepr::Vec(bits));
+                    }
+                }
+
+                Stmt::ActionCall { output_tys, .. } => {
+                    let k = self.ext_action_counter;
+                    self.ext_action_counter += 1;
+                    let mut offset = 0usize;
+                    let mut bit_offsets = Vec::with_capacity(output_tys.len());
+                    for ty in output_tys {
+                        bit_offsets.push(offset);
+                        offset += cir_type_width(ty, types);
+                    }
+                    self.ext_action_map.insert(var_id, (k, bit_offsets));
+                    let handle_name = format!("_action_handle_{}", k);
+                    self.wires.insert(var_id, WireRepr::Scalar(handle_name));
+                }
+
+                Stmt::ActionOutput { call, idx, ty } => {
+                    let (k, bit_offsets) = self.ext_action_map[&call.0].clone();
+                    let base = bit_offsets[*idx];
+                    let w = cir_type_width(ty, types);
+                    let prefix = if self.is_prover { "vope" } else { "q" };
+                    if w == 1 {
+                        let param_name = format!("{}_ext_action_{}_bit_{}", prefix, k, base);
+                        self.stmts.push(IrStmt::Let {
+                            pattern: IrPattern::ident(&out_name),
+                            ty: None,
+                            init: Some(clone_expr(var(&param_name))),
+                        });
+                        self.wires.insert(var_id, WireRepr::Scalar(out_name));
+                    } else {
+                        let bits: Vec<String> = (0..w).map(|j| {
+                            let n = format!("{}_{}", out_name, j);
+                            let param_name = format!("{}_ext_action_{}_bit_{}", prefix, k, base + j);
+                            self.stmts.push(IrStmt::Let {
+                                pattern: IrPattern::ident(&n),
+                                ty: None,
+                                init: Some(clone_expr(var(&param_name))),
+                            });
+                            n
+                        }).collect();
+                        self.wires.insert(var_id, WireRepr::Vec(bits));
+                    }
                 }
             }
         }
@@ -1867,6 +2241,23 @@ pub fn weave_vole_prover_ir_with_mode(
     // Oracle read parameters (Commitment mode).
     for i in 0..num_oracle_reads {
         params.push(IrParam { name: format!("oracle_rd_{}", i), ty: vope_type() });
+    }
+    // External primitive parameters (oracle calls, action calls, rng).
+    let ext = count_external_primitives(block, types);
+    for (k, call) in ext.oracle_calls.iter().enumerate() {
+        for j in 0..call.total_bits {
+            params.push(IrParam { name: format!("vope_ext_oracle_{}_bit_{}", k, j), ty: vope_type() });
+        }
+    }
+    for (k, call) in ext.action_calls.iter().enumerate() {
+        for j in 0..call.total_bits {
+            params.push(IrParam { name: format!("vope_ext_action_{}_bit_{}", k, j), ty: vope_type() });
+        }
+    }
+    for (r, &width) in ext.rng_widths.iter().enumerate() {
+        for j in 0..width {
+            params.push(IrParam { name: format!("vope_ext_rng_{}_bit_{}", r, j), ty: vope_type() });
+        }
     }
 
     let ret_type = IrType::Tuple(vec![vope_type(), hat_array_type(and_count)]);
@@ -1957,6 +2348,23 @@ pub fn weave_vole_verifier_ir_with_mode(
     // Oracle read parameters (Commitment mode).
     for i in 0..num_oracle_reads {
         params.push(IrParam { name: format!("oracle_rd_{}", i), ty: q_type() });
+    }
+    // External primitive parameters (oracle calls, action calls, rng).
+    let ext = count_external_primitives(block, types);
+    for (k, call) in ext.oracle_calls.iter().enumerate() {
+        for j in 0..call.total_bits {
+            params.push(IrParam { name: format!("q_ext_oracle_{}_bit_{}", k, j), ty: q_type() });
+        }
+    }
+    for (k, call) in ext.action_calls.iter().enumerate() {
+        for j in 0..call.total_bits {
+            params.push(IrParam { name: format!("q_ext_action_{}_bit_{}", k, j), ty: q_type() });
+        }
+    }
+    for (r, &width) in ext.rng_widths.iter().enumerate() {
+        for j in 0..width {
+            params.push(IrParam { name: format!("q_ext_rng_{}_bit_{}", r, j), ty: q_type() });
+        }
     }
 
     let ret_type = IrType::Tuple(vec![

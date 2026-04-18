@@ -58,6 +58,7 @@ pub use volar_provenance::{ProvenanceHandler, NoProvenance, KeepProvenance, MapP
 pub mod garble;
 pub mod vole;
 pub mod grafhen;
+pub mod fhe;
 
 // Re-export the most commonly used public items from each submodule.
 pub use garble::{
@@ -89,6 +90,13 @@ pub use vole::{
 pub use grafhen::{
     print_grafhen_module,
     weave_grafhen, weave_grafhen_with_handler,
+};
+
+pub use fhe::{
+    weave_fhe,
+    FheScheme, FheOutput,
+    GrafhenScheme, TfheScheme,
+    print_fhe_cfg_module, print_fhe_flat_module,
 };
 
 // ============================================================================

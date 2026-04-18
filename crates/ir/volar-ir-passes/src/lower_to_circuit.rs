@@ -323,6 +323,33 @@ fn subst_stmt(stmt: &BIrStmt, var_map: &BTreeMap<u32, u32>) -> BIrStmt {
         BIrStmt::Or(a, b) => BIrStmt::Or(s(a), s(b)),
         BIrStmt::Xor(a, b) => BIrStmt::Xor(s(a), s(b)),
         BIrStmt::Not(a) => BIrStmt::Not(s(a)),
+        // External primitives: substitute operand var-IDs, carry everything else through.
+        BIrStmt::OracleCall { name, args, num_bits } => BIrStmt::OracleCall {
+            name: name.clone(),
+            args: args.iter().map(s).collect(),
+            num_bits: *num_bits,
+        },
+        BIrStmt::OracleBit { call, bit } => BIrStmt::OracleBit { call: s(call), bit: *bit },
+        BIrStmt::ActionCall { name, guard, args, fallback, num_bits } => BIrStmt::ActionCall {
+            name: name.clone(),
+            guard: s(guard),
+            args: args.iter().map(s).collect(),
+            fallback: fallback.iter().map(s).collect(),
+            num_bits: *num_bits,
+        },
+        BIrStmt::ActionBit { call, bit } => BIrStmt::ActionBit { call: s(call), bit: *bit },
+        BIrStmt::Rng { name } => BIrStmt::Rng { name: name.clone() },
+        BIrStmt::StorageRead { storage, bit_width, addr } => BIrStmt::StorageRead {
+            storage: *storage,
+            bit_width: *bit_width,
+            addr: s(addr),
+        },
+        BIrStmt::StorageWrite { storage, src, bit_width, addr } => BIrStmt::StorageWrite {
+            storage: *storage,
+            src: s(src),
+            bit_width: *bit_width,
+            addr: s(addr),
+        },
     }
 }
 

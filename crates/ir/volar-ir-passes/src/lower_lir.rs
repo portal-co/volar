@@ -123,6 +123,15 @@ fn lower_biir_stmt<Q: Clone + Default, T: LirTarget<Q>>(stmt: &BIrStmt, vals: &[
             let va = vals[a.0 as usize].clone();
             target.not(va)
         }
+        BIrStmt::OracleCall { .. }
+        | BIrStmt::OracleBit { .. }
+        | BIrStmt::ActionCall { .. }
+        | BIrStmt::ActionBit { .. }
+        | BIrStmt::Rng { .. }
+        | BIrStmt::StorageRead { .. }
+        | BIrStmt::StorageWrite { .. } => {
+            unimplemented!("lower_biir_stmt: extended BIrStmt variants not supported in plain LIR lowering")
+        }
     }
 }
 
@@ -331,7 +340,7 @@ pub fn lower_ir_with_handler<P, T, H>(
                     vals_per_block[bi].push(results[*idx].clone());
                 }
                 // ---- Rng: emit target.rng() --------------------------------
-                IRStmt::Rng { ty } => {
+                IRStmt::Rng { name: _, ty } => {
                     let lir_ty = ir_type_to_lir(&types.0[ty.0 as usize]);
                     vals_per_block[bi].push(target.rng(lir_ty));
                 }

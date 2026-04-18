@@ -1,5 +1,5 @@
 // @reliability: normal
-//! @ai: none
+//! @ai: assisted
 
 // Volar IR: SSA block-based IR for VOLE-based computations.
 // Pure data structure definitions; no cryptographic claims.
@@ -28,8 +28,8 @@ pub use volar_ir_common::IrType as IRType;
 /// Re-export the type intern table.
 pub use volar_ir_common::TypeTable as IRTypes;
 
-/// Re-export oracle/action declaration types so callers only need `volar_ir`.
-pub use volar_ir_common::{ActionDecl, OracleDecl};
+/// Re-export oracle/action/rng declaration types so callers only need `volar_ir`.
+pub use volar_ir_common::{ActionDecl, OracleDecl, RngDecl};
 
 // ============================================================================
 // Blocks and control flow
@@ -39,7 +39,7 @@ pub use volar_ir_common::{ActionDecl, OracleDecl};
 pub struct IRBlockId(pub u32);
 
 /// A complete Volar IR circuit module — a set of blocks with their
-/// oracle and action declarations.
+/// oracle, action, and RNG declarations.
 ///
 /// The type parameter `P` is an optional provenance annotation.  Each
 /// statement in each block carries a `P` value recording where it originated.
@@ -50,13 +50,15 @@ pub struct IRBlocks<P: Clone + Default = ()> {
     pub oracles: Vec<OracleDecl>,
     /// Actions declared for this circuit (resolved by the execution environment).
     pub actions: Vec<ActionDecl>,
+    /// RNG sources declared for this circuit (resolved by the execution environment).
+    pub rngs: Vec<RngDecl>,
     /// The blocks of the circuit, in order.  Block 0 is the entry.
     pub blocks: Vec<IRBlock<P>>,
 }
 impl<P: Clone + Default> IRBlocks<P> {
-    /// Construct an `IRBlocks` with no oracle or action declarations.
+    /// Construct an `IRBlocks` with no oracle, action, or RNG declarations.
     pub fn new(blocks: Vec<IRBlock<P>>) -> Self {
-        IRBlocks { oracles: alloc::vec![], actions: alloc::vec![], blocks }
+        IRBlocks { oracles: alloc::vec![], actions: alloc::vec![], rngs: alloc::vec![], blocks }
     }
 
     pub fn is_movfuscated(&self) -> bool {
@@ -120,6 +122,7 @@ impl<P: Clone + Default> IRBlocks<P> {
         IRBlocks {
             oracles: self.oracles,
             actions: self.actions,
+            rngs: self.rngs,
             blocks: self.blocks.into_iter().map(|b| b.map_prov_with_handler(handler)).collect(),
         }
     }

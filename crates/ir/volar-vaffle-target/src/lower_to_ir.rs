@@ -573,6 +573,7 @@ impl<'m> LowerCtx<'m> {
         (IRBlocks {
             oracles: self.oracles,
             actions: self.actions,
+            rngs: alloc::vec![],
             blocks: self.blocks,
         }, self.types)
     }
@@ -628,7 +629,7 @@ fn translate_stmt(
             IRStmt::StorageRead { storage: *storage, ty: *ty, addr: s(addr) },
         volar_ir_common::Stmt::StorageWrite { storage, src, ty, addr } =>
             IRStmt::StorageWrite { storage: *storage, src: s(src), ty: *ty, addr: s(addr) },
-        volar_ir_common::Stmt::Rng { ty } => IRStmt::Rng { ty: *ty },
+        volar_ir_common::Stmt::Rng { name, ty } => IRStmt::Rng { name: name.clone(), ty: *ty },
         volar_ir_common::Stmt::OracleCall { name, args, output_tys, result_ty } =>
             IRStmt::OracleCall { name: name.clone(), args: args.iter().map(s).collect(),
                 output_tys: output_tys.clone(), result_ty: *result_ty },

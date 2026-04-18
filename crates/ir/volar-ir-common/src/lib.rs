@@ -1,6 +1,6 @@
 #![no_std]
 // @reliability: normal
-// @ai: none
+// @ai: assisted
 
 extern crate alloc;
 
@@ -177,6 +177,22 @@ pub struct ActionDecl {
     pub results: alloc::vec::Vec<TypeId>,
 }
 
+/// Declaration of a named RNG source.
+///
+/// An RNG source is a zero-argument external function that produces a fresh
+/// random value of `ty` on each call.  Unlike `rand`, it is modeled as a named
+/// external primitive so that the compiler can emit a call to a named function
+/// rather than depending on any specific RNG crate.
+///
+/// Each [`Stmt::Rng`] references an `RngDecl` by name.  The execution
+/// environment supplies the concrete implementation.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct RngDecl {
+    pub name: alloc::string::String,
+    /// Type of the fresh random value produced on each call.
+    pub ty: TypeId,
+}
+
 // ============================================================================
 // Shared statement type
 // ============================================================================
@@ -344,10 +360,14 @@ pub enum Stmt<Var, Addr = Var> {
 
     /// Produce a fresh random value drawn uniformly from the type’s domain.
     ///
-    /// Each occurrence is an independent sample.  Optimisers must **not**
-    /// deduplicate, CSE, or reorder `Rng` stmts.  An `Rng` may be DCE'd
-    /// only when its output is demonstrably unused.
+    /// `name` identifies the [`RngDecl`] in the enclosing [`IRBlocks::rngs`]
+    /// that provides this source of randomness.  Each occurrence is an
+    /// independent sample.  Optimisers must **not** deduplicate, CSE, or
+    /// reorder `Rng` stmts.  An `Rng` may be DCE'd only when its output is
+    /// demonstrably unused.
     Rng {
+        /// Name of the declared RNG source (matches an [`RngDecl::name`]).
+        name: alloc::string::String,
         ty: TypeId,
     },
 }

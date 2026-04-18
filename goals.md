@@ -62,6 +62,12 @@ implementation focus (VOLE-based ZK, garbled circuits, compiler toolchain).
 - [ ] batched Quicksilver verification (random-challenge version)
 - [ ] additional ZK proof schemes (non-VOLE-based)
 - [ ] additional garbled circuit schemes
+- [ ] GRAFHEN: replace/fix current stub with full scheme design (currently experimental placeholder)
+- [ ] CKKS: approximate homomorphic encryption for real-number computation
+- [ ] BFV/BGV: exact integer homomorphic encryption schemes
+- [ ] TFHE: fully homomorphic encryption over binary circuits (bootstrapping-based)
+  - [ ] FheScheme trait + generic weaver infrastructure (prerequisite; enables TFHE, CKKS, BFV/BGV)
+  - [ ] TfheScheme reference implementation (LWE ciphertexts, gate bootstrapping, bootstrapping keys)
 - [ ] services / integrations that embed these protocols (e.g. threshold signing, private queries)
 
 ## LIR Remaining

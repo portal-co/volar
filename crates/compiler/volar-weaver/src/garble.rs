@@ -257,6 +257,15 @@ where
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
+            BIrStmt::OracleCall { .. }
+            | BIrStmt::OracleBit { .. }
+            | BIrStmt::ActionCall { .. }
+            | BIrStmt::ActionBit { .. }
+            | BIrStmt::Rng { .. }
+            | BIrStmt::StorageRead { .. }
+            | BIrStmt::StorageWrite { .. } => {
+                unimplemented!("garble weaver: extended BIrStmt variants not supported")
+            }
         };
 
         stmts.push(IrStmt::Let {
@@ -445,6 +454,15 @@ where
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
+            BIrStmt::OracleCall { .. }
+            | BIrStmt::OracleBit { .. }
+            | BIrStmt::ActionCall { .. }
+            | BIrStmt::ActionBit { .. }
+            | BIrStmt::Rng { .. }
+            | BIrStmt::StorageRead { .. }
+            | BIrStmt::StorageWrite { .. } => {
+                unimplemented!("garble weaver: extended BIrStmt variants not supported")
+            }
         };
 
         stmts.push(IrStmt::Let {
@@ -615,6 +633,15 @@ where
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
+            BIrStmt::OracleCall { .. }
+            | BIrStmt::OracleBit { .. }
+            | BIrStmt::ActionCall { .. }
+            | BIrStmt::ActionBit { .. }
+            | BIrStmt::Rng { .. }
+            | BIrStmt::StorageRead { .. }
+            | BIrStmt::StorageWrite { .. } => {
+                unimplemented!("garble weaver: extended BIrStmt variants not supported")
+            }
         };
 
         stmts.push(IrStmt::Let {
@@ -803,6 +830,15 @@ where
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
+            BIrStmt::OracleCall { .. }
+            | BIrStmt::OracleBit { .. }
+            | BIrStmt::ActionCall { .. }
+            | BIrStmt::ActionBit { .. }
+            | BIrStmt::Rng { .. }
+            | BIrStmt::StorageRead { .. }
+            | BIrStmt::StorageWrite { .. } => {
+                unimplemented!("garble weaver: extended BIrStmt variants not supported")
+            }
         };
 
         stmts.push(IrStmt::Let {

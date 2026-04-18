@@ -388,6 +388,32 @@ fn subst_biir(stmt: &BIrStmt, var_map: &[u32]) -> BIrStmt {
         BIrStmt::Or(a, b) => BIrStmt::Or(s(a), s(b)),
         BIrStmt::Xor(a, b) => BIrStmt::Xor(s(a), s(b)),
         BIrStmt::Not(a) => BIrStmt::Not(s(a)),
+        BIrStmt::OracleCall { name, args, num_bits } => BIrStmt::OracleCall {
+            name: name.clone(),
+            args: args.iter().map(s).collect(),
+            num_bits: *num_bits,
+        },
+        BIrStmt::OracleBit { call, bit } => BIrStmt::OracleBit { call: s(call), bit: *bit },
+        BIrStmt::ActionCall { name, guard, args, fallback, num_bits } => BIrStmt::ActionCall {
+            name: name.clone(),
+            guard: s(guard),
+            args: args.iter().map(s).collect(),
+            fallback: fallback.iter().map(s).collect(),
+            num_bits: *num_bits,
+        },
+        BIrStmt::ActionBit { call, bit } => BIrStmt::ActionBit { call: s(call), bit: *bit },
+        BIrStmt::Rng { name } => BIrStmt::Rng { name: name.clone() },
+        BIrStmt::StorageRead { storage, bit_width, addr } => BIrStmt::StorageRead {
+            storage: storage.clone(),
+            bit_width: *bit_width,
+            addr: s(addr),
+        },
+        BIrStmt::StorageWrite { storage, src, bit_width, addr } => BIrStmt::StorageWrite {
+            storage: storage.clone(),
+            src: s(src),
+            bit_width: *bit_width,
+            addr: s(addr),
+        },
     }
 }
 
@@ -684,7 +710,7 @@ fn subst_ir(stmt: &IRStmt, var_map: &[u32]) -> IRStmt {
             },
         IRStmt::ActionOutput { call, idx, ty } =>
             IRStmt::ActionOutput { call: s(call), idx: *idx, ty: ty.clone() },
-        IRStmt::Rng { ty } => IRStmt::Rng { ty: ty.clone() },
+        IRStmt::Rng { name, ty } => IRStmt::Rng { name: name.clone(), ty: ty.clone() },
     }
 }
 
@@ -757,7 +783,7 @@ fn infer_stmt_result_type(
         // Output projections carry their concrete scalar type.
         IRStmt::OracleOutput { ty, .. } | IRStmt::ActionOutput { ty, .. } => ty.clone(),
         // RNG produces a fresh value of the declared type.
-        IRStmt::Rng { ty } => ty.clone(),
+        IRStmt::Rng { ty, .. } => ty.clone(),
     }
 }
 

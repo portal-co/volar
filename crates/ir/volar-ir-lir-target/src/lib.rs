@@ -898,7 +898,7 @@ fn subst_stmt(stmt: &IRStmt, var_map: &[IRVarId]) -> IRStmt {
             },
         IRStmt::ActionOutput { call, idx, ty } =>
             IRStmt::ActionOutput { call: s(call), idx: *idx, ty: ty.clone() },
-        IRStmt::Rng { ty } => IRStmt::Rng { ty: ty.clone() },
+        IRStmt::Rng { name, ty } => IRStmt::Rng { name: name.clone(), ty: ty.clone() },
     }
 }
 
@@ -972,7 +972,7 @@ impl<P: Clone + Default> LirTarget<P> for VolarIrTarget<P> {
             .collect();
         let oracles = core::mem::take(&mut self.pending_oracles);
         let actions = core::mem::take(&mut self.pending_actions);
-        self.completed.push((func.name, IRBlocks { oracles, actions, blocks }));
+        self.completed.push((func.name, IRBlocks { oracles, actions, rngs: vec![], blocks }));
     }
 
     // ---- Block management --------------------------------------------------
@@ -1264,7 +1264,7 @@ impl<P: Clone + Default> LirTarget<P> for VolarIrTarget<P> {
 
     fn rng(&mut self, ty: LirType) -> VolarValue {
         let ir_ty = self.lir_to_ir_type(&ty);
-        let id = self.emit(IRStmt::Rng { ty: ir_ty });
+        let id = self.emit(IRStmt::Rng { name: "rng".into(), ty: ir_ty });
         VolarValue { bits: vec![id], ty }
     }
 }

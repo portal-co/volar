@@ -1,8 +1,9 @@
 // @reliability: normal
-//! @ai: none
+//! @ai: assisted
 // Boolar IR: boolean circuit IR (AND/XOR/NOT basis).
 // Pure data structure definitions; no cryptographic claims.
 use super::{ir::*, *};
+use volar_ir_common::StorageId;
 
 /// A complete Boolar circuit — a set of boolean-gate blocks.
 ///
@@ -73,12 +74,82 @@ impl<P: Clone + Default> BIrBlocks<P> {
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum BIrStmt {
+    // ---- Boolean primitives ------------------------------------------------
     Zero,
     One,
     And(IRVarId, IRVarId),
     Or(IRVarId, IRVarId),
     Xor(IRVarId, IRVarId),
     Not(IRVarId),
+
+    // ---- External primitives -----------------------------------------------
+
+    /// Invoke a named pure oracle.  Produces a call-handle var; individual
+    /// output bits are projected with [`OracleBit`].
+    ///
+    /// `num_bits` is the total number of output bits (sum of the bit-widths of
+    /// all oracle result types, expanded to the bit level by the lowering pass).
+    OracleCall {
+        name: alloc::string::String,
+        args: alloc::vec::Vec<IRVarId>,
+        num_bits: usize,
+    },
+
+    /// Project bit `bit` from an [`OracleCall`] call-handle var.
+    OracleBit {
+        call: IRVarId,
+        bit: usize,
+    },
+
+    /// Conditionally invoke a named action (guard is a separate boolean wire).
+    /// Produces a call-handle var; individual output bits are projected with
+    /// [`ActionBit`].
+    ///
+    /// `fallback` contains one `IRVarId` per output bit; these are used when
+    /// `guard = 0` and the action is not invoked.
+    ActionCall {
+        name: alloc::string::String,
+        guard: IRVarId,
+        args: alloc::vec::Vec<IRVarId>,
+        fallback: alloc::vec::Vec<IRVarId>,
+        num_bits: usize,
+    },
+
+    /// Project bit `bit` from an [`ActionCall`] call-handle var.
+    ActionBit {
+        call: IRVarId,
+        bit: usize,
+    },
+
+    /// Fresh independent random bit from the named RNG source.
+    ///
+    /// `name` matches an [`RngDecl`] in the enclosing circuit.  Each
+    /// occurrence is an independent sample; optimisers must not CSE or
+    /// reorder `Rng` stmts.
+    Rng {
+        name: alloc::string::String,
+    },
+
+    /// Read `bit_width` bits from a storage space, addressed by a bit-vector var.
+    ///
+    /// The result var represents the entire `bit_width`-wide value as a single
+    /// Boolar handle; individual bits are not separately addressable at this
+    /// level.  The lowering pass or weaver expands this as needed.
+    StorageRead {
+        storage: StorageId,
+        bit_width: usize,
+        addr: IRVarId,
+    },
+
+    /// Write a `bit_width`-wide value `src` to storage, addressed by `addr`.
+    ///
+    /// Produces a dummy zero bit (no useful value).
+    StorageWrite {
+        storage: StorageId,
+        src: IRVarId,
+        bit_width: usize,
+        addr: IRVarId,
+    },
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum BIrTerminator {

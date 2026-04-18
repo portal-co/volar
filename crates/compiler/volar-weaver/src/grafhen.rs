@@ -242,6 +242,73 @@ where
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
+
+            // OracleCall: call `{name}_grafhen(pk, &arg0, ...)` → tuple of GrafhenWords.
+            // Individual bits are projected with OracleBit via tuple field access (`.0`, `.1`, ...).
+            BIrStmt::OracleCall { name, args, .. } => {
+                let mut call_args: Vec<IrExpr<H::Output>> = vec![var("pk")];
+                for a in args {
+                    call_args.push(ref_expr(clone_expr(var(&var_names[&a.0]))));
+                }
+                IrExpr::Call {
+                    func: Box::new(IrExpr::Path {
+                        segments: vec![format!("{}_grafhen", name)],
+                        type_args: vec![],
+                    }),
+                    args: call_args,
+                }
+            }
+
+            BIrStmt::OracleBit { call, bit } => clone_expr(IrExpr::Field {
+                base: Box::new(var(&var_names[&call.0])),
+                field: format!("{}", bit),
+            }),
+
+            // ActionCall: call `{name}_action_grafhen(pk, &guard, &arg0, ...)` → tuple.
+            BIrStmt::ActionCall { name, guard, args, .. } => {
+                let mut call_args: Vec<IrExpr<H::Output>> = vec![
+                    var("pk"),
+                    ref_expr(clone_expr(var(&var_names[&guard.0]))),
+                ];
+                for a in args {
+                    call_args.push(ref_expr(clone_expr(var(&var_names[&a.0]))));
+                }
+                IrExpr::Call {
+                    func: Box::new(IrExpr::Path {
+                        segments: vec![format!("{}_action_grafhen", name)],
+                        type_args: vec![],
+                    }),
+                    args: call_args,
+                }
+            }
+
+            BIrStmt::ActionBit { call, bit } => clone_expr(IrExpr::Field {
+                base: Box::new(var(&var_names[&call.0])),
+                field: format!("{}", bit),
+            }),
+
+            // Rng: encrypt a plaintext bit from the named RNG source.
+            // The named function (no args) returns a raw bit; grafhen_encrypt commits it.
+            BIrStmt::Rng { name } => IrExpr::Call {
+                func: Box::new(IrExpr::Path {
+                    segments: vec!["grafhen_encrypt".into()],
+                    type_args: vec![],
+                }),
+                args: vec![
+                    IrExpr::Call {
+                        func: Box::new(IrExpr::Path {
+                            segments: vec![name.clone()],
+                            type_args: vec![],
+                        }),
+                        args: vec![],
+                    },
+                    var("pk"),
+                ],
+            },
+
+            BIrStmt::StorageRead { .. } | BIrStmt::StorageWrite { .. } => {
+                unimplemented!("grafhen weaver: StorageRead/Write not supported")
+            }
         };
 
         stmts.push(IrStmt::Let {

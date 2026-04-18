@@ -1494,3 +1494,241 @@ impl<'a> RustBackend for DynPreambleWriter<'a> {
         Ok(())
     }
 }
+
+// ============================================================================
+// CFG MODULE PRINTING
+// ============================================================================
+
+/// Renders an `IrCfgModule` body without preamble.
+pub struct CfgModuleWriter<'a> {
+    pub module: &'a IrCfgModule,
+}
+
+/// Renders a single `IrCfgFunction` as a Rust `pub fn` with a state-machine loop body.
+pub struct CfgFunctionWriter<'a> {
+    pub func: &'a IrCfgFunction,
+    pub level: usize,
+}
+
+impl<'a> RustBackend for CfgModuleWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for s in &self.module.structs {
+            StructWriter { s }.fmt(f)?;
+            writeln!(f)?;
+        }
+        for t in &self.module.traits {
+            TraitWriter { t }.fmt(f)?;
+            writeln!(f)?;
+        }
+        for i in &self.module.impls {
+            ImplWriter { i }.fmt(f)?;
+            writeln!(f)?;
+        }
+        for func in &self.module.functions {
+            CfgFunctionWriter { func, level: 0 }.fmt(f)?;
+            writeln!(f)?;
+        }
+        Ok(())
+    }
+}
+
+impl<'a> RustBackend for CfgFunctionWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let indent = "    ".repeat(self.level);
+        let func = self.func;
+        let blocks = &func.body.blocks;
+
+        // ── Function signature ────────────────────────────────────────────────
+        write!(f, "{}pub fn {}", indent, func.name)?;
+        GenericsWriter {
+            generics: &func.generics,
+        }
+        .fmt(f)?;
+        write!(f, "(")?;
+        if let Some(r) = func.receiver {
+            ReceiverWriter { r }.fmt(f)?;
+            if !func.params.is_empty() {
+                write!(f, ", ")?;
+            }
+        }
+        for (i, p) in func.params.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "mut {}: ", p.name)?;
+            TypeWriter { ty: &p.ty }.fmt(f)?;
+        }
+        write!(f, ")")?;
+        if let Some(ret) = &func.return_type {
+            write!(f, " -> ")?;
+            TypeWriter { ty: ret }.fmt(f)?;
+        }
+        WhereClauseWriter {
+            where_clause: &func.where_clause,
+        }
+        .fmt(f)?;
+        writeln!(f, " {{")?;
+
+        // If the function has only one block with a Return terminator (no
+        // block params besides the function params), emit a plain body.
+        if blocks.len() == 1 {
+            let blk = &blocks[0];
+            for stmt in &blk.stmts {
+                StmtWriter {
+                    stmt,
+                    level: self.level + 1,
+                }
+                .fmt(f)?;
+            }
+            let i1 = "    ".repeat(self.level + 1);
+            let i2 = "    ".repeat(self.level + 2);
+            match &blk.terminator {
+                IrCfgTerminator::Return(None) => {}
+                IrCfgTerminator::Return(Some(expr)) => {
+                    write!(f, "{}    ", indent)?;
+                    ExprWriter { expr }.fmt(f)?;
+                    writeln!(f)?;
+                }
+                _ => {
+                    write_cfg_terminator(f, &blk.terminator, &i1, &i2)?;
+                }
+            }
+            writeln!(f, "{}}}", indent)?;
+            return Ok(());
+        }
+
+        // ── State-machine loop ────────────────────────────────────────────────
+        write_state_machine(f, func, self.level + 1)?;
+        writeln!(f, "{}}}", indent)?;
+        Ok(())
+    }
+}
+
+/// Emit the state-machine loop body for a CFG function.
+///
+/// Generated structure:
+/// ```rust
+/// let mut __state: usize = 0;
+/// // per-block-param Option slots (blocks 1..):
+/// let mut __b1_p0: Option<ParamType> = None;
+/// // ...
+/// loop {
+///     match __state {
+///         0 => {
+///             // stmts...
+///             // terminator
+///         }
+///         1 => { ... }
+///         _ => unreachable!(),
+///     }
+/// }
+/// ```
+fn write_state_machine(
+    f: &mut fmt::Formatter<'_>,
+    func: &IrCfgFunction,
+    base_level: usize,
+) -> fmt::Result {
+    let blocks = &func.body.blocks;
+    // base_level: nesting level of the function body content (function params are at base_level-1)
+    // body stmts: base_level
+    // loop body: base_level + 1
+    // match arm body: base_level + 2
+    // stmt inside match arm: base_level + 3
+    let l0 = "    ".repeat(base_level);
+    let l1 = "    ".repeat(base_level + 1);
+    let l2 = "    ".repeat(base_level + 2);
+    let l3 = "    ".repeat(base_level + 3);
+
+    writeln!(f, "{}let mut __state: usize = 0;", l0)?;
+
+    // Declare Option slots for block params of blocks 1.. (block 0 uses function params).
+    for (bidx, blk) in blocks.iter().enumerate().skip(1) {
+        for (pidx, param) in blk.params.iter().enumerate() {
+            write!(f, "{}let mut __b{}_p{}: Option<", l0, bidx, pidx)?;
+            TypeWriter { ty: &param.ty }.fmt(f)?;
+            writeln!(f, "> = None;")?;
+        }
+    }
+
+    writeln!(f, "{}loop {{", l0)?;
+    writeln!(f, "{}match __state {{", l1)?;
+
+    for (bidx, blk) in blocks.iter().enumerate() {
+        writeln!(f, "{}{} => {{", l1, bidx)?;
+
+        // Bind block params from their Option slots (block 0 uses function params directly).
+        if bidx > 0 {
+            for (pidx, param) in blk.params.iter().enumerate() {
+                writeln!(
+                    f,
+                    "{}let mut {} = __b{}_p{}.take().unwrap();",
+                    l2, param.name, bidx, pidx
+                )?;
+            }
+        }
+
+        // Emit statements.
+        for stmt in &blk.stmts {
+            StmtWriter {
+                stmt,
+                level: base_level + 2,
+            }
+            .fmt(f)?;
+        }
+
+        // Terminator.
+        write_cfg_terminator(f, &blk.terminator, &l2, &l3)?;
+
+        writeln!(f, "{}}}", l1)?; // end match arm
+    }
+
+    writeln!(f, "{}_ => unreachable!(),", l1)?;
+    writeln!(f, "{}}}", l1)?; // end match
+    writeln!(f, "{}}}", l0)?; // end loop
+    Ok(())
+}
+
+fn write_cfg_terminator(
+    f: &mut fmt::Formatter<'_>,
+    term: &IrCfgTerminator,
+    indent: &str,
+    inner_indent: &str,
+) -> fmt::Result {
+    match term {
+        IrCfgTerminator::Return(None) => {
+            writeln!(f, "{}return;", indent)?;
+        }
+        IrCfgTerminator::Return(Some(expr)) => {
+            write!(f, "{}return ", indent)?;
+            ExprWriter { expr }.fmt(f)?;
+            writeln!(f, ";")?;
+        }
+        IrCfgTerminator::Goto(jump) => {
+            write_jump_setup(f, jump, indent)?;
+            writeln!(f, "{}continue;", indent)?;
+        }
+        IrCfgTerminator::CondGoto { cond, then_, else_ } => {
+            write!(f, "{}if ", indent)?;
+            ExprWriter { expr: cond }.fmt(f)?;
+            writeln!(f, " {{")?;
+            write_jump_setup(f, then_, inner_indent)?;
+            writeln!(f, "{}}} else {{", indent)?;
+            write_jump_setup(f, else_, inner_indent)?;
+            writeln!(f, "{}}}", indent)?;
+            writeln!(f, "{}continue;", indent)?;
+        }
+    }
+    Ok(())
+}
+
+/// Emits the assignments that load a jump's args into the target block's Option slots,
+/// then sets `__state`.
+fn write_jump_setup(f: &mut fmt::Formatter<'_>, jump: &IrCfgJump, indent: &str) -> fmt::Result {
+    for (pidx, arg) in jump.args.iter().enumerate() {
+        write!(f, "{}__b{}_p{} = Some(", indent, jump.target, pidx)?;
+        ExprWriter { expr: arg }.fmt(f)?;
+        writeln!(f, ");")?;
+    }
+    writeln!(f, "{}__state = {};", indent, jump.target)?;
+    Ok(())
+}

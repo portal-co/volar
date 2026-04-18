@@ -1852,3 +1852,86 @@ impl<P: Clone + Default> IrModule<P> {
         }
     }
 }
+
+// ============================================================================
+// CFG IR — control-flow-graph-structured function bodies
+// ============================================================================
+
+/// A jump to a target block, carrying block-parameter arguments.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrCfgJump<P: Clone + Default = ()> {
+    /// 0-indexed block index within the enclosing [`IrCfgBody`].
+    pub target: usize,
+    /// Expressions passed as arguments to the target block's params.
+    pub args: Vec<IrExpr<P>>,
+}
+
+/// Terminates an [`IrCfgBlock`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum IrCfgTerminator<P: Clone + Default = ()> {
+    /// Function returns, with an optional value expression.
+    Return(Option<IrExpr<P>>),
+    /// Unconditional jump to another block.
+    Goto(IrCfgJump<P>),
+    /// Conditional branch: jumps to `then_` if `cond` is truthy, else `else_`.
+    CondGoto {
+        cond: IrExpr<P>,
+        then_: IrCfgJump<P>,
+        else_: IrCfgJump<P>,
+    },
+}
+
+/// A single basic block in a CFG function body.
+///
+/// Block 0 is always the entry block.  Block parameters are filled by the
+/// `args` of incoming jumps (SSA block-argument style, analogous to φ-nodes).
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrCfgBlock<P: Clone + Default = ()> {
+    /// SSA block parameters — bound by the `args` of jumps that target this block.
+    pub params: Vec<IrParam>,
+    pub stmts: Vec<IrStmt<P>>,
+    pub stmt_provs: Vec<P>,
+    pub terminator: IrCfgTerminator<P>,
+}
+
+/// The body of a CFG-structured function: an ordered list of basic blocks.
+///
+/// Block 0 is the entry.  Control flows between blocks via terminators.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrCfgBody<P: Clone + Default = ()> {
+    pub blocks: Vec<IrCfgBlock<P>>,
+}
+
+/// A function with a CFG-structured body.
+///
+/// Contrast with [`IrFunction`], whose body is a tree-structured [`IrBlock`].
+/// CFG functions are produced by weavers that operate on [`IRBlocks`] directly
+/// (e.g., CFG-capable FHE schemes) without first flattening via movfuscation.
+///
+/// [`IRBlocks`]: volar_ir::ir::IRBlocks
+#[derive(Debug, Clone, PartialEq)]
+pub struct IrCfgFunction<P: Clone + Default = ()> {
+    pub name: String,
+    pub generics: Vec<IrGenericParam>,
+    pub receiver: Option<IrReceiver>,
+    pub params: Vec<IrParam>,
+    pub return_type: Option<IrType>,
+    pub where_clause: Vec<IrWherePredicate>,
+    pub external_kind: ExternalKind,
+    pub body: IrCfgBody<P>,
+}
+
+/// A module whose functions have CFG-structured bodies.
+///
+/// Produced by weavers that emit [`IrCfgFunction`]s rather than flat
+/// [`IrFunction`]s.  Use [`volar_compiler::printer::print_cfg_module`] to
+/// render to Rust source.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct IrCfgModule<P: Clone + Default = ()> {
+    pub name: String,
+    pub structs: Vec<IrStruct>,
+    pub traits: Vec<IrTrait>,
+    pub impls: Vec<IrImpl<P>>,
+    pub functions: Vec<IrCfgFunction<P>>,
+    pub type_aliases: Vec<IrTypeAlias>,
+}
