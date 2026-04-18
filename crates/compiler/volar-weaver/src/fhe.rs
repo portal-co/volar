@@ -72,35 +72,17 @@ use crate::{
 // ============================================================================
 
 /// Whether the guard condition for a conditional action is cleartext or encrypted.
-///
-/// - `Public`: the guard is a cleartext `bool`; emits a Rust `if/else` directly.
-/// - `Private`: the guard is an encrypted bit; emits a single call to the
-///   action function with the guard and fallback values prepended as arguments.
-#[derive(Clone, Debug)]
-pub enum FheGuardMode {
-    /// Guard is a cleartext bool. Emits:
-    /// ```rust,ignore
-    /// if guard { action(args...) } else { (fallback0, fallback1, ...) }
-    /// ```
-    Public,
-    /// Guard is an encrypted bit. Emits:
-    /// ```rust,ignore
-    /// action(guard, fallback0, fallback1, ..., arg0, arg1, ...)
-    /// ```
-    /// The action function is responsible for obliviously selecting between the
-    /// real result and the fallback values.
-    Private,
-}
-
 /// Per-action configuration for the FHE weaver.
 ///
 /// Specifies how the weaver should emit an `ActionCall` for a particular named
-/// action function, including how to handle the guard condition and which
-/// outputs are public cleartext versus encrypted.
+/// action function, including which outputs are public cleartext versus encrypted.
+///
+/// Guard mode is now auto-detected from the publicness of the guard variable at
+/// the call site (via `public_set`). No explicit `guard_mode` is needed:
+/// - Public guard (cleartext `bool`) → `action(guard, fallbacks..., args...)`
+/// - Encrypted guard → `action(true, fallbacks..., guard_enc, args...)`
 #[derive(Clone, Debug)]
 pub struct FheActionConfig {
-    /// Whether the guard condition is cleartext (`Public`) or encrypted (`Private`).
-    pub guard_mode: FheGuardMode,
     /// Per-output publicness flags.
     ///
     /// `output_public[i] = true` means output `i` is a cleartext value (e.g.,
@@ -2146,10 +2128,9 @@ impl FheScheme for TfheScheme {
         if let Some(cfg) = self.action_configs.get(name) {
             return Some(cfg.clone());
         }
-        // Backward-compatible heuristic: `_pub` suffix → all-public, public guard.
+        // Backward-compatible heuristic: `_pub` suffix → all-public.
         if name.ends_with("_pub") {
             return Some(FheActionConfig {
-                guard_mode: FheGuardMode::Public,
                 output_public: vec![], // empty = all public
             });
         }
@@ -2497,79 +2478,52 @@ impl FheScheme for TfheScheme {
                 panic!("TfheScheme CFG path: OracleOutput is not yet supported.")
             }
             Stmt::ActionCall { name, guard, args, fallbacks, .. } => {
-                let cfg = match self.action_config(name) {
-                    Some(c) => c,
+                // Require an explicit config or the `_pub` heuristic.
+                match self.action_config(name) {
+                    Some(_) => {}
                     None => panic!(
                         "TfheScheme CFG path: ActionCall '{}' has no configuration. \
                          Register it with TfheScheme::with_action_config, or give it \
                          a '_pub' suffix for the backward-compatible all-public heuristic.",
                         name
                     ),
-                };
+                }
 
                 let guard_name = vname(guard);
-                let arg_exprs: Vec<IrExpr> = args
-                    .iter()
-                    .map(|a| clone_expr(var(&vname(a))))
-                    .collect();
+                let fb_exprs = || fallbacks.iter().map(|f| clone_expr(var(&vname(f))));
+                let arg_exprs: Vec<IrExpr> =
+                    args.iter().map(|a| clone_expr(var(&vname(a)))).collect();
 
-                match cfg.guard_mode {
-                    FheGuardMode::Public => {
-                        // Guard must be a public cleartext bool.
-                        if !public_set.is_public(*guard) {
-                            panic!(
-                                "TfheScheme CFG path: ActionCall '{}': guard var {:?} is not \
-                                 public. Actions with Public guard mode require a cleartext \
-                                 guard condition.",
-                                name, guard
-                            );
-                        }
+                let mut call_args: Vec<IrExpr> = Vec::new();
 
-                        // Fallback tuple: (fb0, fb1, ...).
-                        let fallback_tuple: IrExpr = IrExpr::Tuple(
-                            fallbacks.iter().map(|f| clone_expr(var(&vname(f)))).collect(),
-                        );
-
-                        // Function call expression: name(arg0, arg1, ...)
-                        let call_expr: IrExpr = IrExpr::Call {
-                            func: Box::new(IrExpr::Path {
-                                segments: vec![name.clone()],
-                                type_args: vec![],
-                            }),
-                            args: arg_exprs,
-                        };
-
-                        // Emit: if guard { call } else { fallback_tuple }
-                        let then_block = IrBlock {
-                            stmts: vec![],
-                            stmt_provs: vec![],
-                            expr: Some(Box::new(call_expr)),
-                        };
-                        Some(IrExpr::If {
-                            cond: Box::new(var(&guard_name)),
-                            then_branch: then_block,
-                            else_branch: Some(Box::new(fallback_tuple)),
-                        })
-                    }
-                    FheGuardMode::Private => {
-                        // Encrypted guard: emit name(guard, fb0, fb1, ..., arg0, arg1, ...).
-                        // The action function is responsible for obliviously selecting
-                        // between the real outputs and the fallback values.
-                        let mut all_args: Vec<IrExpr> = Vec::new();
-                        all_args.push(clone_expr(var(&guard_name)));
-                        for f in fallbacks {
-                            all_args.push(clone_expr(var(&vname(f))));
-                        }
-                        all_args.extend(arg_exprs);
-                        Some(IrExpr::Call {
-                            func: Box::new(IrExpr::Path {
-                                segments: vec![name.clone()],
-                                type_args: vec![],
-                            }),
-                            args: all_args,
-                        })
-                    }
+                if public_set.is_public(*guard) {
+                    // Public guard — flat call: action(guard_bool, fallbacks..., args...)
+                    call_args.push(clone_expr(var(&guard_name)));
+                    call_args.extend(fb_exprs());
+                    call_args.extend(arg_exprs);
+                } else {
+                    // Encrypted guard — flat call:
+                    //   action(true, fallbacks..., guard_enc, fallbacks..., args...)
+                    //
+                    // The leading `true` means "always execute"; the action function
+                    // receives the encrypted guard before the args and performs
+                    // oblivious selection internally.  The fallbacks appear twice so
+                    // that stripping the outer `true, fallbacks...` prefix yields a
+                    // second valid action-call suffix, enabling compositional unwrapping.
+                    call_args.push(IrExpr::Lit(IrLit::Bool(true)));
+                    call_args.extend(fb_exprs());
+                    call_args.push(clone_expr(var(&guard_name)));
+                    call_args.extend(fb_exprs());
+                    call_args.extend(arg_exprs);
                 }
+
+                Some(IrExpr::Call {
+                    func: Box::new(IrExpr::Path {
+                        segments: vec![name.clone()],
+                        type_args: vec![],
+                    }),
+                    args: call_args,
+                })
             }
             Stmt::ActionOutput { call, idx, .. } => {
                 // Always emit a field projection from the ActionCall result tuple.
@@ -3177,7 +3131,8 @@ mod tests {
     /// ```
     ///
     /// `"my_action"` has no `_pub` suffix; it must be registered explicitly.
-    /// The emitted code should contain an `if var_1 { my_action(...) }`.
+    /// The guard (`var_1`) is a public const, so the emitted call is flat:
+    /// `my_action(var_1, var_1, input_0)` — no `if/else`.
     #[test]
     fn test_tfhe_cfg_action_config_builder() {
         let mut types = IRTypes::new();
@@ -3208,7 +3163,7 @@ mod tests {
         let circuit = IRBlocks::new(vec![block]);
         let scheme = TfheScheme::cfg().with_action_config(
             "my_action",
-            FheActionConfig { guard_mode: FheGuardMode::Public, output_public: vec![] },
+            FheActionConfig { output_public: vec![] },
         );
         let output = weave_fhe(&circuit, &types, &scheme, "action_cfg_builder", None, None);
         let module = match output {
@@ -3221,18 +3176,22 @@ mod tests {
             code.contains("my_action"),
             "generated code should call my_action:\n{code}"
         );
+        // Public guard → flat call, no if/else wrapper.
         assert!(
-            code.contains("if "),
-            "Public guard mode should emit an if/else:\n{code}"
+            !code.contains("if "),
+            "public guard should emit a flat call with no if/else:\n{code}"
         );
     }
 
-    /// `FheGuardMode::Private` emits a flat call with guard + fallbacks prepended.
+    /// Encrypted guard emits a flat call with `true` + double fallbacks prepended.
     ///
     /// Circuit: same as above but the guard (`input_0`) is encrypted.
-    /// Config: `FheGuardMode::Private` with `output_public: vec![false]`.
+    /// Config: `output_public: vec![false]`.
     ///
-    /// Expected: `private_action(input_0, var_1, input_0)` — no `if`, no `else`.
+    /// Expected: `private_action(true, var_1, input_0, var_1, input_0)` — no `if`, no `else`.
+    /// The leading `true` means "always execute"; stripping `true, var_1` leaves a
+    /// second valid action-call suffix `input_0, var_1, input_0` (encrypted guard,
+    /// fallback, arg), enabling compositional unwrapping.
     #[test]
     fn test_tfhe_cfg_private_guard_action() {
         let mut types = IRTypes::new();
@@ -3264,10 +3223,7 @@ mod tests {
         let circuit = IRBlocks::new(vec![block]);
         let scheme = TfheScheme::cfg().with_action_config(
             "private_action",
-            FheActionConfig {
-                guard_mode: FheGuardMode::Private,
-                output_public: vec![false],
-            },
+            FheActionConfig { output_public: vec![false] },
         );
         let output = weave_fhe(&circuit, &types, &scheme, "priv_guard_action", None, None);
         let module = match output {
@@ -3280,10 +3236,14 @@ mod tests {
             code.contains("private_action"),
             "generated code should call private_action:\n{code}"
         );
-        // Private guard → flat call, no Rust if/else
+        // Encrypted guard → flat call with leading `true`, no Rust if/else.
         assert!(
-            !code.contains("if ") || code.contains("private_action"),
-            "Private guard mode should not emit a separate if/else for the action:\n{code}"
+            !code.contains("if "),
+            "Encrypted guard should emit a flat call with no if/else:\n{code}"
+        );
+        assert!(
+            code.contains("true"),
+            "Encrypted guard call should contain the leading `true` outer guard:\n{code}"
         );
     }
 
@@ -3325,10 +3285,7 @@ mod tests {
         let circuit = IRBlocks::new(vec![block]);
         let scheme = TfheScheme::cfg().with_action_config(
             "mixed_action",
-            FheActionConfig {
-                guard_mode: FheGuardMode::Public,
-                output_public: vec![true, false],
-            },
+            FheActionConfig { output_public: vec![true, false] },
         );
         let output = weave_fhe(&circuit, &types, &scheme, "mixed_action_out", None, None);
         let module = match output {

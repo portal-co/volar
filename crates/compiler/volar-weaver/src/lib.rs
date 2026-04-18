@@ -95,7 +95,7 @@ pub use grafhen::{
 pub use fhe::{
     weave_fhe, weave_fhe_flat_bir,
     FheScheme, FheOutput, FheStorageConfig, FheStorageSizes,
-    FheGuardMode, FheActionConfig,
+    FheActionConfig,
     GrafhenScheme, TfheScheme,
     print_fhe_cfg_module, print_fhe_flat_module,
 };
