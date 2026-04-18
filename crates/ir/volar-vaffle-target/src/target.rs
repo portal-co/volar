@@ -111,10 +111,22 @@ impl FuncBuilder {
 // ============================================================================
 
 /// A [`LirTarget`] that assembles a VAFFLE [`Module`].
+///
+/// # ABI modes
+///
+/// By default, all parameters are passed as flat bit vectors (`LirAbi::CIRCUIT`).
+/// Call [`with_optimized_abi`](Self::with_optimized_abi) to enable stack-based
+/// passing for parameters whose bit-count exceeds 64.  This reduces
+/// block-parameter counts and spill/reload overhead in `lower_to_ir`, at the
+/// cost of extra `StorageRead`/`StorageWrite` operations.
 pub struct VaffleTarget {
     pub module: Module,
     func: Option<FuncBuilder>,
     struct_widths: Vec<usize>,
+    /// When `true`, parameters wider than `LirAbi::VAFFLE_OPTIMIZED.aggregate_byval_limit`
+    /// are passed via `StorageId::STACK` (caller writes bits, passes address;
+    /// callee reads bits from address).  Default: `false`.
+    optimized_abi: bool,
 }
 
 impl VaffleTarget {
@@ -132,7 +144,35 @@ impl VaffleTarget {
             },
             func: None,
             struct_widths: vec![],
+            optimized_abi: false,
         }
+    }
+
+    /// Enable the optimized stack-based ABI for large parameters.
+    ///
+    /// When enabled, parameters whose bit-decomposition exceeds 64 bits are
+    /// passed via `StorageId::STACK` instead of as individual block parameters.
+    /// This reduces the block-parameter count (and therefore spill/reload cost
+    /// in `lower_to_ir`) for functions that accept AES-sized or larger values.
+    ///
+    /// # Compatibility
+    ///
+    /// Callers and callees **must** use the same ABI setting.  Mixing
+    /// `optimized_abi = true` callers with `optimized_abi = false` callees
+    /// (or vice versa) produces incorrect code.
+    pub fn with_optimized_abi(mut self) -> Self {
+        self.optimized_abi = true;
+        self
+    }
+
+    /// Query whether the optimized ABI is enabled.
+    pub fn optimized_abi(&self) -> bool {
+        self.optimized_abi
+    }
+
+    /// Set the ABI mode at runtime.
+    pub fn set_optimized_abi(&mut self, enabled: bool) {
+        self.optimized_abi = enabled;
     }
 
     pub(crate) fn bit_tid(&mut self) -> TypeId { self.module.types.bit() }
@@ -297,23 +337,66 @@ impl LirTarget for VaffleTarget {
         _ret: Option<LirType>,
     ) -> (VaffleBlock, Vec<Vec<VaffleValue>>) {
         let bit_tid = self.bit_tid();
-        let sig_params: Vec<TypeId> = params.iter()
-            .flat_map(|ty| {
+        let threshold = self.abi().aggregate_byval_limit;
+
+        // Decide per-param: direct (N block params) or ptr (PTR_BITS block params).
+        let param_infos: Vec<(usize, bool)> = params.iter()
+            .map(|ty| {
                 let n = bits_for_lir_type(ty, &self.struct_widths);
-                (0..n).map(|_| bit_tid)
+                (n, self.optimized_abi && n > threshold)
             })
+            .collect();
+
+        // Build signature: direct params contribute N Bit slots,
+        // ptr params contribute PTR_BITS Bit slots.
+        let sig_params: Vec<TypeId> = param_infos.iter()
+            .map(|&(n, is_ptr)| if is_ptr { PTR_BITS } else { n })
+            .flat_map(|count| (0..count).map(|_| bit_tid))
             .collect();
         let sig_id = SigId(self.module.sigs.len());
         self.module.sigs.push(SigDecl { params: sig_params, results: vec![] });
 
         let mut fb = FuncBuilder::new(name.to_string(), sig_id, bit_tid);
         let mut groups: Vec<Vec<VaffleValue>> = Vec::new();
-        for ty in params {
-            let n = bits_for_lir_type(ty, &self.struct_widths);
-            let bits: Vec<ValueId> = (0..n).map(|_| fb.emit_block_param(0, bit_tid)).collect();
-            groups.push(vec![VaffleValue { bits, ty: ty.clone() }]);
+        // Collect (group_idx, addr_bits, orig_type, orig_bits) for deferred loads.
+        let mut deferred: Vec<(usize, Vec<ValueId>, LirType, usize)> = Vec::new();
+
+        for (pi, ty) in params.iter().enumerate() {
+            let (n, is_ptr) = param_infos[pi];
+            if is_ptr {
+                let bits: Vec<ValueId> = (0..PTR_BITS)
+                    .map(|_| fb.emit_block_param(0, bit_tid))
+                    .collect();
+                deferred.push((pi, bits, ty.clone(), n));
+                groups.push(vec![]); // placeholder — filled after loads
+            } else {
+                let bits: Vec<ValueId> = (0..n)
+                    .map(|_| fb.emit_block_param(0, bit_tid))
+                    .collect();
+                groups.push(vec![VaffleValue { bits, ty: ty.clone() }]);
+            }
         }
         self.func = Some(fb);
+
+        // Emit StorageReads for ptr-passed params (now self.func is set).
+        for (pi, addr_bits, ty, n) in deferred {
+            let storage = StorageId::STACK;
+            let bit_tid = self.bit_tid();
+            let mut loaded = Vec::with_capacity(n);
+            for i in 0..n {
+                if i == 0 {
+                    let v = self.emit_read(storage, bit_tid, &addr_bits);
+                    loaded.push(v);
+                } else {
+                    let off = self.iconst(LirType::U32, i as i64);
+                    let off_bits = self.pad_to_ptr_bits(off);
+                    let addr = bc_add(self, &addr_bits, &off_bits, false);
+                    let v = self.emit_read(storage, bit_tid, &addr);
+                    loaded.push(v);
+                }
+            }
+            groups[pi] = vec![VaffleValue { bits: loaded, ty }];
+        }
         (VaffleBlock(0), groups)
     }
 
@@ -476,7 +559,42 @@ impl LirTarget for VaffleTarget {
             });
             fid
         };
-        let flat_args: Vec<ValueId> = args.iter().flat_map(|v| v.bits.iter().copied()).collect();
+
+        let threshold = self.abi().aggregate_byval_limit;
+
+        // Build the flat argument list, writing large args to stack storage.
+        let mut flat_args: Vec<ValueId> = Vec::new();
+        for arg in args {
+            if self.optimized_abi && arg.bits.len() > threshold {
+                // Allocate a stack slot for this arg.
+                let base_slot = self.fb().next_stack_slot;
+                self.fb().next_stack_slot += arg.bits.len() as u64;
+
+                // Emit address constant.
+                let addr_const: Vec<ValueId> = (0..PTR_BITS)
+                    .map(|i| self.bc_const((base_slot >> i) & 1 != 0))
+                    .collect();
+
+                // Write each bit to StorageId::STACK.
+                let bit_tid = self.bit_tid();
+                let storage = StorageId::STACK;
+                for (i, &bit) in arg.bits.iter().enumerate() {
+                    if i == 0 {
+                        self.emit_write(storage, bit, bit_tid, &addr_const);
+                    } else {
+                        let off = self.iconst(LirType::U32, i as i64);
+                        let off_bits = self.pad_to_ptr_bits(off);
+                        let addr = bc_add(self, &addr_const, &off_bits, false);
+                        self.emit_write(storage, bit, bit_tid, &addr);
+                    }
+                }
+                // Pass the address instead of the raw bits.
+                flat_args.extend(addr_const);
+            } else {
+                flat_args.extend(arg.bits.iter().copied());
+            }
+        }
+
         let call_id = self.fb().emit_value(Value::Call { func: func_id, args: flat_args });
         match ret_ty {
             None => vec![],
@@ -545,7 +663,11 @@ impl LirTarget for VaffleTarget {
     }
 
     fn abi(&self) -> LirAbi {
-        LirAbi::CIRCUIT
+        if self.optimized_abi {
+            LirAbi::VAFFLE_OPTIMIZED
+        } else {
+            LirAbi::CIRCUIT
+        }
     }
 }
 
@@ -840,5 +962,149 @@ mod tests {
         assert!(!abi.native_aggregates);
         assert_eq!(abi.aggregate_byval_limit, usize::MAX);
         assert!(!abi.pass_by_ptr(1_000_000));
+    }
+
+    #[test]
+    fn test_vaffle_optimized_abi_flag() {
+        let t = VaffleTarget::new().with_optimized_abi();
+        assert!(t.optimized_abi());
+        let abi = t.abi();
+        assert_eq!(abi.aggregate_byval_limit, 64);
+        assert!(abi.pass_by_ptr(65));
+        assert!(!abi.pass_by_ptr(64));
+    }
+
+    #[test]
+    fn test_vaffle_set_optimized_abi_runtime() {
+        let mut t = VaffleTarget::new();
+        assert!(!t.optimized_abi());
+        t.set_optimized_abi(true);
+        assert!(t.optimized_abi());
+        t.set_optimized_abi(false);
+        assert!(!t.optimized_abi());
+    }
+
+    /// With `optimized_abi = false`, a 128-bit param produces 128 block params.
+    #[test]
+    fn test_begin_function_flat_abi_wide_param() {
+        let mut t = VaffleTarget::new();
+        let arr_ty = LirType::Arr(alloc::boxed::Box::new(LirType::U8), 16); // 128 bits
+        let (entry, groups) = t.begin_function("f", &[arr_ty.clone()], None);
+        t.switch_to_block(entry);
+
+        // Flat ABI: 128 block params, 128 bits in the VaffleValue.
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0][0].bits.len(), 128);
+
+        // Count the block params.
+        let body = t.func.as_ref().unwrap();
+        assert_eq!(body.blocks[0].params.len(), 128);
+
+        t.ret(&[]);
+        t.end_function();
+    }
+
+    /// With `optimized_abi = true`, a 128-bit param produces PTR_BITS block
+    /// params (the address) and StorageRead stmts to load the actual bits.
+    #[test]
+    fn test_begin_function_optimized_abi_wide_param() {
+        let mut t = VaffleTarget::new().with_optimized_abi();
+        let arr_ty = LirType::Arr(alloc::boxed::Box::new(LirType::U8), 16); // 128 bits
+        let (entry, groups) = t.begin_function("f", &[arr_ty.clone()], None);
+        t.switch_to_block(entry);
+
+        // Optimized ABI: callee still gets 128 bits (loaded from stack),
+        // but block params are only PTR_BITS wide.
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0][0].bits.len(), 128);
+
+        // Block params should be PTR_BITS, not 128.
+        let body = t.func.as_ref().unwrap();
+        assert_eq!(body.blocks[0].params.len(), PTR_BITS);
+
+        // There should be StorageRead ops for loading the bits.
+        let has_stack_read = body.all_values.iter().any(|v| matches!(
+            v, Value::Op(Stmt::StorageRead { storage, .. }) if *storage == StorageId::STACK
+        ));
+        assert!(has_stack_read, "optimized ABI should emit StorageReads from STACK");
+
+        t.ret(&[]);
+        t.end_function();
+    }
+
+    /// A small param (e.g. U32 = 32 bits) is passed directly even with
+    /// optimized ABI enabled.
+    #[test]
+    fn test_optimized_abi_small_param_direct() {
+        let mut t = VaffleTarget::new().with_optimized_abi();
+        let (entry, groups) = t.begin_function("f", &[LirType::U32], None);
+        t.switch_to_block(entry);
+
+        assert_eq!(groups[0][0].bits.len(), 32);
+        let body = t.func.as_ref().unwrap();
+        assert_eq!(body.blocks[0].params.len(), 32);
+
+        t.ret(&[]);
+        t.end_function();
+    }
+
+    /// call_extern with optimized ABI writes large args to stack and passes
+    /// the address (PTR_BITS bits) instead.
+    #[test]
+    fn test_call_extern_optimized_abi_writes_stack() {
+        let mut t = VaffleTarget::new().with_optimized_abi();
+        let arr_ty = LirType::Arr(alloc::boxed::Box::new(LirType::U8), 16);
+        let (entry, _) = t.begin_function("caller", &[], None);
+        t.switch_to_block(entry);
+
+        // Create a 128-bit value.
+        let mut bits = std::vec::Vec::new();
+        for i in 0..128 {
+            bits.push(t.bc_const(i % 2 != 0));
+        }
+        let arg = VaffleValue { bits, ty: arr_ty.clone() };
+
+        // Call with the large arg.
+        t.call_extern("callee", &[arr_ty], &[arg], None);
+
+        // There should be StorageWrite ops to STACK.
+        let body = t.func.as_ref().unwrap();
+        let has_stack_write = body.all_values.iter().any(|v| matches!(
+            v, Value::Op(Stmt::StorageWrite { storage, .. }) if *storage == StorageId::STACK
+        ));
+        assert!(has_stack_write, "optimized call_extern should write large args to STACK");
+
+        // The Call node's arg count should be PTR_BITS (the address),
+        // NOT 128 (the raw bits).
+        let call_arg_count = body.all_values.iter().find_map(|v| match v {
+            Value::Call { args, .. } => Some(args.len()),
+            _ => None,
+        });
+        assert_eq!(call_arg_count, Some(PTR_BITS), "call should pass PTR_BITS address bits");
+
+        t.ret(&[]);
+        t.end_function();
+    }
+
+    /// call_extern with optimized ABI passes small args directly.
+    #[test]
+    fn test_call_extern_optimized_abi_small_arg_direct() {
+        let mut t = VaffleTarget::new().with_optimized_abi();
+        let (entry, _) = t.begin_function("caller", &[], None);
+        t.switch_to_block(entry);
+
+        let val = t.iconst(LirType::U32, 42);
+        t.call_extern("callee", &[LirType::U32], &[val], None);
+
+        let body = t.func.as_ref().unwrap();
+        let call_arg_count = body.all_values.iter().find_map(|v| match v {
+            Value::Call { args, .. } => Some(args.len()),
+            _ => None,
+        });
+        // 32 bits passed directly.
+        assert_eq!(call_arg_count, Some(32));
+
+        t.ret(&[]);
+        t.end_function();
     }
 }

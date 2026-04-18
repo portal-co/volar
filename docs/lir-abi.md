@@ -37,7 +37,8 @@ pub struct LirAbi {
 
 | Constant | `aggregate_byval_limit` | `native_aggregates` | Used by |
 |---|---|---|---|
-| `LirAbi::CIRCUIT` | `usize::MAX` | `false` | `VolarIrTarget`, `VaffleTarget` |
+| `LirAbi::CIRCUIT` | `usize::MAX` | `false` | `VolarIrTarget`, `VaffleTarget` (default) |
+| `LirAbi::VAFFLE_OPTIMIZED` | `64` | `false` | `VaffleTarget` (with `set_optimized_abi(true)`) |
 | `LirAbi::C_NATIVE` | `64` | `true` | `CBackend` |
 | `LirAbi::DEFAULT` | `usize::MAX` | `false` | Fallback for unknown backends |
 
@@ -87,8 +88,70 @@ variable per bit, LSB first):
 **Stack allocation**: `VaffleTarget` supports `StackAllocExt` via
   `StorageId::STACK`.  `VolarIrTarget` does not (returns `None`).
 
-**Aggregate passing**: Always flattened.  `aggregate_byval_limit = usize::MAX`
-  means pointer-passing is never triggered.
+**Aggregate passing**: Always flattened in the default mode
+  (`optimized_abi = false`).  See the **VAFFLE Optimized ABI** section below
+  for the stack-based passing mode.
+
+### VAFFLE Optimized ABI (`VaffleTarget::with_optimized_abi`)
+
+**ABI**: `LirAbi::VAFFLE_OPTIMIZED` (enabled via runtime flag)
+
+When `VaffleTarget::set_optimized_abi(true)` (or `VaffleTarget::new().with_optimized_abi()`)
+is called, parameters whose bit-decomposition exceeds 64 bits are passed
+via `StorageId::STACK` instead of as individual block parameters.
+
+**Motivation**: In the default circuit ABI, a 128-bit parameter (e.g.
+`[U8; 16]`) becomes 128 separate `Bit`-typed block parameters.  In the
+`lower_to_ir` pass, each block parameter is individually spilled and reloaded
+at every call site, producing O(params × calls) storage operations.  For
+AES-style functions with multiple 128-bit arguments, this is a significant
+bottleneck.
+
+**Protocol (caller)**:
+1. Allocate a stack slot of N bits via `next_stack_slot` bump.
+2. Write each bit of the argument to `StorageId::STACK` at the allocated
+   address (ascending byte offsets from the base).
+3. Pass the `PTR_BITS`-wide (32-bit) base address as block-parameter bits
+   in the `Value::Call` node.
+
+**Protocol (callee)**:
+1. Receive `PTR_BITS` block parameters (the stack address).
+2. Emit N `StorageRead` operations from `StorageId::STACK` at the
+   received address to reconstruct the original bit vector.
+3. Return the loaded bits to the LIR codegen layer (which sees the
+   same `VaffleValue` shape as in the flat ABI).
+
+**Threshold**: 64 bits.  Parameters ≤ 64 bits (including `Bool`, `U8`,
+`U16`, `U32`, `U64`) are always passed directly.  Parameters > 64 bits
+(e.g. `Arr(U8, 16)` = 128 bits, AES state) use stack-based passing.
+
+**Compatibility**: Callers and callees **must** use the same ABI setting.
+Mixing `optimized_abi = true` callers with `optimized_abi = false` callees
+(or vice versa) produces incorrect code.  The flag is a runtime property
+of the `VaffleTarget` instance, so mixed-mode is prevented by using a
+single target instance for all functions in a module.
+
+**Cost**: The optimization trades block-parameter count (which drives
+spill/reload) for storage operations (which are cheaper in the Dyn-based
+call convention).  For a function with three 128-bit parameters:
+
+| Metric | Flat ABI | Optimized ABI |
+|---|---|---|
+| Block params per call | 384 | 96 |
+| StorageWrite per call | 0 | 384 |
+| StorageRead per entry | 0 | 384 |
+| Spill slots (3 calls) | 384 × 3 | 96 × 3 |
+
+The net effect is a 4× reduction in spill/reload traffic (the dominant cost
+in the `lower_to_ir` pass).
+
+**Usage**:
+```rust
+let mut target = VaffleTarget::new().with_optimized_abi();
+// or:
+let mut target = VaffleTarget::new();
+target.set_optimized_abi(true);
+```
 
 ### C Backend (`CBackend`)
 
@@ -245,12 +308,13 @@ separately in the `lower_to_ir.rs` module header but summarised here:
 
 ## Target Capability Matrix
 
-| Capability | `VolarIrTarget` | `VaffleTarget` | `CBackend` |
-|---|---|---|---|
-| `abi()` | `CIRCUIT` | `CIRCUIT` | `C_NATIVE` |
-| `stack_alloc_ext()` | `None` | `Some` | `Some` |
-| `native_aggregates` | No | No | Yes |
-| `aggregate_byval_limit` | ∞ | ∞ | 64 |
-| Value representation | Flat bits | Flat bits | Native C types |
-| Extern calls | Inline | Inline + storage-based calls | C function calls |
-| Pointer types | Panic | 32-bit address | C pointer |
+| Capability | `VolarIrTarget` | `VaffleTarget` (default) | `VaffleTarget` (optimized) | `CBackend` |
+|---|---|---|---|---|
+| `abi()` | `CIRCUIT` | `CIRCUIT` | `VAFFLE_OPTIMIZED` | `C_NATIVE` |
+| `stack_alloc_ext()` | `None` | `Some` | `Some` | `Some` |
+| `native_aggregates` | No | No | No | Yes |
+| `aggregate_byval_limit` | ∞ | ∞ | 64 | 64 |
+| Value representation | Flat bits | Flat bits | Flat bits + stack ptrs | Native C types |
+| Extern calls | Inline | Inline | Inline + stack-based args | C function calls |
+| Pointer types | Panic | 32-bit address | 32-bit address | C pointer |
+| `optimized_abi` flag | N/A | `false` | `true` | N/A |

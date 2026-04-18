@@ -154,6 +154,21 @@ impl LirAbi {
         native_aggregates: true,
     };
 
+    /// ABI for the VAFFLE target with stack-based aggregate passing.
+    ///
+    /// Parameters whose bit-decomposition exceeds 64 bits are passed via
+    /// `StorageId::STACK`: the caller writes the bits to a stack slot and
+    /// passes a 32-bit address; the callee reads the bits back.  This
+    /// dramatically reduces block-parameter counts (and therefore
+    /// spill/reload cost in the `lower_to_ir` pass) for functions that
+    /// accept AES-sized or larger aggregates.
+    ///
+    /// Enable via [`VaffleTarget::with_optimized_abi`].
+    pub const VAFFLE_OPTIMIZED: LirAbi = LirAbi {
+        aggregate_byval_limit: 64,
+        native_aggregates: false,
+    };
+
     /// Default ABI: unlimited inline passing, no native aggregates.
     pub const DEFAULT: LirAbi = LirAbi {
         aggregate_byval_limit: usize::MAX,
