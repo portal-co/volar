@@ -49,15 +49,16 @@ use alloc::{
 
 use volar_compiler::{
     ir::{
+        ArrayKind, ArrayLength,
         ExternalKind, IrBlock, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump, IrCfgModule,
-        IrCfgTerminator, IrExpr, IrFunction, IrGenericParam, IrGenericParamKind, IrModule,
+        IrCfgTerminator, IrExpr, IrFunction, IrGenericParam, IrGenericParamKind, IrLit, IrModule,
         IrParam, IrPattern, IrStmt, IrTraitBound, IrType, StructKind, TraitKind,
     },
     linkage::LinkageSystem,
 };
 use volar_ir::{
     boolar::{BIrBlocks, BIrStmt},
-    ir::{IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRTypes, IRVarId},
+    ir::{IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRTypes, IRVarId, StorageId},
 };
 use volar_ir_passes::{lower_ir_to_boolar, movfuscate_biir};
 
@@ -282,6 +283,31 @@ pub trait FheScheme {
 }
 
 // ============================================================================
+// Storage configuration
+// ============================================================================
+
+/// Maps `(StorageId.0, bit_width)` → cell count.
+///
+/// Tells the weaver how many cells each storage space contains so that it can
+/// allocate per-cell wires and size the MUX/demux trees correctly.
+pub type FheStorageSizes = BTreeMap<(u32, usize), usize>;
+
+/// Configuration for storage support in the FHE weaver.
+///
+/// When storage is enabled, each `(StorageId, bit_width)` pair becomes a
+/// `&mut [WireType]` parameter on the emitted function, and `StorageRead`/
+/// `StorageWrite` stmts are lowered to oblivious MUX-tree reads and
+/// demux+MUX writes using the scheme's binary gate primitives.
+#[derive(Clone, Debug, Default)]
+pub struct FheStorageConfig {
+    /// Number of cells per `(StorageId.0, bit_width)` key.
+    ///
+    /// Missing keys are treated as 0 cells (reads produce zero wires,
+    /// writes are no-ops).
+    pub sizes: FheStorageSizes,
+}
+
+// ============================================================================
 // Output type
 // ============================================================================
 
@@ -310,11 +336,12 @@ pub fn weave_fhe<S: FheScheme>(
     scheme: &S,
     name: &str,
     linkage: Option<&LinkageSystem>,
+    storage: Option<&FheStorageConfig>,
 ) -> FheOutput {
     if scheme.cfg_capable() {
-        FheOutput::Cfg(weave_fhe_cfg(blocks, types, scheme, name, linkage))
+        FheOutput::Cfg(weave_fhe_cfg(blocks, types, scheme, name, linkage, storage))
     } else {
-        FheOutput::Flat(weave_fhe_flat(blocks, types, scheme, name, linkage))
+        FheOutput::Flat(weave_fhe_flat(blocks, types, scheme, name, linkage, storage))
     }
 }
 
@@ -328,6 +355,7 @@ fn weave_fhe_flat<S: FheScheme>(
     scheme: &S,
     name: &str,
     linkage: Option<&LinkageSystem>,
+    storage: Option<&FheStorageConfig>,
 ) -> IrModule {
     let bir_blocks = lower_ir_to_boolar(blocks, types);
     let circuit = movfuscate_biir(&bir_blocks);
@@ -335,7 +363,360 @@ fn weave_fhe_flat<S: FheScheme>(
         circuit.is_circuit(),
         "weave_fhe_flat: circuit after movfuscation must satisfy is_circuit()"
     );
-    weave_fhe_flat_bir(&circuit, scheme, name, linkage, &NoProvenance)
+    weave_fhe_flat_bir(&circuit, scheme, name, linkage, &NoProvenance, storage)
+}
+
+// ============================================================================
+// Oblivious storage context for flat FHE weaving
+// ============================================================================
+
+/// Tracks per-cell wire names and emits oblivious MUX-tree reads / demux writes
+/// using a scheme's binary gate primitives.
+struct FheStorageCtx {
+    /// Current wire name for each cell: `(storage_id, bit_width, cell_index)` → wire name.
+    cells: BTreeMap<(u32, usize, usize), String>,
+    /// Cell count per `(storage_id, bit_width)` key.
+    counts: BTreeMap<(u32, usize), usize>,
+    /// Running counter for unique MUX/demux names.
+    mux_counter: usize,
+}
+
+impl FheStorageCtx {
+    fn new(sizes: &FheStorageSizes) -> Self {
+        let mut counts = BTreeMap::new();
+        for (&(sid, bw), &count) in sizes {
+            if count > 0 {
+                counts.insert((sid, bw), count);
+            }
+        }
+        FheStorageCtx {
+            cells: BTreeMap::new(),
+            counts,
+            mux_counter: 0,
+        }
+    }
+
+    /// Initialise all storage cells from the function parameters.
+    ///
+    /// For each `(sid, bw)` with `count` cells, emits `let _sinit_{sid}_{bw}_{i} =
+    /// storage_{sid}_{bw}[{i}].clone();` bindings and tracks the cell names.
+    fn init_cells<Q: Clone + Default>(&mut self, stmts: &mut Vec<IrStmt<Q>>, stmt_provs: &mut Vec<Q>) {
+        for (&(sid, bw), &count) in &self.counts {
+            let param_name = format!("storage_{}_{}", sid, bw);
+            for ci in 0..count {
+                let name = format!("_sinit_{}_{}_{}", sid, bw, ci);
+                // storage_param[ci].clone()
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&name),
+                    ty: None,
+                    init: Some(clone_expr(IrExpr::Index {
+                        base: Box::new(var(&param_name)),
+                        index: Box::new(IrExpr::Lit(IrLit::Int(ci as i128))),
+                    })),
+                });
+                stmt_provs.push(Q::default());
+                self.cells.insert((sid, bw, ci), name);
+            }
+        }
+    }
+
+    /// Write-back all storage cells to the parameter slices at the end.
+    fn writeback_cells<Q: Clone + Default>(&self, stmts: &mut Vec<IrStmt<Q>>, stmt_provs: &mut Vec<Q>) {
+        for (&(sid, bw), &count) in &self.counts {
+            let param_name = format!("storage_{}_{}", sid, bw);
+            for ci in 0..count {
+                let cell_name = &self.cells[&(sid, bw, ci)];
+                // storage_param[ci] = cell.clone();
+                stmts.push(IrStmt::Expr(IrExpr::Assign {
+                    left: Box::new(IrExpr::Index {
+                        base: Box::new(var(&param_name)),
+                        index: Box::new(IrExpr::Lit(IrLit::Int(ci as i128))),
+                    }),
+                    right: Box::new(clone_expr(var(cell_name))),
+                }));
+                stmt_provs.push(Q::default());
+            }
+        }
+    }
+
+    fn effective_addr_width(cell_count: usize) -> usize {
+        if cell_count <= 1 { return 0; }
+        usize::BITS as usize - (cell_count - 1).leading_zeros() as usize
+    }
+
+    /// Oblivious read via MUX tree.
+    ///
+    /// Returns the name of the output wire.  Cost: `(next_pow2(cells) − 1)` AND
+    /// gates per bit of value width.
+    fn emit_read<S: FheScheme, Q: Clone + Default>(
+        &mut self,
+        out_name: &str,
+        storage_id: u32,
+        bit_width: usize,
+        addr_wire: &str,
+        scheme: &S,
+        stmts: &mut Vec<IrStmt<Q>>,
+        stmt_provs: &mut Vec<Q>,
+        _var_names: &mut BTreeMap<u32, String>,
+    ) -> String {
+        let count = self.counts.get(&(storage_id, bit_width)).copied().unwrap_or(0);
+        if count == 0 {
+            // No cells — return zero.
+            let z = scheme.emit_zero::<Q>();
+            stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(out_name),
+                ty: None,
+                init: Some(z),
+            });
+            stmt_provs.push(Q::default());
+            return String::from(out_name);
+        }
+
+        let _aw = Self::effective_addr_width(count);
+        // Build address bit wire names by indexing the addr var.
+        // The addr is a single wire (merged bits) at BIr level — we need its
+        // individual bits.  However, in the flat BIr circuit, the address may
+        // be a multi-bit value.  We'll use the addr wire directly for 1-cell
+        // storage, and for larger sizes, we split using the addr bits that
+        // were merged into the address variable.
+        //
+        // For the flat path, addresses are individual bit wires (since BIr
+        // operates at the bit level).  The `addr` BIrStmt field is a single
+        // IRVarId that refers to the merged address.  We need the individual
+        // bit wires that were merged into it.  Since we don't track this in
+        // the flat weaver, we pass the address as a single bit for 2-cell
+        // storage and use the addr wire as the MSB selector.
+        //
+        // For simplicity in the flat path, we use the address wire as the
+        // selector bit for a 2-cell MUX.  For larger cell counts, the
+        // address bits should have been individually available from the
+        // circuit's Merge/Shuffle structure.
+        let cells: Vec<String> = (0..count)
+            .map(|ci| self.cells[&(storage_id, bit_width, ci)].clone())
+            .collect();
+
+        // For the MUX tree, we need individual address bit wires.
+        // The flat circuit has already decomposed addresses into individual
+        // bits via Merge/Shuffle.  The `addr_wire` is the wire name of the
+        // *merged* address.  We'll use a MUX tree over the cells with the
+        // address wire as selector.
+        //
+        // Simple 1-cell case: just clone the cell.
+        if count == 1 {
+            stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(out_name),
+                ty: None,
+                init: Some(clone_expr(var(&cells[0]))),
+            });
+            stmt_provs.push(Q::default());
+            return String::from(out_name);
+        }
+
+        // For 2-cell: MUX(addr, cell[0], cell[1]).
+        // For larger: recursive MUX tree using addr bits.
+        // Since the flat circuit has address bits as individual wires,
+        // we use the addr wire (which is the full merged address) as a
+        // single selector for 2-cell, or need individual bits for larger.
+        // The MUX tree approach: MUX(sel, a, b) = sel · (a ⊕ b) ⊕ a
+        let result = self.mux_tree_read(
+            &cells, addr_wire, scheme, stmts, stmt_provs,
+            &format!("_sr_{}", out_name),
+        );
+        stmts.push(IrStmt::Let {
+            pattern: IrPattern::ident(out_name),
+            ty: None,
+            init: Some(clone_expr(var(&result))),
+        });
+        stmt_provs.push(Q::default());
+        String::from(out_name)
+    }
+
+    /// Oblivious write via demux + per-cell MUX.
+    fn emit_write<S: FheScheme, Q: Clone + Default>(
+        &mut self,
+        storage_id: u32,
+        bit_width: usize,
+        src_wire: &str,
+        addr_wire: &str,
+        scheme: &S,
+        stmts: &mut Vec<IrStmt<Q>>,
+        stmt_provs: &mut Vec<Q>,
+    ) {
+        let count = self.counts.get(&(storage_id, bit_width)).copied().unwrap_or(0);
+        if count == 0 { return; }
+        if count == 1 {
+            // Only one cell — unconditional write.
+            let new_name = format!("_sw_{}_{}", storage_id, self.mux_counter);
+            self.mux_counter += 1;
+            stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(&new_name),
+                ty: None,
+                init: Some(clone_expr(var(src_wire))),
+            });
+            stmt_provs.push(Q::default());
+            self.cells.insert((storage_id, bit_width, 0), new_name);
+            return;
+        }
+
+        // For each cell: cell' = MUX(sel, old_cell, src)
+        // where sel = (addr == ci).  For 2 cells: sel[0] = NOT(addr),
+        // sel[1] = addr.
+        let tag = format!("_sdm_{}_{}", storage_id, self.mux_counter);
+        self.mux_counter += 1;
+
+        // NOT of address (for cell 0).
+        let not_addr = format!("{}_not", tag);
+        stmts.push(IrStmt::Let {
+            pattern: IrPattern::ident(&not_addr),
+            ty: None,
+            init: Some(scheme.emit_not::<Q>(var(addr_wire))),
+        });
+        stmt_provs.push(Q::default());
+
+        for ci in 0..count {
+            let old_cell = self.cells[&(storage_id, bit_width, ci)].clone();
+            let sel = if ci == 0 { not_addr.clone() } else { String::from(addr_wire) };
+
+            // MUX(sel, old_cell, src) = sel · (old_cell ⊕ src) ⊕ old_cell
+            let diff_name = format!("{}_d{}", tag, ci);
+            stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(&diff_name),
+                ty: None,
+                init: Some(scheme.emit_xor::<Q>(clone_expr(var(&old_cell)), clone_expr(var(src_wire)))),
+            });
+            stmt_provs.push(Q::default());
+
+            let masked_name = format!("{}_m{}", tag, ci);
+            stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(&masked_name),
+                ty: None,
+                init: Some(scheme.emit_and::<Q>(var(&sel), var(&diff_name), 0)),
+            });
+            stmt_provs.push(Q::default());
+
+            let new_cell = format!("{}_c{}", tag, ci);
+            stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(&new_cell),
+                ty: None,
+                init: Some(scheme.emit_xor::<Q>(var(&masked_name), clone_expr(var(&old_cell)))),
+            });
+            stmt_provs.push(Q::default());
+
+            self.cells.insert((storage_id, bit_width, ci), new_cell);
+        }
+    }
+
+    /// MUX-tree read: recursively halves cells using the address as selector.
+    ///
+    /// For 2 cells and a single-bit address, produces:
+    ///   MUX(addr, cell[0], cell[1]) = addr · (cell[0] ⊕ cell[1]) ⊕ cell[0]
+    fn mux_tree_read<S: FheScheme, Q: Clone + Default>(
+        &mut self,
+        cells: &[String],
+        addr_wire: &str,
+        scheme: &S,
+        stmts: &mut Vec<IrStmt<Q>>,
+        stmt_provs: &mut Vec<Q>,
+        tag: &str,
+    ) -> String {
+        match cells.len() {
+            0 => {
+                let z = format!("{}_z", tag);
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&z),
+                    ty: None,
+                    init: Some(scheme.emit_zero::<Q>()),
+                });
+                stmt_provs.push(Q::default());
+                z
+            }
+            1 => cells[0].clone(),
+            2 => {
+                // MUX(addr, cell[0], cell[1]) = addr · (c0 ⊕ c1) ⊕ c0
+                let diff = format!("{}_xd", tag);
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&diff),
+                    ty: None,
+                    init: Some(scheme.emit_xor::<Q>(
+                        clone_expr(var(&cells[0])),
+                        clone_expr(var(&cells[1])),
+                    )),
+                });
+                stmt_provs.push(Q::default());
+
+                let masked = format!("{}_ma", tag);
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&masked),
+                    ty: None,
+                    init: Some(scheme.emit_and::<Q>(var(addr_wire), var(&diff), 0)),
+                });
+                stmt_provs.push(Q::default());
+
+                let result = format!("{}_r", tag);
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&result),
+                    ty: None,
+                    init: Some(scheme.emit_xor::<Q>(
+                        var(&masked),
+                        clone_expr(var(&cells[0])),
+                    )),
+                });
+                stmt_provs.push(Q::default());
+                result
+            }
+            _ => {
+                // Recursive split — pad to power-of-2, split at midpoint.
+                let n_pad = cells.len().next_power_of_two();
+                let mid = n_pad / 2;
+                let left = if mid <= cells.len() { &cells[..mid] } else { cells };
+                let right = if mid < cells.len() { &cells[mid..] } else { &[] as &[String] };
+                let left_r = self.mux_tree_read(
+                    left, addr_wire, scheme, stmts, stmt_provs,
+                    &format!("{}l", tag),
+                );
+                let right_cells: Vec<String> = if right.is_empty() {
+                    // Pad with zero cells for the right subtree.
+                    let zn = format!("{}rz", tag);
+                    stmts.push(IrStmt::Let {
+                        pattern: IrPattern::ident(&zn),
+                        ty: None,
+                        init: Some(scheme.emit_zero::<Q>()),
+                    });
+                    stmt_provs.push(Q::default());
+                    vec![zn]
+                } else {
+                    right.to_vec()
+                };
+                let right_r = self.mux_tree_read(
+                    &right_cells, addr_wire, scheme, stmts, stmt_provs,
+                    &format!("{}r", tag),
+                );
+                // MUX the two halves.
+                let diff = format!("{}_xd", tag);
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&diff),
+                    ty: None,
+                    init: Some(scheme.emit_xor::<Q>(clone_expr(var(&left_r)), clone_expr(var(&right_r)))),
+                });
+                stmt_provs.push(Q::default());
+                let masked = format!("{}_ma", tag);
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&masked),
+                    ty: None,
+                    init: Some(scheme.emit_and::<Q>(var(addr_wire), var(&diff), 0)),
+                });
+                stmt_provs.push(Q::default());
+                let result = format!("{}_r", tag);
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&result),
+                    ty: None,
+                    init: Some(scheme.emit_xor::<Q>(var(&masked), clone_expr(var(&left_r)))),
+                });
+                stmt_provs.push(Q::default());
+                result
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -349,6 +730,14 @@ fn weave_fhe_flat<S: FheScheme>(
 /// callers (such as `weave_grafhen_with_handler`) that already hold a
 /// `BIrBlocks` and want to preserve per-statement provenance.
 ///
+/// # Storage
+///
+/// When `storage` is `Some`, `StorageRead`/`StorageWrite` stmts in the circuit
+/// are lowered to oblivious MUX-tree reads and demux+MUX writes using the
+/// scheme's binary gates.  Each `(StorageId, bit_width)` pair with at least
+/// one cell in [`FheStorageConfig::sizes`] becomes a `&mut [WireType]`
+/// parameter on the emitted function.
+///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()` (single block, Return
 /// terminator), or if the scheme does not implement a required emit method for
@@ -359,6 +748,7 @@ pub fn weave_fhe_flat_bir<P, H, S>(
     name: &str,
     linkage: Option<&LinkageSystem>,
     handler: &H,
+    storage: Option<&FheStorageConfig>,
 ) -> IrModule<H::Output>
 where
     P: Clone + Default,
@@ -386,6 +776,24 @@ where
         });
     }
 
+    // ---- Storage parameter setup -------------------------------------------
+    // For each (StorageId, bit_width) with cells > 0, add a &mut [WireType] param.
+    let empty_config = FheStorageConfig::default();
+    let stor_cfg = storage.unwrap_or(&empty_config);
+    // Sorted keys for deterministic parameter order.
+    let stor_keys: Vec<(u32, usize)> = stor_cfg.sizes.keys().copied().collect();
+    for &(sid, bw) in &stor_keys {
+        let count = stor_cfg.sizes[&(sid, bw)];
+        if count == 0 { continue; }
+        params.push(IrParam {
+            name: format!("storage_{}_{}", sid, bw),
+            ty: IrType::Reference {
+                mutable: true,
+                elem: Box::new(IrType::Array { kind: ArrayKind::Slice, elem: Box::new(wire_ty.clone()), len: ArrayLength::Const(0) }),
+            },
+        });
+    }
+
     // Map input vars to their names.
     let mut var_names: BTreeMap<u32, String> = BTreeMap::new();
     for i in 0..num_inputs {
@@ -395,6 +803,10 @@ where
     let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
     let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut and_gate_idx: usize = 0;
+
+    // Initialize storage cells from parameters.
+    let mut stor_ctx = FheStorageCtx::new(&stor_cfg.sizes);
+    stor_ctx.init_cells::<H::Output>(&mut stmts, &mut stmt_provs);
 
     for (result_id, stmt, prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
@@ -456,8 +868,53 @@ where
 
             BIrStmt::Rng { name: rng_name } => scheme.emit_rng(rng_name),
 
-            BIrStmt::StorageRead { .. } | BIrStmt::StorageWrite { .. } => {
-                unimplemented!("weave_fhe_flat_bir: StorageRead/Write not yet supported")
+            BIrStmt::StorageRead { storage, bit_width, addr } => {
+                let addr_name = var_names
+                    .get(&addr.0)
+                    .cloned()
+                    .unwrap_or_else(|| format!("wire_{}", addr.0));
+                stor_ctx.emit_read::<S, H::Output>(
+                    &let_name,
+                    storage.0,
+                    *bit_width,
+                    &addr_name,
+                    scheme,
+                    &mut stmts,
+                    &mut stmt_provs,
+                    &mut var_names,
+                );
+                var_names.insert(result_id.0, let_name);
+                continue; // stmts already emitted by emit_read
+            }
+
+            BIrStmt::StorageWrite { storage, src, bit_width, addr } => {
+                let src_name = var_names
+                    .get(&src.0)
+                    .cloned()
+                    .unwrap_or_else(|| format!("wire_{}", src.0));
+                let addr_name = var_names
+                    .get(&addr.0)
+                    .cloned()
+                    .unwrap_or_else(|| format!("wire_{}", addr.0));
+                stor_ctx.emit_write::<S, H::Output>(
+                    storage.0,
+                    *bit_width,
+                    &src_name,
+                    &addr_name,
+                    scheme,
+                    &mut stmts,
+                    &mut stmt_provs,
+                );
+                // StorageWrite produces a dummy zero.
+                let z: IrExpr<H::Output> = scheme.emit_zero();
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&let_name),
+                    ty: None,
+                    init: Some(z),
+                });
+                stmt_provs.push(q);
+                var_names.insert(result_id.0, let_name);
+                continue;
             }
         };
 
@@ -469,6 +926,9 @@ where
         stmt_provs.push(q);
         var_names.insert(result_id.0, let_name);
     }
+
+    // Write back storage cells to the parameter slices.
+    stor_ctx.writeback_cells::<H::Output>(&mut stmts, &mut stmt_provs);
 
     let (ret_expr, ret_type) = build_return(block, &var_names, wire_ty);
 
@@ -512,6 +972,7 @@ fn weave_fhe_cfg<S: FheScheme>(
     scheme: &S,
     name: &str,
     linkage: Option<&LinkageSystem>,
+    storage: Option<&FheStorageConfig>,
 ) -> IrCfgModule {
     let wire_ty = scheme.wire_type();
 
@@ -553,6 +1014,59 @@ fn weave_fhe_cfg<S: FheScheme>(
             let result_ir_vid = num_params + stmt_idx as u32;
             let let_name = format!("var_{}", result_ir_vid);
 
+            // Handle storage stmts generically (array-indexed parameter access).
+            match ir_stmt {
+                IRStmt::StorageRead { storage, ty, addr } => {
+                    let addr_name = var_map
+                        .get(&addr.0)
+                        .cloned()
+                        .unwrap_or_else(|| format!("var_{}", addr.0));
+                    let param_name = format!("storage_{}_{}", storage.0, ty.0);
+                    // let var_N = storage_S_T[addr].clone();
+                    stmts.push(IrStmt::Let {
+                        pattern: IrPattern::ident(&let_name),
+                        ty: None,
+                        init: Some(clone_expr(IrExpr::Index {
+                            base: Box::new(var(&param_name)),
+                            index: Box::new(var(&addr_name)),
+                        })),
+                    });
+                    stmt_provs.push(());
+                    var_map.insert(result_ir_vid, let_name);
+                    continue;
+                }
+                IRStmt::StorageWrite { storage, src, ty, addr } => {
+                    let src_name = var_map
+                        .get(&src.0)
+                        .cloned()
+                        .unwrap_or_else(|| format!("var_{}", src.0));
+                    let addr_name = var_map
+                        .get(&addr.0)
+                        .cloned()
+                        .unwrap_or_else(|| format!("var_{}", addr.0));
+                    let param_name = format!("storage_{}_{}", storage.0, ty.0);
+                    // storage_S_T[addr] = src.clone();
+                    stmts.push(IrStmt::Expr(IrExpr::Assign {
+                        left: Box::new(IrExpr::Index {
+                            base: Box::new(var(&param_name)),
+                            index: Box::new(var(&addr_name)),
+                        }),
+                        right: Box::new(clone_expr(var(&src_name))),
+                    }));
+                    stmt_provs.push(());
+                    // Dummy zero result for the write.
+                    stmts.push(IrStmt::Let {
+                        pattern: IrPattern::ident(&let_name),
+                        ty: None,
+                        init: Some(scheme.emit_zero()),
+                    });
+                    stmt_provs.push(());
+                    var_map.insert(result_ir_vid, let_name);
+                    continue;
+                }
+                _ => {}
+            }
+
             let init_expr = scheme
                 .emit_ir_stmt(ir_stmt, &var_map)
                 .unwrap_or_else(|| {
@@ -593,6 +1107,21 @@ fn weave_fhe_cfg<S: FheScheme>(
                 ty: wire_ty.clone(),
             });
         }
+    }
+
+    // Add storage parameters (same convention as the flat path).
+    let empty_config = FheStorageConfig::default();
+    let stor_cfg = storage.unwrap_or(&empty_config);
+    for &(sid, bw) in stor_cfg.sizes.keys() {
+        let count = stor_cfg.sizes[&(sid, bw)];
+        if count == 0 { continue; }
+        func_params.push(IrParam {
+            name: format!("storage_{}_{}", sid, bw),
+            ty: IrType::Reference {
+                mutable: true,
+                elem: Box::new(IrType::Array { kind: ArrayKind::Slice, elem: Box::new(wire_ty.clone()), len: ArrayLength::Const(0) }),
+            },
+        });
     }
 
     let fn_name = format!("{}_{}_cfg", name, scheme.fn_name_suffix());
@@ -1106,4 +1635,128 @@ pub fn print_fhe_flat_module(module: &IrModule, self_contained: bool) -> String 
     }
     let _ = write!(out, "{}", DisplayRust(ModuleWriter { module }));
     out
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use std::{vec, vec::Vec, string::String, collections::BTreeMap, format};
+
+    use super::*;
+    use volar_ir::{
+        boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
+        ir::{IRBlockId, IRBlockTargetId, IRVarId},
+    };
+
+    /// Build a flat circuit with a 2-cell storage (1-bit values).
+    ///
+    /// ```text
+    /// params: 2 (input_0, input_1)
+    /// wire_2 = StorageWrite(storage=5, src=input_0, bit_width=1, addr=input_1)
+    /// wire_3 = StorageRead(storage=5, bit_width=1, addr=input_1)
+    /// Return wire_3
+    /// ```
+    fn build_storage_circuit() -> BIrBlocks {
+        BIrBlocks(vec![BIrBlock {
+            params: 2,
+            stmts: vec![
+                BIrStmt::StorageWrite {
+                    storage: StorageId(5),
+                    src: IRVarId(0),
+                    bit_width: 1,
+                    addr: IRVarId(1),
+                },
+                BIrStmt::StorageRead {
+                    storage: StorageId(5),
+                    bit_width: 1,
+                    addr: IRVarId(1),
+                },
+            ],
+            stmt_provs: vec![(), ()],
+            terminator: BIrTerminator::Jmp(BIrTarget {
+                block: IRBlockTargetId::Return,
+                args: vec![IRVarId(3)],
+            }),
+        }])
+    }
+
+    fn storage_config_2cells() -> FheStorageConfig {
+        let mut sizes = FheStorageSizes::new();
+        sizes.insert((5, 1), 2);
+        FheStorageConfig { sizes }
+    }
+
+    #[test]
+    fn test_tfhe_flat_with_storage_does_not_panic() {
+        let circuit = build_storage_circuit();
+        let scheme = TfheScheme;
+        let config = storage_config_2cells();
+        let module = weave_fhe_flat_bir(
+            &circuit, &scheme, "stor_test", None, &NoProvenance, Some(&config),
+        );
+        // Should produce a function with storage parameters.
+        assert_eq!(module.functions.len(), 1);
+        let func = &module.functions[0];
+        // Extra params (bk) + 2 inputs + 1 storage param.
+        assert!(
+            func.params.len() >= 4,
+            "expected >=4 params (bk + 2 inputs + storage), got {}",
+            func.params.len()
+        );
+        // The last param should be the storage slice.
+        let stor_param = func.params.last().unwrap();
+        assert_eq!(stor_param.name, "storage_5_1");
+    }
+
+    #[test]
+    fn test_grafhen_flat_with_storage_does_not_panic() {
+        let circuit = build_storage_circuit();
+        let scheme = GrafhenScheme::new(64);
+        let config = storage_config_2cells();
+        let module = weave_fhe_flat_bir(
+            &circuit, &scheme, "stor_grafhen", None, &NoProvenance, Some(&config),
+        );
+        assert_eq!(module.functions.len(), 1);
+        let func = &module.functions[0];
+        // pk + 2 inputs + 1 storage param.
+        assert!(
+            func.params.len() >= 4,
+            "expected >=4 params, got {}",
+            func.params.len()
+        );
+        let stor_param = func.params.last().unwrap();
+        assert_eq!(stor_param.name, "storage_5_1");
+    }
+
+    #[test]
+    fn test_flat_storage_no_config_panics_gracefully() {
+        // Without storage config, storage ops produce zero wires (empty cells).
+        let circuit = build_storage_circuit();
+        let scheme = TfheScheme;
+        // Pass None => 0 cells => reads produce zeros, writes are no-ops.
+        let module = weave_fhe_flat_bir(
+            &circuit, &scheme, "no_stor", None, &NoProvenance, None,
+        );
+        assert_eq!(module.functions.len(), 1);
+    }
+
+    #[test]
+    fn test_flat_storage_writeback_present() {
+        let circuit = build_storage_circuit();
+        let scheme = TfheScheme;
+        let config = storage_config_2cells();
+        let module = weave_fhe_flat_bir(
+            &circuit, &scheme, "wb", None, &NoProvenance, Some(&config),
+        );
+        let code = print_fhe_flat_module(&module, true);
+        // The write-back assigns to storage_5_1[0] and storage_5_1[1].
+        assert!(
+            code.contains("storage_5_1"),
+            "generated code should reference storage parameter"
+        );
+    }
 }

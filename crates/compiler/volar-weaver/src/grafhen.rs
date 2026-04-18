@@ -91,7 +91,7 @@ where
         "weave_grafhen: circuit must satisfy is_circuit() (single block with Return terminator)"
     );
     let scheme = GrafhenScheme::new(word_bound);
-    weave_fhe_flat_bir(circuit, &scheme, name, linkage, handler)
+    weave_fhe_flat_bir(circuit, &scheme, name, linkage, handler, None)
 }
 
 // ============================================================================
