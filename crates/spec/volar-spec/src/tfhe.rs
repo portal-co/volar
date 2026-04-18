@@ -207,6 +207,33 @@ pub fn tfhe_gate_bootstrapping_and<
     key_switch(&lwe_big, &bk.ksk)
 }
 
+/// CMUX (controlled multiplexer) gate.
+///
+/// Computes `if sel { a } else { b }` obliviously using only LWE arithmetic
+/// and one gate bootstrapping.
+///
+/// Formula: `CMUX(sel, a, b) = b XOR (sel AND (a XOR b))`
+///
+/// - `sel = 0` (encrypts false): returns `b`
+/// - `sel = 1` (encrypts true): returns `a`
+///
+/// Cost: one AND gate (one full gate bootstrapping round).
+pub fn tfhe_cmux<
+    const N_LWE: usize,
+    const BIG_N: usize,
+    const BS_ELL: usize,
+    const KS_ELL: usize,
+>(
+    sel: LweCiphertext<N_LWE>,
+    a: LweCiphertext<N_LWE>,
+    b: LweCiphertext<N_LWE>,
+    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+) -> LweCiphertext<N_LWE> {
+    let a_xor_b = tfhe_xor(a, b);
+    let masked = tfhe_gate_bootstrapping_and(sel, a_xor_b, bk);
+    tfhe_xor(b, masked)
+}
+
 // ── Encryption / Decryption (for keygen and tests) ───────────────────────────
 
 /// Encrypt a bit `m ∈ {false, true}` under LWE secret key `sk`.

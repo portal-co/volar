@@ -58,7 +58,8 @@ use volar_compiler::{
 };
 use volar_ir::{
     boolar::{BIrBlocks, BIrStmt},
-    ir::{IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRTypes, IRVarId, StorageId},
+    ir::{IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypeId, IRTypes, IRVarId, PrimType, StorageId},
+    public::PublicSet,
 };
 use volar_ir_passes::{lower_ir_to_boolar, movfuscate_biir};
 
@@ -261,11 +262,15 @@ pub trait FheScheme {
     /// - `None` → unhandled.  Panics the weaver when `cfg_capable` returns `true`.
     ///
     /// `var_map` maps each in-scope `IRVarId.0` to its variable name string.
+    /// `type_map` maps each in-scope `IRVarId.0` to its [`IRTypeId`].
+    /// `types` is the type intern table for the current circuit.
     #[allow(unused_variables)]
     fn emit_ir_stmt(
         &self,
         stmt: &IRStmt,
         var_map: &BTreeMap<u32, String>,
+        type_map: &BTreeMap<u32, IRTypeId>,
+        types: &IRTypes,
     ) -> Option<IrExpr> {
         None
     }
@@ -966,9 +971,65 @@ where
 // CFG path implementation
 // ============================================================================
 
+// ── Type helpers ─────────────────────────────────────────────────────────────
+
+/// Return the total bit-width of a type.
+///
+/// Primitive types return their natural width.  `Vec(n, elem)` returns
+/// `n * elem_width`.  Other forms (Tuple, Block, Func) are unsupported.
+fn ir_type_bit_width(ty_id: IRTypeId, types: &IRTypes) -> usize {
+    match &types.0[ty_id.0 as usize] {
+        IRType::Primitive(PrimType::Bit)    => 1,
+        IRType::Primitive(PrimType::_8)
+        | IRType::Primitive(PrimType::AES8) => 8,
+        IRType::Primitive(PrimType::_16)    => 16,
+        IRType::Primitive(PrimType::_32)    => 32,
+        IRType::Primitive(PrimType::_64)
+        | IRType::Primitive(PrimType::Galois64) => 64,
+        IRType::Primitive(PrimType::_128)   => 128,
+        IRType::Primitive(PrimType::_256)   => 256,
+        IRType::Vec(n, elem_ty) => n * ir_type_bit_width(*elem_ty, types),
+        other => panic!("ir_type_bit_width: unsupported IR type {:?}", other),
+    }
+}
+
+/// Return the bit-width of SSA variable `vid`, defaulting to 1 if unknown.
+fn var_bit_width(vid: IRVarId, type_map: &BTreeMap<u32, IRTypeId>, types: &IRTypes) -> usize {
+    if let Some(&ty_id) = type_map.get(&vid.0) {
+        ir_type_bit_width(ty_id, types)
+    } else {
+        1
+    }
+}
+
+/// Extract the output [`IRTypeId`] from a statement (best-effort).
+///
+/// Returns `None` for stmts whose output type cannot be determined without
+/// external context (e.g. `StorageWrite`, `Poly`).
+fn ir_stmt_output_ty(stmt: &IRStmt) -> Option<IRTypeId> {
+    use volar_ir::ir::Stmt;
+    match stmt {
+        Stmt::Const(_, ty)           => Some(*ty),
+        Stmt::Transmute { dst_ty, .. } => Some(*dst_ty),
+        Stmt::Rol { ty, .. }
+        | Stmt::Ror { ty, .. }
+        | Stmt::Merge { ty, .. }
+        | Stmt::Splat { ty, .. }
+        | Stmt::Shuffle { ty, .. }   => Some(*ty),
+        Stmt::StorageRead { ty, .. } => Some(*ty),
+        Stmt::OracleCall { result_ty, .. }
+        | Stmt::ActionCall { result_ty, .. } => Some(*result_ty),
+        Stmt::OracleOutput { ty, .. }
+        | Stmt::ActionOutput { ty, .. } => Some(*ty),
+        Stmt::Rng { ty, .. }         => Some(*ty),
+        // Poly output is always a single bit; StorageWrite result is a dummy zero.
+        Stmt::Poly { .. } | Stmt::StorageWrite { .. } => None,
+    }
+}
+
 fn weave_fhe_cfg<S: FheScheme>(
     blocks: &IRBlocks,
-    _types: &IRTypes,
+    types: &IRTypes,
     scheme: &S,
     name: &str,
     linkage: Option<&LinkageSystem>,
@@ -995,6 +1056,10 @@ fn weave_fhe_cfg<S: FheScheme>(
         // Variable name map for this block.
         let num_params = ir_block.params.len() as u32;
         let mut var_map: BTreeMap<u32, String> = BTreeMap::new();
+        // Type map: IRVarId.0 → IRTypeId, built incrementally.
+        let mut type_map: BTreeMap<u32, IRTypeId> = BTreeMap::new();
+        // Tracks which variables are known-cleartext (public).
+        let mut public_set: PublicSet = PublicSet::new();
 
         // Params: block 0 uses function param names; others use blk-param names.
         if bidx == 0 {
@@ -1006,6 +1071,10 @@ fn weave_fhe_cfg<S: FheScheme>(
                 var_map.insert(pidx as u32, p.name.clone());
             }
         }
+        // Record param types.
+        for (pidx, &ty_id) in ir_block.params.iter().enumerate() {
+            type_map.insert(pidx as u32, ty_id);
+        }
 
         let mut stmts: Vec<IrStmt> = Vec::new();
         let mut stmt_provs: Vec<()> = Vec::new();
@@ -1013,6 +1082,21 @@ fn weave_fhe_cfg<S: FheScheme>(
         for (stmt_idx, ir_stmt) in ir_block.stmts.iter().enumerate() {
             let result_ir_vid = num_params + stmt_idx as u32;
             let let_name = format!("var_{}", result_ir_vid);
+
+            // Track output type for this stmt.
+            if let Some(ty_id) = ir_stmt_output_ty(ir_stmt) {
+                type_map.insert(result_ir_vid, ty_id);
+            }
+            // Track publicness.
+            match ir_stmt {
+                IRStmt::Const(..) => {
+                    public_set.mark_public(IRVarId(result_ir_vid));
+                }
+                IRStmt::Transmute { src, .. } => {
+                    public_set.propagate_if_all_public(&[*src], IRVarId(result_ir_vid));
+                }
+                _ => {}
+            }
 
             // Handle storage stmts generically (array-indexed parameter access).
             match ir_stmt {
@@ -1068,7 +1152,7 @@ fn weave_fhe_cfg<S: FheScheme>(
             }
 
             let init_expr = scheme
-                .emit_ir_stmt(ir_stmt, &var_map)
+                .emit_ir_stmt(ir_stmt, &var_map, &type_map, types)
                 .unwrap_or_else(|| {
                     panic!(
                         "weave_fhe_cfg: scheme cannot handle IRStmt variant in block {} stmt {}: {:?}. \
@@ -1087,7 +1171,20 @@ fn weave_fhe_cfg<S: FheScheme>(
             var_map.insert(result_ir_vid, let_name);
         }
 
-        let terminator = map_ir_terminator(&ir_block.terminator, &var_map, scheme, &wire_ty);
+        let (extra_stmts, terminator) = map_ir_terminator(
+            &ir_block.terminator,
+            &var_map,
+            &type_map,
+            types,
+            &public_set,
+            scheme,
+            &wire_ty,
+            bidx,
+        );
+        for s in extra_stmts {
+            stmts.push(s);
+            stmt_provs.push(());
+        }
 
         cfg_blocks.push(IrCfgBlock {
             params: if bidx == 0 { vec![] } else { block_params },
@@ -1127,7 +1224,7 @@ fn weave_fhe_cfg<S: FheScheme>(
     let fn_name = format!("{}_{}_cfg", name, scheme.fn_name_suffix());
     let func = IrCfgFunction {
         name: fn_name.clone(),
-        generics: vec![],
+        generics: scheme.generics(),
         receiver: None,
         params: func_params,
         return_type,
@@ -1148,13 +1245,33 @@ fn weave_fhe_cfg<S: FheScheme>(
     module
 }
 
-/// Map an [`IRTerminator`] to an [`IrCfgTerminator`] using the current var_map.
+/// Map an [`IRTerminator`] to an [`IrCfgTerminator`], optionally prepending
+/// CMUX statements for encrypted branch merges.
+///
+/// Returns `(extra_stmts, terminator)`.  `extra_stmts` must be appended to
+/// the block's statement list before `terminator`.
+///
+/// # JumpCond handling
+///
+/// - **Public condition** (in `public_set`): emits `CondGoto` directly — the
+///   condition is cleartext and a real Rust `if/else` is safe.
+/// - **Encrypted condition, same target** (`true_block == false_block`): for
+///   each argument position `i`, emits
+///   `let __cmux_arg_{bidx}_{i} = tfhe_cmux(cond, true_arg_i, false_arg_i, bk);`
+///   then `Goto(target, [__cmux_arg_{bidx}_0, ...])`.
+/// - **Encrypted condition, different targets**: panics.  Oblivious control
+///   flow across distinct basic blocks requires serialising both paths and is
+///   not yet supported.
 fn map_ir_terminator<S: FheScheme>(
     term: &IRTerminator,
     var_map: &BTreeMap<u32, String>,
+    type_map: &BTreeMap<u32, IRTypeId>,
+    types: &IRTypes,
+    public_set: &PublicSet,
     scheme: &S,
     _wire_ty: &IrType,
-) -> IrCfgTerminator {
+    bidx: usize,
+) -> (Vec<IrStmt>, IrCfgTerminator) {
     match term {
         IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => {
             let output_vars: Vec<String> = args
@@ -1167,10 +1284,10 @@ fn map_ir_terminator<S: FheScheme>(
                 })
                 .collect();
             let ret_expr = scheme.emit_cfg_return(&output_vars);
-            IrCfgTerminator::Return(Some(ret_expr))
+            (vec![], IrCfgTerminator::Return(Some(ret_expr)))
         }
         IRTerminator::Jmp { func: IRBlockTargetId::Block(bid), args } => {
-            IrCfgTerminator::Goto(IrCfgJump {
+            let jump = IrCfgJump {
                 target: bid.0 as usize,
                 args: args
                     .iter()
@@ -1181,7 +1298,8 @@ fn map_ir_terminator<S: FheScheme>(
                             .unwrap_or("__unknown"))
                     })
                     .collect(),
-            })
+            };
+            (vec![], IrCfgTerminator::Goto(jump))
         }
         IRTerminator::Jmp { func: IRBlockTargetId::Dyn(_), .. } => {
             panic!("weave_fhe_cfg: dynamic jump targets are not supported in CFG path")
@@ -1198,31 +1316,135 @@ fn map_ir_terminator<S: FheScheme>(
                 .cloned()
                 .unwrap_or_else(|| format!("var_{}", condition.0));
 
-            let map_jump = |bid: &IRBlockTargetId, args: &[IRVarId]| -> IrCfgJump {
-                let target = match bid {
-                    IRBlockTargetId::Block(b) => b.0 as usize,
-                    IRBlockTargetId::Return => usize::MAX, // sentinel
-                    IRBlockTargetId::Dyn(_) => panic!("weave_fhe_cfg: dynamic jump in CondJmp"),
+            // Public condition → direct Rust if/else via CondGoto.
+            if public_set.is_public(*condition) {
+                let map_jump = |bid: &IRBlockTargetId, args: &[IRVarId]| -> IrCfgJump {
+                    let target = match bid {
+                        IRBlockTargetId::Block(b) => b.0 as usize,
+                        IRBlockTargetId::Return    => usize::MAX,
+                        IRBlockTargetId::Dyn(_)   =>
+                            panic!("weave_fhe_cfg: dynamic jump in CondJmp"),
+                    };
+                    IrCfgJump {
+                        target,
+                        args: args
+                            .iter()
+                            .map(|id| {
+                                var(var_map
+                                    .get(&id.0)
+                                    .map(|s| s.as_str())
+                                    .unwrap_or("__unknown"))
+                            })
+                            .collect(),
+                    }
                 };
-                IrCfgJump {
-                    target,
-                    args: args
-                        .iter()
-                        .map(|id| {
-                            var(var_map
-                                .get(&id.0)
-                                .map(|s| s.as_str())
-                                .unwrap_or("__unknown"))
-                        })
-                        .collect(),
-                }
-            };
-
-            IrCfgTerminator::CondGoto {
-                cond: var(&cond_name),
-                then_: map_jump(true_block, true_args),
-                else_: map_jump(false_block, false_args),
+                return (
+                    vec![],
+                    IrCfgTerminator::CondGoto {
+                        cond: var(&cond_name),
+                        then_: map_jump(true_block, true_args),
+                        else_: map_jump(false_block, false_args),
+                    },
+                );
             }
+
+            // Encrypted condition: only same-target phi-merge is supported.
+            let true_target_id  = match true_block  {
+                IRBlockTargetId::Block(b) => b.0,
+                _ => u32::MAX,
+            };
+            let false_target_id = match false_block {
+                IRBlockTargetId::Block(b) => b.0,
+                _ => u32::MAX,
+            };
+            if true_target_id != false_target_id {
+                panic!(
+                    "weave_fhe_cfg block {bidx}: encrypted JumpCond with different targets \
+                     (true→{true_target_id}, false→{false_target_id}) is not supported. \
+                     Oblivious CFG across distinct basic blocks requires serialising both \
+                     paths; use the flat (movfuscation) path or restructure the circuit."
+                );
+            }
+
+            // Same target: merge args with CMUX.
+            // For each arg position i: __cmux_arg_{bidx}_{i} = tfhe_cmux(cond, t_i, f_i, bk)
+            assert_eq!(
+                true_args.len(), false_args.len(),
+                "weave_fhe_cfg block {bidx}: JumpCond same-target branches have different arg counts"
+            );
+
+            let mut extra_stmts: Vec<IrStmt> = Vec::new();
+            let mut merged_args: Vec<IrExpr>  = Vec::new();
+
+            for (i, (t_id, f_id)) in true_args.iter().zip(false_args.iter()).enumerate() {
+                let t_name = var_map.get(&t_id.0).cloned()
+                    .unwrap_or_else(|| format!("var_{}", t_id.0));
+                let f_name = var_map.get(&f_id.0).cloned()
+                    .unwrap_or_else(|| format!("var_{}", f_id.0));
+
+                // Determine width of this argument; emit per-bit CMUX if > 1.
+                let width = var_bit_width(*t_id, type_map, types);
+                let merged_name = format!("__cmux_arg_{}_{}", bidx, i);
+
+                if width == 1 {
+                    // Single-bit CMUX.
+                    // tfhe_cmux(cond.clone(), t.clone(), f.clone(), bk)
+                    let cmux_expr: IrExpr = IrExpr::Call {
+                        func: Box::new(IrExpr::Path {
+                            segments: vec!["tfhe_cmux".into()],
+                            type_args: vec![],
+                        }),
+                        args: vec![
+                            clone_expr(var(&cond_name)),
+                            clone_expr(var(&t_name)),
+                            clone_expr(var(&f_name)),
+                            var("bk"),
+                        ],
+                    };
+                    extra_stmts.push(IrStmt::Let {
+                        pattern: IrPattern::ident(&merged_name),
+                        ty: None,
+                        init: Some(cmux_expr),
+                    });
+                } else {
+                    // Multi-bit: element-wise CMUX → fixed array.
+                    let bit_exprs: Vec<IrExpr> = (0..width)
+                        .map(|bit| {
+                            IrExpr::Call {
+                                func: Box::new(IrExpr::Path {
+                                    segments: vec!["tfhe_cmux".into()],
+                                    type_args: vec![],
+                                }),
+                                args: vec![
+                                    clone_expr(var(&cond_name)),
+                                    clone_expr(IrExpr::Index {
+                                        base:  Box::new(var(&t_name)),
+                                        index: Box::new(IrExpr::Lit(IrLit::Int(bit as i128))),
+                                    }),
+                                    clone_expr(IrExpr::Index {
+                                        base:  Box::new(var(&f_name)),
+                                        index: Box::new(IrExpr::Lit(IrLit::Int(bit as i128))),
+                                    }),
+                                    var("bk"),
+                                ],
+                            }
+                        })
+                        .collect();
+                    extra_stmts.push(IrStmt::Let {
+                        pattern: IrPattern::ident(&merged_name),
+                        ty: None,
+                        init: Some(IrExpr::FixedArray(bit_exprs)),
+                    });
+                }
+
+                merged_args.push(var(&merged_name));
+            }
+
+            let term = IrCfgTerminator::Goto(IrCfgJump {
+                target: true_target_id as usize,
+                args: merged_args,
+            });
+            (extra_stmts, term)
         }
         IRTerminator::JumpTable { .. } => {
             panic!("weave_fhe_cfg: JumpTable terminators are not supported in CFG path")
@@ -1456,12 +1678,12 @@ impl FheScheme for GrafhenScheme {
 // TFHE scheme
 // ============================================================================
 
-// @reliability: experimental
-/// Implementation of [`FheScheme`] for TFHE (Torus Fully Homomorphic Encryption).
+/// [`FheScheme`] implementation for TFHE (Torus Fully Homomorphic Encryption).
 ///
 /// Generates code that calls the functions from `volar_spec::tfhe`:
 /// - Free gates: `tfhe_xor`, `tfhe_not`
 /// - AND gate: `tfhe_gate_bootstrapping_and` (full GINX blind rotation + key switching)
+/// - CMUX: `tfhe_cmux` (used for encrypted branch merging in CFG path)
 ///
 /// The generated function is generic over four const usize parameters:
 /// `N_LWE`, `BIG_N`, `BS_ELL`, `KS_ELL` — corresponding to the TFHE parameters
@@ -1470,7 +1692,15 @@ impl FheScheme for GrafhenScheme {
 /// Wire type: `LweCiphertext<N_LWE>` (a single-bit LWE ciphertext).
 /// Extra parameter: `bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>`.
 ///
-/// # Example generated signature
+/// # Paths
+///
+/// - [`TfheScheme::flat()`] — use the flat (movfuscation) path.  Suitable
+///   for circuits without control flow.
+/// - [`TfheScheme::cfg()`] — preserve the input `IRBlocks` CFG structure.
+///   Encrypted branch conditions are merged with CMUX; public conditions use
+///   direct `if/else`.
+///
+/// # Example generated signature (flat)
 /// ```rust,ignore
 /// fn my_circuit_tfhe<
 ///     const N_LWE: usize,
@@ -1482,9 +1712,32 @@ impl FheScheme for GrafhenScheme {
 ///     bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
 /// ) -> LweCiphertext<N_LWE> { ... }
 /// ```
-pub struct TfheScheme;
+pub struct TfheScheme {
+    /// When `true`, use the CFG path (preserve `IRBlocks` structure).
+    /// When `false`, use the flat movfuscation path.
+    pub use_cfg: bool,
+}
+
+impl TfheScheme {
+    /// Flat path: lower to a single-block boolean circuit (movfuscation).
+    pub fn flat() -> Self {
+        TfheScheme { use_cfg: false }
+    }
+
+    /// CFG path: preserve the input `IRBlocks` control-flow structure.
+    ///
+    /// Encrypted branch conditions are merged with CMUX.
+    /// Public (constant-propagated) conditions use direct `if/else`.
+    pub fn cfg() -> Self {
+        TfheScheme { use_cfg: true }
+    }
+}
 
 impl FheScheme for TfheScheme {
+    fn cfg_capable(&self) -> bool {
+        self.use_cfg
+    }
+
     fn wire_type(&self) -> IrType {
         IrType::Struct {
             kind: StructKind::Custom("LweCiphertext".into()),
@@ -1596,6 +1849,257 @@ impl FheScheme for TfheScheme {
             args: vec![a, b, var("bk")],
         }
     }
+
+    // ── CFG path ─────────────────────────────────────────────────────────────
+
+    fn emit_ir_stmt(
+        &self,
+        stmt: &IRStmt,
+        var_map: &BTreeMap<u32, String>,
+        type_map: &BTreeMap<u32, IRTypeId>,
+        types: &IRTypes,
+    ) -> Option<IrExpr> {
+        use volar_ir::ir::Stmt;
+
+        // Helper: look up variable name.
+        let vname = |vid: &IRVarId| -> String {
+            var_map.get(&vid.0).cloned().unwrap_or_else(|| format!("var_{}", vid.0))
+        };
+
+        // Helper: emit tfhe_trivial_zero() or tfhe_trivial_one() based on bit `b`.
+        let trivial = |bit: bool| -> IrExpr {
+            IrExpr::Call {
+                func: Box::new(IrExpr::Path {
+                    segments: vec![if bit { "tfhe_trivial_one" } else { "tfhe_trivial_zero" }.into()],
+                    type_args: vec![],
+                }),
+                args: vec![],
+            }
+        };
+
+        // Helper: emit tfhe_xor(a, b).
+        let xor2 = |a: IrExpr, b: IrExpr| -> IrExpr {
+            IrExpr::Call {
+                func: Box::new(IrExpr::Path {
+                    segments: vec!["tfhe_xor".into()],
+                    type_args: vec![],
+                }),
+                args: vec![a, b],
+            }
+        };
+
+        // Helper: emit tfhe_gate_bootstrapping_and(a, b, bk).
+        let and2 = |a: IrExpr, b: IrExpr| -> IrExpr {
+            IrExpr::Call {
+                func: Box::new(IrExpr::Path {
+                    segments: vec!["tfhe_gate_bootstrapping_and".into()],
+                    type_args: vec![],
+                }),
+                args: vec![a, b, var("bk")],
+            }
+        };
+
+        // Helper: index into a multi-bit variable at position `bit`.
+        let index_bit = |name: &str, bit: usize| -> IrExpr {
+            IrExpr::Index {
+                base:  Box::new(var(name)),
+                index: Box::new(IrExpr::Lit(IrLit::Int(bit as i128))),
+            }
+        };
+
+        match stmt {
+            // ── Const ─────────────────────────────────────────────────────────
+            // Emit trivial encryptions of each constant bit.
+            Stmt::Const(constant, ty_id) => {
+                let width = if let Some(&tid) = type_map.get(&u32::MAX) { // unused; we use ty_id directly
+                    let _ = tid;
+                    ir_type_bit_width(*ty_id, types)
+                } else {
+                    ir_type_bit_width(*ty_id, types)
+                };
+                if width == 1 {
+                    let bit = (constant.lo & 1) != 0;
+                    Some(trivial(bit))
+                } else {
+                    let elems: Vec<IrExpr> = (0..width)
+                        .map(|i| {
+                            let bit = if i < 128 {
+                                (constant.lo >> i) & 1 != 0
+                            } else {
+                                (constant.hi >> (i - 128)) & 1 != 0
+                            };
+                            trivial(bit)
+                        })
+                        .collect();
+                    Some(IrExpr::FixedArray(elems))
+                }
+            }
+
+            // ── Transmute ─────────────────────────────────────────────────────
+            // Reinterpret bits without change — just clone the source binding.
+            Stmt::Transmute { src, .. } => {
+                let name = vname(src);
+                Some(clone_expr(var(&name)))
+            }
+
+            // ── Poly ──────────────────────────────────────────────────────────
+            // GF(2) multivariate polynomial.  Output is always single-bit.
+            // Variables in monomials must be single-bit LweCiphertexts.
+            Stmt::Poly { coeffs, constant } => {
+                // Start accumulator from the degree-0 constant bit.
+                let const_bit = (constant.lo & 1) != 0;
+                let mut acc: IrExpr = trivial(const_bit);
+
+                for (monomial, &coeff) in coeffs.iter() {
+                    if coeff == 0 { continue; }
+                    // Build AND-chain for this monomial.
+                    let mut term: IrExpr<()> = match monomial.as_slice() {
+                        [] => trivial(true), // empty product = 1
+                        [first, rest @ ..] => {
+                            let w = var_bit_width(*first, type_map, types);
+                            if w != 1 {
+                                panic!(
+                                    "emit_ir_stmt: Poly references a {}-bit variable {:?}; \
+                                     only single-bit variables are supported in the CFG path Poly handler.",
+                                    w, first
+                                );
+                            }
+                            let mut t: IrExpr = clone_expr(var(&vname(first)));
+                            for v in rest {
+                                let wv = var_bit_width(*v, type_map, types);
+                                if wv != 1 {
+                                    panic!(
+                                        "emit_ir_stmt: Poly references a {}-bit variable {:?}; \
+                                         only single-bit variables are supported.",
+                                        wv, v
+                                    );
+                                }
+                                t = and2(t, clone_expr(var(&vname(v))));
+                            }
+                            t
+                        }
+                    };
+                    acc = xor2(acc, term);
+                }
+                Some(acc)
+            }
+
+            // ── Rol / Ror ─────────────────────────────────────────────────────
+            // Circular bit rotation.  Implemented as a permutation of array slots.
+            Stmt::Rol { src, ty, n } => {
+                let width = ir_type_bit_width(*ty, types);
+                let n = n % width;
+                let src_name = vname(src);
+                if width == 1 {
+                    // Single-bit: rotation is identity.
+                    return Some(clone_expr(var(&src_name)));
+                }
+                let elems: Vec<IrExpr> = (0..width)
+                    .map(|i| clone_expr(index_bit(&src_name, (i + width - n) % width)))
+                    .collect();
+                Some(IrExpr::FixedArray(elems))
+            }
+            Stmt::Ror { src, ty, n } => {
+                let width = ir_type_bit_width(*ty, types);
+                let n = n % width;
+                let src_name = vname(src);
+                if width == 1 {
+                    return Some(clone_expr(var(&src_name)));
+                }
+                let elems: Vec<IrExpr> = (0..width)
+                    .map(|i| clone_expr(index_bit(&src_name, (i + n) % width)))
+                    .collect();
+                Some(IrExpr::FixedArray(elems))
+            }
+
+            // ── Merge ─────────────────────────────────────────────────────────
+            // Concatenate parts LSB-first.
+            Stmt::Merge { parts, .. } => {
+                let mut elems: Vec<IrExpr> = Vec::new();
+                for part in parts {
+                    let part_name = vname(part);
+                    let part_width = var_bit_width(*part, type_map, types);
+                    if part_width == 1 {
+                        elems.push(clone_expr(var(&part_name)));
+                    } else {
+                        for bit in 0..part_width {
+                            elems.push(clone_expr(index_bit(&part_name, bit)));
+                        }
+                    }
+                }
+                Some(IrExpr::FixedArray(elems))
+            }
+
+            // ── Splat ─────────────────────────────────────────────────────────
+            // Broadcast a single bit across every position.
+            Stmt::Splat { src, ty } => {
+                let width = ir_type_bit_width(*ty, types);
+                let src_name = vname(src);
+                if width == 1 {
+                    return Some(clone_expr(var(&src_name)));
+                }
+                let elems: Vec<IrExpr> = (0..width)
+                    .map(|_| clone_expr(var(&src_name)))
+                    .collect();
+                Some(IrExpr::FixedArray(elems))
+            }
+
+            // ── Shuffle ───────────────────────────────────────────────────────
+            // Arbitrary bit selection.  `result_bits[i] = (bit_idx, src_var)`.
+            Stmt::Shuffle { result_bits, .. } => {
+                let elems: Vec<IrExpr> = result_bits
+                    .iter()
+                    .map(|(bit_idx, src_var)| {
+                        let src_name = vname(src_var);
+                        let src_width = var_bit_width(*src_var, type_map, types);
+                        if src_width == 1 {
+                            clone_expr(var(&src_name))
+                        } else {
+                            clone_expr(index_bit(&src_name, *bit_idx as usize))
+                        }
+                    })
+                    .collect();
+                Some(IrExpr::FixedArray(elems))
+            }
+
+            // ── OracleCall / OracleOutput / ActionCall / ActionOutput / Rng ──
+            // Not yet supported in the CFG TFHE path.  These require either
+            // TFHE-specific circuit structure (e.g. PBS lookup tables) or
+            // side-effecting homomorphic operations that are deferred to future
+            // work.
+            Stmt::OracleCall { name, .. } => {
+                panic!(
+                    "TfheScheme CFG path: OracleCall '{}' is not yet supported. \
+                     Use the flat path (TfheScheme::flat()) or implement the oracle \
+                     as a homomorphic function.",
+                    name
+                )
+            }
+            Stmt::OracleOutput { .. } => {
+                panic!("TfheScheme CFG path: OracleOutput is not yet supported.")
+            }
+            Stmt::ActionCall { name, .. } => {
+                panic!(
+                    "TfheScheme CFG path: ActionCall '{}' is not yet supported.",
+                    name
+                )
+            }
+            Stmt::ActionOutput { .. } => {
+                panic!("TfheScheme CFG path: ActionOutput is not yet supported.")
+            }
+            Stmt::Rng { name, .. } => {
+                panic!(
+                    "TfheScheme CFG path: Rng source '{}' is not yet supported.",
+                    name
+                )
+            }
+
+            // StorageRead / StorageWrite are handled before emit_ir_stmt is called.
+            Stmt::StorageRead { .. } | Stmt::StorageWrite { .. } => {
+                unreachable!("StorageRead/StorageWrite should be handled before emit_ir_stmt")
+            }
+        }
+    }
 }
 
 
@@ -1649,8 +2153,183 @@ mod tests {
     use super::*;
     use volar_ir::{
         boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
-        ir::{IRBlockId, IRBlockTargetId, IRVarId},
+        ir::{
+            IRBlockId, IRBlockTargetId, IRVarId,
+            IRBlocks, IRBlock, IRTerminator, IRTypes, IRType, PrimType, Constant, Stmt as IRStmt_,
+        },
     };
+    use crate::tests_common::run_compile_check;
+
+    // ---- CFG circuit builders -----------------------------------------------
+
+    /// Single-block AND circuit: params=[Bit, Bit], var_2 = a*b (Poly), Return var_2.
+    fn build_ir_and_cfg() -> (IRBlocks, IRTypes) {
+        let mut types = IRTypes::new();
+        let bit = types.intern(IRType::Primitive(PrimType::Bit));
+        let mut coeffs = BTreeMap::new();
+        coeffs.insert(vec![IRVarId(0), IRVarId(1)], 1u8);
+        let block = IRBlock {
+            params: vec![bit, bit],
+            stmts: vec![IRStmt_::Poly { coeffs, constant: Constant { hi: 0, lo: 0 } }],
+            stmt_provs: vec![()],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: vec![IRVarId(2)],
+            },
+        };
+        (IRBlocks::new(vec![block]), types)
+    }
+
+    /// Two-block circuit with a **public** condition.
+    ///
+    /// ```text
+    /// Block 0: params=[Bit, Bit]
+    ///   var_2 = Const(0, Bit)   // public
+    ///   JumpCond(cond=var_2,
+    ///     true  → Block(1)[var_0],
+    ///     false → Block(1)[var_1])
+    /// Block 1: params=[Bit]
+    ///   Return blk1_p0
+    /// ```
+    fn build_ir_two_block_public_branch() -> (IRBlocks, IRTypes) {
+        let mut types = IRTypes::new();
+        let bit = types.intern(IRType::Primitive(PrimType::Bit));
+        let zero = Constant { hi: 0, lo: 0 };
+
+        let block0 = IRBlock {
+            params: vec![bit, bit],
+            stmts: vec![IRStmt_::Const(zero, bit)],
+            stmt_provs: vec![()],
+            terminator: IRTerminator::JumpCond {
+                condition: IRVarId(2), // the Const — public
+                true_block:  IRBlockTargetId::Block(IRBlockId(1)),
+                true_args:   vec![IRVarId(0)],
+                false_block: IRBlockTargetId::Block(IRBlockId(1)),
+                false_args:  vec![IRVarId(1)],
+            },
+        };
+        let block1 = IRBlock {
+            params: vec![bit],
+            stmts: vec![],
+            stmt_provs: vec![],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: vec![IRVarId(0)],
+            },
+        };
+        (IRBlocks::new(vec![block0, block1]), types)
+    }
+
+    /// Two-block circuit with an **encrypted** condition and same target (CMUX path).
+    ///
+    /// ```text
+    /// Block 0: params=[Bit, Bit]
+    ///   JumpCond(cond=var_0,
+    ///     true  → Block(1)[var_0],
+    ///     false → Block(1)[var_1])
+    /// Block 1: params=[Bit]
+    ///   Return blk1_p0
+    /// ```
+    fn build_ir_two_block_encrypted_same_target() -> (IRBlocks, IRTypes) {
+        let mut types = IRTypes::new();
+        let bit = types.intern(IRType::Primitive(PrimType::Bit));
+
+        let block0 = IRBlock {
+            params: vec![bit, bit],
+            stmts: vec![],
+            stmt_provs: vec![],
+            terminator: IRTerminator::JumpCond {
+                condition: IRVarId(0), // encrypted — not in public_set
+                true_block:  IRBlockTargetId::Block(IRBlockId(1)),
+                true_args:   vec![IRVarId(0)],
+                false_block: IRBlockTargetId::Block(IRBlockId(1)),
+                false_args:  vec![IRVarId(1)],
+            },
+        };
+        let block1 = IRBlock {
+            params: vec![bit],
+            stmts: vec![],
+            stmt_provs: vec![],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: vec![IRVarId(0)],
+            },
+        };
+        (IRBlocks::new(vec![block0, block1]), types)
+    }
+
+    // ---- CFG tests ----------------------------------------------------------
+
+    /// Compile-check TFHE-CFG generated code by prepending the necessary `use` glob.
+    fn run_compile_check_tfhe_cfg(code: &str, test_name: &str) {
+        // `code` starts with `#![allow(...)]` (from self_contained=true); the
+        // use statements must come after that inner attribute.
+        let uses = "use volar_spec::tfhe::{BootstrappingKey, LweCiphertext, \
+                    tfhe_gate_bootstrapping_and, tfhe_xor, tfhe_trivial_zero, tfhe_cmux};\n";
+        let with_imports = if let Some(newline) = code.find('\n') {
+            let (head, tail) = code.split_at(newline + 1);
+            format!("{head}{uses}{tail}")
+        } else {
+            format!("{uses}{code}")
+        };
+        run_compile_check(&with_imports, test_name);
+    }
+
+    #[test]
+    fn test_tfhe_cfg_single_block_and_compiles() {
+        let (circuit, types) = build_ir_and_cfg();
+        let scheme = TfheScheme::cfg();
+        let output = weave_fhe(&circuit, &types, &scheme, "and_cfg", None, None);
+        let module = match output {
+            FheOutput::Cfg(m) => m,
+            _ => panic!("expected FheOutput::Cfg from TfheScheme::cfg()"),
+        };
+        let code = print_fhe_cfg_module(&module, true);
+        run_compile_check_tfhe_cfg(&code, "tfhe_cfg_and");
+    }
+
+    #[test]
+    fn test_tfhe_cfg_two_block_public_branch_emits_cond_goto() {
+        // In TFHE every wire — including Const-derived "public" values — is an
+        // LweCiphertext, so the generated `if var_2 { ... }` is not valid Rust.
+        // This test verifies the structural property (CondGoto is chosen over
+        // CMUX) without attempting a full compile check.
+        let (circuit, types) = build_ir_two_block_public_branch();
+        let scheme = TfheScheme::cfg();
+        let output = weave_fhe(&circuit, &types, &scheme, "pub_branch", None, None);
+        let module = match output {
+            FheOutput::Cfg(m) => m,
+            _ => panic!("expected FheOutput::Cfg from TfheScheme::cfg()"),
+        };
+        let code = print_fhe_cfg_module(&module, true);
+        // Public condition → CondGoto (Rust if/else), NOT a CMUX.
+        assert!(
+            !code.contains("tfhe_cmux"),
+            "public-condition branch should use CondGoto, not tfhe_cmux:\n{code}"
+        );
+        assert!(
+            code.contains("if "),
+            "public-condition branch should emit a Rust if/else:\n{code}"
+        );
+    }
+
+    #[test]
+    fn test_tfhe_cfg_two_block_encrypted_same_target_compiles() {
+        let (circuit, types) = build_ir_two_block_encrypted_same_target();
+        let scheme = TfheScheme::cfg();
+        let output = weave_fhe(&circuit, &types, &scheme, "enc_cmux", None, None);
+        let module = match output {
+            FheOutput::Cfg(m) => m,
+            _ => panic!("expected FheOutput::Cfg from TfheScheme::cfg()"),
+        };
+        let code = print_fhe_cfg_module(&module, true);
+        // Encrypted same-target condition → CMUX stmts emitted before Goto.
+        assert!(
+            code.contains("tfhe_cmux"),
+            "encrypted same-target branch should emit tfhe_cmux:\n{code}"
+        );
+        run_compile_check_tfhe_cfg(&code, "tfhe_cfg_enc_cmux");
+    }
 
     /// Build a flat circuit with a 2-cell storage (1-bit values).
     ///
@@ -1693,7 +2372,7 @@ mod tests {
     #[test]
     fn test_tfhe_flat_with_storage_does_not_panic() {
         let circuit = build_storage_circuit();
-        let scheme = TfheScheme;
+        let scheme = TfheScheme::flat();
         let config = storage_config_2cells();
         let module = weave_fhe_flat_bir(
             &circuit, &scheme, "stor_test", None, &NoProvenance, Some(&config),
@@ -1736,7 +2415,7 @@ mod tests {
     fn test_flat_storage_no_config_panics_gracefully() {
         // Without storage config, storage ops produce zero wires (empty cells).
         let circuit = build_storage_circuit();
-        let scheme = TfheScheme;
+        let scheme = TfheScheme::flat();
         // Pass None => 0 cells => reads produce zeros, writes are no-ops.
         let module = weave_fhe_flat_bir(
             &circuit, &scheme, "no_stor", None, &NoProvenance, None,
@@ -1747,7 +2426,7 @@ mod tests {
     #[test]
     fn test_flat_storage_writeback_present() {
         let circuit = build_storage_circuit();
-        let scheme = TfheScheme;
+        let scheme = TfheScheme::flat();
         let config = storage_config_2cells();
         let module = weave_fhe_flat_bir(
             &circuit, &scheme, "wb", None, &NoProvenance, Some(&config),

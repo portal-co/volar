@@ -98,6 +98,7 @@ pub use fhe::{
     GrafhenScheme, TfheScheme,
     print_fhe_cfg_module, print_fhe_flat_module,
 };
+pub use volar_ir::public::PublicSet;
 
 // ============================================================================
 // Shared: Or-gate lowering
