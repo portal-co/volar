@@ -298,6 +298,10 @@ demoted to Insecure if a fundamental flaw is found:
 - **Garbled circuits** (`garble.rs`) — the half-gate construction is standard,
   but the VOLE-specific binding has not been reviewed.
 - **MPC types** (`mpc.rs`) — minimal stub; semantics not yet defined.
+- **GRAFHEN** (`grafhen.rs`, `volar-weaver/src/grafhen.rs`) — the IND-CPA break
+  (ePrint 2026/700, Theorem 2) is unconditional; currently retained as a ZK
+  correctness layer only. If the **homomorphic correctness** guarantee is also
+  broken, demotion to `.insecure` follows immediately.
 
 New constructions should be introduced at the Experimental level, not added
 directly as `.insecure` files. See [reliability.md](reliability.md) for

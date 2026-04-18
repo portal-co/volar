@@ -240,6 +240,8 @@ All require the `volar_experimental` feature to be enabled.
 | `crates/volar-spec/src/mpc.rs` | `79ee6d7` (experiment: mpc) | design | MPC party type skeleton; semantics TBD |
 | `crates/volar-spec/src/byte_gen/prover.rs` | `263eab1` (fix name) | review-pending | Revised after `cda059c` (actually unsound, oops) |
 | `crates/volar-spec/src/byte_gen/verifier.rs` | `263eab1` (fix name) | review-pending | Same revision cycle; `58e8f84` last structural change |
+| `crates/volar-spec/src/grafhen.rs` | (pending merge) | design | GRAFHEN FHE over symmetric groups; **IND-CPA broken** (ePrint 2026/700); ZK-correctness use only |
+| `crates/volar-weaver/src/grafhen.rs` | (pending merge) | design | Weaver pass for GRAFHEN homomorphic evaluation |
 
 ---
 
