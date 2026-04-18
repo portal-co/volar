@@ -258,16 +258,15 @@ where
         if n == 1 {
             return x;
         }
-        // For general fields: double-and-add.
+        // For general fields: double-and-add over the 64 bits of n.
+        // We iterate all 64 bit positions; positions beyond the MSB contribute 0.
         let mut acc = T::default();
         let mut base = x;
-        let mut remaining = n;
-        while remaining > 0 {
-            if remaining & 1 == 1 {
+        for bit in 0u64..64u64 {
+            if (n >> bit) & 1 == 1 {
                 acc = acc + base.clone();
             }
             base = base.clone() + base; // double
-            remaining >>= 1;
         }
         acc
     }

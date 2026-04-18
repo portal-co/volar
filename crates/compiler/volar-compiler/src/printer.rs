@@ -1613,7 +1613,7 @@ impl<'a> RustBackend for CfgFunctionWriter<'a> {
 /// Emit the state-machine loop body for a CFG function.
 ///
 /// Generated structure:
-/// ```rust
+/// ```ignore
 /// let mut __state: usize = 0;
 /// // per-block-param Option slots (blocks 1..):
 /// let mut __b1_p0: Option<ParamType> = None;
