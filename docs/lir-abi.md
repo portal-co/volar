@@ -372,6 +372,39 @@ circuit model (they are structural, not computational).
 
 ---
 
+## VAFFLE IR Pointer Values
+
+The VAFFLE IR (`crates/ir/vaffle/src/lib.rs`) represents stack-allocated
+pointers as four `Value` enum variants.  These are emitted by `VaffleTarget`
+when the `StackAllocExt` methods are called:
+
+```rust
+pub enum Value {
+    // … other variants …
+
+    /// Allocate `count` elements of `elem_ty` on the function's stack frame.
+    /// `base_slot` is the compile-time stack-storage slot assigned by the target.
+    /// Returns a 32-bit address (PTR_BITS = 32 bit-typed SSA values).
+    StackAlloc { elem_ty: TypeId, count: usize, base_slot: u64 },
+
+    /// Load a value through a stack pointer.
+    /// `ptr` is an address produced by `StackAlloc` or `PtrOffset`.
+    PtrLoad { ptr: ValueId, pointee_ty: TypeId },
+
+    /// Store `val` through a stack pointer. No result value.
+    PtrStore { ptr: ValueId, val: ValueId },
+
+    /// Element-wise pointer offset: `ptr + idx` elements (not bytes).
+    /// `elem_bits` is the element width in storage slots.
+    PtrOffset { ptr: ValueId, idx: ValueId, elem_bits: usize },
+}
+```
+
+All four variants are lowered to `StorageId::STACK` reads/writes during the
+`VaffleTarget → Volar IR` lowering pass (`lower_to_ir.rs`).
+
+---
+
 ## Target Capability Matrix
 
 | Capability | `VolarIrTarget` | `VaffleTarget` (default) | `VaffleTarget` (optimized) | `CBackend` |

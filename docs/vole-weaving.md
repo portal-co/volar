@@ -226,6 +226,114 @@ is available in test scope (the type `T` must implement field multiplication).
 
 ---
 
+---
+
+## Storage Modes
+
+> **Referenced by**: `volar-weaver/src/vole.rs`, `docs/memory-checking.md`
+
+The VOLE prover and verifier weavers support authenticated storage (RAM)
+through a `StorageMode` enum.  Two modes exist:
+
+```rust
+pub enum StorageMode {
+    /// In-circuit MUX/demux trees.  Costs O(M·N) AND gates per access.
+    Tree(StorageSizes),
+    /// Multiset-hash commitment check.  Costs 0 AND gates; reads use oracle params.
+    Commitment,
+}
+
+/// Maps `(StorageId.0, addr_bits)` → cell count per storage space.
+pub type StorageSizes = BTreeMap<(u32, u32), usize>;
+```
+
+### Tree mode
+
+For each `StorageRead(addr, ...)` at a given cell count `N`, the weaver emits:
+
+1. A MUX tree that reads from all `N` current cell wires using the address bits as
+   a selector — equivalent to an oblivious array-lookup circuit.
+2. For `StorageWrite(addr, value, ...)`, a demux+MUX tree that updates the
+   addressed cell while leaving all others unchanged.
+
+Cell wires are tracked per-cell in the weaver's internal `stor` map
+(`(StorageId, addr_bits, cell_index) → wire_name`).  The initial cell wires
+are passed as function parameters.
+
+AND gate cost per access: **O(M · N)** where N = cell count.
+
+### Commitment mode
+
+Based on multiset memory checking (see `docs/memory-checking.md`):
+
+- `StorageRead` — the weaver consumes an **oracle parameter** for the read value
+  and records a `MemoryTraceEntry` in the returned `MemoryTrace`.
+- `StorageWrite` — no circuit gates are emitted; the write is recorded in the
+  trace with the written value and timestamp.
+
+The multiset hash check (`H_produce == H_consume`) is performed outside the
+circuit by the verifier using the `MemoryTrace`.
+
+AND gate cost per access: **0**.
+
+```rust
+pub struct MemoryTraceEntry {
+    pub storage_id: u32,
+    pub addr: u64,
+    pub value_var: String,   // prover-side wire name
+    pub timestamp: u64,
+    pub is_write: bool,
+}
+
+pub struct MemoryTrace {
+    pub entries: Vec<MemoryTraceEntry>,
+}
+```
+
+### Entry points for IR-based storage weaving
+
+The `weave_vole_prover_ir` / `weave_vole_verifier_ir` functions accept
+`IRBlocks` (rather than `BIrBlocks`) and a `StorageMode`:
+
+```rust
+pub fn weave_vole_prover_ir(
+    circuit: &IRBlocks,
+    types: &IRTypes,
+    name: &str,
+    storage_sizes: &StorageSizes,
+    linkage: Option<&LinkageSystem>,
+) -> (IrModule, MemoryTrace);
+
+pub fn weave_vole_verifier_ir(
+    circuit: &IRBlocks,
+    types: &IRTypes,
+    name: &str,
+    storage_sizes: &StorageSizes,
+    linkage: Option<&LinkageSystem>,
+) -> IrModule;
+```
+
+These use `StorageMode::Tree` internally (backward-compatible default).
+For commitment mode, use the `*_with_handler` variants and construct
+`StorageMode::Commitment` explicitly:
+
+```rust
+let mode = StorageMode::Commitment;
+let (module, trace) = weave_vole_prover_with_handler(
+    &circuit, name, linkage, &KeepProvenance
+);
+// trace.entries contains the memory access log for external verification
+```
+
+### Comparison
+
+| Mode | AND gates per access | Verifier state | Extra oracle params |
+|------|---------------------|----------------|---------------------|
+| `Tree(N cells)` | O(N) | O(N) Q-values | 0 |
+| `Commitment` | **0** | **O(1)** | 1 per read |
+
+---
+
 ## Open Issues
 
 - **Field type**: The VOLE weave is fully generic over `T`, but the runtime

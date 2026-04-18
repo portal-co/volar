@@ -83,10 +83,17 @@ pub enum LirType {
     I8, U8, I16, U16, I32, U32, I64, U64,
     Arr(Box<LirType>, usize),     // fixed-size homogeneous array
     Struct(StructId),             // named struct (registered via define_struct)
+    Ptr(Box<LirType>),            // pointer to stack-allocated region (StackAllocExt backends)
 }
 ```
 
-`LirType` is `Clone` (not `Copy`) because `Arr` boxes its element type.
+`LirType` is `Clone` (not `Copy`) because `Arr` and `Ptr` box their element types.
+
+`Ptr(T)` values are produced by `StackAllocExt::alloca` and represent addresses
+into the backend's stack frame.  In `VaffleTarget`, a `Ptr` value is represented
+as `PTR_BITS = 32` bit-typed SSA values (the address bits).  In `CBackend`, it
+becomes a C pointer type `T*`.  Circuit backends that don't support
+`StackAllocExt` panic on `Ptr`.
 
 ### `StructDef`
 
@@ -400,4 +407,5 @@ cargo test -p volar-c-backend
 
 - [LIR ABI](lir-abi.md) — calling conventions, type passing, per-target
   policies, and the `LirAbi` configuration struct.
-| Signed-compare predicates on aggregate types | Panics; scalars only |
+- [Fuzzing](fuzzing.md) — `lower_ir_to_boolar` pass (IRBlocks → BIrBlocks) and property tests.
+- [WAFFLE lowering](waffle-lowering.md) — WASM → VAFFLE → Volar IR pipeline.
