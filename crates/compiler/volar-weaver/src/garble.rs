@@ -98,6 +98,7 @@ fn generic_params() -> Vec<IrGenericParam> {
         IrGenericParam {
             name: "N".into(),
             kind: IrGenericParamKind::Type,
+            const_ty: None,
             bounds: vec![IrTraitBound {
                 trait_kind: TraitKind::Custom("ArraySize".into()),
                 type_args: vec![],
@@ -108,6 +109,7 @@ fn generic_params() -> Vec<IrGenericParam> {
         IrGenericParam {
             name: "D".into(),
             kind: IrGenericParamKind::Type,
+            const_ty: None,
             bounds: vec![IrTraitBound {
                 trait_kind: TraitKind::Custom("Digest".into()),
                 type_args: vec![],

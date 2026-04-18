@@ -451,6 +451,7 @@ fn convert_generic_param(p: &GenericParam) -> Result<IrGenericParam> {
         GenericParam::Type(tp) => Ok(IrGenericParam {
             name: tp.ident.to_string(),
             kind: IrGenericParamKind::Type,
+            const_ty: None,
             bounds: tp
                 .bounds
                 .iter()
@@ -470,12 +471,14 @@ fn convert_generic_param(p: &GenericParam) -> Result<IrGenericParam> {
         GenericParam::Const(cp) => Ok(IrGenericParam {
             name: cp.ident.to_string(),
             kind: IrGenericParamKind::Const,
+            const_ty: Some(convert_type(&cp.ty)?),
             bounds: Vec::new(),
             default: None, // TODO: handle const param default
         }),
         GenericParam::Lifetime(lp) => Ok(IrGenericParam {
             name: lp.lifetime.ident.to_string(),
             kind: IrGenericParamKind::Lifetime,
+            const_ty: None,
             bounds: Vec::new(),
             default: None,
         }),

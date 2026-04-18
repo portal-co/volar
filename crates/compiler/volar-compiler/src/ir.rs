@@ -691,6 +691,9 @@ pub enum IrGenericParamKind {
 pub struct IrGenericParam {
     pub name: String,
     pub kind: IrGenericParamKind,
+    /// For `Const` params: the type of the constant (e.g. `usize`).
+    /// `None` defaults to `usize` in the printer.
+    pub const_ty: Option<IrType>,
     pub bounds: Vec<IrTraitBound>,
     pub default: Option<IrType>,
 }
@@ -1281,6 +1284,7 @@ fn builtin_binop_trait(math: MathTrait) -> IrTrait {
         generics: vec![IrGenericParam {
             name: "Rhs".into(),
             kind: IrGenericParamKind::Type,
+            const_ty: None,
             bounds: vec![],
             default: Some(IrType::TypeParam("Self".into())),
         }],
@@ -1376,6 +1380,7 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
             generics: vec![IrGenericParam {
                 name: "Rhs".into(),
                 kind: IrGenericParamKind::Type,
+                const_ty: None,
                 bounds: vec![],
                 default: Some(IrType::TypeParam("Self".into())),
             }],
@@ -1412,6 +1417,7 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
             generics: vec![IrGenericParam {
                 name: "Rhs".into(),
                 kind: IrGenericParamKind::Type,
+                const_ty: None,
                 bounds: vec![],
                 default: Some(IrType::TypeParam("Self".into())),
             }],
@@ -1624,6 +1630,7 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
             generics: vec![IrGenericParam {
                 name: "T".into(),
                 kind: IrGenericParamKind::Type,
+                const_ty: None,
                 bounds: vec![],
                 default: None,
             }],

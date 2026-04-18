@@ -782,6 +782,7 @@ impl FheScheme for GrafhenScheme {
         vec![IrGenericParam {
             name: "R".into(),
             kind: IrGenericParamKind::Type,
+            const_ty: None,
             bounds: vec![IrTraitBound {
                 trait_kind: TraitKind::Custom("WordReducer".into()),
                 type_args: vec![IrType::TypeParam(format!("{}", self.word_bound))],
@@ -923,31 +924,42 @@ impl FheScheme for GrafhenScheme {
 }
 
 // ============================================================================
-// Reference implementation: TfheScheme (stub)
+// TFHE scheme
 // ============================================================================
 
 // @reliability: experimental
-/// Stub implementation of [`FheScheme`] for TFHE (fully homomorphic encryption
-/// over binary circuits via gate bootstrapping).
+/// Implementation of [`FheScheme`] for TFHE (Torus Fully Homomorphic Encryption).
 ///
-/// This is a **skeleton only** — the type names and function calls are
-/// placeholders for a real TFHE library integration.  Do not use in production.
+/// Generates code that calls the functions from `volar_spec::tfhe`:
+/// - Free gates: `tfhe_xor`, `tfhe_not`
+/// - AND gate: `tfhe_gate_bootstrapping_and` (full GINX blind rotation + key switching)
 ///
-/// TFHE characteristics:
-/// - `wire_type`: single-bit LWE ciphertext (`LweCiphertext`)
-/// - XOR / NOT: free (no bootstrapping required)
-/// - AND: requires gate bootstrapping via the bootstrapping key (`bk`)
-/// - `cfg_capable = false`: uses the flat movfuscation path; CFG-capable TFHE
-///   (via programmable bootstrapping) is future work.
+/// The generated function is generic over four const usize parameters:
+/// `N_LWE`, `BIG_N`, `BS_ELL`, `KS_ELL` — corresponding to the TFHE parameters
+/// in `volar_spec::tfhe::BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>`.
 ///
-/// See the `goals.md` TFHE entry for the full implementation plan.
+/// Wire type: `LweCiphertext<N_LWE>` (a single-bit LWE ciphertext).
+/// Extra parameter: `bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>`.
+///
+/// # Example generated signature
+/// ```rust,ignore
+/// fn my_circuit_tfhe<
+///     const N_LWE: usize,
+///     const BIG_N: usize,
+///     const BS_ELL: usize,
+///     const KS_ELL: usize,
+/// >(
+///     input: LweCiphertext<N_LWE>,
+///     bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+/// ) -> LweCiphertext<N_LWE> { ... }
+/// ```
 pub struct TfheScheme;
 
 impl FheScheme for TfheScheme {
     fn wire_type(&self) -> IrType {
         IrType::Struct {
             kind: StructKind::Custom("LweCiphertext".into()),
-            type_args: vec![],
+            type_args: vec![IrType::TypeParam("N_LWE".into())],
         }
     }
 
@@ -958,10 +970,52 @@ impl FheScheme for TfheScheme {
                 mutable: false,
                 elem: Box::new(IrType::Struct {
                     kind: StructKind::Custom("BootstrappingKey".into()),
-                    type_args: vec![],
+                    type_args: vec![
+                        IrType::TypeParam("N_LWE".into()),
+                        IrType::TypeParam("BIG_N".into()),
+                        IrType::TypeParam("BS_ELL".into()),
+                        IrType::TypeParam("KS_ELL".into()),
+                    ],
                 }),
             },
         }]
+    }
+
+    fn generics(&self) -> Vec<IrGenericParam> {
+        vec![
+            IrGenericParam {
+                name: "N_LWE".into(),
+                kind: IrGenericParamKind::Const,
+                const_ty: None, // defaults to usize in printer
+                bounds: vec![],
+                default: None,
+            },
+            IrGenericParam {
+                name: "BIG_N".into(),
+                kind: IrGenericParamKind::Const,
+                const_ty: None,
+                bounds: vec![],
+                default: None,
+            },
+            IrGenericParam {
+                name: "BS_ELL".into(),
+                kind: IrGenericParamKind::Const,
+                const_ty: None,
+                bounds: vec![],
+                default: None,
+            },
+            IrGenericParam {
+                name: "KS_ELL".into(),
+                kind: IrGenericParamKind::Const,
+                const_ty: None,
+                bounds: vec![],
+                default: None,
+            },
+        ]
+    }
+
+    fn fn_name_suffix(&self) -> &str {
+        "tfhe"
     }
 
     fn emit_zero<Q: Clone + Default>(&self) -> IrExpr<Q> {
@@ -1014,6 +1068,7 @@ impl FheScheme for TfheScheme {
         }
     }
 }
+
 
 // ============================================================================
 // Printing

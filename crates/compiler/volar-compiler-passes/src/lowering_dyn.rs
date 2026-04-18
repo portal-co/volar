@@ -2439,6 +2439,7 @@ mod tests {
         IrGenericParam {
             name: name.to_string(),
             kind: IrGenericParamKind::Type,
+            const_ty: None,
             bounds: {
                 let mut b = vec![IrTraitBound {
                     trait_kind: TraitKind::Math(MathTrait::Unsigned),
@@ -2457,6 +2458,7 @@ mod tests {
         IrGenericParam {
             name: name.to_string(),
             kind: IrGenericParamKind::Type,
+            const_ty: None,
             bounds,
             default: None,
         }

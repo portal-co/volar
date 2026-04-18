@@ -364,6 +364,12 @@ impl<'a> RustBackend for GenericsWriter<'a> {
                 }
                 if p.kind == IrGenericParamKind::Lifetime {
                     write!(f, "'{}", p.name)?;
+                } else if p.kind == IrGenericParamKind::Const {
+                    let ty_str = match &p.const_ty {
+                        Some(ty) => format!("{}", DisplayRust(TypeWriter { ty })),
+                        None => "usize".into(),
+                    };
+                    write!(f, "const {}: {}", p.name, ty_str)?;
                 } else {
                     write!(f, "{}", p.name)?;
                 }

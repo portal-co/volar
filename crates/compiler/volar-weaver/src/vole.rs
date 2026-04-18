@@ -188,12 +188,14 @@ fn prover_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredicate>) {
         IrGenericParam {
             name: "N".into(),
             kind: IrGenericParamKind::Type,
+            const_ty: None,
             bounds: vec![array_size_bound()],
             default: None,
         },
         IrGenericParam {
             name: "T".into(),
             kind: IrGenericParamKind::Type,
+            const_ty: None,
             bounds: vec![],
             default: None,
         },
