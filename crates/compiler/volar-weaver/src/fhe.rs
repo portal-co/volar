@@ -18,7 +18,8 @@
 //! 4. Iterates the flat gate list, calling the binary gate methods on the scheme.
 //! 5. Returns [`FheOutput::Flat`] wrapping an [`IrModule`].
 //!
-//! This is the path used by [`GrafhenScheme`] and [`TfheScheme`].
+//! Use [`weave_fhe_flat_bir`] directly when you already hold a `BIrBlocks`
+//! (e.g. from a previous lowering step) and need provenance threading.
 //!
 //! ### CFG path (`cfg_capable() == true`)
 //!
@@ -38,9 +39,10 @@
 //! > is being implemented.
 
 use alloc::{
+    boxed::Box,
     collections::BTreeMap,
     format,
-    string::{String, ToString},
+    string::String,
     vec,
     vec::Vec,
 };
@@ -48,17 +50,20 @@ use alloc::{
 use volar_compiler::{
     ir::{
         ExternalKind, IrBlock, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump, IrCfgModule,
-        IrCfgTerminator, IrExpr, IrFunction, IrModule, IrParam, IrStmt, IrType,
-        PrimitiveType,
+        IrCfgTerminator, IrExpr, IrFunction, IrGenericParam, IrGenericParamKind, IrModule,
+        IrParam, IrPattern, IrStmt, IrTraitBound, IrType, StructKind, TraitKind,
     },
     linkage::LinkageSystem,
 };
-use volar_ir::ir::{
-    IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRTypes, IRVarId,
+use volar_ir::{
+    boolar::{BIrBlocks, BIrStmt},
+    ir::{IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRTypes, IRVarId},
 };
 use volar_ir_passes::{lower_ir_to_boolar, movfuscate_biir};
 
-use crate::{build_return, expand_ors, var};
+use crate::{
+    build_return, clone_expr, expand_ors, ref_expr, var, NoProvenance, ProvenanceHandler,
+};
 
 // ============================================================================
 // FheScheme trait
@@ -66,76 +71,193 @@ use crate::{build_return, expand_ors, var};
 
 /// Trait implemented by each FHE scheme to guide the weaver.
 ///
-/// Implement the binary gate methods for the **flat path** (`cfg_capable = false`).
-/// Implement [`emit_ir_stmt`] and related methods for the **CFG path**.
+/// # Flat path (default, `cfg_capable = false`)
 ///
-/// # Choosing a path
+/// The weaver lowers `IRBlocks` to boolean gates, movfuscates into a single
+/// circuit, then calls the binary gate and oracle/action/rng methods in order.
+/// Implement all `emit_*` methods that may appear in the input; any unimplemented
+/// variant causes a panic with a descriptive message at weave time.
 ///
-/// - Binary circuits (TFHE gate-by-gate, GRAFHEN): implement binary gate methods,
-///   leave `cfg_capable` as `false`.
-/// - Arithmetic schemes (CKKS, BFV/BGV): implement `emit_ir_stmt` for typed
-///   operations, set `cfg_capable = true`, and return `Some(...)` for every
-///   `IRStmt` variant that may appear in inputs.  Returning `None` from
-///   `emit_ir_stmt` in CFG mode causes a panic; use `cfg_capable = false` if
-///   any stmt variant cannot be handled.
+/// # CFG path (`cfg_capable = true`)
+///
+/// Implement [`emit_ir_stmt`] to handle typed `IRStmt`s without flattening.
+/// Returning `None` from `emit_ir_stmt` panics the weaver.
+///
+/// # Provenance
+///
+/// Emit methods are generic over the output provenance type `Q`.  This lets the
+/// weaver thread provenance from the input circuit through to the output
+/// `IrModule<Q>` without any work in the scheme implementation — the expression
+/// constructors (`IrExpr::Call`, `IrExpr::Path`, …) carry Q as a phantom type.
 pub trait FheScheme {
-    // ── Control flow capability ───────────────────────────────────────────────
+    // ── Control flow ─────────────────────────────────────────────────────────
 
-    /// Whether this scheme can operate on `IRBlocks` directly (CFG path).
+    /// Whether this scheme operates on `IRBlocks` directly (CFG path).
     ///
-    /// - `false` (default): the weaver lowers to `BIrBlocks`, movfuscates, then
-    ///   calls the binary gate methods.  Returns [`FheOutput::Flat`].
-    /// - `true`: the weaver passes each [`IRStmt`] to [`emit_ir_stmt`] without
-    ///   flattening.  Returns [`FheOutput::Cfg`].  The scheme MUST handle every
-    ///   stmt variant that appears in the input; returning `None` panics.
+    /// `false` (default): lowers to `BIrBlocks`, movfuscates, then calls the
+    /// binary gate methods.  Returns [`FheOutput::Flat`].
+    ///
+    /// `true`: passes each [`IRStmt`] to [`emit_ir_stmt`].  Returns
+    /// [`FheOutput::Cfg`].  Every stmt variant that may appear in the input
+    /// MUST be handled; returning `None` panics.
     fn cfg_capable(&self) -> bool {
         false
     }
 
-    // ── Common ────────────────────────────────────────────────────────────────
+    // ── Type and signature ────────────────────────────────────────────────────
 
-    /// The Rust type of a single "wire" value in this scheme.
+    /// The Rust type of an owned gate-output wire in this scheme.
     ///
-    /// In the flat path this is the type of every gate output variable.
-    /// In the CFG path this is the type of every variable in the emitted function.
+    /// Used as the return type and the type of intermediate `let wire_N` bindings.
     fn wire_type(&self) -> IrType;
 
-    /// Additional function parameters the emitted function requires.
+    /// The Rust type of a circuit *input* parameter.
     ///
-    /// These are prepended to (or appended after, at the scheme's discretion)
-    /// the circuit input parameters.  Examples: public key, evaluation key, Δ.
+    /// Defaults to [`wire_type`].  Override when inputs have a different type
+    /// (e.g. GRAFHEN passes inputs by reference: `&GrafhenWord<WBOUND>`).
+    fn input_type(&self) -> IrType {
+        self.wire_type()
+    }
+
+    /// Additional function parameters prepended before the circuit inputs.
+    ///
+    /// Examples: public key (`pk`), bootstrapping key (`bk`), global secret Δ.
     fn extra_params(&self) -> Vec<IrParam>;
 
-    // ── Binary gate path (flat) ───────────────────────────────────────────────
+    /// Generic type parameters on the emitted function.
+    ///
+    /// Example: GRAFHEN emits `<R: WordReducer<WBOUND>>`.
+    /// Default: no generics.
+    fn generics(&self) -> Vec<IrGenericParam> {
+        vec![]
+    }
+
+    /// Suffix appended to the circuit name to form the emitted function name.
+    ///
+    /// The function is named `{circuit_name}_{suffix}`.
+    /// Default: `"fhe"`.  GRAFHEN overrides to `"grafhen"`.
+    fn fn_name_suffix(&self) -> &str {
+        "fhe"
+    }
+
+    // ── Binary gate path ─────────────────────────────────────────────────────
 
     /// Emit a constant-zero wire.
-    fn emit_zero(&self) -> IrExpr;
+    fn emit_zero<Q: Clone + Default>(&self) -> IrExpr<Q>;
 
     /// Emit a constant-one wire.
-    fn emit_one(&self) -> IrExpr;
+    fn emit_one<Q: Clone + Default>(&self) -> IrExpr<Q>;
 
     /// Emit an XOR of two wires.
-    fn emit_xor(&self, a: IrExpr, b: IrExpr) -> IrExpr;
+    fn emit_xor<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q>;
 
     /// Emit a NOT of a wire.
-    fn emit_not(&self, a: IrExpr) -> IrExpr;
+    fn emit_not<Q: Clone + Default>(&self, a: IrExpr<Q>) -> IrExpr<Q>;
 
     /// Emit an AND of two wires.
     ///
     /// `gate_idx` is a 0-based count of AND gates already emitted, allowing
     /// schemes that need per-gate material (bootstrapping keys, garble tables)
     /// to index into a parameter array.
-    fn emit_and(&self, a: IrExpr, b: IrExpr, gate_idx: usize) -> IrExpr;
+    fn emit_and<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>, gate_idx: usize) -> IrExpr<Q>;
+
+    // ── Oracle calls ──────────────────────────────────────────────────────────
+
+    /// Emit a call to a named pure oracle.
+    ///
+    /// `arg_exprs` are the homomorphic arguments, already resolved from
+    /// var_names.  `num_bits` is the total number of output bits.
+    ///
+    /// Default: panics at weave time.
+    #[allow(unused_variables)]
+    fn emit_oracle_call<Q: Clone + Default>(
+        &self,
+        oracle_name: &str,
+        arg_exprs: Vec<IrExpr<Q>>,
+        num_bits: usize,
+    ) -> IrExpr<Q> {
+        panic!(
+            "FheScheme: emit_oracle_call not implemented (oracle: '{}').  \
+             Either implement this method or avoid circuits with oracle calls.",
+            oracle_name
+        )
+    }
+
+    /// Emit the projection of bit `bit` from an oracle call result variable.
+    ///
+    /// `call_var` is the variable name bound to the [`emit_oracle_call`] result.
+    ///
+    /// Default: panics at weave time.
+    #[allow(unused_variables)]
+    fn emit_oracle_bit<Q: Clone + Default>(&self, call_var: &str, bit: usize) -> IrExpr<Q> {
+        panic!(
+            "FheScheme: emit_oracle_bit not implemented (call_var: '{}', bit: {}).  \
+             Either implement this method or avoid circuits with oracle calls.",
+            call_var, bit
+        )
+    }
+
+    // ── Action calls ──────────────────────────────────────────────────────────
+
+    /// Emit a conditional action call.
+    ///
+    /// `guard_expr` is the homomorphic guard bit.
+    /// `arg_exprs` are the homomorphic arguments.
+    /// `fallback_exprs` are wire expressions to use when `guard = 0` (one per
+    /// output bit); schemes that multiplex guard/no-guard paths need these.
+    /// `num_bits` is the total number of output bits.
+    ///
+    /// Default: panics at weave time.
+    #[allow(unused_variables)]
+    fn emit_action_call<Q: Clone + Default>(
+        &self,
+        action_name: &str,
+        guard_expr: IrExpr<Q>,
+        arg_exprs: Vec<IrExpr<Q>>,
+        fallback_exprs: Vec<IrExpr<Q>>,
+        num_bits: usize,
+    ) -> IrExpr<Q> {
+        panic!(
+            "FheScheme: emit_action_call not implemented (action: '{}').  \
+             Either implement this method or avoid circuits with action calls.",
+            action_name
+        )
+    }
+
+    /// Emit the projection of bit `bit` from an action call result variable.
+    ///
+    /// `call_var` is the variable name bound to the [`emit_action_call`] result.
+    ///
+    /// Default: panics at weave time.
+    #[allow(unused_variables)]
+    fn emit_action_bit<Q: Clone + Default>(&self, call_var: &str, bit: usize) -> IrExpr<Q> {
+        panic!(
+            "FheScheme: emit_action_bit not implemented (call_var: '{}', bit: {}).  \
+             Either implement this method or avoid circuits with action calls.",
+            call_var, bit
+        )
+    }
+
+    // ── RNG ───────────────────────────────────────────────────────────────────
+
+    /// Emit a fresh random wire from the named RNG source.
+    ///
+    /// Default: panics at weave time.
+    #[allow(unused_variables)]
+    fn emit_rng<Q: Clone + Default>(&self, rng_name: &str) -> IrExpr<Q> {
+        panic!(
+            "FheScheme: emit_rng not implemented (rng: '{}').  \
+             Either implement this method or avoid circuits with RNG sources.",
+            rng_name
+        )
+    }
 
     // ── CFG path ─────────────────────────────────────────────────────────────
 
-    /// Try to emit a typed [`IRStmt`] natively.
+    /// Try to emit a typed [`IRStmt`] natively (CFG path only).
     ///
-    /// - `Some(expr)` → the scheme handles this stmt; the weaver emits
-    ///   `let var_N = expr;`.
-    /// - `None` → unhandled.  In CFG mode (`cfg_capable = true`) this **panics**.
-    ///   Override this method only when `cfg_capable` returns `true` AND the
-    ///   scheme can handle every stmt variant that may appear.
+    /// - `Some(expr)` → the scheme handles this stmt.
+    /// - `None` → unhandled.  Panics the weaver when `cfg_capable` returns `true`.
     ///
     /// `var_map` maps each in-scope `IRVarId.0` to its variable name string.
     #[allow(unused_variables)]
@@ -149,7 +271,6 @@ pub trait FheScheme {
 
     /// Build the return expression for a CFG-path function's Return terminator.
     ///
-    /// `output_vars` are the variable names of the values being returned.
     /// Default: single output → bare name; multiple outputs → tuple.
     fn emit_cfg_return(&self, output_vars: &[String]) -> IrExpr {
         match output_vars {
@@ -181,8 +302,8 @@ pub enum FheOutput {
 /// Weave an `IRBlocks` circuit using a specific FHE scheme.
 ///
 /// Dispatches to the flat or CFG path based on [`FheScheme::cfg_capable`].
-/// Both paths produce semantically equivalent output; the CFG path may
-/// be more efficient for schemes that support native control flow.
+/// Provenance is erased (uses [`NoProvenance`]).  For provenance threading
+/// on the flat path use [`weave_fhe_flat_bir`] directly.
 pub fn weave_fhe<S: FheScheme>(
     blocks: &IRBlocks,
     types: &IRTypes,
@@ -198,7 +319,7 @@ pub fn weave_fhe<S: FheScheme>(
 }
 
 // ============================================================================
-// Flat path implementation
+// Flat path — high-level entry (lowers IRBlocks first)
 // ============================================================================
 
 fn weave_fhe_flat<S: FheScheme>(
@@ -208,25 +329,60 @@ fn weave_fhe_flat<S: FheScheme>(
     name: &str,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule {
-    // Lower to boolean, then movfuscate into a single circuit block.
     let bir_blocks = lower_ir_to_boolar(blocks, types);
     let circuit = movfuscate_biir(&bir_blocks);
     assert!(
         circuit.is_circuit(),
         "weave_fhe_flat: circuit after movfuscation must satisfy is_circuit()"
     );
+    weave_fhe_flat_bir(&circuit, scheme, name, linkage, &NoProvenance)
+}
+
+// ============================================================================
+// Flat path — core (takes BIrBlocks, threads provenance)
+// ============================================================================
+
+/// Core flat weaver: takes an already-movfuscated `BIrBlocks` circuit plus a
+/// [`ProvenanceHandler`] and produces an `IrModule<H::Output>`.
+///
+/// This is the low-level entry point used by both [`weave_fhe`] and by
+/// callers (such as `weave_grafhen_with_handler`) that already hold a
+/// `BIrBlocks` and want to preserve per-statement provenance.
+///
+/// # Panics
+/// Panics if `circuit` does not satisfy `is_circuit()` (single block, Return
+/// terminator), or if the scheme does not implement a required emit method for
+/// a gate variant present in the circuit.
+pub fn weave_fhe_flat_bir<P, H, S>(
+    circuit: &BIrBlocks<P>,
+    scheme: &S,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+    handler: &H,
+) -> IrModule<H::Output>
+where
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
+    S: FheScheme,
+{
+    assert!(
+        circuit.is_circuit(),
+        "weave_fhe_flat_bir: circuit must satisfy is_circuit() \
+         (single block with Return terminator)"
+    );
 
     let block = &circuit.0[0];
     let expanded = expand_ors(block);
     let num_inputs = block.params as u32;
     let wire_ty = scheme.wire_type();
+    let input_ty = scheme.input_type();
 
     // Build parameter list: extra scheme params + one input per circuit param.
     let mut params: Vec<IrParam> = scheme.extra_params();
     for i in 0..num_inputs {
         params.push(IrParam {
             name: format!("input_{}", i),
-            ty: wire_ty.clone(),
+            ty: input_ty.clone(),
         });
     }
 
@@ -236,89 +392,90 @@ fn weave_fhe_flat<S: FheScheme>(
         var_names.insert(i, format!("input_{}", i));
     }
 
-    let mut stmts: Vec<IrStmt> = Vec::new();
-    let mut stmt_provs: Vec<()> = Vec::new();
+    let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
+    let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut and_gate_idx: usize = 0;
 
-    for (result_id, stmt, _prov) in &expanded {
+    for (result_id, stmt, prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
-        let init_expr = match stmt {
-            volar_ir::boolar::BIrStmt::Zero => scheme.emit_zero(),
-            volar_ir::boolar::BIrStmt::One => scheme.emit_one(),
-            volar_ir::boolar::BIrStmt::Xor(a, b) => {
-                let ea = var(var_names[&a.0].as_str());
-                let eb = var(var_names[&b.0].as_str());
-                scheme.emit_xor(ea, eb)
-            }
-            volar_ir::boolar::BIrStmt::Not(a) => {
-                let ea = var(var_names[&a.0].as_str());
-                scheme.emit_not(ea)
-            }
-            volar_ir::boolar::BIrStmt::And(a, b) => {
-                let ea = var(var_names[&a.0].as_str());
-                let eb = var(var_names[&b.0].as_str());
-                let out = scheme.emit_and(ea, eb, and_gate_idx);
+        let q = handler.map(prov);
+
+        let init_expr: IrExpr<H::Output> = match stmt {
+            BIrStmt::Zero => scheme.emit_zero(),
+            BIrStmt::One => scheme.emit_one(),
+
+            BIrStmt::Xor(a, b) => scheme.emit_xor(
+                var(var_names[&a.0].as_str()),
+                var(var_names[&b.0].as_str()),
+            ),
+
+            BIrStmt::Not(a) => scheme.emit_not(var(var_names[&a.0].as_str())),
+
+            BIrStmt::And(a, b) => {
+                let out = scheme.emit_and(
+                    var(var_names[&a.0].as_str()),
+                    var(var_names[&b.0].as_str()),
+                    and_gate_idx,
+                );
                 and_gate_idx += 1;
                 out
             }
-            volar_ir::boolar::BIrStmt::Or(_, _) => {
-                unreachable!("weave_fhe_flat: Or gates should have been expanded")
+
+            BIrStmt::Or(..) => {
+                unreachable!("weave_fhe_flat_bir: Or gates should have been expanded")
             }
-            volar_ir::boolar::BIrStmt::OracleCall { name: oracle_name, args, num_bits } => {
-                panic!(
-                    "weave_fhe_flat: OracleCall '{}' not supported by scheme '{}'. \
-                     Implement oracle handling or use a scheme that supports it.",
-                    oracle_name, name
-                );
+
+            BIrStmt::OracleCall { name: oracle_name, args, num_bits } => {
+                let arg_exprs: Vec<IrExpr<H::Output>> = args
+                    .iter()
+                    .map(|id| var(var_names[&id.0].as_str()))
+                    .collect();
+                scheme.emit_oracle_call(oracle_name, arg_exprs, *num_bits)
             }
-            volar_ir::boolar::BIrStmt::OracleBit { call, bit } => {
-                panic!(
-                    "weave_fhe_flat: OracleBit not supported by scheme '{}'. \
-                     Implement oracle handling or use a scheme that supports it.",
-                    name
-                );
+
+            BIrStmt::OracleBit { call, bit } => {
+                scheme.emit_oracle_bit(var_names[&call.0].as_str(), *bit)
             }
-            volar_ir::boolar::BIrStmt::ActionCall { .. } => {
-                panic!(
-                    "weave_fhe_flat: ActionCall not supported by scheme '{}'. \
-                     Implement action handling or use a scheme that supports it.",
-                    name
-                );
+
+            BIrStmt::ActionCall { name: action_name, guard, args, fallback, num_bits } => {
+                let guard_expr: IrExpr<H::Output> = var(var_names[&guard.0].as_str());
+                let arg_exprs: Vec<IrExpr<H::Output>> = args
+                    .iter()
+                    .map(|id| var(var_names[&id.0].as_str()))
+                    .collect();
+                let fallback_exprs: Vec<IrExpr<H::Output>> = fallback
+                    .iter()
+                    .map(|id| var(var_names[&id.0].as_str()))
+                    .collect();
+                scheme.emit_action_call(action_name, guard_expr, arg_exprs, fallback_exprs, *num_bits)
             }
-            volar_ir::boolar::BIrStmt::ActionBit { .. } => {
-                panic!(
-                    "weave_fhe_flat: ActionBit not supported by scheme '{}'. \
-                     Implement action handling or use a scheme that supports it.",
-                    name
-                );
+
+            BIrStmt::ActionBit { call, bit } => {
+                scheme.emit_action_bit(var_names[&call.0].as_str(), *bit)
             }
-            volar_ir::boolar::BIrStmt::Rng { name: rng_name } => {
-                panic!(
-                    "weave_fhe_flat: Rng '{}' not supported by scheme '{}'. \
-                     Implement Rng handling or use a scheme that supports it.",
-                    rng_name, name
-                );
-            }
-            volar_ir::boolar::BIrStmt::StorageRead { .. }
-            | volar_ir::boolar::BIrStmt::StorageWrite { .. } => {
-                unimplemented!("weave_fhe_flat: StorageRead/Write not yet supported")
+
+            BIrStmt::Rng { name: rng_name } => scheme.emit_rng(rng_name),
+
+            BIrStmt::StorageRead { .. } | BIrStmt::StorageWrite { .. } => {
+                unimplemented!("weave_fhe_flat_bir: StorageRead/Write not yet supported")
             }
         };
 
         stmts.push(IrStmt::Let {
-            pattern: volar_compiler::ir::IrPattern::ident(&let_name),
+            pattern: IrPattern::ident(&let_name),
             ty: None,
             init: Some(init_expr),
         });
-        stmt_provs.push(());
+        stmt_provs.push(q);
         var_names.insert(result_id.0, let_name);
     }
 
     let (ret_expr, ret_type) = build_return(block, &var_names, wire_ty);
 
+    let fn_name = format!("{}_{}", name, scheme.fn_name_suffix());
     let func = IrFunction {
-        name: format!("{}_{}", name, "fhe"),
-        generics: vec![],
+        name: fn_name.clone(),
+        generics: scheme.generics(),
         receiver: None,
         params,
         return_type: Some(ret_type),
@@ -326,13 +483,13 @@ fn weave_fhe_flat<S: FheScheme>(
         body: IrBlock {
             stmts,
             stmt_provs,
-            expr: Some(alloc::boxed::Box::new(ret_expr)),
+            expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
     };
 
     let mut module = IrModule {
-        name: format!("weaved_{}_fhe", name),
+        name: format!("weaved_{}", fn_name),
         functions: vec![func],
         structs: vec![],
         traits: vec![],
@@ -351,7 +508,7 @@ fn weave_fhe_flat<S: FheScheme>(
 
 fn weave_fhe_cfg<S: FheScheme>(
     blocks: &IRBlocks,
-    types: &IRTypes,
+    _types: &IRTypes,
     scheme: &S,
     name: &str,
     linkage: Option<&LinkageSystem>,
@@ -380,7 +537,6 @@ fn weave_fhe_cfg<S: FheScheme>(
 
         // Params: block 0 uses function param names; others use blk-param names.
         if bidx == 0 {
-            // Function params are named "input_0", "input_1", ...
             for i in 0..num_params {
                 var_map.insert(i, format!("input_{}", i));
             }
@@ -409,7 +565,7 @@ fn weave_fhe_cfg<S: FheScheme>(
                 });
 
             stmts.push(IrStmt::Let {
-                pattern: volar_compiler::ir::IrPattern::ident(&let_name),
+                pattern: IrPattern::ident(&let_name),
                 ty: None,
                 init: Some(init_expr),
             });
@@ -417,7 +573,6 @@ fn weave_fhe_cfg<S: FheScheme>(
             var_map.insert(result_ir_vid, let_name);
         }
 
-        // Map the IRTerminator to an IrCfgTerminator.
         let terminator = map_ir_terminator(&ir_block.terminator, &var_map, scheme, &wire_ty);
 
         cfg_blocks.push(IrCfgBlock {
@@ -428,12 +583,8 @@ fn weave_fhe_cfg<S: FheScheme>(
         });
     }
 
-    // Build the return type from the entry block's terminator if it's a Return.
-    // For CFG functions we use the scheme's wire_type as the return type.
-    // The printer handles the specific return expression.
     let return_type = Some(wire_ty.clone());
 
-    // Build function params from entry block (block 0).
     let mut func_params: Vec<IrParam> = scheme.extra_params();
     if let Some(entry) = blocks.blocks.first() {
         for i in 0..entry.params.len() {
@@ -444,8 +595,9 @@ fn weave_fhe_cfg<S: FheScheme>(
         }
     }
 
+    let fn_name = format!("{}_{}_cfg", name, scheme.fn_name_suffix());
     let func = IrCfgFunction {
-        name: format!("{}_{}", name, "fhe_cfg"),
+        name: fn_name.clone(),
         generics: vec![],
         receiver: None,
         params: func_params,
@@ -455,17 +607,15 @@ fn weave_fhe_cfg<S: FheScheme>(
         body: IrCfgBody { blocks: cfg_blocks },
     };
 
-    let mut module = IrCfgModule {
-        name: format!("weaved_{}_fhe_cfg", name),
+    let module = IrCfgModule {
+        name: format!("weaved_{}", fn_name),
         functions: vec![func],
         structs: vec![],
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],
     };
-    // Note: LinkageSystem currently operates on IrModule; CFG linkage is future work.
-    // If linkage is Some, we log a warning (no-std: just ignore for now).
-    let _ = linkage;
+    let _ = linkage; // CFG linkage is future work
     module
 }
 
@@ -522,7 +672,7 @@ fn map_ir_terminator<S: FheScheme>(
             let map_jump = |bid: &IRBlockTargetId, args: &[IRVarId]| -> IrCfgJump {
                 let target = match bid {
                     IRBlockTargetId::Block(b) => b.0 as usize,
-                    IRBlockTargetId::Return => usize::MAX, // sentinel; handled below
+                    IRBlockTargetId::Return => usize::MAX, // sentinel
                     IRBlockTargetId::Dyn(_) => panic!("weave_fhe_cfg: dynamic jump in CondJmp"),
                 };
                 IrCfgJump {
@@ -555,36 +705,66 @@ fn map_ir_terminator<S: FheScheme>(
 // Reference implementation: GrafhenScheme
 // ============================================================================
 
-/// A wrapper that implements [`FheScheme`] by delegating to the GRAFHEN gate functions.
+/// [`FheScheme`] implementation for GRAFHEN homomorphic evaluation.
 ///
-/// This is provided as a reference implementation demonstrating the flat path.
-/// The underlying cryptographic security of GRAFHEN is experimental (IND-CPA broken);
-/// see `grafhen.rs` for details.
+/// Delegates gate emission to the `grafhen_*` family of functions from
+/// `volar-spec`.  Inputs are passed as `&GrafhenWord<WBOUND>` references;
+/// gate outputs are owned `GrafhenWord<WBOUND>` values.
 ///
-/// # Usage
-///
-/// ```ignore
-/// let scheme = GrafhenScheme::new(4);
-/// let output = weave_fhe(&ir_blocks, &types, &scheme, "my_circuit", None);
+/// The emitted function has signature:
+/// ```text
+/// fn {name}_grafhen<R: WordReducer<WBOUND>>(
+///     pk: &GrafhenPublic<R, WBOUND>,
+///     input_0: &GrafhenWord<WBOUND>,
+///     ...
+/// ) -> GrafhenWord<WBOUND>
 /// ```
+///
+/// **WARNING: IND-CPA BROKEN.** See `docs/grafhen.md` and ePrint 2026/700.
+/// Use only inside a ZK proof for correctness; never as a confidentiality
+/// primitive.
+///
+/// Supports oracle calls (`{oracle}_grafhen(pk, &arg, ...)`),
+/// action calls (`{action}_action_grafhen(pk, &guard, &arg, ...)`),
+/// and RNG (`grafhen_encrypt({rng}(), pk)`).
 pub struct GrafhenScheme {
-    /// Bit width of a GRAFHEN word (controls noise budget).
-    pub word_bound: u8,
+    /// Concrete bit-width baked into `GrafhenWord<WBOUND>` and
+    /// `GrafhenPublic<R, WBOUND>`.
+    pub word_bound: usize,
 }
 
 impl GrafhenScheme {
-    pub fn new(word_bound: u8) -> Self {
+    pub fn new(word_bound: usize) -> Self {
         GrafhenScheme { word_bound }
+    }
+
+    fn word_ty(&self) -> IrType {
+        IrType::Struct {
+            kind: StructKind::Custom("GrafhenWord".into()),
+            type_args: vec![IrType::TypeParam(format!("{}", self.word_bound))],
+        }
+    }
+
+    fn public_ty(&self) -> IrType {
+        IrType::Struct {
+            kind: StructKind::Custom("GrafhenPublic".into()),
+            type_args: vec![
+                IrType::TypeParam("R".into()),
+                IrType::TypeParam(format!("{}", self.word_bound)),
+            ],
+        }
     }
 }
 
 impl FheScheme for GrafhenScheme {
     fn wire_type(&self) -> IrType {
-        IrType::Struct {
-            kind: volar_compiler::ir::StructKind::Custom(
-                format!("GrafhenWord<{}>", self.word_bound),
-            ),
-            type_args: vec![],
+        self.word_ty()
+    }
+
+    fn input_type(&self) -> IrType {
+        IrType::Reference {
+            mutable: false,
+            elem: Box::new(self.word_ty()),
         }
     }
 
@@ -593,57 +773,151 @@ impl FheScheme for GrafhenScheme {
             name: "pk".into(),
             ty: IrType::Reference {
                 mutable: false,
-                elem: alloc::boxed::Box::new(IrType::Struct {
-                    kind: volar_compiler::ir::StructKind::Custom("GrafhenPublic".into()),
-                    type_args: vec![],
-                }),
+                elem: Box::new(self.public_ty()),
             },
         }]
     }
 
-    fn emit_zero(&self) -> IrExpr {
+    fn generics(&self) -> Vec<IrGenericParam> {
+        vec![IrGenericParam {
+            name: "R".into(),
+            kind: IrGenericParamKind::Type,
+            bounds: vec![IrTraitBound {
+                trait_kind: TraitKind::Custom("WordReducer".into()),
+                type_args: vec![IrType::TypeParam(format!("{}", self.word_bound))],
+                assoc_bindings: vec![],
+            }],
+            default: None,
+        }]
+    }
+
+    fn fn_name_suffix(&self) -> &str {
+        "grafhen"
+    }
+
+    fn emit_zero<Q: Clone + Default>(&self) -> IrExpr<Q> {
+        // GrafhenWord::identity() — the additive identity (all-zero ciphertext).
         IrExpr::Call {
-            func: alloc::boxed::Box::new(IrExpr::Path {
-                segments: vec!["grafhen_zero".into()],
+            func: Box::new(IrExpr::Path {
+                segments: vec!["GrafhenWord".into(), "identity".into()],
                 type_args: vec![],
             }),
-            args: vec![var("pk")],
+            args: vec![],
         }
     }
 
-    fn emit_one(&self) -> IrExpr {
-        // GRAFHEN one = NOT(zero)
-        let zero = self.emit_zero();
-        self.emit_not(zero)
+    fn emit_one<Q: Clone + Default>(&self) -> IrExpr<Q> {
+        // pk.enc_one.clone()
+        clone_expr(IrExpr::Field {
+            base: Box::new(var("pk")),
+            field: "enc_one".into(),
+        })
     }
 
-    fn emit_xor(&self, a: IrExpr, b: IrExpr) -> IrExpr {
+    fn emit_xor<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
+        // grafhen_xor(&a.clone(), &b.clone())
         IrExpr::Call {
-            func: alloc::boxed::Box::new(IrExpr::Path {
+            func: Box::new(IrExpr::Path {
                 segments: vec!["grafhen_xor".into()],
                 type_args: vec![],
             }),
-            args: vec![a, b, var("pk")],
+            args: vec![ref_expr(clone_expr(a)), ref_expr(clone_expr(b))],
         }
     }
 
-    fn emit_not(&self, a: IrExpr) -> IrExpr {
+    fn emit_not<Q: Clone + Default>(&self, a: IrExpr<Q>) -> IrExpr<Q> {
+        // grafhen_not(&a.clone(), pk)
         IrExpr::Call {
-            func: alloc::boxed::Box::new(IrExpr::Path {
+            func: Box::new(IrExpr::Path {
                 segments: vec!["grafhen_not".into()],
                 type_args: vec![],
             }),
-            args: vec![a, var("pk")],
+            args: vec![ref_expr(clone_expr(a)), var("pk")],
         }
     }
 
-    fn emit_and(&self, a: IrExpr, b: IrExpr, _gate_idx: usize) -> IrExpr {
+    fn emit_and<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>, _gate_idx: usize) -> IrExpr<Q> {
+        // grafhen_and(&a.clone(), &b.clone(), pk)
         IrExpr::Call {
-            func: alloc::boxed::Box::new(IrExpr::Path {
+            func: Box::new(IrExpr::Path {
                 segments: vec!["grafhen_and".into()],
                 type_args: vec![],
             }),
-            args: vec![a, b, var("pk")],
+            args: vec![ref_expr(clone_expr(a)), ref_expr(clone_expr(b)), var("pk")],
+        }
+    }
+
+    fn emit_oracle_call<Q: Clone + Default>(
+        &self,
+        oracle_name: &str,
+        arg_exprs: Vec<IrExpr<Q>>,
+        _num_bits: usize,
+    ) -> IrExpr<Q> {
+        // {oracle_name}_grafhen(pk, &arg0.clone(), &arg1.clone(), ...)
+        let mut args: Vec<IrExpr<Q>> = vec![var("pk")];
+        args.extend(arg_exprs.into_iter().map(|a| ref_expr(clone_expr(a))));
+        IrExpr::Call {
+            func: Box::new(IrExpr::Path {
+                segments: vec![format!("{}_grafhen", oracle_name)],
+                type_args: vec![],
+            }),
+            args,
+        }
+    }
+
+    fn emit_oracle_bit<Q: Clone + Default>(&self, call_var: &str, bit: usize) -> IrExpr<Q> {
+        // call_var.{bit}.clone()
+        clone_expr(IrExpr::Field {
+            base: Box::new(var(call_var)),
+            field: format!("{}", bit),
+        })
+    }
+
+    fn emit_action_call<Q: Clone + Default>(
+        &self,
+        action_name: &str,
+        guard_expr: IrExpr<Q>,
+        arg_exprs: Vec<IrExpr<Q>>,
+        _fallback_exprs: Vec<IrExpr<Q>>,
+        _num_bits: usize,
+    ) -> IrExpr<Q> {
+        // {action_name}_action_grafhen(pk, &guard.clone(), &arg0.clone(), ...)
+        let mut args: Vec<IrExpr<Q>> = vec![var("pk"), ref_expr(clone_expr(guard_expr))];
+        args.extend(arg_exprs.into_iter().map(|a| ref_expr(clone_expr(a))));
+        IrExpr::Call {
+            func: Box::new(IrExpr::Path {
+                segments: vec![format!("{}_action_grafhen", action_name)],
+                type_args: vec![],
+            }),
+            args,
+        }
+    }
+
+    fn emit_action_bit<Q: Clone + Default>(&self, call_var: &str, bit: usize) -> IrExpr<Q> {
+        // call_var.{bit}.clone()
+        clone_expr(IrExpr::Field {
+            base: Box::new(var(call_var)),
+            field: format!("{}", bit),
+        })
+    }
+
+    fn emit_rng<Q: Clone + Default>(&self, rng_name: &str) -> IrExpr<Q> {
+        // grafhen_encrypt({rng_name}(), pk)
+        IrExpr::Call {
+            func: Box::new(IrExpr::Path {
+                segments: vec!["grafhen_encrypt".into()],
+                type_args: vec![],
+            }),
+            args: vec![
+                IrExpr::Call {
+                    func: Box::new(IrExpr::Path {
+                        segments: vec![rng_name.into()],
+                        type_args: vec![],
+                    }),
+                    args: vec![],
+                },
+                var("pk"),
+            ],
         }
     }
 }
@@ -671,30 +945,28 @@ pub struct TfheScheme;
 
 impl FheScheme for TfheScheme {
     fn wire_type(&self) -> IrType {
-        // Placeholder: real TFHE ciphertexts would be LWE ciphertexts.
         IrType::Struct {
-            kind: volar_compiler::ir::StructKind::Custom("LweCiphertext".into()),
+            kind: StructKind::Custom("LweCiphertext".into()),
             type_args: vec![],
         }
     }
 
     fn extra_params(&self) -> Vec<IrParam> {
-        // Bootstrapping key required for AND gates.
         vec![IrParam {
             name: "bk".into(),
             ty: IrType::Reference {
                 mutable: false,
-                elem: alloc::boxed::Box::new(IrType::Struct {
-                    kind: volar_compiler::ir::StructKind::Custom("BootstrappingKey".into()),
+                elem: Box::new(IrType::Struct {
+                    kind: StructKind::Custom("BootstrappingKey".into()),
                     type_args: vec![],
                 }),
             },
         }]
     }
 
-    fn emit_zero(&self) -> IrExpr {
+    fn emit_zero<Q: Clone + Default>(&self) -> IrExpr<Q> {
         IrExpr::Call {
-            func: alloc::boxed::Box::new(IrExpr::Path {
+            func: Box::new(IrExpr::Path {
                 segments: vec!["tfhe_trivial_zero".into()],
                 type_args: vec![],
             }),
@@ -702,9 +974,9 @@ impl FheScheme for TfheScheme {
         }
     }
 
-    fn emit_one(&self) -> IrExpr {
+    fn emit_one<Q: Clone + Default>(&self) -> IrExpr<Q> {
         IrExpr::Call {
-            func: alloc::boxed::Box::new(IrExpr::Path {
+            func: Box::new(IrExpr::Path {
                 segments: vec!["tfhe_trivial_one".into()],
                 type_args: vec![],
             }),
@@ -712,10 +984,9 @@ impl FheScheme for TfheScheme {
         }
     }
 
-    fn emit_xor(&self, a: IrExpr, b: IrExpr) -> IrExpr {
-        // XOR is a free gate in TFHE (no bootstrapping needed).
+    fn emit_xor<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
         IrExpr::Call {
-            func: alloc::boxed::Box::new(IrExpr::Path {
+            func: Box::new(IrExpr::Path {
                 segments: vec!["tfhe_xor".into()],
                 type_args: vec![],
             }),
@@ -723,10 +994,9 @@ impl FheScheme for TfheScheme {
         }
     }
 
-    fn emit_not(&self, a: IrExpr) -> IrExpr {
-        // NOT is free in TFHE.
+    fn emit_not<Q: Clone + Default>(&self, a: IrExpr<Q>) -> IrExpr<Q> {
         IrExpr::Call {
-            func: alloc::boxed::Box::new(IrExpr::Path {
+            func: Box::new(IrExpr::Path {
                 segments: vec!["tfhe_not".into()],
                 type_args: vec![],
             }),
@@ -734,10 +1004,9 @@ impl FheScheme for TfheScheme {
         }
     }
 
-    fn emit_and(&self, a: IrExpr, b: IrExpr, _gate_idx: usize) -> IrExpr {
-        // AND requires gate bootstrapping.
+    fn emit_and<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>, _gate_idx: usize) -> IrExpr<Q> {
         IrExpr::Call {
-            func: alloc::boxed::Box::new(IrExpr::Path {
+            func: Box::new(IrExpr::Path {
                 segments: vec!["tfhe_gate_bootstrapping_and".into()],
                 type_args: vec![],
             }),
