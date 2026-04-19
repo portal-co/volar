@@ -298,6 +298,57 @@ pub fn apply_aliases_to_stmt<V: Copy + Ord + Clone>(
 }
 
 // ============================================================================
+// GF(2) polynomial substitution
+// ============================================================================
+
+/// Inline `src_poly` into `dst_poly` wherever `src_var` appears as a
+/// **singleton-key** monomial (i.e. the key is exactly `[src_var]`).
+///
+/// `src_poly` evaluates to `src_constant XOR (XOR of src_coeffs monomials)`.
+/// When `dst_coeffs` contains the entry `[src_var] → c` with `c & 1 != 0`:
+/// - Remove the singleton entry.
+/// - XOR `src_constant` into `*dst_constant`.
+/// - For each `(src_key, src_coeff)` in `src_coeffs` with odd coeff: XOR a new
+///   monomial `src_key` into `dst_coeffs`.
+///
+/// Zero-coefficient entries are removed afterwards.
+/// Returns `true` if any substitution was made.
+pub fn merge_poly_into<V: Clone + Ord>(
+    dst_coeffs: &mut BTreeMap<Vec<V>, u8>,
+    dst_constant: &mut Constant,
+    src_var: &V,
+    src_coeffs: &BTreeMap<Vec<V>, u8>,
+    src_constant: Constant,
+) -> bool {
+    let singleton_key = alloc::vec![src_var.clone()];
+    let coeff = match dst_coeffs.get(&singleton_key).copied() {
+        Some(c) if c & 1 != 0 => c,
+        _ => return false,
+    };
+
+    // Remove the singleton entry.
+    dst_coeffs.remove(&singleton_key);
+
+    // XOR src_constant into dst_constant (coefficient is odd → multiply by 1 in GF(2)).
+    if !constant_is_zero(src_constant) {
+        *dst_constant = constant_xor(*dst_constant, src_constant);
+    }
+
+    // XOR in each src monomial.
+    for (src_key, &src_coeff) in src_coeffs {
+        if src_coeff & 1 == 0 {
+            continue;
+        }
+        *dst_coeffs.entry(src_key.clone()).or_insert(0) ^= coeff;
+    }
+
+    // Remove zero-coefficient entries (XOR cancellations).
+    dst_coeffs.retain(|_, c| *c & 1 != 0);
+
+    true
+}
+
+// ============================================================================
 // GF(2) polynomial folding
 // ============================================================================
 

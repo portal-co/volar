@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use volar_ir::ir::{
     IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRTypes, IRVarId,
 };
-use volar_ir_common::{Constant, IrType, Stmt, Type, TypeId};
+use volar_ir_common::{Constant, IrType, Stmt, StorageId, Type, TypeId};
 
 // ============================================================================
 // Public API
@@ -24,6 +24,9 @@ use volar_ir_common::{Constant, IrType, Stmt, Type, TypeId};
 
 /// A concrete value: a `Vec<bool>` of bits, LSB at index 0.
 pub type IrValue = Vec<bool>;
+
+/// Storage map: keyed by `(StorageId, address_as_u64)`, value is a bit vector.
+pub type StorageMap = BTreeMap<(StorageId, u64), Vec<bool>>;
 
 /// Evaluate `blocks` from block 0 with `inputs` bound to the entry block's
 /// typed params.
@@ -40,6 +43,7 @@ pub fn eval_ir(
     let mut loop_count = 0usize;
     let mut current_block: usize = 0;
     let mut current_inputs: Vec<IrValue> = inputs.to_vec();
+    let mut storage: StorageMap = BTreeMap::new();
 
     loop {
         if current_block == 0 {
@@ -50,7 +54,7 @@ pub fn eval_ir(
         }
 
         let block = &blocks.blocks[current_block];
-        let result = eval_ir_block(block, types, &current_inputs)?;
+        let result = eval_ir_block(block, types, &current_inputs, &mut storage)?;
 
         match result {
             IrBlockResult::Return(vals) => return Some(vals),
@@ -78,6 +82,7 @@ fn eval_ir_block(
     block: &volar_ir::ir::IRBlock<()>,
     types: &IRTypes,
     params: &[IrValue],
+    storage: &mut StorageMap,
 ) -> Option<IrBlockResult> {
     assert_eq!(
         params.len(),
@@ -95,7 +100,7 @@ fn eval_ir_block(
     let base = block.params.len() as u32;
     for (i, stmt) in block.stmts.iter().enumerate() {
         let id = base + i as u32;
-        let val = eval_ir_stmt(stmt, types, &vars);
+        let val = eval_ir_stmt(stmt, types, &vars, storage);
         vars.insert(id, val);
     }
 
@@ -142,7 +147,7 @@ fn eval_ir_block(
 }
 
 /// Evaluate a single IR statement.  Returns the result value as a bit vector.
-fn eval_ir_stmt(stmt: &IRStmt, types: &IRTypes, vars: &BTreeMap<u32, IrValue>) -> IrValue {
+fn eval_ir_stmt(stmt: &IRStmt, types: &IRTypes, vars: &BTreeMap<u32, IrValue>, storage: &mut StorageMap) -> IrValue {
     match stmt {
         Stmt::Const(c, ty) => {
             let w = bit_width(*ty, types);
@@ -211,8 +216,28 @@ fn eval_ir_stmt(stmt: &IRStmt, types: &IRTypes, vars: &BTreeMap<u32, IrValue>) -
         Stmt::ActionCall { .. } => panic!("eval_ir: ActionCall not supported"),
         Stmt::ActionOutput { .. } => panic!("eval_ir: ActionOutput not supported"),
         Stmt::Rng { .. } => panic!("eval_ir: Rng not supported"),
-        Stmt::StorageRead { .. } => panic!("eval_ir: StorageRead not supported"),
-        Stmt::StorageWrite { .. } => panic!("eval_ir: StorageWrite not supported"),
+        Stmt::StorageRead { storage: store_id, ty, addr } => {
+            let w = bit_width(*ty, types);
+            let addr_val = get_ir(vars, addr);
+            let addr_u64 = bits_to_u64(&addr_val);
+            storage
+                .get(&(*store_id, addr_u64))
+                .cloned()
+                .unwrap_or_else(|| vec![false; w])
+        }
+        Stmt::StorageWrite { storage: store_id, src, ty, addr } => {
+            let src_val = get_ir(vars, src);
+            let addr_val = get_ir(vars, addr);
+            let addr_u64 = bits_to_u64(&addr_val);
+            let w = bit_width(*ty, types);
+            let mut val = src_val;
+            val.truncate(w);
+            while val.len() < w {
+                val.push(false);
+            }
+            storage.insert((*store_id, addr_u64), val);
+            vec![] // StorageWrite has no output
+        }
     }
 }
 
@@ -337,6 +362,17 @@ fn get_ir(vars: &BTreeMap<u32, IrValue>, id: &IRVarId) -> IrValue {
     vars.get(&id.0)
         .cloned()
         .unwrap_or_else(|| panic!("eval_ir: var {} not found", id.0))
+}
+
+/// Convert the first 64 bits of a bit-vector to a `u64` (LSB at index 0).
+pub fn bits_to_u64(bits: &[bool]) -> u64 {
+    let mut result = 0u64;
+    for (i, &b) in bits.iter().enumerate().take(64) {
+        if b {
+            result |= 1u64 << i;
+        }
+    }
+    result
 }
 
 // ============================================================================

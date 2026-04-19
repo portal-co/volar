@@ -13,9 +13,9 @@
 use std::collections::BTreeMap;
 
 use vaffle::{BlockId, FuncDecl, FuncId, Module, Terminator, Value, ValueId};
-use volar_ir_common::{Constant, Stmt, TypeId, TypeTable};
+use volar_ir_common::{Constant, Stmt, StorageId, TypeId, TypeTable};
 
-use crate::interpreter::ir::{IrValue, bit_width, const_to_bits, rotate_left, rotate_right, transmute_bits};
+use crate::interpreter::ir::{IrValue, StorageMap, bit_width, bits_to_u64, const_to_bits, rotate_left, rotate_right, transmute_bits};
 
 // ============================================================================
 // Public API
@@ -42,6 +42,7 @@ pub fn eval_vaffle(
     };
 
     let mut value_table: BTreeMap<usize, IrValue> = BTreeMap::new();
+    let mut storage: StorageMap = BTreeMap::new();
 
     // Seed the entry block's params from `inputs`.
     let entry_block = &body.blocks[body.entry.0];
@@ -71,7 +72,7 @@ pub fn eval_vaffle(
 
         // Evaluate each stmt value in this block.
         for &vid in &block.stmts {
-            let val = eval_vaffle_value(vid, &body.values, &value_table, &module.types);
+            let val = eval_vaffle_value(vid, &body.values, &value_table, &module.types, &mut storage);
             value_table.insert(vid.0, val);
         }
 
@@ -120,7 +121,21 @@ pub fn eval_vaffle(
                 current_block_id = target.block;
             }
             Terminator::ReturnCall { .. } => panic!("eval_vaffle: ReturnCall not supported"),
-            Terminator::Table { .. } => panic!("eval_vaffle: Table not supported"),
+            Terminator::Table { index, targets, default_target } => {
+                let index_val = get_val(&value_table, *index);
+                let idx = bits_to_u64(&index_val) as usize;
+                let target = if idx < targets.len() { &targets[idx] } else { default_target };
+                let args: Vec<IrValue> = target
+                    .args
+                    .iter()
+                    .map(|vid| get_val(&value_table, *vid))
+                    .collect();
+                let next_block = &body.blocks[target.block.0];
+                for ((param_vid, _), val) in next_block.params.iter().zip(args.iter()) {
+                    value_table.insert(param_vid.0, val.clone());
+                }
+                current_block_id = target.block;
+            }
         }
     }
 }
@@ -134,10 +149,11 @@ fn eval_vaffle_value(
     values: &[Value],
     value_table: &BTreeMap<usize, IrValue>,
     types: &TypeTable,
+    storage: &mut StorageMap,
 ) -> IrValue {
     match &values[vid.0] {
         Value::Param { .. } => get_val(value_table, vid),
-        Value::Op(stmt) => eval_vaffle_stmt(stmt, value_table, types),
+        Value::Op(stmt) => eval_vaffle_stmt(stmt, value_table, types, storage),
         Value::Call { .. } => panic!("eval_vaffle: Call not supported"),
         Value::Output { .. } => panic!("eval_vaffle: Output not supported"),
         Value::StackAlloc { .. } => panic!("eval_vaffle: StackAlloc not supported"),
@@ -151,6 +167,7 @@ fn eval_vaffle_stmt(
     stmt: &Stmt<ValueId>,
     value_table: &BTreeMap<usize, IrValue>,
     types: &TypeTable,
+    storage: &mut StorageMap,
 ) -> IrValue {
     let get = |vid: &ValueId| -> IrValue { get_val(value_table, *vid) };
 
@@ -216,8 +233,26 @@ fn eval_vaffle_stmt(
         Stmt::ActionCall { .. } => panic!("eval_vaffle: ActionCall not supported"),
         Stmt::ActionOutput { .. } => panic!("eval_vaffle: ActionOutput not supported"),
         Stmt::Rng { .. } => panic!("eval_vaffle: Rng not supported"),
-        Stmt::StorageRead { .. } => panic!("eval_vaffle: StorageRead not supported"),
-        Stmt::StorageWrite { .. } => panic!("eval_vaffle: StorageWrite not supported"),
+        Stmt::StorageRead { storage: sid, ty, addr } => {
+            let w = bit_width(*ty, types);
+            let addr_u64 = bits_to_u64(&get(addr));
+            storage
+                .get(&(*sid, addr_u64))
+                .cloned()
+                .unwrap_or_else(|| vec![false; w])
+        }
+        Stmt::StorageWrite { storage: sid, src, ty, addr } => {
+            let src_val = get(src);
+            let addr_u64 = bits_to_u64(&get(addr));
+            let w = bit_width(*ty, types);
+            let mut val = src_val;
+            val.truncate(w);
+            while val.len() < w {
+                val.push(false);
+            }
+            storage.insert((*sid, addr_u64), val);
+            vec![] // StorageWrite has no output
+        }
     }
 }
 

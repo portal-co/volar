@@ -16,7 +16,7 @@
 //!    `(IRBlocks<()>, IRTypes)` by clamping indices and matching types.
 
 use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRVarId};
-use volar_ir_common::{Constant, IrType, Stmt, Type, TypeId, TypeTable};
+use volar_ir_common::{Constant, IrType, Stmt, StorageId, Type, TypeId, TypeTable};
 
 use crate::interpreter::ir::primitive_width;
 
@@ -180,6 +180,164 @@ fn mask_const(c: Constant, width: usize) -> Constant {
 }
 
 // ============================================================================
+// Extended interpreter: storage ops + JumpCond
+// ============================================================================
+
+/// Like [`interpret_ir`] but also emits `StorageRead`, `StorageWrite` stmts
+/// and may produce a `JumpCond` terminator.
+///
+/// `kind % 5` selects:
+///   0 = Const, 1 = Poly, 2 = Rol/Ror, 3 = StorageWrite (void), 4 = StorageRead
+///
+/// `var_info` tracks only non-void vars so they can safely be used as operands.
+/// `StorageWrite` stmts still consume a slot (and var ID) in the block but are
+/// not added to `var_info`.
+pub fn interpret_ir_extended(
+    raw_param_type_idxs: &[RawTypeIdx],
+    raw_stmts: &[RawIrStmt],
+) -> (IRBlocks<()>, TypeTable, Vec<usize>) {
+    let mut types = TypeTable::new();
+
+    let param_type_ids: Vec<TypeId> = raw_param_type_idxs
+        .iter()
+        .map(|&idx| types.primitive(PRIM_TYPES[idx as usize % PRIM_TYPES.len()]))
+        .collect();
+
+    let param_widths: Vec<usize> = param_type_ids
+        .iter()
+        .map(|&tid| match &types.0[tid.0 as usize] {
+            IrType::Primitive(t) => primitive_width(*t),
+            _ => unreachable!(),
+        })
+        .collect();
+
+    // var_info: (TypeId, bit_width, actual IRVarId) — only non-void vars.
+    let mut var_info: Vec<(TypeId, usize, IRVarId)> = param_type_ids
+        .iter()
+        .zip(param_widths.iter())
+        .enumerate()
+        .map(|(i, (&tid, &w))| (tid, w, IRVarId(i as u32)))
+        .collect();
+
+    let n_params = param_type_ids.len();
+    let mut stmts: Vec<IRStmt> = Vec::new();
+
+    for (kind, a, b, c_lo, c_hi) in raw_stmts.iter().copied() {
+        let n_vars = var_info.len();
+        // IRVarId that this stmt's result will occupy.
+        let rv = IRVarId((n_params + stmts.len()) as u32);
+
+        if n_vars == 0 || kind % 5 == 0 {
+            // ── Const ───────────────────────────────────────────────────────
+            let type_idx = (a as usize) % PRIM_TYPES.len();
+            let ty = PRIM_TYPES[type_idx];
+            let tid = types.primitive(ty);
+            let w = primitive_width(ty);
+            stmts.push(Stmt::Const(Constant { lo: c_lo, hi: c_hi }, tid));
+            var_info.push((tid, w, rv));
+        } else if kind % 5 == 1 {
+            // ── Linear Poly (XOR of 1–2 vars of the same width) ─────────────
+            let v0_idx = (a as usize) % n_vars;
+            let (v0_tid, v0_w, v0_id) = var_info[v0_idx];
+
+            let same_w: Vec<usize> = var_info
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, w, _))| *w == v0_w)
+                .map(|(i, _)| i)
+                .collect();
+
+            let mut coeffs = std::collections::BTreeMap::new();
+            coeffs.insert(vec![v0_id], 1u8);
+
+            if same_w.len() > 1 {
+                let v1_vi_idx = (b as usize) % same_w.len();
+                let (_, _, v1_id) = var_info[same_w[v1_vi_idx]];
+                if v1_id != v0_id {
+                    let mut key = vec![v0_id, v1_id];
+                    key.sort();
+                    coeffs.clear();
+                    coeffs.insert(key, 1u8);
+                }
+            }
+
+            let c = mask_const(Constant { lo: c_lo, hi: c_hi }, v0_w);
+            stmts.push(Stmt::Poly { ty: v0_tid, coeffs, constant: c });
+            var_info.push((v0_tid, v0_w, rv));
+        } else if kind % 5 == 2 {
+            // ── Rol / Ror ────────────────────────────────────────────────────
+            let v_idx = (a as usize) % n_vars;
+            let (v_tid, v_w, v_id) = var_info[v_idx];
+            let n_rot = if v_w > 0 { (b as usize) % v_w } else { 0 };
+            let stmt = if kind % 2 == 0 {
+                Stmt::Rol { src: v_id, ty: v_tid, n: n_rot }
+            } else {
+                Stmt::Ror { src: v_id, ty: v_tid, n: n_rot }
+            };
+            stmts.push(stmt);
+            var_info.push((v_tid, v_w, rv));
+        } else if kind % 5 == 3 {
+            // ── StorageWrite (void — not added to var_info) ──────────────────
+            let store_id = StorageId(a % 4);
+            let src_idx = (b as usize) % n_vars;
+            let (src_tid, _, src_id) = var_info[src_idx];
+            let addr_idx = (c_lo as usize % n_vars) as usize;
+            let addr_id = var_info[addr_idx].2;
+            stmts.push(Stmt::StorageWrite {
+                storage: store_id,
+                src: src_id,
+                ty: src_tid,
+                addr: addr_id,
+            });
+            // void result — do NOT add to var_info
+        } else {
+            // ── StorageRead ──────────────────────────────────────────────────
+            let store_id = StorageId(a % 4);
+            let type_idx = (b as usize) % PRIM_TYPES.len();
+            let ty = PRIM_TYPES[type_idx];
+            let tid = types.primitive(ty);
+            let w = primitive_width(ty);
+            let addr_idx = (c_lo as usize % n_vars) as usize;
+            let addr_id = var_info[addr_idx].2;
+            stmts.push(Stmt::StorageRead {
+                storage: store_id,
+                ty: tid,
+                addr: addr_id,
+            });
+            var_info.push((tid, w, rv));
+        }
+    }
+
+    // Terminator: JumpCond on first Bit-typed var if one exists, else Jmp(Return).
+    let total_vars = n_params + stmts.len();
+    let ret_args: Vec<IRVarId> = (0..total_vars as u32).map(IRVarId).collect();
+    let n = stmts.len();
+
+    let bit_tid = types.primitive(Type::Bit);
+    let cond_var = var_info.iter().find(|(tid, _, _)| *tid == bit_tid).map(|(_, _, id)| *id);
+    let terminator = if let Some(cond) = cond_var {
+        IRTerminator::JumpCond {
+            condition: cond,
+            true_block: IRBlockTargetId::Return,
+            true_args: ret_args.clone(),
+            false_block: IRBlockTargetId::Return,
+            false_args: ret_args,
+        }
+    } else {
+        IRTerminator::Jmp { func: IRBlockTargetId::Return, args: ret_args }
+    };
+
+    let block = IRBlock {
+        params: param_type_ids,
+        stmts,
+        stmt_provs: vec![(); n],
+        terminator,
+    };
+
+    (IRBlocks::new(vec![block]), types, param_widths)
+}
+
+// ============================================================================
 // Proptest strategies (test-only)
 // ============================================================================
 
@@ -219,6 +377,49 @@ mod strategies {
                         interpret_ir(&raw_param_types, &raw_stmts);
 
                     // Split flat input bits into per-param IrValues.
+                    let inputs: Vec<IrValue> = {
+                        let mut off = 0;
+                        widths
+                            .iter()
+                            .map(|&w| {
+                                let v = input_bits[off..off + w].to_vec();
+                                off += w;
+                                v
+                            })
+                            .collect()
+                    };
+
+                    (blocks, types, inputs)
+                })
+            },
+        )
+    }
+
+    /// Like [`gen_ir_and_inputs`] but uses [`interpret_ir_extended`] so the
+    /// generated IR may contain `StorageRead`/`StorageWrite` stmts and a
+    /// `JumpCond` terminator.
+    ///
+    /// Used for property H (`store_forward_ir_blocks` preserves semantics).
+    pub fn gen_ir_extended_and_inputs(
+    ) -> impl Strategy<Value = (IRBlocks<()>, TypeTable, Vec<IrValue>)> {
+        proptest::collection::vec(any::<u8>(), 0usize..=4usize).prop_flat_map(
+            |raw_param_types| {
+                let widths: Vec<usize> = raw_param_types
+                    .iter()
+                    .map(|&idx| primitive_width(PRIM_TYPES[idx as usize % PRIM_TYPES.len()]))
+                    .collect();
+                let total_bits: usize = widths.iter().sum();
+
+                let raw_stmts = proptest::collection::vec(
+                    (any::<u8>(), any::<u32>(), any::<u32>(), any::<u128>(), any::<u128>()),
+                    0usize..=8usize,
+                );
+                let input_bits = proptest::collection::vec(any::<bool>(), total_bits);
+
+                (raw_stmts, input_bits).prop_map(move |(raw_stmts, input_bits)| {
+                    let (blocks, types, _param_widths) =
+                        interpret_ir_extended(&raw_param_types, &raw_stmts);
+
                     let inputs: Vec<IrValue> = {
                         let mut off = 0;
                         widths

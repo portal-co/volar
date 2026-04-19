@@ -12,13 +12,13 @@
 //! - `AES8` / `Galois64` monomials inside `Poly` are skipped (see
 //!   `common::fold_poly_in_place`).
 
-use alloc::collections::BTreeMap;
-use vaffle::{Block, BlockId, FuncBody, FuncDecl, Module, SigId, Value, ValueId};
+use alloc::{collections::BTreeMap, vec::Vec};
+use vaffle::{FuncBody, FuncDecl, Module, Terminator, Value, ValueId};
 use volar_ir_common::{Constant, Stmt, TypeId, TypeTable};
 
 use crate::common::{
-    constant_or, constant_rol, constant_ror, constant_shl, fold_poly_in_place, mask_constant,
-    stmt_output_type, type_bit_width,
+    constant_is_zero, constant_or, constant_rol, constant_ror, constant_shl, fold_poly_in_place,
+    mask_constant, merge_poly_into, stmt_output_type, type_bit_width,
 };
 
 // ============================================================================
@@ -66,6 +66,9 @@ fn fold_vaffle_module_inner(
 fn fold_vaffle_body_once(body: &mut FuncBody, types: &TypeTable) -> bool {
     let mut const_map: BTreeMap<ValueId, Constant> = BTreeMap::new();
     let mut type_map: BTreeMap<ValueId, TypeId> = BTreeMap::new();
+    // poly_map: vid → (coeffs, constant, TypeId) for surviving Poly values.
+    let mut poly_map: BTreeMap<ValueId, (BTreeMap<Vec<ValueId>, u8>, Constant, TypeId)> =
+        BTreeMap::new();
     let mut changed = false;
 
     // Seed type_map from all Param values.
@@ -97,14 +100,24 @@ fn fold_vaffle_body_once(body: &mut FuncBody, types: &TypeTable) -> bool {
                 const_map.insert(vid, *c);
             }
 
-            // ── Polynomial: attempt in-place folding. ──────────────────────
+            // ── Polynomial: attempt in-place folding + merging. ────────────
             Stmt::Poly { ty, coeffs, constant } => {
                 let has_foldable = coeffs
                     .iter()
                     .any(|(k, _)| k.iter().any(|v| const_map.contains_key(v)));
                 let can_mask = type_bit_width(*ty, types).is_some();
 
-                if has_foldable || can_mask {
+                // Check if any singleton key refers to a known Poly.
+                let has_mergeable = coeffs.iter().any(|(key, &coeff)| {
+                    coeff & 1 != 0
+                        && key.len() == 1
+                        && poly_map
+                            .get(&key[0])
+                            .map_or(false, |(_, _, src_ty)| *src_ty == *ty)
+                });
+
+                if has_foldable || can_mask || has_mergeable {
+                    // Phase A: fold in-place.
                     if let Value::Op(Stmt::Poly {
                         ty: poly_ty,
                         coeffs: c,
@@ -116,6 +129,46 @@ fn fold_vaffle_body_once(body: &mut FuncBody, types: &TypeTable) -> bool {
                             changed = true;
                         }
                     }
+
+                    // Phase B: poly merging.
+                    if let Value::Op(Stmt::Poly {
+                        ty: poly_ty,
+                        coeffs: c,
+                        constant: k,
+                    }) = &mut body.values[i]
+                    {
+                        let poly_ty_val = *poly_ty;
+                        let singleton_srcs: Vec<ValueId> = c
+                            .iter()
+                            .filter_map(|(key, &coeff)| {
+                                if coeff & 1 != 0 && key.len() == 1 {
+                                    let v = key[0];
+                                    if let Some((_, _, src_ty)) = poly_map.get(&v) {
+                                        if *src_ty == poly_ty_val {
+                                            return Some(v);
+                                        }
+                                    }
+                                }
+                                None
+                            })
+                            .collect();
+
+                        for src_var in singleton_srcs {
+                            if let Some((src_coeffs, src_const, _)) = poly_map.get(&src_var) {
+                                let src_coeffs = src_coeffs.clone();
+                                let src_const = *src_const;
+                                if merge_poly_into(c, k, &src_var, &src_coeffs, src_const) {
+                                    changed = true;
+                                }
+                            }
+                        }
+
+                        // Re-fold after merging.
+                        if changed {
+                            fold_poly_in_place(poly_ty_val, c, k, &const_map, &type_map, types);
+                        }
+                    }
+
                     // Check whether poly collapsed to a constant.
                     let collapsed = match &body.values[i] {
                         Value::Op(Stmt::Poly {
@@ -129,12 +182,22 @@ fn fold_vaffle_body_once(body: &mut FuncBody, types: &TypeTable) -> bool {
                         body.values[i] = Value::Op(Stmt::Const(c, ty));
                         const_map.insert(vid, c);
                         changed = true;
+                    } else {
+                        // Record surviving Poly for downstream merging.
+                        if let Value::Op(Stmt::Poly { coeffs: c, constant: k, ty: t }) =
+                            &body.values[i]
+                        {
+                            poly_map.insert(vid, (c.clone(), *k, *t));
+                        }
                     }
                 } else if coeffs.is_empty() {
                     // Empty poly with no folding opportunity → constant directly.
                     body.values[i] = Value::Op(Stmt::Const(*constant, *ty));
                     const_map.insert(vid, *constant);
                     changed = true;
+                } else {
+                    // No folding possible — record as-is for downstream merging.
+                    poly_map.insert(vid, (coeffs.clone(), *constant, *ty));
                 }
             }
 
@@ -223,5 +286,47 @@ fn fold_vaffle_body_once(body: &mut FuncBody, types: &TypeTable) -> bool {
         }
     }
 
+    // Dead branch removal: fold IfNonzero / Table when condition is known.
+    for block in body.blocks.iter_mut() {
+        changed |= fold_vaffle_terminator_dead_branch(&mut block.terminator, &const_map);
+    }
+
     changed
+}
+
+// ============================================================================
+// Dead branch removal
+// ============================================================================
+
+fn fold_vaffle_terminator_dead_branch(
+    term: &mut Terminator,
+    const_map: &BTreeMap<ValueId, Constant>,
+) -> bool {
+    match term {
+        Terminator::IfNonzero { cond, then_target, else_target } => {
+            if let Some(&c) = const_map.get(cond) {
+                let tgt = if c.lo & 1 != 0 { then_target } else { else_target };
+                let new_target = vaffle::Target {
+                    block: tgt.block,
+                    args: tgt.args.clone(),
+                };
+                *term = Terminator::Jump(new_target);
+                return true;
+            }
+        }
+        Terminator::Table { index, targets, default_target } => {
+            if let Some(&c) = const_map.get(index) {
+                let idx = c.lo as usize;
+                let tgt = if idx < targets.len() { &targets[idx] } else { default_target };
+                let new_target = vaffle::Target {
+                    block: tgt.block,
+                    args: tgt.args.clone(),
+                };
+                *term = Terminator::Jump(new_target);
+                return true;
+            }
+        }
+        _ => {}
+    }
+    false
 }

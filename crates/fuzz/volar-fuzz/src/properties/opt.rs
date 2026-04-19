@@ -1,19 +1,24 @@
-//! Properties E, F, G — constant-folding passes preserve semantics.
+//! Properties E, F, G, H — optimization passes preserve semantics.
 //!
-//! | Property | Pass               | IR layer   |
-//! |----------|--------------------|------------|
-//! | E        | `fold_ir_blocks`   | Volar IR   |
-//! | F        | `fold_biir_blocks` | Boolar IR  |
-//! | G        | `fold_vaffle_module` | VAFFLE   |
+//! | Property | Pass                          | IR layer   |
+//! |----------|-------------------------------|------------|
+//! | E        | `fold_ir_blocks`              | Volar IR   |
+//! | F        | `fold_biir_blocks`            | Boolar IR  |
+//! | G        | `fold_vaffle_module`          | VAFFLE     |
+//! | H        | `store_forward_*`             | all layers |
 
 use proptest::prelude::*;
 use volar_ir_opt::biir::fold_biir_blocks;
 use volar_ir_opt::ir::fold_ir_blocks;
 use volar_ir_opt::vaffle::fold_vaffle_module;
+use volar_ir_opt::store_forward::{
+    store_forward_ir_blocks,
+    store_forward_vaffle_module,
+};
 
 use crate::generators::biir::gen_biir_and_inputs;
-use crate::generators::ir::gen_ir_and_inputs;
-use crate::generators::vaffle::gen_vaffle_and_inputs;
+use crate::generators::ir::{gen_ir_and_inputs, gen_ir_extended_and_inputs};
+use crate::generators::vaffle::{gen_vaffle_and_inputs, gen_vaffle_extended_and_inputs};
 use crate::interpreter::biir::eval_biir;
 use crate::interpreter::ir::eval_ir;
 use crate::interpreter::vaffle::eval_vaffle;
@@ -129,5 +134,73 @@ proptest! {
     ) {
         let mut module = module;
         let _ = fold_vaffle_module(&mut module);
+    }
+}
+
+// ============================================================================
+// Property H — store_forward passes preserve semantics
+// ============================================================================
+
+proptest! {
+    #[test]
+    fn prop_h_store_forward_ir_preserves_semantics(
+        (ir, types, inputs) in gen_ir_extended_and_inputs()
+    ) {
+        let before = match eval_ir(&ir, &types, &inputs) {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+
+        let mut forwarded = ir.clone();
+        store_forward_ir_blocks(&mut forwarded);
+
+        let after = match eval_ir(&forwarded, &types, &inputs) {
+            Some(v) => v,
+            None => {
+                prop_assert!(false, "eval_ir on store-forwarded IR did not terminate");
+                return Ok(());
+            }
+        };
+
+        prop_assert_eq!(before, after, "store_forward_ir_blocks changed the semantics");
+    }
+
+    #[test]
+    fn prop_h_store_forward_ir_does_not_panic(
+        (ir, _types, _inputs) in gen_ir_extended_and_inputs()
+    ) {
+        let mut forwarded = ir.clone();
+        let _ = store_forward_ir_blocks(&mut forwarded);
+    }
+
+    #[test]
+    fn prop_h_store_forward_vaffle_preserves_semantics(
+        (module, func_id, inputs) in gen_vaffle_extended_and_inputs()
+    ) {
+        let before = match eval_vaffle(&module, func_id, &inputs) {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+
+        let mut module = module;
+        store_forward_vaffle_module(&mut module);
+
+        let after = match eval_vaffle(&module, func_id, &inputs) {
+            Some(v) => v,
+            None => {
+                prop_assert!(false, "eval_vaffle on store-forwarded module did not terminate");
+                return Ok(());
+            }
+        };
+
+        prop_assert_eq!(before, after, "store_forward_vaffle_module changed the semantics");
+    }
+
+    #[test]
+    fn prop_h_store_forward_vaffle_does_not_panic(
+        (module, _func_id, _inputs) in gen_vaffle_extended_and_inputs()
+    ) {
+        let mut module = module;
+        let _ = store_forward_vaffle_module(&mut module);
     }
 }

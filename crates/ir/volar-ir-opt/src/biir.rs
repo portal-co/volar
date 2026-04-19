@@ -141,6 +141,9 @@ fn fold_biir_block_once<P: Clone + Default>(block: &mut BIrBlock<P>) -> bool {
     // Rewrite terminator operands through alias_map.
     changed |= apply_aliases_to_biir_terminator(&mut block.terminator, &alias_map);
 
+    // Dead branch removal: fold CondJmp when condition is a known boolean.
+    changed |= fold_biir_terminator_dead_branch(&mut block.terminator, &bool_map);
+
     changed
 }
 
@@ -157,7 +160,7 @@ enum Action {
 // Alias application for Boolar stmts and terminators
 // ============================================================================
 
-fn apply_aliases_to_biir_stmt(stmt: &mut BIrStmt, alias_map: &BTreeMap<IRVarId, IRVarId>) -> bool {
+pub(crate) fn apply_aliases_to_biir_stmt(stmt: &mut BIrStmt, alias_map: &BTreeMap<IRVarId, IRVarId>) -> bool {
     if alias_map.is_empty() {
         return false;
     }
@@ -217,7 +220,7 @@ fn apply_aliases_to_biir_stmt(stmt: &mut BIrStmt, alias_map: &BTreeMap<IRVarId, 
     changed
 }
 
-fn apply_aliases_to_biir_target(
+pub(crate) fn apply_aliases_to_biir_target(
     target: &mut BIrTarget,
     alias_map: &BTreeMap<IRVarId, IRVarId>,
 ) -> bool {
@@ -233,7 +236,7 @@ fn apply_aliases_to_biir_target(
     changed
 }
 
-fn apply_aliases_to_biir_terminator(
+pub(crate) fn apply_aliases_to_biir_terminator(
     term: &mut BIrTerminator,
     alias_map: &BTreeMap<IRVarId, IRVarId>,
 ) -> bool {
@@ -253,4 +256,24 @@ fn apply_aliases_to_biir_terminator(
         }
     }
     changed
+}
+
+// ============================================================================
+// Dead branch removal
+// ============================================================================
+
+/// Fold `CondJmp` when the condition is a known boolean constant.
+/// Returns `true` if the terminator was replaced.
+fn fold_biir_terminator_dead_branch(
+    term: &mut BIrTerminator,
+    bool_map: &BTreeMap<IRVarId, bool>,
+) -> bool {
+    if let BIrTerminator::CondJmp { val, then_target, else_target } = term {
+        if let Some(&v) = bool_map.get(val) {
+            let tgt = if v { then_target.clone() } else { else_target.clone() };
+            *term = BIrTerminator::Jmp(tgt);
+            return true;
+        }
+    }
+    false
 }

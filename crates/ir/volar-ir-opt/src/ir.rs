@@ -8,7 +8,8 @@ use volar_ir_common::{Constant, Stmt, TypeId};
 
 use crate::common::{
     apply_aliases_to_stmt, canon_alias, constant_is_zero, constant_rol, constant_ror,
-    constant_xor, fold_poly_in_place, mask_constant, stmt_output_type, type_bit_width,
+    constant_xor, fold_poly_in_place, mask_constant, merge_poly_into, stmt_output_type,
+    type_bit_width,
 };
 
 // ============================================================================
@@ -40,6 +41,9 @@ fn fold_ir_block_once<P: Clone + Default>(block: &mut IRBlock<P>, types: &IRType
     let mut const_map: BTreeMap<IRVarId, Constant> = BTreeMap::new();
     let mut type_map: BTreeMap<IRVarId, TypeId> = BTreeMap::new();
     let mut alias_map: BTreeMap<IRVarId, IRVarId> = BTreeMap::new();
+    // poly_map: var → (coeffs, constant, TypeId) for surviving Poly stmts.
+    let mut poly_map: BTreeMap<IRVarId, (BTreeMap<Vec<IRVarId>, u8>, Constant, TypeId)> =
+        BTreeMap::new();
     let mut changed = false;
 
     // Seed type_map from block params.
@@ -94,7 +98,45 @@ fn fold_ir_block_once<P: Clone + Default>(block: &mut IRBlock<P>, types: &IRType
                         }
                     }
                 }
-                // Phase B: if poly collapsed, convert to Const or record alias.
+
+                // Phase B: poly merging — substitute any singleton key that
+                // refers to a previously seen Poly (with matching TypeId).
+                {
+                    if let Stmt::Poly { coeffs, constant, ty: poly_ty } = &mut block.stmts[i] {
+                        let poly_ty_val = *poly_ty;
+                        let singleton_srcs: Vec<IRVarId> = coeffs
+                            .iter()
+                            .filter_map(|(key, &coeff)| {
+                                if coeff & 1 != 0 && key.len() == 1 {
+                                    let v = key[0];
+                                    if let Some((_, _, src_ty)) = poly_map.get(&v) {
+                                        if *src_ty == poly_ty_val {
+                                            return Some(v);
+                                        }
+                                    }
+                                }
+                                None
+                            })
+                            .collect();
+
+                        for src_var in singleton_srcs {
+                            if let Some((src_coeffs, src_const, _)) = poly_map.get(&src_var) {
+                                let src_coeffs = src_coeffs.clone();
+                                let src_const = *src_const;
+                                if merge_poly_into(coeffs, constant, &src_var, &src_coeffs, src_const) {
+                                    changed = true;
+                                }
+                            }
+                        }
+
+                        // Re-fold after merging.
+                        if changed {
+                            fold_poly_in_place(poly_ty_val, coeffs, constant, &const_map, &type_map, types);
+                        }
+                    }
+                }
+
+                // Phase C: if poly collapsed, convert to Const or record alias.
                 let replacement = match &block.stmts[i] {
                     Stmt::Poly { coeffs, constant, ty: poly_ty } if coeffs.is_empty() => {
                         Some(IrPolyResult::Const(*constant, *poly_ty))
@@ -126,7 +168,12 @@ fn fold_ir_block_once<P: Clone + Default>(block: &mut IRBlock<P>, types: &IRType
                         }
                         // Don't change stmt; alias propagation handles uses.
                     }
-                    None => {}
+                    None => {
+                        // Record surviving Poly in poly_map for downstream merging.
+                        if let Stmt::Poly { coeffs, constant, ty: poly_ty } = &block.stmts[i] {
+                            poly_map.insert(rv, (coeffs.clone(), *constant, *poly_ty));
+                        }
+                    }
                 }
             }
             IrAction::NoChange => {}
@@ -135,6 +182,9 @@ fn fold_ir_block_once<P: Clone + Default>(block: &mut IRBlock<P>, types: &IRType
 
     // Rewrite the terminator through alias_map.
     changed |= apply_aliases_to_ir_terminator(&mut block.terminator, &alias_map);
+
+    // Dead branch removal: fold JumpCond / JumpTable when condition is known.
+    changed |= fold_ir_terminator_dead_branch(&mut block.terminator, &const_map);
 
     changed
 }
@@ -298,7 +348,7 @@ fn apply_aliases_to_args(
     changed
 }
 
-fn apply_aliases_to_ir_terminator(
+pub(crate) fn apply_aliases_to_ir_terminator(
     term: &mut IRTerminator,
     alias_map: &BTreeMap<IRVarId, IRVarId>,
 ) -> bool {
@@ -335,4 +385,45 @@ fn apply_aliases_to_ir_terminator(
         }
     }
     changed
+}
+
+// ============================================================================
+// Dead branch removal
+// ============================================================================
+
+/// Fold `JumpCond` / `JumpTable` terminators when the condition is a known
+/// constant.  Returns `true` if the terminator was replaced.
+fn fold_ir_terminator_dead_branch(
+    term: &mut IRTerminator,
+    const_map: &BTreeMap<IRVarId, Constant>,
+) -> bool {
+    match term {
+        IRTerminator::JumpCond {
+            condition,
+            true_block,
+            true_args,
+            false_block,
+            false_args,
+        } => {
+            if let Some(&c) = const_map.get(condition) {
+                let (tgt, args) = if c.lo & 1 != 0 {
+                    (true_block.clone(), true_args.clone())
+                } else {
+                    (false_block.clone(), false_args.clone())
+                };
+                *term = IRTerminator::Jmp { func: tgt, args };
+                return true;
+            }
+        }
+        IRTerminator::JumpTable { index, cases } => {
+            if let Some(&c) = const_map.get(index) {
+                if let Some((target, args)) = cases.get(&c).cloned() {
+                    *term = IRTerminator::Jmp { func: target, args };
+                    return true;
+                }
+            }
+        }
+        _ => {}
+    }
+    false
 }
