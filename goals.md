@@ -71,10 +71,14 @@ implementation focus (VOLE-based ZK, garbled circuits, ORAM, compiler toolchain)
 ## In Progress
 
 - [ ] ORAM weaver — compile `volar-oram-core` through `volar-compiler` pipeline
-  - [ ] Wire `volar-oram` to depend on `volar-oram-core` (deduplicate shared types/functions)
-  - [ ] Build ORAM weaver: parse `volar-oram-core` -> AST, combine with synthetic module from user code
-  - [ ] ActionCall-based ORAM interaction (BIR `ActionCall` mechanism for client-server communication)
+  - [x] Wire `volar-oram` to depend on `volar-oram-core` (deduplicate shared types/functions)
+  - [x] Build ORAM weaver: parse `volar-oram-core` -> AST, combine with synthetic module from user code
+  - [x] ActionCall-based ORAM interaction (BIR `ActionCall` mechanism for client-server communication)
+  - [x] `OramConfig` with IR type construction, action decl/config helpers, `configure_scheme()`
+  - [x] `oram_begin_circuit()` — minimal ActionCall IR, weaves through CFG path
+  - [ ] Storage-to-ORAM IR transformation: rewrite `StorageRead`/`StorageWrite` on ORAM-backed regions into ActionCall sequences
   - [ ] Integration tests: end-to-end ORAM through compiler pipeline
+  - [ ] Server circuit compilation: compile `server_step` into sub-circuit via FHE weaver
 
 ## Planned
 
@@ -122,6 +126,10 @@ implementation focus (VOLE-based ZK, garbled circuits, ORAM, compiler toolchain)
   - [ ] TfheScheme reference implementation (LWE ciphertexts, gate bootstrapping, bootstrapping keys)
 
 ### ORAM future work
+- [ ] VAFFLE ORAM support — apply storage-to-ORAM transformation at the VAFFLE level for performance
+  - [ ] VAFFLE has the same storage system (`Stmt<ValueId>` shares `StorageRead`/`StorageWrite` with IR) and functions — transformation can operate on `vaffle::Module` directly
+  - [ ] Benefits: VAFFLE-level rewriting preserves SSA structure and enables VAFFLE-specific optimizations (constant folding, store forwarding) on the ORAM ActionCall sequences before lowering to IR/BIR
+  - [ ] Prerequisite: IR-level storage-to-ORAM transformation (validates the design)
 - [ ] Port client-side ORAM logic to total Rust (enable full ORAM compilation to circuits)
 - [ ] ZK nesting: compile ORAM step function to VOLE-ZK circuit (see `docs/oram-channel-plan.md` Part 4)
 - [ ] ORAM threshold tuning (Linear MUX for small storage, ORAM for large)

@@ -38,10 +38,14 @@
 //! flags, which the FHE weaver uses to track public values through the
 //! `PublicSet` and avoid unnecessary ciphertext operations on leaf indices.
 
-use alloc::{format, string::String, vec};
+use alloc::{collections::BTreeMap, format, string::String, vec, vec::Vec};
 
+#[cfg(feature = "linking")]
 use volar_compiler::linkage::LinkedSpec;
-use volar_ir::ir::{ActionDecl, IRType, IRTypeId, IRTypes, PrimType};
+use volar_ir::ir::{
+    ActionDecl, Constant, IRBlock, IRBlocks, IRBlockTargetId, IRStmt, IRTerminator,
+    IRType, IRTypeId, IRTypes, IRVarId, PrimType, StorageId,
+};
 
 use crate::fhe::FheActionConfig;
 
@@ -253,7 +257,6 @@ impl OramConfig {
 ///
 /// Returns `(ir_blocks, types)`.
 pub fn oram_begin_circuit(config: &OramConfig) -> (IRBlocks, IRTypes) {
-    use volar_ir::ir::{Constant, IRBlock, IRTerminator, IRVarId, IRBlockTargetId};
 
     let mut types = IRTypes::new();
     let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
@@ -307,7 +310,544 @@ pub fn oram_begin_circuit(config: &OramConfig) -> (IRBlocks, IRTypes) {
     (ir, types)
 }
 
-use volar_ir::ir::{IRBlocks, IRStmt};
+// ============================================================================
+// Storage-to-ORAM transformation
+// ============================================================================
+
+/// Pre-interned IR type IDs for a single ORAM configuration.
+struct ConfigTypes {
+    path_ty: IRTypeId,
+    data_ty: IRTypeId,
+    begin_result_ty: IRTypeId,
+    process_result_ty: IRTypeId,
+}
+
+/// Rewrite `StorageRead`/`StorageWrite` on ORAM-backed regions into
+/// ActionCall sequences.
+///
+/// For each storage region described by an [`OramConfig`], this
+/// transformation replaces every `StorageRead`/`StorageWrite` that
+/// targets that region with the following IR sequence:
+///
+/// **StorageRead(S, T, addr) →**
+/// 1. `guard  = Const(1, Bit)`
+/// 2. `fb_leaf = Const(0, u64)`
+/// 3. `begin  = ActionCall("oram_begin_S", guard, [addr], [fb_leaf])`
+/// 4. `leaf   = ActionOutput(begin, 0, u64)` — plaintext leaf
+/// 5. `path   = StorageRead(ORAM_TREE_S, path_ty, leaf)` — direct indexed
+/// 6. `zero_data = Const(0, data_ty)`
+/// 7. `zero_bit  = Const(0, Bit)`
+/// 8. `fb_path  = Const(0, path_ty)` … (fallbacks)
+/// 9. `process = ActionCall("oram_process_S", guard, [path, zero_data, zero_bit], [fb_*])`
+/// 10. `wb_path = ActionOutput(process, 0, path_ty)` — write-back buckets
+/// 11. `rd_data = ActionOutput(process, 1, data_ty)` — **the read result**
+/// 12. `evict1  = ActionOutput(process, 2, u64)`
+/// 13. `evict2  = ActionOutput(process, 3, u64)`
+/// 14. `StorageWrite(ORAM_TREE_S, wb_path, path_ty, leaf)` — write back
+///
+/// **StorageWrite(S, src, T, addr) →**
+/// Same as above, but with `is_write = Const(1, Bit)` and `src` as the
+/// write data. The original statement's result is the dummy zero.
+///
+/// The original storage operations on non-ORAM regions are left untouched.
+/// All subsequent `IRVarId` references in the block are remapped to
+/// account for the expanded statement count.
+///
+/// # Tree storage convention
+///
+/// ORAM tree storage uses `StorageId(1000 + storage_id)` to avoid
+/// collisions with the original storage namespace. The `path_ty` type
+/// acts as the element type for tree reads/writes.
+///
+/// # Eviction passes
+///
+/// The current implementation includes the eviction leaf outputs but
+/// does NOT emit the eviction read/process/write-back sequences. Those
+/// will be added when the eviction protocol is wired (the client already
+/// handles eviction internally — the circuit just needs to shuttle
+/// tree paths for the eviction targets).
+///
+/// # Returns
+///
+/// A new `IRBlocks` with ORAM-backed storage ops replaced, and the
+/// `types` table updated with any newly interned types. The action
+/// declarations from each `OramConfig` are merged into the output.
+pub fn rewrite_storage_to_oram<P: Clone + Default>(
+    ir: &IRBlocks<P>,
+    types: &mut IRTypes,
+    configs: &[OramConfig],
+) -> IRBlocks<P> {
+    // Build a lookup from StorageId → OramConfig index.
+    let oram_map: BTreeMap<u32, usize> = configs
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (c.storage_id, i))
+        .collect();
+
+    // If no configs, return a clone unchanged (no-op).
+    if oram_map.is_empty() {
+        return ir.clone();
+    }
+
+    // Pre-intern shared types.
+    let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
+    let bit_ty = types.bit();
+
+    // Pre-intern per-config types.
+    let config_types: Vec<ConfigTypes> = configs
+        .iter()
+        .map(|c| {
+            let path_ty = c.path_type(types);
+            let data_ty = c.data_type(types);
+            let begin_result_ty = types.intern(IRType::Tuple(vec![u64_ty]));
+            let process_result_ty =
+                types.intern(IRType::Tuple(vec![path_ty, data_ty, u64_ty, u64_ty]));
+            ConfigTypes { path_ty, data_ty, begin_result_ty, process_result_ty }
+        })
+        .collect();
+
+    // Collect action declarations from all configs.
+    let mut new_actions: Vec<ActionDecl> = ir.actions.clone();
+    for c in configs {
+        let (begin_decl, process_decl) = c.action_decls(types);
+        // Avoid duplicates if actions were already declared.
+        if !new_actions.iter().any(|a| a.name == begin_decl.name) {
+            new_actions.push(begin_decl);
+        }
+        if !new_actions.iter().any(|a| a.name == process_decl.name) {
+            new_actions.push(process_decl);
+        }
+    }
+
+    // Rewrite each block.
+    let new_blocks: Vec<IRBlock<P>> = ir
+        .blocks
+        .iter()
+        .map(|block| {
+            rewrite_block(
+                block, &oram_map, configs, &config_types, types, u64_ty, bit_ty,
+            )
+        })
+        .collect();
+
+    IRBlocks {
+        oracles: ir.oracles.clone(),
+        actions: new_actions,
+        rngs: ir.rngs.clone(),
+        blocks: new_blocks,
+    }
+}
+
+/// ORAM tree storage uses `StorageId(1000 + storage_id)`.
+const ORAM_TREE_BASE: u32 = 1000;
+
+/// Rewrite a single IR block, replacing ORAM-backed storage ops.
+fn rewrite_block<P: Clone + Default>(
+    block: &IRBlock<P>,
+    oram_map: &BTreeMap<u32, usize>,
+    configs: &[OramConfig],
+    config_types: &[ConfigTypes],
+    types: &mut IRTypes,
+    u64_ty: IRTypeId,
+    bit_ty: IRTypeId,
+) -> IRBlock<P> {
+    let num_params = block.params.len() as u32;
+
+    // Phase 1: Build the new statement list and a var-remap table.
+    //
+    // For each original statement at index `i` (producing IRVarId(num_params + i)),
+    // we emit one or more new statements. The var-remap maps old IRVarId → new IRVarId.
+    let mut new_stmts: Vec<IRStmt> = Vec::new();
+    let mut new_provs: Vec<P> = Vec::new();
+    let mut var_remap: BTreeMap<u32, u32> = BTreeMap::new();
+
+    // Block params keep their IDs (0..num_params).
+    for p in 0..num_params {
+        var_remap.insert(p, p);
+    }
+
+    for (stmt_idx, (stmt, prov)) in block.stmts.iter().zip(block.stmt_provs.iter()).enumerate() {
+        let old_var = num_params + stmt_idx as u32;
+
+        match stmt {
+            IRStmt::StorageRead { storage, ty: _data_elem_ty, addr }
+                if oram_map.contains_key(&storage.0) =>
+            {
+                let cfg_idx = oram_map[&storage.0];
+                let c = &configs[cfg_idx];
+                let ct = &config_types[cfg_idx];
+
+                let remapped_addr = IRVarId(var_remap[&addr.0]);
+
+                // Emit the ORAM read expansion. Returns the new IRVarId
+                // for the read data result.
+                let result_var = emit_oram_access(
+                    &mut new_stmts,
+                    &mut new_provs,
+                    prov,
+                    c,
+                    ct,
+                    types,
+                    u64_ty,
+                    bit_ty,
+                    num_params,
+                    remapped_addr,
+                    None, // No write data → read mode
+                );
+
+                var_remap.insert(old_var, result_var);
+            }
+
+            IRStmt::StorageWrite { storage, src, ty: _data_elem_ty, addr }
+                if oram_map.contains_key(&storage.0) =>
+            {
+                let cfg_idx = oram_map[&storage.0];
+                let c = &configs[cfg_idx];
+                let ct = &config_types[cfg_idx];
+
+                let remapped_addr = IRVarId(var_remap[&addr.0]);
+                let remapped_src = IRVarId(var_remap[&src.0]);
+
+                // Emit the ORAM write expansion. Returns a dummy var
+                // (the StorageWrite result is unused / zero).
+                let result_var = emit_oram_access(
+                    &mut new_stmts,
+                    &mut new_provs,
+                    prov,
+                    c,
+                    ct,
+                    types,
+                    u64_ty,
+                    bit_ty,
+                    num_params,
+                    remapped_addr,
+                    Some(remapped_src), // Write data → write mode
+                );
+
+                var_remap.insert(old_var, result_var);
+            }
+
+            // Non-ORAM statement — emit as-is with remapped vars.
+            other => {
+                let remapped = remap_stmt(other, &var_remap);
+                new_stmts.push(remapped);
+                new_provs.push(prov.clone());
+                var_remap.insert(old_var, num_params + new_stmts.len() as u32 - 1);
+            }
+        }
+    }
+
+    // Phase 2: Remap the terminator.
+    let new_terminator = remap_terminator(&block.terminator, &var_remap);
+
+    IRBlock {
+        params: block.params.clone(),
+        stmts: new_stmts,
+        stmt_provs: new_provs,
+        terminator: new_terminator,
+    }
+}
+
+/// Emit the ORAM ActionCall sequence for a single storage access.
+///
+/// If `write_data` is `None`, this is a read; otherwise a write.
+///
+/// Returns the `IRVarId` for the **read data** result (for reads) or
+/// a **dummy zero** (for writes).
+fn emit_oram_access<P: Clone + Default>(
+    stmts: &mut Vec<IRStmt>,
+    provs: &mut Vec<P>,
+    prov: &P,
+    config: &OramConfig,
+    ct: &ConfigTypes,
+    _types: &mut IRTypes,
+    u64_ty: IRTypeId,
+    bit_ty: IRTypeId,
+    num_params: u32,
+    addr_var: IRVarId,
+    write_data: Option<IRVarId>,
+) -> u32 {
+    let push = |stmt: IRStmt, provs_vec: &mut Vec<P>, stmts_vec: &mut Vec<IRStmt>| -> u32 {
+        let id = num_params + stmts_vec.len() as u32;
+        stmts_vec.push(stmt);
+        provs_vec.push(prov.clone());
+        id
+    };
+
+    let tree_storage = StorageId(ORAM_TREE_BASE + config.storage_id);
+
+    // --- Begin action: addr → leaf ---
+
+    // v_guard = Const(1, Bit)
+    let v_guard = push(IRStmt::Const(Constant { hi: 0, lo: 1 }, bit_ty), provs, stmts);
+
+    // v_fb_leaf = Const(0, u64) — fallback
+    let v_fb_leaf = push(IRStmt::Const(Constant { hi: 0, lo: 0 }, u64_ty), provs, stmts);
+
+    // v_begin = ActionCall("oram_begin_S", ...)
+    let v_begin = push(
+        IRStmt::ActionCall {
+            name: config.begin_action_name(),
+            guard: IRVarId(v_guard),
+            args: vec![addr_var],
+            fallbacks: vec![IRVarId(v_fb_leaf)],
+            output_tys: vec![u64_ty],
+            result_ty: ct.begin_result_ty,
+        },
+        provs,
+        stmts,
+    );
+
+    // v_leaf = ActionOutput(begin, 0, u64) — plaintext leaf
+    let v_leaf = push(
+        IRStmt::ActionOutput { call: IRVarId(v_begin), idx: 0, ty: u64_ty },
+        provs,
+        stmts,
+    );
+
+    // --- Read tree path at plaintext leaf ---
+
+    // v_path = StorageRead(ORAM_TREE_S, path_ty, leaf)
+    let v_path = push(
+        IRStmt::StorageRead {
+            storage: tree_storage,
+            ty: ct.path_ty,
+            addr: IRVarId(v_leaf),
+        },
+        provs,
+        stmts,
+    );
+
+    // --- Process action: path, data, is_write → wb_path, data, evict1, evict2 ---
+
+    // Write data or zero (for reads)
+    let v_data_arg = match write_data {
+        Some(src) => src.0,
+        None => push(
+            IRStmt::Const(Constant { hi: 0, lo: 0 }, ct.data_ty),
+            provs,
+            stmts,
+        ),
+    };
+
+    // is_write flag
+    let is_write_val = if write_data.is_some() { 1u128 } else { 0u128 };
+    let v_is_write = push(
+        IRStmt::Const(Constant { hi: 0, lo: is_write_val }, bit_ty),
+        provs,
+        stmts,
+    );
+
+    // Fallbacks for process action (4 outputs: path, data, u64, u64)
+    let v_fb_path = push(
+        IRStmt::Const(Constant { hi: 0, lo: 0 }, ct.path_ty),
+        provs,
+        stmts,
+    );
+    let v_fb_data = push(
+        IRStmt::Const(Constant { hi: 0, lo: 0 }, ct.data_ty),
+        provs,
+        stmts,
+    );
+    let v_fb_ev1 = push(
+        IRStmt::Const(Constant { hi: 0, lo: 0 }, u64_ty),
+        provs,
+        stmts,
+    );
+    let v_fb_ev2 = push(
+        IRStmt::Const(Constant { hi: 0, lo: 0 }, u64_ty),
+        provs,
+        stmts,
+    );
+
+    // v_process = ActionCall("oram_process_S", ...)
+    let v_process = push(
+        IRStmt::ActionCall {
+            name: config.process_action_name(),
+            guard: IRVarId(v_guard),
+            args: vec![IRVarId(v_path), IRVarId(v_data_arg), IRVarId(v_is_write)],
+            fallbacks: vec![
+                IRVarId(v_fb_path),
+                IRVarId(v_fb_data),
+                IRVarId(v_fb_ev1),
+                IRVarId(v_fb_ev2),
+            ],
+            output_tys: vec![ct.path_ty, ct.data_ty, u64_ty, u64_ty],
+            result_ty: ct.process_result_ty,
+        },
+        provs,
+        stmts,
+    );
+
+    // Project process outputs
+    let v_wb_path = push(
+        IRStmt::ActionOutput { call: IRVarId(v_process), idx: 0, ty: ct.path_ty },
+        provs,
+        stmts,
+    );
+    let v_rd_data = push(
+        IRStmt::ActionOutput { call: IRVarId(v_process), idx: 1, ty: ct.data_ty },
+        provs,
+        stmts,
+    );
+    let _v_evict1 = push(
+        IRStmt::ActionOutput { call: IRVarId(v_process), idx: 2, ty: u64_ty },
+        provs,
+        stmts,
+    );
+    let _v_evict2 = push(
+        IRStmt::ActionOutput { call: IRVarId(v_process), idx: 3, ty: u64_ty },
+        provs,
+        stmts,
+    );
+
+    // --- Write back updated path ---
+
+    // StorageWrite(ORAM_TREE_S, wb_path, path_ty, leaf)
+    let _v_wb = push(
+        IRStmt::StorageWrite {
+            storage: tree_storage,
+            src: IRVarId(v_wb_path),
+            ty: ct.path_ty,
+            addr: IRVarId(v_leaf),
+        },
+        provs,
+        stmts,
+    );
+
+    // The result for the original StorageRead is the read data.
+    // For StorageWrite, the result is the read data too (caller discards it
+    // since StorageWrite produces a dummy zero — but we return a meaningful
+    // var ID so the remap table is valid).
+    v_rd_data
+}
+
+// ============================================================================
+// Var remapping helpers
+// ============================================================================
+
+/// Remap variable references in a statement using the given lookup table.
+fn remap_stmt(stmt: &IRStmt, remap: &BTreeMap<u32, u32>) -> IRStmt {
+    let rv = |v: &IRVarId| -> IRVarId { IRVarId(remap[&v.0]) };
+
+    match stmt {
+        IRStmt::StorageRead { storage, ty, addr } => IRStmt::StorageRead {
+            storage: *storage,
+            ty: *ty,
+            addr: rv(addr),
+        },
+        IRStmt::StorageWrite { storage, src, ty, addr } => IRStmt::StorageWrite {
+            storage: *storage,
+            src: rv(src),
+            ty: *ty,
+            addr: rv(addr),
+        },
+        IRStmt::Const(c, t) => IRStmt::Const(*c, *t),
+        IRStmt::Transmute { src, src_ty, dst_ty } => IRStmt::Transmute {
+            src: rv(src),
+            src_ty: *src_ty,
+            dst_ty: *dst_ty,
+        },
+        IRStmt::Poly { ty, coeffs, constant } => {
+            let new_coeffs = coeffs
+                .iter()
+                .map(|(vars, coeff)| {
+                    let new_vars: Vec<IRVarId> = vars.iter().map(|v| rv(v)).collect();
+                    (new_vars, *coeff)
+                })
+                .collect();
+            IRStmt::Poly { ty: *ty, coeffs: new_coeffs, constant: *constant }
+        }
+        IRStmt::Rol { src, ty, n } => IRStmt::Rol {
+            src: rv(src),
+            ty: *ty,
+            n: *n,
+        },
+        IRStmt::Ror { src, ty, n } => IRStmt::Ror {
+            src: rv(src),
+            ty: *ty,
+            n: *n,
+        },
+        IRStmt::Merge { parts, ty } => {
+            let new_parts: Vec<IRVarId> = parts.iter().map(|v| rv(v)).collect();
+            IRStmt::Merge { parts: new_parts, ty: *ty }
+        }
+        IRStmt::Splat { src, ty } => IRStmt::Splat {
+            src: rv(src),
+            ty: *ty,
+        },
+        IRStmt::Shuffle { result_bits, ty } => {
+            let new_bits: Vec<(u8, IRVarId)> =
+                result_bits.iter().map(|(bit, v)| (*bit, rv(v))).collect();
+            IRStmt::Shuffle { result_bits: new_bits, ty: *ty }
+        }
+        IRStmt::OracleCall { name, args, output_tys, result_ty } => {
+            IRStmt::OracleCall {
+                name: name.clone(),
+                args: args.iter().map(|v| rv(v)).collect(),
+                output_tys: output_tys.clone(),
+                result_ty: *result_ty,
+            }
+        }
+        IRStmt::OracleOutput { call, idx, ty } => IRStmt::OracleOutput {
+            call: rv(call),
+            idx: *idx,
+            ty: *ty,
+        },
+        IRStmt::ActionCall { name, guard, args, fallbacks, output_tys, result_ty } => {
+            IRStmt::ActionCall {
+                name: name.clone(),
+                guard: rv(guard),
+                args: args.iter().map(|v| rv(v)).collect(),
+                fallbacks: fallbacks.iter().map(|v| rv(v)).collect(),
+                output_tys: output_tys.clone(),
+                result_ty: *result_ty,
+            }
+        }
+        IRStmt::ActionOutput { call, idx, ty } => IRStmt::ActionOutput {
+            call: rv(call),
+            idx: *idx,
+            ty: *ty,
+        },
+        IRStmt::Rng { name, ty } => IRStmt::Rng {
+            name: name.clone(),
+            ty: *ty,
+        },
+    }
+}
+
+/// Remap variable references in a terminator.
+fn remap_terminator(term: &IRTerminator, remap: &BTreeMap<u32, u32>) -> IRTerminator {
+    let rv = |v: &IRVarId| -> IRVarId { IRVarId(remap[&v.0]) };
+    let rargs = |args: &[IRVarId]| -> Vec<IRVarId> { args.iter().map(|v| rv(v)).collect() };
+
+    match term {
+        IRTerminator::Jmp { func, args } => IRTerminator::Jmp {
+            func: func.clone(),
+            args: rargs(args),
+        },
+        IRTerminator::JumpCond {
+            condition,
+            true_block,
+            true_args,
+            false_block,
+            false_args,
+        } => IRTerminator::JumpCond {
+            condition: rv(condition),
+            true_block: true_block.clone(),
+            true_args: rargs(true_args),
+            false_block: false_block.clone(),
+            false_args: rargs(false_args),
+        },
+        IRTerminator::JumpTable { index, cases } => IRTerminator::JumpTable {
+            index: rv(index),
+            cases: cases
+                .iter()
+                .map(|(k, (target, args))| (*k, (target.clone(), rargs(args))))
+                .collect(),
+        },
+    }
+}
 
 /// Parse the `volar-oram-core` server-side source and return a [`LinkedSpec`].
 ///
@@ -338,6 +878,7 @@ pub fn oram_linked_spec() -> LinkedSpec {
 /// The volar-compiler parser handles outer attributes (`#[derive(...)]`)
 /// but not inner attributes. This function removes them line-by-line
 /// so the source can be parsed.
+#[cfg(feature = "linking")]
 fn strip_inner_attributes(source: &str) -> alloc::string::String {
     use alloc::string::String;
     let mut result = String::new();
@@ -637,6 +1178,529 @@ mod tests_config {
         assert!(!process_cfg.all_outputs_public());
         assert!(process_cfg.is_output_public(2));
         assert!(process_cfg.is_output_public(3));
+    }
+}
+
+#[cfg(test)]
+mod tests_rewrite {
+    use super::*;
+    use volar_ir::ir::{IRType, IRTypes, PrimType};
+
+    /// Standard test config: Z=4, B=16, L=4.
+    fn test_config() -> OramConfig {
+        OramConfig { storage_id: 0, z: 4, b: 16, l: 4 }
+    }
+
+    /// Build a minimal single-block IR with the given stmts, params, and terminator.
+    fn make_ir(
+        params: Vec<IRTypeId>,
+        stmts: Vec<IRStmt>,
+        terminator: IRTerminator,
+    ) -> IRBlocks<()> {
+        let num_stmts = stmts.len();
+        IRBlocks {
+            oracles: vec![],
+            actions: vec![],
+            rngs: vec![],
+            blocks: vec![IRBlock {
+                params,
+                stmts,
+                stmt_provs: vec![(); num_stmts],
+                terminator,
+            }],
+        }
+    }
+
+    fn return_jmp(args: Vec<IRVarId>) -> IRTerminator {
+        IRTerminator::Jmp {
+            func: IRBlockTargetId::Return,
+            args,
+        }
+    }
+
+    // -- No-op cases --
+
+    #[test]
+    fn empty_configs_returns_clone() {
+        let mut types = IRTypes::new();
+        let bit_ty = types.bit();
+        let ir = make_ir(
+            vec![bit_ty],
+            vec![IRStmt::Const(Constant { hi: 0, lo: 1 }, bit_ty)],
+            return_jmp(vec![IRVarId(1)]),
+        );
+
+        let result = rewrite_storage_to_oram(&ir, &mut types, &[]);
+        assert_eq!(result.blocks.len(), 1);
+        assert_eq!(result.blocks[0].stmts.len(), 1);
+        assert_eq!(result.actions.len(), 0);
+    }
+
+    #[test]
+    fn non_oram_storage_passes_through() {
+        let mut types = IRTypes::new();
+        let bit_ty = types.bit();
+        let u8_ty = types.intern(IRType::Primitive(PrimType::_8));
+
+        // StorageId(5) is not in any OramConfig
+        let ir = make_ir(
+            vec![bit_ty], // param 0: address
+            vec![
+                IRStmt::StorageRead {
+                    storage: StorageId(5),
+                    ty: u8_ty,
+                    addr: IRVarId(0),
+                },
+            ],
+            return_jmp(vec![IRVarId(1)]),
+        );
+
+        let c = test_config(); // storage_id=0
+        let result = rewrite_storage_to_oram(&ir, &mut types, &[c]);
+
+        // The StorageRead on StorageId(5) should pass through unchanged.
+        assert_eq!(result.blocks[0].stmts.len(), 1);
+        match &result.blocks[0].stmts[0] {
+            IRStmt::StorageRead { storage, .. } => {
+                assert_eq!(storage.0, 5);
+            }
+            other => panic!("expected StorageRead, got {:?}", other),
+        }
+    }
+
+    // -- StorageRead expansion --
+
+    #[test]
+    fn storage_read_expands_to_action_sequence() {
+        let mut types = IRTypes::new();
+        let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
+        let c = test_config();
+        let data_ty = c.data_type(&mut types);
+
+        // Build: param 0 is address (u64), stmt 0 is StorageRead(0, data_ty, addr)
+        let ir = make_ir(
+            vec![u64_ty],
+            vec![IRStmt::StorageRead {
+                storage: StorageId(0),
+                ty: data_ty,
+                addr: IRVarId(0),
+            }],
+            return_jmp(vec![IRVarId(1)]),
+        );
+
+        let result = rewrite_storage_to_oram(&ir, &mut types, &[c]);
+
+        // The single StorageRead should expand into many statements.
+        let block = &result.blocks[0];
+        assert!(
+            block.stmts.len() > 1,
+            "expected expansion, got {} stmts",
+            block.stmts.len()
+        );
+
+        // Count ActionCalls — should have exactly 2 (begin + process).
+        let action_calls: Vec<_> = block
+            .stmts
+            .iter()
+            .filter(|s| matches!(s, IRStmt::ActionCall { .. }))
+            .collect();
+        assert_eq!(
+            action_calls.len(),
+            2,
+            "expected 2 ActionCalls (begin + process)"
+        );
+
+        // First ActionCall should be "oram_begin_0"
+        match &action_calls[0] {
+            IRStmt::ActionCall { name, args, output_tys, .. } => {
+                assert_eq!(name, "oram_begin_0");
+                assert_eq!(args.len(), 1, "begin takes 1 arg (address)");
+                assert_eq!(output_tys.len(), 1, "begin returns 1 output (leaf)");
+            }
+            _ => unreachable!(),
+        }
+
+        // Second ActionCall should be "oram_process_0"
+        match &action_calls[1] {
+            IRStmt::ActionCall { name, args, output_tys, .. } => {
+                assert_eq!(name, "oram_process_0");
+                assert_eq!(args.len(), 3, "process takes 3 args (path, data, is_write)");
+                assert_eq!(output_tys.len(), 4, "process returns 4 outputs");
+            }
+            _ => unreachable!(),
+        }
+
+        // Should have a StorageRead on tree storage (1000 + 0 = 1000)
+        let tree_reads: Vec<_> = block
+            .stmts
+            .iter()
+            .filter(|s| matches!(s, IRStmt::StorageRead { storage, .. } if storage.0 == 1000))
+            .collect();
+        assert_eq!(tree_reads.len(), 1, "expected 1 tree StorageRead");
+
+        // Should have a StorageWrite on tree storage (write-back)
+        let tree_writes: Vec<_> = block
+            .stmts
+            .iter()
+            .filter(|s| matches!(s, IRStmt::StorageWrite { storage, .. } if storage.0 == 1000))
+            .collect();
+        assert_eq!(tree_writes.len(), 1, "expected 1 tree StorageWrite");
+
+        // Action declarations should be added.
+        assert!(result.actions.len() >= 2, "expected at least 2 action declarations");
+        let action_names: Vec<_> = result.actions.iter().map(|a| a.name.as_str()).collect();
+        assert!(action_names.contains(&"oram_begin_0"));
+        assert!(action_names.contains(&"oram_process_0"));
+    }
+
+    // -- StorageWrite expansion --
+
+    #[test]
+    fn storage_write_expands_with_is_write_flag() {
+        let mut types = IRTypes::new();
+        let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
+        let c = test_config();
+        let data_ty = c.data_type(&mut types);
+
+        // Build: param 0 = address (u64), param 1 = data
+        // stmt 0 = StorageWrite(0, src=1, data_ty, addr=0)
+        let ir = make_ir(
+            vec![u64_ty, data_ty],
+            vec![IRStmt::StorageWrite {
+                storage: StorageId(0),
+                src: IRVarId(1),
+                ty: data_ty,
+                addr: IRVarId(0),
+            }],
+            return_jmp(vec![]),
+        );
+
+        let result = rewrite_storage_to_oram(&ir, &mut types, &[c]);
+        let block = &result.blocks[0];
+
+        // Should have 2 ActionCalls (begin + process)
+        let action_calls: Vec<_> = block
+            .stmts
+            .iter()
+            .filter(|s| matches!(s, IRStmt::ActionCall { .. }))
+            .collect();
+        assert_eq!(action_calls.len(), 2);
+
+        // The is_write constant should be 1 for writes.
+        // It's a Const(1, Bit) somewhere in the expansion.
+        let bit_ty = types.bit();
+        let write_consts: Vec<_> = block
+            .stmts
+            .iter()
+            .filter(|s| matches!(s, IRStmt::Const(Constant { hi: 0, lo: 1 }, ty) if *ty == bit_ty))
+            .collect();
+        // We expect at least 2 Const(1, Bit): the guard and the is_write flag.
+        assert!(
+            write_consts.len() >= 2,
+            "expected at least 2 Const(1, Bit) for guard + is_write, got {}",
+            write_consts.len()
+        );
+    }
+
+    // -- Read: is_write = 0 --
+
+    #[test]
+    fn storage_read_has_is_write_zero() {
+        let mut types = IRTypes::new();
+        let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
+        let c = test_config();
+        let data_ty = c.data_type(&mut types);
+
+        let ir = make_ir(
+            vec![u64_ty],
+            vec![IRStmt::StorageRead {
+                storage: StorageId(0),
+                ty: data_ty,
+                addr: IRVarId(0),
+            }],
+            return_jmp(vec![IRVarId(1)]),
+        );
+
+        let result = rewrite_storage_to_oram(&ir, &mut types, &[c]);
+        let block = &result.blocks[0];
+        let bit_ty = types.bit();
+
+        // For reads, we should have exactly 1 Const(1, Bit) — just the guard.
+        // The is_write flag should be Const(0, Bit).
+        let guard_consts: Vec<_> = block
+            .stmts
+            .iter()
+            .filter(|s| matches!(s, IRStmt::Const(Constant { hi: 0, lo: 1 }, ty) if *ty == bit_ty))
+            .collect();
+        assert_eq!(
+            guard_consts.len(),
+            1,
+            "expected exactly 1 Const(1, Bit) for guard (is_write should be 0), got {}",
+            guard_consts.len()
+        );
+    }
+
+    // -- Var remapping correctness --
+
+    #[test]
+    fn subsequent_stmts_use_remapped_vars() {
+        let mut types = IRTypes::new();
+        let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
+        let bit_ty = types.bit();
+        let c = test_config();
+        let data_ty = c.data_type(&mut types);
+
+        // Build:
+        //   param 0 = addr (u64)
+        //   stmt 0 (var 1) = StorageRead(0, data_ty, addr=0) → ORAM-backed
+        //   stmt 1 (var 2) = Const(42, u64) — should pass through
+        //   terminator: return [var1, var2]
+        let ir = make_ir(
+            vec![u64_ty],
+            vec![
+                IRStmt::StorageRead {
+                    storage: StorageId(0),
+                    ty: data_ty,
+                    addr: IRVarId(0),
+                },
+                IRStmt::Const(Constant { hi: 0, lo: 42 }, u64_ty),
+            ],
+            return_jmp(vec![IRVarId(1), IRVarId(2)]),
+        );
+
+        let result = rewrite_storage_to_oram(&ir, &mut types, &[c]);
+        let block = &result.blocks[0];
+
+        // The last stmt should be Const(42, u64), unchanged.
+        let last = block.stmts.last().unwrap();
+        match last {
+            IRStmt::Const(Constant { hi: 0, lo: 42 }, ty) => {
+                assert_eq!(*ty, u64_ty);
+            }
+            other => panic!("expected Const(42, u64) as last stmt, got {:?}", other),
+        }
+
+        // The terminator should reference the remapped vars.
+        // var1 (StorageRead result) should map to the rd_data ActionOutput.
+        // var2 (Const) should map to the last statement index.
+        match &block.terminator {
+            IRTerminator::Jmp { args, .. } => {
+                assert_eq!(args.len(), 2, "terminator should have 2 return args");
+                // Both args should be valid var IDs (< num_params + num_stmts)
+                let max_var = 1 + block.stmts.len() as u32;
+                assert!(
+                    args[0].0 < max_var,
+                    "first return arg {} out of range (max {})",
+                    args[0].0,
+                    max_var
+                );
+                assert!(
+                    args[1].0 < max_var,
+                    "second return arg {} out of range (max {})",
+                    args[1].0,
+                    max_var
+                );
+                // The two args should be different (read data vs const).
+                assert_ne!(args[0], args[1], "return args should differ");
+            }
+            other => panic!("expected Jmp terminator, got {:?}", other),
+        }
+    }
+
+    // -- Provenance tracking --
+
+    #[test]
+    fn provenance_length_matches_stmts() {
+        let mut types = IRTypes::new();
+        let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
+        let c = test_config();
+        let data_ty = c.data_type(&mut types);
+
+        let ir = make_ir(
+            vec![u64_ty],
+            vec![IRStmt::StorageRead {
+                storage: StorageId(0),
+                ty: data_ty,
+                addr: IRVarId(0),
+            }],
+            return_jmp(vec![IRVarId(1)]),
+        );
+
+        let result = rewrite_storage_to_oram(&ir, &mut types, &[c]);
+        let block = &result.blocks[0];
+        assert_eq!(
+            block.stmts.len(),
+            block.stmt_provs.len(),
+            "stmts and stmt_provs must have equal length"
+        );
+    }
+
+    // -- Multiple configs --
+
+    #[test]
+    fn multiple_configs_rewrite_different_storages() {
+        let mut types = IRTypes::new();
+        let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
+        let c0 = OramConfig { storage_id: 0, z: 4, b: 16, l: 4 };
+        let c1 = OramConfig { storage_id: 1, z: 2, b: 8, l: 3 };
+        let data0_ty = c0.data_type(&mut types);
+        let data1_ty = c1.data_type(&mut types);
+
+        let ir = make_ir(
+            vec![u64_ty],
+            vec![
+                IRStmt::StorageRead {
+                    storage: StorageId(0),
+                    ty: data0_ty,
+                    addr: IRVarId(0),
+                },
+                IRStmt::StorageRead {
+                    storage: StorageId(1),
+                    ty: data1_ty,
+                    addr: IRVarId(0),
+                },
+            ],
+            return_jmp(vec![]),
+        );
+
+        let result = rewrite_storage_to_oram(&ir, &mut types, &[c0, c1]);
+        let block = &result.blocks[0];
+
+        // Should have 4 ActionCalls (2 per ORAM config).
+        let action_calls: Vec<_> = block
+            .stmts
+            .iter()
+            .filter(|s| matches!(s, IRStmt::ActionCall { .. }))
+            .collect();
+        assert_eq!(action_calls.len(), 4, "expected 4 ActionCalls for 2 ORAM configs");
+
+        // Tree storage reads: StorageId(1000) and StorageId(1001)
+        let tree_reads: Vec<u32> = block
+            .stmts
+            .iter()
+            .filter_map(|s| match s {
+                IRStmt::StorageRead { storage, .. } if storage.0 >= 1000 => Some(storage.0),
+                _ => None,
+            })
+            .collect();
+        assert!(tree_reads.contains(&1000));
+        assert!(tree_reads.contains(&1001));
+
+        // Action declarations: 4 total (begin+process for each config)
+        assert_eq!(result.actions.len(), 4);
+    }
+
+    // -- Action declarations are not duplicated --
+
+    #[test]
+    fn action_decls_not_duplicated_when_pre_existing() {
+        let mut types = IRTypes::new();
+        let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
+        let c = test_config();
+        let data_ty = c.data_type(&mut types);
+
+        // Pre-populate actions in the IR.
+        let (begin_decl, _) = c.action_decls(&mut types);
+        let mut ir = make_ir(
+            vec![u64_ty],
+            vec![IRStmt::StorageRead {
+                storage: StorageId(0),
+                ty: data_ty,
+                addr: IRVarId(0),
+            }],
+            return_jmp(vec![IRVarId(1)]),
+        );
+        ir.actions.push(begin_decl);
+
+        let result = rewrite_storage_to_oram(&ir, &mut types, &[c]);
+
+        // begin_0 should not be duplicated. Total should be 2 (1 pre-existing + 1 new process).
+        let begin_count = result
+            .actions
+            .iter()
+            .filter(|a| a.name == "oram_begin_0")
+            .count();
+        assert_eq!(begin_count, 1, "oram_begin_0 should not be duplicated");
+        assert_eq!(result.actions.len(), 2);
+    }
+
+    // -- Statement count sanity --
+
+    #[test]
+    fn read_expansion_statement_count() {
+        let mut types = IRTypes::new();
+        let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
+        let c = test_config();
+        let data_ty = c.data_type(&mut types);
+
+        let ir = make_ir(
+            vec![u64_ty],
+            vec![IRStmt::StorageRead {
+                storage: StorageId(0),
+                ty: data_ty,
+                addr: IRVarId(0),
+            }],
+            return_jmp(vec![IRVarId(1)]),
+        );
+
+        let result = rewrite_storage_to_oram(&ir, &mut types, &[c]);
+        let block = &result.blocks[0];
+
+        // Expected expansion for a read:
+        // 1. guard = Const(1, Bit)
+        // 2. fb_leaf = Const(0, u64)
+        // 3. begin = ActionCall
+        // 4. leaf = ActionOutput
+        // 5. path = StorageRead (tree)
+        // 6. zero_data = Const(0, data_ty)
+        // 7. is_write = Const(0, Bit)
+        // 8. fb_path = Const(0, path_ty)
+        // 9. fb_data = Const(0, data_ty)
+        // 10. fb_ev1 = Const(0, u64)
+        // 11. fb_ev2 = Const(0, u64)
+        // 12. process = ActionCall
+        // 13. wb_path = ActionOutput
+        // 14. rd_data = ActionOutput
+        // 15. evict1 = ActionOutput
+        // 16. evict2 = ActionOutput
+        // 17. StorageWrite (tree write-back)
+        assert_eq!(
+            block.stmts.len(),
+            17,
+            "a single StorageRead should expand to exactly 17 statements"
+        );
+    }
+
+    // -- Weave the rewritten IR through CFG path --
+    // NOTE: This currently panics because ir_type_bit_width doesn't support
+    // the complex ORAM tuple/vec types (path = Vec(L, Vec(Z, Tuple(...)))).
+    // This will be resolved when the server circuit compilation path handles
+    // ORAM types natively. For now we document the limitation.
+
+    #[test]
+    #[should_panic(expected = "ir_type_bit_width: unsupported IR type")]
+    fn rewritten_ir_weaves_through_cfg_panics_on_complex_types() {
+        use crate::fhe::{weave_fhe, TfheScheme};
+
+        let mut types = IRTypes::new();
+        let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
+        let c = test_config();
+        let data_ty = c.data_type(&mut types);
+
+        let ir = make_ir(
+            vec![u64_ty],
+            vec![IRStmt::StorageRead {
+                storage: StorageId(0),
+                ty: data_ty,
+                addr: IRVarId(0),
+            }],
+            return_jmp(vec![IRVarId(1)]),
+        );
+
+        let result = rewrite_storage_to_oram(&ir, &mut types, &[c.clone()]);
+
+        let scheme = c.configure_scheme(TfheScheme::cfg());
+        let _output = weave_fhe(&result, &types, &scheme, "oram_rewrite_test", None, None);
     }
 }
 
