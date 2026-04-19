@@ -10,3 +10,4 @@ repository.workspace = true
 volar-channel = { path = "../../channel/volar-channel", version = "0.1.0" }
 
 [dev-dependencies]
+proptest = "1"

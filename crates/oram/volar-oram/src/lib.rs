@@ -1471,3 +1471,369 @@ mod tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Property-based tests (proptest)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod proptests {
+    extern crate std;
+    use super::*;
+    use proptest::prelude::*;
+    use std::collections::BTreeMap;
+    use std::vec::Vec;
+
+    /// Deterministic RNG from seed.
+    fn seeded_rng(seed: u64) -> impl FnMut() -> u64 {
+        let mut state = seed;
+        move || {
+            let val = state;
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            val
+        }
+    }
+
+    /// Raw ORAM operation: (is_write, addr, write_data_byte).
+    /// Interpreted into AccessOp by clamping addr to valid range.
+    #[derive(Clone, Debug)]
+    struct RawOramOp {
+        is_write: bool,
+        addr: u64,
+        data_byte: u8,
+    }
+
+    /// Strategy for a sequence of raw ORAM operations.
+    fn raw_ops(max_ops: usize, max_addr: u64) -> impl Strategy<Value = Vec<RawOramOp>> {
+        proptest::collection::vec(
+            (any::<bool>(), 0..max_addr, any::<u8>()).prop_map(|(is_write, addr, data_byte)| {
+                RawOramOp {
+                    is_write,
+                    addr,
+                    data_byte,
+                }
+            }),
+            1..=max_ops,
+        )
+    }
+
+    // ========================================================================
+    // Property I: HashMap equivalence (local access)
+    //
+    // ORAM should behave identically to a HashMap<u64, [u8; B]>.
+    // Uninitialized reads return zeros.
+    // ========================================================================
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+
+        #[test]
+        fn prop_i_oram_hashmap_equivalence(
+            seed in any::<u64>(),
+            ops in raw_ops(100, 8)
+        ) {
+            let levels = 4; // 8 leaves
+            let num_addrs = 8u64;
+            let mut tree = OramTree::<4, 16>::new(levels);
+            let mut client = OramClient::<4, 16>::new(levels, num_addrs);
+            let mut rng = seeded_rng(seed);
+
+            let mut reference: BTreeMap<u64, [u8; 16]> = BTreeMap::new();
+
+            for op in &ops {
+                if op.is_write {
+                    let mut data = [0u8; 16];
+                    data[0] = op.data_byte;
+                    let result = oram_access_local(
+                        &mut client, &mut tree, op.addr,
+                        AccessOp::Write(data), &mut rng,
+                    );
+                    prop_assert_eq!(result, AccessResult::WriteAck);
+                    reference.insert(op.addr, data);
+                } else {
+                    let result = oram_access_local(
+                        &mut client, &mut tree, op.addr,
+                        AccessOp::Read, &mut rng,
+                    );
+                    let expected = reference.get(&op.addr).copied().unwrap_or([0u8; 16]);
+                    prop_assert_eq!(
+                        result, AccessResult::ReadValue(expected),
+                        "mismatch at addr {}", op.addr
+                    );
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // Property J: Stash boundedness
+    //
+    // After every access, stash.len() <= max_stash. This is already asserted
+    // inside oram_access_local, but this property explicitly tests it across
+    // random operation sequences to ensure the bound holds statistically.
+    // ========================================================================
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+
+        #[test]
+        fn prop_j_stash_bounded(
+            seed in any::<u64>(),
+            ops in raw_ops(200, 8)
+        ) {
+            let levels = 4;
+            let mut tree = OramTree::<4, 16>::new(levels);
+            let mut client = OramClient::<4, 16>::new(levels, 8);
+            let mut rng = seeded_rng(seed);
+
+            for (i, op) in ops.iter().enumerate() {
+                let access_op = if op.is_write {
+                    let mut data = [0u8; 16];
+                    data[0] = op.data_byte;
+                    AccessOp::Write(data)
+                } else {
+                    AccessOp::Read
+                };
+                let _ = oram_access_local(
+                    &mut client, &mut tree, op.addr, access_op, &mut rng,
+                );
+                prop_assert!(
+                    client.stash.len() <= client.max_stash,
+                    "stash overflow at op {}: {} > {}",
+                    i, client.stash.len(), client.max_stash
+                );
+            }
+        }
+    }
+
+    // ========================================================================
+    // Property K: Protocol equivalence
+    //
+    // run_oram_protocol produces the same results as oram_access_local for
+    // the same operation sequence (modulo the protocol not doing deterministic
+    // eviction on a second path — so we compare result values only, not
+    // internal state).
+    // ========================================================================
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(100))]
+
+        #[test]
+        fn prop_k_protocol_equivalence(
+            seed in any::<u64>(),
+            ops in raw_ops(30, 4)
+        ) {
+            let levels = 3; // 4 leaves
+            let num_addrs = 4u64;
+
+            // Local path
+            let mut local_tree = OramTree::<4, 16>::new(levels);
+            let mut local_client = OramClient::<4, 16>::new(levels, num_addrs);
+            let mut local_rng = seeded_rng(seed);
+
+            // Protocol path
+            let mut proto_tree = OramTree::<4, 16>::new(levels);
+            let mut proto_client = OramClient::<4, 16>::new(levels, num_addrs);
+            let mut proto_seed = seed;
+
+            // Both paths should produce the same read values (write acks
+            // are trivially equal). We track expected state via the local
+            // path and verify the protocol path matches.
+            let mut local_ref: BTreeMap<u64, [u8; 16]> = BTreeMap::new();
+
+            for op in &ops {
+                let (local_result, access_op) = if op.is_write {
+                    let mut data = [0u8; 16];
+                    data[0] = op.data_byte;
+                    let r = oram_access_local(
+                        &mut local_client, &mut local_tree, op.addr,
+                        AccessOp::Write(data), &mut local_rng,
+                    );
+                    local_ref.insert(op.addr, data);
+                    (r, AccessOp::Write(data))
+                } else {
+                    let r = oram_access_local(
+                        &mut local_client, &mut local_tree, op.addr,
+                        AccessOp::Read, &mut local_rng,
+                    );
+                    (r, AccessOp::Read)
+                };
+
+                let state = ClientProtocolState::new(
+                    proto_client, op.addr, access_op, levels, proto_seed,
+                );
+                proto_seed = proto_seed.wrapping_add(1000);
+                let (c, proto_result, t) = run_oram_protocol(state, proto_tree);
+                proto_client = c;
+                proto_tree = t;
+
+                // Both should agree on whether it's a read or write result
+                match (&local_result, &proto_result) {
+                    (AccessResult::WriteAck, AccessResult::WriteAck) => {}
+                    (AccessResult::ReadValue(ld), AccessResult::ReadValue(pd)) => {
+                        // Both should read what was last written
+                        let expected = local_ref.get(&op.addr).copied().unwrap_or([0u8; 16]);
+                        prop_assert_eq!(*ld, expected, "local read mismatch at addr {}", op.addr);
+                        prop_assert_eq!(*pd, expected, "protocol read mismatch at addr {}", op.addr);
+                    }
+                    _ => {
+                        prop_assert!(false, "result type mismatch: local={:?} proto={:?}", local_result, proto_result);
+                    }
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // Property L: Path invariant
+    //
+    // After every access, every real block in the tree sits on a valid path
+    // to its assigned leaf (tree integrity check).
+    // ========================================================================
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(100))]
+
+        #[test]
+        fn prop_l_path_invariant(
+            seed in any::<u64>(),
+            ops in raw_ops(50, 8)
+        ) {
+            let levels = 4;
+            let mut tree = OramTree::<4, 16>::new(levels);
+            let mut client = OramClient::<4, 16>::new(levels, 8);
+            let mut rng = seeded_rng(seed);
+
+            for op in &ops {
+                let access_op = if op.is_write {
+                    let mut data = [0u8; 16];
+                    data[0] = op.data_byte;
+                    AccessOp::Write(data)
+                } else {
+                    AccessOp::Read
+                };
+                let _ = oram_access_local(
+                    &mut client, &mut tree, op.addr, access_op, &mut rng,
+                );
+            }
+
+            // Check: every real block in the tree is at a node on the path
+            // to its assigned leaf.
+            for (node_idx, bucket) in tree.buckets.iter().enumerate() {
+                for entry in &bucket.entries {
+                    if entry.is_real() {
+                        prop_assert!(
+                            leaf_in_subtree(entry.leaf, node_idx, levels),
+                            "block addr={} with leaf={} is at node {} which is NOT on the path to that leaf",
+                            entry.addr, entry.leaf, node_idx
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // Property M: Recursive posmap correctness
+    //
+    // A recursive position map produces the same lookup/update results as a
+    // local position map for the same operation sequence.
+    // ========================================================================
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(50))]
+
+        #[test]
+        fn prop_m_recursive_posmap_equivalence(
+            seed in any::<u64>(),
+            ops in proptest::collection::vec((0..16u64, 0..8u64), 1..=30)
+        ) {
+            let num_addrs = 16u64;
+            let num_leaves = 8u64;
+
+            let mut local_rng = seeded_rng(seed);
+            let mut recursive_rng = seeded_rng(seed);
+
+            let mut local_pm = PosMap::local(num_addrs, num_leaves);
+            let mut recursive_pm = PosMap::recursive(num_addrs, num_leaves, 4, &mut seeded_rng(seed.wrapping_add(1)));
+
+            for (addr, new_leaf) in &ops {
+                let _local_old = local_pm.update(*addr, *new_leaf, &mut local_rng);
+                let _recursive_old = recursive_pm.update(*addr, *new_leaf, &mut recursive_rng);
+
+                // Both should agree on the old value (initially 0)
+                // Note: after the first update they may diverge because the
+                // recursive posmap does additional ORAM accesses that consume
+                // RNG differently. So we compare values through the reference,
+                // not by raw old-value comparison.
+                let local_val = local_pm.lookup(*addr, &mut local_rng);
+                let recursive_val = recursive_pm.lookup(*addr, &mut recursive_rng);
+
+                prop_assert_eq!(
+                    local_val, recursive_val,
+                    "posmap divergence at addr={}: local={} recursive={}",
+                    addr, local_val, recursive_val
+                );
+            }
+        }
+    }
+
+    // ========================================================================
+    // Property N: No duplicate addresses in tree + stash
+    //
+    // After every access, each logical address appears at most once across
+    // the tree + stash combined. Duplicates would indicate a correctness bug.
+    // ========================================================================
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+
+        #[test]
+        fn prop_n_no_duplicate_addresses(
+            seed in any::<u64>(),
+            ops in raw_ops(80, 8)
+        ) {
+            let levels = 4;
+            let mut tree = OramTree::<4, 16>::new(levels);
+            let mut client = OramClient::<4, 16>::new(levels, 8);
+            let mut rng = seeded_rng(seed);
+
+            for op in &ops {
+                let access_op = if op.is_write {
+                    let mut data = [0u8; 16];
+                    data[0] = op.data_byte;
+                    AccessOp::Write(data)
+                } else {
+                    AccessOp::Read
+                };
+                let _ = oram_access_local(
+                    &mut client, &mut tree, op.addr, access_op, &mut rng,
+                );
+            }
+
+            // Collect all real addresses from tree + stash
+            let mut addr_count: BTreeMap<u64, usize> = BTreeMap::new();
+
+            for bucket in &tree.buckets {
+                for entry in &bucket.entries {
+                    if entry.is_real() {
+                        *addr_count.entry(entry.addr).or_insert(0) += 1;
+                    }
+                }
+            }
+            for entry in &client.stash {
+                if entry.is_real() {
+                    *addr_count.entry(entry.addr).or_insert(0) += 1;
+                }
+            }
+
+            for (&addr, &count) in &addr_count {
+                prop_assert!(
+                    count <= 1,
+                    "duplicate address {}: found {} copies in tree+stash",
+                    addr, count
+                );
+            }
+        }
+    }
+}
