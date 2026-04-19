@@ -11,7 +11,6 @@ multi_party = []
 
 [dependencies]
 cipher.workspace = true
-rand.workspace = true
 digest.workspace = true
 hybrid-array.workspace = true
 elliptic-curve = {workspace = true,features = ["arithmetic"]}

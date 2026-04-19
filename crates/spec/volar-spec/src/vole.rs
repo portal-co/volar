@@ -6,7 +6,6 @@
 use core::ops::{Add, BitXor, Mul};
 
 use cipher::consts::U1;
-use rand::distr::Distribution;
 
 use super::*;
 pub mod field_rotate;

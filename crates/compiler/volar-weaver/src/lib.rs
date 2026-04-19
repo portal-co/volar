@@ -93,7 +93,8 @@ pub use grafhen::{
 };
 
 pub use fhe::{
-    weave_fhe, weave_fhe_flat_bir,
+    weave_fhe, weave_fhe_flat_bir, derive_storage_config,
+    oblivious_read_loop, oblivious_write_loop,
     FheScheme, FheOutput, FheStorageConfig, FheStorageSizes,
     FheActionConfig,
     GrafhenScheme, TfheScheme,

@@ -108,6 +108,17 @@ impl FheActionConfig {
 }
 
 // ============================================================================
+// Helpers used by FheScheme default implementations
+// ============================================================================
+
+/// Compute `ceil(log2(cell_count))` — the number of address bits needed to
+/// address `cell_count` cells.  Returns 0 for counts ≤ 1.
+fn effective_addr_width(cell_count: usize) -> usize {
+    if cell_count <= 1 { return 0; }
+    usize::BITS as usize - (cell_count - 1).leading_zeros() as usize
+}
+
+// ============================================================================
 // FheScheme trait
 // ============================================================================
 
@@ -399,6 +410,652 @@ pub trait FheScheme {
     fn promote_to_wire<Q: Clone + Default>(&self, expr: IrExpr<Q>, _width: usize) -> IrExpr<Q> {
         expr
     }
+
+    // ── Oblivious storage access ─────────────────────────────────────────────
+
+    /// Emit an oblivious read circuit that selects one of `cells` based on
+    /// the encrypted `addr_wires`.
+    ///
+    /// `cells` contains the current wire name for each storage cell (at least 2;
+    /// the caller handles the 0-cell and 1-cell edge cases before dispatching).
+    ///
+    /// `addr_wires` contains one wire name per address bit (bit 0 = LSB).
+    /// `tag` is a unique prefix for naming intermediate wires.
+    ///
+    /// Returns the wire name of the read result.
+    ///
+    /// **Default**: recursive binary MUX tree.  Cost: `(next_pow2(N) − 1)` AND
+    /// gates.  Override in scheme implementations to use alternative strategies
+    /// (e.g. PBS-based lookup).
+    fn emit_oblivious_read<Q: Clone + Default>(
+        &self,
+        cells: &[String],
+        addr_wires: &[&str],
+        tag: &str,
+        stmts: &mut Vec<IrStmt<Q>>,
+        stmt_provs: &mut Vec<Q>,
+    ) -> String {
+        match cells.len() {
+            0 => {
+                let z = format!("{}_z", tag);
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&z),
+                    ty: None,
+                    init: Some(self.emit_zero::<Q>()),
+                });
+                stmt_provs.push(Q::default());
+                z
+            }
+            1 => cells[0].clone(),
+            2 => {
+                // MUX(sel, cell[0], cell[1]) = sel · (c0 ⊕ c1) ⊕ c0
+                let sel = addr_wires.first().copied().unwrap_or("_zero");
+                let diff = format!("{}_xd", tag);
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&diff),
+                    ty: None,
+                    init: Some(self.emit_xor::<Q>(
+                        clone_expr(var(&cells[0])),
+                        clone_expr(var(&cells[1])),
+                    )),
+                });
+                stmt_provs.push(Q::default());
+
+                let masked = format!("{}_ma", tag);
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&masked),
+                    ty: None,
+                    init: Some(self.emit_and::<Q>(var(sel), var(&diff), 0)),
+                });
+                stmt_provs.push(Q::default());
+
+                let result = format!("{}_r", tag);
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&result),
+                    ty: None,
+                    init: Some(self.emit_xor::<Q>(
+                        var(&masked),
+                        clone_expr(var(&cells[0])),
+                    )),
+                });
+                stmt_provs.push(Q::default());
+                result
+            }
+            _ => {
+                // Recursive split — pad to power-of-2.
+                let n_pad = cells.len().next_power_of_two();
+                let mid = n_pad / 2;
+                let left = if mid <= cells.len() { &cells[..mid] } else { cells };
+                let right = if mid < cells.len() { &cells[mid..] } else { &[] as &[String] };
+                let remaining_addr = if addr_wires.len() > 1 { &addr_wires[1..] } else { &[] as &[&str] };
+
+                let left_r = self.emit_oblivious_read(
+                    left, remaining_addr, &format!("{}l", tag), stmts, stmt_provs,
+                );
+                let right_cells: Vec<String> = if right.is_empty() {
+                    let zn = format!("{}rz", tag);
+                    stmts.push(IrStmt::Let {
+                        pattern: IrPattern::ident(&zn),
+                        ty: None,
+                        init: Some(self.emit_zero::<Q>()),
+                    });
+                    stmt_provs.push(Q::default());
+                    vec![zn]
+                } else {
+                    right.to_vec()
+                };
+                let right_r = self.emit_oblivious_read(
+                    &right_cells, remaining_addr, &format!("{}r", tag), stmts, stmt_provs,
+                );
+
+                // MUX the two halves using the current level's address bit.
+                let sel = addr_wires.first().copied().unwrap_or("_zero");
+                let diff = format!("{}_xd", tag);
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&diff),
+                    ty: None,
+                    init: Some(self.emit_xor::<Q>(
+                        clone_expr(var(&left_r)),
+                        clone_expr(var(&right_r)),
+                    )),
+                });
+                stmt_provs.push(Q::default());
+                let masked = format!("{}_ma", tag);
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&masked),
+                    ty: None,
+                    init: Some(self.emit_and::<Q>(var(sel), var(&diff), 0)),
+                });
+                stmt_provs.push(Q::default());
+                let result = format!("{}_r", tag);
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&result),
+                    ty: None,
+                    init: Some(self.emit_xor::<Q>(
+                        var(&masked),
+                        clone_expr(var(&left_r)),
+                    )),
+                });
+                stmt_provs.push(Q::default());
+                result
+            }
+        }
+    }
+
+    /// Emit an oblivious write circuit that updates all `cells` so that the
+    /// cell at the encrypted `addr_wires` address receives `src_wire` while
+    /// all other cells retain their previous values.
+    ///
+    /// `cells` contains the current wire name for each storage cell (at least 2;
+    /// the caller handles the 0-cell and 1-cell edge cases before dispatching).
+    ///
+    /// Returns a `Vec<String>` of new cell wire names, same length as `cells`.
+    ///
+    /// **Default**: full binary demux — for each cell, compute a one-hot
+    /// selector (AND of address bit matches) then MUX(sel, old, src).
+    /// Cost: roughly `addr_width * N` AND gates.  Override in scheme
+    /// implementations to use alternative strategies.
+    fn emit_oblivious_write<Q: Clone + Default>(
+        &self,
+        cells: &[String],
+        addr_wires: &[&str],
+        src_wire: &str,
+        tag: &str,
+        stmts: &mut Vec<IrStmt<Q>>,
+        stmt_provs: &mut Vec<Q>,
+    ) -> Vec<String> {
+        let count = cells.len();
+        let aw = effective_addr_width(count);
+
+        // Pre-compute NOT of each address bit.
+        let not_addr: Vec<String> = (0..aw)
+            .map(|level| {
+                let name = format!("{}_not{}", tag, level);
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&name),
+                    ty: None,
+                    init: Some(self.emit_not::<Q>(var(addr_wires[level]))),
+                });
+                stmt_provs.push(Q::default());
+                name
+            })
+            .collect();
+
+        let mut new_cells = Vec::with_capacity(count);
+        for ci in 0..count {
+            let old_cell = &cells[ci];
+
+            // Build the one-hot selector for cell `ci`.
+            let sel = if aw == 1 {
+                if ci & 1 == 0 { not_addr[0].clone() } else { String::from(addr_wires[0]) }
+            } else {
+                let first_bit_wire = if ci & 1 == 0 { &not_addr[0] } else { addr_wires[0] };
+                let mut acc = String::from(first_bit_wire);
+                for k in 1..aw {
+                    let bit_wire = if (ci >> k) & 1 == 0 { &not_addr[k] } else { addr_wires[k] };
+                    let and_name = format!("{}_s{}b{}", tag, ci, k);
+                    stmts.push(IrStmt::Let {
+                        pattern: IrPattern::ident(&and_name),
+                        ty: None,
+                        init: Some(self.emit_and::<Q>(var(&acc), var(bit_wire), 0)),
+                    });
+                    stmt_provs.push(Q::default());
+                    acc = and_name;
+                }
+                acc
+            };
+
+            // MUX(sel, old_cell, src) = sel · (old ⊕ src) ⊕ old
+            let diff_name = format!("{}_d{}", tag, ci);
+            stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(&diff_name),
+                ty: None,
+                init: Some(self.emit_xor::<Q>(
+                    clone_expr(var(old_cell)),
+                    clone_expr(var(src_wire)),
+                )),
+            });
+            stmt_provs.push(Q::default());
+
+            let masked_name = format!("{}_m{}", tag, ci);
+            stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(&masked_name),
+                ty: None,
+                init: Some(self.emit_and::<Q>(var(&sel), var(&diff_name), 0)),
+            });
+            stmt_provs.push(Q::default());
+
+            let new_cell = format!("{}_c{}", tag, ci);
+            stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(&new_cell),
+                ty: None,
+                init: Some(self.emit_xor::<Q>(
+                    var(&masked_name),
+                    clone_expr(var(old_cell)),
+                )),
+            });
+            stmt_provs.push(Q::default());
+
+            new_cells.push(new_cell);
+        }
+        new_cells
+    }
+}
+
+// ============================================================================
+// Loop-based oblivious access helpers
+// ============================================================================
+
+/// Emit an oblivious read as a runtime loop rather than an unrolled MUX tree.
+///
+/// Produces a `for` loop that iterates over all cells, computing a one-hot
+/// selector for each cell index by matching plaintext bits of the loop variable
+/// against the encrypted address bits, then conditionally accumulating the
+/// cell value into a mutable result via `MUX(sel, result, cell) =
+/// sel · (result ⊕ cell) ⊕ result`.
+///
+/// **Same asymptotic cost** as the unrolled MUX tree — roughly `N * (aw + 1)`
+/// AND gates (where `aw = ceil(log2(N))`) — but the generated code is O(1) in
+/// size instead of O(N).
+///
+/// Call this from an [`FheScheme::emit_oblivious_read`] override when the
+/// target supports loops and compact code is preferred over fully unrolled
+/// trees.
+pub fn oblivious_read_loop<S: FheScheme, Q: Clone + Default>(
+    scheme: &S,
+    cells: &[String],
+    addr_wires: &[&str],
+    tag: &str,
+    stmts: &mut Vec<IrStmt<Q>>,
+    stmt_provs: &mut Vec<Q>,
+) -> String {
+    let count = cells.len();
+    let aw = effective_addr_width(count);
+
+    // Pre-compute NOT of each address bit (outside the loop).
+    let not_addr: Vec<String> = (0..aw)
+        .map(|k| {
+            let name = format!("{}_not{}", tag, k);
+            stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(&name),
+                ty: None,
+                init: Some(scheme.emit_not::<Q>(var(addr_wires[k]))),
+            });
+            stmt_provs.push(Q::default());
+            name
+        })
+        .collect();
+
+    // Build the cells array: let {tag}_arr = [c0.clone(), c1.clone(), ...];
+    let arr_name = format!("{}_arr", tag);
+    stmts.push(IrStmt::Let {
+        pattern: IrPattern::ident(&arr_name),
+        ty: None,
+        init: Some(IrExpr::FixedArray(
+            cells.iter().map(|c| clone_expr(var(c))).collect(),
+        )),
+    });
+    stmt_provs.push(Q::default());
+
+    // Initialize mutable result: let mut {tag}_result = emit_zero();
+    let result_name = format!("{}_result", tag);
+    stmts.push(IrStmt::Let {
+        pattern: IrPattern::ident(&result_name).as_mut(),
+        ty: None,
+        init: Some(scheme.emit_zero::<Q>()),
+    });
+    stmt_provs.push(Q::default());
+
+    // ── Loop body ────────────────────────────────────────────────────────
+    let loop_var = format!("{}_i", tag);
+    let mut body_stmts: Vec<IrStmt<Q>> = Vec::new();
+    let mut body_provs: Vec<Q> = Vec::new();
+
+    // For each address bit, select the matching wire based on the plaintext
+    // bit of the loop variable:
+    //   let bk = if (i >> k) & 1 == 0 { not_addr_k.clone() } else { addr_k.clone() };
+    let mut bit_names: Vec<String> = Vec::new();
+    for k in 0..aw {
+        let bit_name = format!("{}_b{}", tag, k);
+        let cond = IrExpr::Binary {
+            op: SpecBinOp::Eq,
+            left: Box::new(IrExpr::Binary {
+                op: SpecBinOp::BitAnd,
+                left: Box::new(IrExpr::Binary {
+                    op: SpecBinOp::Shr,
+                    left: Box::new(var(&loop_var)),
+                    right: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
+                }),
+                right: Box::new(IrExpr::Lit(IrLit::Int(1))),
+            }),
+            right: Box::new(IrExpr::Lit(IrLit::Int(0))),
+        };
+        body_stmts.push(IrStmt::Let {
+            pattern: IrPattern::ident(&bit_name),
+            ty: None,
+            init: Some(IrExpr::If {
+                cond: Box::new(cond),
+                then_branch: IrBlock {
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    expr: Some(Box::new(clone_expr(var(&not_addr[k])))),
+                },
+                else_branch: Some(Box::new(IrExpr::Block(IrBlock {
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    expr: Some(Box::new(clone_expr(var(addr_wires[k])))),
+                }))),
+            }),
+        });
+        body_provs.push(Q::default());
+        bit_names.push(bit_name);
+    }
+
+    // Build the one-hot selector by chaining ANDs of all bit-match wires.
+    let sel_name = if aw == 0 {
+        // No address bits — always match (edge case, shouldn't reach here
+        // since the caller handles count ≤ 1).
+        let s = format!("{}_sel", tag);
+        body_stmts.push(IrStmt::Let {
+            pattern: IrPattern::ident(&s),
+            ty: None,
+            init: Some(scheme.emit_one::<Q>()),
+        });
+        body_provs.push(Q::default());
+        s
+    } else if aw == 1 {
+        bit_names[0].clone()
+    } else {
+        let mut acc = bit_names[0].clone();
+        for k in 1..aw {
+            let and_name = format!("{}_sel{}", tag, k);
+            body_stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(&and_name),
+                ty: None,
+                init: Some(scheme.emit_and::<Q>(var(&acc), var(&bit_names[k]), 0)),
+            });
+            body_provs.push(Q::default());
+            acc = and_name;
+        }
+        acc
+    };
+
+    // let cv = cells_arr[i].clone();
+    let cv_name = format!("{}_cv", tag);
+    body_stmts.push(IrStmt::Let {
+        pattern: IrPattern::ident(&cv_name),
+        ty: None,
+        init: Some(clone_expr(IrExpr::Index {
+            base: Box::new(var(&arr_name)),
+            index: Box::new(var(&loop_var)),
+        })),
+    });
+    body_provs.push(Q::default());
+
+    // MUX(sel, result, cell_val) = sel · (result ⊕ cell_val) ⊕ result
+    let diff_name = format!("{}_diff", tag);
+    body_stmts.push(IrStmt::Let {
+        pattern: IrPattern::ident(&diff_name),
+        ty: None,
+        init: Some(scheme.emit_xor::<Q>(
+            clone_expr(var(&result_name)),
+            var(&cv_name),
+        )),
+    });
+    body_provs.push(Q::default());
+
+    let masked_name = format!("{}_masked", tag);
+    body_stmts.push(IrStmt::Let {
+        pattern: IrPattern::ident(&masked_name),
+        ty: None,
+        init: Some(scheme.emit_and::<Q>(
+            var(&sel_name),
+            var(&diff_name),
+            0,
+        )),
+    });
+    body_provs.push(Q::default());
+
+    // result = xor(masked, result.clone());
+    body_stmts.push(IrStmt::Semi(IrExpr::Assign {
+        left: Box::new(var(&result_name)),
+        right: Box::new(scheme.emit_xor::<Q>(
+            var(&masked_name),
+            clone_expr(var(&result_name)),
+        )),
+    }));
+    body_provs.push(Q::default());
+
+    // ── Emit the loop ────────────────────────────────────────────────────
+    stmts.push(IrStmt::Expr(IrExpr::BoundedLoop {
+        var: loop_var,
+        start: Box::new(IrExpr::Cast {
+            expr: Box::new(IrExpr::Lit(IrLit::Int(0))),
+            ty: Box::new(IrType::Primitive(PrimitiveType::Usize)),
+        }),
+        end: Box::new(IrExpr::Cast {
+            expr: Box::new(IrExpr::Lit(IrLit::Int(count as i128))),
+            ty: Box::new(IrType::Primitive(PrimitiveType::Usize)),
+        }),
+        inclusive: false,
+        body: IrBlock {
+            stmts: body_stmts,
+            stmt_provs: body_provs,
+            expr: None,
+        },
+    }));
+    stmt_provs.push(Q::default());
+
+    result_name
+}
+
+/// Emit an oblivious write as a runtime loop rather than unrolled demux+MUX.
+///
+/// Produces a `for` loop that iterates over all cells, computing a one-hot
+/// selector for each cell index and conditionally updating the cell to
+/// `src_wire` (via MUX) when the selector is active.
+///
+/// Returns a `Vec<String>` of new cell wire names — one per cell — extracted
+/// from the mutable array after the loop completes.
+///
+/// **Same asymptotic cost** as the unrolled demux+MUX: roughly
+/// `N * (aw + 1)` AND gates.  Generated code is O(1) instead of O(N).
+///
+/// Call this from an [`FheScheme::emit_oblivious_write`] override when the
+/// target supports loops and compact code is preferred.
+pub fn oblivious_write_loop<S: FheScheme, Q: Clone + Default>(
+    scheme: &S,
+    cells: &[String],
+    addr_wires: &[&str],
+    src_wire: &str,
+    tag: &str,
+    stmts: &mut Vec<IrStmt<Q>>,
+    stmt_provs: &mut Vec<Q>,
+) -> Vec<String> {
+    let count = cells.len();
+    let aw = effective_addr_width(count);
+
+    // Pre-compute NOT of each address bit (outside the loop).
+    let not_addr: Vec<String> = (0..aw)
+        .map(|k| {
+            let name = format!("{}_not{}", tag, k);
+            stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(&name),
+                ty: None,
+                init: Some(scheme.emit_not::<Q>(var(addr_wires[k]))),
+            });
+            stmt_provs.push(Q::default());
+            name
+        })
+        .collect();
+
+    // Build mutable cells array: let mut {tag}_arr = [c0.clone(), ...];
+    let arr_name = format!("{}_arr", tag);
+    stmts.push(IrStmt::Let {
+        pattern: IrPattern::ident(&arr_name).as_mut(),
+        ty: None,
+        init: Some(IrExpr::FixedArray(
+            cells.iter().map(|c| clone_expr(var(c))).collect(),
+        )),
+    });
+    stmt_provs.push(Q::default());
+
+    // ── Loop body ────────────────────────────────────────────────────────
+    let loop_var = format!("{}_i", tag);
+    let mut body_stmts: Vec<IrStmt<Q>> = Vec::new();
+    let mut body_provs: Vec<Q> = Vec::new();
+
+    // Bit-match selection (same pattern as read loop).
+    let mut bit_names: Vec<String> = Vec::new();
+    for k in 0..aw {
+        let bit_name = format!("{}_b{}", tag, k);
+        let cond = IrExpr::Binary {
+            op: SpecBinOp::Eq,
+            left: Box::new(IrExpr::Binary {
+                op: SpecBinOp::BitAnd,
+                left: Box::new(IrExpr::Binary {
+                    op: SpecBinOp::Shr,
+                    left: Box::new(var(&loop_var)),
+                    right: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
+                }),
+                right: Box::new(IrExpr::Lit(IrLit::Int(1))),
+            }),
+            right: Box::new(IrExpr::Lit(IrLit::Int(0))),
+        };
+        body_stmts.push(IrStmt::Let {
+            pattern: IrPattern::ident(&bit_name),
+            ty: None,
+            init: Some(IrExpr::If {
+                cond: Box::new(cond),
+                then_branch: IrBlock {
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    expr: Some(Box::new(clone_expr(var(&not_addr[k])))),
+                },
+                else_branch: Some(Box::new(IrExpr::Block(IrBlock {
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    expr: Some(Box::new(clone_expr(var(addr_wires[k])))),
+                }))),
+            }),
+        });
+        body_provs.push(Q::default());
+        bit_names.push(bit_name);
+    }
+
+    // Build one-hot selector (same chaining as read loop).
+    let sel_name = if aw == 0 {
+        let s = format!("{}_sel", tag);
+        body_stmts.push(IrStmt::Let {
+            pattern: IrPattern::ident(&s),
+            ty: None,
+            init: Some(scheme.emit_one::<Q>()),
+        });
+        body_provs.push(Q::default());
+        s
+    } else if aw == 1 {
+        bit_names[0].clone()
+    } else {
+        let mut acc = bit_names[0].clone();
+        for k in 1..aw {
+            let and_name = format!("{}_sel{}", tag, k);
+            body_stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(&and_name),
+                ty: None,
+                init: Some(scheme.emit_and::<Q>(var(&acc), var(&bit_names[k]), 0)),
+            });
+            body_provs.push(Q::default());
+            acc = and_name;
+        }
+        acc
+    };
+
+    // MUX(sel, old, src) = sel · (old ⊕ src) ⊕ old
+    // Clone old first (consumed by the final XOR), then compute diff.
+    let old_name = format!("{}_old", tag);
+    body_stmts.push(IrStmt::Let {
+        pattern: IrPattern::ident(&old_name),
+        ty: None,
+        init: Some(clone_expr(IrExpr::Index {
+            base: Box::new(var(&arr_name)),
+            index: Box::new(var(&loop_var)),
+        })),
+    });
+    body_provs.push(Q::default());
+
+    let diff_name = format!("{}_diff", tag);
+    body_stmts.push(IrStmt::Let {
+        pattern: IrPattern::ident(&diff_name),
+        ty: None,
+        init: Some(scheme.emit_xor::<Q>(
+            clone_expr(var(&old_name)),
+            clone_expr(var(src_wire)),
+        )),
+    });
+    body_provs.push(Q::default());
+
+    let masked_name = format!("{}_masked", tag);
+    body_stmts.push(IrStmt::Let {
+        pattern: IrPattern::ident(&masked_name),
+        ty: None,
+        init: Some(scheme.emit_and::<Q>(
+            var(&sel_name),
+            var(&diff_name),
+            0,
+        )),
+    });
+    body_provs.push(Q::default());
+
+    // cells_arr[i] = xor(masked, old);  (consumes old — last use)
+    body_stmts.push(IrStmt::Semi(IrExpr::Assign {
+        left: Box::new(IrExpr::Index {
+            base: Box::new(var(&arr_name)),
+            index: Box::new(var(&loop_var)),
+        }),
+        right: Box::new(scheme.emit_xor::<Q>(
+            var(&masked_name),
+            var(&old_name),
+        )),
+    }));
+    body_provs.push(Q::default());
+
+    // ── Emit the loop ────────────────────────────────────────────────────
+    stmts.push(IrStmt::Expr(IrExpr::BoundedLoop {
+        var: loop_var,
+        start: Box::new(IrExpr::Cast {
+            expr: Box::new(IrExpr::Lit(IrLit::Int(0))),
+            ty: Box::new(IrType::Primitive(PrimitiveType::Usize)),
+        }),
+        end: Box::new(IrExpr::Cast {
+            expr: Box::new(IrExpr::Lit(IrLit::Int(count as i128))),
+            ty: Box::new(IrType::Primitive(PrimitiveType::Usize)),
+        }),
+        inclusive: false,
+        body: IrBlock {
+            stmts: body_stmts,
+            stmt_provs: body_provs,
+            expr: None,
+        },
+    }));
+    stmt_provs.push(Q::default());
+
+    // Extract updated cells from the array into individual variables.
+    let mut new_cells = Vec::with_capacity(count);
+    for ci in 0..count {
+        let new_name = format!("{}_c{}", tag, ci);
+        stmts.push(IrStmt::Let {
+            pattern: IrPattern::ident(&new_name),
+            ty: None,
+            init: Some(clone_expr(IrExpr::Index {
+                base: Box::new(var(&arr_name)),
+                index: Box::new(IrExpr::Lit(IrLit::Int(ci as i128))),
+            })),
+        });
+        stmt_provs.push(Q::default());
+        new_cells.push(new_name);
+    }
+
+    new_cells
 }
 
 // ============================================================================
@@ -465,6 +1122,45 @@ pub fn weave_fhe<S: FheScheme>(
 }
 
 // ============================================================================
+// Auto-derive storage configuration from BIR circuit
+// ============================================================================
+
+/// Derive storage configuration by inspecting `StorageRead`/`StorageWrite`
+/// statements in a BIR circuit.
+///
+/// For each `(StorageId, bit_width)` pair found, the cell count is set to
+/// `2^N` where `N` is the maximum address length (number of address bits)
+/// seen across all accesses to that storage pair.  A zero-length address
+/// vector (no address bits) yields 1 cell.
+///
+/// Returns an empty config when the circuit contains no storage operations.
+pub fn derive_storage_config<P: Clone + Default>(circuit: &BIrBlocks<P>) -> FheStorageConfig {
+    let mut max_addr_len: BTreeMap<(u32, usize), usize> = BTreeMap::new();
+    for block in &circuit.0 {
+        for stmt in &block.stmts {
+            match stmt {
+                BIrStmt::StorageRead { storage, bit_width, addr } => {
+                    let key = (storage.0, *bit_width);
+                    let entry = max_addr_len.entry(key).or_insert(0);
+                    *entry = (*entry).max(addr.len());
+                }
+                BIrStmt::StorageWrite { storage, bit_width, addr, .. } => {
+                    let key = (storage.0, *bit_width);
+                    let entry = max_addr_len.entry(key).or_insert(0);
+                    *entry = (*entry).max(addr.len());
+                }
+                _ => {}
+            }
+        }
+    }
+    let sizes = max_addr_len
+        .into_iter()
+        .map(|(key, alen)| (key, 1_usize << alen))
+        .collect();
+    FheStorageConfig { sizes }
+}
+
+// ============================================================================
 // Flat path — high-level entry (lowers IRBlocks first)
 // ============================================================================
 
@@ -482,7 +1178,18 @@ fn weave_fhe_flat<S: FheScheme>(
         circuit.is_circuit(),
         "weave_fhe_flat: circuit after movfuscation must satisfy is_circuit()"
     );
-    weave_fhe_flat_bir(&circuit, scheme, name, linkage, &NoProvenance, storage)
+    // When no storage config is provided, auto-derive from the circuit.
+    // This scans StorageRead/Write stmts and infers cell counts from address
+    // bit widths, so callers don't need to supply FheStorageSizes manually.
+    let derived;
+    let effective_storage = match storage {
+        Some(cfg) => cfg,
+        None => {
+            derived = derive_storage_config(&circuit);
+            &derived
+        }
+    };
+    weave_fhe_flat_bir(&circuit, scheme, name, linkage, &NoProvenance, Some(effective_storage))
 }
 
 // ============================================================================
@@ -558,17 +1265,10 @@ impl FheStorageCtx {
         }
     }
 
-    fn effective_addr_width(cell_count: usize) -> usize {
-        if cell_count <= 1 { return 0; }
-        usize::BITS as usize - (cell_count - 1).leading_zeros() as usize
-    }
-
-    /// Oblivious read via MUX tree.
+    /// Oblivious read — delegates to [`FheScheme::emit_oblivious_read`].
     ///
-    /// `addr_wires` contains one wire name per address bit (bit 0 = LSB).
-    ///
-    /// Returns the name of the output wire.  Cost: `(next_pow2(cells) − 1)` AND
-    /// gates per bit of value width.
+    /// Handles edge cases (0 cells → zero, 1 cell → clone) before dispatching
+    /// to the scheme's oblivious read implementation for ≥ 2 cells.
     fn emit_read<S: FheScheme, Q: Clone + Default>(
         &mut self,
         out_name: &str,
@@ -608,10 +1308,10 @@ impl FheStorageCtx {
             return String::from(out_name);
         }
 
-        // MUX tree over the cells using per-level address bits.
-        let result = self.mux_tree_read(
-            &cells, addr_wires, scheme, stmts, stmt_provs,
-            &format!("_sr_{}", out_name),
+        // Delegate to the scheme's oblivious read (default: MUX tree).
+        let tag = format!("_sr_{}", out_name);
+        let result = scheme.emit_oblivious_read(
+            &cells, addr_wires, &tag, stmts, stmt_provs,
         );
         stmts.push(IrStmt::Let {
             pattern: IrPattern::ident(out_name),
@@ -622,14 +1322,10 @@ impl FheStorageCtx {
         String::from(out_name)
     }
 
-    /// Oblivious write via demux + per-cell MUX.
+    /// Oblivious write — delegates to [`FheScheme::emit_oblivious_write`].
     ///
-    /// `addr_wires` contains one wire name per address bit (bit 0 = LSB).
-    ///
-    /// For each cell `ci`, we compute a selector wire that is 1 iff the address
-    /// equals `ci`.  The selector is the AND of all address bits (or their
-    /// negations) according to the binary representation of `ci`.  Then:
-    ///   cell'[ci] = MUX(sel[ci], old_cell[ci], src)
+    /// Handles edge cases (0 cells → no-op, 1 cell → unconditional write)
+    /// before dispatching to the scheme's oblivious write for ≥ 2 cells.
     fn emit_write<S: FheScheme, Q: Clone + Default>(
         &mut self,
         storage_id: u32,
@@ -656,201 +1352,21 @@ impl FheStorageCtx {
             return;
         }
 
+        let cells: Vec<String> = (0..count)
+            .map(|ci| self.cells[&(storage_id, bit_width, ci)].clone())
+            .collect();
+
         let tag = format!("_sdm_{}_{}", storage_id, self.mux_counter);
         self.mux_counter += 1;
 
-        let aw = Self::effective_addr_width(count);
+        // Delegate to the scheme's oblivious write (default: demux + MUX).
+        let new_cells = scheme.emit_oblivious_write(
+            &cells, addr_wires, src_wire, &tag, stmts, stmt_provs,
+        );
 
-        // Pre-compute NOT of each address bit (reused across cells).
-        let not_addr: Vec<String> = (0..aw)
-            .map(|level| {
-                let name = format!("{}_not{}", tag, level);
-                stmts.push(IrStmt::Let {
-                    pattern: IrPattern::ident(&name),
-                    ty: None,
-                    init: Some(scheme.emit_not::<Q>(var(addr_wires[level]))),
-                });
-                stmt_provs.push(Q::default());
-                name
-            })
-            .collect();
-
-        for ci in 0..count {
-            let old_cell = self.cells[&(storage_id, bit_width, ci)].clone();
-
-            // Build the selector: AND of addr bits matching the binary
-            // representation of `ci`.  For each bit position `k`:
-            //   use addr_wires[k] if bit k of ci is 1, else not_addr[k].
-            let sel = if aw == 1 {
-                // 1-bit address: sel is either NOT(addr) or addr directly.
-                if ci & 1 == 0 { not_addr[0].clone() } else { String::from(addr_wires[0]) }
-            } else {
-                // Multi-bit: AND all the per-bit selectors together.
-                let first_bit_wire = if ci & 1 == 0 { &not_addr[0] } else { addr_wires[0] };
-                let mut acc = String::from(first_bit_wire);
-                for k in 1..aw {
-                    let bit_wire = if (ci >> k) & 1 == 0 { &not_addr[k] } else { addr_wires[k] };
-                    let and_name = format!("{}_s{}b{}", tag, ci, k);
-                    stmts.push(IrStmt::Let {
-                        pattern: IrPattern::ident(&and_name),
-                        ty: None,
-                        init: Some(scheme.emit_and::<Q>(var(&acc), var(bit_wire), 0)),
-                    });
-                    stmt_provs.push(Q::default());
-                    acc = and_name;
-                }
-                acc
-            };
-
-            // MUX(sel, old_cell, src) = sel · (old_cell ⊕ src) ⊕ old_cell
-            let diff_name = format!("{}_d{}", tag, ci);
-            stmts.push(IrStmt::Let {
-                pattern: IrPattern::ident(&diff_name),
-                ty: None,
-                init: Some(scheme.emit_xor::<Q>(clone_expr(var(&old_cell)), clone_expr(var(src_wire)))),
-            });
-            stmt_provs.push(Q::default());
-
-            let masked_name = format!("{}_m{}", tag, ci);
-            stmts.push(IrStmt::Let {
-                pattern: IrPattern::ident(&masked_name),
-                ty: None,
-                init: Some(scheme.emit_and::<Q>(var(&sel), var(&diff_name), 0)),
-            });
-            stmt_provs.push(Q::default());
-
-            let new_cell = format!("{}_c{}", tag, ci);
-            stmts.push(IrStmt::Let {
-                pattern: IrPattern::ident(&new_cell),
-                ty: None,
-                init: Some(scheme.emit_xor::<Q>(var(&masked_name), clone_expr(var(&old_cell)))),
-            });
-            stmt_provs.push(Q::default());
-
-            self.cells.insert((storage_id, bit_width, ci), new_cell);
-        }
-    }
-
-    /// MUX-tree read: recursively halves cells using per-level address bits.
-    ///
-    /// `addr_wires[0]` is the LSB (selects between even/odd halves at the
-    /// bottom of the tree), and higher-indexed bits select at higher levels.
-    ///
-    /// For 2 cells and a single-bit address, produces:
-    ///   MUX(addr[0], cell[0], cell[1]) = addr[0] · (cell[0] ⊕ cell[1]) ⊕ cell[0]
-    fn mux_tree_read<S: FheScheme, Q: Clone + Default>(
-        &mut self,
-        cells: &[String],
-        addr_wires: &[&str],
-        scheme: &S,
-        stmts: &mut Vec<IrStmt<Q>>,
-        stmt_provs: &mut Vec<Q>,
-        tag: &str,
-    ) -> String {
-        match cells.len() {
-            0 => {
-                let z = format!("{}_z", tag);
-                stmts.push(IrStmt::Let {
-                    pattern: IrPattern::ident(&z),
-                    ty: None,
-                    init: Some(scheme.emit_zero::<Q>()),
-                });
-                stmt_provs.push(Q::default());
-                z
-            }
-            1 => cells[0].clone(),
-            2 => {
-                // Use addr_wires[0] (LSB) to select between the two cells.
-                let sel = addr_wires.first().copied().unwrap_or("_zero");
-                // MUX(sel, cell[0], cell[1]) = sel · (c0 ⊕ c1) ⊕ c0
-                let diff = format!("{}_xd", tag);
-                stmts.push(IrStmt::Let {
-                    pattern: IrPattern::ident(&diff),
-                    ty: None,
-                    init: Some(scheme.emit_xor::<Q>(
-                        clone_expr(var(&cells[0])),
-                        clone_expr(var(&cells[1])),
-                    )),
-                });
-                stmt_provs.push(Q::default());
-
-                let masked = format!("{}_ma", tag);
-                stmts.push(IrStmt::Let {
-                    pattern: IrPattern::ident(&masked),
-                    ty: None,
-                    init: Some(scheme.emit_and::<Q>(var(sel), var(&diff), 0)),
-                });
-                stmt_provs.push(Q::default());
-
-                let result = format!("{}_r", tag);
-                stmts.push(IrStmt::Let {
-                    pattern: IrPattern::ident(&result),
-                    ty: None,
-                    init: Some(scheme.emit_xor::<Q>(
-                        var(&masked),
-                        clone_expr(var(&cells[0])),
-                    )),
-                });
-                stmt_provs.push(Q::default());
-                result
-            }
-            _ => {
-                // Recursive split — pad to power-of-2, split at midpoint.
-                // The current level's selector is addr_wires[0] (LSB).
-                // Left subtree gets even-indexed cells, right gets odd-indexed.
-                // We recurse with addr_wires[1..] for higher bits.
-                let n_pad = cells.len().next_power_of_two();
-                let mid = n_pad / 2;
-                let left = if mid <= cells.len() { &cells[..mid] } else { cells };
-                let right = if mid < cells.len() { &cells[mid..] } else { &[] as &[String] };
-                // Recurse on left and right halves with the remaining (higher) address bits.
-                let remaining_addr = if addr_wires.len() > 1 { &addr_wires[1..] } else { &[] as &[&str] };
-                let left_r = self.mux_tree_read(
-                    left, remaining_addr, scheme, stmts, stmt_provs,
-                    &format!("{}l", tag),
-                );
-                let right_cells: Vec<String> = if right.is_empty() {
-                    // Pad with zero cells for the right subtree.
-                    let zn = format!("{}rz", tag);
-                    stmts.push(IrStmt::Let {
-                        pattern: IrPattern::ident(&zn),
-                        ty: None,
-                        init: Some(scheme.emit_zero::<Q>()),
-                    });
-                    stmt_provs.push(Q::default());
-                    vec![zn]
-                } else {
-                    right.to_vec()
-                };
-                let right_r = self.mux_tree_read(
-                    &right_cells, remaining_addr, scheme, stmts, stmt_provs,
-                    &format!("{}r", tag),
-                );
-                // MUX the two halves using the current level's address bit.
-                let sel = addr_wires.first().copied().unwrap_or("_zero");
-                let diff = format!("{}_xd", tag);
-                stmts.push(IrStmt::Let {
-                    pattern: IrPattern::ident(&diff),
-                    ty: None,
-                    init: Some(scheme.emit_xor::<Q>(clone_expr(var(&left_r)), clone_expr(var(&right_r)))),
-                });
-                stmt_provs.push(Q::default());
-                let masked = format!("{}_ma", tag);
-                stmts.push(IrStmt::Let {
-                    pattern: IrPattern::ident(&masked),
-                    ty: None,
-                    init: Some(scheme.emit_and::<Q>(var(sel), var(&diff), 0)),
-                });
-                stmt_provs.push(Q::default());
-                let result = format!("{}_r", tag);
-                stmts.push(IrStmt::Let {
-                    pattern: IrPattern::ident(&result),
-                    ty: None,
-                    init: Some(scheme.emit_xor::<Q>(var(&masked), clone_expr(var(&left_r)))),
-                });
-                stmt_provs.push(Q::default());
-                result
-            }
+        // Update tracked cell names.
+        for (ci, new_name) in new_cells.into_iter().enumerate() {
+            self.cells.insert((storage_id, bit_width, ci), new_name);
         }
     }
 }
@@ -3186,6 +3702,256 @@ mod tests {
             code.contains("storage_5_1"),
             "generated code should reference storage parameter"
         );
+    }
+
+    // ---- Auto-derive storage tests ------------------------------------------
+
+    #[test]
+    fn test_derive_storage_config_matches_manual() {
+        let circuit = build_storage_circuit();
+        let derived = derive_storage_config(&circuit);
+        let manual = storage_config_2cells();
+        assert_eq!(
+            derived.sizes, manual.sizes,
+            "auto-derived storage config should match manual config"
+        );
+    }
+
+    #[test]
+    fn test_derive_storage_config_empty_circuit() {
+        // A circuit with no storage stmts should produce an empty config.
+        let circuit = BIrBlocks(vec![BIrBlock {
+            params: 2,
+            stmts: vec![BIrStmt::Xor(IRVarId(0), IRVarId(1))],
+            stmt_provs: vec![()],
+            terminator: BIrTerminator::Jmp(BIrTarget {
+                block: IRBlockTargetId::Return,
+                args: vec![IRVarId(2)],
+            }),
+        }]);
+        let derived = derive_storage_config(&circuit);
+        assert!(
+            derived.sizes.is_empty(),
+            "circuit without storage ops should yield empty config"
+        );
+    }
+
+    #[test]
+    fn test_derive_storage_config_multi_bit_addr() {
+        // 2-bit address should yield 4 cells.
+        let circuit = BIrBlocks(vec![BIrBlock {
+            params: 3,
+            stmts: vec![
+                BIrStmt::StorageRead {
+                    storage: StorageId(0),
+                    bit_width: 1,
+                    addr: vec![IRVarId(0), IRVarId(1)],
+                },
+            ],
+            stmt_provs: vec![()],
+            terminator: BIrTerminator::Jmp(BIrTarget {
+                block: IRBlockTargetId::Return,
+                args: vec![IRVarId(3)],
+            }),
+        }]);
+        let derived = derive_storage_config(&circuit);
+        assert_eq!(
+            derived.sizes.get(&(0, 1)),
+            Some(&4),
+            "2-bit address should yield 4 cells"
+        );
+    }
+
+    #[test]
+    fn test_auto_derive_weave_produces_storage_params() {
+        // Call weave_fhe_flat_bir with the auto-derived config and verify
+        // it produces the same storage parameter as the manual config.
+        let circuit = build_storage_circuit();
+        let scheme = TfheScheme::flat();
+
+        let manual_config = storage_config_2cells();
+        let manual_module = weave_fhe_flat_bir(
+            &circuit, &scheme, "manual", None, &NoProvenance, Some(&manual_config),
+        );
+
+        let derived_config = derive_storage_config(&circuit);
+        let derived_module = weave_fhe_flat_bir(
+            &circuit, &scheme, "derived", None, &NoProvenance, Some(&derived_config),
+        );
+
+        let manual_func = &manual_module.functions[0];
+        let derived_func = &derived_module.functions[0];
+        assert_eq!(
+            manual_func.params.len(),
+            derived_func.params.len(),
+            "auto-derived should produce same number of params as manual"
+        );
+        // The last param should be the storage slice in both cases.
+        assert_eq!(
+            manual_func.params.last().unwrap().name,
+            derived_func.params.last().unwrap().name,
+            "storage param name should match"
+        );
+    }
+
+    // ---- Loop-based oblivious access tests ---------------------------------
+
+    /// Build an `IrModule` whose single function calls `oblivious_read_loop`
+    /// with `cell_count` cells and `addr_width` address bits.  The function
+    /// takes `bk`, `cell_count` cell params, and `addr_width` addr params,
+    /// returning a single `LweCiphertext<N_LWE>`.
+    fn build_loop_read_module(cell_count: usize, addr_width: usize) -> IrModule {
+        let scheme = TfheScheme::flat();
+        let wire_ty = scheme.wire_type();
+
+        let mut params: Vec<IrParam> = scheme.extra_params();
+        let mut cell_names = Vec::new();
+        for i in 0..cell_count {
+            let name = format!("c{}", i);
+            params.push(IrParam { name: name.clone(), ty: wire_ty.clone() });
+            cell_names.push(name);
+        }
+        let mut addr_names = Vec::new();
+        for i in 0..addr_width {
+            let name = format!("a{}", i);
+            params.push(IrParam { name: name.clone(), ty: wire_ty.clone() });
+            addr_names.push(name);
+        }
+
+        let addr_refs: Vec<&str> = addr_names.iter().map(|s| s.as_str()).collect();
+        let mut stmts: Vec<IrStmt> = Vec::new();
+        let mut provs: Vec<()> = Vec::new();
+
+        let result = oblivious_read_loop(
+            &scheme, &cell_names, &addr_refs, "rd", &mut stmts, &mut provs,
+        );
+
+        IrModule {
+            name: "loop_read_test".into(),
+            structs: vec![],
+            traits: vec![],
+            impls: vec![],
+            type_aliases: vec![],
+            functions: vec![IrFunction {
+                name: "loop_read_tfhe".into(),
+                generics: scheme.generics(),
+                receiver: None,
+                params,
+                return_type: Some(wire_ty),
+                where_clause: vec![],
+                body: IrBlock {
+                    stmts,
+                    stmt_provs: provs,
+                    expr: Some(Box::new(var(&result))),
+                },
+                external_kind: ExternalKind::Normal,
+            }],
+        }
+    }
+
+    /// Build an `IrModule` whose single function calls `oblivious_write_loop`
+    /// with `cell_count` cells, `addr_width` address bits, and a `src` wire.
+    /// Returns a tuple of the new cell values.
+    fn build_loop_write_module(cell_count: usize, addr_width: usize) -> IrModule {
+        let scheme = TfheScheme::flat();
+        let wire_ty = scheme.wire_type();
+
+        let mut params: Vec<IrParam> = scheme.extra_params();
+        let mut cell_names = Vec::new();
+        for i in 0..cell_count {
+            let name = format!("c{}", i);
+            params.push(IrParam { name: name.clone(), ty: wire_ty.clone() });
+            cell_names.push(name);
+        }
+        let mut addr_names = Vec::new();
+        for i in 0..addr_width {
+            let name = format!("a{}", i);
+            params.push(IrParam { name: name.clone(), ty: wire_ty.clone() });
+            addr_names.push(name);
+        }
+        params.push(IrParam { name: "src".into(), ty: wire_ty.clone() });
+
+        let addr_refs: Vec<&str> = addr_names.iter().map(|s| s.as_str()).collect();
+        let mut stmts: Vec<IrStmt> = Vec::new();
+        let mut provs: Vec<()> = Vec::new();
+
+        let new_cells = oblivious_write_loop(
+            &scheme, &cell_names, &addr_refs, "src", "wr", &mut stmts, &mut provs,
+        );
+
+        // Return a tuple of the new cells.
+        let ret_exprs: Vec<IrExpr> = new_cells.iter().map(|n| var(n)).collect();
+        let ret_tys: Vec<IrType> = (0..cell_count).map(|_| wire_ty.clone()).collect();
+        let (ret_expr, ret_ty) = if cell_count == 1 {
+            (ret_exprs.into_iter().next().unwrap(), wire_ty)
+        } else {
+            (IrExpr::Tuple(ret_exprs), IrType::Tuple(ret_tys))
+        };
+
+        IrModule {
+            name: "loop_write_test".into(),
+            structs: vec![],
+            traits: vec![],
+            impls: vec![],
+            type_aliases: vec![],
+            functions: vec![IrFunction {
+                name: "loop_write_tfhe".into(),
+                generics: scheme.generics(),
+                receiver: None,
+                params,
+                return_type: Some(ret_ty),
+                where_clause: vec![],
+                body: IrBlock {
+                    stmts,
+                    stmt_provs: provs,
+                    expr: Some(Box::new(ret_expr)),
+                },
+                external_kind: ExternalKind::Normal,
+            }],
+        }
+    }
+
+    /// Compile-check helper for loop-based codegen tests — needs `tfhe_not`
+    /// in addition to the standard TFHE imports.
+    fn run_compile_check_tfhe_loop(code: &str, test_name: &str) {
+        let uses = "use volar_spec::tfhe::{BootstrappingKey, LweCiphertext, \
+                    tfhe_gate_bootstrapping_and, tfhe_xor, tfhe_trivial_zero, \
+                    tfhe_trivial_one, tfhe_trivial_encrypt, tfhe_not};\n";
+        let with_imports = if let Some(newline) = code.find('\n') {
+            let (head, tail) = code.split_at(newline + 1);
+            format!("{head}{uses}{tail}")
+        } else {
+            format!("{uses}{code}")
+        };
+        run_compile_check(&with_imports, test_name);
+    }
+
+    #[test]
+    fn test_oblivious_read_loop_2cells_compiles() {
+        let module = build_loop_read_module(2, 1);
+        let code = print_fhe_flat_module(&module, true);
+        run_compile_check_tfhe_loop(&code, "loop_read_2cells");
+    }
+
+    #[test]
+    fn test_oblivious_read_loop_4cells_compiles() {
+        let module = build_loop_read_module(4, 2);
+        let code = print_fhe_flat_module(&module, true);
+        run_compile_check_tfhe_loop(&code, "loop_read_4cells");
+    }
+
+    #[test]
+    fn test_oblivious_write_loop_2cells_compiles() {
+        let module = build_loop_write_module(2, 1);
+        let code = print_fhe_flat_module(&module, true);
+        run_compile_check_tfhe_loop(&code, "loop_write_2cells");
+    }
+
+    #[test]
+    fn test_oblivious_write_loop_4cells_compiles() {
+        let module = build_loop_write_module(4, 2);
+        let code = print_fhe_flat_module(&module, true);
+        run_compile_check_tfhe_loop(&code, "loop_write_4cells");
     }
 
     // ---- New feature tests --------------------------------------------------
