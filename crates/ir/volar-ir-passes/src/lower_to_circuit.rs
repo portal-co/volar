@@ -344,13 +344,13 @@ fn subst_stmt(stmt: &BIrStmt, var_map: &BTreeMap<u32, u32>) -> BIrStmt {
         BIrStmt::StorageRead { storage, bit_width, addr } => BIrStmt::StorageRead {
             storage: *storage,
             bit_width: *bit_width,
-            addr: s(addr),
+            addr: addr.iter().map(|v| s(v)).collect(),
         },
         BIrStmt::StorageWrite { storage, src, bit_width, addr } => BIrStmt::StorageWrite {
             storage: *storage,
             src: s(src),
             bit_width: *bit_width,
-            addr: s(addr),
+            addr: addr.iter().map(|v| s(v)).collect(),
         },
     }
 }

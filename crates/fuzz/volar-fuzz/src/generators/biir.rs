@@ -274,7 +274,7 @@ fn make_stmt_extended(kind: u8, a: u32, b: u32, n_avail: u32) -> (BIrStmt, bool)
                     storage: store_id,
                     src: IRVarId(av),
                     bit_width: 1,
-                    addr: IRVarId(bv),
+                    addr: vec![IRVarId(bv)],
                 }, true) // void
             }
             _ => {
@@ -283,7 +283,7 @@ fn make_stmt_extended(kind: u8, a: u32, b: u32, n_avail: u32) -> (BIrStmt, bool)
                 (BIrStmt::StorageRead {
                     storage: store_id,
                     bit_width: 1,
-                    addr: IRVarId(av),
+                    addr: vec![IRVarId(av)],
                 }, false)
             }
         }

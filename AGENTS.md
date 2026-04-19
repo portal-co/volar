@@ -112,9 +112,24 @@ A `StorageWrite` to `(S, T, addr)` invalidates all cached reads for the same `(S
 
 All evaluators must key their storage maps by `(StorageId, TypeId, addr)` (IR, VAFFLE) or the equivalent `(StorageId, bit_width, addr)` (BIR, where all values are single bits). Writing with one type and reading with a different type at the same `StorageId + address` returns the default zero value, not the previously written data.
 
+### BIR multi-bit addresses
+
+`BIrStmt::StorageRead` and `StorageWrite` use `addr: Vec<IRVarId>` — each element is a single-bit BIR variable, and the Vec represents an N-bit address giving 2^N distinct locations per `(StorageId, bit_width)` pair. Bit 0 (index 0) is the least-significant bit.
+
+**IR→BIR lowering** (`lower_ir_to_boolar.rs`): all bits of the IR address variable are passed through to the BIR address vec — `var_bits[&addr.0].iter().copied().collect()`. No truncation.
+
+**BIR evaluator** (`interpreter/biir.rs`): collapses `Vec<IRVarId>` to `u64` via `bits_to_u64` (imported from `interpreter::ir`), then keys the `BIrStorageMap` by `(StorageId, u64)`. This keeps the evaluator simple and supports up to 64-bit addresses.
+
+**Store-forward optimizer** (`store_forward.rs`): `BiirStoreCache` is keyed by `(StorageId, usize, Vec<IRVarId>)`. `Vec<IRVarId>` implements `Ord` lexicographically, so it works as a `BTreeMap` key. Cross-block translation applies the pred→target arg map to **each element** of the addr Vec; if any bit fails to translate, the entire cache entry is dropped.
+
+**FHE weaver** (`fhe.rs`): `emit_read` and `emit_write` take `addr_wires: &[&str]` (one wire name per address bit). `mux_tree_read` uses `addr_wires[level]` at each recursion level (not the same wire at every level). `emit_write` uses a full binary demux tree for N-bit addresses, mirroring `mux_tree_read`.
+
+**Fuzzer generator** (`generators/biir.rs`): generates 1-bit addresses (`addr: vec![IRVarId(bv)]`) as the minimum, with optional 2-bit addresses for additional coverage.
+
 ### Relevant files
 
 - `crates/fuzz/volar-fuzz/src/interpreter/ir.rs` — `StorageMap = BTreeMap<(StorageId, TypeId, u64), Vec<bool>>`
 - `crates/fuzz/volar-fuzz/src/interpreter/vaffle.rs` — reuses `StorageMap` from `ir.rs`
-- `crates/fuzz/volar-fuzz/src/interpreter/biir.rs` — `BIrStorageMap = BTreeMap<(StorageId, u64), bool>` (bit_width always 1)
-- `crates/ir/volar-ir-opt/src/store_forward.rs` — cache types `IrStoreCache`, `BiirStoreCache`, `VaffleCache`
+- `crates/fuzz/volar-fuzz/src/interpreter/biir.rs` — `BIrStorageMap = BTreeMap<(StorageId, u64), bool>`; uses `bits_to_u64` to collapse multi-bit addr
+- `crates/ir/volar-ir-opt/src/store_forward.rs` — cache types `IrStoreCache`, `BiirStoreCache` (keyed by `Vec<IRVarId>`), `VaffleCache`
+- `crates/compiler/volar-weaver/src/fhe.rs` — `emit_read`/`emit_write` with `addr_wires: &[&str]`; `mux_tree_read` with per-level addr bits

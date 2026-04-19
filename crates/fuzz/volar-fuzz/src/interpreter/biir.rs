@@ -10,6 +10,7 @@
 //!   `Return` branch or until `MAX_ITERS` is exceeded, at which point
 //!   `None` is returned.
 
+use crate::interpreter::ir::bits_to_u64;
 use std::collections::BTreeMap;
 
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
@@ -17,8 +18,9 @@ use volar_ir::ir::{IRBlockTargetId, IRVarId, StorageId};
 
 /// Storage map for BIR evaluation: keyed by `(StorageId, address_as_u64)`.
 ///
-/// Since every BIR variable is a single bit, an address variable gives us at
-/// most two distinct locations (0 or 1) per `StorageId`.
+/// Each BIR variable is a single bit; the `addr: Vec<IRVarId>` in
+/// `StorageRead`/`StorageWrite` is an N-bit address collapsed to a `u64`
+/// via `bits_to_u64`.
 pub type BIrStorageMap = BTreeMap<(StorageId, u64), bool>;
 
 /// Maximum number of times block 0 may be re-entered (loop guard for
@@ -133,14 +135,14 @@ fn eval_stmt(stmt: &BIrStmt, vars: &BTreeMap<u32, bool>, storage: &mut BIrStorag
         BIrStmt::ActionBit { .. } => panic!("eval_biir: ActionBit not supported"),
         BIrStmt::Rng { .. } => panic!("eval_biir: Rng not supported"),
         BIrStmt::StorageRead { storage: store_id, bit_width: _, addr } => {
-            let addr_val = get(vars, addr);
-            let addr_u64 = if addr_val { 1 } else { 0 };
+            let addr_bits: Vec<bool> = addr.iter().map(|v| get(vars, v)).collect();
+            let addr_u64 = bits_to_u64(&addr_bits);
             storage.get(&(*store_id, addr_u64)).copied().unwrap_or(false)
         }
         BIrStmt::StorageWrite { storage: store_id, src, bit_width: _, addr } => {
             let src_val = get(vars, src);
-            let addr_val = get(vars, addr);
-            let addr_u64 = if addr_val { 1 } else { 0 };
+            let addr_bits: Vec<bool> = addr.iter().map(|v| get(vars, v)).collect();
+            let addr_u64 = bits_to_u64(&addr_bits);
             storage.insert((*store_id, addr_u64), src_val);
             false // dummy zero bit
         }

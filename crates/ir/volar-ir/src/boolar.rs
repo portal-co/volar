@@ -133,7 +133,11 @@ pub enum BIrStmt {
         name: alloc::string::String,
     },
 
-    /// Read `bit_width` bits from a storage space, addressed by a bit-vector var.
+    /// Read `bit_width` bits from a storage space, addressed by a bit-vector.
+    ///
+    /// `addr` is an N-bit address represented as a `Vec` of single-bit BIR
+    /// variables (bit 0 = index 0 = least-significant), giving 2^N distinct
+    /// locations per `(StorageId, bit_width)` pair.
     ///
     /// The result var represents the entire `bit_width`-wide value as a single
     /// Boolar handle; individual bits are not separately addressable at this
@@ -141,17 +145,21 @@ pub enum BIrStmt {
     StorageRead {
         storage: StorageId,
         bit_width: usize,
-        addr: IRVarId,
+        addr: Vec<IRVarId>,
     },
 
     /// Write a `bit_width`-wide value `src` to storage, addressed by `addr`.
+    ///
+    /// `addr` is an N-bit address represented as a `Vec` of single-bit BIR
+    /// variables (bit 0 = index 0 = least-significant), giving 2^N distinct
+    /// locations per `(StorageId, bit_width)` pair.
     ///
     /// Produces a dummy zero bit (no useful value).
     StorageWrite {
         storage: StorageId,
         src: IRVarId,
         bit_width: usize,
-        addr: IRVarId,
+        addr: Vec<IRVarId>,
     },
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]

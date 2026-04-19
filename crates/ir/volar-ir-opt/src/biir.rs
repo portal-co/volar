@@ -204,14 +204,18 @@ pub(crate) fn apply_aliases_to_biir_stmt(stmt: &mut BIrStmt, alias_map: &BTreeMa
             if c != *call { *call = c; changed = true; }
         }
         BIrStmt::StorageRead { addr, .. } => {
-            let c = canon_alias(alias_map, *addr);
-            if c != *addr { *addr = c; changed = true; }
+            for v in addr.iter_mut() {
+                let c = canon_alias(alias_map, *v);
+                if c != *v { *v = c; changed = true; }
+            }
         }
         BIrStmt::StorageWrite { src, addr, .. } => {
             let cs = canon_alias(alias_map, *src);
             if cs != *src { *src = cs; changed = true; }
-            let ca = canon_alias(alias_map, *addr);
-            if ca != *addr { *addr = ca; changed = true; }
+            for v in addr.iter_mut() {
+                let c = canon_alias(alias_map, *v);
+                if c != *v { *v = c; changed = true; }
+            }
         }
         // Zero, One, Rng: no var references.
         _ => {}

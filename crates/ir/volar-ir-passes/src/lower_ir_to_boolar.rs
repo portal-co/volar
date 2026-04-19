@@ -220,9 +220,9 @@ fn lower_stmt<P: Clone + Default>(
         // as the first Boolar bit of the address IR var.
         IRStmt::StorageRead { storage, ty, addr } => {
             let bit_width = ir_type_bits(&types.0[ty.0 as usize], types);
-            let addr_handle = var_bits[&addr.0][0];
+            let addr_bits: Vec<IRVarId> = var_bits[&addr.0].iter().copied().collect();
             let handle = emitter.emit(
-                BIrStmt::StorageRead { storage: *storage, bit_width, addr: addr_handle },
+                BIrStmt::StorageRead { storage: *storage, bit_width, addr: addr_bits },
                 prov,
             );
             var_bits.insert(ir_var_idx, vec![handle]);
@@ -233,9 +233,9 @@ fn lower_stmt<P: Clone + Default>(
         IRStmt::StorageWrite { storage, src, ty, addr } => {
             let bit_width = ir_type_bits(&types.0[ty.0 as usize], types);
             let src_handle = var_bits[&src.0][0];
-            let addr_handle = var_bits[&addr.0][0];
+            let addr_bits: Vec<IRVarId> = var_bits[&addr.0].iter().copied().collect();
             let handle = emitter.emit(
-                BIrStmt::StorageWrite { storage: *storage, src: src_handle, bit_width, addr: addr_handle },
+                BIrStmt::StorageWrite { storage: *storage, src: src_handle, bit_width, addr: addr_bits },
                 prov,
             );
             var_bits.insert(ir_var_idx, vec![handle]);

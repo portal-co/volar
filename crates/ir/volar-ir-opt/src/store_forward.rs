@@ -400,11 +400,15 @@ fn shift_biir_stmt_vars(
             shift_var(a, old_base, n_stmts, shift);
         }
         BIrStmt::StorageRead { addr, .. } => {
-            shift_var(addr, old_base, n_stmts, shift);
+            for v in addr.iter_mut() {
+                shift_var(v, old_base, n_stmts, shift);
+            }
         }
         BIrStmt::StorageWrite { src, addr, .. } => {
             shift_var(src, old_base, n_stmts, shift);
-            shift_var(addr, old_base, n_stmts, shift);
+            for v in addr.iter_mut() {
+                shift_var(v, old_base, n_stmts, shift);
+            }
         }
         BIrStmt::OracleCall { args, .. } => {
             for a in args.iter_mut() {
@@ -689,7 +693,7 @@ fn merge_ir_caches_with_injection<P: Clone + Default>(
 // Boolar IR
 // ============================================================================
 
-type BiirStoreCache = BTreeMap<(StorageId, usize, IRVarId), IRVarId>;
+type BiirStoreCache = BTreeMap<(StorageId, usize, Vec<IRVarId>), IRVarId>;
 
 /// Apply store-to-load forwarding to `blocks`, propagating store caches across
 /// block boundaries with param injection when needed.
@@ -780,12 +784,12 @@ fn store_forward_biir_block_with_cache<P: Clone + Default>(
         match &stmt {
             BIrStmt::StorageWrite { storage, src, bit_width, addr } => {
                 let src = canon_alias(&alias_map, *src);
-                let addr = canon_alias(&alias_map, *addr);
+                let addr: Vec<IRVarId> = addr.iter().map(|v| canon_alias(&alias_map, *v)).collect();
                 cache.retain(|(s, w, _), _| !(s == storage && w == bit_width));
                 cache.insert((*storage, *bit_width, addr), src);
             }
             BIrStmt::StorageRead { storage, bit_width, addr } => {
-                let addr = canon_alias(&alias_map, *addr);
+                let addr: Vec<IRVarId> = addr.iter().map(|v| canon_alias(&alias_map, *v)).collect();
                 let key = (*storage, *bit_width, addr);
                 if let Some(&src) = cache.get(&key) {
                     alias_map.insert(rv, src);
@@ -908,17 +912,20 @@ fn translate_biir_cache_with_injection<P: Clone + Default>(
     let mut result: BiirStoreCache = BTreeMap::new();
     let mut injections: Vec<IRVarId> = Vec::new(); // pred src vars to inject
 
-    for (&(s, w, addr_p), &src_p) in pred_cache {
-        if let Some(&addr_b) = trans.get(&addr_p) {
-            if let Some(&src_b) = trans.get(&src_p) {
-                result.insert((s, w, addr_b), src_b);
-            } else {
-                let new_idx = old_n_params + injections.len() as u32;
-                let src_b = IRVarId(new_idx);
-                result.insert((s, w, addr_b), src_b);
-                trans.insert(src_p, src_b);
-                injections.push(src_p);
-            }
+    for ((s, w, addr_p), &src_p) in pred_cache {
+        // Translate each bit of the address vec; skip entry if any bit is untranslatable.
+        let addr_b: Vec<IRVarId> = match addr_p.iter().map(|v| trans.get(v).copied()).collect::<Option<Vec<_>>>() {
+            Some(a) => a,
+            None => continue,
+        };
+        if let Some(&src_b) = trans.get(&src_p) {
+            result.insert((*s, *w, addr_b), src_b);
+        } else {
+            let new_idx = old_n_params + injections.len() as u32;
+            let src_b = IRVarId(new_idx);
+            result.insert((*s, *w, addr_b), src_b);
+            trans.insert(src_p, src_b);
+            injections.push(src_p);
         }
     }
 
@@ -961,7 +968,7 @@ fn merge_biir_caches_with_injection<P: Clone + Default>(
     let n_preds = pred_indices.len();
 
     let mut trans_maps: Vec<BTreeMap<IRVarId, IRVarId>> = Vec::with_capacity(n_preds);
-    let mut translated: Vec<BTreeMap<(StorageId, usize, IRVarId), IRVarId>> =
+    let mut translated: Vec<BTreeMap<(StorageId, usize, Vec<IRVarId>), IRVarId>> =
         Vec::with_capacity(n_preds);
 
     for &pi in pred_indices {
@@ -982,9 +989,9 @@ fn merge_biir_caches_with_injection<P: Clone + Default>(
 
         let entries: BTreeMap<_, _> = pred_cache
             .iter()
-            .filter_map(|(&(s, w, addr_p), &src_p)| {
-                let addr_t = *trans.get(&addr_p)?;
-                Some(((s, w, addr_t), src_p))
+            .filter_map(|((s, w, addr_p), &src_p)| {
+                let addr_t: Vec<IRVarId> = addr_p.iter().map(|v| trans.get(v).copied()).collect::<Option<Vec<_>>>()?;
+                Some(((*s, *w, addr_t), src_p))
             })
             .collect();
 
@@ -992,7 +999,7 @@ fn merge_biir_caches_with_injection<P: Clone + Default>(
         translated.push(entries);
     }
 
-    let common_keys: Vec<(StorageId, usize, IRVarId)> = if translated.is_empty() {
+    let common_keys: Vec<(StorageId, usize, Vec<IRVarId>)> = if translated.is_empty() {
         Vec::new()
     } else {
         translated[0]
@@ -1012,8 +1019,9 @@ fn merge_biir_caches_with_injection<P: Clone + Default>(
     let mut injections: Vec<Vec<IRVarId>> = Vec::new();
 
     for (s, w, addr_t) in common_keys {
+        let key = (s, w, addr_t);
         let src_per_pred: Vec<IRVarId> = (0..n_preds)
-            .map(|pp| translated[pp][&(s, w, addr_t)])
+            .map(|pp| translated[pp][&key])
             .collect();
 
         let translated_srcs: Vec<Option<IRVarId>> = src_per_pred
@@ -1026,10 +1034,10 @@ fn merge_biir_caches_with_injection<P: Clone + Default>(
             && translated_srcs.windows(2).all(|w| w[0] == w[1]);
 
         if all_same {
-            result.insert((s, w, addr_t), translated_srcs[0].unwrap());
+            result.insert(key, translated_srcs[0].unwrap());
         } else {
             let new_param_idx = old_n_params + injections.len() as u32;
-            result.insert((s, w, addr_t), IRVarId(new_param_idx));
+            result.insert(key, IRVarId(new_param_idx));
             injections.push(src_per_pred);
         }
     }

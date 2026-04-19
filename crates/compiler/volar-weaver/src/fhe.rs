@@ -565,6 +565,8 @@ impl FheStorageCtx {
 
     /// Oblivious read via MUX tree.
     ///
+    /// `addr_wires` contains one wire name per address bit (bit 0 = LSB).
+    ///
     /// Returns the name of the output wire.  Cost: `(next_pow2(cells) − 1)` AND
     /// gates per bit of value width.
     fn emit_read<S: FheScheme, Q: Clone + Default>(
@@ -572,7 +574,7 @@ impl FheStorageCtx {
         out_name: &str,
         storage_id: u32,
         bit_width: usize,
-        addr_wire: &str,
+        addr_wires: &[&str],
         scheme: &S,
         stmts: &mut Vec<IrStmt<Q>>,
         stmt_provs: &mut Vec<Q>,
@@ -591,35 +593,10 @@ impl FheStorageCtx {
             return String::from(out_name);
         }
 
-        let _aw = Self::effective_addr_width(count);
-        // Build address bit wire names by indexing the addr var.
-        // The addr is a single wire (merged bits) at BIr level — we need its
-        // individual bits.  However, in the flat BIr circuit, the address may
-        // be a multi-bit value.  We'll use the addr wire directly for 1-cell
-        // storage, and for larger sizes, we split using the addr bits that
-        // were merged into the address variable.
-        //
-        // For the flat path, addresses are individual bit wires (since BIr
-        // operates at the bit level).  The `addr` BIrStmt field is a single
-        // IRVarId that refers to the merged address.  We need the individual
-        // bit wires that were merged into it.  Since we don't track this in
-        // the flat weaver, we pass the address as a single bit for 2-cell
-        // storage and use the addr wire as the MSB selector.
-        //
-        // For simplicity in the flat path, we use the address wire as the
-        // selector bit for a 2-cell MUX.  For larger cell counts, the
-        // address bits should have been individually available from the
-        // circuit's Merge/Shuffle structure.
         let cells: Vec<String> = (0..count)
             .map(|ci| self.cells[&(storage_id, bit_width, ci)].clone())
             .collect();
 
-        // For the MUX tree, we need individual address bit wires.
-        // The flat circuit has already decomposed addresses into individual
-        // bits via Merge/Shuffle.  The `addr_wire` is the wire name of the
-        // *merged* address.  We'll use a MUX tree over the cells with the
-        // address wire as selector.
-        //
         // Simple 1-cell case: just clone the cell.
         if count == 1 {
             stmts.push(IrStmt::Let {
@@ -631,14 +608,9 @@ impl FheStorageCtx {
             return String::from(out_name);
         }
 
-        // For 2-cell: MUX(addr, cell[0], cell[1]).
-        // For larger: recursive MUX tree using addr bits.
-        // Since the flat circuit has address bits as individual wires,
-        // we use the addr wire (which is the full merged address) as a
-        // single selector for 2-cell, or need individual bits for larger.
-        // The MUX tree approach: MUX(sel, a, b) = sel · (a ⊕ b) ⊕ a
+        // MUX tree over the cells using per-level address bits.
         let result = self.mux_tree_read(
-            &cells, addr_wire, scheme, stmts, stmt_provs,
+            &cells, addr_wires, scheme, stmts, stmt_provs,
             &format!("_sr_{}", out_name),
         );
         stmts.push(IrStmt::Let {
@@ -651,12 +623,19 @@ impl FheStorageCtx {
     }
 
     /// Oblivious write via demux + per-cell MUX.
+    ///
+    /// `addr_wires` contains one wire name per address bit (bit 0 = LSB).
+    ///
+    /// For each cell `ci`, we compute a selector wire that is 1 iff the address
+    /// equals `ci`.  The selector is the AND of all address bits (or their
+    /// negations) according to the binary representation of `ci`.  Then:
+    ///   cell'[ci] = MUX(sel[ci], old_cell[ci], src)
     fn emit_write<S: FheScheme, Q: Clone + Default>(
         &mut self,
         storage_id: u32,
         bit_width: usize,
         src_wire: &str,
-        addr_wire: &str,
+        addr_wires: &[&str],
         scheme: &S,
         stmts: &mut Vec<IrStmt<Q>>,
         stmt_provs: &mut Vec<Q>,
@@ -677,24 +656,51 @@ impl FheStorageCtx {
             return;
         }
 
-        // For each cell: cell' = MUX(sel, old_cell, src)
-        // where sel = (addr == ci).  For 2 cells: sel[0] = NOT(addr),
-        // sel[1] = addr.
         let tag = format!("_sdm_{}_{}", storage_id, self.mux_counter);
         self.mux_counter += 1;
 
-        // NOT of address (for cell 0).
-        let not_addr = format!("{}_not", tag);
-        stmts.push(IrStmt::Let {
-            pattern: IrPattern::ident(&not_addr),
-            ty: None,
-            init: Some(scheme.emit_not::<Q>(var(addr_wire))),
-        });
-        stmt_provs.push(Q::default());
+        let aw = Self::effective_addr_width(count);
+
+        // Pre-compute NOT of each address bit (reused across cells).
+        let not_addr: Vec<String> = (0..aw)
+            .map(|level| {
+                let name = format!("{}_not{}", tag, level);
+                stmts.push(IrStmt::Let {
+                    pattern: IrPattern::ident(&name),
+                    ty: None,
+                    init: Some(scheme.emit_not::<Q>(var(addr_wires[level]))),
+                });
+                stmt_provs.push(Q::default());
+                name
+            })
+            .collect();
 
         for ci in 0..count {
             let old_cell = self.cells[&(storage_id, bit_width, ci)].clone();
-            let sel = if ci == 0 { not_addr.clone() } else { String::from(addr_wire) };
+
+            // Build the selector: AND of addr bits matching the binary
+            // representation of `ci`.  For each bit position `k`:
+            //   use addr_wires[k] if bit k of ci is 1, else not_addr[k].
+            let sel = if aw == 1 {
+                // 1-bit address: sel is either NOT(addr) or addr directly.
+                if ci & 1 == 0 { not_addr[0].clone() } else { String::from(addr_wires[0]) }
+            } else {
+                // Multi-bit: AND all the per-bit selectors together.
+                let first_bit_wire = if ci & 1 == 0 { &not_addr[0] } else { addr_wires[0] };
+                let mut acc = String::from(first_bit_wire);
+                for k in 1..aw {
+                    let bit_wire = if (ci >> k) & 1 == 0 { &not_addr[k] } else { addr_wires[k] };
+                    let and_name = format!("{}_s{}b{}", tag, ci, k);
+                    stmts.push(IrStmt::Let {
+                        pattern: IrPattern::ident(&and_name),
+                        ty: None,
+                        init: Some(scheme.emit_and::<Q>(var(&acc), var(bit_wire), 0)),
+                    });
+                    stmt_provs.push(Q::default());
+                    acc = and_name;
+                }
+                acc
+            };
 
             // MUX(sel, old_cell, src) = sel · (old_cell ⊕ src) ⊕ old_cell
             let diff_name = format!("{}_d{}", tag, ci);
@@ -725,14 +731,17 @@ impl FheStorageCtx {
         }
     }
 
-    /// MUX-tree read: recursively halves cells using the address as selector.
+    /// MUX-tree read: recursively halves cells using per-level address bits.
+    ///
+    /// `addr_wires[0]` is the LSB (selects between even/odd halves at the
+    /// bottom of the tree), and higher-indexed bits select at higher levels.
     ///
     /// For 2 cells and a single-bit address, produces:
-    ///   MUX(addr, cell[0], cell[1]) = addr · (cell[0] ⊕ cell[1]) ⊕ cell[0]
+    ///   MUX(addr[0], cell[0], cell[1]) = addr[0] · (cell[0] ⊕ cell[1]) ⊕ cell[0]
     fn mux_tree_read<S: FheScheme, Q: Clone + Default>(
         &mut self,
         cells: &[String],
-        addr_wire: &str,
+        addr_wires: &[&str],
         scheme: &S,
         stmts: &mut Vec<IrStmt<Q>>,
         stmt_provs: &mut Vec<Q>,
@@ -751,7 +760,9 @@ impl FheStorageCtx {
             }
             1 => cells[0].clone(),
             2 => {
-                // MUX(addr, cell[0], cell[1]) = addr · (c0 ⊕ c1) ⊕ c0
+                // Use addr_wires[0] (LSB) to select between the two cells.
+                let sel = addr_wires.first().copied().unwrap_or("_zero");
+                // MUX(sel, cell[0], cell[1]) = sel · (c0 ⊕ c1) ⊕ c0
                 let diff = format!("{}_xd", tag);
                 stmts.push(IrStmt::Let {
                     pattern: IrPattern::ident(&diff),
@@ -767,7 +778,7 @@ impl FheStorageCtx {
                 stmts.push(IrStmt::Let {
                     pattern: IrPattern::ident(&masked),
                     ty: None,
-                    init: Some(scheme.emit_and::<Q>(var(addr_wire), var(&diff), 0)),
+                    init: Some(scheme.emit_and::<Q>(var(sel), var(&diff), 0)),
                 });
                 stmt_provs.push(Q::default());
 
@@ -785,12 +796,17 @@ impl FheStorageCtx {
             }
             _ => {
                 // Recursive split — pad to power-of-2, split at midpoint.
+                // The current level's selector is addr_wires[0] (LSB).
+                // Left subtree gets even-indexed cells, right gets odd-indexed.
+                // We recurse with addr_wires[1..] for higher bits.
                 let n_pad = cells.len().next_power_of_two();
                 let mid = n_pad / 2;
                 let left = if mid <= cells.len() { &cells[..mid] } else { cells };
                 let right = if mid < cells.len() { &cells[mid..] } else { &[] as &[String] };
+                // Recurse on left and right halves with the remaining (higher) address bits.
+                let remaining_addr = if addr_wires.len() > 1 { &addr_wires[1..] } else { &[] as &[&str] };
                 let left_r = self.mux_tree_read(
-                    left, addr_wire, scheme, stmts, stmt_provs,
+                    left, remaining_addr, scheme, stmts, stmt_provs,
                     &format!("{}l", tag),
                 );
                 let right_cells: Vec<String> = if right.is_empty() {
@@ -807,10 +823,11 @@ impl FheStorageCtx {
                     right.to_vec()
                 };
                 let right_r = self.mux_tree_read(
-                    &right_cells, addr_wire, scheme, stmts, stmt_provs,
+                    &right_cells, remaining_addr, scheme, stmts, stmt_provs,
                     &format!("{}r", tag),
                 );
-                // MUX the two halves.
+                // MUX the two halves using the current level's address bit.
+                let sel = addr_wires.first().copied().unwrap_or("_zero");
                 let diff = format!("{}_xd", tag);
                 stmts.push(IrStmt::Let {
                     pattern: IrPattern::ident(&diff),
@@ -822,7 +839,7 @@ impl FheStorageCtx {
                 stmts.push(IrStmt::Let {
                     pattern: IrPattern::ident(&masked),
                     ty: None,
-                    init: Some(scheme.emit_and::<Q>(var(addr_wire), var(&diff), 0)),
+                    init: Some(scheme.emit_and::<Q>(var(sel), var(&diff), 0)),
                 });
                 stmt_provs.push(Q::default());
                 let result = format!("{}_r", tag);
@@ -988,15 +1005,19 @@ where
             BIrStmt::Rng { name: rng_name } => scheme.emit_rng(rng_name),
 
             BIrStmt::StorageRead { storage, bit_width, addr } => {
-                let addr_name = var_names
-                    .get(&addr.0)
-                    .cloned()
-                    .unwrap_or_else(|| format!("wire_{}", addr.0));
+                let addr_names: Vec<String> = addr
+                    .iter()
+                    .map(|v| var_names
+                        .get(&v.0)
+                        .cloned()
+                        .unwrap_or_else(|| format!("wire_{}", v.0)))
+                    .collect();
+                let addr_refs: Vec<&str> = addr_names.iter().map(|s| s.as_str()).collect();
                 stor_ctx.emit_read::<S, H::Output>(
                     &let_name,
                     storage.0,
                     *bit_width,
-                    &addr_name,
+                    &addr_refs,
                     scheme,
                     &mut stmts,
                     &mut stmt_provs,
@@ -1011,15 +1032,19 @@ where
                     .get(&src.0)
                     .cloned()
                     .unwrap_or_else(|| format!("wire_{}", src.0));
-                let addr_name = var_names
-                    .get(&addr.0)
-                    .cloned()
-                    .unwrap_or_else(|| format!("wire_{}", addr.0));
+                let addr_names: Vec<String> = addr
+                    .iter()
+                    .map(|v| var_names
+                        .get(&v.0)
+                        .cloned()
+                        .unwrap_or_else(|| format!("wire_{}", v.0)))
+                    .collect();
+                let addr_refs: Vec<&str> = addr_names.iter().map(|s| s.as_str()).collect();
                 stor_ctx.emit_write::<S, H::Output>(
                     storage.0,
                     *bit_width,
                     &src_name,
-                    &addr_name,
+                    &addr_refs,
                     scheme,
                     &mut stmts,
                     &mut stmt_provs,
@@ -3059,8 +3084,8 @@ mod tests {
     ///
     /// ```text
     /// params: 2 (input_0, input_1)
-    /// wire_2 = StorageWrite(storage=5, src=input_0, bit_width=1, addr=input_1)
-    /// wire_3 = StorageRead(storage=5, bit_width=1, addr=input_1)
+    /// wire_2 = StorageWrite(storage=5, src=input_0, bit_width=1, addr=[input_1])
+    /// wire_3 = StorageRead(storage=5, bit_width=1, addr=[input_1])
     /// Return wire_3
     /// ```
     fn build_storage_circuit() -> BIrBlocks {
@@ -3071,12 +3096,12 @@ mod tests {
                     storage: StorageId(5),
                     src: IRVarId(0),
                     bit_width: 1,
-                    addr: IRVarId(1),
+                    addr: vec![IRVarId(1)],
                 },
                 BIrStmt::StorageRead {
                     storage: StorageId(5),
                     bit_width: 1,
-                    addr: IRVarId(1),
+                    addr: vec![IRVarId(1)],
                 },
             ],
             stmt_provs: vec![(), ()],

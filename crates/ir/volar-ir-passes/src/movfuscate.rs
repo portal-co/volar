@@ -406,13 +406,13 @@ fn subst_biir(stmt: &BIrStmt, var_map: &[u32]) -> BIrStmt {
         BIrStmt::StorageRead { storage, bit_width, addr } => BIrStmt::StorageRead {
             storage: storage.clone(),
             bit_width: *bit_width,
-            addr: s(addr),
+            addr: addr.iter().map(|v| s(v)).collect(),
         },
         BIrStmt::StorageWrite { storage, src, bit_width, addr } => BIrStmt::StorageWrite {
             storage: storage.clone(),
             src: s(src),
             bit_width: *bit_width,
-            addr: s(addr),
+            addr: addr.iter().map(|v| s(v)).collect(),
         },
     }
 }
