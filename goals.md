@@ -90,4 +90,10 @@ implementation focus (VOLE-based ZK, garbled circuits, compiler toolchain).
 - [ ] `AES8`/`Galois64` constant folding in `volar-ir-opt` (separate pass after emulation support)
 - [ ] `IterLoop` over non-array collections
 
+## Misc
+
+- [ ] Harden
+  - [ ] Formal security proofs (Lean)
+  - [ ] Use Mythos, if this gets popular
+
 Prefer dynamically creating subgoals to handling entire goals at a time; AI agents, add this to files and memory.
