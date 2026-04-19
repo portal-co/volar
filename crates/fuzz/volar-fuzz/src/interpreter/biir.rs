@@ -13,7 +13,13 @@
 use std::collections::BTreeMap;
 
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
-use volar_ir::ir::{IRBlockTargetId, IRVarId};
+use volar_ir::ir::{IRBlockTargetId, IRVarId, StorageId};
+
+/// Storage map for BIR evaluation: keyed by `(StorageId, address_as_u64)`.
+///
+/// Since every BIR variable is a single bit, an address variable gives us at
+/// most two distinct locations (0 or 1) per `StorageId`.
+pub type BIrStorageMap = BTreeMap<(StorageId, u64), bool>;
 
 /// Maximum number of times block 0 may be re-entered (loop guard for
 /// movfuscated / iterating circuits).
@@ -40,6 +46,7 @@ pub fn eval_biir_with_limit(
     let mut loop_count = 0usize;
     let mut current_block: usize = 0;
     let mut current_inputs: Vec<bool> = inputs.to_vec();
+    let mut storage: BIrStorageMap = BTreeMap::new();
 
     loop {
         if current_block == 0 {
@@ -50,7 +57,7 @@ pub fn eval_biir_with_limit(
         }
 
         let block = &blocks.0[current_block];
-        let output = eval_block(block, &current_inputs)?;
+        let output = eval_block(block, &current_inputs, &mut storage)?;
 
         match output {
             BlockResult::Return(bits) => return Some(bits),
@@ -70,7 +77,7 @@ enum BlockResult {
 
 /// Evaluate one `BIrBlock`, returning either a `Return` result or the next
 /// block index and its argument values.
-fn eval_block(block: &BIrBlock<()>, params: &[bool]) -> Option<BlockResult> {
+fn eval_block(block: &BIrBlock<()>, params: &[bool], storage: &mut BIrStorageMap) -> Option<BlockResult> {
     assert_eq!(
         params.len(),
         block.params as usize,
@@ -88,7 +95,7 @@ fn eval_block(block: &BIrBlock<()>, params: &[bool]) -> Option<BlockResult> {
     let base = block.params;
     for (i, stmt) in block.stmts.iter().enumerate() {
         let id = base + i as u32;
-        let val = eval_stmt(stmt, &vars);
+        let val = eval_stmt(stmt, &vars, storage);
         vars.insert(id, val);
     }
 
@@ -112,7 +119,7 @@ fn eval_block(block: &BIrBlock<()>, params: &[bool]) -> Option<BlockResult> {
 }
 
 /// Evaluate a single boolean gate statement.
-fn eval_stmt(stmt: &BIrStmt, vars: &BTreeMap<u32, bool>) -> bool {
+fn eval_stmt(stmt: &BIrStmt, vars: &BTreeMap<u32, bool>, storage: &mut BIrStorageMap) -> bool {
     match stmt {
         BIrStmt::Zero => false,
         BIrStmt::One => true,
@@ -125,8 +132,18 @@ fn eval_stmt(stmt: &BIrStmt, vars: &BTreeMap<u32, bool>) -> bool {
         BIrStmt::ActionCall { .. } => panic!("eval_biir: ActionCall not supported"),
         BIrStmt::ActionBit { .. } => panic!("eval_biir: ActionBit not supported"),
         BIrStmt::Rng { .. } => panic!("eval_biir: Rng not supported"),
-        BIrStmt::StorageRead { .. } => panic!("eval_biir: StorageRead not supported"),
-        BIrStmt::StorageWrite { .. } => panic!("eval_biir: StorageWrite not supported"),
+        BIrStmt::StorageRead { storage: store_id, bit_width: _, addr } => {
+            let addr_val = get(vars, addr);
+            let addr_u64 = if addr_val { 1 } else { 0 };
+            storage.get(&(*store_id, addr_u64)).copied().unwrap_or(false)
+        }
+        BIrStmt::StorageWrite { storage: store_id, src, bit_width: _, addr } => {
+            let src_val = get(vars, src);
+            let addr_val = get(vars, addr);
+            let addr_u64 = if addr_val { 1 } else { 0 };
+            storage.insert((*store_id, addr_u64), src_val);
+            false // dummy zero bit
+        }
     }
 }
 

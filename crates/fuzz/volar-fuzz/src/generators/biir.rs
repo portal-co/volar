@@ -28,7 +28,7 @@
 //!   (`Zero`, `One`, `And`, `Or`, `Xor`, `Not`).
 
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
-use volar_ir::ir::{IRBlockId, IRBlockTargetId, IRVarId};
+use volar_ir::ir::{IRBlockId, IRBlockTargetId, IRVarId, StorageId};
 
 // ============================================================================
 // Raw data types
@@ -238,6 +238,211 @@ fn make_target(
 }
 
 // ============================================================================
+// Extended stmt builder (8-way dispatch with storage ops)
+// ============================================================================
+
+/// Build a single BIR stmt using 8-way dispatch:
+///   0 = Zero, 1 = One, 2 = And, 3 = Or, 4 = Xor, 5 = Not,
+///   6 = StorageWrite, 7 = StorageRead
+///
+/// `n_avail` is the count of usable operand vars (excludes void StorageWrite
+/// results).  StorageWrite returns a dummy `false` bit and is NOT added to the
+/// usable set — the caller must handle that.
+///
+/// Returns `(stmt, is_void)`.  `is_void` is `true` for StorageWrite.
+fn make_stmt_extended(kind: u8, a: u32, b: u32, n_avail: u32) -> (BIrStmt, bool) {
+    if n_avail == 0 {
+        if kind & 1 == 0 {
+            (BIrStmt::Zero, false)
+        } else {
+            (BIrStmt::One, false)
+        }
+    } else {
+        let av = a % n_avail;
+        let bv = b % n_avail;
+        match kind % 8 {
+            0 => (BIrStmt::Zero, false),
+            1 => (BIrStmt::One, false),
+            2 => (BIrStmt::And(IRVarId(av), IRVarId(bv)), false),
+            3 => (BIrStmt::Or(IRVarId(av), IRVarId(bv)), false),
+            4 => (BIrStmt::Xor(IRVarId(av), IRVarId(bv)), false),
+            5 => (BIrStmt::Not(IRVarId(av)), false),
+            6 => {
+                // StorageWrite: store src=av at addr=bv, bit_width=1
+                let store_id = StorageId(a % 4);
+                (BIrStmt::StorageWrite {
+                    storage: store_id,
+                    src: IRVarId(av),
+                    bit_width: 1,
+                    addr: IRVarId(bv),
+                }, true) // void
+            }
+            _ => {
+                // StorageRead: read from addr=av, bit_width=1
+                let store_id = StorageId(a % 4);
+                (BIrStmt::StorageRead {
+                    storage: store_id,
+                    bit_width: 1,
+                    addr: IRVarId(av),
+                }, false)
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Extended interpreter: single-block BIR with storage ops
+// ============================================================================
+
+/// Like [`interpret_biir`] but uses the 8-way [`make_stmt_extended`] dispatch
+/// so the generated BIR may contain `StorageRead` and `StorageWrite` stmts.
+///
+/// Produces a single-block program that returns all vars.
+pub fn interpret_biir_extended(
+    n_params: u32,
+    raw_stmts: &[RawStmt],
+) -> BIrBlocks<()> {
+    let mut stmts: Vec<BIrStmt> = Vec::with_capacity(raw_stmts.len());
+    // Track indices of usable (non-void) vars.  Params 0..n_params are all
+    // usable.  StorageWrite results are void and excluded.
+    let mut usable: Vec<u32> = (0..n_params).collect();
+
+    for &(kind, a, b) in raw_stmts {
+        let n_avail = usable.len() as u32;
+        // Remap raw operand indices through the usable set.
+        let (mapped_a, mapped_b) = if n_avail == 0 {
+            (0u32, 0u32)
+        } else {
+            (usable[(a as usize) % usable.len()], usable[(b as usize) % usable.len()])
+        };
+        let var_id = n_params + stmts.len() as u32;
+        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail);
+        stmts.push(stmt);
+        if !is_void {
+            usable.push(var_id);
+        }
+    }
+
+    // Terminator: return all vars (params + stmts).
+    let total = n_params + stmts.len() as u32;
+    let ret_args: Vec<IRVarId> = (0..total).map(IRVarId).collect();
+    let n = stmts.len();
+
+    let block = BIrBlock {
+        params: n_params,
+        stmts,
+        stmt_provs: vec![(); n],
+        terminator: BIrTerminator::Jmp(BIrTarget {
+            block: IRBlockTargetId::Return,
+            args: ret_args,
+        }),
+    };
+
+    BIrBlocks(vec![block])
+}
+
+// ============================================================================
+// Multi-block interpreter: two-block BIR for cross-block forwarding tests
+// ============================================================================
+
+/// Build a two-block `BIrBlocks<()>`:
+///
+/// - **Block 0 (entry)**: `n_params` params + stmts from `raw_stmts_b0`
+///   (8-way dispatch).  Terminates with `Jmp(Block(1), all_vars)` — all vars
+///   including void StorageWrite results (which produce dummy `false` bits).
+/// - **Block 1**: params = B0's total var count (params + stmts); stmts from
+///   `raw_stmts_b1` (8-way dispatch with B1-local var IDs).  Terminates with
+///   `Jmp(Return, all_b1_vars)`.
+///
+/// This layout makes Block 0 always execute before Block 1, exercising
+/// cross-block store-to-load forwarding.
+pub fn interpret_biir_multiblock(
+    n_params: u32,
+    raw_stmts_b0: &[RawStmt],
+    raw_stmts_b1: &[RawStmt],
+) -> BIrBlocks<()> {
+    // ── Block 0 ──────────────────────────────────────────────────────────────
+    let mut stmts_b0: Vec<BIrStmt> = Vec::with_capacity(raw_stmts_b0.len());
+    let mut usable_b0: Vec<u32> = (0..n_params).collect();
+
+    for &(kind, a, b) in raw_stmts_b0 {
+        let n_avail = usable_b0.len() as u32;
+        let (mapped_a, mapped_b) = if n_avail == 0 {
+            (0u32, 0u32)
+        } else {
+            (usable_b0[(a as usize) % usable_b0.len()], usable_b0[(b as usize) % usable_b0.len()])
+        };
+        let var_id = n_params + stmts_b0.len() as u32;
+        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail);
+        stmts_b0.push(stmt);
+        if !is_void {
+            usable_b0.push(var_id);
+        }
+    }
+
+    let total_b0 = n_params + stmts_b0.len() as u32;
+    // B0 terminator: jump to Block(1), passing ALL vars (including void).
+    let b0_args: Vec<IRVarId> = (0..total_b0).map(IRVarId).collect();
+    let n_b0 = stmts_b0.len();
+    let b0_term = BIrTerminator::Jmp(BIrTarget {
+        block: IRBlockTargetId::Block(IRBlockId(1)),
+        args: b0_args,
+    });
+
+    // ── Block 1 ──────────────────────────────────────────────────────────────
+    // B1 params = total_b0 (all B0 vars passed as args).
+    let n_b1_params = total_b0;
+    let mut stmts_b1: Vec<BIrStmt> = Vec::with_capacity(raw_stmts_b1.len());
+    // B1 usable set starts with all B1 params (which correspond to B0 usable
+    // vars re-indexed to B1-local positions).  We must track which B0 vars
+    // were usable so we only reference non-void vars as operands.
+    //
+    // Since ALL B0 vars (including void) were passed, a B1 param at position
+    // `i` is usable iff B0's var `i` was usable.  We build the B1 usable set
+    // accordingly.
+    let b0_usable_set: std::collections::BTreeSet<u32> = usable_b0.iter().copied().collect();
+    let mut usable_b1: Vec<u32> = (0..total_b0).filter(|i| b0_usable_set.contains(i)).collect();
+
+    for &(kind, a, b) in raw_stmts_b1 {
+        let n_avail = usable_b1.len() as u32;
+        let (mapped_a, mapped_b) = if n_avail == 0 {
+            (0u32, 0u32)
+        } else {
+            (usable_b1[(a as usize) % usable_b1.len()], usable_b1[(b as usize) % usable_b1.len()])
+        };
+        let var_id = n_b1_params + stmts_b1.len() as u32;
+        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail);
+        stmts_b1.push(stmt);
+        if !is_void {
+            usable_b1.push(var_id);
+        }
+    }
+
+    let total_b1 = n_b1_params + stmts_b1.len() as u32;
+    let b1_ret_args: Vec<IRVarId> = (0..total_b1).map(IRVarId).collect();
+    let n_b1 = stmts_b1.len();
+    let b1_term = BIrTerminator::Jmp(BIrTarget {
+        block: IRBlockTargetId::Return,
+        args: b1_ret_args,
+    });
+
+    let block0 = BIrBlock {
+        params: n_params,
+        stmts: stmts_b0,
+        stmt_provs: vec![(); n_b0],
+        terminator: b0_term,
+    };
+    let block1 = BIrBlock {
+        params: n_b1_params,
+        stmts: stmts_b1,
+        stmt_provs: vec![(); n_b1],
+        terminator: b1_term,
+    };
+
+    BIrBlocks(vec![block0, block1])
+}
+
+// ============================================================================
 // Proptest strategies (test-only)
 // ============================================================================
 
@@ -276,6 +481,39 @@ mod strategies {
                             (interpret_biir(pc.clone(), raw_blocks, raw_ret_arity), inputs)
                         },
                     )
+                },
+            )
+        })
+    }
+
+    /// Single-block `BIrBlocks<()>` with `StorageRead`/`StorageWrite` stmts
+    /// (8-way dispatch).  Paired with matching entry-block inputs.
+    pub fn gen_biir_extended_and_inputs() -> impl Strategy<Value = (BIrBlocks<()>, Vec<bool>)> {
+        (0u32..=4u32).prop_flat_map(|n_params| {
+            let raw_stmts = proptest::collection::vec(
+                (any::<u8>(), any::<u32>(), any::<u32>()),
+                0usize..=8usize,
+            );
+            let inputs = proptest::collection::vec(any::<bool>(), n_params as usize);
+
+            (raw_stmts, inputs).prop_map(move |(raw_stmts, inputs)| {
+                (interpret_biir_extended(n_params, &raw_stmts), inputs)
+            })
+        })
+    }
+
+    /// Two-block `BIrBlocks<()>` with `StorageRead`/`StorageWrite` across
+    /// blocks (8-way dispatch).  Block 0 jumps unconditionally to Block 1.
+    pub fn gen_biir_multiblock_and_inputs() -> impl Strategy<Value = (BIrBlocks<()>, Vec<bool>)> {
+        (0u32..=4u32).prop_flat_map(|n_params| {
+            let raw_tuple = (any::<u8>(), any::<u32>(), any::<u32>());
+            let raw_stmts_b0 = proptest::collection::vec(raw_tuple.clone(), 0usize..=6usize);
+            let raw_stmts_b1 = proptest::collection::vec(raw_tuple, 0usize..=6usize);
+            let inputs = proptest::collection::vec(any::<bool>(), n_params as usize);
+
+            (raw_stmts_b0, raw_stmts_b1, inputs).prop_map(
+                move |(raw_stmts_b0, raw_stmts_b1, inputs)| {
+                    (interpret_biir_multiblock(n_params, &raw_stmts_b0, &raw_stmts_b1), inputs)
                 },
             )
         })
