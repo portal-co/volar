@@ -83,6 +83,11 @@ implementation focus (VOLE-based ZK, garbled circuits, compiler toolchain).
   - [x] `IrType::Vec(N, T)` bit-width computation via `ir_type_bits` helper (fixes Splat and Poly lowering in LIR)
   - [ ] `PrimType::_128` / `PrimType::_256` multi-word primitive support in LIR (currently `unimplemented!`)
   - [ ] field element types (`PrimType::AES8`, `PrimType::Galois64`) in FHE CFG weaving (deferred)
+  - Note: `AES8` and `Galois64` constants will be integrated into constant folding/polynomial
+    simplification in a separate pass, since both types can be emulated (inefficiently) with
+    plain `Bit` values. The initial `volar-ir-opt` folding pass conservatively skips monomials
+    whose variables have these types rather than risk incorrect field arithmetic.
+- [ ] `AES8`/`Galois64` constant folding in `volar-ir-opt` (separate pass after emulation support)
 - [ ] `IterLoop` over non-array collections
 
 Prefer dynamically creating subgoals to handling entire goals at a time; AI agents, add this to files and memory.

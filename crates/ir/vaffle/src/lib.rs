@@ -11,6 +11,7 @@ extern crate alloc;
 /// `types` is the shared [`TypeTable`] that all [`TypeId`] references within
 /// this module index into.  Construct it with [`TypeTable::new`] and use
 /// [`TypeTable::intern`] / [`TypeTable::primitive`] to populate it.
+#[derive(Debug)]
 pub struct Module {
     /// Shared type intern table.
     pub types: TypeTable,
@@ -37,11 +38,13 @@ pub struct ValueId(pub usize);
 /// For import declarations the same information is also available as
 /// `IrType::Func` in the type table, allowing function types to be used as
 /// first-class values in VAFFLE programs.
+#[derive(Debug)]
 pub struct SigDecl {
     pub params: Vec<TypeId>,
     pub results: Vec<TypeId>,
 }
 
+#[derive(Debug)]
 pub enum FuncDecl {
     Import {
         module: String,
@@ -50,22 +53,26 @@ pub enum FuncDecl {
     },
     Body(FuncBody),
 }
+#[derive(Debug)]
 pub struct FuncBody {
     pub sig: SigId,
     pub blocks: Vec<Block>,
     pub values: Vec<Value>,
     pub entry: BlockId,
 }
+#[derive(Debug)]
 pub struct Block {
     /// Block parameters: `(value_id, type_id)` pairs.
     pub params: Vec<(ValueId, TypeId)>,
     pub stmts: Vec<ValueId>,
     pub terminator: Terminator,
 }
+#[derive(Debug)]
 pub struct Target {
     pub block: BlockId,
     pub args: Vec<ValueId>,
 }
+#[derive(Debug)]
 pub enum Terminator {
     Return { values: Vec<ValueId> },
     Jump(Target),
@@ -93,6 +100,7 @@ pub enum Terminator {
 /// Type annotations inside `Op` are [`TypeId`] references into the containing
 /// [`Module::types`] table, consistent with [`Param`](Value::Param) and the
 /// rest of the module.
+#[derive(Debug)]
 pub enum Value {
     Param {
         block: BlockId,

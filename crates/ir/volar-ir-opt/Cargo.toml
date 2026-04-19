@@ -1,0 +1,13 @@
+[package]
+name = "volar-ir-opt"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+
+[dependencies]
+volar-ir.workspace = true
+volar-ir-common.workspace = true
+vaffle.workspace = true
+volar-provenance.workspace = true
