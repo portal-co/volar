@@ -11,6 +11,7 @@ use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 /// Compound types (`Vec`, `Tuple`, `Block`, `Func`) are expressed by
 /// [`IrType`] and referenced via [`TypeId`].
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 #[non_exhaustive]
 pub enum Type {
     /// Single GF(2) element (one bit).
@@ -35,6 +36,7 @@ pub enum Type {
 
 /// A 256-bit compile-time constant, split into high and low 128-bit halves.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct Constant {
     pub hi: u128,
     pub lo: u128,
@@ -49,6 +51,7 @@ pub struct Constant {
 /// Both Volar IR (`IRTypeId`) and VAFFLE use this; the former is now just a
 /// re-export alias in `volar-ir`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct TypeId(pub u32);
 
 /// The full IR type language, shared between Volar IR and VAFFLE.
@@ -61,6 +64,7 @@ pub struct TypeId(pub u32);
 /// [`Func`](IrType::Func) represents a first-class function type (used for
 /// imports, exports, and higher-order values in VAFFLE modules).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IrType {
     /// A primitive scalar type (bit, integer, or Galois-field element).
     Primitive(Type),
@@ -95,6 +99,7 @@ pub enum IrType {
 /// before pushing.  Type tables are typically small (tens of entries), so
 /// this is acceptable; for large tables consider a separate index.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct TypeTable(pub alloc::vec::Vec<IrType>);
 
 impl TypeTable {
@@ -156,6 +161,7 @@ impl Default for TypeTable {
 /// An oracle is a deterministic external function evaluated by all parties.
 /// Its implementation is provided by the execution environment at protocol time.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct OracleDecl {
     pub name: alloc::string::String,
     /// Parameter types in order.
@@ -169,6 +175,7 @@ pub struct OracleDecl {
 /// An action is a side-effectful external function invoked by one party
 /// (prover / evaluator) only when a boolean guard is 1.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct ActionDecl {
     pub name: alloc::string::String,
     /// Parameter types in order.
@@ -187,6 +194,7 @@ pub struct ActionDecl {
 /// Each [`Stmt::Rng`] references an `RngDecl` by name.  The execution
 /// environment supplies the concrete implementation.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct RngDecl {
     pub name: alloc::string::String,
     /// Type of the fresh random value produced on each call.
@@ -203,6 +211,7 @@ pub struct RngDecl {
 /// separate stacks, heaps, or per-type scratch spaces.  The execution
 /// environment maps each `StorageId` to a concrete address space.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct StorageId(pub u32);
 
 impl StorageId {

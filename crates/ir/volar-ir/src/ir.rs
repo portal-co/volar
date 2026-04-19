@@ -36,6 +36,7 @@ pub use volar_ir_common::{ActionDecl, OracleDecl, RngDecl};
 // ============================================================================
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IRBlockId(pub u32);
 
 /// A complete Volar IR circuit module — a set of blocks with their
@@ -133,6 +134,7 @@ impl<P: Clone + Default> IRBlocks<P> {
 // ============================================================================
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IRVarId(pub u32);
 
 // ============================================================================
@@ -173,6 +175,7 @@ pub enum IRTerminator {
     },
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IRBlockTargetId {
     Block(IRBlockId),
     Return,

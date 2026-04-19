@@ -10,3 +10,7 @@ repository.workspace = true
 volar-provenance.workspace = true
 volar-ir-common.workspace = true
 volar-lir.workspace = true
+rkyv = { workspace = true, optional = true }
+
+[features]
+rkyv = ["dep:rkyv", "volar-ir-common/rkyv"]

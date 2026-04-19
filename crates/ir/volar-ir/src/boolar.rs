@@ -10,6 +10,7 @@ use volar_ir_common::StorageId;
 /// The type parameter `P` is an optional per-statement provenance annotation.
 /// Use `P = ()` (the default) when provenance is not needed.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct BIrBlocks<P: Clone + Default = ()>(pub Vec<BIrBlock<P>>);
 
 impl<P: Clone + Default> BIrBlocks<P> {
@@ -33,6 +34,7 @@ impl<P: Clone + Default> BIrBlocks<P> {
 /// The type parameter `P` is an optional per-statement provenance annotation
 /// (parallel to `stmts`).  Use `P = ()` when provenance is not needed.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct BIrBlock<P: Clone + Default = ()> {
     pub params: u32,
     pub stmts: Vec<BIrStmt>,
@@ -73,6 +75,7 @@ impl<P: Clone + Default> BIrBlocks<P> {
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum BIrStmt {
     // ---- Boolean primitives ------------------------------------------------
     Zero,
@@ -152,6 +155,7 @@ pub enum BIrStmt {
     },
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum BIrTerminator {
     Jmp(BIrTarget),
     CondJmp {
@@ -161,6 +165,7 @@ pub enum BIrTerminator {
     },
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct BIrTarget {
     pub block: IRBlockTargetId,
     pub args: Vec<IRVarId>,
