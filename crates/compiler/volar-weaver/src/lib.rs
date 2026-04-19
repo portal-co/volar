@@ -78,6 +78,7 @@ pub use garble::{
 pub use garble::garble_linked_spec;
 #[cfg(feature = "linking")]
 pub use oram::oram_linked_spec;
+pub use oram::OramConfig;
 
 pub use vole::{
     print_weaved_vole_module,
