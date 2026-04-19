@@ -2162,4 +2162,128 @@ mod tests {
         assert!(out.contains("None,"), "missing None: {}", out);
         assert!(out.contains("Some(T)"), "missing Some(T): {}", out);
     }
+
+    #[test]
+    fn oram_core_parses_successfully() {
+        // Verify that volar-oram-core's total-Rust source is parseable
+        // by the compiler. This is a critical integration check: the
+        // ORAM server code must compile through the volar-compiler
+        // pipeline to become circuit code.
+        let source = r#"
+            pub struct OramEntry<const B: usize> {
+                pub addr: u64,
+                pub leaf: u64,
+                pub data: [u8; B],
+            }
+
+            impl<const B: usize> OramEntry<B> {
+                pub fn dummy() -> Self {
+                    Self {
+                        addr: !0u64,
+                        leaf: 0,
+                        data: [0u8; B],
+                    }
+                }
+
+                pub fn is_real(&self) -> bool {
+                    self.addr != !0u64
+                }
+            }
+
+            pub struct Bucket<const Z: usize, const B: usize> {
+                pub entries: [OramEntry<B>; Z],
+            }
+
+            impl<const Z: usize, const B: usize> Bucket<Z, B> {
+                pub fn empty() -> Self {
+                    Self {
+                        entries: [OramEntry::dummy(); Z],
+                    }
+                }
+            }
+
+            pub enum ServerRequest<const Z: usize, const B: usize, const L: usize> {
+                ReadPath { leaf: u64 },
+                WritePath {
+                    leaf: u64,
+                    buckets: [Bucket<Z, B>; L],
+                },
+            }
+
+            pub enum ServerResponse<const Z: usize, const B: usize, const L: usize> {
+                PathBuckets { buckets: [Bucket<Z, B>; L] },
+                Ack,
+            }
+
+            pub fn path_indices<const L: usize>(leaf: u64) -> [usize; L] {
+                let mut path = [0usize; L];
+                let mut idx = 0usize;
+                for level in 1..L {
+                    let bit_pos = L - 1 - level;
+                    if (leaf >> bit_pos) & 1 == 0 {
+                        idx = 2 * idx + 1;
+                    } else {
+                        idx = 2 * idx + 2;
+                    }
+                    path[level] = idx;
+                }
+                path
+            }
+
+            pub fn read_path<const Z: usize, const B: usize, const L: usize, const N: usize>(
+                tree_buckets: &[Bucket<Z, B>; N],
+                leaf: u64,
+            ) -> [Bucket<Z, B>; L] {
+                let path = path_indices::<L>(leaf);
+                let mut result = [Bucket::empty(); L];
+                for i in 0..L {
+                    result[i] = tree_buckets[path[i]];
+                }
+                result
+            }
+
+            pub fn write_path<const Z: usize, const B: usize, const L: usize, const N: usize>(
+                tree_buckets: &mut [Bucket<Z, B>; N],
+                leaf: u64,
+                new_buckets: &[Bucket<Z, B>; L],
+            ) {
+                let path = path_indices::<L>(leaf);
+                for i in 0..L {
+                    tree_buckets[path[i]] = new_buckets[i];
+                }
+            }
+
+            pub fn server_step<const Z: usize, const B: usize, const L: usize, const N: usize>(
+                tree_buckets: &mut [Bucket<Z, B>; N],
+                request: ServerRequest<Z, B, L>,
+            ) -> ServerResponse<Z, B, L> {
+                match request {
+                    ServerRequest::ReadPath { leaf } => {
+                        let buckets = read_path::<Z, B, L, N>(tree_buckets, leaf);
+                        ServerResponse::PathBuckets { buckets }
+                    }
+                    ServerRequest::WritePath { leaf, buckets } => {
+                        write_path::<Z, B, L, N>(tree_buckets, leaf, &buckets);
+                        ServerResponse::Ack
+                    }
+                }
+            }
+        "#;
+        let module = crate::parser::parse_source(source, "oram_core").unwrap();
+
+        // Should have parsed: 2 structs, 2 enums, 2 impls, 4 functions
+        assert_eq!(module.structs.len(), 2, "expected 2 structs (OramEntry, Bucket)");
+        assert_eq!(module.enums.len(), 2, "expected 2 enums (ServerRequest, ServerResponse)");
+        assert_eq!(module.impls.len(), 2, "expected 2 impls");
+        assert_eq!(module.functions.len(), 4, "expected 4 functions");
+
+        // Verify the round-trip prints without error
+        let out = format!("{}", DisplayRust(ModuleWriter { module: &module }));
+        assert!(out.contains("struct OramEntry"), "missing OramEntry struct: {}", out);
+        assert!(out.contains("struct Bucket"), "missing Bucket struct: {}", out);
+        assert!(out.contains("enum ServerRequest"), "missing ServerRequest enum: {}", out);
+        assert!(out.contains("enum ServerResponse"), "missing ServerResponse enum: {}", out);
+        assert!(out.contains("fn path_indices"), "missing path_indices fn: {}", out);
+        assert!(out.contains("fn server_step"), "missing server_step fn: {}", out);
+    }
 }

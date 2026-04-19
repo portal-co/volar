@@ -1,0 +1,11 @@
+[package]
+name = "volar-oram-core"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Server-side Path ORAM operations for Volar circuit compilation"
+repository.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
