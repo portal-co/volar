@@ -667,6 +667,7 @@ where
         name: "weaved_vole_prover".into(),
         functions: vec![func],
         structs: vec![],
+        enums: vec![],
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],
@@ -1009,6 +1010,7 @@ where
         name: "weaved_vole_verifier".into(),
         functions: vec![func],
         structs: vec![],
+        enums: vec![],
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],
@@ -2298,7 +2300,7 @@ pub fn weave_vole_prover_ir_with_mode(
     let mut module = IrModule {
         name: "weaved_vole_ir_prover".into(),
         functions: vec![func],
-        structs: vec![], traits: vec![], impls: vec![], type_aliases: vec![],
+        structs: vec![], enums: vec![], traits: vec![], impls: vec![], type_aliases: vec![],
     };
     if let Some(ls) = linkage { ls.apply(&mut module); }
     (module, trace)
@@ -2413,7 +2415,7 @@ pub fn weave_vole_verifier_ir_with_mode(
     let mut module = IrModule {
         name: "weaved_vole_ir_verifier".into(),
         functions: vec![func],
-        structs: vec![], traits: vec![], impls: vec![], type_aliases: vec![],
+        structs: vec![], enums: vec![], traits: vec![], impls: vec![], type_aliases: vec![],
     };
     if let Some(ls) = linkage { ls.apply(&mut module); }
     (module, trace)

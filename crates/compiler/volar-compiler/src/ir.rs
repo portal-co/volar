@@ -584,6 +584,7 @@ impl fmt::Display for AssociatedType {
 pub struct IrModule<P: Clone + Default = ()> {
     pub name: String,
     pub structs: Vec<IrStruct>,
+    pub enums: Vec<IrEnum>,
     pub traits: Vec<IrTrait>,
     pub impls: Vec<IrImpl<P>>,
     pub functions: Vec<IrFunction<P>>,
@@ -603,6 +604,50 @@ pub struct IrStruct {
     /// emits a single field-element `IRVarId` rather than decomposing the
     /// struct into individual bits.
     pub native_volar_type: Option<volar_ir_common::Type>,
+}
+
+/// A tagged union (enum) declaration.
+///
+/// Each variant can be unit (no data), tuple-like (positional fields), or
+/// struct-like (named fields).  The representation is backend-agnostic:
+///
+/// - **Rust**: emits a standard `enum` with `#[derive(Debug)]`.
+/// - **TypeScript** (future): emits discriminated-union types
+///   `{ tag: "Variant1", ... } | { tag: "Variant2", ... }`.
+/// - **C** (future): emits a tagged struct with a discriminant enum and a union.
+///
+/// Variant construction and pattern matching use existing IR nodes:
+/// - Unit variant: `IrExpr::Path { segments: ["Enum", "Variant"] }`
+/// - Tuple variant: `IrExpr::Call` with path `Enum::Variant`
+/// - Struct variant: `IrExpr::StructExpr { kind: Custom("Enum::Variant"), .. }`
+/// - Patterns: `IrPattern::TupleStruct` / `IrPattern::Struct` with
+///   `StructKind::Custom("Enum::Variant")`
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct IrEnum {
+    pub kind: StructKind,
+    pub generics: Vec<IrGenericParam>,
+    pub variants: Vec<IrEnumVariant>,
+}
+
+/// A single variant of an [`IrEnum`].
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct IrEnumVariant {
+    pub name: String,
+    pub fields: IrEnumVariantData,
+}
+
+/// The data carried by an enum variant.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub enum IrEnumVariantData {
+    /// Unit variant: `Variant` (no payload).
+    Unit,
+    /// Tuple variant: `Variant(T1, T2, ...)`.
+    Tuple(Vec<IrType>),
+    /// Struct variant: `Variant { field1: T1, field2: T2, ... }`.
+    Struct(Vec<IrField>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1896,6 +1941,7 @@ impl<P: Clone + Default> IrModule<P> {
         IrModule {
             name: self.name,
             structs: self.structs,
+            enums: self.enums,
             traits: self.traits,
             impls: self.impls.into_iter().map(|i| i.map_prov(&f)).collect(),
             functions: self.functions.into_iter().map(|func| func.map_prov(&f)).collect(),

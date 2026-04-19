@@ -41,7 +41,7 @@ use alloc::vec::Vec;
 
 use crate::ir::*;
 use crate::printer::{
-    DisplayRust, GenericsWriter, ImplWriter, RustBackend, StructWriter, TraitWriter, TypeWriter,
+    DisplayRust, EnumWriter, GenericsWriter, ImplWriter, RustBackend, StructWriter, TraitWriter, TypeWriter,
     WhereClauseWriter,
 };
 
@@ -117,6 +117,7 @@ fn strip_bodies(module: &IrModule) -> IrModule {
     IrModule {
         name: module.name.clone(),
         structs: module.structs.clone(),
+        enums: module.enums.clone(),
         traits: module.traits.clone(),
         impls: stripped_impls,
         functions: stripped_fns,
@@ -147,6 +148,10 @@ impl<'a> RustBackend for ManifestModuleWriter<'a> {
 
         for s in &self.module.structs {
             StructWriter { s }.fmt(f)?;
+            writeln!(f)?;
+        }
+        for e in &self.module.enums {
+            EnumWriter { e }.fmt(f)?;
             writeln!(f)?;
         }
         for t in &self.module.traits {

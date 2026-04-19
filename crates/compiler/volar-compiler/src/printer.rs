@@ -52,6 +52,10 @@ pub struct StructWriter<'a> {
     pub s: &'a IrStruct,
 }
 
+pub struct EnumWriter<'a> {
+    pub e: &'a IrEnum,
+}
+
 pub struct TraitWriter<'a> {
     pub t: &'a IrTrait,
 }
@@ -129,6 +133,10 @@ impl<'a> RustBackend for ModuleWriter<'a> {
             StructWriter { s }.fmt(f)?;
             writeln!(f)?;
         }
+        for e in &self.module.enums {
+            EnumWriter { e }.fmt(f)?;
+            writeln!(f)?;
+        }
         for t in &self.module.traits {
             TraitWriter { t }.fmt(f)?;
             writeln!(f)?;
@@ -178,6 +186,46 @@ impl<'a> RustBackend for StructWriter<'a> {
             }
             writeln!(f, "}}")?;
         }
+        Ok(())
+    }
+}
+
+impl<'a> RustBackend for EnumWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "#[derive(Debug)]")?;
+        write!(f, "pub enum {}", self.e.kind)?;
+        GenericsWriter {
+            generics: &self.e.generics,
+        }
+        .fmt(f)?;
+        writeln!(f, " {{")?;
+        for variant in &self.e.variants {
+            match &variant.fields {
+                IrEnumVariantData::Unit => {
+                    writeln!(f, "    {},", variant.name)?;
+                }
+                IrEnumVariantData::Tuple(types) => {
+                    write!(f, "    {}(", variant.name)?;
+                    for (i, ty) in types.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        TypeWriter { ty }.fmt(f)?;
+                    }
+                    writeln!(f, "),")?;
+                }
+                IrEnumVariantData::Struct(fields) => {
+                    writeln!(f, "    {} {{", variant.name)?;
+                    for field in fields {
+                        write!(f, "        pub {}: ", field.name)?;
+                        TypeWriter { ty: &field.ty }.fmt(f)?;
+                        writeln!(f, ",")?;
+                    }
+                    writeln!(f, "    }},")?;
+                }
+            }
+        }
+        writeln!(f, "}}")?;
         Ok(())
     }
 }
@@ -2024,5 +2072,94 @@ mod tests {
         assert!(out.contains("__state = 1;"), "expected __state = 1: {}", out);
         assert!(out.contains("__state = 2;"), "expected __state = 2: {}", out);
         assert!(out.contains("continue;"), "expected continue: {}", out);
+    }
+
+    // ── Enum round-trip: parse → print ───────────────────────────────────────
+
+    #[test]
+    fn enum_unit_variants_round_trip() {
+        let source = r#"
+            pub enum Color {
+                Red,
+                Green,
+                Blue,
+            }
+        "#;
+        let module = crate::parser::parse_source(source, "test").unwrap();
+        assert_eq!(module.enums.len(), 1);
+        let e = &module.enums[0];
+        assert_eq!(e.kind.to_string(), "Color");
+        assert_eq!(e.variants.len(), 3);
+        assert_eq!(e.variants[0].name, "Red");
+        assert!(matches!(e.variants[0].fields, crate::ir::IrEnumVariantData::Unit));
+
+        let out = format!("{}", DisplayRust(ModuleWriter { module: &module }));
+        assert!(out.contains("pub enum Color"), "missing enum decl: {}", out);
+        assert!(out.contains("Red,"), "missing Red variant: {}", out);
+        assert!(out.contains("Green,"), "missing Green variant: {}", out);
+        assert!(out.contains("Blue,"), "missing Blue variant: {}", out);
+    }
+
+    #[test]
+    fn enum_tuple_variants_round_trip() {
+        let source = r#"
+            pub enum Expr {
+                Lit(u32),
+                Add(u32, u32),
+            }
+        "#;
+        let module = crate::parser::parse_source(source, "test").unwrap();
+        assert_eq!(module.enums.len(), 1);
+        let e = &module.enums[0];
+        assert_eq!(e.variants.len(), 2);
+        assert_eq!(e.variants[0].name, "Lit");
+        assert!(matches!(&e.variants[0].fields, crate::ir::IrEnumVariantData::Tuple(tys) if tys.len() == 1));
+
+        let out = format!("{}", DisplayRust(ModuleWriter { module: &module }));
+        assert!(out.contains("Lit(u32)"), "missing Lit(u32): {}", out);
+        assert!(out.contains("Add(u32, u32)"), "missing Add(u32, u32): {}", out);
+    }
+
+    #[test]
+    fn enum_struct_variants_round_trip() {
+        let source = r#"
+            pub enum Message {
+                Quit,
+                Move { x: i32, y: i32 },
+                Write(bool),
+            }
+        "#;
+        let module = crate::parser::parse_source(source, "test").unwrap();
+        assert_eq!(module.enums.len(), 1);
+        let e = &module.enums[0];
+        assert_eq!(e.variants.len(), 3);
+        assert_eq!(e.variants[1].name, "Move");
+        assert!(matches!(&e.variants[1].fields, crate::ir::IrEnumVariantData::Struct(fields) if fields.len() == 2));
+
+        let out = format!("{}", DisplayRust(ModuleWriter { module: &module }));
+        assert!(out.contains("Quit,"), "missing Quit: {}", out);
+        assert!(out.contains("Move {"), "missing Move struct variant: {}", out);
+        assert!(out.contains("x: i32"), "missing x field: {}", out);
+        assert!(out.contains("Write(bool)"), "missing Write(bool): {}", out);
+    }
+
+    #[test]
+    fn enum_with_generics_round_trip() {
+        let source = r#"
+            pub enum Option<T> {
+                None,
+                Some(T),
+            }
+        "#;
+        let module = crate::parser::parse_source(source, "test").unwrap();
+        assert_eq!(module.enums.len(), 1);
+        let e = &module.enums[0];
+        assert_eq!(e.generics.len(), 1);
+        assert_eq!(e.generics[0].name, "T");
+
+        let out = format!("{}", DisplayRust(ModuleWriter { module: &module }));
+        assert!(out.contains("pub enum Option<T>"), "missing generic enum: {}", out);
+        assert!(out.contains("None,"), "missing None: {}", out);
+        assert!(out.contains("Some(T)"), "missing Some(T): {}", out);
     }
 }

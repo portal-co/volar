@@ -49,6 +49,7 @@ pub fn monomorphize_module(module: &IrModule, env: &MonoEnv) -> IrModule {
     IrModule {
         name: module.name.clone(),
         structs: module.structs.iter().map(|s| monomorphize_struct(s, env)).collect(),
+        enums: module.enums.clone(),
         traits: module.traits.clone(),
         impls: module.impls.clone(),
         functions: module.functions.iter().map(|f| monomorphize_function(f, env)).collect(),

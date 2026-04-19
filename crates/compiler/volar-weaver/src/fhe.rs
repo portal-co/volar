@@ -1545,6 +1545,7 @@ where
         name: format!("weaved_{}", fn_name),
         functions: vec![func],
         structs: vec![],
+        enums: vec![],
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],

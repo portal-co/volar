@@ -52,6 +52,14 @@ implementation focus (VOLE-based ZK, garbled circuits, compiler toolchain).
 - [ ] full compile and link
   - [x] primitives can link to spec (manifest system)
   - [ ] registry-driven primitive discovery (Phase 2 of primitives plan — deferred)
+- [ ] compiler: enum support (tagged unions)
+  - [x] `IrEnum` / `IrEnumVariant` / `IrEnumVariantData` IR types
+  - [x] parser: `convert_enum()` + `convert_enum_variant()` — unit, tuple, struct variants + generics
+  - [x] printer: `EnumWriter` — Rust backend (`#[derive(Debug)] pub enum ... { ... }`)
+  - [x] round-trip tests (parse → print, 4 tests passing)
+  - [ ] TypeScript backend (discriminated unions — future)
+  - [ ] C backend (tagged struct + union — future)
+- [ ] ORAM weaver integration (compile `volar-oram` through `volar-compiler` pipeline)
 
 ## Planned
 

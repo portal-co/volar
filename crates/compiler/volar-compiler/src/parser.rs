@@ -36,6 +36,7 @@ pub fn parse_sources(sources: &[(&str, &str)], module_name: &str) -> Result<IrMo
         for item in &file.items {
             match item {
                 Item::Struct(s) => module.structs.push(convert_struct(s)?),
+                Item::Enum(e) => module.enums.push(convert_enum(e)?),
                 Item::Trait(t) => module.traits.push(convert_trait(t)?),
                 Item::Impl(i) => module.impls.push(convert_impl(i)?),
                 Item::Fn(f) => module.functions.push(convert_function(f)?),
@@ -78,6 +79,47 @@ fn convert_struct(s: &syn::ItemStruct) -> Result<IrStruct> {
             syn::Fields::Unit => Vec::new(),
         },
         is_tuple: matches!(s.fields, syn::Fields::Unnamed(_)),
+    })
+}
+
+fn convert_enum(e: &syn::ItemEnum) -> Result<IrEnum> {
+    Ok(IrEnum {
+        kind: StructKind::from_str(&e.ident.to_string()),
+        generics: e
+            .generics
+            .params
+            .iter()
+            .map(convert_generic_param)
+            .collect::<Result<Vec<_>>>()?,
+        variants: e
+            .variants
+            .iter()
+            .map(convert_enum_variant)
+            .collect::<Result<Vec<_>>>()?,
+    })
+}
+
+fn convert_enum_variant(v: &syn::Variant) -> Result<IrEnumVariant> {
+    let fields = match &v.fields {
+        syn::Fields::Unit => IrEnumVariantData::Unit,
+        syn::Fields::Unnamed(fields) => IrEnumVariantData::Tuple(
+            fields
+                .unnamed
+                .iter()
+                .map(|f| convert_type(&f.ty))
+                .collect::<Result<Vec<_>>>()?,
+        ),
+        syn::Fields::Named(fields) => IrEnumVariantData::Struct(
+            fields
+                .named
+                .iter()
+                .map(convert_field)
+                .collect::<Result<Vec<_>>>()?,
+        ),
+    };
+    Ok(IrEnumVariant {
+        name: v.ident.to_string(),
+        fields,
     })
 }
 
