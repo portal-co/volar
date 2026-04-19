@@ -237,7 +237,7 @@ fn eval_vaffle_stmt(
             let w = bit_width(*ty, types);
             let addr_u64 = bits_to_u64(&get(addr));
             storage
-                .get(&(*sid, addr_u64))
+                .get(&(*sid, *ty, addr_u64))
                 .cloned()
                 .unwrap_or_else(|| vec![false; w])
         }
@@ -250,7 +250,7 @@ fn eval_vaffle_stmt(
             while val.len() < w {
                 val.push(false);
             }
-            storage.insert((*sid, addr_u64), val);
+            storage.insert((*sid, *ty, addr_u64), val);
             vec![] // StorageWrite has no output
         }
     }

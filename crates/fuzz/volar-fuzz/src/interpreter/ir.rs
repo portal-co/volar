@@ -25,8 +25,14 @@ use volar_ir_common::{Constant, IrType, Stmt, StorageId, Type, TypeId};
 /// A concrete value: a `Vec<bool>` of bits, LSB at index 0.
 pub type IrValue = Vec<bool>;
 
-/// Storage map: keyed by `(StorageId, address_as_u64)`, value is a bit vector.
-pub type StorageMap = BTreeMap<(StorageId, u64), Vec<bool>>;
+/// Storage map: keyed by `(StorageId, TypeId, address_as_u64)`.
+///
+/// Each `(StorageId, TypeId, addr)` triple is an independent storage slot.
+/// This mirrors the store-forwarding cache's invalidation policy: a write to
+/// `(S, T)` only invalidates cached reads for the same `(S, T)` pair.  The
+/// dual-keying by type enables efficient stack lowering and storage remapping
+/// — different types at the same `StorageId + address` never alias.
+pub type StorageMap = BTreeMap<(StorageId, TypeId, u64), Vec<bool>>;
 
 /// Evaluate `blocks` from block 0 with `inputs` bound to the entry block's
 /// typed params.
@@ -221,7 +227,7 @@ fn eval_ir_stmt(stmt: &IRStmt, types: &IRTypes, vars: &BTreeMap<u32, IrValue>, s
             let addr_val = get_ir(vars, addr);
             let addr_u64 = bits_to_u64(&addr_val);
             storage
-                .get(&(*store_id, addr_u64))
+                .get(&(*store_id, *ty, addr_u64))
                 .cloned()
                 .unwrap_or_else(|| vec![false; w])
         }
@@ -235,7 +241,7 @@ fn eval_ir_stmt(stmt: &IRStmt, types: &IRTypes, vars: &BTreeMap<u32, IrValue>, s
             while val.len() < w {
                 val.push(false);
             }
-            storage.insert((*store_id, addr_u64), val);
+            storage.insert((*store_id, *ty, addr_u64), val);
             vec![] // StorageWrite has no output
         }
     }

@@ -517,6 +517,212 @@ pub fn interpret_vaffle_multiblock(
 }
 
 // ============================================================================
+// Diamond interpreter: four-block diamond CFG for multi-predecessor tests
+// ============================================================================
+
+/// Build a four-block diamond VAFFLE module:
+///
+/// ```text
+///       B0 (entry)
+///      /         \
+///    B1           B2
+///      \         /
+///       B3 (merge)
+/// ```
+///
+/// - **Block 0**: function params + stmts from `raw_stmts_b0`.
+///   Terminates with `IfNonzero { cond: ValueId(0), then→B1, else→B2 }`.
+///   First param is forced to `Bit` (1-bit) for the branch condition.
+/// - **Block 1** / **Block 2**: no params; stmts reference B0's `ValueId`s
+///   directly (VAFFLE `ValueId`s are global).  Terminate with `Jump(B3)`.
+/// - **Block 3**: no params; stmts reference only B0's `ValueId`s (B1/B2 are
+///   conditional so their values are unsafe to use in B3).
+///   Terminates with `Return { values: B0_vids ++ B3_vids }` — skips B1/B2.
+pub fn interpret_vaffle_diamond(
+    raw_param_type_idxs: &[RawTypeIdx],
+    raw_stmts_b0: &[RawIrStmt],
+    raw_stmts_b1: &[RawIrStmt],
+    raw_stmts_b2: &[RawIrStmt],
+    raw_stmts_b3: &[RawIrStmt],
+) -> (Module, FuncId, Vec<usize>) {
+    use volar_ir_common::Type;
+
+    let mut type_table = volar_ir_common::TypeTable::new();
+
+    // Ensure at least one Bit param for the condition.
+    let mut adjusted_params: Vec<RawTypeIdx> = raw_param_type_idxs.to_vec();
+    if adjusted_params.is_empty() {
+        adjusted_params.push(0);
+    }
+    adjusted_params[0] = 0; // force Bit
+
+    // ── Block 0 (entry) ──────────────────────────────────────────────────────
+    let (param_type_ids, param_widths, var_info_after_b0, b0_values, b0_stmt_vids) =
+        build_vaffle_extended_block(
+            &mut type_table,
+            &adjusted_params,
+            raw_stmts_b0,
+            BlockId(0),
+            vec![],
+            0,
+        );
+    let b0_value_count = b0_values.len();
+
+    // B0 terminator: IfNonzero on first param (ValueId(0)), then→B1, else→B2.
+    let b0_term = Terminator::IfNonzero {
+        cond: ValueId(0),
+        then_target: Target { block: BlockId(1), args: vec![] },
+        else_target: Target { block: BlockId(2), args: vec![] },
+    };
+
+    // ── Block 1 (true branch) ────────────────────────────────────────────────
+    // No params — references B0 values via global ValueIds.
+    let (_b1_ptids, _b1_pwidths, _var_info_after_b1, b1_values, b1_stmt_vids) =
+        build_vaffle_extended_block(
+            &mut type_table,
+            &[], // no params
+            raw_stmts_b1,
+            BlockId(1),
+            var_info_after_b0.clone(), // carry B0's var_info
+            b0_value_count,
+        );
+    let b1_value_count = b1_values.len();
+
+    // B1 → B3
+    let b1_term = Terminator::Jump(Target { block: BlockId(3), args: vec![] });
+
+    // ── Block 2 (false branch) ───────────────────────────────────────────────
+    let b2_value_offset = b0_value_count + b1_value_count;
+    let (_b2_ptids, _b2_pwidths, _var_info_after_b2, b2_values, b2_stmt_vids) =
+        build_vaffle_extended_block(
+            &mut type_table,
+            &[], // no params
+            raw_stmts_b2,
+            BlockId(2),
+            var_info_after_b0.clone(), // carry B0's var_info (not B1's)
+            b2_value_offset,
+        );
+    let b2_value_count = b2_values.len();
+
+    // B2 → B3
+    let b2_term = Terminator::Jump(Target { block: BlockId(3), args: vec![] });
+
+    // ── Block 3 (merge) ──────────────────────────────────────────────────────
+    let b3_value_offset = b0_value_count + b1_value_count + b2_value_count;
+    let (_b3_ptids, _b3_pwidths, var_info_after_b3, b3_values, b3_stmt_vids) =
+        build_vaffle_extended_block(
+            &mut type_table,
+            &[], // no params
+            raw_stmts_b3,
+            BlockId(3),
+            var_info_after_b0.clone(), // only B0 vars (not B1/B2 — conditional)
+            b3_value_offset,
+        );
+
+    // Return B0 + B3 values only (B1/B2 values are conditional).
+    let mut ret_vids: Vec<ValueId> = (0..b0_value_count).map(ValueId).collect();
+    for (_, _, vid) in &var_info_after_b3 {
+        // Add B3 stmt values (those with ValueId >= b3_value_offset).
+        if vid.0 >= b3_value_offset {
+            ret_vids.push(*vid);
+        }
+    }
+    // Also add B3 stmt vids that might be void (StorageWrite) and thus not in var_info.
+    for &vid in &b3_stmt_vids {
+        if vid.0 >= b3_value_offset && !ret_vids.contains(&vid) {
+            ret_vids.push(vid);
+        }
+    }
+
+    let b3_term = Terminator::Return { values: ret_vids.clone() };
+
+    // Merge all values into a single flat array.
+    let mut all_values: Vec<Value> = b0_values;
+    all_values.extend(b1_values);
+    all_values.extend(b2_values);
+    all_values.extend(b3_values);
+
+    // Build SigDecl.
+    let n_params = param_type_ids.len();
+    let fallback_tid = param_type_ids
+        .first()
+        .copied()
+        .unwrap_or_else(|| type_table.primitive(Type::Bit));
+
+    // Collect all var_info entries for type lookups.
+    let all_var_info: Vec<(TypeId, usize, ValueId)> = {
+        let mut v = var_info_after_b0.clone();
+        // Add B3 entries that are new.
+        for entry in &var_info_after_b3 {
+            if entry.2 .0 >= b3_value_offset {
+                v.push(*entry);
+            }
+        }
+        v
+    };
+
+    let sig_results: Vec<TypeId> = ret_vids
+        .iter()
+        .map(|vid| {
+            if vid.0 < n_params {
+                param_type_ids[vid.0]
+            } else {
+                all_var_info
+                    .iter()
+                    .find(|(_, _, v)| v.0 == vid.0)
+                    .map(|(tid, _, _)| *tid)
+                    .unwrap_or(fallback_tid)
+            }
+        })
+        .collect();
+
+    let sig = SigDecl { params: param_type_ids.clone(), results: sig_results };
+
+    let block0 = Block {
+        params: param_type_ids
+            .iter()
+            .enumerate()
+            .map(|(i, &tid)| (ValueId(i), tid))
+            .collect(),
+        stmts: b0_stmt_vids,
+        terminator: b0_term,
+    };
+    let block1 = Block {
+        params: vec![],
+        stmts: b1_stmt_vids,
+        terminator: b1_term,
+    };
+    let block2 = Block {
+        params: vec![],
+        stmts: b2_stmt_vids,
+        terminator: b2_term,
+    };
+    let block3 = Block {
+        params: vec![],
+        stmts: b3_stmt_vids,
+        terminator: b3_term,
+    };
+
+    let body = FuncBody {
+        sig: SigId(0),
+        blocks: vec![block0, block1, block2, block3],
+        values: all_values,
+        entry: BlockId(0),
+    };
+
+    let module = Module {
+        types: type_table,
+        oracles: vec![],
+        actions: vec![],
+        funcs: vec![FuncDecl::Body(body)],
+        sigs: vec![sig],
+        exports: std::collections::BTreeMap::new(),
+    };
+
+    (module, FuncId(0), param_widths)
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 
@@ -696,6 +902,68 @@ mod strategies {
                             &raw_param_types,
                             &raw_stmts_b0,
                             &raw_stmts_b1,
+                        );
+
+                        let inputs: Vec<IrValue> = {
+                            let mut off = 0;
+                            widths
+                                .iter()
+                                .map(|&w| {
+                                    let v = input_bits[off..off + w].to_vec();
+                                    off += w;
+                                    v
+                                })
+                                .collect()
+                        };
+
+                        (module, func_id, inputs)
+                    },
+                )
+            },
+        )
+    }
+
+    /// Four-block diamond VAFFLE module with `StorageRead`/`StorageWrite`.
+    ///
+    /// B0 branches on the first Bit param to B1 (true) or B2 (false).
+    /// B1 and B2 both merge into B3.  This exercises multi-predecessor
+    /// store-to-load forwarding in `store_forward_vaffle_module`.
+    pub fn gen_vaffle_diamond_and_inputs(
+    ) -> impl Strategy<Value = (Module, FuncId, Vec<IrValue>)> {
+        // At least 1 param (first forced to Bit for the condition).
+        proptest::collection::vec(any::<u8>(), 1usize..=4usize).prop_flat_map(
+            |raw_param_types| {
+                let mut adjusted = raw_param_types.clone();
+                adjusted[0] = 0; // force Bit
+                let widths: Vec<usize> = adjusted
+                    .iter()
+                    .map(|&idx| {
+                        primitive_width(PRIM_TYPES[idx as usize % PRIM_TYPES.len()])
+                    })
+                    .collect();
+                let total_bits: usize = widths.iter().sum();
+
+                let raw_tuple = (
+                    any::<u8>(),
+                    any::<u32>(),
+                    any::<u32>(),
+                    any::<u128>(),
+                    any::<u128>(),
+                );
+                let raw_stmts_b0 = proptest::collection::vec(raw_tuple.clone(), 0usize..=4usize);
+                let raw_stmts_b1 = proptest::collection::vec(raw_tuple.clone(), 0usize..=4usize);
+                let raw_stmts_b2 = proptest::collection::vec(raw_tuple.clone(), 0usize..=4usize);
+                let raw_stmts_b3 = proptest::collection::vec(raw_tuple, 0usize..=4usize);
+                let input_bits = proptest::collection::vec(any::<bool>(), total_bits);
+
+                (raw_stmts_b0, raw_stmts_b1, raw_stmts_b2, raw_stmts_b3, input_bits).prop_map(
+                    move |(raw_stmts_b0, raw_stmts_b1, raw_stmts_b2, raw_stmts_b3, input_bits)| {
+                        let (module, func_id, _param_widths) = interpret_vaffle_diamond(
+                            &raw_param_types,
+                            &raw_stmts_b0,
+                            &raw_stmts_b1,
+                            &raw_stmts_b2,
+                            &raw_stmts_b3,
                         );
 
                         let inputs: Vec<IrValue> = {

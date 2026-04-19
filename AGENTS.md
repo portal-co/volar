@@ -95,3 +95,26 @@ pub struct IrLoweringConfig {
 ```
 
 `lower_ir` uses `IrLoweringConfig::default()` for backward compatibility. Pass a custom config via `lower_ir_with_handler` when targeting a different ABI.
+
+## Storage Semantics (Type-Discriminated Slots)
+
+Storage in Volar IR is keyed by `(StorageId, TypeId, address)`. Each such triple is an **independent slot**: writing `_8` to `(S1, addr=0)` does not affect a read of `Bit` from `(S1, addr=0)`, because different `TypeId`s are distinct namespaces within the same `StorageId`.
+
+This design enables:
+- **Efficient stack lowering**: a single `StorageId` can represent a stack frame with typed fields at distinct type-slots, without requiring separate `StorageId`s for each field.
+- **Storage remapping**: optimization passes (e.g. store-to-load forwarding) can safely forward within a `(StorageId, TypeId)` pair without cross-type interference.
+
+### Invalidation policy
+
+A `StorageWrite` to `(S, T, addr)` invalidates all cached reads for the same `(S, T)` pair regardless of address (conservative on address aliasing), but does NOT invalidate entries for `(S, T')` where `T' != T`.
+
+### Evaluator conformance
+
+All evaluators must key their storage maps by `(StorageId, TypeId, addr)` (IR, VAFFLE) or the equivalent `(StorageId, bit_width, addr)` (BIR, where all values are single bits). Writing with one type and reading with a different type at the same `StorageId + address` returns the default zero value, not the previously written data.
+
+### Relevant files
+
+- `crates/fuzz/volar-fuzz/src/interpreter/ir.rs` — `StorageMap = BTreeMap<(StorageId, TypeId, u64), Vec<bool>>`
+- `crates/fuzz/volar-fuzz/src/interpreter/vaffle.rs` — reuses `StorageMap` from `ir.rs`
+- `crates/fuzz/volar-fuzz/src/interpreter/biir.rs` — `BIrStorageMap = BTreeMap<(StorageId, u64), bool>` (bit_width always 1)
+- `crates/ir/volar-ir-opt/src/store_forward.rs` — cache types `IrStoreCache`, `BiirStoreCache`, `VaffleCache`

@@ -12,7 +12,7 @@
 //! clears **all** cached reads for that `(S, T)` pair, regardless of address.
 
 use alloc::{collections::BTreeMap, vec, vec::Vec};
-use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTerminator};
+use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
 use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRVarId};
 use volar_ir_common::{StorageId, TypeId};
 use vaffle::{FuncBody, FuncDecl, Module, Value, ValueId};
@@ -82,8 +82,10 @@ pub fn store_forward_ir_blocks<P: Clone + Default>(blocks: &mut IRBlocks<P>) -> 
                 }
             }
         } else {
-            // Multiple predecessors: conservative intersection (no injection).
-            intersect_ir_caches(&preds[bi], &outgoing_caches, blocks, bi)
+            // Multiple predecessors: merge with param injection.
+            merge_ir_caches_with_injection(
+                &preds[bi], &outgoing_caches, blocks, bi, &mut any_changed,
+            )
         };
 
         let (changed, out) =
@@ -252,12 +254,212 @@ fn add_ir_args_to_edges(term: &mut IRTerminator, target_block: usize, extra_args
 ///
 /// Vars `0..old_base` (params) are unchanged.  Vars `old_base..old_base+n`
 /// (stmts) are shifted to `old_base+shift..old_base+shift+n`.
-fn build_shift_map(old_base: u32, n_stmts: usize, shift: u32) -> BTreeMap<IRVarId, IRVarId> {
-    let mut map = BTreeMap::new();
-    for i in 0..n_stmts as u32 {
-        map.insert(IRVarId(old_base + i), IRVarId(old_base + shift + i));
+// ── Direct shift helpers ─────────────────────────────────────────────────────
+//
+// When injecting `k` new params into a block, existing stmt IRVarIds must be
+// shifted by `k`.  Previously this used `build_shift_map` to create a
+// BTreeMap and then `apply_aliases_to_*` (which calls `canon_alias`) to apply
+// it.  But `canon_alias` follows alias chains, so a shift map like
+// `{v4→v5, v5→v6}` would chain `v4→v5→v6` instead of the intended `v4→v5`.
+//
+// These helpers apply the shift as a single-level transform, avoiding chaining.
+
+/// Shift `v` in-place if it falls in `[old_base, old_base + n_stmts)`.
+#[inline]
+fn shift_var(v: &mut IRVarId, old_base: u32, n_stmts: u32, shift: u32) {
+    if v.0 >= old_base && v.0 < old_base + n_stmts {
+        v.0 += shift;
     }
-    map
+}
+
+/// Shift all `IRVarId` references in a `Stmt<IRVarId, IRVarId>`.
+fn shift_ir_stmt_vars(
+    stmt: &mut volar_ir_common::Stmt<IRVarId, IRVarId>,
+    old_base: u32,
+    n_stmts: u32,
+    shift: u32,
+) {
+    use volar_ir_common::Stmt;
+    match stmt {
+        Stmt::Const(_, _) | Stmt::Rng { .. } => {}
+        Stmt::Transmute { src, .. }
+        | Stmt::Rol { src, .. }
+        | Stmt::Ror { src, .. }
+        | Stmt::Splat { src, .. } => {
+            shift_var(src, old_base, n_stmts, shift);
+        }
+        Stmt::StorageRead { addr, .. } => {
+            shift_var(addr, old_base, n_stmts, shift);
+        }
+        Stmt::StorageWrite { src, addr, .. } => {
+            shift_var(src, old_base, n_stmts, shift);
+            shift_var(addr, old_base, n_stmts, shift);
+        }
+        Stmt::Merge { parts, .. } => {
+            for p in parts.iter_mut() {
+                shift_var(p, old_base, n_stmts, shift);
+            }
+        }
+        Stmt::Shuffle { result_bits, .. } => {
+            for (_, v) in result_bits.iter_mut() {
+                shift_var(v, old_base, n_stmts, shift);
+            }
+        }
+        Stmt::Poly { coeffs, .. } => {
+            // Shift vars inside monomial keys.  Since keys are sorted
+            // `Vec<IRVarId>` in a BTreeMap, changing a var may change the
+            // sort order, so we rebuild the map.
+            let old = core::mem::take(coeffs);
+            for (mut key, coeff) in old {
+                for v in key.iter_mut() {
+                    shift_var(v, old_base, n_stmts, shift);
+                }
+                key.sort();
+                *coeffs.entry(key).or_insert(0) ^= coeff;
+            }
+            coeffs.retain(|_, c| *c & 1 != 0);
+        }
+        Stmt::OracleCall { args, .. } => {
+            for a in args.iter_mut() {
+                shift_var(a, old_base, n_stmts, shift);
+            }
+        }
+        Stmt::OracleOutput { call, .. } | Stmt::ActionOutput { call, .. } => {
+            shift_var(call, old_base, n_stmts, shift);
+        }
+        Stmt::ActionCall { guard, args, fallbacks, .. } => {
+            shift_var(guard, old_base, n_stmts, shift);
+            for a in args.iter_mut() {
+                shift_var(a, old_base, n_stmts, shift);
+            }
+            for f in fallbacks.iter_mut() {
+                shift_var(f, old_base, n_stmts, shift);
+            }
+        }
+    }
+}
+
+/// Shift all `IRVarId` references in an `IRTerminator`.
+fn shift_ir_terminator_vars(
+    term: &mut IRTerminator,
+    old_base: u32,
+    n_stmts: u32,
+    shift: u32,
+) {
+    let shift_args = |args: &mut Vec<IRVarId>| {
+        for v in args.iter_mut() {
+            shift_var(v, old_base, n_stmts, shift);
+        }
+    };
+    let shift_target_id = |tid: &mut IRBlockTargetId| {
+        if let IRBlockTargetId::Dyn(v) = tid {
+            shift_var(v, old_base, n_stmts, shift);
+        }
+    };
+    match term {
+        IRTerminator::Jmp { func, args } => {
+            shift_target_id(func);
+            shift_args(args);
+        }
+        IRTerminator::JumpCond {
+            condition,
+            true_block,
+            true_args,
+            false_block,
+            false_args,
+        } => {
+            shift_var(condition, old_base, n_stmts, shift);
+            shift_target_id(true_block);
+            shift_args(true_args);
+            shift_target_id(false_block);
+            shift_args(false_args);
+        }
+        IRTerminator::JumpTable { index, cases } => {
+            shift_var(index, old_base, n_stmts, shift);
+            for (_, (target, args)) in cases.iter_mut() {
+                shift_target_id(target);
+                shift_args(args);
+            }
+        }
+    }
+}
+
+/// Shift all `IRVarId` references in a `BIrStmt`.
+fn shift_biir_stmt_vars(
+    stmt: &mut BIrStmt,
+    old_base: u32,
+    n_stmts: u32,
+    shift: u32,
+) {
+    match stmt {
+        BIrStmt::And(a, b) | BIrStmt::Or(a, b) | BIrStmt::Xor(a, b) => {
+            shift_var(a, old_base, n_stmts, shift);
+            shift_var(b, old_base, n_stmts, shift);
+        }
+        BIrStmt::Not(a) => {
+            shift_var(a, old_base, n_stmts, shift);
+        }
+        BIrStmt::StorageRead { addr, .. } => {
+            shift_var(addr, old_base, n_stmts, shift);
+        }
+        BIrStmt::StorageWrite { src, addr, .. } => {
+            shift_var(src, old_base, n_stmts, shift);
+            shift_var(addr, old_base, n_stmts, shift);
+        }
+        BIrStmt::OracleCall { args, .. } => {
+            for a in args.iter_mut() {
+                shift_var(a, old_base, n_stmts, shift);
+            }
+        }
+        BIrStmt::OracleBit { call, .. } | BIrStmt::ActionBit { call, .. } => {
+            shift_var(call, old_base, n_stmts, shift);
+        }
+        BIrStmt::ActionCall { guard, args, fallback, .. } => {
+            shift_var(guard, old_base, n_stmts, shift);
+            for a in args.iter_mut() {
+                shift_var(a, old_base, n_stmts, shift);
+            }
+            for f in fallback.iter_mut() {
+                shift_var(f, old_base, n_stmts, shift);
+            }
+        }
+        // Zero, One, Rng: no var references.
+        _ => {}
+    }
+}
+
+/// Shift all `IRVarId` references in a `BIrTarget`.
+fn shift_biir_target_vars(
+    target: &mut BIrTarget,
+    old_base: u32,
+    n_stmts: u32,
+    shift: u32,
+) {
+    for v in target.args.iter_mut() {
+        shift_var(v, old_base, n_stmts, shift);
+    }
+    if let IRBlockTargetId::Dyn(v) = &mut target.block {
+        shift_var(v, old_base, n_stmts, shift);
+    }
+}
+
+/// Shift all `IRVarId` references in a `BIrTerminator`.
+fn shift_biir_terminator_vars(
+    term: &mut BIrTerminator,
+    old_base: u32,
+    n_stmts: u32,
+    shift: u32,
+) {
+    match term {
+        BIrTerminator::Jmp(target) => {
+            shift_biir_target_vars(target, old_base, n_stmts, shift);
+        }
+        BIrTerminator::CondJmp { val, then_target, else_target } => {
+            shift_var(val, old_base, n_stmts, shift);
+            shift_biir_target_vars(then_target, old_base, n_stmts, shift);
+            shift_biir_target_vars(else_target, old_base, n_stmts, shift);
+        }
+    }
 }
 
 /// Translate a predecessor's outgoing cache into the successor's var space,
@@ -313,11 +515,11 @@ fn translate_ir_cache_with_injection<P: Clone + Default>(
         }
 
         // Shift existing stmt IRVarIds (stmts and terminator).
-        let shift_map = build_shift_map(old_n_params, n_stmts, shift);
+        let n_stmts_u32 = n_stmts as u32;
         for stmt in blocks.blocks[target_idx].stmts.iter_mut() {
-            apply_aliases_to_ir_stmt(stmt, &shift_map);
+            shift_ir_stmt_vars(stmt, old_n_params, n_stmts_u32, shift);
         }
-        apply_aliases_to_ir_terminator(&mut blocks.blocks[target_idx].terminator, &shift_map);
+        shift_ir_terminator_vars(&mut blocks.blocks[target_idx].terminator, old_n_params, n_stmts_u32, shift);
 
         // Add provenance entries for new params (stmts provs are separate;
         // params don't need provenance, but stmt_provs length must still
@@ -333,20 +535,40 @@ fn translate_ir_cache_with_injection<P: Clone + Default>(
     result
 }
 
-/// Conservative intersection for multi-predecessor blocks: translate each
-/// predecessor's cache and keep only entries where all agree (no injection).
-fn intersect_ir_caches<P: Clone + Default>(
+/// Merge multiple predecessors' caches into the successor's var space, with
+/// param injection for source values that differ across predecessors.
+///
+/// Forwards entries where ALL predecessors have a cached write to the same
+/// `(StorageId, TypeId, addr_in_target)`.  If every predecessor's source var
+/// translates to the same target param, no injection is needed.  When sources
+/// differ (the "phi" case), a new parameter is injected and each predecessor
+/// passes its own source value as the argument for that param position.
+fn merge_ir_caches_with_injection<P: Clone + Default>(
     pred_indices: &[usize],
     outgoing_caches: &[Option<IrStoreCache>],
-    blocks: &IRBlocks<P>,
+    blocks: &mut IRBlocks<P>,
     target_idx: usize,
+    changed: &mut bool,
 ) -> IrStoreCache {
-    let mut acc: Option<IrStoreCache> = None;
+    let n_preds = pred_indices.len();
+
+    // ── Phase 1: Build translation maps and translate each pred's cache ──────
+    //
+    // For each predecessor we translate the cache entries' *addr* to the target
+    // block's parameter namespace (via existing edge args) and keep *src* in
+    // the predecessor's own namespace — we may need to inject it later.
+    //
+    // translated[pred_pos] maps (S, T, addr_target) → src_in_pred_namespace
+    // trans_maps[pred_pos] maps pred_var → target_param
+
+    let mut trans_maps: Vec<BTreeMap<IRVarId, IRVarId>> = Vec::with_capacity(n_preds);
+    let mut translated: Vec<BTreeMap<(StorageId, TypeId, IRVarId), IRVarId>> =
+        Vec::with_capacity(n_preds);
 
     for &pi in pred_indices {
         let pred_cache = match &outgoing_caches[pi] {
             Some(c) => c,
-            None => return BTreeMap::new(),
+            None => return BTreeMap::new(), // predecessor not yet processed
         };
 
         let args = match ir_edge_args(&blocks.blocks[pi].terminator, target_idx) {
@@ -354,28 +576,113 @@ fn intersect_ir_caches<P: Clone + Default>(
             None => return BTreeMap::new(),
         };
 
-        // Build translation: pred_var → target_param.
         let mut trans: BTreeMap<IRVarId, IRVarId> = BTreeMap::new();
         for (i, &arg) in args.iter().enumerate() {
             trans.entry(arg).or_insert(IRVarId(i as u32));
         }
 
-        let translated: IrStoreCache = pred_cache
+        let entries: BTreeMap<_, _> = pred_cache
             .iter()
             .filter_map(|(&(s, t, addr_p), &src_p)| {
-                let addr_b = *trans.get(&addr_p)?;
-                let src_b = *trans.get(&src_p)?;
-                Some(((s, t, addr_b), src_b))
+                let addr_t = *trans.get(&addr_p)?;
+                Some(((s, t, addr_t), src_p))
             })
             .collect();
 
-        match &mut acc {
-            None => acc = Some(translated),
-            Some(a) => a.retain(|k, v| translated.get(k) == Some(v)),
+        trans_maps.push(trans);
+        translated.push(entries);
+    }
+
+    // ── Phase 2: Find keys common to ALL predecessors ────────────────────────
+
+    let common_keys: Vec<(StorageId, TypeId, IRVarId)> = if translated.is_empty() {
+        Vec::new()
+    } else {
+        translated[0]
+            .keys()
+            .filter(|k| translated[1..].iter().all(|te| te.contains_key(k)))
+            .cloned()
+            .collect()
+    };
+
+    if common_keys.is_empty() {
+        return BTreeMap::new();
+    }
+
+    // ── Phase 3: Determine which entries need injection ──────────────────────
+
+    let old_n_params = blocks.blocks[target_idx].params.len() as u32;
+    let mut result: IrStoreCache = BTreeMap::new();
+    // Each injection: (TypeId for the new param, [src_in_pred_namespace per pred])
+    let mut injections: Vec<(TypeId, Vec<IRVarId>)> = Vec::new();
+
+    for (s, t, addr_t) in common_keys {
+        // Collect each predecessor's source var (in its own namespace).
+        let src_per_pred: Vec<IRVarId> = (0..n_preds)
+            .map(|pp| translated[pp][&(s, t, addr_t)])
+            .collect();
+
+        // Try to translate all source vars to target namespace.
+        let translated_srcs: Vec<Option<IRVarId>> = src_per_pred
+            .iter()
+            .enumerate()
+            .map(|(pp, &src_p)| trans_maps[pp].get(&src_p).copied())
+            .collect();
+
+        // If all translate to the same target var, no injection needed.
+        let all_same = translated_srcs.iter().all(|s| s.is_some())
+            && translated_srcs.windows(2).all(|w| w[0] == w[1]);
+
+        if all_same {
+            result.insert((s, t, addr_t), translated_srcs[0].unwrap());
+        } else {
+            // Inject a new param — each predecessor will pass its own src value.
+            let new_param_idx = old_n_params + injections.len() as u32;
+            result.insert((s, t, addr_t), IRVarId(new_param_idx));
+            injections.push((t, src_per_pred));
         }
     }
 
-    acc.unwrap_or_default()
+    // ── Phase 4: Apply injections ────────────────────────────────────────────
+
+    if !injections.is_empty() {
+        let shift = injections.len() as u32;
+        let n_stmts = blocks.blocks[target_idx].stmts.len();
+
+        // Add param types to the target block.
+        for &(type_id, _) in &injections {
+            blocks.blocks[target_idx].params.push(type_id);
+        }
+
+        // Shift existing stmt IRVarIds (stmts + terminator).
+        let n_stmts_u32 = n_stmts as u32;
+        for stmt in blocks.blocks[target_idx].stmts.iter_mut() {
+            shift_ir_stmt_vars(stmt, old_n_params, n_stmts_u32, shift);
+        }
+        shift_ir_terminator_vars(
+            &mut blocks.blocks[target_idx].terminator,
+            old_n_params,
+            n_stmts_u32,
+            shift,
+        );
+
+        // Extend each predecessor's edges with the injected source vars.
+        for (pp, &pi) in pred_indices.iter().enumerate() {
+            let extra_args: Vec<IRVarId> = injections
+                .iter()
+                .map(|(_, srcs)| srcs[pp])
+                .collect();
+            add_ir_args_to_edges(
+                &mut blocks.blocks[pi].terminator,
+                target_idx,
+                &extra_args,
+            );
+        }
+
+        *changed = true;
+    }
+
+    result
 }
 
 // ============================================================================
@@ -433,7 +740,10 @@ pub fn store_forward_biir_blocks<P: Clone + Default>(blocks: &mut BIrBlocks<P>) 
                 }
             }
         } else {
-            intersect_biir_caches(&preds[bi], &outgoing_caches, blocks, bi)
+            // Multiple predecessors: merge with param injection.
+            merge_biir_caches_with_injection(
+                &preds[bi], &outgoing_caches, blocks, bi, &mut any_changed,
+            )
         };
 
         let (changed, out) =
@@ -620,11 +930,11 @@ fn translate_biir_cache_with_injection<P: Clone + Default>(
         blocks.0[target_idx].params += shift;
 
         // Shift existing stmt IRVarIds.
-        let shift_map = build_shift_map(old_n_params, n_stmts, shift);
+        let n_stmts_u32 = n_stmts as u32;
         for stmt in blocks.0[target_idx].stmts.iter_mut() {
-            crate::biir::apply_aliases_to_biir_stmt(stmt, &shift_map);
+            shift_biir_stmt_vars(stmt, old_n_params, n_stmts_u32, shift);
         }
-        apply_aliases_to_biir_terminator(&mut blocks.0[target_idx].terminator, &shift_map);
+        shift_biir_terminator_vars(&mut blocks.0[target_idx].terminator, old_n_params, n_stmts_u32, shift);
 
         // Add source vars as extra args to predecessor edges.
         add_biir_args_to_edges(
@@ -639,14 +949,20 @@ fn translate_biir_cache_with_injection<P: Clone + Default>(
     result
 }
 
-/// Conservative intersection for multi-predecessor BIR blocks.
-fn intersect_biir_caches<P: Clone + Default>(
+/// Merge multiple predecessors' BIR caches into the successor's var space,
+/// with param injection for source values that differ across predecessors.
+fn merge_biir_caches_with_injection<P: Clone + Default>(
     pred_indices: &[usize],
     outgoing_caches: &[Option<BiirStoreCache>],
-    blocks: &BIrBlocks<P>,
+    blocks: &mut BIrBlocks<P>,
     target_idx: usize,
+    changed: &mut bool,
 ) -> BiirStoreCache {
-    let mut acc: Option<BiirStoreCache> = None;
+    let n_preds = pred_indices.len();
+
+    let mut trans_maps: Vec<BTreeMap<IRVarId, IRVarId>> = Vec::with_capacity(n_preds);
+    let mut translated: Vec<BTreeMap<(StorageId, usize, IRVarId), IRVarId>> =
+        Vec::with_capacity(n_preds);
 
     for &pi in pred_indices {
         let pred_cache = match &outgoing_caches[pi] {
@@ -664,22 +980,91 @@ fn intersect_biir_caches<P: Clone + Default>(
             trans.entry(arg).or_insert(IRVarId(i as u32));
         }
 
-        let translated: BiirStoreCache = pred_cache
+        let entries: BTreeMap<_, _> = pred_cache
             .iter()
             .filter_map(|(&(s, w, addr_p), &src_p)| {
-                let addr_b = *trans.get(&addr_p)?;
-                let src_b = *trans.get(&src_p)?;
-                Some(((s, w, addr_b), src_b))
+                let addr_t = *trans.get(&addr_p)?;
+                Some(((s, w, addr_t), src_p))
             })
             .collect();
 
-        match &mut acc {
-            None => acc = Some(translated),
-            Some(a) => a.retain(|k, v| translated.get(k) == Some(v)),
+        trans_maps.push(trans);
+        translated.push(entries);
+    }
+
+    let common_keys: Vec<(StorageId, usize, IRVarId)> = if translated.is_empty() {
+        Vec::new()
+    } else {
+        translated[0]
+            .keys()
+            .filter(|k| translated[1..].iter().all(|te| te.contains_key(k)))
+            .cloned()
+            .collect()
+    };
+
+    if common_keys.is_empty() {
+        return BTreeMap::new();
+    }
+
+    let old_n_params = blocks.0[target_idx].params;
+    let mut result: BiirStoreCache = BTreeMap::new();
+    // Each injection: [src_in_pred_namespace per pred]
+    let mut injections: Vec<Vec<IRVarId>> = Vec::new();
+
+    for (s, w, addr_t) in common_keys {
+        let src_per_pred: Vec<IRVarId> = (0..n_preds)
+            .map(|pp| translated[pp][&(s, w, addr_t)])
+            .collect();
+
+        let translated_srcs: Vec<Option<IRVarId>> = src_per_pred
+            .iter()
+            .enumerate()
+            .map(|(pp, &src_p)| trans_maps[pp].get(&src_p).copied())
+            .collect();
+
+        let all_same = translated_srcs.iter().all(|s| s.is_some())
+            && translated_srcs.windows(2).all(|w| w[0] == w[1]);
+
+        if all_same {
+            result.insert((s, w, addr_t), translated_srcs[0].unwrap());
+        } else {
+            let new_param_idx = old_n_params + injections.len() as u32;
+            result.insert((s, w, addr_t), IRVarId(new_param_idx));
+            injections.push(src_per_pred);
         }
     }
 
-    acc.unwrap_or_default()
+    if !injections.is_empty() {
+        let shift = injections.len() as u32;
+        let n_stmts = blocks.0[target_idx].stmts.len();
+
+        // Increment param count.
+        blocks.0[target_idx].params += shift;
+
+        // Shift existing stmt IRVarIds.
+        let n_stmts_u32 = n_stmts as u32;
+        for stmt in blocks.0[target_idx].stmts.iter_mut() {
+            shift_biir_stmt_vars(stmt, old_n_params, n_stmts_u32, shift);
+        }
+        shift_biir_terminator_vars(&mut blocks.0[target_idx].terminator, old_n_params, n_stmts_u32, shift);
+
+        // Extend each predecessor's edges.
+        for (pp, &pi) in pred_indices.iter().enumerate() {
+            let extra_args: Vec<IRVarId> = injections
+                .iter()
+                .map(|srcs| srcs[pp])
+                .collect();
+            add_biir_args_to_edges(
+                &mut blocks.0[pi].terminator,
+                target_idx,
+                &extra_args,
+            );
+        }
+
+        *changed = true;
+    }
+
+    result
 }
 
 // ============================================================================

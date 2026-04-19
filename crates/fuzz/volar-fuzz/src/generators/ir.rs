@@ -461,6 +461,181 @@ pub fn interpret_ir_multiblock(
 }
 
 // ============================================================================
+// Diamond-CFG interpreter: four-block diamond for multi-predecessor tests
+// ============================================================================
+
+/// Build a four-block diamond-shaped `IRBlocks<()>`:
+///
+/// ```text
+///       B0 (entry)
+///      /          \
+///    B1 (true)   B2 (false)
+///      \          /
+///       B3 (merge)
+/// ```
+///
+/// - **Block 0**: function params (first forced to `Bit` for the condition) +
+///   stmts from `raw_stmts_b0`.  Terminates with `JumpCond(param_0,
+///   Block(1), Block(2))`, passing all non-void vars to both targets.
+/// - **Block 1 / Block 2**: params = types of B0's non-void vars; stmts from
+///   `raw_stmts_b1` / `raw_stmts_b2`.  Each terminates with `Jmp(Block(3),
+///   params_only)` — only the inherited B0 vars are forwarded, local stmt
+///   vars are NOT passed.
+/// - **Block 3 (merge)**: params = types of B0's non-void vars; stmts from
+///   `raw_stmts_b3`.  Terminates with `Jmp(Return, all_b3_vars)`.
+///
+/// This exercises multi-predecessor store-to-load forwarding with param
+/// injection: B1 and B2 may write different values to the same storage
+/// location, and B3's read triggers the "phi" injection path.
+pub fn interpret_ir_diamond(
+    raw_param_type_idxs: &[RawTypeIdx],
+    raw_stmts_b0: &[RawIrStmt],
+    raw_stmts_b1: &[RawIrStmt],
+    raw_stmts_b2: &[RawIrStmt],
+    raw_stmts_b3: &[RawIrStmt],
+) -> (IRBlocks<()>, TypeTable, Vec<usize>) {
+    let mut types = TypeTable::new();
+
+    // Ensure at least one Bit param for the condition.
+    let mut adjusted_params = raw_param_type_idxs.to_vec();
+    if adjusted_params.is_empty() {
+        adjusted_params.push(0); // PRIM_TYPES[0] = Type::Bit
+    }
+    adjusted_params[0] = 0; // force first param to Bit
+
+    // ── Block 0 (entry) ──────────────────────────────────────────────────────
+    let param_type_ids: Vec<TypeId> = adjusted_params
+        .iter()
+        .map(|&idx| types.primitive(PRIM_TYPES[idx as usize % PRIM_TYPES.len()]))
+        .collect();
+
+    let param_widths: Vec<usize> = param_type_ids
+        .iter()
+        .map(|&tid| match &types.0[tid.0 as usize] {
+            IrType::Primitive(t) => primitive_width(*t),
+            _ => unreachable!(),
+        })
+        .collect();
+
+    let n_params = param_type_ids.len();
+    let mut var_info_b0: Vec<(TypeId, usize, IRVarId)> = param_type_ids
+        .iter()
+        .zip(param_widths.iter())
+        .enumerate()
+        .map(|(i, (&tid, &w))| (tid, w, IRVarId(i as u32)))
+        .collect();
+
+    let stmts_b0 = build_extended_ir_stmts(
+        &mut types, &mut var_info_b0, raw_stmts_b0, n_params as u32,
+    );
+    let n_b0_stmts = stmts_b0.len();
+
+    // B0 terminator: JumpCond on first param (Bit), true→B1, false→B2.
+    let b0_jump_args: Vec<IRVarId> = var_info_b0.iter().map(|(_, _, id)| *id).collect();
+    let b0_term = IRTerminator::JumpCond {
+        condition: IRVarId(0),
+        true_block: IRBlockTargetId::Block(IRBlockId(1)),
+        true_args: b0_jump_args.clone(),
+        false_block: IRBlockTargetId::Block(IRBlockId(2)),
+        false_args: b0_jump_args,
+    };
+
+    // ── Block 1 (true branch) ────────────────────────────────────────────────
+    let b1_param_types: Vec<TypeId> = var_info_b0.iter().map(|(tid, _, _)| *tid).collect();
+    let n_b1_params = b1_param_types.len();
+
+    let mut var_info_b1: Vec<(TypeId, usize, IRVarId)> = var_info_b0
+        .iter()
+        .enumerate()
+        .map(|(i, (tid, w, _))| (*tid, *w, IRVarId(i as u32)))
+        .collect();
+
+    let stmts_b1 = build_extended_ir_stmts(
+        &mut types, &mut var_info_b1, raw_stmts_b1, n_b1_params as u32,
+    );
+    let n_b1_stmts = stmts_b1.len();
+
+    // B1→B3: pass only the params (B0 vars re-indexed).
+    let b1_to_b3_args: Vec<IRVarId> = (0..n_b1_params as u32).map(IRVarId).collect();
+    let b1_term = IRTerminator::Jmp {
+        func: IRBlockTargetId::Block(IRBlockId(3)),
+        args: b1_to_b3_args,
+    };
+
+    // ── Block 2 (false branch) ───────────────────────────────────────────────
+    let b2_param_types: Vec<TypeId> = var_info_b0.iter().map(|(tid, _, _)| *tid).collect();
+    let n_b2_params = b2_param_types.len();
+
+    let mut var_info_b2: Vec<(TypeId, usize, IRVarId)> = var_info_b0
+        .iter()
+        .enumerate()
+        .map(|(i, (tid, w, _))| (*tid, *w, IRVarId(i as u32)))
+        .collect();
+
+    let stmts_b2 = build_extended_ir_stmts(
+        &mut types, &mut var_info_b2, raw_stmts_b2, n_b2_params as u32,
+    );
+    let n_b2_stmts = stmts_b2.len();
+
+    let b2_to_b3_args: Vec<IRVarId> = (0..n_b2_params as u32).map(IRVarId).collect();
+    let b2_term = IRTerminator::Jmp {
+        func: IRBlockTargetId::Block(IRBlockId(3)),
+        args: b2_to_b3_args,
+    };
+
+    // ── Block 3 (merge) ──────────────────────────────────────────────────────
+    let b3_param_types: Vec<TypeId> = var_info_b0.iter().map(|(tid, _, _)| *tid).collect();
+    let n_b3_params = b3_param_types.len();
+
+    let mut var_info_b3: Vec<(TypeId, usize, IRVarId)> = var_info_b0
+        .iter()
+        .enumerate()
+        .map(|(i, (tid, w, _))| (*tid, *w, IRVarId(i as u32)))
+        .collect();
+
+    let stmts_b3 = build_extended_ir_stmts(
+        &mut types, &mut var_info_b3, raw_stmts_b3, n_b3_params as u32,
+    );
+    let n_b3_stmts = stmts_b3.len();
+
+    let total_b3_vars = n_b3_params + stmts_b3.len();
+    let b3_ret_args: Vec<IRVarId> = (0..total_b3_vars as u32).map(IRVarId).collect();
+    let b3_term = IRTerminator::Jmp {
+        func: IRBlockTargetId::Return,
+        args: b3_ret_args,
+    };
+
+    let blocks = IRBlocks::new(vec![
+        IRBlock {
+            params: param_type_ids,
+            stmts: stmts_b0,
+            stmt_provs: vec![(); n_b0_stmts],
+            terminator: b0_term,
+        },
+        IRBlock {
+            params: b1_param_types,
+            stmts: stmts_b1,
+            stmt_provs: vec![(); n_b1_stmts],
+            terminator: b1_term,
+        },
+        IRBlock {
+            params: b2_param_types,
+            stmts: stmts_b2,
+            stmt_provs: vec![(); n_b2_stmts],
+            terminator: b2_term,
+        },
+        IRBlock {
+            params: b3_param_types,
+            stmts: stmts_b3,
+            stmt_provs: vec![(); n_b3_stmts],
+            terminator: b3_term,
+        },
+    ]);
+
+    (blocks, types, param_widths)
+}
+
+// ============================================================================
 // Proptest strategies (test-only)
 // ============================================================================
 
@@ -588,6 +763,60 @@ mod strategies {
                             &raw_param_types,
                             &raw_stmts_b0,
                             &raw_stmts_b1,
+                        );
+
+                        let inputs: Vec<IrValue> = {
+                            let mut off = 0;
+                            widths
+                                .iter()
+                                .map(|&w| {
+                                    let v = input_bits[off..off + w].to_vec();
+                                    off += w;
+                                    v
+                                })
+                                .collect()
+                        };
+
+                        (blocks, types, inputs)
+                    },
+                )
+            },
+        )
+    }
+
+    /// Four-block diamond `IRBlocks<()>` with `StorageRead`/`StorageWrite`.
+    ///
+    /// B0 branches on the first Bit param to B1 (true) or B2 (false).
+    /// B1 and B2 both merge into B3.  This exercises multi-predecessor
+    /// store-to-load forwarding with param injection.
+    pub fn gen_ir_diamond_and_inputs(
+    ) -> impl Strategy<Value = (IRBlocks<()>, TypeTable, Vec<IrValue>)> {
+        // At least 1 param (forced to Bit for the condition).
+        proptest::collection::vec(any::<u8>(), 1usize..=4usize).prop_flat_map(
+            |raw_param_types| {
+                let mut adjusted = raw_param_types.clone();
+                adjusted[0] = 0; // force Bit
+                let widths: Vec<usize> = adjusted
+                    .iter()
+                    .map(|&idx| primitive_width(PRIM_TYPES[idx as usize % PRIM_TYPES.len()]))
+                    .collect();
+                let total_bits: usize = widths.iter().sum();
+
+                let raw_tuple = (any::<u8>(), any::<u32>(), any::<u32>(), any::<u128>(), any::<u128>());
+                let raw_stmts_b0 = proptest::collection::vec(raw_tuple.clone(), 0usize..=4usize);
+                let raw_stmts_b1 = proptest::collection::vec(raw_tuple.clone(), 0usize..=4usize);
+                let raw_stmts_b2 = proptest::collection::vec(raw_tuple.clone(), 0usize..=4usize);
+                let raw_stmts_b3 = proptest::collection::vec(raw_tuple, 0usize..=4usize);
+                let input_bits = proptest::collection::vec(any::<bool>(), total_bits);
+
+                (raw_stmts_b0, raw_stmts_b1, raw_stmts_b2, raw_stmts_b3, input_bits).prop_map(
+                    move |(raw_stmts_b0, raw_stmts_b1, raw_stmts_b2, raw_stmts_b3, input_bits)| {
+                        let (blocks, types, _param_widths) = interpret_ir_diamond(
+                            &raw_param_types,
+                            &raw_stmts_b0,
+                            &raw_stmts_b1,
+                            &raw_stmts_b2,
+                            &raw_stmts_b3,
                         );
 
                         let inputs: Vec<IrValue> = {

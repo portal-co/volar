@@ -443,6 +443,162 @@ pub fn interpret_biir_multiblock(
 }
 
 // ============================================================================
+// Diamond-CFG interpreter: four-block diamond for multi-predecessor tests
+// ============================================================================
+
+/// Build a four-block diamond-shaped `BIrBlocks<()>`:
+///
+/// ```text
+///       B0 (entry)
+///      /          \
+///    B1 (true)   B2 (false)
+///      \          /
+///       B3 (merge)
+/// ```
+///
+/// - **Block 0**: `n_params` params (min 1 for the condition) + stmts from
+///   `raw_stmts_b0` (8-way dispatch).  Terminates with `CondJmp(param_0,
+///   Block(1), Block(2))`, passing all vars to both targets.
+/// - **Block 1 / Block 2**: params = B0's total var count; stmts from
+///   `raw_stmts_b1` / `raw_stmts_b2`.  Each terminates with `Jmp(Block(3),
+///   params_only)`.
+/// - **Block 3 (merge)**: params = B0's total var count; stmts from
+///   `raw_stmts_b3`.  Terminates with `Jmp(Return, all_b3_vars)`.
+pub fn interpret_biir_diamond(
+    n_params: u32,
+    raw_stmts_b0: &[RawStmt],
+    raw_stmts_b1: &[RawStmt],
+    raw_stmts_b2: &[RawStmt],
+    raw_stmts_b3: &[RawStmt],
+) -> BIrBlocks<()> {
+    let n_params = n_params.max(1); // need at least 1 for the condition
+
+    // ── Block 0 ──────────────────────────────────────────────────────────────
+    let mut stmts_b0: Vec<BIrStmt> = Vec::new();
+    let mut usable_b0: Vec<u32> = (0..n_params).collect();
+
+    for &(kind, a, b) in raw_stmts_b0 {
+        let n_avail = usable_b0.len() as u32;
+        let (mapped_a, mapped_b) = if n_avail == 0 {
+            (0u32, 0u32)
+        } else {
+            (usable_b0[(a as usize) % usable_b0.len()], usable_b0[(b as usize) % usable_b0.len()])
+        };
+        let var_id = n_params + stmts_b0.len() as u32;
+        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail);
+        stmts_b0.push(stmt);
+        if !is_void {
+            usable_b0.push(var_id);
+        }
+    }
+
+    let total_b0 = n_params + stmts_b0.len() as u32;
+    let b0_all_args: Vec<IRVarId> = (0..total_b0).map(IRVarId).collect();
+    let n_b0 = stmts_b0.len();
+    let b0_term = BIrTerminator::CondJmp {
+        val: IRVarId(0),
+        then_target: BIrTarget {
+            block: IRBlockTargetId::Block(IRBlockId(1)),
+            args: b0_all_args.clone(),
+        },
+        else_target: BIrTarget {
+            block: IRBlockTargetId::Block(IRBlockId(2)),
+            args: b0_all_args,
+        },
+    };
+
+    // ── Block 1 (true branch) ────────────────────────────────────────────────
+    let n_b1_params = total_b0;
+    let b0_usable_set: std::collections::BTreeSet<u32> = usable_b0.iter().copied().collect();
+    let mut usable_b1: Vec<u32> = (0..total_b0).filter(|i| b0_usable_set.contains(i)).collect();
+    let mut stmts_b1: Vec<BIrStmt> = Vec::new();
+
+    for &(kind, a, b) in raw_stmts_b1 {
+        let n_avail = usable_b1.len() as u32;
+        let (mapped_a, mapped_b) = if n_avail == 0 {
+            (0u32, 0u32)
+        } else {
+            (usable_b1[(a as usize) % usable_b1.len()], usable_b1[(b as usize) % usable_b1.len()])
+        };
+        let var_id = n_b1_params + stmts_b1.len() as u32;
+        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail);
+        stmts_b1.push(stmt);
+        if !is_void {
+            usable_b1.push(var_id);
+        }
+    }
+
+    let n_b1 = stmts_b1.len();
+    let b1_to_b3_args: Vec<IRVarId> = (0..n_b1_params).map(IRVarId).collect();
+    let b1_term = BIrTerminator::Jmp(BIrTarget {
+        block: IRBlockTargetId::Block(IRBlockId(3)),
+        args: b1_to_b3_args,
+    });
+
+    // ── Block 2 (false branch) ───────────────────────────────────────────────
+    let n_b2_params = total_b0;
+    let mut usable_b2: Vec<u32> = (0..total_b0).filter(|i| b0_usable_set.contains(i)).collect();
+    let mut stmts_b2: Vec<BIrStmt> = Vec::new();
+
+    for &(kind, a, b) in raw_stmts_b2 {
+        let n_avail = usable_b2.len() as u32;
+        let (mapped_a, mapped_b) = if n_avail == 0 {
+            (0u32, 0u32)
+        } else {
+            (usable_b2[(a as usize) % usable_b2.len()], usable_b2[(b as usize) % usable_b2.len()])
+        };
+        let var_id = n_b2_params + stmts_b2.len() as u32;
+        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail);
+        stmts_b2.push(stmt);
+        if !is_void {
+            usable_b2.push(var_id);
+        }
+    }
+
+    let n_b2 = stmts_b2.len();
+    let b2_to_b3_args: Vec<IRVarId> = (0..n_b2_params).map(IRVarId).collect();
+    let b2_term = BIrTerminator::Jmp(BIrTarget {
+        block: IRBlockTargetId::Block(IRBlockId(3)),
+        args: b2_to_b3_args,
+    });
+
+    // ── Block 3 (merge) ──────────────────────────────────────────────────────
+    let n_b3_params = total_b0;
+    let mut usable_b3: Vec<u32> = (0..total_b0).filter(|i| b0_usable_set.contains(i)).collect();
+    let mut stmts_b3: Vec<BIrStmt> = Vec::new();
+
+    for &(kind, a, b) in raw_stmts_b3 {
+        let n_avail = usable_b3.len() as u32;
+        let (mapped_a, mapped_b) = if n_avail == 0 {
+            (0u32, 0u32)
+        } else {
+            (usable_b3[(a as usize) % usable_b3.len()], usable_b3[(b as usize) % usable_b3.len()])
+        };
+        let var_id = n_b3_params + stmts_b3.len() as u32;
+        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail);
+        stmts_b3.push(stmt);
+        if !is_void {
+            usable_b3.push(var_id);
+        }
+    }
+
+    let total_b3 = n_b3_params + stmts_b3.len() as u32;
+    let n_b3 = stmts_b3.len();
+    let b3_ret_args: Vec<IRVarId> = (0..total_b3).map(IRVarId).collect();
+    let b3_term = BIrTerminator::Jmp(BIrTarget {
+        block: IRBlockTargetId::Return,
+        args: b3_ret_args,
+    });
+
+    BIrBlocks(vec![
+        BIrBlock { params: n_params, stmts: stmts_b0, stmt_provs: vec![(); n_b0], terminator: b0_term },
+        BIrBlock { params: n_b1_params, stmts: stmts_b1, stmt_provs: vec![(); n_b1], terminator: b1_term },
+        BIrBlock { params: n_b2_params, stmts: stmts_b2, stmt_provs: vec![(); n_b2], terminator: b2_term },
+        BIrBlock { params: n_b3_params, stmts: stmts_b3, stmt_provs: vec![(); n_b3], terminator: b3_term },
+    ])
+}
+
+// ============================================================================
 // Proptest strategies (test-only)
 // ============================================================================
 
@@ -514,6 +670,28 @@ mod strategies {
             (raw_stmts_b0, raw_stmts_b1, inputs).prop_map(
                 move |(raw_stmts_b0, raw_stmts_b1, inputs)| {
                     (interpret_biir_multiblock(n_params, &raw_stmts_b0, &raw_stmts_b1), inputs)
+                },
+            )
+        })
+    }
+
+    /// Four-block diamond `BIrBlocks<()>` with `StorageRead`/`StorageWrite`.
+    ///
+    /// B0 branches on the first param to B1 (true) or B2 (false).
+    /// B1 and B2 both merge into B3.  This exercises multi-predecessor
+    /// store-to-load forwarding with param injection.
+    pub fn gen_biir_diamond_and_inputs() -> impl Strategy<Value = (BIrBlocks<()>, Vec<bool>)> {
+        (1u32..=4u32).prop_flat_map(|n_params| {
+            let raw_tuple = (any::<u8>(), any::<u32>(), any::<u32>());
+            let raw_stmts_b0 = proptest::collection::vec(raw_tuple.clone(), 0usize..=4usize);
+            let raw_stmts_b1 = proptest::collection::vec(raw_tuple.clone(), 0usize..=4usize);
+            let raw_stmts_b2 = proptest::collection::vec(raw_tuple.clone(), 0usize..=4usize);
+            let raw_stmts_b3 = proptest::collection::vec(raw_tuple, 0usize..=4usize);
+            let inputs = proptest::collection::vec(any::<bool>(), n_params as usize);
+
+            (raw_stmts_b0, raw_stmts_b1, raw_stmts_b2, raw_stmts_b3, inputs).prop_map(
+                move |(raw_stmts_b0, raw_stmts_b1, raw_stmts_b2, raw_stmts_b3, inputs)| {
+                    (interpret_biir_diamond(n_params, &raw_stmts_b0, &raw_stmts_b1, &raw_stmts_b2, &raw_stmts_b3), inputs)
                 },
             )
         })
