@@ -11,10 +11,10 @@
 //! A write to `(S, T)` — same `StorageId` AND same `TypeId` / `bit_width` —
 //! clears **all** cached reads for that `(S, T)` pair, regardless of address.
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::{collections::BTreeMap, vec, vec::Vec};
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt};
 use volar_ir::ir::{IRBlock, IRBlocks, IRVarId};
-use volar_ir_common::{Constant, StorageId, TypeId};
+use volar_ir_common::{StorageId, TypeId};
 use vaffle::{FuncBody, FuncDecl, Module, Value, ValueId};
 
 use crate::common::canon_alias;
@@ -163,13 +163,128 @@ pub fn store_forward_vaffle_module(module: &mut Module) -> bool {
     any_changed
 }
 
+/// Cache type: (StorageId, TypeId, addr_var) → src_var.
+type VaffleCache = BTreeMap<(StorageId, TypeId, ValueId), ValueId>;
+
+/// Process a single body with an RPO pass that propagates store caches across
+/// block boundaries.
+///
+/// For single-block bodies this degenerates to the original within-block pass.
+/// For multi-block bodies, values written in a dominating block and read in a
+/// dominated block are forwarded directly (VAFFLE `ValueId`s are global, so the
+/// cross-block source is accessible in the successor's `value_table`).
 fn store_forward_vaffle_body(body: &mut FuncBody) -> bool {
-    let mut any_changed = false;
-    // Process each block independently (single-block bodies are the common case).
-    for block_idx in 0..body.blocks.len() {
-        any_changed |= store_forward_vaffle_block(body, block_idx);
+    let n = body.blocks.len();
+
+    if n == 1 {
+        // Fast path: no CFG needed.
+        let (changed, _) =
+            store_forward_vaffle_block_with_cache(body, 0, BTreeMap::new());
+        return changed;
     }
+
+    // Build successor / predecessor maps from terminators.
+    let mut succs: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, block) in body.blocks.iter().enumerate() {
+        for s in vaffle_block_succs(&block.terminator) {
+            succs[i].push(s);
+            preds[s].push(i);
+        }
+    }
+
+    let entry = body.entry.0;
+    let rpo = compute_rpo(n, entry, &succs);
+
+    let mut outgoing_caches: Vec<Option<VaffleCache>> = vec![None; n];
+    let mut any_changed = false;
+
+    for &block_idx in &rpo {
+        // Intersect predecessor outgoing caches to build the incoming cache.
+        // For blocks with no processed predecessors (entry or unreachable)
+        // the incoming cache is empty, giving conservative behaviour.
+        let incoming: VaffleCache = if preds[block_idx].is_empty() {
+            BTreeMap::new()
+        } else {
+            intersect_vaffle_caches(&preds[block_idx], &outgoing_caches)
+        };
+
+        let (changed, outgoing) =
+            store_forward_vaffle_block_with_cache(body, block_idx, incoming);
+        any_changed |= changed;
+        outgoing_caches[block_idx] = Some(outgoing);
+    }
+
     any_changed
+}
+
+/// Compute the RPO (reverse post-order) traversal of the CFG.
+fn compute_rpo(n: usize, entry: usize, succs: &[Vec<usize>]) -> Vec<usize> {
+    let mut visited = vec![false; n];
+    let mut post_order: Vec<usize> = Vec::with_capacity(n);
+    dfs_post(entry, succs, &mut visited, &mut post_order);
+    post_order.reverse();
+    post_order
+}
+
+fn dfs_post(
+    node: usize,
+    succs: &[Vec<usize>],
+    visited: &mut Vec<bool>,
+    post: &mut Vec<usize>,
+) {
+    if visited[node] {
+        return;
+    }
+    visited[node] = true;
+    for &s in &succs[node] {
+        dfs_post(s, succs, visited, post);
+    }
+    post.push(node);
+}
+
+/// Collect the block indices that `term` jumps to.
+fn vaffle_block_succs(term: &vaffle::Terminator) -> Vec<usize> {
+    use vaffle::Terminator;
+    match term {
+        Terminator::Return { .. } | Terminator::ReturnCall { .. } => Vec::new(),
+        Terminator::Jump(t) => alloc::vec![t.block.0],
+        Terminator::IfNonzero { then_target, else_target, .. } => {
+            alloc::vec![then_target.block.0, else_target.block.0]
+        }
+        Terminator::Table { targets, default_target, .. } => {
+            let mut v: Vec<usize> = targets.iter().map(|t| t.block.0).collect();
+            v.push(default_target.block.0);
+            v
+        }
+    }
+}
+
+/// Intersect multiple predecessor outgoing caches: keep only entries where
+/// every predecessor agrees on the same source `ValueId`.
+fn intersect_vaffle_caches(
+    pred_indices: &[usize],
+    outgoing: &[Option<VaffleCache>],
+) -> VaffleCache {
+    if pred_indices.is_empty() {
+        return BTreeMap::new();
+    }
+    // Start with first predecessor's cache (clone required for intersection).
+    let mut acc: VaffleCache = match &outgoing[pred_indices[0]] {
+        Some(c) => c.clone(),
+        None => return BTreeMap::new(),
+    };
+    // Intersect with every other predecessor.
+    for &pi in &pred_indices[1..] {
+        match &outgoing[pi] {
+            Some(c) => acc.retain(|k, v| c.get(k) == Some(v)),
+            None => {
+                acc.clear();
+                break;
+            }
+        }
+    }
+    acc
 }
 
 /// Extracted, `Copy`-only fields from a VAFFLE `StorageWrite` or `StorageRead`.
@@ -178,16 +293,24 @@ enum VaffleStoreAction {
     Read  { storage: StorageId, ty: TypeId, addr: ValueId },
 }
 
-fn store_forward_vaffle_block(body: &mut FuncBody, block_idx: usize) -> bool {
-    // Cache: (StorageId, TypeId, addr_var) -> src_var
-    let mut cache: BTreeMap<(StorageId, TypeId, ValueId), ValueId> = BTreeMap::new();
+/// Forward stores in a single block starting from `incoming` cache.
+///
+/// Returns `(changed, outgoing_cache)`.  The `outgoing_cache` reflects all
+/// writes that survive to the end of the block and can be propagated to
+/// successors.
+fn store_forward_vaffle_block_with_cache(
+    body: &mut FuncBody,
+    block_idx: usize,
+    incoming: VaffleCache,
+) -> (bool, VaffleCache) {
+    let mut cache = incoming;
     let mut alias_map: BTreeMap<ValueId, ValueId> = BTreeMap::new();
     let mut changed = false;
 
     let stmt_vids: Vec<ValueId> = body.blocks[block_idx].stmts.clone();
 
     for vid in stmt_vids {
-        // Apply aliases to this value's operands in the values array.
+        // Apply existing aliases to this value's operands.
         if apply_aliases_to_vaffle_value(&mut body.values[vid.0], &alias_map) {
             changed = true;
         }
@@ -224,6 +347,10 @@ fn store_forward_vaffle_block(body: &mut FuncBody, block_idx: usize) -> bool {
                 let addr = canon_alias(&alias_map, addr);
                 let key = (storage, ty, addr);
                 if let Some(&src) = cache.get(&key) {
+                    // Forward: downstream uses of `vid` become uses of `src`.
+                    // Because VAFFLE ValueIds are global and `value_table`
+                    // accumulates across blocks, `src` is always accessible
+                    // in the current block even if it was defined earlier.
                     alias_map.insert(vid, src);
                     changed = true;
                 }
@@ -240,7 +367,7 @@ fn store_forward_vaffle_block(body: &mut FuncBody, block_idx: usize) -> bool {
         );
     }
 
-    changed
+    (changed, cache)
 }
 
 // ============================================================================

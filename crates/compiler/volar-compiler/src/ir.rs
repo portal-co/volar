@@ -41,6 +41,7 @@ pub enum CompilerError {
 
 /// Iterator source methods — how we obtain an iterator from a collection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IterMethod {
     Iter,
     IntoIter,
@@ -70,6 +71,7 @@ impl IterMethod {
 /// variants with a single flat structure that is easy to analyze and
 /// backend-neutral.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrIterChain<P: Clone + Default = ()> {
     /// Where the data comes from
     pub source: IterChainSource<P>,
@@ -81,6 +83,7 @@ pub struct IrIterChain<P: Clone + Default = ()> {
 
 /// The data source for an iterator chain.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IterChainSource<P: Clone + Default = ()> {
     /// `expr.iter()`, `expr.into_iter()`, `expr.chars()`, `expr.bytes()`
     Method {
@@ -102,6 +105,7 @@ pub enum IterChainSource<P: Clone + Default = ()> {
 
 /// An intermediate transformation step in an iterator pipeline.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IterStep<P: Clone + Default = ()> {
     /// `.map(|var| body)`
     Map { var: IrPattern, body: Box<IrExpr<P>> },
@@ -123,6 +127,7 @@ pub enum IterStep<P: Clone + Default = ()> {
 
 /// How an iterator pipeline terminates.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IterTerminal<P: Clone + Default = ()> {
     /// `.collect()` — materializes into a `Vec` (or other container).
     Collect,
@@ -148,6 +153,7 @@ pub type Result<T> = core::result::Result<T, CompilerError>;
 
 /// Primitive scalar types used in volar-spec
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum PrimitiveType {
     /// Boolean type
     Bool,
@@ -251,6 +257,7 @@ impl fmt::Display for PrimitiveType {
 
 /// Known array types in volar-spec
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum ArrayKind {
     /// `GenericArray<T, N>`
     GenericArray,
@@ -262,6 +269,7 @@ pub enum ArrayKind {
 
 /// Array length representation
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum ArrayLength {
     /// Constant size
     Const(usize),
@@ -280,6 +288,7 @@ pub enum ArrayLength {
 
 /// Typenum constants commonly used
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum TypeNumConst {
     U0,
     U1,
@@ -323,6 +332,7 @@ impl TypeNumConst {
 
 /// Known struct types in volar-spec
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum StructKind {
     /// GenericArray — special semantics in lowering (type-level-sized array)
     GenericArray,
@@ -360,6 +370,7 @@ impl fmt::Display for StructKind {
 
 /// Standard mathematical traits
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum MathTrait {
     Add,
     Sub,
@@ -416,6 +427,7 @@ impl MathTrait {
 
 /// Unified trait classification
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum TraitKind {
     Math(MathTrait),
     Into(Box<IrType>),
@@ -471,6 +483,7 @@ impl fmt::Display for TraitKind {
 
 /// Input kinds allowed for generated Fn-like traits
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum FnInput {
     BytesSlice,
     Size,
@@ -479,6 +492,7 @@ pub enum FnInput {
 
 /// VOLE-specific method names
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum VoleMethod {
     Remap,
     RotateLeft,
@@ -496,6 +510,7 @@ impl VoleMethod {
 
 /// Unified method classification
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum MethodKind {
     Vole(VoleMethod),
     Std(String),
@@ -524,6 +539,7 @@ impl MethodKind {
 
 /// Associated type names in traits
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum AssociatedType {
     Output,
     Key,
@@ -564,6 +580,7 @@ impl fmt::Display for AssociatedType {
 // ============================================================================
 
 #[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrModule<P: Clone + Default = ()> {
     pub name: String,
     pub structs: Vec<IrStruct>,
@@ -574,6 +591,7 @@ pub struct IrModule<P: Clone + Default = ()> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrStruct {
     pub kind: StructKind,
     pub generics: Vec<IrGenericParam>,
@@ -588,6 +606,7 @@ pub struct IrStruct {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrTrait {
     pub kind: TraitKind,
     pub generics: Vec<IrGenericParam>,
@@ -596,6 +615,7 @@ pub struct IrTrait {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IrTraitItem {
     Method(IrMethodSig),
     AssociatedType {
@@ -606,6 +626,7 @@ pub enum IrTraitItem {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrImpl<P: Clone + Default = ()> {
     pub generics: Vec<IrGenericParam>,
     pub trait_: Option<IrTraitRef>,
@@ -615,18 +636,21 @@ pub struct IrImpl<P: Clone + Default = ()> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrTraitRef {
     pub kind: TraitKind,
     pub type_args: Vec<IrType>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IrImplItem<P: Clone + Default = ()> {
     Method(IrFunction<P>),
     AssociatedType { name: AssociatedType, ty: IrType },
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrMethodSig {
     pub name: String,
     pub generics: Vec<IrGenericParam>,
@@ -642,6 +666,7 @@ pub struct IrMethodSig {
 /// on function items.  External proc-macros may attach these attributes to library
 /// functions without modifying Volar source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum ExternalKind {
     /// A regular function with a body.
     Normal,
@@ -654,6 +679,7 @@ pub enum ExternalKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrFunction<P: Clone + Default = ()> {
     pub name: String,
     pub generics: Vec<IrGenericParam>,
@@ -668,12 +694,14 @@ pub struct IrFunction<P: Clone + Default = ()> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrParam {
     pub name: String,
     pub ty: IrType,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrField {
     pub name: String,
     pub ty: IrType,
@@ -681,6 +709,7 @@ pub struct IrField {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IrGenericParamKind {
     Type,
     Const,
@@ -688,6 +717,7 @@ pub enum IrGenericParamKind {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrGenericParam {
     pub name: String,
     pub kind: IrGenericParamKind,
@@ -699,6 +729,7 @@ pub struct IrGenericParam {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IrWherePredicate {
     TypeBound {
         ty: IrType,
@@ -707,6 +738,7 @@ pub enum IrWherePredicate {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IrReceiver {
     Value,
     Ref,
@@ -714,6 +746,7 @@ pub enum IrReceiver {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrTypeAlias {
     pub name: String,
     pub generics: Vec<IrGenericParam>,
@@ -721,6 +754,7 @@ pub struct IrTypeAlias {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrBlock<P: Clone + Default = ()> {
     pub stmts: Vec<IrStmt<P>>,
     pub stmt_provs: Vec<P>,
@@ -728,6 +762,7 @@ pub struct IrBlock<P: Clone + Default = ()> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IrStmt<P: Clone + Default = ()> {
     Let {
         pattern: IrPattern,
@@ -739,6 +774,7 @@ pub enum IrStmt<P: Clone + Default = ()> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrMatchArm<P: Clone + Default = ()> {
     pub pattern: IrPattern,
     pub guard: Option<IrExpr<P>>,
@@ -746,12 +782,14 @@ pub struct IrMatchArm<P: Clone + Default = ()> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrClosureParam {
     pub pattern: IrPattern,
     pub ty: Option<IrType>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IrType {
     Primitive(PrimitiveType),
     Array {
@@ -878,6 +916,7 @@ impl fmt::Display for IrType {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrTraitBound {
     pub trait_kind: TraitKind,
     pub type_args: Vec<IrType>,
@@ -911,6 +950,7 @@ impl fmt::Display for IrTraitBound {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IrExpr<P: Clone + Default = ()> {
     Lit(IrLit),
     Var(String),
@@ -1071,6 +1111,7 @@ pub enum IrExpr<P: Clone + Default = ()> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IrPattern {
     Ident {
         mutable: bool,
@@ -1122,6 +1163,7 @@ impl IrPattern {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IrLit {
     Int(i128),
     Float(f64),
@@ -1155,6 +1197,7 @@ impl fmt::Display for IrLit {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum SpecBinOp {
     Add,
     Sub,
@@ -1177,6 +1220,7 @@ pub enum SpecBinOp {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum SpecUnaryOp {
     Neg,
     Not,
@@ -1866,6 +1910,7 @@ impl<P: Clone + Default> IrModule<P> {
 
 /// A jump to a target block, carrying block-parameter arguments.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrCfgJump<P: Clone + Default = ()> {
     /// 0-indexed block index within the enclosing [`IrCfgBody`].
     pub target: usize,
@@ -1875,6 +1920,7 @@ pub struct IrCfgJump<P: Clone + Default = ()> {
 
 /// Terminates an [`IrCfgBlock`].
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IrCfgTerminator<P: Clone + Default = ()> {
     /// Function returns, with an optional value expression.
     Return(Option<IrExpr<P>>),
@@ -1893,6 +1939,7 @@ pub enum IrCfgTerminator<P: Clone + Default = ()> {
 /// Block 0 is always the entry block.  Block parameters are filled by the
 /// `args` of incoming jumps (SSA block-argument style, analogous to φ-nodes).
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrCfgBlock<P: Clone + Default = ()> {
     /// SSA block parameters — bound by the `args` of jumps that target this block.
     pub params: Vec<IrParam>,
@@ -1905,6 +1952,7 @@ pub struct IrCfgBlock<P: Clone + Default = ()> {
 ///
 /// Block 0 is the entry.  Control flows between blocks via terminators.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrCfgBody<P: Clone + Default = ()> {
     pub blocks: Vec<IrCfgBlock<P>>,
 }
@@ -1917,6 +1965,7 @@ pub struct IrCfgBody<P: Clone + Default = ()> {
 ///
 /// [`IRBlocks`]: volar_ir::ir::IRBlocks
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrCfgFunction<P: Clone + Default = ()> {
     pub name: String,
     pub generics: Vec<IrGenericParam>,
@@ -1934,6 +1983,7 @@ pub struct IrCfgFunction<P: Clone + Default = ()> {
 /// [`IrFunction`]s.  Use [`volar_compiler::printer::print_cfg_module`] to
 /// render to Rust source.
 #[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrCfgModule<P: Clone + Default = ()> {
     pub name: String,
     pub structs: Vec<IrStruct>,

@@ -9,6 +9,7 @@ repository.workspace = true
 [features]
 # Enable parsing-based spec linkage (makes weave output self-contained).
 linking = ["volar-compiler/parsing"]
+rkyv = ["volar-compiler/rkyv"]
 
 [dependencies]
 volar-compiler = {path="../volar-compiler"}

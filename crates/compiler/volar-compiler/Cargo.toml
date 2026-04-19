@@ -10,8 +10,10 @@ repository.workspace = true
 default = ["std"]
 std = []
 parsing = ["dep:syn", "dep:quote", "dep:proc-macro2", "std"]
+rkyv = ["dep:rkyv", "volar-ir-common/rkyv"]
 
 [dependencies]
+rkyv = { workspace = true, optional = true }
 syn = { version = "2.0", features = ["full", "parsing", "extra-traits"], optional = true }
 quote = { version = "1.0", optional = true }
 proc-macro2 = { version = "1.0", optional = true }

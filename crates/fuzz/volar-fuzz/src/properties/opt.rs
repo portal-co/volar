@@ -18,7 +18,7 @@ use volar_ir_opt::store_forward::{
 
 use crate::generators::biir::gen_biir_and_inputs;
 use crate::generators::ir::{gen_ir_and_inputs, gen_ir_extended_and_inputs};
-use crate::generators::vaffle::{gen_vaffle_and_inputs, gen_vaffle_extended_and_inputs};
+use crate::generators::vaffle::{gen_vaffle_and_inputs, gen_vaffle_extended_and_inputs, gen_vaffle_multiblock_and_inputs};
 use crate::interpreter::biir::eval_biir;
 use crate::interpreter::ir::eval_ir;
 use crate::interpreter::vaffle::eval_vaffle;
@@ -199,6 +199,43 @@ proptest! {
     #[test]
     fn prop_h_store_forward_vaffle_does_not_panic(
         (module, _func_id, _inputs) in gen_vaffle_extended_and_inputs()
+    ) {
+        let mut module = module;
+        let _ = store_forward_vaffle_module(&mut module);
+    }
+}
+
+// ============================================================================
+// Property H (multi-block) — cross-block store forwarding preserves semantics
+// ============================================================================
+
+proptest! {
+    #[test]
+    fn prop_h_store_forward_vaffle_multiblock_preserves_semantics(
+        (module, func_id, inputs) in gen_vaffle_multiblock_and_inputs()
+    ) {
+        let before = match eval_vaffle(&module, func_id, &inputs) {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+
+        let mut module = module;
+        store_forward_vaffle_module(&mut module);
+
+        let after = match eval_vaffle(&module, func_id, &inputs) {
+            Some(v) => v,
+            None => {
+                prop_assert!(false, "eval_vaffle on multi-block store-forwarded module did not terminate");
+                return Ok(());
+            }
+        };
+
+        prop_assert_eq!(before, after, "store_forward_vaffle_module changed multi-block semantics");
+    }
+
+    #[test]
+    fn prop_h_store_forward_vaffle_multiblock_does_not_panic(
+        (module, _func_id, _inputs) in gen_vaffle_multiblock_and_inputs()
     ) {
         let mut module = module;
         let _ = store_forward_vaffle_module(&mut module);
