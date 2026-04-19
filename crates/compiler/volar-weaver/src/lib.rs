@@ -59,6 +59,7 @@ pub mod garble;
 pub mod vole;
 pub mod grafhen;
 pub mod fhe;
+pub mod oram;
 
 // Re-export the most commonly used public items from each submodule.
 pub use garble::{
@@ -75,6 +76,8 @@ pub use garble::{
 };
 #[cfg(feature = "linking")]
 pub use garble::garble_linked_spec;
+#[cfg(feature = "linking")]
+pub use oram::oram_linked_spec;
 
 pub use vole::{
     print_weaved_vole_module,

@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 use volar_compiler::{
     ArrayKind, AssociatedType, IrExpr, IrImplItem, IrStmt, IrType, MathTrait,
-    StructKind, TraitKind, parse_sources, print_module,
+    SourceInput, StructKind, TraitKind, parse_sources, print_module,
 };
 use volar_compiler_passes::{OperatorAnalysis, TypeContext, type_to_string};
 
@@ -40,9 +40,9 @@ fn main() {
 
     println!("Found {} source files in volar-spec", sources.len());
 
-    let sources_ref: Vec<(&str, &str)> = sources
+    let sources_ref: Vec<SourceInput<'_>> = sources
         .iter()
-        .map(|(content, name)| (content.as_str(), name.as_str()))
+        .map(|(content, name)| SourceInput { source: content.as_str(), name: name.as_str() })
         .collect();
 
     match parse_sources(&sources_ref, "volar_spec") {

@@ -604,6 +604,12 @@ pub struct IrStruct {
     /// emits a single field-element `IRVarId` rather than decomposing the
     /// struct into individual bits.
     pub native_volar_type: Option<volar_ir_common::Type>,
+    /// Derive trait names captured from `#[derive(...)]` attributes.
+    ///
+    /// When non-empty, the printer emits exactly these derives.  When empty
+    /// (programmatically constructed structs), the printer falls back to a
+    /// default set (`Debug, Default`).
+    pub derives: Vec<String>,
 }
 
 /// A tagged union (enum) declaration.
@@ -628,6 +634,12 @@ pub struct IrEnum {
     pub kind: StructKind,
     pub generics: Vec<IrGenericParam>,
     pub variants: Vec<IrEnumVariant>,
+    /// Derive trait names captured from `#[derive(...)]` attributes.
+    ///
+    /// When non-empty, the printer emits exactly these derives.  When empty
+    /// (programmatically constructed enums), the printer falls back to a
+    /// default set (`Debug`).
+    pub derives: Vec<String>,
 }
 
 /// A single variant of an [`IrEnum`].

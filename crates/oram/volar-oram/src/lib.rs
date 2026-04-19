@@ -34,60 +34,11 @@ use alloc::vec;
 use alloc::vec::Vec;
 use volar_channel::{Protocol, Yield};
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
+// Re-export core types so downstream doesn't need to depend on both crates.
+pub use volar_oram_core::{OramEntry, Bucket};
 
-/// Marker for an empty/dummy entry.
-const DUMMY_ADDR: u64 = u64::MAX;
-
-// ---------------------------------------------------------------------------
-// Core data structures
-// ---------------------------------------------------------------------------
-
-/// A single ORAM entry: block data plus metadata.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OramEntry<const B: usize> {
-    /// Logical address. `DUMMY_ADDR` (u64::MAX) indicates an empty slot.
-    pub addr: u64,
-    /// Assigned leaf in the tree (determines which path this block lives on).
-    pub leaf: u64,
-    /// Payload data.
-    pub data: [u8; B],
-}
-
-impl<const B: usize> OramEntry<B> {
-    /// Create a dummy (empty) entry.
-    pub fn dummy() -> Self {
-        Self {
-            addr: DUMMY_ADDR,
-            leaf: 0,
-            data: [0u8; B],
-        }
-    }
-
-    /// Returns true if this is a real (non-dummy) entry.
-    pub fn is_real(&self) -> bool {
-        self.addr != DUMMY_ADDR
-    }
-}
-
-/// A bucket holding Z entries. Each node in the ORAM tree is one bucket.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Bucket<const Z: usize, const B: usize> {
-    pub entries: Vec<OramEntry<B>>,
-}
-
-impl<const Z: usize, const B: usize> Bucket<Z, B> {
-    /// Create an empty bucket (all dummy entries).
-    pub fn empty() -> Self {
-        let mut entries = Vec::with_capacity(Z);
-        for _ in 0..Z {
-            entries.push(OramEntry::dummy());
-        }
-        Self { entries }
-    }
-}
+// Re-export core helper functions (used by both crates).
+pub use volar_oram_core::{bit_reverse, bits_needed, eviction_target};
 
 /// Binary tree of buckets (server-side state).
 ///
@@ -443,13 +394,7 @@ fn insert_position(block: &mut [u8], index: usize, bits_per_pos: usize, value: u
     }
 }
 
-/// Compute the number of bits needed to represent values in `[0, n)`.
-fn bits_needed(n: u64) -> usize {
-    if n <= 1 {
-        return 1;
-    }
-    64 - (n - 1).leading_zeros() as usize
-}
+// `bits_needed` is re-exported from `volar_oram_core` at the top of this file.
 
 /// Compute the number of tree levels needed for `n` blocks.
 /// The tree has `2^(L-1)` leaves, so we need `2^(L-1) >= n`.
@@ -687,29 +632,8 @@ fn evict_along_path<const Z: usize, const B: usize>(
     new_path
 }
 
-/// Compute the deterministic eviction target leaf.
-///
-/// Uses bit-reversal of the access counter modulo the number of leaves.
-/// This ensures uniform coverage over time.
-fn eviction_target(access_counter: u64, num_leaves: u64) -> u64 {
-    if num_leaves <= 1 {
-        return 0;
-    }
-    let bits = bits_needed(num_leaves);
-    let idx = access_counter % num_leaves;
-    bit_reverse(idx, bits) % num_leaves
-}
-
-/// Reverse the low `bits` bits of `x`.
-fn bit_reverse(x: u64, bits: usize) -> u64 {
-    let mut result = 0u64;
-    let mut val = x;
-    for _ in 0..bits {
-        result = (result << 1) | (val & 1);
-        val >>= 1;
-    }
-    result
-}
+// `eviction_target`, `bit_reverse`, and `bits_needed` are re-exported from
+// `volar_oram_core` at the top of this file.
 
 // ---------------------------------------------------------------------------
 // Protocol implementation

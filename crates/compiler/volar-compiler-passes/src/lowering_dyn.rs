@@ -414,6 +414,7 @@ fn lower_struct_dyn(s: &IrStruct, ctx: &LoweringContext) -> IrStruct {
         fields,
         is_tuple: s.is_tuple,
         native_volar_type: s.native_volar_type,
+        derives: s.derives.clone(),
     }
 }
 

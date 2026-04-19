@@ -82,6 +82,7 @@ fn monomorphize_struct(s: &IrStruct, env: &MonoEnv) -> IrStruct {
             .collect(),
         is_tuple: s.is_tuple,
         native_volar_type: s.native_volar_type,
+        derives: s.derives.clone(),
     }
 }
 

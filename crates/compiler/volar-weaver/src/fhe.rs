@@ -3815,6 +3815,7 @@ mod tests {
         IrModule {
             name: "loop_read_test".into(),
             structs: vec![],
+            enums: vec![],
             traits: vec![],
             impls: vec![],
             type_aliases: vec![],
@@ -3877,6 +3878,7 @@ mod tests {
         IrModule {
             name: "loop_write_test".into(),
             structs: vec![],
+            enums: vec![],
             traits: vec![],
             impls: vec![],
             type_aliases: vec![],

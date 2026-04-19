@@ -54,6 +54,7 @@ impl LinkageSystem {
     pub fn apply<Q: Clone + Default>(&self, target: &mut IrModule<Q>) {
         for spec in &self.specs {
             target.structs.extend(spec.module.structs.iter().cloned());
+            target.enums.extend(spec.module.enums.iter().cloned());
             target.traits.extend(spec.module.traits.iter().cloned());
             target.impls.extend(spec.module.impls.iter().cloned().map(|i| i.map_prov(&|_| Q::default())));
             target.functions.extend(spec.module.functions.iter().cloned().map(|f| f.map_prov(&|_| Q::default())));

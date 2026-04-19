@@ -225,6 +225,7 @@ fn test_array_splat() {
     let module = IrModule {
         name: "test".to_owned(),
         structs: vec![],
+        enums: vec![],
         traits: vec![],
         impls: vec![],
         functions: vec![func],
@@ -275,6 +276,7 @@ fn test_struct_splat() {
         ],
         is_tuple: false,
         native_volar_type: None,
+        derives: vec![],
     };
 
     let point_ty = IrType::Struct {
@@ -311,6 +313,7 @@ fn test_struct_splat() {
     let module = IrModule {
         name: "test".to_owned(),
         structs: vec![point_struct],
+        enums: vec![],
         traits: vec![],
         impls: vec![],
         functions: vec![func],
@@ -323,6 +326,7 @@ fn test_struct_splat() {
     let mut b = CBackend::new();
     lower_module_with_opts(&mono, &mut b, "sha256");
     let c_src = b.finish();
+
 
     // manhattan takes Point by value — pass { .x = 3, .y = 7 } → 10
     let output = compile_and_run(
@@ -371,6 +375,7 @@ fn test_phase2_codegen_struct_array() {
     let module = IrModule {
         name: "test".to_owned(),
         structs: vec![],
+        enums: vec![],
         traits: vec![],
         impls: vec![],
         functions: vec![func],

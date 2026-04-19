@@ -160,7 +160,11 @@ impl<'a> RustBackend for ModuleWriter<'a> {
 
 impl<'a> RustBackend for StructWriter<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "#[derive(Debug, Default)]")?;
+        if self.s.derives.is_empty() {
+            writeln!(f, "#[derive(Debug, Default)]")?;
+        } else {
+            writeln!(f, "#[derive({})]", self.s.derives.join(", "))?;
+        }
         write!(f, "pub struct {}", self.s.kind)?;
         GenericsWriter {
             generics: &self.s.generics,
@@ -192,7 +196,11 @@ impl<'a> RustBackend for StructWriter<'a> {
 
 impl<'a> RustBackend for EnumWriter<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "#[derive(Debug)]")?;
+        if self.e.derives.is_empty() {
+            writeln!(f, "#[derive(Debug)]")?;
+        } else {
+            writeln!(f, "#[derive({})]", self.e.derives.join(", "))?;
+        }
         write!(f, "pub enum {}", self.e.kind)?;
         GenericsWriter {
             generics: &self.e.generics,
@@ -217,7 +225,9 @@ impl<'a> RustBackend for EnumWriter<'a> {
                 IrEnumVariantData::Struct(fields) => {
                     writeln!(f, "    {} {{", variant.name)?;
                     for field in fields {
-                        write!(f, "        pub {}: ", field.name)?;
+                        // Enum variant fields inherit the enum's visibility —
+                        // Rust forbids explicit `pub` on them.
+                        write!(f, "        {}: ", field.name)?;
                         TypeWriter { ty: &field.ty }.fmt(f)?;
                         writeln!(f, ",")?;
                     }
@@ -2170,6 +2180,7 @@ mod tests {
         // ORAM server code must compile through the volar-compiler
         // pipeline to become circuit code.
         let source = r#"
+            #[derive(Clone, Copy, PartialEq, Eq)]
             pub struct OramEntry<const B: usize> {
                 pub addr: u64,
                 pub leaf: u64,
@@ -2190,6 +2201,7 @@ mod tests {
                 }
             }
 
+            #[derive(Clone, Copy)]
             pub struct Bucket<const Z: usize, const B: usize> {
                 pub entries: [OramEntry<B>; Z],
             }
@@ -2202,6 +2214,7 @@ mod tests {
                 }
             }
 
+            #[derive(Clone, Copy)]
             pub enum ServerRequest<const Z: usize, const B: usize, const L: usize> {
                 ReadPath { leaf: u64 },
                 WritePath {
@@ -2210,6 +2223,7 @@ mod tests {
                 },
             }
 
+            #[derive(Clone, Copy)]
             pub enum ServerResponse<const Z: usize, const B: usize, const L: usize> {
                 PathBuckets { buckets: [Bucket<Z, B>; L] },
                 Ack,
@@ -2285,5 +2299,11 @@ mod tests {
         assert!(out.contains("enum ServerResponse"), "missing ServerResponse enum: {}", out);
         assert!(out.contains("fn path_indices"), "missing path_indices fn: {}", out);
         assert!(out.contains("fn server_step"), "missing server_step fn: {}", out);
+
+        // Verify derives are preserved through parse-print round-trip
+        assert!(out.contains("#[derive(Clone, Copy, PartialEq, Eq)]"), "missing OramEntry derives: {}", out);
+        // Bucket and enums have derive(Clone, Copy)
+        let derive_clone_copy_count = out.matches("#[derive(Clone, Copy)]").count();
+        assert_eq!(derive_clone_copy_count, 3, "expected 3 derive(Clone, Copy) (Bucket + 2 enums): {}", out);
     }
 }

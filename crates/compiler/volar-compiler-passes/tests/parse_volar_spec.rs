@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::path::Path;
-use volar_compiler::{parse_source, parse_sources};
+use volar_compiler::{SourceInput, parse_source, parse_sources};
 use volar_compiler_passes::{OperatorAnalysis, TypeContext, type_to_string};
 
 fn read_volar_spec_sources() -> Vec<(String, String)> {
@@ -70,9 +70,9 @@ fn test_parse_volar_spec() {
 fn test_parse_volar_spec_combined() {
     let sources = read_volar_spec_sources();
 
-    let sources_ref: Vec<(&str, &str)> = sources
+    let sources_ref: Vec<SourceInput<'_>> = sources
         .iter()
-        .map(|(content, name)| (content.as_str(), name.as_str()))
+        .map(|(content, name)| SourceInput { source: content.as_str(), name: name.as_str() })
         .collect();
 
     match parse_sources(&sources_ref, "volar_spec") {

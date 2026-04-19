@@ -25,14 +25,25 @@ use syn::PathArguments;
 #[cfg(feature = "parsing")]
 use syn::{Expr, FnArg, GenericParam, Item, Pat, ReturnType, Type, Visibility, parse_file};
 
-pub fn parse_sources(sources: &[(&str, &str)], module_name: &str) -> Result<IrModule> {
+/// A named source file to be parsed into IR.
+///
+/// Using a struct instead of a raw `(&str, &str)` tuple prevents
+/// accidental argument-order swaps between source text and file name.
+pub struct SourceInput<'a> {
+    /// The Rust source text to parse.
+    pub source: &'a str,
+    /// A human-readable label for diagnostics (e.g. `"garble.rs"`).
+    pub name: &'a str,
+}
+
+pub fn parse_sources(sources: &[SourceInput<'_>], module_name: &str) -> Result<IrModule> {
     let mut module = IrModule {
         name: module_name.to_string(),
         ..Default::default()
     };
 
-    for (source, _sub_name) in sources {
-        let file = parse_file(source).map_err(|e| CompilerError::ParseError(e.to_string()))?;
+    for input in sources {
+        let file = parse_file(input.source).map_err(|e| CompilerError::ParseError(e.to_string()))?;
         for item in &file.items {
             match item {
                 Item::Struct(s) => module.structs.push(convert_struct(s)?),
@@ -51,7 +62,7 @@ pub fn parse_sources(sources: &[(&str, &str)], module_name: &str) -> Result<IrMo
 }
 
 pub fn parse_source(source: &str, name: &str) -> Result<IrModule> {
-    parse_sources(&[(source, name)], name)
+    parse_sources(&[SourceInput { source, name }], name)
 }
 
 fn convert_struct(s: &syn::ItemStruct) -> Result<IrStruct> {
@@ -79,6 +90,7 @@ fn convert_struct(s: &syn::ItemStruct) -> Result<IrStruct> {
             syn::Fields::Unit => Vec::new(),
         },
         is_tuple: matches!(s.fields, syn::Fields::Unnamed(_)),
+        derives: parse_derives(&s.attrs),
     })
 }
 
@@ -96,6 +108,7 @@ fn convert_enum(e: &syn::ItemEnum) -> Result<IrEnum> {
             .iter()
             .map(convert_enum_variant)
             .collect::<Result<Vec<_>>>()?,
+        derives: parse_derives(&e.attrs),
     })
 }
 
@@ -171,6 +184,36 @@ fn volar_native_type_from_str(s: &str) -> Option<volar_ir_common::Type> {
         "_256"              => Some(Type::_256),
         _                   => None,
     }
+}
+
+/// Extract derive trait names from `#[derive(...)]` attributes.
+///
+/// Returns an empty `Vec` if no `#[derive(...)]` attribute is found, which
+/// tells the printer to fall back to its default set.  When non-empty, the
+/// printer emits exactly these derives.
+fn parse_derives(attrs: &[syn::Attribute]) -> Vec<String> {
+    let mut derives = Vec::new();
+    for attr in attrs {
+        if !attr.path().is_ident("derive") {
+            continue;
+        }
+        // #[derive(Foo, Bar, Baz)] — the token list inside the parens
+        if let syn::Meta::List(list) = &attr.meta {
+            list.parse_args_with(
+                syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+            )
+            .ok()
+            .map(|paths| {
+                for path in paths {
+                    // Use the last segment (e.g. `Clone` from `std::clone::Clone`)
+                    if let Some(seg) = path.segments.last() {
+                        derives.push(seg.ident.to_string());
+                    }
+                }
+            });
+        }
+    }
+    derives
 }
 
 fn convert_field(f: &syn::Field) -> Result<IrField> {
@@ -1023,26 +1066,27 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                 .iter()
                 .map(|s| s.ident.to_string())
                 .collect();
-            if segments.len() == 1 {
+            let type_args: Vec<IrType> = p
+                .path
+                .segments
+                .iter()
+                .flat_map(|s| {
+                    if let PathArguments::AngleBracketed(args) = &s.arguments {
+                        args.args
+                            .iter()
+                            .filter_map(|arg| convert_generic_arg(arg).ok().flatten())
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    }
+                })
+                .collect();
+            if segments.len() == 1 && type_args.is_empty() {
                 Ok(IrExpr::Var(segments[0].clone()))
             } else {
                 Ok(IrExpr::Path {
                     segments,
-                    type_args: p
-                        .path
-                        .segments
-                        .iter()
-                        .flat_map(|s| {
-                            if let PathArguments::AngleBracketed(args) = &s.arguments {
-                                args.args
-                                    .iter()
-                                    .filter_map(|arg| convert_generic_arg(arg).ok().flatten())
-                                    .collect::<Vec<_>>()
-                            } else {
-                                Vec::new()
-                            }
-                        })
-                        .collect(),
+                    type_args,
                 })
             }
         }
@@ -1171,8 +1215,17 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
             } else {
                 Vec::new()
             };
+            // Use all path segments so that enum variant constructors like
+            // `ServerResponse::PathBuckets { ... }` are fully qualified.
+            let full_name = s
+                .path
+                .segments
+                .iter()
+                .map(|seg| seg.ident.to_string())
+                .collect::<Vec<_>>()
+                .join("::");
             Ok(IrExpr::StructExpr {
-                kind: StructKind::from_str(&last.ident.to_string()),
+                kind: StructKind::from_str(&full_name),
                 type_args,
                 fields: s
                     .fields

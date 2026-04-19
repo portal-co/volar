@@ -1055,9 +1055,9 @@ pub fn print_weaved_module(module: &IrModule, self_contained: bool) -> String {
 /// Requires the `linking` feature.
 #[cfg(feature = "linking")]
 pub fn garble_linked_spec() -> LinkedSpec {
-    use volar_compiler::parser::parse_sources;
+    use volar_compiler::parser::{SourceInput, parse_sources};
     let source = include_str!("../../../spec/volar-spec/src/garble.rs");
-    let module = parse_sources(&[("garble.rs", source)], "garble")
+    let module = parse_sources(&[SourceInput { source, name: "garble.rs" }], "garble")
         .expect("garble_linked_spec: failed to parse garble.rs");
     LinkedSpec {
         name: "garble".into(),

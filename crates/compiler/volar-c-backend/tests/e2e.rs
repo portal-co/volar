@@ -456,6 +456,7 @@ fn compiler_oracle_dispatch() {
     let module = IrModule {
         name: "test".to_owned(),
         structs: vec![],
+        enums: vec![],
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],
@@ -521,6 +522,7 @@ fn compiler_rng_dispatch() {
     let module = IrModule {
         name: "test".to_owned(),
         structs: vec![],
+        enums: vec![],
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],

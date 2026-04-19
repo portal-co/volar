@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 use volar_compiler::{
     ArrayKind, AssociatedType, IrExpr, IrImplItem, IrPattern, IrStmt, IrType, MathTrait,
-    MethodKind, PrimitiveType, StructKind, TraitKind, VoleMethod, parse_sources,
+    MethodKind, PrimitiveType, SourceInput, StructKind, TraitKind, VoleMethod, parse_sources,
 };
 
 fn read_volar_spec_sources() -> Vec<(String, String)> {
@@ -42,9 +42,9 @@ fn read_volar_spec_sources() -> Vec<(String, String)> {
 #[test]
 fn test_specialize_volar_spec() {
     let sources = read_volar_spec_sources();
-    let sources_ref: Vec<(&str, &str)> = sources
+    let sources_ref: Vec<SourceInput<'_>> = sources
         .iter()
-        .map(|(content, name)| (content.as_str(), name.as_str()))
+        .map(|(content, name)| SourceInput { source: content.as_str(), name: name.as_str() })
         .collect();
 
     let spec = parse_sources(&sources_ref, "volar_spec").unwrap();
