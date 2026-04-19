@@ -252,6 +252,31 @@ pub trait FheScheme {
     /// to index into a parameter array.
     fn emit_and<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>, gate_idx: usize) -> IrExpr<Q>;
 
+    /// Emit an OR of two wires.
+    ///
+    /// Default: De Morgan — `NOT(AND(NOT(a), NOT(b)))`.
+    /// TFHE overrides with `tfhe_gate_bootstrapping_or` for composability.
+    fn emit_or<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
+        self.emit_not(self.emit_and(self.emit_not(a), self.emit_not(b), 0))
+    }
+
+    /// Emit a composable MUX: `sel ? a : b`.
+    ///
+    /// **TFHE default**: `OR(AND(sel, a), AND(NOT(sel), b))` — fully composable
+    /// because it avoids non-composable XOR.
+    ///
+    /// GRAFHEN may override with the efficient `sel · (a ⊕ b) ⊕ b` since
+    /// garbled-circuit XOR is free and composable.
+    fn emit_cmux<Q: Clone + Default>(&self, sel: IrExpr<Q>, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
+        // Default: OR(AND(sel, a), AND(NOT(sel), b))
+        // Uses clone_expr so the generated code calls .clone() on the sel wire.
+        let sel_clone = clone_expr(sel.clone());
+        let branch_a = self.emit_and(sel_clone, a, 0);
+        let not_sel = self.emit_not(sel);
+        let branch_b = self.emit_and(not_sel, b, 0);
+        self.emit_or(branch_a, branch_b)
+    }
+
     // ── Oracle calls ──────────────────────────────────────────────────────────
 
     /// Emit a call to a named pure oracle.
@@ -448,33 +473,15 @@ pub trait FheScheme {
             }
             1 => cells[0].clone(),
             2 => {
-                // MUX(sel, cell[0], cell[1]) = sel · (c0 ⊕ c1) ⊕ c0
+                // MUX(sel, cell[0], cell[1]): sel=0 → cell[0], sel=1 → cell[1]
                 let sel = addr_wires.first().copied().unwrap_or("_zero");
-                let diff = format!("{}_xd", tag);
-                stmts.push(IrStmt::Let {
-                    pattern: IrPattern::ident(&diff),
-                    ty: None,
-                    init: Some(self.emit_xor::<Q>(
-                        clone_expr(var(&cells[0])),
-                        clone_expr(var(&cells[1])),
-                    )),
-                });
-                stmt_provs.push(Q::default());
-
-                let masked = format!("{}_ma", tag);
-                stmts.push(IrStmt::Let {
-                    pattern: IrPattern::ident(&masked),
-                    ty: None,
-                    init: Some(self.emit_and::<Q>(var(sel), var(&diff), 0)),
-                });
-                stmt_provs.push(Q::default());
-
                 let result = format!("{}_r", tag);
                 stmts.push(IrStmt::Let {
                     pattern: IrPattern::ident(&result),
                     ty: None,
-                    init: Some(self.emit_xor::<Q>(
-                        var(&masked),
+                    init: Some(self.emit_cmux::<Q>(
+                        var(sel),
+                        clone_expr(var(&cells[1])),
                         clone_expr(var(&cells[0])),
                     )),
                 });
@@ -508,31 +515,15 @@ pub trait FheScheme {
                     &right_cells, remaining_addr, &format!("{}r", tag), stmts, stmt_provs,
                 );
 
-                // MUX the two halves using the current level's address bit.
+                // MUX the two halves: sel=0 → left, sel=1 → right.
                 let sel = addr_wires.first().copied().unwrap_or("_zero");
-                let diff = format!("{}_xd", tag);
-                stmts.push(IrStmt::Let {
-                    pattern: IrPattern::ident(&diff),
-                    ty: None,
-                    init: Some(self.emit_xor::<Q>(
-                        clone_expr(var(&left_r)),
-                        clone_expr(var(&right_r)),
-                    )),
-                });
-                stmt_provs.push(Q::default());
-                let masked = format!("{}_ma", tag);
-                stmts.push(IrStmt::Let {
-                    pattern: IrPattern::ident(&masked),
-                    ty: None,
-                    init: Some(self.emit_and::<Q>(var(sel), var(&diff), 0)),
-                });
-                stmt_provs.push(Q::default());
                 let result = format!("{}_r", tag);
                 stmts.push(IrStmt::Let {
                     pattern: IrPattern::ident(&result),
                     ty: None,
-                    init: Some(self.emit_xor::<Q>(
-                        var(&masked),
+                    init: Some(self.emit_cmux::<Q>(
+                        var(sel),
+                        clone_expr(var(&right_r)),
                         clone_expr(var(&left_r)),
                     )),
                 });
@@ -605,32 +596,14 @@ pub trait FheScheme {
                 acc
             };
 
-            // MUX(sel, old_cell, src) = sel · (old ⊕ src) ⊕ old
-            let diff_name = format!("{}_d{}", tag, ci);
-            stmts.push(IrStmt::Let {
-                pattern: IrPattern::ident(&diff_name),
-                ty: None,
-                init: Some(self.emit_xor::<Q>(
-                    clone_expr(var(old_cell)),
-                    clone_expr(var(src_wire)),
-                )),
-            });
-            stmt_provs.push(Q::default());
-
-            let masked_name = format!("{}_m{}", tag, ci);
-            stmts.push(IrStmt::Let {
-                pattern: IrPattern::ident(&masked_name),
-                ty: None,
-                init: Some(self.emit_and::<Q>(var(&sel), var(&diff_name), 0)),
-            });
-            stmt_provs.push(Q::default());
-
+            // MUX(sel, old_cell, src): sel=0 → old, sel=1 → src
             let new_cell = format!("{}_c{}", tag, ci);
             stmts.push(IrStmt::Let {
                 pattern: IrPattern::ident(&new_cell),
                 ty: None,
-                init: Some(self.emit_xor::<Q>(
-                    var(&masked_name),
+                init: Some(self.emit_cmux::<Q>(
+                    var(&sel),
+                    clone_expr(var(src_wire)),
                     clone_expr(var(old_cell)),
                 )),
             });
@@ -792,35 +765,13 @@ pub fn oblivious_read_loop<S: FheScheme, Q: Clone + Default>(
     });
     body_provs.push(Q::default());
 
-    // MUX(sel, result, cell_val) = sel · (result ⊕ cell_val) ⊕ result
-    let diff_name = format!("{}_diff", tag);
-    body_stmts.push(IrStmt::Let {
-        pattern: IrPattern::ident(&diff_name),
-        ty: None,
-        init: Some(scheme.emit_xor::<Q>(
-            clone_expr(var(&result_name)),
-            var(&cv_name),
-        )),
-    });
-    body_provs.push(Q::default());
-
-    let masked_name = format!("{}_masked", tag);
-    body_stmts.push(IrStmt::Let {
-        pattern: IrPattern::ident(&masked_name),
-        ty: None,
-        init: Some(scheme.emit_and::<Q>(
-            var(&sel_name),
-            var(&diff_name),
-            0,
-        )),
-    });
-    body_provs.push(Q::default());
-
-    // result = xor(masked, result.clone());
+    // MUX(sel, result, cell_val): sel=0 → result, sel=1 → cell_val
+    // result = cmux(sel, cell_val, result.clone());
     body_stmts.push(IrStmt::Semi(IrExpr::Assign {
         left: Box::new(var(&result_name)),
-        right: Box::new(scheme.emit_xor::<Q>(
-            var(&masked_name),
+        right: Box::new(scheme.emit_cmux::<Q>(
+            var(&sel_name),
+            var(&cv_name),
             clone_expr(var(&result_name)),
         )),
     }));
@@ -971,7 +922,8 @@ pub fn oblivious_write_loop<S: FheScheme, Q: Clone + Default>(
     };
 
     // MUX(sel, old, src) = sel · (old ⊕ src) ⊕ old
-    // Clone old first (consumed by the final XOR), then compute diff.
+    // MUX(sel, old, src): sel=0 → old, sel=1 → src
+    // Clone old from the array, then cmux.
     let old_name = format!("{}_old", tag);
     body_stmts.push(IrStmt::Let {
         pattern: IrPattern::ident(&old_name),
@@ -983,37 +935,15 @@ pub fn oblivious_write_loop<S: FheScheme, Q: Clone + Default>(
     });
     body_provs.push(Q::default());
 
-    let diff_name = format!("{}_diff", tag);
-    body_stmts.push(IrStmt::Let {
-        pattern: IrPattern::ident(&diff_name),
-        ty: None,
-        init: Some(scheme.emit_xor::<Q>(
-            clone_expr(var(&old_name)),
-            clone_expr(var(src_wire)),
-        )),
-    });
-    body_provs.push(Q::default());
-
-    let masked_name = format!("{}_masked", tag);
-    body_stmts.push(IrStmt::Let {
-        pattern: IrPattern::ident(&masked_name),
-        ty: None,
-        init: Some(scheme.emit_and::<Q>(
-            var(&sel_name),
-            var(&diff_name),
-            0,
-        )),
-    });
-    body_provs.push(Q::default());
-
-    // cells_arr[i] = xor(masked, old);  (consumes old — last use)
+    // cells_arr[i] = cmux(sel, src, old);
     body_stmts.push(IrStmt::Semi(IrExpr::Assign {
         left: Box::new(IrExpr::Index {
             base: Box::new(var(&arr_name)),
             index: Box::new(var(&loop_var)),
         }),
-        right: Box::new(scheme.emit_xor::<Q>(
-            var(&masked_name),
+        right: Box::new(scheme.emit_cmux::<Q>(
+            var(&sel_name),
+            clone_expr(var(src_wire)),
             var(&old_name),
         )),
     }));
@@ -1485,8 +1415,11 @@ where
                 out
             }
 
-            BIrStmt::Or(..) => {
-                unreachable!("weave_fhe_flat_bir: Or gates should have been expanded")
+            BIrStmt::Or(a, b) => {
+                scheme.emit_or(
+                    var(var_names[&a.0].as_str()),
+                    var(var_names[&b.0].as_str()),
+                )
             }
 
             BIrStmt::OracleCall { name: oracle_name, args, num_bits } => {
@@ -2543,6 +2476,21 @@ impl FheScheme for GrafhenScheme {
         }
     }
 
+    fn emit_or<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
+        // De Morgan: NOT(AND(NOT(a), NOT(b)))
+        // GRAFHEN NOT and XOR are free, so only 1 AND gate cost.
+        self.emit_not(self.emit_and(self.emit_not(a), self.emit_not(b), 0))
+    }
+
+    fn emit_cmux<Q: Clone + Default>(&self, sel: IrExpr<Q>, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
+        // GRAFHEN has free composable XOR, so use the efficient formula:
+        // MUX(sel, a, b) = sel · (a ⊕ b) ⊕ b = XOR(AND(sel, XOR(a, b)), b)
+        // Only 1 AND gate cost (XOR and NOT are free).
+        let diff = self.emit_xor(a, clone_expr(b.clone()));
+        let masked = self.emit_and(sel, diff, 0);
+        self.emit_xor(masked, b)
+    }
+
     fn emit_oracle_call<Q: Clone + Default>(
         &self,
         oracle_name: &str,
@@ -2820,13 +2768,17 @@ impl FheScheme for TfheScheme {
     }
 
     fn emit_xor<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
-        IrExpr::Call {
-            func: Box::new(IrExpr::Path {
-                segments: vec!["tfhe_xor".into()],
-                type_args: vec![],
-            }),
-            args: vec![a, b],
-        }
+        // TFHE XOR is non-composable ({0, Q4} encoding breaks chaining).
+        // Decompose: XOR(a, b) = OR(AND(a, NOT(b)), AND(NOT(a), b))
+        // = 2 AND + 1 OR + 2 free NOT = 3 bootstrapping rounds.
+        //
+        // Each input is used twice in the generated code, so the first use
+        // gets a .clone() via clone_expr.
+        let not_b = self.emit_not(clone_expr(b.clone()));
+        let not_a = self.emit_not(clone_expr(a.clone()));
+        let a_and_not_b = self.emit_and(a, not_b, 0);
+        let not_a_and_b = self.emit_and(not_a, b, 0);
+        self.emit_or(a_and_not_b, not_a_and_b)
     }
 
     fn emit_not<Q: Clone + Default>(&self, a: IrExpr<Q>) -> IrExpr<Q> {
@@ -2843,6 +2795,16 @@ impl FheScheme for TfheScheme {
         IrExpr::Call {
             func: Box::new(IrExpr::Path {
                 segments: vec!["tfhe_gate_bootstrapping_and".into()],
+                type_args: vec![],
+            }),
+            args: vec![a, b, var("bk")],
+        }
+    }
+
+    fn emit_or<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
+        IrExpr::Call {
+            func: Box::new(IrExpr::Path {
+                segments: vec!["tfhe_gate_bootstrapping_or".into()],
                 type_args: vec![],
             }),
             args: vec![a, b, var("bk")],
@@ -2877,14 +2839,14 @@ impl FheScheme for TfheScheme {
             }
         };
 
-        // Helper: emit tfhe_xor(a, b).
-        let xor2 = |a: IrExpr, b: IrExpr| -> IrExpr {
+        // Helper: emit tfhe_not(a).
+        let not1 = |a: IrExpr| -> IrExpr {
             IrExpr::Call {
                 func: Box::new(IrExpr::Path {
-                    segments: vec!["tfhe_xor".into()],
+                    segments: vec!["tfhe_not".into()],
                     type_args: vec![],
                 }),
-                args: vec![a, b],
+                args: vec![a],
             }
         };
 
@@ -2897,6 +2859,28 @@ impl FheScheme for TfheScheme {
                 }),
                 args: vec![a, b, var("bk")],
             }
+        };
+
+        // Helper: emit tfhe_gate_bootstrapping_or(a, b, bk).
+        let or2 = |a: IrExpr, b: IrExpr| -> IrExpr {
+            IrExpr::Call {
+                func: Box::new(IrExpr::Path {
+                    segments: vec!["tfhe_gate_bootstrapping_or".into()],
+                    type_args: vec![],
+                }),
+                args: vec![a, b, var("bk")],
+            }
+        };
+
+        // Helper: composable XOR decomposition.
+        // XOR(a, b) = OR(AND(a, NOT(b)), AND(NOT(a), b))
+        // Each input is used twice, so the first use gets clone_expr.
+        let xor2 = |a: IrExpr, b: IrExpr| -> IrExpr {
+            let not_b = not1(clone_expr(b.clone()));
+            let not_a = not1(clone_expr(a.clone()));
+            let a_and_not_b = and2(a, not_b);
+            let not_a_and_b = and2(not_a, b);
+            or2(a_and_not_b, not_a_and_b)
         };
 
         // Helper: index into a multi-bit variable at position `bit`.
@@ -3364,7 +3348,8 @@ mod tests {
         // `code` starts with `#![allow(...)]` (from self_contained=true); the
         // use statements must come after that inner attribute.
         let uses = "use volar_spec::tfhe::{BootstrappingKey, LweCiphertext, \
-                    tfhe_gate_bootstrapping_and, tfhe_xor, tfhe_trivial_zero, \
+                    tfhe_gate_bootstrapping_and, tfhe_gate_bootstrapping_or, \
+                    tfhe_xor, tfhe_not, tfhe_trivial_zero, \
                     tfhe_trivial_one, tfhe_trivial_encrypt, tfhe_cmux};\n";
         let with_imports = if let Some(newline) = code.find('\n') {
             let (head, tail) = code.split_at(newline + 1);
@@ -3915,8 +3900,9 @@ mod tests {
     /// in addition to the standard TFHE imports.
     fn run_compile_check_tfhe_loop(code: &str, test_name: &str) {
         let uses = "use volar_spec::tfhe::{BootstrappingKey, LweCiphertext, \
-                    tfhe_gate_bootstrapping_and, tfhe_xor, tfhe_trivial_zero, \
-                    tfhe_trivial_one, tfhe_trivial_encrypt, tfhe_not};\n";
+                    tfhe_gate_bootstrapping_and, tfhe_gate_bootstrapping_or, \
+                    tfhe_xor, tfhe_not, tfhe_trivial_zero, \
+                    tfhe_trivial_one, tfhe_trivial_encrypt};\n";
         let with_imports = if let Some(newline) = code.find('\n') {
             let (head, tail) = code.split_at(newline + 1);
             format!("{head}{uses}{tail}")
