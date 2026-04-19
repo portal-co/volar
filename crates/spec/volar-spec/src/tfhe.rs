@@ -159,6 +159,18 @@ pub fn tfhe_trivial_encrypt<const N_LWE: usize>(b: bool) -> LweCiphertext<N_LWE>
 }
 
 /// XOR gate — free: `ct_xor = ct_a + ct_b` (componentwise wrapping addition).
+///
+/// # Composability warning
+///
+/// This is a **linear** (non-bootstrapped) gate.  Its output always decrypts
+/// correctly, but the output **phase** may not be in the standard `{0, Q4}`
+/// range.  In particular, `XOR(true, true)` produces phase `2·Q4 = 0x80000000`
+/// instead of `0`.
+///
+/// **Do not** feed the output of this gate into a bootstrapped gate (AND, OR,
+/// CMUX, PBS) unless you are certain both inputs cannot simultaneously be
+/// `true`.  For composable boolean operations, use bootstrapped alternatives
+/// (e.g. `tfhe_cmux` uses `OR(AND, AND)` internally).
 pub fn tfhe_xor<const N_LWE: usize>(
     a: LweCiphertext<N_LWE>,
     b: LweCiphertext<N_LWE>,
@@ -222,17 +234,64 @@ pub fn tfhe_gate_bootstrapping_and<
     ct_out
 }
 
+// ── Gate bootstrapping — OR ───────────────────────────────────────────────────
+
+/// OR gate via full GINX gate bootstrapping.
+///
+/// Computes `a OR b` using the same blind-rotation machinery as AND, but with
+/// a `+Q4/2` pre-offset instead of `−Q4/2`.
+///
+/// Phase arithmetic (for standard `{0, Q4}` encoded inputs):
+/// - `(F, F)` → `0 + 0 + Q4/2 = Q4/2`         → false ✓
+/// - `(F, T)` → `0 + Q4 + Q4/2 = 3·Q4/2`      → true  ✓
+/// - `(T, F)` → `Q4 + 0 + Q4/2 = 3·Q4/2`      → true  ✓
+/// - `(T, T)` → `Q4 + Q4 + Q4/2 = 5·Q4/2`     → true  ✓
+///
+/// Cost: one full gate bootstrapping round (same as AND).
+pub fn tfhe_gate_bootstrapping_or<
+    const N_LWE: usize,
+    const BIG_N: usize,
+    const BS_ELL: usize,
+    const KS_ELL: usize,
+>(
+    ct_a: LweCiphertext<N_LWE>,
+    ct_b: LweCiphertext<N_LWE>,
+    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+) -> LweCiphertext<N_LWE> {
+    // Step 1: combine inputs; ADD Q4/2 to center OR gate threshold
+    let mut ct = lwe_add(ct_a, ct_b);
+    ct.b = ct.b.wrapping_add(Q4 >> 1); // add q/8
+
+    // Steps 2–4: blind rotate, sample extract, key switch (same as AND)
+    let acc = blind_rotate(&ct, bk);
+    let lwe_big = sample_extract(&acc);
+    let mut ct_out = key_switch(&lwe_big, &bk.ksk);
+
+    // Step 5: composability offset
+    ct_out.b = ct_out.b.wrapping_add(Q4 >> 1);
+
+    ct_out
+}
+
 /// CMUX (controlled multiplexer) gate.
 ///
-/// Computes `if sel { a } else { b }` obliviously using only LWE arithmetic
-/// and one gate bootstrapping.
+/// Computes `if sel { a } else { b }` obliviously.
 ///
-/// Formula: `CMUX(sel, a, b) = b XOR (sel AND (a XOR b))`
+/// Formula: `CMUX(sel, a, b) = OR(AND(sel, a), AND(NOT(sel), b))`
 ///
 /// - `sel = 0` (encrypts false): returns `b`
 /// - `sel = 1` (encrypts true): returns `a`
 ///
-/// Cost: one AND gate (one full gate bootstrapping round).
+/// # Why not `b XOR (sel AND (a XOR b))`?
+///
+/// The free XOR gate produces non-standard phases when both inputs encrypt
+/// `true` (phase `2·Q4` instead of `0`).  These non-standard phases cause
+/// the AND gate's blind rotation to misclassify the input, making the
+/// original formula incorrect for `CMUX(false, true, true)` and similar.
+/// The `OR(AND, AND)` decomposition uses only bootstrapped gates on
+/// standard-encoded inputs, guaranteeing correctness and composability.
+///
+/// Cost: three gate bootstrapping rounds (2× AND + 1× OR) plus one free NOT.
 pub fn tfhe_cmux<
     const N_LWE: usize,
     const BIG_N: usize,
@@ -244,9 +303,10 @@ pub fn tfhe_cmux<
     b: LweCiphertext<N_LWE>,
     bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
 ) -> LweCiphertext<N_LWE> {
-    let a_xor_b = tfhe_xor(a, b);
-    let masked = tfhe_gate_bootstrapping_and(sel, a_xor_b, bk);
-    tfhe_xor(b, masked)
+    let not_sel = tfhe_not(sel);
+    let sel_and_a = tfhe_gate_bootstrapping_and(sel, a, bk);
+    let nsel_and_b = tfhe_gate_bootstrapping_and(not_sel, b, bk);
+    tfhe_gate_bootstrapping_or(sel_and_a, nsel_and_b, bk)
 }
 
 // ── Programmable bootstrapping ───────────────────────────────────────────────
@@ -1336,6 +1396,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn or_gate_all_combos() {
+        let (sk, _, bk) = test_keys(42);
+        for (a, b) in [(false, false), (false, true), (true, false), (true, true)] {
+            let ct_a = encrypt(a, &sk, 100);
+            let ct_b = encrypt(b, &sk, 200);
+            let ct_out = tfhe_gate_bootstrapping_or(ct_a, ct_b, &bk);
+            let got = lwe_decrypt(&ct_out, &sk);
+            assert_eq!(got, a | b, "OR({a}, {b}) = {got}, expected {}", a | b);
+        }
+    }
+
     // ── Programmable bootstrapping ────────────────────────────────────────
 
     #[test]
@@ -1465,5 +1537,261 @@ mod tests {
         let lut = [false; 129];
         let addr_bit = encrypt(false, &sk, 1000);
         let _ = tfhe_lut_read(&[addr_bit], &lut, &bk);
+    }
+
+    // ── Property-based tests ─────────────────────────────────────────────
+    //
+    // Fuzz TFHE operations by running them on encrypted inputs in parallel
+    // with the same operations on plaintext booleans, then comparing
+    // decrypted results against the plaintext oracle.
+
+    extern crate std;
+    use std::vec::Vec;
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        // ── Individual gate correctness ──────────────────────────────────
+
+        /// AND gate: decrypt(AND(enc(a), enc(b))) == a && b
+        #[test]
+        fn prop_and_correct(
+            a in any::<bool>(),
+            b in any::<bool>(),
+            key_seed in 0u64..100,
+            enc_seed in 0u64..100000,
+        ) {
+            let (sk, _, bk) = test_keys(key_seed);
+            let ct_a = encrypt(a, &sk, enc_seed);
+            let ct_b = encrypt(b, &sk, enc_seed.wrapping_add(1));
+            let ct_out = tfhe_gate_bootstrapping_and(ct_a, ct_b, &bk);
+            let got = lwe_decrypt(&ct_out, &sk);
+            prop_assert_eq!(got, a & b, "AND({}, {})", a, b);
+        }
+
+        /// XOR gate (free — no bootstrapping): decrypt(XOR(enc(a), enc(b))) == a ^ b
+        #[test]
+        fn prop_xor_correct(
+            a in any::<bool>(),
+            b in any::<bool>(),
+            key_seed in 0u64..100,
+            enc_seed in 0u64..100000,
+        ) {
+            let (sk, _, _bk) = test_keys(key_seed);
+            let ct_a = encrypt(a, &sk, enc_seed);
+            let ct_b = encrypt(b, &sk, enc_seed.wrapping_add(1));
+            let ct_out = tfhe_xor(ct_a, ct_b);
+            let got = lwe_decrypt(&ct_out, &sk);
+            prop_assert_eq!(got, a ^ b, "XOR({}, {})", a, b);
+        }
+
+        /// NOT gate (free — no bootstrapping): decrypt(NOT(enc(a))) == !a
+        #[test]
+        fn prop_not_correct(
+            a in any::<bool>(),
+            key_seed in 0u64..100,
+            enc_seed in 0u64..100000,
+        ) {
+            let (sk, _, _bk) = test_keys(key_seed);
+            let ct_a = encrypt(a, &sk, enc_seed);
+            let ct_out = tfhe_not(ct_a);
+            let got = lwe_decrypt(&ct_out, &sk);
+            prop_assert_eq!(got, !a, "NOT({})", a);
+        }
+
+        /// OR gate (bootstrapped): decrypt(OR(enc(a), enc(b))) == a || b
+        #[test]
+        fn prop_or_correct(
+            a in any::<bool>(),
+            b in any::<bool>(),
+            key_seed in 0u64..100,
+            enc_seed in 0u64..100000,
+        ) {
+            let (sk, _, bk) = test_keys(key_seed);
+            let ct_a = encrypt(a, &sk, enc_seed);
+            let ct_b = encrypt(b, &sk, enc_seed.wrapping_add(1));
+            let ct_out = tfhe_gate_bootstrapping_or(ct_a, ct_b, &bk);
+            let got = lwe_decrypt(&ct_out, &sk);
+            prop_assert_eq!(got, a | b, "OR({}, {})", a, b);
+        }
+
+        /// CMUX (encrypted mux): decrypt(CMUX(sel, a, b)) == if sel { a } else { b }
+        #[test]
+        fn prop_cmux_correct(
+            sel in any::<bool>(),
+            a in any::<bool>(),
+            b in any::<bool>(),
+            key_seed in 0u64..100,
+            enc_seed in 0u64..100000,
+        ) {
+            let (sk, _, bk) = test_keys(key_seed);
+            let ct_sel = encrypt(sel, &sk, enc_seed);
+            let ct_a = encrypt(a, &sk, enc_seed.wrapping_add(1));
+            let ct_b = encrypt(b, &sk, enc_seed.wrapping_add(2));
+            let ct_out = tfhe_cmux(ct_sel, ct_a, ct_b, &bk);
+            let got = lwe_decrypt(&ct_out, &sk);
+            let expected = if sel { a } else { b };
+            prop_assert_eq!(got, expected, "CMUX({}, {}, {})", sel, a, b);
+        }
+
+        // ── Composability (chained gates) ────────────────────────────────
+        //
+        // These verify that the output of one bootstrapped gate can be
+        // correctly fed as input to another gate — the composability
+        // property that depends on the Q4/2 offset being correct.
+
+        /// AND(AND(a, b), c) — two bootstrapped AND gates chained
+        #[test]
+        fn prop_and_chain_2(
+            a in any::<bool>(),
+            b in any::<bool>(),
+            c in any::<bool>(),
+            key_seed in 0u64..100,
+            enc_seed in 0u64..100000,
+        ) {
+            let (sk, _, bk) = test_keys(key_seed);
+            let ct_a = encrypt(a, &sk, enc_seed);
+            let ct_b = encrypt(b, &sk, enc_seed + 1);
+            let ct_c = encrypt(c, &sk, enc_seed + 2);
+            let ct_ab = tfhe_gate_bootstrapping_and(ct_a, ct_b, &bk);
+            let ct_out = tfhe_gate_bootstrapping_and(ct_ab, ct_c, &bk);
+            let got = lwe_decrypt(&ct_out, &sk);
+            prop_assert_eq!(got, a & b & c, "AND(AND({}, {}), {})", a, b, c);
+        }
+
+        /// XOR(AND(a, b), NOT(AND(c, d))) — mixed gate chain
+        #[test]
+        fn prop_mixed_chain(
+            a in any::<bool>(),
+            b in any::<bool>(),
+            c in any::<bool>(),
+            d in any::<bool>(),
+            key_seed in 0u64..100,
+            enc_seed in 0u64..100000,
+        ) {
+            let (sk, _, bk) = test_keys(key_seed);
+            let ct_a = encrypt(a, &sk, enc_seed);
+            let ct_b = encrypt(b, &sk, enc_seed + 1);
+            let ct_c = encrypt(c, &sk, enc_seed + 2);
+            let ct_d = encrypt(d, &sk, enc_seed + 3);
+
+            let ab = tfhe_gate_bootstrapping_and(ct_a, ct_b, &bk);
+            let cd = tfhe_gate_bootstrapping_and(ct_c, ct_d, &bk);
+            let not_cd = tfhe_not(cd);
+            let result = tfhe_xor(ab, not_cd);
+
+            let got = lwe_decrypt(&result, &sk);
+            let expected = (a & b) ^ !(c & d);
+            prop_assert_eq!(got, expected,
+                "XOR(AND({},{}), NOT(AND({},{})))", a, b, c, d);
+        }
+
+        // ── LUT read ────────────────────────────────────────────────────
+
+        /// 1-bit address LUT: negacyclic [v, !v] or constant [v, v]
+        #[test]
+        fn prop_lut_1bit(
+            val0 in any::<bool>(),
+            is_constant in any::<bool>(),
+            addr in any::<bool>(),
+            key_seed in 0u64..100,
+            enc_seed in 0u64..100000,
+        ) {
+            let lut: [bool; 2] = if is_constant {
+                [val0, val0] // constant → trivial encryption path
+            } else {
+                [val0, !val0] // negacyclic-compliant
+            };
+            let (sk, _, bk) = test_keys(key_seed);
+            let ct_addr = encrypt(addr, &sk, enc_seed);
+            let ct_out = tfhe_lut_read(&[ct_addr], &lut, &bk);
+            let got = lwe_decrypt(&ct_out, &sk);
+            let expected = lut[addr as usize];
+            prop_assert_eq!(got, expected, "LUT({:?})[{}]", lut, addr as usize);
+        }
+
+        /// 2-bit address LUT: negacyclic [a, b, !a, !b]
+        #[test]
+        fn prop_lut_2bit(
+            val0 in any::<bool>(),
+            val1 in any::<bool>(),
+            addr0 in any::<bool>(),
+            addr1 in any::<bool>(),
+            key_seed in 0u64..100,
+            enc_seed in 0u64..100000,
+        ) {
+            let lut = [val0, val1, !val0, !val1]; // negacyclic
+            let addr_val = (addr0 as usize) + 2 * (addr1 as usize);
+            let (sk, _, bk) = test_keys(key_seed);
+            let ct_addr0 = encrypt(addr0, &sk, enc_seed);
+            let ct_addr1 = encrypt(addr1, &sk, enc_seed + 1);
+            let ct_out = tfhe_lut_read(&[ct_addr0, ct_addr1], &lut, &bk);
+            let got = lwe_decrypt(&ct_out, &sk);
+            let expected = lut[addr_val];
+            prop_assert_eq!(got, expected, "LUT({:?})[{}]", lut, addr_val);
+        }
+
+        // ── Random circuit ──────────────────────────────────────────────
+        //
+        // Builds a random DAG of composable gates (AND, OR, NOT) over 2-4
+        // encrypted inputs.  After executing 1-5 random operations, decrypts
+        // every intermediate value and compares with the plaintext oracle.
+        //
+        // Note: free XOR is excluded because it produces non-standard phases
+        // that break composability (see `tfhe_xor` doc comment).
+
+        #[test]
+        fn prop_random_circuit(
+            inputs in proptest::collection::vec(any::<bool>(), 2..=4),
+            raw_ops in proptest::collection::vec(
+                (0u8..3, any::<usize>(), any::<usize>()),
+                1..=5,
+            ),
+            key_seed in 0u64..100,
+            enc_seed in 0u64..100000,
+        ) {
+            let (sk, _, bk) = test_keys(key_seed);
+
+            // Plaintext pool
+            let mut plain: Vec<bool> = inputs.clone();
+            // Encrypted pool
+            let mut enc: Vec<Ct> = inputs
+                .iter()
+                .enumerate()
+                .map(|(i, &v)| encrypt(v, &sk, enc_seed.wrapping_add(i as u64)))
+                .collect();
+
+            // Execute operations — each appends a new value to both pools
+            for &(op_type, ref_a, ref_b) in &raw_ops {
+                let n = plain.len();
+                let a = ref_a % n;
+                let b = ref_b % n;
+                match op_type {
+                    0 => {
+                        // AND (bootstrapped — composable)
+                        plain.push(plain[a] & plain[b]);
+                        enc.push(tfhe_gate_bootstrapping_and(enc[a], enc[b], &bk));
+                    }
+                    1 => {
+                        // OR (bootstrapped — composable)
+                        plain.push(plain[a] | plain[b]);
+                        enc.push(tfhe_gate_bootstrapping_or(enc[a], enc[b], &bk));
+                    }
+                    _ => {
+                        // NOT (free — composable on standard-phase inputs)
+                        plain.push(!plain[a]);
+                        enc.push(tfhe_not(enc[a]));
+                    }
+                }
+            }
+
+            // Verify every value in the pool
+            for (i, (&expected, ct)) in plain.iter().zip(enc.iter()).enumerate() {
+                let got = lwe_decrypt(ct, &sk);
+                prop_assert_eq!(got, expected, "pool[{}]", i);
+            }
+        }
     }
 }

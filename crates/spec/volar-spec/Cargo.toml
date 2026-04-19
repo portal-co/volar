@@ -16,3 +16,6 @@ hybrid-array.workspace = true
 elliptic-curve = {workspace = true,features = ["arithmetic"]}
 volar-primitives = { path = "../volar-primitives" }
 volar-common = { path = "../volar-common" }
+
+[dev-dependencies]
+proptest = "1"
