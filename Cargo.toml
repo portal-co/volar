@@ -23,6 +23,8 @@ members = [
     "crates/compiler/volar-c-backend",
     "crates/fuzz/volar-fuzz",
     "crates/ir/volar-ir-opt",
+    "crates/channel/volar-channel",
+    "crates/oram/volar-oram",
 ]
 resolver = "3"
 
@@ -40,6 +42,8 @@ volar-vaffle-target = {path="crates/ir/volar-vaffle-target", version = "0.1.0"}
 volar-ir-common = {path="crates/ir/volar-ir-common", version = "0.1.0"}
 volar-provenance = {path="crates/ir/volar-provenance", version = "0.1.0"}
 volar-ir-opt = {path="crates/ir/volar-ir-opt", version = "0.1.0"}
+volar-channel = {path="crates/channel/volar-channel", version = "0.1.0"}
+volar-oram = {path="crates/oram/volar-oram", version = "0.1.0"}
 volar-compiler-passes = {path="crates/compiler/volar-compiler-passes", version = "0.1.0"}
 
 portal-pc-waffle-ir = { version = "0.6.0-alpha.1", git = "https://github.com/portal-co/waffle-" }

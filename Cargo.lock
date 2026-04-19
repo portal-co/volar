@@ -973,6 +973,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "volar-channel"
+version = "0.1.0"
+
+[[package]]
 name = "volar-common"
 version = "0.1.0"
 dependencies = [
@@ -1101,6 +1105,13 @@ dependencies = [
  "volar-compiler",
  "volar-ir-common",
  "volar-lir",
+]
+
+[[package]]
+name = "volar-oram"
+version = "0.1.0"
+dependencies = [
+ "volar-channel",
 ]
 
 [[package]]
@@ -1376,6 +1387,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[patch.unused]]
+name = "pit-core"
+version = "0.5.0-alpha.1"
+
+[[patch.unused]]
 name = "portal-solutions-asm-aarch64"
 version = "0.1.0"
 
@@ -1402,6 +1417,46 @@ version = "0.1.0"
 [[patch.unused]]
 name = "portal-solutions-asm-x86-64-shim"
 version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-jsc-common"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-generator"
+version = "0.8.0-pre.10"
+
+[[patch.unused]]
+name = "portal-jsc-simpl-js"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-cfg"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-ll-common"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-opt-ssa"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-ssa"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-tac"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-util"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-solutions-swibb"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
 name = "dex-bytecode"
@@ -1544,8 +1599,8 @@ name = "dreamcompiler-minibc-interp"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-solutions-swibb"
-version = "0.6.0-alpha.1"
+name = "portal-pc-asm-common"
+version = "0.1.1"
 
 [[patch.unused]]
 name = "portal-pc-waffle"
@@ -1586,47 +1641,3 @@ version = "0.6.0-alpha.1"
 [[patch.unused]]
 name = "portal-pc-waffle-passes-shared"
 version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "pit-core"
-version = "0.5.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-pc-asm-common"
-version = "0.1.1"
-
-[[patch.unused]]
-name = "portal-jsc-common"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-generator"
-version = "0.8.0-pre.10"
-
-[[patch.unused]]
-name = "portal-jsc-simpl-js"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-cfg"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-ll-common"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-opt-ssa"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-ssa"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-tac"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-util"
-version = "0.8.0-pre.11"

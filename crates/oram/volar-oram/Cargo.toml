@@ -1,0 +1,12 @@
+[package]
+name = "volar-oram"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Recursive Path ORAM runtime for Volar"
+repository.workspace = true
+
+[dependencies]
+volar-channel = { path = "../../channel/volar-channel", version = "0.1.0" }
+
+[dev-dependencies]

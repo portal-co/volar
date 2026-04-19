@@ -1,0 +1,9 @@
+[package]
+name = "volar-channel"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Packet-based protocol abstraction for Volar"
+repository.workspace = true
+
+[dependencies]
