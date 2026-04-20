@@ -733,6 +733,55 @@ pub fn print_module_ts(module: &IrModule) -> String {
     out
 }
 
+/// Render an `IrCfgModule` as a complete TypeScript source file.
+///
+/// CFG functions are emitted as `while (true) { switch (__state) { case N: ... } }`
+/// state machines, matching the Rust CFG printer strategy.  Auxiliary (non-CFG)
+/// functions use the standard `TsFunctionWriter` with full deshadowing and
+/// witness analysis (they are copies of spec functions that may have shadows
+/// and ctx-style witness patterns).
+pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
+    // Build a temporary flat IrModule from the CFG module's auxiliary functions,
+    // structs, and impls so we can reuse deshadow + witness analysis.
+    let mut flat = IrModule {
+        name: module.name.clone(),
+        structs: module.structs.clone(),
+        enums: module.enums.clone(),
+        traits: module.traits.clone(),
+        impls: module.impls.clone(),
+        functions: module.auxiliary_functions.clone(),
+        type_aliases: module.type_aliases.clone(),
+    };
+    deshadow_module(&mut flat);
+
+    let witness_map = build_module_witness_map(&flat);
+    let erased = collect_erased_type_params(&flat);
+    let cx = TsContext {
+        witness_map: &witness_map,
+        erased_type_params: erased,
+    };
+
+    // Reassemble the CFG module with deshadowed auxiliary functions.
+    let deshadowed = IrCfgModule {
+        name: module.name.clone(),
+        structs: flat.structs,
+        enums: flat.enums,
+        traits: flat.traits,
+        impls: flat.impls,
+        functions: module.functions.clone(),
+        auxiliary_functions: flat.functions,
+        type_aliases: flat.type_aliases,
+    };
+
+    let mut out = String::new();
+    let _ = write!(
+        out,
+        "{}",
+        TsFmt(TsCfgModuleWriter { module: &deshadowed }, &cx)
+    );
+    out
+}
+
 /// Apply deshadowing to every function and method body in the module.
 fn deshadow_module(module: &mut IrModule) {
     use std::collections::HashSet;
@@ -3233,4 +3282,404 @@ fn filter_used_generics<'a>(
             used.contains(&g.name)
         })
         .collect()
+}
+
+// ============================================================================
+// CFG MODULE — IrCfgModule → TypeScript (state-machine style)
+// ============================================================================
+
+/// Renders an `IrCfgModule` as TypeScript.
+///
+/// Structs → classes, enums → tagged unions, auxiliary functions → regular
+/// TS functions, CFG functions → `while(true) { switch(__state) {...} }`
+/// state machines.
+pub(crate) struct TsCfgModuleWriter<'a> {
+    pub module: &'a IrCfgModule,
+}
+
+impl<'a> TsBackend for TsCfgModuleWriter<'a> {
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
+        // Structs → TS classes (no impls to merge for CFG modules)
+        for s in &self.module.structs {
+            TsClassWriter {
+                s,
+                impls: &[],
+            }
+            .ts_fmt(f, cx)?;
+            writeln!(f)?;
+        }
+
+        // Enums → tagged union types
+        for e in &self.module.enums {
+            ts_write_enum(f, e, cx)?;
+            writeln!(f)?;
+        }
+
+        // Type aliases
+        for ta in &self.module.type_aliases {
+            ts_write_type_alias(f, ta, cx)?;
+            writeln!(f)?;
+        }
+
+        // Auxiliary (linked-spec) functions — regular flat bodies
+        let empty = WitnessNeeds::default();
+        for func in &self.module.auxiliary_functions {
+            TsFunctionWriter {
+                func,
+                indent: 0,
+                witness_needs: &empty,
+            }
+            .ts_fmt(f, cx)?;
+            writeln!(f)?;
+        }
+
+        // CFG-structured circuit functions — state machines
+        for func in &self.module.functions {
+            TsCfgFunctionWriter { func, indent: 0 }.ts_fmt(f, cx)?;
+            writeln!(f)?;
+        }
+
+        Ok(())
+    }
+}
+
+// ── Enum → tagged-union emitter ───────────────────────────────────────────
+
+/// Emit an `IrEnum` as a TypeScript tagged-union type + factory functions.
+///
+/// ```ts
+/// type MyEnum = { tag: "VariantA", _0: number } | { tag: "VariantB" };
+/// function MyEnum_VariantA(_0: number): MyEnum { return { tag: "VariantA", _0 }; }
+/// function MyEnum_VariantB(): MyEnum { return { tag: "VariantB" }; }
+/// ```
+fn ts_write_enum(
+    f: &mut fmt::Formatter<'_>,
+    e: &IrEnum,
+    cx: &TsContext<'_>,
+) -> fmt::Result {
+    let name = e.kind.to_string();
+
+    // Type definition: union of per-variant objects
+    write!(f, "export type {}", name)?;
+    // Generics
+    if !e.generics.is_empty() {
+        let type_only: Vec<&IrGenericParam> = e
+            .generics
+            .iter()
+            .filter(|g| g.kind == IrGenericParamKind::Type)
+            .collect();
+        if !type_only.is_empty() {
+            write!(f, "<")?;
+            for (i, g) in type_only.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{}", g.name)?;
+            }
+            write!(f, ">")?;
+        }
+    }
+    write!(f, " =")?;
+
+    if e.variants.is_empty() {
+        writeln!(f, " never;")?;
+        return Ok(());
+    }
+
+    writeln!(f)?;
+    for (vi, v) in e.variants.iter().enumerate() {
+        write!(f, "  | {{ tag: \"{}\"", v.name)?;
+        match &v.fields {
+            IrEnumVariantData::Unit => {}
+            IrEnumVariantData::Tuple(types) => {
+                for (fi, ty) in types.iter().enumerate() {
+                    write!(f, ", _{}: ", fi)?;
+                    TsTypeWriter { ty }.ts_fmt(f, cx)?;
+                }
+            }
+            IrEnumVariantData::Struct(fields) => {
+                for field in fields {
+                    write!(f, ", {}: ", field.name)?;
+                    TsTypeWriter { ty: &field.ty }.ts_fmt(f, cx)?;
+                }
+            }
+        }
+        write!(f, " }}")?;
+        if vi + 1 < e.variants.len() {
+            writeln!(f)?;
+        }
+    }
+    writeln!(f, ";")?;
+
+    // Factory functions for each variant
+    for v in &e.variants {
+        write!(f, "export function {}_{}", name, v.name)?;
+        write!(f, "(")?;
+        match &v.fields {
+            IrEnumVariantData::Unit => {}
+            IrEnumVariantData::Tuple(types) => {
+                for (fi, ty) in types.iter().enumerate() {
+                    if fi > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "_{}: ", fi)?;
+                    TsTypeWriter { ty }.ts_fmt(f, cx)?;
+                }
+            }
+            IrEnumVariantData::Struct(fields) => {
+                for (fi, field) in fields.iter().enumerate() {
+                    if fi > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: ", field.name)?;
+                    TsTypeWriter { ty: &field.ty }.ts_fmt(f, cx)?;
+                }
+            }
+        }
+        write!(f, "): {} {{ return {{ tag: \"{}\"", name, v.name)?;
+        match &v.fields {
+            IrEnumVariantData::Unit => {}
+            IrEnumVariantData::Tuple(types) => {
+                for (fi, _) in types.iter().enumerate() {
+                    write!(f, ", _{}", fi)?;
+                }
+            }
+            IrEnumVariantData::Struct(fields) => {
+                for field in fields {
+                    write!(f, ", {}", field.name)?;
+                }
+            }
+        }
+        writeln!(f, " }}; }}")?;
+    }
+
+    Ok(())
+}
+
+// ── Type alias emitter ────────────────────────────────────────────────────
+
+fn ts_write_type_alias(
+    f: &mut fmt::Formatter<'_>,
+    ta: &IrTypeAlias,
+    cx: &TsContext<'_>,
+) -> fmt::Result {
+    write!(f, "export type {}", ta.name)?;
+    if !ta.generics.is_empty() {
+        let type_only: Vec<&IrGenericParam> = ta
+            .generics
+            .iter()
+            .filter(|g| g.kind == IrGenericParamKind::Type)
+            .collect();
+        if !type_only.is_empty() {
+            write!(f, "<")?;
+            for (i, g) in type_only.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{}", g.name)?;
+            }
+            write!(f, ">")?;
+        }
+    }
+    write!(f, " = ")?;
+    TsTypeWriter { ty: &ta.target }.ts_fmt(f, cx)?;
+    writeln!(f, ";")?;
+    Ok(())
+}
+
+// ── CFG Function → state machine ──────────────────────────────────────────
+
+/// Renders a single `IrCfgFunction` as an `export function` with a state-machine body.
+struct TsCfgFunctionWriter<'a> {
+    func: &'a IrCfgFunction,
+    indent: usize,
+}
+
+impl<'a> TsBackend for TsCfgFunctionWriter<'a> {
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
+        let ind = "  ".repeat(self.indent);
+        let func = self.func;
+        let blocks = &func.body.blocks;
+
+        // ── Signature ─────────────────────────────────────────────────────
+        write!(f, "{}export function {}", ind, func.name)?;
+        // Emit type-only generics (skip const generics — TS doesn't have them)
+        let type_generics: Vec<&IrGenericParam> = func
+            .generics
+            .iter()
+            .filter(|g| g.kind == IrGenericParamKind::Type)
+            .collect();
+        if !type_generics.is_empty() {
+            write!(f, "<")?;
+            for (i, g) in type_generics.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{}", g.name)?;
+            }
+            write!(f, ">")?;
+        }
+        write!(f, "(")?;
+        for (i, p) in func.params.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}: ", ts_param_name(&p.name))?;
+            TsTypeWriter { ty: &p.ty }.ts_fmt(f, cx)?;
+        }
+        write!(f, ")")?;
+        if let Some(ret) = &func.return_type {
+            write!(f, ": ")?;
+            TsTypeWriter { ty: ret }.ts_fmt(f, cx)?;
+        }
+
+        // ── Body ──────────────────────────────────────────────────────────
+        writeln!(f, " {{")?;
+
+        // Single-block fast path (no state machine needed)
+        if blocks.len() == 1 {
+            let blk = &blocks[0];
+            for stmt in &blk.stmts {
+                TsStmtWriter {
+                    stmt,
+                    indent: self.indent + 1,
+                }
+                .ts_fmt(f, cx)?;
+            }
+            match &blk.terminator {
+                IrCfgTerminator::Return(None) => {}
+                IrCfgTerminator::Return(Some(expr)) => {
+                    let inner = "  ".repeat(self.indent + 1);
+                    write!(f, "{}return ", inner)?;
+                    TsExprWriter { expr }.ts_fmt(f, cx)?;
+                    writeln!(f, ";")?;
+                }
+                other => {
+                    ts_write_cfg_terminator(f, other, self.indent + 1, cx)?;
+                }
+            }
+            writeln!(f, "{}}}", ind)?;
+            return Ok(());
+        }
+
+        // ── State machine ─────────────────────────────────────────────────
+        ts_write_state_machine(f, func, self.indent + 1, cx)?;
+        writeln!(f, "{}}}", ind)?;
+        Ok(())
+    }
+}
+
+/// Emit the `while(true) { switch(__state) { ... } }` body.
+fn ts_write_state_machine(
+    f: &mut fmt::Formatter<'_>,
+    func: &IrCfgFunction,
+    base: usize,
+    cx: &TsContext<'_>,
+) -> fmt::Result {
+    let blocks = &func.body.blocks;
+    let l0 = "  ".repeat(base);
+    let l1 = "  ".repeat(base + 1);
+    let l2 = "  ".repeat(base + 2);
+
+    writeln!(f, "{}let __state = 0;", l0)?;
+
+    // Declare block-param slots for blocks 1.. (block 0 uses function params).
+    for (bidx, blk) in blocks.iter().enumerate().skip(1) {
+        for (pidx, param) in blk.params.iter().enumerate() {
+            write!(f, "{}let __b{}_p{}: ", l0, bidx, pidx)?;
+            TsTypeWriter { ty: &param.ty }.ts_fmt(f, cx)?;
+            writeln!(f, " | undefined = undefined;")?;
+        }
+    }
+
+    writeln!(f, "{}while (true) {{", l0)?;
+    writeln!(f, "{}switch (__state) {{", l1)?;
+
+    for (bidx, blk) in blocks.iter().enumerate() {
+        writeln!(f, "{}case {}: {{", l1, bidx)?;
+
+        // Bind block params from their slots (block 0 uses function params).
+        if bidx > 0 {
+            for (pidx, param) in blk.params.iter().enumerate() {
+                writeln!(
+                    f,
+                    "{}let {} = __b{}_p{}!;",
+                    l2, param.name, bidx, pidx
+                )?;
+                writeln!(f, "{}__b{}_p{} = undefined;", l2, bidx, pidx)?;
+            }
+        }
+
+        // Statements
+        for stmt in &blk.stmts {
+            TsStmtWriter {
+                stmt,
+                indent: base + 2,
+            }
+            .ts_fmt(f, cx)?;
+        }
+
+        // Terminator
+        ts_write_cfg_terminator(f, &blk.terminator, base + 2, cx)?;
+
+        writeln!(f, "{}}}", l1)?; // end case block
+    }
+
+    writeln!(f, "{}default: throw new Error(\"unreachable\");", l1)?;
+    writeln!(f, "{}}}", l1)?; // end switch
+    writeln!(f, "{}}}", l0)?; // end while
+    Ok(())
+}
+
+/// Emit a CFG terminator in TypeScript.
+fn ts_write_cfg_terminator(
+    f: &mut fmt::Formatter<'_>,
+    term: &IrCfgTerminator,
+    indent: usize,
+    cx: &TsContext<'_>,
+) -> fmt::Result {
+    let ind = "  ".repeat(indent);
+    let inner = "  ".repeat(indent + 1);
+    match term {
+        IrCfgTerminator::Return(None) => {
+            writeln!(f, "{}return;", ind)?;
+        }
+        IrCfgTerminator::Return(Some(expr)) => {
+            write!(f, "{}return ", ind)?;
+            TsExprWriter { expr }.ts_fmt(f, cx)?;
+            writeln!(f, ";")?;
+        }
+        IrCfgTerminator::Goto(jump) => {
+            ts_write_jump_setup(f, jump, indent, cx)?;
+            writeln!(f, "{}continue;", ind)?;
+        }
+        IrCfgTerminator::CondGoto { cond, then_, else_ } => {
+            write!(f, "{}if (", ind)?;
+            TsExprWriter { expr: cond }.ts_fmt(f, cx)?;
+            writeln!(f, ") {{")?;
+            ts_write_jump_setup(f, then_, indent + 1, cx)?;
+            writeln!(f, "{}}} else {{", ind)?;
+            ts_write_jump_setup(f, else_, indent + 1, cx)?;
+            writeln!(f, "{}}}", ind)?;
+            writeln!(f, "{}continue;", ind)?;
+        }
+    }
+    Ok(())
+}
+
+/// Assign jump args to block-param slots and set `__state`.
+fn ts_write_jump_setup(
+    f: &mut fmt::Formatter<'_>,
+    jump: &IrCfgJump,
+    indent: usize,
+    cx: &TsContext<'_>,
+) -> fmt::Result {
+    let ind = "  ".repeat(indent);
+    for (pidx, arg) in jump.args.iter().enumerate() {
+        write!(f, "{}__b{}_p{} = ", ind, jump.target, pidx)?;
+        TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+        writeln!(f, ";")?;
+    }
+    writeln!(f, "{}__state = {};", ind, jump.target)?;
+    Ok(())
 }
