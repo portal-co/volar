@@ -3,19 +3,54 @@
 //! WAFFLE `FunctionBody` → VAFFLE lowering.
 //!
 //! Handles the subset relevant to program-related cryptography:
-//! - **Integer ops**: I32/I64 arithmetic, bitwise, comparisons, constants,
-//!   and conversions.
-//! - **Branches**: `Br`, `CondBr`, `Return`.
-//! - **Direct calls**: `Operator::Call { function_index }`.
-//! - **Linear memory**: `I32Load`, `I32Store`, etc. via byte-addressed
-//!   storage (one 8-bit cell per byte, `StorageId::memory(idx)`).
+//!
+//! **Types**: `I32`, `I64` only.  Any function or block parameter of type
+//! `F32`, `F64`, `V128`, or any reference/heap type yields `UnsupportedOp`.
+//!
+//! **Operators** (supported):
+//! - Constants: `I32Const`, `I64Const`
+//! - Arithmetic: `I32/I64` add, sub, mul, divS, divU, and, or, xor, shl, shrS, shrU
+//! - Comparisons: `I32/I64` eqz, eq, ne, ltS/U, gtS/U, leS/U, geS/U
+//! - Conversions: `I32WrapI64`, `I64ExtendI32S`, `I64ExtendI32U`
+//! - Select: `Select`, `TypedSelect` (I32 non-zero test via OR-reduce)
+//! - Direct calls: `Call { function_index }` — single return value only
+//! - Nop: `Nop`
+//! - Memory loads: `I32Load`, `I64Load`, `I32Load8U/S`, `I32Load16U/S`,
+//!   `I64Load8U/S`, `I64Load16U/S`, `I64Load32U/S` (byte-addressed storage)
+//! - Memory stores: `I32Store`, `I64Store`, `I32Store8/16`,
+//!   `I64Store8/16/32`
+//! - Memory stubs: `MemorySize` (always 0), `MemoryGrow` (always -1)
+//!
+//! **Operators** (not supported — returns `UnsupportedOp`):
+//! - All F32/F64 ops and float memory ops
+//! - All V128/SIMD ops
+//! - All atomic/threads ops
+//! - Integer ops not listed above: rem, clz, ctz, popcnt, rotl, rotr,
+//!   extend-sign variants, trunc-sat conversions
+//! - Multi-result `Call`
+//! - `CallIndirect`, `CallRef`
+//! - Globals: `GlobalGet`, `GlobalSet`
+//! - Tables: `TableGet`, `TableSet`, `TableGrow`, `TableSize`
+//! - Bulk memory: `MemoryCopy`, `MemoryFill`, `MemoryInit`, `DataDrop`
+//! - Reference types: `RefNull`, `RefIsNull`, `RefFunc`
+//! - GC proposal operators
+//! - `Unreachable` operator (distinct from `Terminator::Unreachable`)
+//!
+//! **Terminators** (supported):
+//! - `Br`, `CondBr`, `Return`, `ReturnCall`
+//! - `Unreachable`, `UB`, `None` — stubbed as a return of zero
+//!
+//! **Terminators** (not supported — returns `UnsupportedOp`):
+//! - `Select` (br_table)
+//! - `ReturnCallIndirect`, `ReturnCallRef`
 //!
 //! All integer values are bit-decomposed via `BitCircuitBuilder`, sharing
 //! the same GF(2) Poly circuits as `VolarIrTarget`.
 //!
 //! # Errors
-//! `UnsupportedOp` is returned for floats, tables, globals, indirect
-//! calls, SIMD, and atomics.  The module-level helper skips those functions.
+//! `UnsupportedOp` is returned for any unhandled op, type, or terminator.
+//! The module-level helper [`lower_waffle_module`] skips those functions and
+//! collects errors rather than panicking.
 
 use alloc::{
     collections::BTreeMap,

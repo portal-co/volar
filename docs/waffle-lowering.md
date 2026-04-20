@@ -78,7 +78,7 @@ bit-decomposed by `VaffleTarget`:
 | `I32WrapI64` | `trunc(U32, v)` |
 | `I64ExtendI32S` | `sext(U64, v)` |
 | `I64ExtendI32U` | `zext(U64, v)` |
-| `Select` | `select(cond, a, b)` |
+| `Select`, `TypedSelect` | `select(cond, a, b)` |
 
 ### Control flow
 
@@ -87,6 +87,8 @@ bit-decomposed by `VaffleTarget`:
 | `Br(block)` | `jump(target_block, args)` |
 | `CondBr(cond, then, else)` | `branch(cond, then_block, else_block)` |
 | `Return(vals)` | `ret(vals)` |
+| `ReturnCall(func, args)` | `ret_call(name, args)` — O(1) stack tail call |
+| `Unreachable` / `UB` / `None` | `ret(0)` stub |
 
 ### Direct calls
 
@@ -109,8 +111,19 @@ and reconstruct multi-byte integers via bit concatenation:
 | `I32Store` | 4 | Decompose to 4 bytes, write each |
 | `I32Store8` | 1 | Write low byte |
 | `I32Store16` | 2 | Write 2 bytes |
-| `I64Load` | 8 | Read 8 bytes, combine |
+| `I64Load` | 8 | Read 8 bytes, combine LSB-first |
+| `I64Load8U` | 1 | Read 1 byte, zero-extend to 64 bits |
+| `I64Load8S` | 1 | Read 1 byte, sign-extend to 64 bits |
+| `I64Load16U` | 2 | Read 2 bytes, zero-extend to 64 bits |
+| `I64Load16S` | 2 | Read 2 bytes, sign-extend to 64 bits |
+| `I64Load32U` | 4 | Read 4 bytes, zero-extend to 64 bits |
+| `I64Load32S` | 4 | Read 4 bytes, sign-extend to 64 bits |
 | `I64Store` | 8 | Decompose to 8 bytes, write each |
+| `I64Store8` | 1 | Write low byte |
+| `I64Store16` | 2 | Write 2 bytes |
+| `I64Store32` | 4 | Write 4 bytes |
+| `MemorySize` | — | Always returns 0 (fixed compile-time size) |
+| `MemoryGrow` | — | Always returns -1 (growth not supported in circuit model) |
 
 The `MemoryArg` offset field is added to the base address at lowering time.
 
@@ -139,12 +152,18 @@ The following WASM features are **not supported** and cause `UnsupportedOp` to
 be returned (the function is skipped):
 
 - **Floats** (`F32`, `F64`) — no float circuit exists in VAFFLE
-- **Tables and indirect calls** (`CallIndirect`, `TableGet`, `TableSet`)
+- **Tables and indirect calls** (`CallIndirect`, `TableGet`, `TableSet`, `TableGrow`, `TableSize`, `TableFill`)
 - **Globals** (`GlobalGet`, `GlobalSet`)
 - **SIMD** (`V128` and all `V128*` operators)
-- **Atomics** (`MemoryAtomicNotify`, etc.)
-- **Reference types** (`FuncRef`, `ExternRef`)
-- **Memory management ops** (`MemoryGrow`, `MemorySize`)
+- **Atomics** (`MemoryAtomicNotify`, all `Atomic*` RMW/CAS operators)
+- **Reference types** (`RefNull`, `RefIsNull`, `RefFunc`)
+- **Bulk memory** (`MemoryCopy`, `MemoryFill`, `MemoryInit`, `DataDrop`, `ElemDrop`)
+- **GC proposal** (`StructNew`, `ArrayNew`, `RefCast`, etc.)
+- **Multi-value return** and **multi-result `Call`**
+- **Missing integer ops**: `rem`, `clz`, `ctz`, `popcnt`, `rotl`, `rotr`, sign-extend variants, `trunc_sat*`
+- **Indirect/ref terminators**: `br_table` (`Select`), `ReturnCallIndirect`, `ReturnCallRef`
+
+See [wasm-feature-support.md](wasm-feature-support.md) for a full proposal-level breakdown across both the WAFFLE IR and volar-vaffle-target layers.
 
 ---
 
