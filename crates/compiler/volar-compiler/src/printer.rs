@@ -369,6 +369,10 @@ impl<'a> RustBackend for ImplWriter<'a> {
 impl<'a> RustBackend for FunctionWriter<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let indent = "    ".repeat(self.level);
+        // Emit #[volar_action] attribute for action functions.
+        if self.f.external_kind == ExternalKind::Action {
+            writeln!(f, "{}#[volar_action]", indent)?;
+        }
         if !self.is_trait_item {
             write!(f, "{}pub fn {}", indent, self.f.name)?;
         } else {
@@ -557,6 +561,10 @@ impl<'a> RustBackend for TypeWriter<'a> {
                         write!(f, ", ")?;
                     }
                     TypeWriter { ty: elem }.fmt(f)?;
+                }
+                // Single-element tuples need a trailing comma: (T,)
+                if elems.len() == 1 {
+                    write!(f, ",")?;
                 }
                 write!(f, ")")?;
             }

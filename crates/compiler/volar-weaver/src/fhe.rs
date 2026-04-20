@@ -1090,6 +1090,42 @@ pub fn derive_storage_config<P: Clone + Default>(circuit: &BIrBlocks<P>) -> FheS
     FheStorageConfig { sizes }
 }
 
+/// Derive storage configuration by inspecting `StorageRead`/`StorageWrite`
+/// statements in an IR-level circuit.
+///
+/// Unlike [`derive_storage_config`] which operates on BIR (bit-level), this
+/// scans `IRBlocks` and keys storage by `(StorageId.0, IRTypeId.0)`.
+///
+/// `cell_count_fn` maps each `(StorageId, IRTypeId)` to a cell count.
+/// If `None`, uses `1` (single-cell) as a conservative default.
+pub fn derive_ir_storage_config<P: Clone + Default>(
+    blocks: &IRBlocks<P>,
+    cell_count_fn: Option<&dyn Fn(StorageId, IRTypeId) -> usize>,
+) -> FheStorageConfig {
+    let mut seen: BTreeSet<(u32, usize)> = BTreeSet::new();
+    for block in &blocks.blocks {
+        for stmt in &block.stmts {
+            match stmt {
+                IRStmt::StorageRead { storage, ty, .. }
+                | IRStmt::StorageWrite { storage, ty, .. } => {
+                    seen.insert((storage.0, ty.0 as usize));
+                }
+                _ => {}
+            }
+        }
+    }
+    let sizes = seen
+        .into_iter()
+        .map(|(sid, tid)| {
+            let count = cell_count_fn
+                .map(|f| f(StorageId(sid), IRTypeId(tid as u32)))
+                .unwrap_or(1);
+            ((sid, tid), count)
+        })
+        .collect();
+    FheStorageConfig { sizes }
+}
+
 // ============================================================================
 // Flat path — high-level entry (lowers IRBlocks first)
 // ============================================================================
@@ -1857,6 +1893,9 @@ fn weave_fhe_cfg<S: FheScheme>(
     let analysis = analyze_cfg_publicity(blocks, scheme);
 
     let mut cfg_blocks: Vec<IrCfgBlock> = Vec::new();
+    // Track whether any storage access uses a public address (bool-array),
+    // requiring a `bools_to_usize` helper function in the output module.
+    let mut needs_bools_to_usize = false;
 
     for (bidx, ir_block) in blocks.blocks.iter().enumerate() {
         // Block parameters.
@@ -1933,6 +1972,9 @@ fn weave_fhe_cfg<S: FheScheme>(
             track_stmt_publicness(ir_stmt, result_ir_vid, &mut public_set, &mut action_output_public, scheme);
 
             // Handle storage stmts generically (array-indexed parameter access).
+            // When the address variable is public (e.g. ORAM leaf from an action),
+            // it is typed as `[bool; N]` — we wrap it in `bools_to_usize(&addr)`
+            // so it can index a Rust slice.
             match ir_stmt {
                 IRStmt::StorageRead { storage, ty, addr } => {
                     let addr_name = var_map
@@ -1940,13 +1982,25 @@ fn weave_fhe_cfg<S: FheScheme>(
                         .cloned()
                         .unwrap_or_else(|| format!("var_{}", addr.0));
                     let param_name = format!("storage_{}_{}", storage.0, ty.0);
+                    let index_expr = if public_set.is_public(*addr) {
+                        needs_bools_to_usize = true;
+                        IrExpr::Call {
+                            func: Box::new(IrExpr::Path {
+                                segments: vec!["bools_to_usize".into()],
+                                type_args: vec![],
+                            }),
+                            args: vec![ref_expr(var(&addr_name))],
+                        }
+                    } else {
+                        var(&addr_name)
+                    };
                     // let var_N = storage_S_T[addr].clone();
                     stmts.push(IrStmt::Let {
                         pattern: IrPattern::ident(&let_name),
                         ty: None,
                         init: Some(clone_expr(IrExpr::Index {
                             base: Box::new(var(&param_name)),
-                            index: Box::new(var(&addr_name)),
+                            index: Box::new(index_expr),
                         })),
                     });
                     stmt_provs.push(());
@@ -1963,11 +2017,23 @@ fn weave_fhe_cfg<S: FheScheme>(
                         .cloned()
                         .unwrap_or_else(|| format!("var_{}", addr.0));
                     let param_name = format!("storage_{}_{}", storage.0, ty.0);
+                    let index_expr = if public_set.is_public(*addr) {
+                        needs_bools_to_usize = true;
+                        IrExpr::Call {
+                            func: Box::new(IrExpr::Path {
+                                segments: vec!["bools_to_usize".into()],
+                                type_args: vec![],
+                            }),
+                            args: vec![ref_expr(var(&addr_name))],
+                        }
+                    } else {
+                        var(&addr_name)
+                    };
                     // storage_S_T[addr] = src.clone();
-                    stmts.push(IrStmt::Expr(IrExpr::Assign {
+                    stmts.push(IrStmt::Semi(IrExpr::Assign {
                         left: Box::new(IrExpr::Index {
                             base: Box::new(var(&param_name)),
-                            index: Box::new(var(&addr_name)),
+                            index: Box::new(index_expr),
                         }),
                         right: Box::new(clone_expr(var(&src_name))),
                     }));
@@ -2041,17 +2107,22 @@ fn weave_fhe_cfg<S: FheScheme>(
         }
     }
 
-    // Add storage parameters (same convention as the flat path).
+    // Add storage parameters.
+    // In the CFG path, the key is (StorageId.0, IRTypeId.0 as usize).
+    // Each storage cell holds the full wire type for that IR type, not a
+    // single wire — e.g. an ORAM path of 4096 bits becomes
+    // `[LweCiphertext<N_LWE>; 4096]` per cell.
     let empty_config = FheStorageConfig::default();
     let stor_cfg = storage.unwrap_or(&empty_config);
     for &(sid, bw) in stor_cfg.sizes.keys() {
         let count = stor_cfg.sizes[&(sid, bw)];
         if count == 0 { continue; }
+        let elem_ty = scheme.wire_type_for_ir(IRTypeId(bw as u32), types);
         func_params.push(IrParam {
             name: format!("storage_{}_{}", sid, bw),
             ty: IrType::Reference {
                 mutable: true,
-                elem: Box::new(IrType::Array { kind: ArrayKind::Slice, elem: Box::new(wire_ty.clone()), len: ArrayLength::Const(0) }),
+                elem: Box::new(IrType::Array { kind: ArrayKind::Slice, elem: Box::new(elem_ty), len: ArrayLength::Const(0) }),
             },
         });
     }
@@ -2081,6 +2152,111 @@ fn weave_fhe_cfg<S: FheScheme>(
     if let Some(ls) = linkage {
         ls.apply_cfg(&mut module);
     }
+
+    // ── Emit action function stubs ────────────────────────────────────────
+    //
+    // For each ActionDecl in the IR, generate a stub function with:
+    //   - `#[volar_action]` attribute (via ExternalKind::Action)
+    //   - Public-guard convention parameters:
+    //       guard: bool, fallback_0: pub_ty, ..., arg_0: wire_ty, ...
+    //   - Return type: tuple of (pub_ty | wire_ty) per output_public flags
+    //   - Body: unreachable!()  (stub for compile checking)
+    for action_decl in &blocks.actions {
+        let action_cfg = scheme.action_config(&action_decl.name);
+        let mut params: Vec<IrParam> = Vec::new();
+
+        // First param: guard (always bool).
+        params.push(IrParam {
+            name: "guard".into(),
+            ty: IrType::Primitive(PrimitiveType::Bool),
+        });
+
+        // Fallback params: one per result, always public-typed.
+        for (i, &res_ty) in action_decl.results.iter().enumerate() {
+            params.push(IrParam {
+                name: format!("fallback_{}", i),
+                ty: scheme.public_type_for_ir(res_ty, types),
+            });
+        }
+
+        // Argument params: one per input, always wire-typed.
+        for (i, &param_ty) in action_decl.params.iter().enumerate() {
+            params.push(IrParam {
+                name: format!("arg_{}", i),
+                ty: scheme.wire_type_for_ir(param_ty, types),
+            });
+        }
+
+        // Return type: tuple of results.  Each element is public or wire
+        // depending on FheActionConfig::is_output_public.
+        let ret_elems: Vec<IrType> = action_decl.results.iter().enumerate().map(|(i, &res_ty)| {
+            let is_pub = action_cfg
+                .as_ref()
+                .map(|c| c.is_output_public(i))
+                .unwrap_or(true);
+            if is_pub {
+                scheme.public_type_for_ir(res_ty, types)
+            } else {
+                scheme.wire_type_for_ir(res_ty, types)
+            }
+        }).collect();
+
+        let return_type = match ret_elems.len() {
+            0 => None,
+            // Always wrap in a tuple — ActionOutput uses `.0`, `.1`, etc.
+            _ => Some(IrType::Tuple(ret_elems)),
+        };
+
+        let stub_fn = IrFunction {
+            name: action_decl.name.clone(),
+            generics: scheme.generics(),
+            receiver: None,
+            params,
+            return_type,
+            where_clause: vec![],
+            body: IrBlock {
+                stmts: vec![],
+                stmt_provs: vec![],
+                expr: Some(Box::new(IrExpr::Unreachable)),
+            },
+            external_kind: ExternalKind::Action,
+        };
+        module.auxiliary_functions.push(stub_fn);
+    }
+
+    // ── Emit bools_to_usize helper if any storage access uses a public address ──
+    if needs_bools_to_usize {
+        // fn bools_to_usize(bits: &[bool]) -> usize { unreachable!() }
+        //
+        // The body is `unreachable!()` for now (sufficient for compile-check).
+        // A real implementation will fold the bool slice into a usize at runtime.
+        let helper = IrFunction {
+            name: "bools_to_usize".into(),
+            generics: vec![],
+            receiver: None,
+            params: vec![IrParam {
+                name: "bits".into(),
+                ty: IrType::Reference {
+                    mutable: false,
+                    elem: Box::new(IrType::Array {
+                        kind: ArrayKind::Slice,
+                        elem: Box::new(IrType::Primitive(PrimitiveType::Bool)),
+                        len: ArrayLength::Const(0),
+                    }),
+                },
+            }],
+            return_type: Some(IrType::Primitive(PrimitiveType::Usize)),
+            where_clause: vec![],
+            body: IrBlock {
+                stmts: vec![],
+                stmt_provs: vec![],
+                expr: Some(Box::new(IrExpr::Unreachable)),
+            },
+            external_kind: ExternalKind::Normal,
+        };
+        module.auxiliary_functions.push(helper);
+    }
+
     module
 }
 
@@ -2758,7 +2934,7 @@ impl FheScheme for TfheScheme {
         IrExpr::Call {
             func: Box::new(IrExpr::Path {
                 segments: vec!["tfhe_trivial_zero".into()],
-                type_args: vec![],
+                type_args: vec![IrType::TypeParam("N_LWE".into())],
             }),
             args: vec![],
         }
@@ -2768,7 +2944,7 @@ impl FheScheme for TfheScheme {
         IrExpr::Call {
             func: Box::new(IrExpr::Path {
                 segments: vec!["tfhe_trivial_one".into()],
-                type_args: vec![],
+                type_args: vec![IrType::TypeParam("N_LWE".into())],
             }),
             args: vec![],
         }
@@ -2840,7 +3016,7 @@ impl FheScheme for TfheScheme {
             IrExpr::Call {
                 func: Box::new(IrExpr::Path {
                     segments: vec![if bit { "tfhe_trivial_one" } else { "tfhe_trivial_zero" }.into()],
-                    type_args: vec![],
+                    type_args: vec![IrType::TypeParam("N_LWE".into())],
                 }),
                 args: vec![],
             }
@@ -3137,8 +3313,42 @@ impl FheScheme for TfheScheme {
 
                 let guard_name = vname(guard);
                 let fb_exprs = || fallbacks.iter().map(|f| clone_expr(var(&vname(f))));
-                let arg_exprs: Vec<IrExpr> =
-                    args.iter().map(|a| clone_expr(var(&vname(a)))).collect();
+
+                // Build arg expressions, promoting public args to wire type
+                // via tfhe_trivial_encrypt (single bit) or .map(|b| tfhe_trivial_encrypt(b)) (array).
+                let arg_exprs: Vec<IrExpr> = args.iter().map(|a| {
+                    if public_set.is_public(*a) {
+                        let w = type_map.get(&a.0)
+                            .map(|tid| ir_type_bit_width(*tid, types))
+                            .unwrap_or(1);
+                        let aname = vname(a);
+                        if w == 1 {
+                            // tfhe_trivial_encrypt::<N_LWE>(var)
+                            IrExpr::Call {
+                                func: Box::new(IrExpr::Path {
+                                    segments: vec!["tfhe_trivial_encrypt".into()],
+                                    type_args: vec![IrType::TypeParam("N_LWE".into())],
+                                }),
+                                args: vec![var(&aname)],
+                            }
+                        } else {
+                            // var.map(|b| tfhe_trivial_encrypt::<N_LWE>(b))
+                            IrExpr::RawMap {
+                                receiver: Box::new(var(&aname)),
+                                elem_var: IrPattern::ident("b"),
+                                body: Box::new(IrExpr::Call {
+                                    func: Box::new(IrExpr::Path {
+                                        segments: vec!["tfhe_trivial_encrypt".into()],
+                                        type_args: vec![IrType::TypeParam("N_LWE".into())],
+                                    }),
+                                    args: vec![var("b")],
+                                }),
+                            }
+                        }
+                    } else {
+                        clone_expr(var(&vname(a)))
+                    }
+                }).collect();
 
                 let mut call_args: Vec<IrExpr> = Vec::new();
 
@@ -3163,10 +3373,16 @@ impl FheScheme for TfheScheme {
                     call_args.extend(arg_exprs);
                 }
 
+                // Build turbofish type_args from the scheme's generics so Rust
+                // can resolve const generic parameters on the action function.
+                let turbofish_args: Vec<IrType> = self.generics().iter().map(|g| {
+                    IrType::TypeParam(g.name.clone())
+                }).collect();
+
                 Some(IrExpr::Call {
                     func: Box::new(IrExpr::Path {
                         segments: vec![name.clone()],
-                        type_args: vec![],
+                        type_args: turbofish_args,
                     }),
                     args: call_args,
                 })
@@ -3356,19 +3572,7 @@ mod tests {
 
     /// Compile-check TFHE-CFG generated code by prepending the necessary `use` glob.
     fn run_compile_check_tfhe_cfg(code: &str, test_name: &str) {
-        // `code` starts with `#![allow(...)]` (from self_contained=true); the
-        // use statements must come after that inner attribute.
-        let uses = "use volar_spec::tfhe::{BootstrappingKey, LweCiphertext, \
-                    tfhe_gate_bootstrapping_and, tfhe_gate_bootstrapping_or, \
-                    tfhe_xor, tfhe_not, tfhe_trivial_zero, \
-                    tfhe_trivial_one, tfhe_trivial_encrypt, tfhe_cmux};\n";
-        let with_imports = if let Some(newline) = code.find('\n') {
-            let (head, tail) = code.split_at(newline + 1);
-            format!("{head}{uses}{tail}")
-        } else {
-            format!("{uses}{code}")
-        };
-        run_compile_check(&with_imports, test_name);
+        crate::tests_common::run_compile_check_tfhe_cfg(code, test_name);
     }
 
     #[test]

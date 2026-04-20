@@ -1775,8 +1775,8 @@ mod tests_linking {
 
     #[test]
     fn rewrite_link_weave_integration() {
-        use super::{OramConfig, rewrite_storage_to_oram, oram_linked_spec};
-        use crate::fhe::{weave_fhe, FheOutput, TfheScheme, print_fhe_cfg_module};
+        use super::{OramConfig, rewrite_storage_to_oram, oram_linked_spec, ORAM_TREE_BASE};
+        use crate::fhe::{weave_fhe, FheOutput, TfheScheme, print_fhe_cfg_module, derive_ir_storage_config};
         use volar_ir::ir::{
             IRType, IRTypes, IRBlocks, IRBlock, IRStmt, IRVarId, IRTypeId,
             IRTerminator, IRBlockTargetId, PrimType, StorageId, Constant,
@@ -1816,9 +1816,19 @@ mod tests_linking {
         let mut linkage = LinkageSystem::new();
         linkage.add(oram_linked_spec());
 
-        // Step 3: Weave through CFG with linkage
+        // Step 3: Derive storage configuration from the rewritten IR
+        let num_nodes = c.num_nodes();
+        let storage_config = derive_ir_storage_config(&rewritten, Some(&|sid: StorageId, _ty: IRTypeId| {
+            if sid.0 >= ORAM_TREE_BASE {
+                num_nodes
+            } else {
+                1
+            }
+        }));
+
+        // Step 4: Weave through CFG with linkage and storage config
         let scheme = c.configure_scheme(TfheScheme::cfg());
-        let output = weave_fhe(&rewritten, &types, &scheme, "oram_e2e", Some(&linkage), None);
+        let output = weave_fhe(&rewritten, &types, &scheme, "oram_e2e", Some(&linkage), Some(&storage_config));
 
         let module = match output {
             FheOutput::Cfg(m) => m,
@@ -1865,5 +1875,9 @@ mod tests_linking {
 
         // Derives preserved in linked types
         assert!(code.contains("Clone"), "missing Clone derive in output");
+
+        // Step 7: Compile check — the generated code (with action stubs,
+        // linked ORAM spec, and circuit function) should pass `cargo check`.
+        crate::tests_common::run_compile_check_tfhe_cfg(&code, "oram_e2e");
     }
 }

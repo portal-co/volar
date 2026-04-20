@@ -355,6 +355,7 @@ pub(crate) mod tests_common {
              volar-spec = {{ path = \"{root}/crates/spec/volar-spec\" }}\n\
              volar-primitives = {{ path = \"{root}/crates/spec/volar-primitives\" }}\n\
              volar-common = {{ path = \"{root}/crates/spec/volar-common\" }}\n\
+             volar-macros = {{ path = \"{root}/crates/macros/volar-macros\" }}\n\
              hybrid-array = \"0.4.8\"\n\
              digest = {{ version = \"0.11.2\", default-features = false }}\n\
              cipher = {{ version = \"0.5.1\", default-features = false }}\n\
@@ -387,5 +388,24 @@ pub(crate) mod tests_common {
                 test_name, code, stderr
             );
         }
+    }
+
+    /// Compile-check TFHE-CFG generated code by prepending the necessary `use` glob.
+    ///
+    /// The generated code starts with `#![allow(...)]` (from `self_contained=true`);
+    /// the use statements are inserted after that inner attribute.
+    pub fn run_compile_check_tfhe_cfg(code: &str, test_name: &str) {
+        let uses = "use volar_spec::tfhe::{BootstrappingKey, LweCiphertext, \
+                    tfhe_gate_bootstrapping_and, tfhe_gate_bootstrapping_or, \
+                    tfhe_xor, tfhe_not, tfhe_trivial_zero, \
+                    tfhe_trivial_one, tfhe_trivial_encrypt, tfhe_cmux};\n\
+                    use volar_macros::volar_action;\n";
+        let with_imports = if let Some(newline) = code.find('\n') {
+            let (head, tail) = code.split_at(newline + 1);
+            format!("{head}{uses}{tail}")
+        } else {
+            format!("{uses}{code}")
+        };
+        run_compile_check(&with_imports, test_name);
     }
 }
