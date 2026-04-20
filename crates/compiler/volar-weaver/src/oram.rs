@@ -1088,6 +1088,26 @@ pub fn oram_linked_spec() -> LinkedSpec {
     }
 }
 
+/// Parse the FHE runtime helpers into a [`LinkedSpec`].
+///
+/// This includes utility functions like `bools_to_usize` that are needed
+/// by the woven circuit at runtime. The source is "total Rust" — bounded
+/// loops, no panics — so the volar-compiler parser can handle it.
+///
+/// Requires the `linking` feature.
+#[cfg(feature = "linking")]
+pub fn runtime_linked_spec() -> LinkedSpec {
+    use volar_compiler::parser::{SourceInput, parse_sources};
+    let source = include_str!("../runtime/helpers.rs");
+    let filtered = strip_inner_attributes(source);
+    let module = parse_sources(&[SourceInput { source: &filtered, name: "runtime_helpers.rs" }], "runtime_helpers")
+        .expect("runtime_linked_spec: failed to parse runtime/helpers.rs");
+    LinkedSpec {
+        name: "runtime_helpers".into(),
+        module,
+    }
+}
+
 /// Strip inner attributes (`#![...]`) and inner doc comments (`//!`)
 /// from source code.
 ///
@@ -2080,6 +2100,80 @@ mod tests_linking {
         run_compile_check(&code, "oram_core_roundtrip");
     }
 
+    #[test]
+    fn runtime_helpers_parses_from_include() {
+        let source = include_str!("../runtime/helpers.rs");
+        let filtered = super::strip_inner_attributes(source);
+        let module = parse_sources(&[SourceInput { source: &filtered, name: "runtime_helpers.rs" }], "runtime_helpers")
+            .expect("failed to parse runtime/helpers.rs");
+
+        // Should contain bools_to_usize
+        assert!(
+            module.functions.iter().any(|f| f.name == "bools_to_usize"),
+            "expected bools_to_usize function in runtime helpers"
+        );
+    }
+
+    #[test]
+    fn runtime_helpers_round_trips_through_printer() {
+        use volar_compiler::printer::{DisplayRust, ModuleWriter};
+
+        let source = include_str!("../runtime/helpers.rs");
+        let filtered = super::strip_inner_attributes(source);
+        let module = parse_sources(&[SourceInput { source: &filtered, name: "runtime_helpers.rs" }], "runtime_helpers")
+            .expect("failed to parse runtime/helpers.rs");
+
+        let out = std::format!("{}", DisplayRust(ModuleWriter { module: &module }));
+        assert!(out.contains("fn bools_to_usize"), "missing bools_to_usize in output");
+        // Must have a real body, not unreachable!()
+        assert!(!out.contains("unreachable!()"), "bools_to_usize should have a real body, not unreachable!()");
+    }
+
+    #[test]
+    fn runtime_helpers_compile_check() {
+        use crate::tests_common::run_compile_check;
+        use volar_compiler::printer::{DisplayRust, ModuleWriter};
+
+        let source = include_str!("../runtime/helpers.rs");
+        let filtered = super::strip_inner_attributes(source);
+        let module = parse_sources(&[SourceInput { source: &filtered, name: "runtime_helpers.rs" }], "runtime_helpers")
+            .expect("failed to parse runtime/helpers.rs");
+
+        let code = std::format!("{}", DisplayRust(ModuleWriter { module: &module }));
+        run_compile_check(&code, "runtime_helpers_roundtrip");
+    }
+
+    #[test]
+    fn woven_module_uses_linked_bools_to_usize() {
+        use crate::fhe::print_fhe_cfg_module;
+
+        let module = build_oram_cfg_module();
+        let code = print_fhe_cfg_module(&module, true);
+
+        // bools_to_usize should be present
+        assert!(code.contains("fn bools_to_usize"), "missing bools_to_usize in woven output");
+
+        // Extract the bools_to_usize function body and verify it's not unreachable.
+        // Find the function, then scan until the end of its body.
+        let idx = code.find("fn bools_to_usize").unwrap();
+        let after = &code[idx..];
+        let brace_start = after.find('{').unwrap();
+        // Find the matching closing brace by counting braces
+        let body_bytes = after[brace_start..].as_bytes();
+        let mut depth = 0i32;
+        let mut end = brace_start;
+        for (i, &b) in body_bytes.iter().enumerate() {
+            if b == b'{' { depth += 1; }
+            if b == b'}' { depth -= 1; }
+            if depth == 0 { end = brace_start + i + 1; break; }
+        }
+        let fn_text = &after[..end];
+        assert!(
+            !fn_text.contains("unreachable!()"),
+            "bools_to_usize should have a real implementation, not unreachable!(). Got:\n{}", fn_text
+        );
+    }
+
     // -- End-to-end integration: rewrite + link + weave --
 
     #[test]
@@ -2195,7 +2289,7 @@ mod tests_linking {
     #[test]
     #[cfg(feature = "linking")]
     fn rewrite_link_weave_read_write_e2e() {
-        use super::{OramConfig, rewrite_storage_to_oram, oram_linked_spec, oram_cell_count_fn};
+        use super::{OramConfig, rewrite_storage_to_oram, oram_linked_spec, runtime_linked_spec, oram_cell_count_fn};
         use crate::fhe::{weave_fhe, FheOutput, TfheScheme, derive_ir_storage_config, print_fhe_cfg_module};
         use volar_ir::ir::{
             IRType, IRTypes, IRBlocks, IRBlock, IRStmt, IRVarId,
@@ -2261,6 +2355,7 @@ mod tests_linking {
         // Link and weave.
         let mut linkage = LinkageSystem::new();
         linkage.add(oram_linked_spec());
+        linkage.add(runtime_linked_spec());
 
         let configs = [c.clone()];
         let cell_count = oram_cell_count_fn(&configs);
@@ -2291,7 +2386,7 @@ mod tests_linking {
     /// Shared helper: build a rewritten+linked+woven ORAM CFG module for testing.
     #[cfg(feature = "linking")]
     fn build_oram_cfg_module() -> volar_compiler::IrCfgModule {
-        use super::{OramConfig, rewrite_storage_to_oram, oram_linked_spec, oram_cell_count_fn};
+        use super::{OramConfig, rewrite_storage_to_oram, oram_linked_spec, runtime_linked_spec, oram_cell_count_fn};
         use crate::fhe::{weave_fhe, FheOutput, TfheScheme, derive_ir_storage_config};
         use volar_ir::ir::{
             IRType, IRTypes, IRBlocks, IRBlock, IRStmt, IRVarId,
@@ -2327,9 +2422,10 @@ mod tests_linking {
         let rewritten = rewrite_storage_to_oram(&ir, &mut types, &[c.clone()]);
         assert!(rewritten.blocks[0].stmts.len() > 1, "rewrite should expand storage ops");
 
-        // Step 2: Build linkage system with ORAM core
+        // Step 2: Build linkage system with ORAM core + runtime helpers
         let mut linkage = LinkageSystem::new();
         linkage.add(oram_linked_spec());
+        linkage.add(runtime_linked_spec());
 
         // Step 3: Derive storage configuration from the rewritten IR
         let configs = [c.clone()];

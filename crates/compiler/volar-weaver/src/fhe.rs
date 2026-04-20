@@ -2166,12 +2166,19 @@ fn weave_fhe_cfg<S: FheScheme>(
 
     // ── Emit action function stubs ────────────────────────────────────────
     //
-    // For each ActionDecl in the IR, generate a stub function with:
+    // For each ActionDecl in the IR, generate a function with:
     //   - `#[volar_action]` attribute (via ExternalKind::Action)
     //   - Public-guard convention parameters:
-    //       guard: bool, fallback_0: pub_ty, ..., arg_0: wire_ty, ...
+    //       guard: bool, fallback_0: (pub|wire)_ty, ..., arg_0: wire_ty, ...
+    //     Fallback types match the return element type (public or wire per
+    //     is_output_public).  Promotion from public to wire happens at the
+    //     *call site*, not inside the action body.
     //   - Return type: tuple of (pub_ty | wire_ty) per output_public flags
-    //   - Body: unreachable!()  (stub for compile checking)
+    //   - Body: suppress unused args, return fallback values
+    //
+    // The fallback body returns the fallback parameter values directly,
+    // providing type-correct default behavior. The `#[volar_action]` proc
+    // macro can replace this with context-dependent dispatch in the future.
     for action_decl in &blocks.actions {
         let action_cfg = scheme.action_config(&action_decl.name);
         let mut params: Vec<IrParam> = Vec::new();
@@ -2182,11 +2189,22 @@ fn weave_fhe_cfg<S: FheScheme>(
             ty: IrType::Primitive(PrimitiveType::Bool),
         });
 
-        // Fallback params: one per result, always public-typed.
+        // Fallback params: one per result, typed to match the return element.
+        // Public outputs get public-typed fallbacks; wire outputs get wire-typed
+        // fallbacks.  Promotion from public to wire happens at the *call site*,
+        // not inside the action body.
         for (i, &res_ty) in action_decl.results.iter().enumerate() {
+            let is_pub = action_cfg
+                .as_ref()
+                .map(|c| c.is_output_public(i))
+                .unwrap_or(true);
             params.push(IrParam {
                 name: format!("fallback_{}", i),
-                ty: scheme.public_type_for_ir(res_ty, types),
+                ty: if is_pub {
+                    scheme.public_type_for_ir(res_ty, types)
+                } else {
+                    scheme.wire_type_for_ir(res_ty, types)
+                },
             });
         }
 
@@ -2218,6 +2236,33 @@ fn weave_fhe_cfg<S: FheScheme>(
             _ => Some(IrType::Tuple(ret_elems)),
         };
 
+        // Build fallback body:
+        //   let _ = (guard, arg_0, arg_1, ...);   // suppress unused warnings
+        //   (fallback_0, fallback_1, ...)          // return fallback values
+        let mut suppress_vars: Vec<IrExpr> = Vec::new();
+        suppress_vars.push(IrExpr::Var("guard".into()));
+        for i in 0..action_decl.params.len() {
+            suppress_vars.push(IrExpr::Var(format!("arg_{}", i)));
+        }
+
+        let mut body_stmts: Vec<IrStmt> = Vec::new();
+        let mut body_provs: Vec<()> = Vec::new();
+        body_stmts.push(IrStmt::Let {
+            pattern: IrPattern::Wild,
+            ty: None,
+            init: Some(IrExpr::Tuple(suppress_vars)),
+        });
+        body_provs.push(());
+
+        let fallback_exprs: Vec<IrExpr> = (0..action_decl.results.len())
+            .map(|i| IrExpr::Var(format!("fallback_{}", i)))
+            .collect();
+        let body_expr = if fallback_exprs.is_empty() {
+            None
+        } else {
+            Some(Box::new(IrExpr::Tuple(fallback_exprs)))
+        };
+
         let stub_fn = IrFunction {
             name: action_decl.name.clone(),
             generics: scheme.generics(),
@@ -2226,9 +2271,9 @@ fn weave_fhe_cfg<S: FheScheme>(
             return_type,
             where_clause: vec![],
             body: IrBlock {
-                stmts: vec![],
-                stmt_provs: vec![],
-                expr: Some(Box::new(IrExpr::Unreachable)),
+                stmts: body_stmts,
+                stmt_provs: body_provs,
+                expr: body_expr,
             },
             external_kind: ExternalKind::Action,
         };
@@ -2236,36 +2281,39 @@ fn weave_fhe_cfg<S: FheScheme>(
     }
 
     // ── Emit bools_to_usize helper if any storage access uses a public address ──
+    //
+    // When the runtime linked spec is available (via linkage), the real
+    // implementation is already in `auxiliary_functions` and we skip the stub.
+    // Otherwise emit a stub with `unreachable!()` for compile-checking.
     if needs_bools_to_usize {
-        // fn bools_to_usize(bits: &[bool]) -> usize { unreachable!() }
-        //
-        // The body is `unreachable!()` for now (sufficient for compile-check).
-        // A real implementation will fold the bool slice into a usize at runtime.
-        let helper = IrFunction {
-            name: "bools_to_usize".into(),
-            generics: vec![],
-            receiver: None,
-            params: vec![IrParam {
-                name: "bits".into(),
-                ty: IrType::Reference {
-                    mutable: false,
-                    elem: Box::new(IrType::Array {
-                        kind: ArrayKind::Slice,
-                        elem: Box::new(IrType::Primitive(PrimitiveType::Bool)),
-                        len: ArrayLength::Const(0),
-                    }),
+        let already_linked = module.auxiliary_functions.iter().any(|f| f.name == "bools_to_usize");
+        if !already_linked {
+            let helper = IrFunction {
+                name: "bools_to_usize".into(),
+                generics: vec![],
+                receiver: None,
+                params: vec![IrParam {
+                    name: "bits".into(),
+                    ty: IrType::Reference {
+                        mutable: false,
+                        elem: Box::new(IrType::Array {
+                            kind: ArrayKind::Slice,
+                            elem: Box::new(IrType::Primitive(PrimitiveType::Bool)),
+                            len: ArrayLength::Const(0),
+                        }),
+                    },
+                }],
+                return_type: Some(IrType::Primitive(PrimitiveType::Usize)),
+                where_clause: vec![],
+                body: IrBlock {
+                    stmts: vec![],
+                    stmt_provs: vec![],
+                    expr: Some(Box::new(IrExpr::Unreachable)),
                 },
-            }],
-            return_type: Some(IrType::Primitive(PrimitiveType::Usize)),
-            where_clause: vec![],
-            body: IrBlock {
-                stmts: vec![],
-                stmt_provs: vec![],
-                expr: Some(Box::new(IrExpr::Unreachable)),
-            },
-            external_kind: ExternalKind::Normal,
-        };
-        module.auxiliary_functions.push(helper);
+                external_kind: ExternalKind::Normal,
+            };
+            module.auxiliary_functions.push(helper);
+        }
     }
 
     // ── FHE helper type stubs ─────────────────────────────────────────────────
@@ -3329,7 +3377,47 @@ impl FheScheme for TfheScheme {
                 }
 
                 let guard_name = vname(guard);
-                let fb_exprs = || fallbacks.iter().map(|f| clone_expr(var(&vname(f))));
+                let action_cfg = self.action_config(name);
+
+                // Build fallback expressions, promoting public fallbacks to wire
+                // type when the action output is not public.  This mirrors the
+                // arg_exprs promotion below: single-bit values use
+                // `tfhe_trivial_encrypt`, multi-bit arrays use `RawMap`.
+                let fb_exprs: Vec<IrExpr> = fallbacks.iter().enumerate().map(|(i, f)| {
+                    let is_pub_output = action_cfg.as_ref()
+                        .map(|c| c.is_output_public(i))
+                        .unwrap_or(true);
+                    if !is_pub_output && public_set.is_public(*f) {
+                        // Fallback is public but action expects wire type — promote.
+                        let w = type_map.get(&f.0)
+                            .map(|tid| ir_type_bit_width(*tid, types))
+                            .unwrap_or(1);
+                        let fname = vname(f);
+                        if w == 1 {
+                            IrExpr::Call {
+                                func: Box::new(IrExpr::Path {
+                                    segments: vec!["tfhe_trivial_encrypt".into()],
+                                    type_args: vec![IrType::TypeParam("N_LWE".into())],
+                                }),
+                                args: vec![var(&fname)],
+                            }
+                        } else {
+                            IrExpr::RawMap {
+                                receiver: Box::new(var(&fname)),
+                                elem_var: IrPattern::ident("b"),
+                                body: Box::new(IrExpr::Call {
+                                    func: Box::new(IrExpr::Path {
+                                        segments: vec!["tfhe_trivial_encrypt".into()],
+                                        type_args: vec![IrType::TypeParam("N_LWE".into())],
+                                    }),
+                                    args: vec![var("b")],
+                                }),
+                            }
+                        }
+                    } else {
+                        clone_expr(var(&vname(f)))
+                    }
+                }).collect();
 
                 // Build arg expressions, promoting public args to wire type
                 // via tfhe_trivial_encrypt (single bit) or .map(|b| tfhe_trivial_encrypt(b)) (array).
@@ -3372,7 +3460,7 @@ impl FheScheme for TfheScheme {
                 if public_set.is_public(*guard) {
                     // Public guard — flat call: action(guard_bool, fallbacks..., args...)
                     call_args.push(clone_expr(var(&guard_name)));
-                    call_args.extend(fb_exprs());
+                    call_args.extend(fb_exprs.clone());
                     call_args.extend(arg_exprs);
                 } else {
                     // Encrypted guard — flat call:
@@ -3384,9 +3472,9 @@ impl FheScheme for TfheScheme {
                     // that stripping the outer `true, fallbacks...` prefix yields a
                     // second valid action-call suffix, enabling compositional unwrapping.
                     call_args.push(IrExpr::Lit(IrLit::Bool(true)));
-                    call_args.extend(fb_exprs());
+                    call_args.extend(fb_exprs.clone());
                     call_args.push(clone_expr(var(&guard_name)));
-                    call_args.extend(fb_exprs());
+                    call_args.extend(fb_exprs.clone());
                     call_args.extend(arg_exprs);
                 }
 

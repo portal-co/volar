@@ -1124,6 +1124,10 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     }
                     ExprWriter { expr: e }.fmt(f)?;
                 }
+                // Trailing comma for 1-element tuples: (x,) not (x)
+                if elems.len() == 1 {
+                    write!(f, ",")?;
+                }
                 write!(f, ")")?;
             }
             IrExpr::Array(elems) => {
