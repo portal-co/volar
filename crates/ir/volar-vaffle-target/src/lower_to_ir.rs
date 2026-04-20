@@ -674,6 +674,48 @@ impl<'m> LowerCtx<'m> {
                     false_args: else_args,
                 }
             }
+            Terminator::ReturnCall { func: callee_fid, args: call_args } => {
+                let callee_idx = callee_fid.0;
+                // Guard: Import stubs have no entry_block — fall through to the
+                // catch-all for those (they shouldn't appear as tail calls in
+                // well-formed VAFFLE, but be safe).
+                if callee_idx >= self.func_info.len() {
+                    return IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![] };
+                }
+                let callee_info = &self.func_info[callee_idx];
+                let cl = callee_info.callee_layout.clone();
+
+                // Compute the pre-call SP: sp - F.callee_size.
+                // own_layout.spill_base == F's callee_layout.size (set in plan_functions).
+                // This is the address where F's caller wrote F's args/cont, which
+                // is also where G's frame should start for a tail call.
+                let f_callee_size = own_layout.spill_base;
+                let mut callee_frame_sp = StackPtr::new(sp_bits.to_vec());
+                callee_frame_sp.retreat(f_callee_size);
+
+                // Write G's args at callee_frame_sp + G.callee_layout.param_off.
+                // The continuation already at callee_frame_sp (Block lane) is
+                // F's caller's continuation — G will return there directly.
+                let arg_bits: Vec<IRVarId> = call_args.iter()
+                    .map(|vid| val_map.get(&vid.0).copied().unwrap_or(IRVarId(0)))
+                    .collect();
+                let arg_words = pack_bits(em, &arg_bits, PACK_W);
+                let arg_word_vecs: Vec<Vec<IRVarId>> =
+                    arg_words.iter().map(|&w| vec![w]).collect();
+                frame_push_args(em, &callee_frame_sp, &cl, &arg_word_vecs);
+
+                // Advance SP to G.callee_layout.size and jump to G's entry.
+                let mut new_sp = callee_frame_sp.clone();
+                new_sp.advance(cl.size);
+                let new_sp_bits = new_sp.materialize(em);
+                let sp_words = pack_bits(em, &new_sp_bits, PACK_W);
+
+                let callee_entry = IRBlockId(callee_info.entry_block as u32);
+                IRTerminator::Jmp {
+                    func: IRBlockTargetId::Block(callee_entry),
+                    args: sp_words,
+                }
+            }
             _ => IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![] },
         }
     }
@@ -1169,6 +1211,172 @@ mod tests {
         assert!(
             !reload_reads.is_empty(),
             "spilled `local` must be reloaded (PACK_TID StorageRead)"
+        );
+    }
+
+    /// A `Terminator::ReturnCall` should lower to a direct jump to the callee's
+    /// entry block, not to a Dyn continuation.
+    ///
+    /// Scenario: func0 tail-calls func1.  The lowered IR for func0's block
+    /// should terminate with a `Jmp` to `Block(func1_entry)`, NOT `Dyn(...)`.
+    #[test]
+    fn test_return_call_lowers_to_direct_jump() {
+        use vaffle::*;
+
+        let mut types = volar_ir_common::TypeTable::new();
+        let bit_tid = types.intern(volar_ir_common::IrType::Primitive(
+            volar_ir_common::Type::Bit,
+        ));
+
+        let sig0 = SigDecl { params: std::vec![bit_tid], results: std::vec![bit_tid] };
+        let sig1 = SigDecl { params: std::vec![bit_tid], results: std::vec![bit_tid] };
+
+        // func1: identity function.
+        let mut vals1 = std::vec::Vec::new();
+        vals1.push(Value::Param { block: BlockId(0), ty: bit_tid, idx: 0 });
+        let body1 = FuncBody {
+            sig: SigId(1),
+            blocks: std::vec![Block {
+                params: std::vec![(ValueId(0), bit_tid)],
+                stmts: std::vec![],
+                terminator: Terminator::Return { values: std::vec![ValueId(0)] },
+            }],
+            values: vals1,
+            entry: BlockId(0),
+        };
+
+        // func0: tail-calls func1 with its own param.
+        let mut vals0 = std::vec::Vec::new();
+        vals0.push(Value::Param { block: BlockId(0), ty: bit_tid, idx: 0 });
+        let body0 = FuncBody {
+            sig: SigId(0),
+            blocks: std::vec![Block {
+                params: std::vec![(ValueId(0), bit_tid)],
+                stmts: std::vec![],
+                terminator: Terminator::ReturnCall {
+                    func: FuncId(1),
+                    args: std::vec![ValueId(0)],
+                },
+            }],
+            values: vals0,
+            entry: BlockId(0),
+        };
+
+        let module = vaffle::Module {
+            types,
+            oracles: std::vec![],
+            actions: std::vec![],
+            funcs: std::vec![
+                vaffle::FuncDecl::Body(body0),
+                vaffle::FuncDecl::Body(body1),
+            ],
+            sigs: std::vec![sig0, sig1],
+            exports: alloc::collections::BTreeMap::new(),
+        };
+
+        let (ir_blocks, _ir_types) = lower_vaffle_to_ir(&module);
+
+        // Layout: block 0 = module entry, block 1 = exit cont,
+        //         block 2 = func0 entry, block 3 = func1 entry.
+        assert!(
+            ir_blocks.blocks.len() >= 4,
+            "expected ≥4 IR blocks, got {}",
+            ir_blocks.blocks.len()
+        );
+
+        // func1's entry block index should be 3.
+        let func1_entry = IRBlockId(3);
+
+        // func0's entry block (block 2) terminator must be a direct Jmp to func1.
+        let func0_block = &ir_blocks.blocks[2];
+        match &func0_block.terminator {
+            IRTerminator::Jmp { func: IRBlockTargetId::Block(target), .. } => {
+                assert_eq!(
+                    *target, func1_entry,
+                    "ReturnCall should jump directly to func1's entry block"
+                );
+            }
+            other => panic!(
+                "expected Jmp to Block(func1_entry), got {:?}", other
+            ),
+        }
+
+        // No extra blocks should be added (no call-site continuation split).
+        assert_eq!(
+            ir_blocks.blocks.len(), 4,
+            "tail call should not generate extra continuation blocks"
+        );
+    }
+
+    /// A `Terminator::ReturnCall` should not emit any STACK+PACK_TID
+    /// StorageWrites for spilling (there is no live-across-call state to
+    /// preserve), and should not emit a continuation-write (the caller's
+    /// continuation is reused).
+    #[test]
+    fn test_return_call_no_spill_no_cont_write() {
+        use vaffle::*;
+
+        let mut types = volar_ir_common::TypeTable::new();
+        let bit_tid = types.intern(volar_ir_common::IrType::Primitive(
+            volar_ir_common::Type::Bit,
+        ));
+
+        let sig0 = SigDecl { params: std::vec![bit_tid], results: std::vec![bit_tid] };
+        let sig1 = SigDecl { params: std::vec![bit_tid], results: std::vec![bit_tid] };
+
+        let mut vals1 = std::vec::Vec::new();
+        vals1.push(Value::Param { block: BlockId(0), ty: bit_tid, idx: 0 });
+        let body1 = FuncBody {
+            sig: SigId(1),
+            blocks: std::vec![Block {
+                params: std::vec![(ValueId(0), bit_tid)],
+                stmts: std::vec![],
+                terminator: Terminator::Return { values: std::vec![ValueId(0)] },
+            }],
+            values: vals1,
+            entry: BlockId(0),
+        };
+
+        let mut vals0 = std::vec::Vec::new();
+        vals0.push(Value::Param { block: BlockId(0), ty: bit_tid, idx: 0 });
+        let body0 = FuncBody {
+            sig: SigId(0),
+            blocks: std::vec![Block {
+                params: std::vec![(ValueId(0), bit_tid)],
+                stmts: std::vec![],
+                terminator: Terminator::ReturnCall {
+                    func: FuncId(1),
+                    args: std::vec![ValueId(0)],
+                },
+            }],
+            values: vals0,
+            entry: BlockId(0),
+        };
+
+        let module = vaffle::Module {
+            types,
+            oracles: std::vec![],
+            actions: std::vec![],
+            funcs: std::vec![
+                vaffle::FuncDecl::Body(body0),
+                vaffle::FuncDecl::Body(body1),
+            ],
+            sigs: std::vec![sig0, sig1],
+            exports: alloc::collections::BTreeMap::new(),
+        };
+
+        let (ir_blocks, _) = lower_vaffle_to_ir(&module);
+
+        // Count Block-typed StorageWrites in func0's block (block 2).
+        // A regular call writes one Block-typed cont; a tail call must NOT.
+        let func0_block = &ir_blocks.blocks[2];
+        let block_writes = func0_block.stmts.iter().filter(|s| matches!(
+            s, IRStmt::StorageWrite { ty, .. } if *ty != PACK_TID && *ty != BIT_TID
+        )).count();
+        assert_eq!(
+            block_writes, 0,
+            "tail call must not write a new continuation (Block-lane write count = {})",
+            block_writes
         );
     }
 }

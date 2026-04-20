@@ -434,8 +434,7 @@ fn lower_term(
         Terminator::ReturnCall { func, args } => {
             let name = alloc::format!("func_{}", func.index());
             let arg_vals: Vec<VaffleValue> = args.iter().map(|a| get(a)).collect::<Result<_, _>>()?;
-            let results = tgt.call_extern(&name, &[], &arg_vals, ret_lir);
-            tgt.ret(&results);
+            tgt.ret_call(&name, &arg_vals);
         }
 
         other => return Err(UnsupportedOp(alloc::format!("terminator {other:?}"))),

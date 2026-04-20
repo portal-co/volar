@@ -680,6 +680,38 @@ impl LirTarget for VaffleTarget {
 }
 
 // ============================================================================
+// Tail-call support
+// ============================================================================
+
+impl VaffleTarget {
+    /// Emit a tail-call terminator: `Terminator::ReturnCall { func, args }`.
+    ///
+    /// Looks up `name` in the module's export table (same as `call_extern`); if
+    /// not found, registers an Import stub.  The current block's terminator is
+    /// set to `ReturnCall` — no `Value::Call` or `Value::Output` nodes are
+    /// emitted.  The caller is responsible for ensuring no further stmts follow.
+    pub fn ret_call(&mut self, name: &str, args: &[VaffleValue]) {
+        let func_id = if let Some(&fid) = self.module.exports.get(name) {
+            fid
+        } else {
+            let fid = FuncId(self.module.funcs.len());
+            let sig_id = SigId(self.module.sigs.len());
+            self.module.sigs.push(SigDecl { params: vec![], results: vec![] });
+            self.module.funcs.push(FuncDecl::Import {
+                module: "env".to_string(),
+                name: name.to_string(),
+                sig: sig_id,
+            });
+            fid
+        };
+        let flat: Vec<ValueId> = args.iter().flat_map(|v| v.bits.iter().copied()).collect();
+        let fb = self.fb();
+        let cur = fb.current;
+        fb.blocks[cur].terminator = Some(Terminator::ReturnCall { func: func_id, args: flat });
+    }
+}
+
+// ============================================================================
 // StackAllocExt — stack allocation via StorageId::STACK
 // ============================================================================
 
@@ -1114,5 +1146,35 @@ mod tests {
 
         t.ret(&[]);
         t.end_function();
+    }
+
+    /// `ret_call` emits `Terminator::ReturnCall` and no `Value::Call` node.
+    #[test]
+    fn test_ret_call_emits_return_call_terminator() {
+        let mut t = VaffleTarget::new();
+        let (entry, params) = t.begin_function("caller", &[LirType::Bool], Some(LirType::Bool));
+        t.switch_to_block(entry);
+
+        let arg = params[0][0].clone();
+        t.ret_call("callee", &[arg]);
+        t.end_function();
+
+        // Look up "caller" via the exports map — ret_call may have registered
+        // an Import for "callee" at index 0 before end_function pushed the Body.
+        let caller_fid = t.module.exports["caller"];
+        let body = match &t.module.funcs[caller_fid.0] {
+            vaffle::FuncDecl::Body(b) => b,
+            _ => panic!("expected body"),
+        };
+
+        // Terminator must be ReturnCall.
+        assert!(
+            matches!(body.blocks[0].terminator, vaffle::Terminator::ReturnCall { .. }),
+            "ret_call must produce ReturnCall terminator"
+        );
+
+        // No Value::Call node should be present (tail call, not a regular call).
+        let has_call_node = body.values.iter().any(|v| matches!(v, Value::Call { .. }));
+        assert!(!has_call_node, "ret_call must not emit a Value::Call node");
     }
 }

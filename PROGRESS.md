@@ -116,6 +116,14 @@ Implement **weaver integration** — compiling the ORAM runtime through the vola
 
 - **Weaver integration** — compiling the ORAM runtime through the volar-compiler pipeline
 
+### Tail Call Support (completed this session)
+- Added `VaffleTarget::ret_call(name, args)` in its own `impl VaffleTarget` block (`target.rs`) — emits `Terminator::ReturnCall` directly, no `Value::Call` node
+- Updated `waffle_lower.rs` `Terminator::ReturnCall` arm to call `tgt.ret_call` instead of `call_extern + ret`
+- Added `Terminator::ReturnCall` arm in `lower_to_ir.rs` `translate_terminator` — retreats SP by `own_layout.spill_base`, writes callee args, advances SP by callee size, jumps to callee entry
+- Added 3 new tests: `test_ret_call_emits_return_call_terminator` (target), `test_return_call_lowers_to_direct_jump` and `test_return_call_no_spill_no_cont_write` (lower_to_ir)
+- Fixed `stack_alloc_ext` and `abi` methods accidentally dropped from `impl LirTarget` during prior session
+- All 26 `volar-vaffle-target` tests pass; full workspace clean
+
 ## Deferred
 
 - **Action dispatch** — connecting `#[volar_action]` stubs to `OramClient` handlers at runtime. Deferred because it would require giving the proc-macro attribute extra meaning beyond its current identity-transform role, which is out of scope outside of tests.
