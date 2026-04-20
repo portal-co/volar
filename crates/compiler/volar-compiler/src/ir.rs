@@ -1,3 +1,5 @@
+// @reliability: normal
+// @ai: assisted
 //! Specialized IR types for volar-spec.
 //!
 //! This module provides the unified intermediate representation for volar-spec,

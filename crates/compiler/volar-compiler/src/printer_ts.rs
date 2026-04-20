@@ -1,3 +1,5 @@
+// @reliability: normal
+// @ai: assisted
 //! TypeScript code emitter for dyn-lowered IR.
 //!
 //! Consumes an `IrModule` (typically after `lowering_dyn`) and renders it as

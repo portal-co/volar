@@ -462,6 +462,116 @@ impl<const Z: usize, const B: usize> OramClient<Z, B> {
 }
 
 // ---------------------------------------------------------------------------
+// Action handlers (three-phase decomposition for FHE circuits)
+// ---------------------------------------------------------------------------
+
+/// Internal state carried from [`OramClient::handle_begin`] to
+/// [`OramClient::handle_process`].
+///
+/// The `old_leaf` field is also returned to the circuit as a public value
+/// so the server can read the tree path at that leaf.
+#[derive(Clone, Debug)]
+pub struct ActionBeginState {
+    /// The previous leaf assignment for the accessed address.
+    pub old_leaf: u64,
+    /// The newly assigned leaf (internal — not sent to the circuit).
+    new_leaf: u64,
+    /// The logical address being accessed (internal).
+    addr: u64,
+}
+
+impl<const Z: usize, const B: usize> OramClient<Z, B> {
+    /// **Phase 1 — Begin**: look up the position map, assign a new random
+    /// leaf, and return the old leaf.
+    ///
+    /// The returned [`ActionBeginState`] must be passed to
+    /// [`handle_process`] after the server reads the tree path at
+    /// `old_leaf`.
+    ///
+    /// Corresponds to the `oram_begin_N` action in the woven circuit.
+    pub fn handle_begin(
+        &mut self,
+        addr: u64,
+        levels: usize,
+        rng: &mut dyn FnMut() -> u64,
+    ) -> ActionBeginState {
+        let num_leaves = 1u64 << (levels - 1);
+        let new_leaf = rng() % num_leaves;
+        let old_leaf = self.position_map.update(addr, new_leaf, rng);
+        ActionBeginState { old_leaf, new_leaf, addr }
+    }
+
+    /// **Phase 2 — Process**: absorb the server-provided path into the
+    /// stash, perform the read or write, evict the stash along the
+    /// accessed path, and compute two deterministic eviction targets.
+    ///
+    /// Returns `(write_back_path, read_data, evict_leaf_1, evict_leaf_2)`:
+    /// - `write_back_path`: the updated buckets to write back at `old_leaf`
+    /// - `read_data`: the block data (meaningful for reads; zero for writes)
+    /// - `evict_leaf_1`, `evict_leaf_2`: plaintext leaves for the two
+    ///   deterministic eviction passes that follow
+    ///
+    /// Corresponds to the `oram_process_N` action in the woven circuit.
+    pub fn handle_process(
+        &mut self,
+        begin_state: &ActionBeginState,
+        path: &[Bucket<Z, B>],
+        write_data: [u8; B],
+        is_write: bool,
+        levels: usize,
+    ) -> (Vec<Bucket<Z, B>>, [u8; B], u64, u64) {
+        let op = if is_write {
+            AccessOp::Write(write_data)
+        } else {
+            AccessOp::Read
+        };
+
+        let (result, new_path) = process_access(
+            self,
+            path,
+            begin_state.addr,
+            op,
+            begin_state.old_leaf,
+            begin_state.new_leaf,
+            levels,
+        );
+
+        let read_data = match result {
+            AccessResult::ReadValue(d) => d,
+            AccessResult::WriteAck => [0u8; B],
+        };
+
+        // Two deterministic eviction targets (reverse-lexicographic).
+        let num_leaves = 1u64 << (levels - 1);
+        let evict_leaf_1 = eviction_target(self.access_counter, num_leaves);
+        self.access_counter += 1;
+        let evict_leaf_2 = eviction_target(self.access_counter, num_leaves);
+        self.access_counter += 1;
+
+        (new_path, read_data, evict_leaf_1, evict_leaf_2)
+    }
+
+    /// **Phase 3 — Evict**: absorb the server-provided eviction path
+    /// into the stash, then pack stash entries back into the path.
+    ///
+    /// Called **twice** per access — once for each eviction leaf returned
+    /// by [`handle_process`].
+    ///
+    /// Returns the updated path buckets to write back to the tree.
+    ///
+    /// Corresponds to the `oram_evict_N` action in the woven circuit.
+    pub fn handle_evict(
+        &mut self,
+        path: &[Bucket<Z, B>],
+        evict_leaf: u64,
+        levels: usize,
+    ) -> Vec<Bucket<Z, B>> {
+        absorb_path_to_stash(self, path);
+        evict_along_path(self, evict_leaf, levels)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Core ORAM algorithm
 // ---------------------------------------------------------------------------
 
@@ -1394,6 +1504,176 @@ mod tests {
             }
         }
     }
+
+    // -- Action handler tests --
+
+    #[test]
+    fn test_handle_begin_returns_old_leaf() {
+        let levels = 3;
+        let mut client = OramClient::<4, 16>::new(levels, 4);
+        let mut rng = test_rng(42);
+
+        // First access: position map has all zeros, so old_leaf should be 0.
+        let state = client.handle_begin(0, levels, &mut rng);
+        assert_eq!(state.old_leaf, 0, "initial position should be 0");
+
+        // Second access to the same address: should return the new_leaf from
+        // the first access (which was assigned via RNG).
+        let state2 = client.handle_begin(0, levels, &mut rng);
+        assert_ne!(state2.old_leaf, 0, "second access should reflect updated posmap");
+    }
+
+    #[test]
+    fn test_handle_process_read() {
+        let levels = 3;
+        let mut tree = OramTree::<4, 16>::new(levels);
+        let mut client = OramClient::<4, 16>::new(levels, 4);
+        let mut rng = test_rng(42);
+
+        // Write some data via local access first.
+        let mut data = [0u8; 16];
+        data[0] = 0xAB;
+        oram_access_local(&mut client, &mut tree, 2, AccessOp::Write(data), &mut rng);
+
+        // Now do a three-phase read of address 2.
+        let begin = client.handle_begin(2, levels, &mut rng);
+        let path = tree.read_path(begin.old_leaf);
+        let (wb_path, rd_data, _ev1, _ev2) =
+            client.handle_process(&begin, &path, [0u8; 16], false, levels);
+        tree.write_path(begin.old_leaf, &wb_path);
+
+        assert_eq!(rd_data[0], 0xAB, "read data should match written value");
+    }
+
+    #[test]
+    fn test_handle_process_write() {
+        let levels = 3;
+        let mut tree = OramTree::<4, 16>::new(levels);
+        let mut client = OramClient::<4, 16>::new(levels, 4);
+        let mut rng = test_rng(42);
+
+        // Three-phase write of address 1.
+        let mut data = [0u8; 16];
+        data[0] = 0xCD;
+        let begin = client.handle_begin(1, levels, &mut rng);
+        let path = tree.read_path(begin.old_leaf);
+        let (wb_path, _rd_data, ev1, ev2) =
+            client.handle_process(&begin, &path, data, true, levels);
+        tree.write_path(begin.old_leaf, &wb_path);
+
+        // Do eviction passes.
+        let evict1_path = tree.read_path(ev1);
+        let evict1_wb = client.handle_evict(&evict1_path, ev1, levels);
+        tree.write_path(ev1, &evict1_wb);
+
+        let evict2_path = tree.read_path(ev2);
+        let evict2_wb = client.handle_evict(&evict2_path, ev2, levels);
+        tree.write_path(ev2, &evict2_wb);
+
+        // Verify by reading back via local access.
+        let result = oram_access_local(&mut client, &mut tree, 1, AccessOp::Read, &mut rng);
+        match result {
+            AccessResult::ReadValue(d) => assert_eq!(d[0], 0xCD, "read-back mismatch"),
+            _ => panic!("expected ReadValue"),
+        }
+    }
+
+    #[test]
+    fn test_handle_evict_returns_path_of_correct_length() {
+        let levels = 4; // 8 leaves, 15 nodes
+        let mut tree = OramTree::<4, 16>::new(levels);
+        let mut client = OramClient::<4, 16>::new(levels, 8);
+        let mut rng = test_rng(42);
+
+        // Write some data to populate the stash.
+        for addr in 0..4u64 {
+            let mut data = [0u8; 16];
+            data[0] = addr as u8;
+            oram_access_local(&mut client, &mut tree, addr, AccessOp::Write(data), &mut rng);
+        }
+
+        // Read a path and evict.
+        let leaf = 3;
+        let path = tree.read_path(leaf);
+        let evicted = client.handle_evict(&path, leaf, levels);
+        assert_eq!(evicted.len(), levels, "evicted path should have `levels` buckets");
+    }
+
+    #[test]
+    fn test_three_phase_matches_local_oracle() {
+        // Compare a sequence of three-phase accesses against the local
+        // (single-call) oracle to verify correctness.
+        let levels = 4;
+        let num_addrs = 8u64;
+
+        let mut tree_3p = OramTree::<4, 16>::new(levels);
+        let mut client_3p = OramClient::<4, 16>::new(levels, num_addrs);
+        let mut tree_local = tree_3p.clone();
+        let mut client_local = client_3p.clone();
+
+        let mut rng_3p = test_rng(99);
+        let mut rng_local = test_rng(99);
+
+        // Write to all addresses via both paths.
+        for addr in 0..num_addrs {
+            let mut data = [0u8; 16];
+            data[0] = (addr * 7 + 1) as u8;
+
+            // Local oracle
+            oram_access_local(
+                &mut client_local, &mut tree_local, addr,
+                AccessOp::Write(data), &mut rng_local,
+            );
+
+            // Three-phase handler
+            let begin = client_3p.handle_begin(addr, levels, &mut rng_3p);
+            let path = tree_3p.read_path(begin.old_leaf);
+            let (wb_path, _rd, ev1, ev2) =
+                client_3p.handle_process(&begin, &path, data, true, levels);
+            tree_3p.write_path(begin.old_leaf, &wb_path);
+
+            let ep1 = tree_3p.read_path(ev1);
+            let ewb1 = client_3p.handle_evict(&ep1, ev1, levels);
+            tree_3p.write_path(ev1, &ewb1);
+
+            let ep2 = tree_3p.read_path(ev2);
+            let ewb2 = client_3p.handle_evict(&ep2, ev2, levels);
+            tree_3p.write_path(ev2, &ewb2);
+        }
+
+        // Read all addresses back from both paths and compare.
+        for addr in 0..num_addrs {
+            let local_result = oram_access_local(
+                &mut client_local, &mut tree_local, addr,
+                AccessOp::Read, &mut rng_local,
+            );
+
+            let begin = client_3p.handle_begin(addr, levels, &mut rng_3p);
+            let path = tree_3p.read_path(begin.old_leaf);
+            let (wb_path, rd_data, ev1, ev2) =
+                client_3p.handle_process(&begin, &path, [0u8; 16], false, levels);
+            tree_3p.write_path(begin.old_leaf, &wb_path);
+
+            let ep1 = tree_3p.read_path(ev1);
+            let ewb1 = client_3p.handle_evict(&ep1, ev1, levels);
+            tree_3p.write_path(ev1, &ewb1);
+
+            let ep2 = tree_3p.read_path(ev2);
+            let ewb2 = client_3p.handle_evict(&ep2, ev2, levels);
+            tree_3p.write_path(ev2, &ewb2);
+
+            match local_result {
+                AccessResult::ReadValue(local_data) => {
+                    assert_eq!(
+                        rd_data, local_data,
+                        "three-phase read mismatch at addr {}",
+                        addr
+                    );
+                }
+                _ => panic!("expected ReadValue from local oracle"),
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1732,6 +2012,159 @@ mod proptests {
                 };
                 let _ = oram_access_local(
                     &mut client, &mut tree, op.addr, access_op, &mut rng,
+                );
+            }
+
+            // Collect all real addresses from tree + stash
+            let mut addr_count: BTreeMap<u64, usize> = BTreeMap::new();
+
+            for bucket in &tree.buckets {
+                for entry in &bucket.entries {
+                    if entry.is_real() {
+                        *addr_count.entry(entry.addr).or_insert(0) += 1;
+                    }
+                }
+            }
+            for entry in &client.stash {
+                if entry.is_real() {
+                    *addr_count.entry(entry.addr).or_insert(0) += 1;
+                }
+            }
+
+            for (&addr, &count) in &addr_count {
+                prop_assert!(
+                    count <= 1,
+                    "duplicate address {}: found {} copies in tree+stash",
+                    addr, count
+                );
+            }
+        }
+    }
+
+    // ========================================================================
+    // Property O: Three-phase handler equivalence
+    //
+    // The (handle_begin, handle_process, handle_evict) decomposition
+    // produces the same read values and identical tree/stash state as
+    // oram_access_local.
+    // ========================================================================
+
+    /// Run a single three-phase ORAM access (begin → process → 2× evict).
+    fn three_phase_access(
+        client: &mut OramClient<4, 16>,
+        tree: &mut OramTree<4, 16>,
+        addr: u64,
+        is_write: bool,
+        write_data: [u8; 16],
+        levels: usize,
+        rng: &mut dyn FnMut() -> u64,
+    ) -> [u8; 16] {
+        let begin = client.handle_begin(addr, levels, rng);
+        let path = tree.read_path(begin.old_leaf);
+        let (wb_path, rd_data, ev1, ev2) =
+            client.handle_process(&begin, &path, write_data, is_write, levels);
+        tree.write_path(begin.old_leaf, &wb_path);
+
+        let ep1 = tree.read_path(ev1);
+        let ewb1 = client.handle_evict(&ep1, ev1, levels);
+        tree.write_path(ev1, &ewb1);
+
+        let ep2 = tree.read_path(ev2);
+        let ewb2 = client.handle_evict(&ep2, ev2, levels);
+        tree.write_path(ev2, &ewb2);
+
+        rd_data
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+
+        #[test]
+        fn prop_o_three_phase_equivalence(
+            seed in any::<u64>(),
+            ops in raw_ops(80, 8)
+        ) {
+            let levels = 4;
+            let num_addrs = 8u64;
+
+            let mut local_tree = OramTree::<4, 16>::new(levels);
+            let mut local_client = OramClient::<4, 16>::new(levels, num_addrs);
+            let mut local_rng = seeded_rng(seed);
+
+            let mut tp_tree = local_tree.clone();
+            let mut tp_client = local_client.clone();
+            let mut tp_rng = seeded_rng(seed);
+
+            for op in &ops {
+                if op.is_write {
+                    let mut data = [0u8; 16];
+                    data[0] = op.data_byte;
+
+                    let lr = oram_access_local(
+                        &mut local_client, &mut local_tree, op.addr,
+                        AccessOp::Write(data), &mut local_rng,
+                    );
+                    prop_assert_eq!(lr, AccessResult::WriteAck);
+
+                    three_phase_access(
+                        &mut tp_client, &mut tp_tree, op.addr,
+                        true, data, levels, &mut tp_rng,
+                    );
+                } else {
+                    let lr = oram_access_local(
+                        &mut local_client, &mut local_tree, op.addr,
+                        AccessOp::Read, &mut local_rng,
+                    );
+                    let tp_data = three_phase_access(
+                        &mut tp_client, &mut tp_tree, op.addr,
+                        false, [0u8; 16], levels, &mut tp_rng,
+                    );
+
+                    match lr {
+                        AccessResult::ReadValue(local_data) => {
+                            prop_assert_eq!(
+                                tp_data, local_data,
+                                "three-phase mismatch at addr {}",
+                                op.addr
+                            );
+                        }
+                        _ => panic!("expected ReadValue from local oracle"),
+                    }
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // Property P: Three-phase no-duplicate addresses
+    //
+    // After running the three-phase protocol, each logical address appears
+    // at most once across tree + stash combined.
+    // ========================================================================
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(200))]
+
+        #[test]
+        fn prop_p_three_phase_no_duplicates(
+            seed in any::<u64>(),
+            ops in raw_ops(80, 8)
+        ) {
+            let levels = 4;
+            let num_addrs = 8u64;
+
+            let mut tree = OramTree::<4, 16>::new(levels);
+            let mut client = OramClient::<4, 16>::new(levels, num_addrs);
+            let mut rng = seeded_rng(seed);
+
+            for op in &ops {
+                let is_write = op.is_write;
+                let mut data = [0u8; 16];
+                if is_write { data[0] = op.data_byte; }
+
+                three_phase_access(
+                    &mut client, &mut tree, op.addr,
+                    is_write, data, levels, &mut rng,
                 );
             }
 

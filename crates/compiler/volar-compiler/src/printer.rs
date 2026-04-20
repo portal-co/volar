@@ -1,3 +1,5 @@
+// @reliability: normal
+// @ai: assisted
 use core::fmt::{self, Write};
 
 #[cfg(feature = "std")]

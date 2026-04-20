@@ -47,8 +47,42 @@ A single ORAM access (read or write) in the woven circuit maps to this IR sequen
 2. **Tree read**: circuit reads path at plaintext leaf from tree storage using `StorageId(1000 + storage_id)` (direct indexed, no MUX)
 3. **Process action**: circuit sends `(path_buckets, write_data, is_write)` -> client returns `(write_back_path, read_data, evict_leaf_1, evict_leaf_2)` (1 ActionCall, `output_public=[false, false, true, true]`)
 4. **Tree write-back**: circuit writes `write_back_path` to tree storage at leaf
+5. **Eviction** (×2): for each eviction leaf, read tree path → `evict` action → write back evicted path
+
+Each access emits 4 ActionCalls (begin + process + 2 evicts) and uses 3 action declarations per storage config (begin, process, evict).
 
 The ORAM rewrite pass (`oram.rs`) transforms `StorageRead`/`StorageWrite` IR statements into this sequence of ActionCalls and public-address storage operations.
+
+## Three-Phase Handler API
+
+The single-call `oram_access_local` has been decomposed into three handler methods on `OramClient` to match the circuit's action boundary:
+
+### `handle_begin(addr, levels, rng) -> ActionBeginState`
+- Looks up the position map to get `old_leaf`
+- Assigns a random `new_leaf`
+- Returns `ActionBeginState { old_leaf, new_leaf, addr }`
+
+### `handle_process(begin_state, path, write_data, is_write, levels) -> (Vec<Bucket>, [u8; B], u64, u64)`
+- Absorbs the path from the tree into the stash
+- Performs the read/write operation
+- Packs stash entries back into buckets along the path
+- Returns `(write_back_path, read_data, evict_leaf_1, evict_leaf_2)`
+
+### `handle_evict(path, evict_leaf, levels) -> Vec<Bucket>`
+- Absorbs an eviction path into the stash
+- Packs stash entries back along the eviction path
+- Returns the evicted path for tree write-back
+
+The `test_three_phase_matches_local_oracle` unit test and `prop_o_three_phase_equivalence` proptest verify that this decomposition produces identical results to `oram_access_local`.
+
+## OramConfig Automation
+
+`OramConfig` (in `oram.rs`) centralizes all per-storage ORAM parameter management:
+
+- **`tree_cell_count(sid)`**: returns `Some(num_nodes)` if `sid` is this config's tree storage, else `None`
+- **`oram_cell_count_fn(configs)`**: builds the closure for `derive_ir_storage_config` from a slice of configs
+- **`apply_mono(env)`**: adds Z, B, L, N to a `MonoEnv` for monomorphization
+- **`configure_scheme(scheme)`**: registers action configs on a `TfheScheme`
 
 ## ORAM Weaver Integration Approach
 
@@ -56,7 +90,7 @@ The ORAM rewrite pass (`oram.rs`) transforms `StorageRead`/`StorageWrite` IR sta
 
 Phase 2b (StorageStrategy/PBS) was **skipped** — went directly to Phase 4 (ORAM). PBS is only suitable for cleartext/read-only LUT lookups, NOT for encrypted mutable storage.
 
-## ORAM Fuzzing (Properties I-N)
+## ORAM Fuzzing (Properties I-P)
 
 ORAM property tests use **proptest** in-crate (`#[cfg(test)] mod proptests`), continuing the letter-based naming from IR fuzzing (A-H):
 
@@ -68,12 +102,14 @@ ORAM property tests use **proptest** in-crate (`#[cfg(test)] mod proptests`), co
 | L | Path invariant | Every node on a root-to-leaf path has the correct depth and index |
 | M | Recursive posmap equivalence | `RecursiveOram` read/write matches `BTreeMap` oracle |
 | N | No duplicate addresses | After a sequence of writes, no logical address appears twice in tree + stash |
+| O | Three-phase equivalence | `handle_begin/process/evict` decomposition matches `oram_access_local` |
+| P | Three-phase no duplicates | Three-phase protocol maintains no-duplicate-addresses invariant |
 
 ## Relevant Files
 
-- `crates/oram/volar-oram/src/lib.rs` — full ORAM implementation + 20 unit tests + 6 proptests
+- `crates/oram/volar-oram/src/lib.rs` — full ORAM implementation + 26 unit tests + 8 proptests
 - `crates/oram/volar-oram-core/src/lib.rs` — server-side ORAM source (linked spec)
 - `crates/channel/volar-channel/src/lib.rs` — `Protocol` trait + `run_protocol` + tests
-- `crates/compiler/volar-weaver/src/oram.rs` — ORAM rewrite pass + integration tests
+- `crates/compiler/volar-weaver/src/oram.rs` — ORAM rewrite pass + 21 config tests + 13 rewrite tests + 7 linking tests
 - `docs/oram-channel-plan.md` — approved design plan
 - `docs/oram-fuzzing.md` — property documentation

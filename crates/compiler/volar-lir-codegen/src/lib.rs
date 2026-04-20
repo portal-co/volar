@@ -1,4 +1,5 @@
 // @reliability: normal
+// @ai: assisted
 //! Lower `IrModule` (spec/compiler IR) to any `LirTarget`.
 //!
 //! Works best on monomorphized IR — run `monomorphize_module` first for any

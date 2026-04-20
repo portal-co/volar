@@ -115,6 +115,11 @@ impl OramConfig {
         format!("oram_process_{}", self.storage_id)
     }
 
+    /// Name of the "evict path" action for this storage.
+    pub fn evict_action_name(&self) -> String {
+        format!("oram_evict_{}", self.storage_id)
+    }
+
     // -- IR type construction ------------------------------------------------
 
     /// Intern the ORAM entry type: `Tuple(u64, u64, Vec(B, u8))`.
@@ -191,11 +196,34 @@ impl OramConfig {
         }
     }
 
+    /// Create the [`ActionDecl`] for the "evict path" action.
+    ///
+    /// The evict action is used for deterministic reverse-lexicographic
+    /// eviction. After the main access, the circuit reads the tree path at
+    /// an eviction leaf (plaintext — from the process action output), sends
+    /// the path to the client, and the client moves stash entries into
+    /// buckets whose subtree covers the entry's assigned leaf.
+    ///
+    /// - **Params**: `[path_ty]` — the path buckets read from the tree
+    /// - **Results**: `[path_ty]` — the updated path after eviction
+    ///
+    /// Two eviction passes occur per access (the process action returns two
+    /// eviction leaf indices).
+    pub fn evict_action_decl(&self, types: &mut IRTypes) -> ActionDecl {
+        let path_ty = self.path_type(types);
+        ActionDecl {
+            name: self.evict_action_name(),
+            params: vec![path_ty],
+            results: vec![path_ty],
+        }
+    }
+
     /// Create both [`ActionDecl`]s for this ORAM instance.
-    pub fn action_decls(&self, types: &mut IRTypes) -> (ActionDecl, ActionDecl) {
+    pub fn action_decls(&self, types: &mut IRTypes) -> (ActionDecl, ActionDecl, ActionDecl) {
         let begin = self.begin_action_decl(types);
         let process = self.process_action_decl(types);
-        (begin, process)
+        let evict = self.evict_action_decl(types);
+        (begin, process, evict)
     }
 
     // -- FheActionConfig construction ----------------------------------------
@@ -222,22 +250,91 @@ impl OramConfig {
         }
     }
 
+    /// Create the [`FheActionConfig`] for the "evict path" action.
+    ///
+    /// The single output (updated eviction path) is **encrypted**.
+    pub fn evict_action_config(&self) -> FheActionConfig {
+        FheActionConfig {
+            output_public: vec![false],
+        }
+    }
+
     /// Create all action configs as `(name, config)` pairs, suitable for
     /// registering with [`TfheScheme::with_action_config`].
-    pub fn action_configs(&self) -> [(String, FheActionConfig); 2] {
+    pub fn action_configs(&self) -> [(String, FheActionConfig); 3] {
         [
             (self.begin_action_name(), self.begin_action_config()),
             (self.process_action_name(), self.process_action_config()),
+            (self.evict_action_name(), self.evict_action_config()),
         ]
     }
 
     /// Register this ORAM instance's action configs with a [`TfheScheme`].
     ///
-    /// Convenience method that calls `with_action_config` for both the
-    /// begin and process actions.
+    /// Convenience method that calls `with_action_config` for the
+    /// begin, process, and evict actions.
     pub fn configure_scheme(&self, scheme: crate::fhe::TfheScheme) -> crate::fhe::TfheScheme {
-        let [(n1, c1), (n2, c2)] = self.action_configs();
-        scheme.with_action_config(n1, c1).with_action_config(n2, c2)
+        let [(n1, c1), (n2, c2), (n3, c3)] = self.action_configs();
+        scheme
+            .with_action_config(n1, c1)
+            .with_action_config(n2, c2)
+            .with_action_config(n3, c3)
+    }
+
+    /// Return the tree storage cell count for a given `StorageId`.
+    ///
+    /// Returns `Some(num_nodes)` if `sid` is this ORAM's tree storage
+    /// (`ORAM_TREE_BASE + storage_id`), `None` otherwise.
+    pub fn tree_cell_count(&self, sid: StorageId) -> Option<usize> {
+        if sid.0 == ORAM_TREE_BASE + self.storage_id {
+            Some(self.num_nodes())
+        } else {
+            None
+        }
+    }
+
+    /// Add this ORAM configuration's const-generic parameters to a [`MonoEnv`].
+    ///
+    /// Inserts `Z`, `B`, `L`, and `N` (computed as `2^L − 1`) so that
+    /// monomorphization can resolve the corresponding `ArrayLength::TypeParam`
+    /// entries in linked `volar-oram-core` types.
+    ///
+    /// ```ignore
+    /// let env = MonoEnv::new("")
+    ///     .with_len("N_LWE", 630)  // TFHE params…
+    ///     .with_len("BIG_N", 2048);
+    /// let env = config.apply_mono(env);
+    /// // env now also has Z=4, B=16, L=4, N=15
+    /// ```
+    pub fn apply_mono(&self, env: volar_lir_codegen::mono::MonoEnv) -> volar_lir_codegen::mono::MonoEnv {
+        env.with_len("Z", self.z)
+            .with_len("B", self.b)
+            .with_len("L", self.l)
+            .with_len("N", self.num_nodes())
+    }
+}
+
+/// Build the `cell_count_fn` closure for [`derive_ir_storage_config`]
+/// from a slice of ORAM configurations.
+///
+/// For ORAM tree storages (`StorageId >= ORAM_TREE_BASE`), returns the
+/// corresponding tree's node count. For all other storages, returns 1.
+///
+/// # Example
+///
+/// ```ignore
+/// let configs = &[OramConfig { storage_id: 0, z: 4, b: 16, l: 4 }];
+/// let storage_config = derive_ir_storage_config(&rewritten,
+///     Some(&oram_cell_count_fn(configs)));
+/// ```
+pub fn oram_cell_count_fn(configs: &[OramConfig]) -> impl Fn(StorageId, IRTypeId) -> usize + '_ {
+    move |sid: StorageId, _ty: IRTypeId| {
+        for c in configs {
+            if let Some(count) = c.tree_cell_count(sid) {
+                return count;
+            }
+        }
+        1
     }
 }
 
@@ -320,10 +417,11 @@ struct ConfigTypes {
     data_ty: IRTypeId,
     begin_result_ty: IRTypeId,
     process_result_ty: IRTypeId,
+    evict_result_ty: IRTypeId,
 }
 
 /// Rewrite `StorageRead`/`StorageWrite` on ORAM-backed regions into
-/// ActionCall sequences.
+/// ActionCall sequences with deterministic eviction.
 ///
 /// For each storage region described by an [`OramConfig`], this
 /// transformation replaces every `StorageRead`/`StorageWrite` that
@@ -344,6 +442,15 @@ struct ConfigTypes {
 /// 12. `evict1  = ActionOutput(process, 2, u64)`
 /// 13. `evict2  = ActionOutput(process, 3, u64)`
 /// 14. `StorageWrite(ORAM_TREE_S, wb_path, path_ty, leaf)` — write back
+/// 15–19. Eviction pass 1 (read/evict/write at evict1)
+/// 20–24. Eviction pass 2 (read/evict/write at evict2)
+///
+/// Each eviction pass emits 5 statements:
+/// - `evict_path = StorageRead(ORAM_TREE_S, path_ty, evict_leaf)`
+/// - `fb = Const(0, path_ty)`
+/// - `evict_call = ActionCall("oram_evict_S", guard, [evict_path], [fb])`
+/// - `evict_result = ActionOutput(evict_call, 0, path_ty)`
+/// - `StorageWrite(ORAM_TREE_S, evict_result, path_ty, evict_leaf)`
 ///
 /// **StorageWrite(S, src, T, addr) →**
 /// Same as above, but with `is_write = Const(1, Bit)` and `src` as the
@@ -359,13 +466,14 @@ struct ConfigTypes {
 /// collisions with the original storage namespace. The `path_ty` type
 /// acts as the element type for tree reads/writes.
 ///
-/// # Eviction passes
+/// # Eviction
 ///
-/// The current implementation includes the eviction leaf outputs but
-/// does NOT emit the eviction read/process/write-back sequences. Those
-/// will be added when the eviction protocol is wired (the client already
-/// handles eviction internally — the circuit just needs to shuttle
-/// tree paths for the eviction targets).
+/// Two deterministic eviction passes per access, using reverse-
+/// lexicographic order. The eviction leaf indices are computed by the
+/// client and returned as plaintext outputs of the process action.
+/// Each eviction pass reads the tree path at the eviction leaf, sends
+/// it to the client via the `oram_evict_S` action, and writes back
+/// the updated path.
 ///
 /// # Returns
 ///
@@ -402,20 +510,24 @@ pub fn rewrite_storage_to_oram<P: Clone + Default>(
             let begin_result_ty = types.intern(IRType::Tuple(vec![u64_ty]));
             let process_result_ty =
                 types.intern(IRType::Tuple(vec![path_ty, data_ty, u64_ty, u64_ty]));
-            ConfigTypes { path_ty, data_ty, begin_result_ty, process_result_ty }
+            let evict_result_ty = types.intern(IRType::Tuple(vec![path_ty]));
+            ConfigTypes { path_ty, data_ty, begin_result_ty, process_result_ty, evict_result_ty }
         })
         .collect();
 
     // Collect action declarations from all configs.
     let mut new_actions: Vec<ActionDecl> = ir.actions.clone();
     for c in configs {
-        let (begin_decl, process_decl) = c.action_decls(types);
+        let (begin_decl, process_decl, evict_decl) = c.action_decls(types);
         // Avoid duplicates if actions were already declared.
         if !new_actions.iter().any(|a| a.name == begin_decl.name) {
             new_actions.push(begin_decl);
         }
         if !new_actions.iter().any(|a| a.name == process_decl.name) {
             new_actions.push(process_decl);
+        }
+        if !new_actions.iter().any(|a| a.name == evict_decl.name) {
+            new_actions.push(evict_decl);
         }
     }
 
@@ -548,12 +660,26 @@ fn rewrite_block<P: Clone + Default>(
     }
 }
 
-/// Emit the ORAM ActionCall sequence for a single storage access.
+/// Emit the ORAM ActionCall sequence for a single storage access,
+/// including two deterministic eviction passes.
 ///
 /// If `write_data` is `None`, this is a read; otherwise a write.
 ///
 /// Returns the `IRVarId` for the **read data** result (for reads) or
 /// a **dummy zero** (for writes).
+///
+/// The sequence emitted is:
+/// 1. **Begin**: send address → get plaintext leaf (4 stmts)
+/// 2. **Read tree path** at plaintext leaf (1 stmt)
+/// 3. **Process**: send path + data + is_write → get write-back path,
+///    read data, eviction leaf 1, eviction leaf 2 (8–9 stmts)
+/// 4. **Write-back**: store updated path at leaf (1 stmt)
+/// 5. **Eviction pass 1**: read tree at evict_leaf_1, send to client,
+///    write back evicted path (5 stmts)
+/// 6. **Eviction pass 2**: same for evict_leaf_2 (5 stmts)
+///
+/// Total: 27 statements for a read, 26 for a write (write reuses
+/// the caller-provided data var instead of emitting a zero constant).
 fn emit_oram_access<P: Clone + Default>(
     stmts: &mut Vec<IRStmt>,
     provs: &mut Vec<P>,
@@ -690,12 +816,12 @@ fn emit_oram_access<P: Clone + Default>(
         provs,
         stmts,
     );
-    let _v_evict1 = push(
+    let v_evict1 = push(
         IRStmt::ActionOutput { call: IRVarId(v_process), idx: 2, ty: u64_ty },
         provs,
         stmts,
     );
-    let _v_evict2 = push(
+    let v_evict2 = push(
         IRStmt::ActionOutput { call: IRVarId(v_process), idx: 3, ty: u64_ty },
         provs,
         stmts,
@@ -715,11 +841,101 @@ fn emit_oram_access<P: Clone + Default>(
         stmts,
     );
 
+    // --- Eviction pass 1: read path at evict_leaf_1, evict, write back ---
+    emit_eviction_pass(
+        stmts, provs, prov, config, ct, num_params,
+        tree_storage, v_guard, v_evict1,
+    );
+
+    // --- Eviction pass 2: read path at evict_leaf_2, evict, write back ---
+    emit_eviction_pass(
+        stmts, provs, prov, config, ct, num_params,
+        tree_storage, v_guard, v_evict2,
+    );
+
     // The result for the original StorageRead is the read data.
     // For StorageWrite, the result is the read data too (caller discards it
     // since StorageWrite produces a dummy zero — but we return a meaningful
     // var ID so the remap table is valid).
     v_rd_data
+}
+
+/// Emit a single eviction pass: read tree path → evict action → write back.
+///
+/// 5 statements:
+/// 1. `evict_path = StorageRead(ORAM_TREE_S, path_ty, evict_leaf)`
+/// 2. `fb_evict = Const(0, path_ty)` — fallback
+/// 3. `evict_call = ActionCall("oram_evict_S", guard, [evict_path], [fb_evict])`
+/// 4. `evict_result = ActionOutput(evict_call, 0, path_ty)`
+/// 5. `StorageWrite(ORAM_TREE_S, evict_result, path_ty, evict_leaf)`
+fn emit_eviction_pass<P: Clone + Default>(
+    stmts: &mut Vec<IRStmt>,
+    provs: &mut Vec<P>,
+    prov: &P,
+    config: &OramConfig,
+    ct: &ConfigTypes,
+    num_params: u32,
+    tree_storage: StorageId,
+    v_guard: u32,
+    v_evict_leaf: u32,
+) {
+    let push = |stmt: IRStmt, provs_vec: &mut Vec<P>, stmts_vec: &mut Vec<IRStmt>| -> u32 {
+        let id = num_params + stmts_vec.len() as u32;
+        stmts_vec.push(stmt);
+        provs_vec.push(prov.clone());
+        id
+    };
+
+    // Read tree path at eviction leaf
+    let v_evict_path = push(
+        IRStmt::StorageRead {
+            storage: tree_storage,
+            ty: ct.path_ty,
+            addr: IRVarId(v_evict_leaf),
+        },
+        provs,
+        stmts,
+    );
+
+    // Fallback for evict action
+    let v_fb_evict = push(
+        IRStmt::Const(Constant { hi: 0, lo: 0 }, ct.path_ty),
+        provs,
+        stmts,
+    );
+
+    // Evict action call
+    let v_evict_call = push(
+        IRStmt::ActionCall {
+            name: config.evict_action_name(),
+            guard: IRVarId(v_guard),
+            args: vec![IRVarId(v_evict_path)],
+            fallbacks: vec![IRVarId(v_fb_evict)],
+            output_tys: vec![ct.path_ty],
+            result_ty: ct.evict_result_ty,
+        },
+        provs,
+        stmts,
+    );
+
+    // Project evict result
+    let v_evict_result = push(
+        IRStmt::ActionOutput { call: IRVarId(v_evict_call), idx: 0, ty: ct.path_ty },
+        provs,
+        stmts,
+    );
+
+    // Write back evicted path
+    let _v_evict_wb = push(
+        IRStmt::StorageWrite {
+            storage: tree_storage,
+            src: IRVarId(v_evict_result),
+            ty: ct.path_ty,
+            addr: IRVarId(v_evict_leaf),
+        },
+        provs,
+        stmts,
+    );
 }
 
 // ============================================================================
@@ -1054,8 +1270,10 @@ mod tests_config {
         let configs = c.action_configs();
         assert_eq!(configs[0].0, "oram_begin_0");
         assert_eq!(configs[1].0, "oram_process_0");
+        assert_eq!(configs[2].0, "oram_evict_0");
         assert!(configs[0].1.all_outputs_public());
         assert!(!configs[1].1.all_outputs_public());
+        assert!(!configs[2].1.all_outputs_public());
     }
 
     #[test]
@@ -1093,9 +1311,11 @@ mod tests_config {
         assert_eq!(c.path_bits(), 272);
 
         let mut types = IRTypes::new();
-        let (begin, process) = c.action_decls(&mut types);
+        let (begin, process, evict) = c.action_decls(&mut types);
         assert_eq!(begin.params.len(), 1);
         assert_eq!(process.results.len(), 4);
+        assert_eq!(evict.params.len(), 1, "evict takes 1 arg (path)");
+        assert_eq!(evict.results.len(), 1, "evict returns 1 output (path)");
     }
 
     #[test]
@@ -1178,6 +1398,82 @@ mod tests_config {
         assert!(!process_cfg.all_outputs_public());
         assert!(process_cfg.is_output_public(2));
         assert!(process_cfg.is_output_public(3));
+    }
+
+    #[test]
+    fn tree_cell_count_matches_own_storage() {
+        let c = test_config();
+        let sid = StorageId(super::ORAM_TREE_BASE + c.storage_id);
+        assert_eq!(c.tree_cell_count(sid), Some(c.num_nodes()));
+    }
+
+    #[test]
+    fn tree_cell_count_returns_none_for_other_storage() {
+        let c = test_config();
+        // Original storage id should not match the tree storage.
+        assert_eq!(c.tree_cell_count(StorageId(c.storage_id)), None);
+        // A different tree storage id should not match either.
+        assert_eq!(c.tree_cell_count(StorageId(super::ORAM_TREE_BASE + 99)), None);
+    }
+
+    #[test]
+    fn oram_cell_count_fn_returns_nodes_for_tree_storage() {
+        let c = test_config();
+        let configs = [c.clone()];
+        let f = super::oram_cell_count_fn(&configs);
+        let mut types = IRTypes::new();
+        let dummy_ty = types.intern(IRType::Primitive(PrimType::_64));
+
+        // Tree storage → num_nodes.
+        let tree_sid = StorageId(super::ORAM_TREE_BASE + c.storage_id);
+        assert_eq!(f(tree_sid, dummy_ty), c.num_nodes());
+
+        // Non-tree storage → 1.
+        assert_eq!(f(StorageId(c.storage_id), dummy_ty), 1);
+    }
+
+    #[test]
+    fn oram_cell_count_fn_handles_multiple_configs() {
+        let c0 = OramConfig { storage_id: 0, z: 4, b: 16, l: 3 };
+        let c1 = OramConfig { storage_id: 1, z: 2, b: 8, l: 5 };
+        let configs = [c0.clone(), c1.clone()];
+        let f = super::oram_cell_count_fn(&configs);
+        let mut types = IRTypes::new();
+        let dummy_ty = types.intern(IRType::Primitive(PrimType::_64));
+
+        assert_eq!(f(StorageId(super::ORAM_TREE_BASE + 0), dummy_ty), c0.num_nodes());
+        assert_eq!(f(StorageId(super::ORAM_TREE_BASE + 1), dummy_ty), c1.num_nodes());
+        // Unknown tree storage → 1.
+        assert_eq!(f(StorageId(super::ORAM_TREE_BASE + 2), dummy_ty), 1);
+    }
+
+    #[test]
+    fn apply_mono_adds_z_b_l_n() {
+        use volar_lir_codegen::mono::MonoEnv;
+
+        let c = test_config(); // z=4, b=16, l=4
+        let env = c.apply_mono(MonoEnv::new(""));
+
+        assert_eq!(env.const_params.get("Z"), Some(&4));
+        assert_eq!(env.const_params.get("B"), Some(&16));
+        assert_eq!(env.const_params.get("L"), Some(&4));
+        assert_eq!(env.const_params.get("N"), Some(&15)); // 2^4 - 1
+    }
+
+    #[test]
+    fn apply_mono_preserves_existing_params() {
+        use volar_lir_codegen::mono::MonoEnv;
+
+        let c = test_config();
+        let env = MonoEnv::new("sha3").with_len("N_LWE", 630);
+        let env = c.apply_mono(env);
+
+        // Pre-existing param preserved.
+        assert_eq!(env.const_params.get("N_LWE"), Some(&630));
+        assert_eq!(env.hash_suffix, "sha3");
+        // ORAM params present.
+        assert_eq!(env.const_params.get("Z"), Some(&4));
+        assert_eq!(env.const_params.get("N"), Some(&15));
     }
 }
 
@@ -1298,7 +1594,7 @@ mod tests_rewrite {
             block.stmts.len()
         );
 
-        // Count ActionCalls — should have exactly 2 (begin + process).
+        // Count ActionCalls — should have exactly 4 (begin + process + 2 evicts).
         let action_calls: Vec<_> = block
             .stmts
             .iter()
@@ -1306,8 +1602,8 @@ mod tests_rewrite {
             .collect();
         assert_eq!(
             action_calls.len(),
-            2,
-            "expected 2 ActionCalls (begin + process)"
+            4,
+            "expected 4 ActionCalls (begin + process + 2 evicts)"
         );
 
         // First ActionCall should be "oram_begin_0"
@@ -1330,27 +1626,29 @@ mod tests_rewrite {
             _ => unreachable!(),
         }
 
-        // Should have a StorageRead on tree storage (1000 + 0 = 1000)
+        // Should have StorageReads on tree storage (1000 + 0 = 1000):
+        // 1 main read + 2 eviction reads = 3
         let tree_reads: Vec<_> = block
             .stmts
             .iter()
             .filter(|s| matches!(s, IRStmt::StorageRead { storage, .. } if storage.0 == 1000))
             .collect();
-        assert_eq!(tree_reads.len(), 1, "expected 1 tree StorageRead");
+        assert_eq!(tree_reads.len(), 3, "expected 3 tree StorageReads (1 main + 2 evictions)");
 
-        // Should have a StorageWrite on tree storage (write-back)
+        // Should have StorageWrites on tree storage (write-back + 2 evictions)
         let tree_writes: Vec<_> = block
             .stmts
             .iter()
             .filter(|s| matches!(s, IRStmt::StorageWrite { storage, .. } if storage.0 == 1000))
             .collect();
-        assert_eq!(tree_writes.len(), 1, "expected 1 tree StorageWrite");
+        assert_eq!(tree_writes.len(), 3, "expected 3 tree StorageWrites (1 write-back + 2 evictions)");
 
         // Action declarations should be added.
-        assert!(result.actions.len() >= 2, "expected at least 2 action declarations");
+        assert!(result.actions.len() >= 3, "expected at least 3 action declarations");
         let action_names: Vec<_> = result.actions.iter().map(|a| a.name.as_str()).collect();
         assert!(action_names.contains(&"oram_begin_0"));
         assert!(action_names.contains(&"oram_process_0"));
+        assert!(action_names.contains(&"oram_evict_0"));
     }
 
     // -- StorageWrite expansion --
@@ -1378,13 +1676,13 @@ mod tests_rewrite {
         let result = rewrite_storage_to_oram(&ir, &mut types, &[c]);
         let block = &result.blocks[0];
 
-        // Should have 2 ActionCalls (begin + process)
+        // Should have 4 ActionCalls (begin + process + 2 evicts)
         let action_calls: Vec<_> = block
             .stmts
             .iter()
             .filter(|s| matches!(s, IRStmt::ActionCall { .. }))
             .collect();
-        assert_eq!(action_calls.len(), 2);
+        assert_eq!(action_calls.len(), 4);
 
         // The is_write constant should be 1 for writes.
         // It's a Const(1, Bit) somewhere in the expansion.
@@ -1566,15 +1864,15 @@ mod tests_rewrite {
         let result = rewrite_storage_to_oram(&ir, &mut types, &[c0, c1]);
         let block = &result.blocks[0];
 
-        // Should have 4 ActionCalls (2 per ORAM config).
+        // Should have 8 ActionCalls (4 per ORAM config: begin + process + 2 evicts).
         let action_calls: Vec<_> = block
             .stmts
             .iter()
             .filter(|s| matches!(s, IRStmt::ActionCall { .. }))
             .collect();
-        assert_eq!(action_calls.len(), 4, "expected 4 ActionCalls for 2 ORAM configs");
+        assert_eq!(action_calls.len(), 8, "expected 8 ActionCalls for 2 ORAM configs");
 
-        // Tree storage reads: StorageId(1000) and StorageId(1001)
+        // Tree storage reads: StorageId(1000) and StorageId(1001), 3 each
         let tree_reads: Vec<u32> = block
             .stmts
             .iter()
@@ -1586,8 +1884,8 @@ mod tests_rewrite {
         assert!(tree_reads.contains(&1000));
         assert!(tree_reads.contains(&1001));
 
-        // Action declarations: 4 total (begin+process for each config)
-        assert_eq!(result.actions.len(), 4);
+        // Action declarations: 6 total (begin+process+evict for each config)
+        assert_eq!(result.actions.len(), 6);
     }
 
     // -- Action declarations are not duplicated --
@@ -1600,7 +1898,7 @@ mod tests_rewrite {
         let data_ty = c.data_type(&mut types);
 
         // Pre-populate actions in the IR.
-        let (begin_decl, _) = c.action_decls(&mut types);
+        let (begin_decl, _, _) = c.action_decls(&mut types);
         let mut ir = make_ir(
             vec![u64_ty],
             vec![IRStmt::StorageRead {
@@ -1614,14 +1912,14 @@ mod tests_rewrite {
 
         let result = rewrite_storage_to_oram(&ir, &mut types, &[c]);
 
-        // begin_0 should not be duplicated. Total should be 2 (1 pre-existing + 1 new process).
+        // begin_0 should not be duplicated. Total should be 3 (1 pre-existing begin + 1 new process + 1 new evict).
         let begin_count = result
             .actions
             .iter()
             .filter(|a| a.name == "oram_begin_0")
             .count();
         assert_eq!(begin_count, 1, "oram_begin_0 should not be duplicated");
-        assert_eq!(result.actions.len(), 2);
+        assert_eq!(result.actions.len(), 3);
     }
 
     // -- Statement count sanity --
@@ -1661,13 +1959,23 @@ mod tests_rewrite {
         // 12. process = ActionCall
         // 13. wb_path = ActionOutput
         // 14. rd_data = ActionOutput
-        // 15. evict1 = ActionOutput
-        // 16. evict2 = ActionOutput
+        // 15. evict1_leaf = ActionOutput
+        // 16. evict2_leaf = ActionOutput
         // 17. StorageWrite (tree write-back)
+        // 18. evict1_path = StorageRead (tree at evict1_leaf)
+        // 19. fb_evict1 = Const(0, path_ty)
+        // 20. evict1_call = ActionCall ("oram_evict_0")
+        // 21. evict1_result = ActionOutput
+        // 22. StorageWrite (tree evict1 write-back)
+        // 23. evict2_path = StorageRead (tree at evict2_leaf)
+        // 24. fb_evict2 = Const(0, path_ty)
+        // 25. evict2_call = ActionCall ("oram_evict_0")
+        // 26. evict2_result = ActionOutput
+        // 27. StorageWrite (tree evict2 write-back)
         assert_eq!(
             block.stmts.len(),
-            17,
-            "a single StorageRead should expand to exactly 17 statements"
+            27,
+            "a single StorageRead should expand to exactly 27 statements"
         );
     }
 
@@ -1711,6 +2019,7 @@ mod tests_linking {
     extern crate std;
     extern crate alloc;
     use alloc::vec;
+    use alloc::vec::Vec;
 
     use volar_compiler::parser::{SourceInput, parse_sources};
     use volar_compiler::linkage::LinkageSystem;
@@ -1820,6 +2129,11 @@ mod tests_linking {
         // Derives preserved in linked types
         assert!(code.contains("Clone"), "missing Clone derive in output");
 
+        // Eviction action stubs should be present (3 action types)
+        assert!(code.contains("fn oram_begin_0"), "missing oram_begin_0 action stub");
+        assert!(code.contains("fn oram_process_0"), "missing oram_process_0 action stub");
+        assert!(code.contains("fn oram_evict_0"), "missing oram_evict_0 action stub");
+
         // Compile check — the generated code (with action stubs,
         // linked ORAM spec, and circuit function) should pass `cargo check`.
         crate::tests_common::run_compile_check_tfhe_cfg(&code, "oram_e2e");
@@ -1852,23 +2166,20 @@ mod tests_linking {
     #[test]
     #[cfg(feature = "linking")]
     fn rewrite_link_weave_integration_c() {
+        use super::OramConfig;
         use crate::fhe::print_fhe_cfg_module_c;
         use volar_lir_codegen::mono::MonoEnv;
 
+        let c = OramConfig { storage_id: 0, z: 4, b: 16, l: 4 };
         let module = build_oram_cfg_module();
 
         // C has no generics — monomorphize all const params to concrete values.
-        // TFHE scheme params:
         let env = MonoEnv::new("")
             .with_len("N_LWE", 630)
             .with_len("BIG_N", 2048)
             .with_len("BS_ELL", 3)
-            .with_len("KS_ELL", 4)
-            // ORAM spec params (from OramConfig { z: 4, b: 16, l: 4 }):
-            .with_len("Z", 4)
-            .with_len("B", 16)
-            .with_len("L", 4)
-            .with_len("N", 15);
+            .with_len("KS_ELL", 4);
+        let env = c.apply_mono(env);
 
         let c_code = print_fhe_cfg_module_c(&module, &env);
 
@@ -1878,13 +2189,112 @@ mod tests_linking {
         crate::tests_common::run_compile_check_c(&c_code, "oram_e2e_c");
     }
 
+    /// End-to-end: circuit with both StorageRead and StorageWrite on the
+    /// same ORAM-backed storage. Exercises eviction sequences for both
+    /// access types in a single function.
+    #[test]
+    #[cfg(feature = "linking")]
+    fn rewrite_link_weave_read_write_e2e() {
+        use super::{OramConfig, rewrite_storage_to_oram, oram_linked_spec, oram_cell_count_fn};
+        use crate::fhe::{weave_fhe, FheOutput, TfheScheme, derive_ir_storage_config, print_fhe_cfg_module};
+        use volar_ir::ir::{
+            IRType, IRTypes, IRBlocks, IRBlock, IRStmt, IRVarId,
+            IRTerminator, IRBlockTargetId, PrimType, StorageId, Constant,
+        };
+        use volar_compiler::linkage::LinkageSystem;
+
+        let mut types = IRTypes::new();
+        let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
+        let c = OramConfig { storage_id: 0, z: 4, b: 16, l: 4 };
+        let data_ty = c.data_type(&mut types);
+
+        // Circuit: param 0 = addr (u64), param 1 = write_data (data_ty)
+        //   stmt 0 = StorageWrite(0, src=param1, data_ty, addr=param0)
+        //   stmt 1 = StorageRead(0, data_ty, addr=param0)
+        //   return [stmt1_result]
+        let ir = IRBlocks {
+            oracles: vec![],
+            actions: vec![],
+            rngs: vec![],
+            blocks: vec![IRBlock {
+                params: vec![u64_ty, data_ty],
+                stmts: vec![
+                    IRStmt::StorageWrite {
+                        storage: StorageId(0),
+                        src: IRVarId(1),
+                        ty: data_ty,
+                        addr: IRVarId(0),
+                    },
+                    IRStmt::StorageRead {
+                        storage: StorageId(0),
+                        ty: data_ty,
+                        addr: IRVarId(0),
+                    },
+                ],
+                stmt_provs: vec![(); 2],
+                terminator: IRTerminator::Jmp {
+                    func: IRBlockTargetId::Return,
+                    args: vec![IRVarId(3)], // result of StorageRead (var 2 = StorageWrite dummy, var 3 = StorageRead result)
+                },
+            }],
+        };
+
+        let rewritten = rewrite_storage_to_oram(&ir, &mut types, &[c.clone()]);
+
+        // Should have expanded both storage ops.
+        assert!(
+            rewritten.blocks[0].stmts.len() > 4,
+            "expected expansion for both read and write, got {} stmts",
+            rewritten.blocks[0].stmts.len()
+        );
+
+        // 3 action declarations: begin, process, evict
+        assert_eq!(rewritten.actions.len(), 3, "expected 3 action declarations");
+
+        // 8 ActionCalls: 4 per access (begin + process + 2 evicts) x 2 accesses
+        let action_calls: Vec<_> = rewritten.blocks[0].stmts
+            .iter()
+            .filter(|s| matches!(s, IRStmt::ActionCall { .. }))
+            .collect();
+        assert_eq!(action_calls.len(), 8, "expected 8 ActionCalls for 2 ORAM accesses");
+
+        // Link and weave.
+        let mut linkage = LinkageSystem::new();
+        linkage.add(oram_linked_spec());
+
+        let configs = [c.clone()];
+        let cell_count = oram_cell_count_fn(&configs);
+        let storage_config = derive_ir_storage_config(&rewritten, Some(&cell_count));
+
+        let scheme = c.configure_scheme(TfheScheme::cfg());
+        let output = weave_fhe(&rewritten, &types, &scheme, "oram_rw_e2e", Some(&linkage), Some(&storage_config));
+
+        let module = match output {
+            FheOutput::Cfg(m) => m,
+            FheOutput::Flat(_) => panic!("expected CFG output"),
+        };
+
+        let code = print_fhe_cfg_module(&module, true);
+
+        // All 3 action stubs present.
+        assert!(code.contains("fn oram_begin_0"), "missing oram_begin_0");
+        assert!(code.contains("fn oram_process_0"), "missing oram_process_0");
+        assert!(code.contains("fn oram_evict_0"), "missing oram_evict_0");
+
+        // Circuit function present.
+        assert!(code.contains("fn oram_rw_e2e_tfhe_cfg"), "missing circuit function");
+
+        // Compile check.
+        crate::tests_common::run_compile_check_tfhe_cfg(&code, "oram_rw_e2e");
+    }
+
     /// Shared helper: build a rewritten+linked+woven ORAM CFG module for testing.
     #[cfg(feature = "linking")]
     fn build_oram_cfg_module() -> volar_compiler::IrCfgModule {
-        use super::{OramConfig, rewrite_storage_to_oram, oram_linked_spec, ORAM_TREE_BASE};
+        use super::{OramConfig, rewrite_storage_to_oram, oram_linked_spec, oram_cell_count_fn};
         use crate::fhe::{weave_fhe, FheOutput, TfheScheme, derive_ir_storage_config};
         use volar_ir::ir::{
-            IRType, IRTypes, IRBlocks, IRBlock, IRStmt, IRVarId, IRTypeId,
+            IRType, IRTypes, IRBlocks, IRBlock, IRStmt, IRVarId,
             IRTerminator, IRBlockTargetId, PrimType, StorageId, Constant,
         };
 
@@ -1922,14 +2332,9 @@ mod tests_linking {
         linkage.add(oram_linked_spec());
 
         // Step 3: Derive storage configuration from the rewritten IR
-        let num_nodes = c.num_nodes();
-        let storage_config = derive_ir_storage_config(&rewritten, Some(&|sid: StorageId, _ty: IRTypeId| {
-            if sid.0 >= ORAM_TREE_BASE {
-                num_nodes
-            } else {
-                1
-            }
-        }));
+        let configs = [c.clone()];
+        let cell_count = oram_cell_count_fn(&configs);
+        let storage_config = derive_ir_storage_config(&rewritten, Some(&cell_count));
 
         // Step 4: Weave through CFG with linkage and storage config
         let scheme = c.configure_scheme(TfheScheme::cfg());

@@ -1,4 +1,5 @@
 // @reliability: normal
+// @ai: assisted
 //! C99 backend for `LirTarget`.
 //!
 //! Emits a complete `.c` file suitable for testing with `cc -O0 -std=c99`.

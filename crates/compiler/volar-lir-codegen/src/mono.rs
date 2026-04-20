@@ -1,4 +1,5 @@
 // @reliability: normal
+// @ai: assisted
 //! Monomorphization pass for `IrModule` and `IrCfgModule`.
 //!
 //! Substitutes concrete values for type parameters before LIR lowering.

@@ -1,4 +1,5 @@
 // @reliability: normal
+// @ai: assisted
 //! `LirTarget` — low-level IR builder trait with block parameters.
 //!
 //! Backends receive a stream of builder calls and produce whatever output

@@ -1,4 +1,5 @@
 // @reliability: normal
+// @ai: assisted
 //! Struct registry: maps `StructKind` names to `StructId`s and field info.
 //!
 //! Built from a (monomorphized) `IrModule` by calling `define_struct` on the
