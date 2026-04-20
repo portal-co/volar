@@ -1672,15 +1672,10 @@ mod tests_rewrite {
     }
 
     // -- Weave the rewritten IR through CFG path --
-    // NOTE: This currently panics because ir_type_bit_width doesn't support
-    // the complex ORAM tuple/vec types (path = Vec(L, Vec(Z, Tuple(...)))).
-    // This will be resolved when the server circuit compilation path handles
-    // ORAM types natively. For now we document the limitation.
 
     #[test]
-    #[should_panic(expected = "ir_type_bit_width: unsupported IR type")]
-    fn rewritten_ir_weaves_through_cfg_panics_on_complex_types() {
-        use crate::fhe::{weave_fhe, TfheScheme};
+    fn rewritten_ir_weaves_through_cfg() {
+        use crate::fhe::{weave_fhe, FheOutput, TfheScheme};
 
         let mut types = IRTypes::new();
         let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
@@ -1700,7 +1695,14 @@ mod tests_rewrite {
         let result = rewrite_storage_to_oram(&ir, &mut types, &[c.clone()]);
 
         let scheme = c.configure_scheme(TfheScheme::cfg());
-        let _output = weave_fhe(&result, &types, &scheme, "oram_rewrite_test", None, None);
+        let output = weave_fhe(&result, &types, &scheme, "oram_rewrite_test", None, None);
+
+        match output {
+            FheOutput::Cfg(module) => {
+                assert!(!module.functions.is_empty(), "CFG output should have functions");
+            }
+            FheOutput::Flat(_) => panic!("expected CFG output, got Flat"),
+        }
     }
 }
 

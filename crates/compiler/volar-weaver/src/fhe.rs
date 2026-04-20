@@ -1565,7 +1565,8 @@ where
 /// Return the total bit-width of a type.
 ///
 /// Primitive types return their natural width.  `Vec(n, elem)` returns
-/// `n * elem_width`.  Other forms (Tuple, Block, Func) are unsupported.
+/// `n * elem_width`.  `Tuple(fields)` returns the sum of field widths.
+/// Other forms (Block, Func) are unsupported.
 fn ir_type_bit_width(ty_id: IRTypeId, types: &IRTypes) -> usize {
     match &types.0[ty_id.0 as usize] {
         IRType::Primitive(PrimType::Bit)    => 1,
@@ -1578,6 +1579,7 @@ fn ir_type_bit_width(ty_id: IRTypeId, types: &IRTypes) -> usize {
         IRType::Primitive(PrimType::_128)   => 128,
         IRType::Primitive(PrimType::_256)   => 256,
         IRType::Vec(n, elem_ty) => n * ir_type_bit_width(*elem_ty, types),
+        IRType::Tuple(fields) => fields.iter().map(|f| ir_type_bit_width(*f, types)).sum(),
         other => panic!("ir_type_bit_width: unsupported IR type {:?}", other),
     }
 }
@@ -2906,8 +2908,12 @@ impl FheScheme for TfheScheme {
                         .map(|i| {
                             let bit = if i < 128 {
                                 (constant.lo >> i) & 1 != 0
-                            } else {
+                            } else if i < 256 {
                                 (constant.hi >> (i - 128)) & 1 != 0
+                            } else {
+                                // Constant only has 256 bits of storage;
+                                // bits beyond position 255 are always 0.
+                                false
                             };
                             IrExpr::Lit(IrLit::Bool(bit))
                         })
