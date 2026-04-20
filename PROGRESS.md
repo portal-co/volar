@@ -40,6 +40,22 @@ Implement **weaver integration** — compiling the ORAM runtime through the vola
 - Added `N_LWE` turbofish to `tfhe_trivial_zero`/`one`/`encrypt`
 - ORAM integration test passes (`rewrite_link_weave_integration`)
 
+### Runtime Linking & Action Fallback Fixes
+- Created `runtime/helpers.rs` — total Rust `bools_to_usize` implementation, parsed through volar-compiler pipeline
+- Added `runtime_linked_spec()` in `oram.rs` — `include_str!` + parser pattern for runtime helpers
+- Updated `weave_fhe_cfg` `bools_to_usize` stub to check `already_linked` flag
+- Fixed action stub fallback types: fallback params now match return element types (wire-typed when `!is_output_public`)
+- Fixed call-site fallback promotion: public fallbacks promoted to wire type via `tfhe_trivial_encrypt` / `RawMap` (same pattern as arg promotion)
+- Fixed Rust printer 1-element tuple expressions: `(x,)` not `(x)`
+- Replaced `unreachable!()` in action stub bodies with fallback return bodies
+- 4 new linking tests: `runtime_helpers_parses_from_include`, `runtime_helpers_round_trips_through_printer`, `runtime_helpers_compile_check`, `woven_module_uses_linked_bools_to_usize`
+
+### E2E Execution Test
+- First test that compiles AND runs generated FHE code (not just compile-check)
+- `test_tfhe_cfg_and_executes_correctly`: weaves AND circuit through TFHE, generates keys, encrypts inputs, runs the circuit, decrypts, verifies truth table
+- Uses noiseless (noise_bits=0) parameters for deterministic correctness
+- Follows `test_multi_eval_and` temp-crate pattern from garble.rs
+
 ### Multi-Backend Support
 - Added TS CFG printer (`TsCfgModuleWriter`, `TsCfgFunctionWriter`, `ts_write_enum`, `ts_write_type_alias`, state machine emission) in `printer_ts.rs`
 - Added `print_cfg_module_ts` public API function with proper deshadowing and witness analysis
@@ -100,10 +116,14 @@ Implement **weaver integration** — compiling the ORAM runtime through the vola
 
 - **Weaver integration** — compiling the ORAM runtime through the volar-compiler pipeline
 
+## Deferred
+
+- **Action dispatch** — connecting `#[volar_action]` stubs to `OramClient` handlers at runtime. Deferred because it would require giving the proc-macro attribute extra meaning beyond its current identity-transform role, which is out of scope outside of tests.
+
 ## Next Steps (in order)
 
-1. **Weaver integration design** — determine how the ORAM runtime code gets compiled through volar-compiler and stitched into the woven circuit
-2. **Reliability tags** — tag newly modified files
+1. **Reliability tags** — tag newly modified files
+2. **Further E2E tests** — more complex circuits (multi-block, ORAM storage) with execution verification
 
 ## Key Files
 

@@ -4617,4 +4617,148 @@ mod tests {
             "public ActionOutput returned should be promoted at return site:\n{code}"
         );
     }
+
+    // ── E2E execution tests ─────────────────────────────────────────────
+
+    /// End-to-end test: weave a simple AND circuit through TFHE, compile
+    /// the result, run it with real key-generation / encryption / decryption,
+    /// and verify the output matches `a && b` for all input combinations.
+    ///
+    /// This is the first test that actually *runs* generated FHE code rather
+    /// than just compile-checking it.
+    #[test]
+    fn test_tfhe_cfg_and_executes_correctly() {
+        let (circuit, types) = build_ir_and_cfg();
+        let scheme = TfheScheme::cfg();
+        let output = weave_fhe(&circuit, &types, &scheme, "and_cfg", None, None);
+        let module = match output {
+            FheOutput::Cfg(m) => m,
+            _ => panic!("expected FheOutput::Cfg from TfheScheme::cfg()"),
+        };
+        let code = print_fhe_cfg_module(&module, true);
+
+        // Prepend the use-imports the same way run_compile_check_tfhe_cfg does.
+        let uses = "\
+use volar_spec::tfhe::{\
+    BootstrappingKey, LweCiphertext, \
+    tfhe_gate_bootstrapping_and, tfhe_gate_bootstrapping_or, \
+    tfhe_xor, tfhe_not, tfhe_trivial_zero, \
+    tfhe_trivial_one, tfhe_trivial_encrypt, tfhe_cmux, \
+    gen_lwe_secret_key, gen_rlwe_secret_key, gen_bootstrapping_key, \
+    lwe_encrypt, lwe_decrypt};\n\
+use volar_spec::SpecRng;\n\
+use volar_macros::volar_action;\n";
+
+        let code_with_imports = if let Some(nl) = code.find('\n') {
+            let (head, tail) = code.split_at(nl + 1);
+            format!("{head}{uses}{tail}")
+        } else {
+            format!("{uses}{code}")
+        };
+
+        // Append test harness: deterministic RNG + truth-table test.
+        let test_harness = r#"
+
+// ── Test harness ────────────────────────────────────────────────────────
+
+struct TestRng(u64);
+impl TestRng {
+    fn new(seed: u64) -> Self { Self(seed) }
+}
+impl SpecRng for TestRng {
+    fn next_u32(&mut self) -> u32 {
+        self.0 = self.0.wrapping_add(0x9e3779b97f4a7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+        z = z ^ (z >> 31);
+        z as u32
+    }
+}
+
+const N: usize = 8;
+const BN: usize = 64;
+const BSE: usize = 2;
+const KSE: usize = 2;
+
+#[test]
+fn and_truth_table() {
+    let mut rng = TestRng::new(42);
+    let lwe_sk = gen_lwe_secret_key::<N, _>(&mut rng);
+    let rlwe_sk = gen_rlwe_secret_key::<BN, _>(&mut rng);
+    let bk = gen_bootstrapping_key::<N, BN, BSE, KSE, _>(
+        &lwe_sk, &rlwe_sk, 16, 16, 0, 0, &mut rng,
+    );
+
+    for a in [false, true] {
+        for b in [false, true] {
+            let ct_a = lwe_encrypt(a, &lwe_sk, 0, &mut TestRng::new(100));
+            let ct_b = lwe_encrypt(b, &lwe_sk, 0, &mut TestRng::new(200));
+            let result = and_cfg_tfhe_cfg::<N, BN, BSE, KSE>(&bk, ct_a, ct_b);
+            let decrypted = lwe_decrypt(&result, &lwe_sk);
+            assert_eq!(
+                decrypted, a && b,
+                "AND({},{}) = {}, expected {}", a, b, decrypted, a && b,
+            );
+        }
+    }
+}
+"#;
+
+        let test_code = format!("{code_with_imports}{test_harness}");
+
+        // Set up temp crate as a [[test]] target (like garble::test_multi_eval_and).
+        let root = crate::tests_common::workspace_root();
+        let tmpdir = std::env::temp_dir().join("volar_weaver_tfhe_e2e_and");
+        let srcdir = tmpdir.join("src");
+        std::fs::create_dir_all(&srcdir).unwrap();
+
+        let cargo_toml = std::format!(
+            "[package]\n\
+             name = \"weave-exec-tfhe-and\"\n\
+             version = \"0.1.0\"\n\
+             edition = \"2024\"\n\
+             \n\
+             [[test]]\n\
+             name = \"tfhe_and\"\n\
+             path = \"src/lib.rs\"\n\
+             \n\
+             [dependencies]\n\
+             volar-spec = {{ path = \"{root}/crates/spec/volar-spec\" }}\n\
+             volar-primitives = {{ path = \"{root}/crates/spec/volar-primitives\" }}\n\
+             volar-common = {{ path = \"{root}/crates/spec/volar-common\" }}\n\
+             volar-macros = {{ path = \"{root}/crates/macros/volar-macros\" }}\n\
+             hybrid-array = \"0.4.8\"\n\
+             digest = {{ version = \"0.11.2\", default-features = false }}\n\
+             cipher = {{ version = \"0.5.1\", default-features = false }}\n\
+             rand = {{ version = \"0.9.2\", default-features = false }}\n\
+             typenum = {{ version = \"1.17\", default-features = false }}\n\
+             elliptic-curve = {{ version = \"0.13.8\", features = [\"arithmetic\"], default-features = false }}\n",
+            root = root,
+        );
+
+        std::fs::write(tmpdir.join("Cargo.toml"), &cargo_toml).unwrap();
+        std::fs::write(srcdir.join("lib.rs"), &test_code).unwrap();
+
+        let output = std::process::Command::new("cargo")
+            .args(["test", "--quiet", "--test", "tfhe_and"])
+            .current_dir(&tmpdir)
+            .env(
+                "CARGO_TARGET_DIR",
+                String::from(tmpdir.join("target").to_str().unwrap()),
+            )
+            .output()
+            .expect("failed to run cargo test");
+
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let _ = std::fs::remove_dir_all(&tmpdir);
+
+        if !output.status.success() {
+            panic!(
+                "TFHE E2E AND test failed\n--- code ---\n{}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                test_code, stdout, stderr
+            );
+        }
+    }
 }
