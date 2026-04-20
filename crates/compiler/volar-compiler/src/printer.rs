@@ -1580,6 +1580,10 @@ impl<'a> RustBackend for CfgModuleWriter<'a> {
             StructWriter { s }.fmt(f)?;
             writeln!(f)?;
         }
+        for e in &self.module.enums {
+            EnumWriter { e }.fmt(f)?;
+            writeln!(f)?;
+        }
         for t in &self.module.traits {
             TraitWriter { t }.fmt(f)?;
             writeln!(f)?;
@@ -1588,6 +1592,12 @@ impl<'a> RustBackend for CfgModuleWriter<'a> {
             ImplWriter { i }.fmt(f)?;
             writeln!(f)?;
         }
+        // Auxiliary (linked spec) functions — regular linear bodies.
+        for func in &self.module.auxiliary_functions {
+            FunctionWriter { f: func, level: 0, is_trait_item: false }.fmt(f)?;
+            writeln!(f)?;
+        }
+        // Circuit functions — CFG-structured bodies.
         for func in &self.module.functions {
             CfgFunctionWriter { func, level: 0 }.fmt(f)?;
             writeln!(f)?;

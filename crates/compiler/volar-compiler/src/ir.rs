@@ -2045,8 +2045,13 @@ pub struct IrCfgFunction<P: Clone + Default = ()> {
 pub struct IrCfgModule<P: Clone + Default = ()> {
     pub name: String,
     pub structs: Vec<IrStruct>,
+    pub enums: Vec<IrEnum>,
     pub traits: Vec<IrTrait>,
     pub impls: Vec<IrImpl<P>>,
     pub functions: Vec<IrCfgFunction<P>>,
+    /// Auxiliary (non-CFG) functions merged from linked specs.
+    /// These are printed as regular Rust functions alongside the
+    /// CFG-structured circuit functions.
+    pub auxiliary_functions: Vec<IrFunction<P>>,
     pub type_aliases: Vec<IrTypeAlias>,
 }

@@ -15,7 +15,7 @@ use std::vec::Vec;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
-use crate::ir::IrModule;
+use crate::ir::{IrModule, IrCfgModule};
 
 /// A named spec module to be linked into generated output.
 pub struct LinkedSpec {
@@ -58,6 +58,22 @@ impl LinkageSystem {
             target.traits.extend(spec.module.traits.iter().cloned());
             target.impls.extend(spec.module.impls.iter().cloned().map(|i| i.map_prov(&|_| Q::default())));
             target.functions.extend(spec.module.functions.iter().cloned().map(|f| f.map_prov(&|_| Q::default())));
+            target.type_aliases.extend(spec.module.type_aliases.iter().cloned());
+        }
+    }
+
+    /// Merge all linked spec declarations into a CFG module.
+    ///
+    /// Structs, enums, traits, impls, and type aliases are appended directly.
+    /// Linked spec functions (which have linear bodies) go into
+    /// `auxiliary_functions` rather than the CFG `functions` list.
+    pub fn apply_cfg<Q: Clone + Default>(&self, target: &mut IrCfgModule<Q>) {
+        for spec in &self.specs {
+            target.structs.extend(spec.module.structs.iter().cloned());
+            target.enums.extend(spec.module.enums.iter().cloned());
+            target.traits.extend(spec.module.traits.iter().cloned());
+            target.impls.extend(spec.module.impls.iter().cloned().map(|i| i.map_prov(&|_| Q::default())));
+            target.auxiliary_functions.extend(spec.module.functions.iter().cloned().map(|f| f.map_prov(&|_| Q::default())));
             target.type_aliases.extend(spec.module.type_aliases.iter().cloned());
         }
     }

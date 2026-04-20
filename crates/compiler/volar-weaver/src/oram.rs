@@ -1709,8 +1709,11 @@ mod tests_rewrite {
 #[cfg(all(test, feature = "linking"))]
 mod tests_linking {
     extern crate std;
+    extern crate alloc;
+    use alloc::vec;
 
     use volar_compiler::parser::{SourceInput, parse_sources};
+    use volar_compiler::linkage::LinkageSystem;
 
     #[test]
     fn oram_core_parses_from_include() {
@@ -1766,5 +1769,101 @@ mod tests_linking {
 
         let code = std::format!("{}", DisplayRust(ModuleWriter { module: &module }));
         run_compile_check(&code, "oram_core_roundtrip");
+    }
+
+    // -- End-to-end integration: rewrite + link + weave --
+
+    #[test]
+    fn rewrite_link_weave_integration() {
+        use super::{OramConfig, rewrite_storage_to_oram, oram_linked_spec};
+        use crate::fhe::{weave_fhe, FheOutput, TfheScheme, print_fhe_cfg_module};
+        use volar_ir::ir::{
+            IRType, IRTypes, IRBlocks, IRBlock, IRStmt, IRVarId, IRTypeId,
+            IRTerminator, IRBlockTargetId, PrimType, StorageId, Constant,
+        };
+        use volar_compiler::printer::{CfgModuleWriter, DisplayRust};
+
+        let mut types = IRTypes::new();
+        let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
+        let c = OramConfig { storage_id: 0, z: 4, b: 16, l: 4 };
+        let data_ty = c.data_type(&mut types);
+
+        // Build minimal IR: param 0 = address (u64), stmt 0 = StorageRead
+        let ir = IRBlocks {
+            oracles: vec![],
+            actions: vec![],
+            rngs: vec![],
+            blocks: vec![IRBlock {
+                params: vec![u64_ty],
+                stmts: vec![IRStmt::StorageRead {
+                    storage: StorageId(0),
+                    ty: data_ty,
+                    addr: IRVarId(0),
+                }],
+                stmt_provs: vec![()],
+                terminator: IRTerminator::Jmp {
+                    func: IRBlockTargetId::Return,
+                    args: vec![IRVarId(1)],
+                },
+            }],
+        };
+
+        // Step 1: Rewrite storage to ORAM
+        let rewritten = rewrite_storage_to_oram(&ir, &mut types, &[c.clone()]);
+        assert!(rewritten.blocks[0].stmts.len() > 1, "rewrite should expand storage ops");
+
+        // Step 2: Build linkage system with ORAM core
+        let mut linkage = LinkageSystem::new();
+        linkage.add(oram_linked_spec());
+
+        // Step 3: Weave through CFG with linkage
+        let scheme = c.configure_scheme(TfheScheme::cfg());
+        let output = weave_fhe(&rewritten, &types, &scheme, "oram_e2e", Some(&linkage), None);
+
+        let module = match output {
+            FheOutput::Cfg(m) => m,
+            FheOutput::Flat(_) => panic!("expected CFG output, got Flat"),
+        };
+
+        // Step 4: Verify structural properties — circuit code present
+        assert!(!module.functions.is_empty(), "should have at least one CFG function");
+
+        // Step 5: Verify linked spec content is merged
+        assert!(
+            module.auxiliary_functions.len() >= 4,
+            "expected >= 4 linked functions (path_indices, read_path, write_path, server_step), got {}",
+            module.auxiliary_functions.len()
+        );
+        assert!(
+            module.structs.len() >= 2,
+            "expected >= 2 linked structs (OramEntry, Bucket), got {}",
+            module.structs.len()
+        );
+        assert!(
+            module.enums.len() >= 2,
+            "expected >= 2 linked enums (ServerRequest, ServerResponse), got {}",
+            module.enums.len()
+        );
+
+        // Step 6: Print and verify text output contains both circuit and spec content
+        let code = print_fhe_cfg_module(&module, true);
+
+        // Circuit function
+        assert!(code.contains("fn oram_e2e_tfhe_cfg"), "missing circuit function in output");
+
+        // Linked ORAM types
+        assert!(code.contains("struct OramEntry"), "missing OramEntry struct in output");
+        assert!(code.contains("struct Bucket"), "missing Bucket struct in output");
+        assert!(code.contains("enum ServerRequest"), "missing ServerRequest enum in output");
+        assert!(code.contains("enum ServerResponse"), "missing ServerResponse enum in output");
+
+        // Linked ORAM functions
+        assert!(code.contains("fn path_indices"), "missing path_indices in output");
+        assert!(code.contains("fn read_path"), "missing read_path in output");
+        assert!(code.contains("fn write_path"), "missing write_path in output");
+        assert!(code.contains("fn server_step"), "missing server_step in output");
+
+        // Derives preserved in linked types
+        assert!(code.contains("Clone"), "missing Clone derive in output");
     }
 }

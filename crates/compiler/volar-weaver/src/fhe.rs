@@ -2068,15 +2068,19 @@ fn weave_fhe_cfg<S: FheScheme>(
         body: IrCfgBody { blocks: cfg_blocks },
     };
 
-    let module = IrCfgModule {
+    let mut module = IrCfgModule {
         name: format!("weaved_{}", fn_name),
         functions: vec![func],
         structs: vec![],
+        enums: vec![],
         traits: vec![],
         impls: vec![],
+        auxiliary_functions: vec![],
         type_aliases: vec![],
     };
-    let _ = linkage; // CFG linkage is future work
+    if let Some(ls) = linkage {
+        ls.apply_cfg(&mut module);
+    }
     module
 }
 
