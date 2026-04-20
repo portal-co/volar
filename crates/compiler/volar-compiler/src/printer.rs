@@ -1602,6 +1602,11 @@ impl<'a> RustBackend for CfgModuleWriter<'a> {
         }
         // Auxiliary (linked spec) functions — regular linear bodies.
         for func in &self.module.auxiliary_functions {
+            // TypeStub functions carry only signature info for LIR codegen;
+            // the Rust output imports the real implementation via `use`.
+            if func.external_kind == ExternalKind::TypeStub {
+                continue;
+            }
             FunctionWriter { f: func, level: 0, is_trait_item: false }.fmt(f)?;
             writeln!(f)?;
         }

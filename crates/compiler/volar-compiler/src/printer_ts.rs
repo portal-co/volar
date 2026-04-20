@@ -3324,6 +3324,11 @@ impl<'a> TsBackend for TsCfgModuleWriter<'a> {
         // Auxiliary (linked-spec) functions — regular flat bodies
         let empty = WitnessNeeds::default();
         for func in &self.module.auxiliary_functions {
+            // TypeStub functions carry only signature info for LIR codegen;
+            // the TS output imports the real implementation.
+            if func.external_kind == ExternalKind::TypeStub {
+                continue;
+            }
             TsFunctionWriter {
                 func,
                 indent: 0,

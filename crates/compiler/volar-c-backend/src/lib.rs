@@ -26,6 +26,16 @@ use std::{
 };
 use volar_lir::{IcmpPred, LirTarget, LirType, LirAbi, StackAllocExt, StructDef, StructId};
 
+/// Sanitize a field name for C: if it starts with a digit (e.g. tuple fields
+/// "0", "1", …), prefix with `_` to make it a valid C identifier.
+fn c_field_name(name: &str) -> String {
+    if name.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("_{name}")
+    } else {
+        name.to_string()
+    }
+}
+
 // ============================================================================
 // Handles
 // ============================================================================
@@ -150,13 +160,11 @@ pub struct CBackend {
 
     /// Registered struct definitions in `define_struct` call order.
     struct_defs: Vec<StructDef>,
-    /// Pre-rendered `typedef struct { ... } Name;` strings.
-    struct_typedefs: Vec<String>,
     /// Struct names indexed by `StructId`.
     struct_names: Vec<String>,
-    /// Ordered list of array typedefs needed: (typedef_name, elem_ty, len).
-    /// Inner arrays appear before outer arrays (insertion order via DFS).
-    array_typedefs: Vec<(String, LirType, usize)>,
+    /// Unified list of all type definitions (array and struct typedefs) in
+    /// dependency order.  Emitted as-is in `finish()`.
+    all_typedefs: Vec<String>,
     /// Set of already-registered array typedef names for deduplication.
     array_typedef_set: BTreeSet<String>,
     /// Rendered `extern RetType name(ArgTypes...);` declarations.
@@ -175,9 +183,8 @@ impl CBackend {
             completed_functions: Vec::new(),
             current: None,
             struct_defs: Vec::new(),
-            struct_typedefs: Vec::new(),
             struct_names: Vec::new(),
-            array_typedefs: Vec::new(),
+            all_typedefs: Vec::new(),
             array_typedef_set: BTreeSet::new(),
             extern_decls: Vec::new(),
             next_struct_id: 0,
@@ -195,29 +202,19 @@ impl CBackend {
     ///
     /// Emits (in order):
     /// 1. `#include` headers
-    /// 2. Array typedefs (inner-first so nested arrays are valid C)
-    /// 3. Struct typedefs
-    /// 4. Extern declarations
-    /// 5. Function definitions
+    /// 2. Type definitions (array + struct typedefs in dependency order)
+    /// 3. Extern declarations
+    /// 4. Function definitions
     pub fn finish(self) -> String {
         let mut out = String::new();
         out.push_str("#include <stdint.h>\n");
         out.push_str("#include <stdbool.h>\n\n");
 
-        // Array typedefs.
-        for (name, elem_ty, len) in &self.array_typedefs {
-            let elem_c = lir_type_to_c_free(elem_ty, &self.struct_names);
-            writeln!(out, "typedef struct {{ {elem_c} data[{len}]; }} {name};").unwrap();
+        // All type definitions in dependency order.
+        for td in &self.all_typedefs {
+            out.push_str(td);
         }
-        if !self.array_typedefs.is_empty() {
-            out.push('\n');
-        }
-
-        // Struct typedefs.
-        for s in &self.struct_typedefs {
-            out.push_str(s);
-        }
-        if !self.struct_typedefs.is_empty() {
+        if !self.all_typedefs.is_empty() {
             out.push('\n');
         }
 
@@ -257,7 +254,9 @@ impl CBackend {
             self.register_array_typedef(&elem_clone);
             let name = arr_typedef_name(elem, *len);
             if self.array_typedef_set.insert(name.clone()) {
-                self.array_typedefs.push((name, elem_clone, *len));
+                let elem_c = lir_type_to_c_free(&elem_clone, &self.struct_names);
+                let td = format!("typedef struct {{ {elem_c} data[{len}]; }} {name};\n");
+                self.all_typedefs.push(td);
             }
         }
     }
@@ -323,7 +322,8 @@ impl CBackend {
                 let mut result = Vec::new();
                 for (fname, fty) in field_names.iter().zip(field_tys.iter()) {
                     let fc = self.type_to_c(fty);
-                    let expr = format!("{agg_name}.{fname}");
+                    let cfname = c_field_name(fname);
+                    let expr = format!("{agg_name}.{cfname}");
                     let vid = self.state().next_value;
                     if to_preamble {
                         writeln!(self.state().preamble, "  {fc} v{vid} = {expr};").unwrap();
@@ -372,7 +372,10 @@ impl CBackend {
                     .map(|&v| self.state().name_of(v).to_owned())
                     .collect();
                 let init = field_names.iter().zip(val_names.iter())
-                    .map(|(fname, vname)| format!(".{fname} = {vname}"))
+                    .map(|(fname, vname)| {
+                        let cfname = c_field_name(fname);
+                        format!(".{cfname} = {vname}")
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 let expr = format!("({struct_name}){{ {init} }}");
@@ -408,16 +411,17 @@ impl LirTarget for CBackend {
             self.register_array_typedef(ty);
         }
 
-        // Render the typedef.
+        // Render the typedef with C-safe field names.
         let mut s = "typedef struct {\n".to_string();
         for field in &def.fields {
             let c_type = self.type_to_c(&field.ty);
-            writeln!(s, "  {c_type} {};", field.name).unwrap();
+            let fname = c_field_name(&field.name);
+            writeln!(s, "  {c_type} {fname};").unwrap();
         }
         writeln!(s, "}} {};", def.name).unwrap();
 
         self.struct_names.push(def.name.clone());
-        self.struct_typedefs.push(s);
+        self.all_typedefs.push(s);
         self.struct_defs.push(def);
         id
     }
@@ -840,6 +844,37 @@ impl LirTarget for CBackend {
 
     fn abi(&self) -> LirAbi {
         LirAbi::C_NATIVE
+    }
+
+    fn ptr_index_load(
+        &mut self,
+        ptr: CValue,
+        idx: CValue,
+        pointee_ty: &LirType,
+    ) -> Vec<CValue> {
+        // Emit: pointee_ty vN = ptr[idx];
+        let ptr_name = self.state().name_of(ptr).to_owned();
+        let idx_name = self.state().name_of(idx).to_owned();
+        let c_type = self.type_to_c(pointee_ty);
+        let expr = format!("{ptr_name}[{idx_name}]");
+        let loaded = self.state().emit_instr(pointee_ty.clone(), c_type, &expr);
+        self.unpack_to_scalars(loaded, pointee_ty, false)
+    }
+
+    fn ptr_index_store(
+        &mut self,
+        ptr: CValue,
+        idx: CValue,
+        vals: &[CValue],
+        pointee_ty: &LirType,
+    ) {
+        // Pack flat scalars into the aggregate, then emit: ptr[idx] = packed;
+        let mut offset = 0usize;
+        let packed = self.pack_scalars(pointee_ty, vals, &mut offset);
+        let ptr_name = self.state().name_of(ptr).to_owned();
+        let idx_name = self.state().name_of(idx).to_owned();
+        let val_name = self.state().name_of(packed).to_owned();
+        writeln!(self.state().body, "  {ptr_name}[{idx_name}] = {val_name};").unwrap();
     }
 }
 

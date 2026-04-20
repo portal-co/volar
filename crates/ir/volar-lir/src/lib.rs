@@ -464,4 +464,39 @@ pub trait LirTarget<Prov: Clone + Default = ()> {
     fn abi(&self) -> LirAbi {
         LirAbi::DEFAULT
     }
+
+    // ---- Pointer-indexed memory operations ----------------------------------
+
+    /// Load an element from a pointer at the given index, returning flat
+    /// scalar values.
+    ///
+    /// Semantics: `ptr[idx]` — read the element at offset `idx` and
+    /// decompose the aggregate result into flat scalar values.
+    ///
+    /// Only backends with a memory model (e.g. `CBackend`) need to implement
+    /// this.  Circuit backends can leave the default, which panics.
+    fn ptr_index_load(
+        &mut self,
+        _ptr: Self::Value,
+        _idx: Self::Value,
+        _pointee_ty: &LirType,
+    ) -> Vec<Self::Value> {
+        unimplemented!("ptr_index_load: not supported by this backend")
+    }
+
+    /// Store flat scalar values to a pointer at the given index.
+    ///
+    /// Semantics: `ptr[idx] = pack(vals)` — pack the flat scalars into an
+    /// aggregate and write it at offset `idx`.
+    ///
+    /// Only backends with a memory model need to implement this.
+    fn ptr_index_store(
+        &mut self,
+        _ptr: Self::Value,
+        _idx: Self::Value,
+        _vals: &[Self::Value],
+        _pointee_ty: &LirType,
+    ) {
+        unimplemented!("ptr_index_store: not supported by this backend")
+    }
 }

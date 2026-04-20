@@ -11,184 +11,48 @@ When deciding what to implement or how to design a component, prefer choices tha
 - Keep the IR, compiler, and spec layer general enough to support future protocols.
 - Follow the reliability system: new cryptographic constructions start at Experimental, not Normal.
 
-## Current Implementation Architecture
+## Crate Constraints
 
-The live cryptographic kernel (`volar-spec`) implements two constructions:
-
-**VOLE-based ZK (Quicksilver-style VOLEitH):**
-- Subfield VOLE over GF(2) for bit-level operations, authenticated by an extension field GF(2^128) with a global secret Δ.
-- Commitment structure: `Vope<N, T, K>` — a vector of N authenticated values as polynomials of degree K in Δ.
-- Bit-slicing via `BitsInBytes`/`BitsInBytes64` for SIMD-style parallelization over GF(2).
-- Galois Extension Lifting: mapping bit-commitments into GF(2^k) (like AES's GF(256)) via linear basis transformations to perform field-specific operations (e.g., S-Box inversions).
-- Quicksilver-style algebraic AND checks: the product of two VOLE polynomials is verified against a claimed result by ensuring the resulting high-degree polynomial vanishes.
-
-**Garbled circuits:**
-- Half-gate scheme (Zahur-Rosulek-Evans 2015) over VOLE wire labels.
-- `GlobalSecret<N>`, `Garble<N>`, `Eval<N>`, `GarbleTable<N>` types.
-- Weaver generates both garbler and evaluator variants from boolean circuits.
-
-## Compiler IR Genericity Invariant
-
-All code that programmatically constructs `IrModule` (in `volar-compiler`) must use typed `IrExpr`/`IrStmt` nodes — never embed raw Rust strings as expression text. Use:
-- `IrExpr::MethodCall` for method calls
-- `IrExpr::Binary` for binary operators
-- `IrExpr::StructExpr` for struct literals
-- `IrExpr::Var` for variable references
-- `IrExpr::Call` + `IrExpr::Path` for free function calls with turbofish
-- `IrType::Struct { kind: Custom("..."), .. }` for named types
-
-If the printer does not handle a node correctly, **fix the printer** rather than working around it with raw strings. Guardrails in the printer (debug_assert on ident characters, etc.) exist to catch injection; respect them.
-
-## Tests for Generated IR
-
-Tests of generated compiler IR must **lower and compile the output** (real backend: `print_module` → `rustc`), not perform syntactic IR analysis. Do not assert on variable names, statement counts, or IR structure unless the test is specifically verifying a hard-to-change structural invariant. The correctness signal is: the generated code compiles and (where possible) runs correctly.
-
-## Garbler + Evaluator Pairing
-
-Any weaving pass targeting a garbled circuit scheme must generate **both** variants:
-- **Evaluator side**: takes precomputed `GarbleTable<N>` inputs and evaluates the circuit using `and_via_table`, free-XOR, etc.
-- **Garbler side**: takes `GlobalSecret<N>` and input `Garble<N>` wire labels, produces `GarbleTable<N>` for each AND gate.
-
-These variants must be co-designed so their protocols are compatible (same table order, same wire convention).
-
-## Reliability Tags
-
-Files tagged `// @reliability: experimental` contain unreviewed cryptographic code. New code depending on these must not be deployed without separate review. The `@ai: none` or `@ai: assisted` tags indicate the level of AI involvement in that file.
-
-## IR Type Taxonomy
-
-When working with `IRType` (in `volar-ir`), use this taxonomy to decide how to handle each variant:
-
-| Variant | Kind | Bit-width | FHE CFG support |
-|---|---|---|---|
-| `Primitive(Bit)` | 1-bit GF(2) | 1 | Full |
-| `Vec(N, Bit)` | packed bitvector | N | Full (`[wire; N]`) |
-| `Primitive(_8/_16/_32/_64)` | packed bitvector | 8/16/32/64 | Full (`[wire; W]`) |
-| `Primitive(_128/_256)` | packed bitvector | 128/256 | LIR: `unimplemented!`; FHE: `[wire; W]` |
-| `Primitive(AES8)` | GF(256) field element | 8 | Deferred |
-| `Primitive(Galois64)` | GF(2^64) field element | 64 | Deferred |
-
-- `ir_type_bit_width(ty_id, types)` computes the wire count for any supported type.
-- `FheScheme::wire_type_for_ir` / `public_type_for_ir` convert an `IRTypeId` to the appropriate compiler `IrType` for generated code.
-- Unsupported types (AES8, Galois64 in FHE CFG path; _128/_256 in LIR) panic with an explicit message — do not silently emit wrong code.
-
-## `Poly` Statement Semantics
-
-`IRStmt::Poly { ty, coeffs, constant }` represents a multilinear polynomial over GF(2) with a typed output:
-
-- **`ty = Bit`**: standard GF(2) gate — all coefficient variables are `Bit`-typed. This is the original and most common case.
-- **`ty = T` (bitvector or field element)**: at most one `T`-typed variable per monomial; all other variables in that monomial are `Bit`-typed selectors. The polynomial result has type `T`.
-
-When constructing `Poly` nodes, always supply the `ty` field explicitly. Do not use `ir_stmt_output_ty`'s old fallback (it now returns `Some(*ty)` for `Poly`).
-
-## `IrLoweringConfig`
-
-`volar_ir_config::IrLoweringConfig` configures target-specific parameters for `lower_ir`:
-
-```rust
-pub struct IrLoweringConfig {
-    pub word_bits: usize,       // native word size (default 64)
-    pub pointer_bits: usize,    // pointer size (default 64)
-    pub aggregate_byval_limit: usize, // max struct size for by-value ABI (default 128)
-    pub native_aggregates: bool,      // use struct-typed LIR values (default false)
-}
-```
-
-`lower_ir` uses `IrLoweringConfig::default()` for backward compatibility. Pass a custom config via `lower_ir_with_handler` when targeting a different ABI.
-
-## Storage Semantics (Type-Discriminated Slots)
-
-Storage in Volar IR is keyed by `(StorageId, TypeId, address)`. Each such triple is an **independent slot**: writing `_8` to `(S1, addr=0)` does not affect a read of `Bit` from `(S1, addr=0)`, because different `TypeId`s are distinct namespaces within the same `StorageId`.
-
-This design enables:
-- **Efficient stack lowering**: a single `StorageId` can represent a stack frame with typed fields at distinct type-slots, without requiring separate `StorageId`s for each field.
-- **Storage remapping**: optimization passes (e.g. store-to-load forwarding) can safely forward within a `(StorageId, TypeId)` pair without cross-type interference.
-
-### Invalidation policy
-
-A `StorageWrite` to `(S, T, addr)` invalidates all cached reads for the same `(S, T)` pair regardless of address (conservative on address aliasing), but does NOT invalidate entries for `(S, T')` where `T' != T`.
-
-### Evaluator conformance
-
-All evaluators must key their storage maps by `(StorageId, TypeId, addr)` (IR, VAFFLE) or the equivalent `(StorageId, bit_width, addr)` (BIR, where all values are single bits). Writing with one type and reading with a different type at the same `StorageId + address` returns the default zero value, not the previously written data.
-
-### BIR multi-bit addresses
-
-`BIrStmt::StorageRead` and `StorageWrite` use `addr: Vec<IRVarId>` — each element is a single-bit BIR variable, and the Vec represents an N-bit address giving 2^N distinct locations per `(StorageId, bit_width)` pair. Bit 0 (index 0) is the least-significant bit.
-
-**IR→BIR lowering** (`lower_ir_to_boolar.rs`): all bits of the IR address variable are passed through to the BIR address vec — `var_bits[&addr.0].iter().copied().collect()`. No truncation.
-
-**BIR evaluator** (`interpreter/biir.rs`): collapses `Vec<IRVarId>` to `u64` via `bits_to_u64` (imported from `interpreter::ir`), then keys the `BIrStorageMap` by `(StorageId, u64)`. This keeps the evaluator simple and supports up to 64-bit addresses.
-
-**Store-forward optimizer** (`store_forward.rs`): `BiirStoreCache` is keyed by `(StorageId, usize, Vec<IRVarId>)`. `Vec<IRVarId>` implements `Ord` lexicographically, so it works as a `BTreeMap` key. Cross-block translation applies the pred→target arg map to **each element** of the addr Vec; if any bit fails to translate, the entire cache entry is dropped.
-
-**FHE weaver** (`fhe.rs`): `emit_read` and `emit_write` take `addr_wires: &[&str]` (one wire name per address bit). `mux_tree_read` uses `addr_wires[level]` at each recursion level (not the same wire at every level). `emit_write` uses a full binary demux tree for N-bit addresses, mirroring `mux_tree_read`.
-
-**Fuzzer generator** (`generators/biir.rs`): generates 1-bit addresses (`addr: vec![IRVarId(bv)]`) as the minimum, with optional 2-bit addresses for additional coverage.
-
-### Relevant files
-
-- `crates/fuzz/volar-fuzz/src/interpreter/ir.rs` — `StorageMap = BTreeMap<(StorageId, TypeId, u64), Vec<bool>>`
-- `crates/fuzz/volar-fuzz/src/interpreter/vaffle.rs` — reuses `StorageMap` from `ir.rs`
-- `crates/fuzz/volar-fuzz/src/interpreter/biir.rs` — `BIrStorageMap = BTreeMap<(StorageId, u64), bool>`; uses `bits_to_u64` to collapse multi-bit addr
-- `crates/ir/volar-ir-opt/src/store_forward.rs` — cache types `IrStoreCache`, `BiirStoreCache` (keyed by `Vec<IRVarId>`), `VaffleCache`
-- `crates/compiler/volar-weaver/src/fhe.rs` — `emit_read`/`emit_write` with `addr_wires: &[&str]`; `mux_tree_read` with per-level addr bits
-
-## Channel Crate (`volar-channel`)
-
-`volar-channel` provides a transport-agnostic protocol abstraction for interactive cryptographic protocols. It is `#![no_std] + alloc`.
-
-Core types:
-- **`Yield<D, O>`**: result of a protocol step — either `Done(D)` (protocol complete) or `Send { msg: O, next: S }` (send a message and continue with updated state).
-- **`Protocol`** trait: `fn step(state: Self::State, incoming: Self::Incoming) -> (Self::State, Yield<Self::Done, Self::Outgoing>)` — pure function, serializable state.
-- **`run_protocol`**: driver function that executes two `Protocol` implementations against each other in lockstep (useful for local simulation and testing).
-
-Design invariants:
-- No `Transport` trait. The caller decides how messages move (TCP, shared memory, FHE ciphertext, VOLE commitment).
-- Deterministic: no hidden state, no randomness. RNG is passed in via `State` or `Incoming` if needed.
-- State is passed by value, not `&mut self`, so it can be serialized for checkpointing.
-
-### Relevant files
-- `crates/channel/volar-channel/src/lib.rs` — full implementation + tests
-
-## ORAM Crate (`volar-oram`)
-
-`volar-oram` implements Recursive Path ORAM (Stefanov et al. 2018) for oblivious memory access in FHE/MPC circuits. It is `#![no_std] + alloc`.
-
-Core types:
-- **`OramTree<const Z: usize, const B: usize>`**: the server-side binary tree of buckets, each holding Z blocks of B bytes.
-- **`OramClient<const Z: usize, const B: usize>`**: the client-side state holding the position map and stash.
-- **`OramBlock<const B: usize>`**: a `(logical_address, leaf_label, data: [u8; B])` triple, or `DUMMY`.
-- **`RecursiveOram<const Z: usize, const B: usize, const RZ: usize, const RB: usize>`**: wraps `OramClient` + `OramTree` with a recursive sub-ORAM for the position map when it exceeds the base-case threshold.
-
-Algorithm:
-1. Client looks up `pos_map[addr]` to get the current leaf.
-2. Client picks a `new_leaf` uniformly at random.
-3. Server reads the entire path from root to `old_leaf` and sends it.
-4. Client absorbs the path into the stash, performs the read/write, assigns `new_leaf` to the accessed address.
-5. Client runs deterministic reverse-lexicographic eviction (two paths per access).
-6. Client writes back evicted buckets to the server.
-
-Key design points:
-- **Deterministic eviction**: reverse-lexicographic order via `G(cnt)` — bit-reversal of the access counter. Two eviction paths per access for O(log N) stash size.
-- **Recursive position map**: when `num_leaves > base_case`, the position map is stored in a sub-ORAM with smaller blocks (packing multiple position entries per block).
-- **Protocol integration**: both `OramAccessProtocol` and `RecursiveOramProtocol` implement the `volar-channel::Protocol` trait for interactive client-server execution.
-
-### ORAM Fuzzing (Properties I–N)
-
-ORAM property tests use **proptest** in-crate (`#[cfg(test)] mod proptests`), continuing the letter-based naming from IR fuzzing (A–H):
-
-| Property | Name | What it checks |
+| Crate | `std` | Notes |
 |---|---|---|
-| I | HashMap equivalence | Sequence of read/write ops matches a `BTreeMap` oracle |
-| J | Stash boundedness | Stash size stays ≤ `Z * tree_height` after every operation |
-| K | Protocol equivalence | `run_protocol` path produces same results as local `access()` path |
-| L | Path invariant | Every node on a root-to-leaf path has the correct depth and index |
-| M | Recursive posmap equivalence | `RecursiveOram` read/write matches `BTreeMap` oracle |
-| N | No duplicate addresses | After a sequence of writes, no logical address appears twice in tree + stash |
+| `volar-ir-opt` | `#![no_std]` + `extern crate alloc` | Use `alloc::vec`, `alloc::vec::Vec`, `alloc::collections::BTreeMap` |
+| `volar-spec` | `#![no_std]` | In `#[cfg(test)]` modules: `extern crate std;` + `use std::vec::Vec;` |
+| `volar-fuzz` | `std` | Full standard library available |
+| `volar-channel` | `#![no_std]` + `extern crate alloc` | |
+| `volar-oram` | `#![no_std]` + `extern crate alloc` | |
+| `volar-oram-core` | `#![no_std]`, **zero deps** | Pure total Rust, no alloc |
+| `volar-weaver` | `#![no_std]` + `extern crate alloc` | Accesses `volar_ir_common` types through re-exports in `volar_ir` |
+| `volar-compiler` | `#![no_std]` + `extern crate alloc` | Optional `feature = "std"` |
 
-### Relevant files
-- `crates/oram/volar-oram/src/lib.rs` — full implementation + 20 unit tests + 6 proptests
-- `crates/channel/volar-channel/src/lib.rs` — `Protocol` trait used by ORAM
-- `docs/oram-channel-plan.md` — approved design plan
-- `docs/oram-fuzzing.md` — property documentation
+## Core Design Rules
+
+1. **Compiler IR Genericity**: All code constructing `IrModule` must use typed `IrExpr`/`IrStmt` nodes — never embed raw Rust strings as expression text. Use `IrExpr::MethodCall`, `IrExpr::Binary`, `IrExpr::StructExpr`, `IrExpr::Var`, `IrExpr::Call` + `IrExpr::Path`, `IrType::Struct { kind: Custom("..."), .. }`. If the printer mishandles a node, **fix the printer** — don't work around it with raw strings. The printer's `debug_assert` guardrails on ident characters exist to catch injection.
+
+2. **Tests for Generated IR**: Tests must **lower and compile the output** (real backend: `print_module` → `rustc`), not perform syntactic IR analysis. Do not assert on variable names, statement counts, or IR structure unless verifying a hard-to-change structural invariant. The correctness signal is: the generated code compiles and runs correctly.
+
+3. **Reliability Tags**: Files tagged `// @reliability: experimental` contain unreviewed cryptographic code. New code depending on these must not be deployed without separate review. `@ai: none` / `@ai: assisted` tags indicate AI involvement.
+
+4. **Catch-all arms**: Use `_ =>` catch-alls on IR type matches to support parallel development.
+
+5. **Deterministic spec**: `volar-spec` must be fully deterministic and NOT use the `rand` crate. A `SpecRng` trait is defined in `lib.rs`.
+
+6. **Never specialize on test cases**: Extend tests instead.
+
+7. **GRAFHEN XOR**: Garbled circuits have truly free composable XOR. Do not change `grafhen_xor`.
+
+8. **CFG vs flat AST**: Cannot convert CFG AST to normal AST — the normal AST is total while the CPS AST doesn't need to be.
+
+9. **`IrExpr::RawMap`**: Use for portable `[T; N]::map` expressions (not `MethodCall` + `Closure`).
+
+10. **Keep witness analysis and deshadowing for CFG modules**: The CFG AST contains copies of spec functions (via `auxiliary_functions`) that have the same shadowing and witness patterns as regular `IrModule` functions.
+
+## Topic Context Files
+
+Load these when working in the relevant area:
+
+| Topic | File | When to load |
+|---|---|---|
+| IR types, storage, Poly semantics | `docs/agent-context/ir-types-storage.md` | Working on IR, lowering, evaluators, store-forward, fuzzer generators |
+| Weaving & multi-backend | `docs/agent-context/weaving.md` | Working on FHE/garbled-circuit weaving, compiler printers (Rust/TS/C), action system, CFG emission |
+| ORAM & channel | `docs/agent-context/oram.md` | Working on ORAM crates, channel protocol, ORAM weaver integration |
+| Progress tracking | `PROGRESS.md` | Starting a new session, reviewing status, planning next steps |

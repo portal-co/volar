@@ -17,5 +17,8 @@ volar-compiler-common ={path="../volar-compiler-common"}
 volar-provenance.workspace = true
 volar-ir.workspace = true
 volar-ir-passes = {path="../../ir/volar-ir-passes"}
+volar-lir = {path="../../ir/volar-lir"}
+volar-lir-codegen = {path="../volar-lir-codegen"}
+volar-c-backend = {path="../volar-c-backend"}
 vaffle.workspace = true
 portal-pc-waffle-ir.workspace = true

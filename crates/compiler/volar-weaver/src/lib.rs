@@ -408,4 +408,75 @@ pub(crate) mod tests_common {
         };
         run_compile_check(&with_imports, test_name);
     }
+
+    /// Compile-check TypeScript code by writing it to a temp `.ts` file and
+    /// invoking `tsc --noEmit`.  Skips the test if `tsc` is not on PATH.
+    pub fn run_compile_check_ts(code: &str, test_name: &str) {
+        let tmpdir = std::env::temp_dir().join(format!("volar_ts_{}", test_name));
+        fs::create_dir_all(&tmpdir).unwrap();
+
+        // Write a minimal tsconfig.json
+        let tsconfig = "{\n  \"compilerOptions\": {\n    \
+            \"strict\": false,\n    \"noEmit\": true,\n    \
+            \"target\": \"ES2020\",\n    \"module\": \"ES2020\",\n    \
+            \"moduleResolution\": \"node\"\n  },\n  \
+            \"include\": [\"*.ts\"]\n}\n";
+        fs::write(tmpdir.join("tsconfig.json"), tsconfig).unwrap();
+        fs::write(tmpdir.join("circuit.ts"), code).unwrap();
+
+        let output = Command::new("tsc")
+            .args(["--noEmit"])
+            .current_dir(&tmpdir)
+            .output();
+
+        let _ = fs::remove_dir_all(&tmpdir);
+
+        match output {
+            Ok(o) => {
+                if !o.status.success() {
+                    let stderr = String::from_utf8_lossy(&o.stderr).into_owned();
+                    let stdout = String::from_utf8_lossy(&o.stdout).into_owned();
+                    panic!(
+                        "TypeScript compile check failed (test: {})\n--- code ---\n{}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                        test_name, code, stdout, stderr
+                    );
+                }
+            }
+            Err(_) => {
+                // tsc not on PATH — skip test gracefully
+                std::eprintln!("tsc not found on PATH, skipping TS compile check for {}", test_name);
+            }
+        }
+    }
+
+    /// Compile-check C code by writing it to a temp `.c` file and invoking
+    /// `cc -fsyntax-only -std=c99`.  Skips the test if `cc` is not on PATH.
+    pub fn run_compile_check_c(code: &str, test_name: &str) {
+        let tmpdir = std::env::temp_dir().join(format!("volar_c_{}", test_name));
+        fs::create_dir_all(&tmpdir).unwrap();
+
+        fs::write(tmpdir.join("circuit.c"), code).unwrap();
+
+        let output = Command::new("cc")
+            .args(["-fsyntax-only", "-std=c99", "circuit.c"])
+            .current_dir(&tmpdir)
+            .output();
+
+        let _ = fs::remove_dir_all(&tmpdir);
+
+        match output {
+            Ok(o) => {
+                if !o.status.success() {
+                    let stderr = String::from_utf8_lossy(&o.stderr).into_owned();
+                    panic!(
+                        "C compile check failed (test: {})\n--- code ---\n{}\n--- stderr ---\n{}",
+                        test_name, code, stderr
+                    );
+                }
+            }
+            Err(_) => {
+                std::eprintln!("cc not found on PATH, skipping C compile check for {}", test_name);
+            }
+        }
+    }
 }

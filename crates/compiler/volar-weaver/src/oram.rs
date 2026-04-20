@@ -1775,13 +1775,118 @@ mod tests_linking {
 
     #[test]
     fn rewrite_link_weave_integration() {
+        use crate::fhe::print_fhe_cfg_module;
+
+        let module = build_oram_cfg_module();
+
+        // Verify structural properties — circuit code present
+        assert!(!module.functions.is_empty(), "should have at least one CFG function");
+
+        // Verify linked spec content is merged
+        assert!(
+            module.auxiliary_functions.len() >= 4,
+            "expected >= 4 linked functions (path_indices, read_path, write_path, server_step), got {}",
+            module.auxiliary_functions.len()
+        );
+        assert!(
+            module.structs.len() >= 2,
+            "expected >= 2 linked structs (OramEntry, Bucket), got {}",
+            module.structs.len()
+        );
+        assert!(
+            module.enums.len() >= 2,
+            "expected >= 2 linked enums (ServerRequest, ServerResponse), got {}",
+            module.enums.len()
+        );
+
+        // Print and verify text output contains both circuit and spec content
+        let code = print_fhe_cfg_module(&module, true);
+
+        // Circuit function
+        assert!(code.contains("fn oram_e2e_tfhe_cfg"), "missing circuit function in output");
+
+        // Linked ORAM types
+        assert!(code.contains("struct OramEntry"), "missing OramEntry struct in output");
+        assert!(code.contains("struct Bucket"), "missing Bucket struct in output");
+        assert!(code.contains("enum ServerRequest"), "missing ServerRequest enum in output");
+        assert!(code.contains("enum ServerResponse"), "missing ServerResponse enum in output");
+
+        // Linked ORAM functions
+        assert!(code.contains("fn path_indices"), "missing path_indices in output");
+        assert!(code.contains("fn read_path"), "missing read_path in output");
+        assert!(code.contains("fn write_path"), "missing write_path in output");
+        assert!(code.contains("fn server_step"), "missing server_step in output");
+
+        // Derives preserved in linked types
+        assert!(code.contains("Clone"), "missing Clone derive in output");
+
+        // Compile check — the generated code (with action stubs,
+        // linked ORAM spec, and circuit function) should pass `cargo check`.
+        crate::tests_common::run_compile_check_tfhe_cfg(&code, "oram_e2e");
+    }
+
+    #[test]
+    #[cfg(feature = "linking")]
+    fn rewrite_link_weave_integration_ts() {
+        use crate::fhe::print_fhe_cfg_module_ts;
+
+        let module = build_oram_cfg_module();
+        let ts_code = print_fhe_cfg_module_ts(&module);
+
+        // Sanity: output is non-empty and contains the circuit function name
+        assert!(!ts_code.is_empty(), "TS output should be non-empty");
+        assert!(ts_code.contains("oram_e2e_tfhe_cfg"), "missing circuit function in TS output");
+
+        // Check for linked ORAM types (classes/tagged unions in TS)
+        assert!(ts_code.contains("OramEntry"), "missing OramEntry in TS output");
+        assert!(ts_code.contains("Bucket"), "missing Bucket in TS output");
+        assert!(ts_code.contains("ServerRequest"), "missing ServerRequest in TS output");
+        assert!(ts_code.contains("ServerResponse"), "missing ServerResponse in TS output");
+
+        // Check for linked functions
+        assert!(ts_code.contains("path_indices"), "missing path_indices in TS output");
+
+        crate::tests_common::run_compile_check_ts(&ts_code, "oram_e2e_ts");
+    }
+
+    #[test]
+    #[cfg(feature = "linking")]
+    fn rewrite_link_weave_integration_c() {
+        use crate::fhe::print_fhe_cfg_module_c;
+        use volar_lir_codegen::mono::MonoEnv;
+
+        let module = build_oram_cfg_module();
+
+        // C has no generics — monomorphize all const params to concrete values.
+        // TFHE scheme params:
+        let env = MonoEnv::new("")
+            .with_len("N_LWE", 630)
+            .with_len("BIG_N", 2048)
+            .with_len("BS_ELL", 3)
+            .with_len("KS_ELL", 4)
+            // ORAM spec params (from OramConfig { z: 4, b: 16, l: 4 }):
+            .with_len("Z", 4)
+            .with_len("B", 16)
+            .with_len("L", 4)
+            .with_len("N", 15);
+
+        let c_code = print_fhe_cfg_module_c(&module, &env);
+
+        // Sanity: output is non-empty
+        assert!(!c_code.is_empty(), "C output should be non-empty");
+
+        crate::tests_common::run_compile_check_c(&c_code, "oram_e2e_c");
+    }
+
+    /// Shared helper: build a rewritten+linked+woven ORAM CFG module for testing.
+    #[cfg(feature = "linking")]
+    fn build_oram_cfg_module() -> volar_compiler::IrCfgModule {
         use super::{OramConfig, rewrite_storage_to_oram, oram_linked_spec, ORAM_TREE_BASE};
-        use crate::fhe::{weave_fhe, FheOutput, TfheScheme, print_fhe_cfg_module, derive_ir_storage_config};
+        use crate::fhe::{weave_fhe, FheOutput, TfheScheme, derive_ir_storage_config};
         use volar_ir::ir::{
             IRType, IRTypes, IRBlocks, IRBlock, IRStmt, IRVarId, IRTypeId,
             IRTerminator, IRBlockTargetId, PrimType, StorageId, Constant,
         };
-        use volar_compiler::printer::{CfgModuleWriter, DisplayRust};
 
         let mut types = IRTypes::new();
         let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
@@ -1830,54 +1935,9 @@ mod tests_linking {
         let scheme = c.configure_scheme(TfheScheme::cfg());
         let output = weave_fhe(&rewritten, &types, &scheme, "oram_e2e", Some(&linkage), Some(&storage_config));
 
-        let module = match output {
+        match output {
             FheOutput::Cfg(m) => m,
             FheOutput::Flat(_) => panic!("expected CFG output, got Flat"),
-        };
-
-        // Step 4: Verify structural properties — circuit code present
-        assert!(!module.functions.is_empty(), "should have at least one CFG function");
-
-        // Step 5: Verify linked spec content is merged
-        assert!(
-            module.auxiliary_functions.len() >= 4,
-            "expected >= 4 linked functions (path_indices, read_path, write_path, server_step), got {}",
-            module.auxiliary_functions.len()
-        );
-        assert!(
-            module.structs.len() >= 2,
-            "expected >= 2 linked structs (OramEntry, Bucket), got {}",
-            module.structs.len()
-        );
-        assert!(
-            module.enums.len() >= 2,
-            "expected >= 2 linked enums (ServerRequest, ServerResponse), got {}",
-            module.enums.len()
-        );
-
-        // Step 6: Print and verify text output contains both circuit and spec content
-        let code = print_fhe_cfg_module(&module, true);
-
-        // Circuit function
-        assert!(code.contains("fn oram_e2e_tfhe_cfg"), "missing circuit function in output");
-
-        // Linked ORAM types
-        assert!(code.contains("struct OramEntry"), "missing OramEntry struct in output");
-        assert!(code.contains("struct Bucket"), "missing Bucket struct in output");
-        assert!(code.contains("enum ServerRequest"), "missing ServerRequest enum in output");
-        assert!(code.contains("enum ServerResponse"), "missing ServerResponse enum in output");
-
-        // Linked ORAM functions
-        assert!(code.contains("fn path_indices"), "missing path_indices in output");
-        assert!(code.contains("fn read_path"), "missing read_path in output");
-        assert!(code.contains("fn write_path"), "missing write_path in output");
-        assert!(code.contains("fn server_step"), "missing server_step in output");
-
-        // Derives preserved in linked types
-        assert!(code.contains("Clone"), "missing Clone derive in output");
-
-        // Step 7: Compile check — the generated code (with action stubs,
-        // linked ORAM spec, and circuit function) should pass `cargo check`.
-        crate::tests_common::run_compile_check_tfhe_cfg(&code, "oram_e2e");
+        }
     }
 }

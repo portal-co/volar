@@ -1,5 +1,5 @@
 // @reliability: normal
-//! Monomorphization pass for `IrModule`.
+//! Monomorphization pass for `IrModule` and `IrCfgModule`.
 //!
 //! Substitutes concrete values for type parameters before LIR lowering.
 //! Only handles length (const) parameters like `N: ArraySize`; trait parameters
@@ -7,8 +7,9 @@
 
 use std::collections::BTreeMap;
 use volar_compiler::ir::{
-    ArrayLength, ExternalKind, IrBlock, IrExpr, IrField, IrFunction, IrModule, IrParam, IrStmt, IrStruct,
-    IrType,
+    ArrayLength, ExternalKind, IrBlock, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump,
+    IrCfgModule, IrCfgTerminator, IrEnum, IrEnumVariant, IrEnumVariantData, IrExpr, IrField,
+    IrFunction, IrImpl, IrImplItem, IrModule, IrParam, IrStmt, IrStruct, IrType, IrTypeAlias,
 };
 
 // ============================================================================
@@ -54,6 +55,22 @@ pub fn monomorphize_module(module: &IrModule, env: &MonoEnv) -> IrModule {
         impls: module.impls.clone(),
         functions: module.functions.iter().map(|f| monomorphize_function(f, env)).collect(),
         type_aliases: module.type_aliases.clone(),
+    }
+}
+
+/// Monomorphize an `IrCfgModule`: substitutes type/length parameters
+/// in all struct definitions, enums, type aliases, impls, and function
+/// signatures/bodies (both CFG and auxiliary).
+pub fn monomorphize_cfg_module(module: &IrCfgModule, env: &MonoEnv) -> IrCfgModule {
+    IrCfgModule {
+        name: module.name.clone(),
+        structs: module.structs.iter().map(|s| monomorphize_struct(s, env)).collect(),
+        enums: module.enums.iter().map(|e| monomorphize_enum(e, env)).collect(),
+        traits: module.traits.clone(),
+        impls: module.impls.iter().map(|i| monomorphize_impl(i, env)).collect(),
+        functions: module.functions.iter().map(|f| monomorphize_cfg_function(f, env)).collect(),
+        auxiliary_functions: module.auxiliary_functions.iter().map(|f| monomorphize_function(f, env)).collect(),
+        type_aliases: module.type_aliases.iter().map(|a| monomorphize_type_alias(a, env)).collect(),
     }
 }
 
@@ -109,6 +126,159 @@ pub fn monomorphize_function(func: &IrFunction, env: &MonoEnv) -> IrFunction {
         where_clause: func.where_clause.clone(),
         body: mono_block(&func.body, env),
         external_kind: func.external_kind,
+    }
+}
+
+// ============================================================================
+// Enum monomorphization
+// ============================================================================
+
+fn monomorphize_enum(e: &IrEnum, env: &MonoEnv) -> IrEnum {
+    IrEnum {
+        kind: e.kind.clone(),
+        generics: e
+            .generics
+            .iter()
+            .filter(|g| !env.const_params.contains_key(&g.name))
+            .cloned()
+            .collect(),
+        variants: e
+            .variants
+            .iter()
+            .map(|v| IrEnumVariant {
+                name: v.name.clone(),
+                fields: match &v.fields {
+                    IrEnumVariantData::Unit => IrEnumVariantData::Unit,
+                    IrEnumVariantData::Tuple(tys) => {
+                        IrEnumVariantData::Tuple(tys.iter().map(|t| mono_type(t, env)).collect())
+                    }
+                    IrEnumVariantData::Struct(fields) => {
+                        IrEnumVariantData::Struct(
+                            fields
+                                .iter()
+                                .map(|f| IrField {
+                                    name: f.name.clone(),
+                                    ty: mono_type(&f.ty, env),
+                                    public: f.public,
+                                })
+                                .collect(),
+                        )
+                    }
+                },
+            })
+            .collect(),
+        derives: e.derives.clone(),
+    }
+}
+
+// ============================================================================
+// Impl monomorphization
+// ============================================================================
+
+fn monomorphize_impl(imp: &IrImpl, env: &MonoEnv) -> IrImpl {
+    IrImpl {
+        generics: imp
+            .generics
+            .iter()
+            .filter(|g| !env.const_params.contains_key(&g.name))
+            .cloned()
+            .collect(),
+        trait_: imp.trait_.clone(),
+        self_ty: mono_type(&imp.self_ty, env),
+        where_clause: imp.where_clause.clone(),
+        items: imp
+            .items
+            .iter()
+            .map(|item| match item {
+                IrImplItem::Method(f) => IrImplItem::Method(monomorphize_function(f, env)),
+                IrImplItem::AssociatedType { name, ty } => {
+                    IrImplItem::AssociatedType { name: name.clone(), ty: mono_type(ty, env) }
+                }
+            })
+            .collect(),
+    }
+}
+
+// ============================================================================
+// Type alias monomorphization
+// ============================================================================
+
+fn monomorphize_type_alias(alias: &IrTypeAlias, env: &MonoEnv) -> IrTypeAlias {
+    IrTypeAlias {
+        name: alias.name.clone(),
+        generics: alias
+            .generics
+            .iter()
+            .filter(|g| !env.const_params.contains_key(&g.name))
+            .cloned()
+            .collect(),
+        target: mono_type(&alias.target, env),
+    }
+}
+
+// ============================================================================
+// CFG function monomorphization
+// ============================================================================
+
+fn monomorphize_cfg_function(func: &IrCfgFunction, env: &MonoEnv) -> IrCfgFunction {
+    IrCfgFunction {
+        name: func.name.clone(),
+        generics: func
+            .generics
+            .iter()
+            .filter(|g| !env.const_params.contains_key(&g.name))
+            .cloned()
+            .collect(),
+        receiver: func.receiver,
+        params: func
+            .params
+            .iter()
+            .map(|p| IrParam { name: p.name.clone(), ty: mono_type(&p.ty, env) })
+            .collect(),
+        return_type: func.return_type.as_ref().map(|t| mono_type(t, env)),
+        where_clause: func.where_clause.clone(),
+        external_kind: func.external_kind,
+        body: mono_cfg_body(&func.body, env),
+    }
+}
+
+fn mono_cfg_body(body: &IrCfgBody, env: &MonoEnv) -> IrCfgBody {
+    IrCfgBody {
+        blocks: body.blocks.iter().map(|b| mono_cfg_block(b, env)).collect(),
+    }
+}
+
+fn mono_cfg_block(block: &IrCfgBlock, env: &MonoEnv) -> IrCfgBlock {
+    IrCfgBlock {
+        params: block
+            .params
+            .iter()
+            .map(|p| IrParam { name: p.name.clone(), ty: mono_type(&p.ty, env) })
+            .collect(),
+        stmts: block.stmts.iter().map(|s| mono_stmt(s, env)).collect(),
+        stmt_provs: Vec::new(),
+        terminator: mono_cfg_terminator(&block.terminator, env),
+    }
+}
+
+fn mono_cfg_terminator(term: &IrCfgTerminator, env: &MonoEnv) -> IrCfgTerminator {
+    match term {
+        IrCfgTerminator::Return(val) => {
+            IrCfgTerminator::Return(val.as_ref().map(|e| mono_expr(e, env)))
+        }
+        IrCfgTerminator::Goto(jump) => IrCfgTerminator::Goto(mono_cfg_jump(jump, env)),
+        IrCfgTerminator::CondGoto { cond, then_, else_ } => IrCfgTerminator::CondGoto {
+            cond: mono_expr(cond, env),
+            then_: mono_cfg_jump(then_, env),
+            else_: mono_cfg_jump(else_, env),
+        },
+    }
+}
+
+fn mono_cfg_jump(jump: &IrCfgJump, env: &MonoEnv) -> IrCfgJump {
+    IrCfgJump {
+        target: jump.target,
+        args: jump.args.iter().map(|a| mono_expr(a, env)).collect(),
     }
 }
 

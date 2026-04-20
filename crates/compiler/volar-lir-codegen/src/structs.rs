@@ -6,7 +6,7 @@
 //! `StructExpr` lowering.
 
 use std::collections::BTreeMap;
-use volar_compiler::ir::{ArrayLength, IrModule, IrStruct, IrType, PrimitiveType, StructKind};
+use volar_compiler::ir::{ArrayKind, ArrayLength, IrModule, IrStruct, IrType, PrimitiveType, StructKind};
 use volar_ir_common::Type as NativeType;
 use volar_lir::{FieldDef, LirTarget, LirType, StructDef, StructId};
 
@@ -23,6 +23,11 @@ pub struct StructRegistry {
     /// These structs are **not** registered as LIR structs; instead they map
     /// to `LirType::Native(t)` in all type-conversion contexts.
     native_types: BTreeMap<String, NativeType>,
+    /// When `true`, unknown struct types are treated as opaque (mapped to
+    /// `LirType::U64` placeholder) rather than panicking.  Useful for backends
+    /// (like C) that only need circuit-level code and can tolerate opaque
+    /// external types in function signatures.
+    pub lenient: bool,
 }
 
 struct StructEntry {
@@ -35,7 +40,7 @@ struct StructEntry {
 
 impl StructRegistry {
     fn new() -> Self {
-        StructRegistry { by_name: BTreeMap::new(), native_types: BTreeMap::new() }
+        StructRegistry { by_name: BTreeMap::new(), native_types: BTreeMap::new(), lenient: false }
     }
 
     /// An empty registry (no structs registered). Used when no struct types are needed.
@@ -98,6 +103,94 @@ impl StructRegistry {
     /// Requires that all referenced structs are already in the registry.
     pub fn ir_type_to_lir(&self, ty: &IrType) -> LirType {
         ir_type_to_lir_inner(ty, self)
+    }
+
+    /// Look up a struct by name string (used for synthetic tuple structs).
+    pub fn id_for_name(&self, name: &str) -> Option<StructId> {
+        self.by_name.get(name).map(|e| e.id)
+    }
+
+    /// Register a synthetic struct (e.g. for tuple types).  The caller is
+    /// responsible for having already called `target.define_struct` to obtain
+    /// the `StructId`.
+    pub fn register_synthetic(
+        &mut self,
+        name: String,
+        id: StructId,
+        field_names: Vec<String>,
+        field_types: Vec<LirType>,
+    ) {
+        self.by_name.insert(name, StructEntry { id, field_names, field_types });
+    }
+}
+
+// ============================================================================
+// Tuple struct registration
+// ============================================================================
+
+/// Generate a canonical name for a tuple type based on its element LirTypes.
+fn tuple_struct_name(elem_lir_tys: &[LirType]) -> String {
+    let mut name = String::from("__Tuple");
+    for ty in elem_lir_tys {
+        name.push('_');
+        name.push_str(&lir_type_tag(ty));
+    }
+    name
+}
+
+/// Short tag for a LirType, used to build canonical tuple struct names.
+fn lir_type_tag(ty: &LirType) -> String {
+    match ty {
+        LirType::Bool => "b".into(),
+        LirType::U8 => "u8".into(),
+        LirType::U32 => "u32".into(),
+        LirType::U64 => "u64".into(),
+        LirType::I64 => "i64".into(),
+        LirType::Arr(elem, n) => format!("a{}x{}", lir_type_tag(elem), n),
+        LirType::Struct(id) => format!("s{}", id),
+        LirType::Ptr(elem) => format!("p{}", lir_type_tag(elem)),
+        LirType::Native(n) => format!("n{}", *n as u8),
+        _ => "x".into(),
+    }
+}
+
+/// Recursively scan an `IrType` for tuple types and register them as
+/// synthetic structs in the registry.  Must be called before `ir_type_to_lir`
+/// encounters any tuple types.
+pub fn register_tuples_in_type<T: LirTarget>(
+    ty: &IrType,
+    registry: &mut StructRegistry,
+    target: &mut T,
+) {
+    match ty {
+        IrType::Tuple(elems) if !elems.is_empty() => {
+            // Recurse into elements first (handles nested tuples).
+            for elem in elems {
+                register_tuples_in_type(elem, registry, target);
+            }
+            // Convert elements to LIR and check if already registered.
+            let lir_elems: Vec<LirType> = elems.iter()
+                .map(|e| ir_type_to_lir_inner(e, registry))
+                .collect();
+            let name = tuple_struct_name(&lir_elems);
+            if registry.id_for_name(&name).is_some() {
+                return; // already registered
+            }
+            // Register as a synthetic struct with fields "0", "1", ...
+            let field_defs: Vec<FieldDef> = lir_elems.iter().enumerate()
+                .map(|(i, t)| FieldDef { name: format!("{i}"), ty: t.clone() })
+                .collect();
+            let id = target.define_struct(StructDef {
+                name: name.clone(),
+                fields: field_defs,
+            });
+            let field_names = (0..lir_elems.len()).map(|i| format!("{i}")).collect();
+            registry.register_synthetic(name, id, field_names, lir_elems);
+        }
+        IrType::Array { elem, .. } | IrType::Reference { elem, .. } => {
+            register_tuples_in_type(elem, registry, target);
+        }
+        _ => {}
     }
 }
 
@@ -192,19 +285,53 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
             if let Some(native_ty) = registry.native_types.get(&kind_name(kind)).copied() {
                 return LirType::Native(native_ty);
             }
-            let id = registry.id_for(kind).unwrap_or_else(|| {
-                panic!("struct '{:?}' not in registry — was define_struct called?", kind)
-            });
-            LirType::Struct(id)
+            match registry.id_for(kind) {
+                Some(id) => LirType::Struct(id),
+                None if registry.lenient => {
+                    // Opaque external type — use U64 as a placeholder.
+                    LirType::U64
+                }
+                None => {
+                    panic!("struct '{:?}' not in registry — was define_struct called?", kind)
+                }
+            }
         }
 
         IrType::Reference { elem, .. } => {
-            // References are transparent in LIR (value semantics).
-            ir_type_to_lir_inner(elem, registry)
+            // References to slices become pointers — slices are dynamically
+            // sized, so they can't be flattened to a fixed number of scalars.
+            if let IrType::Array { kind: ArrayKind::Slice, elem: inner_elem, .. } = elem.as_ref() {
+                LirType::Ptr(Box::new(ir_type_to_lir_inner(inner_elem, registry)))
+            } else {
+                // Non-slice references are transparent in LIR (value semantics).
+                ir_type_to_lir_inner(elem, registry)
+            }
         }
 
         IrType::TypeParam(name) => {
             panic!("unsubstituted TypeParam '{name}' — run monomorphize_module first")
+        }
+
+        IrType::Tuple(elems) => {
+            match elems.len() {
+                0 => LirType::Bool,
+                1 => ir_type_to_lir_inner(&elems[0], registry),
+                _ => {
+                    // Look up previously registered synthetic tuple struct.
+                    let lir_elems: Vec<LirType> = elems.iter()
+                        .map(|e| ir_type_to_lir_inner(e, registry))
+                        .collect();
+                    let name = tuple_struct_name(&lir_elems);
+                    match registry.id_for_name(&name) {
+                        Some(id) => LirType::Struct(id),
+                        None if registry.lenient => LirType::U64,
+                        None => panic!(
+                            "tuple type {:?} not registered — call register_tuples_in_type first",
+                            elems,
+                        ),
+                    }
+                }
+            }
         }
 
         other => {

@@ -733,6 +733,10 @@ pub enum ExternalKind {
     Action,
     /// A random-number generator stub.
     Rng,
+    /// A type-only stub: carries signature/return-type info for LIR codegen
+    /// but is not emitted by Rust/TS printers (the real implementation is
+    /// imported via `use`).
+    TypeStub,
 }
 
 #[derive(Debug, Clone, PartialEq)]

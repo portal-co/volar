@@ -436,6 +436,17 @@ pub trait FheScheme {
         expr
     }
 
+    /// Return scheme-specific helper function stubs for type inference.
+    ///
+    /// These stubs carry return-type information needed by the LIR codegen (C
+    /// backend).  They are tagged `ExternalKind::TypeStub` so that the Rust and
+    /// TS printers skip them (the real implementations are imported via `use`).
+    ///
+    /// Default: empty (no scheme-specific helpers).
+    fn helper_type_stubs(&self) -> Vec<IrFunction> {
+        vec![]
+    }
+
     // ── Oblivious storage access ─────────────────────────────────────────────
 
     /// Emit an oblivious read circuit that selects one of `cells` based on
@@ -2257,6 +2268,12 @@ fn weave_fhe_cfg<S: FheScheme>(
         module.auxiliary_functions.push(helper);
     }
 
+    // ── FHE helper type stubs ─────────────────────────────────────────────────
+    // Add scheme-specific helper stubs (e.g. tfhe_trivial_encrypt, tfhe_cmux)
+    // for LIR codegen return-type inference.  Tagged ExternalKind::TypeStub so
+    // the Rust/TS printers skip them.
+    module.auxiliary_functions.extend(scheme.helper_type_stubs());
+
     module
 }
 
@@ -3410,6 +3427,81 @@ impl FheScheme for TfheScheme {
             }
         }
     }
+
+    fn helper_type_stubs(&self) -> Vec<IrFunction> {
+        let wire_ty = self.wire_type();
+        let n_lwe_gen: Vec<IrGenericParam> = self.generics().into_iter()
+            .filter(|g| g.name == "N_LWE")
+            .collect();
+        let all_gens = self.generics();
+        let bk_params = self.extra_params();
+        let stub_body = || IrBlock {
+            stmts: vec![],
+            stmt_provs: vec![],
+            expr: Some(Box::new(IrExpr::Unreachable)),
+        };
+
+        let mut stubs = Vec::new();
+
+        // tfhe_trivial_encrypt(b: bool) -> wire_type
+        stubs.push(IrFunction {
+            name: "tfhe_trivial_encrypt".into(),
+            generics: n_lwe_gen.clone(),
+            receiver: None,
+            params: vec![IrParam {
+                name: "b".into(),
+                ty: IrType::Primitive(PrimitiveType::Bool),
+            }],
+            return_type: Some(wire_ty.clone()),
+            where_clause: vec![],
+            body: stub_body(),
+            external_kind: ExternalKind::TypeStub,
+        });
+
+        // tfhe_trivial_zero() -> wire_type
+        stubs.push(IrFunction {
+            name: "tfhe_trivial_zero".into(),
+            generics: n_lwe_gen.clone(),
+            receiver: None,
+            params: vec![],
+            return_type: Some(wire_ty.clone()),
+            where_clause: vec![],
+            body: stub_body(),
+            external_kind: ExternalKind::TypeStub,
+        });
+
+        // tfhe_trivial_one() -> wire_type
+        stubs.push(IrFunction {
+            name: "tfhe_trivial_one".into(),
+            generics: n_lwe_gen,
+            receiver: None,
+            params: vec![],
+            return_type: Some(wire_ty.clone()),
+            where_clause: vec![],
+            body: stub_body(),
+            external_kind: ExternalKind::TypeStub,
+        });
+
+        // tfhe_cmux(cond, a, b, bk) -> wire_type
+        let mut cmux_params = vec![
+            IrParam { name: "cond".into(), ty: wire_ty.clone() },
+            IrParam { name: "a".into(), ty: wire_ty.clone() },
+            IrParam { name: "b".into(), ty: wire_ty.clone() },
+        ];
+        cmux_params.extend(bk_params);
+        stubs.push(IrFunction {
+            name: "tfhe_cmux".into(),
+            generics: all_gens,
+            receiver: None,
+            params: cmux_params,
+            return_type: Some(wire_ty),
+            where_clause: vec![],
+            body: stub_body(),
+            external_kind: ExternalKind::TypeStub,
+        });
+
+        stubs
+    }
 }
 
 
@@ -3449,6 +3541,30 @@ pub fn print_fhe_flat_module(module: &IrModule, self_contained: bool) -> String 
     }
     let _ = write!(out, "{}", DisplayRust(ModuleWriter { module }));
     out
+}
+
+/// Render a CFG FHE `IrCfgModule` to TypeScript source.
+pub fn print_fhe_cfg_module_ts(module: &IrCfgModule) -> String {
+    volar_compiler::printer_ts::print_cfg_module_ts(module)
+}
+
+/// Render a CFG FHE `IrCfgModule` to C source via the LIR -> C backend pipeline.
+///
+/// The module must be monomorphized first (C has no generics). Pass a
+/// [`MonoEnv`](volar_lir_codegen::mono::MonoEnv) with concrete values for all
+/// const generic parameters used in the module.
+///
+/// Auxiliary (spec) functions are skipped — they contain Rust-specific
+/// constructs (enums, match, etc.) that the LIR/C pipeline does not support.
+/// The FHE helper type stubs (`ExternalKind::TypeStub`) are included in the
+/// module from `weave_fhe_cfg` and provide return-type info to the LIR codegen.
+pub fn print_fhe_cfg_module_c(module: &IrCfgModule, env: &volar_lir_codegen::mono::MonoEnv) -> String {
+    use volar_c_backend::CBackend;
+
+    let mono = volar_lir_codegen::mono::monomorphize_cfg_module(module, env);
+    let mut backend = CBackend::new();
+    volar_lir_codegen::lower_cfg_module_with_opts(&mono, &mut backend, "", false);
+    backend.finish()
 }
 
 // ============================================================================
