@@ -709,6 +709,50 @@ impl VaffleTarget {
         let cur = fb.current;
         fb.blocks[cur].terminator = Some(Terminator::ReturnCall { func: func_id, args: flat });
     }
+
+    /// Emit a call with multiple return types and return all results as separate
+    /// [`VaffleValue`]s.
+    ///
+    /// Unlike [`LirTarget::call_extern`] (which accepts at most one return type),
+    /// `call_extern_multi` handles an arbitrary number of return values by
+    /// assigning each its own slice of `Value::Output { idx }` nodes.
+    /// This is used by the WAFFLE lowering for multi-result calls and for
+    /// globals-tunnelling (where globals are appended to both args and rets).
+    pub fn call_extern_multi(
+        &mut self,
+        name: &str,
+        args: &[VaffleValue],
+        ret_tys: &[LirType],
+    ) -> Vec<VaffleValue> {
+        let func_id = if let Some(&fid) = self.module.exports.get(name) {
+            fid
+        } else {
+            let fid = FuncId(self.module.funcs.len());
+            let sig_id = SigId(self.module.sigs.len());
+            self.module.sigs.push(SigDecl { params: vec![], results: vec![] });
+            self.module.funcs.push(FuncDecl::Import {
+                module: "env".to_string(),
+                name: name.to_string(),
+                sig: sig_id,
+            });
+            fid
+        };
+
+        let flat_args: Vec<ValueId> = args.iter().flat_map(|v| v.bits.iter().copied()).collect();
+        let call_id = self.fb().emit_value(Value::Call { func: func_id, args: flat_args });
+
+        let mut results = Vec::with_capacity(ret_tys.len());
+        let mut bit_offset = 0usize;
+        for ty in ret_tys {
+            let n = bits_for_lir_type(ty, &self.struct_widths);
+            let bits: Vec<ValueId> = (bit_offset..bit_offset + n)
+                .map(|i| self.fb().emit_value(Value::Output { value: call_id, idx: i }))
+                .collect();
+            results.push(VaffleValue { bits, ty: ty.clone() });
+            bit_offset += n;
+        }
+        results
+    }
 }
 
 // ============================================================================

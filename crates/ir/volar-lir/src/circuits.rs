@@ -425,6 +425,112 @@ pub fn bc_select_vec<B: BitCircuitBuilder>(
 }
 
 // ============================================================================
+// Additional integer algorithms
+// ============================================================================
+
+/// Unsigned remainder: `a - udiv(a, x) * x`.
+pub fn bc_urem<B: BitCircuitBuilder>(b: &mut B, a: &[B::Bit], x: &[B::Bit]) -> Vec<B::Bit> {
+    let q = bc_udiv(b, a, x);
+    let qx = bc_mul(b, &q, x);
+    bc_sub(b, a, &qx)
+}
+
+/// Signed remainder: `a - sdiv(a, x) * x`.
+pub fn bc_srem<B: BitCircuitBuilder>(b: &mut B, a: &[B::Bit], x: &[B::Bit]) -> Vec<B::Bit> {
+    let q = bc_sdiv(b, a, x);
+    let qx = bc_mul(b, &q, x);
+    bc_sub(b, a, &qx)
+}
+
+/// Left rotation: `(val << shift) | (val >> (n - shift))`.
+///
+/// `n = val.len()`.  The barrel-shifter inside `bc_shl`/`bc_lshr` already
+/// masks the effective shift to `log2(n)` stages, so the high bits of
+/// `n - shift` do not affect correctness.
+pub fn bc_rotl<B: BitCircuitBuilder>(b: &mut B, val: &[B::Bit], shift: &[B::Bit]) -> Vec<B::Bit> {
+    let n = val.len();
+    let left = bc_shl(b, val, shift);
+    // n - shift (same bit width as shift)
+    let n_bits: Vec<B::Bit> = (0..shift.len()).map(|i| b.bc_const((n >> i) & 1 != 0)).collect();
+    let n_minus = bc_sub(b, &n_bits, shift);
+    let right = bc_lshr(b, val, &n_minus);
+    bc_or_vec(b, &left, &right)
+}
+
+/// Right rotation: `(val >> shift) | (val << (n - shift))`.
+pub fn bc_rotr<B: BitCircuitBuilder>(b: &mut B, val: &[B::Bit], shift: &[B::Bit]) -> Vec<B::Bit> {
+    let n = val.len();
+    let right = bc_lshr(b, val, shift);
+    let n_bits: Vec<B::Bit> = (0..shift.len()).map(|i| b.bc_const((n >> i) & 1 != 0)).collect();
+    let n_minus = bc_sub(b, &n_bits, shift);
+    let left = bc_shl(b, val, &n_minus);
+    bc_or_vec(b, &right, &left)
+}
+
+/// Count leading zeros.  Output is zero-padded to `val.len()` bits.
+///
+/// Computes `any_above[i] = OR(val[i..n-1])` via a suffix-OR scan, then
+/// sums `NOT(any_above[i])` across all positions as a binary counter.
+pub fn bc_clz<B: BitCircuitBuilder>(b: &mut B, val: &[B::Bit]) -> Vec<B::Bit> {
+    let n = val.len();
+    if n == 0 { return vec![]; }
+    // any_above[i] = val[n-1] | val[n-2] | ... | val[i]
+    let mut any_above = vec![b.bc_const(false); n];
+    any_above[n - 1] = val[n - 1].clone();
+    for i in (0..n - 1).rev() {
+        any_above[i] = b.bc_or(any_above[i + 1].clone(), val[i].clone());
+    }
+    // clz = #{ i : NOT any_above[i] }  accumulated as a binary number
+    let mut acc: Vec<B::Bit> = (0..n).map(|_| b.bc_const(false)).collect();
+    for i in 0..n {
+        let lz = b.bc_not(any_above[i].clone());
+        let mut addend: Vec<B::Bit> = vec![lz];
+        addend.extend((1..n).map(|_| b.bc_const(false)));
+        acc = bc_add(b, &acc, &addend, false);
+    }
+    acc
+}
+
+/// Count trailing zeros.  Output is zero-padded to `val.len()` bits.
+///
+/// Mirror of [`bc_clz`]: computes `any_below[i] = OR(val[0..i])` via a
+/// prefix-OR scan, then sums `NOT(any_below[i])`.
+pub fn bc_ctz<B: BitCircuitBuilder>(b: &mut B, val: &[B::Bit]) -> Vec<B::Bit> {
+    let n = val.len();
+    if n == 0 { return vec![]; }
+    // any_below[i] = val[0] | val[1] | ... | val[i]
+    let mut any_below = vec![b.bc_const(false); n];
+    any_below[0] = val[0].clone();
+    for i in 1..n {
+        any_below[i] = b.bc_or(any_below[i - 1].clone(), val[i].clone());
+    }
+    // ctz = #{ i : NOT any_below[i] }
+    let mut acc: Vec<B::Bit> = (0..n).map(|_| b.bc_const(false)).collect();
+    for i in 0..n {
+        let tz = b.bc_not(any_below[i].clone());
+        let mut addend: Vec<B::Bit> = vec![tz];
+        addend.extend((1..n).map(|_| b.bc_const(false)));
+        acc = bc_add(b, &acc, &addend, false);
+    }
+    acc
+}
+
+/// Population count (number of set bits).  Output is zero-padded to `val.len()` bits.
+///
+/// Extends each input bit to `n` bits with zero-padding and ripple-adds them.
+pub fn bc_popcnt<B: BitCircuitBuilder>(b: &mut B, val: &[B::Bit]) -> Vec<B::Bit> {
+    let n = val.len();
+    if n == 0 { return vec![]; }
+    let mut acc: Vec<B::Bit> = (0..n).map(|_| b.bc_const(false)).collect();
+    for bit in val {
+        let mut addend: Vec<B::Bit> = vec![bit.clone()];
+        addend.extend((1..n).map(|_| b.bc_const(false)));
+        acc = bc_add(b, &acc, &addend, false);
+    }
+    acc
+}
+
+// ============================================================================
 // Storage emission trait (for StorageRead / StorageWrite)
 // ============================================================================
 
