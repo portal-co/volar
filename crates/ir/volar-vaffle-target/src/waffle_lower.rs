@@ -63,16 +63,26 @@ use alloc::{
 };
 
 use portal_pc_waffle_ir::{
+    FuncDecl,
+    FunctionBody,
+    MemoryArg,
+    Module as WModule,
+    Operator,
+    SignatureData,
+    Terminator,
+    Type as WType,
+    Value as WValue,
+    ValueDef,
     entity::EntityRef, // for .index() on Func/Block/etc.
-    FuncDecl, FunctionBody, MemoryArg, Module as WModule, Operator, SignatureData, Terminator,
-    Type as WType, Value as WValue, ValueDef,
 };
 
 use volar_ir_common::StorageId;
+use volar_lir::circuits::{
+    StorageEmitter, bc_clz, bc_ctz, bc_popcnt, bc_rotl, bc_rotr, bc_srem, bc_urem,
+};
 use volar_lir::{BitCircuitBuilder, IcmpPred, LirTarget, LirType};
-use volar_lir::circuits::{bc_clz, bc_ctz, bc_popcnt, bc_rotl, bc_rotr, bc_urem, bc_srem, StorageEmitter};
 
-use crate::target::{bits_for_lir_type, VaffleBlock, VaffleTarget, VaffleValue};
+use crate::target::{VaffleBlock, VaffleTarget, VaffleValue, bits_for_lir_type};
 use vaffle::ValueId;
 
 // ============================================================================
@@ -94,8 +104,8 @@ impl core::fmt::Display for UnsupportedOp {
 
 fn waffle_ty(ty: WType) -> Result<LirType, UnsupportedOp> {
     match ty {
-        WType::I32 => Ok(LirType::U32),
-        WType::I64 => Ok(LirType::U64),
+        WType::I32 | WType::F32 => Ok(LirType::U32),
+        WType::I64 | WType::F64 => Ok(LirType::U64),
         other => Err(UnsupportedOp(alloc::format!("{other:?}"))),
     }
 }
@@ -151,8 +161,14 @@ pub fn lower_waffle_function(
     let param_tys: Vec<WType> = body.locals.values().take(body.n_params).copied().collect();
     let ret_tys: &[WType] = &body.rets;
 
-    let param_lir: Vec<LirType> = param_tys.iter().map(|&t| waffle_ty(t)).collect::<Result<_, _>>()?;
-    let ret_lir: Vec<LirType> = ret_tys.iter().map(|&t| waffle_ty(t)).collect::<Result<_, _>>()?;
+    let param_lir: Vec<LirType> = param_tys
+        .iter()
+        .map(|&t| waffle_ty(t))
+        .collect::<Result<_, _>>()?;
+    let ret_lir: Vec<LirType> = ret_tys
+        .iter()
+        .map(|&t| waffle_ty(t))
+        .collect::<Result<_, _>>()?;
 
     // Append global types to function params for threading.
     let mut all_param_lir = param_lir.clone();
@@ -166,13 +182,19 @@ pub fn lower_waffle_function(
     let mut block_map: BTreeMap<portal_pc_waffle_ir::Block, VaffleBlock> = BTreeMap::new();
     block_map.insert(body.entry, entry_block);
     for (wblock, _) in body.blocks.entries() {
-        if wblock == body.entry { continue; }
+        if wblock == body.entry {
+            continue;
+        }
         block_map.insert(wblock, target.create_block());
     }
 
     // ---- Seed value map with entry-block params (= function parameters) -----
     let mut val_map: BTreeMap<WValue, VaffleValue> = BTreeMap::new();
-    for ((_, entry_wval), group) in body.blocks[body.entry].params.iter().zip(param_groups.iter()) {
+    for ((_, entry_wval), group) in body.blocks[body.entry]
+        .params
+        .iter()
+        .zip(param_groups.iter())
+    {
         if let Some(vv) = group.first() {
             val_map.insert(*entry_wval, vv.clone());
         }
@@ -182,10 +204,14 @@ pub fn lower_waffle_function(
     let n_orig_params = param_lir.len();
     let mut current_globals: Vec<VaffleValue> = (0..global_lir_tys.len())
         .map(|i| {
-            param_groups.get(n_orig_params + i)
+            param_groups
+                .get(n_orig_params + i)
                 .and_then(|g| g.first())
                 .cloned()
-                .unwrap_or_else(|| VaffleValue { bits: vec![], ty: LirType::Bool })
+                .unwrap_or_else(|| VaffleValue {
+                    bits: vec![],
+                    ty: LirType::Bool,
+                })
         })
         .collect();
 
@@ -202,7 +228,8 @@ pub fn lower_waffle_function(
                 val_map.insert(wval, vv);
             }
             // Extra block params carry the threaded globals for this block.
-            current_globals = global_lir_tys.iter()
+            current_globals = global_lir_tys
+                .iter()
                 .map(|ty| target.add_block_param(vblock, ty.clone()))
                 .collect();
         }
@@ -215,9 +242,15 @@ pub fn lower_waffle_function(
                     let args: Vec<WValue> = body.arg_pool[*args_ref].to_vec();
                     let result_tys: Vec<WType> = body.type_pool[*tys_ref].to_vec();
                     if let Some(vv) = lower_op(
-                        op, &args, &result_tys, &val_map,
-                        &mut current_globals, &global_idx_map, &global_lir_tys,
-                        target, wasm,
+                        op,
+                        &args,
+                        &result_tys,
+                        &val_map,
+                        &mut current_globals,
+                        &global_idx_map,
+                        &global_lir_tys,
+                        target,
+                        wasm,
                     )? {
                         val_map.insert(wval, vv);
                     }
@@ -229,10 +262,13 @@ pub fn lower_waffle_function(
                         // Compute correct bit offset using the source op's result types.
                         let start = compute_pick_offset(body, from_val, *idx as usize);
                         let end = (start + n).min(call_vv.bits.len());
-                        val_map.insert(wval, VaffleValue {
-                            bits: call_vv.bits[start..end].to_vec(),
-                            ty: lir_ty,
-                        });
+                        val_map.insert(
+                            wval,
+                            VaffleValue {
+                                bits: call_vv.bits[start..end].to_vec(),
+                                ty: lir_ty,
+                            },
+                        );
                     }
                 }
                 ValueDef::Alias(target_val) => {
@@ -270,14 +306,12 @@ pub fn lower_waffle_function(
 /// Returns 0 if `from_val` is not an `Operator` node or any type is unsupported.
 fn compute_pick_offset(body: &FunctionBody, from_val: &WValue, idx: usize) -> usize {
     match &body.values[*from_val] {
-        ValueDef::Operator(_, _, tys_ref) => {
-            body.type_pool[*tys_ref]
-                .iter()
-                .take(idx)
-                .filter_map(|&t| waffle_ty(t).ok())
-                .map(|ty| bits_for_lir_type(&ty, &[]))
-                .sum()
-        }
+        ValueDef::Operator(_, _, tys_ref) => body.type_pool[*tys_ref]
+            .iter()
+            .take(idx)
+            .filter_map(|&t| waffle_ty(t).ok())
+            .map(|ty| bits_for_lir_type(&ty, &[]))
+            .sum(),
         _ => 0,
     }
 }
@@ -294,7 +328,9 @@ fn lower_op(
     wasm: &WModule,
 ) -> Result<Option<VaffleValue>, UnsupportedOp> {
     let get = |i: usize| -> Result<VaffleValue, UnsupportedOp> {
-        val_map.get(&args[i]).cloned()
+        val_map
+            .get(&args[i])
+            .cloned()
             .ok_or_else(|| UnsupportedOp(alloc::format!("undefined value {:?}", args[i])))
     };
 
@@ -304,93 +340,270 @@ fn lower_op(
         Operator::I64Const { value } => tgt.iconst(LirType::U64, *value as i64),
 
         // ---- I32 arithmetic --------------------------------------------
-        Operator::I32Add  => tgt.add(get(0)?, get(1)?),
-        Operator::I32Sub  => tgt.sub(get(0)?, get(1)?),
-        Operator::I32Mul  => tgt.mul(get(0)?, get(1)?),
+        Operator::I32Add => tgt.add(get(0)?, get(1)?),
+        Operator::I32Sub => tgt.sub(get(0)?, get(1)?),
+        Operator::I32Mul => tgt.mul(get(0)?, get(1)?),
         Operator::I32DivS => tgt.sdiv(get(0)?, get(1)?),
         Operator::I32DivU => tgt.udiv(get(0)?, get(1)?),
-        Operator::I32And  => tgt.and(get(0)?, get(1)?),
-        Operator::I32Or   => tgt.or(get(0)?, get(1)?),
-        Operator::I32Xor  => tgt.xor(get(0)?, get(1)?),
-        Operator::I32Shl  => tgt.shl(get(0)?, get(1)?),
+        Operator::I32And => tgt.and(get(0)?, get(1)?),
+        Operator::I32Or => tgt.or(get(0)?, get(1)?),
+        Operator::I32Xor => tgt.xor(get(0)?, get(1)?),
+        Operator::I32Shl => tgt.shl(get(0)?, get(1)?),
         Operator::I32ShrS => tgt.ashr(get(0)?, get(1)?),
         Operator::I32ShrU => tgt.lshr(get(0)?, get(1)?),
         Operator::I32RemU => {
-            let a = get(0)?; let x = get(1)?; let ty = a.ty.clone();
-            VaffleValue { bits: bc_urem(tgt, &a.bits, &x.bits), ty }
+            let a = get(0)?;
+            let x = get(1)?;
+            let ty = a.ty.clone();
+            VaffleValue {
+                bits: bc_urem(tgt, &a.bits, &x.bits),
+                ty,
+            }
         }
         Operator::I32RemS => {
-            let a = get(0)?; let x = get(1)?; let ty = a.ty.clone();
-            VaffleValue { bits: bc_srem(tgt, &a.bits, &x.bits), ty }
+            let a = get(0)?;
+            let x = get(1)?;
+            let ty = a.ty.clone();
+            VaffleValue {
+                bits: bc_srem(tgt, &a.bits, &x.bits),
+                ty,
+            }
         }
-        Operator::I32Clz    => { let a = get(0)?; let ty = a.ty.clone(); VaffleValue { bits: bc_clz(tgt, &a.bits), ty } }
-        Operator::I32Ctz    => { let a = get(0)?; let ty = a.ty.clone(); VaffleValue { bits: bc_ctz(tgt, &a.bits), ty } }
-        Operator::I32Popcnt => { let a = get(0)?; let ty = a.ty.clone(); VaffleValue { bits: bc_popcnt(tgt, &a.bits), ty } }
-        Operator::I32Rotl   => { let a = get(0)?; let x = get(1)?; let ty = a.ty.clone(); VaffleValue { bits: bc_rotl(tgt, &a.bits, &x.bits), ty } }
-        Operator::I32Rotr   => { let a = get(0)?; let x = get(1)?; let ty = a.ty.clone(); VaffleValue { bits: bc_rotr(tgt, &a.bits, &x.bits), ty } }
+        Operator::I32Clz => {
+            let a = get(0)?;
+            let ty = a.ty.clone();
+            VaffleValue {
+                bits: bc_clz(tgt, &a.bits),
+                ty,
+            }
+        }
+        Operator::I32Ctz => {
+            let a = get(0)?;
+            let ty = a.ty.clone();
+            VaffleValue {
+                bits: bc_ctz(tgt, &a.bits),
+                ty,
+            }
+        }
+        Operator::I32Popcnt => {
+            let a = get(0)?;
+            let ty = a.ty.clone();
+            VaffleValue {
+                bits: bc_popcnt(tgt, &a.bits),
+                ty,
+            }
+        }
+        Operator::I32Rotl => {
+            let a = get(0)?;
+            let x = get(1)?;
+            let ty = a.ty.clone();
+            VaffleValue {
+                bits: bc_rotl(tgt, &a.bits, &x.bits),
+                ty,
+            }
+        }
+        Operator::I32Rotr => {
+            let a = get(0)?;
+            let x = get(1)?;
+            let ty = a.ty.clone();
+            VaffleValue {
+                bits: bc_rotr(tgt, &a.bits, &x.bits),
+                ty,
+            }
+        }
 
         // ---- I32 comparisons (result is i32: 0 or 1) -------------------
-        Operator::I32Eqz => { let z = tgt.iconst(LirType::U32, 0); let c = tgt.icmp(IcmpPred::Eq,  get(0)?, z); tgt.zext(c, LirType::U32) }
-        Operator::I32Eq  => { let c = tgt.icmp(IcmpPred::Eq,  get(0)?, get(1)?); tgt.zext(c, LirType::U32) }
-        Operator::I32Ne  => { let c = tgt.icmp(IcmpPred::Ne,  get(0)?, get(1)?); tgt.zext(c, LirType::U32) }
-        Operator::I32LtS => { let c = tgt.icmp(IcmpPred::Slt, get(0)?, get(1)?); tgt.zext(c, LirType::U32) }
-        Operator::I32LtU => { let c = tgt.icmp(IcmpPred::Ult, get(0)?, get(1)?); tgt.zext(c, LirType::U32) }
-        Operator::I32GtS => { let c = tgt.icmp(IcmpPred::Sgt, get(0)?, get(1)?); tgt.zext(c, LirType::U32) }
-        Operator::I32GtU => { let c = tgt.icmp(IcmpPred::Ugt, get(0)?, get(1)?); tgt.zext(c, LirType::U32) }
-        Operator::I32LeS => { let c = tgt.icmp(IcmpPred::Sle, get(0)?, get(1)?); tgt.zext(c, LirType::U32) }
-        Operator::I32LeU => { let c = tgt.icmp(IcmpPred::Ule, get(0)?, get(1)?); tgt.zext(c, LirType::U32) }
-        Operator::I32GeS => { let c = tgt.icmp(IcmpPred::Sge, get(0)?, get(1)?); tgt.zext(c, LirType::U32) }
-        Operator::I32GeU => { let c = tgt.icmp(IcmpPred::Uge, get(0)?, get(1)?); tgt.zext(c, LirType::U32) }
+        Operator::I32Eqz => {
+            let z = tgt.iconst(LirType::U32, 0);
+            let c = tgt.icmp(IcmpPred::Eq, get(0)?, z);
+            tgt.zext(c, LirType::U32)
+        }
+        Operator::I32Eq => {
+            let c = tgt.icmp(IcmpPred::Eq, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U32)
+        }
+        Operator::I32Ne => {
+            let c = tgt.icmp(IcmpPred::Ne, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U32)
+        }
+        Operator::I32LtS => {
+            let c = tgt.icmp(IcmpPred::Slt, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U32)
+        }
+        Operator::I32LtU => {
+            let c = tgt.icmp(IcmpPred::Ult, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U32)
+        }
+        Operator::I32GtS => {
+            let c = tgt.icmp(IcmpPred::Sgt, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U32)
+        }
+        Operator::I32GtU => {
+            let c = tgt.icmp(IcmpPred::Ugt, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U32)
+        }
+        Operator::I32LeS => {
+            let c = tgt.icmp(IcmpPred::Sle, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U32)
+        }
+        Operator::I32LeU => {
+            let c = tgt.icmp(IcmpPred::Ule, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U32)
+        }
+        Operator::I32GeS => {
+            let c = tgt.icmp(IcmpPred::Sge, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U32)
+        }
+        Operator::I32GeU => {
+            let c = tgt.icmp(IcmpPred::Uge, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U32)
+        }
 
         // ---- I64 arithmetic --------------------------------------------
-        Operator::I64Add  => tgt.add(get(0)?, get(1)?),
-        Operator::I64Sub  => tgt.sub(get(0)?, get(1)?),
-        Operator::I64Mul  => tgt.mul(get(0)?, get(1)?),
+        Operator::I64Add => tgt.add(get(0)?, get(1)?),
+        Operator::I64Sub => tgt.sub(get(0)?, get(1)?),
+        Operator::I64Mul => tgt.mul(get(0)?, get(1)?),
         Operator::I64DivS => tgt.sdiv(get(0)?, get(1)?),
         Operator::I64DivU => tgt.udiv(get(0)?, get(1)?),
-        Operator::I64And  => tgt.and(get(0)?, get(1)?),
-        Operator::I64Or   => tgt.or(get(0)?, get(1)?),
-        Operator::I64Xor  => tgt.xor(get(0)?, get(1)?),
-        Operator::I64Shl  => tgt.shl(get(0)?, get(1)?),
+        Operator::I64And => tgt.and(get(0)?, get(1)?),
+        Operator::I64Or => tgt.or(get(0)?, get(1)?),
+        Operator::I64Xor => tgt.xor(get(0)?, get(1)?),
+        Operator::I64Shl => tgt.shl(get(0)?, get(1)?),
         Operator::I64ShrS => tgt.ashr(get(0)?, get(1)?),
         Operator::I64ShrU => tgt.lshr(get(0)?, get(1)?),
         Operator::I64RemU => {
-            let a = get(0)?; let x = get(1)?; let ty = a.ty.clone();
-            VaffleValue { bits: bc_urem(tgt, &a.bits, &x.bits), ty }
+            let a = get(0)?;
+            let x = get(1)?;
+            let ty = a.ty.clone();
+            VaffleValue {
+                bits: bc_urem(tgt, &a.bits, &x.bits),
+                ty,
+            }
         }
         Operator::I64RemS => {
-            let a = get(0)?; let x = get(1)?; let ty = a.ty.clone();
-            VaffleValue { bits: bc_srem(tgt, &a.bits, &x.bits), ty }
+            let a = get(0)?;
+            let x = get(1)?;
+            let ty = a.ty.clone();
+            VaffleValue {
+                bits: bc_srem(tgt, &a.bits, &x.bits),
+                ty,
+            }
         }
-        Operator::I64Clz    => { let a = get(0)?; let ty = a.ty.clone(); VaffleValue { bits: bc_clz(tgt, &a.bits), ty } }
-        Operator::I64Ctz    => { let a = get(0)?; let ty = a.ty.clone(); VaffleValue { bits: bc_ctz(tgt, &a.bits), ty } }
-        Operator::I64Popcnt => { let a = get(0)?; let ty = a.ty.clone(); VaffleValue { bits: bc_popcnt(tgt, &a.bits), ty } }
-        Operator::I64Rotl   => { let a = get(0)?; let x = get(1)?; let ty = a.ty.clone(); VaffleValue { bits: bc_rotl(tgt, &a.bits, &x.bits), ty } }
-        Operator::I64Rotr   => { let a = get(0)?; let x = get(1)?; let ty = a.ty.clone(); VaffleValue { bits: bc_rotr(tgt, &a.bits, &x.bits), ty } }
+        Operator::I64Clz => {
+            let a = get(0)?;
+            let ty = a.ty.clone();
+            VaffleValue {
+                bits: bc_clz(tgt, &a.bits),
+                ty,
+            }
+        }
+        Operator::I64Ctz => {
+            let a = get(0)?;
+            let ty = a.ty.clone();
+            VaffleValue {
+                bits: bc_ctz(tgt, &a.bits),
+                ty,
+            }
+        }
+        Operator::I64Popcnt => {
+            let a = get(0)?;
+            let ty = a.ty.clone();
+            VaffleValue {
+                bits: bc_popcnt(tgt, &a.bits),
+                ty,
+            }
+        }
+        Operator::I64Rotl => {
+            let a = get(0)?;
+            let x = get(1)?;
+            let ty = a.ty.clone();
+            VaffleValue {
+                bits: bc_rotl(tgt, &a.bits, &x.bits),
+                ty,
+            }
+        }
+        Operator::I64Rotr => {
+            let a = get(0)?;
+            let x = get(1)?;
+            let ty = a.ty.clone();
+            VaffleValue {
+                bits: bc_rotr(tgt, &a.bits, &x.bits),
+                ty,
+            }
+        }
 
         // ---- I64 comparisons -------------------------------------------
-        Operator::I64Eqz => { let z = tgt.iconst(LirType::U64, 0); let c = tgt.icmp(IcmpPred::Eq,  get(0)?, z); tgt.zext(c, LirType::U64) }
-        Operator::I64Eq  => { let c = tgt.icmp(IcmpPred::Eq,  get(0)?, get(1)?); tgt.zext(c, LirType::U64) }
-        Operator::I64Ne  => { let c = tgt.icmp(IcmpPred::Ne,  get(0)?, get(1)?); tgt.zext(c, LirType::U64) }
-        Operator::I64LtS => { let c = tgt.icmp(IcmpPred::Slt, get(0)?, get(1)?); tgt.zext(c, LirType::U64) }
-        Operator::I64LtU => { let c = tgt.icmp(IcmpPred::Ult, get(0)?, get(1)?); tgt.zext(c, LirType::U64) }
-        Operator::I64GtS => { let c = tgt.icmp(IcmpPred::Sgt, get(0)?, get(1)?); tgt.zext(c, LirType::U64) }
-        Operator::I64GtU => { let c = tgt.icmp(IcmpPred::Ugt, get(0)?, get(1)?); tgt.zext(c, LirType::U64) }
-        Operator::I64LeS => { let c = tgt.icmp(IcmpPred::Sle, get(0)?, get(1)?); tgt.zext(c, LirType::U64) }
-        Operator::I64LeU => { let c = tgt.icmp(IcmpPred::Ule, get(0)?, get(1)?); tgt.zext(c, LirType::U64) }
-        Operator::I64GeS => { let c = tgt.icmp(IcmpPred::Sge, get(0)?, get(1)?); tgt.zext(c, LirType::U64) }
-        Operator::I64GeU => { let c = tgt.icmp(IcmpPred::Uge, get(0)?, get(1)?); tgt.zext(c, LirType::U64) }
+        Operator::I64Eqz => {
+            let z = tgt.iconst(LirType::U64, 0);
+            let c = tgt.icmp(IcmpPred::Eq, get(0)?, z);
+            tgt.zext(c, LirType::U64)
+        }
+        Operator::I64Eq => {
+            let c = tgt.icmp(IcmpPred::Eq, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U64)
+        }
+        Operator::I64Ne => {
+            let c = tgt.icmp(IcmpPred::Ne, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U64)
+        }
+        Operator::I64LtS => {
+            let c = tgt.icmp(IcmpPred::Slt, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U64)
+        }
+        Operator::I64LtU => {
+            let c = tgt.icmp(IcmpPred::Ult, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U64)
+        }
+        Operator::I64GtS => {
+            let c = tgt.icmp(IcmpPred::Sgt, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U64)
+        }
+        Operator::I64GtU => {
+            let c = tgt.icmp(IcmpPred::Ugt, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U64)
+        }
+        Operator::I64LeS => {
+            let c = tgt.icmp(IcmpPred::Sle, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U64)
+        }
+        Operator::I64LeU => {
+            let c = tgt.icmp(IcmpPred::Ule, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U64)
+        }
+        Operator::I64GeS => {
+            let c = tgt.icmp(IcmpPred::Sge, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U64)
+        }
+        Operator::I64GeU => {
+            let c = tgt.icmp(IcmpPred::Uge, get(0)?, get(1)?);
+            tgt.zext(c, LirType::U64)
+        }
 
         // ---- Conversions -----------------------------------------------
-        Operator::I32WrapI64    => tgt.trunc(get(0)?, LirType::U32),
+        Operator::I32WrapI64 => tgt.trunc(get(0)?, LirType::U32),
         Operator::I64ExtendI32S => tgt.sext(get(0)?, LirType::U64),
         Operator::I64ExtendI32U => tgt.zext(get(0)?, LirType::U64),
         // Sign-extend variants: truncate to the narrow width, then sign-extend.
-        Operator::I32Extend8S  => { let t = tgt.trunc(get(0)?, LirType::U8);  tgt.sext(t, LirType::U32) }
-        Operator::I32Extend16S => { let t = tgt.trunc(get(0)?, LirType::U16); tgt.sext(t, LirType::U32) }
-        Operator::I64Extend8S  => { let t = tgt.trunc(get(0)?, LirType::U8);  tgt.sext(t, LirType::U64) }
-        Operator::I64Extend16S => { let t = tgt.trunc(get(0)?, LirType::U16); tgt.sext(t, LirType::U64) }
-        Operator::I64Extend32S => { let t = tgt.trunc(get(0)?, LirType::U32); tgt.sext(t, LirType::U64) }
+        Operator::I32Extend8S => {
+            let t = tgt.trunc(get(0)?, LirType::U8);
+            tgt.sext(t, LirType::U32)
+        }
+        Operator::I32Extend16S => {
+            let t = tgt.trunc(get(0)?, LirType::U16);
+            tgt.sext(t, LirType::U32)
+        }
+        Operator::I64Extend8S => {
+            let t = tgt.trunc(get(0)?, LirType::U8);
+            tgt.sext(t, LirType::U64)
+        }
+        Operator::I64Extend16S => {
+            let t = tgt.trunc(get(0)?, LirType::U16);
+            tgt.sext(t, LirType::U64)
+        }
+        Operator::I64Extend32S => {
+            let t = tgt.trunc(get(0)?, LirType::U32);
+            tgt.sext(t, LirType::U64)
+        }
 
         // ---- Select (WAFFLE: args = [val_true, val_false, cond]) --------
         Operator::Select | Operator::TypedSelect { .. } => {
@@ -399,7 +612,10 @@ fn lower_op(
             let cond = get(2)?;
             // cond is I32; treat as bool via OR-reduce (non-zero = true).
             let cond_bit = or_bits(tgt, &cond.bits);
-            let cond_bool = VaffleValue { bits: vec![cond_bit], ty: LirType::Bool };
+            let cond_bool = VaffleValue {
+                bits: vec![cond_bit],
+                ty: LirType::Bool,
+            };
             tgt.select(cond_bool, if_t, if_f)
         }
 
@@ -408,8 +624,9 @@ fn lower_op(
             let g_ref = *global_index;
             let g_data = &wasm.globals[g_ref];
             if g_data.mutable {
-                let local_idx = *global_idx_map.get(&g_ref.index())
-                    .ok_or_else(|| UnsupportedOp(alloc::format!("unknown mutable global {}", g_ref.index())))?;
+                let local_idx = *global_idx_map.get(&g_ref.index()).ok_or_else(|| {
+                    UnsupportedOp(alloc::format!("unknown mutable global {}", g_ref.index()))
+                })?;
                 return Ok(Some(current_globals[local_idx].clone()));
             } else {
                 let lir_ty = waffle_ty(g_data.ty)?;
@@ -421,8 +638,9 @@ fn lower_op(
             let g_ref = *global_index;
             let g_data = &wasm.globals[g_ref];
             if g_data.mutable {
-                let local_idx = *global_idx_map.get(&g_ref.index())
-                    .ok_or_else(|| UnsupportedOp(alloc::format!("unknown mutable global {}", g_ref.index())))?;
+                let local_idx = *global_idx_map.get(&g_ref.index()).ok_or_else(|| {
+                    UnsupportedOp(alloc::format!("unknown mutable global {}", g_ref.index()))
+                })?;
                 current_globals[local_idx] = get(0)?;
             }
             return Ok(None);
@@ -432,11 +650,17 @@ fn lower_op(
         Operator::Call { function_index } => {
             let fid = *function_index;
             let name = callee_name(wasm, fid);
-            let arg_vals: Vec<VaffleValue> = args.iter()
-                .map(|wv| val_map.get(wv).cloned()
-                    .ok_or_else(|| UnsupportedOp(alloc::format!("undefined arg {:?}", wv))))
+            let arg_vals: Vec<VaffleValue> = args
+                .iter()
+                .map(|wv| {
+                    val_map
+                        .get(wv)
+                        .cloned()
+                        .ok_or_else(|| UnsupportedOp(alloc::format!("undefined arg {:?}", wv)))
+                })
                 .collect::<Result<_, _>>()?;
-            let orig_ret_tys: Vec<LirType> = result_tys.iter()
+            let orig_ret_tys: Vec<LirType> = result_tys
+                .iter()
                 .map(|&t| waffle_ty(t))
                 .collect::<Result<_, _>>()?;
             // Append current globals to args and return types for threading.
@@ -453,7 +677,8 @@ fn lower_op(
                 1 => Some(all_results.into_iter().next().unwrap()),
                 _ => {
                     // Concatenate return bits so PickOutput can slice with compute_pick_offset.
-                    let bits: Vec<ValueId> = all_results.iter()
+                    let bits: Vec<ValueId> = all_results
+                        .iter()
                         .flat_map(|vv| vv.bits.iter().copied())
                         .collect();
                     let ty = all_results[0].ty.clone();
@@ -561,16 +786,26 @@ fn lower_term(
     tgt: &mut VaffleTarget,
 ) -> Result<(), UnsupportedOp> {
     let get = |wv: &WValue| -> Result<VaffleValue, UnsupportedOp> {
-        val_map.get(wv).cloned()
+        val_map
+            .get(wv)
+            .cloned()
             .ok_or_else(|| UnsupportedOp(alloc::format!("undefined {:?}", wv)))
     };
     let get_block = |wb: portal_pc_waffle_ir::Block| -> Result<VaffleBlock, UnsupportedOp> {
-        block_map.get(&wb).copied()
+        block_map
+            .get(&wb)
+            .copied()
             .ok_or_else(|| UnsupportedOp(alloc::format!("unknown block {:?}", wb)))
     };
     let get_args = |wargs: &[WValue]| -> Result<Vec<VaffleValue>, UnsupportedOp> {
-        wargs.iter().map(|wv| val_map.get(wv).cloned()
-            .ok_or_else(|| UnsupportedOp(alloc::format!("undefined {:?}", wv))))
+        wargs
+            .iter()
+            .map(|wv| {
+                val_map
+                    .get(wv)
+                    .cloned()
+                    .ok_or_else(|| UnsupportedOp(alloc::format!("undefined {:?}", wv)))
+            })
             .collect()
     };
 
@@ -582,11 +817,18 @@ fn lower_term(
             tgt.jump(vb, &args);
         }
 
-        Terminator::CondBr { cond, if_true, if_false } => {
+        Terminator::CondBr {
+            cond,
+            if_true,
+            if_false,
+        } => {
             let cond_vv = get(cond)?;
             // WAFFLE cond is I32; use OR-reduce for non-zero test.
             let cond_bit = or_bits(tgt, &cond_vv.bits);
-            let cond_bool = VaffleValue { bits: vec![cond_bit], ty: LirType::Bool };
+            let cond_bool = VaffleValue {
+                bits: vec![cond_bit],
+                ty: LirType::Bool,
+            };
             let then_b = get_block(if_true.block)?;
             let else_b = get_block(if_false.block)?;
             let mut then_args = get_args(&if_true.args)?;
@@ -597,17 +839,18 @@ fn lower_term(
         }
 
         Terminator::Return { values } => {
-            let mut vals: Vec<VaffleValue> = values.iter().map(|v| get(v)).collect::<Result<_, _>>()?;
+            let mut vals: Vec<VaffleValue> =
+                values.iter().map(|v| get(v)).collect::<Result<_, _>>()?;
             vals.extend_from_slice(current_globals);
             tgt.ret(&vals);
         }
 
         Terminator::Unreachable | Terminator::UB | Terminator::None => {
             // Stub: emit zeros for all original return values + global slots.
-            let mut zero_vals: Vec<VaffleValue> = ret_lir.iter()
-                .map(|ty| tgt.iconst(ty.clone(), 0))
-                .collect();
-            let global_zeros: Vec<VaffleValue> = current_globals.iter()
+            let mut zero_vals: Vec<VaffleValue> =
+                ret_lir.iter().map(|ty| tgt.iconst(ty.clone(), 0)).collect();
+            let global_zeros: Vec<VaffleValue> = current_globals
+                .iter()
                 .map(|vv| tgt.iconst(vv.ty.clone(), 0))
                 .collect();
             zero_vals.extend(global_zeros);
@@ -616,7 +859,8 @@ fn lower_term(
 
         Terminator::ReturnCall { func, args } => {
             let name = alloc::format!("func_{}", func.index());
-            let mut arg_vals: Vec<VaffleValue> = args.iter().map(|a| get(a)).collect::<Result<_, _>>()?;
+            let mut arg_vals: Vec<VaffleValue> =
+                args.iter().map(|a| get(a)).collect::<Result<_, _>>()?;
             arg_vals.extend_from_slice(current_globals);
             tgt.ret_call(&name, &arg_vals);
         }
@@ -639,11 +883,7 @@ const MEM_ADDR_BITS: usize = 32;
 /// `base` is the i32 address from the WASM operand stack (32 bits).
 /// `offset` is the static offset from the `MemoryArg`.
 /// Returns the 32-bit effective address as a bit vector.
-fn effective_addr(
-    tgt: &mut VaffleTarget,
-    base: &VaffleValue,
-    offset: u64,
-) -> VaffleValue {
+fn effective_addr(tgt: &mut VaffleTarget, base: &VaffleValue, offset: u64) -> VaffleValue {
     if offset == 0 {
         return base.clone();
     }
@@ -762,7 +1002,10 @@ fn lower_mem_load(
     // Extend to the target width if needed.
     let target_bits = bits_for_lir_type(&result_ty, &[]);
     if loaded.bits.len() == target_bits {
-        VaffleValue { bits: loaded.bits, ty: result_ty }
+        VaffleValue {
+            bits: loaded.bits,
+            ty: result_ty,
+        }
     } else if sign_extend {
         tgt.sext(loaded, result_ty)
     } else {
@@ -799,9 +1042,13 @@ fn lower_mem_store(
 
 /// OR-reduce a bit vector: 1 iff any input bit is 1 (non-zero test).
 fn or_bits(tgt: &mut VaffleTarget, bits: &[ValueId]) -> ValueId {
-    if bits.is_empty() { return tgt.bc_const(false); }
+    if bits.is_empty() {
+        return tgt.bc_const(false);
+    }
     let mut acc = bits[0];
-    for &b in &bits[1..] { acc = tgt.bc_or(acc, b); }
+    for &b in &bits[1..] {
+        acc = tgt.bc_or(acc, b);
+    }
     acc
 }
 
@@ -809,7 +1056,7 @@ fn or_bits(tgt: &mut VaffleTarget, bits: &[ValueId]) -> ValueId {
 fn callee_name(wasm: &WModule, fid: portal_pc_waffle_ir::Func) -> String {
     match &wasm.funcs[fid] {
         FuncDecl::Body(_, name, _) => name.clone(),
-        FuncDecl::Import(_, name)  => name.clone(),
+        FuncDecl::Import(_, name) => name.clone(),
         _ => alloc::format!("func_{}", fid.index()),
     }
 }
@@ -824,12 +1071,11 @@ mod tests {
     use std::vec;
 
     use super::*;
-    use portal_pc_waffle_ir::{
-        BlockTarget, Global, GlobalData, Memory, MemoryData,
-        Module as WModule, Operator, Signature, SignatureData,
-        Terminator as WTerminator, Type as WType, ValueDef,
-    };
     use portal_pc_waffle_ir::entity::EntityVec;
+    use portal_pc_waffle_ir::{
+        BlockTarget, Global, GlobalData, Memory, MemoryData, Module as WModule, Operator,
+        Signature, SignatureData, Terminator as WTerminator, Type as WType, ValueDef,
+    };
     use volar_ir_common::Stmt;
 
     /// Build a minimal WAFFLE module with one memory and a function that
@@ -884,7 +1130,9 @@ mod tests {
         // i32.store param0, param1
         body.add_op(
             entry,
-            Operator::I32Store { memory: mem_arg.clone() },
+            Operator::I32Store {
+                memory: mem_arg.clone(),
+            },
             &[param0, param1],
             &[],
         );
@@ -900,11 +1148,15 @@ mod tests {
         // return loaded
         body.set_terminator(
             entry,
-            WTerminator::Return { values: vec![loaded] },
+            WTerminator::Return {
+                values: vec![loaded],
+            },
         );
 
         module.funcs.push(portal_pc_waffle_ir::FuncDecl::Body(
-            sig, "store_load".into(), body,
+            sig,
+            "store_load".into(),
+            body,
         ));
 
         module
@@ -945,7 +1197,10 @@ mod tests {
                 }
             }
         }
-        assert!(has_write, "VAFFLE should contain StorageWrite for i32.store");
+        assert!(
+            has_write,
+            "VAFFLE should contain StorageWrite for i32.store"
+        );
         assert!(has_read, "VAFFLE should contain StorageRead for i32.load");
     }
 
@@ -998,7 +1253,9 @@ mod tests {
         // i32.store8 param0, param1
         body.add_op(
             entry,
-            Operator::I32Store8 { memory: mem_arg.clone() },
+            Operator::I32Store8 {
+                memory: mem_arg.clone(),
+            },
             &[param0, param1],
             &[],
         );
@@ -1011,10 +1268,17 @@ mod tests {
             &[WType::I32],
         );
 
-        body.set_terminator(entry, WTerminator::Return { values: vec![loaded] });
+        body.set_terminator(
+            entry,
+            WTerminator::Return {
+                values: vec![loaded],
+            },
+        );
 
         module.funcs.push(portal_pc_waffle_ir::FuncDecl::Body(
-            sig, "byte_store_load".into(), body,
+            sig,
+            "byte_store_load".into(),
+            body,
         ));
 
         module
@@ -1035,14 +1299,26 @@ mod tests {
 
         // i32.store8 writes 1 byte, i32.load8_u reads 1 byte.
         // Each should produce exactly 1 StorageWrite / 1 StorageRead.
-        let writes: Vec<_> = body.values.iter()
+        let writes: Vec<_> = body
+            .values
+            .iter()
             .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageWrite { .. })))
             .collect();
-        let reads: Vec<_> = body.values.iter()
+        let reads: Vec<_> = body
+            .values
+            .iter()
             .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageRead { .. })))
             .collect();
-        assert_eq!(writes.len(), 1, "store8 should produce exactly 1 StorageWrite");
-        assert_eq!(reads.len(), 1, "load8_u should produce exactly 1 StorageRead");
+        assert_eq!(
+            writes.len(),
+            1,
+            "store8 should produce exactly 1 StorageWrite"
+        );
+        assert_eq!(
+            reads.len(),
+            1,
+            "load8_u should produce exactly 1 StorageRead"
+        );
     }
 
     #[test]
@@ -1058,16 +1334,28 @@ mod tests {
         };
 
         // i32.store writes 4 bytes → 4 StorageWrite ops.
-        let writes: Vec<_> = body.values.iter()
+        let writes: Vec<_> = body
+            .values
+            .iter()
             .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageWrite { .. })))
             .collect();
-        assert_eq!(writes.len(), 4, "i32.store should produce 4 StorageWrite ops (one per byte)");
+        assert_eq!(
+            writes.len(),
+            4,
+            "i32.store should produce 4 StorageWrite ops (one per byte)"
+        );
 
         // i32.load reads 4 bytes → 4 StorageRead ops.
-        let reads: Vec<_> = body.values.iter()
+        let reads: Vec<_> = body
+            .values
+            .iter()
             .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageRead { .. })))
             .collect();
-        assert_eq!(reads.len(), 4, "i32.load should produce 4 StorageRead ops (one per byte)");
+        assert_eq!(
+            reads.len(),
+            4,
+            "i32.load should produce 4 StorageRead ops (one per byte)"
+        );
     }
 
     /// Test that MemoryArg.offset is applied correctly.
@@ -1122,10 +1410,17 @@ mod tests {
             &[WType::I32],
         );
 
-        body.set_terminator(entry, WTerminator::Return { values: vec![loaded] });
+        body.set_terminator(
+            entry,
+            WTerminator::Return {
+                values: vec![loaded],
+            },
+        );
 
         module.funcs.push(portal_pc_waffle_ir::FuncDecl::Body(
-            sig, "offset_load".into(), body,
+            sig,
+            "offset_load".into(),
+            body,
         ));
 
         module
@@ -1145,10 +1440,16 @@ mod tests {
             vaffle::FuncDecl::Body(b) => b,
             _ => panic!(),
         };
-        let reads: Vec<_> = body.values.iter()
+        let reads: Vec<_> = body
+            .values
+            .iter()
             .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageRead { .. })))
             .collect();
-        assert_eq!(reads.len(), 4, "i32.load with offset should produce 4 reads");
+        assert_eq!(
+            reads.len(),
+            4,
+            "i32.load with offset should produce 4 reads"
+        );
     }
 
     // ── helpers shared by integer-op tests ───────────────────────────────────
@@ -1157,10 +1458,11 @@ mod tests {
     fn build_simple_module(
         params: Vec<WType>,
         returns: Vec<WType>,
-        build_body: impl FnOnce(&mut portal_pc_waffle_ir::FunctionBody,
-                                portal_pc_waffle_ir::Block,
-                                Vec<portal_pc_waffle_ir::Value>)
-                                -> portal_pc_waffle_ir::Value,
+        build_body: impl FnOnce(
+            &mut portal_pc_waffle_ir::FunctionBody,
+            portal_pc_waffle_ir::Block,
+            Vec<portal_pc_waffle_ir::Value>,
+        ) -> portal_pc_waffle_ir::Value,
     ) -> WModule<'static> {
         let mut sigs: EntityVec<Signature, SignatureData> = EntityVec::default();
         let sig = sigs.push(SignatureData::Func {
@@ -1185,10 +1487,21 @@ mod tests {
         };
         let mut body = portal_pc_waffle_ir::FunctionBody::new(&module, sig);
         let entry = body.entry;
-        let ps: Vec<_> = body.blocks[entry].params.iter().map(|&(_ty, v)| v).collect();
+        let ps: Vec<_> = body.blocks[entry]
+            .params
+            .iter()
+            .map(|&(_ty, v)| v)
+            .collect();
         let result = build_body(&mut body, entry, ps);
-        body.set_terminator(entry, WTerminator::Return { values: vec![result] });
-        module.funcs.push(portal_pc_waffle_ir::FuncDecl::Body(sig, "f".into(), body));
+        body.set_terminator(
+            entry,
+            WTerminator::Return {
+                values: vec![result],
+            },
+        );
+        module
+            .funcs
+            .push(portal_pc_waffle_ir::FuncDecl::Body(sig, "f".into(), body));
         module
     }
 
@@ -1199,9 +1512,7 @@ mod tests {
         let wasm = build_simple_module(
             vec![WType::I32, WType::I32],
             vec![WType::I32],
-            |body, entry, ps| {
-                body.add_op(entry, Operator::I32RemU, &[ps[0], ps[1]], &[WType::I32])
-            },
+            |body, entry, ps| body.add_op(entry, Operator::I32RemU, &[ps[0], ps[1]], &[WType::I32]),
         );
         let mut target = VaffleTarget::new();
         let errors = lower_waffle_module(&wasm, &mut target);
@@ -1216,9 +1527,7 @@ mod tests {
         let wasm = build_simple_module(
             vec![WType::I32, WType::I32],
             vec![WType::I32],
-            |body, entry, ps| {
-                body.add_op(entry, Operator::I32RemS, &[ps[0], ps[1]], &[WType::I32])
-            },
+            |body, entry, ps| body.add_op(entry, Operator::I32RemS, &[ps[0], ps[1]], &[WType::I32]),
         );
         let mut target = VaffleTarget::new();
         let errors = lower_waffle_module(&wasm, &mut target);
@@ -1229,13 +1538,9 @@ mod tests {
 
     #[test]
     fn test_i32_clz_lowers() {
-        let wasm = build_simple_module(
-            vec![WType::I32],
-            vec![WType::I32],
-            |body, entry, ps| {
-                body.add_op(entry, Operator::I32Clz, &[ps[0]], &[WType::I32])
-            },
-        );
+        let wasm = build_simple_module(vec![WType::I32], vec![WType::I32], |body, entry, ps| {
+            body.add_op(entry, Operator::I32Clz, &[ps[0]], &[WType::I32])
+        });
         let mut target = VaffleTarget::new();
         let errors = lower_waffle_module(&wasm, &mut target);
         assert!(errors.is_empty(), "i32.clz lowering failed: {:?}", errors);
@@ -1245,13 +1550,9 @@ mod tests {
 
     #[test]
     fn test_i32_ctz_lowers() {
-        let wasm = build_simple_module(
-            vec![WType::I32],
-            vec![WType::I32],
-            |body, entry, ps| {
-                body.add_op(entry, Operator::I32Ctz, &[ps[0]], &[WType::I32])
-            },
-        );
+        let wasm = build_simple_module(vec![WType::I32], vec![WType::I32], |body, entry, ps| {
+            body.add_op(entry, Operator::I32Ctz, &[ps[0]], &[WType::I32])
+        });
         let mut target = VaffleTarget::new();
         let errors = lower_waffle_module(&wasm, &mut target);
         assert!(errors.is_empty(), "i32.ctz lowering failed: {:?}", errors);
@@ -1261,16 +1562,16 @@ mod tests {
 
     #[test]
     fn test_i32_popcnt_lowers() {
-        let wasm = build_simple_module(
-            vec![WType::I32],
-            vec![WType::I32],
-            |body, entry, ps| {
-                body.add_op(entry, Operator::I32Popcnt, &[ps[0]], &[WType::I32])
-            },
-        );
+        let wasm = build_simple_module(vec![WType::I32], vec![WType::I32], |body, entry, ps| {
+            body.add_op(entry, Operator::I32Popcnt, &[ps[0]], &[WType::I32])
+        });
         let mut target = VaffleTarget::new();
         let errors = lower_waffle_module(&wasm, &mut target);
-        assert!(errors.is_empty(), "i32.popcnt lowering failed: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "i32.popcnt lowering failed: {:?}",
+            errors
+        );
     }
 
     // ── I32Rotl ──────────────────────────────────────────────────────────────
@@ -1280,9 +1581,7 @@ mod tests {
         let wasm = build_simple_module(
             vec![WType::I32, WType::I32],
             vec![WType::I32],
-            |body, entry, ps| {
-                body.add_op(entry, Operator::I32Rotl, &[ps[0], ps[1]], &[WType::I32])
-            },
+            |body, entry, ps| body.add_op(entry, Operator::I32Rotl, &[ps[0], ps[1]], &[WType::I32]),
         );
         let mut target = VaffleTarget::new();
         let errors = lower_waffle_module(&wasm, &mut target);
@@ -1296,9 +1595,7 @@ mod tests {
         let wasm = build_simple_module(
             vec![WType::I32, WType::I32],
             vec![WType::I32],
-            |body, entry, ps| {
-                body.add_op(entry, Operator::I32Rotr, &[ps[0], ps[1]], &[WType::I32])
-            },
+            |body, entry, ps| body.add_op(entry, Operator::I32Rotr, &[ps[0], ps[1]], &[WType::I32]),
         );
         let mut target = VaffleTarget::new();
         let errors = lower_waffle_module(&wasm, &mut target);
@@ -1309,48 +1606,48 @@ mod tests {
 
     #[test]
     fn test_i32_extend8s_lowers() {
-        let wasm = build_simple_module(
-            vec![WType::I32],
-            vec![WType::I32],
-            |body, entry, ps| {
-                body.add_op(entry, Operator::I32Extend8S, &[ps[0]], &[WType::I32])
-            },
-        );
+        let wasm = build_simple_module(vec![WType::I32], vec![WType::I32], |body, entry, ps| {
+            body.add_op(entry, Operator::I32Extend8S, &[ps[0]], &[WType::I32])
+        });
         let mut target = VaffleTarget::new();
         let errors = lower_waffle_module(&wasm, &mut target);
-        assert!(errors.is_empty(), "i32.extend8_s lowering failed: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "i32.extend8_s lowering failed: {:?}",
+            errors
+        );
     }
 
     // ── I32Extend16S ─────────────────────────────────────────────────────────
 
     #[test]
     fn test_i32_extend16s_lowers() {
-        let wasm = build_simple_module(
-            vec![WType::I32],
-            vec![WType::I32],
-            |body, entry, ps| {
-                body.add_op(entry, Operator::I32Extend16S, &[ps[0]], &[WType::I32])
-            },
-        );
+        let wasm = build_simple_module(vec![WType::I32], vec![WType::I32], |body, entry, ps| {
+            body.add_op(entry, Operator::I32Extend16S, &[ps[0]], &[WType::I32])
+        });
         let mut target = VaffleTarget::new();
         let errors = lower_waffle_module(&wasm, &mut target);
-        assert!(errors.is_empty(), "i32.extend16_s lowering failed: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "i32.extend16_s lowering failed: {:?}",
+            errors
+        );
     }
 
     // ── I64Extend32S ─────────────────────────────────────────────────────────
 
     #[test]
     fn test_i64_extend32s_lowers() {
-        let wasm = build_simple_module(
-            vec![WType::I64],
-            vec![WType::I64],
-            |body, entry, ps| {
-                body.add_op(entry, Operator::I64Extend32S, &[ps[0]], &[WType::I64])
-            },
-        );
+        let wasm = build_simple_module(vec![WType::I64], vec![WType::I64], |body, entry, ps| {
+            body.add_op(entry, Operator::I64Extend32S, &[ps[0]], &[WType::I64])
+        });
         let mut target = VaffleTarget::new();
         let errors = lower_waffle_module(&wasm, &mut target);
-        assert!(errors.is_empty(), "i64.extend32_s lowering failed: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "i64.extend32_s lowering failed: {:?}",
+            errors
+        );
     }
 
     // ── Mutable global threading ──────────────────────────────────────────────
@@ -1370,7 +1667,11 @@ mod tests {
         });
 
         let mut globals: EntityVec<Global, GlobalData> = EntityVec::default();
-        globals.push(GlobalData { ty: WType::I32, value: Some(42), mutable: true });
+        globals.push(GlobalData {
+            ty: WType::I32,
+            value: Some(42),
+            mutable: true,
+        });
 
         let mut module = WModule {
             orig_bytes: None,
@@ -1393,14 +1694,33 @@ mod tests {
         let g = Global::from(0u32);
 
         // old_val = global.get g0
-        let old_val = body.add_op(entry, Operator::GlobalGet { global_index: g }, &[], &[WType::I32]);
+        let old_val = body.add_op(
+            entry,
+            Operator::GlobalGet { global_index: g },
+            &[],
+            &[WType::I32],
+        );
 
         // global.set g0, old_val  (write back same value — just to exercise GlobalSet)
-        body.add_op(entry, Operator::GlobalSet { global_index: g }, &[old_val], &[]);
+        body.add_op(
+            entry,
+            Operator::GlobalSet { global_index: g },
+            &[old_val],
+            &[],
+        );
 
         // return old_val
-        body.set_terminator(entry, WTerminator::Return { values: vec![old_val] });
-        module.funcs.push(portal_pc_waffle_ir::FuncDecl::Body(sig, "global_rw".into(), body));
+        body.set_terminator(
+            entry,
+            WTerminator::Return {
+                values: vec![old_val],
+            },
+        );
+        module.funcs.push(portal_pc_waffle_ir::FuncDecl::Body(
+            sig,
+            "global_rw".into(),
+            body,
+        ));
         module
     }
 
@@ -1424,16 +1744,22 @@ mod tests {
         // Original WASM: 0 params, 1 i32 return.
         // After threading 1 mutable i32 global: 32 bit-params (the global bits),
         // and the Return terminator should carry 32 (orig i32) + 32 (global out) = 64 bits.
-        assert_eq!(sig.params.len(), 32,
-            "VAFFLE sig should have 32 bit-params (the mutable i32 global), got {:?}", sig.params.len());
+        assert_eq!(
+            sig.params.len(),
+            32,
+            "VAFFLE sig should have 32 bit-params (the mutable i32 global), got {:?}",
+            sig.params.len()
+        );
 
         let entry_block = &func_body.blocks[func_body.entry.0];
         let ret_bits = match &entry_block.terminator {
             vaffle::Terminator::Return { values } => values.len(),
             other => panic!("expected Return terminator, got {:?}", other),
         };
-        assert_eq!(ret_bits, 64,
-            "Return should carry 64 bits (32 orig + 32 global_out), got {ret_bits}");
+        assert_eq!(
+            ret_bits, 64,
+            "Return should carry 64 bits (32 orig + 32 global_out), got {ret_bits}"
+        );
     }
 
     // ── Multi-value return lowers without error ───────────────────────────────
@@ -1469,11 +1795,19 @@ mod tests {
         let p = body.blocks[entry].params[0].1;
         // return (p, p)
         body.set_terminator(entry, WTerminator::Return { values: vec![p, p] });
-        module.funcs.push(portal_pc_waffle_ir::FuncDecl::Body(sig, "multi_ret".into(), body));
+        module.funcs.push(portal_pc_waffle_ir::FuncDecl::Body(
+            sig,
+            "multi_ret".into(),
+            body,
+        ));
 
         let mut target = VaffleTarget::new();
         let errors = lower_waffle_module(&module, &mut target);
-        assert!(errors.is_empty(), "multi-value return lowering failed: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "multi-value return lowering failed: {:?}",
+            errors
+        );
         assert_eq!(target.module.funcs.len(), 1);
         // VAFFLE sig should return 2 * 32 = 64 bits (two i32s concatenated).
         let func_body = match &target.module.funcs[0] {
@@ -1483,8 +1817,11 @@ mod tests {
         let sig = &target.module.sigs[func_body.sig.0];
         // WASM (i32) → (i32, i32): one 32-bit param → 64-bit return.
         // VAFFLE sig carries 32 bit-params. Results are in the Return terminator.
-        assert_eq!(sig.params.len(), 32,
-            "VAFFLE sig should have 32 bit-params for the i32 input");
+        assert_eq!(
+            sig.params.len(),
+            32,
+            "VAFFLE sig should have 32 bit-params for the i32 input"
+        );
 
         // The Return terminator should carry 64 ValueIds (32+32 bits for the two i32s).
         let entry_block = &func_body.blocks[func_body.entry.0];
@@ -1492,8 +1829,10 @@ mod tests {
             vaffle::Terminator::Return { values } => values.len(),
             other => panic!("expected Return terminator, got {:?}", other),
         };
-        assert_eq!(ret_bits, 64,
-            "Return should carry 64 bits for two i32 returns, got {ret_bits}");
+        assert_eq!(
+            ret_bits, 64,
+            "Return should carry 64 bits for two i32 returns, got {ret_bits}"
+        );
     }
 
     // ── PickOutput: multi-value call with per-output extraction ───────────────
@@ -1533,11 +1872,28 @@ mod tests {
         // Build callee body: return (1, 2).
         let mut callee_body = portal_pc_waffle_ir::FunctionBody::new(&module, callee_sig);
         let callee_entry = callee_body.entry;
-        let c1 = callee_body.add_op(callee_entry, Operator::I32Const { value: 1 }, &[], &[WType::I32]);
-        let c2 = callee_body.add_op(callee_entry, Operator::I32Const { value: 2 }, &[], &[WType::I32]);
-        callee_body.set_terminator(callee_entry, WTerminator::Return { values: vec![c1, c2] });
+        let c1 = callee_body.add_op(
+            callee_entry,
+            Operator::I32Const { value: 1 },
+            &[],
+            &[WType::I32],
+        );
+        let c2 = callee_body.add_op(
+            callee_entry,
+            Operator::I32Const { value: 2 },
+            &[],
+            &[WType::I32],
+        );
+        callee_body.set_terminator(
+            callee_entry,
+            WTerminator::Return {
+                values: vec![c1, c2],
+            },
+        );
         let callee_func = module.funcs.push(portal_pc_waffle_ir::FuncDecl::Body(
-            callee_sig, "callee".into(), callee_body,
+            callee_sig,
+            "callee".into(),
+            callee_body,
         ));
 
         // Build caller body: call callee, pick output[1], return it.
@@ -1546,21 +1902,34 @@ mod tests {
         // The Call op produces a tuple value with both returns.
         let call_val = caller_body.add_op(
             caller_entry,
-            Operator::Call { function_index: callee_func },
+            Operator::Call {
+                function_index: callee_func,
+            },
             &[],
             &[WType::I32, WType::I32],
         );
         // PickOutput(call_val, 1, I32) extracts the second return.
         let picked = caller_body.add_value(ValueDef::PickOutput(call_val, 1, WType::I32));
         caller_body.append_to_block(caller_entry, picked);
-        caller_body.set_terminator(caller_entry, WTerminator::Return { values: vec![picked] });
+        caller_body.set_terminator(
+            caller_entry,
+            WTerminator::Return {
+                values: vec![picked],
+            },
+        );
         module.funcs.push(portal_pc_waffle_ir::FuncDecl::Body(
-            caller_sig, "caller".into(), caller_body,
+            caller_sig,
+            "caller".into(),
+            caller_body,
         ));
 
         let mut target = VaffleTarget::new();
         let errors = lower_waffle_module(&module, &mut target);
-        assert!(errors.is_empty(), "PickOutput lowering failed: {:?}", errors);
+        assert!(
+            errors.is_empty(),
+            "PickOutput lowering failed: {:?}",
+            errors
+        );
         // Both functions should have been lowered.
         assert_eq!(target.module.funcs.len(), 2);
     }
