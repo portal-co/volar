@@ -8,9 +8,10 @@
 
 use std::collections::BTreeMap;
 use volar_compiler::ir::{
-    ArrayLength, ExternalKind, IrBlock, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump,
-    IrCfgModule, IrCfgTerminator, IrEnum, IrEnumVariant, IrEnumVariantData, IrExpr, IrField,
-    IrFunction, IrImpl, IrImplItem, IrModule, IrParam, IrStmt, IrStruct, IrType, IrTypeAlias,
+    ArrayLength, ExternalKind, IrAnyFunction, IrBlock, IrCfgBlock, IrCfgBody, IrCfgFunction,
+    IrCfgJump, IrCfgModule, IrCfgTerminator, IrEnum, IrEnumVariant, IrEnumVariantData, IrExpr,
+    IrField, IrFunction, IrImpl, IrImplItem, IrModule, IrParam, IrStmt, IrStruct, IrType,
+    IrTypeAlias,
 };
 
 // ============================================================================
@@ -47,7 +48,7 @@ impl MonoEnv {
 
 /// Monomorphize an entire `IrModule`: substitutes type/length parameters
 /// in all struct definitions and all function signatures/bodies.
-pub fn monomorphize_module(module: &IrModule, env: &MonoEnv) -> IrModule {
+pub fn monomorphize_module(module: &IrModule<IrFunction>, env: &MonoEnv) -> IrModule<IrFunction> {
     IrModule {
         name: module.name.clone(),
         structs: module.structs.iter().map(|s| monomorphize_struct(s, env)).collect(),
@@ -61,16 +62,18 @@ pub fn monomorphize_module(module: &IrModule, env: &MonoEnv) -> IrModule {
 
 /// Monomorphize an `IrCfgModule`: substitutes type/length parameters
 /// in all struct definitions, enums, type aliases, impls, and function
-/// signatures/bodies (both CFG and auxiliary).
+/// signatures/bodies (both CFG and flat).
 pub fn monomorphize_cfg_module(module: &IrCfgModule, env: &MonoEnv) -> IrCfgModule {
-    IrCfgModule {
+    IrModule {
         name: module.name.clone(),
         structs: module.structs.iter().map(|s| monomorphize_struct(s, env)).collect(),
         enums: module.enums.iter().map(|e| monomorphize_enum(e, env)).collect(),
         traits: module.traits.clone(),
         impls: module.impls.iter().map(|i| monomorphize_impl(i, env)).collect(),
-        functions: module.functions.iter().map(|f| monomorphize_cfg_function(f, env)).collect(),
-        auxiliary_functions: module.auxiliary_functions.iter().map(|f| monomorphize_function(f, env)).collect(),
+        functions: module.functions.iter().map(|f| match f {
+            IrAnyFunction::Cfg(f) => IrAnyFunction::Cfg(monomorphize_cfg_function(f, env)),
+            IrAnyFunction::Flat(f) => IrAnyFunction::Flat(monomorphize_function(f, env)),
+        }).collect(),
         type_aliases: module.type_aliases.iter().map(|a| monomorphize_type_alias(a, env)).collect(),
     }
 }

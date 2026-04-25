@@ -405,7 +405,7 @@ pub fn weave_vole_prover<P: Clone + Default>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<IrFunction> {
     weave_vole_prover_with_handler(circuit, name, linkage, &NoProvenance)
 }
 
@@ -416,7 +416,7 @@ pub fn weave_vole_prover_with_handler<P, H>(
     name: &str,
     linkage: Option<&LinkageSystem>,
     handler: &H,
-) -> IrModule<H::Output>
+) -> IrModule<IrFunction<H::Output>, H::Output>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
@@ -710,7 +710,7 @@ pub fn weave_vole_verifier<P: Clone + Default>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<IrFunction> {
     weave_vole_verifier_with_handler(circuit, name, linkage, &NoProvenance)
 }
 
@@ -721,7 +721,7 @@ pub fn weave_vole_verifier_with_handler<P, H>(
     name: &str,
     linkage: Option<&LinkageSystem>,
     handler: &H,
-) -> IrModule<H::Output>
+) -> IrModule<IrFunction<H::Output>, H::Output>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
@@ -1032,7 +1032,7 @@ pub fn weave_vole_prover_bounded<P: Clone + Default>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<IrFunction> {
     weave_vole_prover_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
 }
 
@@ -1044,7 +1044,7 @@ pub fn weave_vole_prover_bounded_with_handler<P, H>(
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
     handler: &H,
-) -> IrModule<H::Output>
+) -> IrModule<IrFunction<H::Output>, H::Output>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
@@ -1060,7 +1060,7 @@ pub fn weave_vole_verifier_bounded<P: Clone + Default>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<IrFunction> {
     weave_vole_verifier_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
 }
 
@@ -1072,7 +1072,7 @@ pub fn weave_vole_verifier_bounded_with_handler<P, H>(
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
     handler: &H,
-) -> IrModule<H::Output>
+) -> IrModule<IrFunction<H::Output>, H::Output>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
@@ -2211,7 +2211,7 @@ pub fn weave_vole_prover_ir(
     name: &str,
     storage_sizes: &StorageSizes,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<IrFunction> {
     let mode = StorageMode::Tree(storage_sizes.clone());
     weave_vole_prover_ir_with_mode(circuit, types, name, &mode, linkage).0
 }
@@ -2228,7 +2228,7 @@ pub fn weave_vole_prover_ir_with_mode(
     name: &str,
     mode: &StorageMode,
     linkage: Option<&LinkageSystem>,
-) -> (IrModule, MemoryTrace) {
+) -> (IrModule<IrFunction>, MemoryTrace) {
     assert!(circuit.is_circuit(), "weave_vole_prover_ir: circuit must satisfy is_circuit()");
     let block = &circuit.blocks[0];
     let num_params = block.params.len();
@@ -2315,7 +2315,7 @@ pub fn weave_vole_verifier_ir(
     name: &str,
     storage_sizes: &StorageSizes,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<IrFunction> {
     let mode = StorageMode::Tree(storage_sizes.clone());
     weave_vole_verifier_ir_with_mode(circuit, types, name, &mode, linkage).0
 }
@@ -2328,7 +2328,7 @@ pub fn weave_vole_verifier_ir_with_mode(
     name: &str,
     mode: &StorageMode,
     linkage: Option<&LinkageSystem>,
-) -> (IrModule, MemoryTrace) {
+) -> (IrModule<IrFunction>, MemoryTrace) {
     assert!(circuit.is_circuit(), "weave_vole_verifier_ir: circuit must satisfy is_circuit()");
     let block = &circuit.blocks[0];
     let num_params = block.params.len();
@@ -2430,7 +2430,7 @@ pub fn weave_vole_verifier_ir_with_mode(
 /// The preamble brings in the VOLE AND gate primitives from
 /// `volar_spec::vole::prove` — the implementation that was formerly
 /// embedded as a raw string is now the authoritative spec.
-pub fn print_weaved_vole_module(module: &IrModule) -> String {
+pub fn print_weaved_vole_module(module: &IrModule<IrFunction>) -> String {
     use volar_compiler::printer::{DisplayRust, ModuleWriter};
     use alloc::fmt::Write as _;
 

@@ -23,7 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use volar_compiler::ir::{
-    IrBlock, IrExpr, IrIterChain, IrMatchArm, IrModule, IrStmt, IterChainSource,
+    IrBlock, IrExpr, IrFunction, IrIterChain, IrMatchArm, IrModule, IrStmt, IterChainSource,
     IterStep, IterTerminal,
 };
 use volar_ir::ir::IRBlocks;
@@ -43,7 +43,7 @@ use crate::VolarIrTarget;
 /// single- and multi-block callees.
 ///
 /// Returns `(name, IRBlocks)` pairs in the original module order.
-pub fn lower_module_inlining(module: &IrModule) -> Vec<(String, IRBlocks)> {
+pub fn lower_module_inlining(module: &IrModule<IrFunction>) -> Vec<(String, IRBlocks)> {
     let n = module.functions.len();
 
     // ---- Build name→index map --------------------------------------------

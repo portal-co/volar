@@ -29,7 +29,7 @@ pub struct TypeContext {
 }
 
 impl TypeContext {
-    pub fn from_module(module: &IrModule) -> Self {
+    pub fn from_module(module: &IrModule<IrFunction>) -> Self {
         Self::from_module_with_deps(module, &[])
     }
 
@@ -40,7 +40,7 @@ impl TypeContext {
     /// 2. Dependency manifests (earlier deps take precedence on conflict)
     /// 3. Module's own definitions (override everything)
     pub fn from_module_with_deps(
-        module: &IrModule,
+        module: &IrModule<IrFunction>,
         deps: &[volar_compiler::manifest::TypeManifest],
     ) -> Self {
         let mut ctx = Self::default();
@@ -284,7 +284,7 @@ pub struct OperatorAnalysis {
 }
 
 impl OperatorAnalysis {
-    pub fn from_module(module: &IrModule) -> Self {
+    pub fn from_module(module: &IrModule<IrFunction>) -> Self {
         let mut analysis = Self::default();
 
         for imp in &module.impls {
@@ -318,7 +318,7 @@ impl OperatorAnalysis {
 }
 
 /// Utility for tracking used types to guide monomorphization or code gen
-pub fn collect_type_refs(module: &IrModule) -> BTreeSet<String> {
+pub fn collect_type_refs(module: &IrModule<IrFunction>) -> BTreeSet<String> {
     let mut refs = BTreeSet::new();
     for s in &module.structs {
         for field in &s.fields {

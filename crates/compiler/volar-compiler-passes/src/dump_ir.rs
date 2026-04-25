@@ -26,7 +26,7 @@ use core::fmt::Write;
 use volar_compiler::ir::*;
 
 /// Dump an entire module to a human-readable string.
-pub fn dump_module(module: &IrModule) -> String {
+pub fn dump_module(module: &IrModule<IrFunction>) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "=== Module: {} ===", module.name);
     let _ = writeln!(out);

@@ -17,9 +17,9 @@ use std::sync::LazyLock;
 
 use std::collections::BTreeMap;
 use volar_compiler::ir::{
-    ArrayKind, ArrayLength, ExternalKind, IrBlock, IrCfgBody, IrCfgFunction, IrCfgJump, IrCfgModule,
-    IrCfgTerminator, IrClosureParam, IrExpr, IrFunction, IrLit, IrModule, IrPattern, IrStmt,
-    IrType, MethodKind, PrimitiveType, SpecBinOp, SpecUnaryOp, StructKind,
+    ArrayKind, ArrayLength, ExternalKind, IrAnyFunction, IrBlock, IrCfgBody, IrCfgFunction,
+    IrCfgJump, IrCfgModule, IrCfgTerminator, IrClosureParam, IrExpr, IrFunction, IrLit, IrModule,
+    IrPattern, IrStmt, IrType, MethodKind, PrimitiveType, SpecBinOp, SpecUnaryOp, StructKind,
 };
 use volar_lir::{IcmpPred, LirTarget, LirType, LirAbi};
 
@@ -245,13 +245,13 @@ static EMPTY_IR_RET_TYPES: LazyLock<BTreeMap<String, IrType>> =
 ///
 /// The module should be monomorphized before calling this (via `mono::monomorphize_module`).
 /// Struct types are registered via `structs::build_struct_registry` before lowering functions.
-pub fn lower_module<T: LirTarget>(module: &IrModule, target: &mut T) {
+pub fn lower_module<T: LirTarget>(module: &IrModule<IrFunction>, target: &mut T) {
     lower_module_with_opts(module, target, "");
 }
 
 /// Like `lower_module` but with an explicit crypto hash suffix (for extern names).
 pub fn lower_module_with_opts<T: LirTarget>(
-    module: &IrModule,
+    module: &IrModule<IrFunction>,
     target: &mut T,
     hash_suffix: &str,
 ) {
@@ -1275,14 +1275,16 @@ pub fn lower_cfg_module_with_opts<T: LirTarget>(
     include_auxiliary: bool,
 ) {
     // Build struct registry from the CFG module's structs.
-    // We need a temporary IrModule to reuse `build_struct_registry`.
-    let flat = IrModule {
+    // We need a temporary flat IrModule to reuse `build_struct_registry`.
+    let flat: IrModule<IrFunction> = IrModule {
         name: module.name.clone(),
         structs: module.structs.clone(),
         enums: module.enums.clone(),
         traits: module.traits.clone(),
         impls: module.impls.clone(),
-        functions: module.auxiliary_functions.clone(),
+        functions: module.functions.iter().filter_map(|f| {
+            if let IrAnyFunction::Flat(f) = f { Some(f.clone()) } else { None }
+        }).collect(),
         type_aliases: module.type_aliases.clone(),
     };
     let mut registry = structs::build_struct_registry(&flat, target);
@@ -1295,85 +1297,74 @@ pub fn lower_cfg_module_with_opts<T: LirTarget>(
 
     // Pre-register synthetic structs for any tuple types appearing in function
     // signatures.  This must happen before `ir_type_to_lir` encounters tuples.
-    for f in &module.auxiliary_functions {
-        for p in &f.params {
+    for func in &module.functions {
+        let (params, return_type) = match func {
+            IrAnyFunction::Flat(f) => (&f.params, &f.return_type),
+            IrAnyFunction::Cfg(f) => (&f.params, &f.return_type),
+        };
+        for p in params {
             structs::register_tuples_in_type(&p.ty, &mut registry, target);
         }
-        if let Some(rt) = &f.return_type {
-            structs::register_tuples_in_type(rt, &mut registry, target);
-        }
-    }
-    for f in &module.functions {
-        for p in &f.params {
-            structs::register_tuples_in_type(&p.ty, &mut registry, target);
-        }
-        if let Some(rt) = &f.return_type {
+        if let Some(rt) = return_type {
             structs::register_tuples_in_type(rt, &mut registry, target);
         }
     }
 
-    // Build external-fn and func-sigs tables from both auxiliary and CFG functions.
+    // Build external-fn and func-sigs tables from both flat and CFG functions.
     let mut external_fns: BTreeMap<String, ExternalFnInfo> = BTreeMap::new();
     let mut func_sigs: BTreeMap<String, FuncSigInfo> = BTreeMap::new();
     // IR-level return types for type inference at call sites.
     let mut ir_func_ret_types: BTreeMap<String, IrType> = BTreeMap::new();
 
     // Always register metadata (external_fns, func_sigs, ir_func_ret_types)
-    // from auxiliary functions — even when `include_auxiliary` is false.
-    // The CFG functions call action/oracle/rng functions defined in the auxiliary
-    // set, so we need their signatures and external-kind info for lowering.
-    // `include_auxiliary` only controls whether we *lower their bodies*.
-    for f in &module.auxiliary_functions {
-        let param_tys: Vec<LirType> = f.params.iter().map(|p| registry.ir_type_to_lir(&p.ty)).collect();
-        let return_type = f.return_type.as_ref().map(|t| registry.ir_type_to_lir(t));
-        func_sigs.insert(f.name.clone(), FuncSigInfo { param_tys: param_tys.clone(), return_type: return_type.clone() });
-        if let Some(rt) = &f.return_type {
-            ir_func_ret_types.insert(f.name.clone(), rt.clone());
+    // from all functions — even when `include_auxiliary` is false for flat bodies.
+    // The CFG functions call action/oracle/rng functions defined as flat entries,
+    // so we need their signatures and external-kind info for lowering.
+    // `include_auxiliary` only controls whether we *lower flat function bodies*.
+    for func in &module.functions {
+        let (name, params, return_type, external_kind) = match func {
+            IrAnyFunction::Flat(f) => (&f.name, &f.params, &f.return_type, f.external_kind),
+            IrAnyFunction::Cfg(f) => (&f.name, &f.params, &f.return_type, f.external_kind),
+        };
+        let param_tys: Vec<LirType> = params.iter().map(|p| registry.ir_type_to_lir(&p.ty)).collect();
+        let ret_lir = return_type.as_ref().map(|t| registry.ir_type_to_lir(t));
+        func_sigs.insert(name.clone(), FuncSigInfo { param_tys: param_tys.clone(), return_type: ret_lir.clone() });
+        if let Some(rt) = return_type {
+            ir_func_ret_types.insert(name.clone(), rt.clone());
         }
-        if matches!(f.external_kind, ExternalKind::Oracle | ExternalKind::Action | ExternalKind::Rng) {
-            external_fns.insert(f.name.clone(), ExternalFnInfo {
-                kind: f.external_kind,
+        if matches!(external_kind, ExternalKind::Oracle | ExternalKind::Action | ExternalKind::Rng) {
+            external_fns.insert(name.clone(), ExternalFnInfo {
+                kind: external_kind,
                 param_tys,
-                return_type,
-            });
-        }
-    }
-    for f in &module.functions {
-        let param_tys: Vec<LirType> = f.params.iter().map(|p| registry.ir_type_to_lir(&p.ty)).collect();
-        let return_type = f.return_type.as_ref().map(|t| registry.ir_type_to_lir(t));
-        func_sigs.insert(f.name.clone(), FuncSigInfo { param_tys: param_tys.clone(), return_type: return_type.clone() });
-        if let Some(rt) = &f.return_type {
-            ir_func_ret_types.insert(f.name.clone(), rt.clone());
-        }
-        if matches!(f.external_kind, ExternalKind::Oracle | ExternalKind::Action | ExternalKind::Rng) {
-            external_fns.insert(f.name.clone(), ExternalFnInfo {
-                kind: f.external_kind,
-                param_tys,
-                return_type,
+                return_type: ret_lir,
             });
         }
     }
 
-    // Lower auxiliary (flat) functions.
+    // Lower flat functions (auxiliary spec functions).
     if include_auxiliary {
-        for func in &module.auxiliary_functions {
-            if func.external_kind != ExternalKind::Normal {
-                continue;
+        for func in &module.functions {
+            if let IrAnyFunction::Flat(func) = func {
+                if func.external_kind != ExternalKind::Normal {
+                    continue;
+                }
+                lower_function_in_module(
+                    func, target, &registry, hash_suffix, &module.structs, &external_fns, &func_sigs,
+                );
             }
-            lower_function_in_module(
-                func, target, &registry, hash_suffix, &module.structs, &external_fns, &func_sigs,
-            );
         }
     }
 
     // Lower CFG functions.
     for func in &module.functions {
-        if func.external_kind != ExternalKind::Normal {
-            continue;
+        if let IrAnyFunction::Cfg(func) = func {
+            if func.external_kind != ExternalKind::Normal {
+                continue;
+            }
+            lower_cfg_function(
+                func, target, &registry, hash_suffix, &module.structs, &external_fns, &func_sigs, &ir_func_ret_types,
+            );
         }
-        lower_cfg_function(
-            func, target, &registry, hash_suffix, &module.structs, &external_fns, &func_sigs, &ir_func_ret_types,
-        );
     }
 }
 

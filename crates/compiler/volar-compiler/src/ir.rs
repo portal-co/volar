@@ -581,16 +581,30 @@ impl fmt::Display for AssociatedType {
 // MAIN IR DATA STRUCTURES
 // ============================================================================
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct IrModule<P: Clone + Default = ()> {
+pub struct IrModule<F, P: Clone + Default = ()> {
     pub name: String,
     pub structs: Vec<IrStruct>,
     pub enums: Vec<IrEnum>,
     pub traits: Vec<IrTrait>,
     pub impls: Vec<IrImpl<P>>,
-    pub functions: Vec<IrFunction<P>>,
+    pub functions: Vec<F>,
     pub type_aliases: Vec<IrTypeAlias>,
+}
+
+impl<F, P: Clone + Default> Default for IrModule<F, P> {
+    fn default() -> Self {
+        Self {
+            name: Default::default(),
+            structs: Default::default(),
+            enums: Default::default(),
+            traits: Default::default(),
+            impls: Default::default(),
+            functions: Default::default(),
+            type_aliases: Default::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1758,13 +1772,18 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
 // Provenance mapping
 // ============================================================================
 
-impl<P: Clone + Default> IrExpr<P> {
-    /// Map provenance annotations from `P` to `Q`.
-    ///
-    /// Provenance only appears inside nested `IrBlock<P>` values (e.g.
-    /// `BoundedLoop`, `IterLoop`, `Block`, `If`).  Leaf expression
-    /// variants are structurally identical regardless of `P`.
-    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IrExpr<Q> {
+/// Uniform interface for transforming provenance annotations from `P` to `Q`.
+///
+/// All parameterized IR types implement this trait, enabling generic
+/// provenance-mapping in [`IrModule::map_prov`].
+pub trait MapProv<P: Clone + Default, Q: Clone + Default>: Sized {
+    type Output;
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> Self::Output;
+}
+
+impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrExpr<P> {
+    type Output = IrExpr<Q>;
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> IrExpr<Q> {
         match self {
             IrExpr::Lit(l) => IrExpr::Lit(l),
             IrExpr::Var(v) => IrExpr::Var(v),
@@ -1827,8 +1846,9 @@ impl<P: Clone + Default> IrExpr<P> {
     }
 }
 
-impl<P: Clone + Default> IrIterChain<P> {
-    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IrIterChain<Q> {
+impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrIterChain<P> {
+    type Output = IrIterChain<Q>;
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> IrIterChain<Q> {
         IrIterChain {
             source: self.source.map_prov(f),
             steps: self.steps.into_iter().map(|s| s.map_prov(f)).collect(),
@@ -1837,8 +1857,9 @@ impl<P: Clone + Default> IrIterChain<P> {
     }
 }
 
-impl<P: Clone + Default> IterChainSource<P> {
-    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IterChainSource<Q> {
+impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IterChainSource<P> {
+    type Output = IterChainSource<Q>;
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> IterChainSource<Q> {
         match self {
             IterChainSource::Method { collection, method } =>
                 IterChainSource::Method { collection: Box::new(collection.map_prov(f)), method },
@@ -1850,8 +1871,9 @@ impl<P: Clone + Default> IterChainSource<P> {
     }
 }
 
-impl<P: Clone + Default> IterStep<P> {
-    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IterStep<Q> {
+impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IterStep<P> {
+    type Output = IterStep<Q>;
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> IterStep<Q> {
         match self {
             IterStep::Map { var, body } => IterStep::Map { var, body: Box::new(body.map_prov(f)) },
             IterStep::Filter { var, body } => IterStep::Filter { var, body: Box::new(body.map_prov(f)) },
@@ -1865,8 +1887,9 @@ impl<P: Clone + Default> IterStep<P> {
     }
 }
 
-impl<P: Clone + Default> IterTerminal<P> {
-    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IterTerminal<Q> {
+impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IterTerminal<P> {
+    type Output = IterTerminal<Q>;
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> IterTerminal<Q> {
         match self {
             IterTerminal::Collect => IterTerminal::Collect,
             IterTerminal::CollectTyped(ty) => IterTerminal::CollectTyped(ty),
@@ -1877,8 +1900,9 @@ impl<P: Clone + Default> IterTerminal<P> {
     }
 }
 
-impl<P: Clone + Default> IrMatchArm<P> {
-    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IrMatchArm<Q> {
+impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrMatchArm<P> {
+    type Output = IrMatchArm<Q>;
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> IrMatchArm<Q> {
         IrMatchArm {
             pattern: self.pattern,
             guard: self.guard.map(|g| g.map_prov(f)),
@@ -1887,8 +1911,9 @@ impl<P: Clone + Default> IrMatchArm<P> {
     }
 }
 
-impl<P: Clone + Default> IrStmt<P> {
-    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IrStmt<Q> {
+impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrStmt<P> {
+    type Output = IrStmt<Q>;
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> IrStmt<Q> {
         match self {
             IrStmt::Let { pattern, ty, init } =>
                 IrStmt::Let { pattern, ty, init: init.map(|e| e.map_prov(f)) },
@@ -1898,8 +1923,9 @@ impl<P: Clone + Default> IrStmt<P> {
     }
 }
 
-impl<P: Clone + Default> IrBlock<P> {
-    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IrBlock<Q> {
+impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrBlock<P> {
+    type Output = IrBlock<Q>;
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> IrBlock<Q> {
         IrBlock {
             stmts: self.stmts.into_iter().map(|s| s.map_prov(f)).collect(),
             stmt_provs: self.stmt_provs.into_iter().map(|p| f(p)).collect(),
@@ -1908,8 +1934,9 @@ impl<P: Clone + Default> IrBlock<P> {
     }
 }
 
-impl<P: Clone + Default> IrFunction<P> {
-    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IrFunction<Q> {
+impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrFunction<P> {
+    type Output = IrFunction<Q>;
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> IrFunction<Q> {
         IrFunction {
             name: self.name,
             generics: self.generics,
@@ -1923,8 +1950,9 @@ impl<P: Clone + Default> IrFunction<P> {
     }
 }
 
-impl<P: Clone + Default> IrImplItem<P> {
-    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IrImplItem<Q> {
+impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrImplItem<P> {
+    type Output = IrImplItem<Q>;
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> IrImplItem<Q> {
         match self {
             IrImplItem::Method(func) => IrImplItem::Method(func.map_prov(f)),
             IrImplItem::AssociatedType { name, ty } => IrImplItem::AssociatedType { name, ty },
@@ -1932,8 +1960,9 @@ impl<P: Clone + Default> IrImplItem<P> {
     }
 }
 
-impl<P: Clone + Default> IrImpl<P> {
-    pub fn map_prov<Q: Clone + Default>(self, f: &impl Fn(P) -> Q) -> IrImpl<Q> {
+impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrImpl<P> {
+    type Output = IrImpl<Q>;
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> IrImpl<Q> {
         IrImpl {
             generics: self.generics,
             trait_: self.trait_,
@@ -1944,7 +1973,8 @@ impl<P: Clone + Default> IrImpl<P> {
     }
 }
 
-impl<P: Clone + Default> IrModule<P> {
+impl<F: MapProv<P, Q>, P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrModule<F, P> {
+    type Output = IrModule<F::Output, Q>;
     /// Transform all provenance annotations in this module from `P` to `Q`.
     ///
     /// This is the primary mechanism for integrating provenance across
@@ -1952,17 +1982,17 @@ impl<P: Clone + Default> IrModule<P> {
     /// into the weaver's output provenance:
     ///
     /// ```ignore
-    /// let module: IrModule<CircuitProv> = weave(...);
-    /// let mapped: IrModule<AppProv> = module.map_prov(|cp| AppProv::from(cp));
+    /// let module: IrModule<IrFunction<CircuitProv>, CircuitProv> = weave(...);
+    /// let mapped = module.map_prov(&|cp| AppProv::from(cp));
     /// ```
-    pub fn map_prov<Q: Clone + Default>(self, f: impl Fn(P) -> Q) -> IrModule<Q> {
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> IrModule<F::Output, Q> {
         IrModule {
             name: self.name,
             structs: self.structs,
             enums: self.enums,
             traits: self.traits,
-            impls: self.impls.into_iter().map(|i| i.map_prov(&f)).collect(),
-            functions: self.functions.into_iter().map(|func| func.map_prov(&f)).collect(),
+            impls: self.impls.into_iter().map(|i| i.map_prov(f)).collect(),
+            functions: self.functions.into_iter().map(|func| func.map_prov(f)).collect(),
             type_aliases: self.type_aliases,
         }
     }
@@ -2041,23 +2071,94 @@ pub struct IrCfgFunction<P: Clone + Default = ()> {
     pub body: IrCfgBody<P>,
 }
 
-/// A module whose functions have CFG-structured bodies.
+impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrCfgJump<P> {
+    type Output = IrCfgJump<Q>;
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> IrCfgJump<Q> {
+        IrCfgJump {
+            target: self.target,
+            args: self.args.into_iter().map(|e| e.map_prov(f)).collect(),
+        }
+    }
+}
+
+impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrCfgTerminator<P> {
+    type Output = IrCfgTerminator<Q>;
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> IrCfgTerminator<Q> {
+        match self {
+            IrCfgTerminator::Return(e) => IrCfgTerminator::Return(e.map(|e| e.map_prov(f))),
+            IrCfgTerminator::Goto(j) => IrCfgTerminator::Goto(j.map_prov(f)),
+            IrCfgTerminator::CondGoto { cond, then_, else_ } => IrCfgTerminator::CondGoto {
+                cond: cond.map_prov(f),
+                then_: then_.map_prov(f),
+                else_: else_.map_prov(f),
+            },
+        }
+    }
+}
+
+impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrCfgBlock<P> {
+    type Output = IrCfgBlock<Q>;
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> IrCfgBlock<Q> {
+        IrCfgBlock {
+            params: self.params,
+            stmts: self.stmts.into_iter().map(|s| s.map_prov(f)).collect(),
+            stmt_provs: self.stmt_provs.into_iter().map(|p| f(p)).collect(),
+            terminator: self.terminator.map_prov(f),
+        }
+    }
+}
+
+impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrCfgBody<P> {
+    type Output = IrCfgBody<Q>;
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> IrCfgBody<Q> {
+        IrCfgBody {
+            blocks: self.blocks.into_iter().map(|b| b.map_prov(f)).collect(),
+        }
+    }
+}
+
+impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrCfgFunction<P> {
+    type Output = IrCfgFunction<Q>;
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> IrCfgFunction<Q> {
+        IrCfgFunction {
+            name: self.name,
+            generics: self.generics,
+            receiver: self.receiver,
+            params: self.params,
+            return_type: self.return_type,
+            where_clause: self.where_clause,
+            external_kind: self.external_kind,
+            body: self.body.map_prov(f),
+        }
+    }
+}
+
+/// A function that is either flat (tree-structured) or CFG-structured.
+///
+/// Used as the function type of [`IrCfgModule`], which holds a mix of
+/// circuit-level CFG functions and auxiliary flat functions merged from
+/// linked specs via [`LinkageSystem::apply_cfg`].
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub enum IrAnyFunction<P: Clone + Default = ()> {
+    Flat(IrFunction<P>),
+    Cfg(IrCfgFunction<P>),
+}
+
+impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrAnyFunction<P> {
+    type Output = IrAnyFunction<Q>;
+    fn map_prov(self, f: &impl Fn(P) -> Q) -> IrAnyFunction<Q> {
+        match self {
+            IrAnyFunction::Flat(func) => IrAnyFunction::Flat(func.map_prov(f)),
+            IrAnyFunction::Cfg(func) => IrAnyFunction::Cfg(func.map_prov(f)),
+        }
+    }
+}
+
+/// A module whose functions have CFG-structured bodies (possibly mixed with
+/// auxiliary flat functions from linked specs).
 ///
 /// Produced by weavers that emit [`IrCfgFunction`]s rather than flat
 /// [`IrFunction`]s.  Use [`volar_compiler::printer::print_cfg_module`] to
 /// render to Rust source.
-#[derive(Debug, Clone, PartialEq, Default)]
-#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct IrCfgModule<P: Clone + Default = ()> {
-    pub name: String,
-    pub structs: Vec<IrStruct>,
-    pub enums: Vec<IrEnum>,
-    pub traits: Vec<IrTrait>,
-    pub impls: Vec<IrImpl<P>>,
-    pub functions: Vec<IrCfgFunction<P>>,
-    /// Auxiliary (non-CFG) functions merged from linked specs.
-    /// These are printed as regular Rust functions alongside the
-    /// CFG-structured circuit functions.
-    pub auxiliary_functions: Vec<IrFunction<P>>,
-    pub type_aliases: Vec<IrTypeAlias>,
-}
+pub type IrCfgModule<P = ()> = IrModule<IrAnyFunction<P>, P>;

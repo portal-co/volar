@@ -152,7 +152,7 @@ fn garble_struct<P: Clone + Default>(base_expr: IrExpr<P>) -> IrExpr<P> {
 /// Backwards-compatible evaluator weave — discards provenance.
 ///
 /// See [`weave_evaluator_with_handler`] for the provenance-preserving variant.
-pub fn weave_evaluator<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule {
+pub fn weave_evaluator<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule<IrFunction> {
     weave_evaluator_with_handler(circuit, name, linkage, &NoProvenance)
 }
 
@@ -163,7 +163,7 @@ pub fn weave_evaluator_with_handler<P, H>(
     name: &str,
     linkage: Option<&LinkageSystem>,
     handler: &H,
-) -> IrModule<H::Output>
+) -> IrModule<IrFunction<H::Output>, H::Output>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
@@ -329,13 +329,13 @@ where
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
 /// Backwards-compatible garbler weave — discards provenance.
-pub fn weave_garbler<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule {
+pub fn weave_garbler<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule<IrFunction> {
     weave_garbler_with_handler(circuit, name, linkage, &NoProvenance)
 }
 
 /// Weave a single-block boolean circuit into a garbled-circuit **garbler** `IrModule`,
 /// using `handler` to map input provenance into the output IR.
-pub fn weave_garbler_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>, handler: &H) -> IrModule<H::Output>
+pub fn weave_garbler_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>, handler: &H) -> IrModule<IrFunction<H::Output>, H::Output>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
@@ -521,13 +521,13 @@ where
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
 /// Backwards-compatible GarbledCircuit weave — discards provenance.
-pub fn weave_into_gc<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule {
+pub fn weave_into_gc<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule<IrFunction> {
     weave_into_gc_with_handler(circuit, name, linkage, &NoProvenance)
 }
 
 /// Weave a single-block boolean circuit into a `GarbledCircuit`-returning function,
 /// using `handler` to map input provenance into the output IR.
-pub fn weave_into_gc_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>, handler: &H) -> IrModule<H::Output>
+pub fn weave_into_gc_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>, handler: &H) -> IrModule<IrFunction<H::Output>, H::Output>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
@@ -721,7 +721,7 @@ pub fn weave_eval_from_setup<P: Clone + Default>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<IrFunction> {
     weave_eval_from_setup_with_handler(circuit, name, linkage, &NoProvenance)
 }
 
@@ -732,7 +732,7 @@ pub fn weave_eval_from_setup_with_handler<P, H>(
     name: &str,
     linkage: Option<&LinkageSystem>,
     handler: &H,
-) -> IrModule<H::Output>
+) -> IrModule<IrFunction<H::Output>, H::Output>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
@@ -898,7 +898,7 @@ pub fn weave_evaluator_bounded<P: Clone + Default>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<IrFunction> {
     weave_evaluator_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
 }
 
@@ -910,7 +910,7 @@ pub fn weave_evaluator_bounded_with_handler<P, H>(
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
     handler: &H,
-) -> IrModule<H::Output>
+) -> IrModule<IrFunction<H::Output>, H::Output>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
@@ -927,7 +927,7 @@ pub fn weave_garbler_bounded<P: Clone + Default>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<IrFunction> {
     weave_garbler_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
 }
 
@@ -939,7 +939,7 @@ pub fn weave_garbler_bounded_with_handler<P, H>(
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
     handler: &H,
-) -> IrModule<H::Output>
+) -> IrModule<IrFunction<H::Output>, H::Output>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
@@ -956,7 +956,7 @@ pub fn weave_into_gc_bounded<P: Clone + Default>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<IrFunction> {
     weave_into_gc_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
 }
 
@@ -968,7 +968,7 @@ pub fn weave_into_gc_bounded_with_handler<P, H>(
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
     handler: &H,
-) -> IrModule<H::Output>
+) -> IrModule<IrFunction<H::Output>, H::Output>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
@@ -985,7 +985,7 @@ pub fn weave_eval_from_setup_bounded<P: Clone + Default>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<IrFunction> {
     weave_eval_from_setup_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
 }
 
@@ -997,7 +997,7 @@ pub fn weave_eval_from_setup_bounded_with_handler<P, H>(
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
     handler: &H,
-) -> IrModule<H::Output>
+) -> IrModule<IrFunction<H::Output>, H::Output>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
@@ -1012,7 +1012,7 @@ where
 // ============================================================================
 
 /// Render a weaved garble `IrModule` to Rust source.
-pub fn print_weaved_module(module: &IrModule, self_contained: bool) -> String {
+pub fn print_weaved_module(module: &IrModule<IrFunction>, self_contained: bool) -> String {
     use volar_compiler::printer::{DisplayRust, ModuleWriter};
     use alloc::fmt::Write as _;
 

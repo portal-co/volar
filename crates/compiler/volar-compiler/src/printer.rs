@@ -47,7 +47,7 @@ impl<T: RustBackend> fmt::Display for DisplayRust<T> {
 
 /// Renders an `IrModule` body (structs, traits, impls, functions) without preamble.
 pub struct ModuleWriter<'a> {
-    pub module: &'a IrModule,
+    pub module: &'a IrModule<IrFunction>,
 }
 
 pub struct StructWriter<'a> {
@@ -1473,12 +1473,12 @@ fn bin_op_str(op: SpecBinOp) -> &'static str {
 /// Render a full module with the standard preamble as a String.
 ///
 /// This preserves backward compatibility with the old `print_module` API.
-pub fn print_module(module: &IrModule) -> String {
+pub fn print_module(module: &IrModule<IrFunction>) -> String {
     print_module_with_deps(module, &[])
 }
 
 /// Render a module with the standard preamble plus data-driven dependency imports.
-pub fn print_module_with_deps(module: &IrModule, deps: &[crate::manifest::TypeManifest]) -> String {
+pub fn print_module_with_deps(module: &IrModule<IrFunction>, deps: &[crate::manifest::TypeManifest]) -> String {
     let mut out = String::new();
     let _ = write!(out, "{}", DisplayRust(DynPreambleWriter { deps }));
     let _ = write!(out, "{}", DisplayRust(ModuleWriter { module }));
@@ -1606,20 +1606,22 @@ impl<'a> RustBackend for CfgModuleWriter<'a> {
             ImplWriter { i }.fmt(f)?;
             writeln!(f)?;
         }
-        // Auxiliary (linked spec) functions — regular linear bodies.
-        for func in &self.module.auxiliary_functions {
-            // TypeStub functions carry only signature info for LIR codegen;
-            // the Rust output imports the real implementation via `use`.
-            if func.external_kind == ExternalKind::TypeStub {
-                continue;
-            }
-            FunctionWriter { f: func, level: 0, is_trait_item: false }.fmt(f)?;
-            writeln!(f)?;
-        }
-        // Circuit functions — CFG-structured bodies.
         for func in &self.module.functions {
-            CfgFunctionWriter { func, level: 0 }.fmt(f)?;
-            writeln!(f)?;
+            match func {
+                IrAnyFunction::Flat(func) => {
+                    // TypeStub functions carry only signature info for LIR codegen;
+                    // the Rust output imports the real implementation via `use`.
+                    if func.external_kind == ExternalKind::TypeStub {
+                        continue;
+                    }
+                    FunctionWriter { f: func, level: 0, is_trait_item: false }.fmt(f)?;
+                    writeln!(f)?;
+                }
+                IrAnyFunction::Cfg(func) => {
+                    CfgFunctionWriter { func, level: 0 }.fmt(f)?;
+                    writeln!(f)?;
+                }
+            }
         }
         Ok(())
     }

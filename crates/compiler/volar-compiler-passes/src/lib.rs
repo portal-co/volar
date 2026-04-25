@@ -22,14 +22,14 @@ pub use const_analysis::*;
 pub use lowering::*;
 
 /// Generate dynamic Rust code by lowering type-level lengths to runtime witnesses.
-pub fn print_module_rust_dyn(module: &volar_compiler::ir::IrModule) -> String {
+pub fn print_module_rust_dyn(module: &volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>) -> String {
     let lowered = lowering_dyn::lower_module_dyn(module);
     volar_compiler::printer::print_module(&lowered)
 }
 
 /// Generate dynamic Rust code with dependency manifests providing context.
 pub fn print_module_rust_dyn_with_deps(
-    module: &volar_compiler::ir::IrModule,
+    module: &volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>,
     deps: &[volar_compiler::manifest::TypeManifest],
 ) -> String {
     let lowered = lowering_dyn::lower_module_dyn(module);
@@ -37,14 +37,14 @@ pub fn print_module_rust_dyn_with_deps(
 }
 
 /// Generate TypeScript code by lowering type-level lengths to runtime witnesses.
-pub fn print_module_typescript(module: &volar_compiler::ir::IrModule) -> String {
+pub fn print_module_typescript(module: &volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>) -> String {
     let lowered = lowering_dyn::lower_module_dyn(module);
     volar_compiler::printer_ts::print_module_ts(&lowered)
 }
 
 /// Generate TypeScript code with dependency manifests providing context.
 pub fn print_module_typescript_with_deps(
-    module: &volar_compiler::ir::IrModule,
+    module: &volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>,
     deps: &[volar_compiler::manifest::TypeManifest],
 ) -> String {
     let _ = deps;

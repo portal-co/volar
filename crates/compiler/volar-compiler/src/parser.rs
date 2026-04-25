@@ -36,7 +36,7 @@ pub struct SourceInput<'a> {
     pub name: &'a str,
 }
 
-pub fn parse_sources(sources: &[SourceInput<'_>], module_name: &str) -> Result<IrModule> {
+pub fn parse_sources(sources: &[SourceInput<'_>], module_name: &str) -> Result<IrModule<IrFunction>> {
     let mut module = IrModule {
         name: module_name.to_string(),
         ..Default::default()
@@ -61,7 +61,7 @@ pub fn parse_sources(sources: &[SourceInput<'_>], module_name: &str) -> Result<I
     Ok(module)
 }
 
-pub fn parse_source(source: &str, name: &str) -> Result<IrModule> {
+pub fn parse_source(source: &str, name: &str) -> Result<IrModule<IrFunction>> {
     parse_sources(&[SourceInput { source, name }], name)
 }
 

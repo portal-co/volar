@@ -40,7 +40,7 @@
 use alloc::string::String;
 
 use volar_compiler::{
-    ir::IrModule,
+    ir::{IrFunction, IrModule},
     linkage::LinkageSystem,
 };
 use volar_ir::boolar::BIrBlocks;
@@ -66,7 +66,7 @@ pub fn weave_grafhen<P: Clone + Default>(
     name: &str,
     word_bound: usize,
     linkage: Option<&LinkageSystem>,
-) -> IrModule {
+) -> IrModule<IrFunction> {
     weave_grafhen_with_handler(circuit, name, word_bound, linkage, &NoProvenance)
 }
 
@@ -81,7 +81,7 @@ pub fn weave_grafhen_with_handler<P, H>(
     word_bound: usize,
     linkage: Option<&LinkageSystem>,
     handler: &H,
-) -> IrModule<H::Output>
+) -> IrModule<IrFunction<H::Output>, H::Output>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
@@ -99,7 +99,7 @@ where
 // ============================================================================
 
 /// Render a weaved GRAFHEN `IrModule` to Rust source.
-pub fn print_grafhen_module(module: &IrModule, self_contained: bool) -> String {
+pub fn print_grafhen_module(module: &IrModule<IrFunction>, self_contained: bool) -> String {
     use volar_compiler::printer::{DisplayRust, ModuleWriter};
     use alloc::fmt::Write as _;
 

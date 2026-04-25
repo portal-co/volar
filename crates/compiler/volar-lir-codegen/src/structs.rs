@@ -7,7 +7,7 @@
 //! `StructExpr` lowering.
 
 use std::collections::BTreeMap;
-use volar_compiler::ir::{ArrayKind, ArrayLength, IrModule, IrStruct, IrType, PrimitiveType, StructKind};
+use volar_compiler::ir::{ArrayKind, ArrayLength, IrFunction, IrModule, IrStruct, IrType, PrimitiveType, StructKind};
 use volar_ir_common::Type as NativeType;
 use volar_lir::{FieldDef, LirTarget, LirType, StructDef, StructId};
 
@@ -209,7 +209,7 @@ pub fn register_tuples_in_type<T: LirTarget>(
 /// Structs are registered in the order they appear in `module.structs`.
 /// The caller must ensure the ordering is dependency-safe (fields of struct S
 /// must not reference struct T unless T appears earlier in the list).
-pub fn build_struct_registry<T: LirTarget>(module: &IrModule, target: &mut T) -> StructRegistry {
+pub fn build_struct_registry<T: LirTarget>(module: &IrModule<IrFunction>, target: &mut T) -> StructRegistry {
     let mut registry = StructRegistry::new();
 
     for ir_struct in &module.structs {

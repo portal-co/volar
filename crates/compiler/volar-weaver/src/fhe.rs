@@ -50,8 +50,9 @@ use alloc::{
 use volar_compiler::{
     ir::{
         ArrayKind, ArrayLength,
-        ExternalKind, IrBlock, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump, IrCfgModule,
-        IrCfgTerminator, IrExpr, IrFunction, IrGenericParam, IrGenericParamKind, IrLit, IrModule,
+        ExternalKind, IrAnyFunction, IrBlock, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump,
+        IrCfgModule, IrCfgTerminator, IrExpr, IrFunction, IrGenericParam, IrGenericParamKind,
+        IrLit, IrModule,
         IrParam, IrPattern, IrStmt, IrTraitBound, IrType, PrimitiveType, SpecBinOp, StructKind, TraitKind,
     },
     linkage::LinkageSystem,
@@ -1032,7 +1033,7 @@ pub struct FheStorageConfig {
 pub enum FheOutput {
     /// Produced by the flat path (`cfg_capable == false`).
     /// The circuit was movfuscated and emitted using binary gate methods.
-    Flat(IrModule),
+    Flat(IrModule<IrFunction>),
     /// Produced by the CFG path (`cfg_capable == true`).
     /// IRBlocks were processed directly, preserving control-flow structure.
     Cfg(IrCfgModule),
@@ -1148,7 +1149,7 @@ fn weave_fhe_flat<S: FheScheme>(
     name: &str,
     linkage: Option<&LinkageSystem>,
     storage: Option<&FheStorageConfig>,
-) -> IrModule {
+) -> IrModule<IrFunction> {
     let bir_blocks = lower_ir_to_boolar(blocks, types);
     let circuit = movfuscate_biir(&bir_blocks);
     assert!(
@@ -1378,7 +1379,7 @@ pub fn weave_fhe_flat_bir<P, H, S>(
     linkage: Option<&LinkageSystem>,
     handler: &H,
     storage: Option<&FheStorageConfig>,
-) -> IrModule<H::Output>
+) -> IrModule<IrFunction<H::Output>, H::Output>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
@@ -2150,14 +2151,13 @@ fn weave_fhe_cfg<S: FheScheme>(
         body: IrCfgBody { blocks: cfg_blocks },
     };
 
-    let mut module = IrCfgModule {
+    let mut module: IrCfgModule = IrModule {
         name: format!("weaved_{}", fn_name),
-        functions: vec![func],
+        functions: vec![IrAnyFunction::Cfg(func)],
         structs: vec![],
         enums: vec![],
         traits: vec![],
         impls: vec![],
-        auxiliary_functions: vec![],
         type_aliases: vec![],
     };
     if let Some(ls) = linkage {
@@ -2277,16 +2277,18 @@ fn weave_fhe_cfg<S: FheScheme>(
             },
             external_kind: ExternalKind::Action,
         };
-        module.auxiliary_functions.push(stub_fn);
+        module.functions.push(IrAnyFunction::Flat(stub_fn));
     }
 
     // ── Emit bools_to_usize helper if any storage access uses a public address ──
     //
     // When the runtime linked spec is available (via linkage), the real
-    // implementation is already in `auxiliary_functions` and we skip the stub.
+    // implementation is already in `functions` as a Flat entry; skip the stub.
     // Otherwise emit a stub with `unreachable!()` for compile-checking.
     if needs_bools_to_usize {
-        let already_linked = module.auxiliary_functions.iter().any(|f| f.name == "bools_to_usize");
+        let already_linked = module.functions.iter().any(|f| {
+            matches!(f, IrAnyFunction::Flat(f) if f.name == "bools_to_usize")
+        });
         if !already_linked {
             let helper = IrFunction {
                 name: "bools_to_usize".into(),
@@ -2312,7 +2314,7 @@ fn weave_fhe_cfg<S: FheScheme>(
                 },
                 external_kind: ExternalKind::Normal,
             };
-            module.auxiliary_functions.push(helper);
+            module.functions.push(IrAnyFunction::Flat(helper));
         }
     }
 
@@ -2320,7 +2322,7 @@ fn weave_fhe_cfg<S: FheScheme>(
     // Add scheme-specific helper stubs (e.g. tfhe_trivial_encrypt, tfhe_cmux)
     // for LIR codegen return-type inference.  Tagged ExternalKind::TypeStub so
     // the Rust/TS printers skip them.
-    module.auxiliary_functions.extend(scheme.helper_type_stubs());
+    module.functions.extend(scheme.helper_type_stubs().into_iter().map(IrAnyFunction::Flat));
 
     module
 }
@@ -3615,7 +3617,7 @@ pub fn print_fhe_cfg_module(module: &IrCfgModule, self_contained: bool) -> Strin
 }
 
 /// Render a flat FHE `IrModule` to Rust source.
-pub fn print_fhe_flat_module(module: &IrModule, self_contained: bool) -> String {
+pub fn print_fhe_flat_module(module: &IrModule<IrFunction>, self_contained: bool) -> String {
     use volar_compiler::printer::{DisplayRust, ModuleWriter};
     use alloc::fmt::Write as _;
 
@@ -4204,7 +4206,7 @@ mod tests {
     /// with `cell_count` cells and `addr_width` address bits.  The function
     /// takes `bk`, `cell_count` cell params, and `addr_width` addr params,
     /// returning a single `LweCiphertext<N_LWE>`.
-    fn build_loop_read_module(cell_count: usize, addr_width: usize) -> IrModule {
+    fn build_loop_read_module(cell_count: usize, addr_width: usize) -> IrModule<IrFunction> {
         let scheme = TfheScheme::flat();
         let wire_ty = scheme.wire_type();
 
@@ -4257,7 +4259,7 @@ mod tests {
     /// Build an `IrModule` whose single function calls `oblivious_write_loop`
     /// with `cell_count` cells, `addr_width` address bits, and a `src` wire.
     /// Returns a tuple of the new cell values.
-    fn build_loop_write_module(cell_count: usize, addr_width: usize) -> IrModule {
+    fn build_loop_write_module(cell_count: usize, addr_width: usize) -> IrModule<IrFunction> {
         let scheme = TfheScheme::flat();
         let wire_ty = scheme.wire_type();
 

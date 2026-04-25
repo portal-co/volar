@@ -51,7 +51,7 @@ impl LoweringContext {
 }
 
 impl LoweringContext {
-    pub fn new(module: &IrModule) -> Self {
+    pub fn new(module: &IrModule<IrFunction>) -> Self {
         Self::new_with_deps(module, &[])
     }
 
@@ -60,7 +60,7 @@ impl LoweringContext {
     /// Dependency structs are registered so that lowering can see their
     /// generic structure (lengths vs type params, etc.) when generating
     /// dynamic code that references them.
-    pub fn new_with_deps(module: &IrModule, deps: &[volar_compiler::manifest::TypeManifest]) -> Self {
+    pub fn new_with_deps(module: &IrModule<IrFunction>, deps: &[volar_compiler::manifest::TypeManifest]) -> Self {
         let mut struct_info = BTreeMap::new();
 
         // Discover length-alias traits (e.g., VoleArray: ArrayLength → length alias).
@@ -192,7 +192,7 @@ impl LoweringContext {
     }
 }
 
-pub fn lower_module_dyn(module: &IrModule) -> IrModule {
+pub fn lower_module_dyn(module: &IrModule<IrFunction>) -> IrModule<IrFunction> {
     let ctx = LoweringContext::new(module);
     let mut lowered = IrModule {
         name: format!("{}_dyn", module.name),

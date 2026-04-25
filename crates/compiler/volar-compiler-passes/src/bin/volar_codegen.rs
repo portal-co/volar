@@ -32,7 +32,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use volar_compiler::{
-    ir::IrModule,
+    ir::{IrFunction, IrModule},
     manifest::emit_manifest,
     parser::parse_source,
 };
@@ -152,7 +152,7 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
 // Parsing
 // ---------------------------------------------------------------------------
 
-fn parse_spec(spec_dir: &Path, module_name: &str) -> IrModule {
+fn parse_spec(spec_dir: &Path, module_name: &str) -> IrModule<IrFunction> {
     let mut files = Vec::new();
     collect_rs_files(spec_dir, &mut files).unwrap_or_else(|e| {
         eprintln!("warning: error reading spec dir {:?}: {}", spec_dir, e);

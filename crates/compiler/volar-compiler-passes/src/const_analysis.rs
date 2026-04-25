@@ -278,7 +278,7 @@ pub struct ConstAnalysis {
 
 impl ConstAnalysis {
     /// Run constant analysis over the entire module.
-    pub fn from_module(module: &IrModule) -> Self {
+    pub fn from_module(module: &IrModule<IrFunction>) -> Self {
         let mut result = Self::default();
 
         // Pass 0: discover length-alias custom traits.

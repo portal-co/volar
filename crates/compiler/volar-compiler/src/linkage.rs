@@ -15,14 +15,14 @@ use std::vec::Vec;
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
-use crate::ir::{IrModule, IrCfgModule};
+use crate::ir::{IrAnyFunction, IrCfgModule, IrFunction, IrImpl, IrModule, MapProv};
 
 /// A named spec module to be linked into generated output.
 pub struct LinkedSpec {
     /// Human-readable name for this spec (e.g. `"garble"`).
     pub name: String,
     /// The parsed `IrModule` containing the spec's declarations.
-    pub module: IrModule,
+    pub module: IrModule<IrFunction>,
 }
 
 /// Accumulates [`LinkedSpec`] modules and merges them into target `IrModule`s.
@@ -51,13 +51,13 @@ impl LinkageSystem {
     ///
     /// The linked spec declarations carry `()` provenance; they are assigned
     /// `Q::default()` in the output module.
-    pub fn apply<Q: Clone + Default>(&self, target: &mut IrModule<Q>) {
+    pub fn apply<Q: Clone + Default>(&self, target: &mut IrModule<IrFunction<Q>, Q>) {
         for spec in &self.specs {
             target.structs.extend(spec.module.structs.iter().cloned());
             target.enums.extend(spec.module.enums.iter().cloned());
             target.traits.extend(spec.module.traits.iter().cloned());
-            target.impls.extend(spec.module.impls.iter().cloned().map(|i| i.map_prov(&|_| Q::default())));
-            target.functions.extend(spec.module.functions.iter().cloned().map(|f| f.map_prov(&|_| Q::default())));
+            target.impls.extend(spec.module.impls.iter().cloned().map(|i: IrImpl<()>| i.map_prov(&|_| Q::default())));
+            target.functions.extend(spec.module.functions.iter().cloned().map(|f: IrFunction<()>| f.map_prov(&|_| Q::default())));
             target.type_aliases.extend(spec.module.type_aliases.iter().cloned());
         }
     }
@@ -65,15 +65,18 @@ impl LinkageSystem {
     /// Merge all linked spec declarations into a CFG module.
     ///
     /// Structs, enums, traits, impls, and type aliases are appended directly.
-    /// Linked spec functions (which have linear bodies) go into
-    /// `auxiliary_functions` rather than the CFG `functions` list.
+    /// Linked spec functions (which have linear bodies) are pushed as
+    /// [`IrAnyFunction::Flat`] entries into the module's `functions` vec.
     pub fn apply_cfg<Q: Clone + Default>(&self, target: &mut IrCfgModule<Q>) {
         for spec in &self.specs {
             target.structs.extend(spec.module.structs.iter().cloned());
             target.enums.extend(spec.module.enums.iter().cloned());
             target.traits.extend(spec.module.traits.iter().cloned());
-            target.impls.extend(spec.module.impls.iter().cloned().map(|i| i.map_prov(&|_| Q::default())));
-            target.auxiliary_functions.extend(spec.module.functions.iter().cloned().map(|f| f.map_prov(&|_| Q::default())));
+            target.impls.extend(spec.module.impls.iter().cloned().map(|i: IrImpl<()>| i.map_prov(&|_| Q::default())));
+            target.functions.extend(
+                spec.module.functions.iter().cloned()
+                    .map(|f: IrFunction<()>| IrAnyFunction::Flat(f.map_prov(&|_| Q::default())))
+            );
             target.type_aliases.extend(spec.module.type_aliases.iter().cloned());
         }
     }

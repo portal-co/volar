@@ -458,7 +458,7 @@ fn write_ctx_param(needs: &WitnessNeeds, f: &mut fmt::Formatter<'_>) -> fmt::Res
 
 /// Build a map from internal function names to their witness needs.
 /// Used so that callers know they must forward `ctx` when calling these functions.
-fn build_module_witness_map(module: &IrModule) -> BTreeMap<String, WitnessNeeds> {
+fn build_module_witness_map(module: &IrModule<IrFunction>) -> BTreeMap<String, WitnessNeeds> {
     let mut map = BTreeMap::new();
 
     // First pass: direct witness needs
@@ -719,7 +719,7 @@ fn collect_call_targets_chain(chain: &IrIterChain, targets: &mut Vec<String>) {
 /// Clones the module and applies a deshadowing pass to all function/method
 /// bodies before emitting.  The deshadow pass turns Rust-legal `let x = f(x)`
 /// shadows into TS-legal `const x_1 = f(x)`.
-pub fn print_module_ts(module: &IrModule) -> String {
+pub fn print_module_ts(module: &IrModule<IrFunction>) -> String {
     let mut module = module.clone();
     deshadow_module(&mut module);
 
@@ -743,15 +743,19 @@ pub fn print_module_ts(module: &IrModule) -> String {
 /// witness analysis (they are copies of spec functions that may have shadows
 /// and ctx-style witness patterns).
 pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
-    // Build a temporary flat IrModule from the CFG module's auxiliary functions,
-    // structs, and impls so we can reuse deshadow + witness analysis.
-    let mut flat = IrModule {
+    // Extract auxiliary (flat) functions and build a temporary flat IrModule so
+    // we can reuse deshadow + witness analysis on them.
+    let aux_functions: Vec<IrFunction> = module.functions.iter().filter_map(|f| {
+        if let IrAnyFunction::Flat(f) = f { Some(f.clone()) } else { None }
+    }).collect();
+
+    let mut flat: IrModule<IrFunction> = IrModule {
         name: module.name.clone(),
         structs: module.structs.clone(),
         enums: module.enums.clone(),
         traits: module.traits.clone(),
         impls: module.impls.clone(),
-        functions: module.auxiliary_functions.clone(),
+        functions: aux_functions,
         type_aliases: module.type_aliases.clone(),
     };
     deshadow_module(&mut flat);
@@ -764,14 +768,17 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
     };
 
     // Reassemble the CFG module with deshadowed auxiliary functions.
-    let deshadowed = IrCfgModule {
+    let cfg_functions: Vec<IrAnyFunction> = module.functions.iter().filter_map(|f| {
+        if let IrAnyFunction::Cfg(f) = f { Some(IrAnyFunction::Cfg(f.clone())) } else { None }
+    }).collect();
+    let deshadowed_aux: Vec<IrAnyFunction> = flat.functions.into_iter().map(IrAnyFunction::Flat).collect();
+    let deshadowed: IrCfgModule = IrModule {
         name: module.name.clone(),
         structs: flat.structs,
         enums: flat.enums,
         traits: flat.traits,
         impls: flat.impls,
-        functions: module.functions.clone(),
-        auxiliary_functions: flat.functions,
+        functions: cfg_functions.into_iter().chain(deshadowed_aux).collect(),
         type_aliases: flat.type_aliases,
     };
 
@@ -785,7 +792,7 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
 }
 
 /// Apply deshadowing to every function and method body in the module.
-fn deshadow_module(module: &mut IrModule) {
+fn deshadow_module(module: &mut IrModule<IrFunction>) {
     use std::collections::HashSet;
 
     // Top-level functions
@@ -828,7 +835,7 @@ struct TsContext<'a> {
 
 /// Collect type parameter names that are erased in TS (Fn-bounded, AsRef-bounded)
 /// across the entire module.  These will be printed as `any`.
-fn collect_erased_type_params(module: &IrModule) -> Vec<String> {
+fn collect_erased_type_params(module: &IrModule<IrFunction>) -> Vec<String> {
     // First, collect all type-param names that would survive into TS generics
     // (type-kind, no Fn/AsRef/Math/Into bounds).
     let mut surviving = Vec::new();
@@ -1142,7 +1149,7 @@ impl TsBackend for TsPreambleWriter {
 // ============================================================================
 
 struct TsModuleWriter<'a> {
-    module: &'a IrModule,
+    module: &'a IrModule<IrFunction>,
 }
 
 impl<'a> TsBackend for TsModuleWriter<'a> {
@@ -3323,27 +3330,28 @@ impl<'a> TsBackend for TsCfgModuleWriter<'a> {
             writeln!(f)?;
         }
 
-        // Auxiliary (linked-spec) functions — regular flat bodies
         let empty = WitnessNeeds::default();
-        for func in &self.module.auxiliary_functions {
-            // TypeStub functions carry only signature info for LIR codegen;
-            // the TS output imports the real implementation.
-            if func.external_kind == ExternalKind::TypeStub {
-                continue;
-            }
-            TsFunctionWriter {
-                func,
-                indent: 0,
-                witness_needs: &empty,
-            }
-            .ts_fmt(f, cx)?;
-            writeln!(f)?;
-        }
-
-        // CFG-structured circuit functions — state machines
         for func in &self.module.functions {
-            TsCfgFunctionWriter { func, indent: 0 }.ts_fmt(f, cx)?;
-            writeln!(f)?;
+            match func {
+                IrAnyFunction::Flat(func) => {
+                    // TypeStub functions carry only signature info for LIR codegen;
+                    // the TS output imports the real implementation.
+                    if func.external_kind == ExternalKind::TypeStub {
+                        continue;
+                    }
+                    TsFunctionWriter {
+                        func,
+                        indent: 0,
+                        witness_needs: &empty,
+                    }
+                    .ts_fmt(f, cx)?;
+                    writeln!(f)?;
+                }
+                IrAnyFunction::Cfg(func) => {
+                    TsCfgFunctionWriter { func, indent: 0 }.ts_fmt(f, cx)?;
+                    writeln!(f)?;
+                }
+            }
         }
 
         Ok(())

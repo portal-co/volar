@@ -58,7 +58,7 @@ pub struct TypeManifest {
     pub crate_name: String,
     pub version: String,
     pub deps: Vec<String>,
-    pub module: IrModule,
+    pub module: IrModule<IrFunction>,
 }
 
 // ============================================================================
@@ -67,7 +67,7 @@ pub struct TypeManifest {
 
 /// Strip function/method bodies from an `IrModule`, replacing them with
 /// `todo!()`.  Everything else (structs, traits, signatures) is kept.
-fn strip_bodies(module: &IrModule) -> IrModule {
+fn strip_bodies(module: &IrModule<IrFunction>) -> IrModule<IrFunction> {
     let stub_block = IrBlock {
         stmts: Vec::new(),
         stmt_provs: Vec::new(),
@@ -130,7 +130,7 @@ struct ManifestModuleWriter<'a> {
     crate_name: &'a str,
     version: &'a str,
     deps: &'a [String],
-    module: &'a IrModule,
+    module: &'a IrModule<IrFunction>,
 }
 
 impl<'a> RustBackend for ManifestModuleWriter<'a> {
@@ -225,7 +225,7 @@ impl<'a> RustBackend for ManifestFunctionWriter<'a> {
 ///
 /// Bodies are stripped; only signatures remain.
 pub fn emit_manifest(
-    module: &IrModule,
+    module: &IrModule<IrFunction>,
     crate_name: &str,
     version: &str,
     deps: &[String],
