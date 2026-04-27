@@ -1,0 +1,20 @@
+[package]
+name = "volar-llvm-backend"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+
+[dependencies]
+volar-lir = { workspace = true }
+volar-ir-common.workspace = true
+inkwell.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+volar-lir-codegen = { path = "../volar-lir-codegen" }
+volar-compiler = { path = "../volar-compiler" }
+volar-ir.workspace = true
+volar-ir-passes.workspace = true
+volar-ir-common.workspace = true
