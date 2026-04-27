@@ -1,5 +1,5 @@
 [package]
-name = "volar-lir"
+name = "volar-lir-saved"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
@@ -7,8 +7,8 @@ description.workspace = true
 repository.workspace = true
 
 [features]
-rkyv = ["dep:rkyv", "volar-ir-common/rkyv"]
+rkyv = ["dep:rkyv", "volar-lir/rkyv"]
 
 [dependencies]
-volar-ir-common.workspace = true
+volar-lir = { workspace = true }
 rkyv = { workspace = true, optional = true }

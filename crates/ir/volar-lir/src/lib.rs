@@ -45,6 +45,7 @@ pub use circuits::{BitCircuitBuilder, StorageEmitter, StackPtr, FrameLayout, PAC
 ///
 /// An empty `prefix` and empty `remap` (the default) is the identity.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct NameConfig {
     /// Prefix prepended to all names not found in `remap`.
     pub prefix: String,
@@ -75,6 +76,13 @@ impl NameConfig {
 ///
 /// Note: `Clone`, not `Copy` — `Arr` boxes its element type.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(feature = "rkyv", rkyv(serialize_bounds(
+    __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+    __S::Error: rkyv::rancor::Source,
+)))]
+#[cfg_attr(feature = "rkyv", rkyv(bytecheck(bounds(__C: rkyv::validation::ArchiveContext))))]
+#[cfg_attr(feature = "rkyv", rkyv(deserialize_bounds(__D::Error: rkyv::rancor::Source)))]
 pub enum LirType {
     // ---- Scalars ------------------------------------------------------------
     Bool,
@@ -88,7 +96,7 @@ pub enum LirType {
     U64,
     // ---- Aggregates ---------------------------------------------------------
     /// Fixed-size homogeneous array: `[elem; len]`.
-    Arr(Box<LirType>, usize),
+    Arr(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Box<LirType>, usize),
     /// Named struct registered via `LirTarget::define_struct`.
     Struct(StructId),
     /// An opaque Volar-IR-native field element, treated as a **single** value
@@ -108,7 +116,7 @@ pub enum LirType {
     /// [`LirTarget::stack_alloc_ext`] (e.g. `CBackend`).  Circuit backends
     /// (`VolarIrTarget`, `VaffleTarget`) have no memory model and will panic
     /// if they encounter a `Ptr` type.
-    Ptr(Box<LirType>),
+    Ptr(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Box<LirType>),
 }
 
 impl LirType {
@@ -272,14 +280,16 @@ pub trait StackAllocExt {
 pub type StructId = u32;
 
 /// One field in a struct definition.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct FieldDef {
     pub name: String,
     pub ty: LirType,
 }
 
 /// A named struct with an ordered list of fields.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct StructDef {
     pub name: String,
     pub fields: Vec<FieldDef>,
@@ -290,6 +300,7 @@ pub struct StructDef {
 // ============================================================================
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IcmpPred {
     Eq,
     Ne,

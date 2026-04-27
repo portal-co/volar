@@ -1,0 +1,14 @@
+[package]
+name = "volar-build"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+
+[dependencies]
+volar-lir-saved = { path = "../volar-lir-saved", features = ["rkyv"] }
+volar-llvm-backend = { path = "../volar-llvm-backend" }
+volar-lir = { workspace = true }
+inkwell = { workspace = true }
+rkyv = { workspace = true, features = ["bytecheck"] }

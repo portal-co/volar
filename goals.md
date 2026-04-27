@@ -91,6 +91,10 @@ implementation focus (VOLE-based ZK, garbled circuits, ORAM, compiler toolchain)
   - [x] primitives can link to spec (manifest system)
   - [ ] registry-driven primitive discovery (Phase 2 of primitives plan)
 
+### LIR serialization (deferred)
+- [ ] `rkyv` derives on `IRBlocks<P>`, `IRBlock<P>`, `IRTerminator` in `volar-ir` (`ir.rs`) — needed to serialize IR before lowering
+- [ ] `rkyv` dep + derives on `vaffle` crate types (`Module`, `FuncBody`, `Block`, `Terminator`) — needed for serialized waffle IR
+
 ### LIR remaining
 - [ ] memory operations (load/store) in `LirTarget`
   - [ ] `LirType::Ptr` + `StackAllocExt` trait (`alloca`, `ptr_load`, `ptr_store`, `ptr_offset`)
