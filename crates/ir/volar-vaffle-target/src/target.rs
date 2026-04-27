@@ -1221,4 +1221,13 @@ mod tests {
         let has_call_node = body.values.iter().any(|v| matches!(v, Value::Call { .. }));
         assert!(!has_call_node, "ret_call must not emit a Value::Call node");
     }
+
+    // ============================================================================
+    // Corpus: smoke test (all cases build without panic)
+    // ============================================================================
+
+    #[test]
+    fn test_corpus_smoke() {
+        volar_lir_test_corpus::for_each_build!(VaffleTarget::new());
+    }
 }

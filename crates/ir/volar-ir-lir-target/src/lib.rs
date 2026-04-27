@@ -1704,4 +1704,13 @@ mod tests {
         assert_eq!(abi.aggregate_byval_limit, usize::MAX);
         assert!(!abi.pass_by_ptr(1_000_000));
     }
+
+    // ============================================================================
+    // Corpus: smoke test (all cases build without panic)
+    // ============================================================================
+
+    #[test]
+    fn test_corpus_smoke() {
+        volar_lir_test_corpus::for_each_build!(VolarIrTarget::<()>::new());
+    }
 }

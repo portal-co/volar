@@ -13,52 +13,21 @@
 //! 4. **ir_direct** — `IRBlocks` circuits (Poly stmts) → `lower_ir` → C
 //! 5. **compiler_externals** — `IrModule` with `#[oracle]`/`#[action]`/`#[rng]` → C
 
-use std::collections::BTreeMap;
-use std::{fs, process::Command};
-use tempfile::TempDir;
-
 use volar_c_backend::CBackend;
-use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
-use volar_ir::ir::{
-    IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypeId, IRTypes,
-    IRVarId,
-};
-use volar_ir_common::{Constant, IrType as CommonIrType, Type};
+use volar_ir::boolar::BIrBlocks;
+use volar_ir::ir::{IRBlocks, IRTypes};
 use volar_ir_passes::{
     lower_lir::{lower_biir, lower_ir},
     lower_to_circuit::lower_to_circuit,
     movfuscate_biir, LoweringMode,
 };
 use volar_lir::LirTarget;
-
-// ============================================================================
-// Harness
-// ============================================================================
-
-fn compile_and_run(c_src: &str, main_body: &str) -> String {
-    let dir = TempDir::new().expect("tempdir");
-    let c_path = dir.path().join("test.c");
-    let exe_path = dir.path().join("test");
-
-    let full_src = format!(
-        "{c_src}\n#include <stdio.h>\n#include <string.h>\nint main(void) {{\n{main_body}\n  return 0;\n}}\n"
-    );
-
-    fs::write(&c_path, &full_src).expect("write C source");
-
-    let status = Command::new("cc")
-        .args(["-O0", "-std=c99", "-o"])
-        .arg(&exe_path)
-        .arg(&c_path)
-        .status()
-        .expect("cc not found — install a C compiler");
-    assert!(status.success(), "C compilation failed.\nSource:\n{full_src}");
-
-    let output = Command::new(&exe_path)
-        .output()
-        .expect("failed to run compiled program");
-    String::from_utf8(output.stdout).expect("non-UTF8 output")
-}
+use volar_lir_test_corpus::{
+    compile_and_run,
+    make_biir_and, make_biir_half_adder, make_biir_identity, make_biir_not,
+    make_biir_self_loop, make_biir_two_block_not, make_biir_xor,
+    make_ir_and, make_ir_not, make_ir_xor,
+};
 
 /// Lower `BIrBlocks` to C source via the CBackend.
 fn biir_to_c(blocks: &BIrBlocks, name: &str) -> String {
@@ -106,201 +75,6 @@ fn run_ir(blocks: &IRBlocks, types: &IRTypes, name: &str, inputs: &[bool], expec
     assert_eq!(actual, expected, "{name}({inputs:?}): expected {expected}, got {actual}");
 }
 
-// ============================================================================
-// Shared BIrBlocks corpus
-// ============================================================================
-
-/// 1-bit identity: return the input.
-fn biir_identity() -> BIrBlocks {
-    BIrBlocks(vec![BIrBlock {
-        params: 1,
-        stmts: vec![],
-        stmt_provs: vec![],
-        terminator: BIrTerminator::Jmp(BIrTarget {
-            block: IRBlockTargetId::Return,
-            args: vec![IRVarId(0)],
-        }),
-    }])
-}
-
-/// 1-bit NOT.
-fn biir_not() -> BIrBlocks {
-    BIrBlocks(vec![BIrBlock {
-        params: 1,
-        stmts: vec![BIrStmt::Not(IRVarId(0))],
-        stmt_provs: vec![],
-        terminator: BIrTerminator::Jmp(BIrTarget {
-            block: IRBlockTargetId::Return,
-            args: vec![IRVarId(1)],
-        }),
-    }])
-}
-
-/// 2-bit AND.
-fn biir_and() -> BIrBlocks {
-    BIrBlocks(vec![BIrBlock {
-        params: 2,
-        stmts: vec![BIrStmt::And(IRVarId(0), IRVarId(1))],
-        stmt_provs: vec![],
-        terminator: BIrTerminator::Jmp(BIrTarget {
-            block: IRBlockTargetId::Return,
-            args: vec![IRVarId(2)],
-        }),
-    }])
-}
-
-/// 2-bit XOR.
-fn biir_xor() -> BIrBlocks {
-    BIrBlocks(vec![BIrBlock {
-        params: 2,
-        stmts: vec![BIrStmt::Xor(IRVarId(0), IRVarId(1))],
-        stmt_provs: vec![],
-        terminator: BIrTerminator::Jmp(BIrTarget {
-            block: IRBlockTargetId::Return,
-            args: vec![IRVarId(2)],
-        }),
-    }])
-}
-
-/// Half adder: 2 inputs → (sum=XOR, carry=AND) packed as 2-bit output.
-fn biir_half_adder() -> BIrBlocks {
-    BIrBlocks(vec![BIrBlock {
-        params: 2,
-        stmts: vec![
-            BIrStmt::Xor(IRVarId(0), IRVarId(1)), // var 2 = sum
-            BIrStmt::And(IRVarId(0), IRVarId(1)), // var 3 = carry
-        ],
-        stmt_provs: vec![],
-        terminator: BIrTerminator::Jmp(BIrTarget {
-            block: IRBlockTargetId::Return,
-            args: vec![IRVarId(2), IRVarId(3)], // [sum, carry] packed LSB-first
-        }),
-    }])
-}
-
-/// Two-block NOT: block 0 → block 1 → return NOT(input).
-fn biir_two_block_not() -> BIrBlocks {
-    BIrBlocks(vec![
-        BIrBlock {
-            params: 1,
-            stmts: vec![],
-            stmt_provs: vec![],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Block(IRBlockId(1)),
-                args: vec![IRVarId(0)],
-            }),
-        },
-        BIrBlock {
-            params: 1,
-            stmts: vec![BIrStmt::Not(IRVarId(0))],
-            stmt_provs: vec![],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Return,
-                args: vec![IRVarId(1)],
-            }),
-        },
-    ])
-}
-
-/// Self-loop: if input=1 return input, else loop with constant 1.
-/// Output is always 1 (terminates in ≤1 iteration).
-fn biir_self_loop() -> BIrBlocks {
-    BIrBlocks(vec![BIrBlock {
-        params: 1,
-        stmts: vec![BIrStmt::One], // var 1 = constant 1
-        stmt_provs: vec![],
-        terminator: BIrTerminator::CondJmp {
-            val: IRVarId(0),
-            then_target: BIrTarget {
-                block: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
-            else_target: BIrTarget {
-                block: IRBlockTargetId::Block(IRBlockId(0)),
-                args: vec![IRVarId(1)],
-            },
-        },
-    }])
-}
-
-// ============================================================================
-// Shared IRBlocks corpus (Bit-typed, using Poly)
-// ============================================================================
-
-fn bit_types() -> IRTypes {
-    IRTypes(vec![CommonIrType::Primitive(Type::Bit)])
-}
-
-fn bit_tid() -> IRTypeId {
-    IRTypeId(0)
-}
-
-/// IR: 2-bit XOR via Poly.
-fn ir_xor() -> (IRBlocks, IRTypes) {
-    let types = bit_types();
-    let mut coeffs = BTreeMap::new();
-    coeffs.insert(vec![IRVarId(0)], 1u8);
-    coeffs.insert(vec![IRVarId(1)], 1u8);
-    let blocks = IRBlocks::new(vec![IRBlock {
-        params: vec![bit_tid(), bit_tid()],
-        stmts: vec![IRStmt::Poly {
-            ty: bit_tid(),
-            coeffs,
-            constant: Constant { hi: 0, lo: 0 },
-        }],
-        stmt_provs: vec![],
-        terminator: IRTerminator::Jmp {
-            func: IRBlockTargetId::Return,
-            args: vec![IRVarId(2)],
-        },
-    }]);
-    (blocks, types)
-}
-
-/// IR: 2-bit AND via Poly.
-fn ir_and() -> (IRBlocks, IRTypes) {
-    let types = bit_types();
-    let mut coeffs = BTreeMap::new();
-    let mut key = vec![IRVarId(0), IRVarId(1)];
-    key.sort();
-    coeffs.insert(key, 1u8);
-    let blocks = IRBlocks::new(vec![IRBlock {
-        params: vec![bit_tid(), bit_tid()],
-        stmts: vec![IRStmt::Poly {
-            ty: bit_tid(),
-            coeffs,
-            constant: Constant { hi: 0, lo: 0 },
-        }],
-        stmt_provs: vec![],
-        terminator: IRTerminator::Jmp {
-            func: IRBlockTargetId::Return,
-            args: vec![IRVarId(2)],
-        },
-    }]);
-    (blocks, types)
-}
-
-/// IR: 1-bit NOT via Poly (a + 1 in GF(2)).
-fn ir_not() -> (IRBlocks, IRTypes) {
-    let types = bit_types();
-    let mut coeffs = BTreeMap::new();
-    coeffs.insert(vec![IRVarId(0)], 1u8);
-    let blocks = IRBlocks::new(vec![IRBlock {
-        params: vec![bit_tid()],
-        stmts: vec![IRStmt::Poly {
-            ty: bit_tid(),
-            coeffs,
-            constant: Constant { hi: 0, lo: 1 },
-        }],
-        stmt_provs: vec![],
-        terminator: IRTerminator::Jmp {
-            func: IRBlockTargetId::Return,
-            args: vec![IRVarId(1)],
-        },
-    }]);
-    (blocks, types)
-}
-
 // ############################################################################
 //
 // Category 1: BIrBlocks direct circuit lowering
@@ -309,21 +83,21 @@ fn ir_not() -> (IRBlocks, IRTypes) {
 
 #[test]
 fn biir_direct_identity() {
-    let c = biir_identity();
+    let c = make_biir_identity();
     run_biir(&c, "id", &[false], 0);
     run_biir(&c, "id", &[true], 1);
 }
 
 #[test]
 fn biir_direct_not() {
-    let c = biir_not();
+    let c = make_biir_not();
     run_biir(&c, "not", &[false], 1);
     run_biir(&c, "not", &[true], 0);
 }
 
 #[test]
 fn biir_direct_and() {
-    let c = biir_and();
+    let c = make_biir_and();
     run_biir(&c, "and", &[false, false], 0);
     run_biir(&c, "and", &[false, true], 0);
     run_biir(&c, "and", &[true, false], 0);
@@ -332,7 +106,7 @@ fn biir_direct_and() {
 
 #[test]
 fn biir_direct_xor() {
-    let c = biir_xor();
+    let c = make_biir_xor();
     run_biir(&c, "xor", &[false, false], 0);
     run_biir(&c, "xor", &[false, true], 1);
     run_biir(&c, "xor", &[true, false], 1);
@@ -341,7 +115,7 @@ fn biir_direct_xor() {
 
 #[test]
 fn biir_direct_half_adder() {
-    let c = biir_half_adder();
+    let c = make_biir_half_adder();
     // Output: bit 0 = sum (XOR), bit 1 = carry (AND).
     // Packed u64: carry << 1 | sum.
     run_biir(&c, "ha", &[false, false], 0b00); // sum=0, carry=0
@@ -366,7 +140,7 @@ fn biir_movfuscate_two_block_not() {
     // pc=0 activates block 0 which passes state to block 1;
     // pc=1 activates block 1 which returns NOT(state).
     // With limit≥2, both iterations complete and the MUX selects the final result.
-    let dag = biir_two_block_not();
+    let dag = make_biir_two_block_not();
     let movf = movfuscate_biir(&dag);
     assert!(movf.is_movfuscated(), "should be single block after movfuscation");
     assert_eq!(movf.0[0].params, 2, "combined block has pc(1) + state(1) params");
@@ -388,7 +162,7 @@ fn biir_movfuscate_two_block_not() {
 fn biir_lower_to_circuit_self_loop() {
     // Self-loop: if input=1, return it; else loop with 1.
     // After ≤1 iteration the output is always 1.
-    let looped = biir_self_loop();
+    let looped = make_biir_self_loop();
     let circuit = lower_to_circuit(&looped, 4, LoweringMode::Unconditional);
     assert!(circuit.is_circuit());
     run_biir(&circuit, "loop_c", &[false], 1);
@@ -400,7 +174,7 @@ fn biir_lower_to_circuit_with_flag() {
     // Same self-loop, but WithTerminationFlag → prepends a done bit.
     // Output: bit 0 = done flag, bit 1 = result.
     // Both inputs terminate within 4 iterations → done=1.
-    let looped = biir_self_loop();
+    let looped = make_biir_self_loop();
     let circuit = lower_to_circuit(&looped, 4, LoweringMode::WithTerminationFlag);
     assert!(circuit.is_circuit());
     // input=false: done=1, result=1 → packed 0b11 = 3
@@ -417,7 +191,7 @@ fn biir_lower_to_circuit_with_flag() {
 
 #[test]
 fn ir_direct_xor() {
-    let (blocks, types) = ir_xor();
+    let (blocks, types) = make_ir_xor();
     run_ir(&blocks, &types, "ir_xor", &[false, false], 0);
     run_ir(&blocks, &types, "ir_xor", &[false, true], 1);
     run_ir(&blocks, &types, "ir_xor", &[true, false], 1);
@@ -426,7 +200,7 @@ fn ir_direct_xor() {
 
 #[test]
 fn ir_direct_and() {
-    let (blocks, types) = ir_and();
+    let (blocks, types) = make_ir_and();
     run_ir(&blocks, &types, "ir_and", &[false, false], 0);
     run_ir(&blocks, &types, "ir_and", &[false, true], 0);
     run_ir(&blocks, &types, "ir_and", &[true, false], 0);
@@ -435,7 +209,7 @@ fn ir_direct_and() {
 
 #[test]
 fn ir_direct_not() {
-    let (blocks, types) = ir_not();
+    let (blocks, types) = make_ir_not();
     run_ir(&blocks, &types, "ir_not", &[false], 1);
     run_ir(&blocks, &types, "ir_not", &[true], 0);
 }

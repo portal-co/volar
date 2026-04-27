@@ -22,6 +22,7 @@ members = [
     "crates/compiler/volar-lir-codegen",
     "crates/compiler/volar-c-backend",
     "crates/compiler/volar-llvm-backend",
+    "crates/compiler/volar-lir-test-corpus",
     "crates/fuzz/volar-fuzz",
     "crates/ir/volar-ir-opt",
     "crates/channel/volar-channel",
@@ -50,6 +51,7 @@ volar-oram = {path="crates/oram/volar-oram", version = "0.1.0"}
 volar-oram-core = {path="crates/oram/volar-oram-core", version = "0.1.0"}
 volar-macros = {path="crates/macros/volar-macros", version = "0.1.0"}
 volar-compiler-passes = {path="crates/compiler/volar-compiler-passes", version = "0.1.0"}
+volar-lir-test-corpus = {path="crates/compiler/volar-lir-test-corpus", version = "0.1.0"}
 
 portal-pc-waffle-ir = { version = "0.6.0-alpha.1", git = "https://github.com/portal-co/waffle-" }
 

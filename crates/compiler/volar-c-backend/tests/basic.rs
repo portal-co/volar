@@ -1,42 +1,9 @@
 // @reliability: normal
 //! Integration tests: emit C, compile with `cc`, run, check stdout.
 
-use std::{fs, process::Command};
-use tempfile::TempDir;
 use volar_c_backend::CBackend;
 use volar_lir::{IcmpPred, LirTarget, LirType};
-
-// ============================================================================
-// Helper: compile + run C source with an appended main
-// ============================================================================
-
-fn compile_and_run(c_src: &str, main_body: &str) -> String {
-    let dir = TempDir::new().expect("tempdir");
-    let c_path = dir.path().join("test.c");
-    let exe_path = dir.path().join("test");
-
-    let full_src = format!(
-        "{c_src}\n#include <stdio.h>\nint main(void) {{\n{main_body}\n  return 0;\n}}\n"
-    );
-
-    fs::write(&c_path, &full_src).expect("write C source");
-
-    let status = Command::new("cc")
-        .args(["-O0", "-std=c99", "-o"])
-        .arg(&exe_path)
-        .arg(&c_path)
-        .status()
-        .expect("cc not found — install a C compiler");
-    assert!(
-        status.success(),
-        "C compilation failed.\nSource:\n{full_src}"
-    );
-
-    let output = Command::new(&exe_path)
-        .output()
-        .expect("failed to run compiled program");
-    String::from_utf8(output.stdout).expect("non-UTF8 output")
-}
+use volar_lir_test_corpus::compile_and_run;
 
 // ============================================================================
 // Test 1: simple addition
@@ -479,4 +446,70 @@ fn test_name_config_remap() {
         src.contains("pfx_sub"),
         "expected prefixed name 'pfx_sub' in:\n{src}"
     );
+}
+
+// ============================================================================
+// Corpus: smoke test (all cases build without panic)
+// ============================================================================
+
+#[test]
+fn test_corpus_smoke() {
+    volar_lir_test_corpus::for_each_build!(CBackend::new());
+}
+
+// ============================================================================
+// Corpus: e2e I/O verification (build → C → compile → run → check)
+// ============================================================================
+
+#[test]
+fn test_corpus_e2e() {
+    use volar_lir_test_corpus::generated::*;
+    use volar_lir_test_corpus::ALL_CASES;
+
+    macro_rules! run_case {
+        ($build_fn:ident) => {{
+            let mut b = CBackend::new();
+            $build_fn(&mut b);
+            let c_src = b.finish();
+            let case_name = stringify!($build_fn)
+                .strip_prefix("build_")
+                .unwrap_or(stringify!($build_fn));
+            let case = ALL_CASES
+                .iter()
+                .find(|c| c.name == case_name)
+                .unwrap_or_else(|| panic!("case not found: {case_name}"));
+            for io in case.ios {
+                let body = case.c_main_body(io);
+                let out = compile_and_run(&c_src, &body);
+                let actual: u64 = out
+                    .trim()
+                    .parse()
+                    .unwrap_or_else(|_| panic!("{case_name}: parse error: {out:?}"));
+                assert_eq!(
+                    actual, io.expected,
+                    "{case_name}({:?}): expected {}, got {actual}",
+                    io.inputs, io.expected
+                );
+            }
+        }};
+    }
+
+    run_case!(build_const_u32);
+    run_case!(build_add_u32);
+    run_case!(build_sub_u32);
+    run_case!(build_mul_u32);
+    run_case!(build_udiv_u32);
+    run_case!(build_and_u64);
+    run_case!(build_or_u64);
+    run_case!(build_xor_u64);
+    run_case!(build_not_bool);
+    run_case!(build_shl_u32);
+    run_case!(build_lshr_u32);
+    run_case!(build_icmp_eq_u32);
+    run_case!(build_icmp_ult_u32);
+    run_case!(build_zext_u8_to_u32);
+    run_case!(build_trunc_u32_to_u8);
+    run_case!(build_select_u32);
+    run_case!(build_branch_merge_u32);
+    run_case!(build_loop_sum_u32);
 }

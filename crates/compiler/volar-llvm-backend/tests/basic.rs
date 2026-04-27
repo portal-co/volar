@@ -559,3 +559,13 @@ fn test_name_config_remap() {
         "expected prefixed name 'pfx_sub' in:\n{ir}"
     );
 }
+
+// ============================================================================
+// Corpus: smoke test (all cases build without panic)
+// ============================================================================
+
+#[test]
+fn test_corpus_smoke() {
+    let ctx = Context::create();
+    volar_lir_test_corpus::for_each_build!(LlvmBackend::new(&ctx, "smoke"));
+}

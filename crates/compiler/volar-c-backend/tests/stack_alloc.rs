@@ -4,42 +4,9 @@
 //! Each test that produces code writes C to a tempdir, compiles with
 //! `cc -O0 -std=c99`, runs the binary, and checks stdout.
 
-use std::{fs, process::Command};
-use tempfile::TempDir;
 use volar_c_backend::CBackend;
 use volar_lir::{LirTarget, LirType, StackAllocExt};
-
-// ============================================================================
-// Helper: compile + run C source with an appended main
-// ============================================================================
-
-fn compile_and_run(c_src: &str, main_body: &str) -> String {
-    let dir = TempDir::new().expect("tempdir");
-    let c_path = dir.path().join("test.c");
-    let exe_path = dir.path().join("test");
-
-    let full_src = format!(
-        "{c_src}\n#include <stdio.h>\nint main(void) {{\n{main_body}\n  return 0;\n}}\n"
-    );
-
-    fs::write(&c_path, &full_src).expect("write C source");
-
-    let status = Command::new("cc")
-        .args(["-O0", "-std=c99", "-o"])
-        .arg(&exe_path)
-        .arg(&c_path)
-        .status()
-        .expect("cc not found — install a C compiler");
-    assert!(
-        status.success(),
-        "C compilation failed.\nSource:\n{full_src}"
-    );
-
-    let output = Command::new(&exe_path)
-        .output()
-        .expect("failed to run compiled binary");
-    String::from_utf8(output.stdout).expect("non-UTF8 output")
-}
+use volar_lir_test_corpus::compile_and_run;
 
 // ============================================================================
 // Test 1: stack_alloc_ext returns Some for CBackend
