@@ -491,3 +491,71 @@ fn test_multiple_functions() {
 
     b.finish().verify().expect("verify");
 }
+
+// ============================================================================
+// NameConfig: prefix and per-name remap
+// ============================================================================
+
+#[test]
+fn test_name_config_prefix() {
+    let ctx = Context::create();
+    let mut b = LlvmBackend::new(&ctx, "test_prefix").with_prefix("pfx_");
+
+    let (entry, pvs) = b.begin_function("add", &[LirType::U32, LirType::U32], Some(LirType::U32));
+    b.switch_to_block(entry);
+    let sum = b.add(pvs[0][0].clone(), pvs[1][0].clone());
+    b.ret(&[sum]);
+    b.end_function();
+
+    let m = b.finish();
+    m.verify().expect("verify");
+    let ir = m.print_to_string().to_string();
+    assert!(
+        ir.contains("pfx_add"),
+        "expected prefixed function name 'pfx_add' in:\n{ir}"
+    );
+    // The bare "add" should not appear as a definition.
+    assert!(
+        !ir.contains("define") || ir.contains("pfx_add"),
+        "un-prefixed 'add' should not be defined in:\n{ir}"
+    );
+}
+
+#[test]
+fn test_name_config_remap() {
+    use std::collections::BTreeMap;
+    use volar_llvm_backend::NameConfig;
+
+    let mut remap = BTreeMap::new();
+    remap.insert("add".to_string(), "vector_add".to_string());
+    let cfg = NameConfig { prefix: "pfx_".to_string(), remap };
+
+    let ctx = Context::create();
+    let mut b = LlvmBackend::new(&ctx, "test_remap").with_name_config(cfg);
+
+    // "add" is remapped to "vector_add" (prefix not applied).
+    let (entry, pvs) = b.begin_function("add", &[LirType::U32, LirType::U32], Some(LirType::U32));
+    b.switch_to_block(entry);
+    let sum = b.add(pvs[0][0].clone(), pvs[1][0].clone());
+    b.ret(&[sum]);
+    b.end_function();
+
+    // "sub" gets the prefix "pfx_".
+    let (entry2, pvs2) = b.begin_function("sub", &[LirType::U32, LirType::U32], Some(LirType::U32));
+    b.switch_to_block(entry2);
+    let diff = b.sub(pvs2[0][0].clone(), pvs2[1][0].clone());
+    b.ret(&[diff]);
+    b.end_function();
+
+    let m = b.finish();
+    m.verify().expect("verify");
+    let ir = m.print_to_string().to_string();
+    assert!(
+        ir.contains("vector_add"),
+        "expected remapped name 'vector_add' in:\n{ir}"
+    );
+    assert!(
+        ir.contains("pfx_sub"),
+        "expected prefixed name 'pfx_sub' in:\n{ir}"
+    );
+}

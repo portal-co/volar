@@ -19,11 +19,53 @@
 #![no_std]
 extern crate alloc;
 
-use alloc::{boxed::Box, string::String, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
 use volar_ir_common::Type as NativeType;
 
 pub mod circuits;
 pub use circuits::{BitCircuitBuilder, StorageEmitter, StackPtr, FrameLayout, PACK_W, n_packs, pack_bits, unpack_words};
+
+// ============================================================================
+// Name configuration
+// ============================================================================
+
+/// Controls how a backend maps logical names to emitted names.
+///
+/// Applied to every name a backend **defines or calls**:
+/// - Functions registered via [`LirTarget::begin_function`]
+/// - External functions declared via [`LirTarget::call_extern`]
+/// - Oracle calls (`oracle_<name>`) and action calls (`action_<name>`)
+///
+/// The backend's `rng_fn` field (where present) is **not** subject to
+/// `NameConfig`; it is always used verbatim as an absolute name.
+///
+/// # Resolution order
+/// 1. If `remap` contains the original (un-prefixed) `name`, return `remap[name]`.
+/// 2. Otherwise, prepend `prefix` to `name` and return the result.
+///
+/// An empty `prefix` and empty `remap` (the default) is the identity.
+#[derive(Clone, Debug, Default)]
+pub struct NameConfig {
+    /// Prefix prepended to all names not found in `remap`.
+    pub prefix: String,
+    /// Per-name overrides.  Keys are the original (un-prefixed) names; values
+    /// are used verbatim (no prefix is applied to them).
+    pub remap: BTreeMap<String, String>,
+}
+
+impl NameConfig {
+    /// Apply this configuration to `name`.
+    pub fn apply(&self, name: &str) -> String {
+        if let Some(mapped) = self.remap.get(name) {
+            return mapped.clone();
+        }
+        if self.prefix.is_empty() {
+            String::from(name)
+        } else {
+            alloc::format!("{}{}", self.prefix, name)
+        }
+    }
+}
 
 // ============================================================================
 // Types

@@ -27,6 +27,8 @@ use std::{
 };
 use volar_lir::{IcmpPred, LirTarget, LirType, LirAbi, StackAllocExt, StructDef, StructId};
 
+pub use volar_lir::NameConfig;
+
 /// Sanitize a field name for C: if it starts with a digit (e.g. tuple fields
 /// "0", "1", …), prefix with `_` to make it a valid C identifier.
 fn c_field_name(name: &str) -> String {
@@ -172,6 +174,9 @@ pub struct CBackend {
     extern_decls: Vec<String>,
     /// Next StructId to assign.
     next_struct_id: StructId,
+    /// Name configuration: prefix and per-name remaps applied to all defined
+    /// and called function names.  See [`NameConfig`].
+    pub name_config: NameConfig,
     /// Name of the C function to call for `Rng` stmts.
     /// Expected signature: `void rng_fn(void *out, size_t len);`
     /// Default: `"volar_rng"`.
@@ -189,8 +194,21 @@ impl CBackend {
             array_typedef_set: BTreeSet::new(),
             extern_decls: Vec::new(),
             next_struct_id: 0,
+            name_config: NameConfig::default(),
             rng_fn: "volar_rng".to_string(),
         }
+    }
+
+    /// Set the name configuration (prefix + per-name remaps).
+    pub fn with_name_config(mut self, config: NameConfig) -> Self {
+        self.name_config = config;
+        self
+    }
+
+    /// Convenience: set a prefix applied to all emitted function names.
+    pub fn with_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.name_config.prefix = prefix.into();
+        self
     }
 
     /// Set the C function name used for `Rng` stmts.
@@ -461,7 +479,7 @@ impl LirTarget for CBackend {
         let param_ctypes: Vec<String> = params.iter().map(|ty| self.type_to_c(ty)).collect();
 
         let mut state = FunctionState {
-            name: name.to_owned(),
+            name: self.name_config.apply(name),
             ret_ty: ret,
             func_param_count: params.len(),
             preamble: String::new(),
@@ -667,6 +685,8 @@ impl LirTarget for CBackend {
         args: &[CValue],
         ret_ty: Option<LirType>,
     ) -> Vec<CValue> {
+        let name = self.name_config.apply(name);
+        let name = name.as_str();
         // Pack flat scalars into C aggregate arguments.
         let mut offset = 0usize;
         let packed_args: Vec<CValue> = arg_tys.iter()

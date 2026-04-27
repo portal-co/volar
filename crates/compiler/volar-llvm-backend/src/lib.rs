@@ -1,6 +1,6 @@
 // @reliability: normal
 // @ai: assisted
-//! LLVM backend for `LirTarget` (via `inkwell` / LLVM 21).
+//! LLVM backend for `LirTarget` (via `inkwell` / LLVM 20).
 //!
 //! Emits a native LLVM `Module` that can be compiled to object code, LLVM IR
 //! text, or bitcode.  Each LIR function becomes an LLVM function; SSA values
@@ -31,12 +31,13 @@
 //! 3. `jump(target, args)` / `branch(...)` — adds incoming edges to the
 //!    target block's PHI nodes, then emits an unconditional/conditional branch.
 //!
-//! # Pointer types (LLVM 21 opaque pointers)
+//! # Pointer types (opaque pointers)
 //!
-//! LLVM 21 uses untyped `ptr` for all pointer values.  `ptr_load` and GEP
+//! LLVM 20 uses untyped `ptr` for all pointer values.  `ptr_load` and GEP
 //! operations receive the pointee type explicitly (stored in `LlvmValue::ty`).
 
-use std::{collections::HashMap, vec::Vec};
+use std::collections::HashMap;
+use std::vec::Vec;
 
 use inkwell::{
     AddressSpace,
@@ -48,6 +49,8 @@ use inkwell::{
 };
 use volar_ir_common::Type as NativeType;
 use volar_lir::{IcmpPred, LirAbi, LirTarget, LirType, StackAllocExt, StructDef, StructId};
+
+pub use volar_lir::NameConfig;
 
 // ============================================================================
 // Value and Block handle types
@@ -140,6 +143,10 @@ pub struct LlvmBackend<'ctx> {
     /// re-declaring the same extern multiple times.
     extern_cache: HashMap<String, FunctionValue<'ctx>>,
 
+    /// Name configuration: prefix and per-name remaps applied to all defined
+    /// and called function names.  See [`NameConfig`].
+    pub name_config: NameConfig,
+
     /// Name of the C function called for `rng` stmts.
     /// Expected signature: `void volar_rng(void*, uint64_t)`.
     /// Default: `"volar_rng"`.
@@ -160,8 +167,21 @@ impl<'ctx> LlvmBackend<'ctx> {
             struct_llvm_types: Vec::new(),
             next_struct_id: 0,
             extern_cache: HashMap::new(),
+            name_config: NameConfig::default(),
             rng_fn: "volar_rng".to_string(),
         }
+    }
+
+    /// Set the name configuration (prefix + per-name remaps).
+    pub fn with_name_config(mut self, config: NameConfig) -> Self {
+        self.name_config = config;
+        self
+    }
+
+    /// Convenience: set a prefix applied to all emitted function names.
+    pub fn with_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.name_config.prefix = prefix.into();
+        self
     }
 
     /// Set the RNG helper function name.
@@ -333,7 +353,7 @@ impl<'ctx> LirTarget for LlvmBackend<'ctx> {
             None => self.context.void_type().fn_type(&param_llvm_tys, false),
         };
 
-        let func = self.module.add_function(name, fn_type, None);
+        let func = self.module.add_function(&self.name_config.apply(name), fn_type, None);
 
         // Create the entry block.
         let entry_llvm = self.context.append_basic_block(func, "block0");
@@ -693,7 +713,7 @@ impl<'ctx> LirTarget for LlvmBackend<'ctx> {
             None => self.context.void_type().fn_type(&param_llvm_tys, false),
         };
 
-        let func = self.declare_extern(name, fn_type);
+        let func = self.declare_extern(&self.name_config.apply(name), fn_type);
 
         // Build the call arguments.
         let call_args: Vec<BasicMetadataValueEnum<'ctx>> =

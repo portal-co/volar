@@ -415,3 +415,68 @@ fn test_c_backend_pass_by_ptr_threshold() {
     // Above threshold: by pointer
     assert!(abi.pass_by_ptr(65));
 }
+
+// ============================================================================
+// NameConfig: prefix and per-name remap
+// ============================================================================
+
+#[test]
+fn test_name_config_prefix() {
+    use volar_c_backend::NameConfig;
+
+    let mut b = CBackend::new().with_prefix("pfx_");
+
+    // Emit a simple function: u32 add(u32 a, u32 b) { return a + b; }
+    let (entry, pvs) = b.begin_function("add", &[LirType::U32, LirType::U32], Some(LirType::U32));
+    b.switch_to_block(entry);
+    let sum = b.add(pvs[0][0], pvs[1][0]);
+    b.ret(&[sum]);
+    b.end_function();
+
+    let src = b.finish();
+    assert!(
+        src.contains("pfx_add"),
+        "expected prefixed function name 'pfx_add' in:\n{src}"
+    );
+    assert!(
+        !src.contains("\nadd(") && !src.contains(" add("),
+        "un-prefixed 'add(' should not appear in:\n{src}"
+    );
+}
+
+#[test]
+fn test_name_config_remap() {
+    use std::collections::BTreeMap;
+    use volar_c_backend::NameConfig;
+
+    let mut remap = BTreeMap::new();
+    remap.insert("add".to_string(), "vector_add".to_string());
+    let cfg = NameConfig { prefix: "pfx_".to_string(), remap };
+
+    let mut b = CBackend::new().with_name_config(cfg);
+
+    let (entry, pvs) = b.begin_function("add", &[LirType::U32, LirType::U32], Some(LirType::U32));
+    b.switch_to_block(entry);
+    let sum = b.add(pvs[0][0], pvs[1][0]);
+    b.ret(&[sum]);
+    b.end_function();
+
+    // Also emit a second function that is NOT remapped to check prefix still applies.
+    let (entry2, pvs2) = b.begin_function("sub", &[LirType::U32, LirType::U32], Some(LirType::U32));
+    b.switch_to_block(entry2);
+    let diff = b.sub(pvs2[0][0], pvs2[1][0]);
+    b.ret(&[diff]);
+    b.end_function();
+
+    let src = b.finish();
+    // Remap: "add" → "vector_add" (prefix not applied)
+    assert!(
+        src.contains("vector_add"),
+        "expected remapped name 'vector_add' in:\n{src}"
+    );
+    // Non-remapped "sub" gets the prefix.
+    assert!(
+        src.contains("pfx_sub"),
+        "expected prefixed name 'pfx_sub' in:\n{src}"
+    );
+}
