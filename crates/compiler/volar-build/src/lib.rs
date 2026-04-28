@@ -2,7 +2,10 @@
 // @ai: assisted
 //! Build script helper for compiling [`SavedLirModule`] to object code.
 //!
-//! Intended for use in `build.rs` scripts.  Typical native usage:
+//! Intended for use in `build.rs` scripts.  [`compile_lir_to_object`]
+//! automatically reads Cargo's `TARGET`, `HOST`, and `OPT_LEVEL` environment
+//! variables, so `CompileOptions::default()` works for both native and
+//! cross-compilation builds without any explicit configuration:
 //!
 //! ```rust,ignore
 //! // build.rs
@@ -17,19 +20,14 @@
 //! }
 //! ```
 //!
-//! Cross-compilation example (aarch64 Linux):
+//! To add name remapping (cross-compilation is still auto-detected):
 //!
 //! ```rust,ignore
 //! // build.rs
 //! fn main() {
 //!     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
 //!     let opts = volar_build::CompileOptions::default()
-//!         .for_target("aarch64-unknown-linux-gnu")
-//!         .with_cpu("generic")
-//!         .with_name_config(volar_build::NameConfig {
-//!             prefix: "mylib_".into(),
-//!             ..Default::default()
-//!         });
+//!         .with_prefix("mylib_");
 //!     volar_build::compile_lir_to_object(
 //!         std::path::Path::new("src/my_program.lir"),
 //!         &out.join("my_program.o"),
@@ -37,6 +35,14 @@
 //!     ).unwrap();
 //!     println!("cargo:rustc-link-search={}", out.display());
 //! }
+//! ```
+//!
+//! To force a specific target triple (overrides Cargo env):
+//!
+//! ```rust,ignore
+//! let opts = volar_build::CompileOptions::default()
+//!     .for_target("aarch64-unknown-linux-gnu")
+//!     .with_cpu("cortex-a55");
 //! ```
 
 use std::path::Path;
@@ -88,11 +94,15 @@ pub struct CompileOptions {
     /// Name remapping applied to all emitted and called function names.
     pub name_config: NameConfig,
 
-    /// Target triple for cross-compilation, e.g. `"aarch64-unknown-linux-gnu"`.
+    /// Target triple override, e.g. `"aarch64-unknown-linux-gnu"`.
     ///
-    /// `None` means the native host target.  When a triple is provided,
-    /// `Target::initialize_all` is called so that the appropriate LLVM backend
-    /// is available, and the host CPU / feature string is **not** used.
+    /// When `None` (the default), [`compile_lir_to_object`] reads the `TARGET`
+    /// and `HOST` environment variables that Cargo sets in every `build.rs`.
+    /// If `TARGET != HOST` the `TARGET` triple is used automatically, so
+    /// cross-compilation works without any explicit configuration.
+    ///
+    /// Set this field only when you need to override the Cargo-detected target
+    /// or compile outside of a `build.rs` context.
     pub target_triple: Option<String>,
 
     /// CPU name passed to the LLVM `TargetMachine`.
@@ -226,7 +236,28 @@ pub fn compile_lir_to_object(
     let module = backend.finish();
 
     // ---- Resolve target machine ---------------------------------------------
-    let (triple, cpu_str, features_str) = match &options.target_triple {
+    // Prefer an explicit override, then fall back to Cargo's TARGET env var.
+    // Cargo always sets TARGET (and HOST) in build scripts; comparing them
+    // tells us whether this is a cross-compilation.
+    let cargo_target = std::env::var("TARGET").ok();
+    let cargo_host  = std::env::var("HOST").ok();
+    let explicit_triple = options.target_triple.as_deref();
+
+    // Resolved triple string (owned).
+    let resolved_triple_str: Option<String> = explicit_triple
+        .map(str::to_owned)
+        .or_else(|| {
+            // Use Cargo's TARGET only when it differs from HOST (cross build),
+            // or HOST is unavailable (not running inside a build script).
+            match (&cargo_target, &cargo_host) {
+                (Some(t), Some(h)) if t != h => Some(t.clone()),
+                (Some(_), Some(_)) => None, // native — let LLVM auto-detect
+                (Some(t), None)    => Some(t.clone()), // unknown host, use TARGET
+                _                  => None,
+            }
+        });
+
+    let (triple, cpu_str, features_str) = match resolved_triple_str {
         None => {
             // Native target: initialize just the host backend.
             Target::initialize_native(&InitializationConfig::default())
@@ -253,7 +284,7 @@ pub fn compile_lir_to_object(
             // Cross-compilation: initialize all LLVM backends.
             Target::initialize_all(&InitializationConfig::default());
 
-            let triple = TargetTriple::create(triple_str);
+            let triple = TargetTriple::create(&triple_str);
             let cpu = options.cpu.as_deref().unwrap_or("generic").to_owned();
             let features = options.features.as_deref().unwrap_or("").to_owned();
             (triple, cpu, features)
