@@ -1,0 +1,20 @@
+[package]
+name = "volar-lir-text"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+description = "Text-format serialisation and parsing for volar-lir types and SavedLirModule"
+repository.workspace = true
+
+[dependencies]
+volar-lir        = { path = "../volar-lir" }
+volar-lir-saved  = { path = "../../compiler/volar-lir-saved" }
+volar-ir-common  = { path = "../volar-ir-common" }
+
+[features]
+default = []
+# Enables the parser (ParseText impls).  Still no_std; uses alloc.
+parse = []
+
+[dev-dependencies]
+volar-lir-saved = { path = "../../compiler/volar-lir-saved" }
