@@ -20,6 +20,7 @@ members = [
     "crates/compiler/volar-weaver",
     "crates/ir/volar-lir",
     "crates/ir/volar-lir-text",
+    "crates/ir/volar-ir-text",
     "crates/compiler/volar-lir-codegen",
     "crates/compiler/volar-c-backend",
     "crates/compiler/volar-llvm-backend",
@@ -45,6 +46,7 @@ volar-ir = {path="crates/ir/volar-ir", version = "0.1.0"}
 volar-ir-passes = {path="crates/ir/volar-ir-passes", version = "0.1.0"}
 volar-lir = {path="crates/ir/volar-lir", version = "0.1.0"}
 volar-lir-text = {path="crates/ir/volar-lir-text", version = "0.1.0"}
+volar-ir-text  = {path="crates/ir/volar-ir-text",  version = "0.1.0"}
 vaffle = {path="crates/ir/vaffle", version = "0.1.0"}
 volar-vaffle-target = {path="crates/ir/volar-vaffle-target", version = "0.1.0"}
 volar-ir-common = {path="crates/ir/volar-ir-common", version = "0.1.0"}

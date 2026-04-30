@@ -1,0 +1,15 @@
+[package]
+name = "volar-ir-text"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+volar-ir         = { workspace = true }
+volar-ir-common  = { workspace = true }
+
+[features]
+default = []
+parse   = []
+
+[lib]
+path = "src/lib.rs"
