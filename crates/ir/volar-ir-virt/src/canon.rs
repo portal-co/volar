@@ -91,8 +91,11 @@ impl HandlerKey for IrHandlerKey {
     fn immediate_schema(&self) -> Vec<ImmediateKind> {
         let mut out = Vec::new();
         for s in &self.stmts {
-            if let IRStmt::Const(_, _) = s {
-                out.push(ImmediateKind::Constant);
+            match s {
+                IRStmt::Const(_, _) | IRStmt::Poly { .. } => {
+                    out.push(ImmediateKind::Constant);
+                }
+                _ => {}
             }
         }
         append_ir_terminator_schema(&self.terminator, &mut out);
@@ -106,11 +109,14 @@ impl IrHandlerKey {
     pub fn typed_immediate_schema(&self, addr_ty: IRTypeId) -> Vec<IrImmediateSlot> {
         let mut out = Vec::new();
         for s in &self.stmts {
-            if let IRStmt::Const(_, ty) = s {
-                out.push(IrImmediateSlot {
-                    kind: ImmediateKind::Constant,
-                    ty: *ty,
-                });
+            match s {
+                IRStmt::Const(_, ty) | IRStmt::Poly { ty, .. } => {
+                    out.push(IrImmediateSlot {
+                        kind: ImmediateKind::Constant,
+                        ty: *ty,
+                    });
+                }
+                _ => {}
             }
         }
         let mut tslots = Vec::new();
@@ -176,6 +182,10 @@ fn canon_ir_stmt(s: &IRStmt, consts: &mut Vec<Constant>) -> IRStmt {
         IRStmt::Const(c, ty) => {
             consts.push(*c);
             IRStmt::Const(ZERO_CONSTANT, *ty)
+        }
+        IRStmt::Poly { ty, coeffs, constant } => {
+            consts.push(*constant);
+            IRStmt::Poly { ty: *ty, coeffs: coeffs.clone(), constant: ZERO_CONSTANT }
         }
         other => other.clone(),
     }

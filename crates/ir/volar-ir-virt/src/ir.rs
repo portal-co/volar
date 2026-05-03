@@ -33,7 +33,7 @@ use volar_ir::ir::{
 };
 use volar_ir_common::{Constant, Stmt, StorageId, Type as PrimType};
 
-use crate::canon::{canonicalize_ir_block, BlockImmediates, IrHandlerKey};
+use crate::canon::{canonicalize_ir_block, BlockImmediates, IrHandlerKey, ZERO_CONSTANT};
 use crate::ctx::{DedupTable, VirtOutput};
 use crate::{DedupPolicy, DispatchMode, VirtualizeConfig};
 
@@ -75,10 +75,20 @@ pub fn virtualize_ir<P: Clone + Default>(
     let blocks_in = blocks.blocks.len();
     validate_input(blocks);
 
+    // CSE: merge duplicate OracleCall stmts within each block before
+    // canonicalisation so identical blocks that differ only by redundant
+    // oracle calls can share handlers.
+    let cse_blocks: IRBlocks<P> = IRBlocks {
+        oracles: blocks.oracles.clone(),
+        actions: blocks.actions.clone(),
+        rngs: blocks.rngs.clone(),
+        blocks: blocks.blocks.iter().map(deduplicate_oracle_calls_in_block).collect(),
+    };
+
     // Canonicalise every block — lifts Const values and terminator
     // block-target ids into BlockImmediates.
     let per_block_canon: Vec<(IrHandlerKey, BlockImmediates)> =
-        blocks.blocks.iter().map(canonicalize_ir_block).collect();
+        cse_blocks.blocks.iter().map(canonicalize_ir_block).collect();
     let dedup = DedupTable::build(per_block_canon);
     let n_handlers = dedup.n_handlers();
 
@@ -92,11 +102,11 @@ pub fn virtualize_ir<P: Clone + Default>(
     let reg_storage_base = layout.next_free_storage_after_bytecode(cfg.bytecode_storage);
 
     // Allocate per-type register storages starting at reg_storage_base.
-    let reg_alloc = RegAlloc::build(blocks, reg_storage_base);
+    let reg_alloc = RegAlloc::build(&cse_blocks, reg_storage_base);
 
     // Emit the module using the pre-computed layout.
     let out_blocks =
-        emit_output_ir(blocks, &dedup, &layout, &reg_alloc, addr_ty, bit_ty, cfg);
+        emit_output_ir(&cse_blocks, &dedup, &layout, &reg_alloc, addr_ty, bit_ty, cfg);
 
     let bytecode = if cfg.bytecode_form.wants_external() {
         Some(dedup.to_bytecode())
@@ -257,17 +267,19 @@ impl RegAlloc {
         // Extract return shape.
         let return_arg_tys = extract_return_shape(blocks);
 
-        // Allocate return registers above the param range.
+        // Allocate return registers.  Return regs are only live in the
+        // final execution step (the done=1 arm writes them; the dispatcher
+        // reads them immediately after and exits).  They are never live
+        // simultaneously with any block's param registers, so they can
+        // share the same slots — starting from index 0 of each type's
+        // storage.  The total register file depth for type T is then
+        // max(max_T_params, n_T_returns) rather than max_T_params + n_T_returns.
         let mut return_regs: Vec<RegRef> = Vec::with_capacity(return_arg_tys.len());
         {
             let mut next_ret_idx: BTreeMap<IRTypeId, u32> = BTreeMap::new();
             for &ty in &return_arg_tys {
-                let base = max_param_idx.get(&ty).copied().unwrap_or(0);
                 let off = next_ret_idx.entry(ty).or_insert(0);
-                return_regs.push(RegRef {
-                    ty,
-                    idx: base + *off,
-                });
+                return_regs.push(RegRef { ty, idx: *off });
                 *off += 1;
             }
         }
@@ -455,14 +467,17 @@ impl HandlerSchema {
 
         let mut const_value_slot = Vec::with_capacity(key.stmts.len());
         for s in &key.stmts {
-            if let Stmt::Const(_, ty) = s {
-                const_value_slot.push(Some(push_slot(
-                    &mut schema.slots,
-                    SlotKind::ConstValue,
-                    *ty,
-                )));
-            } else {
-                const_value_slot.push(None);
+            match s {
+                Stmt::Const(_, ty) | Stmt::Poly { ty, .. } => {
+                    const_value_slot.push(Some(push_slot(
+                        &mut schema.slots,
+                        SlotKind::ConstValue,
+                        *ty,
+                    )));
+                }
+                _ => {
+                    const_value_slot.push(None);
+                }
             }
         }
         schema.const_value_slot = const_value_slot;
@@ -565,12 +580,30 @@ impl GlobalLayout {
 // Output IR emission
 // ============================================================================
 
-/// Block-id constants for the rewritten module.
+/// Block-id constants for the legacy (indirect) dispatch layout.
+///
+/// Layout: SETUP | DISPATCHER | RETURN | DISPATCH | handler_0 .. handler_n | subblocks
 const SETUP_BID: u32 = 0;
 const DISPATCHER_BID: u32 = 1;
 const RETURN_BID: u32 = 2;
 const DISPATCH_BID: u32 = 3;
 const HANDLER_BID_BASE: u32 = 4;
+
+/// Block-id constants for the direct-dispatch layout.
+///
+/// Layout: SETUP | RETURN | INIT_DISPATCH | handler_0 .. handler_n | subblocks
+///
+/// Handlers jump directly to their successor via an inline dispatch sub-block,
+/// skipping the DISPATCHER and DISPATCH blocks entirely.
+const DD_RETURN_BID: u32 = 1;
+const DD_INIT_DISPATCH_BID: u32 = 2;
+const DD_HANDLER_BID_BASE: u32 = 3;
+
+/// Context threaded into handler/sub-block emitters when `direct_dispatch=true`.
+struct DirectDispatch<'a> {
+    dedup: &'a DedupTable<IrHandlerKey>,
+    bytecode_storage: StorageId,
+}
 
 fn emit_output_ir<P: Clone + Default>(
     blocks_in: &IRBlocks<P>,
@@ -586,7 +619,9 @@ fn emit_output_ir<P: Clone + Default>(
 
     let n_handlers = dedup.n_handlers();
     let mut extra_subblocks: Vec<IRBlock<P>> = Vec::new();
-    let mut next_sub_bid = HANDLER_BID_BASE + n_handlers as u32;
+
+    let handler_bid_base = if cfg.direct_dispatch { DD_HANDLER_BID_BASE } else { HANDLER_BID_BASE };
+    let mut next_sub_bid = handler_bid_base + n_handlers as u32;
 
     // --- setup ---
     let setup = emit_setup_block(
@@ -600,14 +635,10 @@ fn emit_output_ir<P: Clone + Default>(
         cfg,
     );
 
-    // --- dispatcher ---
-    let dispatcher = emit_dispatcher_block(addr_ty, bit_ty);
-
-    // --- return ---
-    let return_block = emit_return_block(reg_alloc, &return_arg_tys, addr_ty);
-
-    // --- dispatch ---
-    let dispatch = emit_dispatch_block(dedup, cfg.bytecode_storage, addr_ty);
+    let dd = cfg.direct_dispatch.then(|| DirectDispatch {
+        dedup,
+        bytecode_storage: cfg.bytecode_storage,
+    });
 
     // --- handlers (+ arm sub-blocks) ---
     let mut handler_blocks: Vec<IRBlock<P>> = Vec::with_capacity(n_handlers);
@@ -622,17 +653,38 @@ fn emit_output_ir<P: Clone + Default>(
             addr_ty,
             bit_ty,
             &mut next_sub_bid,
+            dd.as_ref(),
         );
         handler_blocks.push(handler);
         extra_subblocks.extend(extras);
     }
 
-    // Assemble.
-    let mut all_blocks: Vec<IRBlock<P>> = Vec::with_capacity(4 + n_handlers + extra_subblocks.len());
-    all_blocks.push(setup);
-    all_blocks.push(dispatcher);
-    all_blocks.push(return_block);
-    all_blocks.push(dispatch);
+    // Assemble — layout differs between modes.
+    let mut all_blocks: Vec<IRBlock<P>>;
+    if cfg.direct_dispatch {
+        // Layout: SETUP | RETURN | INIT_DISPATCH | handlers | subblocks
+        let return_block = emit_return_block(reg_alloc, &return_arg_tys, addr_ty);
+        let init_dispatch = emit_dispatch_block_with_base(
+            dedup,
+            cfg.bytecode_storage,
+            addr_ty,
+            DD_HANDLER_BID_BASE,
+        );
+        all_blocks = Vec::with_capacity(3 + n_handlers + extra_subblocks.len());
+        all_blocks.push(setup);
+        all_blocks.push(return_block);
+        all_blocks.push(init_dispatch);
+    } else {
+        // Layout: SETUP | DISPATCHER | RETURN | DISPATCH | handlers | subblocks
+        let dispatcher = emit_dispatcher_block(addr_ty, bit_ty);
+        let return_block = emit_return_block(reg_alloc, &return_arg_tys, addr_ty);
+        let dispatch = emit_dispatch_block(dedup, cfg.bytecode_storage, addr_ty);
+        all_blocks = Vec::with_capacity(4 + n_handlers + extra_subblocks.len());
+        all_blocks.push(setup);
+        all_blocks.push(dispatcher);
+        all_blocks.push(return_block);
+        all_blocks.push(dispatch);
+    }
     all_blocks.extend(handler_blocks);
     all_blocks.extend(extra_subblocks);
 
@@ -708,13 +760,19 @@ fn emit_setup_block<P: Clone + Default>(
         }
     }
 
-    // 3. pc=0, done=0, jump to dispatcher.
+    // 3. Jump to the first dispatch point.
+    //    Legacy mode: jump to DISPATCHER with (pc=0, done=0).
+    //    Direct mode: jump to INIT_DISPATCH with (pc=0).
     let pc = b.push(Stmt::Const(const_u32(0), addr_ty));
-    let done = b.push(Stmt::Const(const_bit(false), bit_ty));
-
+    let entry_bid = if cfg.direct_dispatch { DD_INIT_DISPATCH_BID } else { DISPATCHER_BID };
+    let mut jump_args = vec![pc];
+    if !cfg.direct_dispatch {
+        let done = b.push(Stmt::Const(const_bit(false), bit_ty));
+        jump_args.push(done);
+    }
     b.terminator = IRTerminator::Jmp {
-        func: IRBlockTargetId::Block(IRBlockId(DISPATCHER_BID)),
-        args: vec![pc, done],
+        func: IRBlockTargetId::Block(IRBlockId(entry_bid)),
+        args: jump_args,
     };
     b.into_ir_block::<P>()
 }
@@ -736,15 +794,18 @@ fn compute_slot_values<P: Clone + Default>(
         out[*slot_idx] = const_u32(my_regs[i].idx);
     }
 
-    // Const value slots.
+    // Const value slots (also covers Poly.constant).
     for (stmt_idx, slot_opt) in schema.const_value_slot.iter().enumerate() {
         if let Some(slot_idx) = slot_opt {
             match &block.stmts[stmt_idx] {
                 Stmt::Const(c, _) => {
                     out[*slot_idx] = *c;
                 }
+                Stmt::Poly { constant, .. } => {
+                    out[*slot_idx] = *constant;
+                }
                 _ => panic!(
-                    "compute_slot_values: schema says stmt {} is Const \
+                    "compute_slot_values: schema says stmt {} is Const/Poly \
                      but source block disagrees",
                     stmt_idx
                 ),
@@ -863,6 +924,19 @@ fn emit_dispatch_block<P: Clone + Default>(
     bytecode_storage: StorageId,
     addr_ty: IRTypeId,
 ) -> IRBlock<P> {
+    emit_dispatch_block_with_base(dedup, bytecode_storage, addr_ty, HANDLER_BID_BASE)
+}
+
+/// Emit a block that reads `handler_idx` from bytecode at `pc` and
+/// dispatches to the appropriate handler via `JumpTable`.
+/// Used both for the legacy `DISPATCH_BID` block and for the inline
+/// dispatch sub-blocks in direct-dispatch mode.
+fn emit_dispatch_block_with_base<P: Clone + Default>(
+    dedup: &DedupTable<IrHandlerKey>,
+    bytecode_storage: StorageId,
+    addr_ty: IRTypeId,
+    handler_bid_base: u32,
+) -> IRBlock<P> {
     let mut b = IRBlockUnfinished::new(vec![addr_ty]);
     let handler_idx = b.push(Stmt::StorageRead {
         storage: bytecode_storage,
@@ -874,7 +948,7 @@ fn emit_dispatch_block<P: Clone + Default>(
         cases.insert(
             const_u32(h_idx as u32),
             (
-                IRBlockTargetId::Block(IRBlockId(HANDLER_BID_BASE + h_idx as u32)),
+                IRBlockTargetId::Block(IRBlockId(handler_bid_base + h_idx as u32)),
                 vec![IRVarId(0)],
             ),
         );
@@ -900,6 +974,7 @@ fn emit_handler_block<P: Clone + Default>(
     addr_ty: IRTypeId,
     bit_ty: IRTypeId,
     next_sub_bid: &mut u32,
+    dd: Option<&DirectDispatch<'_>>,
 ) -> (IRBlock<P>, Vec<IRBlock<P>>) {
     let mut b = IRBlockUnfinished::new(vec![addr_ty]);
     let pc = IRVarId(0);
@@ -940,6 +1015,32 @@ fn emit_handler_block<P: Clone + Default>(
                     storage: slot_storage,
                     ty: *ty,
                     addr: pc,
+                });
+                canonical_var[canonical_id] = v;
+            }
+            Stmt::Poly { ty, coeffs, .. } => {
+                // The constant term was lifted into a bytecode slot; read it
+                // back at runtime and fold it in via a degree-1 XOR poly.
+                let slot_storage = slot_ids[schema.const_value_slot[stmt_idx]
+                    .expect("Poly stmt must have a value slot")];
+                let const_var = b.push(Stmt::StorageRead {
+                    storage: slot_storage,
+                    ty: *ty,
+                    addr: pc,
+                });
+                let remapped_coeffs = remap_coeffs(coeffs, &canonical_var);
+                let poly_out = b.push(Stmt::Poly {
+                    ty: *ty,
+                    coeffs: remapped_coeffs,
+                    constant: ZERO_CONSTANT,
+                });
+                let mut xor_coeffs = BTreeMap::new();
+                xor_coeffs.insert(alloc::vec![poly_out], 1u8);
+                xor_coeffs.insert(alloc::vec![const_var], 1u8);
+                let v = b.push(Stmt::Poly {
+                    ty: *ty,
+                    coeffs: xor_coeffs,
+                    constant: ZERO_CONSTANT,
                 });
                 canonical_var[canonical_id] = v;
             }
@@ -984,7 +1085,13 @@ fn emit_handler_block<P: Clone + Default>(
                 &canon_types,
             );
             let _ = func;
-            build_return_to_dispatcher(&mut b, arm, slot_ids, addr_ty, bit_ty, pc)
+            if let Some(dd) = dd {
+                build_direct_dispatch_terminator(
+                    &mut b, arm, slot_ids, addr_ty, bit_ty, pc, dd, next_sub_bid, &mut extras,
+                )
+            } else {
+                build_return_to_dispatcher(&mut b, arm, slot_ids, addr_ty, bit_ty, pc)
+            }
         }
         IRTerminator::JumpCond {
             condition,
@@ -1004,22 +1111,18 @@ fn emit_handler_block<P: Clone + Default>(
             let false_arg_tys: Vec<IRTypeId> =
                 false_args.iter().map(|v| canon_types[v.0 as usize]).collect();
 
-            extras.push(emit_arm_subblock::<P>(
-                &schema.arms[0],
-                slot_ids,
-                reg_alloc,
-                addr_ty,
-                bit_ty,
-                &true_arg_tys,
-            ));
-            extras.push(emit_arm_subblock::<P>(
-                &schema.arms[1],
-                slot_ids,
-                reg_alloc,
-                addr_ty,
-                bit_ty,
-                &false_arg_tys,
-            ));
+            let (true_sub, true_dd_extras) = emit_arm_subblock::<P>(
+                &schema.arms[0], slot_ids, reg_alloc, addr_ty, bit_ty,
+                &true_arg_tys, dd, next_sub_bid,
+            );
+            let (false_sub, false_dd_extras) = emit_arm_subblock::<P>(
+                &schema.arms[1], slot_ids, reg_alloc, addr_ty, bit_ty,
+                &false_arg_tys, dd, next_sub_bid,
+            );
+            extras.push(true_sub);
+            extras.extend(true_dd_extras);
+            extras.push(false_sub);
+            extras.extend(false_dd_extras);
 
             let _ = (true_block, false_block);
 
@@ -1047,14 +1150,12 @@ fn emit_handler_block<P: Clone + Default>(
                 *next_sub_bid += 1;
                 let arg_tys: Vec<IRTypeId> =
                     args.iter().map(|v| canon_types[v.0 as usize]).collect();
-                extras.push(emit_arm_subblock::<P>(
-                    &schema.arms[arm_idx],
-                    slot_ids,
-                    reg_alloc,
-                    addr_ty,
-                    bit_ty,
-                    &arg_tys,
-                ));
+                let (arm_sub, arm_dd_extras) = emit_arm_subblock::<P>(
+                    &schema.arms[arm_idx], slot_ids, reg_alloc, addr_ty, bit_ty,
+                    &arg_tys, dd, next_sub_bid,
+                );
+                extras.push(arm_sub);
+                extras.extend(arm_dd_extras);
                 let arm_args = core::iter::once(pc)
                     .chain(args.iter().map(|v| canonical_var[v.0 as usize]))
                     .collect::<Vec<_>>();
@@ -1126,11 +1227,56 @@ fn build_return_to_dispatcher(
     }
 }
 
+/// Build a direct-dispatch terminator: reads `next_pc` and `done` from
+/// bytecode, then emits `JumpCond(done, DD_RETURN_BID, dispatch_sub(next_pc))`.
+/// The inline dispatch sub-block (which reads `handler_idx` and jumps directly
+/// to the successor handler) is appended to `extras`.
+#[allow(clippy::too_many_arguments)]
+fn build_direct_dispatch_terminator<P: Clone + Default>(
+    b: &mut IRBlockUnfinished,
+    arm: &ArmSchema,
+    slot_ids: &[StorageId],
+    addr_ty: IRTypeId,
+    bit_ty: IRTypeId,
+    pc: IRVarId,
+    dd: &DirectDispatch<'_>,
+    next_sub_bid: &mut u32,
+    extras: &mut Vec<IRBlock<P>>,
+) -> IRTerminator {
+    let next_pc = b.push(Stmt::StorageRead {
+        storage: slot_ids[arm.next_pc_slot],
+        ty: addr_ty,
+        addr: pc,
+    });
+    let done = b.push(Stmt::StorageRead {
+        storage: slot_ids[arm.done_slot],
+        ty: bit_ty,
+        addr: pc,
+    });
+    let dispatch_sub_bid = *next_sub_bid;
+    *next_sub_bid += 1;
+    extras.push(emit_dispatch_block_with_base(
+        dd.dedup,
+        dd.bytecode_storage,
+        addr_ty,
+        DD_HANDLER_BID_BASE,
+    ));
+    IRTerminator::JumpCond {
+        condition: done,
+        true_block: IRBlockTargetId::Block(IRBlockId(DD_RETURN_BID)),
+        true_args: vec![],
+        false_block: IRBlockTargetId::Block(IRBlockId(dispatch_sub_bid)),
+        false_args: vec![next_pc],
+    }
+}
+
 /// Sub-block emitted for each arm of a conditional terminator.
 /// Params: `[pc: _32, arg_0: ty_0, ... arg_{n-1}: ty_{n-1}]`.
 /// Body: writes each arg to its dst register (dst reg idx read from
-/// bytecode at pc), then jumps to dispatcher with (next_pc, done) read
-/// from bytecode.
+/// bytecode at pc), then returns control to the dispatcher.
+///
+/// In direct-dispatch mode (`dd` is `Some`) also returns an inline
+/// dispatch sub-block that routes to the successor handler.
 #[allow(clippy::too_many_arguments)]
 fn emit_arm_subblock<P: Clone + Default>(
     arm: &ArmSchema,
@@ -1139,7 +1285,9 @@ fn emit_arm_subblock<P: Clone + Default>(
     addr_ty: IRTypeId,
     bit_ty: IRTypeId,
     arg_tys: &[IRTypeId],
-) -> IRBlock<P> {
+    dd: Option<&DirectDispatch<'_>>,
+    next_sub_bid: &mut u32,
+) -> (IRBlock<P>, Vec<IRBlock<P>>) {
     let mut params: Vec<IRTypeId> = vec![addr_ty];
     params.extend_from_slice(arg_tys);
     let mut b = IRBlockUnfinished::new(params);
@@ -1160,21 +1308,28 @@ fn emit_arm_subblock<P: Clone + Default>(
         });
     }
 
-    let next_pc = b.push(Stmt::StorageRead {
-        storage: slot_ids[arm.next_pc_slot],
-        ty: addr_ty,
-        addr: pc,
-    });
-    let done = b.push(Stmt::StorageRead {
-        storage: slot_ids[arm.done_slot],
-        ty: bit_ty,
-        addr: pc,
-    });
-    b.terminator = IRTerminator::Jmp {
-        func: IRBlockTargetId::Block(IRBlockId(DISPATCHER_BID)),
-        args: vec![next_pc, done],
+    let mut dd_extras: Vec<IRBlock<P>> = Vec::new();
+    b.terminator = if let Some(dd) = dd {
+        build_direct_dispatch_terminator(
+            &mut b, arm, slot_ids, addr_ty, bit_ty, pc, dd, next_sub_bid, &mut dd_extras,
+        )
+    } else {
+        let next_pc = b.push(Stmt::StorageRead {
+            storage: slot_ids[arm.next_pc_slot],
+            ty: addr_ty,
+            addr: pc,
+        });
+        let done = b.push(Stmt::StorageRead {
+            storage: slot_ids[arm.done_slot],
+            ty: bit_ty,
+            addr: pc,
+        });
+        IRTerminator::Jmp {
+            func: IRBlockTargetId::Block(IRBlockId(DISPATCHER_BID)),
+            args: vec![next_pc, done],
+        }
     };
-    b.into_ir_block::<P>()
+    (b.into_ir_block::<P>(), dd_extras)
 }
 
 /// Return the IR type of each canonical SSA id in the handler key:
@@ -1191,6 +1346,100 @@ fn canonical_types(key: &IrHandlerKey) -> Vec<IRTypeId> {
         out.push(stmt_output_type(s).unwrap_or(IRTypeId(u32::MAX)));
     }
     out
+}
+
+// ============================================================================
+// Oracle call CSE (pre-canonicalisation)
+// ============================================================================
+
+/// Merge duplicate `OracleCall` stmts within a single block.
+///
+/// Two `OracleCall`s are identical when they have the same name and the same
+/// (already-remapped) argument var ids.  The second and any further duplicates
+/// are dropped; their output var is redirected to the first call's output var
+/// so that all `OracleOutput` users resolve correctly.
+///
+/// All subsequent stmt var ids are renumbered to close the gaps, and the
+/// terminator is updated accordingly.
+fn deduplicate_oracle_calls_in_block<P: Clone + Default>(block: &IRBlock<P>) -> IRBlock<P> {
+    let n_params = block.params.len();
+    let total = n_params + block.stmts.len();
+    // var_remap[old_var.0] = new IRVarId (identity until a stmt is dropped)
+    let mut var_remap: Vec<IRVarId> = (0..total as u32).map(IRVarId).collect();
+    // (name, remapped-args) → first-call new var
+    let mut seen: BTreeMap<(alloc::string::String, Vec<IRVarId>), IRVarId> = BTreeMap::new();
+    let mut new_stmts: Vec<IRStmt> = Vec::with_capacity(block.stmts.len());
+    let mut new_provs: Vec<P> = Vec::with_capacity(block.stmts.len());
+
+    for (stmt_idx, (s, prov)) in block.stmts.iter().zip(block.stmt_provs.iter()).enumerate() {
+        let old_var = IRVarId((n_params + stmt_idx) as u32);
+        match s {
+            Stmt::OracleCall { name, args, output_tys, result_ty } => {
+                let remapped_args: Vec<IRVarId> =
+                    args.iter().map(|v| var_remap[v.0 as usize]).collect();
+                let key = (name.clone(), remapped_args.clone());
+                if let Some(&first_var) = seen.get(&key) {
+                    var_remap[old_var.0 as usize] = first_var;
+                } else {
+                    let new_var = IRVarId((n_params + new_stmts.len()) as u32);
+                    seen.insert(key, new_var);
+                    var_remap[old_var.0 as usize] = new_var;
+                    new_stmts.push(Stmt::OracleCall {
+                        name: name.clone(),
+                        args: remapped_args,
+                        output_tys: output_tys.clone(),
+                        result_ty: *result_ty,
+                    });
+                    new_provs.push(prov.clone());
+                }
+            }
+            other => {
+                let new_var = IRVarId((n_params + new_stmts.len()) as u32);
+                var_remap[old_var.0 as usize] = new_var;
+                new_stmts.push(remap_stmt(other, &var_remap));
+                new_provs.push(prov.clone());
+            }
+        }
+    }
+    let new_terminator = remap_ir_terminator_vars(&block.terminator, &var_remap);
+    IRBlock {
+        params: block.params.clone(),
+        stmts: new_stmts,
+        stmt_provs: new_provs,
+        terminator: new_terminator,
+    }
+}
+
+fn remap_ir_terminator_vars(t: &IRTerminator, var_remap: &[IRVarId]) -> IRTerminator {
+    match t {
+        IRTerminator::Jmp { func, args } => IRTerminator::Jmp {
+            func: func.clone(),
+            args: remap_vars(args, var_remap),
+        },
+        IRTerminator::JumpCond {
+            condition,
+            true_block,
+            true_args,
+            false_block,
+            false_args,
+        } => IRTerminator::JumpCond {
+            condition: remap_var(*condition, var_remap),
+            true_block: true_block.clone(),
+            true_args: remap_vars(true_args, var_remap),
+            false_block: false_block.clone(),
+            false_args: remap_vars(false_args, var_remap),
+        },
+        IRTerminator::JumpTable { index, cases } => {
+            let mut new_cases = BTreeMap::new();
+            for (k, (target, args)) in cases {
+                new_cases.insert(*k, (target.clone(), remap_vars(args, var_remap)));
+            }
+            IRTerminator::JumpTable {
+                index: remap_var(*index, var_remap),
+                cases: new_cases,
+            }
+        }
+    }
 }
 
 // ============================================================================

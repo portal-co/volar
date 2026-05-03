@@ -48,9 +48,15 @@ pub fn virtualize_bir<P: Clone + Default>(
 
     validate_input(blocks, common_params);
 
+    // CSE: merge duplicate OracleCall stmts within each block before
+    // canonicalisation.
+    let cse_blocks = BIrBlocks(
+        blocks.0.iter().map(deduplicate_bir_oracle_calls_in_block).collect(),
+    );
+
     // Canonicalise every block.
     let per_block_canon: Vec<(BirHandlerKey, BlockImmediates)> =
-        blocks.0.iter().map(canonicalize_bir_block).collect();
+        cse_blocks.0.iter().map(canonicalize_bir_block).collect();
 
     let dedup = DedupTable::build(per_block_canon);
     let n_handlers = dedup.n_handlers();
@@ -69,7 +75,7 @@ pub fn virtualize_bir<P: Clone + Default>(
 
     // Emit output BIR.
     let out_blocks = emit_output_bir::<P>(
-        blocks,
+        &cse_blocks,
         common_params,
         &dedup,
         &layout,
@@ -656,6 +662,82 @@ fn emit_handler_block<P: Clone + Default>(
 // ============================================================================
 // Stmt and terminator remapping
 // ============================================================================
+
+// ============================================================================
+// Oracle call CSE (pre-canonicalisation)
+// ============================================================================
+
+/// Merge duplicate `OracleCall` stmts within a single BIR block.
+fn deduplicate_bir_oracle_calls_in_block<P: Clone + Default>(
+    block: &BIrBlock<P>,
+) -> BIrBlock<P> {
+    let n_params = block.params as usize;
+    let mut var_remap: BTreeMap<IRVarId, IRVarId> = BTreeMap::new();
+    // (name, remapped-args) → first-call new var
+    let mut seen: BTreeMap<(alloc::string::String, Vec<IRVarId>), IRVarId> = BTreeMap::new();
+    let mut new_stmts: Vec<BIrStmt> = Vec::with_capacity(block.stmts.len());
+    let mut new_provs: Vec<P> = Vec::with_capacity(block.stmts.len());
+
+    let rv = |v: IRVarId, map: &BTreeMap<IRVarId, IRVarId>| -> IRVarId {
+        map.get(&v).copied().unwrap_or(v)
+    };
+
+    for (stmt_idx, (s, prov)) in block.stmts.iter().zip(block.stmt_provs.iter()).enumerate() {
+        let old_var = IRVarId((n_params + stmt_idx) as u32);
+        match s {
+            BIrStmt::OracleCall { name, args, num_bits } => {
+                let remapped_args: Vec<IRVarId> =
+                    args.iter().map(|v| rv(*v, &var_remap)).collect();
+                let key = (name.clone(), remapped_args.clone());
+                if let Some(&first_var) = seen.get(&key) {
+                    var_remap.insert(old_var, first_var);
+                } else {
+                    let new_var = IRVarId((n_params + new_stmts.len()) as u32);
+                    seen.insert(key, new_var);
+                    var_remap.insert(old_var, new_var);
+                    new_stmts.push(BIrStmt::OracleCall {
+                        name: name.clone(),
+                        args: remapped_args,
+                        num_bits: *num_bits,
+                    });
+                    new_provs.push(prov.clone());
+                }
+            }
+            other => {
+                let new_var = IRVarId((n_params + new_stmts.len()) as u32);
+                var_remap.insert(old_var, new_var);
+                new_stmts.push(remap_bir_stmt(other, &var_remap));
+                new_provs.push(prov.clone());
+            }
+        }
+    }
+    let new_terminator = remap_bir_terminator_vars(&block.terminator, &var_remap);
+    BIrBlock {
+        params: block.params,
+        stmts: new_stmts,
+        stmt_provs: new_provs,
+        terminator: new_terminator,
+    }
+}
+
+fn remap_bir_terminator_vars(
+    t: &BIrTerminator,
+    map: &BTreeMap<IRVarId, IRVarId>,
+) -> BIrTerminator {
+    let rv = |v: IRVarId| map.get(&v).copied().unwrap_or(v);
+    let rt = |tgt: &BIrTarget| BIrTarget {
+        block: tgt.block.clone(),
+        args: tgt.args.iter().map(|v| rv(*v)).collect(),
+    };
+    match t {
+        BIrTerminator::Jmp(tgt) => BIrTerminator::Jmp(rt(tgt)),
+        BIrTerminator::CondJmp { val, then_target, else_target } => BIrTerminator::CondJmp {
+            val: rv(*val),
+            then_target: rt(then_target),
+            else_target: rt(else_target),
+        },
+    }
+}
 
 fn remap_v(v: IRVarId, map: &BTreeMap<IRVarId, IRVarId>) -> IRVarId {
     map.get(&v).copied().unwrap_or(v)

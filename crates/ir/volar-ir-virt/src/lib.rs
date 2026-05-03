@@ -118,6 +118,12 @@ pub struct VirtualizeConfig {
     /// [`BytecodeForm::wants_in_ir`] is true.  Must not collide with any
     /// `StorageId` the input module already reads from or writes to.
     pub bytecode_storage: StorageId,
+    /// When `true`, handlers jump directly to their successor handler via an
+    /// inline `JumpTable`, eliminating the two-block dispatcher→dispatch
+    /// indirection on the hot path.  Each handler arm emits one extra
+    /// dispatch sub-block.  Only supported for IR (`virtualize_ir`); BIR
+    /// direct dispatch is not yet implemented (would cause O(n²) block growth).
+    pub direct_dispatch: bool,
 }
 
 impl Default for VirtualizeConfig {
@@ -127,6 +133,7 @@ impl Default for VirtualizeConfig {
             bytecode_form: BytecodeForm::Both,
             dedup: DedupPolicy::ConstantsAndTargets,
             bytecode_storage: StorageId::VIRT_BYTECODE,
+            direct_dispatch: false,
         }
     }
 }
