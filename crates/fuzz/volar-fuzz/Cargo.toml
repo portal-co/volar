@@ -11,6 +11,7 @@ volar-ir.workspace = true
 volar-ir-passes.workspace = true
 volar-ir-common.workspace = true
 volar-ir-opt.workspace = true
+volar-ir-virt.workspace = true
 vaffle.workspace = true
 arbitrary = { version = "1", features = ["derive"] }
 

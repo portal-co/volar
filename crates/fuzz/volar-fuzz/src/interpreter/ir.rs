@@ -146,7 +146,38 @@ fn eval_ir_block(
                 IRBlockTargetId::Dyn(_) => panic!("eval_ir: Dyn jump in JumpCond not supported"),
             }
         }
-        IRTerminator::JumpTable { .. } => panic!("eval_ir: JumpTable not supported"),
+        IRTerminator::JumpTable { index, cases } => {
+            let idx_val = get_ir(&vars, index);
+            // Interpret the index value as a (hi, lo) pair to match the
+            // Constant key encoding.
+            let mut lo: u128 = 0;
+            let mut hi: u128 = 0;
+            for (i, b) in idx_val.iter().enumerate() {
+                if *b {
+                    if i < 128 {
+                        lo |= 1u128 << i;
+                    } else if i < 256 {
+                        hi |= 1u128 << (i - 128);
+                    }
+                }
+            }
+            let key = Constant { hi, lo };
+            let (target_block, target_args) = cases
+                .get(&key)
+                .expect("eval_ir: JumpTable case missing for index value");
+            let arg_vals: Vec<IrValue> =
+                target_args.iter().map(|id| get_ir(&vars, id)).collect();
+            match target_block {
+                IRBlockTargetId::Return => IrBlockResult::Return(arg_vals),
+                IRBlockTargetId::Block(b) => IrBlockResult::Jump {
+                    target: b.0 as usize,
+                    args: arg_vals,
+                },
+                IRBlockTargetId::Dyn(_) => {
+                    panic!("eval_ir: Dyn jump in JumpTable not supported")
+                }
+            }
+        }
     };
 
     Some(result)

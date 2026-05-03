@@ -195,12 +195,15 @@ pub trait MovfuscCtx {
     ) -> Self::Blocks;
 
     // ---- Default Bit-select (for PC and done) ------------------------------
+    //
+    // The default impls delegate to the shared helpers in
+    // [`crate::dispatch_accumulator`] via a small adapter shim so that
+    // `volar-ir-virt` and `movfuscate` share the same formulas.
 
     /// `select(cond, a, b) = AND(cond, XOR(a, b)) XOR b` — all Bit operands.
     fn emit_select_bit(&mut self, cond: u32, a: u32, b: u32) -> u32 {
-        let xab = self.emit_xor_bit(a, b);
-        let sel = self.emit_and_bit(cond, xab);
-        self.emit_xor_bit(sel, b)
+        let mut shim = MovfuscShim { inner: self };
+        crate::dispatch_accumulator::emit_select_bit(&mut shim, cond, a, b)
     }
 
     /// `select(cond, a, b) = gate(cond, a+b) + b` — typed field operands.
@@ -214,6 +217,11 @@ pub trait MovfuscCtx {
         b: u32,
         ty: &Self::SlotTy,
     ) -> u32 {
+        // Inlined directly (rather than via the shim) because
+        // DispatchSlotPrimitives::SlotTy is a concrete associated type
+        // and the generic helper needs it, which would require yet
+        // another adapter.  Keeping this as the authoritative
+        // formula-keeper site.
         let xab = self.emit_field_add(a, b, ty);
         let sel = self.emit_gate(cond, xab, ty);
         self.emit_field_add(sel, b, ty)
@@ -221,37 +229,44 @@ pub trait MovfuscCtx {
 
     /// Emit `is_active` for `block_idx`: AND-of-(NOT-or-identity) per PC bit.
     fn emit_is_block(&mut self, pc_vars: &[u32], block_idx: usize) -> u32 {
-        if pc_vars.is_empty() {
-            return self.emit_one_bit();
-        }
-        let bit0 = if (block_idx & 1) == 1 {
-            pc_vars[0]
-        } else {
-            self.emit_not(pc_vars[0])
-        };
-        let mut acc = bit0;
-        for j in 1..pc_vars.len() {
-            let bitj = if (block_idx >> j) & 1 == 1 {
-                pc_vars[j]
-            } else {
-                self.emit_not(pc_vars[j])
-            };
-            acc = self.emit_and_bit(acc, bitj);
-        }
-        acc
+        let mut shim = MovfuscShim { inner: self };
+        crate::dispatch_accumulator::emit_is_block(&mut shim, pc_vars, block_idx)
     }
 
     /// Emit constant-bit vars for `block_idx` in `pc_width` bits (LSB-first).
     fn encode_pc_bits(&mut self, block_idx: usize, pc_width: usize) -> Vec<u32> {
-        (0..pc_width)
-            .map(|j| {
-                if (block_idx >> j) & 1 == 1 {
-                    self.emit_one_bit()
-                } else {
-                    self.emit_zero_bit()
-                }
-            })
-            .collect()
+        let mut shim = MovfuscShim { inner: self };
+        crate::dispatch_accumulator::encode_pc_bits(&mut shim, block_idx, pc_width)
+    }
+}
+
+/// Adapter between `MovfuscCtx` and
+/// [`crate::dispatch_accumulator::DispatchBitPrimitives`].
+///
+/// We cannot directly `impl DispatchBitPrimitives for T: MovfuscCtx`
+/// due to orphan rules, so a local shim borrows the ctx and forwards
+/// each call.
+struct MovfuscShim<'a, C: MovfuscCtx + ?Sized> {
+    inner: &'a mut C,
+}
+
+impl<'a, C: MovfuscCtx + ?Sized> crate::dispatch_accumulator::DispatchBitPrimitives
+    for MovfuscShim<'a, C>
+{
+    fn emit_zero_bit(&mut self) -> u32 {
+        self.inner.emit_zero_bit()
+    }
+    fn emit_one_bit(&mut self) -> u32 {
+        self.inner.emit_one_bit()
+    }
+    fn emit_and_bit(&mut self, a: u32, b: u32) -> u32 {
+        self.inner.emit_and_bit(a, b)
+    }
+    fn emit_xor_bit(&mut self, a: u32, b: u32) -> u32 {
+        self.inner.emit_xor_bit(a, b)
+    }
+    fn emit_not(&mut self, a: u32) -> u32 {
+        self.inner.emit_not(a)
     }
 }
 

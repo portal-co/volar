@@ -1,0 +1,17 @@
+[package]
+name = "volar-ir-virt"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+
+[dependencies]
+volar-ir.workspace = true
+volar-ir-common.workspace = true
+volar-ir-passes.workspace = true
+volar-provenance.workspace = true
+
+[dev-dependencies]
+volar-fuzz = { path = "../../fuzz/volar-fuzz" }
+volar-weaver = { path = "../../compiler/volar-weaver" }

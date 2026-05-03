@@ -112,6 +112,36 @@ Implement **weaver integration** — compiling the ORAM runtime through the vola
 - Added 5 handler unit tests (including `test_three_phase_matches_local_oracle`)
 - Added 2 property-based tests (`prop_o_three_phase_equivalence`, `prop_p_three_phase_no_duplicates`) — 200 cases each
 
+### Virtualisation Pass (new crate)
+- New crate `crates/ir/volar-ir-virt/` (Tier 2, `experimental` + `assisted`)
+  with `virtualize_ir` and `virtualize_bir`: deduplicates blocks into unique
+  *instruction handlers*, rewrites the module into dispatcher + handlers,
+  and emits a bytecode table (in-IR `StorageWrite`s at `StorageId::VIRT_BYTECODE`
+  and/or an external `VirtBytecode` artefact).  Primary size win for the
+  Rust / TS / C backends (`N_blocks` → `N_handlers`)
+- Public dispatch: `IRTerminator::JumpTable` for IR, balanced `CondJmp`
+  cascade for BIR
+- Oblivious dispatch: composes `virtualize_*` output with `movfuscate_*`,
+  producing a flat self-looping block using the shared slot-accumulator
+  helpers
+- Added `StorageId::VIRT_BYTECODE` constant to `volar-ir-common`
+- Extracted `dispatch_accumulator` helper module in `volar-ir-passes` —
+  `emit_is_block`, `encode_pc_bits`, `emit_select_bit`, `emit_select_slot`
+  moved to free generics over `DispatchBitPrimitives` /
+  `DispatchSlotPrimitives` so `movfuscate` and `volar-ir-virt` share one
+  implementation.  `MovfuscCtx` public surface unchanged (default
+  methods now delegate via a local `MovfuscShim`)
+- Added `JumpTable` case to the `eval_ir` interpreter in
+  `volar-fuzz::interpreter::ir` (previously panicked — needed to
+  evaluate the Public-dispatch output)
+- Tests: `crates/ir/volar-ir-virt/tests/equiv_ir.rs`,
+  `equiv_bir.rs`, `dedup_invariant.rs`, `fhe_integration.rs`
+  (virtualise + movfuscate composition check) — all 15 passing
+- Fuzz: `crates/fuzz/volar-fuzz/src/properties/virt.rs` —
+  `prop_virt_ir_preserves_semantics`,
+  `prop_virt_bir_preserves_semantics`, and two `does_not_panic`
+  properties, all passing
+
 ## In Progress
 
 - **Weaver integration** — compiling the ORAM runtime through the volar-compiler pipeline
@@ -127,11 +157,15 @@ Implement **weaver integration** — compiling the ORAM runtime through the vola
 ## Deferred
 
 - **Action dispatch** — connecting `#[volar_action]` stubs to `OramClient` handlers at runtime. Deferred because it would require giving the proc-macro attribute extra meaning beyond its current identity-transform role, which is out of scope outside of tests.
+- **`volar-ir-virt` `BytecodeForm::External` printer integration** — Rust / TS / C backends currently ignore the returned `VirtBytecode` artefact.  A follow-up task should teach the printers to emit it as a `const BYTECODE: &[u8]` (or equivalent) plus a small dispatch shim.  Out of scope for v1 because the in-IR form already gives the full correctness story.
+- **`virtualize_ir` + Oblivious full pipeline** — blocked on `movfuscate_ir` learning to handle `IRTerminator::JumpTable`.  Until that lands, IR Oblivious dispatch panics when the input has more than one handler.  BIR Oblivious dispatch works today because BIR's Public dispatch uses a `CondJmp` cascade rather than a `JumpTable`.
+- **`volar-ir-virt` `DedupPolicy::Maximal`** — lifting scalar-in-stmt fields (`Rol.n`, `Shuffle.result_bits`, BIR `storage`, RNG/oracle names) as immediates.  Enum variant is reserved; currently panics.
 
 ## Next Steps (in order)
 
 1. **Reliability tags** — tag newly modified files
 2. **Further E2E tests** — more complex circuits (multi-block, ORAM storage) with execution verification
+3. **Virtualisation External bytecode printer hookup** — emit the `VirtBytecode` artefact as a `const` + runtime shim in the Rust / TS / C backends
 
 ## Key Files
 
@@ -150,3 +184,10 @@ Implement **weaver integration** — compiling the ORAM runtime through the vola
 | `crates/oram/volar-oram/src/lib.rs` | experimental, assisted | Recursive Path ORAM |
 | `crates/oram/volar-oram-core/src/lib.rs` | experimental, assisted | ORAM core (no_std, zero deps) |
 | `crates/channel/volar-channel/src/lib.rs` | experimental, assisted | Packet-based channel |
+| `crates/ir/volar-ir-virt/src/lib.rs` | experimental, assisted | Virtualisation pass public API + `VirtualizeConfig` |
+| `crates/ir/volar-ir-virt/src/canon.rs` | experimental, assisted | `IrHandlerKey` / `BirHandlerKey` canonicalisation |
+| `crates/ir/volar-ir-virt/src/ctx.rs` | experimental, assisted | Shared `DedupTable`, `VirtOutput` |
+| `crates/ir/volar-ir-virt/src/ir.rs` | experimental, assisted | `virtualize_ir` (JumpTable dispatch) |
+| `crates/ir/volar-ir-virt/src/bir.rs` | experimental, assisted | `virtualize_bir` (CondJmp-cascade dispatch) |
+| `crates/ir/volar-ir-virt/src/bytecode.rs` | experimental, assisted | `VirtBytecode` external artefact |
+| `crates/ir/volar-ir-passes/src/dispatch_accumulator.rs` | normal, assisted | Shared `emit_is_block`, `encode_pc_bits`, `emit_select_bit`, `emit_select_slot` |

@@ -2,3 +2,4 @@
 pub mod biir_passes;
 pub mod ir_passes;
 pub mod opt;
+pub mod virt;

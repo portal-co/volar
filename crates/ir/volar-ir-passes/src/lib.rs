@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+pub mod dispatch_accumulator;
 pub mod lower_ir_to_boolar;
 pub mod lower_lir;
 pub mod lower_to_circuit;

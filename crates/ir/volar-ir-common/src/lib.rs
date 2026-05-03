@@ -219,6 +219,10 @@ impl StorageId {
     pub const DEFAULT: StorageId = StorageId(0);
     /// A dedicated call-stack storage space.
     pub const STACK: StorageId = StorageId(1);
+    /// Storage space for the virtualisation pass bytecode table (see
+    /// `volar-ir-virt`).  Chosen to be outside the WASM memory range so
+    /// virtualised modules can still reference any `memory(i)`.
+    pub const VIRT_BYTECODE: StorageId = StorageId(2);
     /// Base ID for WASM linear memories.  Memory `i` uses `StorageId(MEMORY_BASE + i)`.
     pub const MEMORY_BASE: u32 = 16;
     /// Convenience: StorageId for WASM memory index `i`.

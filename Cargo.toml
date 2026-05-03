@@ -29,6 +29,7 @@ members = [
     "crates/compiler/volar-build",
     "crates/fuzz/volar-fuzz",
     "crates/ir/volar-ir-opt",
+    "crates/ir/volar-ir-virt",
     "crates/channel/volar-channel",
     "crates/oram/volar-oram",
     "crates/oram/volar-oram-core",
@@ -52,6 +53,7 @@ volar-vaffle-target = {path="crates/ir/volar-vaffle-target", version = "0.1.0"}
 volar-ir-common = {path="crates/ir/volar-ir-common", version = "0.1.0"}
 volar-provenance = {path="crates/ir/volar-provenance", version = "0.1.0"}
 volar-ir-opt = {path="crates/ir/volar-ir-opt", version = "0.1.0"}
+volar-ir-virt = {path="crates/ir/volar-ir-virt", version = "0.1.0"}
 volar-channel = {path="crates/channel/volar-channel", version = "0.1.0"}
 volar-oram = {path="crates/oram/volar-oram", version = "0.1.0"}
 volar-oram-core = {path="crates/oram/volar-oram-core", version = "0.1.0"}
