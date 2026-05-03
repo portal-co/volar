@@ -501,7 +501,11 @@ impl<'a> RustBackend for TraitBoundWriter<'a> {
                 write!(f, "FnMut({}) -> ", inp_str)?;
                 TypeWriter { ty }.fmt(f)?;
             }
-            _ => write!(f, "{}", self.bound)?,
+            _ => {
+                // Guardrail: Custom must not wrap a well-known typed variant name.
+                self.bound.trait_kind.debug_assert_not_misrouted();
+                write!(f, "{}", self.bound)?;
+            }
         }
         Ok(())
     }
@@ -1384,11 +1388,15 @@ impl RustBackend for ReceiverWriter {
 // ============================================================================
 
 fn method_name(method: &MethodKind) -> String {
+    // Guardrail: Other must not wrap a well-known StdMethod name.
+    method.debug_assert_not_misrouted();
     let name = match method {
         MethodKind::Known(m) => m.as_str().to_string(),
         MethodKind::Vole(v) => format!("{:?}", v).to_lowercase(),
         MethodKind::Other(s) => s.clone(),
     };
+    // Existing ident-char guardrail (also checked inside debug_assert_not_misrouted
+    // for Other, but retained here to cover Vole-derived names too).
     debug_assert!(
         name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
         "Method name is not a valid ident: {:?}",

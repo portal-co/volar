@@ -1101,6 +1101,17 @@ fn lower_method_call<T: LirTarget>(
             lower_method_extern(receiver, m.as_str(), type_args, args, ctx)
         }
         MethodKind::Other(name) => {
+            // Guardrails: ident-char validity + misrouting check.
+            debug_assert!(
+                name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                "LIR lower: method name is not a valid identifier: {name:?}"
+            );
+            debug_assert!(
+                StdMethod::try_from_str(name.as_str()).is_none(),
+                "LIR lower: {name:?} is a well-known StdMethod but was constructed as \
+                 MethodKind::Other; use MethodKind::from_str(\"{name}\") or \
+                 MethodKind::Known(StdMethod::…) instead"
+            );
             lower_method_extern(receiver, name, type_args, args, ctx)
         }
 

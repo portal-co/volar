@@ -2650,6 +2650,14 @@ fn emit_known_method_call(
 }
 
 /// Emit a generic method call as `receiver.name(args…)`.
+///
+/// This is the fallback path for domain-specific methods that have no
+/// TypeScript-specific translation.  Both guardrails fire here in debug
+/// builds:
+/// - Ident-char check (inherited from the Rust printer's convention).
+/// - Misrouting check: the name must *not* be one that `StdMethod` knows
+///   about; those names belong in [`emit_known_method_call`] and have
+///   specialised TypeScript translations.
 fn emit_other_method_call(
     receiver: &IrExpr,
     name: &str,
@@ -2657,6 +2665,16 @@ fn emit_other_method_call(
     f: &mut fmt::Formatter<'_>,
     cx: &TsContext<'_>,
 ) -> fmt::Result {
+    debug_assert!(
+        name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+        "TS emit: method name is not a valid identifier: {name:?}"
+    );
+    debug_assert!(
+        StdMethod::try_from_str(name).is_none(),
+        "TS emit: {name:?} is a well-known StdMethod but was routed to \
+         emit_other_method_call; use MethodKind::Known(StdMethod::…) so the \
+         TypeScript backend can apply the correct translation"
+    );
     TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
     write!(f, ".{}(", name)?;
     for (i, arg) in args.iter().enumerate() {
@@ -3056,6 +3074,8 @@ fn ts_default_value(ty: &IrType, f: &mut fmt::Formatter<'_>, cx: &TsContext) -> 
 /// this helper is kept for witness-scanning code that needs the name
 /// without full emission.
 fn ts_method_call_name(method: &MethodKind) -> String {
+    // Guardrail: Other must not wrap a well-known StdMethod name.
+    method.debug_assert_not_misrouted();
     match method {
         MethodKind::Known(m) => m.as_str().to_string(),
         MethodKind::Vole(v) => format!("{:?}", v).to_lowercase(),

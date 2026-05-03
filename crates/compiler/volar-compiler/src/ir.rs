@@ -464,6 +464,28 @@ pub enum TraitKind {
 }
 
 impl TraitKind {
+    /// Asserts in debug builds that this `Custom` variant does not wrap a name
+    /// that belongs in a typed [`TraitKind`] variant.
+    ///
+    /// Call this at every `TraitKind::Custom` code-generation site so that
+    /// misrouted construction is caught during testing.
+    ///
+    /// Note: for `TraitKind`, misrouting is less likely to cause a wrong
+    /// *output* (the `Display` impl renders both `Custom("Digest")` and
+    /// `Digest` as `"Digest"`), but fixing it early keeps construction sites
+    /// honest and is required by the AGENTS.md compiler design rules.
+    #[inline]
+    pub fn debug_assert_not_misrouted(&self) {
+        if let Self::Custom(name) = self {
+            debug_assert!(
+                matches!(Self::from_single_name(name.as_str()), Self::Custom(_)),
+                "TraitKind::Custom({name:?}) wraps a well-known trait name — \
+                 use `TraitKind::from_path` or the typed variant directly \
+                 (e.g. `TraitKind::{name}`)."
+            );
+        }
+    }
+
     pub fn from_path(segments: &[String]) -> Self {
         if let Some(math) = MathTrait::from_path(segments) {
             return Self::Math(math);
@@ -501,6 +523,8 @@ impl TraitKind {
 
 impl fmt::Display for TraitKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Guardrail fires on every format call for Custom variants.
+        self.debug_assert_not_misrouted();
         match self {
             Self::Math(m) => write!(f, "{:?}", m),
             Self::External { path } => write!(f, "{}", path.join("::")),
@@ -712,6 +736,38 @@ impl MethodKind {
             return Self::Known(m);
         }
         Self::Other(s.to_string())
+    }
+
+    /// Asserts in debug builds that this `Other` variant does not wrap a name
+    /// that belongs in [`MethodKind::Known`], and that the name is a valid
+    /// identifier.
+    ///
+    /// Call this at every `MethodKind::Other` code-generation site (Rust
+    /// printer, TypeScript printer, LIR codegen) so that misrouted construction
+    /// is caught immediately during testing rather than silently producing
+    /// wrong output.
+    ///
+    /// ```
+    /// # use volar_compiler::ir::{MethodKind, StdMethod};
+    /// // Correct — "and_via_table" is genuinely domain-specific
+    /// MethodKind::Other("and_via_table".into()).debug_assert_not_misrouted();
+    /// ```
+    #[inline]
+    pub fn debug_assert_not_misrouted(&self) {
+        if let Self::Other(s) = self {
+            debug_assert!(
+                StdMethod::try_from_str(s.as_str()).is_none(),
+                "MethodKind::Other({s:?}) wraps a well-known method name — \
+                 use `MethodKind::from_str(\"{s}\")` or \
+                 `MethodKind::Known(StdMethod::…)` to construct it correctly. \
+                 The TypeScript and other backends have specialised emit logic \
+                 for this method that would be bypassed with Other."
+            );
+            debug_assert!(
+                s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                "MethodKind::Other({s:?}) is not a valid identifier"
+            );
+        }
     }
 }
 
@@ -1178,6 +1234,8 @@ pub struct IrTraitBound {
 
 impl fmt::Display for IrTraitBound {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Guardrail: catches Custom("Digest") etc. at any Display call site.
+        self.trait_kind.debug_assert_not_misrouted();
         write!(f, "{}", self.trait_kind)?;
         if !self.type_args.is_empty() || !self.assoc_bindings.is_empty() {
             write!(f, "<")?;
