@@ -1385,9 +1385,9 @@ impl RustBackend for ReceiverWriter {
 
 fn method_name(method: &MethodKind) -> String {
     let name = match method {
-        MethodKind::Std(s) => s.clone(),
+        MethodKind::Known(m) => m.as_str().to_string(),
         MethodKind::Vole(v) => format!("{:?}", v).to_lowercase(),
-        MethodKind::Unknown(s) => s.clone(),
+        MethodKind::Other(s) => s.clone(),
     };
     debug_assert!(
         name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),

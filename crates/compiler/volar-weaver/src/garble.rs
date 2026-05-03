@@ -100,7 +100,7 @@ fn generic_params() -> Vec<IrGenericParam> {
             kind: IrGenericParamKind::Type,
             const_ty: None,
             bounds: vec![IrTraitBound {
-                trait_kind: TraitKind::Custom("ArraySize".into()),
+                trait_kind: TraitKind::ArraySize,
                 type_args: vec![],
                 assoc_bindings: vec![],
             }],
@@ -111,7 +111,7 @@ fn generic_params() -> Vec<IrGenericParam> {
             kind: IrGenericParamKind::Type,
             const_ty: None,
             bounds: vec![IrTraitBound {
-                trait_kind: TraitKind::Custom("Digest".into()),
+                trait_kind: TraitKind::Digest,
                 type_args: vec![],
                 assoc_bindings: vec![],
             }],
@@ -240,7 +240,7 @@ where
                 and_counter += 1;
                 IrExpr::MethodCall {
                     receiver: Box::new(clone_expr(var(&name_a))),
-                    method: MethodKind::Std("and_via_table".into()),
+                    method: MethodKind::Other("and_via_table".into()),
                     type_args: vec![IrType::TypeParam("D".into())],
                     args: vec![
                         ref_expr(clone_expr(var(&name_b))),
@@ -416,7 +416,7 @@ where
                         right: Box::new(IrExpr::Index {
                             base: Box::new(IrExpr::MethodCall {
                                 receiver: Box::new(var("secret")),
-                                method: MethodKind::Std("secret".into()),
+                                method: MethodKind::Other("secret".into()),
                                 type_args: vec![],
                                 args: vec![],
                             }),
@@ -438,7 +438,7 @@ where
                     ty: None,
                     init: Some(IrExpr::MethodCall {
                         receiver: Box::new(var("secret")),
-                        method: MethodKind::Std("gen_and_table".into()),
+                        method: MethodKind::Other("gen_and_table".into()),
                         type_args: vec![IrType::TypeParam("D".into())],
                         args: vec![
                             ref_expr(clone_expr(var(&name_a))),
@@ -450,7 +450,7 @@ where
 
                 IrExpr::MethodCall {
                     receiver: Box::new(var(&name_a)),
-                    method: MethodKind::Std("and_result".into()),
+                    method: MethodKind::Other("and_result".into()),
                     type_args: vec![IrType::TypeParam("D".into())],
                     args: vec![ref_expr(var(&name_b))],
                 }
@@ -597,7 +597,7 @@ where
                         right: Box::new(IrExpr::Index {
                             base: Box::new(IrExpr::MethodCall {
                                 receiver: Box::new(var("secret")),
-                                method: MethodKind::Std("secret".into()),
+                                method: MethodKind::Other("secret".into()),
                                 type_args: vec![],
                                 args: vec![],
                             }),
@@ -618,7 +618,7 @@ where
                     ty: None,
                     init: Some(IrExpr::MethodCall {
                         receiver: Box::new(var("secret")),
-                        method: MethodKind::Std("gen_and_table".into()),
+                        method: MethodKind::Other("gen_and_table".into()),
                         type_args: vec![IrType::TypeParam("D".into())],
                         args: vec![
                             ref_expr(clone_expr(var(&name_a))),
@@ -630,7 +630,7 @@ where
 
                 IrExpr::MethodCall {
                     receiver: Box::new(clone_expr(var(&name_a))),
-                    method: MethodKind::Std("and_result".into()),
+                    method: MethodKind::Other("and_result".into()),
                     type_args: vec![IrType::TypeParam("D".into())],
                     args: vec![ref_expr(var(&name_b))],
                 }
@@ -816,7 +816,7 @@ where
                 and_counter += 1;
                 IrExpr::MethodCall {
                     receiver: Box::new(clone_expr(var(&name_a))),
-                    method: MethodKind::Std("and_via_table".into()),
+                    method: MethodKind::Other("and_via_table".into()),
                     type_args: vec![IrType::TypeParam("D".into())],
                     args: vec![
                         ref_expr(clone_expr(var(&name_b))),

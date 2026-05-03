@@ -42,7 +42,7 @@ use alloc::{
 
 use volar_compiler::ir::{
     IrClosureParam, IrExpr, IrPattern, IrType, MethodKind, PrimitiveType,
-    SpecUnaryOp,
+    SpecUnaryOp, StdMethod,
 };
 use volar_ir::{
     boolar::{BIrBlock, BIrStmt, BIrTerminator},
@@ -194,7 +194,7 @@ pub(crate) fn var<P: Clone + Default>(name: &str) -> IrExpr<P> {
 pub(crate) fn clone_expr<P: Clone + Default>(expr: IrExpr<P>) -> IrExpr<P> {
     IrExpr::MethodCall {
         receiver: Box::new(expr),
-        method: MethodKind::Std("clone".into()),
+        method: MethodKind::Known(StdMethod::Clone),
         type_args: vec![],
         args: vec![],
     }

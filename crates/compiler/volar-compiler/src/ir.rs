@@ -427,7 +427,10 @@ impl MathTrait {
     }
 }
 
-/// Unified trait classification
+/// Unified trait classification.
+///
+/// Well-known crypto/stdlib traits that the compiler has specific handling for
+/// are named variants.  Everything else goes in `Custom(String)`.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum TraitKind {
@@ -436,9 +439,27 @@ pub enum TraitKind {
     AsRef(Box<IrType>),
     /// Fn-like trait: input variant and output type
     Fn(FnInput, Box<IrType>),
+    // ---- Crypto / typenum traits that processing code knows about ----
+    /// `generic_array::ArrayLength<T>` — type-level array length marker
+    ArrayLength,
+    /// `typenum::ArraySize` — alternative length-marker trait  
+    ArraySize,
+    /// `volar-spec` VOLE array marker trait
+    VoleArray,
+    /// `volar-common` length-doubling PRG trait
+    LengthDoubler,
+    /// `cipher::BlockEncrypt`
+    BlockEncrypt,
+    /// `cipher::BlockCipher`
+    BlockCipher,
+    /// `digest::Digest`
+    Digest,
+    /// `rand::RngCore` / `CryptoRng` (normalised to a single variant)
+    Rng,
     External {
         path: Vec<String>,
     },
+    /// Open-ended user-defined traits not specifically handled by the compiler.
     Custom(String),
 }
 
@@ -449,16 +470,32 @@ impl TraitKind {
         }
         // Normalize Rng aliases
         let last = segments.last().cloned().unwrap_or_default();
-        let name = match last.as_str() {
-            "RngCore" | "CryptoRng" => "Rng".to_string(),
-            _ => last,
-        };
-        if segments.len() > 1 {
-            return Self::External {
-                path: segments.to_vec(),
-            };
+        // Single-segment: check for well-known trait names
+        if segments.len() == 1 {
+            return Self::from_single_name(&last);
         }
-        Self::Custom(name)
+        // RngCore / CryptoRng in qualified paths
+        if matches!(last.as_str(), "RngCore" | "CryptoRng") {
+            return Self::Rng;
+        }
+        Self::External {
+            path: segments.to_vec(),
+        }
+    }
+
+    /// Classify a bare (single-segment) trait name.
+    pub fn from_single_name(name: &str) -> Self {
+        match name {
+            "ArrayLength" => Self::ArrayLength,
+            "ArraySize" => Self::ArraySize,
+            "VoleArray" => Self::VoleArray,
+            "LengthDoubler" => Self::LengthDoubler,
+            "BlockEncrypt" => Self::BlockEncrypt,
+            "BlockCipher" => Self::BlockCipher,
+            "Digest" => Self::Digest,
+            "Rng" | "RngCore" | "CryptoRng" => Self::Rng,
+            _ => Self::Custom(name.to_string()),
+        }
     }
 }
 
@@ -468,17 +505,21 @@ impl fmt::Display for TraitKind {
             Self::Math(m) => write!(f, "{:?}", m),
             Self::External { path } => write!(f, "{}", path.join("::")),
             Self::Custom(name) => write!(f, "{}", name),
-            Self::Into(ty) => {
-                write!(f, "Into<{}>", ty)
-            }
-            Self::AsRef(ty) => {
-                write!(f, "AsRef<{}>", ty)
-            }
+            Self::Into(ty) => write!(f, "Into<{}>", ty),
+            Self::AsRef(ty) => write!(f, "AsRef<{}>", ty),
             Self::Fn(input, ty) => match input {
                 FnInput::BytesSlice => write!(f, "FnMut(&[u8]) -> {}", ty),
                 FnInput::Size => write!(f, "FnMut(usize) -> {}", ty),
                 FnInput::Bool => write!(f, "FnMut(bool) -> {}", ty),
             },
+            Self::ArrayLength => write!(f, "ArrayLength"),
+            Self::ArraySize => write!(f, "ArraySize"),
+            Self::VoleArray => write!(f, "VoleArray"),
+            Self::LengthDoubler => write!(f, "LengthDoubler"),
+            Self::BlockEncrypt => write!(f, "BlockEncrypt"),
+            Self::BlockCipher => write!(f, "BlockCipher"),
+            Self::Digest => write!(f, "Digest"),
+            Self::Rng => write!(f, "Rng"),
         }
     }
 }
@@ -510,13 +551,156 @@ impl VoleMethod {
     }
 }
 
-/// Unified method classification
+/// Well-known method names that the compiler has specific handling for.
+///
+/// Every variant here corresponds to a Rust method name that at least one
+/// compiler pass matches against.  Adding a new variant here removes one
+/// `if name == "..."` / `match s.as_str()` pattern from processing code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub enum StdMethod {
+    // ---- Standard Rust methods (former Std whitelist) ----
+    Clone,
+    Default,
+    Into,
+    From,
+    AsRef,
+    AsSlice,
+    AsPtr,
+    Get,
+    Len,
+    IsEmpty,
+    Contains,
+    Unwrap,
+    UnwrapOr,
+    UnwrapOrDefault,
+    Expect,
+    ToUsize,
+    ToString,
+    WrappingAdd,
+    WrappingSub,
+    CheckedAdd,
+    CheckedSub,
+    SaturatingAdd,
+    SaturatingSub,
+    Bitxor,
+    Deref,
+    // ---- Previously Unknown but switch-cased in processing code ----
+    EncryptBlock,
+    Finalize,
+    ToVec,
+    Ilog2,
+    Shl,
+    Shr,
+    MapOr,
+    Update,
+    Cloned,
+    At,
+}
+
+impl StdMethod {
+    pub fn try_from_str(s: &str) -> Option<Self> {
+        match s {
+            "clone" => Some(Self::Clone),
+            "default" => Some(Self::Default),
+            "into" => Some(Self::Into),
+            "from" => Some(Self::From),
+            "as_ref" => Some(Self::AsRef),
+            "as_slice" => Some(Self::AsSlice),
+            "as_ptr" => Some(Self::AsPtr),
+            "get" => Some(Self::Get),
+            "len" => Some(Self::Len),
+            "is_empty" => Some(Self::IsEmpty),
+            "contains" => Some(Self::Contains),
+            "unwrap" => Some(Self::Unwrap),
+            "unwrap_or" => Some(Self::UnwrapOr),
+            "unwrap_or_default" => Some(Self::UnwrapOrDefault),
+            "expect" => Some(Self::Expect),
+            "to_usize" => Some(Self::ToUsize),
+            "to_string" => Some(Self::ToString),
+            "wrapping_add" => Some(Self::WrappingAdd),
+            "wrapping_sub" => Some(Self::WrappingSub),
+            "checked_add" => Some(Self::CheckedAdd),
+            "checked_sub" => Some(Self::CheckedSub),
+            "saturating_add" => Some(Self::SaturatingAdd),
+            "saturating_sub" => Some(Self::SaturatingSub),
+            "bitxor" => Some(Self::Bitxor),
+            "deref" => Some(Self::Deref),
+            "encrypt_block" => Some(Self::EncryptBlock),
+            "finalize" => Some(Self::Finalize),
+            "to_vec" => Some(Self::ToVec),
+            "ilog2" => Some(Self::Ilog2),
+            "shl" => Some(Self::Shl),
+            "shr" => Some(Self::Shr),
+            "map_or" => Some(Self::MapOr),
+            "update" => Some(Self::Update),
+            "cloned" => Some(Self::Cloned),
+            "at" => Some(Self::At),
+            _ => None,
+        }
+    }
+
+    /// Returns the Rust source spelling of this method name.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Clone => "clone",
+            Self::Default => "default",
+            Self::Into => "into",
+            Self::From => "from",
+            Self::AsRef => "as_ref",
+            Self::AsSlice => "as_slice",
+            Self::AsPtr => "as_ptr",
+            Self::Get => "get",
+            Self::Len => "len",
+            Self::IsEmpty => "is_empty",
+            Self::Contains => "contains",
+            Self::Unwrap => "unwrap",
+            Self::UnwrapOr => "unwrap_or",
+            Self::UnwrapOrDefault => "unwrap_or_default",
+            Self::Expect => "expect",
+            Self::ToUsize => "to_usize",
+            Self::ToString => "to_string",
+            Self::WrappingAdd => "wrapping_add",
+            Self::WrappingSub => "wrapping_sub",
+            Self::CheckedAdd => "checked_add",
+            Self::CheckedSub => "checked_sub",
+            Self::SaturatingAdd => "saturating_add",
+            Self::SaturatingSub => "saturating_sub",
+            Self::Bitxor => "bitxor",
+            Self::Deref => "deref",
+            Self::EncryptBlock => "encrypt_block",
+            Self::Finalize => "finalize",
+            Self::ToVec => "to_vec",
+            Self::Ilog2 => "ilog2",
+            Self::Shl => "shl",
+            Self::Shr => "shr",
+            Self::MapOr => "map_or",
+            Self::Update => "update",
+            Self::Cloned => "cloned",
+            Self::At => "at",
+        }
+    }
+}
+
+impl fmt::Display for StdMethod {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Unified method classification.
+///
+/// Use `Known(StdMethod::*)` for any method the compiler has specific handling
+/// for, and `Other(String)` for domain-specific or user-defined methods (e.g.
+/// garbled-circuit helpers like `and_via_table`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum MethodKind {
     Vole(VoleMethod),
-    Std(String),
-    Unknown(String),
+    /// A method the compiler knows about and has explicit handling for.
+    Known(StdMethod),
+    /// A method with no special compiler handling; emitted as-is.
+    Other(String),
 }
 
 impl MethodKind {
@@ -524,18 +708,10 @@ impl MethodKind {
         if let Some(v) = VoleMethod::try_from_str(s) {
             return Self::Vole(v);
         }
-
-        // Common std-like methods
-        match s {
-            "clone" | "default" | "into" | "from" | "as_ref" | "as_slice" | "get" | "len"
-            | "is_empty" | "contains" | "unwrap" | "unwrap_or" | "unwrap_or_default" | "expect"
-            | "to_usize" | "to_string" | "as_ptr" | "wrapping_add" | "wrapping_sub"
-            | "checked_add" | "checked_sub" | "saturating_add" | "saturating_sub" | "bitxor"
-            | "deref" => return Self::Std(s.to_string()),
-            _ => {}
+        if let Some(m) = StdMethod::try_from_str(s) {
+            return Self::Known(m);
         }
-
-        Self::Unknown(s.to_string())
+        Self::Other(s.to_string())
     }
 }
 
@@ -1651,7 +1827,7 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         // --- Crypto traits ---
         // BlockEncrypt
         IrTrait {
-            kind: TraitKind::Custom("BlockEncrypt".into()),
+            kind: TraitKind::BlockEncrypt,
             generics: vec![],
             super_traits: vec![],
             items: vec![
@@ -1681,7 +1857,7 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         },
         // BlockCipher
         IrTrait {
-            kind: TraitKind::Custom("BlockCipher".into()),
+            kind: TraitKind::BlockCipher,
             generics: vec![],
             super_traits: vec![],
             items: vec![IrTraitItem::AssociatedType {
@@ -1692,7 +1868,7 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         },
         // Digest
         IrTrait {
-            kind: TraitKind::Custom("Digest".into()),
+            kind: TraitKind::Digest,
             generics: vec![],
             super_traits: vec![],
             items: vec![
@@ -1747,7 +1923,7 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         },
         // ArrayLength<T> — marker/type-level constant
         IrTrait {
-            kind: TraitKind::Custom("ArrayLength".into()),
+            kind: TraitKind::ArrayLength,
             generics: vec![IrGenericParam {
                 name: "T".into(),
                 kind: IrGenericParamKind::Type,
@@ -1760,7 +1936,7 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         },
         // Rng — minimal definition
         IrTrait {
-            kind: TraitKind::Custom("Rng".into()),
+            kind: TraitKind::Rng,
             generics: vec![],
             super_traits: vec![],
             items: vec![],

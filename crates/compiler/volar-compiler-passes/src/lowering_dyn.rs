@@ -203,33 +203,31 @@ pub fn lower_module_dyn(module: &IrModule<IrFunction>) -> IrModule<IrFunction> {
         lowered.structs.push(lower_struct_dyn(s, &ctx));
     }
 
-    // Emit custom traits (LengthDoubler, PuncturableLengthDoubler, VoleArray, etc.)
+    // Emit custom traits (LengthDoubler, PuncturableLengthDoubler, etc.)
+    // Skip well-known typed variants that the lowering handles structurally.
     for t in &module.traits {
-        if let TraitKind::Custom(_) = &t.kind {
-            // Skip VoleArray — it's just an alias for ArrayLength
-            if let TraitKind::Custom(name) = &t.kind {
-                if name == "VoleArray" {
-                    continue;
-                }
-            }
-            lowered.traits.push(lower_trait_dyn(t, &ctx));
+        match &t.kind {
+            // VoleArray is just an alias for ArrayLength — skip
+            TraitKind::VoleArray => continue,
+            // All other Custom traits are emitted
+            TraitKind::Custom(_) => lowered.traits.push(lower_trait_dyn(t, &ctx)),
+            _ => {}
         }
     }
 
     for im in &module.impls {
         // Skip blanket impls for marker/alias traits that don't apply in dynamic context
         if let Some(tr) = &im.trait_ {
-            if let TraitKind::Custom(name) = &tr.kind {
+            match &tr.kind {
                 // Skip blanket impls where self_ty is a type param (e.g., impl<T: ...> Foo for T)
-                if let IrType::TypeParam(_) = &im.self_ty {
-                    if name == "ByteBlockEncrypt" {
+                TraitKind::Custom(name) if name == "ByteBlockEncrypt" => {
+                    if let IrType::TypeParam(_) = &im.self_ty {
                         continue;
                     }
                 }
                 // Skip marker trait impls (VoleArray is an alias for ArrayLength)
-                if name == "VoleArray" {
-                    continue;
-                }
+                TraitKind::VoleArray => continue,
+                _ => {}
             }
         }
         lowered.impls.push(lower_impl_dyn(im, &ctx));
@@ -320,7 +318,7 @@ fn lower_trait_dyn(t: &volar_compiler::ir::IrTrait, ctx: &LoweringContext) -> vo
                     let had_length_bound = bounds.iter().any(|b| {
                         is_length_bound(b)
                             || matches!(&b.trait_kind, TraitKind::Math(MathTrait::Unsigned))
-                            || matches!(&b.trait_kind, TraitKind::Custom(n) if n == "ArrayLength")
+                            || matches!(&b.trait_kind, TraitKind::ArrayLength)
                     });
                     let mut new_bounds: Vec<_> = bounds
                         .iter()
@@ -697,8 +695,8 @@ fn lower_trait_bound_dyn(
     }
     match &b.trait_kind {
         TraitKind::Math(MathTrait::Unsigned) => return None,
-        TraitKind::Custom(name) if name == "ArrayLength" => return None,
-        TraitKind::Custom(name) if name == "VoleArray" => return None,
+        TraitKind::ArrayLength => return None,
+        TraitKind::VoleArray => return None,
         _ => {}
     }
     let b = b.clone();
@@ -1316,42 +1314,38 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 }
             }
 
-            if let MethodKind::Unknown(ref name) = method {
-                if name == "encrypt_block" {
-                    if let Some(a) = args.get(0).cloned() {
-                        args[0] = IrExpr::Call {
-                            func: Box::new(IrExpr::Path {
-                                segments: vec!["Block".to_string(), "from_mut_slice".to_string()],
-                                type_args: vec![IrType::TypeParam("B".to_string())],
-                            }),
-                            args: vec![a],
-                        };
-                    }
+            if method == MethodKind::Known(StdMethod::EncryptBlock) {
+                if let Some(a) = args.get(0).cloned() {
+                    args[0] = IrExpr::Call {
+                        func: Box::new(IrExpr::Path {
+                            segments: vec!["Block".to_string(), "from_mut_slice".to_string()],
+                            type_args: vec![IrType::TypeParam("B".to_string())],
+                        }),
+                        args: vec![a],
+                    };
                 }
             }
 
-            if let MethodKind::Std(name) = &method {
-                if name == "to_usize" {
-                    match receiver.as_ref() {
-                        IrExpr::Var(v)
-                            if v.len() == 1 && v.chars().next().unwrap().is_uppercase() =>
-                        {
-                            return IrExpr::Var(v.to_lowercase());
-                        }
-                        IrExpr::Path { segments, .. }
-                            if segments.len() == 2 && segments[1] == "OutputSize" =>
-                        {
-                            return IrExpr::TypenumUsize {
-                                ty: Box::new(IrType::Projection {
-                                    base: Box::new(IrType::TypeParam(segments[0].clone())),
-                                    trait_path: None,
-                                    trait_args: Vec::new(),
-                                    assoc: AssociatedType::from_str(&segments[1]),
-                                }),
-                            };
-                        }
-                        _ => {}
+            if method == MethodKind::Known(StdMethod::ToUsize) {
+                match receiver.as_ref() {
+                    IrExpr::Var(v)
+                        if v.len() == 1 && v.chars().next().unwrap().is_uppercase() =>
+                    {
+                        return IrExpr::Var(v.to_lowercase());
                     }
+                    IrExpr::Path { segments, .. }
+                        if segments.len() == 2 && segments[1] == "OutputSize" =>
+                    {
+                        return IrExpr::TypenumUsize {
+                            ty: Box::new(IrType::Projection {
+                                base: Box::new(IrType::TypeParam(segments[0].clone())),
+                                trait_path: None,
+                                trait_args: Vec::new(),
+                                assoc: AssociatedType::from_str(&segments[1]),
+                            }),
+                        };
+                    }
+                    _ => {}
                 }
             }
             let lowered = IrExpr::MethodCall {
@@ -1364,14 +1358,14 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 args,
             };
             // Digest::finalize() returns GenericArray → wrap with .to_vec()
-            if matches!(&method, MethodKind::Unknown(n) if n == "finalize") {
+            if method == MethodKind::Known(StdMethod::Finalize) {
                 IrExpr::MethodCall {
                     receiver: Box::new(lowered),
-                    method: MethodKind::Std("to_vec".to_string()),
+                    method: MethodKind::Known(StdMethod::ToVec),
                     type_args: vec![],
                     args: vec![],
                 }
-            } else if matches!(&method, MethodKind::Std(n) if n == "as_ref") {
+            } else if method == MethodKind::Known(StdMethod::AsRef) {
                 // Disambiguate as_ref() → AsRef::<[u8]>::as_ref(&x)
                 let lowered_receiver = lower_expr_dyn(receiver, ctx, fn_gen);
                 IrExpr::Call {
@@ -1441,8 +1435,12 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                         });
                     } else if let Some(b_param) = fn_gen.iter().find(|p| {
                         p.name.starts_with('B')
-                            && p.bounds.iter().any(|b| matches!(&b.trait_kind,
-                                TraitKind::Custom(n) if n == "LengthDoubler" || n == "BlockEncrypt" || n == "BlockCipher"))
+                            && p.bounds.iter().any(|b| matches!(
+                                &b.trait_kind,
+                                TraitKind::LengthDoubler
+                                    | TraitKind::BlockEncrypt
+                                    | TraitKind::BlockCipher
+                            ))
                     }) {
                         new_func = Some(IrExpr::Path {
                             segments: vec!["double_vec".to_string()],
@@ -1454,8 +1452,12 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 {
                     if let Some(b_param) = fn_gen.iter().find(|p| {
                         p.name.starts_with('B')
-                            && p.bounds.iter().any(|b| matches!(&b.trait_kind,
-                                TraitKind::Custom(n) if n == "LengthDoubler" || n == "BlockEncrypt" || n == "BlockCipher"))
+                            && p.bounds.iter().any(|b| matches!(
+                                &b.trait_kind,
+                                TraitKind::LengthDoubler
+                                    | TraitKind::BlockEncrypt
+                                    | TraitKind::BlockCipher
+                            ))
                     }) {
                         new_func = Some(IrExpr::Path {
                             segments: vec![name.clone()],
@@ -1480,10 +1482,9 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 } else if name == "commit" {
                     if let Some(d_param) = fn_gen.iter().find(|p| {
                         p.name.starts_with('D')
-                            && p.bounds.iter().any(|b| {
-                                matches!(&b.trait_kind,
-                                TraitKind::Custom(n) if n == "Digest")
-                            })
+                            && p.bounds
+                                .iter()
+                                .any(|b| matches!(&b.trait_kind, TraitKind::Digest))
                     }) {
                         new_func = Some(IrExpr::Path {
                             segments: vec![name.clone()],
@@ -2140,7 +2141,7 @@ fn lower_default_value(
                         segments: vec![format!("{}", p)],
                         type_args: vec![],
                     }),
-                    method: MethodKind::Std("default".to_string()),
+                    method: MethodKind::Known(StdMethod::Default),
                     args: vec![],
                     type_args: vec![],
                 }
@@ -3113,7 +3114,7 @@ mod rename_tests {
         let mut block = IrBlock {
             stmts: vec![IrStmt::Expr(IrExpr::MethodCall {
                 receiver: Box::new(IrExpr::Var("self".to_string())),
-                method: MethodKind::Unknown("remap".to_string()),
+                method: MethodKind::Vole(VoleMethod::Remap),
                 type_args: vec![],
                 args: vec![
                     IrExpr::Field {
@@ -3128,7 +3129,7 @@ mod rename_tests {
                         ret_type: None,
                         body: Box::new(IrExpr::MethodCall {
                             receiver: Box::new(IrExpr::Var("a".to_string())),
-                            method: MethodKind::Unknown("wrapping_sub".to_string()),
+                            method: MethodKind::Known(StdMethod::WrappingSub),
                             type_args: vec![],
                             args: vec![IrExpr::Var("n".to_string())],
                         }),

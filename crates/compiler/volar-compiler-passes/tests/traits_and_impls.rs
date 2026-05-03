@@ -378,8 +378,7 @@ fn test_type_context_has_builtins() {
         "TypeContext should have Clone"
     );
     assert!(
-        ctx.lookup_trait(&TraitKind::Custom("Digest".into()))
-            .is_some(),
+        ctx.lookup_trait(&TraitKind::Digest).is_some(),
         "TypeContext should have Digest"
     );
 }
@@ -397,7 +396,7 @@ fn test_type_context_custom_trait_overrides_builtin() {
 
     // Custom trait should be findable
     let ld = ctx
-        .lookup_trait(&TraitKind::Custom("LengthDoubler".into()))
+        .lookup_trait(&TraitKind::LengthDoubler)
         .expect("LengthDoubler should be in TypeContext");
 
     assert_eq!(ld.items.len(), 2); // OutputSize + double
@@ -597,10 +596,7 @@ fn test_trait_with_supertrait() {
 
     let t = &module.traits[0];
     assert_eq!(t.super_traits.len(), 1);
-    assert_eq!(
-        t.super_traits[0].trait_kind,
-        TraitKind::Custom("LengthDoubler".into())
-    );
+    assert_eq!(t.super_traits[0].trait_kind, TraitKind::LengthDoubler);
 }
 
 #[test]
@@ -614,11 +610,8 @@ fn test_trait_with_generic_supertrait() {
     assert_eq!(t.generics.len(), 1);
     assert_eq!(t.generics[0].name, "T");
     assert_eq!(t.super_traits.len(), 1);
-    // ArrayLength is recognized as Custom trait
-    assert_eq!(
-        t.super_traits[0].trait_kind,
-        TraitKind::Custom("ArrayLength".into())
-    );
+    // ArrayLength is now a typed variant
+    assert_eq!(t.super_traits[0].trait_kind, TraitKind::ArrayLength);
     // With type arg T
     assert_eq!(t.super_traits[0].type_args.len(), 1);
 }
@@ -641,7 +634,7 @@ fn test_custom_trait_full_definition() {
 
     // LengthDoubler
     let ld = ctx
-        .lookup_trait(&TraitKind::Custom("LengthDoubler".into()))
+        .lookup_trait(&TraitKind::LengthDoubler)
         .expect("LengthDoubler should be registered");
     assert_eq!(ld.items.len(), 2); // OutputSize + double
     assert!(ld.generics.is_empty());
@@ -752,7 +745,7 @@ fn test_volar_spec_length_doubler_is_custom_trait() {
     let ld = module
         .traits
         .iter()
-        .find(|t| matches!(&t.kind, TraitKind::Custom(n) if n == "LengthDoubler"));
+        .find(|t| matches!(&t.kind, TraitKind::LengthDoubler));
     assert!(
         ld.is_some(),
         "LengthDoubler should be parsed as a custom trait"
@@ -943,12 +936,14 @@ fn test_length_alias_discovery() {
     let module = parse_source(source, "test").unwrap();
     let analysis = ConstAnalysis::from_module(&module);
 
-    // VoleArray should be discovered as a length alias
+    // VoleArray is now a typed TraitKind variant, recognised directly by
+    // is_length_bound — it should NOT appear in the Custom length_alias_traits
+    // list (that list is only for user-defined Custom traits).
     assert!(
-        analysis
+        !analysis
             .length_alias_traits
             .contains(&"VoleArray".to_string()),
-        "VoleArray should be a length alias, got: {:?}",
+        "VoleArray is a typed variant, not a Custom alias, got: {:?}",
         analysis.length_alias_traits
     );
 

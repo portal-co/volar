@@ -2507,62 +2507,84 @@ fn emit_method_call(
     f: &mut fmt::Formatter<'_>,
     cx: &TsContext<'_>,
 ) -> fmt::Result {
-    let name = ts_method_call_name(method);
-    match name.as_str() {
-        "wrapping_add" if args.len() == 1 => {
+    match method {
+        MethodKind::Known(m) => emit_known_method_call(receiver, *m, args, f, cx),
+        MethodKind::Vole(v) => {
+            let name = format!("{:?}", v).to_lowercase();
+            emit_other_method_call(receiver, &name, args, f, cx)
+        }
+        MethodKind::Other(name) => emit_other_method_call(receiver, name, args, f, cx),
+    }
+}
+
+/// Emit a method call for a [`StdMethod`] — the typed fast path.
+fn emit_known_method_call(
+    receiver: &IrExpr,
+    method: StdMethod,
+    args: &[IrExpr],
+    f: &mut fmt::Formatter<'_>,
+    cx: &TsContext<'_>,
+) -> fmt::Result {
+    match method {
+        StdMethod::WrappingAdd if args.len() == 1 => {
             write!(f, "wrappingAdd(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ", ")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
             write!(f, ")")
         }
-        "wrapping_sub" if args.len() == 1 => {
+        StdMethod::WrappingSub if args.len() == 1 => {
             write!(f, "wrappingSub(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ", ")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
             write!(f, ")")
         }
-        "ilog2" if args.is_empty() => {
+        StdMethod::Ilog2 if args.is_empty() => {
             write!(f, "ilog2(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ")")
         }
-        "clone" if args.is_empty() => {
+        StdMethod::Clone if args.is_empty() => {
             write!(f, "structuredClone(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ")")
         }
-        "into" if args.is_empty() => TsExprWriter { expr: receiver }.ts_fmt(f, cx),
-        "cloned" if args.is_empty() => TsExprWriter { expr: receiver }.ts_fmt(f, cx),
-        "to_vec" if args.is_empty() => {
+        StdMethod::Into if args.is_empty() => TsExprWriter { expr: receiver }.ts_fmt(f, cx),
+        StdMethod::Cloned if args.is_empty() => TsExprWriter { expr: receiver }.ts_fmt(f, cx),
+        StdMethod::ToVec if args.is_empty() => {
             write!(f, "[...")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, "]")
         }
-        "as_slice" if args.is_empty() => TsExprWriter { expr: receiver }.ts_fmt(f, cx),
-        "len" if args.is_empty() => {
+        StdMethod::AsSlice if args.is_empty() => TsExprWriter { expr: receiver }.ts_fmt(f, cx),
+        StdMethod::Len if args.is_empty() => {
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ".length")
         }
-        "contains" if args.len() == 1 => {
+        StdMethod::Contains if args.len() == 1 => {
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ".includes(")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
             write!(f, ")")
         }
-        "get" if args.len() == 1 => {
+        StdMethod::Get if args.len() == 1 => {
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, "?.[")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
             write!(f, "]")
         }
-        "unwrap_or_default" if args.is_empty() => {
+        StdMethod::UnwrapOrDefault if args.is_empty() => {
             write!(f, "(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, " ?? 0)")
         }
-        "map_or" if args.len() == 2 => {
+        StdMethod::Unwrap if args.is_empty() => {
+            write!(f, "(")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, " ?? 0)")
+        }
+        StdMethod::MapOr if args.len() == 2 => {
             // Option.map_or(default, f) → (x != null ? f(x) : default)
             write!(f, "((")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
@@ -2574,59 +2596,76 @@ fn emit_method_call(
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
             write!(f, "))")
         }
-        "update" if args.len() == 1 => {
+        StdMethod::Update if args.len() == 1 => {
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ".update(")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
             write!(f, ")")
         }
-        "finalize" if args.is_empty() => {
+        StdMethod::Finalize if args.is_empty() => {
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ".finalize()")
         }
-        "bitxor" if args.len() == 1 => {
+        StdMethod::Bitxor if args.len() == 1 => {
             write!(f, "fieldBitxor(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ", ")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
             write!(f, ")")
         }
-        "shl" if args.len() == 1 => {
+        StdMethod::Shl if args.len() == 1 => {
             write!(f, "fieldShl(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ", ")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
             write!(f, ")")
         }
-        "shr" if args.len() == 1 => {
+        StdMethod::Shr if args.len() == 1 => {
             write!(f, "fieldShr(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ", ")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
             write!(f, ")")
         }
-        "at" | "valueOf" if args.len() == 1 => {
+        // AsRef / Deref with an index arg → subscript access
+        StdMethod::AsRef | StdMethod::Deref if args.len() == 1 => {
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, "[(")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
             write!(f, ")]")
         }
-        "at" if args.is_empty() => {
+        StdMethod::At if args.len() == 1 => {
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, "[(")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            write!(f, ")]")
+        }
+        StdMethod::At if args.is_empty() => {
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ".at(0)")
         }
-        _ => {
-            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ".{}(", name)?;
-            for (i, arg) in args.iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
-            }
-            write!(f, ")")
-        }
+        // Fall through to generic emission using the snake_case name
+        _ => emit_other_method_call(receiver, method.as_str(), args, f, cx),
     }
+}
+
+/// Emit a generic method call as `receiver.name(args…)`.
+fn emit_other_method_call(
+    receiver: &IrExpr,
+    name: &str,
+    args: &[IrExpr],
+    f: &mut fmt::Formatter<'_>,
+    cx: &TsContext<'_>,
+) -> fmt::Result {
+    TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+    write!(f, ".{}(", name)?;
+    for (i, arg) in args.iter().enumerate() {
+        if i > 0 {
+            write!(f, ", ")?;
+        }
+        TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+    }
+    write!(f, ")")
 }
 
 /// Emit a path expression with smart mapping.
@@ -3012,31 +3051,15 @@ fn ts_default_value(ty: &IrType, f: &mut fmt::Formatter<'_>, cx: &TsContext) -> 
     }
 }
 
+/// Returns the canonical name used when emitting this method call in
+/// TypeScript.  Most callers should use [`emit_method_call`] directly;
+/// this helper is kept for witness-scanning code that needs the name
+/// without full emission.
 fn ts_method_call_name(method: &MethodKind) -> String {
     match method {
-        MethodKind::Std(s) => match s.as_str() {
-            "clone" => "clone".to_string(),
-            "into" => "into".to_string(),
-            "len" => "length".to_string(),
-            "is_empty" => "length === 0 ? true : false; /* ".to_string(),
-            "contains" => "includes".to_string(),
-            "unwrap" | "unwrap_or_default" => "unwrap_or_default".to_string(),
-            "as_ref" => "valueOf".to_string(),
-            "as_slice" => "slice".to_string(),
-            "get" => "get".to_string(),
-            "to_usize" | "to_string" => s.clone(),
-            "wrapping_add" => "wrapping_add".to_string(),
-            "wrapping_sub" => "wrapping_sub".to_string(),
-            "ilog2" => "ilog2".to_string(),
-            "bitxor" => "bitxor".to_string(),
-            "shl" => "shl".to_string(),
-            "shr" => "shr".to_string(),
-            "map_or" => "map_or".to_string(),
-            "deref" => "valueOf".to_string(),
-            _ => s.clone(),
-        },
+        MethodKind::Known(m) => m.as_str().to_string(),
         MethodKind::Vole(v) => format!("{:?}", v).to_lowercase(),
-        MethodKind::Unknown(s) => s.clone(),
+        MethodKind::Other(s) => s.clone(),
     }
 }
 

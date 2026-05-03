@@ -19,7 +19,8 @@ use std::collections::BTreeMap;
 use volar_compiler::ir::{
     ArrayKind, ArrayLength, ExternalKind, IrAnyFunction, IrBlock, IrCfgBody, IrCfgFunction,
     IrCfgJump, IrCfgModule, IrCfgTerminator, IrClosureParam, IrExpr, IrFunction, IrLit, IrModule,
-    IrPattern, IrStmt, IrType, MethodKind, PrimitiveType, SpecBinOp, SpecUnaryOp, StructKind,
+    IrPattern, IrStmt, IrType, MethodKind, PrimitiveType, SpecBinOp, SpecUnaryOp, StdMethod,
+    StructKind,
 };
 use volar_lir::{IcmpPred, LirTarget, LirType, LirAbi};
 
@@ -166,9 +167,11 @@ impl<'t, T: LirTarget> LowerCtx<'t, T> {
                 }
             }
 
-            IrExpr::MethodCall { receiver, method: MethodKind::Std(m), .. }
-                if m == "clone" || m == "deref" =>
-            {
+            IrExpr::MethodCall {
+                receiver,
+                method: MethodKind::Known(StdMethod::Clone | StdMethod::Deref),
+                ..
+            } => {
                 self.infer_type(receiver)
             }
 
@@ -1088,13 +1091,16 @@ fn lower_method_call<T: LirTarget>(
 ) -> Vec<T::Value> {
     match method {
         // `.clone()` and `.deref()` are transparent in value semantics.
-        MethodKind::Std(m) if m == "clone" || m == "deref" => lower_expr(receiver, ctx),
+        MethodKind::Known(StdMethod::Clone | StdMethod::Deref) => lower_expr(receiver, ctx),
 
         // Reference methods — transparent.
-        MethodKind::Std(m) if m == "as_ref" || m == "as_slice" => lower_expr(receiver, ctx),
+        MethodKind::Known(StdMethod::AsRef | StdMethod::AsSlice) => lower_expr(receiver, ctx),
 
-        // Unknown methods → extern call.
-        MethodKind::Unknown(name) => {
+        // Other methods → extern call.
+        MethodKind::Known(m) => {
+            lower_method_extern(receiver, m.as_str(), type_args, args, ctx)
+        }
+        MethodKind::Other(name) => {
             lower_method_extern(receiver, name, type_args, args, ctx)
         }
 

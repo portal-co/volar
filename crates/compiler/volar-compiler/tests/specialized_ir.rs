@@ -110,6 +110,9 @@ fn test_specialize_volar_spec() {
             TraitKind::Fn(inp, ty) => {
                 println!("  Fn-like trait: {:?} -> {:?}", inp, ty);
             }
+            _ => {
+                println!("  Typed variant: {:?}", t.kind);
+            }
         }
     }
 
@@ -238,12 +241,12 @@ fn test_method_classification() {
                         vole_methods += 1;
                         println!("VOLE method: {:?}", v);
                     }
-                    MethodKind::Std(s) => {
+                    MethodKind::Known(m) => {
                         std_methods += 1;
-                        println!("Std method: {}", s);
+                        println!("Known method: {}", m);
                     }
-                    MethodKind::Unknown(u) => {
-                        println!("Unknown method: {}", u);
+                    MethodKind::Other(u) => {
+                        println!("Other method: {}", u);
                     }
                 }
             }

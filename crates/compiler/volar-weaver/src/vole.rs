@@ -42,7 +42,7 @@ use volar_compiler::{
     ir::{
         AssociatedType, ExternalKind, IrBlock, IrExpr, IrFunction, IrGenericParam, IrGenericParamKind,
         IrModule, IrParam, IrPattern, IrStmt, IrTraitBound, IrType, IrWherePredicate,
-        MethodKind, SpecBinOp, StructKind, TraitKind,
+        MathTrait, MethodKind, SpecBinOp, StdMethod, StructKind, TraitKind,
     },
     linkage::LinkageSystem,
 };
@@ -148,7 +148,7 @@ fn partial_eq_t() -> IrTraitBound {
 /// `T: Clone` bound.
 fn clone_t() -> IrTraitBound {
     IrTraitBound {
-        trait_kind: TraitKind::Custom("Clone".into()),
+        trait_kind: TraitKind::Math(MathTrait::Clone),
         type_args: vec![],
         assoc_bindings: vec![],
     }
@@ -157,7 +157,7 @@ fn clone_t() -> IrTraitBound {
 /// `T: Default` bound.
 fn default_t() -> IrTraitBound {
     IrTraitBound {
-        trait_kind: TraitKind::Custom("Default".into()),
+        trait_kind: TraitKind::Math(MathTrait::Default),
         type_args: vec![],
         assoc_bindings: vec![],
     }
@@ -166,7 +166,7 @@ fn default_t() -> IrTraitBound {
 /// `N: ArraySize` bound.
 fn array_size_bound() -> IrTraitBound {
     IrTraitBound {
-        trait_kind: TraitKind::Custom("ArraySize".into()),
+        trait_kind: TraitKind::ArraySize,
         type_args: vec![],
         assoc_bindings: vec![],
     }
@@ -175,7 +175,7 @@ fn array_size_bound() -> IrTraitBound {
 /// `N: VoleArray<T>` bound.
 fn vole_array_t_bound() -> IrTraitBound {
     IrTraitBound {
-        trait_kind: TraitKind::Custom("VoleArray".into()),
+        trait_kind: TraitKind::VoleArray,
         type_args: vec![IrType::TypeParam("T".into())],
         assoc_bindings: vec![],
     }
@@ -871,7 +871,7 @@ where
                             base: Box::new(var("delta")),
                             field: "delta".into(),
                         }),
-                        method: MethodKind::Std("clone".into()),
+                        method: MethodKind::Known(StdMethod::Clone),
                         type_args: vec![],
                         args: vec![],
                     })),
