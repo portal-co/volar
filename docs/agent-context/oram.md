@@ -111,5 +111,5 @@ ORAM property tests use **proptest** in-crate (`#[cfg(test)] mod proptests`), co
 - `crates/oram/volar-oram-core/src/lib.rs` — server-side ORAM source (linked spec)
 - `crates/channel/volar-channel/src/lib.rs` — `Protocol` trait + `run_protocol` + tests
 - `crates/compiler/volar-weaver/src/oram.rs` — ORAM rewrite pass + 21 config tests + 13 rewrite tests + 7 linking tests
-- `docs/oram-channel-plan.md` — approved design plan
+- `docs/archive/oram-channel-plan.md` — approved design plan (archived; implemented)
 - `docs/oram-fuzzing.md` — property documentation

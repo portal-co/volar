@@ -191,6 +191,112 @@ where `<level>` is one of:
 A file that was AI-generated and then carefully line-by-line reviewed and
 corrected by a human is `supervised`, not `generated`.
 
+---
+
+## AI Capability Tiers
+
+The reliability level says how much the *code* can be trusted. The capability
+tier says how much an *AI agent* can be trusted to modify a given file. The
+tier is the second factor in the reliability policy: a change is allowed only
+when the agent's tier is high enough for the file's tier requirement, in
+addition to satisfying every other requirement on this page.
+
+### The Three Tiers
+
+| Tier | What an agent at this tier may do | What it must not do |
+|---|---|---|
+| **Tier 1 — Glue** | Documentation edits, dependency bumps, formatting, mechanical refactors (renames, file moves, splitting/merging modules with no semantic change), test scaffolding that does not assert new properties, reading and summarising code. | Modify compiler/IR semantics. Modify any cryptographic spec. Introduce or change `unsafe`. Change reliability or AI markers. |
+| **Tier 2 — Compiler** | Anything Tier 1 may do, plus: write and refactor compiler/IR/lowering/printer/weaver code; add tests that compile and run generated code; add backends; modify ABI policy; touch `volar-fuzz` generators and properties. | Modify any file under `crates/spec/` that defines a cryptographic protocol. Promote a file out of Experimental. Change `// @reliability` from a stricter to a looser level. |
+| **Tier 3 — Cryptography** | Anything Tier 2 may do, plus: design and modify cryptographic constructions in `volar-spec`, `volar-primitives`, `volar-common`, the GRAFHEN and TFHE schemes, ORAM client-side state machines, and any code marked `@reliability: hazmat`. May introduce new Experimental constructions and write the accompanying review documents. | Promote a file from Experimental to Normal/Hazmat without an external human reviewer signing off (the promotion protocol below). |
+
+Tiers are inclusive: Tier 3 may do everything Tier 2 may do, and Tier 2
+everything Tier 1 may do.
+
+### Mapping Claude Models to Tiers
+
+This mapping is the project's current calibration; revisit it whenever model
+capabilities or evaluation results change materially.
+
+| Tier | Claude models permitted at this tier |
+|---|---|
+| **Tier 1 — Glue** | Any current Claude model (Haiku 4.x, Sonnet ≤ 4.5, Opus ≤ 4.4). |
+| **Tier 2 — Compiler** | Sonnet 4.6 or later; Opus 4.5 or later. |
+| **Tier 3 — Cryptography** | Opus 4.6 or later. |
+
+Sonnet (any version) is **not** permitted at Tier 3, even if it is otherwise
+the strongest model available in a session. Cryptographic correctness arguments
+are subtle enough that we require Opus-class reasoning depth here. If the
+strongest available agent is a Sonnet-tier model and a Tier 3 change is needed,
+the agent must stop and surface the situation rather than proceeding.
+
+Non-Claude models follow whatever mapping the project owner publishes in
+[`AGENTS.md`](../AGENTS.md). In the absence of an explicit mapping, default to
+Tier 1.
+
+### File-to-Tier Mapping
+
+The required tier for a file is the **maximum** of:
+
+1. The crate-default tier from the table below, and
+2. Any explicit `// @ai-tier: <n>` marker on the file (which can only raise the
+   requirement, never lower it).
+
+| Crate / path | Default required tier | Reason |
+|---|---|---|
+| `crates/spec/volar-spec/` | **3** | Cryptographic protocol specifications. |
+| `crates/spec/volar-primitives/` | **3** | Field arithmetic — correctness is load-bearing for every protocol above. |
+| `crates/spec/volar-common/` | **3** | Hash commitments and PRG primitives consumed by the spec layer. |
+| `crates/spec/volar-spec-dyn/`, `crates/spec/volar-dyn/` | 2 | Auto-generated / mechanical mirrors of `volar-spec`; do not encode new crypto. |
+| `crates/oram/volar-oram-core/` | **3** | Server-side ORAM in total Rust; correctness underpins every ORAM-using circuit. |
+| `crates/oram/volar-oram/` | **3** | Client-side ORAM state machine; subtle eviction invariants. |
+| `crates/channel/volar-channel/` | 2 | Pure protocol abstraction; no cryptography. |
+| `crates/compiler/`, `crates/ir/`, `crates/macros/` | 2 | Compiler, IR, lowering, printers, backends, proc-macros. |
+| `crates/fuzz/volar-fuzz/` | 2 | Fuzz generators and interpreters; differential oracles. Property *definitions* about cryptographic constructions require Tier 3. |
+| `docs/`, `README.md`, `PROGRESS.md`, `goals.md`, `AGENTS.md` | 1 | Documentation. Edits that change the reliability or capability policy itself require human approval, regardless of tier. |
+| `Cargo.toml`, `Cargo.lock`, build scripts | 2 | A bad dependency change can compromise crypto crates. |
+| `.rs.insecure` files | 1 to read; **3** to modify | Insecure files are research records; modifying them is rare and requires the highest tier because the modification is itself a cryptographic claim. |
+
+A file may explicitly raise its tier requirement by adding the marker:
+
+```rust
+// @ai-tier: 3
+```
+
+at the same location as the `@reliability` marker. The marker is ignored
+unless it raises the requirement above the crate default.
+
+### Combined Reliability × Tier Rules
+
+The legal combinations of reliability change and required tier are:
+
+| Change | Minimum tier | Additional requirement |
+|---|---|---|
+| Edit a Normal file in a Tier-2 crate | 2 | Tests must compile and pass. |
+| Edit a Normal file in a Tier-3 crate | 3 | Tests must compile and pass. |
+| Edit a Hazmat file | 3 | The `@hazmat-reason` and `# Safety` documentation must remain accurate; new call sites require `// SAFETY(hazmat):` comments. |
+| Edit an Experimental cryptographic file | 3 | The change is itself an experimental revision; the AI marker may need to update (e.g. `assisted` → `unreviewed` if the change was not human-reviewed). |
+| Edit an Experimental compiler/infra file | 2 | Standard review; AI marker accuracy. |
+| Promote Experimental → Normal or Hazmat | Human reviewer (AI agent may draft only) | Full promotion protocol below. AI cannot self-promote. |
+| Demote Experimental → Insecure | 3 (with named external attack reference) | Full demotion protocol; record the attack in [insecure.md](insecure.md). |
+| Add a brand-new cryptographic construction | 3 | Must enter at Experimental; must include a review plan analogous to [grafhen-review-plan.md](grafhen-review-plan.md). |
+| Add a brand-new compiler pass / IR variant | 2 | Must include both a generator (where applicable) and a property test. |
+| Mechanical refactor (rename, move, split) of any file | The file's required tier | The refactor must be observably equivalent; tests pass before and after. |
+
+### What a Lower-Tier Agent Should Do When Blocked
+
+If an agent at Tier *k* needs to make a change that requires Tier *k+1*:
+
+1. Stop the change.
+2. Produce a written description of the desired change, the file's required
+   tier, and the reason the change exceeds the agent's tier (e.g. "this file
+   is at `crates/spec/volar-spec/src/vole/prove.rs`, default Tier 3, and the
+   agent is Tier 2").
+3. Hand the description to a human or to a higher-tier agent.
+
+Producing an analysis or plan that a higher-tier agent will execute is
+**always** within Tier 1 capability and is the recommended fallback. See
+[agents-guide.md](agents-guide.md) for the full operating procedure.
+
 ### AI Markers and Reliability Levels
 
 The following combinations are valid:

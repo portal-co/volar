@@ -135,7 +135,7 @@ implementation focus (VOLE-based ZK, garbled circuits, ORAM, compiler toolchain)
   - [ ] Benefits: VAFFLE-level rewriting preserves SSA structure and enables VAFFLE-specific optimizations (constant folding, store forwarding) on the ORAM ActionCall sequences before lowering to IR/BIR
   - [ ] Prerequisite: IR-level storage-to-ORAM transformation (validates the design)
 - [ ] Port client-side ORAM logic to total Rust (enable full ORAM compilation to circuits)
-- [ ] ZK nesting: compile ORAM step function to VOLE-ZK circuit (see `docs/oram-channel-plan.md` Part 4)
+- [ ] ZK nesting: compile ORAM step function to VOLE-ZK circuit (see `docs/archive/oram-channel-plan.md` Part 4)
 - [ ] ORAM threshold tuning (Linear MUX for small storage, ORAM for large)
 
 ### Applications

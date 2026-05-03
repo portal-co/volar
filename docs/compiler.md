@@ -372,8 +372,8 @@ pub fn print_module_with_deps(module: &IrModule, deps: &[TypeManifest]) -> Strin
 
 Renders a dyn-lowered `IrModule` as TypeScript. Structs become classes, impl
 methods attach to class bodies. See
-[compiler/TYPESCRIPT_BACKEND_PLAN.md](compiler/TYPESCRIPT_BACKEND_PLAN.md)
-for the full design.
+[archive/compiler/TYPESCRIPT_BACKEND_PLAN.md](archive/compiler/TYPESCRIPT_BACKEND_PLAN.md)
+for the full design (archived; the design was implemented).
 
 Notable features:
 - **Impl merging**: Multiple `impl` blocks with different type specializations
