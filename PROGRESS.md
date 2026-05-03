@@ -142,6 +142,43 @@ Implement **weaver integration** — compiling the ORAM runtime through the vola
   `prop_virt_bir_preserves_semantics`, and two `does_not_panic`
   properties, all passing
 
+### Virtualisation v2 — register-based IR calling convention (this session)
+- `virtualize_ir` rewritten to route cross-block values through a
+  per-type *register file* stored in dedicated `StorageId`s (one
+  `StorageId` per IR type used as a param / return arg).  Block
+  parameters are no longer required to share the same arity or
+  signature; each block reads its inputs from register indices encoded
+  in the bytecode and writes its terminator args into the target
+  block's register indices.
+- `Jmp(Return, args)` is now a *special branch* — each arm carries a
+  `done: Bit` immediate alongside `next_pc: _32`; the dispatcher
+  branches on `done` to a Return sub-block that reads the return
+  registers and exits via `Jmp(Return, [vals…])`.
+- Conditional branches (`JumpCond` / `JumpTable`) materialise one
+  arm-sub-block per target; each sub-block performs its own arg
+  forwarding + jump to the dispatcher with its own `(next_pc, done)`.
+  Conditions remain structural canonical-var references (register
+  reads happen at handler entry).
+- Added `StorageId::VIRT_REGISTERS_BASE` to `volar-ir-common`; the
+  register file is placed *above* the bytecode range at pass time
+  (`bytecode_storage + 1 + total_bytecode_slots`) to avoid collisions.
+- Extended per-handler bytecode schema with five slot kinds:
+  `ParamSrcReg` (where to read each block param from),
+  `ConstValue` (lifted `Stmt::Const`), and per arm `TargetPc` +
+  `DoneFlag` + `ArgDstReg` (one dst-register-index per arg).  All
+  address-typed slots are `_32`; the done flag is `Bit`.
+- Return-shape extraction scans every `Jmp(Return, args)` (including
+  conditional arms and jump-table cases) and panics if they disagree,
+  making the function's return shape a well-defined property of the
+  input module.
+- New equivalence tests in `tests/equiv_ir.rs`:
+  `varied_param_blocks_semantics`, `varied_param_blocks_dedup_count`,
+  `multi_type_return_semantics` (mixed `_32` + `Bit` return arity),
+  and `jumpcond_with_return_arm_semantics` (`JumpCond` with a Return
+  arm + a Block arm).  All 11 IR tests + 6 BIR tests + 2 dedup-invariant
+  tests + 1 FHE-integration test pass.
+- Fuzz properties unchanged and still pass (4 properties, 256+ cases each).
+
 ## In Progress
 
 - **Weaver integration** — compiling the ORAM runtime through the volar-compiler pipeline
@@ -160,6 +197,7 @@ Implement **weaver integration** — compiling the ORAM runtime through the vola
 - **`volar-ir-virt` `BytecodeForm::External` printer integration** — Rust / TS / C backends currently ignore the returned `VirtBytecode` artefact.  A follow-up task should teach the printers to emit it as a `const BYTECODE: &[u8]` (or equivalent) plus a small dispatch shim.  Out of scope for v1 because the in-IR form already gives the full correctness story.
 - **`virtualize_ir` + Oblivious full pipeline** — blocked on `movfuscate_ir` learning to handle `IRTerminator::JumpTable`.  Until that lands, IR Oblivious dispatch panics when the input has more than one handler.  BIR Oblivious dispatch works today because BIR's Public dispatch uses a `CondJmp` cascade rather than a `JumpTable`.
 - **`volar-ir-virt` `DedupPolicy::Maximal`** — lifting scalar-in-stmt fields (`Rol.n`, `Shuffle.result_bits`, BIR `storage`, RNG/oracle names) as immediates.  Enum variant is reserved; currently panics.
+- **`virtualize_bir` varied block-param counts** — the BIR path still requires all blocks to share the same `params: u32` (its v1 calling convention threads bit state through block params rather than a register file).  The IR register-file approach can be mirrored to BIR (single `Bit` register file), but is deferred; typical BIR post-lowering modules already have uniform param counts so this is not blocking.
 
 ## Next Steps (in order)
 

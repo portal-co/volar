@@ -406,3 +406,211 @@ fn storage_semantics_preserved() {
     assert_eq!(ref_out, virt_out);
 }
 
+// ============================================================================
+// Test: varied block parameters (different arities across blocks)
+// ============================================================================
+
+/// Three blocks with *different* parameter signatures:
+///   block 0 (entry): params=[a: _32, b: _32]
+///     term: Jmp(Block(1), [a, b, a])   // forward 3 args
+///   block 1: params=[x: _32, y: _32, z: _32]
+///     stmt:  s = Poly(x * y + z)    (GF(2^32) XOR-multiply semantics)
+///     term:  Jmp(Block(2), [s])
+///   block 2: params=[r: _32]
+///     term:  Jmp(Return, [r])
+fn varied_param_blocks() -> (IRBlocks, IRTypes) {
+    let mut types = IRTypes(vec![IRType::Primitive(PrimType::Bit)]);
+    let u32_ty = types.intern(IRType::Primitive(PrimType::_32));
+
+    // Poly: s = x * y + z  over _32 (GF(2^32)).
+    // Non-Bit slot convention: Poly over a non-Bit type only admits
+    // degree-1 use of the non-Bit var; mixing two non-Bit vars is
+    // disallowed.  So model `x + z` instead (GF(2^32) XOR), and use
+    // the other operand by folding it into the output of block 0.
+    let mut coeffs: BTreeMap<Vec<IRVarId>, u8> = BTreeMap::new();
+    coeffs.insert(vec![IRVarId(0)], 1); // x
+    coeffs.insert(vec![IRVarId(2)], 1); // z  (y is unused in this simple test)
+
+    let blocks = IRBlocks::new(vec![
+        IRBlock {
+            params: vec![u32_ty, u32_ty],
+            stmts: vec![],
+            stmt_provs: vec![],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Block(IRBlockId(1)),
+                args: vec![IRVarId(0), IRVarId(1), IRVarId(0)],
+            },
+        },
+        IRBlock {
+            params: vec![u32_ty, u32_ty, u32_ty],
+            stmts: vec![Stmt::Poly {
+                ty: u32_ty,
+                coeffs,
+                constant: Constant { hi: 0, lo: 0 },
+            }],
+            stmt_provs: vec![()],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Block(IRBlockId(2)),
+                args: vec![IRVarId(3)], // the Poly result
+            },
+        },
+        IRBlock {
+            params: vec![u32_ty],
+            stmts: vec![],
+            stmt_provs: vec![],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: vec![IRVarId(0)],
+            },
+        },
+    ]);
+
+    (blocks, types)
+}
+
+#[test]
+fn varied_param_blocks_semantics() {
+    let (blocks, mut types) = varied_param_blocks();
+    let u32_ty = types.intern(IRType::Primitive(PrimType::_32));
+    let a = const_to_bits(&Constant { hi: 0, lo: 0xDEAD }, bit_width(u32_ty, &types));
+    let b = const_to_bits(&Constant { hi: 0, lo: 0xBEEF }, bit_width(u32_ty, &types));
+
+    let ref_out = eval_ir(&blocks, &types, &[a.clone(), b.clone()]).expect("ref");
+    // x + z with x=0xDEAD, z=0xDEAD (a forwarded twice) → XOR = 0.
+    assert_eq!(bits_to_u32(&ref_out[0]), 0);
+
+    let virt = virtualize_ir(&blocks, &mut types, &cfg_default());
+    let virt_out = eval_ir(&virt.blocks, &types, &[a, b]).expect("virt");
+    assert_eq!(ref_out, virt_out);
+}
+
+#[test]
+fn varied_param_blocks_dedup_count() {
+    // Each block has a distinct shape (param arity is part of the
+    // canonical key), so n_handlers should equal blocks_in.
+    let (blocks, mut types) = varied_param_blocks();
+    let out = virtualize_ir(&blocks, &mut types, &cfg_default());
+    assert_eq!(out.blocks_in, 3);
+    assert_eq!(out.n_handlers, 3);
+}
+
+// ============================================================================
+// Test: Return with multiple args of mixed types (special-branch test)
+// ============================================================================
+
+/// Entry computes a _32 and a Bit and returns both via a single
+/// `Jmp(Return, [w, b])`.
+fn multi_type_return() -> (IRBlocks, IRTypes) {
+    let mut types = IRTypes(vec![IRType::Primitive(PrimType::Bit)]);
+    let bit_ty = IRTypeId(0);
+    let u32_ty = types.intern(IRType::Primitive(PrimType::_32));
+
+    let mut coeffs: BTreeMap<Vec<IRVarId>, u8> = BTreeMap::new();
+    coeffs.insert(vec![IRVarId(1)], 1); // b
+
+    let blocks = IRBlocks::new(vec![IRBlock {
+        params: vec![u32_ty, bit_ty],
+        stmts: vec![
+            // r = w + 7   (XOR in GF(2^32), equivalent to w ^ 7)
+            Stmt::Const(Constant { hi: 0, lo: 7 }, u32_ty),
+            Stmt::Poly {
+                ty: u32_ty,
+                coeffs: {
+                    let mut c: BTreeMap<Vec<IRVarId>, u8> = BTreeMap::new();
+                    c.insert(vec![IRVarId(0)], 1);
+                    c
+                },
+                constant: Constant { hi: 0, lo: 7 },
+            },
+        ],
+        stmt_provs: vec![(), ()],
+        terminator: IRTerminator::Jmp {
+            func: IRBlockTargetId::Return,
+            // [r, b]
+            args: vec![IRVarId(3), IRVarId(1)],
+        },
+    }]);
+
+    (blocks, types)
+}
+
+#[test]
+fn multi_type_return_semantics() {
+    let (blocks, mut types) = multi_type_return();
+    let bit_ty = IRTypeId(0);
+    let u32_ty = types.intern(IRType::Primitive(PrimType::_32));
+    let w = const_to_bits(&Constant { hi: 0, lo: 0x1234 }, bit_width(u32_ty, &types));
+    let b = const_to_bits(&Constant { hi: 0, lo: 1 }, bit_width(bit_ty, &types));
+
+    let ref_out = eval_ir(&blocks, &types, &[w.clone(), b.clone()]).expect("ref");
+    assert_eq!(ref_out.len(), 2);
+    assert_eq!(bits_to_u32(&ref_out[0]), 0x1234 ^ 7);
+    assert_eq!(ref_out[1], vec![true]);
+
+    let virt = virtualize_ir(&blocks, &mut types, &cfg_default());
+    let virt_out = eval_ir(&virt.blocks, &types, &[w, b]).expect("virt");
+    assert_eq!(ref_out, virt_out);
+}
+
+// ============================================================================
+// Test: conditional branch directly to Return (special-branch + JumpCond)
+// ============================================================================
+
+/// Entry: `if cond then Return(42) else Jmp(block 1)`.
+/// Block 1: `Return(input)`.
+///
+/// Exercises JumpCond whose true arm is a Return (special branch) and
+/// whose false arm forwards an arg to the other block's param reg.
+fn jumpcond_return_or_jump() -> (IRBlocks, IRTypes) {
+    let mut types = IRTypes(vec![IRType::Primitive(PrimType::Bit)]);
+    let bit_ty = IRTypeId(0);
+    let u32_ty = types.intern(IRType::Primitive(PrimType::_32));
+
+    let blocks = IRBlocks::new(vec![
+        IRBlock {
+            params: vec![bit_ty, u32_ty],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 42 }, u32_ty)],
+            stmt_provs: vec![()],
+            terminator: IRTerminator::JumpCond {
+                condition: IRVarId(0),
+                true_block: IRBlockTargetId::Return,
+                true_args: vec![IRVarId(2)],
+                false_block: IRBlockTargetId::Block(IRBlockId(1)),
+                false_args: vec![IRVarId(1)],
+            },
+        },
+        IRBlock {
+            params: vec![u32_ty],
+            stmts: vec![],
+            stmt_provs: vec![],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: vec![IRVarId(0)],
+            },
+        },
+    ]);
+
+    (blocks, types)
+}
+
+#[test]
+fn jumpcond_with_return_arm_semantics() {
+    let (blocks, mut types) = jumpcond_return_or_jump();
+    let bit_ty = IRTypeId(0);
+    let u32_ty = types.intern(IRType::Primitive(PrimType::_32));
+    let cond_t = const_to_bits(&Constant { hi: 0, lo: 1 }, bit_width(bit_ty, &types));
+    let cond_f = const_to_bits(&Constant { hi: 0, lo: 0 }, bit_width(bit_ty, &types));
+    let x = const_to_bits(&Constant { hi: 0, lo: 0xABCD }, bit_width(u32_ty, &types));
+
+    let ref_t = eval_ir(&blocks, &types, &[cond_t.clone(), x.clone()]).expect("ref t");
+    let ref_f = eval_ir(&blocks, &types, &[cond_f.clone(), x.clone()]).expect("ref f");
+    assert_eq!(bits_to_u32(&ref_t[0]), 42);
+    assert_eq!(bits_to_u32(&ref_f[0]), 0xABCD);
+
+    let virt = virtualize_ir(&blocks, &mut types, &cfg_default());
+    let virt_t = eval_ir(&virt.blocks, &types, &[cond_t, x.clone()]).expect("virt t");
+    let virt_f = eval_ir(&virt.blocks, &types, &[cond_f, x]).expect("virt f");
+    assert_eq!(ref_t, virt_t);
+    assert_eq!(ref_f, virt_f);
+}
+

@@ -223,6 +223,12 @@ impl StorageId {
     /// `volar-ir-virt`).  Chosen to be outside the WASM memory range so
     /// virtualised modules can still reference any `memory(i)`.
     pub const VIRT_BYTECODE: StorageId = StorageId(2);
+    /// Base of the reserved range for the virtualisation pass
+    /// *register file*.  Each IR type used as a block-param or
+    /// terminator-arg type is assigned its own `StorageId` in the range
+    /// `[VIRT_REGISTERS_BASE, VIRT_REGISTERS_BASE + n_types)`.  Register
+    /// indices live at the address level within that storage.
+    pub const VIRT_REGISTERS_BASE: u32 = 3;
     /// Base ID for WASM linear memories.  Memory `i` uses `StorageId(MEMORY_BASE + i)`.
     pub const MEMORY_BASE: u32 = 16;
     /// Convenience: StorageId for WASM memory index `i`.
