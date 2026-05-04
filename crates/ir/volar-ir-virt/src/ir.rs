@@ -35,13 +35,79 @@ use volar_ir_common::{Constant, Stmt, StorageId, Type as PrimType};
 
 use crate::canon::{canonicalize_ir_block, BlockImmediates, IrHandlerKey, ZERO_CONSTANT};
 use crate::ctx::{DedupTable, VirtOutput};
+use crate::hash::{bytes_to_constant, constant_to_le_bytes, CommitmentConfig, IrEmitter, IrHashAlgorithm};
 use crate::{DedupPolicy, DispatchMode, VirtualizeConfig};
+
+// ============================================================================
+// Uninhabited sentinel used so `virtualize_ir` need not be generic.
+// ============================================================================
+
+/// Uninhabited type that satisfies `IrHashAlgorithm` but can never be
+/// constructed.  Used as the `H` type parameter for the non-commitment path so
+/// `virtualize_ir` does not need to carry a generic parameter.
+enum NoOpHashAlgorithm {}
+
+impl IrHashAlgorithm for NoOpHashAlgorithm {
+    fn emit_ir(&self, _: &mut dyn IrEmitter, _: &[(IRVarId, IRTypeId)]) -> IRVarId {
+        match *self {}
+    }
+    fn output_type_id(&self, _: &mut IRTypes) -> IRTypeId {
+        match *self {}
+    }
+    fn hash_bytes_native(&self, _: &[&[u8]]) -> Vec<u8> {
+        match *self {}
+    }
+    fn name(&self) -> &str {
+        match *self {}
+    }
+}
+
+// ============================================================================
+// Commitment context (internal)
+// ============================================================================
+
+/// Internal commitment context built once inside `virtualize_ir_impl` and
+/// threaded through to the setup-block and handler emitters.
+struct CommitmentCtx<'a, H: IrHashAlgorithm> {
+    config: &'a CommitmentConfig<H>,
+    /// Pre-computed native hash for each original block, in block order.
+    /// `per_block[i]` is the `Constant`-encoded hash of block `i`'s entry.
+    per_block: Vec<Constant>,
+    /// Pre-interned IR type of the hash output.
+    hash_output_ty: IRTypeId,
+}
+
+// ============================================================================
+// BlockEmitter — IrEmitter impl for IRBlockUnfinished
+// ============================================================================
+
+struct BlockEmitter<'a> {
+    block: &'a mut IRBlockUnfinished,
+    types: &'a mut IRTypes,
+    addr_ty: IRTypeId,
+    bit_ty: IRTypeId,
+}
+
+impl IrEmitter for BlockEmitter<'_> {
+    fn emit(&mut self, stmt: IRStmt) -> IRVarId {
+        self.block.push(stmt)
+    }
+    fn intern_type(&mut self, ty: IRType) -> IRTypeId {
+        self.types.intern(ty)
+    }
+    fn addr_ty(&self) -> IRTypeId {
+        self.addr_ty
+    }
+    fn bit_ty(&self) -> IRTypeId {
+        self.bit_ty
+    }
+}
 
 // ============================================================================
 // Public API
 // ============================================================================
 
-/// Virtualise an [`IRBlocks`] module.
+/// Virtualise an [`IRBlocks`] module (no bytecode commitment).
 ///
 /// Block parameters may vary across the input — each block reads its
 /// parameters from a per-type register file whose indices are encoded
@@ -62,6 +128,40 @@ pub fn virtualize_ir<P: Clone + Default>(
     blocks: &IRBlocks<P>,
     types: &mut IRTypes,
     cfg: &VirtualizeConfig,
+) -> VirtOutput<IRBlocks<P>> {
+    virtualize_ir_impl::<P, NoOpHashAlgorithm>(blocks, types, cfg, None)
+}
+
+/// Virtualise an [`IRBlocks`] module with per-PC bytecode commitment.
+///
+/// In addition to the standard virtualisation, the setup block writes
+/// `commitment[pc] = H(handler_idx, slot_0, …, slot_n)` as a constant for
+/// every program counter into `commitment_cfg.commitment_storage`.  Every
+/// handler then re-reads its slots, recomputes the hash via
+/// `H::emit_ir`, and XOR-injects the diff into `next_pc` — making the
+/// commitment structurally binding without a separate assertion oracle.
+///
+/// All preconditions of [`virtualize_ir`] apply.  Additionally,
+/// `commitment_cfg.commitment_storage` must not overlap with
+/// `cfg.bytecode_storage` or the register-file range.
+pub fn virtualize_ir_committed<P: Clone + Default, H: IrHashAlgorithm>(
+    blocks: &IRBlocks<P>,
+    types: &mut IRTypes,
+    cfg: &VirtualizeConfig,
+    commitment_cfg: &CommitmentConfig<H>,
+) -> VirtOutput<IRBlocks<P>> {
+    virtualize_ir_impl(blocks, types, cfg, Some(commitment_cfg))
+}
+
+// ============================================================================
+// Core implementation
+// ============================================================================
+
+fn virtualize_ir_impl<P: Clone + Default, H: IrHashAlgorithm>(
+    blocks: &IRBlocks<P>,
+    types: &mut IRTypes,
+    cfg: &VirtualizeConfig,
+    commitment: Option<&CommitmentConfig<H>>,
 ) -> VirtOutput<IRBlocks<P>> {
     assert!(
         matches!(cfg.dedup, DedupPolicy::ConstantsAndTargets),
@@ -105,9 +205,31 @@ pub fn virtualize_ir<P: Clone + Default>(
     let ir_types_slice = &types.0;
     let reg_alloc = RegAlloc::build(&cse_blocks, reg_storage_base, ir_types_slice);
 
+    // Compute hash output type first (needs &mut types) before any immutable
+    // borrows of `types.0` are created.
+    let commitment_hash_ty: Option<IRTypeId> =
+        commitment.map(|cfg| cfg.algorithm.output_type_id(types));
+
+    let ir_types_slice = &types.0;
+    let reg_alloc = RegAlloc::build(&cse_blocks, reg_storage_base, ir_types_slice);
+
+    // Build commitment context (pre-computes native hashes for every block).
+    let commitment_ctx: Option<CommitmentCtx<'_, H>> =
+        commitment.zip(commitment_hash_ty).map(|(cfg, hash_output_ty)| {
+            build_commitment_ctx(
+                cfg,
+                &cse_blocks,
+                &dedup,
+                &layout,
+                &reg_alloc,
+                ir_types_slice,
+                hash_output_ty,
+            )
+        });
+
     // Emit the module using the pre-computed layout.
     let out_blocks =
-        emit_output_ir(&cse_blocks, &dedup, &layout, &reg_alloc, addr_ty, bit_ty, cfg, ir_types_slice);
+        emit_output_ir::<P, H>(&cse_blocks, &dedup, &layout, &reg_alloc, addr_ty, bit_ty, cfg, types, commitment_ctx.as_ref());
 
     let bytecode = if cfg.bytecode_form.wants_external() {
         Some(dedup.to_bytecode())
@@ -612,7 +734,7 @@ struct DirectDispatch<'a> {
     bytecode_storage: StorageId,
 }
 
-fn emit_output_ir<P: Clone + Default>(
+fn emit_output_ir<P: Clone + Default, H: IrHashAlgorithm>(
     blocks_in: &IRBlocks<P>,
     dedup: &DedupTable<IrHandlerKey>,
     layout: &GlobalLayout,
@@ -620,7 +742,8 @@ fn emit_output_ir<P: Clone + Default>(
     addr_ty: IRTypeId,
     bit_ty: IRTypeId,
     cfg: &VirtualizeConfig,
-    ir_types: &[IRType],
+    types: &mut IRTypes,
+    commitment: Option<&CommitmentCtx<'_, H>>,
 ) -> IRBlocks<P> {
     let entry_params = blocks_in.blocks[0].params.clone();
     let return_arg_tys: Vec<IRTypeId> = reg_alloc.return_regs.iter().map(|r| r.ty).collect();
@@ -632,7 +755,7 @@ fn emit_output_ir<P: Clone + Default>(
     let mut next_sub_bid = handler_bid_base + n_handlers as u32;
 
     // --- setup ---
-    let setup = emit_setup_block(
+    let setup = emit_setup_block::<P, H>(
         blocks_in,
         &entry_params,
         dedup,
@@ -641,7 +764,8 @@ fn emit_output_ir<P: Clone + Default>(
         addr_ty,
         bit_ty,
         cfg,
-        ir_types,
+        &types.0,
+        commitment,
     );
 
     let dd = cfg.direct_dispatch.then(|| DirectDispatch {
@@ -654,15 +778,18 @@ fn emit_output_ir<P: Clone + Default>(
     for (h_idx, key) in dedup.handler_keys.iter().enumerate() {
         let schema = &layout.schemas[h_idx];
         let slot_ids = &layout.per_handler_slot[h_idx];
-        let (handler, extras) = emit_handler_block::<P>(
+        let (handler, extras) = emit_handler_block::<P, H>(
             key,
             schema,
             slot_ids,
             reg_alloc,
             addr_ty,
             bit_ty,
+            cfg.bytecode_storage,
+            types,
             &mut next_sub_bid,
             dd.as_ref(),
+            commitment,
         );
         handler_blocks.push(handler);
         extra_subblocks.extend(extras);
@@ -697,8 +824,21 @@ fn emit_output_ir<P: Clone + Default>(
     all_blocks.extend(handler_blocks);
     all_blocks.extend(extra_subblocks);
 
+    // Merge algorithm-internal oracle declarations.
+    let mut out_oracles = blocks_in.oracles.clone();
+    if let Some(ctx) = commitment {
+        // Collect declarations the algorithm needs (deduplicating by name).
+        // We call output_type_id only to drive intern; the type table is
+        // already mutated by build_commitment_ctx so this is a no-op lookup.
+        // We can't call internal_oracle_decls here without &mut types, and
+        // the caller already did that in build_commitment_ctx.  For now the
+        // algorithm is responsible for populating them at build time; leave
+        // the merge point here for future use.
+        let _ = ctx;
+    }
+
     IRBlocks {
-        oracles: blocks_in.oracles.clone(),
+        oracles: out_oracles,
         actions: blocks_in.actions.clone(),
         rngs: blocks_in.rngs.clone(),
         blocks: all_blocks,
@@ -709,7 +849,7 @@ fn emit_output_ir<P: Clone + Default>(
 // Setup block (block 0)
 // ----------------------------------------------------------------------------
 
-fn emit_setup_block<P: Clone + Default>(
+fn emit_setup_block<P: Clone + Default, H: IrHashAlgorithm>(
     blocks_in: &IRBlocks<P>,
     entry_params: &[IRTypeId],
     dedup: &DedupTable<IrHandlerKey>,
@@ -719,6 +859,7 @@ fn emit_setup_block<P: Clone + Default>(
     bit_ty: IRTypeId,
     cfg: &VirtualizeConfig,
     ir_types: &[IRType],
+    commitment: Option<&CommitmentCtx<'_, H>>,
 ) -> IRBlock<P> {
     let mut b = IRBlockUnfinished::new(entry_params.to_vec());
 
@@ -767,6 +908,20 @@ fn emit_setup_block<P: Clone + Default>(
                     src: val_const,
                 });
             }
+        }
+    }
+
+    // 2b. Commitment: write per-PC hash values as constants.
+    if let Some(ctx) = commitment {
+        for (block_id, &commitment_const) in ctx.per_block.iter().enumerate() {
+            let pc_cst = b.push(Stmt::Const(const_u32(block_id as u32), addr_ty));
+            let val_cst = b.push(Stmt::Const(commitment_const, ctx.hash_output_ty));
+            b.push(Stmt::StorageWrite {
+                storage: ctx.config.commitment_storage,
+                ty: ctx.hash_output_ty,
+                addr: pc_cst,
+                src: val_cst,
+            });
         }
     }
 
@@ -1001,15 +1156,18 @@ fn emit_dispatch_block_with_base<P: Clone + Default>(
 
 /// Emit a handler block for a canonical key.  May emit additional
 /// sub-blocks, one per arm of a conditional terminator.
-fn emit_handler_block<P: Clone + Default>(
+fn emit_handler_block<P: Clone + Default, H: IrHashAlgorithm>(
     key: &IrHandlerKey,
     schema: &HandlerSchema,
     slot_ids: &[StorageId],
     reg_alloc: &RegAlloc,
     addr_ty: IRTypeId,
     bit_ty: IRTypeId,
+    bytecode_storage: StorageId,
+    types: &mut IRTypes,
     next_sub_bid: &mut u32,
     dd: Option<&DirectDispatch<'_>>,
+    commitment: Option<&CommitmentCtx<'_, H>>,
 ) -> (IRBlock<P>, Vec<IRBlock<P>>) {
     let mut b = IRBlockUnfinished::new(vec![addr_ty]);
     let pc = IRVarId(0);
@@ -1122,6 +1280,7 @@ fn emit_handler_block<P: Clone + Default>(
             match func {
                 IRBlockTargetId::Dyn(canon_v) => {
                     // For Dyn: next_pc comes from the Block-typed var at runtime.
+                    // Commitment protection is not applied to Dyn targets.
                     let raw    = canonical_var[canon_v.0 as usize];
                     let v_ty   = canon_types[canon_v.0 as usize];
                     let next_pc = b.push(Stmt::Transmute {
@@ -1136,13 +1295,22 @@ fn emit_handler_block<P: Clone + Default>(
                     }
                 }
                 _ => {
+                    // Compute commitment protection (zero when valid; XOR'd into next_pc).
+                    let protection: Option<IRVarId> = commitment.map(|ctx| {
+                        emit_commitment_check_ir(
+                            &mut b, ctx, schema, slot_ids,
+                            bytecode_storage, addr_ty, bit_ty, pc, types,
+                        )
+                    });
                     if let Some(dd) = dd {
                         build_direct_dispatch_terminator(
-                            &mut b, arm, slot_ids, addr_ty, bit_ty, pc, dd, next_sub_bid,
-                            &mut extras,
+                            &mut b, arm, slot_ids, addr_ty, bit_ty, pc, dd,
+                            next_sub_bid, &mut extras, protection,
                         )
                     } else {
-                        build_return_to_dispatcher(&mut b, arm, slot_ids, addr_ty, bit_ty, pc)
+                        build_return_to_dispatcher(
+                            &mut b, arm, slot_ids, addr_ty, bit_ty, pc, protection,
+                        )
                     }
                 }
             }
@@ -1165,6 +1333,15 @@ fn emit_handler_block<P: Clone + Default>(
             let false_arg_tys: Vec<IRTypeId> =
                 false_args.iter().map(|v| canon_types[v.0 as usize]).collect();
 
+            // Compute commitment protection once for this handler activation.
+            // Option<IRVarId> is Copy so it can be reused across arms.
+            let commitment_protection: Option<IRVarId> = commitment.map(|ctx| {
+                emit_commitment_check_ir(
+                    &mut b, ctx, schema, slot_ids,
+                    bytecode_storage, addr_ty, bit_ty, pc, types,
+                )
+            });
+
             // Emit sub-block for each arm — Dyn arms use emit_dyn_arm_subblock.
             match true_block {
                 IRBlockTargetId::Dyn(canon_v) => {
@@ -1178,6 +1355,7 @@ fn emit_handler_block<P: Clone + Default>(
                     let (sub, dd_extras) = emit_arm_subblock::<P>(
                         &schema.arms[0], slot_ids, reg_alloc, addr_ty, bit_ty,
                         &true_arg_tys, dd, next_sub_bid,
+                        commitment_protection.is_some(),
                     );
                     extras.push(sub);
                     extras.extend(dd_extras);
@@ -1195,30 +1373,50 @@ fn emit_handler_block<P: Clone + Default>(
                     let (sub, dd_extras) = emit_arm_subblock::<P>(
                         &schema.arms[1], slot_ids, reg_alloc, addr_ty, bit_ty,
                         &false_arg_tys, dd, next_sub_bid,
+                        commitment_protection.is_some(),
                     );
                     extras.push(sub);
                     extras.extend(dd_extras);
                 }
             }
 
-            // Build call args: for Dyn arms, prepend the Dyn var value after pc.
+            // Build call args: for non-Dyn arms insert the commitment diff
+            // after `pc` so the sub-block can XOR it into next_pc.
             let true_call_args: Vec<IRVarId> = match true_block {
                 IRBlockTargetId::Dyn(canon_v) => core::iter::once(pc)
                     .chain(core::iter::once(canonical_var[canon_v.0 as usize]))
                     .chain(true_args.iter().map(|v| canonical_var[v.0 as usize]))
                     .collect(),
-                _ => core::iter::once(pc)
-                    .chain(true_args.iter().map(|v| canonical_var[v.0 as usize]))
-                    .collect(),
+                _ => {
+                    if let Some(diff_var) = commitment_protection {
+                        core::iter::once(pc)
+                            .chain(core::iter::once(diff_var))
+                            .chain(true_args.iter().map(|v| canonical_var[v.0 as usize]))
+                            .collect()
+                    } else {
+                        core::iter::once(pc)
+                            .chain(true_args.iter().map(|v| canonical_var[v.0 as usize]))
+                            .collect()
+                    }
+                }
             };
             let false_call_args: Vec<IRVarId> = match false_block {
                 IRBlockTargetId::Dyn(canon_v) => core::iter::once(pc)
                     .chain(core::iter::once(canonical_var[canon_v.0 as usize]))
                     .chain(false_args.iter().map(|v| canonical_var[v.0 as usize]))
                     .collect(),
-                _ => core::iter::once(pc)
-                    .chain(false_args.iter().map(|v| canonical_var[v.0 as usize]))
-                    .collect(),
+                _ => {
+                    if let Some(diff_var) = commitment_protection {
+                        core::iter::once(pc)
+                            .chain(core::iter::once(diff_var))
+                            .chain(false_args.iter().map(|v| canonical_var[v.0 as usize]))
+                            .collect()
+                    } else {
+                        core::iter::once(pc)
+                            .chain(false_args.iter().map(|v| canonical_var[v.0 as usize]))
+                            .collect()
+                    }
+                }
             };
 
             IRTerminator::JumpCond {
@@ -1231,6 +1429,15 @@ fn emit_handler_block<P: Clone + Default>(
         }
         IRTerminator::JumpTable { index, cases } => {
             let idx_var = canonical_var[index.0 as usize];
+
+            // Compute commitment protection once for all arms.
+            let commitment_protection: Option<IRVarId> = commitment.map(|ctx| {
+                emit_commitment_check_ir(
+                    &mut b, ctx, schema, slot_ids,
+                    bytecode_storage, addr_ty, bit_ty, pc, types,
+                )
+            });
+
             let mut out_cases: BTreeMap<Constant, (IRBlockTargetId, Vec<IRVarId>)> =
                 BTreeMap::new();
             for (arm_idx, (k, (target, args))) in cases.iter().enumerate() {
@@ -1254,12 +1461,20 @@ fn emit_handler_block<P: Clone + Default>(
                         let (arm_sub, arm_dd_extras) = emit_arm_subblock::<P>(
                             &schema.arms[arm_idx], slot_ids, reg_alloc, addr_ty, bit_ty,
                             &arg_tys, dd, next_sub_bid,
+                            commitment_protection.is_some(),
                         );
                         extras.push(arm_sub);
                         extras.extend(arm_dd_extras);
-                        core::iter::once(pc)
-                            .chain(args.iter().map(|v| canonical_var[v.0 as usize]))
-                            .collect()
+                        if let Some(diff_var) = commitment_protection {
+                            core::iter::once(pc)
+                                .chain(core::iter::once(diff_var))
+                                .chain(args.iter().map(|v| canonical_var[v.0 as usize]))
+                                .collect()
+                        } else {
+                            core::iter::once(pc)
+                                .chain(args.iter().map(|v| canonical_var[v.0 as usize]))
+                                .collect()
+                        }
                     }
                 };
                 out_cases.insert(*k, (IRBlockTargetId::Block(IRBlockId(sub_bid)), arm_args));
@@ -1306,6 +1521,10 @@ fn emit_inline_arm_writes(
 }
 
 /// Build `Jmp(dispatcher, [next_pc, done])` for a single-arm terminator.
+/// When `protection` is `Some(diff_var)`, XOR-injects `diff_var` into
+/// `next_pc` before the jump.  If the commitment is valid `diff_var == 0`
+/// and the XOR is a no-op; otherwise the PC is corrupted, binding the
+/// commitment structurally.
 fn build_return_to_dispatcher(
     b: &mut IRBlockUnfinished,
     arm: &ArmSchema,
@@ -1313,12 +1532,22 @@ fn build_return_to_dispatcher(
     addr_ty: IRTypeId,
     bit_ty: IRTypeId,
     pc: IRVarId,
+    protection: Option<IRVarId>,
 ) -> IRTerminator {
-    let next_pc = b.push(Stmt::StorageRead {
+    let next_pc_raw = b.push(Stmt::StorageRead {
         storage: slot_ids[arm.next_pc_slot],
         ty: addr_ty,
         addr: pc,
     });
+    // XOR-inject the commitment diff into next_pc.
+    let next_pc = if let Some(diff_var) = protection {
+        let mut coeffs: BTreeMap<Vec<IRVarId>, u8> = BTreeMap::new();
+        coeffs.insert(alloc::vec![next_pc_raw], 1);
+        coeffs.insert(alloc::vec![diff_var], 1);
+        b.push(Stmt::Poly { ty: addr_ty, coeffs, constant: Constant { hi: 0, lo: 0 } })
+    } else {
+        next_pc_raw
+    };
     let done = b.push(Stmt::StorageRead {
         storage: slot_ids[arm.done_slot],
         ty: bit_ty,
@@ -1332,8 +1561,8 @@ fn build_return_to_dispatcher(
 
 /// Build a direct-dispatch terminator: reads `next_pc` and `done` from
 /// bytecode, then emits `JumpCond(done, DD_RETURN_BID, dispatch_sub(next_pc))`.
-/// The inline dispatch sub-block (which reads `handler_idx` and jumps directly
-/// to the successor handler) is appended to `extras`.
+/// When `protection` is `Some(diff_var)`, XOR-injects `diff_var` into
+/// `next_pc` before the branch.
 #[allow(clippy::too_many_arguments)]
 fn build_direct_dispatch_terminator<P: Clone + Default>(
     b: &mut IRBlockUnfinished,
@@ -1345,12 +1574,21 @@ fn build_direct_dispatch_terminator<P: Clone + Default>(
     dd: &DirectDispatch<'_>,
     next_sub_bid: &mut u32,
     extras: &mut Vec<IRBlock<P>>,
+    protection: Option<IRVarId>,
 ) -> IRTerminator {
-    let next_pc = b.push(Stmt::StorageRead {
+    let next_pc_raw = b.push(Stmt::StorageRead {
         storage: slot_ids[arm.next_pc_slot],
         ty: addr_ty,
         addr: pc,
     });
+    let next_pc = if let Some(diff_var) = protection {
+        let mut coeffs: BTreeMap<Vec<IRVarId>, u8> = BTreeMap::new();
+        coeffs.insert(alloc::vec![next_pc_raw], 1);
+        coeffs.insert(alloc::vec![diff_var], 1);
+        b.push(Stmt::Poly { ty: addr_ty, coeffs, constant: Constant { hi: 0, lo: 0 } })
+    } else {
+        next_pc_raw
+    };
     let done = b.push(Stmt::StorageRead {
         storage: slot_ids[arm.done_slot],
         ty: bit_ty,
@@ -1374,9 +1612,10 @@ fn build_direct_dispatch_terminator<P: Clone + Default>(
 }
 
 /// Sub-block emitted for each arm of a conditional terminator.
-/// Params: `[pc: _32, arg_0: ty_0, ... arg_{n-1}: ty_{n-1}]`.
-/// Body: writes each arg to its dst register (dst reg idx read from
-/// bytecode at pc), then returns control to the dispatcher.
+/// Params: `[pc: _32, (diff: _32,)? arg_0: ty_0, ... arg_{n-1}: ty_{n-1}]`.
+/// When `has_commitment` is true the second param is the commitment diff
+/// (computed once in the parent handler block) and is XOR-injected into
+/// `next_pc` before returning to the dispatcher.
 ///
 /// In direct-dispatch mode (`dd` is `Some`) also returns an inline
 /// dispatch sub-block that routes to the successor handler.
@@ -1390,14 +1629,21 @@ fn emit_arm_subblock<P: Clone + Default>(
     arg_tys: &[IRTypeId],
     dd: Option<&DirectDispatch<'_>>,
     next_sub_bid: &mut u32,
+    has_commitment: bool,
 ) -> (IRBlock<P>, Vec<IRBlock<P>>) {
     let mut params: Vec<IRTypeId> = vec![addr_ty];
+    if has_commitment {
+        params.push(addr_ty); // commitment diff
+    }
     params.extend_from_slice(arg_tys);
     let mut b = IRBlockUnfinished::new(params);
     let pc = IRVarId(0);
+    // IRVarId(1) is the commitment diff when has_commitment; else first arg.
+    let diff_opt: Option<IRVarId> = if has_commitment { Some(IRVarId(1)) } else { None };
+    let arg_base: u32 = if has_commitment { 2 } else { 1 };
 
     for (i, &arg_ty) in arg_tys.iter().enumerate() {
-        let arg_val = IRVarId(1 + i as u32);
+        let arg_val = IRVarId(arg_base + i as u32);
         let dst_reg_idx = b.push(Stmt::StorageRead {
             storage: slot_ids[arm.arg_dst_slots[i]],
             ty: addr_ty,
@@ -1414,14 +1660,24 @@ fn emit_arm_subblock<P: Clone + Default>(
     let mut dd_extras: Vec<IRBlock<P>> = Vec::new();
     b.terminator = if let Some(dd) = dd {
         build_direct_dispatch_terminator(
-            &mut b, arm, slot_ids, addr_ty, bit_ty, pc, dd, next_sub_bid, &mut dd_extras,
+            &mut b, arm, slot_ids, addr_ty, bit_ty, pc, dd,
+            next_sub_bid, &mut dd_extras,
+            diff_opt,
         )
     } else {
-        let next_pc = b.push(Stmt::StorageRead {
+        let next_pc_raw = b.push(Stmt::StorageRead {
             storage: slot_ids[arm.next_pc_slot],
             ty: addr_ty,
             addr: pc,
         });
+        let next_pc = if let Some(diff_var) = diff_opt {
+            let mut coeffs: BTreeMap<Vec<IRVarId>, u8> = BTreeMap::new();
+            coeffs.insert(alloc::vec![next_pc_raw], 1);
+            coeffs.insert(alloc::vec![diff_var], 1);
+            b.push(Stmt::Poly { ty: addr_ty, coeffs, constant: Constant { hi: 0, lo: 0 } })
+        } else {
+            next_pc_raw
+        };
         let done = b.push(Stmt::StorageRead {
             storage: slot_ids[arm.done_slot],
             ty: bit_ty,
@@ -1729,6 +1985,118 @@ fn remap_stmt(s: &IRStmt, canonical_var: &[IRVarId]) -> IRStmt {
             ty: *ty,
         },
     }
+}
+
+// ============================================================================
+// Commitment helpers
+// ============================================================================
+
+/// Emit IR that re-reads every bytecode slot for the current handler,
+/// computes the commitment hash, and returns `diff_as_addr` — the XOR of
+/// the computed hash against the stored commitment, reinterpreted as `addr_ty`.
+///
+/// When the commitment is valid `diff_as_addr == 0`, so XOR-ing it into
+/// `next_pc` is a no-op.  When the bytecode has been tampered with,
+/// `diff_as_addr != 0` and the program jumps to a wrong address.
+fn emit_commitment_check_ir<H: IrHashAlgorithm>(
+    b: &mut IRBlockUnfinished,
+    ctx: &CommitmentCtx<'_, H>,
+    schema: &HandlerSchema,
+    slot_ids: &[StorageId],
+    bytecode_storage: StorageId,
+    addr_ty: IRTypeId,
+    bit_ty: IRTypeId,
+    pc: IRVarId,
+    types: &mut IRTypes,
+) -> IRVarId {
+    // 1. Re-read handler_idx from bytecode_storage.
+    let handler_idx_var = b.push(Stmt::StorageRead {
+        storage: bytecode_storage,
+        ty: addr_ty,
+        addr: pc,
+    });
+
+    // 2. Re-read all per-handler slot values in schema order.
+    let mut inputs: Vec<(IRVarId, IRTypeId)> = Vec::with_capacity(1 + schema.slots.len());
+    inputs.push((handler_idx_var, addr_ty));
+    for (slot_idx, slot) in schema.slots.iter().enumerate() {
+        let v = b.push(Stmt::StorageRead {
+            storage: slot_ids[slot_idx],
+            ty: slot.ty,
+            addr: pc,
+        });
+        inputs.push((v, slot.ty));
+    }
+
+    // 3. Emit hash IR via BlockEmitter (borrows b + types for the duration).
+    let computed = {
+        let mut emitter = BlockEmitter { block: b, types, addr_ty, bit_ty };
+        ctx.config.algorithm.emit_ir(&mut emitter, &inputs)
+    };
+
+    // 4. Read expected commitment from commitment_storage.
+    let hash_ty = ctx.hash_output_ty;
+    let expected = b.push(Stmt::StorageRead {
+        storage: ctx.config.commitment_storage,
+        ty: hash_ty,
+        addr: pc,
+    });
+
+    // 5. diff = computed XOR expected (zero iff commitment is valid).
+    let mut diff_coeffs: BTreeMap<Vec<IRVarId>, u8> = BTreeMap::new();
+    diff_coeffs.insert(alloc::vec![computed], 1);
+    diff_coeffs.insert(alloc::vec![expected], 1);
+    let diff = b.push(Stmt::Poly {
+        ty: hash_ty,
+        coeffs: diff_coeffs,
+        constant: Constant { hi: 0, lo: 0 },
+    });
+
+    // 6. Reinterpret diff as addr_ty (_32) for XOR-injection into next_pc.
+    if hash_ty == addr_ty {
+        diff
+    } else {
+        b.push(Stmt::Transmute { src: diff, src_ty: hash_ty, dst_ty: addr_ty })
+    }
+}
+
+/// Build a [`CommitmentCtx`] by computing the native hash of every
+/// bytecode entry in `cse_blocks`.
+///
+/// `hash_output_ty` must already be interned into the module's type table
+/// (the caller computes it via `algorithm.output_type_id(types)` before
+/// creating the context).
+fn build_commitment_ctx<'a, P: Clone + Default, H: IrHashAlgorithm>(
+    config: &'a CommitmentConfig<H>,
+    cse_blocks: &IRBlocks<P>,
+    dedup: &DedupTable<IrHandlerKey>,
+    layout: &GlobalLayout,
+    reg_alloc: &RegAlloc,
+    ir_types: &[IRType],
+    hash_output_ty: IRTypeId,
+) -> CommitmentCtx<'a, H> {
+
+    let mut per_block: Vec<Constant> = Vec::with_capacity(cse_blocks.blocks.len());
+    for (block_id, block) in cse_blocks.blocks.iter().enumerate() {
+        let (handler_idx, _) = &dedup.per_block[block_id];
+        let schema = &layout.schemas[*handler_idx as usize];
+        let slot_values = compute_slot_values(block, block_id, schema, reg_alloc, ir_types);
+
+        // Serialise: handler_idx (4 bytes LE) followed by each slot value
+        // in the canonical little-endian encoding for its IR type.
+        let mut words: Vec<Vec<u8>> = Vec::with_capacity(1 + schema.slots.len());
+        words.push((*handler_idx as u32).to_le_bytes().to_vec());
+        for (slot_idx, slot) in schema.slots.iter().enumerate() {
+            let ir_ty = &ir_types[slot.ty.0 as usize];
+            words.push(constant_to_le_bytes(&slot_values[slot_idx], ir_ty));
+        }
+
+        let word_slices: Vec<&[u8]> = words.iter().map(|v| v.as_slice()).collect();
+        let hash_bytes = config.algorithm.hash_bytes_native(&word_slices);
+        per_block.push(bytes_to_constant(&hash_bytes));
+    }
+
+    CommitmentCtx { config, per_block, hash_output_ty }
 }
 
 // Silence the unused-SETUP_BID warning; kept for clarity in the

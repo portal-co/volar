@@ -42,12 +42,14 @@ pub mod bir;
 pub mod bytecode;
 pub mod canon;
 pub mod ctx;
+pub mod hash;
 pub mod ir;
 
 pub use bytecode::{BytecodeEntry, HandlerImmSchema, VirtBytecode};
 pub use canon::{BirHandlerKey, BlockImmediates, HandlerKey, ImmediateKind, IrHandlerKey};
 pub use ctx::VirtOutput;
-pub use ir::virtualize_ir;
+pub use hash::{CommitmentConfig, IrEmitter, IrHashAlgorithm, XorFoldHash32};
+pub use ir::{virtualize_ir, virtualize_ir_committed};
 pub use bir::virtualize_bir;
 
 use volar_ir_common::StorageId;
