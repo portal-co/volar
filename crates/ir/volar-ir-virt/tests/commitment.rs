@@ -14,6 +14,7 @@
 //!
 //! Because commitment diffs are zero for correctly-written bytecode, the
 //! XOR injected into `next_pc` is a no-op and the output matches.
+extern crate alloc;
 
 use volar_fuzz::interpreter::ir::{bit_width, const_to_bits, eval_ir};
 use volar_ir::ir::{
@@ -39,10 +40,11 @@ fn cfg_in_ir() -> VirtualizeConfig {
 }
 
 fn commitment_cfg() -> CommitmentConfig<XorFoldHash32> {
-    // Use a StorageId well above the virt bytecode range to avoid collisions.
     CommitmentConfig {
         algorithm: XorFoldHash32::default(),
         commitment_storage: StorageId(64),
+        key: alloc::vec![],
+        key_storage: None,
     }
 }
 
@@ -319,4 +321,122 @@ fn committed_lifted_const_same_output() {
         plain_out, commit_out,
         "committed output must match plain when bytecode is valid"
     );
+}
+
+// ============================================================================
+// SipHash48 tests
+// ============================================================================
+
+/// Build a SipHash48 CommitmentConfig with a fixed compile-time key.
+fn siphash_commitment_cfg() -> CommitmentConfig<volar_ir_virt::SipHash48> {
+    CommitmentConfig {
+        algorithm: volar_ir_virt::SipHash48,
+        commitment_storage: StorageId(64),
+        // k0 = 0x_DEAD_BEEF_CAFE_BABE, k1 = 0x_0123_4567_89AB_CDEF
+        key: alloc::vec![
+            Constant { hi: 0, lo: 0xDEAD_BEEF_CAFE_BABE_u64 as u128 },
+            Constant { hi: 0, lo: 0x0123_4567_89AB_CDEF_u64 as u128 },
+        ],
+        key_storage: Some(StorageId(128)),
+    }
+}
+
+/// Run `eval_ir` prepending the two SipHash key constants as the first
+/// arguments (they are the extra entry-block params added by the keyed pass).
+fn eval_with_sip_key<I>(
+    blocks: &volar_ir::ir::IRBlocks,
+    types: &volar_ir::ir::IRTypes,
+    original_inputs: I,
+) -> Vec<Vec<bool>>
+where
+    I: IntoIterator<Item = Vec<bool>>,
+{
+    use volar_fuzz::interpreter::ir::eval_ir;
+    // The u64 type is always index 0 of a freshly-built IRTypes table,
+    // but we can find it by scanning — or just ask for bit_width of _64.
+    let u64_ty_id = types.0.iter().position(|t| {
+        matches!(t, volar_ir::ir::IRType::Primitive(volar_ir::ir::PrimType::_64))
+    }).expect("_64 type not in table") as u32;
+    let u64_ty = volar_ir::ir::IRTypeId(u64_ty_id);
+    let k0_bits = const_to_bits(
+        &Constant { hi: 0, lo: 0xDEAD_BEEF_CAFE_BABE_u64 as u128 },
+        bit_width(u64_ty, types),
+    );
+    let k1_bits = const_to_bits(
+        &Constant { hi: 0, lo: 0x0123_4567_89AB_CDEF_u64 as u128 },
+        bit_width(u64_ty, types),
+    );
+    let mut args = alloc::vec![k0_bits, k1_bits];
+    args.extend(original_inputs);
+    eval_ir(blocks, types, &args).expect("eval_ir with sip key failed")
+}
+
+#[test]
+fn siphash48_committed_single_block_same_output() {
+    let (blocks, mut types) = single_const_return();
+
+    let plain = virtualize_ir(&blocks, &mut types, &cfg_in_ir());
+    let plain_out = eval_ir(&plain.blocks, &types, &[]).expect("plain eval");
+
+    let committed =
+        virtualize_ir_committed(&blocks, &mut types, &cfg_in_ir(), &siphash_commitment_cfg());
+    // The pass adds two key params at the front; supply them.
+    assert_eq!(committed.key_params.len(), 2, "SipHash48 must add 2 key params");
+    let commit_out = eval_with_sip_key(&committed.blocks, &types, []);
+
+    assert_eq!(plain_out, commit_out, "SipHash48 single-block output must match plain");
+    assert_eq!(bits_to_u32(&commit_out[0]), 42);
+}
+
+#[test]
+fn siphash48_key_params_reported_correctly() {
+    let (blocks, mut types) = single_const_return();
+    let committed =
+        virtualize_ir_committed(&blocks, &mut types, &cfg_in_ir(), &siphash_commitment_cfg());
+
+    // key_params must carry the two compile-time key constants.
+    assert_eq!(committed.key_params.len(), 2);
+    assert_eq!(committed.key_params[0].0.lo, 0xDEAD_BEEF_CAFE_BABE_u64 as u128);
+    assert_eq!(committed.key_params[1].0.lo, 0x0123_4567_89AB_CDEF_u64 as u128);
+}
+
+#[test]
+fn siphash48_committed_passthrough_same_output() {
+    let (blocks, mut types) = three_block_passthrough();
+    let u32_ty = types.intern(IRType::Primitive(volar_ir::ir::PrimType::_32));
+    let input = const_to_bits(&Constant { hi: 0, lo: 7 }, bit_width(u32_ty, &types));
+
+    let plain = virtualize_ir(&blocks, &mut types, &cfg_in_ir());
+    let plain_out =
+        eval_ir(&plain.blocks, &types, &[input.clone()]).expect("plain");
+
+    let committed =
+        virtualize_ir_committed(&blocks, &mut types, &cfg_in_ir(), &siphash_commitment_cfg());
+    let commit_out = eval_with_sip_key(&committed.blocks, &types, [input]);
+
+    assert_eq!(plain_out, commit_out, "SipHash48 passthrough must match plain");
+    assert_eq!(bits_to_u32(&plain_out[0]), 7);
+}
+
+#[test]
+fn siphash48_committed_jumpcond_same_output() {
+    let (blocks, mut types) = jumpcond_two_branch();
+    let bit_ty = IRTypeId(0);
+    let u32_ty = types.intern(IRType::Primitive(volar_ir::ir::PrimType::_32));
+
+    let c_t = const_to_bits(&Constant { hi: 0, lo: 1 }, bit_width(bit_ty, &types));
+    let c_f = const_to_bits(&Constant { hi: 0, lo: 0 }, bit_width(bit_ty, &types));
+    let x = const_to_bits(&Constant { hi: 0, lo: 99 }, bit_width(u32_ty, &types));
+
+    let plain = virtualize_ir(&blocks, &mut types, &cfg_in_ir());
+    let plain_t = eval_ir(&plain.blocks, &types, &[c_t.clone(), x.clone()]).expect("plain t");
+    let plain_f = eval_ir(&plain.blocks, &types, &[c_f.clone(), x.clone()]).expect("plain f");
+
+    let committed =
+        virtualize_ir_committed(&blocks, &mut types, &cfg_in_ir(), &siphash_commitment_cfg());
+    let commit_t = eval_with_sip_key(&committed.blocks, &types, [c_t, x.clone()]);
+    let commit_f = eval_with_sip_key(&committed.blocks, &types, [c_f, x]);
+
+    assert_eq!(plain_t, commit_t, "SipHash48 JumpCond true must match");
+    assert_eq!(plain_f, commit_f, "SipHash48 JumpCond false must match");
 }

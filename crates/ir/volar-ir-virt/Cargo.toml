@@ -11,6 +11,7 @@ volar-ir.workspace = true
 volar-ir-common.workspace = true
 volar-ir-passes.workspace = true
 volar-provenance.workspace = true
+volar-lir.workspace = true
 
 [dev-dependencies]
 volar-fuzz = { path = "../../fuzz/volar-fuzz" }

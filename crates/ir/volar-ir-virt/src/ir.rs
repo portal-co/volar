@@ -48,13 +48,13 @@ use crate::{DedupPolicy, DispatchMode, VirtualizeConfig};
 enum NoOpHashAlgorithm {}
 
 impl IrHashAlgorithm for NoOpHashAlgorithm {
-    fn emit_ir(&self, _: &mut dyn IrEmitter, _: &[(IRVarId, IRTypeId)]) -> IRVarId {
+    fn emit_ir(&self, _: &mut dyn IrEmitter, _: &[(IRVarId, IRTypeId)], _: &[(IRVarId, IRTypeId)]) -> IRVarId {
         match *self {}
     }
     fn output_type_id(&self, _: &mut IRTypes) -> IRTypeId {
         match *self {}
     }
-    fn hash_bytes_native(&self, _: &[&[u8]]) -> Vec<u8> {
+    fn hash_bytes_native(&self, _: &[&[u8]], _: &[&[u8]]) -> Vec<u8> {
         match *self {}
     }
     fn name(&self) -> &str {
@@ -75,6 +75,10 @@ struct CommitmentCtx<'a, H: IrHashAlgorithm> {
     per_block: Vec<Constant>,
     /// Pre-interned IR type of the hash output.
     hash_output_ty: IRTypeId,
+    /// Pre-interned IR type IDs for the key words (empty if unkeyed).
+    key_type_ids: Vec<IRTypeId>,
+    /// Raw IR types for the key words, used for native serialisation.
+    key_schema: Vec<IRType>,
 }
 
 // ============================================================================
@@ -202,14 +206,18 @@ fn virtualize_ir_impl<P: Clone + Default, H: IrHashAlgorithm>(
     let reg_storage_base = layout.next_free_storage_after_bytecode(cfg.bytecode_storage);
 
     // Allocate per-type register storages starting at reg_storage_base.
-    let ir_types_slice = &types.0;
-    let reg_alloc = RegAlloc::build(&cse_blocks, reg_storage_base, ir_types_slice);
-
-    // Compute hash output type first (needs &mut types) before any immutable
-    // borrows of `types.0` are created.
+    // All &mut types operations must finish BEFORE creating `ir_types_slice`.
+    // 1. Key schema: intern key-word types and collect their raw IRTypes.
+    let commitment_key_schema: Vec<IRType> =
+        commitment.map(|cfg| cfg.algorithm.key_schema()).unwrap_or_default();
+    let commitment_key_type_ids: Vec<IRTypeId> =
+        commitment_key_schema.iter().map(|t| types.intern(t.clone())).collect();
+    // 2. Hash output type.
     let commitment_hash_ty: Option<IRTypeId> =
         commitment.map(|cfg| cfg.algorithm.output_type_id(types));
 
+    // Now safe to take an immutable slice (no more &mut types borrows until
+    // emit_output_ir, which takes &mut types itself).
     let ir_types_slice = &types.0;
     let reg_alloc = RegAlloc::build(&cse_blocks, reg_storage_base, ir_types_slice);
 
@@ -224,8 +232,21 @@ fn virtualize_ir_impl<P: Clone + Default, H: IrHashAlgorithm>(
                 &reg_alloc,
                 ir_types_slice,
                 hash_output_ty,
+                commitment_key_type_ids.clone(),
+                commitment_key_schema.clone(),
             )
         });
+
+    // Key params the caller must supply as the first entry-block arguments.
+    let key_params: Vec<(Constant, IRTypeId)> = commitment
+        .map(|cfg| {
+            cfg.key
+                .iter()
+                .zip(commitment_key_type_ids.iter())
+                .map(|(&k, &ty)| (k, ty))
+                .collect()
+        })
+        .unwrap_or_default();
 
     // Emit the module using the pre-computed layout.
     let out_blocks =
@@ -248,6 +269,7 @@ fn virtualize_ir_impl<P: Clone + Default, H: IrHashAlgorithm>(
         bytecode,
         n_handlers,
         blocks_in,
+        key_params,
     }
 }
 
@@ -861,9 +883,36 @@ fn emit_setup_block<P: Clone + Default, H: IrHashAlgorithm>(
     ir_types: &[IRType],
     commitment: Option<&CommitmentCtx<'_, H>>,
 ) -> IRBlock<P> {
-    let mut b = IRBlockUnfinished::new(entry_params.to_vec());
+    // Build the param list: key words first, then original entry params.
+    // The key params are at IRVarId(0..n_key); original params follow.
+    let n_key = commitment.map(|ctx| ctx.key_type_ids.len()).unwrap_or(0);
+    let mut block_params: Vec<IRTypeId> = Vec::with_capacity(n_key + entry_params.len());
+    if let Some(ctx) = commitment {
+        block_params.extend_from_slice(&ctx.key_type_ids);
+    }
+    block_params.extend_from_slice(entry_params);
+    let mut b = IRBlockUnfinished::new(block_params);
+
+    // 0. Write key params to key_storage so handlers can read them back.
+    if let Some(ctx) = commitment {
+        if let (Some(key_storage), false) =
+            (ctx.config.key_storage, ctx.key_type_ids.is_empty())
+        {
+            for (k_idx, &key_ty) in ctx.key_type_ids.iter().enumerate() {
+                let addr = b.push(Stmt::Const(const_u32(k_idx as u32), addr_ty));
+                b.push(Stmt::StorageWrite {
+                    storage: key_storage,
+                    ty: key_ty,
+                    addr,
+                    src: IRVarId(k_idx as u32), // key params are the first block params
+                });
+            }
+        }
+    }
 
     // 1. Write the entry block's params into their assigned registers.
+    // Because key params are prepended, original entry params are at
+    // IRVarId(n_key + param_idx) rather than IRVarId(param_idx).
     let entry_regs = &reg_alloc.per_block_params[0];
     assert_eq!(
         entry_regs.len(),
@@ -876,7 +925,7 @@ fn emit_setup_block<P: Clone + Default, H: IrHashAlgorithm>(
             storage: reg_alloc.storage_for(reg.ty),
             ty: reg.ty,
             addr,
-            src: IRVarId(param_idx as u32),
+            src: IRVarId((n_key + param_idx) as u32),
         });
     }
 
@@ -2009,6 +2058,21 @@ fn emit_commitment_check_ir<H: IrHashAlgorithm>(
     pc: IRVarId,
     types: &mut IRTypes,
 ) -> IRVarId {
+    // 0. Read key words from key_storage (one StorageRead per key word).
+    let mut key_vars: Vec<(IRVarId, IRTypeId)> =
+        Vec::with_capacity(ctx.key_type_ids.len());
+    if let Some(key_storage) = ctx.config.key_storage {
+        for (k_idx, &key_ty) in ctx.key_type_ids.iter().enumerate() {
+            let addr = b.push(Stmt::Const(const_u32(k_idx as u32), addr_ty));
+            let kv = b.push(Stmt::StorageRead {
+                storage: key_storage,
+                ty: key_ty,
+                addr,
+            });
+            key_vars.push((kv, key_ty));
+        }
+    }
+
     // 1. Re-read handler_idx from bytecode_storage.
     let handler_idx_var = b.push(Stmt::StorageRead {
         storage: bytecode_storage,
@@ -2031,7 +2095,7 @@ fn emit_commitment_check_ir<H: IrHashAlgorithm>(
     // 3. Emit hash IR via BlockEmitter (borrows b + types for the duration).
     let computed = {
         let mut emitter = BlockEmitter { block: b, types, addr_ty, bit_ty };
-        ctx.config.algorithm.emit_ir(&mut emitter, &inputs)
+        ctx.config.algorithm.emit_ir(&mut emitter, &key_vars, &inputs)
     };
 
     // 4. Read expected commitment from commitment_storage.
@@ -2074,7 +2138,17 @@ fn build_commitment_ctx<'a, P: Clone + Default, H: IrHashAlgorithm>(
     reg_alloc: &RegAlloc,
     ir_types: &[IRType],
     hash_output_ty: IRTypeId,
+    key_type_ids: Vec<IRTypeId>,
+    key_schema: Vec<IRType>,
 ) -> CommitmentCtx<'a, H> {
+    // Serialise the key for native hashing.
+    let key_word_bytes: Vec<Vec<u8>> = config
+        .key
+        .iter()
+        .zip(key_schema.iter())
+        .map(|(k, ty)| constant_to_le_bytes(k, ty))
+        .collect();
+    let key_word_slices: Vec<&[u8]> = key_word_bytes.iter().map(|v| v.as_slice()).collect();
 
     let mut per_block: Vec<Constant> = Vec::with_capacity(cse_blocks.blocks.len());
     for (block_id, block) in cse_blocks.blocks.iter().enumerate() {
@@ -2092,11 +2166,11 @@ fn build_commitment_ctx<'a, P: Clone + Default, H: IrHashAlgorithm>(
         }
 
         let word_slices: Vec<&[u8]> = words.iter().map(|v| v.as_slice()).collect();
-        let hash_bytes = config.algorithm.hash_bytes_native(&word_slices);
+        let hash_bytes = config.algorithm.hash_bytes_native(&key_word_slices, &word_slices);
         per_block.push(bytes_to_constant(&hash_bytes));
     }
 
-    CommitmentCtx { config, per_block, hash_output_ty }
+    CommitmentCtx { config, per_block, hash_output_ty, key_type_ids, key_schema }
 }
 
 // Silence the unused-SETUP_BID warning; kept for clarity in the

@@ -48,7 +48,7 @@ pub mod ir;
 pub use bytecode::{BytecodeEntry, HandlerImmSchema, VirtBytecode};
 pub use canon::{BirHandlerKey, BlockImmediates, HandlerKey, ImmediateKind, IrHandlerKey};
 pub use ctx::VirtOutput;
-pub use hash::{CommitmentConfig, IrEmitter, IrHashAlgorithm, XorFoldHash32};
+pub use hash::{CommitmentConfig, IrEmitter, IrHashAlgorithm, SipHash48, XorFoldHash32};
 pub use ir::{virtualize_ir, virtualize_ir_committed};
 pub use bir::virtualize_bir;
 

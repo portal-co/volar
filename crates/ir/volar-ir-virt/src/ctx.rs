@@ -5,6 +5,9 @@
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
+use volar_ir::ir::{IRTypeId, IRVarId};
+use volar_ir_common::Constant;
+
 use crate::bytecode::{BytecodeEntry, HandlerImmSchema, VirtBytecode};
 use crate::canon::{BlockImmediates, HandlerKey};
 
@@ -16,12 +19,18 @@ pub struct VirtOutput<B> {
     /// The bytecode artefact, present iff the config asked for
     /// [`crate::BytecodeForm::wants_external`].
     pub bytecode: Option<VirtBytecode>,
-    /// Number of unique handlers after deduplication.  Primary size
-    /// metric of the pass.
+    /// Number of unique handlers after deduplication.
     pub n_handlers: usize,
-    /// Number of original blocks in the input module.  `blocks_in ==
-    /// n_handlers` means the pass was a no-op (no duplicates existed).
+    /// Number of original blocks in the input module.
     pub blocks_in: usize,
+    /// Key parameters prepended to the entry block when a keyed
+    /// [`crate::CommitmentConfig`] was supplied.
+    ///
+    /// `key_params[i] = (constant_value, ir_type_id)` for the i-th key word.
+    /// The caller must pass these values as the **first arguments** to the
+    /// virtualised module (before the original entry-block arguments).
+    /// Empty when no keyed commitment was requested.
+    pub key_params: Vec<(Constant, IRTypeId)>,
 }
 
 /// Intermediate table built by canonicalising every block.
