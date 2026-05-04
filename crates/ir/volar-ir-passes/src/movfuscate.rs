@@ -81,6 +81,28 @@ pub fn pc_bits_needed(n: usize) -> usize {
     (usize::BITS - (n - 1).leading_zeros()) as usize
 }
 
+/// Number of bits in `ty` for the purpose of equality checking in
+/// `emit_eq_const_ir`.  `Block` types are treated as `_32` (block indices
+/// are stored as 32-bit integers at runtime).
+fn bit_width_for_eq(ir_types: &[IRType], ty: IRTypeId) -> usize {
+    match &ir_types[ty.0 as usize] {
+        IRType::Primitive(p) => match p {
+            Type::Bit     => 1,
+            Type::_8      => 8,
+            Type::_16     => 16,
+            Type::_32     => 32,
+            Type::_64     => 64,
+            Type::_128    => 128,
+            Type::_256    => 256,
+            Type::AES8    => 8,
+            Type::Galois64 => 64,
+            _ => panic!("bit_width_for_eq: unsupported primitive type {:?}", p),
+        },
+        IRType::Block { .. } => 32,
+        other => panic!("bit_width_for_eq: unsupported type {:?}", other),
+    }
+}
+
 // ============================================================================
 // Per-block terminator result
 // ============================================================================
@@ -981,6 +1003,42 @@ impl<P: Clone + Default> IrCtx<P> {
         )
     }
 
+    /// Extract bit `bit_j` of `src` as a fresh Bit-typed var.
+    fn emit_shuffle_bit(&mut self, src: u32, bit_j: u8) -> u32 {
+        let bt = self.bit_type_id;
+        self.push_typed(
+            IRStmt::Shuffle { result_bits: vec![(bit_j, IRVarId(src))], ty: bt },
+            bt,
+        )
+    }
+
+    /// Emit `val XOR const_k` (field addition in GF(2^n)) using `Poly`.
+    fn emit_poly_xor_const(&mut self, val: u32, const_k: Constant, ty: IRTypeId) -> u32 {
+        let mut coeffs = BTreeMap::new();
+        coeffs.insert(vec![IRVarId(val)], 1u8);
+        self.push_typed(IRStmt::Poly { ty, coeffs, constant: const_k }, ty)
+    }
+
+    /// Emit a Bit var that is `1` iff `val == const_k`.
+    ///
+    /// For `Bit`-typed `val`: direct identity or NOT.
+    /// For wider types: compute `diff = val XOR const_k` via `Poly`, then AND
+    /// the NOT of each bit of `diff` (checking all bits are zero).
+    fn emit_eq_const_ir(&mut self, val: u32, const_k: Constant, idx_ty: IRTypeId) -> u32 {
+        if matches!(self.ir_types[idx_ty.0 as usize], IRType::Primitive(Type::Bit)) {
+            return if const_k.lo == 0 { self.emit_not(val) } else { val };
+        }
+        let diff = self.emit_poly_xor_const(val, const_k, idx_ty);
+        let check_width = bit_width_for_eq(&self.ir_types, idx_ty);
+        let mut is_zero = self.emit_one_bit();
+        for j in 0..check_width as u8 {
+            let bit_j = self.emit_shuffle_bit(diff, j);
+            let not_j = self.emit_not(bit_j);
+            is_zero   = self.emit_and_bit(is_zero, not_j);
+        }
+        is_zero
+    }
+
     /// Decompose a single `IRBlockTargetId + args` for the dispatch table.
     ///
     /// `blocks` is needed for static `Block(j)` targets to look up the target
@@ -1442,11 +1500,57 @@ impl<P: Clone + Default> MovfuscCtx for IrCtx<P> {
                     .collect();
                 TermResult { done, next_pc_bits, next_state, ret_vals }
             }
-            IRTerminator::JumpTable { .. } => {
-                unimplemented!(
-                    "movfuscate_ir: JumpTable terminators are not yet supported; \
-                     lower to JumpCond chains before movfuscating"
-                )
+            IRTerminator::JumpTable { index, cases } => {
+                let idx_val = block_vals[index.0 as usize];
+                let idx_ty  = self.var_types[idx_val as usize];
+                let state_width = state_slot_types.len();
+                let ret_width   = return_slot_types.len();
+
+                let mut done_acc = self.emit_zero_bit();
+                let mut npc_acc: Vec<u32> =
+                    (0..pc_width).map(|_| self.emit_zero_bit()).collect();
+                let mut ns_acc: Vec<u32> = state_slot_types
+                    .iter()
+                    .map(|ty| self.emit_zero_slot(ty))
+                    .collect();
+                let mut ret_acc: Vec<u32> = return_slot_types
+                    .iter()
+                    .map(|ty| self.emit_zero_slot(ty))
+                    .collect();
+
+                for (const_k, (target, args)) in cases {
+                    let is_case = self.emit_eq_const_ir(idx_val, *const_k, idx_ty);
+                    let (done_k, npc_k, ns_k, ret_k) = self.process_ir_target(
+                        target,
+                        args,
+                        block_vals,
+                        pc_width,
+                        state_slot_types,
+                        return_slot_types,
+                        blocks,
+                    );
+                    let g = self.emit_and_bit(is_case, done_k);
+                    done_acc = self.emit_xor_bit(done_acc, g);
+                    for j in 0..pc_width {
+                        let g = self.emit_and_bit(is_case, npc_k[j]);
+                        npc_acc[j] = self.emit_xor_bit(npc_acc[j], g);
+                    }
+                    for k in 0..state_width {
+                        let g = self.emit_gate(is_case, ns_k[k], &state_slot_types[k]);
+                        ns_acc[k] = self.emit_field_add(ns_acc[k], g, &state_slot_types[k]);
+                    }
+                    for m in 0..ret_width {
+                        let g = self.emit_gate(is_case, ret_k[m], &return_slot_types[m]);
+                        ret_acc[m] = self.emit_field_add(ret_acc[m], g, &return_slot_types[m]);
+                    }
+                }
+
+                TermResult {
+                    done: done_acc,
+                    next_pc_bits: npc_acc,
+                    next_state: ns_acc,
+                    ret_vals: ret_acc,
+                }
             }
         }
     }

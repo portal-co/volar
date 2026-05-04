@@ -52,7 +52,7 @@ use crate::{DedupPolicy, DispatchMode, VirtualizeConfig};
 ///
 /// # Preconditions
 /// * The input must have at least one block.
-/// * No terminator may target `IRBlockTargetId::Dyn` in v1.
+/// * `Dyn(v)` targets are supported; `v` must have type `IRType::Block { params }`.
 /// * All `Jmp(Return, args)` terminators must agree on the return arg
 ///   type list (which defines the function's return shape).
 /// * The input must not read or write any `StorageId` colliding with
@@ -102,11 +102,12 @@ pub fn virtualize_ir<P: Clone + Default>(
     let reg_storage_base = layout.next_free_storage_after_bytecode(cfg.bytecode_storage);
 
     // Allocate per-type register storages starting at reg_storage_base.
-    let reg_alloc = RegAlloc::build(&cse_blocks, reg_storage_base);
+    let ir_types_slice = &types.0;
+    let reg_alloc = RegAlloc::build(&cse_blocks, reg_storage_base, ir_types_slice);
 
     // Emit the module using the pre-computed layout.
     let out_blocks =
-        emit_output_ir(&cse_blocks, &dedup, &layout, &reg_alloc, addr_ty, bit_ty, cfg);
+        emit_output_ir(&cse_blocks, &dedup, &layout, &reg_alloc, addr_ty, bit_ty, cfg, ir_types_slice);
 
     let bytecode = if cfg.bytecode_form.wants_external() {
         Some(dedup.to_bytecode())
@@ -115,8 +116,6 @@ pub fn virtualize_ir<P: Clone + Default>(
     };
 
     // Oblivious dispatch runs movfuscate_ir over the Public output.
-    // Note: movfuscate_ir does not yet support JumpTable terminators;
-    // that path remains a deferred upstream task.
     let final_blocks = match cfg.dispatch {
         DispatchMode::Public => out_blocks,
         DispatchMode::Oblivious => volar_ir_passes::movfuscate_ir(&out_blocks, types),
@@ -130,32 +129,8 @@ pub fn virtualize_ir<P: Clone + Default>(
     }
 }
 
-fn validate_input<P: Clone + Default>(blocks: &IRBlocks<P>) {
-    for (i, b) in blocks.blocks.iter().enumerate() {
-        let check_target = |t: &IRBlockTargetId| {
-            assert!(
-                !matches!(t, IRBlockTargetId::Dyn(_)),
-                "virtualize_ir: block {} uses Dyn jump target (unsupported)",
-                i
-            );
-        };
-        match &b.terminator {
-            IRTerminator::Jmp { func, .. } => check_target(func),
-            IRTerminator::JumpCond {
-                true_block,
-                false_block,
-                ..
-            } => {
-                check_target(true_block);
-                check_target(false_block);
-            }
-            IRTerminator::JumpTable { cases, .. } => {
-                for (_, (t, _)) in cases {
-                    check_target(t);
-                }
-            }
-        }
-    }
+fn validate_input<P: Clone + Default>(_blocks: &IRBlocks<P>) {
+    // All terminator forms — including Dyn targets — are now valid inputs.
 }
 
 // ============================================================================
@@ -246,7 +221,11 @@ struct RegRef {
 }
 
 impl RegAlloc {
-    fn build<P: Clone + Default>(blocks: &IRBlocks<P>, storage_base: u32) -> Self {
+    fn build<P: Clone + Default>(
+        blocks: &IRBlocks<P>,
+        storage_base: u32,
+        ir_types: &[IRType],
+    ) -> Self {
         let mut per_block_params: Vec<Vec<RegRef>> = Vec::with_capacity(blocks.blocks.len());
         let mut max_param_idx: BTreeMap<IRTypeId, u32> = BTreeMap::new();
 
@@ -262,6 +241,34 @@ impl RegAlloc {
                 *idx += 1;
             }
             per_block_params.push(row);
+        }
+
+        // Pre-register param types from Dyn jump-target Block signatures.
+        // Without this, storage_for(T) panics if T appears only in a Dyn
+        // target's Block.params and nowhere else as a block param.
+        for b in &blocks.blocks {
+            let mut visit = |target: &IRBlockTargetId| {
+                if let IRBlockTargetId::Dyn(v) = target {
+                    let v_ty_id = resolve_var_type(b, *v);
+                    if let IRType::Block { params } = &ir_types[v_ty_id.0 as usize] {
+                        for &param_ty in params {
+                            max_param_idx.entry(param_ty).or_insert(0);
+                        }
+                    }
+                }
+            };
+            match &b.terminator {
+                IRTerminator::Jmp { func, .. } => visit(func),
+                IRTerminator::JumpCond { true_block, false_block, .. } => {
+                    visit(true_block);
+                    visit(false_block);
+                }
+                IRTerminator::JumpTable { cases, .. } => {
+                    for (target, _) in cases.values() {
+                        visit(target);
+                    }
+                }
+            }
         }
 
         // Extract return shape.
@@ -613,6 +620,7 @@ fn emit_output_ir<P: Clone + Default>(
     addr_ty: IRTypeId,
     bit_ty: IRTypeId,
     cfg: &VirtualizeConfig,
+    ir_types: &[IRType],
 ) -> IRBlocks<P> {
     let entry_params = blocks_in.blocks[0].params.clone();
     let return_arg_tys: Vec<IRTypeId> = reg_alloc.return_regs.iter().map(|r| r.ty).collect();
@@ -633,6 +641,7 @@ fn emit_output_ir<P: Clone + Default>(
         addr_ty,
         bit_ty,
         cfg,
+        ir_types,
     );
 
     let dd = cfg.direct_dispatch.then(|| DirectDispatch {
@@ -709,6 +718,7 @@ fn emit_setup_block<P: Clone + Default>(
     addr_ty: IRTypeId,
     bit_ty: IRTypeId,
     cfg: &VirtualizeConfig,
+    ir_types: &[IRType],
 ) -> IRBlock<P> {
     let mut b = IRBlockUnfinished::new(entry_params.to_vec());
 
@@ -744,7 +754,7 @@ fn emit_setup_block<P: Clone + Default>(
 
             let schema = &layout.schemas[*h_idx as usize];
             let slot_ids = &layout.per_handler_slot[*h_idx as usize];
-            let slot_values = compute_slot_values(block, block_id, schema, reg_alloc);
+            let slot_values = compute_slot_values(block, block_id, schema, reg_alloc, ir_types);
             assert_eq!(slot_values.len(), schema.slots.len());
 
             for (slot_idx, slot) in schema.slots.iter().enumerate() {
@@ -784,6 +794,7 @@ fn compute_slot_values<P: Clone + Default>(
     block_id: usize,
     schema: &HandlerSchema,
     reg_alloc: &RegAlloc,
+    ir_types: &[IRType],
 ) -> Vec<Constant> {
     let mut out: Vec<Constant> = vec![const_u32(0); schema.slots.len()];
 
@@ -814,7 +825,7 @@ fn compute_slot_values<P: Clone + Default>(
     }
 
     // Terminator arm slots.
-    fill_terminator_slots(block, schema, reg_alloc, &mut out);
+    fill_terminator_slots(block, schema, reg_alloc, ir_types, &mut out);
 
     out
 }
@@ -823,29 +834,53 @@ fn fill_terminator_slots<P: Clone + Default>(
     block: &IRBlock<P>,
     schema: &HandlerSchema,
     reg_alloc: &RegAlloc,
+    ir_types: &[IRType],
     out: &mut [Constant],
 ) {
     let fill_arm = |out: &mut [Constant],
                     arm: &ArmSchema,
                     target: &IRBlockTargetId,
                     args: &[IRVarId]| {
-        let (next_pc, done) = match target {
-            IRBlockTargetId::Block(bid) => (bid.0, false),
-            IRBlockTargetId::Return => (0u32, true),
-            IRBlockTargetId::Dyn(_) => panic!("fill_terminator_slots: Dyn"),
-        };
-        out[arm.next_pc_slot] = const_u32(next_pc);
-        out[arm.done_slot] = const_bit(done);
         assert_eq!(arm.arg_dst_slots.len(), args.len());
-        for (i, _arg) in args.iter().enumerate() {
-            let dst_reg = match target {
-                IRBlockTargetId::Block(target_bid) => {
-                    reg_alloc.per_block_params[target_bid.0 as usize][i]
+        match target {
+            IRBlockTargetId::Block(bid) => {
+                out[arm.next_pc_slot] = const_u32(bid.0);
+                out[arm.done_slot] = const_bit(false);
+                for (i, _arg) in args.iter().enumerate() {
+                    let dst = reg_alloc.per_block_params[bid.0 as usize][i];
+                    out[arm.arg_dst_slots[i]] = const_u32(dst.idx);
                 }
-                IRBlockTargetId::Return => reg_alloc.return_regs[i],
-                IRBlockTargetId::Dyn(_) => unreachable!(),
-            };
-            out[arm.arg_dst_slots[i]] = const_u32(dst_reg.idx);
+            }
+            IRBlockTargetId::Return => {
+                out[arm.next_pc_slot] = const_u32(0);
+                out[arm.done_slot] = const_bit(true);
+                for (i, _arg) in args.iter().enumerate() {
+                    out[arm.arg_dst_slots[i]] = const_u32(reg_alloc.return_regs[i].idx);
+                }
+            }
+            IRBlockTargetId::Dyn(v) => {
+                // done = false; next_pc is a dummy (handler reads it from the
+                // runtime Dyn var via Transmute — see emit_handler_block).
+                out[arm.next_pc_slot] = const_u32(0);
+                out[arm.done_slot] = const_bit(false);
+                // Compute arg-destination register indices from the Block type's
+                // params signature (same sequential-per-type rule as RegAlloc).
+                let v_ty_id = resolve_var_type(block, *v);
+                let sig: &[IRTypeId] = match &ir_types[v_ty_id.0 as usize] {
+                    IRType::Block { params } => params,
+                    _ => panic!(
+                        "fill_terminator_slots: Dyn var {} does not have Block type",
+                        v.0
+                    ),
+                };
+                let mut type_counter: BTreeMap<IRTypeId, u32> = BTreeMap::new();
+                for (i, _arg) in args.iter().enumerate() {
+                    let param_ty = sig[i];
+                    let idx = type_counter.entry(param_ty).or_insert(0);
+                    out[arm.arg_dst_slots[i]] = const_u32(*idx);
+                    *idx += 1;
+                }
+            }
         }
     };
 
@@ -1084,13 +1119,32 @@ fn emit_handler_block<P: Clone + Default>(
                 &canonical_var,
                 &canon_types,
             );
-            let _ = func;
-            if let Some(dd) = dd {
-                build_direct_dispatch_terminator(
-                    &mut b, arm, slot_ids, addr_ty, bit_ty, pc, dd, next_sub_bid, &mut extras,
-                )
-            } else {
-                build_return_to_dispatcher(&mut b, arm, slot_ids, addr_ty, bit_ty, pc)
+            match func {
+                IRBlockTargetId::Dyn(canon_v) => {
+                    // For Dyn: next_pc comes from the Block-typed var at runtime.
+                    let raw    = canonical_var[canon_v.0 as usize];
+                    let v_ty   = canon_types[canon_v.0 as usize];
+                    let next_pc = b.push(Stmt::Transmute {
+                        src: raw,
+                        src_ty: v_ty,
+                        dst_ty: addr_ty,
+                    });
+                    let done = b.push(Stmt::Const(const_bit(false), bit_ty));
+                    IRTerminator::Jmp {
+                        func: IRBlockTargetId::Block(IRBlockId(DISPATCHER_BID)),
+                        args: vec![next_pc, done],
+                    }
+                }
+                _ => {
+                    if let Some(dd) = dd {
+                        build_direct_dispatch_terminator(
+                            &mut b, arm, slot_ids, addr_ty, bit_ty, pc, dd, next_sub_bid,
+                            &mut extras,
+                        )
+                    } else {
+                        build_return_to_dispatcher(&mut b, arm, slot_ids, addr_ty, bit_ty, pc)
+                    }
+                }
             }
         }
         IRTerminator::JumpCond {
@@ -1111,27 +1165,61 @@ fn emit_handler_block<P: Clone + Default>(
             let false_arg_tys: Vec<IRTypeId> =
                 false_args.iter().map(|v| canon_types[v.0 as usize]).collect();
 
-            let (true_sub, true_dd_extras) = emit_arm_subblock::<P>(
-                &schema.arms[0], slot_ids, reg_alloc, addr_ty, bit_ty,
-                &true_arg_tys, dd, next_sub_bid,
-            );
-            let (false_sub, false_dd_extras) = emit_arm_subblock::<P>(
-                &schema.arms[1], slot_ids, reg_alloc, addr_ty, bit_ty,
-                &false_arg_tys, dd, next_sub_bid,
-            );
-            extras.push(true_sub);
-            extras.extend(true_dd_extras);
-            extras.push(false_sub);
-            extras.extend(false_dd_extras);
+            // Emit sub-block for each arm — Dyn arms use emit_dyn_arm_subblock.
+            match true_block {
+                IRBlockTargetId::Dyn(canon_v) => {
+                    let dyn_ty = canon_types[canon_v.0 as usize];
+                    extras.push(emit_dyn_arm_subblock::<P>(
+                        &schema.arms[0], slot_ids, reg_alloc, addr_ty, bit_ty,
+                        dyn_ty, &true_arg_tys,
+                    ));
+                }
+                _ => {
+                    let (sub, dd_extras) = emit_arm_subblock::<P>(
+                        &schema.arms[0], slot_ids, reg_alloc, addr_ty, bit_ty,
+                        &true_arg_tys, dd, next_sub_bid,
+                    );
+                    extras.push(sub);
+                    extras.extend(dd_extras);
+                }
+            }
+            match false_block {
+                IRBlockTargetId::Dyn(canon_v) => {
+                    let dyn_ty = canon_types[canon_v.0 as usize];
+                    extras.push(emit_dyn_arm_subblock::<P>(
+                        &schema.arms[1], slot_ids, reg_alloc, addr_ty, bit_ty,
+                        dyn_ty, &false_arg_tys,
+                    ));
+                }
+                _ => {
+                    let (sub, dd_extras) = emit_arm_subblock::<P>(
+                        &schema.arms[1], slot_ids, reg_alloc, addr_ty, bit_ty,
+                        &false_arg_tys, dd, next_sub_bid,
+                    );
+                    extras.push(sub);
+                    extras.extend(dd_extras);
+                }
+            }
 
-            let _ = (true_block, false_block);
-
-            let true_call_args = core::iter::once(pc)
-                .chain(true_args.iter().map(|v| canonical_var[v.0 as usize]))
-                .collect::<Vec<_>>();
-            let false_call_args = core::iter::once(pc)
-                .chain(false_args.iter().map(|v| canonical_var[v.0 as usize]))
-                .collect::<Vec<_>>();
+            // Build call args: for Dyn arms, prepend the Dyn var value after pc.
+            let true_call_args: Vec<IRVarId> = match true_block {
+                IRBlockTargetId::Dyn(canon_v) => core::iter::once(pc)
+                    .chain(core::iter::once(canonical_var[canon_v.0 as usize]))
+                    .chain(true_args.iter().map(|v| canonical_var[v.0 as usize]))
+                    .collect(),
+                _ => core::iter::once(pc)
+                    .chain(true_args.iter().map(|v| canonical_var[v.0 as usize]))
+                    .collect(),
+            };
+            let false_call_args: Vec<IRVarId> = match false_block {
+                IRBlockTargetId::Dyn(canon_v) => core::iter::once(pc)
+                    .chain(core::iter::once(canonical_var[canon_v.0 as usize]))
+                    .chain(false_args.iter().map(|v| canonical_var[v.0 as usize]))
+                    .collect(),
+                _ => core::iter::once(pc)
+                    .chain(false_args.iter().map(|v| canonical_var[v.0 as usize]))
+                    .collect(),
+            };
 
             IRTerminator::JumpCond {
                 condition: cond_var,
@@ -1145,20 +1233,35 @@ fn emit_handler_block<P: Clone + Default>(
             let idx_var = canonical_var[index.0 as usize];
             let mut out_cases: BTreeMap<Constant, (IRBlockTargetId, Vec<IRVarId>)> =
                 BTreeMap::new();
-            for (arm_idx, (k, (_target, args))) in cases.iter().enumerate() {
+            for (arm_idx, (k, (target, args))) in cases.iter().enumerate() {
                 let sub_bid = *next_sub_bid;
                 *next_sub_bid += 1;
                 let arg_tys: Vec<IRTypeId> =
                     args.iter().map(|v| canon_types[v.0 as usize]).collect();
-                let (arm_sub, arm_dd_extras) = emit_arm_subblock::<P>(
-                    &schema.arms[arm_idx], slot_ids, reg_alloc, addr_ty, bit_ty,
-                    &arg_tys, dd, next_sub_bid,
-                );
-                extras.push(arm_sub);
-                extras.extend(arm_dd_extras);
-                let arm_args = core::iter::once(pc)
-                    .chain(args.iter().map(|v| canonical_var[v.0 as usize]))
-                    .collect::<Vec<_>>();
+                let arm_args: Vec<IRVarId> = match target {
+                    IRBlockTargetId::Dyn(canon_v) => {
+                        let dyn_ty = canon_types[canon_v.0 as usize];
+                        extras.push(emit_dyn_arm_subblock::<P>(
+                            &schema.arms[arm_idx], slot_ids, reg_alloc, addr_ty, bit_ty,
+                            dyn_ty, &arg_tys,
+                        ));
+                        core::iter::once(pc)
+                            .chain(core::iter::once(canonical_var[canon_v.0 as usize]))
+                            .chain(args.iter().map(|v| canonical_var[v.0 as usize]))
+                            .collect()
+                    }
+                    _ => {
+                        let (arm_sub, arm_dd_extras) = emit_arm_subblock::<P>(
+                            &schema.arms[arm_idx], slot_ids, reg_alloc, addr_ty, bit_ty,
+                            &arg_tys, dd, next_sub_bid,
+                        );
+                        extras.push(arm_sub);
+                        extras.extend(arm_dd_extras);
+                        core::iter::once(pc)
+                            .chain(args.iter().map(|v| canonical_var[v.0 as usize]))
+                            .collect()
+                    }
+                };
                 out_cases.insert(*k, (IRBlockTargetId::Block(IRBlockId(sub_bid)), arm_args));
             }
             IRTerminator::JumpTable {
@@ -1330,6 +1433,51 @@ fn emit_arm_subblock<P: Clone + Default>(
         }
     };
     (b.into_ir_block::<P>(), dd_extras)
+}
+
+/// Sub-block for a `Dyn` terminator arm.
+///
+/// Params: `[pc: _32, dyn_val: dyn_var_ty, arg_0: ty_0, …]`.
+/// Body: write each arg to its destination register (indexed from bytecode),
+/// then compute `next_pc = Transmute(dyn_val → addr_ty)` and jump to DISPATCHER.
+#[allow(clippy::too_many_arguments)]
+fn emit_dyn_arm_subblock<P: Clone + Default>(
+    arm: &ArmSchema,
+    slot_ids: &[StorageId],
+    reg_alloc: &RegAlloc,
+    addr_ty: IRTypeId,
+    bit_ty: IRTypeId,
+    dyn_var_ty: IRTypeId,
+    arg_tys: &[IRTypeId],
+) -> IRBlock<P> {
+    let mut params: Vec<IRTypeId> = vec![addr_ty, dyn_var_ty];
+    params.extend_from_slice(arg_tys);
+    let mut b = IRBlockUnfinished::new(params);
+    let pc       = IRVarId(0);
+    let dyn_val  = IRVarId(1);
+
+    for (i, &arg_ty) in arg_tys.iter().enumerate() {
+        let arg_val = IRVarId(2 + i as u32);
+        let dst_reg_idx = b.push(Stmt::StorageRead {
+            storage: slot_ids[arm.arg_dst_slots[i]],
+            ty: addr_ty,
+            addr: pc,
+        });
+        b.push(Stmt::StorageWrite {
+            storage: reg_alloc.storage_for(arg_ty),
+            ty: arg_ty,
+            addr: dst_reg_idx,
+            src: arg_val,
+        });
+    }
+
+    let next_pc = b.push(Stmt::Transmute { src: dyn_val, src_ty: dyn_var_ty, dst_ty: addr_ty });
+    let done    = b.push(Stmt::Const(const_bit(false), bit_ty));
+    b.terminator = IRTerminator::Jmp {
+        func: IRBlockTargetId::Block(IRBlockId(DISPATCHER_BID)),
+        args: vec![next_pc, done],
+    };
+    b.into_ir_block::<P>()
 }
 
 /// Return the IR type of each canonical SSA id in the handler key:

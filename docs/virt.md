@@ -278,5 +278,8 @@ tree for dispatch (no `JumpTable`).  Inlining the full O(n)-deep tree at
 every handler produces O(n²) blocks — impractical for large circuits.  A
 future approach could use a compact binary-encoded dispatch table instead.
 
-**`IRBlockTargetId::Dyn`** is not supported in v1.  Any input terminator
-targeting `Dyn` will panic in `validate_input`.
+**`IRBlockTargetId::Dyn`** is supported.  The source variable must have type
+`IRType::Block { params }` at the terminator site; it is `Transmute`d to `_32`
+inside the handler body to produce `next_pc`.  Argument destination registers
+are derived from the Block type's `params` signature using the standard
+per-type sequential rule.
