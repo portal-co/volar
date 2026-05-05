@@ -32,6 +32,7 @@
 
 use alloc::{
     boxed::Box,
+    collections::BTreeMap,
     format,
     string::{String, ToString},
     vec,
@@ -41,8 +42,8 @@ use alloc::{
 use volar_compiler::{
     ir::{
         AssociatedType, ExternalKind, IrBlock, IrExpr, IrFunction, IrGenericParam, IrGenericParamKind,
-        IrModule, IrParam, IrPattern, IrStmt, IrTraitBound, IrType, IrWherePredicate,
-        MathTrait, MethodKind, SpecBinOp, StdMethod, StructKind, TraitKind,
+        IrLit, IrModule, IrParam, IrPattern, IrStmt, IrTraitBound, IrType, IrWherePredicate,
+        MathTrait, MethodKind, PrimitiveType, SpecBinOp, StdMethod, StructKind, TraitKind,
     },
     linkage::LinkageSystem,
 };
@@ -52,6 +53,7 @@ use volar_ir::ir::{
     IRType as CircuitIrType, IRTypeId as CirTyId, IRTypes as CirTypes,
     IRVarId as CirVar, PrimType, Stmt, StorageId,
 };
+use volar_ir::public::PublicSet;
 use volar_ir_passes::lower_to_circuit::lower_to_circuit;
 pub use volar_ir_passes::lower_to_circuit::LoweringMode;
 
@@ -295,6 +297,117 @@ fn q_struct<P: Clone + Default>(body: IrExpr<P>) -> IrExpr<P> {
 }
 
 // ============================================================================
+// ZK witness configuration
+// ============================================================================
+
+/// Per-circuit configuration controlling which inputs/outputs are public cleartext
+/// versus private committed witnesses in the VOLE ZK weaver.
+///
+/// In ZK, *all* inputs are private witnesses by default.  Mark some as public to
+/// have them typed as `bool` instead of `Vope`/`Q`; the wire commitment is then
+/// synthesised from `vope_one` or `delta` rather than passed in as a VOLE pair.
+///
+/// Mirrors the `FheActionConfig`-based mechanism in the FHE weaver, but with the
+/// opposite default: ZK is private-first, FHE is encrypted-first.
+#[derive(Clone, Debug, Default)]
+pub struct ZkWitnessConfig {
+    /// Which circuit input params (0-based) are public cleartext inputs.
+    ///
+    /// Public inputs become `bool` parameters; the prover synthesises
+    /// `vope_input_i = if b { vope_one.clone() } else { zero }` and the verifier
+    /// synthesises `q_input_i = if b { Q { q: delta.clone() } } else { Q { q: 0 } }`.
+    pub public_inputs: PublicSet,
+
+    /// Per-action public output configuration, keyed by action name.
+    ///
+    /// For each named action, specifies which output bits are public cleartext
+    /// (`bool`) versus private committed (`Vope`/`Q`).  Actions absent from this
+    /// map default to all-private.
+    pub action_configs: BTreeMap<String, ZkActionConfig>,
+}
+
+/// Per-action output configuration for the ZK weaver.
+///
+/// Structurally identical to `FheActionConfig` — same concept, different default
+/// (all-private rather than all-public).
+#[derive(Clone, Debug, Default)]
+pub struct ZkActionConfig {
+    /// Per-output-bit publicness flags (indexed by bit position within the action's output).
+    ///
+    /// `output_public[i] = true` → output bit `i` is cleartext (`bool` parameter).
+    /// `false` (or absent) → committed VOLE wire (default).
+    pub output_public: Vec<bool>,
+}
+
+impl ZkActionConfig {
+    /// Returns `true` if output bit `idx` is public.
+    pub fn is_output_public(&self, idx: usize) -> bool {
+        self.output_public.get(idx).copied().unwrap_or(false)
+    }
+}
+
+// ============================================================================
+// Public-wire synthesis helpers
+// ============================================================================
+
+/// `bool` type — the Rust type for public ZK inputs.
+fn bool_type() -> IrType {
+    IrType::Primitive(PrimitiveType::Bool)
+}
+
+/// Synthesise a prover VOLE wire from a public `bool` variable `bool_name`.
+///
+/// Generates: `if {bool_name} { vope_one.clone() } else { vope_one.clone() + vope_one.clone() }`
+///
+/// `vope_one.clone() + vope_one.clone()` = the zero Vope (since addition is XOR in GF2
+/// and adding a committed wire to itself cancels both bit and MAC).
+fn synth_prover_public_wire<P: Clone + Default>(bool_name: &str) -> IrExpr<P> {
+    let vope_one = clone_expr(var("vope_one"));
+    let vope_zero = IrExpr::Binary {
+        op: SpecBinOp::Add,
+        left: Box::new(clone_expr(var("vope_one"))),
+        right: Box::new(clone_expr(var("vope_one"))),
+    };
+    IrExpr::If {
+        cond: Box::new(var(bool_name)),
+        then_branch: IrBlock {
+            stmts: vec![],
+            stmt_provs: vec![],
+            expr: Some(Box::new(vope_one)),
+        },
+        else_branch: Some(Box::new(vope_zero)),
+    }
+}
+
+/// Synthesise a verifier Q wire from a public `bool` variable `bool_name`.
+///
+/// Generates: `if {bool_name} { Q { q: delta.delta.clone() } } else { Q { q: Array::default() } }`
+///
+/// For a public bit `b=1` the verifier computes `K = M + 1·Δ`; with `M=0` this is `Δ`.
+/// For `b=0`, `K = 0`.  This is consistent with the prover's synthesis above.
+fn synth_verifier_public_wire<P: Clone + Default>(bool_name: &str) -> IrExpr<P> {
+    let q_one = q_struct(IrExpr::MethodCall {
+        receiver: Box::new(IrExpr::Field {
+            base: Box::new(var("delta")),
+            field: "delta".into(),
+        }),
+        method: MethodKind::Known(StdMethod::Clone),
+        type_args: vec![],
+        args: vec![],
+    });
+    let q_zero = q_struct(array_t_default());
+    IrExpr::If {
+        cond: Box::new(var(bool_name)),
+        then_branch: IrBlock {
+            stmts: vec![],
+            stmt_provs: vec![],
+            expr: Some(Box::new(q_one)),
+        },
+        else_branch: Some(Box::new(q_zero)),
+    }
+}
+
+// ============================================================================
 // AND gate helper calls
 // ============================================================================
 
@@ -383,24 +496,12 @@ fn emit_verifier_and_gate<P: Clone + Default>(
 
 /// Weave a single-block boolean circuit into a VOLE **prover** `IrModule`.
 ///
-/// The generated function signature is:
-/// ```text
-/// fn vole_prove_<name><N: ArraySize, T>(
-///     vope_one: Vope<N, T, U1>,      // committed constant 1: u=[[1..]], v=[0..]
-///     vope_input_0: Vope<N, T, U1>, // prover's input wire commitments
-///     ...
-/// ) -> (Vope<N, T, U1>, Vec<Array<T, N>>)
-/// where
-///     N: VoleArray<T>,
-///     T: Clone + Add<Output = T> + Mul<Output = T> + Default,
-/// ```
-///
-/// The returned `Vec<Array<T, N>>` contains one `hat` per AND gate in circuit order.
-/// These are the Quicksilver `V̂` values that must be sent to the verifier.
+/// All inputs are treated as private committed witnesses.
+/// Use [`weave_vole_prover_with_config`] to mark some inputs or action outputs
+/// as public cleartext.
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-/// Backwards-compatible VOLE prover weave — discards provenance.
 pub fn weave_vole_prover<P: Clone + Default>(
     circuit: &BIrBlocks<P>,
     name: &str,
@@ -411,9 +512,56 @@ pub fn weave_vole_prover<P: Clone + Default>(
 
 /// Weave a single-block boolean circuit into a VOLE **prover** `IrModule`,
 /// using `handler` to map input provenance into the output IR.
+///
+/// All inputs are treated as private committed witnesses (default ZK behaviour).
+/// Use [`weave_vole_prover_with_config`] to mark some as public.
 pub fn weave_vole_prover_with_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
+    linkage: Option<&LinkageSystem>,
+    handler: &H,
+) -> IrModule<IrFunction<H::Output>, H::Output>
+where
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
+{
+    weave_vole_prover_inner(circuit, name, &ZkWitnessConfig::default(), linkage, handler)
+}
+
+/// Weave a single-block boolean circuit into a VOLE **prover** `IrModule` with
+/// explicit public/private witness configuration.
+///
+/// Public inputs in `config.public_inputs` are typed as `bool`; the wire
+/// commitment is synthesised from `vope_one` at runtime.  Public action outputs
+/// in `config.action_configs` are similarly typed as `bool` parameters.
+pub fn weave_vole_prover_with_config<P: Clone + Default>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    config: &ZkWitnessConfig,
+    linkage: Option<&LinkageSystem>,
+) -> IrModule<IrFunction> {
+    weave_vole_prover_inner(circuit, name, config, linkage, &NoProvenance)
+}
+
+/// Weave with both a [`ZkWitnessConfig`] and a provenance handler.
+pub fn weave_vole_prover_with_config_and_handler<P, H>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    config: &ZkWitnessConfig,
+    linkage: Option<&LinkageSystem>,
+    handler: &H,
+) -> IrModule<IrFunction<H::Output>, H::Output>
+where
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
+{
+    weave_vole_prover_inner(circuit, name, config, linkage, handler)
+}
+
+fn weave_vole_prover_inner<P, H>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
@@ -431,12 +579,12 @@ where
     let expanded = expand_ors(block);
 
     // Pre-scan for external primitives (oracle calls, action calls, RNG sources).
-    // Build index maps from result-var → external-primitive index before the main loop.
-    let mut oracle_handle_map = alloc::collections::BTreeMap::<u32, usize>::new();
+    // Track (name, bit_count) for actions so we can look up per-action public configs.
+    let mut oracle_handle_map = BTreeMap::<u32, usize>::new();
     let mut oracle_bit_counts: Vec<usize> = Vec::new();
-    let mut action_handle_map = alloc::collections::BTreeMap::<u32, usize>::new();
-    let mut action_bit_counts: Vec<usize> = Vec::new();
-    let mut rng_var_map = alloc::collections::BTreeMap::<u32, usize>::new();
+    let mut action_handle_map = BTreeMap::<u32, usize>::new();
+    let mut action_infos: Vec<(String, usize)> = Vec::new(); // (name, num_bits)
+    let mut rng_var_map = BTreeMap::<u32, usize>::new();
     for (result_id, stmt, _) in &expanded {
         match stmt {
             BIrStmt::OracleCall { num_bits, .. } => {
@@ -444,10 +592,10 @@ where
                 oracle_handle_map.insert(result_id.0, k);
                 oracle_bit_counts.push(*num_bits);
             }
-            BIrStmt::ActionCall { num_bits, .. } => {
-                let k = action_bit_counts.len();
+            BIrStmt::ActionCall { name: action_name, num_bits, .. } => {
+                let k = action_infos.len();
                 action_handle_map.insert(result_id.0, k);
-                action_bit_counts.push(*num_bits);
+                action_infos.push((action_name.clone(), *num_bits));
             }
             BIrStmt::Rng { .. } => {
                 let r = rng_var_map.len();
@@ -457,24 +605,28 @@ where
         }
     }
 
-    let mut var_names = alloc::collections::BTreeMap::<u32, String>::new();
+    // var_names maps param index → wire name in the emitted function body.
+    // For private inputs the wire name IS the param name; for public inputs we
+    // synthesise a wire after the params so the same name is used in gate logic.
+    let mut var_names = BTreeMap::<u32, String>::new();
     for i in 0..num_params {
         var_names.insert(i as u32, format!("vope_input_{}", i));
     }
 
-    // Build parameter list: vope_one, then vope_input_i, then external primitive params.
+    // Build parameter list.
     let mut params: Vec<IrParam> = Vec::new();
     params.push(IrParam {
         name: "vope_one".into(),
         ty: vope_type(),
     });
     for i in 0..num_params {
+        let is_pub = config.public_inputs.is_public(CirVar(i as u32));
         params.push(IrParam {
-            name: format!("vope_input_{}", i),
-            ty: vope_type(),
+            name: if is_pub { format!("input_{}", i) } else { format!("vope_input_{}", i) },
+            ty: if is_pub { bool_type() } else { vope_type() },
         });
     }
-    // Oracle output bit commitments (one Vope per output bit, per oracle call).
+    // Oracle output bit commitments — always private (no oracle public config yet).
     for (k, &num_bits) in oracle_bit_counts.iter().enumerate() {
         for j in 0..num_bits {
             params.push(IrParam {
@@ -483,16 +635,22 @@ where
             });
         }
     }
-    // Action output bit commitments.
-    for (k, &num_bits) in action_bit_counts.iter().enumerate() {
-        for j in 0..num_bits {
+    // Action output bit commitments — public or private per ZkActionConfig.
+    for (k, (action_name, num_bits)) in action_infos.iter().enumerate() {
+        let action_cfg = config.action_configs.get(action_name.as_str());
+        for j in 0..*num_bits {
+            let is_pub = action_cfg.map(|c| c.is_output_public(j)).unwrap_or(false);
             params.push(IrParam {
-                name: format!("vope_action_{}_bit_{}", k, j),
-                ty: vope_type(),
+                name: if is_pub {
+                    format!("action_{}_bit_{}", k, j)
+                } else {
+                    format!("vope_action_{}_bit_{}", k, j)
+                },
+                ty: if is_pub { bool_type() } else { vope_type() },
             });
         }
     }
-    // RNG bit commitments (one Vope per RNG sample).
+    // RNG bit commitments — always private.
     for r in 0..rng_var_map.len() {
         params.push(IrParam {
             name: format!("vope_rng_{}", r),
@@ -514,13 +672,24 @@ where
     let mut and_counter: usize = 0;
     let mut hat_names: Vec<String> = Vec::new();
 
+    // Synthesise Vope wires for public inputs from the bool params.
+    for i in 0..num_params {
+        if config.public_inputs.is_public(CirVar(i as u32)) {
+            stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(&format!("vope_input_{}", i)),
+                ty: None,
+                init: Some(synth_prover_public_wire(&format!("input_{}", i))),
+            });
+            stmt_provs.push(H::Output::default());
+        }
+    }
+
     for (result_id, stmt, prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
         let q = handler.map(prov);
 
         match stmt {
             BIrStmt::Zero => {
-                // Vope { u: Array::<Array<T,N>,U1>::default(), v: Array::<T,N>::default() }
                 stmts.push(IrStmt::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
@@ -582,14 +751,12 @@ where
                 and_counter += 1;
                 hat_names.push(hat_name.clone());
                 emit_prover_and_gate(&name_a, &name_b, &let_name, &hat_name, &mut stmts);
-                // AND gate emits 1 stmt (let (wire, hat) = ...)
                 stmt_provs.push(q.clone());
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
 
             BIrStmt::OracleCall { .. } => {
-                // Handle-only: individual output bits are projected via OracleBit.
                 let k = oracle_handle_map[&result_id.0];
                 var_names.insert(result_id.0, format!("oracle_handle_{}", k));
                 continue;
@@ -606,7 +773,6 @@ where
             }
 
             BIrStmt::ActionCall { .. } => {
-                // Handle-only: individual output bits are projected via ActionBit.
                 let k = action_handle_map[&result_id.0];
                 var_names.insert(result_id.0, format!("action_handle_{}", k));
                 continue;
@@ -614,10 +780,20 @@ where
 
             BIrStmt::ActionBit { call, bit } => {
                 let k = action_handle_map[&call.0];
+                let (action_name, _) = &action_infos[k];
+                let is_pub = config.action_configs
+                    .get(action_name.as_str())
+                    .map(|c| c.is_output_public(*bit))
+                    .unwrap_or(false);
+                let init = if is_pub {
+                    synth_prover_public_wire(&format!("action_{}_bit_{}", k, bit))
+                } else {
+                    clone_expr(var(&format!("vope_action_{}_bit_{}", k, bit)))
+                };
                 stmts.push(IrStmt::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
-                    init: Some(clone_expr(var(&format!("vope_action_{}_bit_{}", k, bit)))),
+                    init: Some(init),
                 });
                 stmt_provs.push(q.clone());
             }
@@ -684,28 +860,11 @@ where
 
 /// Weave a single-block boolean circuit into a VOLE **verifier** `IrModule`.
 ///
-/// The generated function signature is:
-/// ```text
-/// fn vole_verify_<name><N: ArraySize, T>(
-///     delta: &Delta<N, T>,
-///     // One pair per AND gate (circuit order):
-///     q_and_0: Q<N, T>, hat_0: Array<T, N>,
-///     ...
-///     // Verifier's VOLE shares for input wires:
-///     q_input_0: Q<N, T>,
-///     ...
-/// ) -> (Q<N, T>, bool)
-/// where
-///     N: ArraySize,
-///     T: Clone + Add<Output = T> + Mul<Output = T> + PartialEq + Default,
-/// ```
-///
-/// For each AND gate, the verifier checks: `K_a · K_b + hat == K_c · Δ`.
-/// The returned `bool` is `true` iff all AND gate checks passed.
+/// All inputs are treated as private committed witnesses.
+/// Use [`weave_vole_verifier_with_config`] to mark some as public.
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-/// Backwards-compatible VOLE verifier weave — discards provenance.
 pub fn weave_vole_verifier<P: Clone + Default>(
     circuit: &BIrBlocks<P>,
     name: &str,
@@ -716,9 +875,55 @@ pub fn weave_vole_verifier<P: Clone + Default>(
 
 /// Weave a single-block boolean circuit into a VOLE **verifier** `IrModule`,
 /// using `handler` to map input provenance into the output IR.
+///
+/// All inputs are private witnesses.  Use [`weave_vole_verifier_with_config`] for
+/// public/private control.
 pub fn weave_vole_verifier_with_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
+    linkage: Option<&LinkageSystem>,
+    handler: &H,
+) -> IrModule<IrFunction<H::Output>, H::Output>
+where
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
+{
+    weave_vole_verifier_inner(circuit, name, &ZkWitnessConfig::default(), linkage, handler)
+}
+
+/// Weave a single-block boolean circuit into a VOLE **verifier** `IrModule` with
+/// explicit public/private witness configuration.
+///
+/// Public inputs become `bool` parameters; the verifier synthesises Q wires from
+/// `delta` rather than receiving them as VOLE shares.
+pub fn weave_vole_verifier_with_config<P: Clone + Default>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    config: &ZkWitnessConfig,
+    linkage: Option<&LinkageSystem>,
+) -> IrModule<IrFunction> {
+    weave_vole_verifier_inner(circuit, name, config, linkage, &NoProvenance)
+}
+
+/// Weave with both a [`ZkWitnessConfig`] and a provenance handler.
+pub fn weave_vole_verifier_with_config_and_handler<P, H>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    config: &ZkWitnessConfig,
+    linkage: Option<&LinkageSystem>,
+    handler: &H,
+) -> IrModule<IrFunction<H::Output>, H::Output>
+where
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
+{
+    weave_vole_verifier_inner(circuit, name, config, linkage, handler)
+}
+
+fn weave_vole_verifier_inner<P, H>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
@@ -740,12 +945,12 @@ where
         .filter(|(_, s, _)| matches!(s, BIrStmt::And(..)))
         .count();
 
-    // Pre-scan for external primitives (oracle calls, action calls, RNG sources).
-    let mut oracle_handle_map = alloc::collections::BTreeMap::<u32, usize>::new();
+    // Pre-scan: track (name, bit_count) for actions.
+    let mut oracle_handle_map = BTreeMap::<u32, usize>::new();
     let mut oracle_bit_counts: Vec<usize> = Vec::new();
-    let mut action_handle_map = alloc::collections::BTreeMap::<u32, usize>::new();
-    let mut action_bit_counts: Vec<usize> = Vec::new();
-    let mut rng_var_map = alloc::collections::BTreeMap::<u32, usize>::new();
+    let mut action_handle_map = BTreeMap::<u32, usize>::new();
+    let mut action_infos: Vec<(String, usize)> = Vec::new(); // (name, num_bits)
+    let mut rng_var_map = BTreeMap::<u32, usize>::new();
     for (result_id, stmt, _) in &expanded {
         match stmt {
             BIrStmt::OracleCall { num_bits, .. } => {
@@ -753,10 +958,10 @@ where
                 oracle_handle_map.insert(result_id.0, k);
                 oracle_bit_counts.push(*num_bits);
             }
-            BIrStmt::ActionCall { num_bits, .. } => {
-                let k = action_bit_counts.len();
+            BIrStmt::ActionCall { name: action_name, num_bits, .. } => {
+                let k = action_infos.len();
                 action_handle_map.insert(result_id.0, k);
-                action_bit_counts.push(*num_bits);
+                action_infos.push((action_name.clone(), *num_bits));
             }
             BIrStmt::Rng { .. } => {
                 let r = rng_var_map.len();
@@ -766,7 +971,7 @@ where
         }
     }
 
-    let mut var_names = alloc::collections::BTreeMap::<u32, String>::new();
+    let mut var_names = BTreeMap::<u32, String>::new();
     for i in 0..num_params {
         var_names.insert(i as u32, format!("q_input_{}", i));
     }
@@ -774,7 +979,7 @@ where
     // Build parameter list.
     let mut params: Vec<IrParam> = Vec::new();
 
-    // delta: &Delta<N, T>
+    // delta: &Delta<N, T> — always present (needed to synthesise public wires too).
     params.push(IrParam {
         name: "delta".into(),
         ty: ref_to_vole(delta_type()),
@@ -792,14 +997,15 @@ where
         });
     }
 
-    // Input wire Q shares.
+    // Input wire Q shares — or bool for public inputs.
     for i in 0..num_params {
+        let is_pub = config.public_inputs.is_public(CirVar(i as u32));
         params.push(IrParam {
-            name: format!("q_input_{}", i),
-            ty: q_type(),
+            name: if is_pub { format!("input_{}", i) } else { format!("q_input_{}", i) },
+            ty: if is_pub { bool_type() } else { q_type() },
         });
     }
-    // Oracle output Q shares (one Q per output bit, per oracle call).
+    // Oracle output Q shares — always private.
     for (k, &num_bits) in oracle_bit_counts.iter().enumerate() {
         for j in 0..num_bits {
             params.push(IrParam {
@@ -808,16 +1014,22 @@ where
             });
         }
     }
-    // Action output Q shares.
-    for (k, &num_bits) in action_bit_counts.iter().enumerate() {
-        for j in 0..num_bits {
+    // Action output Q shares — public or private per ZkActionConfig.
+    for (k, (action_name, num_bits)) in action_infos.iter().enumerate() {
+        let action_cfg = config.action_configs.get(action_name.as_str());
+        for j in 0..*num_bits {
+            let is_pub = action_cfg.map(|c| c.is_output_public(j)).unwrap_or(false);
             params.push(IrParam {
-                name: format!("q_action_{}_bit_{}", k, j),
-                ty: q_type(),
+                name: if is_pub {
+                    format!("action_{}_bit_{}", k, j)
+                } else {
+                    format!("q_action_{}_bit_{}", k, j)
+                },
+                ty: if is_pub { bool_type() } else { q_type() },
             });
         }
     }
-    // RNG Q shares (one per RNG sample).
+    // RNG Q shares — always private.
     for r in 0..rng_var_map.len() {
         params.push(IrParam {
             name: format!("q_rng_{}", r),
@@ -828,7 +1040,7 @@ where
     // Return type: (Q<N, T>, bool)
     let ret_type = IrType::Tuple(vec![
         q_type(),
-        IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool),
+        IrType::Primitive(PrimitiveType::Bool),
     ]);
 
     let (generics, where_clause) = verifier_generics_and_where();
@@ -844,9 +1056,21 @@ where
             subpat: None,
         },
         ty: None,
-        init: Some(IrExpr::Lit(volar_compiler::ir::IrLit::Bool(true))),
+        init: Some(IrExpr::Lit(IrLit::Bool(true))),
     });
     stmt_provs.push(H::Output::default());
+
+    // Synthesise Q wires for public inputs from the bool params.
+    for i in 0..num_params {
+        if config.public_inputs.is_public(CirVar(i as u32)) {
+            stmts.push(IrStmt::Let {
+                pattern: IrPattern::ident(&format!("q_input_{}", i)),
+                ty: None,
+                init: Some(synth_verifier_public_wire(&format!("input_{}", i))),
+            });
+            stmt_provs.push(H::Output::default());
+        }
+    }
 
     for (result_id, stmt, prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
@@ -882,7 +1106,6 @@ where
             BIrStmt::Xor(a, b) => {
                 let name_a = var_names[&a.0].clone();
                 let name_b = var_names[&b.0].clone();
-                // Q { q: Array::from_fn(|i| q_a.q[i].clone() + q_b.q[i].clone()) }
                 stmts.push(IrStmt::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
@@ -927,7 +1150,6 @@ where
                     &q_and_name, &hat_name,
                     &mut stmts,
                 );
-                // AND gate emits 2 stmts (let (wire, ok) = ...; all_ok = ...)
                 stmt_provs.push(q.clone());
                 stmt_provs.push(q.clone());
             }
@@ -958,10 +1180,20 @@ where
 
             BIrStmt::ActionBit { call, bit } => {
                 let k = action_handle_map[&call.0];
+                let (action_name, _) = &action_infos[k];
+                let is_pub = config.action_configs
+                    .get(action_name.as_str())
+                    .map(|c| c.is_output_public(*bit))
+                    .unwrap_or(false);
+                let init = if is_pub {
+                    synth_verifier_public_wire(&format!("action_{}_bit_{}", k, bit))
+                } else {
+                    clone_expr(var(&format!("q_action_{}_bit_{}", k, bit)))
+                };
                 stmts.push(IrStmt::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
-                    init: Some(clone_expr(var(&format!("q_action_{}_bit_{}", k, bit)))),
+                    init: Some(init),
                 });
                 stmt_provs.push(q.clone());
             }
@@ -1050,7 +1282,38 @@ where
     H: ProvenanceHandler<P>,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_vole_prover_with_handler(&lowered, name, linkage, handler)
+    weave_vole_prover_inner(&lowered, name, &ZkWitnessConfig::default(), linkage, handler)
+}
+
+/// Bounded VOLE prover weave with witness config.
+pub fn weave_vole_prover_bounded_with_config<P: Clone + Default>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    config: &ZkWitnessConfig,
+    limit: u32,
+    mode: LoweringMode,
+    linkage: Option<&LinkageSystem>,
+) -> IrModule<IrFunction> {
+    let lowered = lower_to_circuit(circuit, limit, mode);
+    weave_vole_prover_inner(&lowered, name, config, linkage, &NoProvenance)
+}
+
+/// Bounded VOLE prover weave with witness config and provenance handler.
+pub fn weave_vole_prover_bounded_with_config_and_handler<P, H>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    config: &ZkWitnessConfig,
+    limit: u32,
+    mode: LoweringMode,
+    linkage: Option<&LinkageSystem>,
+    handler: &H,
+) -> IrModule<IrFunction<H::Output>, H::Output>
+where
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
+{
+    let lowered = lower_to_circuit(circuit, limit, mode);
+    weave_vole_prover_inner(&lowered, name, config, linkage, handler)
 }
 
 /// Backwards-compatible bounded VOLE verifier weave.
@@ -1078,7 +1341,38 @@ where
     H: ProvenanceHandler<P>,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_vole_verifier_with_handler(&lowered, name, linkage, handler)
+    weave_vole_verifier_inner(&lowered, name, &ZkWitnessConfig::default(), linkage, handler)
+}
+
+/// Bounded VOLE verifier weave with witness config.
+pub fn weave_vole_verifier_bounded_with_config<P: Clone + Default>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    config: &ZkWitnessConfig,
+    limit: u32,
+    mode: LoweringMode,
+    linkage: Option<&LinkageSystem>,
+) -> IrModule<IrFunction> {
+    let lowered = lower_to_circuit(circuit, limit, mode);
+    weave_vole_verifier_inner(&lowered, name, config, linkage, &NoProvenance)
+}
+
+/// Bounded VOLE verifier weave with witness config and provenance handler.
+pub fn weave_vole_verifier_bounded_with_config_and_handler<P, H>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    config: &ZkWitnessConfig,
+    limit: u32,
+    mode: LoweringMode,
+    linkage: Option<&LinkageSystem>,
+    handler: &H,
+) -> IrModule<IrFunction<H::Output>, H::Output>
+where
+    P: Clone + Default,
+    H: ProvenanceHandler<P>,
+{
+    let lowered = lower_to_circuit(circuit, limit, mode);
+    weave_vole_verifier_inner(&lowered, name, config, linkage, handler)
 }
 
 // ============================================================================

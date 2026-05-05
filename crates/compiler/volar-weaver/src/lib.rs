@@ -88,9 +88,14 @@ pub use vole::{
     weave_vole_verifier, weave_vole_verifier_bounded,
     weave_vole_prover_with_handler, weave_vole_prover_bounded_with_handler,
     weave_vole_verifier_with_handler, weave_vole_verifier_bounded_with_handler,
+    weave_vole_prover_with_config, weave_vole_prover_with_config_and_handler,
+    weave_vole_verifier_with_config, weave_vole_verifier_with_config_and_handler,
+    weave_vole_prover_bounded_with_config, weave_vole_prover_bounded_with_config_and_handler,
+    weave_vole_verifier_bounded_with_config, weave_vole_verifier_bounded_with_config_and_handler,
     weave_vole_prover_ir, weave_vole_verifier_ir,
     weave_vole_prover_ir_with_mode, weave_vole_verifier_ir_with_mode,
     StorageSizes, StorageMode, MemoryTrace, MemoryTraceEntry,
+    ZkWitnessConfig, ZkActionConfig,
 };
 
 pub use grafhen::{
