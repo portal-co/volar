@@ -223,7 +223,7 @@ fn ir_direct_not() {
 #[test]
 fn compiler_oracle_dispatch() {
     use volar_compiler::ir::*;
-    use volar_lir_codegen::lower_module_with_opts;
+    use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
 
     // Module: #[oracle] fn double(x: u64) -> u64;
     //         fn call_it(x: u64) -> u64 { double(x) }
@@ -272,7 +272,7 @@ fn compiler_oracle_dispatch() {
     };
 
     let mut b = CBackend::new();
-    lower_module_with_opts(&module, &mut b, "");
+    lower_module_with_opts(&module, &mut b, &MonoEnv::new(""));
     let c_src = b.finish();
 
     // Provide the oracle stub BEFORE main (as a top-level function).
@@ -289,7 +289,7 @@ fn compiler_oracle_dispatch() {
 #[test]
 fn compiler_rng_dispatch() {
     use volar_compiler::ir::*;
-    use volar_lir_codegen::lower_module_with_opts;
+    use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
 
     // Module: #[rng] fn get_rand() -> u64;
     //         fn use_rng() -> u64 { get_rand() }
@@ -332,7 +332,7 @@ fn compiler_rng_dispatch() {
     };
 
     let mut b = CBackend::new().with_rng_fn("test_rng".to_owned());
-    lower_module_with_opts(&module, &mut b, "");
+    lower_module_with_opts(&module, &mut b, &MonoEnv::new(""));
     let c_src = b.finish();
 
     // The RNG stub must be defined *before* the generated `use_rng()` which
@@ -346,4 +346,167 @@ fn compiler_rng_dispatch() {
     );
     // 8 bytes of 0x42 = 0x4242424242424242
     assert_eq!(out.trim(), "4774451407313060418");
+}
+
+// ############################################################################
+//
+// Category 6: Spec IR monomorphization
+//
+// These tests parse real volar-spec source files and lower them with a MonoEnv,
+// exercising the on-the-fly generic substitution path added to the lowering.
+//
+// ############################################################################
+
+fn read_spec_file(name: &str) -> String {
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent().unwrap()
+        .parent().unwrap()
+        .join("spec").join("volar-spec").join("src");
+    std::fs::read_to_string(base.join(name))
+        .unwrap_or_else(|e| panic!("cannot read spec file {name}: {e}"))
+}
+
+/// Parse grafhen.rs, extract `GrafhenWord` struct (which has a `const WBOUND:
+/// usize` generic), combine with a hand-built test function, lower with
+/// `WBOUND=4`, compile, and run — verifying the on-the-fly const-generic
+/// substitution produces correct C.
+#[test]
+fn spec_grafhen_word_zero() {
+    use volar_compiler::{parse_source, ir::{ExternalKind, IrBlock, IrExpr, IrFunction, IrLit, IrModule, IrType, StructKind}};
+    use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
+
+    let src = read_spec_file("grafhen.rs");
+    let parsed = parse_source(&src, "grafhen").expect("parse failed");
+
+    // Extract the GrafhenWord struct (has `data: [u8; WBOUND]` and `len: usize`).
+    let word_struct = parsed.structs.iter()
+        .find(|s| s.kind == StructKind::Custom("GrafhenWord".into()))
+        .expect("GrafhenWord not found")
+        .clone();
+
+    let word_ty = IrType::Struct {
+        kind: StructKind::Custom("GrafhenWord".into()),
+        type_args: vec![],
+    };
+
+    // fn make_zero() -> GrafhenWord { GrafhenWord { data: [0u8; 4], len: 0 } }
+    let body_expr = IrExpr::StructExpr {
+        kind: StructKind::Custom("GrafhenWord".into()),
+        type_args: vec![],
+        fields: vec![
+            ("data".into(), IrExpr::FixedArray(vec![
+                IrExpr::Lit(IrLit::Int(0u64.into())),
+                IrExpr::Lit(IrLit::Int(0u64.into())),
+                IrExpr::Lit(IrLit::Int(0u64.into())),
+                IrExpr::Lit(IrLit::Int(0u64.into())),
+            ])),
+            ("len".into(), IrExpr::Lit(IrLit::Int(0u64.into()))),
+        ],
+        rest: None,
+    };
+
+    let func = IrFunction {
+        name: "make_zero".into(),
+        generics: vec![],
+        receiver: None,
+        params: vec![],
+        return_type: Some(word_ty),
+        where_clause: vec![],
+        body: IrBlock { stmts: vec![], stmt_provs: vec![], expr: Some(Box::new(body_expr)) },
+        external_kind: ExternalKind::Normal,
+    };
+
+    let module = IrModule {
+        name: "spec_test".into(),
+        structs: vec![word_struct],
+        enums: vec![],
+        traits: vec![],
+        impls: vec![],
+        type_aliases: vec![],
+        functions: vec![func],
+    };
+
+    // Monomorphize WBOUND → 4 on the fly during lowering.
+    let env = MonoEnv::new("").with_len("WBOUND", 4);
+    let mut b = CBackend::new();
+    lower_module_with_opts(&module, &mut b, &env);
+    let c_src = b.finish();
+
+    // GrafhenWord { data: [0,0,0,0], len: 0 } — verify data[0] and len.
+    // data field is Arr_U8_4 struct, so indexing is w.data.data[0].
+    let out = compile_and_run(
+        &c_src,
+        r#"GrafhenWord w = make_zero(); printf("%u %u\n", (unsigned)w.data.data[0], (unsigned)w.len);"#,
+    );
+    assert_eq!(out.trim(), "0 0");
+}
+
+/// Like `spec_grafhen_word_zero` but returns a non-zero word — verifies
+/// the struct-expression lowering handles concrete array literals correctly.
+#[test]
+fn spec_grafhen_word_nonzero() {
+    use volar_compiler::{parse_source, ir::{ExternalKind, IrBlock, IrExpr, IrFunction, IrLit, IrModule, IrType, StructKind}};
+    use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
+
+    let src = read_spec_file("grafhen.rs");
+    let parsed = parse_source(&src, "grafhen").expect("parse failed");
+
+    let word_struct = parsed.structs.iter()
+        .find(|s| s.kind == StructKind::Custom("GrafhenWord".into()))
+        .expect("GrafhenWord not found")
+        .clone();
+
+    let word_ty = IrType::Struct {
+        kind: StructKind::Custom("GrafhenWord".into()),
+        type_args: vec![],
+    };
+
+    // fn make_word() -> GrafhenWord { GrafhenWord { data: [1, 2, 3, 4], len: 3 } }
+    let body_expr = IrExpr::StructExpr {
+        kind: StructKind::Custom("GrafhenWord".into()),
+        type_args: vec![],
+        fields: vec![
+            ("data".into(), IrExpr::FixedArray(vec![
+                IrExpr::Lit(IrLit::Int(1u64.into())),
+                IrExpr::Lit(IrLit::Int(2u64.into())),
+                IrExpr::Lit(IrLit::Int(3u64.into())),
+                IrExpr::Lit(IrLit::Int(4u64.into())),
+            ])),
+            ("len".into(), IrExpr::Lit(IrLit::Int(3u64.into()))),
+        ],
+        rest: None,
+    };
+
+    let func = IrFunction {
+        name: "make_word".into(),
+        generics: vec![],
+        receiver: None,
+        params: vec![],
+        return_type: Some(word_ty),
+        where_clause: vec![],
+        body: IrBlock { stmts: vec![], stmt_provs: vec![], expr: Some(Box::new(body_expr)) },
+        external_kind: ExternalKind::Normal,
+    };
+
+    let module = IrModule {
+        name: "spec_test".into(),
+        structs: vec![word_struct],
+        enums: vec![],
+        traits: vec![],
+        impls: vec![],
+        type_aliases: vec![],
+        functions: vec![func],
+    };
+
+    let env = MonoEnv::new("").with_len("WBOUND", 4);
+    let mut b = CBackend::new();
+    lower_module_with_opts(&module, &mut b, &env);
+    let c_src = b.finish();
+
+    // data = [1,2,3,4], len = 3 — check first element and len.
+    let out = compile_and_run(
+        &c_src,
+        r#"GrafhenWord w = make_word(); printf("%u %u\n", (unsigned)w.data.data[0], (unsigned)w.len);"#,
+    );
+    assert_eq!(out.trim(), "1 3");
 }

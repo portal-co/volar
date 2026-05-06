@@ -147,7 +147,7 @@ fn test_array_splat() {
         ArrayKind, ArrayLength, IrBlock, IrExpr, IrFunction, IrLit, IrModule, IrParam,
         IrType, PrimitiveType, SpecBinOp,
     };
-    use volar_lir_codegen::{lower_module_with_opts, mono::{MonoEnv, monomorphize_module}};
+    use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
 
     // fn arr_sum(a: [u8; 4]) -> u32 {
     //     (a[0] as u32) + (a[1] as u32) + (a[2] as u32) + (a[3] as u32)
@@ -200,10 +200,9 @@ fn test_array_splat() {
     };
 
     let env = MonoEnv::new("sha256");
-    let mono = monomorphize_module(&module, &env);
 
     let mut b = CBackend::new();
-    lower_module_with_opts(&mono, &mut b, "sha256");
+    lower_module_with_opts(&module, &mut b, &env);
     let c_src = b.finish();
 
     // arr_sum takes Arr_U8_4 — pass { .data = {1, 2, 3, 4} } → 1+2+3+4 = 10
@@ -231,7 +230,7 @@ fn test_struct_splat() {
         IrBlock, IrExpr, IrField, IrFunction, IrModule, IrParam, IrStruct, IrType,
         PrimitiveType, SpecBinOp, StructKind,
     };
-    use volar_lir_codegen::{lower_module_with_opts, mono::{MonoEnv, monomorphize_module}};
+    use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
 
     // struct Point { x: u32, y: u32 }
     let point_struct = IrStruct {
@@ -288,12 +287,10 @@ fn test_struct_splat() {
     };
 
     let env = MonoEnv::new("sha256");
-    let mono = monomorphize_module(&module, &env);
 
     let mut b = CBackend::new();
-    lower_module_with_opts(&mono, &mut b, "sha256");
+    lower_module_with_opts(&module, &mut b, &env);
     let c_src = b.finish();
-
 
     // manhattan takes Point by value — pass { .x = 3, .y = 7 } → 10
     let output = compile_and_run(
@@ -314,7 +311,7 @@ fn test_phase2_codegen_struct_array() {
         IrBlock, IrExpr, IrFunction, IrModule, IrParam,
         IrType, PrimitiveType, SpecBinOp,
     };
-    use volar_lir_codegen::{lower_module_with_opts, mono::{MonoEnv, monomorphize_module}};
+    use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
 
     // fn xor_bytes(x: u8, y: u8) -> u8 { x ^ y }
     let func = IrFunction {
@@ -350,10 +347,9 @@ fn test_phase2_codegen_struct_array() {
     };
 
     let env = MonoEnv::new("sha256");
-    let mono = monomorphize_module(&module, &env);
 
     let mut b = CBackend::new();
-    lower_module_with_opts(&mono, &mut b, "sha256");
+    lower_module_with_opts(&module, &mut b, &env);
     let c_src = b.finish();
 
     let output = compile_and_run(&c_src, r#"  printf("%u\n", (unsigned)xor_bytes(0xABu, 0x0Fu));"#);

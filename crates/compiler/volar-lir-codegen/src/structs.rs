@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use volar_compiler::ir::{ArrayKind, ArrayLength, IrFunction, IrModule, IrStruct, IrType, PrimitiveType, StructKind};
 use volar_ir_common::Type as NativeType;
 use volar_lir::{FieldDef, LirTarget, LirType, StructDef, StructId};
+use crate::mono::{MonoEnv, mono_type};
 
 // ============================================================================
 // StructRegistry
@@ -100,10 +101,10 @@ impl StructRegistry {
         panic!("StructId {id} not in registry")
     }
 
-    /// Resolve an IrType to a LirType using this registry.
+    /// Resolve an IrType to a LirType, applying `env` substitutions first.
     /// Requires that all referenced structs are already in the registry.
-    pub fn ir_type_to_lir(&self, ty: &IrType) -> LirType {
-        ir_type_to_lir_inner(ty, self)
+    pub fn ir_type_to_lir(&self, ty: &IrType, env: &MonoEnv) -> LirType {
+        ir_type_to_lir_inner(&mono_type(ty, env), self)
     }
 
     /// Look up a struct by name string (used for synthetic tuple structs).
@@ -162,16 +163,18 @@ pub fn register_tuples_in_type<T: LirTarget>(
     ty: &IrType,
     registry: &mut StructRegistry,
     target: &mut T,
+    env: &MonoEnv,
 ) {
+    let ty = &mono_type(ty, env);
     match ty {
         IrType::Tuple(elems) if !elems.is_empty() => {
             // Recurse into elements first (handles nested tuples).
             for elem in elems {
-                register_tuples_in_type(elem, registry, target);
+                register_tuples_in_type(elem, registry, target, env);
             }
             // Convert elements to LIR and check if already registered.
             let lir_elems: Vec<LirType> = elems.iter()
-                .map(|e| ir_type_to_lir_inner(e, registry))
+                .map(|e| ir_type_to_lir_inner(&mono_type(e, env), registry))
                 .collect();
             let name = tuple_struct_name(&lir_elems);
             if registry.id_for_name(&name).is_some() {
@@ -189,7 +192,7 @@ pub fn register_tuples_in_type<T: LirTarget>(
             registry.register_synthetic(name, id, field_names, lir_elems);
         }
         IrType::Array { elem, .. } | IrType::Reference { elem, .. } => {
-            register_tuples_in_type(elem, registry, target);
+            register_tuples_in_type(elem, registry, target, env);
         }
         _ => {}
     }
@@ -199,17 +202,18 @@ pub fn register_tuples_in_type<T: LirTarget>(
 // Builder
 // ============================================================================
 
-/// Build a `StructRegistry` from a (monomorphized) `IrModule`.
+/// Build a `StructRegistry` from an `IrModule`, applying `env` substitutions
+/// to field types on the fly.
 ///
 /// For each struct in `module.structs`:
-/// 1. Maps its field types to `LirType`.
+/// 1. Maps its field types to `LirType` (with mono substitution via `env`).
 /// 2. Calls `target.define_struct(...)`.
 /// 3. Records the mapping.
 ///
 /// Structs are registered in the order they appear in `module.structs`.
 /// The caller must ensure the ordering is dependency-safe (fields of struct S
 /// must not reference struct T unless T appears earlier in the list).
-pub fn build_struct_registry<T: LirTarget>(module: &IrModule<IrFunction>, target: &mut T) -> StructRegistry {
+pub fn build_struct_registry<T: LirTarget>(module: &IrModule<IrFunction>, target: &mut T, env: &MonoEnv) -> StructRegistry {
     let mut registry = StructRegistry::new();
 
     for ir_struct in &module.structs {
@@ -227,12 +231,13 @@ pub fn build_struct_registry<T: LirTarget>(module: &IrModule<IrFunction>, target
             continue;
         }
 
-        // Map field types to LirType using the partially-built registry.
+        // Map field types to LirType using the partially-built registry,
+        // applying MonoEnv substitutions on the fly.
         let lir_fields: Vec<(String, LirType)> = ir_struct
             .fields
             .iter()
             .map(|f| {
-                let lir_ty = registry.ir_type_to_lir(&f.ty);
+                let lir_ty = registry.ir_type_to_lir(&f.ty, env);
                 (f.name.clone(), lir_ty)
             })
             .collect();
@@ -272,7 +277,7 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
                 ArrayLength::Const(n) => *n,
                 ArrayLength::TypeNum(tn) => tn.to_usize(),
                 ArrayLength::TypeParam(name) => {
-                    panic!("unsubstituted TypeParam length '{name}' — run monomorphize_module first")
+                    panic!("unsubstituted TypeParam length '{name}' — add it to MonoEnv")
                 }
                 ArrayLength::Projection { .. } => {
                     unimplemented!("Projection array length in LIR lowering")
@@ -310,7 +315,7 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
         }
 
         IrType::TypeParam(name) => {
-            panic!("unsubstituted TypeParam '{name}' — run monomorphize_module first")
+            panic!("unsubstituted TypeParam '{name}' — add it to MonoEnv")
         }
 
         IrType::Tuple(elems) => {

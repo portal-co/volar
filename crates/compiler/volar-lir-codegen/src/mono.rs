@@ -1,10 +1,11 @@
 // @reliability: normal
 // @ai: assisted
-//! Monomorphization pass for `IrModule` and `IrCfgModule`.
+//! Monomorphization support for IR→LIR lowering.
 //!
-//! Substitutes concrete values for type parameters before LIR lowering.
-//! Only handles length (const) parameters like `N: ArraySize`; trait parameters
-//! like `D: Digest` are handled at method-dispatch time via `MonoEnv::hash_suffix`.
+//! `MonoEnv` carries substitutions for const/length parameters and type parameters.
+//! Lowering functions (`lower_module_with_opts`, etc.) accept a `&MonoEnv` and
+//! apply these substitutions on the fly — no separate pre-lowering pass needed.
+//! Trait-dispatch parameters (e.g. `D: Digest`) use `MonoEnv::hash_suffix`.
 
 use std::collections::BTreeMap;
 use volar_compiler::ir::{
@@ -23,6 +24,9 @@ pub struct MonoEnv {
     /// Substitutions for array-length type parameters.
     /// e.g., `"N" → 16` for `Array<u8, N>` → `Array<u8, 16>`.
     pub const_params: BTreeMap<String, usize>,
+    /// Substitutions for type parameters.
+    /// e.g., `"T" → IrType::Primitive(U8)` for `fn foo<T>(x: T)`.
+    pub type_params: BTreeMap<String, IrType>,
     /// Concrete name suffix for the `D: Digest` trait parameter.
     /// e.g., `"sha256"`. Appended to crypto extern function names.
     pub hash_suffix: String,
@@ -32,12 +36,18 @@ impl MonoEnv {
     pub fn new(hash_suffix: impl Into<String>) -> Self {
         MonoEnv {
             const_params: BTreeMap::new(),
+            type_params: BTreeMap::new(),
             hash_suffix: hash_suffix.into(),
         }
     }
 
     pub fn with_len(mut self, param: impl Into<String>, len: usize) -> Self {
         self.const_params.insert(param.into(), len);
+        self
+    }
+
+    pub fn with_type(mut self, param: impl Into<String>, ty: IrType) -> Self {
+        self.type_params.insert(param.into(), ty);
         self
     }
 }
@@ -47,23 +57,29 @@ impl MonoEnv {
 // ============================================================================
 
 /// Monomorphize an entire `IrModule`: substitutes type/length parameters
-/// in all struct definitions and all function signatures/bodies.
-pub fn monomorphize_module(module: &IrModule<IrFunction>, env: &MonoEnv) -> IrModule<IrFunction> {
+/// in all parts of the module (structs, enums, impls, type aliases, functions).
+///
+/// No longer needed as a separate pass — `lower_module_with_opts` accepts a
+/// `MonoEnv` and applies substitutions on the fly.  Kept for completeness.
+pub(crate) fn monomorphize_module(module: &IrModule<IrFunction>, env: &MonoEnv) -> IrModule<IrFunction> {
     IrModule {
         name: module.name.clone(),
         structs: module.structs.iter().map(|s| monomorphize_struct(s, env)).collect(),
-        enums: module.enums.clone(),
+        enums: module.enums.iter().map(|e| monomorphize_enum(e, env)).collect(),
         traits: module.traits.clone(),
-        impls: module.impls.clone(),
+        impls: module.impls.iter().map(|i| monomorphize_impl(i, env)).collect(),
         functions: module.functions.iter().map(|f| monomorphize_function(f, env)).collect(),
-        type_aliases: module.type_aliases.clone(),
+        type_aliases: module.type_aliases.iter().map(|a| monomorphize_type_alias(a, env)).collect(),
     }
 }
 
 /// Monomorphize an `IrCfgModule`: substitutes type/length parameters
 /// in all struct definitions, enums, type aliases, impls, and function
 /// signatures/bodies (both CFG and flat).
-pub fn monomorphize_cfg_module(module: &IrCfgModule, env: &MonoEnv) -> IrCfgModule {
+///
+/// No longer needed as a separate pass — `lower_cfg_module_with_opts` accepts a
+/// `MonoEnv` and applies substitutions on the fly.  Kept for completeness.
+pub(crate) fn monomorphize_cfg_module(module: &IrCfgModule, env: &MonoEnv) -> IrCfgModule {
     IrModule {
         name: module.name.clone(),
         structs: module.structs.iter().map(|s| monomorphize_struct(s, env)).collect(),
@@ -293,10 +309,11 @@ fn mono_cfg_jump(jump: &IrCfgJump, env: &MonoEnv) -> IrCfgJump {
 pub fn mono_type(ty: &IrType, env: &MonoEnv) -> IrType {
     match ty {
         IrType::TypeParam(name) => {
-            // If it's a known const param, we keep the TypeParam but with
-            // the concrete length resolved into containing Array types.
-            // Standalone TypeParam("N") in non-length context → leave as-is.
-            ty.clone()
+            if let Some(concrete) = env.type_params.get(name) {
+                mono_type(concrete, env) // recurse in case the substituted type itself has params
+            } else {
+                ty.clone()
+            }
         }
         IrType::Array { kind, elem, len } => IrType::Array {
             kind: *kind,
@@ -320,7 +337,7 @@ pub fn mono_type(ty: &IrType, env: &MonoEnv) -> IrType {
     }
 }
 
-fn mono_len(len: &ArrayLength, env: &MonoEnv) -> ArrayLength {
+pub(crate) fn mono_len(len: &ArrayLength, env: &MonoEnv) -> ArrayLength {
     match len {
         ArrayLength::TypeParam(name) => {
             if let Some(&n) = env.const_params.get(name) {

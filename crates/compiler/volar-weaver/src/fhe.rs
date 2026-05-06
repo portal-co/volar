@@ -3640,9 +3640,8 @@ pub fn print_fhe_cfg_module_ts(module: &IrCfgModule) -> String {
 
 /// Render a CFG FHE `IrCfgModule` to C source via the LIR -> C backend pipeline.
 ///
-/// The module must be monomorphized first (C has no generics). Pass a
-/// [`MonoEnv`](volar_lir_codegen::mono::MonoEnv) with concrete values for all
-/// const generic parameters used in the module.
+/// Pass a [`MonoEnv`](volar_lir_codegen::mono::MonoEnv) with concrete values for all
+/// const generic parameters; monomorphization is applied on the fly during lowering.
 ///
 /// Auxiliary (spec) functions are skipped — they contain Rust-specific
 /// constructs (enums, match, etc.) that the LIR/C pipeline does not support.
@@ -3651,9 +3650,8 @@ pub fn print_fhe_cfg_module_ts(module: &IrCfgModule) -> String {
 pub fn print_fhe_cfg_module_c(module: &IrCfgModule, env: &volar_lir_codegen::mono::MonoEnv) -> String {
     use volar_c_backend::CBackend;
 
-    let mono = volar_lir_codegen::mono::monomorphize_cfg_module(module, env);
     let mut backend = CBackend::new();
-    volar_lir_codegen::lower_cfg_module_with_opts(&mono, &mut backend, "", false);
+    volar_lir_codegen::lower_cfg_module_with_opts(module, &mut backend, env, false);
     backend.finish()
 }
 

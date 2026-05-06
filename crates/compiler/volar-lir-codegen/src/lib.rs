@@ -28,6 +28,7 @@ use structs::{
     StructRegistry, flatten_count, flatten_scalar_types,
     struct_field_scalar_offset, struct_field_scalar_width, primitive_to_lir,
 };
+use mono::{MonoEnv, mono_type, mono_len};
 
 // Unwrap a single-element Vec into a scalar, panicking if the vec has != 1 element.
 fn into_scalar<V: Clone>(vals: Vec<V>, context: &str) -> V {
@@ -38,26 +39,28 @@ fn into_scalar<V: Clone>(vals: Vec<V>, context: &str) -> V {
 // Type mapping
 // ============================================================================
 
-/// Convert an `IrType` to `LirType` without a struct registry (primitives only).
-fn ir_type_to_lir(ty: &IrType) -> LirType {
+/// Convert an `IrType` to `LirType` without a struct registry (primitives only),
+/// applying `env` substitutions on the fly.
+fn ir_type_to_lir_prim(ty: &IrType, env: &MonoEnv) -> LirType {
+    let ty = &mono_type(ty, env);
     match ty {
         IrType::Primitive(p) => primitive_to_lir(*p),
         IrType::Unit => LirType::Bool,
-        IrType::Reference { elem, .. } => ir_type_to_lir(elem),
+        IrType::Reference { elem, .. } => ir_type_to_lir_prim(elem, env),
         IrType::Array { elem, len, .. } => {
-            let n = const_len(len);
-            LirType::Arr(Box::new(ir_type_to_lir(elem)), n)
+            let n = const_len(len, env);
+            LirType::Arr(Box::new(ir_type_to_lir_prim(elem, env)), n)
         }
-        other => unimplemented!("ir_type_to_lir: unsupported type {:?}", other),
+        other => unimplemented!("ir_type_to_lir_prim: unsupported type {:?}", other),
     }
 }
 
-fn const_len(len: &ArrayLength) -> usize {
-    match len {
-        ArrayLength::Const(n) => *n,
+fn const_len(len: &ArrayLength, env: &MonoEnv) -> usize {
+    match mono_len(len, env) {
+        ArrayLength::Const(n) => n,
         ArrayLength::TypeNum(tn) => tn.to_usize(),
         ArrayLength::TypeParam(name) => {
-            panic!("unsubstituted TypeParam length '{name}' — run monomorphize_module first")
+            panic!("unsubstituted TypeParam length '{name}' — add it to MonoEnv")
         }
         ArrayLength::Projection { .. } => unimplemented!("Projection length in lowering"),
     }
@@ -100,8 +103,8 @@ struct LowerCtx<'t, T: LirTarget> {
     current_block: T::Block,
     /// Struct registry (IDs, field names, field types).
     registry: &'t StructRegistry,
-    /// Hash suffix for crypto extern names (e.g., "sha256").
-    hash_suffix: String,
+    /// Monomorphization environment: concrete lengths and hash suffix.
+    mono: &'t MonoEnv,
     /// Original IrModule struct defs (for field type lookup).
     module_structs: &'t [volar_compiler::ir::IrStruct],
     /// Functions annotated `#[oracle]`, `#[action]`, or `#[rng]`.
@@ -120,7 +123,7 @@ impl<'t, T: LirTarget> LowerCtx<'t, T> {
         entry: T::Block,
         params: Vec<(String, Vec<T::Value>, IrType)>,
         registry: &'t StructRegistry,
-        hash_suffix: String,
+        mono: &'t MonoEnv,
         module_structs: &'t [volar_compiler::ir::IrStruct],
     ) -> Self {
         let mut env = BTreeMap::new();
@@ -129,7 +132,7 @@ impl<'t, T: LirTarget> LowerCtx<'t, T> {
             env.insert(name.clone(), vals);
             env_types.insert(name, ty);
         }
-        LowerCtx { target, env, env_types, current_block: entry, registry, hash_suffix, module_structs, external_fns: &EMPTY_EXTERNAL_FNS, func_sigs: &EMPTY_FUNC_SIGS, ir_func_ret_types: &EMPTY_IR_RET_TYPES }
+        LowerCtx { target, env, env_types, current_block: entry, registry, mono, module_structs, external_fns: &EMPTY_EXTERNAL_FNS, func_sigs: &EMPTY_FUNC_SIGS, ir_func_ret_types: &EMPTY_IR_RET_TYPES }
     }
 
     /// Infer the IrType of an expression using env_types and module struct defs.
@@ -244,21 +247,21 @@ static EMPTY_IR_RET_TYPES: LazyLock<BTreeMap<String, IrType>> =
 // Public API
 // ============================================================================
 
-/// Lower all functions in `module` to `target`.
+/// Lower all functions in `module` to `target` using an empty `MonoEnv`.
 ///
-/// The module should be monomorphized before calling this (via `mono::monomorphize_module`).
 /// Struct types are registered via `structs::build_struct_registry` before lowering functions.
 pub fn lower_module<T: LirTarget>(module: &IrModule<IrFunction>, target: &mut T) {
-    lower_module_with_opts(module, target, "");
+    lower_module_with_opts(module, target, &MonoEnv::new(""));
 }
 
-/// Like `lower_module` but with an explicit crypto hash suffix (for extern names).
+/// Like `lower_module` but with a `MonoEnv` providing concrete generic substitutions
+/// (array lengths, hash suffix) applied on the fly during lowering.
 pub fn lower_module_with_opts<T: LirTarget>(
     module: &IrModule<IrFunction>,
     target: &mut T,
-    hash_suffix: &str,
+    env: &MonoEnv,
 ) {
-    let registry = structs::build_struct_registry(module, target);
+    let registry = structs::build_struct_registry(module, target, env);
 
     // Build a lookup table for oracle/action/rng functions.
     let external_fns: BTreeMap<String, ExternalFnInfo> = module
@@ -266,8 +269,8 @@ pub fn lower_module_with_opts<T: LirTarget>(
         .iter()
         .filter(|f| matches!(f.external_kind, ExternalKind::Oracle | ExternalKind::Action | ExternalKind::Rng))
         .map(|f| {
-            let param_tys = f.params.iter().map(|p| registry.ir_type_to_lir(&p.ty)).collect();
-            let return_type = f.return_type.as_ref().map(|t| registry.ir_type_to_lir(t));
+            let param_tys = f.params.iter().map(|p| registry.ir_type_to_lir(&p.ty, env)).collect();
+            let return_type = f.return_type.as_ref().map(|t| registry.ir_type_to_lir(t, env));
             (f.name.clone(), ExternalFnInfo {
                 kind: f.external_kind,
                 param_tys,
@@ -277,14 +280,13 @@ pub fn lower_module_with_opts<T: LirTarget>(
         .collect();
 
     // Build a signature table for ALL functions (for return-type inference at
-    // call sites).  This enables `lower_call` to pass the correct `ret_ty`
-    // to `call_extern` instead of `None`.
+    // call sites).
     let func_sigs: BTreeMap<String, FuncSigInfo> = module
         .functions
         .iter()
         .map(|f| {
-            let param_tys = f.params.iter().map(|p| registry.ir_type_to_lir(&p.ty)).collect();
-            let return_type = f.return_type.as_ref().map(|t| registry.ir_type_to_lir(t));
+            let param_tys = f.params.iter().map(|p| registry.ir_type_to_lir(&p.ty, env)).collect();
+            let return_type = f.return_type.as_ref().map(|t| registry.ir_type_to_lir(t, env));
             (f.name.clone(), FuncSigInfo { param_tys, return_type })
         })
         .collect();
@@ -295,7 +297,7 @@ pub fn lower_module_with_opts<T: LirTarget>(
             continue;
         }
         lower_function_in_module(
-            func, target, &registry, hash_suffix, &module.structs, &external_fns, &func_sigs,
+            func, target, &registry, env, &module.structs, &external_fns, &func_sigs,
         );
     }
 }
@@ -305,7 +307,7 @@ fn lower_function_in_module<T: LirTarget>(
     func: &IrFunction,
     target: &mut T,
     registry: &StructRegistry,
-    hash_suffix: &str,
+    env: &MonoEnv,
     module_structs: &[volar_compiler::ir::IrStruct],
     external_fns: &BTreeMap<String, ExternalFnInfo>,
     func_sigs: &BTreeMap<String, FuncSigInfo>,
@@ -313,9 +315,9 @@ fn lower_function_in_module<T: LirTarget>(
     let param_lir_tys: Vec<LirType> = func
         .params
         .iter()
-        .map(|p| registry.ir_type_to_lir(&p.ty))
+        .map(|p| registry.ir_type_to_lir(&p.ty, env))
         .collect();
-    let ret_ty = func.return_type.as_ref().map(|t| registry.ir_type_to_lir(t));
+    let ret_ty = func.return_type.as_ref().map(|t| registry.ir_type_to_lir(t, env));
 
     let (entry, param_val_groups) = target.begin_function(&func.name, &param_lir_tys, ret_ty);
     target.switch_to_block(entry.clone());
@@ -332,7 +334,7 @@ fn lower_function_in_module<T: LirTarget>(
         entry,
         named_params,
         registry,
-        hash_suffix.to_owned(),
+        env,
         module_structs,
     );
     ctx.external_fns = external_fns;
@@ -347,28 +349,28 @@ fn lower_function_in_module<T: LirTarget>(
 ///
 /// Use `lower_module_with_opts` for modules that use structs or arrays.
 pub fn lower_function<T: LirTarget>(func: &IrFunction, target: &mut T) {
+    static EMPTY_ENV: std::sync::LazyLock<MonoEnv> = std::sync::LazyLock::new(|| MonoEnv::new(""));
     let empty_registry = StructRegistry::empty();
-    lower_function_with_registry(func, target, &empty_registry, "", &[]);
+    lower_function_with_registry(func, target, &empty_registry, &EMPTY_ENV, &[]);
 }
 
 pub fn lower_function_with_registry<T: LirTarget>(
     func: &IrFunction,
     target: &mut T,
     registry: &StructRegistry,
-    hash_suffix: &str,
+    env: &MonoEnv,
     module_structs: &[volar_compiler::ir::IrStruct],
 ) {
     let param_lir_tys: Vec<LirType> = func
         .params
         .iter()
-        .map(|p| registry.ir_type_to_lir(&p.ty))
+        .map(|p| registry.ir_type_to_lir(&p.ty, env))
         .collect();
-    let ret_ty = func.return_type.as_ref().map(|t| registry.ir_type_to_lir(t));
+    let ret_ty = func.return_type.as_ref().map(|t| registry.ir_type_to_lir(t, env));
 
     let (entry, param_val_groups) = target.begin_function(&func.name, &param_lir_tys, ret_ty);
     target.switch_to_block(entry.clone());
 
-    // Each group is the flat scalar values for that parameter.
     let named_params: Vec<(String, Vec<T::Value>, IrType)> = func
         .params
         .iter()
@@ -381,7 +383,7 @@ pub fn lower_function_with_registry<T: LirTarget>(
         entry,
         named_params,
         registry,
-        hash_suffix.to_owned(),
+        env,
         module_structs,
     );
 
@@ -487,7 +489,7 @@ fn lower_expr<T: LirTarget>(expr: &IrExpr, ctx: &mut LowerCtx<T>) -> Vec<T::Valu
 
         IrExpr::Cast { expr: inner, ty } => {
             let v = into_scalar(lower_expr(inner, ctx), "cast operand");
-            let dst = ir_type_to_lir(ty);
+            let dst = ir_type_to_lir_prim(ty, ctx.mono);
             vec![ctx.target.zext(v, dst)]
         }
 
@@ -702,9 +704,9 @@ fn lower_field<T: LirTarget>(base: &IrExpr, field: &str, ctx: &mut LowerCtx<T>) 
         // Compute scalar offset = sum of flattened widths of elements 0..idx.
         let offset: usize = elems[..idx]
             .iter()
-            .map(|ty| flatten_count(&ctx.registry.ir_type_to_lir(ty), ctx.registry))
+            .map(|ty| flatten_count(&ctx.registry.ir_type_to_lir(ty, ctx.mono), ctx.registry))
             .sum();
-        let width = flatten_count(&ctx.registry.ir_type_to_lir(&elems[idx]), ctx.registry);
+        let width = flatten_count(&ctx.registry.ir_type_to_lir(&elems[idx], ctx.mono), ctx.registry);
 
         let base_vals = lower_expr(base, ctx);
         return base_vals[offset..offset + width].to_vec();
@@ -772,7 +774,7 @@ fn lower_array_generate<T: LirTarget>(
     body: &IrExpr,
     ctx: &mut LowerCtx<T>,
 ) -> Vec<T::Value> {
-    let n = const_len(len);
+    let n = const_len(len, ctx.mono);
 
     // Unroll: evaluate body once per index, concatenate flat scalar lists.
     let result: Vec<T::Value> = (0..n)
@@ -805,8 +807,8 @@ fn lower_raw_map<T: LirTarget>(
     let recv_ty = ctx
         .infer_type(receiver)
         .unwrap_or_else(|| panic!("RawMap: could not infer receiver type"));
-    let (elem_ir_ty, n) = array_elem_and_len(&recv_ty);
-    let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty);
+    let (elem_ir_ty, n) = array_elem_and_len(&recv_ty, ctx.mono);
+    let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
     let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
 
     let recv_vals = lower_expr(receiver, ctx); // n * elem_width scalars
@@ -833,8 +835,8 @@ fn lower_raw_zip<T: LirTarget>(
     let left_ty = ctx
         .infer_type(left)
         .unwrap_or_else(|| panic!("RawZip: could not infer left type"));
-    let (elem_ir_ty, n) = array_elem_and_len(&left_ty);
-    let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty);
+    let (elem_ir_ty, n) = array_elem_and_len(&left_ty, ctx.mono);
+    let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
     let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
 
     let left_vals  = lower_expr(left, ctx);
@@ -865,10 +867,10 @@ fn bind_map_pattern<T: LirTarget>(
     }
 }
 
-fn array_elem_and_len(ty: &IrType) -> (IrType, usize) {
+fn array_elem_and_len(ty: &IrType, env: &MonoEnv) -> (IrType, usize) {
     match ty {
-        IrType::Array { elem, len, .. } => (*elem.clone(), const_len(len)),
-        IrType::Reference { elem, .. } => array_elem_and_len(elem),
+        IrType::Array { elem, len, .. } => (*elem.clone(), const_len(len, env)),
+        IrType::Reference { elem, .. } => array_elem_and_len(elem, env),
         other => panic!("expected array type, got {:?}", other),
     }
 }
@@ -914,15 +916,15 @@ fn lower_index<T: LirTarget>(
     // Use ptr_index_load instead of the flat mux tree.
     if is_slice_ref(&base_ir_ty) {
         let elem_ir_ty = slice_ref_elem(&base_ir_ty);
-        let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty);
+        let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
         let ptr_vals = lower_expr(base, ctx);
         let ptr = ptr_vals.into_iter().next().expect("pointer should be a single scalar");
         let idx_val = into_scalar(lower_expr(index, ctx), "array index");
         return ctx.target.ptr_index_load(ptr, idx_val, &elem_lir_ty);
     }
 
-    let (elem_ir_ty, n) = array_elem_and_len(&base_ir_ty);
-    let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty);
+    let (elem_ir_ty, n) = array_elem_and_len(&base_ir_ty, ctx.mono);
+    let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
     let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
 
     let arr_vals = lower_expr(base, ctx);   // n * elem_width scalars
@@ -959,7 +961,7 @@ fn lower_assign<T: LirTarget>(
             if is_slice_ref(&base_ir_ty) {
                 // Pointer-based store: ptr[idx] = pack(rhs_vals)
                 let elem_ir_ty = slice_ref_elem(&base_ir_ty);
-                let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty);
+                let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
                 let ptr_vals = lower_expr(base, ctx);
                 let ptr = ptr_vals.into_iter().next().expect("pointer should be a single scalar");
                 let idx_val = into_scalar(lower_expr(index, ctx), "assign index");
@@ -968,8 +970,8 @@ fn lower_assign<T: LirTarget>(
             } else {
                 // In-memory array: update env with new values.
                 // For flat-scalar arrays this replaces the slice at the right index.
-                let (elem_ir_ty, _n) = array_elem_and_len(&base_ir_ty);
-                let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty);
+                let (elem_ir_ty, _n) = array_elem_and_len(&base_ir_ty, ctx.mono);
+                let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
                 let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
 
                 let idx_val = into_scalar(lower_expr(index, ctx), "assign index");
@@ -1126,16 +1128,16 @@ fn lower_method_extern<T: LirTarget>(
     args: &[IrExpr],
     ctx: &mut LowerCtx<T>,
 ) -> Vec<T::Value> {
-    let extern_name = if ctx.hash_suffix.is_empty() {
+    let extern_name = if ctx.mono.hash_suffix.is_empty() {
         method_name.to_owned()
     } else {
-        format!("{}_{}", method_name, ctx.hash_suffix)
+        format!("{}_{}", method_name, ctx.mono.hash_suffix)
     };
 
     // Collect ABI types and flat scalar values for receiver + args.
     let recv_ir_ty = ctx.infer_type(receiver);
     let recv_lir_ty = recv_ir_ty.as_ref()
-        .map(|t| ctx.registry.ir_type_to_lir(t))
+        .map(|t| ctx.registry.ir_type_to_lir(t, ctx.mono))
         .unwrap_or(LirType::U64);
 
     let mut arg_tys: Vec<LirType> = vec![recv_lir_ty];
@@ -1144,13 +1146,13 @@ fn lower_method_extern<T: LirTarget>(
     for a in args {
         let a_ir_ty = ctx.infer_type(a);
         let a_lir_ty = a_ir_ty.as_ref()
-            .map(|t| ctx.registry.ir_type_to_lir(t))
+            .map(|t| ctx.registry.ir_type_to_lir(t, ctx.mono))
             .unwrap_or(LirType::U64);
         arg_tys.push(a_lir_ty);
         flat_args.extend(lower_expr(a, ctx));
     }
 
-    let ret_lir_ty = recv_ir_ty.map(|t| ctx.registry.ir_type_to_lir(&t));
+    let ret_lir_ty = recv_ir_ty.map(|t| ctx.registry.ir_type_to_lir(&t, ctx.mono));
     ctx.target.call_extern(&extern_name, &arg_tys, &flat_args, ret_lir_ty)
 }
 
@@ -1256,7 +1258,7 @@ fn lower_call<T: LirTarget>(func: &IrExpr, args: &[IrExpr], ctx: &mut LowerCtx<T
     for a in args {
         let a_ir_ty = ctx.infer_type(a);
         let a_lir_ty = a_ir_ty.as_ref()
-            .map(|t| ctx.registry.ir_type_to_lir(t))
+            .map(|t| ctx.registry.ir_type_to_lir(t, ctx.mono))
             .unwrap_or(LirType::U64);
         arg_tys.push(a_lir_ty);
         flat_args.extend(lower_expr(a, ctx));
@@ -1269,17 +1271,17 @@ fn lower_call<T: LirTarget>(func: &IrExpr, args: &[IrExpr], ctx: &mut LowerCtx<T
 // CFG Module lowering — IrCfgModule → LirTarget (direct block map)
 // ============================================================================
 
-/// Lower all functions in an `IrCfgModule` to `target`.
+/// Lower all functions in an `IrCfgModule` to `target` using an empty `MonoEnv`.
 ///
 /// Auxiliary functions (flat bodies from linked specs) are lowered through the
 /// normal `lower_function_in_module` path.  CFG-structured circuit functions
 /// map each `IrCfgBlock` directly to a LIR block, using the target's native
 /// `create_block`/`jump`/`branch`/`ret`.
 pub fn lower_cfg_module<T: LirTarget>(module: &IrCfgModule, target: &mut T) {
-    lower_cfg_module_with_opts(module, target, "", true);
+    lower_cfg_module_with_opts(module, target, &MonoEnv::new(""), true);
 }
 
-/// Like `lower_cfg_module` but with control over hash suffix and auxiliary
+/// Like `lower_cfg_module` but with a `MonoEnv` and control over auxiliary
 /// function lowering.
 ///
 /// When `include_auxiliary` is `false`, only CFG functions are lowered.
@@ -1288,7 +1290,7 @@ pub fn lower_cfg_module<T: LirTarget>(module: &IrCfgModule, target: &mut T) {
 pub fn lower_cfg_module_with_opts<T: LirTarget>(
     module: &IrCfgModule,
     target: &mut T,
-    hash_suffix: &str,
+    env: &MonoEnv,
     include_auxiliary: bool,
 ) {
     // Build struct registry from the CFG module's structs.
@@ -1304,7 +1306,7 @@ pub fn lower_cfg_module_with_opts<T: LirTarget>(
         }).collect(),
         type_aliases: module.type_aliases.clone(),
     };
-    let mut registry = structs::build_struct_registry(&flat, target);
+    let mut registry = structs::build_struct_registry(&flat, target, env);
     // When skipping auxiliary functions, enable lenient mode so that external
     // types (e.g. TFHE scheme types not defined in the module) are treated
     // as opaque rather than causing a panic.
@@ -1320,10 +1322,10 @@ pub fn lower_cfg_module_with_opts<T: LirTarget>(
             IrAnyFunction::Cfg(f) => (&f.params, &f.return_type),
         };
         for p in params {
-            structs::register_tuples_in_type(&p.ty, &mut registry, target);
+            structs::register_tuples_in_type(&p.ty, &mut registry, target, env);
         }
         if let Some(rt) = return_type {
-            structs::register_tuples_in_type(rt, &mut registry, target);
+            structs::register_tuples_in_type(rt, &mut registry, target, env);
         }
     }
 
@@ -1343,8 +1345,8 @@ pub fn lower_cfg_module_with_opts<T: LirTarget>(
             IrAnyFunction::Flat(f) => (&f.name, &f.params, &f.return_type, f.external_kind),
             IrAnyFunction::Cfg(f) => (&f.name, &f.params, &f.return_type, f.external_kind),
         };
-        let param_tys: Vec<LirType> = params.iter().map(|p| registry.ir_type_to_lir(&p.ty)).collect();
-        let ret_lir = return_type.as_ref().map(|t| registry.ir_type_to_lir(t));
+        let param_tys: Vec<LirType> = params.iter().map(|p| registry.ir_type_to_lir(&p.ty, env)).collect();
+        let ret_lir = return_type.as_ref().map(|t| registry.ir_type_to_lir(t, env));
         func_sigs.insert(name.clone(), FuncSigInfo { param_tys: param_tys.clone(), return_type: ret_lir.clone() });
         if let Some(rt) = return_type {
             ir_func_ret_types.insert(name.clone(), rt.clone());
@@ -1366,7 +1368,7 @@ pub fn lower_cfg_module_with_opts<T: LirTarget>(
                     continue;
                 }
                 lower_function_in_module(
-                    func, target, &registry, hash_suffix, &module.structs, &external_fns, &func_sigs,
+                    func, target, &registry, env, &module.structs, &external_fns, &func_sigs,
                 );
             }
         }
@@ -1379,7 +1381,7 @@ pub fn lower_cfg_module_with_opts<T: LirTarget>(
                 continue;
             }
             lower_cfg_function(
-                func, target, &registry, hash_suffix, &module.structs, &external_fns, &func_sigs, &ir_func_ret_types,
+                func, target, &registry, env, &module.structs, &external_fns, &func_sigs, &ir_func_ret_types,
             );
         }
     }
@@ -1390,7 +1392,7 @@ fn lower_cfg_function<T: LirTarget>(
     func: &IrCfgFunction,
     target: &mut T,
     registry: &StructRegistry,
-    hash_suffix: &str,
+    env: &MonoEnv,
     module_structs: &[volar_compiler::ir::IrStruct],
     external_fns: &BTreeMap<String, ExternalFnInfo>,
     func_sigs: &BTreeMap<String, FuncSigInfo>,
@@ -1402,9 +1404,9 @@ fn lower_cfg_function<T: LirTarget>(
     let param_lir_tys: Vec<LirType> = func
         .params
         .iter()
-        .map(|p| registry.ir_type_to_lir(&p.ty))
+        .map(|p| registry.ir_type_to_lir(&p.ty, env))
         .collect();
-    let ret_ty = func.return_type.as_ref().map(|t| registry.ir_type_to_lir(t));
+    let ret_ty = func.return_type.as_ref().map(|t| registry.ir_type_to_lir(t, env));
 
     // Begin the function — gets the entry block (block 0) and its parameter values.
     let (entry, param_val_groups) = target.begin_function(&func.name, &param_lir_tys, ret_ty);
@@ -1423,7 +1425,7 @@ fn lower_cfg_function<T: LirTarget>(
     for (bidx, blk) in blocks.iter().enumerate().skip(1) {
         let mut param_groups = Vec::new();
         for param in &blk.params {
-            let lir_ty = registry.ir_type_to_lir(&param.ty);
+            let lir_ty = registry.ir_type_to_lir(&param.ty, env);
             // add_block_param returns a single LIR value; for aggregate types
             // we need to flatten (same as begin_function).
             let scalar_tys = structs::flatten_scalar_types(&lir_ty, registry);
@@ -1462,7 +1464,7 @@ fn lower_cfg_function<T: LirTarget>(
             lir_blocks[bidx].clone(),
             named_params,
             registry,
-            hash_suffix.to_owned(),
+            env,
             module_structs,
         );
         ctx.external_fns = external_fns;
