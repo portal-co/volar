@@ -17,18 +17,19 @@ use std::sync::LazyLock;
 
 use std::collections::BTreeMap;
 use volar_compiler::ir::{
-    ArrayKind, ArrayLength, ExternalKind, IrAnyFunction, IrBlock, IrCfgBody, IrCfgFunction,
-    IrCfgJump, IrCfgModule, IrCfgTerminator, IrClosureParam, IrExpr, IrFunction, IrLit, IrModule,
+    ArrayKind, ArrayLength, ExternalKind, IrAnyFunction, IrBlock, IrCfgFunction,
+    IrCfgJump, IrCfgModule, IrCfgTerminator, IrExpr, IrFunction, IrLit, IrModule,
     IrPattern, IrStmt, IrType, MethodKind, PrimitiveType, SpecBinOp, SpecUnaryOp, StdMethod,
     StructKind,
 };
-use volar_lir::{IcmpPred, LirTarget, LirType, LirAbi};
+use volar_lir::{IcmpPred, LirTarget, LirType};
 
 use structs::{
-    StructRegistry, flatten_count, flatten_scalar_types,
+    StructRegistry, EnumRegistry, flatten_count, flatten_scalar_types,
     struct_field_scalar_offset, struct_field_scalar_width, primitive_to_lir,
 };
 use mono::{MonoEnv, mono_type, mono_len};
+use volar_compiler::ir::IrEnum;
 
 // Unwrap a single-element Vec into a scalar, panicking if the vec has != 1 element.
 fn into_scalar<V: Clone>(vals: Vec<V>, context: &str) -> V {
@@ -84,6 +85,7 @@ struct ExternalFnInfo {
 /// Used to infer return types at call sites.
 struct FuncSigInfo {
     /// LIR types of the declared parameters.
+    #[allow(dead_code)]
     param_tys: Vec<LirType>,
     /// LIR return type.
     return_type: Option<LirType>,
@@ -103,10 +105,15 @@ struct LowerCtx<'t, T: LirTarget> {
     current_block: T::Block,
     /// Struct registry (IDs, field names, field types).
     registry: &'t StructRegistry,
+    /// Enum registry (variant discriminants, payload widths).
+    enum_registry: &'t EnumRegistry,
     /// Monomorphization environment: concrete lengths and hash suffix.
     mono: &'t MonoEnv,
     /// Original IrModule struct defs (for field type lookup).
     module_structs: &'t [volar_compiler::ir::IrStruct],
+    /// Original IrModule enum defs (reserved for future variant lookup refinements).
+    #[allow(dead_code)]
+    module_enums: &'t [IrEnum],
     /// Functions annotated `#[oracle]`, `#[action]`, or `#[rng]`.
     /// Populated from the module at `lower_module_with_opts` time.
     external_fns: &'t BTreeMap<String, ExternalFnInfo>,
@@ -123,8 +130,10 @@ impl<'t, T: LirTarget> LowerCtx<'t, T> {
         entry: T::Block,
         params: Vec<(String, Vec<T::Value>, IrType)>,
         registry: &'t StructRegistry,
+        enum_registry: &'t EnumRegistry,
         mono: &'t MonoEnv,
         module_structs: &'t [volar_compiler::ir::IrStruct],
+        module_enums: &'t [IrEnum],
     ) -> Self {
         let mut env = BTreeMap::new();
         let mut env_types = BTreeMap::new();
@@ -132,7 +141,14 @@ impl<'t, T: LirTarget> LowerCtx<'t, T> {
             env.insert(name.clone(), vals);
             env_types.insert(name, ty);
         }
-        LowerCtx { target, env, env_types, current_block: entry, registry, mono, module_structs, external_fns: &EMPTY_EXTERNAL_FNS, func_sigs: &EMPTY_FUNC_SIGS, ir_func_ret_types: &EMPTY_IR_RET_TYPES }
+        LowerCtx {
+            target, env, env_types, current_block: entry,
+            registry, enum_registry, mono,
+            module_structs, module_enums,
+            external_fns: &EMPTY_EXTERNAL_FNS,
+            func_sigs: &EMPTY_FUNC_SIGS,
+            ir_func_ret_types: &EMPTY_IR_RET_TYPES,
+        }
     }
 
     /// Infer the IrType of an expression using env_types and module struct defs.
@@ -242,6 +258,10 @@ static EMPTY_FUNC_SIGS: LazyLock<BTreeMap<String, FuncSigInfo>> =
     LazyLock::new(BTreeMap::new);
 static EMPTY_IR_RET_TYPES: LazyLock<BTreeMap<String, IrType>> =
     LazyLock::new(BTreeMap::new);
+static EMPTY_ENUMS: LazyLock<Vec<IrEnum>> =
+    LazyLock::new(Vec::new);
+static EMPTY_ENUM_REGISTRY: LazyLock<EnumRegistry> =
+    LazyLock::new(EnumRegistry::empty);
 
 // ============================================================================
 // Public API
@@ -261,7 +281,17 @@ pub fn lower_module_with_opts<T: LirTarget>(
     target: &mut T,
     env: &MonoEnv,
 ) {
-    let registry = structs::build_struct_registry(module, target, env);
+    let mut registry = structs::build_struct_registry(module, target, env);
+    let enum_registry = structs::build_enum_registry(&module.enums, &mut registry, target, env);
+    // Pre-register synthetic structs for tuple types in function signatures.
+    for func in &module.functions {
+        for p in &func.params {
+            structs::register_tuples_in_type(&p.ty, &mut registry, target, env);
+        }
+        if let Some(rt) = &func.return_type {
+            structs::register_tuples_in_type(rt, &mut registry, target, env);
+        }
+    }
 
     // Build a lookup table for oracle/action/rng functions.
     let external_fns: BTreeMap<String, ExternalFnInfo> = module
@@ -291,13 +321,21 @@ pub fn lower_module_with_opts<T: LirTarget>(
         })
         .collect();
 
+    // IR-level return types for infer_type at call sites (needed for tuple destructuring).
+    let ir_func_ret_types: BTreeMap<String, IrType> = module
+        .functions
+        .iter()
+        .filter_map(|f| f.return_type.as_ref().map(|t| (f.name.clone(), t.clone())))
+        .collect();
+
     // Lower only normal (non-external) function bodies.
     for func in &module.functions {
         if func.external_kind != ExternalKind::Normal {
             continue;
         }
         lower_function_in_module(
-            func, target, &registry, env, &module.structs, &external_fns, &func_sigs,
+            func, target, &registry, &enum_registry, env,
+            &module.structs, &module.enums, &external_fns, &func_sigs, &ir_func_ret_types,
         );
     }
 }
@@ -307,10 +345,13 @@ fn lower_function_in_module<T: LirTarget>(
     func: &IrFunction,
     target: &mut T,
     registry: &StructRegistry,
+    enum_registry: &EnumRegistry,
     env: &MonoEnv,
     module_structs: &[volar_compiler::ir::IrStruct],
+    module_enums: &[IrEnum],
     external_fns: &BTreeMap<String, ExternalFnInfo>,
     func_sigs: &BTreeMap<String, FuncSigInfo>,
+    ir_func_ret_types: &BTreeMap<String, IrType>,
 ) {
     let param_lir_tys: Vec<LirType> = func
         .params
@@ -330,15 +371,11 @@ fn lower_function_in_module<T: LirTarget>(
         .collect();
 
     let mut ctx = LowerCtx::new(
-        target,
-        entry,
-        named_params,
-        registry,
-        env,
-        module_structs,
+        target, entry, named_params, registry, enum_registry, env, module_structs, module_enums,
     );
     ctx.external_fns = external_fns;
     ctx.func_sigs = func_sigs;
+    ctx.ir_func_ret_types = ir_func_ret_types;
 
     let tail_vals = lower_block(&func.body, &mut ctx);
     ctx.target.ret(&tail_vals);
@@ -379,12 +416,7 @@ pub fn lower_function_with_registry<T: LirTarget>(
         .collect();
 
     let mut ctx = LowerCtx::new(
-        target,
-        entry,
-        named_params,
-        registry,
-        env,
-        module_structs,
+        target, entry, named_params, registry, &EMPTY_ENUM_REGISTRY, env, module_structs, &EMPTY_ENUMS,
     );
 
     let tail_vals = lower_block(&func.body, &mut ctx);
@@ -418,13 +450,19 @@ fn lower_stmt<T: LirTarget>(stmt: &IrStmt, ctx: &mut LowerCtx<T>) {
                     }
                     _ => lower_expr(init_expr, ctx),
                 };
+                // For tuple patterns, split by element widths derived from the type.
+                if let IrPattern::Tuple(sub_pats) = pattern {
+                    let tuple_ty = ty.clone().or_else(|| ctx.infer_type(init_expr));
+                    bind_tuple_pattern(sub_pats, vals, tuple_ty.as_ref(), ctx);
+                    return;
+                }
                 if let IrPattern::Ident { name, .. } = pattern {
                     let ir_ty = ty.clone().or_else(|| ctx.infer_type(init_expr));
                     if let Some(ir_ty) = ir_ty {
                         ctx.env_types.insert(name.clone(), ir_ty);
                     }
                 }
-                bind_pattern(pattern, vals, ctx);
+                bind_pattern(pattern, vals, None, ctx);
             }
         }
         IrStmt::Semi(expr) | IrStmt::Expr(expr) => {
@@ -433,12 +471,72 @@ fn lower_stmt<T: LirTarget>(stmt: &IrStmt, ctx: &mut LowerCtx<T>) {
     }
 }
 
-fn bind_pattern<T: LirTarget>(pattern: &IrPattern, vals: Vec<T::Value>, ctx: &mut LowerCtx<T>) {
+/// Split flat scalars across a tuple sub-pattern list using element type widths.
+fn bind_tuple_pattern<T: LirTarget>(
+    sub_pats: &[IrPattern],
+    vals: Vec<T::Value>,
+    tuple_ty: Option<&IrType>,
+    ctx: &mut LowerCtx<T>,
+) {
+    let elem_types: Option<&Vec<IrType>> = match tuple_ty {
+        Some(IrType::Tuple(elems)) => Some(elems),
+        _ => None,
+    };
+    let mut offset = 0;
+    for (i, sub_pat) in sub_pats.iter().enumerate() {
+        let width = if let Some(elems) = elem_types {
+            if let Some(elem_ty) = elems.get(i) {
+                flatten_count(&ctx.registry.ir_type_to_lir(elem_ty, ctx.mono), ctx.registry)
+            } else {
+                1
+            }
+        } else {
+            // No type info: give each sub-pattern 1 scalar.
+            1
+        };
+        let slice = if offset + width <= vals.len() {
+            vals[offset..offset + width].to_vec()
+        } else {
+            vals[offset..].to_vec()
+        };
+        let elem_ty_hint = elem_types.and_then(|elems| elems.get(i));
+        bind_pattern(sub_pat, slice, elem_ty_hint, ctx);
+        offset += width;
+    }
+}
+
+fn bind_pattern<T: LirTarget>(
+    pattern: &IrPattern,
+    vals: Vec<T::Value>,
+    ty_hint: Option<&IrType>,
+    ctx: &mut LowerCtx<T>,
+) {
     match pattern {
         IrPattern::Ident { name, .. } => {
+            if let Some(ty) = ty_hint {
+                ctx.env_types.insert(name.clone(), ty.clone());
+            }
             ctx.env.insert(name.clone(), vals);
         }
         IrPattern::Wild => {}
+        IrPattern::Tuple(sub_pats) => {
+            bind_tuple_pattern(sub_pats, vals, ty_hint, ctx);
+        }
+        IrPattern::TupleStruct { kind, elems } => {
+            // Enum variant pattern: the vals ARE the payload (caller strips tag first).
+            use volar_compiler::ir::StructKind;
+            let variant_name = match kind { StructKind::Custom(n) => n.as_str(), StructKind::GenericArray => "Array" };
+            let payload_tys: Vec<LirType> = ctx.enum_registry.find_variant(variant_name)
+                .map(|(_, v)| v.payload_lir_tys.clone())
+                .unwrap_or_default();
+            let mut offset = 0;
+            for (sub_pat, lir_ty) in elems.iter().zip(payload_tys.iter()) {
+                let w = flatten_count(lir_ty, ctx.registry);
+                let slice = vals[offset..(offset + w).min(vals.len())].to_vec();
+                bind_pattern(sub_pat, slice, None, ctx);
+                offset += w;
+            }
+        }
         other => unimplemented!("bind_pattern: unsupported pattern {:?}", other),
     }
 }
@@ -487,6 +585,16 @@ fn lower_expr<T: LirTarget>(expr: &IrExpr, ctx: &mut LowerCtx<T>) -> Vec<T::Valu
             lower_if(cond, then_branch, else_branch.as_deref(), ctx)
         }
 
+        // ---- Match (enum discriminant or primitive switch) ------------------
+
+        IrExpr::Match { expr: scrutinee, arms } => {
+            lower_match(scrutinee, arms, ctx)
+        }
+
+        // ---- Try (`?` operator) ---------------------------------------------
+
+        IrExpr::Try(inner) => lower_try(inner, ctx),
+
         IrExpr::Cast { expr: inner, ty } => {
             let v = into_scalar(lower_expr(inner, ctx), "cast operand");
             let dst = ir_type_to_lir_prim(ty, ctx.mono);
@@ -510,6 +618,13 @@ fn lower_expr<T: LirTarget>(expr: &IrExpr, ctx: &mut LowerCtx<T>) -> Vec<T::Valu
         // ---- Phase 2: struct construction -----------------------------------
 
         IrExpr::StructExpr { kind, fields, .. } => lower_struct_expr(kind, fields, ctx),
+
+        // ---- Tuple construction ---------------------------------------------
+
+        IrExpr::Tuple(elems) => {
+            // Flatten all tuple elements into a single scalar list.
+            elems.iter().flat_map(|e| lower_expr(e, ctx)).collect()
+        }
 
         // ---- Phase 2: fixed-size array literal ------------------------------
 
@@ -556,6 +671,67 @@ fn lower_expr<T: LirTarget>(expr: &IrExpr, ctx: &mut LowerCtx<T>) -> Vec<T::Valu
         IrExpr::Assign { left, right } => {
             lower_assign(left, right, ctx);
             vec![]
+        }
+
+        // ---- Compound assignment (x op= rhs) --------------------------------
+
+        IrExpr::AssignOp { op, left, right } => {
+            let lv = into_scalar(lower_expr(left, ctx), "assignop lhs");
+            let rv = into_scalar(lower_expr(right, ctx), "assignop rhs");
+            let result = lower_binop(*op, lv, rv, ctx);
+            if let IrExpr::Var(name) = left.as_ref() {
+                ctx.env.insert(name.clone(), vec![result]);
+            } else {
+                unimplemented!("AssignOp on non-variable lhs: {:?}", left);
+            }
+            vec![]
+        }
+
+        // ---- Default / zero value -------------------------------------------
+
+        IrExpr::DefaultValue { ty } => {
+            let lir_ty = ty.as_ref()
+                .map(|t| ctx.registry.ir_type_to_lir(t, ctx.mono))
+                .unwrap_or(LirType::Bool);
+            flatten_scalar_types(&lir_ty, ctx.registry)
+                .into_iter()
+                .map(|sty| ctx.target.iconst(sty, 0))
+                .collect()
+        }
+
+        // ---- Fold (unrolled accumulation over array) -------------------------
+
+        IrExpr::RawFold { receiver, init, acc_var, elem_var, body } => {
+            lower_raw_fold(receiver, init, acc_var, elem_var, body, ctx)
+        }
+
+        // ---- Path: may be a unit enum variant (e.g. `Option::None`) --------
+
+        IrExpr::Path { segments, .. } => {
+            // Check for unit enum variant.
+            let joined = segments.join("_");
+            if let Some((entry, variant)) = ctx.enum_registry.find_variant(&joined) {
+                let tag = ctx.target.iconst(LirType::U8, variant.discriminant as i64);
+                let mut scalars: Vec<T::Value> = vec![tag];
+                let max_w = entry.max_payload_width;
+                while scalars.len() < 1 + max_w {
+                    scalars.push(ctx.target.iconst(LirType::U8, 0));
+                }
+                return scalars;
+            }
+            // Also try the last segment alone (for unqualified names like `None`).
+            if let Some(last) = segments.last() {
+                if let Some((entry, variant)) = ctx.enum_registry.find_variant(last) {
+                    let tag = ctx.target.iconst(LirType::U8, variant.discriminant as i64);
+                    let mut scalars: Vec<T::Value> = vec![tag];
+                    let max_w = entry.max_payload_width;
+                    while scalars.len() < 1 + max_w {
+                        scalars.push(ctx.target.iconst(LirType::U8, 0));
+                    }
+                    return scalars;
+                }
+            }
+            unimplemented!("lower_expr: unresolved Path {:?}", segments)
         }
 
         other => unimplemented!("lower_expr: unsupported expr {:?}", other),
@@ -683,6 +859,300 @@ fn lower_if<T: LirTarget>(
     ctx.target.switch_to_block(join_block.clone());
     ctx.current_block = join_block;
     join_params
+}
+
+// ============================================================================
+// Match lowering
+// ============================================================================
+
+fn lower_match<T: LirTarget>(
+    scrutinee: &IrExpr,
+    arms: &[volar_compiler::ir::IrMatchArm],
+    ctx: &mut LowerCtx<T>,
+) -> Vec<T::Value> {
+    let scrutinee_vals = lower_expr(scrutinee, ctx);
+    let scrutinee_ty = ctx.infer_type(scrutinee);
+
+    // Determine whether this is an enum match or primitive match.
+    let is_enum = scrutinee_ty.as_ref().map_or(false, |ty| {
+        let base_ty = match ty { IrType::Reference { elem, .. } => elem.as_ref(), other => other };
+        matches!(base_ty, IrType::Struct { kind, .. } if ctx.enum_registry.is_enum(kind))
+    });
+
+    if is_enum && !scrutinee_vals.is_empty() {
+        let tag = scrutinee_vals[0].clone();
+        let payload = scrutinee_vals[1..].to_vec();
+        lower_enum_match(tag, payload, arms, ctx)
+    } else {
+        // Primitive match: compare scrutinee scalar against literal patterns.
+        lower_primitive_match(&scrutinee_vals, arms, ctx)
+    }
+}
+
+/// Lower a match over a primitive value (integer or bool literals).
+fn lower_primitive_match<T: LirTarget>(
+    scrutinee_vals: &[T::Value],
+    arms: &[volar_compiler::ir::IrMatchArm],
+    ctx: &mut LowerCtx<T>,
+) -> Vec<T::Value> {
+    // Emit an if-else chain: for each arm check scrutinee == literal, else fallthrough.
+    // The last arm must be `Wild` (catch-all).
+    let scrutinee = scrutinee_vals.first().cloned()
+        .unwrap_or_else(|| ctx.target.iconst(LirType::Bool, 0));
+
+    // Emit an if-else chain via the recursive arm handler.
+
+    // Iterative if-else construction using a pre-built list.
+    let mut remaining = arms.iter().peekable();
+    lower_match_arm_chain(&scrutinee, &mut remaining, ctx)
+}
+
+fn lower_match_arm_chain<'a, T: LirTarget>(
+    scrutinee: &T::Value,
+    arms: &mut std::iter::Peekable<std::slice::Iter<'a, volar_compiler::ir::IrMatchArm>>,
+    ctx: &mut LowerCtx<T>,
+) -> Vec<T::Value> {
+    use volar_compiler::ir::{IrPattern, IrLit};
+    let Some(arm) = arms.next() else {
+        return vec![];
+    };
+    match &arm.pattern {
+        IrPattern::Wild | IrPattern::Ident { .. } => {
+            // Catch-all: bind if ident, then lower body.
+            if let IrPattern::Ident { name, .. } = &arm.pattern {
+                ctx.env.insert(name.clone(), vec![scrutinee.clone()]);
+            }
+            lower_expr(&arm.body, ctx)
+        }
+        IrPattern::Lit(IrLit::Bool(b)) => {
+            let expected = ctx.target.iconst(LirType::Bool, *b as i64);
+            let cond = ctx.target.icmp(IcmpPred::Eq, scrutinee.clone(), expected);
+            let then_block = ctx.target.create_block();
+            let else_block = ctx.target.create_block();
+            ctx.target.branch(cond, then_block.clone(), &[], else_block.clone(), &[]);
+
+            ctx.target.switch_to_block(then_block.clone());
+            ctx.current_block = then_block;
+            let then_vals = lower_expr(&arm.body, ctx);
+            let n = then_vals.len();
+            let scalar_tys: Vec<LirType> = then_vals.iter().map(|v| ctx.target.value_scalar_type(v)).collect();
+            let join_block = ctx.target.create_block();
+            let join_params: Vec<T::Value> = scalar_tys.iter()
+                .map(|ty| ctx.target.add_block_param(join_block.clone(), ty.clone()))
+                .collect();
+            ctx.target.jump(join_block.clone(), &then_vals);
+
+            ctx.target.switch_to_block(else_block.clone());
+            ctx.current_block = else_block;
+            let else_vals = lower_match_arm_chain(scrutinee, arms, ctx);
+            let else_vals = if else_vals.len() == n { else_vals }
+                else { scalar_tys.iter().map(|ty| ctx.target.iconst(ty.clone(), 0)).collect() };
+            ctx.target.jump(join_block.clone(), &else_vals);
+
+            ctx.target.switch_to_block(join_block.clone());
+            ctx.current_block = join_block;
+            join_params
+        }
+        IrPattern::Lit(IrLit::Int(v)) => {
+            let val = *v as i64;
+            let expected = ctx.target.iconst(LirType::U64, val);
+            let cond = ctx.target.icmp(IcmpPred::Eq, scrutinee.clone(), expected);
+            let then_block = ctx.target.create_block();
+            let else_block = ctx.target.create_block();
+            ctx.target.branch(cond, then_block.clone(), &[], else_block.clone(), &[]);
+
+            ctx.target.switch_to_block(then_block.clone());
+            ctx.current_block = then_block;
+            let then_vals = lower_expr(&arm.body, ctx);
+            let n = then_vals.len();
+            let scalar_tys: Vec<LirType> = then_vals.iter().map(|v| ctx.target.value_scalar_type(v)).collect();
+            let join_block = ctx.target.create_block();
+            let join_params: Vec<T::Value> = scalar_tys.iter()
+                .map(|ty| ctx.target.add_block_param(join_block.clone(), ty.clone()))
+                .collect();
+            ctx.target.jump(join_block.clone(), &then_vals);
+
+            ctx.target.switch_to_block(else_block.clone());
+            ctx.current_block = else_block;
+            let else_vals = lower_match_arm_chain(scrutinee, arms, ctx);
+            let else_vals = if else_vals.len() == n { else_vals }
+                else { scalar_tys.iter().map(|ty| ctx.target.iconst(ty.clone(), 0)).collect() };
+            ctx.target.jump(join_block.clone(), &else_vals);
+
+            ctx.target.switch_to_block(join_block.clone());
+            ctx.current_block = join_block;
+            join_params
+        }
+        other => unimplemented!("lower_primitive_match: unsupported arm pattern {:?}", other),
+    }
+}
+
+/// Lower a match over an enum value: flat scalars `[tag, payload...]`.
+///
+/// Emits an if-else chain: for each variant arm check `tag == discriminant`,
+/// bind the payload slice to the pattern, lower the body.  A wild/ident arm
+/// (or absence of one) provides the fallthrough.
+fn lower_enum_match<T: LirTarget>(
+    tag: T::Value,
+    payload: Vec<T::Value>,
+    arms: &[volar_compiler::ir::IrMatchArm],
+    ctx: &mut LowerCtx<T>,
+) -> Vec<T::Value> {
+    use volar_compiler::ir::IrPattern;
+
+    let join_block = ctx.target.create_block();
+    let mut join_params: Option<Vec<T::Value>> = None;
+    let mut scalar_tys: Vec<LirType> = vec![];
+
+    // Separate variant arms from the catch-all.
+    let mut variant_arms: Vec<&volar_compiler::ir::IrMatchArm> = vec![];
+    let mut catch_all: Option<&volar_compiler::ir::IrMatchArm> = None;
+    for arm in arms {
+        match &arm.pattern {
+            IrPattern::Wild | IrPattern::Ident { .. } => catch_all = Some(arm),
+            _ => variant_arms.push(arm),
+        }
+    }
+
+    for arm in &variant_arms {
+        // Resolve discriminant and payload binding from the pattern.
+        let (disc, bound_payload) = enum_arm_disc_and_payload(arm, &payload, ctx);
+
+        let disc_val = ctx.target.iconst(LirType::U8, disc as i64);
+        let cond = ctx.target.icmp(IcmpPred::Eq, tag.clone(), disc_val);
+        let then_block = ctx.target.create_block();
+        let else_block = ctx.target.create_block();
+        ctx.target.branch(cond, then_block.clone(), &[], else_block.clone(), &[]);
+
+        ctx.target.switch_to_block(then_block.clone());
+        ctx.current_block = then_block;
+        // Bind pattern variables to their payload slices.
+        bind_enum_arm_pattern(arm, &bound_payload, ctx);
+        let then_vals = lower_expr(&arm.body, ctx);
+
+        if join_params.is_none() {
+            scalar_tys = then_vals.iter().map(|v| ctx.target.value_scalar_type(v)).collect();
+            join_params = Some(scalar_tys.iter()
+                .map(|ty| ctx.target.add_block_param(join_block.clone(), ty.clone()))
+                .collect());
+        }
+        ctx.target.jump(join_block.clone(), &then_vals);
+
+        ctx.target.switch_to_block(else_block.clone());
+        ctx.current_block = else_block;
+    }
+
+    // Emit catch-all / wildcard body.
+    let catch_vals = if let Some(arm) = catch_all {
+        if let IrPattern::Ident { name, .. } = &arm.pattern {
+            // Bind the whole flattened enum value (tag + payload) to the ident.
+            let mut all = vec![tag.clone()];
+            all.extend(payload.iter().cloned());
+            ctx.env.insert(name.clone(), all);
+        }
+        lower_expr(&arm.body, ctx)
+    } else {
+        scalar_tys.iter().map(|ty| ctx.target.iconst(ty.clone(), 0)).collect()
+    };
+
+    let Some(jp) = join_params else {
+        // No variant arms — only catch-all.
+        return catch_vals;
+    };
+    ctx.target.jump(join_block.clone(), &catch_vals);
+    ctx.target.switch_to_block(join_block.clone());
+    ctx.current_block = join_block;
+    jp
+}
+
+/// Return the discriminant of a variant arm and the relevant payload slice.
+fn enum_arm_disc_and_payload<T: LirTarget>(
+    arm: &volar_compiler::ir::IrMatchArm,
+    payload: &[T::Value],
+    ctx: &LowerCtx<T>,
+) -> (u64, Vec<T::Value>) {
+    use volar_compiler::ir::{IrPattern, StructKind};
+    let variant_name = match &arm.pattern {
+        IrPattern::TupleStruct { kind, .. } | IrPattern::Struct { kind, .. } => {
+            match kind { StructKind::Custom(n) => n.as_str(), StructKind::GenericArray => "Array" }
+        }
+        IrPattern::Ident { name, .. } => name.as_str(),
+        _ => return (0, payload.to_vec()),
+    };
+    let (disc, pay_width) = ctx.enum_registry.find_variant(variant_name)
+        .map(|(_, v)| (v.discriminant, v.payload_lir_tys.len()))
+        .unwrap_or((0, payload.len()));
+    let slice = payload[..pay_width.min(payload.len())].to_vec();
+    (disc, slice)
+}
+
+/// Bind the sub-patterns of an enum arm to slices of the payload.
+fn bind_enum_arm_pattern<T: LirTarget>(
+    arm: &volar_compiler::ir::IrMatchArm,
+    payload: &[T::Value],
+    ctx: &mut LowerCtx<T>,
+) {
+    use volar_compiler::ir::{IrPattern, StructKind};
+    match &arm.pattern {
+        IrPattern::TupleStruct { kind, elems } => {
+            let variant_name = match kind { StructKind::Custom(n) => n.as_str(), StructKind::GenericArray => "Array" };
+            let payload_tys: Vec<LirType> = ctx.enum_registry.find_variant(variant_name)
+                .map(|(_, v)| v.payload_lir_tys.clone())
+                .unwrap_or_default();
+            let mut offset = 0;
+            for (sub_pat, lir_ty) in elems.iter().zip(payload_tys.iter()) {
+                let w = flatten_count(lir_ty, ctx.registry);
+                let slice = payload[offset..(offset + w).min(payload.len())].to_vec();
+                bind_pattern(sub_pat, slice, None, ctx);
+                offset += w;
+            }
+        }
+        IrPattern::Struct { kind, fields, .. } => {
+            let variant_name = match kind { StructKind::Custom(n) => n.as_str(), StructKind::GenericArray => "Array" };
+            let variant_entry = ctx.enum_registry.find_variant(variant_name);
+            if let Some((_, v)) = variant_entry {
+                let mut offset = 0;
+                for (field_name, sub_pat) in fields {
+                    let field_idx = v.field_names.as_ref()
+                        .and_then(|names| names.iter().position(|n| n == field_name))
+                        .unwrap_or(0);
+                    let w = v.payload_lir_tys.get(field_idx)
+                        .map(|t| flatten_count(t, ctx.registry))
+                        .unwrap_or(1);
+                    let slice = payload[offset..(offset + w).min(payload.len())].to_vec();
+                    bind_pattern(sub_pat, slice, None, ctx);
+                    offset += w;
+                }
+            }
+        }
+        IrPattern::Wild => {}
+        IrPattern::Ident { name, .. } => {
+            ctx.env.insert(name.clone(), payload.to_vec());
+        }
+        _ => {}
+    }
+}
+
+/// Lower `expr?` — early-return on Err/None (tag ≠ 0), continue with Ok/Some payload.
+fn lower_try<T: LirTarget>(inner: &IrExpr, ctx: &mut LowerCtx<T>) -> Vec<T::Value> {
+    let vals = lower_expr(inner, ctx);
+    if vals.is_empty() {
+        return vals;
+    }
+    let tag = vals[0].clone();
+    let ok_disc = ctx.target.iconst(LirType::U8, 0);
+    let is_ok = ctx.target.icmp(IcmpPred::Eq, tag, ok_disc);
+    let ok_block  = ctx.target.create_block();
+    let err_block = ctx.target.create_block();
+    ctx.target.branch(is_ok, ok_block.clone(), &[], err_block.clone(), &[]);
+    // Err path: propagate error via early return.
+    ctx.target.switch_to_block(err_block.clone());
+    ctx.current_block = err_block;
+    ctx.target.ret(&vals);
+    // Ok path: unwrap the payload (drop tag).
+    ctx.target.switch_to_block(ok_block.clone());
+    ctx.current_block = ok_block;
+    vals[1..].to_vec()
 }
 
 // ============================================================================
@@ -865,6 +1335,43 @@ fn bind_map_pattern<T: LirTarget>(
         IrPattern::Wild => {}
         other => unimplemented!("bind_map_pattern: {:?}", other),
     }
+}
+
+// ============================================================================
+// RawFold (unrolled accumulation over a flat array)
+// ============================================================================
+
+fn lower_raw_fold<T: LirTarget>(
+    receiver: &IrExpr,
+    init: &IrExpr,
+    acc_var: &IrPattern,
+    elem_var: &IrPattern,
+    body: &IrExpr,
+    ctx: &mut LowerCtx<T>,
+) -> Vec<T::Value> {
+    let recv_ty = ctx
+        .infer_type(receiver)
+        .unwrap_or_else(|| panic!("RawFold: could not infer receiver type"));
+    let (elem_ir_ty, n) = array_elem_and_len(&recv_ty, ctx.mono);
+    let elem_lir_ty = ctx.registry.ir_type_to_lir(&elem_ir_ty, ctx.mono);
+    let elem_width = flatten_count(&elem_lir_ty, ctx.registry);
+
+    let recv_vals = lower_expr(receiver, ctx);
+    let init_ty = ctx.infer_type(init);
+    let mut acc_vals = lower_expr(init, ctx);
+
+    for k in 0..n {
+        let elem_vals = recv_vals[k * elem_width..(k + 1) * elem_width].to_vec();
+        bind_map_pattern(elem_var, elem_vals, &elem_ir_ty, ctx);
+        let acc_ty = init_ty.as_ref().unwrap_or(&elem_ir_ty);
+        bind_map_pattern(acc_var, acc_vals, acc_ty, ctx);
+        acc_vals = lower_expr(body, ctx);
+    }
+
+    // Clean up loop variables from env.
+    if let IrPattern::Ident { name, .. } = elem_var { ctx.env.remove(name); ctx.env_types.remove(name); }
+    if let IrPattern::Ident { name, .. } = acc_var  { ctx.env.remove(name); ctx.env_types.remove(name); }
+    acc_vals
 }
 
 fn array_elem_and_len(ty: &IrType, env: &MonoEnv) -> (IrType, usize) {
@@ -1179,6 +1686,22 @@ fn lower_call<T: LirTarget>(func: &IrExpr, args: &[IrExpr], ctx: &mut LowerCtx<T
         other => unimplemented!("lower_call: non-path func {:?}", other),
     };
 
+    // ---- Enum variant construction (Tuple variant) -------------------------
+    // Check if this call is `EnumKind::VariantName(args...)` — a tuple variant constructor.
+    // Both "Some" and "Option_Some" (joined path) are recognized.
+    if let Some((entry, variant)) = ctx.enum_registry.find_variant(&func_name) {
+        let tag = ctx.target.iconst(LirType::U8, variant.discriminant as i64);
+        let mut scalars: Vec<T::Value> = vec![tag];
+        for a in args {
+            scalars.extend(lower_expr(a, ctx));
+        }
+        let max_w = entry.max_payload_width;
+        while scalars.len() < 1 + max_w {
+            scalars.push(ctx.target.iconst(LirType::U8, 0));
+        }
+        return scalars;
+    }
+
     // ---- Dispatch oracle / action / rng ------------------------------------
     if let Some(info) = ctx.external_fns.get(&func_name) {
         return match info.kind {
@@ -1307,6 +1830,7 @@ pub fn lower_cfg_module_with_opts<T: LirTarget>(
         type_aliases: module.type_aliases.clone(),
     };
     let mut registry = structs::build_struct_registry(&flat, target, env);
+    let enum_registry = structs::build_enum_registry(&module.enums, &mut registry, target, env);
     // When skipping auxiliary functions, enable lenient mode so that external
     // types (e.g. TFHE scheme types not defined in the module) are treated
     // as opaque rather than causing a panic.
@@ -1368,7 +1892,8 @@ pub fn lower_cfg_module_with_opts<T: LirTarget>(
                     continue;
                 }
                 lower_function_in_module(
-                    func, target, &registry, env, &module.structs, &external_fns, &func_sigs,
+                    func, target, &registry, &enum_registry, env,
+                    &module.structs, &module.enums, &external_fns, &func_sigs, &ir_func_ret_types,
                 );
             }
         }
@@ -1381,7 +1906,8 @@ pub fn lower_cfg_module_with_opts<T: LirTarget>(
                 continue;
             }
             lower_cfg_function(
-                func, target, &registry, env, &module.structs, &external_fns, &func_sigs, &ir_func_ret_types,
+                func, target, &registry, &enum_registry, env,
+                &module.structs, &module.enums, &external_fns, &func_sigs, &ir_func_ret_types,
             );
         }
     }
@@ -1392,8 +1918,10 @@ fn lower_cfg_function<T: LirTarget>(
     func: &IrCfgFunction,
     target: &mut T,
     registry: &StructRegistry,
+    enum_registry: &EnumRegistry,
     env: &MonoEnv,
     module_structs: &[volar_compiler::ir::IrStruct],
+    module_enums: &[IrEnum],
     external_fns: &BTreeMap<String, ExternalFnInfo>,
     func_sigs: &BTreeMap<String, FuncSigInfo>,
     ir_func_ret_types: &BTreeMap<String, IrType>,
@@ -1464,8 +1992,10 @@ fn lower_cfg_function<T: LirTarget>(
             lir_blocks[bidx].clone(),
             named_params,
             registry,
+            enum_registry,
             env,
             module_structs,
+            module_enums,
         );
         ctx.external_fns = external_fns;
         ctx.func_sigs = func_sigs;
@@ -1488,7 +2018,7 @@ fn lower_cfg_terminator<T: LirTarget>(
     term: &IrCfgTerminator,
     lir_blocks: &[T::Block],
     ctx: &mut LowerCtx<T>,
-    registry: &StructRegistry,
+    _registry: &StructRegistry,
 ) {
     match term {
         IrCfgTerminator::Return(None) => {

@@ -1,5 +1,6 @@
 // @reliability: normal
 // @ai: assisted
+#![allow(dead_code)]
 //! Monomorphization support for IR→LIR lowering.
 //!
 //! `MonoEnv` carries substitutions for const/length parameters and type parameters.
@@ -9,7 +10,7 @@
 
 use std::collections::BTreeMap;
 use volar_compiler::ir::{
-    ArrayLength, ExternalKind, IrAnyFunction, IrBlock, IrCfgBlock, IrCfgBody, IrCfgFunction,
+    ArrayLength, IrAnyFunction, IrCfgBlock, IrCfgBody, IrCfgFunction,
     IrCfgJump, IrCfgModule, IrCfgTerminator, IrEnum, IrEnumVariant, IrEnumVariantData, IrExpr,
     IrField, IrFunction, IrImpl, IrImplItem, IrModule, IrParam, IrStmt, IrStruct, IrType,
     IrTypeAlias,
@@ -27,6 +28,9 @@ pub struct MonoEnv {
     /// Substitutions for type parameters.
     /// e.g., `"T" → IrType::Primitive(U8)` for `fn foo<T>(x: T)`.
     pub type_params: BTreeMap<String, IrType>,
+    /// Substitutions for associated type projections.
+    /// Key: `(base_param_name, assoc_name)` e.g., `("B", "OutputSize")`.
+    pub projections: BTreeMap<(String, String), IrType>,
     /// Concrete name suffix for the `D: Digest` trait parameter.
     /// e.g., `"sha256"`. Appended to crypto extern function names.
     pub hash_suffix: String,
@@ -37,6 +41,7 @@ impl MonoEnv {
         MonoEnv {
             const_params: BTreeMap::new(),
             type_params: BTreeMap::new(),
+            projections: BTreeMap::new(),
             hash_suffix: hash_suffix.into(),
         }
     }
@@ -48,6 +53,18 @@ impl MonoEnv {
 
     pub fn with_type(mut self, param: impl Into<String>, ty: IrType) -> Self {
         self.type_params.insert(param.into(), ty);
+        self
+    }
+
+    /// Bind `base_param::assoc_name` to a concrete type.
+    /// e.g., `.with_projection("B", "OutputSize", Array<u8, 32>)`
+    pub fn with_projection(
+        mut self,
+        base: impl Into<String>,
+        assoc: impl Into<String>,
+        ty: IrType,
+    ) -> Self {
+        self.projections.insert((base.into(), assoc.into()), ty);
         self
     }
 }
@@ -332,7 +349,26 @@ pub fn mono_type(ty: &IrType, env: &MonoEnv) -> IrType {
         IrType::Vector { elem } => {
             IrType::Vector { elem: Box::new(mono_type(elem, env)) }
         }
-        // Primitive, Unit, Never, Infer, Existential, FnPtr, Projection, Param
+        IrType::Projection { base, assoc, .. } => {
+            if let IrType::TypeParam(name) = base.as_ref() {
+                let assoc_str = assoc.to_string();
+                if let Some(concrete) = env.projections.get(&(name.clone(), assoc_str)) {
+                    return mono_type(concrete, env);
+                }
+            }
+            // Recurse into base in case it contains substitutable params.
+            IrType::Projection {
+                base: Box::new(mono_type(base, env)),
+                trait_path: {
+                    // preserve the trait_path field
+                    match ty { IrType::Projection { trait_path, .. } => trait_path.clone(), _ => unreachable!() }
+                },
+                trait_args: match ty { IrType::Projection { trait_args, .. } => trait_args.iter().map(|a| mono_type(a, env)).collect(), _ => unreachable!() },
+                assoc: assoc.clone(),
+            }
+        }
+
+        // Primitive, Unit, Never, Infer, Existential, FnPtr, Param
         other => other.clone(),
     }
 }

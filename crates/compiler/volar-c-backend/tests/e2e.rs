@@ -350,7 +350,149 @@ fn compiler_rng_dispatch() {
 
 // ############################################################################
 //
-// Category 6: Spec IR monomorphization
+// Category 6: Enum round-trip
+//
+// Tests for enum representation (tag + payload flat layout), construction,
+// and pattern matching via IrExpr::Match.
+//
+// ############################################################################
+
+/// Build a module containing an `Option<u32>` enum and two functions:
+/// - `make_some(x: u32) -> Option<u32>` returns `Some(x)`
+/// - `unwrap_or(opt: Option<u32>, default: u32) -> u32` — returns inner value or default
+#[test]
+fn enum_option_roundtrip() {
+    use volar_compiler::ir::*;
+    use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
+
+    // enum Option<u32> { None, Some(u32) }  — hand-built IrEnum
+    let option_enum = IrEnum {
+        kind: StructKind::Custom("OptionU32".into()),
+        generics: vec![],
+        variants: vec![
+            IrEnumVariant {
+                name: "None".into(),
+                fields: IrEnumVariantData::Unit,
+            },
+            IrEnumVariant {
+                name: "Some".into(),
+                fields: IrEnumVariantData::Tuple(vec![IrType::Primitive(PrimitiveType::U32)]),
+            },
+        ],
+        derives: vec![],
+    };
+
+    let opt_ty = IrType::Struct {
+        kind: StructKind::Custom("OptionU32".into()),
+        type_args: vec![],
+    };
+
+    // fn make_some(x: u32) -> OptionU32 { Some(x) }
+    let make_some = IrFunction {
+        name: "make_some".into(),
+        generics: vec![],
+        receiver: None,
+        params: vec![IrParam { name: "x".into(), ty: IrType::Primitive(PrimitiveType::U32) }],
+        return_type: Some(opt_ty.clone()),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts: vec![],
+            stmt_provs: vec![],
+            expr: Some(Box::new(IrExpr::Call {
+                func: Box::new(IrExpr::Path {
+                    segments: vec!["Some".into()],
+                    type_args: vec![],
+                }),
+                args: vec![IrExpr::Var("x".into())],
+            })),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    // fn make_none() -> OptionU32 { None }
+    let make_none = IrFunction {
+        name: "make_none".into(),
+        generics: vec![],
+        receiver: None,
+        params: vec![],
+        return_type: Some(opt_ty.clone()),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts: vec![],
+            stmt_provs: vec![],
+            expr: Some(Box::new(IrExpr::Path {
+                segments: vec!["None".into()],
+                type_args: vec![],
+            })),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    // fn unwrap_or(opt: OptionU32, default: u32) -> u32 {
+    //     match opt { Some(v) => v, None => default, _ => default }
+    // }
+    let unwrap_or = IrFunction {
+        name: "unwrap_or".into(),
+        generics: vec![],
+        receiver: None,
+        params: vec![
+            IrParam { name: "opt".into(), ty: opt_ty.clone() },
+            IrParam { name: "default".into(), ty: IrType::Primitive(PrimitiveType::U32) },
+        ],
+        return_type: Some(IrType::Primitive(PrimitiveType::U32)),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts: vec![],
+            stmt_provs: vec![],
+            expr: Some(Box::new(IrExpr::Match {
+                expr: Box::new(IrExpr::Var("opt".into())),
+                arms: vec![
+                    IrMatchArm {
+                        pattern: IrPattern::TupleStruct {
+                            kind: StructKind::Custom("Some".into()),
+                            elems: vec![IrPattern::Ident {
+                                mutable: false, name: "v".into(), subpat: None,
+                            }],
+                        },
+                        guard: None,
+                        body: IrExpr::Var("v".into()),
+                    },
+                    IrMatchArm {
+                        pattern: IrPattern::Wild,
+                        guard: None,
+                        body: IrExpr::Var("default".into()),
+                    },
+                ],
+            })),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    let module = IrModule {
+        name: "test".into(),
+        structs: vec![],
+        enums: vec![option_enum],
+        traits: vec![],
+        impls: vec![],
+        type_aliases: vec![],
+        functions: vec![make_some, make_none, unwrap_or],
+    };
+
+    let mut b = CBackend::new();
+    lower_module_with_opts(&module, &mut b, &MonoEnv::new(""));
+    let c_src = b.finish();
+
+    // make_some(42) → Some(42), unwrap_or(Some(42), 0) = 42
+    let out = compile_and_run(
+        &c_src,
+        r#"printf("%u %u\n", (unsigned)unwrap_or(make_some(42), 0), (unsigned)unwrap_or(make_none(), 99));"#,
+    );
+    assert_eq!(out.trim(), "42 99");
+}
+
+// ############################################################################
+//
+// Category 7: Spec IR monomorphization
 //
 // These tests parse real volar-spec source files and lower them with a MonoEnv,
 // exercising the on-the-fly generic substitution path added to the lowering.

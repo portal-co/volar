@@ -380,6 +380,99 @@ fn test_c_backend_pass_by_ptr_threshold() {
 }
 
 // ============================================================================
+// Tuple pattern destructuring
+// ============================================================================
+
+/// Exercises `IrPattern::Tuple` in `bind_pattern`:
+/// build a module with two functions — `make_pair() -> (u32, u32)` and
+/// `sum_pair() -> u32` which calls make_pair and destructures the result.
+#[test]
+fn test_tuple_pattern_destructuring() {
+    use volar_compiler::ir::{
+        ExternalKind, IrBlock, IrExpr, IrFunction, IrLit, IrModule, IrParam,
+        IrPattern, IrStmt, IrType, PrimitiveType, SpecBinOp,
+    };
+    use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
+
+    // fn make_pair() -> (u32, u32) { (3, 7) }
+    let make_pair = IrFunction {
+        name: "make_pair".into(),
+        generics: vec![],
+        receiver: None,
+        params: vec![],
+        return_type: Some(IrType::Tuple(vec![
+            IrType::Primitive(PrimitiveType::U32),
+            IrType::Primitive(PrimitiveType::U32),
+        ])),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts: vec![],
+            stmt_provs: vec![],
+            expr: Some(Box::new(IrExpr::Tuple(vec![
+                IrExpr::Lit(IrLit::Int(3u64.into())),
+                IrExpr::Lit(IrLit::Int(7u64.into())),
+            ]))),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    // fn sum_pair() -> u32 {
+    //     let (a, b) = make_pair();
+    //     a + b
+    // }
+    let sum_pair = IrFunction {
+        name: "sum_pair".into(),
+        generics: vec![],
+        receiver: None,
+        params: vec![],
+        return_type: Some(IrType::Primitive(PrimitiveType::U32)),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts: vec![
+                IrStmt::Let {
+                    pattern: IrPattern::Tuple(vec![
+                        IrPattern::Ident { mutable: false, name: "a".into(), subpat: None },
+                        IrPattern::Ident { mutable: false, name: "b".into(), subpat: None },
+                    ]),
+                    ty: Some(IrType::Tuple(vec![
+                        IrType::Primitive(PrimitiveType::U32),
+                        IrType::Primitive(PrimitiveType::U32),
+                    ])),
+                    init: Some(IrExpr::Call {
+                        func: Box::new(IrExpr::Var("make_pair".into())),
+                        args: vec![],
+                    }),
+                },
+            ],
+            stmt_provs: vec![],
+            expr: Some(Box::new(IrExpr::Binary {
+                op: SpecBinOp::Add,
+                left: Box::new(IrExpr::Var("a".into())),
+                right: Box::new(IrExpr::Var("b".into())),
+            })),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    let module = IrModule {
+        name: "test".into(),
+        structs: vec![],
+        enums: vec![],
+        traits: vec![],
+        impls: vec![],
+        type_aliases: vec![],
+        functions: vec![make_pair, sum_pair],
+    };
+
+    let mut b = CBackend::new();
+    lower_module_with_opts(&module, &mut b, &MonoEnv::new(""));
+    let c_src = b.finish();
+
+    let out = compile_and_run(&c_src, r#"printf("%u\n", sum_pair());"#);
+    assert_eq!(out.trim(), "10");
+}
+
+// ============================================================================
 // NameConfig: prefix and per-name remap
 // ============================================================================
 

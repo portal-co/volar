@@ -7,7 +7,10 @@
 //! `StructExpr` lowering.
 
 use std::collections::BTreeMap;
-use volar_compiler::ir::{ArrayKind, ArrayLength, IrFunction, IrModule, IrStruct, IrType, PrimitiveType, StructKind};
+use volar_compiler::ir::{
+    ArrayKind, ArrayLength, IrEnum, IrEnumVariantData, IrFunction, IrModule, IrStruct, IrType,
+    PrimitiveType, StructKind,
+};
 use volar_ir_common::Type as NativeType;
 use volar_lir::{FieldDef, LirTarget, LirType, StructDef, StructId};
 use crate::mono::{MonoEnv, mono_type};
@@ -455,4 +458,186 @@ pub fn struct_field_scalar_width(
     field_idx: usize,
 ) -> usize {
     flatten_count(&registry.field_types(id)[field_idx], registry)
+}
+
+// ============================================================================
+// EnumRegistry
+// ============================================================================
+
+/// Flat-scalar representation of one enum variant's payload.
+#[derive(Clone, Debug)]
+pub struct VariantEntry {
+    /// Variant name (e.g. "Some", "Ok", "None").
+    pub name: String,
+    /// Discriminant tag value emitted as a U8 scalar.
+    pub discriminant: u64,
+    /// Flat LirTypes of this variant's payload scalars (after mono + flatten).
+    pub payload_lir_tys: Vec<LirType>,
+    /// Field names for struct variants; `None` for tuple/unit variants.
+    pub field_names: Option<Vec<String>>,
+}
+
+pub struct EnumEntry {
+    pub variants: Vec<VariantEntry>,
+    /// `max over variants of payload_lir_tys.len()`
+    pub max_payload_width: usize,
+    /// `StructId` of the synthetic `__Enum_<kind>` struct registered for type lookup.
+    pub synthetic_id: StructId,
+}
+
+/// Maps enum kind names to their flat-scalar layout info.
+pub struct EnumRegistry {
+    enums: BTreeMap<String, EnumEntry>,
+}
+
+impl EnumRegistry {
+    fn new() -> Self {
+        EnumRegistry { enums: BTreeMap::new() }
+    }
+
+    /// An empty registry (no enums registered).
+    pub fn empty() -> Self {
+        Self::new()
+    }
+
+    /// Return `true` if `kind` is a known enum.
+    pub fn is_enum(&self, kind: &StructKind) -> bool {
+        self.enums.contains_key(&kind_name(kind))
+    }
+
+    /// Return the `StructId` of the synthetic flat struct for this enum, if registered.
+    pub fn synthetic_id_for(&self, kind: &StructKind) -> Option<StructId> {
+        self.enums.get(&kind_name(kind)).map(|e| e.synthetic_id)
+    }
+
+    /// Total flat width (tag + max payload) of this enum kind.
+    pub fn flat_width_for(&self, kind: &StructKind) -> Option<usize> {
+        self.enums.get(&kind_name(kind)).map(|e| 1 + e.max_payload_width)
+    }
+
+    /// Look up a variant by `"EnumName::VariantName"` or `"VariantName"` (searches all enums).
+    pub fn find_variant(&self, name: &str) -> Option<(&EnumEntry, &VariantEntry)> {
+        // Try "EnumKind::VariantName" form.
+        if let Some((enum_name, variant_name)) = name.split_once("::") {
+            if let Some(entry) = self.enums.get(enum_name) {
+                if let Some(v) = entry.variants.iter().find(|v| v.name == variant_name) {
+                    return Some((entry, v));
+                }
+            }
+        }
+        // Try matching variant name across all enums (for unqualified names).
+        for entry in self.enums.values() {
+            if let Some(v) = entry.variants.iter().find(|v| v.name == name) {
+                return Some((entry, v));
+            }
+        }
+        None
+    }
+
+    /// Variant payload width (scalars only, not including the tag).
+    pub fn variant_payload_width(&self, kind: &StructKind, variant_name: &str) -> usize {
+        self.enums.get(&kind_name(kind))
+            .and_then(|e| e.variants.iter().find(|v| v.name == variant_name))
+            .map(|v| v.payload_lir_tys.len())
+            .unwrap_or(0)
+    }
+
+    /// All variants for a given enum kind.
+    pub fn variants_for(&self, kind: &StructKind) -> Option<&[VariantEntry]> {
+        self.enums.get(&kind_name(kind)).map(|e| e.variants.as_slice())
+    }
+
+    /// Maximum payload width (excluding tag) for a given enum kind.
+    pub fn max_payload_width(&self, kind: &StructKind) -> usize {
+        self.enums.get(&kind_name(kind)).map(|e| e.max_payload_width).unwrap_or(0)
+    }
+}
+
+/// Build an `EnumRegistry` from an `IrModule`, applying `env` substitutions.
+///
+/// For each enum in `module.enums`:
+/// 1. Maps variant field types to flat `LirType` lists (with mono via `env`).
+/// 2. Computes `max_payload_width = max over all variants of their flat scalar counts`.
+/// 3. Registers a synthetic struct `__Enum_{kind}` in `struct_registry` so that
+///    `ir_type_to_lir` can return a `LirType::Struct(id)` for enum-typed values.
+pub fn build_enum_registry<T: LirTarget>(
+    enums: &[IrEnum],
+    struct_registry: &mut StructRegistry,
+    target: &mut T,
+    env: &MonoEnv,
+) -> EnumRegistry {
+    let mut registry = EnumRegistry::new();
+
+    for ir_enum in enums {
+        let name = kind_name(&ir_enum.kind);
+
+        let mut variant_entries: Vec<VariantEntry> = Vec::new();
+        for (disc, variant) in ir_enum.variants.iter().enumerate() {
+            let (payload_lir_tys, field_names) = match &variant.fields {
+                IrEnumVariantData::Unit => (vec![], None),
+                IrEnumVariantData::Tuple(tys) => {
+                    let lir_tys: Vec<LirType> = tys.iter()
+                        .flat_map(|t| {
+                            let lir = ir_type_to_lir_inner(&mono_type(t, env), struct_registry);
+                            flatten_scalar_types(&lir, struct_registry)
+                        })
+                        .collect();
+                    (lir_tys, None)
+                }
+                IrEnumVariantData::Struct(fields) => {
+                    let mut all_tys = vec![];
+                    let names: Vec<String> = fields.iter().map(|f| f.name.clone()).collect();
+                    for f in fields {
+                        let lir = ir_type_to_lir_inner(&mono_type(&f.ty, env), struct_registry);
+                        all_tys.extend(flatten_scalar_types(&lir, struct_registry));
+                    }
+                    (all_tys, Some(names))
+                }
+            };
+            variant_entries.push(VariantEntry {
+                name: variant.name.clone(),
+                discriminant: disc as u64,
+                payload_lir_tys,
+                field_names,
+            });
+        }
+
+        let max_payload_width = variant_entries.iter()
+            .map(|v| v.payload_lir_tys.len())
+            .max()
+            .unwrap_or(0);
+
+        // Register a synthetic struct: {_tag: U8, _p0: U8, ...} with 1 + max_payload_width fields.
+        // We use U8 for all payload slots as a uniform scalar placeholder — actual types
+        // are tracked in VariantEntry.payload_lir_tys for lowering.
+        let synthetic_name = format!("__Enum_{name}");
+        let mut fields = vec![FieldDef { name: "_tag".into(), ty: LirType::U8 }];
+        for i in 0..max_payload_width {
+            fields.push(FieldDef { name: format!("_p{i}"), ty: LirType::U8 });
+        }
+        let synthetic_id = target.define_struct(StructDef {
+            name: synthetic_name.clone(),
+            fields: fields.clone(),
+        });
+        let field_names = fields.iter().map(|f| f.name.clone()).collect();
+        let field_types = fields.into_iter().map(|f| f.ty).collect();
+        struct_registry.register_synthetic(synthetic_name.clone(), synthetic_id, field_names, field_types);
+
+        // Also register the enum kind name → synthetic_id so ir_type_to_lir can find it.
+        struct_registry.register_synthetic(
+            name.clone(),
+            synthetic_id,
+            // Field names/types not needed here since enum lookup uses EnumRegistry.
+            vec!["_tag".into()],
+            vec![LirType::U8],
+        );
+
+        registry.enums.insert(name, EnumEntry {
+            variants: variant_entries,
+            max_payload_width,
+            synthetic_id,
+        });
+    }
+
+    registry
 }
