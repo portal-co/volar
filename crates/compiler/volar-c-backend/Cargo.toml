@@ -14,6 +14,7 @@ volar-ir-common.workspace = true
 tempfile = "3"
 volar-lir-codegen = { path = "../volar-lir-codegen" }
 volar-compiler = { path = "../volar-compiler", features = ["parsing"] }
+volar-weaver = { path = "../volar-weaver" }
 volar-lir-test-corpus = { workspace = true }
 volar-ir.workspace = true
 volar-ir-passes.workspace = true

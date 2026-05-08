@@ -10,11 +10,48 @@
 
 use std::collections::BTreeMap;
 use volar_compiler::ir::{
-    ArrayLength, IrAnyFunction, IrCfgBlock, IrCfgBody, IrCfgFunction,
+    ArrayKind, ArrayLength, IrAnyFunction, IrCfgBlock, IrCfgBody, IrCfgFunction,
     IrCfgJump, IrCfgModule, IrCfgTerminator, IrEnum, IrEnumVariant, IrEnumVariantData, IrExpr,
     IrField, IrFunction, IrImpl, IrImplItem, IrModule, IrParam, IrStmt, IrStruct, IrType,
-    IrTypeAlias,
+    IrTypeAlias, StructKind, TypeNumConst,
 };
+
+// ============================================================================
+// Array length helpers
+// ============================================================================
+
+/// Convert the second type argument of a generic array type (e.g. `Array<T, N>`)
+/// to an `ArrayLength`, resolving const params via `env` where possible.
+pub(crate) fn type_args_to_len(len_ty: Option<&IrType>, env: &MonoEnv) -> ArrayLength {
+    match len_ty {
+        Some(IrType::TypeParam(name)) => {
+            // Check const_params first (most common: `N` → 16).
+            if let Some(&n) = env.const_params.get(name.as_str()) {
+                return ArrayLength::Const(n);
+            }
+            // Check type_params in case this is aliased to a concrete size.
+            if let Some(concrete) = env.type_params.get(name.as_str()) {
+                return type_args_to_len(Some(concrete), env);
+            }
+            ArrayLength::TypeParam(name.clone())
+        }
+        Some(IrType::Struct { kind: StructKind::Custom(name), type_args }) if type_args.is_empty() => {
+            // Typenum constant used as a type argument (e.g. `U1`, `U16`).
+            // Try to parse it as a typenum name.
+            if let Some(tn) = TypeNumConst::from_str(name) {
+                return ArrayLength::TypeNum(tn);
+            }
+            // Fall back to const_params (e.g. env has with_len("U1", 1)).
+            if let Some(&n) = env.const_params.get(name.as_str()) {
+                return ArrayLength::Const(n);
+            }
+            ArrayLength::TypeParam(name.clone()) // unresolved
+        }
+        Some(IrType::Primitive(volar_compiler::ir::PrimitiveType::Usize)) => ArrayLength::Const(1),
+        None => ArrayLength::Const(0),
+        _ => ArrayLength::Const(0), // unknown — default to 0; lowering will panic with a clear message
+    }
+}
 
 // ============================================================================
 // MonoEnv
@@ -337,10 +374,28 @@ pub fn mono_type(ty: &IrType, env: &MonoEnv) -> IrType {
             elem: Box::new(mono_type(elem, env)),
             len: mono_len(len, env),
         },
-        IrType::Struct { kind, type_args } => IrType::Struct {
-            kind: kind.clone(),
-            type_args: type_args.iter().map(|a| mono_type(a, env)).collect(),
-        },
+        IrType::Struct { kind, type_args } => {
+            // hybrid_array::Array<T, N> is parsed as Struct { kind: Custom("Array") | GenericArray }
+            // but must be lowered as IrType::Array.  Convert it here so the LIR pipeline sees
+            // a concrete array length rather than a struct it can't register.
+            let is_generic_array = matches!(kind, StructKind::GenericArray)
+                || matches!(kind, StructKind::Custom(n) if n == "Array");
+
+            if is_generic_array && !type_args.is_empty() {
+                let elem = Box::new(mono_type(&type_args[0], env));
+                let len = type_args_to_len(type_args.get(1), env);
+                return IrType::Array {
+                    kind: ArrayKind::GenericArray,
+                    elem,
+                    len,
+                };
+            }
+
+            IrType::Struct {
+                kind: kind.clone(),
+                type_args: type_args.iter().map(|a| mono_type(a, env)).collect(),
+            }
+        }
         IrType::Reference { mutable, elem } => IrType::Reference {
             mutable: *mutable,
             elem: Box::new(mono_type(elem, env)),

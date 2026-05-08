@@ -28,7 +28,7 @@ use structs::{
     StructRegistry, EnumRegistry, flatten_count, flatten_scalar_types,
     struct_field_scalar_offset, struct_field_scalar_width, primitive_to_lir,
 };
-use mono::{MonoEnv, mono_type, mono_len};
+use mono::{MonoEnv, mono_type, mono_len, type_args_to_len};
 use volar_compiler::ir::IrEnum;
 
 // Unwrap a single-element Vec into a scalar, panicking if the vec has != 1 element.
@@ -559,9 +559,16 @@ fn lower_expr<T: LirTarget>(expr: &IrExpr, ctx: &mut LowerCtx<T>) -> Vec<T::Valu
             .unwrap_or_else(|| panic!("undefined variable: {name}")),
 
         IrExpr::Binary { op, left, right } => {
-            let lv = into_scalar(lower_expr(left, ctx), "binary lhs");
-            let rv = into_scalar(lower_expr(right, ctx), "binary rhs");
-            vec![lower_binop(*op, lv, rv, ctx)]
+            let lv = lower_expr(left, ctx);
+            let rv = lower_expr(right, ctx);
+            if lv.len() == 1 && rv.len() == 1 {
+                vec![lower_binop(*op, lv.into_iter().next().unwrap(), rv.into_iter().next().unwrap(), ctx)]
+            } else if lv.len() == rv.len() && !lv.is_empty() {
+                // Element-wise operation over aggregate types (e.g. Vope addition).
+                lv.into_iter().zip(rv).map(|(l, r)| lower_binop(*op, l, r, ctx)).collect()
+            } else {
+                panic!("Binary {:?}: operand widths {} vs {} — cannot apply element-wise", op, lv.len(), rv.len())
+            }
         }
 
         IrExpr::Unary { op, expr: inner } => {
@@ -687,6 +694,23 @@ fn lower_expr<T: LirTarget>(expr: &IrExpr, ctx: &mut LowerCtx<T>) -> Vec<T::Valu
             vec![]
         }
 
+        // ---- TypenumUsize and LengthOf — resolve to concrete usize const ------
+
+        IrExpr::TypenumUsize { ty } => {
+            // `T::USIZE` — resolve T as a const param.
+            let n = match ty.as_ref() {
+                IrType::TypeParam(name) => ctx.mono.const_params.get(name.as_str()).copied()
+                    .unwrap_or_else(|| panic!("TypenumUsize: unresolved TypeParam '{name}'")),
+                other => panic!("TypenumUsize: unexpected type {:?}", other),
+            };
+            vec![ctx.target.iconst(LirType::U64, n as i64)]
+        }
+
+        IrExpr::LengthOf(len) => {
+            let n = const_len(len, ctx.mono);
+            vec![ctx.target.iconst(LirType::U64, n as i64)]
+        }
+
         // ---- Default / zero value -------------------------------------------
 
         IrExpr::DefaultValue { ty } => {
@@ -705,9 +729,17 @@ fn lower_expr<T: LirTarget>(expr: &IrExpr, ctx: &mut LowerCtx<T>) -> Vec<T::Valu
             lower_raw_fold(receiver, init, acc_var, elem_var, body, ctx)
         }
 
-        // ---- Path: may be a unit enum variant (e.g. `Option::None`) --------
+        // ---- Path: may be a unit enum variant or a type-level size constant --
 
         IrExpr::Path { segments, .. } => {
+            // `T::USIZE` pattern — access const generic usize from MonoEnv.
+            if segments.len() == 2 && segments[1] == "USIZE" {
+                let ty_name = &segments[0];
+                if let Some(&n) = ctx.mono.const_params.get(ty_name.as_str()) {
+                    return vec![ctx.target.iconst(LirType::U64, n as i64)];
+                }
+            }
+
             // Check for unit enum variant.
             let joined = segments.join("_");
             if let Some((entry, variant)) = ctx.enum_registry.find_variant(&joined) {
@@ -1505,7 +1537,17 @@ fn lower_assign<T: LirTarget>(
                 }
             }
         }
-        _ => unimplemented!("lower_assign: unsupported lhs {:?}", left),
+        // Simple variable assignment: `x = rhs`
+        IrExpr::Var(name) => {
+            let rhs_vals = lower_expr(right, ctx);
+            let inferred_ty = ctx.infer_type(right);
+            if let Some(ty) = inferred_ty {
+                ctx.env_types.insert(name.clone(), ty);
+            }
+            ctx.env.insert(name.clone(), rhs_vals);
+        }
+        // Field assignment is not supported in value-semantics LIR.
+        other => unimplemented!("lower_assign: unsupported lhs {:?}", other),
     }
 }
 
@@ -1668,15 +1710,24 @@ fn lower_method_extern<T: LirTarget>(
 // ============================================================================
 
 fn lower_call<T: LirTarget>(func: &IrExpr, args: &[IrExpr], ctx: &mut LowerCtx<T>) -> Vec<T::Value> {
-    if let IrExpr::Path { segments, .. } = func {
+    // Handle Array::from_fn(|i| body) — convert on the fly to ArrayGenerate.
+    if let IrExpr::Path { segments, type_args } = func {
         if segments.len() >= 2
             && (segments[segments.len() - 2] == "Array"
                 || segments[segments.len() - 2] == "GenericArray")
             && segments[segments.len() - 1] == "from_fn"
         {
-            unimplemented!(
-                "Array::from_fn call — use IrExpr::ArrayGenerate instead (run lowering_dyn)"
-            );
+            if let Some(IrExpr::Closure { params, body, .. }) = args.first() {
+                if let Some(volar_compiler::ir::IrClosureParam { pattern: IrPattern::Ident { name: idx, .. }, .. }) = params.first() {
+                    // Derive element type and length from the call's type_args.
+                    // type_args = [elem_type, length_type] for Array::<T, N>::from_fn
+                    let elem_ty = type_args.first().map(|t| mono_type(t, ctx.mono));
+                    let len = type_args_to_len(type_args.get(1), ctx.mono);
+                    return lower_array_generate(elem_ty.as_ref(), &len, idx, body, ctx);
+                }
+            }
+            // Fallback if closure form is unexpected.
+            panic!("Array::from_fn with unexpected args — expected a single closure argument");
         }
     }
 
