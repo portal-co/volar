@@ -25,6 +25,7 @@ use std::{
     string::String,
     vec::Vec,
 };
+use volar_ir_common::Type as NativeType;
 use volar_lir::{IcmpPred, LirTarget, LirType, LirAbi, StackAllocExt, StructDef, StructId};
 
 pub use volar_lir::NameConfig;
@@ -181,6 +182,9 @@ pub struct CBackend {
     /// Expected signature: `void rng_fn(void *out, size_t len);`
     /// Default: `"volar_rng"`.
     pub rng_fn: String,
+    /// Set to `true` when any `LirType::Native(AES8)` value is encountered,
+    /// causing `finish()` to emit a `volar_gf8_mul` helper function.
+    needs_gf8_helpers: bool,
 }
 
 impl CBackend {
@@ -196,6 +200,7 @@ impl CBackend {
             next_struct_id: 0,
             name_config: NameConfig::default(),
             rng_fn: "volar_rng".to_string(),
+            needs_gf8_helpers: false,
         }
     }
 
@@ -228,6 +233,27 @@ impl CBackend {
         let mut out = String::new();
         out.push_str("#include <stdint.h>\n");
         out.push_str("#include <stdbool.h>\n\n");
+
+        // GF(2^8) carry-less multiply helper, emitted only when Galois field types are used.
+        // Uses AES polynomial 0x1b (x^8 + x^4 + x^3 + x + 1).
+        if self.needs_gf8_helpers {
+            out.push_str(concat!(
+                "/* GF(2^8) carry-less multiply, AES polynomial 0x1b */\n",
+                "static uint8_t volar_gf8_mul(uint8_t a, uint8_t b) {\n",
+                "  uint8_t p = 0;\n",
+                "  uint8_t hi;\n",
+                "  int i;\n",
+                "  for (i = 0; i < 8; i++) {\n",
+                "    if (b & 1) p ^= a;\n",
+                "    hi = a & 0x80;\n",
+                "    a = (uint8_t)(a << 1);\n",
+                "    if (hi) a ^= 0x1b;\n",
+                "    b >>= 1;\n",
+                "  }\n",
+                "  return p;\n",
+                "}\n\n",
+            ));
+        }
 
         // All type definitions in dependency order.
         for td in &self.all_typedefs {
@@ -580,9 +606,35 @@ impl LirTarget for CBackend {
 
     // ---- Arithmetic ---------------------------------------------------------
 
-    fn add(&mut self, lhs: CValue, rhs: CValue) -> CValue { self.binop(lhs, "+", rhs) }
-    fn sub(&mut self, lhs: CValue, rhs: CValue) -> CValue { self.binop(lhs, "-", rhs) }
-    fn mul(&mut self, lhs: CValue, rhs: CValue) -> CValue { self.binop(lhs, "*", rhs) }
+    fn add(&mut self, lhs: CValue, rhs: CValue) -> CValue {
+        // GF(2^8): addition is XOR.
+        if self.state().type_of(lhs) == &LirType::Native(NativeType::AES8) {
+            self.needs_gf8_helpers = true;
+            return self.binop(lhs, "^", rhs);
+        }
+        self.binop(lhs, "+", rhs)
+    }
+    fn sub(&mut self, lhs: CValue, rhs: CValue) -> CValue {
+        // GF(2^8): subtraction is XOR (same as addition in char 2).
+        if self.state().type_of(lhs) == &LirType::Native(NativeType::AES8) {
+            self.needs_gf8_helpers = true;
+            return self.binop(lhs, "^", rhs);
+        }
+        self.binop(lhs, "-", rhs)
+    }
+    fn mul(&mut self, lhs: CValue, rhs: CValue) -> CValue {
+        // GF(2^8): carry-less multiply via volar_gf8_mul helper.
+        if self.state().type_of(lhs) == &LirType::Native(NativeType::AES8) {
+            self.needs_gf8_helpers = true;
+            let ty = self.state().type_of(lhs).clone();
+            let c_type = self.type_to_c(&ty);
+            let l = self.state().name_of(lhs).to_owned();
+            let r = self.state().name_of(rhs).to_owned();
+            let expr = format!("volar_gf8_mul({l}, {r})");
+            return self.state().emit_instr(ty, c_type, &expr);
+        }
+        self.binop(lhs, "*", rhs)
+    }
     fn udiv(&mut self, lhs: CValue, rhs: CValue) -> CValue { self.binop(lhs, "/", rhs) }
     fn sdiv(&mut self, lhs: CValue, rhs: CValue) -> CValue { self.binop(lhs, "/", rhs) }
 

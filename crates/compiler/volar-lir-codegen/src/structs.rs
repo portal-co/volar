@@ -352,7 +352,10 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
 pub fn primitive_to_lir(p: PrimitiveType) -> LirType {
     match p {
         PrimitiveType::Bool | PrimitiveType::Bit => LirType::Bool,
-        PrimitiveType::U8 | PrimitiveType::Galois | PrimitiveType::BitsInBytes => LirType::U8,
+        PrimitiveType::U8 | PrimitiveType::BitsInBytes => LirType::U8,
+        // Galois maps to Native(AES8) so the C backend can emit GF(2^8) arithmetic
+        // (XOR for add/sub, carry-less multiply for mul) rather than wrapping integers.
+        PrimitiveType::Galois => LirType::Native(NativeType::AES8),
         PrimitiveType::U32 => LirType::U32,
         PrimitiveType::U64
         | PrimitiveType::Galois64
