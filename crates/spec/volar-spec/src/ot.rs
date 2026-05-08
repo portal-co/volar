@@ -24,3 +24,4 @@ pub mod group;
 pub mod base;
 pub mod iknp;
 pub mod softspoken;
+pub mod lwe;
