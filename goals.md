@@ -29,6 +29,10 @@ implementation focus (VOLE-based ZK, garbled circuits, ORAM, compiler toolchain)
   - [x] VOLE ZK proving: Quicksilver-style AND check (`volar-spec/src/vole/prove.rs`)
   - [x] VOLE weaver: `BIrBlocks` -> prover/verifier `IrModule` (returns fixed-size hat array)
   - [x] prove helpers in total-Rust subset, parseable by compiler
+  - [x] VOLE end-to-end pipeline: weaver -> IrModule -> LIR -> C -> compile + run
+    - Prover and verifier both lower to C via spec linkage; compiled output runs successfully
+    - Correctness test: fabricated honest inputs (masks=0, delta=1) verify as expected
+    - Note: delta is known to prover in this test; proper VOLE setup (OT-based, so delta is prover-unknown) is a stronger milestone (see Planned)
 - [x] primitives compile
   - [x] macros removed, lib.rs parseable by volar-compiler
   - [x] manifest generation (`volar-codegen manifest`)
@@ -116,7 +120,7 @@ implementation focus (VOLE-based ZK, garbled circuits, ORAM, compiler toolchain)
 - [ ] consistency checks
 - [ ] succinct proofs
 - [ ] MPC protocol (beyond type stubs)
-- [ ] VOLE setup (OT-based correlation generation)
+- [ ] VOLE setup (OT-based correlation generation — makes delta prover-unknown, required for real security)
 - [ ] batched Quicksilver verification (random-challenge version)
 - [ ] additional ZK proof schemes (non-VOLE-based)
 - [ ] additional garbled circuit schemes

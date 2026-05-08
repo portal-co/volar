@@ -269,3 +269,66 @@ fn vole_verifier_xor_gate_to_c() {
     assert!(!c_src.is_empty());
     compile_and_run(&c_src, "/* vole xor verifier smoke */");
 }
+
+/// End-to-end correctness test: prover produces hat, verifier accepts it.
+///
+/// Fabricates honest VOLE inputs with masks=0, delta=1, and bit values a=1, b=0.
+/// VOLE relation: K_w = v_w + u_w * delta.  With v=0 and delta=1:
+///   K_a = 1, K_b = 0, K_and = 0, hat = v_a*v_b = 0.
+/// Verifier equation: K_a*K_b + hat == K_and*delta  =>  0 == 0  =>  true.
+///
+/// Stronger models would implement proper VOLE setup (OT-based correlation
+/// generation) so that delta is unknown to the prover.  See goals.md.
+#[test]
+fn vole_prover_verifier_correctness_e2e() {
+    let circuit = make_biir_and();
+    let linkage = make_vole_linkage();
+    // Prover C already contains vole_and_verifier_check via spec linkage.
+    let module = weave_vole_prover(&circuit, "and_prover", Some(&linkage));
+
+    let env = vole_env();
+    let mut b = CBackend::new();
+    lower_module_with_opts(&module, &mut b, &env);
+    let c_src = b.finish();
+
+    // Honest VOLE inputs: a=1, b=0 => AND=0; delta=1 on all 16 GF(2^8) lanes;
+    // masks v=0 so K_w = u_w * delta directly.
+    let main_body = r#"
+  Vope vope_one; memset(&vope_one, 0, sizeof(vope_one));
+  memset(vope_one.u.data[0].data, 1, 16);
+  Vope vope_a; memset(&vope_a, 0, sizeof(vope_a));
+  memset(vope_a.u.data[0].data, 1, 16);
+  Vope vope_b; memset(&vope_b, 0, sizeof(vope_b));
+
+  __Tuple_s2_aau8x16x1 prover_out = vole_prove_and_prover(vope_one, vope_a, vope_b);
+  Arr_U8_16 hat = prover_out._1.data[0];
+
+  Delta delta; memset(&delta, 0, sizeof(delta));
+  memset(delta.delta.data, 1, 16);
+  Q q_a; memset(&q_a, 0, sizeof(q_a));
+  memset(q_a.q.data, 1, 16);
+  Q q_b; memset(&q_b, 0, sizeof(q_b));
+  Q q_and; memset(&q_and, 0, sizeof(q_and));
+
+  __Tuple_s1_b result = vole_and_verifier_check(delta, q_a, q_b, q_and, hat);
+  printf("%d\n", (int)result._1);
+"#;
+    let out = compile_and_run(&c_src, main_body);
+    assert_eq!(out.trim(), "1", "VOLE verifier should accept honest prover output");
+}
+
+#[test]
+#[ignore = "diagnostic: writes C to /tmp for manual inspection"]
+fn dump_vole_and_c_to_tmp() {
+    let circuit = make_biir_and();
+    let linkage = make_vole_linkage();
+    let module_p = weave_vole_prover(&circuit, "and_prover", Some(&linkage));
+    let module_v = weave_vole_verifier(&circuit, "and_verifier", Some(&linkage));
+    let env = vole_env();
+    let mut bp = CBackend::new();
+    lower_module_with_opts(&module_p, &mut bp, &env);
+    let mut bv = CBackend::new();
+    lower_module_with_opts(&module_v, &mut bv, &env);
+    std::fs::write("/tmp/vole_prover.c", bp.finish()).unwrap();
+    std::fs::write("/tmp/vole_verifier.c", bv.finish()).unwrap();
+}
