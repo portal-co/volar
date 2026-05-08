@@ -6,6 +6,7 @@ pub use hybrid_array::{Array, ArraySize};
 pub use volar_common::hash_commitment as simple;
 pub mod byte_gen;
 pub mod garble;
+pub mod ot;
 pub mod vole;
 pub mod curve;
 pub mod mpc;

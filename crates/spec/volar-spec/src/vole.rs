@@ -11,6 +11,7 @@ use super::*;
 pub mod field_rotate;
 mod impls;
 pub mod poly;
+pub mod setup;
 
 pub trait VoleArray<T>: ArraySize {}
 impl<T, X: ArraySize> VoleArray<T> for X {}
