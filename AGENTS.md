@@ -53,8 +53,10 @@ A file may explicitly raise its required tier with `// @ai-tier: 3` placed
 next to its `@reliability` marker. The marker can only raise the
 requirement, never lower it.
 
-**If your tier is below the file's required tier, do not edit it.** Produce
-a hand-off document instead — see
+**If your tier is below the file's required tier, perform a reasoning pass
+first** — reason through whether the change is genuinely cryptographic or
+merely structural, surface that reasoning to the owner, and wait for an
+explicit go/no-go before proceeding or writing a hand-off document. See
 [`docs/agents-guide.md` § 5](docs/agents-guide.md#5-when-you-are-blocked).
 
 ## Crate Constraints

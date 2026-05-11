@@ -286,12 +286,24 @@ The legal combinations of reliability change and required tier are:
 
 If an agent at Tier *k* needs to make a change that requires Tier *k+1*:
 
-1. Stop the change.
-2. Produce a written description of the desired change, the file's required
-   tier, and the reason the change exceeds the agent's tier (e.g. "this file
-   is at `crates/spec/volar-spec/src/vole/prove.rs`, default Tier 3, and the
-   agent is Tier 2").
-3. Hand the description to a human or to a higher-tier agent.
+1. **Reasoning pass first.** Before writing a hand-off or stopping, reason
+   through the situation in your reply:
+   - Is the change actually *cryptographic* (new protocol logic, soundness
+     argument, secret-randomness invariant) or merely structural/mechanical
+     (adding an enum variant, wiring a new type, fixing a compile error in
+     a high-tier crate)?
+   - What specifically makes this file sensitive at its tier?
+   - Could a lower-tier model execute this correctly?
+2. **Surface the reasoning to the owner and wait.** Do not produce a
+   hand-off document yet; do not proceed with the edit yet. The owner may
+   grant a session-scoped override (agent proceeds, marks change
+   `@ai: assisted`) or confirm the block (agent produces the hand-off
+   below).
+3. **On confirmed block:** Produce a written description of the desired
+   change, the file's required tier, and the reason the change exceeds the
+   agent's tier (e.g. "this file is at `crates/spec/volar-spec/src/vole/prove.rs`,
+   default Tier 3, and the agent is Tier 2").
+4. Hand the description to a human or to a higher-tier agent.
 
 Producing an analysis or plan that a higher-tier agent will execute is
 **always** within Tier 1 capability and is the recommended fallback. See

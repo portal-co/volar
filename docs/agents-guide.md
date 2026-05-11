@@ -35,6 +35,26 @@ Before touching any file, an agent must answer these questions:
 
 Only after all six answers are clear may the agent edit code.
 
+**Borderline cases — the reasoning pass.** Before stopping on a tier
+mismatch, the agent must first produce a short reasoning paragraph (inline,
+before any hand-off document) that answers:
+
+- Is the proposed change actually *cryptographic* in nature (new protocol
+  logic, invariant about secret-randomness, soundness argument), or is it
+  mechanical/infrastructural (adding a variant to an enum, wiring a new
+  type through existing match arms, fixing a compile error)?
+- What specific part of the file's reliability level makes the change
+  sensitive: is it the field arithmetic, the protocol transcript, the
+  hazmat call-site invariants, or just the crate location?
+- Is there any ambiguity about whether a lower-tier model could execute
+  this correctly?
+
+Surface this reasoning to the owner and **wait for an explicit go/no-go
+before either writing the hand-off or proceeding.** The owner may grant
+a session-scoped override, in which case the agent proceeds and marks
+the change `@ai: assisted`. If the owner confirms the block, produce the
+full hand-off document described in § 5.
+
 ---
 
 ## 2. The Five Safe Refactor Patterns
@@ -150,8 +170,24 @@ yours. Examples:
 - Any tier is asked to promote an Experimental file to Normal (requires a
   human).
 
-The correct response is to **produce a hand-off document**, not to make the
-change anyway. A hand-off document contains:
+**Step 1 — Reasoning pass (before anything else).** Write a short paragraph
+(directly in your reply, not in a file) that covers:
+
+1. What the proposed change actually does in concrete terms.
+2. Whether the sensitivity comes from the change itself (new cryptographic
+   logic, soundness argument) or merely from the file's location in a
+   high-tier crate (e.g. adding a match arm, wiring a new type).
+3. Whether a lower-tier model could execute this correctly — and why or why not.
+
+Then **stop and present this reasoning to the owner.** Do not write the
+hand-off document yet; do not proceed with the edit yet.
+
+**Step 2 — Owner decision.** The owner will either:
+- **Grant a session-scoped override:** proceed with the edit; mark the change
+  `@ai: assisted` and note the override in the commit message.
+- **Confirm the block:** produce the full hand-off document below.
+
+**Hand-off document format:**
 
 ```
 File:           <relative path>
