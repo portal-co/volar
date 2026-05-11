@@ -17,9 +17,11 @@ pub mod const_analysis;
 pub mod dump_ir;
 pub mod lowering;
 pub mod lowering_dyn;
+pub mod unpack_packed_bits;
 
 pub use const_analysis::*;
 pub use lowering::*;
+pub use unpack_packed_bits::unpack_bits_in_type;
 
 /// Generate dynamic Rust code by lowering type-level lengths to runtime witnesses.
 pub fn print_module_rust_dyn(module: &volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>) -> String {

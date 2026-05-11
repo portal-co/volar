@@ -103,6 +103,59 @@ export class BitsInBytes64 implements FieldElement {
   static default(): BitsInBytes64 { return new BitsInBytes64(0n); }
 }
 
+/**
+ * GF(3) field element — mod-3 integer arithmetic.
+ *
+ * `value` is 0, 1, or 2.  `Z3(2)` is the `None` sentinel reserved for the
+ * future `Bumped<Bit>` optional-trit system.
+ *
+ * GF(2)→GF(3) Möbius-lifted bitwise operations (agree with GF(2) on {0,1}):
+ *   bitxor(a, b) = a + b + a·b  mod 3
+ *   bitor(a,  b) = a + b + 2·a·b mod 3
+ *   bitand(a, b) = a·b           mod 3
+ */
+export class Z3 implements FieldElement {
+  constructor(public readonly value: number) {}
+
+  private static add3(a: number, b: number): number {
+    const s = a + b;
+    return s >= 3 ? s - 3 : s;
+  }
+  private static neg3(a: number): number {
+    return a === 0 ? 0 : 3 - a;
+  }
+  private static mul3(a: number, b: number): number {
+    const p = a * b;
+    return p >= 3 ? p - 3 : p;
+  }
+
+  add(rhs: any): Z3 { return new Z3(Z3.add3(this.value, (rhs as Z3).value)); }
+  sub(rhs: any): Z3 { return new Z3(Z3.add3(this.value, Z3.neg3((rhs as Z3).value))); }
+  mul(rhs: any): Z3 { return new Z3(Z3.mul3(this.value, (rhs as Z3).value)); }
+
+  bitxor(rhs: any): Z3 {
+    const a = this.value, b = (rhs as Z3).value;
+    // a + b + a·b  mod 3
+    return new Z3(Z3.add3(Z3.add3(a, b), Z3.mul3(a, b)));
+  }
+  bitor(rhs: any): Z3 {
+    const a = this.value, b = (rhs as Z3).value;
+    // a + b + 2·a·b  mod 3
+    const ab = Z3.mul3(a, b);
+    return new Z3(Z3.add3(Z3.add3(a, b), Z3.add3(ab, ab)));
+  }
+  bitand(rhs: any): Z3 { return new Z3(Z3.mul3(this.value, (rhs as Z3).value)); }
+
+  // Shift has no meaningful ternary interpretation; return zero per spec.
+  shl(_n: number): Z3 { return new Z3(0); }
+  shr(_n: number): Z3 { return new Z3(0); }
+
+  clone(): Z3 { return new Z3(this.value); }
+  into<T>(): T { return this.value as unknown as T; }
+
+  static default(): Z3 { return new Z3(0); }
+}
+
 // ============================================================================
 // GF(2^8) multiplication
 // ============================================================================

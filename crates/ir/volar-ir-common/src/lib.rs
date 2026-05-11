@@ -32,6 +32,10 @@ pub enum Type {
     AES8,
     /// GF(2^64) field element.
     Galois64,
+    /// GF(3) element — mod-3 integer stored in 2 bits.
+    ///
+    /// Used by the TFHE backend; not valid in `lower_ir_to_boolar` (GF(2)-only).
+    Z3,
 }
 
 /// A 256-bit compile-time constant, split into high and low 128-bit halves.

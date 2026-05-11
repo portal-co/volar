@@ -16,6 +16,7 @@ export {
   Galois64,
   BitsInBytes,
   BitsInBytes64,
+  Z3,
 } from "./primitives";
 
 export {

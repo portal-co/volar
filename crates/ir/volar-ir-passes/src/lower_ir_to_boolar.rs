@@ -492,6 +492,13 @@ pub fn ir_type_bits(ty: &IRType, types: &IRTypes) -> usize {
         IRType::Primitive(PrimType::_64) | IRType::Primitive(PrimType::Galois64) => 64,
         IRType::Primitive(PrimType::_128) => 128,
         IRType::Primitive(PrimType::_256) => 256,
+        IRType::Primitive(PrimType::Z3) => {
+            panic!(
+                "ir_type_bits: Z3 (GF(3)) cannot be lowered to GF(2) bits. \
+                 Z3 values are only valid in the TFHE backend. \
+                 Use raise_to_z3 before the TFHE weaver, not before lower_ir_to_boolar."
+            );
+        }
         IRType::Vec(n, elem_id) => n * ir_type_bits(&types.0[elem_id.0 as usize], types),
         IRType::Tuple(ids) => {
             ids.iter().map(|id| ir_type_bits(&types.0[id.0 as usize], types)).sum()

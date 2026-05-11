@@ -453,6 +453,70 @@ impl Invert for Galois256 {
 }
 
 // ============================================================================
+// Z3 — GF(3)
+// ============================================================================
+
+/// An element of GF(3) — mod-3 integer arithmetic.
+///
+/// The value is stored as 0, 1, or 2.  All operations reduce mod 3 without
+/// using `%` (which is outside the total-Rust compiler subset); an if-chain
+/// is used instead.
+///
+/// # GF(2) → GF(3) Möbius lifting
+/// Binary operations `bitxor`, `bitor`, `bitand` implement the GF(2) truth
+/// tables lifted to GF(3) via the Möbius inversion formula:
+/// - `bitxor(a, b) = a + b + a·b mod 3`
+/// - `bitor(a,  b) = a + b + 2·a·b mod 3`
+/// - `bitand(a, b) = a·b mod 3`
+///
+/// On inputs `{0, 1}` these agree with the corresponding GF(2) gates.
+/// `Z3(2)` is reserved as the `None` sentinel in the future `Bumped<Bit>`
+/// system — see `docs/adr/bumping-handoff.md`.
+// @reliability: normal
+// @ai: assisted
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct Z3(pub u8);
+
+impl Z3 {
+    /// Addition mod 3: result is always in 0..=2.
+    #[inline]
+    fn add3(a: u8, b: u8) -> u8 {
+        let s = a + b;
+        if s >= 3 { s - 3 } else { s }
+    }
+
+    /// Negation mod 3: 0 → 0, 1 → 2, 2 → 1.
+    #[inline]
+    fn neg3(a: u8) -> u8 {
+        if a == 0 { 0 } else { 3 - a }
+    }
+
+    /// Multiplication mod 3: product of two elements each in 0..=2 is at
+    /// most 4, so only `2·2 = 4` needs a single subtraction.
+    #[inline]
+    fn mul3(a: u8, b: u8) -> u8 {
+        let p = a * b;
+        if p >= 3 { p - 3 } else { p }
+    }
+}
+
+impl Add<Z3> for Z3 {
+    type Output = Z3;
+    fn add(self, rhs: Z3) -> Self::Output { Z3(Self::add3(self.0, rhs.0)) }
+}
+
+impl Sub<Z3> for Z3 {
+    type Output = Z3;
+    fn sub(self, rhs: Z3) -> Self::Output { Z3(Self::add3(self.0, Self::neg3(rhs.0))) }
+}
+
+impl Mul<Z3> for Z3 {
+    type Output = Z3;
+    fn mul(self, rhs: Z3) -> Self::Output { Z3(Self::mul3(self.0, rhs.0)) }
+}
+
+// ============================================================================
 // Tropical semiring
 // ============================================================================
 
@@ -531,7 +595,79 @@ mod tests {
     }
 
     #[test]
-    fn test_galois256_commutativity() {
+    fn test_z3_add_table() {
+        // Full GF(3) addition table
+        let expected: [[u8; 3]; 3] = [[0, 1, 2], [1, 2, 0], [2, 0, 1]];
+        for a in 0u8..3 {
+            for b in 0u8..3 {
+                assert_eq!(
+                    (Z3(a) + Z3(b)).0,
+                    expected[a as usize][b as usize],
+                    "Z3({a}) + Z3({b})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_z3_sub() {
+        assert_eq!(Z3(0) - Z3(0), Z3(0));
+        assert_eq!(Z3(0) - Z3(1), Z3(2)); // 0 − 1 = −1 = 2 mod 3
+        assert_eq!(Z3(1) - Z3(2), Z3(2)); // 1 − 2 = −1 = 2 mod 3
+        assert_eq!(Z3(2) - Z3(1), Z3(1)); // 2 − 1 =  1 mod 3
+    }
+
+    #[test]
+    fn test_z3_mul_table() {
+        // Full GF(3) multiplication table
+        let expected: [[u8; 3]; 3] = [[0, 0, 0], [0, 1, 2], [0, 2, 1]];
+        for a in 0u8..3 {
+            for b in 0u8..3 {
+                assert_eq!(
+                    (Z3(a) * Z3(b)).0,
+                    expected[a as usize][b as usize],
+                    "Z3({a}) * Z3({b})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_z3_additive_inverse() {
+        // a + (-a) == 0 for all a
+        for a in 0u8..3 {
+            let neg_a = if a == 0 { Z3(0) } else { Z3(3 - a) };
+            assert_eq!((Z3(a) + neg_a).0, 0, "Z3({a}) has no additive inverse");
+        }
+    }
+
+    #[test]
+    fn test_z3_multiplicative_inverse() {
+        // Only 1 and 2 have inverses in GF(3): 1·1=1, 2·2=1
+        assert_eq!(Z3(1) * Z3(1), Z3(1));
+        assert_eq!(Z3(2) * Z3(2), Z3(1));
+    }
+
+    #[test]
+    fn test_z3_galois_compat() {
+        // On inputs {0,1}, lifted ops agree with GF(2)
+        // bitxor(a,b) = a+b+ab mod 3
+        for a in 0u8..2 {
+            for b in 0u8..2 {
+                let xor_gf2 = a ^ b;
+                let xor_z3 = {
+                    let ab = Z3(a) * Z3(b);
+                    (Z3(a) + Z3(b) + ab).0
+                };
+                assert_eq!(xor_gf2, xor_z3, "bitxor Z3({a},{b})");
+                // bitand(a,b) = a*b
+                assert_eq!(a & b, (Z3(a) * Z3(b)).0, "bitand Z3({a},{b})");
+            }
+        }
+    }
+
+    #[test]
+    fn test_z3_galois256_commutativity() {
         let a = Galois256(U256([0xDEADBEEF, 0xCAFEBABE, 0x01020304, 0x05060708]));
         let b = Galois256(U256([0x42, 0xFF, 0x123, 0x456]));
         assert_eq!(a * b, b * a);

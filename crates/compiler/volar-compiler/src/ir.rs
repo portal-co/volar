@@ -185,6 +185,11 @@ pub enum PrimitiveType {
     Galois128,
     /// 256-bit Galois field element (GF(2^256))
     Galois256,
+    /// GF(3) element — mod-3 integer stored in 2 bits.
+    ///
+    /// Valid only in the TFHE backend; raises an error if passed to
+    /// `lower_ir_to_boolar` (which is GF(2)-only).
+    Z3,
 }
 
 impl PrimitiveType {
@@ -205,6 +210,7 @@ impl PrimitiveType {
             "Galois256" => Some(Self::Galois256),
             "BitsInBytes" => Some(Self::BitsInBytes),
             "BitsInBytes64" => Some(Self::BitsInBytes64),
+            "Z3" => Some(Self::Z3),
             _ => None,
         }
     }
@@ -219,6 +225,7 @@ impl PrimitiveType {
             Self::Usize => std::mem::size_of::<usize>() * 8,
             Self::I128 | Self::U128 | Self::Galois128 => 128,
             Self::Galois256 => 256,
+            Self::Z3 => 2,
         }
     }
 
@@ -227,7 +234,7 @@ impl PrimitiveType {
         matches!(
             self,
             Self::Bit | Self::Galois | Self::Galois64 | Self::Galois128 | Self::Galois256
-            | Self::BitsInBytes | Self::BitsInBytes64
+            | Self::BitsInBytes | Self::BitsInBytes64 | Self::Z3
         )
     }
 }
@@ -249,6 +256,7 @@ impl fmt::Display for PrimitiveType {
             Self::Galois256 => write!(f, "Galois256"),
             Self::BitsInBytes => write!(f, "BitsInBytes"),
             Self::BitsInBytes64 => write!(f, "BitsInBytes64"),
+            Self::Z3 => write!(f, "Z3"),
         }
     }
 }

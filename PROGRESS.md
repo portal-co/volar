@@ -193,6 +193,7 @@ Implement **weaver integration** — compiling the ORAM runtime through the vola
 
 ## Deferred
 
+- **TS primitives completeness** — `printer_ts.rs` currently handles `Z3` in preamble, `is_primitive_class`, `runtime_type_check`, `ts_primitive`, and `ts_default_value`. Future schemes adding new `PrimitiveType` variants will need corresponding entries in all five locations. Consider a table-driven or trait-based dispatch to enforce completeness at compile time.
 - **Action dispatch** — connecting `#[volar_action]` stubs to `OramClient` handlers at runtime. Deferred because it would require giving the proc-macro attribute extra meaning beyond its current identity-transform role, which is out of scope outside of tests.
 - **`volar-ir-virt` `BytecodeForm::External` printer integration** — Rust / TS / C backends currently ignore the returned `VirtBytecode` artefact.  A follow-up task should teach the printers to emit it as a `const BYTECODE: &[u8]` (or equivalent) plus a small dispatch shim.  Out of scope for v1 because the in-IR form already gives the full correctness story.
 - **`virtualize_ir` + Oblivious full pipeline** — blocked on `movfuscate_ir` learning to handle `IRTerminator::JumpTable`.  Until that lands, IR Oblivious dispatch panics when the input has more than one handler.  BIR Oblivious dispatch works today because BIR's Public dispatch uses a `CondJmp` cascade rather than a `JumpTable`.

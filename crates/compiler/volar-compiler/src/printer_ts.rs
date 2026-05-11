@@ -422,7 +422,7 @@ fn is_crypto_type_param(name: &str) -> bool {
 fn is_primitive_class(name: &str) -> bool {
     matches!(
         name,
-        "Bit" | "Galois" | "Galois64" | "BitsInBytes" | "BitsInBytes64"
+        "Bit" | "Galois" | "Galois64" | "BitsInBytes" | "BitsInBytes64" | "Z3"
     )
 }
 
@@ -1031,6 +1031,7 @@ fn runtime_type_check(ty: &IrType, struct_fields: &[IrField]) -> Option<String> 
         IrType::Primitive(PrimitiveType::Galois) => "Galois",
         IrType::Primitive(PrimitiveType::Galois64) => "Galois64",
         IrType::Primitive(PrimitiveType::Bit) => "Bit",
+        IrType::Primitive(PrimitiveType::Z3) => "Z3",
         IrType::Struct { kind, .. } => return Some(format!("/* {} */ true", kind)),
         _ => return None,
     };
@@ -1122,6 +1123,7 @@ impl TsBackend for TsPreambleWriter {
         writeln!(f, "  Galois64,")?;
         writeln!(f, "  BitsInBytes,")?;
         writeln!(f, "  BitsInBytes64,")?;
+        writeln!(f, "  Z3,")?;
         writeln!(f, "  fieldAdd,")?;
         writeln!(f, "  fieldSub,")?;
         writeln!(f, "  fieldMul,")?;
@@ -2956,6 +2958,7 @@ fn ts_primitive(p: &PrimitiveType) -> &'static str {
         PrimitiveType::Galois256 => "Galois256",
         PrimitiveType::BitsInBytes => "BitsInBytes",
         PrimitiveType::BitsInBytes64 => "BitsInBytes64",
+        PrimitiveType::Z3 => "Z3",
     }
 }
 
@@ -3050,6 +3053,7 @@ fn ts_default_value(ty: &IrType, f: &mut fmt::Formatter<'_>, cx: &TsContext) -> 
             PrimitiveType::Galois256 => write!(f, "Galois256.default()"),
             PrimitiveType::BitsInBytes => write!(f, "BitsInBytes.default()"),
             PrimitiveType::BitsInBytes64 => write!(f, "BitsInBytes64.default()"),
+            PrimitiveType::Z3 => write!(f, "Z3.default()"),
         },
         IrType::Array { elem, len, .. } => {
             // Recursive: Array.from({length: N}, () => default(elem))

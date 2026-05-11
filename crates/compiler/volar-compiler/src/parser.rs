@@ -182,6 +182,7 @@ fn volar_native_type_from_str(s: &str) -> Option<volar_ir_common::Type> {
         "_64" | "U64"       => Some(Type::_64),
         "_128"| "U128"      => Some(Type::_128),
         "_256"              => Some(Type::_256),
+        "Z3"                => Some(Type::Z3),
         _                   => None,
     }
 }
