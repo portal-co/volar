@@ -33,11 +33,11 @@ choices that:
 The reliability level says how trusted the *code* is. The capability tier
 says how trusted the *AI agent* must be to modify it.
 
-| Tier | Claude models | What this tier may modify |
-|---|---|---|
-| **Tier 1 — Glue** | Any current Claude model | Documentation, formatting, mechanical refactors, test scaffolding |
-| **Tier 2 — Compiler** | Sonnet 4.6+ or Opus 4.5+ | Compiler, IR, lowering, weavers, backends, fuzzing |
-| **Tier 3 — Cryptography** | **Opus 4.6+ only** (Sonnet not permitted at this tier) | `volar-spec`, `volar-primitives`, `volar-common`, `volar-oram*`, GRAFHEN/TFHE schemes, Hazmat code |
+| Tier | Claude models | GPT models | What this tier may modify |
+|---|---|---|---|
+| **Tier 1 — Glue** | Any current Claude model | Any current GPT model not listed for Tier 2 or Tier 3, including GPT-5.4-Mini and earlier small/fast variants | Documentation, formatting, mechanical refactors, test scaffolding |
+| **Tier 2 — Compiler** | Sonnet 4.6+ or Opus 4.5+ | Full GPT-5.2, GPT-5.3-Codex, full GPT-5.4, GPT-5.5, and later non-mini successors | Compiler, IR, lowering, weavers, backends, fuzzing |
+| **Tier 3 — Cryptography** | **Opus 4.6+ only** (Sonnet not permitted at this tier) | **GPT-5.5+ only** | `volar-spec`, `volar-primitives`, `volar-common`, `volar-oram*`, GRAFHEN/TFHE schemes, Hazmat code |
 
 **Crate-default tiers:**
 
@@ -93,7 +93,7 @@ explicit go/no-go before proceeding or writing a hand-off document. See
    contain unreviewed cryptographic code. New code depending on these must
    not be deployed without separate review. `@ai: none` / `@ai: assisted`
    tags indicate AI involvement. **Tier 3 files** (see above) may only be
-   modified by Opus 4.6+.
+   modified by Opus 4.6+ or GPT-5.5+.
 
 4. **Catch-all arms**: Use `_ =>` catch-alls on IR type matches to support
    parallel development.

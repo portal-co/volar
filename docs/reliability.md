@@ -212,26 +212,27 @@ addition to satisfying every other requirement on this page.
 Tiers are inclusive: Tier 3 may do everything Tier 2 may do, and Tier 2
 everything Tier 1 may do.
 
-### Mapping Claude Models to Tiers
+### Mapping AI Models to Tiers
 
 This mapping is the project's current calibration; revisit it whenever model
 capabilities or evaluation results change materially.
 
-| Tier | Claude models permitted at this tier |
-|---|---|
-| **Tier 1 — Glue** | Any current Claude model (Haiku 4.x, Sonnet ≤ 4.5, Opus ≤ 4.4). |
-| **Tier 2 — Compiler** | Sonnet 4.6 or later; Opus 4.5 or later. |
-| **Tier 3 — Cryptography** | Opus 4.6 or later. |
+| Tier | Claude models permitted at this tier | GPT models permitted at this tier |
+|---|---|---|
+| **Tier 1 — Glue** | Any current Claude model (Haiku 4.x, Sonnet ≤ 4.5, Opus ≤ 4.4). | Any current GPT model not listed for Tier 2 or Tier 3, including GPT-5.4-Mini and earlier small/fast variants. |
+| **Tier 2 — Compiler** | Sonnet 4.6 or later; Opus 4.5 or later. | Full GPT-5.2, GPT-5.3-Codex, full GPT-5.4, GPT-5.5, and later non-mini successors in those families. |
+| **Tier 3 — Cryptography** | Opus 4.6 or later. | GPT-5.5 or later. |
 
-Sonnet (any version) is **not** permitted at Tier 3, even if it is otherwise
-the strongest model available in a session. Cryptographic correctness arguments
-are subtle enough that we require Opus-class reasoning depth here. If the
-strongest available agent is a Sonnet-tier model and a Tier 3 change is needed,
-the agent must stop and surface the situation rather than proceeding.
+Sonnet (any version), GPT-5.4-Mini, GPT-5.3-Codex, GPT-5.4, and GPT-5.2 are
+**not** permitted at Tier 3, even if one of them is otherwise the strongest
+model available in a session. Cryptographic correctness arguments are subtle
+enough that we require Opus-class or frontier GPT reasoning depth here. If the
+strongest available agent is a Tier-2 model and a Tier 3 change is needed, the
+agent must stop and surface the situation rather than proceeding.
 
-Non-Claude models follow whatever mapping the project owner publishes in
-[`AGENTS.md`](../AGENTS.md). In the absence of an explicit mapping, default to
-Tier 1.
+Models from families not listed above follow whatever mapping the project
+owner publishes in [`AGENTS.md`](../AGENTS.md). In the absence of an explicit
+mapping, default to Tier 1.
 
 ### File-to-Tier Mapping
 

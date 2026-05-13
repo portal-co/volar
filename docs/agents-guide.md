@@ -13,6 +13,7 @@ silently corrupting load-bearing code.
 If you are reading this and you are not sure what tier you are operating at,
 the default is **Tier 1**. Read [reliability.md § AI Capability Tiers](reliability.md#ai-capability-tiers)
 before continuing.
+The model mapping in that section covers both Claude and GPT-family models.
 
 ---
 
