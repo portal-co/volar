@@ -57,6 +57,7 @@ pub use volar_provenance::{ProvenanceHandler, NoProvenance, KeepProvenance, MapP
 
 pub mod garble;
 pub mod vole;
+pub(crate) mod vole_common;
 pub mod grafhen;
 pub mod fhe;
 pub mod oram;

@@ -61,42 +61,32 @@ use crate::{array_default, build_return, clone_expr, expand_ors, ref_expr, var, 
 
 // ============================================================================
 // VOLE-specific type helpers
+//
+// The K-parametric versions live in `crate::vole_common` so future weavers
+// (e.g. the FAEST weaver, which emits `Vope<N, T, U3>` for S-box gates) can
+// share the same `IrType` factories. The zero-arg helpers here are thin
+// wrappers around `vole_common::*` pinned at K=1 — the AND-check Quicksilver
+// degree this weaver implements.
 // ============================================================================
 
 /// `Vope<N, T, U1>` — prover's degree-1 VOLE wire commitment.
 fn vope_type() -> IrType {
-    IrType::Struct {
-        kind: StructKind::Custom("Vope".into()),
-        type_args: vec![
-            IrType::TypeParam("N".into()),
-            IrType::TypeParam("T".into()),
-            IrType::TypeParam("U1".into()),
-        ],
-    }
+    crate::vole_common::vope_type_k(1)
 }
 
 /// `Q<N, T>` — verifier's VOLE wire share.
 fn q_type() -> IrType {
-    IrType::Struct {
-        kind: StructKind::Custom("Q".into()),
-        type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("T".into())],
-    }
+    crate::vole_common::q_type()
 }
 
 /// `Delta<N, T>` — verifier's global secret.
 fn delta_type() -> IrType {
-    IrType::Struct {
-        kind: StructKind::Custom("Delta".into()),
-        type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("T".into())],
-    }
+    crate::vole_common::delta_type()
 }
 
 /// `Array<T, N>` — element-wise hat / field vector.
 fn array_t_n() -> IrType {
-    IrType::Struct {
-        kind: StructKind::Custom("Array".into()),
-        type_args: vec![IrType::TypeParam("T".into()), IrType::TypeParam("N".into())],
-    }
+    crate::vole_common::array_t_n()
 }
 
 /// `[Array<T, N>; AND_COUNT]` — fixed-size hat array returned by the prover.
@@ -108,12 +98,9 @@ fn hat_array_type(and_count: usize) -> IrType {
     }
 }
 
-/// `&T` reference helper.
+/// `&T` reference helper. See [`crate::vole_common::ref_to_vole`].
 fn ref_to_vole(ty: IrType) -> IrType {
-    IrType::Reference {
-        mutable: false,
-        elem: Box::new(ty),
-    }
+    crate::vole_common::ref_to_vole(ty)
 }
 
 // ============================================================================

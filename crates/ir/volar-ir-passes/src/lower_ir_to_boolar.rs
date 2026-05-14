@@ -761,6 +761,73 @@ mod tests {
         assert_eq!(b.stmts.len(), 8);
     }
 
+    // -- AES8 Poly lowering ---------------------------------------------------
+    //
+    // FAEST relies on `PrimType::AES8` (GF(2^8) under the AES polynomial) being
+    // lowerable. The IR's `Poly` semantics permit linear combinations over a
+    // bitvector/field type with Bit selectors — addition in GF(2^k) of
+    // characteristic 2 is bitwise XOR, so the existing per-bit-position
+    // `lower_poly_bit` produces correct output for AES8-typed linear combos.
+    //
+    // GF(2^8) *multiplication* (i.e. `gf_mul_u8`) is not a `Poly` statement —
+    // it parses from the spec total-Rust subset as an extern function call.
+    // The lowering responsibility for that path lives in the spec-call
+    // expansion pass, not here.
+
+    #[test]
+    fn poly_aes8_linear_combo_xors_per_bit() {
+        // Build: param0 = AES8, param1 = AES8 (each becomes 8 boolar bits),
+        // then stmt0 = Poly { ty: AES8, coeffs: {[param0] -> 1, [param1] -> 1},
+        // constant = 0 } — i.e. param0 XOR param1.
+        // Verify: 8 output bits, each is XOR of the corresponding param bits.
+        let mut types = TypeTable::new();
+        let aes8_id = types.primitive(PrimType::AES8);
+
+        let mut coeffs: alloc::collections::BTreeMap<std::vec::Vec<IRVarId>, u8> =
+            alloc::collections::BTreeMap::new();
+        coeffs.insert(std::vec![IRVarId(0)], 1);
+        coeffs.insert(std::vec![IRVarId(1)], 1);
+
+        let block = IRBlock::<()> {
+            params: std::vec![aes8_id, aes8_id],
+            stmts: std::vec![volar_ir::ir::IRStmt::Poly {
+                ty: aes8_id,
+                coeffs,
+                constant: zero_const(),
+            }],
+            stmt_provs: std::vec![()],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: std::vec![IRVarId(2)],
+            },
+        };
+        let blocks = IRBlocks::new(std::vec![block]);
+        let lowered = lower_ir_to_boolar::<()>(&blocks, &types);
+        let b = &lowered.0[0];
+        // 2 AES8 params = 16 boolar param bits. Each of the 8 output bits is
+        // one Xor — so 8 stmts emitted.
+        assert_eq!(b.params, 16);
+        assert_eq!(b.stmts.len(), 8);
+        for stmt in &b.stmts {
+            assert!(
+                matches!(stmt, BIrStmt::Xor(_, _)),
+                "expected per-bit Xor for AES8 linear combination, got {:?}",
+                stmt
+            );
+        }
+    }
+
+    // Latent limitation worth recording for the FAEST work:
+    // `infer_poly_width` derives the output width from referenced variables'
+    // bit-counts, *not* from the Poly's `ty`. Consequently a pure-constant
+    // `Poly { ty: AES8, coeffs: {}, constant: c }` lowers to a single bit,
+    // not 8. This isn't a blocker for FAEST — pure constants always go
+    // through `IRStmt::Const` instead — but if a future weaver pass emits
+    // constant-only Polys at field types, `infer_poly_width` will need to
+    // fall back to `ir_type_bits(ty)` when `coeffs` is empty. Tracked
+    // adjacent to AES8 work; no test asserts the current (wrong-for-empty)
+    // behaviour because no code path produces it today.
+
     // -- Provenance threading -------------------------------------------------
 
     #[test]
