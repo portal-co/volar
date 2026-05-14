@@ -781,6 +781,7 @@ fn bits_for_lir_type(ty: &LirType, struct_widths: &[usize]) -> usize {
         LirType::I16 | LirType::U16 => 16,
         LirType::I32 | LirType::U32 => 32,
         LirType::I64 | LirType::U64 => 64,
+        LirType::I128 | LirType::U128 => 128,
         LirType::Arr(elem, n) => n * bits_for_lir_type(elem, struct_widths),
         LirType::Struct(id) => struct_widths[*id as usize],
         // Native field elements occupy exactly one IRVarId slot (not N bits).
@@ -796,6 +797,7 @@ fn lir_type_for_bits(n: usize) -> LirType {
         16 => LirType::U16,
         32 => LirType::U32,
         64 => LirType::U64,
+        128 => LirType::U128,
         other => panic!("VolarIrTarget: no standard LirType for {other} bits"),
     }
 }

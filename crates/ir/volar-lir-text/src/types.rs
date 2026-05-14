@@ -24,6 +24,8 @@ impl WriteText for LirType {
             LirType::U32     => w.write_str("u32"),
             LirType::I64     => w.write_str("i64"),
             LirType::U64     => w.write_str("u64"),
+            LirType::I128    => w.write_str("i128"),
+            LirType::U128    => w.write_str("u128"),
             LirType::Arr(elem, len) => {
                 w.write_str("arr[")?;
                 elem.write_text(w)?;

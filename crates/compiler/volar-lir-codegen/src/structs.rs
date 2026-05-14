@@ -361,11 +361,13 @@ pub fn primitive_to_lir(p: PrimitiveType) -> LirType {
         | PrimitiveType::Galois64
         | PrimitiveType::BitsInBytes64
         | PrimitiveType::Usize => LirType::U64,
-        PrimitiveType::I128 | PrimitiveType::U128 => LirType::I64,
+        PrimitiveType::I128 => LirType::I128,
+        PrimitiveType::U128 => LirType::U128,
         // 128-bit and 256-bit fields don't have direct LIR lowerings yet;
         // map them to the closest available integer type for now.
         PrimitiveType::Galois128 => LirType::I64, // placeholder
         PrimitiveType::Galois256 => LirType::I64, // placeholder
+        PrimitiveType::Z3 => LirType::Native(NativeType::Z3),
     }
 }
 

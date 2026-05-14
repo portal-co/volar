@@ -217,6 +217,7 @@ impl<'ctx> LlvmBackend<'ctx> {
             LirType::I16 | LirType::U16 => self.context.i16_type().into(),
             LirType::I32 | LirType::U32 => self.context.i32_type().into(),
             LirType::I64 | LirType::U64 => self.context.i64_type().into(),
+            LirType::I128 | LirType::U128 => self.context.i128_type().into(),
             LirType::Native(t) => self.native_type_to_llvm(*t).into(),
             // LLVM 21 opaque pointer.
             LirType::Ptr(_) => self.context.ptr_type(AddressSpace::default()).into(),

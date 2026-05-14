@@ -94,6 +94,8 @@ pub enum LirType {
     U32,
     I64,
     U64,
+    I128,
+    U128,
     // ---- Aggregates ---------------------------------------------------------
     /// Fixed-size homogeneous array: `[elem; len]`.
     Arr(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Box<LirType>, usize),
@@ -128,6 +130,7 @@ impl LirType {
             LirType::I16 | LirType::U16 => 16,
             LirType::I32 | LirType::U32 => 32,
             LirType::I64 | LirType::U64 => 64,
+            LirType::I128 | LirType::U128 => 128,
             LirType::Arr(elem, len) => elem.bit_width() * (*len as u32),
             LirType::Struct(_) => panic!("bit_width not defined for Struct"),
             LirType::Native(_) => panic!("bit_width not meaningful for Native field elements"),
@@ -137,7 +140,7 @@ impl LirType {
 
     /// Whether this scalar type is signed. Panics on aggregates.
     pub fn is_signed(&self) -> bool {
-        matches!(self, LirType::I8 | LirType::I16 | LirType::I32 | LirType::I64)
+        matches!(self, LirType::I8 | LirType::I16 | LirType::I32 | LirType::I64 | LirType::I128)
     }
 
     pub fn is_scalar(&self) -> bool {

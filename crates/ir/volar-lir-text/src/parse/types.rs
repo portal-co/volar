@@ -42,6 +42,8 @@ pub(crate) fn parse_lir_type(lex: &mut Lexer<'_>) -> Result<LirType, ParseError>
         "u32"  => Ok(LirType::U32),
         "i64"  => Ok(LirType::I64),
         "u64"  => Ok(LirType::U64),
+        "i128" => Ok(LirType::I128),
+        "u128" => Ok(LirType::U128),
         "arr"  => {
             lex.expect_byte(b'[')?;
             let elem = parse_lir_type(lex)?;
