@@ -14,6 +14,7 @@ pub mod lwe;
 // pub mod xsat;
 pub mod grafhen;
 pub mod tfhe;
+pub mod faest;
 pub use volar_primitives as field;
 
 // ── Deterministic RNG trait ──────────────────────────────────────────────────
