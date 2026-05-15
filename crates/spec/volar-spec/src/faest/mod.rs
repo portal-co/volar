@@ -24,3 +24,6 @@
 //! - `weaver` (M5) — top-level signing/verification weaver.
 
 pub mod aes;
+pub mod prg;
+pub mod leaf_commit;
+pub mod bavc;

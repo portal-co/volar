@@ -474,6 +474,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "keccak"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e24a010dd405bd7ed803e5253182815b41bf2e6a80cc3bfc066658e03a198aa"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.0",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -661,7 +671,7 @@ dependencies = [
  "paste",
  "portal-pc-waffle-entity",
  "serde",
- "sha3",
+ "sha3 0.10.8",
  "smallvec",
  "wasm-encoder 0.241.2",
  "wasmparser 0.241.2",
@@ -960,7 +970,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75872d278a8f37ef87fa0ddbda7802605cb18344497949862c0d4dcb291eba60"
 dependencies = [
  "digest 0.10.7",
- "keccak",
+ "keccak 0.1.6",
+]
+
+[[package]]
+name = "sha3"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be176f1a57ce4e3d31c1a166222d9768de5954f811601fb7ca06fc8203905ce1"
+dependencies = [
+ "digest 0.11.2",
+ "keccak 0.2.0",
 ]
 
 [[package]]
@@ -1377,6 +1397,7 @@ dependencies = [
  "hybrid-array",
  "proptest",
  "sha2",
+ "sha3 0.11.0",
  "volar-common",
  "volar-primitives",
 ]
@@ -1637,46 +1658,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[patch.unused]]
-name = "portal-jsc-common"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-generator"
-version = "0.8.0-pre.10"
-
-[[patch.unused]]
-name = "portal-jsc-simpl-js"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-cfg"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-ll-common"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-opt-ssa"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-ssa"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-tac"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-jsc-swc-util"
-version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "portal-pc-asm-common"
-version = "0.1.1"
-
-[[patch.unused]]
 name = "portal-pc-waffle"
 version = "0.6.0-alpha.1"
 
@@ -1797,44 +1778,8 @@ name = "yecta"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-solutions-asm-aarch64"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-jvm"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-regalloc"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-riscv64"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-semantics"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-x86-64"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-x86-64-shim"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "wax-core"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "wax-tags"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "pit-core"
-version = "0.5.0-alpha.1"
+name = "portal-pc-asm-common"
+version = "0.1.1"
 
 [[patch.unused]]
 name = "dreamcomp-ir-plugin-host"
@@ -1894,6 +1839,90 @@ version = "0.1.0"
 
 [[patch.unused]]
 name = "dreamcompiler-minibc-interp"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-aarch64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-jvm"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-regalloc"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-riscv64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-semantics"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-x86-64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-x86-64-shim"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-jsc-common"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-generator"
+version = "0.8.0-pre.10"
+
+[[patch.unused]]
+name = "portal-jsc-simpl-js"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-cfg"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-ll-common"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-opt-ssa"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-ssa"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-tac"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-jsc-swc-util"
+version = "0.8.0-pre.11"
+
+[[patch.unused]]
+name = "portal-solutions-swibb"
+version = "0.6.0-alpha.1"
+
+[[patch.unused]]
+name = "embedded-llm"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "embedded-llm-tools"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "wax-core"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "wax-tags"
 version = "0.1.0"
 
 [[patch.unused]]
@@ -1965,13 +1994,5 @@ name = "type-onion"
 version = "0.2.3"
 
 [[patch.unused]]
-name = "embedded-llm"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "embedded-llm-tools"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-swibb"
-version = "0.6.0-alpha.1"
+name = "pit-core"
+version = "0.5.0-alpha.1"

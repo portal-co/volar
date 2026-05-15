@@ -1,4 +1,5 @@
 #![no_std]
+extern crate alloc;
 
 use digest::Digest;
 pub use hybrid_array::{Array, ArraySize};
