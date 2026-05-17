@@ -28,3 +28,4 @@ pub mod prg;
 pub mod leaf_commit;
 pub mod bavc;
 pub mod convert_to_vole;
+pub mod universal_hash;
