@@ -45,6 +45,20 @@ pub trait ProvenanceHandler<P: Clone + Default> {
     fn synthetic(&self) -> Self::Output {
         Self::Output::default()
     }
+
+    /// Return the QuickSilver polynomial degree to use for an AND gate whose
+    /// provenance is `prov`.
+    ///
+    /// - `1` (default) → standard K=1 `vole_and_prover_step` with a hat.
+    /// - `2` → K=2 `mul_generalized` without a hat; the full product
+    ///   polynomial is tracked in a `Vope<N,T,U2>` and verified by direct
+    ///   evaluation at Δ without a hat correction.
+    ///
+    /// Override this in FAEST-aware handlers to route S-box AND gates to K=2
+    /// (or K=3 in a future extension).
+    fn gate_degree(&self, _prov: &P) -> usize {
+        1
+    }
 }
 
 /// Provenance handler that discards all annotations.

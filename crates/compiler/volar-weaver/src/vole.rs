@@ -477,6 +477,96 @@ fn emit_verifier_and_gate<P: Clone + Default>(
     }));
 }
 
+/// `[Vope<N, T, U2>; SBOX_COUNT]` — hat-free K=2 S-box product commitments.
+fn sbox_vope_array_type(sbox_count: usize) -> IrType {
+    IrType::Array {
+        kind: volar_compiler::ir::ArrayKind::FixedArray,
+        elem: Box::new(crate::vole_common::vope_type_k(2)),
+        len: volar_compiler::ir::ArrayLength::Const(sbox_count),
+    }
+}
+
+/// Emit: `let (wire_k, sbox_k2_k) = vole_sbox_prover_step::<N, T>(wire_a.clone(), wire_b.clone());`
+///
+/// Calls the single-function prover step that returns both the K=1 downstream
+/// wire AND the K=2 hat-free product Vope.
+fn emit_prover_sbox_gate_k2<P: Clone + Default>(
+    name_a: &str,
+    name_b: &str,
+    wire_name: &str,
+    k2_name: &str,
+    stmts: &mut Vec<IrStmt<P>>,
+) {
+    stmts.push(IrStmt::Let {
+        pattern: IrPattern::Tuple(vec![
+            IrPattern::ident(wire_name),
+            IrPattern::ident(k2_name),
+        ]),
+        ty: None,
+        init: Some(IrExpr::Call {
+            func: Box::new(IrExpr::Path {
+                segments: vec!["vole_sbox_prover_step".into()],
+                type_args: vec![
+                    IrType::TypeParam("N".into()),
+                    IrType::TypeParam("T".into()),
+                ],
+            }),
+            args: vec![
+                clone_expr(var(name_a)),
+                clone_expr(var(name_b)),
+            ],
+        }),
+    });
+}
+
+/// Emit: `let (wire_k, ok_k) = vole_sbox_verifier_check::<N,T>(delta, &q_a, &q_b, sbox_vopes[idx].clone());`
+/// followed by `all_ok = all_ok && ok_k;`.
+fn emit_verifier_sbox_check_k2<P: Clone + Default>(
+    name_a: &str,
+    name_b: &str,
+    wire_name: &str,
+    ok_name: &str,
+    sbox_idx: usize,
+    stmts: &mut Vec<IrStmt<P>>,
+) {
+    // let (wire_k, ok_k) = vole_sbox_verifier_check::<N,T>(delta, &q_a, &q_b, sbox_vopes[idx].clone());
+    stmts.push(IrStmt::Let {
+        pattern: IrPattern::Tuple(vec![
+            IrPattern::ident(wire_name),
+            IrPattern::ident(ok_name),
+        ]),
+        ty: None,
+        init: Some(IrExpr::Call {
+            func: Box::new(IrExpr::Path {
+                segments: vec!["vole_sbox_verifier_check".into()],
+                type_args: vec![
+                    IrType::TypeParam("N".into()),
+                    IrType::TypeParam("T".into()),
+                ],
+            }),
+            args: vec![
+                var("delta"),
+                ref_expr(var(name_a)),
+                ref_expr(var(name_b)),
+                clone_expr(IrExpr::Index {
+                    base: Box::new(var("sbox_vopes")),
+                    index: Box::new(IrExpr::Lit(IrLit::Int(sbox_idx as i128))),
+                }),
+            ],
+        }),
+    });
+
+    // all_ok = all_ok && ok_k;
+    stmts.push(IrStmt::Semi(IrExpr::Assign {
+        left: Box::new(var("all_ok")),
+        right: Box::new(IrExpr::Binary {
+            op: SpecBinOp::And,
+            left: Box::new(var("all_ok")),
+            right: Box::new(var(ok_name)),
+        }),
+    }));
+}
+
 // ============================================================================
 // Prover weaving pass
 // ============================================================================
@@ -645,19 +735,31 @@ where
         });
     }
 
-    // Return type: (Vope<N, T, U1>, [Array<T, N>; AND_COUNT]) — AND_COUNT known at weave time.
-    let and_count = expanded
-        .iter()
-        .filter(|(_, s, _)| matches!(s, BIrStmt::And(..)))
-        .count();
-    let ret_type = IrType::Tuple(vec![vope_type(), hat_array_type(and_count)]);
+    // Count K=1 (regular AND) and K=2 (sbox AND) gates separately.
+    let (and_count, sbox_count) = expanded.iter().fold((0usize, 0usize), |(k1, k2), (_, s, prov)| {
+        if matches!(s, BIrStmt::And(..)) {
+            if handler.gate_degree(prov) == 2 { (k1, k2 + 1) } else { (k1 + 1, k2) }
+        } else {
+            (k1, k2)
+        }
+    });
+
+    // Return type: (Vope<N, T, U1>, [Array<T, N>; K1_COUNT])
+    // or, when sbox_count > 0: (Vope<N, T, U1>, [Array<T, N>; K1_COUNT], [Vope<N,T,U2>; SBOX_COUNT])
+    let ret_type = if sbox_count == 0 {
+        IrType::Tuple(vec![vope_type(), hat_array_type(and_count)])
+    } else {
+        IrType::Tuple(vec![vope_type(), hat_array_type(and_count), sbox_vope_array_type(sbox_count)])
+    };
 
     let (generics, where_clause) = prover_generics_and_where();
 
     let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
     let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut and_counter: usize = 0;
+    let mut sbox_counter: usize = 0;
     let mut hat_names: Vec<String> = Vec::new();
+    let mut sbox_k2_names: Vec<String> = Vec::new();
 
     // Synthesise Vope wires for public inputs from the bool params.
     for i in 0..num_params {
@@ -734,10 +836,19 @@ where
             BIrStmt::And(a, b) => {
                 let name_a = var_names[&a.0].clone();
                 let name_b = var_names[&b.0].clone();
-                let hat_name = format!("hat_{}", and_counter);
-                and_counter += 1;
-                hat_names.push(hat_name.clone());
-                emit_prover_and_gate(&name_a, &name_b, &let_name, &hat_name, &mut stmts);
+                if handler.gate_degree(prov) == 2 {
+                    // K=2 S-box gate: hat-free, produces (Vope<K=1>, Vope<K=2>).
+                    let k2_name = format!("sbox_k2_{}", sbox_counter);
+                    sbox_counter += 1;
+                    sbox_k2_names.push(k2_name.clone());
+                    emit_prover_sbox_gate_k2(&name_a, &name_b, &let_name, &k2_name, &mut stmts);
+                } else {
+                    // K=1 standard AND gate: produces K=1 Vope + hat.
+                    let hat_name = format!("hat_{}", and_counter);
+                    and_counter += 1;
+                    hat_names.push(hat_name.clone());
+                    emit_prover_and_gate(&name_a, &name_b, &let_name, &hat_name, &mut stmts);
+                }
                 stmt_provs.push(q.clone());
             }
 
@@ -806,10 +917,16 @@ where
         var_names.insert(result_id.0, let_name);
     }
 
-    // Return (output_wire, [hat_0, hat_1, ...]).
+    // Return (output_wire, [hat_0, hat_1, ...]) or
+    //        (output_wire, [hat_0, ...], [sbox_k2_0, ...]) when sbox_count > 0.
     let (output_expr, _) = build_return(block, &var_names, vope_type());
     let hats_expr = IrExpr::FixedArray(hat_names.iter().map(|h| var(h)).collect());
-    let ret_expr = IrExpr::Tuple(vec![output_expr, hats_expr]);
+    let ret_expr = if sbox_k2_names.is_empty() {
+        IrExpr::Tuple(vec![output_expr, hats_expr])
+    } else {
+        let sbox_expr = IrExpr::FixedArray(sbox_k2_names.iter().map(|n| var(n)).collect());
+        IrExpr::Tuple(vec![output_expr, hats_expr, sbox_expr])
+    };
 
     let func = IrFunction {
         name: format!("vole_prove_{}", name),
@@ -927,10 +1044,13 @@ where
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
 
-    let and_count = expanded
-        .iter()
-        .filter(|(_, s, _)| matches!(s, BIrStmt::And(..)))
-        .count();
+    let (and_count, sbox_count) = expanded.iter().fold((0usize, 0usize), |(k1, k2), (_, s, prov)| {
+        if matches!(s, BIrStmt::And(..)) {
+            if handler.gate_degree(prov) == 2 { (k1, k2 + 1) } else { (k1 + 1, k2) }
+        } else {
+            (k1, k2)
+        }
+    });
 
     // Pre-scan: track (name, bit_count) for actions.
     let mut oracle_handle_map = BTreeMap::<u32, usize>::new();
@@ -972,7 +1092,7 @@ where
         ty: ref_to_vole(delta_type()),
     });
 
-    // Pairs (q_and_k, hat_k) for each AND gate.
+    // Pairs (q_and_k, hat_k) for each K=1 AND gate.
     for k in 0..and_count {
         params.push(IrParam {
             name: format!("q_and_{}", k),
@@ -981,6 +1101,14 @@ where
         params.push(IrParam {
             name: format!("hat_{}", k),
             ty: array_t_n(),
+        });
+    }
+
+    // K=2 S-box Vopes — one per sbox gate (verifier-side check).
+    if sbox_count > 0 {
+        params.push(IrParam {
+            name: "sbox_vopes".into(),
+            ty: sbox_vope_array_type(sbox_count),
         });
     }
 
@@ -1035,6 +1163,7 @@ where
     let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
     let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut and_counter: usize = 0;
+    let mut sbox_counter: usize = 0;
 
     stmts.push(IrStmt::Let {
         pattern: IrPattern::Ident {
@@ -1128,17 +1257,29 @@ where
             BIrStmt::And(a, b) => {
                 let name_a = var_names[&a.0].clone();
                 let name_b = var_names[&b.0].clone();
-                let q_and_name = format!("q_and_{}", and_counter);
-                let hat_name = format!("hat_{}", and_counter);
-                let ok_name = format!("ok_{}", and_counter);
-                and_counter += 1;
-                emit_verifier_and_gate(
-                    &name_a, &name_b, &let_name, &ok_name,
-                    &q_and_name, &hat_name,
-                    &mut stmts,
-                );
-                stmt_provs.push(q.clone());
-                stmt_provs.push(q.clone());
+                let ok_name = format!("ok_and_{}", and_counter + sbox_counter);
+                if handler.gate_degree(prov) == 2 {
+                    // K=2 S-box gate: verify via sbox_vopes[sbox_idx] * delta == q_a * q_b.
+                    emit_verifier_sbox_check_k2(
+                        &name_a, &name_b, &let_name, &ok_name,
+                        sbox_counter, &mut stmts,
+                    );
+                    sbox_counter += 1;
+                    stmt_provs.push(q.clone());
+                    stmt_provs.push(q.clone());
+                    stmt_provs.push(q.clone());
+                } else {
+                    let q_and_name = format!("q_and_{}", and_counter);
+                    let hat_name = format!("hat_{}", and_counter);
+                    and_counter += 1;
+                    emit_verifier_and_gate(
+                        &name_a, &name_b, &let_name, &ok_name,
+                        &q_and_name, &hat_name,
+                        &mut stmts,
+                    );
+                    stmt_provs.push(q.clone());
+                    stmt_provs.push(q.clone());
+                }
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),

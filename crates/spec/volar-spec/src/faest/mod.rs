@@ -30,4 +30,5 @@ pub mod bavc;
 pub mod convert_to_vole;
 pub mod universal_hash;
 pub mod transcript;
+pub mod traits;
 pub mod sign;

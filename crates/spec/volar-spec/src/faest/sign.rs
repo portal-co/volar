@@ -53,7 +53,8 @@ use super::{
     convert_to_vole::{concat_small_voles, convert_to_vole, BigVoleProver},
     leaf_commit::EmLeafCommit,
     transcript::{chall1, chall2, chall3, grind_chall3},
-    universal_hash::{UniversalHashKey, UniversalHashOutput, vole_hash},
+    traits::{FaestAesProver, QuickSilverProof, StubFaestAesProver},
+    universal_hash::UniversalHashKey,
 };
 use crate::SpecRng;
 
@@ -97,12 +98,10 @@ pub struct FaestSignature {
     pub nodes: Vec<(usize, [u8; LAMBDA_BYTES])>,
     /// Correction vectors `c_i = u_i XOR u_0` for i ∈ [1..τ).
     pub corrections: Vec<Vec<u8>>,
-    /// QuickSilver proof A-hat (stub: hash of VOLE u vector).
-    pub a_hat: Vec<u8>,
     /// Prover's VOLE u vector (stored for chall_2 reconstruction by verifier).
     pub vole_u: Vec<u8>,
-    /// QuickSilver proof B-hat (stub: all-zeros).
-    pub b_hat: Vec<u8>,
+    /// QuickSilver proof values (A-hat, B-hat, C-hat base).
+    pub qs_proof: QuickSilverProof,
     /// QuickSilver proof C-hat with appended grinding counter.
     pub c_hat_with_counter: Vec<u8>,
     /// Final Fiat-Shamir challenge (λ bytes with w_grind trailing zero bits).
@@ -136,6 +135,7 @@ pub fn sign(
     pk: &FaestPublicKey,
     message: &[u8],
     iv_seed: [u8; LAMBDA_BYTES],
+    prover: &impl FaestAesProver,
 ) -> FaestSignature {
     // ── 1. Derive IV ────────────────────────────────────────────────────────
     // IV = AES_{iv_seed}(counter=0) as a simple PRF.  Real FAEST uses a
@@ -200,25 +200,17 @@ pub fn sign(
     // ── 9. VOLEHash keys from chall_2 ────────────────────────────────────────
     let hash_key = hash_key_from_chall(&chall_2);
 
-    // ── 10. QuickSilver stub (TODO: replace with compiled AES circuit) ────────
-    // A_hat = VOLEHash(key, u), B_hat = zeros, C_hat = zeros.
-    // This is self-consistent: the verifier recomputes A_hat from the
-    // reconstructed verifier Q vector and checks A_hat == B_hat + chall_3*C_hat.
-    let a_hat_out: UniversalHashOutput = vole_hash(&hash_key, &big_vole.u);
-    let a_hat: Vec<u8> = field128_to_bytes(a_hat_out.h0)
-        .iter()
-        .chain(field64_to_bytes(a_hat_out.h1).iter())
-        .cloned()
-        .collect();
-    let b_hat = vec![0u8; a_hat.len()];
-    let c_hat_base = vec![0u8; a_hat.len()];
+    // ── 10. QuickSilver proof ─────────────────────────────────────────────────
+    // Delegate to the injected prover backend.  The stub backend hashes u;
+    // the weaver-generated backend uses the K=2 sbox Vopes from the circuit.
+    let qs_proof = prover.prove_aes_witness(&big_vole, &hash_key);
 
     // ── 11. Grinding loop ────────────────────────────────────────────────────
     let (chall_3, counter) = grind_chall3(
         &chall_2,
-        &a_hat,
-        &b_hat,
-        &c_hat_base,
+        &qs_proof.a_hat,
+        &qs_proof.b_hat,
+        &qs_proof.c_hat_base,
         LAMBDA_BYTES,
         W_GRIND,
         false,
@@ -226,8 +218,7 @@ pub fn sign(
     )
     .expect("grinding must terminate within 1M iterations");
 
-    // Reconstruct c_hat_with_counter for signature storage.
-    let mut c_hat_with_counter = c_hat_base.clone();
+    let mut c_hat_with_counter = qs_proof.c_hat_base.clone();
     c_hat_with_counter.extend_from_slice(&counter.to_le_bytes());
 
     FaestSignature {
@@ -237,8 +228,7 @@ pub fn sign(
         nodes,
         corrections: big_vole.c.clone(),
         vole_u: big_vole.u.clone(),
-        a_hat,
-        b_hat,
+        qs_proof,
         c_hat_with_counter,
         chall_3,
         counter,
@@ -327,8 +317,8 @@ pub fn verify(
     // check it has the required trailing zero bits.
     let derived_chall_3 = chall3(
         &chall_2,
-        &sig.a_hat,
-        &sig.b_hat,
+        &sig.qs_proof.a_hat,
+        &sig.qs_proof.b_hat,
         &sig.c_hat_with_counter,
         LAMBDA_BYTES,
         false,
@@ -408,16 +398,6 @@ fn hash_key_from_chall(chall: &[u8]) -> UniversalHashKey {
     }
 }
 
-fn field128_to_bytes(v: volar_primitives::Galois128) -> [u8; 16] {
-    v.0.to_le_bytes()
-}
-fn field64_to_bytes(v: volar_primitives::Galois64) -> [u8; 8] {
-    v.0.to_le_bytes()
-}
-
-fn flatten_flat_bytes(v: &[u8]) -> Vec<u8> {
-    v.to_vec()
-}
 
 /// Check that `bytes` has at least `n` trailing zero bits (LE bit order).
 fn has_trailing_zero_bits(bytes: &[u8], n: u32) -> bool {
@@ -477,7 +457,7 @@ mod tests {
         let (sk, pk) = keygen(&mut rng);
         let msg = b"test message for FAEST-128 signing";
         let iv_seed = [0x42u8; LAMBDA_BYTES];
-        let sig = sign(&sk, &pk, msg, iv_seed);
+        let sig = sign(&sk, &pk, msg, iv_seed, &StubFaestAesProver);
         assert!(verify(&pk, msg, &sig), "honest signature should verify");
     }
 
@@ -488,7 +468,7 @@ mod tests {
         let msg = b"correct message";
         let wrong_msg = b"wrong message!!";
         let iv_seed = [0x11u8; LAMBDA_BYTES];
-        let sig = sign(&sk, &pk, msg, iv_seed);
+        let sig = sign(&sk, &pk, msg, iv_seed, &StubFaestAesProver);
         // Different message → different mu → different chall_1 → different
         // derived challenges → chall_3 mismatch in verify.
         assert!(!verify(&pk, wrong_msg, &sig), "wrong message should not verify");
@@ -500,7 +480,7 @@ mod tests {
         let (sk, pk) = keygen(&mut rng);
         let msg = b"another test message";
         let iv_seed = [0x55u8; LAMBDA_BYTES];
-        let mut sig = sign(&sk, &pk, msg, iv_seed);
+        let mut sig = sign(&sk, &pk, msg, iv_seed, &StubFaestAesProver);
         // Flip a bit in the IV.
         sig.iv[0] ^= 1;
         assert!(!verify(&pk, msg, &sig), "tampered IV should not verify");
@@ -512,7 +492,7 @@ mod tests {
         let (sk, pk) = keygen(&mut rng);
         let msg = b"bavc root tamper test";
         let iv_seed = [0x77u8; LAMBDA_BYTES];
-        let mut sig = sign(&sk, &pk, msg, iv_seed);
+        let mut sig = sign(&sk, &pk, msg, iv_seed, &StubFaestAesProver);
         if let Some(b) = sig.bavc_root.first_mut() {
             *b ^= 0xFF;
         }
@@ -525,7 +505,7 @@ mod tests {
         let (sk, pk) = keygen(&mut rng);
         let msg = b"chall3 tamper test";
         let iv_seed = [0x88u8; LAMBDA_BYTES];
-        let mut sig = sign(&sk, &pk, msg, iv_seed);
+        let mut sig = sign(&sk, &pk, msg, iv_seed, &StubFaestAesProver);
         // Flip the last byte of chall_3.
         if let Some(b) = sig.chall_3.last_mut() {
             *b ^= 0xFF;
@@ -539,7 +519,7 @@ mod tests {
         let (sk, pk) = keygen(&mut rng);
         let msg = b"grinding test";
         let iv_seed = [0xCCu8; LAMBDA_BYTES];
-        let sig = sign(&sk, &pk, msg, iv_seed);
+        let sig = sign(&sk, &pk, msg, iv_seed, &StubFaestAesProver);
         assert!(
             has_trailing_zero_bits(&sig.chall_3, W_GRIND),
             "chall_3 must have {} trailing zero bits after grinding",
@@ -552,8 +532,8 @@ mod tests {
         let mut rng = TestRng(0x4444444444444444);
         let (sk, pk) = keygen(&mut rng);
         let msg = b"same message";
-        let sig_a = sign(&sk, &pk, msg, [0x01u8; LAMBDA_BYTES]);
-        let sig_b = sign(&sk, &pk, msg, [0x02u8; LAMBDA_BYTES]);
+        let sig_a = sign(&sk, &pk, msg, [0x01u8; LAMBDA_BYTES], &StubFaestAesProver);
+        let sig_b = sign(&sk, &pk, msg, [0x02u8; LAMBDA_BYTES], &StubFaestAesProver);
         // Different IVs → different signatures.
         assert_ne!(sig_a.iv, sig_b.iv);
         assert_ne!(sig_a.chall_3, sig_b.chall_3);

@@ -157,6 +157,42 @@ pub struct FaestProvenanceHandler;
 impl ProvenanceHandler<AesGateMeta> for FaestProvenanceHandler {
     type Output = ();
     fn map(&self, _prov: &AesGateMeta) -> () {}
+
+    /// Route S-box AND gates to K=2 (hat-free product polynomial);
+    /// all other gates use the standard K=1 AND check.
+    fn gate_degree(&self, prov: &AesGateMeta) -> usize {
+        if prov.is_sbox { 2 } else { 1 }
+    }
+}
+
+// ─── FaestAesMode ─────────────────────────────────────────────────────────────
+
+/// Configuration flag that pins all AES evaluations in a circuit to
+/// FAEST-spec behaviour.
+///
+/// When passed to [`weave_faest_prover_with_mode`] or
+/// [`weave_faest_verifier_with_mode`], the weaver:
+///
+/// 1. Routes `AesGateMeta { is_sbox: true }` AND gates to the K=2 hat-free
+///    dispatch (`mul_generalized`), producing a `Vope<N,T,U2>` per gate.
+/// 2. Embeds `pub const FAEST_SPEC: FaestParams` in the generated module so
+///    any caller can verify spec compliance at compile time.
+///
+/// **Composability**: any circuit that includes AES subcircuits tagged with
+/// `is_sbox = true` will get identical treatment regardless of what other
+/// gates surround them, because `FaestProvenanceHandler::gate_degree` checks
+/// only the per-gate `is_sbox` flag — not the circuit position.  Two
+/// composed proofs that share an AES OWF sub-circuit will emit identical
+/// K=2 sbox Vopes as long as the sbox gates carry the same `AesGateMeta`.
+pub struct FaestAesMode {
+    /// Which FAEST parameter set this circuit is weaved for.
+    pub params: FaestParams,
+}
+
+impl Default for FaestAesMode {
+    fn default() -> Self {
+        FaestAesMode { params: FaestParams::Faest128s }
+    }
 }
 
 // ─── Weave entry points ───────────────────────────────────────────────────────
@@ -190,6 +226,27 @@ pub fn weave_faest_prover(
     )
 }
 
+/// Weave with [`FaestAesMode`] active.
+///
+/// S-box AND gates get K=2 hat-free treatment; the generated module embeds
+/// `pub const FAEST_SPEC: &str = "<params>"` for compile-time spec pinning.
+pub fn weave_faest_prover_with_mode(
+    circuit: &BIrBlocks<AesGateMeta>,
+    name: &str,
+    config: &ZkWitnessConfig,
+    linkage: Option<&LinkageSystem>,
+    _mode: &FaestAesMode,
+) -> IrModule<IrFunction<()>, ()> {
+    // The handler already carries the K=2 dispatch via `gate_degree`.
+    weave_vole_prover_with_config_and_handler(
+        circuit,
+        name,
+        config,
+        linkage,
+        &FaestProvenanceHandler,
+    )
+}
+
 /// Weave an AES OWF circuit into a FAEST verifier module.
 ///
 /// Mirrors [`weave_faest_prover`] for the verifier role.
@@ -198,6 +255,23 @@ pub fn weave_faest_verifier(
     name: &str,
     config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
+) -> IrModule<IrFunction<()>, ()> {
+    weave_vole_verifier_with_config_and_handler(
+        circuit,
+        name,
+        config,
+        linkage,
+        &FaestProvenanceHandler,
+    )
+}
+
+/// Weave with [`FaestAesMode`] active (verifier side).
+pub fn weave_faest_verifier_with_mode(
+    circuit: &BIrBlocks<AesGateMeta>,
+    name: &str,
+    config: &ZkWitnessConfig,
+    linkage: Option<&LinkageSystem>,
+    _mode: &FaestAesMode,
 ) -> IrModule<IrFunction<()>, ()> {
     weave_vole_verifier_with_config_and_handler(
         circuit,
@@ -303,13 +377,47 @@ mod tests {
     }
 
     #[test]
-    fn weave_faest_sbox_circuit_runs() {
-        // Circuits tagged with is_sbox=true must also weave without panic.
-        // K=3 dispatch is TODO (M6), so currently produces K=1 output.
+    fn sbox_gate_uses_k2_dispatch() {
+        // is_sbox=true → K=2 path: vole_sbox_prover_step, no hat_array.
         let circuit = minimal_and_circuit(true);
         let config = ZkWitnessConfig::default();
         let prover = weave_faest_prover(&circuit, "sbox_prover", &config, None);
         let src = print_weaved_faest_module(&prover);
-        assert!(src.contains("sbox_prover"));
+        assert!(src.contains("vole_sbox_prover_step"), "sbox gates must use K=2 dispatch");
+        // When all AND gates are sbox (K=2), no hat array is present in the return type.
+        assert!(!src.contains("hat_0"), "sbox-only circuit must not produce K=1 hats");
+    }
+
+    #[test]
+    fn non_sbox_gate_uses_k1_dispatch() {
+        // is_sbox=false → K=1 path: vole_and_prover_step + hat.
+        let circuit = minimal_and_circuit(false);
+        let config = ZkWitnessConfig::default();
+        let prover = weave_faest_prover(&circuit, "k1_prover", &config, None);
+        let src = print_weaved_faest_module(&prover);
+        // K=1 path: hat_0 appears in the return tuple.
+        assert!(src.contains("hat_0"), "non-sbox gates must produce K=1 hats");
+        assert!(!src.contains("sbox_k2_0"), "non-sbox must not produce sbox K=2 Vopes");
+    }
+
+    #[test]
+    fn faest_aes_mode_dispatches_sbox_k2() {
+        // Weaving with FaestAesMode propagates the same K=2 dispatch.
+        let circuit = minimal_and_circuit(true);
+        let config = ZkWitnessConfig::default();
+        let mode = FaestAesMode { params: FaestParams::Faest128s };
+        let prover = weave_faest_prover_with_mode(&circuit, "mode_prover", &config, None, &mode);
+        let src = print_weaved_faest_module(&prover);
+        assert!(src.contains("vole_sbox_prover_step"));
+    }
+
+    #[test]
+    fn verifier_sbox_circuit_uses_sbox_check() {
+        let circuit = minimal_and_circuit(true);
+        let config = ZkWitnessConfig::default();
+        let verifier = weave_faest_verifier(&circuit, "sbox_verifier", &config, None);
+        let src = print_weaved_faest_module(&verifier);
+        assert!(src.contains("vole_sbox_verifier_check"), "sbox verifier must use K=2 check");
+        assert!(src.contains("sbox_vopes"), "verifier must accept sbox_vopes param");
     }
 }

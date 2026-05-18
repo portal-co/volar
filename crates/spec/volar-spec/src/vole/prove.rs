@@ -88,6 +88,58 @@ where
     (Q { q: q_and.q.clone() }, ok)
 }
 
+/// Prover step for a K=2 S-box AND gate: `c = a AND b`.
+///
+/// Returns `(vope_c_k1, vope_c_k2)`:
+/// - `vope_c_k1`: K=1 wire to use in downstream gates (same wire value as K=1 AND).
+/// - `vope_c_k2`: K=2 hat-free product commitment sent to the verifier.
+///
+/// The K=2 Vope satisfies `K_{c}(Δ) = K_a(Δ)·K_b(Δ)` exactly — no hat
+/// correction is needed.  The verifier reconstructs `Q_c = K_c(Δ)` by
+/// evaluating the K=2 Vope at Δ and checks `Q_a·Q_b == Q_c`.
+pub fn vole_sbox_prover_step<N, T>(
+    vope_a: Vope<N, T, U1>,
+    vope_b: Vope<N, T, U1>,
+) -> (Vope<N, T, U1>, Vope<N, T, U2>)
+where
+    N: VoleArray<T>,
+    T: Add<Output = T> + Mul<Output = T> + Default + Clone,
+{
+    // K=2 product: v_k2 = v_a·v_b, u_k2[0] = v_a·u_b+u_a·v_b, u_k2[1] = u_a·u_b
+    let k2: Vope<N, T, U2> = vope_a.mul_generalized(&vope_b);
+
+    // Extract K=1 downstream wire: v_k1 = u_k2[0], u_k1[0] = u_k2[1]
+    let k1 = Vope::<N, T, U1> {
+        u: Array::<Array<T, N>, U1>::from_fn(|_| k2.u[1].clone()),
+        v: k2.u[0].clone(),
+    };
+    (k1, k2)
+}
+
+/// Verifier check for a K=2 S-box AND gate.
+///
+/// Given the prover-supplied K=2 Vope, evaluates it at `Δ` to get `Q_c` and
+/// checks `Q_a · Q_b == Q_c`.  No hat correction is needed.
+///
+/// Returns `(Q_c, ok)`.
+pub fn vole_sbox_verifier_check<N, T>(
+    delta: &Delta<N, T>,
+    q_a: &Q<N, T>,
+    q_b: &Q<N, T>,
+    vope_k2: Vope<N, T, U2>,
+) -> (Q<N, T>, bool)
+where
+    N: VoleArray<T>,
+    T: Clone + Add<Output = T> + Mul<Output = T> + PartialEq + Default + Into<T>,
+{
+    let q_c = vope_k2 * delta.clone(); // eval K=2 Vope at Δ → Q
+    let mut ok = true;
+    for i in 0..N::USIZE {
+        ok = ok && (q_a.q[i].clone() * q_b.q[i].clone() == q_c.q[i]);
+    }
+    (q_c, ok)
+}
+
 /// Prover step for a degree-3 product gate: `c = a · b · d`.
 ///
 /// Produces a `Vope<N, T, U3>` whose polynomial in Δ equals
