@@ -58,6 +58,7 @@ pub use volar_provenance::{ProvenanceHandler, NoProvenance, KeepProvenance, MapP
 pub mod garble;
 pub mod vole;
 pub(crate) mod vole_common;
+pub mod faest;
 pub mod grafhen;
 pub mod fhe;
 pub mod oram;
@@ -102,6 +103,12 @@ pub use vole::{
 pub use grafhen::{
     print_grafhen_module,
     weave_grafhen, weave_grafhen_with_handler,
+};
+
+pub use faest::{
+    weave_faest_prover, weave_faest_verifier,
+    print_weaved_faest_module,
+    AesGateMeta, FaestParams, FaestProvenanceHandler,
 };
 
 pub use fhe::{
