@@ -745,9 +745,15 @@ pub fn print_module_ts_with_imports(
 
     let witness_map = build_module_witness_map(&module);
     let erased = collect_erased_type_params(&module);
+    let tuple_structs: std::collections::HashSet<String> = module.structs.iter()
+        .filter(|s| s.is_tuple)
+        .map(|s| s.kind.to_string())
+        .collect();
     let cx = TsContext {
         witness_map: &witness_map,
         erased_type_params: erased,
+        self_type: None,
+        tuple_structs: &tuple_structs,
     };
     let mut out = String::new();
     // ESM imports for remote specs
@@ -809,9 +815,15 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
 
     let witness_map = build_module_witness_map(&flat);
     let erased = collect_erased_type_params(&flat);
+    let tuple_structs_flat: std::collections::HashSet<String> = flat.structs.iter()
+        .filter(|s| s.is_tuple)
+        .map(|s| s.kind.to_string())
+        .collect();
     let cx = TsContext {
         witness_map: &witness_map,
         erased_type_params: erased,
+        self_type: None,
+        tuple_structs: &tuple_structs_flat,
     };
 
     // Reassemble the CFG module with deshadowed auxiliary functions.
@@ -879,6 +891,21 @@ struct TsContext<'a> {
     /// Type parameter names that have been erased (Fn-bounded, AsRef-bounded, etc.)
     /// and should be printed as `any` in type positions.
     erased_type_params: Vec<String>,
+    /// Class name in scope when emitting inside a class body. `Self` maps to `this`.
+    self_type: Option<String>,
+    /// Struct names that are tuple structs — their constructors use positional `new T(x)` syntax.
+    tuple_structs: &'a std::collections::HashSet<String>,
+}
+
+impl<'a> TsContext<'a> {
+    fn with_self_type(&self, name: &str) -> TsContext<'a> {
+        TsContext {
+            witness_map: self.witness_map,
+            erased_type_params: self.erased_type_params.clone(),
+            self_type: Some(name.to_string()),
+            tuple_structs: self.tuple_structs,
+        }
+    }
 }
 
 /// Collect type parameter names that are erased in TS (Fn-bounded, AsRef-bounded)
@@ -1186,10 +1213,19 @@ impl TsBackend for TsPreambleWriter {
         writeln!(f, "  asRefU8,")?;
         writeln!(f, "}} from \"./index\";")?;
         writeln!(f)?;
-        // Type aliases for Rust types that map to TypeScript equivalents.
+        // Canonical Option/Result classes.
+        writeln!(f, "class Some<T> {{ constructor(public _0: T) {{}} }}")?;
+        writeln!(f, "class Ok<T> {{ constructor(public _0: T) {{}} }}")?;
+        writeln!(f, "class Err<E = unknown> {{ constructor(public _0: E) {{}} }}")?;
         writeln!(f, "type Vec<T> = T[];")?;
         writeln!(f, "type Option<T> = T | undefined;")?;
-        writeln!(f, "type Result<T, _E = unknown> = T;")?;
+        writeln!(f, "type Result<T, E = unknown> = T;")?;
+        // Minimal-runtime clone: spread arrays, shallow-copy objects with prototype.
+        writeln!(f, "function __clone<T>(x: T): T {{")?;
+        writeln!(f, "  if (Array.isArray(x)) return ([...x] as unknown) as T;")?;
+        writeln!(f, "  if (x !== null && typeof x === 'object') return Object.assign(Object.create(Object.getPrototypeOf(x)), x) as T;")?;
+        writeln!(f, "  return x;")?;
+        writeln!(f, "}}")?;
         writeln!(f)?;
         Ok(())
     }
@@ -1302,7 +1338,7 @@ impl<'a> TsBackend for TsClassWriter<'a> {
         .ts_fmt(f, cx)?;
         writeln!(f, " {{")?;
 
-        // Constructor with non-phantom fields — takes an initializer object
+        // Constructor with non-phantom fields
         let fields: Vec<&IrField> = self
             .s
             .fields
@@ -1310,7 +1346,7 @@ impl<'a> TsBackend for TsClassWriter<'a> {
             .filter(|field| !is_phantom_field(field))
             .collect();
 
-        // Declare fields with definite assignment assertion (assigned via Object.assign)
+        // Declare fields with definite assignment assertion
         for (idx, field) in fields.iter().enumerate() {
             let ts_name = ts_field_name(&field.name, idx);
             write!(f, "  {}!: ", ts_name)?;
@@ -1318,20 +1354,52 @@ impl<'a> TsBackend for TsClassWriter<'a> {
             writeln!(f, ";")?;
         }
         writeln!(f)?;
-        writeln!(f, "  constructor(init: {{ ")?;
-        for (i, field) in fields.iter().enumerate() {
-            let ts_name = ts_field_name(&field.name, i);
-            let comma = if i + 1 < fields.len() { "," } else { "" };
-            write!(f, "    {}: ", ts_name)?;
-            TsTypeWriter { ty: &field.ty }.ts_fmt(f, cx)?;
-            writeln!(f, "{}", comma)?;
+
+        if self.s.is_tuple {
+            // Tuple struct: positional constructor  new Foo(val)
+            write!(f, "  constructor(")?;
+            for (i, field) in fields.iter().enumerate() {
+                if i > 0 { write!(f, ", ")?; }
+                let ts_name = ts_field_name(&field.name, i);
+                write!(f, "{}: ", ts_name)?;
+                TsTypeWriter { ty: &field.ty }.ts_fmt(f, cx)?;
+            }
+            writeln!(f, ") {{")?;
+            for (i, field) in fields.iter().enumerate() {
+                let ts_name = ts_field_name(&field.name, i);
+                writeln!(f, "    this.{} = {};", ts_name, ts_name)?;
+            }
+            writeln!(f, "  }}")?;
+        } else {
+            // Named struct: object-initializer constructor  new Foo({ field: val })
+            writeln!(f, "  constructor(init: {{ ")?;
+            for (i, field) in fields.iter().enumerate() {
+                let ts_name = ts_field_name(&field.name, i);
+                let comma = if i + 1 < fields.len() { "," } else { "" };
+                write!(f, "    {}: ", ts_name)?;
+                TsTypeWriter { ty: &field.ty }.ts_fmt(f, cx)?;
+                writeln!(f, "{}", comma)?;
+            }
+            writeln!(f, "  }}) {{")?;
+            writeln!(f, "    Object.assign(this, init);")?;
+            writeln!(f, "  }}")?;
         }
-        writeln!(f, "  }}) {{")?;
-        writeln!(f, "    Object.assign(this, init);")?;
-        writeln!(f, "  }}")?;
 
         // Run analysis to detect overlapping methods
         let analysis = analyze_class_impls(self.impls);
+        // Build `ClassName<T, U>` string for Self references in method bodies.
+        let self_type_str = {
+            let type_params: Vec<&str> = self.s.generics.iter()
+                .filter(|g| g.kind == IrGenericParamKind::Type)
+                .map(|g| g.name.as_str())
+                .collect();
+            if type_params.is_empty() {
+                name.clone()
+            } else {
+                format!("{}<{}>", name, type_params.join(", "))
+            }
+        };
+        let cx_class = cx.with_self_type(&self_type_str);
 
         // Emit unique methods
         let class_name = name.clone();
@@ -1347,7 +1415,7 @@ impl<'a> TsBackend for TsClassWriter<'a> {
                 indent: 1,
                 witness_needs: needs,
             }
-            .ts_fmt(f, cx)?;
+            .ts_fmt(f, &cx_class)?;
         }
 
         // Emit merged methods (runtime dispatch)
@@ -1369,7 +1437,7 @@ impl<'a> TsBackend for TsClassWriter<'a> {
                 indent: 1,
                 witness_needs: &needs,
             }
-            .ts_fmt(f, cx)?;
+            .ts_fmt(f, &cx_class)?;
         }
 
         writeln!(f, "}}")?;
@@ -1396,6 +1464,24 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
         let name = ts_method_name(&self.func.name, self.imp.trait_.as_ref());
 
         let is_static = self.func.receiver.is_none();
+        // Static members cannot reference class type parameters, so strip generics from self_type.
+        let cx_static;
+        let cx = if is_static {
+            if let Some(self_ty) = &cx.self_type {
+                let bare = self_ty.split('<').next().unwrap_or(self_ty).to_string();
+                cx_static = TsContext {
+                    witness_map: cx.witness_map,
+                    erased_type_params: cx.erased_type_params.clone(),
+                    self_type: Some(bare),
+                    tuple_structs: cx.tuple_structs,
+                };
+                &cx_static
+            } else {
+                cx
+            }
+        } else {
+            cx
+        };
         if is_static {
             write!(f, "{}static {}", ind, name)?;
         } else {
@@ -1728,7 +1814,11 @@ impl<'a> TsBackend for TsTypeWriter<'a> {
             }
             IrType::TypeParam(p) => {
                 if p == "Self" {
-                    write!(f, "any")?;
+                    if let Some(name) = &cx.self_type {
+                        write!(f, "{}", name)?;
+                    } else {
+                        write!(f, "any")?;
+                    }
                 } else if cx.erased_type_params.contains(p) {
                     write!(f, "any")?;
                 } else {
@@ -2061,25 +2151,53 @@ impl<'a> TsBackend for TsExprWriter<'a> {
             IrExpr::Call { func, args } => {
                 // Check for Some(x)/None via Path or Var
                 if let IrExpr::Path { segments, .. } = func.as_ref() {
-                    if segments.len() == 1 && segments[0] == "Some" && args.len() == 1 {
-                        return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
-                    }
-                    if segments.len() == 1 && segments[0] == "None" && args.is_empty() {
-                        return write!(f, "undefined");
+                    if segments.len() == 1 {
+                        let name = &segments[0];
+                        match name.as_str() {
+                            "Some" if args.len() == 1 => {
+                                // Transparent: Some(x) = x (None = undefined)
+                                return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
+                            }
+                            "None" if args.is_empty() => return write!(f, "undefined"),
+                            "Ok" if args.len() == 1 => {
+                                return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
+                            }
+                            "Err" if args.len() == 1 => {
+                                return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
+                            }
+                            _ if is_primitive_class(name) || cx.tuple_structs.contains(name.as_str()) => {
+                                write!(f, "new {}(", name)?;
+                                for (i, arg) in args.iter().enumerate() {
+                                    if i > 0 { write!(f, ", ")?; }
+                                    TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+                                }
+                                return write!(f, ")");
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 if let IrExpr::Var(v) = func.as_ref() {
-                    if v == "Some" && args.len() == 1 {
-                        return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
+                    match v.as_str() {
+                        "Some" if args.len() == 1 => {
+                            return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
+                        }
+                        "None" if args.is_empty() => return write!(f, "undefined"),
+                        "Ok" if args.len() == 1 => {
+                            return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
+                        }
+                        "Err" if args.len() == 1 => {
+                            return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
+                        }
+                        _ => {}
                     }
-                    if v == "None" && args.is_empty() {
-                        return write!(f, "undefined");
-                    }
-                    // Tuple struct constructors → new ClassName(init)
-                    // Bit(x), BitsInBytes(x), etc. are tuple structs
-                    if is_primitive_class(v) && args.len() == 1 {
+                    // Tuple struct constructors → new ClassName(args...)
+                    if is_primitive_class(v) || cx.tuple_structs.contains(v.as_str()) {
                         write!(f, "new {}(", v)?;
-                        TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+                        for (i, arg) in args.iter().enumerate() {
+                            if i > 0 { write!(f, ", ")?; }
+                            TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+                        }
                         return write!(f, ")");
                     }
                 }
@@ -2177,7 +2295,13 @@ impl<'a> TsBackend for TsExprWriter<'a> {
             IrExpr::StructExpr { kind, fields, .. } => {
                 // Strip Rust module prefixes (super::, crate::, self::) from type names.
                 let raw = kind.to_string();
-                let name = raw.rsplit("::").next().unwrap_or(raw.as_str()).to_string();
+                let base = raw.rsplit("::").next().unwrap_or(raw.as_str());
+                // `Self` in a struct expression → the current class name.
+                let name = if base == "Self" {
+                    cx.self_type.as_deref().unwrap_or("Self").to_string()
+                } else {
+                    base.to_string()
+                };
                 let real_fields: Vec<&(String, IrExpr)> = fields
                     .iter()
                     .filter(|(n, _)| !n.starts_with("_phantom"))
@@ -2640,7 +2764,7 @@ fn emit_known_method_call(
             write!(f, ")")
         }
         StdMethod::Clone if args.is_empty() => {
-            write!(f, "structuredClone(")?;
+            write!(f, "__clone(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ")")
         }
@@ -2663,6 +2787,7 @@ fn emit_known_method_call(
             write!(f, ")")
         }
         StdMethod::Get if args.len() == 1 => {
+            // arr.get(j) → optional chaining, returns T | undefined
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, "?.[")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
@@ -2676,13 +2801,12 @@ fn emit_known_method_call(
         StdMethod::Unwrap if args.is_empty() => {
             write!(f, "(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, " ?? 0)")
+            write!(f, ")!")
         }
-        // expect("msg") → unwrap with the message as a comment (runtime panics not modelled in TS)
         StdMethod::Expect if args.len() == 1 => {
             write!(f, "(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, "!)") // non-null assertion
+            write!(f, ")!")
         }
         StdMethod::MapOr if args.len() == 2 => {
             // Option.map_or(default, f) → (x != null ? f(x) : default)
@@ -3016,6 +3140,30 @@ fn emit_other_method_call(
          emit_other_method_call; use MethodKind::Known(StdMethod::…) so the \
          TypeScript backend can apply the correct translation"
     );
+    // Option/Result query methods
+    match name {
+        "is_some" => {
+            write!(f, "(")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            return write!(f, ") != null");
+        }
+        "is_none" => {
+            write!(f, "(")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            return write!(f, ") == null");
+        }
+        "is_ok" => {
+            write!(f, "(")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            return write!(f, ") instanceof Ok");
+        }
+        "is_err" => {
+            write!(f, "(")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            return write!(f, ") instanceof Err");
+        }
+        _ => {}
+    }
     // Numeric literals need parens before method access in JS/TS (e.g. `(1).method()`).
     let needs_parens = matches!(receiver, IrExpr::Lit(IrLit::Int(_) | IrLit::Float(_)));
     if needs_parens { write!(f, "(")?; }
@@ -3052,9 +3200,6 @@ fn emit_path(segments: &[String], f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[]")
     } else if segs.len() == 2 && segs[0] == "Vec" && segs[1] == "with_capacity" {
         write!(f, "/* Vec::with_capacity */ Array")
-    } else if segs.len() == 1 && segs[0] == "Some" {
-        // Option::Some(x) → x (TS uses `T | undefined`)
-        write!(f, "")
     } else if segs.len() == 1 && segs[0] == "None" {
         write!(f, "undefined")
     } else if segs.is_empty() {
@@ -3541,7 +3686,8 @@ fn ts_pattern_condition(
         IrPattern::Ident { .. } | IrPattern::Wild => write!(f, "true"),
         IrPattern::TupleStruct { kind, .. } => {
             let name = kind.to_string();
-            match name.rsplit("::").next().unwrap_or(&name) {
+            let variant = name.rsplit("::").next().unwrap_or(&name);
+            match variant {
                 "Some" | "Ok" => {
                     write!(f, "{} !== null && {} !== undefined", match_var, match_var)
                 }
@@ -3571,11 +3717,30 @@ fn ts_emit_pattern_bindings(
             let kw = if *mutable { "let" } else { "const" };
             writeln!(f, "{} {} = {};", kw, escape_ts_reserved(name), match_var)
         }
-        IrPattern::TupleStruct { kind: _, elems } => {
-            // For Some(s)/Ok(v): bind inner element to the whole match_var
-            // (TypeScript has no Option wrapping; `Some(x)` is just `x`)
+        IrPattern::TupleStruct { kind, elems } => {
+            let name = kind.to_string();
+            let variant = name.rsplit("::").next().unwrap_or(&name);
+            // For Some/None/Ok/Err (transparent): bind inner directly to match_var.
+            // For user-defined tuple structs: access ._0, ._1 etc.
+            // For imported primitive classes: also bind directly (they may not have ._0 declared).
+            let transparent = matches!(variant, "Some" | "Ok" | "Err" | "None")
+                || is_primitive_class(variant);
             if elems.len() == 1 {
-                ts_emit_pattern_bindings(&elems[0], match_var, f)?;
+                let field = if transparent {
+                    match_var.to_string()
+                } else {
+                    format!("{}._0", match_var)
+                };
+                ts_emit_pattern_bindings(&elems[0], &field, f)?;
+            } else {
+                for (i, elem) in elems.iter().enumerate() {
+                    let field = if transparent {
+                        format!("{}[{}]", match_var, i)
+                    } else {
+                        format!("{}._{}",  match_var, i)
+                    };
+                    ts_emit_pattern_bindings(elem, &field, f)?;
+                }
             }
             Ok(())
         }

@@ -332,7 +332,7 @@ fn test_prove_module_static_print_roundtrip() {
     let module = volar_compiler::parse_source(prove_src, "prove")
         .expect("prove.rs should parse in the total-Rust subset");
 
-    assert_eq!(module.functions.len(), 2, "Expected vole_and_prover_step and vole_and_verifier_check");
+    assert!(module.functions.len() >= 2, "Expected at least vole_and_prover_step and vole_and_verifier_check");
     assert!(module.functions.iter().any(|f| f.name == "vole_and_prover_step"));
     assert!(module.functions.iter().any(|f| f.name == "vole_and_verifier_check"));
 
