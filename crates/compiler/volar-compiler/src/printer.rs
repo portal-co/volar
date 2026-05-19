@@ -1487,18 +1487,30 @@ pub fn print_module(module: &IrModule<IrFunction>) -> String {
 
 /// Render a module with the standard preamble plus data-driven dependency imports.
 pub fn print_module_with_deps(module: &IrModule<IrFunction>, deps: &[crate::manifest::TypeManifest]) -> String {
+    print_module_with_remotes(module, deps, &[])
+}
+
+/// Render a module with manifest deps **and** remote-linked spec imports.
+///
+/// `remotes` is typically obtained from [`LinkageSystem::remote_refs`].
+pub fn print_module_with_remotes(
+    module: &IrModule<IrFunction>,
+    deps: &[crate::manifest::TypeManifest],
+    remotes: &[crate::linkage::RemoteSpecRef<'_>],
+) -> String {
     let mut out = String::new();
-    let _ = write!(out, "{}", DisplayRust(DynPreambleWriter { deps }));
+    let _ = write!(out, "{}", DisplayRust(DynPreambleWriter { deps, remotes }));
     let _ = write!(out, "{}", DisplayRust(ModuleWriter { module }));
     out
 }
 
 /// Data-driven preamble writer.
 ///
-/// Generates standard imports plus `pub use` statements for dependency
-/// types/traits based on manifests.
+/// Generates standard imports plus `pub use` statements for manifest deps and
+/// remote-linked specs.
 pub struct DynPreambleWriter<'a> {
     pub deps: &'a [crate::manifest::TypeManifest],
+    pub remotes: &'a [crate::linkage::RemoteSpecRef<'a>],
 }
 
 impl<'a> RustBackend for DynPreambleWriter<'a> {
@@ -1550,6 +1562,17 @@ impl<'a> RustBackend for DynPreambleWriter<'a> {
             }
         }
         if !self.deps.is_empty() {
+            writeln!(f)?;
+        }
+
+        // Remote spec re-exports (from LinkageSystem::remote_refs)
+        for remote in self.remotes {
+            let crate_ident = remote.rust_crate.replace('-', "_");
+            if !remote.type_names.is_empty() {
+                writeln!(f, "pub use {}::{{{}}};", crate_ident, remote.type_names.join(", "))?;
+            }
+        }
+        if !self.remotes.is_empty() {
             writeln!(f)?;
         }
 

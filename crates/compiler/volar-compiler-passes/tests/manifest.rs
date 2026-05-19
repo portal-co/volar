@@ -312,7 +312,7 @@ fn test_module_overrides_dep_struct() {
 
 #[test]
 fn test_preamble_no_deps_has_no_pub_use() {
-    let preamble = format!("{}", DisplayRust(DynPreambleWriter { deps: &[] }));
+    let preamble = format!("{}", DisplayRust(DynPreambleWriter { deps: &[], remotes: &[] }));
     assert!(
         !preamble.contains("pub use"),
         "no deps = no pub use statements"
@@ -332,7 +332,8 @@ fn test_preamble_with_primitives_dep() {
     let preamble = format!(
         "{}",
         DisplayRust(DynPreambleWriter {
-            deps: &[prim_manifest]
+            deps: &[prim_manifest],
+            remotes: &[],
         })
     );
 

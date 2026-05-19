@@ -720,6 +720,18 @@ fn collect_call_targets_chain(chain: &IrIterChain, targets: &mut Vec<String>) {
 /// bodies before emitting.  The deshadow pass turns Rust-legal `let x = f(x)`
 /// shadows into TS-legal `const x_1 = f(x)`.
 pub fn print_module_ts(module: &IrModule<IrFunction>) -> String {
+    print_module_ts_with_imports(module, &[])
+}
+
+/// Render an `IrModule` as TypeScript with ESM `import` statements for remote specs.
+///
+/// `remotes` is typically obtained from [`LinkageSystem::remote_refs`].
+/// Each remote entry emits one `import { TypeA, TypeB } from 'package'` line
+/// before the module body.
+pub fn print_module_ts_with_imports(
+    module: &IrModule<IrFunction>,
+    remotes: &[crate::linkage::RemoteSpecRef<'_>],
+) -> String {
     let mut module = module.clone();
     deshadow_module(&mut module);
 
@@ -730,9 +742,35 @@ pub fn print_module_ts(module: &IrModule<IrFunction>) -> String {
         erased_type_params: erased,
     };
     let mut out = String::new();
+    // ESM imports for remote specs
+    let _ = write!(out, "{}", TsImportsWriter { remotes });
     let _ = write!(out, "{}", TsFmt(TsPreambleWriter, &cx));
     let _ = write!(out, "{}", TsFmt(TsModuleWriter { module: &module }, &cx));
     out
+}
+
+/// Emits ESM `import` statements for remote-linked specs.
+struct TsImportsWriter<'a> {
+    remotes: &'a [crate::linkage::RemoteSpecRef<'a>],
+}
+
+impl<'a> fmt::Display for TsImportsWriter<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for remote in self.remotes {
+            if !remote.type_names.is_empty() {
+                writeln!(
+                    f,
+                    "import {{ {} }} from '{}';",
+                    remote.type_names.join(", "),
+                    remote.ts_package()
+                )?;
+            }
+        }
+        if !self.remotes.is_empty() {
+            writeln!(f)?;
+        }
+        Ok(())
+    }
 }
 
 /// Render an `IrCfgModule` as a complete TypeScript source file.

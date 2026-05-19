@@ -1,0 +1,13 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+description = "Build task runner for the volar workspace"
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[dependencies]
+volar-compiler = { path = "../crates/compiler/volar-compiler", features = ["parsing", "std"] }
+volar-compiler-passes = { path = "../crates/compiler/volar-compiler-passes" }

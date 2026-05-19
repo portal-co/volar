@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Fast typecheck ──────────────────────────────────────────────────────────
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --exclude xtask
+
+  # ── Full test suite ─────────────────────────────────────────────────────────
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --exclude xtask
+
+  # ── Generated-file freshness check ─────────────────────────────────────────
+  check-generated:
+    name: Check generated files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Regenerate derived specs
+        run: cargo xtask check-specs
+      - name: Fail if any generated file is stale
+        run: |
+          git diff --exit-code \
+            crates/compiler/volar-compiler/volar_ts_generated.ts \
+            crates/compiler/volar-compiler/volar_dyn_generated.rs \
+            crates/spec/volar-spec-dyn/src/generated.rs

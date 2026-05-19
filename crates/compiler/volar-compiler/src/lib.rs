@@ -31,6 +31,7 @@ pub mod deshadow;
 pub mod ir;
 pub mod linkage;
 pub mod manifest;
+pub mod multi_module;
 #[cfg(feature = "parsing")]
 pub mod parser;
 pub mod printer;
@@ -39,6 +40,7 @@ pub mod printer_ts;
 pub use ir::*;
 pub use linkage::*;
 pub use manifest::*;
+pub use multi_module::*;
 #[cfg(feature = "parsing")]
 pub use parser::*;
 pub use printer::*;
