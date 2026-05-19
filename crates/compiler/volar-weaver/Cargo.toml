@@ -10,6 +10,8 @@ repository.workspace = true
 # Enable parsing-based spec linkage (makes weave output self-contained).
 linking = ["volar-compiler/parsing"]
 rkyv = ["volar-compiler/rkyv"]
+# Enable the network-protocol weaving pass (volar_net::VoleTransport interface).
+net = ["dep:volar-net"]
 
 [dependencies]
 volar-compiler = {path="../volar-compiler"}
@@ -22,3 +24,4 @@ volar-lir-codegen = {path="../volar-lir-codegen"}
 volar-c-backend = {path="../volar-c-backend"}
 vaffle.workspace = true
 portal-pc-waffle-ir.workspace = true
+volar-net = { workspace = true, optional = true }

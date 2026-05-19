@@ -34,6 +34,7 @@ members = [
     "crates/oram/volar-oram",
     "crates/oram/volar-oram-core",
     "crates/macros/volar-macros",
+    "crates/net/volar-net",
 ]
 resolver = "3"
 
@@ -58,6 +59,7 @@ volar-channel = {path="crates/channel/volar-channel", version = "0.1.0"}
 volar-oram = {path="crates/oram/volar-oram", version = "0.1.0"}
 volar-oram-core = {path="crates/oram/volar-oram-core", version = "0.1.0"}
 volar-macros = {path="crates/macros/volar-macros", version = "0.1.0"}
+volar-net = {path="crates/net/volar-net", version = "0.1.0"}
 volar-compiler-passes = {path="crates/compiler/volar-compiler-passes", version = "0.1.0"}
 volar-lir-test-corpus = {path="crates/compiler/volar-lir-test-corpus", version = "0.1.0"}
 volar-lir-saved = {path="crates/compiler/volar-lir-saved", version = "0.1.0"}

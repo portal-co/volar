@@ -62,6 +62,8 @@ pub mod faest;
 pub mod grafhen;
 pub mod fhe;
 pub mod oram;
+#[cfg(feature = "net")]
+pub mod net;
 
 // Re-export the most commonly used public items from each submodule.
 pub use garble::{
@@ -109,6 +111,13 @@ pub use faest::{
     weave_faest_prover, weave_faest_verifier,
     print_weaved_faest_module,
     AesGateMeta, FaestParams, FaestProvenanceHandler,
+};
+
+#[cfg(feature = "net")]
+pub use net::{
+    weave_net_vole_prover, weave_net_vole_verifier,
+    weave_net_vole_prover_loop, weave_net_vole_verifier_loop,
+    print_net_vole_module, print_net_vole_cfg_module,
 };
 
 pub use fhe::{
@@ -371,6 +380,63 @@ pub(crate) mod tests_common {
              volar-primitives = {{ path = \"{root}/crates/spec/volar-primitives\" }}\n\
              volar-common = {{ path = \"{root}/crates/spec/volar-common\" }}\n\
              volar-macros = {{ path = \"{root}/crates/macros/volar-macros\" }}\n\
+             hybrid-array = \"0.4.8\"\n\
+             digest = {{ version = \"0.11.2\", default-features = false }}\n\
+             cipher = {{ version = \"0.5.1\", default-features = false }}\n\
+             rand = {{ version = \"0.9.2\", default-features = false }}\n\
+             typenum = {{ version = \"1.17\", default-features = false }}\n\
+             elliptic-curve = {{ version = \"0.13.8\", features = [\"arithmetic\"], default-features = false }}\n",
+            name = test_name,
+            root = root,
+        );
+
+        fs::write(tmpdir.join("Cargo.toml"), &cargo_toml).unwrap();
+        fs::write(srcdir.join("lib.rs"), code).unwrap();
+
+        let output = Command::new("cargo")
+            .args(["check", "--quiet"])
+            .current_dir(&tmpdir)
+            .env(
+                "CARGO_TARGET_DIR",
+                String::from(tmpdir.join("target").to_str().unwrap()),
+            )
+            .output()
+            .expect("failed to run cargo check");
+
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let _ = fs::remove_dir_all(&tmpdir);
+
+        if !output.status.success() {
+            panic!(
+                "Generated code failed to compile (test: {})\n--- code ---\n{}\n--- stderr ---\n{}",
+                test_name, code, stderr
+            );
+        }
+    }
+
+    /// Like [`run_compile_check`] but also adds `volar-net` as a dependency,
+    /// enabling generated code that uses `volar_net::VoleTransport`.
+    pub fn run_compile_check_net(code: &str, test_name: &str) {
+        let root = workspace_root();
+        let tmpdir = std::env::temp_dir().join(format!("volar_weaver_{}", test_name));
+        let srcdir = tmpdir.join("src");
+        fs::create_dir_all(&srcdir).unwrap();
+
+        let cargo_toml = std::format!(
+            "[package]\n\
+             name = \"weave-check-{name}\"\n\
+             version = \"0.1.0\"\n\
+             edition = \"2024\"\n\
+             \n\
+             [lib]\n\
+             path = \"src/lib.rs\"\n\
+             \n\
+             [dependencies]\n\
+             volar-spec = {{ path = \"{root}/crates/spec/volar-spec\" }}\n\
+             volar-primitives = {{ path = \"{root}/crates/spec/volar-primitives\" }}\n\
+             volar-common = {{ path = \"{root}/crates/spec/volar-common\" }}\n\
+             volar-macros = {{ path = \"{root}/crates/macros/volar-macros\" }}\n\
+             volar-net = {{ path = \"{root}/crates/net/volar-net\" }}\n\
              hybrid-array = \"0.4.8\"\n\
              digest = {{ version = \"0.11.2\", default-features = false }}\n\
              cipher = {{ version = \"0.5.1\", default-features = false }}\n\
