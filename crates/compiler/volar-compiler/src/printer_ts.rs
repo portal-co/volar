@@ -69,6 +69,10 @@ enum WitnessKind {
     Constructor { type_param: String },
     /// `T::default()` — produce the zero / identity element for a type param
     Default { type_param: String },
+    /// `T` used as a value (any static call `T::method()` or bare `T`).
+    /// The witness is the class constructor itself — `ctx.TClass`.
+    /// Unlike Constructor/Default, generics are preserved: `ctx.TClass: typeof Galois`.
+    Class { type_param: String },
 }
 
 /// The set of witnesses needed by one function (or one merged method).
@@ -148,26 +152,29 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
                 }
             }
         }
-        // Call to T::new() or T::default()
+        // Call to T::new(), T::default(), or any other T::method() on a type param
         IrExpr::Call { func, args } => {
             if let IrExpr::Path { segments, .. } = func.as_ref() {
                 if segments.len() == 2 {
                     let type_name = &segments[0];
                     let method = &segments[1];
-                    if method == "new"
-                        && (declared_generics.contains(type_name)
-                            || is_crypto_type_param(type_name))
-                    {
-                        out.add(WitnessKind::Constructor {
-                            type_param: type_name.clone(),
-                        });
-                    } else if method == "default"
-                        && (declared_generics.contains(type_name)
-                            || is_crypto_type_param(type_name))
-                    {
-                        out.add(WitnessKind::Default {
-                            type_param: type_name.clone(),
-                        });
+                    let is_type_param = declared_generics.contains(type_name)
+                        || is_crypto_type_param(type_name);
+                    if is_type_param {
+                        if method == "new" {
+                            out.add(WitnessKind::Constructor {
+                                type_param: type_name.clone(),
+                            });
+                        } else if method == "default" {
+                            out.add(WitnessKind::Default {
+                                type_param: type_name.clone(),
+                            });
+                        } else {
+                            // Any other T::method() — need the class witness
+                            out.add(WitnessKind::Class {
+                                type_param: type_name.clone(),
+                            });
+                        }
                     }
                 }
             }
@@ -285,7 +292,19 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
             scan_expr_witnesses(init, out, declared_generics);
             scan_expr_witnesses(body, out, declared_generics);
         }
-        _ => {} // Lit, Var, Path, Break, Continue, Unreachable, etc.
+        // Bare `T` used as a value (e.g. passed to a function expecting a class)
+        IrExpr::Var(name) => {
+            if declared_generics.contains(name) || is_crypto_type_param(name) {
+                out.add(WitnessKind::Class { type_param: name.clone() });
+            }
+        }
+        IrExpr::Path { segments, .. } if segments.len() == 1 => {
+            let name = &segments[0];
+            if declared_generics.contains(name) || is_crypto_type_param(name) {
+                out.add(WitnessKind::Class { type_param: name.clone() });
+            }
+        }
+        _ => {} // Lit, Path(multi-seg), Break, Continue, Unreachable, etc.
     }
 }
 
@@ -436,6 +455,7 @@ fn witness_ctx_field(kind: &WitnessKind) -> String {
         WitnessKind::Projection { type_param, field } => format!("{}_{}", type_param, field),
         WitnessKind::Constructor { type_param } => format!("new{}", type_param),
         WitnessKind::Default { type_param } => format!("default{}", type_param),
+        WitnessKind::Class { type_param } => format!("{}Class", type_param),
     }
 }
 
@@ -445,6 +465,8 @@ fn witness_ctx_type(kind: &WitnessKind) -> &'static str {
         WitnessKind::Projection { .. } => "number",
         WitnessKind::Constructor { .. } => "() => any",
         WitnessKind::Default { .. } => "() => any",
+        // Class witness: a constructor function with static methods accessible on it.
+        WitnessKind::Class { .. } => "{ new(...args: any[]): any } & Record<string, (...args: any[]) => any>",
     }
 }
 
@@ -754,6 +776,7 @@ pub fn print_module_ts_with_imports(
         erased_type_params: erased,
         self_type: None,
         tuple_structs: &tuple_structs,
+        class_witnesses: Vec::new(),
     };
     let mut out = String::new();
     // ESM imports for remote specs
@@ -824,6 +847,7 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
         erased_type_params: erased,
         self_type: None,
         tuple_structs: &tuple_structs_flat,
+        class_witnesses: Vec::new(),
     };
 
     // Reassemble the CFG module with deshadowed auxiliary functions.
@@ -895,6 +919,9 @@ struct TsContext<'a> {
     self_type: Option<String>,
     /// Struct names that are tuple structs — their constructors use positional `new T(x)` syntax.
     tuple_structs: &'a std::collections::HashSet<String>,
+    /// Type-param names that have a Class witness in the current function scope.
+    /// When a bare `G` (Var/Path) is seen, emit `ctx.GClass` instead.
+    class_witnesses: Vec<String>,
 }
 
 impl<'a> TsContext<'a> {
@@ -904,6 +931,17 @@ impl<'a> TsContext<'a> {
             erased_type_params: self.erased_type_params.clone(),
             self_type: Some(name.to_string()),
             tuple_structs: self.tuple_structs,
+            class_witnesses: self.class_witnesses.clone(),
+        }
+    }
+
+    fn with_class_witnesses(&self, witnesses: Vec<String>) -> TsContext<'a> {
+        TsContext {
+            witness_map: self.witness_map,
+            erased_type_params: self.erased_type_params.clone(),
+            self_type: self.self_type.clone(),
+            tuple_structs: self.tuple_structs,
+            class_witnesses: witnesses,
         }
     }
 }
@@ -1474,6 +1512,7 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
                     erased_type_params: cx.erased_type_params.clone(),
                     self_type: Some(bare),
                     tuple_structs: cx.tuple_structs,
+                    class_witnesses: cx.class_witnesses.clone(),
                 };
                 &cx_static
             } else {
@@ -1519,11 +1558,17 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
         }
 
         writeln!(f)?;
+        // Extend context with class witnesses active in this method body.
+        let class_wit_names: Vec<String> = self.witness_needs.needs.iter()
+            .filter_map(|k| if let WitnessKind::Class { type_param } = k { Some(type_param.clone()) } else { None })
+            .collect();
+        let cx_fn = if class_wit_names.is_empty() { None } else { Some(cx.with_class_witnesses(class_wit_names)) };
+        let cx_body = cx_fn.as_ref().map(|c| c as &TsContext<'_>).unwrap_or(cx);
         TsBlockWriter {
             block: &self.func.body,
             indent: self.indent,
         }
-        .ts_fmt(f, cx)?;
+        .ts_fmt(f, cx_body)?;
         writeln!(f)?;
         Ok(())
     }
@@ -1703,11 +1748,17 @@ impl<'a> TsBackend for TsFunctionWriter<'a> {
             TsTypeWriter { ty: ret }.ts_fmt(f, cx)?;
         }
         writeln!(f)?;
+        // Extend context with class witnesses active in this function body.
+        let class_wit_names: Vec<String> = self.witness_needs.needs.iter()
+            .filter_map(|k| if let WitnessKind::Class { type_param } = k { Some(type_param.clone()) } else { None })
+            .collect();
+        let cx_fn = if class_wit_names.is_empty() { None } else { Some(cx.with_class_witnesses(class_wit_names)) };
+        let cx_body = cx_fn.as_ref().map(|c| c as &TsContext<'_>).unwrap_or(cx);
         TsBlockWriter {
             block: &self.func.body,
             indent: self.indent,
         }
-        .ts_fmt(f, cx)?;
+        .ts_fmt(f, cx_body)?;
         writeln!(f)?;
         Ok(())
     }
@@ -2107,6 +2158,9 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     "this".to_string()
                 } else if v == "None" {
                     "undefined".to_string()
+                } else if cx.class_witnesses.contains(v) {
+                    // Type param used as a value → class witness reference
+                    format!("ctx.{}Class", v)
                 } else {
                     escape_ts_reserved(v)
                 };
@@ -2202,25 +2256,36 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     }
                 }
                 if let IrExpr::Path { segments, .. } = func.as_ref() {
-                    // T::new() → ctx.newT()  (constructor witness)
-                    if segments.len() == 2 && segments[1] == "new" {
+                    if segments.len() == 2 {
                         let type_name = &segments[0];
-                        if is_crypto_type_param(type_name) {
-                            write!(f, "ctx.new{}(", type_name)?;
-                            for (i, arg) in args.iter().enumerate() {
-                                if i > 0 {
-                                    write!(f, ", ")?;
+                        let method = &segments[1];
+                        let is_type_param = is_crypto_type_param(type_name)
+                            || cx.class_witnesses.contains(type_name);
+                        if is_type_param {
+                            match method.as_str() {
+                                "new" => {
+                                    // T::new() → ctx.newT()  (Constructor witness, backward compat)
+                                    write!(f, "ctx.new{}(", type_name)?;
+                                    for (i, arg) in args.iter().enumerate() {
+                                        if i > 0 { write!(f, ", ")?; }
+                                        TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+                                    }
+                                    return write!(f, ")");
                                 }
-                                TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+                                "default" => {
+                                    // T::default() → ctx.defaultT()  (Default witness, backward compat)
+                                    return write!(f, "ctx.default{}()", type_name);
+                                }
+                                _ => {
+                                    // T::method() → ctx.TClass.method()  (Class witness)
+                                    write!(f, "ctx.{}Class.{}(", type_name, method)?;
+                                    for (i, arg) in args.iter().enumerate() {
+                                        if i > 0 { write!(f, ", ")?; }
+                                        TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+                                    }
+                                    return write!(f, ")");
+                                }
                             }
-                            return write!(f, ")");
-                        }
-                    }
-                    // T::default() → ctx.defaultT()  (default witness)
-                    if segments.len() == 2 && segments[1] == "default" {
-                        let type_name = &segments[0];
-                        if is_crypto_type_param(type_name) {
-                            return write!(f, "ctx.default{}()", type_name);
                         }
                     }
                     // Check if target is an internal function that needs ctx forwarding
@@ -2290,7 +2355,12 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 }
             }
             IrExpr::Path { segments, .. } => {
-                emit_path(segments, f)?;
+                // Single-segment path that is a class witness → ctx.TClass
+                if segments.len() == 1 && cx.class_witnesses.contains(&segments[0]) {
+                    write!(f, "ctx.{}Class", &segments[0])?;
+                } else {
+                    emit_path(segments, f)?;
+                }
             }
             IrExpr::StructExpr { kind, fields, .. } => {
                 // Strip Rust module prefixes (super::, crate::, self::) from type names.

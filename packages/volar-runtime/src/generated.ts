@@ -650,9 +650,9 @@ export class RoLeafCommitDyn<D> {
     Object.assign(this, init);
   }
 
-  static commit(ctx: { newD: () => any }, r: number[], iv: number[], tweak: number): [number[], number[]]
+  static commit(ctx: { newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, r: number[], iv: number[], tweak: number): [number[], number[]]
   {
-    const out_size = D.output_size();
+    const out_size = ctx.DClass.output_size();
     let h = ctx.newD();
     h.update(r);
     h.update(iv);
@@ -1608,10 +1608,10 @@ export class MemoryCheckStateDyn<T, H> {
     Object.assign(this, init);
   }
 
-  drain(addr: any, final_value: any, final_timestamp: bigint)
+  drain(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: any, final_value: any, final_timestamp: bigint)
   {
     const enc = this.encode(addr, final_value, final_timestamp);
-    H.absorb(this.consume, enc);
+    ctx.HClass.absorb(this.consume, enc);
   }
 
   encode(addr: any, value: any, timestamp: bigint): any
@@ -1622,23 +1622,23 @@ export class MemoryCheckStateDyn<T, H> {
     return fieldAdd(fieldAdd(a, v), t);
   }
 
-  init(addr: any, zero_value: any)
+  init(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: any, zero_value: any)
   {
     const enc = this.encode(addr, zero_value, 0);
-    H.absorb(this.produce, enc);
+    ctx.HClass.absorb(this.produce, enc);
   }
 
-  static new(key: ChallengeKeyDyn<any>): MemoryCheckStateDyn
+  static new(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, key: ChallengeKeyDyn<any>): MemoryCheckStateDyn
   {
-    return new MemoryCheckStateDyn({ key: key, produce: H.new_state(), consume: H.new_state() });
+    return new MemoryCheckStateDyn({ key: key, produce: ctx.HClass.new_state(), consume: ctx.HClass.new_state() });
   }
 
-  read(addr: any, value: any, timestamp: bigint, write_timestamp: bigint)
+  read(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: any, value: any, timestamp: bigint, write_timestamp: bigint)
   {
     const enc_produce = this.encode(__clone(addr), __clone(value), timestamp);
-    H.absorb(this.produce, enc_produce);
+    ctx.HClass.absorb(this.produce, enc_produce);
     const enc_consume = this.encode(addr, value, write_timestamp);
-    H.absorb(this.consume, enc_consume);
+    ctx.HClass.absorb(this.consume, enc_consume);
   }
 
   scale_by_u64(ctx: { defaultT: () => any }, x: any, n: bigint): any
@@ -1660,17 +1660,17 @@ export class MemoryCheckStateDyn<T, H> {
     return acc;
   }
 
-  verify(): boolean
+  verify(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }): boolean
   {
-    return H.finalize_eq(this.produce, this.consume);
+    return ctx.HClass.finalize_eq(this.produce, this.consume);
   }
 
-  write(addr: any, new_value: any, timestamp: bigint, old_value: any, old_timestamp: bigint)
+  write(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: any, new_value: any, timestamp: bigint, old_value: any, old_timestamp: bigint)
   {
     const enc_new = this.encode(__clone(addr), new_value, timestamp);
-    H.absorb(this.produce, enc_new);
+    ctx.HClass.absorb(this.produce, enc_new);
     const enc_old = this.encode(addr, old_value, old_timestamp);
-    H.absorb(this.consume, enc_old);
+    ctx.HClass.absorb(this.consume, enc_old);
   }
 }
 
@@ -3133,46 +3133,46 @@ export function grafhen_decrypt(n: number, d: number, wbound: number, key: Grafh
   return (() => { const __match = perm[0]; if (__match === 0) { return false; } else if (__match === 4) { return true; } else { return undefined; } })();
 }
 
-export function ot_send_setup<G, D, R>(rng: R): [BaseOtSenderDyn<G, D>, number /* G::Element */]
+export function ot_send_setup<G, D, R>(ctx: { GClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, rng: R): [BaseOtSenderDyn<G, D>, number /* G::Element */]
 {
-  const y = G.random_scalar(rng);
-  const g = G.generator();
-  const s = G.scalar_mul(g, y);
-  const t = G.scalar_mul(s, y);
+  const y = ctx.GClass.random_scalar(rng);
+  const g = ctx.GClass.generator();
+  const s = ctx.GClass.scalar_mul(g, y);
+  const t = ctx.GClass.scalar_mul(s, y);
   return [new BaseOtSenderDyn({ y: y, s: __clone(s), t: t, _d: PhantomData }), s];
 }
 
-export function ot_recv<G, D, R>(rng: R, s: number /* G::Element */, c: boolean): [BaseOtReceiverDyn<G, D>, OtReceiverMsgDyn<G>]
+export function ot_recv<G, D, R>(ctx: { GClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, rng: R, s: number /* G::Element */, c: boolean): [BaseOtReceiverDyn<G, D>, OtReceiverMsgDyn<G>]
 {
-  const x = G.random_scalar(rng);
-  const g = G.generator();
-  const gx = G.scalar_mul(g, x);
+  const x = ctx.GClass.random_scalar(rng);
+  const g = ctx.GClass.generator();
+  const gx = ctx.GClass.scalar_mul(g, x);
   const r = (() => { if (c) {
-  return G.add(s, gx);
+  return ctx.GClass.add(s, gx);
 } else {
   return gx;
 } })();
   return [new BaseOtReceiverDyn({ x: x, s: s, c: c, _d: PhantomData }), new OtReceiverMsgDyn({ r: r })];
 }
 
-export function ot_send_finish<G, D>(ctx: { newD: () => any }, state: BaseOtSenderDyn<G, D>, msg: OtReceiverMsgDyn<G>): [Output<D>, Output<D>]
+export function ot_send_finish<G, D>(ctx: { newD: () => any, GClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, state: BaseOtSenderDyn<G, D>, msg: OtReceiverMsgDyn<G>): [Output<D>, Output<D>]
 {
-  const ry = G.scalar_mul(msg.r, state.y);
-  const s_inv = G.neg(state.s);
-  const r_minus_s = G.add(msg.r, s_inv);
-  const r_minus_s_y = G.scalar_mul(r_minus_s, state.y);
+  const ry = ctx.GClass.scalar_mul(msg.r, state.y);
+  const s_inv = ctx.GClass.neg(state.s);
+  const r_minus_s = ctx.GClass.add(msg.r, s_inv);
+  const r_minus_s_y = ctx.GClass.scalar_mul(r_minus_s, state.y);
   let h0 = ctx.newD();
-  G.write_element(ry, h0);
+  ctx.GClass.write_element(ry, h0);
   let h1 = ctx.newD();
-  G.write_element(r_minus_s_y, h1);
+  ctx.GClass.write_element(r_minus_s_y, h1);
   return [[...h0.finalize()], [...h1.finalize()]];
 }
 
-export function ot_recv_finish<G, D>(ctx: { newD: () => any }, state: BaseOtReceiverDyn<G, D>): Output<D>
+export function ot_recv_finish<G, D>(ctx: { newD: () => any, GClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, state: BaseOtReceiverDyn<G, D>): Output<D>
 {
-  const sx = G.scalar_mul(state.s, state.x);
+  const sx = ctx.GClass.scalar_mul(state.s, state.x);
   let h = ctx.newD();
-  G.write_element(sx, h);
+  ctx.GClass.write_element(sx, h);
   return [...h.finalize()];
 }
 
@@ -3269,7 +3269,7 @@ export function pack_kappa(bits: boolean[]): number[]
   return out;
 }
 
-export function iknp_cot_extend<R>(ctx: { newD: () => any }, m: number, l: number, rng_s: R, rng_r: R, receiver_bits: boolean[], delta_msg: number[]): [number[][], number[][]]
+export function iknp_cot_extend<R>(ctx: { newD: () => any, GClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, m: number, l: number, rng_s: R, rng_r: R, receiver_bits: boolean[], delta_msg: number[]): [number[][], number[][]]
 {
   let delta_ot = Array.from({length: IKNP_KAPPA}, () => false);
   for (let i = 0; i < IKNP_KAPPA; i++)   {
@@ -3286,8 +3286,8 @@ export function iknp_cot_extend<R>(ctx: { newD: () => any }, m: number, l: numbe
   }
   let chosen_seeds = Array.from({length: IKNP_KAPPA}, () => Array.from({length: IKNP_KAPPA_BYTES}, () => 0));
   for (let i = 0; i < IKNP_KAPPA; i++)   {
-    const [s_state, s_msg] = ot_send_setup(rng_r);
-    const [r_state, r_msg] = ot_recv(rng_s, s_msg, delta_ot[i]);
+    const [s_state, s_msg] = ot_send_setup(ctx, rng_r);
+    const [r_state, r_msg] = ot_recv(ctx, rng_s, s_msg, delta_ot[i]);
     const [key_0, key_1] = ot_send_finish(ctx, s_state, r_msg);
     const kc = ot_recv_finish(ctx, r_state);
     let e0 = Array.from({length: IKNP_KAPPA_BYTES}, () => 0);
@@ -3491,7 +3491,7 @@ export function lwe_ot_recv_decrypt(l: number, receiver: LweOtReceiver, sender_m
   return out;
 }
 
-export function softspoken_cot_extend<D, R>(ctx: { newD: () => any }, k: number, m: number, l: number, rng_s: R, rng_r: R, receiver_bits: boolean[], delta_msg: number[]): SoftSpokenOutDyn<D>
+export function softspoken_cot_extend<D, R>(ctx: { newD: () => any, GClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, k: number, m: number, l: number, rng_s: R, rng_r: R, receiver_bits: boolean[], delta_msg: number[]): SoftSpokenOutDyn<D>
 {
   const [sender_r0, receiver_v] = iknp_cot_extend(ctx, rng_s, rng_r, receiver_bits, delta_msg);
   let hs = ctx.newD();

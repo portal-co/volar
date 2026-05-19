@@ -130,6 +130,7 @@ Load these when working in the relevant area:
 | User-facing integration | `docs/integration-guide.md` | When answering questions about app integration |
 | IR types, storage, Poly semantics | `docs/agent-context/ir-types-storage.md` | Working on IR, lowering, evaluators, store-forward, fuzzer generators |
 | Weaving & multi-backend | `docs/agent-context/weaving.md` | Working on FHE/garbled-circuit weaving, compiler printers (Rust/TS/C), action system, CFG emission |
+| TypeScript class witnesses | `docs/agent-context/ts-class-witnesses.md` | Working on TS codegen: `WitnessKind`, `ctx` parameter, type-param-as-value, static method dispatch |
 | ORAM & channel | `docs/agent-context/oram.md` | Working on ORAM crates, channel protocol, ORAM weaver integration |
 | Progress tracking | `PROGRESS.md` | Starting a new session, reviewing status, planning next steps |
 | Top-level doc index | `docs/README.md` | Looking for a specific subsystem reference |
