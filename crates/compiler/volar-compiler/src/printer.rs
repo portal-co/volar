@@ -987,6 +987,11 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 }
                 .fmt(f)?;
             }
+            IrExpr::WhileLoop { cond, body } => {
+                write!(f, "while ")?;
+                ExprWriter { expr: cond }.fmt(f)?;
+                BlockWriter { block: body, level: 0 }.fmt(f)?;
+            }
             IrExpr::IterPipeline(chain) => {
                 IterChainWriter { chain }.fmt(f)?;
             }

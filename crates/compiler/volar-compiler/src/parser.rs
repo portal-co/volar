@@ -8,6 +8,7 @@ use std::{
     collections::{HashMap, HashSet},
     format,
     string::{String, ToString},
+    vec,
     vec::Vec,
 };
 
@@ -52,6 +53,15 @@ pub fn parse_sources(sources: &[SourceInput<'_>], module_name: &str) -> Result<I
                 Item::Impl(i) => module.impls.push(convert_impl(i)?),
                 Item::Fn(f) => module.functions.push(convert_function(f)?),
                 Item::Type(t) => module.type_aliases.push(convert_type_alias(t)?),
+                Item::Const(c) => {
+                    if let (Ok(value), Ok(ty)) = (convert_expr(&c.expr), convert_type(&c.ty)) {
+                        module.consts.push(crate::ir::IrConst {
+                            name: c.ident.to_string(),
+                            ty,
+                            value,
+                        });
+                    }
+                }
                 Item::Use(u) => {}
                 _ => {}
             }
@@ -1144,17 +1154,55 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
         }),
         Expr::Paren(p) => convert_expr(&p.expr),
         Expr::Block(b) => Ok(IrExpr::Block(convert_block(&b.block)?)),
-        Expr::If(i) => Ok(IrExpr::If {
-            cond: Box::new(convert_expr(&i.cond)?),
-            then_branch: convert_block(&i.then_branch)?,
-            else_branch: i
-                .else_branch
-                .as_ref()
-                .map(|(_, e)| Ok::<_, CompilerError>(Box::new(convert_expr(e)?)))
-                .transpose()?,
-        }),
+        Expr::If(i) => {
+            // Desugar `if let PAT = EXPR { then } else { else }` to a match expression.
+            if let Expr::Let(let_cond) = i.cond.as_ref() {
+                let pat = convert_pattern(&let_cond.pat);
+                let scrutinee = convert_expr(&let_cond.expr)?;
+                let then_block = convert_block(&i.then_branch)?;
+                let else_arm_body = i
+                    .else_branch
+                    .as_ref()
+                    .map(|(_, e)| convert_expr(e))
+                    .transpose()?
+                    .unwrap_or(IrExpr::Block(IrBlock {
+                        stmts: vec![],
+                        stmt_provs: vec![],
+                        expr: None,
+                    }));
+                Ok(IrExpr::Match {
+                    expr: Box::new(scrutinee),
+                    arms: vec![
+                        IrMatchArm {
+                            pattern: pat,
+                            guard: None,
+                            body: IrExpr::Block(then_block),
+                        },
+                        IrMatchArm {
+                            pattern: IrPattern::Wild,
+                            guard: None,
+                            body: else_arm_body,
+                        },
+                    ],
+                })
+            } else {
+                Ok(IrExpr::If {
+                    cond: Box::new(convert_expr(&i.cond)?),
+                    then_branch: convert_block(&i.then_branch)?,
+                    else_branch: i
+                        .else_branch
+                        .as_ref()
+                        .map(|(_, e)| Ok::<_, CompilerError>(Box::new(convert_expr(e)?)))
+                        .transpose()?,
+                })
+            }
+        }
         Expr::ForLoop(f) => convert_for_loop(&f.pat, &f.expr, &f.body),
-        Expr::While(_) | Expr::Loop(_) => Err(CompilerError::UnboundedLoop),
+        Expr::While(w) => Ok(IrExpr::WhileLoop {
+            cond: Box::new(convert_expr(&w.cond)?),
+            body: convert_block(&w.body)?,
+        }),
+        Expr::Loop(_) => Err(CompilerError::UnboundedLoop),
         Expr::Match(m) => Ok(IrExpr::Match {
             expr: Box::new(convert_expr(&m.expr)?),
             arms: m
@@ -1202,6 +1250,7 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                 .transpose()?,
         )),
         Expr::Continue(_) => Ok(IrExpr::Continue),
+        Expr::Try(t) => Ok(IrExpr::Try(Box::new(convert_expr(&t.expr)?))),
         Expr::Assign(a) => Ok(IrExpr::Assign {
             left: Box::new(convert_expr(&a.left)?),
             right: Box::new(convert_expr(&a.right)?),

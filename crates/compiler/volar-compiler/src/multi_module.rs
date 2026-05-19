@@ -225,6 +225,7 @@ impl LinkageSystem {
                 impls: Vec::new(),
                 functions: Vec::new(),
                 type_aliases: Vec::new(),
+                consts: Vec::new(),
             })
             .collect();
 

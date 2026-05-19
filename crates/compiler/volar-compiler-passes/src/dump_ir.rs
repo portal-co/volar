@@ -664,6 +664,14 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             indent(out, level);
             let _ = write!(out, "}}");
         }
+        IrExpr::WhileLoop { cond, body } => {
+            let _ = write!(out, "while ");
+            dump_expr(out, cond, level);
+            let _ = writeln!(out, " {{");
+            dump_block(out, body, level + 1);
+            indent(out, level);
+            let _ = write!(out, "}}");
+        }
         IrExpr::Break(val) => {
             let _ = write!(out, "break");
             if let Some(v) = val {

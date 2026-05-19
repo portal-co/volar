@@ -196,6 +196,7 @@ fn parse_spec(spec_dir: &Path, module_name: &str) -> IrModule<IrFunction> {
                 module.impls.extend(m.impls);
                 module.functions.extend(m.functions);
                 module.type_aliases.extend(m.type_aliases);
+                module.consts.extend(m.consts);
             }
             Err(e) => {
                 eprintln!("  parse error in {:?}: {}", file.file_name().unwrap(), e);

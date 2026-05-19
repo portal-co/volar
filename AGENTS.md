@@ -76,12 +76,14 @@ explicit go/no-go before proceeding or writing a hand-off document. See
 
 1. **Compiler IR Genericity**: All code constructing `IrModule` must use
    typed `IrExpr`/`IrStmt` nodes — never embed raw Rust strings as
-   expression text. Use `IrExpr::MethodCall`, `IrExpr::Binary`,
+   expression text, and never store pre-rendered strings as IR data fields.
+   This applies to every IR struct field, including new additions like
+   `IrConst.value`. Use `IrExpr::MethodCall`, `IrExpr::Binary`,
    `IrExpr::StructExpr`, `IrExpr::Var`, `IrExpr::Call` + `IrExpr::Path`,
    `IrType::Struct { kind: Custom("..."), .. }`. If the printer mishandles
-   a node, **fix the printer** — don't work around it with raw strings.
-   The printer's `debug_assert` guardrails on ident characters exist to
-   catch injection.
+   a node, **fix the printer** — don't work around it with raw strings or
+   pre-rendered values. The printer's `debug_assert` guardrails on ident
+   characters exist to catch injection.
 
 2. **Tests for Generated IR**: Tests must **lower and compile the output**
    (real backend: `print_module` → `rustc`), not perform syntactic IR

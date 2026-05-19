@@ -143,6 +143,7 @@ fn expr_refs_any(expr: &IrExpr, names: &HashSet<String>) -> bool {
         IrExpr::IterLoop {
             collection, body, ..
         } => expr_refs_any(collection, names) || block_refs_any(body, names),
+        IrExpr::WhileLoop { cond, body } => expr_refs_any(cond, names) || block_refs_any(body, names),
         IrExpr::Repeat { elem, len } => expr_refs_any(elem, names) || expr_refs_any(len, names),
         IrExpr::RawMap { receiver, body, .. } => {
             expr_refs_any(receiver, names) || expr_refs_any(body, names)
@@ -439,6 +440,10 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
                 rename_var_in_block(body, old, new_name);
             }
         }
+        IrExpr::WhileLoop { cond, body } => {
+            rename_var_in_expr(cond, old, new_name);
+            rename_var_in_block(body, old, new_name);
+        }
         IrExpr::Repeat { elem, len } => {
             rename_var_in_expr(elem, old, new_name);
             rename_var_in_expr(len, old, new_name);
@@ -684,6 +689,10 @@ fn deshadow_expr(expr: &mut IrExpr, scope: &mut HashSet<String>) {
             let mut inner = scope.clone();
             inner.insert(var.clone());
             deshadow_block(body, &inner);
+        }
+        IrExpr::WhileLoop { cond, body } => {
+            deshadow_expr(cond, scope);
+            deshadow_block(body, scope);
         }
         IrExpr::IterLoop {
             pattern,

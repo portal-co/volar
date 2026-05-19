@@ -628,6 +628,33 @@ pub enum StdMethod {
     Update,
     Cloned,
     At,
+    // ---- Integer bit/byte operations (need TS-specific translations) ----
+    WrappingShl,
+    WrappingShr,
+    SaturatingMul,
+    CountOnes,
+    LeadingZeros,
+    TrailingZeros,
+    FromLeBytes,
+    ToLeBytes,
+    FromBeBytes,
+    ToBeBytes,
+    Pow,
+    Abs,
+    Min,
+    Max,
+    CopyFromSlice,
+    Rev,
+    Sort,
+    Fill,
+    Truncate,
+    Push,
+    Pop,
+    WithCapacity,
+    New,
+    WrappingMul,
+    WrappingNeg,
+    OverflowingAdd,
 }
 
 impl StdMethod {
@@ -668,6 +695,32 @@ impl StdMethod {
             "update" => Some(Self::Update),
             "cloned" => Some(Self::Cloned),
             "at" => Some(Self::At),
+            "wrapping_shl" => Some(Self::WrappingShl),
+            "wrapping_shr" => Some(Self::WrappingShr),
+            "saturating_mul" => Some(Self::SaturatingMul),
+            "count_ones" => Some(Self::CountOnes),
+            "leading_zeros" => Some(Self::LeadingZeros),
+            "trailing_zeros" => Some(Self::TrailingZeros),
+            "from_le_bytes" => Some(Self::FromLeBytes),
+            "to_le_bytes" => Some(Self::ToLeBytes),
+            "from_be_bytes" => Some(Self::FromBeBytes),
+            "to_be_bytes" => Some(Self::ToBeBytes),
+            "pow" => Some(Self::Pow),
+            "abs" => Some(Self::Abs),
+            "min" => Some(Self::Min),
+            "max" => Some(Self::Max),
+            "copy_from_slice" => Some(Self::CopyFromSlice),
+            "rev" => Some(Self::Rev),
+            "sort" => Some(Self::Sort),
+            "fill" => Some(Self::Fill),
+            "truncate" => Some(Self::Truncate),
+            "push" => Some(Self::Push),
+            "pop" => Some(Self::Pop),
+            "with_capacity" => Some(Self::WithCapacity),
+            "new" => Some(Self::New),
+            "wrapping_mul" => Some(Self::WrappingMul),
+            "wrapping_neg" => Some(Self::WrappingNeg),
+            "overflowing_add" => Some(Self::OverflowingAdd),
             _ => None,
         }
     }
@@ -710,6 +763,32 @@ impl StdMethod {
             Self::Update => "update",
             Self::Cloned => "cloned",
             Self::At => "at",
+            Self::WrappingShl => "wrapping_shl",
+            Self::WrappingShr => "wrapping_shr",
+            Self::SaturatingMul => "saturating_mul",
+            Self::CountOnes => "count_ones",
+            Self::LeadingZeros => "leading_zeros",
+            Self::TrailingZeros => "trailing_zeros",
+            Self::FromLeBytes => "from_le_bytes",
+            Self::ToLeBytes => "to_le_bytes",
+            Self::FromBeBytes => "from_be_bytes",
+            Self::ToBeBytes => "to_be_bytes",
+            Self::Pow => "pow",
+            Self::Abs => "abs",
+            Self::Min => "min",
+            Self::Max => "max",
+            Self::CopyFromSlice => "copy_from_slice",
+            Self::Rev => "rev",
+            Self::Sort => "sort",
+            Self::Fill => "fill",
+            Self::Truncate => "truncate",
+            Self::Push => "push",
+            Self::Pop => "pop",
+            Self::WithCapacity => "with_capacity",
+            Self::New => "new",
+            Self::WrappingMul => "wrapping_mul",
+            Self::WrappingNeg => "wrapping_neg",
+            Self::OverflowingAdd => "overflowing_add",
         }
     }
 }
@@ -821,6 +900,15 @@ impl fmt::Display for AssociatedType {
 // MAIN IR DATA STRUCTURES
 // ============================================================================
 
+/// A `pub const` declaration captured from the spec source.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct IrConst {
+    pub name: String,
+    pub ty: IrType,
+    pub value: IrExpr,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrModule<F, P: Clone + Default = ()> {
@@ -831,6 +919,7 @@ pub struct IrModule<F, P: Clone + Default = ()> {
     pub impls: Vec<IrImpl<P>>,
     pub functions: Vec<F>,
     pub type_aliases: Vec<IrTypeAlias>,
+    pub consts: Vec<IrConst>,
 }
 
 impl<F, P: Clone + Default> Default for IrModule<F, P> {
@@ -843,6 +932,7 @@ impl<F, P: Clone + Default> Default for IrModule<F, P> {
             impls: Default::default(),
             functions: Default::default(),
             type_aliases: Default::default(),
+            consts: Default::default(),
         }
     }
 }
@@ -1424,6 +1514,10 @@ pub enum IrExpr<P: Clone + Default = ()> {
     },
     TypenumUsize {
         ty: Box<IrType>,
+    },
+    WhileLoop {
+        cond: Box<IrExpr<P>>,
+        body: IrBlock<P>,
     },
     Unreachable,
     Try(Box<IrExpr<P>>),
@@ -2082,6 +2176,8 @@ impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrExpr<P> {
             IrExpr::Range { start, end, inclusive } =>
                 IrExpr::Range { start: start.map(|e| Box::new(e.map_prov(f))), end: end.map(|e| Box::new(e.map_prov(f))), inclusive },
             IrExpr::TypenumUsize { ty } => IrExpr::TypenumUsize { ty },
+            IrExpr::WhileLoop { cond, body } =>
+                IrExpr::WhileLoop { cond: Box::new(cond.map_prov(f)), body: body.map_prov(f) },
             IrExpr::Unreachable => IrExpr::Unreachable,
             IrExpr::Try(e) => IrExpr::Try(Box::new(e.map_prov(f))),
         }
@@ -2236,6 +2332,7 @@ impl<F: MapProv<P, Q>, P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for
             impls: self.impls.into_iter().map(|i| i.map_prov(f)).collect(),
             functions: self.functions.into_iter().map(|func| func.map_prov(f)).collect(),
             type_aliases: self.type_aliases,
+            consts: self.consts,
         }
     }
 }

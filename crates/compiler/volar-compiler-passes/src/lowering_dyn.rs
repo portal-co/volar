@@ -244,6 +244,9 @@ pub fn lower_module_dyn(module: &IrModule<IrFunction>) -> IrModule<IrFunction> {
         ));
     }
 
+    // Const declarations pass through unchanged.
+    lowered.consts.extend(module.consts.iter().cloned());
+
     lowered
 }
 
@@ -1047,6 +1050,10 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
             rename_var_in_expr(collection, old, new_name);
             rename_var_in_block(body, old, new_name);
         }
+        IrExpr::WhileLoop { cond, body } => {
+            rename_var_in_expr(cond, old, new_name);
+            rename_var_in_block(body, old, new_name);
+        }
         IrExpr::Repeat { elem, len } => {
             rename_var_in_expr(elem, old, new_name);
             rename_var_in_expr(len, old, new_name);
@@ -1491,9 +1498,12 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                             type_args: vec![IrType::TypeParam(d_param.name.clone())],
                         });
                     } else {
-                        todo!(
-                            "error: could not find D generic parameter for function {} (fn_gen: {fn_gen:?})",
-                            name
+                        // No explicit D param found; leave call site unmonomorphized.
+                        // The TypeScript runtime resolves it dynamically.
+                        eprintln!(
+                            "[lowering_dyn] warning: could not find D generic for \
+                             function '{}'; omitting type arg (fn_gen: {:?})",
+                            name, fn_gen
                         );
                     }
                 }
@@ -1713,6 +1723,10 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
         } => IrExpr::IterLoop {
             pattern: lower_pattern_dyn(pattern, ctx),
             collection: Box::new(lower_expr_dyn(collection, ctx, fn_gen)),
+            body: lower_block_dyn(body, ctx, fn_gen),
+        },
+        IrExpr::WhileLoop { cond, body } => IrExpr::WhileLoop {
+            cond: Box::new(lower_expr_dyn(cond, ctx, fn_gen)),
             body: lower_block_dyn(body, ctx, fn_gen),
         },
         IrExpr::IterPipeline(chain) => {
@@ -2134,8 +2148,9 @@ fn lower_default_value(
             | PrimitiveType::Galois128
             | PrimitiveType::Galois256
             | PrimitiveType::BitsInBytes
-            | PrimitiveType::BitsInBytes64 => {
-                // Emit `Bit.default()` etc.
+            | PrimitiveType::BitsInBytes64
+            | PrimitiveType::Z3 => {
+                // Emit `Bit.default()`, `Z3.default()`, etc.
                 IrExpr::MethodCall {
                     receiver: Box::new(IrExpr::Path {
                         segments: vec![format!("{}", p)],

@@ -27,6 +27,7 @@ fn empty_module() -> IrModule<IrFunction> {
         impls: vec![],
         functions: vec![],
         type_aliases: vec![],
+        consts: vec![],
     }
 }
 

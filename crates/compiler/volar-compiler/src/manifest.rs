@@ -122,6 +122,7 @@ fn strip_bodies(module: &IrModule<IrFunction>) -> IrModule<IrFunction> {
         impls: stripped_impls,
         functions: stripped_fns,
         type_aliases: module.type_aliases.clone(),
+        consts: module.consts.clone(),
     }
 }
 

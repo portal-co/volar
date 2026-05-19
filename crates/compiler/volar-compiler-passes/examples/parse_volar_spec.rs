@@ -221,6 +221,18 @@ fn main() {
                             count_loops_in_expr(e, counts);
                         }
                     }
+                    IrExpr::WhileLoop { cond, body } => {
+                        counts.2 += 1;
+                        count_loops_in_expr(cond, counts);
+                        for stmt in &body.stmts {
+                            if let IrStmt::Semi(e) | IrStmt::Expr(e) = stmt {
+                                count_loops_in_expr(e, counts);
+                            }
+                        }
+                        if let Some(e) = &body.expr {
+                            count_loops_in_expr(e, counts);
+                        }
+                    }
                     IrExpr::Block(block) => {
                         for stmt in &block.stmts {
                             if let IrStmt::Semi(e) | IrStmt::Expr(e) = stmt {
