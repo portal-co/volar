@@ -205,6 +205,29 @@ fn parse_spec(spec_dir: &Path, module_name: &str) -> IrModule<IrFunction> {
         }
     }
 
+    // Deduplicate top-level functions by name: keep the first definition
+    // encountered (deterministic because files are sorted). Duplicates arise
+    // when the same helper function is copy-pasted across spec modules.
+    {
+        let mut seen_fns = std::collections::HashSet::new();
+        let before = module.functions.len();
+        module.functions.retain(|f| seen_fns.insert(f.name.clone()));
+        let removed = before - module.functions.len();
+        if removed > 0 {
+            eprintln!("[volar-codegen] deduplicated {} duplicate top-level function(s)", removed);
+        }
+    }
+
+    // Deduplicate structs and consts by name as well.
+    {
+        let mut seen = std::collections::HashSet::new();
+        module.structs.retain(|s| seen.insert(s.kind.to_string()));
+    }
+    {
+        let mut seen = std::collections::HashSet::new();
+        module.consts.retain(|c| seen.insert(c.name.clone()));
+    }
+
     eprintln!(
         "[volar-codegen] combined IR: {} structs  {} traits  {} impls  {} fns  ({} error(s))",
         module.structs.len(),

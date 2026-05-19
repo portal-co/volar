@@ -200,7 +200,16 @@ pub fn lower_module_dyn(module: &IrModule<IrFunction>) -> IrModule<IrFunction> {
     };
 
     for s in &module.structs {
-        lowered.structs.push(lower_struct_dyn(s, &ctx));
+        // Only structs with generic parameters (length witnesses or type params) need
+        // lowering and renaming to "Dyn". Primitives and non-generic structs pass through.
+        let needs_lowering = ctx.struct_info.get(&s.kind.to_string())
+            .map(|info| !info.length_witnesses.is_empty() || !info.type_params.is_empty())
+            .unwrap_or(false);
+        if needs_lowering {
+            lowered.structs.push(lower_struct_dyn(s, &ctx));
+        } else {
+            lowered.structs.push(s.clone());
+        }
     }
 
     // Emit custom traits (LengthDoubler, PuncturableLengthDoubler, etc.)
@@ -770,9 +779,20 @@ fn lower_type_dyn_inner(
                 || kind_str == "Box"
                 || kind_str == "Vec"
             {
+                // Standard library containers: keep as-is.
                 kind.clone()
+            } else if let Some(info) = ctx.struct_info.get(&kind_str) {
+                // Only rename structs that have generic parameters needing lowering.
+                // Primitives (Bit, Galois, Fe25519, EdPoint, Zq, …) have no such
+                // parameters and keep their original names.
+                if info.length_witnesses.is_empty() && info.type_params.is_empty() {
+                    kind.clone()
+                } else {
+                    StructKind::from_str(&format!("{}Dyn", kind))
+                }
             } else {
-                StructKind::from_str(&format!("{}Dyn", kind))
+                // Not in struct_info → external/primitive type, keep original name.
+                kind.clone()
             };
 
             IrType::Struct {
@@ -1185,12 +1205,13 @@ fn lower_pattern_dyn(p: &IrPattern, ctx: &LoweringContext) -> IrPattern {
         }
         IrPattern::Struct { kind, fields, rest } => {
             let kind_str = kind.to_string();
-            // Only rename if it's one of our structs, also handle Self
-            let (new_kind, needs_rest) = if ctx.struct_info.contains_key(&kind_str) {
-                // For our structs, we add witness fields, so always use ..
+            let has_generics = ctx.struct_info.get(&kind_str)
+                .map(|info| !info.length_witnesses.is_empty() || !info.type_params.is_empty())
+                .unwrap_or(false);
+            let (new_kind, needs_rest) = if has_generics {
+                // For structs with generics, we add witness fields, so always use ..
                 (StructKind::from_str(&format!("{}Dyn", kind)), true)
             } else if kind_str == "Self" {
-                // Self in impl blocks also needs .. because the impl is for our structs
                 (kind.clone(), true)
             } else {
                 (kind.clone(), *rest)
@@ -1206,8 +1227,10 @@ fn lower_pattern_dyn(p: &IrPattern, ctx: &LoweringContext) -> IrPattern {
         }
         IrPattern::TupleStruct { kind, elems } => {
             let kind_str = kind.to_string();
-            // Only rename if it's one of our structs
-            let new_kind = if ctx.struct_info.contains_key(&kind_str) {
+            let has_generics = ctx.struct_info.get(&kind_str)
+                .map(|info| !info.length_witnesses.is_empty() || !info.type_params.is_empty())
+                .unwrap_or(false);
+            let new_kind = if has_generics {
                 StructKind::from_str(&format!("{}Dyn", kind))
             } else {
                 kind.clone()
@@ -1235,14 +1258,14 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
     match e {
         IrExpr::Lit(_) => e.clone(),
         IrExpr::Var(v) => {
-            if v.len() == 1 && v.chars().next().unwrap().is_uppercase() {
-                if fn_gen.iter().any(|p| {
-                    p.name == *v
-                        && classify_generic_with_aliases(p, &[fn_gen], &ctx.aliases())
-                            == GenericKind::Length
-                }) {
-                    return IrExpr::Var(v.to_lowercase());
-                }
+            // Substitute any length-generic parameter (single or multi-char, e.g. N,
+            // N_LWE, BIG_N) with its lowercase dyn witness name.
+            if fn_gen.iter().any(|p| {
+                p.name == *v
+                    && classify_generic_with_aliases(p, &[fn_gen], &ctx.aliases())
+                        == GenericKind::Length
+            }) {
+                return IrExpr::Var(v.to_lowercase());
             }
             if v == "GenericArray" || v == "Array" {
                 return IrExpr::Path {
@@ -1523,15 +1546,19 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             };
             if let Some(ref name) = func_name {
                 if let Some(info) = ctx.struct_info.get(name.as_str()) {
-                    let dyn_name = format!("{}Dyn", name);
-                    match &mut func {
-                        IrExpr::Path { segments, .. } => {
-                            if let Some(last) = segments.last_mut() {
-                                *last = dyn_name;
+                    let has_generics = !info.length_witnesses.is_empty()
+                        || !info.type_params.is_empty();
+                    if has_generics {
+                        let dyn_name = format!("{}Dyn", name);
+                        match &mut func {
+                            IrExpr::Path { segments, .. } => {
+                                if let Some(last) = segments.last_mut() {
+                                    *last = dyn_name;
+                                }
                             }
+                            IrExpr::Var(n) => *n = dyn_name,
+                            _ => {}
                         }
-                        IrExpr::Var(n) => *n = dyn_name,
-                        _ => {}
                     }
                     // For tuple struct constructors, append PhantomData if needed
                     if info.needs_phantom {
@@ -1555,9 +1582,12 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             rest,
         } => {
             let kind_str = kind.to_string();
+            let has_generics = ctx.struct_info.get(&kind_str)
+                .map(|info| !info.length_witnesses.is_empty() || !info.type_params.is_empty())
+                .unwrap_or(false);
             let new_kind = if kind_str == "Option" || kind_str == "Result" {
                 kind.clone()
-            } else if ctx.struct_info.contains_key(&kind_str) {
+            } else if has_generics {
                 StructKind::from_str(&format!("{}Dyn", kind))
             } else {
                 kind.clone()
