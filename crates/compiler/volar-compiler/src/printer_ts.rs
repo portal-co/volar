@@ -1304,27 +1304,42 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
             writeln!(f)?;
         }
 
-        // Emit standalone functions
+        // Group standalone functions by name; merge duplicates with arg-count dispatch.
+        let mut fn_groups: BTreeMap<String, Vec<&IrFunction>> = BTreeMap::new();
         for func in &self.module.functions {
             let fn_name = if func.name.starts_with("r#") {
                 func.name[2..].to_string()
             } else {
                 func.name.clone()
             };
+            fn_groups.entry(fn_name).or_default().push(func);
+        }
+        for (fn_name, variants) in &fn_groups {
             let empty = WitnessNeeds::default();
-            let needs = cx.witness_map.get(&fn_name).unwrap_or(&empty);
-            TsFunctionWriter {
-                func,
-                indent: 0,
-                witness_needs: needs,
+            let needs = cx.witness_map.get(fn_name.as_str()).unwrap_or(&empty);
+            if variants.len() == 1 {
+                TsFunctionWriter {
+                    func: variants[0],
+                    indent: 0,
+                    witness_needs: needs,
+                }
+                .ts_fmt(f, cx)?;
+            } else {
+                // Multiple definitions — emit a merged dispatcher
+                TsMergedFunctionWriter {
+                    name: fn_name,
+                    variants,
+                    witness_needs: needs,
+                }
+                .ts_fmt(f, cx)?;
             }
-            .ts_fmt(f, cx)?;
             writeln!(f)?;
         }
 
-        // Any impls whose struct isn't in this module
-        for (name, impls) in &impl_groups {
-            writeln!(f, "// Orphan impls for {}", name)?;
+        // Any impls whose struct isn't in this module — emit as standalone functions.
+        // Group by method name and merge duplicates.
+        let mut orphan_fns: BTreeMap<String, Vec<&IrFunction>> = BTreeMap::new();
+        for (struct_name, impls) in &impl_groups {
             for imp in impls {
                 for item in &imp.items {
                     if let IrImplItem::Method(func) = item {
@@ -1333,19 +1348,23 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
                         } else {
                             func.name.clone()
                         };
-                        let key = format!("{}.{}", name, fn_name);
-                        let empty = WitnessNeeds::default();
-                        let needs = cx.witness_map.get(&key).unwrap_or(&empty);
-                        TsFunctionWriter {
-                            func,
-                            indent: 0,
-                            witness_needs: needs,
-                        }
-                        .ts_fmt(f, cx)?;
-                        writeln!(f)?;
+                        let _ = struct_name; // the struct may be the key for witness lookup
+                        orphan_fns.entry(fn_name).or_default().push(func);
                     }
                 }
             }
+        }
+        for (fn_name, variants) in &orphan_fns {
+            let empty = WitnessNeeds::default();
+            let needs = cx.witness_map.get(fn_name.as_str()).unwrap_or(&empty);
+            if variants.len() == 1 {
+                TsFunctionWriter { func: variants[0], indent: 0, witness_needs: needs }
+                    .ts_fmt(f, cx)?;
+            } else {
+                TsMergedFunctionWriter { name: fn_name, variants, witness_needs: needs }
+                    .ts_fmt(f, cx)?;
+            }
+            writeln!(f)?;
         }
 
         Ok(())
@@ -1818,6 +1837,55 @@ impl<'a> TsBackend for TsGenericsWriter<'a> {
 }
 
 // ============================================================================
+// MERGED FUNCTION (top-level, multiple definitions with the same name)
+// ============================================================================
+
+struct TsMergedFunctionWriter<'a> {
+    name: &'a str,
+    variants: &'a [&'a IrFunction],
+    witness_needs: &'a WitnessNeeds,
+}
+
+impl<'a> TsBackend for TsMergedFunctionWriter<'a> {
+    fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
+        // Emit a single function that dispatches on argument count.
+        // Each variant gets a case matching its total param count.
+        write!(f, "export function {}(...__args: any[]): any {{", self.name)?;
+        writeln!(f)?;
+        for (vi, variant) in self.variants.iter().enumerate() {
+            let n_params = variant.params.len()
+                + if self.witness_needs.is_empty() { 0 } else { 1 };
+            write!(f, "  if (__args.length === {}) {{", n_params)?;
+            writeln!(f)?;
+            // Unpack args
+            let mut idx = 0usize;
+            if !self.witness_needs.is_empty() {
+                writeln!(f, "    const ctx = __args[{}];", idx)?;
+                idx += 1;
+            }
+            for p in &variant.params {
+                writeln!(f, "    const {} = __args[{}];", ts_param_name(&p.name), idx)?;
+                idx += 1;
+            }
+            // Emit body
+            let class_wit_names: Vec<String> = self.witness_needs.needs.iter()
+                .filter_map(|k| if let WitnessKind::Class { type_param } = k { Some(type_param.clone()) } else { None })
+                .collect();
+            let cx_fn = if class_wit_names.is_empty() { None } else { Some(cx.with_class_witnesses(class_wit_names)) };
+            let cx_body = cx_fn.as_ref().map(|c| c as &TsContext<'_>).unwrap_or(cx);
+            write!(f, "    return (() => ")?;
+            TsBlockWriter { block: &variant.body, indent: 0 }.ts_fmt(f, cx_body)?;
+            writeln!(f, ")();")?;
+            write!(f, "  }}")?;
+            if vi + 1 < self.variants.len() { write!(f, " else")?; }
+            writeln!(f)?;
+        }
+        writeln!(f, "  throw new Error(\"{}(): no matching variant for \" + __args.length + \" args\");", self.name)?;
+        writeln!(f, "}}")
+    }
+}
+
+// ============================================================================
 // TYPE
 // ============================================================================
 
@@ -1998,6 +2066,7 @@ fn emit_statement_expr(
             inclusive,
             body,
         } => {
+            // All numeric values are bigint; use `+= 1n` not `++`.
             write!(f, "for (let {} = ", var)?;
             TsExprWriter { expr: start }.ts_fmt(f, cx)?;
             write!(f, "; {} {} ", var, if *inclusive { "<=" } else { "<" })?;
@@ -2313,8 +2382,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
             }
             IrExpr::Field { base, field } => {
                 TsExprWriter { expr: base }.ts_fmt(f, cx)?;
-                // Tuple struct fields have numeric names ("0", "1") which are invalid
-                // as property access in JS/TS. Prefix them with underscore.
+                // Numeric field names ("0", "1") prefix with underscore for valid TS property.
                 let field_ts = if field.chars().next().map_or(false, |c| c.is_ascii_digit()) {
                     format!("_{}", field)
                 } else {
@@ -2667,8 +2735,6 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         }
                         IrType::Array { len, elem, .. } => {
                             // Array default → Array.from({length: N}, () => default(elem))
-                            // This handles the case where dyn-lowering didn't expand it,
-                            // or when the TS printer is used directly.
                             write!(f, "Array.from({{length: ")?;
                             ts_length(len, f, cx)?;
                             write!(f, "}}, () => ")?;
@@ -3627,7 +3693,6 @@ fn ts_default_value(ty: &IrType, f: &mut fmt::Formatter<'_>, cx: &TsContext) -> 
             PrimitiveType::Z3 => write!(f, "Z3.default()"),
         },
         IrType::Array { elem, len, .. } => {
-            // Recursive: Array.from({length: N}, () => default(elem))
             write!(f, "Array.from({{length: ")?;
             ts_length(len, f, cx)?;
             write!(f, "}}, () => ")?;

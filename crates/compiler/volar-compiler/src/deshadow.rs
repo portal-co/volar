@@ -601,16 +601,11 @@ fn deshadow_stmts(
             let mut out = Vec::new();
             for name in &bound {
                 if scope.contains(name) {
-                    let refs_name = if let Some(e) = init.as_ref() {
-                        let check_set: HashSet<String> = core::iter::once(name.clone()).collect();
-                        expr_refs_any(e, &check_set)
-                    } else {
-                        false
-                    };
-                    if refs_name {
-                        let fresh = fresh_name(name, scope);
-                        out.push((name.clone(), fresh));
-                    }
+                    // TypeScript `let` doesn't allow re-declaration in the same scope —
+                    // always generate a fresh name when shadowing, regardless of whether
+                    // the initializer references the old binding.
+                    let fresh = fresh_name(name, scope);
+                    out.push((name.clone(), fresh));
                 }
             }
             out
@@ -996,7 +991,7 @@ mod tests {
     #[test]
     fn shadow_without_ref_no_rename() {
         // let x = 1;
-        // let x = 2;  // shadows but doesn't reference old x
+        // let x = 2;  // shadows — always rename for TypeScript compat
         let mut block = IrBlock {
             stmts: vec![let_stmt("x", lit_int(1)), let_stmt("x", lit_int(2))],
             stmt_provs: Vec::new(),
@@ -1005,13 +1000,13 @@ mod tests {
         let outer = HashSet::new();
         deshadow_block(&mut block, &outer);
 
-        // No rename needed — the init doesn't reference `x`
+        // Always rename even if init doesn't reference `x` — TS `let` can't redeclare.
         if let IrStmt::Let {
             pattern: IrPattern::Ident { name, .. },
             ..
         } = &block.stmts[1]
         {
-            assert_eq!(name, "x"); // unchanged
+            assert_eq!(name, "x_1"); // renamed to avoid TS redeclaration error
         } else {
             panic!("expected let");
         }
