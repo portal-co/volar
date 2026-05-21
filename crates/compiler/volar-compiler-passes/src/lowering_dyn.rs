@@ -253,10 +253,45 @@ pub fn lower_module_dyn(module: &IrModule<IrFunction>) -> IrModule<IrFunction> {
         ));
     }
 
+    // Enums pass through unchanged.
+    lowered.enums.extend(module.enums.iter().cloned());
+
     // Const declarations pass through unchanged.
     lowered.consts.extend(module.consts.iter().cloned());
 
+    // Type aliases pass through unchanged (e.g. `type Zq = u32`).
+    lowered.type_aliases.extend(module.type_aliases.iter().cloned());
+
     lowered
+}
+
+/// Collect all type-param names referenced in a function's params and return type.
+fn collect_type_refs_in_fn(f: &IrFunction) -> Vec<String> {
+    let mut refs = Vec::new();
+    for p in &f.params {
+        collect_type_refs_in_type(&p.ty, &mut refs);
+    }
+    if let Some(ret) = &f.return_type {
+        collect_type_refs_in_type(ret, &mut refs);
+    }
+    refs
+}
+
+fn collect_type_refs_in_type(ty: &IrType, refs: &mut Vec<String>) {
+    match ty {
+        IrType::TypeParam(n) => {
+            if !refs.contains(n) { refs.push(n.clone()); }
+        }
+        IrType::Struct { type_args, .. } => {
+            for a in type_args { collect_type_refs_in_type(a, refs); }
+        }
+        IrType::Vector { elem } | IrType::Reference { elem, .. } => {
+            collect_type_refs_in_type(elem, refs);
+        }
+        IrType::Array { elem, .. } => { collect_type_refs_in_type(elem, refs); }
+        IrType::Tuple(elems) => { for e in elems { collect_type_refs_in_type(e, refs); } }
+        _ => {}
+    }
 }
 
 /// Extract constant witness values from a type (e.g., K=U0 in Vope<N, T, U0>)
@@ -548,8 +583,9 @@ fn lower_function_dyn(
         }
     }
 
-    // Static methods also need impl-level length params
-    if f.receiver.is_none() && !is_trait_impl {
+    // Static methods need impl-level length params (always, even for trait impls —
+    // there is no `self` to carry the length, so it must be a runtime parameter).
+    if f.receiver.is_none() {
         for p in impl_gen {
             let kind = classify_generic_with_aliases(p, &[impl_gen], &ctx.aliases());
             if kind == GenericKind::Length {
@@ -2064,8 +2100,27 @@ fn lower_array_length(
                     ArrayLength::TypeParam(p.to_lowercase())
                 }
             } else {
-                // Otherwise lowercase it to a runtime variable
-                ArrayLength::TypeParam(p.to_lowercase())
+                // If the name doesn't appear in fn_gen as a const generic,
+                // it may be a placeholder ("N") — try to find the sole length
+                // generic in scope instead.
+                let lc = p.to_lowercase();
+                let is_placeholder = !fn_gen.iter().any(|g| g.name.to_lowercase() == lc);
+                if is_placeholder {
+                    let length_generics: Vec<&IrGenericParam> = fn_gen
+                        .iter()
+                        .filter(|g| {
+                            classify_generic_with_aliases(g, &[fn_gen], &ctx.aliases())
+                                == GenericKind::Length
+                        })
+                        .collect();
+                    if length_generics.len() == 1 {
+                        ArrayLength::TypeParam(length_generics[0].name.to_lowercase())
+                    } else {
+                        ArrayLength::TypeParam(lc)
+                    }
+                } else {
+                    ArrayLength::TypeParam(lc)
+                }
             }
         }
         ArrayLength::TypeNum(tn) => ArrayLength::Const(tn.to_usize()),

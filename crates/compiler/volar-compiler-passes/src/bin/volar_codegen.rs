@@ -62,6 +62,14 @@ impl Target {
         }
     }
 
+    /// For targets that want to prepend a primitives layer before the main spec.
+    fn primitives_dir(self) -> Option<&'static str> {
+        match self {
+            Target::Ts => Some("crates/spec/volar-primitives/src"),
+            _ => None,
+        }
+    }
+
     fn default_out(self) -> &'static str {
         match self {
             Target::Ts => "packages/volar-runtime/src/generated.ts",
@@ -192,6 +200,7 @@ fn parse_spec(spec_dir: &Path, module_name: &str) -> IrModule<IrFunction> {
                     m.functions.len(),
                 );
                 module.structs.extend(m.structs);
+                module.enums.extend(m.enums);
                 module.traits.extend(m.traits);
                 module.impls.extend(m.impls);
                 module.functions.extend(m.functions);
@@ -266,7 +275,37 @@ fn write_dump(path: &Path, content: &str) -> Result<(), Box<dyn std::error::Erro
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = parse_args()?;
 
-    let module = parse_spec(&cfg.spec_dir, cfg.target.module_name());
+    // For targets with a primitives layer (TS), merge primitives first so that
+    // dedup retains the primitive definitions and volar-spec re-uses them.
+    let module = if let Some(prim_dir) = cfg.target.primitives_dir() {
+        let prim_path = PathBuf::from(prim_dir);
+        let mut m = parse_spec(&prim_path, cfg.target.module_name());
+        let spec = parse_spec(&cfg.spec_dir, cfg.target.module_name());
+        // Merge: primitives first; dedup keeps the first occurrence.
+        m.structs.extend(spec.structs);
+        m.enums.extend(spec.enums);
+        m.traits.extend(spec.traits);
+        m.impls.extend(spec.impls);
+        m.functions.extend(spec.functions);
+        m.type_aliases.extend(spec.type_aliases);
+        m.consts.extend(spec.consts);
+        // Re-run dedup after merge.
+        {
+            let mut seen = std::collections::HashSet::new();
+            m.structs.retain(|s| seen.insert(s.kind.to_string()));
+        }
+        {
+            let mut seen = std::collections::HashSet::new();
+            m.functions.retain(|f| seen.insert(f.name.clone()));
+        }
+        {
+            let mut seen = std::collections::HashSet::new();
+            m.consts.retain(|c| seen.insert(c.name.clone()));
+        }
+        m
+    } else {
+        parse_spec(&cfg.spec_dir, cfg.target.module_name())
+    };
 
     // Optional pre-lowering IR dump.
     if cfg.dump_ir {

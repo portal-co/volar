@@ -7,12 +7,6 @@ import {
   type BlockEncrypt,
   type Digest,
   type LengthDoubler,
-  Bit,
-  Galois,
-  Galois64,
-  BitsInBytes,
-  BitsInBytes64,
-  Z3,
   fieldAdd,
   fieldSub,
   fieldMul,
@@ -31,6 +25,9 @@ import {
   asRefU8,
 } from "./index";
 
+type Shake128 = any; type Shake256 = any; type Sha3_256 = any;
+type DigestUpdate = any;
+
 class Some<T> { constructor(public _0: T) {} }
 class Ok<T> { constructor(public _0: T) {} }
 class Err<E = unknown> { constructor(public _0: E) {} }
@@ -43,236 +40,562 @@ function __clone<T>(x: T): T {
   return x;
 }
 
-export const P_LIMBS = [BigInt("18446744073709551597"), BigInt("18446744073709551615"), BigInt("18446744073709551615"), BigInt("9223372036854775807")];
-export const D_LIMBS = [BigInt("8496970652267935907"), BigInt("31536524315187371"), BigInt("10144147576115030168"), BigInt("5909686906226998899")];
-export const D2_LIMBS = [BigInt("16993941304535871833"), BigInt("63073048630374742"), BigInt("1841551078520508720"), BigInt("2596001775599221991")];
+export const GF8_POLY = 27n;
+export const GF64_POLY = 27n;
+export const GF128_POLY = 135n;
+export const GF256_POLY = new U256([1061n, 0n, 0n, 0n]);
+export const P_LIMBS = [18446744073709551597n, 18446744073709551615n, 18446744073709551615n, 9223372036854775807n];
+export const D_LIMBS = [8496970652267935907n, 31536524315187371n, 10144147576115030168n, 5909686906226998899n];
+export const D2_LIMBS = [16993941304535871833n, 63073048630374742n, 1841551078520508720n, 2596001775599221991n];
 export const D = fe_const(D_LIMBS);
 export const D2 = fe_const(D2_LIMBS);
-export const BASE_X_LIMBS = [BigInt("14507833142362363162"), BigInt("7578651490590762930"), BigInt("13881468655802702940"), BigInt("2407515759118799870")];
-export const BASE_Y_LIMBS = [BigInt("7378697629483820632"), BigInt("7378697629483820646"), BigInt("7378697629483820646"), BigInt("7378697629483820646")];
-export const SBOX = [99, 124, 119, 123, 242, 107, 111, 197, 48, 1, 103, 43, 254, 215, 171, 118, 202, 130, 201, 125, 250, 89, 71, 240, 173, 212, 162, 175, 156, 164, 114, 192, 183, 253, 147, 38, 54, 63, 247, 204, 52, 165, 229, 241, 113, 216, 49, 21, 4, 199, 35, 195, 24, 150, 5, 154, 7, 18, 128, 226, 235, 39, 178, 117, 9, 131, 44, 26, 27, 110, 90, 160, 82, 59, 214, 179, 41, 227, 47, 132, 83, 209, 0, 237, 32, 252, 177, 91, 106, 203, 190, 57, 74, 76, 88, 207, 208, 239, 170, 251, 67, 77, 51, 133, 69, 249, 2, 127, 80, 60, 159, 168, 81, 163, 64, 143, 146, 157, 56, 245, 188, 182, 218, 33, 16, 255, 243, 210, 205, 12, 19, 236, 95, 151, 68, 23, 196, 167, 126, 61, 100, 93, 25, 115, 96, 129, 79, 220, 34, 42, 144, 136, 70, 238, 184, 20, 222, 94, 11, 219, 224, 50, 58, 10, 73, 6, 36, 92, 194, 211, 172, 98, 145, 149, 228, 121, 231, 200, 55, 109, 141, 213, 78, 169, 108, 86, 244, 234, 101, 122, 174, 8, 186, 120, 37, 46, 28, 166, 180, 198, 232, 221, 116, 31, 75, 189, 139, 138, 112, 62, 181, 102, 72, 3, 246, 14, 97, 53, 87, 185, 134, 193, 29, 158, 225, 248, 152, 17, 105, 217, 142, 148, 155, 30, 135, 233, 206, 85, 40, 223, 140, 161, 137, 13, 191, 230, 66, 104, 65, 153, 45, 15, 176, 84, 187, 22];
-export const RCON = [0, 1, 2, 4, 8, 16, 32, 64, 128, 27, 54];
-export const NR = 10;
-export const BLOCK = 16;
-export const NK_ROUND_KEYS = fieldAdd(NR, 1);
-export const GF8_AES_POLY = 27;
-export const LAMBDA_BYTES = 16;
-export const TAU = 4;
-export const SUB_VOLE_N = 8;
-export const SUB_VOLE_K = 3;
-export const L_HAT_BYTES = 16;
-export const W_GRIND = 4;
-export const COM_BYTES = 32;
-export const TOY_P = 2147483647;
-export const TOY_G = 7;
-export const IKNP_KAPPA = 128;
-export const IKNP_KAPPA_BYTES = (IKNP_KAPPA / 8);
-export const LWE_N = 16;
-export const LWE_Q_BITS = 16;
-export const LWE_Q = fieldShl(1, LWE_Q_BITS);
-export const LWE_Q_MASK = fieldSub(LWE_Q, 1);
-export const LWE_NOISE_BOUND = 1;
+export const BASE_X_LIMBS = [14507833142362363162n, 7578651490590762930n, 13881468655802702940n, 2407515759118799870n];
+export const BASE_Y_LIMBS = [7378697629483820632n, 7378697629483820646n, 7378697629483820646n, 7378697629483820646n];
+export const SBOX = [99n, 124n, 119n, 123n, 242n, 107n, 111n, 197n, 48n, 1n, 103n, 43n, 254n, 215n, 171n, 118n, 202n, 130n, 201n, 125n, 250n, 89n, 71n, 240n, 173n, 212n, 162n, 175n, 156n, 164n, 114n, 192n, 183n, 253n, 147n, 38n, 54n, 63n, 247n, 204n, 52n, 165n, 229n, 241n, 113n, 216n, 49n, 21n, 4n, 199n, 35n, 195n, 24n, 150n, 5n, 154n, 7n, 18n, 128n, 226n, 235n, 39n, 178n, 117n, 9n, 131n, 44n, 26n, 27n, 110n, 90n, 160n, 82n, 59n, 214n, 179n, 41n, 227n, 47n, 132n, 83n, 209n, 0n, 237n, 32n, 252n, 177n, 91n, 106n, 203n, 190n, 57n, 74n, 76n, 88n, 207n, 208n, 239n, 170n, 251n, 67n, 77n, 51n, 133n, 69n, 249n, 2n, 127n, 80n, 60n, 159n, 168n, 81n, 163n, 64n, 143n, 146n, 157n, 56n, 245n, 188n, 182n, 218n, 33n, 16n, 255n, 243n, 210n, 205n, 12n, 19n, 236n, 95n, 151n, 68n, 23n, 196n, 167n, 126n, 61n, 100n, 93n, 25n, 115n, 96n, 129n, 79n, 220n, 34n, 42n, 144n, 136n, 70n, 238n, 184n, 20n, 222n, 94n, 11n, 219n, 224n, 50n, 58n, 10n, 73n, 6n, 36n, 92n, 194n, 211n, 172n, 98n, 145n, 149n, 228n, 121n, 231n, 200n, 55n, 109n, 141n, 213n, 78n, 169n, 108n, 86n, 244n, 234n, 101n, 122n, 174n, 8n, 186n, 120n, 37n, 46n, 28n, 166n, 180n, 198n, 232n, 221n, 116n, 31n, 75n, 189n, 139n, 138n, 112n, 62n, 181n, 102n, 72n, 3n, 246n, 14n, 97n, 53n, 87n, 185n, 134n, 193n, 29n, 158n, 225n, 248n, 152n, 17n, 105n, 217n, 142n, 148n, 155n, 30n, 135n, 233n, 206n, 85n, 40n, 223n, 140n, 161n, 137n, 13n, 191n, 230n, 66n, 104n, 65n, 153n, 45n, 15n, 176n, 84n, 187n, 22n];
+export const RCON = [0n, 1n, 2n, 4n, 8n, 16n, 32n, 64n, 128n, 27n, 54n];
+export const NR = 10n;
+export const BLOCK = 16n;
+export const NK_ROUND_KEYS = fieldAdd(NR, 1n);
+export const GF8_AES_POLY = 27n;
+export const LAMBDA_BYTES = 16n;
+export const TAU = 4n;
+export const SUB_VOLE_N = 8n;
+export const SUB_VOLE_K = 3n;
+export const L_HAT_BYTES = 16n;
+export const W_GRIND = 4n;
+export const COM_BYTES = 32n;
+export const TOY_P = 2147483647n;
+export const TOY_G = 7n;
+export const IKNP_KAPPA = 128n;
+export const IKNP_KAPPA_BYTES = (IKNP_KAPPA / 8n);
+export const LWE_N = 16n;
+export const LWE_Q_BITS = 16n;
+export const LWE_Q = fieldShl(1n, LWE_Q_BITS);
+export const LWE_Q_MASK = fieldSub(LWE_Q, 1n);
+export const LWE_NOISE_BOUND = 1n;
 export const TAG_DOMAIN = new Uint8Array([/* byte string */]);
-export const Q4 = fieldShl(1, 30);
+export const Q4 = fieldShl(1n, 30n);
+
+export type Zq = bigint;
+
+export class U256 {
+  _0!: bigint[];
+
+  constructor(_0: bigint[]) {
+    this._0 = _0;
+  }
+
+  bit(n: bigint): boolean
+  {
+    const word = Number((n / 64n));
+    const bit = (n % 64n);
+    return (() => { if ((word < 4n)) {
+  return (fieldBitand(fieldShr(this._0[Number(word)], bit), 1n) !== 0n);
+} else {
+  return false;
+} })();
+  }
+
+  high_bit(): boolean
+  {
+    return (fieldShr(this._0[Number(3n)], 63n) !== 0n);
+  }
+
+  is_zero(): boolean
+  {
+    return ((((this._0[Number(0n)] === 0n) && (this._0[Number(1n)] === 0n)) && (this._0[Number(2n)] === 0n)) && (this._0[Number(3n)] === 0n));
+  }
+
+  shl1(): U256
+  {
+    let out = Array.from({length: Number(4n)}, () => 0n);
+    out[Number(0n)] = fieldShl(this._0[Number(0n)], 1n);
+    out[Number(1n)] = fieldBitor(fieldShl(this._0[Number(1n)], 1n), fieldShr(this._0[Number(0n)], 63n));
+    out[Number(2n)] = fieldBitor(fieldShl(this._0[Number(2n)], 1n), fieldShr(this._0[Number(1n)], 63n));
+    out[Number(3n)] = fieldBitor(fieldShl(this._0[Number(3n)], 1n), fieldShr(this._0[Number(2n)], 63n));
+    return new U256(out);
+  }
+
+  shr1(): U256
+  {
+    let out = Array.from({length: Number(4n)}, () => 0n);
+    out[Number(0n)] = fieldBitor(fieldShr(this._0[Number(0n)], 1n), fieldShl(this._0[Number(1n)], 63n));
+    out[Number(1n)] = fieldBitor(fieldShr(this._0[Number(1n)], 1n), fieldShl(this._0[Number(2n)], 63n));
+    out[Number(2n)] = fieldBitor(fieldShr(this._0[Number(2n)], 1n), fieldShl(this._0[Number(3n)], 63n));
+    out[Number(3n)] = fieldShr(this._0[Number(3n)], 1n);
+    return new U256(out);
+  }
+
+  xor(other: U256): U256
+  {
+    return new U256([fieldBitxor(this._0[Number(0n)], other._0[Number(0n)]), fieldBitxor(this._0[Number(1n)], other._0[Number(1n)]), fieldBitxor(this._0[Number(2n)], other._0[Number(2n)]), fieldBitxor(this._0[Number(3n)], other._0[Number(3n)])]);
+  }
+}
+
+export class Bit {
+  _0!: boolean;
+
+  constructor(_0: boolean) {
+    this._0 = _0;
+  }
+
+  bitxor(rhs: bigint): Bit
+  {
+    return new Bit(fieldBitxor(this._0, (fieldBitand(rhs, 1n) !== 0n)));
+  }
+}
+
+export class Galois {
+  _0!: bigint;
+
+  constructor(_0: bigint) {
+    this._0 = _0;
+  }
+
+  add(rhs: Galois): Galois
+  {
+    return new Galois(fieldBitxor(this._0, rhs._0));
+  }
+
+  bitxor(rhs: bigint): Galois
+  {
+    return new Galois(fieldBitxor(this._0, rhs));
+  }
+
+  invert(): Galois
+  {
+    return new Galois(gf_invert_u8(this._0, GF8_POLY));
+  }
+
+  mul(rhs: Galois): Galois
+  {
+    return new Galois(gf_mul_u8(this._0, rhs._0, GF8_POLY));
+  }
+
+  sub(rhs: Galois): Galois
+  {
+    return new Galois(fieldBitxor(this._0, rhs._0));
+  }
+}
+
+export class BitsInBytes {
+  _0!: bigint;
+
+  constructor(_0: bigint) {
+    this._0 = _0;
+  }
+
+  add(rhs: BitsInBytes): BitsInBytes
+  {
+    return new BitsInBytes(fieldBitxor(this._0, rhs._0));
+  }
+
+  bitxor(rhs: bigint): BitsInBytes
+  {
+    return new BitsInBytes(fieldBitxor(this._0, rhs));
+  }
+
+  mul(rhs: BitsInBytes): BitsInBytes
+  {
+    return new BitsInBytes(fieldBitand(this._0, rhs._0));
+  }
+
+  sub(rhs: BitsInBytes): BitsInBytes
+  {
+    return new BitsInBytes(fieldBitxor(this._0, rhs._0));
+  }
+}
+
+export class Galois64 {
+  _0!: bigint;
+
+  constructor(_0: bigint) {
+    this._0 = _0;
+  }
+
+  add(rhs: Galois64): Galois64
+  {
+    return new Galois64(fieldBitxor(this._0, rhs._0));
+  }
+
+  bitxor(rhs: bigint): Galois64
+  {
+    return new Galois64(fieldBitxor(this._0, fieldMul(BigInt(rhs), 72340172838076673n)));
+  }
+
+  invert(): Galois64
+  {
+    return new Galois64(gf_invert_u64(this._0, GF64_POLY));
+  }
+
+  mul(rhs: Galois64): Galois64
+  {
+    return new Galois64(gf_mul_u64(this._0, rhs._0, GF64_POLY));
+  }
+
+  sub(rhs: Galois64): Galois64
+  {
+    return new Galois64(fieldBitxor(this._0, rhs._0));
+  }
+}
+
+export class BitsInBytes64 {
+  _0!: bigint;
+
+  constructor(_0: bigint) {
+    this._0 = _0;
+  }
+
+  add(rhs: BitsInBytes64): BitsInBytes64
+  {
+    return new BitsInBytes64(fieldBitxor(this._0, rhs._0));
+  }
+
+  bitxor(rhs: bigint): BitsInBytes64
+  {
+    return new BitsInBytes64(fieldBitxor(this._0, fieldMul(BigInt(rhs), 72340172838076673n)));
+  }
+
+  mul(rhs: BitsInBytes64): BitsInBytes64
+  {
+    return new BitsInBytes64(fieldBitand(this._0, rhs._0));
+  }
+
+  sub(rhs: BitsInBytes64): BitsInBytes64
+  {
+    return new BitsInBytes64(fieldBitxor(this._0, rhs._0));
+  }
+}
+
+export class Galois128 {
+  _0!: bigint;
+
+  constructor(_0: bigint) {
+    this._0 = _0;
+  }
+
+  add(rhs: Galois128): Galois128
+  {
+    return new Galois128(fieldBitxor(this._0, rhs._0));
+  }
+
+  bitxor(rhs: bigint): Galois128
+  {
+    return new Galois128(fieldBitxor(this._0, (rhs as unknown as bigint)));
+  }
+
+  invert(): Galois128
+  {
+    return new Galois128(gf_invert_u128(this._0, GF128_POLY));
+  }
+
+  mul(rhs: Galois128): Galois128
+  {
+    return new Galois128(gf_mul_u128(this._0, rhs._0, GF128_POLY));
+  }
+
+  sub(rhs: Galois128): Galois128
+  {
+    return new Galois128(fieldBitxor(this._0, rhs._0));
+  }
+}
+
+export class Galois256 {
+  _0!: U256;
+
+  constructor(_0: U256) {
+    this._0 = _0;
+  }
+
+  add(rhs: Galois256): Galois256
+  {
+    return new Galois256(this._0.xor(rhs._0));
+  }
+
+  invert(): Galois256
+  {
+    return new Galois256(gf_invert_256(this._0, GF256_POLY));
+  }
+
+  mul(rhs: Galois256): Galois256
+  {
+    return new Galois256(gf_mul_256(this._0, rhs._0, GF256_POLY));
+  }
+
+  sub(rhs: Galois256): Galois256
+  {
+    return new Galois256(this._0.xor(rhs._0));
+  }
+}
+
+export class Z3 {
+  _0!: bigint;
+
+  constructor(_0: bigint) {
+    this._0 = _0;
+  }
+
+  add(rhs: Z3): Z3
+  {
+    return new Z3(Z3.add3(this._0, rhs._0));
+  }
+
+  static add3(a: bigint, b: bigint): bigint
+  {
+    const s = fieldAdd(a, b);
+    return (() => { if ((s >= 3n)) {
+  return fieldSub(s, 3n);
+} else {
+  return s;
+} })();
+  }
+
+  mul(rhs: Z3): Z3
+  {
+    return new Z3(Z3.mul3(this._0, rhs._0));
+  }
+
+  static mul3(a: bigint, b: bigint): bigint
+  {
+    const p = fieldMul(a, b);
+    return (() => { if ((p >= 3n)) {
+  return fieldSub(p, 3n);
+} else {
+  return p;
+} })();
+  }
+
+  static neg3(a: bigint): bigint
+  {
+    return (() => { if ((a === 0n)) {
+  return 0n;
+} else {
+  return fieldSub(3n, a);
+} })();
+  }
+
+  sub(rhs: Z3): Z3
+  {
+    return new Z3(Z3.add3(this._0, Z3.neg3(rhs._0)));
+  }
+}
+
+export class TropicalDyn<T> {
+  _0!: T;
+
+  constructor(_0: T) {
+    this._0 = _0;
+  }
+
+  add<T>(rhs: TropicalDyn<T>): TropicalDyn<T>
+  {
+    return new TropicalDyn(BigInt(Math.min(Number(this._0), Number(rhs._0))));
+  }
+
+  mul<U>(rhs: TropicalDyn<any>): TropicalDyn<T>
+  {
+    return new TropicalDyn(fieldAdd(this._0, rhs._0));
+  }
+}
 
 export class ABODyn<B, D> {
-  k!: number;
-  n!: number;
-  commit!: number[];
-  per_byte!: number[][][];
+  k!: bigint;
+  n!: bigint;
+  commit!: bigint[];
+  per_byte!: bigint[][][];
 
   constructor(init: { 
-    k: number,
-    n: number,
-    commit: number[],
-    per_byte: number[][][]
+    k: bigint,
+    n: bigint,
+    commit: bigint[],
+    per_byte: bigint[][][]
   }) {
     Object.assign(this, init);
   }
 
-  open(t: number, u: number, m: number, bad: bigint[], rand: R): ABOOpeningDyn<B, D>
+  open<B, D>(t: bigint, u: bigint, m: bigint, bad: bigint[], rand: R): ABOOpeningDyn<B, D>
   {
-    const k: number = this.k;
-    const n: number = this.n;
-    return new ABOOpeningDyn({ bad: __clone(bad), openings: Array.from({length: n - 0}, (_, __i) => __i + 0).map((ni: any) => (() => {
+    const k: bigint = this.k;
+    const n: bigint = this.n;
+    return new ABOOpeningDyn({ bad: __clone(bad), openings: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((ni: any) => (() => {
   const bad_1 = __clone(bad);
-  return Array.from({length: t - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
+  return Array.from({length: Number(t - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   const bad_2 = __clone(bad_1);
-  return Array.from({length: u - 0}, (_, __i) => __i + 0).map((j: any) => (() => {
+  return Array.from({length: Number(u - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
   const i2 = fieldBitor(i, fieldShl(Number(j), ilog2(t)));
   return (() => { if (bad_2.includes(BigInt(i2))) {
-  const h = hashCommit(this.per_byte[ni][i2], rand);
-  return Array.from({length: m - 0}, (_, __i) => __i + 0).map((j: any) => (asRefU8(h)?.[j] ?? 0));
+  const h = hashCommit(this.per_byte[Number(ni)][Number(i2)], rand);
+  return Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (asRefU8(h)?.[j] ?? 0));
 } else {
-  return Array.from({length: m - 0}, (_, __i) => __i + 0).map((j: any) => (() => {
-  return (this.per_byte[ni][i2]?.[j] ?? 0);
+  return Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
+  return (this.per_byte[Number(ni)][Number(i2)]?.[j] ?? 0);
 })());
 } })();
 })());
 })());
-})()), t: 0, u: 0, n: 0 });
+})()), t: 0n, u: 0n, n: 0n });
   }
 
-  split_bit_typenum(ctx: { B_OutputSize: number, D_OutputSize: number }, m: number, target: number): BSplitDyn<B, D>[]
+  split_bit_typenum<B, D>(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, NClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, m: bigint, target: bigint): BSplitDyn<B, D>[]
   {
-    const k: number = this.k;
-    const n: number = this.n;
-    return Array.from({length: m - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const s = this.per_byte[N.party_index(target)].slice(fieldMul(i, m)).slice(0, m);
-  return new BSplitDyn({ split: Array.from({length: ilog2(ctx.D_OutputSize) - 0}, (_, __i) => __i + 0).map((j: any) => (() => {
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((b: any) => (() => {
+    const k: bigint = this.k;
+    const n: bigint = this.n;
+    return Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const s = this.per_byte[Number(ctx.NClass.party_index(target))].slice(Number(fieldMul(i, m))).slice(0, Number(m));
+  return new BSplitDyn({ split: Array.from({length: Number(ilog2(ctx.D_OutputSize) - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
+  return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((b: any) => (() => {
   return s.map((val: any, i: number) => [i, val] as [number, typeof val]).map(([a, c]: any) => (() => {
-  return (() => { if ((fieldBitand(fieldShr(a, j), 1) === b)) {
+  return (() => { if ((fieldBitand(fieldShr(a, j), 1n) === b)) {
   return __clone(c);
 } else {
   return undefined;
 } })();
 })()).filter((__x: any) => __x !== undefined).reduce((a: any, b: any) => (() => {
-  return Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i: any) => fieldBitxor(a[i], b[i]));
-})(), Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((_: any) => 0));
+  return Array.from({length: Number(ctx.B_OutputSize - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldBitxor(a[Number(i)], b[Number(i)]));
+})(), Array.from({length: Number(ctx.B_OutputSize - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n));
 })());
 })()) });
 })());
   }
 
-  to_vole_material(ctx: { B_OutputSize: number }, m: number, target: number): VopeDyn<number>[]
+  to_vole_material(ctx: { B_OutputSize: bigint, NClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, m: bigint, target: bigint): VopeDyn<bigint>[]
   {
-    const k: number = this.k;
-    const n: number = this.n;
-    return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const s = this.per_byte[N.party_index(target)].slice(fieldMul(i, m)).slice(0, m);
+    const k: bigint = this.k;
+    const n: bigint = this.n;
+    return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const s = this.per_byte[Number(ctx.NClass.party_index(target))].slice(Number(fieldMul(i, m))).slice(0, Number(m));
   return create_vole_from_material(ctx, s);
 })());
   }
 
-  to_vole_material_expanded(ctx: { B_OutputSize: number }, m: number, target: number, f: (arg: Uint8Array) => any): VopeDyn<number>[]
+  to_vole_material_expanded(ctx: { B_OutputSize: bigint, NClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, m: bigint, target: bigint, f: (arg: Uint8Array) => any): VopeDyn<bigint>[]
   {
-    const k: number = this.k;
-    const n: number = this.n;
-    return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const s = this.per_byte[N.party_index(target)].slice(fieldMul(i, m)).slice(0, m);
+    const k: bigint = this.k;
+    const n: bigint = this.n;
+    return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const s = this.per_byte[Number(ctx.NClass.party_index(target))].slice(Number(fieldMul(i, m))).slice(0, Number(m));
   return create_vole_from_material_expanded(ctx, s, f);
 })());
   }
 
-  to_vole_material_typenum(ctx: { B_OutputSize: number }, m: number, target: number): VopeDyn<number>[]
+  to_vole_material_typenum(ctx: { B_OutputSize: bigint, NClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, m: bigint, target: bigint): VopeDyn<bigint>[]
   {
-    const k: number = this.k;
-    const n: number = this.n;
-    return Array.from({length: m - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const s = this.per_byte[N.party_index(target)].slice(fieldMul(i, m)).slice(0, m);
+    const k: bigint = this.k;
+    const n: bigint = this.n;
+    return Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const s = this.per_byte[Number(ctx.NClass.party_index(target))].slice(Number(fieldMul(i, m))).slice(0, Number(m));
   return create_vole_from_material(ctx, s);
 })());
   }
 
-  to_vole_material_typenum_expanded(ctx: { B_OutputSize: number }, m: number, target: number, f: (arg: Uint8Array) => any): VopeDyn<number>[]
+  to_vole_material_typenum_expanded(ctx: { B_OutputSize: bigint, NClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, m: bigint, target: bigint, f: (arg: Uint8Array) => any): VopeDyn<bigint>[]
   {
-    const k: number = this.k;
-    const n: number = this.n;
-    return Array.from({length: m - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const s = this.per_byte[N.party_index(target)].slice(fieldMul(i, m)).slice(0, m);
+    const k: bigint = this.k;
+    const n: bigint = this.n;
+    return Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const s = this.per_byte[Number(ctx.NClass.party_index(target))].slice(Number(fieldMul(i, m))).slice(0, Number(m));
   return create_vole_from_material_expanded(ctx, s, f);
 })());
   }
 }
 
 export class ABOOpeningDyn<B, D> {
-  t!: number;
-  u!: number;
-  n!: number;
+  t!: bigint;
+  u!: bigint;
+  n!: bigint;
   bad!: bigint[];
-  openings!: number[][][][];
+  openings!: bigint[][][][];
 
   constructor(init: { 
-    t: number,
-    u: number,
-    n: number,
+    t: bigint,
+    u: bigint,
+    n: bigint,
     bad: bigint[],
-    openings: number[][][][]
+    openings: bigint[][][][]
   }) {
     Object.assign(this, init);
   }
 
-  split_bit_typenum(ctx: { B_OutputSize: number, D_OutputSize: number }, m: number, party: number): BSplitDyn<B, D>[]
+  split_bit_typenum<B, D>(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, NClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, m: bigint, party: bigint): BSplitDyn<B, D>[]
   {
-    const t: number = this.t;
-    const u: number = this.u;
-    const n: number = this.n;
-    return Array.from({length: m - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const s = this.openings[N.party_index(party)][i];
-  return new BSplitDyn({ split: Array.from({length: ilog2(ctx.D_OutputSize) - 0}, (_, __i) => __i + 0).map((j: any) => (() => {
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((b: any) => (() => {
+    const t: bigint = this.t;
+    const u: bigint = this.u;
+    const n: bigint = this.n;
+    return Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const s = this.openings[Number(ctx.NClass.party_index(party))][Number(i)];
+  return new BSplitDyn({ split: Array.from({length: Number(ilog2(ctx.D_OutputSize) - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
+  return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((b: any) => (() => {
   return s.map((val: any, i: number) => [i, val] as [number, typeof val]).map(([a, c]: any) => (() => {
-  return (() => { if ((fieldBitand(fieldShr(a, j), 1) === b)) {
+  return (() => { if ((fieldBitand(fieldShr(a, j), 1n) === b)) {
   return __clone(c);
 } else {
   return undefined;
 } })();
 })()).filter((__x: any) => __x !== undefined).reduce((a: any, b: any) => (() => {
-  return Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i: any) => fieldBitxor(a[i], b[i]));
-})(), Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((_: any) => 0));
+  return Array.from({length: Number(ctx.B_OutputSize - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldBitxor(a[Number(i)], b[Number(i)]));
+})(), Array.from({length: Number(ctx.B_OutputSize - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n));
 })());
 })()) });
 })());
   }
 
-  to_vole_material(ctx: { B_OutputSize: number }, m: number, party: number): VopeDyn<number>[]
+  to_vole_material(ctx: { B_OutputSize: bigint, NClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, m: bigint, party: bigint): VopeDyn<bigint>[]
   {
-    const t: number = this.t;
-    const u: number = this.u;
-    const n: number = this.n;
-    return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const s = this.openings[N.party_index(party)][i];
+    const t: bigint = this.t;
+    const u: bigint = this.u;
+    const n: bigint = this.n;
+    return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const s = this.openings[Number(ctx.NClass.party_index(party))][Number(i)];
   return create_vole_from_material(ctx, s);
 })());
   }
 
-  to_vole_material_expanded(ctx: { B_OutputSize: number }, m: number, party: number, f: (arg: Uint8Array) => any): VopeDyn<number>[]
+  to_vole_material_expanded(ctx: { B_OutputSize: bigint, NClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, m: bigint, party: bigint, f: (arg: Uint8Array) => any): VopeDyn<bigint>[]
   {
-    const t: number = this.t;
-    const u: number = this.u;
-    const n: number = this.n;
-    return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const s = this.openings[N.party_index(party)][i];
+    const t: bigint = this.t;
+    const u: bigint = this.u;
+    const n: bigint = this.n;
+    return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const s = this.openings[Number(ctx.NClass.party_index(party))][Number(i)];
   return create_vole_from_material_expanded(ctx, s, f);
 })());
   }
 
-  to_vole_material_typenum(ctx: { B_OutputSize: number }, m: number, party: number): VopeDyn<number>[]
+  to_vole_material_typenum(ctx: { B_OutputSize: bigint, NClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, m: bigint, party: bigint): VopeDyn<bigint>[]
   {
-    const t: number = this.t;
-    const u: number = this.u;
-    const n: number = this.n;
-    return Array.from({length: m - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const s = this.openings[N.party_index(party)][i];
+    const t: bigint = this.t;
+    const u: bigint = this.u;
+    const n: bigint = this.n;
+    return Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const s = this.openings[Number(ctx.NClass.party_index(party))][Number(i)];
   return create_vole_from_material(ctx, s);
 })());
   }
 
-  to_vole_material_typenum_expanded(ctx: { B_OutputSize: number }, m: number, party: number, f: (arg: Uint8Array) => any): VopeDyn<number>[]
+  to_vole_material_typenum_expanded(ctx: { B_OutputSize: bigint, NClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, m: bigint, party: bigint, f: (arg: Uint8Array) => any): VopeDyn<bigint>[]
   {
-    const t: number = this.t;
-    const u: number = this.u;
-    const n: number = this.n;
-    return Array.from({length: m - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const s = this.openings[N.party_index(party)][i];
+    const t: bigint = this.t;
+    const u: bigint = this.u;
+    const n: bigint = this.n;
+    return Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const s = this.openings[Number(ctx.NClass.party_index(party))][Number(i)];
   return create_vole_from_material_expanded(ctx, s, f);
 })());
   }
 
-  validate(ctx: { B_OutputSize: number, D_OutputSize: number, newD: () => any }, commit_: number[], rand: R): boolean
+  validate(ctx: { B_OutputSize: bigint, D_OutputSize: bigint, newD: () => any }, commit_: bigint[], rand: R): boolean
   {
-    const t: number = this.t;
-    const u: number = this.u;
-    const n: number = this.n;
+    const t: bigint = this.t;
+    const u: bigint = this.u;
+    const n: bigint = this.n;
     let h = ctx.newD();
-    for (let i = 0; i < t; i++)     {
-      for (let b = 0; b < u; b++)       {
+    for (let i = 0n; i < t; i += 1n)     {
+      for (let b = 0n; b < u; b += 1n)       {
         const i2 = fieldBitor(i, fieldShl(Number(b), ilog2(t)));
         if (this.bad.includes(BigInt(i2)))         {
-          h.update(this.openings[0][i][b].slice(0, ctx.D_OutputSize));
+          h.update(this.openings[Number(0n)][Number(i)][Number(b)].slice(0, Number(ctx.D_OutputSize)));
         } else         {
-          h.update(hashCommit(this.openings[0][i][b].slice(0, ctx.B_OutputSize), rand));
+          h.update(hashCommit(this.openings[Number(0n)][Number(i)][Number(b)].slice(0, Number(ctx.B_OutputSize)), rand));
         }
       }
     }
@@ -281,10 +604,10 @@ export class ABOOpeningDyn<B, D> {
 }
 
 export class BSplitDyn<B, D> {
-  split!: number[][][];
+  split!: bigint[][][];
 
   constructor(init: { 
-    split: number[][][]
+    split: bigint[][][]
   }) {
     Object.assign(this, init);
   }
@@ -304,7 +627,7 @@ export class Fe25519 {
 
   is_zero(): boolean
   {
-    return (this._0 === [0, 0, 0, 0]);
+    return (this._0 === [0n, 0n, 0n, 0n]);
   }
 
   mul(rhs: Fe25519): Fe25519
@@ -322,11 +645,11 @@ export class Fe25519 {
     return fe_sub(this, rhs);
   }
 
-  to_bytes(): number[]
+  to_bytes(): bigint[]
   {
-    let out = Array.from({length: 32}, () => 0);
-    for (let i = 0; i < 4; i++)     {
-      (out.slice(fieldMul(i, 8), fieldAdd(fieldMul(i, 8), 8))).splice(0, ([(this._0[i]) & 0xFF, ((this._0[i]) >> 8) & 0xFF, ((this._0[i]) >> 16) & 0xFF, ((this._0[i]) >> 24) & 0xFF]).length, ...([(this._0[i]) & 0xFF, ((this._0[i]) >> 8) & 0xFF, ((this._0[i]) >> 16) & 0xFF, ((this._0[i]) >> 24) & 0xFF]));
+    let out = Array.from({length: Number(32n)}, () => 0n);
+    for (let i = 0n; i < 4n; i += 1n)     {
+      (out.slice(Number(fieldMul(i, 8n)), Number(fieldAdd(fieldMul(i, 8n), 8n)))).splice(0, ([(this._0[Number(i)]) & 0xFFn, ((this._0[Number(i)]) >> 8n) & 0xFFn, ((this._0[Number(i)]) >> 16n) & 0xFFn, ((this._0[Number(i)]) >> 24n) & 0xFFn]).length, ...([(this._0[Number(i)]) & 0xFFn, ((this._0[Number(i)]) >> 8n) & 0xFFn, ((this._0[Number(i)]) >> 16n) & 0xFFn, ((this._0[Number(i)]) >> 24n) & 0xFFn]));
     }
     return out;
   }
@@ -392,17 +715,17 @@ export class Ed25519 {
     return ed_neg(a);
   }
 
-  static random_scalar<R>(rng: R): number[]
+  static random_scalar<R>(rng: R): bigint[]
   {
-    let k = Array.from({length: 32}, () => 0);
+    let k = Array.from({length: Number(32n)}, () => 0n);
     for (const byte of k.iter_mut())     {
       byte = rng.next_u8();
     }
-    k[31] &= 63;
+    k[Number(31n)] &= 63n;
     return k;
   }
 
-  static scalar_mul(elt: EdPoint, k: number[]): EdPoint
+  static scalar_mul(elt: EdPoint, k: bigint[]): EdPoint
   {
     return ed_scalar_mul(elt, k);
   }
@@ -416,94 +739,94 @@ export class Ed25519 {
 }
 
 export class BavcCommitmentDyn {
-  com_bytes!: number;
-  root!: Vec<number>;
-  vec_hashes!: Vec<Vec<number>>;
-  seeds!: Vec<number[]>;
-  commitments!: Vec<number[]>;
+  com_bytes!: bigint;
+  root!: Vec<bigint>;
+  vec_hashes!: Vec<Vec<bigint>>;
+  seeds!: Vec<bigint[]>;
+  commitments!: Vec<bigint[]>;
 
   constructor(init: { 
-    com_bytes: number,
-    root: Vec<number>,
-    vec_hashes: Vec<Vec<number>>,
-    seeds: Vec<number[]>,
-    commitments: Vec<number[]>
+    com_bytes: bigint,
+    root: Vec<bigint>,
+    vec_hashes: Vec<Vec<bigint>>,
+    seeds: Vec<bigint[]>,
+    commitments: Vec<bigint[]>
   }) {
     Object.assign(this, init);
   }
 }
 
 export class BavcOpeningDyn {
-  com_bytes!: number;
-  hidden_commits!: Vec<number[]>;
-  nodes!: Vec<[number, number[]]>;
+  com_bytes!: bigint;
+  hidden_commits!: Vec<bigint[]>;
+  nodes!: Vec<[bigint, bigint[]]>;
 
   constructor(init: { 
-    com_bytes: number,
-    hidden_commits: Vec<number[]>,
-    nodes: Vec<[number, number[]]>
+    com_bytes: bigint,
+    hidden_commits: Vec<bigint[]>,
+    nodes: Vec<[bigint, bigint[]]>
   }) {
     Object.assign(this, init);
   }
 }
 
 export class BavcDyn<L> {
-  com_bytes!: number;
+  com_bytes!: bigint;
 
   constructor(init: { 
-    com_bytes: number
+    com_bytes: bigint
   }) {
     Object.assign(this, init);
   }
 
-  static collect_open_nodes(com_bytes: number, deltas: readonly number[], tree: readonly number[][], tau: number, n: number): Vec<[number, number[]]>
+  static collect_open_nodes(com_bytes: bigint, deltas: readonly bigint[], tree: readonly bigint[][], tau: bigint, n: bigint): Vec<[bigint, bigint[]]>
   {
     const leaf_count = fieldMul(tau, n);
-    const total_nodes = fieldSub(fieldMul(2, leaf_count), 1);
+    const total_nodes = fieldSub(fieldMul(2n, leaf_count), 1n);
     let hidden = [];
     for (const [i, d] of deltas.map((val: any, i: number) => [i, val] as [number, typeof val]))     {
       const leaf_k = fieldAdd(fieldMul(i, n), d);
-      const tree_pos = fieldAdd(fieldSub(leaf_count, 1), leaf_k);
-      hidden[tree_pos] = true;
+      const tree_pos = fieldAdd(fieldSub(leaf_count, 1n), leaf_k);
+      hidden[Number(tree_pos)] = true;
     }
-    for (const node of (Array.from({length: fieldSub(leaf_count, 1) - 0}, (_, i) => i + 0)).slice().reverse())     {
-      hidden[node] = (hidden[fieldAdd(fieldMul(2, node), 1)] || hidden[fieldAdd(fieldMul(2, node), 2)]);
+    for (const node of (Array.from({length: Number(fieldSub(leaf_count, 1n) - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())     {
+      hidden[Number(node)] = (hidden[Number(fieldAdd(fieldMul(2n, node), 1n))] || hidden[Number(fieldAdd(fieldMul(2n, node), 2n))]);
     }
-    let out: Vec<[number, number[]]> = []();
-    walk(0, hidden, tree, leaf_count, out);
+    let out: Vec<[bigint, bigint[]]> = []();
+    walk(0n, hidden, tree, leaf_count, out);
     return out;
   }
 
-  static commit(ctx: { newD: () => any }, com_bytes: number, r: number[], iv: number[], tau: number, n: number): BavcCommitmentDyn
+  static commit(ctx: { newD: () => any }, com_bytes: bigint, r: bigint[], iv: bigint[], tau: bigint, n: bigint): BavcCommitmentDyn
   {
     const leaf_count = fieldMul(tau, n);
-    const total_nodes = fieldSub(fieldMul(2, leaf_count), 1);
-    let tree: Vec<number[]> = [];
-    tree[0] = r;
-    for (let node = 0; node < fieldSub(leaf_count, 1); node++)     {
-      const parent = Vec(tree[node]);
+    const total_nodes = fieldSub(fieldMul(2n, leaf_count), 1n);
+    let tree: Vec<bigint[]> = [];
+    tree[Number(0n)] = r;
+    for (let node = 0n; node < fieldSub(leaf_count, 1n); node += 1n)     {
+      const parent = Vec(tree[Number(node)]);
       const [left, right] = doubleVec(parent);
-      tree[fieldAdd(fieldMul(2, node), 1)] = left._0;
-      tree[fieldAdd(fieldMul(2, node), 2)] = right._0;
+      tree[Number(fieldAdd(fieldMul(2n, node), 1n))] = left._0;
+      tree[Number(fieldAdd(fieldMul(2n, node), 2n))] = right._0;
     }
     let seeds = /* Vec::with_capacity */ Array(leaf_count);
     let commitments = /* Vec::with_capacity */ Array(leaf_count);
-    for (let i = 0; i < tau; i++)     {
-      for (let j = 0; j < n; j++)       {
+    for (let i = 0n; i < tau; i += 1n)     {
+      for (let j = 0n; j < n; j += 1n)       {
         const leaf_k = fieldAdd(fieldMul(i, n), j);
-        const tree_pos = fieldAdd(fieldSub(leaf_count, 1), leaf_k);
-        const r_leaf = tree[tree_pos];
+        const tree_pos = fieldAdd(fieldSub(leaf_count, 1n), leaf_k);
+        const r_leaf = tree[Number(tree_pos)];
         const tweak = Number(leaf_k);
         const [sd, com] = hashCommit(r_leaf, iv, tweak);
         (seeds).push(sd);
         (commitments).push(com);
       }
     }
-    let vec_hashes: Vec<Vec<number>> = /* Vec::with_capacity */ Array(tau);
-    for (let i = 0; i < tau; i++)     {
+    let vec_hashes: Vec<Vec<bigint>> = /* Vec::with_capacity */ Array(tau);
+    for (let i = 0n; i < tau; i += 1n)     {
       let h = ctx.newD();
-      for (let j = 0; j < n; j++)       {
-        h.update(commitments[fieldAdd(fieldMul(i, n), j)]);
+      for (let j = 0n; j < n; j += 1n)       {
+        h.update(commitments[Number(fieldAdd(fieldMul(i, n), j))]);
       }
       (vec_hashes).push([...[...h.finalize()]]);
     }
@@ -512,73 +835,73 @@ export class BavcDyn<L> {
       h.update(hi);
     }
     const root = [...[...h.finalize()]];
-    return new BavcCommitmentDyn({ root: root, vec_hashes: vec_hashes, seeds: seeds, commitments: commitments, com_bytes: 0 });
+    return new BavcCommitmentDyn({ root: root, vec_hashes: vec_hashes, seeds: seeds, commitments: commitments, com_bytes: 0n });
   }
 
-  static open(com_bytes: number, commitment: BavcCommitmentDyn, deltas: readonly number[], tau: number, n: number): BavcOpeningDyn
+  static open(com_bytes: bigint, commitment: BavcCommitmentDyn, deltas: readonly bigint[], tau: bigint, n: bigint): BavcOpeningDyn
   {
     for (const [i, d] of deltas.map((val: any, i: number) => [i, val] as [number, typeof val]))     {
     }
     const leaf_count = fieldMul(tau, n);
-    const total_nodes = fieldSub(fieldMul(2, leaf_count), 1);
+    const total_nodes = fieldSub(fieldMul(2n, leaf_count), 1n);
     let hidden = [];
     for (const [i, d] of deltas.map((val: any, i: number) => [i, val] as [number, typeof val]))     {
       const leaf_k = fieldAdd(fieldMul(i, n), d);
-      const tree_pos = fieldAdd(fieldSub(leaf_count, 1), leaf_k);
-      hidden[tree_pos] = true;
+      const tree_pos = fieldAdd(fieldSub(leaf_count, 1n), leaf_k);
+      hidden[Number(tree_pos)] = true;
     }
-    for (const node of (Array.from({length: fieldSub(leaf_count, 1) - 0}, (_, i) => i + 0)).slice().reverse())     {
-      const left = fieldAdd(fieldMul(2, node), 1);
-      const right = fieldAdd(fieldMul(2, node), 2);
-      hidden[node] = (hidden[left] || hidden[right]);
+    for (const node of (Array.from({length: Number(fieldSub(leaf_count, 1n) - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())     {
+      const left = fieldAdd(fieldMul(2n, node), 1n);
+      const right = fieldAdd(fieldMul(2n, node), 2n);
+      hidden[Number(node)] = (hidden[Number(left)] || hidden[Number(right)]);
     }
-    let tree: Vec<number[]> = [];
+    let tree: Vec<bigint[]> = [];
     const _ = tree;
-    return new BavcOpeningDyn({ hidden_commits: deltas.map((val: any, i: number) => [i, val] as [number, typeof val]).map(([i, d]: any) => commitment.commitments[fieldAdd(fieldMul(i, n), d)]), nodes: [](), com_bytes: 0 });
+    return new BavcOpeningDyn({ hidden_commits: deltas.map((val: any, i: number) => [i, val] as [number, typeof val]).map(([i, d]: any) => commitment.commitments[Number(fieldAdd(fieldMul(i, n), d))]), nodes: [](), com_bytes: 0n });
   }
 
-  static reconstruct(ctx: { newD: () => any }, com_bytes: number, nodes: readonly [number, number[]][], hidden_commits: readonly number[][], deltas: readonly number[], iv: number[], expected_root: readonly number[], tau: number, n: number): (Vec<number[]> | undefined)
+  static reconstruct(ctx: { newD: () => any }, com_bytes: bigint, nodes: readonly [bigint, bigint[]][], hidden_commits: readonly bigint[][], deltas: readonly bigint[], iv: bigint[], expected_root: readonly bigint[], tau: bigint, n: bigint): (Vec<bigint[]> | undefined)
   {
     const leaf_count = fieldMul(tau, n);
-    const total_nodes = fieldSub(fieldMul(2, leaf_count), 1);
+    const total_nodes = fieldSub(fieldMul(2n, leaf_count), 1n);
     let hidden = [];
     for (const [i, d] of deltas.map((val: any, i: number) => [i, val] as [number, typeof val]))     {
       const leaf_k = fieldAdd(fieldMul(i, n), d);
-      const tree_pos = fieldAdd(fieldSub(leaf_count, 1), leaf_k);
-      hidden[tree_pos] = true;
+      const tree_pos = fieldAdd(fieldSub(leaf_count, 1n), leaf_k);
+      hidden[Number(tree_pos)] = true;
     }
-    for (const node of (Array.from({length: fieldSub(leaf_count, 1) - 0}, (_, i) => i + 0)).slice().reverse())     {
-      hidden[node] = (hidden[fieldAdd(fieldMul(2, node), 1)] || hidden[fieldAdd(fieldMul(2, node), 2)]);
+    for (const node of (Array.from({length: Number(fieldSub(leaf_count, 1n) - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())     {
+      hidden[Number(node)] = (hidden[Number(fieldAdd(fieldMul(2n, node), 1n))] || hidden[Number(fieldAdd(fieldMul(2n, node), 2n))]);
     }
-    let tree: Vec<(number[] | undefined)> = [];
+    let tree: Vec<(bigint[] | undefined)> = [];
     for (const [idx, seed] of nodes)     {
-      tree[idx] = seed;
+      tree[Number(idx)] = seed;
     }
-    for (let node = 0; node < fieldSub(leaf_count, 1); node++)     {
-      return (() => { const __match = tree[node]; if (__match !== null && __match !== undefined) { const parent_seed = __match;
+    for (let node = 0n; node < fieldSub(leaf_count, 1n); node += 1n)     {
+      return (() => { const __match = tree[Number(node)]; if (__match !== null && __match !== undefined) { const parent_seed = __match;
 return (() => {
   const parent = Vec(parent_seed);
   const [left, right] = doubleVec(parent);
-  if ((tree[fieldAdd(fieldMul(2, node), 1)]) == null)   {
-    tree[fieldAdd(fieldMul(2, node), 1)] = left._0;
+  if ((tree[Number(fieldAdd(fieldMul(2n, node), 1n))]) == null)   {
+    tree[Number(fieldAdd(fieldMul(2n, node), 1n))] = left._0;
   }
-  if ((tree[fieldAdd(fieldMul(2, node), 2)]) == null)   {
-    tree[fieldAdd(fieldMul(2, node), 2)] = right._0;
+  if ((tree[Number(fieldAdd(fieldMul(2n, node), 2n))]) == null)   {
+    tree[Number(fieldAdd(fieldMul(2n, node), 2n))] = right._0;
   }
 })(); } else { return (() => {
 })(); } })();
     }
-    let leaf_seeds: Vec<number[]> = /* Vec::with_capacity */ Array(leaf_count);
-    let leaf_coms: Vec<number[]> = /* Vec::with_capacity */ Array(leaf_count);
-    for (let i = 0; i < tau; i++)     {
-      for (let j = 0; j < n; j++)       {
+    let leaf_seeds: Vec<bigint[]> = /* Vec::with_capacity */ Array(leaf_count);
+    let leaf_coms: Vec<bigint[]> = /* Vec::with_capacity */ Array(leaf_count);
+    for (let i = 0n; i < tau; i += 1n)     {
+      for (let j = 0n; j < n; j += 1n)       {
         const leaf_k = fieldAdd(fieldMul(i, n), j);
-        const tree_pos = fieldAdd(fieldSub(leaf_count, 1), leaf_k);
-        if ((j === deltas[i]))         {
-          (leaf_seeds).push(Array.from({length: LAMBDA_BYTES}, () => 0));
-          (leaf_coms).push(hidden_commits[i]);
+        const tree_pos = fieldAdd(fieldSub(leaf_count, 1n), leaf_k);
+        if ((j === deltas[Number(i)]))         {
+          (leaf_seeds).push(Array.from({length: Number(LAMBDA_BYTES)}, () => 0n));
+          (leaf_coms).push(hidden_commits[Number(i)]);
         } else         {
-          const r_leaf = tree[tree_pos];
+          const r_leaf = tree[Number(tree_pos)];
           const tweak = Number(leaf_k);
           const [sd, com] = hashCommit(r_leaf, iv, tweak);
           (leaf_seeds).push(sd);
@@ -586,11 +909,11 @@ return (() => {
         }
       }
     }
-    let vec_hashes: Vec<Vec<number>> = /* Vec::with_capacity */ Array(tau);
-    for (let i = 0; i < tau; i++)     {
+    let vec_hashes: Vec<Vec<bigint>> = /* Vec::with_capacity */ Array(tau);
+    for (let i = 0n; i < tau; i += 1n)     {
       let h = ctx.newD();
-      for (let j = 0; j < n; j++)       {
-        h.update(leaf_coms[fieldAdd(fieldMul(i, n), j)]);
+      for (let j = 0n; j < n; j += 1n)       {
+        h.update(leaf_coms[Number(fieldAdd(fieldMul(i, n), j))]);
       }
       (vec_hashes).push([...[...h.finalize()]]);
     }
@@ -608,36 +931,36 @@ return (() => {
 }
 
 export class ConvertOutput {
-  u!: Vec<number>;
-  v!: Vec<Vec<number>>;
+  u!: Vec<bigint>;
+  v!: Vec<Vec<bigint>>;
 
   constructor(init: { 
-    u: Vec<number>,
-    v: Vec<Vec<number>>
+    u: Vec<bigint>,
+    v: Vec<Vec<bigint>>
   }) {
     Object.assign(this, init);
   }
 }
 
 export class BigVoleProver {
-  u!: Vec<number>;
-  c!: Vec<Vec<number>>;
-  v_columns!: Vec<Vec<number>>;
+  u!: Vec<bigint>;
+  c!: Vec<Vec<bigint>>;
+  v_columns!: Vec<Vec<bigint>>;
 
   constructor(init: { 
-    u: Vec<number>,
-    c: Vec<Vec<number>>,
-    v_columns: Vec<Vec<number>>
+    u: Vec<bigint>,
+    c: Vec<Vec<bigint>>,
+    v_columns: Vec<Vec<bigint>>
   }) {
     Object.assign(this, init);
   }
 }
 
 export class BigVoleVerifier {
-  q_columns!: Vec<Vec<number>>;
+  q_columns!: Vec<Vec<bigint>>;
 
   constructor(init: { 
-    q_columns: Vec<Vec<number>>
+    q_columns: Vec<Vec<bigint>>
   }) {
     Object.assign(this, init);
   }
@@ -650,18 +973,18 @@ export class RoLeafCommitDyn<D> {
     Object.assign(this, init);
   }
 
-  static commit(ctx: { newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, r: number[], iv: number[], tweak: number): [number[], number[]]
+  static commit(ctx: { newD: () => any, DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, sd_bytes: bigint, com_bytes: bigint, r: bigint[], iv: bigint[], tweak: bigint): [bigint[], bigint[]]
   {
     const out_size = ctx.DClass.output_size();
     let h = ctx.newD();
     h.update(r);
     h.update(iv);
-    h.update([(tweak) & 0xFF, ((tweak) >> 8) & 0xFF, ((tweak) >> 16) & 0xFF, ((tweak) >> 24) & 0xFF]);
+    h.update([(tweak) & 0xFFn, ((tweak) >> 8n) & 0xFFn, ((tweak) >> 16n) & 0xFFn, ((tweak) >> 24n) & 0xFFn]);
     const digest = [...h.finalize()];
-    let sd = Array.from({length: sd_bytes}, () => 0);
-    let com = Array.from({length: com_bytes}, () => 0);
-    (sd).splice(0, (digest.slice(0, sd_bytes)).length, ...(digest.slice(0, sd_bytes)));
-    (com).splice(0, (digest.slice(sd_bytes, fieldAdd(sd_bytes, com_bytes))).length, ...(digest.slice(sd_bytes, fieldAdd(sd_bytes, com_bytes))));
+    let sd = Array.from({length: Number(sd_bytes)}, () => 0n);
+    let com = Array.from({length: Number(com_bytes)}, () => 0n);
+    (sd).splice(0, (digest.slice(0, Number(sd_bytes))).length, ...(digest.slice(0, Number(sd_bytes))));
+    (com).splice(0, (digest.slice(Number(sd_bytes), Number(fieldAdd(sd_bytes, com_bytes)))).length, ...(digest.slice(Number(sd_bytes), Number(fieldAdd(sd_bytes, com_bytes)))));
     return [sd, com];
   }
 }
@@ -673,15 +996,15 @@ export class EmLeafCommit {
     Object.assign(this, init);
   }
 
-  static commit(r: number[], iv: number[], tweak: number): [number[], number[]]
+  static commit(sd_bytes: bigint, com_bytes: bigint, r: bigint[], iv: bigint[], tweak: bigint): [bigint[], bigint[]]
   {
-    let seed_buf = Array.from({length: 16}, () => 0);
+    let seed_buf = Array.from({length: Number(16n)}, () => 0n);
     (seed_buf).splice(0, (r.slice(0)).length, ...(r.slice(0)));
     const com_vec = aes_ctr_prg(seed_buf, iv, tweak, com_bytes);
-    let sd = Array.from({length: sd_bytes}, () => 0);
+    let sd = Array.from({length: Number(sd_bytes)}, () => 0n);
     (sd).splice(0, (r).length, ...(r));
-    let com = Array.from({length: com_bytes}, () => 0);
-    (com).splice(0, (com_vec.slice(0, com_bytes)).length, ...(com_vec.slice(0, com_bytes)));
+    let com = Array.from({length: Number(com_bytes)}, () => 0n);
+    (com).splice(0, (com_vec.slice(0, Number(com_bytes))).length, ...(com_vec.slice(0, Number(com_bytes))));
     return [sd, com];
   }
 }
@@ -693,73 +1016,73 @@ export class AesCtrLengthDoubler {
     Object.assign(this, init);
   }
 
-  static double(a: number[]): number[][]
+  static double(a: bigint[]): bigint[][]
   {
-    let block0 = Array.from({length: BLOCK}, () => 0);
-    let block1 = Array.from({length: BLOCK}, () => 0);
-    block1[0] = 1;
-    const key: number[] = a._0;
+    let block0 = Array.from({length: Number(BLOCK)}, () => 0n);
+    let block1 = Array.from({length: Number(BLOCK)}, () => 0n);
+    block1[Number(0n)] = 1n;
+    const key: bigint[] = a._0;
     const c0 = encrypt_block(key, block0);
     const c1 = encrypt_block(key, block1);
-    (block0).fill(0);
-    (block1).fill(0);
+    (block0).fill(0n);
+    (block1).fill(0n);
     return [Vec(c0), Vec(c1)];
   }
 }
 
 export class FaestSecretKey {
-  _0!: number[];
+  _0!: bigint[];
 
-  constructor(_0: number[]) {
+  constructor(_0: bigint[]) {
     this._0 = _0;
   }
 }
 
 export class FaestPublicKey {
-  _0!: number[];
+  _0!: bigint[];
 
-  constructor(_0: number[]) {
+  constructor(_0: bigint[]) {
     this._0 = _0;
   }
 }
 
 export class FaestSignature {
-  iv!: number[];
-  bavc_root!: Vec<number>;
-  hidden_commits!: Vec<number[]>;
-  nodes!: Vec<[number, number[]]>;
-  corrections!: Vec<Vec<number>>;
-  vole_u!: Vec<number>;
+  iv!: bigint[];
+  bavc_root!: Vec<bigint>;
+  hidden_commits!: Vec<bigint[]>;
+  nodes!: Vec<[bigint, bigint[]]>;
+  corrections!: Vec<Vec<bigint>>;
+  vole_u!: Vec<bigint>;
   qs_proof!: QuickSilverProof;
-  c_hat_with_counter!: Vec<number>;
-  chall_3!: Vec<number>;
-  counter!: number;
+  c_hat_with_counter!: Vec<bigint>;
+  chall_3!: Vec<bigint>;
+  counter!: bigint;
 
   constructor(init: { 
-    iv: number[],
-    bavc_root: Vec<number>,
-    hidden_commits: Vec<number[]>,
-    nodes: Vec<[number, number[]]>,
-    corrections: Vec<Vec<number>>,
-    vole_u: Vec<number>,
+    iv: bigint[],
+    bavc_root: Vec<bigint>,
+    hidden_commits: Vec<bigint[]>,
+    nodes: Vec<[bigint, bigint[]]>,
+    corrections: Vec<Vec<bigint>>,
+    vole_u: Vec<bigint>,
     qs_proof: QuickSilverProof,
-    c_hat_with_counter: Vec<number>,
-    chall_3: Vec<number>,
-    counter: number
+    c_hat_with_counter: Vec<bigint>,
+    chall_3: Vec<bigint>,
+    counter: bigint
   }) {
     Object.assign(this, init);
   }
 }
 
 export class QuickSilverProof {
-  a_hat!: Vec<number>;
-  b_hat!: Vec<number>;
-  c_hat_base!: Vec<number>;
+  a_hat!: Vec<bigint>;
+  b_hat!: Vec<bigint>;
+  c_hat_base!: Vec<bigint>;
 
   constructor(init: { 
-    a_hat: Vec<number>,
-    b_hat: Vec<number>,
-    c_hat_base: Vec<number>
+    a_hat: Vec<bigint>,
+    b_hat: Vec<bigint>,
+    c_hat_base: Vec<bigint>
   }) {
     Object.assign(this, init);
   }
@@ -775,7 +1098,7 @@ export class StubFaestAesProver {
   prove_aes_witness(big_vole: BigVoleProver, hash_key: UniversalHashKey): QuickSilverProof
   {
     const a_hat_out: UniversalHashOutput = vole_hash(hash_key, big_vole.u);
-    const a_hat: Vec<number> = [(a_hat_out.h0._0) & 0xFF, ((a_hat_out.h0._0) >> 8) & 0xFF, ((a_hat_out.h0._0) >> 16) & 0xFF, ((a_hat_out.h0._0) >> 24) & 0xFF].concat([(a_hat_out.h1._0) & 0xFF, ((a_hat_out.h1._0) >> 8) & 0xFF, ((a_hat_out.h1._0) >> 16) & 0xFF, ((a_hat_out.h1._0) >> 24) & 0xFF]).collect();
+    const a_hat: Vec<bigint> = [(a_hat_out.h0._0) & 0xFFn, ((a_hat_out.h0._0) >> 8n) & 0xFFn, ((a_hat_out.h0._0) >> 16n) & 0xFFn, ((a_hat_out.h0._0) >> 24n) & 0xFFn].concat([(a_hat_out.h1._0) & 0xFFn, ((a_hat_out.h1._0) >> 8n) & 0xFFn, ((a_hat_out.h1._0) >> 16n) & 0xFFn, ((a_hat_out.h1._0) >> 24n) & 0xFFn]).collect();
     const len = a_hat.length;
     return new QuickSilverProof({ a_hat: a_hat, b_hat: [], c_hat_base: [] });
   }
@@ -790,7 +1113,7 @@ export class FaestTranscript {
     Object.assign(this, init);
   }
 
-  absorb(data: readonly number[])
+  absorb(data: readonly bigint[])
   {
     this.sponge.absorb(data);
   }
@@ -805,7 +1128,7 @@ export class FaestTranscript {
     return new FaestTranscript({ sponge: Sponge.Shake256(Shake256.default()) });
   }
 
-  squeeze(n: number): Vec<number>
+  squeeze(n: bigint): Vec<bigint>
   {
     return this.sponge.squeeze(n);
   }
@@ -836,27 +1159,27 @@ export class UniversalHashOutput {
 }
 
 export class EvalDyn {
-  n!: number;
-  target!: number[];
+  n!: bigint;
+  target!: bigint[];
 
   constructor(init: { 
-    n: number,
-    target: number[]
+    n: bigint,
+    target: bigint[]
   }) {
     Object.assign(this, init);
   }
 
   and_via_table(ctx: { newD: () => any }, other: EvalDyn, table: GarbleTableDyn): EvalDyn
   {
-    const n: number = this.n;
-    const index = fieldBitor((() => { if ((fieldBitand(this.target[0], 1) === 1)) {
-  return 1;
+    const n: bigint = this.n;
+    const index = fieldBitor((() => { if ((fieldBitand(this.target[Number(0n)], 1n) === 1n)) {
+  return 1n;
 } else {
-  return 0;
-} })(), (() => { if ((fieldBitand(other.target[0], 1) === 1)) {
-  return 2;
+  return 0n;
+} })(), (() => { if ((fieldBitand(other.target[Number(0n)], 1n) === 1n)) {
+  return 2n;
 } else {
-  return 0;
+  return 0n;
 } })());
     const hash = (() => {
   let d = ctx.newD();
@@ -864,180 +1187,180 @@ export class EvalDyn {
   d.update(other.target);
   return [...d.finalize()];
 })();
-    return new EvalDyn({ target: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => fieldBitxor(hash[i], table.table[index][i])), n: 0 });
+    return new EvalDyn({ target: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldBitxor(hash[Number(i)], table.table[Number(index)][Number(i)])), n: 0n });
   }
 
-  bitxor(rhs: EvalDyn): number /* EvalDyn::Output */
+  bitxor(rhs: EvalDyn): EvalDyn
   {
-    const n: number = this.n;
-    return new EvalDyn({ target: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => fieldBitxor(this.target[i], rhs.target[i])), n: 0 });
+    const n: bigint = this.n;
+    return new EvalDyn({ target: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldBitxor(this.target[Number(i)], rhs.target[Number(i)])), n: 0n });
   }
 
-  open(garble: GarbleDyn): number[]
+  open(garble: GarbleDyn): bigint[]
   {
-    const n: number = this.n;
-    return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => fieldBitxor(this.target[i], garble.base[i]));
+    const n: bigint = this.n;
+    return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldBitxor(this.target[Number(i)], garble.base[Number(i)]));
   }
 
-  to_share(o: number): EvalDyn
+  to_share(o: bigint): EvalDyn
   {
-    const n: number = this.n;
-    return new EvalDyn({ target: Array.from({length: o - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  let v = 0;
-  for (let j = 0; j < 8; j++)   {
-    const bit = fieldBitand(this.target[fieldAdd(fieldMul(i, 8), j)], 1);
+    const n: bigint = this.n;
+    return new EvalDyn({ target: Array.from({length: Number(o - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  let v = 0n;
+  for (let j = 0n; j < 8n; j += 1n)   {
+    const bit = fieldBitand(this.target[Number(fieldAdd(fieldMul(i, 8n), j))], 1n);
     v |= fieldShl(bit, j);
   }
   return v;
-})()), n: 0 });
+})()), n: 0n });
   }
 
-  static zero(n: number): EvalDyn
+  static zero(n: bigint): EvalDyn
   {
-    return new EvalDyn({ target: Array.from({length: n - 0}, (_, __i) => __i + 0).map((_: any) => 0), n: 0 });
+    return new EvalDyn({ target: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n), n: 0n });
   }
 }
 
 export class GarbleDyn {
-  n!: number;
-  base!: number[];
+  n!: bigint;
+  base!: bigint[];
 
   constructor(init: { 
-    n: number,
-    base: number[]
+    n: bigint,
+    base: bigint[]
   }) {
     Object.assign(this, init);
   }
 
   and_result(ctx: { newD: () => any }, b: GarbleDyn): GarbleDyn
   {
-    const n: number = this.n;
+    const n: bigint = this.n;
     let d = ctx.newD();
     d.update(this.base);
     d.update(b.base);
     const hash = [...d.finalize()];
-    return new GarbleDyn({ base: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => hash[i]), n: 0 });
+    return new GarbleDyn({ base: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => hash[Number(i)]), n: 0n });
   }
 
-  share(target: number[]): EvalDyn
+  share(target: bigint[]): EvalDyn
   {
-    const n: number = this.n;
-    return new EvalDyn({ target: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => fieldBitxor(this.base[i], target[i])), n: 0 });
+    const n: bigint = this.n;
+    return new EvalDyn({ target: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldBitxor(this.base[Number(i)], target[Number(i)])), n: 0n });
   }
 
-  to_share(o: number): GarbleDyn
+  to_share(o: bigint): GarbleDyn
   {
-    const n: number = this.n;
-    return new GarbleDyn({ base: Array.from({length: o - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  let v = 0;
-  for (let j = 0; j < 8; j++)   {
-    const bit = fieldBitand(this.base[fieldAdd(fieldMul(i, 8), j)], 1);
+    const n: bigint = this.n;
+    return new GarbleDyn({ base: Array.from({length: Number(o - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  let v = 0n;
+  for (let j = 0n; j < 8n; j += 1n)   {
+    const bit = fieldBitand(this.base[Number(fieldAdd(fieldMul(i, 8n), j))], 1n);
     v |= fieldShl(bit, j);
   }
   return v;
-})()), n: 0 });
+})()), n: 0n });
   }
 
-  static zero(n: number): GarbleDyn
+  static zero(n: bigint): GarbleDyn
   {
-    return new GarbleDyn({ base: Array.from({length: n - 0}, (_, __i) => __i + 0).map((_: any) => 0), n: 0 });
+    return new GarbleDyn({ base: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n), n: 0n });
   }
 }
 
 export class GarbleTableDyn {
-  n!: number;
-  table!: number[][];
+  n!: bigint;
+  table!: bigint[][];
 
   constructor(init: { 
-    n: number,
-    table: number[][]
+    n: bigint,
+    table: bigint[][]
   }) {
     Object.assign(this, init);
   }
 }
 
 export class GlobalSecretDyn {
-  n!: number;
-  secret!: number[];
+  n!: bigint;
+  secret!: bigint[];
 
   constructor(init: { 
-    n: number,
-    secret: number[]
+    n: bigint,
+    secret: bigint[]
   }) {
     Object.assign(this, init);
   }
 
   encode(garble: GarbleDyn, value: boolean): EvalDyn
   {
-    const n: number = this.n;
-    return new EvalDyn({ target: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
+    const n: bigint = this.n;
+    return new EvalDyn({ target: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   return (() => { if (value) {
-  return fieldBitxor(this.secret[i], garble.base[i]);
+  return fieldBitxor(this.secret[Number(i)], garble.base[Number(i)]);
 } else {
-  return garble.base[i];
+  return garble.base[Number(i)];
 } })();
-})()), n: 0 });
+})()), n: 0n });
   }
 
   gen_and_table(ctx: { newD: () => any }, a: GarbleDyn, b: GarbleDyn): GarbleTableDyn
   {
-    const n: number = this.n;
+    const n: bigint = this.n;
     const result_base = a.and_result(b);
-    let table = Array.from({length: n - 0}, (_, __i) => __i + 0).map((_: any) => Array.from({length: n - 0}, (_, __i) => __i + 0).map((_: any) => 0));
-    for (let i = 0; i < 4; i++)     {
-      const av = (fieldBitand(i, 1) !== 0);
-      const bv = (fieldBitand(i, 2) !== 0);
+    let table = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n));
+    for (let i = 0n; i < 4n; i += 1n)     {
+      const av = (fieldBitand(i, 1n) !== 0n);
+      const bv = (fieldBitand(i, 2n) !== 0n);
       const ea = this.encode(a, av);
       const eb = this.encode(b, bv);
-      const row = fieldBitor(Number(fieldBitand(ea.target[0], 1)), fieldShl(Number(fieldBitand(eb.target[0], 1)), 1));
+      const row = fieldBitor(Number(fieldBitand(ea.target[Number(0n)], 1n)), fieldShl(Number(fieldBitand(eb.target[Number(0n)], 1n)), 1n));
       const result_label = this.encode(result_base, fieldBitand(av, bv));
       let d = ctx.newD();
       d.update(ea.target);
       d.update(eb.target);
       const hash = [...d.finalize()];
-      table[row] = Array.from({length: n - 0}, (_, __i) => __i + 0).map((j: any) => fieldBitxor(hash[j], result_label.target[j]));
+      table[Number(row)] = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => fieldBitxor(hash[Number(j)], result_label.target[Number(j)]));
     }
-    return new GarbleTableDyn({ table: table, n: 0 });
+    return new GarbleTableDyn({ table: table, n: 0n });
   }
 
-  static new(n: number, secret: number[]): GlobalSecretDyn
+  static new(n: bigint, secret: bigint[]): GlobalSecretDyn
   {
-    secret[0] |= 1;
+    secret[Number(0n)] |= 1n;
     return new GlobalSecretDyn({ secret: secret });
   }
 
   not_garble(a: GarbleDyn): GarbleDyn
   {
-    const n: number = this.n;
-    return new GarbleDyn({ base: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => fieldBitxor(a.base[i], this.secret[i])), n: 0 });
+    const n: bigint = this.n;
+    return new GarbleDyn({ base: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldBitxor(a.base[Number(i)], this.secret[Number(i)])), n: 0n });
   }
 
   one_wire_eval(): EvalDyn
   {
-    const n: number = this.n;
+    const n: bigint = this.n;
     return this.encode(Garble.zero(), true);
   }
 
-  secret(): number[]
+  secret(): bigint[]
   {
-    const n: number = this.n;
+    const n: bigint = this.n;
     return __clone(this.secret);
   }
 }
 
 export class GarbledCircuitDyn {
-  n!: number;
-  i!: number;
-  a!: number;
+  n!: bigint;
+  i!: bigint;
+  a!: bigint;
   secret!: GlobalSecretDyn;
   input_labels!: GarbleDyn[];
   tables!: GarbleTableDyn[];
   output_label!: GarbleDyn;
 
   constructor(init: { 
-    n: number,
-    i: number,
-    a: number,
+    n: bigint,
+    i: bigint,
+    a: bigint,
     secret: GlobalSecretDyn,
     input_labels: GarbleDyn[],
     tables: GarbleTableDyn[],
@@ -1048,31 +1371,31 @@ export class GarbledCircuitDyn {
 
   encode_inputs(bits: boolean[]): EvalDyn[]
   {
-    const n: number = this.n;
-    const i: number = this.i;
-    const a: number = this.a;
-    return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => this.secret.encode(this.input_labels[i], bits[i]));
+    const n: bigint = this.n;
+    const i: bigint = this.i;
+    const a: bigint = this.a;
+    return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => this.secret.encode(this.input_labels[Number(i)], bits[Number(i)]));
   }
 
   eval_setup(): EvalSetupDyn
   {
-    const n: number = this.n;
-    const i: number = this.i;
-    const a: number = this.a;
-    return new EvalSetupDyn({ one_wire: this.secret.one_wire_eval(), tables: __clone(this.tables), output_label: __clone(this.output_label), n: 0, a: 0 });
+    const n: bigint = this.n;
+    const i: bigint = this.i;
+    const a: bigint = this.a;
+    return new EvalSetupDyn({ one_wire: this.secret.one_wire_eval(), tables: __clone(this.tables), output_label: __clone(this.output_label), n: 0n, a: 0n });
   }
 }
 
 export class EvalSetupDyn {
-  n!: number;
-  a!: number;
+  n!: bigint;
+  a!: bigint;
   one_wire!: EvalDyn;
   tables!: GarbleTableDyn[];
   output_label!: GarbleDyn;
 
   constructor(init: { 
-    n: number,
-    a: number,
+    n: bigint,
+    a: bigint,
     one_wire: EvalDyn,
     tables: GarbleTableDyn[],
     output_label: GarbleDyn
@@ -1082,9 +1405,9 @@ export class EvalSetupDyn {
 
   recover_output(result: EvalDyn): boolean
   {
-    const n: number = this.n;
-    const a: number = this.a;
-    return (fieldBitand(result.open(this.output_label)[0], 1) !== 0);
+    const n: bigint = this.n;
+    const a: bigint = this.a;
+    return (fieldBitand(result.open(this.output_label)[Number(0n)], 1n) !== 0n);
   }
 }
 
@@ -1101,49 +1424,49 @@ export class NoReduction {
 }
 
 export class GrafhenWordDyn {
-  wbound!: number;
-  data!: number[];
-  len!: number;
+  wbound!: bigint;
+  data!: bigint[];
+  len!: bigint;
 
   constructor(init: { 
-    wbound: number,
-    data: number[],
-    len: number
+    wbound: bigint,
+    data: bigint[],
+    len: bigint
   }) {
     Object.assign(this, init);
   }
 
-  static identity(wbound: number): GrafhenWordDyn
+  static identity(wbound: bigint): GrafhenWordDyn
   {
-    return new GrafhenWordDyn({ data: Array.from({length: wbound}, () => 0), len: 0, wbound: 0 });
+    return new GrafhenWordDyn({ data: Array.from({length: Number(wbound)}, () => 0n), len: 0n, wbound: 0n });
   }
 }
 
 export class GrafhenKeyDyn {
-  n!: number;
-  d!: number;
-  gens!: number[][];
-  inv_gens!: number[][];
+  n!: bigint;
+  d!: bigint;
+  gens!: bigint[][];
+  inv_gens!: bigint[][];
 
   constructor(init: { 
-    n: number,
-    d: number,
-    gens: number[][],
-    inv_gens: number[][]
+    n: bigint,
+    d: bigint,
+    gens: bigint[][],
+    inv_gens: bigint[][]
   }) {
     Object.assign(this, init);
   }
 }
 
 export class GrafhenPublicDyn<R> {
-  wbound!: number;
+  wbound!: bigint;
   enc_one!: GrafhenWordDyn;
   and_w1!: GrafhenWordDyn;
   and_w2!: GrafhenWordDyn;
   reducer!: R;
 
   constructor(init: { 
-    wbound: number,
+    wbound: bigint,
     enc_one: GrafhenWordDyn,
     and_w1: GrafhenWordDyn,
     and_w2: GrafhenWordDyn,
@@ -1154,54 +1477,54 @@ export class GrafhenPublicDyn<R> {
 }
 
 export class LweSampleDyn<T, U> {
-  n!: number;
-  m!: number;
-  matrix!: any[][];
+  n!: bigint;
+  m!: bigint;
+  matrix!: T[][];
   b!: any[];
 
   constructor(init: { 
-    n: number,
-    m: number,
-    matrix: any[][],
+    n: bigint,
+    m: bigint,
+    matrix: T[][],
     b: any[]
   }) {
     Object.assign(this, init);
   }
 
-  static new(n: number, m: number, matrix: any[][], b: any[]): LweSampleDyn
+  static new<T, U>(n: bigint, m: bigint, matrix: T[][], b: any[]): LweSampleDyn
   {
     return new LweSampleDyn({ matrix: matrix, b: b });
   }
 
-  static sample<S, P>(ctx: { defaultA: () => any }, n: number, m: number, matrix: any[][], s: any[], e: any[]): LweSampleDyn
+  static sample<S, P, T>(ctx: { defaultA: () => any }, n: bigint, m: bigint, matrix: T[][], s: any[], e: any[]): LweSampleDyn
   {
-    return new LweSampleDyn({ b: Array.from({length: m - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  return fieldAdd(s.map((val: any, i: number) => [i, val] as [number, typeof val]).map(([a, b]: any) => fieldMul(__clone(b), __clone(matrix[i][a]))).reduce((a: any, b: any) => fieldAdd(a, b), ctx.defaultA()), __clone(e[i]));
+    return new LweSampleDyn({ b: Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  return fieldAdd(s.map((val: any, i: number) => [i, val] as [number, typeof val]).map(([a, b]: any) => fieldMul(__clone(b), __clone(matrix[Number(i)][Number(a)]))).reduce((a: any, b: any) => fieldAdd(a, b), ctx.defaultA()), __clone(e[Number(i)]));
 })()), matrix: matrix });
   }
 }
 
 export class AllPartiesDyn<T> {
-  n!: number;
-  other_parties!: OtherPartiesDyn<any>;
-  self_party!: any;
+  n!: bigint;
+  other_parties!: OtherPartiesDyn<T>;
+  self_party!: T;
 
   constructor(init: { 
-    n: number,
-    other_parties: OtherPartiesDyn<any>,
-    self_party: any
+    n: bigint,
+    other_parties: OtherPartiesDyn<T>,
+    self_party: T
   }) {
     Object.assign(this, init);
   }
 }
 
 export class OtherPartiesDyn<T> {
-  n!: number;
-  other_parties!: any[];
+  n!: bigint;
+  other_parties!: T[];
 
   constructor(init: { 
-    n: number,
-    other_parties: any[]
+    n: bigint,
+    other_parties: T[]
   }) {
     Object.assign(this, init);
   }
@@ -1272,14 +1595,14 @@ export class ToyGroup {
 
   static neg(a: ToyElement): ToyElement
   {
-    return new ToyElement(toy_pow(a._0, fieldSub(TOY_P, 2)));
+    return new ToyElement(toy_pow(a._0, fieldSub(TOY_P, 2n)));
   }
 
   static random_scalar<R>(rng: R): bigint
   {
     const lo = BigInt(rng.next_u32());
     const hi = BigInt(rng.next_u32());
-    return (fieldBitor(fieldShl(hi, 32), lo) % fieldSub(TOY_P, 1));
+    return (fieldBitor(fieldShl(hi, 32n), lo) % fieldSub(TOY_P, 1n));
   }
 
   static scalar_mul(elt: ToyElement, k: bigint): ToyElement
@@ -1289,34 +1612,34 @@ export class ToyGroup {
 
   static write_element<D>(elt: ToyElement, h: D)
   {
-    h.update([(elt._0) & 0xFF, ((elt._0) >> 8) & 0xFF, ((elt._0) >> 16) & 0xFF, ((elt._0) >> 24) & 0xFF]);
+    h.update([(elt._0) & 0xFFn, ((elt._0) >> 8n) & 0xFFn, ((elt._0) >> 16n) & 0xFFn, ((elt._0) >> 24n) & 0xFFn]);
   }
 }
 
 export class IdealCotDyn<T> {
-  n!: number;
-  delta!: DeltaDyn<any>;
+  n!: bigint;
+  delta!: DeltaDyn<T>;
 
   constructor(init: { 
-    n: number,
-    delta: DeltaDyn<any>
+    n: bigint,
+    delta: DeltaDyn<T>
   }) {
     Object.assign(this, init);
   }
 
-  cot<R>(rng: R, sample_t: unknown /* impl Fn */, b: boolean): [any[], any[]]
+  cot<R, T>(rng: R, sample_t: unknown /* impl Fn */, b: boolean): [T[], T[]]
   {
-    const n: number = this.n;
-    const r0 = Array.from({length: n - 0}, (_, __i) => __i + 0).map((_: any) => sample_t(rng));
+    const n: bigint = this.n;
+    const r0 = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => sample_t(rng));
     const v = (() => { if (b) {
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => fieldAdd(__clone(r0[i]), __clone(this.delta.delta[i])));
+  return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldAdd(__clone(r0[Number(i)]), __clone(this.delta.delta[Number(i)])));
 } else {
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => __clone(r0[i]));
+  return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(r0[Number(i)]));
 } })();
     return [r0, v];
   }
 
-  static new(n: number, delta: DeltaDyn<any>): IdealCotDyn
+  static new<T>(n: bigint, delta: DeltaDyn<T>): IdealCotDyn
   {
     return new IdealCotDyn({ delta: delta });
   }
@@ -1335,15 +1658,15 @@ export class LweOtCrs {
 
   static sample<R>(rng: R): LweOtCrs
   {
-    let a = Array.from({length: LWE_N}, () => Array.from({length: LWE_N}, () => 0));
-    for (let i = 0; i < LWE_N; i++)     {
-      for (let j = 0; j < LWE_N; j++)       {
-        a[i][j] = sample_zq(rng);
+    let a = Array.from({length: Number(LWE_N)}, () => Array.from({length: Number(LWE_N)}, () => 0n));
+    for (let i = 0n; i < LWE_N; i += 1n)     {
+      for (let j = 0n; j < LWE_N; j += 1n)       {
+        a[Number(i)][Number(j)] = sample_zq(rng);
       }
     }
-    let h = Array.from({length: LWE_N}, () => 0);
-    for (let i = 0; i < LWE_N; i++)     {
-      h[i] = sample_zq(rng);
+    let h = Array.from({length: Number(LWE_N)}, () => 0n);
+    for (let i = 0n; i < LWE_N; i += 1n)     {
+      h[Number(i)] = sample_zq(rng);
     }
     return new LweOtCrs({ a: a, h: h });
   }
@@ -1372,14 +1695,14 @@ export class LweOtRecvMsg {
 }
 
 export class LweOtSenderMsgDyn {
-  l!: number;
+  l!: bigint;
   u0!: Zq[];
   v0!: Zq[];
   u1!: Zq[];
   v1!: Zq[];
 
   constructor(init: { 
-    l: number,
+    l: bigint,
     u0: Zq[],
     v0: Zq[],
     u1: Zq[],
@@ -1390,67 +1713,67 @@ export class LweOtSenderMsgDyn {
 }
 
 export class SoftSpokenOutDyn<D> {
-  m!: number;
-  l!: number;
-  sender_r0!: number[][];
-  receiver_v!: number[][];
-  sender_tag!: Output<D>;
-  receiver_tag!: Output<D>;
+  m!: bigint;
+  l!: bigint;
+  sender_r0!: bigint[][];
+  receiver_v!: bigint[][];
+  sender_tag!: bigint[];
+  receiver_tag!: bigint[];
 
   constructor(init: { 
-    m: number,
-    l: number,
-    sender_r0: number[][],
-    receiver_v: number[][],
-    sender_tag: Output<D>,
-    receiver_tag: Output<D>
+    m: bigint,
+    l: bigint,
+    sender_r0: bigint[][],
+    receiver_v: bigint[][],
+    sender_tag: bigint[],
+    receiver_tag: bigint[]
   }) {
     Object.assign(this, init);
   }
 
   check(): boolean
   {
-    const m: number = this.m;
-    const l: number = this.l;
+    const m: bigint = this.m;
+    const l: bigint = this.l;
     return (this.sender_tag === this.receiver_tag);
   }
 }
 
 export class LweCiphertextDyn {
-  n_lwe!: number;
-  a!: number[];
-  b!: number;
+  n_lwe!: bigint;
+  a!: bigint[];
+  b!: bigint;
 
   constructor(init: { 
-    n_lwe: number,
-    a: number[],
-    b: number
+    n_lwe: bigint,
+    a: bigint[],
+    b: bigint
   }) {
     Object.assign(this, init);
   }
 }
 
 export class RlweCiphertextDyn {
-  big_n!: number;
-  a!: number[];
-  b!: number[];
+  big_n!: bigint;
+  a!: bigint[];
+  b!: bigint[];
 
   constructor(init: { 
-    big_n: number,
-    a: number[],
-    b: number[]
+    big_n: bigint,
+    a: bigint[],
+    b: bigint[]
   }) {
     Object.assign(this, init);
   }
 }
 
 export class RgswRowDyn {
-  big_n!: number;
+  big_n!: bigint;
   rlwe0!: RlweCiphertextDyn;
   rlwe1!: RlweCiphertextDyn;
 
   constructor(init: { 
-    big_n: number,
+    big_n: bigint,
     rlwe0: RlweCiphertextDyn,
     rlwe1: RlweCiphertextDyn
   }) {
@@ -1459,13 +1782,13 @@ export class RgswRowDyn {
 }
 
 export class RgswCiphertextDyn {
-  big_n!: number;
-  bs_ell!: number;
+  big_n!: bigint;
+  bs_ell!: bigint;
   rows!: RgswRowDyn[];
 
   constructor(init: { 
-    big_n: number,
-    bs_ell: number,
+    big_n: bigint,
+    bs_ell: bigint,
     rows: RgswRowDyn[]
   }) {
     Object.assign(this, init);
@@ -1473,78 +1796,78 @@ export class RgswCiphertextDyn {
 }
 
 export class KeySwitchingKeyDyn {
-  n_lwe!: number;
-  big_n!: number;
-  ks_ell!: number;
+  n_lwe!: bigint;
+  big_n!: bigint;
+  ks_ell!: bigint;
   ksk!: LweCiphertextDyn[][];
-  ks_bg_log!: number;
+  ks_bg_log!: bigint;
 
   constructor(init: { 
-    n_lwe: number,
-    big_n: number,
-    ks_ell: number,
+    n_lwe: bigint,
+    big_n: bigint,
+    ks_ell: bigint,
     ksk: LweCiphertextDyn[][],
-    ks_bg_log: number
+    ks_bg_log: bigint
   }) {
     Object.assign(this, init);
   }
 }
 
 export class BootstrappingKeyDyn {
-  n_lwe!: number;
-  big_n!: number;
-  bs_ell!: number;
-  ks_ell!: number;
+  n_lwe!: bigint;
+  big_n!: bigint;
+  bs_ell!: bigint;
+  ks_ell!: bigint;
   bsk!: RgswCiphertextDyn[];
   ksk!: KeySwitchingKeyDyn;
-  bs_bg_log!: number;
+  bs_bg_log!: bigint;
 
   constructor(init: { 
-    n_lwe: number,
-    big_n: number,
-    bs_ell: number,
-    ks_ell: number,
+    n_lwe: bigint,
+    big_n: bigint,
+    bs_ell: bigint,
+    ks_ell: bigint,
     bsk: RgswCiphertextDyn[],
     ksk: KeySwitchingKeyDyn,
-    bs_bg_log: number
+    bs_bg_log: bigint
   }) {
     Object.assign(this, init);
   }
 }
 
 export class LweSecretKeyDyn {
-  n_lwe!: number;
-  key!: number[];
+  n_lwe!: bigint;
+  key!: bigint[];
 
   constructor(init: { 
-    n_lwe: number,
-    key: number[]
+    n_lwe: bigint,
+    key: bigint[]
   }) {
     Object.assign(this, init);
   }
 }
 
 export class RlweSecretKeyDyn {
-  big_n!: number;
-  key!: number[];
+  big_n!: bigint;
+  key!: bigint[];
 
   constructor(init: { 
-    big_n: number,
-    key: number[]
+    big_n: bigint,
+    key: bigint[]
   }) {
     Object.assign(this, init);
   }
 }
 
 export class BitVoleDyn<T> {
-  n!: number;
+  n!: bigint;
   u!: Bit[];
-  v!: any[];
+  v!: T[];
 
   constructor(init: { 
-    n: number,
+    n: bigint,
     u: Bit[],
-    v: any[]
+    v: T[]
   }) {
     Object.assign(this, init);
   }
@@ -1557,37 +1880,37 @@ export class AdditiveHasher {
     Object.assign(this, init);
   }
 
-  static absorb(state: any, encoded: any)
+  static absorb<T>(state: T, encoded: T)
   {
     const old = core.mem.take(state);
     state = fieldAdd(old, encoded);
   }
 
-  static finalize_eq(produce: any, consume: any): boolean
+  static finalize_eq<T>(produce: T, consume: T): boolean
   {
     return (produce === consume);
   }
 
-  static new_state(ctx: { defaultT: () => any }): any
+  static new_state<T>(ctx: { defaultT: () => any }): T
   {
     return ctx.defaultT();
   }
 }
 
 export class ChallengeKeyDyn<T> {
-  r1!: any;
-  r2!: any;
-  r3!: any;
+  r1!: T;
+  r2!: T;
+  r3!: T;
 
   constructor(init: { 
-    r1: any,
-    r2: any,
-    r3: any
+    r1: T,
+    r2: T,
+    r3: T
   }) {
     Object.assign(this, init);
   }
 
-  static from_challenge(r: any): ChallengeKeyDyn
+  static from_challenge<T>(r: T): ChallengeKeyDyn
   {
     const r2 = fieldMul(__clone(r), __clone(r));
     const r3 = fieldMul(__clone(r2), __clone(r));
@@ -1596,25 +1919,25 @@ export class ChallengeKeyDyn<T> {
 }
 
 export class MemoryCheckStateDyn<T, H> {
-  key!: ChallengeKeyDyn<any>;
+  key!: ChallengeKeyDyn<T>;
   produce!: number /* H::State */;
   consume!: number /* H::State */;
 
   constructor(init: { 
-    key: ChallengeKeyDyn<any>,
+    key: ChallengeKeyDyn<T>,
     produce: number /* H::State */,
     consume: number /* H::State */
   }) {
     Object.assign(this, init);
   }
 
-  drain(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: any, final_value: any, final_timestamp: bigint)
+  drain<T>(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: T, final_value: T, final_timestamp: bigint)
   {
     const enc = this.encode(addr, final_value, final_timestamp);
     ctx.HClass.absorb(this.consume, enc);
   }
 
-  encode(addr: any, value: any, timestamp: bigint): any
+  encode<T>(addr: T, value: T, timestamp: bigint): T
   {
     const a = fieldMul(addr, __clone(this.key.r1));
     const v = fieldMul(value, __clone(this.key.r2));
@@ -1622,18 +1945,18 @@ export class MemoryCheckStateDyn<T, H> {
     return fieldAdd(fieldAdd(a, v), t);
   }
 
-  init(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: any, zero_value: any)
+  init<T>(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: T, zero_value: T)
   {
-    const enc = this.encode(addr, zero_value, 0);
+    const enc = this.encode(addr, zero_value, 0n);
     ctx.HClass.absorb(this.produce, enc);
   }
 
-  static new(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, key: ChallengeKeyDyn<any>): MemoryCheckStateDyn
+  static new<T>(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, key: ChallengeKeyDyn<T>): MemoryCheckStateDyn
   {
     return new MemoryCheckStateDyn({ key: key, produce: ctx.HClass.new_state(), consume: ctx.HClass.new_state() });
   }
 
-  read(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: any, value: any, timestamp: bigint, write_timestamp: bigint)
+  read<T>(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: T, value: T, timestamp: bigint, write_timestamp: bigint)
   {
     const enc_produce = this.encode(__clone(addr), __clone(value), timestamp);
     ctx.HClass.absorb(this.produce, enc_produce);
@@ -1641,18 +1964,18 @@ export class MemoryCheckStateDyn<T, H> {
     ctx.HClass.absorb(this.consume, enc_consume);
   }
 
-  scale_by_u64(ctx: { defaultT: () => any }, x: any, n: bigint): any
+  scale_by_u64<T>(ctx: { defaultT: () => any }, x: T, n: bigint): T
   {
-    if ((n === 0))     {
+    if ((n === 0n))     {
       return ctx.defaultT();
     }
-    if ((n === 1))     {
+    if ((n === 1n))     {
       return x;
     }
     let acc = ctx.defaultT();
     let base = x;
-    for (let bit = 0; bit < 64; bit++)     {
-      if ((fieldBitand(fieldShr(n, bit), 1) === 1))       {
+    for (let bit = 0n; bit < 64n; bit += 1n)     {
+      if ((fieldBitand(fieldShr(n, bit), 1n) === 1n))       {
         acc = fieldAdd(acc, __clone(base));
       }
       base = fieldAdd(__clone(base), base);
@@ -1665,7 +1988,7 @@ export class MemoryCheckStateDyn<T, H> {
     return ctx.HClass.finalize_eq(this.produce, this.consume);
   }
 
-  write(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: any, new_value: any, timestamp: bigint, old_value: any, old_timestamp: bigint)
+  write<T>(ctx: { HClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, addr: T, new_value: T, timestamp: bigint, old_value: T, old_timestamp: bigint)
   {
     const enc_new = this.encode(__clone(addr), new_value, timestamp);
     ctx.HClass.absorb(this.produce, enc_new);
@@ -1675,46 +1998,46 @@ export class MemoryCheckStateDyn<T, H> {
 }
 
 export class PolyDyn<T> {
-  n!: number;
-  c0!: any;
-  c1!: any[];
+  n!: bigint;
+  c0!: T;
+  c1!: T[];
 
   constructor(init: { 
-    n: number,
-    c0: any,
-    c1: any[]
+    n: bigint,
+    c0: T,
+    c1: T[]
   }) {
     Object.assign(this, init);
   }
 
-  apply<O>(ctx: { defaultO: () => any }, m: number, x: number, x2: number, xs: number, s: number, voles: VopeDyn<any>[][]): VopeDyn<any>
+  apply<O, T>(ctx: { defaultO: () => any }, m: bigint, x: bigint, x2: bigint, xs: bigint, s: bigint, voles: VopeDyn<T>[][]): VopeDyn<any>
   {
-    const n: number = this.n;
-    const v = Array.from({length: m - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
+    const n: bigint = this.n;
+    const v = Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   let sum = ctx.defaultO();
-  for (let k = 0; k < n; k++)   {
-    let b: any = __clone(this.c1[k]);
+  for (let k = 0n; k < n; k += 1n)   {
+    let b: any = __clone(this.c1[Number(k)]);
     for (const v of voles)     {
-      b = fieldMul(b, __clone(v[k].v[i]));
+      b = fieldMul(b, __clone(v[Number(k)].v[Number(i)]));
     }
     sum = fieldAdd(sum, b);
   }
   const c0: any = __clone(this.c0);
   return fieldAdd(sum, c0);
 })());
-    const u = Array.from({length: xs - 0}, (_, __i) => __i + 0).map((l: any) => (() => {
-  return Array.from({length: m - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
+    const u = Array.from({length: Number(xs - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+  return Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   let sum = ctx.defaultO();
-  for (let k = 0; k < n; k++)   {
-    for (let n = 0; n < x; n++)     {
-      let b: any = __clone(this.c1[k]);
-      for (let m = 0; m < s; m++)       {
+  for (let k = 0n; k < n; k += 1n)   {
+    for (let n = 0n; n < x; n += 1n)     {
+      let b: any = __clone(this.c1[Number(k)]);
+      for (let m = 0n; m < s; m += 1n)       {
         const l_1 = fieldAdd(fieldMul(l, s), m);
         for (const [idx, v] of voles.map((val: any, i: number) => [i, val] as [number, typeof val]))         {
           b = fieldMul(b, (() => { if ((idx === n)) {
-  return __clone(v[k].u[l_1][i]);
+  return __clone(v[Number(k)].u[Number(l_1)][Number(i)]);
 } else {
-  return __clone(v[k].v[i]);
+  return __clone(v[Number(k)].v[Number(i)]);
 } })());
         }
       }
@@ -1724,37 +2047,37 @@ export class PolyDyn<T> {
   return sum;
 })());
 })());
-    return new VopeDyn({ u: u, v: v, n: 0, k: 1 });
+    return new VopeDyn({ u: u, v: v, n: 0n, k: 1n });
   }
 
-  apply_pool<O>(ctx: { defaultO: () => any }, m: number, x: number, x2: number, xs: number, s: number, voles: PolyInputPoolDyn<VopeDyn<any>>): VopeDyn<any>
+  apply_pool<O, T>(ctx: { defaultO: () => any }, m: bigint, x: bigint, x2: bigint, xs: bigint, s: bigint, voles: PolyInputPoolDyn<VopeDyn<T>>): VopeDyn<any>
   {
-    const n: number = this.n;
-    const v = Array.from({length: m - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
+    const n: bigint = this.n;
+    const v = Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   let sum = ctx.defaultO();
-  for (let k = 0; k < n; k++)   {
-    let b: any = __clone(this.c1[k]);
+  for (let k = 0n; k < n; k += 1n)   {
+    let b: any = __clone(this.c1[Number(k)]);
     for (const v of voles.indices)     {
-      b = fieldMul(b, __clone(voles.inputs[v[k]].v[i]));
+      b = fieldMul(b, __clone(voles.inputs[Number(v[Number(k)])].v[Number(i)]));
     }
     sum = fieldAdd(sum, b);
   }
   const c0: any = __clone(this.c0);
   return fieldAdd(sum, c0);
 })());
-    const u = Array.from({length: xs - 0}, (_, __i) => __i + 0).map((l: any) => (() => {
-  return Array.from({length: m - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
+    const u = Array.from({length: Number(xs - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+  return Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   let sum = ctx.defaultO();
-  for (let k = 0; k < n; k++)   {
-    for (let n = 0; n < x; n++)     {
-      let b: any = __clone(this.c1[k]);
-      for (let m = 0; m < s; m++)       {
+  for (let k = 0n; k < n; k += 1n)   {
+    for (let n = 0n; n < x; n += 1n)     {
+      let b: any = __clone(this.c1[Number(k)]);
+      for (let m = 0n; m < s; m += 1n)       {
         const l_1 = fieldAdd(fieldMul(l, s), m);
         for (const [idx, v] of voles.indices.map((val: any, i: number) => [i, val] as [number, typeof val]))         {
           b = fieldMul(b, (() => { if ((idx === n)) {
-  return __clone(voles.inputs[v[k]].u[l_1][i]);
+  return __clone(voles.inputs[Number(v[Number(k)])].u[Number(l_1)][Number(i)]);
 } else {
-  return __clone(voles.inputs[v[k]].v[i]);
+  return __clone(voles.inputs[Number(v[Number(k)])].v[Number(i)]);
 } })());
         }
       }
@@ -1764,22 +2087,22 @@ export class PolyDyn<T> {
   return sum;
 })());
 })());
-    return new VopeDyn({ u: u, v: v, n: 0, k: 1 });
+    return new VopeDyn({ u: u, v: v, n: 0n, k: 1n });
   }
 
-  get_qs<Q, A>(m: number, x: number, root: DeltaDyn<any>, inputs: QDyn<any>[][], reduction: number): QDyn<any>
+  get_qs<Q, A>(m: bigint, x: bigint, root: DeltaDyn<any>, inputs: QDyn<any>[][], reduction: bigint): QDyn<any>
   {
-    const n: number = this.n;
-    return new Q({ q: Array.from({length: m - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
+    const n: bigint = this.n;
+    return new Q({ q: Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   let sum: any = __clone(this.c0);
-  for (let _ = 0; _ < n; _++)   {
-    sum = fieldMul(__clone(root.delta[i]), sum);
+  for (let _ = 0n; _ < n; _ += 1n)   {
+    sum = fieldMul(__clone(root.delta[Number(i)]), sum);
   }
-  for (let j = 0; j < n; j++)   {
-    let b: any = __clone(this.c1[j]);
+  for (let j = 0n; j < n; j += 1n)   {
+    let b: any = __clone(this.c1[Number(j)]);
     for (const i2 of inputs)     {
-      for (let _ = 0; _ < reduction; _++)       {
-        b = fieldMul(__clone(i2[j].q[i]), b);
+      for (let _ = 0n; _ < reduction; _ += 1n)       {
+        b = fieldMul(__clone(i2[Number(j)].q[Number(i)]), b);
       }
     }
     sum = fieldAdd(sum, b);
@@ -1788,19 +2111,19 @@ export class PolyDyn<T> {
 })()) });
   }
 
-  get_qs_pool<Q, A>(m: number, x: number, root: DeltaDyn<any>, inputs: PolyInputPoolDyn<QDyn<any>>, reduction: number): QDyn<any>
+  get_qs_pool<Q, A>(m: bigint, x: bigint, root: DeltaDyn<any>, inputs: PolyInputPoolDyn<QDyn<any>>, reduction: bigint): QDyn<any>
   {
-    const n: number = this.n;
-    return new Q({ q: Array.from({length: m - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
+    const n: bigint = this.n;
+    return new Q({ q: Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   let sum: any = __clone(this.c0);
-  for (let _ = 0; _ < n; _++)   {
-    sum = fieldMul(__clone(root.delta[i]), sum);
+  for (let _ = 0n; _ < n; _ += 1n)   {
+    sum = fieldMul(__clone(root.delta[Number(i)]), sum);
   }
-  for (let j = 0; j < n; j++)   {
-    let b: any = __clone(this.c1[j]);
+  for (let j = 0n; j < n; j += 1n)   {
+    let b: any = __clone(this.c1[Number(j)]);
     for (const i2 of inputs.indices)     {
-      for (let _ = 0; _ < reduction; _++)       {
-        b = fieldMul(__clone(inputs.inputs[i2[j]].q[i]), b);
+      for (let _ = 0n; _ < reduction; _ += 1n)       {
+        b = fieldMul(__clone(inputs.inputs[Number(i2[Number(j)])].q[Number(i)]), b);
       }
     }
     sum = fieldAdd(sum, b);
@@ -1811,613 +2134,619 @@ export class PolyDyn<T> {
 }
 
 export class PolyInputPoolDyn<T> {
-  n!: number;
-  x!: number;
-  inputs!: any[];
-  indices!: number[][];
+  n!: bigint;
+  x!: bigint;
+  inputs!: T[];
+  indices!: bigint[][];
 
   constructor(init: { 
-    n: number,
-    x: number,
-    inputs: any[],
-    indices: number[][]
+    n: bigint,
+    x: bigint,
+    inputs: T[],
+    indices: bigint[][]
   }) {
     Object.assign(this, init);
   }
 }
 
 export class VopeDyn<T> {
-  n!: number;
-  k!: number;
-  u!: any[][];
-  v!: any[];
+  n!: bigint;
+  k!: bigint;
+  u!: T[][];
+  v!: T[];
 
   constructor(init: { 
-    n: number,
-    k: number,
-    u: any[][],
-    v: any[]
+    n: bigint,
+    k: bigint,
+    u: T[][],
+    v: T[]
   }) {
     Object.assign(this, init);
   }
 
-  add(rhs: VopeDyn<any>): number /* VopeDyn<T>::Output */
+  add<U>(rhs: VopeDyn<any>): VopeDyn<T>
   {
-    const n: number = this.n;
-    const k: number = this.k;
-    return new VopeDyn({ u: Array.from({length: k - 0}, (_, __i) => __i + 0).map((l: any) => (() => {
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => fieldAdd(__clone(this.u[l][i]), __clone(rhs.u[l][i])));
-})()), v: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => fieldAdd(__clone(this.v[i]), __clone(rhs.v[i]))), n: 0, k: 1 });
+    const n: bigint = this.n;
+    const k: bigint = this.k;
+    return new VopeDyn({ u: Array.from({length: Number(k - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+  return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldAdd(__clone(this.u[Number(l)][Number(i)]), __clone(rhs.u[Number(l)][Number(i)])));
+})()), v: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldAdd(__clone(this.v[Number(i)]), __clone(rhs.v[Number(i)]))), n: 0n, k: 1n });
   }
 
-  bitxor(rhs: any[]): number /* VopeDyn<T>::Output */
+  bitxor<U>(rhs: any[]): VopeDyn<T>
   {
-    const n: number = this.n;
-    const k: number = this.k;
-    return new VopeDyn({ u: Array.from({length: k - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((j: any) => (() => {
-  const o: any = fieldBitxor(__clone(this.u[i][j]), __clone(rhs[fieldAdd(fieldMul(i, k), j)]));
+    const n: bigint = this.n;
+    const k: bigint = this.k;
+    return new VopeDyn({ u: Array.from({length: Number(k - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
+  const o: any = fieldBitxor(__clone(this.u[Number(i)][Number(j)]), __clone(rhs[Number(fieldAdd(fieldMul(i, k), j))]));
   return o;
 })());
-})()), v: this.v.map((a: any) => a), n: 0, k: 1 });
+})()), v: this.v.map((a: any) => a), n: 0n, k: 1n });
   }
 
   clone(): VopeDyn<T>
   {
-    const n: number = this.n;
-    const k: number = this.k;
+    const n: bigint = this.n;
+    const k: bigint = this.k;
     const { u, v } = this;
-    return new VopeDyn({ u: Array.from({length: k - 0}, (_, __i) => __i + 0).map((l: any) => Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => __clone(u[l][i]))), v: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => __clone(v[i])), n: 0, k: 1 });
+    return new VopeDyn({ u: Array.from({length: Number(k - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(u[Number(l)][Number(i)]))), v: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(v[Number(i)])), n: 0n, k: 1n });
   }
 
-  static constant(n: number, v: any[]): VopeDyn
+  static constant<T>(n: bigint, v: T[]): VopeDyn
   {
-    const k: number = 0;
-    return new VopeDyn({ u: Array.from({length: 0 - 0}, (_, __i) => __i + 0).map((_: any) => (() => { throw new Error("unreachable"); })()), v: v, n: 0, k: 1 });
+    const k: bigint = 0n;
+    return new VopeDyn({ u: Array.from({length: Number(0n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => (() => { throw new Error("unreachable"); })()), v: v, n: 0n, k: 1n });
   }
 
   eq(other: VopeDyn<T>): boolean
   {
-    const n: number = this.n;
-    const k: number = this.k;
+    const n: bigint = this.n;
+    const k: bigint = this.k;
     const { u: u1, v: v1 } = this;
     const { u: u2, v: v2 } = other;
-    for (let l = 0; l < k; l++)     {
-      for (let i = 0; i < n; i++)       {
-        if ((u1[l][i] !== u2[l][i]))         {
+    for (let l = 0n; l < k; l += 1n)     {
+      for (let i = 0n; i < n; i += 1n)       {
+        if ((u1[Number(l)][Number(i)] !== u2[Number(l)][Number(i)]))         {
           return false;
         }
       }
     }
-    for (let i = 0; i < n; i++)     {
-      if ((v1[i] !== v2[i]))       {
+    for (let i = 0n; i < n; i += 1n)     {
+      if ((v1[Number(i)] !== v2[Number(i)]))       {
         return false;
       }
     }
     return true;
   }
 
-  expand(ctx: { defaultT: () => any }, l: number): VopeDyn<any>
+  expand<T>(ctx: { defaultT: () => any }, l: bigint): VopeDyn<T>
   {
-    const n: number = this.n;
-    const k: number = this.k;
+    const n: bigint = this.n;
+    const k: bigint = this.k;
     const { u, v } = this;
-    return new VopeDyn({ u: Array.from({length: l - 0}, (_, __i) => __i + 0).map((l: any) => (() => {
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => ((u?.[l]) != null ? ((a) => __clone(a[i]))(u?.[l]) : (ctx.defaultT())));
-})()), v: __clone(v), n: 0, k: 1 });
+    return new VopeDyn({ u: Array.from({length: Number(l - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+  return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => ((u?.[l]) != null ? ((a) => __clone(a[Number(i)]))(u?.[l]) : (ctx.defaultT())));
+})()), v: __clone(v), n: 0n, k: 1n });
   }
 
-  mul(rhs: DeltaDyn<any>): number /* VopeDyn<T>::Output */
+  mul<U>(rhs: DeltaDyn<any>): VopeDyn<T>
   {
-    const n: number = this.n;
-    const k: number = this.k;
+    const n: bigint = this.n;
+    const k: bigint = this.k;
     return new QDyn({ q: this.u.map((val: any, i: number) => [i, val] as [number, typeof val]).reduce((a: any, [i, b]: any) => (() => {
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((j: any) => (() => {
-  let x = __clone(rhs.delta[i]);
-  for (let _ = 0; _ < i; _++)   {
-    x = fieldMul(x, __clone(rhs.delta[i]));
+  return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
+  let x = __clone(rhs.delta[Number(i)]);
+  for (let _ = 0n; _ < i; _ += 1n)   {
+    x = fieldMul(x, __clone(rhs.delta[Number(i)]));
   }
-  const m: any = fieldMul(__clone(b[j]), x);
-  return fieldAdd(m, __clone(a[j]));
+  const m: any = fieldMul(__clone(b[Number(j)]), x);
+  return fieldAdd(m, __clone(a[Number(j)]));
 })());
-})(), this.v.map((a: any) => a)), n: 0 });
+})(), this.v.map((a: any) => a)), n: 0n });
   }
 
-  mul_generalized(ctx: { defaultT: () => any }, k2: number, other: VopeDyn<any>): VopeDyn<any>
+  mul_generalized<T>(ctx: { defaultT: () => any }, k2: bigint, other: VopeDyn<T>): VopeDyn<T>
   {
-    const n: number = this.n;
-    const k: number = this.k;
-    let res_u = Array.from({length: fieldAdd(k2, k) - 0}, (_, __i) => __i + 0).map((_: any) => []);
-    let res_v = Array.from({length: n - 0}, (_, __i) => __i + 0).map((_: any) => ctx.defaultT());
-    for (let i = 0; i <= k; i++)     {
-      for (let j = 0; j <= k2; j++)       {
+    const n: bigint = this.n;
+    const k: bigint = this.k;
+    let res_u = Array.from({length: Number(fieldAdd(k2, k) - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => []);
+    let res_v = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => ctx.defaultT());
+    for (let i = 0n; i <= k; i += 1n)     {
+      for (let j = 0n; j <= k2; j += 1n)       {
         const k_1 = fieldAdd(i, j);
-        const a_coeff = (() => { if ((i === 0)) {
+        const a_coeff = (() => { if ((i === 0n)) {
   return this.v;
 } else {
-  return this.u[fieldSub(i, 1)];
+  return this.u[Number(fieldSub(i, 1n))];
 } })();
-        const b_coeff = (() => { if ((j === 0)) {
+        const b_coeff = (() => { if ((j === 0n)) {
   return other.v;
 } else {
-  return other.u[fieldSub(j, 1)];
+  return other.u[Number(fieldSub(j, 1n))];
 } })();
-        if ((k_1 === 0))         {
-          for (let lane = 0; lane < n; lane++)           {
-            res_v[lane] = fieldAdd(__clone(res_v[lane]), fieldMul(__clone(a_coeff[lane]), __clone(b_coeff[lane])));
+        if ((k_1 === 0n))         {
+          for (let lane = 0n; lane < n; lane += 1n)           {
+            res_v[Number(lane)] = fieldAdd(__clone(res_v[Number(lane)]), fieldMul(__clone(a_coeff[Number(lane)]), __clone(b_coeff[Number(lane)])));
           }
         } else         {
-          for (let lane = 0; lane < n; lane++)           {
-            res_u[fieldSub(k_1, 1)][lane] = fieldAdd(__clone(res_u[fieldSub(k_1, 1)][lane]), fieldMul(__clone(a_coeff[lane]), __clone(b_coeff[lane])));
+          for (let lane = 0n; lane < n; lane += 1n)           {
+            res_u[Number(fieldSub(k_1, 1n))][Number(lane)] = fieldAdd(__clone(res_u[Number(fieldSub(k_1, 1n))][Number(lane)]), fieldMul(__clone(a_coeff[Number(lane)]), __clone(b_coeff[Number(lane)])));
           }
         }
       }
     }
-    return new VopeDyn({ u: res_u, v: res_v, n: 0, k: 1 });
+    return new VopeDyn({ u: res_u, v: res_v, n: 0n, k: 1n });
   }
 
-  remap(m: number, f: (arg: number) => number): VopeDyn<any>
+  remap<T>(m: bigint, f: (arg: number) => bigint): VopeDyn<T>
   {
-    const n: number = this.n;
-    const k: number = this.k;
+    const n: bigint = this.n;
+    const k: bigint = this.k;
     const { u, v } = this;
-    return new VopeDyn({ u: Array.from({length: k - 0}, (_, __i) => __i + 0).map((l: any) => (() => {
-  return Array.from({length: m - 0}, (_, __i) => __i + 0).map((i: any) => __clone(u[l][(f(i) % n)]));
-})()), v: Array.from({length: m - 0}, (_, __i) => __i + 0).map((i: any) => __clone(v[(f(i) % n)])), n: 0, k: 1 });
+    return new VopeDyn({ u: Array.from({length: Number(k - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+  return Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(u[Number(l)][Number((f(i) % n))]));
+})()), v: Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(v[Number((f(i) % n))])), n: 0n, k: 1n });
   }
 
-  rotate_left(n_param: number): VopeDyn<T>
+  rotate_left(n_param: bigint): VopeDyn<T>
   {
-    const n: number = this.n;
-    const k: number = this.k;
+    const n: bigint = this.n;
+    const k: bigint = this.k;
     return this.remap(this.n, (a) => wrappingSub(a, n_param));
   }
 
-  rotate_right(n_param: number): VopeDyn<T>
+  rotate_right(n_param: bigint): VopeDyn<T>
   {
-    const n: number = this.n;
-    const k: number = this.k;
+    const n: bigint = this.n;
+    const k: bigint = this.k;
     return this.remap(this.n, (a) => wrappingAdd(a, n_param));
   }
 
-  scale<T>(f: (arg: boolean) => any): VopeDyn<any>
+  scale<T>(f: (arg: boolean) => T): VopeDyn<T>
   {
-    const n: number = this.n;
-    const k: number = this.k;
+    const n: bigint = this.n;
+    const k: bigint = this.k;
     const { u, v } = this;
-    return new VopeDyn({ u: Array.from({length: k - 0}, (_, __i) => __i + 0).map((l: any) => (() => {
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const b = __clone(u[l][i]);
+    return new VopeDyn({ u: Array.from({length: Number(k - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+  return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const b = __clone(u[Number(l)][Number(i)]);
   return f(b);
 })());
-})()), v: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const b = __clone(v[i]);
+})()), v: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const b = __clone(v[Number(i)]);
   return f(b);
-})()), n: 0, k: 1 });
+})()), n: 0n, k: 1n });
   }
 
-  bit(n_param: number): VopeDyn<Bit>
+  bit(n_param: bigint): VopeDyn<Bit>
   {
     if (this.u[0] instanceof BitsInBytes) {
-      const n: number = this.n;
-      const k: number = this.k;
+      const n: bigint = this.n;
+      const k: bigint = this.k;
       const { u, v } = this;
-      return new VopeDyn({ u: Array.from({length: k - 0}, (_, __i) => __i + 0).map((l: any) => (() => {
-  return Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const b = __clone(u[l][i]);
-  return new Bit((fieldBitand(fieldShr(b, n_param), 1) !== 0));
+      return new VopeDyn({ u: Array.from({length: Number(k - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+  return Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const b = __clone(u[Number(l)][Number(i)]);
+  return new Bit((fieldBitand(fieldShr(b, n_param), 1n) !== 0n));
 })());
-})()), v: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const b = __clone(v[i]);
-  return new Bit((fieldBitand(fieldShr(b, n_param), 1) !== 0));
-})()), n: 0, k: 1 });
+})()), v: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const b = __clone(v[Number(i)]);
+  return new Bit((fieldBitand(fieldShr(b, n_param), 1n) !== 0n));
+})()), n: 0n, k: 1n });
     } else {
-      const n: number = this.n;
-      const k: number = this.k;
+      const n: bigint = this.n;
+      const k: bigint = this.k;
       const { u, v } = this;
-      return new VopeDyn({ u: Array.from({length: k - 0}, (_, __i) => __i + 0).map((l: any) => (() => {
-  return Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const b = __clone(u[l][i]);
-  return new Bit((fieldBitand(fieldShr(b, n_param), 1) !== 0));
+      return new VopeDyn({ u: Array.from({length: Number(k - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+  return Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const b = __clone(u[Number(l)][Number(i)]);
+  return new Bit((fieldBitand(fieldShr(b, n_param), 1n) !== 0n));
 })());
-})()), v: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const b = __clone(v[i]);
-  return new Bit((fieldBitand(fieldShr(b, n_param), 1) !== 0));
-})()), n: 0, k: 1 });
+})()), v: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const b = __clone(v[Number(i)]);
+  return new Bit((fieldBitand(fieldShr(b, n_param), 1n) !== 0n));
+})()), n: 0n, k: 1n });
     }
   }
 
-  rotate_left_bits(n_param: number): VopeDyn<T>
+  rotate_left_bits(n_param: bigint): VopeDyn<T>
   {
     if (this.u[0] instanceof BitsInBytes) {
-      const n: number = this.n;
-      const k: number = this.k;
+      const n: bigint = this.n;
+      const k: bigint = this.k;
       const { u, v } = this;
-      return new VopeDyn({ u: Array.from({length: k - 0}, (_, __i) => __i + 0).map((l: any) => (() => {
-  return Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const b = __clone(u[l][i]);
-  const next = __clone(u[l][(fieldAdd(i, 1) % n_param)]);
-  return new BitsInBytes(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(8, Number(n_param)))));
+      return new VopeDyn({ u: Array.from({length: Number(k - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+  return Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const b = __clone(u[Number(l)][Number(i)]);
+  const next = __clone(u[Number(l)][Number((fieldAdd(i, 1n) % n_param))]);
+  return new BitsInBytes(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(8n, Number(n_param)))));
 })());
-})()), v: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const b = __clone(v[i]);
-  const next = __clone(v[(fieldAdd(i, 1) % n_param)]);
-  return new BitsInBytes(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(8, Number(n_param)))));
-})()), n: 0, k: 1 });
+})()), v: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const b = __clone(v[Number(i)]);
+  const next = __clone(v[Number((fieldAdd(i, 1n) % n_param))]);
+  return new BitsInBytes(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(8n, Number(n_param)))));
+})()), n: 0n, k: 1n });
     } else {
-      const n: number = this.n;
-      const k: number = this.k;
+      const n: bigint = this.n;
+      const k: bigint = this.k;
       const { u, v } = this;
-      return new VopeDyn({ u: Array.from({length: k - 0}, (_, __i) => __i + 0).map((l: any) => (() => {
-  return Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const b = __clone(u[l][i]);
-  const next = __clone(u[l][(fieldAdd(i, 1) % n_param)]);
-  return new BitsInBytes64(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(64, Number(n_param)))));
+      return new VopeDyn({ u: Array.from({length: Number(k - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+  return Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const b = __clone(u[Number(l)][Number(i)]);
+  const next = __clone(u[Number(l)][Number((fieldAdd(i, 1n) % n_param))]);
+  return new BitsInBytes64(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(64n, Number(n_param)))));
 })());
-})()), v: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const b = __clone(v[i]);
-  const next = __clone(v[(fieldAdd(i, 1) % n_param)]);
-  return new BitsInBytes64(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(64, Number(n_param)))));
-})()), n: 0, k: 1 });
+})()), v: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const b = __clone(v[Number(i)]);
+  const next = __clone(v[Number((fieldAdd(i, 1n) % n_param))]);
+  return new BitsInBytes64(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(64n, Number(n_param)))));
+})()), n: 0n, k: 1n });
     }
   }
 
-  rotate_right_bits(n_param: number): VopeDyn<T>
+  rotate_right_bits(n_param: bigint): VopeDyn<T>
   {
     if (this.u[0] instanceof BitsInBytes) {
-      const n: number = this.n;
-      const k: number = this.k;
+      const n: bigint = this.n;
+      const k: bigint = this.k;
       const { u, v } = this;
-      return new VopeDyn({ u: Array.from({length: k - 0}, (_, __i) => __i + 0).map((l: any) => (() => {
-  return Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const prev = __clone(u[l][(fieldSub(fieldAdd(i, n_param), 1) % n_param)]);
-  const b = __clone(u[l][i]);
-  return new BitsInBytes(fieldBitor(fieldShl(prev, fieldSub(8, Number(n_param))), fieldShr(b, Number(n_param))));
+      return new VopeDyn({ u: Array.from({length: Number(k - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+  return Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const prev = __clone(u[Number(l)][Number((fieldSub(fieldAdd(i, n_param), 1n) % n_param))]);
+  const b = __clone(u[Number(l)][Number(i)]);
+  return new BitsInBytes(fieldBitor(fieldShl(prev, fieldSub(8n, Number(n_param))), fieldShr(b, Number(n_param))));
 })());
-})()), v: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const prev = __clone(v[(fieldSub(fieldAdd(i, n_param), 1) % n_param)]);
-  const b = __clone(v[i]);
-  return new BitsInBytes(fieldBitor(fieldShl(prev, fieldSub(8, Number(n_param))), fieldShr(b, Number(n_param))));
-})()), n: 0, k: 1 });
+})()), v: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const prev = __clone(v[Number((fieldSub(fieldAdd(i, n_param), 1n) % n_param))]);
+  const b = __clone(v[Number(i)]);
+  return new BitsInBytes(fieldBitor(fieldShl(prev, fieldSub(8n, Number(n_param))), fieldShr(b, Number(n_param))));
+})()), n: 0n, k: 1n });
     } else {
-      const n: number = this.n;
-      const k: number = this.k;
+      const n: bigint = this.n;
+      const k: bigint = this.k;
       const { u, v } = this;
-      return new VopeDyn({ u: Array.from({length: k - 0}, (_, __i) => __i + 0).map((l: any) => (() => {
-  return Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const prev = __clone(u[l][(fieldSub(fieldAdd(i, n_param), 1) % n_param)]);
-  const b = __clone(u[l][i]);
-  return new BitsInBytes64(fieldBitor(fieldShl(prev, fieldSub(64, Number(n_param))), fieldShr(b, Number(n_param))));
+      return new VopeDyn({ u: Array.from({length: Number(k - 0n)}, (_, __i) => BigInt(__i) + 0n).map((l: any) => (() => {
+  return Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const prev = __clone(u[Number(l)][Number((fieldSub(fieldAdd(i, n_param), 1n) % n_param))]);
+  const b = __clone(u[Number(l)][Number(i)]);
+  return new BitsInBytes64(fieldBitor(fieldShl(prev, fieldSub(64n, Number(n_param))), fieldShr(b, Number(n_param))));
 })());
-})()), v: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const prev = __clone(v[(fieldSub(fieldAdd(i, n_param), 1) % n_param)]);
-  const b = __clone(v[i]);
-  return new BitsInBytes64(fieldBitor(fieldShl(prev, fieldSub(64, Number(n_param))), fieldShr(b, Number(n_param))));
-})()), n: 0, k: 1 });
+})()), v: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const prev = __clone(v[Number((fieldSub(fieldAdd(i, n_param), 1n) % n_param))]);
+  const b = __clone(v[Number(i)]);
+  return new BitsInBytes64(fieldBitor(fieldShl(prev, fieldSub(64n, Number(n_param))), fieldShr(b, Number(n_param))));
+})()), n: 0n, k: 1n });
     }
   }
 }
 
 export class DeltaDyn<T> {
-  n!: number;
-  delta!: any[];
+  n!: bigint;
+  delta!: T[];
 
   constructor(init: { 
-    n: number,
-    delta: any[]
+    n: bigint,
+    delta: T[]
   }) {
     Object.assign(this, init);
   }
 
   clone(): DeltaDyn<T>
   {
-    const n: number = this.n;
+    const n: bigint = this.n;
     const { delta } = this;
-    return new DeltaDyn({ delta: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => __clone(delta[i])), n: 0 });
+    return new DeltaDyn({ delta: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(delta[Number(i)])), n: 0n });
   }
 
   eq(other: DeltaDyn<T>): boolean
   {
-    const n: number = this.n;
+    const n: bigint = this.n;
     const { delta: d1 } = this;
     const { delta: d2 } = other;
-    for (let i = 0; i < n; i++)     {
-      if ((d1[i] !== d2[i]))       {
+    for (let i = 0n; i < n; i += 1n)     {
+      if ((d1[Number(i)] !== d2[Number(i)]))       {
         return false;
       }
     }
     return true;
   }
 
-  remap(m: number, f: (arg: number) => number): DeltaDyn<any>
+  remap<T>(m: bigint, f: (arg: number) => bigint): DeltaDyn<T>
   {
-    const n: number = this.n;
+    const n: bigint = this.n;
     const { delta } = this;
-    return new DeltaDyn({ delta: Array.from({length: m - 0}, (_, __i) => __i + 0).map((i: any) => __clone(delta[(f(i) % n)])), n: 0 });
+    return new DeltaDyn({ delta: Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(delta[Number((f(i) % n))])), n: 0n });
   }
 
-  rotate_left(n_param: number): DeltaDyn<T>
+  rotate_left(n_param: bigint): DeltaDyn<T>
   {
-    const n: number = this.n;
+    const n: bigint = this.n;
     return this.remap(this.n, (a) => wrappingSub(a, n_param));
   }
 
-  rotate_right(n_param: number): DeltaDyn<T>
+  rotate_right(n_param: bigint): DeltaDyn<T>
   {
-    const n: number = this.n;
+    const n: bigint = this.n;
     return this.remap(this.n, (a) => wrappingAdd(a, n_param));
   }
 
   static_<U, O>(val: any[]): QDyn<any>
   {
-    const n: number = this.n;
-    return new QDyn({ q: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => fieldMul(__clone(val[i]), __clone(this.delta[i]))), n: 0 });
+    const n: bigint = this.n;
+    return new QDyn({ q: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldMul(__clone(val[Number(i)]), __clone(this.delta[Number(i)]))), n: 0n });
   }
 
-  bit(n_param: number): DeltaDyn<Bit>
+  bit(n_param: bigint): DeltaDyn<Bit>
   {
     if (this.delta[0] instanceof BitsInBytes) {
-      const n: number = this.n;
+      const n: bigint = this.n;
       const { delta } = this;
-      return new DeltaDyn({ delta: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const b = __clone(delta[i]);
-  return new Bit((fieldBitand(fieldShr(b, n_param), 1) !== 0));
-})()), n: 0 });
+      return new DeltaDyn({ delta: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const b = __clone(delta[Number(i)]);
+  return new Bit((fieldBitand(fieldShr(b, n_param), 1n) !== 0n));
+})()), n: 0n });
     } else {
-      const n: number = this.n;
+      const n: bigint = this.n;
       const { delta } = this;
-      return new DeltaDyn({ delta: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const b = __clone(delta[i]);
-  return new Bit((fieldBitand(fieldShr(b, n_param), 1) !== 0));
-})()), n: 0 });
+      return new DeltaDyn({ delta: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const b = __clone(delta[Number(i)]);
+  return new Bit((fieldBitand(fieldShr(b, n_param), 1n) !== 0n));
+})()), n: 0n });
     }
   }
 
-  rotate_left_bits(n_param: number): DeltaDyn<T>
+  rotate_left_bits(n_param: bigint): DeltaDyn<T>
   {
     if (this.delta[0] instanceof BitsInBytes) {
-      const n: number = this.n;
+      const n: bigint = this.n;
       const { delta } = this;
-      return new DeltaDyn({ delta: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const b = __clone(delta[i]);
-  const next = __clone(delta[(fieldAdd(i, 1) % n_param)]);
-  return new BitsInBytes(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(8, Number(n_param)))));
-})()), n: 0 });
+      return new DeltaDyn({ delta: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const b = __clone(delta[Number(i)]);
+  const next = __clone(delta[Number((fieldAdd(i, 1n) % n_param))]);
+  return new BitsInBytes(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(8n, Number(n_param)))));
+})()), n: 0n });
     } else {
-      const n: number = this.n;
+      const n: bigint = this.n;
       const { delta } = this;
-      return new DeltaDyn({ delta: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const b = __clone(delta[i]);
-  const next = __clone(delta[(fieldAdd(i, 1) % n_param)]);
-  return new BitsInBytes64(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(64, Number(n_param)))));
-})()), n: 0 });
+      return new DeltaDyn({ delta: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const b = __clone(delta[Number(i)]);
+  const next = __clone(delta[Number((fieldAdd(i, 1n) % n_param))]);
+  return new BitsInBytes64(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(64n, Number(n_param)))));
+})()), n: 0n });
     }
   }
 
-  rotate_right_bits(n_param: number): DeltaDyn<T>
+  rotate_right_bits(n_param: bigint): DeltaDyn<T>
   {
     if (this.delta[0] instanceof BitsInBytes) {
-      const n: number = this.n;
+      const n: bigint = this.n;
       const { delta } = this;
-      return new DeltaDyn({ delta: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const prev = __clone(delta[(fieldSub(fieldAdd(i, n_param), 1) % n_param)]);
-  const b = __clone(delta[i]);
-  return new BitsInBytes(fieldBitor(fieldShl(prev, fieldSub(8, Number(n_param))), fieldShr(b, Number(n_param))));
-})()), n: 0 });
+      return new DeltaDyn({ delta: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const prev = __clone(delta[Number((fieldSub(fieldAdd(i, n_param), 1n) % n_param))]);
+  const b = __clone(delta[Number(i)]);
+  return new BitsInBytes(fieldBitor(fieldShl(prev, fieldSub(8n, Number(n_param))), fieldShr(b, Number(n_param))));
+})()), n: 0n });
     } else {
-      const n: number = this.n;
+      const n: bigint = this.n;
       const { delta } = this;
-      return new DeltaDyn({ delta: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const prev = __clone(delta[(fieldSub(fieldAdd(i, n_param), 1) % n_param)]);
-  const b = __clone(delta[i]);
-  return new BitsInBytes64(fieldBitor(fieldShl(prev, fieldSub(64, Number(n_param))), fieldShr(b, Number(n_param))));
-})()), n: 0 });
+      return new DeltaDyn({ delta: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const prev = __clone(delta[Number((fieldSub(fieldAdd(i, n_param), 1n) % n_param))]);
+  const b = __clone(delta[Number(i)]);
+  return new BitsInBytes64(fieldBitor(fieldShl(prev, fieldSub(64n, Number(n_param))), fieldShr(b, Number(n_param))));
+})()), n: 0n });
     }
   }
 }
 
 export class QDyn<T> {
-  n!: number;
-  q!: any[];
+  n!: bigint;
+  q!: T[];
 
   constructor(init: { 
-    n: number,
-    q: any[]
+    n: bigint,
+    q: T[]
   }) {
     Object.assign(this, init);
   }
 
   clone(): QDyn<T>
   {
-    const n: number = this.n;
+    const n: bigint = this.n;
     const { q } = this;
-    return new QDyn({ q: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => __clone(q[i])), n: 0 });
+    return new QDyn({ q: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(q[Number(i)])), n: 0n });
   }
 
   eq(other: QDyn<T>): boolean
   {
-    const n: number = this.n;
+    const n: bigint = this.n;
     const { q: q1 } = this;
     const { q: q2 } = other;
-    for (let i = 0; i < n; i++)     {
-      if ((q1[i] !== q2[i]))       {
+    for (let i = 0n; i < n; i += 1n)     {
+      if ((q1[Number(i)] !== q2[Number(i)]))       {
         return false;
       }
     }
     return true;
   }
 
-  remap(m: number, f: (arg: number) => number): QDyn<any>
+  remap<T>(m: bigint, f: (arg: number) => bigint): QDyn<T>
   {
-    const n: number = this.n;
+    const n: bigint = this.n;
     const { q } = this;
-    return new QDyn({ q: Array.from({length: m - 0}, (_, __i) => __i + 0).map((i: any) => __clone(q[(f(i) % n)])), n: 0 });
+    return new QDyn({ q: Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(q[Number((f(i) % n))])), n: 0n });
   }
 
-  rotate_left(n_param: number): QDyn<T>
+  rotate_left(n_param: bigint): QDyn<T>
   {
-    const n: number = this.n;
+    const n: bigint = this.n;
     return this.remap(this.n, (a) => wrappingSub(a, n_param));
   }
 
-  rotate_right(n_param: number): QDyn<T>
+  rotate_right(n_param: bigint): QDyn<T>
   {
-    const n: number = this.n;
+    const n: bigint = this.n;
     return this.remap(this.n, (a) => wrappingAdd(a, n_param));
   }
 
-  bit(n_param: number): QDyn<Bit>
+  bit(n_param: bigint): QDyn<Bit>
   {
     if (this.q[0] instanceof BitsInBytes) {
-      const n: number = this.n;
+      const n: bigint = this.n;
       const { q } = this;
-      return new QDyn({ q: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const b = __clone(q[i]);
-  return new Bit((fieldBitand(fieldShr(b, n_param), 1) !== 0));
-})()), n: 0 });
+      return new QDyn({ q: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const b = __clone(q[Number(i)]);
+  return new Bit((fieldBitand(fieldShr(b, n_param), 1n) !== 0n));
+})()), n: 0n });
     } else {
-      const n: number = this.n;
+      const n: bigint = this.n;
       const { q } = this;
-      return new QDyn({ q: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const b = __clone(q[i]);
-  return new Bit((fieldBitand(fieldShr(b, n_param), 1) !== 0));
-})()), n: 0 });
+      return new QDyn({ q: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const b = __clone(q[Number(i)]);
+  return new Bit((fieldBitand(fieldShr(b, n_param), 1n) !== 0n));
+})()), n: 0n });
     }
   }
 
-  rotate_left_bits(n_param: number): QDyn<T>
+  rotate_left_bits(n_param: bigint): QDyn<T>
   {
     if (this.q[0] instanceof BitsInBytes) {
-      const n: number = this.n;
+      const n: bigint = this.n;
       const { q } = this;
-      return new QDyn({ q: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const b = __clone(q[i]);
-  const next = __clone(q[(fieldAdd(i, 1) % n_param)]);
-  return new BitsInBytes(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(8, Number(n_param)))));
-})()), n: 0 });
+      return new QDyn({ q: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const b = __clone(q[Number(i)]);
+  const next = __clone(q[Number((fieldAdd(i, 1n) % n_param))]);
+  return new BitsInBytes(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(8n, Number(n_param)))));
+})()), n: 0n });
     } else {
-      const n: number = this.n;
+      const n: bigint = this.n;
       const { q } = this;
-      return new QDyn({ q: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const b = __clone(q[i]);
-  const next = __clone(q[(fieldAdd(i, 1) % n_param)]);
-  return new BitsInBytes64(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(64, Number(n_param)))));
-})()), n: 0 });
+      return new QDyn({ q: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const b = __clone(q[Number(i)]);
+  const next = __clone(q[Number((fieldAdd(i, 1n) % n_param))]);
+  return new BitsInBytes64(fieldBitor(fieldShl(b, Number(n_param)), fieldShr(next, fieldSub(64n, Number(n_param)))));
+})()), n: 0n });
     }
   }
 
-  rotate_right_bits(n_param: number): QDyn<T>
+  rotate_right_bits(n_param: bigint): QDyn<T>
   {
     if (this.q[0] instanceof BitsInBytes) {
-      const n: number = this.n;
+      const n: bigint = this.n;
       const { q } = this;
-      return new QDyn({ q: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const prev = __clone(q[(fieldSub(fieldAdd(i, n_param), 1) % n_param)]);
-  const b = __clone(q[i]);
-  return new BitsInBytes(fieldBitor(fieldShl(prev, fieldSub(8, Number(n_param))), fieldShr(b, Number(n_param))));
-})()), n: 0 });
+      return new QDyn({ q: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const prev = __clone(q[Number((fieldSub(fieldAdd(i, n_param), 1n) % n_param))]);
+  const b = __clone(q[Number(i)]);
+  return new BitsInBytes(fieldBitor(fieldShl(prev, fieldSub(8n, Number(n_param))), fieldShr(b, Number(n_param))));
+})()), n: 0n });
     } else {
-      const n: number = this.n;
+      const n: bigint = this.n;
       const { q } = this;
-      return new QDyn({ q: Array.from({length: n_param - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const prev = __clone(q[(fieldSub(fieldAdd(i, n_param), 1) % n_param)]);
-  const b = __clone(q[i]);
-  return new BitsInBytes64(fieldBitor(fieldShl(prev, fieldSub(64, Number(n_param))), fieldShr(b, Number(n_param))));
-})()), n: 0 });
+      return new QDyn({ q: Array.from({length: Number(n_param - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const prev = __clone(q[Number((fieldSub(fieldAdd(i, n_param), 1n) % n_param))]);
+  const b = __clone(q[Number(i)]);
+  return new BitsInBytes64(fieldBitor(fieldShl(prev, fieldSub(64n, Number(n_param))), fieldShr(b, Number(n_param))));
+})()), n: 0n });
     }
   }
 }
 
-export function add_round_key(state: number[], round_key: number[])
+export type Sponge =
+  | { tag: "Shake128", _0: Shake128 }
+  | { tag: "Shake256", _0: Shake256 };
+export function Sponge_Shake128(_0: Shake128): Sponge { return { tag: "Shake128", _0 }; }
+export function Sponge_Shake256(_0: Shake256): Sponge { return { tag: "Shake256", _0 }; }
+
+export function add_round_key(state: bigint[], round_key: bigint[])
 {
-  for (let i = 0; i < BLOCK; i++)   {
-    state[i] ^= round_key[i];
+  for (let i = 0n; i < BLOCK; i += 1n)   {
+    state[Number(i)] ^= round_key[Number(i)];
   }
 }
 
-export function add_to_lower_word(iv: number[], counter: number): number[]
+export function add_to_lower_word(iv: bigint[], counter: bigint): bigint[]
 {
   let out = iv;
-  const lower = u32.from_le_bytes([out[0], out[1], out[2], out[3]]);
+  const lower = u32.from_le_bytes([out[Number(0n)], out[Number(1n)], out[Number(2n)], out[Number(3n)]]);
   const new_ = wrappingAdd(lower, counter);
-  const bytes = [(new_) & 0xFF, ((new_) >> 8) & 0xFF, ((new_) >> 16) & 0xFF, ((new_) >> 24) & 0xFF];
-  out[0] = bytes[0];
-  out[1] = bytes[1];
-  out[2] = bytes[2];
-  out[3] = bytes[3];
+  const bytes = [(new_) & 0xFFn, ((new_) >> 8n) & 0xFFn, ((new_) >> 16n) & 0xFFn, ((new_) >> 24n) & 0xFFn];
+  out[Number(0n)] = bytes[Number(0n)];
+  out[Number(1n)] = bytes[Number(1n)];
+  out[Number(2n)] = bytes[Number(2n)];
+  out[Number(3n)] = bytes[Number(3n)];
   return out;
 }
 
-export function add_to_upper_word(iv: number[], tweak: number)
+export function add_to_upper_word(iv: bigint[], tweak: bigint)
 {
-  const upper = u32.from_le_bytes([iv[12], iv[13], iv[14], iv[15]]);
+  const upper = u32.from_le_bytes([iv[Number(12n)], iv[Number(13n)], iv[Number(14n)], iv[Number(15n)]]);
   const new_ = wrappingAdd(upper, tweak);
-  const bytes = [(new_) & 0xFF, ((new_) >> 8) & 0xFF, ((new_) >> 16) & 0xFF, ((new_) >> 24) & 0xFF];
-  iv[12] = bytes[0];
-  iv[13] = bytes[1];
-  iv[14] = bytes[2];
-  iv[15] = bytes[3];
+  const bytes = [(new_) & 0xFFn, ((new_) >> 8n) & 0xFFn, ((new_) >> 16n) & 0xFFn, ((new_) >> 24n) & 0xFFn];
+  iv[Number(12n)] = bytes[Number(0n)];
+  iv[Number(13n)] = bytes[Number(1n)];
+  iv[Number(14n)] = bytes[Number(2n)];
+  iv[Number(15n)] = bytes[Number(3n)];
 }
 
-export function aes_ctr_prg(seed: number[], iv: number[], tweak: number, out_bytes: number): Vec<number>
+export function aes_ctr_prg(seed: bigint[], iv: bigint[], tweak: bigint, out_bytes: bigint): Vec<bigint>
 {
   let iv_tweaked = iv;
   add_to_upper_word(iv_tweaked, tweak);
   const n_full = (out_bytes / BLOCK);
   const rem = (out_bytes % BLOCK);
   let out = alloc.vec.Vec.with_capacity(out_bytes);
-  for (let i = 0; i < n_full; i++)   {
+  for (let i = 0n; i < n_full; i += 1n)   {
     const block_in = add_to_lower_word(iv_tweaked, Number(i));
     const ct = encrypt_block(seed, block_in);
     out.extend_from_slice(ct);
   }
-  if ((rem > 0))   {
+  if ((rem > 0n))   {
     const block_in = add_to_lower_word(iv_tweaked, Number(n_full));
     const ct = encrypt_block(seed, block_in);
-    out.extend_from_slice(ct.slice(0, rem));
+    out.extend_from_slice(ct.slice(0, Number(rem)));
   }
   return out;
 }
 
-export function and_test_poly(big_n: number): number[]
+export function and_test_poly(big_n: bigint): bigint[]
 {
-  let v = Array.from({length: big_n}, () => 0);
-  const half_q4 = fieldShr(Q4, 1);
-  for (let k = 0; k < (big_n / 2); k++)   {
-    v[k] = (-((half_q4)) >>> 0);
+  let v = Array.from({length: Number(big_n)}, () => 0n);
+  const half_q4 = fieldShr(Q4, 1n);
+  for (let k = 0n; k < (big_n / 2n); k += 1n)   {
+    v[Number(k)] = ((-((half_q4)) & 0xFFFFFFFFn));
   }
-  for (let k = (big_n / 2); k < big_n; k++)   {
-    v[k] = half_q4;
+  for (let k = (big_n / 2n); k < big_n; k += 1n)   {
+    v[Number(k)] = half_q4;
   }
   return v;
 }
 
-export function blind_rotate(n_lwe: number, big_n: number, bs_ell: number, ks_ell: number, ct: LweCiphertextDyn, bk: BootstrappingKeyDyn): RlweCiphertextDyn
+export function blind_rotate(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, ct: LweCiphertextDyn, bk: BootstrappingKeyDyn): RlweCiphertextDyn
 {
   return blind_rotate_with_poly(ct, and_test_poly(), bk);
 }
 
-export function blind_rotate_with_poly(n_lwe: number, big_n: number, bs_ell: number, ks_ell: number, ct: LweCiphertextDyn, test_poly: number[], bk: BootstrappingKeyDyn): RlweCiphertextDyn
+export function blind_rotate_with_poly(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, ct: LweCiphertextDyn, test_poly: bigint[], bk: BootstrappingKeyDyn): RlweCiphertextDyn
 {
-  let acc = new RlweCiphertextDyn({ a: Array.from({length: big_n}, () => 0), b: test_poly, big_n: 0 });
-  const two_n = fieldMul(2, big_n);
+  let acc = new RlweCiphertextDyn({ a: Array.from({length: Number(big_n)}, () => 0n), b: test_poly, big_n: 0n });
+  const two_n = fieldMul(2n, big_n);
   const log2_two_n = Math.clz32((two_n) & -((two_n) | 0));
-  const scale_shift = (32 - (log2_two_n));
+  const scale_shift = (32n - (log2_two_n));
   const b_exp = torus_to_exp(ct.b, scale_shift, two_n);
-  if ((b_exp !== 0))   {
+  if ((b_exp !== 0n))   {
     acc = rlwe_rotate(acc, fieldSub(two_n, b_exp));
   }
-  for (let i = 0; i < n_lwe; i++)   {
-    const a_exp = torus_to_exp(ct.a[i], scale_shift, two_n);
-    if ((a_exp !== 0))     {
+  for (let i = 0n; i < n_lwe; i += 1n)   {
+    const a_exp = torus_to_exp(ct.a[Number(i)], scale_shift, two_n);
+    if ((a_exp !== 0n))     {
       const acc_rotated = rlwe_rotate(acc, a_exp);
-      acc = cmux(bk.bsk[i], acc_rotated, acc, bk.bs_bg_log);
+      acc = cmux(bk.bsk[Number(i)], acc_rotated, acc, bk.bs_bg_log);
     }
   }
   return acc;
 }
 
-export function chall1(mu: readonly number[], iv: number[], com_bytes: readonly number[], lambda_plus_b: number, use_shake256: boolean): Vec<number>
+export function chall1(mu: readonly bigint[], iv: bigint[], com_bytes: readonly bigint[], lambda_plus_b: bigint, use_shake256: boolean): Vec<bigint>
 {
   let t = (() => { if (use_shake256) {
   return FaestTranscript.new_shake256();
@@ -2430,7 +2759,7 @@ export function chall1(mu: readonly number[], iv: number[], com_bytes: readonly 
   return t.squeeze(lambda_plus_b);
 }
 
-export function chall2(chall_1: readonly number[], u_hat: readonly number[], d: readonly number[], lambda_plus_b: number, use_shake256: boolean): Vec<number>
+export function chall2(chall_1: readonly bigint[], u_hat: readonly bigint[], d: readonly bigint[], lambda_plus_b: bigint, use_shake256: boolean): Vec<bigint>
 {
   let t = (() => { if (use_shake256) {
   return FaestTranscript.new_shake256();
@@ -2443,7 +2772,7 @@ export function chall2(chall_1: readonly number[], u_hat: readonly number[], d: 
   return t.squeeze(lambda_plus_b);
 }
 
-export function chall3(chall_2: readonly number[], a_hat: readonly number[], b_hat: readonly number[], c_hat: readonly number[], lambda: number, use_shake256: boolean): Vec<number>
+export function chall3(chall_2: readonly bigint[], a_hat: readonly bigint[], b_hat: readonly bigint[], c_hat: readonly bigint[], lambda: bigint, use_shake256: boolean): Vec<bigint>
 {
   let t = (() => { if (use_shake256) {
   return FaestTranscript.new_shake256();
@@ -2457,7 +2786,7 @@ export function chall3(chall_2: readonly number[], a_hat: readonly number[], b_h
   return t.squeeze(lambda);
 }
 
-export function cmux(big_n: number, bs_ell: number, c: RgswCiphertextDyn, d1: RlweCiphertextDyn, d0: RlweCiphertextDyn, bs_bg_log: number): RlweCiphertextDyn
+export function cmux(big_n: bigint, bs_ell: bigint, c: RgswCiphertextDyn, d1: RlweCiphertextDyn, d0: RlweCiphertextDyn, bs_bg_log: bigint): RlweCiphertextDyn
 {
   const diff = rlwe_sub(d1, d0);
   const prod = external_product(c, diff, bs_bg_log);
@@ -2466,19 +2795,19 @@ export function cmux(big_n: number, bs_ell: number, c: RgswCiphertextDyn, d1: Rl
 
 export function concat_small_voles(outs: Vec<ConvertOutput>): BigVoleProver
 {
-  const l_hat = outs[0].u.length;
+  const l_hat = outs[Number(0n)].u.length;
   for (const o of outs)   {
     for (const vj of o.v)     {
     }
   }
-  const u = __clone(outs[0].u);
-  let c: Vec<Vec<number>> = /* Vec::with_capacity */ Array(fieldSub(outs.length, 1));
-  for (const o of outs.slice(1))   {
+  const u = __clone(outs[Number(0n)].u);
+  let c: Vec<Vec<bigint>> = /* Vec::with_capacity */ Array(fieldSub(outs.length, 1n));
+  for (const o of outs.slice(Number(1n)))   {
     let ci = __clone(o.u);
     xor_in_place(ci, u);
     (c).push(ci);
   }
-  let v_columns: Vec<Vec<number>> = []();
+  let v_columns: Vec<Vec<bigint>> = []();
   for (const o of outs)   {
     for (const vj of o.v)     {
       (v_columns).push(vj);
@@ -2487,18 +2816,18 @@ export function concat_small_voles(outs: Vec<ConvertOutput>): BigVoleProver
   return new BigVoleProver({ u: u, c: c, v_columns: v_columns });
 }
 
-export function concat_small_voles_verifier(outs: Vec<ConvertOutput>, deltas: readonly number[], corrections: readonly Vec<number>[]): BigVoleVerifier
+export function concat_small_voles_verifier(outs: Vec<ConvertOutput>, deltas: readonly bigint[], corrections: readonly Vec<bigint>[]): BigVoleVerifier
 {
-  let q_columns: Vec<Vec<number>> = []();
+  let q_columns: Vec<Vec<bigint>> = []();
   for (const [i, o] of outs.map((val: any, i: number) => [i, val] as [number, typeof val]))   {
     const k = o.v.length;
-    const delta_i = deltas[i];
+    const delta_i = deltas[Number(i)];
     for (const [bit, vj_raw] of o.v.map((val: any, i: number) => [i, val] as [number, typeof val]))     {
       let q = vj_raw;
-      if ((i >= 1))       {
-        const delta_bit = (fieldBitand(fieldShr(delta_i, bit), 1) === 1);
+      if ((i >= 1n))       {
+        const delta_bit = (fieldBitand(fieldShr(delta_i, bit), 1n) === 1n);
         if (delta_bit)         {
-          xor_in_place(q, corrections[fieldSub(i, 1)]);
+          xor_in_place(q, corrections[Number(fieldSub(i, 1n))]);
         }
       }
       (q_columns).push(q);
@@ -2508,36 +2837,36 @@ export function concat_small_voles_verifier(outs: Vec<ConvertOutput>, deltas: re
   return new BigVoleVerifier({ q_columns: q_columns });
 }
 
-export function concat_words(wbound: number, a: GrafhenWordDyn, b: GrafhenWordDyn): (GrafhenWordDyn | undefined)
+export function concat_words(wbound: bigint, a: GrafhenWordDyn, b: GrafhenWordDyn): (GrafhenWordDyn | undefined)
 {
   const new_len = (() => { const __match = (a.len + (b.len)); if (__match !== null && __match !== undefined) { const n = __match;
 return n; } else { return undefined; } })();
   let result = GrafhenWord.identity();
-  (result.data.slice(0, a.len)).splice(0, (a.data.slice(0, a.len)).length, ...(a.data.slice(0, a.len)));
-  (result.data.slice(a.len, new_len)).splice(0, (b.data.slice(0, b.len)).length, ...(b.data.slice(0, b.len)));
+  (result.data.slice(0, Number(a.len))).splice(0, (a.data.slice(0, Number(a.len))).length, ...(a.data.slice(0, Number(a.len))));
+  (result.data.slice(Number(a.len), Number(new_len))).splice(0, (b.data.slice(0, Number(b.len))).length, ...(b.data.slice(0, Number(b.len))));
   result.len = new_len;
   return result;
 }
 
-export function convert_to_vole(seeds: readonly (number[] | undefined)[], iv: number[], tweak: number, l_hat_bytes: number): ConvertOutput
+export function convert_to_vole(seeds: readonly (bigint[] | undefined)[], iv: bigint[], tweak: bigint, l_hat_bytes: bigint): ConvertOutput
 {
   const n = seeds.length;
   const d = Number(Math.clz32((n) & -((n) | 0)));
   const zero_block = [];
-  let r: Vec<Vec<number>> = /* Vec::with_capacity */ Array(n);
+  let r: Vec<Vec<bigint>> = /* Vec::with_capacity */ Array(n);
   for (const s of seeds)   {
     return (() => { const __match = s; if (__match !== null && __match !== undefined) { const seed = __match;
 return (r).push(aes_ctr_prg(seed, iv, tweak, l_hat_bytes)); } else { return (r).push(__clone(zero_block)); } })();
   }
-  let v: Vec<Vec<number>> = Array.from({length: d - 0}, (_, __i) => __i + 0).map((_: any) => []);
-  let level: Vec<Vec<number>> = r;
-  for (let j = 0; j < d; j++)   {
-    const half = (level.length / 2);
-    let next: Vec<Vec<number>> = /* Vec::with_capacity */ Array(half);
-    for (let i = 0; i < half; i++)     {
-      xor_in_place(v[j], level[fieldAdd(fieldMul(2, i), 1)]);
-      let new_entry = __clone(level[fieldMul(2, i)]);
-      xor_in_place(new_entry, level[fieldAdd(fieldMul(2, i), 1)]);
+  let v: Vec<Vec<bigint>> = Array.from({length: Number(d - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => []);
+  let level: Vec<Vec<bigint>> = r;
+  for (let j = 0n; j < d; j += 1n)   {
+    const half = (level.length / 2n);
+    let next: Vec<Vec<bigint>> = /* Vec::with_capacity */ Array(half);
+    for (let i = 0n; i < half; i += 1n)     {
+      xor_in_place(v[Number(j)], level[Number(fieldAdd(fieldMul(2n, i), 1n))]);
+      let new_entry = __clone(level[Number(fieldMul(2n, i))]);
+      xor_in_place(new_entry, level[Number(fieldAdd(fieldMul(2n, i), 1n))]);
       (next).push(new_entry);
     }
     level = next;
@@ -2546,34 +2875,34 @@ return (r).push(aes_ctr_prg(seed, iv, tweak, l_hat_bytes)); } else { return (r).
   return new ConvertOutput({ u: u, v: v });
 }
 
-export function create_vole_from_material(ctx: { B_OutputSize: number }, s: readonly any[]): VopeDyn<number>
+export function create_vole_from_material(ctx: { B_OutputSize: bigint }, s: readonly any[]): VopeDyn<bigint>
 {
-  const u: number[] = s.reduce((a: any, b: any) => (() => {
-  return Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i: any) => fieldBitxor(a[i], asRefU8(b)[i]));
-})(), Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((_: any) => 0));
-  const v: number[] = s.map((val: any, i: number) => [i, val] as [number, typeof val]).reduce((a: any, [i, b]: any) => (() => {
-  return Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((j: any) => fieldBitxor(fieldBitxor(a[j], asRefU8(b)[j]), ((i) & 0xFF)));
-})(), Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((_: any) => 0));
-  return new VopeDyn({ u: Array.from({length: 1 - 0}, (_, __i) => __i + 0).map((_: any) => __clone(u)), v: v, n: 0, k: 1 });
+  const u: bigint[] = s.reduce((a: any, b: any) => (() => {
+  return Array.from({length: Number(ctx.B_OutputSize - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldBitxor(a[Number(i)], asRefU8(b)[Number(i)]));
+})(), Array.from({length: Number(ctx.B_OutputSize - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n));
+  const v: bigint[] = s.map((val: any, i: number) => [i, val] as [number, typeof val]).reduce((a: any, [i, b]: any) => (() => {
+  return Array.from({length: Number(ctx.B_OutputSize - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => fieldBitxor(fieldBitxor(a[Number(j)], asRefU8(b)[Number(j)]), ((i) & 0xFFn)));
+})(), Array.from({length: Number(ctx.B_OutputSize - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n));
+  return new VopeDyn({ u: Array.from({length: Number(1n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => __clone(u)), v: v, n: 0n, k: 1n });
 }
 
-export function create_vole_from_material_expanded(ctx: { B_OutputSize: number }, s: readonly any[], f: (arg: Uint8Array) => any): VopeDyn<number>
+export function create_vole_from_material_expanded(ctx: { B_OutputSize: bigint }, s: readonly any[], f: (arg: Uint8Array) => any): VopeDyn<bigint>
 {
-  const u: number[] = s.map((b: any) => f(asRefU8(b).slice(0, ctx.B_OutputSize))).reduce((a: any, b: any) => (() => {
-  return Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((i: any) => fieldBitxor(a[i], asRefU8(b)[i]));
-})(), Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((_: any) => 0));
-  const v: number[] = s.map((b: any) => f(asRefU8(b).slice(0, ctx.B_OutputSize))).map((val: any, i: number) => [i, val] as [number, typeof val]).reduce((a: any, [i, b]: any) => (() => {
-  return Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((j: any) => fieldBitxor(fieldBitxor(a[j], asRefU8(b)[j]), ((i) & 0xFF)));
-})(), Array.from({length: ctx.B_OutputSize - 0}, (_, __i) => __i + 0).map((_: any) => 0));
-  return new VopeDyn({ u: Array.from({length: 1 - 0}, (_, __i) => __i + 0).map((_: any) => __clone(u)), v: v, n: 0, k: 1 });
+  const u: bigint[] = s.map((b: any) => f(asRefU8(b).slice(0, Number(ctx.B_OutputSize)))).reduce((a: any, b: any) => (() => {
+  return Array.from({length: Number(ctx.B_OutputSize - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldBitxor(a[Number(i)], asRefU8(b)[Number(i)]));
+})(), Array.from({length: Number(ctx.B_OutputSize - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n));
+  const v: bigint[] = s.map((b: any) => f(asRefU8(b).slice(0, Number(ctx.B_OutputSize)))).map((val: any, i: number) => [i, val] as [number, typeof val]).reduce((a: any, [i, b]: any) => (() => {
+  return Array.from({length: Number(ctx.B_OutputSize - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => fieldBitxor(fieldBitxor(a[Number(j)], asRefU8(b)[Number(j)]), ((i) & 0xFFn)));
+})(), Array.from({length: Number(ctx.B_OutputSize - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n));
+  return new VopeDyn({ u: Array.from({length: Number(1n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => __clone(u)), v: v, n: 0n, k: 1n });
 }
 
-export function derive_and_q<T>(n: number, delta: DeltaDyn<any>, q_a: QDyn<any>, q_b: QDyn<any>, hat: any[]): QDyn<any>
+export function derive_and_q<T>(n: bigint, delta: DeltaDyn<T>, q_a: QDyn<T>, q_b: QDyn<T>, hat: T[]): QDyn<T>
 {
-  return new QDyn({ q: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const lhs = fieldAdd(fieldMul(__clone(q_a.q[i]), __clone(q_b.q[i])), __clone(hat[i]));
-  return fieldMul(lhs, delta.delta[i].invert());
-})()), n: 0 });
+  return new QDyn({ q: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const lhs = fieldAdd(fieldMul(__clone(q_a.q[Number(i)]), __clone(q_b.q[Number(i)])), __clone(hat[Number(i)]));
+  return fieldMul(lhs, delta.delta[Number(i)].invert());
+})()), n: 0n });
 }
 
 export function ed_add(p1: EdPoint, p2: EdPoint): EdPoint
@@ -2608,14 +2937,14 @@ export function ed_neg(p: EdPoint): EdPoint
   return new EdPoint({ x: fe_neg(p.x), y: p.y, z: p.z, t: fe_neg(p.t) });
 }
 
-export function ed_scalar_mul(p: EdPoint, k: number[]): EdPoint
+export function ed_scalar_mul(p: EdPoint, k: bigint[]): EdPoint
 {
   let acc = EdPoint.IDENTITY;
-  for (const byte_idx of (Array.from({length: 32 - 0}, (_, i) => i + 0)).slice().reverse())   {
-    for (const bit of (Array.from({length: 8 - 0}, (_, i) => i + 0)).slice().reverse())     {
+  for (const byte_idx of (Array.from({length: Number(32n - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())   {
+    for (const bit of (Array.from({length: Number(8n - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())     {
       acc = ed_double(acc);
-      const b = fieldBitand(fieldShr(k[byte_idx], bit), 1);
-      if ((b === 1))       {
+      const b = fieldBitand(fieldShr(k[Number(byte_idx)], bit), 1n);
+      if ((b === 1n))       {
         acc = ed_add(acc, p);
       }
     }
@@ -2623,113 +2952,113 @@ export function ed_scalar_mul(p: EdPoint, k: number[]): EdPoint
   return acc;
 }
 
-export function encrypt_block(key: number[], plain: number[]): number[]
+export function encrypt_block(key: bigint[], plain: bigint[]): bigint[]
 {
   const round_keys = key_expansion(key);
   let state = plain;
-  add_round_key(state, round_keys[0]);
-  for (let r = 1; r < NR; r++)   {
+  add_round_key(state, round_keys[Number(0n)]);
+  for (let r = 1n; r < NR; r += 1n)   {
     sub_bytes(state);
     shift_rows(state);
     mix_columns(state);
-    add_round_key(state, round_keys[r]);
+    add_round_key(state, round_keys[Number(r)]);
   }
   sub_bytes(state);
   shift_rows(state);
-  add_round_key(state, round_keys[NR]);
+  add_round_key(state, round_keys[Number(NR)]);
   return state;
 }
 
-export function encrypt_branch<R>(l: number, rng: R, crs: LweOtCrs, pk: Zq[], msg: number[]): [Zq[], Zq[]]
+export function encrypt_branch<R>(l: bigint, rng: R, crs: LweOtCrs, pk: Zq[], msg: bigint[]): [Zq[], Zq[]]
 {
-  let r = Array.from({length: LWE_N}, () => 0);
-  for (let i = 0; i < LWE_N; i++)   {
-    r[i] = sample_noise(rng);
+  let r = Array.from({length: Number(LWE_N)}, () => 0n);
+  for (let i = 0n; i < LWE_N; i += 1n)   {
+    r[Number(i)] = sample_noise(rng);
   }
-  let u = Array.from({length: LWE_N}, () => 0);
-  for (let j = 0; j < LWE_N; j++)   {
-    let acc: Zq = 0;
-    for (let i = 0; i < LWE_N; i++)     {
-      acc = zq_add(acc, zq_mul(crs.a[i][j], r[i]));
+  let u = Array.from({length: Number(LWE_N)}, () => 0n);
+  for (let j = 0n; j < LWE_N; j += 1n)   {
+    let acc: Zq = 0n;
+    for (let i = 0n; i < LWE_N; i += 1n)     {
+      acc = zq_add(acc, zq_mul(crs.a[Number(i)][Number(j)], r[Number(i)]));
     }
     acc = zq_add(acc, sample_noise(rng));
-    u[j] = acc;
+    u[Number(j)] = acc;
   }
-  let base: Zq = 0;
-  for (let i = 0; i < LWE_N; i++)   {
-    base = zq_add(base, zq_mul(pk[i], r[i]));
+  let base: Zq = 0n;
+  for (let i = 0n; i < LWE_N; i += 1n)   {
+    base = zq_add(base, zq_mul(pk[Number(i)], r[Number(i)]));
   }
-  const half_q = (LWE_Q / 2);
-  let v = Array.from({length: l}, () => 0);
-  for (let k = 0; k < l; k++)   {
-    const plain = (() => { if ((fieldBitand(msg[k], 1) === 1)) {
+  const half_q = (LWE_Q / 2n);
+  let v = Array.from({length: Number(l)}, () => 0n);
+  for (let k = 0n; k < l; k += 1n)   {
+    const plain = (() => { if ((fieldBitand(msg[Number(k)], 1n) === 1n)) {
   return half_q;
 } else {
-  return 0;
+  return 0n;
 } })();
-    v[k] = zq_add(zq_add(base, sample_noise(rng)), plain);
+    v[Number(k)] = zq_add(zq_add(base, sample_noise(rng)), plain);
   }
   return [u, v];
 }
 
-export function eval_word_to_perm(n: number, d: number, wbound: number, key: GrafhenKeyDyn, word: GrafhenWordDyn): number[]
+export function eval_word_to_perm(n: bigint, d: bigint, wbound: bigint, key: GrafhenKeyDyn, word: GrafhenWordDyn): bigint[]
 {
-  let perm: number[] = Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => ((i) & 0xFF));
-  for (const g of word.data.slice(0, word.len))   {
+  let perm: bigint[] = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => ((i) & 0xFFn));
+  for (const g of word.data.slice(0, Number(word.len)))   {
     const g_1 = Number(g);
-    const generator: number[] = (() => { if ((g_1 < d)) {
-  return key.gens[g_1];
+    const generator: bigint[] = (() => { if ((g_1 < d)) {
+  return key.gens[Number(g_1)];
 } else {
-  return key.inv_gens[fieldSub(g_1, d)];
+  return key.inv_gens[Number(fieldSub(g_1, d))];
 } })();
-    perm = Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => generator[Number(perm[i])]);
+    perm = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => generator[Number(Number(perm[Number(i)]))]);
   }
   return perm;
 }
 
-export function expand_challenge_to_deltas(chall_1: readonly number[], tau: number, n: number): Vec<number>
+export function expand_challenge_to_deltas(chall_1: readonly bigint[], tau: bigint, n: bigint): Vec<bigint>
 {
-  return Array.from({length: tau - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const byte = Number(chall_1[(i % chall_1.length)]);
+  return Array.from({length: Number(tau - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const byte = Number(chall_1[Number((i % chall_1.length))]);
   return (byte % n);
 })());
 }
 
-export function external_product(big_n: number, bs_ell: number, rgsw: RgswCiphertextDyn, rlwe: RlweCiphertextDyn, bs_bg_log: number): RlweCiphertextDyn
+export function external_product(big_n: bigint, bs_ell: bigint, rgsw: RgswCiphertextDyn, rlwe: RlweCiphertextDyn, bs_bg_log: bigint): RlweCiphertextDyn
 {
   const a_decomp = poly_decompose(rlwe.a, bs_bg_log);
   const b_decomp = poly_decompose(rlwe.b, bs_bg_log);
-  let out_a = Array.from({length: big_n}, () => 0);
-  let out_b = Array.from({length: big_n}, () => 0);
-  for (let j = 0; j < bs_ell; j++)   {
-    const row = rgsw.rows[j];
-    const prod_a0 = poly_mul_neg(a_decomp[j], row.rlwe0.a);
-    const prod_a1 = poly_mul_neg(a_decomp[j], row.rlwe0.b);
-    const prod_b0 = poly_mul_neg(b_decomp[j], row.rlwe1.a);
-    const prod_b1 = poly_mul_neg(b_decomp[j], row.rlwe1.b);
-    for (let k = 0; k < big_n; k++)     {
-      out_a[k] = wrappingAdd(wrappingAdd(out_a[k], prod_a0[k]), prod_b0[k]);
-      out_b[k] = wrappingAdd(wrappingAdd(out_b[k], prod_a1[k]), prod_b1[k]);
+  let out_a = Array.from({length: Number(big_n)}, () => 0n);
+  let out_b = Array.from({length: Number(big_n)}, () => 0n);
+  for (let j = 0n; j < bs_ell; j += 1n)   {
+    const row = rgsw.rows[Number(j)];
+    const prod_a0 = poly_mul_neg(a_decomp[Number(j)], row.rlwe0.a);
+    const prod_a1 = poly_mul_neg(a_decomp[Number(j)], row.rlwe0.b);
+    const prod_b0 = poly_mul_neg(b_decomp[Number(j)], row.rlwe1.a);
+    const prod_b1 = poly_mul_neg(b_decomp[Number(j)], row.rlwe1.b);
+    for (let k = 0n; k < big_n; k += 1n)     {
+      out_a[Number(k)] = wrappingAdd(wrappingAdd(out_a[Number(k)], prod_a0[Number(k)]), prod_b0[Number(k)]);
+      out_b[Number(k)] = wrappingAdd(wrappingAdd(out_b[Number(k)], prod_a1[Number(k)]), prod_b1[Number(k)]);
     }
   }
-  return new RlweCiphertextDyn({ a: out_a, b: out_b, big_n: 0 });
+  return new RlweCiphertextDyn({ a: out_a, b: out_b, big_n: 0n });
 }
 
 export function fe_add(a: Fe25519, b: Fe25519): Fe25519
 {
-  let r = Array.from({length: 4}, () => 0);
-  let c: bigint = 0;
-  for (let i = 0; i < 4; i++)   {
-    const v = fieldAdd(fieldAdd((a._0[i] as unknown as bigint), (b._0[i] as unknown as bigint)), (c as unknown as bigint));
-    r[i] = BigInt(v);
-    c = BigInt(fieldShr(v, 64));
+  let r = Array.from({length: Number(4n)}, () => 0n);
+  let c: bigint = 0n;
+  for (let i = 0n; i < 4n; i += 1n)   {
+    const v = fieldAdd(fieldAdd((a._0[Number(i)] as unknown as bigint), (b._0[Number(i)] as unknown as bigint)), (c as unknown as bigint));
+    r[Number(i)] = BigInt(v);
+    c = BigInt(fieldShr(v, 64n));
   }
-  if ((c !== 0))   {
-    let c2: bigint = fieldMul((c as unknown as bigint), 38);
-    for (let i = 0; i < 4; i++)     {
-      const v = fieldAdd((r[i] as unknown as bigint), c2);
-      r[i] = BigInt(v);
-      c2 = fieldShr(v, 64);
+  if ((c !== 0n))   {
+    let c2: bigint = fieldMul((c as unknown as bigint), 38n);
+    for (let i = 0n; i < 4n; i += 1n)     {
+      const v = fieldAdd((r[Number(i)] as unknown as bigint), c2);
+      r[Number(i)] = BigInt(v);
+      c2 = fieldShr(v, 64n);
     }
   }
   return fe_canonicalize(r);
@@ -2738,16 +3067,16 @@ export function fe_add(a: Fe25519, b: Fe25519): Fe25519
 export function fe_canonicalize(a: bigint[]): Fe25519
 {
   let x = a;
-  for (let _ = 0; _ < 2; _++)   {
-    let tmp = Array.from({length: 4}, () => 0);
-    let borrow: bigint = 0;
-    for (let i = 0; i < 4; i++)     {
-      const [r1, b1] = x[i].overflowing_sub(P_LIMBS[i]);
+  for (let _ = 0n; _ < 2n; _ += 1n)   {
+    let tmp = Array.from({length: Number(4n)}, () => 0n);
+    let borrow: bigint = 0n;
+    for (let i = 0n; i < 4n; i += 1n)     {
+      const [r1, b1] = x[Number(i)].overflowing_sub(P_LIMBS[Number(i)]);
       const [r2, b2] = r1.overflowing_sub(borrow);
-      tmp[i] = r2;
+      tmp[Number(i)] = r2;
       borrow = fieldBitor(BigInt(b1), BigInt(b2));
     }
-    if ((borrow === 0))     {
+    if ((borrow === 0n))     {
       x = tmp;
     }
   }
@@ -2761,13 +3090,13 @@ export function fe_const(limbs: bigint[]): Fe25519
 
 export function fe_invert(a: Fe25519): Fe25519
 {
-  const exp_limbs: bigint[] = [BigInt("18446744073709551595"), BigInt("18446744073709551615"), BigInt("18446744073709551615"), BigInt("9223372036854775807")];
+  const exp_limbs: bigint[] = [18446744073709551595n, 18446744073709551615n, 18446744073709551615n, 9223372036854775807n];
   let acc = Fe25519.ONE;
-  for (const limb_idx of (Array.from({length: 4 - 0}, (_, i) => i + 0)).slice().reverse())   {
-    for (const bit of (Array.from({length: 64 - 0}, (_, i) => i + 0)).slice().reverse())     {
+  for (const limb_idx of (Array.from({length: Number(4n - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())   {
+    for (const bit of (Array.from({length: Number(64n - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())     {
       acc = fe_sq(acc);
-      const b = fieldBitand(fieldShr(exp_limbs[limb_idx], bit), 1);
-      if ((b === 1))       {
+      const b = fieldBitand(fieldShr(exp_limbs[Number(limb_idx)], bit), 1n);
+      if ((b === 1n))       {
         acc = fe_mul(acc, a);
       }
     }
@@ -2786,12 +3115,12 @@ export function fe_neg(a: Fe25519): Fe25519
   return (() => { if (a.is_zero()) {
   return Fe25519.ZERO;
 } else {
-  let neg = Array.from({length: 4}, () => 0);
-  let borrow: bigint = 0;
-  for (let i = 0; i < 4; i++)   {
-    const [r1, br1] = P_LIMBS[i].overflowing_sub(a._0[i]);
+  let neg = Array.from({length: Number(4n)}, () => 0n);
+  let borrow: bigint = 0n;
+  for (let i = 0n; i < 4n; i += 1n)   {
+    const [r1, br1] = P_LIMBS[Number(i)].overflowing_sub(a._0[Number(i)]);
     const [r2, br2] = r1.overflowing_sub(borrow);
-    neg[i] = r2;
+    neg[Number(i)] = r2;
     borrow = fieldBitor(BigInt(br1), BigInt(br2));
   }
   return new Fe25519(neg);
@@ -2805,96 +3134,323 @@ export function fe_sq(a: Fe25519): Fe25519
 
 export function fe_sub(a: Fe25519, b: Fe25519): Fe25519
 {
-  let neg_b = Array.from({length: 4}, () => 0);
-  let borrow: bigint = 0;
-  for (let i = 0; i < 4; i++)   {
-    const [r1, br1] = P_LIMBS[i].overflowing_sub(b._0[i]);
+  let neg_b = Array.from({length: Number(4n)}, () => 0n);
+  let borrow: bigint = 0n;
+  for (let i = 0n; i < 4n; i += 1n)   {
+    const [r1, br1] = P_LIMBS[Number(i)].overflowing_sub(b._0[Number(i)]);
     const [r2, br2] = r1.overflowing_sub(borrow);
-    neg_b[i] = r2;
+    neg_b[Number(i)] = r2;
     borrow = fieldBitor(BigInt(br1), BigInt(br2));
   }
   return fe_add(a, new Fe25519(neg_b));
 }
 
-export function gen_abo<B, D>(ctx: { newD: () => any }, k: number, n: number, a: number[], rand: readonly number[]): ABODyn<B, D>
+export function field_invert<T>(ctx: { defaultT: () => any }, a: T, c: T, w: bigint): T
+{
+  if ((a === ctx.defaultT()))   {
+    return ctx.defaultT();
+  }
+  const e = fieldSub(w, 1n);
+  let r = __clone(a);
+  let k: bigint = 1n;
+  const msb = fieldSub(31n, Math.clz32(e));
+  for (const bit_pos of (Array.from({length: Number(msb - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())   {
+    let tmp = __clone(r);
+    for (let _ = 0n; _ < k; _ += 1n)     {
+      tmp = field_square(tmp, __clone(c));
+    }
+    r = field_mul(tmp, r, __clone(c));
+    k *= 2n;
+    if ((fieldBitand(fieldShr(e, bit_pos), 1n) === 1n))     {
+      r = field_mul(field_square(r, __clone(c)), __clone(a), __clone(c));
+      k += 1n;
+    }
+  }
+  return field_square(r, c);
+}
+
+export function field_mul<T>(ctx: { defaultT: () => any, TClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, a: T, b: T, c: T): T
+{
+  let p: T = ctx.defaultT();
+  let a_1 = a;
+  let b_1 = b;
+  const h = fieldShl(ctx.TClass.from(1n), Number(fieldSub(fieldShl(size_of_val(p), 3n), 1n)));
+  for (let _ = 0n; _ < fieldShl(size_of_val(p), 3n); _ += 1n)   {
+    if ((fieldBitand(__clone(b_1), ctx.TClass.from(1n)) !== ctx.defaultT()))     {
+      p ^= __clone(a_1);
+    }
+    const high_bit = fieldBitand(__clone(a_1), __clone(h));
+    a_1 <<= 1n;
+    if ((high_bit !== ctx.defaultT()))     {
+      a_1 ^= __clone(c);
+    }
+    b_1 >>= 1n;
+  }
+  return p;
+}
+
+export function field_square<T>(a: T, c: T): T
+{
+  return field_mul(__clone(a), a, c);
+}
+
+export function gen_abo<B, D>(ctx: { newD: () => any }, k: bigint, n: bigint, a: bigint[], rand: readonly bigint[]): ABODyn<B, D>
 {
   let h = ctx.newD();
-  const per_byte = Array.from({length: n - 0}, (_, __i) => __i + 0).map((_ni: any) => (() => {
-  let per_byte = Array.from({length: k - 0}, (_, __i) => __i + 0).map((_: any) => []);
-  for (let i = 0; i < k; i++)   {
-    const core = Array.from({length: ilog2(k) - 0}, (_, __i) => __i + 0).reduce((acc: any, b: any) => (() => {
-  if ((fieldBitand(fieldShr(i, b), 1) !== 0))   {
+  const per_byte = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_ni: any) => (() => {
+  let per_byte = Array.from({length: Number(k - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => []);
+  for (let i = 0n; i < k; i += 1n)   {
+    const core = Array.from({length: Number(ilog2(k) - 0n)}, (_, __i) => BigInt(__i) + 0n).reduce((acc: any, b: any) => (() => {
+  if ((fieldBitand(fieldShr(i, b), 1n) !== 0n))   {
     const doubled = doubleVec(acc);
-    acc = __clone(doubled[1]);
+    acc = __clone(doubled[Number(1n)]);
   } else   {
     const doubled = doubleVec(acc);
-    acc = __clone(doubled[0]);
+    acc = __clone(doubled[Number(0n)]);
   }
   return acc;
 })(), __clone(a));
     h.update(hashCommit(core, rand));
-    per_byte[i] = core;
+    per_byte[Number(i)] = core;
   }
   return per_byte;
 })());
-  return new ABODyn({ commit: [...h.finalize()], per_byte: per_byte, k: 0, n: 0 });
+  return new ABODyn({ commit: [...h.finalize()], per_byte: per_byte, k: 0n, n: 0n });
 }
 
-export function gen_bootstrapping_key<R>(n_lwe: number, big_n: number, bs_ell: number, ks_ell: number, lwe_sk: LweSecretKeyDyn, rlwe_sk: RlweSecretKeyDyn, bs_bg_log: number, ks_bg_log: number, bs_noise_bits: number, ks_noise_bits: number, rng: R): BootstrappingKeyDyn
+export function gen_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, lwe_sk: LweSecretKeyDyn, rlwe_sk: RlweSecretKeyDyn, bs_bg_log: bigint, ks_bg_log: bigint, bs_noise_bits: bigint, ks_noise_bits: bigint, rng: R): BootstrappingKeyDyn
 {
-  const bsk = Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const bit = (lwe_sk.key[i] !== 0);
+  const bsk = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const bit = (lwe_sk.key[Number(i)] !== 0n);
   return rgsw_encrypt(bit, rlwe_sk, bs_bg_log, bs_noise_bits, rng);
 })());
-  const rlwe_as_lwe = new LweSecretKeyDyn({ key: Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => ((rlwe_sk.key[i]) & 0xFF)), n_lwe: 0 });
-  const ksk_array: LweCiphertextDyn[][] = Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const s_bit = rlwe_sk.key[i];
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((j: any) => (() => {
-  const shift = (32 - (Math.imul(ks_bg_log, fieldAdd(Number(j), 1))));
-  const msg_val = ((s_bit) << (shift)) >>> 0;
+  const rlwe_as_lwe = new LweSecretKeyDyn({ key: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => ((rlwe_sk.key[Number(i)]) & 0xFFn)), n_lwe: 0n });
+  const ksk_array: LweCiphertextDyn[][] = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const s_bit = rlwe_sk.key[Number(i)];
+  return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
+  const shift = (32n - (BigInt(Math.imul(Number(ks_bg_log), Number(fieldAdd(Number(j), 1n))))));
+  const msg_val = (((s_bit) << (shift)) & 0xFFFFFFFFn);
   return lwe_encrypt_raw(msg_val, lwe_sk, ks_noise_bits, rng);
 })());
 })());
   const _ = rlwe_as_lwe;
-  const ksk = new KeySwitchingKeyDyn({ ksk: ksk_array, ks_bg_log: ks_bg_log, n_lwe: 0, big_n: 0, ks_ell: 0 });
-  return new BootstrappingKeyDyn({ bsk: bsk, ksk: ksk, bs_bg_log: bs_bg_log, n_lwe: 0, big_n: 0, bs_ell: 0, ks_ell: 0 });
+  const ksk = new KeySwitchingKeyDyn({ ksk: ksk_array, ks_bg_log: ks_bg_log, n_lwe: 0n, big_n: 0n, ks_ell: 0n });
+  return new BootstrappingKeyDyn({ bsk: bsk, ksk: ksk, bs_bg_log: bs_bg_log, n_lwe: 0n, big_n: 0n, bs_ell: 0n, ks_ell: 0n });
 }
 
-export function gen_lwe_secret_key<R>(n_lwe: number, rng: R): LweSecretKeyDyn
+export function gen_lwe_secret_key<R>(n_lwe: bigint, rng: R): LweSecretKeyDyn
 {
-  let key = Array.from({length: n_lwe}, () => 0);
+  let key = Array.from({length: Number(n_lwe)}, () => 0n);
   for (const k of key.iter_mut())   {
-    k = ((fieldBitand(rng.next_u8(), 1)) & 0xFF);
+    k = ((fieldBitand(rng.next_u8(), 1n)) & 0xFFn);
   }
-  return new LweSecretKeyDyn({ key: key, n_lwe: 0 });
+  return new LweSecretKeyDyn({ key: key, n_lwe: 0n });
 }
 
-export function gen_rlwe_secret_key<R>(big_n: number, rng: R): RlweSecretKeyDyn
+export function gen_rlwe_secret_key<R>(big_n: bigint, rng: R): RlweSecretKeyDyn
 {
-  let key = Array.from({length: big_n}, () => 0);
+  let key = Array.from({length: Number(big_n)}, () => 0n);
   for (const k of key.iter_mut())   {
-    k = Number(fieldBitand(rng.next_u8(), 1));
+    k = Number(fieldBitand(rng.next_u8(), 1n));
   }
-  return new RlweSecretKeyDyn({ key: key, big_n: 0 });
+  return new RlweSecretKeyDyn({ key: key, big_n: 0n });
 }
 
-export function gf_mul(a: number, b: number): number
+export function gf_invert_256(a: U256, c: U256): U256
+{
+  if (a.is_zero())   {
+    return U256.ZERO;
+  }
+  const e: bigint = 255n;
+  const msb: bigint = 7n;
+  let r = a;
+  let k: bigint = 1n;
+  for (let bit_pos_rev = 0n; bit_pos_rev < msb; bit_pos_rev += 1n)   {
+    const bit_pos = fieldSub(fieldSub(msb, 1n), bit_pos_rev);
+    let tmp = r;
+    for (let _ = 0n; _ < k; _ += 1n)     {
+      tmp = gf_mul_256(tmp, tmp, c);
+    }
+    r = gf_mul_256(tmp, r, c);
+    k *= 2n;
+    if ((fieldBitand(fieldShr(e, bit_pos), 1n) === 1n))     {
+      r = gf_mul_256(gf_mul_256(r, r, c), a, c);
+      k += 1n;
+    }
+  }
+  return gf_mul_256(r, r, c);
+}
+
+export function gf_invert_u128(a: bigint, c: bigint): bigint
+{
+  if ((a === 0n))   {
+    return 0n;
+  }
+  const e: bigint = 127n;
+  const msb: bigint = 6n;
+  let r = a;
+  let k: bigint = 1n;
+  for (let bit_pos_rev = 0n; bit_pos_rev < msb; bit_pos_rev += 1n)   {
+    const bit_pos = fieldSub(fieldSub(msb, 1n), bit_pos_rev);
+    let tmp = r;
+    for (let _ = 0n; _ < k; _ += 1n)     {
+      tmp = gf_mul_u128(tmp, tmp, c);
+    }
+    r = gf_mul_u128(tmp, r, c);
+    k *= 2n;
+    if ((fieldBitand(fieldShr(e, bit_pos), 1n) === 1n))     {
+      r = gf_mul_u128(gf_mul_u128(r, r, c), a, c);
+      k += 1n;
+    }
+  }
+  return gf_mul_u128(r, r, c);
+}
+
+export function gf_invert_u64(a: bigint, c: bigint): bigint
+{
+  if ((a === 0n))   {
+    return 0n;
+  }
+  const e: bigint = 63n;
+  const msb: bigint = 5n;
+  let r = a;
+  let k: bigint = 1n;
+  for (let bit_pos_rev = 0n; bit_pos_rev < msb; bit_pos_rev += 1n)   {
+    const bit_pos = fieldSub(fieldSub(msb, 1n), bit_pos_rev);
+    let tmp = r;
+    for (let _ = 0n; _ < k; _ += 1n)     {
+      tmp = gf_mul_u64(tmp, tmp, c);
+    }
+    r = gf_mul_u64(tmp, r, c);
+    k *= 2n;
+    if ((fieldBitand(fieldShr(e, bit_pos), 1n) === 1n))     {
+      r = gf_mul_u64(gf_mul_u64(r, r, c), a, c);
+      k += 1n;
+    }
+  }
+  return gf_mul_u64(r, r, c);
+}
+
+export function gf_invert_u8(a: bigint, c: bigint): bigint
+{
+  if ((a === 0n))   {
+    return 0n;
+  }
+  const e: bigint = 7n;
+  const msb: bigint = 2n;
+  let r = a;
+  let k: bigint = 1n;
+  for (let bit_pos_rev = 0n; bit_pos_rev < msb; bit_pos_rev += 1n)   {
+    const bit_pos = fieldSub(fieldSub(msb, 1n), bit_pos_rev);
+    let tmp = r;
+    for (let _ = 0n; _ < k; _ += 1n)     {
+      tmp = gf_mul_u8(tmp, tmp, c);
+    }
+    r = gf_mul_u8(tmp, r, c);
+    k *= 2n;
+    if ((fieldBitand(fieldShr(e, bit_pos), 1n) === 1n))     {
+      r = gf_mul_u8(gf_mul_u8(r, r, c), a, c);
+      k += 1n;
+    }
+  }
+  return gf_mul_u8(r, r, c);
+}
+
+export function gf_mul(a: bigint, b: bigint): bigint
 {
   return volar_primitives.gf_mul_u8(a, b, GF8_AES_POLY);
 }
 
-export function grafhen_and<R>(wbound: number, enc_a: GrafhenWordDyn, enc_b: GrafhenWordDyn, pk: GrafhenPublicDyn<R>): GrafhenWordDyn
+export function gf_mul_256(a: U256, b: U256, c: U256): U256
+{
+  let p = U256.ZERO;
+  let a_1 = a;
+  let b_1 = b;
+  for (let _ = 0n; _ < 256n; _ += 1n)   {
+    if (b_1.bit(0n))     {
+      p = p.xor(a_1);
+    }
+    const high = a_1.high_bit();
+    a_1 = a_1.shl1();
+    if (high)     {
+      a_1 = a_1.xor(c);
+    }
+    b_1 = b_1.shr1();
+  }
+  return p;
+}
+
+export function gf_mul_u128(a: bigint, b: bigint, c: bigint): bigint
+{
+  let p: bigint = 0n;
+  let a_1 = a;
+  let b_1 = b;
+  const h: bigint = fieldShl(1n, 127n);
+  for (let _ = 0n; _ < 128n; _ += 1n)   {
+    if ((fieldBitand(b_1, 1n) !== 0n))     {
+      p ^= a_1;
+    }
+    const high = fieldBitand(a_1, h);
+    a_1 <<= 1n;
+    if ((high !== 0n))     {
+      a_1 ^= c;
+    }
+    b_1 >>= 1n;
+  }
+  return p;
+}
+
+export function gf_mul_u64(a: bigint, b: bigint, c: bigint): bigint
+{
+  let p: bigint = 0n;
+  let a_1 = a;
+  let b_1 = b;
+  const h: bigint = fieldShl(1n, 63n);
+  for (let _ = 0n; _ < 64n; _ += 1n)   {
+    if ((fieldBitand(b_1, 1n) !== 0n))     {
+      p ^= a_1;
+    }
+    const high = fieldBitand(a_1, h);
+    a_1 <<= 1n;
+    if ((high !== 0n))     {
+      a_1 ^= c;
+    }
+    b_1 >>= 1n;
+  }
+  return p;
+}
+
+export function gf_mul_u8(a: bigint, b: bigint, c: bigint): bigint
+{
+  let p: bigint = 0n;
+  let a_1 = a;
+  let b_1 = b;
+  for (let _ = 0n; _ < 8n; _ += 1n)   {
+    if ((fieldBitand(b_1, 1n) !== 0n))     {
+      p ^= a_1;
+    }
+    const high = fieldBitand(a_1, 128n);
+    a_1 <<= 1n;
+    if ((high !== 0n))     {
+      a_1 ^= c;
+    }
+    b_1 >>= 1n;
+  }
+  return p;
+}
+
+export function grafhen_and<R>(wbound: bigint, enc_a: GrafhenWordDyn, enc_b: GrafhenWordDyn, pk: GrafhenPublicDyn<R>): GrafhenWordDyn
 {
   const w1 = enc_a;
   const w2 = enc_b;
   const a = pk.and_w1;
   const b = pk.and_w2;
   const segs: GrafhenWordDyn[] = [w1, a, w1, w2, b, w2, w1, a, w1, w2, b, w2];
-  const total_len: number = segs.map((s: any) => s.len).sum();
+  const total_len: bigint = segs.map((s: any) => s.len).sum();
   let result = GrafhenWord.identity();
-  let pos = 0;
+  let pos = 0n;
   for (const seg of segs)   {
-    (result.data.slice(pos, fieldAdd(pos, seg.len))).splice(0, (seg.data.slice(0, seg.len)).length, ...(seg.data.slice(0, seg.len)));
+    (result.data.slice(Number(pos), Number(fieldAdd(pos, seg.len)))).splice(0, (seg.data.slice(0, Number(seg.len))).length, ...(seg.data.slice(0, Number(seg.len))));
     pos += seg.len;
   }
   result.len = total_len;
@@ -2902,13 +3458,13 @@ export function grafhen_and<R>(wbound: number, enc_a: GrafhenWordDyn, enc_b: Gra
   return result;
 }
 
-export function grafhen_decrypt(n: number, d: number, wbound: number, key: GrafhenKeyDyn, word: GrafhenWordDyn): (boolean | undefined)
+export function grafhen_decrypt(n: bigint, d: bigint, wbound: bigint, key: GrafhenKeyDyn, word: GrafhenWordDyn): (boolean | undefined)
 {
   const perm = eval_word_to_perm(key, word);
-  return (() => { const __match = perm[0]; if (__match === 0) { return false; } else if (__match === 4) { return true; } else { return undefined; } })();
+  return (() => { const __match = perm[Number(0n)]; if (__match === 0n) { return false; } else if (__match === 4n) { return true; } else { return undefined; } })();
 }
 
-export function grafhen_encrypt<R>(wbound: number, bit: boolean, zero_cipher: GrafhenWordDyn, pk: GrafhenPublicDyn<R>): GrafhenWordDyn
+export function grafhen_encrypt<R>(wbound: bigint, bit: boolean, zero_cipher: GrafhenWordDyn, pk: GrafhenPublicDyn<R>): GrafhenWordDyn
 {
   return (() => { if (bit) {
   return grafhen_xor(zero_cipher, pk.enc_one);
@@ -2917,25 +3473,25 @@ export function grafhen_encrypt<R>(wbound: number, bit: boolean, zero_cipher: Gr
 } })();
 }
 
-export function grafhen_not<R>(wbound: number, a: GrafhenWordDyn, pk: GrafhenPublicDyn<R>): GrafhenWordDyn
+export function grafhen_not<R>(wbound: bigint, a: GrafhenWordDyn, pk: GrafhenPublicDyn<R>): GrafhenWordDyn
 {
   return grafhen_xor(a, pk.enc_one);
 }
 
-export function grafhen_xor(wbound: number, a: GrafhenWordDyn, b: GrafhenWordDyn): GrafhenWordDyn
+export function grafhen_xor(wbound: bigint, a: GrafhenWordDyn, b: GrafhenWordDyn): GrafhenWordDyn
 {
   return (concat_words(a, b))!;
 }
 
-export function grafhen_zero(wbound: number): GrafhenWordDyn
+export function grafhen_zero(wbound: bigint): GrafhenWordDyn
 {
   return GrafhenWord.identity();
 }
 
-export function grind_chall3(chall_2: readonly number[], a_hat: readonly number[], b_hat: readonly number[], c_hat_base: readonly number[], lambda: number, w_grind: number, use_shake256: boolean, max_iters: number): ([Vec<number>, number] | undefined)
+export function grind_chall3(chall_2: readonly bigint[], a_hat: readonly bigint[], b_hat: readonly bigint[], c_hat_base: readonly bigint[], lambda: bigint, w_grind: bigint, use_shake256: boolean, max_iters: bigint): ([Vec<bigint>, bigint] | undefined)
 {
-  for (let counter = 0; counter < max_iters; counter++)   {
-    const counter_bytes = [(counter) & 0xFF, ((counter) >> 8) & 0xFF, ((counter) >> 16) & 0xFF, ((counter) >> 24) & 0xFF];
+  for (let counter = 0n; counter < max_iters; counter += 1n)   {
+    const counter_bytes = [(counter) & 0xFFn, ((counter) >> 8n) & 0xFFn, ((counter) >> 16n) & 0xFFn, ((counter) >> 24n) & 0xFFn];
     let c_hat_grind = alloc.vec.Vec.from(c_hat_base);
     c_hat_grind.extend_from_slice(counter_bytes);
     const candidate = chall3(chall_2, a_hat, b_hat, c_hat_grind, lambda, use_shake256);
@@ -2946,305 +3502,305 @@ export function grind_chall3(chall_2: readonly number[], a_hat: readonly number[
   return undefined;
 }
 
-export function has_trailing_zero_bits(bytes: readonly number[], n: number): boolean
+export function has_trailing_zero_bits(bytes: readonly bigint[], n: bigint): boolean
 {
-  if ((n === 0))   {
+  if ((n === 0n))   {
     return true;
   }
   const n_1 = Number(n);
-  const full_bytes = (n_1 / 8);
-  const rem = (n_1 % 8);
-  if ((bytes.length < fieldAdd(full_bytes, (() => { if ((rem > 0)) {
-  return 1;
+  const full_bytes = (n_1 / 8n);
+  const rem = (n_1 % 8n);
+  if ((bytes.length < fieldAdd(full_bytes, (() => { if ((rem > 0n)) {
+  return 1n;
 } else {
-  return 0;
+  return 0n;
 } })())))   {
     return false;
   }
-  for (let i = fieldSub(bytes.length, full_bytes); i < bytes.length; i++)   {
-    if ((bytes[i] !== 0))     {
+  for (let i = fieldSub(bytes.length, full_bytes); i < bytes.length; i += 1n)   {
+    if ((bytes[Number(i)] !== 0n))     {
       return false;
     }
   }
-  if ((rem > 0))   {
-    const mask = fieldSub(fieldShl(1, rem), 1);
-    const idx = fieldSub(fieldSub(bytes.length, full_bytes), 1);
-    if ((fieldBitand(bytes[idx], mask) !== 0))     {
+  if ((rem > 0n))   {
+    const mask = fieldSub(fieldShl(1n, rem), 1n);
+    const idx = fieldSub(fieldSub(bytes.length, full_bytes), 1n);
+    if ((fieldBitand(bytes[Number(idx)], mask) !== 0n))     {
       return false;
     }
   }
   return true;
 }
 
-export function hash_key_from_chall(chall: readonly number[]): UniversalHashKey
+export function hash_key_from_chall(chall: readonly bigint[]): UniversalHashKey
 {
-  let r0_bytes = Array.from({length: 16}, () => 0);
-  const n = Math.min(chall.length, 16);
-  (r0_bytes.slice(0, n)).splice(0, (chall.slice(0, n)).length, ...(chall.slice(0, n)));
-  let r1_bytes = Array.from({length: 8}, () => 0);
+  let r0_bytes = Array.from({length: Number(16n)}, () => 0n);
+  const n = BigInt(Math.min(Number(chall.length), Number(16n)));
+  (r0_bytes.slice(0, Number(n))).splice(0, (chall.slice(0, Number(n))).length, ...(chall.slice(0, Number(n))));
+  let r1_bytes = Array.from({length: Number(8n)}, () => 0n);
   const off = n;
-  const m = Math.min(fieldSub(chall.length, off), 8);
-  (r1_bytes.slice(0, m)).splice(0, (chall.slice(off, fieldAdd(off, m))).length, ...(chall.slice(off, fieldAdd(off, m))));
-  return new UniversalHashKey({ r0: Galois128(u128.from_le_bytes(r0_bytes)), r1: new Galois64(u64.from_le_bytes(r1_bytes)) });
+  const m = BigInt(Math.min(Number(fieldSub(chall.length, off)), Number(8n)));
+  (r1_bytes.slice(0, Number(m))).splice(0, (chall.slice(Number(off), Number(fieldAdd(off, m)))).length, ...(chall.slice(Number(off), Number(fieldAdd(off, m)))));
+  return new UniversalHashKey({ r0: new Galois128(u128.from_le_bytes(r0_bytes)), r1: new Galois64(u64.from_le_bytes(r1_bytes)) });
 }
 
-export function iknp_cot_extend<R>(ctx: { newD: () => any, GClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, m: number, l: number, rng_s: R, rng_r: R, receiver_bits: boolean[], delta_msg: number[]): [number[][], number[][]]
+export function iknp_cot_extend<R>(ctx: { newD: () => any, GClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, m: bigint, l: bigint, rng_s: R, rng_r: R, receiver_bits: boolean[], delta_msg: bigint[]): [bigint[][], bigint[][]]
 {
-  let delta_ot = Array.from({length: IKNP_KAPPA}, () => false);
-  for (let i = 0; i < IKNP_KAPPA; i++)   {
-    delta_ot[i] = (fieldBitand(rng_s.next_u32(), 1) === 1);
+  let delta_ot = Array.from({length: Number(IKNP_KAPPA)}, () => false);
+  for (let i = 0n; i < IKNP_KAPPA; i += 1n)   {
+    delta_ot[Number(i)] = (fieldBitand(rng_s.next_u32(), 1n) === 1n);
   }
   const delta_ot_bytes = pack_kappa(delta_ot);
-  let seeds_0 = Array.from({length: IKNP_KAPPA}, () => Array.from({length: IKNP_KAPPA_BYTES}, () => 0));
-  let seeds_1 = Array.from({length: IKNP_KAPPA}, () => Array.from({length: IKNP_KAPPA_BYTES}, () => 0));
-  for (let i = 0; i < IKNP_KAPPA; i++)   {
-    for (let b = 0; b < IKNP_KAPPA_BYTES; b++)     {
-      seeds_0[i][b] = ((fieldBitand(rng_r.next_u32(), 255)) & 0xFF);
-      seeds_1[i][b] = ((fieldBitand(rng_r.next_u32(), 255)) & 0xFF);
+  let seeds_0 = Array.from({length: Number(IKNP_KAPPA)}, () => Array.from({length: Number(IKNP_KAPPA_BYTES)}, () => 0n));
+  let seeds_1 = Array.from({length: Number(IKNP_KAPPA)}, () => Array.from({length: Number(IKNP_KAPPA_BYTES)}, () => 0n));
+  for (let i = 0n; i < IKNP_KAPPA; i += 1n)   {
+    for (let b = 0n; b < IKNP_KAPPA_BYTES; b += 1n)     {
+      seeds_0[Number(i)][Number(b)] = ((fieldBitand(rng_r.next_u32(), 255n)) & 0xFFn);
+      seeds_1[Number(i)][Number(b)] = ((fieldBitand(rng_r.next_u32(), 255n)) & 0xFFn);
     }
   }
-  let chosen_seeds = Array.from({length: IKNP_KAPPA}, () => Array.from({length: IKNP_KAPPA_BYTES}, () => 0));
-  for (let i = 0; i < IKNP_KAPPA; i++)   {
+  let chosen_seeds = Array.from({length: Number(IKNP_KAPPA)}, () => Array.from({length: Number(IKNP_KAPPA_BYTES)}, () => 0n));
+  for (let i = 0n; i < IKNP_KAPPA; i += 1n)   {
     const [s_state, s_msg] = ot_send_setup(ctx, rng_r);
-    const [r_state, r_msg] = ot_recv(ctx, rng_s, s_msg, delta_ot[i]);
+    const [r_state, r_msg] = ot_recv(ctx, rng_s, s_msg, delta_ot[Number(i)]);
     const [key_0, key_1] = ot_send_finish(ctx, s_state, r_msg);
     const kc = ot_recv_finish(ctx, r_state);
-    let e0 = Array.from({length: IKNP_KAPPA_BYTES}, () => 0);
-    let e1 = Array.from({length: IKNP_KAPPA_BYTES}, () => 0);
-    ot_send_payload(key_0, key_1, seeds_0[i], seeds_1[i], e0, e1);
-    const chosen_e: readonly number[] = (() => { if (delta_ot[i]) {
+    let e0 = Array.from({length: Number(IKNP_KAPPA_BYTES)}, () => 0n);
+    let e1 = Array.from({length: Number(IKNP_KAPPA_BYTES)}, () => 0n);
+    ot_send_payload(key_0, key_1, seeds_0[Number(i)], seeds_1[Number(i)], e0, e1);
+    const chosen_e: readonly bigint[] = (() => { if (delta_ot[Number(i)]) {
   return e1;
 } else {
   return e0;
 } })();
-    ot_recv_payload(kc, chosen_e, chosen_seeds[i]);
+    ot_recv_payload(kc, chosen_e, chosen_seeds[Number(i)]);
   }
-  let t_cols = Array.from({length: IKNP_KAPPA}, () => Array.from({length: m}, () => false));
-  let q_cols = Array.from({length: IKNP_KAPPA}, () => Array.from({length: m}, () => false));
+  let t_cols = Array.from({length: Number(IKNP_KAPPA)}, () => Array.from({length: Number(m)}, () => false));
+  let q_cols = Array.from({length: Number(IKNP_KAPPA)}, () => Array.from({length: Number(m)}, () => false));
     {
-    let prg1 = Array.from({length: m}, () => false);
-    for (let i = 0; i < IKNP_KAPPA; i++)     {
-      prg_to_bools(ctx, seeds_0[i], t_cols[i]);
-      prg_to_bools(ctx, seeds_1[i], prg1);
-      let u_col = Array.from({length: m}, () => false);
-      for (let j = 0; j < m; j++)       {
-        u_col[j] = fieldBitxor(fieldBitxor(t_cols[i][j], prg1[j]), receiver_bits[j]);
+    let prg1 = Array.from({length: Number(m)}, () => false);
+    for (let i = 0n; i < IKNP_KAPPA; i += 1n)     {
+      prg_to_bools(ctx, seeds_0[Number(i)], t_cols[Number(i)]);
+      prg_to_bools(ctx, seeds_1[Number(i)], prg1);
+      let u_col = Array.from({length: Number(m)}, () => false);
+      for (let j = 0n; j < m; j += 1n)       {
+        u_col[Number(j)] = fieldBitxor(fieldBitxor(t_cols[Number(i)][Number(j)], prg1[Number(j)]), receiver_bits[Number(j)]);
       }
-      let prg_chosen = Array.from({length: m}, () => false);
-      prg_to_bools(ctx, chosen_seeds[i], prg_chosen);
-      for (let j = 0; j < m; j++)       {
-        if (delta_ot[i])         {
-          q_cols[i][j] = fieldBitxor(prg_chosen[j], u_col[j]);
+      let prg_chosen = Array.from({length: Number(m)}, () => false);
+      prg_to_bools(ctx, chosen_seeds[Number(i)], prg_chosen);
+      for (let j = 0n; j < m; j += 1n)       {
+        if (delta_ot[Number(i)])         {
+          q_cols[Number(i)][Number(j)] = fieldBitxor(prg_chosen[Number(j)], u_col[Number(j)]);
         } else         {
-          q_cols[i][j] = prg_chosen[j];
+          q_cols[Number(i)][Number(j)] = prg_chosen[Number(j)];
         }
       }
     }
   }
-  let sender_r0 = Array.from({length: m}, () => Array.from({length: l}, () => 0));
-  let receiver_v = Array.from({length: m}, () => Array.from({length: l}, () => 0));
-  let q_row = Array.from({length: IKNP_KAPPA}, () => false);
-  let t_row = Array.from({length: IKNP_KAPPA}, () => false);
-  for (let j = 0; j < m; j++)   {
-    for (let i = 0; i < IKNP_KAPPA; i++)     {
-      q_row[i] = q_cols[i][j];
-      t_row[i] = t_cols[i][j];
+  let sender_r0 = Array.from({length: Number(m)}, () => Array.from({length: Number(l)}, () => 0n));
+  let receiver_v = Array.from({length: Number(m)}, () => Array.from({length: Number(l)}, () => 0n));
+  let q_row = Array.from({length: Number(IKNP_KAPPA)}, () => false);
+  let t_row = Array.from({length: Number(IKNP_KAPPA)}, () => false);
+  for (let j = 0n; j < m; j += 1n)   {
+    for (let i = 0n; i < IKNP_KAPPA; i += 1n)     {
+      q_row[Number(i)] = q_cols[Number(i)][Number(j)];
+      t_row[Number(i)] = t_cols[Number(i)][Number(j)];
     }
     const q_bytes = pack_kappa(q_row);
     const t_bytes = pack_kappa(t_row);
-    let r0 = Array.from({length: l}, () => 0);
+    let r0 = Array.from({length: Number(l)}, () => 0n);
     prg_with_index(ctx, q_bytes, Number(j), r0);
     let q_xor_delta = q_bytes;
-    for (let b = 0; b < IKNP_KAPPA_BYTES; b++)     {
-      q_xor_delta[b] ^= delta_ot_bytes[b];
+    for (let b = 0n; b < IKNP_KAPPA_BYTES; b += 1n)     {
+      q_xor_delta[Number(b)] ^= delta_ot_bytes[Number(b)];
     }
-    let r1 = Array.from({length: l}, () => 0);
+    let r1 = Array.from({length: Number(l)}, () => 0n);
     prg_with_index(ctx, q_xor_delta, Number(j), r1);
-    let v_pre = Array.from({length: l}, () => 0);
+    let v_pre = Array.from({length: Number(l)}, () => 0n);
     prg_with_index(ctx, t_bytes, Number(j), v_pre);
-    let correction = Array.from({length: l}, () => 0);
-    for (let b = 0; b < l; b++)     {
-      correction[b] = fieldBitxor(fieldBitxor(r0[b], r1[b]), delta_msg[b]);
+    let correction = Array.from({length: Number(l)}, () => 0n);
+    for (let b = 0n; b < l; b += 1n)     {
+      correction[Number(b)] = fieldBitxor(fieldBitxor(r0[Number(b)], r1[Number(b)]), delta_msg[Number(b)]);
     }
-    sender_r0[j] = r0;
-    if (receiver_bits[j])     {
-      for (let b = 0; b < l; b++)       {
-        receiver_v[j][b] = fieldBitxor(v_pre[b], correction[b]);
+    sender_r0[Number(j)] = r0;
+    if (receiver_bits[Number(j)])     {
+      for (let b = 0n; b < l; b += 1n)       {
+        receiver_v[Number(j)][Number(b)] = fieldBitxor(v_pre[Number(b)], correction[Number(b)]);
       }
     } else     {
-      receiver_v[j] = v_pre;
+      receiver_v[Number(j)] = v_pre;
     }
   }
   return [sender_r0, receiver_v];
 }
 
-export function key_expansion(key: number[]): number[][]
+export function key_expansion(key: bigint[]): bigint[][]
 {
-  let words = Array.from({length: fieldMul(4, NK_ROUND_KEYS)}, () => Array.from({length: 4}, () => 0));
-  for (let i = 0; i < 4; i++)   {
-    words[i] = [key[fieldMul(4, i)], key[fieldAdd(fieldMul(4, i), 1)], key[fieldAdd(fieldMul(4, i), 2)], key[fieldAdd(fieldMul(4, i), 3)]];
+  let words = Array.from({length: Number(fieldMul(4n, NK_ROUND_KEYS))}, () => Array.from({length: Number(4n)}, () => 0n));
+  for (let i = 0n; i < 4n; i += 1n)   {
+    words[Number(i)] = [key[Number(fieldMul(4n, i))], key[Number(fieldAdd(fieldMul(4n, i), 1n))], key[Number(fieldAdd(fieldMul(4n, i), 2n))], key[Number(fieldAdd(fieldMul(4n, i), 3n))]];
   }
-  for (let i = 4; i < fieldMul(4, NK_ROUND_KEYS); i++)   {
-    let temp = words[fieldSub(i, 1)];
-    if (((i % 4) === 0))     {
-      const t0 = temp[0];
-      temp[0] = temp[1];
-      temp[1] = temp[2];
-      temp[2] = temp[3];
-      temp[3] = t0;
-      for (let b = 0; b < 4; b++)       {
-        temp[b] = SBOX[Number(temp[b])];
+  for (let i = 4n; i < fieldMul(4n, NK_ROUND_KEYS); i += 1n)   {
+    let temp = words[Number(fieldSub(i, 1n))];
+    if (((i % 4n) === 0n))     {
+      const t0 = temp[Number(0n)];
+      temp[Number(0n)] = temp[Number(1n)];
+      temp[Number(1n)] = temp[Number(2n)];
+      temp[Number(2n)] = temp[Number(3n)];
+      temp[Number(3n)] = t0;
+      for (let b = 0n; b < 4n; b += 1n)       {
+        temp[Number(b)] = SBOX[Number(Number(temp[Number(b)]))];
       }
-      temp[0] ^= RCON[(i / 4)];
+      temp[Number(0n)] ^= RCON[Number((i / 4n))];
     }
-    for (let b = 0; b < 4; b++)     {
-      words[i][b] = fieldBitxor(words[fieldSub(i, 4)][b], temp[b]);
+    for (let b = 0n; b < 4n; b += 1n)     {
+      words[Number(i)][Number(b)] = fieldBitxor(words[Number(fieldSub(i, 4n))][Number(b)], temp[Number(b)]);
     }
   }
-  let round_keys = Array.from({length: NK_ROUND_KEYS}, () => Array.from({length: BLOCK}, () => 0));
-  for (let r = 0; r < NK_ROUND_KEYS; r++)   {
-    for (let c = 0; c < 4; c++)     {
-      const w = words[fieldAdd(fieldMul(4, r), c)];
-      round_keys[r][fieldMul(4, c)] = w[0];
-      round_keys[r][fieldAdd(fieldMul(4, c), 1)] = w[1];
-      round_keys[r][fieldAdd(fieldMul(4, c), 2)] = w[2];
-      round_keys[r][fieldAdd(fieldMul(4, c), 3)] = w[3];
+  let round_keys = Array.from({length: Number(NK_ROUND_KEYS)}, () => Array.from({length: Number(BLOCK)}, () => 0n));
+  for (let r = 0n; r < NK_ROUND_KEYS; r += 1n)   {
+    for (let c = 0n; c < 4n; c += 1n)     {
+      const w = words[Number(fieldAdd(fieldMul(4n, r), c))];
+      round_keys[Number(r)][Number(fieldMul(4n, c))] = w[Number(0n)];
+      round_keys[Number(r)][Number(fieldAdd(fieldMul(4n, c), 1n))] = w[Number(1n)];
+      round_keys[Number(r)][Number(fieldAdd(fieldMul(4n, c), 2n))] = w[Number(2n)];
+      round_keys[Number(r)][Number(fieldAdd(fieldMul(4n, c), 3n))] = w[Number(3n)];
     }
   }
   return round_keys;
 }
 
-export function key_switch(n_lwe: number, big_n: number, ks_ell: number, ct_big: LweCiphertextDyn, ksk: KeySwitchingKeyDyn): LweCiphertextDyn
+export function key_switch(n_lwe: bigint, big_n: bigint, ks_ell: bigint, ct_big: LweCiphertextDyn, ksk: KeySwitchingKeyDyn): LweCiphertextDyn
 {
-  let out_a = Array.from({length: n_lwe}, () => 0);
+  let out_a = Array.from({length: Number(n_lwe)}, () => 0n);
   let out_b = ct_big.b;
-  for (let i = 0; i < big_n; i++)   {
-    const digits = ks_decompose(ct_big.a[i], ksk.ks_bg_log);
-    for (let j = 0; j < ks_ell; j++)     {
-      const d = Number(digits[j]);
-      if ((d === 0))       {
+  for (let i = 0n; i < big_n; i += 1n)   {
+    const digits = ks_decompose(ct_big.a[Number(i)], ksk.ks_bg_log);
+    for (let j = 0n; j < ks_ell; j += 1n)     {
+      const d = Number(digits[Number(j)]);
+      if ((d === 0n))       {
         continue;
       }
-      const ksk_ct = ksk.ksk[i][j];
-      for (let k = 0; k < n_lwe; k++)       {
-        out_a[k] = wrappingSub(out_a[k], Math.imul(d, ksk_ct.a[k]));
+      const ksk_ct = ksk.ksk[Number(i)][Number(j)];
+      for (let k = 0n; k < n_lwe; k += 1n)       {
+        out_a[Number(k)] = wrappingSub(out_a[Number(k)], BigInt(Math.imul(Number(d), Number(ksk_ct.a[Number(k)]))));
       }
-      out_b = wrappingSub(out_b, Math.imul(d, ksk_ct.b));
+      out_b = wrappingSub(out_b, BigInt(Math.imul(Number(d), Number(ksk_ct.b))));
     }
   }
-  return new LweCiphertextDyn({ a: out_a, b: out_b, n_lwe: 0 });
+  return new LweCiphertextDyn({ a: out_a, b: out_b, n_lwe: 0n });
 }
 
 export function keygen(rng: unknown /* impl SpecRng */): [FaestSecretKey, FaestPublicKey]
 {
-  let sk = Array.from({length: LAMBDA_BYTES}, () => 0);
+  let sk = Array.from({length: Number(LAMBDA_BYTES)}, () => 0n);
   for (const b of sk.iter_mut())   {
     b = rng.next_u8();
   }
-  const pk = aes128_encrypt(sk, Array.from({length: LAMBDA_BYTES}, () => 0));
+  const pk = aes128_encrypt(sk, Array.from({length: Number(LAMBDA_BYTES)}, () => 0n));
   return [new FaestSecretKey(sk), new FaestPublicKey(pk)];
 }
 
-export function ks_decompose(ks_ell: number, x: number, bg_log: number): number[]
+export function ks_decompose(ks_ell: bigint, x: bigint, bg_log: bigint): bigint[]
 {
-  const bg = fieldShl(1, bg_log);
-  const mask = fieldSub(bg, 1);
+  const bg = fieldShl(1n, bg_log);
+  const mask = fieldSub(bg, 1n);
   let rem = BigInt(x);
-  const tail_shift = (32 - (Math.imul(bg_log, Number(ks_ell))));
-  if (((tail_shift > 0) && (tail_shift < 32)))   {
-    const half_tail = fieldShl(1, fieldSub(tail_shift, 1));
+  const tail_shift = (32n - (BigInt(Math.imul(Number(bg_log), Number(Number(ks_ell))))));
+  if (((tail_shift > 0n) && (tail_shift < 32n)))   {
+    const half_tail = fieldShl(1n, fieldSub(tail_shift, 1n));
     rem = wrappingAdd(rem, half_tail);
   }
-  let digits = Array.from({length: ks_ell}, () => 0);
-  for (const j of (Array.from({length: ks_ell - 0}, (_, i) => i + 0)).slice().reverse())   {
-    const shift = (32 - (Math.imul(bg_log, fieldAdd(Number(j), 1))));
-    if ((shift < 32))     {
-      digits[j] = Number(fieldBitand(fieldShr(rem, shift), mask));
+  let digits = Array.from({length: Number(ks_ell)}, () => 0n);
+  for (const j of (Array.from({length: Number(ks_ell - 0n)}, (_, __i) => BigInt(__i) + 0n)).slice().reverse())   {
+    const shift = (32n - (BigInt(Math.imul(Number(bg_log), Number(fieldAdd(Number(j), 1n))))));
+    if ((shift < 32n))     {
+      digits[Number(j)] = Number(fieldBitand(fieldShr(rem, shift), mask));
     }
   }
   return digits;
 }
 
-export function lift_bit<T>(n: number, bit_t: any): any[]
+export function lift_bit<T>(n: bigint, bit_t: T): T[]
 {
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((_: any) => __clone(bit_t));
+  return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => __clone(bit_t));
 }
 
-export function lwe_add(n_lwe: number, a: LweCiphertextDyn, b: LweCiphertextDyn): LweCiphertextDyn
+export function lwe_add(n_lwe: bigint, a: LweCiphertextDyn, b: LweCiphertextDyn): LweCiphertextDyn
 {
-  let out_a = Array.from({length: n_lwe}, () => 0);
-  for (let i = 0; i < n_lwe; i++)   {
-    out_a[i] = wrappingAdd(a.a[i], b.a[i]);
+  let out_a = Array.from({length: Number(n_lwe)}, () => 0n);
+  for (let i = 0n; i < n_lwe; i += 1n)   {
+    out_a[Number(i)] = wrappingAdd(a.a[Number(i)], b.a[Number(i)]);
   }
-  return new LweCiphertextDyn({ a: out_a, b: wrappingAdd(a.b, b.b), n_lwe: 0 });
+  return new LweCiphertextDyn({ a: out_a, b: wrappingAdd(a.b, b.b), n_lwe: 0n });
 }
 
-export function lwe_decrypt(n_lwe: number, ct: LweCiphertextDyn, sk: LweSecretKeyDyn): boolean
+export function lwe_decrypt(n_lwe: bigint, ct: LweCiphertextDyn, sk: LweSecretKeyDyn): boolean
 {
-  let dot: number = 0;
-  for (let i = 0; i < n_lwe; i++)   {
-    dot = wrappingAdd(dot, Math.imul(ct.a[i], Number(sk.key[i])));
+  let dot: bigint = 0n;
+  for (let i = 0n; i < n_lwe; i += 1n)   {
+    dot = wrappingAdd(dot, BigInt(Math.imul(Number(ct.a[Number(i)]), Number(Number(sk.key[Number(i)])))));
   }
   const phase = wrappingSub(ct.b, dot);
-  const half = fieldShr(Q4, 1);
+  const half = fieldShr(Q4, 1n);
   const shifted = wrappingSub(phase, half);
   return (shifted < Q4);
 }
 
-export function lwe_encrypt<R>(n_lwe: number, m: boolean, sk: LweSecretKeyDyn, noise_bits: number, rng: R): LweCiphertextDyn
+export function lwe_encrypt<R>(n_lwe: bigint, m: boolean, sk: LweSecretKeyDyn, noise_bits: bigint, rng: R): LweCiphertextDyn
 {
-  let a = Array.from({length: n_lwe}, () => 0);
+  let a = Array.from({length: Number(n_lwe)}, () => 0n);
   for (const ai of a.iter_mut())   {
     ai = rng.next_u32();
   }
-  let dot: number = 0;
-  for (let i = 0; i < n_lwe; i++)   {
-    dot = wrappingAdd(dot, Math.imul(a[i], Number(sk.key[i])));
+  let dot: bigint = 0n;
+  for (let i = 0n; i < n_lwe; i += 1n)   {
+    dot = wrappingAdd(dot, BigInt(Math.imul(Number(a[Number(i)]), Number(Number(sk.key[Number(i)])))));
   }
-  const e: number = small_noise(noise_bits, rng);
+  const e: bigint = small_noise(noise_bits, rng);
   const msg = (() => { if (m) {
   return Q4;
 } else {
-  return 0;
+  return 0n;
 } })();
   const b = wrappingAdd(wrappingAdd(dot, e), msg);
-  return new LweCiphertextDyn({ a: a, b: b, n_lwe: 0 });
+  return new LweCiphertextDyn({ a: a, b: b, n_lwe: 0n });
 }
 
-export function lwe_encrypt_raw<R>(n_lwe: number, msg: number, sk: LweSecretKeyDyn, noise_bits: number, rng: R): LweCiphertextDyn
+export function lwe_encrypt_raw<R>(n_lwe: bigint, msg: bigint, sk: LweSecretKeyDyn, noise_bits: bigint, rng: R): LweCiphertextDyn
 {
-  let a = Array.from({length: n_lwe}, () => 0);
+  let a = Array.from({length: Number(n_lwe)}, () => 0n);
   for (const ai of a.iter_mut())   {
     ai = rng.next_u32();
   }
-  let dot: number = 0;
-  for (let i = 0; i < n_lwe; i++)   {
-    dot = wrappingAdd(dot, Math.imul(a[i], Number(sk.key[i])));
+  let dot: bigint = 0n;
+  for (let i = 0n; i < n_lwe; i += 1n)   {
+    dot = wrappingAdd(dot, BigInt(Math.imul(Number(a[Number(i)]), Number(Number(sk.key[Number(i)])))));
   }
   const e = small_noise(noise_bits, rng);
   const b = wrappingAdd(wrappingAdd(dot, e), msg);
-  return new LweCiphertextDyn({ a: a, b: b, n_lwe: 0 });
+  return new LweCiphertextDyn({ a: a, b: b, n_lwe: 0n });
 }
 
 export function lwe_ot_recv<R>(rng: R, crs: LweOtCrs, c: boolean): [LweOtReceiver, LweOtRecvMsg]
 {
-  let s = Array.from({length: LWE_N}, () => 0);
-  for (let i = 0; i < LWE_N; i++)   {
-    s[i] = sample_noise(rng);
+  let s = Array.from({length: Number(LWE_N)}, () => 0n);
+  for (let i = 0n; i < LWE_N; i += 1n)   {
+    s[Number(i)] = sample_noise(rng);
   }
-  let pk_real = Array.from({length: LWE_N}, () => 0);
-  for (let i = 0; i < LWE_N; i++)   {
-    let acc: Zq = 0;
-    for (let j = 0; j < LWE_N; j++)     {
-      acc = zq_add(acc, zq_mul(crs.a[i][j], s[j]));
+  let pk_real = Array.from({length: Number(LWE_N)}, () => 0n);
+  for (let i = 0n; i < LWE_N; i += 1n)   {
+    let acc: Zq = 0n;
+    for (let j = 0n; j < LWE_N; j += 1n)     {
+      acc = zq_add(acc, zq_mul(crs.a[Number(i)][Number(j)], s[Number(j)]));
     }
     acc = zq_add(acc, sample_noise(rng));
-    pk_real[i] = acc;
+    pk_real[Number(i)] = acc;
   }
   const pk0 = (() => { if (c) {
-  let pk0 = Array.from({length: LWE_N}, () => 0);
-  for (let i = 0; i < LWE_N; i++)   {
-    pk0[i] = zq_sub(crs.h[i], pk_real[i]);
+  let pk0 = Array.from({length: Number(LWE_N)}, () => 0n);
+  for (let i = 0n; i < LWE_N; i += 1n)   {
+    pk0[Number(i)] = zq_sub(crs.h[Number(i)], pk_real[Number(i)]);
   }
   return pk0;
 } else {
@@ -3253,77 +3809,77 @@ export function lwe_ot_recv<R>(rng: R, crs: LweOtCrs, c: boolean): [LweOtReceive
   return [new LweOtReceiver({ s: s, c: c }), new LweOtRecvMsg({ pk0: pk0 })];
 }
 
-export function lwe_ot_recv_decrypt(l: number, receiver: LweOtReceiver, sender_msg: LweOtSenderMsgDyn): number[]
+export function lwe_ot_recv_decrypt(l: bigint, receiver: LweOtReceiver, sender_msg: LweOtSenderMsgDyn): bigint[]
 {
   const [u, v] = (() => { if (receiver.c) {
   return [sender_msg.u1, sender_msg.v1];
 } else {
   return [sender_msg.u0, sender_msg.v0];
 } })();
-  let s_dot_u: Zq = 0;
-  for (let i = 0; i < LWE_N; i++)   {
-    s_dot_u = zq_add(s_dot_u, zq_mul(receiver.s[i], u[i]));
+  let s_dot_u: Zq = 0n;
+  for (let i = 0n; i < LWE_N; i += 1n)   {
+    s_dot_u = zq_add(s_dot_u, zq_mul(receiver.s[Number(i)], u[Number(i)]));
   }
-  const quarter = (LWE_Q / 4);
-  const three_quarter = fieldMul(3, quarter);
-  let out = Array.from({length: l}, () => 0);
-  for (let k = 0; k < l; k++)   {
-    const raw = zq_sub(v[k], s_dot_u);
-    out[k] = (() => { if (((raw > quarter) && (raw <= three_quarter))) {
-  return 1;
+  const quarter = (LWE_Q / 4n);
+  const three_quarter = fieldMul(3n, quarter);
+  let out = Array.from({length: Number(l)}, () => 0n);
+  for (let k = 0n; k < l; k += 1n)   {
+    const raw = zq_sub(v[Number(k)], s_dot_u);
+    out[Number(k)] = (() => { if (((raw > quarter) && (raw <= three_quarter))) {
+  return 1n;
 } else {
-  return 0;
+  return 0n;
 } })();
   }
   return out;
 }
 
-export function lwe_ot_send<R>(l: number, rng: R, crs: LweOtCrs, recv_msg: LweOtRecvMsg, m0: number[], m1: number[]): LweOtSenderMsgDyn
+export function lwe_ot_send<R>(l: bigint, rng: R, crs: LweOtCrs, recv_msg: LweOtRecvMsg, m0: bigint[], m1: bigint[]): LweOtSenderMsgDyn
 {
   const pk0 = recv_msg.pk0;
-  let pk1 = Array.from({length: LWE_N}, () => 0);
-  for (let i = 0; i < LWE_N; i++)   {
-    pk1[i] = zq_sub(crs.h[i], pk0[i]);
+  let pk1 = Array.from({length: Number(LWE_N)}, () => 0n);
+  for (let i = 0n; i < LWE_N; i += 1n)   {
+    pk1[Number(i)] = zq_sub(crs.h[Number(i)], pk0[Number(i)]);
   }
   const [u0, v0] = encrypt_branch(rng, crs, pk0, m0);
   const [u1, v1] = encrypt_branch(rng, crs, pk1, m1);
-  return new LweOtSenderMsgDyn({ u0: u0, v0: v0, u1: u1, v1: v1, l: 0 });
+  return new LweOtSenderMsgDyn({ u0: u0, v0: v0, u1: u1, v1: v1, l: 0n });
 }
 
-export function memory_check_per_lane<T>(n: number, challenges: any[]): MemoryCheckStateDyn<any, AdditiveHasher>[]
+export function memory_check_per_lane<T>(n: bigint, challenges: T[]): MemoryCheckStateDyn<T, AdditiveHasher>[]
 {
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  const key = ChallengeKey.from_challenge(__clone(challenges[i]));
+  return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  const key = ChallengeKey.from_challenge(__clone(challenges[Number(i)]));
   return MemoryCheckState.new(key);
 })());
 }
 
-export function mix_columns(state: number[])
+export function mix_columns(state: bigint[])
 {
-  for (let c = 0; c < 4; c++)   {
-    const i = fieldMul(4, c);
-    const s0 = state[i];
-    const s1 = state[fieldAdd(i, 1)];
-    const s2 = state[fieldAdd(i, 2)];
-    const s3 = state[fieldAdd(i, 3)];
-    state[i] = fieldBitxor(fieldBitxor(fieldBitxor(gf_mul(s0, 2), gf_mul(s1, 3)), s2), s3);
-    state[fieldAdd(i, 1)] = fieldBitxor(fieldBitxor(fieldBitxor(s0, gf_mul(s1, 2)), gf_mul(s2, 3)), s3);
-    state[fieldAdd(i, 2)] = fieldBitxor(fieldBitxor(fieldBitxor(s0, s1), gf_mul(s2, 2)), gf_mul(s3, 3));
-    state[fieldAdd(i, 3)] = fieldBitxor(fieldBitxor(fieldBitxor(gf_mul(s0, 3), s1), s2), gf_mul(s3, 2));
+  for (let c = 0n; c < 4n; c += 1n)   {
+    const i = fieldMul(4n, c);
+    const s0 = state[Number(i)];
+    const s1 = state[Number(fieldAdd(i, 1n))];
+    const s2 = state[Number(fieldAdd(i, 2n))];
+    const s3 = state[Number(fieldAdd(i, 3n))];
+    state[Number(i)] = fieldBitxor(fieldBitxor(fieldBitxor(gf_mul(s0, 2n), gf_mul(s1, 3n)), s2), s3);
+    state[Number(fieldAdd(i, 1n))] = fieldBitxor(fieldBitxor(fieldBitxor(s0, gf_mul(s1, 2n)), gf_mul(s2, 3n)), s3);
+    state[Number(fieldAdd(i, 2n))] = fieldBitxor(fieldBitxor(fieldBitxor(s0, s1), gf_mul(s2, 2n)), gf_mul(s3, 3n));
+    state[Number(fieldAdd(i, 3n))] = fieldBitxor(fieldBitxor(fieldBitxor(gf_mul(s0, 3n), s1), s2), gf_mul(s3, 2n));
   }
 }
 
 export function mul_4x4(a: bigint[], b: bigint[]): bigint[]
 {
-  let r = Array.from({length: 8}, () => 0);
-  for (let i = 0; i < 4; i++)   {
-    let carry: bigint = 0;
-    for (let j = 0; j < 4; j++)     {
-      const v = fieldAdd(fieldAdd((r[fieldAdd(i, j)] as unknown as bigint), fieldMul((a[i] as unknown as bigint), (b[j] as unknown as bigint))), (carry as unknown as bigint));
-      r[fieldAdd(i, j)] = BigInt(v);
-      carry = BigInt(fieldShr(v, 64));
+  let r = Array.from({length: Number(8n)}, () => 0n);
+  for (let i = 0n; i < 4n; i += 1n)   {
+    let carry: bigint = 0n;
+    for (let j = 0n; j < 4n; j += 1n)     {
+      const v = fieldAdd(fieldAdd((r[Number(fieldAdd(i, j))] as unknown as bigint), fieldMul((a[Number(i)] as unknown as bigint), (b[Number(j)] as unknown as bigint))), (carry as unknown as bigint));
+      r[Number(fieldAdd(i, j))] = BigInt(v);
+      carry = BigInt(fieldShr(v, 64n));
     }
-    r[fieldAdd(i, 4)] = carry;
+    r[Number(fieldAdd(i, 4n))] = carry;
   }
   return r;
 }
@@ -3346,7 +3902,7 @@ export function ot_recv_choice<G, D>(state: BaseOtReceiverDyn<G, D>): boolean
   return state.c;
 }
 
-export function ot_recv_finish<G, D>(ctx: { newD: () => any, GClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, state: BaseOtReceiverDyn<G, D>): Output<D>
+export function ot_recv_finish<G, D>(ctx: { newD: () => any, GClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, state: BaseOtReceiverDyn<G, D>): bigint[]
 {
   const sx = ctx.GClass.scalar_mul(state.s, state.x);
   let h = ctx.newD();
@@ -3354,14 +3910,14 @@ export function ot_recv_finish<G, D>(ctx: { newD: () => any, GClass: { new(...ar
   return [...h.finalize()];
 }
 
-export function ot_recv_payload<D>(kc: Output<D>, ec: readonly number[], mc: readonly number[])
+export function ot_recv_payload<D>(kc: bigint[], ec: readonly bigint[], mc: readonly bigint[])
 {
-  for (let i = 0; i < ec.length; i++)   {
-    mc[i] = fieldBitxor(ec[i], kc[i]);
+  for (let i = 0n; i < ec.length; i += 1n)   {
+    mc[Number(i)] = fieldBitxor(ec[Number(i)], kc[Number(i)]);
   }
 }
 
-export function ot_send_finish<G, D>(ctx: { newD: () => any, GClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, state: BaseOtSenderDyn<G, D>, msg: OtReceiverMsgDyn<G>): [Output<D>, Output<D>]
+export function ot_send_finish<G, D>(ctx: { newD: () => any, GClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, state: BaseOtSenderDyn<G, D>, msg: OtReceiverMsgDyn<G>): [bigint[], bigint[]]
 {
   const ry = ctx.GClass.scalar_mul(msg.r, state.y);
   const s_inv = ctx.GClass.neg(state.s);
@@ -3374,13 +3930,13 @@ export function ot_send_finish<G, D>(ctx: { newD: () => any, GClass: { new(...ar
   return [[...h0.finalize()], [...h1.finalize()]];
 }
 
-export function ot_send_payload<D>(k0: Output<D>, k1: Output<D>, m0: readonly number[], m1: readonly number[], e0: readonly number[], e1: readonly number[])
+export function ot_send_payload<D>(k0: bigint[], k1: bigint[], m0: readonly bigint[], m1: readonly bigint[], e0: readonly bigint[], e1: readonly bigint[])
 {
-  for (let i = 0; i < m0.length; i++)   {
-    e0[i] = fieldBitxor(m0[i], k0[i]);
+  for (let i = 0n; i < m0.length; i += 1n)   {
+    e0[Number(i)] = fieldBitxor(m0[Number(i)], k0[Number(i)]);
   }
-  for (let i = 0; i < m1.length; i++)   {
-    e1[i] = fieldBitxor(m1[i], k1[i]);
+  for (let i = 0n; i < m1.length; i += 1n)   {
+    e1[Number(i)] = fieldBitxor(m1[Number(i)], k1[Number(i)]);
   }
 }
 
@@ -3393,257 +3949,257 @@ export function ot_send_setup<G, D, R>(ctx: { GClass: { new(...args: any[]): any
   return [new BaseOtSenderDyn({ y: y, s: __clone(s), t: t, _d: PhantomData }), s];
 }
 
-export function pack_kappa(bits: boolean[]): number[]
+export function pack_kappa(bits: boolean[]): bigint[]
 {
-  let out = Array.from({length: IKNP_KAPPA_BYTES}, () => 0);
-  for (let i = 0; i < IKNP_KAPPA; i++)   {
-    if (bits[i])     {
-      out[(i / 8)] |= fieldShl(1, (i % 8));
+  let out = Array.from({length: Number(IKNP_KAPPA_BYTES)}, () => 0n);
+  for (let i = 0n; i < IKNP_KAPPA; i += 1n)   {
+    if (bits[Number(i)])     {
+      out[Number((i / 8n))] |= fieldShl(1n, (i % 8n));
     }
   }
   return out;
 }
 
-export function poly_add_neg(n: number, a: number[], b: number[]): number[]
+export function poly_add_neg(n: bigint, a: bigint[], b: bigint[]): bigint[]
 {
-  let result = Array.from({length: n}, () => 0);
-  for (let i = 0; i < n; i++)   {
-    result[i] = wrappingAdd(a[i], b[i]);
+  let result = Array.from({length: Number(n)}, () => 0n);
+  for (let i = 0n; i < n; i += 1n)   {
+    result[Number(i)] = wrappingAdd(a[Number(i)], b[Number(i)]);
   }
   return result;
 }
 
-export function poly_decompose(big_n: number, bs_ell: number, p: number[], bg_log: number): number[][]
+export function poly_decompose(big_n: bigint, bs_ell: bigint, p: bigint[], bg_log: bigint): bigint[][]
 {
-  const bg = fieldShl(1, bg_log);
-  const mask = Number(fieldSub(bg, 1));
-  let result = Array.from({length: bs_ell}, () => Array.from({length: big_n}, () => 0));
-  for (let i = 0; i < big_n; i++)   {
-    const x = p[i];
-    const tail_bits = (32 - (Math.imul(bg_log, Number(bs_ell))));
-    const rounded = (() => { if (((tail_bits > 0) && (tail_bits < 32))) {
-  return wrappingAdd(x, fieldShl(1, fieldSub(tail_bits, 1)));
+  const bg = fieldShl(1n, bg_log);
+  const mask = Number(fieldSub(bg, 1n));
+  let result = Array.from({length: Number(bs_ell)}, () => Array.from({length: Number(big_n)}, () => 0n));
+  for (let i = 0n; i < big_n; i += 1n)   {
+    const x = p[Number(i)];
+    const tail_bits = (32n - (BigInt(Math.imul(Number(bg_log), Number(Number(bs_ell))))));
+    const rounded = (() => { if (((tail_bits > 0n) && (tail_bits < 32n))) {
+  return wrappingAdd(x, fieldShl(1n, fieldSub(tail_bits, 1n)));
 } else {
   return x;
 } })();
-    for (let j = 0; j < bs_ell; j++)     {
-      const shift = (32 - (Math.imul(bg_log, fieldAdd(Number(j), 1))));
-      result[j][i] = (() => { if ((shift < 32)) {
+    for (let j = 0n; j < bs_ell; j += 1n)     {
+      const shift = (32n - (BigInt(Math.imul(Number(bg_log), Number(fieldAdd(Number(j), 1n))))));
+      result[Number(j)][Number(i)] = (() => { if ((shift < 32n)) {
   return fieldBitand(fieldShr(rounded, shift), mask);
 } else {
-  return 0;
+  return 0n;
 } })();
     }
   }
   return result;
 }
 
-export function poly_mul_neg(n: number, a: number[], b: number[]): number[]
+export function poly_mul_neg(n: bigint, a: bigint[], b: bigint[]): bigint[]
 {
-  let result = Array.from({length: n}, () => 0);
-  for (let i = 0; i < n; i++)   {
-    for (let j = 0; j < n; j++)     {
+  let result = Array.from({length: Number(n)}, () => 0n);
+  for (let i = 0n; i < n; i += 1n)   {
+    for (let j = 0n; j < n; j += 1n)     {
       const deg = fieldAdd(i, j);
       if ((deg < n))       {
-        result[deg] = wrappingAdd(result[deg], Math.imul(a[i], b[j]));
+        result[Number(deg)] = wrappingAdd(result[Number(deg)], BigInt(Math.imul(Number(a[Number(i)]), Number(b[Number(j)]))));
       } else       {
-        result[fieldSub(deg, n)] = wrappingSub(result[fieldSub(deg, n)], Math.imul(a[i], b[j]));
+        result[Number(fieldSub(deg, n))] = wrappingSub(result[Number(fieldSub(deg, n))], BigInt(Math.imul(Number(a[Number(i)]), Number(b[Number(j)]))));
       }
     }
   }
   return result;
 }
 
-export function poly_rotate(n: number, p: number[], exp: number): number[]
+export function poly_rotate(n: bigint, p: bigint[], exp: bigint): bigint[]
 {
-  const exp_1 = (exp % fieldMul(2, n));
-  if ((exp_1 === 0))   {
+  const exp_1 = (exp % fieldMul(2n, n));
+  if ((exp_1 === 0n))   {
     return p;
   }
-  let result = Array.from({length: n}, () => 0);
-  for (let i = 0; i < n; i++)   {
+  let result = Array.from({length: Number(n)}, () => 0n);
+  for (let i = 0n; i < n; i += 1n)   {
     const new_pos = fieldAdd(i, exp_1);
     if ((new_pos < n))     {
-      result[new_pos] = wrappingAdd(result[new_pos], p[i]);
-    } else if ((new_pos < fieldMul(2, n)))     {
-      result[fieldSub(new_pos, n)] = wrappingSub(result[fieldSub(new_pos, n)], p[i]);
+      result[Number(new_pos)] = wrappingAdd(result[Number(new_pos)], p[Number(i)]);
+    } else if ((new_pos < fieldMul(2n, n)))     {
+      result[Number(fieldSub(new_pos, n))] = wrappingSub(result[Number(fieldSub(new_pos, n))], p[Number(i)]);
     } else     {
-      result[fieldSub(new_pos, fieldMul(2, n))] = wrappingAdd(result[fieldSub(new_pos, fieldMul(2, n))], p[i]);
+      result[Number(fieldSub(new_pos, fieldMul(2n, n)))] = wrappingAdd(result[Number(fieldSub(new_pos, fieldMul(2n, n)))], p[Number(i)]);
     }
   }
   return result;
 }
 
-export function poly_sub_neg(n: number, a: number[], b: number[]): number[]
+export function poly_sub_neg(n: bigint, a: bigint[], b: bigint[]): bigint[]
 {
-  let result = Array.from({length: n}, () => 0);
-  for (let i = 0; i < n; i++)   {
-    result[i] = wrappingSub(a[i], b[i]);
+  let result = Array.from({length: Number(n)}, () => 0n);
+  for (let i = 0n; i < n; i += 1n)   {
+    result[Number(i)] = wrappingSub(a[Number(i)], b[Number(i)]);
   }
   return result;
 }
 
-export function prg_to_bools(ctx: { newD: () => any }, seed: readonly number[], out: readonly boolean[])
+export function prg_to_bools(ctx: { newD: () => any }, seed: readonly bigint[], out: readonly boolean[])
 {
-  let counter: number = 0;
-  let pos = 0;
+  let counter: bigint = 0n;
+  let pos = 0n;
   while ((pos < out.length))   {
     let h = ctx.newD();
     h.update(seed);
-    h.update([(counter) & 0xFF, ((counter) >> 8) & 0xFF, ((counter) >> 16) & 0xFF, ((counter) >> 24) & 0xFF]);
+    h.update([(counter) & 0xFFn, ((counter) >> 8n) & 0xFFn, ((counter) >> 16n) & 0xFFn, ((counter) >> 24n) & 0xFFn]);
     const block = [...h.finalize()];
-    const block_bytes: readonly number[] = asRefU8(block);
+    const block_bytes: readonly bigint[] = asRefU8(block);
     for (const byte of block_bytes)     {
-      for (let bit = 0; bit < 8; bit++)       {
+      for (let bit = 0n; bit < 8n; bit += 1n)       {
         if ((pos >= out.length))         {
           return;
         }
-        out[pos] = (fieldBitand(fieldShr(byte, bit), 1) === 1);
-        pos += 1;
+        out[Number(pos)] = (fieldBitand(fieldShr(byte, bit), 1n) === 1n);
+        pos += 1n;
       }
     }
-    counter += 1;
+    counter += 1n;
   }
 }
 
-export function prg_with_index(ctx: { newD: () => any }, seed: readonly number[], idx: number, out: readonly number[])
+export function prg_with_index(ctx: { newD: () => any }, seed: readonly bigint[], idx: bigint, out: readonly bigint[])
 {
-  let counter: number = 0;
-  let pos = 0;
+  let counter: bigint = 0n;
+  let pos = 0n;
   while ((pos < out.length))   {
     let h = ctx.newD();
     h.update(seed);
-    h.update([(idx) & 0xFF, ((idx) >> 8) & 0xFF, ((idx) >> 16) & 0xFF, ((idx) >> 24) & 0xFF]);
-    h.update([(counter) & 0xFF, ((counter) >> 8) & 0xFF, ((counter) >> 16) & 0xFF, ((counter) >> 24) & 0xFF]);
+    h.update([(idx) & 0xFFn, ((idx) >> 8n) & 0xFFn, ((idx) >> 16n) & 0xFFn, ((idx) >> 24n) & 0xFFn]);
+    h.update([(counter) & 0xFFn, ((counter) >> 8n) & 0xFFn, ((counter) >> 16n) & 0xFFn, ((counter) >> 24n) & 0xFFn]);
     const block = [...h.finalize()];
-    const block_bytes: readonly number[] = asRefU8(block);
-    const take = Math.min(fieldSub(out.length, pos), block_bytes.length);
-    (out.slice(pos, fieldAdd(pos, take))).splice(0, (block_bytes.slice(0, take)).length, ...(block_bytes.slice(0, take)));
+    const block_bytes: readonly bigint[] = asRefU8(block);
+    const take = BigInt(Math.min(Number(fieldSub(out.length, pos)), Number(block_bytes.length)));
+    (out.slice(Number(pos), Number(fieldAdd(pos, take)))).splice(0, (block_bytes.slice(0, Number(take))).length, ...(block_bytes.slice(0, Number(take))));
     pos += take;
-    counter += 1;
+    counter += 1n;
   }
 }
 
-export function random_nonzero_delta<T, R>(n: number, rng: R, sample_t: unknown /* impl Fn */, is_zero: unknown /* impl Fn */): DeltaDyn<any>
+export function random_nonzero_delta<T, R>(n: bigint, rng: R, sample_t: unknown /* impl Fn */, is_zero: unknown /* impl Fn */): DeltaDyn<T>
 {
-  return new DeltaDyn({ delta: Array.from({length: n - 0}, (_, __i) => __i + 0).map((_: any) => (() => {
+  return new DeltaDyn({ delta: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => (() => {
   let x = sample_t(rng);
-  let tries = 0;
-  while ((is_zero(x) && (tries < 64)))   {
+  let tries = 0n;
+  while ((is_zero(x) && (tries < 64n)))   {
     x = sample_t(rng);
-    tries += 1;
+    tries += 1n;
   }
   return x;
-})()), n: 0 });
+})()), n: 0n });
 }
 
-export function recompute_tree(r: number[], total_leaves: number): Vec<number[]>
+export function recompute_tree(r: bigint[], total_leaves: bigint): Vec<bigint[]>
 {
-  const total_nodes = fieldSub(fieldMul(2, total_leaves), 1);
+  const total_nodes = fieldSub(fieldMul(2n, total_leaves), 1n);
   let tree = [];
-  tree[0] = r;
-  for (let node = 0; node < fieldSub(total_leaves, 1); node++)   {
-    const parent = Vec(tree[node]);
+  tree[Number(0n)] = r;
+  for (let node = 0n; node < fieldSub(total_leaves, 1n); node += 1n)   {
+    const parent = Vec(tree[Number(node)]);
     const [left, right] = doubleVec(parent);
-    tree[fieldAdd(fieldMul(2, node), 1)] = left._0;
-    tree[fieldAdd(fieldMul(2, node), 2)] = right._0;
+    tree[Number(fieldAdd(fieldMul(2n, node), 1n))] = left._0;
+    tree[Number(fieldAdd(fieldMul(2n, node), 2n))] = right._0;
   }
   return tree;
 }
 
 export function reduce_wide(t: bigint[]): Fe25519
 {
-  let acc = Array.from({length: 5}, () => 0);
-  let c: bigint = 0;
-  for (let i = 0; i < 4; i++)   {
-    const v = fieldAdd(fieldAdd((t[i] as unknown as bigint), fieldMul((t[fieldAdd(4, i)] as unknown as bigint), 38)), c);
-    acc[i] = BigInt(v);
-    c = fieldShr(v, 64);
+  let acc = Array.from({length: Number(5n)}, () => 0n);
+  let c: bigint = 0n;
+  for (let i = 0n; i < 4n; i += 1n)   {
+    const v = fieldAdd(fieldAdd((t[Number(i)] as unknown as bigint), fieldMul((t[Number(fieldAdd(4n, i))] as unknown as bigint), 38n)), c);
+    acc[Number(i)] = BigInt(v);
+    c = fieldShr(v, 64n);
   }
-  acc[4] = BigInt(c);
-  let out = Array.from({length: 4}, () => 0);
-  let c_1: bigint = fieldMul((acc[4] as unknown as bigint), 38);
-  for (let i = 0; i < 4; i++)   {
-    const v = fieldAdd((acc[i] as unknown as bigint), c_1);
-    out[i] = BigInt(v);
-    c_1 = fieldShr(v, 64);
+  acc[Number(4n)] = BigInt(c);
+  let out = Array.from({length: Number(4n)}, () => 0n);
+  let c_1: bigint = fieldMul((acc[Number(4n)] as unknown as bigint), 38n);
+  for (let i = 0n; i < 4n; i += 1n)   {
+    const v = fieldAdd((acc[Number(i)] as unknown as bigint), c_1);
+    out[Number(i)] = BigInt(v);
+    c_1 = fieldShr(v, 64n);
   }
-  if ((c_1 !== 0))   {
-    let c2: bigint = fieldMul(c_1, 38);
-    for (let i = 0; i < 4; i++)     {
-      const v = fieldAdd((out[i] as unknown as bigint), c2);
-      out[i] = BigInt(v);
-      c2 = fieldShr(v, 64);
+  if ((c_1 !== 0n))   {
+    let c2: bigint = fieldMul(c_1, 38n);
+    for (let i = 0n; i < 4n; i += 1n)     {
+      const v = fieldAdd((out[Number(i)] as unknown as bigint), c2);
+      out[Number(i)] = BigInt(v);
+      c2 = fieldShr(v, 64n);
     }
   }
   return fe_canonicalize(out);
 }
 
-export function rgsw_encrypt<R>(big_n: number, bs_ell: number, m: boolean, sk: RlweSecretKeyDyn, bs_bg_log: number, noise_bits: number, rng: R): RgswCiphertextDyn
+export function rgsw_encrypt<R>(big_n: bigint, bs_ell: bigint, m: boolean, sk: RlweSecretKeyDyn, bs_bg_log: bigint, noise_bits: bigint, rng: R): RgswCiphertextDyn
 {
   const msg_bit = (() => { if (m) {
-  return 1;
+  return 1n;
 } else {
-  return 0;
+  return 0n;
 } })();
-  const rows = Array.from({length: n - 0}, (_, __i) => __i + 0).map((j: any) => (() => {
-  const shift = (32 - (Math.imul(bs_bg_log, fieldAdd(Number(j), 1))));
-  const g_factor = ((1) << (shift)) >>> 0;
-  const contrib = Math.imul(msg_bit, g_factor);
-  let rlwe0 = rlwe_encrypt_scalar(0, sk, noise_bits, rng);
-  rlwe0.a[0] = wrappingAdd(rlwe0.a[0], contrib);
+  const rows = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
+  const shift = (32n - (BigInt(Math.imul(Number(bs_bg_log), Number(fieldAdd(Number(j), 1n))))));
+  const g_factor = (((1n) << (shift)) & 0xFFFFFFFFn);
+  const contrib = BigInt(Math.imul(Number(msg_bit), Number(g_factor)));
+  let rlwe0 = rlwe_encrypt_scalar(0n, sk, noise_bits, rng);
+  rlwe0.a[Number(0n)] = wrappingAdd(rlwe0.a[Number(0n)], contrib);
   const rlwe1 = rlwe_encrypt_scalar(contrib, sk, noise_bits, rng);
-  return new RgswRowDyn({ rlwe0: rlwe0, rlwe1: rlwe1, big_n: 0 });
+  return new RgswRowDyn({ rlwe0: rlwe0, rlwe1: rlwe1, big_n: 0n });
 })());
-  return new RgswCiphertextDyn({ rows: rows, big_n: 0, bs_ell: 0 });
+  return new RgswCiphertextDyn({ rows: rows, big_n: 0n, bs_ell: 0n });
 }
 
-export function rlwe_add(big_n: number, a: RlweCiphertextDyn, b: RlweCiphertextDyn): RlweCiphertextDyn
+export function rlwe_add(big_n: bigint, a: RlweCiphertextDyn, b: RlweCiphertextDyn): RlweCiphertextDyn
 {
-  return new RlweCiphertextDyn({ a: poly_add_neg(a.a, b.a), b: poly_add_neg(a.b, b.b), big_n: 0 });
+  return new RlweCiphertextDyn({ a: poly_add_neg(a.a, b.a), b: poly_add_neg(a.b, b.b), big_n: 0n });
 }
 
-export function rlwe_encrypt_poly<R>(big_n: number, msg_poly: number[], sk: RlweSecretKeyDyn, noise_bits: number, rng: R): RlweCiphertextDyn
+export function rlwe_encrypt_poly<R>(big_n: bigint, msg_poly: bigint[], sk: RlweSecretKeyDyn, noise_bits: bigint, rng: R): RlweCiphertextDyn
 {
-  const a: number[] = Array.from({length: n - 0}, (_, __i) => __i + 0).map((_: any) => rng.next_u32());
+  const a: bigint[] = Array.from({length: Number(big_n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => rng.next_u32());
   let b = poly_mul_neg(a, sk.key);
-  for (let i = 0; i < big_n; i++)   {
-    b[i] = wrappingAdd(wrappingAdd(b[i], small_noise(noise_bits, rng)), msg_poly[i]);
+  for (let i = 0n; i < big_n; i += 1n)   {
+    b[Number(i)] = wrappingAdd(wrappingAdd(b[Number(i)], small_noise(noise_bits, rng)), msg_poly[Number(i)]);
   }
-  return new RlweCiphertextDyn({ a: a, b: b, big_n: 0 });
+  return new RlweCiphertextDyn({ a: a, b: b, big_n: 0n });
 }
 
-export function rlwe_encrypt_scalar<R>(big_n: number, m: number, sk: RlweSecretKeyDyn, noise_bits: number, rng: R): RlweCiphertextDyn
+export function rlwe_encrypt_scalar<R>(big_n: bigint, m: bigint, sk: RlweSecretKeyDyn, noise_bits: bigint, rng: R): RlweCiphertextDyn
 {
-  const a: number[] = Array.from({length: n - 0}, (_, __i) => __i + 0).map((_: any) => rng.next_u32());
+  const a: bigint[] = Array.from({length: Number(big_n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => rng.next_u32());
   let b = poly_mul_neg(a, sk.key);
-  b[0] = wrappingAdd(wrappingAdd(b[0], small_noise(noise_bits, rng)), m);
-  return new RlweCiphertextDyn({ a: a, b: b, big_n: 0 });
+  b[Number(0n)] = wrappingAdd(wrappingAdd(b[Number(0n)], small_noise(noise_bits, rng)), m);
+  return new RlweCiphertextDyn({ a: a, b: b, big_n: 0n });
 }
 
-export function rlwe_rotate(big_n: number, ct: RlweCiphertextDyn, exp: number): RlweCiphertextDyn
+export function rlwe_rotate(big_n: bigint, ct: RlweCiphertextDyn, exp: bigint): RlweCiphertextDyn
 {
-  return new RlweCiphertextDyn({ a: poly_rotate(ct.a, exp), b: poly_rotate(ct.b, exp), big_n: 0 });
+  return new RlweCiphertextDyn({ a: poly_rotate(ct.a, exp), b: poly_rotate(ct.b, exp), big_n: 0n });
 }
 
-export function rlwe_sub(big_n: number, a: RlweCiphertextDyn, b: RlweCiphertextDyn): RlweCiphertextDyn
+export function rlwe_sub(big_n: bigint, a: RlweCiphertextDyn, b: RlweCiphertextDyn): RlweCiphertextDyn
 {
-  return new RlweCiphertextDyn({ a: poly_sub_neg(a.a, b.a), b: poly_sub_neg(a.b, b.b), big_n: 0 });
+  return new RlweCiphertextDyn({ a: poly_sub_neg(a.a, b.a), b: poly_sub_neg(a.b, b.b), big_n: 0n });
 }
 
-export function sample_extract(big_n: number, rlwe: RlweCiphertextDyn): LweCiphertextDyn
+export function sample_extract(big_n: bigint, rlwe: RlweCiphertextDyn): LweCiphertextDyn
 {
-  let a_lwe = Array.from({length: big_n}, () => 0);
-  a_lwe[0] = rlwe.a[0];
-  for (let i = 1; i < big_n; i++)   {
-    a_lwe[i] = (-((rlwe.a[fieldSub(big_n, i)])) >>> 0);
+  let a_lwe = Array.from({length: Number(big_n)}, () => 0n);
+  a_lwe[Number(0n)] = rlwe.a[Number(0n)];
+  for (let i = 1n; i < big_n; i += 1n)   {
+    a_lwe[Number(i)] = ((-((rlwe.a[Number(fieldSub(big_n, i))])) & 0xFFFFFFFFn));
   }
-  return new LweCiphertextDyn({ a: a_lwe, b: rlwe.b[0], n_lwe: 0 });
+  return new LweCiphertextDyn({ a: a_lwe, b: rlwe.b[Number(0n)], n_lwe: 0n });
 }
 
 export function sample_noise<R>(rng: R): Zq
 {
-  const span = fieldAdd(fieldMul(2, LWE_NOISE_BOUND), 1);
+  const span = fieldAdd(fieldMul(2n, LWE_NOISE_BOUND), 1n);
   const raw = (rng.next_u32() % span);
   return (() => { if ((raw <= LWE_NOISE_BOUND)) {
   return raw;
@@ -3657,75 +4213,75 @@ export function sample_zq<R>(rng: R): Zq
   return fieldBitand(rng.next_u32(), LWE_Q_MASK);
 }
 
-export function shift_rows(state: number[])
+export function shift_rows(state: bigint[])
 {
-  const t = state[1];
-  state[1] = state[5];
-  state[5] = state[9];
-  state[9] = state[13];
-  state[13] = t;
-  const t_1 = state[2];
-  state[2] = state[10];
-  state[10] = t_1;
-  const t_2 = state[6];
-  state[6] = state[14];
-  state[14] = t_2;
-  const t_3 = state[15];
-  state[15] = state[11];
-  state[11] = state[7];
-  state[7] = state[3];
-  state[3] = t_3;
+  const t = state[Number(1n)];
+  state[Number(1n)] = state[Number(5n)];
+  state[Number(5n)] = state[Number(9n)];
+  state[Number(9n)] = state[Number(13n)];
+  state[Number(13n)] = t;
+  const t_1 = state[Number(2n)];
+  state[Number(2n)] = state[Number(10n)];
+  state[Number(10n)] = t_1;
+  const t_2 = state[Number(6n)];
+  state[Number(6n)] = state[Number(14n)];
+  state[Number(14n)] = t_2;
+  const t_3 = state[Number(15n)];
+  state[Number(15n)] = state[Number(11n)];
+  state[Number(11n)] = state[Number(7n)];
+  state[Number(7n)] = state[Number(3n)];
+  state[Number(3n)] = t_3;
 }
 
-export function sign(sk: FaestSecretKey, pk: FaestPublicKey, message: readonly number[], iv_seed: number[], prover: unknown /* impl FaestAesProver */): FaestSignature
+export function sign(sk: FaestSecretKey, pk: FaestPublicKey, message: readonly bigint[], iv_seed: bigint[], prover: unknown /* impl FaestAesProver */): FaestSignature
 {
-  const iv: number[] = aes128_encrypt(iv_seed, Array.from({length: LAMBDA_BYTES}, () => 0));
-  const r: number[] = aes128_encrypt(sk._0, iv);
+  const iv: bigint[] = aes128_encrypt(iv_seed, Array.from({length: Number(LAMBDA_BYTES)}, () => 0n));
+  const r: bigint[] = aes128_encrypt(sk._0, iv);
   const commitment: BavcCommitmentDyn = Bavc.commit(r, iv, TAU, SUB_VOLE_N);
-  const mu: Vec<number> = (() => {
+  const mu: Vec<bigint> = (() => {
   let h = Sha3_256.new();
-  DigestUpdate.update(h, pk._0);
-  DigestUpdate.update(h, message);
-  return [...Digest.finalize(h)];
+  h.update(pk._0);
+  h.update(message);
+  return [...h.finalize()];
 })();
-  const chall_1 = chall1(mu, iv, commitment.root, fieldAdd(LAMBDA_BYTES, 8), false);
+  const chall_1 = chall1(mu, iv, commitment.root, fieldAdd(LAMBDA_BYTES, 8n), false);
   const deltas = expand_challenge_to_deltas(chall_1, TAU, SUB_VOLE_N);
   const nodes = Bavc.collect_open_nodes(deltas, recompute_tree(r, fieldMul(TAU, SUB_VOLE_N)), TAU, SUB_VOLE_N);
-  const hidden_commits: Vec<number[]> = deltas.map((val: any, i: number) => [i, val] as [number, typeof val]).map(([i, d]: any) => commitment.commitments[fieldAdd(fieldMul(i, SUB_VOLE_N), d)]);
-  const opening = new BavcOpeningDyn({ hidden_commits: __clone(hidden_commits), nodes: __clone(nodes), com_bytes: 0 });
+  const hidden_commits: Vec<bigint[]> = deltas.map((val: any, i: number) => [i, val] as [number, typeof val]).map(([i, d]: any) => commitment.commitments[Number(fieldAdd(fieldMul(i, SUB_VOLE_N), d))]);
+  const opening = new BavcOpeningDyn({ hidden_commits: __clone(hidden_commits), nodes: __clone(nodes), com_bytes: 0n });
   const _ = opening;
   let sub_voles = /* Vec::with_capacity */ Array(TAU);
-  for (let i = 0; i < TAU; i++)   {
-    const seeds_i: Vec<(number[] | undefined)> = Array.from({length: SUB_VOLE_N - 0}, (_, __i) => __i + 0).map((j: any) => commitment.seeds[fieldAdd(fieldMul(i, SUB_VOLE_N), j)]);
+  for (let i = 0n; i < TAU; i += 1n)   {
+    const seeds_i: Vec<(bigint[] | undefined)> = Array.from({length: Number(SUB_VOLE_N - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => commitment.seeds[Number(fieldAdd(fieldMul(i, SUB_VOLE_N), j))]);
     (sub_voles).push(convert_to_vole(seeds_i, iv, Number(i), L_HAT_BYTES));
   }
   const big_vole: BigVoleProver = concat_small_voles(sub_voles);
-  const corrections_flat: Vec<number> = big_vole.c.flatten().collect();
-  const chall_2 = chall2(chall_1, big_vole.u, corrections_flat, fieldAdd(LAMBDA_BYTES, 8), false);
+  const corrections_flat: Vec<bigint> = big_vole.c.flatten().collect();
+  const chall_2 = chall2(chall_1, big_vole.u, corrections_flat, fieldAdd(LAMBDA_BYTES, 8n), false);
   const hash_key = hash_key_from_chall(chall_2);
   const qs_proof = prover.prove_aes_witness(big_vole, hash_key);
-  const [chall_3, counter] = (grind_chall3(chall_2, qs_proof.a_hat, qs_proof.b_hat, qs_proof.c_hat_base, LAMBDA_BYTES, W_GRIND, false, 1000000))!;
+  const [chall_3, counter] = (grind_chall3(chall_2, qs_proof.a_hat, qs_proof.b_hat, qs_proof.c_hat_base, LAMBDA_BYTES, W_GRIND, false, 1000000n))!;
   let c_hat_with_counter = __clone(qs_proof.c_hat_base);
-  c_hat_with_counter.extend_from_slice([(counter) & 0xFF, ((counter) >> 8) & 0xFF, ((counter) >> 16) & 0xFF, ((counter) >> 24) & 0xFF]);
+  c_hat_with_counter.extend_from_slice([(counter) & 0xFFn, ((counter) >> 8n) & 0xFFn, ((counter) >> 16n) & 0xFFn, ((counter) >> 24n) & 0xFFn]);
   return new FaestSignature({ iv: iv, bavc_root: __clone(commitment.root), hidden_commits: hidden_commits, nodes: nodes, corrections: __clone(big_vole.c), vole_u: __clone(big_vole.u), qs_proof: qs_proof, c_hat_with_counter: c_hat_with_counter, chall_3: chall_3, counter: counter });
 }
 
-export function small_noise<R>(noise_bits: number, rng: R): number
+export function small_noise<R>(noise_bits: bigint, rng: R): bigint
 {
-  if ((noise_bits >= 32))   {
+  if ((noise_bits >= 32n))   {
     return rng.next_u32();
   }
-  const raw: number = rng.next_u32();
-  const mask = wrappingSub(fieldShl(1, noise_bits), 1);
+  const raw: bigint = rng.next_u32();
+  const mask = wrappingSub(fieldShl(1n, noise_bits), 1n);
   const small = fieldBitand(raw, mask);
-  return (() => { if (((noise_bits > 0) && (fieldShr(small, fieldSub(noise_bits, 1)) !== 0))) {
+  return (() => { if (((noise_bits > 0n) && (fieldShr(small, fieldSub(noise_bits, 1n)) !== 0n))) {
   return fieldBitor(small, !mask);
 } else {
   return small;
 } })();
 }
 
-export function softspoken_cot_extend<D, R>(ctx: { newD: () => any, GClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, k: number, m: number, l: number, rng_s: R, rng_r: R, receiver_bits: boolean[], delta_msg: number[]): SoftSpokenOutDyn<D>
+export function softspoken_cot_extend<D, R>(ctx: { newD: () => any, GClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, k: bigint, m: bigint, l: bigint, rng_s: R, rng_r: R, receiver_bits: boolean[], delta_msg: bigint[]): SoftSpokenOutDyn<D>
 {
   const [sender_r0, receiver_v] = iknp_cot_extend(ctx, rng_s, rng_r, receiver_bits, delta_msg);
   let hs = ctx.newD();
@@ -3738,29 +4294,29 @@ export function softspoken_cot_extend<D, R>(ctx: { newD: () => any, GClass: { ne
   let hr = ctx.newD();
   hr.update(TAG_DOMAIN);
   hr.update(delta_msg);
-  for (let j = 0; j < m; j++)   {
-    let r0_reconstructed = Array.from({length: l}, () => 0);
-    if (receiver_bits[j])     {
-      for (let b = 0; b < l; b++)       {
-        r0_reconstructed[b] = fieldBitxor(receiver_v[j][b], delta_msg[b]);
+  for (let j = 0n; j < m; j += 1n)   {
+    let r0_reconstructed = Array.from({length: Number(l)}, () => 0n);
+    if (receiver_bits[Number(j)])     {
+      for (let b = 0n; b < l; b += 1n)       {
+        r0_reconstructed[Number(b)] = fieldBitxor(receiver_v[Number(j)][Number(b)], delta_msg[Number(b)]);
       }
     } else     {
-      r0_reconstructed = receiver_v[j];
+      r0_reconstructed = receiver_v[Number(j)];
     }
     hr.update(r0_reconstructed);
   }
   const receiver_tag = [...hr.finalize()];
-  return new SoftSpokenOutDyn({ sender_r0: sender_r0, receiver_v: receiver_v, sender_tag: sender_tag, receiver_tag: receiver_tag, m: 0, l: 0 });
+  return new SoftSpokenOutDyn({ sender_r0: sender_r0, receiver_v: receiver_v, sender_tag: sender_tag, receiver_tag: receiver_tag, m: 0n, l: 0n });
 }
 
-export function sub_bytes(state: number[])
+export function sub_bytes(state: bigint[])
 {
-  for (let i = 0; i < BLOCK; i++)   {
-    state[i] = SBOX[Number(state[i])];
+  for (let i = 0n; i < BLOCK; i += 1n)   {
+    state[Number(i)] = SBOX[Number(Number(state[Number(i)]))];
   }
 }
 
-export function tfhe_cmux(n_lwe: number, big_n: number, bs_ell: number, ks_ell: number, sel: LweCiphertextDyn, a: LweCiphertextDyn, b: LweCiphertextDyn, bk: BootstrappingKeyDyn): LweCiphertextDyn
+export function tfhe_cmux(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, sel: LweCiphertextDyn, a: LweCiphertextDyn, b: LweCiphertextDyn, bk: BootstrappingKeyDyn): LweCiphertextDyn
 {
   const not_sel = tfhe_not(sel);
   const sel_and_a = tfhe_gate_bootstrapping_and(sel, a, bk);
@@ -3768,89 +4324,89 @@ export function tfhe_cmux(n_lwe: number, big_n: number, bs_ell: number, ks_ell: 
   return tfhe_gate_bootstrapping_or(sel_and_a, nsel_and_b, bk);
 }
 
-export function tfhe_gate_bootstrapping_and(n_lwe: number, big_n: number, bs_ell: number, ks_ell: number, ct_a: LweCiphertextDyn, ct_b: LweCiphertextDyn, bk: BootstrappingKeyDyn): LweCiphertextDyn
+export function tfhe_gate_bootstrapping_and(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, ct_a: LweCiphertextDyn, ct_b: LweCiphertextDyn, bk: BootstrappingKeyDyn): LweCiphertextDyn
 {
   let ct = lwe_add(ct_a, ct_b);
-  ct.b = wrappingSub(ct.b, fieldShr(Q4, 1));
+  ct.b = wrappingSub(ct.b, fieldShr(Q4, 1n));
   const acc = blind_rotate(ct, bk);
   const lwe_big = sample_extract(acc);
   let ct_out = key_switch(lwe_big, bk.ksk);
-  ct_out.b = wrappingAdd(ct_out.b, fieldShr(Q4, 1));
+  ct_out.b = wrappingAdd(ct_out.b, fieldShr(Q4, 1n));
   return ct_out;
 }
 
-export function tfhe_gate_bootstrapping_or(n_lwe: number, big_n: number, bs_ell: number, ks_ell: number, ct_a: LweCiphertextDyn, ct_b: LweCiphertextDyn, bk: BootstrappingKeyDyn): LweCiphertextDyn
+export function tfhe_gate_bootstrapping_or(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, ct_a: LweCiphertextDyn, ct_b: LweCiphertextDyn, bk: BootstrappingKeyDyn): LweCiphertextDyn
 {
   let ct = lwe_add(ct_a, ct_b);
-  ct.b = wrappingAdd(ct.b, fieldShr(Q4, 1));
+  ct.b = wrappingAdd(ct.b, fieldShr(Q4, 1n));
   const acc = blind_rotate(ct, bk);
   const lwe_big = sample_extract(acc);
   let ct_out = key_switch(lwe_big, bk.ksk);
-  ct_out.b = wrappingAdd(ct_out.b, fieldShr(Q4, 1));
+  ct_out.b = wrappingAdd(ct_out.b, fieldShr(Q4, 1n));
   return ct_out;
 }
 
-export function tfhe_lut_read(n_lwe: number, big_n: number, bs_ell: number, ks_ell: number, addr_bits: readonly LweCiphertextDyn[], lut: readonly boolean[], bk: BootstrappingKeyDyn): LweCiphertextDyn
+export function tfhe_lut_read(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, addr_bits: readonly LweCiphertextDyn[], lut: readonly boolean[], bk: BootstrappingKeyDyn): LweCiphertextDyn
 {
-  const two_n = fieldMul(2, big_n);
-  const k = Math.max(lut.length, 1).next_power_of_two();
-  if ((!(lut.length === 0) && lut.all((v) => (v === lut[0]))))   {
-    const msg = (() => { if (lut[0]) {
+  const two_n = fieldMul(2n, big_n);
+  const k = BigInt(Math.max(Number(lut.length), Number(1n))).next_power_of_two();
+  if ((!(lut.length === 0) && lut.all((v) => (v === lut[Number(0n)]))))   {
+    const msg = (() => { if (lut[Number(0n)]) {
   return Q4;
 } else {
-  return 0;
+  return 0n;
 } })();
-    return new LweCiphertextDyn({ a: Array.from({length: n_lwe}, () => 0), b: msg, n_lwe: 0 });
+    return new LweCiphertextDyn({ a: Array.from({length: Number(n_lwe)}, () => 0n), b: msg, n_lwe: 0n });
   }
-  const half_q4 = fieldShr(Q4, 1);
+  const half_q4 = fieldShr(Q4, 1n);
   const step = (two_n / k);
-  const half_k = (k / 2);
+  const half_k = (k / 2n);
   const poly_step = (big_n / half_k);
-  let test_poly = Array.from({length: big_n}, () => 0);
-  for (let j = 0; j < big_n; j++)   {
+  let test_poly = Array.from({length: Number(big_n)}, () => 0n);
+  for (let j = 0n; j < big_n; j += 1n)   {
     const entry_idx = (j / poly_step);
-    const val = (() => { if (((entry_idx < lut.length) && lut[entry_idx])) {
+    const val = (() => { if (((entry_idx < lut.length) && lut[Number(entry_idx)])) {
   return half_q4;
 } else {
-  return (-((half_q4)) >>> 0);
+  return ((-((half_q4)) & 0xFFFFFFFFn));
 } })();
-    test_poly[j] = val;
+    test_poly[Number(j)] = val;
   }
-  const delta = (fieldShl(1, 32) / BigInt(k));
-  let combined = new LweCiphertextDyn({ a: Array.from({length: n_lwe}, () => 0), b: 0, n_lwe: 0 });
+  const delta = (fieldShl(1n, 32n) / BigInt(k));
+  let combined = new LweCiphertextDyn({ a: Array.from({length: Number(n_lwe)}, () => 0n), b: 0n, n_lwe: 0n });
   for (const [j, addr_ct] of addr_bits.map((val: any, i: number) => [i, val] as [number, typeof val]))   {
-    const target = fieldMul(fieldShl(1, j), delta);
-    for (let i = 0; i < n_lwe; i++)     {
-      const scaled = (Math.imul(BigInt(addr_ct.a[i]), target) / BigInt(Q4));
-      combined.a[i] = wrappingAdd(combined.a[i], Number(scaled));
+    const target = fieldMul(fieldShl(1n, j), delta);
+    for (let i = 0n; i < n_lwe; i += 1n)     {
+      const scaled = (BigInt(Math.imul(Number(BigInt(addr_ct.a[Number(i)])), Number(target))) / BigInt(Q4));
+      combined.a[Number(i)] = wrappingAdd(combined.a[Number(i)], Number(scaled));
     }
-    const scaled_b = (Math.imul(BigInt(addr_ct.b), target) / BigInt(Q4));
+    const scaled_b = (BigInt(Math.imul(Number(BigInt(addr_ct.b)), Number(target))) / BigInt(Q4));
     combined.b = wrappingAdd(combined.b, Number(scaled_b));
   }
-  const centering = Number((delta / 2));
+  const centering = Number((delta / 2n));
   combined.b = wrappingAdd(combined.b, centering);
   let ct_out = tfhe_programmable_bootstrap(combined, test_poly, bk);
   ct_out.b = wrappingAdd(ct_out.b, half_q4);
   return ct_out;
 }
 
-export function tfhe_not(n_lwe: number, a: LweCiphertextDyn): LweCiphertextDyn
+export function tfhe_not(n_lwe: bigint, a: LweCiphertextDyn): LweCiphertextDyn
 {
-  let out_a = Array.from({length: n_lwe}, () => 0);
-  for (let i = 0; i < n_lwe; i++)   {
-    out_a[i] = (-((a.a[i])) >>> 0);
+  let out_a = Array.from({length: Number(n_lwe)}, () => 0n);
+  for (let i = 0n; i < n_lwe; i += 1n)   {
+    out_a[Number(i)] = ((-((a.a[Number(i)])) & 0xFFFFFFFFn));
   }
-  return new LweCiphertextDyn({ a: out_a, b: wrappingSub(Q4, a.b), n_lwe: 0 });
+  return new LweCiphertextDyn({ a: out_a, b: wrappingSub(Q4, a.b), n_lwe: 0n });
 }
 
-export function tfhe_programmable_bootstrap(n_lwe: number, big_n: number, bs_ell: number, ks_ell: number, ct: LweCiphertextDyn, test_poly: number[], bk: BootstrappingKeyDyn): LweCiphertextDyn
+export function tfhe_programmable_bootstrap(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, ct: LweCiphertextDyn, test_poly: bigint[], bk: BootstrappingKeyDyn): LweCiphertextDyn
 {
   const acc = blind_rotate_with_poly(ct, test_poly, bk);
   const lwe_big = sample_extract(acc);
   return key_switch(lwe_big, bk.ksk);
 }
 
-export function tfhe_trivial_encrypt(n_lwe: number, b: boolean): LweCiphertextDyn
+export function tfhe_trivial_encrypt(n_lwe: bigint, b: boolean): LweCiphertextDyn
 {
   return (() => { if (b) {
   return tfhe_trivial_one();
@@ -3859,34 +4415,34 @@ export function tfhe_trivial_encrypt(n_lwe: number, b: boolean): LweCiphertextDy
 } })();
 }
 
-export function tfhe_trivial_one(n_lwe: number): LweCiphertextDyn
+export function tfhe_trivial_one(n_lwe: bigint): LweCiphertextDyn
 {
-  return new LweCiphertextDyn({ a: Array.from({length: n_lwe}, () => 0), b: Q4, n_lwe: 0 });
+  return new LweCiphertextDyn({ a: Array.from({length: Number(n_lwe)}, () => 0n), b: Q4, n_lwe: 0n });
 }
 
-export function tfhe_trivial_zero(n_lwe: number): LweCiphertextDyn
+export function tfhe_trivial_zero(n_lwe: bigint): LweCiphertextDyn
 {
-  return new LweCiphertextDyn({ a: Array.from({length: n_lwe}, () => 0), b: 0, n_lwe: 0 });
+  return new LweCiphertextDyn({ a: Array.from({length: Number(n_lwe)}, () => 0n), b: 0n, n_lwe: 0n });
 }
 
-export function tfhe_xor(n_lwe: number, a: LweCiphertextDyn, b: LweCiphertextDyn): LweCiphertextDyn
+export function tfhe_xor(n_lwe: bigint, a: LweCiphertextDyn, b: LweCiphertextDyn): LweCiphertextDyn
 {
-  let out_a = Array.from({length: n_lwe}, () => 0);
-  for (let i = 0; i < n_lwe; i++)   {
-    out_a[i] = wrappingAdd(a.a[i], b.a[i]);
+  let out_a = Array.from({length: Number(n_lwe)}, () => 0n);
+  for (let i = 0n; i < n_lwe; i += 1n)   {
+    out_a[Number(i)] = wrappingAdd(a.a[Number(i)], b.a[Number(i)]);
   }
-  return new LweCiphertextDyn({ a: out_a, b: wrappingAdd(a.b, b.b), n_lwe: 0 });
+  return new LweCiphertextDyn({ a: out_a, b: wrappingAdd(a.b, b.b), n_lwe: 0n });
 }
 
-export function torus_to_exp(x: number, scale_shift: number, two_n: number): number
+export function torus_to_exp(x: bigint, scale_shift: bigint, two_n: bigint): bigint
 {
-  const half = (() => { if ((scale_shift > 0)) {
-  return fieldShl(1, fieldSub(scale_shift, 1));
+  const half = (() => { if ((scale_shift > 0n)) {
+  return fieldShl(1n, fieldSub(scale_shift, 1n));
 } else {
-  return 0;
+  return 0n;
 } })();
   const exp = Number(fieldShr(wrappingAdd(x, half), scale_shift));
-  return fieldBitand(exp, fieldSub(two_n, 1));
+  return fieldBitand(exp, fieldSub(two_n, 1n));
 }
 
 export function toy_mul(a: bigint, b: bigint): bigint
@@ -3896,54 +4452,54 @@ export function toy_mul(a: bigint, b: bigint): bigint
 
 export function toy_pow(base: bigint, exp: bigint): bigint
 {
-  let acc: bigint = 1;
+  let acc: bigint = 1n;
   let b = (base % TOY_P);
-  while ((exp > 0))   {
-    if ((fieldBitand(exp, 1) === 1))     {
+  while ((exp > 0n))   {
+    if ((fieldBitand(exp, 1n) === 1n))     {
       acc = toy_mul(acc, b);
     }
     b = toy_mul(b, b);
-    exp >>= 1;
+    exp >>= 1n;
   }
   return acc;
 }
 
-export function verify(pk: FaestPublicKey, message: readonly number[], sig: FaestSignature): boolean
+export function verify(pk: FaestPublicKey, message: readonly bigint[], sig: FaestSignature): boolean
 {
   const iv = sig.iv;
-  const mu: Vec<number> = (() => {
+  const mu: Vec<bigint> = (() => {
   let h = Sha3_256.new();
-  DigestUpdate.update(h, pk._0);
-  DigestUpdate.update(h, message);
-  return [...Digest.finalize(h)];
+  h.update(pk._0);
+  h.update(message);
+  return [...h.finalize()];
 })();
-  const chall_1 = chall1(mu, iv, sig.bavc_root, fieldAdd(LAMBDA_BYTES, 8), false);
+  const chall_1 = chall1(mu, iv, sig.bavc_root, fieldAdd(LAMBDA_BYTES, 8n), false);
   const deltas = expand_challenge_to_deltas(chall_1, TAU, SUB_VOLE_N);
   const reconstructed_seeds_opt = Bavc.reconstruct(sig.nodes, sig.hidden_commits, deltas, iv, sig.bavc_root, TAU, SUB_VOLE_N);
   const reconstructed_seeds = (() => { const __match = reconstructed_seeds_opt; if (__match !== null && __match !== undefined) { const s = __match;
 return s; } else { return false; } })();
   let sub_voles_v = /* Vec::with_capacity */ Array(TAU);
-  for (let i = 0; i < TAU; i++)   {
-    const d = deltas[i];
-    const verifier_seeds: Vec<(number[] | undefined)> = Array.from({length: SUB_VOLE_N - 0}, (_, __i) => __i + 0).map((j: any) => (() => {
-  return (() => { if ((j === 0)) {
+  for (let i = 0n; i < TAU; i += 1n)   {
+    const d = deltas[Number(i)];
+    const verifier_seeds: Vec<(bigint[] | undefined)> = Array.from({length: Number(SUB_VOLE_N - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
+  return (() => { if ((j === 0n)) {
   return undefined;
 } else {
-  return reconstructed_seeds[fieldAdd(fieldMul(i, SUB_VOLE_N), fieldBitxor(j, d))];
+  return reconstructed_seeds[Number(fieldAdd(fieldMul(i, SUB_VOLE_N), fieldBitxor(j, d)))];
 } })();
 })());
     (sub_voles_v).push(convert_to_vole(verifier_seeds, iv, Number(i), L_HAT_BYTES));
   }
   const corrections = sig.corrections;
-  if ((corrections.length !== fieldSub(TAU, 1)))   {
+  if ((corrections.length !== fieldSub(TAU, 1n)))   {
     return false;
   }
-  const big_q: Vec<number> = (() => {
+  const big_q: Vec<bigint> = (() => {
   const q_out = concat_small_voles_verifier(sub_voles_v, deltas, corrections);
   return q_out.q_columns.flatten().collect();
 })();
-  const corrections_flat: Vec<number> = sig.corrections.flatten().collect();
-  const chall_2 = chall2(chall_1, sig.vole_u, corrections_flat, fieldAdd(LAMBDA_BYTES, 8), false);
+  const corrections_flat: Vec<bigint> = sig.corrections.flatten().collect();
+  const chall_2 = chall2(chall_1, sig.vole_u, corrections_flat, fieldAdd(LAMBDA_BYTES, 8n), false);
   const hash_key = hash_key_from_chall(chall_2);
   const derived_chall_3 = chall3(chall_2, sig.qs_proof.a_hat, sig.qs_proof.b_hat, sig.c_hat_with_counter, LAMBDA_BYTES, false);
   if ((derived_chall_3 !== sig.chall_3))   {
@@ -3956,57 +4512,57 @@ return s; } else { return false; } })();
   return true;
 }
 
-export function vole_and_prover_step<T>(n: number, vope_a: VopeDyn<any>, vope_b: VopeDyn<any>): [VopeDyn<any>, any[]]
+export function vole_and_prover_step<T>(n: bigint, vope_a: VopeDyn<T>, vope_b: VopeDyn<T>): [VopeDyn<T>, T[]]
 {
-  const u_c_inner = Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  return fieldMul(__clone(vope_a.u[0][i]), __clone(vope_b.u[0][i]));
+  const u_c_inner = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  return fieldMul(__clone(vope_a.u[Number(0n)][Number(i)]), __clone(vope_b.u[Number(0n)][Number(i)]));
 })());
-  const u_c = Array.from({length: 1 - 0}, (_, __i) => __i + 0).map((_: any) => __clone(u_c_inner));
-  const v_c = Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  return fieldAdd(fieldMul(__clone(vope_a.v[i]), __clone(vope_b.u[0][i])), fieldMul(__clone(vope_b.v[i]), __clone(vope_a.u[0][i])));
+  const u_c = Array.from({length: Number(1n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => __clone(u_c_inner));
+  const v_c = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  return fieldAdd(fieldMul(__clone(vope_a.v[Number(i)]), __clone(vope_b.u[Number(0n)][Number(i)])), fieldMul(__clone(vope_b.v[Number(i)]), __clone(vope_a.u[Number(0n)][Number(i)])));
 })());
-  const hat = Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => (() => {
-  return fieldMul(__clone(vope_a.v[i]), __clone(vope_b.v[i]));
+  const hat = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
+  return fieldMul(__clone(vope_a.v[Number(i)]), __clone(vope_b.v[Number(i)]));
 })());
-  return [new VopeDyn({ u: u_c, v: v_c, n: 0, k: 1 }), hat];
+  return [new VopeDyn({ u: u_c, v: v_c, n: 0n, k: 1n }), hat];
 }
 
-export function vole_and_verifier_check<T>(n: number, delta: DeltaDyn<any>, q_a: QDyn<any>, q_b: QDyn<any>, q_and: QDyn<any>, hat: any[]): [QDyn<any>, boolean]
+export function vole_and_verifier_check<T>(n: bigint, delta: DeltaDyn<T>, q_a: QDyn<T>, q_b: QDyn<T>, q_and: QDyn<T>, hat: T[]): [QDyn<T>, boolean]
 {
   let ok = true;
-  for (let i = 0; i < n; i++)   {
-    const lhs = fieldAdd(fieldMul(__clone(q_a.q[i]), __clone(q_b.q[i])), __clone(hat[i]));
-    const rhs = fieldMul(__clone(q_and.q[i]), __clone(delta.delta[i]));
+  for (let i = 0n; i < n; i += 1n)   {
+    const lhs = fieldAdd(fieldMul(__clone(q_a.q[Number(i)]), __clone(q_b.q[Number(i)])), __clone(hat[Number(i)]));
+    const rhs = fieldMul(__clone(q_and.q[Number(i)]), __clone(delta.delta[Number(i)]));
     ok = (ok && (lhs === rhs));
   }
-  return [new QDyn({ q: __clone(q_and.q), n: 0 }), ok];
+  return [new QDyn({ q: __clone(q_and.q), n: 0n }), ok];
 }
 
-export function vole_commit_bit<T, R>(n: number, cot: IdealCotDyn<any>, rng: R, sample_t: unknown /* impl Fn */, bit_to_t: (arg: boolean) => any, bit: boolean): [VopeDyn<any>, QDyn<any>]
+export function vole_commit_bit<T, R>(n: bigint, cot: IdealCotDyn<T>, rng: R, sample_t: unknown /* impl Fn */, bit_to_t: (arg: boolean) => T, bit: boolean): [VopeDyn<T>, QDyn<T>]
 {
   const [r0, v] = cot.cot(rng, sample_t, bit);
   const u_t = bit_to_t(bit);
-  const u_row: any[] = lift_bit(u_t);
-  const u: any[][] = Array.from({length: 1 - 0}, (_, __i) => __i + 0).map((_: any) => (() => {
-  return Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => __clone(u_row[i]));
+  const u_row: T[] = lift_bit(u_t);
+  const u: T[][] = Array.from({length: Number(1n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => (() => {
+  return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(u_row[Number(i)]));
 })());
-  const q = Array.from({length: n - 0}, (_, __i) => __i + 0).map((i: any) => __clone(r0[i]));
-  return [new VopeDyn({ u: u, v: v, n: 0, k: 1 }), new QDyn({ q: q, n: 0 })];
+  const q = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(r0[Number(i)]));
+  return [new VopeDyn({ u: u, v: v, n: 0n, k: 1n }), new QDyn({ q: q, n: 0n })];
 }
 
-export function vole_hash(key: UniversalHashKey, input: readonly number[]): UniversalHashOutput
+export function vole_hash(key: UniversalHashKey, input: readonly bigint[]): UniversalHashOutput
 {
-  const n_full = (input.length / 16);
-  const tail = input.slice(fieldMul(n_full, 16));
-  let h0 = Galois128(0);
-  let h1 = new Galois64(0);
+  const n_full = (input.length / 16n);
+  const tail = input.slice(Number(fieldMul(n_full, 16n)));
+  let h0 = new Galois128(0n);
+  let h1 = new Galois64(0n);
   let pow0 = key.r0;
   let pow1 = key.r1;
-  for (let i = 0; i < n_full; i++)   {
-    const block = input.slice(fieldMul(i, 16), fieldMul(fieldAdd(i, 1), 16));
-    let bytes = Array.from({length: 16}, () => 0);
+  for (let i = 0n; i < n_full; i += 1n)   {
+    const block = input.slice(Number(fieldMul(i, 16n)), Number(fieldMul(fieldAdd(i, 1n), 16n)));
+    let bytes = Array.from({length: Number(16n)}, () => 0n);
     (bytes).splice(0, (block).length, ...(block));
-    const s = Galois128(u128.from_le_bytes(bytes));
+    const s = new Galois128(u128.from_le_bytes(bytes));
     h0 = fieldAdd(h0, fieldMul(s, pow0));
     const s64 = new Galois64(BigInt(s._0));
     h1 = fieldAdd(h1, fieldMul(s64, pow1));
@@ -4014,9 +4570,9 @@ export function vole_hash(key: UniversalHashKey, input: readonly number[]): Univ
     pow1 = fieldMul(pow1, key.r1);
   }
   if (!(tail.length === 0))   {
-    let bytes = Array.from({length: 8}, () => 0);
-    const n = Math.min(tail.length, 8);
-    (bytes.slice(0, n)).splice(0, (tail.slice(0, n)).length, ...(tail.slice(0, n)));
+    let bytes = Array.from({length: Number(8n)}, () => 0n);
+    const n = BigInt(Math.min(Number(tail.length), Number(8n)));
+    (bytes.slice(0, Number(n))).splice(0, (tail.slice(0, Number(n))).length, ...(tail.slice(0, Number(n))));
     const t = new Galois64(u64.from_le_bytes(bytes));
     h1 = fieldAdd(h1, fieldMul(t, pow1));
   }
@@ -4033,51 +4589,51 @@ export function vole_hash_consistency_check(key: UniversalHashKey, hu: Universal
   return ((lhs0 === rhs0) && (lhs1 === rhs1));
 }
 
-export function vole_mul3_prover_step<T>(n: number, vope_a: VopeDyn<any>, vope_b: VopeDyn<any>, vope_d: VopeDyn<any>): VopeDyn<any>
+export function vole_mul3_prover_step<T>(n: bigint, vope_a: VopeDyn<T>, vope_b: VopeDyn<T>, vope_d: VopeDyn<T>): VopeDyn<T>
 {
-  const ab: VopeDyn<any> = vope_a.mul_generalized(vope_b);
+  const ab: VopeDyn<T> = vope_a.mul_generalized(vope_b);
   return ab.mul_generalized(vope_d);
 }
 
-export function vole_mul3_verifier_check<T>(n: number, delta: DeltaDyn<any>, q_a: QDyn<any>, q_b: QDyn<any>, q_d: QDyn<any>, vope_abd: VopeDyn<any>): [QDyn<any>, boolean]
+export function vole_mul3_verifier_check<T>(n: bigint, delta: DeltaDyn<T>, q_a: QDyn<T>, q_b: QDyn<T>, q_d: QDyn<T>, vope_abd: VopeDyn<T>): [QDyn<T>, boolean]
 {
   const q_abd = fieldMul(vope_abd, __clone(delta));
   let ok = true;
-  for (let i = 0; i < n; i++)   {
-    const lhs = fieldMul(fieldMul(__clone(q_a.q[i]), __clone(q_b.q[i])), __clone(q_d.q[i]));
-    ok = (ok && (lhs === q_abd.q[i]));
+  for (let i = 0n; i < n; i += 1n)   {
+    const lhs = fieldMul(fieldMul(__clone(q_a.q[Number(i)]), __clone(q_b.q[Number(i)])), __clone(q_d.q[Number(i)]));
+    ok = (ok && (lhs === q_abd.q[Number(i)]));
   }
   return [q_abd, ok];
 }
 
-export function vole_sbox_prover_step<T>(n: number, vope_a: VopeDyn<any>, vope_b: VopeDyn<any>): [VopeDyn<any>, VopeDyn<any>]
+export function vole_sbox_prover_step<T>(n: bigint, vope_a: VopeDyn<T>, vope_b: VopeDyn<T>): [VopeDyn<T>, VopeDyn<T>]
 {
-  const k2: VopeDyn<any> = vope_a.mul_generalized(vope_b);
-  const k1 = new VopeDyn({ u: Array.from({length: 1 - 0}, (_, __i) => __i + 0).map((_: any) => __clone(k2.u[1])), v: __clone(k2.u[0]), n: 0, k: 1 });
+  const k2: VopeDyn<T> = vope_a.mul_generalized(vope_b);
+  const k1 = new VopeDyn({ u: Array.from({length: Number(1n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => __clone(k2.u[Number(1n)])), v: __clone(k2.u[Number(0n)]), n: 0n, k: 1n });
   return [k1, k2];
 }
 
-export function vole_sbox_verifier_check<T>(n: number, delta: DeltaDyn<any>, q_a: QDyn<any>, q_b: QDyn<any>, vope_k2: VopeDyn<any>): [QDyn<any>, boolean]
+export function vole_sbox_verifier_check<T>(n: bigint, delta: DeltaDyn<T>, q_a: QDyn<T>, q_b: QDyn<T>, vope_k2: VopeDyn<T>): [QDyn<T>, boolean]
 {
   const q_c = fieldMul(vope_k2, __clone(delta));
   let ok = true;
-  for (let i = 0; i < n; i++)   {
-    ok = (ok && (fieldMul(__clone(q_a.q[i]), __clone(q_b.q[i])) === q_c.q[i]));
+  for (let i = 0n; i < n; i += 1n)   {
+    ok = (ok && (fieldMul(__clone(q_a.q[Number(i)]), __clone(q_b.q[Number(i)])) === q_c.q[Number(i)]));
   }
   return [q_c, ok];
 }
 
-export function xor_in_place(a: readonly number[], b: readonly number[])
+export function xor_in_place(a: readonly bigint[], b: readonly bigint[])
 {
-  for (let i = 0; i < a.length; i++)   {
-    a[i] ^= b[i];
+  for (let i = 0n; i < a.length; i += 1n)   {
+    a[Number(i)] ^= b[Number(i)];
   }
 }
 
 export function zk_hash(key: UniversalHashKey, elements: readonly Galois128[]): UniversalHashOutput
 {
-  let h0 = Galois128(0);
-  let h1 = new Galois64(0);
+  let h0 = new Galois128(0n);
+  let h1 = new Galois64(0n);
   let pow0 = key.r0;
   let pow1 = key.r1;
   for (const x of elements)   {
@@ -4097,7 +4653,7 @@ export function zq_add(a: Zq, b: Zq): Zq
 
 export function zq_mul(a: Zq, b: Zq): Zq
 {
-  return fieldBitand(Math.imul(a, b), LWE_Q_MASK);
+  return fieldBitand(BigInt(Math.imul(Number(a), Number(b))), LWE_Q_MASK);
 }
 
 export function zq_neg(a: Zq): Zq
@@ -4110,7 +4666,7 @@ export function zq_sub(a: Zq, b: Zq): Zq
   return fieldBitand(wrappingSub(a, b), LWE_Q_MASK);
 }
 
-export function absorb(data: readonly number[])
+export function absorb(data: readonly bigint[])
 {
   return (() => { const __match = this; if (true /* Sponge::Shake128 */) { const h = __match._0;
 return h.update(data); } else { const h = __match._0;
@@ -4118,8 +4674,9 @@ return h.update(data); } })();
 }
 
 export function party_index(...__args: any[]): any {
-  if (__args.length === 1) {
-    const requested = __args[0];
+  if (__args.length === 2) {
+    const n = __args[0];
+    const requested = __args[1];
     return (() => {
   return requested;
 })();
@@ -4127,13 +4684,13 @@ export function party_index(...__args: any[]): any {
   if (__args.length === 1) {
     const _ = __args[0];
     return (() => {
-  return 0;
+  return 0n;
 })();
   }
   throw new Error("party_index(): no matching variant for " + __args.length + " args");
 }
 
-export function squeeze(n: number): Vec<number>
+export function squeeze(n: bigint): Vec<bigint>
 {
   let out = [];
   (() => { const __match = this; if (true /* Sponge::Shake128 */) { const h = __match._0;

@@ -6,21 +6,26 @@ import type { FieldElement } from "./interfaces";
 /**
  * Integer log2 (floor).
  */
-export function ilog2(x: number): number {
-  if (x <= 0) return 0;
-  return Math.floor(Math.log2(x));
+export function ilog2(x: bigint | number): bigint {
+  const n = typeof x === "bigint" ? Number(x) : x;
+  if (n <= 0) return 0n;
+  return BigInt(Math.floor(Math.log2(n)));
 }
 
 // ============================================================================
 // Wrapping arithmetic (u32 range)
 // ============================================================================
 
-export function wrappingAdd(a: number, b: number): number {
-  return (a + b) >>> 0;
+export function wrappingAdd(a: bigint | number, b: bigint | number): bigint {
+  const x = typeof a === "bigint" ? a : BigInt(a);
+  const y = typeof b === "bigint" ? b : BigInt(b);
+  return BigInt((Number(x + y)) >>> 0);
 }
 
-export function wrappingSub(a: number, b: number): number {
-  return (a - b + 0x100000000) >>> 0;
+export function wrappingSub(a: bigint | number, b: bigint | number): bigint {
+  const x = typeof a === "bigint" ? Number(a) : a;
+  const y = typeof b === "bigint" ? Number(b) : b;
+  return BigInt((x - y + 0x100000000) >>> 0);
 }
 
 // ============================================================================
@@ -75,15 +80,24 @@ export function fieldBitand(a: any, b: any): any {
 
 export function fieldShl(a: any, b: any): any {
   if (typeof a === "number" && typeof b === "number") return a << b;
-  if (typeof a === "bigint" && typeof b === "bigint") return a << b;
-  if (isFieldElement(a) && typeof b === "number") return a.shl(b);
+  // Coerce to bigint when mixed — shift amount must be bigint for bigint operands
+  if ((typeof a === "bigint" || typeof a === "number") && (typeof b === "bigint" || typeof b === "number")) {
+    const ab = typeof a === "bigint" ? a : BigInt(a);
+    const bb = typeof b === "bigint" ? b : BigInt(b);
+    return ab << bb;
+  }
+  if (isFieldElement(a)) return a.shl(typeof b === "bigint" ? Number(b) : b);
   throw new Error(`fieldShl: unsupported types ${typeof a}, ${typeof b}`);
 }
 
 export function fieldShr(a: any, b: any): any {
   if (typeof a === "number" && typeof b === "number") return a >> b;
-  if (typeof a === "bigint" && typeof b === "bigint") return a >> b;
-  if (isFieldElement(a) && typeof b === "number") return a.shr(b);
+  if ((typeof a === "bigint" || typeof a === "number") && (typeof b === "bigint" || typeof b === "number")) {
+    const ab = typeof a === "bigint" ? a : BigInt(a);
+    const bb = typeof b === "bigint" ? b : BigInt(b);
+    return ab >> bb;
+  }
+  if (isFieldElement(a)) return a.shr(typeof b === "bigint" ? Number(b) : b);
   throw new Error(`fieldShr: unsupported types ${typeof a}, ${typeof b}`);
 }
 

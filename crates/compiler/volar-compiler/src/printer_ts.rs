@@ -436,7 +436,7 @@ fn compute_merged_witnesses(variants: &[ImplMethod<'_>]) -> WitnessNeeds {
 fn is_crypto_type_param(name: &str) -> bool {
     matches!(
         name,
-        "B" | "D" | "O" | "T" | "A" | "Q" | "M" | "U" | "R" | "X" | "Y"
+        "B" | "D" | "N" | "O" | "T" | "A" | "Q" | "M" | "U" | "R" | "X" | "Y"
     )
 }
 
@@ -462,7 +462,7 @@ fn witness_ctx_field(kind: &WitnessKind) -> String {
 /// Get the TypeScript type for a witness field.
 fn witness_ctx_type(kind: &WitnessKind) -> &'static str {
     match kind {
-        WitnessKind::Projection { .. } => "number",
+        WitnessKind::Projection { .. } => "bigint",
         WitnessKind::Constructor { .. } => "() => any",
         WitnessKind::Default { .. } => "() => any",
         // Class witness: a constructor function with static methods accessible on it.
@@ -778,10 +778,13 @@ pub fn print_module_ts_with_imports(
         tuple_structs: &tuple_structs,
         class_witnesses: Vec::new(),
     };
+    let local_names: std::collections::HashSet<String> = module.structs.iter()
+        .map(|s| s.kind.to_string())
+        .collect();
     let mut out = String::new();
     // ESM imports for remote specs
     let _ = write!(out, "{}", TsImportsWriter { remotes });
-    let _ = write!(out, "{}", TsFmt(TsPreambleWriter, &cx));
+    let _ = write!(out, "{}", TsFmt(TsPreambleWriter { local_names: &local_names }, &cx));
     let _ = write!(out, "{}", TsFmt(TsModuleWriter { module: &module }, &cx));
     out
 }
@@ -991,6 +994,10 @@ fn collect_erased_type_params(module: &IrModule<IrFunction>) -> Vec<String> {
         }
     }
     for imp in &module.impls {
+        // Classify impl-level generics (e.g. `impl<T: Add> ... for Foo`).
+        for g in &imp.generics {
+            classify(g, &mut surviving, &mut all_seen);
+        }
         for item in &imp.items {
             if let IrImplItem::Method(func) = item {
                 for g in &func.generics {
@@ -1211,9 +1218,18 @@ fn is_statement_like(expr: &IrExpr) -> bool {
 // PREAMBLE
 // ============================================================================
 
-struct TsPreambleWriter;
+/// Names of classes that come from the hand-written runtime and are imported
+/// from `./index` unless the module already defines them.
+const RUNTIME_CLASSES: &[&str] = &[
+    "Bit", "Galois", "Galois64", "BitsInBytes", "BitsInBytes64", "Z3",
+];
 
-impl TsBackend for TsPreambleWriter {
+struct TsPreambleWriter<'a> {
+    /// Struct/class names that are defined in this module (not imported).
+    local_names: &'a std::collections::HashSet<String>,
+}
+
+impl<'a> TsBackend for TsPreambleWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, _cx: &TsContext<'_>) -> fmt::Result {
         writeln!(f, "// Auto-generated TypeScript from volar-spec")?;
         writeln!(
@@ -1221,18 +1237,21 @@ impl TsBackend for TsPreambleWriter {
             "// Type-level lengths have been converted to runtime number witnesses"
         )?;
         writeln!(f)?;
+        // Import helper functions and interfaces; skip class names that are generated locally.
+        let imported_classes: Vec<&str> = RUNTIME_CLASSES
+            .iter()
+            .filter(|&&n| !self.local_names.contains(n))
+            .copied()
+            .collect();
         writeln!(f, "import {{")?;
         writeln!(f, "  type Cloneable,")?;
         writeln!(f, "  type FieldElement,")?;
         writeln!(f, "  type BlockEncrypt,")?;
         writeln!(f, "  type Digest,")?;
         writeln!(f, "  type LengthDoubler,")?;
-        writeln!(f, "  Bit,")?;
-        writeln!(f, "  Galois,")?;
-        writeln!(f, "  Galois64,")?;
-        writeln!(f, "  BitsInBytes,")?;
-        writeln!(f, "  BitsInBytes64,")?;
-        writeln!(f, "  Z3,")?;
+        for cls in &imported_classes {
+            writeln!(f, "  {},", cls)?;
+        }
         writeln!(f, "  fieldAdd,")?;
         writeln!(f, "  fieldSub,")?;
         writeln!(f, "  fieldMul,")?;
@@ -1250,6 +1269,10 @@ impl TsBackend for TsPreambleWriter {
         writeln!(f, "  wrappingSub,")?;
         writeln!(f, "  asRefU8,")?;
         writeln!(f, "}} from \"./index\";")?;
+        writeln!(f)?;
+        // Stub types for external sha3/digest types referenced from generated code.
+        writeln!(f, "type Shake128 = any; type Shake256 = any; type Sha3_256 = any;")?;
+        writeln!(f, "type DigestUpdate = any;")?;
         writeln!(f)?;
         // Canonical Option/Result classes.
         writeln!(f, "class Some<T> {{ constructor(public _0: T) {{}} }}")?;
@@ -1289,6 +1312,14 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
             writeln!(f)?;
         }
 
+        // Type aliases (e.g. `type Zq = u32` → `type Zq = bigint`)
+        for ta in &self.module.type_aliases {
+            ts_write_type_alias(f, ta, cx)?;
+        }
+        if !self.module.type_aliases.is_empty() {
+            writeln!(f)?;
+        }
+
         // Group impl items by self_ty struct name so we can merge into class bodies.
         let mut impl_groups: BTreeMap<String, Vec<&IrImpl>> = BTreeMap::new();
         for imp in &self.module.impls {
@@ -1301,6 +1332,12 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
             let name = s.kind.to_string();
             let impls = impl_groups.remove(&name).unwrap_or_default();
             TsClassWriter { s, impls: &impls }.ts_fmt(f, cx)?;
+            writeln!(f)?;
+        }
+
+        // Enums → tagged union types
+        for e in &self.module.enums {
+            ts_write_enum(f, e, cx)?;
             writeln!(f)?;
         }
 
@@ -1547,8 +1584,22 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
         }
 
         let used_params = function_used_type_params(self.func);
+        // Merge impl-level type params that are used in this method but not in
+        // the method's own generic list (e.g. `impl<T> Trait for Foo { fn m(x: T) }`).
+        let mut all_fn_generics: Vec<IrGenericParam> = self.func.generics.clone();
+        for g in &self.imp.generics {
+            if g.kind == IrGenericParamKind::Type
+                && used_params.contains(&g.name)
+                && !all_fn_generics.iter().any(|eg| eg.name == g.name)
+                && !self.witness_needs.needs.iter().any(|w| {
+                    matches!(w, WitnessKind::Class { type_param } if type_param == &g.name)
+                })
+            {
+                all_fn_generics.push(g.clone());
+            }
+        }
         TsGenericsWriter {
-            generics: &self.func.generics,
+            generics: &all_fn_generics,
             used_only: Some(&used_params),
         }
         .ts_fmt(f, cx)?;
@@ -1919,6 +1970,10 @@ impl<'a> TsBackend for TsTypeWriter<'a> {
                     write!(f, " | undefined)")?;
                     return Ok(());
                 }
+                // `digest::Output<D>` / `Output<D>` — a fixed-length byte array.
+                if name == "Output" {
+                    return write!(f, "bigint[]");
+                }
                 write!(f, "{}", name)?;
                 if !type_args.is_empty() {
                     write!(f, "<")?;
@@ -1959,6 +2014,14 @@ impl<'a> TsBackend for TsTypeWriter<'a> {
                 TsTypeWriter { ty: elem }.ts_fmt(f, cx)?;
             }
             IrType::Projection { base, assoc, .. } => {
+                // `Self::Output` / `T::Output` in arithmetic trait impls (Add, Mul, …)
+                // almost always resolves to Self. Emit the class name when in impl context.
+                if matches!(assoc, crate::ir::AssociatedType::Output) {
+                    if let Some(self_ty) = &cx.self_type {
+                        write!(f, "{}", self_ty)?;
+                        return Ok(());
+                    }
+                }
                 write!(f, "number /* ")?;
                 TsTypeWriter { ty: base }.ts_fmt(f, cx)?;
                 write!(f, "::{} */", assoc)?;
@@ -2071,7 +2134,7 @@ fn emit_statement_expr(
             TsExprWriter { expr: start }.ts_fmt(f, cx)?;
             write!(f, "; {} {} ", var, if *inclusive { "<=" } else { "<" })?;
             TsExprWriter { expr: end }.ts_fmt(f, cx)?;
-            write!(f, "; {}++) ", var)?;
+            write!(f, "; {} += 1n) ", var)?;
             TsBlockWriter {
                 block: body,
                 indent,
@@ -2326,10 +2389,37 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 }
                 if let IrExpr::Path { segments, .. } = func.as_ref() {
                     if segments.len() == 2 {
-                        let type_name = &segments[0];
+                        // Trait-qualified calls on external traits: `DigestUpdate::update(h, x)`
+                        // → `h.update(x)`. The first arg becomes the receiver.
+                        let is_trait_namespace = matches!(
+                            segments[0].as_str(),
+                            "DigestUpdate" | "Digest" | "Into"
+                        );
+                        if is_trait_namespace && !args.is_empty() {
+                            let method = &segments[1];
+                            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+                            write!(f, ".{}(", method)?;
+                            for (i, arg) in args[1..].iter().enumerate() {
+                                if i > 0 { write!(f, ", ")?; }
+                                TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+                            }
+                            return write!(f, ")");
+                        }
+                        // Resolve `Self` to the current class name.
+                        let self_resolved;
+                        let type_name = if segments[0] == "Self" {
+                            if let Some(st) = &cx.self_type {
+                                self_resolved = st.split('<').next().unwrap_or(st).to_string();
+                                &self_resolved
+                            } else {
+                                &segments[0]
+                            }
+                        } else {
+                            &segments[0]
+                        };
                         let method = &segments[1];
                         let is_type_param = is_crypto_type_param(type_name)
-                            || cx.class_witnesses.contains(type_name);
+                            || cx.class_witnesses.iter().any(|w| w == type_name.as_str());
                         if is_type_param {
                             match method.as_str() {
                                 "new" => {
@@ -2400,26 +2490,30 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     inclusive,
                 } = index.as_ref()
                 {
+                    // .slice() takes number args — wrap bigint with Number()
                     TsExprWriter { expr: base }.ts_fmt(f, cx)?;
                     write!(f, ".slice(")?;
                     if let Some(s) = start {
+                        write!(f, "Number(")?;
                         TsExprWriter { expr: s }.ts_fmt(f, cx)?;
+                        write!(f, ")")?;
                     } else {
                         write!(f, "0")?;
                     }
                     if let Some(e) = end {
-                        write!(f, ", ")?;
+                        write!(f, ", Number(")?;
                         TsExprWriter { expr: e }.ts_fmt(f, cx)?;
                         if *inclusive {
-                            write!(f, " + 1")?;
+                            write!(f, " + 1n")?;
                         }
+                        write!(f, ")")?;
                     }
                     write!(f, ")")?;
                 } else {
                     TsExprWriter { expr: base }.ts_fmt(f, cx)?;
-                    write!(f, "[")?;
+                    write!(f, "[Number(")?;
                     TsExprWriter { expr: index }.ts_fmt(f, cx)?;
-                    write!(f, "]")?;
+                    write!(f, ")]")?;
                 }
             }
             IrExpr::Path { segments, .. } => {
@@ -2427,7 +2521,15 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 if segments.len() == 1 && cx.class_witnesses.contains(&segments[0]) {
                     write!(f, "ctx.{}Class", &segments[0])?;
                 } else {
-                    emit_path(segments, f)?;
+                    // Replace `Self` in path segments with the current class name.
+                    let resolved: Vec<String> = segments.iter().map(|s| {
+                        if s == "Self" {
+                            cx.self_type.as_deref().unwrap_or("Self").to_string()
+                        } else {
+                            s.clone()
+                        }
+                    }).collect();
+                    emit_path(&resolved, f)?;
                 }
             }
             IrExpr::StructExpr { kind, fields, .. } => {
@@ -2475,9 +2577,9 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 write!(f, "]")?;
             }
             IrExpr::Repeat { elem, len } => {
-                write!(f, "Array.from({{length: ")?;
+                write!(f, "Array.from({{length: Number(")?;
                 TsExprWriter { expr: len }.ts_fmt(f, cx)?;
-                write!(f, "}}, () => ")?;
+                write!(f, ")}}, () => ")?;
                 TsExprWriter { expr: elem }.ts_fmt(f, cx)?;
                 write!(f, ")")?;
             }
@@ -2540,7 +2642,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 TsExprWriter { expr: start }.ts_fmt(f, cx)?;
                 write!(f, "; {} {} ", var, if *inclusive { "<=" } else { "<" })?;
                 TsExprWriter { expr: end }.ts_fmt(f, cx)?;
-                write!(f, "; {}++) ", var)?;
+                write!(f, "; {} += 1n) ", var)?;
                 TsBlockWriter {
                     block: body,
                     indent: 0,
@@ -2640,22 +2742,23 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 end,
                 inclusive,
             } => {
-                write!(f, "Array.from({{length: ")?;
+                // Range → Array.from with bigint elements
+                write!(f, "Array.from({{length: Number(")?;
                 if let Some(e) = end {
                     TsExprWriter { expr: e }.ts_fmt(f, cx)?;
                     if *inclusive {
-                        write!(f, " + 1")?;
+                        write!(f, " + 1n")?;
                     }
                 } else {
-                    write!(f, "0")?;
+                    write!(f, "0n")?;
                 }
                 if let Some(s) = start {
                     write!(f, " - ")?;
                     TsExprWriter { expr: s }.ts_fmt(f, cx)?;
-                    write!(f, "}}, (_, i) => i + ")?;
+                    write!(f, ")}}, (_, __i) => BigInt(__i) + ")?;
                     TsExprWriter { expr: s }.ts_fmt(f, cx)?;
                 } else {
-                    write!(f, "}}, (_, i) => i")?;
+                    write!(f, ")}}, (_, __i) => BigInt(__i)")?;
                 }
                 write!(f, ")")?;
             }
@@ -2690,7 +2793,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 IrType::Primitive(PrimitiveType::U8) => {
                     write!(f, "((")?;
                     TsExprWriter { expr }.ts_fmt(f, cx)?;
-                    write!(f, ") & 0xFF)")?;
+                    write!(f, ") & 0xFFn)")?;
                 }
                 IrType::Primitive(PrimitiveType::Usize) => {
                     write!(f, "Number(")?;
@@ -2734,10 +2837,9 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                             write!(f, "ctx.default{}()", name)?;
                         }
                         IrType::Array { len, elem, .. } => {
-                            // Array default → Array.from({length: N}, () => default(elem))
-                            write!(f, "Array.from({{length: ")?;
+                            write!(f, "Array.from({{length: Number(")?;
                             ts_length(len, f, cx)?;
-                            write!(f, "}}, () => ")?;
+                            write!(f, ")}}, () => ")?;
                             ts_default_value(elem, f, cx)?;
                             write!(f, ")")?;
                         }
@@ -2758,11 +2860,12 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 body,
                 ..
             } => {
-                write!(f, "Array.from({{length: ")?;
+                // index_var is bigint (all integers are bigint)
+                write!(f, "Array.from({{length: Number(")?;
                 ts_length(len, f, cx)?;
-                write!(f, "}}, (_, {}) => ", index_var)?;
+                write!(f, ")}}, (_, __raw_{}) => {{ const {} = BigInt(__raw_{}); return ", index_var, index_var, index_var)?;
                 TsExprWriter { expr: body }.ts_fmt(f, cx)?;
-                write!(f, ")")?;
+                write!(f, "; }})")?;
             }
             IrExpr::Match { expr, arms } => {
                 write!(f, "(() => {{ ")?;
@@ -3055,16 +3158,16 @@ fn emit_known_method_call(
             write!(f, "))")
         }
         StdMethod::WrappingMul if args.len() == 1 => {
-            write!(f, "Math.imul(")?;
+            write!(f, "BigInt(Math.imul(Number(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ", ")?;
+            write!(f, "), Number(")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, ")")
+            write!(f, ")))")
         }
         StdMethod::WrappingNeg if args.is_empty() => {
-            write!(f, "(-((")?;
+            write!(f, "((-((")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ")) >>> 0)")
+            write!(f, ")) & 0xFFFFFFFFn))")
         }
         StdMethod::OverflowingAdd if args.len() == 1 => {
             write!(f, "[wrappingAdd(")?;
@@ -3104,9 +3207,9 @@ fn emit_known_method_call(
         StdMethod::Truncate if args.len() == 1 => {
             write!(f, "(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ").splice(")?;
+            write!(f, ").splice(Number(")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, ")")
+            write!(f, "))")
         }
         StdMethod::Push if args.len() == 1 => {
             write!(f, "(")?;
@@ -3133,27 +3236,27 @@ fn emit_known_method_call(
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
             write!(f, ")")
         }
-        // Integer bit-shift (masking to 32-bit like Rust semantics)
+        // Integer bit-shift (masking to 32-bit like Rust semantics, bigint-safe)
         StdMethod::WrappingShl if args.len() == 1 => {
-            write!(f, "((")?;
+            write!(f, "(((")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             write!(f, ") << (")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, ")) >>> 0")
+            write!(f, ")) & 0xFFFFFFFFn)")
         }
         StdMethod::WrappingShr if args.len() == 1 => {
             write!(f, "((")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ") >>> (")?;
+            write!(f, ") >> (")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
             write!(f, "))")
         }
         StdMethod::SaturatingMul if args.len() == 1 => {
-            write!(f, "Math.imul(")?;
+            write!(f, "BigInt(Math.imul(Number(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ", ")?;
+            write!(f, "), Number(")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, ")")
+            write!(f, ")))")
         }
         StdMethod::CountOnes if args.is_empty() => {
             // popcount — no native, use a simple approximation
@@ -3175,56 +3278,56 @@ fn emit_known_method_call(
             write!(f, ") | 0))")
         }
         StdMethod::FromLeBytes if args.len() == 1 => {
-            // u32::from_le_bytes([b0, b1, b2, b3])
+            // u32::from_le_bytes([b0, b1, b2, b3]) — all bigint
             write!(f, "((")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, ")[0] | ((")?;
+            write!(f, ")[0n] | ((")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, ")[1] << 8) | ((")?;
+            write!(f, ")[1n] << 8n) | ((")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, ")[2] << 16) | ((")?;
+            write!(f, ")[2n] << 16n) | ((")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, ")[3] << 24))")
+            write!(f, ")[3n] << 24n))")
         }
         StdMethod::ToLeBytes if args.is_empty() => {
             write!(f, "[(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ") & 0xFF, ((")?;
+            write!(f, ") & 0xFFn, ((")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ") >> 8) & 0xFF, ((")?;
+            write!(f, ") >> 8n) & 0xFFn, ((")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ") >> 16) & 0xFF, ((")?;
+            write!(f, ") >> 16n) & 0xFFn, ((")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ") >> 24) & 0xFF]")
+            write!(f, ") >> 24n) & 0xFFn]")
         }
         StdMethod::FromBeBytes if args.len() == 1 => {
             write!(f, "((")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, ")[3] | ((")?;
+            write!(f, ")[3n] | ((")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, ")[2] << 8) | ((")?;
+            write!(f, ")[2n] << 8n) | ((")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, ")[1] << 16) | ((")?;
+            write!(f, ")[1n] << 16n) | ((")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, ")[0] << 24))")
+            write!(f, ")[0n] << 24n))")
         }
         StdMethod::ToBeBytes if args.is_empty() => {
             write!(f, "[((")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ") >> 24) & 0xFF, ((")?;
+            write!(f, ") >> 24n) & 0xFFn, ((")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ") >> 16) & 0xFF, ((")?;
+            write!(f, ") >> 16n) & 0xFFn, ((")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ") >> 8) & 0xFF, (")?;
+            write!(f, ") >> 8n) & 0xFFn, (")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ") & 0xFF]")
+            write!(f, ") & 0xFFn]")
         }
         StdMethod::Pow if args.len() == 1 => {
-            write!(f, "Math.pow(")?;
+            write!(f, "BigInt(Math.pow(Number(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ", ")?;
+            write!(f, "), Number(")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, ")")
+            write!(f, ")))")
         }
         StdMethod::Abs if args.is_empty() => {
             write!(f, "Math.abs(")?;
@@ -3232,18 +3335,18 @@ fn emit_known_method_call(
             write!(f, ")")
         }
         StdMethod::Min if args.len() == 1 => {
-            write!(f, "Math.min(")?;
+            write!(f, "BigInt(Math.min(Number(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ", ")?;
+            write!(f, "), Number(")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, ")")
+            write!(f, ")))")
         }
         StdMethod::Max if args.len() == 1 => {
-            write!(f, "Math.max(")?;
+            write!(f, "BigInt(Math.max(Number(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ", ")?;
+            write!(f, "), Number(")?;
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
-            write!(f, ")")
+            write!(f, ")))")
         }
         // Fall through to generic emission using the snake_case name
         _ => emit_other_method_call(receiver, method.as_str(), args, f, cx),
@@ -3397,14 +3500,14 @@ impl<'a> TsBackend for TsIterChainWriter<'a> {
                     )?;
                 }
                 IterStep::Take { count } => {
-                    write!(f, ".slice(0, ")?;
+                    write!(f, ".slice(0, Number(")?;
                     TsExprWriter { expr: count }.ts_fmt(f, cx)?;
-                    write!(f, ")")?;
+                    write!(f, "))")?;
                 }
                 IterStep::Skip { count } => {
-                    write!(f, ".slice(")?;
+                    write!(f, ".slice(Number(")?;
                     TsExprWriter { expr: count }.ts_fmt(f, cx)?;
-                    write!(f, ")")?;
+                    write!(f, "))")?;
                 }
                 IterStep::Chain { other } => {
                     write!(f, ".concat(")?;
@@ -3467,14 +3570,14 @@ impl<'a> TsBackend for TsIterSourceWriter<'a> {
                 end,
                 inclusive,
             } => {
-                write!(f, "Array.from({{length: ")?;
+                write!(f, "Array.from({{length: Number(")?;
                 TsExprWriter { expr: end }.ts_fmt(f, cx)?;
                 if *inclusive {
-                    write!(f, " + 1")?;
+                    write!(f, " + 1n")?;
                 }
                 write!(f, " - ")?;
                 TsExprWriter { expr: start }.ts_fmt(f, cx)?;
-                write!(f, "}}, (_, __i) => __i + ")?;
+                write!(f, ")}}, (_, __i) => BigInt(__i) + ")?;
                 TsExprWriter { expr: start }.ts_fmt(f, cx)?;
                 write!(f, ")")?;
             }
@@ -3586,8 +3689,8 @@ impl<'a> TsBackend for TsPatternWriter<'a> {
 fn ts_primitive(p: &PrimitiveType) -> &'static str {
     match p {
         PrimitiveType::Bool => "boolean",
-        PrimitiveType::U8 | PrimitiveType::U32 | PrimitiveType::Usize => "number",
-        PrimitiveType::U64 | PrimitiveType::I128 | PrimitiveType::U128 => "bigint",
+        PrimitiveType::U8 | PrimitiveType::U32 | PrimitiveType::Usize
+        | PrimitiveType::U64 | PrimitiveType::I128 | PrimitiveType::U128 => "bigint",
         PrimitiveType::Bit => "Bit",
         PrimitiveType::Galois => "Galois",
         PrimitiveType::Galois64 => "Galois64",
@@ -3638,19 +3741,13 @@ fn bin_op_helper(op: SpecBinOp) -> Option<&'static str> {
 
 fn ts_literal(l: &IrLit, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match l {
-        IrLit::Int(n) => {
-            if *n >= -(1i128 << 53) && *n <= (1i128 << 53) {
-                write!(f, "{}", n)
-            } else {
-                write!(f, "BigInt(\"{}\")", n)
-            }
-        }
+        IrLit::Int(n) => write!(f, "{}n", n),
         IrLit::Float(v) => write!(f, "{}", v),
         IrLit::Bool(b) => write!(f, "{}", b),
         IrLit::Char(c) => write!(f, "\"{}\"", c),
         IrLit::Str(s) => write!(f, "\"{}\"", s),
         IrLit::ByteStr(_) => write!(f, "new Uint8Array([/* byte string */])"),
-        IrLit::Byte(b) => write!(f, "{}", b),
+        IrLit::Byte(b) => write!(f, "{}n", b),
         IrLit::Unit => write!(f, "undefined"),
     }
 }
@@ -3681,8 +3778,8 @@ fn ts_default_value(ty: &IrType, f: &mut fmt::Formatter<'_>, cx: &TsContext) -> 
     match ty {
         IrType::Primitive(p) => match p {
             PrimitiveType::Bool => write!(f, "false"),
-            PrimitiveType::U8 | PrimitiveType::U32 | PrimitiveType::Usize => write!(f, "0"),
-            PrimitiveType::U64 | PrimitiveType::I128 | PrimitiveType::U128 => write!(f, "0n"),
+            PrimitiveType::U8 | PrimitiveType::U32 | PrimitiveType::Usize
+            | PrimitiveType::U64 | PrimitiveType::I128 | PrimitiveType::U128 => write!(f, "0n"),
             PrimitiveType::Bit => write!(f, "Bit.default()"),
             PrimitiveType::Galois => write!(f, "Galois.default()"),
             PrimitiveType::Galois64 => write!(f, "Galois64.default()"),
@@ -3693,9 +3790,9 @@ fn ts_default_value(ty: &IrType, f: &mut fmt::Formatter<'_>, cx: &TsContext) -> 
             PrimitiveType::Z3 => write!(f, "Z3.default()"),
         },
         IrType::Array { elem, len, .. } => {
-            write!(f, "Array.from({{length: ")?;
+            write!(f, "Array.from({{length: Number(")?;
             ts_length(len, f, cx)?;
-            write!(f, "}}, () => ")?;
+            write!(f, ")}}, () => ")?;
             ts_default_value(elem, f, cx)?;
             write!(f, ")")
         }
@@ -3856,10 +3953,8 @@ fn ts_emit_pattern_bindings(
             let name = kind.to_string();
             let variant = name.rsplit("::").next().unwrap_or(&name);
             // For Some/None/Ok/Err (transparent): bind inner directly to match_var.
-            // For user-defined tuple structs: access ._0, ._1 etc.
-            // For imported primitive classes: also bind directly (they may not have ._0 declared).
-            let transparent = matches!(variant, "Some" | "Ok" | "Err" | "None")
-                || is_primitive_class(variant);
+            // For tuple structs (including generated primitives): access ._0, ._1 etc.
+            let transparent = matches!(variant, "Some" | "Ok" | "Err" | "None");
             if elems.len() == 1 {
                 let field = if transparent {
                     match_var.to_string()
