@@ -718,9 +718,10 @@ export class Ed25519 {
   static random_scalar<R>(rng: R): bigint[]
   {
     let k = Array.from({length: Number(32n)}, () => 0n);
-    for (const byte of k.iter_mut())     {
-      byte = rng.next_u8();
-    }
+    for (let __mut_2 = 0n; __mut_2 < BigInt(k.length); __mut_2 += 1n) {
+    {
+      k[Number(__mut_2)] = rng.next_u8();
+    }}
     k[Number(31n)] &= 63n;
     return k;
   }
@@ -3241,18 +3242,20 @@ export function gen_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, bs_ell: b
 export function gen_lwe_secret_key<R>(n_lwe: bigint, rng: R): LweSecretKeyDyn
 {
   let key = Array.from({length: Number(n_lwe)}, () => 0n);
-  for (const k of key.iter_mut())   {
-    k = ((fieldBitand(rng.next_u8(), 1n)) & 0xFFn);
-  }
+  for (let __mut_1 = 0n; __mut_1 < BigInt(key.length); __mut_1 += 1n) {
+  {
+    key[Number(__mut_1)] = ((fieldBitand(rng.next_u8(), 1n)) & 0xFFn);
+  }}
   return new LweSecretKeyDyn({ key: key, n_lwe: 0n });
 }
 
 export function gen_rlwe_secret_key<R>(big_n: bigint, rng: R): RlweSecretKeyDyn
 {
   let key = Array.from({length: Number(big_n)}, () => 0n);
-  for (const k of key.iter_mut())   {
-    k = Number(fieldBitand(rng.next_u8(), 1n));
-  }
+  for (let __mut_1 = 0n; __mut_1 < BigInt(key.length); __mut_1 += 1n) {
+  {
+    key[Number(__mut_1)] = Number(fieldBitand(rng.next_u8(), 1n));
+  }}
   return new RlweSecretKeyDyn({ key: key, big_n: 0n });
 }
 
@@ -3694,9 +3697,10 @@ export function key_switch(n_lwe: bigint, big_n: bigint, ks_ell: bigint, ct_big:
 export function keygen(rng: unknown /* impl SpecRng */): [FaestSecretKey, FaestPublicKey]
 {
   let sk = Array.from({length: Number(LAMBDA_BYTES)}, () => 0n);
-  for (const b of sk.iter_mut())   {
-    b = rng.next_u8();
-  }
+  for (let __mut_1 = 0n; __mut_1 < BigInt(sk.length); __mut_1 += 1n) {
+  {
+    sk[Number(__mut_1)] = rng.next_u8();
+  }}
   const pk = aes128_encrypt(sk, Array.from({length: Number(LAMBDA_BYTES)}, () => 0n));
   return [new FaestSecretKey(sk), new FaestPublicKey(pk)];
 }
@@ -3750,9 +3754,10 @@ export function lwe_decrypt(n_lwe: bigint, ct: LweCiphertextDyn, sk: LweSecretKe
 export function lwe_encrypt<R>(n_lwe: bigint, m: boolean, sk: LweSecretKeyDyn, noise_bits: bigint, rng: R): LweCiphertextDyn
 {
   let a = Array.from({length: Number(n_lwe)}, () => 0n);
-  for (const ai of a.iter_mut())   {
-    ai = rng.next_u32();
-  }
+  for (let __mut_1 = 0n; __mut_1 < BigInt(a.length); __mut_1 += 1n) {
+  {
+    a[Number(__mut_1)] = rng.next_u32();
+  }}
   let dot: bigint = 0n;
   for (let i = 0n; i < n_lwe; i += 1n)   {
     dot = wrappingAdd(dot, BigInt(Math.imul(Number(a[Number(i)]), Number(Number(sk.key[Number(i)])))));
@@ -3770,9 +3775,10 @@ export function lwe_encrypt<R>(n_lwe: bigint, m: boolean, sk: LweSecretKeyDyn, n
 export function lwe_encrypt_raw<R>(n_lwe: bigint, msg: bigint, sk: LweSecretKeyDyn, noise_bits: bigint, rng: R): LweCiphertextDyn
 {
   let a = Array.from({length: Number(n_lwe)}, () => 0n);
-  for (const ai of a.iter_mut())   {
-    ai = rng.next_u32();
-  }
+  for (let __mut_1 = 0n; __mut_1 < BigInt(a.length); __mut_1 += 1n) {
+  {
+    a[Number(__mut_1)] = rng.next_u32();
+  }}
   let dot: bigint = 0n;
   for (let i = 0n; i < n_lwe; i += 1n)   {
     dot = wrappingAdd(dot, BigInt(Math.imul(Number(a[Number(i)]), Number(Number(sk.key[Number(i)])))));

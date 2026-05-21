@@ -777,6 +777,7 @@ pub fn print_module_ts_with_imports(
         self_type: None,
         tuple_structs: &tuple_structs,
         class_witnesses: Vec::new(),
+        mut_refs: Vec::new(),
     };
     let local_names: std::collections::HashSet<String> = module.structs.iter()
         .map(|s| s.kind.to_string())
@@ -851,6 +852,7 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
         self_type: None,
         tuple_structs: &tuple_structs_flat,
         class_witnesses: Vec::new(),
+        mut_refs: Vec::new(),
     };
 
     // Reassemble the CFG module with deshadowed auxiliary functions.
@@ -911,6 +913,16 @@ fn deshadow_module(module: &mut IrModule<IrFunction>) {
 // Shared context threaded through all writers
 // ============================================================================
 
+/// A mutable-reference variable in scope: `(var_name, array_expr_str, index_var)`.
+/// Variables in this list are references with shape `{"*": value}`.
+/// Reading `*var` emits `array[Number(index)]`; writing `*var = x` emits `array[Number(index)] = x`.
+#[derive(Clone)]
+struct MutRef {
+    var: String,
+    array_expr: String,
+    index_var: String,
+}
+
 /// Immutable context passed to every TS writer.
 struct TsContext<'a> {
     /// Per-function witness needs keyed by `"functionName"` or `"ClassName.methodName"`.
@@ -925,6 +937,8 @@ struct TsContext<'a> {
     /// Type-param names that have a Class witness in the current function scope.
     /// When a bare `G` (Var/Path) is seen, emit `ctx.GClass` instead.
     class_witnesses: Vec<String>,
+    /// Mutable-reference variables in scope (from `iter_mut` loops).
+    mut_refs: Vec<MutRef>,
 }
 
 impl<'a> TsContext<'a> {
@@ -935,6 +949,7 @@ impl<'a> TsContext<'a> {
             self_type: Some(name.to_string()),
             tuple_structs: self.tuple_structs,
             class_witnesses: self.class_witnesses.clone(),
+            mut_refs: self.mut_refs.clone(),
         }
     }
 
@@ -945,7 +960,25 @@ impl<'a> TsContext<'a> {
             self_type: self.self_type.clone(),
             tuple_structs: self.tuple_structs,
             class_witnesses: witnesses,
+            mut_refs: self.mut_refs.clone(),
         }
+    }
+
+    fn with_mut_ref(&self, mut_ref: MutRef) -> TsContext<'a> {
+        let mut mut_refs = self.mut_refs.clone();
+        mut_refs.push(mut_ref);
+        TsContext {
+            witness_map: self.witness_map,
+            erased_type_params: self.erased_type_params.clone(),
+            self_type: self.self_type.clone(),
+            tuple_structs: self.tuple_structs,
+            class_witnesses: self.class_witnesses.clone(),
+            mut_refs,
+        }
+    }
+
+    fn find_mut_ref(&self, var: &str) -> Option<&MutRef> {
+        self.mut_refs.iter().rev().find(|r| r.var == var)
     }
 }
 
@@ -1569,6 +1602,7 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
                     self_type: Some(bare),
                     tuple_structs: cx.tuple_structs,
                     class_witnesses: cx.class_witnesses.clone(),
+                    mut_refs: cx.mut_refs.clone(),
                 };
                 &cx_static
             } else {
@@ -2146,6 +2180,30 @@ fn emit_statement_expr(
             collection,
             body,
         } => {
+            // `iter_mut()`: lower to an indexed loop with mutable-reference semantics.
+            // The {"*": value} shape is used conceptually; writes go through to the array
+            // via index tracking (ad-hoc optimization: direct indexed write, not getter/setter).
+            // Future: replace with getter/setter reference objects for general correctness.
+            if let IrExpr::MethodCall { receiver, method, args, .. } = collection.as_ref() {
+                if matches!(method, MethodKind::Other(s) if s == "iter_mut") && args.is_empty() {
+                    let arr_str = format!("{}", TsFmt(TsExprWriter { expr: receiver }, cx));
+                    let idx_var = format!("__mut_{}", indent);  // fresh per indent level
+                    let var_name = match pattern {
+                        IrPattern::Ident { name, .. } => name.clone(),
+                        _ => "__mut_elem".to_string(),
+                    };
+                    let cx_body = cx.with_mut_ref(MutRef {
+                        var: var_name,
+                        array_expr: arr_str.clone(),
+                        index_var: idx_var.clone(),
+                    });
+                    writeln!(f, "for (let {} = 0n; {} < BigInt({}.length); {} += 1n) {}",
+                        idx_var, idx_var, arr_str, idx_var, "{")?;
+                    TsBlockWriter { block: body, indent }.ts_fmt(f, &cx_body)?;
+                    write!(f, "}}")?;
+                    return Ok(());
+                }
+            }
             write!(f, "for (const ")?;
             TsPatternWriter { pat: pattern }.ts_fmt(f, cx)?;
             write!(f, " of ")?;
@@ -2197,6 +2255,18 @@ fn emit_statement_expr(
             TsBlockWriter { block: b, indent }.ts_fmt(f, cx)?;
         }
         IrExpr::Assign { left, right } => {
+            // `*byte = expr` where byte is a mutable ref → `arr[Number(i)] = expr`
+            if let IrExpr::Unary { op: SpecUnaryOp::Deref, expr: inner } = left.as_ref() {
+                if let IrExpr::Var(v) = inner.as_ref() {
+                    if let Some(r) = cx.find_mut_ref(v) {
+                        let arr = r.array_expr.clone();
+                        let idx = r.index_var.clone();
+                        write!(f, "{}[Number({})] = ", arr, idx)?;
+                        TsExprWriter { expr: right }.ts_fmt(f, cx)?;
+                        return write!(f, ";");
+                    }
+                }
+            }
             TsExprWriter { expr: left }.ts_fmt(f, cx)?;
             write!(f, " = ")?;
             TsExprWriter { expr: right }.ts_fmt(f, cx)?;
@@ -2322,7 +2392,16 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     write!(f, "!")?;
                     TsExprWriter { expr }.ts_fmt(f, cx)?;
                 }
-                SpecUnaryOp::Deref | SpecUnaryOp::Ref | SpecUnaryOp::RefMut => {
+                SpecUnaryOp::Deref => {
+                    // Deref a mutable reference `{"*": v}` → emit `var["*"]`
+                    if let IrExpr::Var(v) = expr.as_ref() {
+                        if let Some(r) = cx.find_mut_ref(v) {
+                            return write!(f, "{}[Number({})]", r.array_expr, r.index_var);
+                        }
+                    }
+                    TsExprWriter { expr }.ts_fmt(f, cx)?;
+                }
+                SpecUnaryOp::Ref | SpecUnaryOp::RefMut => {
                     TsExprWriter { expr }.ts_fmt(f, cx)?;
                 }
             },
