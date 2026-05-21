@@ -2434,6 +2434,10 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                             "Err" if args.len() == 1 => {
                                 return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
                             }
+                            // Vec<T> = T[]; coercion is identity
+                            "Vec" if args.len() == 1 => {
+                                return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
+                            }
                             _ if is_primitive_class(name) || cx.tuple_structs.contains(name.as_str()) => {
                                 write!(f, "new {}(", name)?;
                                 for (i, arg) in args.iter().enumerate() {
@@ -2456,6 +2460,10 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                             return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
                         }
                         "Err" if args.len() == 1 => {
+                            return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
+                        }
+                        // `Vec(x)` — Vec<T> = T[], coercion is identity
+                        "Vec" if args.len() == 1 => {
                             return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
                         }
                         _ => {}
@@ -3260,6 +3268,13 @@ fn emit_known_method_call(
             TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
             write!(f, "), false]")
         }
+        StdMethod::OverflowingSub if args.len() == 1 => {
+            write!(f, "[wrappingSub(")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ", ")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            write!(f, "), false]")
+        }
         // Vec/slice operations → array equivalents
         StdMethod::CopyFromSlice if args.len() == 1 => {
             // dst.copy_from_slice(src) → dst.splice(0, src.length, ...src)
@@ -3485,6 +3500,23 @@ fn emit_other_method_call(
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             return write!(f, ") instanceof Err");
         }
+        // (flatten is an IterMethod handled in IterChainSource::Method → .flat())
+        "next_power_of_two" => {
+            // Round up to next power of 2
+            write!(f, "BigInt(1 << Math.ceil(Math.log2(Number(")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            return write!(f, "))))");
+        }
+        "all" => {
+            // .all(|x| pred) → emit as .every()
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ".every(")?;
+            for (i, arg) in args.iter().enumerate() {
+                if i > 0 { write!(f, ", ")?; }
+                TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+            }
+            return write!(f, ")");
+        }
         _ => {}
     }
     // Numeric literals need parens before method access in JS/TS (e.g. `(1).method()`).
@@ -3645,6 +3677,11 @@ impl<'a> TsBackend for TsIterSourceWriter<'a> {
                     write!(f, "Array.from(")?;
                     TsExprWriter { expr: collection }.ts_fmt(f, cx)?;
                     write!(f, ")")?;
+                }
+                IterMethod::Flatten => {
+                    // Vec<Vec<T>>.flatten() → .flat() in JS/TS
+                    TsExprWriter { expr: collection }.ts_fmt(f, cx)?;
+                    write!(f, ".flat()")?;
                 }
             },
             IterChainSource::Range {

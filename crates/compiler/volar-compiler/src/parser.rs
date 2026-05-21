@@ -1568,12 +1568,13 @@ fn peel_iter_chain(syn_expr: &Expr) -> Result<Option<PeeledChain>> {
             let args: Vec<&Expr> = m.args.iter().collect();
             match method_name.as_str() {
                 // Source methods — these are the base of the chain
-                "iter" | "into_iter" | "chars" | "bytes" if args.is_empty() => {
+                "iter" | "into_iter" | "chars" | "bytes" | "flatten" if args.is_empty() => {
                     let method = match method_name.as_str() {
                         "iter" => crate::ir::IterMethod::Iter,
                         "into_iter" => crate::ir::IterMethod::IntoIter,
                         "chars" => crate::ir::IterMethod::Chars,
                         "bytes" => crate::ir::IterMethod::Bytes,
+                        "flatten" => crate::ir::IterMethod::Flatten,
                         _ => crate::ir::IterMethod::Iter,
                     };
                     Ok(Some(PeeledChain {

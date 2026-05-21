@@ -804,7 +804,7 @@ export class BavcDyn<L> {
     let tree: Vec<bigint[]> = [];
     tree[Number(0n)] = r;
     for (let node = 0n; node < fieldSub(leaf_count, 1n); node += 1n)     {
-      const parent = Vec(tree[Number(node)]);
+      const parent = tree[Number(node)];
       const [left, right] = AesCtrLengthDoubler.double(parent);
       tree[Number(fieldAdd(fieldMul(2n, node), 1n))] = left[0];
       tree[Number(fieldAdd(fieldMul(2n, node), 2n))] = right[0];
@@ -880,7 +880,7 @@ export class BavcDyn<L> {
     for (let node = 0n; node < fieldSub(leaf_count, 1n); node += 1n)     {
       return (() => { const __match = tree[Number(node)]; if (__match !== null && __match !== undefined) { const parent_seed = __match;
 return (() => {
-  const parent = Vec(parent_seed);
+  const parent = parent_seed;
   const [left, right] = AesCtrLengthDoubler.double(parent);
   if ((tree[Number(fieldAdd(fieldMul(2n, node), 1n))]) == null)   {
     tree[Number(fieldAdd(fieldMul(2n, node), 1n))] = left[0];
@@ -1026,7 +1026,7 @@ export class AesCtrLengthDoubler {
     const c1 = encrypt_block(key, block1);
     (block0).fill(0n);
     (block1).fill(0n);
-    return [Vec(c0), Vec(c1)];
+    return [c0, c1];
   }
 }
 
@@ -3071,8 +3071,8 @@ export function fe_canonicalize(a: bigint[]): Fe25519
     let tmp = Array.from({length: Number(4n)}, () => 0n);
     let borrow: bigint = 0n;
     for (let i = 0n; i < 4n; i += 1n)     {
-      const [r1, b1] = x[Number(i)].overflowing_sub(P_LIMBS[Number(i)]);
-      const [r2, b2] = r1.overflowing_sub(borrow);
+      const [r1, b1] = [wrappingSub(x[Number(i)], P_LIMBS[Number(i)]), false];
+      const [r2, b2] = [wrappingSub(r1, borrow), false];
       tmp[Number(i)] = r2;
       borrow = fieldBitor(BigInt(b1), BigInt(b2));
     }
@@ -3118,8 +3118,8 @@ export function fe_neg(a: Fe25519): Fe25519
   let neg = Array.from({length: Number(4n)}, () => 0n);
   let borrow: bigint = 0n;
   for (let i = 0n; i < 4n; i += 1n)   {
-    const [r1, br1] = P_LIMBS[Number(i)].overflowing_sub(a[0][Number(i)]);
-    const [r2, br2] = r1.overflowing_sub(borrow);
+    const [r1, br1] = [wrappingSub(P_LIMBS[Number(i)], a[0][Number(i)]), false];
+    const [r2, br2] = [wrappingSub(r1, borrow), false];
     neg[Number(i)] = r2;
     borrow = fieldBitor(BigInt(br1), BigInt(br2));
   }
@@ -3137,8 +3137,8 @@ export function fe_sub(a: Fe25519, b: Fe25519): Fe25519
   let neg_b = Array.from({length: Number(4n)}, () => 0n);
   let borrow: bigint = 0n;
   for (let i = 0n; i < 4n; i += 1n)   {
-    const [r1, br1] = P_LIMBS[Number(i)].overflowing_sub(b[0][Number(i)]);
-    const [r2, br2] = r1.overflowing_sub(borrow);
+    const [r1, br1] = [wrappingSub(P_LIMBS[Number(i)], b[0][Number(i)]), false];
+    const [r2, br2] = [wrappingSub(r1, borrow), false];
     neg_b[Number(i)] = r2;
     borrow = fieldBitor(BigInt(br1), BigInt(br2));
   }
@@ -4104,7 +4104,7 @@ export function recompute_tree(r: bigint[], total_leaves: bigint): Vec<bigint[]>
   let tree = [];
   tree[Number(0n)] = r;
   for (let node = 0n; node < fieldSub(total_leaves, 1n); node += 1n)   {
-    const parent = Vec(tree[Number(node)]);
+    const parent = tree[Number(node)];
     const [left, right] = AesCtrLengthDoubler.double(parent);
     tree[Number(fieldAdd(fieldMul(2n, node), 1n))] = left[0];
     tree[Number(fieldAdd(fieldMul(2n, node), 2n))] = right[0];
@@ -4354,8 +4354,8 @@ export function tfhe_gate_bootstrapping_or(n_lwe: bigint, big_n: bigint, bs_ell:
 export function tfhe_lut_read(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, addr_bits: readonly LweCiphertextDyn[], lut: readonly boolean[], bk: BootstrappingKeyDyn): LweCiphertextDyn
 {
   const two_n = fieldMul(2n, big_n);
-  const k = BigInt(Math.max(Number(lut.length), Number(1n))).next_power_of_two();
-  if ((!(lut.length === 0) && lut.all((v) => (v === lut[Number(0n)]))))   {
+  const k = BigInt(1 << Math.ceil(Math.log2(Number(BigInt(Math.max(Number(lut.length), Number(1n)))))));
+  if ((!(lut.length === 0) && lut.every((v) => (v === lut[Number(0n)]))))   {
     const msg = (() => { if (lut[Number(0n)]) {
   return Q4;
 } else {
@@ -4501,7 +4501,7 @@ return s; } else { return false; } })();
   }
   const big_q: Vec<bigint> = (() => {
   const q_out = concat_small_voles_verifier(sub_voles_v, deltas, corrections);
-  return q_out.q_columns.flatten().collect();
+  return q_out.q_columns.flat();
 })();
   const corrections_flat: Vec<bigint> = sig.corrections.flatten().collect();
   const chall_2 = chall2(chall_1, sig.vole_u, corrections_flat, fieldAdd(LAMBDA_BYTES, 8n), false);

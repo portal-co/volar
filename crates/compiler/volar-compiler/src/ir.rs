@@ -49,6 +49,9 @@ pub enum IterMethod {
     IntoIter,
     Chars,
     Bytes,
+    /// `.flatten()` — flattens nested iterables (Vec<Vec<T>> → Vec<T>).
+    /// In TS, emitted as `.flat()` on the source collection.
+    Flatten,
 }
 
 impl IterMethod {
@@ -58,6 +61,7 @@ impl IterMethod {
             "into_iter" => Some(Self::IntoIter),
             "chars" => Some(Self::Chars),
             "bytes" => Some(Self::Bytes),
+            "flatten" => Some(Self::Flatten),
             _ => None,
         }
     }
@@ -655,6 +659,7 @@ pub enum StdMethod {
     WrappingMul,
     WrappingNeg,
     OverflowingAdd,
+    OverflowingSub,
 }
 
 impl StdMethod {
@@ -721,6 +726,7 @@ impl StdMethod {
             "wrapping_mul" => Some(Self::WrappingMul),
             "wrapping_neg" => Some(Self::WrappingNeg),
             "overflowing_add" => Some(Self::OverflowingAdd),
+            "overflowing_sub" => Some(Self::OverflowingSub),
             _ => None,
         }
     }
@@ -789,6 +795,7 @@ impl StdMethod {
             Self::WrappingMul => "wrapping_mul",
             Self::WrappingNeg => "wrapping_neg",
             Self::OverflowingAdd => "overflowing_add",
+            Self::OverflowingSub => "overflowing_sub",
         }
     }
 }

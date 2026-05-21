@@ -688,6 +688,7 @@ impl<'a> RustBackend for IterChainSourceWriter<'a> {
                     IterMethod::IntoIter => "into_iter",
                     IterMethod::Chars => "chars",
                     IterMethod::Bytes => "bytes",
+                    IterMethod::Flatten => "flatten",
                 };
                 write!(f, ".{}()", mname)?;
             }
