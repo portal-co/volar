@@ -1297,7 +1297,6 @@ impl<'a> TsBackend for TsPreambleWriter<'a> {
         writeln!(f, "  fieldNe,")?;
         writeln!(f, "  ilog2,")?;
         writeln!(f, "  commit as hashCommit,")?;
-        writeln!(f, "  doubleVec,")?;
         writeln!(f, "  wrappingAdd,")?;
         writeln!(f, "  wrappingSub,")?;
         writeln!(f, "  asRefU8,")?;
@@ -1473,10 +1472,16 @@ impl<'a> TsBackend for TsClassWriter<'a> {
             .filter(|field| !is_phantom_field(field))
             .collect();
 
-        // Declare fields with definite assignment assertion
+        // Declare fields with definite assignment assertion.
+        // Numeric (tuple) fields use bracket notation `[N]`; named fields use `.name`.
         for (idx, field) in fields.iter().enumerate() {
             let ts_name = ts_field_name(&field.name, idx);
-            write!(f, "  {}!: ", ts_name)?;
+            // Numeric field: `[N]!: T;`  named field: `name!: T;`
+            if ts_name.starts_with('[') {
+                write!(f, "  {}!: ", ts_name)?;
+            } else {
+                write!(f, "  {}!: ", ts_name)?;
+            }
             TsTypeWriter { ty: &field.ty }.ts_fmt(f, cx)?;
             writeln!(f, ";")?;
         }
@@ -1484,17 +1489,16 @@ impl<'a> TsBackend for TsClassWriter<'a> {
 
         if self.s.is_tuple {
             // Tuple struct: positional constructor  new Foo(val)
+            // Parameters use `_N` names; field assignment uses bracket notation `this[N]`.
             write!(f, "  constructor(")?;
             for (i, field) in fields.iter().enumerate() {
                 if i > 0 { write!(f, ", ")?; }
-                let ts_name = ts_field_name(&field.name, i);
-                write!(f, "{}: ", ts_name)?;
+                write!(f, "_{}: ", i)?;
                 TsTypeWriter { ty: &field.ty }.ts_fmt(f, cx)?;
             }
             writeln!(f, ") {{")?;
-            for (i, field) in fields.iter().enumerate() {
-                let ts_name = ts_field_name(&field.name, i);
-                writeln!(f, "    this.{} = {};", ts_name, ts_name)?;
+            for (i, _field) in fields.iter().enumerate() {
+                writeln!(f, "    this[{}] = _{};", i, i)?;
             }
             writeln!(f, "  }}")?;
         } else {
@@ -2551,13 +2555,14 @@ impl<'a> TsBackend for TsExprWriter<'a> {
             }
             IrExpr::Field { base, field } => {
                 TsExprWriter { expr: base }.ts_fmt(f, cx)?;
-                // Numeric field names ("0", "1") prefix with underscore for valid TS property.
-                let field_ts = if field.chars().next().map_or(false, |c| c.is_ascii_digit()) {
-                    format!("_{}", field)
+                // Numeric field names ("0", "1") → bracket notation `[N]` (works for both
+                // tuple struct class fields and array element access).
+                if field.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+                    let idx: usize = field.parse().unwrap_or(0);
+                    write!(f, "[{}]", idx)?;
                 } else {
-                    field.clone()
-                };
-                write!(f, ".{}", field_ts)?;
+                    write!(f, ".{}", field)?;
+                }
             }
             IrExpr::Index { base, index } => {
                 // TODO: Slice operations should be represented as a dedicated
@@ -3510,8 +3515,6 @@ fn emit_path(segments: &[String], f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "asRefU8")
     } else if segs.len() == 2 && segs[0] == "D" && segs[1] == "new" {
         write!(f, "new D")
-    } else if segs.len() == 1 && segs[0] == "double_vec" {
-        write!(f, "doubleVec")
     } else if segs.len() == 1 && segs[0] == "commit" {
         write!(f, "hashCommit")
     } else if segs.len() == 2 && segs[0] == "Vec" && segs[1] == "new" {
@@ -3953,11 +3956,11 @@ fn escape_ts_reserved(name: &str) -> String {
 
 /// Convert a Rust field name to a valid TypeScript property name.
 ///
-/// Tuple struct fields have numeric names ("0", "1") or empty names, which are
-/// invalid as TypeScript property identifiers. Prefix them with `_`.
+/// Numeric or empty field names use bracket notation `[N]` in TS (works for
+/// tuple struct class fields and array element access alike).
 fn ts_field_name(name: &str, positional_index: usize) -> String {
     if name.is_empty() || name.chars().next().map_or(false, |c| c.is_ascii_digit()) {
-        format!("_{}", positional_index)
+        format!("[{}]", positional_index)
     } else {
         name.to_string()
     }
@@ -4032,13 +4035,13 @@ fn ts_emit_pattern_bindings(
             let name = kind.to_string();
             let variant = name.rsplit("::").next().unwrap_or(&name);
             // For Some/None/Ok/Err (transparent): bind inner directly to match_var.
-            // For tuple structs (including generated primitives): access ._0, ._1 etc.
+            // For tuple structs: access via [N] bracket notation.
             let transparent = matches!(variant, "Some" | "Ok" | "Err" | "None");
             if elems.len() == 1 {
                 let field = if transparent {
                     match_var.to_string()
                 } else {
-                    format!("{}._0", match_var)
+                    format!("{}[0]", match_var)
                 };
                 ts_emit_pattern_bindings(&elems[0], &field, f)?;
             } else {
@@ -4046,7 +4049,7 @@ fn ts_emit_pattern_bindings(
                     let field = if transparent {
                         format!("{}[{}]", match_var, i)
                     } else {
-                        format!("{}._{}",  match_var, i)
+                        format!("{}[{}]", match_var, i)
                     };
                     ts_emit_pattern_bindings(elem, &field, f)?;
                 }

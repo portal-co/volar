@@ -1491,28 +1491,10 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 _ => None,
             };
             if let Some(name) = &func_name {
-                // B::double(x) → double_vec::<B>(x) — bridges Vec<u8> ↔ GenericArray
-                if name == "double" {
-                    if let Some(qual) = &func_qualifier {
-                        // Use the qualifier as the type param (e.g., B::double → double_vec::<B>)
-                        new_func = Some(IrExpr::Path {
-                            segments: vec!["double_vec".to_string()],
-                            type_args: vec![IrType::TypeParam(qual.clone())],
-                        });
-                    } else if let Some(b_param) = fn_gen.iter().find(|p| {
-                        p.name.starts_with('B')
-                            && p.bounds.iter().any(|b| matches!(
-                                &b.trait_kind,
-                                TraitKind::LengthDoubler
-                                    | TraitKind::BlockEncrypt
-                                    | TraitKind::BlockCipher
-                            ))
-                    }) {
-                        new_func = Some(IrExpr::Path {
-                            segments: vec!["double_vec".to_string()],
-                            type_args: vec![IrType::TypeParam(b_param.name.clone())],
-                        });
-                    }
+                // `B::double(x)` passes through unchanged — the TS printer handles it
+                // via class witnesses (`ctx.BClass.double(x)`). No lowering hack needed.
+                if false && name == "double" {
+                    // (disabled: was rewriting to double_vec which is not spec-consistent)
                 } else if name == "create_vole_from_material"
                     || name == "create_vole_from_material_expanded"
                 {

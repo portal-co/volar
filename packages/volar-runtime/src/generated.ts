@@ -19,7 +19,6 @@ import {
   fieldNe,
   ilog2,
   commit as hashCommit,
-  doubleVec,
   wrappingAdd,
   wrappingSub,
   asRefU8,
@@ -79,10 +78,10 @@ export const Q4 = fieldShl(1n, 30n);
 export type Zq = bigint;
 
 export class U256 {
-  _0!: bigint[];
+  [0]!: bigint[];
 
   constructor(_0: bigint[]) {
-    this._0 = _0;
+    this[0] = _0;
   }
 
   bit(n: bigint): boolean
@@ -90,7 +89,7 @@ export class U256 {
     const word = Number((n / 64n));
     const bit = (n % 64n);
     return (() => { if ((word < 4n)) {
-  return (fieldBitand(fieldShr(this._0[Number(word)], bit), 1n) !== 0n);
+  return (fieldBitand(fieldShr(this[0][Number(word)], bit), 1n) !== 0n);
 } else {
   return false;
 } })();
@@ -98,246 +97,246 @@ export class U256 {
 
   high_bit(): boolean
   {
-    return (fieldShr(this._0[Number(3n)], 63n) !== 0n);
+    return (fieldShr(this[0][Number(3n)], 63n) !== 0n);
   }
 
   is_zero(): boolean
   {
-    return ((((this._0[Number(0n)] === 0n) && (this._0[Number(1n)] === 0n)) && (this._0[Number(2n)] === 0n)) && (this._0[Number(3n)] === 0n));
+    return ((((this[0][Number(0n)] === 0n) && (this[0][Number(1n)] === 0n)) && (this[0][Number(2n)] === 0n)) && (this[0][Number(3n)] === 0n));
   }
 
   shl1(): U256
   {
     let out = Array.from({length: Number(4n)}, () => 0n);
-    out[Number(0n)] = fieldShl(this._0[Number(0n)], 1n);
-    out[Number(1n)] = fieldBitor(fieldShl(this._0[Number(1n)], 1n), fieldShr(this._0[Number(0n)], 63n));
-    out[Number(2n)] = fieldBitor(fieldShl(this._0[Number(2n)], 1n), fieldShr(this._0[Number(1n)], 63n));
-    out[Number(3n)] = fieldBitor(fieldShl(this._0[Number(3n)], 1n), fieldShr(this._0[Number(2n)], 63n));
+    out[Number(0n)] = fieldShl(this[0][Number(0n)], 1n);
+    out[Number(1n)] = fieldBitor(fieldShl(this[0][Number(1n)], 1n), fieldShr(this[0][Number(0n)], 63n));
+    out[Number(2n)] = fieldBitor(fieldShl(this[0][Number(2n)], 1n), fieldShr(this[0][Number(1n)], 63n));
+    out[Number(3n)] = fieldBitor(fieldShl(this[0][Number(3n)], 1n), fieldShr(this[0][Number(2n)], 63n));
     return new U256(out);
   }
 
   shr1(): U256
   {
     let out = Array.from({length: Number(4n)}, () => 0n);
-    out[Number(0n)] = fieldBitor(fieldShr(this._0[Number(0n)], 1n), fieldShl(this._0[Number(1n)], 63n));
-    out[Number(1n)] = fieldBitor(fieldShr(this._0[Number(1n)], 1n), fieldShl(this._0[Number(2n)], 63n));
-    out[Number(2n)] = fieldBitor(fieldShr(this._0[Number(2n)], 1n), fieldShl(this._0[Number(3n)], 63n));
-    out[Number(3n)] = fieldShr(this._0[Number(3n)], 1n);
+    out[Number(0n)] = fieldBitor(fieldShr(this[0][Number(0n)], 1n), fieldShl(this[0][Number(1n)], 63n));
+    out[Number(1n)] = fieldBitor(fieldShr(this[0][Number(1n)], 1n), fieldShl(this[0][Number(2n)], 63n));
+    out[Number(2n)] = fieldBitor(fieldShr(this[0][Number(2n)], 1n), fieldShl(this[0][Number(3n)], 63n));
+    out[Number(3n)] = fieldShr(this[0][Number(3n)], 1n);
     return new U256(out);
   }
 
   xor(other: U256): U256
   {
-    return new U256([fieldBitxor(this._0[Number(0n)], other._0[Number(0n)]), fieldBitxor(this._0[Number(1n)], other._0[Number(1n)]), fieldBitxor(this._0[Number(2n)], other._0[Number(2n)]), fieldBitxor(this._0[Number(3n)], other._0[Number(3n)])]);
+    return new U256([fieldBitxor(this[0][Number(0n)], other[0][Number(0n)]), fieldBitxor(this[0][Number(1n)], other[0][Number(1n)]), fieldBitxor(this[0][Number(2n)], other[0][Number(2n)]), fieldBitxor(this[0][Number(3n)], other[0][Number(3n)])]);
   }
 }
 
 export class Bit {
-  _0!: boolean;
+  [0]!: boolean;
 
   constructor(_0: boolean) {
-    this._0 = _0;
+    this[0] = _0;
   }
 
   bitxor(rhs: bigint): Bit
   {
-    return new Bit(fieldBitxor(this._0, (fieldBitand(rhs, 1n) !== 0n)));
+    return new Bit(fieldBitxor(this[0], (fieldBitand(rhs, 1n) !== 0n)));
   }
 }
 
 export class Galois {
-  _0!: bigint;
+  [0]!: bigint;
 
   constructor(_0: bigint) {
-    this._0 = _0;
+    this[0] = _0;
   }
 
   add(rhs: Galois): Galois
   {
-    return new Galois(fieldBitxor(this._0, rhs._0));
+    return new Galois(fieldBitxor(this[0], rhs[0]));
   }
 
   bitxor(rhs: bigint): Galois
   {
-    return new Galois(fieldBitxor(this._0, rhs));
+    return new Galois(fieldBitxor(this[0], rhs));
   }
 
   invert(): Galois
   {
-    return new Galois(gf_invert_u8(this._0, GF8_POLY));
+    return new Galois(gf_invert_u8(this[0], GF8_POLY));
   }
 
   mul(rhs: Galois): Galois
   {
-    return new Galois(gf_mul_u8(this._0, rhs._0, GF8_POLY));
+    return new Galois(gf_mul_u8(this[0], rhs[0], GF8_POLY));
   }
 
   sub(rhs: Galois): Galois
   {
-    return new Galois(fieldBitxor(this._0, rhs._0));
+    return new Galois(fieldBitxor(this[0], rhs[0]));
   }
 }
 
 export class BitsInBytes {
-  _0!: bigint;
+  [0]!: bigint;
 
   constructor(_0: bigint) {
-    this._0 = _0;
+    this[0] = _0;
   }
 
   add(rhs: BitsInBytes): BitsInBytes
   {
-    return new BitsInBytes(fieldBitxor(this._0, rhs._0));
+    return new BitsInBytes(fieldBitxor(this[0], rhs[0]));
   }
 
   bitxor(rhs: bigint): BitsInBytes
   {
-    return new BitsInBytes(fieldBitxor(this._0, rhs));
+    return new BitsInBytes(fieldBitxor(this[0], rhs));
   }
 
   mul(rhs: BitsInBytes): BitsInBytes
   {
-    return new BitsInBytes(fieldBitand(this._0, rhs._0));
+    return new BitsInBytes(fieldBitand(this[0], rhs[0]));
   }
 
   sub(rhs: BitsInBytes): BitsInBytes
   {
-    return new BitsInBytes(fieldBitxor(this._0, rhs._0));
+    return new BitsInBytes(fieldBitxor(this[0], rhs[0]));
   }
 }
 
 export class Galois64 {
-  _0!: bigint;
+  [0]!: bigint;
 
   constructor(_0: bigint) {
-    this._0 = _0;
+    this[0] = _0;
   }
 
   add(rhs: Galois64): Galois64
   {
-    return new Galois64(fieldBitxor(this._0, rhs._0));
+    return new Galois64(fieldBitxor(this[0], rhs[0]));
   }
 
   bitxor(rhs: bigint): Galois64
   {
-    return new Galois64(fieldBitxor(this._0, fieldMul(BigInt(rhs), 72340172838076673n)));
+    return new Galois64(fieldBitxor(this[0], fieldMul(BigInt(rhs), 72340172838076673n)));
   }
 
   invert(): Galois64
   {
-    return new Galois64(gf_invert_u64(this._0, GF64_POLY));
+    return new Galois64(gf_invert_u64(this[0], GF64_POLY));
   }
 
   mul(rhs: Galois64): Galois64
   {
-    return new Galois64(gf_mul_u64(this._0, rhs._0, GF64_POLY));
+    return new Galois64(gf_mul_u64(this[0], rhs[0], GF64_POLY));
   }
 
   sub(rhs: Galois64): Galois64
   {
-    return new Galois64(fieldBitxor(this._0, rhs._0));
+    return new Galois64(fieldBitxor(this[0], rhs[0]));
   }
 }
 
 export class BitsInBytes64 {
-  _0!: bigint;
+  [0]!: bigint;
 
   constructor(_0: bigint) {
-    this._0 = _0;
+    this[0] = _0;
   }
 
   add(rhs: BitsInBytes64): BitsInBytes64
   {
-    return new BitsInBytes64(fieldBitxor(this._0, rhs._0));
+    return new BitsInBytes64(fieldBitxor(this[0], rhs[0]));
   }
 
   bitxor(rhs: bigint): BitsInBytes64
   {
-    return new BitsInBytes64(fieldBitxor(this._0, fieldMul(BigInt(rhs), 72340172838076673n)));
+    return new BitsInBytes64(fieldBitxor(this[0], fieldMul(BigInt(rhs), 72340172838076673n)));
   }
 
   mul(rhs: BitsInBytes64): BitsInBytes64
   {
-    return new BitsInBytes64(fieldBitand(this._0, rhs._0));
+    return new BitsInBytes64(fieldBitand(this[0], rhs[0]));
   }
 
   sub(rhs: BitsInBytes64): BitsInBytes64
   {
-    return new BitsInBytes64(fieldBitxor(this._0, rhs._0));
+    return new BitsInBytes64(fieldBitxor(this[0], rhs[0]));
   }
 }
 
 export class Galois128 {
-  _0!: bigint;
+  [0]!: bigint;
 
   constructor(_0: bigint) {
-    this._0 = _0;
+    this[0] = _0;
   }
 
   add(rhs: Galois128): Galois128
   {
-    return new Galois128(fieldBitxor(this._0, rhs._0));
+    return new Galois128(fieldBitxor(this[0], rhs[0]));
   }
 
   bitxor(rhs: bigint): Galois128
   {
-    return new Galois128(fieldBitxor(this._0, (rhs as unknown as bigint)));
+    return new Galois128(fieldBitxor(this[0], (rhs as unknown as bigint)));
   }
 
   invert(): Galois128
   {
-    return new Galois128(gf_invert_u128(this._0, GF128_POLY));
+    return new Galois128(gf_invert_u128(this[0], GF128_POLY));
   }
 
   mul(rhs: Galois128): Galois128
   {
-    return new Galois128(gf_mul_u128(this._0, rhs._0, GF128_POLY));
+    return new Galois128(gf_mul_u128(this[0], rhs[0], GF128_POLY));
   }
 
   sub(rhs: Galois128): Galois128
   {
-    return new Galois128(fieldBitxor(this._0, rhs._0));
+    return new Galois128(fieldBitxor(this[0], rhs[0]));
   }
 }
 
 export class Galois256 {
-  _0!: U256;
+  [0]!: U256;
 
   constructor(_0: U256) {
-    this._0 = _0;
+    this[0] = _0;
   }
 
   add(rhs: Galois256): Galois256
   {
-    return new Galois256(this._0.xor(rhs._0));
+    return new Galois256(this[0].xor(rhs[0]));
   }
 
   invert(): Galois256
   {
-    return new Galois256(gf_invert_256(this._0, GF256_POLY));
+    return new Galois256(gf_invert_256(this[0], GF256_POLY));
   }
 
   mul(rhs: Galois256): Galois256
   {
-    return new Galois256(gf_mul_256(this._0, rhs._0, GF256_POLY));
+    return new Galois256(gf_mul_256(this[0], rhs[0], GF256_POLY));
   }
 
   sub(rhs: Galois256): Galois256
   {
-    return new Galois256(this._0.xor(rhs._0));
+    return new Galois256(this[0].xor(rhs[0]));
   }
 }
 
 export class Z3 {
-  _0!: bigint;
+  [0]!: bigint;
 
   constructor(_0: bigint) {
-    this._0 = _0;
+    this[0] = _0;
   }
 
   add(rhs: Z3): Z3
   {
-    return new Z3(Z3.add3(this._0, rhs._0));
+    return new Z3(Z3.add3(this[0], rhs[0]));
   }
 
   static add3(a: bigint, b: bigint): bigint
@@ -352,7 +351,7 @@ export class Z3 {
 
   mul(rhs: Z3): Z3
   {
-    return new Z3(Z3.mul3(this._0, rhs._0));
+    return new Z3(Z3.mul3(this[0], rhs[0]));
   }
 
   static mul3(a: bigint, b: bigint): bigint
@@ -376,25 +375,25 @@ export class Z3 {
 
   sub(rhs: Z3): Z3
   {
-    return new Z3(Z3.add3(this._0, Z3.neg3(rhs._0)));
+    return new Z3(Z3.add3(this[0], Z3.neg3(rhs[0])));
   }
 }
 
 export class TropicalDyn<T> {
-  _0!: T;
+  [0]!: T;
 
   constructor(_0: T) {
-    this._0 = _0;
+    this[0] = _0;
   }
 
   add<T>(rhs: TropicalDyn<T>): TropicalDyn<T>
   {
-    return new TropicalDyn(BigInt(Math.min(Number(this._0), Number(rhs._0))));
+    return new TropicalDyn(BigInt(Math.min(Number(this[0]), Number(rhs[0]))));
   }
 
   mul<U>(rhs: TropicalDyn<any>): TropicalDyn<T>
   {
-    return new TropicalDyn(fieldAdd(this._0, rhs._0));
+    return new TropicalDyn(fieldAdd(this[0], rhs[0]));
   }
 }
 
@@ -614,10 +613,10 @@ export class BSplitDyn<B, D> {
 }
 
 export class Fe25519 {
-  _0!: bigint[];
+  [0]!: bigint[];
 
   constructor(_0: bigint[]) {
-    this._0 = _0;
+    this[0] = _0;
   }
 
   add(rhs: Fe25519): Fe25519
@@ -627,7 +626,7 @@ export class Fe25519 {
 
   is_zero(): boolean
   {
-    return (this._0 === [0n, 0n, 0n, 0n]);
+    return (this[0] === [0n, 0n, 0n, 0n]);
   }
 
   mul(rhs: Fe25519): Fe25519
@@ -649,7 +648,7 @@ export class Fe25519 {
   {
     let out = Array.from({length: Number(32n)}, () => 0n);
     for (let i = 0n; i < 4n; i += 1n)     {
-      (out.slice(Number(fieldMul(i, 8n)), Number(fieldAdd(fieldMul(i, 8n), 8n)))).splice(0, ([(this._0[Number(i)]) & 0xFFn, ((this._0[Number(i)]) >> 8n) & 0xFFn, ((this._0[Number(i)]) >> 16n) & 0xFFn, ((this._0[Number(i)]) >> 24n) & 0xFFn]).length, ...([(this._0[Number(i)]) & 0xFFn, ((this._0[Number(i)]) >> 8n) & 0xFFn, ((this._0[Number(i)]) >> 16n) & 0xFFn, ((this._0[Number(i)]) >> 24n) & 0xFFn]));
+      (out.slice(Number(fieldMul(i, 8n)), Number(fieldAdd(fieldMul(i, 8n), 8n)))).splice(0, ([(this[0][Number(i)]) & 0xFFn, ((this[0][Number(i)]) >> 8n) & 0xFFn, ((this[0][Number(i)]) >> 16n) & 0xFFn, ((this[0][Number(i)]) >> 24n) & 0xFFn]).length, ...([(this[0][Number(i)]) & 0xFFn, ((this[0][Number(i)]) >> 8n) & 0xFFn, ((this[0][Number(i)]) >> 16n) & 0xFFn, ((this[0][Number(i)]) >> 24n) & 0xFFn]));
     }
     return out;
   }
@@ -806,9 +805,9 @@ export class BavcDyn<L> {
     tree[Number(0n)] = r;
     for (let node = 0n; node < fieldSub(leaf_count, 1n); node += 1n)     {
       const parent = Vec(tree[Number(node)]);
-      const [left, right] = doubleVec(parent);
-      tree[Number(fieldAdd(fieldMul(2n, node), 1n))] = left._0;
-      tree[Number(fieldAdd(fieldMul(2n, node), 2n))] = right._0;
+      const [left, right] = AesCtrLengthDoubler.double(parent);
+      tree[Number(fieldAdd(fieldMul(2n, node), 1n))] = left[0];
+      tree[Number(fieldAdd(fieldMul(2n, node), 2n))] = right[0];
     }
     let seeds = /* Vec::with_capacity */ Array(leaf_count);
     let commitments = /* Vec::with_capacity */ Array(leaf_count);
@@ -882,12 +881,12 @@ export class BavcDyn<L> {
       return (() => { const __match = tree[Number(node)]; if (__match !== null && __match !== undefined) { const parent_seed = __match;
 return (() => {
   const parent = Vec(parent_seed);
-  const [left, right] = doubleVec(parent);
+  const [left, right] = AesCtrLengthDoubler.double(parent);
   if ((tree[Number(fieldAdd(fieldMul(2n, node), 1n))]) == null)   {
-    tree[Number(fieldAdd(fieldMul(2n, node), 1n))] = left._0;
+    tree[Number(fieldAdd(fieldMul(2n, node), 1n))] = left[0];
   }
   if ((tree[Number(fieldAdd(fieldMul(2n, node), 2n))]) == null)   {
-    tree[Number(fieldAdd(fieldMul(2n, node), 2n))] = right._0;
+    tree[Number(fieldAdd(fieldMul(2n, node), 2n))] = right[0];
   }
 })(); } else { return (() => {
 })(); } })();
@@ -1022,7 +1021,7 @@ export class AesCtrLengthDoubler {
     let block0 = Array.from({length: Number(BLOCK)}, () => 0n);
     let block1 = Array.from({length: Number(BLOCK)}, () => 0n);
     block1[Number(0n)] = 1n;
-    const key: bigint[] = a._0;
+    const key: bigint[] = a[0];
     const c0 = encrypt_block(key, block0);
     const c1 = encrypt_block(key, block1);
     (block0).fill(0n);
@@ -1032,18 +1031,18 @@ export class AesCtrLengthDoubler {
 }
 
 export class FaestSecretKey {
-  _0!: bigint[];
+  [0]!: bigint[];
 
   constructor(_0: bigint[]) {
-    this._0 = _0;
+    this[0] = _0;
   }
 }
 
 export class FaestPublicKey {
-  _0!: bigint[];
+  [0]!: bigint[];
 
   constructor(_0: bigint[]) {
-    this._0 = _0;
+    this[0] = _0;
   }
 }
 
@@ -1099,7 +1098,7 @@ export class StubFaestAesProver {
   prove_aes_witness(big_vole: BigVoleProver, hash_key: UniversalHashKey): QuickSilverProof
   {
     const a_hat_out: UniversalHashOutput = vole_hash(hash_key, big_vole.u);
-    const a_hat: Vec<bigint> = [(a_hat_out.h0._0) & 0xFFn, ((a_hat_out.h0._0) >> 8n) & 0xFFn, ((a_hat_out.h0._0) >> 16n) & 0xFFn, ((a_hat_out.h0._0) >> 24n) & 0xFFn].concat([(a_hat_out.h1._0) & 0xFFn, ((a_hat_out.h1._0) >> 8n) & 0xFFn, ((a_hat_out.h1._0) >> 16n) & 0xFFn, ((a_hat_out.h1._0) >> 24n) & 0xFFn]).collect();
+    const a_hat: Vec<bigint> = [(a_hat_out.h0[0]) & 0xFFn, ((a_hat_out.h0[0]) >> 8n) & 0xFFn, ((a_hat_out.h0[0]) >> 16n) & 0xFFn, ((a_hat_out.h0[0]) >> 24n) & 0xFFn].concat([(a_hat_out.h1[0]) & 0xFFn, ((a_hat_out.h1[0]) >> 8n) & 0xFFn, ((a_hat_out.h1[0]) >> 16n) & 0xFFn, ((a_hat_out.h1[0]) >> 24n) & 0xFFn]).collect();
     const len = a_hat.length;
     return new QuickSilverProof({ a_hat: a_hat, b_hat: [], c_hat_base: [] });
   }
@@ -1570,10 +1569,10 @@ export class OtReceiverMsgDyn<G> {
 }
 
 export class ToyElement {
-  _0!: bigint;
+  [0]!: bigint;
 
   constructor(_0: bigint) {
-    this._0 = _0;
+    this[0] = _0;
   }
 }
 
@@ -1586,7 +1585,7 @@ export class ToyGroup {
 
   static add(a: ToyElement, b: ToyElement): ToyElement
   {
-    return new ToyElement(toy_mul(a._0, b._0));
+    return new ToyElement(toy_mul(a[0], b[0]));
   }
 
   static generator(): ToyElement
@@ -1596,7 +1595,7 @@ export class ToyGroup {
 
   static neg(a: ToyElement): ToyElement
   {
-    return new ToyElement(toy_pow(a._0, fieldSub(TOY_P, 2n)));
+    return new ToyElement(toy_pow(a[0], fieldSub(TOY_P, 2n)));
   }
 
   static random_scalar<R>(rng: R): bigint
@@ -1608,12 +1607,12 @@ export class ToyGroup {
 
   static scalar_mul(elt: ToyElement, k: bigint): ToyElement
   {
-    return new ToyElement(toy_pow(elt._0, k));
+    return new ToyElement(toy_pow(elt[0], k));
   }
 
   static write_element<D>(elt: ToyElement, h: D)
   {
-    h.update([(elt._0) & 0xFFn, ((elt._0) >> 8n) & 0xFFn, ((elt._0) >> 16n) & 0xFFn, ((elt._0) >> 24n) & 0xFFn]);
+    h.update([(elt[0]) & 0xFFn, ((elt[0]) >> 8n) & 0xFFn, ((elt[0]) >> 16n) & 0xFFn, ((elt[0]) >> 24n) & 0xFFn]);
   }
 }
 
@@ -3050,7 +3049,7 @@ export function fe_add(a: Fe25519, b: Fe25519): Fe25519
   let r = Array.from({length: Number(4n)}, () => 0n);
   let c: bigint = 0n;
   for (let i = 0n; i < 4n; i += 1n)   {
-    const v = fieldAdd(fieldAdd((a._0[Number(i)] as unknown as bigint), (b._0[Number(i)] as unknown as bigint)), (c as unknown as bigint));
+    const v = fieldAdd(fieldAdd((a[0][Number(i)] as unknown as bigint), (b[0][Number(i)] as unknown as bigint)), (c as unknown as bigint));
     r[Number(i)] = BigInt(v);
     c = BigInt(fieldShr(v, 64n));
   }
@@ -3107,7 +3106,7 @@ export function fe_invert(a: Fe25519): Fe25519
 
 export function fe_mul(a: Fe25519, b: Fe25519): Fe25519
 {
-  const wide = mul_4x4(a._0, b._0);
+  const wide = mul_4x4(a[0], b[0]);
   return reduce_wide(wide);
 }
 
@@ -3119,7 +3118,7 @@ export function fe_neg(a: Fe25519): Fe25519
   let neg = Array.from({length: Number(4n)}, () => 0n);
   let borrow: bigint = 0n;
   for (let i = 0n; i < 4n; i += 1n)   {
-    const [r1, br1] = P_LIMBS[Number(i)].overflowing_sub(a._0[Number(i)]);
+    const [r1, br1] = P_LIMBS[Number(i)].overflowing_sub(a[0][Number(i)]);
     const [r2, br2] = r1.overflowing_sub(borrow);
     neg[Number(i)] = r2;
     borrow = fieldBitor(BigInt(br1), BigInt(br2));
@@ -3138,7 +3137,7 @@ export function fe_sub(a: Fe25519, b: Fe25519): Fe25519
   let neg_b = Array.from({length: Number(4n)}, () => 0n);
   let borrow: bigint = 0n;
   for (let i = 0n; i < 4n; i += 1n)   {
-    const [r1, br1] = P_LIMBS[Number(i)].overflowing_sub(b._0[Number(i)]);
+    const [r1, br1] = P_LIMBS[Number(i)].overflowing_sub(b[0][Number(i)]);
     const [r2, br2] = r1.overflowing_sub(borrow);
     neg_b[Number(i)] = r2;
     borrow = fieldBitor(BigInt(br1), BigInt(br2));
@@ -3195,7 +3194,7 @@ export function field_square<T>(a: T, c: T): T
   return field_mul(__clone(a), a, c);
 }
 
-export function gen_abo<B, D>(ctx: { newD: () => any }, k: bigint, n: bigint, a: bigint[], rand: readonly bigint[]): ABODyn<B, D>
+export function gen_abo<B, D>(ctx: { newD: () => any, BClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, k: bigint, n: bigint, a: bigint[], rand: readonly bigint[]): ABODyn<B, D>
 {
   let h = ctx.newD();
   const per_byte = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_ni: any) => (() => {
@@ -3203,10 +3202,10 @@ export function gen_abo<B, D>(ctx: { newD: () => any }, k: bigint, n: bigint, a:
   for (let i = 0n; i < k; i += 1n)   {
     const core = Array.from({length: Number(ilog2(k) - 0n)}, (_, __i) => BigInt(__i) + 0n).reduce((acc: any, b: any) => (() => {
   if ((fieldBitand(fieldShr(i, b), 1n) !== 0n))   {
-    const doubled = doubleVec(acc);
+    const doubled = ctx.BClass.double(acc);
     acc = __clone(doubled[Number(1n)]);
   } else   {
-    const doubled = doubleVec(acc);
+    const doubled = ctx.BClass.double(acc);
     acc = __clone(doubled[Number(0n)]);
   }
   return acc;
@@ -4106,9 +4105,9 @@ export function recompute_tree(r: bigint[], total_leaves: bigint): Vec<bigint[]>
   tree[Number(0n)] = r;
   for (let node = 0n; node < fieldSub(total_leaves, 1n); node += 1n)   {
     const parent = Vec(tree[Number(node)]);
-    const [left, right] = doubleVec(parent);
-    tree[Number(fieldAdd(fieldMul(2n, node), 1n))] = left._0;
-    tree[Number(fieldAdd(fieldMul(2n, node), 2n))] = right._0;
+    const [left, right] = AesCtrLengthDoubler.double(parent);
+    tree[Number(fieldAdd(fieldMul(2n, node), 1n))] = left[0];
+    tree[Number(fieldAdd(fieldMul(2n, node), 2n))] = right[0];
   }
   return tree;
 }
@@ -4242,11 +4241,11 @@ export function shift_rows(state: bigint[])
 export function sign(sk: FaestSecretKey, pk: FaestPublicKey, message: readonly bigint[], iv_seed: bigint[], prover: unknown /* impl FaestAesProver */): FaestSignature
 {
   const iv: bigint[] = aes128_encrypt(iv_seed, Array.from({length: Number(LAMBDA_BYTES)}, () => 0n));
-  const r: bigint[] = aes128_encrypt(sk._0, iv);
+  const r: bigint[] = aes128_encrypt(sk[0], iv);
   const commitment: BavcCommitmentDyn = Bavc.commit(r, iv, TAU, SUB_VOLE_N);
   const mu: Vec<bigint> = (() => {
   let h = Sha3_256.new();
-  h.update(pk._0);
+  h.update(pk[0]);
   h.update(message);
   return [...h.finalize()];
 })();
@@ -4475,7 +4474,7 @@ export function verify(pk: FaestPublicKey, message: readonly bigint[], sig: Faes
   const iv = sig.iv;
   const mu: Vec<bigint> = (() => {
   let h = Sha3_256.new();
-  h.update(pk._0);
+  h.update(pk[0]);
   h.update(message);
   return [...h.finalize()];
 })();
@@ -4570,7 +4569,7 @@ export function vole_hash(key: UniversalHashKey, input: readonly bigint[]): Univ
     (bytes).splice(0, (block).length, ...(block));
     const s = new Galois128(u128.from_le_bytes(bytes));
     h0 = fieldAdd(h0, fieldMul(s, pow0));
-    const s64 = new Galois64(BigInt(s._0));
+    const s64 = new Galois64(BigInt(s[0]));
     h1 = fieldAdd(h1, fieldMul(s64, pow1));
     pow0 = fieldMul(pow0, key.r0);
     pow1 = fieldMul(pow1, key.r1);
@@ -4589,7 +4588,7 @@ export function vole_hash_consistency_check(key: UniversalHashKey, hu: Universal
 {
   const lhs0 = hq.h0;
   const rhs0 = fieldAdd(hv.h0, fieldMul(delta, fieldAdd(hu.h0, hc.h0)));
-  const delta64 = new Galois64(BigInt(delta._0));
+  const delta64 = new Galois64(BigInt(delta[0]));
   const lhs1 = hq.h1;
   const rhs1 = fieldAdd(hv.h1, fieldMul(delta64, fieldAdd(hu.h1, hc.h1)));
   return ((lhs0 === rhs0) && (lhs1 === rhs1));
@@ -4644,7 +4643,7 @@ export function zk_hash(key: UniversalHashKey, elements: readonly Galois128[]): 
   let pow1 = key.r1;
   for (const x of elements)   {
     h0 = fieldAdd(h0, fieldMul(x, pow0));
-    const x64 = new Galois64(BigInt(x._0));
+    const x64 = new Galois64(BigInt(x[0]));
     h1 = fieldAdd(h1, fieldMul(x64, pow1));
     pow0 = fieldMul(pow0, key.r0);
     pow1 = fieldMul(pow1, key.r1);
@@ -4674,8 +4673,8 @@ export function zq_sub(a: Zq, b: Zq): Zq
 
 export function absorb(data: readonly bigint[])
 {
-  return (() => { const __match = this; if (true /* Sponge::Shake128 */) { const h = __match._0;
-return h.update(data); } else { const h = __match._0;
+  return (() => { const __match = this; if (true /* Sponge::Shake128 */) { const h = __match[0];
+return h.update(data); } else { const h = __match[0];
 return h.update(data); } })();
 }
 
@@ -4699,11 +4698,11 @@ export function party_index(...__args: any[]): any {
 export function squeeze(n: bigint): Vec<bigint>
 {
   let out = [];
-  (() => { const __match = this; if (true /* Sponge::Shake128 */) { const h = __match._0;
+  (() => { const __match = this; if (true /* Sponge::Shake128 */) { const h = __match[0];
 return (() => {
   let r = __clone(h).finalize_xof();
   r.read(out);
-})(); } else { const h = __match._0;
+})(); } else { const h = __match[0];
 return (() => {
   let r = __clone(h).finalize_xof();
   r.read(out);
