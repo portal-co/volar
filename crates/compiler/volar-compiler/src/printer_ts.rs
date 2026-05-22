@@ -484,19 +484,17 @@ fn write_ctx_param(needs: &WitnessNeeds, f: &mut fmt::Formatter<'_>) -> fmt::Res
 
 /// Build a map from internal function names to their witness needs.
 /// Used so that callers know they must forward `ctx` when calling these functions.
-fn build_module_witness_map(module: &IrModule<IrFunction>) -> BTreeMap<String, WitnessNeeds> {
-    let mut map = BTreeMap::new();
+fn build_module_witness_map(module: &IrModule<IrFunction>) -> BTreeMap<Vec<String>, WitnessNeeds> {
+    let mut map: BTreeMap<Vec<String>, WitnessNeeds> = BTreeMap::new();
 
-    // First pass: direct witness needs
+    // First pass: direct witness needs.
+    // Top-level functions use full IrPath as key; methods use vec!["ClassName.methodName"].
     for func in &module.functions {
         let needs = compute_function_witnesses(func, &[]);
         if !needs.is_empty() {
-            let name = if func.name.starts_with("r#") {
-                func.name[2..].to_string()
-            } else {
-                func.name.clone()
-            };
-            map.insert(name, needs);
+            let bare = if func.name.starts_with("r#") { &func.name[2..] } else { &func.name };
+            let key = item_irpath(&func.module_path, bare);
+            map.insert(key, needs);
         }
     }
     for imp in &module.impls {
@@ -507,7 +505,8 @@ fn build_module_witness_map(module: &IrModule<IrFunction>) -> BTreeMap<String, W
                 if !needs.is_empty() {
                     let class_name = self_ty_name(&imp.self_ty);
                     let method_name = ts_method_name(&func.name, imp.trait_.as_ref());
-                    let key = format!("{}.{}", class_name, method_name);
+                    // Methods are keyed by a single-element vec to distinguish from top-level fns
+                    let key: Vec<String> = core::iter::once(format!("{}.{}", class_name, method_name)).collect();
                     map.insert(key, needs);
                 }
             }
@@ -518,22 +517,19 @@ fn build_module_witness_map(module: &IrModule<IrFunction>) -> BTreeMap<String, W
     // that needs witnesses, the caller also needs those witnesses (so it can
     // forward `ctx`).  We iterate until no new needs are added.
     //
-    // Collect all (name, body) pairs for scanning.
-    let mut all_funcs: Vec<(String, &IrBlock)> = Vec::new();
+    // Collect all (IrPath key, body) pairs for scanning.
+    let mut all_funcs: Vec<(Vec<String>, &IrBlock)> = Vec::new();
     for func in &module.functions {
-        let name = if func.name.starts_with("r#") {
-            func.name[2..].to_string()
-        } else {
-            func.name.clone()
-        };
-        all_funcs.push((name, &func.body));
+        let bare = if func.name.starts_with("r#") { &func.name[2..] } else { &func.name };
+        let key = item_irpath(&func.module_path, bare);
+        all_funcs.push((key, &func.body));
     }
     for imp in &module.impls {
         for item in &imp.items {
             if let IrImplItem::Method(func) = item {
                 let class_name = self_ty_name(&imp.self_ty);
                 let method_name = ts_method_name(&func.name, imp.trait_.as_ref());
-                let key = format!("{}.{}", class_name, method_name);
+                let key: Vec<String> = core::iter::once(format!("{}.{}", class_name, method_name)).collect();
                 all_funcs.push((key, &func.body));
             }
         }
@@ -541,18 +537,22 @@ fn build_module_witness_map(module: &IrModule<IrFunction>) -> BTreeMap<String, W
 
     loop {
         let mut changed = false;
-        for (caller_name, body) in &all_funcs {
+        for (caller_key, body) in &all_funcs {
             let callee_names = collect_call_targets(body);
             let mut extra = WitnessNeeds::default();
             for callee in &callee_names {
-                if let Some(callee_needs) = map.get(callee.as_str()) {
+                // Resolve bare callee name by last segment
+                if let Some(callee_needs) = map.iter()
+                    .find(|(k, _)| k.last().map(|s| s.as_str()) == Some(callee.as_str()))
+                    .map(|(_, v)| v)
+                {
                     extra.merge(callee_needs);
                 }
             }
             if extra.is_empty() {
                 continue;
             }
-            let entry = map.entry(caller_name.clone()).or_default();
+            let entry = map.entry(caller_key.clone()).or_default();
             let before = entry.needs.len();
             entry.merge(&extra);
             entry.sorted();
@@ -566,6 +566,27 @@ fn build_module_witness_map(module: &IrModule<IrFunction>) -> BTreeMap<String, W
     }
 
     map
+}
+
+/// Compute the set of bare item names that appear in more than one origin crate.
+/// These items need `$`-qualified TS names to avoid collisions.
+fn compute_name_collisions(module: &IrModule<IrFunction>) -> std::collections::HashSet<String> {
+    use std::collections::HashMap;
+    let mut counts: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+    for f in &module.functions {
+        counts.entry(f.name.clone())
+            .or_default()
+            .insert(f.module_path.first().cloned().unwrap_or_default());
+    }
+    for s in &module.structs {
+        counts.entry(s.kind.to_string())
+            .or_default()
+            .insert(s.module_path.first().cloned().unwrap_or_default());
+    }
+    counts.into_iter()
+        .filter(|(_, crates)| crates.len() > 1)
+        .map(|(name, _)| name)
+        .collect()
 }
 
 /// Collect the simple names of all functions called in a block (non-method calls only).
@@ -767,12 +788,16 @@ pub fn print_module_ts_with_imports(
 
     let witness_map = build_module_witness_map(&module);
     let erased = collect_erased_type_params(&module);
-    let tuple_structs: std::collections::HashSet<String> = module.structs.iter()
+    // IrPath-keyed tuple struct set
+    let tuple_structs: std::collections::HashSet<Vec<String>> = module.structs.iter()
         .filter(|s| s.is_tuple)
-        .map(|s| s.kind.to_string())
+        .map(|s| item_irpath(&s.module_path, &s.kind.to_string()))
         .collect();
+    // Pre-pass: bare names that appear in more than one origin crate → get $-qualified TS names
+    let name_collisions = compute_name_collisions(&module);
     let cx = TsContext {
         witness_map: &witness_map,
+        name_collisions: &name_collisions,
         erased_type_params: erased,
         self_type: None,
         tuple_structs: &tuple_structs,
@@ -842,12 +867,14 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
 
     let witness_map = build_module_witness_map(&flat);
     let erased = collect_erased_type_params(&flat);
-    let tuple_structs_flat: std::collections::HashSet<String> = flat.structs.iter()
+    let tuple_structs_flat: std::collections::HashSet<Vec<String>> = flat.structs.iter()
         .filter(|s| s.is_tuple)
-        .map(|s| s.kind.to_string())
+        .map(|s| item_irpath(&s.module_path, &s.kind.to_string()))
         .collect();
+    let name_collisions_flat = compute_name_collisions(&flat);
     let cx = TsContext {
         witness_map: &witness_map,
+        name_collisions: &name_collisions_flat,
         erased_type_params: erased,
         self_type: None,
         tuple_structs: &tuple_structs_flat,
@@ -925,15 +952,20 @@ struct MutRef {
 
 /// Immutable context passed to every TS writer.
 struct TsContext<'a> {
-    /// Per-function witness needs keyed by `"functionName"` or `"ClassName.methodName"`.
-    witness_map: &'a BTreeMap<String, WitnessNeeds>,
+    /// Per-function witness needs keyed by IrPath (`module_path + name`) for
+    /// top-level functions, and `vec!["ClassName.methodName"]` for methods.
+    witness_map: &'a BTreeMap<Vec<String>, WitnessNeeds>,
+    /// Bare function names that appear in more than one origin module.
+    /// These are emitted as `module_stem$name` in TS to avoid collisions.
+    name_collisions: &'a std::collections::HashSet<String>,
     /// Type parameter names that have been erased (Fn-bounded, AsRef-bounded, etc.)
     /// and should be printed as `any` in type positions.
     erased_type_params: Vec<String>,
     /// Class name in scope when emitting inside a class body. `Self` maps to `this`.
     self_type: Option<String>,
     /// Struct names that are tuple structs — their constructors use positional `new T(x)` syntax.
-    tuple_structs: &'a std::collections::HashSet<String>,
+    /// Keyed by IrPath (module_path + struct_name).
+    tuple_structs: &'a std::collections::HashSet<Vec<String>>,
     /// Type-param names that have a Class witness in the current function scope.
     /// When a bare `G` (Var/Path) is seen, emit `ctx.GClass` instead.
     class_witnesses: Vec<String>,
@@ -942,9 +974,34 @@ struct TsContext<'a> {
 }
 
 impl<'a> TsContext<'a> {
+    /// Look up witness needs for a bare function name (last segment of IrPath).
+    fn get_witness_needs(&self, bare_name: &str) -> Option<&WitnessNeeds> {
+        self.witness_map.iter()
+            .find(|(k, _)| k.last().map(|s| s.as_str()) == Some(bare_name))
+            .map(|(_, v)| v)
+    }
+
+    /// Check if a bare struct/function name is a tuple struct (by last segment of IrPath).
+    fn is_tuple_struct(&self, bare_name: &str) -> bool {
+        self.tuple_structs.iter()
+            .any(|k| k.last().map(|s| s.as_str()) == Some(bare_name))
+    }
+
+    /// Return the TS-qualified name for an item: bare name if unique, `stem$name` if colliding.
+    fn ts_qualified_name(&self, module_path: &[String], bare_name: &str) -> String {
+        if self.name_collisions.contains(bare_name) && !module_path.is_empty() {
+            // Use the parent module stem (second-to-last element of the full path) as qualifier
+            let stem = module_path.last().map(|s| s.as_str()).unwrap_or("_");
+            format!("{}${}", stem, bare_name)
+        } else {
+            bare_name.to_string()
+        }
+    }
+
     fn with_self_type(&self, name: &str) -> TsContext<'a> {
         TsContext {
             witness_map: self.witness_map,
+            name_collisions: self.name_collisions,
             erased_type_params: self.erased_type_params.clone(),
             self_type: Some(name.to_string()),
             tuple_structs: self.tuple_structs,
@@ -956,6 +1013,7 @@ impl<'a> TsContext<'a> {
     fn with_class_witnesses(&self, witnesses: Vec<String>) -> TsContext<'a> {
         TsContext {
             witness_map: self.witness_map,
+            name_collisions: self.name_collisions,
             erased_type_params: self.erased_type_params.clone(),
             self_type: self.self_type.clone(),
             tuple_structs: self.tuple_structs,
@@ -969,6 +1027,7 @@ impl<'a> TsContext<'a> {
         mut_refs.push(mut_ref);
         TsContext {
             witness_map: self.witness_map,
+            name_collisions: self.name_collisions,
             erased_type_params: self.erased_type_params.clone(),
             self_type: self.self_type.clone(),
             tuple_structs: self.tuple_structs,
@@ -1387,7 +1446,7 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
         }
         for (fn_name, variants) in &fn_groups {
             let empty = WitnessNeeds::default();
-            let needs = cx.witness_map.get(fn_name.as_str()).unwrap_or(&empty);
+            let needs = cx.get_witness_needs(&fn_name).unwrap_or(&empty);
             if variants.len() == 1 {
                 TsFunctionWriter {
                     func: variants[0],
@@ -1427,7 +1486,7 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
         }
         for (fn_name, variants) in &orphan_fns {
             let empty = WitnessNeeds::default();
-            let needs = cx.witness_map.get(fn_name.as_str()).unwrap_or(&empty);
+            let needs = cx.get_witness_needs(&fn_name).unwrap_or(&empty);
             if variants.len() == 1 {
                 TsFunctionWriter { func: variants[0], indent: 0, witness_needs: needs }
                     .ts_fmt(f, cx)?;
@@ -1541,7 +1600,7 @@ impl<'a> TsBackend for TsClassWriter<'a> {
             let method_name = ts_method_name(&im.func.name, im.imp.trait_.as_ref());
             let key = format!("{}.{}", class_name, method_name);
             let empty = WitnessNeeds::default();
-            let needs = cx.witness_map.get(&key).unwrap_or(&empty);
+            let needs = cx.get_witness_needs(&key).unwrap_or(&empty);
             TsMethodWriter {
                 func: im.func,
                 imp: im.imp,
@@ -1559,7 +1618,7 @@ impl<'a> TsBackend for TsClassWriter<'a> {
             for v in &mm.variants {
                 let method_name = ts_method_name(&v.func.name, v.imp.trait_.as_ref());
                 let key = format!("{}.{}", class_name, method_name);
-                if let Some(v_needs) = cx.witness_map.get(&key) {
+                if let Some(v_needs) = cx.get_witness_needs(&key) {
                     needs.merge(v_needs);
                 }
             }
@@ -1604,6 +1663,7 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
                 let bare = self_ty.split('<').next().unwrap_or(self_ty).to_string();
                 cx_static = TsContext {
                     witness_map: cx.witness_map,
+                    name_collisions: cx.name_collisions,
                     erased_type_params: cx.erased_type_params.clone(),
                     self_type: Some(bare),
                     tuple_structs: cx.tuple_structs,
@@ -2448,7 +2508,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                             "Vec" if args.len() == 1 => {
                                 return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
                             }
-                            _ if is_primitive_class(name) || cx.tuple_structs.contains(name.as_str()) => {
+                            _ if is_primitive_class(name) || cx.is_tuple_struct(name) => {
                                 write!(f, "new {}(", name)?;
                                 let mut first = true;
                                 for arg in args.iter().filter(|a| !is_phantom_arg(a)) {
@@ -2481,7 +2541,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         _ => {}
                     }
                     // Tuple struct constructors → new ClassName(args...)
-                    if is_primitive_class(v) || cx.tuple_structs.contains(v.as_str()) {
+                    if is_primitive_class(v) || cx.is_tuple_struct(v) {
                         write!(f, "new {}(", v)?;
                         let mut first = true;
                         for arg in args.iter().filter(|a| !is_phantom_arg(a)) {
@@ -2555,7 +2615,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     // Check if target is an internal function that needs ctx forwarding
                     if segments.len() == 1 {
                         let target_name = &segments[0];
-                        if cx.witness_map.contains_key(target_name.as_str()) {
+                        if cx.get_witness_needs(target_name).is_some() {
                             write!(f, "{}(ctx", target_name)?;
                             for arg in args.iter().filter(|a| !is_phantom_arg(a)) {
                                 write!(f, ", ")?;

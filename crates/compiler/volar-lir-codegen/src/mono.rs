@@ -124,6 +124,7 @@ pub(crate) fn monomorphize_module(module: &IrModule<IrFunction>, env: &MonoEnv) 
         impls: module.impls.iter().map(|i| monomorphize_impl(i, env)).collect(),
         functions: module.functions.iter().map(|f| monomorphize_function(f, env)).collect(),
         type_aliases: module.type_aliases.iter().map(|a| monomorphize_type_alias(a, env)).collect(),
+        consts: module.consts.clone(),
     }
 }
 
@@ -145,6 +146,7 @@ pub(crate) fn monomorphize_cfg_module(module: &IrCfgModule, env: &MonoEnv) -> Ir
             IrAnyFunction::Flat(f) => IrAnyFunction::Flat(monomorphize_function(f, env)),
         }).collect(),
         type_aliases: module.type_aliases.iter().map(|a| monomorphize_type_alias(a, env)).collect(),
+        consts: module.consts.clone(),
     }
 }
 
@@ -155,6 +157,7 @@ pub(crate) fn monomorphize_cfg_module(module: &IrCfgModule, env: &MonoEnv) -> Ir
 fn monomorphize_struct(s: &IrStruct, env: &MonoEnv) -> IrStruct {
     IrStruct {
         kind: s.kind.clone(),
+        module_path: s.module_path.clone(),
         // Remove generic params that are being substituted.
         generics: s
             .generics
@@ -184,6 +187,7 @@ fn monomorphize_struct(s: &IrStruct, env: &MonoEnv) -> IrStruct {
 pub fn monomorphize_function(func: &IrFunction, env: &MonoEnv) -> IrFunction {
     IrFunction {
         name: func.name.clone(),
+        module_path: func.module_path.clone(),
         generics: func
             .generics
             .iter()
@@ -280,6 +284,7 @@ fn monomorphize_impl(imp: &IrImpl, env: &MonoEnv) -> IrImpl {
 fn monomorphize_type_alias(alias: &IrTypeAlias, env: &MonoEnv) -> IrTypeAlias {
     IrTypeAlias {
         name: alias.name.clone(),
+        module_path: alias.module_path.clone(),
         generics: alias
             .generics
             .iter()

@@ -168,7 +168,7 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
 // Parsing
 // ---------------------------------------------------------------------------
 
-fn parse_spec(spec_dir: &Path, module_name: &str) -> IrModule<IrFunction> {
+fn parse_spec(spec_dir: &Path, module_name: &str, crate_name: &str) -> IrModule<IrFunction> {
     let mut files = Vec::new();
     collect_rs_files(spec_dir, &mut files).unwrap_or_else(|e| {
         eprintln!("warning: error reading spec dir {:?}: {}", spec_dir, e);
@@ -197,8 +197,12 @@ fn parse_spec(spec_dir: &Path, module_name: &str) -> IrModule<IrFunction> {
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown");
+        // Build module path: [crate_name, file_stem]
+        // Sub-module files (e.g. faest/bavc.rs) get the stem only; the crate gives enough
+        // disambiguation for the maps. Full sub-path resolution is a future enhancement.
+        let module_path: Vec<String> = vec![crate_name.to_string(), stem.to_string()];
 
-        match parse_source(&content, stem) {
+        match parse_source(&content, stem, &module_path) {
             Ok(m) => {
                 eprintln!(
                     "  parsed {:?}: {} structs  {} impls  {} fns",
@@ -222,27 +226,35 @@ fn parse_spec(spec_dir: &Path, module_name: &str) -> IrModule<IrFunction> {
         }
     }
 
-    // Deduplicate top-level functions by name: keep the first definition
-    // encountered (deterministic because files are sorted). Duplicates arise
-    // when the same helper function is copy-pasted across spec modules.
+    // Deduplicate: within the same top-level crate, keep first by bare name.
+    // Across different crates, keep all (cross-crate duplicates get $-qualified names in TS).
     {
-        let mut seen_fns = std::collections::HashSet::new();
+        let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
         let before = module.functions.len();
-        module.functions.retain(|f| seen_fns.insert(f.name.clone()));
+        module.functions.retain(|f| {
+            let crate_name = f.module_path.first().cloned().unwrap_or_default();
+            seen.insert((crate_name, f.name.clone()))
+        });
         let removed = before - module.functions.len();
         if removed > 0 {
             eprintln!("[volar-codegen] deduplicated {} duplicate top-level function(s)", removed);
         }
     }
-
-    // Deduplicate structs and consts by name as well.
     {
-        let mut seen = std::collections::HashSet::new();
-        module.structs.retain(|s| seen.insert(s.kind.to_string()));
+        let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        module.structs.retain(|s| {
+            let crate_name = s.module_path.first().cloned().unwrap_or_default();
+            seen.insert((crate_name, s.kind.to_string()))
+        });
     }
     {
-        let mut seen = std::collections::HashSet::new();
-        module.consts.retain(|c| seen.insert(c.name.clone()));
+        // Dedup consts: within the same top-level crate, keep first by bare name.
+        // Across different crates, keep all (they may need $-qualified names in TS).
+        let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+        module.consts.retain(|c| {
+            let crate_name = c.module_path.first().cloned().unwrap_or_default();
+            seen.insert((crate_name, c.name.clone()))
+        });
     }
 
     eprintln!(
@@ -288,11 +300,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Dedup keeps the first (lowest-layer) occurrence.
     let module = if let Some(prim_dir) = cfg.target.primitives_dir() {
         let prim_path = PathBuf::from(prim_dir);
-        let mut m = parse_spec(&prim_path, cfg.target.module_name());
+        let mut m = parse_spec(&prim_path, cfg.target.module_name(), "volar_primitives");
 
         // Optional common layer (volar-common: hash_commitment, length_doubling)
         if let Some(common_dir) = cfg.target.common_dir() {
-            let common = parse_spec(&PathBuf::from(common_dir), cfg.target.module_name());
+            let common = parse_spec(&PathBuf::from(common_dir), cfg.target.module_name(), "volar_common");
             m.structs.extend(common.structs);
             m.enums.extend(common.enums);
             m.traits.extend(common.traits);
@@ -302,7 +314,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             m.consts.extend(common.consts);
         }
 
-        let spec = parse_spec(&cfg.spec_dir, cfg.target.module_name());
+        let spec = parse_spec(&cfg.spec_dir, cfg.target.module_name(), "volar_spec");
         // Merge: primitives/common first; dedup keeps the first occurrence.
         m.structs.extend(spec.structs);
         m.enums.extend(spec.enums);
@@ -311,22 +323,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         m.functions.extend(spec.functions);
         m.type_aliases.extend(spec.type_aliases);
         m.consts.extend(spec.consts);
-        // Re-run dedup after merge.
+        // Re-run dedup after merge: within same crate, keep first by bare name;
+        // across crates, keep all (they'll get $-qualified TS names).
         {
-            let mut seen = std::collections::HashSet::new();
-            m.structs.retain(|s| seen.insert(s.kind.to_string()));
+            let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+            m.structs.retain(|s| {
+                let crate_name = s.module_path.first().cloned().unwrap_or_default();
+                seen.insert((crate_name, s.kind.to_string()))
+            });
         }
         {
-            let mut seen = std::collections::HashSet::new();
-            m.functions.retain(|f| seen.insert(f.name.clone()));
+            let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+            m.functions.retain(|f| {
+                let crate_name = f.module_path.first().cloned().unwrap_or_default();
+                seen.insert((crate_name, f.name.clone()))
+            });
         }
         {
-            let mut seen = std::collections::HashSet::new();
-            m.consts.retain(|c| seen.insert(c.name.clone()));
+            let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+            m.consts.retain(|c| {
+                let crate_name = c.module_path.first().cloned().unwrap_or_default();
+                seen.insert((crate_name, c.name.clone()))
+            });
         }
         m
     } else {
-        parse_spec(&cfg.spec_dir, cfg.target.module_name())
+        parse_spec(&cfg.spec_dir, cfg.target.module_name(), "volar_spec")
     };
 
     // Optional pre-lowering IR dump.

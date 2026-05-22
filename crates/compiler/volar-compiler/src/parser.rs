@@ -37,7 +37,11 @@ pub struct SourceInput<'a> {
     pub name: &'a str,
 }
 
-pub fn parse_sources(sources: &[SourceInput<'_>], module_name: &str) -> Result<IrModule<IrFunction>> {
+pub fn parse_sources(
+    sources: &[SourceInput<'_>],
+    module_name: &str,
+    module_path: &[String],
+) -> Result<IrModule<IrFunction>> {
     let mut module = IrModule {
         name: module_name.to_string(),
         ..Default::default()
@@ -47,22 +51,39 @@ pub fn parse_sources(sources: &[SourceInput<'_>], module_name: &str) -> Result<I
         let file = parse_file(input.source).map_err(|e| CompilerError::ParseError(e.to_string()))?;
         for item in &file.items {
             match item {
-                Item::Struct(s) => module.structs.push(convert_struct(s)?),
+                Item::Struct(s) => {
+                    let mut st = convert_struct(s)?;
+                    st.module_path = module_path.to_vec();
+                    module.structs.push(st);
+                }
                 Item::Enum(e) => module.enums.push(convert_enum(e)?),
-                Item::Trait(t) => module.traits.push(convert_trait(t)?),
+                Item::Trait(t) => {
+                    let mut tr = convert_trait(t)?;
+                    tr.module_path = module_path.to_vec();
+                    module.traits.push(tr);
+                }
                 Item::Impl(i) => module.impls.push(convert_impl(i)?),
-                Item::Fn(f) => module.functions.push(convert_function(f)?),
-                Item::Type(t) => module.type_aliases.push(convert_type_alias(t)?),
+                Item::Fn(f) => {
+                    let mut func = convert_function(f)?;
+                    func.module_path = module_path.to_vec();
+                    module.functions.push(func);
+                }
+                Item::Type(t) => {
+                    let mut alias = convert_type_alias(t)?;
+                    alias.module_path = module_path.to_vec();
+                    module.type_aliases.push(alias);
+                }
                 Item::Const(c) => {
                     if let (Ok(value), Ok(ty)) = (convert_expr(&c.expr), convert_type(&c.ty)) {
                         module.consts.push(crate::ir::IrConst {
                             name: c.ident.to_string(),
+                            module_path: module_path.to_vec(),
                             ty,
                             value,
                         });
                     }
                 }
-                Item::Use(u) => {}
+                Item::Use(_) => {}
                 _ => {}
             }
         }
@@ -71,14 +92,15 @@ pub fn parse_sources(sources: &[SourceInput<'_>], module_name: &str) -> Result<I
     Ok(module)
 }
 
-pub fn parse_source(source: &str, name: &str) -> Result<IrModule<IrFunction>> {
-    parse_sources(&[SourceInput { source, name }], name)
+pub fn parse_source(source: &str, name: &str, module_path: &[String]) -> Result<IrModule<IrFunction>> {
+    parse_sources(&[SourceInput { source, name }], name, module_path)
 }
 
 fn convert_struct(s: &syn::ItemStruct) -> Result<IrStruct> {
     let native_volar_type = parse_native_volar_type(&s.attrs);
     Ok(IrStruct {
         kind: StructKind::from_str(&s.ident.to_string()),
+        module_path: vec![],
         native_volar_type,
         generics: s
             .generics
@@ -238,6 +260,7 @@ fn convert_field(f: &syn::Field) -> Result<IrField> {
 fn convert_trait(t: &syn::ItemTrait) -> Result<IrTrait> {
     Ok(IrTrait {
         kind: TraitKind::from_path(&[t.ident.to_string()]),
+        module_path: vec![],
         generics: t
             .generics
             .params
@@ -412,6 +435,7 @@ fn convert_impl_item(item: &syn::ImplItem) -> Result<Option<IrImplItem>> {
     match item {
         syn::ImplItem::Fn(m) => Ok(Some(IrImplItem::Method(IrFunction {
             name: m.sig.ident.to_string(),
+            module_path: vec![],
             generics: m
                 .sig
                 .generics
@@ -470,6 +494,7 @@ fn convert_function(f: &syn::ItemFn) -> Result<IrFunction> {
     let external_kind = parse_external_kind(&f.attrs);
     Ok(IrFunction {
         name: f.sig.ident.to_string(),
+        module_path: vec![],
         generics: f
             .sig
             .generics
@@ -532,6 +557,7 @@ fn parse_external_kind(attrs: &[syn::Attribute]) -> ExternalKind {
 fn convert_type_alias(t: &syn::ItemType) -> Result<IrTypeAlias> {
     Ok(IrTypeAlias {
         name: t.ident.to_string(),
+        module_path: vec![],
         generics: t
             .generics
             .params

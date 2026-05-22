@@ -1576,6 +1576,7 @@ where
     let fn_name = format!("{}_{}", name, scheme.fn_name_suffix());
     let func = IrFunction {
         name: fn_name.clone(),
+        module_path: vec![],
         generics: scheme.generics(),
         receiver: None,
         params,
@@ -1597,6 +1598,8 @@ where
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],
+
+        consts: vec![],
     };
     if let Some(ls) = linkage {
         ls.apply(&mut module);
@@ -2159,6 +2162,8 @@ fn weave_fhe_cfg<S: FheScheme>(
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],
+
+        consts: vec![],
     };
     if let Some(ls) = linkage {
         ls.apply_cfg(&mut module);
@@ -2265,6 +2270,7 @@ fn weave_fhe_cfg<S: FheScheme>(
 
         let stub_fn = IrFunction {
             name: action_decl.name.clone(),
+            module_path: vec![],
             generics: scheme.generics(),
             receiver: None,
             params,
@@ -2292,6 +2298,7 @@ fn weave_fhe_cfg<S: FheScheme>(
         if !already_linked {
             let helper = IrFunction {
                 name: "bools_to_usize".into(),
+                module_path: vec![],
                 generics: vec![],
                 receiver: None,
                 params: vec![IrParam {
@@ -3536,6 +3543,7 @@ impl FheScheme for TfheScheme {
         // tfhe_trivial_encrypt(b: bool) -> wire_type
         stubs.push(IrFunction {
             name: "tfhe_trivial_encrypt".into(),
+            module_path: vec![],
             generics: n_lwe_gen.clone(),
             receiver: None,
             params: vec![IrParam {
@@ -3551,6 +3559,7 @@ impl FheScheme for TfheScheme {
         // tfhe_trivial_zero() -> wire_type
         stubs.push(IrFunction {
             name: "tfhe_trivial_zero".into(),
+            module_path: vec![],
             generics: n_lwe_gen.clone(),
             receiver: None,
             params: vec![],
@@ -3563,6 +3572,7 @@ impl FheScheme for TfheScheme {
         // tfhe_trivial_one() -> wire_type
         stubs.push(IrFunction {
             name: "tfhe_trivial_one".into(),
+            module_path: vec![],
             generics: n_lwe_gen,
             receiver: None,
             params: vec![],
@@ -3581,6 +3591,7 @@ impl FheScheme for TfheScheme {
         cmux_params.extend(bk_params);
         stubs.push(IrFunction {
             name: "tfhe_cmux".into(),
+            module_path: vec![],
             generics: all_gens,
             receiver: None,
             params: cmux_params,
@@ -4239,6 +4250,7 @@ mod tests {
             type_aliases: vec![],
             functions: vec![IrFunction {
                 name: "loop_read_tfhe".into(),
+                module_path: vec![],
                 generics: scheme.generics(),
                 receiver: None,
                 params,
@@ -4302,6 +4314,7 @@ mod tests {
             type_aliases: vec![],
             functions: vec![IrFunction {
                 name: "loop_write_tfhe".into(),
+                module_path: vec![],
                 generics: scheme.generics(),
                 receiver: None,
                 params,

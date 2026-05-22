@@ -1879,6 +1879,7 @@ pub fn lower_cfg_module_with_opts<T: LirTarget>(
             if let IrAnyFunction::Flat(f) = f { Some(f.clone()) } else { None }
         }).collect(),
         type_aliases: module.type_aliases.clone(),
+        consts: module.consts.clone(),
     };
     let mut registry = structs::build_struct_registry(&flat, target, env);
     let enum_registry = structs::build_enum_registry(&module.enums, &mut registry, target, env);

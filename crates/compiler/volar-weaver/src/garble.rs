@@ -283,6 +283,7 @@ where
 
     let func = IrFunction {
         name: name.into(),
+        module_path: vec![],
         generics: generic_params(),
         receiver: None,
         params,
@@ -304,6 +305,8 @@ where
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],
+
+        consts: vec![],
     };
     if let Some(ls) = linkage {
         ls.apply(&mut module);
@@ -483,6 +486,7 @@ where
 
     let func = IrFunction {
         name: format!("{}_garble", name),
+        module_path: vec![],
         generics: generic_params(),
         receiver: None,
         params,
@@ -504,6 +508,8 @@ where
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],
+
+        consts: vec![],
     };
     if let Some(ls) = linkage {
         ls.apply(&mut module);
@@ -679,6 +685,7 @@ where
 
     let func = IrFunction {
         name: format!("{}_into_gc", name),
+        module_path: vec![],
         generics: generic_params(),
         receiver: None,
         params,
@@ -700,6 +707,8 @@ where
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],
+
+        consts: vec![],
     };
     if let Some(ls) = linkage {
         ls.apply(&mut module);
@@ -859,6 +868,7 @@ where
 
     let func = IrFunction {
         name: format!("{}_eval_from_setup", name),
+        module_path: vec![],
         generics: generic_params(),
         receiver: None,
         params,
@@ -880,6 +890,8 @@ where
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],
+
+        consts: vec![],
     };
     if let Some(ls) = linkage {
         ls.apply(&mut module);
@@ -1163,6 +1175,8 @@ mod tests {
             traits: vec![],
             impls: vec![],
             type_aliases: vec![],
+
+            consts: vec![],
         };
         let fns_code = print_weaved_module(&combined_module, false);
 

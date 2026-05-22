@@ -83,6 +83,7 @@ fn strip_bodies(module: &IrModule<IrFunction>) -> IrModule<IrFunction> {
     let strip_function = |f: &IrFunction| -> IrFunction {
         IrFunction {
             name: f.name.clone(),
+            module_path: f.module_path.clone(),
             generics: f.generics.clone(),
             receiver: f.receiver,
             params: f.params.clone(),
@@ -298,7 +299,7 @@ pub fn parse_manifest(raw: &[u8]) -> core::result::Result<TypeManifest, Manifest
 
     // 4. Parse with existing parser
     // The header lines are doc comments that syn will ignore
-    let module = crate::parser::parse_source(text, &crate_name)
+    let module = crate::parser::parse_source(text, &crate_name, &[])
         .map_err(|e| ManifestError::ParseError(format!("{}", e)))?;
 
     Ok(TypeManifest {

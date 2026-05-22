@@ -907,11 +907,30 @@ impl fmt::Display for AssociatedType {
 // MAIN IR DATA STRUCTURES
 // ============================================================================
 
+/// Fully-qualified path of an IR item: `[crate_name, module_stem, …, item_name]`.
+/// The last element is always the bare identifier. An empty vec means
+/// the item is synthetic or built-in (no origin).
+pub type IrPath = Vec<String>;
+
+/// Return the bare name (last segment) of an `IrPath`.
+pub fn ir_path_name(path: &IrPath) -> &str {
+    path.last().map(|s| s.as_str()).unwrap_or("")
+}
+
+/// Build the full `IrPath` for an item given its `module_path` and bare `name`.
+pub fn item_irpath(module_path: &[String], name: &str) -> IrPath {
+    let mut v = module_path.to_vec();
+    v.push(name.to_string());
+    v
+}
+
 /// A `pub const` declaration captured from the spec source.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrConst {
     pub name: String,
+    /// Origin module path (without the item name). Empty = synthetic/built-in.
+    pub module_path: Vec<String>,
     pub ty: IrType,
     pub value: IrExpr,
 }
@@ -948,6 +967,8 @@ impl<F, P: Clone + Default> Default for IrModule<F, P> {
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrStruct {
     pub kind: StructKind,
+    /// Origin module path (without the item name). Empty = synthetic/built-in.
+    pub module_path: Vec<String>,
     pub generics: Vec<IrGenericParam>,
     pub fields: Vec<IrField>,
     pub is_tuple: bool,
@@ -1019,6 +1040,8 @@ pub enum IrEnumVariantData {
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrTrait {
     pub kind: TraitKind,
+    /// Origin module path (without the trait name). Empty = synthetic/built-in.
+    pub module_path: Vec<String>,
     pub generics: Vec<IrGenericParam>,
     pub super_traits: Vec<IrTraitBound>,
     pub items: Vec<IrTraitItem>,
@@ -1096,6 +1119,8 @@ pub enum ExternalKind {
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrFunction<P: Clone + Default = ()> {
     pub name: String,
+    /// Origin module path (without the item name). Empty = synthetic/built-in.
+    pub module_path: Vec<String>,
     pub generics: Vec<IrGenericParam>,
     pub receiver: Option<IrReceiver>,
     pub params: Vec<IrParam>,
@@ -1163,6 +1188,8 @@ pub enum IrReceiver {
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IrTypeAlias {
     pub name: String,
+    /// Origin module path (without the item name). Empty = synthetic/built-in.
+    pub module_path: Vec<String>,
     pub generics: Vec<IrGenericParam>,
     pub target: IrType,
 }
@@ -1745,7 +1772,9 @@ fn builtin_binop_trait(math: MathTrait) -> IrTrait {
     let method = math.method_name().unwrap_or("op");
     IrTrait {
         kind: TraitKind::Math(math),
-        generics: vec![IrGenericParam {
+
+
+        module_path: vec![],        generics: vec![IrGenericParam {
             name: "Rhs".into(),
             kind: IrGenericParamKind::Type,
             const_ty: None,
@@ -1792,7 +1821,9 @@ fn builtin_unary_trait(math: MathTrait) -> IrTrait {
     let method = math.method_name().unwrap_or("op");
     IrTrait {
         kind: TraitKind::Math(math),
-        generics: vec![],
+
+
+        module_path: vec![],        generics: vec![],
         super_traits: vec![],
         items: vec![
             IrTraitItem::AssociatedType {
@@ -1841,7 +1872,9 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         // PartialEq<Rhs = Self>
         IrTrait {
             kind: TraitKind::Math(MathTrait::PartialEq),
-            generics: vec![IrGenericParam {
+
+
+            module_path: vec![],            generics: vec![IrGenericParam {
                 name: "Rhs".into(),
                 kind: IrGenericParamKind::Type,
                 const_ty: None,
@@ -1867,7 +1900,9 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         // Eq: marker trait, supertrait PartialEq
         IrTrait {
             kind: TraitKind::Math(MathTrait::Eq),
-            generics: vec![],
+
+
+            module_path: vec![],            generics: vec![],
             super_traits: vec![IrTraitBound {
                 trait_kind: TraitKind::Math(MathTrait::PartialEq),
                 type_args: vec![],
@@ -1878,7 +1913,9 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         // PartialOrd<Rhs = Self>: supertrait PartialEq
         IrTrait {
             kind: TraitKind::Math(MathTrait::PartialOrd),
-            generics: vec![IrGenericParam {
+
+
+            module_path: vec![],            generics: vec![IrGenericParam {
                 name: "Rhs".into(),
                 kind: IrGenericParamKind::Type,
                 const_ty: None,
@@ -1914,7 +1951,9 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         // Ord: supertrait PartialOrd + Eq
         IrTrait {
             kind: TraitKind::Math(MathTrait::Ord),
-            generics: vec![],
+
+
+            module_path: vec![],            generics: vec![],
             super_traits: vec![
                 IrTraitBound {
                     trait_kind: TraitKind::Math(MathTrait::Eq),
@@ -1948,7 +1987,9 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         // Clone
         IrTrait {
             kind: TraitKind::Math(MathTrait::Clone),
-            generics: vec![],
+
+
+            module_path: vec![],            generics: vec![],
             super_traits: vec![],
             items: vec![IrTraitItem::Method(IrMethodSig {
                 name: "clone".into(),
@@ -1962,7 +2003,9 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         // Copy: marker trait, supertrait Clone
         IrTrait {
             kind: TraitKind::Math(MathTrait::Copy),
-            generics: vec![],
+
+
+            module_path: vec![],            generics: vec![],
             super_traits: vec![IrTraitBound {
                 trait_kind: TraitKind::Math(MathTrait::Clone),
                 type_args: vec![],
@@ -1973,7 +2016,9 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         // Default — static method, no receiver
         IrTrait {
             kind: TraitKind::Math(MathTrait::Default),
-            generics: vec![],
+
+
+            module_path: vec![],            generics: vec![],
             super_traits: vec![],
             items: vec![IrTraitItem::Method(IrMethodSig {
                 name: "default".into(),
@@ -1987,7 +2032,9 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         // Unsigned — marker trait for typenum
         IrTrait {
             kind: TraitKind::Math(MathTrait::Unsigned),
-            generics: vec![],
+
+
+            module_path: vec![],            generics: vec![],
             super_traits: vec![],
             items: vec![],
         },
@@ -1995,7 +2042,9 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         // BlockEncrypt
         IrTrait {
             kind: TraitKind::BlockEncrypt,
-            generics: vec![],
+
+
+            module_path: vec![],            generics: vec![],
             super_traits: vec![],
             items: vec![
                 IrTraitItem::AssociatedType {
@@ -2025,7 +2074,9 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         // BlockCipher
         IrTrait {
             kind: TraitKind::BlockCipher,
-            generics: vec![],
+
+
+            module_path: vec![],            generics: vec![],
             super_traits: vec![],
             items: vec![IrTraitItem::AssociatedType {
                 name: AssociatedType::BlockSize,
@@ -2036,7 +2087,9 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         // Digest
         IrTrait {
             kind: TraitKind::Digest,
-            generics: vec![],
+
+
+            module_path: vec![],            generics: vec![],
             super_traits: vec![],
             items: vec![
                 IrTraitItem::AssociatedType {
@@ -2091,7 +2144,9 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         // ArrayLength<T> — marker/type-level constant
         IrTrait {
             kind: TraitKind::ArrayLength,
-            generics: vec![IrGenericParam {
+
+
+            module_path: vec![],            generics: vec![IrGenericParam {
                 name: "T".into(),
                 kind: IrGenericParamKind::Type,
                 const_ty: None,
@@ -2104,7 +2159,9 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
         // Rng — minimal definition
         IrTrait {
             kind: TraitKind::Rng,
-            generics: vec![],
+
+
+            module_path: vec![],            generics: vec![],
             super_traits: vec![],
             items: vec![],
         },
@@ -2284,6 +2341,7 @@ impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrFunction<P> {
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrFunction<Q> {
         IrFunction {
             name: self.name,
+            module_path: self.module_path,
             generics: self.generics,
             receiver: self.receiver,
             params: self.params,

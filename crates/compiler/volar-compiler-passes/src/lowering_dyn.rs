@@ -38,18 +38,40 @@ pub struct StructInfo {
 }
 /// Context for lowering
 pub struct LoweringContext {
-    pub struct_info: BTreeMap<String, StructInfo>,
+    /// IrPath-keyed struct metadata. Key = module_path + struct_name (last segment = bare name).
+    pub struct_info: BTreeMap<Vec<String>, StructInfo>,
     /// Trait names that are length aliases (e.g., VoleArray: ArrayLength).
     pub length_aliases: Vec<String>,
-    /// Leading length params for each function/static method after lowering.
-    /// Used to inject forwarded length args at call sites.
-    pub fn_length_params: BTreeMap<String, Vec<String>>,
+    /// IrPath-keyed leading length params per function/static method after lowering.
+    /// Key = module_path + fn_name. Used to inject forwarded length args at call sites.
+    pub fn_length_params: BTreeMap<Vec<String>, Vec<String>>,
 }
 
 impl LoweringContext {
     /// Get length aliases as string slices for use with `classify_generic_with_aliases`.
     fn aliases(&self) -> Vec<&str> {
         self.length_aliases.iter().map(|s| s.as_str()).collect()
+    }
+
+    /// Look up struct info by bare struct name (last segment of IrPath).
+    pub fn get_struct_info(&self, bare_name: &str) -> Option<&StructInfo> {
+        self.struct_info.iter()
+            .find(|(k, _)| k.last().map(|s| s.as_str()) == Some(bare_name))
+            .map(|(_, v)| v)
+    }
+
+    /// Look up struct info mutably by bare struct name.
+    pub fn get_struct_info_mut(&mut self, bare_name: &str) -> Option<&mut StructInfo> {
+        self.struct_info.iter_mut()
+            .find(|(k, _)| k.last().map(|s| s.as_str()) == Some(bare_name))
+            .map(|(_, v)| v)
+    }
+
+    /// Look up fn length params by bare function name (last segment of IrPath).
+    pub fn get_fn_length_params(&self, bare_name: &str) -> Option<&Vec<String>> {
+        self.fn_length_params.iter()
+            .find(|(k, _)| k.last().map(|s| s.as_str()) == Some(bare_name))
+            .map(|(_, v)| v)
     }
 }
 
@@ -119,7 +141,8 @@ impl LoweringContext {
                     }
                 }
                 // Don't overwrite if already registered by an earlier dep
-                struct_info.entry(s.kind.to_string()).or_insert(info);
+                let key = item_irpath(&s.module_path, &s.kind.to_string());
+                struct_info.entry(key).or_insert(info);
             }
         }
 
@@ -150,13 +173,13 @@ impl LoweringContext {
                     }
                 }
             }
-            struct_info.insert(s.kind.to_string(), info);
+            struct_info.insert(item_irpath(&s.module_path, &s.kind.to_string()), info);
         }
 
         // Pass 2: Determine which structs need phantom data
         for s in &module.structs {
             let kind_str = s.kind.to_string();
-            if let Some(info) = struct_info.get_mut(&kind_str) {
+            if let Some(info) = struct_info.get_mut(&item_irpath(&s.module_path, &kind_str)) {
                 // Collect type params used in fields
                 let used_type_params: Vec<String> = s
                     .fields
@@ -180,7 +203,11 @@ impl LoweringContext {
             if let IrType::Struct { kind, .. } = &im.self_ty {
                 if let Some(tr) = &im.trait_ {
                     if let TraitKind::Math(MathTrait::Clone) = &tr.kind {
-                        if let Some(entry) = struct_info.get_mut(&kind.to_string()) {
+                        let k = kind.to_string();
+                        if let Some(entry) = struct_info.iter_mut()
+                            .find(|(key, _)| key.last().map(|s| s.as_str()) == Some(k.as_str()))
+                            .map(|(_, v)| v)
+                        {
                             entry.manual_clone = true;
                         }
                     }
@@ -190,12 +217,12 @@ impl LoweringContext {
 
         // Pre-pass: compute leading length params for every top-level function
         // and every static impl method so call sites can forward them.
-        let mut fn_length_params: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut fn_length_params: BTreeMap<Vec<String>, Vec<String>> = BTreeMap::new();
         let aliases_ref2: Vec<&str> = length_aliases.iter().map(|s| s.as_str()).collect();
         for f in &module.functions {
             let params = fn_leading_length_params(f, &[], &aliases_ref2, false);
             if !params.is_empty() {
-                fn_length_params.insert(f.name.clone(), params);
+                fn_length_params.insert(item_irpath(&f.module_path, &f.name), params);
             }
         }
         for im in &module.impls {
@@ -215,7 +242,7 @@ impl LoweringContext {
                         // Static method — leading params come from fn_gen + impl_gen
                         let params = fn_leading_length_params(f, &impl_gen, &aliases_ref2, is_trait_impl);
                         if !params.is_empty() {
-                            fn_length_params.insert(f.name.clone(), params);
+                            fn_length_params.insert(item_irpath(&f.module_path, &f.name), params);
                         }
                     }
                 }
@@ -282,7 +309,7 @@ pub fn lower_module_dyn(module: &IrModule<IrFunction>) -> IrModule<IrFunction> {
     for s in &module.structs {
         // Only structs with generic parameters (length witnesses or type params) need
         // lowering and renaming to "Dyn". Primitives and non-generic structs pass through.
-        let needs_lowering = ctx.struct_info.get(&s.kind.to_string())
+        let needs_lowering = ctx.get_struct_info(&s.kind.to_string())
             .map(|info| !info.length_witnesses.is_empty() || !info.type_params.is_empty())
             .unwrap_or(false);
         if needs_lowering {
@@ -379,7 +406,7 @@ fn extract_constant_witnesses(ty: &IrType, ctx: &LoweringContext) -> BTreeMap<St
     let mut result = BTreeMap::new();
     if let IrType::Struct { kind, type_args } = ty {
         let kind_str = kind.to_string();
-        if let Some(info) = ctx.struct_info.get(&kind_str) {
+        if let Some(info) = ctx.get_struct_info(&kind_str) {
             let mut type_arg_idx = 0;
             for (name, gkind, pkind) in &info.orig_generics {
                 if *pkind == IrGenericParamKind::Lifetime {
@@ -407,6 +434,7 @@ fn lower_trait_dyn(t: &volar_compiler::ir::IrTrait, ctx: &LoweringContext) -> vo
     let empty_gen: Vec<IrGenericParam> = Vec::new();
     IrTrait {
         kind: t.kind.clone(),
+        module_path: t.module_path.clone(),
         generics: lower_generics_dyn(&t.generics, &[], ctx),
         super_traits: t
             .super_traits
@@ -474,7 +502,7 @@ fn lower_trait_dyn(t: &volar_compiler::ir::IrTrait, ctx: &LoweringContext) -> vo
 }
 
 fn lower_struct_dyn(s: &IrStruct, ctx: &LoweringContext) -> IrStruct {
-    let info = ctx.struct_info.get(&s.kind.to_string()).unwrap();
+    let info = ctx.get_struct_info(&s.kind.to_string()).unwrap();
     let mut fields = Vec::new();
 
     // Don't add lifetimes since we convert &[T] to Vec<T>
@@ -535,6 +563,7 @@ fn lower_struct_dyn(s: &IrStruct, ctx: &LoweringContext) -> IrStruct {
 
     IrStruct {
         kind: StructKind::from_str(&format!("{}Dyn", s.kind)),
+        module_path: s.module_path.clone(),
         generics,
         fields,
         is_tuple: s.is_tuple,
@@ -703,7 +732,7 @@ fn lower_function_dyn(
     // Unpack witnesses in methods
     if f.receiver.is_some() {
         if let Some(sname) = self_struct {
-            if let Some(info) = ctx.struct_info.get(sname) {
+            if let Some(info) = ctx.get_struct_info(sname) {
                 let mut unpacks = Vec::new();
                 // Collect param names to detect conflicts with field bindings
                 let _param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
@@ -776,6 +805,7 @@ fn lower_function_dyn(
 
     IrFunction {
         name: f.name.clone(),
+        module_path: f.module_path.clone(),
         generics: lower_generics_dyn(&f.generics, impl_gen, ctx),
         receiver: f.receiver,
         params,
@@ -866,7 +896,7 @@ fn lower_type_dyn_inner(
         IrType::Struct { kind, type_args } => {
             let mut lowered_args = Vec::new();
             let kind_str = kind.to_string();
-            if let Some(info) = ctx.struct_info.get(&kind_str) {
+            if let Some(info) = ctx.get_struct_info(&kind_str) {
                 let non_lifetime_generics: Vec<_> = info
                     .orig_generics
                     .iter()
@@ -897,7 +927,7 @@ fn lower_type_dyn_inner(
             {
                 // Standard library containers: keep as-is.
                 kind.clone()
-            } else if let Some(info) = ctx.struct_info.get(&kind_str) {
+            } else if let Some(info) = ctx.get_struct_info(&kind_str) {
                 // Only rename structs that have generic parameters needing lowering.
                 // Primitives (Bit, Galois, Fe25519, EdPoint, Zq, …) have no such
                 // parameters and keep their original names.
@@ -1321,7 +1351,7 @@ fn lower_pattern_dyn(p: &IrPattern, ctx: &LoweringContext) -> IrPattern {
         }
         IrPattern::Struct { kind, fields, rest } => {
             let kind_str = kind.to_string();
-            let has_generics = ctx.struct_info.get(&kind_str)
+            let has_generics = ctx.get_struct_info(&kind_str)
                 .map(|info| !info.length_witnesses.is_empty() || !info.type_params.is_empty())
                 .unwrap_or(false);
             let (new_kind, needs_rest) = if has_generics {
@@ -1343,7 +1373,7 @@ fn lower_pattern_dyn(p: &IrPattern, ctx: &LoweringContext) -> IrPattern {
         }
         IrPattern::TupleStruct { kind, elems } => {
             let kind_str = kind.to_string();
-            let has_generics = ctx.struct_info.get(&kind_str)
+            let has_generics = ctx.get_struct_info(&kind_str)
                 .map(|info| !info.length_witnesses.is_empty() || !info.type_params.is_empty())
                 .unwrap_or(false);
             let new_kind = if has_generics {
@@ -1653,7 +1683,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     .unwrap_or(false);
                 if !is_constructor {
                     if let Some(callee) = callee_name {
-                        if let Some(expected) = ctx.fn_length_params.get(callee) {
+                        if let Some(expected) = ctx.get_fn_length_params(callee) {
                             // Compute which length params are currently in scope.
                             let in_scope: Vec<String> = fn_gen
                                 .iter()
@@ -1694,7 +1724,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 _ => None,
             };
             if let Some(ref name) = func_name {
-                if let Some(info) = ctx.struct_info.get(name.as_str()) {
+                if let Some(info) = ctx.get_struct_info(name.as_str()) {
                     let has_generics = !info.length_witnesses.is_empty()
                         || !info.type_params.is_empty();
                     if has_generics {
@@ -1731,7 +1761,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             rest,
         } => {
             let kind_str = kind.to_string();
-            let has_generics = ctx.struct_info.get(&kind_str)
+            let has_generics = ctx.get_struct_info(&kind_str)
                 .map(|info| !info.length_witnesses.is_empty() || !info.type_params.is_empty())
                 .unwrap_or(false);
             let new_kind = if kind_str == "Option" || kind_str == "Result" {
@@ -1747,7 +1777,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 .map(|(n, v)| (n.clone(), lower_expr_dyn(v, ctx, fn_gen)))
                 .collect();
 
-            if let Some(info) = ctx.struct_info.get(&kind_str) {
+            if let Some(info) = ctx.get_struct_info(&kind_str) {
                 // Map from witness name to the corresponding type arg if it's a typenum constant
                 let mut witness_values: BTreeMap<String, Option<usize>> = BTreeMap::new();
 

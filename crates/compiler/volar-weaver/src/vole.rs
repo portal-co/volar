@@ -930,6 +930,7 @@ where
 
     let func = IrFunction {
         name: format!("vole_prove_{}", name),
+        module_path: vec![],
         generics,
         receiver: None,
         params,
@@ -951,6 +952,8 @@ where
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],
+
+        consts: vec![],
     };
     if let Some(ls) = linkage {
         ls.apply(&mut module);
@@ -1353,6 +1356,7 @@ where
 
     let func = IrFunction {
         name: format!("vole_verify_{}", name),
+        module_path: vec![],
         generics,
         receiver: None,
         params,
@@ -1374,6 +1378,8 @@ where
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],
+
+        consts: vec![],
     };
     if let Some(ls) = linkage {
         ls.apply(&mut module);
@@ -2706,6 +2712,7 @@ pub fn weave_vole_prover_ir_with_mode(
 
     let func = IrFunction {
         name: format!("vole_prove_ir_{}", name),
+        module_path: vec![],
         generics,
         receiver: None,
         params,
@@ -2723,6 +2730,7 @@ pub fn weave_vole_prover_ir_with_mode(
         name: "weaved_vole_ir_prover".into(),
         functions: vec![func],
         structs: vec![], enums: vec![], traits: vec![], impls: vec![], type_aliases: vec![],
+ consts: vec![],
     };
     if let Some(ls) = linkage { ls.apply(&mut module); }
     (module, trace)
@@ -2821,6 +2829,7 @@ pub fn weave_vole_verifier_ir_with_mode(
 
     let func = IrFunction {
         name: format!("vole_verify_ir_{}", name),
+        module_path: vec![],
         generics,
         receiver: None,
         params,
@@ -2838,6 +2847,7 @@ pub fn weave_vole_verifier_ir_with_mode(
         name: "weaved_vole_ir_verifier".into(),
         functions: vec![func],
         structs: vec![], enums: vec![], traits: vec![], impls: vec![], type_aliases: vec![],
+ consts: vec![],
     };
     if let Some(ls) = linkage { ls.apply(&mut module); }
     (module, trace)
