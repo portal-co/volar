@@ -1305,6 +1305,9 @@ impl<'a> TsBackend for TsPreambleWriter<'a> {
         // Stub types for external sha3/digest types referenced from generated code.
         writeln!(f, "type Shake128 = any; type Shake256 = any; type Sha3_256 = any;")?;
         writeln!(f, "type DigestUpdate = any;")?;
+        // Function aliases (re-exports from other modules in the spec).
+        // aes128_encrypt is `aes::encrypt_block` re-exported under a different name.
+        writeln!(f, "declare const aes128_encrypt: typeof encrypt_block;")?;
         writeln!(f)?;
         // Canonical Option/Result classes.
         writeln!(f, "class Some<T> {{ constructor(public _0: T) {{}} }}")?;
@@ -1991,14 +1994,11 @@ impl<'a> TsBackend for TsTypeWriter<'a> {
                 write!(f, "[]")?;
             }
             IrType::Array { kind, elem, .. } => {
-                if *kind == ArrayKind::Slice {
-                    write!(f, "readonly ")?;
-                    TsTypeWriter { ty: elem }.ts_fmt(f, cx)?;
-                    write!(f, "[]")?;
-                } else {
-                    TsTypeWriter { ty: elem }.ts_fmt(f, cx)?;
-                    write!(f, "[]")?;
-                }
+                // All array/slice types emit as T[] — `readonly` is omitted since
+                // mutability is not tracked consistently in the lowered IR.
+                let _ = kind;
+                TsTypeWriter { ty: elem }.ts_fmt(f, cx)?;
+                write!(f, "[]")?;
             }
             IrType::Struct { kind, type_args } => {
                 let name = kind.to_string();
@@ -2277,10 +2277,21 @@ fn emit_statement_expr(
             write!(f, ";")?;
         }
         IrExpr::AssignOp { op, left, right } => {
-            TsExprWriter { expr: left }.ts_fmt(f, cx)?;
-            write!(f, " {}= ", ts_bin_op(*op))?;
-            TsExprWriter { expr: right }.ts_fmt(f, cx)?;
-            write!(f, ";")?;
+            // For ops that work on field elements (bitxor, shl, etc.), desugar
+            // `x op= y` → `x = fieldOp(x, y)` so the helper can dispatch on type.
+            if let Some(helper) = bin_op_helper(*op) {
+                TsExprWriter { expr: left }.ts_fmt(f, cx)?;
+                write!(f, " = {}(", helper)?;
+                TsExprWriter { expr: left }.ts_fmt(f, cx)?;
+                write!(f, ", ")?;
+                TsExprWriter { expr: right }.ts_fmt(f, cx)?;
+                write!(f, ");")?;
+            } else {
+                TsExprWriter { expr: left }.ts_fmt(f, cx)?;
+                write!(f, " {}= ", ts_bin_op(*op))?;
+                TsExprWriter { expr: right }.ts_fmt(f, cx)?;
+                write!(f, ";")?;
+            }
         }
         other => {
             // Fallback: just emit as expression statement
@@ -2860,9 +2871,18 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 TsExprWriter { expr: right }.ts_fmt(f, cx)?;
             }
             IrExpr::AssignOp { op, left, right } => {
-                TsExprWriter { expr: left }.ts_fmt(f, cx)?;
-                write!(f, " {}= ", ts_bin_op(*op))?;
-                TsExprWriter { expr: right }.ts_fmt(f, cx)?;
+                if let Some(helper) = bin_op_helper(*op) {
+                    TsExprWriter { expr: left }.ts_fmt(f, cx)?;
+                    write!(f, " = {}(", helper)?;
+                    TsExprWriter { expr: left }.ts_fmt(f, cx)?;
+                    write!(f, ", ")?;
+                    TsExprWriter { expr: right }.ts_fmt(f, cx)?;
+                    write!(f, ")")?;
+                } else {
+                    TsExprWriter { expr: left }.ts_fmt(f, cx)?;
+                    write!(f, " {}= ", ts_bin_op(*op))?;
+                    TsExprWriter { expr: right }.ts_fmt(f, cx)?;
+                }
             }
             IrExpr::Return(e) => {
                 write!(f, "return")?;
@@ -3108,8 +3128,9 @@ fn emit_known_method_call(
         }
         StdMethod::AsSlice if args.is_empty() => TsExprWriter { expr: receiver }.ts_fmt(f, cx),
         StdMethod::Len if args.is_empty() => {
+            write!(f, "BigInt(")?;
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
-            write!(f, ".length")
+            write!(f, ".length)")
         }
         StdMethod::Contains if args.len() == 1 => {
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
@@ -3500,7 +3521,14 @@ fn emit_other_method_call(
             TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
             return write!(f, ") instanceof Err");
         }
-        // (flatten is an IterMethod handled in IterChainSource::Method → .flat())
+        "flatten" => {
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            return write!(f, ".flat()");
+        }
+        "collect" => {
+            // collect() is a no-op in TS — arrays are already concrete
+            return TsExprWriter { expr: receiver }.ts_fmt(f, cx);
+        }
         "next_power_of_two" => {
             // Round up to next power of 2
             write!(f, "BigInt(1 << Math.ceil(Math.log2(Number(")?;

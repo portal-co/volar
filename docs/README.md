@@ -19,7 +19,8 @@ documents live in [`archive/`](archive/README.md).
 |---|---|
 | Integrating Volar into an application | [**integration-guide.md**](integration-guide.md) |
 | An AI agent about to modify any file | [**agents-guide.md**](agents-guide.md) → [reliability.md](reliability.md) |
-| New to the project | [overview.md](overview.md) → [spec.md](spec.md) |
+| Touching lowering, a backend, or a weaver | [**pipeline.md**](pipeline.md) — the full multi-pass picture |
+| New to the project | [overview.md](overview.md) → [spec.md](spec.md) → [pipeline.md](pipeline.md) |
 | Trying to understand a single subsystem | The [Topic Index](#topic-index) below |
 | Trying to assess whether some code is safe to deploy | [reliability.md](reliability.md) |
 
@@ -79,6 +80,7 @@ producing test scaffolding, hand-off documents, and analysis. See
 
 | Document | What it covers |
 |---|---|
+| [pipeline.md](pipeline.md) | **Full multi-pass pipeline**: parse → weave → lower → codegen, recursive flows, why fixes belong in lowering not backends |
 | [compiler.md](compiler.md) | `volar-compiler`: parser, IR types, manifests, dynamic lowering, Rust/TS printers |
 | [ir-lowering.md](ir-lowering.md) | The `volar-ir` low-level circuit IR, movfuscation, Volar IR / Boolar IR |
 | [lir.md](lir.md) | LIR target trait, IrModule → LirTarget lowering, monomorphisation |

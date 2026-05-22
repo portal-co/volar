@@ -127,6 +127,7 @@ Load these when working in the relevant area:
 |---|---|---|
 | Reliability + AI tiers | `docs/reliability.md` | Always — first thing before editing |
 | Operating procedure for AI agents | `docs/agents-guide.md` | Always — first thing before editing |
+| **Full pipeline (multi-pass, weaving feedback)** | **`docs/pipeline.md`** | **Touching any lowering pass, codegen backend, or weaver — the overview.md sketch is not accurate** |
 | User-facing integration | `docs/integration-guide.md` | When answering questions about app integration |
 | IR types, storage, Poly semantics | `docs/agent-context/ir-types-storage.md` | Working on IR, lowering, evaluators, store-forward, fuzzer generators |
 | Weaving & multi-backend | `docs/agent-context/weaving.md` | Working on FHE/garbled-circuit weaving, compiler printers (Rust/TS/C), action system, CFG emission |

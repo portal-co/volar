@@ -131,9 +131,9 @@ export function doubleVec(v: any[]): [any[], any[]] {
   return [v.slice(0, mid), v.slice(mid)];
 }
 
-export function asRefU8(x: unknown): number[] {
-  if (Array.isArray(x)) return x;
-  if (x instanceof Uint8Array) return Array.from(x);
+export function asRefU8(x: unknown): bigint[] {
+  if (Array.isArray(x)) return x.map(v => typeof v === "bigint" ? v : BigInt(v as number));
+  if (x instanceof Uint8Array) return Array.from(x, v => BigInt(v));
   if (typeof x === "object" && x !== null && "value" in x) {
     return asRefU8((x as { value: unknown }).value);
   }

@@ -66,12 +66,19 @@ vaffle               (WAFFLE integration stub)
 
 ## Compilation Pipeline
 
+> **Sketch only.** The real pipeline is multi-pass with weaving feedback loops.
+> See [pipeline.md](pipeline.md) for the accurate picture before touching any
+> lowering pass, codegen backend, or weaver.
+
 ```
 volar-spec Rust source (total subset of Rust)
         │
         │  volar-compiler / parser.rs
         ▼
     IrModule   (generic, type-level lengths encoded in generics)
+        │
+        │  [optional weaving passes — volar-weaver]
+        │  [may add new IrModule or IrCfgModule nodes]
         │
         │  volar-compiler / lowering_dyn.rs
         ▼
@@ -92,24 +99,33 @@ compiled crates (see [compiler.md](compiler.md)) — so that code referencing
 
 ## Low-Level Circuit Pipeline (volar-ir)
 
+> Sketch only — the low-level IRs feed back into the high-level IrModule via
+> weaving. See [pipeline.md](pipeline.md) for the full graph.
+
 ```
-WAFFLE IR
-    │  (lowering to VOLE-compatible ops)
-    ▼
-VAFFLE   (optimizations, inlining)
+VAFFLE   (volar-aware WAFFLE; optimizations, inlining)
     │  (replacing function calls with dynamic block jumps)
     ▼
 Volar IR   (constant folding, SSA opts)
     │  (replacing blocks with real-vs-fake flags)
     ▼
 Movfuscated Volar IR   (constant folding, SSA)
-    │                           │
-    │  (ZK proof conversion)    │  (booleanize)
-    ▼                           ▼
-ZK Proof              Boolar IR   (peephole)
+    │                               │
+    │  (ZK proof weaving)           │  (booleanize)
+    ▼                               ▼
+IrModule / IrCfgModule        Boolar IR   (peephole)
+(prover + verifier fns)             │
+    │                               │  (garble weaving)
+    │                               ▼
+    │                      IrCfgModule (garbler + evaluator)
+    │                               │
+    └──────────── both ─────────────┘
+                          lower_module_dyn / lower_cfg_module
+                                    │
+                          LirTarget (→ C99, VAFFLE, …)
 ```
 
-See [ir-lowering.md](ir-lowering.md) for details.
+See [ir-lowering.md](ir-lowering.md) for details on Volar IR and Boolar IR.
 
 ---
 
