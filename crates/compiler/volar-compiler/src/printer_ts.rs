@@ -1296,7 +1296,6 @@ impl<'a> TsBackend for TsPreambleWriter<'a> {
         writeln!(f, "  fieldEq,")?;
         writeln!(f, "  fieldNe,")?;
         writeln!(f, "  ilog2,")?;
-        writeln!(f, "  commit as hashCommit,")?;
         writeln!(f, "  wrappingAdd,")?;
         writeln!(f, "  wrappingSub,")?;
         writeln!(f, "  asRefU8,")?;
@@ -2451,8 +2450,10 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                             }
                             _ if is_primitive_class(name) || cx.tuple_structs.contains(name.as_str()) => {
                                 write!(f, "new {}(", name)?;
-                                for (i, arg) in args.iter().enumerate() {
-                                    if i > 0 { write!(f, ", ")?; }
+                                let mut first = true;
+                                for arg in args.iter().filter(|a| !is_phantom_arg(a)) {
+                                    if !first { write!(f, ", ")?; }
+                                    first = false;
                                     TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
                                 }
                                 return write!(f, ")");
@@ -2482,8 +2483,10 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     // Tuple struct constructors → new ClassName(args...)
                     if is_primitive_class(v) || cx.tuple_structs.contains(v.as_str()) {
                         write!(f, "new {}(", v)?;
-                        for (i, arg) in args.iter().enumerate() {
-                            if i > 0 { write!(f, ", ")?; }
+                        let mut first = true;
+                        for arg in args.iter().filter(|a| !is_phantom_arg(a)) {
+                            if !first { write!(f, ", ")?; }
+                            first = false;
                             TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
                         }
                         return write!(f, ")");
@@ -2554,7 +2557,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         let target_name = &segments[0];
                         if cx.witness_map.contains_key(target_name.as_str()) {
                             write!(f, "{}(ctx", target_name)?;
-                            for arg in args {
+                            for arg in args.iter().filter(|a| !is_phantom_arg(a)) {
                                 write!(f, ", ")?;
                                 TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
                             }
@@ -2564,10 +2567,10 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 }
                 TsExprWriter { expr: func }.ts_fmt(f, cx)?;
                 write!(f, "(")?;
-                for (i, arg) in args.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
+                let mut first = true;
+                for arg in args.iter().filter(|a| !is_phantom_arg(a)) {
+                    if !first { write!(f, ", ")?; }
+                    first = false;
                     TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
                 }
                 write!(f, ")")?;
@@ -3575,8 +3578,6 @@ fn emit_path(segments: &[String], f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "asRefU8")
     } else if segs.len() == 2 && segs[0] == "D" && segs[1] == "new" {
         write!(f, "new D")
-    } else if segs.len() == 1 && segs[0] == "commit" {
-        write!(f, "hashCommit")
     } else if segs.len() == 2 && segs[0] == "Vec" && segs[1] == "new" {
         write!(f, "[]")
     } else if segs.len() == 2 && segs[0] == "Vec" && segs[1] == "with_capacity" {
@@ -4035,6 +4036,11 @@ fn is_phantom_field(field: &IrField) -> bool {
     field.name == "_phantom"
         || field.name.starts_with("_phantom")
         || matches!(&field.ty, IrType::Struct { kind, .. } if kind.to_string().contains("PhantomData"))
+}
+
+/// TS has no PhantomData — drop any call argument that is a bare `PhantomData` path.
+fn is_phantom_arg(expr: &IrExpr) -> bool {
+    matches!(expr, IrExpr::Path { segments, .. } if segments.last().map(|s| s == "PhantomData").unwrap_or(false))
 }
 
 fn pattern_is_mutable(pat: &IrPattern) -> bool {

@@ -24,7 +24,6 @@ import {
   fieldEq,
   fieldNe,
   ilog2,
-  commit as hashCommit,
   wrappingAdd,
   wrappingSub,
   asRefU8,
@@ -32,6 +31,7 @@ import {
 
 type Shake128 = any; type Shake256 = any; type Sha3_256 = any;
 type DigestUpdate = any;
+declare const aes128_encrypt: typeof encrypt_block;
 
 class Some<T> { constructor(public _0: T) {} }
 class Ok<T> { constructor(public _0: T) {} }

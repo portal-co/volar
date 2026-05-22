@@ -41,6 +41,9 @@ pub struct LoweringContext {
     pub struct_info: BTreeMap<String, StructInfo>,
     /// Trait names that are length aliases (e.g., VoleArray: ArrayLength).
     pub length_aliases: Vec<String>,
+    /// Leading length params for each function/static method after lowering.
+    /// Used to inject forwarded length args at call sites.
+    pub fn_length_params: BTreeMap<String, Vec<String>>,
 }
 
 impl LoweringContext {
@@ -185,11 +188,88 @@ impl LoweringContext {
             }
         }
 
+        // Pre-pass: compute leading length params for every top-level function
+        // and every static impl method so call sites can forward them.
+        let mut fn_length_params: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let aliases_ref2: Vec<&str> = length_aliases.iter().map(|s| s.as_str()).collect();
+        for f in &module.functions {
+            let params = fn_leading_length_params(f, &[], &aliases_ref2, false);
+            if !params.is_empty() {
+                fn_length_params.insert(f.name.clone(), params);
+            }
+        }
+        for im in &module.impls {
+            // Collect impl-level generics with where-clause bounds merged in
+            let mut impl_gen = im.generics.clone();
+            for wp in &im.where_clause {
+                if let IrWherePredicate::TypeBound { ty: IrType::TypeParam(name), bounds } = wp {
+                    if let Some(p) = impl_gen.iter_mut().find(|p| &p.name == name) {
+                        p.bounds.extend(bounds.clone());
+                    }
+                }
+            }
+            let is_trait_impl = im.trait_.is_some();
+            for item in &im.items {
+                if let IrImplItem::Method(f) = item {
+                    if f.receiver.is_none() {
+                        // Static method — leading params come from fn_gen + impl_gen
+                        let params = fn_leading_length_params(f, &impl_gen, &aliases_ref2, is_trait_impl);
+                        if !params.is_empty() {
+                            fn_length_params.insert(f.name.clone(), params);
+                        }
+                    }
+                }
+            }
+        }
+
         Self {
             struct_info,
             length_aliases,
+            fn_length_params,
         }
     }
+}
+
+/// Compute the ordered list of leading length param names that `lower_function_dyn`
+/// will prepend to `f`'s parameter list. Mirrors the logic in `lower_function_dyn`.
+fn fn_leading_length_params(
+    f: &IrFunction,
+    impl_gen: &[IrGenericParam],
+    aliases: &[&str],
+    is_trait_impl: bool,
+) -> Vec<String> {
+    let mut params: Vec<String> = Vec::new();
+    let mut fn_gen = f.generics.clone();
+    for wp in &f.where_clause {
+        if let IrWherePredicate::TypeBound { ty: IrType::TypeParam(name), bounds } = wp {
+            if let Some(p) = fn_gen.iter_mut().find(|p| &p.name == name) {
+                p.bounds.extend(bounds.clone());
+            }
+        }
+    }
+    if !is_trait_impl {
+        for p in &fn_gen {
+            let kind = classify_generic_with_aliases(p, &[&fn_gen, impl_gen], aliases);
+            if kind == GenericKind::Length {
+                let name = p.name.to_lowercase();
+                if !params.contains(&name) {
+                    params.push(name);
+                }
+            }
+        }
+    }
+    if f.receiver.is_none() {
+        for p in impl_gen {
+            let kind = classify_generic_with_aliases(p, &[impl_gen], aliases);
+            if kind == GenericKind::Length {
+                let name = p.name.to_lowercase();
+                if !params.contains(&name) {
+                    params.push(name);
+                }
+            }
+        }
+    }
+    params
 }
 
 pub fn lower_module_dyn(module: &IrModule<IrFunction>) -> IrModule<IrFunction> {
@@ -1554,6 +1634,57 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             }
 
             let mut final_args = args;
+
+            // Inject forwarded length params at call sites.
+            // After lowering, callee functions gain leading usize params for each
+            // erased length generic. Call sites inside generic functions have those
+            // params in scope (from their own lowered signature) and must forward them.
+            {
+                // Only inject for bare Var references (top-level function calls).
+                // Path expressions like ["D", "new"] are type-param qualified calls
+                // handled by class witnesses in the TS printer — don't touch them.
+                let callee_name = match &func {
+                    IrExpr::Var(name) => Some(name.as_str()),
+                    _ => None,
+                };
+                // Never inject into constructors (uppercase first letter).
+                let is_constructor = callee_name
+                    .map(|n| n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false))
+                    .unwrap_or(false);
+                if !is_constructor {
+                    if let Some(callee) = callee_name {
+                        if let Some(expected) = ctx.fn_length_params.get(callee) {
+                            // Compute which length params are currently in scope.
+                            let in_scope: Vec<String> = fn_gen
+                                .iter()
+                                .filter_map(|p| {
+                                    let kind = classify_generic_with_aliases(
+                                        p,
+                                        &[fn_gen],
+                                        &ctx.aliases(),
+                                    );
+                                    if kind == GenericKind::Length {
+                                        Some(p.name.to_lowercase())
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            // Prepend length params that the callee expects and we have in scope.
+                            let mut prepend: Vec<IrExpr> = Vec::new();
+                            for param in expected {
+                                if in_scope.contains(param) {
+                                    prepend.push(IrExpr::Var(param.clone()));
+                                }
+                            }
+                            if !prepend.is_empty() {
+                                prepend.extend(final_args);
+                                final_args = prepend;
+                            }
+                        }
+                    }
+                }
+            }
 
             // Rename tuple struct constructors (e.g., CommitmentCore → CommitmentCoreDyn)
             // and append PhantomData if the struct needs it

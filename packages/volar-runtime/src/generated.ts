@@ -18,7 +18,6 @@ import {
   fieldEq,
   fieldNe,
   ilog2,
-  commit as hashCommit,
   wrappingAdd,
   wrappingSub,
   asRefU8,
@@ -398,6 +397,54 @@ export class TropicalDyn<T> {
   }
 }
 
+export class CommitmentCoreDyn<D> {
+  [0]!: bigint[];
+
+  constructor(_0: bigint[]) {
+    this[0] = _0;
+  }
+
+  as_ref(): bigint[]
+  {
+    return this[0];
+  }
+
+  clone(): CommitmentCoreDyn<D>
+  {
+    return new CommitmentCoreDyn(__clone(this[0]));
+  }
+
+  static default(ctx: { D_OutputSize: bigint }): CommitmentCoreDyn
+  {
+    return new CommitmentCoreDyn(Array.from({length: Number(ctx.D_OutputSize - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => 0n));
+  }
+
+  eq(other: CommitmentCoreDyn<D>): boolean
+  {
+    return (this[0] === other[0]);
+  }
+
+  validate(ctx: { newD: () => any }, opened_message: bigint[], opened_rand: bigint[]): boolean
+  {
+    const recomputed: CommitmentCoreDyn<D> = commit(ctx, opened_message, opened_rand);
+    return (recomputed[0] === this[0]);
+  }
+}
+
+export class ViaDigestPuncturableRandomizerDyn<D> {
+
+  constructor(init: { 
+  }) {
+    Object.assign(this, init);
+  }
+
+  static double(ctx: { DClass: { new(...args: any[]): any } & Record<string, (...args: any[]) => any> }, a: bigint[]): bigint[][]
+  {
+    const v = ctx.DClass.digest(a);
+    return [__clone(v), Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => fieldBitxor(v[Number(i)], a[Number(i)]))];
+  }
+}
+
 export class ABODyn<B, D> {
   k!: bigint;
   n!: bigint;
@@ -413,7 +460,7 @@ export class ABODyn<B, D> {
     Object.assign(this, init);
   }
 
-  open<B, D>(t: bigint, u: bigint, m: bigint, bad: bigint[], rand: R): ABOOpeningDyn<B, D>
+  open<B, D>(ctx: { newD: () => any }, t: bigint, u: bigint, m: bigint, bad: bigint[], rand: R): ABOOpeningDyn<B, D>
   {
     const k: bigint = this.k;
     const n: bigint = this.n;
@@ -424,7 +471,7 @@ export class ABODyn<B, D> {
   return Array.from({length: Number(u - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
   const i2 = fieldBitor(i, fieldShl(Number(j), ilog2(t)));
   return (() => { if (bad_2.includes(BigInt(i2))) {
-  const h = hashCommit(this.per_byte[Number(ni)][Number(i2)], rand);
+  const h = commit(ctx, this.per_byte[Number(ni)][Number(i2)], rand);
   return Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (asRefU8(h)?.[j] ?? 0));
 } else {
   return Array.from({length: Number(m - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
@@ -595,7 +642,7 @@ export class ABOOpeningDyn<B, D> {
         if (this.bad.includes(BigInt(i2)))         {
           h.update(this.openings[Number(0n)][Number(i)][Number(b)].slice(0, Number(ctx.D_OutputSize)));
         } else         {
-          h.update(hashCommit(this.openings[Number(0n)][Number(i)][Number(b)].slice(0, Number(ctx.B_OutputSize)), rand));
+          h.update(commit(ctx, this.openings[Number(0n)][Number(i)][Number(b)].slice(0, Number(ctx.B_OutputSize)), rand));
         }
       }
     }
@@ -818,7 +865,7 @@ export class BavcDyn<L> {
         const tree_pos = fieldAdd(fieldSub(leaf_count, 1n), leaf_k);
         const r_leaf = tree[Number(tree_pos)];
         const tweak = Number(leaf_k);
-        const [sd, com] = hashCommit(r_leaf, iv, tweak);
+        const [sd, com] = commit(ctx, r_leaf, iv, tweak);
         (seeds).push(sd);
         (commitments).push(com);
       }
@@ -904,7 +951,7 @@ return (() => {
         } else         {
           const r_leaf = tree[Number(tree_pos)];
           const tweak = Number(leaf_k);
-          const [sd, com] = hashCommit(r_leaf, iv, tweak);
+          const [sd, com] = commit(ctx, r_leaf, iv, tweak);
           (leaf_seeds).push(sd);
           (leaf_coms).push(com);
         }
@@ -1099,7 +1146,7 @@ export class StubFaestAesProver {
   prove_aes_witness(big_vole: BigVoleProver, hash_key: UniversalHashKey): QuickSilverProof
   {
     const a_hat_out: UniversalHashOutput = vole_hash(hash_key, big_vole.u);
-    const a_hat: Vec<bigint> = [(a_hat_out.h0[0]) & 0xFFn, ((a_hat_out.h0[0]) >> 8n) & 0xFFn, ((a_hat_out.h0[0]) >> 16n) & 0xFFn, ((a_hat_out.h0[0]) >> 24n) & 0xFFn].concat([(a_hat_out.h1[0]) & 0xFFn, ((a_hat_out.h1[0]) >> 8n) & 0xFFn, ((a_hat_out.h1[0]) >> 16n) & 0xFFn, ((a_hat_out.h1[0]) >> 24n) & 0xFFn]).collect();
+    const a_hat: Vec<bigint> = [(a_hat_out.h0[0]) & 0xFFn, ((a_hat_out.h0[0]) >> 8n) & 0xFFn, ((a_hat_out.h0[0]) >> 16n) & 0xFFn, ((a_hat_out.h0[0]) >> 24n) & 0xFFn].concat([(a_hat_out.h1[0]) & 0xFFn, ((a_hat_out.h1[0]) >> 8n) & 0xFFn, ((a_hat_out.h1[0]) >> 16n) & 0xFFn, ((a_hat_out.h1[0]) >> 24n) & 0xFFn]);
     const len = BigInt(a_hat.length);
     return new QuickSilverProof({ a_hat: a_hat, b_hat: [], c_hat_base: [] });
   }
@@ -2724,7 +2771,7 @@ export function and_test_poly(big_n: bigint): bigint[]
 
 export function blind_rotate(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, ct: LweCiphertextDyn, bk: BootstrappingKeyDyn): RlweCiphertextDyn
 {
-  return blind_rotate_with_poly(ct, and_test_poly(), bk);
+  return blind_rotate_with_poly(n_lwe, big_n, bs_ell, ks_ell, ct, and_test_poly(big_n), bk);
 }
 
 export function blind_rotate_with_poly(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, ct: LweCiphertextDyn, test_poly: bigint[], bk: BootstrappingKeyDyn): RlweCiphertextDyn
@@ -2735,13 +2782,13 @@ export function blind_rotate_with_poly(n_lwe: bigint, big_n: bigint, bs_ell: big
   const scale_shift = (32n - (log2_two_n));
   const b_exp = torus_to_exp(ct.b, scale_shift, two_n);
   if ((b_exp !== 0n))   {
-    acc = rlwe_rotate(acc, fieldSub(two_n, b_exp));
+    acc = rlwe_rotate(big_n, acc, fieldSub(two_n, b_exp));
   }
   for (let i = 0n; i < n_lwe; i += 1n)   {
     const a_exp = torus_to_exp(ct.a[Number(i)], scale_shift, two_n);
     if ((a_exp !== 0n))     {
-      const acc_rotated = rlwe_rotate(acc, a_exp);
-      acc = cmux(bk.bsk[Number(i)], acc_rotated, acc, bk.bs_bg_log);
+      const acc_rotated = rlwe_rotate(big_n, acc, a_exp);
+      acc = cmux(big_n, bs_ell, bk.bsk[Number(i)], acc_rotated, acc, bk.bs_bg_log);
     }
   }
   return acc;
@@ -2789,9 +2836,17 @@ export function chall3(chall_2: bigint[], a_hat: bigint[], b_hat: bigint[], c_ha
 
 export function cmux(big_n: bigint, bs_ell: bigint, c: RgswCiphertextDyn, d1: RlweCiphertextDyn, d0: RlweCiphertextDyn, bs_bg_log: bigint): RlweCiphertextDyn
 {
-  const diff = rlwe_sub(d1, d0);
-  const prod = external_product(c, diff, bs_bg_log);
-  return rlwe_add(d0, prod);
+  const diff = rlwe_sub(big_n, d1, d0);
+  const prod = external_product(big_n, bs_ell, c, diff, bs_bg_log);
+  return rlwe_add(big_n, d0, prod);
+}
+
+export function commit<D>(ctx: { newD: () => any }, message: bigint[], rand: bigint[]): CommitmentCoreDyn<D>
+{
+  let hasher = ctx.newD();
+  hasher.update(asRefU8(message));
+  hasher.update(asRefU8(rand));
+  return new CommitmentCoreDyn([...hasher.finalize()]);
 }
 
 export function concat_small_voles(outs: Vec<ConvertOutput>): BigVoleProver
@@ -3211,7 +3266,7 @@ export function gen_abo<B, D>(ctx: { newD: () => any, BClass: { new(...args: any
   }
   return acc;
 })(), __clone(a));
-    h.update(hashCommit(core, rand));
+    h.update(commit(ctx, core, rand));
     per_byte[Number(i)] = core;
   }
   return per_byte;
@@ -3223,7 +3278,7 @@ export function gen_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, bs_ell: b
 {
   const bsk = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
   const bit = (lwe_sk.key[Number(i)] !== 0n);
-  return rgsw_encrypt(bit, rlwe_sk, bs_bg_log, bs_noise_bits, rng);
+  return rgsw_encrypt(big_n, bs_ell, bit, rlwe_sk, bs_bg_log, bs_noise_bits, rng);
 })());
   const rlwe_as_lwe = new LweSecretKeyDyn({ key: Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => ((rlwe_sk.key[Number(i)]) & 0xFFn)), n_lwe: 0n });
   const ksk_array: LweCiphertextDyn[][] = Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => (() => {
@@ -3231,7 +3286,7 @@ export function gen_bootstrapping_key<R>(n_lwe: bigint, big_n: bigint, bs_ell: b
   return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((j: any) => (() => {
   const shift = (32n - (BigInt(Math.imul(Number(ks_bg_log), Number(fieldAdd(Number(j), 1n))))));
   const msg_val = (((s_bit) << (shift)) & 0xFFFFFFFFn);
-  return lwe_encrypt_raw(msg_val, lwe_sk, ks_noise_bits, rng);
+  return lwe_encrypt_raw(n_lwe, msg_val, lwe_sk, ks_noise_bits, rng);
 })());
 })());
   const _ = rlwe_as_lwe;
@@ -3463,14 +3518,14 @@ export function grafhen_and<R>(wbound: bigint, enc_a: GrafhenWordDyn, enc_b: Gra
 
 export function grafhen_decrypt(n: bigint, d: bigint, wbound: bigint, key: GrafhenKeyDyn, word: GrafhenWordDyn): (boolean | undefined)
 {
-  const perm = eval_word_to_perm(key, word);
+  const perm = eval_word_to_perm(n, d, wbound, key, word);
   return (() => { const __match = perm[Number(0n)]; if (__match === 0n) { return false; } else if (__match === 4n) { return true; } else { return undefined; } })();
 }
 
 export function grafhen_encrypt<R>(wbound: bigint, bit: boolean, zero_cipher: GrafhenWordDyn, pk: GrafhenPublicDyn<R>): GrafhenWordDyn
 {
   return (() => { if (bit) {
-  return grafhen_xor(zero_cipher, pk.enc_one);
+  return grafhen_xor(wbound, zero_cipher, pk.enc_one);
 } else {
   return zero_cipher;
 } })();
@@ -3478,12 +3533,12 @@ export function grafhen_encrypt<R>(wbound: bigint, bit: boolean, zero_cipher: Gr
 
 export function grafhen_not<R>(wbound: bigint, a: GrafhenWordDyn, pk: GrafhenPublicDyn<R>): GrafhenWordDyn
 {
-  return grafhen_xor(a, pk.enc_one);
+  return grafhen_xor(wbound, a, pk.enc_one);
 }
 
 export function grafhen_xor(wbound: bigint, a: GrafhenWordDyn, b: GrafhenWordDyn): GrafhenWordDyn
 {
-  return (concat_words(a, b))!;
+  return (concat_words(wbound, a, b))!;
 }
 
 export function grafhen_zero(wbound: bigint): GrafhenWordDyn
@@ -4152,9 +4207,9 @@ export function rgsw_encrypt<R>(big_n: bigint, bs_ell: bigint, m: boolean, sk: R
   const shift = (32n - (BigInt(Math.imul(Number(bs_bg_log), Number(fieldAdd(Number(j), 1n))))));
   const g_factor = (((1n) << (shift)) & 0xFFFFFFFFn);
   const contrib = BigInt(Math.imul(Number(msg_bit), Number(g_factor)));
-  let rlwe0 = rlwe_encrypt_scalar(0n, sk, noise_bits, rng);
+  let rlwe0 = rlwe_encrypt_scalar(big_n, 0n, sk, noise_bits, rng);
   rlwe0.a[Number(0n)] = wrappingAdd(rlwe0.a[Number(0n)], contrib);
-  const rlwe1 = rlwe_encrypt_scalar(contrib, sk, noise_bits, rng);
+  const rlwe1 = rlwe_encrypt_scalar(big_n, contrib, sk, noise_bits, rng);
   return new RgswRowDyn({ rlwe0: rlwe0, rlwe1: rlwe1, big_n: 0n });
 })());
   return new RgswCiphertextDyn({ rows: rows, big_n: 0n, bs_ell: 0n });
@@ -4262,7 +4317,7 @@ export function sign(sk: FaestSecretKey, pk: FaestPublicKey, message: bigint[], 
     (sub_voles).push(convert_to_vole(seeds_i, iv, Number(i), L_HAT_BYTES));
   }
   const big_vole: BigVoleProver = concat_small_voles(sub_voles);
-  const corrections_flat: Vec<bigint> = big_vole.c.flatten().collect();
+  const corrections_flat: Vec<bigint> = big_vole.c.flat();
   const chall_2 = chall2(chall_1, big_vole.u, corrections_flat, fieldAdd(LAMBDA_BYTES, 8n), false);
   const hash_key = hash_key_from_chall(chall_2);
   const qs_proof = prover.prove_aes_witness(big_vole, hash_key);
@@ -4324,30 +4379,30 @@ export function sub_bytes(state: bigint[])
 
 export function tfhe_cmux(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, sel: LweCiphertextDyn, a: LweCiphertextDyn, b: LweCiphertextDyn, bk: BootstrappingKeyDyn): LweCiphertextDyn
 {
-  const not_sel = tfhe_not(sel);
-  const sel_and_a = tfhe_gate_bootstrapping_and(sel, a, bk);
-  const nsel_and_b = tfhe_gate_bootstrapping_and(not_sel, b, bk);
-  return tfhe_gate_bootstrapping_or(sel_and_a, nsel_and_b, bk);
+  const not_sel = tfhe_not(n_lwe, sel);
+  const sel_and_a = tfhe_gate_bootstrapping_and(n_lwe, big_n, bs_ell, ks_ell, sel, a, bk);
+  const nsel_and_b = tfhe_gate_bootstrapping_and(n_lwe, big_n, bs_ell, ks_ell, not_sel, b, bk);
+  return tfhe_gate_bootstrapping_or(n_lwe, big_n, bs_ell, ks_ell, sel_and_a, nsel_and_b, bk);
 }
 
 export function tfhe_gate_bootstrapping_and(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, ct_a: LweCiphertextDyn, ct_b: LweCiphertextDyn, bk: BootstrappingKeyDyn): LweCiphertextDyn
 {
-  let ct = lwe_add(ct_a, ct_b);
+  let ct = lwe_add(n_lwe, ct_a, ct_b);
   ct.b = wrappingSub(ct.b, fieldShr(Q4, 1n));
-  const acc = blind_rotate(ct, bk);
-  const lwe_big = sample_extract(acc);
-  let ct_out = key_switch(lwe_big, bk.ksk);
+  const acc = blind_rotate(n_lwe, big_n, bs_ell, ks_ell, ct, bk);
+  const lwe_big = sample_extract(big_n, acc);
+  let ct_out = key_switch(n_lwe, big_n, ks_ell, lwe_big, bk.ksk);
   ct_out.b = wrappingAdd(ct_out.b, fieldShr(Q4, 1n));
   return ct_out;
 }
 
 export function tfhe_gate_bootstrapping_or(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, ct_a: LweCiphertextDyn, ct_b: LweCiphertextDyn, bk: BootstrappingKeyDyn): LweCiphertextDyn
 {
-  let ct = lwe_add(ct_a, ct_b);
+  let ct = lwe_add(n_lwe, ct_a, ct_b);
   ct.b = wrappingAdd(ct.b, fieldShr(Q4, 1n));
-  const acc = blind_rotate(ct, bk);
-  const lwe_big = sample_extract(acc);
-  let ct_out = key_switch(lwe_big, bk.ksk);
+  const acc = blind_rotate(n_lwe, big_n, bs_ell, ks_ell, ct, bk);
+  const lwe_big = sample_extract(big_n, acc);
+  let ct_out = key_switch(n_lwe, big_n, ks_ell, lwe_big, bk.ksk);
   ct_out.b = wrappingAdd(ct_out.b, fieldShr(Q4, 1n));
   return ct_out;
 }
@@ -4391,7 +4446,7 @@ export function tfhe_lut_read(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_e
   }
   const centering = Number((delta / 2n));
   combined.b = wrappingAdd(combined.b, centering);
-  let ct_out = tfhe_programmable_bootstrap(combined, test_poly, bk);
+  let ct_out = tfhe_programmable_bootstrap(n_lwe, big_n, bs_ell, ks_ell, combined, test_poly, bk);
   ct_out.b = wrappingAdd(ct_out.b, half_q4);
   return ct_out;
 }
@@ -4407,17 +4462,17 @@ export function tfhe_not(n_lwe: bigint, a: LweCiphertextDyn): LweCiphertextDyn
 
 export function tfhe_programmable_bootstrap(n_lwe: bigint, big_n: bigint, bs_ell: bigint, ks_ell: bigint, ct: LweCiphertextDyn, test_poly: bigint[], bk: BootstrappingKeyDyn): LweCiphertextDyn
 {
-  const acc = blind_rotate_with_poly(ct, test_poly, bk);
-  const lwe_big = sample_extract(acc);
-  return key_switch(lwe_big, bk.ksk);
+  const acc = blind_rotate_with_poly(n_lwe, big_n, bs_ell, ks_ell, ct, test_poly, bk);
+  const lwe_big = sample_extract(big_n, acc);
+  return key_switch(n_lwe, big_n, ks_ell, lwe_big, bk.ksk);
 }
 
 export function tfhe_trivial_encrypt(n_lwe: bigint, b: boolean): LweCiphertextDyn
 {
   return (() => { if (b) {
-  return tfhe_trivial_one();
+  return tfhe_trivial_one(n_lwe);
 } else {
-  return tfhe_trivial_zero();
+  return tfhe_trivial_zero(n_lwe);
 } })();
 }
 
@@ -4504,7 +4559,7 @@ return s; } else { return false; } })();
   const q_out = concat_small_voles_verifier(sub_voles_v, deltas, corrections);
   return q_out.q_columns.flat();
 })();
-  const corrections_flat: Vec<bigint> = sig.corrections.flatten().collect();
+  const corrections_flat: Vec<bigint> = sig.corrections.flat();
   const chall_2 = chall2(chall_1, sig.vole_u, corrections_flat, fieldAdd(LAMBDA_BYTES, 8n), false);
   const hash_key = hash_key_from_chall(chall_2);
   const derived_chall_3 = chall3(chall_2, sig.qs_proof.a_hat, sig.qs_proof.b_hat, sig.c_hat_with_counter, LAMBDA_BYTES, false);
@@ -4548,7 +4603,7 @@ export function vole_commit_bit<T, R>(n: bigint, cot: IdealCotDyn<T>, rng: R, sa
 {
   const [r0, v] = cot.cot(rng, sample_t, bit);
   const u_t = bit_to_t(bit);
-  const u_row: T[] = lift_bit(u_t);
+  const u_row: T[] = lift_bit(n, u_t);
   const u: T[][] = Array.from({length: Number(1n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((_: any) => (() => {
   return Array.from({length: Number(n - 0n)}, (_, __i) => BigInt(__i) + 0n).map((i: any) => __clone(u_row[Number(i)]));
 })());

@@ -146,6 +146,22 @@ This must happen in the lowering, not in individual backends, because:
 - A printer-side workaround duplicated across backends would create drift
   between targets.
 
+**Current limitation — call-site length param forwarding**: The lowering matches
+callee length-param names against the caller's in-scope names. When the caller
+names a length generic `BIG_N` but the callee names the same concept `N`, the
+names differ and injection misses. The short-term workaround is explicit
+turbofish in the spec (e.g., `poly_mul_neg::<BIG_N>(a, b)`), which the parser
+captures as type args and the lowering uses to determine which in-scope variable
+to forward.
+
+**Future goal — weak type inference pass**: Implement a separate lowering sub-pass
+that, for each `Call` site without explicit type args, infers which length
+variables to forward by walking the argument types and matching array sizes
+against the callee's parameter types. This would eliminate the need for turbofish
+annotations in the spec for this purpose, and is the right long-term design.
+Until then, callers that use different generic names than their callees must
+annotate with turbofish.
+
 ### LIR Codegen (`volar-lir-codegen`) and Backends
 
 `lower_module` / `lower_cfg_module` lowers a (possibly dynamic) `IrModule` or

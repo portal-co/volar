@@ -70,6 +70,14 @@ impl Target {
         }
     }
 
+    /// For targets that also need volar-common (hash commitments, length doubling).
+    fn common_dir(self) -> Option<&'static str> {
+        match self {
+            Target::Ts => Some("crates/spec/volar-common/src"),
+            _ => None,
+        }
+    }
+
     fn default_out(self) -> &'static str {
         match self {
             Target::Ts => "packages/volar-runtime/src/generated.ts",
@@ -275,13 +283,27 @@ fn write_dump(path: &Path, content: &str) -> Result<(), Box<dyn std::error::Erro
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = parse_args()?;
 
-    // For targets with a primitives layer (TS), merge primitives first so that
-    // dedup retains the primitive definitions and volar-spec re-uses them.
+    // For targets with a primitives layer (TS), merge in order:
+    //   primitives → common → spec
+    // Dedup keeps the first (lowest-layer) occurrence.
     let module = if let Some(prim_dir) = cfg.target.primitives_dir() {
         let prim_path = PathBuf::from(prim_dir);
         let mut m = parse_spec(&prim_path, cfg.target.module_name());
+
+        // Optional common layer (volar-common: hash_commitment, length_doubling)
+        if let Some(common_dir) = cfg.target.common_dir() {
+            let common = parse_spec(&PathBuf::from(common_dir), cfg.target.module_name());
+            m.structs.extend(common.structs);
+            m.enums.extend(common.enums);
+            m.traits.extend(common.traits);
+            m.impls.extend(common.impls);
+            m.functions.extend(common.functions);
+            m.type_aliases.extend(common.type_aliases);
+            m.consts.extend(common.consts);
+        }
+
         let spec = parse_spec(&cfg.spec_dir, cfg.target.module_name());
-        // Merge: primitives first; dedup keeps the first occurrence.
+        // Merge: primitives/common first; dedup keeps the first occurrence.
         m.structs.extend(spec.structs);
         m.enums.extend(spec.enums);
         m.traits.extend(spec.traits);
