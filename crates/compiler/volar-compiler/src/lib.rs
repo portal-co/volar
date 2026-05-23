@@ -36,6 +36,7 @@ pub mod multi_module;
 pub mod parser;
 pub mod printer;
 pub mod printer_ts;
+pub mod reachability;
 
 pub use ir::*;
 pub use linkage::*;

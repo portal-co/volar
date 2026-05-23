@@ -44,6 +44,16 @@ pub fn print_module_typescript(module: &volar_compiler::ir::IrModule<volar_compi
     volar_compiler::printer_ts::print_module_ts(&lowered)
 }
 
+/// Generate TypeScript code for only the functions transitively reachable from
+/// `seeds` (and their dependencies).  Types are always emitted in full.
+pub fn print_module_typescript_seeded(
+    module: &volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>,
+    seeds: &[&str],
+) -> String {
+    let lowered = lowering_dyn::lower_module_dyn(module);
+    volar_compiler::printer_ts::print_module_ts_seeded(&lowered, seeds)
+}
+
 /// Generate TypeScript code with dependency manifests providing context.
 pub fn print_module_typescript_with_deps(
     module: &volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>,

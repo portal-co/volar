@@ -183,7 +183,7 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
                 // size_of_val(x) / size_of::<T>() via path — need SizeOf witness
                 let filtered: Vec<&str> = segments.iter()
                     .map(|s| s.as_str())
-                    .filter(|s| !matches!(*s, "super"|"crate"|"self"|"mem"|"std"|"core"|"alloc"))
+                    .filter(|s| !is_namespace_prefix(s))
                     .collect();
                 if matches!(filtered.as_slice(), ["size_of_val"] | ["size_of"]) {
                     for tp in declared_generics {
@@ -840,7 +840,51 @@ pub fn print_module_ts_with_imports(
     // ESM imports for remote specs
     let _ = write!(out, "{}", TsImportsWriter { remotes });
     let _ = write!(out, "{}", TsFmt(TsPreambleWriter { local_names: &local_names }, &cx));
-    let _ = write!(out, "{}", TsFmt(TsModuleWriter { module: &module }, &cx));
+    let _ = write!(out, "{}", TsFmt(TsModuleWriter { module: &module, filter_fns: None }, &cx));
+    out
+}
+
+/// Render an `IrModule` as TypeScript, emitting only functions reachable from
+/// `seeds` (and their transitive call-graph closure).  Types (structs, enums,
+/// consts) are always emitted in full.  Pass an empty `seeds` slice to get an
+/// empty function set (use [`print_module_ts`] for the complete output).
+pub fn print_module_ts_seeded(
+    module: &IrModule<IrFunction>,
+    seeds: &[&str],
+) -> String {
+    use crate::reachability::compute_reachable;
+
+    let mut module = module.clone();
+    deshadow_module(&mut module);
+
+    let witness_map = build_module_witness_map(&module);
+    let erased = collect_erased_type_params(&module);
+    let tuple_structs: std::collections::HashSet<Vec<String>> = module.structs.iter()
+        .filter(|s| s.is_tuple)
+        .map(|s| item_irpath(&s.module_path, &s.kind.to_string()))
+        .collect();
+    let name_collisions = compute_name_collisions(&module);
+    let enum_names: std::collections::HashSet<String> = module.enums.iter()
+        .map(|e| e.kind.to_string())
+        .collect();
+    let cx = TsContext {
+        witness_map: &witness_map,
+        name_collisions: &name_collisions,
+        erased_type_params: erased,
+        self_type: None,
+        tuple_structs: &tuple_structs,
+        class_witnesses: Vec::new(),
+        mut_refs: Vec::new(),
+        enum_names: &enum_names,
+        var_types: core::cell::RefCell::new(Vec::new()),
+    };
+    let local_names: std::collections::HashSet<String> = module.structs.iter()
+        .map(|s| s.kind.to_string())
+        .collect();
+    let reachable = compute_reachable(&module, seeds);
+    let mut out = String::new();
+    let _ = write!(out, "{}", TsFmt(TsPreambleWriter { local_names: &local_names }, &cx));
+    let _ = write!(out, "{}", TsFmt(TsModuleWriter { module: &module, filter_fns: Some(&reachable) }, &cx));
     out
 }
 
@@ -1459,6 +1503,9 @@ impl<'a> TsBackend for TsPreambleWriter<'a> {
 
 struct TsModuleWriter<'a> {
     module: &'a IrModule<IrFunction>,
+    /// When `Some`, only emit functions whose bare name is in this set.
+    /// Types (structs, enums, consts) are always emitted in full.
+    filter_fns: Option<&'a std::collections::HashSet<String>>,
 }
 
 impl<'a> TsBackend for TsModuleWriter<'a> {
@@ -1512,6 +1559,7 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
         }
 
         // Group standalone functions by name; merge duplicates with arg-count dispatch.
+        // When filter_fns is set, skip functions not in the reachable set.
         let mut fn_groups: BTreeMap<String, Vec<&IrFunction>> = BTreeMap::new();
         for func in &self.module.functions {
             let fn_name = if func.name.starts_with("r#") {
@@ -1519,6 +1567,11 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
             } else {
                 func.name.clone()
             };
+            if let Some(filter) = self.filter_fns {
+                if !filter.contains(&fn_name) && !filter.contains(&func.name) {
+                    continue;
+                }
+            }
             fn_groups.entry(fn_name).or_default().push(func);
         }
         for (fn_name, variants) in &fn_groups {
@@ -2889,7 +2942,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     {
                         let filtered: Vec<&str> = segments.iter()
                             .map(|s| s.as_str())
-                            .filter(|s| !matches!(*s, "super"|"crate"|"self"|"mem"|"std"|"core"|"alloc"))
+                            .filter(|s| !is_namespace_prefix(s))
                             .collect();
                         if matches!(filtered.as_slice(), ["size_of_val"] | ["size_of"]) {
                             // Try to resolve from var_types; fall back to first SizeOf witness
@@ -2911,7 +2964,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     {
                         let filtered: Vec<&str> = segments.iter()
                             .map(|s| s.as_str())
-                            .filter(|s| !matches!(*s, "super" | "crate" | "self" | "mem" | "std" | "core" | "alloc"))
+                            .filter(|s| !is_namespace_prefix(s))
                             .collect();
                         if filtered == ["take"] && !args.is_empty() {
                             let inner = unwrap_ref_expr(&args[0]);
@@ -2926,14 +2979,14 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     {
                         let segs: Vec<&str> = segments.iter()
                             .map(|s| s.as_str())
-                            .filter(|s| !matches!(*s, "super" | "crate" | "self"))
+                            .filter(|s| !is_namespace_prefix(s))
                             .collect();
                         if segs.len() == 2 && segs[0] == "Vec" && segs[1] == "new" && args.is_empty() {
                             return write!(f, "[]");
                         }
-                        // Enum::Variant(...) → EnumName_VariantName(...) factory function
+                        // Enum::Variant(...) → new EnumName_VariantName(...)
                         if segs.len() == 2 && cx.enum_names.contains(segs[0]) {
-                            write!(f, "{}_{}", segs[0], segs[1])?;
+                            write!(f, "new {}_{}", segs[0], segs[1])?;
                             write!(f, "(")?;
                             let mut first = true;
                             for arg in args.iter().filter(|a| !is_phantom_arg(a)) {
@@ -3965,43 +4018,61 @@ fn emit_other_method_call(
 }
 
 /// Emit a path expression with smart mapping.
+/// Return true for Rust module-navigation and crate-namespace segments that
+/// have no meaning in TypeScript and should be stripped before emitting paths.
+pub(crate) fn is_namespace_prefix(s: &str) -> bool {
+    matches!(
+        s,
+        "super" | "crate" | "self"
+        | "mem" | "alloc" | "std" | "core" | "vec" | "collections"
+        | "volar_primitives" | "volar_common" | "volar_spec"
+    )
+}
+
+/// Well-known Rust stdlib/spec path patterns that map to specific TS expressions.
+/// Matched against the namespace-stripped segment list produced by `strip_ns_segs`.
+enum KnownCallPath<'a> {
+    VecNew,                  // Vec::new()          → []
+    VecWithCapacity,         // Vec::with_capacity  → Array
+    FromLeBytes(&'a str),    // u32/u64/u128::from_le_bytes → u*_from_le_bytes
+    AsRefAsRef,              // AsRef::as_ref       → asRefU8
+    SizeOf,                  // size_of / size_of_val → ctx.sizeOf_unknown (fallback)
+    None_,                   // None                → undefined
+}
+
+impl<'a> KnownCallPath<'a> {
+    fn from_segs(segs: &[&'a str]) -> Option<Self> {
+        match segs {
+            ["Vec", "new"] | ["Vec", "new", ..] if segs.len() == 2 => Some(Self::VecNew),
+            ["Vec", "with_capacity"] => Some(Self::VecWithCapacity),
+            [int, "from_le_bytes"]
+                if matches!(*int, "u32" | "u64" | "u128") => Some(Self::FromLeBytes(int)),
+            ["AsRef", "as_ref"] => Some(Self::AsRefAsRef),
+            ["size_of_val"] | ["size_of"] => Some(Self::SizeOf),
+            ["None"] => Some(Self::None_),
+            _ => None,
+        }
+    }
+}
+
 fn emit_path(segments: &[String], f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    // Strip Rust module-nav prefixes that don't exist in TS.
-    // Also strip known Rust crate/module namespace prefixes so calls like
+    // Strip Rust module-nav/crate namespace prefixes so calls like
     // `volar_primitives::gf_mul_u8` become just `gf_mul_u8`.
-    let segs: Vec<&str> = segments
-        .iter()
-        .map(|s| s.as_str())
-        .filter(|s| !matches!(
-            *s,
-            "super" | "crate" | "self"
-            | "volar_primitives" | "volar_common" | "volar_spec"
-            | "alloc" | "std" | "core" | "vec" | "mem"
-        ))
+    let segs: Vec<&str> = segments.iter().map(|s| s.as_str())
+        .filter(|s| !is_namespace_prefix(s))
         .collect();
 
-    if segs.len() == 2 && segs[0] == "AsRef" && segs[1] == "as_ref" {
-        write!(f, "asRefU8")
-    } else if segs.len() == 2 && segs[0] == "D" && segs[1] == "new" {
-        write!(f, "new D")
-    } else if segs.len() == 2 && segs[0] == "Vec" && segs[1] == "new" {
-        write!(f, "[]")
-    } else if segs.len() == 2 && segs[0] == "Vec" && segs[1] == "with_capacity" {
-        write!(f, "/* Vec::with_capacity */ Array")
-    // Rust primitive integer byte conversions: u32/u64/u128::from_le_bytes
-    } else if segs.len() == 2 && (segs[0] == "u32" || segs[0] == "u64" || segs[0] == "u128")
-        && segs[1] == "from_le_bytes"
-    {
-        write!(f, "{}_from_le_bytes", segs[0])
-    // size_of_val / size_of — handled at call site; shouldn't reach here as a bare path
-    } else if segs.len() == 1 && (segs[0] == "size_of_val" || segs[0] == "size_of") {
-        write!(f, "ctx.sizeOf_unknown")
-    } else if segs.len() == 1 && segs[0] == "None" {
-        write!(f, "undefined")
-    } else if segs.is_empty() {
-        Ok(())
-    } else {
-        write!(f, "{}", segs.join("."))
+    match KnownCallPath::from_segs(&segs) {
+        Some(KnownCallPath::VecNew)          => write!(f, "[]"),
+        Some(KnownCallPath::VecWithCapacity) => write!(f, "/* Vec::with_capacity */ Array"),
+        Some(KnownCallPath::FromLeBytes(ty)) => write!(f, "{}_from_le_bytes", ty),
+        Some(KnownCallPath::AsRefAsRef)      => write!(f, "asRefU8"),
+        Some(KnownCallPath::SizeOf)          => write!(f, "ctx.sizeOf_unknown"),
+        Some(KnownCallPath::None_)           => write!(f, "undefined"),
+        None if segs.is_empty()              => Ok(()),
+        // D::new() — special: D is a generic type param for a Digest, emit `new D`
+        None if segs == ["D", "new"]         => write!(f, "new D"),
+        None                                 => write!(f, "{}", segs.join(".")),
     }
 }
 
@@ -4503,10 +4574,12 @@ fn ts_pattern_condition(
                 "Some" | "Ok" => {
                     write!(f, "{} !== null && {} !== undefined", match_var, match_var)
                 }
-                "None" | "Err" => {
-                    write!(f, "{} === null || {} === undefined", match_var, match_var)
+                "None" => write!(f, "{} === undefined", match_var),
+                "Err" => write!(f, "{} === null || {} === undefined", match_var, match_var),
+                _ => {
+                    let class_name = name.replace("::", "_");
+                    write!(f, "{} instanceof {}", match_var, class_name)
                 }
-                _ => write!(f, "true /* {} */", name),
             }
         }
         _ => write!(f, "true /* pattern {:?} */", pat),
@@ -4532,14 +4605,14 @@ fn ts_emit_pattern_bindings(
         IrPattern::TupleStruct { kind, elems } => {
             let name = kind.to_string();
             let variant = name.rsplit("::").next().unwrap_or(&name);
-            // For Some/None/Ok/Err (transparent): bind inner directly to match_var.
-            // For tuple structs: access via [N] bracket notation.
+            // Some/Ok/Err/None are transparent: inner value IS the match_var.
+            // Enum variant classes use named fields ._0, ._1, ... on class instances.
             let transparent = matches!(variant, "Some" | "Ok" | "Err" | "None");
             if elems.len() == 1 {
                 let field = if transparent {
                     match_var.to_string()
                 } else {
-                    format!("{}[0]", match_var)
+                    format!("{}._0", match_var)
                 };
                 ts_emit_pattern_bindings(&elems[0], &field, f)?;
             } else {
@@ -4547,7 +4620,7 @@ fn ts_emit_pattern_bindings(
                     let field = if transparent {
                         format!("{}[{}]", match_var, i)
                     } else {
-                        format!("{}[{}]", match_var, i)
+                        format!("{}._{}",  match_var, i)
                     };
                     ts_emit_pattern_bindings(elem, &field, f)?;
                 }
@@ -4849,14 +4922,14 @@ impl<'a> TsBackend for TsCfgModuleWriter<'a> {
     }
 }
 
-// ── Enum → tagged-union emitter ───────────────────────────────────────────
+// ── Enum → union-of-classes emitter ──────────────────────────────────────
 
-/// Emit an `IrEnum` as a TypeScript tagged-union type + factory functions.
+/// Emit an `IrEnum` as a TypeScript union of classes + a type alias.
 ///
 /// ```ts
-/// type MyEnum = { tag: "VariantA", _0: number } | { tag: "VariantB" };
-/// function MyEnum_VariantA(_0: number): MyEnum { return { tag: "VariantA", _0 }; }
-/// function MyEnum_VariantB(): MyEnum { return { tag: "VariantB" }; }
+/// export class Sponge_Shake128 { constructor(public _0: Shake128) {} __zero() {...} }
+/// export class Sponge_Shake256 { constructor(public _0: Shake256) {} __zero() {...} }
+/// export type Sponge = Sponge_Shake128 | Sponge_Shake256;
 /// ```
 fn ts_write_enum(
     f: &mut fmt::Formatter<'_>,
@@ -4865,99 +4938,87 @@ fn ts_write_enum(
 ) -> fmt::Result {
     let name = e.kind.to_string();
 
-    // Type definition: union of per-variant objects
-    write!(f, "export type {}", name)?;
-    // Generics
-    if !e.generics.is_empty() {
-        let type_only: Vec<&IrGenericParam> = e
-            .generics
-            .iter()
-            .filter(|g| g.kind == IrGenericParamKind::Type)
-            .collect();
-        if !type_only.is_empty() {
+    let type_generics: Vec<&IrGenericParam> = e
+        .generics
+        .iter()
+        .filter(|g| g.kind == IrGenericParamKind::Type)
+        .collect();
+
+    let emit_generics = |f: &mut fmt::Formatter<'_>| -> fmt::Result {
+        if !type_generics.is_empty() {
             write!(f, "<")?;
-            for (i, g) in type_only.iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
+            for (i, g) in type_generics.iter().enumerate() {
+                if i > 0 { write!(f, ", ")?; }
                 write!(f, "{}", g.name)?;
             }
             write!(f, ">")?;
         }
-    }
-    write!(f, " =")?;
+        Ok(())
+    };
 
     if e.variants.is_empty() {
-        writeln!(f, " never;")?;
+        write!(f, "export type {}", name)?;
+        emit_generics(f)?;
+        writeln!(f, " = never;")?;
         return Ok(());
     }
 
-    writeln!(f)?;
-    for (vi, v) in e.variants.iter().enumerate() {
-        write!(f, "  | {{ tag: \"{}\"", v.name)?;
+    // One class per variant
+    for v in &e.variants {
+        let class_name = format!("{}_{}", name, v.name);
+        write!(f, "export class {}", class_name)?;
+        emit_generics(f)?;
         match &v.fields {
-            IrEnumVariantData::Unit => {}
+            IrEnumVariantData::Unit => {
+                writeln!(f, " {{")?;
+                writeln!(f, "  __zero(): this {{ return new (this.constructor as any)() as this; }}")?;
+                writeln!(f, "}}")?;
+            }
             IrEnumVariantData::Tuple(types) => {
+                write!(f, " {{ constructor(")?;
                 for (fi, ty) in types.iter().enumerate() {
-                    write!(f, ", _{}: ", fi)?;
+                    if fi > 0 { write!(f, ", ")?; }
+                    write!(f, "public _{}: ", fi)?;
                     TsTypeWriter { ty }.ts_fmt(f, cx)?;
                 }
+                writeln!(f, ") {{}}")?;
+                write!(f, "  __zero(): this {{ return new (this.constructor as any)(")?;
+                for (fi, _) in types.iter().enumerate() {
+                    if fi > 0 { write!(f, ", ")?; }
+                    write!(f, "__zeroValue(this._{})", fi)?;
+                }
+                writeln!(f, ") as this; }}")?;
+                writeln!(f, "}}")?;
             }
             IrEnumVariantData::Struct(fields) => {
-                for field in fields {
-                    write!(f, ", $f{}: ", field.name)?;
+                write!(f, " {{ constructor(")?;
+                for (fi, field) in fields.iter().enumerate() {
+                    if fi > 0 { write!(f, ", ")?; }
+                    write!(f, "public $f{}: ", field.name)?;
                     TsTypeWriter { ty: &field.ty }.ts_fmt(f, cx)?;
                 }
+                writeln!(f, ") {{}}")?;
+                write!(f, "  __zero(): this {{ return new (this.constructor as any)(")?;
+                for (fi, field) in fields.iter().enumerate() {
+                    if fi > 0 { write!(f, ", ")?; }
+                    write!(f, "__zeroValue(this.$f{})", field.name)?;
+                }
+                writeln!(f, ") as this; }}")?;
+                writeln!(f, "}}")?;
             }
         }
-        write!(f, " }}")?;
-        if vi + 1 < e.variants.len() {
-            writeln!(f)?;
-        }
+    }
+
+    // Union type alias
+    write!(f, "export type {}", name)?;
+    emit_generics(f)?;
+    write!(f, " =")?;
+    for (vi, v) in e.variants.iter().enumerate() {
+        if vi > 0 { write!(f, " |")?; }
+        write!(f, " {}_{}", name, v.name)?;
+        emit_generics(f)?;
     }
     writeln!(f, ";")?;
-
-    // Factory functions for each variant
-    for v in &e.variants {
-        write!(f, "export function {}_{}", name, v.name)?;
-        write!(f, "(")?;
-        match &v.fields {
-            IrEnumVariantData::Unit => {}
-            IrEnumVariantData::Tuple(types) => {
-                for (fi, ty) in types.iter().enumerate() {
-                    if fi > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "_{}: ", fi)?;
-                    TsTypeWriter { ty }.ts_fmt(f, cx)?;
-                }
-            }
-            IrEnumVariantData::Struct(fields) => {
-                for (fi, field) in fields.iter().enumerate() {
-                    if fi > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}: ", field.name)?;
-                    TsTypeWriter { ty: &field.ty }.ts_fmt(f, cx)?;
-                }
-            }
-        }
-        write!(f, "): {} {{ return {{ tag: \"{}\"", name, v.name)?;
-        match &v.fields {
-            IrEnumVariantData::Unit => {}
-            IrEnumVariantData::Tuple(types) => {
-                for (fi, _) in types.iter().enumerate() {
-                    write!(f, ", _{}", fi)?;
-                }
-            }
-            IrEnumVariantData::Struct(fields) => {
-                for field in fields {
-                    write!(f, ", $f{}: {}", field.name, field.name)?;
-                }
-            }
-        }
-        writeln!(f, " }}; }}")?;
-    }
 
     Ok(())
 }

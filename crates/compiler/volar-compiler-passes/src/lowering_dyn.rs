@@ -17,6 +17,36 @@ use std::{boxed::Box, collections::BTreeMap, format, string::ToString, vec, vec:
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, collections::BTreeMap, format, string::ToString, vec, vec::Vec};
 
+/// Standard library and compiler-builtin container types that receive special
+/// treatment during dynamic lowering (kept as-is rather than renamed to `*Dyn`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KnownContainerType {
+    GenericArray,
+    Array,
+    Vec,
+    Option,
+    Result,
+    Box,
+}
+
+impl KnownContainerType {
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "GenericArray" => Some(Self::GenericArray),
+            "Array"        => Some(Self::Array),
+            "Vec"          => Some(Self::Vec),
+            "Option"       => Some(Self::Option),
+            "Result"       => Some(Self::Result),
+            "Box"          => Some(Self::Box),
+            _              => None,
+        }
+    }
+
+    fn is_array_like(self) -> bool {
+        matches!(self, Self::GenericArray | Self::Array)
+    }
+}
+
 /// Information about a struct's witness fields
 #[derive(Debug, Clone, Default)]
 pub struct StructInfo {
@@ -918,13 +948,7 @@ fn lower_type_dyn_inner(
                     .collect();
             }
 
-            let new_kind = if kind_str == "GenericArray"
-                || kind_str == "Array"
-                || kind_str == "Option"
-                || kind_str == "Result"
-                || kind_str == "Box"
-                || kind_str == "Vec"
-            {
+            let new_kind = if KnownContainerType::from_str(&kind_str).is_some() {
                 // Standard library containers: keep as-is.
                 kind.clone()
             } else if let Some(info) = ctx.get_struct_info(&kind_str) {
@@ -1413,7 +1437,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             }) {
                 return IrExpr::Var(v.to_lowercase());
             }
-            if v == "GenericArray" || v == "Array" {
+            if KnownContainerType::from_str(v).map_or(false, |c| c.is_array_like()) {
                 return IrExpr::Path {
                     segments: vec!["Vec".to_string()],
                     type_args: vec![],
@@ -1450,7 +1474,9 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 }
             }
             let mut segments = segments.clone();
-            if segments.len() > 0 && (segments[0] == "GenericArray" || segments[0] == "Array") {
+            if segments.len() > 0
+                && KnownContainerType::from_str(&segments[0]).map_or(false, |c| c.is_array_like())
+            {
                 segments[0] = "Vec".to_string();
             }
             IrExpr::Path {
@@ -1764,7 +1790,10 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             let has_generics = ctx.get_struct_info(&kind_str)
                 .map(|info| !info.length_witnesses.is_empty() || !info.type_params.is_empty())
                 .unwrap_or(false);
-            let new_kind = if kind_str == "Option" || kind_str == "Result" {
+            let new_kind = if matches!(
+                KnownContainerType::from_str(&kind_str),
+                Some(KnownContainerType::Option | KnownContainerType::Result)
+            ) {
                 kind.clone()
             } else if has_generics {
                 StructKind::from_str(&format!("{}Dyn", kind))

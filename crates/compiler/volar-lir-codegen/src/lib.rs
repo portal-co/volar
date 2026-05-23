@@ -340,6 +340,39 @@ pub fn lower_module_with_opts<T: LirTarget>(
     }
 }
 
+/// Lower only functions transitively reachable from `seeds` (and their call
+/// dependencies) via `lower_module_with_opts`.  Struct/enum registries are
+/// built from the full module so type layouts are always available.
+pub fn lower_module_seeded<T: LirTarget>(
+    module: &IrModule<IrFunction>,
+    target: &mut T,
+    env: &MonoEnv,
+    seeds: &[&str],
+) {
+    use volar_compiler::reachability::compute_reachable;
+    let reachable = compute_reachable(module, seeds);
+    // Build a filtered module view with only reachable non-external functions.
+    // Keep all structs/enums/consts/impls so the registry builds correctly.
+    let filtered_functions: Vec<IrFunction> = module.functions.iter()
+        .filter(|f| {
+            f.external_kind != ExternalKind::Normal
+                || reachable.contains(&f.name)
+        })
+        .cloned()
+        .collect();
+    let filtered = IrModule {
+        name: module.name.clone(),
+        structs: module.structs.clone(),
+        enums: module.enums.clone(),
+        traits: module.traits.clone(),
+        impls: module.impls.clone(),
+        functions: filtered_functions,
+        type_aliases: module.type_aliases.clone(),
+        consts: module.consts.clone(),
+    };
+    lower_module_with_opts(&filtered, target, env);
+}
+
 /// Internal: lower a function with full module context (external-fn dispatch).
 fn lower_function_in_module<T: LirTarget>(
     func: &IrFunction,
