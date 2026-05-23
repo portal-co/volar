@@ -47,7 +47,7 @@ fn test_parse_volar_spec() {
 
     // Parse each file individually first
     for (content, name) in &sources {
-        match parse_source(content, name) {
+        match parse_source(content, name, &[]) {
             Ok(module) => {
                 println!(
                     "Parsed {}: {} structs, {} traits, {} impls, {} functions",

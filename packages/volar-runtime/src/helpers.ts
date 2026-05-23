@@ -139,3 +139,20 @@ export function asRefU8(x: unknown): bigint[] {
   }
   throw new Error(`asRefU8: cannot convert ${typeof x}`);
 }
+
+// Rust-style integer byte conversions (little-endian).
+export function u32_from_le_bytes(b: bigint[]): bigint {
+  return (b[0] & 0xFFn) | ((b[1] & 0xFFn) << 8n) | ((b[2] & 0xFFn) << 16n) | ((b[3] & 0xFFn) << 24n);
+}
+
+export function u64_from_le_bytes(b: bigint[]): bigint {
+  let v = 0n;
+  for (let i = 0; i < 8; i++) v |= ((b[i] ?? 0n) & 0xFFn) << BigInt(i * 8);
+  return v;
+}
+
+export function u128_from_le_bytes(b: bigint[]): bigint {
+  let v = 0n;
+  for (let i = 0; i < 16; i++) v |= ((b[i] ?? 0n) & 0xFFn) << BigInt(i * 8);
+  return v;
+}

@@ -73,6 +73,9 @@ enum WitnessKind {
     /// The witness is the class constructor itself — `ctx.TClass`.
     /// Unlike Constructor/Default, generics are preserved: `ctx.TClass: typeof Galois`.
     Class { type_param: String },
+    /// `mem::size_of_val(&x)` where `x: T` — byte count of one field element.
+    /// Emitted as `ctx.sizeOfT: bigint`.
+    SizeOf { type_param: String },
 }
 
 /// The set of witnesses needed by one function (or one merged method).
@@ -175,6 +178,24 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
                                 type_param: type_name.clone(),
                             });
                         }
+                    }
+                }
+                // size_of_val(x) / size_of::<T>() via path — need SizeOf witness
+                let filtered: Vec<&str> = segments.iter()
+                    .map(|s| s.as_str())
+                    .filter(|s| !matches!(*s, "super"|"crate"|"self"|"mem"|"std"|"core"|"alloc"))
+                    .collect();
+                if matches!(filtered.as_slice(), ["size_of_val"] | ["size_of"]) {
+                    for tp in declared_generics {
+                        out.add(WitnessKind::SizeOf { type_param: tp.clone() });
+                    }
+                }
+            }
+            // size_of_val as a bare Var (most common in lowered IR)
+            if let IrExpr::Var(n) = func.as_ref() {
+                if n == "size_of_val" || n == "size_of" {
+                    for tp in declared_generics {
+                        out.add(WitnessKind::SizeOf { type_param: tp.clone() });
                     }
                 }
             }
@@ -456,6 +477,7 @@ fn witness_ctx_field(kind: &WitnessKind) -> String {
         WitnessKind::Constructor { type_param } => format!("new{}", type_param),
         WitnessKind::Default { type_param } => format!("default{}", type_param),
         WitnessKind::Class { type_param } => format!("{}Class", type_param),
+        WitnessKind::SizeOf { type_param } => format!("sizeOf{}", type_param),
     }
 }
 
@@ -467,6 +489,7 @@ fn witness_ctx_type(kind: &WitnessKind) -> &'static str {
         WitnessKind::Default { .. } => "() => any",
         // Class witness: a constructor function with static methods accessible on it.
         WitnessKind::Class { .. } => "{ new(...args: any[]): any } & Record<string, (...args: any[]) => any>",
+        WitnessKind::SizeOf { .. } => "bigint",
     }
 }
 
@@ -795,6 +818,10 @@ pub fn print_module_ts_with_imports(
         .collect();
     // Pre-pass: bare names that appear in more than one origin crate → get $-qualified TS names
     let name_collisions = compute_name_collisions(&module);
+    // Enum names for detecting Enum::Variant(...) constructor call sites
+    let enum_names: std::collections::HashSet<String> = module.enums.iter()
+        .map(|e| e.kind.to_string())
+        .collect();
     let cx = TsContext {
         witness_map: &witness_map,
         name_collisions: &name_collisions,
@@ -803,6 +830,8 @@ pub fn print_module_ts_with_imports(
         tuple_structs: &tuple_structs,
         class_witnesses: Vec::new(),
         mut_refs: Vec::new(),
+        enum_names: &enum_names,
+        var_types: core::cell::RefCell::new(Vec::new()),
     };
     let local_names: std::collections::HashSet<String> = module.structs.iter()
         .map(|s| s.kind.to_string())
@@ -872,6 +901,9 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
         .map(|s| item_irpath(&s.module_path, &s.kind.to_string()))
         .collect();
     let name_collisions_flat = compute_name_collisions(&flat);
+    let enum_names_flat: std::collections::HashSet<String> = flat.enums.iter()
+        .map(|e| e.kind.to_string())
+        .collect();
     let cx = TsContext {
         witness_map: &witness_map,
         name_collisions: &name_collisions_flat,
@@ -880,6 +912,8 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
         tuple_structs: &tuple_structs_flat,
         class_witnesses: Vec::new(),
         mut_refs: Vec::new(),
+        enum_names: &enum_names_flat,
+        var_types: core::cell::RefCell::new(Vec::new()),
     };
 
     // Reassemble the CFG module with deshadowed auxiliary functions.
@@ -971,6 +1005,13 @@ struct TsContext<'a> {
     class_witnesses: Vec<String>,
     /// Mutable-reference variables in scope (from `iter_mut` loops).
     mut_refs: Vec<MutRef>,
+    /// Enum type names in this module. Used to detect `Enum::Variant(...)` constructor calls
+    /// and emit `Enum_Variant(...)` (factory function) instead of `Enum.Variant(...)`.
+    enum_names: &'a std::collections::HashSet<String>,
+    /// Variable name → type-param name, built from `let x: T = ...` bindings as we
+    /// emit statements.  Used to resolve `size_of_val(x)` → `ctx.sizeOfT`.
+    /// Uses interior mutability so we can accumulate bindings through `&TsContext`.
+    var_types: core::cell::RefCell<Vec<(String, String)>>,
 }
 
 impl<'a> TsContext<'a> {
@@ -1007,6 +1048,8 @@ impl<'a> TsContext<'a> {
             tuple_structs: self.tuple_structs,
             class_witnesses: self.class_witnesses.clone(),
             mut_refs: self.mut_refs.clone(),
+            enum_names: self.enum_names,
+            var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
         }
     }
 
@@ -1019,6 +1062,8 @@ impl<'a> TsContext<'a> {
             tuple_structs: self.tuple_structs,
             class_witnesses: witnesses,
             mut_refs: self.mut_refs.clone(),
+            enum_names: self.enum_names,
+            var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
         }
     }
 
@@ -1033,7 +1078,19 @@ impl<'a> TsContext<'a> {
             tuple_structs: self.tuple_structs,
             class_witnesses: self.class_witnesses.clone(),
             mut_refs,
+            enum_names: self.enum_names,
+            var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
         }
+    }
+
+    fn register_var_type(&self, name: &str, type_param: &str) {
+        self.var_types.borrow_mut().push((name.to_string(), type_param.to_string()));
+    }
+
+    fn lookup_var_type<'b>(&'b self, name: &str) -> Option<String> {
+        self.var_types.borrow().iter().rev()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
     }
 
     fn find_mut_ref(&self, var: &str) -> Option<&MutRef> {
@@ -1256,12 +1313,12 @@ fn runtime_type_check(ty: &IrType, struct_fields: &[IrField]) -> Option<String> 
         match &field.ty {
             // Vec<T> field — check first element
             IrType::Vector { .. } => {
-                return Some(format!("this.{}[0] instanceof {}", field.name, class_name));
+                return Some(format!("this.$f{}[0] instanceof {}", field.name, class_name));
             }
             // Vec<Vec<T>> field — check first element of first element
             IrType::Array { elem, .. } if matches!(elem.as_ref(), IrType::Vector { .. }) => {
                 return Some(format!(
-                    "this.{}[0]?.[0] instanceof {}",
+                    "this.$f{}[0]?.[0] instanceof {}",
                     field.name, class_name
                 ));
             }
@@ -1358,6 +1415,9 @@ impl<'a> TsBackend for TsPreambleWriter<'a> {
         writeln!(f, "  wrappingAdd,")?;
         writeln!(f, "  wrappingSub,")?;
         writeln!(f, "  asRefU8,")?;
+        writeln!(f, "  u32_from_le_bytes,")?;
+        writeln!(f, "  u64_from_le_bytes,")?;
+        writeln!(f, "  u128_from_le_bytes,")?;
         writeln!(f, "}} from \"./index\";")?;
         writeln!(f)?;
         // Stub types for external sha3/digest types referenced from generated code.
@@ -1380,6 +1440,14 @@ impl<'a> TsBackend for TsPreambleWriter<'a> {
         writeln!(f, "  if (x !== null && typeof x === 'object') return Object.assign(Object.create(Object.getPrototypeOf(x)), x) as T;")?;
         writeln!(f, "  return x;")?;
         writeln!(f, "}}")?;
+        writeln!(f, "function __zeroValue<T>(val: T): T {{")?;
+        writeln!(f, "  if (typeof val === 'bigint') return 0n as any;")?;
+        writeln!(f, "  if (Array.isArray(val)) return [] as any;")?;
+        writeln!(f, "  if (val !== null && typeof val === 'object' && typeof (val as any).__zero === 'function') return (val as any).__zero();")?;
+        writeln!(f, "  return val;")?;
+        writeln!(f, "}}")?;
+        writeln!(f, "function __take<T>(val: T, setter: (v: T) => void): T {{ setter(__zeroValue(val)); return val; }}")?;
+        writeln!(f, "function __equals(a: any, b: any): boolean {{ return fieldEq(a, b); }}")?;
         writeln!(f)?;
         Ok(())
     }
@@ -1395,16 +1463,6 @@ struct TsModuleWriter<'a> {
 
 impl<'a> TsBackend for TsModuleWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
-        // Emit const declarations first so they are in scope for functions.
-        for c in &self.module.consts {
-            write!(f, "export const {} = ", c.name)?;
-            TsExprWriter { expr: &c.value }.ts_fmt(f, cx)?;
-            writeln!(f, ";")?;
-        }
-        if !self.module.consts.is_empty() {
-            writeln!(f)?;
-        }
-
         // Type aliases (e.g. `type Zq = u32` → `type Zq = bigint`)
         for ta in &self.module.type_aliases {
             ts_write_type_alias(f, ta, cx)?;
@@ -1432,6 +1490,25 @@ impl<'a> TsBackend for TsModuleWriter<'a> {
         for e in &self.module.enums {
             ts_write_enum(f, e, cx)?;
             writeln!(f)?;
+        }
+
+        // Emit const declarations after classes/enums so that forward references
+        // (e.g. `new U256(...)`) resolve to already-declared classes.
+        // Deduplicate by name: merged modules may contain the same const multiple times.
+        {
+            let mut seen_consts: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            let mut any = false;
+            for c in &self.module.consts {
+                if seen_consts.insert(c.name.as_str()) {
+                    write!(f, "export const {} = ", c.name)?;
+                    TsExprWriter { expr: &c.value }.ts_fmt(f, cx)?;
+                    writeln!(f, ";")?;
+                    any = true;
+                }
+            }
+            if any {
+                writeln!(f)?;
+            }
         }
 
         // Group standalone functions by name; merge duplicates with arg-count dispatch.
@@ -1577,6 +1654,27 @@ impl<'a> TsBackend for TsClassWriter<'a> {
             writeln!(f, "  }}")?;
         }
 
+        // Emit __zero(): zeroes out all fields and returns a new zeroed instance.
+        // Called by __take/__zeroValue for class-typed values.
+        writeln!(f, "  __zero(): this {{")?;
+        if self.s.is_tuple {
+            write!(f, "    return new (this.constructor as any)(")?;
+            for (i, _) in fields.iter().enumerate() {
+                if i > 0 { write!(f, ", ")?; }
+                write!(f, "__zeroValue(this[{}])", i)?;
+            }
+            writeln!(f, ") as this;")?;
+        } else {
+            write!(f, "    return new (this.constructor as any)({{ ")?;
+            for (i, field) in fields.iter().enumerate() {
+                if i > 0 { write!(f, ", ")?; }
+                let ts_name = ts_field_name(&field.name, i);
+                write!(f, "{}: __zeroValue(this.{})", ts_name, ts_name)?;
+            }
+            writeln!(f, " }}) as this;")?;
+        }
+        writeln!(f, "  }}")?;
+
         // Run analysis to detect overlapping methods
         let analysis = analyze_class_impls(self.impls);
         // Build `ClassName<T, U>` string for Self references in method bodies.
@@ -1604,6 +1702,7 @@ impl<'a> TsBackend for TsClassWriter<'a> {
             TsMethodWriter {
                 func: im.func,
                 imp: im.imp,
+                struct_generics: &self.s.generics,
                 indent: 1,
                 witness_needs: needs,
             }
@@ -1626,6 +1725,7 @@ impl<'a> TsBackend for TsClassWriter<'a> {
             TsMergedMethodWriter {
                 merged: mm,
                 struct_fields: &self.s.fields,
+                struct_generics: &self.s.generics,
                 indent: 1,
                 witness_needs: &needs,
             }
@@ -1637,6 +1737,34 @@ impl<'a> TsBackend for TsClassWriter<'a> {
     }
 }
 
+/// Returns true if `ty` contains a `Self` type parameter.
+fn ir_type_uses_self_ref(ty: &IrType) -> bool {
+    match ty {
+        IrType::TypeParam(name) => name == "Self",
+        IrType::Struct { type_args, .. } => type_args.iter().any(ir_type_uses_self_ref),
+        IrType::Vector { elem } => ir_type_uses_self_ref(elem),
+        IrType::Array { elem, .. } => ir_type_uses_self_ref(elem),
+        IrType::Tuple(elems) => elems.iter().any(ir_type_uses_self_ref),
+        IrType::Reference { elem, .. } => ir_type_uses_self_ref(elem),
+        IrType::Projection { base, .. } => ir_type_uses_self_ref(base),
+        _ => false,
+    }
+}
+
+/// Returns true if `ty` contains any reference to a type param whose name is in `params`.
+fn ir_type_uses_any_param(ty: &IrType, params: &std::collections::HashSet<&str>) -> bool {
+    match ty {
+        IrType::TypeParam(name) => params.contains(name.as_str()),
+        IrType::Struct { type_args, .. } => type_args.iter().any(|a| ir_type_uses_any_param(a, params)),
+        IrType::Vector { elem } => ir_type_uses_any_param(elem, params),
+        IrType::Array { elem, .. } => ir_type_uses_any_param(elem, params),
+        IrType::Tuple(elems) => elems.iter().any(|a| ir_type_uses_any_param(a, params)),
+        IrType::Reference { elem, .. } => ir_type_uses_any_param(elem, params),
+        IrType::Projection { base, .. } => ir_type_uses_any_param(base, params),
+        _ => false,
+    }
+}
+
 // ============================================================================
 // METHOD (single, inside a class)
 // ============================================================================
@@ -1644,6 +1772,7 @@ impl<'a> TsBackend for TsClassWriter<'a> {
 struct TsMethodWriter<'a> {
     func: &'a IrFunction,
     imp: &'a IrImpl,
+    struct_generics: &'a [IrGenericParam],
     indent: usize,
     witness_needs: &'a WitnessNeeds,
 }
@@ -1656,19 +1785,23 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
         let name = ts_method_name(&self.func.name, self.imp.trait_.as_ref());
 
         let is_static = self.func.receiver.is_none();
-        // Static members cannot reference class type parameters, so strip generics from self_type.
+        // Static methods: keep the full self_type (including type params) so that `Self` in
+        // return types expands to the full generic class name (e.g. `Foo<T>`). The class-level
+        // type params that appear in static methods are re-declared as method-level type params
+        // below, so they are valid in static scope.
         let cx_static;
         let cx = if is_static {
-            if let Some(self_ty) = &cx.self_type {
-                let bare = self_ty.split('<').next().unwrap_or(self_ty).to_string();
+            if cx.self_type.is_some() {
                 cx_static = TsContext {
                     witness_map: cx.witness_map,
                     name_collisions: cx.name_collisions,
                     erased_type_params: cx.erased_type_params.clone(),
-                    self_type: Some(bare),
+                    self_type: cx.self_type.clone(),
                     tuple_structs: cx.tuple_structs,
                     class_witnesses: cx.class_witnesses.clone(),
                     mut_refs: cx.mut_refs.clone(),
+                    enum_names: cx.enum_names,
+                    var_types: core::cell::RefCell::new(cx.var_types.borrow().clone()),
                 };
                 &cx_static
             } else {
@@ -1684,23 +1817,76 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
         }
 
         let used_params = function_used_type_params(self.func);
-        // Merge impl-level type params that are used in this method but not in
-        // the method's own generic list (e.g. `impl<T> Trait for Foo { fn m(x: T) }`).
-        let mut all_fn_generics: Vec<IrGenericParam> = self.func.generics.clone();
-        for g in &self.imp.generics {
-            if g.kind == IrGenericParamKind::Type
-                && used_params.contains(&g.name)
-                && !all_fn_generics.iter().any(|eg| eg.name == g.name)
-                && !self.witness_needs.needs.iter().any(|w| {
-                    matches!(w, WitnessKind::Class { type_param } if type_param == &g.name)
-                })
-            {
-                all_fn_generics.push(g.clone());
+
+        // Class-level type params (from non-trait impl's generics). These are the params
+        // declared on the surrounding `class Foo<T>`. In TypeScript:
+        //   - Instance methods: T is already in scope → don't re-declare it at method level
+        //     (re-declaring shadows the class T, causing TS2719).
+        //   - Static methods: T is NOT in scope → must declare it at method level, otherwise
+        //     TypeScript emits TS2302 ("static members cannot reference class type parameters").
+        // Class-level type params: those that appear both in impl generics AND in the struct's
+        // own generics. For non-trait impls this is all impl type generics. For trait impls we
+        // check against struct_generics so that e.g. `impl<T> Clone for DeltaDyn<T>` treats T
+        // as a class-level param (avoiding TS2719 from `clone<T>` shadowing the class T).
+        let struct_param_names: std::collections::HashSet<&str> = self.struct_generics
+            .iter()
+            .filter(|g| g.kind == IrGenericParamKind::Type)
+            .map(|g| g.name.as_str())
+            .collect();
+        let class_type_params: std::collections::HashSet<&str> = self.imp.generics.iter()
+            .filter(|g| {
+                g.kind == IrGenericParamKind::Type
+                    && (self.imp.trait_.is_none() || struct_param_names.contains(g.name.as_str()))
+            })
+            .map(|g| g.name.as_str())
+            .collect();
+
+        // When `Self` appears in the return type or params, all impl-level type params are
+        // implicitly used (TypeParam("Self") is excluded by collect_type_param_refs_inner).
+        // Extend used_params to include all imp generics if Self is referenced.
+        let self_referenced = {
+            let mut types: Vec<&IrType> = self.func.params.iter().map(|p| &p.ty).collect();
+            if let Some(ret) = &self.func.return_type { types.push(ret); }
+            types.iter().any(|t| ir_type_uses_self_ref(t))
+        };
+        let mut effective_used_params: Vec<String> = used_params.clone();
+        if self_referenced {
+            for g in &self.imp.generics {
+                if g.kind == IrGenericParamKind::Type {
+                    let s = g.name.clone();
+                    if !effective_used_params.contains(&s) {
+                        effective_used_params.push(s);
+                    }
+                }
             }
         }
+
+        let mut all_fn_generics: Vec<IrGenericParam>;
+        if !is_static && !class_type_params.is_empty() {
+            // Instance method on a generic class: remove func-level generics that shadow class params.
+            all_fn_generics = self.func.generics.iter()
+                .filter(|g| !class_type_params.contains(g.name.as_str()))
+                .cloned()
+                .collect();
+        } else {
+            // Static method or trait impl: use original func generics, then merge impl-level ones.
+            all_fn_generics = self.func.generics.clone();
+            for g in &self.imp.generics {
+                if g.kind == IrGenericParamKind::Type
+                    && effective_used_params.contains(&g.name)
+                    && !all_fn_generics.iter().any(|eg| eg.name == g.name)
+                    && !self.witness_needs.needs.iter().any(|w| {
+                        matches!(w, WitnessKind::Class { type_param } if type_param == &g.name)
+                    })
+                {
+                    all_fn_generics.push(g.clone());
+                }
+            }
+        }
+
         TsGenericsWriter {
             generics: &all_fn_generics,
-            used_only: Some(&used_params),
+            used_only: Some(&effective_used_params),
         }
         .ts_fmt(f, cx)?;
 
@@ -1722,9 +1908,23 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
         }
         write!(f, ")")?;
 
+        // For instance methods only: suppress the return type annotation when it references the
+        // class's type params. The body constructs a concrete type that doesn't match the generic
+        // T, which TypeScript rejects as TS2322. Without the annotation TypeScript infers the
+        // return type from the body.
+        let suppress_ret = if !is_static && !class_type_params.is_empty() {
+            self.func.return_type.as_ref()
+                .map(|r| ir_type_uses_any_param(r, &class_type_params) || ir_type_uses_self_ref(r))
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
         if let Some(ret) = &self.func.return_type {
-            write!(f, ": ")?;
-            TsTypeWriter { ty: ret }.ts_fmt(f, cx)?;
+            if !suppress_ret {
+                write!(f, ": ")?;
+                TsTypeWriter { ty: ret }.ts_fmt(f, cx)?;
+            }
         }
 
         writeln!(f)?;
@@ -1751,6 +1951,7 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
 struct TsMergedMethodWriter<'a> {
     merged: &'a MergedMethod<'a>,
     struct_fields: &'a [IrField],
+    struct_generics: &'a [IrGenericParam],
     indent: usize,
     witness_needs: &'a WitnessNeeds,
 }
@@ -1819,10 +2020,24 @@ impl<'a> TsBackend for TsMergedMethodWriter<'a> {
         }
         write!(f, ")")?;
 
-        // Return type — use first variant's
-        if let Some(ret) = &first.func.return_type {
-            write!(f, ": ")?;
-            TsTypeWriter { ty: ret }.ts_fmt(f, cx)?;
+        // Return type — use first variant's, unless it references class-level type params
+        // in which case suppress it (body returns concrete types which would fail TS2322).
+        let class_params: std::collections::HashSet<&str> = self.struct_generics
+            .iter()
+            .filter(|g| g.kind == IrGenericParamKind::Type)
+            .map(|g| g.name.as_str())
+            .collect();
+        // Suppress return type if it references class type params OR is Self
+        // (Self expands to the class type which implicitly uses all class params).
+        let suppress_ret = !is_static && !class_params.is_empty()
+            && first.func.return_type.as_ref()
+                .map(|r| ir_type_uses_any_param(r, &class_params) || ir_type_uses_self_ref(r))
+                .unwrap_or(false);
+        if !suppress_ret {
+            if let Some(ret) = &first.func.return_type {
+                write!(f, ": ")?;
+                TsTypeWriter { ty: ret }.ts_fmt(f, cx)?;
+            }
         }
 
         writeln!(f)?;
@@ -2375,6 +2590,10 @@ impl<'a> TsBackend for TsStmtWriter<'a> {
         let ind = "  ".repeat(self.indent);
         match self.stmt {
             IrStmt::Let { pattern, ty, init } => {
+                // Track `let x: T = ...` bindings so size_of_val(x) → ctx.sizeOfT.
+                if let Some(IrType::TypeParam(tp)) = ty {
+                    collect_pattern_var_types(pattern, tp, cx);
+                }
                 let is_mutable = pattern_is_mutable(pattern);
                 let kw = if is_mutable { "let" } else { "const" };
                 write!(f, "{}{} ", ind, kw)?;
@@ -2385,7 +2604,20 @@ impl<'a> TsBackend for TsStmtWriter<'a> {
                 }
                 if let Some(i) = init {
                     write!(f, " = ")?;
-                    TsExprWriter { expr: i }.ts_fmt(f, cx)?;
+                    // `let x: T[] = y.0` — `.0` on a Vec/Array lowered type is transparent:
+                    // the wrapper struct was erased, so `y` IS the array. Skip the `[0]`.
+                    let is_vec_binding = matches!(ty,
+                        Some(IrType::Vector { .. }) | Some(IrType::Array { .. }));
+                    let init_is_field_zero = matches!(i, IrExpr::Field { field, .. } if field == "0");
+                    if is_vec_binding && init_is_field_zero {
+                        if let IrExpr::Field { base, .. } = i {
+                            TsExprWriter { expr: base }.ts_fmt(f, cx)?;
+                        } else {
+                            TsExprWriter { expr: i }.ts_fmt(f, cx)?;
+                        }
+                    } else {
+                        TsExprWriter { expr: i }.ts_fmt(f, cx)?;
+                    }
                 }
                 writeln!(f, ";")?;
             }
@@ -2443,6 +2675,23 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 write!(f, "{}", name)?;
             }
             IrExpr::Binary { op, left, right } => {
+                match op {
+                    SpecBinOp::Eq => {
+                        write!(f, "__equals(")?;
+                        TsExprWriter { expr: left }.ts_fmt(f, cx)?;
+                        write!(f, ", ")?;
+                        TsExprWriter { expr: right }.ts_fmt(f, cx)?;
+                        return write!(f, ")");
+                    }
+                    SpecBinOp::Ne => {
+                        write!(f, "!__equals(")?;
+                        TsExprWriter { expr: left }.ts_fmt(f, cx)?;
+                        write!(f, ", ")?;
+                        TsExprWriter { expr: right }.ts_fmt(f, cx)?;
+                        return write!(f, ")");
+                    }
+                    _ => {}
+                }
                 if let Some(helper) = bin_op_helper(*op) {
                     write!(f, "{}(", helper)?;
                     TsExprWriter { expr: left }.ts_fmt(f, cx)?;
@@ -2538,6 +2787,18 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         "Vec" if args.len() == 1 => {
                             return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
                         }
+                        // size_of_val(p) → ctx.sizeOfT (looked up from var_types)
+                        "size_of_val" | "size_of" => {
+                            let tp = if !args.is_empty() {
+                                let inner = unwrap_ref_expr(&args[0]);
+                                if let IrExpr::Var(name) = inner { cx.lookup_var_type(name) } else { None }
+                            } else { None };
+                            return if let Some(tp) = tp {
+                                write!(f, "ctx.sizeOf{}", tp)
+                            } else {
+                                write!(f, "ctx.sizeOf_unknown")
+                            };
+                        }
                         _ => {}
                     }
                     // Tuple struct constructors → new ClassName(args...)
@@ -2624,6 +2885,65 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                             return write!(f, ")");
                         }
                     }
+                    // size_of_val(p) / size_of::<T>() → ctx.sizeOfT
+                    {
+                        let filtered: Vec<&str> = segments.iter()
+                            .map(|s| s.as_str())
+                            .filter(|s| !matches!(*s, "super"|"crate"|"self"|"mem"|"std"|"core"|"alloc"))
+                            .collect();
+                        if matches!(filtered.as_slice(), ["size_of_val"] | ["size_of"]) {
+                            // Try to resolve from var_types; fall back to first SizeOf witness
+                            let tp = if !args.is_empty() {
+                                let inner = unwrap_ref_expr(&args[0]);
+                                if let IrExpr::Var(name) = inner {
+                                    cx.lookup_var_type(name)
+                                } else { None }
+                            } else { None };
+                            if let Some(tp) = tp {
+                                return write!(f, "ctx.sizeOf{}", tp);
+                            }
+                            // Fallback: emit first SizeOf witness from the current function
+                            // (works when there's only one type param, which is the common case)
+                            return write!(f, "ctx.sizeOf_unknown");
+                        }
+                    }
+                    // mem::take(expr) → __take(expr, y => expr = y)
+                    {
+                        let filtered: Vec<&str> = segments.iter()
+                            .map(|s| s.as_str())
+                            .filter(|s| !matches!(*s, "super" | "crate" | "self" | "mem" | "std" | "core" | "alloc"))
+                            .collect();
+                        if filtered == ["take"] && !args.is_empty() {
+                            let inner = unwrap_ref_expr(&args[0]);
+                            write!(f, "__take(")?;
+                            TsExprWriter { expr: inner }.ts_fmt(f, cx)?;
+                            write!(f, ", y => ")?;
+                            TsExprWriter { expr: inner }.ts_fmt(f, cx)?;
+                            return write!(f, " = y)");
+                        }
+                    }
+                    // Vec::new() with no args → [] (an empty call [] () is not valid TS)
+                    {
+                        let segs: Vec<&str> = segments.iter()
+                            .map(|s| s.as_str())
+                            .filter(|s| !matches!(*s, "super" | "crate" | "self"))
+                            .collect();
+                        if segs.len() == 2 && segs[0] == "Vec" && segs[1] == "new" && args.is_empty() {
+                            return write!(f, "[]");
+                        }
+                        // Enum::Variant(...) → EnumName_VariantName(...) factory function
+                        if segs.len() == 2 && cx.enum_names.contains(segs[0]) {
+                            write!(f, "{}_{}", segs[0], segs[1])?;
+                            write!(f, "(")?;
+                            let mut first = true;
+                            for arg in args.iter().filter(|a| !is_phantom_arg(a)) {
+                                if !first { write!(f, ", ")?; }
+                                first = false;
+                                TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+                            }
+                            return write!(f, ")");
+                        }
+                    }
                 }
                 TsExprWriter { expr: func }.ts_fmt(f, cx)?;
                 write!(f, "(")?;
@@ -2637,14 +2957,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
             }
             IrExpr::Field { base, field } => {
                 TsExprWriter { expr: base }.ts_fmt(f, cx)?;
-                // Numeric field names ("0", "1") → bracket notation `[N]` (works for both
-                // tuple struct class fields and array element access).
-                if field.chars().next().map_or(false, |c| c.is_ascii_digit()) {
-                    let idx: usize = field.parse().unwrap_or(0);
-                    write!(f, "[{}]", idx)?;
-                } else {
-                    write!(f, ".{}", field)?;
-                }
+                write!(f, "{}", ts_field_access(field))?;
             }
             IrExpr::Index { base, index } => {
                 // TODO: Slice operations should be represented as a dedicated
@@ -2710,14 +3023,16 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 };
                 let real_fields: Vec<&(String, IrExpr)> = fields
                     .iter()
-                    .filter(|(n, _)| !n.starts_with("_phantom"))
+                    .filter(|(n, v)| {
+                        !n.starts_with("_phantom") && !is_phantom_arg(v)
+                    })
                     .collect();
                 write!(f, "new {}({{ ", name)?;
                 for (i, (field_name, val)) in real_fields.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}: ", field_name)?;
+                    write!(f, "$f{}: ", field_name)?;
                     TsExprWriter { expr: val }.ts_fmt(f, cx)?;
                 }
                 write!(f, " }})")?;
@@ -3608,6 +3923,30 @@ fn emit_other_method_call(
             }
             return write!(f, ")");
         }
+        "extend_from_slice" | "extend" => {
+            // Vec::extend_from_slice(slice) → arr.push(...slice)
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ".push(...(")?;
+            if let Some(arg) = args.first() {
+                TsExprWriter { expr: arg }.ts_fmt(f, cx)?;
+            }
+            return write!(f, "))");
+        }
+        // PartialEq trait methods → __equals
+        "eq" if args.len() == 1 => {
+            write!(f, "__equals(")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ", ")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            return write!(f, ")");
+        }
+        "ne" if args.len() == 1 => {
+            write!(f, "!__equals(")?;
+            TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
+            write!(f, ", ")?;
+            TsExprWriter { expr: &args[0] }.ts_fmt(f, cx)?;
+            return write!(f, ")");
+        }
         _ => {}
     }
     // Numeric literals need parens before method access in JS/TS (e.g. `(1).method()`).
@@ -3628,10 +3967,17 @@ fn emit_other_method_call(
 /// Emit a path expression with smart mapping.
 fn emit_path(segments: &[String], f: &mut fmt::Formatter<'_>) -> fmt::Result {
     // Strip Rust module-nav prefixes that don't exist in TS.
+    // Also strip known Rust crate/module namespace prefixes so calls like
+    // `volar_primitives::gf_mul_u8` become just `gf_mul_u8`.
     let segs: Vec<&str> = segments
         .iter()
         .map(|s| s.as_str())
-        .filter(|s| !matches!(*s, "super" | "crate" | "self"))
+        .filter(|s| !matches!(
+            *s,
+            "super" | "crate" | "self"
+            | "volar_primitives" | "volar_common" | "volar_spec"
+            | "alloc" | "std" | "core" | "vec" | "mem"
+        ))
         .collect();
 
     if segs.len() == 2 && segs[0] == "AsRef" && segs[1] == "as_ref" {
@@ -3642,6 +3988,14 @@ fn emit_path(segments: &[String], f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[]")
     } else if segs.len() == 2 && segs[0] == "Vec" && segs[1] == "with_capacity" {
         write!(f, "/* Vec::with_capacity */ Array")
+    // Rust primitive integer byte conversions: u32/u64/u128::from_le_bytes
+    } else if segs.len() == 2 && (segs[0] == "u32" || segs[0] == "u64" || segs[0] == "u128")
+        && segs[1] == "from_le_bytes"
+    {
+        write!(f, "{}_from_le_bytes", segs[0])
+    // size_of_val / size_of — handled at call site; shouldn't reach here as a bare path
+    } else if segs.len() == 1 && (segs[0] == "size_of_val" || segs[0] == "size_of") {
+        write!(f, "ctx.sizeOf_unknown")
     } else if segs.len() == 1 && segs[0] == "None" {
         write!(f, "undefined")
     } else if segs.is_empty() {
@@ -3845,22 +4199,12 @@ impl<'a> TsBackend for TsPatternWriter<'a> {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    if let IrPattern::Ident { name: pat_name, .. } = p {
-                        if pat_name == name {
-                            write!(f, "{}", name)?;
-                        } else {
-                            write!(f, "{}: ", name)?;
-                            TsPatternWriter { pat: p }.ts_fmt(f, cx)?;
-                        }
-                    } else {
-                        write!(f, "{}: ", name)?;
-                        TsPatternWriter { pat: p }.ts_fmt(f, cx)?;
-                    }
+                    // Field is $f-prefixed; always use "{ $fname: pat }" to bind
+                    // the original (unprefixed) name as the local variable.
+                    write!(f, "$f{}: ", name)?;
+                    TsPatternWriter { pat: p }.ts_fmt(f, cx)?;
                 }
-                if *rest {
-                    // Don't emit ...__rest — it causes duplicate identifier errors.
-                    // The rest is unused in our generated code anyway.
-                }
+                let _ = rest;
                 write!(f, " }}")?;
             }
             IrPattern::Ref { pat, .. } => {
@@ -4084,11 +4428,34 @@ fn escape_ts_reserved(name: &str) -> String {
 ///
 /// Numeric or empty field names use bracket notation `[N]` in TS (works for
 /// tuple struct class fields and array element access alike).
+/// Register all ident bindings in `pat` as having type param `tp` in `cx.var_types`.
+fn collect_pattern_var_types(pat: &IrPattern, tp: &str, cx: &TsContext<'_>) {
+    match pat {
+        IrPattern::Ident { name, .. } if name != "_" => {
+            cx.register_var_type(name, tp);
+        }
+        IrPattern::Tuple(pats) | IrPattern::TupleStruct { elems: pats, .. } => {
+            for p in pats { collect_pattern_var_types(p, tp, cx); }
+        }
+        IrPattern::Ref { pat, .. } => collect_pattern_var_types(pat, tp, cx),
+        _ => {}
+    }
+}
+
 fn ts_field_name(name: &str, positional_index: usize) -> String {
     if name.is_empty() || name.chars().next().map_or(false, |c| c.is_ascii_digit()) {
         format!("[{}]", positional_index)
     } else {
-        name.to_string()
+        format!("$f{}", name)
+    }
+}
+
+fn ts_field_access(name: &str) -> String {
+    if name.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+        let idx: usize = name.parse().unwrap_or(0);
+        format!("[{}]", idx)
+    } else {
+        format!(".$f{}", name)
     }
 }
 
@@ -4228,15 +4595,52 @@ fn resolve_fn_generic(
 }
 
 /// Write a parameter's type, resolving Fn-bounded generics inline.
+/// Unwrap reference wrappers to get the inner type for param-type resolution.
+fn unwrap_ref(ty: &IrType) -> &IrType {
+    match ty {
+        IrType::Reference { elem, .. } => unwrap_ref(elem),
+        other => other,
+    }
+}
+
+fn unwrap_ref_expr(e: &IrExpr) -> &IrExpr {
+    match e {
+        IrExpr::Unary { op: SpecUnaryOp::Ref | SpecUnaryOp::RefMut, expr } => unwrap_ref_expr(expr),
+        other => other,
+    }
+}
+
 fn write_param_type(
     p: &IrParam,
     generics: &[IrGenericParam],
     f: &mut fmt::Formatter<'_>,
     cx: &TsContext<'_>,
 ) -> fmt::Result {
-    if let IrType::TypeParam(tp) = &p.ty {
+    // Resolve against the inner type (unwrapping &/&mut wrappers).
+    let inner = unwrap_ref(&p.ty);
+    if let IrType::TypeParam(tp) = inner {
         if let Some(fn_type) = resolve_fn_generic(tp, generics, cx) {
             return write!(f, "{}", fn_type);
+        }
+        // Any type param with no TS-expressible bounds (Fn/AsRef) should be erased to `any`.
+        // This covers: R (SpecRng), D/D_ (Digest), T (FieldElement), etc.
+        // Calling methods on these types would cause TS2339; `any` allows arbitrary calls.
+        let has_useful_bounds = generics.iter().any(|g| {
+            g.name == tp.as_str() && g.bounds.iter().any(|b| {
+                matches!(&b.trait_kind, TraitKind::Fn(..) | TraitKind::AsRef(..))
+            })
+        });
+        if !has_useful_bounds {
+            return write!(f, "any");
+        }
+    }
+    // Existential params (impl Trait) with no useful TS bounds → `any`.
+    if let IrType::Existential { bounds } = inner {
+        let has_useful = bounds.iter().any(|b| {
+            matches!(&b.trait_kind, TraitKind::Fn(..) | TraitKind::AsRef(..))
+        });
+        if !has_useful {
+            return write!(f, "any");
         }
     }
     if let IrType::Existential { bounds } = &p.ty {
@@ -4501,7 +4905,7 @@ fn ts_write_enum(
             }
             IrEnumVariantData::Struct(fields) => {
                 for field in fields {
-                    write!(f, ", {}: ", field.name)?;
+                    write!(f, ", $f{}: ", field.name)?;
                     TsTypeWriter { ty: &field.ty }.ts_fmt(f, cx)?;
                 }
             }
@@ -4548,7 +4952,7 @@ fn ts_write_enum(
             }
             IrEnumVariantData::Struct(fields) => {
                 for field in fields {
-                    write!(f, ", {}", field.name)?;
+                    write!(f, ", $f{}: {}", field.name, field.name)?;
                 }
             }
         }

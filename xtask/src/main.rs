@@ -13,7 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process;
 
-use volar_compiler::{SourceInput, parse_sources};
+use volar_compiler::{IrFunction, IrModule, SourceInput, parse_sources};
 use volar_compiler_passes::{print_module_rust_dyn, print_module_typescript};
 
 fn main() {
@@ -40,30 +40,47 @@ fn main() {
 fn gen_specs(check_only: bool) {
     let workspace = workspace_root();
 
-    // ── Parse spec sources ──────────────────────────────────────────────────
+    // ── Parse each spec crate with its own namespace path ──────────────────
     let primitives_src_dir = workspace.join("crates/spec/volar-primitives/src");
+    let common_src_dir = workspace.join("crates/spec/volar-common/src");
     let spec_src_dir = workspace.join("crates/spec/volar-spec/src");
 
     let primitives_sources = collect_rs_files(&primitives_src_dir);
+    let common_sources = collect_rs_files(&common_src_dir);
     let spec_sources = collect_rs_files(&spec_src_dir);
 
-    // Parse primitives as a standalone module.
+    let prim_path = vec!["volar_primitives".to_string()];
+    let common_path = vec!["volar_common".to_string()];
+    let spec_path = vec!["volar_spec".to_string()];
+
     let prim_inputs: Vec<SourceInput<'_>> = primitives_sources
         .iter()
-        .map(|(content, name)| SourceInput { source: content.as_str(), name: name.as_str() })
+        .map(|(c, n)| SourceInput { source: c.as_str(), name: n.as_str() })
         .collect();
-    // Parse volar-spec (merged with primitives so it can reference primitive types).
-    let mut all_inputs: Vec<SourceInput<'_>> = prim_inputs.clone();
+    let common_inputs: Vec<SourceInput<'_>> = common_sources
+        .iter()
+        .map(|(c, n)| SourceInput { source: c.as_str(), name: n.as_str() })
+        .collect();
     let spec_inputs: Vec<SourceInput<'_>> = spec_sources
         .iter()
-        .map(|(content, name)| SourceInput { source: content.as_str(), name: name.as_str() })
+        .map(|(c, n)| SourceInput { source: c.as_str(), name: n.as_str() })
         .collect();
-    all_inputs.extend(spec_inputs.iter().cloned());
-    let combined_module = parse_sources(&all_inputs, "volar_spec")
-        .expect("parse volar-spec + volar-primitives");
+
+    let prim_module = parse_sources(&prim_inputs, "volar_primitives", &prim_path)
+        .expect("parse volar-primitives");
+    let common_module = parse_sources(&common_inputs, "volar_common", &common_path)
+        .expect("parse volar-common");
+    let spec_module = parse_sources(&spec_inputs, "volar_spec", &spec_path)
+        .expect("parse volar-spec");
+
+    let combined_module = merge_modules(vec![prim_module, common_module, spec_module]);
 
     // ── Generate outputs ────────────────────────────────────────────────────
     let generated = [
+        (
+            workspace.join("packages/volar-runtime/src/generated.ts"),
+            print_module_typescript(&combined_module),
+        ),
         (
             workspace.join("crates/compiler/volar-compiler/volar_ts_generated.ts"),
             print_module_typescript(&combined_module),
@@ -108,6 +125,27 @@ fn gen_specs(check_only: bool) {
         eprintln!("\nStale generated files detected. Run `cargo xtask gen-specs` to regenerate.");
         process::exit(1);
     }
+}
+
+/// Merge multiple `IrModule`s into one flat module by extending all item lists.
+/// The merged module takes its name from the last module in the list.
+fn merge_modules(modules: Vec<IrModule<IrFunction>>) -> IrModule<IrFunction> {
+    let mut out = IrModule::default();
+    for m in modules {
+        if out.name.is_empty() {
+            out.name = m.name.clone();
+        } else {
+            out.name = m.name.clone(); // last wins for module name
+        }
+        out.structs.extend(m.structs);
+        out.enums.extend(m.enums);
+        out.traits.extend(m.traits);
+        out.impls.extend(m.impls);
+        out.functions.extend(m.functions);
+        out.type_aliases.extend(m.type_aliases);
+        out.consts.extend(m.consts);
+    }
+    out
 }
 
 // ============================================================================

@@ -18,7 +18,7 @@ pub struct Vope<T>(pub T, pub Bit);
 "#;
 
 fn parse(src: &str, name: &str) -> IrModule<IrFunction> {
-    volar_compiler::parse_source(src, name).expect("parse")
+    volar_compiler::parse_source(src, name, &[]).expect("parse")
 }
 
 fn build_ls() -> LinkageSystem {

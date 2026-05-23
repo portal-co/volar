@@ -1676,112 +1676,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[patch.unused]]
-name = "dex-bytecode"
+name = "embedded-llm"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "osctx"
+name = "embedded-llm-tools"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "speet-dex"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-link-core"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-linker"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-memory"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-mips"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-module-builder"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-module-target"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-object"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-ordering"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-powerpc"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-reach"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-riscv"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-schedule"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-traps"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-wasm-helpers"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "speet-x86_64"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "wasm-layout"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "yecta"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-aarch64"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-jvm"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-regalloc"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-riscv64"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-semantics"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-x86-64"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-solutions-asm-x86-64-shim"
-version = "0.1.0"
+name = "portal-solutions-swibb"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
 name = "portal-jsc-common"
@@ -1880,6 +1784,102 @@ name = "dreamcompiler-minibc-interp"
 version = "0.1.0"
 
 [[patch.unused]]
+name = "pit-core"
+version = "0.5.0-alpha.1"
+
+[[patch.unused]]
+name = "dex-bytecode"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "osctx"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-dex"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-link-core"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-linker"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-memory"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-mips"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-module-builder"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-module-target"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-object"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-ordering"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-powerpc"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-reach"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-riscv"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-schedule"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-traps"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-wasm-helpers"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "speet-x86_64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "wasm-layout"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "yecta"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "wax-core"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "wax-tags"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-pc-asm-common"
+version = "0.1.1"
+
+[[patch.unused]]
 name = "ast-traits"
 version = "0.1.0"
 
@@ -1948,24 +1948,32 @@ name = "type-onion"
 version = "0.2.3"
 
 [[patch.unused]]
-name = "portal-solutions-swibb"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "pit-core"
-version = "0.5.0-alpha.1"
-
-[[patch.unused]]
-name = "wax-core"
+name = "portal-solutions-asm-aarch64"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "wax-tags"
+name = "portal-solutions-asm-jvm"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "portal-pc-asm-common"
-version = "0.1.1"
+name = "portal-solutions-asm-regalloc"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-riscv64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-semantics"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-x86-64"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "portal-solutions-asm-x86-64-shim"
+version = "0.1.0"
 
 [[patch.unused]]
 name = "portal-pc-waffle"
@@ -2006,11 +2014,3 @@ version = "0.6.0-alpha.1"
 [[patch.unused]]
 name = "portal-pc-waffle-passes-shared"
 version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "embedded-llm"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "embedded-llm-tools"
-version = "0.1.0"

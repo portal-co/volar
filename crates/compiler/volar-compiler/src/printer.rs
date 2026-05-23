@@ -1875,6 +1875,7 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
     use super::*;
+    use crate::parser::parse_source;
     use crate::ir::{
         ExternalKind, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump, IrCfgTerminator, IrExpr,
         IrLit, IrParam, IrType, PrimitiveType,

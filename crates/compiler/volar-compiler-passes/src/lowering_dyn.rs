@@ -2713,6 +2713,7 @@ mod tests {
         LoweringContext {
             struct_info: BTreeMap::new(),
             length_aliases: Vec::new(),
+            fn_length_params: BTreeMap::new(),
         }
     }
 
