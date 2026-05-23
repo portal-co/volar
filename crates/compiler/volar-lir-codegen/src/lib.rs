@@ -350,13 +350,13 @@ pub fn lower_module_seeded<T: LirTarget>(
     seeds: &[&str],
 ) {
     use volar_compiler::reachability::compute_reachable;
-    let reachable = compute_reachable(module, seeds);
+    let reachability = compute_reachable(module, seeds);
     // Build a filtered module view with only reachable non-external functions.
     // Keep all structs/enums/consts/impls so the registry builds correctly.
     let filtered_functions: Vec<IrFunction> = module.functions.iter()
         .filter(|f| {
             f.external_kind != ExternalKind::Normal
-                || reachable.contains(&f.name)
+                || reachability.fns.contains(&f.name)
         })
         .cloned()
         .collect();

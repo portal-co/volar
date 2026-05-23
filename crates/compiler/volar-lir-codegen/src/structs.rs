@@ -318,6 +318,11 @@ fn ir_type_to_lir_inner(ty: &IrType, registry: &StructRegistry) -> LirType {
         }
 
         IrType::TypeParam(name) => {
+            // TypeParam may share a name with a concrete struct (e.g. U256 used as
+            // a type-parameter name in a function that is also a module-level struct).
+            if let Some(id) = registry.id_for_name(name) {
+                return LirType::Struct(id);
+            }
             panic!("unsubstituted TypeParam '{name}' — add it to MonoEnv")
         }
 

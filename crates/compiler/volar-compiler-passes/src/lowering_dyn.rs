@@ -274,6 +274,12 @@ impl LoweringContext {
                         if !params.is_empty() {
                             fn_length_params.insert(item_irpath(&f.module_path, &f.name), params);
                         }
+                    } else {
+                        // Instance method — only fn-level length generics (impl-level are on the struct)
+                        let params = fn_leading_length_params(f, &[], &aliases_ref2, is_trait_impl);
+                        if !params.is_empty() {
+                            fn_length_params.insert(item_irpath(&f.module_path, &f.name), params);
+                        }
                     }
                 }
             }
@@ -1548,6 +1554,46 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                         };
                     }
                     _ => {}
+                }
+            }
+            // Inject leading length params for methods that need them, analogous to
+            // standalone function calls.  For each expected param NOT in the caller's
+            // generic scope, derive it from the last positional argument's length field.
+            // Heuristic: strip trailing ASCII digits from the param name to get the
+            // struct field (e.g., "k2" → field "k" on the last VopeDyn-like argument).
+            if let MethodKind::Other(method_name) = &method {
+                if let Some(expected) = ctx.get_fn_length_params(method_name.as_str()) {
+                    if !expected.is_empty() {
+                        let in_scope: Vec<String> = fn_gen.iter()
+                            .filter_map(|p| {
+                                let kind = classify_generic_with_aliases(
+                                    p, &[fn_gen], &ctx.aliases(),
+                                );
+                                if kind == GenericKind::Length {
+                                    Some(p.name.to_lowercase())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        let mut prepend: Vec<IrExpr> = Vec::new();
+                        for param in expected {
+                            if in_scope.contains(param) {
+                                prepend.push(IrExpr::Var(param.clone()));
+                            } else if let Some(last_arg) = args.last() {
+                                // Derive from the last arg's field (strip trailing digits).
+                                let base = param.trim_end_matches(|c: char| c.is_ascii_digit());
+                                prepend.push(IrExpr::Field {
+                                    base: Box::new(last_arg.clone()),
+                                    field: base.to_string(),
+                                });
+                            }
+                        }
+                        if !prepend.is_empty() {
+                            prepend.extend(args.drain(..));
+                            args = prepend;
+                        }
+                    }
                 }
             }
             let lowered = IrExpr::MethodCall {
