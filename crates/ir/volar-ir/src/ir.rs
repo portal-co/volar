@@ -46,6 +46,7 @@ pub struct IRBlockId(pub u32);
 /// statement in each block carries a `P` value recording where it originated.
 /// Use `P = ()` (the default) when provenance is not needed.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IRBlocks<P: Clone + Default = ()> {
     /// Oracles declared for this circuit (resolved by the execution environment).
     pub oracles: Vec<OracleDecl>,
@@ -82,6 +83,7 @@ impl<P: Clone + Default> IRBlocks<P> {
 /// The type parameter `P` is an optional per-statement provenance annotation
 /// (parallel to `stmts`).  Use `P = ()` when provenance is not needed.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IRBlock<P: Clone + Default = ()> {
     pub params: Vec<IRTypeId>,
     pub stmts: Vec<IRStmt>,
@@ -156,6 +158,7 @@ pub type IRStmt<Var = IRVarId, Addr = Var> = volar_ir_common::Stmt<Var, Addr>;
 // ============================================================================
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IRTerminator {
     Jmp {
         func: IRBlockTargetId,

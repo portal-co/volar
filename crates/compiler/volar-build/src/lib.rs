@@ -45,6 +45,16 @@
 //!     .with_cpu("cortex-a55");
 //! ```
 
+#[cfg(feature = "weave-rust")]
+mod weave;
+#[cfg(feature = "weave-rust")]
+pub use weave::{
+    Weaver, SavedCircuit, emit_woven_rust,
+    serialize_boolar_circuit, serialize_volar_circuit,
+};
+#[cfg(feature = "weave-rust")]
+pub use volar_weaver::StorageSizes;
+
 use std::path::Path;
 
 use inkwell::{

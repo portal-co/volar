@@ -6,9 +6,15 @@ license.workspace = true
 description.workspace = true
 repository.workspace = true
 
+[features]
+weave-rust = ["dep:volar-ir", "dep:volar-weaver"]
+weave-net  = ["weave-rust", "volar-weaver/net"]
+
 [dependencies]
 volar-lir-saved = { path = "../volar-lir-saved", features = ["rkyv"] }
 volar-llvm-backend = { path = "../volar-llvm-backend" }
 volar-lir = { workspace = true }
 inkwell = { workspace = true }
 rkyv = { workspace = true, features = ["bytecheck"] }
+volar-ir     = { workspace = true, features = ["rkyv"], optional = true }
+volar-weaver = { path = "../volar-weaver", optional = true }

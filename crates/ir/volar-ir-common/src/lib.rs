@@ -41,6 +41,7 @@ pub enum Type {
 /// A 256-bit compile-time constant, split into high and low 128-bit halves.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(feature = "rkyv", rkyv(attr(derive(PartialEq, Eq, PartialOrd, Ord))))]
 pub struct Constant {
     pub hi: u128,
     pub lo: u128,
@@ -257,6 +258,7 @@ impl StorageId {
 ///   from `var`; together they define every bit of the output, LSB first.
 ///   Length equals the output bit-width.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum Stmt<Var, Addr = Var> {
     /// Load a value from a storage location addressed by `addr`.
     StorageRead {
@@ -296,6 +298,7 @@ pub enum Stmt<Var, Addr = Var> {
     Poly {
         /// Output (and dominant operand) type.
         ty: TypeId,
+        #[cfg_attr(feature = "rkyv", rkyv(with = rkyv::with::AsVec))]
         coeffs: BTreeMap<Vec<Var>, u8>,
         constant: Constant,
     },
