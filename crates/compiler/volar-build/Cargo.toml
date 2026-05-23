@@ -7,8 +7,11 @@ description.workspace = true
 repository.workspace = true
 
 [features]
-weave-rust = ["dep:volar-ir", "dep:volar-weaver"]
-weave-net  = ["weave-rust", "volar-weaver/net"]
+weave-rust       = ["dep:volar-ir", "dep:volar-weaver"]
+weave-net        = ["weave-rust", "volar-weaver/net"]
+pipeline         = ["dep:volar-ir-passes", "dep:volar-ir-opt", "dep:volar-ir"]
+pipeline-vaffle  = ["pipeline", "dep:vaffle", "dep:volar-vaffle-target"]
+pipeline-wasm    = ["pipeline-vaffle", "dep:portal-pc-waffle-ir", "dep:portal-pc-waffle-frontend"]
 
 [dependencies]
 volar-lir-saved = { path = "../volar-lir-saved", features = ["rkyv"] }
@@ -16,5 +19,11 @@ volar-llvm-backend = { path = "../volar-llvm-backend" }
 volar-lir = { workspace = true }
 inkwell = { workspace = true }
 rkyv = { workspace = true, features = ["bytecheck"] }
-volar-ir     = { workspace = true, features = ["rkyv"], optional = true }
-volar-weaver = { path = "../volar-weaver", optional = true }
+volar-ir              = { workspace = true, features = ["rkyv"], optional = true }
+volar-weaver          = { path = "../volar-weaver", optional = true }
+volar-ir-passes       = { workspace = true, optional = true }
+volar-ir-opt          = { workspace = true, optional = true }
+vaffle                = { path = "../../ir/vaffle", features = ["rkyv"], optional = true }
+volar-vaffle-target   = { workspace = true, optional = true }
+portal-pc-waffle-ir       = { workspace = true, optional = true }
+portal-pc-waffle-frontend = { workspace = true, optional = true }

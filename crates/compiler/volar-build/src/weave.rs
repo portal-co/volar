@@ -15,21 +15,7 @@ use std::path::Path;
 use volar_ir::boolar::BIrBlocks;
 use volar_ir::ir::{IRBlocks, IRTypes};
 
-// ============================================================================
-// SavedCircuit
-// ============================================================================
-
-/// On-disk representation of a circuit IR, used as input to [`emit_woven_rust`].
-///
-/// Serialized with rkyv; the conventional file extension is `.circuit`.
-#[non_exhaustive]
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub enum SavedCircuit {
-    /// A Boolar IR circuit (boolean SSA gates: AND / XOR / NOT).
-    Boolar(BIrBlocks),
-    /// A Volar IR circuit (field-level SSA) together with its type table.
-    Volar(IRBlocks, IRTypes),
-}
+pub use crate::SavedCircuit;
 
 /// Serialize a [`BIrBlocks`] circuit for later use with [`emit_woven_rust`].
 pub fn serialize_boolar_circuit(

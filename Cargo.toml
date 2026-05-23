@@ -104,6 +104,7 @@ volar-lir-saved = {path="crates/compiler/volar-lir-saved", version = "0.1.0"}
 volar-build = {path="crates/compiler/volar-build", version = "0.1.0"}
 
 portal-pc-waffle-ir = { version = "0.6.0-alpha.1", git = "https://github.com/portal-co/waffle-" }
+portal-pc-waffle-frontend = { version = "0.6.0-alpha.1", git = "https://github.com/portal-co/waffle-" }
 
 digest = { version = "0.11.2", default-features = false }
 sha3 = { version = "0.11.0-rc.2", default-features = false }

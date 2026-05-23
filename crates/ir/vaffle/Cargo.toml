@@ -6,5 +6,9 @@ license.workspace = true
 description.workspace = true
 repository.workspace = true
 
+[features]
+rkyv = ["dep:rkyv", "volar-ir-common/rkyv"]
+
 [dependencies]
 volar-ir-common.workspace = true
+rkyv = { workspace = true, optional = true }

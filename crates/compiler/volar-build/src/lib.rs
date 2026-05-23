@@ -45,15 +45,27 @@
 //!     .with_cpu("cortex-a55");
 //! ```
 
+#[cfg(any(feature = "weave-rust", feature = "pipeline"))]
+mod circuit;
+#[cfg(any(feature = "weave-rust", feature = "pipeline"))]
+pub use circuit::SavedCircuit;
+
 #[cfg(feature = "weave-rust")]
 mod weave;
 #[cfg(feature = "weave-rust")]
 pub use weave::{
-    Weaver, SavedCircuit, emit_woven_rust,
+    Weaver, emit_woven_rust,
     serialize_boolar_circuit, serialize_volar_circuit,
 };
 #[cfg(feature = "weave-rust")]
 pub use volar_weaver::StorageSizes;
+
+#[cfg(feature = "pipeline")]
+mod pipeline;
+#[cfg(feature = "pipeline")]
+pub use pipeline::{Pipeline, PipelinePass};
+#[cfg(feature = "pipeline-vaffle")]
+pub use pipeline::serialize_vaffle_module;
 
 use std::path::Path;
 

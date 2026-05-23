@@ -890,6 +890,7 @@ pub(crate) fn bits_for_lir_type(ty: &LirType, struct_widths: &[usize]) -> usize 
         LirType::I16 | LirType::U16 => 16,
         LirType::I32 | LirType::U32 => 32,
         LirType::I64 | LirType::U64 => 64,
+        LirType::I128 | LirType::U128 => 128,
         LirType::Arr(elem, n) => n * bits_for_lir_type(elem, struct_widths),
         LirType::Struct(id) => struct_widths[*id as usize],
         LirType::Native(_) => 1,

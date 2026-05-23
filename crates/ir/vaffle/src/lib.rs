@@ -12,6 +12,7 @@ extern crate alloc;
 /// this module index into.  Construct it with [`TypeTable::new`] and use
 /// [`TypeTable::intern`] / [`TypeTable::primitive`] to populate it.
 #[derive(Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct Module {
     /// Shared type intern table.
     pub types: TypeTable,
@@ -24,12 +25,16 @@ pub struct Module {
     pub exports: BTreeMap<String, FuncId>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct SigId(pub usize);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct FuncId(pub usize);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct BlockId(pub usize);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct ValueId(pub usize);
 
 /// A function signature: parameter types and result types, expressed as
@@ -39,12 +44,14 @@ pub struct ValueId(pub usize);
 /// `IrType::Func` in the type table, allowing function types to be used as
 /// first-class values in VAFFLE programs.
 #[derive(Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct SigDecl {
     pub params: Vec<TypeId>,
     pub results: Vec<TypeId>,
 }
 
 #[derive(Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum FuncDecl {
     Import {
         module: String,
@@ -54,6 +61,7 @@ pub enum FuncDecl {
     Body(FuncBody),
 }
 #[derive(Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct FuncBody {
     pub sig: SigId,
     pub blocks: Vec<Block>,
@@ -61,6 +69,7 @@ pub struct FuncBody {
     pub entry: BlockId,
 }
 #[derive(Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct Block {
     /// Block parameters: `(value_id, type_id)` pairs.
     pub params: Vec<(ValueId, TypeId)>,
@@ -68,11 +77,13 @@ pub struct Block {
     pub terminator: Terminator,
 }
 #[derive(Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct Target {
     pub block: BlockId,
     pub args: Vec<ValueId>,
 }
 #[derive(Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum Terminator {
     Return { values: Vec<ValueId> },
     Jump(Target),
@@ -101,6 +112,7 @@ pub enum Terminator {
 /// [`Module::types`] table, consistent with [`Param`](Value::Param) and the
 /// rest of the module.
 #[derive(Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum Value {
     Param {
         block: BlockId,
