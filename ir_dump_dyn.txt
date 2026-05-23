@@ -1,0 +1,4128 @@
+=== Module: volar_ts_dyn ===
+
+struct U256 {
+  : [u64; 4],
+}
+
+struct Bit {
+  : bool,
+}
+
+struct Galois {
+  : u8,
+}
+
+struct BitsInBytes {
+  : u8,
+}
+
+struct Galois64 {
+  : u64,
+}
+
+struct BitsInBytes64 {
+  : u64,
+}
+
+struct Galois128 {
+  : u128,
+}
+
+struct Galois256 {
+  : U256,
+}
+
+struct Z3 {
+  : u8,
+}
+
+struct TropicalDyn<T> {
+  : T,
+}
+
+struct CommitmentCoreDyn<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> {
+  : Vec<u8>,
+  _phantom: PhantomData<D>,
+}
+
+struct ViaDigestPuncturableRandomizerDyn<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> {
+  digest: PhantomData<D>,
+}
+
+struct ABODyn<B: IrTraitBound { trait_kind: LengthDoubler, type_args: [], assoc_bindings: [] }, D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> {
+  k: usize,
+  n: usize,
+  commit: Vec<u8>,
+  per_byte: Vec<Vec<Vec<u8>>>,
+  _phantom: PhantomData<(B, D)>,
+}
+
+struct ABOOpeningDyn<B: IrTraitBound { trait_kind: LengthDoubler, type_args: [], assoc_bindings: [] }, D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> {
+  t: usize,
+  u: usize,
+  n: usize,
+  bad: Vec<u64>,
+  openings: Vec<Vec<Vec<Vec<u8>>>>,
+  _phantom: PhantomData<(B, D)>,
+}
+
+struct BSplitDyn<B: IrTraitBound { trait_kind: LengthDoubler, type_args: [], assoc_bindings: [] }, D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> {
+  split: Vec<[Vec<u8>; 2]>,
+  _phantom: PhantomData<(B, D)>,
+}
+
+struct Fe25519 {
+  : [u64; 4],
+}
+
+struct EdPoint {
+  x: Fe25519,
+  y: Fe25519,
+  z: Fe25519,
+  t: Fe25519,
+}
+
+struct Ed25519 {
+}
+
+struct BavcCommitmentDyn {
+  com_bytes: usize,
+  root: Vec<u8>,
+  vec_hashes: Vec<Vec<u8>>,
+  seeds: Vec<[u8; LAMBDA_BYTES]>,
+  commitments: Vec<[u8; COM_BYTES]>,
+}
+
+struct BavcOpeningDyn {
+  com_bytes: usize,
+  hidden_commits: Vec<[u8; COM_BYTES]>,
+  nodes: Vec<(usize, [u8; LAMBDA_BYTES])>,
+}
+
+struct BavcDyn<L> {
+  com_bytes: usize,
+  _l: PhantomData<L>,
+}
+
+struct ConvertOutput {
+  u: Vec<u8>,
+  v: Vec<Vec<u8>>,
+}
+
+struct BigVoleProver {
+  u: Vec<u8>,
+  c: Vec<Vec<u8>>,
+  v_columns: Vec<Vec<u8>>,
+}
+
+struct BigVoleVerifier {
+  q_columns: Vec<Vec<u8>>,
+}
+
+struct RoLeafCommitDyn<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> {
+  _d: PhantomData<D>,
+}
+
+struct EmLeafCommit {
+}
+
+struct AesCtrLengthDoubler {
+}
+
+struct FaestSecretKey {
+  : [u8; LAMBDA_BYTES],
+}
+
+struct FaestPublicKey {
+  : [u8; LAMBDA_BYTES],
+}
+
+struct FaestSignature {
+  iv: [u8; LAMBDA_BYTES],
+  bavc_root: Vec<u8>,
+  hidden_commits: Vec<[u8; COM_BYTES]>,
+  nodes: Vec<(usize, [u8; LAMBDA_BYTES])>,
+  corrections: Vec<Vec<u8>>,
+  vole_u: Vec<u8>,
+  qs_proof: QuickSilverProof,
+  c_hat_with_counter: Vec<u8>,
+  chall_3: Vec<u8>,
+  counter: u32,
+}
+
+struct QuickSilverProof {
+  a_hat: Vec<u8>,
+  b_hat: Vec<u8>,
+  c_hat_base: Vec<u8>,
+}
+
+struct StubFaestAesProver {
+}
+
+struct FaestTranscript {
+  sponge: Sponge,
+}
+
+struct UniversalHashKey {
+  r0: Galois128,
+  r1: Galois64,
+}
+
+struct UniversalHashOutput {
+  h0: Galois128,
+  h1: Galois64,
+}
+
+struct EvalDyn {
+  n: usize,
+  target: Vec<u8>,
+}
+
+struct GarbleDyn {
+  n: usize,
+  base: Vec<u8>,
+}
+
+struct GarbleTableDyn {
+  n: usize,
+  table: [Vec<u8>; 4],
+}
+
+struct GlobalSecretDyn {
+  n: usize,
+  secret: Vec<u8>,
+}
+
+struct GarbledCircuitDyn {
+  n: usize,
+  i: usize,
+  a: usize,
+  secret: GlobalSecretDyn,
+  input_labels: [GarbleDyn; I],
+  tables: [GarbleTableDyn; A],
+  output_label: GarbleDyn,
+}
+
+struct EvalSetupDyn {
+  n: usize,
+  a: usize,
+  one_wire: EvalDyn,
+  tables: [GarbleTableDyn; A],
+  output_label: GarbleDyn,
+}
+
+struct NoReduction {
+}
+
+struct GrafhenWordDyn {
+  wbound: usize,
+  data: [u8; WBOUND],
+  len: usize,
+}
+
+struct GrafhenKeyDyn {
+  n: usize,
+  d: usize,
+  gens: [[u8; N]; D],
+  inv_gens: [[u8; N]; D],
+}
+
+struct GrafhenPublicDyn<R> {
+  wbound: usize,
+  enc_one: GrafhenWordDyn,
+  and_w1: GrafhenWordDyn,
+  and_w2: GrafhenWordDyn,
+  reducer: R,
+}
+
+struct LweSampleDyn<T, U> {
+  n: usize,
+  m: usize,
+  matrix: Vec<Vec<T>>,
+  b: Vec<U>,
+}
+
+struct AllPartiesDyn<T> {
+  n: usize,
+  other_parties: OtherPartiesDyn<T>,
+  self_party: T,
+}
+
+struct OtherPartiesDyn<T> {
+  n: usize,
+  other_parties: Vec<T>,
+}
+
+struct BaseOtSenderDyn<G: IrTraitBound { trait_kind: Custom("Group"), type_args: [], assoc_bindings: [] }, D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> {
+  y: <G as _>::Scalar,
+  s: <G as _>::Element,
+  t: <G as _>::Element,
+  _d: PhantomData<D>,
+  _phantom: PhantomData<G>,
+}
+
+struct BaseOtReceiverDyn<G: IrTraitBound { trait_kind: Custom("Group"), type_args: [], assoc_bindings: [] }, D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> {
+  x: <G as _>::Scalar,
+  s: <G as _>::Element,
+  c: bool,
+  _d: PhantomData<D>,
+  _phantom: PhantomData<G>,
+}
+
+struct OtReceiverMsgDyn<G: IrTraitBound { trait_kind: Custom("Group"), type_args: [], assoc_bindings: [] }> {
+  r: <G as _>::Element,
+  _phantom: PhantomData<G>,
+}
+
+struct ToyElement {
+  : u64,
+}
+
+struct ToyGroup {
+}
+
+struct IdealCotDyn<T> {
+  n: usize,
+  delta: DeltaDyn<T>,
+}
+
+struct LweOtCrs {
+  a: [[Zq; LWE_N]; LWE_N],
+  h: [Zq; LWE_N],
+}
+
+struct LweOtReceiver {
+  s: [Zq; LWE_N],
+  c: bool,
+}
+
+struct LweOtRecvMsg {
+  pk0: [Zq; LWE_N],
+}
+
+struct LweOtSenderMsgDyn {
+  l: usize,
+  u0: [Zq; LWE_N],
+  v0: [Zq; L],
+  u1: [Zq; LWE_N],
+  v1: [Zq; L],
+}
+
+struct SoftSpokenOutDyn<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> {
+  m: usize,
+  l: usize,
+  sender_r0: [[u8; L]; M],
+  receiver_v: [[u8; L]; M],
+  sender_tag: Output<D>,
+  receiver_tag: Output<D>,
+}
+
+struct LweCiphertextDyn {
+  n_lwe: usize,
+  a: [u32; N_LWE],
+  b: u32,
+}
+
+struct RlweCiphertextDyn {
+  big_n: usize,
+  a: [u32; BIG_N],
+  b: [u32; BIG_N],
+}
+
+struct RgswRowDyn {
+  big_n: usize,
+  rlwe0: RlweCiphertextDyn,
+  rlwe1: RlweCiphertextDyn,
+}
+
+struct RgswCiphertextDyn {
+  big_n: usize,
+  bs_ell: usize,
+  rows: [RgswRowDyn; BS_ELL],
+}
+
+struct KeySwitchingKeyDyn {
+  n_lwe: usize,
+  big_n: usize,
+  ks_ell: usize,
+  ksk: [[LweCiphertextDyn; KS_ELL]; BIG_N],
+  ks_bg_log: u32,
+}
+
+struct BootstrappingKeyDyn {
+  n_lwe: usize,
+  big_n: usize,
+  bs_ell: usize,
+  ks_ell: usize,
+  bsk: [RgswCiphertextDyn; N_LWE],
+  ksk: KeySwitchingKeyDyn,
+  bs_bg_log: u32,
+}
+
+struct LweSecretKeyDyn {
+  n_lwe: usize,
+  key: [u8; N_LWE],
+}
+
+struct RlweSecretKeyDyn {
+  big_n: usize,
+  key: [u32; BIG_N],
+}
+
+struct BitVoleDyn<T> {
+  n: usize,
+  u: Vec<Bit>,
+  v: Vec<T>,
+}
+
+struct AdditiveHasher {
+}
+
+struct ChallengeKeyDyn<T> {
+  r1: T,
+  r2: T,
+  r3: T,
+}
+
+struct MemoryCheckStateDyn<T, H: IrTraitBound { trait_kind: Custom("MemoryHasher"), type_args: [TypeParam("T")], assoc_bindings: [] }> {
+  key: ChallengeKeyDyn<T>,
+  produce: <H as _>::State,
+  consume: <H as _>::State,
+  _phantom: PhantomData<H>,
+}
+
+struct PolyDyn<T> {
+  n: usize,
+  c0: T,
+  c1: Vec<T>,
+}
+
+struct PolyInputPoolDyn<T> {
+  n: usize,
+  x: usize,
+  inputs: Vec<T>,
+  indices: Vec<Vec<usize>>,
+}
+
+struct VopeDyn<T> {
+  n: usize,
+  k: usize,
+  u: Vec<Vec<T>>,
+  v: Vec<T>,
+}
+
+struct DeltaDyn<T> {
+  n: usize,
+  delta: Vec<T>,
+}
+
+struct QDyn<T> {
+  n: usize,
+  q: Vec<T>,
+}
+
+trait Custom("FieldMulBackend") {
+}
+
+trait Custom("Invert") {
+  fn invert(&self, ) -> Self;
+}
+
+trait Custom("PuncturableLengthDoubler") {
+}
+
+trait Custom("PartyIndex") {
+  fn party_index(requested: usize) -> usize;
+}
+
+trait Custom("LeafCommit") {
+  fn commit(r: &[u8; SD_BYTES], iv: &[u8; 16], tweak: u32) -> ([u8; SD_BYTES], [u8; COM_BYTES]);
+}
+
+trait Custom("FaestAesProver") {
+  fn prove_aes_witness(&self, big_vole: &BigVoleProver, hash_key: &UniversalHashKey) -> QuickSilverProof;
+  fn verify_aes_proof(&self, _proof: &QuickSilverProof, _hash_key: &UniversalHashKey, _q_vec: &[u8; 0], _delta: &[u8; 0]) -> bool;
+}
+
+trait Custom("WordReducer") {
+  fn reduce(&self, word: &mut GrafhenWordDyn);
+}
+
+trait Custom("SpecRng") {
+  fn next_u32(&mut self, ) -> u32;
+  fn next_u8(&mut self, ) -> u8;
+}
+
+trait Custom("Group") {
+  type Element: ...;
+  type Scalar: ...;
+  fn generator() -> <Self as _>::Element;
+  fn random_scalar<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(rng: &mut R) -> <Self as _>::Scalar;
+  fn scalar_mul(elt: &<Self as _>::Element, k: &<Self as _>::Scalar) -> <Self as _>::Element;
+  fn add(a: &<Self as _>::Element, b: &<Self as _>::Element) -> <Self as _>::Element;
+  fn neg(a: &<Self as _>::Element) -> <Self as _>::Element;
+  fn write_element<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }>(elt: &<Self as _>::Element, h: &mut D);
+}
+
+trait Custom("MemoryHasher")<T> {
+  type State: ...;
+  fn new_state() -> <Self as _>::State;
+  fn absorb(state: &mut <Self as _>::State, encoded: T);
+  fn finalize_eq(produce: &<Self as _>::State, consume: &<Self as _>::State) -> bool;
+}
+
+impl<T: IrTraitBound { trait_kind: Custom("ShlAssign"), type_args: [Primitive(U32)], assoc_bindings: [] } + IrTraitBound { trait_kind: Custom("ShrAssign"), type_args: [Primitive(U32)], assoc_bindings: [] } + IrTraitBound { trait_kind: Math(Default), type_args: [], assoc_bindings: [] } + IrTraitBound { trait_kind: Math(BitXor), type_args: [], assoc_bindings: [(Output, TypeParam("T"))] } + IrTraitBound { trait_kind: Custom("BitXorAssign"), type_args: [], assoc_bindings: [] } + IrTraitBound { trait_kind: Math(Shl), type_args: [Primitive(U32)], assoc_bindings: [(Output, TypeParam("T"))] } + IrTraitBound { trait_kind: Math(BitAnd), type_args: [], assoc_bindings: [(Output, TypeParam("T"))] } + IrTraitBound { trait_kind: Math(PartialEq), type_args: [], assoc_bindings: [] } + IrTraitBound { trait_kind: Custom("From"), type_args: [Primitive(U8)], assoc_bindings: [] } + IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] }> Custom("FieldMulBackend") for T {
+}
+
+impl U256 {
+  fn bit(&self, n: u32) -> bool {
+    let word = (n Div 64) as usize;
+    let bit = (n Rem 64);
+    => if (word Lt 4) {
+      => (((self.0[word] Shr bit) BitAnd 1) Ne 0)
+    } else {
+      => false
+    }
+  }
+  fn high_bit(&self, ) -> bool {
+    => ((self.0[3] Shr 63) Ne 0)
+  }
+  fn shl1(&self, ) -> Self {
+    let mut out = [0; 4];
+    out[0] = (self.0[0] Shl 1);
+    out[1] = ((self.0[1] Shl 1) BitOr (self.0[0] Shr 63));
+    out[2] = ((self.0[2] Shl 1) BitOr (self.0[1] Shr 63));
+    out[3] = ((self.0[3] Shl 1) BitOr (self.0[2] Shr 63));
+    => U256(out)
+  }
+  fn shr1(&self, ) -> Self {
+    let mut out = [0; 4];
+    out[0] = ((self.0[0] Shr 1) BitOr (self.0[1] Shl 63));
+    out[1] = ((self.0[1] Shr 1) BitOr (self.0[2] Shl 63));
+    out[2] = ((self.0[2] Shr 1) BitOr (self.0[3] Shl 63));
+    out[3] = (self.0[3] Shr 1);
+    => U256(out)
+  }
+  fn xor(&self, other: &Self) -> Self {
+    => U256([(self.0[0] BitXor other.0[0]), (self.0[1] BitXor other.0[1]), (self.0[2] BitXor other.0[2]), (self.0[3] BitXor other.0[3])])
+  }
+  fn is_zero(&self, ) -> bool {
+    => ((((self.0[0] Eq 0) And (self.0[1] Eq 0)) And (self.0[2] Eq 0)) And (self.0[3] Eq 0))
+  }
+}
+
+impl Math(BitXor) for Bit {
+  type Output = Self;
+  fn bitxor(self, rhs: u8) -> <Self as _>::Output {
+    => Bit((self.0 BitXor ((rhs BitAnd 1) Ne 0)))
+  }
+}
+
+impl Math(BitXor) for Galois {
+  type Output = Self;
+  fn bitxor(self, rhs: u8) -> <Self as _>::Output {
+    => Galois((self.0 BitXor rhs))
+  }
+}
+
+impl Math(Add) for Galois {
+  type Output = Galois;
+  fn add(self, rhs: Galois) -> <Self as _>::Output {
+    => Galois((self.0 BitXor rhs.0))
+  }
+}
+
+impl Math(Mul) for Galois {
+  type Output = Galois;
+  fn mul(self, rhs: Galois) -> <Self as _>::Output {
+    => Galois(gf_mul_u8(self.0, rhs.0, GF8_POLY))
+  }
+}
+
+impl Math(Sub) for Galois {
+  type Output = Galois;
+  fn sub(self, rhs: Galois) -> <Self as _>::Output {
+    => Galois((self.0 BitXor rhs.0))
+  }
+}
+
+impl Custom("Invert") for Galois {
+  fn invert(&self, ) -> Self {
+    => Galois(gf_invert_u8(self.0, GF8_POLY))
+  }
+}
+
+impl Math(BitXor) for BitsInBytes {
+  type Output = Self;
+  fn bitxor(self, rhs: u8) -> <Self as _>::Output {
+    => BitsInBytes((self.0 BitXor rhs))
+  }
+}
+
+impl Math(Add) for BitsInBytes {
+  type Output = BitsInBytes;
+  fn add(self, rhs: BitsInBytes) -> <Self as _>::Output {
+    => BitsInBytes((self.0 BitXor rhs.0))
+  }
+}
+
+impl Math(Mul) for BitsInBytes {
+  type Output = BitsInBytes;
+  fn mul(self, rhs: BitsInBytes) -> <Self as _>::Output {
+    => BitsInBytes((self.0 BitAnd rhs.0))
+  }
+}
+
+impl Math(Sub) for BitsInBytes {
+  type Output = BitsInBytes;
+  fn sub(self, rhs: BitsInBytes) -> <Self as _>::Output {
+    => BitsInBytes((self.0 BitXor rhs.0))
+  }
+}
+
+impl Math(BitXor) for Galois64 {
+  type Output = Self;
+  fn bitxor(self, rhs: u8) -> <Self as _>::Output {
+    => Galois64((self.0 BitXor (rhs as u64 Mul 72340172838076673)))
+  }
+}
+
+impl Math(Add) for Galois64 {
+  type Output = Galois64;
+  fn add(self, rhs: Galois64) -> <Self as _>::Output {
+    => Galois64((self.0 BitXor rhs.0))
+  }
+}
+
+impl Math(Mul) for Galois64 {
+  type Output = Galois64;
+  fn mul(self, rhs: Galois64) -> <Self as _>::Output {
+    => Galois64(gf_mul_u64(self.0, rhs.0, GF64_POLY))
+  }
+}
+
+impl Math(Sub) for Galois64 {
+  type Output = Galois64;
+  fn sub(self, rhs: Galois64) -> <Self as _>::Output {
+    => Galois64((self.0 BitXor rhs.0))
+  }
+}
+
+impl Custom("Invert") for Galois64 {
+  fn invert(&self, ) -> Self {
+    => Galois64(gf_invert_u64(self.0, GF64_POLY))
+  }
+}
+
+impl Math(BitXor) for BitsInBytes64 {
+  type Output = Self;
+  fn bitxor(self, rhs: u8) -> <Self as _>::Output {
+    => BitsInBytes64((self.0 BitXor (rhs as u64 Mul 72340172838076673)))
+  }
+}
+
+impl Math(Add) for BitsInBytes64 {
+  type Output = BitsInBytes64;
+  fn add(self, rhs: BitsInBytes64) -> <Self as _>::Output {
+    => BitsInBytes64((self.0 BitXor rhs.0))
+  }
+}
+
+impl Math(Mul) for BitsInBytes64 {
+  type Output = BitsInBytes64;
+  fn mul(self, rhs: BitsInBytes64) -> <Self as _>::Output {
+    => BitsInBytes64((self.0 BitAnd rhs.0))
+  }
+}
+
+impl Math(Sub) for BitsInBytes64 {
+  type Output = BitsInBytes64;
+  fn sub(self, rhs: BitsInBytes64) -> <Self as _>::Output {
+    => BitsInBytes64((self.0 BitXor rhs.0))
+  }
+}
+
+impl Math(BitXor) for Galois128 {
+  type Output = Self;
+  fn bitxor(self, rhs: u8) -> <Self as _>::Output {
+    => Galois128((self.0 BitXor rhs as u128))
+  }
+}
+
+impl Math(Add) for Galois128 {
+  type Output = Galois128;
+  fn add(self, rhs: Galois128) -> <Self as _>::Output {
+    => Galois128((self.0 BitXor rhs.0))
+  }
+}
+
+impl Math(Mul) for Galois128 {
+  type Output = Galois128;
+  fn mul(self, rhs: Galois128) -> <Self as _>::Output {
+    => Galois128(gf_mul_u128(self.0, rhs.0, GF128_POLY))
+  }
+}
+
+impl Math(Sub) for Galois128 {
+  type Output = Galois128;
+  fn sub(self, rhs: Galois128) -> <Self as _>::Output {
+    => Galois128((self.0 BitXor rhs.0))
+  }
+}
+
+impl Custom("Invert") for Galois128 {
+  fn invert(&self, ) -> Self {
+    => Galois128(gf_invert_u128(self.0, GF128_POLY))
+  }
+}
+
+impl Math(Add) for Galois256 {
+  type Output = Galois256;
+  fn add(self, rhs: Galois256) -> <Self as _>::Output {
+    => Galois256(self.0.Other("xor")(Refrhs.0))
+  }
+}
+
+impl Math(Mul) for Galois256 {
+  type Output = Galois256;
+  fn mul(self, rhs: Galois256) -> <Self as _>::Output {
+    => Galois256(gf_mul_256(self.0, rhs.0, GF256_POLY))
+  }
+}
+
+impl Math(Sub) for Galois256 {
+  type Output = Galois256;
+  fn sub(self, rhs: Galois256) -> <Self as _>::Output {
+    => Galois256(self.0.Other("xor")(Refrhs.0))
+  }
+}
+
+impl Custom("Invert") for Galois256 {
+  fn invert(&self, ) -> Self {
+    => Galois256(gf_invert_256(self.0, GF256_POLY))
+  }
+}
+
+impl Z3 {
+  fn add3(a: u8, b: u8) -> u8 {
+    let s = (a Add b);
+    => if (s Ge 3) {
+      => (s Sub 3)
+    } else {
+      => s
+    }
+  }
+  fn neg3(a: u8) -> u8 {
+    => if (a Eq 0) {
+      => 0
+    } else {
+      => (3 Sub a)
+    }
+  }
+  fn mul3(a: u8, b: u8) -> u8 {
+    let p = (a Mul b);
+    => if (p Ge 3) {
+      => (p Sub 3)
+    } else {
+      => p
+    }
+  }
+}
+
+impl Math(Add) for Z3 {
+  type Output = Z3;
+  fn add(self, rhs: Z3) -> <Self as _>::Output {
+    => Z3(Self::add3(self.0, rhs.0))
+  }
+}
+
+impl Math(Sub) for Z3 {
+  type Output = Z3;
+  fn sub(self, rhs: Z3) -> <Self as _>::Output {
+    => Z3(Self::add3(self.0, Self::neg3(rhs.0)))
+  }
+}
+
+impl Math(Mul) for Z3 {
+  type Output = Z3;
+  fn mul(self, rhs: Z3) -> <Self as _>::Output {
+    => Z3(Self::mul3(self.0, rhs.0))
+  }
+}
+
+impl<T: IrTraitBound { trait_kind: Math(Ord), type_args: [], assoc_bindings: [] }> Math(Add) for TropicalDyn<T> {
+  type Output = TropicalDyn<T>;
+  fn add(self, rhs: TropicalDyn<T>) -> <Self as _>::Output {
+    => TropicalDyn(self.0.Known(Min)(rhs.0))
+  }
+}
+
+impl<T: IrTraitBound { trait_kind: Math(Add), type_args: [TypeParam("U")], assoc_bindings: [] }, U> Math(Mul) for TropicalDyn<T> {
+  type Output = TropicalDyn<<T as Add>::Output>;
+  fn mul(self, rhs: TropicalDyn<U>) -> <Self as _>::Output {
+    => TropicalDyn((self.0 Add rhs.0))
+  }
+}
+
+impl<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> Custom("AsRef") for CommitmentCoreDyn<D> {
+  fn as_ref(&self, ) -> &[u8; 0] {
+    => Refself.0
+  }
+}
+
+impl<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> Math(Default) for CommitmentCoreDyn<D> {
+  fn default() -> Self {
+    => CommitmentCoreDyn((0..LengthOf(Projection { type: TypeParam("D"), field: "OutputSize", trait_path: None })).map(|_| 0).collect::<Vec<u8>>() , PhantomData)
+  }
+}
+
+impl<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> Math(Clone) for CommitmentCoreDyn<D> {
+  fn clone(&self, ) -> Self {
+    => CommitmentCoreDyn(self.0.Known(Clone)(), PhantomData)
+  }
+}
+
+impl<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> Math(PartialEq) for CommitmentCoreDyn<D> {
+  fn eq(&self, other: &Self) -> bool {
+    => (self.0.Known(AsSlice)() Eq other.0.Known(AsSlice)())
+  }
+}
+
+impl<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> Math(Eq) for CommitmentCoreDyn<D> {
+}
+
+impl<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> CommitmentCoreDyn<D> {
+  fn validate(&self, opened_message: &impl AsRef<[u8; 0]><[u8; 0]>, opened_rand: &impl AsRef<[u8; 0]><[u8; 0]>) -> bool {
+    let recomputed: CommitmentCoreDyn<D> = commit::<D>(opened_message, opened_rand);
+    => (Refrecomputed.0 Eq Refself.0)
+  }
+}
+
+impl<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> LengthDoubler for ViaDigestPuncturableRandomizerDyn<D> {
+  type OutputSize = <D as _>::OutputSize;
+  fn double(a: Vec<u8>) -> [Vec<u8>; 2] {
+    let v = D::digest(Refa);
+    => [v.Known(Clone)(), (0..n).map(|i| (v[i] BitXor a[i])).collect()]
+  }
+}
+
+impl<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> Custom("PuncturableLengthDoubler") for ViaDigestPuncturableRandomizerDyn<D> {
+}
+
+impl<B: IrTraitBound { trait_kind: LengthDoubler, type_args: [], assoc_bindings: [] }, D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> ABODyn<B, D> {
+  fn open<R: IrTraitBound { trait_kind: AsRef(Array { kind: Slice, elem: Primitive(U8), len: Const(0) }), type_args: [Array { kind: Slice, elem: Primitive(U8), len: Const(0) }], assoc_bindings: [] }>(&self, t: usize, u: usize, m: usize, bad: Vec<u64>, rand: &R) -> ABOOpeningDyn<B, D> {
+    let k: usize = self.k;
+    let n: usize = self.n;
+    => ABOOpeningDyn { bad: bad.Known(Clone)(), openings: (0..n).map(|ni| {
+      let bad = bad.Known(Clone)();
+      => (0..t).map(|i| {
+        let bad = bad.Known(Clone)();
+        => (0..u).map(|j| {
+          let i2 = (i BitOr (j as usize Shl t.Known(Ilog2)()));
+          => if bad.Known(Contains)(Refi2 as u64) {
+            let h = commit::<D>(t, u, Refself.per_byte[ni][i2], rand);
+            => (0..m).map(|j| AsRef::as_ref::<[u8; _]>(Refh).Known(Get)(j).Known(Cloned)().Known(UnwrapOrDefault)()).collect::<Vec<u8>>() 
+          } else {
+            => (0..m).map(|j| {
+              => self.per_byte[ni][i2].Known(Get)(j).Known(Cloned)().Known(UnwrapOrDefault)()
+            }).collect::<Vec<u8>>() 
+          }
+        }).collect::<Vec<Vec<u8>>>() 
+      }).collect::<Vec<Vec<Vec<u8>>>>() 
+    }).collect::<Vec<Vec<Vec<Vec<u8>>>>>() , t: 0, u: 0, n: 0, _phantom: PhantomData }
+  }
+}
+
+impl<B: IrTraitBound { trait_kind: LengthDoubler, type_args: [], assoc_bindings: [] }, D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> ABODyn<B, D> {
+  fn to_vole_material(&self, m: usize, target: usize) -> [VopeDyn<u8>; M] {
+    let k: usize = self.k;
+    let n: usize = self.n;
+    => (0..n).map(|i| {
+      let s = Refself.per_byte[N::party_index(target)][(i Mul m)..][..m];
+      => create_vole_from_material::<B, _>(s)
+    }).collect()
+  }
+  fn to_vole_material_typenum(&self, m: usize, target: usize) -> Vec<VopeDyn<u8>> {
+    let k: usize = self.k;
+    let n: usize = self.n;
+    => (0..m).map(|i| {
+      let s = Refself.per_byte[N::party_index(target)][(i Mul m)..][..m];
+      => create_vole_from_material::<B, _>(s)
+    }).collect::<Vec<VopeDyn<u8>>>() 
+  }
+  fn to_vole_material_expanded<X: IrTraitBound { trait_kind: AsRef(Array { kind: Slice, elem: Primitive(U8), len: Const(0) }), type_args: [Array { kind: Slice, elem: Primitive(U8), len: Const(0) }], assoc_bindings: [] }, F: IrTraitBound { trait_kind: Fn(BytesSlice, TypeParam("X")), type_args: [], assoc_bindings: [] }>(&self, m: usize, target: usize, f: F) -> [VopeDyn<u8>; M] {
+    let k: usize = self.k;
+    let n: usize = self.n;
+    => (0..n).map(|i| {
+      let s = Refself.per_byte[N::party_index(target)][(i Mul m)..][..m];
+      => create_vole_from_material_expanded::<B, _, _, _>(s, RefMutf)
+    }).collect()
+  }
+  fn to_vole_material_typenum_expanded<X: IrTraitBound { trait_kind: AsRef(Array { kind: Slice, elem: Primitive(U8), len: Const(0) }), type_args: [Array { kind: Slice, elem: Primitive(U8), len: Const(0) }], assoc_bindings: [] }, F: IrTraitBound { trait_kind: Fn(BytesSlice, TypeParam("X")), type_args: [], assoc_bindings: [] }>(&self, m: usize, target: usize, f: F) -> Vec<VopeDyn<u8>> {
+    let k: usize = self.k;
+    let n: usize = self.n;
+    => (0..m).map(|i| {
+      let s = Refself.per_byte[N::party_index(target)][(i Mul m)..][..m];
+      => create_vole_from_material_expanded::<B, _, _, _>(s, RefMutf)
+    }).collect::<Vec<VopeDyn<u8>>>() 
+  }
+  fn split_bit_typenum(&self, m: usize, target: usize) -> Vec<BSplitDyn<B, D>> {
+    let k: usize = self.k;
+    let n: usize = self.n;
+    => (0..m).map(|i| {
+      let s = Refself.per_byte[N::party_index(target)][(i Mul m)..][..m];
+      => BSplitDyn { split: (0..ilog2(LengthOf(Projection { type: TypeParam("D"), field: "OutputSize", trait_path: None }))).map(|j| {
+        => (0..n).map(|b| {
+          => s.Iter().enumerate().filter_map(|(a, c)| {
+            => if (((a Shr j) BitAnd 1) Eq b) {
+              => Some(c.Known(Clone)())
+            } else {
+              => None
+            }
+          }).fold((0..LengthOf(Projection { type: TypeParam("B"), field: "OutputSize", trait_path: None })).map(|_| 0).collect::<Vec<u8>>() , |mut a, b| {
+            => (0..LengthOf(Projection { type: TypeParam("B"), field: "OutputSize", trait_path: None })).map(|i| a[i].Known(Bitxor)(b[i])).collect::<Vec<u8>>() 
+          })
+        }).collect()
+      }).collect::<Vec<[Vec<u8>; 2]>>() , _phantom: PhantomData }
+    }).collect::<Vec<BSplitDyn<B, D>>>() 
+  }
+}
+
+impl<B: IrTraitBound { trait_kind: LengthDoubler, type_args: [], assoc_bindings: [] }, D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> ABOOpeningDyn<B, D> {
+  fn to_vole_material(&self, m: usize, party: usize) -> [VopeDyn<u8>; M] {
+    let t: usize = self.t;
+    let u: usize = self.u;
+    let n: usize = self.n;
+    => (0..n).map(|i| {
+      let s = Refself.openings[N::party_index(party)][i];
+      => create_vole_from_material::<B, _>(s)
+    }).collect()
+  }
+  fn to_vole_material_typenum(&self, m: usize, party: usize) -> Vec<VopeDyn<u8>> {
+    let t: usize = self.t;
+    let u: usize = self.u;
+    let n: usize = self.n;
+    => (0..m).map(|i| {
+      let s = Refself.openings[N::party_index(party)][i];
+      => create_vole_from_material::<B, _>(s)
+    }).collect::<Vec<VopeDyn<u8>>>() 
+  }
+  fn to_vole_material_expanded<X: IrTraitBound { trait_kind: AsRef(Array { kind: Slice, elem: Primitive(U8), len: Const(0) }), type_args: [Array { kind: Slice, elem: Primitive(U8), len: Const(0) }], assoc_bindings: [] }, F: IrTraitBound { trait_kind: Fn(BytesSlice, TypeParam("X")), type_args: [], assoc_bindings: [] }>(&self, m: usize, party: usize, f: F) -> [VopeDyn<u8>; M] {
+    let t: usize = self.t;
+    let u: usize = self.u;
+    let n: usize = self.n;
+    => (0..n).map(|i| {
+      let s = Refself.openings[N::party_index(party)][i];
+      => create_vole_from_material_expanded::<B, _, _, _>(s, RefMutf)
+    }).collect()
+  }
+  fn to_vole_material_typenum_expanded<X: IrTraitBound { trait_kind: AsRef(Array { kind: Slice, elem: Primitive(U8), len: Const(0) }), type_args: [Array { kind: Slice, elem: Primitive(U8), len: Const(0) }], assoc_bindings: [] }, F: IrTraitBound { trait_kind: Fn(BytesSlice, TypeParam("X")), type_args: [], assoc_bindings: [] }>(&self, m: usize, party: usize, f: F) -> Vec<VopeDyn<u8>> {
+    let t: usize = self.t;
+    let u: usize = self.u;
+    let n: usize = self.n;
+    => (0..m).map(|i| {
+      let s = Refself.openings[N::party_index(party)][i];
+      => create_vole_from_material_expanded::<B, _, _, _>(s, RefMutf)
+    }).collect::<Vec<VopeDyn<u8>>>() 
+  }
+  fn split_bit_typenum(&self, m: usize, party: usize) -> Vec<BSplitDyn<B, D>> {
+    let t: usize = self.t;
+    let u: usize = self.u;
+    let n: usize = self.n;
+    => (0..m).map(|i| {
+      let s = Refself.openings[N::party_index(party)][i];
+      => BSplitDyn { split: (0..ilog2(LengthOf(Projection { type: TypeParam("D"), field: "OutputSize", trait_path: None }))).map(|j| {
+        => (0..n).map(|b| {
+          => s.Iter().enumerate().filter_map(|(a, c)| {
+            => if (((a Shr j) BitAnd 1) Eq b) {
+              => Some(c.Known(Clone)())
+            } else {
+              => None
+            }
+          }).fold((0..LengthOf(Projection { type: TypeParam("B"), field: "OutputSize", trait_path: None })).map(|_| 0).collect::<Vec<u8>>() , |mut a, b| {
+            => (0..LengthOf(Projection { type: TypeParam("B"), field: "OutputSize", trait_path: None })).map(|i| a[i].Known(Bitxor)(b[i])).collect::<Vec<u8>>() 
+          })
+        }).collect()
+      }).collect::<Vec<[Vec<u8>; 2]>>() , _phantom: PhantomData }
+    }).collect::<Vec<BSplitDyn<B, D>>>() 
+  }
+}
+
+impl<B: IrTraitBound { trait_kind: LengthDoubler, type_args: [], assoc_bindings: [] }, D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> ABOOpeningDyn<B, D> {
+  fn validate<R: IrTraitBound { trait_kind: AsRef(Array { kind: Slice, elem: Primitive(U8), len: Const(0) }), type_args: [Array { kind: Slice, elem: Primitive(U8), len: Const(0) }], assoc_bindings: [] }>(&self, commit_: &Vec<u8>, rand: &R) -> bool {
+    let t: usize = self.t;
+    let u: usize = self.u;
+    let n: usize = self.n;
+    let mut h = D::new();
+    for i in 0..t {
+      => for b in 0..u {
+        let i2 = (i BitOr (b as usize Shl t.Known(Ilog2)()));
+        => if self.bad.Known(Contains)(Refi2 as u64) {
+          h.Known(Update)(Refself.openings[0][i][b][..LengthOf(Projection { type: TypeParam("D"), field: "OutputSize", trait_path: None })]);
+        } else {
+          h.Known(Update)(Refcommit::<D>(t, u, RefRefself.openings[0][i][b][..LengthOf(Projection { type: TypeParam("B"), field: "OutputSize", trait_path: None })], rand));
+        }
+      }
+    };
+    => (h.Known(Finalize)().Known(ToVec)().Known(AsSlice)() Eq commit_.Known(AsSlice)())
+  }
+}
+
+impl<B: IrTraitBound { trait_kind: LengthDoubler, type_args: [], assoc_bindings: [] }, D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> ABOOpeningDyn<B, D> {
+  fn validate<R: IrTraitBound { trait_kind: AsRef(Array { kind: Slice, elem: Primitive(U8), len: Const(0) }), type_args: [Array { kind: Slice, elem: Primitive(U8), len: Const(0) }], assoc_bindings: [] }>(t: usize, u: usize, nothers: usize, this: Vec<&Self>, me: &ABODyn<B, D>, commit_: Vec<&Vec<u8>>, rand: &R) -> bool {
+    => commit_.Iter().enumerate() /* lazy */.Other("all")(|(ci, commit_)| {
+      let mut h = D::new();
+      if (ci Ne 0) {
+        => for i in 0..t {
+          => for b in 0..u {
+            let i2 = (i BitOr (b as usize Shl t.Known(Ilog2)()));
+            h.Known(Update)(Refcommit::<D>(t, u, Refme.per_byte[ci][i2], rand));
+          }
+        }
+      };
+      for (idx, this) in this.Iter().enumerate() /* lazy */ {
+        if ((idx Add 1) Eq ci) {
+          continue;
+        };
+        => for i in 0..t {
+          => for b in 0..u {
+            let i2 = (i BitOr (b as usize Shl t.Known(Ilog2)()));
+            => if this.bad.Known(Contains)(Refi2 as u64) {
+              h.Known(Update)(Refthis.openings[ci][i][b][..LengthOf(Projection { type: TypeParam("D"), field: "OutputSize", trait_path: None })]);
+            } else {
+              h.Known(Update)(Refcommit::<D>(t, u, RefRefthis.openings[ci][i][b][..LengthOf(Projection { type: TypeParam("B"), field: "OutputSize", trait_path: None })], rand));
+            }
+          }
+        }
+      };
+      => (h.Known(Finalize)().Known(ToVec)().Known(AsSlice)() Eq commit_.Known(AsSlice)())
+    })
+  }
+}
+
+impl Custom("PartyIndex") for U1 {
+  fn party_index(_: usize) -> usize {
+    => 0
+  }
+}
+
+impl Custom("PartyIndex") for N {
+  fn party_index(n: usize, requested: usize) -> usize {
+    => requested
+  }
+}
+
+impl Fe25519 {
+  fn is_zero(&self, ) -> bool {
+    => (self.0 Eq [0, 0, 0, 0])
+  }
+  fn to_bytes(self, ) -> [u8; 32] {
+    let mut out = [0; 32];
+    for i in 0..4 {
+      out[(i Mul 8)..((i Mul 8) Add 8)].Known(CopyFromSlice)(Refself.0[i].Known(ToLeBytes)());
+    };
+    => out
+  }
+}
+
+impl Math(Add) for Fe25519 {
+  type Output = Self;
+  fn add(self, rhs: Self) -> Self {
+    => fe_add(Refself, Refrhs)
+  }
+}
+
+impl Math(Sub) for Fe25519 {
+  type Output = Self;
+  fn sub(self, rhs: Self) -> Self {
+    => fe_sub(Refself, Refrhs)
+  }
+}
+
+impl Math(Mul) for Fe25519 {
+  type Output = Self;
+  fn mul(self, rhs: Self) -> Self {
+    => fe_mul(Refself, Refrhs)
+  }
+}
+
+impl Math(Neg) for Fe25519 {
+  type Output = Self;
+  fn neg(self, ) -> Self {
+    => fe_neg(Refself)
+  }
+}
+
+impl EdPoint {
+  fn base() -> Self {
+    let x = Fe25519(BASE_X_LIMBS);
+    let y = Fe25519(BASE_Y_LIMBS);
+    => Self { x: x, y: y, z: Fe25519::ONE, t: fe_mul(Refx, Refy) }
+  }
+  fn to_affine(&self, ) -> (Fe25519, Fe25519) {
+    let zinv = fe_invert(Refself.z);
+    => (fe_mul(Refself.x, Refzinv), fe_mul(Refself.y, Refzinv))
+  }
+}
+
+impl Math(PartialEq) for EdPoint {
+  fn eq(&self, other: &Self) -> bool {
+    let lhs_x = fe_mul(Refself.x, Refother.z);
+    let rhs_x = fe_mul(Refother.x, Refself.z);
+    let lhs_y = fe_mul(Refself.y, Refother.z);
+    let rhs_y = fe_mul(Refother.y, Refself.z);
+    => ((lhs_x Eq rhs_x) And (lhs_y Eq rhs_y))
+  }
+}
+
+impl Math(Eq) for EdPoint {
+}
+
+impl Custom("Group") for Ed25519 {
+  type Other("Element") = EdPoint;
+  type Other("Scalar") = [u8; 32];
+  fn generator() -> EdPoint {
+    => EdPoint::base()
+  }
+  fn random_scalar<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(rng: &mut R) -> [u8; 32] {
+    let mut k = [0; 32];
+    for byte in k.Other("iter_mut")() {
+      Derefbyte = rng.Other("next_u8")();
+    };
+    k[31] BitAnd= 63;
+    => k
+  }
+  fn scalar_mul(elt: &EdPoint, k: &[u8; 32]) -> EdPoint {
+    => ed_scalar_mul(elt, k)
+  }
+  fn add(a: &EdPoint, b: &EdPoint) -> EdPoint {
+    => ed_add(a, b)
+  }
+  fn neg(a: &EdPoint) -> EdPoint {
+    => ed_neg(a)
+  }
+  fn write_element<D_: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }>(elt: &EdPoint, h: &mut D_) {
+    let (x, y) = elt.Other("to_affine")();
+    h.Known(Update)(x.Other("to_bytes")());
+    h.Known(Update)(y.Other("to_bytes")());
+  }
+}
+
+impl<L: IrTraitBound { trait_kind: Custom("LeafCommit"), type_args: [TypeParam("LAMBDA_BYTES"), TypeParam("COM_BYTES")], assoc_bindings: [] }> BavcDyn<L> {
+  fn commit<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }>(com_bytes: usize, r: [u8; LAMBDA_BYTES], iv: &[u8; 16], tau: usize, n: usize) -> BavcCommitmentDyn {
+    let leaf_count = (tau Mul n);
+    let total_nodes = ((2 Mul leaf_count) Sub 1);
+    let mut tree: Vec<[u8; LAMBDA_BYTES]> = [];
+    tree[0] = r;
+    for node in 0..(leaf_count Sub 1) {
+      let parent = Vec::<u8, U16>(tree[node]);
+      let [left, right] = AesCtrLengthDoubler::double(parent);
+      tree[((2 Mul node) Add 1)] = left.0;
+      tree[((2 Mul node) Add 2)] = right.0;
+    };
+    let mut seeds = Vec::with_capacity(leaf_count);
+    let mut commitments = Vec::with_capacity(leaf_count);
+    for i in 0..tau {
+      => for j in 0..n {
+        let leaf_k = ((i Mul n) Add j);
+        let tree_pos = ((leaf_count Sub 1) Add leaf_k);
+        let r_leaf = tree[tree_pos];
+        let tweak = leaf_k as u32;
+        let (sd, com) = L::commit(Refr_leaf, iv, tweak);
+        seeds.Known(Push)(sd);
+        commitments.Known(Push)(com);
+      }
+    };
+    let mut vec_hashes: Vec<Vec<u8>> = Vec::with_capacity(tau);
+    for i in 0..tau {
+      let mut h = D::new();
+      for j in 0..n {
+        h.Known(Update)(Refcommitments[((i Mul n) Add j)]);
+      };
+      vec_hashes.Known(Push)(h.Known(Finalize)().Known(ToVec)().Known(ToVec)());
+    };
+    let mut h = D::new();
+    for hi in Refvec_hashes {
+      h.Known(Update)(hi);
+    };
+    let root = h.Known(Finalize)().Known(ToVec)().Known(ToVec)();
+    => BavcCommitmentDyn { root: root, vec_hashes: vec_hashes, seeds: seeds, commitments: commitments, com_bytes: 0 }
+  }
+  fn open(com_bytes: usize, commitment: &BavcCommitmentDyn, deltas: &[usize; 0], tau: usize, n: usize) -> BavcOpeningDyn {
+    for (i, &d) in deltas.Iter().enumerate() /* lazy */ {
+    };
+    let leaf_count = (tau Mul n);
+    let total_nodes = ((2 Mul leaf_count) Sub 1);
+    let mut hidden = [];
+    for (i, &d) in deltas.Iter().enumerate() /* lazy */ {
+      let leaf_k = ((i Mul n) Add d);
+      let tree_pos = ((leaf_count Sub 1) Add leaf_k);
+      hidden[tree_pos] = true;
+    };
+    for node in 0..(leaf_count Sub 1).Known(Rev)() {
+      let left = ((2 Mul node) Add 1);
+      let right = ((2 Mul node) Add 2);
+      hidden[node] = (hidden[left] Or hidden[right]);
+    };
+    let mut tree: Vec<[u8; LAMBDA_BYTES]> = [];
+    let _ = tree;
+    => BavcOpeningDyn { hidden_commits: deltas.Iter().enumerate().map(|(i, d)| commitment.commitments[((i Mul n) Add d)]).collect(), nodes: Vec::new(), com_bytes: 0 }
+  }
+  fn collect_open_nodes(com_bytes: usize, deltas: &[usize; 0], tree: &[[u8; LAMBDA_BYTES]; 0], tau: usize, n: usize) -> Vec<(usize, [u8; LAMBDA_BYTES])> {
+    let leaf_count = (tau Mul n);
+    let total_nodes = ((2 Mul leaf_count) Sub 1);
+    let mut hidden = [];
+    for (i, &d) in deltas.Iter().enumerate() /* lazy */ {
+      let leaf_k = ((i Mul n) Add d);
+      let tree_pos = ((leaf_count Sub 1) Add leaf_k);
+      hidden[tree_pos] = true;
+    };
+    for node in 0..(leaf_count Sub 1).Known(Rev)() {
+      hidden[node] = (hidden[((2 Mul node) Add 1)] Or hidden[((2 Mul node) Add 2)]);
+    };
+    let mut out: Vec<(usize, [u8; LAMBDA_BYTES])> = Vec::new();
+    walk(0, Refhidden, tree, leaf_count, RefMutout);
+    => out
+  }
+  fn reconstruct<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }>(com_bytes: usize, nodes: &[(usize, [u8; LAMBDA_BYTES]); 0], hidden_commits: &[[u8; COM_BYTES]; 0], deltas: &[usize; 0], iv: &[u8; 16], expected_root: &[u8; 0], tau: usize, n: usize) -> Option<Vec<[u8; LAMBDA_BYTES]>> {
+    let leaf_count = (tau Mul n);
+    let total_nodes = ((2 Mul leaf_count) Sub 1);
+    let mut hidden = [];
+    for (i, &d) in deltas.Iter().enumerate() /* lazy */ {
+      let leaf_k = ((i Mul n) Add d);
+      let tree_pos = ((leaf_count Sub 1) Add leaf_k);
+      hidden[tree_pos] = true;
+    };
+    for node in 0..(leaf_count Sub 1).Known(Rev)() {
+      hidden[node] = (hidden[((2 Mul node) Add 1)] Or hidden[((2 Mul node) Add 2)]);
+    };
+    let mut tree: Vec<Option<[u8; LAMBDA_BYTES]>> = [];
+    for (idx, seed) in nodes {
+      tree[Derefidx] = Some(Derefseed);
+    };
+    for node in 0..(leaf_count Sub 1) {
+      => match tree[node] {
+        Some(parent_seed) => {
+          let parent = Vec::<u8, U16>(parent_seed);
+          let [left, right] = AesCtrLengthDoubler::double(parent);
+          if tree[((2 Mul node) Add 1)].Other("is_none")() {
+            tree[((2 Mul node) Add 1)] = Some(left.0);
+          };
+          => if tree[((2 Mul node) Add 2)].Other("is_none")() {
+            tree[((2 Mul node) Add 2)] = Some(right.0);
+          }
+        },
+        _ => {
+        },
+      }
+    };
+    let mut leaf_seeds: Vec<[u8; LAMBDA_BYTES]> = Vec::with_capacity(leaf_count);
+    let mut leaf_coms: Vec<[u8; COM_BYTES]> = Vec::with_capacity(leaf_count);
+    for i in 0..tau {
+      => for j in 0..n {
+        let leaf_k = ((i Mul n) Add j);
+        let tree_pos = ((leaf_count Sub 1) Add leaf_k);
+        => if (j Eq deltas[i]) {
+          leaf_seeds.Known(Push)([0; LAMBDA_BYTES]);
+          leaf_coms.Known(Push)(hidden_commits[i]);
+        } else {
+          let r_leaf = tree[tree_pos]?;
+          let tweak = leaf_k as u32;
+          let (sd, com) = L::commit(Refr_leaf, iv, tweak);
+          leaf_seeds.Known(Push)(sd);
+          leaf_coms.Known(Push)(com);
+        }
+      }
+    };
+    let mut vec_hashes: Vec<Vec<u8>> = Vec::with_capacity(tau);
+    for i in 0..tau {
+      let mut h = D::new();
+      for j in 0..n {
+        h.Known(Update)(Refleaf_coms[((i Mul n) Add j)]);
+      };
+      vec_hashes.Known(Push)(h.Known(Finalize)().Known(ToVec)().Known(ToVec)());
+    };
+    let mut h = D::new();
+    for hi in Refvec_hashes {
+      h.Known(Update)(hi);
+    };
+    let root = h.Known(Finalize)().Known(ToVec)().Known(ToVec)();
+    => if (root.Known(AsSlice)() Eq expected_root) {
+      => Some(leaf_seeds)
+    } else {
+      => None
+    }
+  }
+}
+
+impl<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] } + IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> Custom("LeafCommit") for RoLeafCommitDyn<D> {
+  fn commit(sd_bytes: usize, com_bytes: usize, r: &[u8; SD_BYTES], iv: &[u8; 16], tweak: u32) -> ([u8; SD_BYTES], [u8; COM_BYTES]) {
+    let out_size = D::output_size();
+    let mut h = D::new();
+    h.Known(Update)(r);
+    h.Known(Update)(iv);
+    h.Known(Update)(Reftweak.Known(ToLeBytes)());
+    let digest = h.Known(Finalize)().Known(ToVec)();
+    let mut sd = [0; sd_bytes];
+    let mut com = [0; com_bytes];
+    sd.Known(CopyFromSlice)(Refdigest[..sd_bytes]);
+    com.Known(CopyFromSlice)(Refdigest[sd_bytes..(sd_bytes Add com_bytes)]);
+    => (sd, com)
+  }
+}
+
+impl Custom("LeafCommit") for EmLeafCommit {
+  fn commit(sd_bytes: usize, com_bytes: usize, r: &[u8; SD_BYTES], iv: &[u8; 16], tweak: u32) -> ([u8; SD_BYTES], [u8; COM_BYTES]) {
+    let mut seed_buf = [0; 16];
+    seed_buf.Known(CopyFromSlice)(Refr[..]);
+    let com_vec = aes_ctr_prg(Refseed_buf, iv, tweak, com_bytes);
+    let mut sd = [0; sd_bytes];
+    sd.Known(CopyFromSlice)(r);
+    let mut com = [0; com_bytes];
+    com.Known(CopyFromSlice)(Refcom_vec[..com_bytes]);
+    => (sd, com)
+  }
+}
+
+impl LengthDoubler for AesCtrLengthDoubler {
+  type OutputSize = U16;
+  fn double(a: Vec<u8>) -> [Vec<u8>; 2] {
+    let mut block0 = [0; BLOCK];
+    let mut block1 = [0; BLOCK];
+    block1[0] = 1;
+    let key: [u8; BLOCK] = a.0;
+    let c0 = encrypt_block(Refkey, Refblock0);
+    let c1 = encrypt_block(Refkey, Refblock1);
+    block0.Known(Fill)(0);
+    block1.Known(Fill)(0);
+    => [Vec(c0), Vec(c1)]
+  }
+}
+
+impl Custom("FaestAesProver") for StubFaestAesProver {
+  fn prove_aes_witness(&self, big_vole: &BigVoleProver, hash_key: &UniversalHashKey) -> QuickSilverProof {
+    let a_hat_out: UniversalHashOutput = vole_hash(hash_key, Refbig_vole.u);
+    let a_hat: Vec<u8> = a_hat_out.h0.0.Known(ToLeBytes)().Iter().chain(a_hat_out.h1.0.Known(ToLeBytes)().Iter() /* lazy */) /* lazy */.Known(Cloned)().Other("collect")();
+    let len = a_hat.Known(Len)();
+    => QuickSilverProof { a_hat: a_hat, b_hat: [], c_hat_base: [] }
+  }
+}
+
+impl Sponge {
+  fn absorb(&mut self, data: &[u8; 0]) {
+    => match self {
+      Sponge::Shake128(h) => h.Known(Update)(data),
+      Sponge::Shake256(h) => h.Known(Update)(data),
+    }
+  }
+  fn squeeze(&self, n: usize) -> Vec<u8> {
+    let mut out = [];
+    match self {
+      Sponge::Shake128(h) => {
+        let mut r = h.Known(Clone)().Other("finalize_xof")();
+        r.Other("read")(RefMutout);
+      },
+      Sponge::Shake256(h) => {
+        let mut r = h.Known(Clone)().Other("finalize_xof")();
+        r.Other("read")(RefMutout);
+      },
+    };
+    => out
+  }
+}
+
+impl FaestTranscript {
+  fn new_shake128() -> Self {
+    => FaestTranscript { sponge: Sponge::Shake128(Shake128::default()) }
+  }
+  fn new_shake256() -> Self {
+    => FaestTranscript { sponge: Sponge::Shake256(Shake256::default()) }
+  }
+  fn absorb(&mut self, data: &[u8; 0]) {
+    self.sponge.Other("absorb")(data);
+  }
+  fn squeeze(&self, n: usize) -> Vec<u8> {
+    => self.sponge.Other("squeeze")(n)
+  }
+}
+
+impl GarbleDyn {
+  fn zero(n: usize) -> Self {
+    => GarbleDyn { base: (0..n).map(|_| 0).collect::<Vec<u8>>() , n: 0 }
+  }
+  fn and_result<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }>(&self, b: &GarbleDyn) -> Self {
+    let n: usize = self.n;
+    let mut d = D::new();
+    d.Known(Update)(Refself.base);
+    d.Known(Update)(Refb.base);
+    let hash = d.Known(Finalize)().Known(ToVec)();
+    => GarbleDyn { base: (0..n).map(|i| hash[i]).collect::<Vec<u8>>() , n: 0 }
+  }
+  fn share(&self, target: &Vec<u8>) -> EvalDyn {
+    let n: usize = self.n;
+    => EvalDyn { target: (0..n).map(|i| (self.base[i] BitXor target[i])).collect::<Vec<u8>>() , n: 0 }
+  }
+  fn to_share(&self, o: usize) -> GarbleDyn {
+    let n: usize = self.n;
+    => GarbleDyn { base: (0..o).map(|i| {
+      let mut v = 0;
+      for j in 0..8 {
+        let bit = (self.base[((i Mul 8) Add j)] BitAnd 1);
+        v BitOr= (bit Shl j);
+      };
+      => v
+    }).collect::<Vec<u8>>() , n: 0 }
+  }
+}
+
+impl EvalDyn {
+  fn zero(n: usize) -> Self {
+    => EvalDyn { target: (0..n).map(|_| 0).collect::<Vec<u8>>() , n: 0 }
+  }
+  fn open(&self, garble: &GarbleDyn) -> Vec<u8> {
+    let n: usize = self.n;
+    => (0..n).map(|i| (self.target[i] BitXor garble.base[i])).collect::<Vec<u8>>() 
+  }
+  fn to_share(&self, o: usize) -> EvalDyn {
+    let n: usize = self.n;
+    => EvalDyn { target: (0..o).map(|i| {
+      let mut v = 0;
+      for j in 0..8 {
+        let bit = (self.target[((i Mul 8) Add j)] BitAnd 1);
+        v BitOr= (bit Shl j);
+      };
+      => v
+    }).collect::<Vec<u8>>() , n: 0 }
+  }
+  fn and_via_table<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }>(&self, other: &EvalDyn, table: &GarbleTableDyn) -> EvalDyn {
+    let n: usize = self.n;
+    let index = (if ((self.target[0] BitAnd 1) Eq 1) {
+      => 1
+    } else {
+      => 0
+    } BitOr if ((other.target[0] BitAnd 1) Eq 1) {
+      => 2
+    } else {
+      => 0
+    });
+    let hash = {
+      let mut d = D::new();
+      d.Known(Update)(Refself.target);
+      d.Known(Update)(Refother.target);
+      => d.Known(Finalize)().Known(ToVec)()
+    };
+    => EvalDyn { target: (0..n).map(|i| (hash[i] BitXor table.table[index][i])).collect::<Vec<u8>>() , n: 0 }
+  }
+}
+
+impl GlobalSecretDyn {
+  fn new(n: usize, secret: Vec<u8>) -> Self {
+    secret[0] BitOr= 1;
+    => Self { secret: secret }
+  }
+  fn secret(&self, ) -> Vec<u8> {
+    let n: usize = self.n;
+    => self.secret.Known(Clone)()
+  }
+  fn encode(&self, garble: &GarbleDyn, value: bool) -> EvalDyn {
+    let n: usize = self.n;
+    => EvalDyn { target: (0..n).map(|i| {
+      => if value {
+        => (self.secret[i] BitXor garble.base[i])
+      } else {
+        => garble.base[i]
+      }
+    }).collect::<Vec<u8>>() , n: 0 }
+  }
+  fn one_wire_eval(&self, ) -> EvalDyn {
+    let n: usize = self.n;
+    => self.Other("encode")(RefGarble::zero(), true)
+  }
+  fn not_garble(&self, a: &GarbleDyn) -> GarbleDyn {
+    let n: usize = self.n;
+    => GarbleDyn { base: (0..n).map(|i| (a.base[i] BitXor self.secret[i])).collect::<Vec<u8>>() , n: 0 }
+  }
+  fn gen_and_table<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }>(&self, a: &GarbleDyn, b: &GarbleDyn) -> GarbleTableDyn {
+    let n: usize = self.n;
+    let result_base = a.Other("and_result")(b);
+    let mut table = (0..n).map(|_| (0..n).map(|_| 0).collect::<Vec<u8>>() ).collect();
+    for i in 0..4 {
+      let av = ((i BitAnd 1) Ne 0);
+      let bv = ((i BitAnd 2) Ne 0);
+      let ea = self.Other("encode")(a, av);
+      let eb = self.Other("encode")(b, bv);
+      let row = ((ea.target[0] BitAnd 1) as usize BitOr ((eb.target[0] BitAnd 1) as usize Shl 1));
+      let result_label = self.Other("encode")(Refresult_base, (av BitAnd bv));
+      let mut d = D::new();
+      d.Known(Update)(Refea.target);
+      d.Known(Update)(Refeb.target);
+      let hash = d.Known(Finalize)().Known(ToVec)();
+      table[row] = (0..n).map(|j| (hash[j] BitXor result_label.target[j])).collect::<Vec<u8>>() ;
+    };
+    => GarbleTableDyn { table: table, n: 0 }
+  }
+}
+
+impl Math(BitXor) for EvalDyn {
+  type Output = EvalDyn;
+  fn bitxor(self, rhs: EvalDyn) -> <Self as _>::Output {
+    let n: usize = self.n;
+    return EvalDyn { target: (0..n).map(|i| (self.target[i] BitXor rhs.target[i])).collect::<Vec<u8>>() , n: 0 };
+  }
+}
+
+impl GarbledCircuitDyn {
+  fn encode_inputs(&self, bits: &[bool; I]) -> [EvalDyn; I] {
+    let n: usize = self.n;
+    let i: usize = self.i;
+    let a: usize = self.a;
+    => (0..n).map(|i| self.secret.Other("encode")(Refself.input_labels[i], bits[i])).collect()
+  }
+  fn eval_setup(&self, ) -> EvalSetupDyn {
+    let n: usize = self.n;
+    let i: usize = self.i;
+    let a: usize = self.a;
+    => EvalSetupDyn { one_wire: self.secret.Other("one_wire_eval")(), tables: self.tables.Known(Clone)(), output_label: self.output_label.Known(Clone)(), n: 0, a: 0 }
+  }
+}
+
+impl EvalSetupDyn {
+  fn recover_output(&self, result: &EvalDyn) -> bool {
+    let n: usize = self.n;
+    let a: usize = self.a;
+    => ((result.Other("open")(Refself.output_label)[0] BitAnd 1) Ne 0)
+  }
+}
+
+impl Custom("WordReducer") for NoReduction {
+  fn reduce(&self, _word: &mut GrafhenWordDyn) {
+  }
+}
+
+impl GrafhenWordDyn {
+  fn identity(wbound: usize) -> Self {
+    => GrafhenWordDyn { data: [0; wbound], len: 0, wbound: 0 }
+  }
+}
+
+impl<T: IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] }, U: IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] }> LweSampleDyn<T, U> {
+  fn new(n: usize, m: usize, matrix: Vec<Vec<T>>, b: Vec<U>) -> Self {
+    => Self { matrix: matrix, b: b }
+  }
+  fn sample<S: IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] } + IrTraitBound { trait_kind: Math(Mul), type_args: [TypeParam("T")], assoc_bindings: [(Output, TypeParam("A"))] }, A: IrTraitBound { trait_kind: Math(Add), type_args: [TypeParam("P")], assoc_bindings: [(Output, TypeParam("U"))] } + IrTraitBound { trait_kind: Math(Add), type_args: [TypeParam("A")], assoc_bindings: [(Output, TypeParam("A"))] } + IrTraitBound { trait_kind: Math(Default), type_args: [], assoc_bindings: [] }, P: IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] }>(n: usize, m: usize, matrix: Vec<Vec<T>>, s: Vec<S>, e: Vec<P>) -> Self {
+    => Self { b: (0..m).map(|i| {
+      => (s.Iter().enumerate().map(|(a, b)| (b.Known(Clone)() Mul matrix[i][a].Known(Clone)())).fold(A::default(), |mut a, b| (a Add b)) Add e[i].Known(Clone)())
+    }).collect::<Vec<U>>() , matrix: matrix }
+  }
+}
+
+impl Custom("Group") for ToyGroup {
+  type Other("Element") = ToyElement;
+  type Other("Scalar") = u64;
+  fn generator() -> ToyElement {
+    => ToyElement(TOY_G)
+  }
+  fn random_scalar<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(rng: &mut R) -> u64 {
+    let lo = rng.Other("next_u32")() as u64;
+    let hi = rng.Other("next_u32")() as u64;
+    => (((hi Shl 32) BitOr lo) Rem (TOY_P Sub 1))
+  }
+  fn scalar_mul(elt: &ToyElement, k: &u64) -> ToyElement {
+    => ToyElement(toy_pow(elt.0, Derefk))
+  }
+  fn add(a: &ToyElement, b: &ToyElement) -> ToyElement {
+    => ToyElement(toy_mul(a.0, b.0))
+  }
+  fn neg(a: &ToyElement) -> ToyElement {
+    => ToyElement(toy_pow(a.0, (TOY_P Sub 2)))
+  }
+  fn write_element<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }>(elt: &ToyElement, h: &mut D) {
+    h.Known(Update)(elt.0.Known(ToLeBytes)());
+  }
+}
+
+impl<T: IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] } + IrTraitBound { trait_kind: Math(Add), type_args: [], assoc_bindings: [(Output, TypeParam("T"))] } + IrTraitBound { trait_kind: Math(Mul), type_args: [], assoc_bindings: [(Output, TypeParam("T"))] } + IrTraitBound { trait_kind: Math(Default), type_args: [], assoc_bindings: [] }> IdealCotDyn<T> {
+  fn new(n: usize, delta: DeltaDyn<T>) -> Self {
+    => Self { delta: delta }
+  }
+  fn cot<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(&self, rng: &mut R, sample_t: impl Fn, b: bool) -> (Vec<T>, Vec<T>) {
+    let n: usize = self.n;
+    let r0 = (0..n).map(|_| sample_t(rng)).collect::<Vec<T>>() ;
+    let v = if b {
+      => (0..n).map(|i| (r0[i].Known(Clone)() Add self.delta.delta[i].Known(Clone)())).collect::<Vec<T>>() 
+    } else {
+      => (0..n).map(|i| r0[i].Known(Clone)()).collect::<Vec<T>>() 
+    };
+    => (r0, v)
+  }
+}
+
+impl LweOtCrs {
+  fn sample<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(rng: &mut R) -> Self {
+    let mut a = [[0; LWE_N]; LWE_N];
+    for i in 0..LWE_N {
+      => for j in 0..LWE_N {
+        a[i][j] = sample_zq(rng);
+      }
+    };
+    let mut h = [0; LWE_N];
+    for i in 0..LWE_N {
+      h[i] = sample_zq(rng);
+    };
+    => Self { a: a, h: h }
+  }
+}
+
+impl<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }> SoftSpokenOutDyn<D> {
+  fn check(&self, ) -> bool {
+    let m: usize = self.m;
+    let l: usize = self.l;
+    => (self.sender_tag Eq self.receiver_tag)
+  }
+}
+
+impl VopeDyn<BitsInBytes> {
+  fn rotate_left_bits(&self, n_param: usize) -> Self {
+    let n: usize = self.n;
+    let k: usize = self.k;
+    let VopeDyn { u, v, .. } = self;
+    => VopeDyn { u: (0..k).map(|l| {
+      => (0..n_param).map(|i| {
+        let BitsInBytes(b) = u[l][i].Known(Clone)();
+        let BitsInBytes(next) = u[l][((i Add 1) Rem n_param)].Known(Clone)();
+        => BitsInBytes((b.Known(Shl)(n_param as u32) BitOr next.Known(Shr)((8 Sub n_param as u32))))
+      }).collect::<Vec<BitsInBytes>>() 
+    }).collect::<Vec<Vec<BitsInBytes>>>() , v: (0..n_param).map(|i| {
+      let BitsInBytes(b) = v[i].Known(Clone)();
+      let BitsInBytes(next) = v[((i Add 1) Rem n_param)].Known(Clone)();
+      => BitsInBytes((b.Known(Shl)(n_param as u32) BitOr next.Known(Shr)((8 Sub n_param as u32))))
+    }).collect::<Vec<BitsInBytes>>() , n: 0, k: 1 }
+  }
+  fn rotate_right_bits(&self, n_param: usize) -> Self {
+    let n: usize = self.n;
+    let k: usize = self.k;
+    let VopeDyn { u, v, .. } = self;
+    => VopeDyn { u: (0..k).map(|l| {
+      => (0..n_param).map(|i| {
+        let BitsInBytes(prev) = u[l][(((i Add n_param) Sub 1) Rem n_param)].Known(Clone)();
+        let BitsInBytes(b) = u[l][i].Known(Clone)();
+        => BitsInBytes((prev.Known(Shl)((8 Sub n_param as u32)) BitOr b.Known(Shr)(n_param as u32)))
+      }).collect::<Vec<BitsInBytes>>() 
+    }).collect::<Vec<Vec<BitsInBytes>>>() , v: (0..n_param).map(|i| {
+      let BitsInBytes(prev) = v[(((i Add n_param) Sub 1) Rem n_param)].Known(Clone)();
+      let BitsInBytes(b) = v[i].Known(Clone)();
+      => BitsInBytes((prev.Known(Shl)((8 Sub n_param as u32)) BitOr b.Known(Shr)(n_param as u32)))
+    }).collect::<Vec<BitsInBytes>>() , n: 0, k: 1 }
+  }
+  fn bit(&self, n_param: u8) -> VopeDyn<Bit> {
+    let n: usize = self.n;
+    let k: usize = self.k;
+    let VopeDyn { u, v, .. } = self;
+    => VopeDyn { u: (0..k).map(|l| {
+      => (0..n_param).map(|i| {
+        let BitsInBytes(b) = u[l][i].Known(Clone)();
+        => Bit((((b Shr n_param) BitAnd 1) Ne 0))
+      }).collect::<Vec<Bit>>() 
+    }).collect::<Vec<Vec<Bit>>>() , v: (0..n_param).map(|i| {
+      let BitsInBytes(b) = v[i].Known(Clone)();
+      => Bit((((b Shr n_param) BitAnd 1) Ne 0))
+    }).collect::<Vec<Bit>>() , n: 0, k: 1 }
+  }
+}
+
+impl VopeDyn<BitsInBytes64> {
+  fn rotate_left_bits(&self, n_param: usize) -> Self {
+    let n: usize = self.n;
+    let k: usize = self.k;
+    let VopeDyn { u, v, .. } = self;
+    => VopeDyn { u: (0..k).map(|l| {
+      => (0..n_param).map(|i| {
+        let BitsInBytes64(b) = u[l][i].Known(Clone)();
+        let BitsInBytes64(next) = u[l][((i Add 1) Rem n_param)].Known(Clone)();
+        => BitsInBytes64((b.Known(Shl)(n_param as u32) BitOr next.Known(Shr)((64 Sub n_param as u32))))
+      }).collect::<Vec<BitsInBytes64>>() 
+    }).collect::<Vec<Vec<BitsInBytes64>>>() , v: (0..n_param).map(|i| {
+      let BitsInBytes64(b) = v[i].Known(Clone)();
+      let BitsInBytes64(next) = v[((i Add 1) Rem n_param)].Known(Clone)();
+      => BitsInBytes64((b.Known(Shl)(n_param as u32) BitOr next.Known(Shr)((64 Sub n_param as u32))))
+    }).collect::<Vec<BitsInBytes64>>() , n: 0, k: 1 }
+  }
+  fn rotate_right_bits(&self, n_param: usize) -> Self {
+    let n: usize = self.n;
+    let k: usize = self.k;
+    let VopeDyn { u, v, .. } = self;
+    => VopeDyn { u: (0..k).map(|l| {
+      => (0..n_param).map(|i| {
+        let BitsInBytes64(prev) = u[l][(((i Add n_param) Sub 1) Rem n_param)].Known(Clone)();
+        let BitsInBytes64(b) = u[l][i].Known(Clone)();
+        => BitsInBytes64((prev.Known(Shl)((64 Sub n_param as u32)) BitOr b.Known(Shr)(n_param as u32)))
+      }).collect::<Vec<BitsInBytes64>>() 
+    }).collect::<Vec<Vec<BitsInBytes64>>>() , v: (0..n_param).map(|i| {
+      let BitsInBytes64(prev) = v[(((i Add n_param) Sub 1) Rem n_param)].Known(Clone)();
+      let BitsInBytes64(b) = v[i].Known(Clone)();
+      => BitsInBytes64((prev.Known(Shl)((64 Sub n_param as u32)) BitOr b.Known(Shr)(n_param as u32)))
+    }).collect::<Vec<BitsInBytes64>>() , n: 0, k: 1 }
+  }
+  fn bit(&self, n_param: u8) -> VopeDyn<Bit> {
+    let n: usize = self.n;
+    let k: usize = self.k;
+    let VopeDyn { u, v, .. } = self;
+    => VopeDyn { u: (0..k).map(|l| {
+      => (0..n_param).map(|i| {
+        let BitsInBytes64(b) = u[l][i].Known(Clone)();
+        => Bit((((b Shr n_param) BitAnd 1) Ne 0))
+      }).collect::<Vec<Bit>>() 
+    }).collect::<Vec<Vec<Bit>>>() , v: (0..n_param).map(|i| {
+      let BitsInBytes64(b) = v[i].Known(Clone)();
+      => Bit((((b Shr n_param) BitAnd 1) Ne 0))
+    }).collect::<Vec<Bit>>() , n: 0, k: 1 }
+  }
+}
+
+impl QDyn<BitsInBytes> {
+  fn rotate_left_bits(&self, n_param: usize) -> Self {
+    let n: usize = self.n;
+    let QDyn { q, .. } = self;
+    => QDyn { q: (0..n_param).map(|i| {
+      let BitsInBytes(b) = q[i].Known(Clone)();
+      let BitsInBytes(next) = q[((i Add 1) Rem n_param)].Known(Clone)();
+      => BitsInBytes((b.Known(Shl)(n_param as u32) BitOr next.Known(Shr)((8 Sub n_param as u32))))
+    }).collect::<Vec<BitsInBytes>>() , n: 0 }
+  }
+  fn rotate_right_bits(&self, n_param: usize) -> Self {
+    let n: usize = self.n;
+    let QDyn { q, .. } = self;
+    => QDyn { q: (0..n_param).map(|i| {
+      let BitsInBytes(prev) = q[(((i Add n_param) Sub 1) Rem n_param)].Known(Clone)();
+      let BitsInBytes(b) = q[i].Known(Clone)();
+      => BitsInBytes((prev.Known(Shl)((8 Sub n_param as u32)) BitOr b.Known(Shr)(n_param as u32)))
+    }).collect::<Vec<BitsInBytes>>() , n: 0 }
+  }
+  fn bit(&self, n_param: u8) -> QDyn<Bit> {
+    let n: usize = self.n;
+    let QDyn { q, .. } = self;
+    => QDyn { q: (0..n_param).map(|i| {
+      let BitsInBytes(b) = q[i].Known(Clone)();
+      => Bit((((b Shr n_param) BitAnd 1) Ne 0))
+    }).collect::<Vec<Bit>>() , n: 0 }
+  }
+}
+
+impl QDyn<BitsInBytes64> {
+  fn rotate_left_bits(&self, n_param: usize) -> Self {
+    let n: usize = self.n;
+    let QDyn { q, .. } = self;
+    => QDyn { q: (0..n_param).map(|i| {
+      let BitsInBytes64(b) = q[i].Known(Clone)();
+      let BitsInBytes64(next) = q[((i Add 1) Rem n_param)].Known(Clone)();
+      => BitsInBytes64((b.Known(Shl)(n_param as u32) BitOr next.Known(Shr)((64 Sub n_param as u32))))
+    }).collect::<Vec<BitsInBytes64>>() , n: 0 }
+  }
+  fn rotate_right_bits(&self, n_param: usize) -> Self {
+    let n: usize = self.n;
+    let QDyn { q, .. } = self;
+    => QDyn { q: (0..n_param).map(|i| {
+      let BitsInBytes64(prev) = q[(((i Add n_param) Sub 1) Rem n_param)].Known(Clone)();
+      let BitsInBytes64(b) = q[i].Known(Clone)();
+      => BitsInBytes64((prev.Known(Shl)((64 Sub n_param as u32)) BitOr b.Known(Shr)(n_param as u32)))
+    }).collect::<Vec<BitsInBytes64>>() , n: 0 }
+  }
+  fn bit(&self, n_param: u8) -> QDyn<Bit> {
+    let n: usize = self.n;
+    let QDyn { q, .. } = self;
+    => QDyn { q: (0..n_param).map(|i| {
+      let BitsInBytes64(b) = q[i].Known(Clone)();
+      => Bit((((b Shr n_param) BitAnd 1) Ne 0))
+    }).collect::<Vec<Bit>>() , n: 0 }
+  }
+}
+
+impl DeltaDyn<BitsInBytes> {
+  fn rotate_left_bits(&self, n_param: usize) -> Self {
+    let n: usize = self.n;
+    let DeltaDyn { delta, .. } = self;
+    => DeltaDyn { delta: (0..n_param).map(|i| {
+      let BitsInBytes(b) = delta[i].Known(Clone)();
+      let BitsInBytes(next) = delta[((i Add 1) Rem n_param)].Known(Clone)();
+      => BitsInBytes((b.Known(Shl)(n_param as u32) BitOr next.Known(Shr)((8 Sub n_param as u32))))
+    }).collect::<Vec<BitsInBytes>>() , n: 0 }
+  }
+  fn rotate_right_bits(&self, n_param: usize) -> Self {
+    let n: usize = self.n;
+    let DeltaDyn { delta, .. } = self;
+    => DeltaDyn { delta: (0..n_param).map(|i| {
+      let BitsInBytes(prev) = delta[(((i Add n_param) Sub 1) Rem n_param)].Known(Clone)();
+      let BitsInBytes(b) = delta[i].Known(Clone)();
+      => BitsInBytes((prev.Known(Shl)((8 Sub n_param as u32)) BitOr b.Known(Shr)(n_param as u32)))
+    }).collect::<Vec<BitsInBytes>>() , n: 0 }
+  }
+  fn bit(&self, n_param: u8) -> DeltaDyn<Bit> {
+    let n: usize = self.n;
+    let DeltaDyn { delta, .. } = self;
+    => DeltaDyn { delta: (0..n_param).map(|i| {
+      let BitsInBytes(b) = delta[i].Known(Clone)();
+      => Bit((((b Shr n_param) BitAnd 1) Ne 0))
+    }).collect::<Vec<Bit>>() , n: 0 }
+  }
+}
+
+impl DeltaDyn<BitsInBytes64> {
+  fn rotate_left_bits(&self, n_param: usize) -> Self {
+    let n: usize = self.n;
+    let DeltaDyn { delta, .. } = self;
+    => DeltaDyn { delta: (0..n_param).map(|i| {
+      let BitsInBytes64(b) = delta[i].Known(Clone)();
+      let BitsInBytes64(next) = delta[((i Add 1) Rem n_param)].Known(Clone)();
+      => BitsInBytes64((b.Known(Shl)(n_param as u32) BitOr next.Known(Shr)((64 Sub n_param as u32))))
+    }).collect::<Vec<BitsInBytes64>>() , n: 0 }
+  }
+  fn rotate_right_bits(&self, n_param: usize) -> Self {
+    let n: usize = self.n;
+    let DeltaDyn { delta, .. } = self;
+    => DeltaDyn { delta: (0..n_param).map(|i| {
+      let BitsInBytes64(prev) = delta[(((i Add n_param) Sub 1) Rem n_param)].Known(Clone)();
+      let BitsInBytes64(b) = delta[i].Known(Clone)();
+      => BitsInBytes64((prev.Known(Shl)((64 Sub n_param as u32)) BitOr b.Known(Shr)(n_param as u32)))
+    }).collect::<Vec<BitsInBytes64>>() , n: 0 }
+  }
+  fn bit(&self, n_param: u8) -> DeltaDyn<Bit> {
+    let n: usize = self.n;
+    let DeltaDyn { delta, .. } = self;
+    => DeltaDyn { delta: (0..n_param).map(|i| {
+      let BitsInBytes64(b) = delta[i].Known(Clone)();
+      => Bit((((b Shr n_param) BitAnd 1) Ne 0))
+    }).collect::<Vec<Bit>>() , n: 0 }
+  }
+}
+
+impl<T: IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] }> Math(Clone) for VopeDyn<T> {
+  fn clone(&self, ) -> Self {
+    let n: usize = self.n;
+    let k: usize = self.k;
+    let VopeDyn { u, v, .. } = self;
+    => VopeDyn { u: (0..k).map(|l| (0..n).map(|i| u[l][i].Known(Clone)()).collect::<Vec<T>>() ).collect::<Vec<Vec<T>>>() , v: (0..n).map(|i| v[i].Known(Clone)()).collect::<Vec<T>>() , n: 0, k: 1 }
+  }
+}
+
+impl<T: IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] }> Math(Clone) for QDyn<T> {
+  fn clone(&self, ) -> Self {
+    let n: usize = self.n;
+    let QDyn { q, .. } = self;
+    => QDyn { q: (0..n).map(|i| q[i].Known(Clone)()).collect::<Vec<T>>() , n: 0 }
+  }
+}
+
+impl<T: IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] }> Math(Clone) for DeltaDyn<T> {
+  fn clone(&self, ) -> Self {
+    let n: usize = self.n;
+    let DeltaDyn { delta, .. } = self;
+    => DeltaDyn { delta: (0..n).map(|i| delta[i].Known(Clone)()).collect::<Vec<T>>() , n: 0 }
+  }
+}
+
+impl<T: IrTraitBound { trait_kind: Math(PartialEq), type_args: [], assoc_bindings: [] }> Math(PartialEq) for VopeDyn<T> {
+  fn eq(&self, other: &Self) -> bool {
+    let n: usize = self.n;
+    let k: usize = self.k;
+    let VopeDyn { u: u1, v: v1, .. } = self;
+    let VopeDyn { u: u2, v: v2, .. } = other;
+    for l in 0..k {
+      => for i in 0..n {
+        => if (u1[l][i] Ne u2[l][i]) {
+          return false;
+        }
+      }
+    };
+    for i in 0..n {
+      => if (v1[i] Ne v2[i]) {
+        return false;
+      }
+    };
+    => true
+  }
+}
+
+impl<T: IrTraitBound { trait_kind: Math(PartialEq), type_args: [], assoc_bindings: [] }> Math(PartialEq) for QDyn<T> {
+  fn eq(&self, other: &Self) -> bool {
+    let n: usize = self.n;
+    let QDyn { q: q1, .. } = self;
+    let QDyn { q: q2, .. } = other;
+    for i in 0..n {
+      => if (q1[i] Ne q2[i]) {
+        return false;
+      }
+    };
+    => true
+  }
+}
+
+impl<T: IrTraitBound { trait_kind: Math(PartialEq), type_args: [], assoc_bindings: [] }> Math(PartialEq) for DeltaDyn<T> {
+  fn eq(&self, other: &Self) -> bool {
+    let n: usize = self.n;
+    let DeltaDyn { delta: d1, .. } = self;
+    let DeltaDyn { delta: d2, .. } = other;
+    for i in 0..n {
+      => if (d1[i] Ne d2[i]) {
+        return false;
+      }
+    };
+    => true
+  }
+}
+
+impl<T: IrTraitBound { trait_kind: Math(Eq), type_args: [], assoc_bindings: [] }> Math(Eq) for VopeDyn<T> {
+}
+
+impl<T: IrTraitBound { trait_kind: Math(Eq), type_args: [], assoc_bindings: [] }> Math(Eq) for QDyn<T> {
+}
+
+impl<T: IrTraitBound { trait_kind: Math(Eq), type_args: [], assoc_bindings: [] }> Math(Eq) for DeltaDyn<T> {
+}
+
+impl<T: IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] } + IrTraitBound { trait_kind: Math(Default), type_args: [], assoc_bindings: [] } + IrTraitBound { trait_kind: Math(Add), type_args: [], assoc_bindings: [(Output, TypeParam("T"))] } + IrTraitBound { trait_kind: Math(PartialEq), type_args: [], assoc_bindings: [] }> Custom("MemoryHasher") for AdditiveHasher {
+  type Other("State") = T;
+  fn new_state() -> T {
+    => T::default()
+  }
+  fn absorb(state: &mut T, encoded: T) {
+    let old = core::mem::take(state);
+    Derefstate = (old Add encoded);
+  }
+  fn finalize_eq(produce: &T, consume: &T) -> bool {
+    => (Derefproduce Eq Derefconsume)
+  }
+}
+
+impl<T: IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] } + IrTraitBound { trait_kind: Math(Mul), type_args: [], assoc_bindings: [(Output, TypeParam("T"))] }> ChallengeKeyDyn<T> {
+  fn from_challenge(r: T) -> Self {
+    let r2 = (r.Known(Clone)() Mul r.Known(Clone)());
+    let r3 = (r2.Known(Clone)() Mul r.Known(Clone)());
+    => ChallengeKeyDyn { r1: r, r2: r2, r3: r3 }
+  }
+}
+
+impl<T: IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] } + IrTraitBound { trait_kind: Math(Default), type_args: [], assoc_bindings: [] } + IrTraitBound { trait_kind: Math(Add), type_args: [], assoc_bindings: [(Output, TypeParam("T"))] } + IrTraitBound { trait_kind: Math(Mul), type_args: [], assoc_bindings: [(Output, TypeParam("T"))] }, H: IrTraitBound { trait_kind: Custom("MemoryHasher"), type_args: [TypeParam("T")], assoc_bindings: [] }> MemoryCheckStateDyn<T, H> {
+  fn new(key: ChallengeKeyDyn<T>) -> Self {
+    => MemoryCheckStateDyn { key: key, produce: H::new_state(), consume: H::new_state(), _phantom: PhantomData }
+  }
+  fn encode(&self, addr: T, value: T, timestamp: u64) -> T {
+    let a = (addr Mul self.key.r1.Known(Clone)());
+    let v = (value Mul self.key.r2.Known(Clone)());
+    let t = self.Other("scale_by_u64")(self.key.r3.Known(Clone)(), timestamp);
+    => ((a Add v) Add t)
+  }
+  fn init(&mut self, addr: T, zero_value: T) {
+    let enc = self.Other("encode")(addr, zero_value, 0);
+    H::absorb(RefMutself.produce, enc);
+  }
+  fn write(&mut self, addr: T, new_value: T, timestamp: u64, old_value: T, old_timestamp: u64) {
+    let enc_new = self.Other("encode")(addr.Known(Clone)(), new_value, timestamp);
+    H::absorb(RefMutself.produce, enc_new);
+    let enc_old = self.Other("encode")(addr, old_value, old_timestamp);
+    H::absorb(RefMutself.consume, enc_old);
+  }
+  fn read(&mut self, addr: T, value: T, timestamp: u64, write_timestamp: u64) {
+    let enc_produce = self.Other("encode")(addr.Known(Clone)(), value.Known(Clone)(), timestamp);
+    H::absorb(RefMutself.produce, enc_produce);
+    let enc_consume = self.Other("encode")(addr, value, write_timestamp);
+    H::absorb(RefMutself.consume, enc_consume);
+  }
+  fn drain(&mut self, addr: T, final_value: T, final_timestamp: u64) {
+    let enc = self.Other("encode")(addr, final_value, final_timestamp);
+    H::absorb(RefMutself.consume, enc);
+  }
+  fn verify(&self, ) -> bool {
+    => H::finalize_eq(Refself.produce, Refself.consume)
+  }
+  fn scale_by_u64(&self, x: T, n: u64) -> T {
+    if (n Eq 0) {
+      return T::default();
+    };
+    if (n Eq 1) {
+      return x;
+    };
+    let mut acc = T::default();
+    let mut base = x;
+    for bit in 0..64 {
+      if (((n Shr bit) BitAnd 1) Eq 1) {
+        acc = (acc Add base.Known(Clone)());
+      };
+      base = (base.Known(Clone)() Add base);
+    };
+    => acc
+  }
+}
+
+impl<T> PolyDyn<T> {
+  fn get_qs_pool<Q: IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] } + IrTraitBound { trait_kind: Math(Mul), type_args: [TypeParam("A")], assoc_bindings: [(Output, TypeParam("A"))] }, A: IrTraitBound { trait_kind: Math(Add), type_args: [TypeParam("A")], assoc_bindings: [(Output, TypeParam("A"))] }>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: PolyInputPoolDyn<QDyn<Q>>, reduction: usize) -> QDyn<A> {
+    let n: usize = self.n;
+    => super::Q { q: (0..m).map(|i| {
+      let mut sum: A = self.c0.Known(Clone)().Known(Into)();
+      for _ in 0..n {
+        sum = (root.delta[i].Known(Clone)() Mul sum);
+      };
+      for j in 0..n {
+        let mut b: A = self.c1[j].Known(Clone)().Known(Into)();
+        for i2 in inputs.indices.Iter() /* lazy */ {
+          => for _ in 0..reduction {
+            b = (inputs.inputs[i2[j]].q[i].Known(Clone)() Mul b);
+          }
+        };
+        sum = (sum Add b);
+      };
+      => sum
+    }).collect::<Vec<A>>()  }
+  }
+  fn get_qs<Q: IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] } + IrTraitBound { trait_kind: Math(Mul), type_args: [TypeParam("A")], assoc_bindings: [(Output, TypeParam("A"))] }, A: IrTraitBound { trait_kind: Math(Add), type_args: [TypeParam("A")], assoc_bindings: [(Output, TypeParam("A"))] }>(&self, m: usize, x: usize, root: DeltaDyn<Q>, inputs: Vec<Vec<QDyn<Q>>>, reduction: usize) -> QDyn<A> {
+    let n: usize = self.n;
+    => super::Q { q: (0..m).map(|i| {
+      let mut sum: A = self.c0.Known(Clone)().Known(Into)();
+      for _ in 0..n {
+        sum = (root.delta[i].Known(Clone)() Mul sum);
+      };
+      for j in 0..n {
+        let mut b: A = self.c1[j].Known(Clone)().Known(Into)();
+        for i2 in inputs.Iter() /* lazy */ {
+          => for _ in 0..reduction {
+            b = (i2[j].q[i].Known(Clone)() Mul b);
+          }
+        };
+        sum = (sum Add b);
+      };
+      => sum
+    }).collect::<Vec<A>>()  }
+  }
+  fn apply_pool<M, O: IrTraitBound { trait_kind: Math(Mul), type_args: [TypeParam("O")], assoc_bindings: [(Output, TypeParam("O"))] } + IrTraitBound { trait_kind: Math(Add), type_args: [TypeParam("O")], assoc_bindings: [(Output, TypeParam("O"))] } + IrTraitBound { trait_kind: Math(Default), type_args: [], assoc_bindings: [] } + IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] }>(&self, m: usize, x: usize, x2: usize, xs: usize, s: usize, voles: &PolyInputPoolDyn<VopeDyn<T>>) -> VopeDyn<O> {
+    let n: usize = self.n;
+    let v = (0..m).map(|i| {
+      let mut sum = O::default();
+      for k in 0..n {
+        let mut b: O = self.c1[k].Known(Clone)().Known(Into)();
+        for v in Refvoles.indices {
+          b = (b Mul voles.inputs[v[k]].v[i].Known(Clone)().Known(Into)());
+        };
+        sum = (sum Add b);
+      };
+      let c0: O = self.c0.Known(Clone)().Known(Into)();
+      => (sum Add c0)
+    }).collect::<Vec<O>>() ;
+    let u = (0..xs).map(|l| {
+      => (0..m).map(|i| {
+        let mut sum = O::default();
+        for k in 0..n {
+          => for n in 0..x {
+            let mut b: O = self.c1[k].Known(Clone)().Known(Into)();
+            for m in 0..s {
+              let l = ((l Mul s) Add m);
+              => for (idx, v) in voles.indices.Iter().enumerate() /* lazy */ {
+                b = (b Mul if (idx Eq n) {
+                  => voles.inputs[v[k]].u[l][i].Known(Clone)().Known(Into)()
+                } else {
+                  => voles.inputs[v[k]].v[i].Known(Clone)().Known(Into)()
+                });
+              }
+            };
+            sum = (sum Add b);
+          }
+        };
+        => sum
+      }).collect::<Vec<O>>() 
+    }).collect::<Vec<Vec<O>>>() ;
+    return VopeDyn { u: u, v: v, n: 0, k: 1 };
+  }
+  fn apply<M, O: IrTraitBound { trait_kind: Math(Mul), type_args: [TypeParam("O")], assoc_bindings: [(Output, TypeParam("O"))] } + IrTraitBound { trait_kind: Math(Add), type_args: [TypeParam("O")], assoc_bindings: [(Output, TypeParam("O"))] } + IrTraitBound { trait_kind: Math(Default), type_args: [], assoc_bindings: [] } + IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] }>(&self, m: usize, x: usize, x2: usize, xs: usize, s: usize, voles: Vec<Vec<VopeDyn<T>>>) -> VopeDyn<O> {
+    let n: usize = self.n;
+    let v = (0..m).map(|i| {
+      let mut sum = O::default();
+      for k in 0..n {
+        let mut b: O = self.c1[k].Known(Clone)().Known(Into)();
+        for v in Refvoles {
+          b = (b Mul v[k].v[i].Known(Clone)().Known(Into)());
+        };
+        sum = (sum Add b);
+      };
+      let c0: O = self.c0.Known(Clone)().Known(Into)();
+      => (sum Add c0)
+    }).collect::<Vec<O>>() ;
+    let u = (0..xs).map(|l| {
+      => (0..m).map(|i| {
+        let mut sum = O::default();
+        for k in 0..n {
+          => for n in 0..x {
+            let mut b: O = self.c1[k].Known(Clone)().Known(Into)();
+            for m in 0..s {
+              let l = ((l Mul s) Add m);
+              => for (idx, v) in voles.Iter().enumerate() /* lazy */ {
+                b = (b Mul if (idx Eq n) {
+                  => v[k].u[l][i].Known(Clone)().Known(Into)()
+                } else {
+                  => v[k].v[i].Known(Clone)().Known(Into)()
+                });
+              }
+            };
+            sum = (sum Add b);
+          }
+        };
+        => sum
+      }).collect::<Vec<O>>() 
+    }).collect::<Vec<Vec<O>>>() ;
+    return VopeDyn { u: u, v: v, n: 0, k: 1 };
+  }
+}
+
+impl<T: IrTraitBound { trait_kind: Math(Add), type_args: [], assoc_bindings: [(Output, TypeParam("T"))] } + IrTraitBound { trait_kind: Math(Mul), type_args: [], assoc_bindings: [(Output, TypeParam("T"))] } + IrTraitBound { trait_kind: Math(Default), type_args: [], assoc_bindings: [] } + IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] }> VopeDyn<T> {
+  fn mul_generalized(&self, k2: usize, other: &VopeDyn<T>) -> VopeDyn<T> {
+    let n: usize = self.n;
+    let k: usize = self.k;
+    let mut res_u = (0..(k2 Add k)).map(|_| DefaultValue(Vec<T>)).collect::<Vec<Vec<T>>>() ;
+    let mut res_v = (0..n).map(|_| DefaultValue(T)).collect::<Vec<T>>() ;
+    for i in 0..=k {
+      => for j in 0..=k2 {
+        let k = (i Add j);
+        let a_coeff = if (i Eq 0) {
+          => Refself.v
+        } else {
+          => Refself.u[(i Sub 1)]
+        };
+        let b_coeff = if (j Eq 0) {
+          => Refother.v
+        } else {
+          => Refother.u[(j Sub 1)]
+        };
+        => if (k Eq 0) {
+          => for lane in 0..n {
+            res_v[lane] = (res_v[lane].Known(Clone)() Add (a_coeff[lane].Known(Clone)() Mul b_coeff[lane].Known(Clone)()));
+          }
+        } else {
+          => for lane in 0..n {
+            res_u[(k Sub 1)][lane] = (res_u[(k Sub 1)][lane].Known(Clone)() Add (a_coeff[lane].Known(Clone)() Mul b_coeff[lane].Known(Clone)()));
+          }
+        }
+      }
+    };
+    => VopeDyn { u: res_u, v: res_v, n: 0, k: 1 }
+  }
+}
+
+impl<T> VopeDyn<T> {
+  fn constant(n: usize, v: Vec<T>) -> Self {
+    let k: usize = 0;
+    => VopeDyn { u: (0..0).map(|_| unreachable!()).collect::<Vec<Vec<T>>>() , v: v, n: 0, k: 1 }
+  }
+}
+
+impl<T: IrTraitBound { trait_kind: Math(Add), type_args: [TypeParam("U")], assoc_bindings: [(Output, TypeParam("O"))] } + IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] }, U: IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] }, O> Math(Add) for VopeDyn<T> {
+  type Output = VopeDyn<O>;
+  fn add(self, rhs: VopeDyn<U>) -> <Self as _>::Output {
+    let n: usize = self.n;
+    let k: usize = self.k;
+    => VopeDyn { u: (0..k).map(|l| {
+      => (0..n).map(|i| (self.u[l][i].Known(Clone)() Add rhs.u[l][i].Known(Clone)())).collect::<Vec<O>>() 
+    }).collect::<Vec<Vec<O>>>() , v: (0..n).map(|i| (self.v[i].Known(Clone)() Add rhs.v[i].Known(Clone)())).collect::<Vec<O>>() , n: 0, k: 1 }
+  }
+}
+
+impl<T: IrTraitBound { trait_kind: Math(BitXor), type_args: [TypeParam("U")], assoc_bindings: [(Output, TypeParam("O"))] } + IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] } + IrTraitBound { trait_kind: Into(TypeParam("O")), type_args: [TypeParam("O")], assoc_bindings: [] }, U: IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] }, O> Math(BitXor) for VopeDyn<T> {
+  type Output = VopeDyn<O>;
+  fn bitxor(self, rhs: Vec<U>) -> <Self as _>::Output {
+    let n: usize = self.n;
+    let k: usize = self.k;
+    => VopeDyn { u: (0..k).map(|i| {
+      => (0..n).map(|j| {
+        let o: O = self.u[i][j].Known(Clone)().Known(Bitxor)(rhs[((i Mul k) Add j)].Known(Clone)());
+        => o
+      }).collect::<Vec<O>>() 
+    }).collect::<Vec<Vec<O>>>() , v: self.v.IntoIter().map(|a| a.Known(Into)()).collect(), n: 0, k: 1 }
+  }
+}
+
+impl<T: IrTraitBound { trait_kind: Math(Mul), type_args: [TypeParam("U")], assoc_bindings: [(Output, TypeParam("O"))] } + IrTraitBound { trait_kind: Into(TypeParam("O")), type_args: [TypeParam("O")], assoc_bindings: [] } + IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] }, U: IrTraitBound { trait_kind: Math(Mul), type_args: [TypeParam("U")], assoc_bindings: [(Output, TypeParam("U"))] } + IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] }, O: IrTraitBound { trait_kind: Math(Add), type_args: [TypeParam("O")], assoc_bindings: [(Output, TypeParam("O"))] } + IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] }> Math(Mul) for VopeDyn<T> {
+  type Output = QDyn<O>;
+  fn mul(self, rhs: DeltaDyn<U>) -> <Self as _>::Output {
+    let n: usize = self.n;
+    let k: usize = self.k;
+    => QDyn { q: self.u.Iter().enumerate().fold(self.v.IntoIter().map(|a| a.Known(Into)()).collect(), |mut a, (i, b)| {
+      => (0..n).map(|j| {
+        let mut x = rhs.delta[i].Known(Clone)();
+        for _ in 0..i {
+          x = (x Mul rhs.delta[i].Known(Clone)());
+        };
+        let m: O = (b[j].Known(Clone)() Mul x);
+        => (m Add a[j].Known(Clone)())
+      }).collect::<Vec<O>>() 
+    }), n: 0 }
+  }
+}
+
+impl<T> VopeDyn<T> {
+  fn expand(&self, l: usize) -> VopeDyn<T> {
+    let n: usize = self.n;
+    let k: usize = self.k;
+    let Self { u, v, .. } = self;
+    => VopeDyn { u: (0..l).map(|l| {
+      => (0..n).map(|i| u.Known(Get)(l).Known(MapOr)(T::default(), |a| a[i].Known(Clone)())).collect::<Vec<T>>() 
+    }).collect::<Vec<Vec<T>>>() , v: v.Known(Clone)(), n: 0, k: 1 }
+  }
+  fn rotate_left(&self, n_param: usize) -> Self {
+    let n: usize = self.n;
+    let k: usize = self.k;
+    => self.Vole(Remap)(self.n, |a| a.Known(WrappingSub)(n_param))
+  }
+  fn rotate_right(&self, n_param: usize) -> Self {
+    let n: usize = self.n;
+    let k: usize = self.k;
+    => self.Vole(Remap)(self.n, |a| a.Known(WrappingAdd)(n_param))
+  }
+  fn remap<F: IrTraitBound { trait_kind: Fn(Size, Primitive(Usize)), type_args: [], assoc_bindings: [] }>(&self, m: usize, f: F) -> VopeDyn<T> {
+    let n: usize = self.n;
+    let k: usize = self.k;
+    let Self { u, v, .. } = self;
+    => VopeDyn { u: (0..k).map(|l| {
+      => (0..m).map(|i| u[l][(f(i) Rem n)].Known(Clone)()).collect::<Vec<T>>() 
+    }).collect::<Vec<Vec<T>>>() , v: (0..m).map(|i| v[(f(i) Rem n)].Known(Clone)()).collect::<Vec<T>>() , n: 0, k: 1 }
+  }
+}
+
+impl VopeDyn<Bit> {
+  fn scale<T>(self, f: impl FnMut(bool) -> T) -> VopeDyn<T> {
+    let n: usize = self.n;
+    let k: usize = self.k;
+    let VopeDyn { u, v, .. } = self;
+    => VopeDyn { u: (0..k).map(|l| {
+      => (0..n).map(|i| {
+        let Bit(b) = u[l][i].Known(Clone)();
+        => f(b)
+      }).collect::<Vec<T>>() 
+    }).collect::<Vec<Vec<T>>>() , v: (0..n).map(|i| {
+      let Bit(b) = v[i].Known(Clone)();
+      => f(b)
+    }).collect::<Vec<T>>() , n: 0, k: 1 }
+  }
+}
+
+impl<T> DeltaDyn<T> {
+  fn remap<F: IrTraitBound { trait_kind: Fn(Size, Primitive(Usize)), type_args: [], assoc_bindings: [] }>(&self, m: usize, f: F) -> DeltaDyn<T> {
+    let n: usize = self.n;
+    let Self { delta, .. } = self;
+    => DeltaDyn { delta: (0..m).map(|i| delta[(f(i) Rem n)].Known(Clone)()).collect::<Vec<T>>() , n: 0 }
+  }
+  fn rotate_left(&self, n_param: usize) -> Self {
+    let n: usize = self.n;
+    => self.Vole(Remap)(self.n, |a| a.Known(WrappingSub)(n_param))
+  }
+  fn rotate_right(&self, n_param: usize) -> Self {
+    let n: usize = self.n;
+    => self.Vole(Remap)(self.n, |a| a.Known(WrappingAdd)(n_param))
+  }
+  fn r#static<U: IrTraitBound { trait_kind: Math(Mul), type_args: [TypeParam("T")], assoc_bindings: [(Output, TypeParam("O"))] } + IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] }, O>(&self, val: Vec<U>) -> QDyn<O> {
+    let n: usize = self.n;
+    => QDyn { q: (0..n).map(|i| (val[i].Known(Clone)() Mul self.delta[i].Known(Clone)())).collect::<Vec<O>>() , n: 0 }
+  }
+}
+
+impl<T> QDyn<T> {
+  fn remap<F: IrTraitBound { trait_kind: Fn(Size, Primitive(Usize)), type_args: [], assoc_bindings: [] }>(&self, m: usize, f: F) -> QDyn<T> {
+    let n: usize = self.n;
+    let Self { q, .. } = self;
+    => QDyn { q: (0..m).map(|i| q[(f(i) Rem n)].Known(Clone)()).collect::<Vec<T>>() , n: 0 }
+  }
+  fn rotate_left(&self, n_param: usize) -> Self {
+    let n: usize = self.n;
+    => self.Vole(Remap)(self.n, |a| a.Known(WrappingSub)(n_param))
+  }
+  fn rotate_right(&self, n_param: usize) -> Self {
+    let n: usize = self.n;
+    => self.Vole(Remap)(self.n, |a| a.Known(WrappingAdd)(n_param))
+  }
+}
+
+fn field_mul<T: IrTraitBound { trait_kind: Custom("FieldMulBackend"), type_args: [], assoc_bindings: [] }>(a: T, b: T, c: T) -> T {
+  let mut p: T = T::default();
+  let mut a = a;
+  let mut b = b;
+  let h = (T::from(1) Shl ((size_of_val(Refp) Shl 3) Sub 1) as u32);
+  for _ in 0..(size_of_val(Refp) Shl 3) {
+    if ((b.Known(Clone)() BitAnd T::from(1)) Ne T::default()) {
+      p BitXor= a.Known(Clone)();
+    };
+    let high_bit = (a.Known(Clone)() BitAnd h.Known(Clone)());
+    a Shl= 1;
+    if (high_bit Ne T::default()) {
+      a BitXor= c.Known(Clone)();
+    };
+    b Shr= 1;
+  };
+  => p
+}
+
+fn field_square<T: IrTraitBound { trait_kind: Custom("FieldMulBackend"), type_args: [], assoc_bindings: [] }>(a: T, c: T) -> T {
+  => field_mul(a.Known(Clone)(), a, c)
+}
+
+fn field_invert<T: IrTraitBound { trait_kind: Custom("FieldMulBackend"), type_args: [], assoc_bindings: [] }>(a: T, c: T, w: u32) -> T {
+  if (a Eq T::default()) {
+    return T::default();
+  };
+  let e = (w Sub 1);
+  let mut r = a.Known(Clone)();
+  let mut k: u32 = 1;
+  let msb = (31 Sub e.Known(LeadingZeros)());
+  for bit_pos in 0..msb.Known(Rev)() {
+    let mut tmp = r.Known(Clone)();
+    for _ in 0..k {
+      tmp = field_square(tmp, c.Known(Clone)());
+    };
+    r = field_mul(tmp, r, c.Known(Clone)());
+    k Mul= 2;
+    => if (((e Shr bit_pos) BitAnd 1) Eq 1) {
+      r = field_mul(field_square(r, c.Known(Clone)()), a.Known(Clone)(), c.Known(Clone)());
+      k Add= 1;
+    }
+  };
+  => field_square(r, c)
+}
+
+fn gf_mul_u8(a: u8, b: u8, c: u8) -> u8 {
+  let mut p: u8 = 0;
+  let mut a = a;
+  let mut b = b;
+  for _ in 0..8 {
+    if ((b BitAnd 1) Ne 0) {
+      p BitXor= a;
+    };
+    let high = (a BitAnd 128);
+    a Shl= 1;
+    if (high Ne 0) {
+      a BitXor= c;
+    };
+    b Shr= 1;
+  };
+  => p
+}
+
+fn gf_mul_u64(a: u64, b: u64, c: u64) -> u64 {
+  let mut p: u64 = 0;
+  let mut a = a;
+  let mut b = b;
+  let h: u64 = (1 Shl 63);
+  for _ in 0..64 {
+    if ((b BitAnd 1) Ne 0) {
+      p BitXor= a;
+    };
+    let high = (a BitAnd h);
+    a Shl= 1;
+    if (high Ne 0) {
+      a BitXor= c;
+    };
+    b Shr= 1;
+  };
+  => p
+}
+
+fn gf_mul_u128(a: u128, b: u128, c: u128) -> u128 {
+  let mut p: u128 = 0;
+  let mut a = a;
+  let mut b = b;
+  let h: u128 = (1 Shl 127);
+  for _ in 0..128 {
+    if ((b BitAnd 1) Ne 0) {
+      p BitXor= a;
+    };
+    let high = (a BitAnd h);
+    a Shl= 1;
+    if (high Ne 0) {
+      a BitXor= c;
+    };
+    b Shr= 1;
+  };
+  => p
+}
+
+fn gf_invert_u8(a: u8, c: u8) -> u8 {
+  if (a Eq 0) {
+    return 0;
+  };
+  let e: u32 = 7;
+  let msb: u32 = 2;
+  let mut r = a;
+  let mut k: u32 = 1;
+  for bit_pos_rev in 0..msb {
+    let bit_pos = ((msb Sub 1) Sub bit_pos_rev);
+    let mut tmp = r;
+    for _ in 0..k {
+      tmp = gf_mul_u8(tmp, tmp, c);
+    };
+    r = gf_mul_u8(tmp, r, c);
+    k Mul= 2;
+    => if (((e Shr bit_pos) BitAnd 1) Eq 1) {
+      r = gf_mul_u8(gf_mul_u8(r, r, c), a, c);
+      k Add= 1;
+    }
+  };
+  => gf_mul_u8(r, r, c)
+}
+
+fn gf_invert_u64(a: u64, c: u64) -> u64 {
+  if (a Eq 0) {
+    return 0;
+  };
+  let e: u32 = 63;
+  let msb: u32 = 5;
+  let mut r = a;
+  let mut k: u32 = 1;
+  for bit_pos_rev in 0..msb {
+    let bit_pos = ((msb Sub 1) Sub bit_pos_rev);
+    let mut tmp = r;
+    for _ in 0..k {
+      tmp = gf_mul_u64(tmp, tmp, c);
+    };
+    r = gf_mul_u64(tmp, r, c);
+    k Mul= 2;
+    => if (((e Shr bit_pos) BitAnd 1) Eq 1) {
+      r = gf_mul_u64(gf_mul_u64(r, r, c), a, c);
+      k Add= 1;
+    }
+  };
+  => gf_mul_u64(r, r, c)
+}
+
+fn gf_invert_u128(a: u128, c: u128) -> u128 {
+  if (a Eq 0) {
+    return 0;
+  };
+  let e: u32 = 127;
+  let msb: u32 = 6;
+  let mut r = a;
+  let mut k: u32 = 1;
+  for bit_pos_rev in 0..msb {
+    let bit_pos = ((msb Sub 1) Sub bit_pos_rev);
+    let mut tmp = r;
+    for _ in 0..k {
+      tmp = gf_mul_u128(tmp, tmp, c);
+    };
+    r = gf_mul_u128(tmp, r, c);
+    k Mul= 2;
+    => if (((e Shr bit_pos) BitAnd 1) Eq 1) {
+      r = gf_mul_u128(gf_mul_u128(r, r, c), a, c);
+      k Add= 1;
+    }
+  };
+  => gf_mul_u128(r, r, c)
+}
+
+fn gf_mul_256(a: U256, b: U256, c: U256) -> U256 {
+  let mut p = U256::ZERO;
+  let mut a = a;
+  let mut b = b;
+  for _ in 0..256 {
+    if b.Other("bit")(0) {
+      p = p.Other("xor")(Refa);
+    };
+    let high = a.Other("high_bit")();
+    a = a.Other("shl1")();
+    if high {
+      a = a.Other("xor")(Refc);
+    };
+    b = b.Other("shr1")();
+  };
+  => p
+}
+
+fn gf_invert_256(a: U256, c: U256) -> U256 {
+  if a.Other("is_zero")() {
+    return U256::ZERO;
+  };
+  let e: u32 = 255;
+  let msb: u32 = 7;
+  let mut r = a;
+  let mut k: u32 = 1;
+  for bit_pos_rev in 0..msb {
+    let bit_pos = ((msb Sub 1) Sub bit_pos_rev);
+    let mut tmp = r;
+    for _ in 0..k {
+      tmp = gf_mul_256(tmp, tmp, c);
+    };
+    r = gf_mul_256(tmp, r, c);
+    k Mul= 2;
+    => if (((e Shr bit_pos) BitAnd 1) Eq 1) {
+      r = gf_mul_256(gf_mul_256(r, r, c), a, c);
+      k Add= 1;
+    }
+  };
+  => gf_mul_256(r, r, c)
+}
+
+fn commit<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }>(message: &impl AsRef<[u8; 0]><[u8; 0]>, rand: &impl AsRef<[u8; 0]><[u8; 0]>) -> CommitmentCoreDyn<D> {
+  let mut hasher = D::new();
+  hasher.Known(Update)(AsRef::as_ref::<[u8; _]>(Refmessage));
+  hasher.Known(Update)(AsRef::as_ref::<[u8; _]>(Refrand));
+  => CommitmentCoreDyn(hasher.Known(Finalize)().Known(ToVec)(), PhantomData)
+}
+
+fn gen_abo<B: IrTraitBound { trait_kind: LengthDoubler, type_args: [], assoc_bindings: [] }, D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }>(k: usize, n: usize, a: Vec<u8>, rand: &impl AsRef<[u8; 0]><[u8; 0]>) -> ABODyn<B, D> {
+  let mut h = D::new();
+  let per_byte = (0..n).map(|_ni| {
+    let mut per_byte = (0..k).map(|_| DefaultValue(Vec<u8>)).collect::<Vec<Vec<u8>>>() ;
+    for i in 0..k {
+      let core = (0..k.Known(Ilog2)()).fold(a.Known(Clone)(), |mut acc, b| {
+        if (((i Shr b) BitAnd 1) Ne 0) {
+          let doubled = B::double(acc);
+          acc = doubled[1].Known(Clone)();
+        } else {
+          let doubled = B::double(acc);
+          acc = doubled[0].Known(Clone)();
+        };
+        => acc
+      });
+      h.Known(Update)(Refcommit::<D>(k, n, Refcore, rand));
+      per_byte[i] = core;
+    };
+    return per_byte;
+  }).collect::<Vec<Vec<Vec<u8>>>>() ;
+  => ABODyn::<B, D, K, N> { commit: h.Known(Finalize)().Known(ToVec)(), per_byte: per_byte, k: 0, n: 0, _phantom: PhantomData }
+}
+
+fn create_vole_from_material<B: IrTraitBound { trait_kind: LengthDoubler, type_args: [], assoc_bindings: [] }, X: IrTraitBound { trait_kind: AsRef(Array { kind: Slice, elem: Primitive(U8), len: Const(0) }), type_args: [Array { kind: Slice, elem: Primitive(U8), len: Const(0) }], assoc_bindings: [] }>(s: &[X; 0]) -> VopeDyn<u8> {
+  let u: Vec<u8> = s.Iter().fold((0..LengthOf(Projection { type: TypeParam("B"), field: "OutputSize", trait_path: None })).map(|_| 0).collect::<Vec<u8>>() , |mut a, b| {
+    => (0..LengthOf(Projection { type: TypeParam("B"), field: "OutputSize", trait_path: None })).map(|i| a[i].Known(Bitxor)(AsRef::as_ref::<[u8; _]>(Refb)[i])).collect::<Vec<u8>>() 
+  });
+  let v: Vec<u8> = s.Iter().enumerate().fold((0..LengthOf(Projection { type: TypeParam("B"), field: "OutputSize", trait_path: None })).map(|_| 0).collect::<Vec<u8>>() , |mut a, (i, b)| {
+    => (0..LengthOf(Projection { type: TypeParam("B"), field: "OutputSize", trait_path: None })).map(|j| a[j].Known(Bitxor)(AsRef::as_ref::<[u8; _]>(Refb)[j]).Known(Bitxor)(i as u8)).collect::<Vec<u8>>() 
+  });
+  => VopeDyn { u: (0..1).map(|_| u.Known(Clone)()).collect::<Vec<Vec<u8>>>() , v: v, n: 0, k: 1 }
+}
+
+fn create_vole_from_material_expanded<B: IrTraitBound { trait_kind: LengthDoubler, type_args: [], assoc_bindings: [] }, X: IrTraitBound { trait_kind: AsRef(Array { kind: Slice, elem: Primitive(U8), len: Const(0) }), type_args: [Array { kind: Slice, elem: Primitive(U8), len: Const(0) }], assoc_bindings: [] }, Y: IrTraitBound { trait_kind: AsRef(Array { kind: Slice, elem: Primitive(U8), len: Const(0) }), type_args: [Array { kind: Slice, elem: Primitive(U8), len: Const(0) }], assoc_bindings: [] }, F: IrTraitBound { trait_kind: Fn(BytesSlice, TypeParam("X")), type_args: [], assoc_bindings: [] }>(s: &[Y; 0], f: F) -> VopeDyn<u8> {
+  let u: Vec<u8> = s.Iter().map(|b| f(RefAsRef::as_ref::<[u8; _]>(Refb)[..LengthOf(Projection { type: TypeParam("B"), field: "OutputSize", trait_path: None })])).fold((0..LengthOf(Projection { type: TypeParam("B"), field: "OutputSize", trait_path: None })).map(|_| 0).collect::<Vec<u8>>() , |mut a, b| {
+    => (0..LengthOf(Projection { type: TypeParam("B"), field: "OutputSize", trait_path: None })).map(|i| a[i].Known(Bitxor)(AsRef::as_ref::<[u8; _]>(Refb)[i])).collect::<Vec<u8>>() 
+  });
+  let v: Vec<u8> = s.Iter().map(|b| f(RefAsRef::as_ref::<[u8; _]>(Refb)[..LengthOf(Projection { type: TypeParam("B"), field: "OutputSize", trait_path: None })])).enumerate().fold((0..LengthOf(Projection { type: TypeParam("B"), field: "OutputSize", trait_path: None })).map(|_| 0).collect::<Vec<u8>>() , |mut a, (i, b)| {
+    => (0..LengthOf(Projection { type: TypeParam("B"), field: "OutputSize", trait_path: None })).map(|j| a[j].Known(Bitxor)(AsRef::as_ref::<[u8; _]>(Refb)[j]).Known(Bitxor)(i as u8)).collect::<Vec<u8>>() 
+  });
+  => VopeDyn { u: (0..1).map(|_| u.Known(Clone)()).collect::<Vec<Vec<u8>>>() , v: v, n: 0, k: 1 }
+}
+
+fn mul_4x4(a: &[u64; 4], b: &[u64; 4]) -> [u64; 8] {
+  let mut r = [0; 8];
+  for i in 0..4 {
+    let mut carry: u64 = 0;
+    for j in 0..4 {
+      let v = ((r[(i Add j)] as u128 Add (a[i] as u128 Mul b[j] as u128)) Add carry as u128);
+      r[(i Add j)] = v as u64;
+      carry = (v Shr 64) as u64;
+    };
+    r[(i Add 4)] = carry;
+  };
+  => r
+}
+
+fn reduce_wide(t: &[u64; 8]) -> Fe25519 {
+  let mut acc = [0; 5];
+  let mut c: u128 = 0;
+  for i in 0..4 {
+    let v = ((t[i] as u128 Add (t[(4 Add i)] as u128 Mul 38)) Add c);
+    acc[i] = v as u64;
+    c = (v Shr 64);
+  };
+  acc[4] = c as u64;
+  let mut out = [0; 4];
+  let mut c: u128 = (acc[4] as u128 Mul 38);
+  for i in 0..4 {
+    let v = (acc[i] as u128 Add c);
+    out[i] = v as u64;
+    c = (v Shr 64);
+  };
+  if (c Ne 0) {
+    let mut c2: u128 = (c Mul 38);
+    => for i in 0..4 {
+      let v = (out[i] as u128 Add c2);
+      out[i] = v as u64;
+      c2 = (v Shr 64);
+    }
+  };
+  => fe_canonicalize(out)
+}
+
+fn fe_canonicalize(a: [u64; 4]) -> Fe25519 {
+  let mut x = a;
+  for _ in 0..2 {
+    let mut tmp = [0; 4];
+    let mut borrow: u64 = 0;
+    for i in 0..4 {
+      let (r1, b1) = x[i].Known(OverflowingSub)(P_LIMBS[i]);
+      let (r2, b2) = r1.Known(OverflowingSub)(borrow);
+      tmp[i] = r2;
+      borrow = (b1 as u64 BitOr b2 as u64);
+    };
+    => if (borrow Eq 0) {
+      x = tmp;
+    }
+  };
+  => Fe25519(x)
+}
+
+fn fe_add(a: &Fe25519, b: &Fe25519) -> Fe25519 {
+  let mut r = [0; 4];
+  let mut c: u64 = 0;
+  for i in 0..4 {
+    let v = ((a.0[i] as u128 Add b.0[i] as u128) Add c as u128);
+    r[i] = v as u64;
+    c = (v Shr 64) as u64;
+  };
+  if (c Ne 0) {
+    let mut c2: u128 = (c as u128 Mul 38);
+    => for i in 0..4 {
+      let v = (r[i] as u128 Add c2);
+      r[i] = v as u64;
+      c2 = (v Shr 64);
+    }
+  };
+  => fe_canonicalize(r)
+}
+
+fn fe_sub(a: &Fe25519, b: &Fe25519) -> Fe25519 {
+  let mut neg_b = [0; 4];
+  let mut borrow: u64 = 0;
+  for i in 0..4 {
+    let (r1, br1) = P_LIMBS[i].Known(OverflowingSub)(b.0[i]);
+    let (r2, br2) = r1.Known(OverflowingSub)(borrow);
+    neg_b[i] = r2;
+    borrow = (br1 as u64 BitOr br2 as u64);
+  };
+  => fe_add(a, RefFe25519(neg_b))
+}
+
+fn fe_neg(a: &Fe25519) -> Fe25519 {
+  => if a.Other("is_zero")() {
+    => Fe25519::ZERO
+  } else {
+    let mut neg = [0; 4];
+    let mut borrow: u64 = 0;
+    for i in 0..4 {
+      let (r1, br1) = P_LIMBS[i].Known(OverflowingSub)(a.0[i]);
+      let (r2, br2) = r1.Known(OverflowingSub)(borrow);
+      neg[i] = r2;
+      borrow = (br1 as u64 BitOr br2 as u64);
+    };
+    => Fe25519(neg)
+  }
+}
+
+fn fe_mul(a: &Fe25519, b: &Fe25519) -> Fe25519 {
+  let wide = mul_4x4(Refa.0, Refb.0);
+  => reduce_wide(Refwide)
+}
+
+fn fe_sq(a: &Fe25519) -> Fe25519 {
+  => fe_mul(a, a)
+}
+
+fn fe_invert(a: &Fe25519) -> Fe25519 {
+  let exp_limbs: [u64; 4] = [18446744073709551595, 18446744073709551615, 18446744073709551615, 9223372036854775807];
+  let mut acc = Fe25519::ONE;
+  for limb_idx in 0..4.Known(Rev)() {
+    => for bit in 0..64.Known(Rev)() {
+      acc = fe_sq(Refacc);
+      let b = ((exp_limbs[limb_idx] Shr bit) BitAnd 1);
+      => if (b Eq 1) {
+        acc = fe_mul(Refacc, a);
+      }
+    }
+  };
+  => acc
+}
+
+fn fe_const(limbs: [u64; 4]) -> Fe25519 {
+  => Fe25519(limbs)
+}
+
+fn ed_add(p1: &EdPoint, p2: &EdPoint) -> EdPoint {
+  let a = fe_mul(Reffe_sub(Refp1.y, Refp1.x), Reffe_sub(Refp2.y, Refp2.x));
+  let b = fe_mul(Reffe_add(Refp1.y, Refp1.x), Reffe_add(Refp2.y, Refp2.x));
+  let c = fe_mul(Reffe_mul(Refp1.t, RefD2), Refp2.t);
+  let d_ = fe_add(Reffe_mul(Refp1.z, Refp2.z), Reffe_mul(Refp1.z, Refp2.z));
+  let e = fe_sub(Refb, Refa);
+  let f = fe_sub(Refd_, Refc);
+  let g = fe_add(Refd_, Refc);
+  let h = fe_add(Refb, Refa);
+  => EdPoint { x: fe_mul(Refe, Reff), y: fe_mul(Refg, Refh), t: fe_mul(Refe, Refh), z: fe_mul(Reff, Refg) }
+}
+
+fn ed_double(p: &EdPoint) -> EdPoint {
+  let a = fe_sq(Refp.x);
+  let b = fe_sq(Refp.y);
+  let c = fe_add(Reffe_sq(Refp.z), Reffe_sq(Refp.z));
+  let d_ = fe_neg(Refa);
+  let xy_sum = fe_add(Refp.x, Refp.y);
+  let e = fe_sub(Reffe_sub(Reffe_sq(Refxy_sum), Refa), Refb);
+  let g = fe_add(Refd_, Refb);
+  let f = fe_sub(Refg, Refc);
+  let h = fe_sub(Refd_, Refb);
+  => EdPoint { x: fe_mul(Refe, Reff), y: fe_mul(Refg, Refh), t: fe_mul(Refe, Refh), z: fe_mul(Reff, Refg) }
+}
+
+fn ed_neg(p: &EdPoint) -> EdPoint {
+  => EdPoint { x: fe_neg(Refp.x), y: p.y, z: p.z, t: fe_neg(Refp.t) }
+}
+
+fn ed_scalar_mul(p: &EdPoint, k: &[u8; 32]) -> EdPoint {
+  let mut acc = EdPoint::IDENTITY;
+  for byte_idx in 0..32.Known(Rev)() {
+    => for bit in 0..8.Known(Rev)() {
+      acc = ed_double(Refacc);
+      let b = ((k[byte_idx] Shr bit) BitAnd 1);
+      => if (b Eq 1) {
+        acc = ed_add(Refacc, p);
+      }
+    }
+  };
+  => acc
+}
+
+fn gf_mul(a: u8, b: u8) -> u8 {
+  => volar_primitives::gf_mul_u8(a, b, GF8_AES_POLY)
+}
+
+fn sub_bytes(state: &mut [u8; BLOCK]) {
+  => for i in 0..BLOCK {
+    state[i] = SBOX[state[i] as usize];
+  }
+}
+
+fn shift_rows(state: &mut [u8; BLOCK]) {
+  let t = state[1];
+  state[1] = state[5];
+  state[5] = state[9];
+  state[9] = state[13];
+  state[13] = t;
+  let t = state[2];
+  state[2] = state[10];
+  state[10] = t;
+  let t = state[6];
+  state[6] = state[14];
+  state[14] = t;
+  let t = state[15];
+  state[15] = state[11];
+  state[11] = state[7];
+  state[7] = state[3];
+  state[3] = t;
+}
+
+fn mix_columns(state: &mut [u8; BLOCK]) {
+  => for c in 0..4 {
+    let i = (4 Mul c);
+    let s0 = state[i];
+    let s1 = state[(i Add 1)];
+    let s2 = state[(i Add 2)];
+    let s3 = state[(i Add 3)];
+    state[i] = (((gf_mul(s0, 2) BitXor gf_mul(s1, 3)) BitXor s2) BitXor s3);
+    state[(i Add 1)] = (((s0 BitXor gf_mul(s1, 2)) BitXor gf_mul(s2, 3)) BitXor s3);
+    state[(i Add 2)] = (((s0 BitXor s1) BitXor gf_mul(s2, 2)) BitXor gf_mul(s3, 3));
+    state[(i Add 3)] = (((gf_mul(s0, 3) BitXor s1) BitXor s2) BitXor gf_mul(s3, 2));
+  }
+}
+
+fn add_round_key(state: &mut [u8; BLOCK], round_key: &[u8; BLOCK]) {
+  => for i in 0..BLOCK {
+    state[i] BitXor= round_key[i];
+  }
+}
+
+fn key_expansion(key: &[u8; BLOCK]) -> [[u8; BLOCK]; NK_ROUND_KEYS] {
+  let mut words = [[0; 4]; (4 Mul NK_ROUND_KEYS)];
+  for i in 0..4 {
+    words[i] = [key[(4 Mul i)], key[((4 Mul i) Add 1)], key[((4 Mul i) Add 2)], key[((4 Mul i) Add 3)]];
+  };
+  for i in 4..(4 Mul NK_ROUND_KEYS) {
+    let mut temp = words[(i Sub 1)];
+    if ((i Rem 4) Eq 0) {
+      let t0 = temp[0];
+      temp[0] = temp[1];
+      temp[1] = temp[2];
+      temp[2] = temp[3];
+      temp[3] = t0;
+      for b in 0..4 {
+        temp[b] = SBOX[temp[b] as usize];
+      };
+      temp[0] BitXor= RCON[(i Div 4)];
+    };
+    => for b in 0..4 {
+      words[i][b] = (words[(i Sub 4)][b] BitXor temp[b]);
+    }
+  };
+  let mut round_keys = [[0; BLOCK]; NK_ROUND_KEYS];
+  for r in 0..NK_ROUND_KEYS {
+    => for c in 0..4 {
+      let w = words[((4 Mul r) Add c)];
+      round_keys[r][(4 Mul c)] = w[0];
+      round_keys[r][((4 Mul c) Add 1)] = w[1];
+      round_keys[r][((4 Mul c) Add 2)] = w[2];
+      round_keys[r][((4 Mul c) Add 3)] = w[3];
+    }
+  };
+  => round_keys
+}
+
+fn encrypt_block(key: &[u8; BLOCK], plain: &[u8; BLOCK]) -> [u8; BLOCK] {
+  let round_keys = key_expansion(key);
+  let mut state = Derefplain;
+  add_round_key(RefMutstate, Refround_keys[0]);
+  for r in 1..NR {
+    sub_bytes(RefMutstate);
+    shift_rows(RefMutstate);
+    mix_columns(RefMutstate);
+    add_round_key(RefMutstate, Refround_keys[r]);
+  };
+  sub_bytes(RefMutstate);
+  shift_rows(RefMutstate);
+  add_round_key(RefMutstate, Refround_keys[NR]);
+  => state
+}
+
+fn convert_to_vole(seeds: &[Option<[u8; LAMBDA_BYTES]>; 0], iv: &[u8; 16], tweak: u32, l_hat_bytes: usize) -> ConvertOutput {
+  let n = seeds.Known(Len)();
+  let d = n.Known(TrailingZeros)() as usize;
+  let zero_block = [];
+  let mut r: Vec<Vec<u8>> = Vec::with_capacity(n);
+  for s in seeds {
+    => match s {
+      Some(seed) => r.Known(Push)(aes_ctr_prg(seed, iv, tweak, l_hat_bytes)),
+      None => r.Known(Push)(zero_block.Known(Clone)()),
+    }
+  };
+  let mut v: Vec<Vec<u8>> = (0..d).map(|_| []).collect();
+  let mut level: Vec<Vec<u8>> = r;
+  for j in 0..d {
+    let half = (level.Known(Len)() Div 2);
+    let mut next: Vec<Vec<u8>> = Vec::with_capacity(half);
+    for i in 0..half {
+      xor_in_place(RefMutv[j], Reflevel[((2 Mul i) Add 1)]);
+      let mut new_entry = level[(2 Mul i)].Known(Clone)();
+      xor_in_place(RefMutnew_entry, Reflevel[((2 Mul i) Add 1)]);
+      next.Known(Push)(new_entry);
+    };
+    level = next;
+  };
+  let u = level.IntoIter() /* lazy */.Other("next")().Known(Unwrap)();
+  => ConvertOutput { u: u, v: v }
+}
+
+fn concat_small_voles(outs: Vec<ConvertOutput>) -> BigVoleProver {
+  let l_hat = outs[0].u.Known(Len)();
+  for o in Refouts {
+    => for vj in Refo.v {
+    }
+  };
+  let u = outs[0].u.Known(Clone)();
+  let mut c: Vec<Vec<u8>> = Vec::with_capacity((outs.Known(Len)() Sub 1));
+  for o in outs.Iter().skip(1) /* lazy */ {
+    let mut ci = o.u.Known(Clone)();
+    xor_in_place(RefMutci, Refu);
+    c.Known(Push)(ci);
+  };
+  let mut v_columns: Vec<Vec<u8>> = Vec::new();
+  for o in outs {
+    => for vj in o.v {
+      v_columns.Known(Push)(vj);
+    }
+  };
+  => BigVoleProver { u: u, c: c, v_columns: v_columns }
+}
+
+fn concat_small_voles_verifier(outs: Vec<ConvertOutput>, deltas: &[usize; 0], corrections: &[Vec<u8>; 0]) -> BigVoleVerifier {
+  let mut q_columns: Vec<Vec<u8>> = Vec::new();
+  for (i, o) in outs.IntoIter().enumerate() /* lazy */ {
+    let k = o.v.Known(Len)();
+    let delta_i = deltas[i];
+    for (bit, vj_raw) in o.v.IntoIter().enumerate() /* lazy */ {
+      let mut q = vj_raw;
+      if (i Ge 1) {
+        let delta_bit = (((delta_i Shr bit) BitAnd 1) Eq 1);
+        => if delta_bit {
+          xor_in_place(RefMutq, Refcorrections[(i Sub 1)]);
+        }
+      };
+      q_columns.Known(Push)(q);
+    };
+    let _ = k;
+  };
+  => BigVoleVerifier { q_columns: q_columns }
+}
+
+fn xor_in_place(a: &mut [u8; 0], b: &[u8; 0]) {
+  => for i in 0..a.Known(Len)() {
+    a[i] BitXor= b[i];
+  }
+}
+
+fn add_to_upper_word(iv: &mut [u8; BLOCK], tweak: u32) {
+  let upper = u32::from_le_bytes([iv[12], iv[13], iv[14], iv[15]]);
+  let new = upper.Known(WrappingAdd)(tweak);
+  let bytes = new.Known(ToLeBytes)();
+  iv[12] = bytes[0];
+  iv[13] = bytes[1];
+  iv[14] = bytes[2];
+  iv[15] = bytes[3];
+}
+
+fn add_to_lower_word(iv: &[u8; BLOCK], counter: u32) -> [u8; BLOCK] {
+  let mut out = Derefiv;
+  let lower = u32::from_le_bytes([out[0], out[1], out[2], out[3]]);
+  let new = lower.Known(WrappingAdd)(counter);
+  let bytes = new.Known(ToLeBytes)();
+  out[0] = bytes[0];
+  out[1] = bytes[1];
+  out[2] = bytes[2];
+  out[3] = bytes[3];
+  => out
+}
+
+fn aes_ctr_prg(seed: &[u8; BLOCK], iv: &[u8; BLOCK], tweak: u32, out_bytes: usize) -> Vec<u8> {
+  let mut iv_tweaked = Derefiv;
+  add_to_upper_word(RefMutiv_tweaked, tweak);
+  let n_full = (out_bytes Div BLOCK);
+  let rem = (out_bytes Rem BLOCK);
+  let mut out = alloc::vec::Vec::with_capacity(out_bytes);
+  for i in 0..n_full {
+    let block_in = add_to_lower_word(Refiv_tweaked, i as u32);
+    let ct = encrypt_block(seed, Refblock_in);
+    out.Other("extend_from_slice")(Refct);
+  };
+  if (rem Gt 0) {
+    let block_in = add_to_lower_word(Refiv_tweaked, n_full as u32);
+    let ct = encrypt_block(seed, Refblock_in);
+    out.Other("extend_from_slice")(Refct[..rem]);
+  };
+  => out
+}
+
+fn keygen(rng: &mut impl SpecRng) -> (FaestSecretKey, FaestPublicKey) {
+  let mut sk = [0; LAMBDA_BYTES];
+  for b in sk.Other("iter_mut")() {
+    Derefb = rng.Other("next_u8")();
+  };
+  let pk = aes128_encrypt(Refsk, Ref[0; LAMBDA_BYTES]);
+  => (FaestSecretKey(sk), FaestPublicKey(pk))
+}
+
+fn sign(sk: &FaestSecretKey, pk: &FaestPublicKey, message: &[u8; 0], iv_seed: [u8; LAMBDA_BYTES], prover: &impl FaestAesProver) -> FaestSignature {
+  let iv: [u8; LAMBDA_BYTES] = aes128_encrypt(Refiv_seed, Ref[0; LAMBDA_BYTES]);
+  let r: [u8; LAMBDA_BYTES] = aes128_encrypt(Refsk.0, Refiv);
+  let commitment: BavcCommitmentDyn = Bavc::commit::<EmLeafCommit, COM_BYTES, Sha3_256>(r, Refiv, TAU, SUB_VOLE_N);
+  let mu: Vec<u8> = {
+    let mut h = Sha3_256::new();
+    DigestUpdate::update(RefMuth, Refpk.0);
+    DigestUpdate::update(RefMuth, message);
+    => Digest::finalize(h).Known(ToVec)()
+  };
+  let chall_1 = chall1(Refmu, Refiv, Refcommitment.root, (LAMBDA_BYTES Add 8), false);
+  let deltas = expand_challenge_to_deltas(Refchall_1, TAU, SUB_VOLE_N);
+  let nodes = Bavc::collect_open_nodes::<EmLeafCommit, COM_BYTES>(Refdeltas, Refrecompute_tree(r, (TAU Mul SUB_VOLE_N)), TAU, SUB_VOLE_N);
+  let hidden_commits: Vec<[u8; COM_BYTES]> = deltas.Iter().enumerate().map(|(i, d)| commitment.commitments[((i Mul SUB_VOLE_N) Add d)]).collect();
+  let opening = BavcOpeningDyn::<COM_BYTES> { hidden_commits: hidden_commits.Known(Clone)(), nodes: nodes.Known(Clone)(), com_bytes: 0 };
+  let _ = opening;
+  let mut sub_voles = Vec::with_capacity(TAU);
+  for i in 0..TAU {
+    let seeds_i: Vec<Option<[u8; LAMBDA_BYTES]>> = (0..SUB_VOLE_N).map(|j| Some(commitment.seeds[((i Mul SUB_VOLE_N) Add j)])).collect();
+    sub_voles.Known(Push)(convert_to_vole(Refseeds_i, Refiv, i as u32, L_HAT_BYTES));
+  };
+  let big_vole: BigVoleProver = concat_small_voles(sub_voles);
+  let corrections_flat: Vec<u8> = big_vole.c.Iter() /* lazy */.Other("flatten")().Known(Cloned)().Other("collect")();
+  let chall_2 = chall2(Refchall_1, Refbig_vole.u, Refcorrections_flat, (LAMBDA_BYTES Add 8), false);
+  let hash_key = hash_key_from_chall(Refchall_2);
+  let qs_proof = prover.Other("prove_aes_witness")(Refbig_vole, Refhash_key);
+  let (chall_3, counter) = grind_chall3(Refchall_2, Refqs_proof.a_hat, Refqs_proof.b_hat, Refqs_proof.c_hat_base, LAMBDA_BYTES, W_GRIND, false, 1000000).Known(Expect)("grinding must terminate within 1M iterations");
+  let mut c_hat_with_counter = qs_proof.c_hat_base.Known(Clone)();
+  c_hat_with_counter.Other("extend_from_slice")(Refcounter.Known(ToLeBytes)());
+  => FaestSignature { iv: iv, bavc_root: commitment.root.Known(Clone)(), hidden_commits: hidden_commits, nodes: nodes, corrections: big_vole.c.Known(Clone)(), vole_u: big_vole.u.Known(Clone)(), qs_proof: qs_proof, c_hat_with_counter: c_hat_with_counter, chall_3: chall_3, counter: counter }
+}
+
+fn verify(pk: &FaestPublicKey, message: &[u8; 0], sig: &FaestSignature) -> bool {
+  let iv = Refsig.iv;
+  let mu: Vec<u8> = {
+    let mut h = Sha3_256::new();
+    DigestUpdate::update(RefMuth, Refpk.0);
+    DigestUpdate::update(RefMuth, message);
+    => Digest::finalize(h).Known(ToVec)()
+  };
+  let chall_1 = chall1(Refmu, iv, Refsig.bavc_root, (LAMBDA_BYTES Add 8), false);
+  let deltas = expand_challenge_to_deltas(Refchall_1, TAU, SUB_VOLE_N);
+  let reconstructed_seeds_opt = Bavc::reconstruct::<EmLeafCommit, COM_BYTES, Sha3_256>(Refsig.nodes, Refsig.hidden_commits, Refdeltas, iv, Refsig.bavc_root, TAU, SUB_VOLE_N);
+  let reconstructed_seeds = match reconstructed_seeds_opt {
+    Some(s) => s,
+    None => return false,
+  };
+  let mut sub_voles_v = Vec::with_capacity(TAU);
+  for i in 0..TAU {
+    let d = deltas[i];
+    let verifier_seeds: Vec<Option<[u8; LAMBDA_BYTES]>> = (0..SUB_VOLE_N).map(|j| {
+      => if (j Eq 0) {
+        => None
+      } else {
+        => Some(reconstructed_seeds[((i Mul SUB_VOLE_N) Add (j BitXor d))])
+      }
+    }).collect();
+    sub_voles_v.Known(Push)(convert_to_vole(Refverifier_seeds, iv, i as u32, L_HAT_BYTES));
+  };
+  let corrections = Refsig.corrections;
+  if (corrections.Known(Len)() Ne (TAU Sub 1)) {
+    return false;
+  };
+  let big_q: Vec<u8> = {
+    let q_out = concat_small_voles_verifier(sub_voles_v, Refdeltas, corrections);
+    => q_out.q_columns.IntoIter() /* lazy */.Flatten().collect()
+  };
+  let corrections_flat: Vec<u8> = sig.corrections.Iter() /* lazy */.Other("flatten")().Known(Cloned)().Other("collect")();
+  let chall_2 = chall2(Refchall_1, Refsig.vole_u, Refcorrections_flat, (LAMBDA_BYTES Add 8), false);
+  let hash_key = hash_key_from_chall(Refchall_2);
+  let derived_chall_3 = chall3(Refchall_2, Refsig.qs_proof.a_hat, Refsig.qs_proof.b_hat, Refsig.c_hat_with_counter, LAMBDA_BYTES, false);
+  if (derived_chall_3 Ne sig.chall_3) {
+    return false;
+  };
+  if Nothas_trailing_zero_bits(Refsig.chall_3, W_GRIND) {
+    return false;
+  };
+  let _ = hash_key;
+  => true
+}
+
+fn expand_challenge_to_deltas(chall_1: &[u8; 0], tau: usize, n: usize) -> Vec<usize> {
+  => (0..tau).map(|i| {
+    let byte = chall_1[(i Rem chall_1.Known(Len)())] as usize;
+    => (byte Rem n)
+  }).collect()
+}
+
+fn recompute_tree(r: [u8; LAMBDA_BYTES], total_leaves: usize) -> Vec<[u8; LAMBDA_BYTES]> {
+  let total_nodes = ((2 Mul total_leaves) Sub 1);
+  let mut tree = [];
+  tree[0] = r;
+  for node in 0..(total_leaves Sub 1) {
+    let parent = Vec::<u8, U16>(tree[node]);
+    let [left, right] = AesCtrLengthDoubler::double(parent);
+    tree[((2 Mul node) Add 1)] = left.0;
+    tree[((2 Mul node) Add 2)] = right.0;
+  };
+  => tree
+}
+
+fn hash_key_from_chall(chall: &[u8; 0]) -> UniversalHashKey {
+  let mut r0_bytes = [0; 16];
+  let n = chall.Known(Len)().Known(Min)(16);
+  r0_bytes[..n].Known(CopyFromSlice)(Refchall[..n]);
+  let mut r1_bytes = [0; 8];
+  let off = n;
+  let m = (chall.Known(Len)() Sub off).Known(Min)(8);
+  r1_bytes[..m].Known(CopyFromSlice)(Refchall[off..(off Add m)]);
+  => UniversalHashKey { r0: Galois128(u128::from_le_bytes(r0_bytes)), r1: Galois64(u64::from_le_bytes(r1_bytes)) }
+}
+
+fn has_trailing_zero_bits(bytes: &[u8; 0], n: u32) -> bool {
+  if (n Eq 0) {
+    return true;
+  };
+  let n = n as usize;
+  let full_bytes = (n Div 8);
+  let rem = (n Rem 8);
+  if (bytes.Known(Len)() Lt (full_bytes Add if (rem Gt 0) {
+    => 1
+  } else {
+    => 0
+  })) {
+    return false;
+  };
+  for i in (bytes.Known(Len)() Sub full_bytes)..bytes.Known(Len)() {
+    => if (bytes[i] Ne 0) {
+      return false;
+    }
+  };
+  if (rem Gt 0) {
+    let mask = ((1 Shl rem) Sub 1);
+    let idx = ((bytes.Known(Len)() Sub full_bytes) Sub 1);
+    => if ((bytes[idx] BitAnd mask) Ne 0) {
+      return false;
+    }
+  };
+  => true
+}
+
+fn chall1(mu: &[u8; 0], iv: &[u8; 16], com_bytes: &[u8; 0], lambda_plus_b: usize, use_shake256: bool) -> Vec<u8> {
+  let mut t = if use_shake256 {
+    => FaestTranscript::new_shake256()
+  } else {
+    => FaestTranscript::new_shake128()
+  };
+  t.Other("absorb")(mu);
+  t.Other("absorb")(AsRef::as_ref::<[u8; _]>(Refiv));
+  t.Other("absorb")(com_bytes);
+  => t.Other("squeeze")(lambda_plus_b)
+}
+
+fn chall2(chall_1: &[u8; 0], u_hat: &[u8; 0], d: &[u8; 0], lambda_plus_b: usize, use_shake256: bool) -> Vec<u8> {
+  let mut t = if use_shake256 {
+    => FaestTranscript::new_shake256()
+  } else {
+    => FaestTranscript::new_shake128()
+  };
+  t.Other("absorb")(chall_1);
+  t.Other("absorb")(u_hat);
+  t.Other("absorb")(d);
+  => t.Other("squeeze")(lambda_plus_b)
+}
+
+fn chall3(chall_2: &[u8; 0], a_hat: &[u8; 0], b_hat: &[u8; 0], c_hat: &[u8; 0], lambda: usize, use_shake256: bool) -> Vec<u8> {
+  let mut t = if use_shake256 {
+    => FaestTranscript::new_shake256()
+  } else {
+    => FaestTranscript::new_shake128()
+  };
+  t.Other("absorb")(chall_2);
+  t.Other("absorb")(a_hat);
+  t.Other("absorb")(b_hat);
+  t.Other("absorb")(c_hat);
+  => t.Other("squeeze")(lambda)
+}
+
+fn grind_chall3(chall_2: &[u8; 0], a_hat: &[u8; 0], b_hat: &[u8; 0], c_hat_base: &[u8; 0], lambda: usize, w_grind: u32, use_shake256: bool, max_iters: u32) -> Option<(Vec<u8>, u32)> {
+  for counter in 0..max_iters {
+    let counter_bytes = counter.Known(ToLeBytes)();
+    let mut c_hat_grind = alloc::vec::Vec::from(c_hat_base);
+    c_hat_grind.Other("extend_from_slice")(Refcounter_bytes);
+    let candidate = chall3(chall_2, a_hat, b_hat, Refc_hat_grind, lambda, use_shake256);
+    => if has_trailing_zero_bits(Refcandidate, w_grind) {
+      return Some((candidate, counter));
+    }
+  };
+  => None
+}
+
+fn vole_hash(key: &UniversalHashKey, input: &[u8; 0]) -> UniversalHashOutput {
+  let n_full = (input.Known(Len)() Div 16);
+  let tail = Refinput[(n_full Mul 16)..];
+  let mut h0 = Galois128(0);
+  let mut h1 = Galois64(0);
+  let mut pow0 = key.r0;
+  let mut pow1 = key.r1;
+  for i in 0..n_full {
+    let block = Refinput[(i Mul 16)..((i Add 1) Mul 16)];
+    let mut bytes = [0; 16];
+    bytes.Known(CopyFromSlice)(block);
+    let s = Galois128(u128::from_le_bytes(bytes));
+    h0 = (h0 Add (s Mul pow0));
+    let s64 = Galois64(s.0 as u64);
+    h1 = (h1 Add (s64 Mul pow1));
+    pow0 = (pow0 Mul key.r0);
+    pow1 = (pow1 Mul key.r1);
+  };
+  if Nottail.Known(IsEmpty)() {
+    let mut bytes = [0; 8];
+    let n = tail.Known(Len)().Known(Min)(8);
+    bytes[..n].Known(CopyFromSlice)(Reftail[..n]);
+    let t = Galois64(u64::from_le_bytes(bytes));
+    h1 = (h1 Add (t Mul pow1));
+  };
+  => UniversalHashOutput { h0: h0, h1: h1 }
+}
+
+fn zk_hash(key: &UniversalHashKey, elements: &[Galois128; 0]) -> UniversalHashOutput {
+  let mut h0 = Galois128(0);
+  let mut h1 = Galois64(0);
+  let mut pow0 = key.r0;
+  let mut pow1 = key.r1;
+  for &x in elements {
+    h0 = (h0 Add (x Mul pow0));
+    let x64 = Galois64(x.0 as u64);
+    h1 = (h1 Add (x64 Mul pow1));
+    pow0 = (pow0 Mul key.r0);
+    pow1 = (pow1 Mul key.r1);
+  };
+  => UniversalHashOutput { h0: h0, h1: h1 }
+}
+
+fn vole_hash_consistency_check(key: &UniversalHashKey, hu: UniversalHashOutput, hq: UniversalHashOutput, hv: UniversalHashOutput, hc: UniversalHashOutput, delta: Galois128) -> bool {
+  let lhs0 = hq.h0;
+  let rhs0 = (hv.h0 Add (delta Mul (hu.h0 Add hc.h0)));
+  let delta64 = Galois64(delta.0 as u64);
+  let lhs1 = hq.h1;
+  let rhs1 = (hv.h1 Add (delta64 Mul (hu.h1 Add hc.h1)));
+  => ((lhs0 Eq rhs0) And (lhs1 Eq rhs1))
+}
+
+fn concat_words(wbound: usize, a: &GrafhenWordDyn, b: &GrafhenWordDyn) -> Option<GrafhenWordDyn> {
+  let new_len = match a.len.Known(CheckedAdd)(b.len) {
+    Some(n) if (n Le wbound) => n,
+    _ => return None,
+  };
+  let mut result = GrafhenWord::identity();
+  result.data[..a.len].Known(CopyFromSlice)(Refa.data[..a.len]);
+  result.data[a.len..new_len].Known(CopyFromSlice)(Refb.data[..b.len]);
+  result.len = new_len;
+  => Some(result)
+}
+
+fn grafhen_zero(wbound: usize) -> GrafhenWordDyn {
+  => GrafhenWord::identity()
+}
+
+fn grafhen_xor(wbound: usize, a: &GrafhenWordDyn, b: &GrafhenWordDyn) -> GrafhenWordDyn {
+  => concat_words(wbound, a, b).Known(Expect)("grafhen_xor: combined word length exceeds WBOUND")
+}
+
+fn grafhen_not<R>(wbound: usize, a: &GrafhenWordDyn, pk: &GrafhenPublicDyn<R>) -> GrafhenWordDyn {
+  => grafhen_xor(wbound, a, Refpk.enc_one)
+}
+
+fn grafhen_and<R>(wbound: usize, enc_a: &GrafhenWordDyn, enc_b: &GrafhenWordDyn, pk: &GrafhenPublicDyn<R>) -> GrafhenWordDyn {
+  let w1 = enc_a;
+  let w2 = enc_b;
+  let a = Refpk.and_w1;
+  let b = Refpk.and_w2;
+  let segs: [&GrafhenWordDyn; 12] = [w1, a, w1, w2, b, w2, w1, a, w1, w2, b, w2];
+  let total_len: usize = segs.Iter().map(|s| s.len) /* lazy */.Other("sum")();
+  let mut result = GrafhenWord::identity();
+  let mut pos = 0;
+  for seg in Refsegs {
+    result.data[pos..(pos Add seg.len)].Known(CopyFromSlice)(Refseg.data[..seg.len]);
+    pos Add= seg.len;
+  };
+  result.len = total_len;
+  pk.reducer.Other("reduce")(RefMutresult);
+  => result
+}
+
+fn grafhen_encrypt<R>(wbound: usize, bit: bool, zero_cipher: &GrafhenWordDyn, pk: &GrafhenPublicDyn<R>) -> GrafhenWordDyn {
+  => if bit {
+    => grafhen_xor(wbound, zero_cipher, Refpk.enc_one)
+  } else {
+    => Derefzero_cipher
+  }
+}
+
+fn eval_word_to_perm(n: usize, d: usize, wbound: usize, key: &GrafhenKeyDyn, word: &GrafhenWordDyn) -> [u8; N] {
+  let mut perm: [u8; N] = (0..n).map(|i| i as u8).collect();
+  for &g in Refword.data[..word.len] {
+    let g = g as usize;
+    let generator: &[u8; N] = if (g Lt d) {
+      => Refkey.gens[g]
+    } else {
+      => Refkey.inv_gens[(g Sub d)]
+    };
+    perm = (0..n).map(|i| generator[perm[i] as usize]).collect();
+  };
+  => perm
+}
+
+fn grafhen_decrypt(n: usize, d: usize, wbound: usize, key: &GrafhenKeyDyn, word: &GrafhenWordDyn) -> Option<bool> {
+  let perm = eval_word_to_perm(n, d, wbound, key, word);
+  => match perm[0] {
+    0 => Some(false),
+    4 => Some(true),
+    _ => None,
+  }
+}
+
+fn ot_send_setup<G: IrTraitBound { trait_kind: Custom("Group"), type_args: [], assoc_bindings: [] }, D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }, R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(rng: &mut R) -> (BaseOtSenderDyn<G, D>, <G as _>::Element) {
+  let y = G::random_scalar(rng);
+  let g = G::generator();
+  let s = G::scalar_mul(Refg, Refy);
+  let t = G::scalar_mul(Refs, Refy);
+  => (BaseOtSenderDyn { y: y, s: s.Known(Clone)(), t: t, _d: PhantomData, _phantom: PhantomData }, s)
+}
+
+fn ot_recv<G: IrTraitBound { trait_kind: Custom("Group"), type_args: [], assoc_bindings: [] }, D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }, R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(rng: &mut R, s: <G as _>::Element, c: bool) -> (BaseOtReceiverDyn<G, D>, OtReceiverMsgDyn<G>) {
+  let x = G::random_scalar(rng);
+  let g = G::generator();
+  let gx = G::scalar_mul(Refg, Refx);
+  let r = if c {
+    => G::add(Refs, Refgx)
+  } else {
+    => gx
+  };
+  => (BaseOtReceiverDyn { x: x, s: s, c: c, _d: PhantomData, _phantom: PhantomData }, OtReceiverMsgDyn { r: r, _phantom: PhantomData })
+}
+
+fn ot_send_finish<G: IrTraitBound { trait_kind: Custom("Group"), type_args: [], assoc_bindings: [] }, D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }>(state: &BaseOtSenderDyn<G, D>, msg: &OtReceiverMsgDyn<G>) -> (Output<D>, Output<D>) {
+  let ry = G::scalar_mul(Refmsg.r, Refstate.y);
+  let s_inv = G::neg(Refstate.s);
+  let r_minus_s = G::add(Refmsg.r, Refs_inv);
+  let r_minus_s_y = G::scalar_mul(Refr_minus_s, Refstate.y);
+  let mut h0 = D::new();
+  G::write_element::<D>(Refry, RefMuth0);
+  let mut h1 = D::new();
+  G::write_element::<D>(Refr_minus_s_y, RefMuth1);
+  => (h0.Known(Finalize)().Known(ToVec)(), h1.Known(Finalize)().Known(ToVec)())
+}
+
+fn ot_recv_finish<G: IrTraitBound { trait_kind: Custom("Group"), type_args: [], assoc_bindings: [] }, D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }>(state: &BaseOtReceiverDyn<G, D>) -> Output<D> {
+  let sx = G::scalar_mul(Refstate.s, Refstate.x);
+  let mut h = D::new();
+  G::write_element::<D>(Refsx, RefMuth);
+  => h.Known(Finalize)().Known(ToVec)()
+}
+
+fn ot_recv_choice<G: IrTraitBound { trait_kind: Custom("Group"), type_args: [], assoc_bindings: [] }, D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }>(state: &BaseOtReceiverDyn<G, D>) -> bool {
+  => state.c
+}
+
+fn ot_send_payload<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }>(k0: &Output<D>, k1: &Output<D>, m0: &[u8; 0], m1: &[u8; 0], e0: &mut [u8; 0], e1: &mut [u8; 0]) {
+  for i in 0..m0.Known(Len)() {
+    e0[i] = (m0[i] BitXor k0[i]);
+  };
+  => for i in 0..m1.Known(Len)() {
+    e1[i] = (m1[i] BitXor k1[i]);
+  }
+}
+
+fn ot_recv_payload<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }>(kc: &Output<D>, ec: &[u8; 0], mc: &mut [u8; 0]) {
+  => for i in 0..ec.Known(Len)() {
+    mc[i] = (ec[i] BitXor kc[i]);
+  }
+}
+
+fn toy_mul(a: u64, b: u64) -> u64 {
+  => ((a Mul b) Rem TOY_P)
+}
+
+fn toy_pow(base: u64, exp: u64) -> u64 {
+  let mut acc: u64 = 1;
+  let mut b = (base Rem TOY_P);
+  while (exp Gt 0) {
+    if ((exp BitAnd 1) Eq 1) {
+      acc = toy_mul(acc, b);
+    };
+    b = toy_mul(b, b);
+    exp Shr= 1;
+  };
+  => acc
+}
+
+fn prg_with_index<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }>(seed: &[u8; 0], idx: u32, out: &mut [u8; 0]) {
+  let mut counter: u32 = 0;
+  let mut pos = 0;
+  => while (pos Lt out.Known(Len)()) {
+    let mut h = D::new();
+    h.Known(Update)(seed);
+    h.Known(Update)(idx.Known(ToLeBytes)());
+    h.Known(Update)(counter.Known(ToLeBytes)());
+    let block = h.Known(Finalize)().Known(ToVec)();
+    let block_bytes: &[u8; 0] = AsRef::as_ref::<[u8; _]>(Refblock);
+    let take = (out.Known(Len)() Sub pos).Known(Min)(block_bytes.Known(Len)());
+    out[pos..(pos Add take)].Known(CopyFromSlice)(Refblock_bytes[..take]);
+    pos Add= take;
+    counter Add= 1;
+  }
+}
+
+fn prg_to_bools<D: IrTraitBound { trait_kind: Digest, type_args: [], assoc_bindings: [] }>(seed: &[u8; 0], out: &mut [bool; 0]) {
+  let mut counter: u32 = 0;
+  let mut pos = 0;
+  => while (pos Lt out.Known(Len)()) {
+    let mut h = D::new();
+    h.Known(Update)(seed);
+    h.Known(Update)(counter.Known(ToLeBytes)());
+    let block = h.Known(Finalize)().Known(ToVec)();
+    let block_bytes: &[u8; 0] = AsRef::as_ref::<[u8; _]>(Refblock);
+    for &byte in block_bytes.Iter() /* lazy */ {
+      => for bit in 0..8 {
+        if (pos Ge out.Known(Len)()) {
+          return;
+        };
+        out[pos] = (((byte Shr bit) BitAnd 1) Eq 1);
+        pos Add= 1;
+      }
+    };
+    counter Add= 1;
+  }
+}
+
+fn pack_kappa(bits: &[bool; IKNP_KAPPA]) -> [u8; IKNP_KAPPA_BYTES] {
+  let mut out = [0; IKNP_KAPPA_BYTES];
+  for i in 0..IKNP_KAPPA {
+    => if bits[i] {
+      out[(i Div 8)] BitOr= (1 Shl (i Rem 8));
+    }
+  };
+  => out
+}
+
+fn iknp_cot_extend<G, D, R>(m: usize, l: usize, rng_s: &mut R, rng_r: &mut R, receiver_bits: &[bool; M], delta_msg: &[u8; L]) -> ([[u8; L]; M], [[u8; L]; M]) {
+  let mut delta_ot = [false; IKNP_KAPPA];
+  for i in 0..IKNP_KAPPA {
+    delta_ot[i] = ((rng_s.Other("next_u32")() BitAnd 1) Eq 1);
+  };
+  let delta_ot_bytes = pack_kappa(Refdelta_ot);
+  let mut seeds_0 = [[0; IKNP_KAPPA_BYTES]; IKNP_KAPPA];
+  let mut seeds_1 = [[0; IKNP_KAPPA_BYTES]; IKNP_KAPPA];
+  for i in 0..IKNP_KAPPA {
+    => for b in 0..IKNP_KAPPA_BYTES {
+      seeds_0[i][b] = (rng_r.Other("next_u32")() BitAnd 255) as u8;
+      seeds_1[i][b] = (rng_r.Other("next_u32")() BitAnd 255) as u8;
+    }
+  };
+  let mut chosen_seeds = [[0; IKNP_KAPPA_BYTES]; IKNP_KAPPA];
+  for i in 0..IKNP_KAPPA {
+    let (s_state, s_msg) = ot_send_setup::<G, D, _>(rng_r);
+    let (r_state, r_msg) = ot_recv::<G, D, _>(rng_s, s_msg, delta_ot[i]);
+    let (key_0, key_1) = ot_send_finish::<G, D>(Refs_state, Refr_msg);
+    let kc = ot_recv_finish::<G, D>(Refr_state);
+    let mut e0 = [0; IKNP_KAPPA_BYTES];
+    let mut e1 = [0; IKNP_KAPPA_BYTES];
+    ot_send_payload::<D>(Refkey_0, Refkey_1, Refseeds_0[i], Refseeds_1[i], RefMute0, RefMute1);
+    let chosen_e: &[u8; 0] = if delta_ot[i] {
+      => Refe1
+    } else {
+      => Refe0
+    };
+    ot_recv_payload::<D>(Refkc, chosen_e, RefMutchosen_seeds[i]);
+  };
+  let mut t_cols = [[false; m]; IKNP_KAPPA];
+  let mut q_cols = [[false; m]; IKNP_KAPPA];
+  {
+    let mut prg1 = [false; m];
+    => for i in 0..IKNP_KAPPA {
+      prg_to_bools::<D>(Refseeds_0[i], RefMutt_cols[i]);
+      prg_to_bools::<D>(Refseeds_1[i], RefMutprg1);
+      let mut u_col = [false; m];
+      for j in 0..m {
+        u_col[j] = ((t_cols[i][j] BitXor prg1[j]) BitXor receiver_bits[j]);
+      };
+      let mut prg_chosen = [false; m];
+      prg_to_bools::<D>(Refchosen_seeds[i], RefMutprg_chosen);
+      => for j in 0..m {
+        => if delta_ot[i] {
+          q_cols[i][j] = (prg_chosen[j] BitXor u_col[j]);
+        } else {
+          q_cols[i][j] = prg_chosen[j];
+        }
+      }
+    }
+  };
+  let mut sender_r0 = [[0; l]; m];
+  let mut receiver_v = [[0; l]; m];
+  let mut q_row = [false; IKNP_KAPPA];
+  let mut t_row = [false; IKNP_KAPPA];
+  for j in 0..m {
+    for i in 0..IKNP_KAPPA {
+      q_row[i] = q_cols[i][j];
+      t_row[i] = t_cols[i][j];
+    };
+    let q_bytes = pack_kappa(Refq_row);
+    let t_bytes = pack_kappa(Reft_row);
+    let mut r0 = [0; l];
+    prg_with_index::<D>(Refq_bytes, j as u32, RefMutr0);
+    let mut q_xor_delta = q_bytes;
+    for b in 0..IKNP_KAPPA_BYTES {
+      q_xor_delta[b] BitXor= delta_ot_bytes[b];
+    };
+    let mut r1 = [0; l];
+    prg_with_index::<D>(Refq_xor_delta, j as u32, RefMutr1);
+    let mut v_pre = [0; l];
+    prg_with_index::<D>(Reft_bytes, j as u32, RefMutv_pre);
+    let mut correction = [0; l];
+    for b in 0..l {
+      correction[b] = ((r0[b] BitXor r1[b]) BitXor delta_msg[b]);
+    };
+    sender_r0[j] = r0;
+    => if receiver_bits[j] {
+      => for b in 0..l {
+        receiver_v[j][b] = (v_pre[b] BitXor correction[b]);
+      }
+    } else {
+      receiver_v[j] = v_pre;
+    }
+  };
+  => (sender_r0, receiver_v)
+}
+
+fn zq_add(a: Zq, b: Zq) -> Zq {
+  => (a.Known(WrappingAdd)(b) BitAnd LWE_Q_MASK)
+}
+
+fn zq_sub(a: Zq, b: Zq) -> Zq {
+  => (a.Known(WrappingSub)(b) BitAnd LWE_Q_MASK)
+}
+
+fn zq_mul(a: Zq, b: Zq) -> Zq {
+  => (a.Known(WrappingMul)(b) BitAnd LWE_Q_MASK)
+}
+
+fn zq_neg(a: Zq) -> Zq {
+  => (LWE_Q.Known(WrappingSub)(a) BitAnd LWE_Q_MASK)
+}
+
+fn sample_noise<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(rng: &mut R) -> Zq {
+  let span = ((2 Mul LWE_NOISE_BOUND) Add 1);
+  let raw = (rng.Other("next_u32")() Rem span);
+  => if (raw Le LWE_NOISE_BOUND) {
+    => raw
+  } else {
+    => zq_neg((raw Sub LWE_NOISE_BOUND))
+  }
+}
+
+fn sample_zq<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(rng: &mut R) -> Zq {
+  => (rng.Other("next_u32")() BitAnd LWE_Q_MASK)
+}
+
+fn lwe_ot_recv<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(rng: &mut R, crs: &LweOtCrs, c: bool) -> (LweOtReceiver, LweOtRecvMsg) {
+  let mut s = [0; LWE_N];
+  for i in 0..LWE_N {
+    s[i] = sample_noise(rng);
+  };
+  let mut pk_real = [0; LWE_N];
+  for i in 0..LWE_N {
+    let mut acc: Zq = 0;
+    for j in 0..LWE_N {
+      acc = zq_add(acc, zq_mul(crs.a[i][j], s[j]));
+    };
+    acc = zq_add(acc, sample_noise(rng));
+    pk_real[i] = acc;
+  };
+  let pk0 = if c {
+    let mut pk0 = [0; LWE_N];
+    for i in 0..LWE_N {
+      pk0[i] = zq_sub(crs.h[i], pk_real[i]);
+    };
+    => pk0
+  } else {
+    => pk_real
+  };
+  => (LweOtReceiver { s: s, c: c }, LweOtRecvMsg { pk0: pk0 })
+}
+
+fn encrypt_branch<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(l: usize, rng: &mut R, crs: &LweOtCrs, pk: &[Zq; LWE_N], msg: &[u8; L]) -> ([Zq; LWE_N], [Zq; L]) {
+  let mut r = [0; LWE_N];
+  for i in 0..LWE_N {
+    r[i] = sample_noise(rng);
+  };
+  let mut u = [0; LWE_N];
+  for j in 0..LWE_N {
+    let mut acc: Zq = 0;
+    for i in 0..LWE_N {
+      acc = zq_add(acc, zq_mul(crs.a[i][j], r[i]));
+    };
+    acc = zq_add(acc, sample_noise(rng));
+    u[j] = acc;
+  };
+  let mut base: Zq = 0;
+  for i in 0..LWE_N {
+    base = zq_add(base, zq_mul(pk[i], r[i]));
+  };
+  let half_q = (LWE_Q Div 2);
+  let mut v = [0; l];
+  for k in 0..l {
+    let plain = if ((msg[k] BitAnd 1) Eq 1) {
+      => half_q
+    } else {
+      => 0
+    };
+    v[k] = zq_add(zq_add(base, sample_noise(rng)), plain);
+  };
+  => (u, v)
+}
+
+fn lwe_ot_send<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(l: usize, rng: &mut R, crs: &LweOtCrs, recv_msg: &LweOtRecvMsg, m0: &[u8; L], m1: &[u8; L]) -> LweOtSenderMsgDyn {
+  let pk0 = recv_msg.pk0;
+  let mut pk1 = [0; LWE_N];
+  for i in 0..LWE_N {
+    pk1[i] = zq_sub(crs.h[i], pk0[i]);
+  };
+  let (u0, v0) = encrypt_branch::<R, L>(l, rng, crs, Refpk0, m0);
+  let (u1, v1) = encrypt_branch::<R, L>(l, rng, crs, Refpk1, m1);
+  => LweOtSenderMsgDyn { u0: u0, v0: v0, u1: u1, v1: v1, l: 0 }
+}
+
+fn lwe_ot_recv_decrypt(l: usize, receiver: &LweOtReceiver, sender_msg: &LweOtSenderMsgDyn) -> [u8; L] {
+  let (u, v) = if receiver.c {
+    => (Refsender_msg.u1, Refsender_msg.v1)
+  } else {
+    => (Refsender_msg.u0, Refsender_msg.v0)
+  };
+  let mut s_dot_u: Zq = 0;
+  for i in 0..LWE_N {
+    s_dot_u = zq_add(s_dot_u, zq_mul(receiver.s[i], u[i]));
+  };
+  let quarter = (LWE_Q Div 4);
+  let three_quarter = (3 Mul quarter);
+  let mut out = [0; l];
+  for k in 0..l {
+    let raw = zq_sub(v[k], s_dot_u);
+    out[k] = if ((raw Gt quarter) And (raw Le three_quarter)) {
+      => 1
+    } else {
+      => 0
+    };
+  };
+  => out
+}
+
+fn softspoken_cot_extend<G, D, R>(k: usize, m: usize, l: usize, rng_s: &mut R, rng_r: &mut R, receiver_bits: &[bool; M], delta_msg: &[u8; L]) -> SoftSpokenOutDyn<D> {
+  let (sender_r0, receiver_v) = iknp_cot_extend::<G, D, _, M, L>(m, l, rng_s, rng_r, receiver_bits, delta_msg);
+  let mut hs = D::new();
+  hs.Known(Update)(TAG_DOMAIN);
+  hs.Known(Update)(delta_msg);
+  for row in sender_r0.Iter() /* lazy */ {
+    hs.Known(Update)(row);
+  };
+  let sender_tag = hs.Known(Finalize)().Known(ToVec)();
+  let mut hr = D::new();
+  hr.Known(Update)(TAG_DOMAIN);
+  hr.Known(Update)(delta_msg);
+  for j in 0..m {
+    let mut r0_reconstructed = [0; l];
+    if receiver_bits[j] {
+      => for b in 0..l {
+        r0_reconstructed[b] = (receiver_v[j][b] BitXor delta_msg[b]);
+      }
+    } else {
+      r0_reconstructed = receiver_v[j];
+    };
+    hr.Known(Update)(Refr0_reconstructed);
+  };
+  let receiver_tag = hr.Known(Finalize)().Known(ToVec)();
+  => SoftSpokenOutDyn { sender_r0: sender_r0, receiver_v: receiver_v, sender_tag: sender_tag, receiver_tag: receiver_tag, m: 0, l: 0 }
+}
+
+fn tfhe_trivial_zero(n_lwe: usize) -> LweCiphertextDyn {
+  => LweCiphertextDyn { a: [0; n_lwe], b: 0, n_lwe: 0 }
+}
+
+fn tfhe_trivial_one(n_lwe: usize) -> LweCiphertextDyn {
+  => LweCiphertextDyn { a: [0; n_lwe], b: Q4, n_lwe: 0 }
+}
+
+fn tfhe_trivial_encrypt(n_lwe: usize, b: bool) -> LweCiphertextDyn {
+  => if b {
+    => tfhe_trivial_one(n_lwe)
+  } else {
+    => tfhe_trivial_zero(n_lwe)
+  }
+}
+
+fn tfhe_xor(n_lwe: usize, a: LweCiphertextDyn, b: LweCiphertextDyn) -> LweCiphertextDyn {
+  let mut out_a = [0; n_lwe];
+  for i in 0..n_lwe {
+    out_a[i] = a.a[i].Known(WrappingAdd)(b.a[i]);
+  };
+  => LweCiphertextDyn { a: out_a, b: a.b.Known(WrappingAdd)(b.b), n_lwe: 0 }
+}
+
+fn tfhe_not(n_lwe: usize, a: LweCiphertextDyn) -> LweCiphertextDyn {
+  let mut out_a = [0; n_lwe];
+  for i in 0..n_lwe {
+    out_a[i] = a.a[i].Known(WrappingNeg)();
+  };
+  => LweCiphertextDyn { a: out_a, b: Q4.Known(WrappingSub)(a.b), n_lwe: 0 }
+}
+
+fn tfhe_gate_bootstrapping_and(n_lwe: usize, big_n: usize, bs_ell: usize, ks_ell: usize, ct_a: LweCiphertextDyn, ct_b: LweCiphertextDyn, bk: &BootstrappingKeyDyn) -> LweCiphertextDyn {
+  let mut ct = lwe_add(n_lwe, ct_a, ct_b);
+  ct.b = ct.b.Known(WrappingSub)((Q4 Shr 1));
+  let acc = blind_rotate(n_lwe, big_n, bs_ell, ks_ell, Refct, bk);
+  let lwe_big = sample_extract(big_n, Refacc);
+  let mut ct_out = key_switch(n_lwe, big_n, ks_ell, Reflwe_big, Refbk.ksk);
+  ct_out.b = ct_out.b.Known(WrappingAdd)((Q4 Shr 1));
+  => ct_out
+}
+
+fn tfhe_gate_bootstrapping_or(n_lwe: usize, big_n: usize, bs_ell: usize, ks_ell: usize, ct_a: LweCiphertextDyn, ct_b: LweCiphertextDyn, bk: &BootstrappingKeyDyn) -> LweCiphertextDyn {
+  let mut ct = lwe_add(n_lwe, ct_a, ct_b);
+  ct.b = ct.b.Known(WrappingAdd)((Q4 Shr 1));
+  let acc = blind_rotate(n_lwe, big_n, bs_ell, ks_ell, Refct, bk);
+  let lwe_big = sample_extract(big_n, Refacc);
+  let mut ct_out = key_switch(n_lwe, big_n, ks_ell, Reflwe_big, Refbk.ksk);
+  ct_out.b = ct_out.b.Known(WrappingAdd)((Q4 Shr 1));
+  => ct_out
+}
+
+fn tfhe_cmux(n_lwe: usize, big_n: usize, bs_ell: usize, ks_ell: usize, sel: LweCiphertextDyn, a: LweCiphertextDyn, b: LweCiphertextDyn, bk: &BootstrappingKeyDyn) -> LweCiphertextDyn {
+  let not_sel = tfhe_not(n_lwe, sel);
+  let sel_and_a = tfhe_gate_bootstrapping_and(n_lwe, big_n, bs_ell, ks_ell, sel, a, bk);
+  let nsel_and_b = tfhe_gate_bootstrapping_and(n_lwe, big_n, bs_ell, ks_ell, not_sel, b, bk);
+  => tfhe_gate_bootstrapping_or(n_lwe, big_n, bs_ell, ks_ell, sel_and_a, nsel_and_b, bk)
+}
+
+fn tfhe_programmable_bootstrap(n_lwe: usize, big_n: usize, bs_ell: usize, ks_ell: usize, ct: LweCiphertextDyn, test_poly: [u32; BIG_N], bk: &BootstrappingKeyDyn) -> LweCiphertextDyn {
+  let acc = blind_rotate_with_poly(n_lwe, big_n, bs_ell, ks_ell, Refct, test_poly, bk);
+  let lwe_big = sample_extract(big_n, Refacc);
+  => key_switch(n_lwe, big_n, ks_ell, Reflwe_big, Refbk.ksk)
+}
+
+fn tfhe_lut_read(n_lwe: usize, big_n: usize, bs_ell: usize, ks_ell: usize, addr_bits: &[LweCiphertextDyn; 0], lut: &[bool; 0], bk: &BootstrappingKeyDyn) -> LweCiphertextDyn {
+  let two_n = (2 Mul big_n);
+  let k = lut.Known(Len)().Known(Max)(1).Other("next_power_of_two")();
+  if (Notlut.Known(IsEmpty)() And lut.Iter() /* lazy */.Other("all")(|&v| (v Eq lut[0]))) {
+    let msg = if lut[0] {
+      => Q4
+    } else {
+      => 0
+    };
+    return LweCiphertextDyn { a: [0; n_lwe], b: msg, n_lwe: 0 };
+  };
+  let half_q4 = (Q4 Shr 1);
+  let step = (two_n Div k);
+  let half_k = (k Div 2);
+  let poly_step = (big_n Div half_k);
+  let mut test_poly = [0; big_n];
+  for j in 0..big_n {
+    let entry_idx = (j Div poly_step);
+    let val = if ((entry_idx Lt lut.Known(Len)()) And lut[entry_idx]) {
+      => half_q4
+    } else {
+      => half_q4.Known(WrappingNeg)()
+    };
+    test_poly[j] = val;
+  };
+  let delta = ((1 Shl 32) Div k as u64);
+  let mut combined = LweCiphertextDyn { a: [0; n_lwe], b: 0, n_lwe: 0 };
+  for (j, addr_ct) in addr_bits.Iter().enumerate() /* lazy */ {
+    let target = ((1 Shl j) Mul delta);
+    for i in 0..n_lwe {
+      let scaled = (addr_ct.a[i] as u64.Known(WrappingMul)(target) Div Q4 as u64);
+      combined.a[i] = combined.a[i].Known(WrappingAdd)(scaled as u32);
+    };
+    let scaled_b = (addr_ct.b as u64.Known(WrappingMul)(target) Div Q4 as u64);
+    combined.b = combined.b.Known(WrappingAdd)(scaled_b as u32);
+  };
+  let centering = (delta Div 2) as u32;
+  combined.b = combined.b.Known(WrappingAdd)(centering);
+  let mut ct_out = tfhe_programmable_bootstrap(n_lwe, big_n, bs_ell, ks_ell, combined, test_poly, bk);
+  ct_out.b = ct_out.b.Known(WrappingAdd)(half_q4);
+  => ct_out
+}
+
+fn lwe_encrypt<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(n_lwe: usize, m: bool, sk: &LweSecretKeyDyn, noise_bits: u32, rng: &mut R) -> LweCiphertextDyn {
+  let mut a = [0; n_lwe];
+  for ai in a.Other("iter_mut")() {
+    Derefai = rng.Other("next_u32")();
+  };
+  let mut dot: u32 = 0;
+  for i in 0..n_lwe {
+    dot = dot.Known(WrappingAdd)(a[i].Known(WrappingMul)(sk.key[i] as u32));
+  };
+  let e: u32 = small_noise(noise_bits, rng);
+  let msg = if m {
+    => Q4
+  } else {
+    => 0
+  };
+  let b = dot.Known(WrappingAdd)(e).Known(WrappingAdd)(msg);
+  => LweCiphertextDyn { a: a, b: b, n_lwe: 0 }
+}
+
+fn lwe_decrypt(n_lwe: usize, ct: &LweCiphertextDyn, sk: &LweSecretKeyDyn) -> bool {
+  let mut dot: u32 = 0;
+  for i in 0..n_lwe {
+    dot = dot.Known(WrappingAdd)(ct.a[i].Known(WrappingMul)(sk.key[i] as u32));
+  };
+  let phase = ct.b.Known(WrappingSub)(dot);
+  let half = (Q4 Shr 1);
+  let shifted = phase.Known(WrappingSub)(half);
+  => (shifted Lt Q4)
+}
+
+fn gen_lwe_secret_key<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(n_lwe: usize, rng: &mut R) -> LweSecretKeyDyn {
+  let mut key = [0; n_lwe];
+  for k in key.Other("iter_mut")() {
+    Derefk = (rng.Other("next_u8")() BitAnd 1) as u8;
+  };
+  => LweSecretKeyDyn { key: key, n_lwe: 0 }
+}
+
+fn gen_rlwe_secret_key<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(big_n: usize, rng: &mut R) -> RlweSecretKeyDyn {
+  let mut key = [0; big_n];
+  for k in key.Other("iter_mut")() {
+    Derefk = (rng.Other("next_u8")() BitAnd 1) as u32;
+  };
+  => RlweSecretKeyDyn { key: key, big_n: 0 }
+}
+
+fn gen_bootstrapping_key<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(n_lwe: usize, big_n: usize, bs_ell: usize, ks_ell: usize, lwe_sk: &LweSecretKeyDyn, rlwe_sk: &RlweSecretKeyDyn, bs_bg_log: u32, ks_bg_log: u32, bs_noise_bits: u32, ks_noise_bits: u32, rng: &mut R) -> BootstrappingKeyDyn {
+  let bsk = (0..n).map(|i| {
+    let bit = (lwe_sk.key[i] Ne 0);
+    => rgsw_encrypt(big_n, bs_ell, bit, rlwe_sk, bs_bg_log, bs_noise_bits, rng)
+  }).collect();
+  let rlwe_as_lwe = LweSecretKeyDyn::<BIG_N> { key: (0..n).map(|i| rlwe_sk.key[i] as u8).collect(), n_lwe: 0 };
+  let ksk_array: [[LweCiphertextDyn; KS_ELL]; BIG_N] = (0..n).map(|i| {
+    let s_bit = rlwe_sk.key[i];
+    => (0..n).map(|j| {
+      let shift = 32.Known(SaturatingSub)(ks_bg_log.Known(SaturatingMul)((j as u32 Add 1)));
+      let msg_val = s_bit.Known(WrappingShl)(shift);
+      => lwe_encrypt_raw(n_lwe, msg_val, lwe_sk, ks_noise_bits, rng)
+    }).collect()
+  }).collect();
+  let _ = rlwe_as_lwe;
+  let ksk = KeySwitchingKeyDyn { ksk: ksk_array, ks_bg_log: ks_bg_log, n_lwe: 0, big_n: 0, ks_ell: 0 };
+  => BootstrappingKeyDyn { bsk: bsk, ksk: ksk, bs_bg_log: bs_bg_log, n_lwe: 0, big_n: 0, bs_ell: 0, ks_ell: 0 }
+}
+
+fn rlwe_encrypt_scalar<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(big_n: usize, m: u32, sk: &RlweSecretKeyDyn, noise_bits: u32, rng: &mut R) -> RlweCiphertextDyn {
+  let a: [u32; BIG_N] = (0..big_n).map(|_| rng.Other("next_u32")()).collect();
+  let mut b = poly_mul_neg(big_n, Refa, Refsk.key);
+  b[0] = b[0].Known(WrappingAdd)(small_noise(noise_bits, rng)).Known(WrappingAdd)(m);
+  => RlweCiphertextDyn { a: a, b: b, big_n: 0 }
+}
+
+fn rlwe_encrypt_poly<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(big_n: usize, msg_poly: &[u32; BIG_N], sk: &RlweSecretKeyDyn, noise_bits: u32, rng: &mut R) -> RlweCiphertextDyn {
+  let a: [u32; BIG_N] = (0..big_n).map(|_| rng.Other("next_u32")()).collect();
+  let mut b = poly_mul_neg(big_n, Refa, Refsk.key);
+  for i in 0..big_n {
+    b[i] = b[i].Known(WrappingAdd)(small_noise(noise_bits, rng)).Known(WrappingAdd)(msg_poly[i]);
+  };
+  => RlweCiphertextDyn { a: a, b: b, big_n: 0 }
+}
+
+fn rgsw_encrypt<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(big_n: usize, bs_ell: usize, m: bool, sk: &RlweSecretKeyDyn, bs_bg_log: u32, noise_bits: u32, rng: &mut R) -> RgswCiphertextDyn {
+  let msg_bit = if m {
+    => 1
+  } else {
+    => 0
+  };
+  let rows = (0..n).map(|j| {
+    let shift = 32.Known(SaturatingSub)(bs_bg_log.Known(SaturatingMul)((j as u32 Add 1)));
+    let g_factor = 1.Known(WrappingShl)(shift);
+    let contrib = msg_bit.Known(WrappingMul)(g_factor);
+    let mut rlwe0 = rlwe_encrypt_scalar(big_n, 0, sk, noise_bits, rng);
+    rlwe0.a[0] = rlwe0.a[0].Known(WrappingAdd)(contrib);
+    let rlwe1 = rlwe_encrypt_scalar(big_n, contrib, sk, noise_bits, rng);
+    => RgswRowDyn { rlwe0: rlwe0, rlwe1: rlwe1, big_n: 0 }
+  }).collect();
+  => RgswCiphertextDyn { rows: rows, big_n: 0, bs_ell: 0 }
+}
+
+fn blind_rotate_with_poly(n_lwe: usize, big_n: usize, bs_ell: usize, ks_ell: usize, ct: &LweCiphertextDyn, test_poly: [u32; BIG_N], bk: &BootstrappingKeyDyn) -> RlweCiphertextDyn {
+  let mut acc = RlweCiphertextDyn { a: [0; big_n], b: test_poly, big_n: 0 };
+  let two_n = (2 Mul big_n);
+  let log2_two_n = two_n.Known(TrailingZeros)();
+  let scale_shift = 32.Known(SaturatingSub)(log2_two_n);
+  let b_exp = torus_to_exp(ct.b, scale_shift, two_n);
+  if (b_exp Ne 0) {
+    acc = rlwe_rotate(big_n, Refacc, (two_n Sub b_exp));
+  };
+  for i in 0..n_lwe {
+    let a_exp = torus_to_exp(ct.a[i], scale_shift, two_n);
+    => if (a_exp Ne 0) {
+      let acc_rotated = rlwe_rotate(big_n, Refacc, a_exp);
+      acc = cmux(big_n, bs_ell, Refbk.bsk[i], Refacc_rotated, Refacc, bk.bs_bg_log);
+    }
+  };
+  => acc
+}
+
+fn and_test_poly(big_n: usize) -> [u32; BIG_N] {
+  let mut v = [0; big_n];
+  let half_q4 = (Q4 Shr 1);
+  for k in 0..(big_n Div 2) {
+    v[k] = half_q4.Known(WrappingNeg)();
+  };
+  for k in (big_n Div 2)..big_n {
+    v[k] = half_q4;
+  };
+  => v
+}
+
+fn blind_rotate(n_lwe: usize, big_n: usize, bs_ell: usize, ks_ell: usize, ct: &LweCiphertextDyn, bk: &BootstrappingKeyDyn) -> RlweCiphertextDyn {
+  => blind_rotate_with_poly(n_lwe, big_n, bs_ell, ks_ell, ct, and_test_poly(big_n), bk)
+}
+
+fn torus_to_exp(x: u32, scale_shift: u32, two_n: usize) -> usize {
+  let half = if (scale_shift Gt 0) {
+    => (1 Shl (scale_shift Sub 1))
+  } else {
+    => 0
+  };
+  let exp = (x.Known(WrappingAdd)(half) Shr scale_shift) as usize;
+  => (exp BitAnd (two_n Sub 1))
+}
+
+fn sample_extract(big_n: usize, rlwe: &RlweCiphertextDyn) -> LweCiphertextDyn {
+  let mut a_lwe = [0; big_n];
+  a_lwe[0] = rlwe.a[0];
+  for i in 1..big_n {
+    a_lwe[i] = rlwe.a[(big_n Sub i)].Known(WrappingNeg)();
+  };
+  => LweCiphertextDyn { a: a_lwe, b: rlwe.b[0], n_lwe: 0 }
+}
+
+fn key_switch(n_lwe: usize, big_n: usize, ks_ell: usize, ct_big: &LweCiphertextDyn, ksk: &KeySwitchingKeyDyn) -> LweCiphertextDyn {
+  let mut out_a = [0; n_lwe];
+  let mut out_b = ct_big.b;
+  for i in 0..big_n {
+    let digits = ks_decompose::<KS_ELL>(ks_ell, ct_big.a[i], ksk.ks_bg_log);
+    => for j in 0..ks_ell {
+      let d = digits[j] as u32;
+      if (d Eq 0) {
+        continue;
+      };
+      let ksk_ct = Refksk.ksk[i][j];
+      for k in 0..n_lwe {
+        out_a[k] = out_a[k].Known(WrappingSub)(d.Known(WrappingMul)(ksk_ct.a[k]));
+      };
+      out_b = out_b.Known(WrappingSub)(d.Known(WrappingMul)(ksk_ct.b));
+    }
+  };
+  => LweCiphertextDyn { a: out_a, b: out_b, n_lwe: 0 }
+}
+
+fn ks_decompose(ks_ell: usize, x: u32, bg_log: u32) -> [u32; KS_ELL] {
+  let bg = (1 Shl bg_log);
+  let mask = (bg Sub 1);
+  let mut rem = x as u64;
+  let tail_shift = 32.Known(SaturatingSub)(bg_log.Known(SaturatingMul)(ks_ell as u32));
+  if ((tail_shift Gt 0) And (tail_shift Lt 32)) {
+    let half_tail = (1 Shl (tail_shift Sub 1));
+    rem = rem.Known(WrappingAdd)(half_tail);
+  };
+  let mut digits = [0; ks_ell];
+  for j in 0..ks_ell.Known(Rev)() {
+    let shift = 32.Known(SaturatingSub)(bg_log.Known(SaturatingMul)((j as u32 Add 1)));
+    => if (shift Lt 32) {
+      digits[j] = ((rem Shr shift) BitAnd mask) as u32;
+    }
+  };
+  => digits
+}
+
+fn cmux(big_n: usize, bs_ell: usize, c: &RgswCiphertextDyn, d1: &RlweCiphertextDyn, d0: &RlweCiphertextDyn, bs_bg_log: u32) -> RlweCiphertextDyn {
+  let diff = rlwe_sub(big_n, d1, d0);
+  let prod = external_product(big_n, bs_ell, c, Refdiff, bs_bg_log);
+  => rlwe_add(big_n, d0, Refprod)
+}
+
+fn external_product(big_n: usize, bs_ell: usize, rgsw: &RgswCiphertextDyn, rlwe: &RlweCiphertextDyn, bs_bg_log: u32) -> RlweCiphertextDyn {
+  let a_decomp = poly_decompose::<BIG_N, BS_ELL>(big_n, bs_ell, Refrlwe.a, bs_bg_log);
+  let b_decomp = poly_decompose::<BIG_N, BS_ELL>(big_n, bs_ell, Refrlwe.b, bs_bg_log);
+  let mut out_a = [0; big_n];
+  let mut out_b = [0; big_n];
+  for j in 0..bs_ell {
+    let row = Refrgsw.rows[j];
+    let prod_a0 = poly_mul_neg(big_n, Refa_decomp[j], Refrow.rlwe0.a);
+    let prod_a1 = poly_mul_neg(big_n, Refa_decomp[j], Refrow.rlwe0.b);
+    let prod_b0 = poly_mul_neg(big_n, Refb_decomp[j], Refrow.rlwe1.a);
+    let prod_b1 = poly_mul_neg(big_n, Refb_decomp[j], Refrow.rlwe1.b);
+    => for k in 0..big_n {
+      out_a[k] = out_a[k].Known(WrappingAdd)(prod_a0[k]).Known(WrappingAdd)(prod_b0[k]);
+      out_b[k] = out_b[k].Known(WrappingAdd)(prod_a1[k]).Known(WrappingAdd)(prod_b1[k]);
+    }
+  };
+  => RlweCiphertextDyn { a: out_a, b: out_b, big_n: 0 }
+}
+
+fn poly_decompose(big_n: usize, bs_ell: usize, p: &[u32; BIG_N], bg_log: u32) -> [[u32; BIG_N]; BS_ELL] {
+  let bg = (1 Shl bg_log);
+  let mask = (bg Sub 1) as u32;
+  let mut result = [[0; big_n]; bs_ell];
+  for i in 0..big_n {
+    let x = p[i];
+    let tail_bits = 32.Known(SaturatingSub)(bg_log.Known(SaturatingMul)(bs_ell as u32));
+    let rounded = if ((tail_bits Gt 0) And (tail_bits Lt 32)) {
+      => x.Known(WrappingAdd)((1 Shl (tail_bits Sub 1)))
+    } else {
+      => x
+    };
+    => for j in 0..bs_ell {
+      let shift = 32.Known(SaturatingSub)(bg_log.Known(SaturatingMul)((j as u32 Add 1)));
+      result[j][i] = if (shift Lt 32) {
+        => ((rounded Shr shift) BitAnd mask)
+      } else {
+        => 0
+      };
+    }
+  };
+  => result
+}
+
+fn rlwe_add(big_n: usize, a: &RlweCiphertextDyn, b: &RlweCiphertextDyn) -> RlweCiphertextDyn {
+  => RlweCiphertextDyn { a: poly_add_neg(big_n, Refa.a, Refb.a), b: poly_add_neg(big_n, Refa.b, Refb.b), big_n: 0 }
+}
+
+fn rlwe_sub(big_n: usize, a: &RlweCiphertextDyn, b: &RlweCiphertextDyn) -> RlweCiphertextDyn {
+  => RlweCiphertextDyn { a: poly_sub_neg(big_n, Refa.a, Refb.a), b: poly_sub_neg(big_n, Refa.b, Refb.b), big_n: 0 }
+}
+
+fn rlwe_rotate(big_n: usize, ct: &RlweCiphertextDyn, exp: usize) -> RlweCiphertextDyn {
+  => RlweCiphertextDyn { a: poly_rotate(big_n, Refct.a, exp), b: poly_rotate(big_n, Refct.b, exp), big_n: 0 }
+}
+
+fn lwe_add(n_lwe: usize, a: LweCiphertextDyn, b: LweCiphertextDyn) -> LweCiphertextDyn {
+  let mut out_a = [0; n_lwe];
+  for i in 0..n_lwe {
+    out_a[i] = a.a[i].Known(WrappingAdd)(b.a[i]);
+  };
+  => LweCiphertextDyn { a: out_a, b: a.b.Known(WrappingAdd)(b.b), n_lwe: 0 }
+}
+
+fn lwe_encrypt_raw<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(n_lwe: usize, msg: u32, sk: &LweSecretKeyDyn, noise_bits: u32, rng: &mut R) -> LweCiphertextDyn {
+  let mut a = [0; n_lwe];
+  for ai in a.Other("iter_mut")() {
+    Derefai = rng.Other("next_u32")();
+  };
+  let mut dot: u32 = 0;
+  for i in 0..n_lwe {
+    dot = dot.Known(WrappingAdd)(a[i].Known(WrappingMul)(sk.key[i] as u32));
+  };
+  let e = small_noise(noise_bits, rng);
+  let b = dot.Known(WrappingAdd)(e).Known(WrappingAdd)(msg);
+  => LweCiphertextDyn { a: a, b: b, n_lwe: 0 }
+}
+
+fn poly_mul_neg(n: usize, a: &[u32; N], b: &[u32; N]) -> [u32; N] {
+  let mut result = [0; n];
+  for i in 0..n {
+    => for j in 0..n {
+      let deg = (i Add j);
+      => if (deg Lt n) {
+        result[deg] = result[deg].Known(WrappingAdd)(a[i].Known(WrappingMul)(b[j]));
+      } else {
+        result[(deg Sub n)] = result[(deg Sub n)].Known(WrappingSub)(a[i].Known(WrappingMul)(b[j]));
+      }
+    }
+  };
+  => result
+}
+
+fn poly_add_neg(n: usize, a: &[u32; N], b: &[u32; N]) -> [u32; N] {
+  let mut result = [0; n];
+  for i in 0..n {
+    result[i] = a[i].Known(WrappingAdd)(b[i]);
+  };
+  => result
+}
+
+fn poly_sub_neg(n: usize, a: &[u32; N], b: &[u32; N]) -> [u32; N] {
+  let mut result = [0; n];
+  for i in 0..n {
+    result[i] = a[i].Known(WrappingSub)(b[i]);
+  };
+  => result
+}
+
+fn poly_rotate(n: usize, p: &[u32; N], exp: usize) -> [u32; N] {
+  let exp = (exp Rem (2 Mul n));
+  if (exp Eq 0) {
+    return Derefp;
+  };
+  let mut result = [0; n];
+  for i in 0..n {
+    let new_pos = (i Add exp);
+    => if (new_pos Lt n) {
+      result[new_pos] = result[new_pos].Known(WrappingAdd)(p[i]);
+    } else if (new_pos Lt (2 Mul n)) {
+      result[(new_pos Sub n)] = result[(new_pos Sub n)].Known(WrappingSub)(p[i]);
+    } else {
+      result[(new_pos Sub (2 Mul n))] = result[(new_pos Sub (2 Mul n))].Known(WrappingAdd)(p[i]);
+    }
+  };
+  => result
+}
+
+fn small_noise<R: IrTraitBound { trait_kind: Custom("SpecRng"), type_args: [], assoc_bindings: [] }>(noise_bits: u32, rng: &mut R) -> u32 {
+  if (noise_bits Ge 32) {
+    return rng.Other("next_u32")();
+  };
+  let raw: u32 = rng.Other("next_u32")();
+  let mask = (1 Shl noise_bits).Known(WrappingSub)(1);
+  let small = (raw BitAnd mask);
+  => if ((noise_bits Gt 0) And ((small Shr (noise_bits Sub 1)) Ne 0)) {
+    => (small BitOr Notmask)
+  } else {
+    => small
+  }
+}
+
+fn memory_check_per_lane<N, T>(n: usize, challenges: Vec<T>) -> Vec<MemoryCheckStateDyn<T, AdditiveHasher>> {
+  => (0..n).map(|i| {
+    let key = ChallengeKey::from_challenge(challenges[i].Known(Clone)());
+    => MemoryCheckState::new(key)
+  }).collect()
+}
+
+fn vole_and_prover_step<N, T>(n: usize, vope_a: VopeDyn<T>, vope_b: VopeDyn<T>) -> (VopeDyn<T>, Vec<T>) {
+  let u_c_inner = (0..n).map(|i| {
+    => (vope_a.u[0][i].Known(Clone)() Mul vope_b.u[0][i].Known(Clone)())
+  }).collect::<Vec<T>>() ;
+  let u_c = (0..1).map(|_| u_c_inner.Known(Clone)()).collect::<Vec<Vec<T>>>() ;
+  let v_c = (0..n).map(|i| {
+    => ((vope_a.v[i].Known(Clone)() Mul vope_b.u[0][i].Known(Clone)()) Add (vope_b.v[i].Known(Clone)() Mul vope_a.u[0][i].Known(Clone)()))
+  }).collect::<Vec<T>>() ;
+  let hat = (0..n).map(|i| {
+    => (vope_a.v[i].Known(Clone)() Mul vope_b.v[i].Known(Clone)())
+  }).collect::<Vec<T>>() ;
+  => (VopeDyn { u: u_c, v: v_c, n: 0, k: 1 }, hat)
+}
+
+fn vole_and_verifier_check<N, T>(n: usize, delta: &DeltaDyn<T>, q_a: &QDyn<T>, q_b: &QDyn<T>, q_and: &QDyn<T>, hat: &Vec<T>) -> (QDyn<T>, bool) {
+  let mut ok = true;
+  for i in 0..n {
+    let lhs = ((q_a.q[i].Known(Clone)() Mul q_b.q[i].Known(Clone)()) Add hat[i].Known(Clone)());
+    let rhs = (q_and.q[i].Known(Clone)() Mul delta.delta[i].Known(Clone)());
+    ok = (ok And (lhs Eq rhs));
+  };
+  => (QDyn { q: q_and.q.Known(Clone)(), n: 0 }, ok)
+}
+
+fn vole_sbox_prover_step<N, T>(n: usize, vope_a: VopeDyn<T>, vope_b: VopeDyn<T>) -> (VopeDyn<T>, VopeDyn<T>) {
+  let k2: VopeDyn<T> = vope_a.Other("mul_generalized")(Refvope_b);
+  let k1 = VopeDyn::<N, T, U1> { u: (0..1).map(|_| k2.u[1].Known(Clone)()).collect::<Vec<Vec<T>>>() , v: k2.u[0].Known(Clone)(), n: 0, k: 1 };
+  => (k1, k2)
+}
+
+fn vole_sbox_verifier_check<N, T>(n: usize, delta: &DeltaDyn<T>, q_a: &QDyn<T>, q_b: &QDyn<T>, vope_k2: VopeDyn<T>) -> (QDyn<T>, bool) {
+  let q_c = (vope_k2 Mul delta.Known(Clone)());
+  let mut ok = true;
+  for i in 0..n {
+    ok = (ok And ((q_a.q[i].Known(Clone)() Mul q_b.q[i].Known(Clone)()) Eq q_c.q[i]));
+  };
+  => (q_c, ok)
+}
+
+fn vole_mul3_prover_step<N, T>(n: usize, vope_a: &VopeDyn<T>, vope_b: &VopeDyn<T>, vope_d: &VopeDyn<T>) -> VopeDyn<T> {
+  let ab: VopeDyn<T> = vope_a.Other("mul_generalized")(vope_b);
+  => ab.Other("mul_generalized")(vope_d)
+}
+
+fn vole_mul3_verifier_check<N, T>(n: usize, delta: &DeltaDyn<T>, q_a: &QDyn<T>, q_b: &QDyn<T>, q_d: &QDyn<T>, vope_abd: VopeDyn<T>) -> (QDyn<T>, bool) {
+  let q_abd = (vope_abd Mul delta.Known(Clone)());
+  let mut ok = true;
+  for i in 0..n {
+    let lhs = ((q_a.q[i].Known(Clone)() Mul q_b.q[i].Known(Clone)()) Mul q_d.q[i].Known(Clone)());
+    ok = (ok And (lhs Eq q_abd.q[i]));
+  };
+  => (q_abd, ok)
+}
+
+fn random_nonzero_delta<N, T, R>(n: usize, rng: &mut R, sample_t: impl Fn, is_zero: impl Fn) -> DeltaDyn<T> {
+  => DeltaDyn { delta: (0..n).map(|_| {
+    let mut x = sample_t(rng);
+    let mut tries = 0;
+    while (is_zero(Refx) And (tries Lt 64)) {
+      x = sample_t(rng);
+      tries Add= 1;
+    };
+    => x
+  }).collect::<Vec<T>>() , n: 0 }
+}
+
+fn lift_bit<T: IrTraitBound { trait_kind: Math(Clone), type_args: [], assoc_bindings: [] }>(n: usize, bit_t: T) -> Vec<T> {
+  => (0..n).map(|_| bit_t.Known(Clone)()).collect::<Vec<T>>() 
+}
+
+fn vole_commit_bit<N, T, R>(n: usize, cot: &IdealCotDyn<T>, rng: &mut R, sample_t: impl Fn, bit_to_t: impl FnMut(bool) -> T, bit: bool) -> (VopeDyn<T>, QDyn<T>) {
+  let (r0, v) = cot.Other("cot")(rng, sample_t, bit);
+  let u_t = bit_to_t(bit);
+  let u_row: Vec<T> = lift_bit(n, u_t);
+  let u: Vec<Vec<T>> = (0..1).map(|_| {
+    => (0..n).map(|i| u_row[i].Known(Clone)()).collect::<Vec<T>>() 
+  }).collect::<Vec<Vec<T>>>() ;
+  let q = (0..n).map(|i| r0[i].Known(Clone)()).collect::<Vec<T>>() ;
+  => (VopeDyn { u: u, v: v, n: 0, k: 1 }, QDyn { q: q, n: 0 })
+}
+
+fn derive_and_q<N, T>(n: usize, delta: &DeltaDyn<T>, q_a: &QDyn<T>, q_b: &QDyn<T>, hat: &Vec<T>) -> QDyn<T> {
+  => QDyn { q: (0..n).map(|i| {
+    let lhs = ((q_a.q[i].Known(Clone)() Mul q_b.q[i].Known(Clone)()) Add hat[i].Known(Clone)());
+    => (lhs Mul delta.delta[i].Other("invert")())
+  }).collect::<Vec<T>>() , n: 0 }
+}
+
+type Zq = u32

@@ -15,7 +15,7 @@ pub trait Field {
 "#;
 
 fn parse_simple_spec() -> IrModule<IrFunction> {
-    volar_compiler::parse_source(SIMPLE_SPEC, "test_primitives").expect("parse simple spec")
+    volar_compiler::parse_source(SIMPLE_SPEC, "test_primitives", &[]).expect("parse simple spec")
 }
 
 fn empty_module() -> IrModule<IrFunction> {

@@ -18,7 +18,7 @@ use volar_compiler::parse_manifest;
 #[test]
 fn test_parse_volar_primitives_source() {
     let source = include_str!("../data/volar_primitives_expanded.rs");
-    let module = parse_source(source, "volar_primitives").expect("parse volar-primitives");
+    let module = parse_source(source, "volar_primitives", &[]).expect("parse volar-primitives");
 
     // 6 structs: Bit, Galois, BitsInBytes, Galois64, BitsInBytes64, Tropical
     assert_eq!(
@@ -81,7 +81,7 @@ fn test_parse_volar_primitives_source() {
 #[test]
 fn test_emit_manifest_has_marker() {
     let source = "pub struct Foo { pub x: u8 }";
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let bytes = emit_manifest(&module, "test-crate", "0.1.0", &[]);
 
     assert_eq!(bytes[0], MANIFEST_MARKER);
@@ -92,7 +92,7 @@ fn test_emit_manifest_has_marker() {
 #[test]
 fn test_emit_manifest_not_valid_utf8() {
     let source = "pub struct Foo { pub x: u8 }";
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let bytes = emit_manifest(&module, "test-crate", "0.1.0", &[]);
 
     // The whole thing should NOT be valid UTF-8 (because of 0xFF prefix)
@@ -110,7 +110,7 @@ fn test_manifest_round_trip_simple() {
             fn baz(&self) -> u32 { todo!() }
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let bytes = emit_manifest(
         &module,
         "my-crate",
@@ -148,7 +148,7 @@ fn test_manifest_round_trip_simple() {
 #[test]
 fn test_manifest_round_trip_primitives() {
     let source = include_str!("../data/volar_primitives_expanded.rs");
-    let module = parse_source(source, "volar_primitives").unwrap();
+    let module = parse_source(source, "volar_primitives", &[]).unwrap();
 
     let bytes = emit_manifest(&module, "volar-primitives", "0.1.0", &[]);
     let manifest = parse_manifest(&bytes).expect("parse primitives manifest");
@@ -189,7 +189,7 @@ fn test_manifest_bodies_are_stripped() {
             z
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let bytes = emit_manifest(&module, "test", "0.1.0", &[]);
 
     // The emitted text (after 0xFF) should contain "todo!()"
@@ -213,7 +213,7 @@ fn test_manifest_bodies_are_stripped() {
 #[test]
 fn test_type_context_with_primitives_dep() {
     let prim_source = include_str!("../data/volar_primitives_expanded.rs");
-    let prim_module = parse_source(prim_source, "volar_primitives").unwrap();
+    let prim_module = parse_source(prim_source, "volar_primitives", &[]).unwrap();
     let prim_bytes = emit_manifest(&prim_module, "volar-primitives", "0.1.0", &[]);
     let prim_manifest = parse_manifest(&prim_bytes).unwrap();
 
@@ -223,7 +223,7 @@ fn test_type_context_with_primitives_dep() {
             pub field: Galois,
         }
     "#;
-    let module = parse_source(downstream, "downstream").unwrap();
+    let module = parse_source(downstream, "downstream", &[]).unwrap();
 
     let ctx = TypeContext::from_module_with_deps(&module, &[prim_manifest]);
 
@@ -257,11 +257,11 @@ fn test_type_context_with_primitives_dep() {
 #[test]
 fn test_type_context_dep_impls_registered() {
     let prim_source = include_str!("../data/volar_primitives_expanded.rs");
-    let prim_module = parse_source(prim_source, "volar_primitives").unwrap();
+    let prim_module = parse_source(prim_source, "volar_primitives", &[]).unwrap();
     let prim_bytes = emit_manifest(&prim_module, "volar-primitives", "0.1.0", &[]);
     let prim_manifest = parse_manifest(&prim_bytes).unwrap();
 
-    let module = parse_source("pub struct Dummy {}", "test").unwrap();
+    let module = parse_source("pub struct Dummy {}", "test", &[]).unwrap();
     let ctx = TypeContext::from_module_with_deps(&module, &[prim_manifest]);
 
     // Should have trait impls from the dep
@@ -285,7 +285,7 @@ fn test_type_context_dep_impls_registered() {
 #[test]
 fn test_module_overrides_dep_struct() {
     let prim_source = include_str!("../data/volar_primitives_expanded.rs");
-    let prim_module = parse_source(prim_source, "volar_primitives").unwrap();
+    let prim_module = parse_source(prim_source, "volar_primitives", &[]).unwrap();
     let prim_bytes = emit_manifest(&prim_module, "volar-primitives", "0.1.0", &[]);
     let prim_manifest = parse_manifest(&prim_bytes).unwrap();
 
@@ -293,7 +293,7 @@ fn test_module_overrides_dep_struct() {
     let source = r#"
         pub struct Galois { pub x: u32, pub y: u32 }
     "#;
-    let module = parse_source(source, "override_test").unwrap();
+    let module = parse_source(source, "override_test", &[]).unwrap();
     let ctx = TypeContext::from_module_with_deps(&module, &[prim_manifest]);
 
     // Module's definition should win
@@ -325,7 +325,7 @@ fn test_preamble_no_deps_has_no_pub_use() {
 #[test]
 fn test_preamble_with_primitives_dep() {
     let prim_source = include_str!("../data/volar_primitives_expanded.rs");
-    let prim_module = parse_source(prim_source, "volar_primitives").unwrap();
+    let prim_module = parse_source(prim_source, "volar_primitives", &[]).unwrap();
     let prim_bytes = emit_manifest(&prim_module, "volar-primitives", "0.1.0", &[]);
     let prim_manifest = parse_manifest(&prim_bytes).unwrap();
 
@@ -360,12 +360,12 @@ fn test_preamble_with_primitives_dep() {
 #[test]
 fn test_print_module_with_deps_includes_preamble() {
     let prim_source = include_str!("../data/volar_primitives_expanded.rs");
-    let prim_module = parse_source(prim_source, "volar_primitives").unwrap();
+    let prim_module = parse_source(prim_source, "volar_primitives", &[]).unwrap();
     let prim_bytes = emit_manifest(&prim_module, "volar-primitives", "0.1.0", &[]);
     let prim_manifest = parse_manifest(&prim_bytes).unwrap();
 
     let source = "pub struct Foo { pub x: u8 }";
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let output = print_module_with_deps(&module, &[prim_manifest]);
 
     // Should contain both preamble and module content
@@ -378,7 +378,7 @@ fn test_print_module_with_deps_includes_preamble() {
 fn test_end_to_end_volar_primitives_manifest_file() {
     // Parse volar-primitives
     let prim_source = include_str!("../data/volar_primitives_expanded.rs");
-    let prim_module = parse_source(prim_source, "volar_primitives").unwrap();
+    let prim_module = parse_source(prim_source, "volar_primitives", &[]).unwrap();
 
     // Emit manifest
     let manifest_bytes = emit_manifest(&prim_module, "volar-primitives", "0.1.0", &[]);
@@ -398,7 +398,7 @@ fn test_end_to_end_volar_primitives_manifest_file() {
             pub bits: BitsInBytes,
         }
     "#;
-    let downstream = parse_source(downstream_source, "downstream").unwrap();
+    let downstream = parse_source(downstream_source, "downstream", &[]).unwrap();
 
     // TypeContext resolves dependency types
     let ctx = TypeContext::from_module_with_deps(&downstream, &[manifest.clone()]);
@@ -425,8 +425,8 @@ fn test_manifest_with_multiple_deps() {
         pub struct BetaType { pub b: u64 }
     "#;
 
-    let dep_a_module = parse_source(dep_a_source, "dep_a").unwrap();
-    let dep_b_module = parse_source(dep_b_source, "dep_b").unwrap();
+    let dep_a_module = parse_source(dep_a_source, "dep_a", &[]).unwrap();
+    let dep_b_module = parse_source(dep_b_source, "dep_b", &[]).unwrap();
 
     let dep_a_bytes = emit_manifest(&dep_a_module, "dep-a", "1.0.0", &[]);
     let dep_b_bytes = emit_manifest(&dep_b_module, "dep-b", "2.0.0", &["dep-a".into()]);
@@ -436,7 +436,7 @@ fn test_manifest_with_multiple_deps() {
     assert_eq!(dep_b.deps, vec!["dep-a"]);
 
     let main_source = "pub struct Main { pub x: bool }";
-    let main_module = parse_source(main_source, "main").unwrap();
+    let main_module = parse_source(main_source, "main", &[]).unwrap();
 
     let ctx = TypeContext::from_module_with_deps(&main_module, &[dep_a.clone(), dep_b.clone()]);
     assert!(ctx.structs.contains_key("AlphaType"));

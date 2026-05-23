@@ -518,7 +518,7 @@ fn spec_grafhen_word_zero() {
     use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
 
     let src = read_spec_file("grafhen.rs");
-    let parsed = parse_source(&src, "grafhen").expect("parse failed");
+    let parsed = parse_source(&src, "grafhen", &[]).expect("parse failed");
 
     // Extract the GrafhenWord struct (has `data: [u8; WBOUND]` and `len: usize`).
     let word_struct = parsed.structs.iter()
@@ -591,7 +591,7 @@ fn spec_grafhen_word_nonzero() {
     use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
 
     let src = read_spec_file("grafhen.rs");
-    let parsed = parse_source(&src, "grafhen").expect("parse failed");
+    let parsed = parse_source(&src, "grafhen", &[]).expect("parse failed");
 
     let word_struct = parsed.structs.iter()
         .find(|s| s.kind == StructKind::Custom("GrafhenWord".into()))

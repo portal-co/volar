@@ -45,7 +45,7 @@ fn main() {
         .map(|(content, name)| SourceInput { source: content.as_str(), name: name.as_str() })
         .collect();
 
-    match parse_sources(&sources_ref, "volar_spec") {
+    match parse_sources(&sources_ref, "volar_spec", &[]) {
         Ok(module) => {
             println!("\n=== IR Module Statistics ===");
             println!("Structs: {}", module.structs.len());

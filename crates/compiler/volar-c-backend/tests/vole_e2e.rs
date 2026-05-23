@@ -68,7 +68,7 @@ fn parse_vole_spec() -> volar_compiler::ir::IrModule<volar_compiler::ir::IrFunct
     let inputs: Vec<SourceInput> = loaded.iter()
         .map(|(src, name)| SourceInput { source: src.as_str(), name: name.as_str() })
         .collect();
-    parse_sources(&inputs, "volar_spec")
+    parse_sources(&inputs, "volar_spec", &[])
         .unwrap_or_else(|e| panic!("parse_vole_spec failed: {e}"))
 }
 

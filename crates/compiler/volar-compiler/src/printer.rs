@@ -2163,7 +2163,7 @@ mod tests {
                 Blue,
             }
         "#;
-        let module = crate::parser::parse_source(source, "test").unwrap();
+        let module = parse_source(source, "test", &[]).unwrap();
         assert_eq!(module.enums.len(), 1);
         let e = &module.enums[0];
         assert_eq!(e.kind.to_string(), "Color");
@@ -2186,7 +2186,7 @@ mod tests {
                 Add(u32, u32),
             }
         "#;
-        let module = crate::parser::parse_source(source, "test").unwrap();
+        let module = parse_source(source, "test", &[]).unwrap();
         assert_eq!(module.enums.len(), 1);
         let e = &module.enums[0];
         assert_eq!(e.variants.len(), 2);
@@ -2207,7 +2207,7 @@ mod tests {
                 Write(bool),
             }
         "#;
-        let module = crate::parser::parse_source(source, "test").unwrap();
+        let module = parse_source(source, "test", &[]).unwrap();
         assert_eq!(module.enums.len(), 1);
         let e = &module.enums[0];
         assert_eq!(e.variants.len(), 3);
@@ -2229,7 +2229,7 @@ mod tests {
                 Some(T),
             }
         "#;
-        let module = crate::parser::parse_source(source, "test").unwrap();
+        let module = parse_source(source, "test", &[]).unwrap();
         assert_eq!(module.enums.len(), 1);
         let e = &module.enums[0];
         assert_eq!(e.generics.len(), 1);
@@ -2351,7 +2351,7 @@ mod tests {
                 }
             }
         "#;
-        let module = crate::parser::parse_source(source, "oram_core").unwrap();
+        let module = parse_source(source, "oram_core", &[]).unwrap();
 
         // Should have parsed: 2 structs, 2 enums, 2 impls, 4 functions
         assert_eq!(module.structs.len(), 2, "expected 2 structs (OramEntry, Bucket)");

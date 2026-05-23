@@ -47,7 +47,7 @@ fn test_specialize_volar_spec() {
         .map(|(content, name)| SourceInput { source: content.as_str(), name: name.as_str() })
         .collect();
 
-    let spec = parse_sources(&sources_ref, "volar_spec").unwrap();
+    let spec = parse_sources(&sources_ref, "volar_spec", &[]).unwrap();
 
     println!("\n=== Specialized Module Statistics ===");
     println!("Structs: {}", spec.structs.len());
@@ -222,7 +222,7 @@ fn test_method_classification() {
 
     use volar_compiler::{IrExpr, IrStmt, parse_source};
 
-    let spec = parse_source(source, "test").unwrap();
+    let spec = parse_source(source, "test", &[]).unwrap();
 
     let f = &spec.functions[0];
 
@@ -277,7 +277,7 @@ fn test_array_operations() {
 
     use volar_compiler::{IrExpr, IrStmt, parse_source};
 
-    let spec = parse_source(source, "test").unwrap();
+    let spec = parse_source(source, "test", &[]).unwrap();
 
     let f = &spec.functions[0];
 
@@ -343,7 +343,7 @@ fn test_bounded_loops() {
 
     use volar_compiler::{IrExpr, IrStmt, parse_source};
 
-    let spec = parse_source(source, "test").unwrap();
+    let spec = parse_source(source, "test", &[]).unwrap();
 
     let f = &spec.functions[0];
 
@@ -402,7 +402,7 @@ fn test_primitive_type_classification() {
         }
     "#;
 
-    let spec = parse_source(source, "test").unwrap();
+    let spec = parse_source(source, "test", &[]).unwrap();
 
     let f = &spec.functions[0];
 
@@ -469,7 +469,7 @@ fn test_array_type_classification() {
         }
     "#;
 
-    let spec = parse_source(source, "test").unwrap();
+    let spec = parse_source(source, "test", &[]).unwrap();
 
     let f = &spec.functions[0];
 
@@ -528,7 +528,7 @@ fn test_iter_chain_simple_fold() {
             let x = arr.iter().fold(0, |acc, elem| acc + elem);
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let f = &module.functions[0];
 
     if let IrStmt::Let {
@@ -572,7 +572,7 @@ fn test_iter_chain_enumerate_filter_map_fold() {
             let x = s.iter().enumerate().filter_map(|a| compute(a)).fold(init, |a, b| a + b);
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let f = &module.functions[0];
 
     if let IrStmt::Let {
@@ -615,7 +615,7 @@ fn test_iter_chain_map_collect() {
             let x = items.iter().map(|i| i * 2).collect();
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let f = &module.functions[0];
 
     if let IrStmt::Let {
@@ -650,7 +650,7 @@ fn test_non_iterator_map_is_raw_map() {
             let x = arr.map(|a| a + 1);
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let f = &module.functions[0];
 
     if let IrStmt::Let {
@@ -677,7 +677,7 @@ fn test_iter_chain_range_fold() {
             let x = (0..n).fold(init, |acc, i| acc + i);
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let f = &module.functions[0];
 
     if let IrStmt::Let {
@@ -710,7 +710,7 @@ fn test_iter_chain_for_loop_uses_lazy_chain() {
             };
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let f = &module.functions[0];
 
     // Should be IterLoop with collection = IterPipeline(Lazy chain)
@@ -748,7 +748,7 @@ fn test_iter_chain_printer_round_trip() {
             let c = (0..n).fold(start, |a, i| a + i);
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let output = print_module(&module);
 
     // Verify the printed output contains expected method chains

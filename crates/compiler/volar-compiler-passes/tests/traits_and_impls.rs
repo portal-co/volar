@@ -23,7 +23,7 @@ fn test_classify_struct_generics() {
             cipher: B,
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let analysis = ConstAnalysis::from_module(&module);
 
     let generics = analysis.struct_generics.get("Foo").unwrap();
@@ -50,7 +50,7 @@ fn test_classify_trait_assoc_type_as_length() {
             fn double(a: GenericArray<u8, Self::OutputSize>) -> [GenericArray<u8, Self::OutputSize>; 2];
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let analysis = ConstAnalysis::from_module(&module);
 
     // OutputSize is bounded by ArrayLength<u8>, so it's a type-level constant
@@ -68,7 +68,7 @@ fn test_classify_trait_assoc_type_as_type() {
             fn compute(self) -> Self::Output;
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let analysis = ConstAnalysis::from_module(&module);
 
     // Output has no length-related bounds, so it's a regular type
@@ -89,7 +89,7 @@ fn test_classify_impl_assoc_inherits_from_trait() {
             type OutputSize = U32;
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let analysis = ConstAnalysis::from_module(&module);
 
     // The impl's OutputSize should inherit Length classification from the trait
@@ -114,7 +114,7 @@ fn test_classify_add_output_is_type() {
             fn add(self, rhs: Foo) -> Foo { Foo {} }
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let analysis = ConstAnalysis::from_module(&module);
 
     // Add is a built-in trait — its Output is a regular type, not a length
@@ -145,7 +145,7 @@ fn test_printer_trait_associated_types_with_bounds() {
             fn double(a: u8) -> u8;
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let printed = volar_compiler::print_module(&module);
 
     // Should contain proper associated type with bounds, not Debug format
@@ -169,7 +169,7 @@ fn test_printer_impl_associated_type() {
             fn add(self, rhs: Foo) -> Foo { Foo {} }
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let printed = volar_compiler::print_module(&module);
 
     // Should contain `type Output = Foo;`
@@ -391,7 +391,7 @@ fn test_type_context_custom_trait_overrides_builtin() {
             fn double(a: u8) -> u8;
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let ctx = TypeContext::from_module(&module);
 
     // Custom trait should be findable
@@ -426,7 +426,7 @@ fn test_validate_impl_missing_associated_type() {
             fn compute(self) -> u8 { 42 }
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let ctx = TypeContext::from_module(&module);
 
     let errors = ctx.validate_impl(&module.impls[0]);
@@ -453,7 +453,7 @@ fn test_validate_impl_missing_method() {
             type Output = u8;
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let ctx = TypeContext::from_module(&module);
 
     let errors = ctx.validate_impl(&module.impls[0]);
@@ -478,7 +478,7 @@ fn test_validate_impl_complete() {
             fn compute(self) -> u8 { 42 }
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let ctx = TypeContext::from_module(&module);
 
     let errors = ctx.validate_impl(&module.impls[0]);
@@ -500,7 +500,7 @@ fn test_trait_with_generic_method() {
             fn remap<M, F: FnMut(usize) -> usize>(&self, f: F) -> Self;
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
 
     assert_eq!(module.traits.len(), 1);
     let t = &module.traits[0];
@@ -524,7 +524,7 @@ fn test_trait_with_static_method() {
             fn double(a: u8) -> [u8; 2];
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
 
     let t = &module.traits[0];
     match &t.items[0] {
@@ -550,7 +550,7 @@ fn test_impl_method_with_where_clause() {
             }
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
 
     let imp = &module.impls[0];
     match &imp.items[0] {
@@ -576,7 +576,7 @@ fn test_trait_with_generic_param_and_default() {
             fn add(self, rhs: Rhs) -> Self::Output;
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
 
     let t = &module.traits[0];
     assert_eq!(t.generics.len(), 1);
@@ -592,7 +592,7 @@ fn test_trait_with_supertrait() {
     let source = r#"
         pub trait PuncturableLengthDoubler: LengthDoubler {}
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
 
     let t = &module.traits[0];
     assert_eq!(t.super_traits.len(), 1);
@@ -604,7 +604,7 @@ fn test_trait_with_generic_supertrait() {
     let source = r#"
         pub trait VoleArray<T>: ArrayLength<T> {}
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
 
     let t = &module.traits[0];
     assert_eq!(t.generics.len(), 1);
@@ -629,7 +629,7 @@ fn test_custom_trait_full_definition() {
         }
         pub trait PuncturableLengthDoubler: LengthDoubler {}
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let ctx = TypeContext::from_module(&module);
 
     // LengthDoubler
@@ -662,7 +662,7 @@ fn test_add_impl_resolved_through_type_context() {
             }
         }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let ctx = TypeContext::from_module(&module);
 
     // The builtin Add definition should exist
@@ -740,7 +740,7 @@ fn test_volar_spec_length_doubler_is_custom_trait() {
         .iter()
         .map(|(c, n)| SourceInput { source: c.as_str(), name: n.as_str() })
         .collect();
-    let module = parse_sources(&sources_ref, "volar_spec").unwrap();
+    let module = parse_sources(&sources_ref, "volar_spec", &[]).unwrap();
 
     let ld = module
         .traits
@@ -772,7 +772,7 @@ fn test_volar_spec_length_doubler_output_size_is_const() {
         .iter()
         .map(|(c, n)| SourceInput { source: c.as_str(), name: n.as_str() })
         .collect();
-    let module = parse_sources(&sources_ref, "volar_spec").unwrap();
+    let module = parse_sources(&sources_ref, "volar_spec", &[]).unwrap();
     let analysis = ConstAnalysis::from_module(&module);
 
     assert!(
@@ -788,7 +788,7 @@ fn test_volar_spec_add_impls_have_output() {
         .iter()
         .map(|(c, n)| SourceInput { source: c.as_str(), name: n.as_str() })
         .collect();
-    let module = parse_sources(&sources_ref, "volar_spec").unwrap();
+    let module = parse_sources(&sources_ref, "volar_spec", &[]).unwrap();
     let ctx = TypeContext::from_module(&module);
 
     // Find all Add impls
@@ -828,7 +828,7 @@ fn test_volar_spec_type_context_validates_impls() {
         .iter()
         .map(|(c, n)| SourceInput { source: c.as_str(), name: n.as_str() })
         .collect();
-    let module = parse_sources(&sources_ref, "volar_spec").unwrap();
+    let module = parse_sources(&sources_ref, "volar_spec", &[]).unwrap();
     let ctx = TypeContext::from_module(&module);
 
     // Validate all custom trait impls (not math/crypto builtins since those
@@ -886,7 +886,7 @@ fn test_display_rust_module_writer() {
     let source = r#"
         pub struct Foo { pub x: u8 }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let s = format!("{}", DisplayRust(ModuleWriter { module: &module }));
     assert!(s.contains("pub struct Foo"));
     assert!(s.contains("pub x: u8"));
@@ -904,7 +904,7 @@ fn test_print_module_backward_compat() {
     let source = r#"
         pub struct Bar { pub y: bool }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let printed = volar_compiler::print_module(&module);
     // Should contain the preamble
     assert!(printed.contains("Auto-generated"));
@@ -918,7 +918,7 @@ fn test_module_writer_no_preamble() {
     let source = r#"
         pub struct Baz { pub z: u32 }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let s = format!("{}", DisplayRust(ModuleWriter { module: &module }));
     // Should NOT contain the preamble
     assert!(!s.contains("Auto-generated"));
@@ -933,7 +933,7 @@ fn test_length_alias_discovery() {
         pub trait VoleArray<T>: ArrayLength<T> {}
         pub struct Foo<N: VoleArray<u8>> { pub data: GenericArray<u8, N> }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let analysis = ConstAnalysis::from_module(&module);
 
     // VoleArray is now a typed TraitKind variant, recognised directly by
@@ -964,7 +964,7 @@ fn test_transitive_length_alias() {
         pub trait HugeArray<T>: BigArray<T> {}
         pub struct Bar<N: HugeArray<u8>> { pub data: GenericArray<u8, N> }
     "#;
-    let module = parse_source(source, "test").unwrap();
+    let module = parse_source(source, "test", &[]).unwrap();
     let analysis = ConstAnalysis::from_module(&module);
 
     assert!(

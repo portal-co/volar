@@ -75,7 +75,7 @@ fn test_parse_volar_spec_combined() {
         .map(|(content, name)| SourceInput { source: content.as_str(), name: name.as_str() })
         .collect();
 
-    match parse_sources(&sources_ref, "volar_spec") {
+    match parse_sources(&sources_ref, "volar_spec", &[]) {
         Ok(module) => {
             println!("Combined module statistics:");
             println!("  Structs: {}", module.structs.len());
@@ -138,7 +138,7 @@ pub struct Q<N: ArrayLength<T>, T> {
 }
     "#;
 
-    let module = parse_source(source, "vole").unwrap();
+    let module = parse_source(source, "vole", &[]).unwrap();
 
     assert_eq!(module.structs.len(), 2);
 
@@ -162,7 +162,7 @@ pub struct Vope<N: VoleArray<T>, T, K: ArrayLength<GenericArray<T, N>> = U1> {
 }
     "#;
 
-    let module = parse_source(source, "vope").unwrap();
+    let module = parse_source(source, "vope", &[]).unwrap();
 
     assert_eq!(module.structs.len(), 1);
 
@@ -194,7 +194,7 @@ impl<
 }
     "#;
 
-    let module = parse_source(source, "add_impl").unwrap();
+    let module = parse_source(source, "add_impl", &[]).unwrap();
 
     assert_eq!(module.impls.len(), 1);
 
@@ -245,7 +245,7 @@ impl<N: ArrayLength<T>, T> Delta<N, T> {
 }
     "#;
 
-    let module = parse_source(source, "remap").unwrap();
+    let module = parse_source(source, "remap", &[]).unwrap();
 
     assert_eq!(module.impls.len(), 1);
 
@@ -281,7 +281,7 @@ impl Foo {
 }
     "#;
 
-    let module = parse_source(source, "log2_test").unwrap();
+    let module = parse_source(source, "log2_test", &[]).unwrap();
     assert_eq!(module.impls.len(), 1);
 
     let imp = &module.impls[0];
@@ -329,7 +329,7 @@ fn test_prove_module_static_print_roundtrip() {
     let prove_src = fs::read_to_string(&prove_path)
         .expect("prove.rs should exist");
     let prove_src = prove_src.as_str();
-    let module = volar_compiler::parse_source(prove_src, "prove")
+    let module = volar_compiler::parse_source(prove_src, "prove", &[])
         .expect("prove.rs should parse in the total-Rust subset");
 
     assert!(module.functions.len() >= 2, "Expected at least vole_and_prover_step and vole_and_verifier_check");
@@ -412,7 +412,7 @@ fn test_parse_primitives_and_generate_manifest() {
     let prim_src = fs::read_to_string(&prim_path)
         .expect("volar-primitives/src/lib.rs should exist");
 
-    let module = volar_compiler::parse_source(&prim_src, "volar_primitives")
+    let module = volar_compiler::parse_source(&prim_src, "volar_primitives", &[])
         .expect("lib.rs should parse (macros removed, total-Rust subset)");
 
     // Verify key types are present
@@ -463,7 +463,7 @@ fn test_primitives_ts_transpile() {
         .join("spec/volar-primitives/src/lib.rs");
     let prim_src = fs::read_to_string(&prim_path).unwrap();
 
-    let module = volar_compiler::parse_source(&prim_src, "volar_primitives").unwrap();
+    let module = volar_compiler::parse_source(&prim_src, "volar_primitives", &[]).unwrap();
 
     // Static Rust print — should contain from_fn and field ops
     use volar_compiler::printer::{DisplayRust, ModuleWriter};
