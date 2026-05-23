@@ -479,6 +479,7 @@ pub fn weave_net_vole_prover(
 
     let func = IrFunction {
         name: format!("vole_prove_net_{}", name),
+        module_path: vec![],
         generics,
         receiver: None,
         params,
@@ -496,6 +497,7 @@ pub fn weave_net_vole_prover(
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],
+        consts: vec![],
     };
     if let Some(ls) = linkage {
         ls.apply(&mut module);
@@ -748,6 +750,7 @@ pub fn weave_net_vole_verifier(
 
     let func = IrFunction {
         name: format!("vole_verify_net_{}", name),
+        module_path: vec![],
         generics,
         receiver: None,
         params,
@@ -765,6 +768,7 @@ pub fn weave_net_vole_verifier(
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],
+        consts: vec![],
     };
     if let Some(ls) = linkage {
         ls.apply(&mut module);
@@ -1023,6 +1027,7 @@ pub fn weave_net_vole_prover_loop(
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],
+        consts: vec![],
     };
     if let Some(ls) = linkage {
         ls.apply_cfg(&mut module);
@@ -1398,6 +1403,7 @@ pub fn weave_net_vole_verifier_loop(
         traits: vec![],
         impls: vec![],
         type_aliases: vec![],
+        consts: vec![],
     };
     if let Some(ls) = linkage {
         ls.apply_cfg(&mut module);
