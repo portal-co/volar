@@ -475,7 +475,7 @@ pub(crate) fn parse_saved_ir_blocks(s: &str) -> Result<SavedIrBlocks, ParseError
 
     Ok(SavedIrBlocks {
         types: TypeTable(types),
-        blocks: IRBlocks { oracles, actions, rngs, blocks },
+        blocks: IRBlocks { oracles, actions, rngs, blocks, pre_init: vec![] },
     })
 }
 
@@ -679,5 +679,5 @@ pub(crate) fn parse_saved_bir_blocks(s: &str) -> Result<SavedBIrBlocks, ParseErr
         }
     }
 
-    Ok(SavedBIrBlocks { blocks: BIrBlocks(blocks) })
+    Ok(SavedBIrBlocks { blocks: BIrBlocks { blocks, pre_init: vec![] } })
 }

@@ -700,19 +700,19 @@ type BiirStoreCache = BTreeMap<(StorageId, usize, Vec<IRVarId>), IRVarId>;
 ///
 /// Returns `true` if any block was modified.
 pub fn store_forward_biir_blocks<P: Clone + Default>(blocks: &mut BIrBlocks<P>) -> bool {
-    let n = blocks.0.len();
+    let n = blocks.blocks.len();
     if n == 0 {
         return false;
     }
     if n == 1 {
         let (changed, _) =
-            store_forward_biir_block_with_cache(&mut blocks.0[0], BTreeMap::new());
+            store_forward_biir_block_with_cache(&mut blocks.blocks[0], BTreeMap::new());
         return changed;
     }
 
     // ── Build CFG ────────────────────────────────────────────────────────────
     let succs: Vec<Vec<usize>> = (0..n)
-        .map(|i| biir_terminator_succ_blocks(&blocks.0[i].terminator))
+        .map(|i| biir_terminator_succ_blocks(&blocks.blocks[i].terminator))
         .collect();
 
     let mut preds: Vec<Vec<usize>> = vec![Vec::new(); n];
@@ -751,7 +751,7 @@ pub fn store_forward_biir_blocks<P: Clone + Default>(blocks: &mut BIrBlocks<P>) 
         };
 
         let (changed, out) =
-            store_forward_biir_block_with_cache(&mut blocks.0[bi], incoming);
+            store_forward_biir_block_with_cache(&mut blocks.blocks[bi], incoming);
         any_changed |= changed;
         outgoing_caches[bi] = Some(out);
     }
@@ -898,7 +898,7 @@ fn translate_biir_cache_with_injection<P: Clone + Default>(
     blocks: &mut BIrBlocks<P>,
     changed: &mut bool,
 ) -> BiirStoreCache {
-    let args = match biir_edge_args(&blocks.0[pred_idx].terminator, target_idx) {
+    let args = match biir_edge_args(&blocks.blocks[pred_idx].terminator, target_idx) {
         Some(a) => a,
         None => return BTreeMap::new(),
     };
@@ -908,7 +908,7 @@ fn translate_biir_cache_with_injection<P: Clone + Default>(
         trans.entry(arg).or_insert(IRVarId(i as u32));
     }
 
-    let old_n_params = blocks.0[target_idx].params;
+    let old_n_params = blocks.blocks[target_idx].params;
     let mut result: BiirStoreCache = BTreeMap::new();
     let mut injections: Vec<IRVarId> = Vec::new(); // pred src vars to inject
 
@@ -931,21 +931,21 @@ fn translate_biir_cache_with_injection<P: Clone + Default>(
 
     if !injections.is_empty() {
         let shift = injections.len() as u32;
-        let n_stmts = blocks.0[target_idx].stmts.len();
+        let n_stmts = blocks.blocks[target_idx].stmts.len();
 
         // Increment param count.
-        blocks.0[target_idx].params += shift;
+        blocks.blocks[target_idx].params += shift;
 
         // Shift existing stmt IRVarIds.
         let n_stmts_u32 = n_stmts as u32;
-        for stmt in blocks.0[target_idx].stmts.iter_mut() {
+        for stmt in blocks.blocks[target_idx].stmts.iter_mut() {
             shift_biir_stmt_vars(stmt, old_n_params, n_stmts_u32, shift);
         }
-        shift_biir_terminator_vars(&mut blocks.0[target_idx].terminator, old_n_params, n_stmts_u32, shift);
+        shift_biir_terminator_vars(&mut blocks.blocks[target_idx].terminator, old_n_params, n_stmts_u32, shift);
 
         // Add source vars as extra args to predecessor edges.
         add_biir_args_to_edges(
-            &mut blocks.0[pred_idx].terminator,
+            &mut blocks.blocks[pred_idx].terminator,
             target_idx,
             &injections,
         );
@@ -977,7 +977,7 @@ fn merge_biir_caches_with_injection<P: Clone + Default>(
             None => return BTreeMap::new(),
         };
 
-        let args = match biir_edge_args(&blocks.0[pi].terminator, target_idx) {
+        let args = match biir_edge_args(&blocks.blocks[pi].terminator, target_idx) {
             Some(a) => a,
             None => return BTreeMap::new(),
         };
@@ -1013,7 +1013,7 @@ fn merge_biir_caches_with_injection<P: Clone + Default>(
         return BTreeMap::new();
     }
 
-    let old_n_params = blocks.0[target_idx].params;
+    let old_n_params = blocks.blocks[target_idx].params;
     let mut result: BiirStoreCache = BTreeMap::new();
     // Each injection: [src_in_pred_namespace per pred]
     let mut injections: Vec<Vec<IRVarId>> = Vec::new();
@@ -1044,17 +1044,17 @@ fn merge_biir_caches_with_injection<P: Clone + Default>(
 
     if !injections.is_empty() {
         let shift = injections.len() as u32;
-        let n_stmts = blocks.0[target_idx].stmts.len();
+        let n_stmts = blocks.blocks[target_idx].stmts.len();
 
         // Increment param count.
-        blocks.0[target_idx].params += shift;
+        blocks.blocks[target_idx].params += shift;
 
         // Shift existing stmt IRVarIds.
         let n_stmts_u32 = n_stmts as u32;
-        for stmt in blocks.0[target_idx].stmts.iter_mut() {
+        for stmt in blocks.blocks[target_idx].stmts.iter_mut() {
             shift_biir_stmt_vars(stmt, old_n_params, n_stmts_u32, shift);
         }
-        shift_biir_terminator_vars(&mut blocks.0[target_idx].terminator, old_n_params, n_stmts_u32, shift);
+        shift_biir_terminator_vars(&mut blocks.blocks[target_idx].terminator, old_n_params, n_stmts_u32, shift);
 
         // Extend each predecessor's edges.
         for (pp, &pi) in pred_indices.iter().enumerate() {
@@ -1063,7 +1063,7 @@ fn merge_biir_caches_with_injection<P: Clone + Default>(
                 .map(|srcs| srcs[pp])
                 .collect();
             add_biir_args_to_edges(
-                &mut blocks.0[pi].terminator,
+                &mut blocks.blocks[pi].terminator,
                 target_idx,
                 &extra_args,
             );

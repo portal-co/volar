@@ -122,7 +122,7 @@ pub fn interpret_biir(
         })
         .collect();
 
-    BIrBlocks(blocks)
+    BIrBlocks { blocks, pre_init: vec![] }
 }
 
 // ============================================================================
@@ -338,7 +338,7 @@ pub fn interpret_biir_extended(
         }),
     };
 
-    BIrBlocks(vec![block])
+    BIrBlocks { blocks: vec![block], pre_init: vec![] }
 }
 
 // ============================================================================
@@ -439,7 +439,7 @@ pub fn interpret_biir_multiblock(
         terminator: b1_term,
     };
 
-    BIrBlocks(vec![block0, block1])
+    BIrBlocks { blocks: vec![block0, block1], pre_init: vec![] }
 }
 
 // ============================================================================
@@ -590,12 +590,12 @@ pub fn interpret_biir_diamond(
         args: b3_ret_args,
     });
 
-    BIrBlocks(vec![
+    BIrBlocks { blocks: vec![
         BIrBlock { params: n_params, stmts: stmts_b0, stmt_provs: vec![(); n_b0], terminator: b0_term },
         BIrBlock { params: n_b1_params, stmts: stmts_b1, stmt_provs: vec![(); n_b1], terminator: b1_term },
         BIrBlock { params: n_b2_params, stmts: stmts_b2, stmt_provs: vec![(); n_b2], terminator: b2_term },
         BIrBlock { params: n_b3_params, stmts: stmts_b3, stmt_provs: vec![(); n_b3], terminator: b3_term },
-    ])
+    ], pre_init: vec![] }
 }
 
 // ============================================================================

@@ -162,7 +162,7 @@ impl WriteText for SavedBIrBlocks {
     fn write_text(&self, w: &mut dyn fmt::Write) -> fmt::Result {
         w.write_str(FORMAT_HEADER)?;
         w.write_char('\n')?;
-        for (i, block) in self.blocks.0.iter().enumerate() {
+        for (i, block) in self.blocks.blocks.iter().enumerate() {
             write_bir_block(i, block, w)?;
         }
         Ok(())

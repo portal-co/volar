@@ -402,6 +402,7 @@ pub fn oram_begin_circuit(config: &OramConfig) -> (IRBlocks, IRTypes) {
         actions: vec![begin_decl],
         rngs: vec![],
         blocks: vec![block],
+        pre_init: vec![],
     };
 
     (ir, types)
@@ -547,6 +548,7 @@ pub fn rewrite_storage_to_oram<P: Clone + Default>(
         actions: new_actions,
         rngs: ir.rngs.clone(),
         blocks: new_blocks,
+        pre_init: ir.pre_init.clone(),
     }
 }
 
@@ -1524,6 +1526,7 @@ mod tests_rewrite {
                 stmt_provs: vec![(); num_stmts],
                 terminator,
             }],
+            pre_init: vec![],
         }
     }
 
@@ -2310,6 +2313,7 @@ mod tests_linking {
             oracles: vec![],
             actions: vec![],
             rngs: vec![],
+            pre_init: vec![],
             blocks: vec![IRBlock {
                 params: vec![u64_ty, data_ty],
                 stmts: vec![
@@ -2403,6 +2407,7 @@ mod tests_linking {
             oracles: vec![],
             actions: vec![],
             rngs: vec![],
+            pre_init: vec![],
             blocks: vec![IRBlock {
                 params: vec![u64_ty],
                 stmts: vec![IRStmt::StorageRead {

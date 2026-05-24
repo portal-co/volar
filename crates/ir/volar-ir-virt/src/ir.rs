@@ -187,6 +187,7 @@ fn virtualize_ir_impl<P: Clone + Default, H: IrHashAlgorithm>(
         actions: blocks.actions.clone(),
         rngs: blocks.rngs.clone(),
         blocks: blocks.blocks.iter().map(deduplicate_oracle_calls_in_block).collect(),
+        pre_init: blocks.pre_init.clone(),
     };
 
     // Canonicalise every block — lifts Const values and terminator
@@ -864,6 +865,7 @@ fn emit_output_ir<P: Clone + Default, H: IrHashAlgorithm>(
         actions: blocks_in.actions.clone(),
         rngs: blocks_in.rngs.clone(),
         blocks: all_blocks,
+        pre_init: blocks_in.pre_init.clone(),
     }
 }
 

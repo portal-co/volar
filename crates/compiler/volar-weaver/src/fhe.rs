@@ -1078,7 +1078,7 @@ pub fn weave_fhe<S: FheScheme>(
 /// Returns an empty config when the circuit contains no storage operations.
 pub fn derive_storage_config<P: Clone + Default>(circuit: &BIrBlocks<P>) -> FheStorageConfig {
     let mut max_addr_len: BTreeMap<(u32, usize), usize> = BTreeMap::new();
-    for block in &circuit.0 {
+    for block in &circuit.blocks {
         for stmt in &block.stmts {
             match stmt {
                 BIrStmt::StorageRead { storage, bit_width, addr } => {
@@ -1391,7 +1391,7 @@ where
          (single block with Return terminator)"
     );
 
-    let block = &circuit.0[0];
+    let block = &circuit.blocks[0];
     let expanded = expand_ors(block);
     let num_inputs = block.params as u32;
     let wire_ty = scheme.wire_type();
@@ -4020,7 +4020,7 @@ mod tests {
     /// Return wire_3
     /// ```
     fn build_storage_circuit() -> BIrBlocks {
-        BIrBlocks(vec![BIrBlock {
+        BIrBlocks { blocks: vec![BIrBlock {
             params: 2,
             stmts: vec![
                 BIrStmt::StorageWrite {
@@ -4040,7 +4040,7 @@ mod tests {
                 block: IRBlockTargetId::Return,
                 args: vec![IRVarId(3)],
             }),
-        }])
+        }], pre_init: vec![] }
     }
 
     fn storage_config_2cells() -> FheStorageConfig {
@@ -4135,7 +4135,7 @@ mod tests {
     #[test]
     fn test_derive_storage_config_empty_circuit() {
         // A circuit with no storage stmts should produce an empty config.
-        let circuit = BIrBlocks(vec![BIrBlock {
+        let circuit = BIrBlocks { blocks: vec![BIrBlock {
             params: 2,
             stmts: vec![BIrStmt::Xor(IRVarId(0), IRVarId(1))],
             stmt_provs: vec![()],
@@ -4143,7 +4143,7 @@ mod tests {
                 block: IRBlockTargetId::Return,
                 args: vec![IRVarId(2)],
             }),
-        }]);
+        }], pre_init: vec![] };
         let derived = derive_storage_config(&circuit);
         assert!(
             derived.sizes.is_empty(),
@@ -4154,7 +4154,7 @@ mod tests {
     #[test]
     fn test_derive_storage_config_multi_bit_addr() {
         // 2-bit address should yield 4 cells.
-        let circuit = BIrBlocks(vec![BIrBlock {
+        let circuit = BIrBlocks { blocks: vec![BIrBlock {
             params: 3,
             stmts: vec![
                 BIrStmt::StorageRead {
@@ -4168,7 +4168,7 @@ mod tests {
                 block: IRBlockTargetId::Return,
                 args: vec![IRVarId(3)],
             }),
-        }]);
+        }], pre_init: vec![] };
         let derived = derive_storage_config(&circuit);
         assert_eq!(
             derived.sizes.get(&(0, 1)),

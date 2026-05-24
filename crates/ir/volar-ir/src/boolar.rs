@@ -3,7 +3,7 @@
 // Boolar IR: boolean circuit IR (AND/XOR/NOT basis).
 // Pure data structure definitions; no cryptographic claims.
 use super::{ir::*, *};
-use volar_ir_common::StorageId;
+use volar_ir_common::{PreInitSegment, StorageId};
 
 /// A complete Boolar circuit — a set of boolean-gate blocks.
 ///
@@ -11,15 +11,20 @@ use volar_ir_common::StorageId;
 /// Use `P = ()` (the default) when provenance is not needed.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct BIrBlocks<P: Clone + Default = ()>(pub Vec<BIrBlock<P>>);
+pub struct BIrBlocks<P: Clone + Default = ()> {
+    /// The blocks of the circuit, in order. Block 0 is the entry.
+    pub blocks: Vec<BIrBlock<P>>,
+    /// Pre-initialised storage segments propagated from WASM data sections.
+    pub pre_init: alloc::vec::Vec<PreInitSegment>,
+}
 
 impl<P: Clone + Default> BIrBlocks<P> {
     pub fn is_movfuscated(&self) -> bool {
-        return self.0.len() == 1;
+        return self.blocks.len() == 1;
     }
     pub fn is_circuit(&self) -> bool {
         return self.is_movfuscated()
-            && match &self.0[0].terminator {
+            && match &self.blocks[0].terminator {
                 BIrTerminator::Jmp(BIrTarget {
                     block: IRBlockTargetId::Return,
                     ..
@@ -70,7 +75,10 @@ impl<P: Clone + Default> BIrBlock<P> {
 impl<P: Clone + Default> BIrBlocks<P> {
     /// Map provenance annotations using a [`ProvenanceHandler`].
     pub fn map_prov_with_handler<H: volar_provenance::ProvenanceHandler<P>>(self, handler: &H) -> BIrBlocks<H::Output> {
-        BIrBlocks(self.0.into_iter().map(|b| b.map_prov_with_handler(handler)).collect())
+        BIrBlocks {
+            blocks: self.blocks.into_iter().map(|b| b.map_prov_with_handler(handler)).collect(),
+            pre_init: self.pre_init,
+        }
     }
 }
 

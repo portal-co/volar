@@ -75,9 +75,10 @@ use volar_ir_common::Constant;
 /// Panics on `JumpTable` terminators and `Dyn` jump targets (not representable
 /// in `BIrTerminator`).
 pub fn lower_ir_to_boolar<P: Clone + Default>(blocks: &IRBlocks<P>, types: &IRTypes) -> BIrBlocks<P> {
-    BIrBlocks(
-        blocks.blocks.iter().map(|block| lower_block(block, types)).collect(),
-    )
+    BIrBlocks {
+        blocks: blocks.blocks.iter().map(|block| lower_block(block, types)).collect(),
+        pre_init: blocks.pre_init.clone(),
+    }
 }
 
 // ============================================================================

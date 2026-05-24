@@ -68,13 +68,13 @@ pub fn lower_to_circuit<P: Clone + Default>(blocks: &BIrBlocks<P>, limit: u32, m
     }
 
     assert_eq!(
-        blocks.0.len(),
+        blocks.blocks.len(),
         1,
         "lower_to_circuit: multi-block DAG lowering is not yet implemented; \
          only single-block self-loops are currently supported"
     );
 
-    let block0 = &blocks.0[0];
+    let block0 = &blocks.blocks[0];
     let p = block0.params as usize; // number of circuit input params
 
     // Emitter owns the accumulating stmt list and var-ID counter.
@@ -169,7 +169,7 @@ pub fn lower_to_circuit<P: Clone + Default>(blocks: &BIrBlocks<P>, limit: u32, m
         }),
     };
 
-    BIrBlocks(vec![out_block])
+    BIrBlocks { blocks: vec![out_block], pre_init: vec![] }
 }
 
 // ============================================================================
@@ -397,7 +397,7 @@ mod tests {
     /// Semantics: "if input bit is 1, return it; else loop with 1".
     /// After at most 1 iteration, output is always 1.
     fn build_simple_loop() -> BIrBlocks {
-        BIrBlocks(std::vec![BIrBlock {
+        BIrBlocks { blocks: std::vec![BIrBlock {
             params: 1,
             stmts: std::vec![BIrStmt::One], // IRVarId(1) = constant 1
             stmt_provs: std::vec![()],
@@ -412,13 +412,13 @@ mod tests {
                     args: std::vec![IRVarId(1)], // loop with One
                 },
             },
-        }])
+        }], pre_init: std::vec![] }
     }
 
     #[test]
     fn test_already_circuit_passthrough() {
         // A circuit should be returned unchanged.
-        let circuit: BIrBlocks<()> = BIrBlocks(std::vec![BIrBlock {
+        let circuit: BIrBlocks<()> = BIrBlocks { blocks: std::vec![BIrBlock {
             params: 1,
             stmts: std::vec![],
             stmt_provs: std::vec![],
@@ -426,7 +426,7 @@ mod tests {
                 block: IRBlockTargetId::Return,
                 args: std::vec![IRVarId(0)],
             }),
-        }]);
+        }], pre_init: std::vec![] };
         let result = lower_to_circuit(&circuit, 3, LoweringMode::Unconditional);
         assert_eq!(result, circuit);
     }
@@ -500,7 +500,7 @@ mod tests {
     #[test]
     fn test_lower_unconditional_jmp_block0() {
         // Pure loop: always Jmp(Block(0)). Output = state after limit steps.
-        let blocks = BIrBlocks(std::vec![BIrBlock {
+        let blocks = BIrBlocks { blocks: std::vec![BIrBlock {
             params: 1,
             stmts: std::vec![BIrStmt::Not(IRVarId(0))], // flip the bit each step
             stmt_provs: std::vec![()],
@@ -508,16 +508,16 @@ mod tests {
                 block: IRBlockTargetId::Block(IRBlockId(0)),
                 args: std::vec![IRVarId(1)], // loop with NOT(input)
             }),
-        }]);
+        }], pre_init: std::vec![] };
         let lowered = lower_to_circuit(&blocks, 4, LoweringMode::Unconditional);
         assert!(lowered.is_circuit());
-        assert_eq!(lowered.0[0].params, 1);
+        assert_eq!(lowered.blocks[0].params, 1);
     }
 
     #[test]
     fn test_lower_both_return_condjmp() {
         // CondJmp where both targets return: always done, result = mux(val, then, else).
-        let blocks: BIrBlocks<()> = BIrBlocks(std::vec![BIrBlock {
+        let blocks: BIrBlocks<()> = BIrBlocks { blocks: std::vec![BIrBlock {
             params: 2, // two input bits: selector and value
             stmts: std::vec![],
             stmt_provs: std::vec![],
@@ -532,7 +532,7 @@ mod tests {
                     args: std::vec![IRVarId(0)], // return bit 0 if val=0
                 },
             },
-        }]);
+        }], pre_init: std::vec![] };
         // Not a circuit (has CondJmp).
         assert!(!blocks.is_circuit());
         let lowered = lower_to_circuit(&blocks, 1, LoweringMode::Unconditional);

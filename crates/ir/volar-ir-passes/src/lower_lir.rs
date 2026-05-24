@@ -43,11 +43,11 @@ pub fn lower_biir_with_handler<P, T, H>(
     H: ProvenanceHandler<P>,
     T: LirTarget<H::Output>,
 {
-    let entry_block = &blocks.0[0];
+    let entry_block = &blocks.blocks[0];
     let num_inputs = entry_block.params as usize;
 
     // Create all LIR block handles up front (forward declarations).
-    let mut block_handles: Vec<T::Block> = Vec::with_capacity(blocks.0.len());
+    let mut block_handles: Vec<T::Block> = Vec::with_capacity(blocks.blocks.len());
     // begin_function creates the entry block for us; create extra blocks here temporarily.
     // We'll call begin_function below, which gives us the true entry block.
     // For blocks beyond the first we pre-allocate after begin_function.
@@ -59,16 +59,16 @@ pub fn lower_biir_with_handler<P, T, H>(
     block_handles.push(entry_handle);
 
     // Pre-create handles for all blocks after the entry.
-    for _ in 1..blocks.0.len() {
+    for _ in 1..blocks.blocks.len() {
         block_handles.push(target.create_block());
     }
 
     // Add block params for blocks beyond entry (entry params are function params).
     // vals_per_block[b] stores the values for block b: [param0, param1, ..., stmt0, stmt1, ...]
-    let mut vals_per_block: Vec<Vec<T::Value>> = Vec::with_capacity(blocks.0.len());
+    let mut vals_per_block: Vec<Vec<T::Value>> = Vec::with_capacity(blocks.blocks.len());
     vals_per_block.push(entry_params); // entry block's params = function params
 
-    for (bi, block) in blocks.0.iter().enumerate().skip(1) {
+    for (bi, block) in blocks.blocks.iter().enumerate().skip(1) {
         let mut block_vals: Vec<T::Value> = Vec::with_capacity(block.params as usize);
         for _ in 0..block.params {
             let v = target.add_block_param(block_handles[bi].clone(), LirType::Bool);
@@ -78,7 +78,7 @@ pub fn lower_biir_with_handler<P, T, H>(
     }
 
     // Emit each block.
-    for (bi, block) in blocks.0.iter().enumerate() {
+    for (bi, block) in blocks.blocks.iter().enumerate() {
         target.switch_to_block(block_handles[bi].clone());
 
         let vals = &mut vals_per_block[bi];

@@ -311,7 +311,7 @@ pub(crate) mod tests_common {
 
     /// Two-input circuit: Xor(0,1)->wire2, And(0,2)->wire3, Return wire3.
     pub fn build_xor_and_circuit() -> BIrBlocks {
-        BIrBlocks(vec![BIrBlock {
+        BIrBlocks { blocks: vec![BIrBlock {
             params: 2,
             stmts: vec![
                 BIrStmt::Xor(IRVarId(0), IRVarId(1)),
@@ -322,12 +322,12 @@ pub(crate) mod tests_common {
                 block: IRBlockTargetId::Return,
                 args: vec![IRVarId(3)],
             }),
-        }])
+        }], pre_init: vec![] }
     }
 
     /// Two-input AND circuit: And(0,1)->wire2, Return wire2.
     pub fn build_and_circuit() -> BIrBlocks {
-        BIrBlocks(vec![BIrBlock {
+        BIrBlocks { blocks: vec![BIrBlock {
             params: 2,
             stmts: vec![BIrStmt::And(IRVarId(0), IRVarId(1))],
             stmt_provs: vec![()],
@@ -335,12 +335,12 @@ pub(crate) mod tests_common {
                 block: IRBlockTargetId::Return,
                 args: vec![IRVarId(2)],
             }),
-        }])
+        }], pre_init: vec![] }
     }
 
     /// Single-bit self-loop: params=1, stmts=[One], CondJmp → Return or Block(0).
     pub fn build_simple_loop() -> BIrBlocks {
-        BIrBlocks(vec![BIrBlock {
+        BIrBlocks { blocks: vec![BIrBlock {
             params: 1,
             stmts: vec![BIrStmt::One],
             stmt_provs: vec![()],
@@ -355,7 +355,7 @@ pub(crate) mod tests_common {
                     args: vec![IRVarId(1)],
                 },
             },
-        }])
+        }], pre_init: vec![] }
     }
 
     /// Generate a temp Cargo project, put `code` in src/lib.rs,

@@ -517,15 +517,15 @@ impl<P: Clone + Default> MovfuscCtx for BIrCtx<P> {
     type SlotTy = ();
 
     fn num_blocks(blocks: &BIrBlocks<P>) -> usize {
-        blocks.0.len()
+        blocks.blocks.len()
     }
 
     fn block_param_count(blocks: &BIrBlocks<P>, i: usize) -> usize {
-        blocks.0[i].params as usize
+        blocks.blocks[i].params as usize
     }
 
     fn return_val_width(blocks: &BIrBlocks<P>) -> usize {
-        for block in &blocks.0 {
+        for block in &blocks.blocks {
             match &block.terminator {
                 BIrTerminator::Jmp(t) if matches!(t.block, IRBlockTargetId::Return) => {
                     return t.args.len()
@@ -596,7 +596,7 @@ impl<P: Clone + Default> MovfuscCtx for BIrCtx<P> {
         block_idx: usize,
         state_vars: &[u32],
     ) -> Vec<u32> {
-        let block = &blocks.0[block_idx];
+        let block = &blocks.blocks[block_idx];
         let p = block.params as usize;
         let mut var_map: Vec<u32> = Vec::with_capacity(p + block.stmts.len());
         var_map.extend_from_slice(&state_vars[..p]);
@@ -620,7 +620,7 @@ impl<P: Clone + Default> MovfuscCtx for BIrCtx<P> {
     ) -> TermResult {
         let state_width = state_slot_types.len();
         let ret_width = return_slot_types.len();
-        let block = &blocks.0[block_idx];
+        let block = &blocks.blocks[block_idx];
         match &block.terminator {
             BIrTerminator::Jmp(target) => {
                 let (done, next_pc_bits, next_state, ret_vals) = self.process_biir_target(
@@ -671,7 +671,7 @@ impl<P: Clone + Default> MovfuscCtx for BIrCtx<P> {
         loop_vars: Vec<u32>,
         ret_vars: Vec<u32>,
     ) -> BIrBlocks<P> {
-        BIrBlocks(vec![BIrBlock {
+        BIrBlocks { blocks: vec![BIrBlock {
             params: combined_params as u32,
             stmts: self.stmts,
             stmt_provs: self.stmt_provs,
@@ -686,7 +686,7 @@ impl<P: Clone + Default> MovfuscCtx for BIrCtx<P> {
                     args: loop_vars.into_iter().map(IRVarId).collect(),
                 },
             },
-        }])
+        }], pre_init: vec![] }
     }
 }
 
@@ -1708,15 +1708,17 @@ fn compute_return_slot_types<P: Clone + Default>(
 /// Source statement provenances are carried through; synthetic dispatch gates
 /// receive `P::default()`.
 pub fn movfuscate_biir<P: Clone + Default>(blocks: &BIrBlocks<P>) -> BIrBlocks<P> {
-    let n = blocks.0.len();
+    let n = blocks.blocks.len();
     let pc_width = pc_bits_needed(n);
-    let state_width = blocks.0.iter().map(|b| b.params as usize).max().unwrap_or(0);
+    let state_width = blocks.blocks.iter().map(|b| b.params as usize).max().unwrap_or(0);
     let combined_params = pc_width + state_width;
     let ctx = BIrCtx::<P>::new(combined_params as u32);
     let state_slot_types = vec![(); state_width];
     let ret_width = BIrCtx::<P>::return_val_width(blocks);
     let return_slot_types = vec![(); ret_width];
-    movfuscate(ctx, blocks, state_slot_types, return_slot_types)
+    let mut result = movfuscate(ctx, blocks, state_slot_types, return_slot_types);
+    result.pre_init = blocks.pre_init.clone();
+    result
 }
 
 /// Movfuscate an `IRBlocks` module into a single self-looping block.
@@ -1764,7 +1766,9 @@ pub fn movfuscate_ir<P: Clone + Default>(blocks: &IRBlocks<P>, types: &mut IRTyp
         ir_types,
         pc_width,
     );
-    movfuscate(ctx, blocks, state_slot_types, return_slot_types)
+    let mut result = movfuscate(ctx, blocks, state_slot_types, return_slot_types);
+    result.pre_init = blocks.pre_init.clone();
+    result
 }
 
 // ============================================================================
@@ -1804,7 +1808,7 @@ mod tests {
     // =========================================================================
 
     fn two_block_dag() -> BIrBlocks {
-        BIrBlocks(std::vec![
+        BIrBlocks { blocks: std::vec![
             BIrBlock {
                 params: 1,
                 stmts: std::vec![BIrStmt::Not(IRVarId(0))],
@@ -1830,12 +1834,12 @@ mod tests {
                     args: std::vec![IRVarId(0)],
                 }),
             },
-        ])
+        ], pre_init: std::vec![] }
     }
 
     #[test]
     fn test_biir_single_block_passthrough() {
-        let single = BIrBlocks(std::vec![BIrBlock {
+        let single = BIrBlocks { blocks: std::vec![BIrBlock {
             params: 2,
             stmts: std::vec![BIrStmt::And(IRVarId(0), IRVarId(1))],
             stmt_provs: std::vec![()],
@@ -1843,7 +1847,7 @@ mod tests {
                 block: IRBlockTargetId::Return,
                 args: std::vec![IRVarId(2)],
             }),
-        }]);
+        }], pre_init: std::vec![] };
         let result = movfuscate_biir(&single);
         assert_eq!(result, single);
     }
@@ -1856,13 +1860,13 @@ mod tests {
     #[test]
     fn test_biir_two_block_dag_param_count() {
         let result = movfuscate_biir(&two_block_dag());
-        assert_eq!(result.0[0].params, 2); // pc(1) + state(1)
+        assert_eq!(result.blocks[0].params, 2); // pc(1) + state(1)
     }
 
     #[test]
     fn test_biir_two_block_dag_terminator_shape() {
         let result = movfuscate_biir(&two_block_dag());
-        match &result.0[0].terminator {
+        match &result.blocks[0].terminator {
             BIrTerminator::CondJmp { then_target, else_target, .. } => {
                 assert_eq!(then_target.block, IRBlockTargetId::Return);
                 assert_eq!(else_target.block, IRBlockTargetId::Block(IRBlockId(0)));
@@ -1874,7 +1878,7 @@ mod tests {
 
     #[test]
     fn test_biir_ret_width_preserved() {
-        match &movfuscate_biir(&two_block_dag()).0[0].terminator {
+        match &movfuscate_biir(&two_block_dag()).blocks[0].terminator {
             BIrTerminator::CondJmp { then_target, .. } => {
                 assert_eq!(then_target.args.len(), 1);
             }
@@ -1884,7 +1888,7 @@ mod tests {
 
     #[test]
     fn test_biir_three_block_chain() {
-        let blocks = BIrBlocks(std::vec![
+        let blocks = BIrBlocks { blocks: std::vec![
             BIrBlock {
                 params: 1,
                 stmts: std::vec![],
@@ -1912,11 +1916,11 @@ mod tests {
                     args: std::vec![IRVarId(0)],
                 }),
             },
-        ]);
+        ], pre_init: std::vec![] };
         let result = movfuscate_biir(&blocks);
         assert!(result.is_movfuscated());
-        assert_eq!(result.0[0].params, 3); // pc(2) + state(1)
-        match &result.0[0].terminator {
+        assert_eq!(result.blocks[0].params, 3); // pc(2) + state(1)
+        match &result.blocks[0].terminator {
             BIrTerminator::CondJmp { then_target, else_target, .. } => {
                 assert_eq!(then_target.block, IRBlockTargetId::Return);
                 assert_eq!(else_target.args.len(), 3);
@@ -1927,7 +1931,7 @@ mod tests {
 
     #[test]
     fn test_biir_self_loop_passthrough() {
-        let blocks = BIrBlocks(std::vec![BIrBlock {
+        let blocks = BIrBlocks { blocks: std::vec![BIrBlock {
             params: 1,
             stmts: std::vec![BIrStmt::Not(IRVarId(0))],
             stmt_provs: std::vec![()],
@@ -1935,7 +1939,7 @@ mod tests {
                 block: IRBlockTargetId::Block(IRBlockId(0)),
                 args: std::vec![IRVarId(1)],
             }),
-        }]);
+        }], pre_init: std::vec![] };
         let result = movfuscate_biir(&blocks);
         assert_eq!(result, blocks);
     }
@@ -1951,7 +1955,7 @@ mod tests {
                 args: std::vec![IRVarId(0)],
             }),
         };
-        let blocks = BIrBlocks(std::vec![
+        let blocks = BIrBlocks { blocks: std::vec![
             make_pass(1),
             make_pass(2),
             make_pass(3),
@@ -1964,10 +1968,10 @@ mod tests {
                     args: std::vec![IRVarId(0)],
                 }),
             },
-        ]);
+        ], pre_init: std::vec![] };
         let result = movfuscate_biir(&blocks);
         assert!(result.is_movfuscated());
-        assert_eq!(result.0[0].params, 3); // pc(2) + state(1)
+        assert_eq!(result.blocks[0].params, 3); // pc(2) + state(1)
     }
 
     // =========================================================================

@@ -316,7 +316,7 @@ mod tests {
             BIrStmt::And(IRVarId(0), IRVarId(1)),
             AesGateMeta { round: 0, even_half: true, is_sbox },
         );
-        BIrBlocks(std::vec![block])
+        BIrBlocks { blocks: std::vec![block], pre_init: std::vec![] }
     }
 
     #[test]

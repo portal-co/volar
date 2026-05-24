@@ -240,6 +240,48 @@ impl StorageId {
     pub const fn memory(i: u32) -> StorageId { StorageId(Self::MEMORY_BASE + i) }
 }
 
+/// A contiguous run of pre-initialised typed elements for a storage space.
+///
+/// Represents WASM active data-segment initialisation: at module instantiation,
+/// before any code runs, cells `offset .. offset + data.len()` of the storage
+/// identified by `(storage, ty)` are set to the corresponding `data` values.
+///
+/// Multiple segments may share the same `StorageId` but have different `TypeId`s
+/// (different element-width lanes of the same logical storage).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct PreInitSegment {
+    /// Which storage space to initialise.
+    pub storage: StorageId,
+    /// Element type — indexes the containing module's `TypeTable`.
+    /// Multiple segments for the same `StorageId` may use different `TypeId`s.
+    pub ty: TypeId,
+    /// Element offset of `data[0]` within the `(storage, ty)` lane.
+    /// For WASM byte-typed memories this equals the WASM byte offset.
+    pub offset: usize,
+    /// Typed initial values — one `Constant` per element.
+    /// `hi = 0` for types narrower than 128 bits; `lo` holds the value.
+    /// Can be bit-packed by the consumer; prefer the typed accessors below.
+    pub data: alloc::vec::Vec<Constant>,
+}
+
+impl PreInitSegment {
+    /// Value of element `i` as a `u8`.
+    pub fn as_u8(&self, i: usize) -> u8 { self.data[i].lo as u8 }
+    /// Value of element `i` as a `u16`.
+    pub fn as_u16(&self, i: usize) -> u16 { self.data[i].lo as u16 }
+    /// Value of element `i` as a `u32`.
+    pub fn as_u32(&self, i: usize) -> u32 { self.data[i].lo as u32 }
+    /// Value of element `i` as a `u64`.
+    pub fn as_u64(&self, i: usize) -> u64 { self.data[i].lo as u64 }
+    /// Value of element `i` as a `u128`.
+    pub fn as_u128(&self, i: usize) -> u128 { self.data[i].lo }
+    /// Full 256-bit `Constant` for element `i`.
+    pub fn as_constant(&self, i: usize) -> Constant { self.data[i] }
+    /// Absolute cell index for element `i`: `self.offset + i`.
+    pub fn cell_index(&self, i: usize) -> usize { self.offset + i }
+}
+
 /// Shared computational statement type for Volar IR and VAFFLE.
 ///
 /// Generic over two parameters:

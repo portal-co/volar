@@ -76,7 +76,7 @@ use portal_pc_waffle_ir::{
     entity::EntityRef, // for .index() on Func/Block/etc.
 };
 
-use volar_ir_common::StorageId;
+use volar_ir_common::{Constant, PreInitSegment, StorageId};
 use volar_lir::circuits::{
     StorageEmitter, bc_clz, bc_ctz, bc_popcnt, bc_rotl, bc_rotr, bc_srem, bc_urem,
 };
@@ -188,6 +188,24 @@ pub fn lower_waffle_module(
             }
         }
     }
+
+    // Collect WASM active data-segment pre-initialisations.
+    // WASM linear memories use 8-bit byte cells, so ty = the u8 TypeId.
+    let u8_tid = target.lir_type_to_tid(&volar_lir::LirType::U8);
+    for (mem_ref, mem_data) in wasm.memories.entries() {
+        let storage = StorageId::memory(mem_ref.index() as u32);
+        for seg in &mem_data.segments {
+            target.module.pre_init.push(PreInitSegment {
+                storage,
+                ty: u8_tid,
+                offset: seg.offset,
+                data: seg.data.iter()
+                    .map(|&b| Constant { hi: 0, lo: b as u128 })
+                    .collect(),
+            });
+        }
+    }
+
     errors
 }
 

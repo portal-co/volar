@@ -651,7 +651,7 @@ where
         "weave_vole_prover: circuit must satisfy is_circuit()"
     );
 
-    let block = &circuit.0[0];
+    let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
 
@@ -1043,7 +1043,7 @@ where
         "weave_vole_verifier: circuit must satisfy is_circuit()"
     );
 
-    let block = &circuit.0[0];
+    let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
 

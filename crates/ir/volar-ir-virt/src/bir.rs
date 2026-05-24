@@ -41,22 +41,23 @@ pub fn virtualize_bir<P: Clone + Default>(
         matches!(cfg.dedup, DedupPolicy::ConstantsAndTargets),
         "volar-ir-virt v1 only implements DedupPolicy::ConstantsAndTargets"
     );
-    assert!(!blocks.0.is_empty(), "virtualize_bir: input has no blocks");
+    assert!(!blocks.blocks.is_empty(), "virtualize_bir: input has no blocks");
 
-    let blocks_in = blocks.0.len();
-    let common_params = blocks.0[0].params;
+    let blocks_in = blocks.blocks.len();
+    let common_params = blocks.blocks[0].params;
 
     validate_input(blocks, common_params);
 
     // CSE: merge duplicate OracleCall stmts within each block before
     // canonicalisation.
-    let cse_blocks = BIrBlocks(
-        blocks.0.iter().map(deduplicate_bir_oracle_calls_in_block).collect(),
-    );
+    let cse_blocks = BIrBlocks {
+        blocks: blocks.blocks.iter().map(deduplicate_bir_oracle_calls_in_block).collect(),
+        pre_init: blocks.pre_init.clone(),
+    };
 
     // Canonicalise every block.
     let per_block_canon: Vec<(BirHandlerKey, BlockImmediates)> =
-        cse_blocks.0.iter().map(canonicalize_bir_block).collect();
+        cse_blocks.blocks.iter().map(canonicalize_bir_block).collect();
 
     let dedup = DedupTable::build(per_block_canon);
     let n_handlers = dedup.n_handlers();
@@ -120,7 +121,7 @@ fn bits_needed(n: usize) -> usize {
 }
 
 fn validate_input<P: Clone + Default>(blocks: &BIrBlocks<P>, common_params: u32) {
-    for (i, b) in blocks.0.iter().enumerate() {
+    for (i, b) in blocks.blocks.iter().enumerate() {
         assert_eq!(
             b.params, common_params,
             "virtualize_bir: block {} has {} params, expected {}",
@@ -349,7 +350,7 @@ fn emit_output_bir<P: Clone + Default>(
     debug_assert_eq!(out_blocks.len(), 2 + n_interior + n_handlers);
     let _ = setup_id;
 
-    BIrBlocks(out_blocks)
+    BIrBlocks { blocks: out_blocks, pre_init: _blocks_in.pre_init.clone() }
 }
 
 // ============================================================================

@@ -17,7 +17,7 @@ use crate::common::canon_alias;
 /// Returns `true` if any block was modified.
 pub fn fold_biir_blocks<P: Clone + Default>(blocks: &mut BIrBlocks<P>) -> bool {
     let mut any_changed = false;
-    for block in blocks.0.iter_mut() {
+    for block in blocks.blocks.iter_mut() {
         loop {
             if !fold_biir_block_once(block) {
                 break;

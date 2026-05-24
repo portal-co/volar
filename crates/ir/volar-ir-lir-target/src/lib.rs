@@ -981,7 +981,7 @@ impl<P: Clone + Default> LirTarget<P> for VolarIrTarget<P> {
             .collect();
         let oracles = core::mem::take(&mut self.pending_oracles);
         let actions = core::mem::take(&mut self.pending_actions);
-        self.completed.push((func.name, IRBlocks { oracles, actions, rngs: vec![], blocks }));
+        self.completed.push((func.name, IRBlocks { oracles, actions, rngs: vec![], blocks, pre_init: vec![] }));
     }
 
     // ---- Block management --------------------------------------------------

@@ -45,7 +45,7 @@ fn cfg_oblivious() -> VirtualizeConfig {
 /// param and returns.  Both blocks use `params = 2` so the virtualiser
 /// accepts them.
 fn mini_bir() -> BIrBlocks {
-    BIrBlocks(vec![
+    BIrBlocks { blocks: vec![
         BIrBlock {
             params: 2,
             stmts: vec![BIrStmt::Xor(IRVarId(0), IRVarId(1))],
@@ -64,7 +64,7 @@ fn mini_bir() -> BIrBlocks {
                 args: vec![IRVarId(2)],
             }),
         },
-    ])
+    ], pre_init: vec![] }
 }
 
 #[test]
@@ -78,7 +78,7 @@ fn virtualize_bir_oblivious_is_movfuscated_and_storage_derivable() {
         virt.blocks.is_movfuscated(),
         "expected a single movfuscated block after Oblivious dispatch; \
          got {} blocks",
-        virt.blocks.0.len()
+        virt.blocks.blocks.len()
     );
 
     // The rendered form must still be a valid input to the FHE

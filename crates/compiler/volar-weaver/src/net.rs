@@ -328,7 +328,7 @@ fn emit_verifier_and_gate(
 // ── Gate count helper ─────────────────────────────────────────────────────────
 
 fn count_and_gates<P: Clone + Default>(circuit: &BIrBlocks<P>) -> usize {
-    let block = &circuit.0[0];
+    let block = &circuit.blocks[0];
     expand_ors(block)
         .into_iter()
         .filter(|(_, s, _)| matches!(s, BIrStmt::And(..)))
@@ -360,7 +360,7 @@ pub fn weave_net_vole_prover(
 ) -> IrModule<IrFunction> {
     assert!(circuit.is_circuit(), "weave_net_vole_prover: circuit must satisfy is_circuit()");
 
-    let block = &circuit.0[0];
+    let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
 
@@ -532,7 +532,7 @@ pub fn weave_net_vole_verifier(
 ) -> IrModule<IrFunction> {
     assert!(circuit.is_circuit(), "weave_net_vole_verifier: circuit must satisfy is_circuit()");
 
-    let block = &circuit.0[0];
+    let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
 
@@ -811,7 +811,7 @@ pub fn weave_net_vole_prover_loop(
 ) -> IrCfgModule {
     assert!(circuit.is_movfuscated(), "weave_net_vole_prover_loop: circuit must be single-block");
 
-    let block = &circuit.0[0];
+    let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
     let and_count = count_and_gates(circuit);
@@ -1062,7 +1062,7 @@ pub fn weave_net_vole_verifier_loop(
 ) -> IrCfgModule {
     assert!(circuit.is_movfuscated(), "weave_net_vole_verifier_loop: circuit must be single-block");
 
-    let block = &circuit.0[0];
+    let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
     let and_count = count_and_gates(circuit);

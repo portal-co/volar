@@ -58,7 +58,7 @@ pub fn eval_biir_with_limit(
             }
         }
 
-        let block = &blocks.0[current_block];
+        let block = &blocks.blocks[current_block];
         let output = eval_block(block, &current_inputs, &mut storage)?;
 
         match output {
@@ -208,11 +208,11 @@ mod tests {
         // Single block: emit Zero, return it.
         let v0 = IRVarId(0); // param
         let v1 = IRVarId(1); // stmt: Zero
-        let blocks = BIrBlocks(vec![simple_block(
+        let blocks = BIrBlocks { blocks: vec![simple_block(
             1,
             vec![BIrStmt::Zero],
             BIrTerminator::Jmp(ret_target(vec![v1])),
-        )]);
+        )], pre_init: vec![] };
         assert_eq!(eval_biir(&blocks, &[true]), Some(vec![false]));
     }
 
@@ -220,11 +220,11 @@ mod tests {
     fn identity_circuit_passes_input() {
         // Single block: return the single param unchanged.
         let v0 = IRVarId(0);
-        let blocks = BIrBlocks(vec![simple_block(
+        let blocks = BIrBlocks { blocks: vec![simple_block(
             1,
             vec![],
             BIrTerminator::Jmp(ret_target(vec![v0])),
-        )]);
+        )], pre_init: vec![] };
         assert_eq!(eval_biir(&blocks, &[true]), Some(vec![true]));
         assert_eq!(eval_biir(&blocks, &[false]), Some(vec![false]));
     }
@@ -233,11 +233,11 @@ mod tests {
     fn not_gate_inverts_input() {
         let v0 = IRVarId(0);
         let v1 = IRVarId(1); // NOT v0
-        let blocks = BIrBlocks(vec![simple_block(
+        let blocks = BIrBlocks { blocks: vec![simple_block(
             1,
             vec![BIrStmt::Not(v0)],
             BIrTerminator::Jmp(ret_target(vec![v1])),
-        )]);
+        )], pre_init: vec![] };
         assert_eq!(eval_biir(&blocks, &[false]), Some(vec![true]));
         assert_eq!(eval_biir(&blocks, &[true]), Some(vec![false]));
     }
@@ -247,11 +247,11 @@ mod tests {
         let v0 = IRVarId(0);
         let v1 = IRVarId(1);
         let v2 = IRVarId(2); // AND(v0, v1)
-        let blocks = BIrBlocks(vec![simple_block(
+        let blocks = BIrBlocks { blocks: vec![simple_block(
             2,
             vec![BIrStmt::And(v0, v1)],
             BIrTerminator::Jmp(ret_target(vec![v2])),
-        )]);
+        )], pre_init: vec![] };
         assert_eq!(eval_biir(&blocks, &[false, false]), Some(vec![false]));
         assert_eq!(eval_biir(&blocks, &[false, true]), Some(vec![false]));
         assert_eq!(eval_biir(&blocks, &[true, false]), Some(vec![false]));
@@ -263,11 +263,11 @@ mod tests {
         let v0 = IRVarId(0);
         let v1 = IRVarId(1);
         let v2 = IRVarId(2); // XOR(v0, v1)
-        let blocks = BIrBlocks(vec![simple_block(
+        let blocks = BIrBlocks { blocks: vec![simple_block(
             2,
             vec![BIrStmt::Xor(v0, v1)],
             BIrTerminator::Jmp(ret_target(vec![v2])),
-        )]);
+        )], pre_init: vec![] };
         assert_eq!(eval_biir(&blocks, &[false, false]), Some(vec![false]));
         assert_eq!(eval_biir(&blocks, &[false, true]), Some(vec![true]));
         assert_eq!(eval_biir(&blocks, &[true, false]), Some(vec![true]));
@@ -282,7 +282,7 @@ mod tests {
         let v0 = IRVarId(0);
         let v_one = IRVarId(0); // block 1: Zero stmts, so first stmt is at index 0
         // block 1 has 0 params, so first stmt var is IRVarId(0)
-        let blocks = BIrBlocks(vec![
+        let blocks = BIrBlocks { blocks: vec![
             simple_block(
                 1,
                 vec![],
@@ -302,7 +302,7 @@ mod tests {
                 vec![BIrStmt::Zero],
                 BIrTerminator::Jmp(ret_target(vec![IRVarId(0)])),
             ),
-        ]);
+        ], pre_init: vec![] };
         assert_eq!(eval_biir(&blocks, &[true]), Some(vec![true]));
         assert_eq!(eval_biir(&blocks, &[false]), Some(vec![false]));
     }
@@ -315,7 +315,7 @@ mod tests {
         // terminator: if v0 (loop_again) goto self with args [Zero, Zero], else return []
         let v_loop = IRVarId(0);
         let v_zero = IRVarId(2); // params=2, stmt 0 → IRVarId(2)
-        let blocks = BIrBlocks(vec![simple_block(
+        let blocks = BIrBlocks { blocks: vec![simple_block(
             2,
             vec![BIrStmt::Zero],
             BIrTerminator::CondJmp {
@@ -323,7 +323,7 @@ mod tests {
                 then_target: block_target(0, vec![v_zero, v_zero]),
                 else_target: ret_target(vec![]),
             },
-        )]);
+        )], pre_init: vec![] };
         // When loop_again=false, returns immediately.
         assert_eq!(eval_biir(&blocks, &[false, false]), Some(vec![]));
         // When loop_again=true → loops once (next iter gets loop_again=false via Zero) → returns.

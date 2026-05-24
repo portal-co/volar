@@ -69,6 +69,7 @@ pub fn raise_bits_to_z3<P: Clone + Default>(
             .iter()
             .map(|b| lift_block(b, bit_ty_id, z3_ty_id))
             .collect(),
+        pre_init: blocks.pre_init.clone(),
     }
 }
 

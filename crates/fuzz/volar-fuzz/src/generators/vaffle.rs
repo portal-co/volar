@@ -168,6 +168,7 @@ pub fn interpret_vaffle(
         funcs: vec![FuncDecl::Body(body)],
         sigs: vec![sig],
         exports: BTreeMap::new(),
+        pre_init: vec![],
     };
 
     (module, FuncId(0), param_widths)
@@ -395,6 +396,7 @@ fn interpret_vaffle_extended_inner(
         funcs: vec![FuncDecl::Body(body)],
         sigs: vec![sig],
         exports: std::collections::BTreeMap::new(),
+        pre_init: vec![],
     };
 
     (module, FuncId(0), param_widths)
@@ -511,6 +513,7 @@ pub fn interpret_vaffle_multiblock(
         funcs: vec![FuncDecl::Body(body)],
         sigs: vec![sig],
         exports: std::collections::BTreeMap::new(),
+        pre_init: vec![],
     };
 
     (module, FuncId(0), param_widths)
@@ -717,6 +720,7 @@ pub fn interpret_vaffle_diamond(
         funcs: vec![FuncDecl::Body(body)],
         sigs: vec![sig],
         exports: std::collections::BTreeMap::new(),
+        pre_init: vec![],
     };
 
     (module, FuncId(0), param_widths)

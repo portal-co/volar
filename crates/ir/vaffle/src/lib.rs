@@ -1,7 +1,7 @@
 #![no_std]
 
 use alloc::{collections::btree_map::BTreeMap, string::String, vec::Vec};
-use volar_ir_common::{Constant, IrType, OracleDecl, ActionDecl, Stmt, Type, TypeId, TypeTable};
+use volar_ir_common::{Constant, IrType, OracleDecl, ActionDecl, PreInitSegment, Stmt, Type, TypeId, TypeTable};
 
 extern crate alloc;
 
@@ -23,6 +23,8 @@ pub struct Module {
     pub funcs: Vec<FuncDecl>,
     pub sigs: Vec<SigDecl>,
     pub exports: BTreeMap<String, FuncId>,
+    /// Pre-initialised storage segments (from WASM active data segments).
+    pub pre_init: Vec<PreInitSegment>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]

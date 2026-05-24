@@ -29,7 +29,7 @@ pub use volar_ir_common::IrType as IRType;
 pub use volar_ir_common::TypeTable as IRTypes;
 
 /// Re-export oracle/action/rng declaration types so callers only need `volar_ir`.
-pub use volar_ir_common::{ActionDecl, OracleDecl, RngDecl};
+pub use volar_ir_common::{ActionDecl, OracleDecl, PreInitSegment, RngDecl};
 
 // ============================================================================
 // Blocks and control flow
@@ -56,11 +56,19 @@ pub struct IRBlocks<P: Clone + Default = ()> {
     pub rngs: Vec<RngDecl>,
     /// The blocks of the circuit, in order.  Block 0 is the entry.
     pub blocks: Vec<IRBlock<P>>,
+    /// Pre-initialised storage segments propagated from WASM data sections.
+    pub pre_init: alloc::vec::Vec<PreInitSegment>,
 }
 impl<P: Clone + Default> IRBlocks<P> {
     /// Construct an `IRBlocks` with no oracle, action, or RNG declarations.
     pub fn new(blocks: Vec<IRBlock<P>>) -> Self {
-        IRBlocks { oracles: alloc::vec![], actions: alloc::vec![], rngs: alloc::vec![], blocks }
+        IRBlocks {
+            oracles: alloc::vec![],
+            actions: alloc::vec![],
+            rngs: alloc::vec![],
+            blocks,
+            pre_init: alloc::vec![],
+        }
     }
 
     pub fn is_movfuscated(&self) -> bool {
@@ -127,6 +135,7 @@ impl<P: Clone + Default> IRBlocks<P> {
             actions: self.actions,
             rngs: self.rngs,
             blocks: self.blocks.into_iter().map(|b| b.map_prov_with_handler(handler)).collect(),
+            pre_init: self.pre_init,
         }
     }
 }

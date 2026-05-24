@@ -22,7 +22,7 @@ fn cfg_default() -> VirtualizeConfig {
 // ============================================================================
 
 fn three_block_passthrough() -> BIrBlocks {
-    BIrBlocks(vec![
+    BIrBlocks { blocks: vec![
         BIrBlock {
             params: 1,
             stmts: vec![],
@@ -50,7 +50,7 @@ fn three_block_passthrough() -> BIrBlocks {
                 args: vec![IRVarId(0)],
             }),
         },
-    ])
+    ], pre_init: vec![] }
 }
 
 #[test]
@@ -90,7 +90,7 @@ fn bir_passthrough_oblivious_is_movfuscated_shape() {
     // Oblivious dispatch collapses the virt output through
     // `movfuscate_biir`, producing a single self-looping block.
     assert_eq!(
-        virt.blocks.0.len(),
+        virt.blocks.blocks.len(),
         1,
         "oblivious dispatch must produce the movfuscated single-block shape"
     );
@@ -107,7 +107,7 @@ fn xor_and_chain() -> BIrBlocks {
     // block 1: params=[x]
     //   y = Not(x)
     //   return [y]
-    BIrBlocks(vec![
+    BIrBlocks { blocks: vec![
         BIrBlock {
             params: 2,
             stmts: vec![BIrStmt::Xor(IRVarId(0), IRVarId(1))],
@@ -126,7 +126,7 @@ fn xor_and_chain() -> BIrBlocks {
                 args: vec![IRVarId(1)],
             }),
         },
-    ])
+    ], pre_init: vec![] }
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn bir_xor_and_chain_semantics() {
 
 #[test]
 fn bir_single_block_is_trivial() {
-    let blocks = BIrBlocks(vec![BIrBlock {
+    let blocks = BIrBlocks { blocks: vec![BIrBlock {
         params: 1,
         stmts: vec![BIrStmt::Not(IRVarId(0))],
         stmt_provs: vec![()],
@@ -154,7 +154,7 @@ fn bir_single_block_is_trivial() {
             block: IRBlockTargetId::Return,
             args: vec![IRVarId(1)],
         }),
-    }]);
+    }], pre_init: vec![] };
     let ref_out = eval_biir(&blocks, &[true]).expect("ref eval");
     assert_eq!(ref_out, vec![false]);
 
@@ -181,7 +181,7 @@ fn bir_condjmp_two_branch() -> BIrBlocks {
     // block 2: params=[a]  -- return 0
     //   zero = Zero
     //   return [zero]
-    BIrBlocks(vec![
+    BIrBlocks { blocks: vec![
         BIrBlock {
             params: 1,
             stmts: vec![],
@@ -216,7 +216,7 @@ fn bir_condjmp_two_branch() -> BIrBlocks {
                 args: vec![IRVarId(1)],
             }),
         },
-    ])
+    ], pre_init: vec![] }
 }
 
 #[test]

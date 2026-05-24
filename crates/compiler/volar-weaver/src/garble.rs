@@ -173,7 +173,7 @@ where
         "weave_evaluator: circuit must satisfy is_circuit() (single block with Return terminator)"
     );
 
-    let block = &circuit.0[0];
+    let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
 
@@ -348,7 +348,7 @@ where
         "weave_garbler: circuit must satisfy is_circuit() (single block with Return terminator)"
     );
 
-    let block = &circuit.0[0];
+    let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
 
@@ -543,7 +543,7 @@ where
         "weave_into_gc: circuit must satisfy is_circuit() (single block with Return terminator)"
     );
 
-    let block = &circuit.0[0];
+    let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
 
@@ -751,7 +751,7 @@ where
         "weave_eval_from_setup: circuit must satisfy is_circuit()"
     );
 
-    let block = &circuit.0[0];
+    let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
 

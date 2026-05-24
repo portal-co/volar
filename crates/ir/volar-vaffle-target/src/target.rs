@@ -141,6 +141,7 @@ impl VaffleTarget {
                 funcs: vec![],
                 sigs: vec![],
                 exports: BTreeMap::new(),
+                pre_init: vec![],
             },
             func: None,
             struct_widths: vec![],

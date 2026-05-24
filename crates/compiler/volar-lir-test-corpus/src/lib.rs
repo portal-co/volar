@@ -114,7 +114,7 @@ use volar_ir_common::{Constant, IrType as CommonIrType, Type};
 
 /// 1-bit identity: return the input.
 pub fn make_biir_identity() -> BIrBlocks {
-    BIrBlocks(vec![BIrBlock {
+    BIrBlocks { blocks: vec![BIrBlock {
         params: 1,
         stmts: vec![],
         stmt_provs: vec![],
@@ -122,12 +122,12 @@ pub fn make_biir_identity() -> BIrBlocks {
             block: IRBlockTargetId::Return,
             args: vec![IRVarId(0)],
         }),
-    }])
+    }], pre_init: vec![] }
 }
 
 /// 1-bit NOT.
 pub fn make_biir_not() -> BIrBlocks {
-    BIrBlocks(vec![BIrBlock {
+    BIrBlocks { blocks: vec![BIrBlock {
         params: 1,
         stmts: vec![BIrStmt::Not(IRVarId(0))],
         stmt_provs: vec![],
@@ -135,12 +135,12 @@ pub fn make_biir_not() -> BIrBlocks {
             block: IRBlockTargetId::Return,
             args: vec![IRVarId(1)],
         }),
-    }])
+    }], pre_init: vec![] }
 }
 
 /// 2-bit AND.
 pub fn make_biir_and() -> BIrBlocks {
-    BIrBlocks(vec![BIrBlock {
+    BIrBlocks { blocks: vec![BIrBlock {
         params: 2,
         stmts: vec![BIrStmt::And(IRVarId(0), IRVarId(1))],
         stmt_provs: vec![],
@@ -148,12 +148,12 @@ pub fn make_biir_and() -> BIrBlocks {
             block: IRBlockTargetId::Return,
             args: vec![IRVarId(2)],
         }),
-    }])
+    }], pre_init: vec![] }
 }
 
 /// 2-bit XOR.
 pub fn make_biir_xor() -> BIrBlocks {
-    BIrBlocks(vec![BIrBlock {
+    BIrBlocks { blocks: vec![BIrBlock {
         params: 2,
         stmts: vec![BIrStmt::Xor(IRVarId(0), IRVarId(1))],
         stmt_provs: vec![],
@@ -161,12 +161,12 @@ pub fn make_biir_xor() -> BIrBlocks {
             block: IRBlockTargetId::Return,
             args: vec![IRVarId(2)],
         }),
-    }])
+    }], pre_init: vec![] }
 }
 
 /// Half adder: 2 inputs → (sum=XOR, carry=AND) packed as 2-bit output.
 pub fn make_biir_half_adder() -> BIrBlocks {
-    BIrBlocks(vec![BIrBlock {
+    BIrBlocks { blocks: vec![BIrBlock {
         params: 2,
         stmts: vec![
             BIrStmt::Xor(IRVarId(0), IRVarId(1)), // var 2 = sum
@@ -177,12 +177,12 @@ pub fn make_biir_half_adder() -> BIrBlocks {
             block: IRBlockTargetId::Return,
             args: vec![IRVarId(2), IRVarId(3)], // [sum, carry] packed LSB-first
         }),
-    }])
+    }], pre_init: vec![] }
 }
 
 /// Two-block NOT: block 0 → block 1 → return NOT(input).
 pub fn make_biir_two_block_not() -> BIrBlocks {
-    BIrBlocks(vec![
+    BIrBlocks { blocks: vec![
         BIrBlock {
             params: 1,
             stmts: vec![],
@@ -201,13 +201,13 @@ pub fn make_biir_two_block_not() -> BIrBlocks {
                 args: vec![IRVarId(1)],
             }),
         },
-    ])
+    ], pre_init: vec![] }
 }
 
 /// Self-loop: if input=1 return input, else loop with constant 1.
 /// Output is always 1 (terminates in ≤1 iteration).
 pub fn make_biir_self_loop() -> BIrBlocks {
-    BIrBlocks(vec![BIrBlock {
+    BIrBlocks { blocks: vec![BIrBlock {
         params: 1,
         stmts: vec![BIrStmt::One], // var 1 = constant 1
         stmt_provs: vec![],
@@ -222,7 +222,7 @@ pub fn make_biir_self_loop() -> BIrBlocks {
                 args: vec![IRVarId(1)],
             },
         },
-    }])
+    }], pre_init: vec![] }
 }
 
 // ============================================================================

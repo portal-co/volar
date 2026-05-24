@@ -49,7 +49,7 @@ fn simple_ir_module() -> SavedIrBlocks {
 
     SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], blocks: vec![block] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block] },
     }
 }
 
@@ -91,7 +91,7 @@ fn ir_type_table() {
     let m = SavedIrBlocks {
         types,
         blocks: IRBlocks {
-            oracles: vec![], actions: vec![], rngs: vec![],
+            oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![],
             blocks: vec![IRBlock {
                 params:     vec![],
                 stmts:      vec![],
@@ -120,6 +120,7 @@ fn ir_decls() {
             oracles: vec![OracleDecl { name: "my_oracle".into(), params: vec![ty(0)], results: vec![ty(1)] }],
             actions: vec![ActionDecl { name: "my_action".into(), params: vec![ty(1)], results: vec![ty(0)] }],
             rngs:    vec![RngDecl { name: "my_rng".into(), ty: ty(0) }],
+            pre_init: vec![],
             blocks: vec![IRBlock {
                 params:     vec![],
                 stmts:      vec![],
@@ -147,7 +148,7 @@ fn ir_stmt_storage_read_write() {
     };
     round_trip_ir(SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], blocks: vec![block] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block] },
     });
 }
 
@@ -162,7 +163,7 @@ fn ir_stmt_transmute() {
     };
     round_trip_ir(SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], blocks: vec![block] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block] },
     });
 }
 
@@ -180,7 +181,7 @@ fn ir_stmt_poly() {
     };
     round_trip_ir(SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], blocks: vec![block] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block] },
     });
 }
 
@@ -201,7 +202,7 @@ fn ir_stmt_rot_merge_splat_shuffle() {
     };
     round_trip_ir(SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], blocks: vec![block] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block] },
     });
 }
 
@@ -233,7 +234,7 @@ fn ir_stmt_oracle_action_rng() {
     };
     round_trip_ir(SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], blocks: vec![block] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block] },
     });
 }
 
@@ -260,7 +261,7 @@ fn ir_terminator_jmp_cond() {
     };
     round_trip_ir(SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], blocks: vec![block0, block1] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block0, block1] },
     });
 }
 
@@ -284,7 +285,7 @@ fn ir_terminator_jmp_table() {
     };
     round_trip_ir(SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], blocks: vec![block0, block1] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block0, block1] },
     });
 }
 
@@ -299,7 +300,7 @@ fn ir_string_escaping() {
     };
     round_trip_ir(SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], blocks: vec![block] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block] },
     });
 }
 
@@ -315,7 +316,7 @@ fn ir_constant_large() {
     };
     round_trip_ir(SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], blocks: vec![block] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block] },
     });
 }
 
@@ -340,7 +341,7 @@ fn bir_simple_round_trip() {
             block: IRBlockTargetId::Return, args: vec![v(6)],
         }),
     };
-    round_trip_bir(SavedBIrBlocks { blocks: BIrBlocks(vec![block]) });
+    round_trip_bir(SavedBIrBlocks { blocks: BIrBlocks { blocks: vec![block], pre_init: vec![] } });
 }
 
 #[test]
@@ -360,7 +361,7 @@ fn bir_oracle_action_rng() {
             block: IRBlockTargetId::Return, args: vec![v(8)],
         }),
     };
-    round_trip_bir(SavedBIrBlocks { blocks: BIrBlocks(vec![block]) });
+    round_trip_bir(SavedBIrBlocks { blocks: BIrBlocks { blocks: vec![block], pre_init: vec![] } });
 }
 
 #[test]
@@ -376,7 +377,7 @@ fn bir_storage() {
             block: IRBlockTargetId::Return, args: vec![v(4)],
         }),
     };
-    round_trip_bir(SavedBIrBlocks { blocks: BIrBlocks(vec![block]) });
+    round_trip_bir(SavedBIrBlocks { blocks: BIrBlocks { blocks: vec![block], pre_init: vec![] } });
 }
 
 #[test]
@@ -397,7 +398,7 @@ fn bir_cond_jmp() {
         stmt_provs: vec![],
         terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![v(0)] }),
     };
-    round_trip_bir(SavedBIrBlocks { blocks: BIrBlocks(vec![block0, block1]) });
+    round_trip_bir(SavedBIrBlocks { blocks: BIrBlocks { blocks: vec![block0, block1], pre_init: vec![] } });
 }
 
 #[test]
@@ -418,7 +419,7 @@ fn bir_multi_block() {
             block: IRBlockTargetId::Return, args: vec![v(1)],
         }),
     };
-    round_trip_bir(SavedBIrBlocks { blocks: BIrBlocks(vec![block0, block1]) });
+    round_trip_bir(SavedBIrBlocks { blocks: BIrBlocks { blocks: vec![block0, block1], pre_init: vec![] } });
 }
 
 // ============================================================================
