@@ -41,9 +41,11 @@ use alloc::{
 
 use volar_compiler::{
     ir::{
-        AssociatedType, ExternalKind, IrBlock, IrExpr, IrFunction, IrGenericParam, IrGenericParamKind,
-        IrLit, IrModule, IrParam, IrPattern, IrStmt, IrTraitBound, IrType, IrWherePredicate,
-        MathTrait, MethodKind, PrimitiveType, SpecBinOp, StdMethod, StructKind, TraitKind,
+        AssociatedType, ExternalKind, IrAnyFunction, IrBlock, IrCfgBlock, IrCfgBody, IrCfgFunction,
+        IrCfgJump, IrCfgModule, IrCfgTerminator, IrExpr, IrFunction, IrGenericParam,
+        IrGenericParamKind, IrLit, IrModule, IrParam, IrPattern, IrStmt, IrTraitBound, IrType,
+        IrWherePredicate, MathTrait, MethodKind, PrimitiveType, SpecBinOp, StdMethod, StructKind,
+        TraitKind,
     },
     linkage::LinkageSystem,
 };
@@ -2500,6 +2502,15 @@ impl VoleIrCtx {
             }
         }
 
+        self.emit_circuit_stmts(block, types, mode);
+    }
+
+    /// Emit only the per-stmt gate computation.
+    /// Caller must pre-populate `self.wires` (input wires) and `self.stor` (storage cells)
+    /// before calling, then may read back `self.stor` for updated cell names after.
+    fn emit_circuit_stmts(&mut self, block: &CirBlock, types: &CirTypes, mode: &StorageMode) {
+        let p = block.params.len();
+
         // Process stmts.
         for (si, stmt) in block.stmts.iter().enumerate() {
             let var_id = (p + si) as u32;
@@ -2948,6 +2959,771 @@ pub fn weave_vole_verifier_ir_with_mode(
     };
     if let Some(ls) = linkage { ls.apply(&mut module); }
     (module, trace)
+}
+
+// ============================================================================
+// Network IR weaver — shared helpers
+// ============================================================================
+
+/// `Result<T, E>` — two-arg generic Result.
+fn net_result_type(ok: IrType, err: IrType) -> IrType {
+    IrType::Struct { kind: StructKind::Custom("Result".into()), type_args: vec![ok, err] }
+}
+
+/// `<Tr as volar_net::VoleTransport<N, T>>::Error`
+fn net_tr_error_type() -> IrType {
+    IrType::Projection {
+        base: Box::new(IrType::TypeParam("Tr".into())),
+        trait_path: Some("volar_net::VoleTransport".into()),
+        trait_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("T".into())],
+        assoc: AssociatedType::Other("Error".into()),
+    }
+}
+
+/// `transport.METHOD(args...)?`
+fn net_transport_try(method: &str, args: Vec<IrExpr>) -> IrExpr {
+    IrExpr::Try(Box::new(IrExpr::MethodCall {
+        receiver: Box::new(var("transport")),
+        method: MethodKind::Other(method.into()),
+        type_args: vec![],
+        args,
+    }))
+}
+
+/// `Ok(expr)`
+fn net_ok_expr(inner: IrExpr) -> IrExpr {
+    IrExpr::Call {
+        func: Box::new(IrExpr::Path { segments: vec!["Ok".into()], type_args: vec![] }),
+        args: vec![inner],
+    }
+}
+
+/// `&[hat_0, ...]` — slice reference to fixed array of named wires.
+fn net_hats_slice(hat_names: &[String]) -> IrExpr {
+    ref_expr(IrExpr::FixedArray(hat_names.iter().map(|h| var(h)).collect()))
+}
+
+/// `volar_net::vope_bit(&wire)`
+fn net_vope_bit_call(wire: &str) -> IrExpr {
+    IrExpr::Call {
+        func: Box::new(IrExpr::Path {
+            segments: vec!["volar_net".into(), "vope_bit".into()],
+            type_args: vec![],
+        }),
+        args: vec![ref_expr(var(wire))],
+    }
+}
+
+/// `Q { q: Array::default() }` — zero Q value (verifier zero wire).
+fn net_q_zero_expr() -> IrExpr {
+    IrExpr::StructExpr {
+        kind: StructKind::Custom("Q".into()),
+        type_args: vec![],
+        fields: vec![("q".into(), IrExpr::Call {
+            func: Box::new(IrExpr::Path {
+                segments: vec!["Array".into(), "default".into()],
+                type_args: vec![IrType::TypeParam("T".into()), IrType::TypeParam("N".into())],
+            }),
+            args: vec![],
+        })],
+        rest: None,
+    }
+}
+
+/// `Vope { u: Array::default(), v: Array::default() }` — zero prover wire.
+fn net_vope_zero_expr() -> IrExpr {
+    IrExpr::StructExpr {
+        kind: StructKind::Custom("Vope".into()),
+        type_args: vec![],
+        fields: vec![
+            ("u".into(), array_default()),
+            ("v".into(), IrExpr::Call {
+                func: Box::new(IrExpr::Path {
+                    segments: vec!["Array".into(), "default".into()],
+                    type_args: vec![IrType::TypeParam("T".into()), IrType::TypeParam("N".into())],
+                }),
+                args: vec![],
+            }),
+        ],
+        rest: None,
+    }
+}
+
+fn net_vole_transport_bound() -> IrTraitBound {
+    IrTraitBound {
+        trait_kind: TraitKind::External { path: vec!["volar_net".into(), "VoleTransport".into()] },
+        type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("T".into())],
+        assoc_bindings: vec![],
+    }
+}
+
+/// Generics and where clause for the net prover IR variants (adds Tr + PartialEq).
+fn net_prover_ir_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredicate>) {
+    let (mut generics, mut wh) = prover_generics_and_where();
+    generics.push(IrGenericParam {
+        name: "Tr".into(),
+        kind: IrGenericParamKind::Type,
+        const_ty: None,
+        bounds: vec![net_vole_transport_bound()],
+        default: None,
+    });
+    // vope_bit requires PartialEq on T
+    if let Some(IrWherePredicate::TypeBound { bounds, .. }) = wh.last_mut() {
+        bounds.push(IrTraitBound {
+            trait_kind: TraitKind::Math(MathTrait::PartialEq),
+            type_args: vec![],
+            assoc_bindings: vec![],
+        });
+    }
+    (generics, wh)
+}
+
+/// Generics and where clause for the net verifier IR variants.
+fn net_verifier_ir_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredicate>) {
+    let (mut generics, wh) = verifier_generics_and_where();
+    generics.push(IrGenericParam {
+        name: "Tr".into(),
+        kind: IrGenericParamKind::Type,
+        const_ty: None,
+        bounds: vec![net_vole_transport_bound()],
+        default: None,
+    });
+    (generics, wh)
+}
+
+fn net_transport_param() -> IrParam {
+    IrParam {
+        name: "transport".into(),
+        ty: IrType::Reference {
+            mutable: true,
+            elem: Box::new(IrType::TypeParam("Tr".into())),
+        },
+    }
+}
+
+fn net_bool_type() -> IrType { IrType::Primitive(PrimitiveType::Bool) }
+
+fn net_usize_type() -> IrType { IrType::Primitive(PrimitiveType::Usize) }
+
+/// `&[Q<N,T>]` — slice type for q_ands.
+fn net_q_slice_type() -> IrType {
+    IrType::Reference {
+        mutable: false,
+        elem: Box::new(IrType::Array {
+            kind: volar_compiler::ir::ArrayKind::Slice,
+            elem: Box::new(q_type()),
+            len: volar_compiler::ir::ArrayLength::Const(0),
+        }),
+    }
+}
+
+/// Emit `if is_first { then_expr } else { else_expr }` as a let statement.
+fn net_if_first_let(name: &str, then_expr: IrExpr, else_expr: IrExpr) -> IrStmt {
+    IrStmt::Let {
+        pattern: IrPattern::ident(name),
+        ty: None,
+        init: Some(IrExpr::If {
+            cond: Box::new(var("is_first")),
+            then_branch: IrBlock { stmts: vec![], stmt_provs: vec![], expr: Some(Box::new(then_expr)) },
+            else_branch: Some(Box::new(else_expr)),
+        }),
+    }
+}
+
+/// For each storage cell, push a `let _sinit_... = if is_first { const } else { param.clone() };`
+/// into `stmts` and pre-populate `ctx.stor`. Returns ordered list of cell keys.
+fn net_emit_conditional_storage_init(
+    ctx: &mut VoleIrCtx,
+    storage_sizes: &StorageSizes,
+    pre_init: &[PreInitSegment],
+    types: &CirTypes,
+    is_prover: bool,
+) -> Vec<(u32, u32, usize)> {
+    let mut cell_keys: Vec<(u32, u32, usize)> = Vec::new();
+    for (&(sid, tid), &count) in storage_sizes {
+        let cell_tid = CirTyId(tid);
+        let vw = cir_type_width(&cell_tid, types);
+        for ci in 0..count {
+            let name = format!("_sinit_{}_{}_{}", sid, tid, ci);
+            let pi_val = lookup_pre_init_value(pre_init, sid, tid, ci);
+            if vw == 1 {
+                let bit = pi_val.map(|c| c.lo & 1 == 1).unwrap_or(false);
+                let then_expr = if bit {
+                    if is_prover { clone_expr(var("vope_one")) } else { clone_expr(var("q_one")) }
+                } else {
+                    if is_prover { net_vope_zero_expr() } else { net_q_zero_expr() }
+                };
+                let param_name = format!("{}_in", name);
+                ctx.stmts.push(net_if_first_let(&name, then_expr, clone_expr(var(&param_name))));
+                cell_keys.push((sid, tid, ci));
+            } else {
+                // Multi-bit: each sub-wire is a separate param.
+                let val = pi_val.map(|c| c.lo).unwrap_or(0);
+                for j in 0..vw {
+                    let sub = format!("{}_{}", name, j);
+                    let bit = (val >> j) & 1 == 1;
+                    let then_expr = if bit {
+                        if is_prover { clone_expr(var("vope_one")) } else { clone_expr(var("q_one")) }
+                    } else {
+                        if is_prover { net_vope_zero_expr() } else { net_q_zero_expr() }
+                    };
+                    let param_name = format!("{}_{}_in", name, j);
+                    ctx.stmts.push(net_if_first_let(&sub, then_expr, clone_expr(var(&param_name))));
+                }
+                cell_keys.push((sid, tid, ci));
+            }
+            ctx.stor.insert((sid, tid, ci), name);
+        }
+    }
+    cell_keys
+}
+
+/// Collect updated cell wire names from `ctx.stor` as back-edge args.
+fn net_collect_cell_back_args(
+    ctx: &VoleIrCtx,
+    storage_sizes: &StorageSizes,
+    types: &CirTypes,
+) -> Vec<IrExpr> {
+    let mut args: Vec<IrExpr> = Vec::new();
+    for (&(sid, tid), &_count) in storage_sizes {
+        let cell_tid = CirTyId(tid);
+        let vw = cir_type_width(&cell_tid, types);
+        let count = _count;
+        for ci in 0..count {
+            let name = &ctx.stor[&(sid, tid, ci)];
+            if vw == 1 {
+                args.push(clone_expr(var(name)));
+            } else {
+                for j in 0..vw {
+                    args.push(clone_expr(var(&format!("{}_{}", name, j))));
+                }
+            }
+        }
+    }
+    args
+}
+
+/// Build Block 1 params for storage cells (one or vw params per cell).
+fn net_cell_block_params(
+    storage_sizes: &StorageSizes,
+    types: &CirTypes,
+    wire_type: IrType,
+) -> Vec<IrParam> {
+    let mut params: Vec<IrParam> = Vec::new();
+    for (&(sid, tid), &count) in storage_sizes {
+        let cell_tid = CirTyId(tid);
+        let vw = cir_type_width(&cell_tid, types);
+        for ci in 0..count {
+            let name = format!("_sinit_{}_{}_{}", sid, tid, ci);
+            if vw == 1 {
+                params.push(IrParam { name: format!("{}_in", name), ty: wire_type.clone() });
+            } else {
+                for j in 0..vw {
+                    params.push(IrParam { name: format!("{}_{}_in", name, j), ty: wire_type.clone() });
+                }
+            }
+        }
+    }
+    params
+}
+
+/// Build Block 0 → Block 1 dummy cell args (all zeros for prover/verifier).
+fn net_cell_dummy_args(
+    storage_sizes: &StorageSizes,
+    types: &CirTypes,
+    is_prover: bool,
+) -> Vec<IrExpr> {
+    let mut args: Vec<IrExpr> = Vec::new();
+    for (&(_sid, tid), &count) in storage_sizes {
+        let cell_tid = CirTyId(tid);
+        let vw = cir_type_width(&cell_tid, types);
+        for _ci in 0..count {
+            let n = if vw == 1 { 1 } else { vw };
+            for _ in 0..n {
+                args.push(if is_prover { net_vope_zero_expr() } else { net_q_zero_expr() });
+            }
+        }
+    }
+    args
+}
+
+// ============================================================================
+// Network IR weaver — flat variants
+// ============================================================================
+
+/// Weave a single-block Volar IR circuit into a VOLE **prover** network function (flat).
+///
+/// Generated signature:
+/// ```text
+/// fn vole_prove_net_ir_<NAME><N, T, Tr: VoleTransport<N, T>>(
+///     vope_one: Vope<N, T, U1>, w_0: Vope, ..., transport: &mut Tr,
+/// ) -> Result<Vope<N, T, U1>, Tr::Error>
+/// ```
+pub fn weave_net_vole_prover_ir(
+    circuit: &IRBlocks,
+    types: &CirTypes,
+    name: &str,
+    storage_sizes: &StorageSizes,
+    linkage: Option<&LinkageSystem>,
+) -> IrModule<IrFunction> {
+    assert!(circuit.is_circuit(), "weave_net_vole_prover_ir: circuit must satisfy is_circuit()");
+    let block = &circuit.blocks[0];
+    let num_params = block.params.len();
+    let mode = StorageMode::Tree(storage_sizes.clone());
+    let (generics, where_clause) = net_prover_ir_generics_and_where();
+
+    let mut params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
+    for i in 0..num_params {
+        params.push(IrParam { name: format!("w_{}", i), ty: vope_type() });
+    }
+    params.push(net_transport_param());
+
+    let ret_type = net_result_type(vope_type(), net_tr_error_type());
+
+    let mut ctx = VoleIrCtx::new(true);
+    ctx.emit_circuit(block, types, &mode, &circuit.pre_init);
+
+    let hats_ref = net_hats_slice(&ctx.hat_names);
+    ctx.stmts.push(IrStmt::Semi(net_transport_try("send_hats", vec![hats_ref])));
+    ctx.stmts.push(IrStmt::Semi(net_transport_try("recv_verdict", vec![])));
+
+    let ret_args = match &block.terminator {
+        IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+        _ => panic!("weave_net_vole_prover_ir: expected Jmp(Return)"),
+    };
+    let output_expr = if ret_args.len() == 1 {
+        clone_expr(var(ctx.scalar(&ret_args[0])))
+    } else {
+        IrExpr::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect())
+    };
+
+    let func = IrFunction {
+        name: format!("vole_prove_net_ir_{}", name),
+        module_path: vec![],
+        generics,
+        receiver: None,
+        params,
+        return_type: Some(ret_type),
+        where_clause,
+        body: IrBlock {
+            stmts: ctx.stmts,
+            stmt_provs: vec![],
+            expr: Some(Box::new(net_ok_expr(output_expr))),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+    let mut module = IrModule {
+        name: format!("weaved_net_prover_ir_{}", name),
+        functions: vec![func],
+        structs: vec![], enums: vec![], traits: vec![], impls: vec![],
+        type_aliases: vec![], consts: vec![],
+    };
+    if let Some(ls) = linkage { ls.apply(&mut module); }
+    module
+}
+
+/// Weave a single-block Volar IR circuit into a VOLE **verifier** network function (flat).
+///
+/// Generated signature:
+/// ```text
+/// fn vole_verify_net_ir_<NAME><N, T, Tr: VoleTransport<N, T>>(
+///     delta: &Delta<N,T>, q_and_0: Q, hat_0: Array<T,N>, ..., q_one: Q, w_0: Q, ..., transport: &mut Tr,
+/// ) -> Result<bool, Tr::Error>
+/// ```
+pub fn weave_net_vole_verifier_ir(
+    circuit: &IRBlocks,
+    types: &CirTypes,
+    name: &str,
+    storage_sizes: &StorageSizes,
+    linkage: Option<&LinkageSystem>,
+) -> IrModule<IrFunction> {
+    assert!(circuit.is_circuit(), "weave_net_vole_verifier_ir: circuit must satisfy is_circuit()");
+    let block = &circuit.blocks[0];
+    let num_params = block.params.len();
+    let mode = StorageMode::Tree(storage_sizes.clone());
+    let and_count = count_ir_ands(block, types, &mode);
+    let (generics, where_clause) = net_verifier_ir_generics_and_where();
+
+    let mut params: Vec<IrParam> = vec![
+        IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
+    ];
+    for k in 0..and_count {
+        params.push(IrParam { name: format!("q_and_{}", k), ty: q_type() });
+        params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
+    }
+    params.push(IrParam { name: "q_one".into(), ty: q_type() });
+    for i in 0..num_params {
+        params.push(IrParam { name: format!("w_{}", i), ty: q_type() });
+    }
+    params.push(net_transport_param());
+
+    let ret_type = net_result_type(net_bool_type(), net_tr_error_type());
+
+    let mut ctx = VoleIrCtx::new(false);
+    ctx.stmts.push(IrStmt::Let {
+        pattern: IrPattern::Ident { mutable: true, name: "all_ok".into(), subpat: None },
+        ty: None,
+        init: Some(IrExpr::Lit(IrLit::Bool(true))),
+    });
+    ctx.emit_circuit(block, types, &mode, &circuit.pre_init);
+
+    ctx.stmts.push(IrStmt::Semi(net_transport_try("send_verdict", vec![var("all_ok")])));
+
+    let ret_args = match &block.terminator {
+        IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+        _ => panic!("weave_net_vole_verifier_ir: expected Jmp(Return)"),
+    };
+    let output_expr = if ret_args.len() == 1 {
+        clone_expr(var(ctx.scalar(&ret_args[0])))
+    } else {
+        IrExpr::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect())
+    };
+
+    let func = IrFunction {
+        name: format!("vole_verify_net_ir_{}", name),
+        module_path: vec![],
+        generics,
+        receiver: None,
+        params,
+        return_type: Some(ret_type),
+        where_clause,
+        body: IrBlock {
+            stmts: ctx.stmts,
+            stmt_provs: vec![],
+            expr: Some(Box::new(net_ok_expr(output_expr))),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+    let mut module = IrModule {
+        name: format!("weaved_net_verifier_ir_{}", name),
+        functions: vec![func],
+        structs: vec![], enums: vec![], traits: vec![], impls: vec![],
+        type_aliases: vec![], consts: vec![],
+    };
+    if let Some(ls) = linkage { ls.apply(&mut module); }
+    module
+}
+
+// ============================================================================
+// Network IR weaver — loop variants
+// ============================================================================
+
+/// Weave a single-block Volar IR circuit into a VOLE **prover** CFG loop with
+/// streaming transport.
+///
+/// Storage is initialized on the first iteration via an `is_first: bool`
+/// CFG parameter; subsequent iterations carry the updated cell values as
+/// loop state.
+///
+/// Generated signature:
+/// ```text
+/// fn vole_prove_net_ir_loop_<NAME><N, T, Tr: VoleTransport<N, T>>(
+///     vope_one: Vope, init_w_0: Vope, ..., transport: &mut Tr,
+/// ) -> Result<Vope, Tr::Error>
+/// ```
+pub fn weave_net_vole_prover_ir_loop(
+    circuit: &IRBlocks,
+    types: &CirTypes,
+    name: &str,
+    storage_sizes: &StorageSizes,
+    linkage: Option<&LinkageSystem>,
+) -> IrCfgModule {
+    assert!(circuit.is_circuit(), "weave_net_vole_prover_ir_loop: circuit must satisfy is_circuit()");
+    let block = &circuit.blocks[0];
+    let num_params = block.params.len();
+    let mode = StorageMode::Tree(storage_sizes.clone());
+    let (generics, where_clause) = net_prover_ir_generics_and_where();
+
+    // Function-level params.
+    let mut func_params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
+    for i in 0..num_params {
+        func_params.push(IrParam { name: format!("init_w{}", i), ty: vope_type() });
+    }
+    func_params.push(net_transport_param());
+
+    let ret_type = net_result_type(vope_type(), net_tr_error_type());
+
+    // ── Block 0: entry ────────────────────────────────────────────────────────
+    let mut b0_args: Vec<IrExpr> = (0..num_params)
+        .map(|i| clone_expr(var(&format!("init_w{}", i))))
+        .collect();
+    b0_args.extend(net_cell_dummy_args(storage_sizes, types, true));
+    b0_args.push(IrExpr::Lit(IrLit::Bool(true))); // is_first = true
+    let block0 = IrCfgBlock {
+        params: vec![],
+        stmts: vec![],
+        stmt_provs: vec![],
+        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args }),
+    };
+
+    // ── Block 1: loop body ─────────────────────────────────────────────────
+    let mut b1_params: Vec<IrParam> = (0..num_params)
+        .map(|i| IrParam { name: format!("w{}", i), ty: vope_type() })
+        .collect();
+    b1_params.extend(net_cell_block_params(storage_sizes, types, vope_type()));
+    b1_params.push(IrParam { name: "is_first".into(), ty: net_bool_type() });
+
+    let mut ctx = VoleIrCtx::new(true);
+
+    // Register circuit input wires.
+    for i in 0..num_params {
+        ctx.wires.insert(i as u32, WireRepr::Scalar(format!("w{}", i)));
+    }
+
+    // Conditional storage init: if is_first → const else → passed-in param.
+    net_emit_conditional_storage_init(&mut ctx, storage_sizes, &circuit.pre_init, types, true);
+
+    // Gate computation.
+    ctx.emit_circuit_stmts(block, types, &mode);
+
+    // Done bit.
+    let ret_args = match &block.terminator {
+        IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+        _ => panic!("weave_net_vole_prover_ir_loop: expected Jmp(Return)"),
+    };
+    let done_wire = ctx.scalar(ret_args.last().expect("ret_args must be non-empty"));
+    ctx.stmts.push(IrStmt::Let {
+        pattern: IrPattern::ident("done_bit"),
+        ty: None,
+        init: Some(net_vope_bit_call(done_wire)),
+    });
+
+    // Send iteration.
+    let hats_ref = net_hats_slice(&ctx.hat_names);
+    ctx.stmts.push(IrStmt::Semi(net_transport_try(
+        "send_iteration",
+        vec![hats_ref, var("done_bit")],
+    )));
+
+    // Back-edge args: next circuit inputs + updated cells + is_first=false.
+    let next_state_args: Vec<IrExpr> = ret_args[..ret_args.len().saturating_sub(1)]
+        .iter()
+        .map(|v| clone_expr(var(ctx.scalar(v))))
+        .collect();
+    let output_wire = ctx.scalar(&ret_args[0]).to_string();
+    let mut back_args = next_state_args;
+    back_args.extend(net_collect_cell_back_args(&ctx, storage_sizes, types));
+    back_args.push(IrExpr::Lit(IrLit::Bool(false))); // is_first = false
+
+    let b1 = IrCfgBlock {
+        params: b1_params,
+        stmts: ctx.stmts,
+        stmt_provs: vec![],
+        terminator: IrCfgTerminator::CondGoto {
+            cond: var("done_bit"),
+            then_: IrCfgJump { target: 2, args: vec![clone_expr(var(&output_wire))] },
+            else_: IrCfgJump { target: 1, args: back_args },
+        },
+    };
+
+    // ── Block 2: exit ─────────────────────────────────────────────────────
+    let b2 = IrCfgBlock {
+        params: vec![IrParam { name: "output".into(), ty: vope_type() }],
+        stmts: vec![IrStmt::Semi(net_transport_try("recv_verdict", vec![]))],
+        stmt_provs: vec![],
+        terminator: IrCfgTerminator::Return(Some(net_ok_expr(var("output")))),
+    };
+
+    let func = IrCfgFunction {
+        name: format!("vole_prove_net_ir_loop_{}", name),
+        generics,
+        receiver: None,
+        params: func_params,
+        return_type: Some(ret_type),
+        where_clause,
+        external_kind: ExternalKind::Normal,
+        body: IrCfgBody { blocks: vec![block0, b1, b2] },
+    };
+    let mut module: IrCfgModule = IrModule {
+        name: format!("weaved_net_prover_ir_loop_{}", name),
+        functions: vec![IrAnyFunction::Cfg(func)],
+        structs: vec![], enums: vec![], traits: vec![], impls: vec![],
+        type_aliases: vec![], consts: vec![],
+    };
+    if let Some(ls) = linkage { ls.apply_cfg(&mut module); }
+    module
+}
+
+/// Weave a single-block Volar IR circuit into a VOLE **verifier** CFG loop with
+/// streaming transport.
+///
+/// The `is_first: bool` CFG parameter gates storage initialization on the first
+/// iteration. AND Q-shares are supplied pre-allocated in `q_ands[iter*AND_COUNT+k]`.
+///
+/// Generated signature:
+/// ```text
+/// fn vole_verify_net_ir_loop_<NAME><N, T, Tr: VoleTransport<N, T>>(
+///     q_one: Q, delta: Delta, q_ands: &[Q], init_q_0: Q, ..., transport: &mut Tr,
+/// ) -> Result<bool, Tr::Error>
+/// ```
+pub fn weave_net_vole_verifier_ir_loop(
+    circuit: &IRBlocks,
+    types: &CirTypes,
+    name: &str,
+    storage_sizes: &StorageSizes,
+    linkage: Option<&LinkageSystem>,
+) -> IrCfgModule {
+    assert!(circuit.is_circuit(), "weave_net_vole_verifier_ir_loop: circuit must satisfy is_circuit()");
+    let block = &circuit.blocks[0];
+    let num_params = block.params.len();
+    let mode = StorageMode::Tree(storage_sizes.clone());
+    let and_count = count_ir_ands(block, types, &mode);
+    let (generics, where_clause) = net_verifier_ir_generics_and_where();
+
+    // Function-level params.
+    let mut func_params: Vec<IrParam> = vec![
+        IrParam { name: "q_one".into(), ty: q_type() },
+        IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
+        IrParam { name: "q_ands".into(), ty: net_q_slice_type() },
+    ];
+    for i in 0..num_params {
+        func_params.push(IrParam { name: format!("init_q{}", i), ty: q_type() });
+    }
+    func_params.push(net_transport_param());
+
+    let ret_type = net_result_type(net_bool_type(), net_tr_error_type());
+
+    // ── Block 0: entry ───────────────────────────────────────────────────────
+    let mut b0_args: Vec<IrExpr> = (0..num_params)
+        .map(|i| clone_expr(var(&format!("init_q{}", i))))
+        .collect();
+    b0_args.extend(net_cell_dummy_args(storage_sizes, types, false));
+    b0_args.push(IrExpr::Lit(IrLit::Bool(true)));  // all_ok = true
+    b0_args.push(IrExpr::Lit(IrLit::Int(0)));       // iter = 0
+    b0_args.push(IrExpr::Lit(IrLit::Bool(true)));   // is_first = true
+    let block0 = IrCfgBlock {
+        params: vec![],
+        stmts: vec![],
+        stmt_provs: vec![],
+        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args }),
+    };
+
+    // ── Block 1: loop body ─────────────────────────────────────────────────
+    let mut b1_params: Vec<IrParam> = (0..num_params)
+        .map(|i| IrParam { name: format!("q{}", i), ty: q_type() })
+        .collect();
+    b1_params.extend(net_cell_block_params(storage_sizes, types, q_type()));
+    b1_params.push(IrParam { name: "all_ok".into(), ty: net_bool_type() });
+    b1_params.push(IrParam { name: "iter".into(), ty: net_usize_type() });
+    b1_params.push(IrParam { name: "is_first".into(), ty: net_bool_type() });
+
+    let mut ctx = VoleIrCtx::new(false);
+
+    // Receive hats from transport.
+    ctx.stmts.push(IrStmt::Let {
+        pattern: IrPattern::Tuple(vec![
+            IrPattern::ident("iter_hats"),
+            IrPattern::ident("is_sentinel"),
+        ]),
+        ty: None,
+        init: Some(net_transport_try("recv_iteration", vec![
+            IrExpr::Lit(IrLit::Int(and_count as i128)),
+        ])),
+    });
+
+    // Mutable all_ok accumulator for this iteration.
+    ctx.stmts.push(IrStmt::Let {
+        pattern: IrPattern::Ident { mutable: true, name: "all_ok".into(), subpat: None },
+        ty: None,
+        init: Some(var("all_ok")),
+    });
+
+    // Pre-bind q_and_k and hat_k so emit_circuit_stmts can reference them.
+    for k in 0..and_count {
+        let q_and_idx = IrExpr::Binary {
+            op: SpecBinOp::Add,
+            left: Box::new(IrExpr::Binary {
+                op: SpecBinOp::Mul,
+                left: Box::new(var("iter")),
+                right: Box::new(IrExpr::Lit(IrLit::Int(and_count as i128))),
+            }),
+            right: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
+        };
+        ctx.stmts.push(IrStmt::Let {
+            pattern: IrPattern::ident(&format!("q_and_{}", k)),
+            ty: None,
+            init: Some(clone_expr(IrExpr::Index {
+                base: Box::new(var("q_ands")),
+                index: Box::new(q_and_idx),
+            })),
+        });
+        ctx.stmts.push(IrStmt::Let {
+            pattern: IrPattern::ident(&format!("hat_{}", k)),
+            ty: None,
+            init: Some(clone_expr(IrExpr::Index {
+                base: Box::new(var("iter_hats")),
+                index: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
+            })),
+        });
+    }
+
+    // Register circuit input wires.
+    for i in 0..num_params {
+        ctx.wires.insert(i as u32, WireRepr::Scalar(format!("q{}", i)));
+    }
+
+    // Conditional storage init.
+    net_emit_conditional_storage_init(&mut ctx, storage_sizes, &circuit.pre_init, types, false);
+
+    // Gate computation.
+    ctx.emit_circuit_stmts(block, types, &mode);
+
+    // Extract back-edge args from terminator.
+    let ret_args = match &block.terminator {
+        IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+        _ => panic!("weave_net_vole_verifier_ir_loop: expected Jmp(Return)"),
+    };
+
+    let mut back_args: Vec<IrExpr> = ret_args[..ret_args.len().saturating_sub(1)]
+        .iter()
+        .map(|v| clone_expr(var(ctx.scalar(v))))
+        .collect();
+    back_args.extend(net_collect_cell_back_args(&ctx, storage_sizes, types));
+    back_args.push(var("all_ok")); // accumulated all_ok
+    back_args.push(IrExpr::Binary {
+        op: SpecBinOp::Add,
+        left: Box::new(var("iter")),
+        right: Box::new(IrExpr::Lit(IrLit::Int(1))),
+    });
+    back_args.push(IrExpr::Lit(IrLit::Bool(false))); // is_first = false
+
+    let b1 = IrCfgBlock {
+        params: b1_params,
+        stmts: ctx.stmts,
+        stmt_provs: vec![],
+        terminator: IrCfgTerminator::CondGoto {
+            cond: var("is_sentinel"),
+            then_: IrCfgJump { target: 2, args: vec![var("all_ok")] },
+            else_: IrCfgJump { target: 1, args: back_args },
+        },
+    };
+
+    // ── Block 2: exit ─────────────────────────────────────────────────────
+    let b2 = IrCfgBlock {
+        params: vec![IrParam { name: "final_ok".into(), ty: net_bool_type() }],
+        stmts: vec![IrStmt::Semi(net_transport_try("send_verdict", vec![var("final_ok")]))],
+        stmt_provs: vec![],
+        terminator: IrCfgTerminator::Return(Some(net_ok_expr(var("final_ok")))),
+    };
+
+    let func = IrCfgFunction {
+        name: format!("vole_verify_net_ir_loop_{}", name),
+        generics,
+        receiver: None,
+        params: func_params,
+        return_type: Some(ret_type),
+        where_clause,
+        external_kind: ExternalKind::Normal,
+        body: IrCfgBody { blocks: vec![block0, b1, b2] },
+    };
+    let mut module: IrCfgModule = IrModule {
+        name: format!("weaved_net_verifier_ir_loop_{}", name),
+        functions: vec![IrAnyFunction::Cfg(func)],
+        structs: vec![], enums: vec![], traits: vec![], impls: vec![],
+        type_aliases: vec![], consts: vec![],
+    };
+    if let Some(ls) = linkage { ls.apply_cfg(&mut module); }
+    module
 }
 
 // ============================================================================
