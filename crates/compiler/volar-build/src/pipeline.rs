@@ -146,6 +146,20 @@ impl Pipeline {
 // ---- Terminal methods -------------------------------------------------------
 
 impl Pipeline {
+    /// Execute all passes and return the resulting Volar IR.
+    ///
+    /// The pipeline must reach the `VolarIr` stage — start from `.wasm`,
+    /// `.vaffle`, or `.circuit` and call `.lower_to_volar_ir()` if needed.
+    #[cfg(feature = "pipeline")]
+    pub fn to_volar_ir(self) -> Result<(IRBlocks, IRTypes), Box<dyn std::error::Error>> {
+        match self.execute()? {
+            ExecutedPipeline::VolarIr(blocks, types) => Ok((blocks, types)),
+            ExecutedPipeline::Lir(_) => Err(
+                "to_volar_ir requires VolarIr stage; got Lir — add .lower_to_volar_ir() or start from a non-Lir source".into()
+            ),
+        }
+    }
+
     /// Execute all passes and compile the result to a native object file.
     pub fn compile_to_object(
         self,

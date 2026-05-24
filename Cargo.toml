@@ -35,6 +35,7 @@ members = [
     "crates/oram/volar-oram-core",
     "crates/macros/volar-macros",
     "crates/net/volar-net",
+    "crates/tools/volar-ir-tester",
     "xtask",
 ]
 default-members = [

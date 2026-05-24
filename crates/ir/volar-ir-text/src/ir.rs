@@ -67,7 +67,7 @@ pub(crate) fn write_quoted_str(s: &str, w: &mut dyn fmt::Write) -> fmt::Result {
 
 pub(crate) fn write_var(v: IRVarId, w: &mut dyn fmt::Write) -> fmt::Result {
     w.write_char('v')?;
-    w.write_str(&v.0.to_string())
+    write!(w, "{}", v.0)
 }
 
 pub(crate) fn write_var_list(vars: &[IRVarId], w: &mut dyn fmt::Write) -> fmt::Result {
@@ -83,7 +83,7 @@ pub(crate) fn write_type_id_list(ids: &[TypeId], w: &mut dyn fmt::Write) -> fmt:
     w.write_char('[')?;
     for (i, id) in ids.iter().enumerate() {
         if i > 0 { w.write_char(',')?; }
-        w.write_str(&id.0.to_string())?;
+        write!(w, "{}", id.0)?;
     }
     w.write_char(']')
 }
@@ -93,7 +93,7 @@ pub(crate) fn write_constant(c: &Constant, w: &mut dyn fmt::Write) -> fmt::Resul
 }
 
 pub(crate) fn write_storage(s: StorageId, w: &mut dyn fmt::Write) -> fmt::Result {
-    w.write_str(&s.0.to_string())
+    write!(w, "{}", s.0)
 }
 
 // ============================================================================

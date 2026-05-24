@@ -1,0 +1,13 @@
+[package]
+name = "volar-ir-tester"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "volar-ir-tester"
+path = "src/main.rs"
+
+[dependencies]
+volar-build   = { path = "../../compiler/volar-build", features = ["pipeline-wasm"] }
+volar-ir-text = { workspace = true }

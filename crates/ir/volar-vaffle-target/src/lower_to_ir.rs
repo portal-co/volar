@@ -64,7 +64,7 @@ use volar_ir::ir::{
 use volar_ir_common::{Constant, IrType, Stmt, StorageId, Type, TypeId};
 use volar_lir::circuits::{
     bc_add, FrameLayout, StackPtr,
-    frame_push_args, frame_read_args, frame_write_cont, frame_read_cont,
+    frame_write_cont, frame_read_cont,
     frame_write_ret, frame_spill, frame_reload,
     BitCircuitBuilder, StorageEmitter,
     PACK_W, n_packs, pack_bits, unpack_words,
@@ -188,6 +188,11 @@ struct FuncInfo {
     callee_layout: FrameLayout,
     /// Frame layout of this function's own frame (for spilling).
     own_layout: FrameLayout,
+    /// Number of packed words carrying parameters as entry-block params.
+    /// Callers append these after the SP words in the jump args.
+    n_param_words: usize,
+    /// Number of individual parameter bits in the function signature.
+    n_params: usize,
 }
 
 struct LowerCtx<'m> {
@@ -249,6 +254,8 @@ impl<'m> LowerCtx<'m> {
                             spill_base: 0, n_spill: 0, size: 0,
                             storage: StorageId::STACK,
                         },
+                        n_param_words: 0,
+                        n_params: 0,
                     });
                     continue;
                 }
@@ -259,17 +266,12 @@ impl<'m> LowerCtx<'m> {
             let n_ret = if sig.results.is_empty() { 0 } else { 1 };
             let n_values = body.values.len();
 
-            // Callee layout: what the caller pushes for this function.
-            //   Packed lane: params packed into ceil(n_params/PACK_W) words,
-            //                ret packed into ceil(n_ret/PACK_W) words.
-            //   Block-lane: continuation at addr sp (free).
+            // Callee layout: params are now passed as entry-block params (not
+            // written to the frame), so the frame only needs ret + cont slots.
             let n_param_words = BlockEmitter::n_packs(n_params);
             let n_ret_words = BlockEmitter::n_packs(n_ret);
 
             let mut offset = 0u64;
-            let params: Vec<(u64, u64, TypeId)> = (0..n_param_words).map(|_| {
-                let o = offset; offset += 1; (o, 1, PACK_TID)
-            }).collect();
             let ret = if n_ret > 0 {
                 let o = offset; offset += n_ret_words as u64;
                 Some((o, n_ret_words as u64, PACK_TID))
@@ -278,20 +280,18 @@ impl<'m> LowerCtx<'m> {
             let callee_size = offset;
 
             let callee_layout = FrameLayout {
-                params, ret, cont_ty,
+                params: vec![], ret, cont_ty,
                 spill_base: 0, n_spill: 0,
                 size: callee_size, storage: StorageId::STACK,
             };
 
-            // Own layout: this function's spill slots (appended after the
-            // callee-visible slots in the same frame region).
-            // Spill is also packed: ceil(n_values / PACK_W) packed words.
+            // Own layout: this function's spill slots.
             let n_spill_words = BlockEmitter::n_packs(n_values) as u64;
             let spill_base = callee_size;
             let own_size = callee_size + n_spill_words;
 
             let own_layout = FrameLayout {
-                params: callee_layout.params.clone(),
+                params: vec![],
                 ret: callee_layout.ret,
                 cont_ty,
                 spill_base, n_spill: n_spill_words,
@@ -303,6 +303,8 @@ impl<'m> LowerCtx<'m> {
                 entry_block: block_offset,
                 callee_layout,
                 own_layout,
+                n_param_words,
+                n_params,
             });
             block_offset += body.blocks.len();
         }
@@ -397,16 +399,21 @@ impl<'m> LowerCtx<'m> {
         let callee_layout = info.callee_layout.clone();
 
         let sp_packs = BlockEmitter::n_packs(SP_BITS);
+        let n_param_words = info.n_param_words;
+        let n_params = info.n_params;
 
         for (vaffle_bi, vaffle_block) in body.blocks.iter().enumerate() {
             let ir_bi = entry_block_offset + vaffle_bi;
             let is_entry = vaffle_bi == body.entry.0;
 
             // Every block takes SP as packed words.
+            // Entry blocks also take n_param_words packed parameter words
+            // (passed directly by the caller instead of written to the frame).
+            // Non-entry blocks take individual VAFFLE block params.
             let mut params: Vec<IRTypeId> = vec![PACK_TID; sp_packs];
-            // Non-entry blocks also take the original VAFFLE block params
-            // (individual bits — these are internal and stay unpacked).
-            if !is_entry {
+            if is_entry {
+                params.extend(vec![PACK_TID; n_param_words]);
+            } else {
                 for &(_vid, ty_id) in &vaffle_block.params {
                     params.push(ty_id);
                 }
@@ -423,16 +430,12 @@ impl<'m> LowerCtx<'m> {
 
             let mut val_map: BTreeMap<usize, IRVarId> = BTreeMap::new();
 
-            // Entry block: read packed args from the frame, unpack.
+            // Entry block: param words arrive directly as block params after SP.
             if is_entry {
-                let arg_words = frame_read_args(&mut em, &frame_sp, &callee_layout);
-                // arg_words: Vec<Vec<IRVarId>> — one inner vec per param slot,
-                // each containing one packed word.
-                // Flatten and unpack back to individual bits.
-                let sig = &self.module.sigs[body.sig.0];
-                let n_params = sig.params.len();
-                let all_words: Vec<IRVarId> = arg_words.into_iter().flat_map(|w| w).collect();
-                let all_bits = unpack_words(&mut em, &all_words, n_params, PACK_W);
+                let param_word_ids: Vec<IRVarId> = (sp_packs as u32 .. (sp_packs + n_param_words) as u32)
+                    .map(IRVarId)
+                    .collect();
+                let all_bits = unpack_words(&mut em, &param_word_ids, n_params, PACK_W);
                 for (pi, &bit) in all_bits.iter().enumerate() {
                     if pi < vaffle_block.params.len() {
                         val_map.insert(vaffle_block.params[pi].0.0, bit);
@@ -509,16 +512,11 @@ impl<'m> LowerCtx<'m> {
                                     &own_layout, wi as u64, word, PACK_TID);
                             }
 
-                            // 2. Write callee args (packed).
+                            // 2. Pack callee args — passed as entry-block params, not frame writes.
                             let arg_bits: Vec<IRVarId> = call_args.iter()
                                 .map(|vid| val_map[&vid.0])
                                 .collect();
                             let arg_words = pack_bits(&mut current_em, &arg_bits, PACK_W);
-                            let arg_word_vecs: Vec<Vec<IRVarId>> = arg_words.iter()
-                                .map(|&w| vec![w])
-                                .collect();
-                            let callee_frame_sp = StackPtr::new(current_sp_bits.clone());
-                            frame_push_args(&mut current_em, &callee_frame_sp, &cl, &arg_word_vecs);
 
                             // 3. Write continuation.
                             let n_ret = cl.ret.map_or(0, |(_, c, _)| c as usize);
@@ -529,13 +527,15 @@ impl<'m> LowerCtx<'m> {
                             let cont_var = current_em.emit(IRStmt::Const(
                                 Constant { hi: 0, lo: cont_ir_idx as u128 }, cont_ty,
                             ));
+                            let callee_frame_sp = StackPtr::new(current_sp_bits.clone());
                             frame_write_cont(&mut current_em, &callee_frame_sp, &cl, cont_var);
 
-                            // 4. Advance SP, pack, jump.
+                            // 4. Advance SP, pack, jump — args appended after SP words.
                             let mut new_sp = StackPtr::new(current_sp_bits.clone());
                             new_sp.advance(cl.size);
                             let new_sp_bits = new_sp.materialize(&mut current_em);
-                            let sp_words = pack_bits(&mut current_em, &new_sp_bits, PACK_W);
+                            let mut sp_words = pack_bits(&mut current_em, &new_sp_bits, PACK_W);
+                            sp_words.extend(arg_words);
 
                             let callee_entry = IRBlockId(callee_info.entry_block as u32);
                             let block = current_em.finish(IRTerminator::Jmp {
@@ -693,22 +693,18 @@ impl<'m> LowerCtx<'m> {
                 let mut callee_frame_sp = StackPtr::new(sp_bits.to_vec());
                 callee_frame_sp.retreat(f_callee_size);
 
-                // Write G's args at callee_frame_sp + G.callee_layout.param_off.
-                // The continuation already at callee_frame_sp (Block lane) is
-                // F's caller's continuation — G will return there directly.
+                // Pack G's args — passed as entry-block params, not frame writes.
                 let arg_bits: Vec<IRVarId> = call_args.iter()
                     .map(|vid| val_map.get(&vid.0).copied().unwrap_or(IRVarId(0)))
                     .collect();
                 let arg_words = pack_bits(em, &arg_bits, PACK_W);
-                let arg_word_vecs: Vec<Vec<IRVarId>> =
-                    arg_words.iter().map(|&w| vec![w]).collect();
-                frame_push_args(em, &callee_frame_sp, &cl, &arg_word_vecs);
 
-                // Advance SP to G.callee_layout.size and jump to G's entry.
+                // Advance SP to G.callee_layout.size and jump — args after SP words.
                 let mut new_sp = callee_frame_sp.clone();
                 new_sp.advance(cl.size);
                 let new_sp_bits = new_sp.materialize(em);
-                let sp_words = pack_bits(em, &new_sp_bits, PACK_W);
+                let mut sp_words = pack_bits(em, &new_sp_bits, PACK_W);
+                sp_words.extend(arg_words);
 
                 let callee_entry = IRBlockId(callee_info.entry_block as u32);
                 IRTerminator::Jmp {
