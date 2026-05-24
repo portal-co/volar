@@ -51,7 +51,7 @@ use volar_ir::boolar::{BIrBlocks, BIrStmt};
 use volar_ir::ir::{
     IRBlocks, IRBlock as CirBlock, IRBlockTargetId, IRTerminator,
     IRType as CircuitIrType, IRTypeId as CirTyId, IRTypes as CirTypes,
-    IRVarId as CirVar, PrimType, Stmt, StorageId,
+    IRVarId as CirVar, PrimType, PreInitSegment, Stmt, StorageId,
 };
 use volar_ir::public::PublicSet;
 use volar_ir_passes::lower_to_circuit::lower_to_circuit;
@@ -1860,6 +1860,22 @@ struct VoleIrCtx {
     ext_rng_counter: usize,
 }
 
+/// Returns the pre-init constant for storage cell `(sid, tid, ci)`, or `None`.
+fn lookup_pre_init_value(
+    pre_init: &[PreInitSegment],
+    sid: u32,
+    tid: u32,
+    ci: usize,
+) -> Option<volar_ir::ir::Constant> {
+    for seg in pre_init {
+        if seg.storage.0 != sid || seg.ty.0 != tid { continue; }
+        if ci < seg.offset { continue; }
+        let local = ci - seg.offset;
+        if local < seg.data.len() { return Some(seg.data[local]); }
+    }
+    None
+}
+
 impl VoleIrCtx {
     fn new(is_prover: bool) -> Self {
         VoleIrCtx {
@@ -2383,6 +2399,7 @@ impl VoleIrCtx {
         block: &CirBlock,
         types: &CirTypes,
         mode: &StorageMode,
+        pre_init: &[PreInitSegment],
     ) {
         let p = block.params.len();
 
@@ -2392,15 +2409,95 @@ impl VoleIrCtx {
             self.wires.insert(i as u32, WireRepr::Scalar(name));
         }
 
-        // Initialize storage cells to zero (Tree mode only).
+        // Initialize storage cells (Tree mode only).
+        // Cells with a pre-init value get per-bit emit_one/emit_zero; others get emit_zero.
         if let StorageMode::Tree(storage_sizes) = mode {
             for (&(sid, tid), &count) in storage_sizes {
-            for ci in 0..count {
-                let name = format!("_sinit_{}_{}_{}", sid, tid, ci);
-                self.emit_zero(&name);
-                self.stor.insert((sid, tid, ci), name);
+                let cell_tid = CirTyId(tid);
+                let vw = cir_type_width(&cell_tid, types);
+                for ci in 0..count {
+                    let name = format!("_sinit_{}_{}_{}", sid, tid, ci);
+                    match lookup_pre_init_value(pre_init, sid, tid, ci) {
+                        None => self.emit_zero(&name),
+                        Some(c) => {
+                            let val = c.lo;
+                            if vw == 1 {
+                                if val & 1 == 1 { self.emit_one(&name); }
+                                else { self.emit_zero(&name); }
+                            } else {
+                                for j in 0..vw {
+                                    let n = format!("{}_{}", name, j);
+                                    if (val >> j) & 1 == 1 { self.emit_one(&n); }
+                                    else { self.emit_zero(&n); }
+                                }
+                            }
+                        }
+                    }
+                    self.stor.insert((sid, tid, ci), name);
+                }
             }
         }
+
+        // Commitment mode: emit pre-init writes as constant authenticated wires
+        // before any circuit stmts. Synthetic var IDs start after the last stmt var.
+        if matches!(mode, StorageMode::Commitment) && !pre_init.is_empty() {
+            let n_stmts = block.stmts.len() as u32;
+            let mut syn_id = p as u32 + n_stmts;
+            for seg in pre_init {
+                let sid = seg.storage.0;
+                let tid = seg.ty.0;
+                let cell_tid = CirTyId(tid);
+                let vw = cir_type_width(&cell_tid, types);
+                for (local, c) in seg.data.iter().enumerate() {
+                    let ci = seg.offset + local;
+                    let val = c.lo;
+
+                    // Emit constant value wire.
+                    let val_id = syn_id; syn_id += 1;
+                    let val_name = format!("_pinit_v_{}_{}_{}", sid, tid, ci);
+                    if vw == 1 {
+                        if val & 1 == 1 { self.emit_one(&val_name); } else { self.emit_zero(&val_name); }
+                        self.wires.insert(val_id, WireRepr::Scalar(val_name));
+                    } else {
+                        let bits: Vec<String> = (0..vw).map(|j| {
+                            let n = format!("{}_{}", val_name, j);
+                            if (val >> j) & 1 == 1 { self.emit_one(&n); } else { self.emit_zero(&n); }
+                            n
+                        }).collect();
+                        self.wires.insert(val_id, WireRepr::Vec(bits));
+                    }
+
+                    // Emit constant address wire (cell index ci, bit-decomposed).
+                    let addr_id = syn_id; syn_id += 1;
+                    let addr_name = format!("_pinit_a_{}_{}_{}", sid, tid, ci);
+                    let addr_val = ci as u128;
+                    // Use enough bits for the address — at least 1.
+                    let aw = usize::max(1,
+                        usize::BITS as usize - ci.saturating_sub(1).leading_zeros() as usize);
+                    if aw == 1 {
+                        if addr_val & 1 == 1 { self.emit_one(&addr_name); } else { self.emit_zero(&addr_name); }
+                        self.wires.insert(addr_id, WireRepr::Scalar(addr_name));
+                    } else {
+                        let bits: Vec<String> = (0..aw).map(|j| {
+                            let n = format!("{}_{}", addr_name, j);
+                            if (addr_val >> j) & 1 == 1 { self.emit_one(&n); } else { self.emit_zero(&n); }
+                            n
+                        }).collect();
+                        self.wires.insert(addr_id, WireRepr::Vec(bits));
+                    }
+
+                    // Record as a write at the start of the trace.
+                    self.trace.entries.push(MemoryTraceEntry {
+                        addr_var: addr_id,
+                        value_var: val_id,
+                        storage_id: sid,
+                        type_id: tid,
+                        is_write: true,
+                        timestamp: self.mem_timestamp,
+                    });
+                    self.mem_timestamp += 1;
+                }
+            }
         }
 
         // Process stmts.
@@ -2695,7 +2792,7 @@ pub fn weave_vole_prover_ir_with_mode(
     let ret_type = IrType::Tuple(vec![vope_type(), hat_array_type(and_count)]);
 
     let mut ctx = VoleIrCtx::new(true);
-    ctx.emit_circuit(block, types, mode);
+    ctx.emit_circuit(block, types, mode, &circuit.pre_init);
 
     let ret_args = match &block.terminator {
         IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
@@ -2813,7 +2910,7 @@ pub fn weave_vole_verifier_ir_with_mode(
         init: Some(IrExpr::Lit(volar_compiler::ir::IrLit::Bool(true))),
     });
 
-    ctx.emit_circuit(block, types, mode);
+    ctx.emit_circuit(block, types, mode, &circuit.pre_init);
 
     let ret_args = match &block.terminator {
         IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
