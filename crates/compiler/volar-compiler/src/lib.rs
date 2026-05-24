@@ -27,6 +27,7 @@ extern crate std;
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 
+pub mod chunk_module;
 pub mod deshadow;
 pub mod ir;
 pub mod linkage;
@@ -38,6 +39,7 @@ pub mod printer;
 pub mod printer_ts;
 pub mod reachability;
 
+pub use chunk_module::{ChunkConfig, ChunkOptions, ChunkedModuleOutput};
 pub use ir::*;
 pub use linkage::*;
 pub use manifest::*;

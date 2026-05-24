@@ -82,7 +82,7 @@ pub struct OutputModule {
 }
 
 impl OutputModule {
-    fn type_names(&self) -> Vec<String> {
+    pub(crate) fn type_names(&self) -> Vec<String> {
         let mut names: Vec<String> = Vec::new();
         for s in &self.module.structs {
             names.push(s.kind.to_string());
@@ -307,7 +307,7 @@ impl LinkageSystem {
 /// Collect all struct-kind type-name strings referenced within an `IrModule`'s
 /// field types, impl self-types, and function signatures.  Used for dependency
 /// inference between partition groups.
-fn collect_type_refs(module: &IrModule<IrFunction>) -> BTreeSet<String> {
+pub(crate) fn collect_type_refs(module: &IrModule<IrFunction>) -> BTreeSet<String> {
     use crate::ir::IrType;
 
     fn walk(ty: &IrType, out: &mut BTreeSet<String>) {
@@ -367,7 +367,7 @@ fn collect_type_refs(module: &IrModule<IrFunction>) -> BTreeSet<String> {
 ///
 /// `deps[i]` = list of indices that `i` depends on (must come before `i`).
 /// Returns indices in dependency-first order.
-fn topo_sort(n: usize, deps: &[Vec<usize>]) -> Vec<usize> {
+pub(crate) fn topo_sort(n: usize, deps: &[Vec<usize>]) -> Vec<usize> {
     // Build reverse edges: dependents[j] = nodes that depend on j.
     let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut in_deg = vec![0usize; n];

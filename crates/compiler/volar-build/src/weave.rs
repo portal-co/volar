@@ -155,3 +155,100 @@ pub fn emit_woven_rust(
     std::fs::write(out_path, rust_source)?;
     Ok(())
 }
+
+// ============================================================================
+// emit_woven_rust_chunked
+// ============================================================================
+
+/// Weave a saved circuit and write chunked Rust source files into `out_dir/`.
+///
+/// Creates `out_dir/mod.rs` (wrapper) and `out_dir/chunk_0.rs`, ... chunk files.
+///
+/// Also emits `cargo:rerun-if-changed=<circuit_path>`.
+///
+/// # Returns
+///
+/// A list of written file paths in emission order (mod.rs first, then chunks).
+#[cfg(feature = "weave-chunked")]
+pub fn emit_woven_rust_chunked(
+    circuit_path: &Path,
+    out_dir: &Path,
+    weaver: &Weaver,
+    options: &volar_compiler::chunk_module::ChunkOptions,
+) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
+    use volar_compiler::chunk_module::{ChunkConfig, chunk_module_rust};
+    use volar_compiler_passes::chunk_function_bodies;
+
+    println!("cargo:rerun-if-changed={}", circuit_path.display());
+
+    let bytes = std::fs::read(circuit_path)?;
+    let circuit = rkyv::from_bytes::<SavedCircuit, rkyv::rancor::Error>(&bytes)?;
+
+    let module: volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction> =
+        match (weaver, circuit) {
+            (Weaver::GarbleEvaluator { name }, SavedCircuit::Boolar(bir)) => {
+                volar_weaver::weave_evaluator(&bir, name, None)
+            }
+            (Weaver::GarbleGarbler { name }, SavedCircuit::Boolar(bir)) => {
+                volar_weaver::weave_garbler(&bir, name, None)
+            }
+            (Weaver::VoleProver { name }, SavedCircuit::Boolar(bir)) => {
+                volar_weaver::weave_vole_prover(&bir, name, None)
+            }
+            (Weaver::VoleVerifier { name }, SavedCircuit::Boolar(bir)) => {
+                volar_weaver::weave_vole_verifier(&bir, name, None)
+            }
+            (Weaver::VoleProverIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
+                volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None)
+            }
+            (Weaver::VoleVerifierIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
+                volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None)
+            }
+            #[cfg(feature = "weave-net")]
+            (Weaver::NetVoleProver { name }, SavedCircuit::Boolar(bir)) => {
+                volar_weaver::weave_net_vole_prover(&bir, name, None)
+            }
+            #[cfg(feature = "weave-net")]
+            (Weaver::NetVoleVerifier { name }, SavedCircuit::Boolar(bir)) => {
+                volar_weaver::weave_net_vole_verifier(&bir, name, None)
+            }
+            (w, c) => {
+                let circuit_kind = match &c {
+                    SavedCircuit::Boolar(_) => "Boolar",
+                    SavedCircuit::Volar(..) => "Volar",
+                    _ => "unknown",
+                };
+                return Err(format!(
+                    "weaver/circuit mismatch: {:?} cannot process {} circuit",
+                    w, circuit_kind
+                ).into());
+            }
+        };
+
+    let chunked_module;
+    let effective = if let Some(threshold) = options.fn_chunk_max_stmts {
+        chunked_module = chunk_function_bodies(&module, threshold);
+        &chunked_module
+    } else {
+        &module
+    };
+
+    let items_per_chunk = options.module_items_per_chunk.unwrap_or(usize::MAX);
+    let output = chunk_module_rust(effective, &ChunkConfig { items_per_chunk }, &[]);
+
+    std::fs::create_dir_all(out_dir)?;
+
+    let mut written: Vec<std::path::PathBuf> = Vec::new();
+
+    let wrapper_path = out_dir.join("mod.rs");
+    std::fs::write(&wrapper_path, &output.wrapper)?;
+    written.push(wrapper_path);
+
+    for (i, src) in output.chunks.iter().enumerate() {
+        let chunk_path = out_dir.join(format!("chunk_{i}.rs"));
+        std::fs::write(&chunk_path, src)?;
+        written.push(chunk_path);
+    }
+
+    Ok(written)
+}

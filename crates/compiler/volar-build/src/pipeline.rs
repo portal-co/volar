@@ -146,6 +146,28 @@ impl Pipeline {
             ),
         }
     }
+
+    /// Execute all passes and emit chunked Rust source files into `out_dir/`.
+    ///
+    /// Only supports VolarIr-stage weavers (`VoleProverIr`, `VoleVerifierIr`).
+    /// Returns a list of written file paths.
+    #[cfg(feature = "weave-chunked")]
+    pub fn emit_woven_rust_chunked(
+        self,
+        out_dir: &Path,
+        weaver: &crate::Weaver,
+        options: &volar_compiler::chunk_module::ChunkOptions,
+    ) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
+        let executed = self.execute()?;
+        match executed {
+            ExecutedPipeline::VolarIr(blocks, types) => {
+                weave_volar_ir_chunked(&blocks, &types, out_dir, weaver, options)
+            }
+            ExecutedPipeline::Lir(_) => Err(
+                "emit_woven_rust_chunked requires VolarIr stage; got Lir".into()
+            ),
+        }
+    }
 }
 
 // ============================================================================
@@ -408,6 +430,59 @@ fn weave_volar_ir_in_memory(
 
     std::fs::write(out_path, rust_source)?;
     Ok(())
+}
+
+// ============================================================================
+// weave_volar_ir_chunked
+// ============================================================================
+
+#[cfg(feature = "weave-chunked")]
+fn weave_volar_ir_chunked(
+    blocks: &IRBlocks,
+    types: &IRTypes,
+    out_dir: &Path,
+    weaver: &crate::Weaver,
+    options: &volar_compiler::chunk_module::ChunkOptions,
+) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
+    use volar_compiler::chunk_module::{ChunkConfig, chunk_module_rust};
+    use volar_compiler_passes::chunk_function_bodies;
+
+    let module = match weaver {
+        crate::Weaver::VoleProverIr { name, storage_sizes } => {
+            volar_weaver::weave_vole_prover_ir(blocks, types, name, storage_sizes, None)
+        }
+        crate::Weaver::VoleVerifierIr { name, storage_sizes } => {
+            volar_weaver::weave_vole_verifier_ir(blocks, types, name, storage_sizes, None)
+        }
+        w => return Err(format!(
+            "Pipeline::emit_woven_rust_chunked: weaver {:?} requires Boolar IR; use emit_woven_rust_chunked (standalone) with a .circuit file instead",
+            w
+        ).into()),
+    };
+
+    let chunked_module;
+    let effective = if let Some(threshold) = options.fn_chunk_max_stmts {
+        chunked_module = chunk_function_bodies(&module, threshold);
+        &chunked_module
+    } else {
+        &module
+    };
+
+    let items_per_chunk = options.module_items_per_chunk.unwrap_or(usize::MAX);
+    let output = chunk_module_rust(effective, &ChunkConfig { items_per_chunk }, &[]);
+
+    std::fs::create_dir_all(out_dir)?;
+
+    let mut written = Vec::new();
+    let wrapper_path = out_dir.join("mod.rs");
+    std::fs::write(&wrapper_path, &output.wrapper)?;
+    written.push(wrapper_path);
+    for (i, src) in output.chunks.iter().enumerate() {
+        let chunk_path = out_dir.join(format!("chunk_{i}.rs"));
+        std::fs::write(&chunk_path, src)?;
+        written.push(chunk_path);
+    }
+    Ok(written)
 }
 
 // ============================================================================

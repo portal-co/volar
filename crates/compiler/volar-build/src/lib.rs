@@ -59,6 +59,10 @@ pub use weave::{
 };
 #[cfg(feature = "weave-rust")]
 pub use volar_weaver::StorageSizes;
+#[cfg(feature = "weave-chunked")]
+pub use weave::emit_woven_rust_chunked;
+#[cfg(feature = "weave-chunked")]
+pub use volar_compiler::chunk_module::ChunkOptions;
 
 #[cfg(feature = "pipeline")]
 mod pipeline;

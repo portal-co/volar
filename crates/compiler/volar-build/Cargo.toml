@@ -9,6 +9,7 @@ repository.workspace = true
 [features]
 weave-rust       = ["dep:volar-ir", "dep:volar-weaver"]
 weave-net        = ["weave-rust", "volar-weaver/net"]
+weave-chunked    = ["weave-rust", "dep:volar-compiler", "dep:volar-compiler-passes"]
 pipeline         = ["dep:volar-ir-passes", "dep:volar-ir-opt", "dep:volar-ir"]
 pipeline-vaffle  = ["pipeline", "dep:vaffle", "dep:volar-vaffle-target"]
 pipeline-wasm    = ["pipeline-vaffle", "dep:portal-pc-waffle-ir", "dep:portal-pc-waffle-frontend"]
@@ -21,6 +22,8 @@ inkwell = { workspace = true }
 rkyv = { workspace = true, features = ["bytecheck"] }
 volar-ir              = { workspace = true, features = ["rkyv"], optional = true }
 volar-weaver          = { path = "../volar-weaver", optional = true }
+volar-compiler        = { path = "../volar-compiler", optional = true }
+volar-compiler-passes = { path = "../volar-compiler-passes", optional = true }
 volar-ir-passes       = { workspace = true, optional = true }
 volar-ir-opt          = { workspace = true, optional = true }
 vaffle                = { path = "../../ir/vaffle", features = ["rkyv"], optional = true }
