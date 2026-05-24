@@ -12,10 +12,12 @@
 #![no_std]
 extern crate alloc;
 
+pub mod import_config;
 pub mod target;
 pub mod waffle_lower;
 pub mod lower_to_ir;
 
+pub use import_config::{WaffleImportConfig, WaffleImportKind};
 pub use target::{VaffleBlock, VaffleTarget, VaffleValue};
 pub use waffle_lower::{lower_waffle_function, lower_waffle_module, UnsupportedOp};
 pub use lower_to_ir::lower_vaffle_to_ir;

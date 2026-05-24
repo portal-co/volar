@@ -59,6 +59,8 @@ pub enum PipelinePass {
 pub struct Pipeline {
     source: SourceStage,
     passes: Vec<PipelinePass>,
+    #[cfg(feature = "pipeline-wasm")]
+    import_config: volar_vaffle_target::WaffleImportConfig,
 }
 
 // ---- Constructors -----------------------------------------------------------
@@ -66,24 +68,55 @@ pub struct Pipeline {
 impl Pipeline {
     /// Start from a pre-recorded `.lir` file.
     pub fn from_saved_lir(path: impl Into<PathBuf>) -> Self {
-        Pipeline { source: SourceStage::Lir(path.into()), passes: vec![] }
+        Pipeline {
+            source: SourceStage::Lir(path.into()),
+            passes: vec![],
+            #[cfg(feature = "pipeline-wasm")]
+            import_config: volar_vaffle_target::WaffleImportConfig::new(),
+        }
     }
 
     /// Start from a `.circuit` file (rkyv-serialized `IRBlocks + IRTypes`).
     pub fn from_volar_ir(path: impl Into<PathBuf>) -> Self {
-        Pipeline { source: SourceStage::VolarIr(path.into()), passes: vec![] }
+        Pipeline {
+            source: SourceStage::VolarIr(path.into()),
+            passes: vec![],
+            #[cfg(feature = "pipeline-wasm")]
+            import_config: volar_vaffle_target::WaffleImportConfig::new(),
+        }
     }
 
     /// Start from a `.vaffle` file (rkyv-serialized VAFFLE `Module`).
     #[cfg(feature = "pipeline-vaffle")]
     pub fn from_vaffle(path: impl Into<PathBuf>) -> Self {
-        Pipeline { source: SourceStage::Vaffle(path.into()), passes: vec![] }
+        Pipeline {
+            source: SourceStage::Vaffle(path.into()),
+            passes: vec![],
+            #[cfg(feature = "pipeline-wasm")]
+            import_config: volar_vaffle_target::WaffleImportConfig::new(),
+        }
     }
 
     /// Start from a `.wasm` file; WAFFLE parsing happens in-memory at execution time.
     #[cfg(feature = "pipeline-wasm")]
     pub fn from_wasm(path: impl Into<PathBuf>) -> Self {
-        Pipeline { source: SourceStage::Wasm(path.into()), passes: vec![] }
+        Pipeline {
+            source: SourceStage::Wasm(path.into()),
+            passes: vec![],
+            import_config: volar_vaffle_target::WaffleImportConfig::new(),
+        }
+    }
+
+    /// Configure oracle/action import mappings for WASM pipelines.
+    ///
+    /// Has no effect when the source is not a `.wasm` file.
+    #[cfg(feature = "pipeline-wasm")]
+    pub fn with_import_config(
+        mut self,
+        config: volar_vaffle_target::WaffleImportConfig,
+    ) -> Self {
+        self.import_config = config;
+        self
     }
 }
 
@@ -223,7 +256,11 @@ impl Pipeline {
         }
 
         // Load into the internal runtime stage.
-        let mut stage = load_source(self.source)?;
+        let mut stage = load_source(
+            self.source,
+            #[cfg(feature = "pipeline-wasm")]
+            self.import_config,
+        )?;
 
         // Run passes.
         for pass in self.passes {
@@ -257,7 +294,11 @@ enum RuntimeStage {
 // load_source
 // ============================================================================
 
-fn load_source(source: SourceStage) -> Result<RuntimeStage, Box<dyn std::error::Error>> {
+fn load_source(
+    source: SourceStage,
+    #[cfg(feature = "pipeline-wasm")]
+    import_config: volar_vaffle_target::WaffleImportConfig,
+) -> Result<RuntimeStage, Box<dyn std::error::Error>> {
     match source {
         SourceStage::Lir(path) => {
             let bytes = std::fs::read(&path)?;
@@ -287,7 +328,7 @@ fn load_source(source: SourceStage) -> Result<RuntimeStage, Box<dyn std::error::
                 portal_pc_waffle_frontend::from_wasm_bytes(&bytes, &portal_pc_waffle_frontend::FrontendOptions::default())
                     .map_err(|e| format!("WAFFLE parse failed: {e}"))?;
             let mut target = volar_vaffle_target::VaffleTarget::new();
-            volar_vaffle_target::lower_waffle_module(&waffle_module, &mut target);
+            volar_vaffle_target::lower_waffle_module(&waffle_module, &mut target, &import_config);
             Ok(RuntimeStage::Vaffle(target.module))
         }
     }

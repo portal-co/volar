@@ -72,6 +72,8 @@ mod pipeline;
 pub use pipeline::{Pipeline, PipelinePass};
 #[cfg(feature = "pipeline-vaffle")]
 pub use pipeline::serialize_vaffle_module;
+#[cfg(feature = "pipeline-wasm")]
+pub use volar_vaffle_target::{WaffleImportConfig, WaffleImportKind};
 
 use std::path::Path;
 

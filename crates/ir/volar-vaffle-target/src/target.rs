@@ -201,6 +201,32 @@ impl VaffleTarget {
     pub fn register_oracle(&mut self, decl: OracleDecl) { self.module.oracles.push(decl); }
     pub fn register_action(&mut self, decl: ActionDecl) { self.module.actions.push(decl); }
 
+    /// Emit an action call: calls `action_{name}`, then muxes each result with
+    /// its fallback — `guard_bit=1` uses the result, `guard_bit=0` uses the fallback.
+    pub fn action_call(
+        &mut self,
+        name: &str,
+        guard_bit: ValueId,
+        args: &[VaffleValue],
+        fallbacks: &[VaffleValue],
+        ret_tys: &[LirType],
+    ) -> Vec<VaffleValue> {
+        let results = self.call_extern_multi(
+            &alloc::format!("action_{name}"),
+            args,
+            ret_tys,
+        );
+        results
+            .into_iter()
+            .zip(fallbacks.iter())
+            .map(|(r, fb)| {
+                let ty = r.ty.clone();
+                let bits = bc_select_vec(self, guard_bit, &r.bits, &fb.bits);
+                VaffleValue { bits, ty }
+            })
+            .collect()
+    }
+
     /// Convert a `LirType` to a `TypeId` in the module's type table.
     pub(crate) fn lir_type_to_tid(&mut self, ty: &LirType) -> TypeId {
         match ty {

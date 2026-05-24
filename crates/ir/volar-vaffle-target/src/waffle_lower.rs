@@ -82,6 +82,7 @@ use volar_lir::circuits::{
 };
 use volar_lir::{BitCircuitBuilder, IcmpPred, LirTarget, LirType};
 
+use crate::import_config::{WaffleImportConfig, WaffleImportKind};
 use crate::target::{VaffleBlock, VaffleTarget, VaffleValue, bits_for_lir_type};
 use vaffle::ValueId;
 
@@ -116,15 +117,73 @@ fn waffle_ty(ty: WType) -> Result<LirType, UnsupportedOp> {
 
 /// Lower all function bodies in a WAFFLE module into `target`, skipping
 /// unsupported functions.  Returns a list of (name, error) for skipped functions.
+///
+/// `config` maps WAFFLE import names to oracle/action declarations. Matching
+/// imports are pre-registered in `target.module.oracles` / `target.module.actions`
+/// and routed through the oracle/action calling convention at every call site.
+/// Pass `&WaffleImportConfig::default()` for the original behaviour.
 pub fn lower_waffle_module(
     wasm: &WModule,
     target: &mut VaffleTarget,
+    config: &WaffleImportConfig,
 ) -> Vec<(String, UnsupportedOp)> {
+    // Pre-register OracleDecl / ActionDecl for imports named in config.
+    for (_func_ref, decl) in wasm.funcs.entries() {
+        if let FuncDecl::Import(sig, import_name) = decl {
+            let Some(kind) = config.imports.get(import_name) else { continue };
+            let sig_data = &wasm.signatures[*sig];
+            let (wasm_params, wasm_results) = match sig_data {
+                portal_pc_waffle_ir::SignatureData::Func { params, returns, .. } => {
+                    (params.as_slice(), returns.as_slice())
+                }
+                _ => continue,
+            };
+            match kind {
+                WaffleImportKind::Oracle { name } => {
+                    let params: alloc::vec::Vec<_> = wasm_params
+                        .iter()
+                        .filter_map(|&t| waffle_ty(t).ok())
+                        .map(|lt| target.lir_type_to_tid(&lt))
+                        .collect();
+                    let results: alloc::vec::Vec<_> = wasm_results
+                        .iter()
+                        .filter_map(|&t| waffle_ty(t).ok())
+                        .map(|lt| target.lir_type_to_tid(&lt))
+                        .collect();
+                    target.register_oracle(volar_ir_common::OracleDecl {
+                        name: name.clone(),
+                        params,
+                        results,
+                    });
+                }
+                WaffleImportKind::Action { name, n_args } => {
+                    let action_params: alloc::vec::Vec<_> = wasm_params
+                        .iter()
+                        .skip(1) // skip guard
+                        .take(*n_args)
+                        .filter_map(|&t| waffle_ty(t).ok())
+                        .map(|lt| target.lir_type_to_tid(&lt))
+                        .collect();
+                    let results: alloc::vec::Vec<_> = wasm_results
+                        .iter()
+                        .filter_map(|&t| waffle_ty(t).ok())
+                        .map(|lt| target.lir_type_to_tid(&lt))
+                        .collect();
+                    target.register_action(volar_ir_common::ActionDecl {
+                        name: name.clone(),
+                        params: action_params,
+                        results,
+                    });
+                }
+            }
+        }
+    }
+
     let mut errors = Vec::new();
     // EntityVec::entries() yields (Func, &FuncDecl) pairs.
     for (_func_ref, decl) in wasm.funcs.entries() {
         if let FuncDecl::Body(_, name, body) = decl {
-            if let Err(e) = lower_waffle_function(body, name.as_str(), wasm, target) {
+            if let Err(e) = lower_waffle_function(body, name.as_str(), wasm, target, config) {
                 errors.push((name.clone(), e));
             }
         }
@@ -145,6 +204,7 @@ pub fn lower_waffle_function(
     name: &str,
     wasm: &WModule,
     target: &mut VaffleTarget,
+    config: &WaffleImportConfig,
 ) -> Result<(), UnsupportedOp> {
     // ---- Collect mutable globals for threading ---------------------------
     let mut global_lir_tys: Vec<LirType> = Vec::new();
@@ -251,6 +311,7 @@ pub fn lower_waffle_function(
                         &global_lir_tys,
                         target,
                         wasm,
+                        config,
                     )? {
                         val_map.insert(wval, vv);
                     }
@@ -326,6 +387,7 @@ fn lower_op(
     global_lir_tys: &[LirType],
     tgt: &mut VaffleTarget,
     wasm: &WModule,
+    config: &WaffleImportConfig,
 ) -> Result<Option<VaffleValue>, UnsupportedOp> {
     let get = |i: usize| -> Result<VaffleValue, UnsupportedOp> {
         val_map
@@ -650,6 +712,54 @@ fn lower_op(
         Operator::Call { function_index } => {
             let fid = *function_index;
             let name = callee_name(wasm, fid);
+
+            // Oracle / action dispatch: bypass globals threading.
+            if let Some(kind) = config.imports.get(&name) {
+                let all_arg_vals: Vec<VaffleValue> = args
+                    .iter()
+                    .map(|wv| {
+                        val_map
+                            .get(wv)
+                            .cloned()
+                            .ok_or_else(|| UnsupportedOp(alloc::format!("undefined arg {:?}", wv)))
+                    })
+                    .collect::<Result<_, _>>()?;
+                let orig_ret_tys: Vec<LirType> = result_tys
+                    .iter()
+                    .map(|&t| waffle_ty(t))
+                    .collect::<Result<_, _>>()?;
+
+                let results = match kind {
+                    WaffleImportKind::Oracle { name: oracle_name } => {
+                        tgt.call_extern_multi(
+                            &alloc::format!("oracle_{oracle_name}"),
+                            &all_arg_vals,
+                            &orig_ret_tys,
+                        )
+                    }
+                    WaffleImportKind::Action { name: action_name, n_args } => {
+                        let guard_vv = all_arg_vals[0].clone();
+                        let guard_bit = or_bits(tgt, &guard_vv.bits);
+                        let real_args = &all_arg_vals[1..=*n_args];
+                        let fallbacks = &all_arg_vals[*n_args + 1..];
+                        tgt.action_call(action_name, guard_bit, real_args, fallbacks, &orig_ret_tys)
+                    }
+                };
+
+                return Ok(match results.len() {
+                    0 => None,
+                    1 => Some(results.into_iter().next().unwrap()),
+                    _ => {
+                        let bits: Vec<ValueId> = results
+                            .iter()
+                            .flat_map(|vv| vv.bits.iter().copied())
+                            .collect();
+                        let ty = results[0].ty.clone();
+                        Some(VaffleValue { bits, ty })
+                    }
+                });
+            }
+
             let arg_vals: Vec<VaffleValue> = args
                 .iter()
                 .map(|wv| {
@@ -1167,7 +1277,7 @@ mod tests {
         let wasm = build_store_load_module();
         let mut target = VaffleTarget::new();
 
-        let errors = lower_waffle_module(&wasm, &mut target);
+        let errors = lower_waffle_module(&wasm, &mut target, &WaffleImportConfig::default());
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
         // Should have one function in the module.
@@ -1288,7 +1398,7 @@ mod tests {
     fn test_byte_memory_access() {
         let wasm = build_byte_store_load_module();
         let mut target = VaffleTarget::new();
-        let errors = lower_waffle_module(&wasm, &mut target);
+        let errors = lower_waffle_module(&wasm, &mut target, &WaffleImportConfig::default());
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
         let func = &target.module.funcs[0];
@@ -1325,7 +1435,7 @@ mod tests {
     fn test_i32_store_produces_4_byte_writes() {
         let wasm = build_store_load_module();
         let mut target = VaffleTarget::new();
-        let errors = lower_waffle_module(&wasm, &mut target);
+        let errors = lower_waffle_module(&wasm, &mut target, &WaffleImportConfig::default());
         assert!(errors.is_empty());
 
         let body = match &target.module.funcs[0] {
@@ -1430,7 +1540,7 @@ mod tests {
     fn test_offset_load_lowering() {
         let wasm = build_offset_load_module();
         let mut target = VaffleTarget::new();
-        let errors = lower_waffle_module(&wasm, &mut target);
+        let errors = lower_waffle_module(&wasm, &mut target, &WaffleImportConfig::default());
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
 
         // The function should have produced VAFFLE with storage reads.
@@ -1515,7 +1625,7 @@ mod tests {
             |body, entry, ps| body.add_op(entry, Operator::I32RemU, &[ps[0], ps[1]], &[WType::I32]),
         );
         let mut target = VaffleTarget::new();
-        let errors = lower_waffle_module(&wasm, &mut target);
+        let errors = lower_waffle_module(&wasm, &mut target, &WaffleImportConfig::default());
         assert!(errors.is_empty(), "i32.rem_u lowering failed: {:?}", errors);
         assert_eq!(target.module.funcs.len(), 1);
     }
@@ -1530,7 +1640,7 @@ mod tests {
             |body, entry, ps| body.add_op(entry, Operator::I32RemS, &[ps[0], ps[1]], &[WType::I32]),
         );
         let mut target = VaffleTarget::new();
-        let errors = lower_waffle_module(&wasm, &mut target);
+        let errors = lower_waffle_module(&wasm, &mut target, &WaffleImportConfig::default());
         assert!(errors.is_empty(), "i32.rem_s lowering failed: {:?}", errors);
     }
 
@@ -1542,7 +1652,7 @@ mod tests {
             body.add_op(entry, Operator::I32Clz, &[ps[0]], &[WType::I32])
         });
         let mut target = VaffleTarget::new();
-        let errors = lower_waffle_module(&wasm, &mut target);
+        let errors = lower_waffle_module(&wasm, &mut target, &WaffleImportConfig::default());
         assert!(errors.is_empty(), "i32.clz lowering failed: {:?}", errors);
     }
 
@@ -1554,7 +1664,7 @@ mod tests {
             body.add_op(entry, Operator::I32Ctz, &[ps[0]], &[WType::I32])
         });
         let mut target = VaffleTarget::new();
-        let errors = lower_waffle_module(&wasm, &mut target);
+        let errors = lower_waffle_module(&wasm, &mut target, &WaffleImportConfig::default());
         assert!(errors.is_empty(), "i32.ctz lowering failed: {:?}", errors);
     }
 
@@ -1566,7 +1676,7 @@ mod tests {
             body.add_op(entry, Operator::I32Popcnt, &[ps[0]], &[WType::I32])
         });
         let mut target = VaffleTarget::new();
-        let errors = lower_waffle_module(&wasm, &mut target);
+        let errors = lower_waffle_module(&wasm, &mut target, &WaffleImportConfig::default());
         assert!(
             errors.is_empty(),
             "i32.popcnt lowering failed: {:?}",
@@ -1584,7 +1694,7 @@ mod tests {
             |body, entry, ps| body.add_op(entry, Operator::I32Rotl, &[ps[0], ps[1]], &[WType::I32]),
         );
         let mut target = VaffleTarget::new();
-        let errors = lower_waffle_module(&wasm, &mut target);
+        let errors = lower_waffle_module(&wasm, &mut target, &WaffleImportConfig::default());
         assert!(errors.is_empty(), "i32.rotl lowering failed: {:?}", errors);
     }
 
@@ -1598,7 +1708,7 @@ mod tests {
             |body, entry, ps| body.add_op(entry, Operator::I32Rotr, &[ps[0], ps[1]], &[WType::I32]),
         );
         let mut target = VaffleTarget::new();
-        let errors = lower_waffle_module(&wasm, &mut target);
+        let errors = lower_waffle_module(&wasm, &mut target, &WaffleImportConfig::default());
         assert!(errors.is_empty(), "i32.rotr lowering failed: {:?}", errors);
     }
 
@@ -1610,7 +1720,7 @@ mod tests {
             body.add_op(entry, Operator::I32Extend8S, &[ps[0]], &[WType::I32])
         });
         let mut target = VaffleTarget::new();
-        let errors = lower_waffle_module(&wasm, &mut target);
+        let errors = lower_waffle_module(&wasm, &mut target, &WaffleImportConfig::default());
         assert!(
             errors.is_empty(),
             "i32.extend8_s lowering failed: {:?}",
@@ -1626,7 +1736,7 @@ mod tests {
             body.add_op(entry, Operator::I32Extend16S, &[ps[0]], &[WType::I32])
         });
         let mut target = VaffleTarget::new();
-        let errors = lower_waffle_module(&wasm, &mut target);
+        let errors = lower_waffle_module(&wasm, &mut target, &WaffleImportConfig::default());
         assert!(
             errors.is_empty(),
             "i32.extend16_s lowering failed: {:?}",
@@ -1642,7 +1752,7 @@ mod tests {
             body.add_op(entry, Operator::I64Extend32S, &[ps[0]], &[WType::I64])
         });
         let mut target = VaffleTarget::new();
-        let errors = lower_waffle_module(&wasm, &mut target);
+        let errors = lower_waffle_module(&wasm, &mut target, &WaffleImportConfig::default());
         assert!(
             errors.is_empty(),
             "i64.extend32_s lowering failed: {:?}",
@@ -1728,7 +1838,7 @@ mod tests {
     fn test_mutable_global_threading() {
         let wasm = build_global_get_set_module();
         let mut target = VaffleTarget::new();
-        let errors = lower_waffle_module(&wasm, &mut target);
+        let errors = lower_waffle_module(&wasm, &mut target, &WaffleImportConfig::default());
         assert!(errors.is_empty(), "global threading failed: {:?}", errors);
         assert_eq!(target.module.funcs.len(), 1);
 
@@ -1802,7 +1912,7 @@ mod tests {
         ));
 
         let mut target = VaffleTarget::new();
-        let errors = lower_waffle_module(&module, &mut target);
+        let errors = lower_waffle_module(&module, &mut target, &WaffleImportConfig::default());
         assert!(
             errors.is_empty(),
             "multi-value return lowering failed: {:?}",
@@ -1924,7 +2034,7 @@ mod tests {
         ));
 
         let mut target = VaffleTarget::new();
-        let errors = lower_waffle_module(&module, &mut target);
+        let errors = lower_waffle_module(&module, &mut target, &WaffleImportConfig::default());
         assert!(
             errors.is_empty(),
             "PickOutput lowering failed: {:?}",
@@ -1932,5 +2042,127 @@ mod tests {
         );
         // Both functions should have been lowered.
         assert_eq!(target.module.funcs.len(), 2);
+    }
+
+    // ── Oracle / action import registration ──────────────────────────────────
+    //
+    // A WAFFLE module with:
+    //   - import "oracle_hash"  : (i32, i32) → i32   (oracle)
+    //   - import "action_send"  : (i32, i32, i32) → i32  (action: guard, 1 arg, 1 fallback)
+    //   - a caller function that calls both
+    //
+    // After lowering with the appropriate WaffleImportConfig the VAFFLE module
+    // must contain one OracleDecl with name "hash" and one ActionDecl with name "send".
+
+    fn build_oracle_action_module() -> WModule<'static> {
+        let mut sigs: EntityVec<Signature, SignatureData> = EntityVec::default();
+        // oracle_hash: (i32, i32) → i32
+        let oracle_sig = sigs.push(SignatureData::Func {
+            params: vec![WType::I32, WType::I32],
+            returns: vec![WType::I32],
+            shared: false,
+        });
+        // action_send: (i32, i32, i32) → i32  [guard, arg, fallback]
+        let action_sig = sigs.push(SignatureData::Func {
+            params: vec![WType::I32, WType::I32, WType::I32],
+            returns: vec![WType::I32],
+            shared: false,
+        });
+        // caller: (i32, i32, i32) → i32  [two hash inputs + guard]
+        let caller_sig = sigs.push(SignatureData::Func {
+            params: vec![WType::I32, WType::I32, WType::I32],
+            returns: vec![WType::I32],
+            shared: false,
+        });
+
+        let mut module = WModule {
+            orig_bytes: None,
+            funcs: EntityVec::default(),
+            signatures: sigs,
+            globals: EntityVec::default(),
+            tables: EntityVec::default(),
+            imports: vec![],
+            exports: vec![],
+            memories: EntityVec::default(),
+            control_tags: EntityVec::default(),
+            start_func: None,
+            debug: Default::default(),
+            debug_map: Default::default(),
+            custom_sections: Default::default(),
+        };
+
+        // Push the two imports.
+        let oracle_func = module.funcs.push(portal_pc_waffle_ir::FuncDecl::Import(
+            oracle_sig,
+            "oracle_hash".into(),
+        ));
+        let action_func = module.funcs.push(portal_pc_waffle_ir::FuncDecl::Import(
+            action_sig,
+            "action_send".into(),
+        ));
+
+        // Build caller body: hash(p0, p1) → h; send(p2, h, 0) → result; return result.
+        let mut body = portal_pc_waffle_ir::FunctionBody::new(&module, caller_sig);
+        let entry = body.entry;
+        let p0 = body.blocks[entry].params[0].1;
+        let p1 = body.blocks[entry].params[1].1;
+        let p2 = body.blocks[entry].params[2].1; // guard
+
+        // h = oracle_hash(p0, p1)
+        let h = body.add_op(
+            entry,
+            Operator::Call { function_index: oracle_func },
+            &[p0, p1],
+            &[WType::I32],
+        );
+
+        // fallback = 0
+        let fallback = body.add_op(entry, Operator::I32Const { value: 0 }, &[], &[WType::I32]);
+
+        // result = action_send(p2, h, fallback)
+        let result = body.add_op(
+            entry,
+            Operator::Call { function_index: action_func },
+            &[p2, h, fallback],
+            &[WType::I32],
+        );
+
+        body.set_terminator(entry, WTerminator::Return { values: vec![result] });
+
+        module.funcs.push(portal_pc_waffle_ir::FuncDecl::Body(
+            caller_sig,
+            "caller".into(),
+            body,
+        ));
+
+        module
+    }
+
+    #[test]
+    fn test_oracle_and_action_registration() {
+        let wasm = build_oracle_action_module();
+        let config = WaffleImportConfig::new()
+            .with_oracle("oracle_hash", "hash")
+            .with_action("action_send", "send", 1);
+
+        let mut target = VaffleTarget::new();
+        let errors = lower_waffle_module(&wasm, &mut target, &config);
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+
+        // OracleDecl for "hash" should be registered.
+        assert_eq!(target.module.oracles.len(), 1, "expected one oracle");
+        assert_eq!(target.module.oracles[0].name, "hash");
+        assert_eq!(target.module.oracles[0].params.len(), 2, "oracle has 2 params");
+        assert_eq!(target.module.oracles[0].results.len(), 1, "oracle has 1 result");
+
+        // ActionDecl for "send" should be registered.
+        assert_eq!(target.module.actions.len(), 1, "expected one action");
+        assert_eq!(target.module.actions[0].name, "send");
+        assert_eq!(target.module.actions[0].params.len(), 1, "action has 1 real arg");
+        assert_eq!(target.module.actions[0].results.len(), 1, "action has 1 result");
+
+        // The caller function should have lowered successfully.
+        let caller = target.module.funcs.iter().find(|f| matches!(f, vaffle::FuncDecl::Body(_)));
+        assert!(caller.is_some(), "caller function body should be present");
     }
 }
