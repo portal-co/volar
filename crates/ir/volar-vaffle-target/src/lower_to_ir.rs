@@ -178,6 +178,61 @@ impl StorageEmitter for BlockEmitter {
 }
 
 // ============================================================================
+// Type-table remapping: VAFFLE TypeId → IR TypeId
+// ============================================================================
+
+/// Recursively intern VAFFLE type `vtid` into `ir_types`, returning the
+/// corresponding IR `TypeId`.  Uses `map`/`done` for memoization so each
+/// entry is processed at most once (handles shared structure and avoids
+/// infinite loops for any forward-declared but well-formed type graph).
+fn remap_type_id(
+    vtid: TypeId,
+    vaffle_types: &volar_ir_common::TypeTable,
+    ir_types: &mut IRTypes,
+    map: &mut Vec<TypeId>,
+    done: &mut Vec<bool>,
+) -> TypeId {
+    if done[vtid.0 as usize] {
+        return map[vtid.0 as usize];
+    }
+    // Mark before recursing to break cycles (result is a placeholder until we
+    // overwrite below — cycles in IrType are not valid, so this is safe).
+    done[vtid.0 as usize] = true;
+    let vty = vaffle_types.0[vtid.0 as usize].clone();
+    let ity = match vty {
+        IrType::Primitive(p) => IrType::Primitive(p),
+        IrType::Vec(k, inner) => {
+            let inner_ir = remap_type_id(inner, vaffle_types, ir_types, map, done);
+            IrType::Vec(k, inner_ir)
+        }
+        IrType::Tuple(parts) => {
+            let parts_ir: Vec<TypeId> = parts.iter()
+                .map(|&p| remap_type_id(p, vaffle_types, ir_types, map, done))
+                .collect();
+            IrType::Tuple(parts_ir)
+        }
+        IrType::Block { params } => {
+            let params_ir: Vec<TypeId> = params.iter()
+                .map(|&p| remap_type_id(p, vaffle_types, ir_types, map, done))
+                .collect();
+            IrType::Block { params: params_ir }
+        }
+        IrType::Func { params, results } => {
+            let params_ir: Vec<TypeId> = params.iter()
+                .map(|&p| remap_type_id(p, vaffle_types, ir_types, map, done))
+                .collect();
+            let results_ir: Vec<TypeId> = results.iter()
+                .map(|&r| remap_type_id(r, vaffle_types, ir_types, map, done))
+                .collect();
+            IrType::Func { params: params_ir, results: results_ir }
+        }
+    };
+    let ir_tid = ir_types.intern(ity);
+    map[vtid.0 as usize] = ir_tid;
+    ir_tid
+}
+
+// ============================================================================
 // LowerCtx
 // ============================================================================
 
@@ -198,6 +253,8 @@ struct FuncInfo {
 struct LowerCtx<'m> {
     module: &'m Module,
     types: IRTypes,
+    /// Maps VAFFLE TypeId → IR TypeId (index = VAFFLE TypeId.0).
+    type_map: Vec<TypeId>,
     func_info: Vec<FuncInfo>,
     blocks: Vec<IRBlock>,
     oracles: Vec<OracleDecl>,
@@ -214,14 +271,34 @@ impl<'m> LowerCtx<'m> {
         types.push(IrType::Primitive(Type::Bit));           // index 0 = BIT_TID
         types.push(IrType::Vec(SP_BITS, BIT_TID));          // index 1 = ADDR_TID
         types.push(IrType::Vec(PACK_W, BIT_TID));           // index 2 = PACK_TID
+
+        // Build a mapping from VAFFLE TypeId → IR TypeId by interning each
+        // VAFFLE type into the IR type table (recursively remapping inner refs).
+        let n = module.types.0.len();
+        let mut type_map = alloc::vec![TypeId(0); n];
+        let mut done = alloc::vec![false; n];
+        for i in 0..n {
+            remap_type_id(TypeId(i as u32), &module.types, &mut types, &mut type_map, &mut done);
+        }
+
+        // Remap TypeIds in pre_init segments to be valid in the IR type table.
+        let pre_init = module.pre_init.iter().map(|seg| {
+            volar_ir_common::PreInitSegment {
+                storage: seg.storage,
+                ty: type_map[seg.ty.0 as usize],
+                offset: seg.offset,
+                data: seg.data.clone(),
+            }
+        }).collect();
+
         LowerCtx {
-            module, types,
+            module, types, type_map,
             func_info: Vec::new(),
             blocks: Vec::new(),
             oracles: module.oracles.clone(),
             actions: module.actions.clone(),
             extra_blocks: Vec::new(),
-            pre_init: module.pre_init.clone(),
+            pre_init,
         }
     }
 
@@ -461,7 +538,7 @@ impl<'m> LowerCtx<'m> {
                 for &svid in before_call {
                     match &body.values[svid.0] {
                         Value::Op(stmt) => {
-                            let ir_stmt = translate_stmt(stmt, &val_map);
+                            let ir_stmt = translate_stmt(stmt, &val_map, &self.type_map);
                             let id = current_em.emit(ir_stmt);
                             val_map.insert(svid.0, id);
                         }
@@ -846,16 +923,22 @@ fn collect_terminator_uses(term: &Terminator, out: &mut BTreeSet<usize>) {
     }
 }
 
-/// Translate a VAFFLE `Stmt<ValueId>` to an `IRStmt<IRVarId>` using `val_map`.
+/// Translate a VAFFLE `Stmt<ValueId>` to an `IRStmt<IRVarId>`.
+///
+/// `val_map` maps VAFFLE `ValueId` → IR `IRVarId`.
+/// `type_map` maps VAFFLE `TypeId` → IR `TypeId` (produced by [`remap_type_id`]).
 fn translate_stmt(
     stmt: &volar_ir_common::Stmt<ValueId>,
     val_map: &BTreeMap<usize, IRVarId>,
+    type_map: &[TypeId],
 ) -> IRStmt {
     let s = |vid: &ValueId| val_map.get(&vid.0).copied().unwrap_or(IRVarId(0));
+    let t = |tid: &TypeId| type_map[tid.0 as usize];
+    let tv = |tids: &[TypeId]| tids.iter().map(t).collect::<Vec<_>>();
     match stmt {
-        volar_ir_common::Stmt::Const(c, ty) => IRStmt::Const(*c, *ty),
+        volar_ir_common::Stmt::Const(c, ty) => IRStmt::Const(*c, t(ty)),
         volar_ir_common::Stmt::Poly { ty, coeffs, constant } => IRStmt::Poly {
-            ty: *ty,
+            ty: t(ty),
             coeffs: coeffs.iter().map(|(vars, &coeff)| {
                 let mut nv: Vec<IRVarId> = vars.iter().map(s).collect();
                 nv.sort();
@@ -864,33 +947,46 @@ fn translate_stmt(
             constant: *constant,
         },
         volar_ir_common::Stmt::Merge { parts, ty } =>
-            IRStmt::Merge { parts: parts.iter().map(s).collect(), ty: *ty },
+            IRStmt::Merge { parts: parts.iter().map(s).collect(), ty: t(ty) },
         volar_ir_common::Stmt::Splat { src, ty } =>
-            IRStmt::Splat { src: s(src), ty: *ty },
+            IRStmt::Splat { src: s(src), ty: t(ty) },
         volar_ir_common::Stmt::Transmute { src, src_ty, dst_ty } =>
-            IRStmt::Transmute { src: s(src), src_ty: *src_ty, dst_ty: *dst_ty },
+            IRStmt::Transmute { src: s(src), src_ty: t(src_ty), dst_ty: t(dst_ty) },
         volar_ir_common::Stmt::Rol { src, ty, n } =>
-            IRStmt::Rol { src: s(src), ty: *ty, n: *n },
+            IRStmt::Rol { src: s(src), ty: t(ty), n: *n },
         volar_ir_common::Stmt::Ror { src, ty, n } =>
-            IRStmt::Ror { src: s(src), ty: *ty, n: *n },
+            IRStmt::Ror { src: s(src), ty: t(ty), n: *n },
         volar_ir_common::Stmt::Shuffle { result_bits, ty } =>
-            IRStmt::Shuffle { result_bits: result_bits.iter().map(|(b, v)| (*b, s(v))).collect(), ty: *ty },
+            IRStmt::Shuffle {
+                result_bits: result_bits.iter().map(|(b, v)| (*b, s(v))).collect(),
+                ty: t(ty),
+            },
         volar_ir_common::Stmt::StorageRead { storage, ty, addr } =>
-            IRStmt::StorageRead { storage: *storage, ty: *ty, addr: s(addr) },
+            IRStmt::StorageRead { storage: *storage, ty: t(ty), addr: s(addr) },
         volar_ir_common::Stmt::StorageWrite { storage, src, ty, addr } =>
-            IRStmt::StorageWrite { storage: *storage, src: s(src), ty: *ty, addr: s(addr) },
-        volar_ir_common::Stmt::Rng { name, ty } => IRStmt::Rng { name: name.clone(), ty: *ty },
+            IRStmt::StorageWrite { storage: *storage, src: s(src), ty: t(ty), addr: s(addr) },
+        volar_ir_common::Stmt::Rng { name, ty } =>
+            IRStmt::Rng { name: name.clone(), ty: t(ty) },
         volar_ir_common::Stmt::OracleCall { name, args, output_tys, result_ty } =>
-            IRStmt::OracleCall { name: name.clone(), args: args.iter().map(s).collect(),
-                output_tys: output_tys.clone(), result_ty: *result_ty },
+            IRStmt::OracleCall {
+                name: name.clone(),
+                args: args.iter().map(s).collect(),
+                output_tys: tv(output_tys),
+                result_ty: t(result_ty),
+            },
         volar_ir_common::Stmt::OracleOutput { call, idx, ty } =>
-            IRStmt::OracleOutput { call: s(call), idx: *idx, ty: *ty },
+            IRStmt::OracleOutput { call: s(call), idx: *idx, ty: t(ty) },
         volar_ir_common::Stmt::ActionCall { name, guard, args, fallbacks, output_tys, result_ty } =>
-            IRStmt::ActionCall { name: name.clone(), guard: s(guard),
-                args: args.iter().map(s).collect(), fallbacks: fallbacks.iter().map(s).collect(),
-                output_tys: output_tys.clone(), result_ty: *result_ty },
+            IRStmt::ActionCall {
+                name: name.clone(),
+                guard: s(guard),
+                args: args.iter().map(s).collect(),
+                fallbacks: fallbacks.iter().map(s).collect(),
+                output_tys: tv(output_tys),
+                result_ty: t(result_ty),
+            },
         volar_ir_common::Stmt::ActionOutput { call, idx, ty } =>
-            IRStmt::ActionOutput { call: s(call), idx: *idx, ty: *ty },
+            IRStmt::ActionOutput { call: s(call), idx: *idx, ty: t(ty) },
     }
 }
 
