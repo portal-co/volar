@@ -168,6 +168,30 @@ impl Pipeline {
             ),
         }
     }
+
+    /// Execute all passes and emit chunked TypeScript source files into `out_dir/`.
+    ///
+    /// Produces `out_dir/index.ts` (wrapper) and `out_dir/chunk_0.ts`, etc.
+    /// Only supports VolarIr-stage weavers (`VoleProverIr`, `VoleVerifierIr`).
+    /// Returns a list of written file paths.
+    #[cfg(feature = "weave-ts")]
+    pub fn emit_woven_typescript_chunked(
+        self,
+        out_dir: &Path,
+        weaver: &crate::Weaver,
+        options: &volar_compiler::chunk_module::ChunkOptions,
+    ) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
+        let executed = self.execute()?;
+        match executed {
+            ExecutedPipeline::VolarIr(blocks, types) => {
+                let module = weave_volar_ir_to_ir_module(&blocks, &types, weaver)?;
+                volar_compiler_passes::emit_woven_ts_chunked(&module, out_dir, options)
+            }
+            ExecutedPipeline::Lir(_) => Err(
+                "emit_woven_typescript_chunked requires VolarIr stage; got Lir".into()
+            ),
+        }
+    }
 }
 
 // ============================================================================
@@ -193,6 +217,7 @@ impl Pipeline {
             #[cfg(feature = "pipeline-wasm")]
             SourceStage::Wasm(p) => Some(p),
         };
+        #[cfg(feature = "cargo-directives")]
         if let Some(p) = source_path {
             println!("cargo:rerun-if-changed={}", p.display());
         }
@@ -483,6 +508,32 @@ fn weave_volar_ir_chunked(
         written.push(chunk_path);
     }
     Ok(written)
+}
+
+// ============================================================================
+// weave_volar_ir_to_ir_module — shared helper for TS emit terminal
+// ============================================================================
+
+#[cfg(feature = "weave-ts")]
+fn weave_volar_ir_to_ir_module(
+    blocks: &IRBlocks,
+    types: &IRTypes,
+    weaver: &crate::Weaver,
+) -> Result<volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>, Box<dyn std::error::Error>> {
+    use crate::Weaver;
+    let module = match weaver {
+        Weaver::VoleProverIr { name, storage_sizes } => {
+            volar_weaver::weave_vole_prover_ir(blocks, types, name, storage_sizes, None)
+        }
+        Weaver::VoleVerifierIr { name, storage_sizes } => {
+            volar_weaver::weave_vole_verifier_ir(blocks, types, name, storage_sizes, None)
+        }
+        w => return Err(format!(
+            "Pipeline TS emit: weaver {:?} requires Boolar IR; use emit_woven_typescript_chunked (standalone) with a .circuit file instead",
+            w
+        ).into()),
+    };
+    Ok(module)
 }
 
 // ============================================================================

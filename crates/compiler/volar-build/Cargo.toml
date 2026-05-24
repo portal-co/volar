@@ -7,9 +7,12 @@ description.workspace = true
 repository.workspace = true
 
 [features]
+default          = ["cargo-directives"]
+cargo-directives = []
 weave-rust       = ["dep:volar-ir", "dep:volar-weaver"]
 weave-net        = ["weave-rust", "volar-weaver/net"]
 weave-chunked    = ["weave-rust", "dep:volar-compiler", "dep:volar-compiler-passes"]
+weave-ts         = ["weave-rust", "dep:volar-compiler", "dep:volar-compiler-passes"]
 pipeline         = ["dep:volar-ir-passes", "dep:volar-ir-opt", "dep:volar-ir"]
 pipeline-vaffle  = ["pipeline", "dep:vaffle", "dep:volar-vaffle-target"]
 pipeline-wasm    = ["pipeline-vaffle", "dep:portal-pc-waffle-ir", "dep:portal-pc-waffle-frontend"]

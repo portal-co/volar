@@ -98,6 +98,7 @@ pub fn emit_woven_rust(
     out_path: &Path,
     weaver: &Weaver,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "cargo-directives")]
     println!("cargo:rerun-if-changed={}", circuit_path.display());
 
     let bytes = std::fs::read(circuit_path)?;
@@ -157,6 +158,124 @@ pub fn emit_woven_rust(
 }
 
 // ============================================================================
+// emit_woven_typescript
+// ============================================================================
+
+/// Weave a saved circuit and write the resulting TypeScript source to `out_path`.
+///
+/// Emits `cargo:rerun-if-changed=<circuit_path>` when the `cargo-directives`
+/// feature is enabled (the default).
+///
+/// # Arguments
+///
+/// - `circuit_path` — path to a `.circuit` file (Boolar or Volar).
+/// - `out_path` — destination for the emitted TypeScript (`.ts`) file.
+/// - `weaver` — protocol to apply; must match the circuit variant.
+#[cfg(feature = "weave-ts")]
+pub fn emit_woven_typescript(
+    circuit_path: &Path,
+    out_path: &Path,
+    weaver: &Weaver,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use volar_compiler::chunk_module::{ChunkConfig, chunk_module_ts};
+
+    #[cfg(feature = "cargo-directives")]
+    println!("cargo:rerun-if-changed={}", circuit_path.display());
+
+    let bytes = std::fs::read(circuit_path)?;
+    let circuit = rkyv::from_bytes::<SavedCircuit, rkyv::rancor::Error>(&bytes)?;
+
+    let module = weave_to_ir_module(weaver, circuit)?;
+
+    let output = chunk_module_ts(&module, &ChunkConfig { items_per_chunk: usize::MAX }, &[]);
+    let ts_source = output.chunks.into_iter().next().unwrap_or_default();
+    std::fs::write(out_path, ts_source)?;
+    Ok(())
+}
+
+// ============================================================================
+// emit_woven_typescript_chunked
+// ============================================================================
+
+/// Weave a saved circuit and write chunked TypeScript source files into `out_dir/`.
+///
+/// Creates `out_dir/index.ts` (wrapper) and `out_dir/chunk_0.ts`, ... chunk files.
+///
+/// Emits `cargo:rerun-if-changed=<circuit_path>` when the `cargo-directives`
+/// feature is enabled (the default).
+///
+/// # Returns
+///
+/// A list of written file paths in emission order (index.ts first, then chunks).
+#[cfg(feature = "weave-ts")]
+pub fn emit_woven_typescript_chunked(
+    circuit_path: &Path,
+    out_dir: &Path,
+    weaver: &Weaver,
+    options: &volar_compiler::chunk_module::ChunkOptions,
+) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
+    #[cfg(feature = "cargo-directives")]
+    println!("cargo:rerun-if-changed={}", circuit_path.display());
+
+    let bytes = std::fs::read(circuit_path)?;
+    let circuit = rkyv::from_bytes::<SavedCircuit, rkyv::rancor::Error>(&bytes)?;
+
+    let module = weave_to_ir_module(weaver, circuit)?;
+    volar_compiler_passes::emit_woven_ts_chunked(&module, out_dir, options)
+}
+
+// ============================================================================
+// weave_to_ir_module — shared helper for TS emit functions
+// ============================================================================
+
+#[cfg(feature = "weave-ts")]
+fn weave_to_ir_module(
+    weaver: &Weaver,
+    circuit: SavedCircuit,
+) -> Result<volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>, Box<dyn std::error::Error>> {
+    let module = match (weaver, circuit) {
+        (Weaver::GarbleEvaluator { name }, SavedCircuit::Boolar(bir)) => {
+            volar_weaver::weave_evaluator(&bir, name, None)
+        }
+        (Weaver::GarbleGarbler { name }, SavedCircuit::Boolar(bir)) => {
+            volar_weaver::weave_garbler(&bir, name, None)
+        }
+        (Weaver::VoleProver { name }, SavedCircuit::Boolar(bir)) => {
+            volar_weaver::weave_vole_prover(&bir, name, None)
+        }
+        (Weaver::VoleVerifier { name }, SavedCircuit::Boolar(bir)) => {
+            volar_weaver::weave_vole_verifier(&bir, name, None)
+        }
+        (Weaver::VoleProverIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
+            volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None)
+        }
+        (Weaver::VoleVerifierIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
+            volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None)
+        }
+        #[cfg(feature = "weave-net")]
+        (Weaver::NetVoleProver { name }, SavedCircuit::Boolar(bir)) => {
+            volar_weaver::weave_net_vole_prover(&bir, name, None)
+        }
+        #[cfg(feature = "weave-net")]
+        (Weaver::NetVoleVerifier { name }, SavedCircuit::Boolar(bir)) => {
+            volar_weaver::weave_net_vole_verifier(&bir, name, None)
+        }
+        (w, c) => {
+            let circuit_kind = match &c {
+                SavedCircuit::Boolar(_) => "Boolar",
+                SavedCircuit::Volar(..) => "Volar",
+                _ => "unknown",
+            };
+            return Err(format!(
+                "weaver/circuit mismatch: {:?} cannot process {} circuit",
+                w, circuit_kind
+            ).into());
+        }
+    };
+    Ok(module)
+}
+
+// ============================================================================
 // emit_woven_rust_chunked
 // ============================================================================
 
@@ -179,6 +298,7 @@ pub fn emit_woven_rust_chunked(
     use volar_compiler::chunk_module::{ChunkConfig, chunk_module_rust};
     use volar_compiler_passes::chunk_function_bodies;
 
+    #[cfg(feature = "cargo-directives")]
     println!("cargo:rerun-if-changed={}", circuit_path.display());
 
     let bytes = std::fs::read(circuit_path)?;

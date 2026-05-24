@@ -61,8 +61,10 @@ pub use weave::{
 pub use volar_weaver::StorageSizes;
 #[cfg(feature = "weave-chunked")]
 pub use weave::emit_woven_rust_chunked;
-#[cfg(feature = "weave-chunked")]
+#[cfg(any(feature = "weave-chunked", feature = "weave-ts"))]
 pub use volar_compiler::chunk_module::ChunkOptions;
+#[cfg(feature = "weave-ts")]
+pub use weave::{emit_woven_typescript, emit_woven_typescript_chunked};
 
 #[cfg(feature = "pipeline")]
 mod pipeline;
@@ -239,7 +241,7 @@ pub fn compile_lir_to_object(
     out_path: &Path,
     options: &CompileOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Tell Cargo to re-run this build script if the saved LIR changes.
+    #[cfg(feature = "cargo-directives")]
     println!("cargo:rerun-if-changed={}", saved_path.display());
 
     let opt_level = options.opt_level.unwrap_or_else(opt_level_from_env);
