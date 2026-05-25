@@ -153,7 +153,7 @@ proptest! {
         };
 
         let mut forwarded = ir.clone();
-        store_forward_ir_blocks(&mut forwarded);
+        store_forward_ir_blocks(&mut forwarded, &types);
 
         let after = match eval_ir(&forwarded, &types, &inputs) {
             Some(v) => v,
@@ -168,10 +168,10 @@ proptest! {
 
     #[test]
     fn prop_h_store_forward_ir_does_not_panic(
-        (ir, _types, _inputs) in gen_ir_extended_and_inputs()
+        (ir, types, _inputs) in gen_ir_extended_and_inputs()
     ) {
         let mut forwarded = ir.clone();
-        let _ = store_forward_ir_blocks(&mut forwarded);
+        let _ = store_forward_ir_blocks(&mut forwarded, &types);
     }
 
     #[test]
@@ -258,7 +258,7 @@ proptest! {
         };
 
         let mut forwarded = ir.clone();
-        store_forward_ir_blocks(&mut forwarded);
+        store_forward_ir_blocks(&mut forwarded, &types);
 
         let after = match eval_ir(&forwarded, &types, &inputs) {
             Some(v) => v,
@@ -273,10 +273,10 @@ proptest! {
 
     #[test]
     fn prop_h_store_forward_ir_multiblock_does_not_panic(
-        (ir, _types, _inputs) in gen_ir_multiblock_and_inputs()
+        (ir, types, _inputs) in gen_ir_multiblock_and_inputs()
     ) {
         let mut forwarded = ir.clone();
-        let _ = store_forward_ir_blocks(&mut forwarded);
+        let _ = store_forward_ir_blocks(&mut forwarded, &types);
     }
 }
 
@@ -363,7 +363,7 @@ proptest! {
         };
 
         let mut forwarded = ir.clone();
-        store_forward_ir_blocks(&mut forwarded);
+        store_forward_ir_blocks(&mut forwarded, &types);
 
         let after = match eval_ir(&forwarded, &types, &inputs) {
             Some(v) => v,
@@ -378,10 +378,10 @@ proptest! {
 
     #[test]
     fn prop_h_store_forward_ir_diamond_does_not_panic(
-        (ir, _types, _inputs) in gen_ir_diamond_and_inputs()
+        (ir, types, _inputs) in gen_ir_diamond_and_inputs()
     ) {
         let mut forwarded = ir.clone();
-        let _ = store_forward_ir_blocks(&mut forwarded);
+        let _ = store_forward_ir_blocks(&mut forwarded, &types);
     }
 
     #[test]

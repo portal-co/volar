@@ -14,10 +14,13 @@
 use alloc::{collections::BTreeMap, vec, vec::Vec};
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
 use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRVarId};
-use volar_ir_common::{Constant, StorageId, TypeId};
+use volar_ir_common::{Constant, StorageId, TypeId, TypeTable};
 use vaffle::{FuncBody, FuncDecl, Module, Value, ValueId};
 
-use crate::common::canon_alias;
+use crate::common::{
+    canon_alias, constant_and, constant_is_zero, constant_or, constant_rol, constant_ror,
+    constant_shl, constant_xor, mask_constant, stmt_output_type, type_bit_width,
+};
 use crate::ir::apply_aliases_to_ir_terminator;
 use crate::biir::apply_aliases_to_biir_terminator;
 
@@ -25,18 +28,54 @@ use crate::biir::apply_aliases_to_biir_terminator;
 // Address disambiguation
 // ============================================================================
 
-/// Max distinct addresses tracked per (StorageId, TypeId) slot before falling
-/// back to conservative invalidation.
+/// Max distinct addresses tracked per (StorageId, TypeId/bit_width) slot.
 const MAX_CONCURRENT_STORES: usize = 16;
+
+const ALL_ONES: Constant = Constant { hi: u128::MAX, lo: u128::MAX };
+
+/// Per-bit abstract value: `known` marks which bit positions we know,
+/// `value` holds their values (only meaningful where `known` has a 1-bit).
+///
+/// Used alongside the GF(2) poly check to catch cases like `Merge` of adder
+/// output bits, where individual bits are provably distinct even though the
+/// whole-word poly XOR has variable terms.
+#[derive(Clone, Copy)]
+struct KnownBits {
+    known: Constant,
+    value: Constant,
+}
+
+impl Default for KnownBits {
+    fn default() -> Self {
+        KnownBits { known: Constant { hi: 0, lo: 0 }, value: Constant { hi: 0, lo: 0 } }
+    }
+}
+
+impl KnownBits {
+    fn from_const(c: Constant, width: usize) -> Self {
+        let m = mask_constant(ALL_ONES, width);
+        KnownBits { known: m, value: constant_and(c, m) }
+    }
+    /// True if any bit position is definitely 1 in the XOR of `self` and `other`.
+    fn xor_has_one_bit(self, other: KnownBits) -> bool {
+        let both = constant_and(self.known, other.known);
+        !constant_is_zero(both)
+            && !constant_is_zero(constant_and(both, constant_xor(self.value, other.value)))
+    }
+}
+
+/// Set bit `bit` (0-indexed) in a 256-bit `Constant`.
+fn set_bit_in_constant(mut c: Constant, bit: usize) -> Constant {
+    if bit < 128 { c.lo |= 1u128 << bit; }
+    else if bit < 256 { c.hi |= 1u128 << (bit - 128); }
+    c
+}
 
 /// GF(2) polynomial representation of an address: `(monomials, constant)`.
 /// Monomial coefficients are mod-2; XOR-ing two of these gives their difference.
 type IrPolyRepr = (BTreeMap<Vec<IRVarId>, u8>, Constant);
 
 /// Extract the GF(2) polynomial representation of an IR address variable.
-///
-/// Returns `({}, c)` for a known constant, `(coeffs, constant)` for a known
-/// polynomial, or a fresh singleton monomial `{[v]: 1}` for opaque vars.
 fn ir_addr_poly(
     v: IRVarId,
     const_map: &BTreeMap<IRVarId, Constant>,
@@ -53,20 +92,13 @@ fn ir_addr_poly(
     (m, Constant { hi: 0, lo: 0 })
 }
 
-/// Return `true` iff `a` and `b` are provably distinct addresses.
-///
-/// Computes the symbolic GF(2) XOR of the two polynomial representations.
-/// If all variable terms cancel and the constant part is nonzero, the
-/// addresses differ by a known nonzero constant and cannot alias.
-fn ir_addrs_provably_different(
+/// GF(2) poly check: true iff the symbolic XOR of `a` and `b` is a nonzero constant.
+fn ir_polys_xor_nonzero_const(
     a: IRVarId,
     b: IRVarId,
     const_map: &BTreeMap<IRVarId, Constant>,
     poly_map: &BTreeMap<IRVarId, IrPolyRepr>,
 ) -> bool {
-    if a == b {
-        return false;
-    }
     let (mut ca, ka) = ir_addr_poly(a, const_map, poly_map);
     let (cb, kb) = ir_addr_poly(b, const_map, poly_map);
     for (key, coeff) in cb {
@@ -74,8 +106,128 @@ fn ir_addrs_provably_different(
         *e ^= coeff;
     }
     ca.retain(|_, v| *v & 1 != 0);
-    let xor_const = crate::common::constant_xor(ka, kb);
-    ca.is_empty() && !crate::common::constant_is_zero(xor_const)
+    ca.is_empty() && !constant_is_zero(constant_xor(ka, kb))
+}
+
+/// Return `true` iff `a` and `b` are provably distinct addresses.
+///
+/// Runs two complementary checks:
+/// 1. GF(2) polynomial XOR — catches same-base + different-constant patterns.
+/// 2. Bitwise known-bits XOR — catches `Merge`/`Rol`/`Ror`/`Splat`/`Shuffle`
+///    patterns where individual bits are definitively distinct.
+fn ir_addrs_provably_different(
+    a: IRVarId,
+    b: IRVarId,
+    const_map: &BTreeMap<IRVarId, Constant>,
+    poly_map: &BTreeMap<IRVarId, IrPolyRepr>,
+    known_bits_map: &BTreeMap<IRVarId, KnownBits>,
+) -> bool {
+    if a == b { return false; }
+    if ir_polys_xor_nonzero_const(a, b, const_map, poly_map) { return true; }
+    let kb_a = known_bits_map.get(&a).copied().unwrap_or_default();
+    let kb_b = known_bits_map.get(&b).copied().unwrap_or_default();
+    kb_a.xor_has_one_bit(kb_b)
+}
+
+/// Compute `KnownBits` and output bit-width for one IR statement result.
+fn ir_stmt_known_bits(
+    stmt: &volar_ir_common::Stmt<IRVarId, IRVarId>,
+    known_bits_map: &BTreeMap<IRVarId, KnownBits>,
+    width_map: &BTreeMap<IRVarId, usize>,
+    types: &TypeTable,
+) -> (KnownBits, Option<usize>) {
+    use volar_ir_common::Stmt;
+    let get_w = |ty: TypeId| type_bit_width(ty, types).unwrap_or(0);
+    let get_kb = |v: &IRVarId| known_bits_map.get(v).copied().unwrap_or_default();
+    let get_pw = |v: &IRVarId| width_map.get(v).copied().unwrap_or(0);
+
+    match stmt {
+        Stmt::Const(c, ty) => {
+            let w = get_w(*ty);
+            (KnownBits::from_const(*c, w), Some(w))
+        }
+        Stmt::Poly { coeffs, constant, ty } => {
+            let w = get_w(*ty);
+            let kb = if coeffs.is_empty() {
+                KnownBits::from_const(*constant, w)
+            } else {
+                KnownBits::default()
+            };
+            (kb, Some(w))
+        }
+        Stmt::Transmute { src, dst_ty, .. } => {
+            let w = get_w(*dst_ty);
+            let kb = get_kb(src);
+            (KnownBits { known: mask_constant(kb.known, w), value: mask_constant(kb.value, w) }, Some(w))
+        }
+        Stmt::Merge { parts, ty } => {
+            let total_w = get_w(*ty);
+            let mut known = Constant { hi: 0, lo: 0 };
+            let mut value = Constant { hi: 0, lo: 0 };
+            let mut offset = 0usize;
+            for part in parts {
+                let part_w = get_pw(part);
+                if part_w == 0 { break; }
+                let kb = get_kb(part);
+                let sk = constant_shl(mask_constant(kb.known, part_w), offset);
+                let sv = constant_shl(mask_constant(kb.value, part_w), offset);
+                known = constant_or(known, sk);
+                value = constant_or(value, sv);
+                offset += part_w;
+                if offset >= total_w { break; }
+            }
+            (KnownBits { known, value }, Some(total_w))
+        }
+        Stmt::Rol { src, ty, n } => {
+            let w = get_w(*ty);
+            let kb = get_kb(src);
+            (KnownBits { known: constant_rol(kb.known, w, *n), value: constant_rol(kb.value, w, *n) }, Some(w))
+        }
+        Stmt::Ror { src, ty, n } => {
+            let w = get_w(*ty);
+            let kb = get_kb(src);
+            (KnownBits { known: constant_ror(kb.known, w, *n), value: constant_ror(kb.value, w, *n) }, Some(w))
+        }
+        Stmt::Splat { src, ty } => {
+            let w = get_w(*ty);
+            let kb = get_kb(src);
+            let kb_out = if kb.known.lo & 1 != 0 {
+                let fill = if kb.value.lo & 1 != 0 { ALL_ONES } else { Constant { hi: 0, lo: 0 } };
+                KnownBits { known: mask_constant(ALL_ONES, w), value: mask_constant(fill, w) }
+            } else {
+                KnownBits::default()
+            };
+            (kb_out, Some(w))
+        }
+        Stmt::Shuffle { result_bits, ty } => {
+            let w = get_w(*ty);
+            let mut known = Constant { hi: 0, lo: 0 };
+            let mut value = Constant { hi: 0, lo: 0 };
+            for (out_bit, (src_bit, src_var)) in result_bits.iter().enumerate() {
+                if out_bit >= 256 { break; }
+                let kb = get_kb(src_var);
+                let sb = *src_bit as usize;
+                let (ka, va) = if sb < 128 {
+                    ((kb.known.lo >> sb) & 1, (kb.value.lo >> sb) & 1)
+                } else if sb < 256 {
+                    ((kb.known.hi >> (sb - 128)) & 1, (kb.value.hi >> (sb - 128)) & 1)
+                } else {
+                    (0, 0)
+                };
+                if ka != 0 {
+                    known = set_bit_in_constant(known, out_bit);
+                    if va != 0 { value = set_bit_in_constant(value, out_bit); }
+                }
+            }
+            (KnownBits { known, value }, Some(w))
+        }
+        _ => {
+            let w = stmt_output_type(stmt)
+                .and_then(|ty| type_bit_width(ty, types))
+                .unwrap_or(0);
+            (KnownBits::default(), if w > 0 { Some(w) } else { None })
+        }
+    }
 }
 
 // ============================================================================
@@ -93,14 +245,17 @@ type IrStoreCache = BTreeMap<(StorageId, TypeId, IRVarId), IRVarId>;
 /// param injections to carry source values not already in their param list.
 ///
 /// Returns `true` if any block was modified.
-pub fn store_forward_ir_blocks<P: Clone + Default>(blocks: &mut IRBlocks<P>) -> bool {
+pub fn store_forward_ir_blocks<P: Clone + Default>(
+    blocks: &mut IRBlocks<P>,
+    types: &TypeTable,
+) -> bool {
     let n = blocks.blocks.len();
     if n == 0 {
         return false;
     }
     if n == 1 {
         let (changed, _) =
-            store_forward_ir_block_with_cache(&mut blocks.blocks[0], BTreeMap::new());
+            store_forward_ir_block_with_cache(&mut blocks.blocks[0], BTreeMap::new(), types);
         return changed;
     }
 
@@ -146,7 +301,7 @@ pub fn store_forward_ir_blocks<P: Clone + Default>(blocks: &mut IRBlocks<P>) -> 
         };
 
         let (changed, out) =
-            store_forward_ir_block_with_cache(&mut blocks.blocks[bi], incoming);
+            store_forward_ir_block_with_cache(&mut blocks.blocks[bi], incoming, types);
         any_changed |= changed;
         outgoing_caches[bi] = Some(out);
     }
@@ -160,11 +315,14 @@ pub fn store_forward_ir_blocks<P: Clone + Default>(blocks: &mut IRBlocks<P>) -> 
 fn store_forward_ir_block_with_cache<P: Clone + Default>(
     block: &mut IRBlock<P>,
     incoming: IrStoreCache,
+    types: &TypeTable,
 ) -> (bool, IrStoreCache) {
     let mut cache = incoming;
     let mut alias_map: BTreeMap<IRVarId, IRVarId> = BTreeMap::new();
     let mut const_map: BTreeMap<IRVarId, Constant> = BTreeMap::new();
     let mut addr_poly_map: BTreeMap<IRVarId, IrPolyRepr> = BTreeMap::new();
+    let mut known_bits_map: BTreeMap<IRVarId, KnownBits> = BTreeMap::new();
+    let mut width_map: BTreeMap<IRVarId, usize> = BTreeMap::new();
     let mut changed = false;
 
     let base = block.params.len() as u32;
@@ -179,7 +337,7 @@ fn store_forward_ir_block_with_cache<P: Clone + Default>(
         let stmt = block.stmts[i].clone();
 
         use volar_ir_common::Stmt;
-        // Track constants and polynomials for address disambiguation.
+        // Track constants and polynomials for GF(2) disambiguation.
         match &stmt {
             Stmt::Const(c, _) => { const_map.insert(rv, *c); }
             Stmt::Poly { coeffs, constant, .. } => {
@@ -187,6 +345,11 @@ fn store_forward_ir_block_with_cache<P: Clone + Default>(
             }
             _ => {}
         }
+        // Track bitwise known bits for the complementary bitwise check.
+        let (kb, w) = ir_stmt_known_bits(&stmt, &known_bits_map, &width_map, types);
+        known_bits_map.insert(rv, kb);
+        if let Some(w) = w { width_map.insert(rv, w); }
+
         match &stmt {
             Stmt::StorageWrite { storage, src, ty, addr } => {
                 let src = canon_alias(&alias_map, *src);
@@ -199,7 +362,9 @@ fn store_forward_ir_block_with_cache<P: Clone + Default>(
                 } else {
                     cache.retain(|(s, t, cached_addr), _| {
                         if s != storage || t != ty { return true; }
-                        ir_addrs_provably_different(addr, *cached_addr, &const_map, &addr_poly_map)
+                        ir_addrs_provably_different(
+                            addr, *cached_addr, &const_map, &addr_poly_map, &known_bits_map,
+                        )
                     });
                 }
                 cache.insert((*storage, *ty, addr), src);
@@ -839,12 +1004,32 @@ pub fn store_forward_biir_blocks<P: Clone + Default>(blocks: &mut BIrBlocks<P>) 
 /// Process a single BIR block starting from `incoming` cache.
 ///
 /// Returns `(changed, outgoing_cache)`.
+fn biir_addrs_provably_different(
+    addr_a: &[IRVarId],
+    addr_b: &[IRVarId],
+    known_map: &BTreeMap<IRVarId, Option<bool>>,
+) -> bool {
+    if addr_a.len() != addr_b.len() {
+        return true;
+    }
+    for (a_bit, b_bit) in addr_a.iter().zip(addr_b.iter()) {
+        if a_bit == b_bit { continue; }
+        let ka = known_map.get(a_bit).copied().flatten();
+        let kb = known_map.get(b_bit).copied().flatten();
+        if matches!((ka, kb), (Some(true), Some(false)) | (Some(false), Some(true))) {
+            return true;
+        }
+    }
+    false
+}
+
 fn store_forward_biir_block_with_cache<P: Clone + Default>(
     block: &mut BIrBlock<P>,
     incoming: BiirStoreCache,
 ) -> (bool, BiirStoreCache) {
     let mut cache = incoming;
     let mut alias_map: BTreeMap<IRVarId, IRVarId> = BTreeMap::new();
+    let mut known_map: BTreeMap<IRVarId, Option<bool>> = BTreeMap::new();
     let mut changed = false;
 
     let base = block.params;
@@ -858,11 +1043,55 @@ fn store_forward_biir_block_with_cache<P: Clone + Default>(
 
         let stmt = block.stmts[i].clone();
 
+        // Update known-bits map for this value.
+        let known: Option<bool> = match &stmt {
+            BIrStmt::Zero => Some(false),
+            BIrStmt::One  => Some(true),
+            BIrStmt::Not(a) => {
+                known_map.get(&canon_alias(&alias_map, *a)).copied().flatten().map(|b| !b)
+            }
+            BIrStmt::And(a, b) => {
+                let ka = known_map.get(&canon_alias(&alias_map, *a)).copied().flatten();
+                let kb = known_map.get(&canon_alias(&alias_map, *b)).copied().flatten();
+                match (ka, kb) {
+                    (Some(false), _) | (_, Some(false)) => Some(false),
+                    (Some(true), Some(true)) => Some(true),
+                    _ => None,
+                }
+            }
+            BIrStmt::Or(a, b) => {
+                let ka = known_map.get(&canon_alias(&alias_map, *a)).copied().flatten();
+                let kb = known_map.get(&canon_alias(&alias_map, *b)).copied().flatten();
+                match (ka, kb) {
+                    (Some(true), _) | (_, Some(true)) => Some(true),
+                    (Some(false), Some(false)) => Some(false),
+                    _ => None,
+                }
+            }
+            BIrStmt::Xor(a, b) => {
+                let ka = known_map.get(&canon_alias(&alias_map, *a)).copied().flatten();
+                let kb = known_map.get(&canon_alias(&alias_map, *b)).copied().flatten();
+                ka.and_then(|a| kb.map(|b| a ^ b))
+            }
+            _ => None,
+        };
+        known_map.insert(rv, known);
+
         match &stmt {
             BIrStmt::StorageWrite { storage, src, bit_width, addr } => {
                 let src = canon_alias(&alias_map, *src);
                 let addr: Vec<IRVarId> = addr.iter().map(|v| canon_alias(&alias_map, *v)).collect();
-                cache.retain(|(s, w, _), _| !(s == storage && w == bit_width));
+                let slot_count = cache.keys()
+                    .filter(|(s, w, _)| s == storage && w == bit_width)
+                    .count();
+                if slot_count >= MAX_CONCURRENT_STORES {
+                    cache.retain(|(s, w, _), _| !(s == storage && w == bit_width));
+                } else {
+                    cache.retain(|(s, w, cached_addr), _| {
+                        if s != storage || w != bit_width { return true; }
+                        biir_addrs_provably_different(&addr, cached_addr, &known_map)
+                    });
+                }
                 cache.insert((*storage, *bit_width, addr), src);
             }
             BIrStmt::StorageRead { storage, bit_width, addr } => {
@@ -1157,9 +1386,6 @@ fn merge_biir_caches_with_injection<P: Clone + Default>(
 // ============================================================================
 
 /// Extract the GF(2) polynomial representation of a VAFFLE address value.
-///
-/// Looks up `v` directly in the body's value table (which is global across
-/// blocks), so this works for values defined in dominating blocks.
 fn vaffle_addr_poly(
     values: &[Value],
     v: ValueId,
@@ -1176,11 +1402,8 @@ fn vaffle_addr_poly(
     }
 }
 
-/// Return `true` iff VAFFLE address values `a` and `b` are provably distinct.
-fn vaffle_addrs_provably_different(values: &[Value], a: ValueId, b: ValueId) -> bool {
-    if a == b {
-        return false;
-    }
+/// GF(2) poly check for VAFFLE addresses.
+fn vaffle_polys_xor_nonzero_const(values: &[Value], a: ValueId, b: ValueId) -> bool {
     let (mut ca, ka) = vaffle_addr_poly(values, a);
     let (cb, kb) = vaffle_addr_poly(values, b);
     for (key, coeff) in cb {
@@ -1188,8 +1411,136 @@ fn vaffle_addrs_provably_different(values: &[Value], a: ValueId, b: ValueId) -> 
         *e ^= coeff;
     }
     ca.retain(|_, v| *v & 1 != 0);
-    let xor_const = crate::common::constant_xor(ka, kb);
-    ca.is_empty() && !crate::common::constant_is_zero(xor_const)
+    ca.is_empty() && !constant_is_zero(constant_xor(ka, kb))
+}
+
+/// Compute `KnownBits` for one VAFFLE value, given already-computed results for
+/// earlier values (forward pass over the global value table).
+fn vaffle_value_known_bits(
+    values: &[Value],
+    kb_vec: &[KnownBits],
+    width_vec: &[usize],
+    v: ValueId,
+    types: &TypeTable,
+) -> (KnownBits, usize) {
+    use volar_ir_common::Stmt;
+    let get_w = |ty: TypeId| type_bit_width(ty, types).unwrap_or(0);
+    let get_kb = |u: ValueId| kb_vec.get(u.0).copied().unwrap_or_default();
+    let get_pw = |u: ValueId| width_vec.get(u.0).copied().unwrap_or(0);
+
+    match &values[v.0] {
+        Value::Op(Stmt::Const(c, ty)) => {
+            let w = get_w(*ty);
+            (KnownBits::from_const(*c, w), w)
+        }
+        Value::Op(Stmt::Poly { coeffs, constant, ty }) => {
+            let w = get_w(*ty);
+            let kb = if coeffs.is_empty() {
+                KnownBits::from_const(*constant, w)
+            } else {
+                KnownBits::default()
+            };
+            (kb, w)
+        }
+        Value::Op(Stmt::Transmute { src, dst_ty, .. }) => {
+            let w = get_w(*dst_ty);
+            let kb = get_kb(*src);
+            (KnownBits { known: mask_constant(kb.known, w), value: mask_constant(kb.value, w) }, w)
+        }
+        Value::Op(Stmt::Merge { parts, ty }) => {
+            let total_w = get_w(*ty);
+            let mut known = Constant { hi: 0, lo: 0 };
+            let mut value = Constant { hi: 0, lo: 0 };
+            let mut offset = 0usize;
+            for &part in parts {
+                let part_w = get_pw(part);
+                if part_w == 0 { break; }
+                let kb = get_kb(part);
+                let sk = constant_shl(mask_constant(kb.known, part_w), offset);
+                let sv = constant_shl(mask_constant(kb.value, part_w), offset);
+                known = constant_or(known, sk);
+                value = constant_or(value, sv);
+                offset += part_w;
+                if offset >= total_w { break; }
+            }
+            (KnownBits { known, value }, total_w)
+        }
+        Value::Op(Stmt::Rol { src, ty, n }) => {
+            let w = get_w(*ty);
+            let kb = get_kb(*src);
+            (KnownBits { known: constant_rol(kb.known, w, *n), value: constant_rol(kb.value, w, *n) }, w)
+        }
+        Value::Op(Stmt::Ror { src, ty, n }) => {
+            let w = get_w(*ty);
+            let kb = get_kb(*src);
+            (KnownBits { known: constant_ror(kb.known, w, *n), value: constant_ror(kb.value, w, *n) }, w)
+        }
+        Value::Op(Stmt::Splat { src, ty }) => {
+            let w = get_w(*ty);
+            let kb = get_kb(*src);
+            let kb_out = if kb.known.lo & 1 != 0 {
+                let fill = if kb.value.lo & 1 != 0 { ALL_ONES } else { Constant { hi: 0, lo: 0 } };
+                KnownBits { known: mask_constant(ALL_ONES, w), value: mask_constant(fill, w) }
+            } else {
+                KnownBits::default()
+            };
+            (kb_out, w)
+        }
+        Value::Op(Stmt::Shuffle { result_bits, ty }) => {
+            let w = get_w(*ty);
+            let mut known = Constant { hi: 0, lo: 0 };
+            let mut value = Constant { hi: 0, lo: 0 };
+            for (out_bit, (src_bit, src_var)) in result_bits.iter().enumerate() {
+                if out_bit >= 256 { break; }
+                let kb = get_kb(*src_var);
+                let sb = *src_bit as usize;
+                let (ka, va) = if sb < 128 {
+                    ((kb.known.lo >> sb) & 1, (kb.value.lo >> sb) & 1)
+                } else if sb < 256 {
+                    ((kb.known.hi >> (sb - 128)) & 1, (kb.value.hi >> (sb - 128)) & 1)
+                } else {
+                    (0, 0)
+                };
+                if ka != 0 {
+                    known = set_bit_in_constant(known, out_bit);
+                    if va != 0 { value = set_bit_in_constant(value, out_bit); }
+                }
+            }
+            (KnownBits { known, value }, w)
+        }
+        Value::Param { ty, .. } => {
+            let w = get_w(*ty);
+            (KnownBits::default(), w)
+        }
+        _ => (KnownBits::default(), 0),
+    }
+}
+
+/// Pre-compute `KnownBits` for every value in a VAFFLE function body.
+fn compute_vaffle_known_bits(body: &FuncBody, types: &TypeTable) -> alloc::vec::Vec<KnownBits> {
+    let n = body.values.len();
+    let mut kb_vec = alloc::vec![KnownBits::default(); n];
+    let mut width_vec = alloc::vec![0usize; n];
+    for i in 0..n {
+        let (kb, w) = vaffle_value_known_bits(&body.values, &kb_vec, &width_vec, ValueId(i), types);
+        kb_vec[i] = kb;
+        width_vec[i] = w;
+    }
+    kb_vec
+}
+
+/// Return `true` iff VAFFLE address values `a` and `b` are provably distinct.
+fn vaffle_addrs_provably_different(
+    values: &[Value],
+    kb_vec: &[KnownBits],
+    a: ValueId,
+    b: ValueId,
+) -> bool {
+    if a == b { return false; }
+    if vaffle_polys_xor_nonzero_const(values, a, b) { return true; }
+    let kb_a = kb_vec.get(a.0).copied().unwrap_or_default();
+    let kb_b = kb_vec.get(b.0).copied().unwrap_or_default();
+    kb_a.xor_has_one_bit(kb_b)
 }
 
 // ============================================================================
@@ -1203,7 +1554,7 @@ pub fn store_forward_vaffle_module(module: &mut Module) -> bool {
     let mut any_changed = false;
     for func in module.funcs.iter_mut() {
         if let FuncDecl::Body(body) = func {
-            any_changed |= store_forward_vaffle_body(body);
+            any_changed |= store_forward_vaffle_body(body, &module.types);
         }
     }
     any_changed
@@ -1219,13 +1570,14 @@ type VaffleCache = BTreeMap<(StorageId, TypeId, ValueId), ValueId>;
 /// For multi-block bodies, values written in a dominating block and read in a
 /// dominated block are forwarded directly (VAFFLE `ValueId`s are global, so the
 /// cross-block source is accessible in the successor's `value_table`).
-fn store_forward_vaffle_body(body: &mut FuncBody) -> bool {
+fn store_forward_vaffle_body(body: &mut FuncBody, types: &TypeTable) -> bool {
+    let kb_vec = compute_vaffle_known_bits(body, types);
     let n = body.blocks.len();
 
     if n == 1 {
         // Fast path: no CFG needed.
         let (changed, _) =
-            store_forward_vaffle_block_with_cache(body, 0, BTreeMap::new());
+            store_forward_vaffle_block_with_cache(body, &kb_vec, 0, BTreeMap::new());
         return changed;
     }
 
@@ -1256,7 +1608,7 @@ fn store_forward_vaffle_body(body: &mut FuncBody) -> bool {
         };
 
         let (changed, outgoing) =
-            store_forward_vaffle_block_with_cache(body, block_idx, incoming);
+            store_forward_vaffle_block_with_cache(body, &kb_vec, block_idx, incoming);
         any_changed |= changed;
         outgoing_caches[block_idx] = Some(outgoing);
     }
@@ -1346,6 +1698,7 @@ enum VaffleStoreAction {
 /// successors.
 fn store_forward_vaffle_block_with_cache(
     body: &mut FuncBody,
+    kb_vec: &[KnownBits],
     block_idx: usize,
     incoming: VaffleCache,
 ) -> (bool, VaffleCache) {
@@ -1395,7 +1748,7 @@ fn store_forward_vaffle_block_with_cache(
                     let vals = &body.values;
                     cache.retain(|(s, t, cached_addr), _| {
                         if *s != storage || *t != ty { return true; }
-                        vaffle_addrs_provably_different(vals, addr, *cached_addr)
+                        vaffle_addrs_provably_different(vals, kb_vec, addr, *cached_addr)
                     });
                 }
                 cache.insert((storage, ty, addr), src);
@@ -1641,7 +1994,8 @@ mod tests {
             Stmt::StorageRead { storage: st, ty, addr: IRVarId(1) },                   // v7 → alias v3
         ];
         let mut blocks = IRBlocks::new(vec![make_block(vec![], stmts)]);
-        let changed = store_forward_ir_blocks(&mut blocks);
+        let types = volar_ir_common::TypeTable::new();
+        let changed = store_forward_ir_blocks(&mut blocks, &types);
         assert!(changed, "expected forwarding to occur");
     }
 
@@ -1663,7 +2017,8 @@ mod tests {
             Stmt::StorageRead { storage: st, ty, addr: IRVarId(1) },                   // v5 — not forwarded
         ];
         let mut blocks = IRBlocks::new(vec![make_block(vec![TypeId(0)], stmts)]);
+        let types = volar_ir_common::TypeTable::new();
         // Should not panic; cache conservatively flushed by the opaque write.
-        let _changed = store_forward_ir_blocks(&mut blocks);
+        let _changed = store_forward_ir_blocks(&mut blocks, &types);
     }
 }
