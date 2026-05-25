@@ -5,4 +5,5 @@
 //! and the `arbitrary` impls (for cargo-fuzz).
 pub mod biir;
 pub mod ir;
+pub mod oracle;
 pub mod vaffle;

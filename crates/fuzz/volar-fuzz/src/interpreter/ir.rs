@@ -4,10 +4,11 @@
 //! handles all widths uniformly, including `Vec`-typed compound values.
 //!
 //! # Limitations
-//! - Oracle, action, RNG, and storage statements **panic** — the generator
-//!   never produces them.
-//! - `JumpTable` and `Dyn` jump targets **panic** — not emitted by the
-//!   generator.
+//! - Action and RNG statements **panic** — the generator never produces them.
+//! - Oracle calls are handled via a FNV-1a hash oracle (deterministic, pure).
+//! - `Dyn` jump targets are resolved by treating the variable as a 32-bit
+//!   block index (LSB-first bit vector → u64 → block index).
+//! - `Block` types are treated as 32-bit integers (block IDs).
 //! - `_256`, `AES8`, and `Galois64` types are supported by width only (no
 //!   field-specific semantics); the generator avoids them.
 
@@ -16,7 +17,9 @@ use std::collections::BTreeMap;
 use volar_ir::ir::{
     IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRTypes, IRVarId,
 };
-use volar_ir_common::{Constant, IrType, Stmt, StorageId, Type, TypeId};
+use volar_ir_common::{Constant, IrType, OracleDecl, Stmt, StorageId, Type, TypeId};
+
+use crate::generators::oracle::hash_oracle;
 
 // ============================================================================
 // Public API
@@ -60,7 +63,7 @@ pub fn eval_ir(
         }
 
         let block = &blocks.blocks[current_block];
-        let result = eval_ir_block(block, types, &current_inputs, &mut storage)?;
+        let result = eval_ir_block(block, types, &blocks.oracles, &current_inputs, &mut storage)?;
 
         match result {
             IrBlockResult::Return(vals) => return Some(vals),
@@ -87,6 +90,7 @@ enum IrBlockResult {
 fn eval_ir_block(
     block: &volar_ir::ir::IRBlock<()>,
     types: &IRTypes,
+    oracles: &[OracleDecl],
     params: &[IrValue],
     storage: &mut StorageMap,
 ) -> Option<IrBlockResult> {
@@ -99,6 +103,9 @@ fn eval_ir_block(
     );
 
     let mut vars: BTreeMap<u32, IrValue> = BTreeMap::new();
+    // Side-table for OracleCall aggregates: stmt_var_id → Vec<IrValue> (one per output).
+    let mut oracle_agg: BTreeMap<u32, Vec<IrValue>> = BTreeMap::new();
+
     for (i, v) in params.iter().enumerate() {
         vars.insert(i as u32, v.clone());
     }
@@ -106,21 +113,14 @@ fn eval_ir_block(
     let base = block.params.len() as u32;
     for (i, stmt) in block.stmts.iter().enumerate() {
         let id = base + i as u32;
-        let val = eval_ir_stmt(stmt, types, &vars, storage);
+        let val = eval_ir_stmt(stmt, id, types, oracles, &vars, &mut oracle_agg, storage);
         vars.insert(id, val);
     }
 
     let result = match &block.terminator {
         IRTerminator::Jmp { func, args } => {
             let arg_vals: Vec<IrValue> = args.iter().map(|id| get_ir(&vars, id)).collect();
-            match func {
-                IRBlockTargetId::Return => IrBlockResult::Return(arg_vals),
-                IRBlockTargetId::Block(b) => IrBlockResult::Jump {
-                    target: b.0 as usize,
-                    args: arg_vals,
-                },
-                IRBlockTargetId::Dyn(_) => panic!("eval_ir: Dyn jump not supported"),
-            }
+            resolve_ir_target(func, &arg_vals, &vars)
         }
         IRTerminator::JumpCond {
             condition,
@@ -130,21 +130,14 @@ fn eval_ir_block(
             false_args,
         } => {
             let cond_val = get_ir(&vars, condition);
-            let (target_block, target_args) = if cond_val[0] {
+            let (target_block, target_args) = if cond_val.first().copied().unwrap_or(false) {
                 (true_block, true_args)
             } else {
                 (false_block, false_args)
             };
             let arg_vals: Vec<IrValue> =
                 target_args.iter().map(|id| get_ir(&vars, id)).collect();
-            match target_block {
-                IRBlockTargetId::Return => IrBlockResult::Return(arg_vals),
-                IRBlockTargetId::Block(b) => IrBlockResult::Jump {
-                    target: b.0 as usize,
-                    args: arg_vals,
-                },
-                IRBlockTargetId::Dyn(_) => panic!("eval_ir: Dyn jump in JumpCond not supported"),
-            }
+            resolve_ir_target(target_block, &arg_vals, &vars)
         }
         IRTerminator::JumpTable { index, cases } => {
             let idx_val = get_ir(&vars, index);
@@ -167,24 +160,51 @@ fn eval_ir_block(
                 .expect("eval_ir: JumpTable case missing for index value");
             let arg_vals: Vec<IrValue> =
                 target_args.iter().map(|id| get_ir(&vars, id)).collect();
-            match target_block {
-                IRBlockTargetId::Return => IrBlockResult::Return(arg_vals),
-                IRBlockTargetId::Block(b) => IrBlockResult::Jump {
-                    target: b.0 as usize,
-                    args: arg_vals,
-                },
-                IRBlockTargetId::Dyn(_) => {
-                    panic!("eval_ir: Dyn jump in JumpTable not supported")
-                }
-            }
+            resolve_ir_target(target_block, &arg_vals, &vars)
         }
     };
 
     Some(result)
 }
 
+/// Resolve an `IRBlockTargetId` to an `IrBlockResult`.
+///
+/// For `Dyn` targets the block index is read from the variable: the 32-bit
+/// (LSB-first) bit vector is interpreted as a u64 via `bits_to_u64`.
+fn resolve_ir_target(
+    target: &IRBlockTargetId,
+    arg_vals: &[IrValue],
+    vars: &BTreeMap<u32, IrValue>,
+) -> IrBlockResult {
+    match target {
+        IRBlockTargetId::Return => IrBlockResult::Return(arg_vals.to_vec()),
+        IRBlockTargetId::Block(b) => IrBlockResult::Jump {
+            target: b.0 as usize,
+            args: arg_vals.to_vec(),
+        },
+        IRBlockTargetId::Dyn(v) => {
+            let bits = vars.get(&v.0).cloned().unwrap_or_default();
+            let block_idx = bits_to_u64(&bits) as usize;
+            IrBlockResult::Jump {
+                target: block_idx,
+                args: arg_vals.to_vec(),
+            }
+        }
+    }
+}
+
 /// Evaluate a single IR statement.  Returns the result value as a bit vector.
-fn eval_ir_stmt(stmt: &IRStmt, types: &IRTypes, vars: &BTreeMap<u32, IrValue>, storage: &mut StorageMap) -> IrValue {
+///
+/// `stmt_id` is the SSA variable ID being assigned (used as the oracle agg key).
+fn eval_ir_stmt(
+    stmt: &IRStmt,
+    stmt_id: u32,
+    types: &IRTypes,
+    oracles: &[OracleDecl],
+    vars: &BTreeMap<u32, IrValue>,
+    oracle_agg: &mut BTreeMap<u32, Vec<IrValue>>,
+    storage: &mut StorageMap,
+) -> IrValue {
     match stmt {
         Stmt::Const(c, ty) => {
             let w = bit_width(*ty, types);
@@ -248,8 +268,42 @@ fn eval_ir_stmt(stmt: &IRStmt, types: &IRTypes, vars: &BTreeMap<u32, IrValue>, s
             }
             result
         }
-        Stmt::OracleCall { .. } => panic!("eval_ir: OracleCall not supported"),
-        Stmt::OracleOutput { .. } => panic!("eval_ir: OracleOutput not supported"),
+        Stmt::OracleCall { name, args, output_tys, .. } => {
+            // Find oracle index by name for the hash seed.
+            let oracle_idx = oracles
+                .iter()
+                .position(|o| &o.name == name)
+                .unwrap_or(0) as u32;
+            // Flatten all input args into a single bit vector.
+            let flat_inputs: Vec<bool> = args
+                .iter()
+                .flat_map(|v| get_ir(vars, v))
+                .collect();
+            // Compute total output width.
+            let output_widths: Vec<usize> =
+                output_tys.iter().map(|&ty| bit_width(ty, types)).collect();
+            let total_w: usize = output_widths.iter().sum();
+            let flat_out = hash_oracle(oracle_idx, &flat_inputs, total_w);
+            // Split into per-output slices.
+            let mut outputs: Vec<IrValue> = Vec::with_capacity(output_tys.len());
+            let mut offset = 0;
+            for &w in &output_widths {
+                outputs.push(flat_out[offset..offset + w].to_vec());
+                offset += w;
+            }
+            // Store aggregate under this stmt's var ID.
+            oracle_agg.insert(stmt_id, outputs);
+            // Return an empty sentinel — callers use OracleOutput to project.
+            vec![]
+        }
+        Stmt::OracleOutput { call, idx, ty } => {
+            let w = bit_width(*ty, types);
+            oracle_agg
+                .get(&call.0)
+                .and_then(|agg| agg.get(*idx))
+                .cloned()
+                .unwrap_or_else(|| vec![false; w])
+        }
         Stmt::ActionCall { .. } => panic!("eval_ir: ActionCall not supported"),
         Stmt::ActionOutput { .. } => panic!("eval_ir: ActionOutput not supported"),
         Stmt::Rng { .. } => panic!("eval_ir: Rng not supported"),
@@ -283,13 +337,15 @@ fn eval_ir_stmt(stmt: &IRStmt, types: &IRTypes, vars: &BTreeMap<u32, IrValue>, s
 // ============================================================================
 
 /// Number of bits used by the type identified by `ty_id`.
+///
+/// `Block` and `Func` types are encoded as 32-bit block/function IDs.
 pub fn bit_width(ty_id: TypeId, types: &IRTypes) -> usize {
     match &types.0[ty_id.0 as usize] {
         IrType::Primitive(t) => primitive_width(*t),
         IrType::Vec(n, elem_ty) => n * bit_width(*elem_ty, types),
         IrType::Tuple(elems) => elems.iter().map(|&e| bit_width(e, types)).sum(),
-        IrType::Block { .. } => panic!("bit_width: Block type has no concrete bit width"),
-        IrType::Func { .. } => panic!("bit_width: Func type has no concrete bit width"),
+        IrType::Block { .. } => 32,
+        IrType::Func { .. } => 32,
     }
 }
 

@@ -4,17 +4,18 @@
 //! same representation used by [`crate::interpreter::ir`].
 //!
 //! # Limitations
-//! - `Call`, `Output`, `StackAlloc`, `PtrLoad`, `PtrStore`, `PtrOffset`
-//!   values **panic** — the generator never produces them.
-//! - `ReturnCall` and `Table` terminators **panic** — not emitted by the
-//!   generator.
-//! - Oracle, action, RNG, and storage statements **panic**.
+//! - `StackAlloc`, `PtrLoad`, `PtrStore`, `PtrOffset` **panic** — not generated.
+//! - `ReturnCall` **panics** — not emitted by the generator.
+//! - `Value::Call` and `Value::Output` are supported (single-level only).
+//! - Oracle calls use the FNV-1a hash oracle (deterministic, pure).
+//! - Action, RNG statements **panic** — not generated.
 
 use std::collections::BTreeMap;
 
 use vaffle::{BlockId, FuncDecl, FuncId, Module, Terminator, Value, ValueId};
-use volar_ir_common::{Constant, Stmt, StorageId, TypeId, TypeTable};
+use volar_ir_common::{Constant, OracleDecl, Stmt, StorageId, TypeId, TypeTable};
 
+use crate::generators::oracle::hash_oracle;
 use crate::interpreter::ir::{IrValue, StorageMap, bit_width, bits_to_u64, const_to_bits, rotate_left, rotate_right, transmute_bits};
 
 // ============================================================================
@@ -36,13 +37,32 @@ pub fn eval_vaffle(
     func_id: FuncId,
     inputs: &[IrValue],
 ) -> Option<Vec<IrValue>> {
+    eval_vaffle_depth(module, func_id, inputs, &mut BTreeMap::new(), 0)
+}
+
+/// Internal recursive evaluator with a call-depth guard and shared storage.
+fn eval_vaffle_depth(
+    module: &Module,
+    func_id: FuncId,
+    inputs: &[IrValue],
+    storage: &mut StorageMap,
+    depth: usize,
+) -> Option<Vec<IrValue>> {
+    const MAX_CALL_DEPTH: usize = 4;
+    if depth > MAX_CALL_DEPTH {
+        return None;
+    }
+
     let body = match &module.funcs[func_id.0] {
         FuncDecl::Body(b) => b,
         FuncDecl::Import { .. } => panic!("eval_vaffle: cannot evaluate an imported function"),
     };
 
     let mut value_table: BTreeMap<usize, IrValue> = BTreeMap::new();
-    let mut storage: StorageMap = BTreeMap::new();
+    // Side-table for OracleCall aggregates: vid → Vec<IrValue>.
+    let mut oracle_agg: BTreeMap<usize, Vec<IrValue>> = BTreeMap::new();
+    // Side-table for Value::Call aggregates: vid → Vec<IrValue>.
+    let mut call_agg: BTreeMap<usize, Vec<IrValue>> = BTreeMap::new();
 
     // Seed the entry block's params from `inputs`.
     let entry_block = &body.blocks[body.entry.0];
@@ -72,7 +92,16 @@ pub fn eval_vaffle(
 
         // Evaluate each stmt value in this block.
         for &vid in &block.stmts {
-            let val = eval_vaffle_value(vid, &body.values, &value_table, &module.types, &mut storage);
+            let val = eval_vaffle_value(
+                vid,
+                &body.values,
+                module,
+                &mut value_table,
+                &mut oracle_agg,
+                &mut call_agg,
+                storage,
+                depth,
+            )?;
             value_table.insert(vid.0, val);
         }
 
@@ -144,29 +173,50 @@ pub fn eval_vaffle(
 // Value evaluation
 // ============================================================================
 
+#[allow(clippy::too_many_arguments)]
 fn eval_vaffle_value(
     vid: ValueId,
     values: &[Value],
-    value_table: &BTreeMap<usize, IrValue>,
-    types: &TypeTable,
+    module: &Module,
+    value_table: &mut BTreeMap<usize, IrValue>,
+    oracle_agg: &mut BTreeMap<usize, Vec<IrValue>>,
+    call_agg: &mut BTreeMap<usize, Vec<IrValue>>,
     storage: &mut StorageMap,
-) -> IrValue {
-    match &values[vid.0] {
+    depth: usize,
+) -> Option<IrValue> {
+    let val = match &values[vid.0] {
         Value::Param { .. } => get_val(value_table, vid),
-        Value::Op(stmt) => eval_vaffle_stmt(stmt, value_table, types, storage),
-        Value::Call { .. } => panic!("eval_vaffle: Call not supported"),
-        Value::Output { .. } => panic!("eval_vaffle: Output not supported"),
+        Value::Op(stmt) => eval_vaffle_stmt(stmt, vid.0, &module.types, &module.oracles, value_table, oracle_agg, storage),
+        Value::Call { func, args } => {
+            // Collect argument values.
+            let arg_vals: Vec<IrValue> = args.iter().map(|a| get_val(value_table, *a)).collect();
+            // Recursive eval with depth guard.
+            let results = eval_vaffle_depth(module, *func, &arg_vals, storage, depth + 1)?;
+            call_agg.insert(vid.0, results);
+            vec![] // projected by Value::Output
+        }
+        Value::Output { value, idx } => {
+            call_agg
+                .get(&value.0)
+                .and_then(|agg| agg.get(*idx))
+                .cloned()
+                .unwrap_or_default()
+        }
         Value::StackAlloc { .. } => panic!("eval_vaffle: StackAlloc not supported"),
         Value::PtrLoad { .. } => panic!("eval_vaffle: PtrLoad not supported"),
         Value::PtrStore { .. } => panic!("eval_vaffle: PtrStore not supported"),
         Value::PtrOffset { .. } => panic!("eval_vaffle: PtrOffset not supported"),
-    }
+    };
+    Some(val)
 }
 
 fn eval_vaffle_stmt(
     stmt: &Stmt<ValueId>,
-    value_table: &BTreeMap<usize, IrValue>,
+    stmt_vid: usize,
     types: &TypeTable,
+    oracles: &[OracleDecl],
+    value_table: &mut BTreeMap<usize, IrValue>,
+    oracle_agg: &mut BTreeMap<usize, Vec<IrValue>>,
     storage: &mut StorageMap,
 ) -> IrValue {
     let get = |vid: &ValueId| -> IrValue { get_val(value_table, *vid) };
@@ -228,8 +278,33 @@ fn eval_vaffle_stmt(
             }
             result
         }
-        Stmt::OracleCall { .. } => panic!("eval_vaffle: OracleCall not supported"),
-        Stmt::OracleOutput { .. } => panic!("eval_vaffle: OracleOutput not supported"),
+        Stmt::OracleCall { name, args, output_tys, .. } => {
+            let oracle_idx = oracles
+                .iter()
+                .position(|o| &o.name == name)
+                .unwrap_or(0) as u32;
+            let flat_inputs: Vec<bool> = args.iter().flat_map(|v| get(v)).collect();
+            let output_widths: Vec<usize> =
+                output_tys.iter().map(|&ty| bit_width(ty, types)).collect();
+            let total_w: usize = output_widths.iter().sum();
+            let flat_out = hash_oracle(oracle_idx, &flat_inputs, total_w);
+            let mut outputs = Vec::with_capacity(output_tys.len());
+            let mut offset = 0;
+            for &w in &output_widths {
+                outputs.push(flat_out[offset..offset + w].to_vec());
+                offset += w;
+            }
+            oracle_agg.insert(stmt_vid, outputs);
+            vec![]
+        }
+        Stmt::OracleOutput { call, idx, ty } => {
+            let w = bit_width(*ty, types);
+            oracle_agg
+                .get(&call.0)
+                .and_then(|agg| agg.get(*idx))
+                .cloned()
+                .unwrap_or_else(|| vec![false; w])
+        }
         Stmt::ActionCall { .. } => panic!("eval_vaffle: ActionCall not supported"),
         Stmt::ActionOutput { .. } => panic!("eval_vaffle: ActionOutput not supported"),
         Stmt::Rng { .. } => panic!("eval_vaffle: Rng not supported"),

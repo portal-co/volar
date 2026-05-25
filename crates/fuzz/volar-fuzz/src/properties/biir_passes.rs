@@ -34,10 +34,10 @@ const LOWER_LIMIT: u32 = 16;
 /// Initial call → PC = 0 (all false), state = original entry inputs padded
 /// with false on the right.
 fn movfuscated_inputs(cfg: &volar_ir::boolar::BIrBlocks<()>, entry_inputs: &[bool]) -> Vec<bool> {
-    let n_blocks = cfg.0.len();
+    let n_blocks = cfg.blocks.len();
     let pc_width = pc_bits_needed(n_blocks);
-    let state_width = cfg.0.iter().map(|b| b.params as usize).max().unwrap_or(0);
-    let n_entry = cfg.0[0].params as usize;
+    let state_width = cfg.blocks.iter().map(|b| b.params as usize).max().unwrap_or(0);
+    let n_entry = cfg.blocks[0].params as usize;
 
     let mut v = vec![false; pc_width];
     v.extend_from_slice(entry_inputs);

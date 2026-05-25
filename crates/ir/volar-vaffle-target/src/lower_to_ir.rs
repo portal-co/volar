@@ -248,6 +248,8 @@ struct FuncInfo {
     n_param_words: usize,
     /// Number of individual parameter bits in the function signature.
     n_params: usize,
+    /// Total bit-width of all return values (sum of bit-widths of sig.results).
+    total_ret_bits: usize,
 }
 
 struct LowerCtx<'m> {
@@ -335,6 +337,7 @@ impl<'m> LowerCtx<'m> {
                         },
                         n_param_words: 0,
                         n_params: 0,
+                        total_ret_bits: 0,
                     });
                     continue;
                 }
@@ -342,20 +345,27 @@ impl<'m> LowerCtx<'m> {
 
             let sig = &self.module.sigs[body.sig.0];
             let n_params = sig.params.len();
-            let n_ret = if sig.results.is_empty() { 0 } else { 1 };
             let n_values = body.values.len();
+
+            // Total bit-width of all return values (supports multi-bit types).
+            let total_ret_bits: usize = sig.results.iter()
+                .map(|&vtid| {
+                    let ir_tid = self.type_map[vtid.0 as usize];
+                    ir_type_bit_width(&self.types, ir_tid)
+                })
+                .sum();
 
             // Callee layout: params are now passed as entry-block params (not
             // written to the frame), so the frame only needs ret + cont slots.
             let n_param_words = BlockEmitter::n_packs(n_params);
-            let n_ret_words = BlockEmitter::n_packs(n_ret);
+            let n_ret_words = BlockEmitter::n_packs(total_ret_bits);
 
             let mut offset = 0u64;
-            let ret = if n_ret > 0 {
+            let ret = if total_ret_bits > 0 {
                 let o = offset; offset += n_ret_words as u64;
                 Some((o, n_ret_words as u64, PACK_TID))
             } else { None };
-            let cont_ty = Some(self.intern_cont_block_type(n_ret));
+            let cont_ty = Some(self.intern_cont_block_type(total_ret_bits));
             let callee_size = offset;
 
             let callee_layout = FrameLayout {
@@ -384,6 +394,7 @@ impl<'m> LowerCtx<'m> {
                 own_layout,
                 n_param_words,
                 n_params,
+                total_ret_bits,
             });
             block_offset += body.blocks.len();
         }
@@ -437,9 +448,15 @@ impl<'m> LowerCtx<'m> {
         ));
         frame_write_cont(&mut em, &sp, callee_layout, cont_var);
 
-        // Advance SP by callee's frame size.
+        // Advance SP by the callee's *own* frame size (callee_layout.size plus
+        // the callee's own spill words) so the callee can find its frame base by
+        // retreating own_layout.size from the received SP.  Advancing by only
+        // callee_layout.size would leave the received SP too low, causing the
+        // callee's `frame_sp.retreat(own_layout.size)` to under-shoot the address
+        // where the continuation was written.
+        let own_size = info.own_layout.size;
         let mut new_sp = sp.clone();
-        new_sp.advance(callee_layout.size);
+        new_sp.advance(own_size);
         let new_sp_bits = new_sp.materialize(&mut em);
 
         // Pack SP bits into words for the jump.
@@ -451,20 +468,17 @@ impl<'m> LowerCtx<'m> {
         }));
 
         // Block 1: exit continuation.  Packed params: [sp_words, ret_words].
-        let n_ret = self.func_info[0].callee_layout.ret.map_or(0, |(_, c, _)| c as usize);
-        // n_ret is in packed words for the new layout; actual ret bits
-        // were ceil(original_ret_bits / PACK_W) words, but the exit
-        // continuation just forwards them.
+        // Use the actual total bit-width of the function's return values.
+        let total_ret_bits = self.func_info[0].total_ret_bits;
         let sp_packs = BlockEmitter::n_packs(SP_BITS);
-        let n_ret_bits = if n_ret > 0 { 1 } else { 0 }; // original ret is 1 bit
-        let ret_packs = BlockEmitter::n_packs(n_ret_bits);
+        let ret_packs = BlockEmitter::n_packs(total_ret_bits);
         let exit_params: Vec<IRTypeId> = vec![PACK_TID; sp_packs + ret_packs];
         let mut exit_em = BlockEmitter::new(exit_params);
 
-        // Unpack return words to bits and return them.
+        // Unpack all return bits and forward them as individual Bit args.
         let ret_word_ids: Vec<IRVarId> = (sp_packs as u32 .. (sp_packs + ret_packs) as u32)
             .map(IRVarId).collect();
-        let ret_bits = unpack_words(&mut exit_em, &ret_word_ids, n_ret_bits, PACK_W);
+        let ret_bits = unpack_words(&mut exit_em, &ret_word_ids, total_ret_bits, PACK_W);
 
         self.blocks.push(exit_em.finish(IRTerminator::Jmp {
             func: IRBlockTargetId::Return, args: ret_bits,
@@ -609,9 +623,10 @@ impl<'m> LowerCtx<'m> {
                             let callee_frame_sp = StackPtr::new(current_sp_bits.clone());
                             frame_write_cont(&mut current_em, &callee_frame_sp, &cl, cont_var);
 
-                            // 4. Advance SP, pack, jump — args appended after SP words.
+                            // 4. Advance SP by callee's own size (callee_layout + spill),
+                            // pack, jump — args appended after SP words.
                             let mut new_sp = StackPtr::new(current_sp_bits.clone());
-                            new_sp.advance(cl.size);
+                            new_sp.advance(callee_info.own_layout.size);
                             let new_sp_bits = new_sp.materialize(&mut current_em);
                             let mut sp_words = pack_bits(&mut current_em, &new_sp_bits, PACK_W);
                             sp_words.extend(arg_words);
@@ -703,13 +718,27 @@ impl<'m> LowerCtx<'m> {
         let s = |vid: &ValueId| val_map.get(&vid.0).copied().unwrap_or(IRVarId(0));
         let entry_off = self.func_info[func_idx].entry_block;
 
+        let body = match &self.module.funcs[func_idx] {
+            FuncDecl::Body(b) => b,
+            _ => return IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![] },
+        };
+
         match term {
             Terminator::Return { values } => {
-                let ret_bits: Vec<IRVarId> = values.iter().map(|v| s(v)).collect();
-                // Write packed return value.
-                let ret_words = pack_bits(em, &ret_bits, PACK_W);
+                // Explode each returned VAFFLE value into individual Bit vars,
+                // supporting multi-bit types (e.g. _8, _16, _32, _64, _128).
+                let mut all_ret_bits: Vec<IRVarId> = Vec::new();
+                for vid in values {
+                    let ir_var = s(vid);
+                    let vtid = vaffle_value_vtid(body, *vid);
+                    let ir_tid = self.type_map[vtid.0 as usize];
+                    let n_bits = ir_type_bit_width(&self.types, ir_tid);
+                    all_ret_bits.extend(explode_to_bits(em, ir_var, n_bits));
+                }
+                // Pack all return bits into words.
+                let ret_words = pack_bits(em, &all_ret_bits, PACK_W);
                 // frame_write_ret expects one value per ret slot;
-                // our layout has ceil(ret_bits/PACK_W) slots of PACK_TID.
+                // our layout has ceil(total_ret_bits/PACK_W) slots of PACK_TID.
                 frame_write_ret(em, frame_sp, own_layout, &ret_words);
 
                 let cont_var = frame_read_cont(em, frame_sp, own_layout)
@@ -764,13 +793,12 @@ impl<'m> LowerCtx<'m> {
                 let callee_info = &self.func_info[callee_idx];
                 let cl = callee_info.callee_layout.clone();
 
-                // Compute the pre-call SP: sp - F.callee_size.
-                // own_layout.spill_base == F's callee_layout.size (set in plan_functions).
-                // This is the address where F's caller wrote F's args/cont, which
-                // is also where G's frame should start for a tail call.
-                let f_callee_size = own_layout.spill_base;
-                let mut callee_frame_sp = StackPtr::new(sp_bits.to_vec());
-                callee_frame_sp.retreat(f_callee_size);
+                // The tail call reuses F's continuation, which F's caller wrote at
+                // F's frame base.  With the fix where callers advance SP by
+                // own_layout.size, F's frame base == frame_sp (already computed as
+                // received_sp - own_layout.size).  G starts its frame at the same
+                // address so G can find the continuation when it retreats own_size.
+                let callee_frame_sp = frame_sp.clone();
 
                 // Pack G's args — passed as entry-block params, not frame writes.
                 let arg_bits: Vec<IRVarId> = call_args.iter()
@@ -778,9 +806,9 @@ impl<'m> LowerCtx<'m> {
                     .collect();
                 let arg_words = pack_bits(em, &arg_bits, PACK_W);
 
-                // Advance SP to G.callee_layout.size and jump — args after SP words.
+                // Advance SP by G's own size and jump — args after SP words.
                 let mut new_sp = callee_frame_sp.clone();
-                new_sp.advance(cl.size);
+                new_sp.advance(callee_info.own_layout.size);
                 let new_sp_bits = new_sp.materialize(em);
                 let mut sp_words = pack_bits(em, &new_sp_bits, PACK_W);
                 sp_words.extend(arg_words);
@@ -921,6 +949,74 @@ fn collect_terminator_uses(term: &Terminator, out: &mut BTreeSet<usize>) {
             for v in &default_target.args { out.insert(v.0); }
         }
     }
+}
+
+/// Compute the bit-width of an IR type recursively.
+fn ir_type_bit_width(types: &IRTypes, tid: TypeId) -> usize {
+    match &types.0[tid.0 as usize] {
+        IrType::Primitive(p) => match p {
+            volar_ir_common::Type::Bit      =>   1,
+            volar_ir_common::Type::_8
+            | volar_ir_common::Type::AES8   =>   8,
+            volar_ir_common::Type::_16      =>  16,
+            volar_ir_common::Type::_32      =>  32,
+            volar_ir_common::Type::_64
+            | volar_ir_common::Type::Galois64 => 64,
+            volar_ir_common::Type::_128     => 128,
+            volar_ir_common::Type::_256     => 256,
+            volar_ir_common::Type::Z3       =>   2,
+            _ => 1, // unknown primitive — treat as 1 bit
+        },
+        IrType::Vec(n, inner) => *n * ir_type_bit_width(types, *inner),
+        IrType::Tuple(parts)  => parts.iter().map(|&p| ir_type_bit_width(types, p)).sum(),
+        IrType::Block { .. } | IrType::Func { .. } => 32,
+    }
+}
+
+/// Return the VAFFLE TypeId of a value in a function body.
+fn vaffle_value_vtid(body: &FuncBody, vid: ValueId) -> TypeId {
+    match &body.values[vid.0] {
+        Value::Param { ty, .. } => *ty,
+        Value::Op(stmt)         => stmt_result_vtid(stmt),
+        // Call produces an aggregate; Output extracts one element.
+        // Type lookup requires following the callee sig — fall back to Bit.
+        Value::Call { .. } | Value::Output { .. } | _ => TypeId(0),
+    }
+}
+
+/// Return the result TypeId of a VAFFLE Stmt.
+fn stmt_result_vtid(stmt: &Stmt<ValueId>) -> TypeId {
+    match stmt {
+        Stmt::Const(_, ty)             => *ty,
+        Stmt::Poly { ty, .. }          => *ty,
+        Stmt::Merge { ty, .. }         => *ty,
+        Stmt::Splat { ty, .. }         => *ty,
+        Stmt::Transmute { dst_ty, .. } => *dst_ty,
+        Stmt::Rol { ty, .. }           => *ty,
+        Stmt::Ror { ty, .. }           => *ty,
+        Stmt::Shuffle { ty, .. }       => *ty,
+        Stmt::StorageRead { ty, .. }   => *ty,
+        Stmt::StorageWrite { .. }      => TypeId(0),
+        Stmt::Rng { ty, .. }           => *ty,
+        Stmt::OracleCall { result_ty, .. }  => *result_ty,
+        Stmt::OracleOutput { ty, .. }       => *ty,
+        Stmt::ActionCall { result_ty, .. }  => *result_ty,
+        Stmt::ActionOutput { ty, .. }       => *ty,
+    }
+}
+
+/// Emit stmts that extract `n_bits` individual `Bit`-typed vars from `ir_var`.
+/// If `n_bits == 1` the var is returned as-is (it's already Bit-typed).
+fn explode_to_bits(em: &mut BlockEmitter, ir_var: IRVarId, n_bits: usize) -> Vec<IRVarId> {
+    if n_bits <= 1 {
+        return vec![ir_var];
+    }
+    (0..n_bits)
+        .map(|i| em.emit(IRStmt::Shuffle {
+            result_bits: vec![(i as u8, ir_var)],
+            ty: BIT_TID,
+        }))
+        .collect()
 }
 
 /// Translate a VAFFLE `Stmt<ValueId>` to an `IRStmt<IRVarId>`.

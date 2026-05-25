@@ -21,10 +21,10 @@ fuzz_target!(|data: ArbitraryBIir| {
     };
 
     // Build padded inputs for the movfuscated form.
-    let n_blocks = cfg.0.len();
+    let n_blocks = cfg.blocks.len();
     let pc_width = pc_bits_needed(n_blocks);
-    let state_width = cfg.0.iter().map(|b| b.params as usize).max().unwrap_or(0);
-    let n_entry = cfg.0[0].params as usize;
+    let state_width = cfg.blocks.iter().map(|b| b.params as usize).max().unwrap_or(0);
+    let n_entry = cfg.blocks[0].params as usize;
 
     let mut m_inputs = vec![false; pc_width];
     m_inputs.extend_from_slice(&inputs);

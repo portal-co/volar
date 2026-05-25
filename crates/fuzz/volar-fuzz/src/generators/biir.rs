@@ -238,19 +238,29 @@ fn make_target(
 }
 
 // ============================================================================
-// Extended stmt builder (8-way dispatch with storage ops)
+// Extended stmt builder (10-way dispatch with storage + oracle ops)
 // ============================================================================
 
-/// Build a single BIR stmt using 8-way dispatch:
+/// Build a single BIR stmt using 10-way dispatch:
 ///   0 = Zero, 1 = One, 2 = And, 3 = Or, 4 = Xor, 5 = Not,
-///   6 = StorageWrite, 7 = StorageRead
+///   6 = StorageWrite, 7 = StorageRead, 8 = OracleCall, 9 = OracleBit
 ///
 /// `n_avail` is the count of usable operand vars (excludes void StorageWrite
 /// results).  StorageWrite returns a dummy `false` bit and is NOT added to the
 /// usable set — the caller must handle that.
 ///
-/// Returns `(stmt, is_void)`.  `is_void` is `true` for StorageWrite.
-fn make_stmt_extended(kind: u8, a: u32, b: u32, n_avail: u32) -> (BIrStmt, bool) {
+/// `oracle_calls` is a list of `(var_id, num_bits)` for prior OracleCall stmts;
+/// OracleBit picks from this list.
+///
+/// Returns `(stmt, is_void)`.  `is_void` is `true` for StorageWrite and
+/// OracleCall (OracleCall itself is a sentinel; OracleBit extracts bits).
+fn make_stmt_extended(
+    kind: u8,
+    a: u32,
+    b: u32,
+    n_avail: u32,
+    oracle_calls: &[(u32, usize)],
+) -> (BIrStmt, bool) {
     if n_avail == 0 {
         if kind & 1 == 0 {
             (BIrStmt::Zero, false)
@@ -260,7 +270,7 @@ fn make_stmt_extended(kind: u8, a: u32, b: u32, n_avail: u32) -> (BIrStmt, bool)
     } else {
         let av = a % n_avail;
         let bv = b % n_avail;
-        match kind % 8 {
+        match kind % 10 {
             0 => (BIrStmt::Zero, false),
             1 => (BIrStmt::One, false),
             2 => (BIrStmt::And(IRVarId(av), IRVarId(bv)), false),
@@ -277,7 +287,7 @@ fn make_stmt_extended(kind: u8, a: u32, b: u32, n_avail: u32) -> (BIrStmt, bool)
                     addr: vec![IRVarId(bv)],
                 }, true) // void
             }
-            _ => {
+            7 => {
                 // StorageRead: read from addr=av, bit_width=1
                 let store_id = StorageId(a % 4);
                 (BIrStmt::StorageRead {
@@ -285,6 +295,29 @@ fn make_stmt_extended(kind: u8, a: u32, b: u32, n_avail: u32) -> (BIrStmt, bool)
                     bit_width: 1,
                     addr: vec![IRVarId(av)],
                 }, false)
+            }
+            8 => {
+                // OracleCall: one input bit, produces `num_bits` output bits.
+                // The result is an aggregate sentinel; OracleBit extracts bits.
+                let num_bits = (b as usize % 4) + 1;
+                let oracle_name = format!("o{}", a % 4);
+                (BIrStmt::OracleCall {
+                    name: oracle_name,
+                    args: vec![IRVarId(av)],
+                    num_bits,
+                }, true) // OracleCall is void; bits extracted by OracleBit
+            }
+            _ => {
+                // OracleBit: extract one bit from a prior OracleCall.
+                if oracle_calls.is_empty() {
+                    // No prior oracle calls — fall back to Not.
+                    (BIrStmt::Not(IRVarId(av)), false)
+                } else {
+                    let call_entry = oracle_calls[(a as usize) % oracle_calls.len()];
+                    let call_var = IRVarId(call_entry.0);
+                    let bit_idx = (b as usize) % call_entry.1.max(1);
+                    (BIrStmt::OracleBit { call: call_var, bit: bit_idx }, false)
+                }
             }
         }
     }
@@ -294,8 +327,9 @@ fn make_stmt_extended(kind: u8, a: u32, b: u32, n_avail: u32) -> (BIrStmt, bool)
 // Extended interpreter: single-block BIR with storage ops
 // ============================================================================
 
-/// Like [`interpret_biir`] but uses the 8-way [`make_stmt_extended`] dispatch
-/// so the generated BIR may contain `StorageRead` and `StorageWrite` stmts.
+/// Like [`interpret_biir`] but uses the 10-way [`make_stmt_extended`] dispatch
+/// so the generated BIR may contain `StorageRead`/`StorageWrite` and
+/// `OracleCall`/`OracleBit` stmts.
 ///
 /// Produces a single-block program that returns all vars.
 pub fn interpret_biir_extended(
@@ -304,8 +338,10 @@ pub fn interpret_biir_extended(
 ) -> BIrBlocks<()> {
     let mut stmts: Vec<BIrStmt> = Vec::with_capacity(raw_stmts.len());
     // Track indices of usable (non-void) vars.  Params 0..n_params are all
-    // usable.  StorageWrite results are void and excluded.
+    // usable.  StorageWrite and OracleCall results are void and excluded.
     let mut usable: Vec<u32> = (0..n_params).collect();
+    // (var_id, num_bits) for OracleCall stmts — used by OracleBit.
+    let mut oracle_calls: Vec<(u32, usize)> = Vec::new();
 
     for &(kind, a, b) in raw_stmts {
         let n_avail = usable.len() as u32;
@@ -316,7 +352,11 @@ pub fn interpret_biir_extended(
             (usable[(a as usize) % usable.len()], usable[(b as usize) % usable.len()])
         };
         let var_id = n_params + stmts.len() as u32;
-        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail);
+        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail, &oracle_calls);
+        // Track OracleCall aggregates for later OracleBit extraction.
+        if let BIrStmt::OracleCall { num_bits, .. } = &stmt {
+            oracle_calls.push((var_id, *num_bits));
+        }
         stmts.push(stmt);
         if !is_void {
             usable.push(var_id);
@@ -364,6 +404,7 @@ pub fn interpret_biir_multiblock(
     // ── Block 0 ──────────────────────────────────────────────────────────────
     let mut stmts_b0: Vec<BIrStmt> = Vec::with_capacity(raw_stmts_b0.len());
     let mut usable_b0: Vec<u32> = (0..n_params).collect();
+    let mut oracle_calls_b0: Vec<(u32, usize)> = Vec::new();
 
     for &(kind, a, b) in raw_stmts_b0 {
         let n_avail = usable_b0.len() as u32;
@@ -373,7 +414,10 @@ pub fn interpret_biir_multiblock(
             (usable_b0[(a as usize) % usable_b0.len()], usable_b0[(b as usize) % usable_b0.len()])
         };
         let var_id = n_params + stmts_b0.len() as u32;
-        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail);
+        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail, &oracle_calls_b0);
+        if let BIrStmt::OracleCall { num_bits, .. } = &stmt {
+            oracle_calls_b0.push((var_id, *num_bits));
+        }
         stmts_b0.push(stmt);
         if !is_void {
             usable_b0.push(var_id);
@@ -402,6 +446,7 @@ pub fn interpret_biir_multiblock(
     // accordingly.
     let b0_usable_set: std::collections::BTreeSet<u32> = usable_b0.iter().copied().collect();
     let mut usable_b1: Vec<u32> = (0..total_b0).filter(|i| b0_usable_set.contains(i)).collect();
+    let mut oracle_calls_b1: Vec<(u32, usize)> = Vec::new();
 
     for &(kind, a, b) in raw_stmts_b1 {
         let n_avail = usable_b1.len() as u32;
@@ -411,7 +456,10 @@ pub fn interpret_biir_multiblock(
             (usable_b1[(a as usize) % usable_b1.len()], usable_b1[(b as usize) % usable_b1.len()])
         };
         let var_id = n_b1_params + stmts_b1.len() as u32;
-        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail);
+        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail, &oracle_calls_b1);
+        if let BIrStmt::OracleCall { num_bits, .. } = &stmt {
+            oracle_calls_b1.push((var_id, *num_bits));
+        }
         stmts_b1.push(stmt);
         if !is_void {
             usable_b1.push(var_id);
@@ -476,6 +524,7 @@ pub fn interpret_biir_diamond(
     // ── Block 0 ──────────────────────────────────────────────────────────────
     let mut stmts_b0: Vec<BIrStmt> = Vec::new();
     let mut usable_b0: Vec<u32> = (0..n_params).collect();
+    let mut oracle_calls_b0: Vec<(u32, usize)> = Vec::new();
 
     for &(kind, a, b) in raw_stmts_b0 {
         let n_avail = usable_b0.len() as u32;
@@ -485,7 +534,8 @@ pub fn interpret_biir_diamond(
             (usable_b0[(a as usize) % usable_b0.len()], usable_b0[(b as usize) % usable_b0.len()])
         };
         let var_id = n_params + stmts_b0.len() as u32;
-        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail);
+        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail, &oracle_calls_b0);
+        if let BIrStmt::OracleCall { num_bits, .. } = &stmt { oracle_calls_b0.push((var_id, *num_bits)); }
         stmts_b0.push(stmt);
         if !is_void {
             usable_b0.push(var_id);
@@ -512,6 +562,7 @@ pub fn interpret_biir_diamond(
     let b0_usable_set: std::collections::BTreeSet<u32> = usable_b0.iter().copied().collect();
     let mut usable_b1: Vec<u32> = (0..total_b0).filter(|i| b0_usable_set.contains(i)).collect();
     let mut stmts_b1: Vec<BIrStmt> = Vec::new();
+    let mut oracle_calls_b1: Vec<(u32, usize)> = Vec::new();
 
     for &(kind, a, b) in raw_stmts_b1 {
         let n_avail = usable_b1.len() as u32;
@@ -521,7 +572,8 @@ pub fn interpret_biir_diamond(
             (usable_b1[(a as usize) % usable_b1.len()], usable_b1[(b as usize) % usable_b1.len()])
         };
         let var_id = n_b1_params + stmts_b1.len() as u32;
-        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail);
+        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail, &oracle_calls_b1);
+        if let BIrStmt::OracleCall { num_bits, .. } = &stmt { oracle_calls_b1.push((var_id, *num_bits)); }
         stmts_b1.push(stmt);
         if !is_void {
             usable_b1.push(var_id);
@@ -539,6 +591,7 @@ pub fn interpret_biir_diamond(
     let n_b2_params = total_b0;
     let mut usable_b2: Vec<u32> = (0..total_b0).filter(|i| b0_usable_set.contains(i)).collect();
     let mut stmts_b2: Vec<BIrStmt> = Vec::new();
+    let mut oracle_calls_b2: Vec<(u32, usize)> = Vec::new();
 
     for &(kind, a, b) in raw_stmts_b2 {
         let n_avail = usable_b2.len() as u32;
@@ -548,7 +601,8 @@ pub fn interpret_biir_diamond(
             (usable_b2[(a as usize) % usable_b2.len()], usable_b2[(b as usize) % usable_b2.len()])
         };
         let var_id = n_b2_params + stmts_b2.len() as u32;
-        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail);
+        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail, &oracle_calls_b2);
+        if let BIrStmt::OracleCall { num_bits, .. } = &stmt { oracle_calls_b2.push((var_id, *num_bits)); }
         stmts_b2.push(stmt);
         if !is_void {
             usable_b2.push(var_id);
@@ -566,6 +620,7 @@ pub fn interpret_biir_diamond(
     let n_b3_params = total_b0;
     let mut usable_b3: Vec<u32> = (0..total_b0).filter(|i| b0_usable_set.contains(i)).collect();
     let mut stmts_b3: Vec<BIrStmt> = Vec::new();
+    let mut oracle_calls_b3: Vec<(u32, usize)> = Vec::new();
 
     for &(kind, a, b) in raw_stmts_b3 {
         let n_avail = usable_b3.len() as u32;
@@ -575,7 +630,8 @@ pub fn interpret_biir_diamond(
             (usable_b3[(a as usize) % usable_b3.len()], usable_b3[(b as usize) % usable_b3.len()])
         };
         let var_id = n_b3_params + stmts_b3.len() as u32;
-        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail);
+        let (stmt, is_void) = make_stmt_extended(kind, mapped_a, mapped_b, n_avail, &oracle_calls_b3);
+        if let BIrStmt::OracleCall { num_bits, .. } = &stmt { oracle_calls_b3.push((var_id, *num_bits)); }
         stmts_b3.push(stmt);
         if !is_void {
             usable_b3.push(var_id);

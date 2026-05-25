@@ -11,6 +11,9 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 volar-fuzz = { path = "../crates/fuzz/volar-fuzz" }
 volar-ir-passes = { path = "../crates/ir/volar-ir-passes" }
+volar-ir-opt = { path = "../crates/ir/volar-ir-opt" }
+volar-ir-virt = { path = "../crates/ir/volar-ir-virt" }
+volar-vaffle-target = { path = "../crates/ir/volar-vaffle-target" }
 
 # Cargo-fuzz requires a separate workspace so it does not inherit
 # workspace settings from the main Cargo.toml.
@@ -31,5 +34,59 @@ doc = false
 [[bin]]
 name = "fuzz_lower_ir_to_boolar"
 path = "fuzz_targets/fuzz_lower_ir_to_boolar.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_vaffle_to_ir"
+path = "fuzz_targets/fuzz_vaffle_to_ir.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_ir_fold"
+path = "fuzz_targets/fuzz_ir_fold.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_biir_fold"
+path = "fuzz_targets/fuzz_biir_fold.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_vaffle_fold"
+path = "fuzz_targets/fuzz_vaffle_fold.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_ir_store_forward"
+path = "fuzz_targets/fuzz_ir_store_forward.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_biir_store_forward"
+path = "fuzz_targets/fuzz_biir_store_forward.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_vaffle_store_forward"
+path = "fuzz_targets/fuzz_vaffle_store_forward.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_ir_virt"
+path = "fuzz_targets/fuzz_ir_virt.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_bir_virt"
+path = "fuzz_targets/fuzz_bir_virt.rs"
 test = false
 doc = false

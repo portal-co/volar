@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc cc80ab7ca4a057ee2e1a3a7f98a1da54616604be02d7dc1a1993797f83babf3a # shrinks to (module, func_id, inputs) = (Module { types: TypeTable([]), oracles: [], actions: [], funcs: [Body(FuncBody { sig: SigId(0), blocks: [Block { params: [], stmts: [], terminator: Return { values: [] } }], values: [], entry: BlockId(0) })], sigs: [SigDecl { params: [], results: [] }], exports: {}, pre_init: [] }, FuncId(0), [])
+cc 47f326c0ccaa36adfe756c451a367ad756aad13d6a05bd2438eab08a13442e46 # shrinks to (module, func_id, inputs) = (Module { types: TypeTable([]), oracles: [], actions: [], funcs: [Body(FuncBody { sig: SigId(0), blocks: [Block { params: [], stmts: [], terminator: Return { values: [] } }], values: [], entry: BlockId(0) })], sigs: [SigDecl { params: [], results: [] }], exports: {}, pre_init: [] }, FuncId(0), [])

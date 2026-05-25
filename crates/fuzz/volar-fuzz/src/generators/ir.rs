@@ -16,7 +16,7 @@
 //!    `(IRBlocks<()>, IRTypes)` by clamping indices and matching types.
 
 use volar_ir::ir::{IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRVarId};
-use volar_ir_common::{Constant, IrType, Stmt, StorageId, Type, TypeId, TypeTable};
+use volar_ir_common::{Constant, IrType, OracleDecl, Stmt, StorageId, Type, TypeId, TypeTable};
 
 use crate::interpreter::ir::primitive_width;
 
@@ -183,15 +183,15 @@ fn mask_const(c: Constant, width: usize) -> Constant {
 // Shared 5-way stmt builder for extended IR generation
 // ============================================================================
 
-/// Build stmts using the 5-way `kind % 5` dispatch:
-///   0 = Const, 1 = Poly, 2 = Rol/Ror, 3 = StorageWrite (void), 4 = StorageRead
+/// Build stmts using the 7-way `kind % 7` dispatch:
+///   0 = Const, 1 = Poly, 2 = Rol/Ror, 3 = StorageWrite (void), 4 = StorageRead,
+///   5 = OracleCall + OracleOutput[0], 6 = OracleCall + OracleOutput[0] (second slot)
 ///
-/// * `types`     — type table, may be extended with new primitive types.
-/// * `var_info`  — `(TypeId, bit_width, IRVarId)` for all vars available as
-///                 operands.  Updated in-place: non-void results are appended.
-/// * `raw_stmts` — raw generation data.
-/// * `stmt_base` — IRVarId offset for the first stmt (= number of block params
-///                 in the current block).
+/// * `types`        — type table, may be extended with new types.
+/// * `var_info`     — `(TypeId, bit_width, IRVarId)` for non-void vars; updated in-place.
+/// * `raw_stmts`    — raw generation data.
+/// * `stmt_base`    — IRVarId offset for the first stmt in this block.
+/// * `oracle_decls` — oracles available in this IRBlocks module.
 ///
 /// Returns the built statement list.
 fn build_extended_ir_stmts(
@@ -199,6 +199,7 @@ fn build_extended_ir_stmts(
     var_info: &mut Vec<(TypeId, usize, IRVarId)>,
     raw_stmts: &[RawIrStmt],
     stmt_base: u32,
+    oracle_decls: &[OracleDecl],
 ) -> Vec<IRStmt> {
     let mut stmts: Vec<IRStmt> = Vec::new();
 
@@ -206,7 +207,10 @@ fn build_extended_ir_stmts(
         let n_vars = var_info.len();
         let rv = IRVarId(stmt_base + stmts.len() as u32);
 
-        if n_vars == 0 || kind % 5 == 0 {
+        // Oracle dispatch: only when oracles are declared AND vars exist.
+        let use_oracle = !oracle_decls.is_empty() && n_vars > 0 && (kind % 7 >= 5);
+
+        if n_vars == 0 || kind % 7 == 0 {
             // ── Const ───────────────────────────────────────────────────────
             let type_idx = (a as usize) % PRIM_TYPES.len();
             let ty = PRIM_TYPES[type_idx];
@@ -214,7 +218,7 @@ fn build_extended_ir_stmts(
             let w = primitive_width(ty);
             stmts.push(Stmt::Const(Constant { lo: c_lo, hi: c_hi }, tid));
             var_info.push((tid, w, rv));
-        } else if kind % 5 == 1 {
+        } else if kind % 7 == 1 {
             // ── Linear Poly (XOR of 1–2 vars of the same width) ─────────────
             let v0_idx = (a as usize) % n_vars;
             let (v0_tid, v0_w, v0_id) = var_info[v0_idx];
@@ -243,7 +247,7 @@ fn build_extended_ir_stmts(
             let c = mask_const(Constant { lo: c_lo, hi: c_hi }, v0_w);
             stmts.push(Stmt::Poly { ty: v0_tid, coeffs, constant: c });
             var_info.push((v0_tid, v0_w, rv));
-        } else if kind % 5 == 2 {
+        } else if kind % 7 == 2 {
             // ── Rol / Ror ────────────────────────────────────────────────────
             let v_idx = (a as usize) % n_vars;
             let (v_tid, v_w, v_id) = var_info[v_idx];
@@ -255,7 +259,7 @@ fn build_extended_ir_stmts(
             };
             stmts.push(stmt);
             var_info.push((v_tid, v_w, rv));
-        } else if kind % 5 == 3 {
+        } else if kind % 7 == 3 {
             // ── StorageWrite (void — not added to var_info) ──────────────────
             let store_id = StorageId(a % 4);
             let src_idx = (b as usize) % n_vars;
@@ -269,7 +273,7 @@ fn build_extended_ir_stmts(
                 addr: addr_id,
             });
             // void result — do NOT add to var_info
-        } else {
+        } else if kind % 7 == 4 {
             // ── StorageRead ──────────────────────────────────────────────────
             let store_id = StorageId(a % 4);
             let type_idx = (b as usize) % PRIM_TYPES.len();
@@ -284,6 +288,49 @@ fn build_extended_ir_stmts(
                 addr: addr_id,
             });
             var_info.push((tid, w, rv));
+        } else if use_oracle {
+            // ── OracleCall + OracleOutput[0] ─────────────────────────────────
+            // Emit two stmts: the aggregate call, then a projection of output 0.
+            let oracle_idx = (a as usize) % oracle_decls.len();
+            let decl = &oracle_decls[oracle_idx];
+
+            // Build arg list: one var per oracle param type (match by type, fallback any).
+            let args: Vec<IRVarId> = decl
+                .params
+                .iter()
+                .map(|&param_tid| {
+                    // Prefer a var with the same TypeId; fall back to any var.
+                    let matching = var_info.iter().find(|(tid, _, _)| *tid == param_tid);
+                    let fallback = &var_info[(a as usize) % n_vars];
+                    matching.unwrap_or(fallback).2
+                })
+                .collect();
+
+            // Pre-intern the result Tuple type.
+            let output_tys = decl.results.clone();
+            let result_ty = types.intern(IrType::Tuple(output_tys.clone()));
+
+            // OracleCall: aggregate var at rv.
+            stmts.push(Stmt::OracleCall {
+                name: decl.name.clone(),
+                args,
+                output_tys: output_tys.clone(),
+                result_ty,
+            });
+            // OracleOutput[0]: the first result, at rv+1.
+            if !output_tys.is_empty() {
+                let out_tid = output_tys[0];
+                let out_w = crate::interpreter::ir::bit_width(out_tid, types);
+                let rv_out = IRVarId(stmt_base + stmts.len() as u32);
+                stmts.push(Stmt::OracleOutput {
+                    call: rv,
+                    idx: 0,
+                    ty: out_tid,
+                });
+                var_info.push((out_tid, out_w, rv_out));
+            }
+            // rv itself (the aggregate) is NOT added to var_info — it has a
+            // Tuple type that cannot be used as a plain typed operand.
         }
     }
 
@@ -291,14 +338,37 @@ fn build_extended_ir_stmts(
 }
 
 // ============================================================================
+// Oracle declaration helpers
+// ============================================================================
+
+/// Build a small oracle declaration list from raw bytes for use in extended IR.
+///
+/// Creates 0–2 oracles, each with one primitive param and one primitive result.
+pub fn build_oracle_decls(types: &mut TypeTable, raw: u8) -> Vec<OracleDecl> {
+    let n = (raw as usize) % 3; // 0, 1, or 2 oracles
+    (0..n)
+        .map(|i| {
+            let param_ty = PRIM_TYPES[(raw as usize + i) % PRIM_TYPES.len()];
+            let result_ty = PRIM_TYPES[(raw as usize + i + 1) % PRIM_TYPES.len()];
+            OracleDecl {
+                name: format!("o{i}"),
+                params: vec![types.primitive(param_ty)],
+                results: vec![types.primitive(result_ty)],
+            }
+        })
+        .collect()
+}
+
+// ============================================================================
 // Extended interpreter: storage ops + JumpCond
 // ============================================================================
 
-/// Like [`interpret_ir`] but also emits `StorageRead`, `StorageWrite` stmts
-/// and may produce a `JumpCond` terminator.
+/// Like [`interpret_ir`] but also emits `StorageRead`, `StorageWrite`, and
+/// oracle call stmts.
 ///
-/// `kind % 5` selects:
-///   0 = Const, 1 = Poly, 2 = Rol/Ror, 3 = StorageWrite (void), 4 = StorageRead
+/// `kind % 7` selects:
+///   0 = Const, 1 = Poly, 2 = Rol/Ror, 3 = StorageWrite (void), 4 = StorageRead,
+///   5–6 = OracleCall+OracleOutput (when oracles declared)
 ///
 /// `var_info` tracks only non-void vars so they can safely be used as operands.
 /// `StorageWrite` stmts still consume a slot (and var ID) in the block but are
@@ -331,7 +401,12 @@ pub fn interpret_ir_extended(
         .collect();
 
     let n_params = param_type_ids.len();
-    let stmts = build_extended_ir_stmts(&mut types, &mut var_info, raw_stmts, n_params as u32);
+
+    // Build oracle declarations from param data seed.
+    let oracle_seed = raw_param_type_idxs.first().copied().unwrap_or(0);
+    let oracle_decls = build_oracle_decls(&mut types, oracle_seed);
+
+    let stmts = build_extended_ir_stmts(&mut types, &mut var_info, raw_stmts, n_params as u32, &oracle_decls);
 
     // Terminator: JumpCond on first Bit-typed var if one exists, else Jmp(Return).
     let total_vars = n_params + stmts.len();
@@ -359,7 +434,9 @@ pub fn interpret_ir_extended(
         terminator,
     };
 
-    (IRBlocks::new(vec![block]), types, param_widths)
+    let mut ir = IRBlocks::new(vec![block]);
+    ir.oracles = oracle_decls;
+    (ir, types, param_widths)
 }
 
 // ============================================================================
@@ -406,8 +483,11 @@ pub fn interpret_ir_multiblock(
         .map(|(i, (&tid, &w))| (tid, w, IRVarId(i as u32)))
         .collect();
 
+    let oracle_seed = raw_param_type_idxs.first().copied().unwrap_or(0);
+    let oracle_decls = build_oracle_decls(&mut types, oracle_seed);
+
     let stmts_b0 = build_extended_ir_stmts(
-        &mut types, &mut var_info_b0, raw_stmts_b0, n_params as u32,
+        &mut types, &mut var_info_b0, raw_stmts_b0, n_params as u32, &oracle_decls,
     );
 
     // B0 terminator: jump to Block(1), passing all non-void vars as args.
@@ -432,7 +512,7 @@ pub fn interpret_ir_multiblock(
         .collect();
 
     let stmts_b1 = build_extended_ir_stmts(
-        &mut types, &mut var_info_b1, raw_stmts_b1, n_b1_params as u32,
+        &mut types, &mut var_info_b1, raw_stmts_b1, n_b1_params as u32, &oracle_decls,
     );
 
     // B1 terminator: return all B1 vars (params + stmts).
@@ -457,7 +537,9 @@ pub fn interpret_ir_multiblock(
         terminator: b1_term,
     };
 
-    (IRBlocks::new(vec![block0, block1]), types, param_widths)
+    let mut ir = IRBlocks::new(vec![block0, block1]);
+    ir.oracles = oracle_decls;
+    (ir, types, param_widths)
 }
 
 // ============================================================================
@@ -525,8 +607,11 @@ pub fn interpret_ir_diamond(
         .map(|(i, (&tid, &w))| (tid, w, IRVarId(i as u32)))
         .collect();
 
+    let oracle_seed = raw_param_type_idxs.first().copied().unwrap_or(0);
+    let oracle_decls = build_oracle_decls(&mut types, oracle_seed);
+
     let stmts_b0 = build_extended_ir_stmts(
-        &mut types, &mut var_info_b0, raw_stmts_b0, n_params as u32,
+        &mut types, &mut var_info_b0, raw_stmts_b0, n_params as u32, &oracle_decls,
     );
     let n_b0_stmts = stmts_b0.len();
 
@@ -551,7 +636,7 @@ pub fn interpret_ir_diamond(
         .collect();
 
     let stmts_b1 = build_extended_ir_stmts(
-        &mut types, &mut var_info_b1, raw_stmts_b1, n_b1_params as u32,
+        &mut types, &mut var_info_b1, raw_stmts_b1, n_b1_params as u32, &oracle_decls,
     );
     let n_b1_stmts = stmts_b1.len();
 
@@ -573,7 +658,7 @@ pub fn interpret_ir_diamond(
         .collect();
 
     let stmts_b2 = build_extended_ir_stmts(
-        &mut types, &mut var_info_b2, raw_stmts_b2, n_b2_params as u32,
+        &mut types, &mut var_info_b2, raw_stmts_b2, n_b2_params as u32, &oracle_decls,
     );
     let n_b2_stmts = stmts_b2.len();
 
@@ -594,7 +679,7 @@ pub fn interpret_ir_diamond(
         .collect();
 
     let stmts_b3 = build_extended_ir_stmts(
-        &mut types, &mut var_info_b3, raw_stmts_b3, n_b3_params as u32,
+        &mut types, &mut var_info_b3, raw_stmts_b3, n_b3_params as u32, &oracle_decls,
     );
     let n_b3_stmts = stmts_b3.len();
 
@@ -605,7 +690,7 @@ pub fn interpret_ir_diamond(
         args: b3_ret_args,
     };
 
-    let blocks = IRBlocks::new(vec![
+    let mut blocks = IRBlocks::new(vec![
         IRBlock {
             params: param_type_ids,
             stmts: stmts_b0,
@@ -631,6 +716,7 @@ pub fn interpret_ir_diamond(
             terminator: b3_term,
         },
     ]);
+    blocks.oracles = oracle_decls;
 
     (blocks, types, param_widths)
 }

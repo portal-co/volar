@@ -13,6 +13,7 @@ volar-ir-common.workspace = true
 volar-ir-opt.workspace = true
 volar-ir-virt.workspace = true
 vaffle.workspace = true
+volar-vaffle-target.workspace = true
 arbitrary = { version = "1", features = ["derive"] }
 
 [dev-dependencies]

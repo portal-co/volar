@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 
 use vaffle::{Block, BlockId, FuncBody, FuncDecl, FuncId, Module, SigDecl, SigId, Target, Terminator, Value, ValueId};
-use volar_ir_common::{Constant, IrType, Stmt, StorageId, Type, TypeId, TypeTable};
+use volar_ir_common::{Constant, IrType, OracleDecl, Stmt, StorageId, Type, TypeId, TypeTable};
 
 use crate::interpreter::ir::primitive_width;
 use crate::generators::ir::{PRIM_TYPES, RawIrStmt, RawTypeIdx};
@@ -205,6 +205,8 @@ fn build_vaffle_extended_block(
     initial_var_info: Vec<(TypeId, usize, ValueId)>,
     // offset for new ValueId assignment
     value_offset: usize,
+    // oracle declarations for this module (may be empty)
+    oracle_decls: &[volar_ir_common::OracleDecl],
 ) -> (
     Vec<TypeId>,         // param_type_ids
     Vec<usize>,          // param_widths
@@ -247,7 +249,9 @@ fn build_vaffle_extended_block(
         let n_vars = var_info.len();
         let vid = ValueId(param_value_offset + stmt_vids.len());
 
-        if n_vars == 0 || kind % 5 == 0 {
+        let use_oracle = !oracle_decls.is_empty() && n_vars > 0 && (kind % 7 >= 5);
+
+        if n_vars == 0 || kind % 7 == 0 {
             let type_idx = (a as usize) % PRIM_TYPES.len();
             let ty = PRIM_TYPES[type_idx];
             let tid = type_table.primitive(ty);
@@ -255,7 +259,7 @@ fn build_vaffle_extended_block(
             new_values.push(Value::Op(Stmt::Const(Constant { lo: c_lo, hi: c_hi }, tid)));
             stmt_vids.push(vid);
             var_info.push((tid, w, vid));
-        } else if kind % 5 == 1 {
+        } else if kind % 7 == 1 {
             let v0_idx = (a as usize) % n_vars;
             let (v0_tid, v0_w, v0_id) = var_info[v0_idx];
             let same_w: Vec<usize> = var_info
@@ -280,7 +284,7 @@ fn build_vaffle_extended_block(
             new_values.push(Value::Op(Stmt::Poly { ty: v0_tid, coeffs, constant: c }));
             stmt_vids.push(vid);
             var_info.push((v0_tid, v0_w, vid));
-        } else if kind % 5 == 2 {
+        } else if kind % 7 == 2 {
             let v_idx = (a as usize) % n_vars;
             let (v_tid, v_w, v_id) = var_info[v_idx];
             let n_rot = if v_w > 0 { (b as usize) % v_w } else { 0 };
@@ -292,7 +296,7 @@ fn build_vaffle_extended_block(
             new_values.push(Value::Op(s));
             stmt_vids.push(vid);
             var_info.push((v_tid, v_w, vid));
-        } else if kind % 5 == 3 {
+        } else if kind % 7 == 3 {
             let store_id = StorageId(a % 4);
             let src_idx = (b as usize) % n_vars;
             let (src_tid, _, src_id) = var_info[src_idx];
@@ -306,7 +310,7 @@ fn build_vaffle_extended_block(
             }));
             stmt_vids.push(vid);
             // void — do NOT add to var_info
-        } else {
+        } else if kind % 7 == 4 {
             let store_id = StorageId(a % 4);
             let type_idx = (b as usize) % PRIM_TYPES.len();
             let ty = PRIM_TYPES[type_idx];
@@ -321,10 +325,67 @@ fn build_vaffle_extended_block(
             }));
             stmt_vids.push(vid);
             var_info.push((tid, w, vid));
+        } else if use_oracle {
+            // ── OracleCall + OracleOutput[0] ─────────────────────────────────
+            let oracle_idx = (a as usize) % oracle_decls.len();
+            let decl = &oracle_decls[oracle_idx];
+
+            let args: Vec<ValueId> = decl
+                .params
+                .iter()
+                .map(|&param_tid| {
+                    let matching = var_info.iter().find(|(tid, _, _)| *tid == param_tid);
+                    let fallback = &var_info[(a as usize) % n_vars];
+                    matching.unwrap_or(fallback).2
+                })
+                .collect();
+
+            let output_tys = decl.results.clone();
+            let result_ty = type_table.intern(IrType::Tuple(output_tys.clone()));
+
+            // OracleCall aggregate at vid.
+            new_values.push(Value::Op(Stmt::OracleCall {
+                name: decl.name.clone(),
+                args,
+                output_tys: output_tys.clone(),
+                result_ty,
+            }));
+            stmt_vids.push(vid);
+            // aggregate NOT added to var_info
+
+            // OracleOutput[0] at vid+1.
+            if !output_tys.is_empty() {
+                let out_tid = output_tys[0];
+                let out_w = crate::interpreter::ir::bit_width(out_tid, type_table);
+                let out_vid = ValueId(param_value_offset + stmt_vids.len());
+                new_values.push(Value::Op(Stmt::OracleOutput {
+                    call: vid,
+                    idx: 0,
+                    ty: out_tid,
+                }));
+                stmt_vids.push(out_vid);
+                var_info.push((out_tid, out_w, out_vid));
+            }
         }
     }
 
     (param_type_ids, param_widths, var_info, new_values, stmt_vids)
+}
+
+/// Build a small oracle declaration list from a raw seed byte.
+fn build_vaffle_oracle_decls(type_table: &mut TypeTable, raw: u8) -> Vec<OracleDecl> {
+    let n = (raw as usize) % 3;
+    (0..n)
+        .map(|i| {
+            let param_ty = PRIM_TYPES[(raw as usize + i) % PRIM_TYPES.len()];
+            let result_ty = PRIM_TYPES[(raw as usize + i + 1) % PRIM_TYPES.len()];
+            OracleDecl {
+                name: format!("o{i}"),
+                params: vec![type_table.primitive(param_ty)],
+                results: vec![type_table.primitive(result_ty)],
+            }
+        })
+        .collect()
 }
 
 fn interpret_vaffle_extended_inner(
@@ -334,6 +395,9 @@ fn interpret_vaffle_extended_inner(
 ) -> (Module, FuncId, Vec<usize>) {
     let mut type_table = volar_ir_common::TypeTable::new();
 
+    let oracle_seed = raw_param_type_idxs.first().copied().unwrap_or(0);
+    let oracle_decls = build_vaffle_oracle_decls(&mut type_table, oracle_seed);
+
     let (param_type_ids, param_widths, var_info, new_values, stmt_vids) =
         build_vaffle_extended_block(
             &mut type_table,
@@ -342,6 +406,7 @@ fn interpret_vaffle_extended_inner(
             block_id,
             vec![],
             0,
+            &oracle_decls,
         );
 
     let n_params = param_type_ids.len();
@@ -391,7 +456,7 @@ fn interpret_vaffle_extended_inner(
 
     let module = Module {
         types: type_table,
-        oracles: vec![],
+        oracles: oracle_decls,
         actions: vec![],
         funcs: vec![FuncDecl::Body(body)],
         sigs: vec![sig],
@@ -426,6 +491,9 @@ pub fn interpret_vaffle_multiblock(
 
     let mut type_table = volar_ir_common::TypeTable::new();
 
+    let oracle_seed = raw_param_type_idxs.first().copied().unwrap_or(0);
+    let oracle_decls = build_vaffle_oracle_decls(&mut type_table, oracle_seed);
+
     // --- Block 0 ---
     let (param_type_ids, param_widths, var_info_after_b0, b0_values, b0_stmt_vids) =
         build_vaffle_extended_block(
@@ -435,6 +503,7 @@ pub fn interpret_vaffle_multiblock(
             BlockId(0),
             vec![],
             0,
+            &oracle_decls,
         );
     let n_params = param_type_ids.len();
     let b0_value_count = b0_values.len(); // how many values are in B0 (params + stmts)
@@ -452,6 +521,7 @@ pub fn interpret_vaffle_multiblock(
         BlockId(1),
         var_info_after_b0,
         b0_value_count, // B1 ValueIds start where B0's end
+        &oracle_decls,
     );
 
     // Block 1 terminator: Return all values from both blocks.
@@ -552,6 +622,9 @@ pub fn interpret_vaffle_diamond(
 
     let mut type_table = volar_ir_common::TypeTable::new();
 
+    let oracle_seed = raw_param_type_idxs.first().copied().unwrap_or(0);
+    let oracle_decls = build_vaffle_oracle_decls(&mut type_table, oracle_seed);
+
     // Ensure at least one Bit param for the condition.
     let mut adjusted_params: Vec<RawTypeIdx> = raw_param_type_idxs.to_vec();
     if adjusted_params.is_empty() {
@@ -568,6 +641,7 @@ pub fn interpret_vaffle_diamond(
             BlockId(0),
             vec![],
             0,
+            &oracle_decls,
         );
     let b0_value_count = b0_values.len();
 
@@ -588,6 +662,7 @@ pub fn interpret_vaffle_diamond(
             BlockId(1),
             var_info_after_b0.clone(), // carry B0's var_info
             b0_value_count,
+            &oracle_decls,
         );
     let b1_value_count = b1_values.len();
 
@@ -604,6 +679,7 @@ pub fn interpret_vaffle_diamond(
             BlockId(2),
             var_info_after_b0.clone(), // carry B0's var_info (not B1's)
             b2_value_offset,
+            &oracle_decls,
         );
     let b2_value_count = b2_values.len();
 
@@ -620,6 +696,7 @@ pub fn interpret_vaffle_diamond(
             BlockId(3),
             var_info_after_b0.clone(), // only B0 vars (not B1/B2 — conditional)
             b3_value_offset,
+            &oracle_decls,
         );
 
     // Return B0 + B3 values only (B1/B2 values are conditional).
@@ -715,7 +792,7 @@ pub fn interpret_vaffle_diamond(
 
     let module = Module {
         types: type_table,
-        oracles: vec![],
+        oracles: oracle_decls,
         actions: vec![],
         funcs: vec![FuncDecl::Body(body)],
         sigs: vec![sig],
@@ -724,6 +801,199 @@ pub fn interpret_vaffle_diamond(
     };
 
     (module, FuncId(0), param_widths)
+}
+
+// ============================================================================
+// Two-function VAFFLE module
+// ============================================================================
+
+/// Build a two-function VAFFLE module exercising `Value::Call` and `Value::Output`.
+///
+/// - **func_1** (FuncId(1)): a pure single-block function built from `raw_stmts_f1`.
+///   Its result types are exactly the types of all its values (params + stmts).
+/// - **func_0** (FuncId(0)): a single-block function built from `raw_stmts_f0`.
+///   After its own stmts, it emits a `Value::Call { func: FuncId(1), args }` whose
+///   arguments are chosen from func_0's available vars (matched by type; fallback
+///   to const zero when no match). Each call output is then extracted with
+///   `Value::Output`. The return includes func_0's own values plus call outputs.
+///
+/// Returns `(module, FuncId(0), func_0_param_widths)`.
+pub fn interpret_vaffle_two_func(
+    raw_param_type_idxs_f0: &[RawTypeIdx],
+    raw_stmts_f0: &[RawIrStmt],
+    raw_param_type_idxs_f1: &[RawTypeIdx],
+    raw_stmts_f1: &[RawIrStmt],
+) -> (Module, FuncId, Vec<usize>) {
+    use volar_ir_common::Type;
+
+    let mut type_table = volar_ir_common::TypeTable::new();
+
+    let oracle_seed = raw_param_type_idxs_f0.first().copied().unwrap_or(0);
+    let oracle_decls = build_vaffle_oracle_decls(&mut type_table, oracle_seed);
+
+    // ── Build func_1 (callee) ─────────────────────────────────────────────────
+    // func_1 is a pure function; no calls inside it.
+    let (f1_param_type_ids, _f1_param_widths, f1_var_info, f1_values, f1_stmt_vids) =
+        build_vaffle_extended_block(
+            &mut type_table,
+            raw_param_type_idxs_f1,
+            raw_stmts_f1,
+            BlockId(0),
+            vec![],
+            0,
+            &oracle_decls,
+        );
+
+    let f1_total = f1_values.len();
+    let f1_all_vids: Vec<ValueId> = (0..f1_total).map(ValueId).collect();
+
+    // func_1 sig: params from param types; results are the types of all values.
+    let fallback_bit_tid = type_table.primitive(Type::Bit);
+    let f1_result_tys: Vec<TypeId> = (0..f1_total)
+        .map(|i| {
+            f1_var_info
+                .iter()
+                .find(|(_, _, vid)| vid.0 == i)
+                .map(|(tid, _, _)| *tid)
+                .unwrap_or(fallback_bit_tid)
+        })
+        .collect();
+
+    let f1_sig = SigDecl { params: f1_param_type_ids.clone(), results: f1_result_tys.clone() };
+
+    let f1_block = Block {
+        params: f1_param_type_ids
+            .iter()
+            .enumerate()
+            .map(|(i, &tid)| (ValueId(i), tid))
+            .collect(),
+        stmts: f1_stmt_vids,
+        terminator: Terminator::Return { values: f1_all_vids },
+    };
+
+    let f1_body = FuncBody {
+        sig: SigId(1),
+        blocks: vec![f1_block],
+        values: f1_values,
+        entry: BlockId(0),
+    };
+
+    // ── Build func_0 (caller) ─────────────────────────────────────────────────
+    let (f0_param_type_ids, f0_param_widths, mut f0_var_info, mut f0_values, mut f0_stmt_vids) =
+        build_vaffle_extended_block(
+            &mut type_table,
+            raw_param_type_idxs_f0,
+            raw_stmts_f0,
+            BlockId(0),
+            vec![],
+            0,
+            &oracle_decls,
+        );
+
+    // Emit Value::Call { func: FuncId(1), args }.
+    // For each of func_1's param types, pick a var from f0_var_info with matching type,
+    // or fall back to a Const zero of the right type.
+    let call_vid = ValueId(f0_values.len());
+    let call_args: Vec<ValueId> = f1_param_type_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &needed_tid)| {
+            // Find first var in f0 with matching type.
+            if let Some(&(_, _, vid)) = f0_var_info.iter().find(|(tid, _, _)| *tid == needed_tid) {
+                vid
+            } else {
+                // Emit a Const zero of the right type and use it.
+                let const_vid = ValueId(f0_values.len() + i);
+                // We'll push Const values after the loop; for now just record the vid.
+                // Actually we need to do this inside the loop — push now.
+                let _ = const_vid; // avoid unused warning
+                // Recompute: we may have pushed consts already above this iteration.
+                let cur_vid = ValueId(f0_values.len());
+                let w = f0_var_info
+                    .iter()
+                    .find(|(tid, _, _)| *tid == needed_tid)
+                    .map(|(_, w, _)| *w)
+                    .unwrap_or(1);
+                f0_values.push(Value::Op(Stmt::Const(
+                    volar_ir_common::Constant { lo: 0, hi: 0 },
+                    needed_tid,
+                )));
+                f0_stmt_vids.push(cur_vid);
+                f0_var_info.push((needed_tid, w, cur_vid));
+                cur_vid
+            }
+        })
+        .collect();
+
+    // Now emit the Call value itself.
+    f0_values.push(Value::Call { func: FuncId(1), args: call_args });
+    f0_stmt_vids.push(call_vid);
+
+    // Emit Value::Output for each of func_1's outputs.
+    let mut output_vids: Vec<ValueId> = Vec::new();
+    for (out_idx, &out_tid) in f1_result_tys.iter().enumerate() {
+        let out_vid = ValueId(f0_values.len());
+        let w = type_table
+            .0
+            .get(out_tid.0 as usize)
+            .map(|ty| match ty {
+                volar_ir_common::IrType::Primitive(t) => primitive_width(*t),
+                _ => 1,
+            })
+            .unwrap_or(1);
+        f0_values.push(Value::Output { value: call_vid, idx: out_idx });
+        f0_stmt_vids.push(out_vid);
+        f0_var_info.push((out_tid, w, out_vid));
+        output_vids.push(out_vid);
+    }
+
+    // func_0 returns all its own values + call outputs (call_vid itself is a sentinel, skip it).
+    let f0_own_vids: Vec<ValueId> = (0..call_vid.0).map(ValueId).collect();
+    let mut f0_return_vids = f0_own_vids;
+    f0_return_vids.extend_from_slice(&output_vids);
+
+    // Build func_0 result types for the sig.
+    let f0_result_tys: Vec<TypeId> = f0_return_vids
+        .iter()
+        .map(|vid| {
+            f0_var_info
+                .iter()
+                .find(|(_, _, v)| v.0 == vid.0)
+                .map(|(tid, _, _)| *tid)
+                .unwrap_or(fallback_bit_tid)
+        })
+        .collect();
+
+    let f0_sig = SigDecl { params: f0_param_type_ids.clone(), results: f0_result_tys };
+
+    let f0_block = Block {
+        params: f0_param_type_ids
+            .iter()
+            .enumerate()
+            .map(|(i, &tid)| (ValueId(i), tid))
+            .collect(),
+        stmts: f0_stmt_vids,
+        terminator: Terminator::Return { values: f0_return_vids },
+    };
+
+    let f0_body = FuncBody {
+        sig: SigId(0),
+        blocks: vec![f0_block],
+        values: f0_values,
+        entry: BlockId(0),
+    };
+
+    let module = Module {
+        types: type_table,
+        oracles: oracle_decls,
+        actions: vec![],
+        funcs: vec![FuncDecl::Body(f0_body), FuncDecl::Body(f1_body)],
+        sigs: vec![f0_sig, f1_sig],
+        exports: std::collections::BTreeMap::new(),
+        pre_init: vec![],
+    };
+
+    (module, FuncId(0), f0_param_widths)
 }
 
 // ============================================================================

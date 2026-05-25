@@ -5,3 +5,4 @@
 //! proptest's random sources.
 pub mod biir;
 pub mod ir;
+pub mod vaffle;

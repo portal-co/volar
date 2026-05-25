@@ -4,12 +4,13 @@
 //! returning the output bit-vector when a `Return` target is reached.
 //!
 //! # Limitations
-//! - Oracle, action, RNG, and storage statements **panic** — the generator
-//!   never produces them, so this should not occur during property tests.
+//! - Action and RNG statements **panic** — the generator never produces them.
+//! - Oracle calls use the FNV-1a hash oracle (hashing the oracle name + inputs).
 //! - A self-looping block (movfuscated form) will execute until it reaches a
 //!   `Return` branch or until `MAX_ITERS` is exceeded, at which point
 //!   `None` is returned.
 
+use crate::generators::oracle::hash_oracle;
 use crate::interpreter::ir::bits_to_u64;
 use std::collections::BTreeMap;
 
@@ -90,6 +91,9 @@ fn eval_block(block: &BIrBlock<()>, params: &[bool], storage: &mut BIrStorageMap
 
     // Build the variable table: params first (indices 0..params), then stmts.
     let mut vars: BTreeMap<u32, bool> = BTreeMap::new();
+    // Side-table for OracleCall aggregates: var_id → Vec<bool> (one bit per output bit).
+    let mut oracle_agg: BTreeMap<u32, Vec<bool>> = BTreeMap::new();
+
     for (i, &v) in params.iter().enumerate() {
         vars.insert(i as u32, v);
     }
@@ -97,7 +101,7 @@ fn eval_block(block: &BIrBlock<()>, params: &[bool], storage: &mut BIrStorageMap
     let base = block.params;
     for (i, stmt) in block.stmts.iter().enumerate() {
         let id = base + i as u32;
-        let val = eval_stmt(stmt, &vars, storage);
+        let val = eval_stmt(stmt, id, &vars, &mut oracle_agg, storage);
         vars.insert(id, val);
     }
 
@@ -121,7 +125,15 @@ fn eval_block(block: &BIrBlock<()>, params: &[bool], storage: &mut BIrStorageMap
 }
 
 /// Evaluate a single boolean gate statement.
-fn eval_stmt(stmt: &BIrStmt, vars: &BTreeMap<u32, bool>, storage: &mut BIrStorageMap) -> bool {
+///
+/// `stmt_id` is the SSA variable ID assigned to this stmt (used as the oracle agg key).
+fn eval_stmt(
+    stmt: &BIrStmt,
+    stmt_id: u32,
+    vars: &BTreeMap<u32, bool>,
+    oracle_agg: &mut BTreeMap<u32, Vec<bool>>,
+    storage: &mut BIrStorageMap,
+) -> bool {
     match stmt {
         BIrStmt::Zero => false,
         BIrStmt::One => true,
@@ -129,8 +141,21 @@ fn eval_stmt(stmt: &BIrStmt, vars: &BTreeMap<u32, bool>, storage: &mut BIrStorag
         BIrStmt::Or(a, b) => get(vars, a) | get(vars, b),
         BIrStmt::Xor(a, b) => get(vars, a) ^ get(vars, b),
         BIrStmt::Not(a) => !get(vars, a),
-        BIrStmt::OracleCall { .. } => panic!("eval_biir: OracleCall not supported"),
-        BIrStmt::OracleBit { .. } => panic!("eval_biir: OracleBit not supported"),
+        BIrStmt::OracleCall { name, args, num_bits } => {
+            // Hash the oracle name bytes as a u32 seed.
+            let oracle_idx: u32 = name.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
+            let flat_inputs: Vec<bool> = args.iter().map(|v| get(vars, v)).collect();
+            let out = hash_oracle(oracle_idx, &flat_inputs, *num_bits);
+            oracle_agg.insert(stmt_id, out);
+            false // sentinel; actual bits extracted via OracleBit
+        }
+        BIrStmt::OracleBit { call, bit } => {
+            oracle_agg
+                .get(&call.0)
+                .and_then(|bits| bits.get(*bit))
+                .copied()
+                .unwrap_or(false)
+        }
         BIrStmt::ActionCall { .. } => panic!("eval_biir: ActionCall not supported"),
         BIrStmt::ActionBit { .. } => panic!("eval_biir: ActionBit not supported"),
         BIrStmt::Rng { .. } => panic!("eval_biir: Rng not supported"),
