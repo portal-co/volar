@@ -3,12 +3,11 @@
 //! Constant-folding pass for Volar IR (`IRBlocks`).
 
 use alloc::{collections::BTreeMap, vec::Vec};
-use volar_ir::ir::{IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRTerminator, IRTypes, IRVarId};
+use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRTypes, IRVarId};
 use volar_ir_common::{Constant, Stmt, TypeId};
 
 use crate::common::{
-    apply_aliases_to_stmt, canon_alias, constant_is_zero, constant_rol, constant_ror,
-    constant_xor, fold_poly_in_place, mask_constant, merge_poly_into, stmt_output_type,
+    apply_aliases_to_stmt, canon_alias, constant_is_zero, constant_rol, constant_ror, fold_poly_in_place, mask_constant, merge_poly_into, stmt_output_type,
     type_bit_width,
 };
 
@@ -273,7 +272,7 @@ fn compute_action(
             IrAction::NoChange
         }
 
-        Stmt::Transmute { src, src_ty, dst_ty } => {
+        Stmt::Transmute { src, src_ty: _, dst_ty } => {
             if let Some(&c) = const_map.get(src) {
                 // Transmute is a bit-reinterpretation; just mask to dst width.
                 if let Some(dst_w) = type_bit_width(*dst_ty, types) {

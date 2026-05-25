@@ -45,7 +45,7 @@ pub struct ValueId(pub usize);
 /// For import declarations the same information is also available as
 /// `IrType::Func` in the type table, allowing function types to be used as
 /// first-class values in VAFFLE programs.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct SigDecl {
     pub params: Vec<TypeId>,
@@ -78,13 +78,13 @@ pub struct Block {
     pub stmts: Vec<ValueId>,
     pub terminator: Terminator,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct Target {
     pub block: BlockId,
     pub args: Vec<ValueId>,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum Terminator {
     Return { values: Vec<ValueId> },

@@ -2,7 +2,7 @@
 // @ai: assisted
 //! Constant-folding and boolean-simplification pass for Boolar IR.
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::collections::BTreeMap;
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
 use volar_ir::ir::{IRBlockTargetId, IRVarId};
 

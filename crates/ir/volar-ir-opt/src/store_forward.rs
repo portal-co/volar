@@ -266,14 +266,14 @@ fn add_ir_args_to_edges(term: &mut IRTerminator, target_block: usize, extra_args
 
 /// Shift `v` in-place if it falls in `[old_base, old_base + n_stmts)`.
 #[inline]
-fn shift_var(v: &mut IRVarId, old_base: u32, n_stmts: u32, shift: u32) {
+pub(crate) fn shift_var(v: &mut IRVarId, old_base: u32, n_stmts: u32, shift: u32) {
     if v.0 >= old_base && v.0 < old_base + n_stmts {
         v.0 += shift;
     }
 }
 
 /// Shift all `IRVarId` references in a `Stmt<IRVarId, IRVarId>`.
-fn shift_ir_stmt_vars(
+pub(crate) fn shift_ir_stmt_vars(
     stmt: &mut volar_ir_common::Stmt<IRVarId, IRVarId>,
     old_base: u32,
     n_stmts: u32,
@@ -340,7 +340,7 @@ fn shift_ir_stmt_vars(
 }
 
 /// Shift all `IRVarId` references in an `IRTerminator`.
-fn shift_ir_terminator_vars(
+pub(crate) fn shift_ir_terminator_vars(
     term: &mut IRTerminator,
     old_base: u32,
     n_stmts: u32,
@@ -1321,7 +1321,7 @@ fn apply_aliases_to_vaffle_value(
     if alias_map.is_empty() {
         return false;
     }
-    use volar_ir_common::Stmt;
+    
     let stmt = match value {
         Value::Op(s) => s,
         _ => return false,

@@ -442,11 +442,194 @@ pub enum Stmt<Var, Addr = Var> {
     /// `name` identifies the [`RngDecl`] in the enclosing [`IRBlocks::rngs`]
     /// that provides this source of randomness.  Each occurrence is an
     /// independent sample.  Optimisers must **not** deduplicate, CSE, or
-    /// reorder `Rng` stmts.  An `Rng` may be DCE'd only when its output is
+    /// reorder `Rng` stmts.  An `Rng` may be DCE’d only when its output is
     /// demonstrably unused.
     Rng {
         /// Name of the declared RNG source (matches an [`RngDecl::name`]).
         name: alloc::string::String,
         ty: TypeId,
     },
+}
+
+// ============================================================================
+// Generic substitution utilities
+// ============================================================================
+
+/// Merges a guest [`TypeTable`] into a host [`TypeTable`], producing a mapping
+/// from guest [`TypeId`]s to their equivalent host [`TypeId`]s.
+///
+/// Types that are structurally identical to an existing host type share the
+/// same [`TypeId`] (via [`TypeTable::intern`]).  New types are appended.
+///
+/// Reusable in any pass that combines programs from different modules.
+pub struct TypeRemapper {
+    /// `map[guest_id.0]` = the corresponding [`TypeId`] in the host table.
+    pub map: alloc::vec::Vec<TypeId>,
+}
+
+impl TypeRemapper {
+    /// Merge `guest` into `host` and return the resulting remapper.
+    pub fn merge(host: &mut TypeTable, guest: &TypeTable) -> TypeRemapper {
+        let n = guest.0.len();
+        let mut map = alloc::vec![TypeId(0); n];
+        let mut done = alloc::vec![false; n];
+        for i in 0..n {
+            Self::remap_one(i, guest, host, &mut map, &mut done);
+        }
+        TypeRemapper { map }
+    }
+
+    fn remap_one(
+        idx: usize,
+        guest: &TypeTable,
+        host: &mut TypeTable,
+        map: &mut alloc::vec::Vec<TypeId>,
+        done: &mut alloc::vec::Vec<bool>,
+    ) -> TypeId {
+        if done[idx] {
+            return map[idx];
+        }
+        done[idx] = true; // set before recursing (cycle guard)
+        let remapped = match &guest.0[idx] {
+            IrType::Primitive(p) => IrType::Primitive(*p),
+            IrType::Vec(n, inner) => {
+                let inner_host = Self::remap_one(inner.0 as usize, guest, host, map, done);
+                IrType::Vec(*n, inner_host)
+            }
+            IrType::Tuple(parts) => {
+                let parts_host: alloc::vec::Vec<TypeId> = parts
+                    .iter()
+                    .map(|p| Self::remap_one(p.0 as usize, guest, host, map, done))
+                    .collect();
+                IrType::Tuple(parts_host)
+            }
+            IrType::Block { params } => {
+                let params_host: alloc::vec::Vec<TypeId> = params
+                    .iter()
+                    .map(|p| Self::remap_one(p.0 as usize, guest, host, map, done))
+                    .collect();
+                IrType::Block { params: params_host }
+            }
+            IrType::Func { params, results } => {
+                let params_host: alloc::vec::Vec<TypeId> = params
+                    .iter()
+                    .map(|p| Self::remap_one(p.0 as usize, guest, host, map, done))
+                    .collect();
+                let results_host: alloc::vec::Vec<TypeId> = results
+                    .iter()
+                    .map(|r| Self::remap_one(r.0 as usize, guest, host, map, done))
+                    .collect();
+                IrType::Func { params: params_host, results: results_host }
+            }
+        };
+        let host_id = host.intern(remapped);
+        map[idx] = host_id;
+        host_id
+    }
+
+    /// Remap a single guest [`TypeId`] to its host equivalent.
+    #[inline]
+    pub fn remap(&self, id: TypeId) -> TypeId {
+        self.map[id.0 as usize]
+    }
+
+    /// Remap every [`TypeId`] field in a [`Stmt<V, A>`] in-place.
+    ///
+    /// Variable references (`V`, `A`) are left unchanged.
+    pub fn remap_stmt_types<V: Clone, A: Clone>(&self, stmt: &mut Stmt<V, A>) {
+        match stmt {
+            Stmt::StorageRead { ty, .. } => {
+                *ty = self.remap(*ty);
+            }
+            Stmt::StorageWrite { ty, .. } => {
+                *ty = self.remap(*ty);
+            }
+            Stmt::Const(_, ty) => {
+                *ty = self.remap(*ty);
+            }
+            Stmt::Transmute { src_ty, dst_ty, .. } => {
+                *src_ty = self.remap(*src_ty);
+                *dst_ty = self.remap(*dst_ty);
+            }
+            Stmt::Poly { ty, coeffs: _, constant: _ } => {
+                *ty = self.remap(*ty);
+            }
+            Stmt::Rol { ty, .. } | Stmt::Ror { ty, .. } => {
+                *ty = self.remap(*ty);
+            }
+            Stmt::Merge { ty, .. } => {
+                *ty = self.remap(*ty);
+            }
+            Stmt::Splat { ty, .. } => {
+                *ty = self.remap(*ty);
+            }
+            Stmt::Shuffle { ty, .. } => {
+                *ty = self.remap(*ty);
+            }
+            Stmt::OracleCall { output_tys, result_ty, .. } => {
+                for t in output_tys.iter_mut() {
+                    *t = self.remap(*t);
+                }
+                *result_ty = self.remap(*result_ty);
+            }
+            Stmt::OracleOutput { ty, .. } => {
+                *ty = self.remap(*ty);
+            }
+            Stmt::ActionCall { output_tys, result_ty, .. } => {
+                for t in output_tys.iter_mut() {
+                    *t = self.remap(*t);
+                }
+                *result_ty = self.remap(*result_ty);
+            }
+            Stmt::ActionOutput { ty, .. } => {
+                *ty = self.remap(*ty);
+            }
+            Stmt::Rng { ty, .. } => {
+                *ty = self.remap(*ty);
+            }
+        }
+    }
+
+    /// Remap [`TypeId`]s inside an [`OracleDecl`].
+    pub fn remap_oracle_decl(&self, decl: &mut OracleDecl) {
+        for t in decl.params.iter_mut() { *t = self.remap(*t); }
+        for t in decl.results.iter_mut() { *t = self.remap(*t); }
+    }
+
+    /// Remap [`TypeId`]s inside an [`ActionDecl`].
+    pub fn remap_action_decl(&self, decl: &mut ActionDecl) {
+        for t in decl.params.iter_mut() { *t = self.remap(*t); }
+        for t in decl.results.iter_mut() { *t = self.remap(*t); }
+    }
+
+    /// Remap the [`TypeId`] inside an [`RngDecl`].
+    pub fn remap_rng_decl(&self, decl: &mut RngDecl) {
+        decl.ty = self.remap(decl.ty);
+    }
+}
+
+/// Allocates fresh [`StorageId`]s above the range already in use.
+///
+/// Call [`StorageAllocator::new`] with `first_free` set to one above the
+/// maximum [`StorageId`] observed in the program (clamped to ≥ 64 to avoid
+/// the reserved protocol range).
+pub struct StorageAllocator {
+    pub next: u32,
+}
+
+impl StorageAllocator {
+    /// Create an allocator starting at `first_free`.
+    ///
+    /// The caller is responsible for scanning the program to find the current
+    /// maximum StorageId and passing `max + 1` here (clamped to ≥ 64).
+    pub fn new(first_free: u32) -> Self {
+        StorageAllocator { next: first_free }
+    }
+
+    /// Allocate the next fresh [`StorageId`].
+    pub fn alloc(&mut self) -> StorageId {
+        let id = StorageId(self.next);
+        self.next += 1;
+        id
+    }
 }

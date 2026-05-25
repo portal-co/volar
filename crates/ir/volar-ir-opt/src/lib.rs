@@ -8,4 +8,6 @@ pub mod biir;
 pub mod common;
 pub mod ir;
 pub mod store_forward;
+pub mod substitute_ir;
+pub mod substitute_vaffle;
 pub mod vaffle;

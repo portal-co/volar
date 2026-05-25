@@ -17,7 +17,7 @@ use vaffle::{FuncBody, FuncDecl, Module, Terminator, Value, ValueId};
 use volar_ir_common::{Constant, Stmt, TypeId, TypeTable};
 
 use crate::common::{
-    constant_is_zero, constant_or, constant_rol, constant_ror, constant_shl, fold_poly_in_place,
+    constant_or, constant_rol, constant_ror, constant_shl, fold_poly_in_place,
     mask_constant, merge_poly_into, stmt_output_type, type_bit_width,
 };
 
