@@ -14,12 +14,69 @@
 use alloc::{collections::BTreeMap, vec, vec::Vec};
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
 use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRVarId};
-use volar_ir_common::{StorageId, TypeId};
+use volar_ir_common::{Constant, StorageId, TypeId};
 use vaffle::{FuncBody, FuncDecl, Module, Value, ValueId};
 
 use crate::common::canon_alias;
 use crate::ir::apply_aliases_to_ir_terminator;
 use crate::biir::apply_aliases_to_biir_terminator;
+
+// ============================================================================
+// Address disambiguation
+// ============================================================================
+
+/// Max distinct addresses tracked per (StorageId, TypeId) slot before falling
+/// back to conservative invalidation.
+const MAX_CONCURRENT_STORES: usize = 16;
+
+/// GF(2) polynomial representation of an address: `(monomials, constant)`.
+/// Monomial coefficients are mod-2; XOR-ing two of these gives their difference.
+type IrPolyRepr = (BTreeMap<Vec<IRVarId>, u8>, Constant);
+
+/// Extract the GF(2) polynomial representation of an IR address variable.
+///
+/// Returns `({}, c)` for a known constant, `(coeffs, constant)` for a known
+/// polynomial, or a fresh singleton monomial `{[v]: 1}` for opaque vars.
+fn ir_addr_poly(
+    v: IRVarId,
+    const_map: &BTreeMap<IRVarId, Constant>,
+    poly_map: &BTreeMap<IRVarId, IrPolyRepr>,
+) -> IrPolyRepr {
+    if let Some(&c) = const_map.get(&v) {
+        return (BTreeMap::new(), c);
+    }
+    if let Some(p) = poly_map.get(&v) {
+        return p.clone();
+    }
+    let mut m = BTreeMap::new();
+    m.insert(alloc::vec![v], 1u8);
+    (m, Constant { hi: 0, lo: 0 })
+}
+
+/// Return `true` iff `a` and `b` are provably distinct addresses.
+///
+/// Computes the symbolic GF(2) XOR of the two polynomial representations.
+/// If all variable terms cancel and the constant part is nonzero, the
+/// addresses differ by a known nonzero constant and cannot alias.
+fn ir_addrs_provably_different(
+    a: IRVarId,
+    b: IRVarId,
+    const_map: &BTreeMap<IRVarId, Constant>,
+    poly_map: &BTreeMap<IRVarId, IrPolyRepr>,
+) -> bool {
+    if a == b {
+        return false;
+    }
+    let (mut ca, ka) = ir_addr_poly(a, const_map, poly_map);
+    let (cb, kb) = ir_addr_poly(b, const_map, poly_map);
+    for (key, coeff) in cb {
+        let e = ca.entry(key).or_insert(0);
+        *e ^= coeff;
+    }
+    ca.retain(|_, v| *v & 1 != 0);
+    let xor_const = crate::common::constant_xor(ka, kb);
+    ca.is_empty() && !crate::common::constant_is_zero(xor_const)
+}
 
 // ============================================================================
 // Volar IR
@@ -106,6 +163,8 @@ fn store_forward_ir_block_with_cache<P: Clone + Default>(
 ) -> (bool, IrStoreCache) {
     let mut cache = incoming;
     let mut alias_map: BTreeMap<IRVarId, IRVarId> = BTreeMap::new();
+    let mut const_map: BTreeMap<IRVarId, Constant> = BTreeMap::new();
+    let mut addr_poly_map: BTreeMap<IRVarId, IrPolyRepr> = BTreeMap::new();
     let mut changed = false;
 
     let base = block.params.len() as u32;
@@ -120,11 +179,29 @@ fn store_forward_ir_block_with_cache<P: Clone + Default>(
         let stmt = block.stmts[i].clone();
 
         use volar_ir_common::Stmt;
+        // Track constants and polynomials for address disambiguation.
+        match &stmt {
+            Stmt::Const(c, _) => { const_map.insert(rv, *c); }
+            Stmt::Poly { coeffs, constant, .. } => {
+                addr_poly_map.insert(rv, (coeffs.clone(), *constant));
+            }
+            _ => {}
+        }
         match &stmt {
             Stmt::StorageWrite { storage, src, ty, addr } => {
                 let src = canon_alias(&alias_map, *src);
                 let addr = canon_alias(&alias_map, *addr);
-                cache.retain(|(s, t, _), _| !(s == storage && t == ty));
+                let slot_count = cache.keys()
+                    .filter(|(s, t, _)| s == storage && t == ty)
+                    .count();
+                if slot_count >= MAX_CONCURRENT_STORES {
+                    cache.retain(|(s, t, _), _| !(s == storage && t == ty));
+                } else {
+                    cache.retain(|(s, t, cached_addr), _| {
+                        if s != storage || t != ty { return true; }
+                        ir_addrs_provably_different(addr, *cached_addr, &const_map, &addr_poly_map)
+                    });
+                }
                 cache.insert((*storage, *ty, addr), src);
             }
             Stmt::StorageRead { storage, ty, addr } => {
@@ -1076,6 +1153,46 @@ fn merge_biir_caches_with_injection<P: Clone + Default>(
 }
 
 // ============================================================================
+// VAFFLE — address disambiguation helpers
+// ============================================================================
+
+/// Extract the GF(2) polynomial representation of a VAFFLE address value.
+///
+/// Looks up `v` directly in the body's value table (which is global across
+/// blocks), so this works for values defined in dominating blocks.
+fn vaffle_addr_poly(
+    values: &[Value],
+    v: ValueId,
+) -> (BTreeMap<Vec<ValueId>, u8>, Constant) {
+    use volar_ir_common::Stmt;
+    match &values[v.0] {
+        Value::Op(Stmt::Const(c, _)) => (BTreeMap::new(), *c),
+        Value::Op(Stmt::Poly { coeffs, constant, .. }) => (coeffs.clone(), *constant),
+        _ => {
+            let mut m = BTreeMap::new();
+            m.insert(alloc::vec![v], 1u8);
+            (m, Constant { hi: 0, lo: 0 })
+        }
+    }
+}
+
+/// Return `true` iff VAFFLE address values `a` and `b` are provably distinct.
+fn vaffle_addrs_provably_different(values: &[Value], a: ValueId, b: ValueId) -> bool {
+    if a == b {
+        return false;
+    }
+    let (mut ca, ka) = vaffle_addr_poly(values, a);
+    let (cb, kb) = vaffle_addr_poly(values, b);
+    for (key, coeff) in cb {
+        let e = ca.entry(key).or_insert(0);
+        *e ^= coeff;
+    }
+    ca.retain(|_, v| *v & 1 != 0);
+    let xor_const = crate::common::constant_xor(ka, kb);
+    ca.is_empty() && !crate::common::constant_is_zero(xor_const)
+}
+
+// ============================================================================
 // VAFFLE
 // ============================================================================
 
@@ -1269,7 +1386,18 @@ fn store_forward_vaffle_block_with_cache(
             Some(VaffleStoreAction::Write { storage, src, ty, addr }) => {
                 let src = canon_alias(&alias_map, src);
                 let addr = canon_alias(&alias_map, addr);
-                cache.retain(|(s, t, _), _| !(s == &storage && t == &ty));
+                let slot_count = cache.keys()
+                    .filter(|(s, t, _)| *s == storage && *t == ty)
+                    .count();
+                if slot_count >= MAX_CONCURRENT_STORES {
+                    cache.retain(|(s, t, _), _| !(*s == storage && *t == ty));
+                } else {
+                    let vals = &body.values;
+                    cache.retain(|(s, t, cached_addr), _| {
+                        if *s != storage || *t != ty { return true; }
+                        vaffle_addrs_provably_different(vals, addr, *cached_addr)
+                    });
+                }
                 cache.insert((storage, ty, addr), src);
             }
             Some(VaffleStoreAction::Read { storage, ty, addr }) => {
@@ -1460,4 +1588,82 @@ fn apply_aliases_to_vaffle_target(
         if c != *v { *v = c; changed = true; }
     }
     changed
+}
+
+// ============================================================================
+// Unit tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec;
+    use volar_ir::ir::{IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRTerminator, IRVarId};
+    use volar_ir_common::{Constant, Stmt, StorageId, TypeId};
+
+    fn jmp_self() -> IRTerminator {
+        IRTerminator::Jmp {
+            func: IRBlockTargetId::Block(IRBlockId(0)),
+            args: vec![],
+        }
+    }
+
+    fn make_block(params: Vec<TypeId>, stmts: Vec<Stmt<IRVarId, IRVarId>>) -> IRBlock<()> {
+        let n = stmts.len();
+        IRBlock { params, stmts, stmt_provs: vec![(); n], terminator: jmp_self() }
+    }
+
+    fn const_addr(lo: u128) -> Stmt<IRVarId, IRVarId> {
+        Stmt::Const(Constant { hi: 0, lo }, TypeId(0))
+    }
+
+    #[test]
+    fn two_const_addr_writes_both_forwarded() {
+        // Block:
+        //   v0 = const(0)               ← address 0
+        //   v1 = const(1)               ← address 1
+        //   v2 = const(42)              ← value stored at addr 0
+        //   v3 = const(99)              ← value stored at addr 1
+        //        store(S, v2, T, v0)
+        //        store(S, v3, T, v1)
+        //   v6 = load(S, T, v0)         ← should forward to v2
+        //   v7 = load(S, T, v1)         ← should forward to v3
+        let st = StorageId(0);
+        let ty = TypeId(0);
+        let stmts = vec![
+            const_addr(0),                                                             // v0
+            const_addr(1),                                                             // v1
+            Stmt::Const(Constant { hi: 0, lo: 42 }, TypeId(0)),                       // v2
+            Stmt::Const(Constant { hi: 0, lo: 99 }, TypeId(0)),                       // v3
+            Stmt::StorageWrite { storage: st, src: IRVarId(2), ty, addr: IRVarId(0) }, // v4
+            Stmt::StorageWrite { storage: st, src: IRVarId(3), ty, addr: IRVarId(1) }, // v5
+            Stmt::StorageRead { storage: st, ty, addr: IRVarId(0) },                   // v6 → alias v2
+            Stmt::StorageRead { storage: st, ty, addr: IRVarId(1) },                   // v7 → alias v3
+        ];
+        let mut blocks = IRBlocks::new(vec![make_block(vec![], stmts)]);
+        let changed = store_forward_ir_blocks(&mut blocks);
+        assert!(changed, "expected forwarding to occur");
+    }
+
+    #[test]
+    fn opaque_addr_write_drops_cache() {
+        // p0 (IRVarId(0)): opaque param address.
+        //   v1 = const(0)               ← constant address
+        //   v2 = const(42)              ← value
+        //        store(S, v2, T, v1)    ← populate cache for const addr
+        //        store(S, v2, T, p0)    ← opaque addr — cannot prove distinct → flush
+        //   v5 = load(S, T, v1)         ← NOT forwarded (cache flushed)
+        let st = StorageId(0);
+        let ty = TypeId(0);
+        let stmts = vec![
+            Stmt::Const(Constant { hi: 0, lo: 0 }, TypeId(0)),                        // v1
+            Stmt::Const(Constant { hi: 0, lo: 42 }, TypeId(0)),                       // v2
+            Stmt::StorageWrite { storage: st, src: IRVarId(2), ty, addr: IRVarId(1) }, // v3
+            Stmt::StorageWrite { storage: st, src: IRVarId(2), ty, addr: IRVarId(0) }, // v4 (opaque)
+            Stmt::StorageRead { storage: st, ty, addr: IRVarId(1) },                   // v5 — not forwarded
+        ];
+        let mut blocks = IRBlocks::new(vec![make_block(vec![TypeId(0)], stmts)]);
+        // Should not panic; cache conservatively flushed by the opaque write.
+        let _changed = store_forward_ir_blocks(&mut blocks);
+    }
 }
