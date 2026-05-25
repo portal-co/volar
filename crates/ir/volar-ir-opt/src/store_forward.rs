@@ -71,6 +71,67 @@ fn set_bit_in_constant(mut c: Constant, bit: usize) -> Constant {
     c
 }
 
+fn get_bit_of_constant(c: Constant, b: usize) -> bool {
+    if b < 128 { (c.lo >> b) & 1 != 0 }
+    else if b < 256 { (c.hi >> (b - 128)) & 1 != 0 }
+    else { false }
+}
+
+/// Compute known-bits for a GF(2) polynomial over a bit-vector type.
+///
+/// For each output bit `b`:
+/// - bits >= 8 have no monomial contribution (coeff is u8), so they equal the constant (known).
+/// - bits < 8: evaluate each monomial at bit `b` using per-bit AND with short-circuit.
+///   A monomial with an unknown bit is still known-0 if another bit in that monomial is known-0.
+fn poly_known_bits<Var: Ord>(
+    w: usize,
+    coeffs: &BTreeMap<Vec<Var>, u8>,
+    constant: &Constant,
+    get_kb: impl Fn(&Var) -> KnownBits,
+) -> KnownBits {
+    let mut out_known = Constant { hi: 0, lo: 0 };
+    let mut out_value = Constant { hi: 0, lo: 0 };
+
+    for b in 0..w.min(256) {
+        let const_bit = get_bit_of_constant(*constant, b);
+        let mut result_val = const_bit;
+        let mut result_known = true;
+
+        if b < 8 {
+            'monomials: for (key, &coeff) in coeffs {
+                if (coeff >> b) & 1 == 0 { continue; }
+                // Evaluate AND(vars in key)[b] with short-circuit.
+                let mut mono_val: Option<bool> = Some(true);
+                for v in key {
+                    let kb = get_kb(v);
+                    if get_bit_of_constant(kb.known, b) {
+                        if !get_bit_of_constant(kb.value, b) {
+                            mono_val = Some(false); // 0 AND anything = 0
+                            break;
+                        }
+                        // known-1: multiplicative identity, no change
+                    } else {
+                        if mono_val != Some(false) {
+                            mono_val = None; // unknown bit → result unknown unless already 0
+                        }
+                    }
+                }
+                match mono_val {
+                    Some(v) => result_val ^= v,
+                    None => { result_known = false; break 'monomials; }
+                }
+            }
+        }
+
+        if result_known {
+            out_known = set_bit_in_constant(out_known, b);
+            if result_val { out_value = set_bit_in_constant(out_value, b); }
+        }
+    }
+
+    KnownBits { known: out_known, value: out_value }
+}
+
 /// GF(2) polynomial representation of an address: `(monomials, constant)`.
 /// Monomial coefficients are mod-2; XOR-ing two of these gives their difference.
 type IrPolyRepr = (BTreeMap<Vec<IRVarId>, u8>, Constant);
@@ -148,11 +209,7 @@ fn ir_stmt_known_bits(
         }
         Stmt::Poly { coeffs, constant, ty } => {
             let w = get_w(*ty);
-            let kb = if coeffs.is_empty() {
-                KnownBits::from_const(*constant, w)
-            } else {
-                KnownBits::default()
-            };
+            let kb = poly_known_bits(w, coeffs, constant, |v| get_kb(v));
             (kb, Some(w))
         }
         Stmt::Transmute { src, dst_ty, .. } => {
@@ -1435,11 +1492,7 @@ fn vaffle_value_known_bits(
         }
         Value::Op(Stmt::Poly { coeffs, constant, ty }) => {
             let w = get_w(*ty);
-            let kb = if coeffs.is_empty() {
-                KnownBits::from_const(*constant, w)
-            } else {
-                KnownBits::default()
-            };
+            let kb = poly_known_bits(w, coeffs, constant, |v| get_kb(*v));
             (kb, w)
         }
         Value::Op(Stmt::Transmute { src, dst_ty, .. }) => {
