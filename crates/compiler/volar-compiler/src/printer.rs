@@ -3,12 +3,16 @@
 use core::fmt::{self, Write};
 
 #[cfg(feature = "std")]
+use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "std")]
 use std::format;
 #[cfg(feature = "std")]
 use std::string::{String, ToString};
 #[cfg(feature = "std")]
 use std::vec::Vec;
 
+#[cfg(not(feature = "std"))]
+use alloc::collections::{BTreeMap, BTreeSet};
 #[cfg(not(feature = "std"))]
 use alloc::format;
 #[cfg(not(feature = "std"))]
@@ -17,6 +21,268 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use crate::ir::*;
+
+// ============================================================================
+// ASYNC ANALYSIS — compute which functions must be emitted as `async fn`
+// ============================================================================
+
+/// Printer-level context injected into writer structs when async emit is active.
+///
+/// This is a pure code-generation concern: the IR is always synchronous;
+/// this context drives the Rust printer to add `async` keywords and `.await`
+/// at oracle/action/rng call sites.
+pub struct RustCtx {
+    pub emit_async: bool,
+    /// Transitive set of function names that must be emitted as `async fn`.
+    /// Includes oracle/action/rng leaves plus every woven caller of one.
+    pub async_fns: BTreeSet<String>,
+    /// Leaf oracle/action/rng names — call sites in async mode get `.await`.
+    pub oracle_fn_names: BTreeSet<String>,
+}
+
+/// Collect direct callee names (by bare identifier) from an expression tree.
+fn collect_callee_names_expr(expr: &IrExpr, out: &mut BTreeSet<String>) {
+    match expr {
+        IrExpr::Call { func, args } => {
+            match func.as_ref() {
+                IrExpr::Var(n) => { out.insert(n.clone()); }
+                IrExpr::Path { segments, .. } if segments.len() == 1 => {
+                    out.insert(segments[0].clone());
+                }
+                _ => {}
+            }
+            collect_callee_names_expr(func, out);
+            for a in args { collect_callee_names_expr(a, out); }
+        }
+        IrExpr::MethodCall { receiver, args, .. } => {
+            collect_callee_names_expr(receiver, out);
+            for a in args { collect_callee_names_expr(a, out); }
+        }
+        IrExpr::Binary { left, right, .. }
+        | IrExpr::Assign { left, right }
+        | IrExpr::AssignOp { left, right, .. } => {
+            collect_callee_names_expr(left, out);
+            collect_callee_names_expr(right, out);
+        }
+        IrExpr::Unary { expr, .. }
+        | IrExpr::Return(Some(expr))
+        | IrExpr::Break(Some(expr))
+        | IrExpr::Cast { expr, .. }
+        | IrExpr::Try(expr)
+        | IrExpr::Field { base: expr, .. } => {
+            collect_callee_names_expr(expr, out);
+        }
+        IrExpr::Index { base, index } => {
+            collect_callee_names_expr(base, out);
+            collect_callee_names_expr(index, out);
+        }
+        IrExpr::Block(b) => collect_callee_names_block(b, out),
+        IrExpr::If { cond, then_branch, else_branch } => {
+            collect_callee_names_expr(cond, out);
+            collect_callee_names_block(then_branch, out);
+            if let Some(e) = else_branch { collect_callee_names_expr(e, out); }
+        }
+        IrExpr::BoundedLoop { start, end, body, .. } => {
+            collect_callee_names_expr(start, out);
+            collect_callee_names_expr(end, out);
+            collect_callee_names_block(body, out);
+        }
+        IrExpr::IterLoop { collection, body, .. } => {
+            collect_callee_names_expr(collection, out);
+            collect_callee_names_block(body, out);
+        }
+        IrExpr::WhileLoop { cond, body } => {
+            collect_callee_names_expr(cond, out);
+            collect_callee_names_block(body, out);
+        }
+        IrExpr::Closure { body, .. } => collect_callee_names_expr(body, out),
+        IrExpr::RawMap { receiver, body, .. } => {
+            collect_callee_names_expr(receiver, out);
+            collect_callee_names_expr(body, out);
+        }
+        IrExpr::RawZip { left, right, body, .. } => {
+            collect_callee_names_expr(left, out);
+            collect_callee_names_expr(right, out);
+            collect_callee_names_expr(body, out);
+        }
+        IrExpr::RawFold { receiver, init, body, .. } => {
+            collect_callee_names_expr(receiver, out);
+            collect_callee_names_expr(init, out);
+            collect_callee_names_expr(body, out);
+        }
+        IrExpr::StructExpr { fields, rest, .. } => {
+            for (_, e) in fields { collect_callee_names_expr(e, out); }
+            if let Some(r) = rest { collect_callee_names_expr(r, out); }
+        }
+        IrExpr::Tuple(es) | IrExpr::Array(es) | IrExpr::FixedArray(es) => {
+            for e in es { collect_callee_names_expr(e, out); }
+        }
+        IrExpr::Repeat { elem, len } => {
+            collect_callee_names_expr(elem, out);
+            collect_callee_names_expr(len, out);
+        }
+        IrExpr::Range { start, end, .. } => {
+            if let Some(e) = start { collect_callee_names_expr(e, out); }
+            if let Some(e) = end   { collect_callee_names_expr(e, out); }
+        }
+        IrExpr::Match { expr, arms } => {
+            collect_callee_names_expr(expr, out);
+            for arm in arms { collect_callee_names_expr(&arm.body, out); }
+        }
+        IrExpr::ArrayGenerate { body, .. } => collect_callee_names_expr(body, out),
+        _ => {}
+    }
+}
+
+fn collect_callee_names_block(block: &IrBlock, out: &mut BTreeSet<String>) {
+    for stmt in &block.stmts {
+        match stmt {
+            IrStmt::Let { init: Some(e), .. } => collect_callee_names_expr(e, out),
+            IrStmt::Semi(e) | IrStmt::Expr(e) => collect_callee_names_expr(e, out),
+            _ => {}
+        }
+    }
+    if let Some(e) = &block.expr { collect_callee_names_expr(e, out); }
+}
+
+fn collect_callee_names_cfg_block(block: &IrCfgBlock, out: &mut BTreeSet<String>) {
+    for stmt in &block.stmts {
+        match stmt {
+            IrStmt::Let { init: Some(e), .. } => collect_callee_names_expr(e, out),
+            IrStmt::Semi(e) | IrStmt::Expr(e) => collect_callee_names_expr(e, out),
+            _ => {}
+        }
+    }
+    match &block.terminator {
+        IrCfgTerminator::Return(Some(e)) => collect_callee_names_expr(e, out),
+        IrCfgTerminator::CondGoto { cond, then_, else_ } => {
+            collect_callee_names_expr(cond, out);
+            for a in &then_.args { collect_callee_names_expr(a, out); }
+            for a in &else_.args { collect_callee_names_expr(a, out); }
+        }
+        IrCfgTerminator::Goto(j) => {
+            for a in &j.args { collect_callee_names_expr(a, out); }
+        }
+        _ => {}
+    }
+}
+
+/// Compute the oracle/action/rng leaf set and the transitive async closure
+/// for a flat `IrModule<IrFunction>`.
+///
+/// Returns `(oracle_fn_names, async_fns)` where `async_fns` is a superset
+/// of `oracle_fn_names` that includes every woven caller.
+pub fn compute_async_fns(module: &IrModule<IrFunction>) -> (BTreeSet<String>, BTreeSet<String>) {
+    let mut oracle_fns = BTreeSet::new();
+    for func in &module.functions {
+        if matches!(func.external_kind, ExternalKind::Oracle | ExternalKind::Action | ExternalKind::Rng) {
+            oracle_fns.insert(func.name.clone());
+        }
+    }
+    for imp in &module.impls {
+        for item in &imp.items {
+            if let IrImplItem::Method(func) = item {
+                if matches!(func.external_kind, ExternalKind::Oracle | ExternalKind::Action | ExternalKind::Rng) {
+                    oracle_fns.insert(func.name.clone());
+                }
+            }
+        }
+    }
+
+    let mut async_fns = oracle_fns.clone();
+    let mut call_graph: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for func in &module.functions {
+        let mut callees = BTreeSet::new();
+        collect_callee_names_block(&func.body, &mut callees);
+        call_graph.insert(func.name.clone(), callees);
+    }
+    for imp in &module.impls {
+        for item in &imp.items {
+            if let IrImplItem::Method(func) = item {
+                let mut callees = BTreeSet::new();
+                collect_callee_names_block(&func.body, &mut callees);
+                call_graph.insert(func.name.clone(), callees);
+            }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for (name, callees) in &call_graph {
+            if !async_fns.contains(name) && callees.iter().any(|c| async_fns.contains(c)) {
+                async_fns.insert(name.clone());
+                changed = true;
+            }
+        }
+        if !changed { break; }
+    }
+    (oracle_fns, async_fns)
+}
+
+/// Compute the oracle/action/rng leaf set and the transitive async closure
+/// for a CFG module (`IrCfgModule`).
+pub fn compute_async_fns_cfg(module: &IrCfgModule) -> (BTreeSet<String>, BTreeSet<String>) {
+    let mut oracle_fns = BTreeSet::new();
+    for func in &module.functions {
+        let kind = match func {
+            IrAnyFunction::Flat(f) => f.external_kind,
+            IrAnyFunction::Cfg(f) => f.external_kind,
+        };
+        let name = match func {
+            IrAnyFunction::Flat(f) => f.name.clone(),
+            IrAnyFunction::Cfg(f) => f.name.clone(),
+        };
+        if matches!(kind, ExternalKind::Oracle | ExternalKind::Action | ExternalKind::Rng) {
+            oracle_fns.insert(name);
+        }
+    }
+    for imp in &module.impls {
+        for item in &imp.items {
+            if let IrImplItem::Method(func) = item {
+                if matches!(func.external_kind, ExternalKind::Oracle | ExternalKind::Action | ExternalKind::Rng) {
+                    oracle_fns.insert(func.name.clone());
+                }
+            }
+        }
+    }
+
+    let mut async_fns = oracle_fns.clone();
+    let mut call_graph: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for func in &module.functions {
+        let (name, callees) = match func {
+            IrAnyFunction::Flat(f) => {
+                let mut c = BTreeSet::new();
+                collect_callee_names_block(&f.body, &mut c);
+                (f.name.clone(), c)
+            }
+            IrAnyFunction::Cfg(f) => {
+                let mut c = BTreeSet::new();
+                for blk in &f.body.blocks { collect_callee_names_cfg_block(blk, &mut c); }
+                (f.name.clone(), c)
+            }
+        };
+        call_graph.insert(name, callees);
+    }
+    loop {
+        let mut changed = false;
+        for (name, callees) in &call_graph {
+            if !async_fns.contains(name) && callees.iter().any(|c| async_fns.contains(c)) {
+                async_fns.insert(name.clone());
+                changed = true;
+            }
+        }
+        if !changed { break; }
+    }
+    (oracle_fns, async_fns)
+}
+
+/// Returns `true` if the expression is a call to a function in `names`.
+fn expr_calls_fn_in(func: &IrExpr, names: &BTreeSet<String>) -> bool {
+    match func {
+        IrExpr::Var(n) => names.contains(n),
+        IrExpr::Path { segments, .. } if segments.len() == 1 => names.contains(&segments[0]),
+        _ => false,
+    }
+}
 
 // ============================================================================
 // TRAIT + DISPLAY ADAPTER
@@ -48,6 +314,9 @@ impl<T: RustBackend> fmt::Display for DisplayRust<T> {
 /// Renders an `IrModule` body (structs, traits, impls, functions) without preamble.
 pub struct ModuleWriter<'a> {
     pub module: &'a IrModule<IrFunction>,
+    /// When `true`, emit all eligible functions as `async fn` and add `.await`
+    /// at oracle/action/rng call sites.  Trait-impl methods are never made async.
+    pub emit_async: bool,
 }
 
 pub struct StructWriter<'a> {
@@ -64,12 +333,14 @@ pub struct TraitWriter<'a> {
 
 pub struct ImplWriter<'a> {
     pub i: &'a IrImpl,
+    pub ctx: Option<&'a RustCtx>,
 }
 
 pub struct FunctionWriter<'a> {
     pub f: &'a IrFunction,
     pub level: usize,
     pub is_trait_item: bool,
+    pub ctx: Option<&'a RustCtx>,
 }
 
 pub struct GenericsWriter<'a> {
@@ -91,15 +362,29 @@ pub struct TypeWriter<'a> {
 pub struct BlockWriter<'a> {
     pub block: &'a IrBlock,
     pub level: usize,
+    pub ctx: Option<&'a RustCtx>,
 }
 
 pub struct StmtWriter<'a> {
     pub stmt: &'a IrStmt,
     pub level: usize,
+    pub ctx: Option<&'a RustCtx>,
 }
 
 pub struct ExprWriter<'a> {
     pub expr: &'a IrExpr,
+    pub ctx: Option<&'a RustCtx>,
+}
+
+impl<'a> ExprWriter<'a> {
+    #[inline]
+    fn sub(&self, expr: &'a IrExpr) -> ExprWriter<'a> {
+        ExprWriter { expr, ctx: self.ctx }
+    }
+    #[inline]
+    fn block(&self, block: &'a IrBlock, level: usize) -> BlockWriter<'a> {
+        BlockWriter { block, level, ctx: self.ctx }
+    }
 }
 
 /// Writes an expression as part of an iterator chain (without final `.collect()`).
@@ -131,6 +416,14 @@ pub struct ReceiverWriter {
 
 impl<'a> RustBackend for ModuleWriter<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ctx_owned: Option<RustCtx> = if self.emit_async {
+            let (oracle_fns, async_fns) = compute_async_fns(self.module);
+            Some(RustCtx { emit_async: true, oracle_fn_names: oracle_fns, async_fns })
+        } else {
+            None
+        };
+        let ctx = ctx_owned.as_ref();
+
         for s in &self.module.structs {
             StructWriter { s }.fmt(f)?;
             writeln!(f)?;
@@ -144,7 +437,7 @@ impl<'a> RustBackend for ModuleWriter<'a> {
             writeln!(f)?;
         }
         for i in &self.module.impls {
-            ImplWriter { i }.fmt(f)?;
+            ImplWriter { i, ctx }.fmt(f)?;
             writeln!(f)?;
         }
         for func in &self.module.functions {
@@ -152,6 +445,7 @@ impl<'a> RustBackend for ModuleWriter<'a> {
                 f: func,
                 level: 0,
                 is_trait_item: false,
+                ctx,
             }
             .fmt(f)?;
             writeln!(f)?;
@@ -348,12 +642,15 @@ impl<'a> RustBackend for ImplWriter<'a> {
         }
         .fmt(f)?;
         writeln!(f, " {{")?;
+        let is_trait_item = self.i.trait_.is_some();
         for item in &self.i.items {
             match item {
                 IrImplItem::Method(func) => FunctionWriter {
                     f: func,
                     level: 1,
-                    is_trait_item: self.i.trait_.is_some(),
+                    is_trait_item,
+                    // Trait-impl methods can never be made async; pass ctx only for inherent impls.
+                    ctx: if is_trait_item { None } else { self.ctx },
                 }
                 .fmt(f)?,
                 IrImplItem::AssociatedType { name, ty } => {
@@ -375,8 +672,13 @@ impl<'a> RustBackend for FunctionWriter<'a> {
         if self.f.external_kind == ExternalKind::Action {
             writeln!(f, "{}#[volar_action]", indent)?;
         }
+        // Decide whether to emit `async fn`.  Trait-impl methods are always
+        // excluded (ctx is already None for those; guard is defensive).
+        let is_async = !self.is_trait_item
+            && self.ctx.map_or(false, |c| c.emit_async && c.async_fns.contains(&self.f.name));
+        let async_kw = if is_async { "async " } else { "" };
         if !self.is_trait_item {
-            write!(f, "{}pub fn {}", indent, self.f.name)?;
+            write!(f, "{}pub {}fn {}", indent, async_kw, self.f.name)?;
         } else {
             write!(f, "{}fn {}", indent, self.f.name)?;
         }
@@ -411,6 +713,7 @@ impl<'a> RustBackend for FunctionWriter<'a> {
         BlockWriter {
             block: &self.f.body,
             level: self.level,
+            ctx: self.ctx,
         }
         .fmt(f)?;
         writeln!(f)?;
@@ -630,12 +933,13 @@ impl<'a> RustBackend for BlockWriter<'a> {
             StmtWriter {
                 stmt,
                 level: self.level + 1,
+                ctx: self.ctx,
             }
             .fmt(f)?;
         }
         if let Some(e) = &self.block.expr {
             write!(f, "{}    ", indent)?;
-            ExprWriter { expr: e }.fmt(f)?;
+            ExprWriter { expr: e, ctx: self.ctx }.fmt(f)?;
             writeln!(f)?;
         }
         write!(f, "{}}}", indent)?;
@@ -657,16 +961,16 @@ impl<'a> RustBackend for StmtWriter<'a> {
                 }
                 if let Some(i) = init {
                     write!(f, " = ")?;
-                    ExprWriter { expr: i }.fmt(f)?;
+                    ExprWriter { expr: i, ctx: self.ctx }.fmt(f)?;
                 }
                 writeln!(f, ";")?;
             }
             IrStmt::Semi(e) => {
-                ExprWriter { expr: e }.fmt(f)?;
+                ExprWriter { expr: e, ctx: self.ctx }.fmt(f)?;
                 writeln!(f, ";")?;
             }
             IrStmt::Expr(e) => {
-                ExprWriter { expr: e }.fmt(f)?;
+                ExprWriter { expr: e, ctx: self.ctx }.fmt(f)?;
                 writeln!(f)?;
             }
         }
@@ -682,7 +986,7 @@ impl<'a> RustBackend for IterChainSourceWriter<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.source {
             IterChainSource::Method { collection, method } => {
-                ExprWriter { expr: collection }.fmt(f)?;
+                ExprWriter { expr: collection, ctx: None }.fmt(f)?;
                 let mname = match method {
                     IterMethod::Iter => "iter",
                     IterMethod::IntoIter => "into_iter",
@@ -698,9 +1002,9 @@ impl<'a> RustBackend for IterChainSourceWriter<'a> {
                 inclusive,
             } => {
                 write!(f, "(")?;
-                ExprWriter { expr: start }.fmt(f)?;
+                ExprWriter { expr: start, ctx: None }.fmt(f)?;
                 write!(f, "{}", if *inclusive { "..=" } else { ".." })?;
-                ExprWriter { expr: end }.fmt(f)?;
+                ExprWriter { expr: end, ctx: None }.fmt(f)?;
                 write!(f, ")")?;
             }
             IterChainSource::Zip { left, right } => {
@@ -727,28 +1031,28 @@ impl<'a> IterChainWriter<'a> {
                     write!(f, ".map(|")?;
                     PatternWriter { pat: var }.fmt(f)?;
                     write!(f, "| ")?;
-                    ExprWriter { expr: body }.fmt(f)?;
+                    ExprWriter { expr: body, ctx: None }.fmt(f)?;
                     write!(f, ")")?;
                 }
                 IterStep::Filter { var, body } => {
                     write!(f, ".filter(|")?;
                     PatternWriter { pat: var }.fmt(f)?;
                     write!(f, "| ")?;
-                    ExprWriter { expr: body }.fmt(f)?;
+                    ExprWriter { expr: body, ctx: None }.fmt(f)?;
                     write!(f, ")")?;
                 }
                 IterStep::FilterMap { var, body } => {
                     write!(f, ".filter_map(|")?;
                     PatternWriter { pat: var }.fmt(f)?;
                     write!(f, "| ")?;
-                    ExprWriter { expr: body }.fmt(f)?;
+                    ExprWriter { expr: body, ctx: None }.fmt(f)?;
                     write!(f, ")")?;
                 }
                 IterStep::FlatMap { var, body } => {
                     write!(f, ".flat_map(|")?;
                     PatternWriter { pat: var }.fmt(f)?;
                     write!(f, "| ")?;
-                    ExprWriter { expr: body }.fmt(f)?;
+                    ExprWriter { expr: body, ctx: None }.fmt(f)?;
                     write!(f, ")")?;
                 }
                 IterStep::Enumerate => {
@@ -756,12 +1060,12 @@ impl<'a> IterChainWriter<'a> {
                 }
                 IterStep::Take { count } => {
                     write!(f, ".take(")?;
-                    ExprWriter { expr: count }.fmt(f)?;
+                    ExprWriter { expr: count, ctx: None }.fmt(f)?;
                     write!(f, ")")?;
                 }
                 IterStep::Skip { count } => {
                     write!(f, ".skip(")?;
-                    ExprWriter { expr: count }.fmt(f)?;
+                    ExprWriter { expr: count, ctx: None }.fmt(f)?;
                     write!(f, ")")?;
                 }
                 IterStep::Chain { other } => {
@@ -794,13 +1098,13 @@ impl<'a> RustBackend for IterChainWriter<'a> {
                 body,
             } => {
                 write!(f, ".fold(")?;
-                ExprWriter { expr: init }.fmt(f)?;
+                ExprWriter { expr: init, ctx: None }.fmt(f)?;
                 write!(f, ", |")?;
                 PatternWriter { pat: acc_var }.fmt(f)?;
                 write!(f, ", ")?;
                 PatternWriter { pat: elem_var }.fmt(f)?;
                 write!(f, "| ")?;
-                ExprWriter { expr: body }.fmt(f)?;
+                ExprWriter { expr: body, ctx: None }.fmt(f)?;
                 write!(f, ")")?;
             }
             IterTerminal::Lazy => {
@@ -838,7 +1142,7 @@ impl<'a> RustBackend for ExprChainWriter<'a> {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    ExprWriter { expr: arg }.fmt(f)?;
+                    ExprWriter { expr: arg, ctx: None }.fmt(f)?;
                 }
                 write!(f, ")")?;
             }
@@ -847,11 +1151,11 @@ impl<'a> RustBackend for ExprChainWriter<'a> {
             }
             IrExpr::RawMap { .. } | IrExpr::RawZip { .. } | IrExpr::RawFold { .. } => {
                 // In chain context, emit the raw op then .into_iter()
-                ExprWriter { expr: self.expr }.fmt(f)?;
+                ExprWriter { expr: self.expr, ctx: None }.fmt(f)?;
                 write!(f, ".into_iter()")?;
             }
             _ => {
-                ExprWriter { expr: self.expr }.fmt(f)?;
+                ExprWriter { expr: self.expr, ctx: None }.fmt(f)?;
                 write!(f, ".into_iter()")?;
             }
         }
@@ -873,9 +1177,9 @@ impl<'a> RustBackend for ExprWriter<'a> {
             }
             IrExpr::Binary { op, left, right } => {
                 write!(f, "(")?;
-                ExprWriter { expr: left }.fmt(f)?;
+                self.sub(left).fmt(f)?;
                 write!(f, " {} ", bin_op_str(*op))?;
-                ExprWriter { expr: right }.fmt(f)?;
+                self.sub(right).fmt(f)?;
                 write!(f, ")")?;
             }
             IrExpr::MethodCall {
@@ -885,7 +1189,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 type_args,
             } => {
                 let name = method_name(method);
-                ExprWriter { expr: receiver }.fmt(f)?;
+                self.sub(receiver).fmt(f)?;
                 write!(f, ".{}", name)?;
                 if !type_args.is_empty() {
                     write!(f, "::<")?;
@@ -902,20 +1206,30 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    ExprWriter { expr: arg }.fmt(f)?;
+                    self.sub(arg).fmt(f)?;
                 }
                 write!(f, ")")?;
             }
             IrExpr::Call { func, args } => {
-                ExprWriter { expr: func }.fmt(f)?;
+                // In async mode, oracle/action/rng calls get `.await`.
+                let is_oracle = self.ctx.map_or(false, |c| {
+                    c.emit_async && expr_calls_fn_in(func, &c.oracle_fn_names)
+                });
+                if is_oracle {
+                    write!(f, "(")?;
+                }
+                self.sub(func).fmt(f)?;
                 write!(f, "(")?;
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    ExprWriter { expr: arg }.fmt(f)?;
+                    self.sub(arg).fmt(f)?;
                 }
                 write!(f, ")")?;
+                if is_oracle {
+                    write!(f, ").await")?;
+                }
             }
             IrExpr::Field { base, field } => {
                 debug_assert!(
@@ -924,31 +1238,27 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     "Field name is not a valid ident or index: {:?}",
                     field
                 );
-                ExprWriter { expr: base }.fmt(f)?;
+                self.sub(base).fmt(f)?;
                 write!(f, ".{}", field)?;
             }
             IrExpr::Index { base, index } => {
-                ExprWriter { expr: base }.fmt(f)?;
+                self.sub(base).fmt(f)?;
                 write!(f, "[")?;
-                ExprWriter { expr: index }.fmt(f)?;
+                self.sub(index).fmt(f)?;
                 write!(f, "]")?;
             }
-            IrExpr::Block(b) => BlockWriter { block: b, level: 0 }.fmt(f)?,
+            IrExpr::Block(b) => self.block(b, 0).fmt(f)?,
             IrExpr::If {
                 cond,
                 then_branch,
                 else_branch,
             } => {
                 write!(f, "if ")?;
-                ExprWriter { expr: cond }.fmt(f)?;
-                BlockWriter {
-                    block: then_branch,
-                    level: 0,
-                }
-                .fmt(f)?;
+                self.sub(cond).fmt(f)?;
+                self.block(then_branch, 0).fmt(f)?;
                 if let Some(eb) = else_branch {
                     write!(f, " else ")?;
-                    ExprWriter { expr: eb }.fmt(f)?;
+                    self.sub(eb).fmt(f)?;
                 }
             }
             IrExpr::BoundedLoop {
@@ -964,14 +1274,10 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     var
                 );
                 write!(f, "for {} in ", var)?;
-                ExprWriter { expr: start }.fmt(f)?;
+                self.sub(start).fmt(f)?;
                 write!(f, "{} ", if *inclusive { "..=" } else { ".." })?;
-                ExprWriter { expr: end }.fmt(f)?;
-                BlockWriter {
-                    block: body,
-                    level: 0,
-                }
-                .fmt(f)?;
+                self.sub(end).fmt(f)?;
+                self.block(body, 0).fmt(f)?;
             }
             IrExpr::IterLoop {
                 pattern,
@@ -981,17 +1287,13 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 write!(f, "for ")?;
                 PatternWriter { pat: pattern }.fmt(f)?;
                 write!(f, " in ")?;
-                ExprWriter { expr: collection }.fmt(f)?;
-                BlockWriter {
-                    block: body,
-                    level: 0,
-                }
-                .fmt(f)?;
+                self.sub(collection).fmt(f)?;
+                self.block(body, 0).fmt(f)?;
             }
             IrExpr::WhileLoop { cond, body } => {
                 write!(f, "while ")?;
-                ExprWriter { expr: cond }.fmt(f)?;
-                BlockWriter { block: body, level: 0 }.fmt(f)?;
+                self.sub(cond).fmt(f)?;
+                self.block(body, 0).fmt(f)?;
             }
             IrExpr::IterPipeline(chain) => {
                 IterChainWriter { chain }.fmt(f)?;
@@ -1001,11 +1303,11 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 elem_var,
                 body,
             } => {
-                ExprWriter { expr: receiver }.fmt(f)?;
+                self.sub(receiver).fmt(f)?;
                 write!(f, ".map(|")?;
                 PatternWriter { pat: elem_var }.fmt(f)?;
                 write!(f, "| ")?;
-                ExprWriter { expr: body }.fmt(f)?;
+                self.sub(body).fmt(f)?;
                 write!(f, ")")?;
             }
             IrExpr::RawZip {
@@ -1015,15 +1317,15 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 right_var,
                 body,
             } => {
-                ExprWriter { expr: left }.fmt(f)?;
+                self.sub(left).fmt(f)?;
                 write!(f, ".zip(")?;
-                ExprWriter { expr: right }.fmt(f)?;
+                self.sub(right).fmt(f)?;
                 write!(f, ", |")?;
                 PatternWriter { pat: left_var }.fmt(f)?;
                 write!(f, ", ")?;
                 PatternWriter { pat: right_var }.fmt(f)?;
                 write!(f, "| ")?;
-                ExprWriter { expr: body }.fmt(f)?;
+                self.sub(body).fmt(f)?;
                 write!(f, ")")?;
             }
             IrExpr::RawFold {
@@ -1033,15 +1335,15 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 elem_var,
                 body,
             } => {
-                ExprWriter { expr: receiver }.fmt(f)?;
+                self.sub(receiver).fmt(f)?;
                 write!(f, ".fold(")?;
-                ExprWriter { expr: init }.fmt(f)?;
+                self.sub(init).fmt(f)?;
                 write!(f, ", |")?;
                 PatternWriter { pat: acc_var }.fmt(f)?;
                 write!(f, ", ")?;
                 PatternWriter { pat: elem_var }.fmt(f)?;
                 write!(f, "| ")?;
-                ExprWriter { expr: body }.fmt(f)?;
+                self.sub(body).fmt(f)?;
                 write!(f, ")")?;
             }
             IrExpr::Path {
@@ -1095,7 +1397,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     PatternWriter { pat: &p.pattern }.fmt(f)?;
                 }
                 write!(f, "| ")?;
-                ExprWriter { expr: body }.fmt(f)?;
+                self.sub(body).fmt(f)?;
             }
             IrExpr::Range {
                 start,
@@ -1103,17 +1405,17 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 inclusive,
             } => {
                 if let Some(s) = start {
-                    ExprWriter { expr: s }.fmt(f)?;
+                    self.sub(s).fmt(f)?;
                 }
                 write!(f, "{}", if *inclusive { "..=" } else { ".." })?;
                 if let Some(e) = end {
-                    ExprWriter { expr: e }.fmt(f)?;
+                    self.sub(e).fmt(f)?;
                 }
             }
             IrExpr::Assign { left, right } => {
-                ExprWriter { expr: left }.fmt(f)?;
+                self.sub(left).fmt(f)?;
                 write!(f, " = ")?;
-                ExprWriter { expr: right }.fmt(f)?;
+                self.sub(right).fmt(f)?;
             }
             IrExpr::StructExpr { kind, fields, .. } => {
                 write!(f, "{} {{ ", kind)?;
@@ -1122,7 +1424,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                         write!(f, ", ")?;
                     }
                     write!(f, "{}: ", name)?;
-                    ExprWriter { expr: val }.fmt(f)?;
+                    self.sub(val).fmt(f)?;
                 }
                 write!(f, " }}")?;
             }
@@ -1132,7 +1434,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    ExprWriter { expr: e }.fmt(f)?;
+                    self.sub(e).fmt(f)?;
                 }
                 // Trailing comma for 1-element tuples: (x,) not (x)
                 if elems.len() == 1 {
@@ -1146,7 +1448,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    ExprWriter { expr: e }.fmt(f)?;
+                    self.sub(e).fmt(f)?;
                 }
                 write!(f, "]")?;
             }
@@ -1156,20 +1458,20 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    ExprWriter { expr: e }.fmt(f)?;
+                    self.sub(e).fmt(f)?;
                 }
                 write!(f, "]")?;
             }
             IrExpr::Repeat { elem, len } => {
                 write!(f, "[")?;
-                ExprWriter { expr: elem }.fmt(f)?;
+                self.sub(elem).fmt(f)?;
                 write!(f, "; ")?;
-                ExprWriter { expr: len }.fmt(f)?;
+                self.sub(len).fmt(f)?;
                 write!(f, "]")?;
             }
             IrExpr::Cast { expr, ty } => {
                 write!(f, "(")?;
-                ExprWriter { expr }.fmt(f)?;
+                self.sub(expr).fmt(f)?;
                 write!(f, " as ")?;
                 TypeWriter { ty }.fmt(f)?;
                 write!(f, ")")?;
@@ -1178,24 +1480,24 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 write!(f, "return")?;
                 if let Some(e) = e {
                     write!(f, " ")?;
-                    ExprWriter { expr: e }.fmt(f)?;
+                    self.sub(e).fmt(f)?;
                 }
             }
             IrExpr::Break(e) => {
                 write!(f, "break")?;
                 if let Some(e) = e {
                     write!(f, " ")?;
-                    ExprWriter { expr: e }.fmt(f)?;
+                    self.sub(e).fmt(f)?;
                 }
             }
             IrExpr::Continue => write!(f, "continue")?,
             IrExpr::AssignOp { op, left, right } => {
-                ExprWriter { expr: left }.fmt(f)?;
+                self.sub(left).fmt(f)?;
                 write!(f, " {}= ", bin_op_str(*op))?;
-                ExprWriter { expr: right }.fmt(f)?;
+                self.sub(right).fmt(f)?;
             }
             IrExpr::Try(e) => {
-                ExprWriter { expr: e }.fmt(f)?;
+                self.sub(e).fmt(f)?;
                 write!(f, "?")?;
             }
             IrExpr::TypenumUsize { ty } => {
@@ -1275,40 +1577,40 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 let len_ty = array_length_as_static_type(len);
                 TypeWriter { ty: &len_ty }.fmt(f)?;
                 write!(f, ">::from_fn(|{}| ", index_var)?;
-                ExprWriter { expr: body }.fmt(f)?;
+                self.sub(body).fmt(f)?;
                 write!(f, ")")?;
             }
             IrExpr::Unary { op, expr } => match op {
                 SpecUnaryOp::Neg => {
                     write!(f, "-")?;
-                    ExprWriter { expr }.fmt(f)?;
+                    self.sub(expr).fmt(f)?;
                 }
                 SpecUnaryOp::Not => {
                     write!(f, "!")?;
-                    ExprWriter { expr }.fmt(f)?;
+                    self.sub(expr).fmt(f)?;
                 }
                 SpecUnaryOp::Deref => {
                     write!(f, "*")?;
-                    ExprWriter { expr }.fmt(f)?;
+                    self.sub(expr).fmt(f)?;
                 }
                 SpecUnaryOp::Ref => {
                     write!(f, "&")?;
-                    ExprWriter { expr }.fmt(f)?;
+                    self.sub(expr).fmt(f)?;
                 }
                 SpecUnaryOp::RefMut => {
                     write!(f, "&mut ")?;
-                    ExprWriter { expr }.fmt(f)?;
+                    self.sub(expr).fmt(f)?;
                 }
             },
             IrExpr::Match { expr, arms } => {
                 write!(f, "match ")?;
-                ExprWriter { expr }.fmt(f)?;
+                self.sub(expr).fmt(f)?;
                 writeln!(f, " {{")?;
                 for arm in arms {
                     write!(f, "    ")?;
                     PatternWriter { pat: &arm.pattern }.fmt(f)?;
                     write!(f, " => ")?;
-                    ExprWriter { expr: &arm.body }.fmt(f)?;
+                    self.sub(&arm.body).fmt(f)?;
                     writeln!(f, ",")?;
                 }
                 write!(f, "}}")?;
@@ -1506,7 +1808,20 @@ pub fn print_module_with_remotes(
 ) -> String {
     let mut out = String::new();
     let _ = write!(out, "{}", DisplayRust(DynPreambleWriter { deps, remotes }));
-    let _ = write!(out, "{}", DisplayRust(ModuleWriter { module }));
+    let _ = write!(out, "{}", DisplayRust(ModuleWriter { module, emit_async: false }));
+    out
+}
+
+/// Like [`print_module_with_remotes`] but emits every eligible function as
+/// `async fn` and adds `.await` at oracle/action/rng call sites.
+pub fn print_module_async(
+    module: &IrModule<IrFunction>,
+    deps: &[crate::manifest::TypeManifest],
+    remotes: &[crate::linkage::RemoteSpecRef<'_>],
+) -> String {
+    let mut out = String::new();
+    let _ = write!(out, "{}", DisplayRust(DynPreambleWriter { deps, remotes }));
+    let _ = write!(out, "{}", DisplayRust(ModuleWriter { module, emit_async: true }));
     out
 }
 
@@ -1617,16 +1932,28 @@ impl<'a> RustBackend for DynPreambleWriter<'a> {
 /// Renders an `IrCfgModule` body without preamble.
 pub struct CfgModuleWriter<'a> {
     pub module: &'a IrCfgModule,
+    /// When `true`, emit all eligible functions as `async fn` and add `.await`
+    /// at oracle/action/rng call sites.
+    pub emit_async: bool,
 }
 
 /// Renders a single `IrCfgFunction` as a Rust `pub fn` with a state-machine loop body.
 pub struct CfgFunctionWriter<'a> {
     pub func: &'a IrCfgFunction,
     pub level: usize,
+    pub ctx: Option<&'a RustCtx>,
 }
 
 impl<'a> RustBackend for CfgModuleWriter<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ctx_owned: Option<RustCtx> = if self.emit_async {
+            let (oracle_fns, async_fns) = compute_async_fns_cfg(self.module);
+            Some(RustCtx { emit_async: true, oracle_fn_names: oracle_fns, async_fns })
+        } else {
+            None
+        };
+        let ctx = ctx_owned.as_ref();
+
         for s in &self.module.structs {
             StructWriter { s }.fmt(f)?;
             writeln!(f)?;
@@ -1640,7 +1967,7 @@ impl<'a> RustBackend for CfgModuleWriter<'a> {
             writeln!(f)?;
         }
         for i in &self.module.impls {
-            ImplWriter { i }.fmt(f)?;
+            ImplWriter { i, ctx }.fmt(f)?;
             writeln!(f)?;
         }
         for func in &self.module.functions {
@@ -1651,11 +1978,11 @@ impl<'a> RustBackend for CfgModuleWriter<'a> {
                     if func.external_kind == ExternalKind::TypeStub {
                         continue;
                     }
-                    FunctionWriter { f: func, level: 0, is_trait_item: false }.fmt(f)?;
+                    FunctionWriter { f: func, level: 0, is_trait_item: false, ctx }.fmt(f)?;
                     writeln!(f)?;
                 }
                 IrAnyFunction::Cfg(func) => {
-                    CfgFunctionWriter { func, level: 0 }.fmt(f)?;
+                    CfgFunctionWriter { func, level: 0, ctx }.fmt(f)?;
                     writeln!(f)?;
                 }
             }
@@ -1671,7 +1998,9 @@ impl<'a> RustBackend for CfgFunctionWriter<'a> {
         let blocks = &func.body.blocks;
 
         // ── Function signature ────────────────────────────────────────────────
-        write!(f, "{}pub fn {}", indent, func.name)?;
+        let is_async = self.ctx.map_or(false, |c| c.emit_async && c.async_fns.contains(&func.name));
+        let async_kw = if is_async { "async " } else { "" };
+        write!(f, "{}pub {}fn {}", indent, async_kw, func.name)?;
         GenericsWriter {
             generics: &func.generics,
         }
@@ -1709,6 +2038,7 @@ impl<'a> RustBackend for CfgFunctionWriter<'a> {
                 StmtWriter {
                     stmt,
                     level: self.level + 1,
+                    ctx: self.ctx,
                 }
                 .fmt(f)?;
             }
@@ -1718,11 +2048,11 @@ impl<'a> RustBackend for CfgFunctionWriter<'a> {
                 IrCfgTerminator::Return(None) => {}
                 IrCfgTerminator::Return(Some(expr)) => {
                     write!(f, "{}    ", indent)?;
-                    ExprWriter { expr }.fmt(f)?;
+                    ExprWriter { expr, ctx: self.ctx }.fmt(f)?;
                     writeln!(f)?;
                 }
                 _ => {
-                    write_cfg_terminator(f, &blk.terminator, &i1, &i2)?;
+                    write_cfg_terminator(f, &blk.terminator, &i1, &i2, self.ctx)?;
                 }
             }
             writeln!(f, "{}}}", indent)?;
@@ -1730,7 +2060,7 @@ impl<'a> RustBackend for CfgFunctionWriter<'a> {
         }
 
         // ── State-machine loop ────────────────────────────────────────────────
-        write_state_machine(f, func, self.level + 1)?;
+        write_state_machine(f, func, self.level + 1, self.ctx)?;
         writeln!(f, "{}}}", indent)?;
         Ok(())
     }
@@ -1759,6 +2089,7 @@ fn write_state_machine(
     f: &mut fmt::Formatter<'_>,
     func: &IrCfgFunction,
     base_level: usize,
+    ctx: Option<&RustCtx>,
 ) -> fmt::Result {
     let blocks = &func.body.blocks;
     // base_level: nesting level of the function body content (function params are at base_level-1)
@@ -1804,12 +2135,13 @@ fn write_state_machine(
             StmtWriter {
                 stmt,
                 level: base_level + 2,
+                ctx,
             }
             .fmt(f)?;
         }
 
         // Terminator.
-        write_cfg_terminator(f, &blk.terminator, &l2, &l3)?;
+        write_cfg_terminator(f, &blk.terminator, &l2, &l3, ctx)?;
 
         writeln!(f, "{}}}", l1)?; // end match arm
     }
@@ -1825,6 +2157,7 @@ fn write_cfg_terminator(
     term: &IrCfgTerminator,
     indent: &str,
     inner_indent: &str,
+    ctx: Option<&RustCtx>,
 ) -> fmt::Result {
     match term {
         IrCfgTerminator::Return(None) => {
@@ -1832,20 +2165,20 @@ fn write_cfg_terminator(
         }
         IrCfgTerminator::Return(Some(expr)) => {
             write!(f, "{}return ", indent)?;
-            ExprWriter { expr }.fmt(f)?;
+            ExprWriter { expr, ctx }.fmt(f)?;
             writeln!(f, ";")?;
         }
         IrCfgTerminator::Goto(jump) => {
-            write_jump_setup(f, jump, indent)?;
+            write_jump_setup(f, jump, indent, ctx)?;
             writeln!(f, "{}continue;", indent)?;
         }
         IrCfgTerminator::CondGoto { cond, then_, else_ } => {
             write!(f, "{}if ", indent)?;
-            ExprWriter { expr: cond }.fmt(f)?;
+            ExprWriter { expr: cond, ctx }.fmt(f)?;
             writeln!(f, " {{")?;
-            write_jump_setup(f, then_, inner_indent)?;
+            write_jump_setup(f, then_, inner_indent, ctx)?;
             writeln!(f, "{}}} else {{", indent)?;
-            write_jump_setup(f, else_, inner_indent)?;
+            write_jump_setup(f, else_, inner_indent, ctx)?;
             writeln!(f, "{}}}", indent)?;
             writeln!(f, "{}continue;", indent)?;
         }
@@ -1855,10 +2188,10 @@ fn write_cfg_terminator(
 
 /// Emits the assignments that load a jump's args into the target block's Option slots,
 /// then sets `__state`.
-fn write_jump_setup(f: &mut fmt::Formatter<'_>, jump: &IrCfgJump, indent: &str) -> fmt::Result {
+fn write_jump_setup(f: &mut fmt::Formatter<'_>, jump: &IrCfgJump, indent: &str, ctx: Option<&RustCtx>) -> fmt::Result {
     for (pidx, arg) in jump.args.iter().enumerate() {
         write!(f, "{}__b{}_p{} = Some(", indent, jump.target, pidx)?;
-        ExprWriter { expr: arg }.fmt(f)?;
+        ExprWriter { expr: arg, ctx }.fmt(f)?;
         writeln!(f, ");")?;
     }
     writeln!(f, "{}__state = {};", indent, jump.target)?;
@@ -1895,7 +2228,7 @@ mod tests {
     }
 
     fn render(func: &IrCfgFunction) -> String {
-        format!("{}", DisplayRust(CfgFunctionWriter { func, level: 0 }))
+        format!("{}", DisplayRust(CfgFunctionWriter { func, level: 0, ctx: None }))
     }
 
     // ── Single-block fast path ────────────────────────────────────────────────
@@ -2172,7 +2505,7 @@ mod tests {
         assert_eq!(e.variants[0].name, "Red");
         assert!(matches!(e.variants[0].fields, crate::ir::IrEnumVariantData::Unit));
 
-        let out = format!("{}", DisplayRust(ModuleWriter { module: &module }));
+        let out = format!("{}", DisplayRust(ModuleWriter { module: &module, emit_async: false }));
         assert!(out.contains("pub enum Color"), "missing enum decl: {}", out);
         assert!(out.contains("Red,"), "missing Red variant: {}", out);
         assert!(out.contains("Green,"), "missing Green variant: {}", out);
@@ -2194,7 +2527,7 @@ mod tests {
         assert_eq!(e.variants[0].name, "Lit");
         assert!(matches!(&e.variants[0].fields, crate::ir::IrEnumVariantData::Tuple(tys) if tys.len() == 1));
 
-        let out = format!("{}", DisplayRust(ModuleWriter { module: &module }));
+        let out = format!("{}", DisplayRust(ModuleWriter { module: &module, emit_async: false }));
         assert!(out.contains("Lit(u32)"), "missing Lit(u32): {}", out);
         assert!(out.contains("Add(u32, u32)"), "missing Add(u32, u32): {}", out);
     }
@@ -2215,7 +2548,7 @@ mod tests {
         assert_eq!(e.variants[1].name, "Move");
         assert!(matches!(&e.variants[1].fields, crate::ir::IrEnumVariantData::Struct(fields) if fields.len() == 2));
 
-        let out = format!("{}", DisplayRust(ModuleWriter { module: &module }));
+        let out = format!("{}", DisplayRust(ModuleWriter { module: &module, emit_async: false }));
         assert!(out.contains("Quit,"), "missing Quit: {}", out);
         assert!(out.contains("Move {"), "missing Move struct variant: {}", out);
         assert!(out.contains("x: i32"), "missing x field: {}", out);
@@ -2236,7 +2569,7 @@ mod tests {
         assert_eq!(e.generics.len(), 1);
         assert_eq!(e.generics[0].name, "T");
 
-        let out = format!("{}", DisplayRust(ModuleWriter { module: &module }));
+        let out = format!("{}", DisplayRust(ModuleWriter { module: &module, emit_async: false }));
         assert!(out.contains("pub enum Option<T>"), "missing generic enum: {}", out);
         assert!(out.contains("None,"), "missing None: {}", out);
         assert!(out.contains("Some(T)"), "missing Some(T): {}", out);
@@ -2361,7 +2694,7 @@ mod tests {
         assert_eq!(module.functions.len(), 4, "expected 4 functions");
 
         // Verify the round-trip prints without error
-        let out = format!("{}", DisplayRust(ModuleWriter { module: &module }));
+        let out = format!("{}", DisplayRust(ModuleWriter { module: &module, emit_async: false }));
         assert!(out.contains("struct OramEntry"), "missing OramEntry struct: {}", out);
         assert!(out.contains("struct Bucket"), "missing Bucket struct: {}", out);
         assert!(out.contains("enum ServerRequest"), "missing ServerRequest enum: {}", out);

@@ -161,7 +161,7 @@ impl<'a> RustBackend for ManifestModuleWriter<'a> {
             writeln!(f)?;
         }
         for imp in &self.module.impls {
-            ImplWriter { i: imp }.fmt(f)?;
+            ImplWriter { i: imp, ctx: None }.fmt(f)?;
             writeln!(f)?;
         }
         for func in &self.module.functions {

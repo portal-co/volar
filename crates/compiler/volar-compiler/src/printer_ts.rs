@@ -24,7 +24,7 @@
 use core::fmt::{self, Write};
 
 #[cfg(feature = "std")]
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "std")]
 use std::format;
 #[cfg(feature = "std")]
@@ -33,7 +33,7 @@ use std::string::{String, ToString};
 use std::vec::Vec;
 
 #[cfg(not(feature = "std"))]
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 #[cfg(not(feature = "std"))]
 use alloc::format;
 #[cfg(not(feature = "std"))]
@@ -43,6 +43,7 @@ use alloc::vec::Vec;
 
 use crate::deshadow::deshadow_block;
 use crate::ir::*;
+use crate::printer::{compute_async_fns, compute_async_fns_cfg};
 
 // ============================================================================
 // WITNESS ANALYSIS — collect runtime witnesses needed per function
@@ -883,12 +884,81 @@ pub fn print_module_ts_with_imports(
         enum_names: &enum_names,
         var_types: core::cell::RefCell::new(Vec::new()),
         method_t_fields: method_t_fields_map,
+        emit_async: false,
+        emit_generator: false,
+        async_fns: BTreeSet::new(),
+        oracle_fn_names: BTreeSet::new(),
     };
     let local_names: std::collections::HashSet<String> = module.structs.iter()
         .map(|s| s.kind.to_string())
         .collect();
     let mut out = String::new();
     // ESM imports for remote specs
+    let _ = write!(out, "{}", TsImportsWriter { remotes });
+    let _ = write!(out, "{}", TsFmt(TsPreambleWriter { local_names: &local_names, filter_fns: None }, &cx));
+    let _ = write!(out, "{}", TsFmt(TsModuleWriter { module: &module, filter_fns: None, filter_methods: None }, &cx));
+    out
+}
+
+/// Like [`print_module_ts_with_imports`] but emits every eligible function as
+/// `async function` and inserts `await` at oracle/action/rng call sites.
+pub fn print_module_ts_async(
+    module: &IrModule<IrFunction>,
+    imports: &[crate::linkage::RemoteSpecRef<'_>],
+) -> String {
+    print_module_ts_with_emit_flags(module, imports, true, false)
+}
+
+/// Like [`print_module_ts_with_imports`] but emits every eligible function as
+/// `function*` and inserts `yield*` at oracle/action/rng call sites.
+pub fn print_module_ts_generator(
+    module: &IrModule<IrFunction>,
+    imports: &[crate::linkage::RemoteSpecRef<'_>],
+) -> String {
+    print_module_ts_with_emit_flags(module, imports, false, true)
+}
+
+fn print_module_ts_with_emit_flags(
+    module: &IrModule<IrFunction>,
+    remotes: &[crate::linkage::RemoteSpecRef<'_>],
+    emit_async: bool,
+    emit_generator: bool,
+) -> String {
+    let mut module = module.clone();
+    deshadow_module(&mut module);
+
+    let witness_map = build_module_witness_map(&module);
+    let erased = collect_erased_type_params(&module);
+    let tuple_structs: std::collections::HashSet<Vec<String>> = module.structs.iter()
+        .filter(|s| s.is_tuple)
+        .map(|s| item_irpath(&s.module_path, &s.kind.to_string()))
+        .collect();
+    let name_collisions = compute_name_collisions(&module);
+    let enum_names: std::collections::HashSet<String> = module.enums.iter()
+        .map(|e| e.kind.to_string())
+        .collect();
+    let method_t_fields_map = build_method_t_fields(&module);
+    let (oracle_fns, async_fns) = compute_async_fns(&module);
+    let cx = TsContext {
+        witness_map: &witness_map,
+        name_collisions: &name_collisions,
+        erased_type_params: erased,
+        self_type: None,
+        tuple_structs: &tuple_structs,
+        class_witnesses: Vec::new(),
+        mut_refs: Vec::new(),
+        enum_names: &enum_names,
+        var_types: core::cell::RefCell::new(Vec::new()),
+        method_t_fields: method_t_fields_map,
+        emit_async,
+        emit_generator,
+        async_fns,
+        oracle_fn_names: oracle_fns,
+    };
+    let local_names: std::collections::HashSet<String> = module.structs.iter()
+        .map(|s| s.kind.to_string())
+        .collect();
+    let mut out = String::new();
     let _ = write!(out, "{}", TsImportsWriter { remotes });
     let _ = write!(out, "{}", TsFmt(TsPreambleWriter { local_names: &local_names, filter_fns: None }, &cx));
     let _ = write!(out, "{}", TsFmt(TsModuleWriter { module: &module, filter_fns: None, filter_methods: None }, &cx));
@@ -930,6 +1000,10 @@ pub fn print_module_ts_seeded(
         enum_names: &enum_names,
         var_types: core::cell::RefCell::new(Vec::new()),
         method_t_fields: method_t_fields_map2,
+        emit_async: false,
+        emit_generator: false,
+        async_fns: BTreeSet::new(),
+        oracle_fn_names: BTreeSet::new(),
     };
     let local_names: std::collections::HashSet<String> = module.structs.iter()
         .map(|s| s.kind.to_string())
@@ -1017,6 +1091,10 @@ pub fn print_cfg_module_ts(module: &IrCfgModule) -> String {
         enum_names: &enum_names_flat,
         var_types: core::cell::RefCell::new(Vec::new()),
         method_t_fields: method_t_fields_map3,
+        emit_async: false,
+        emit_generator: false,
+        async_fns: BTreeSet::new(),
+        oracle_fn_names: BTreeSet::new(),
     };
 
     // Reassemble the CFG module with deshadowed auxiliary functions.
@@ -1120,6 +1198,14 @@ struct TsContext<'a> {
     /// Built from module impls: for each method with `Default` witness, find the struct's
     /// first field that carries the generic T element type.
     method_t_fields: BTreeMap<String, String>,
+    /// When `true`, emit eligible functions as `async function` / `async method`.
+    emit_async: bool,
+    /// When `true`, emit eligible functions as `function*` / `*method`.
+    emit_generator: bool,
+    /// Transitive set of function names that must be emitted as async/generator.
+    async_fns: BTreeSet<String>,
+    /// Leaf oracle/action/rng names — call sites get `await`/`yield*`.
+    oracle_fn_names: BTreeSet<String>,
 }
 
 impl<'a> TsContext<'a> {
@@ -1159,6 +1245,10 @@ impl<'a> TsContext<'a> {
             enum_names: self.enum_names,
             var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
             method_t_fields: self.method_t_fields.clone(),
+            emit_async: self.emit_async,
+            emit_generator: self.emit_generator,
+            async_fns: self.async_fns.clone(),
+            oracle_fn_names: self.oracle_fn_names.clone(),
         }
     }
 
@@ -1174,6 +1264,10 @@ impl<'a> TsContext<'a> {
             enum_names: self.enum_names,
             var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
             method_t_fields: self.method_t_fields.clone(),
+            emit_async: self.emit_async,
+            emit_generator: self.emit_generator,
+            async_fns: self.async_fns.clone(),
+            oracle_fn_names: self.oracle_fn_names.clone(),
         }
     }
 
@@ -1191,6 +1285,10 @@ impl<'a> TsContext<'a> {
             enum_names: self.enum_names,
             var_types: core::cell::RefCell::new(self.var_types.borrow().clone()),
             method_t_fields: self.method_t_fields.clone(),
+            emit_async: self.emit_async,
+            emit_generator: self.emit_generator,
+            async_fns: self.async_fns.clone(),
+            oracle_fn_names: self.oracle_fn_names.clone(),
         }
     }
 
@@ -1946,6 +2044,10 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
                     enum_names: cx.enum_names,
                     var_types: core::cell::RefCell::new(cx.var_types.borrow().clone()),
                     method_t_fields: cx.method_t_fields.clone(),
+                    emit_async: cx.emit_async,
+                    emit_generator: cx.emit_generator,
+                    async_fns: cx.async_fns.clone(),
+                    oracle_fn_names: cx.oracle_fn_names.clone(),
                 };
                 &cx_static
             } else {
@@ -1954,10 +2056,14 @@ impl<'a> TsBackend for TsMethodWriter<'a> {
         } else {
             cx
         };
+        // Async/generator only for inherent (non-trait) methods.
+        let eligible = self.imp.trait_.is_none() && cx.async_fns.contains(name.as_str());
+        let async_kw = if cx.emit_async && eligible { "async " } else { "" };
+        let gen_star  = if cx.emit_generator && eligible { "*" } else { "" };
         if is_static {
-            write!(f, "{}static {}", ind, name)?;
+            write!(f, "{}static {}{}{}", ind, async_kw, gen_star, name)?;
         } else {
-            write!(f, "{}{}", ind, name)?;
+            write!(f, "{}{}{}{}", ind, async_kw, gen_star, name)?;
         }
 
         let used_params = function_used_type_params(self.func);
@@ -2250,7 +2356,11 @@ impl<'a> TsBackend for TsFunctionWriter<'a> {
         } else {
             &self.func.name
         };
-        write!(f, "{}export function {}", ind, name)?;
+        let is_async = cx.emit_async && cx.async_fns.contains(name);
+        let is_gen   = cx.emit_generator && cx.async_fns.contains(name);
+        let async_kw = if is_async { "async " } else { "" };
+        let gen_star  = if is_gen  { "*" }      else { "" };
+        write!(f, "{}export {}function{} {}", ind, async_kw, gen_star, name)?;
         let used_params = function_used_type_params(self.func);
         TsGenericsWriter {
             generics: &self.func.generics,
@@ -2360,7 +2470,11 @@ impl<'a> TsBackend for TsMergedFunctionWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
         // Emit a single function that dispatches on argument count.
         // Each variant gets a case matching its total param count.
-        write!(f, "export function {}(...__args: any[]): any {{", self.name)?;
+        let is_async = cx.emit_async && cx.async_fns.contains(self.name);
+        let is_gen   = cx.emit_generator && cx.async_fns.contains(self.name);
+        let async_kw = if is_async { "async " } else { "" };
+        let gen_star  = if is_gen  { "*" }      else { "" };
+        write!(f, "export {}function{} {}(...__args: any[]): any {{", async_kw, gen_star, self.name)?;
         writeln!(f)?;
         for (vi, variant) in self.variants.iter().enumerate() {
             let n_params = variant.params.len()
@@ -3089,6 +3203,17 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         }
                     }
                 }
+                // oracle/action/rng call sites: prepend `await` or `yield*`.
+                let callee_name: Option<&str> = match func.as_ref() {
+                    IrExpr::Var(n) => Some(n.as_str()),
+                    IrExpr::Path { segments, .. } if segments.len() == 1 => Some(segments[0].as_str()),
+                    _ => None,
+                };
+                let is_suspension = callee_name
+                    .map(|n| cx.oracle_fn_names.contains(n))
+                    .unwrap_or(false);
+                if cx.emit_async && is_suspension { write!(f, "await ")?; }
+                if cx.emit_generator && is_suspension { write!(f, "yield* ")?; }
                 TsExprWriter { expr: func }.ts_fmt(f, cx)?;
                 write!(f, "(")?;
                 let mut first = true;
@@ -5176,7 +5301,11 @@ impl<'a> TsBackend for TsCfgFunctionWriter<'a> {
         let blocks = &func.body.blocks;
 
         // ── Signature ─────────────────────────────────────────────────────
-        write!(f, "{}export function {}", ind, func.name)?;
+        let is_async = cx.emit_async && cx.async_fns.contains(&func.name);
+        let is_gen   = cx.emit_generator && cx.async_fns.contains(&func.name);
+        let async_kw = if is_async { "async " } else { "" };
+        let gen_star  = if is_gen  { "*" }      else { "" };
+        write!(f, "{}export {}function{} {}", ind, async_kw, gen_star, func.name)?;
         // Emit type-only generics (skip const generics — TS doesn't have them)
         let type_generics: Vec<&IrGenericParam> = func
             .generics
