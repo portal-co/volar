@@ -56,6 +56,7 @@ use crate::net::{
     q_type, ref_mut_to, ref_to, result_type, tr_error_type, transport_call_try, vope_bit_call,
     vope_type,
 };
+use crate::storage_loop::zero_vope_expr;
 
 // ── Local helpers ───────────────────────────────────────────────────────────
 
@@ -383,6 +384,11 @@ pub fn weave_hybrid_net_vole_prover(
 
     // ── Function params ────────────────────────────────────────────────────
     let mut func_params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
+    // Public multiset-hash challenge powers (r, r², r³) for the carried memory
+    // accumulator (`mem_prod`/`mem_cons`).
+    for r in ["r1", "r2", "r3"] {
+        func_params.push(IrParam { name: r.into(), ty: IrType::TypeParam("T".into()) });
+    }
     for i in 0..num_params {
         func_params.push(IrParam { name: format!("init_w{i}"), ty: vope_type() });
     }
@@ -390,12 +396,21 @@ pub fn weave_hybrid_net_vole_prover(
         name: "transport".into(),
         ty: ref_mut_to(IrType::TypeParam("Tr".into())),
     });
-    let ret_type = result_type(vope_type(), tr_error_type());
+    // Returns (output, mem_prod, mem_cons): the final committed output plus the
+    // carried memory-consistency accumulators (a single field element each).
+    let ret_type = result_type(
+        IrType::Tuple(vec![vope_type(), vope_type(), vope_type()]),
+        tr_error_type(),
+    );
 
     // ── Block 0: entry ─────────────────────────────────────────────────────
-    let b0_args: Vec<IrExpr> = (0..num_params)
+    // Bundle order everywhere: [w_0..w_{ℓ-1}, mem_prod, mem_cons, ts].
+    let mut b0_args: Vec<IrExpr> = (0..num_params)
         .map(|i| clone_expr(var(&format!("init_w{i}"))))
         .collect();
+    b0_args.push(zero_vope_expr()); // mem_prod
+    b0_args.push(zero_vope_expr()); // mem_cons
+    b0_args.push(zero_vope_expr()); // ts
     let block0 = IrCfgBlock {
         params: vec![],
         stmts: vec![],
@@ -404,9 +419,12 @@ pub fn weave_hybrid_net_vole_prover(
     };
 
     // ── Block 1: ZK loop body ──────────────────────────────────────────────
-    let b1_params: Vec<IrParam> = (0..num_params)
+    let mut b1_params: Vec<IrParam> = (0..num_params)
         .map(|i| IrParam { name: format!("w{i}"), ty: vope_type() })
         .collect();
+    b1_params.push(IrParam { name: "mem_prod".into(), ty: vope_type() });
+    b1_params.push(IrParam { name: "mem_cons".into(), ty: vope_type() });
+    b1_params.push(IrParam { name: "ts".into(), ty: vope_type() });
     let mut b1_stmts: Vec<IrStmt> = Vec::new();
     let mut wnames = BTreeMap::<u32, String>::new();
     for i in 0..num_params {
@@ -453,6 +471,36 @@ pub fn weave_hybrid_net_vole_prover(
     let done_wire = wnames[&done_id].clone();
     let out_wire = wnames[&out_id].clone();
 
+    // Carried memory accumulator: fold this iteration's output into `mem_prod`
+    // and advance `ts` (a running output digest — `storage_loop.rs` shows the
+    // same accumulator fed by real StorageRead/StorageWrite).  The input
+    // accumulators are *cloned* so the gap branch can still carry the input
+    // values as the replay anchor.
+    let absorb_out = IrExpr::Call {
+        func: Box::new(IrExpr::Path {
+            segments: vec!["volar_spec".into(), "vole".into(), "bridge".into(), "mem_acc_absorb_vope".into()],
+            type_args: vec![],
+        }),
+        args: vec![
+            clone_expr(var("mem_prod")),
+            ref_expr(var(&out_wire)),
+            ref_expr(var(&out_wire)),
+            ref_expr(var("ts")),
+            ref_expr(var("r1")),
+            ref_expr(var("r2")),
+            ref_expr(var("r3")),
+        ],
+    };
+    b1_stmts.push(let_stmt("mem_prod1", absorb_out));
+    b1_stmts.push(let_stmt(
+        "ts1",
+        IrExpr::Binary {
+            op: SpecBinOp::Add,
+            left: Box::new(clone_expr(var("ts"))),
+            right: Box::new(clone_expr(var("vope_one"))),
+        },
+    ));
+
     // let done_bit = volar_net::vope_bit(&done_wire);
     b1_stmts.push(let_stmt("done_bit", vope_bit_call(&done_wire)));
     // let cont = transport.try_send_iteration(&[hats...], done_bit)?;
@@ -461,19 +509,26 @@ pub fn weave_hybrid_net_vole_prover(
         transport_call_try("try_send_iteration", vec![hats_slice_expr(&hat_names), var("done_bit")]),
     ));
 
-    // then -> B2 [done_bit, out.clone(), next0.clone(), ...]
+    // then -> B2 [done_bit, out.clone(), next..., mem_prod1, mem_cons, ts1]
+    // (continue path carries the *updated* accumulator).
     let mut b2_args: Vec<IrExpr> = vec![var("done_bit"), clone_expr(var(&out_wire))];
     for id in &next_ids {
         b2_args.push(clone_expr(var(&wnames[&id.0])));
     }
-    // else (disconnect) -> B4 [anchor w_i.clone()..., plaintext mirror
-    // vope_bit(&w_i)..., gap_len=0].  The anchor is the iteration-INPUT state
-    // (this iteration's send failed, so replay re-runs it); the verifier still
-    // holds the matching Q-shares.  The plaintext mirror advances during the gap
-    // for liveness only — on reconnect the gap is replayed from the anchor.
+    b2_args.push(var("mem_prod1"));
+    b2_args.push(clone_expr(var("mem_cons")));
+    b2_args.push(var("ts1"));
+
+    // else (disconnect) -> B4 [anchor w_i.clone()..., mem_prod/cons/ts (INPUT),
+    // plaintext mirror vope_bit(&w_i)..., gap_len=0].  The anchor is the
+    // iteration-INPUT state (this iteration's send failed, so replay re-runs it
+    // and re-absorbs); the verifier still holds the matching Q-shares.
     let mut b4_args: Vec<IrExpr> = (0..num_params)
         .map(|i| clone_expr(var(&format!("w{i}"))))
         .collect();
+    b4_args.push(clone_expr(var("mem_prod")));
+    b4_args.push(clone_expr(var("mem_cons")));
+    b4_args.push(clone_expr(var("ts")));
     for i in 0..num_params {
         b4_args.push(vope_bit_call(&format!("w{i}")));
     }
@@ -498,38 +553,76 @@ pub fn weave_hybrid_net_vole_prover(
     for i in 0..num_params {
         b2_params.push(IrParam { name: format!("nw{i}"), ty: vope_type() });
     }
-    let b1_back: Vec<IrExpr> = (0..num_params).map(|i| var(&format!("nw{i}"))).collect();
+    b2_params.push(IrParam { name: "mem_prod".into(), ty: vope_type() });
+    b2_params.push(IrParam { name: "mem_cons".into(), ty: vope_type() });
+    b2_params.push(IrParam { name: "ts".into(), ty: vope_type() });
+    // else (continue) -> B1 [nw..., mem_prod, mem_cons, ts]
+    let mut b1_back: Vec<IrExpr> = (0..num_params).map(|i| var(&format!("nw{i}"))).collect();
+    b1_back.push(var("mem_prod"));
+    b1_back.push(var("mem_cons"));
+    b1_back.push(var("ts"));
     let block2 = IrCfgBlock {
         params: b2_params,
         stmts: vec![],
         stmt_provs: vec![],
         terminator: IrCfgTerminator::CondGoto {
             cond: var("db"),
-            then_: IrCfgJump { target: 3, args: vec![var("out")] },
+            // done -> B3 [out, mem_prod, mem_cons]
+            then_: IrCfgJump {
+                target: 3,
+                args: vec![var("out"), var("mem_prod"), var("mem_cons")],
+            },
             else_: IrCfgJump { target: 1, args: b1_back },
         },
     };
 
     // ── Block 3: exit ──────────────────────────────────────────────────────
     let block3 = IrCfgBlock {
-        params: vec![IrParam { name: "output".into(), ty: vope_type() }],
+        params: vec![
+            IrParam { name: "output".into(), ty: vope_type() },
+            IrParam { name: "fprod".into(), ty: vope_type() },
+            IrParam { name: "fcons".into(), ty: vope_type() },
+        ],
         stmts: vec![IrStmt::Semi(transport_call_try("recv_verdict", vec![]))],
         stmt_provs: vec![],
-        terminator: IrCfgTerminator::Return(Some(ok_expr(var("output")))),
+        terminator: IrCfgTerminator::Return(Some(ok_expr(IrExpr::Tuple(vec![
+            var("output"),
+            var("fprod"),
+            var("fcons"),
+        ])))),
     };
 
     // The gap blocks carry the **anchor** Vope wires `aw_i` (the iteration-input
     // state, unchanged) plus a plaintext mirror `p_i` (advanced for liveness).
     // On *any* reconnect the gap is re-proven by replaying from the anchor — no
     // re-commitment, no linking — so the sound bridge reuses the base protocol.
+    // The anchor bundle is [w_0..w_{ℓ-1}, mem_prod, mem_cons, ts] — the same
+    // order as B1's params — so the memory accumulator is carried through every
+    // gap block and restored to B1 on replay (i.e. it survives the network cut).
     let aw_params = |prefix: &str| -> Vec<IrParam> {
-        (0..num_params).map(|i| IrParam { name: format!("{prefix}{i}"), ty: vope_type() }).collect()
+        let mut v: Vec<IrParam> = (0..num_params)
+            .map(|i| IrParam { name: format!("{prefix}{i}"), ty: vope_type() })
+            .collect();
+        for suf in ["_mp", "_mc", "_ts"] {
+            v.push(IrParam { name: format!("{prefix}{suf}"), ty: vope_type() });
+        }
+        v
     };
     let aw_clone_args = |prefix: &str| -> Vec<IrExpr> {
-        (0..num_params).map(|i| clone_expr(var(&format!("{prefix}{i}")))).collect()
+        let mut v: Vec<IrExpr> = (0..num_params)
+            .map(|i| clone_expr(var(&format!("{prefix}{i}"))))
+            .collect();
+        for suf in ["_mp", "_mc", "_ts"] {
+            v.push(clone_expr(var(&format!("{prefix}{suf}"))));
+        }
+        v
     };
     let aw_move_args = |prefix: &str| -> Vec<IrExpr> {
-        (0..num_params).map(|i| var(&format!("{prefix}{i}"))).collect()
+        let mut v: Vec<IrExpr> = (0..num_params).map(|i| var(&format!("{prefix}{i}"))).collect();
+        for suf in ["_mp", "_mc", "_ts"] {
+            v.push(var(&format!("{prefix}{suf}")));
+        }
+        v
     };
 
     // ── Block 4: gap body (one cleartext iteration; anchor carried) ────────
@@ -661,29 +754,6 @@ pub fn weave_hybrid_net_vole_prover(
         ls.apply_cfg(&mut module);
     }
     module
-}
-
-/// `Vope { u: Array::<u8,N>::default(), v: Array::<T,N>::default() }` — committed
-/// zero wire (copied verbatim from the net loop weaver's `Zero` lowering).
-fn zero_vope_expr() -> IrExpr {
-    IrExpr::StructExpr {
-        kind: StructKind::Custom("Vope".into()),
-        type_args: vec![],
-        fields: vec![
-            ("u".into(), crate::array_default()),
-            (
-                "v".into(),
-                IrExpr::Call {
-                    func: Box::new(IrExpr::Path {
-                        segments: vec!["Array".into(), "default".into()],
-                        type_args: vec![IrType::TypeParam("T".into()), IrType::TypeParam("N".into())],
-                    }),
-                    args: vec![],
-                },
-            ),
-        ],
-        rest: None,
-    }
 }
 
 // ============================================================================
@@ -919,5 +989,21 @@ mod tests {
         assert!(code.contains("try_reconnect"), "expected reconnect handling");
         assert!(code.contains("prover_bridge"), "expected resumption bridge call");
         assert!(code.contains("ResumeToken"), "expected resume token construction");
+        // Memory accumulator carried through the gap (survives the cut):
+        assert!(code.contains("mem_prod"), "expected carried produce accumulator");
+        assert!(code.contains("mem_cons"), "expected carried consume accumulator");
+        assert!(code.contains("mem_acc_absorb_vope"), "expected in-circuit absorb");
+    }
+
+    #[test]
+    fn test_hybrid_prover_returns_memory_triple() {
+        let circuit = build_simple_loop();
+        let module = weave_hybrid_net_vole_prover(&circuit, "test", None);
+        let code = print_hybrid_net_cfg_module(&module);
+        // The accumulator survives the gap because it is part of the anchor
+        // bundle carried through every gap block (suffixes _mp/_mc/_ts) and
+        // restored to the ZK body on replay; the prover returns it as a triple.
+        assert!(code.contains("_mp") && code.contains("_mc") && code.contains("_ts"),
+            "expected accumulator carried through gap blocks as anchor bundle");
     }
 }

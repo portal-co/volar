@@ -93,7 +93,7 @@ fn storage_loop_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredica
 }
 
 /// `&[Vope<N, T, U1>]`
-fn vope_slice_type() -> IrType {
+pub(crate) fn vope_slice_type() -> IrType {
     ref_to(IrType::Array {
         kind: volar_compiler::ir::ArrayKind::Slice,
         elem: Box::new(vope_type()),
@@ -102,7 +102,7 @@ fn vope_slice_type() -> IrType {
 }
 
 /// `Vope { u: Array::<Array<T,N>, U1>::default(), v: Array::<T,N>::default() }`
-fn zero_vope_expr() -> IrExpr {
+pub(crate) fn zero_vope_expr() -> IrExpr {
     let array_default = |type_args: Vec<IrType>| IrExpr::Call {
         func: Box::new(IrExpr::Path { segments: vec!["Array".into(), "default".into()], type_args }),
         args: vec![],
@@ -121,7 +121,7 @@ fn zero_vope_expr() -> IrExpr {
 }
 
 /// `volar_spec::vole::bridge::mem_acc_absorb_vope(acc, &addr, &value, &ts, &r1, &r2, &r3)`
-fn absorb_call(acc: &str, addr: &str, value: &str, ts: &str) -> IrExpr {
+pub(crate) fn absorb_call(acc: &str, addr: &str, value: &str, ts: &str) -> IrExpr {
     IrExpr::Call {
         func: Box::new(IrExpr::Path {
             segments: vec![
@@ -145,7 +145,7 @@ fn absorb_call(acc: &str, addr: &str, value: &str, ts: &str) -> IrExpr {
 }
 
 /// `slice[iter * count + k].clone()`
-fn slice_index_clone(slice: &str, count: usize, k: usize) -> IrExpr {
+pub(crate) fn slice_index_clone(slice: &str, count: usize, k: usize) -> IrExpr {
     let idx = IrExpr::Binary {
         op: SpecBinOp::Add,
         left: Box::new(IrExpr::Binary {
@@ -162,7 +162,7 @@ fn let_stmt(name: &str, init: IrExpr) -> IrStmt {
     IrStmt::Let { pattern: IrPattern::ident(name), ty: None, init: Some(init) }
 }
 
-fn count_storage(expanded: &[(IRVarId, BIrStmt, ())]) -> (usize, usize) {
+pub(crate) fn count_storage(expanded: &[(IRVarId, BIrStmt, ())]) -> (usize, usize) {
     let mut reads = 0;
     let mut writes = 0;
     for (_, s, _) in expanded {

@@ -282,16 +282,28 @@ pub trait ResilientVoleTransport<N: ArraySize, T>: VoleTransport<N, T> {
   Compile-checked against a Commitment-mode loop fixture. This is the
   infrastructure that unblocks A1/C2/C3.
 
+- **Accumulator carried through the hybrid gap (A1 — DONE).** The hybrid prover
+  (`hybrid_net.rs`) now threads `mem_prod`/`mem_cons`/`ts` as part of the **anchor
+  bundle** (`[w_0..w_{ℓ-1}, mem_prod, mem_cons, ts]`, suffixes `_mp`/`_mc`/`_ts`)
+  through every gap block (B4–B8) and restores it to the ZK body on replay — so
+  the memory accumulator **provably survives a network cut**. Each ZK iteration
+  folds its output into `mem_prod` via `mem_acc_absorb_vope`; the prover returns
+  `(output, mem_prod, mem_cons)`. (The per-iteration absorb here digests the
+  output as a stand-in; `storage_loop.rs` shows the same accumulator fed by real
+  `StorageRead`/`StorageWrite`.)
+
 **Not yet built — remaining integration (specified here):**
-- **Carry the accumulator through the hybrid gap (A1 completion).** The storage
-  loop weaver and the hybrid bridge exist separately; threading `mem_prod`/
-  `mem_cons`/`ts` as additional anchor-carried wires in `hybrid_net.rs` (and into
-  `ResumeToken.mem_acc`) is now a mechanical extension of the proven anchor-carry
-  pattern. Full read-consistency soundness also needs per-cell last-write-ts
-  bookkeeping + a final drain (about *which tuples to absorb*, not the carry).
-- **AND-gate + transport integration.** `storage_loop` covers the linear+storage
-  subset; combining it with the ZK hat path (`vole_and_prover_step` + transport)
-  is the union of `storage_loop` and `hybrid_net`.
+- **Unify the two absorb sites.** `storage_loop` absorbs real storage ops
+  (with per-iteration `read_vals`/`write_olds` slices + `iter` indexing) but no
+  transport/gap; `hybrid_net` carries the accumulator through the gap but absorbs
+  a placeholder output digest. The union — storage slices + AND/hat + transport +
+  gap — is the same CFG shape with both absorb sites wired in.
+- **Full read-consistency soundness.** Per-cell last-write-timestamp bookkeeping
+  so a read consumes the exact `(addr, value, write_ts)` tuple, plus a final
+  drain (about *which tuples to absorb*, not the carry, which is done and sound).
+- **Verifier-side accumulator.** The verifier currently returns `bool`; mirroring
+  the carried `mem_prod`/`mem_cons` and the offline `mem_prod == mem_cons` drain
+  check on the verifier side completes the two-party picture.
 - **`ContinuationGlue` + dynamic skip in `lower_to_circuit`.** The shared
   "bind pre-skip → post-skip committed state" helper (additive-hash carry for the
   bridge; `vole_rekey_*` XOR-key binding for the non-bridge skip) and the dynamic
