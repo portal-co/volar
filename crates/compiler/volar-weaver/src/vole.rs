@@ -3740,7 +3740,7 @@ pub fn print_weaved_vole_module(module: &IrModule<IrFunction>) -> String {
     use alloc::fmt::Write as _;
 
     let mut body = String::new();
-    let _ = write!(body, "{}", DisplayRust(ModuleWriter { module }));
+    let _ = write!(body, "{}", DisplayRust(ModuleWriter { module, emit_async: false }));
 
     let preamble = concat!(
         "#![allow(unused_variables, dead_code, unused_mut, unused_imports, non_snake_case, unused_parens)]\n",

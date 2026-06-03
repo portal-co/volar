@@ -3623,7 +3623,7 @@ pub fn print_fhe_cfg_module(module: &IrCfgModule, self_contained: bool) -> Strin
              non_snake_case, unused_parens)]"
         );
     }
-    let _ = write!(out, "{}", DisplayRust(CfgModuleWriter { module }));
+    let _ = write!(out, "{}", DisplayRust(CfgModuleWriter { module, emit_async: false }));
     out
 }
 
@@ -3640,7 +3640,7 @@ pub fn print_fhe_flat_module(module: &IrModule<IrFunction>, self_contained: bool
              non_snake_case, unused_parens)]"
         );
     }
-    let _ = write!(out, "{}", DisplayRust(ModuleWriter { module }));
+    let _ = write!(out, "{}", DisplayRust(ModuleWriter { module, emit_async: false }));
     out
 }
 
@@ -4248,6 +4248,7 @@ mod tests {
             traits: vec![],
             impls: vec![],
             type_aliases: vec![],
+            consts: vec![],
             functions: vec![IrFunction {
                 name: "loop_read_tfhe".into(),
                 module_path: vec![],
@@ -4312,6 +4313,7 @@ mod tests {
             traits: vec![],
             impls: vec![],
             type_aliases: vec![],
+            consts: vec![],
             functions: vec![IrFunction {
                 name: "loop_write_tfhe".into(),
                 module_path: vec![],

@@ -63,12 +63,24 @@ pub enum Weaver {
     VoleProverIr { name: String, storage_sizes: volar_weaver::StorageSizes },
     /// VOLE ZK **verifier** using field-level Volar IR.
     VoleVerifierIr { name: String, storage_sizes: volar_weaver::StorageSizes },
+    /// Cleartext (non-ZK) **no-op** evaluator (Boolar IR).
+    NoOp { name: String },
+    /// Cleartext (non-ZK) **no-op** evaluator using field-level Volar IR.
+    NoOpIr { name: String },
     /// Network VOLE **prover** (Boolar IR).  Requires the `weave-net` feature.
     #[cfg(feature = "weave-net")]
     NetVoleProver { name: String },
     /// Network VOLE **verifier** (Boolar IR).  Requires the `weave-net` feature.
     #[cfg(feature = "weave-net")]
     NetVoleVerifier { name: String },
+    /// Hybrid network-resilient VOLE **prover** (Boolar loop circuit → CFG).
+    /// Reacts to the network cutting off; requires the `weave-net` feature.
+    #[cfg(feature = "weave-net")]
+    HybridNetVoleProver { name: String },
+    /// Hybrid network-resilient VOLE **verifier** (Boolar loop circuit → CFG).
+    /// Requires the `weave-net` feature.
+    #[cfg(feature = "weave-net")]
+    HybridNetVoleVerifier { name: String },
 }
 
 // ============================================================================
@@ -129,6 +141,14 @@ pub fn emit_woven_rust(
             let module = volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None);
             volar_weaver::print_weaved_vole_module(&module)
         }
+        (Weaver::NoOp { name }, SavedCircuit::Boolar(bir)) => {
+            let module = volar_weaver::weave_noop(&bir, name, None);
+            volar_weaver::print_noop_module(&module)
+        }
+        (Weaver::NoOpIr { name }, SavedCircuit::Volar(ir, types)) => {
+            let module = volar_weaver::weave_noop_ir(&ir, &types, name, None);
+            volar_weaver::print_noop_module(&module)
+        }
         #[cfg(feature = "weave-net")]
         (Weaver::NetVoleProver { name }, SavedCircuit::Boolar(bir)) => {
             let module = volar_weaver::weave_net_vole_prover(&bir, name, None);
@@ -138,6 +158,16 @@ pub fn emit_woven_rust(
         (Weaver::NetVoleVerifier { name }, SavedCircuit::Boolar(bir)) => {
             let module = volar_weaver::weave_net_vole_verifier(&bir, name, None);
             volar_weaver::print_weaved_module(&module, false)
+        }
+        #[cfg(feature = "weave-net")]
+        (Weaver::HybridNetVoleProver { name }, SavedCircuit::Boolar(bir)) => {
+            let module = volar_weaver::weave_hybrid_net_vole_prover(&bir, name, None);
+            volar_weaver::print_hybrid_net_cfg_module(&module)
+        }
+        #[cfg(feature = "weave-net")]
+        (Weaver::HybridNetVoleVerifier { name }, SavedCircuit::Boolar(bir)) => {
+            let module = volar_weaver::weave_hybrid_net_vole_verifier(&bir, name, None);
+            volar_weaver::print_hybrid_net_cfg_module(&module)
         }
         (w, c) => {
             let circuit_kind = match &c {
@@ -252,6 +282,12 @@ fn weave_to_ir_module(
         (Weaver::VoleVerifierIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
             volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None)
         }
+        (Weaver::NoOp { name }, SavedCircuit::Boolar(bir)) => {
+            volar_weaver::weave_noop(&bir, name, None)
+        }
+        (Weaver::NoOpIr { name }, SavedCircuit::Volar(ir, types)) => {
+            volar_weaver::weave_noop_ir(&ir, &types, name, None)
+        }
         #[cfg(feature = "weave-net")]
         (Weaver::NetVoleProver { name }, SavedCircuit::Boolar(bir)) => {
             volar_weaver::weave_net_vole_prover(&bir, name, None)
@@ -323,6 +359,12 @@ pub fn emit_woven_rust_chunked(
             }
             (Weaver::VoleVerifierIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
                 volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None)
+            }
+            (Weaver::NoOp { name }, SavedCircuit::Boolar(bir)) => {
+                volar_weaver::weave_noop(&bir, name, None)
+            }
+            (Weaver::NoOpIr { name }, SavedCircuit::Volar(ir, types)) => {
+                volar_weaver::weave_noop_ir(&ir, &types, name, None)
             }
             #[cfg(feature = "weave-net")]
             (Weaver::NetVoleProver { name }, SavedCircuit::Boolar(bir)) => {

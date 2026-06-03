@@ -1029,7 +1029,7 @@ pub fn print_weaved_module(module: &IrModule<IrFunction>, self_contained: bool) 
     use alloc::fmt::Write as _;
 
     let mut out = String::new();
-    let _ = write!(out, "{}", DisplayRust(ModuleWriter { module }));
+    let _ = write!(out, "{}", DisplayRust(ModuleWriter { module, emit_async: false }));
 
     let preamble: &str = if self_contained {
         concat!(

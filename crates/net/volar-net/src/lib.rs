@@ -130,3 +130,119 @@ where
 {
     &v.u[0][0] != &T::default()
 }
+
+// ============================================================================
+// Resilience layer — hybrid (network-resilient) VOLE sessions
+// ============================================================================
+//
+// The hybrid network VOLE weaver (`volar-weaver::weave_hybrid_net_vole_*`)
+// reacts to the network cutting off mid-proof: it switches to a cleartext
+// (non-ZK) "no-op" gap path that consumes no VOLE correlations, then runs a
+// **resumption bridge** on reconnect.  Generated code is strategy-agnostic — it
+// calls only the [`ResilientVoleTransport`] methods below, so the resumption
+// bridge can be swapped (best-effort / VCB-RX / VCB-IVC) without regenerating.
+//
+// See `docs/vole-continuation-bridge.md` for the cryptographic specification.
+
+/// Outcome classification of a non-propagating iteration send.
+///
+/// The generated hybrid loop uses [`ResilientVoleTransport::try_send_iteration`]
+/// (which returns `Result<bool, _>`) so it can *branch* on a disconnect instead
+/// of `?`-propagating it.  This enum documents the three logical outcomes and is
+/// available to transport implementors that want a richer classification API.
+pub enum SendOutcome<E> {
+    /// Send succeeded; stay on the ZK streaming path.
+    Continue,
+    /// Recoverable disconnect; enter the cleartext gap path and try to reconnect.
+    Disconnect,
+    /// Unrecoverable error; the session must abort, surfacing this error.
+    Fatal(E),
+}
+
+/// Material identifying the re-committed boundary state after a gap.
+///
+/// For the best-effort strategy this is just the fresh VOLE commitments to the
+/// resumed live state `S_{k+m}`.  For the sound VOLE Continuation Bridge it also
+/// carries the boundary commitments / folding proof (see the design doc); those
+/// fields are added by the concrete strategy implementation.
+pub struct ResumeToken<N: ArraySize, T> {
+    /// Fresh VOLE commitments to the resumed live state wires.
+    pub resume_state: Vec<Vope<N, T, U1>>,
+}
+
+/// Whether the unauthenticated gap `[start, end)` was retroactively proven.
+pub enum GapVerdict {
+    /// The gap was bridged by a sound continuation proof (VCB).
+    Proven,
+    /// The gap ran in the clear and is *not* proven; the final verdict is
+    /// qualified "valid except iterations `[start, end)`".
+    Unproven { start: u32, end: u32 },
+}
+
+/// Network transport with disconnect-aware resumption, layered on
+/// [`VoleTransport`].
+///
+/// All methods have best-effort default implementations, so any existing
+/// `VoleTransport` implementor opts in with a bare
+/// `impl ResilientVoleTransport<N, T> for MyTransport {}`.  Override the methods
+/// to add error classification, real reconnection, or a sound resumption bridge
+/// (see `docs/vole-continuation-bridge.md`).
+pub trait ResilientVoleTransport<N: ArraySize, T>: VoleTransport<N, T> {
+    /// Send one iteration's hats, classifying any error instead of propagating.
+    ///
+    /// Returns `Ok(true)` if the iteration was sent (stay on the ZK path),
+    /// `Ok(false)` on a recoverable disconnect (enter the cleartext gap path),
+    /// or `Err(_)` for an unrecoverable error (the generated code `?`-propagates
+    /// it).  Default: any transport error maps to a recoverable `Ok(false)`.
+    fn try_send_iteration(&mut self, hats: &[Array<T, N>], is_sentinel: bool) -> Result<bool, Self::Error> {
+        Ok(self.send_iteration(hats, is_sentinel).is_ok())
+    }
+
+    /// Attempt to re-establish the connection. `Ok(true)` = reconnected.
+    ///
+    /// Default: `Ok(false)` — "reconnection unsupported"; the generated gap loop
+    /// then runs the cleartext path to completion.
+    fn try_reconnect(&mut self) -> Result<bool, Self::Error> {
+        Ok(false)
+    }
+
+    /// Prover side of the resumption bridge after a gap of `gap_len` iterations.
+    ///
+    /// Default (best-effort): no-op — the resumed state rides on the re-opened
+    /// streaming loop / VOLE setup, and the gap is left unproven.
+    fn prover_bridge(&mut self, _token: &ResumeToken<N, T>, _gap_len: u32) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Verifier side of the resumption bridge.  Returns whether the `gap_len`
+    /// gap was retroactively proven.
+    ///
+    /// Default (best-effort): returns [`GapVerdict::Unproven`] with a
+    /// gap-relative interval `[0, gap_len)`; the generated verifier offsets it by
+    /// its absolute iteration counter and records the qualified verdict.
+    fn verifier_bridge(&mut self, gap_len: u32) -> Result<GapVerdict, Self::Error> {
+        Ok(GapVerdict::Unproven { start: 0, end: gap_len })
+    }
+}
+
+/// Re-commit a cleartext bit into a degree-1 VOPE wire after a gap.
+///
+/// **Placeholder re-commitment.** A real resumption must draw a *fresh* VOLE
+/// correlation for the resumed wire (see `docs/vole-continuation-bridge.md`
+/// §3.2); this helper instead encodes the bit with the *public* constant wire
+/// `one` (`1` → `one`, `0` → `one + one`, which is the field zero in `GF(2^k)`).
+/// It is structurally valid and lets the generated hybrid prover resume the
+/// streaming loop, but it is **not hiding** — replace it with a setup-backed
+/// fresh commitment when implementing a sound [`GapVerdict::Proven`] bridge.
+pub fn recommit_bit<N, T>(one: &Vope<N, T, U1>, bit: bool) -> Vope<N, T, U1>
+where
+    N: VoleArray<T>,
+    T: Clone + core::ops::Add<Output = T>,
+    Vope<N, T, U1>: Clone + core::ops::Add<Output = Vope<N, T, U1>>,
+{
+    if bit {
+        one.clone()
+    } else {
+        one.clone() + one.clone()
+    }
+}

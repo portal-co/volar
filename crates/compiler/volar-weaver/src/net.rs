@@ -51,35 +51,35 @@ use crate::{
 
 // ── Type helpers ──────────────────────────────────────────────────────────────
 
-fn vope_type() -> IrType {
+pub(crate) fn vope_type() -> IrType {
     vole_common::vope_type_k(1)
 }
 
-fn q_type() -> IrType {
+pub(crate) fn q_type() -> IrType {
     vole_common::q_type()
 }
 
-fn delta_type() -> IrType {
+pub(crate) fn delta_type() -> IrType {
     vole_common::delta_type()
 }
 
-fn array_t_n() -> IrType {
+pub(crate) fn array_t_n() -> IrType {
     vole_common::array_t_n()
 }
 
-fn ref_to(ty: IrType) -> IrType {
+pub(crate) fn ref_to(ty: IrType) -> IrType {
     IrType::Reference { mutable: false, elem: Box::new(ty) }
 }
 
-fn ref_mut_to(ty: IrType) -> IrType {
+pub(crate) fn ref_mut_to(ty: IrType) -> IrType {
     IrType::Reference { mutable: true, elem: Box::new(ty) }
 }
 
-fn bool_type() -> IrType {
+pub(crate) fn bool_type() -> IrType {
     IrType::Primitive(PrimitiveType::Bool)
 }
 
-fn usize_type() -> IrType {
+pub(crate) fn usize_type() -> IrType {
     IrType::Primitive(PrimitiveType::Usize)
 }
 
@@ -94,7 +94,7 @@ fn vec_q_t_n() -> IrType {
 }
 
 /// `Result<T, E>` — two-arg generic Result.
-fn result_type(ok: IrType, err: IrType) -> IrType {
+pub(crate) fn result_type(ok: IrType, err: IrType) -> IrType {
     IrType::Struct {
         kind: StructKind::Custom("Result".into()),
         type_args: vec![ok, err],
@@ -102,7 +102,7 @@ fn result_type(ok: IrType, err: IrType) -> IrType {
 }
 
 /// `<Tr as volar_net::VoleTransport<N, T>>::Error`
-fn tr_error_type() -> IrType {
+pub(crate) fn tr_error_type() -> IrType {
     IrType::Projection {
         base: Box::new(IrType::TypeParam("Tr".into())),
         trait_path: Some("volar_net::VoleTransport".into()),
@@ -112,7 +112,7 @@ fn tr_error_type() -> IrType {
 }
 
 /// `&[Q<N, T>]` — slice reference for q_ands supply in loop verifier.
-fn q_slice_type() -> IrType {
+pub(crate) fn q_slice_type() -> IrType {
     ref_to(IrType::Array {
         kind: volar_compiler::ir::ArrayKind::Slice,
         elem: Box::new(q_type()),
@@ -173,7 +173,7 @@ fn vole_transport_bound() -> IrTraitBound {
 }
 
 /// `<N: ArraySize, T>` with prover where clause + `Tr: VoleTransport<N, T>`.
-fn net_prover_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredicate>) {
+pub(crate) fn net_prover_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredicate>) {
     let generics = vec![
         IrGenericParam {
             name: "N".into(),
@@ -211,7 +211,7 @@ fn net_prover_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredicate
 }
 
 /// Adds `T: PartialEq` for the verifier and loop-prover variants.
-fn net_verifier_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredicate>) {
+pub(crate) fn net_verifier_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredicate>) {
     let (generics, mut where_clause) = net_prover_generics_and_where();
     if let Some(IrWherePredicate::TypeBound { bounds, .. }) = where_clause.last_mut() {
         bounds.push(partial_eq_t());
@@ -220,14 +220,14 @@ fn net_verifier_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredica
 }
 
 /// Loop prover also needs `T: PartialEq` for `vope_bit`.
-fn net_prover_loop_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredicate>) {
+pub(crate) fn net_prover_loop_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredicate>) {
     net_verifier_generics_and_where()
 }
 
 // ── Expression helpers ────────────────────────────────────────────────────────
 
 /// `Ok(expr)` — wrap in Result::Ok.
-fn ok_expr(inner: IrExpr) -> IrExpr {
+pub(crate) fn ok_expr(inner: IrExpr) -> IrExpr {
     IrExpr::Call {
         func: Box::new(IrExpr::Path { segments: vec!["Ok".into()], type_args: vec![] }),
         args: vec![inner],
@@ -235,7 +235,7 @@ fn ok_expr(inner: IrExpr) -> IrExpr {
 }
 
 /// `transport.METHOD(args...)?`
-fn transport_call_try(method: &str, args: Vec<IrExpr>) -> IrExpr {
+pub(crate) fn transport_call_try(method: &str, args: Vec<IrExpr>) -> IrExpr {
     IrExpr::Try(Box::new(IrExpr::MethodCall {
         receiver: Box::new(var("transport")),
         method: MethodKind::Other(method.into()),
@@ -245,7 +245,7 @@ fn transport_call_try(method: &str, args: Vec<IrExpr>) -> IrExpr {
 }
 
 /// `volar_net::vope_bit(&wire_name)`
-fn vope_bit_call(wire_name: &str) -> IrExpr {
+pub(crate) fn vope_bit_call(wire_name: &str) -> IrExpr {
     IrExpr::Call {
         func: Box::new(IrExpr::Path {
             segments: vec!["volar_net".into(), "vope_bit".into()],
@@ -256,13 +256,13 @@ fn vope_bit_call(wire_name: &str) -> IrExpr {
 }
 
 /// `&[hat_0, hat_1, ...]` as a slice reference to a fixed array.
-fn hats_slice_expr(hat_names: &[String]) -> IrExpr {
+pub(crate) fn hats_slice_expr(hat_names: &[String]) -> IrExpr {
     let arr = IrExpr::FixedArray(hat_names.iter().map(|h| var(h)).collect());
     ref_expr(arr)
 }
 
 /// `let (wire_k, hat_k) = vole_and_prover_step::<N,T>(a.clone(), b.clone());`
-fn emit_prover_and_gate(
+pub(crate) fn emit_prover_and_gate(
     name_a: &str,
     name_b: &str,
     wire_name: &str,
@@ -286,7 +286,7 @@ fn emit_prover_and_gate(
 }
 
 /// `let (wire_k, ok_k) = vole_and_verifier_check::<N,T>(delta, &qa, &qb, &q_and, &hat); all_ok = all_ok && ok_k;`
-fn emit_verifier_and_gate(
+pub(crate) fn emit_verifier_and_gate(
     name_a: &str,
     name_b: &str,
     wire_name: &str,
@@ -327,7 +327,7 @@ fn emit_verifier_and_gate(
 
 // ── Gate count helper ─────────────────────────────────────────────────────────
 
-fn count_and_gates<P: Clone + Default>(circuit: &BIrBlocks<P>) -> usize {
+pub(crate) fn count_and_gates<P: Clone + Default>(circuit: &BIrBlocks<P>) -> usize {
     let block = &circuit.blocks[0];
     expand_ors(block)
         .into_iter()
@@ -1421,7 +1421,7 @@ pub fn print_net_vole_module(module: &IrModule<IrFunction>) -> String {
     use alloc::fmt::Write as _;
 
     let mut body = String::new();
-    let _ = write!(body, "{}", DisplayRust(ModuleWriter { module }));
+    let _ = write!(body, "{}", DisplayRust(ModuleWriter { module, emit_async: false }));
 
     let preamble = concat!(
         "#![allow(unused_variables, dead_code, unused_mut, unused_imports, non_snake_case, unused_parens)]\n",
@@ -1449,7 +1449,7 @@ pub fn print_net_vole_cfg_module(module: &IrCfgModule) -> String {
     use alloc::fmt::Write as _;
 
     let mut body = String::new();
-    let _ = write!(body, "{}", DisplayRust(CfgModuleWriter { module }));
+    let _ = write!(body, "{}", DisplayRust(CfgModuleWriter { module, emit_async: false }));
 
     let preamble = concat!(
         "#![allow(unused_variables, dead_code, unused_mut, unused_imports, non_snake_case, unused_parens)]\n",

@@ -62,8 +62,11 @@ pub mod faest;
 pub mod grafhen;
 pub mod fhe;
 pub mod oram;
+pub mod noop;
 #[cfg(feature = "net")]
 pub mod net;
+#[cfg(feature = "net")]
+pub mod hybrid_net;
 
 // Re-export the most commonly used public items from each submodule.
 pub use garble::{
@@ -120,6 +123,12 @@ pub use net::{
     print_net_vole_module, print_net_vole_cfg_module,
 };
 
+#[cfg(feature = "net")]
+pub use hybrid_net::{
+    weave_hybrid_net_vole_prover, weave_hybrid_net_vole_verifier,
+    print_hybrid_net_cfg_module,
+};
+
 pub use fhe::{
     weave_fhe, weave_fhe_flat_bir, derive_storage_config,
     oblivious_read_loop, oblivious_write_loop,
@@ -129,6 +138,8 @@ pub use fhe::{
     print_fhe_cfg_module, print_fhe_flat_module,
 };
 pub use volar_ir::public::PublicSet;
+
+pub use noop::{weave_noop, weave_noop_ir, print_noop_module};
 
 // ============================================================================
 // Shared: Or-gate lowering

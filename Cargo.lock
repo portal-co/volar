@@ -1709,6 +1709,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[patch.unused]]
+name = "pit-core"
+version = "0.5.0-alpha.1"
+
+[[patch.unused]]
 name = "dex-bytecode"
 version = "0.1.0"
 
@@ -1789,12 +1793,8 @@ name = "yecta"
 version = "0.1.0"
 
 [[patch.unused]]
-name = "wax-core"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "wax-tags"
-version = "0.1.0"
+name = "portal-solutions-swibb"
+version = "0.6.0-alpha.1"
 
 [[patch.unused]]
 name = "portal-jsc-common"
@@ -1831,94 +1831,6 @@ version = "0.8.0-pre.11"
 [[patch.unused]]
 name = "portal-jsc-swc-util"
 version = "0.8.0-pre.11"
-
-[[patch.unused]]
-name = "pit-core"
-version = "0.5.0-alpha.1"
-
-[[patch.unused]]
-name = "portal-solutions-swibb"
-version = "0.6.0-alpha.1"
-
-[[patch.unused]]
-name = "ast-traits"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "cfg-traits"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "register-machine-traits"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "sift-trait"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "siftify"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "ssa-canon"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "ssa-cc"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "ssa-impls"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "ssa-pliron-compat"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "ssa-reloop"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "ssa-reloop2"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "ssa-rust"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "ssa-trace"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "ssa-traits"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "ssa-translation"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "tac-traits"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "type-onion"
-version = "0.2.3"
-
-[[patch.unused]]
-name = "embedded-llm"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "embedded-llm-tools"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "portal-pc-asm-common"
-version = "0.1.1"
 
 [[patch.unused]]
 name = "dreamcomp-ir-plugin-host"
@@ -2017,6 +1929,18 @@ name = "portal-pc-waffle-passes-shared"
 version = "0.6.0-alpha.1"
 
 [[patch.unused]]
+name = "portal-pc-asm-common"
+version = "0.1.1"
+
+[[patch.unused]]
+name = "wax-core"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "wax-tags"
+version = "0.1.0"
+
+[[patch.unused]]
 name = "portal-solutions-asm-aarch64"
 version = "0.1.0"
 
@@ -2043,3 +1967,79 @@ version = "0.1.0"
 [[patch.unused]]
 name = "portal-solutions-asm-x86-64-shim"
 version = "0.1.0"
+
+[[patch.unused]]
+name = "embedded-llm"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "embedded-llm-tools"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "ast-traits"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "cfg-traits"
+version = "0.2.3"
+
+[[patch.unused]]
+name = "register-machine-traits"
+version = "0.2.3"
+
+[[patch.unused]]
+name = "sift-trait"
+version = "0.2.3"
+
+[[patch.unused]]
+name = "siftify"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "ssa-canon"
+version = "0.2.3"
+
+[[patch.unused]]
+name = "ssa-cc"
+version = "0.2.3"
+
+[[patch.unused]]
+name = "ssa-impls"
+version = "0.2.3"
+
+[[patch.unused]]
+name = "ssa-pliron-compat"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "ssa-reloop"
+version = "0.2.3"
+
+[[patch.unused]]
+name = "ssa-reloop2"
+version = "0.2.3"
+
+[[patch.unused]]
+name = "ssa-rust"
+version = "0.2.3"
+
+[[patch.unused]]
+name = "ssa-trace"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "ssa-traits"
+version = "0.2.3"
+
+[[patch.unused]]
+name = "ssa-translation"
+version = "0.2.3"
+
+[[patch.unused]]
+name = "tac-traits"
+version = "0.2.3"
+
+[[patch.unused]]
+name = "type-onion"
+version = "0.2.3"
