@@ -122,11 +122,11 @@ pub(crate) fn q_slice_type() -> IrType {
 
 // ── Trait bound helpers ───────────────────────────────────────────────────────
 
-fn array_size_bound() -> IrTraitBound {
+pub(crate) fn array_size_bound() -> IrTraitBound {
     IrTraitBound { trait_kind: TraitKind::ArraySize, type_args: vec![], assoc_bindings: vec![] }
 }
 
-fn vole_array_t_bound() -> IrTraitBound {
+pub(crate) fn vole_array_t_bound() -> IrTraitBound {
     IrTraitBound {
         trait_kind: TraitKind::VoleArray,
         type_args: vec![IrType::TypeParam("T".into())],
@@ -134,11 +134,11 @@ fn vole_array_t_bound() -> IrTraitBound {
     }
 }
 
-fn clone_t() -> IrTraitBound {
+pub(crate) fn clone_t() -> IrTraitBound {
     IrTraitBound { trait_kind: TraitKind::Math(MathTrait::Clone), type_args: vec![], assoc_bindings: vec![] }
 }
 
-fn add_output_t() -> IrTraitBound {
+pub(crate) fn add_output_t() -> IrTraitBound {
     IrTraitBound {
         trait_kind: TraitKind::Math(MathTrait::Add),
         type_args: vec![],
@@ -146,7 +146,7 @@ fn add_output_t() -> IrTraitBound {
     }
 }
 
-fn mul_output_t() -> IrTraitBound {
+pub(crate) fn mul_output_t() -> IrTraitBound {
     IrTraitBound {
         trait_kind: TraitKind::Math(MathTrait::Mul),
         type_args: vec![],
@@ -154,7 +154,7 @@ fn mul_output_t() -> IrTraitBound {
     }
 }
 
-fn default_t() -> IrTraitBound {
+pub(crate) fn default_t() -> IrTraitBound {
     IrTraitBound { trait_kind: TraitKind::Math(MathTrait::Default), type_args: vec![], assoc_bindings: vec![] }
 }
 

@@ -270,21 +270,28 @@ pub trait ResilientVoleTransport<N: ArraySize, T>: VoleTransport<N, T> {
   by re-entering the ZK loop body from them on reconnect — no placeholder
   re-commitment in the bridge path.
 - `volar_spec::vole::bridge`: `vole_rekey_prover` / `vole_rekey_verifier_check`
-  (XOR-key re-commitment, free linear check) and `mem_acc_absorb` (additive
-  multiset-hash accumulation) — unit-tested.
+  (XOR-key re-commitment, free linear check), `mem_acc_absorb` (plain-field
+  additive multiset-hash accumulation), and `vope_scale_const` +
+  `mem_acc_absorb_vope` (the **in-circuit** encode/accumulate on VOPE wires via
+  free public-scalar scaling) — all unit-tested.
+- **Storage-aware loop weaver** `volar_weaver::weave_storage_commit_loop_prover`
+  (`storage_loop.rs`): the first weaver that threads a **loop-carried in-circuit
+  multiset accumulator** (`mem_prod`/`mem_cons`/`ts`) through a dynamic loop,
+  fed by `StorageRead`/`StorageWrite`, exiting with `(output, mem_prod, mem_cons)`.
+  Single-bit address; linear gates only (no AND/transport in this slice).
+  Compile-checked against a Commitment-mode loop fixture. This is the
+  infrastructure that unblocks A1/C2/C3.
 
-**Not yet built — requires new infrastructure (specified here):**
-- **Loop-carried Commitment-mode memory.** Today Commitment-mode storage
-  (`volar-weaver/src/vole.rs`) requires `is_circuit()` (a single, flat block): the
-  `MemoryTrace` + `mem_timestamp` are accumulated at **weave time** for a flat
-  circuit and checked **offline**. The loop weavers (`weave_*_loop`,
-  `weave_hybrid_net_*`) are storage-free. Carrying the multiset hash across loop
-  iterations as the `mem_produce`/`mem_consume` VOLE wires (so it survives a gap)
-  therefore needs: (1) a storage-aware loop weaver, and (2) converting the offline
-  trace into an **in-circuit running accumulator** threaded through the loop's
-  live state (and into `ResumeToken.mem_acc`). The primitive (`mem_acc_absorb`)
-  and the `ResumeToken.mem_acc` slot are in place; the weaver wiring + a
-  storage-bearing loop test fixture are the remaining work.
+**Not yet built — remaining integration (specified here):**
+- **Carry the accumulator through the hybrid gap (A1 completion).** The storage
+  loop weaver and the hybrid bridge exist separately; threading `mem_prod`/
+  `mem_cons`/`ts` as additional anchor-carried wires in `hybrid_net.rs` (and into
+  `ResumeToken.mem_acc`) is now a mechanical extension of the proven anchor-carry
+  pattern. Full read-consistency soundness also needs per-cell last-write-ts
+  bookkeeping + a final drain (about *which tuples to absorb*, not the carry).
+- **AND-gate + transport integration.** `storage_loop` covers the linear+storage
+  subset; combining it with the ZK hat path (`vole_and_prover_step` + transport)
+  is the union of `storage_loop` and `hybrid_net`.
 - **`ContinuationGlue` + dynamic skip in `lower_to_circuit`.** The shared
   "bind pre-skip → post-skip committed state" helper (additive-hash carry for the
   bridge; `vole_rekey_*` XOR-key binding for the non-bridge skip) and the dynamic

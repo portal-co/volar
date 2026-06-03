@@ -67,6 +67,8 @@ pub mod noop;
 pub mod net;
 #[cfg(feature = "net")]
 pub mod hybrid_net;
+#[cfg(feature = "net")]
+pub mod storage_loop;
 
 // Re-export the most commonly used public items from each submodule.
 pub use garble::{
@@ -128,6 +130,9 @@ pub use hybrid_net::{
     weave_hybrid_net_vole_prover, weave_hybrid_net_vole_verifier,
     print_hybrid_net_cfg_module,
 };
+
+#[cfg(feature = "net")]
+pub use storage_loop::{weave_storage_commit_loop_prover, print_storage_loop_module};
 
 pub use fhe::{
     weave_fhe, weave_fhe_flat_bir, derive_storage_config,

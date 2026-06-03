@@ -79,6 +79,49 @@ where
     acc + addr * r1 + value * r2 + ts * r3
 }
 
+/// Scale a degree-1 VOPE wire by a **public** field constant `c`.
+///
+/// Multiplies both the `u[0]` and `v` lanes by `c`; degree-preserving and free
+/// (public scalar → no secret-dependent multiplication, unlike the hazmat
+/// `Vope * Vope`).  This is the in-circuit analogue of multiplying a committed
+/// value by a public challenge power.
+pub fn vope_scale_const<N, T>(w: &Vope<N, T, U1>, c: &T) -> Vope<N, T, U1>
+where
+    N: VoleArray<T>,
+    T: Clone + Mul<Output = T> + Default,
+{
+    Vope {
+        u: Array::<Array<T, N>, U1>::from_fn(|_| {
+            Array::<T, N>::from_fn(|i| w.u[0][i].clone() * c.clone())
+        }),
+        v: Array::<T, N>::from_fn(|i| w.v[i].clone() * c.clone()),
+    }
+}
+
+/// In-circuit multiset-hash absorb on VOPE wires.
+///
+/// Returns `acc + addr·r1 + value·r2 + ts·r3` where `(r1, r2, r3)` are the
+/// public challenge powers (cf. [`mem_acc_absorb`], which operates on plain
+/// field elements).  The committed `addr`/`value`/`ts` wires are scaled by the
+/// public powers via [`vope_scale_const`] and summed — all free in VOLE.  Carry
+/// the resulting accumulator as loop-state so memory stays O(1) across a gap.
+pub fn mem_acc_absorb_vope<N, T>(
+    acc: Vope<N, T, U1>,
+    addr: &Vope<N, T, U1>,
+    value: &Vope<N, T, U1>,
+    ts: &Vope<N, T, U1>,
+    r1: &T,
+    r2: &T,
+    r3: &T,
+) -> Vope<N, T, U1>
+where
+    N: VoleArray<T>,
+    T: Clone + Add<Output = T> + Mul<Output = T> + Default,
+    Vope<N, T, U1>: Add<Output = Vope<N, T, U1>>,
+{
+    acc + vope_scale_const(addr, r1) + vope_scale_const(value, r2) + vope_scale_const(ts, r3)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,5 +163,37 @@ mod tests {
         let b = mem_acc_absorb(0, r1, r2, r3, 5, 13, 2);
         let ba = mem_acc_absorb(b, r1, r2, r3, 2, 11, 1);
         assert_eq!(ab, ba);
+    }
+
+    /// Build a degree-1 VOPE wire with `u[0] = [u0, u0]`, `v = [v0, v0]`.
+    fn vope(u0: u64, v0: u64) -> Vope<U2, u64, U1> {
+        Vope {
+            u: Array::<Array<u64, U2>, U1>::from_fn(|_| Array::<u64, U2>::from_fn(|_| u0)),
+            v: Array::<u64, U2>::from_fn(|_| v0),
+        }
+    }
+
+    #[test]
+    fn scale_const_scales_both_lanes() {
+        let w = vope(3, 5);
+        let s = vope_scale_const(&w, &4u64);
+        assert_eq!(s.u[0][0], 12);
+        assert_eq!(s.u[0][1], 12);
+        assert_eq!(s.v[0], 20);
+        assert_eq!(s.v[1], 20);
+    }
+
+    #[test]
+    fn mem_acc_vope_matches_scalar_formula() {
+        // The VOPE accumulator's u[0] lane should track the plain-field formula
+        // acc + addr·r1 + value·r2 + ts·r3 on the encoded bit values.
+        let (r1, r2, r3) = (7u64, 49u64, 343u64);
+        let acc = vope(0, 0);
+        let addr = vope(1, 0); // addr bit = 1
+        let value = vope(11, 0);
+        let ts = vope(2, 0);
+        let out = mem_acc_absorb_vope(acc, &addr, &value, &ts, &r1, &r2, &r3);
+        let expect = 1 * r1 + 11 * r2 + 2 * r3;
+        assert_eq!(out.u[0][0], expect);
     }
 }
