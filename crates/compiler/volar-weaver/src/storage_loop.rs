@@ -436,6 +436,16 @@ fn q_bitpack_call(bits: &[String], pow2: &[String]) -> IrExpr {
     }
 }
 
+/// Wire names for the little-endian bits of a **public** cell address `c` over
+/// `addr_bits` bits: bit `1` → `one_name` (the committed public-1 wire), bit `0`
+/// → `zero_name`.  Used to encode the init/drain cell addresses, which are public
+/// constants (cells `0..2^addr_bits`).
+fn const_addr_bits(c: usize, addr_bits: usize, one_name: &str, zero_name: &str) -> Vec<String> {
+    (0..addr_bits)
+        .map(|j| if (c >> j) & 1 == 1 { one_name.into() } else { zero_name.into() })
+        .collect()
+}
+
 /// Number of AND/OR gates a gadget contributes (Or lowers to one AND).
 fn gadget_and_count(gates: &[(IRVarId, BIrStmt)]) -> usize {
     gates.iter().filter(|(_, s)| matches!(s, BIrStmt::And(..) | BIrStmt::Or(..))).count()
@@ -780,19 +790,28 @@ fn bridge_call2(fname: &str, a: IrExpr, b: IrExpr) -> IrExpr {
 pub fn weave_ts_storage_loop_prover(
     circuit: &BIrBlocks,
     ts_bits: usize,
+    addr_bits: usize,
     name: &str,
     linkage: Option<&LinkageSystem>,
 ) -> IrCfgModule {
     assert!(circuit.is_movfuscated(), "weave_ts_storage_loop_prover: circuit must be single-block");
     assert!(ts_bits >= 1, "ts_bits must be >= 1");
+    assert!(
+        (1..=8).contains(&addr_bits),
+        "addr_bits must be 1..=8 (init/drain materialises 2^addr_bits cells)"
+    );
     let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
     let (read_count, write_count) = count_storage(&expanded);
     let b = ts_bits;
+    let cells = 1usize << addr_bits;
 
     let (generics, where_clause) = net_prover_loop_generics_and_where();
-    let pow2_names: Vec<String> = (0..b).map(|j| format!("pow2_{j}")).collect();
+    let npow = b.max(addr_bits);
+    let pow2_names: Vec<String> = (0..npow).map(|j| format!("pow2_{j}")).collect();
+    let pow2_ts: Vec<String> = pow2_names[..b].to_vec();
+    let pow2_addr: Vec<String> = pow2_names[..addr_bits].to_vec();
 
     // ── Function params ────────────────────────────────────────────────────
     let mut func_params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
@@ -809,10 +828,10 @@ pub fn weave_ts_storage_loop_prover(
     func_params.push(IrParam { name: "write_olds".into(), ty: vope_slice_type() });
     func_params.push(IrParam { name: "read_last_ts".into(), ty: vope_slice_type() });
     func_params.push(IrParam { name: "write_last_ts".into(), ty: vope_slice_type() });
-    for cell in 0..2 {
+    for cell in 0..cells {
         func_params.push(IrParam { name: format!("final_val{cell}"), ty: vope_type() });
     }
-    for cell in 0..2 {
+    for cell in 0..cells {
         for j in 0..b {
             func_params.push(IrParam { name: format!("final_ts{cell}_{j}"), ty: vope_type() });
         }
@@ -821,19 +840,25 @@ pub fn weave_ts_storage_loop_prover(
 
     let ret_type = result_type(vope_type(), tr_error_type());
 
-    // ── Block 0: entry — initialise memory (both cells at ts=0) ─────────────
+    // ── Block 0: entry — initialise memory (all 2^addr_bits cells at ts=0) ──
     let mut b0_stmts: Vec<IrStmt> = vec![
         let_stmt("zw", zero_vope_expr()),
-        let_stmt("mp_zero", zero_vope_expr()),
+        let_stmt("mp_acc0", zero_vope_expr()),
     ];
-    // cell 0: (addr=0, val=0, ts=0) → encode = 0 (folded but kept explicit).
-    b0_stmts.push(let_stmt("init_p0", absorb_call("mp_zero", "zw", "zw", "zw")));
-    // cell 1: (addr=1, val=0, ts=0).
-    b0_stmts.push(let_stmt("init_p1", absorb_call("init_p0", "vope_one", "zw", "zw")));
+    let mut init_cur = String::from("mp_acc0");
+    for c in 0..cells {
+        let bits = const_addr_bits(c, addr_bits, "vope_one", "zw");
+        let af = format!("initaddr_{c}");
+        b0_stmts.push(let_stmt(&af, bitpack_call(&bits, &pow2_addr)));
+        let np = format!("init_p{c}");
+        // produce (addr=c, val=0, ts=0)
+        b0_stmts.push(let_stmt(&np, absorb_call(&init_cur, &af, "zw", "zw")));
+        init_cur = np;
+    }
 
     let mut b0_args: Vec<IrExpr> =
         (0..num_params).map(|i| clone_expr(var(&format!("init_w{i}")))).collect();
-    b0_args.push(clone_expr(var("init_p1"))); // mem_prod
+    b0_args.push(clone_expr(var(&init_cur))); // mem_prod
     b0_args.push(zero_vope_expr()); // mem_cons
     // counter initial value = 1  (so init ts=0 < first produce ts=1)
     b0_args.push(clone_expr(var("vope_one"))); // cnt bit 0 = 1
@@ -903,7 +928,7 @@ pub fn weave_ts_storage_loop_prover(
             .collect();
         // consume (addr, consume_val, bitpack(t_last))
         let ts_cons = format!("tscons_{tag}");
-        stmts.push(let_stmt(&ts_cons, bitpack_call(&tl, &pow2_names)));
+        stmts.push(let_stmt(&ts_cons, bitpack_call(&tl, &pow2_ts)));
         let nc = format!("cons_{tag}");
         stmts.push(let_stmt(&nc, absorb_call(cur_cons, addr_w, consume_val, &ts_cons)));
         *cur_cons = nc;
@@ -927,7 +952,7 @@ pub fn weave_ts_storage_loop_prover(
         *cur_order = new_order;
         // produce (addr, produce_val, bitpack(counter))
         let ts_prod = format!("tsprod_{tag}");
-        stmts.push(let_stmt(&ts_prod, bitpack_call(cur_cnt, &pow2_names)));
+        stmts.push(let_stmt(&ts_prod, bitpack_call(cur_cnt, &pow2_ts)));
         let np = format!("prod_{tag}");
         stmts.push(let_stmt(&np, absorb_call(cur_prod, addr_w, produce_val, &ts_prod)));
         *cur_prod = np;
@@ -966,8 +991,10 @@ pub fn weave_ts_storage_loop_prover(
                 b1_stmts.push(let_stmt(&let_name, e));
             }
             BIrStmt::StorageRead { addr, .. } => {
-                assert_eq!(addr.len(), 1, "ts_storage_loop: single-bit address only");
-                let addr_w = wnames[&addr[0].0].clone();
+                assert_eq!(addr.len(), addr_bits, "ts_storage_loop: address width must equal addr_bits");
+                let addr_w = format!("af_{ssa}");
+                let bits: Vec<String> = addr.iter().map(|a| wnames[&a.0].clone()).collect();
+                b1_stmts.push(let_stmt(&addr_w, bitpack_call(&bits, &pow2_addr)));
                 let val_name = format!("rd_{ssa}_v");
                 b1_stmts.push(let_stmt(&val_name, slice_index_clone("read_vals", read_count, read_k)));
                 emit_access(
@@ -980,8 +1007,10 @@ pub fn weave_ts_storage_loop_prover(
                 continue;
             }
             BIrStmt::StorageWrite { src, addr, .. } => {
-                assert_eq!(addr.len(), 1, "ts_storage_loop: single-bit address only");
-                let addr_w = wnames[&addr[0].0].clone();
+                assert_eq!(addr.len(), addr_bits, "ts_storage_loop: address width must equal addr_bits");
+                let addr_w = format!("af_{ssa}");
+                let bits: Vec<String> = addr.iter().map(|a| wnames[&a.0].clone()).collect();
+                b1_stmts.push(let_stmt(&addr_w, bitpack_call(&bits, &pow2_addr)));
                 let new_w = wnames[&src.0].clone();
                 let old_name = format!("wr_{ssa}_old");
                 b1_stmts.push(let_stmt(&old_name, slice_index_clone("write_olds", write_count, write_k)));
@@ -1056,18 +1085,23 @@ pub fn weave_ts_storage_loop_prover(
         },
     };
 
-    // ── Block 2: exit — drain both cells, open drain + ordering, recv verdict ─
+    // ── Block 2: exit — drain all cells, open drain + ordering, recv verdict ─
     let mut b2_stmts: Vec<IrStmt> = vec![let_stmt("zwx", zero_vope_expr())];
-    // drain cell 0: consume (addr=0, final_val0, bitpack(final_ts0))
-    let ts0_bits: Vec<String> = (0..b).map(|j| format!("final_ts0_{j}")).collect();
-    b2_stmts.push(let_stmt("ts_d0", bitpack_call(&ts0_bits, &pow2_names)));
-    b2_stmts.push(let_stmt("fc0", absorb_call("fcons", "zwx", "final_val0", "ts_d0")));
-    // drain cell 1: consume (addr=1, final_val1, bitpack(final_ts1))
-    let ts1_bits: Vec<String> = (0..b).map(|j| format!("final_ts1_{j}")).collect();
-    b2_stmts.push(let_stmt("ts_d1", bitpack_call(&ts1_bits, &pow2_names)));
-    b2_stmts.push(let_stmt("fc1", absorb_call("fc0", "vope_one", "final_val1", "ts_d1")));
+    let mut drain_cur = String::from("fcons");
+    for c in 0..cells {
+        let bits = const_addr_bits(c, addr_bits, "vope_one", "zwx");
+        let af = format!("draddr_{c}");
+        b2_stmts.push(let_stmt(&af, bitpack_call(&bits, &pow2_addr)));
+        let ts_bits_c: Vec<String> = (0..b).map(|j| format!("final_ts{c}_{j}")).collect();
+        let tsd = format!("ts_d{c}");
+        b2_stmts.push(let_stmt(&tsd, bitpack_call(&ts_bits_c, &pow2_ts)));
+        let nc = format!("fc{c}");
+        // consume (addr=c, final_val_c, bitpack(final_ts_c))
+        b2_stmts.push(let_stmt(&nc, absorb_call(&drain_cur, &af, &format!("final_val{c}"), &tsd)));
+        drain_cur = nc;
+    }
     // open drain: M_diff = mem_prod.v ^ mem_cons.v
-    b2_stmts.push(let_stmt("mem_open", bridge_call2("mem_drain_open", var("fprod"), var("fc1"))));
+    b2_stmts.push(let_stmt("mem_open", bridge_call2("mem_drain_open", var("fprod"), var(&drain_cur))));
     b2_stmts.push(IrStmt::Semi(transport_call_try("send_opening", vec![ref_expr(var("mem_open"))])));
     // open ordering result (must be 1)
     b2_stmts.push(let_stmt(
@@ -1213,20 +1247,29 @@ fn q_const(is_one: bool) -> IrExpr {
 pub fn weave_ts_storage_loop_verifier(
     circuit: &BIrBlocks,
     ts_bits: usize,
+    addr_bits: usize,
     name: &str,
     linkage: Option<&LinkageSystem>,
 ) -> IrCfgModule {
     assert!(circuit.is_movfuscated(), "weave_ts_storage_loop_verifier: circuit must be single-block");
     assert!(ts_bits >= 1, "ts_bits must be >= 1");
+    assert!(
+        (1..=8).contains(&addr_bits),
+        "addr_bits must be 1..=8 (init/drain materialises 2^addr_bits cells)"
+    );
     let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
     let (read_count, write_count) = count_storage(&expanded);
     let b = ts_bits;
+    let cells = 1usize << addr_bits;
     let andc = ts_iter_and_count(b, read_count + write_count);
 
     let (generics, where_clause) = net_verifier_generics_and_where();
-    let pow2_names: Vec<String> = (0..b).map(|j| format!("pow2_{j}")).collect();
+    let npow = b.max(addr_bits);
+    let pow2_names: Vec<String> = (0..npow).map(|j| format!("pow2_{j}")).collect();
+    let pow2_ts: Vec<String> = pow2_names[..b].to_vec();
+    let pow2_addr: Vec<String> = pow2_names[..addr_bits].to_vec();
 
     // ── Function params ────────────────────────────────────────────────────
     let mut func_params: Vec<IrParam> = vec![IrParam { name: "delta".into(), ty: ref_to(delta_type()) }];
@@ -1243,10 +1286,10 @@ pub fn weave_ts_storage_loop_verifier(
     for s in ["q_read_vals", "q_write_olds", "q_read_last_ts", "q_write_last_ts"] {
         func_params.push(IrParam { name: s.into(), ty: q_slice_type() });
     }
-    for cell in 0..2 {
+    for cell in 0..cells {
         func_params.push(IrParam { name: format!("q_final_val{cell}"), ty: q_type() });
     }
-    for cell in 0..2 {
+    for cell in 0..cells {
         for j in 0..b {
             func_params.push(IrParam { name: format!("q_final_ts{cell}_{j}"), ty: q_type() });
         }
@@ -1255,18 +1298,26 @@ pub fn weave_ts_storage_loop_verifier(
 
     let ret_type = result_type(bool_type(), tr_error_type());
 
-    // ── Block 0: entry — init mem_prod_q (both cells, ts=0) ─────────────────
+    // ── Block 0: entry — init mem_prod_q (all 2^addr_bits cells, ts=0) ──────
     let mut b0_stmts: Vec<IrStmt> = vec![
         let_stmt("qz", q_const(false)),
         let_stmt("qone", q_const(true)),
-        let_stmt("mpz", q_const(false)),
+        let_stmt("mp_acc0", q_const(false)),
     ];
-    b0_stmts.push(let_stmt("iq0", q_absorb_call("mpz", "qz", "qz", "qz")));   // (0,0,0)=0
-    b0_stmts.push(let_stmt("iq1", q_absorb_call("iq0", "qone", "qz", "qz"))); // (1,0,0)
+    let mut init_cur = String::from("mp_acc0");
+    for c in 0..cells {
+        let bits = const_addr_bits(c, addr_bits, "qone", "qz");
+        let af = format!("qinitaddr_{c}");
+        b0_stmts.push(let_stmt(&af, q_bitpack_call(&bits, &pow2_addr)));
+        let np = format!("iq{c}");
+        // produce (addr=c, val=0, ts=0)
+        b0_stmts.push(let_stmt(&np, q_absorb_call(&init_cur, &af, "qz", "qz")));
+        init_cur = np;
+    }
 
     let mut b0_args: Vec<IrExpr> =
         (0..num_params).map(|i| clone_expr(var(&format!("init_q{i}")))).collect();
-    b0_args.push(clone_expr(var("iq1"))); // mem_prod_q
+    b0_args.push(clone_expr(var(&init_cur))); // mem_prod_q
     b0_args.push(q_const(false)); // mem_cons_q = 0
     b0_args.push(q_const(true)); // qcnt bit0 = Q(1) = Δ
     for _ in 1..b {
@@ -1351,7 +1402,7 @@ pub fn weave_ts_storage_loop_verifier(
             .collect();
         // consume
         let ts_cons = format!("qtscons_{tag}");
-        stmts.push(let_stmt(&ts_cons, q_bitpack_call(&tl, &pow2_names)));
+        stmts.push(let_stmt(&ts_cons, q_bitpack_call(&tl, &pow2_ts)));
         let nc = format!("qcons_{tag}");
         stmts.push(let_stmt(&nc, q_absorb_call(cur_cons, addr_q, consume_q, &ts_cons)));
         *cur_cons = nc;
@@ -1403,7 +1454,7 @@ pub fn weave_ts_storage_loop_verifier(
         *cur_order = new_order;
         // produce
         let ts_prod = format!("qtsprod_{tag}");
-        stmts.push(let_stmt(&ts_prod, q_bitpack_call(cur_cnt, &pow2_names)));
+        stmts.push(let_stmt(&ts_prod, q_bitpack_call(cur_cnt, &pow2_ts)));
         let np = format!("qprod_{tag}");
         stmts.push(let_stmt(&np, q_absorb_call(cur_prod, addr_q, produce_q, &ts_prod)));
         *cur_prod = np;
@@ -1441,8 +1492,10 @@ pub fn weave_ts_storage_loop_verifier(
                 ));
             }
             BIrStmt::StorageRead { addr, .. } => {
-                assert_eq!(addr.len(), 1, "ts_storage_loop: single-bit address only");
-                let addr_q = qwnames[&addr[0].0].clone();
+                assert_eq!(addr.len(), addr_bits, "ts_storage_loop: address width must equal addr_bits");
+                let addr_q = format!("qaf_{ssa}");
+                let bits: Vec<String> = addr.iter().map(|a| qwnames[&a.0].clone()).collect();
+                b1_stmts.push(let_stmt(&addr_q, q_bitpack_call(&bits, &pow2_addr)));
                 let val_q = format!("qrd_{ssa}_v");
                 b1_stmts.push(let_stmt(&val_q, q_slice_index_clone("q_read_vals", read_count, read_k)));
                 emit_access_q(
@@ -1455,8 +1508,10 @@ pub fn weave_ts_storage_loop_verifier(
                 continue;
             }
             BIrStmt::StorageWrite { src, addr, .. } => {
-                assert_eq!(addr.len(), 1, "ts_storage_loop: single-bit address only");
-                let addr_q = qwnames[&addr[0].0].clone();
+                assert_eq!(addr.len(), addr_bits, "ts_storage_loop: address width must equal addr_bits");
+                let addr_q = format!("qaf_{ssa}");
+                let bits: Vec<String> = addr.iter().map(|a| qwnames[&a.0].clone()).collect();
+                b1_stmts.push(let_stmt(&addr_q, q_bitpack_call(&bits, &pow2_addr)));
                 let new_q = qwnames[&src.0].clone();
                 let old_q = format!("qwr_{ssa}_old");
                 b1_stmts.push(let_stmt(&old_q, q_slice_index_clone("q_write_olds", write_count, write_k)));
@@ -1516,17 +1571,24 @@ pub fn weave_ts_storage_loop_verifier(
         },
     };
 
-    // ── Block 2: exit — drain both cells, check drain + ordering, send verdict ─
-    let mut b2_stmts: Vec<IrStmt> = vec![let_stmt("qzx", q_const(false))];
-    // drain cell 0: consume (addr=0, q_final_val0, bitpack(q_final_ts0))
-    let qts0: Vec<String> = (0..b).map(|j| format!("q_final_ts0_{j}")).collect();
-    b2_stmts.push(let_stmt("qts_d0", q_bitpack_call(&qts0, &pow2_names)));
-    b2_stmts.push(let_stmt("qfc0", q_absorb_call("fcons", "qzx", "q_final_val0", "qts_d0")));
-    // drain cell 1: consume (addr=1, q_final_val1, bitpack(q_final_ts1))
-    let qts1: Vec<String> = (0..b).map(|j| format!("q_final_ts1_{j}")).collect();
-    b2_stmts.push(let_stmt("qone_x", q_const(true)));
-    b2_stmts.push(let_stmt("qts_d1", q_bitpack_call(&qts1, &pow2_names)));
-    b2_stmts.push(let_stmt("qfc1", q_absorb_call("qfc0", "qone_x", "q_final_val1", "qts_d1")));
+    // ── Block 2: exit — drain all cells, check drain + ordering, send verdict ─
+    let mut b2_stmts: Vec<IrStmt> = vec![
+        let_stmt("qzx", q_const(false)),
+        let_stmt("qone_x", q_const(true)),
+    ];
+    let mut drain_cur = String::from("fcons");
+    for c in 0..cells {
+        let bits = const_addr_bits(c, addr_bits, "qone_x", "qzx");
+        let af = format!("qdraddr_{c}");
+        b2_stmts.push(let_stmt(&af, q_bitpack_call(&bits, &pow2_addr)));
+        let qts_c: Vec<String> = (0..b).map(|j| format!("q_final_ts{c}_{j}")).collect();
+        let tsd = format!("qts_d{c}");
+        b2_stmts.push(let_stmt(&tsd, q_bitpack_call(&qts_c, &pow2_ts)));
+        let nc = format!("qfc{c}");
+        // consume (addr=c, q_final_val_c, bitpack(q_final_ts_c))
+        b2_stmts.push(let_stmt(&nc, q_absorb_call(&drain_cur, &af, &format!("q_final_val{c}"), &tsd)));
+        drain_cur = nc;
+    }
     // recv drain opening + check
     b2_stmts.push(let_stmt("mem_open", transport_call_try("recv_opening", vec![])));
     b2_stmts.push(let_stmt(
@@ -1538,7 +1600,7 @@ pub fn weave_ts_storage_loop_verifier(
                 ],
                 type_args: vec![],
             }),
-            args: vec![ref_expr(var("fprod")), ref_expr(var("qfc1")), ref_expr(var("mem_open"))],
+            args: vec![ref_expr(var("fprod")), ref_expr(var(&drain_cur)), ref_expr(var("mem_open"))],
         },
     ));
     // recv ordering opening + check (order_ok must be committed to 1)
@@ -1848,12 +1910,58 @@ mod tests {
         }
     }
 
+    /// Single-block loop with a 2-bit address: params (ids 0,1)=addr bits,
+    /// (id 2)=value, (id 3)=done. Write(src=w2, addr=[w0,w1]); Read(addr=[w0,w1])
+    /// → id 5. Jmp next state = [w0,w1,w2,read(id5)] (width = num_params 4),
+    /// done = w3.
+    fn build_storage_loop_2bit() -> BIrBlocks {
+        BIrBlocks {
+            blocks: vec![BIrBlock {
+                params: 4,
+                stmts: vec![
+                    BIrStmt::StorageWrite {
+                        storage: StorageId(0),
+                        src: IRVarId(2),
+                        bit_width: 1,
+                        addr: vec![IRVarId(0), IRVarId(1)],
+                    },
+                    BIrStmt::StorageRead {
+                        storage: StorageId(0),
+                        bit_width: 1,
+                        addr: vec![IRVarId(0), IRVarId(1)],
+                    },
+                ],
+                stmt_provs: vec![(), ()],
+                terminator: BIrTerminator::Jmp(BIrTarget {
+                    block: IRBlockTargetId::Return,
+                    args: vec![IRVarId(0), IRVarId(1), IRVarId(2), IRVarId(5), IRVarId(3)],
+                }),
+            }],
+            pre_init: vec![],
+        }
+    }
+
     #[test]
     fn test_storage_loop_compiles() {
         let circuit = build_storage_loop();
         let module = weave_storage_commit_loop_prover(&circuit, "test", None);
         let code = print_storage_loop_module(&module);
         run_compile_check_net(&code, "storage_commit_loop");
+    }
+
+    #[test]
+    fn test_ts_storage_loop_multibit_addr_compiles() {
+        // 2-bit address ⇒ 4 cells of init/drain; ts_bits=3.
+        let circuit = build_storage_loop_2bit();
+        let mp = weave_ts_storage_loop_prover(&circuit, 3, 2, "mb", None);
+        let codep = print_storage_loop_module(&mp);
+        run_compile_check_net(&codep, "ts_storage_loop_prover_2bit");
+        // 4 cells (final_val0..3) materialised; address bit-packed.
+        assert!(codep.contains("final_val3"), "2^addr_bits=4 drain cells");
+        let mv = weave_ts_storage_loop_verifier(&circuit, 3, 2, "mb", None);
+        let codev = print_storage_loop_module(&mv);
+        run_compile_check_net(&codev, "ts_storage_loop_verifier_2bit");
+        assert!(codev.contains("q_final_val3"), "verifier mirrors 4 drain cells");
     }
 
     #[test]
@@ -1882,7 +1990,7 @@ mod tests {
     #[test]
     fn test_ts_storage_loop_prover_compiles() {
         let circuit = build_storage_loop();
-        let module = weave_ts_storage_loop_prover(&circuit, 4, "test", None);
+        let module = weave_ts_storage_loop_prover(&circuit, 4, 1, "test", None);
         let code = print_storage_loop_module(&module);
         run_compile_check_net(&code, "ts_storage_loop_prover");
     }
@@ -1890,7 +1998,7 @@ mod tests {
     #[test]
     fn test_ts_storage_loop_prover_is_sound_shaped() {
         let circuit = build_storage_loop();
-        let module = weave_ts_storage_loop_prover(&circuit, 4, "test", None);
+        let module = weave_ts_storage_loop_prover(&circuit, 4, 1, "test", None);
         let code = print_storage_loop_module(&module);
         // committed-counter ordering gadget + increment lower to hats
         assert!(code.contains("vole_and_prover_step"), "ordering/incr ANDs → hats");
@@ -1904,7 +2012,7 @@ mod tests {
     #[test]
     fn test_ts_storage_loop_verifier_compiles() {
         let circuit = build_storage_loop();
-        let module = weave_ts_storage_loop_verifier(&circuit, 4, "test", None);
+        let module = weave_ts_storage_loop_verifier(&circuit, 4, 1, "test", None);
         let code = print_storage_loop_module(&module);
         run_compile_check_net(&code, "ts_storage_loop_verifier");
     }
@@ -1912,7 +2020,7 @@ mod tests {
     #[test]
     fn test_ts_storage_loop_verifier_checks_drain_and_order() {
         let circuit = build_storage_loop();
-        let module = weave_ts_storage_loop_verifier(&circuit, 4, "test", None);
+        let module = weave_ts_storage_loop_verifier(&circuit, 4, 1, "test", None);
         let code = print_storage_loop_module(&module);
         assert!(code.contains("vole_and_verifier_check"), "gadget ANDs checked");
         assert!(code.contains("mem_acc_absorb_q"), "Q-side multiset absorb");

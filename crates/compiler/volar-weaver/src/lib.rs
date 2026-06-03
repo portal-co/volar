@@ -141,7 +141,8 @@ pub use storage_loop::{
 };
 #[cfg(feature = "net")]
 pub use glue::{
-    weave_continuation_glue_prover, weave_continuation_glue_verifier, print_glue_module, GlueMode,
+    weave_continuation_glue_prover, weave_continuation_glue_verifier, weave_skip_resume_prover,
+    weave_skip_resume_verifier, print_glue_module, GlueMode,
 };
 
 pub use fhe::{

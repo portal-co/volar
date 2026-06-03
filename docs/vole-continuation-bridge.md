@@ -425,8 +425,24 @@ Mechanism:
   `ts_iter_and_count` for the per-iteration AND count / `q_ands` indexing).
 
 The counter is committed (private) rather than the public op-index scheme, so it
-does **not** leak the access-timing pattern. Multi-bit addresses pack the same
-way (`Σ bit_i · 2^i`) and generalise init/drain from 2 cells to `2^addr_bits`.
+does **not** leak the access-timing pattern.
+
+**Multi-bit addresses — SHIPPED.** `weave_ts_storage_loop_{prover,verifier}` take
+an `addr_bits` parameter (`1..=8`). The per-access address is the free linear
+bit-pack `Σ addr_i · 2^i` of the committed address wires (`vope_bitpack` /
+`q_bitpack`); init/drain materialise all `2^addr_bits` cells, whose addresses are
+public constants encoded from the public-`1`/`0` wires (`const_addr_bits`). The
+`pow2` argument is `max(addr_bits, ts_bits)` wide and sliced per use. Cost is
+**exponential in `addr_bits`** (init + drain emit `2^addr_bits` absorbs each), so
+it is practical only for small address widths — wider memories want a sparse
+init/drain (only touched cells) instead, which is the natural follow-up.
+
+**Skip-resume entry — SHIPPED.** `glue::weave_skip_resume_{prover,verifier}` is the
+composition point a driver weaves between a fast-forwarded segment and the resumed
+segment: it re-keys the carried state wires (`XorRekey`) into the resumed segment's
+committed inputs **and** carries `mem_prod`/`mem_cons` unchanged
+(`AdditiveHashCarry`), so the driver feeds the returned wires straight into the
+resumed loop body's `init_w*` + accumulators.
 
 The committed counter starts at `1`, so the all-zero `(0,0,0)` tuple (which the
 no-constant-term `encode` maps to the field zero) cannot be consumed as a phantom

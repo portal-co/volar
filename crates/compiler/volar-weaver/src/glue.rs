@@ -291,6 +291,82 @@ fn finish_module(
     module
 }
 
+// ============================================================================
+// Skip-resume entry — the composite a driver weaves at a skip boundary
+// ============================================================================
+
+/// Weave the **prover** side of a skip-resume entry for an `ell`-wide carried
+/// state plus the two memory-multiset accumulators.
+///
+/// This is the composition point between a fast-forwarded (skipped) segment and
+/// the resumed segment: it re-keys each state wire under a fresh one-time pad
+/// (the `XorRekey` glue — producing the resumed segment's committed initial
+/// state) **and** carries `mem_prod` / `mem_cons` unchanged (the
+/// `AdditiveHashCarry` glue — memory is already succinct, closed later by the
+/// drain).  A driver weaves `[prior segment] → skip_resume → [resumed loop body]`,
+/// feeding the returned wires as the loop body's `init_w*` + accumulators.
+///
+/// Signature:
+/// ```text
+/// fn continuation_glue_resume_<NAME><N,T>(
+///     snapshot_0: Vope, .., key_0: Vope, .., mem_prod: Vope, mem_cons: Vope,
+/// ) -> (Vope, ..ell.., Vope /*mem_prod*/, Vope /*mem_cons*/)
+/// ```
+pub fn weave_skip_resume_prover(
+    ell: usize,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+) -> IrCfgModule {
+    assert!(ell >= 1, "skip-resume needs at least one boundary wire");
+    let (generics, where_clause) = glue_generics_and_where();
+
+    let mut func_params: Vec<IrParam> =
+        (0..ell).map(|i| IrParam { name: format!("snapshot_{i}"), ty: vope_type() }).collect();
+    for i in 0..ell {
+        func_params.push(IrParam { name: format!("key_{i}"), ty: vope_type() });
+    }
+    func_params.push(IrParam { name: "mem_prod".into(), ty: vope_type() });
+    func_params.push(IrParam { name: "mem_cons".into(), ty: vope_type() });
+
+    let mut stmts: Vec<IrStmt> = Vec::new();
+    let mut out_names: Vec<String> = Vec::with_capacity(ell + 2);
+    for i in 0..ell {
+        let nm = format!("rekeyed_{i}");
+        stmts.push(let_stmt(&nm, rekey_prover_call(&format!("snapshot_{i}"), &format!("key_{i}"))));
+        out_names.push(nm);
+    }
+    // Memory accumulators carried unchanged (identity; rebind for uniform return).
+    stmts.push(let_stmt("mp_carry", clone_expr(var("mem_prod"))));
+    stmts.push(let_stmt("mc_carry", clone_expr(var("mem_cons"))));
+    out_names.push("mp_carry".into());
+    out_names.push("mc_carry".into());
+
+    let ret_type = IrType::Tuple(vec![vope_type(); ell + 2]);
+    let block0 = IrCfgBlock {
+        params: vec![],
+        stmts,
+        stmt_provs: vec![],
+        terminator: IrCfgTerminator::Return(Some(IrExpr::Tuple(
+            out_names.iter().map(|n| var(n)).collect(),
+        ))),
+    };
+    finish_module(
+        block0, generics, where_clause, func_params, Some(ret_type),
+        &format!("resume_{name}"), linkage,
+    )
+}
+
+/// Verifier side of the skip-resume entry: checks each state-wire re-key binding
+/// (the memory carry needs no extra check — it is closed by the drain).
+/// Delegates to the `XorRekey` glue verifier.
+pub fn weave_skip_resume_verifier(
+    ell: usize,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+) -> IrCfgModule {
+    weave_continuation_glue_verifier(ell, GlueMode::XorRekey, &format!("resume_{name}"), linkage)
+}
+
 /// Print a continuation-glue CFG module to self-contained Rust source.
 pub fn print_glue_module(module: &IrCfgModule) -> String {
     use volar_compiler::printer::{CfgModuleWriter, DisplayRust};
@@ -336,6 +412,24 @@ mod tests {
         let code = print_glue_module(&m);
         run_compile_check_net(&code, "glue_xor_rekey_verifier");
         assert!(code.contains("vole_rekey_verifier_check("), "binding checked per wire");
+    }
+
+    #[test]
+    fn test_skip_resume_prover_rekeys_state_and_carries_memory() {
+        let m = weave_skip_resume_prover(2, "seg", None);
+        let code = print_glue_module(&m);
+        run_compile_check_net(&code, "skip_resume_prover");
+        assert!(code.contains("vole_rekey_prover("), "state wires re-keyed");
+        assert!(code.contains("mem_prod"), "memory accumulator carried");
+        assert!(code.contains("mem_cons"), "memory accumulator carried");
+    }
+
+    #[test]
+    fn test_skip_resume_verifier_checks_bindings() {
+        let m = weave_skip_resume_verifier(2, "seg", None);
+        let code = print_glue_module(&m);
+        run_compile_check_net(&code, "skip_resume_verifier");
+        assert!(code.contains("vole_rekey_verifier_check("), "bindings checked");
     }
 
     #[test]
