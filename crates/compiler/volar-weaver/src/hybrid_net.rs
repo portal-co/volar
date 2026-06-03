@@ -53,10 +53,10 @@ use crate::{clone_expr, expand_ors, ref_expr, var};
 use crate::net::{
     bool_type, count_and_gates, delta_type, emit_prover_and_gate, hats_slice_expr,
     net_verifier_generics_and_where, net_prover_loop_generics_and_where, ok_expr, q_slice_type,
-    q_type, ref_mut_to, ref_to, result_type, tr_error_type, transport_call_try, vope_bit_call,
-    vope_type,
+    q_type, ref_mut_to, ref_to, result_type, tr_error_type, transport_call_try, usize_type,
+    vope_bit_call, vope_type,
 };
-use crate::storage_loop::zero_vope_expr;
+use crate::storage_loop::{absorb_call, count_storage, slice_index_clone, vope_slice_type, zero_vope_expr};
 
 // ── Local helpers ───────────────────────────────────────────────────────────
 
@@ -187,9 +187,15 @@ fn emit_cleartext_gates(
                 expr: Box::new(var(&names[&a.0])),
             },
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
+            // Storage on the cleartext gap path is **provisional** — the gap is
+            // replayed from the anchor on reconnect, so a placeholder read/write
+            // value here only affects liveness (provisional output), never
+            // soundness.  A StorageRead yields `false`, a StorageWrite a dummy.
+            BIrStmt::StorageRead { .. } | BIrStmt::StorageWrite { .. } => {
+                IrExpr::Lit(IrLit::Bool(false))
+            }
             _ => {
-                // Oracle/Action/Rng/Storage are not supported on the cleartext
-                // gap path; such circuits cannot use the hybrid weaver.
+                // Oracle/Action/Rng are not supported on the cleartext gap path.
                 panic!("hybrid_net cleartext gap: unsupported gate {stmt:?}");
             }
         };
@@ -378,6 +384,7 @@ pub fn weave_hybrid_net_vole_prover(
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
     let (done_id, out_id, next_ids) = analyze_loop_terminator(block);
+    let (read_count, write_count) = count_storage(&expanded);
 
     let (mut generics, where_clause) = net_prover_loop_generics_and_where();
     make_resilient(&mut generics);
@@ -392,6 +399,10 @@ pub fn weave_hybrid_net_vole_prover(
     for i in 0..num_params {
         func_params.push(IrParam { name: format!("init_w{i}"), ty: vope_type() });
     }
+    // Per-iteration committed read values / write old-values for storage absorbs
+    // (indexed `iter * count + k`).  Unused (and empty) for storage-free circuits.
+    func_params.push(IrParam { name: "read_vals".into(), ty: vope_slice_type() });
+    func_params.push(IrParam { name: "write_olds".into(), ty: vope_slice_type() });
     func_params.push(IrParam {
         name: "transport".into(),
         ty: ref_mut_to(IrType::TypeParam("Tr".into())),
@@ -404,13 +415,14 @@ pub fn weave_hybrid_net_vole_prover(
     );
 
     // ── Block 0: entry ─────────────────────────────────────────────────────
-    // Bundle order everywhere: [w_0..w_{ℓ-1}, mem_prod, mem_cons, ts].
+    // Bundle order everywhere: [w_0..w_{ℓ-1}, mem_prod, mem_cons, ts, iter].
     let mut b0_args: Vec<IrExpr> = (0..num_params)
         .map(|i| clone_expr(var(&format!("init_w{i}"))))
         .collect();
     b0_args.push(zero_vope_expr()); // mem_prod
     b0_args.push(zero_vope_expr()); // mem_cons
     b0_args.push(zero_vope_expr()); // ts
+    b0_args.push(IrExpr::Lit(IrLit::Int(0))); // iter
     let block0 = IrCfgBlock {
         params: vec![],
         stmts: vec![],
@@ -425,6 +437,7 @@ pub fn weave_hybrid_net_vole_prover(
     b1_params.push(IrParam { name: "mem_prod".into(), ty: vope_type() });
     b1_params.push(IrParam { name: "mem_cons".into(), ty: vope_type() });
     b1_params.push(IrParam { name: "ts".into(), ty: vope_type() });
+    b1_params.push(IrParam { name: "iter".into(), ty: usize_type() });
     let mut b1_stmts: Vec<IrStmt> = Vec::new();
     let mut wnames = BTreeMap::<u32, String>::new();
     for i in 0..num_params {
@@ -432,6 +445,14 @@ pub fn weave_hybrid_net_vole_prover(
     }
     let mut hat_names: Vec<String> = Vec::new();
     let mut and_counter = 0usize;
+    // Running SSA names for the memory accumulator updated by storage ops; they
+    // start at the input params and chain through each StorageRead/StorageWrite.
+    let mut cur_prod = String::from("mem_prod");
+    let mut cur_cons = String::from("mem_cons");
+    let mut cur_ts = String::from("ts");
+    let mut ssa = 0usize;
+    let mut read_k = 0usize;
+    let mut write_k = 0usize;
     for (result_id, stmt, _) in &expanded {
         let let_name = format!("lw_{}", result_id.0);
         match stmt {
@@ -459,6 +480,50 @@ pub fn weave_hybrid_net_vole_prover(
                 hat_names.push(hat.clone());
                 emit_prover_and_gate(&wnames[&a.0], &wnames[&b.0], &let_name, &hat, &mut b1_stmts);
             }
+            BIrStmt::StorageRead { addr, .. } => {
+                assert_eq!(addr.len(), 1, "hybrid storage: only single-bit addresses supported");
+                let addr_w = wnames[&addr[0].0].clone();
+                let val = format!("rd_{ssa}"); ssa += 1;
+                b1_stmts.push(let_stmt(&val, slice_index_clone("read_vals", read_count, read_k)));
+                read_k += 1;
+                let nc = format!("scons_{ssa}"); ssa += 1;
+                b1_stmts.push(let_stmt(&nc, absorb_call(&cur_cons, &addr_w, &val, &cur_ts)));
+                cur_cons = nc;
+                let nts = format!("sts_{ssa}"); ssa += 1;
+                b1_stmts.push(let_stmt(&nts, IrExpr::Binary {
+                    op: SpecBinOp::Add,
+                    left: Box::new(clone_expr(var(&cur_ts))),
+                    right: Box::new(clone_expr(var("vope_one"))),
+                }));
+                cur_ts = nts;
+                let np = format!("sprod_{ssa}"); ssa += 1;
+                b1_stmts.push(let_stmt(&np, absorb_call(&cur_prod, &addr_w, &val, &cur_ts)));
+                cur_prod = np;
+                wnames.insert(result_id.0, val);
+                continue;
+            }
+            BIrStmt::StorageWrite { src, addr, .. } => {
+                assert_eq!(addr.len(), 1, "hybrid storage: only single-bit addresses supported");
+                let addr_w = wnames[&addr[0].0].clone();
+                let new_w = wnames[&src.0].clone();
+                let old = format!("old_{ssa}"); ssa += 1;
+                b1_stmts.push(let_stmt(&old, slice_index_clone("write_olds", write_count, write_k)));
+                write_k += 1;
+                let nc = format!("scons_{ssa}"); ssa += 1;
+                b1_stmts.push(let_stmt(&nc, absorb_call(&cur_cons, &addr_w, &old, &cur_ts)));
+                cur_cons = nc;
+                let nts = format!("sts_{ssa}"); ssa += 1;
+                b1_stmts.push(let_stmt(&nts, IrExpr::Binary {
+                    op: SpecBinOp::Add,
+                    left: Box::new(clone_expr(var(&cur_ts))),
+                    right: Box::new(clone_expr(var("vope_one"))),
+                }));
+                cur_ts = nts;
+                let np = format!("sprod_{ssa}"); ssa += 1;
+                b1_stmts.push(let_stmt(&np, absorb_call(&cur_prod, &addr_w, &new_w, &cur_ts)));
+                cur_prod = np;
+                b1_stmts.push(let_stmt(&let_name, zero_vope_expr()));
+            }
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
             _ => {
                 wnames.insert(result_id.0, let_name.clone());
@@ -471,36 +536,6 @@ pub fn weave_hybrid_net_vole_prover(
     let done_wire = wnames[&done_id].clone();
     let out_wire = wnames[&out_id].clone();
 
-    // Carried memory accumulator: fold this iteration's output into `mem_prod`
-    // and advance `ts` (a running output digest — `storage_loop.rs` shows the
-    // same accumulator fed by real StorageRead/StorageWrite).  The input
-    // accumulators are *cloned* so the gap branch can still carry the input
-    // values as the replay anchor.
-    let absorb_out = IrExpr::Call {
-        func: Box::new(IrExpr::Path {
-            segments: vec!["volar_spec".into(), "vole".into(), "bridge".into(), "mem_acc_absorb_vope".into()],
-            type_args: vec![],
-        }),
-        args: vec![
-            clone_expr(var("mem_prod")),
-            ref_expr(var(&out_wire)),
-            ref_expr(var(&out_wire)),
-            ref_expr(var("ts")),
-            ref_expr(var("r1")),
-            ref_expr(var("r2")),
-            ref_expr(var("r3")),
-        ],
-    };
-    b1_stmts.push(let_stmt("mem_prod1", absorb_out));
-    b1_stmts.push(let_stmt(
-        "ts1",
-        IrExpr::Binary {
-            op: SpecBinOp::Add,
-            left: Box::new(clone_expr(var("ts"))),
-            right: Box::new(clone_expr(var("vope_one"))),
-        },
-    ));
-
     // let done_bit = volar_net::vope_bit(&done_wire);
     b1_stmts.push(let_stmt("done_bit", vope_bit_call(&done_wire)));
     // let cont = transport.try_send_iteration(&[hats...], done_bit)?;
@@ -509,26 +544,34 @@ pub fn weave_hybrid_net_vole_prover(
         transport_call_try("try_send_iteration", vec![hats_slice_expr(&hat_names), var("done_bit")]),
     ));
 
-    // then -> B2 [done_bit, out.clone(), next..., mem_prod1, mem_cons, ts1]
-    // (continue path carries the *updated* accumulator).
+    // then -> B2 [done_bit, out.clone(), next..., cur_prod, cur_cons, cur_ts, iter+1]
+    // (continue path carries the *updated* accumulator advanced by storage ops).
     let mut b2_args: Vec<IrExpr> = vec![var("done_bit"), clone_expr(var(&out_wire))];
     for id in &next_ids {
         b2_args.push(clone_expr(var(&wnames[&id.0])));
     }
-    b2_args.push(var("mem_prod1"));
-    b2_args.push(clone_expr(var("mem_cons")));
-    b2_args.push(var("ts1"));
+    b2_args.push(var(&cur_prod));
+    b2_args.push(var(&cur_cons));
+    b2_args.push(var(&cur_ts));
+    b2_args.push(IrExpr::Binary {
+        op: SpecBinOp::Add,
+        left: Box::new(var("iter")),
+        right: Box::new(IrExpr::Lit(IrLit::Int(1))),
+    });
 
-    // else (disconnect) -> B4 [anchor w_i.clone()..., mem_prod/cons/ts (INPUT),
-    // plaintext mirror vope_bit(&w_i)..., gap_len=0].  The anchor is the
-    // iteration-INPUT state (this iteration's send failed, so replay re-runs it
-    // and re-absorbs); the verifier still holds the matching Q-shares.
+    // else (disconnect) -> B4 [anchor w_i.clone()..., mem_prod/cons/ts/iter
+    // (INPUT), plaintext mirror vope_bit(&w_i)..., gap_len=0].  The anchor is the
+    // iteration-INPUT state + INPUT accumulator/iter (this iteration's send
+    // failed, so replay re-runs it from the same iter, re-reading the same
+    // read_vals/write_olds and re-absorbing); the verifier still holds the
+    // matching Q-shares.
     let mut b4_args: Vec<IrExpr> = (0..num_params)
         .map(|i| clone_expr(var(&format!("w{i}"))))
         .collect();
     b4_args.push(clone_expr(var("mem_prod")));
     b4_args.push(clone_expr(var("mem_cons")));
     b4_args.push(clone_expr(var("ts")));
+    b4_args.push(var("iter"));
     for i in 0..num_params {
         b4_args.push(vope_bit_call(&format!("w{i}")));
     }
@@ -556,11 +599,13 @@ pub fn weave_hybrid_net_vole_prover(
     b2_params.push(IrParam { name: "mem_prod".into(), ty: vope_type() });
     b2_params.push(IrParam { name: "mem_cons".into(), ty: vope_type() });
     b2_params.push(IrParam { name: "ts".into(), ty: vope_type() });
-    // else (continue) -> B1 [nw..., mem_prod, mem_cons, ts]
+    b2_params.push(IrParam { name: "iter".into(), ty: usize_type() });
+    // else (continue) -> B1 [nw..., mem_prod, mem_cons, ts, iter]
     let mut b1_back: Vec<IrExpr> = (0..num_params).map(|i| var(&format!("nw{i}"))).collect();
     b1_back.push(var("mem_prod"));
     b1_back.push(var("mem_cons"));
     b1_back.push(var("ts"));
+    b1_back.push(var("iter"));
     let block2 = IrCfgBlock {
         params: b2_params,
         stmts: vec![],
@@ -596,9 +641,11 @@ pub fn weave_hybrid_net_vole_prover(
     // state, unchanged) plus a plaintext mirror `p_i` (advanced for liveness).
     // On *any* reconnect the gap is re-proven by replaying from the anchor — no
     // re-commitment, no linking — so the sound bridge reuses the base protocol.
-    // The anchor bundle is [w_0..w_{ℓ-1}, mem_prod, mem_cons, ts] — the same
-    // order as B1's params — so the memory accumulator is carried through every
-    // gap block and restored to B1 on replay (i.e. it survives the network cut).
+    // The anchor bundle is [w_0..w_{ℓ-1}, mem_prod, mem_cons, ts, iter] — the
+    // same order as B1's params — so the memory accumulator AND the iteration
+    // counter are carried through every gap block and restored to B1 on replay
+    // (i.e. memory survives the network cut, and replay re-reads the same
+    // read_vals/write_olds slices).  `_it` is the usize iter; the rest are Vope.
     let aw_params = |prefix: &str| -> Vec<IrParam> {
         let mut v: Vec<IrParam> = (0..num_params)
             .map(|i| IrParam { name: format!("{prefix}{i}"), ty: vope_type() })
@@ -606,6 +653,7 @@ pub fn weave_hybrid_net_vole_prover(
         for suf in ["_mp", "_mc", "_ts"] {
             v.push(IrParam { name: format!("{prefix}{suf}"), ty: vope_type() });
         }
+        v.push(IrParam { name: format!("{prefix}_it"), ty: usize_type() });
         v
     };
     let aw_clone_args = |prefix: &str| -> Vec<IrExpr> {
@@ -615,6 +663,7 @@ pub fn weave_hybrid_net_vole_prover(
         for suf in ["_mp", "_mc", "_ts"] {
             v.push(clone_expr(var(&format!("{prefix}{suf}"))));
         }
+        v.push(var(&format!("{prefix}_it")));
         v
     };
     let aw_move_args = |prefix: &str| -> Vec<IrExpr> {
@@ -622,6 +671,7 @@ pub fn weave_hybrid_net_vole_prover(
         for suf in ["_mp", "_mc", "_ts"] {
             v.push(var(&format!("{prefix}{suf}")));
         }
+        v.push(var(&format!("{prefix}_it")));
         v
     };
 
@@ -992,7 +1042,6 @@ mod tests {
         // Memory accumulator carried through the gap (survives the cut):
         assert!(code.contains("mem_prod"), "expected carried produce accumulator");
         assert!(code.contains("mem_cons"), "expected carried consume accumulator");
-        assert!(code.contains("mem_acc_absorb_vope"), "expected in-circuit absorb");
     }
 
     #[test]
@@ -1005,5 +1054,49 @@ mod tests {
         // restored to the ZK body on replay; the prover returns it as a triple.
         assert!(code.contains("_mp") && code.contains("_mc") && code.contains("_ts"),
             "expected accumulator carried through gap blocks as anchor bundle");
+    }
+
+    /// Storage-bearing loop (1-bit address): Write(w1 @ w0); v = Read(@ w0).
+    /// Jmp convention: next = [w0, w1, v(id4)], done = w2.
+    fn build_storage_hybrid_loop() -> BIrBlocks {
+        use volar_ir::boolar::{BIrBlock, BIrStmt, BIrTarget, BIrTerminator};
+        use volar_ir::ir::{IRBlockTargetId, StorageId};
+        BIrBlocks {
+            blocks: vec![BIrBlock {
+                params: 3,
+                stmts: vec![
+                    BIrStmt::StorageWrite {
+                        storage: StorageId(0), src: IRVarId(1), bit_width: 1, addr: vec![IRVarId(0)],
+                    },
+                    BIrStmt::StorageRead {
+                        storage: StorageId(0), bit_width: 1, addr: vec![IRVarId(0)],
+                    },
+                ],
+                stmt_provs: vec![(), ()],
+                terminator: BIrTerminator::Jmp(BIrTarget {
+                    block: IRBlockTargetId::Return,
+                    args: vec![IRVarId(0), IRVarId(1), IRVarId(4), IRVarId(2)],
+                }),
+            }],
+            pre_init: vec![],
+        }
+    }
+
+    #[test]
+    fn test_hybrid_storage_unified() {
+        // The unified weaver: storage absorbs in the ZK body + accumulator
+        // carried through the gap + transport, all in one prover.
+        let circuit = build_storage_hybrid_loop();
+        let module = weave_hybrid_net_vole_prover(&circuit, "test", None);
+        let code = print_hybrid_net_cfg_module(&module);
+        run_compile_check_net(&code, "hybrid_storage_unified");
+        // Real storage absorbs present, fed by the per-iteration slices:
+        assert!(code.contains("mem_acc_absorb_vope"), "expected in-circuit storage absorb");
+        assert!(code.contains("read_vals"), "expected read-value slice");
+        assert!(code.contains("write_olds"), "expected write old-value slice");
+        // And still resilient (gap + replay) with the accumulator carried:
+        assert!(code.contains("try_reconnect") && code.contains("prover_bridge"),
+            "expected gap/resume handling");
+        assert!(code.contains("_mp"), "expected accumulator carried through gap");
     }
 }

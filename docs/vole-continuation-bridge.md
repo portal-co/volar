@@ -292,18 +292,26 @@ pub trait ResilientVoleTransport<N: ArraySize, T>: VoleTransport<N, T> {
   output as a stand-in; `storage_loop.rs` shows the same accumulator fed by real
   `StorageRead`/`StorageWrite`.)
 
+- **Unified prover (DONE).** `hybrid_net.rs` now does it all in one weaver: the
+  ZK body (B1) performs **real** storage absorbs (`StorageRead`/`StorageWrite`
+  fed by per-iteration `read_vals`/`write_olds` slices indexed by a carried
+  `iter`) alongside AND/hats + transport, while the accumulator `mem_prod`/
+  `mem_cons`/`ts` **and** `iter` are carried through the gap as the anchor bundle
+  and restored on replay (so replay re-reads the same slices and re-absorbs).
+  The cleartext gap path tolerates storage as a *provisional* placeholder (reads
+  → `false`), which is sound because the gap is replayed from the anchor.
+  Single-bit address. Tested by `test_hybrid_storage_unified`.
+
 **Not yet built — remaining integration (specified here):**
-- **Unify the two absorb sites.** `storage_loop` absorbs real storage ops
-  (with per-iteration `read_vals`/`write_olds` slices + `iter` indexing) but no
-  transport/gap; `hybrid_net` carries the accumulator through the gap but absorbs
-  a placeholder output digest. The union — storage slices + AND/hat + transport +
-  gap — is the same CFG shape with both absorb sites wired in.
 - **Full read-consistency soundness.** Per-cell last-write-timestamp bookkeeping
   so a read consumes the exact `(addr, value, write_ts)` tuple, plus a final
-  drain (about *which tuples to absorb*, not the carry, which is done and sound).
+  drain (about *which tuples to absorb*, not the carry, which is done and sound);
+  multi-bit address packing (`Σ bit_i · 2^i`, a free linear combine).
 - **Verifier-side accumulator.** The verifier currently returns `bool`; mirroring
   the carried `mem_prod`/`mem_cons` and the offline `mem_prod == mem_cons` drain
   check on the verifier side completes the two-party picture.
+- **C2/C3** (`ContinuationGlue` + `lower_to_circuit` dynamic skip) and the
+  **VCB-IVC folding frontier** (gate succinctness) remain as specified above.
 - **`ContinuationGlue` + dynamic skip in `lower_to_circuit`.** The shared
   "bind pre-skip → post-skip committed state" helper (additive-hash carry for the
   bridge; `vole_rekey_*` XOR-key binding for the non-bridge skip) and the dynamic

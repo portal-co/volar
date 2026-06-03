@@ -120,7 +120,11 @@ pub(crate) fn zero_vope_expr() -> IrExpr {
     }
 }
 
-/// `volar_spec::vole::bridge::mem_acc_absorb_vope(acc, &addr, &value, &ts, &r1, &r2, &r3)`
+/// `volar_spec::vole::bridge::mem_acc_absorb_vope(acc.clone(), &addr, &value, &ts, &r1, &r2, &r3)`
+///
+/// The accumulator is **cloned** so the input value remains available — the
+/// hybrid weaver needs it as the gap replay anchor (the extra clone is free in
+/// the storage-only loop, which has a single path).
 pub(crate) fn absorb_call(acc: &str, addr: &str, value: &str, ts: &str) -> IrExpr {
     IrExpr::Call {
         func: Box::new(IrExpr::Path {
@@ -133,7 +137,7 @@ pub(crate) fn absorb_call(acc: &str, addr: &str, value: &str, ts: &str) -> IrExp
             type_args: vec![],
         }),
         args: vec![
-            var(acc),
+            clone_expr(var(acc)),
             ref_expr(var(addr)),
             ref_expr(var(value)),
             ref_expr(var(ts)),
