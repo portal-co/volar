@@ -70,6 +70,8 @@ pub mod net;
 pub mod hybrid_net;
 #[cfg(feature = "net")]
 pub mod storage_loop;
+#[cfg(feature = "net")]
+pub mod glue;
 
 // Re-export the most commonly used public items from each submodule.
 pub use garble::{
@@ -136,6 +138,10 @@ pub use hybrid_net::{
 pub use storage_loop::{
     weave_storage_commit_loop_prover, weave_ts_storage_loop_prover, weave_ts_storage_loop_verifier,
     weave_lt_check, weave_lt_check_verifier, print_storage_loop_module,
+};
+#[cfg(feature = "net")]
+pub use glue::{
+    weave_continuation_glue_prover, weave_continuation_glue_verifier, print_glue_module, GlueMode,
 };
 
 pub use fhe::{

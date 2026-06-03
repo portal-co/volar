@@ -24,6 +24,18 @@
 //! - Each iteration replicates the original gate list.
 //! - Each output bit requires 1 AND + 2 XOR per MUX level.
 //! - The done-OR cascade adds 4 gates (NOT, NOT, AND, NOT) per additional iteration.
+//!
+//! # Dynamic skip & the continuation binding (VCB §C)
+//!
+//! This pass is purely **Boolar** (boolean gates); it has no notion of VOLE
+//! commitments.  The "dynamic skip" continuation — fast-forwarding a segment and
+//! resuming a *fresh* committed segment bound to the prior one — therefore does
+//! **not** live here: the binding is a VOLE-level (XOR-key re-commitment + free
+//! linear check) concern emitted by `volar_weaver::glue::weave_continuation_glue_*`
+//! at the segment boundary.  The only thing this pass needs to hand off is the
+//! boundary's **carried-state width** (the `ell` the glue re-keys); that is what
+//! [`lower_to_circuit_with_boundary`] returns alongside the lowered circuit.
+//! Static lowering ([`lower_to_circuit`]) is unchanged.
 
 use volar_ir::{
     boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
@@ -170,6 +182,43 @@ pub fn lower_to_circuit<P: Clone + Default>(blocks: &BIrBlocks<P>, limit: u32, m
     };
 
     BIrBlocks { blocks: vec![out_block], pre_init: vec![] }
+}
+
+/// Boundary metadata for binding a lowered (skipped) segment to a resumed
+/// segment via the VOLE continuation glue
+/// (`volar_weaver::glue::weave_continuation_glue_*`).
+///
+/// The skip binding re-keys the segment's carried state under a fresh one-time
+/// pad and proves the link with a free linear check; this struct reports how
+/// wide that carried state is so the caller can size the glue (`ell =
+/// state_width`) without re-deriving it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct SkipBoundary {
+    /// Number of carried state wires at the segment boundary — the `ell` the
+    /// XOR-key re-commitment glue re-keys.
+    pub state_width: usize,
+    /// Whether a termination/done flag is prepended to the lowered outputs.
+    pub has_done_flag: bool,
+}
+
+/// Lower as [`lower_to_circuit`], additionally returning the [`SkipBoundary`] so
+/// a caller can attach the dynamic-skip continuation glue at the segment
+/// boundary.  Static lowering behaviour is identical to [`lower_to_circuit`].
+pub fn lower_to_circuit_with_boundary<P: Clone + Default>(
+    blocks: &BIrBlocks<P>,
+    limit: u32,
+    mode: LoweringMode,
+) -> (BIrBlocks<P>, SkipBoundary) {
+    let circuit = lower_to_circuit(blocks, limit, mode);
+    let has_done_flag = mode == LoweringMode::WithTerminationFlag;
+    // The single output block returns `[done?] ++ state`; the carried state is
+    // everything but the optional leading done flag.
+    let ret_len = match &circuit.blocks[0].terminator {
+        BIrTerminator::Jmp(t) => t.args.len(),
+        _ => 0,
+    };
+    let state_width = ret_len.saturating_sub(has_done_flag as usize);
+    (circuit, SkipBoundary { state_width, has_done_flag })
 }
 
 // ============================================================================
@@ -432,12 +481,25 @@ mod tests {
     }
 
     #[test]
+    fn test_skip_boundary_reports_state_width() {
+        let blocks = build_simple_loop(); // 1 state wire
+        let (circ_u, b_u) = lower_to_circuit_with_boundary(&blocks, 3, LoweringMode::Unconditional);
+        assert!(circ_u.is_circuit());
+        assert_eq!(b_u.state_width, 1, "one carried state wire");
+        assert!(!b_u.has_done_flag);
+        // WithTerminationFlag prepends a done flag; carried state width is unchanged.
+        let (_circ_f, b_f) = lower_to_circuit_with_boundary(&blocks, 3, LoweringMode::WithTerminationFlag);
+        assert_eq!(b_f.state_width, 1, "done flag excluded from state width");
+        assert!(b_f.has_done_flag);
+    }
+
+    #[test]
     fn test_lower_simple_loop_is_circuit() {
         let blocks = build_simple_loop();
         assert!(!blocks.is_circuit(), "precondition: not yet a circuit");
         let lowered = lower_to_circuit(&blocks, 3, LoweringMode::Unconditional);
         assert!(lowered.is_circuit(), "lowered result must satisfy is_circuit()");
-        assert_eq!(lowered.0[0].params, 1, "param count must be preserved");
+        assert_eq!(lowered.blocks[0].params, 1, "param count must be preserved");
     }
 
     #[test]
@@ -445,7 +507,7 @@ mod tests {
         let blocks = build_simple_loop();
         let lowered = lower_to_circuit(&blocks, 3, LoweringMode::Unconditional);
         // Unconditional: return has exactly 1 arg (same as original return width).
-        match &lowered.0[0].terminator {
+        match &lowered.blocks[0].terminator {
             BIrTerminator::Jmp(t) => {
                 assert_eq!(
                     t.args.len(),
@@ -464,7 +526,7 @@ mod tests {
         let lowered = lower_to_circuit(&blocks, 3, LoweringMode::WithTerminationFlag);
         assert!(lowered.is_circuit());
         // WithTerminationFlag: return has 1 extra arg (done flag) prepended.
-        match &lowered.0[0].terminator {
+        match &lowered.blocks[0].terminator {
             BIrTerminator::Jmp(t) => {
                 assert_eq!(
                     t.args.len(),
@@ -492,7 +554,7 @@ mod tests {
         let l3 = lower_to_circuit(&blocks, 3, LoweringMode::Unconditional);
         let l6 = lower_to_circuit(&blocks, 6, LoweringMode::Unconditional);
         assert!(
-            l6.0[0].stmts.len() > l3.0[0].stmts.len(),
+            l6.blocks[0].stmts.len() > l3.blocks[0].stmts.len(),
             "more iterations → more gates"
         );
     }
@@ -538,7 +600,7 @@ mod tests {
         let lowered = lower_to_circuit(&blocks, 1, LoweringMode::Unconditional);
         assert!(lowered.is_circuit());
         // Output width = 1 (one return arg from each branch).
-        match &lowered.0[0].terminator {
+        match &lowered.blocks[0].terminator {
             BIrTerminator::Jmp(t) => assert_eq!(t.args.len(), 1),
             _ => panic!(),
         }

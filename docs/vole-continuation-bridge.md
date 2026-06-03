@@ -321,12 +321,20 @@ pub trait ResilientVoleTransport<N: ArraySize, T>: VoleTransport<N, T> {
   **gadget** (§9). The gadget itself (`emit_lt`) is **built and exhaustively
   tested** (`gadgets.rs`); the weaver integration (bit-vector timestamps,
   per-cell last-write-ts consume, init/drain) is specified in §9.
-- **C2/C3** (`ContinuationGlue` + `lower_to_circuit` dynamic skip) and the
-  **VCB-IVC folding frontier** (gate succinctness) remain as specified above.
-- **`ContinuationGlue` + dynamic skip in `lower_to_circuit`.** The shared
-  "bind pre-skip → post-skip committed state" helper (additive-hash carry for the
-  bridge; `vole_rekey_*` XOR-key binding for the non-bridge skip) and the dynamic
-  (`m` known at runtime) skip entry depend on the loop-carried-memory model above.
+- **C2/C3 — SHIPPED.** `volar_weaver::glue::weave_continuation_glue_{prover,verifier}`
+  (`GlueMode::{AdditiveHashCarry, XorRekey}`) is the shared "bind pre-skip →
+  post-skip committed state" helper, compile-checked:
+  - `XorRekey` (dynamic skip): per boundary wire `rekeyed = vole_rekey_prover(snapshot,
+    key)` (free `Add`/XOR), bound by `vole_rekey_verifier_check`
+    (`q_rekeyed == q_snapshot + q_key`, no `Δ`). Keys are fresh commitments from
+    `ResilientVoleTransport::fresh_commit`.
+  - `AdditiveHashCarry` (bridge / replay-from-anchor): identity carry — nothing to
+    re-commit (the same anchor is replayed; consistency closed by the drain).
+  - **Layering (important):** the binding is VOLE-level, so it is **not** injected
+    into the Boolar-only `lower_to_circuit`. That pass instead exposes
+    `lower_to_circuit_with_boundary` → `SkipBoundary { state_width, has_done_flag }`,
+    handing the glue its `ell` (= carried-state width). Static lowering unchanged.
+- **VCB-IVC folding frontier** (gate succinctness) remains as specified above.
 - **VCB-IVC gate succinctness (§3.3).** Needs a new `volar-fold` crate (no
   folding/IVC exists in the repo). The boundary linking reuses the same free
   linear check as `vole_rekey_verifier_check`. Until then, VCB-RX gives sound

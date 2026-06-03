@@ -636,8 +636,8 @@ mod tests {
     fn passthrough_zero_params() {
         let (blocks, types) = make_passthrough(0);
         let lowered = lower_ir_to_boolar::<()>(&blocks, &types);
-        assert_eq!(lowered.0.len(), 1);
-        let b = &lowered.0[0];
+        assert_eq!(lowered.blocks.len(), 1);
+        let b = &lowered.blocks[0];
         assert_eq!(b.params, 0);
         assert_eq!(b.stmts.len(), 0);
     }
@@ -646,7 +646,7 @@ mod tests {
     fn passthrough_three_bit_params() {
         let (blocks, types) = make_passthrough(3);
         let lowered = lower_ir_to_boolar::<()>(&blocks, &types);
-        let b = &lowered.0[0];
+        let b = &lowered.blocks[0];
         // 3 Bit params → 3 Boolar params.
         assert_eq!(b.params, 3);
         assert_eq!(b.stmts.len(), 0);
@@ -669,7 +669,7 @@ mod tests {
         let blocks = IRBlocks::<()>::new(std::vec![block]);
         let lowered = lower_ir_to_boolar::<()>(&blocks, &types);
         // One u8 param → 8 Boolar bit params.
-        assert_eq!(lowered.0[0].params, 8);
+        assert_eq!(lowered.blocks[0].params, 8);
     }
 
     // -- Const statement ------------------------------------------------------
@@ -692,7 +692,7 @@ mod tests {
 
         let blocks = IRBlocks::new(std::vec![block]);
         let lowered = lower_ir_to_boolar::<()>(&blocks, &types);
-        let b = &lowered.0[0];
+        let b = &lowered.blocks[0];
         // 1-bit const zero → exactly one BIrStmt::Zero.
         assert_eq!(b.stmts.len(), 1);
         assert_eq!(b.stmts[0], BIrStmt::Zero);
@@ -718,7 +718,7 @@ mod tests {
 
         let blocks = IRBlocks::new(std::vec![block]);
         let lowered = lower_ir_to_boolar::<()>(&blocks, &types);
-        let b = &lowered.0[0];
+        let b = &lowered.blocks[0];
         assert_eq!(b.stmts.len(), 8);
         // LSB first: bit 0 = 1 → One.
         assert_eq!(b.stmts[0], BIrStmt::One);
@@ -757,7 +757,7 @@ mod tests {
         };
         let blocks = IRBlocks::new(std::vec![block]);
         let lowered = lower_ir_to_boolar::<()>(&blocks, &types);
-        let b = &lowered.0[0];
+        let b = &lowered.blocks[0];
         // Transmute emits zero new stmts; only the 8 from the Const.
         assert_eq!(b.stmts.len(), 8);
     }
@@ -804,7 +804,7 @@ mod tests {
         };
         let blocks = IRBlocks::new(std::vec![block]);
         let lowered = lower_ir_to_boolar::<()>(&blocks, &types);
-        let b = &lowered.0[0];
+        let b = &lowered.blocks[0];
         // 2 AES8 params = 16 boolar param bits. Each of the 8 output bits is
         // one Xor — so 8 stmts emitted.
         assert_eq!(b.params, 16);
@@ -849,7 +849,7 @@ mod tests {
         };
         let blocks = IRBlocks::new(std::vec![block]);
         let lowered = lower_ir_to_boolar::<u32>(&blocks, &types);
-        let b = &lowered.0[0];
+        let b = &lowered.blocks[0];
         // The single Const(Bit, 0) emits one Zero stmt with provenance 42.
         assert_eq!(b.stmt_provs.len(), 1);
         assert_eq!(b.stmt_provs[0], 42u32);
