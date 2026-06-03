@@ -93,31 +93,40 @@ fn bin(op: SpecBinOp, a: &str, b: &str) -> IrExpr {
     IrExpr::Binary { op, left: Box::new(var(a)), right: Box::new(var(b)) }
 }
 
-/// `volar_net::recommit_bit(&vope_one, {bit_name})`
-fn recommit_call(bit_name: &str) -> IrExpr {
+/// `Vec::new()`
+fn vec_new() -> IrExpr {
     IrExpr::Call {
-        func: Box::new(IrExpr::Path {
-            segments: vec!["volar_net".into(), "recommit_bit".into()],
-            type_args: vec![],
-        }),
-        args: vec![ref_expr(var("vope_one")), var(bit_name)],
+        func: Box::new(IrExpr::Path { segments: vec!["Vec".into(), "new".into()], type_args: vec![] }),
+        args: vec![],
     }
 }
 
-/// `volar_net::ResumeToken { resume_state: Vec::from([rw0.clone(), ...]) }`
-fn resume_token_expr(rw_names: &[String]) -> IrExpr {
-    let arr = IrExpr::FixedArray(rw_names.iter().map(|n| clone_expr(var(n))).collect());
-    let vecf = IrExpr::Call {
-        func: Box::new(IrExpr::Path {
-            segments: vec!["Vec".into(), "from".into()],
-            type_args: vec![],
-        }),
-        args: vec![arr],
+/// `volar_net::ResumeToken { resume_state: Vec::from([w0.clone(), ...]), mem_acc: Vec::new() }`
+///
+/// `state_names` are the anchor (or fresh) live-state wires; `mem_acc_names` are
+/// the carried memory-accumulator wires (empty for storage-free circuits).
+fn resume_token_expr(state_names: &[String], mem_acc_names: &[String]) -> IrExpr {
+    let mk_vec = |names: &[String]| -> IrExpr {
+        if names.is_empty() {
+            vec_new()
+        } else {
+            let arr = IrExpr::FixedArray(names.iter().map(|n| clone_expr(var(n))).collect());
+            IrExpr::Call {
+                func: Box::new(IrExpr::Path {
+                    segments: vec!["Vec".into(), "from".into()],
+                    type_args: vec![],
+                }),
+                args: vec![arr],
+            }
+        }
     };
     IrExpr::StructExpr {
         kind: StructKind::Custom("volar_net::ResumeToken".into()),
         type_args: vec![],
-        fields: vec![("resume_state".into(), vecf)],
+        fields: vec![
+            ("resume_state".into(), mk_vec(state_names)),
+            ("mem_acc".into(), mk_vec(mem_acc_names)),
+        ],
         rest: None,
     }
 }
@@ -457,9 +466,17 @@ pub fn weave_hybrid_net_vole_prover(
     for id in &next_ids {
         b2_args.push(clone_expr(var(&wnames[&id.0])));
     }
-    // else (disconnect) -> B4 [vope_bit(&next0), ..., gap_len=0]
-    let mut b4_args: Vec<IrExpr> =
-        next_ids.iter().map(|id| vope_bit_call(&wnames[&id.0])).collect();
+    // else (disconnect) -> B4 [anchor w_i.clone()..., plaintext mirror
+    // vope_bit(&w_i)..., gap_len=0].  The anchor is the iteration-INPUT state
+    // (this iteration's send failed, so replay re-runs it); the verifier still
+    // holds the matching Q-shares.  The plaintext mirror advances during the gap
+    // for liveness only — on reconnect the gap is replayed from the anchor.
+    let mut b4_args: Vec<IrExpr> = (0..num_params)
+        .map(|i| clone_expr(var(&format!("w{i}"))))
+        .collect();
+    for i in 0..num_params {
+        b4_args.push(vope_bit_call(&format!("w{i}")));
+    }
     b4_args.push(IrExpr::Lit(IrLit::Int(0)));
 
     let block1 = IrCfgBlock {
@@ -501,26 +518,38 @@ pub fn weave_hybrid_net_vole_prover(
         terminator: IrCfgTerminator::Return(Some(ok_expr(var("output")))),
     };
 
-    // ── Block 4: gap body (one cleartext iteration) ────────────────────────
-    let mut b4_params: Vec<IrParam> = (0..num_params)
-        .map(|i| IrParam { name: format!("p{i}"), ty: bool_type() })
-        .collect();
+    // The gap blocks carry the **anchor** Vope wires `aw_i` (the iteration-input
+    // state, unchanged) plus a plaintext mirror `p_i` (advanced for liveness).
+    // On *any* reconnect the gap is re-proven by replaying from the anchor — no
+    // re-commitment, no linking — so the sound bridge reuses the base protocol.
+    let aw_params = |prefix: &str| -> Vec<IrParam> {
+        (0..num_params).map(|i| IrParam { name: format!("{prefix}{i}"), ty: vope_type() }).collect()
+    };
+    let aw_clone_args = |prefix: &str| -> Vec<IrExpr> {
+        (0..num_params).map(|i| clone_expr(var(&format!("{prefix}{i}")))).collect()
+    };
+    let aw_move_args = |prefix: &str| -> Vec<IrExpr> {
+        (0..num_params).map(|i| var(&format!("{prefix}{i}"))).collect()
+    };
+
+    // ── Block 4: gap body (one cleartext iteration; anchor carried) ────────
+    let mut b4_params: Vec<IrParam> = aw_params("aw");
+    b4_params.extend((0..num_params).map(|i| IrParam { name: format!("p{i}"), ty: bool_type() }));
     b4_params.push(IrParam { name: "gap_len".into(), ty: u32_type() });
 
     let mut b4_stmts: Vec<IrStmt> = Vec::new();
     let pnames = emit_cleartext_gates(&expanded, num_params, "p", "g_", &mut b4_stmts);
     let pdone = pnames[&done_id].clone();
-    let pout = pnames[&out_id].clone();
     b4_stmts.push(let_stmt("gl2", incr("gap_len")));
     b4_stmts.push(let_stmt("reconnected", transport_call_try("try_reconnect", vec![])));
 
-    // then (reconnected) -> B5 [pnext..., gl2]
-    let mut b5_args: Vec<IrExpr> = next_ids.iter().map(|id| var(&pnames[&id.0])).collect();
+    // then (reconnected) -> B5 [aw..., gl2]   (replay from anchor)
+    let mut b5_args: Vec<IrExpr> = aw_clone_args("aw");
     b5_args.push(var("gl2"));
-    // else -> B6 [pnext..., pdone, pout, gl2]
-    let mut b6_args: Vec<IrExpr> = next_ids.iter().map(|id| var(&pnames[&id.0])).collect();
+    // else -> B6 [aw..., pnext..., pdone, gl2]   (carry anchor + advanced mirror)
+    let mut b6_args: Vec<IrExpr> = aw_clone_args("aw");
+    b6_args.extend(next_ids.iter().map(|id| var(&pnames[&id.0])));
     b6_args.push(var(&pdone));
-    b6_args.push(var(&pout));
     b6_args.push(var("gl2"));
 
     let block4 = IrCfgBlock {
@@ -534,38 +563,32 @@ pub fn weave_hybrid_net_vole_prover(
         },
     };
 
-    // ── Block 5: resume (re-commit + bridge, re-enter ZK body) ─────────────
-    let mut b5_params: Vec<IrParam> = (0..num_params)
-        .map(|i| IrParam { name: format!("rp{i}"), ty: bool_type() })
-        .collect();
+    // ── Block 5: resume — bridge handshake, replay ZK body from anchor ─────
+    let mut b5_params: Vec<IrParam> = aw_params("rw");
     b5_params.push(IrParam { name: "gl".into(), ty: u32_type() });
-
-    let mut b5_stmts: Vec<IrStmt> = Vec::new();
     let rw_names: Vec<String> = (0..num_params).map(|i| format!("rw{i}")).collect();
-    for i in 0..num_params {
-        b5_stmts.push(let_stmt(&rw_names[i], recommit_call(&format!("rp{i}"))));
-    }
-    b5_stmts.push(let_stmt("token", resume_token_expr(&rw_names)));
+    let mut b5_stmts: Vec<IrStmt> = Vec::new();
+    b5_stmts.push(let_stmt("token", resume_token_expr(&rw_names, &[])));
     b5_stmts.push(IrStmt::Semi(transport_call_try(
         "prover_bridge",
         vec![ref_expr(var("token")), var("gl")],
     )));
-    let b5_back: Vec<IrExpr> = rw_names.iter().map(|n| var(n)).collect();
     let block5 = IrCfgBlock {
         params: b5_params,
         stmts: b5_stmts,
         stmt_provs: vec![],
-        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b5_back }),
+        // Goto B1 with the anchor wires → replay the gap iterations under VOLE.
+        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: aw_move_args("rw") }),
     };
 
     // ── Block 6: gap dispatch (finished-offline vs continue gap) ───────────
-    let mut b6_params: Vec<IrParam> = (0..num_params)
-        .map(|i| IrParam { name: format!("gp{i}"), ty: bool_type() })
-        .collect();
+    let mut b6_params: Vec<IrParam> = aw_params("gw");
+    b6_params.extend((0..num_params).map(|i| IrParam { name: format!("gp{i}"), ty: bool_type() }));
     b6_params.push(IrParam { name: "gpdone".into(), ty: bool_type() });
-    b6_params.push(IrParam { name: "gpout".into(), ty: bool_type() });
     b6_params.push(IrParam { name: "gl".into(), ty: u32_type() });
-    let mut b4_cont_args: Vec<IrExpr> = (0..num_params).map(|i| var(&format!("gp{i}"))).collect();
+    // continue gap -> B4 [gw..., gp..., gl]
+    let mut b4_cont_args: Vec<IrExpr> = aw_clone_args("gw");
+    b4_cont_args.extend((0..num_params).map(|i| var(&format!("gp{i}"))));
     b4_cont_args.push(var("gl"));
     let block6 = IrCfgBlock {
         params: b6_params,
@@ -573,43 +596,42 @@ pub fn weave_hybrid_net_vole_prover(
         stmt_provs: vec![],
         terminator: IrCfgTerminator::CondGoto {
             cond: var("gpdone"),
-            then_: IrCfgJump { target: 7, args: vec![var("gpout"), var("gl")] },
+            // finished offline -> B7 [gw..., gl] (still must replay on reconnect)
+            then_: IrCfgJump { target: 7, args: { let mut a = aw_clone_args("gw"); a.push(var("gl")); a } },
             else_: IrCfgJump { target: 4, args: b4_cont_args },
         },
     };
 
-    // ── Block 7: offline spin (retry reconnect after offline finish) ───────
+    // ── Block 7: offline spin (retry reconnect, anchor carried) ────────────
+    let mut b7_params: Vec<IrParam> = aw_params("sw");
+    b7_params.push(IrParam { name: "gl".into(), ty: u32_type() });
     let block7 = IrCfgBlock {
-        params: vec![
-            IrParam { name: "fout".into(), ty: bool_type() },
-            IrParam { name: "gl".into(), ty: u32_type() },
-        ],
+        params: b7_params,
         stmts: vec![let_stmt("connected", transport_call_try("try_reconnect", vec![]))],
         stmt_provs: vec![],
         terminator: IrCfgTerminator::CondGoto {
             cond: var("connected"),
-            then_: IrCfgJump { target: 8, args: vec![var("fout"), var("gl")] },
-            else_: IrCfgJump { target: 7, args: vec![var("fout"), var("gl")] },
+            then_: IrCfgJump { target: 8, args: { let mut a = aw_clone_args("sw"); a.push(var("gl")); a } },
+            else_: IrCfgJump { target: 7, args: { let mut a = aw_clone_args("sw"); a.push(var("gl")); a } },
         },
     };
 
-    // ── Block 8: final (re-commit output, bridge, verdict, return) ─────────
+    // ── Block 8: final-resume — bridge handshake, replay from anchor ───────
+    let mut b8_params: Vec<IrParam> = aw_params("fw");
+    b8_params.push(IrParam { name: "gl".into(), ty: u32_type() });
+    let fw_names: Vec<String> = (0..num_params).map(|i| format!("fw{i}")).collect();
     let mut b8_stmts: Vec<IrStmt> = Vec::new();
-    b8_stmts.push(let_stmt("out", recommit_call("ffout")));
-    b8_stmts.push(let_stmt("token", resume_token_expr(&["out".into()])));
+    b8_stmts.push(let_stmt("token", resume_token_expr(&fw_names, &[])));
     b8_stmts.push(IrStmt::Semi(transport_call_try(
         "prover_bridge",
         vec![ref_expr(var("token")), var("gl")],
     )));
-    b8_stmts.push(IrStmt::Semi(transport_call_try("recv_verdict", vec![])));
     let block8 = IrCfgBlock {
-        params: vec![
-            IrParam { name: "ffout".into(), ty: bool_type() },
-            IrParam { name: "gl".into(), ty: u32_type() },
-        ],
+        params: b8_params,
         stmts: b8_stmts,
         stmt_provs: vec![],
-        terminator: IrCfgTerminator::Return(Some(ok_expr(var("out")))),
+        // Replay from anchor even after an offline finish (authoritative proof).
+        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: aw_move_args("fw") }),
     };
 
     let func = IrCfgFunction {
@@ -893,9 +915,9 @@ mod tests {
         assert!(code.contains("vole_and_prover_step") || code.contains("vope_one"),
             "expected ZK gate lowering");
         assert!(code.contains("try_send_iteration"), "expected resilient send");
-        // Cleartext gap path + resumption present:
+        // Cleartext gap path + sound replay-from-anchor resumption present:
         assert!(code.contains("try_reconnect"), "expected reconnect handling");
-        assert!(code.contains("recommit_bit"), "expected cleartext re-commitment");
         assert!(code.contains("prover_bridge"), "expected resumption bridge call");
+        assert!(code.contains("ResumeToken"), "expected resume token construction");
     }
 }

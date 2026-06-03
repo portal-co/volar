@@ -80,3 +80,4 @@ pub mod vope;
 pub use vope::Vope;
 pub mod garble;
 pub mod prove;
+pub mod bridge;

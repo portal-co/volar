@@ -230,22 +230,67 @@ Resume streaming VOLE loop from {K'_j}.
 The generated hybrid code is strategy-agnostic; it calls into the runtime trait:
 
 ```rust
-pub enum SendOutcome { Continue, Disconnect, Fatal }
+pub enum SendOutcome<E> { Continue, Disconnect, Fatal(E) }   // documentation enum
 
-pub struct ResumeToken<N: ArraySize, T> { /* re-committed boundary state + proof material */ }
+pub struct ResumeToken<N: ArraySize, T> {
+    pub resume_state: Vec<Vope<N, T, U1>>,  // anchor (replay) or fresh (re-commit) wires
+    pub mem_acc:      Vec<Vope<N, T, U1>>,  // carried multiset-hash accumulator wires
+}
 
 pub enum GapVerdict { Proven, Unproven { start: u32, end: u32 } }
 
 pub trait ResilientVoleTransport<N: ArraySize, T>: VoleTransport<N, T> {
-    fn try_send_iteration(&mut self, hats: &[Array<T, N>], is_sentinel: bool) -> SendOutcome;
+    // Result<bool>: Ok(true)=sent/continue, Ok(false)=disconnect, Err=fatal.
+    // (Returns Result<bool> rather than the SendOutcome enum because CFG
+    //  terminators are only Return/Goto/CondGoto — see hybrid_net.rs.)
+    fn try_send_iteration(&mut self, hats: &[Array<T, N>], is_sentinel: bool) -> Result<bool, Self::Error>;
     fn try_reconnect(&mut self) -> Result<bool, Self::Error>;
     fn prover_bridge(&mut self, token: &ResumeToken<N, T>, gap_len: u32) -> Result<(), Self::Error>;
     fn verifier_bridge(&mut self, gap_len: u32) -> Result<GapVerdict, Self::Error>;
+    fn fresh_commit(&mut self, bits: &[bool]) -> Result<Vec<Vope<N, T, U1>>, Self::Error>;
 }
 ```
 
-- **Best-effort default:** `prover_bridge` transmits `(ResumeToken, gap_len)`;
-  `verifier_bridge` returns `GapVerdict::Unproven { k, k+gap_len }` and records it.
-- **VCB-RX / VCB-IVC:** implement `prover_bridge` / `verifier_bridge` to run the
-  re-execution or the folding + linking protocol of §3.3, returning
-  `GapVerdict::Proven` on success.
+- **Best-effort default:** `prover_bridge` no-op; `verifier_bridge` returns
+  `GapVerdict::Unproven`. All methods have defaults so a bare
+  `impl ResilientVoleTransport for X {}` works.
+- **VCB-RX (shipped path):** generated code replays from the anchor, so the
+  transport's `prover_bridge` only re-synchronises the channel; a sound transport
+  returns `GapVerdict::Proven` from `verifier_bridge`.
+
+---
+
+## 8. Implementation status & remaining integration (this repo)
+
+**Built and tested:**
+- `volar_net::ResilientVoleTransport` (+ `SendOutcome`, `ResumeToken { resume_state,
+  mem_acc }`, `GapVerdict`, `fresh_commit`, placeholder `recommit_bit`).
+- `hybrid_net.rs` prover CFG implements **sound replay-from-anchor (VCB-RX)**: the
+  pre-gap anchor wires are carried through the gap blocks and the gap is re-proven
+  by re-entering the ZK loop body from them on reconnect — no placeholder
+  re-commitment in the bridge path.
+- `volar_spec::vole::bridge`: `vole_rekey_prover` / `vole_rekey_verifier_check`
+  (XOR-key re-commitment, free linear check) and `mem_acc_absorb` (additive
+  multiset-hash accumulation) — unit-tested.
+
+**Not yet built — requires new infrastructure (specified here):**
+- **Loop-carried Commitment-mode memory.** Today Commitment-mode storage
+  (`volar-weaver/src/vole.rs`) requires `is_circuit()` (a single, flat block): the
+  `MemoryTrace` + `mem_timestamp` are accumulated at **weave time** for a flat
+  circuit and checked **offline**. The loop weavers (`weave_*_loop`,
+  `weave_hybrid_net_*`) are storage-free. Carrying the multiset hash across loop
+  iterations as the `mem_produce`/`mem_consume` VOLE wires (so it survives a gap)
+  therefore needs: (1) a storage-aware loop weaver, and (2) converting the offline
+  trace into an **in-circuit running accumulator** threaded through the loop's
+  live state (and into `ResumeToken.mem_acc`). The primitive (`mem_acc_absorb`)
+  and the `ResumeToken.mem_acc` slot are in place; the weaver wiring + a
+  storage-bearing loop test fixture are the remaining work.
+- **`ContinuationGlue` + dynamic skip in `lower_to_circuit`.** The shared
+  "bind pre-skip → post-skip committed state" helper (additive-hash carry for the
+  bridge; `vole_rekey_*` XOR-key binding for the non-bridge skip) and the dynamic
+  (`m` known at runtime) skip entry depend on the loop-carried-memory model above.
+- **VCB-IVC gate succinctness (§3.3).** Needs a new `volar-fold` crate (no
+  folding/IVC exists in the repo). The boundary linking reuses the same free
+  linear check as `vole_rekey_verifier_check`. Until then, VCB-RX gives sound
+  resumption with **memory already succinct in cell count** (single accumulator),
+  just not gate-succinct in the gap length `m`.

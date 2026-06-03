@@ -166,8 +166,16 @@ pub enum SendOutcome<E> {
 /// carries the boundary commitments / folding proof (see the design doc); those
 /// fields are added by the concrete strategy implementation.
 pub struct ResumeToken<N: ArraySize, T> {
-    /// Fresh VOLE commitments to the resumed live state wires.
+    /// The resumed live-state wires. For the sound replay-from-anchor bridge
+    /// these are the *anchor* wires (the iteration-input state the verifier
+    /// still holds `Q`s for); the gap is then re-proven by replaying from them.
+    /// For a re-commitment strategy they are fresh `Vope` commitments instead.
     pub resume_state: Vec<Vope<N, T, U1>>,
+    /// Carried multiset-hash memory accumulator wires (`mem_produce`,
+    /// `mem_consume`) in Commitment storage mode — a single field element each,
+    /// so memory is carried across the gap in O(1) regardless of cell count.
+    /// Empty when the circuit has no committed storage.
+    pub mem_acc: Vec<Vope<N, T, U1>>,
 }
 
 /// Whether the unauthenticated gap `[start, end)` was retroactively proven.
@@ -222,6 +230,23 @@ pub trait ResilientVoleTransport<N: ArraySize, T>: VoleTransport<N, T> {
     /// its absolute iteration counter and records the qualified verdict.
     fn verifier_bridge(&mut self, gap_len: u32) -> Result<GapVerdict, Self::Error> {
         Ok(GapVerdict::Unproven { start: 0, end: gap_len })
+    }
+
+    /// Draw `bits.len()` **fresh** VOLE correlations from the transport's setup
+    /// pool and commit each bit, returning the prover-side `Vope` wires.
+    ///
+    /// This is the real re-commitment primitive (cf. the structural
+    /// [`recommit_bit`] placeholder).  The single-process `vole_commit_bit`
+    /// (`volar_spec::vole::setup`) emits *both* halves and so cannot be called
+    /// from two-party generated code; instead the transport owns the prover's
+    /// correlation pool and the verifier obtains the matching `Q`s from its own
+    /// pool during the bridge handshake.
+    ///
+    /// Used by the dynamic-skip / XOR-key re-commitment path
+    /// (`docs/vole-continuation-bridge.md` §C).  The default panics — only
+    /// transports that re-commit (rather than replay from the anchor) need it.
+    fn fresh_commit(&mut self, _bits: &[bool]) -> Result<Vec<Vope<N, T, U1>>, Self::Error> {
+        unimplemented!("fresh_commit: implement for transports that re-commit resumed state")
     }
 }
 
