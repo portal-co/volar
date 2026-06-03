@@ -407,7 +407,7 @@ fn let_stmt(name: &str, init: IrExpr) -> IrStmt {
 }
 
 /// `volar_spec::vole::bridge::vope_bitpack(&[b0.clone(), ..], &[pow2_0.clone(), ..])`
-fn bitpack_call(bits: &[String], pow2: &[String]) -> IrExpr {
+pub(crate) fn bitpack_call(bits: &[String], pow2: &[String]) -> IrExpr {
     let bit_arr = ref_expr(IrExpr::FixedArray(bits.iter().map(|b| clone_expr(var(b))).collect()));
     let pow_arr = ref_expr(IrExpr::FixedArray(pow2.iter().map(|p| clone_expr(var(p))).collect()));
     IrExpr::Call {
@@ -422,7 +422,7 @@ fn bitpack_call(bits: &[String], pow2: &[String]) -> IrExpr {
 }
 
 /// `volar_spec::vole::bridge::q_bitpack(&[q0.clone(), ..], &[pow2_0.clone(), ..])`
-fn q_bitpack_call(bits: &[String], pow2: &[String]) -> IrExpr {
+pub(crate) fn q_bitpack_call(bits: &[String], pow2: &[String]) -> IrExpr {
     let bit_arr = ref_expr(IrExpr::FixedArray(bits.iter().map(|b| clone_expr(var(b))).collect()));
     let pow_arr = ref_expr(IrExpr::FixedArray(pow2.iter().map(|p| clone_expr(var(p))).collect()));
     IrExpr::Call {
@@ -453,7 +453,7 @@ fn gadget_and_count(gates: &[(IRVarId, BIrStmt)]) -> usize {
 
 /// Per-iteration AND-gate count for the ts-aware loop: each storage access runs
 /// `emit_lt` (ordering) + one `order &= lt` AND + `emit_incr` (counter).
-fn ts_iter_and_count(ts_bits: usize, num_access: usize) -> usize {
+pub(crate) fn ts_iter_and_count(ts_bits: usize, num_access: usize) -> usize {
     let mut lt_buf = GateBuf::new(2 * ts_bits as u32);
     let a: Vec<u32> = (0..ts_bits as u32).collect();
     let b: Vec<u32> = (ts_bits as u32..2 * ts_bits as u32).collect();
@@ -782,6 +782,199 @@ fn bridge_call2(fname: &str, a: IrExpr, b: IrExpr) -> IrExpr {
     }
 }
 
+/// Emit one storage access's timestamp-sound bookkeeping into `stmts`
+/// (**prover** side), reused by [`weave_ts_storage_loop_prover`] and the hybrid
+/// weaver's ZK body.
+///
+/// Consumes `(addr_w, consume_val, bitpack(t_last))`, folds
+/// `order_ok &= emit_lt(t_last, counter)`, produces `(addr_w, produce_val,
+/// bitpack(counter))`, then `counter += 1`.  `addr_w` is the already-resolved
+/// address-field wire (a single bit, or a bit-pack of the address bits); the
+/// committed `t_last` bit-vector is read from
+/// `last_slice[iter*last_count + k_base*ts_bits + j]`.  All gadget AND hats are
+/// pushed to `hat_names`; the running accumulators / counter are advanced in
+/// place.  `tag` namespaces the generated wires (callers pass a fresh `ssa`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_ts_access_prover(
+    addr_w: &str,
+    consume_val: &str,
+    produce_val: &str,
+    last_slice: &str,
+    last_count: usize,
+    k_base: usize,
+    ts_bits: usize,
+    pow2_ts: &[String],
+    ssa: &mut usize,
+    cur_prod: &mut String,
+    cur_cons: &mut String,
+    cur_order: &mut String,
+    cur_cnt: &mut Vec<String>,
+    hat_names: &mut Vec<String>,
+    stmts: &mut Vec<IrStmt>,
+) {
+    let b = ts_bits;
+    let tag = *ssa;
+    *ssa += 1;
+    // t_last witness bits
+    let tl: Vec<String> = (0..b)
+        .map(|j| {
+            let nm = format!("tl{tag}_{j}");
+            stmts.push(let_stmt(&nm, slice_index_clone(last_slice, last_count, k_base * b + j)));
+            nm
+        })
+        .collect();
+    // consume (addr, consume_val, bitpack(t_last))
+    let ts_cons = format!("tscons_{tag}");
+    stmts.push(let_stmt(&ts_cons, bitpack_call(&tl, pow2_ts)));
+    let nc = format!("cons_{tag}");
+    stmts.push(let_stmt(&nc, absorb_call(cur_cons, addr_w, consume_val, &ts_cons)));
+    *cur_cons = nc;
+    // ordering: order_ok &= (t_last < counter)
+    let mut lt_buf = GateBuf::new(2 * b as u32);
+    let a_ids: Vec<u32> = (0..b as u32).collect();
+    let b_ids: Vec<u32> = (b as u32..2 * b as u32).collect();
+    let lt_res = emit_lt(&a_ids, &b_ids, &mut lt_buf);
+    let mut lt_in = BTreeMap::<u32, String>::new();
+    for j in 0..b {
+        lt_in.insert(j as u32, tl[j].clone());
+        lt_in.insert((b + j) as u32, cur_cnt[j].clone());
+    }
+    let lt_name =
+        lower_gadget_prover(&lt_buf.gates, &lt_in, lt_res, &format!("lt{tag}"), hat_names, stmts);
+    let new_order = format!("ord_{tag}");
+    let ord_hat = format!("ordh_{tag}");
+    hat_names.push(ord_hat.clone());
+    emit_prover_and_gate(cur_order, &lt_name, &new_order, &ord_hat, stmts);
+    *cur_order = new_order;
+    // produce (addr, produce_val, bitpack(counter))
+    let ts_prod = format!("tsprod_{tag}");
+    stmts.push(let_stmt(&ts_prod, bitpack_call(cur_cnt, pow2_ts)));
+    let np = format!("prod_{tag}");
+    stmts.push(let_stmt(&np, absorb_call(cur_prod, addr_w, produce_val, &ts_prod)));
+    *cur_prod = np;
+    // counter += 1  (committed ripple-carry increment)
+    let mut ic_buf = GateBuf::new(b as u32);
+    let ic_outs = crate::gadgets::emit_incr(&a_ids, &mut ic_buf);
+    let mut ic_in = BTreeMap::<u32, String>::new();
+    for j in 0..b {
+        ic_in.insert(j as u32, cur_cnt[j].clone());
+    }
+    let ic_map =
+        lower_gadget_prover_map(&ic_buf.gates, &ic_in, &format!("ic{tag}"), hat_names, stmts);
+    *cur_cnt = ic_outs.iter().map(|id| ic_map[id].clone()).collect();
+}
+
+/// Verifier (`Q`-side) mirror of [`emit_ts_access_prover`].  `andc` is the total
+/// per-iteration AND count (circuit ANDs + ts-gadget ANDs) used to index
+/// `q_ands[iter*andc + k]`; `and_counter` threads the running AND index across
+/// the whole iteration (so it must already account for any circuit ANDs emitted
+/// before this access).  Requires `delta`, `iter`, `q_ands`, `iter_hats` in
+/// scope (the standard verifier-loop names).  Folds every gate `ok` into the
+/// mutable `all_ok_new` accumulator.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_ts_access_verifier(
+    addr_q: &str,
+    consume_q: &str,
+    produce_q: &str,
+    last_slice: &str,
+    last_count: usize,
+    k_base: usize,
+    ts_bits: usize,
+    pow2_ts: &[String],
+    andc: usize,
+    ssa: &mut usize,
+    and_counter: &mut usize,
+    cur_prod: &mut String,
+    cur_cons: &mut String,
+    cur_order: &mut String,
+    cur_cnt: &mut Vec<String>,
+    stmts: &mut Vec<IrStmt>,
+) {
+    let b = ts_bits;
+    let tag = *ssa;
+    *ssa += 1;
+    let mk_qand = |k: usize| qand_index_expr(andc, k);
+    let mk_hat = |k: usize| iter_hat_index_expr(k);
+    // q t_last bits
+    let tl: Vec<String> = (0..b)
+        .map(|j| {
+            let nm = format!("qtl{tag}_{j}");
+            stmts.push(let_stmt(&nm, q_slice_index_clone(last_slice, last_count, k_base * b + j)));
+            nm
+        })
+        .collect();
+    // consume
+    let ts_cons = format!("qtscons_{tag}");
+    stmts.push(let_stmt(&ts_cons, q_bitpack_call(&tl, pow2_ts)));
+    let nc = format!("qcons_{tag}");
+    stmts.push(let_stmt(&nc, q_absorb_call(cur_cons, addr_q, consume_q, &ts_cons)));
+    *cur_cons = nc;
+    // ordering gadget: order_ok &= (t_last < counter)
+    let mut lt_buf = GateBuf::new(2 * b as u32);
+    let a_ids: Vec<u32> = (0..b as u32).collect();
+    let b_ids: Vec<u32> = (b as u32..2 * b as u32).collect();
+    let lt_res = emit_lt(&a_ids, &b_ids, &mut lt_buf);
+    let mut lt_in = BTreeMap::<u32, String>::new();
+    for j in 0..b {
+        lt_in.insert(j as u32, tl[j].clone());
+        lt_in.insert((b + j) as u32, cur_cnt[j].clone());
+    }
+    let lt_map = lower_gadget_verifier(
+        &lt_buf.gates, &lt_in, &format!("lt{tag}"), and_counter, &mk_qand, &mk_hat,
+        "all_ok_new", stmts,
+    );
+    let q_lt = lt_map[&lt_res].clone();
+    // order AND
+    let k = *and_counter;
+    *and_counter += 1;
+    let new_order = format!("qord_{tag}");
+    let ok_ord = format!("okord_{tag}");
+    stmts.push(IrStmt::Let {
+        pattern: IrPattern::Tuple(vec![IrPattern::ident(&new_order), IrPattern::ident(&ok_ord)]),
+        ty: None,
+        init: Some(IrExpr::Call {
+            func: Box::new(IrExpr::Path {
+                segments: vec!["vole_and_verifier_check".into()],
+                type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("T".into())],
+            }),
+            args: vec![
+                var("delta"),
+                ref_expr(var(cur_order)),
+                ref_expr(var(&q_lt)),
+                ref_expr(mk_qand(k)),
+                ref_expr(mk_hat(k)),
+            ],
+        }),
+    });
+    stmts.push(IrStmt::Semi(IrExpr::Assign {
+        left: Box::new(var("all_ok_new")),
+        right: Box::new(IrExpr::Binary {
+            op: SpecBinOp::And,
+            left: Box::new(var("all_ok_new")),
+            right: Box::new(var(&ok_ord)),
+        }),
+    }));
+    *cur_order = new_order;
+    // produce
+    let ts_prod = format!("qtsprod_{tag}");
+    stmts.push(let_stmt(&ts_prod, q_bitpack_call(cur_cnt, pow2_ts)));
+    let np = format!("qprod_{tag}");
+    stmts.push(let_stmt(&np, q_absorb_call(cur_prod, addr_q, produce_q, &ts_prod)));
+    *cur_prod = np;
+    // counter += 1
+    let mut ic_buf = GateBuf::new(b as u32);
+    let ic_outs = crate::gadgets::emit_incr(&a_ids, &mut ic_buf);
+    let mut ic_in = BTreeMap::<u32, String>::new();
+    for j in 0..b {
+        ic_in.insert(j as u32, cur_cnt[j].clone());
+    }
+    let ic_map = lower_gadget_verifier(
+        &ic_buf.gates, &ic_in, &format!("ic{tag}"), and_counter, &mk_qand, &mk_hat,
+        "all_ok_new", stmts,
+    );
+    *cur_cnt = ic_outs.iter().map(|id| ic_map[id].clone()).collect();
+}
+
 /// Weave a single-block loop circuit with Commitment-mode storage into a
 /// **timestamp-sound** VOLE prover `IrCfgModule`.
 ///
@@ -944,75 +1137,6 @@ pub fn weave_ts_storage_loop_prover(
     let mut read_k = 0usize;
     let mut write_k = 0usize;
 
-    // Emit one storage access's ts-sound bookkeeping. `consume_val`/`produce_val`
-    // are wire names; `last_slice`/`last_count`/`k_base` locate this access's
-    // committed `t_last` bit-vector at `last_slice[iter*last_count + k_base*B + j]`.
-    let mut emit_access = |addr_w: &str,
-                           consume_val: &str,
-                           produce_val: &str,
-                           last_slice: &str,
-                           last_count: usize,
-                           k_base: usize,
-                           ssa: &mut usize,
-                           cur_prod: &mut String,
-                           cur_cons: &mut String,
-                           cur_order: &mut String,
-                           cur_cnt: &mut Vec<String>,
-                           hat_names: &mut Vec<String>,
-                           stmts: &mut Vec<IrStmt>| {
-        let tag = *ssa;
-        *ssa += 1;
-        // t_last witness bits
-        let tl: Vec<String> = (0..b)
-            .map(|j| {
-                let nm = format!("tl{tag}_{j}");
-                stmts.push(let_stmt(&nm, slice_index_clone(last_slice, last_count, k_base * b + j)));
-                nm
-            })
-            .collect();
-        // consume (addr, consume_val, bitpack(t_last))
-        let ts_cons = format!("tscons_{tag}");
-        stmts.push(let_stmt(&ts_cons, bitpack_call(&tl, &pow2_ts)));
-        let nc = format!("cons_{tag}");
-        stmts.push(let_stmt(&nc, absorb_call(cur_cons, addr_w, consume_val, &ts_cons)));
-        *cur_cons = nc;
-        // ordering: order_ok &= (t_last < counter)
-        let mut lt_buf = GateBuf::new(2 * b as u32);
-        let a_ids: Vec<u32> = (0..b as u32).collect();
-        let b_ids: Vec<u32> = (b as u32..2 * b as u32).collect();
-        let lt_res = emit_lt(&a_ids, &b_ids, &mut lt_buf);
-        let mut lt_in = BTreeMap::<u32, String>::new();
-        for j in 0..b {
-            lt_in.insert(j as u32, tl[j].clone());
-            lt_in.insert((b + j) as u32, cur_cnt[j].clone());
-        }
-        let lt_name = lower_gadget_prover(
-            &lt_buf.gates, &lt_in, lt_res, &format!("lt{tag}"), hat_names, stmts,
-        );
-        let new_order = format!("ord_{tag}");
-        let ord_hat = format!("ordh_{tag}");
-        hat_names.push(ord_hat.clone());
-        emit_prover_and_gate(cur_order, &lt_name, &new_order, &ord_hat, stmts);
-        *cur_order = new_order;
-        // produce (addr, produce_val, bitpack(counter))
-        let ts_prod = format!("tsprod_{tag}");
-        stmts.push(let_stmt(&ts_prod, bitpack_call(cur_cnt, &pow2_ts)));
-        let np = format!("prod_{tag}");
-        stmts.push(let_stmt(&np, absorb_call(cur_prod, addr_w, produce_val, &ts_prod)));
-        *cur_prod = np;
-        // counter += 1  (committed ripple-carry increment)
-        let mut ic_buf = GateBuf::new(b as u32);
-        let ic_outs = crate::gadgets::emit_incr(&a_ids, &mut ic_buf);
-        let mut ic_in = BTreeMap::<u32, String>::new();
-        for j in 0..b {
-            ic_in.insert(j as u32, cur_cnt[j].clone());
-        }
-        let ic_map = lower_gadget_prover_map(
-            &ic_buf.gates, &ic_in, &format!("ic{tag}"), hat_names, stmts,
-        );
-        *cur_cnt = ic_outs.iter().map(|id| ic_map[id].clone()).collect();
-    };
-
     for (result_id, stmt, _) in &expanded {
         let let_name = format!("lw_{}", result_id.0);
         match stmt {
@@ -1041,10 +1165,10 @@ pub fn weave_ts_storage_loop_prover(
                 b1_stmts.push(let_stmt(&addr_w, bitpack_call(&bits, &pow2_addr)));
                 let val_name = format!("rd_{ssa}_v");
                 b1_stmts.push(let_stmt(&val_name, slice_index_clone("read_vals", read_count, read_k)));
-                emit_access(
+                emit_ts_access_prover(
                     &addr_w, &val_name, &val_name, "read_last_ts", read_count * b, read_k,
-                    &mut ssa, &mut cur_prod, &mut cur_cons, &mut cur_order, &mut cur_cnt,
-                    &mut hat_names, &mut b1_stmts,
+                    b, &pow2_ts, &mut ssa, &mut cur_prod, &mut cur_cons, &mut cur_order,
+                    &mut cur_cnt, &mut hat_names, &mut b1_stmts,
                 );
                 read_k += 1;
                 wnames.insert(result_id.0, val_name);
@@ -1058,10 +1182,10 @@ pub fn weave_ts_storage_loop_prover(
                 let new_w = wnames[&src.0].clone();
                 let old_name = format!("wr_{ssa}_old");
                 b1_stmts.push(let_stmt(&old_name, slice_index_clone("write_olds", write_count, write_k)));
-                emit_access(
+                emit_ts_access_prover(
                     &addr_w, &old_name, &new_w, "write_last_ts", write_count * b, write_k,
-                    &mut ssa, &mut cur_prod, &mut cur_cons, &mut cur_order, &mut cur_cnt,
-                    &mut hat_names, &mut b1_stmts,
+                    b, &pow2_ts, &mut ssa, &mut cur_prod, &mut cur_cons, &mut cur_order,
+                    &mut cur_cnt, &mut hat_names, &mut b1_stmts,
                 );
                 write_k += 1;
                 b1_stmts.push(let_stmt(&let_name, zero_vope_expr()));
@@ -1438,103 +1562,6 @@ pub fn weave_ts_storage_loop_verifier(
     let mut read_k = 0usize;
     let mut write_k = 0usize;
 
-    let mut emit_access_q = |addr_q: &str,
-                             consume_q: &str,
-                             produce_q: &str,
-                             last_slice: &str,
-                             last_count: usize,
-                             k_base: usize,
-                             ssa: &mut usize,
-                             and_counter: &mut usize,
-                             cur_prod: &mut String,
-                             cur_cons: &mut String,
-                             cur_order: &mut String,
-                             cur_cnt: &mut Vec<String>,
-                             stmts: &mut Vec<IrStmt>| {
-        let tag = *ssa;
-        *ssa += 1;
-        let mk_qand = |k: usize| qand_index_expr(andc, k);
-        let mk_hat = |k: usize| iter_hat_index_expr(k);
-        // q t_last bits
-        let tl: Vec<String> = (0..b)
-            .map(|j| {
-                let nm = format!("qtl{tag}_{j}");
-                stmts.push(let_stmt(&nm, q_slice_index_clone(last_slice, last_count, k_base * b + j)));
-                nm
-            })
-            .collect();
-        // consume
-        let ts_cons = format!("qtscons_{tag}");
-        stmts.push(let_stmt(&ts_cons, q_bitpack_call(&tl, &pow2_ts)));
-        let nc = format!("qcons_{tag}");
-        stmts.push(let_stmt(&nc, q_absorb_call(cur_cons, addr_q, consume_q, &ts_cons)));
-        *cur_cons = nc;
-        // ordering gadget: order_ok &= (t_last < counter)
-        let mut lt_buf = GateBuf::new(2 * b as u32);
-        let a_ids: Vec<u32> = (0..b as u32).collect();
-        let b_ids: Vec<u32> = (b as u32..2 * b as u32).collect();
-        let lt_res = emit_lt(&a_ids, &b_ids, &mut lt_buf);
-        let mut lt_in = BTreeMap::<u32, String>::new();
-        for j in 0..b {
-            lt_in.insert(j as u32, tl[j].clone());
-            lt_in.insert((b + j) as u32, cur_cnt[j].clone());
-        }
-        let lt_map = lower_gadget_verifier(
-            &lt_buf.gates, &lt_in, &format!("lt{tag}"), and_counter, &mk_qand, &mk_hat,
-            "all_ok_new", stmts,
-        );
-        let q_lt = lt_map[&lt_res].clone();
-        // order AND
-        let k = *and_counter;
-        *and_counter += 1;
-        let new_order = format!("qord_{tag}");
-        let ok_ord = format!("okord_{tag}");
-        stmts.push(IrStmt::Let {
-            pattern: IrPattern::Tuple(vec![IrPattern::ident(&new_order), IrPattern::ident(&ok_ord)]),
-            ty: None,
-            init: Some(IrExpr::Call {
-                func: Box::new(IrExpr::Path {
-                    segments: vec!["vole_and_verifier_check".into()],
-                    type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("T".into())],
-                }),
-                args: vec![
-                    var("delta"),
-                    ref_expr(var(cur_order)),
-                    ref_expr(var(&q_lt)),
-                    ref_expr(mk_qand(k)),
-                    ref_expr(mk_hat(k)),
-                ],
-            }),
-        });
-        stmts.push(IrStmt::Semi(IrExpr::Assign {
-            left: Box::new(var("all_ok_new")),
-            right: Box::new(IrExpr::Binary {
-                op: SpecBinOp::And,
-                left: Box::new(var("all_ok_new")),
-                right: Box::new(var(&ok_ord)),
-            }),
-        }));
-        *cur_order = new_order;
-        // produce
-        let ts_prod = format!("qtsprod_{tag}");
-        stmts.push(let_stmt(&ts_prod, q_bitpack_call(cur_cnt, &pow2_ts)));
-        let np = format!("qprod_{tag}");
-        stmts.push(let_stmt(&np, q_absorb_call(cur_prod, addr_q, produce_q, &ts_prod)));
-        *cur_prod = np;
-        // counter += 1
-        let mut ic_buf = GateBuf::new(b as u32);
-        let ic_outs = crate::gadgets::emit_incr(&a_ids, &mut ic_buf);
-        let mut ic_in = BTreeMap::<u32, String>::new();
-        for j in 0..b {
-            ic_in.insert(j as u32, cur_cnt[j].clone());
-        }
-        let ic_map = lower_gadget_verifier(
-            &ic_buf.gates, &ic_in, &format!("ic{tag}"), and_counter, &mk_qand, &mk_hat,
-            "all_ok_new", stmts,
-        );
-        *cur_cnt = ic_outs.iter().map(|id| ic_map[id].clone()).collect();
-    };
-
     for (result_id, stmt, _) in &expanded {
         let let_name = format!("lq_{}", result_id.0);
         match stmt {
@@ -1561,10 +1588,10 @@ pub fn weave_ts_storage_loop_verifier(
                 b1_stmts.push(let_stmt(&addr_q, q_bitpack_call(&bits, &pow2_addr)));
                 let val_q = format!("qrd_{ssa}_v");
                 b1_stmts.push(let_stmt(&val_q, q_slice_index_clone("q_read_vals", read_count, read_k)));
-                emit_access_q(
+                emit_ts_access_verifier(
                     &addr_q, &val_q, &val_q, "q_read_last_ts", read_count * b, read_k,
-                    &mut ssa, &mut and_counter, &mut cur_prod, &mut cur_cons, &mut cur_order,
-                    &mut cur_cnt, &mut b1_stmts,
+                    b, &pow2_ts, andc, &mut ssa, &mut and_counter, &mut cur_prod, &mut cur_cons,
+                    &mut cur_order, &mut cur_cnt, &mut b1_stmts,
                 );
                 read_k += 1;
                 qwnames.insert(result_id.0, val_q);
@@ -1578,10 +1605,10 @@ pub fn weave_ts_storage_loop_verifier(
                 let new_q = qwnames[&src.0].clone();
                 let old_q = format!("qwr_{ssa}_old");
                 b1_stmts.push(let_stmt(&old_q, q_slice_index_clone("q_write_olds", write_count, write_k)));
-                emit_access_q(
+                emit_ts_access_verifier(
                     &addr_q, &old_q, &new_q, "q_write_last_ts", write_count * b, write_k,
-                    &mut ssa, &mut and_counter, &mut cur_prod, &mut cur_cons, &mut cur_order,
-                    &mut cur_cnt, &mut b1_stmts,
+                    b, &pow2_ts, andc, &mut ssa, &mut and_counter, &mut cur_prod, &mut cur_cons,
+                    &mut cur_order, &mut cur_cnt, &mut b1_stmts,
                 );
                 write_k += 1;
                 b1_stmts.push(let_stmt(&let_name, q_const(false)));

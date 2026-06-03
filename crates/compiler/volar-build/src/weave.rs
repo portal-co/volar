@@ -161,12 +161,13 @@ pub fn emit_woven_rust(
         }
         #[cfg(feature = "weave-net")]
         (Weaver::HybridNetVoleProver { name }, SavedCircuit::Boolar(bir)) => {
-            let module = volar_weaver::weave_hybrid_net_vole_prover(&bir, name, None);
+            // Default committed-timestamp width; expose via the Weaver variant when callers need to tune it.
+            let module = volar_weaver::weave_hybrid_net_vole_prover(&bir, 8, name, None);
             volar_weaver::print_hybrid_net_cfg_module(&module)
         }
         #[cfg(feature = "weave-net")]
         (Weaver::HybridNetVoleVerifier { name }, SavedCircuit::Boolar(bir)) => {
-            let module = volar_weaver::weave_hybrid_net_vole_verifier(&bir, name, None);
+            let module = volar_weaver::weave_hybrid_net_vole_verifier(&bir, 8, name, None);
             volar_weaver::print_hybrid_net_cfg_module(&module)
         }
         (w, c) => {

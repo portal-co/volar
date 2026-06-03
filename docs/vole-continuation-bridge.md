@@ -454,33 +454,39 @@ for free (like an XOR gate) and needs **no separate
 dynamic-skip continuation with the ts-sound storage loop in one weaver
 (`test_ts_storage_loop_resume_composes_skip_and_loop`).
 
-**hybrid_net integration — SPEC (next dedicated pass).** `hybrid_net.rs` still
-uses the *vacuous* single-field `ts` (+1) in its B1 storage absorbs, so its
-memory checking carries the same future-consumption gap §9 fixes for the
-standalone loop. The integration is mechanical but spans the 9-block CFG; it has
-**not** been attempted yet to avoid a half-sound intermediate. Concrete plan:
+**hybrid_net integration — SHIPPED.** `weave_hybrid_net_vole_{prover,verifier}`
+take a `ts_bits` parameter and now use the **committed-counter** ts-sound scheme
+in their storage absorbs (replacing the old vacuous single-`ts` +1), so the
+network-resilient weaver closes the same future-consumption gap as the standalone
+loop. How it was done:
 
-1. **Gap threading is the easy lever.** The bundle is threaded through B4–B8 by
-   three closures (`aw_params` / `aw_clone_args` / `aw_move_args`) over the suffix
-   list `["_mp","_mc","_ts"]` + `_it`. Replace `"_ts"` with the `ts_bits` counter
-   suffixes `"_ts0".."_ts{B-1}"` plus `"_ord"` (the `order_ok` wire). All gap
-   blocks then carry the committed counter + ordering accumulator automatically.
-2. **B1 (prover ZK body):** swap the single-`ts` absorb for the standalone loop's
-   per-access logic — `bitpack(counter)` produce ts, `bitpack(t_last)` consume ts
-   (new `read_last_ts`/`write_last_ts` params), `order_ok &= emit_lt(t_last,
-   counter)`, `counter += emit_incr`. The gadget hats join B1's existing
-   `try_send_iteration` batch (extend `AND_COUNT` via `ts_iter_and_count`).
-3. **B0 init / B3 drain + order-open:** mirror the standalone loop's init (produce
-   cells at ts 0) and exit (drain cells, `mem_drain_open` + `vope_open_mask` via
-   the existing `send_mem_opening`/`send_opening`).
-4. **Verifier:** extend `emit_verifier_loop_gates` the same way (it currently uses
-   `q_ts_incr` on a single field), add the counter/order bundle slots, and fold
-   `order_ok` into the verdict via `assert_one_check`.
-5. **Reuse, don't duplicate:** consider extracting the standalone loop's
-   `emit_access` / `emit_access_q` into `pub(crate)` helpers so B1 and
-   `emit_verifier_loop_gates` call them directly. The replay-from-anchor soundness
-   is unchanged — the gap replays under VOLE, so the counter/order wires just need
-   to survive the gap (which step 1 guarantees).
+1. **Shared per-access helpers.** The standalone loop's per-access logic was
+   extracted to `pub(crate)` `storage_loop::emit_ts_access_{prover,verifier}` and
+   is now called by both the standalone loop and the hybrid weaver — one
+   implementation, no divergence.
+2. **Gap threading via the suffix list.** The `aw_params`/`aw_clone_args`/
+   `aw_move_args` closures iterate a computed `acc_sufs =
+   ["_mp","_mc","_ts0".."_ts{B-1}","_ord"]`, so the committed counter bits +
+   `order_ok` are carried through every gap block (B4–B8) and restored to B1 on
+   replay automatically. Replay-from-anchor soundness is unchanged.
+3. **B1 (prover ZK body)** calls `emit_ts_access_prover` (bit-pack produce/consume
+   timestamps, `order_ok &= emit_lt(t_last, counter)`, `counter += emit_incr`);
+   the gadget hats join the `try_send_iteration` batch. `B0` init-produces both
+   single-bit cells at ts 0; `B3` drains both cells, opens the drain
+   (`mem_drain_open`/`send_mem_opening`) and the ordering result
+   (`vope_open_mask`/`send_opening`).
+4. **Verifier** `emit_verifier_loop_gates` calls `emit_ts_access_verifier`; the
+   3-block CFG carries the counter/order bundle slots, init-produces in B0, and at
+   the sentinel runs `mem_drain_check` + `assert_one_check`, folding both into the
+   verdict (`final_ok && mem_ok && order_ok`).
+5. **AND_COUNT** is `count_and_gates(circuit) + ts_iter_and_count(b, accesses)`;
+   prover hat order and verifier `and_counter`/`q_ands` stride agree by
+   construction (same expanded-stmt traversal).
+
+Still single-bit address in hybrid (the standalone loop generalises to
+`addr_bits`); multi-bit hybrid + sparse init/drain (ADR 0002) are the follow-ups.
+The `weave-net` dispatch passes a default `ts_bits = 8`; expose it via the
+`Weaver` variant if callers need to tune it.
 
 The committed counter starts at `1`, so the all-zero `(0,0,0)` tuple (which the
 no-constant-term `encode` maps to the field zero) cannot be consumed as a phantom
