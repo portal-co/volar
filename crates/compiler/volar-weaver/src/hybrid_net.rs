@@ -255,13 +255,50 @@ fn array_from_fn_t(body: IrExpr) -> IrExpr {
 /// Replicates the net loop verifier's per-gate Q lowering, reading hats from
 /// `iter_hats[k]` and `q_and` shares from `q_ands[iter * AND_COUNT + k]`, and
 /// accumulating `all_ok_new`.
+/// `volar_spec::vole::bridge::mem_acc_absorb_q(acc.clone(), &addr, &value, &ts, &r1, &r2, &r3)`
+fn absorb_q_call(acc: &str, addr: &str, value: &str, ts: &str) -> IrExpr {
+    IrExpr::Call {
+        func: Box::new(IrExpr::Path {
+            segments: vec!["volar_spec".into(), "vole".into(), "bridge".into(), "mem_acc_absorb_q".into()],
+            type_args: vec![],
+        }),
+        args: vec![
+            clone_expr(var(acc)),
+            ref_expr(var(addr)),
+            ref_expr(var(value)),
+            ref_expr(var(ts)),
+            ref_expr(var("r1")),
+            ref_expr(var("r2")),
+            ref_expr(var("r3")),
+        ],
+    }
+}
+
+/// Verifier `Q` timestamp increment: `Q { q: from_fn(|i| cur_ts.q[i] + delta.delta[i]) }`
+/// (adds the verifier's committed-1 share `Δ`, mirroring the prover's `ts + vope_one`).
+fn q_ts_incr(cur_ts: &str) -> IrExpr {
+    q_struct(array_from_fn_t(IrExpr::Binary {
+        op: SpecBinOp::Add,
+        left: Box::new(field_index_clone(cur_ts, "q")),
+        right: Box::new(field_index_clone("delta", "delta")),
+    }))
+}
+
 fn emit_verifier_loop_gates(
     expanded: &[(IRVarId, BIrStmt, ())],
     vnames: &mut BTreeMap<u32, String>,
     and_count: usize,
+    read_count: usize,
+    write_count: usize,
+    cur_prod: &mut String,
+    cur_cons: &mut String,
+    cur_ts: &mut String,
     stmts: &mut Vec<IrStmt>,
 ) {
     let mut and_counter = 0usize;
+    let mut ssa = 0usize;
+    let mut read_k = 0usize;
+    let mut write_k = 0usize;
     for (result_id, stmt, _) in expanded {
         let let_name = format!("lq_{}", result_id.0);
         match stmt {
@@ -347,6 +384,42 @@ fn emit_verifier_loop_gates(
                     }),
                 }));
                 and_counter += 1;
+            }
+            BIrStmt::StorageRead { addr, .. } => {
+                assert_eq!(addr.len(), 1, "hybrid storage: only single-bit addresses supported");
+                let addr_q = vnames[&addr[0].0].clone();
+                let val = format!("vrd_{ssa}"); ssa += 1;
+                stmts.push(let_stmt(&val, slice_index_clone("read_vals_q", read_count, read_k)));
+                read_k += 1;
+                let nc = format!("vcons_{ssa}"); ssa += 1;
+                stmts.push(let_stmt(&nc, absorb_q_call(cur_cons, &addr_q, &val, cur_ts)));
+                *cur_cons = nc;
+                let nts = format!("vts_{ssa}"); ssa += 1;
+                stmts.push(let_stmt(&nts, q_ts_incr(cur_ts)));
+                *cur_ts = nts;
+                let np = format!("vprod_{ssa}"); ssa += 1;
+                stmts.push(let_stmt(&np, absorb_q_call(cur_prod, &addr_q, &val, cur_ts)));
+                *cur_prod = np;
+                vnames.insert(result_id.0, val);
+                continue;
+            }
+            BIrStmt::StorageWrite { src, addr, .. } => {
+                assert_eq!(addr.len(), 1, "hybrid storage: only single-bit addresses supported");
+                let addr_q = vnames[&addr[0].0].clone();
+                let new_q = vnames[&src.0].clone();
+                let old = format!("vold_{ssa}"); ssa += 1;
+                stmts.push(let_stmt(&old, slice_index_clone("write_olds_q", write_count, write_k)));
+                write_k += 1;
+                let nc = format!("vcons_{ssa}"); ssa += 1;
+                stmts.push(let_stmt(&nc, absorb_q_call(cur_cons, &addr_q, &old, cur_ts)));
+                *cur_cons = nc;
+                let nts = format!("vts_{ssa}"); ssa += 1;
+                stmts.push(let_stmt(&nts, q_ts_incr(cur_ts)));
+                *cur_ts = nts;
+                let np = format!("vprod_{ssa}"); ssa += 1;
+                stmts.push(let_stmt(&np, absorb_q_call(cur_prod, &addr_q, &new_q, cur_ts)));
+                *cur_prod = np;
+                stmts.push(let_stmt(&let_name, q_struct(array_t_default())));
             }
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
             _ => {
@@ -622,13 +695,26 @@ pub fn weave_hybrid_net_vole_prover(
     };
 
     // ── Block 3: exit ──────────────────────────────────────────────────────
+    // Open the memory-consistency drain (mask of mem_prod − mem_cons), send it
+    // for the verifier's `mem_drain_check`, then receive the verdict.
+    let drain_open = IrExpr::Call {
+        func: Box::new(IrExpr::Path {
+            segments: vec!["volar_spec".into(), "vole".into(), "bridge".into(), "mem_drain_open".into()],
+            type_args: vec![],
+        }),
+        args: vec![ref_expr(var("fprod")), ref_expr(var("fcons"))],
+    };
     let block3 = IrCfgBlock {
         params: vec![
             IrParam { name: "output".into(), ty: vope_type() },
             IrParam { name: "fprod".into(), ty: vope_type() },
             IrParam { name: "fcons".into(), ty: vope_type() },
         ],
-        stmts: vec![IrStmt::Semi(transport_call_try("recv_verdict", vec![]))],
+        stmts: vec![
+            let_stmt("mem_opening", drain_open),
+            IrStmt::Semi(transport_call_try("send_mem_opening", vec![ref_expr(var("mem_opening"))])),
+            IrStmt::Semi(transport_call_try("recv_verdict", vec![])),
+        ],
         stmt_provs: vec![],
         terminator: IrCfgTerminator::Return(Some(ok_expr(IrExpr::Tuple(vec![
             var("output"),
@@ -838,6 +924,7 @@ pub fn weave_hybrid_net_vole_verifier(
     let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let and_count = count_and_gates(circuit);
+    let (read_count, write_count) = count_storage(&expand_ors(block));
 
     let (mut generics, where_clause) = net_verifier_generics_and_where();
     make_resilient(&mut generics);
@@ -847,21 +934,34 @@ pub fn weave_hybrid_net_vole_verifier(
         IrParam { name: "delta".into(), ty: ref_to(delta_type()) },
         IrParam { name: "q_ands".into(), ty: q_slice_type() },
     ];
+    for r in ["r1", "r2", "r3"] {
+        func_params.push(IrParam { name: r.into(), ty: IrType::TypeParam("T".into()) });
+    }
     for i in 0..num_params {
         func_params.push(IrParam { name: format!("init_q{i}"), ty: q_type() });
     }
+    // Verifier Q-shares of the per-iteration committed read values / write
+    // old-values (mirror of the prover's `read_vals`/`write_olds`).
+    func_params.push(IrParam { name: "read_vals_q".into(), ty: q_slice_type() });
+    func_params.push(IrParam { name: "write_olds_q".into(), ty: q_slice_type() });
     func_params.push(IrParam {
         name: "transport".into(),
         ty: ref_mut_to(IrType::TypeParam("Tr".into())),
     });
     let ret_type = result_type(bool_type(), tr_error_type());
 
-    // ── Block 0: entry → B1 [init_q.clone()..., all_ok=true, iter=0] ───────
+    // Bundle order: [q_0..q_{ℓ-1}, all_ok, iter, mem_prod_q, mem_cons_q, mem_ts_q].
+    let q_zero = || q_struct(array_t_default());
+
+    // ── Block 0: entry → B1 [init_q.clone()..., true, 0, Qzero, Qzero, Qzero] ─
     let mut b0_args: Vec<IrExpr> = (0..num_params)
         .map(|i| clone_expr(var(&format!("init_q{i}"))))
         .collect();
     b0_args.push(IrExpr::Lit(IrLit::Bool(true)));
     b0_args.push(IrExpr::Lit(IrLit::Int(0)));
+    b0_args.push(q_zero()); // mem_prod_q
+    b0_args.push(q_zero()); // mem_cons_q
+    b0_args.push(q_zero()); // mem_ts_q
     let block0 = IrCfgBlock {
         params: vec![],
         stmts: vec![],
@@ -870,12 +970,15 @@ pub fn weave_hybrid_net_vole_verifier(
     };
 
     // ── Block 1: receive-or-disconnect dispatch ────────────────────────────
-    // params: q0..qN-1, all_ok, iter
+    // params: q0..qN-1, all_ok, iter, mem_prod_q, mem_cons_q, mem_ts_q
     let mut b1_params: Vec<IrParam> = (0..num_params)
         .map(|i| IrParam { name: format!("q{i}"), ty: q_type() })
         .collect();
     b1_params.push(IrParam { name: "all_ok".into(), ty: bool_type() });
-    b1_params.push(IrParam { name: "iter".into(), ty: u32_type() });
+    b1_params.push(IrParam { name: "iter".into(), ty: usize_type() });
+    b1_params.push(IrParam { name: "mem_prod_q".into(), ty: q_type() });
+    b1_params.push(IrParam { name: "mem_cons_q".into(), ty: q_type() });
+    b1_params.push(IrParam { name: "mem_ts_q".into(), ty: q_type() });
 
     // let got = transport.try_recv_iteration(AND_COUNT)?;  -> Option<(hats,bool)>
     // Modeled with the resilient default: if recv fails, park in the gap block.
@@ -911,13 +1014,29 @@ pub fn weave_hybrid_net_vole_verifier(
     for i in 0..num_params {
         vnames.insert(i as u32, format!("q{i}"));
     }
-    emit_verifier_loop_gates(&expand_ors(block), &mut vnames, and_count, &mut b1_stmts);
+    let mut cur_prod = String::from("mem_prod_q");
+    let mut cur_cons = String::from("mem_cons_q");
+    let mut cur_ts = String::from("mem_ts_q");
+    emit_verifier_loop_gates(
+        &expand_ors(block),
+        &mut vnames,
+        and_count,
+        read_count,
+        write_count,
+        &mut cur_prod,
+        &mut cur_cons,
+        &mut cur_ts,
+        &mut b1_stmts,
+    );
 
     let (_done, _out, next_ids) = analyze_loop_terminator(block);
     let mut back_args: Vec<IrExpr> =
         next_ids.iter().map(|id| clone_expr(var(&vnames[&id.0]))).collect();
     back_args.push(var("all_ok_new"));
     back_args.push(incr("iter"));
+    back_args.push(var(&cur_prod));
+    back_args.push(var(&cur_cons));
+    back_args.push(var(&cur_ts));
 
     let block1 = IrCfgBlock {
         params: b1_params,
@@ -925,17 +1044,46 @@ pub fn weave_hybrid_net_vole_verifier(
         stmt_provs: vec![],
         terminator: IrCfgTerminator::CondGoto {
             cond: var("is_sentinel"),
-            then_: IrCfgJump { target: 2, args: vec![var("all_ok_new")] },
+            // sentinel -> B2 [all_ok_new, mem_prod_q, mem_cons_q]
+            then_: IrCfgJump {
+                target: 2,
+                args: vec![var("all_ok_new"), var(&cur_prod), var(&cur_cons)],
+            },
             else_: IrCfgJump { target: 1, args: back_args },
         },
     };
 
-    // ── Block 2: exit — send verdict, return ───────────────────────────────
+    // ── Block 2: exit — drain check, verdict, return ───────────────────────
+    // Receive the prover's drain opening and check memory consistency
+    // (mem_prod == mem_cons); fold it into the verdict.
+    let drain_check = IrExpr::Call {
+        func: Box::new(IrExpr::Path {
+            segments: vec!["volar_spec".into(), "vole".into(), "bridge".into(), "mem_drain_check".into()],
+            type_args: vec![],
+        }),
+        args: vec![ref_expr(var("fprod_q")), ref_expr(var("fcons_q")), ref_expr(var("mem_opening"))],
+    };
     let block2 = IrCfgBlock {
-        params: vec![IrParam { name: "final_ok".into(), ty: bool_type() }],
-        stmts: vec![IrStmt::Semi(transport_call_try("send_verdict", vec![var("final_ok")]))],
+        params: vec![
+            IrParam { name: "final_ok".into(), ty: bool_type() },
+            IrParam { name: "fprod_q".into(), ty: q_type() },
+            IrParam { name: "fcons_q".into(), ty: q_type() },
+        ],
+        stmts: vec![
+            let_stmt("mem_opening", transport_call_try("recv_mem_opening", vec![])),
+            let_stmt("mem_ok", drain_check),
+            let_stmt(
+                "verdict",
+                IrExpr::Binary {
+                    op: SpecBinOp::And,
+                    left: Box::new(var("final_ok")),
+                    right: Box::new(var("mem_ok")),
+                },
+            ),
+            IrStmt::Semi(transport_call_try("send_verdict", vec![var("verdict")])),
+        ],
         stmt_provs: vec![],
-        terminator: IrCfgTerminator::Return(Some(ok_expr(var("final_ok")))),
+        terminator: IrCfgTerminator::Return(Some(ok_expr(var("verdict")))),
     };
 
     let func = IrCfgFunction {
@@ -1098,5 +1246,23 @@ mod tests {
         assert!(code.contains("try_reconnect") && code.contains("prover_bridge"),
             "expected gap/resume handling");
         assert!(code.contains("_mp"), "expected accumulator carried through gap");
+        // Prover opens the memory-consistency drain for the verifier:
+        assert!(code.contains("mem_drain_open") && code.contains("send_mem_opening"),
+            "expected prover drain opening");
+    }
+
+    #[test]
+    fn test_hybrid_storage_verifier() {
+        // The verifier mirrors the prover's storage absorbs in Q-space and runs
+        // the drain check (mem_prod == mem_cons), folding it into the verdict.
+        let circuit = build_storage_hybrid_loop();
+        let module = weave_hybrid_net_vole_verifier(&circuit, "test", None);
+        let code = print_hybrid_net_cfg_module(&module);
+        run_compile_check_net(&code, "hybrid_storage_verifier");
+        assert!(code.contains("mem_acc_absorb_q"), "expected Q-side storage absorb");
+        assert!(code.contains("read_vals_q") && code.contains("write_olds_q"),
+            "expected verifier Q-share slices");
+        assert!(code.contains("recv_mem_opening"), "expected verifier receives drain opening");
+        assert!(code.contains("mem_drain_check"), "expected verifier drain check");
     }
 }

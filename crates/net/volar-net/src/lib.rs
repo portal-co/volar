@@ -248,6 +248,23 @@ pub trait ResilientVoleTransport<N: ArraySize, T>: VoleTransport<N, T> {
     fn fresh_commit(&mut self, _bits: &[bool]) -> Result<Vec<Vope<N, T, U1>>, Self::Error> {
         unimplemented!("fresh_commit: implement for transports that re-commit resumed state")
     }
+
+    /// Prover → Verifier: open the memory-consistency drain — the mask of the
+    /// committed difference `mem_prod − mem_cons` (from
+    /// `volar_spec::vole::bridge::mem_drain_open`).  Default: no-op.
+    fn send_mem_opening(&mut self, _opening: &Array<T, N>) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Verifier ← Prover: receive the drain opening to check with
+    /// `mem_drain_check`.  Default: a zero array (`T: Default`), i.e. a transport
+    /// that does not exchange the opening behaves as "empty memory".
+    fn recv_mem_opening(&mut self) -> Result<Array<T, N>, Self::Error>
+    where
+        T: Default,
+    {
+        Ok(Array::<T, N>::from_fn(|_| T::default()))
+    }
 }
 
 /// Re-commit a cleartext bit into a degree-1 VOPE wire after a gap.

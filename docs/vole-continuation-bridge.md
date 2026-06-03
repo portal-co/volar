@@ -302,14 +302,24 @@ pub trait ResilientVoleTransport<N: ArraySize, T>: VoleTransport<N, T> {
   → `false`), which is sound because the gap is replayed from the anchor.
   Single-bit address. Tested by `test_hybrid_storage_unified`.
 
+- **Verifier-side accumulator + drain check (DONE).** The hybrid verifier now
+  carries Q-share accumulators `mem_prod_q`/`mem_cons_q`/`mem_ts_q` through its
+  loop, mirrors the prover's storage absorbs in Q-space
+  (`mem_acc_absorb_q`, fed by `read_vals_q`/`write_olds_q`), and at exit runs the
+  **drain check**: the prover sends `M_diff = mem_prod.v ⊕ mem_cons.v`
+  (`mem_drain_open` + `send_mem_opening`); the verifier checks
+  `K_prod ⊕ K_cons == M_diff` (`recv_mem_opening` + `mem_drain_check`), which
+  holds iff the committed produce/consume multisets match, and folds the result
+  into the verdict (`verdict = all_ok && mem_ok`). Two-party memory consistency
+  is now actually *checked*, not just carried. Tested by
+  `test_hybrid_storage_verifier`.
+
 **Not yet built — remaining integration (specified here):**
 - **Full read-consistency soundness.** Per-cell last-write-timestamp bookkeeping
   so a read consumes the exact `(addr, value, write_ts)` tuple, plus a final
-  drain (about *which tuples to absorb*, not the carry, which is done and sound);
-  multi-bit address packing (`Σ bit_i · 2^i`, a free linear combine).
-- **Verifier-side accumulator.** The verifier currently returns `bool`; mirroring
-  the carried `mem_prod`/`mem_cons` and the offline `mem_prod == mem_cons` drain
-  check on the verifier side completes the two-party picture.
+  drain of live cells (about *which tuples to absorb*, not the carry/check, which
+  are done and sound); multi-bit address packing (`Σ bit_i · 2^i`, a free linear
+  combine).
 - **C2/C3** (`ContinuationGlue` + `lower_to_circuit` dynamic skip) and the
   **VCB-IVC folding frontier** (gate succinctness) remain as specified above.
 - **`ContinuationGlue` + dynamic skip in `lower_to_circuit`.** The shared

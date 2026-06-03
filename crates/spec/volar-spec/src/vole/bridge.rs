@@ -122,6 +122,78 @@ where
     acc + vope_scale_const(addr, r1) + vope_scale_const(value, r2) + vope_scale_const(ts, r3)
 }
 
+// ── Verifier-side (Q) mirrors ───────────────────────────────────────────────
+
+/// Scale a verifier `Q` share by a **public** field constant `c` (mirror of
+/// [`vope_scale_const`]).
+pub fn q_scale_const<N, T>(q: &Q<N, T>, c: &T) -> Q<N, T>
+where
+    N: ArraySize,
+    T: Clone + Mul<Output = T>,
+{
+    Q { q: Array::<T, N>::from_fn(|i| q.q[i].clone() * c.clone()) }
+}
+
+/// In-circuit multiset-hash absorb on verifier `Q` shares (mirror of
+/// [`mem_acc_absorb_vope`]): `acc + addr·r1 + value·r2 + ts·r3`.
+pub fn mem_acc_absorb_q<N, T>(
+    acc: Q<N, T>,
+    addr: &Q<N, T>,
+    value: &Q<N, T>,
+    ts: &Q<N, T>,
+    r1: &T,
+    r2: &T,
+    r3: &T,
+) -> Q<N, T>
+where
+    N: ArraySize,
+    T: Clone + Add<Output = T> + Mul<Output = T>,
+{
+    let a = q_scale_const(addr, r1);
+    let v = q_scale_const(value, r2);
+    let t = q_scale_const(ts, r3);
+    Q {
+        q: Array::<T, N>::from_fn(|i| {
+            acc.q[i].clone() + a.q[i].clone() + v.q[i].clone() + t.q[i].clone()
+        }),
+    }
+}
+
+/// Prover side of the memory-consistency **drain check**: open the mask of the
+/// committed difference `mem_prod − mem_cons`.
+///
+/// For a degree-1 VOPE the prover's MAC of a wire is its `v`-component; the
+/// difference's MAC is `mem_prod.v + mem_cons.v` (subtraction = XOR in
+/// `GF(2^k)`).  The prover sends this array; the verifier checks it with
+/// [`mem_drain_check`].
+pub fn mem_drain_open<N, T>(prod: &Vope<N, T, U1>, cons: &Vope<N, T, U1>) -> Array<T, N>
+where
+    N: VoleArray<T>,
+    T: Clone + Add<Output = T>,
+{
+    Array::<T, N>::from_fn(|i| prod.v[i].clone() + cons.v[i].clone())
+}
+
+/// Verifier side of the memory-consistency drain check.
+///
+/// Checks `K_prod + K_cons == opening` lane-wise, where `opening` is the
+/// prover-sent mask from [`mem_drain_open`].  Because `K = M + x·Δ`, this holds
+/// iff the committed difference `x = 0` (i.e. the produce/consume multisets
+/// match) — a cheating prover with `x ≠ 0` would need `x·Δ = 0`, impossible for
+/// non-zero `Δ`.  Returns `true` if memory was consistent.
+pub fn mem_drain_check<N, T>(prod_q: &Q<N, T>, cons_q: &Q<N, T>, opening: &Array<T, N>) -> bool
+where
+    N: ArraySize,
+    T: Clone + Add<Output = T> + PartialEq,
+{
+    let mut ok = true;
+    for i in 0..N::USIZE {
+        let k_diff = prod_q.q[i].clone() + cons_q.q[i].clone();
+        ok = ok && (k_diff == opening[i].clone());
+    }
+    ok
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +253,40 @@ mod tests {
         assert_eq!(s.u[0][1], 12);
         assert_eq!(s.v[0], 20);
         assert_eq!(s.v[1], 20);
+    }
+
+    #[test]
+    fn q_scale_const_scales_lanes() {
+        let s = q_scale_const(&q::<3, 5>(), &4u64);
+        assert_eq!(s.q[0], 12);
+        assert_eq!(s.q[1], 20);
+    }
+
+    #[test]
+    fn mem_acc_q_matches_formula() {
+        let (r1, r2, r3) = (7u64, 49, 343);
+        let acc = q::<0, 0>();
+        let out = mem_acc_absorb_q(acc, &q::<1, 1>(), &q::<11, 11>(), &q::<2, 2>(), &r1, &r2, &r3);
+        assert_eq!(out.q[0], 1 * r1 + 11 * r2 + 2 * r3);
+    }
+
+    #[test]
+    fn drain_open_xors_masks() {
+        let open = mem_drain_open(&vope(0, 2), &vope(0, 5));
+        assert_eq!(open[0], 7);
+        assert_eq!(open[1], 7);
+    }
+
+    #[test]
+    fn drain_check_accepts_and_rejects() {
+        // K_prod + K_cons == opening  (3+5 == 8) lane-wise.
+        let prod_q = q::<3, 3>();
+        let cons_q = q::<5, 5>();
+        let good = Array::<u64, U2>::from_fn(|_| 8);
+        assert!(mem_drain_check(&prod_q, &cons_q, &good));
+        let mut bad = good.clone();
+        bad[0] = 9;
+        assert!(!mem_drain_check(&prod_q, &cons_q, &bad));
     }
 
     #[test]
