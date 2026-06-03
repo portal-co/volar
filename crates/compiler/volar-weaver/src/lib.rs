@@ -62,6 +62,7 @@ pub mod faest;
 pub mod grafhen;
 pub mod fhe;
 pub mod oram;
+pub mod gadgets;
 pub mod noop;
 #[cfg(feature = "net")]
 pub mod net;
@@ -132,7 +133,7 @@ pub use hybrid_net::{
 };
 
 #[cfg(feature = "net")]
-pub use storage_loop::{weave_storage_commit_loop_prover, print_storage_loop_module};
+pub use storage_loop::{weave_storage_commit_loop_prover, weave_lt_check, print_storage_loop_module};
 
 pub use fhe::{
     weave_fhe, weave_fhe_flat_bir, derive_storage_config,

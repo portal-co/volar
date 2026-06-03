@@ -50,10 +50,61 @@ use volar_ir::boolar::{BIrBlocks, BIrStmt, BIrTerminator};
 use volar_ir::ir::IRVarId;
 
 use crate::{clone_expr, expand_ors, ref_expr, var};
+use crate::gadgets::{emit_lt, GateBuf};
 use crate::net::{
-    add_output_t, array_size_bound, bool_type, clone_t, default_t, mul_output_t, ref_to,
-    usize_type, vole_array_t_bound, vope_bit_call, vope_type,
+    add_output_t, array_size_bound, bool_type, clone_t, default_t, emit_prover_and_gate,
+    mul_output_t, ref_to, usize_type, vole_array_t_bound, vope_bit_call, vope_type,
 };
+
+// ── Gadget → VOLE lowering bridge ───────────────────────────────────────────
+
+/// Lower a boolean gadget (`BIrStmt` gates over abstract var-ids, e.g. from
+/// `gadgets::emit_lt`) to VOLE **prover** IR.  `in_map` pre-binds the gadget's
+/// input var-ids to existing `Vope` wire names.  `Xor`/`Not`/`Zero`/`One` are
+/// free; each `And` becomes a `vole_and_prover_step` (its hat name pushed to
+/// `hats`); `Or(a,b) = a + b + (a·b)` (one AND).  Returns the wire bound to
+/// `result_id`.
+fn lower_gadget_prover(
+    gates: &[(IRVarId, BIrStmt)],
+    in_map: &BTreeMap<u32, String>,
+    result_id: u32,
+    tag: &str,
+    hats: &mut Vec<String>,
+    stmts: &mut Vec<IrStmt>,
+) -> String {
+    let addv = |a: &str, b: &str| IrExpr::Binary {
+        op: SpecBinOp::Add,
+        left: Box::new(clone_expr(var(a))),
+        right: Box::new(clone_expr(var(b))),
+    };
+    let mut map = in_map.clone();
+    for (rid, stmt) in gates {
+        let name = format!("g{tag}_{}", rid.0);
+        match stmt {
+            BIrStmt::Zero => stmts.push(let_stmt(&name, zero_vope_expr())),
+            BIrStmt::One => stmts.push(let_stmt(&name, clone_expr(var("vope_one")))),
+            BIrStmt::Xor(a, b) => stmts.push(let_stmt(&name, addv(&map[&a.0], &map[&b.0]))),
+            BIrStmt::Not(a) => stmts.push(let_stmt(&name, addv(&map[&a.0], "vope_one"))),
+            BIrStmt::And(a, b) => {
+                let hat = format!("gh{tag}_{}", rid.0);
+                hats.push(hat.clone());
+                emit_prover_and_gate(&map[&a.0], &map[&b.0], &name, &hat, stmts);
+            }
+            BIrStmt::Or(a, b) => {
+                let hat = format!("gh{tag}_{}", rid.0);
+                hats.push(hat.clone());
+                let ab = format!("{name}_ab");
+                emit_prover_and_gate(&map[&a.0], &map[&b.0], &ab, &hat, stmts);
+                let t = format!("{name}_t");
+                stmts.push(let_stmt(&t, addv(&map[&a.0], &map[&b.0])));
+                stmts.push(let_stmt(&name, addv(&t, &ab)));
+            }
+            _ => panic!("lower_gadget_prover: unexpected gate {stmt:?}"),
+        }
+        map.insert(rid.0, name);
+    }
+    map[&result_id].clone()
+}
 
 // ── Local helpers ───────────────────────────────────────────────────────────
 
@@ -445,6 +496,75 @@ pub fn weave_storage_commit_loop_prover(
     module
 }
 
+/// Weave a VOLE **prover** function computing the committed less-than
+/// `a < b` over two `n`-bit committed timestamps, via the `emit_lt` gadget
+/// lowered to VOLE (XOR/NOT free, AND → `vole_and_prover_step` + hat).
+///
+/// This validates the gadget → VOLE lowering bridge end-to-end (the
+/// timestamp-ordering primitive that fixes the memory-checking soundness gap;
+/// see `docs/vole-continuation-bridge.md` §9).  Generated signature:
+/// ```text
+/// fn lt_check_<NAME><N, T>(vope_one: Vope<N,T,U1>,
+///     a0: Vope<N,T,U1>, .., b0: Vope<N,T,U1>, ..) -> Vope<N,T,U1>   // = (a < b)
+/// ```
+pub fn weave_lt_check(n: usize, name: &str, linkage: Option<&LinkageSystem>) -> IrCfgModule {
+    let (generics, where_clause) = storage_loop_generics_and_where();
+
+    let mut func_params = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
+    for i in 0..n {
+        func_params.push(IrParam { name: format!("a{i}"), ty: vope_type() });
+    }
+    for i in 0..n {
+        func_params.push(IrParam { name: format!("b{i}"), ty: vope_type() });
+    }
+
+    // Build the gadget over abstract ids: a = 0..n, b = n..2n.
+    let a_ids: Vec<u32> = (0..n as u32).collect();
+    let b_ids: Vec<u32> = (n as u32..2 * n as u32).collect();
+    let mut buf = GateBuf::new(2 * n as u32);
+    let result_id = emit_lt(&a_ids, &b_ids, &mut buf);
+
+    let mut in_map = BTreeMap::<u32, String>::new();
+    for i in 0..n {
+        in_map.insert(i as u32, format!("a{i}"));
+        in_map.insert((n + i) as u32, format!("b{i}"));
+    }
+    let mut hats: Vec<String> = Vec::new();
+    let mut stmts: Vec<IrStmt> = Vec::new();
+    let result = lower_gadget_prover(&buf.gates, &in_map, result_id, "lt", &mut hats, &mut stmts);
+
+    let block0 = IrCfgBlock {
+        params: vec![],
+        stmts,
+        stmt_provs: vec![],
+        terminator: IrCfgTerminator::Return(Some(var(&result))),
+    };
+    let func = IrCfgFunction {
+        name: format!("lt_check_{name}"),
+        generics,
+        receiver: None,
+        params: func_params,
+        return_type: Some(vope_type()),
+        where_clause,
+        external_kind: ExternalKind::Normal,
+        body: IrCfgBody { blocks: vec![block0] },
+    };
+    let mut module: IrCfgModule = IrModule {
+        name: format!("weaved_lt_check_{name}"),
+        functions: vec![IrAnyFunction::Cfg(func)],
+        structs: vec![],
+        enums: vec![],
+        traits: vec![],
+        impls: vec![],
+        type_aliases: vec![],
+        consts: vec![],
+    };
+    if let Some(ls) = linkage {
+        ls.apply_cfg(&mut module);
+    }
+    module
+}
+
 /// Print a storage-loop CFG module to self-contained Rust source.
 pub fn print_storage_loop_module(module: &IrCfgModule) -> String {
     use volar_compiler::printer::{CfgModuleWriter, DisplayRust};
@@ -463,6 +583,7 @@ pub fn print_storage_loop_module(module: &IrCfgModule) -> String {
         "use cipher::consts::U1;\n",
         "use volar_spec::vole::{Q, Vope, VoleArray};\n",
         "use volar_spec::vole::bridge::mem_acc_absorb_vope;\n",
+        "use volar_spec::vole::prove::vole_and_prover_step;\n",
         "use volar_net::vope_bit;\n",
         "\n",
     );
@@ -537,5 +658,15 @@ mod tests {
         assert!(code.contains("mem_acc_absorb_vope"), "expected in-circuit absorb");
         assert!(code.contains("read_vals"), "expected per-iteration read-value slice");
         assert!(code.contains("write_olds"), "expected per-iteration old-value slice");
+    }
+
+    #[test]
+    fn test_lt_check_lowers_to_vole() {
+        // The timestamp-ordering gadget (emit_lt) lowers to VOLE and compiles:
+        // ANDs become vole_and_prover_step + hat; XOR/NOT are field adds.
+        let module = weave_lt_check(4, "ts", None);
+        let code = print_storage_loop_module(&module);
+        run_compile_check_net(&code, "lt_check_gadget");
+        assert!(code.contains("vole_and_prover_step"), "expected gadget ANDs lowered to hats");
     }
 }

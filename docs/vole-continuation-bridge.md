@@ -315,11 +315,12 @@ pub trait ResilientVoleTransport<N: ArraySize, T>: VoleTransport<N, T> {
   `test_hybrid_storage_verifier`.
 
 **Not yet built — remaining integration (specified here):**
-- **Full read-consistency soundness.** Per-cell last-write-timestamp bookkeeping
-  so a read consumes the exact `(addr, value, write_ts)` tuple, plus a final
-  drain of live cells (about *which tuples to absorb*, not the carry/check, which
-  are done and sound); multi-bit address packing (`Σ bit_i · 2^i`, a free linear
-  combine).
+- **Full read-consistency soundness — see §9.** The multiset balance + drain check
+  are wired and sound *for what they check*, but the **timestamp-ordering** that
+  makes the multiset a genuine memory-consistency proof needs the comparison
+  **gadget** (§9). The gadget itself (`emit_lt`) is **built and exhaustively
+  tested** (`gadgets.rs`); the weaver integration (bit-vector timestamps,
+  per-cell last-write-ts consume, init/drain) is specified in §9.
 - **C2/C3** (`ContinuationGlue` + `lower_to_circuit` dynamic skip) and the
   **VCB-IVC folding frontier** (gate succinctness) remain as specified above.
 - **`ContinuationGlue` + dynamic skip in `lower_to_circuit`.** The shared
@@ -331,3 +332,78 @@ pub trait ResilientVoleTransport<N: ArraySize, T>: VoleTransport<N, T> {
   linear check as `vole_rekey_verifier_check`. Until then, VCB-RX gives sound
   resumption with **memory already succinct in cell count** (single accumulator),
   just not gate-succinct in the gap length `m`.
+
+---
+
+## 9. Timestamp soundness & the comparison gadget
+
+### The attack (multiset balance is not enough)
+
+The in-circuit multiset memory check accumulates `(addr, value, ts)` tuples into
+`mem_prod` / `mem_cons` and checks `mem_prod == mem_cons` at the drain (§8).
+**Multiset balance alone does not prove read-consistency.** Concretely, a
+cheating prover can make a read return a *future* write's value:
+
+- op 2 (read `a`): consume `(a, v, t=100)`, produce `(a, v, cur=2)`.
+- op 100 (write `a=v`): produce `(a, v, 100)`, consume the then-current entry.
+
+Over the whole trace `(a, v, 100)` is produced once (op 100) and consumed once
+(op 2), so the multisets **still balance** — yet the op-2 read returned a value
+only written at op 100. The fix is a per-access **timestamp-ordering check**:
+the consumed timestamp must be strictly less than the current timestamp,
+`t_last < cur_ts`, which rules out consuming not-yet-produced entries.
+
+### The gadget (built + tested)
+
+`volar_weaver::gadgets::emit_lt` synthesises an unsigned less-than over
+committed bit-vectors using the equal-prefix recurrence (MSB→LSB):
+
+```text
+lt = 0; eq = 1
+for i = n-1 .. 0:  lt |= eq & ¬a_i & b_i ;  eq &= ¬(a_i ^ b_i)
+```
+
+emitted as `And`/`Or`/`Xor`/`Not` `BIrStmt` gates, so the VOLE weaver lowers them
+normally (XOR/NOT free; AND → `vole_and_prover_step` + hat). It is verified by an
+**exhaustive** test (`lt_gadget_exhaustive`: all `a, b` for widths 1–4) against
+the integer reference. This keeps timestamps **private** (committed), unlike a
+public-timestamp scheme which would leak the access-timing pattern.
+
+### Built toolkit (all tested)
+
+- `gadgets::emit_lt` — committed less-than (exhaustive test, widths 1–4).
+- `gadgets::emit_incr` — committed `+1` ripple counter (exhaustive test).
+- `storage_loop::lower_gadget_prover` — lowers a boolean gadget to VOLE prover IR
+  (XOR/NOT free; AND/OR → `vole_and_prover_step` + hat). Validated end-to-end by
+  `weave_lt_check` + `test_lt_check_lowers_to_vole` (gadget → hats, compiles).
+- `bridge::{vope_bitpack, q_bitpack}` — link committed timestamp bits to the
+  multiset field value (`Σ bits·pow2`), tested.
+- `bridge::{mem_acc_absorb_vope, mem_acc_absorb_q, mem_drain_open, mem_drain_check}`
+  — the multiset absorb + drain (tested).
+
+So every cryptographic primitive for sound, private timestamp ordering exists
+and is tested. The remaining work is **weaver wiring** (mechanical, below).
+
+### Integration (the remaining weaver wiring)
+
+Timestamps become committed `TS_BITS`-wide bit-vectors:
+
+- **cur_ts** is the operation index `iter·OPS + k` — *public* (both parties count
+  ops identically), so its bits are public constants (no counter gadget, no
+  committed produce-side ts). Its field contribution `cur_ts·r³` is a public
+  scalar in the absorb.
+- **t_last** (the addressed cell's last-write timestamp) is *committed*
+  (prover-supplied per access as a bit-vector slice). Its field value for the
+  consume absorb is the free linear bit-pack `Σ t_last_i · 2^i` (`vope_bitpack`
+  / `q_bitpack` — to add next to `bridge.rs`, mirroring `vope_scale_const`).
+- Per access: `consume(addr, value, bitpack(t_last))`,
+  `produce(addr, value, cur_ts)`, and `order_ok &= emit_lt(t_last, cur_ts_bits)`.
+- **Init**: produce `(addr, init_value, 0)` for each cell at entry (from
+  `pre_init`); **drain**: consume each cell's final `(addr, value, ts)` at exit.
+- The verdict folds in `order_ok` alongside the §8 drain check:
+  `verdict = all_ok && mem_ok && order_ok`.
+
+The gadget produces AND-gate hats, so this integrates in the **hybrid** weaver
+(which already has the hat/transport machinery), not the linear-only
+`storage_loop`. Single-bit address first; multi-bit packs the address the same
+way (`Σ bit_i · 2^i`).
