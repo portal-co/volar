@@ -440,7 +440,7 @@ pub(crate) fn q_bitpack_call(bits: &[String], pow2: &[String]) -> IrExpr {
 /// `addr_bits` bits: bit `1` → `one_name` (the committed public-1 wire), bit `0`
 /// → `zero_name`.  Used to encode the init/drain cell addresses, which are public
 /// constants (cells `0..2^addr_bits`).
-fn const_addr_bits(c: usize, addr_bits: usize, one_name: &str, zero_name: &str) -> Vec<String> {
+pub(crate) fn const_addr_bits(c: usize, addr_bits: usize, one_name: &str, zero_name: &str) -> Vec<String> {
     (0..addr_bits)
         .map(|j| if (c >> j) & 1 == 1 { one_name.into() } else { zero_name.into() })
         .collect()

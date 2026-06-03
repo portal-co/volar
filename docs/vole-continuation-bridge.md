@@ -483,10 +483,14 @@ loop. How it was done:
    prover hat order and verifier `and_counter`/`q_ands` stride agree by
    construction (same expanded-stmt traversal).
 
-Still single-bit address in hybrid (the standalone loop generalises to
-`addr_bits`); multi-bit hybrid + sparse init/drain (ADR 0002) are the follow-ups.
-The `weave-net` dispatch passes a default `ts_bits = 8`; expose it via the
-`Weaver` variant if callers need to tune it.
+Both weavers take `addr_bits` too (multi-bit addresses): the per-access address
+is the free linear bit-pack `Σ addr_i·2^i` of the committed address wires, and
+init/drain materialise all `2^addr_bits` cells (`const_addr_bits` for the public
+cell addresses; `pow2` is `max(addr_bits, ts_bits)` wide, sliced per use). The
+`Weaver::HybridNetVole{Prover,Verifier}` variants now carry `{ name, ts_bits,
+addr_bits }`, so the dispatch threads both (prover and verifier must use matching
+values). Sparse init/drain (ADR 0002) remains the follow-up to remove the
+`2^addr_bits` blow-up for large memories.
 
 The committed counter starts at `1`, so the all-zero `(0,0,0)` tuple (which the
 no-constant-term `encode` maps to the field zero) cannot be consumed as a phantom

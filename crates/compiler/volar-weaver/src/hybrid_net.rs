@@ -292,7 +292,9 @@ fn emit_verifier_loop_gates(
     read_count: usize,
     write_count: usize,
     ts_bits: usize,
+    addr_bits: usize,
     pow2_ts: &[String],
+    pow2_addr: &[String],
     cur_prod: &mut String,
     cur_cons: &mut String,
     cur_order: &mut String,
@@ -392,8 +394,10 @@ fn emit_verifier_loop_gates(
                 and_counter += 1;
             }
             BIrStmt::StorageRead { addr, .. } => {
-                assert_eq!(addr.len(), 1, "hybrid storage: only single-bit addresses supported");
-                let addr_q = vnames[&addr[0].0].clone();
+                assert_eq!(addr.len(), addr_bits, "hybrid storage: address width must equal addr_bits");
+                let addr_q = format!("vaf_{ssa}");
+                let bits: Vec<String> = addr.iter().map(|a| vnames[&a.0].clone()).collect();
+                stmts.push(let_stmt(&addr_q, crate::storage_loop::q_bitpack_call(&bits, pow2_addr)));
                 let val = format!("vrd_{ssa}_v");
                 stmts.push(let_stmt(&val, slice_index_clone("read_vals_q", read_count, read_k)));
                 crate::storage_loop::emit_ts_access_verifier(
@@ -406,8 +410,10 @@ fn emit_verifier_loop_gates(
                 continue;
             }
             BIrStmt::StorageWrite { src, addr, .. } => {
-                assert_eq!(addr.len(), 1, "hybrid storage: only single-bit addresses supported");
-                let addr_q = vnames[&addr[0].0].clone();
+                assert_eq!(addr.len(), addr_bits, "hybrid storage: address width must equal addr_bits");
+                let addr_q = format!("vaf_{ssa}");
+                let bits: Vec<String> = addr.iter().map(|a| vnames[&a.0].clone()).collect();
+                stmts.push(let_stmt(&addr_q, crate::storage_loop::q_bitpack_call(&bits, pow2_addr)));
                 let new_q = vnames[&src.0].clone();
                 let old = format!("vold_{ssa}_old");
                 stmts.push(let_stmt(&old, slice_index_clone("write_olds_q", write_count, write_k)));
@@ -447,11 +453,16 @@ fn emit_verifier_loop_gates(
 pub fn weave_hybrid_net_vole_prover(
     circuit: &BIrBlocks,
     ts_bits: usize,
+    addr_bits: usize,
     name: &str,
     linkage: Option<&LinkageSystem>,
 ) -> IrCfgModule {
     assert!(circuit.is_movfuscated(), "weave_hybrid_net_vole_prover: circuit must be single-block");
     assert!(ts_bits >= 1, "ts_bits must be >= 1");
+    assert!(
+        (1..=8).contains(&addr_bits),
+        "addr_bits must be 1..=8 (init/drain materialises 2^addr_bits cells)"
+    );
 
     let block = &circuit.blocks[0];
     let num_params = block.params as usize;
@@ -459,9 +470,13 @@ pub fn weave_hybrid_net_vole_prover(
     let (done_id, out_id, next_ids) = analyze_loop_terminator(block);
     let (read_count, write_count) = count_storage(&expanded);
     let b = ts_bits;
+    let cells = 1usize << addr_bits;
     // Committed timestamp counter bits + ordering accumulator carried in the bundle.
     let cnt_names: Vec<String> = (0..b).map(|j| format!("cnt{j}")).collect();
-    let pow2_names: Vec<String> = (0..b).map(|j| format!("pow2_{j}")).collect();
+    let npow = b.max(addr_bits);
+    let pow2_names: Vec<String> = (0..npow).map(|j| format!("pow2_{j}")).collect();
+    let pow2_ts: Vec<String> = pow2_names[..b].to_vec();
+    let pow2_addr: Vec<String> = pow2_names[..addr_bits].to_vec();
     // Accumulator suffixes threaded through the gap bundle (after the ℓ state wires,
     // before `_it`): produce/consume hashes, the `b` counter bits, ordering wire.
     let acc_sufs: Vec<String> = {
@@ -497,11 +512,11 @@ pub fn weave_hybrid_net_vole_prover(
     // Committed per-access last-write timestamp bit-vectors (ts-soundness ordering).
     func_params.push(IrParam { name: "read_last_ts".into(), ty: vope_slice_type() });
     func_params.push(IrParam { name: "write_last_ts".into(), ty: vope_slice_type() });
-    // Drain witnesses for the two single-bit cells: final value + final ts bits.
-    for cell in 0..2 {
+    // Drain witnesses for all 2^addr_bits cells: final value + final ts bits.
+    for cell in 0..cells {
         func_params.push(IrParam { name: format!("final_val{cell}"), ty: vope_type() });
     }
-    for cell in 0..2 {
+    for cell in 0..cells {
         for j in 0..b {
             func_params.push(IrParam { name: format!("final_ts{cell}_{j}"), ty: vope_type() });
         }
@@ -520,18 +535,24 @@ pub fn weave_hybrid_net_vole_prover(
     // ── Block 0: entry ─────────────────────────────────────────────────────
     // Bundle order everywhere:
     //   [w_0..w_{ℓ-1}, mem_prod, mem_cons, cnt_0..cnt_{B-1}, order_ok, iter].
-    // Initialise memory: produce both single-bit cells at ts=0 (cell 0's
-    // (0,0,0) encodes to the field zero, so only cell 1 contributes).
-    let b0_stmts: Vec<IrStmt> = vec![
+    // Initialise memory: produce all 2^addr_bits cells at ts=0.
+    let mut b0_stmts: Vec<IrStmt> = vec![
         let_stmt("zw", zero_vope_expr()),
         let_stmt("mp_acc0", zero_vope_expr()),
-        let_stmt("init_p0", absorb_call("mp_acc0", "zw", "zw", "zw")),
-        let_stmt("init_p1", absorb_call("init_p0", "vope_one", "zw", "zw")),
     ];
+    let mut init_cur = String::from("mp_acc0");
+    for c in 0..cells {
+        let bits = crate::storage_loop::const_addr_bits(c, addr_bits, "vope_one", "zw");
+        let af = format!("initaddr_{c}");
+        b0_stmts.push(let_stmt(&af, crate::storage_loop::bitpack_call(&bits, &pow2_addr)));
+        let np = format!("init_p{c}");
+        b0_stmts.push(let_stmt(&np, absorb_call(&init_cur, &af, "zw", "zw")));
+        init_cur = np;
+    }
     let mut b0_args: Vec<IrExpr> = (0..num_params)
         .map(|i| clone_expr(var(&format!("init_w{i}"))))
         .collect();
-    b0_args.push(clone_expr(var("init_p1"))); // mem_prod (cells initialised)
+    b0_args.push(clone_expr(var(&init_cur))); // mem_prod (cells initialised)
     b0_args.push(zero_vope_expr()); // mem_cons
     b0_args.push(clone_expr(var("vope_one"))); // cnt bit 0 = 1 (init ts 0 < first produce 1)
     for _ in 1..b {
@@ -562,7 +583,6 @@ pub fn weave_hybrid_net_vole_prover(
     for i in 0..num_params {
         wnames.insert(i as u32, format!("w{i}"));
     }
-    let pow2_ts: Vec<String> = pow2_names.clone();
     let mut hat_names: Vec<String> = Vec::new();
     let mut and_counter = 0usize;
     // Running SSA names for the memory accumulator updated by storage ops; they
@@ -602,8 +622,10 @@ pub fn weave_hybrid_net_vole_prover(
                 emit_prover_and_gate(&wnames[&a.0], &wnames[&b.0], &let_name, &hat, &mut b1_stmts);
             }
             BIrStmt::StorageRead { addr, .. } => {
-                assert_eq!(addr.len(), 1, "hybrid storage: only single-bit addresses supported");
-                let addr_w = wnames[&addr[0].0].clone();
+                assert_eq!(addr.len(), addr_bits, "hybrid storage: address width must equal addr_bits");
+                let addr_w = format!("af_{ssa}");
+                let bits: Vec<String> = addr.iter().map(|a| wnames[&a.0].clone()).collect();
+                b1_stmts.push(let_stmt(&addr_w, crate::storage_loop::bitpack_call(&bits, &pow2_addr)));
                 let val = format!("rd_{ssa}_v");
                 b1_stmts.push(let_stmt(&val, slice_index_clone("read_vals", read_count, read_k)));
                 crate::storage_loop::emit_ts_access_prover(
@@ -616,8 +638,10 @@ pub fn weave_hybrid_net_vole_prover(
                 continue;
             }
             BIrStmt::StorageWrite { src, addr, .. } => {
-                assert_eq!(addr.len(), 1, "hybrid storage: only single-bit addresses supported");
-                let addr_w = wnames[&addr[0].0].clone();
+                assert_eq!(addr.len(), addr_bits, "hybrid storage: address width must equal addr_bits");
+                let addr_w = format!("af_{ssa}");
+                let bits: Vec<String> = addr.iter().map(|a| wnames[&a.0].clone()).collect();
+                b1_stmts.push(let_stmt(&addr_w, crate::storage_loop::bitpack_call(&bits, &pow2_addr)));
                 let new_w = wnames[&src.0].clone();
                 let old = format!("wr_{ssa}_old");
                 b1_stmts.push(let_stmt(&old, slice_index_clone("write_olds", write_count, write_k)));
@@ -750,20 +774,26 @@ pub fn weave_hybrid_net_vole_prover(
         }),
         args,
     };
-    let ts0_bits: Vec<String> = (0..b).map(|j| format!("final_ts0_{j}")).collect();
-    let ts1_bits: Vec<String> = (0..b).map(|j| format!("final_ts1_{j}")).collect();
-    let mut b3_stmts: Vec<IrStmt> = vec![
-        let_stmt("zwx", zero_vope_expr()),
-        let_stmt("ts_d0", crate::storage_loop::bitpack_call(&ts0_bits, &pow2_names)),
-        let_stmt("fc0", absorb_call("fcons", "zwx", "final_val0", "ts_d0")),
-        let_stmt("ts_d1", crate::storage_loop::bitpack_call(&ts1_bits, &pow2_names)),
-        let_stmt("fc1", absorb_call("fc0", "vope_one", "final_val1", "ts_d1")),
-        let_stmt("mem_opening", bridge_fn("mem_drain_open", vec![ref_expr(var("fprod")), ref_expr(var("fc1"))])),
+    let mut b3_stmts: Vec<IrStmt> = vec![let_stmt("zwx", zero_vope_expr())];
+    let mut drain_cur = String::from("fcons");
+    for c in 0..cells {
+        let bits = crate::storage_loop::const_addr_bits(c, addr_bits, "vope_one", "zwx");
+        let af = format!("draddr_{c}");
+        b3_stmts.push(let_stmt(&af, crate::storage_loop::bitpack_call(&bits, &pow2_addr)));
+        let ts_bits_c: Vec<String> = (0..b).map(|j| format!("final_ts{c}_{j}")).collect();
+        let tsd = format!("ts_d{c}");
+        b3_stmts.push(let_stmt(&tsd, crate::storage_loop::bitpack_call(&ts_bits_c, &pow2_ts)));
+        let nc = format!("fc{c}");
+        b3_stmts.push(let_stmt(&nc, absorb_call(&drain_cur, &af, &format!("final_val{c}"), &tsd)));
+        drain_cur = nc;
+    }
+    b3_stmts.extend([
+        let_stmt("mem_opening", bridge_fn("mem_drain_open", vec![ref_expr(var("fprod")), ref_expr(var(&drain_cur))])),
         IrStmt::Semi(transport_call_try("send_mem_opening", vec![ref_expr(var("mem_opening"))])),
         let_stmt("order_opening", bridge_fn("vope_open_mask", vec![ref_expr(var("forder"))])),
         IrStmt::Semi(transport_call_try("send_opening", vec![ref_expr(var("order_opening"))])),
         IrStmt::Semi(transport_call_try("recv_verdict", vec![])),
-    ];
+    ]);
     let block3 = IrCfgBlock {
         params: vec![
             IrParam { name: "output".into(), ty: vope_type() },
@@ -776,7 +806,7 @@ pub fn weave_hybrid_net_vole_prover(
         terminator: IrCfgTerminator::Return(Some(ok_expr(IrExpr::Tuple(vec![
             var("output"),
             var("fprod"),
-            var("fc1"),
+            var(&drain_cur),
         ])))),
     };
 
@@ -974,23 +1004,31 @@ pub fn weave_hybrid_net_vole_prover(
 pub fn weave_hybrid_net_vole_verifier(
     circuit: &BIrBlocks,
     ts_bits: usize,
+    addr_bits: usize,
     name: &str,
     linkage: Option<&LinkageSystem>,
 ) -> IrCfgModule {
     assert!(circuit.is_movfuscated(), "weave_hybrid_net_vole_verifier: circuit must be single-block");
     assert!(ts_bits >= 1, "ts_bits must be >= 1");
+    assert!(
+        (1..=8).contains(&addr_bits),
+        "addr_bits must be 1..=8 (init/drain materialises 2^addr_bits cells)"
+    );
 
     let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let circuit_ands = count_and_gates(circuit);
     let (read_count, write_count) = count_storage(&expand_ors(block));
     let b = ts_bits;
+    let cells = 1usize << addr_bits;
     // Total per-iteration ANDs = circuit ANDs + ts-gadget ANDs (ordering + counter).
     let andc = circuit_ands
         + crate::storage_loop::ts_iter_and_count(b, read_count + write_count);
     let cnt_names: Vec<String> = (0..b).map(|j| format!("qcnt{j}")).collect();
-    let pow2_names: Vec<String> = (0..b).map(|j| format!("pow2_{j}")).collect();
-    let pow2_ts = pow2_names.clone();
+    let npow = b.max(addr_bits);
+    let pow2_names: Vec<String> = (0..npow).map(|j| format!("pow2_{j}")).collect();
+    let pow2_ts: Vec<String> = pow2_names[..b].to_vec();
+    let pow2_addr: Vec<String> = pow2_names[..addr_bits].to_vec();
 
     let (mut generics, where_clause) = net_verifier_generics_and_where();
     make_resilient(&mut generics);
@@ -1015,10 +1053,10 @@ pub fn weave_hybrid_net_vole_verifier(
     func_params.push(IrParam { name: "write_olds_q".into(), ty: q_slice_type() });
     func_params.push(IrParam { name: "q_read_last_ts".into(), ty: q_slice_type() });
     func_params.push(IrParam { name: "q_write_last_ts".into(), ty: q_slice_type() });
-    for cell in 0..2 {
+    for cell in 0..cells {
         func_params.push(IrParam { name: format!("q_final_val{cell}"), ty: q_type() });
     }
-    for cell in 0..2 {
+    for cell in 0..cells {
         for j in 0..b {
             func_params.push(IrParam { name: format!("q_final_ts{cell}_{j}"), ty: q_type() });
         }
@@ -1041,20 +1079,27 @@ pub fn weave_hybrid_net_vole_verifier(
         })
     };
 
-    // ── Block 0: entry — init mem_prod_q (both cells at ts=0) → B1 ──────────
-    let b0_stmts: Vec<IrStmt> = vec![
+    // ── Block 0: entry — init mem_prod_q (all 2^addr_bits cells at ts=0) → B1 ─
+    let mut b0_stmts: Vec<IrStmt> = vec![
         let_stmt("qz", q_zero()),
         let_stmt("qone", q_one()),
         let_stmt("mpz", q_zero()),
-        let_stmt("iq0", absorb_q_call("mpz", "qz", "qz", "qz")), // cell 0 (0,0,0)=0
-        let_stmt("iq1", absorb_q_call("iq0", "qone", "qz", "qz")), // cell 1 (1,0,0)
     ];
+    let mut init_cur = String::from("mpz");
+    for c in 0..cells {
+        let bits = crate::storage_loop::const_addr_bits(c, addr_bits, "qone", "qz");
+        let af = format!("qinitaddr_{c}");
+        b0_stmts.push(let_stmt(&af, crate::storage_loop::q_bitpack_call(&bits, &pow2_addr)));
+        let np = format!("iq{c}");
+        b0_stmts.push(let_stmt(&np, absorb_q_call(&init_cur, &af, "qz", "qz")));
+        init_cur = np;
+    }
     let mut b0_args: Vec<IrExpr> = (0..num_params)
         .map(|i| clone_expr(var(&format!("init_q{i}"))))
         .collect();
     b0_args.push(IrExpr::Lit(IrLit::Bool(true)));
     b0_args.push(IrExpr::Lit(IrLit::Int(0)));
-    b0_args.push(clone_expr(var("iq1"))); // mem_prod_q (cells initialised)
+    b0_args.push(clone_expr(var(&init_cur))); // mem_prod_q (cells initialised)
     b0_args.push(q_zero()); // mem_cons_q
     b0_args.push(q_one()); // qcnt bit 0 = Q(1) = Δ
     for _ in 1..b {
@@ -1127,7 +1172,9 @@ pub fn weave_hybrid_net_vole_verifier(
         read_count,
         write_count,
         b,
+        addr_bits,
         &pow2_ts,
+        &pow2_addr,
         &mut cur_prod,
         &mut cur_cons,
         &mut cur_order,
@@ -1170,8 +1217,50 @@ pub fn weave_hybrid_net_vole_verifier(
         }),
         args,
     };
-    let qts0: Vec<String> = (0..b).map(|j| format!("q_final_ts0_{j}")).collect();
-    let qts1: Vec<String> = (0..b).map(|j| format!("q_final_ts1_{j}")).collect();
+    let mut b2_stmts: Vec<IrStmt> = vec![let_stmt("qzx", q_zero()), let_stmt("qone_x", q_one())];
+    let mut drain_cur = String::from("fcons_q");
+    for c in 0..cells {
+        let bits = crate::storage_loop::const_addr_bits(c, addr_bits, "qone_x", "qzx");
+        let af = format!("qdraddr_{c}");
+        b2_stmts.push(let_stmt(&af, crate::storage_loop::q_bitpack_call(&bits, &pow2_addr)));
+        let qts_c: Vec<String> = (0..b).map(|j| format!("q_final_ts{c}_{j}")).collect();
+        let tsd = format!("qts_d{c}");
+        b2_stmts.push(let_stmt(&tsd, crate::storage_loop::q_bitpack_call(&qts_c, &pow2_ts)));
+        let nc = format!("qfc{c}");
+        b2_stmts.push(let_stmt(&nc, absorb_q_call(&drain_cur, &af, &format!("q_final_val{c}"), &tsd)));
+        drain_cur = nc;
+    }
+    b2_stmts.extend([
+        let_stmt("mem_opening", transport_call_try("recv_mem_opening", vec![])),
+        let_stmt(
+            "mem_ok",
+            bridge_fn(
+                "mem_drain_check",
+                vec![ref_expr(var("fprod_q")), ref_expr(var(&drain_cur)), ref_expr(var("mem_opening"))],
+            ),
+        ),
+        let_stmt("order_opening", transport_call_try("recv_opening", vec![])),
+        let_stmt(
+            "order_ok2",
+            bridge_fn(
+                "assert_one_check",
+                vec![ref_expr(var("forder_q")), ref_expr(var("order_opening")), var("delta")],
+            ),
+        ),
+        let_stmt(
+            "verdict",
+            IrExpr::Binary {
+                op: SpecBinOp::And,
+                left: Box::new(IrExpr::Binary {
+                    op: SpecBinOp::And,
+                    left: Box::new(var("final_ok")),
+                    right: Box::new(var("mem_ok")),
+                }),
+                right: Box::new(var("order_ok2")),
+            },
+        ),
+        IrStmt::Semi(transport_call_try("send_verdict", vec![clone_expr(var("verdict"))])),
+    ]);
     let block2 = IrCfgBlock {
         params: vec![
             IrParam { name: "final_ok".into(), ty: bool_type() },
@@ -1179,43 +1268,7 @@ pub fn weave_hybrid_net_vole_verifier(
             IrParam { name: "fcons_q".into(), ty: q_type() },
             IrParam { name: "forder_q".into(), ty: q_type() },
         ],
-        stmts: vec![
-            let_stmt("qzx", q_zero()),
-            let_stmt("qone_x", q_one()),
-            let_stmt("qts_d0", crate::storage_loop::q_bitpack_call(&qts0, &pow2_names)),
-            let_stmt("qfc0", absorb_q_call("fcons_q", "qzx", "q_final_val0", "qts_d0")),
-            let_stmt("qts_d1", crate::storage_loop::q_bitpack_call(&qts1, &pow2_names)),
-            let_stmt("qfc1", absorb_q_call("qfc0", "qone_x", "q_final_val1", "qts_d1")),
-            let_stmt("mem_opening", transport_call_try("recv_mem_opening", vec![])),
-            let_stmt(
-                "mem_ok",
-                bridge_fn(
-                    "mem_drain_check",
-                    vec![ref_expr(var("fprod_q")), ref_expr(var("qfc1")), ref_expr(var("mem_opening"))],
-                ),
-            ),
-            let_stmt("order_opening", transport_call_try("recv_opening", vec![])),
-            let_stmt(
-                "order_ok2",
-                bridge_fn(
-                    "assert_one_check",
-                    vec![ref_expr(var("forder_q")), ref_expr(var("order_opening")), var("delta")],
-                ),
-            ),
-            let_stmt(
-                "verdict",
-                IrExpr::Binary {
-                    op: SpecBinOp::And,
-                    left: Box::new(IrExpr::Binary {
-                        op: SpecBinOp::And,
-                        left: Box::new(var("final_ok")),
-                        right: Box::new(var("mem_ok")),
-                    }),
-                    right: Box::new(var("order_ok2")),
-                },
-            ),
-            IrStmt::Semi(transport_call_try("send_verdict", vec![clone_expr(var("verdict"))])),
-        ],
+        stmts: core::mem::take(&mut b2_stmts),
         stmt_provs: vec![],
         terminator: IrCfgTerminator::Return(Some(ok_expr(var("verdict")))),
     };
@@ -1296,7 +1349,7 @@ mod tests {
     #[test]
     fn test_hybrid_net_prover_compiles() {
         let circuit = build_simple_loop();
-        let module = weave_hybrid_net_vole_prover(&circuit, 4, "test", None);
+        let module = weave_hybrid_net_vole_prover(&circuit, 4, 1, "test", None);
         let code = print_hybrid_net_cfg_module(&module);
         run_compile_check_net(&code, "hybrid_net_prover");
     }
@@ -1304,7 +1357,7 @@ mod tests {
     #[test]
     fn test_hybrid_net_verifier_compiles() {
         let circuit = build_simple_loop();
-        let module = weave_hybrid_net_vole_verifier(&circuit, 4, "test", None);
+        let module = weave_hybrid_net_vole_verifier(&circuit, 4, 1, "test", None);
         let code = print_hybrid_net_cfg_module(&module);
         run_compile_check_net(&code, "hybrid_net_verifier");
     }
@@ -1312,7 +1365,7 @@ mod tests {
     #[test]
     fn test_hybrid_prover_has_both_paths() {
         let circuit = build_simple_loop();
-        let module = weave_hybrid_net_vole_prover(&circuit, 4, "test", None);
+        let module = weave_hybrid_net_vole_prover(&circuit, 4, 1, "test", None);
         let code = print_hybrid_net_cfg_module(&module);
         // ZK path present:
         assert!(code.contains("vole_and_prover_step") || code.contains("vope_one"),
@@ -1330,7 +1383,7 @@ mod tests {
     #[test]
     fn test_hybrid_prover_returns_memory_triple() {
         let circuit = build_simple_loop();
-        let module = weave_hybrid_net_vole_prover(&circuit, 4, "test", None);
+        let module = weave_hybrid_net_vole_prover(&circuit, 4, 1, "test", None);
         let code = print_hybrid_net_cfg_module(&module);
         // The accumulator survives the gap because it is part of the anchor
         // bundle carried through every gap block (suffixes _mp/_mc/_ts) and
@@ -1365,12 +1418,54 @@ mod tests {
         }
     }
 
+    /// Hybrid storage loop with a 2-bit address (4 cells).
+    fn build_storage_hybrid_loop_2bit() -> BIrBlocks {
+        use volar_ir::boolar::{BIrBlock, BIrStmt, BIrTarget, BIrTerminator};
+        use volar_ir::ir::{IRBlockTargetId, StorageId};
+        BIrBlocks {
+            blocks: vec![BIrBlock {
+                params: 4,
+                stmts: vec![
+                    BIrStmt::StorageWrite {
+                        storage: StorageId(0), src: IRVarId(2), bit_width: 1,
+                        addr: vec![IRVarId(0), IRVarId(1)],
+                    },
+                    BIrStmt::StorageRead {
+                        storage: StorageId(0), bit_width: 1, addr: vec![IRVarId(0), IRVarId(1)],
+                    },
+                ],
+                stmt_provs: vec![(), ()],
+                terminator: BIrTerminator::Jmp(BIrTarget {
+                    block: IRBlockTargetId::Return,
+                    args: vec![IRVarId(0), IRVarId(1), IRVarId(2), IRVarId(5), IRVarId(3)],
+                }),
+            }],
+            pre_init: vec![],
+        }
+    }
+
+    #[test]
+    fn test_hybrid_storage_multibit_addr() {
+        // 2-bit address ⇒ 4 init/drain cells; ts-sound + network-resilient.
+        let circuit = build_storage_hybrid_loop_2bit();
+        let mp = weave_hybrid_net_vole_prover(&circuit, 3, 2, "mb", None);
+        let codep = print_hybrid_net_cfg_module(&mp);
+        run_compile_check_net(&codep, "hybrid_storage_prover_2bit");
+        assert!(codep.contains("final_val3"), "4 drain cells materialised");
+        assert!(codep.contains("vope_bitpack"), "address + timestamp bit-packed");
+        let mv = weave_hybrid_net_vole_verifier(&circuit, 3, 2, "mb", None);
+        let codev = print_hybrid_net_cfg_module(&mv);
+        run_compile_check_net(&codev, "hybrid_storage_verifier_2bit");
+        assert!(codev.contains("q_final_val3"), "verifier mirrors 4 drain cells");
+        assert!(codev.contains("assert_one_check"), "ordering asserted");
+    }
+
     #[test]
     fn test_hybrid_storage_unified() {
         // The unified weaver: storage absorbs in the ZK body + accumulator
         // carried through the gap + transport, all in one prover.
         let circuit = build_storage_hybrid_loop();
-        let module = weave_hybrid_net_vole_prover(&circuit, 4, "test", None);
+        let module = weave_hybrid_net_vole_prover(&circuit, 4, 1, "test", None);
         let code = print_hybrid_net_cfg_module(&module);
         run_compile_check_net(&code, "hybrid_storage_unified");
         // Real storage absorbs present, fed by the per-iteration slices:
@@ -1397,7 +1492,7 @@ mod tests {
         // The verifier mirrors the prover's storage absorbs in Q-space and runs
         // the drain check (mem_prod == mem_cons), folding it into the verdict.
         let circuit = build_storage_hybrid_loop();
-        let module = weave_hybrid_net_vole_verifier(&circuit, 4, "test", None);
+        let module = weave_hybrid_net_vole_verifier(&circuit, 4, 1, "test", None);
         let code = print_hybrid_net_cfg_module(&module);
         run_compile_check_net(&code, "hybrid_storage_verifier");
         assert!(code.contains("mem_acc_absorb_q"), "expected Q-side storage absorb");
