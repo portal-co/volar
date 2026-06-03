@@ -748,6 +748,29 @@ pub fn weave_storage_commit_loop_prover(
 // weave_ts_storage_loop_prover  —  timestamp-SOUND storage loop
 // ============================================================================
 
+/// `volar_spec::vole::bridge::vole_rekey_prover(snapshot, key)` — re-key a
+/// committed snapshot wire under a fresh one-time-pad `key` (free `Add`/XOR).
+/// Used by the skip-**resume** entry to derive a resumed segment's initial state.
+fn rekey_prover_call(snapshot: &str, key: &str) -> IrExpr {
+    IrExpr::Call {
+        func: Box::new(IrExpr::Path {
+            segments: vec![
+                "volar_spec".into(), "vole".into(), "bridge".into(), "vole_rekey_prover".into(),
+            ],
+            type_args: vec![],
+        }),
+        args: vec![clone_expr(var(snapshot)), clone_expr(var(key))],
+    }
+}
+
+/// Verifier-side re-key: `Q { q: from_fn(|i| q_snapshot.q[i] + q_key.q[i]) }`.
+/// Computing the resumed state inline as this free linear combination *is* the
+/// binding — no separate `vole_rekey_verifier_check` is needed (the relation is
+/// enforced for free, like an XOR gate).
+fn rekey_verifier_expr(q_snapshot: &str, q_key: &str) -> IrExpr {
+    q_struct(array_from_fn_t_n(add(clone_expr(q_idx(q_snapshot)), clone_expr(q_idx(q_key)))))
+}
+
 /// `volar_spec::vole::bridge::FN(&a, &b)` two-ref bridge call.
 fn bridge_call2(fname: &str, a: IrExpr, b: IrExpr) -> IrExpr {
     IrExpr::Call {
@@ -791,6 +814,7 @@ pub fn weave_ts_storage_loop_prover(
     circuit: &BIrBlocks,
     ts_bits: usize,
     addr_bits: usize,
+    resume: bool,
     name: &str,
     linkage: Option<&LinkageSystem>,
 ) -> IrCfgModule {
@@ -821,8 +845,18 @@ pub fn weave_ts_storage_loop_prover(
     for n in &pow2_names {
         func_params.push(IrParam { name: n.clone(), ty: IrType::TypeParam("T".into()) });
     }
-    for i in 0..num_params {
-        func_params.push(IrParam { name: format!("init_w{i}"), ty: vope_type() });
+    if resume {
+        // Skip-resume entry: initial state is the re-keyed snapshot.
+        for i in 0..num_params {
+            func_params.push(IrParam { name: format!("snapshot_{i}"), ty: vope_type() });
+        }
+        for i in 0..num_params {
+            func_params.push(IrParam { name: format!("key_{i}"), ty: vope_type() });
+        }
+    } else {
+        for i in 0..num_params {
+            func_params.push(IrParam { name: format!("init_w{i}"), ty: vope_type() });
+        }
     }
     func_params.push(IrParam { name: "read_vals".into(), ty: vope_slice_type() });
     func_params.push(IrParam { name: "write_olds".into(), ty: vope_slice_type() });
@@ -845,6 +879,16 @@ pub fn weave_ts_storage_loop_prover(
         let_stmt("zw", zero_vope_expr()),
         let_stmt("mp_acc0", zero_vope_expr()),
     ];
+    // Skip-resume: derive the loop's initial state from the re-keyed snapshot
+    // (the free linear rekey relation binds it to the prior segment).
+    if resume {
+        for i in 0..num_params {
+            b0_stmts.push(let_stmt(
+                &format!("init_w{i}"),
+                rekey_prover_call(&format!("snapshot_{i}"), &format!("key_{i}")),
+            ));
+        }
+    }
     let mut init_cur = String::from("mp_acc0");
     for c in 0..cells {
         let bits = const_addr_bits(c, addr_bits, "vope_one", "zw");
@@ -1248,6 +1292,7 @@ pub fn weave_ts_storage_loop_verifier(
     circuit: &BIrBlocks,
     ts_bits: usize,
     addr_bits: usize,
+    resume: bool,
     name: &str,
     linkage: Option<&LinkageSystem>,
 ) -> IrCfgModule {
@@ -1280,8 +1325,17 @@ pub fn weave_ts_storage_loop_verifier(
         func_params.push(IrParam { name: n.clone(), ty: IrType::TypeParam("T".into()) });
     }
     func_params.push(IrParam { name: "q_ands".into(), ty: q_slice_type() });
-    for i in 0..num_params {
-        func_params.push(IrParam { name: format!("init_q{i}"), ty: q_type() });
+    if resume {
+        for i in 0..num_params {
+            func_params.push(IrParam { name: format!("q_snapshot_{i}"), ty: q_type() });
+        }
+        for i in 0..num_params {
+            func_params.push(IrParam { name: format!("q_key_{i}"), ty: q_type() });
+        }
+    } else {
+        for i in 0..num_params {
+            func_params.push(IrParam { name: format!("init_q{i}"), ty: q_type() });
+        }
     }
     for s in ["q_read_vals", "q_write_olds", "q_read_last_ts", "q_write_last_ts"] {
         func_params.push(IrParam { name: s.into(), ty: q_slice_type() });
@@ -1304,6 +1358,15 @@ pub fn weave_ts_storage_loop_verifier(
         let_stmt("qone", q_const(true)),
         let_stmt("mp_acc0", q_const(false)),
     ];
+    // Skip-resume: resumed state Q = q_snapshot + q_key (free linear rekey).
+    if resume {
+        for i in 0..num_params {
+            b0_stmts.push(let_stmt(
+                &format!("init_q{i}"),
+                rekey_verifier_expr(&format!("q_snapshot_{i}"), &format!("q_key_{i}")),
+            ));
+        }
+    }
     let mut init_cur = String::from("mp_acc0");
     for c in 0..cells {
         let bits = const_addr_bits(c, addr_bits, "qone", "qz");
@@ -1853,7 +1916,7 @@ pub fn print_storage_loop_module(module: &IrCfgModule) -> String {
         "use hybrid_array::{Array, ArraySize};\n",
         "use cipher::consts::U1;\n",
         "use volar_spec::vole::{Delta, Q, Vope, VoleArray};\n",
-        "use volar_spec::vole::bridge::{mem_acc_absorb_vope, mem_acc_absorb_q, vope_bitpack, q_bitpack, mem_drain_open, mem_drain_check, vope_open_mask, assert_one_check};\n",
+        "use volar_spec::vole::bridge::{mem_acc_absorb_vope, mem_acc_absorb_q, vope_bitpack, q_bitpack, mem_drain_open, mem_drain_check, vope_open_mask, assert_one_check, vole_rekey_prover};\n",
         "use volar_spec::vole::prove::{vole_and_prover_step, vole_and_verifier_check};\n",
         "use volar_net::{vope_bit, VoleTransport};\n",
         "\n",
@@ -1950,15 +2013,33 @@ mod tests {
     }
 
     #[test]
+    fn test_ts_storage_loop_resume_composes_skip_and_loop() {
+        // Skip-resume composition: the loop's initial state is the re-keyed
+        // snapshot (snapshot + key), computed inline — unifying the dynamic-skip
+        // continuation with the ts-sound storage loop.
+        let circuit = build_storage_loop();
+        let mp = weave_ts_storage_loop_prover(&circuit, 4, 1, true, "rsm", None);
+        let codep = print_storage_loop_module(&mp);
+        run_compile_check_net(&codep, "ts_storage_loop_resume_prover");
+        assert!(codep.contains("vole_rekey_prover("), "initial state derived by re-key");
+        assert!(codep.contains("snapshot_0"), "takes a committed snapshot");
+        assert!(codep.contains("key_0"), "takes a fresh one-time-pad key");
+        let mv = weave_ts_storage_loop_verifier(&circuit, 4, 1, true, "rsm", None);
+        let codev = print_storage_loop_module(&mv);
+        run_compile_check_net(&codev, "ts_storage_loop_resume_verifier");
+        assert!(codev.contains("q_snapshot_0") && codev.contains("q_key_0"), "verifier mirrors rekey");
+    }
+
+    #[test]
     fn test_ts_storage_loop_multibit_addr_compiles() {
         // 2-bit address ⇒ 4 cells of init/drain; ts_bits=3.
         let circuit = build_storage_loop_2bit();
-        let mp = weave_ts_storage_loop_prover(&circuit, 3, 2, "mb", None);
+        let mp = weave_ts_storage_loop_prover(&circuit, 3, 2, false, "mb", None);
         let codep = print_storage_loop_module(&mp);
         run_compile_check_net(&codep, "ts_storage_loop_prover_2bit");
         // 4 cells (final_val0..3) materialised; address bit-packed.
         assert!(codep.contains("final_val3"), "2^addr_bits=4 drain cells");
-        let mv = weave_ts_storage_loop_verifier(&circuit, 3, 2, "mb", None);
+        let mv = weave_ts_storage_loop_verifier(&circuit, 3, 2, false, "mb", None);
         let codev = print_storage_loop_module(&mv);
         run_compile_check_net(&codev, "ts_storage_loop_verifier_2bit");
         assert!(codev.contains("q_final_val3"), "verifier mirrors 4 drain cells");
@@ -1990,7 +2071,7 @@ mod tests {
     #[test]
     fn test_ts_storage_loop_prover_compiles() {
         let circuit = build_storage_loop();
-        let module = weave_ts_storage_loop_prover(&circuit, 4, 1, "test", None);
+        let module = weave_ts_storage_loop_prover(&circuit, 4, 1, false, "test", None);
         let code = print_storage_loop_module(&module);
         run_compile_check_net(&code, "ts_storage_loop_prover");
     }
@@ -1998,7 +2079,7 @@ mod tests {
     #[test]
     fn test_ts_storage_loop_prover_is_sound_shaped() {
         let circuit = build_storage_loop();
-        let module = weave_ts_storage_loop_prover(&circuit, 4, 1, "test", None);
+        let module = weave_ts_storage_loop_prover(&circuit, 4, 1, false, "test", None);
         let code = print_storage_loop_module(&module);
         // committed-counter ordering gadget + increment lower to hats
         assert!(code.contains("vole_and_prover_step"), "ordering/incr ANDs → hats");
@@ -2012,7 +2093,7 @@ mod tests {
     #[test]
     fn test_ts_storage_loop_verifier_compiles() {
         let circuit = build_storage_loop();
-        let module = weave_ts_storage_loop_verifier(&circuit, 4, 1, "test", None);
+        let module = weave_ts_storage_loop_verifier(&circuit, 4, 1, false, "test", None);
         let code = print_storage_loop_module(&module);
         run_compile_check_net(&code, "ts_storage_loop_verifier");
     }
@@ -2020,7 +2101,7 @@ mod tests {
     #[test]
     fn test_ts_storage_loop_verifier_checks_drain_and_order() {
         let circuit = build_storage_loop();
-        let module = weave_ts_storage_loop_verifier(&circuit, 4, 1, "test", None);
+        let module = weave_ts_storage_loop_verifier(&circuit, 4, 1, false, "test", None);
         let code = print_storage_loop_module(&module);
         assert!(code.contains("vole_and_verifier_check"), "gadget ANDs checked");
         assert!(code.contains("mem_acc_absorb_q"), "Q-side multiset absorb");

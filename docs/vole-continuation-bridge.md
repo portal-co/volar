@@ -444,6 +444,44 @@ committed inputs **and** carries `mem_prod`/`mem_cons` unchanged
 (`AdditiveHashCarry`), so the driver feeds the returned wires straight into the
 resumed loop body's `init_w*` + accumulators.
 
+**Skip-resume ⊕ ts-loop composition — SHIPPED.** `weave_ts_storage_loop_{prover,
+verifier}` take a `resume: bool`. When set, the loop's initial state is the
+re-keyed snapshot computed **inline** — prover `init_w_i = vole_rekey_prover(
+snapshot_i, key_i)`, verifier `init_q_i = q_snapshot_i + q_key_i`. Because both
+sides compute the same free linear combination, the rekey relation is enforced
+for free (like an XOR gate) and needs **no separate
+`vole_rekey_verifier_check`** — the binding is automatic. This unifies the
+dynamic-skip continuation with the ts-sound storage loop in one weaver
+(`test_ts_storage_loop_resume_composes_skip_and_loop`).
+
+**hybrid_net integration — SPEC (next dedicated pass).** `hybrid_net.rs` still
+uses the *vacuous* single-field `ts` (+1) in its B1 storage absorbs, so its
+memory checking carries the same future-consumption gap §9 fixes for the
+standalone loop. The integration is mechanical but spans the 9-block CFG; it has
+**not** been attempted yet to avoid a half-sound intermediate. Concrete plan:
+
+1. **Gap threading is the easy lever.** The bundle is threaded through B4–B8 by
+   three closures (`aw_params` / `aw_clone_args` / `aw_move_args`) over the suffix
+   list `["_mp","_mc","_ts"]` + `_it`. Replace `"_ts"` with the `ts_bits` counter
+   suffixes `"_ts0".."_ts{B-1}"` plus `"_ord"` (the `order_ok` wire). All gap
+   blocks then carry the committed counter + ordering accumulator automatically.
+2. **B1 (prover ZK body):** swap the single-`ts` absorb for the standalone loop's
+   per-access logic — `bitpack(counter)` produce ts, `bitpack(t_last)` consume ts
+   (new `read_last_ts`/`write_last_ts` params), `order_ok &= emit_lt(t_last,
+   counter)`, `counter += emit_incr`. The gadget hats join B1's existing
+   `try_send_iteration` batch (extend `AND_COUNT` via `ts_iter_and_count`).
+3. **B0 init / B3 drain + order-open:** mirror the standalone loop's init (produce
+   cells at ts 0) and exit (drain cells, `mem_drain_open` + `vope_open_mask` via
+   the existing `send_mem_opening`/`send_opening`).
+4. **Verifier:** extend `emit_verifier_loop_gates` the same way (it currently uses
+   `q_ts_incr` on a single field), add the counter/order bundle slots, and fold
+   `order_ok` into the verdict via `assert_one_check`.
+5. **Reuse, don't duplicate:** consider extracting the standalone loop's
+   `emit_access` / `emit_access_q` into `pub(crate)` helpers so B1 and
+   `emit_verifier_loop_gates` call them directly. The replay-from-anchor soundness
+   is unchanged — the gap replays under VOLE, so the counter/order wires just need
+   to survive the gap (which step 1 guarantees).
+
 The committed counter starts at `1`, so the all-zero `(0,0,0)` tuple (which the
 no-constant-term `encode` maps to the field zero) cannot be consumed as a phantom
 "future" read: any forged read leaves the cell's true live tuple unconsumed,
