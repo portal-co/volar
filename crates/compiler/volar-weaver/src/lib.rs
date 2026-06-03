@@ -133,7 +133,10 @@ pub use hybrid_net::{
 };
 
 #[cfg(feature = "net")]
-pub use storage_loop::{weave_storage_commit_loop_prover, weave_lt_check, print_storage_loop_module};
+pub use storage_loop::{
+    weave_storage_commit_loop_prover, weave_ts_storage_loop_prover, weave_ts_storage_loop_verifier,
+    weave_lt_check, weave_lt_check_verifier, print_storage_loop_module,
+};
 
 pub use fhe::{
     weave_fhe, weave_fhe_flat_bir, derive_storage_config,

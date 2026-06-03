@@ -232,6 +232,40 @@ where
     ok
 }
 
+/// Prover side of a **value-1 opening**: reveal the MAC mask of a committed
+/// wire so the verifier can confirm the wire carries the bit `1`.
+///
+/// For a degree-1 VOPE the prover's MAC of a wire is its `v`-component, so the
+/// opening is just `w.v`.  Used to enforce a timestamp-ordering result
+/// (`emit_lt` output, AND-folded across all accesses) is `1` — i.e. every read
+/// consumed a strictly-earlier write, closing the "consume a future write"
+/// attack that multiset balance alone does not catch.
+pub fn vope_open_mask<N, T>(w: &Vope<N, T, U1>) -> Array<T, N>
+where
+    N: VoleArray<T>,
+    T: Clone,
+{
+    w.v.clone()
+}
+
+/// Verifier side of a value-1 opening (cf. [`vope_open_mask`]).
+///
+/// Checks `K_w + opening == Δ` lane-wise.  Because `K = M + x·Δ` and the prover
+/// sends `opening = M`, this holds iff the committed value `x == 1`.  A cheating
+/// prover with `x ≠ 1` would need `(x−1)·Δ = 0`, impossible for non-zero `Δ`.
+/// Returns `true` if the wire was committed to `1`.
+pub fn assert_one_check<N, T>(q: &Q<N, T>, opening: &Array<T, N>, delta: &Delta<N, T>) -> bool
+where
+    N: ArraySize,
+    T: Clone + Add<Output = T> + PartialEq,
+{
+    let mut ok = true;
+    for i in 0..N::USIZE {
+        ok = ok && (q.q[i].clone() + opening[i].clone() == delta.delta[i].clone());
+    }
+    ok
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +275,20 @@ mod tests {
 
     fn q<const A: u64, const B: u64>() -> Q<U2, u64> {
         Q { q: Array::<u64, U2>::from_fn(|i| if i == 0 { A } else { B }) }
+    }
+
+    #[test]
+    fn assert_one_accepts_value_one_rejects_others() {
+        // Mechanical check (mirrors drain_check's test style): accept iff
+        // K_w + opening == Δ lane-wise.  In GF(2^k) for a value-1 wire
+        // K = M + Δ and opening = M, so K + M = Δ.
+        let delta = Delta { delta: Array::<u64, U2>::from_fn(|i| if i == 0 { 10 } else { 20 }) };
+        let opening = Array::<u64, U2>::from_fn(|i| if i == 0 { 3 } else { 7 });
+        let k_good = Q { q: Array::<u64, U2>::from_fn(|i| delta.delta[i] - opening[i]) };
+        assert!(assert_one_check(&k_good, &opening, &delta));
+        let mut k_bad = k_good;
+        k_bad.q[0] += 1; // value ≠ 1
+        assert!(!assert_one_check(&k_bad, &opening, &delta));
     }
 
     #[test]

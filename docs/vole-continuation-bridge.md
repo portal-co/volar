@@ -380,30 +380,48 @@ public-timestamp scheme which would leak the access-timing pattern.
   multiset field value (`Σ bits·pow2`), tested.
 - `bridge::{mem_acc_absorb_vope, mem_acc_absorb_q, mem_drain_open, mem_drain_check}`
   — the multiset absorb + drain (tested).
+- `bridge::{vope_open_mask, assert_one_check}` — value-1 opening: prover reveals a
+  committed wire's MAC mask, verifier checks `K + opening == Δ` (holds iff the
+  wire is `1`). Used to enforce the AND-folded `order_ok` (tested).
+- `storage_loop::lower_gadget_verifier` — `Q`-side mirror of the gadget lowering
+  (ANDs → `vole_and_verifier_check`, hats consumed from a slice; validated by
+  `weave_lt_check_verifier`).
 
 So every cryptographic primitive for sound, private timestamp ordering exists
-and is tested. The remaining work is **weaver wiring** (mechanical, below).
+and is tested.
 
-### Integration (the remaining weaver wiring)
+### Integration — SHIPPED (`weave_ts_storage_loop_{prover,verifier}`)
 
-Timestamps become committed `TS_BITS`-wide bit-vectors:
+`storage_loop::weave_ts_storage_loop_prover` / `_verifier` are the
+**timestamp-sound** storage loop (single-bit address, `ts_bits`-wide counter),
+both compile-checked (`test_ts_storage_loop_{prover,verifier}_compiles`).
+Mechanism:
 
-- **cur_ts** is the operation index `iter·OPS + k` — *public* (both parties count
-  ops identically), so its bits are public constants (no counter gadget, no
-  committed produce-side ts). Its field contribution `cur_ts·r³` is a public
-  scalar in the absorb.
-- **t_last** (the addressed cell's last-write timestamp) is *committed*
-  (prover-supplied per access as a bit-vector slice). Its field value for the
-  consume absorb is the free linear bit-pack `Σ t_last_i · 2^i` (`vope_bitpack`
-  / `q_bitpack` — to add next to `bridge.rs`, mirroring `vope_scale_const`).
+- **counter** is a *committed* `ts_bits`-bit bit-vector carried through the loop,
+  initialised to `1` and incremented per access with `emit_incr` (its ANDs
+  streamed as hats). The produce-side timestamp is `bitpack(counter)` (free
+  linear `Σ bit_i · 2^i`).
+- **t_last** (the addressed cell's last-write timestamp) is *committed*,
+  prover-supplied per access as a bit-vector slice (`read_last_ts` /
+  `write_last_ts`). The consume-side timestamp is `bitpack(t_last)`.
 - Per access: `consume(addr, value, bitpack(t_last))`,
-  `produce(addr, value, cur_ts)`, and `order_ok &= emit_lt(t_last, cur_ts_bits)`.
-- **Init**: produce `(addr, init_value, 0)` for each cell at entry (from
-  `pre_init`); **drain**: consume each cell's final `(addr, value, ts)` at exit.
-- The verdict folds in `order_ok` alongside the §8 drain check:
-  `verdict = all_ok && mem_ok && order_ok`.
+  `order_ok &= emit_lt(t_last, counter)`, `produce(addr, value, bitpack(counter))`,
+  `counter += 1`. All gadget hats stream via `transport.send_iteration` and are
+  checked verifier-side via `recv_iteration` + `vole_and_verifier_check`.
+- **Init** (entry block): produce both single-bit cells at `ts = 0`. **Drain**
+  (exit block): consume each cell's committed final `(addr, value, ts)` witness.
+- The exit opens the drain (`mem_drain_open` → `mem_drain_check`) and the ordering
+  result (`vope_open_mask` → `assert_one_check`); the verdict is
+  `all_ok && drain_ok && order_ok`. Both halves agree on AND ordering by
+  construction (identical `emit_lt`/`emit_incr` traversal, shared
+  `ts_iter_and_count` for the per-iteration AND count / `q_ands` indexing).
 
-The gadget produces AND-gate hats, so this integrates in the **hybrid** weaver
-(which already has the hat/transport machinery), not the linear-only
-`storage_loop`. Single-bit address first; multi-bit packs the address the same
-way (`Σ bit_i · 2^i`).
+The counter is committed (private) rather than the public op-index scheme, so it
+does **not** leak the access-timing pattern. Multi-bit addresses pack the same
+way (`Σ bit_i · 2^i`) and generalise init/drain from 2 cells to `2^addr_bits`.
+
+The committed counter starts at `1`, so the all-zero `(0,0,0)` tuple (which the
+no-constant-term `encode` maps to the field zero) cannot be consumed as a phantom
+"future" read: any forged read leaves the cell's true live tuple unconsumed,
+breaking the drain balance. (A constant-term `encode` would remove this corner
+case entirely; tracked as a hardening follow-up.)

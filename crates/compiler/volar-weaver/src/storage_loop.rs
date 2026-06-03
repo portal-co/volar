@@ -40,9 +40,10 @@ use alloc::{boxed::Box, collections::BTreeMap, format, string::String, vec, vec:
 
 use volar_compiler::{
     ir::{
-        ExternalKind, IrAnyFunction, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump,
-        IrCfgModule, IrCfgTerminator, IrExpr, IrGenericParam, IrGenericParamKind, IrLit,
-        IrModule, IrParam, IrPattern, IrStmt, IrType, IrWherePredicate, SpecBinOp, StructKind,
+        ArrayKind, ArrayLength, ExternalKind, IrAnyFunction, IrCfgBlock, IrCfgBody, IrCfgFunction,
+        IrCfgJump, IrClosureParam, IrCfgModule, IrCfgTerminator, IrExpr, IrGenericParam,
+        IrGenericParamKind, IrLit, IrModule, IrParam, IrPattern, IrStmt, IrType, IrWherePredicate,
+        SpecBinOp, StructKind,
     },
     linkage::LinkageSystem,
 };
@@ -52,8 +53,11 @@ use volar_ir::ir::IRVarId;
 use crate::{clone_expr, expand_ors, ref_expr, var};
 use crate::gadgets::{emit_lt, GateBuf};
 use crate::net::{
-    add_output_t, array_size_bound, bool_type, clone_t, default_t, emit_prover_and_gate,
-    mul_output_t, ref_to, usize_type, vole_array_t_bound, vope_bit_call, vope_type,
+    add_output_t, array_size_bound, array_t_n, bool_type, clone_t, default_t, delta_type,
+    emit_prover_and_gate, hats_slice_expr, mul_output_t, net_prover_loop_generics_and_where,
+    net_verifier_generics_and_where, ok_expr, q_slice_type, q_type, ref_mut_to, ref_to,
+    result_type, tr_error_type, transport_call_try, usize_type, vole_array_t_bound, vope_bit_call,
+    vope_type,
 };
 
 // ── Gadget → VOLE lowering bridge ───────────────────────────────────────────
@@ -72,6 +76,20 @@ fn lower_gadget_prover(
     hats: &mut Vec<String>,
     stmts: &mut Vec<IrStmt>,
 ) -> String {
+    let map = lower_gadget_prover_map(gates, in_map, tag, hats, stmts);
+    map[&result_id].clone()
+}
+
+/// As [`lower_gadget_prover`] but returns the full gadget-id → wire-name map (so
+/// multi-output gadgets such as [`crate::gadgets::emit_incr`] can recover every
+/// result bit).
+fn lower_gadget_prover_map(
+    gates: &[(IRVarId, BIrStmt)],
+    in_map: &BTreeMap<u32, String>,
+    tag: &str,
+    hats: &mut Vec<String>,
+    stmts: &mut Vec<IrStmt>,
+) -> BTreeMap<u32, String> {
     let addv = |a: &str, b: &str| IrExpr::Binary {
         op: SpecBinOp::Add,
         left: Box::new(clone_expr(var(a))),
@@ -103,7 +121,178 @@ fn lower_gadget_prover(
         }
         map.insert(rid.0, name);
     }
-    map[&result_id].clone()
+    map
+}
+
+// ── Verifier-side (Q) gadget lowering ────────────────────────────────────────
+
+/// `Array::<T, N>::default()`
+fn array_t_n_default() -> IrExpr {
+    IrExpr::Call {
+        func: Box::new(IrExpr::Path {
+            segments: vec!["Array".into(), "default".into()],
+            type_args: vec![IrType::TypeParam("T".into()), IrType::TypeParam("N".into())],
+        }),
+        args: vec![],
+    }
+}
+
+/// `Q { q: <field> }`
+fn q_struct(q_field: IrExpr) -> IrExpr {
+    IrExpr::StructExpr {
+        kind: StructKind::Custom("Q".into()),
+        type_args: vec![],
+        fields: vec![("q".into(), q_field)],
+        rest: None,
+    }
+}
+
+/// `Array::<T, N>::from_fn(|i| <body>)` — body references the closure index `i`.
+fn array_from_fn_t_n(body: IrExpr) -> IrExpr {
+    IrExpr::Call {
+        func: Box::new(IrExpr::Path {
+            segments: vec!["Array".into(), "from_fn".into()],
+            type_args: vec![IrType::TypeParam("T".into()), IrType::TypeParam("N".into())],
+        }),
+        args: vec![IrExpr::Closure {
+            params: vec![IrClosureParam { pattern: IrPattern::ident("i"), ty: None }],
+            ret_type: None,
+            body: Box::new(body),
+        }],
+    }
+}
+
+/// `<name>.q[i]`
+fn q_idx(name: &str) -> IrExpr {
+    IrExpr::Index {
+        base: Box::new(IrExpr::Field { base: Box::new(var(name)), field: "q".into() }),
+        index: Box::new(var("i")),
+    }
+}
+
+/// `delta.delta[i]`
+fn delta_idx() -> IrExpr {
+    IrExpr::Index {
+        base: Box::new(IrExpr::Field { base: Box::new(var("delta")), field: "delta".into() }),
+        index: Box::new(var("i")),
+    }
+}
+
+fn add(a: IrExpr, b: IrExpr) -> IrExpr {
+    IrExpr::Binary { op: SpecBinOp::Add, left: Box::new(a), right: Box::new(b) }
+}
+
+/// Verifier (`Q`-side) mirror of [`lower_gadget_prover`].  Lowers the same
+/// boolean gadget to verifier IR: `Zero`→`Q{0}`, `One`→`Q{Δ}`, `Xor`/`Not` are
+/// free `Q` combinations, each `And`/`Or` runs `vole_and_verifier_check` (its
+/// per-gate `ok` is `&&`-folded into the mutable accumulator named `ok_acc`).
+///
+/// `mk_qand(k)` / `mk_hat(k)` produce the index expressions for the `k`-th AND's
+/// verifier share and received hat (so callers control flat vs. per-iteration
+/// `iter * AND_COUNT + base` indexing); `and_counter` is advanced in lockstep
+/// with the prover's hat ordering.  Returns the wire bound to `result_id`.
+#[allow(clippy::too_many_arguments)]
+fn lower_gadget_verifier(
+    gates: &[(IRVarId, BIrStmt)],
+    in_map: &BTreeMap<u32, String>,
+    tag: &str,
+    and_counter: &mut usize,
+    mk_qand: &dyn Fn(usize) -> IrExpr,
+    mk_hat: &dyn Fn(usize) -> IrExpr,
+    ok_acc: &str,
+    stmts: &mut Vec<IrStmt>,
+) -> BTreeMap<u32, String> {
+    let mut map = in_map.clone();
+    // `let (qname, ok_k) = vole_and_verifier_check::<N,T>(delta, &qa, &qb, &q_and, &hat);`
+    // then `ok_acc = ok_acc & ok_k;`
+    let mut emit_and = |qa: &str, qb: &str, qname: &str, stmts: &mut Vec<IrStmt>| {
+        let k = *and_counter;
+        *and_counter += 1;
+        let ok_name = format!("ok_{qname}");
+        stmts.push(IrStmt::Let {
+            pattern: IrPattern::Tuple(vec![
+                IrPattern::ident(qname),
+                IrPattern::ident(&ok_name),
+            ]),
+            ty: None,
+            init: Some(IrExpr::Call {
+                func: Box::new(IrExpr::Path {
+                    segments: vec!["vole_and_verifier_check".into()],
+                    type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("T".into())],
+                }),
+                args: vec![
+                    var("delta"),
+                    ref_expr(var(qa)),
+                    ref_expr(var(qb)),
+                    ref_expr(mk_qand(k)),
+                    ref_expr(mk_hat(k)),
+                ],
+            }),
+        });
+        stmts.push(IrStmt::Semi(IrExpr::Assign {
+            left: Box::new(var(ok_acc)),
+            right: Box::new(IrExpr::Binary {
+                op: SpecBinOp::And,
+                left: Box::new(var(ok_acc)),
+                right: Box::new(var(&ok_name)),
+            }),
+        }));
+    };
+
+    for (rid, stmt) in gates {
+        let name = format!("qg{tag}_{}", rid.0);
+        match stmt {
+            BIrStmt::Zero => stmts.push(let_stmt(&name, q_struct(array_t_n_default()))),
+            BIrStmt::One => stmts.push(let_stmt(
+                &name,
+                q_struct(clone_expr(IrExpr::Field {
+                    base: Box::new(var("delta")),
+                    field: "delta".into(),
+                })),
+            )),
+            BIrStmt::Xor(a, b) => {
+                let (qa, qb) = (map[&a.0].clone(), map[&b.0].clone());
+                let _ = (&qa, &qb);
+                stmts.push(let_stmt(
+                    &name,
+                    q_struct(array_from_fn_t_n(add(
+                        clone_expr(q_idx(&qa)),
+                        clone_expr(q_idx(&qb)),
+                    ))),
+                ));
+            }
+            BIrStmt::Not(a) => {
+                let qa = map[&a.0].clone();
+                stmts.push(let_stmt(
+                    &name,
+                    q_struct(array_from_fn_t_n(add(
+                        clone_expr(q_idx(&qa)),
+                        clone_expr(delta_idx()),
+                    ))),
+                ));
+            }
+            BIrStmt::And(a, b) => {
+                let (qa, qb) = (map[&a.0].clone(), map[&b.0].clone());
+                emit_and(&qa, &qb, &name, stmts);
+            }
+            BIrStmt::Or(a, b) => {
+                let (qa, qb) = (map[&a.0].clone(), map[&b.0].clone());
+                let ab = format!("{name}_ab");
+                emit_and(&qa, &qb, &ab, stmts);
+                // qg = qa + qb + qab  (free Q combination)
+                stmts.push(let_stmt(
+                    &name,
+                    q_struct(array_from_fn_t_n(add(
+                        add(clone_expr(q_idx(&qa)), clone_expr(q_idx(&qb))),
+                        clone_expr(q_idx(&ab)),
+                    ))),
+                ));
+            }
+            _ => panic!("lower_gadget_verifier: unexpected gate {stmt:?}"),
+        }
+        map.insert(rid.0, name);
+    }
+    map
 }
 
 // ── Local helpers ───────────────────────────────────────────────────────────
@@ -215,6 +404,55 @@ pub(crate) fn slice_index_clone(slice: &str, count: usize, k: usize) -> IrExpr {
 
 fn let_stmt(name: &str, init: IrExpr) -> IrStmt {
     IrStmt::Let { pattern: IrPattern::ident(name), ty: None, init: Some(init) }
+}
+
+/// `volar_spec::vole::bridge::vope_bitpack(&[b0.clone(), ..], &[pow2_0.clone(), ..])`
+fn bitpack_call(bits: &[String], pow2: &[String]) -> IrExpr {
+    let bit_arr = ref_expr(IrExpr::FixedArray(bits.iter().map(|b| clone_expr(var(b))).collect()));
+    let pow_arr = ref_expr(IrExpr::FixedArray(pow2.iter().map(|p| clone_expr(var(p))).collect()));
+    IrExpr::Call {
+        func: Box::new(IrExpr::Path {
+            segments: vec![
+                "volar_spec".into(), "vole".into(), "bridge".into(), "vope_bitpack".into(),
+            ],
+            type_args: vec![],
+        }),
+        args: vec![bit_arr, pow_arr],
+    }
+}
+
+/// `volar_spec::vole::bridge::q_bitpack(&[q0.clone(), ..], &[pow2_0.clone(), ..])`
+fn q_bitpack_call(bits: &[String], pow2: &[String]) -> IrExpr {
+    let bit_arr = ref_expr(IrExpr::FixedArray(bits.iter().map(|b| clone_expr(var(b))).collect()));
+    let pow_arr = ref_expr(IrExpr::FixedArray(pow2.iter().map(|p| clone_expr(var(p))).collect()));
+    IrExpr::Call {
+        func: Box::new(IrExpr::Path {
+            segments: vec![
+                "volar_spec".into(), "vole".into(), "bridge".into(), "q_bitpack".into(),
+            ],
+            type_args: vec![],
+        }),
+        args: vec![bit_arr, pow_arr],
+    }
+}
+
+/// Number of AND/OR gates a gadget contributes (Or lowers to one AND).
+fn gadget_and_count(gates: &[(IRVarId, BIrStmt)]) -> usize {
+    gates.iter().filter(|(_, s)| matches!(s, BIrStmt::And(..) | BIrStmt::Or(..))).count()
+}
+
+/// Per-iteration AND-gate count for the ts-aware loop: each storage access runs
+/// `emit_lt` (ordering) + one `order &= lt` AND + `emit_incr` (counter).
+fn ts_iter_and_count(ts_bits: usize, num_access: usize) -> usize {
+    let mut lt_buf = GateBuf::new(2 * ts_bits as u32);
+    let a: Vec<u32> = (0..ts_bits as u32).collect();
+    let b: Vec<u32> = (ts_bits as u32..2 * ts_bits as u32).collect();
+    let _ = emit_lt(&a, &b, &mut lt_buf);
+    let lt_ands = gadget_and_count(&lt_buf.gates);
+    let mut incr_buf = GateBuf::new(ts_bits as u32);
+    let _ = crate::gadgets::emit_incr(&(0..ts_bits as u32).collect::<Vec<_>>(), &mut incr_buf);
+    let incr_ands = gadget_and_count(&incr_buf.gates);
+    num_access * (lt_ands + 1 + incr_ands)
 }
 
 pub(crate) fn count_storage(expanded: &[(IRVarId, BIrStmt, ())]) -> (usize, usize) {
@@ -496,6 +734,879 @@ pub fn weave_storage_commit_loop_prover(
     module
 }
 
+// ============================================================================
+// weave_ts_storage_loop_prover  —  timestamp-SOUND storage loop
+// ============================================================================
+
+/// `volar_spec::vole::bridge::FN(&a, &b)` two-ref bridge call.
+fn bridge_call2(fname: &str, a: IrExpr, b: IrExpr) -> IrExpr {
+    IrExpr::Call {
+        func: Box::new(IrExpr::Path {
+            segments: vec!["volar_spec".into(), "vole".into(), "bridge".into(), fname.into()],
+            type_args: vec![],
+        }),
+        args: vec![ref_expr(a), ref_expr(b)],
+    }
+}
+
+/// Weave a single-block loop circuit with Commitment-mode storage into a
+/// **timestamp-sound** VOLE prover `IrCfgModule`.
+///
+/// Unlike [`weave_storage_commit_loop_prover`] (which used a single monotonic
+/// field `ts` and so could not catch the "consume a future write" attack), this
+/// weaver carries a **committed `ts_bits`-bit global counter** and, per storage
+/// access, (1) consumes the cell's prior `(addr, value, t_last)` tuple, (2)
+/// proves `t_last < counter` with the [`emit_lt`] gadget (its ANDs streamed as
+/// hats), (3) produces `(addr, value, counter)`, then (4) increments the counter
+/// with [`emit_incr`].  The all-accesses-ordered AND-fold `order_ok` and the
+/// produce/consume drain are opened at exit so the verifier rejects any
+/// out-of-order (forged) read.  Memory is initialised (both single-bit cells at
+/// `ts = 0`) in the entry block and drained at exit using committed
+/// final-state witnesses.
+///
+/// Generated signature (B = `ts_bits`):
+/// ```text
+/// fn ts_storage_loop_<NAME><N, T, Tr: VoleTransport<N, T>>(
+///     vope_one: Vope<N,T,U1>, r1: T, r2: T, r3: T,
+///     pow2_0: T, .., pow2_{B-1}: T,          // bit weights for the ts bitpack
+///     init_w0: Vope, ..,                     // initial loop state
+///     read_vals: &[Vope], write_olds: &[Vope],            // committed values
+///     read_last_ts: &[Vope], write_last_ts: &[Vope],      // committed t_last bits
+///     final_val0: Vope, final_val1: Vope,                 // drain witnesses
+///     final_ts0_0: Vope, .., final_ts1_{B-1}: Vope,
+///     transport: &mut Tr,
+/// ) -> Result<Vope<N,T,U1>, <Tr as VoleTransport<N,T>>::Error>
+/// ```
+pub fn weave_ts_storage_loop_prover(
+    circuit: &BIrBlocks,
+    ts_bits: usize,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+) -> IrCfgModule {
+    assert!(circuit.is_movfuscated(), "weave_ts_storage_loop_prover: circuit must be single-block");
+    assert!(ts_bits >= 1, "ts_bits must be >= 1");
+    let block = &circuit.blocks[0];
+    let num_params = block.params as usize;
+    let expanded = expand_ors(block);
+    let (read_count, write_count) = count_storage(&expanded);
+    let b = ts_bits;
+
+    let (generics, where_clause) = net_prover_loop_generics_and_where();
+    let pow2_names: Vec<String> = (0..b).map(|j| format!("pow2_{j}")).collect();
+
+    // ── Function params ────────────────────────────────────────────────────
+    let mut func_params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
+    for r in ["r1", "r2", "r3"] {
+        func_params.push(IrParam { name: r.into(), ty: IrType::TypeParam("T".into()) });
+    }
+    for n in &pow2_names {
+        func_params.push(IrParam { name: n.clone(), ty: IrType::TypeParam("T".into()) });
+    }
+    for i in 0..num_params {
+        func_params.push(IrParam { name: format!("init_w{i}"), ty: vope_type() });
+    }
+    func_params.push(IrParam { name: "read_vals".into(), ty: vope_slice_type() });
+    func_params.push(IrParam { name: "write_olds".into(), ty: vope_slice_type() });
+    func_params.push(IrParam { name: "read_last_ts".into(), ty: vope_slice_type() });
+    func_params.push(IrParam { name: "write_last_ts".into(), ty: vope_slice_type() });
+    for cell in 0..2 {
+        func_params.push(IrParam { name: format!("final_val{cell}"), ty: vope_type() });
+    }
+    for cell in 0..2 {
+        for j in 0..b {
+            func_params.push(IrParam { name: format!("final_ts{cell}_{j}"), ty: vope_type() });
+        }
+    }
+    func_params.push(IrParam { name: "transport".into(), ty: ref_mut_to(IrType::TypeParam("Tr".into())) });
+
+    let ret_type = result_type(vope_type(), tr_error_type());
+
+    // ── Block 0: entry — initialise memory (both cells at ts=0) ─────────────
+    let mut b0_stmts: Vec<IrStmt> = vec![
+        let_stmt("zw", zero_vope_expr()),
+        let_stmt("mp_zero", zero_vope_expr()),
+    ];
+    // cell 0: (addr=0, val=0, ts=0) → encode = 0 (folded but kept explicit).
+    b0_stmts.push(let_stmt("init_p0", absorb_call("mp_zero", "zw", "zw", "zw")));
+    // cell 1: (addr=1, val=0, ts=0).
+    b0_stmts.push(let_stmt("init_p1", absorb_call("init_p0", "vope_one", "zw", "zw")));
+
+    let mut b0_args: Vec<IrExpr> =
+        (0..num_params).map(|i| clone_expr(var(&format!("init_w{i}")))).collect();
+    b0_args.push(clone_expr(var("init_p1"))); // mem_prod
+    b0_args.push(zero_vope_expr()); // mem_cons
+    // counter initial value = 1  (so init ts=0 < first produce ts=1)
+    b0_args.push(clone_expr(var("vope_one"))); // cnt bit 0 = 1
+    for _ in 1..b {
+        b0_args.push(zero_vope_expr()); // cnt bits 1.. = 0
+    }
+    b0_args.push(clone_expr(var("vope_one"))); // order_ok = true
+    b0_args.push(IrExpr::Lit(IrLit::Int(0))); // iter
+    let block0 = IrCfgBlock {
+        params: vec![],
+        stmts: b0_stmts,
+        stmt_provs: vec![],
+        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args }),
+    };
+
+    // ── Block 1: loop body ─────────────────────────────────────────────────
+    let mut b1_params: Vec<IrParam> =
+        (0..num_params).map(|i| IrParam { name: format!("w{i}"), ty: vope_type() }).collect();
+    b1_params.push(IrParam { name: "mem_prod".into(), ty: vope_type() });
+    b1_params.push(IrParam { name: "mem_cons".into(), ty: vope_type() });
+    let cnt_names: Vec<String> = (0..b).map(|j| format!("cnt{j}")).collect();
+    for n in &cnt_names {
+        b1_params.push(IrParam { name: n.clone(), ty: vope_type() });
+    }
+    b1_params.push(IrParam { name: "order_ok".into(), ty: vope_type() });
+    b1_params.push(IrParam { name: "iter".into(), ty: usize_type() });
+
+    let mut b1_stmts: Vec<IrStmt> = vec![let_stmt("zwb", zero_vope_expr())];
+    let mut wnames = BTreeMap::<u32, String>::new();
+    for i in 0..num_params {
+        wnames.insert(i as u32, format!("w{i}"));
+    }
+    let mut cur_prod = String::from("mem_prod");
+    let mut cur_cons = String::from("mem_cons");
+    let mut cur_order = String::from("order_ok");
+    let mut cur_cnt: Vec<String> = cnt_names.clone();
+    let mut hat_names: Vec<String> = Vec::new();
+    let mut ssa = 0usize;
+    let mut read_k = 0usize;
+    let mut write_k = 0usize;
+
+    // Emit one storage access's ts-sound bookkeeping. `consume_val`/`produce_val`
+    // are wire names; `last_slice`/`last_count`/`k_base` locate this access's
+    // committed `t_last` bit-vector at `last_slice[iter*last_count + k_base*B + j]`.
+    let mut emit_access = |addr_w: &str,
+                           consume_val: &str,
+                           produce_val: &str,
+                           last_slice: &str,
+                           last_count: usize,
+                           k_base: usize,
+                           ssa: &mut usize,
+                           cur_prod: &mut String,
+                           cur_cons: &mut String,
+                           cur_order: &mut String,
+                           cur_cnt: &mut Vec<String>,
+                           hat_names: &mut Vec<String>,
+                           stmts: &mut Vec<IrStmt>| {
+        let tag = *ssa;
+        *ssa += 1;
+        // t_last witness bits
+        let tl: Vec<String> = (0..b)
+            .map(|j| {
+                let nm = format!("tl{tag}_{j}");
+                stmts.push(let_stmt(&nm, slice_index_clone(last_slice, last_count, k_base * b + j)));
+                nm
+            })
+            .collect();
+        // consume (addr, consume_val, bitpack(t_last))
+        let ts_cons = format!("tscons_{tag}");
+        stmts.push(let_stmt(&ts_cons, bitpack_call(&tl, &pow2_names)));
+        let nc = format!("cons_{tag}");
+        stmts.push(let_stmt(&nc, absorb_call(cur_cons, addr_w, consume_val, &ts_cons)));
+        *cur_cons = nc;
+        // ordering: order_ok &= (t_last < counter)
+        let mut lt_buf = GateBuf::new(2 * b as u32);
+        let a_ids: Vec<u32> = (0..b as u32).collect();
+        let b_ids: Vec<u32> = (b as u32..2 * b as u32).collect();
+        let lt_res = emit_lt(&a_ids, &b_ids, &mut lt_buf);
+        let mut lt_in = BTreeMap::<u32, String>::new();
+        for j in 0..b {
+            lt_in.insert(j as u32, tl[j].clone());
+            lt_in.insert((b + j) as u32, cur_cnt[j].clone());
+        }
+        let lt_name = lower_gadget_prover(
+            &lt_buf.gates, &lt_in, lt_res, &format!("lt{tag}"), hat_names, stmts,
+        );
+        let new_order = format!("ord_{tag}");
+        let ord_hat = format!("ordh_{tag}");
+        hat_names.push(ord_hat.clone());
+        emit_prover_and_gate(cur_order, &lt_name, &new_order, &ord_hat, stmts);
+        *cur_order = new_order;
+        // produce (addr, produce_val, bitpack(counter))
+        let ts_prod = format!("tsprod_{tag}");
+        stmts.push(let_stmt(&ts_prod, bitpack_call(cur_cnt, &pow2_names)));
+        let np = format!("prod_{tag}");
+        stmts.push(let_stmt(&np, absorb_call(cur_prod, addr_w, produce_val, &ts_prod)));
+        *cur_prod = np;
+        // counter += 1  (committed ripple-carry increment)
+        let mut ic_buf = GateBuf::new(b as u32);
+        let ic_outs = crate::gadgets::emit_incr(&a_ids, &mut ic_buf);
+        let mut ic_in = BTreeMap::<u32, String>::new();
+        for j in 0..b {
+            ic_in.insert(j as u32, cur_cnt[j].clone());
+        }
+        let ic_map = lower_gadget_prover_map(
+            &ic_buf.gates, &ic_in, &format!("ic{tag}"), hat_names, stmts,
+        );
+        *cur_cnt = ic_outs.iter().map(|id| ic_map[id].clone()).collect();
+    };
+
+    for (result_id, stmt, _) in &expanded {
+        let let_name = format!("lw_{}", result_id.0);
+        match stmt {
+            BIrStmt::Zero => b1_stmts.push(let_stmt(&let_name, zero_vope_expr())),
+            BIrStmt::One => b1_stmts.push(let_stmt(&let_name, clone_expr(var("vope_one")))),
+            BIrStmt::Xor(a, bb) => {
+                let e = IrExpr::Binary {
+                    op: SpecBinOp::Add,
+                    left: Box::new(clone_expr(var(&wnames[&a.0]))),
+                    right: Box::new(clone_expr(var(&wnames[&bb.0]))),
+                };
+                b1_stmts.push(let_stmt(&let_name, e));
+            }
+            BIrStmt::Not(a) => {
+                let e = IrExpr::Binary {
+                    op: SpecBinOp::Add,
+                    left: Box::new(clone_expr(var(&wnames[&a.0]))),
+                    right: Box::new(clone_expr(var("vope_one"))),
+                };
+                b1_stmts.push(let_stmt(&let_name, e));
+            }
+            BIrStmt::StorageRead { addr, .. } => {
+                assert_eq!(addr.len(), 1, "ts_storage_loop: single-bit address only");
+                let addr_w = wnames[&addr[0].0].clone();
+                let val_name = format!("rd_{ssa}_v");
+                b1_stmts.push(let_stmt(&val_name, slice_index_clone("read_vals", read_count, read_k)));
+                emit_access(
+                    &addr_w, &val_name, &val_name, "read_last_ts", read_count * b, read_k,
+                    &mut ssa, &mut cur_prod, &mut cur_cons, &mut cur_order, &mut cur_cnt,
+                    &mut hat_names, &mut b1_stmts,
+                );
+                read_k += 1;
+                wnames.insert(result_id.0, val_name);
+                continue;
+            }
+            BIrStmt::StorageWrite { src, addr, .. } => {
+                assert_eq!(addr.len(), 1, "ts_storage_loop: single-bit address only");
+                let addr_w = wnames[&addr[0].0].clone();
+                let new_w = wnames[&src.0].clone();
+                let old_name = format!("wr_{ssa}_old");
+                b1_stmts.push(let_stmt(&old_name, slice_index_clone("write_olds", write_count, write_k)));
+                emit_access(
+                    &addr_w, &old_name, &new_w, "write_last_ts", write_count * b, write_k,
+                    &mut ssa, &mut cur_prod, &mut cur_cons, &mut cur_order, &mut cur_cnt,
+                    &mut hat_names, &mut b1_stmts,
+                );
+                write_k += 1;
+                b1_stmts.push(let_stmt(&let_name, zero_vope_expr()));
+            }
+            BIrStmt::And(..) | BIrStmt::Or(..) => {
+                panic!("ts_storage_loop: AND/OR circuit gates not supported (linear subset only)")
+            }
+            _ => panic!("ts_storage_loop: unsupported statement {stmt:?}"),
+        }
+        wnames.insert(result_id.0, let_name);
+    }
+
+    // Terminator analysis.
+    let (done_id, out_id, next_ids) = match &block.terminator {
+        BIrTerminator::Jmp(t) => {
+            assert!(!t.args.is_empty());
+            (t.args.last().unwrap().0, t.args[0].0, t.args[..t.args.len() - 1].to_vec())
+        }
+        BIrTerminator::CondJmp { val, then_target, else_target } => (
+            val.0,
+            then_target.args.get(0).map(|id| id.0).unwrap_or(val.0),
+            else_target.args.clone(),
+        ),
+    };
+    let done_wire = wnames[&done_id].clone();
+    let out_wire = wnames[&out_id].clone();
+
+    b1_stmts.push(let_stmt("done_bit", vope_bit_call(&done_wire)));
+    // transport.send_iteration(&hats, done_bit)?
+    b1_stmts.push(IrStmt::Semi(transport_call_try(
+        "send_iteration",
+        vec![hats_slice_expr(&hat_names), var("done_bit")],
+    )));
+
+    // then (done) -> B2 [out, mem_prod, mem_cons, order_ok]
+    let b2_args = vec![
+        clone_expr(var(&out_wire)),
+        clone_expr(var(&cur_prod)),
+        clone_expr(var(&cur_cons)),
+        clone_expr(var(&cur_order)),
+    ];
+    // else -> B1 [next..., mem_prod, mem_cons, cnt.., order_ok, iter+1]
+    let mut back_args: Vec<IrExpr> =
+        next_ids.iter().map(|id| clone_expr(var(&wnames[&id.0]))).collect();
+    back_args.push(clone_expr(var(&cur_prod)));
+    back_args.push(clone_expr(var(&cur_cons)));
+    for n in &cur_cnt {
+        back_args.push(clone_expr(var(n)));
+    }
+    back_args.push(clone_expr(var(&cur_order)));
+    back_args.push(IrExpr::Binary {
+        op: SpecBinOp::Add,
+        left: Box::new(var("iter")),
+        right: Box::new(IrExpr::Lit(IrLit::Int(1))),
+    });
+
+    let block1 = IrCfgBlock {
+        params: b1_params,
+        stmts: b1_stmts,
+        stmt_provs: vec![],
+        terminator: IrCfgTerminator::CondGoto {
+            cond: var("done_bit"),
+            then_: IrCfgJump { target: 2, args: b2_args },
+            else_: IrCfgJump { target: 1, args: back_args },
+        },
+    };
+
+    // ── Block 2: exit — drain both cells, open drain + ordering, recv verdict ─
+    let mut b2_stmts: Vec<IrStmt> = vec![let_stmt("zwx", zero_vope_expr())];
+    // drain cell 0: consume (addr=0, final_val0, bitpack(final_ts0))
+    let ts0_bits: Vec<String> = (0..b).map(|j| format!("final_ts0_{j}")).collect();
+    b2_stmts.push(let_stmt("ts_d0", bitpack_call(&ts0_bits, &pow2_names)));
+    b2_stmts.push(let_stmt("fc0", absorb_call("fcons", "zwx", "final_val0", "ts_d0")));
+    // drain cell 1: consume (addr=1, final_val1, bitpack(final_ts1))
+    let ts1_bits: Vec<String> = (0..b).map(|j| format!("final_ts1_{j}")).collect();
+    b2_stmts.push(let_stmt("ts_d1", bitpack_call(&ts1_bits, &pow2_names)));
+    b2_stmts.push(let_stmt("fc1", absorb_call("fc0", "vope_one", "final_val1", "ts_d1")));
+    // open drain: M_diff = mem_prod.v ^ mem_cons.v
+    b2_stmts.push(let_stmt("mem_open", bridge_call2("mem_drain_open", var("fprod"), var("fc1"))));
+    b2_stmts.push(IrStmt::Semi(transport_call_try("send_opening", vec![ref_expr(var("mem_open"))])));
+    // open ordering result (must be 1)
+    b2_stmts.push(let_stmt(
+        "order_open",
+        IrExpr::Call {
+            func: Box::new(IrExpr::Path {
+                segments: vec![
+                    "volar_spec".into(), "vole".into(), "bridge".into(), "vope_open_mask".into(),
+                ],
+                type_args: vec![],
+            }),
+            args: vec![ref_expr(var("forder"))],
+        },
+    ));
+    b2_stmts.push(IrStmt::Semi(transport_call_try("send_opening", vec![ref_expr(var("order_open"))])));
+    b2_stmts.push(IrStmt::Semi(transport_call_try("recv_verdict", vec![])));
+    let block2 = IrCfgBlock {
+        params: vec![
+            IrParam { name: "output".into(), ty: vope_type() },
+            IrParam { name: "fprod".into(), ty: vope_type() },
+            IrParam { name: "fcons".into(), ty: vope_type() },
+            IrParam { name: "forder".into(), ty: vope_type() },
+        ],
+        stmts: b2_stmts,
+        stmt_provs: vec![],
+        terminator: IrCfgTerminator::Return(Some(ok_expr(var("output")))),
+    };
+
+    let func = IrCfgFunction {
+        name: format!("ts_storage_loop_{name}"),
+        generics,
+        receiver: None,
+        params: func_params,
+        return_type: Some(ret_type),
+        where_clause,
+        external_kind: ExternalKind::Normal,
+        body: IrCfgBody { blocks: vec![block0, block1, block2] },
+    };
+    let mut module: IrCfgModule = IrModule {
+        name: format!("weaved_ts_storage_loop_{name}"),
+        functions: vec![IrAnyFunction::Cfg(func)],
+        structs: vec![],
+        enums: vec![],
+        traits: vec![],
+        impls: vec![],
+        type_aliases: vec![],
+        consts: vec![],
+    };
+    let _ = ts_iter_and_count(b, read_count + write_count); // documents per-iter AND count
+    if let Some(ls) = linkage {
+        ls.apply_cfg(&mut module);
+    }
+    module
+}
+
+// ============================================================================
+// weave_ts_storage_loop_verifier  —  Q-side mirror
+// ============================================================================
+
+/// `q_ands[iter * andc + k]`
+fn qand_index_expr(andc: usize, k: usize) -> IrExpr {
+    let idx = IrExpr::Binary {
+        op: SpecBinOp::Add,
+        left: Box::new(IrExpr::Binary {
+            op: SpecBinOp::Mul,
+            left: Box::new(var("iter")),
+            right: Box::new(IrExpr::Lit(IrLit::Int(andc as i128))),
+        }),
+        right: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
+    };
+    IrExpr::Index { base: Box::new(var("q_ands")), index: Box::new(idx) }
+}
+
+/// `iter_hats[k]`
+fn iter_hat_index_expr(k: usize) -> IrExpr {
+    IrExpr::Index {
+        base: Box::new(var("iter_hats")),
+        index: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
+    }
+}
+
+/// `q[iter * count + k].clone()` — verifier-side per-iteration slice index.
+fn q_slice_index_clone(slice: &str, count: usize, k: usize) -> IrExpr {
+    let idx = IrExpr::Binary {
+        op: SpecBinOp::Add,
+        left: Box::new(IrExpr::Binary {
+            op: SpecBinOp::Mul,
+            left: Box::new(var("iter")),
+            right: Box::new(IrExpr::Lit(IrLit::Int(count as i128))),
+        }),
+        right: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
+    };
+    clone_expr(IrExpr::Index { base: Box::new(var(slice)), index: Box::new(idx) })
+}
+
+/// `mem_acc_absorb_q(acc.clone(), &addr, &value, &ts, &r1, &r2, &r3)`
+fn q_absorb_call(acc: &str, addr: &str, value: &str, ts: &str) -> IrExpr {
+    IrExpr::Call {
+        func: Box::new(IrExpr::Path {
+            segments: vec![
+                "volar_spec".into(), "vole".into(), "bridge".into(), "mem_acc_absorb_q".into(),
+            ],
+            type_args: vec![],
+        }),
+        args: vec![
+            clone_expr(var(acc)),
+            ref_expr(var(addr)),
+            ref_expr(var(value)),
+            ref_expr(var(ts)),
+            ref_expr(var("r1")),
+            ref_expr(var("r2")),
+            ref_expr(var("r3")),
+        ],
+    }
+}
+
+/// `Q { q: <delta.delta.clone() or Array::default()> }` for public-constant Q.
+fn q_const(is_one: bool) -> IrExpr {
+    if is_one {
+        q_struct(clone_expr(IrExpr::Field { base: Box::new(var("delta")), field: "delta".into() }))
+    } else {
+        q_struct(array_t_n_default())
+    }
+}
+
+/// Verifier (`Q`-side) mirror of [`weave_ts_storage_loop_prover`].  Receives one
+/// iteration's gadget hats via `transport.recv_iteration(AND_COUNT)`, mirrors the
+/// committed-counter ordering checks and the multiset absorbs in `Q`-space, and
+/// at the sentinel checks (a) the produce/consume drain (`mem_drain_check`) and
+/// (b) that every access was ordered (`assert_one_check` on the opened
+/// `order_ok`).  The verdict is `all_ok && drain_ok && order_ok`.
+///
+/// Generated signature (B = `ts_bits`, ANDC = per-iteration AND count):
+/// ```text
+/// fn ts_storage_verify_<NAME><N, T, Tr: VoleTransport<N, T>>(
+///     delta: &Delta<N,T>, r1: T, r2: T, r3: T, pow2_0: T, .., pow2_{B-1}: T,
+///     q_ands: &[Q<N,T>], init_q0: Q, ..,
+///     q_read_vals: &[Q], q_write_olds: &[Q], q_read_last_ts: &[Q], q_write_last_ts: &[Q],
+///     q_final_val0: Q, q_final_val1: Q, q_final_ts0_0: Q, .., q_final_ts1_{B-1}: Q,
+///     transport: &mut Tr,
+/// ) -> Result<bool, <Tr as VoleTransport<N,T>>::Error>
+/// ```
+pub fn weave_ts_storage_loop_verifier(
+    circuit: &BIrBlocks,
+    ts_bits: usize,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+) -> IrCfgModule {
+    assert!(circuit.is_movfuscated(), "weave_ts_storage_loop_verifier: circuit must be single-block");
+    assert!(ts_bits >= 1, "ts_bits must be >= 1");
+    let block = &circuit.blocks[0];
+    let num_params = block.params as usize;
+    let expanded = expand_ors(block);
+    let (read_count, write_count) = count_storage(&expanded);
+    let b = ts_bits;
+    let andc = ts_iter_and_count(b, read_count + write_count);
+
+    let (generics, where_clause) = net_verifier_generics_and_where();
+    let pow2_names: Vec<String> = (0..b).map(|j| format!("pow2_{j}")).collect();
+
+    // ── Function params ────────────────────────────────────────────────────
+    let mut func_params: Vec<IrParam> = vec![IrParam { name: "delta".into(), ty: ref_to(delta_type()) }];
+    for r in ["r1", "r2", "r3"] {
+        func_params.push(IrParam { name: r.into(), ty: IrType::TypeParam("T".into()) });
+    }
+    for n in &pow2_names {
+        func_params.push(IrParam { name: n.clone(), ty: IrType::TypeParam("T".into()) });
+    }
+    func_params.push(IrParam { name: "q_ands".into(), ty: q_slice_type() });
+    for i in 0..num_params {
+        func_params.push(IrParam { name: format!("init_q{i}"), ty: q_type() });
+    }
+    for s in ["q_read_vals", "q_write_olds", "q_read_last_ts", "q_write_last_ts"] {
+        func_params.push(IrParam { name: s.into(), ty: q_slice_type() });
+    }
+    for cell in 0..2 {
+        func_params.push(IrParam { name: format!("q_final_val{cell}"), ty: q_type() });
+    }
+    for cell in 0..2 {
+        for j in 0..b {
+            func_params.push(IrParam { name: format!("q_final_ts{cell}_{j}"), ty: q_type() });
+        }
+    }
+    func_params.push(IrParam { name: "transport".into(), ty: ref_mut_to(IrType::TypeParam("Tr".into())) });
+
+    let ret_type = result_type(bool_type(), tr_error_type());
+
+    // ── Block 0: entry — init mem_prod_q (both cells, ts=0) ─────────────────
+    let mut b0_stmts: Vec<IrStmt> = vec![
+        let_stmt("qz", q_const(false)),
+        let_stmt("qone", q_const(true)),
+        let_stmt("mpz", q_const(false)),
+    ];
+    b0_stmts.push(let_stmt("iq0", q_absorb_call("mpz", "qz", "qz", "qz")));   // (0,0,0)=0
+    b0_stmts.push(let_stmt("iq1", q_absorb_call("iq0", "qone", "qz", "qz"))); // (1,0,0)
+
+    let mut b0_args: Vec<IrExpr> =
+        (0..num_params).map(|i| clone_expr(var(&format!("init_q{i}")))).collect();
+    b0_args.push(clone_expr(var("iq1"))); // mem_prod_q
+    b0_args.push(q_const(false)); // mem_cons_q = 0
+    b0_args.push(q_const(true)); // qcnt bit0 = Q(1) = Δ
+    for _ in 1..b {
+        b0_args.push(q_const(false)); // qcnt bits = 0
+    }
+    b0_args.push(q_const(true)); // q_order init = Q(1) = Δ
+    b0_args.push(IrExpr::Lit(IrLit::Bool(true))); // all_ok
+    b0_args.push(IrExpr::Lit(IrLit::Int(0))); // iter
+    let block0 = IrCfgBlock {
+        params: vec![],
+        stmts: b0_stmts,
+        stmt_provs: vec![],
+        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args }),
+    };
+
+    // ── Block 1: loop body ─────────────────────────────────────────────────
+    let qcnt_names: Vec<String> = (0..b).map(|j| format!("qcnt{j}")).collect();
+    let mut b1_params: Vec<IrParam> =
+        (0..num_params).map(|i| IrParam { name: format!("q{i}"), ty: q_type() }).collect();
+    b1_params.push(IrParam { name: "mem_prod_q".into(), ty: q_type() });
+    b1_params.push(IrParam { name: "mem_cons_q".into(), ty: q_type() });
+    for n in &qcnt_names {
+        b1_params.push(IrParam { name: n.clone(), ty: q_type() });
+    }
+    b1_params.push(IrParam { name: "q_order".into(), ty: q_type() });
+    b1_params.push(IrParam { name: "all_ok".into(), ty: bool_type() });
+    b1_params.push(IrParam { name: "iter".into(), ty: usize_type() });
+
+    let mut b1_stmts: Vec<IrStmt> = Vec::new();
+    // let (iter_hats, is_sentinel) = transport.recv_iteration(ANDC)?;
+    b1_stmts.push(IrStmt::Let {
+        pattern: IrPattern::Tuple(vec![
+            IrPattern::ident("iter_hats"),
+            IrPattern::ident("is_sentinel"),
+        ]),
+        ty: None,
+        init: Some(transport_call_try("recv_iteration", vec![IrExpr::Lit(IrLit::Int(andc as i128))])),
+    });
+    b1_stmts.push(IrStmt::Let {
+        pattern: IrPattern::Ident { mutable: true, name: "all_ok_new".into(), subpat: None },
+        ty: None,
+        init: Some(var("all_ok")),
+    });
+
+    let mut qwnames = BTreeMap::<u32, String>::new();
+    for i in 0..num_params {
+        qwnames.insert(i as u32, format!("q{i}"));
+    }
+    let mut cur_prod = String::from("mem_prod_q");
+    let mut cur_cons = String::from("mem_cons_q");
+    let mut cur_order = String::from("q_order");
+    let mut cur_cnt: Vec<String> = qcnt_names.clone();
+    let mut and_counter = 0usize;
+    let mut ssa = 0usize;
+    let mut read_k = 0usize;
+    let mut write_k = 0usize;
+
+    let mut emit_access_q = |addr_q: &str,
+                             consume_q: &str,
+                             produce_q: &str,
+                             last_slice: &str,
+                             last_count: usize,
+                             k_base: usize,
+                             ssa: &mut usize,
+                             and_counter: &mut usize,
+                             cur_prod: &mut String,
+                             cur_cons: &mut String,
+                             cur_order: &mut String,
+                             cur_cnt: &mut Vec<String>,
+                             stmts: &mut Vec<IrStmt>| {
+        let tag = *ssa;
+        *ssa += 1;
+        let mk_qand = |k: usize| qand_index_expr(andc, k);
+        let mk_hat = |k: usize| iter_hat_index_expr(k);
+        // q t_last bits
+        let tl: Vec<String> = (0..b)
+            .map(|j| {
+                let nm = format!("qtl{tag}_{j}");
+                stmts.push(let_stmt(&nm, q_slice_index_clone(last_slice, last_count, k_base * b + j)));
+                nm
+            })
+            .collect();
+        // consume
+        let ts_cons = format!("qtscons_{tag}");
+        stmts.push(let_stmt(&ts_cons, q_bitpack_call(&tl, &pow2_names)));
+        let nc = format!("qcons_{tag}");
+        stmts.push(let_stmt(&nc, q_absorb_call(cur_cons, addr_q, consume_q, &ts_cons)));
+        *cur_cons = nc;
+        // ordering gadget: order_ok &= (t_last < counter)
+        let mut lt_buf = GateBuf::new(2 * b as u32);
+        let a_ids: Vec<u32> = (0..b as u32).collect();
+        let b_ids: Vec<u32> = (b as u32..2 * b as u32).collect();
+        let lt_res = emit_lt(&a_ids, &b_ids, &mut lt_buf);
+        let mut lt_in = BTreeMap::<u32, String>::new();
+        for j in 0..b {
+            lt_in.insert(j as u32, tl[j].clone());
+            lt_in.insert((b + j) as u32, cur_cnt[j].clone());
+        }
+        let lt_map = lower_gadget_verifier(
+            &lt_buf.gates, &lt_in, &format!("lt{tag}"), and_counter, &mk_qand, &mk_hat,
+            "all_ok_new", stmts,
+        );
+        let q_lt = lt_map[&lt_res].clone();
+        // order AND
+        let k = *and_counter;
+        *and_counter += 1;
+        let new_order = format!("qord_{tag}");
+        let ok_ord = format!("okord_{tag}");
+        stmts.push(IrStmt::Let {
+            pattern: IrPattern::Tuple(vec![IrPattern::ident(&new_order), IrPattern::ident(&ok_ord)]),
+            ty: None,
+            init: Some(IrExpr::Call {
+                func: Box::new(IrExpr::Path {
+                    segments: vec!["vole_and_verifier_check".into()],
+                    type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("T".into())],
+                }),
+                args: vec![
+                    var("delta"),
+                    ref_expr(var(cur_order)),
+                    ref_expr(var(&q_lt)),
+                    ref_expr(mk_qand(k)),
+                    ref_expr(mk_hat(k)),
+                ],
+            }),
+        });
+        stmts.push(IrStmt::Semi(IrExpr::Assign {
+            left: Box::new(var("all_ok_new")),
+            right: Box::new(IrExpr::Binary {
+                op: SpecBinOp::And,
+                left: Box::new(var("all_ok_new")),
+                right: Box::new(var(&ok_ord)),
+            }),
+        }));
+        *cur_order = new_order;
+        // produce
+        let ts_prod = format!("qtsprod_{tag}");
+        stmts.push(let_stmt(&ts_prod, q_bitpack_call(cur_cnt, &pow2_names)));
+        let np = format!("qprod_{tag}");
+        stmts.push(let_stmt(&np, q_absorb_call(cur_prod, addr_q, produce_q, &ts_prod)));
+        *cur_prod = np;
+        // counter += 1
+        let mut ic_buf = GateBuf::new(b as u32);
+        let ic_outs = crate::gadgets::emit_incr(&a_ids, &mut ic_buf);
+        let mut ic_in = BTreeMap::<u32, String>::new();
+        for j in 0..b {
+            ic_in.insert(j as u32, cur_cnt[j].clone());
+        }
+        let ic_map = lower_gadget_verifier(
+            &ic_buf.gates, &ic_in, &format!("ic{tag}"), and_counter, &mk_qand, &mk_hat,
+            "all_ok_new", stmts,
+        );
+        *cur_cnt = ic_outs.iter().map(|id| ic_map[id].clone()).collect();
+    };
+
+    for (result_id, stmt, _) in &expanded {
+        let let_name = format!("lq_{}", result_id.0);
+        match stmt {
+            BIrStmt::Zero => b1_stmts.push(let_stmt(&let_name, q_const(false))),
+            BIrStmt::One => b1_stmts.push(let_stmt(&let_name, q_const(true))),
+            BIrStmt::Xor(a, bb) => {
+                let (qa, qb) = (qwnames[&a.0].clone(), qwnames[&bb.0].clone());
+                b1_stmts.push(let_stmt(
+                    &let_name,
+                    q_struct(array_from_fn_t_n(add(clone_expr(q_idx(&qa)), clone_expr(q_idx(&qb))))),
+                ));
+            }
+            BIrStmt::Not(a) => {
+                let qa = qwnames[&a.0].clone();
+                b1_stmts.push(let_stmt(
+                    &let_name,
+                    q_struct(array_from_fn_t_n(add(clone_expr(q_idx(&qa)), clone_expr(delta_idx())))),
+                ));
+            }
+            BIrStmt::StorageRead { addr, .. } => {
+                assert_eq!(addr.len(), 1, "ts_storage_loop: single-bit address only");
+                let addr_q = qwnames[&addr[0].0].clone();
+                let val_q = format!("qrd_{ssa}_v");
+                b1_stmts.push(let_stmt(&val_q, q_slice_index_clone("q_read_vals", read_count, read_k)));
+                emit_access_q(
+                    &addr_q, &val_q, &val_q, "q_read_last_ts", read_count * b, read_k,
+                    &mut ssa, &mut and_counter, &mut cur_prod, &mut cur_cons, &mut cur_order,
+                    &mut cur_cnt, &mut b1_stmts,
+                );
+                read_k += 1;
+                qwnames.insert(result_id.0, val_q);
+                continue;
+            }
+            BIrStmt::StorageWrite { src, addr, .. } => {
+                assert_eq!(addr.len(), 1, "ts_storage_loop: single-bit address only");
+                let addr_q = qwnames[&addr[0].0].clone();
+                let new_q = qwnames[&src.0].clone();
+                let old_q = format!("qwr_{ssa}_old");
+                b1_stmts.push(let_stmt(&old_q, q_slice_index_clone("q_write_olds", write_count, write_k)));
+                emit_access_q(
+                    &addr_q, &old_q, &new_q, "q_write_last_ts", write_count * b, write_k,
+                    &mut ssa, &mut and_counter, &mut cur_prod, &mut cur_cons, &mut cur_order,
+                    &mut cur_cnt, &mut b1_stmts,
+                );
+                write_k += 1;
+                b1_stmts.push(let_stmt(&let_name, q_const(false)));
+            }
+            BIrStmt::And(..) | BIrStmt::Or(..) => {
+                panic!("ts_storage_loop verifier: AND/OR circuit gates not supported")
+            }
+            _ => panic!("ts_storage_loop verifier: unsupported statement {stmt:?}"),
+        }
+        qwnames.insert(result_id.0, let_name);
+    }
+
+    // Terminator: next-state ids (all but last for Jmp; else_target for CondJmp).
+    let next_ids: Vec<IRVarId> = match &block.terminator {
+        BIrTerminator::Jmp(t) => t.args[..t.args.len().saturating_sub(1)].to_vec(),
+        BIrTerminator::CondJmp { else_target, .. } => else_target.args.clone(),
+    };
+
+    // then (sentinel) -> B2 [mem_prod_q, mem_cons_q, q_order, all_ok_new]
+    let b2_args = vec![
+        clone_expr(var(&cur_prod)),
+        clone_expr(var(&cur_cons)),
+        clone_expr(var(&cur_order)),
+        var("all_ok_new"),
+    ];
+    // else -> B1 [next.., mem_prod_q, mem_cons_q, qcnt.., q_order, all_ok_new, iter+1]
+    let mut back_args: Vec<IrExpr> =
+        next_ids.iter().map(|id| clone_expr(var(&qwnames[&id.0]))).collect();
+    back_args.push(clone_expr(var(&cur_prod)));
+    back_args.push(clone_expr(var(&cur_cons)));
+    for n in &cur_cnt {
+        back_args.push(clone_expr(var(n)));
+    }
+    back_args.push(clone_expr(var(&cur_order)));
+    back_args.push(var("all_ok_new"));
+    back_args.push(IrExpr::Binary {
+        op: SpecBinOp::Add,
+        left: Box::new(var("iter")),
+        right: Box::new(IrExpr::Lit(IrLit::Int(1))),
+    });
+
+    let block1 = IrCfgBlock {
+        params: b1_params,
+        stmts: b1_stmts,
+        stmt_provs: vec![],
+        terminator: IrCfgTerminator::CondGoto {
+            cond: var("is_sentinel"),
+            then_: IrCfgJump { target: 2, args: b2_args },
+            else_: IrCfgJump { target: 1, args: back_args },
+        },
+    };
+
+    // ── Block 2: exit — drain both cells, check drain + ordering, send verdict ─
+    let mut b2_stmts: Vec<IrStmt> = vec![let_stmt("qzx", q_const(false))];
+    // drain cell 0: consume (addr=0, q_final_val0, bitpack(q_final_ts0))
+    let qts0: Vec<String> = (0..b).map(|j| format!("q_final_ts0_{j}")).collect();
+    b2_stmts.push(let_stmt("qts_d0", q_bitpack_call(&qts0, &pow2_names)));
+    b2_stmts.push(let_stmt("qfc0", q_absorb_call("fcons", "qzx", "q_final_val0", "qts_d0")));
+    // drain cell 1: consume (addr=1, q_final_val1, bitpack(q_final_ts1))
+    let qts1: Vec<String> = (0..b).map(|j| format!("q_final_ts1_{j}")).collect();
+    b2_stmts.push(let_stmt("qone_x", q_const(true)));
+    b2_stmts.push(let_stmt("qts_d1", q_bitpack_call(&qts1, &pow2_names)));
+    b2_stmts.push(let_stmt("qfc1", q_absorb_call("qfc0", "qone_x", "q_final_val1", "qts_d1")));
+    // recv drain opening + check
+    b2_stmts.push(let_stmt("mem_open", transport_call_try("recv_opening", vec![])));
+    b2_stmts.push(let_stmt(
+        "drain_ok",
+        IrExpr::Call {
+            func: Box::new(IrExpr::Path {
+                segments: vec![
+                    "volar_spec".into(), "vole".into(), "bridge".into(), "mem_drain_check".into(),
+                ],
+                type_args: vec![],
+            }),
+            args: vec![ref_expr(var("fprod")), ref_expr(var("qfc1")), ref_expr(var("mem_open"))],
+        },
+    ));
+    // recv ordering opening + check (order_ok must be committed to 1)
+    b2_stmts.push(let_stmt("order_open", transport_call_try("recv_opening", vec![])));
+    b2_stmts.push(let_stmt(
+        "order_ok2",
+        IrExpr::Call {
+            func: Box::new(IrExpr::Path {
+                segments: vec![
+                    "volar_spec".into(), "vole".into(), "bridge".into(), "assert_one_check".into(),
+                ],
+                type_args: vec![],
+            }),
+            args: vec![ref_expr(var("forder")), ref_expr(var("order_open")), var("delta")],
+        },
+    ));
+    // verdict = all_ok && drain_ok && order_ok2
+    b2_stmts.push(let_stmt(
+        "verdict",
+        IrExpr::Binary {
+            op: SpecBinOp::And,
+            left: Box::new(IrExpr::Binary {
+                op: SpecBinOp::And,
+                left: Box::new(var("final_ok")),
+                right: Box::new(var("drain_ok")),
+            }),
+            right: Box::new(var("order_ok2")),
+        },
+    ));
+    b2_stmts.push(IrStmt::Semi(transport_call_try("send_verdict", vec![clone_expr(var("verdict"))])));
+    let block2 = IrCfgBlock {
+        params: vec![
+            IrParam { name: "fprod".into(), ty: q_type() },
+            IrParam { name: "fcons".into(), ty: q_type() },
+            IrParam { name: "forder".into(), ty: q_type() },
+            IrParam { name: "final_ok".into(), ty: bool_type() },
+        ],
+        stmts: b2_stmts,
+        stmt_provs: vec![],
+        terminator: IrCfgTerminator::Return(Some(ok_expr(var("verdict")))),
+    };
+
+    let func = IrCfgFunction {
+        name: format!("ts_storage_verify_{name}"),
+        generics,
+        receiver: None,
+        params: func_params,
+        return_type: Some(ret_type),
+        where_clause,
+        external_kind: ExternalKind::Normal,
+        body: IrCfgBody { blocks: vec![block0, block1, block2] },
+    };
+    let mut module: IrCfgModule = IrModule {
+        name: format!("weaved_ts_storage_verify_{name}"),
+        functions: vec![IrAnyFunction::Cfg(func)],
+        structs: vec![],
+        enums: vec![],
+        traits: vec![],
+        impls: vec![],
+        type_aliases: vec![],
+        consts: vec![],
+    };
+    if let Some(ls) = linkage {
+        ls.apply_cfg(&mut module);
+    }
+    module
+}
+
 /// Weave a VOLE **prover** function computing the committed less-than
 /// `a < b` over two `n`-bit committed timestamps, via the `emit_lt` gadget
 /// lowered to VOLE (XOR/NOT free, AND → `vole_and_prover_step` + hat).
@@ -565,6 +1676,104 @@ pub fn weave_lt_check(n: usize, name: &str, linkage: Option<&LinkageSystem>) -> 
     module
 }
 
+/// Verifier (`Q`-side) mirror of [`weave_lt_check`]: checks the AND-gate hats of
+/// the committed less-than gadget and returns the accumulated `all_ok`.  This
+/// validates [`lower_gadget_verifier`] end-to-end (hats consumed via
+/// `vole_and_verifier_check`, `Xor`/`Not` lowered to free `Q` combinations).
+/// Generated signature:
+/// ```text
+/// fn lt_check_verify_<NAME><N, T>(delta: &Delta<N,T>, q_ands: &[Q<N,T>],
+///     a0: Q<N,T>, .., b0: Q<N,T>, .., hats: &[Array<T,N>]) -> bool
+/// ```
+pub fn weave_lt_check_verifier(n: usize, name: &str, linkage: Option<&LinkageSystem>) -> IrCfgModule {
+    let (generics, where_clause) = storage_loop_generics_and_where();
+
+    let q_slice = ref_to(IrType::Array {
+        kind: ArrayKind::Slice,
+        elem: Box::new(q_type()),
+        len: ArrayLength::Const(0),
+    });
+    let hats_slice = ref_to(IrType::Array {
+        kind: ArrayKind::Slice,
+        elem: Box::new(array_t_n()),
+        len: ArrayLength::Const(0),
+    });
+
+    let mut func_params = vec![
+        IrParam { name: "delta".into(), ty: ref_to(delta_type()) },
+        IrParam { name: "q_ands".into(), ty: q_slice },
+    ];
+    for i in 0..n {
+        func_params.push(IrParam { name: format!("a{i}"), ty: q_type() });
+    }
+    for i in 0..n {
+        func_params.push(IrParam { name: format!("b{i}"), ty: q_type() });
+    }
+    func_params.push(IrParam { name: "hats".into(), ty: hats_slice });
+
+    // Build the gadget over abstract ids (same as the prover): a = 0..n, b = n..2n.
+    let a_ids: Vec<u32> = (0..n as u32).collect();
+    let b_ids: Vec<u32> = (n as u32..2 * n as u32).collect();
+    let mut buf = GateBuf::new(2 * n as u32);
+    let result_id = emit_lt(&a_ids, &b_ids, &mut buf);
+
+    let mut in_map = BTreeMap::<u32, String>::new();
+    for i in 0..n {
+        in_map.insert(i as u32, format!("a{i}"));
+        in_map.insert((n + i) as u32, format!("b{i}"));
+    }
+
+    let mut stmts: Vec<IrStmt> = vec![IrStmt::Let {
+        pattern: IrPattern::Ident { mutable: true, name: "all_ok".into(), subpat: None },
+        ty: None,
+        init: Some(IrExpr::Lit(IrLit::Bool(true))),
+    }];
+    let mut and_counter = 0usize;
+    let mk_qand = |k: usize| IrExpr::Index {
+        base: Box::new(var("q_ands")),
+        index: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
+    };
+    let mk_hat = |k: usize| IrExpr::Index {
+        base: Box::new(var("hats")),
+        index: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
+    };
+    let vmap = lower_gadget_verifier(
+        &buf.gates, &in_map, "lt", &mut and_counter, &mk_qand, &mk_hat, "all_ok", &mut stmts,
+    );
+    let _ = (&vmap, result_id);
+
+    let block0 = IrCfgBlock {
+        params: vec![],
+        stmts,
+        stmt_provs: vec![],
+        terminator: IrCfgTerminator::Return(Some(var("all_ok"))),
+    };
+    let func = IrCfgFunction {
+        name: format!("lt_check_verify_{name}"),
+        generics,
+        receiver: None,
+        params: func_params,
+        return_type: Some(bool_type()),
+        where_clause,
+        external_kind: ExternalKind::Normal,
+        body: IrCfgBody { blocks: vec![block0] },
+    };
+    let mut module: IrCfgModule = IrModule {
+        name: format!("weaved_lt_check_verify_{name}"),
+        functions: vec![IrAnyFunction::Cfg(func)],
+        structs: vec![],
+        enums: vec![],
+        traits: vec![],
+        impls: vec![],
+        type_aliases: vec![],
+        consts: vec![],
+    };
+    if let Some(ls) = linkage {
+        ls.apply_cfg(&mut module);
+    }
+    module
+}
+
 /// Print a storage-loop CFG module to self-contained Rust source.
 pub fn print_storage_loop_module(module: &IrCfgModule) -> String {
     use volar_compiler::printer::{CfgModuleWriter, DisplayRust};
@@ -581,10 +1790,10 @@ pub fn print_storage_loop_module(module: &IrCfgModule) -> String {
         "use core::ops::{Add, Mul};\n",
         "use hybrid_array::{Array, ArraySize};\n",
         "use cipher::consts::U1;\n",
-        "use volar_spec::vole::{Q, Vope, VoleArray};\n",
-        "use volar_spec::vole::bridge::mem_acc_absorb_vope;\n",
-        "use volar_spec::vole::prove::vole_and_prover_step;\n",
-        "use volar_net::vope_bit;\n",
+        "use volar_spec::vole::{Delta, Q, Vope, VoleArray};\n",
+        "use volar_spec::vole::bridge::{mem_acc_absorb_vope, mem_acc_absorb_q, vope_bitpack, q_bitpack, mem_drain_open, mem_drain_check, vope_open_mask, assert_one_check};\n",
+        "use volar_spec::vole::prove::{vole_and_prover_step, vole_and_verifier_check};\n",
+        "use volar_net::{vope_bit, VoleTransport};\n",
         "\n",
     );
 
@@ -668,5 +1877,57 @@ mod tests {
         let code = print_storage_loop_module(&module);
         run_compile_check_net(&code, "lt_check_gadget");
         assert!(code.contains("vole_and_prover_step"), "expected gadget ANDs lowered to hats");
+    }
+
+    #[test]
+    fn test_ts_storage_loop_prover_compiles() {
+        let circuit = build_storage_loop();
+        let module = weave_ts_storage_loop_prover(&circuit, 4, "test", None);
+        let code = print_storage_loop_module(&module);
+        run_compile_check_net(&code, "ts_storage_loop_prover");
+    }
+
+    #[test]
+    fn test_ts_storage_loop_prover_is_sound_shaped() {
+        let circuit = build_storage_loop();
+        let module = weave_ts_storage_loop_prover(&circuit, 4, "test", None);
+        let code = print_storage_loop_module(&module);
+        // committed-counter ordering gadget + increment lower to hats
+        assert!(code.contains("vole_and_prover_step"), "ordering/incr ANDs → hats");
+        assert!(code.contains("vope_bitpack"), "timestamps bitpacked into the multiset value");
+        assert!(code.contains("send_iteration"), "hats streamed per iteration");
+        assert!(code.contains("mem_drain_open"), "produce/consume drain opened at exit");
+        assert!(code.contains("vope_open_mask"), "ordering result opened at exit");
+        assert!(code.contains("read_last_ts"), "per-access committed t_last witness");
+    }
+
+    #[test]
+    fn test_ts_storage_loop_verifier_compiles() {
+        let circuit = build_storage_loop();
+        let module = weave_ts_storage_loop_verifier(&circuit, 4, "test", None);
+        let code = print_storage_loop_module(&module);
+        run_compile_check_net(&code, "ts_storage_loop_verifier");
+    }
+
+    #[test]
+    fn test_ts_storage_loop_verifier_checks_drain_and_order() {
+        let circuit = build_storage_loop();
+        let module = weave_ts_storage_loop_verifier(&circuit, 4, "test", None);
+        let code = print_storage_loop_module(&module);
+        assert!(code.contains("vole_and_verifier_check"), "gadget ANDs checked");
+        assert!(code.contains("mem_acc_absorb_q"), "Q-side multiset absorb");
+        assert!(code.contains("mem_drain_check"), "produce/consume drain checked");
+        assert!(code.contains("assert_one_check"), "ordering result asserted == 1");
+        assert!(code.contains("recv_iteration"), "hats received per iteration");
+    }
+
+    #[test]
+    fn test_lt_check_verifier_lowers_to_vole() {
+        // Verifier mirror: gadget ANDs lower to vole_and_verifier_check, hats
+        // consumed from the slice, Xor/Not are free Q combinations.
+        let module = weave_lt_check_verifier(4, "ts", None);
+        let code = print_storage_loop_module(&module);
+        run_compile_check_net(&code, "lt_check_verify_gadget");
+        assert!(code.contains("vole_and_verifier_check"), "expected gadget ANDs checked");
     }
 }

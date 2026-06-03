@@ -98,6 +98,27 @@ pub trait VoleTransport<N: ArraySize, T> {
         &mut self,
         count: usize,
     ) -> Result<Vec<VoleStorageEntry<N, T>>, Self::Error>;
+
+    // ── Quicksilver linear openings ───────────────────────────────────────────
+
+    /// Prover → Verifier: open a single committed wire's MAC mask (an
+    /// `Array<T, N>`), used for end-of-proof linear checks such as the memory
+    /// drain (`mem_drain_open`) and the timestamp-ordering assertion
+    /// (`vope_open_mask`).  Default: no-op (in-process / loopback transports).
+    fn send_opening(&mut self, _opening: &Array<T, N>) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Verifier ← Prover: receive a single opening to check (cf. [`send_opening`]).
+    /// Default: a zero array (`T: Default`).
+    ///
+    /// [`send_opening`]: VoleTransport::send_opening
+    fn recv_opening(&mut self) -> Result<Array<T, N>, Self::Error>
+    where
+        T: Default,
+    {
+        Ok(Array::<T, N>::from_fn(|_| T::default()))
+    }
 }
 
 /// One oracle-read memory access entry sent from prover to verifier.
