@@ -26,17 +26,22 @@
 //! - [`bridge_adapter`] — `FoldingBridge<L>`, a resilience-bridge strategy.
 //!
 //! ## Status (honest)
-//! The folding machinery (scalar field, commitment, R1CS, NIFS, native verify,
-//! IVC) is concrete and self-tested. The VOLE-MAC ↔ commitment **linking** is
-//! abstracted behind [`link::BoundaryLink`]; the shipped [`link::DummyLink`] is a
-//! placeholder (**not sound**) so the bridge wires end-to-end — a cryptographically
-//! sound embedding is the isolated open task (see the doc).
+//! The folding machinery is concrete and self-tested: a **Montgomery** scalar
+//! field ([`scalar`]), a Pedersen commitment with **binding** hash-to-curve
+//! generators and a **Pippenger MSM** ([`pedersen`]), R1CS/NIFS/native-verify/IVC,
+//! and [`keccak`] (SHA3-256, anchored to the `sha3` crate) — the chosen
+//! **dual-preimage Keccak** boundary embedding's reference.  Remaining for that
+//! embedding: the Keccak-in-R1CS arithmetization, the VOLE-side boolean gadget,
+//! and the bridge digest wiring (see `docs/boundary-link-embedding.md`).  The
+//! [`link::BoundaryLink`] trait keeps the embedding swappable; [`link::DummyLink`]
+//! is the non-sound placeholder used until `KeccakDigestLink` lands.
 
 #![no_std]
 extern crate alloc;
 
 pub mod scalar;
 pub mod pedersen;
+pub mod keccak;
 pub mod r1cs;
 pub mod nifs;
 pub mod verify;

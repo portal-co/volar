@@ -103,10 +103,14 @@ commitment with a hard relation is found. **This needs cryptographic review.**
 
 ## 5. Other caveats (honest)
 
-- **Pedersen generators are not binding** until a *hash-to-curve* derivation
-  replaces the current base-scalar-mult one (`curve.rs` lacks hash-to-curve). The
-  commitment is correctly homomorphic (folding/tests work) but a prover who knows
-  the generator DLs can equivocate. Isolated task, same status as the embedding.
+- **Pedersen generators — now binding.** Derived by `hash_to_curve`
+  (try-and-increment, SHA3-256 RO; [`hash-to-curve-generators.md`](hash-to-curve-generators.md)).
+  Discrete-log relations are unknown in the ROM ⇒ binding holds. *(Was the open
+  "known-DL generators" gap; now closed.)*
+- **Performance — fixed.** `F_ℓ` uses Montgomery reduction (was bit-by-bit long
+  division) and Pedersen commit uses a Pippenger MSM (was naive per-point
+  scalar-mul). Both are verified against their references; folding is no longer
+  seconds-to-minutes slow. This was a prerequisite for the Keccak embedding (§4).
 - **IVC cross-step continuity** (output of step `t` = input of step `t+1`) is
   assumed by witness chaining, not enforced in-circuit; a production IVC adds
   Nova's augmented-circuit continuity constraint. The per-step `F` constraints +
@@ -129,7 +133,8 @@ correlations** during the gap.
 
 | Component | State |
 |---|---|
-| `F_ℓ`, Pedersen, R1CS, NIFS, native verify, IVC, FoldingBridge | **implemented + tested** (25 unit tests) |
-| `BoundaryLink` embedding | **trait + `DummyLink` placeholder** — sound impl is the open task (§4) |
-| Binding generators (hash-to-curve) | **open** (§5) |
-| In-circuit continuity, Fiat–Shamir, fast reduction | refinements (§5) |
+| `F_ℓ` (Montgomery), Pedersen + Pippenger MSM, R1CS, NIFS, native verify, IVC, FoldingBridge | **implemented + tested** (31 unit tests) |
+| Binding generators (hash-to-curve) | **DONE** — `hash_to_curve` ([§5](#5-other-caveats-honest), `hash-to-curve-generators.md`) |
+| Fast field + MSM | **DONE** — Montgomery + Pippenger, verified vs reference |
+| `BoundaryLink` embedding | **chosen = dual-preimage Keccak** ([`boundary-link-embedding.md`](boundary-link-embedding.md)); Keccak reference + sha3 anchor built; **R1CS arithmetization + VOLE gadget + bridge wiring remain** |
+| In-circuit continuity, Fiat–Shamir | refinements (§5) |

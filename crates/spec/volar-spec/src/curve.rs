@@ -197,6 +197,70 @@ pub fn fe_sq(a: &Fe25519) -> Fe25519 {
     fe_mul(a, a)
 }
 
+/// `base^exp mod p`, `exp` little-endian limbs — square-and-multiply (MSB→LSB).
+pub fn fe_pow(base: &Fe25519, exp: &[u64; 4]) -> Fe25519 {
+    let mut acc = Fe25519::ONE;
+    for limb_idx in (0..4).rev() {
+        for bit in (0..64).rev() {
+            acc = fe_sq(&acc);
+            if (exp[limb_idx] >> bit) & 1 == 1 {
+                acc = fe_mul(&acc, base);
+            }
+        }
+    }
+    acc
+}
+
+/// `√−1 mod p = 2^{(p−1)/4}` (since `2` is a non-residue); `(p−1)/4 = 2^253 − 5`.
+fn sqrt_m1() -> Fe25519 {
+    const E: [u64; 4] = [
+        0xFFFF_FFFF_FFFF_FFFB,
+        0xFFFF_FFFF_FFFF_FFFF,
+        0xFFFF_FFFF_FFFF_FFFF,
+        0x1FFF_FFFF_FFFF_FFFF,
+    ];
+    fe_pow(&Fe25519([2, 0, 0, 0]), &E)
+}
+
+/// Square root mod `p = 2^255 − 19` (`p ≡ 5 mod 8`).  Returns `Some(r)` with
+/// `r² = w` if `w` is a quadratic residue, else `None`.
+///
+/// `c = w^{(p+3)/8}` (`(p+3)/8 = 2^252 − 2`); then `c² ∈ {w, −w}`: if `c²=w`,
+/// `c` is the root; if `c²=−w`, `c·√−1` is the root; otherwise `w` is a non-residue.
+pub fn fe_sqrt(w: &Fe25519) -> Option<Fe25519> {
+    const E: [u64; 4] = [
+        0xFFFF_FFFF_FFFF_FFFE,
+        0xFFFF_FFFF_FFFF_FFFF,
+        0xFFFF_FFFF_FFFF_FFFF,
+        0x0FFF_FFFF_FFFF_FFFF,
+    ];
+    let c = fe_pow(w, &E);
+    let c2 = fe_sq(&c);
+    if c2 == *w {
+        Some(c)
+    } else if c2 == fe_neg(w) {
+        Some(fe_mul(&c, &sqrt_m1()))
+    } else {
+        None
+    }
+}
+
+/// Whether `w` is a quadratic residue mod `p`.
+pub fn is_square(w: &Fe25519) -> bool {
+    fe_sqrt(w).is_some()
+}
+
+/// Interpret 32 little-endian bytes as an integer and reduce mod `p`.
+pub fn fe_from_bytes_le(b: &[u8; 32]) -> Fe25519 {
+    let mut limbs = [0u64; 4];
+    for i in 0..4 {
+        let mut chunk = [0u8; 8];
+        chunk.copy_from_slice(&b[i * 8..i * 8 + 8]);
+        limbs[i] = u64::from_le_bytes(chunk);
+    }
+    reduce_wide(&[limbs[0], limbs[1], limbs[2], limbs[3], 0, 0, 0, 0])
+}
+
 /// `a^(p − 2) mod p` via naive square-and-multiply.
 pub fn fe_invert(a: &Fe25519) -> Fe25519 {
     // p - 2 = 2^255 - 21. Bits: top bit at position 254, then ones down to 5,
@@ -388,6 +452,63 @@ pub fn ed_scalar_mul(p: &EdPoint, k: &[u8; 32]) -> EdPoint {
         }
     }
     acc
+}
+
+/// Clear the cofactor (`h = 8`): `[8]·P` via three doublings.  Maps any point
+/// into the prime-order (`ℓ`) subgroup.
+pub fn ed_mul_cofactor(p: &EdPoint) -> EdPoint {
+    ed_double(&ed_double(&ed_double(p)))
+}
+
+/// Hash-to-curve by **try-and-increment** (RFC 9380 §6.9.1 spirit), using
+/// SHA3-256 as the random oracle.  Returns a prime-order point whose discrete log
+/// w.r.t. the base point is unknown — suitable for **binding** Pedersen
+/// generators.
+///
+/// For counter `ctr = 0, 1, …`: hash `domain ‖ index ‖ ctr` to a field element
+/// `x` (+ a sign bit); solve the Edwards equation for `y² = (1+x²)/(1−d·x²)`; if
+/// that is a quadratic residue, take `y = ±√(y²)` (sign from the hash) and clear
+/// the cofactor.  Retry on a non-residue, zero denominator, or identity output.
+///
+/// Indifferentiability is **not** required for generators (only one-wayness of the
+/// DL), so the simple try-and-increment map is sound in the ROM; Elligator2
+/// (constant-time, RFC 9380) is the standardized alternative.
+pub fn hash_to_curve(domain: &[u8], index: u64) -> EdPoint {
+    use sha3::Sha3_256;
+    for ctr in 0u64.. {
+        let mut h = Sha3_256::new();
+        h.update(domain);
+        h.update(index.to_le_bytes());
+        h.update(ctr.to_le_bytes());
+        let out = h.finalize();
+        let mut xb = [0u8; 32];
+        xb.copy_from_slice(&out);
+        let sign = (xb[31] >> 7) & 1;
+        xb[31] &= 0x7f; // clear top bit; x < 2^255
+        let x = fe_from_bytes_le(&xb);
+
+        let xx = fe_sq(&x);
+        let num = fe_add(&Fe25519::ONE, &xx);
+        let den = fe_sub(&Fe25519::ONE, &fe_mul(&D, &xx));
+        if den.is_zero() {
+            continue;
+        }
+        let yy = fe_mul(&num, &fe_invert(&den));
+        let Some(mut y) = fe_sqrt(&yy) else {
+            continue;
+        };
+        // Fix the sign by the hash bit (parity of y).
+        if (y.to_bytes()[0] & 1) != sign {
+            y = fe_neg(&y);
+        }
+        let point = EdPoint { x, y, z: Fe25519::ONE, t: fe_mul(&x, &y) };
+        let p8 = ed_mul_cofactor(&point);
+        if p8 == EdPoint::IDENTITY {
+            continue;
+        }
+        return p8;
+    }
+    unreachable!("hash_to_curve: counter exhausted")
 }
 
 // ============================================================================
@@ -583,5 +704,59 @@ mod tests {
         let (_k0, k1) = ot_send_finish::<Ed25519, Sha256>(&sender, &msg);
         let kc = ot_recv_finish::<Ed25519, Sha256>(&receiver);
         assert_eq!(k1, kc, "c=1 must yield k1");
+    }
+
+    // ── Hash-to-curve / field sqrt ────────────────────────────────────────
+
+    /// Ed25519 group order ℓ, little-endian bytes (for prime-order checks).
+    const ELL_BYTES: [u8; 32] = [
+        0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde,
+        0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10,
+    ];
+
+    fn on_curve(p: &EdPoint) -> bool {
+        let (x, y) = p.to_affine();
+        let xx = fe_sq(&x);
+        let yy = fe_sq(&y);
+        let lhs = fe_sub(&yy, &xx);
+        let rhs = fe_add(&Fe25519::ONE, &fe_mul(&D, &fe_mul(&xx, &yy)));
+        lhs == rhs
+    }
+
+    #[test]
+    fn fe_sqrt_roundtrip_and_residue() {
+        for v in [1u64, 2, 3, 4, 9, 16, 1234567] {
+            let a = Fe25519([v, 0, 0, 0]);
+            let aa = fe_sq(&a);
+            // aa is a square; its sqrt squares back to aa.
+            let r = fe_sqrt(&aa).expect("square has a root");
+            assert_eq!(fe_sq(&r), aa, "sqrt({v}^2)^2 != {v}^2");
+            assert!(is_square(&aa));
+        }
+        // A non-residue must report None. 2 is a known QNR mod p (= 2^255-19).
+        assert!(fe_sqrt(&Fe25519([2, 0, 0, 0])).is_none(), "2 is a non-residue mod p");
+        assert!(!is_square(&Fe25519([2, 0, 0, 0])));
+    }
+
+    #[test]
+    fn hash_to_curve_points_are_prime_order_and_on_curve() {
+        for i in 0..5u64 {
+            let p = hash_to_curve(b"volar-fold/test", i);
+            assert!(on_curve(&p), "hash_to_curve point {i} not on curve");
+            // Prime-order: [ℓ]·P == identity (cofactor was cleared).
+            assert_eq!(ed_scalar_mul(&p, &ELL_BYTES), EdPoint::IDENTITY, "point {i} not prime-order");
+            assert_ne!(p, EdPoint::IDENTITY);
+        }
+    }
+
+    #[test]
+    fn hash_to_curve_is_deterministic_and_distinct() {
+        let a0 = hash_to_curve(b"dom", 0);
+        let a0b = hash_to_curve(b"dom", 0);
+        let a1 = hash_to_curve(b"dom", 1);
+        let c0 = hash_to_curve(b"other", 0);
+        assert_eq!(a0, a0b, "deterministic");
+        assert_ne!(a0, a1, "distinct index");
+        assert_ne!(a0, c0, "distinct domain");
     }
 }

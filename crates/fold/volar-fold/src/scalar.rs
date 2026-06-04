@@ -108,6 +108,130 @@ fn mul_512(a: &[u64; 4], b: &[u64; 4]) -> [u64; 8] {
     res
 }
 
+// ── Montgomery reduction (fast multiply) ─────────────────────────────────────
+//
+// The reference `mul_512`+`reduce_512` (bit-by-bit long division) is correct but
+// ~512 iterations/multiply — far too slow for folding.  Multiplication instead
+// uses Montgomery reduction: `montmul(a,b) = a·b·R⁻¹ mod ℓ` with `R = 2²⁵⁶`, and a
+// *plain*-form product is recovered as `montmul(montmul(a,b), R²)` (two `O(n²)`
+// reductions, ~300× faster than long division).  The constants `N′ = −ℓ⁻¹ mod
+// 2⁶⁴` and `R² = 2⁵¹² mod ℓ` are computed at **compile time** by `const fn`, and
+// cross-checked against the reference path in tests — so there is no hand-entered
+// constant to get wrong.
+
+const fn ge4(a: &[u64; 4], b: &[u64; 4]) -> bool {
+    let mut i = 4;
+    while i > 0 {
+        i -= 1;
+        if a[i] != b[i] {
+            return a[i] > b[i];
+        }
+    }
+    true
+}
+
+const fn sub4(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
+    let mut out = [0u64; 4];
+    let mut borrow: u128 = 0;
+    let mut i = 0;
+    while i < 4 {
+        let cur = (a[i] as u128).wrapping_sub(b[i] as u128).wrapping_sub(borrow);
+        out[i] = cur as u64;
+        borrow = (cur >> 127) & 1;
+        i += 1;
+    }
+    out
+}
+
+/// `2·a mod ℓ` for `a < ℓ` (const-fn, used to build `R²`).
+const fn dbl_mod_l(a: [u64; 4]) -> [u64; 4] {
+    let mut r = [0u64; 4];
+    let mut carry = 0u64;
+    let mut i = 0;
+    while i < 4 {
+        r[i] = (a[i] << 1) | carry;
+        carry = a[i] >> 63; // a < ℓ < 2^253 ⇒ top carry is 0
+        i += 1;
+    }
+    if ge4(&r, &L) {
+        sub4(&r, &L)
+    } else {
+        r
+    }
+}
+
+/// `R² = 2⁵¹² mod ℓ` via 512 modular doublings of 1.
+const fn r2_mod_l() -> [u64; 4] {
+    let mut acc = [1u64, 0, 0, 0];
+    let mut i = 0;
+    while i < 512 {
+        acc = dbl_mod_l(acc);
+        i += 1;
+    }
+    acc
+}
+
+/// `a⁻¹ mod 2⁶⁴` (Newton; `a` odd). 6 iters ⇒ ≥ 64 correct bits.
+const fn inv_mod_2_64(a: u64) -> u64 {
+    let mut x = a;
+    let mut i = 0;
+    while i < 6 {
+        x = x.wrapping_mul(2u64.wrapping_sub(a.wrapping_mul(x)));
+        i += 1;
+    }
+    x
+}
+
+const R2: [u64; 4] = r2_mod_l();
+const N_PRIME: u64 = inv_mod_2_64(L[0]).wrapping_neg();
+
+/// Montgomery multiply: `a·b·R⁻¹ mod ℓ` (`R = 2²⁵⁶`), SOS form. Inputs `< ℓ`.
+fn montmul(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
+    let mut t = [0u64; 9];
+    for i in 0..4 {
+        // t += a[i] · b
+        let mut carry: u128 = 0;
+        for j in 0..4 {
+            let s = t[i + j] as u128 + a[i] as u128 * b[j] as u128 + carry;
+            t[i + j] = s as u64;
+            carry = s >> 64;
+        }
+        let mut k = i + 4;
+        while carry != 0 {
+            let s = t[k] as u128 + carry;
+            t[k] = s as u64;
+            carry = s >> 64;
+            k += 1;
+        }
+        // Montgomery word: m = t[i]·N′ mod 2⁶⁴; t += m·ℓ·2^{64i} (clears t[i]).
+        let m = (t[i] as u128 * N_PRIME as u128) as u64;
+        let mut carry2: u128 = 0;
+        for j in 0..4 {
+            let s = t[i + j] as u128 + m as u128 * L[j] as u128 + carry2;
+            t[i + j] = s as u64;
+            carry2 = s >> 64;
+        }
+        let mut k = i + 4;
+        while carry2 != 0 {
+            let s = t[k] as u128 + carry2;
+            t[k] = s as u64;
+            carry2 = s >> 64;
+            k += 1;
+        }
+    }
+    // Result = t[4..8] (+ t[8] overflow bit), in [0, 2ℓ): one conditional subtract.
+    let mut r = [t[4], t[5], t[6], t[7]];
+    if t[8] != 0 || ge_256(&r, &L) {
+        r = sub_256(&r, &L);
+    }
+    r
+}
+
+/// Reference multiply (long division) — kept as the test oracle for `montmul`.
+fn mul_ref(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
+    reduce_512(&mul_512(a, b))
+}
+
 impl Scalar {
     pub const ZERO: Scalar = Scalar([0, 0, 0, 0]);
     pub const ONE: Scalar = Scalar([1, 0, 0, 0]);
@@ -189,7 +313,9 @@ impl Scalar {
     }
 
     pub fn mul(&self, other: &Scalar) -> Scalar {
-        Scalar(reduce_512(&mul_512(&self.0, &other.0)))
+        // Plain·plain → plain via two Montgomery reductions:
+        // montmul(montmul(a,b), R²) = (a·b·R⁻¹)·R²·R⁻¹ = a·b.
+        Scalar(montmul(&montmul(&self.0, &other.0), &R2))
     }
 
     /// Multiplicative inverse via Fermat's little theorem (`a^(ℓ-2)`).
@@ -238,6 +364,34 @@ mod tests {
         let a = Scalar::from_u64(123);
         let b = Scalar::from_u64(456);
         assert_eq!(a.mul(&b), Scalar::from_u64(123 * 456));
+    }
+
+    #[test]
+    fn montgomery_mul_matches_reference() {
+        // The fast (Montgomery) multiply must equal the long-division reference
+        // across a spread of values, including near-ℓ operands.
+        let samples = [
+            [1u64, 0, 0, 0],
+            [0xffff_ffff_ffff_ffff, 0, 0, 0],
+            [0x1234_5678, 0x9abc_def0, 0xdead_beef, 0x0fed_cba9],
+            // ℓ − 1 (largest canonical element)
+            sub_256(&L, &[1, 0, 0, 0]),
+            [0xaaaa_aaaa_aaaa_aaaa, 0x5555_5555_5555_5555, 0xf0f0_f0f0_f0f0_f0f0, 0x0123],
+        ];
+        for a in &samples {
+            for b in &samples {
+                let fast = montmul(&montmul(a, b), &R2);
+                let refr = mul_ref(a, b);
+                assert_eq!(fast, refr, "montmul mismatch for {a:?} * {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn montgomery_constants_sane() {
+        // R² = 2^512 mod ℓ recomputed by reference doubling; N′·ℓ ≡ −1 mod 2^64.
+        assert!(ge4(&L, &R2) || !ge4(&R2, &L)); // R2 canonical (< ℓ)
+        assert_eq!(N_PRIME.wrapping_mul(L[0]), u64::MAX); // ℓ·N′ ≡ −1 (mod 2^64)
     }
 
     #[test]

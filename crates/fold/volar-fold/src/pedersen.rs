@@ -4,25 +4,19 @@
 //! `Commit(x⃗; ρ) = Σ_i x_i·G_i + ρ·H`, used to commit the folding witness and
 //! the boundary state.
 //!
-//! ## SOUNDNESS CAVEAT (must be discharged)
-//! For binding, the generators `{G_i, H}` must have **unknown pairwise
-//! discrete-log relations** — i.e. be derived by a *hash-to-curve* (random
-//! oracle), not by scalar-multiplying a known base.  `volar_spec::curve` does not
-//! yet provide hash-to-curve, so [`PedersenParams::setup`] currently derives
-//! `G_i = [s_i]·B` with **known** `s_i`.  The commitment is then correctly
-//! *homomorphic* (folding works, tests pass) but **not binding** — a malicious
-//! prover who knows the `s_i` can open a commitment two ways.  Replace the
-//! derivation with hash-to-curve before relying on soundness (tracked alongside
-//! the `link::BoundaryLink` embedding as an isolated crypto task).
+//! ## Binding
+//! The generators `{G_i, H}` are derived by **hash-to-curve**
+//! ([`volar_spec::curve::hash_to_curve`], try-and-increment, SHA3-256 RO), so
+//! their pairwise discrete-log relations are unknown in the ROM — the commitment
+//! is binding.  (Earlier scaffold versions derived `G_i = [s_i]·B` with known
+//! `s_i`, which was homomorphic but *not* binding; that is fixed here.)  The
+//! `seed` only domain-separates independent generator sets.
 
 use alloc::vec::Vec;
 
-use volar_spec::curve::{ed_add, ed_scalar_mul, EdPoint};
+use volar_spec::curve::{ed_add, ed_double, ed_scalar_mul, hash_to_curve, EdPoint};
 
 use crate::scalar::Scalar;
-
-/// Index used to derive the blinding generator `H`.
-const H_INDEX: u64 = 0xFFFF_FFFF_FFFF_FFFF;
 
 /// Public Pedersen generators.
 #[derive(Clone)]
@@ -38,44 +32,77 @@ pub fn scalar_mul(p: &EdPoint, k: &Scalar) -> EdPoint {
     ed_scalar_mul(p, &k.to_bytes_le())
 }
 
+/// Extract the `width`-bit window of a little-endian scalar at bit offset `off`.
+fn scalar_window(limbs: &[u64; 4], off: usize, width: usize) -> u64 {
+    if off >= 256 {
+        return 0;
+    }
+    let limb = off / 64;
+    let bit = off % 64;
+    let lo = limbs[limb] >> bit;
+    let hi = if bit == 0 || limb + 1 >= 4 { 0 } else { limbs[limb + 1] << (64 - bit) };
+    (lo | hi) & ((1u64 << width) - 1)
+}
+
+/// Multi-scalar multiplication `Σ_i scalars[i]·points[i]` by the Pippenger
+/// bucket method — `O(n)` point adds per window instead of a 256-doubling
+/// scalar-mul per point.  This is the folding hot path (committing the witness).
+pub fn msm(points: &[EdPoint], scalars: &[Scalar]) -> EdPoint {
+    assert_eq!(points.len(), scalars.len());
+    if points.is_empty() {
+        return EdPoint::IDENTITY;
+    }
+    const C: usize = 8; // window width
+    const NUM_WINDOWS: usize = 256 / C; // 32
+    let mut acc = EdPoint::IDENTITY;
+    for w in (0..NUM_WINDOWS).rev() {
+        // acc <<= C  (C doublings)
+        for _ in 0..C {
+            acc = ed_double(&acc);
+        }
+        // Accumulate points into 2^C − 1 buckets by their window digit.
+        let mut buckets = alloc::vec![EdPoint::IDENTITY; (1 << C) - 1];
+        for (p, s) in points.iter().zip(scalars.iter()) {
+            let digit = scalar_window(&s.0, w * C, C) as usize;
+            if digit != 0 {
+                buckets[digit - 1] = ed_add(&buckets[digit - 1], p);
+            }
+        }
+        // window_sum = Σ_d d·bucket[d] via running-sum trick.
+        let mut running = EdPoint::IDENTITY;
+        let mut window_sum = EdPoint::IDENTITY;
+        for b in (0..buckets.len()).rev() {
+            running = ed_add(&running, &buckets[b]);
+            window_sum = ed_add(&window_sum, &running);
+        }
+        acc = ed_add(&acc, &window_sum);
+    }
+    acc
+}
+
 impl PedersenParams {
-    /// Derive `n` message generators + a blinding generator from a public seed.
-    ///
-    /// **Not binding** until hash-to-curve is available (see the module caveat).
+    /// Derive `n` message generators + a blinding generator by hash-to-curve.
+    /// `seed` domain-separates independent generator sets.  Binding in the ROM.
     pub fn setup(n: usize, seed: u64) -> PedersenParams {
-        let base = EdPoint::base();
         let mut g = Vec::with_capacity(n);
         for i in 0..n {
-            let s = derive_scalar(seed, i as u64 + 1);
-            g.push(ed_scalar_mul(&base, &s.to_bytes_le()));
+            // Domain-separate generator index from the blinding generator.
+            g.push(hash_to_curve(b"volar-fold/pedersen/G", seed ^ (i as u64).wrapping_shl(1)));
         }
-        let h = ed_scalar_mul(&base, &derive_scalar(seed, H_INDEX).to_bytes_le());
+        let h = hash_to_curve(b"volar-fold/pedersen/H", seed);
         PedersenParams { g, h }
     }
 
-    /// `Σ_i x_i·G_i + ρ·H`.  Requires `x.len() <= self.g.len()`.
+    /// `Σ_i x_i·G_i + ρ·H` via Pippenger MSM (the blinder term is folded in as the
+    /// extra pair `(H, ρ)`).  Requires `x.len() <= self.g.len()`.
     pub fn commit(&self, x: &[Scalar], blind: &Scalar) -> EdPoint {
         assert!(x.len() <= self.g.len(), "pedersen: message longer than generators");
-        let mut acc = scalar_mul(&self.h, blind);
-        for (xi, gi) in x.iter().zip(self.g.iter()) {
-            acc = ed_add(&acc, &scalar_mul(gi, xi));
-        }
-        acc
+        let mut points: Vec<EdPoint> = self.g[..x.len()].to_vec();
+        points.push(self.h);
+        let mut scalars: Vec<Scalar> = x.to_vec();
+        scalars.push(*blind);
+        msm(&points, &scalars)
     }
-}
-
-/// A nothing-up-my-sleeve scalar from `(seed, idx)`.  Placeholder (not a random
-/// oracle) — see the module caveat.
-fn derive_scalar(seed: u64, idx: u64) -> Scalar {
-    let a = seed
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        .wrapping_add(idx.wrapping_mul(0xBF58_476D_1CE4_E5B9))
-        .wrapping_add(1);
-    let b = idx
-        .wrapping_mul(0x94D0_49BB_1331_11EB)
-        .wrapping_add(seed)
-        .wrapping_add(0x1234_5678_9abc_def1);
-    Scalar::from_limbs([a, b, idx.wrapping_add(1), seed | 1])
 }
 
 #[cfg(test)]
@@ -109,6 +136,21 @@ mod tests {
         let scaled: Vec<Scalar> = a.iter().map(|x| x.mul(&k)).collect();
         let rhs = p.commit(&scaled, &r.mul(&k));
         assert_eq!(lhs, rhs);
+    }
+
+    #[test]
+    fn msm_matches_naive_sum() {
+        let pts: Vec<EdPoint> = (0..6u64).map(|i| volar_spec::curve::hash_to_curve(b"msm/test", i)).collect();
+        let scs: Vec<Scalar> = [3u64, 0, 1, 0xdead_beef, 255, 256]
+            .iter()
+            .map(|&v| Scalar::from_u64(v))
+            .collect();
+        // naive Σ scalar_mul
+        let mut naive = EdPoint::IDENTITY;
+        for (p, s) in pts.iter().zip(scs.iter()) {
+            naive = ed_add(&naive, &scalar_mul(p, s));
+        }
+        assert_eq!(msm(&pts, &scs), naive, "Pippenger MSM disagrees with naive sum");
     }
 
     #[test]

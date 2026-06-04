@@ -11,3 +11,7 @@ hybrid-array.workspace = true
 cipher.workspace = true
 volar-spec = { path = "../../spec/volar-spec" }
 volar-net = { path = "../../net/volar-net" }
+
+[dev-dependencies]
+sha3.workspace = true
+digest = { version = "0.11.2", default-features = false }
