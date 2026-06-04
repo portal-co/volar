@@ -1,8 +1,10 @@
 # ADR 0002: Sparse (non-exponential) init/drain for committed memory checking
 
-**Status:** Accepted direction — not yet implemented. Current code is correct but
-materialises `2^addr_bits` cells; this ADR is the design-of-record for the
-scalable replacement.
+**Status:** **Implemented (Option A).** `weave_ts_storage_loop_*` and
+`weave_hybrid_net_vole_*` now use the touched-cell witness list with `emit_lt`
+sortedness + the `r0` constant-term `encode` hardening; the `addr_bits` cap is
+lifted to `1..=64` and init/drain are `Θ(K)`. Option B (sorted-trace permutation)
+remains the future gold-standard for fully uniform RAM.
 **Tier of recommendations:** Tier 2 (touches `volar-weaver`; reuses existing
 `volar-spec` primitives — no new spec surface required for the recommended path).
 **Prepared by:** Opus 4.8, session 2026-06-03, VCB timestamp-soundness arc.

@@ -80,13 +80,16 @@ pub enum Weaver {
     /// storage address width (the weaver materialises `2^addr_bits` memory
     /// cells in init/drain — keep it small).  See
     /// [`docs/vole-continuation-bridge.md`] §9 and ADR 0002.
+    /// `touched_count` (K) is the number of distinct memory cells touched over
+    /// the whole execution — the sparse init/drain cost (ADR 0002 Option A),
+    /// linear in the trace and independent of `addr_bits`.
     #[cfg(feature = "weave-net")]
-    HybridNetVoleProver { name: String, ts_bits: usize, addr_bits: usize },
+    HybridNetVoleProver { name: String, ts_bits: usize, addr_bits: usize, touched_count: usize },
     /// Hybrid network-resilient VOLE **verifier** (Boolar loop circuit → CFG).
-    /// Requires the `weave-net` feature.  `ts_bits` / `addr_bits` as above and
-    /// **must match** the prover's.
+    /// Requires the `weave-net` feature.  `ts_bits` / `addr_bits` / `touched_count`
+    /// as above and **must match** the prover's.
     #[cfg(feature = "weave-net")]
-    HybridNetVoleVerifier { name: String, ts_bits: usize, addr_bits: usize },
+    HybridNetVoleVerifier { name: String, ts_bits: usize, addr_bits: usize, touched_count: usize },
 }
 
 // ============================================================================
@@ -166,13 +169,13 @@ pub fn emit_woven_rust(
             volar_weaver::print_weaved_module(&module, false)
         }
         #[cfg(feature = "weave-net")]
-        (Weaver::HybridNetVoleProver { name, ts_bits, addr_bits }, SavedCircuit::Boolar(bir)) => {
-            let module = volar_weaver::weave_hybrid_net_vole_prover(&bir, *ts_bits, *addr_bits, name, None);
+        (Weaver::HybridNetVoleProver { name, ts_bits, addr_bits, touched_count }, SavedCircuit::Boolar(bir)) => {
+            let module = volar_weaver::weave_hybrid_net_vole_prover(&bir, *ts_bits, *addr_bits, *touched_count, name, None);
             volar_weaver::print_hybrid_net_cfg_module(&module)
         }
         #[cfg(feature = "weave-net")]
-        (Weaver::HybridNetVoleVerifier { name, ts_bits, addr_bits }, SavedCircuit::Boolar(bir)) => {
-            let module = volar_weaver::weave_hybrid_net_vole_verifier(&bir, *ts_bits, *addr_bits, name, None);
+        (Weaver::HybridNetVoleVerifier { name, ts_bits, addr_bits, touched_count }, SavedCircuit::Boolar(bir)) => {
+            let module = volar_weaver::weave_hybrid_net_vole_verifier(&bir, *ts_bits, *addr_bits, *touched_count, name, None);
             volar_weaver::print_hybrid_net_cfg_module(&module)
         }
         (w, c) => {

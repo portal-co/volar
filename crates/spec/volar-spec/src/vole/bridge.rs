@@ -64,19 +64,24 @@ where
 
 /// Absorb one `(addr, value, ts)` memory tuple into a multiset-hash accumulator.
 ///
-/// Returns `acc + addr·r1 + value·r2 + ts·r3` where `(r1, r2, r3) = (r, r², r³)`
-/// are the public challenge powers.  All multiplications are by public
-/// constants, so this is free in VOLE.  Matches the `encode` formula in
-/// `vole::memory` and is commutative/associative, so accumulation order does
-/// not matter (multiset semantics).
+/// Returns `acc + r0 + addr·r1 + value·r2 + ts·r3` where `(r1, r2, r3) =
+/// (r, r², r³)` are the public challenge powers and `r0 ≠ 0` is a public
+/// **constant term**.  The constant term makes *every* tuple — including the
+/// all-zero `(0,0,0)` — contribute a non-zero encoding, so a forged consume of a
+/// phantom zero tuple is caught by the drain.  It cancels in the
+/// produce − consume difference because the produce/consume tuple counts match
+/// (each access is one produce + one consume; init/drain are balanced per
+/// touched cell).  All multiplications are by public constants, so this is free
+/// in VOLE.  Matches the hardened `encode` in `vole::memory`; commutative and
+/// associative, so accumulation order does not matter (multiset semantics).
 ///
 /// `T` may be a plain field element (prover/verifier offline) or a
 /// VOLE-authenticated value (`Vope`/`Q`), since the operation is purely linear.
-pub fn mem_acc_absorb<T>(acc: T, r1: T, r2: T, r3: T, addr: T, value: T, ts: T) -> T
+pub fn mem_acc_absorb<T>(acc: T, r0: T, r1: T, r2: T, r3: T, addr: T, value: T, ts: T) -> T
 where
     T: Clone + Add<Output = T> + Mul<Output = T>,
 {
-    acc + addr * r1 + value * r2 + ts * r3
+    acc + r0 + addr * r1 + value * r2 + ts * r3
 }
 
 /// Scale a degree-1 VOPE wire by a **public** field constant `c`.
@@ -107,9 +112,11 @@ where
 /// the resulting accumulator as loop-state so memory stays O(1) across a gap.
 pub fn mem_acc_absorb_vope<N, T>(
     acc: Vope<N, T, U1>,
+    one: &Vope<N, T, U1>,
     addr: &Vope<N, T, U1>,
     value: &Vope<N, T, U1>,
     ts: &Vope<N, T, U1>,
+    r0: &T,
     r1: &T,
     r2: &T,
     r3: &T,
@@ -119,7 +126,11 @@ where
     T: Clone + Add<Output = T> + Mul<Output = T> + Default,
     Vope<N, T, U1>: Add<Output = Vope<N, T, U1>>,
 {
-    acc + vope_scale_const(addr, r1) + vope_scale_const(value, r2) + vope_scale_const(ts, r3)
+    // Constant term r0·(public 1); `one` is the committed public-1 wire.
+    acc + vope_scale_const(one, r0)
+        + vope_scale_const(addr, r1)
+        + vope_scale_const(value, r2)
+        + vope_scale_const(ts, r3)
 }
 
 /// Bit-pack committed timestamp bits into a field value: `Σ bits[i] · pow2[i]`.
@@ -161,9 +172,11 @@ where
 /// [`mem_acc_absorb_vope`]): `acc + addr·r1 + value·r2 + ts·r3`.
 pub fn mem_acc_absorb_q<N, T>(
     acc: Q<N, T>,
+    one: &Q<N, T>,
     addr: &Q<N, T>,
     value: &Q<N, T>,
     ts: &Q<N, T>,
+    r0: &T,
     r1: &T,
     r2: &T,
     r3: &T,
@@ -172,12 +185,14 @@ where
     N: ArraySize,
     T: Clone + Add<Output = T> + Mul<Output = T>,
 {
+    // Constant term r0·Δ; `one` is the verifier Q-share of the public 1 (= Δ).
+    let c = q_scale_const(one, r0);
     let a = q_scale_const(addr, r1);
     let v = q_scale_const(value, r2);
     let t = q_scale_const(ts, r3);
     Q {
         q: Array::<T, N>::from_fn(|i| {
-            acc.q[i].clone() + a.q[i].clone() + v.q[i].clone() + t.q[i].clone()
+            acc.q[i].clone() + c.q[i].clone() + a.q[i].clone() + v.q[i].clone() + t.q[i].clone()
         }),
     }
 }
@@ -316,12 +331,21 @@ mod tests {
     #[test]
     fn mem_acc_is_order_independent() {
         // Multiset property: absorbing two tuples in either order matches.
-        let (r1, r2, r3) = (7u64, 49, 343);
-        let a = mem_acc_absorb(0, r1, r2, r3, 2, 11, 1);
-        let ab = mem_acc_absorb(a, r1, r2, r3, 5, 13, 2);
-        let b = mem_acc_absorb(0, r1, r2, r3, 5, 13, 2);
-        let ba = mem_acc_absorb(b, r1, r2, r3, 2, 11, 1);
+        let (r0, r1, r2, r3) = (2u64, 7, 49, 343);
+        let a = mem_acc_absorb(0, r0, r1, r2, r3, 2, 11, 1);
+        let ab = mem_acc_absorb(a, r0, r1, r2, r3, 5, 13, 2);
+        let b = mem_acc_absorb(0, r0, r1, r2, r3, 5, 13, 2);
+        let ba = mem_acc_absorb(b, r0, r1, r2, r3, 2, 11, 1);
         assert_eq!(ab, ba);
+    }
+
+    #[test]
+    fn mem_acc_zero_tuple_is_visible() {
+        // The all-zero tuple (0,0,0) must NOT vanish — the constant term r0
+        // makes it contribute, so a phantom zero-tuple consume is caught.
+        let (r0, r1, r2, r3) = (99u64, 7, 49, 343);
+        assert_eq!(mem_acc_absorb(0, r0, r1, r2, r3, 0, 0, 0), r0);
+        assert_ne!(mem_acc_absorb(0, r0, r1, r2, r3, 0, 0, 0), 0);
     }
 
     /// Build a degree-1 VOPE wire with `u[0] = [u0, u0]`, `v = [v0, v0]`.
@@ -364,10 +388,12 @@ mod tests {
 
     #[test]
     fn mem_acc_q_matches_formula() {
-        let (r1, r2, r3) = (7u64, 49, 343);
+        let (r0, r1, r2, r3) = (5u64, 7, 49, 343);
         let acc = q::<0, 0>();
-        let out = mem_acc_absorb_q(acc, &q::<1, 1>(), &q::<11, 11>(), &q::<2, 2>(), &r1, &r2, &r3);
-        assert_eq!(out.q[0], 1 * r1 + 11 * r2 + 2 * r3);
+        // `one` (Q-share of public 1) = Δ; use Δ = [1,1] so r0·Δ = r0 in lane 0.
+        let one = q::<1, 1>();
+        let out = mem_acc_absorb_q(acc, &one, &q::<1, 1>(), &q::<11, 11>(), &q::<2, 2>(), &r0, &r1, &r2, &r3);
+        assert_eq!(out.q[0], 1 * r0 + 1 * r1 + 11 * r2 + 2 * r3);
     }
 
     #[test]
@@ -393,13 +419,14 @@ mod tests {
     fn mem_acc_vope_matches_scalar_formula() {
         // The VOPE accumulator's u[0] lane should track the plain-field formula
         // acc + addr·r1 + value·r2 + ts·r3 on the encoded bit values.
-        let (r1, r2, r3) = (7u64, 49u64, 343u64);
+        let (r0, r1, r2, r3) = (5u64, 7u64, 49u64, 343u64);
         let acc = vope(0, 0);
+        let one = vope(1, 0); // public 1 wire (u[0]=1)
         let addr = vope(1, 0); // addr bit = 1
         let value = vope(11, 0);
         let ts = vope(2, 0);
-        let out = mem_acc_absorb_vope(acc, &addr, &value, &ts, &r1, &r2, &r3);
-        let expect = 1 * r1 + 11 * r2 + 2 * r3;
+        let out = mem_acc_absorb_vope(acc, &one, &addr, &value, &ts, &r0, &r1, &r2, &r3);
+        let expect = 1 * r0 + 1 * r1 + 11 * r2 + 2 * r3;
         assert_eq!(out.u[0][0], expect);
     }
 }

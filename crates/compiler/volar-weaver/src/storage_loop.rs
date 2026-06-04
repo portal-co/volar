@@ -360,11 +360,12 @@ pub(crate) fn zero_vope_expr() -> IrExpr {
     }
 }
 
-/// `volar_spec::vole::bridge::mem_acc_absorb_vope(acc.clone(), &addr, &value, &ts, &r1, &r2, &r3)`
+/// `mem_acc_absorb_vope(acc.clone(), &vope_one, &addr, &value, &ts, &r0, &r1, &r2, &r3)`
 ///
 /// The accumulator is **cloned** so the input value remains available — the
 /// hybrid weaver needs it as the gap replay anchor (the extra clone is free in
-/// the storage-only loop, which has a single path).
+/// the storage-only loop, which has a single path).  `vope_one` (the public-1
+/// wire, a function param on every prover) carries the constant term `r0`.
 pub(crate) fn absorb_call(acc: &str, addr: &str, value: &str, ts: &str) -> IrExpr {
     IrExpr::Call {
         func: Box::new(IrExpr::Path {
@@ -378,9 +379,11 @@ pub(crate) fn absorb_call(acc: &str, addr: &str, value: &str, ts: &str) -> IrExp
         }),
         args: vec![
             clone_expr(var(acc)),
+            ref_expr(var("vope_one")),
             ref_expr(var(addr)),
             ref_expr(var(value)),
             ref_expr(var(ts)),
+            ref_expr(var("r0")),
             ref_expr(var("r1")),
             ref_expr(var("r2")),
             ref_expr(var("r3")),
@@ -478,6 +481,247 @@ pub(crate) fn count_storage(expanded: &[(IRVarId, BIrStmt, ())]) -> (usize, usiz
     (reads, writes)
 }
 
+// ── Sparse touched-cell init/drain (ADR 0002 Option A) ───────────────────────
+
+/// `slice[idx].clone()` — flat (non-iter-strided) index, for exit-time witness
+/// slices that are used once (touched-cell init/drain).
+pub(crate) fn flat_index_clone(slice: &str, idx: usize) -> IrExpr {
+    clone_expr(IrExpr::Index {
+        base: Box::new(var(slice)),
+        index: Box::new(IrExpr::Lit(IrLit::Int(idx as i128))),
+    })
+}
+
+/// Number of AND gates the touched-cell sortedness check contributes:
+/// `K-1` strict-less-than gadgets over `addr_bits`-wide addresses, plus one
+/// `order_ok &=` AND per comparison.
+pub(crate) fn sort_and_count(touched_count: usize, addr_bits: usize) -> usize {
+    if touched_count < 2 {
+        return 0;
+    }
+    let mut lt_buf = GateBuf::new(2 * addr_bits as u32);
+    let a: Vec<u32> = (0..addr_bits as u32).collect();
+    let b: Vec<u32> = (addr_bits as u32..2 * addr_bits as u32).collect();
+    let _ = emit_lt(&a, &b, &mut lt_buf);
+    let per = gadget_and_count(&lt_buf.gates) + 1; // lt gadget + the `&=` AND
+    (touched_count - 1) * per
+}
+
+/// Read the `i`-th touched cell's `addr_bits`-wide committed address bits from
+/// `slice`, binding each to a fresh name; returns the bit-wire names.
+fn touched_addr_bits(slice: &str, i: usize, addr_bits: usize, tag: &str, stmts: &mut Vec<IrStmt>) -> Vec<String> {
+    (0..addr_bits)
+        .map(|j| {
+            let nm = format!("{tag}_{i}_{j}");
+            stmts.push(let_stmt(&nm, flat_index_clone(slice, i * addr_bits + j)));
+            nm
+        })
+        .collect()
+}
+
+/// **Prover** init: produce all `K` touched cells `(addr_i, init_val_i, 0)` into a
+/// fresh accumulator.  Returns the final `mem_prod` wire name.  Requires
+/// `vope_one`/`r0..r3` in scope (via [`absorb_call`]) and the witness slices
+/// `touched_addr` (K·addr_bits bits) / `touched_init_val` (K).
+pub(crate) fn emit_touched_init_prover(
+    k: usize,
+    addr_bits: usize,
+    pow2_addr: &[String],
+    stmts: &mut Vec<IrStmt>,
+) -> String {
+    stmts.push(let_stmt("zwI", zero_vope_expr())); // ts = 0
+    stmts.push(let_stmt("mp_init0", zero_vope_expr()));
+    let mut cur = String::from("mp_init0");
+    for i in 0..k {
+        let ab = touched_addr_bits("touched_addr", i, addr_bits, "iab", stmts);
+        let ai = format!("iaddr_{i}");
+        stmts.push(let_stmt(&ai, bitpack_call(&ab, pow2_addr)));
+        let iv = format!("ival_{i}");
+        stmts.push(let_stmt(&iv, flat_index_clone("touched_init_val", i)));
+        let np = format!("mp_init{}", i + 1);
+        stmts.push(let_stmt(&np, absorb_call(&cur, &ai, &iv, "zwI")));
+        cur = np;
+    }
+    cur
+}
+
+/// **Prover** drain: consume all `K` touched cells `(addr_i, final_val_i,
+/// bitpack(final_ts_i))` and fold the strict-sortedness ordering
+/// `order_ok &= emit_lt(addr_{i-1}, addr_i)` (its hats pushed to `sort_hats` for
+/// a one-shot `send_hats`).  `cur_order` is advanced in place.  Returns the final
+/// `mem_cons` wire name.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_touched_drain_prover(
+    k: usize,
+    addr_bits: usize,
+    ts_bits: usize,
+    pow2_addr: &[String],
+    pow2_ts: &[String],
+    start_cons: &str,
+    cur_order: &mut String,
+    sort_hats: &mut Vec<String>,
+    stmts: &mut Vec<IrStmt>,
+) -> String {
+    let mut cur = String::from(start_cons);
+    let mut prev_ab: Vec<String> = Vec::new();
+    for i in 0..k {
+        let ab = touched_addr_bits("touched_addr", i, addr_bits, "dab", stmts);
+        let ai = format!("daddr_{i}");
+        stmts.push(let_stmt(&ai, bitpack_call(&ab, pow2_addr)));
+        let tsb: Vec<String> = (0..ts_bits)
+            .map(|j| {
+                let nm = format!("dts_{i}_{j}");
+                stmts.push(let_stmt(&nm, flat_index_clone("touched_final_ts", i * ts_bits + j)));
+                nm
+            })
+            .collect();
+        let tsd = format!("dtsd_{i}");
+        stmts.push(let_stmt(&tsd, bitpack_call(&tsb, pow2_ts)));
+        let fv = format!("dfval_{i}");
+        stmts.push(let_stmt(&fv, flat_index_clone("touched_final_val", i)));
+        let nc = format!("dcons_{i}");
+        stmts.push(let_stmt(&nc, absorb_call(&cur, &ai, &fv, &tsd)));
+        cur = nc;
+        if i > 0 {
+            // order_ok &= (addr_{i-1} < addr_i)
+            let mut lt_buf = GateBuf::new(2 * addr_bits as u32);
+            let a_ids: Vec<u32> = (0..addr_bits as u32).collect();
+            let b_ids: Vec<u32> = (addr_bits as u32..2 * addr_bits as u32).collect();
+            let lt_res = emit_lt(&a_ids, &b_ids, &mut lt_buf);
+            let mut in_map = BTreeMap::<u32, String>::new();
+            for j in 0..addr_bits {
+                in_map.insert(j as u32, prev_ab[j].clone());
+                in_map.insert((addr_bits + j) as u32, ab[j].clone());
+            }
+            let lt_name =
+                lower_gadget_prover(&lt_buf.gates, &in_map, lt_res, &format!("srt{i}"), sort_hats, stmts);
+            let no = format!("sord_{i}");
+            let h = format!("srth_{i}");
+            sort_hats.push(h.clone());
+            emit_prover_and_gate(cur_order, &lt_name, &no, &h, stmts);
+            *cur_order = no;
+        }
+        prev_ab = ab;
+    }
+    cur
+}
+
+/// **Verifier** init mirror of [`emit_touched_init_prover`].  Requires
+/// `q_one_const`/`r0..r3` in scope (via [`q_absorb_call`]).  Returns the final
+/// `mem_prod_q` wire name.
+pub(crate) fn emit_touched_init_verifier(
+    k: usize,
+    addr_bits: usize,
+    pow2_addr: &[String],
+    stmts: &mut Vec<IrStmt>,
+) -> String {
+    stmts.push(let_stmt("qzwI", q_struct(array_t_n_default())));
+    stmts.push(let_stmt("qmp_init0", q_struct(array_t_n_default())));
+    let mut cur = String::from("qmp_init0");
+    for i in 0..k {
+        let ab = touched_addr_bits("q_touched_addr", i, addr_bits, "qiab", stmts);
+        let ai = format!("qiaddr_{i}");
+        stmts.push(let_stmt(&ai, q_bitpack_call(&ab, pow2_addr)));
+        let iv = format!("qival_{i}");
+        stmts.push(let_stmt(&iv, flat_index_clone("q_touched_init_val", i)));
+        let np = format!("qmp_init{}", i + 1);
+        stmts.push(let_stmt(&np, q_absorb_call(&cur, &ai, &iv, "qzwI")));
+        cur = np;
+    }
+    cur
+}
+
+/// **Verifier** drain mirror of [`emit_touched_drain_prover`].  Lowers the
+/// sortedness gadgets via [`lower_gadget_verifier`], folding each gate `ok` into
+/// the mutable `ok_acc` and advancing the `Q` ordering wire `cur_order` through
+/// `vole_and_verifier_check`.  `mk_qand`/`mk_hat` index the one-shot sort
+/// `q_ands`/hats (flat).  Returns the final `mem_cons_q` wire name.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_touched_drain_verifier(
+    k: usize,
+    addr_bits: usize,
+    ts_bits: usize,
+    pow2_addr: &[String],
+    pow2_ts: &[String],
+    start_cons: &str,
+    cur_order: &mut String,
+    ok_acc: &str,
+    and_counter: &mut usize,
+    mk_qand: &dyn Fn(usize) -> IrExpr,
+    mk_hat: &dyn Fn(usize) -> IrExpr,
+    stmts: &mut Vec<IrStmt>,
+) -> String {
+    let mut cur = String::from(start_cons);
+    let mut prev_ab: Vec<String> = Vec::new();
+    for i in 0..k {
+        let ab = touched_addr_bits("q_touched_addr", i, addr_bits, "qdab", stmts);
+        let ai = format!("qdaddr_{i}");
+        stmts.push(let_stmt(&ai, q_bitpack_call(&ab, pow2_addr)));
+        let tsb: Vec<String> = (0..ts_bits)
+            .map(|j| {
+                let nm = format!("qdts_{i}_{j}");
+                stmts.push(let_stmt(&nm, flat_index_clone("q_touched_final_ts", i * ts_bits + j)));
+                nm
+            })
+            .collect();
+        let tsd = format!("qdtsd_{i}");
+        stmts.push(let_stmt(&tsd, q_bitpack_call(&tsb, pow2_ts)));
+        let fv = format!("qdfval_{i}");
+        stmts.push(let_stmt(&fv, flat_index_clone("q_touched_final_val", i)));
+        let nc = format!("qdcons_{i}");
+        stmts.push(let_stmt(&nc, q_absorb_call(&cur, &ai, &fv, &tsd)));
+        cur = nc;
+        if i > 0 {
+            let mut lt_buf = GateBuf::new(2 * addr_bits as u32);
+            let a_ids: Vec<u32> = (0..addr_bits as u32).collect();
+            let b_ids: Vec<u32> = (addr_bits as u32..2 * addr_bits as u32).collect();
+            let lt_res = emit_lt(&a_ids, &b_ids, &mut lt_buf);
+            let mut in_map = BTreeMap::<u32, String>::new();
+            for j in 0..addr_bits {
+                in_map.insert(j as u32, prev_ab[j].clone());
+                in_map.insert((addr_bits + j) as u32, ab[j].clone());
+            }
+            let lt_map = lower_gadget_verifier(
+                &lt_buf.gates, &in_map, &format!("qsrt{i}"), and_counter, mk_qand, mk_hat, ok_acc,
+                stmts,
+            );
+            let q_lt = lt_map[&lt_res].clone();
+            let kk = *and_counter;
+            *and_counter += 1;
+            let no = format!("qsord_{i}");
+            let ok = format!("qsok_{i}");
+            stmts.push(IrStmt::Let {
+                pattern: IrPattern::Tuple(vec![IrPattern::ident(&no), IrPattern::ident(&ok)]),
+                ty: None,
+                init: Some(IrExpr::Call {
+                    func: Box::new(IrExpr::Path {
+                        segments: vec!["vole_and_verifier_check".into()],
+                        type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("T".into())],
+                    }),
+                    args: vec![
+                        var("delta"),
+                        ref_expr(var(cur_order)),
+                        ref_expr(var(&q_lt)),
+                        ref_expr(mk_qand(kk)),
+                        ref_expr(mk_hat(kk)),
+                    ],
+                }),
+            });
+            stmts.push(IrStmt::Semi(IrExpr::Assign {
+                left: Box::new(var(ok_acc)),
+                right: Box::new(IrExpr::Binary {
+                    op: SpecBinOp::And,
+                    left: Box::new(var(ok_acc)),
+                    right: Box::new(var(&ok)),
+                }),
+            }));
+            *cur_order = no;
+        }
+        prev_ab = ab;
+    }
+    cur
+}
+
 // ============================================================================
 // weave_storage_commit_loop_prover
 // ============================================================================
@@ -513,7 +757,7 @@ pub fn weave_storage_commit_loop_prover(
 
     // ── Function params ────────────────────────────────────────────────────
     let mut func_params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
-    for r in ["r1", "r2", "r3"] {
+    for r in ["r0", "r1", "r2", "r3"] {
         func_params.push(IrParam { name: r.into(), ty: IrType::TypeParam("T".into()) });
     }
     for i in 0..num_params {
@@ -1007,22 +1251,20 @@ pub fn weave_ts_storage_loop_prover(
     circuit: &BIrBlocks,
     ts_bits: usize,
     addr_bits: usize,
+    touched_count: usize,
     resume: bool,
     name: &str,
     linkage: Option<&LinkageSystem>,
 ) -> IrCfgModule {
     assert!(circuit.is_movfuscated(), "weave_ts_storage_loop_prover: circuit must be single-block");
     assert!(ts_bits >= 1, "ts_bits must be >= 1");
-    assert!(
-        (1..=8).contains(&addr_bits),
-        "addr_bits must be 1..=8 (init/drain materialises 2^addr_bits cells)"
-    );
+    assert!((1..=64).contains(&addr_bits), "addr_bits must be 1..=64");
     let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
     let (read_count, write_count) = count_storage(&expanded);
     let b = ts_bits;
-    let cells = 1usize << addr_bits;
+    let k = touched_count;
 
     let (generics, where_clause) = net_prover_loop_generics_and_where();
     let npow = b.max(addr_bits);
@@ -1032,7 +1274,7 @@ pub fn weave_ts_storage_loop_prover(
 
     // ── Function params ────────────────────────────────────────────────────
     let mut func_params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
-    for r in ["r1", "r2", "r3"] {
+    for r in ["r0", "r1", "r2", "r3"] {
         func_params.push(IrParam { name: r.into(), ty: IrType::TypeParam("T".into()) });
     }
     for n in &pow2_names {
@@ -1055,23 +1297,17 @@ pub fn weave_ts_storage_loop_prover(
     func_params.push(IrParam { name: "write_olds".into(), ty: vope_slice_type() });
     func_params.push(IrParam { name: "read_last_ts".into(), ty: vope_slice_type() });
     func_params.push(IrParam { name: "write_last_ts".into(), ty: vope_slice_type() });
-    for cell in 0..cells {
-        func_params.push(IrParam { name: format!("final_val{cell}"), ty: vope_type() });
-    }
-    for cell in 0..cells {
-        for j in 0..b {
-            func_params.push(IrParam { name: format!("final_ts{cell}_{j}"), ty: vope_type() });
-        }
-    }
+    // Sparse touched-cell witnesses (ADR 0002 Option A): K cells, not 2^addr_bits.
+    func_params.push(IrParam { name: "touched_addr".into(), ty: vope_slice_type() });
+    func_params.push(IrParam { name: "touched_init_val".into(), ty: vope_slice_type() });
+    func_params.push(IrParam { name: "touched_final_val".into(), ty: vope_slice_type() });
+    func_params.push(IrParam { name: "touched_final_ts".into(), ty: vope_slice_type() });
     func_params.push(IrParam { name: "transport".into(), ty: ref_mut_to(IrType::TypeParam("Tr".into())) });
 
     let ret_type = result_type(vope_type(), tr_error_type());
 
-    // ── Block 0: entry — initialise memory (all 2^addr_bits cells at ts=0) ──
-    let mut b0_stmts: Vec<IrStmt> = vec![
-        let_stmt("zw", zero_vope_expr()),
-        let_stmt("mp_acc0", zero_vope_expr()),
-    ];
+    // ── Block 0: entry — sparse init: produce the K touched cells at ts=0 ──
+    let mut b0_stmts: Vec<IrStmt> = vec![let_stmt("zw", zero_vope_expr())];
     // Skip-resume: derive the loop's initial state from the re-keyed snapshot
     // (the free linear rekey relation binds it to the prior segment).
     if resume {
@@ -1082,16 +1318,7 @@ pub fn weave_ts_storage_loop_prover(
             ));
         }
     }
-    let mut init_cur = String::from("mp_acc0");
-    for c in 0..cells {
-        let bits = const_addr_bits(c, addr_bits, "vope_one", "zw");
-        let af = format!("initaddr_{c}");
-        b0_stmts.push(let_stmt(&af, bitpack_call(&bits, &pow2_addr)));
-        let np = format!("init_p{c}");
-        // produce (addr=c, val=0, ts=0)
-        b0_stmts.push(let_stmt(&np, absorb_call(&init_cur, &af, "zw", "zw")));
-        init_cur = np;
-    }
+    let init_cur = emit_touched_init_prover(k, addr_bits, &pow2_addr, &mut b0_stmts);
 
     let mut b0_args: Vec<IrExpr> =
         (0..num_params).map(|i| clone_expr(var(&format!("init_w{i}")))).collect();
@@ -1253,25 +1480,20 @@ pub fn weave_ts_storage_loop_prover(
         },
     };
 
-    // ── Block 2: exit — drain all cells, open drain + ordering, recv verdict ─
-    let mut b2_stmts: Vec<IrStmt> = vec![let_stmt("zwx", zero_vope_expr())];
-    let mut drain_cur = String::from("fcons");
-    for c in 0..cells {
-        let bits = const_addr_bits(c, addr_bits, "vope_one", "zwx");
-        let af = format!("draddr_{c}");
-        b2_stmts.push(let_stmt(&af, bitpack_call(&bits, &pow2_addr)));
-        let ts_bits_c: Vec<String> = (0..b).map(|j| format!("final_ts{c}_{j}")).collect();
-        let tsd = format!("ts_d{c}");
-        b2_stmts.push(let_stmt(&tsd, bitpack_call(&ts_bits_c, &pow2_ts)));
-        let nc = format!("fc{c}");
-        // consume (addr=c, final_val_c, bitpack(final_ts_c))
-        b2_stmts.push(let_stmt(&nc, absorb_call(&drain_cur, &af, &format!("final_val{c}"), &tsd)));
-        drain_cur = nc;
-    }
+    // ── Block 2: exit — sparse drain of K touched cells, open drain + ordering ─
+    let mut b2_stmts: Vec<IrStmt> = Vec::new();
+    let mut cur_order_x = String::from("forder");
+    let mut sort_hats: Vec<String> = Vec::new();
+    let drain_cur = emit_touched_drain_prover(
+        k, addr_bits, b, &pow2_addr, &pow2_ts, "fcons", &mut cur_order_x, &mut sort_hats,
+        &mut b2_stmts,
+    );
+    // Send the one-shot sortedness-gadget hats (separate from the streaming loop).
+    b2_stmts.push(IrStmt::Semi(transport_call_try("send_hats", vec![hats_slice_expr(&sort_hats)])));
     // open drain: M_diff = mem_prod.v ^ mem_cons.v
     b2_stmts.push(let_stmt("mem_open", bridge_call2("mem_drain_open", var("fprod"), var(&drain_cur))));
     b2_stmts.push(IrStmt::Semi(transport_call_try("send_opening", vec![ref_expr(var("mem_open"))])));
-    // open ordering result (must be 1)
+    // open ordering result (must be 1; includes the touched-cell sort checks)
     b2_stmts.push(let_stmt(
         "order_open",
         IrExpr::Call {
@@ -1281,7 +1503,7 @@ pub fn weave_ts_storage_loop_prover(
                 ],
                 type_args: vec![],
             }),
-            args: vec![ref_expr(var("forder"))],
+            args: vec![ref_expr(var(&cur_order_x))],
         },
     ));
     b2_stmts.push(IrStmt::Semi(transport_call_try("send_opening", vec![ref_expr(var("order_open"))])));
@@ -1365,8 +1587,12 @@ fn q_slice_index_clone(slice: &str, count: usize, k: usize) -> IrExpr {
     clone_expr(IrExpr::Index { base: Box::new(var(slice)), index: Box::new(idx) })
 }
 
-/// `mem_acc_absorb_q(acc.clone(), &addr, &value, &ts, &r1, &r2, &r3)`
-fn q_absorb_call(acc: &str, addr: &str, value: &str, ts: &str) -> IrExpr {
+/// `mem_acc_absorb_q(acc.clone(), &q_one_const, &addr, &value, &ts, &r0, &r1, &r2, &r3)`
+///
+/// `q_one_const` (the verifier Q-share of the public 1, = Δ) carries the constant
+/// term `r0`.  Every verifier block that invokes this must bind a
+/// `let q_one_const = Q { q: delta.delta.clone() };` in scope.
+pub(crate) fn q_absorb_call(acc: &str, addr: &str, value: &str, ts: &str) -> IrExpr {
     IrExpr::Call {
         func: Box::new(IrExpr::Path {
             segments: vec![
@@ -1376,9 +1602,11 @@ fn q_absorb_call(acc: &str, addr: &str, value: &str, ts: &str) -> IrExpr {
         }),
         args: vec![
             clone_expr(var(acc)),
+            ref_expr(var("q_one_const")),
             ref_expr(var(addr)),
             ref_expr(var(value)),
             ref_expr(var(ts)),
+            ref_expr(var("r0")),
             ref_expr(var("r1")),
             ref_expr(var("r2")),
             ref_expr(var("r3")),
@@ -1416,22 +1644,20 @@ pub fn weave_ts_storage_loop_verifier(
     circuit: &BIrBlocks,
     ts_bits: usize,
     addr_bits: usize,
+    touched_count: usize,
     resume: bool,
     name: &str,
     linkage: Option<&LinkageSystem>,
 ) -> IrCfgModule {
     assert!(circuit.is_movfuscated(), "weave_ts_storage_loop_verifier: circuit must be single-block");
     assert!(ts_bits >= 1, "ts_bits must be >= 1");
-    assert!(
-        (1..=8).contains(&addr_bits),
-        "addr_bits must be 1..=8 (init/drain materialises 2^addr_bits cells)"
-    );
+    assert!((1..=64).contains(&addr_bits), "addr_bits must be 1..=64");
     let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
     let (read_count, write_count) = count_storage(&expanded);
     let b = ts_bits;
-    let cells = 1usize << addr_bits;
+    let k = touched_count;
     let andc = ts_iter_and_count(b, read_count + write_count);
 
     let (generics, where_clause) = net_verifier_generics_and_where();
@@ -1442,13 +1668,15 @@ pub fn weave_ts_storage_loop_verifier(
 
     // ── Function params ────────────────────────────────────────────────────
     let mut func_params: Vec<IrParam> = vec![IrParam { name: "delta".into(), ty: ref_to(delta_type()) }];
-    for r in ["r1", "r2", "r3"] {
+    for r in ["r0", "r1", "r2", "r3"] {
         func_params.push(IrParam { name: r.into(), ty: IrType::TypeParam("T".into()) });
     }
     for n in &pow2_names {
         func_params.push(IrParam { name: n.clone(), ty: IrType::TypeParam("T".into()) });
     }
     func_params.push(IrParam { name: "q_ands".into(), ty: q_slice_type() });
+    // Verifier Q-shares for the one-shot touched-cell sortedness gadget.
+    func_params.push(IrParam { name: "q_ands_sort".into(), ty: q_slice_type() });
     if resume {
         for i in 0..num_params {
             func_params.push(IrParam { name: format!("q_snapshot_{i}"), ty: q_type() });
@@ -1464,24 +1692,16 @@ pub fn weave_ts_storage_loop_verifier(
     for s in ["q_read_vals", "q_write_olds", "q_read_last_ts", "q_write_last_ts"] {
         func_params.push(IrParam { name: s.into(), ty: q_slice_type() });
     }
-    for cell in 0..cells {
-        func_params.push(IrParam { name: format!("q_final_val{cell}"), ty: q_type() });
-    }
-    for cell in 0..cells {
-        for j in 0..b {
-            func_params.push(IrParam { name: format!("q_final_ts{cell}_{j}"), ty: q_type() });
-        }
+    // Sparse touched-cell witnesses (Q mirror).
+    for s in ["q_touched_addr", "q_touched_init_val", "q_touched_final_val", "q_touched_final_ts"] {
+        func_params.push(IrParam { name: s.into(), ty: q_slice_type() });
     }
     func_params.push(IrParam { name: "transport".into(), ty: ref_mut_to(IrType::TypeParam("Tr".into())) });
 
     let ret_type = result_type(bool_type(), tr_error_type());
 
-    // ── Block 0: entry — init mem_prod_q (all 2^addr_bits cells, ts=0) ──────
-    let mut b0_stmts: Vec<IrStmt> = vec![
-        let_stmt("qz", q_const(false)),
-        let_stmt("qone", q_const(true)),
-        let_stmt("mp_acc0", q_const(false)),
-    ];
+    // ── Block 0: entry — sparse init: produce the K touched cells at ts=0 ──
+    let mut b0_stmts: Vec<IrStmt> = vec![let_stmt("q_one_const", q_const(true))];
     // Skip-resume: resumed state Q = q_snapshot + q_key (free linear rekey).
     if resume {
         for i in 0..num_params {
@@ -1491,16 +1711,7 @@ pub fn weave_ts_storage_loop_verifier(
             ));
         }
     }
-    let mut init_cur = String::from("mp_acc0");
-    for c in 0..cells {
-        let bits = const_addr_bits(c, addr_bits, "qone", "qz");
-        let af = format!("qinitaddr_{c}");
-        b0_stmts.push(let_stmt(&af, q_bitpack_call(&bits, &pow2_addr)));
-        let np = format!("iq{c}");
-        // produce (addr=c, val=0, ts=0)
-        b0_stmts.push(let_stmt(&np, q_absorb_call(&init_cur, &af, "qz", "qz")));
-        init_cur = np;
-    }
+    let init_cur = emit_touched_init_verifier(k, addr_bits, &pow2_addr, &mut b0_stmts);
 
     let mut b0_args: Vec<IrExpr> =
         (0..num_params).map(|i| clone_expr(var(&format!("init_q{i}")))).collect();
@@ -1548,6 +1759,8 @@ pub fn weave_ts_storage_loop_verifier(
         ty: None,
         init: Some(var("all_ok")),
     });
+    // Q-share of the public 1 (= Δ), carrying the constant encode term r0.
+    b1_stmts.push(let_stmt("q_one_const", q_const(true)));
 
     let mut qwnames = BTreeMap::<u32, String>::new();
     for i in 0..num_params {
@@ -1661,24 +1874,32 @@ pub fn weave_ts_storage_loop_verifier(
         },
     };
 
-    // ── Block 2: exit — drain all cells, check drain + ordering, send verdict ─
+    // ── Block 2: exit — sparse drain of K touched cells + drain/order check ──
     let mut b2_stmts: Vec<IrStmt> = vec![
-        let_stmt("qzx", q_const(false)),
-        let_stmt("qone_x", q_const(true)),
+        let_stmt("q_one_const", q_const(true)),
+        // mutable verdict accumulator seeded with the streaming all_ok
+        IrStmt::Let {
+            pattern: IrPattern::Ident { mutable: true, name: "all_ok_d".into(), subpat: None },
+            ty: None,
+            init: Some(var("final_ok")),
+        },
+        // receive the one-shot sortedness-gadget hats
+        let_stmt("sort_hats", transport_call_try("recv_hats", vec![IrExpr::Lit(IrLit::Int(sort_and_count(k, addr_bits) as i128))])),
     ];
-    let mut drain_cur = String::from("fcons");
-    for c in 0..cells {
-        let bits = const_addr_bits(c, addr_bits, "qone_x", "qzx");
-        let af = format!("qdraddr_{c}");
-        b2_stmts.push(let_stmt(&af, q_bitpack_call(&bits, &pow2_addr)));
-        let qts_c: Vec<String> = (0..b).map(|j| format!("q_final_ts{c}_{j}")).collect();
-        let tsd = format!("qts_d{c}");
-        b2_stmts.push(let_stmt(&tsd, q_bitpack_call(&qts_c, &pow2_ts)));
-        let nc = format!("qfc{c}");
-        // consume (addr=c, q_final_val_c, bitpack(q_final_ts_c))
-        b2_stmts.push(let_stmt(&nc, q_absorb_call(&drain_cur, &af, &format!("q_final_val{c}"), &tsd)));
-        drain_cur = nc;
-    }
+    let mut cur_order_x = String::from("forder");
+    let mut sort_and_counter = 0usize;
+    let mk_qand_sort = |kk: usize| IrExpr::Index {
+        base: Box::new(var("q_ands_sort")),
+        index: Box::new(IrExpr::Lit(IrLit::Int(kk as i128))),
+    };
+    let mk_hat_sort = |kk: usize| IrExpr::Index {
+        base: Box::new(var("sort_hats")),
+        index: Box::new(IrExpr::Lit(IrLit::Int(kk as i128))),
+    };
+    let drain_cur = emit_touched_drain_verifier(
+        k, addr_bits, b, &pow2_addr, &pow2_ts, "fcons", &mut cur_order_x, "all_ok_d",
+        &mut sort_and_counter, &mk_qand_sort, &mk_hat_sort, &mut b2_stmts,
+    );
     // recv drain opening + check
     b2_stmts.push(let_stmt("mem_open", transport_call_try("recv_opening", vec![])));
     b2_stmts.push(let_stmt(
@@ -1693,7 +1914,7 @@ pub fn weave_ts_storage_loop_verifier(
             args: vec![ref_expr(var("fprod")), ref_expr(var(&drain_cur)), ref_expr(var("mem_open"))],
         },
     ));
-    // recv ordering opening + check (order_ok must be committed to 1)
+    // recv ordering opening + check (order_ok, incl. sort checks, must be 1)
     b2_stmts.push(let_stmt("order_open", transport_call_try("recv_opening", vec![])));
     b2_stmts.push(let_stmt(
         "order_ok2",
@@ -1704,17 +1925,17 @@ pub fn weave_ts_storage_loop_verifier(
                 ],
                 type_args: vec![],
             }),
-            args: vec![ref_expr(var("forder")), ref_expr(var("order_open")), var("delta")],
+            args: vec![ref_expr(var(&cur_order_x)), ref_expr(var("order_open")), var("delta")],
         },
     ));
-    // verdict = all_ok && drain_ok && order_ok2
+    // verdict = all_ok_d && drain_ok && order_ok2
     b2_stmts.push(let_stmt(
         "verdict",
         IrExpr::Binary {
             op: SpecBinOp::And,
             left: Box::new(IrExpr::Binary {
                 op: SpecBinOp::And,
-                left: Box::new(var("final_ok")),
+                left: Box::new(var("all_ok_d")),
                 right: Box::new(var("drain_ok")),
             }),
             right: Box::new(var("order_ok2")),
@@ -2039,19 +2260,62 @@ mod tests {
         run_compile_check_net(&code, "storage_commit_loop");
     }
 
+    /// Single-block loop with an `n`-bit address (ids 0..n-1 = addr bits,
+    /// id n = value, id n+1 = done). Write+Read at the n-bit address.
+    fn build_storage_loop_nbit(n: usize) -> BIrBlocks {
+        let addr: Vec<IRVarId> = (0..n as u32).map(IRVarId).collect();
+        let value = IRVarId(n as u32);
+        let done = IRVarId(n as u32 + 1);
+        let read_res = IRVarId(n as u32 + 3); // params(n+2) + write(n+2) + read(n+3)
+        let mut args: Vec<IRVarId> = addr.clone();
+        args.push(value);
+        args.push(read_res);
+        args.push(done);
+        BIrBlocks {
+            blocks: vec![BIrBlock {
+                params: n as u32 + 2,
+                stmts: vec![
+                    BIrStmt::StorageWrite { storage: StorageId(0), src: value, bit_width: 1, addr: addr.clone() },
+                    BIrStmt::StorageRead { storage: StorageId(0), bit_width: 1, addr },
+                ],
+                stmt_provs: vec![(), ()],
+                terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args }),
+            }],
+            pre_init: vec![],
+        }
+    }
+
+    #[test]
+    fn test_ts_storage_loop_wide_addr_sparse() {
+        // 16-bit address (65536 cells) with only K=3 touched cells — IMPOSSIBLE
+        // under the old dense 2^addr_bits init/drain, trivial under sparse (ADR
+        // 0002 Option A): cost is Θ(K), independent of addr_bits.
+        let circuit = build_storage_loop_nbit(16);
+        let mp = weave_ts_storage_loop_prover(&circuit, 8, 16, 3, false, "wide", None);
+        let codep = print_storage_loop_module(&mp);
+        run_compile_check_net(&codep, "ts_storage_loop_prover_wide");
+        // Witness count scales with K (3), not 2^16: exactly K init/final names.
+        assert!(codep.contains("ival_2") && !codep.contains("ival_3"), "exactly K init witnesses");
+        assert!(!codep.contains("final_val255"), "no dense per-cell params");
+        let mv = weave_ts_storage_loop_verifier(&circuit, 8, 16, 3, false, "wide", None);
+        let codev = print_storage_loop_module(&mv);
+        run_compile_check_net(&codev, "ts_storage_loop_verifier_wide");
+        assert!(codev.contains("q_touched_addr"), "verifier sparse witnesses");
+    }
+
     #[test]
     fn test_ts_storage_loop_resume_composes_skip_and_loop() {
         // Skip-resume composition: the loop's initial state is the re-keyed
         // snapshot (snapshot + key), computed inline — unifying the dynamic-skip
         // continuation with the ts-sound storage loop.
         let circuit = build_storage_loop();
-        let mp = weave_ts_storage_loop_prover(&circuit, 4, 1, true, "rsm", None);
+        let mp = weave_ts_storage_loop_prover(&circuit, 4, 1, 2, true, "rsm", None);
         let codep = print_storage_loop_module(&mp);
         run_compile_check_net(&codep, "ts_storage_loop_resume_prover");
         assert!(codep.contains("vole_rekey_prover("), "initial state derived by re-key");
         assert!(codep.contains("snapshot_0"), "takes a committed snapshot");
         assert!(codep.contains("key_0"), "takes a fresh one-time-pad key");
-        let mv = weave_ts_storage_loop_verifier(&circuit, 4, 1, true, "rsm", None);
+        let mv = weave_ts_storage_loop_verifier(&circuit, 4, 1, 2, true, "rsm", None);
         let codev = print_storage_loop_module(&mv);
         run_compile_check_net(&codev, "ts_storage_loop_resume_verifier");
         assert!(codev.contains("q_snapshot_0") && codev.contains("q_key_0"), "verifier mirrors rekey");
@@ -2059,17 +2323,19 @@ mod tests {
 
     #[test]
     fn test_ts_storage_loop_multibit_addr_compiles() {
-        // 2-bit address ⇒ 4 cells of init/drain; ts_bits=3.
+        // 2-bit address with sparse (Θ(K)) init/drain; ts_bits=3, K=4.
         let circuit = build_storage_loop_2bit();
-        let mp = weave_ts_storage_loop_prover(&circuit, 3, 2, false, "mb", None);
+        let mp = weave_ts_storage_loop_prover(&circuit, 3, 2, 4, false, "mb", None);
         let codep = print_storage_loop_module(&mp);
         run_compile_check_net(&codep, "ts_storage_loop_prover_2bit");
-        // 4 cells (final_val0..3) materialised; address bit-packed.
-        assert!(codep.contains("final_val3"), "2^addr_bits=4 drain cells");
-        let mv = weave_ts_storage_loop_verifier(&circuit, 3, 2, false, "mb", None);
+        // Sparse witnesses (touched-cell list), not 2^addr_bits cells; addr bit-packed.
+        assert!(codep.contains("touched_addr") && codep.contains("touched_final_val"), "sparse drain witnesses");
+        assert!(!codep.contains("final_val3"), "no dense per-cell params");
+        let mv = weave_ts_storage_loop_verifier(&circuit, 3, 2, 4, false, "mb", None);
         let codev = print_storage_loop_module(&mv);
         run_compile_check_net(&codev, "ts_storage_loop_verifier_2bit");
-        assert!(codev.contains("q_final_val3"), "verifier mirrors 4 drain cells");
+        assert!(codev.contains("q_touched_final_val"), "verifier mirrors sparse drain");
+        assert!(codev.contains("q_ands_sort"), "sortedness gadget q_ands");
     }
 
     #[test]
@@ -2098,7 +2364,7 @@ mod tests {
     #[test]
     fn test_ts_storage_loop_prover_compiles() {
         let circuit = build_storage_loop();
-        let module = weave_ts_storage_loop_prover(&circuit, 4, 1, false, "test", None);
+        let module = weave_ts_storage_loop_prover(&circuit, 4, 1, 2, false, "test", None);
         let code = print_storage_loop_module(&module);
         run_compile_check_net(&code, "ts_storage_loop_prover");
     }
@@ -2106,7 +2372,7 @@ mod tests {
     #[test]
     fn test_ts_storage_loop_prover_is_sound_shaped() {
         let circuit = build_storage_loop();
-        let module = weave_ts_storage_loop_prover(&circuit, 4, 1, false, "test", None);
+        let module = weave_ts_storage_loop_prover(&circuit, 4, 1, 2, false, "test", None);
         let code = print_storage_loop_module(&module);
         // committed-counter ordering gadget + increment lower to hats
         assert!(code.contains("vole_and_prover_step"), "ordering/incr ANDs → hats");
@@ -2120,7 +2386,7 @@ mod tests {
     #[test]
     fn test_ts_storage_loop_verifier_compiles() {
         let circuit = build_storage_loop();
-        let module = weave_ts_storage_loop_verifier(&circuit, 4, 1, false, "test", None);
+        let module = weave_ts_storage_loop_verifier(&circuit, 4, 1, 2, false, "test", None);
         let code = print_storage_loop_module(&module);
         run_compile_check_net(&code, "ts_storage_loop_verifier");
     }
@@ -2128,7 +2394,7 @@ mod tests {
     #[test]
     fn test_ts_storage_loop_verifier_checks_drain_and_order() {
         let circuit = build_storage_loop();
-        let module = weave_ts_storage_loop_verifier(&circuit, 4, 1, false, "test", None);
+        let module = weave_ts_storage_loop_verifier(&circuit, 4, 1, 2, false, "test", None);
         let code = print_storage_loop_module(&module);
         assert!(code.contains("vole_and_verifier_check"), "gadget ANDs checked");
         assert!(code.contains("mem_acc_absorb_q"), "Q-side multiset absorb");
