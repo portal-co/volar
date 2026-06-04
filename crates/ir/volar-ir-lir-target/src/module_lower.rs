@@ -27,7 +27,7 @@ use volar_compiler::ir::{
     IterStep, IterTerminal,
 };
 use volar_ir::ir::IRBlocks;
-use volar_lir_codegen::{lower_function_with_registry, structs::build_struct_registry};
+use volar_lir_codegen::{lower_function_with_registry, mono::MonoEnv, structs::build_struct_registry};
 
 use crate::VolarIrTarget;
 
@@ -70,6 +70,8 @@ pub fn lower_module_inlining(module: &IrModule<IrFunction>) -> Vec<(String, IRBl
     let order = topo_sort(n, &deps);
 
     // ---- Lower each function, registering it for subsequent callers ------
+    // This inlining path does no monomorphization, so a default (empty) env.
+    let env = MonoEnv::new("");
     let mut lowered: BTreeMap<String, IRBlocks> = BTreeMap::new();
     for func_idx in order {
         let func = &module.functions[func_idx];
@@ -77,14 +79,14 @@ pub fn lower_module_inlining(module: &IrModule<IrFunction>) -> Vec<(String, IRBl
 
         // Build struct registry: registers struct layouts with the target
         // and returns a typed registry for the lowering pass.
-        let registry = build_struct_registry(module, &mut target);
+        let registry = build_struct_registry(module, &mut target, &env);
 
         // Register all previously-lowered local functions as inlinable.
         for (name, blocks) in &lowered {
             target.add_extern(name.clone(), blocks.clone());
         }
 
-        lower_function_with_registry(func, &mut target, &registry, "", &module.structs);
+        lower_function_with_registry(func, &mut target, &registry, &env, &module.structs);
 
         for (name, blocks) in target.take_completed() {
             lowered.insert(name, blocks);
@@ -238,6 +240,10 @@ fn collect_calls_expr(
         }
         IrExpr::IterLoop { collection, body, .. } => {
             collect_calls_expr(collection, name_to_idx, out);
+            collect_calls_block(body, name_to_idx, out);
+        }
+        IrExpr::WhileLoop { cond, body } => {
+            collect_calls_expr(cond, name_to_idx, out);
             collect_calls_block(body, name_to_idx, out);
         }
         IrExpr::Block(b) => collect_calls_block(b, name_to_idx, out),

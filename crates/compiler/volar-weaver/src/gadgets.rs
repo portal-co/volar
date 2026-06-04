@@ -126,8 +126,12 @@ fn kxor(buf: &mut GateBuf, a: u32, b: u32, zero: u32) -> u32 {
 
 /// The Keccak-f[1600] permutation over gate wires (state = 25 lanes × 64 bits,
 /// flat index `lane*64 + bit`).  θ/ι are XORs (free), χ contributes the ANDs.
-fn keccakf_gates(buf: &mut GateBuf, st: &mut [u32], zero: u32) {
-    for round in 0..24 {
+/// `rounds` is 24 for real Keccak; a smaller count is used only by the
+/// lowering/codegen compile-check (the lowering path is round-independent, so a
+/// reduced circuit validates the same machinery without a 150k-statement
+/// `cargo check`).
+fn keccakf_gates(buf: &mut GateBuf, st: &mut [u32], zero: u32, rounds: usize) {
+    for round in 0..rounds {
         // θ: column parities, folded into every lane of the column.
         let mut bc = [[0u32; 64]; 5];
         for col in 0..5 {
@@ -233,12 +237,16 @@ fn padded_message_gates(buf: &mut GateBuf, input: &[u32], zero: u32) -> Vec<u32>
 /// Emit gates computing **Keccak-256** (SHA3-256) of the committed `input` bits
 /// (LSB-first), returning the 256 squeezed output-bit var-ids.  This is the
 /// VOLE-side preimage circuit of the dual-preimage boundary link; the woven
-/// verifier constrains the outputs to the public digest `d`.
-///
-/// Currently exercised by the gadget test; wired into the gap-boundary weave
-/// (`docs/boundary-link-embedding.md` §VOLE side) as the closing step.
-#[allow(dead_code)]
+/// verifier constrains the outputs to the public digest `d` (see
+/// [`emit_keccak256_digest_match`]).
 pub(crate) fn emit_keccak256(input: &[u32], buf: &mut GateBuf) -> [u32; 256] {
+    emit_keccak256_rounds(input, buf, 24)
+}
+
+/// As [`emit_keccak256`] but with a configurable Keccak-f round count.  Only the
+/// `rounds = 24` form is real Keccak; smaller counts exist solely so the
+/// VOLE-lowering compile-check can run on a tractable circuit.
+pub(crate) fn emit_keccak256_rounds(input: &[u32], buf: &mut GateBuf, rounds: usize) -> [u32; 256] {
     let zero = buf.zero();
     let msg = padded_message_gates(buf, input, zero);
     let mut st = alloc::vec![zero; 1600];
@@ -247,9 +255,34 @@ pub(crate) fn emit_keccak256(input: &[u32], buf: &mut GateBuf) -> [u32; 256] {
         for g in 0..1088 {
             st[g] = kxor(buf, st[g], msg[b * 1088 + g], zero);
         }
-        keccakf_gates(buf, &mut st, zero);
+        keccakf_gates(buf, &mut st, zero, rounds);
     }
     core::array::from_fn(|i| st[i])
+}
+
+/// Emit Keccak-256 over `input` and the **public-digest equality** that the
+/// dual-preimage link enforces: `match = ⋀_i (out_i XNOR d_i)`, a single wire
+/// that is `1` iff `Keccak256(input) == digest`.  The prover opens `match` and
+/// the verifier `assert_one_check`s it (exactly as the storage loop does for its
+/// ordering bit).  `digest` is a 256-bit public value baked as constant gate
+/// structure (XNOR with a constant is identity or a free NOT) — the established
+/// way these weavers encode public values.  Returns the `match` var-id.
+pub(crate) fn emit_keccak256_digest_match(
+    input: &[u32],
+    digest: &[bool],
+    buf: &mut GateBuf,
+    rounds: usize,
+) -> u32 {
+    assert_eq!(digest.len(), 256, "keccak digest must be 256 bits");
+    let out = emit_keccak256_rounds(input, buf, rounds);
+    // eq_i = out_i XNOR d_i = (out_i) if d_i else (¬out_i).
+    let eq: Vec<u32> =
+        (0..256).map(|i| if digest[i] { out[i] } else { buf.not(out[i]) }).collect();
+    let mut acc = eq[0];
+    for &e in &eq[1..] {
+        acc = buf.and(acc, e);
+    }
+    acc
 }
 
 #[cfg(test)]

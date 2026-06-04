@@ -9,10 +9,15 @@ anchored to the `sha3` crate); the now-fast field/MSM that make it practical; th
 boundary is proved (in-circuit) to hash to a public `d` and Pedersen-bound, with
 e2e bridge tests. **VOLE leg circuit DONE**: [`emit_keccak256`](../crates/compiler/volar-weaver/src/gadgets.rs)
 emits the same Keccak as a boolean `GateBuf` gadget (XOR/NOT free, χ's ANDs →
-hats), cross-checked against the `sha3` crate. **Remaining**: the *gap-boundary
-weave* — lower `emit_keccak256` over the committed boundary wires via
-`lower_gadget_{prover,verifier}` (`send_hats`/`recv_hats`) and constrain the
-output to the public `d`, in the hybrid/storage gap prover+verifier. Companion to
+hats), cross-checked against the `sha3` crate. **VOLE-leg lowering DONE**:
+[`weave_keccak_check`](../crates/compiler/volar-weaver/src/storage_loop.rs) /
+`weave_keccak_check_verifier` lower `emit_keccak256` + the **public-digest
+equality** (`match = ⋀_i(out_i XNOR d_i)`, prover-opened and verifier
+`assert_one_check`-ed) to VOLE prover/verifier IR; the generated code **compiles**
+(`cargo check`-validated on a reduced-round circuit; the full 24-round lowering +
+printer is exercised structurally). **Remaining**: splice that call into the
+actual hybrid/storage gap prover+verifier at the boundary (wire the live
+boundary state in, stream the χ hats, open `match`). Companion to
 [`vcb-ivc-folding.md`](vcb-ivc-folding.md) §4.
 
 ## Why this is hard

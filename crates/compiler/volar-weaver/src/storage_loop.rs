@@ -51,7 +51,7 @@ use volar_ir::boolar::{BIrBlocks, BIrStmt, BIrTerminator};
 use volar_ir::ir::IRVarId;
 
 use crate::{clone_expr, expand_ors, ref_expr, var};
-use crate::gadgets::{emit_lt, GateBuf};
+use crate::gadgets::{emit_keccak256_digest_match, emit_lt, GateBuf};
 use crate::net::{
     add_output_t, array_size_bound, array_t_n, bool_type, clone_t, default_t, delta_type,
     emit_prover_and_gate, hats_slice_expr, mul_output_t, net_prover_loop_generics_and_where,
@@ -2147,6 +2147,177 @@ pub fn weave_lt_check_verifier(n: usize, name: &str, linkage: Option<&LinkageSys
     module
 }
 
+/// **VOLE leg of the dual-preimage boundary link.**  Weave `Keccak256` over the
+/// `n` committed boundary bits and bind it to a public digest: returns the
+/// committed `match` bit, which is `1` iff `Keccak256(boundary) == digest` (the
+/// prover then opens it and the verifier `assert_one_check`s it, exactly like the
+/// storage loop's ordering bit).  This is the streamed counterpart to the
+/// folding-side `volar-fold::keccak_r1cs` — both prove a preimage of the same
+/// public `d`, so collision resistance forces the two boundaries equal (see
+/// `docs/boundary-link-embedding.md`).
+///
+/// `rounds` is 24 for real Keccak; the compile-check uses a smaller count (the
+/// VOLE lowering is round-independent).  `digest` is a 256-bit public value baked
+/// as gate structure.  Generated signature:
+/// ```text
+/// fn keccak_check_<NAME><N, T>(vope_one: Vope<N,T,U1>, a0: Vope<N,T,U1>, ..)
+///     -> Vope<N,T,U1>   // = (Keccak256(a) == digest)
+/// ```
+pub fn weave_keccak_check(
+    n: usize,
+    rounds: usize,
+    digest: &[bool],
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+) -> IrCfgModule {
+    let (generics, where_clause) = storage_loop_generics_and_where();
+
+    let mut func_params = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
+    for i in 0..n {
+        func_params.push(IrParam { name: format!("a{i}"), ty: vope_type() });
+    }
+
+    let a_ids: Vec<u32> = (0..n as u32).collect();
+    let mut buf = GateBuf::new(n as u32);
+    let match_id = emit_keccak256_digest_match(&a_ids, digest, &mut buf, rounds);
+
+    let mut in_map = BTreeMap::<u32, String>::new();
+    for i in 0..n {
+        in_map.insert(i as u32, format!("a{i}"));
+    }
+    let mut hats: Vec<String> = Vec::new();
+    let mut stmts: Vec<IrStmt> = Vec::new();
+    let result = lower_gadget_prover(&buf.gates, &in_map, match_id, "kc", &mut hats, &mut stmts);
+
+    let block0 = IrCfgBlock {
+        params: vec![],
+        stmts,
+        stmt_provs: vec![],
+        terminator: IrCfgTerminator::Return(Some(var(&result))),
+    };
+    let func = IrCfgFunction {
+        name: format!("keccak_check_{name}"),
+        generics,
+        receiver: None,
+        params: func_params,
+        return_type: Some(vope_type()),
+        where_clause,
+        external_kind: ExternalKind::Normal,
+        body: IrCfgBody { blocks: vec![block0] },
+    };
+    let mut module: IrCfgModule = IrModule {
+        name: format!("weaved_keccak_check_{name}"),
+        functions: vec![IrAnyFunction::Cfg(func)],
+        structs: vec![],
+        enums: vec![],
+        traits: vec![],
+        impls: vec![],
+        type_aliases: vec![],
+        consts: vec![],
+    };
+    if let Some(ls) = linkage {
+        ls.apply_cfg(&mut module);
+    }
+    module
+}
+
+/// Verifier (`Q`-side) mirror of [`weave_keccak_check`]: checks every χ-AND hat of
+/// the woven Keccak + digest-equality gadget and returns the accumulated
+/// `all_ok` (the full integration additionally `assert_one_check`s the opened
+/// `match` bit).  Generated signature:
+/// ```text
+/// fn keccak_check_verify_<NAME><N, T>(delta: &Delta<N,T>, q_ands: &[Q<N,T>],
+///     a0: Q<N,T>, .., hats: &[Array<T,N>]) -> bool
+/// ```
+pub fn weave_keccak_check_verifier(
+    n: usize,
+    rounds: usize,
+    digest: &[bool],
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+) -> IrCfgModule {
+    let (generics, where_clause) = storage_loop_generics_and_where();
+
+    let q_slice = ref_to(IrType::Array {
+        kind: ArrayKind::Slice,
+        elem: Box::new(q_type()),
+        len: ArrayLength::Const(0),
+    });
+    let hats_slice = ref_to(IrType::Array {
+        kind: ArrayKind::Slice,
+        elem: Box::new(array_t_n()),
+        len: ArrayLength::Const(0),
+    });
+
+    let mut func_params = vec![
+        IrParam { name: "delta".into(), ty: ref_to(delta_type()) },
+        IrParam { name: "q_ands".into(), ty: q_slice },
+    ];
+    for i in 0..n {
+        func_params.push(IrParam { name: format!("a{i}"), ty: q_type() });
+    }
+    func_params.push(IrParam { name: "hats".into(), ty: hats_slice });
+
+    let a_ids: Vec<u32> = (0..n as u32).collect();
+    let mut buf = GateBuf::new(n as u32);
+    let match_id = emit_keccak256_digest_match(&a_ids, digest, &mut buf, rounds);
+
+    let mut in_map = BTreeMap::<u32, String>::new();
+    for i in 0..n {
+        in_map.insert(i as u32, format!("a{i}"));
+    }
+
+    let mut stmts: Vec<IrStmt> = vec![IrStmt::Let {
+        pattern: IrPattern::Ident { mutable: true, name: "all_ok".into(), subpat: None },
+        ty: None,
+        init: Some(IrExpr::Lit(IrLit::Bool(true))),
+    }];
+    let mut and_counter = 0usize;
+    let mk_qand = |k: usize| IrExpr::Index {
+        base: Box::new(var("q_ands")),
+        index: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
+    };
+    let mk_hat = |k: usize| IrExpr::Index {
+        base: Box::new(var("hats")),
+        index: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
+    };
+    let vmap = lower_gadget_verifier(
+        &buf.gates, &in_map, "kc", &mut and_counter, &mk_qand, &mk_hat, "all_ok", &mut stmts,
+    );
+    let _ = (&vmap, match_id);
+
+    let block0 = IrCfgBlock {
+        params: vec![],
+        stmts,
+        stmt_provs: vec![],
+        terminator: IrCfgTerminator::Return(Some(var("all_ok"))),
+    };
+    let func = IrCfgFunction {
+        name: format!("keccak_check_verify_{name}"),
+        generics,
+        receiver: None,
+        params: func_params,
+        return_type: Some(bool_type()),
+        where_clause,
+        external_kind: ExternalKind::Normal,
+        body: IrCfgBody { blocks: vec![block0] },
+    };
+    let mut module: IrCfgModule = IrModule {
+        name: format!("weaved_keccak_check_verify_{name}"),
+        functions: vec![IrAnyFunction::Cfg(func)],
+        structs: vec![],
+        enums: vec![],
+        traits: vec![],
+        impls: vec![],
+        type_aliases: vec![],
+        consts: vec![],
+    };
+    if let Some(ls) = linkage {
+        ls.apply_cfg(&mut module);
+    }
+    module
+}
+
 /// Print a storage-loop CFG module to self-contained Rust source.
 pub fn print_storage_loop_module(module: &IrCfgModule) -> String {
     use volar_compiler::printer::{CfgModuleWriter, DisplayRust};
@@ -2411,5 +2582,45 @@ mod tests {
         let code = print_storage_loop_module(&module);
         run_compile_check_net(&code, "lt_check_verify_gadget");
         assert!(code.contains("vole_and_verifier_check"), "expected gadget ANDs checked");
+    }
+
+    #[test]
+    fn test_keccak_check_full_lowers_and_prints() {
+        // The real 24-round Keccak boundary gadget (VOLE leg of the dual-preimage
+        // link) lowers and prints: ~38 400 χ ANDs → hats, θ/ι XOR/NOT free, plus
+        // the 256-bit public-digest equality (XNOR + AND-reduce → one `match`).
+        // (No `cargo check` here — a 150k-statement fn is impractical to compile;
+        // `test_keccak_check_compiles` covers compilation on a reduced circuit.)
+        let digest = vec![false; 256];
+        let module = weave_keccak_check(8, 24, &digest, "full", None);
+        let code = print_storage_loop_module(&module);
+        assert!(code.contains("vole_and_prover_step"), "χ + digest-match ANDs → hats");
+        assert!(code.contains("keccak_check_full"), "named entrypoint emitted");
+        // The circuit is large: a real Keccak-f produces tens of thousands of gates.
+        assert!(
+            code.matches("vole_and_prover_step").count() > 30_000,
+            "expected ~38 400 AND hats from a full Keccak-f"
+        );
+    }
+
+    #[test]
+    fn test_keccak_check_compiles() {
+        // Reduced-round (lowering is round-independent) so `cargo check` is
+        // tractable; validates the woven Keccak + digest-equality prover code
+        // actually compiles.
+        let digest = vec![false; 256];
+        let module = weave_keccak_check(8, 1, &digest, "rc", None);
+        let code = print_storage_loop_module(&module);
+        run_compile_check_net(&code, "keccak_check_gadget");
+        assert!(code.contains("vole_and_prover_step"), "ANDs lowered to hats");
+    }
+
+    #[test]
+    fn test_keccak_check_verifier_compiles() {
+        let digest = vec![false; 256];
+        let module = weave_keccak_check_verifier(8, 1, &digest, "rc", None);
+        let code = print_storage_loop_module(&module);
+        run_compile_check_net(&code, "keccak_check_verify_gadget");
+        assert!(code.contains("vole_and_verifier_check"), "ANDs checked against hats");
     }
 }
