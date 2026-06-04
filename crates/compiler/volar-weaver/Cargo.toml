@@ -25,3 +25,8 @@ volar-c-backend = {path="../volar-c-backend"}
 vaffle.workspace = true
 portal-pc-waffle-ir.workspace = true
 volar-net = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Cross-check the `emit_keccak256` boolean gadget against a known-good SHA3-256.
+sha3.workspace = true
+digest = { version = "0.11.2", default-features = false }

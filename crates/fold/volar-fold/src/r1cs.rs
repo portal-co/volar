@@ -31,7 +31,14 @@ pub struct R1CS {
 fn matvec(mat: &[(usize, usize, Scalar)], z: &[Scalar], num_cons: usize) -> Vec<Scalar> {
     let mut out = alloc::vec![Scalar::ZERO; num_cons];
     for (row, col, val) in mat {
-        out[*row] = out[*row].add(&val.mul(&z[*col]));
+        // Most coefficients in boolean-circuit arithmetizations (e.g. the Keccak
+        // R1CS, ~155k constraints) are `1`; skipping the multiply there keeps the
+        // native check practical.
+        if *val == Scalar::ONE {
+            out[*row] = out[*row].add(&z[*col]);
+        } else {
+            out[*row] = out[*row].add(&val.mul(&z[*col]));
+        }
     }
     out
 }

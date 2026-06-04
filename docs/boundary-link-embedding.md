@@ -1,10 +1,18 @@
 # The boundary-link embedding (VOLE ⇄ folding)
 
-**Status:** Chosen scheme = **dual-preimage Keccak digest**. Foundations built:
-the Keccak reference + SHA3-256 ([`keccak.rs`](../crates/fold/volar-fold/src/keccak.rs),
-anchored to the `sha3` crate) and the now-fast field/MSM that make it practical.
-Remaining: the Keccak-in-R1CS arithmetization, the VOLE-side boolean gadget, and
-the bridge wiring (spec'd below). Companion to
+**Status:** Chosen scheme = **dual-preimage Keccak digest**. **Folding leg
+DONE**: the Keccak reference + SHA3-256 ([`keccak.rs`](../crates/fold/volar-fold/src/keccak.rs),
+anchored to the `sha3` crate); the now-fast field/MSM that make it practical; the
+**Keccak-in-R1CS arithmetization** ([`keccak_r1cs.rs`](../crates/fold/volar-fold/src/keccak_r1cs.rs),
+~155k constraints/Keccak-f, cross-checked against the reference); and
+[`KeccakDigestLink`](../crates/fold/volar-fold/src/link.rs) — the folding-committed
+boundary is proved (in-circuit) to hash to a public `d` and Pedersen-bound, with
+e2e bridge tests. **VOLE leg circuit DONE**: [`emit_keccak256`](../crates/compiler/volar-weaver/src/gadgets.rs)
+emits the same Keccak as a boolean `GateBuf` gadget (XOR/NOT free, χ's ANDs →
+hats), cross-checked against the `sha3` crate. **Remaining**: the *gap-boundary
+weave* — lower `emit_keccak256` over the committed boundary wires via
+`lower_gadget_{prover,verifier}` (`send_hats`/`recv_hats`) and constrain the
+output to the public `d`, in the hybrid/storage gap prover+verifier. Companion to
 [`vcb-ivc-folding.md`](vcb-ivc-folding.md) §4.
 
 ## Why this is hard
@@ -80,12 +88,15 @@ and **cross-checked against `keccak256_bits`** (the sha3-anchored reference); th
 witness builder evaluates the gates on the boundary bits.
 
 **VOLE side.** The streamed proof, at the gap boundary, weaves the same Keccak as
-a boolean gadget (`emit_keccak256` over `GateBuf`, reusing
-`xor`/`not`/`and`) lowered via the existing `lower_gadget_{prover,verifier}`
-(XOR/NOT free, AND → `vole_and_prover_step` hats), constraining the squeezed
-output to the public `d`. Reuses the exact pattern of the sortedness gadget in
-`storage_loop`. (Cross-crate: this lives in `volar-weaver`; the digest `d` is the
-shared public value.)
+a boolean gadget — [`emit_keccak256`](../crates/compiler/volar-weaver/src/gadgets.rs)
+over `GateBuf` (reusing `xor`/`not`/`and`), **built and sha3-verified** — to be
+lowered via the existing `lower_gadget_{prover,verifier}` (XOR/NOT free, AND →
+`vole_and_prover_step` hats), constraining the squeezed output to the public `d`.
+Reuses the exact pattern of the sortedness gadget in `storage_loop`. (Cross-crate:
+this lives in `volar-weaver`; the digest `d` is the shared public value.) The gate
+count is similar to the R1CS side (~155k gates), but **only χ's 24·1600 = 38 400
+ANDs cost hats** — θ/ι XORs are free in the VOLE cost model (unlike R1CS, where
+XOR is quadratic).
 
 **`KeccakDigestLink: BoundaryLink`** carries `d`; `verify` confirms (a) the folded
 instance — which includes the Keccak(`S_fold`)=`d` constraints — passes

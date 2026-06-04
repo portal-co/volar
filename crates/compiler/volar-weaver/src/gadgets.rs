@@ -84,6 +84,174 @@ pub(crate) fn emit_incr(a: &[u32], buf: &mut GateBuf) -> Vec<u32> {
     out
 }
 
+// ── Keccak-256 boolean gadget (the VOLE leg of the dual-preimage boundary link) ──
+//
+// The folding side arithmetizes the same Keccak in R1CS (`volar-fold::keccak_r1cs`);
+// here the *VOLE*-committed boundary is hashed by weaving these gates, lowered
+// normally (XOR/NOT free, χ's ANDs → hats), and the squeezed output is checked
+// against the public digest `d`.  Collision-resistance then forces the two
+// boundaries (folding and VOLE) to be the same bit-string.  See
+// `docs/boundary-link-embedding.md`.
+//
+// Standard Keccak-f[1600] tables (LSB-first lanes).  Duplicated from the lane
+// reference in `volar-fold::keccak`; the sha3-anchored gadget test catches any
+// transcription error.
+const KECCAK_RNDC: [u64; 24] = [
+    0x0000_0000_0000_0001, 0x0000_0000_0000_8082, 0x8000_0000_0000_808a, 0x8000_0000_8000_8000,
+    0x0000_0000_0000_808b, 0x0000_0000_8000_0001, 0x8000_0000_8000_8081, 0x8000_0000_0000_8009,
+    0x0000_0000_0000_008a, 0x0000_0000_0000_0088, 0x0000_0000_8000_8009, 0x0000_0000_8000_000a,
+    0x0000_0000_8000_808b, 0x8000_0000_0000_008b, 0x8000_0000_0000_8089, 0x8000_0000_0000_8003,
+    0x8000_0000_0000_8002, 0x8000_0000_0000_0080, 0x0000_0000_0000_800a, 0x8000_0000_8000_000a,
+    0x8000_0000_8000_8081, 0x8000_0000_0000_8080, 0x0000_0000_8000_0001, 0x8000_0000_8000_8008,
+];
+const KECCAK_ROTC: [u32; 24] =
+    [1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 2, 14, 27, 41, 56, 8, 25, 43, 62, 18, 39, 61, 20, 44];
+const KECCAK_PILN: [usize; 24] =
+    [10, 7, 11, 17, 18, 3, 5, 16, 8, 21, 24, 4, 15, 23, 19, 13, 12, 2, 20, 14, 22, 9, 6, 1];
+
+/// SHA3-256 rate in bytes (1088 bits = 17 lanes).
+const KECCAK_RATE_BYTES: usize = 136;
+
+/// XOR with the constant-`0` wire elided (keeps the first absorb block + padding
+/// zeros gate-free, mirroring the folding-side static-zero shortcut).
+fn kxor(buf: &mut GateBuf, a: u32, b: u32, zero: u32) -> u32 {
+    if a == zero {
+        b
+    } else if b == zero {
+        a
+    } else {
+        buf.xor(a, b)
+    }
+}
+
+/// The Keccak-f[1600] permutation over gate wires (state = 25 lanes × 64 bits,
+/// flat index `lane*64 + bit`).  θ/ι are XORs (free), χ contributes the ANDs.
+fn keccakf_gates(buf: &mut GateBuf, st: &mut [u32], zero: u32) {
+    for round in 0..24 {
+        // θ: column parities, folded into every lane of the column.
+        let mut bc = [[0u32; 64]; 5];
+        for col in 0..5 {
+            for i in 0..64 {
+                let mut acc = st[col * 64 + i];
+                for k in 1..5 {
+                    acc = kxor(buf, acc, st[(col + 5 * k) * 64 + i], zero);
+                }
+                bc[col][i] = acc;
+            }
+        }
+        for col in 0..5 {
+            let left = bc[(col + 4) % 5];
+            let right = bc[(col + 1) % 5];
+            let mut t = [0u32; 64];
+            for i in 0..64 {
+                t[i] = kxor(buf, left[i], right[(i + 63) % 64], zero); // ⊕ rotl(·,1)
+            }
+            for jj in 0..5 {
+                let lane = jj * 5 + col;
+                for i in 0..64 {
+                    st[lane * 64 + i] = kxor(buf, st[lane * 64 + i], t[i], zero);
+                }
+            }
+        }
+
+        // ρ + π: rotate/permute lanes — pure wire re-indexing.
+        let mut cur = [0u32; 64];
+        cur[..].copy_from_slice(&st[64..128]); // lane 1
+        for idx in 0..24 {
+            let j = KECCAK_PILN[idx];
+            let mut tmp = [0u32; 64];
+            tmp[..].copy_from_slice(&st[j * 64..j * 64 + 64]);
+            let rot = (KECCAK_ROTC[idx] as usize) % 64;
+            for i in 0..64 {
+                st[j * 64 + i] = cur[(i + 64 - rot) % 64];
+            }
+            cur = tmp;
+        }
+
+        // χ: per row, st[i] ^= (¬st[i+1]) & st[i+2]  (from a snapshot of the row).
+        let mut j = 0;
+        while j < 25 {
+            let mut row = [[0u32; 64]; 5];
+            for (i, r) in row.iter_mut().enumerate() {
+                r.copy_from_slice(&st[(j + i) * 64..(j + i) * 64 + 64]);
+            }
+            for i in 0..5 {
+                for bit in 0..64 {
+                    let nb = buf.not(row[(i + 1) % 5][bit]);
+                    let andt = buf.and(nb, row[(i + 2) % 5][bit]);
+                    st[(j + i) * 64 + bit] = kxor(buf, row[i][bit], andt, zero);
+                }
+            }
+            j += 5;
+        }
+
+        // ι: XOR the public round constant into lane 0 (each set bit = a free NOT).
+        for bit in 0..64 {
+            if (KECCAK_RNDC[round] >> bit) & 1 == 1 {
+                st[bit] = buf.not(st[bit]);
+            }
+        }
+    }
+}
+
+/// Build the SHA3-padded sponge message as gate wires (length `num_blocks·1088`),
+/// reproducing [`volar-fold`'s] byte-level `0x06`/`0x80` padding at bit
+/// granularity.  Padding bits are constants ⇒ no ANDs.
+fn padded_message_gates(buf: &mut GateBuf, input: &[u32], zero: u32) -> Vec<u32> {
+    let num_input_bits = input.len();
+    let nbytes = num_input_bits.div_ceil(8);
+    let rate = KECCAK_RATE_BYTES;
+    let stripped = nbytes / rate;
+    let rem = nbytes - stripped * rate;
+    let total_bytes = (stripped + 1) * rate;
+    let fin06_byte = stripped * rate + rem;
+    let fin80_byte = total_bytes - 1;
+
+    let total_bits = total_bytes * 8;
+    let mut out = Vec::with_capacity(total_bits);
+    for i in 0..total_bits {
+        let byte = i / 8;
+        let j = i % 8;
+        let base = if byte < nbytes && byte * 8 + j < num_input_bits {
+            input[byte * 8 + j]
+        } else {
+            zero
+        };
+        let mut cbyte = 0u8;
+        if byte == fin06_byte {
+            cbyte ^= 0x06;
+        }
+        if byte == fin80_byte {
+            cbyte ^= 0x80;
+        }
+        // ⊕ constant: identity, or a free NOT.
+        out.push(if (cbyte >> j) & 1 == 1 { buf.not(base) } else { base });
+    }
+    out
+}
+
+/// Emit gates computing **Keccak-256** (SHA3-256) of the committed `input` bits
+/// (LSB-first), returning the 256 squeezed output-bit var-ids.  This is the
+/// VOLE-side preimage circuit of the dual-preimage boundary link; the woven
+/// verifier constrains the outputs to the public digest `d`.
+///
+/// Currently exercised by the gadget test; wired into the gap-boundary weave
+/// (`docs/boundary-link-embedding.md` §VOLE side) as the closing step.
+#[allow(dead_code)]
+pub(crate) fn emit_keccak256(input: &[u32], buf: &mut GateBuf) -> [u32; 256] {
+    let zero = buf.zero();
+    let msg = padded_message_gates(buf, input, zero);
+    let mut st = alloc::vec![zero; 1600];
+    let blocks = msg.len() / 1088;
+    for b in 0..blocks {
+        for g in 0..1088 {
+            st[g] = kxor(buf, st[g], msg[b * 1088 + g], zero);
+        }
+        keccakf_gates(buf, &mut st, zero);
+    }
+    core::array::from_fn(|i| st[i])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +359,61 @@ mod tests {
                     assert_eq!(got, lt_ref(av, bv), "lt({av},{bv}) n={n}");
                 }
             }
+        }
+    }
+
+    /// Evaluate every gate once over `inputs` (the `nparams` boundary bits),
+    /// returning the full var-id → value map (gate ids are sequential from
+    /// `nparams`, so `vals[id]` reads any wire — params or gate result).
+    fn eval_all(gates: &[(IRVarId, BIrStmt)], inputs: &[bool], nparams: usize) -> Vec<bool> {
+        let mut vals = inputs.to_vec();
+        debug_assert_eq!(vals.len(), nparams);
+        for (id, stmt) in gates {
+            let v = match stmt {
+                BIrStmt::Zero => false,
+                BIrStmt::One => true,
+                BIrStmt::And(a, b) => vals[a.0 as usize] && vals[b.0 as usize],
+                BIrStmt::Or(a, b) => vals[a.0 as usize] || vals[b.0 as usize],
+                BIrStmt::Xor(a, b) => vals[a.0 as usize] ^ vals[b.0 as usize],
+                BIrStmt::Not(a) => !vals[a.0 as usize],
+                _ => panic!("unexpected gate in keccak gadget"),
+            };
+            debug_assert_eq!(id.0 as usize, vals.len(), "gate ids must be sequential");
+            vals.push(v);
+        }
+        vals
+    }
+
+    /// Reference SHA3-256 over a bit-vector (LSB-first packing), via the `sha3`
+    /// crate — the same bit interface the gadget reproduces.
+    fn keccak_ref_bits(input: &[bool]) -> [bool; 256] {
+        use digest::Digest;
+        let nbytes = input.len().div_ceil(8);
+        let mut bytes = vec![0u8; nbytes];
+        for (i, &b) in input.iter().enumerate() {
+            if b {
+                bytes[i / 8] |= 1 << (i % 8);
+            }
+        }
+        let mut h = sha3::Sha3_256::new();
+        h.update(&bytes);
+        let o = h.finalize();
+        core::array::from_fn(|i| (o[i / 8] >> (i % 8)) & 1 == 1)
+    }
+
+    #[test]
+    fn keccak_gadget_matches_sha3() {
+        // Empty, one absorb block, and a multi-byte case.
+        for input_bytes in [vec![], vec![0xa5u8, 0x3c], vec![1u8, 2, 3, 4, 5, 6, 7]] {
+            let nbits = input_bytes.len() * 8;
+            let inbits: Vec<bool> =
+                (0..nbits).map(|i| (input_bytes[i / 8] >> (i % 8)) & 1 == 1).collect();
+            let params: Vec<u32> = (0..nbits as u32).collect();
+            let mut buf = GateBuf::new(nbits as u32);
+            let out = emit_keccak256(&params, &mut buf);
+            let vals = eval_all(&buf.gates, &inbits, nbits);
+            let got: [bool; 256] = core::array::from_fn(|i| vals[out[i] as usize]);
+            assert_eq!(got, keccak_ref_bits(&inbits), "keccak gadget mismatch for {nbits} bits");
         }
     }
 }

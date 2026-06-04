@@ -113,7 +113,7 @@ mod tests {
     extern crate std;
     use super::*;
     use crate::ivc::{prove_gap, Step};
-    use crate::link::DummyLink;
+    use crate::link::{DummyLink, KeccakDigestLink};
     use crate::scalar::Scalar;
     use cipher::consts::U2;
     use hybrid_array::Array;
@@ -185,5 +185,59 @@ mod tests {
         let delta = Delta { delta: Array::<u64, U2>::from_fn(|_| 9) };
         let verdict = bridge.verifier_bridge(&msg, &keys, &keys, &delta);
         assert!(matches!(verdict, GapVerdict::Unproven { .. }), "tampered fold must not be Proven");
+    }
+
+    fn boundary(bits: &[bool]) -> Vec<Scalar> {
+        bits.iter().map(|&b| if b { Scalar::ONE } else { Scalar::ZERO }).collect()
+    }
+
+    #[test]
+    fn folding_bridge_with_keccak_link_proves_honest_gap() {
+        let r1cs = mul_gate();
+        let params = PedersenParams::setup(8, 5);
+        let bridge = FoldingBridge::new(r1cs.clone(), params.clone(), KeccakDigestLink::new(params.clone()));
+
+        // Honest folded gap.
+        let steps: Vec<Step> = (1..=4u64).map(|i| step(i, i + 1, i * (i + 1), i)).collect();
+        // Bit-string boundaries (the dual-preimage link hashes these).
+        let s_in = boundary(&[true, false, true, true]);
+        let s_out = boundary(&[false, false, true, false]);
+        let (r_in, r_out) = (Scalar::from_u64(2), Scalar::from_u64(3));
+        let gap = prove_gap(&r1cs, &params, &steps, &s_in, &r_in, &s_out, &r_out);
+
+        let bits_in = [vope(1)];
+        let bits_out = [vope(0)];
+        let msg = bridge.prover_bridge(gap, &bits_in, &s_in, &r_in, &bits_out, &s_out, &r_out);
+
+        let keys = [q(7)];
+        let delta = Delta { delta: Array::<u64, U2>::from_fn(|_| 9) };
+        let verdict = bridge.verifier_bridge(&msg, &keys, &keys, &delta);
+        assert!(matches!(verdict, GapVerdict::Proven), "honest gap with Keccak links should be Proven");
+    }
+
+    #[test]
+    fn folding_bridge_with_keccak_link_rejects_boundary_opening_mismatch() {
+        let r1cs = mul_gate();
+        let params = PedersenParams::setup(8, 5);
+        let bridge = FoldingBridge::new(r1cs.clone(), params.clone(), KeccakDigestLink::new(params.clone()));
+
+        let steps: Vec<Step> = (1..=4u64).map(|i| step(i, i + 1, i * (i + 1), i)).collect();
+        let s_in = boundary(&[true, false, true, true]);
+        let s_out = boundary(&[false, false, true, false]);
+        let (r_in, r_out) = (Scalar::from_u64(2), Scalar::from_u64(3));
+        let gap = prove_gap(&r1cs, &params, &steps, &s_in, &r_in, &s_out, &r_out);
+
+        let bits_in = [vope(1)];
+        let bits_out = [vope(0)];
+        // Prover lies about the OUT boundary's blinder: c_out was committed with
+        // r_out, but the link is handed a different opening ⇒ Pedersen open fails.
+        let msg = bridge.prover_bridge(
+            gap, &bits_in, &s_in, &r_in, &bits_out, &s_out, &Scalar::from_u64(31337),
+        );
+
+        let keys = [q(7)];
+        let delta = Delta { delta: Array::<u64, U2>::from_fn(|_| 9) };
+        let verdict = bridge.verifier_bridge(&msg, &keys, &keys, &delta);
+        assert!(matches!(verdict, GapVerdict::Unproven { .. }), "boundary opening mismatch must not be Proven");
     }
 }

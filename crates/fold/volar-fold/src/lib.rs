@@ -29,12 +29,19 @@
 //! The folding machinery is concrete and self-tested: a **Montgomery** scalar
 //! field ([`scalar`]), a Pedersen commitment with **binding** hash-to-curve
 //! generators and a **Pippenger MSM** ([`pedersen`]), R1CS/NIFS/native-verify/IVC,
-//! and [`keccak`] (SHA3-256, anchored to the `sha3` crate) — the chosen
-//! **dual-preimage Keccak** boundary embedding's reference.  Remaining for that
-//! embedding: the Keccak-in-R1CS arithmetization, the VOLE-side boolean gadget,
-//! and the bridge digest wiring (see `docs/boundary-link-embedding.md`).  The
-//! [`link::BoundaryLink`] trait keeps the embedding swappable; [`link::DummyLink`]
-//! is the non-sound placeholder used until `KeccakDigestLink` lands.
+//! and [`keccak`] (SHA3-256, anchored to the `sha3` crate).  The chosen
+//! **dual-preimage Keccak** boundary embedding is now concrete on the **folding
+//! leg**: [`keccak_r1cs`] arithmetizes Keccak-256 in R1CS over `F_ℓ`
+//! (cross-checked against the reference), and [`link::KeccakDigestLink`] proves
+//! the folding-committed boundary hashes (in-circuit) to a public digest while
+//! binding it to the Pedersen commitment — strictly sounder than the
+//! [`link::DummyLink`] placeholder.  The **VOLE leg's** Keccak circuit is also
+//! built — `volar-weaver`'s `emit_keccak256` boolean gadget (sha3-verified).
+//! **Remaining:** the gap-boundary *weave* (lower `emit_keccak256` over the
+//! committed boundary wires + constrain its output to the same digest, in the
+//! hybrid/storage prover+verifier, `docs/boundary-link-embedding.md` §VOLE side);
+//! plus the in-circuit composition of the Keccak block into the folded instance +
+//! Fiat–Shamir (refinements, `docs/vcb-ivc-folding.md` §5).
 
 #![no_std]
 extern crate alloc;
@@ -42,6 +49,7 @@ extern crate alloc;
 pub mod scalar;
 pub mod pedersen;
 pub mod keccak;
+pub mod keccak_r1cs;
 pub mod r1cs;
 pub mod nifs;
 pub mod verify;

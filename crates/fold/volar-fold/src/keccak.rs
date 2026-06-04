@@ -13,7 +13,10 @@
 
 use alloc::vec::Vec;
 
-const RNDC: [u64; 24] = [
+// Round constants / rotation offsets / π lane permutation. `pub(crate)` so the
+// in-R1CS arithmetization ([`crate::keccak_r1cs`]) reuses the *same* tables — one
+// source of truth keeps the reference and the circuit from drifting apart.
+pub(crate) const RNDC: [u64; 24] = [
     0x0000_0000_0000_0001, 0x0000_0000_0000_8082, 0x8000_0000_0000_808a, 0x8000_0000_8000_8000,
     0x0000_0000_0000_808b, 0x0000_0000_8000_0001, 0x8000_0000_8000_8081, 0x8000_0000_0000_8009,
     0x0000_0000_0000_008a, 0x0000_0000_0000_0088, 0x0000_0000_8000_8009, 0x0000_0000_8000_000a,
@@ -21,9 +24,9 @@ const RNDC: [u64; 24] = [
     0x8000_0000_0000_8002, 0x8000_0000_0000_0080, 0x0000_0000_0000_800a, 0x8000_0000_8000_000a,
     0x8000_0000_8000_8081, 0x8000_0000_0000_8080, 0x0000_0000_8000_0001, 0x8000_0000_8000_8008,
 ];
-const ROTC: [u32; 24] =
+pub(crate) const ROTC: [u32; 24] =
     [1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 2, 14, 27, 41, 56, 8, 25, 43, 62, 18, 39, 61, 20, 44];
-const PILN: [usize; 24] =
+pub(crate) const PILN: [usize; 24] =
     [10, 7, 11, 17, 18, 3, 5, 16, 8, 21, 24, 4, 15, 23, 19, 13, 12, 2, 20, 14, 22, 9, 6, 1];
 
 /// SHA3-256 rate in bytes (capacity 512 bits).

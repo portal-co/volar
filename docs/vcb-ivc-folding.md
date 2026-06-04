@@ -79,8 +79,16 @@ The boundary state is a bit-string committed in **two** worlds: VOLE (`GF(2^k)`
 MACs) and folding (`F_ℓ` Pedersen). The fields differ, so there is **no free
 linear check** tying them. Per the design decision, this is abstracted behind the
 [`BoundaryLink`](../crates/fold/volar-fold/src/link.rs) trait (`prove`/`verify`),
-so the embedding is a swappable component. The shipped `DummyLink` **always
-accepts** (placeholder, **not sound**) so the bridge wires and tests end-to-end.
+so the embedding is a swappable component. The **chosen dual-preimage Keccak**
+embedding (full design in [`boundary-link-embedding.md`](boundary-link-embedding.md))
+is implemented on its **folding leg**: [`KeccakDigestLink`](../crates/fold/volar-fold/src/link.rs)
+proves the folding-committed boundary hashes — through the in-R1CS Keccak
+arithmetization ([`keccak_r1cs`](../crates/fold/volar-fold/src/keccak_r1cs.rs)) —
+to a public digest `d`, and Pedersen-binds the bits. The remaining **VOLE leg**
+(the streamed proof proving the VOLE-committed boundary hashes to the *same* `d`)
+is the woven `emit_keccak256` gadget in `volar-weaver` (§VOLE side of the
+embedding doc). `DummyLink` (always-accepts, **not sound**) remains for the
+non-integrated path.
 
 **Candidate sound embeddings (interactive — online is cheap):**
 
@@ -136,5 +144,5 @@ correlations** during the gap.
 | `F_ℓ` (Montgomery), Pedersen + Pippenger MSM, R1CS, NIFS, native verify, IVC, FoldingBridge | **implemented + tested** (31 unit tests) |
 | Binding generators (hash-to-curve) | **DONE** — `hash_to_curve` ([§5](#5-other-caveats-honest), `hash-to-curve-generators.md`) |
 | Fast field + MSM | **DONE** — Montgomery + Pippenger, verified vs reference |
-| `BoundaryLink` embedding | **chosen = dual-preimage Keccak** ([`boundary-link-embedding.md`](boundary-link-embedding.md)); Keccak reference + sha3 anchor built; **R1CS arithmetization + VOLE gadget + bridge wiring remain** |
-| In-circuit continuity, Fiat–Shamir | refinements (§5) |
+| `BoundaryLink` embedding | **dual-preimage Keccak, both circuits DONE**: folding leg = `keccak_r1cs` (Keccak-256 in R1CS over `F_ℓ`) + `KeccakDigestLink` (folding-committed boundary hashes in-circuit to a public digest, Pedersen-bound) + e2e bridge tests; VOLE leg = `emit_keccak256` boolean `GateBuf` gadget (XOR/NOT free, χ ANDs → hats), both cross-checked vs `sha3`. **Remaining**: the gap-boundary *weave* (lower `emit_keccak256` + constrain output to `d`) in the hybrid/storage prover+verifier |
+| In-circuit continuity, Keccak-block composition into the folded instance, Fiat–Shamir | refinements (§5) |
