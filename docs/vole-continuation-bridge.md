@@ -334,12 +334,17 @@ pub trait ResilientVoleTransport<N: ArraySize, T>: VoleTransport<N, T> {
     into the Boolar-only `lower_to_circuit`. That pass instead exposes
     `lower_to_circuit_with_boundary` → `SkipBoundary { state_width, has_done_flag }`,
     handing the glue its `ell` (= carried-state width). Static lowering unchanged.
-- **VCB-IVC folding frontier** (gate succinctness) remains as specified above.
-- **VCB-IVC gate succinctness (§3.3).** Needs a new `volar-fold` crate (no
-  folding/IVC exists in the repo). The boundary linking reuses the same free
-  linear check as `vole_rekey_verifier_check`. Until then, VCB-RX gives sound
-  resumption with **memory already succinct in cell count** (single accumulator),
-  just not gate-succinct in the gap length `m`.
+- **VCB-IVC gate succinctness (§3.3) — IMPLEMENTED (scaffold).** The folding
+  bridge now exists as the [`volar-fold`](../crates/fold/volar-fold) crate —
+  *Nova minus the zkSNARK* (native interactive final check ⇒ single Ed25519
+  curve, no cycle), with `F_ℓ`, Pedersen, (relaxed) R1CS, NIFS folding, native
+  verify, the gap-folding IVC driver, and a `FoldingBridge<L>` strategy (25 unit
+  tests). The reconnect cost is `O(|F|)`, **independent of `m`**. The
+  VOLE-MAC ↔ commitment **embedding** is abstracted behind the `BoundaryLink`
+  trait (shipped `DummyLink` is a non-sound placeholder); a sound embedding +
+  binding (hash-to-curve) generators are the isolated open tasks. Full design:
+  [`vcb-ivc-folding.md`](vcb-ivc-folding.md). VCB-RX remains the
+  ready-to-use sound fallback while those are discharged.
 
 ---
 
