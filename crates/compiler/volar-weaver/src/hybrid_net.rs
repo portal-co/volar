@@ -132,6 +132,55 @@ fn resume_token_expr(state_names: &[String], mem_acc_names: &[String]) -> IrExpr
     }
 }
 
+/// Emit the **dual-preimage VOLE-leg boundary attestation** at a resume seam:
+/// run `keccak_check_<name>` over the committed boundary-state wires (proving
+/// `Keccak256(boundary) == d` for the public digest baked into that function),
+/// open the resulting `match` bit, and send it.  The verifier side
+/// (`keccak_check_verify_<name>`, generated alongside) is invoked by the
+/// resilient transport's `verifier_bridge`, which `recv_opening`s this mask and
+/// `assert_one_check`s the match — so collision resistance ties this VOLE
+/// boundary to the folding boundary committed to the same `d`
+/// (`docs/boundary-link-embedding.md`).
+fn emit_boundary_attest_prover(name: &str, boundary_wires: &[String], stmts: &mut Vec<IrStmt>) {
+    // let kmatch = keccak_check_<name>::<N, T>(vope_one.clone(), w0.clone(), ..);
+    let mut args = vec![clone_expr(var("vope_one"))];
+    for w in boundary_wires {
+        args.push(clone_expr(var(w)));
+    }
+    stmts.push(let_stmt(
+        "kmatch",
+        IrExpr::Call {
+            func: Box::new(IrExpr::Path {
+                segments: vec![format!("keccak_check_{name}")],
+                type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("T".into())],
+            }),
+            args,
+        },
+    ));
+    // let kmatch_open = volar_spec::vole::bridge::vope_open_mask(&kmatch);
+    stmts.push(let_stmt(
+        "kmatch_open",
+        IrExpr::Call {
+            func: Box::new(IrExpr::Path {
+                segments: vec![
+                    "volar_spec".into(), "vole".into(), "bridge".into(), "vope_open_mask".into(),
+                ],
+                type_args: vec![],
+            }),
+            args: vec![ref_expr(var("kmatch"))],
+        },
+    ));
+    // transport.send_opening(&kmatch_open)?;
+    stmts.push(IrStmt::Semi(transport_call_try("send_opening", vec![ref_expr(var("kmatch_open"))])));
+}
+
+/// Extract the lone function from a `weave_keccak_check{,_verifier}` module so it
+/// can be added to the woven hybrid module (the boundary attestation is a *call*,
+/// not an inline — a full Keccak-f is ~150k statements).
+fn keccak_check_fn(module: IrCfgModule) -> IrAnyFunction {
+    module.functions.into_iter().next().expect("keccak_check module has one function")
+}
+
 /// `gap_len + 1` (u32).
 fn incr(name: &str) -> IrExpr {
     IrExpr::Binary {
@@ -457,6 +506,7 @@ pub fn weave_hybrid_net_vole_prover(
     touched_count: usize,
     name: &str,
     linkage: Option<&LinkageSystem>,
+    boundary_attest: Option<(&[bool], usize)>,
 ) -> IrCfgModule {
     assert!(circuit.is_movfuscated(), "weave_hybrid_net_vole_prover: circuit must be single-block");
     assert!(ts_bits >= 1, "ts_bits must be >= 1");
@@ -863,6 +913,9 @@ pub fn weave_hybrid_net_vole_prover(
     b5_params.push(IrParam { name: "gl".into(), ty: u32_type() });
     let rw_names: Vec<String> = (0..num_params).map(|i| format!("rw{i}")).collect();
     let mut b5_stmts: Vec<IrStmt> = Vec::new();
+    if boundary_attest.is_some() {
+        emit_boundary_attest_prover(name, &rw_names, &mut b5_stmts);
+    }
     b5_stmts.push(let_stmt("token", resume_token_expr(&rw_names, &[])));
     b5_stmts.push(IrStmt::Semi(transport_call_try(
         "prover_bridge",
@@ -916,6 +969,9 @@ pub fn weave_hybrid_net_vole_prover(
     b8_params.push(IrParam { name: "gl".into(), ty: u32_type() });
     let fw_names: Vec<String> = (0..num_params).map(|i| format!("fw{i}")).collect();
     let mut b8_stmts: Vec<IrStmt> = Vec::new();
+    if boundary_attest.is_some() {
+        emit_boundary_attest_prover(name, &fw_names, &mut b8_stmts);
+    }
     b8_stmts.push(let_stmt("token", resume_token_expr(&fw_names, &[])));
     b8_stmts.push(IrStmt::Semi(transport_call_try(
         "prover_bridge",
@@ -942,9 +998,17 @@ pub fn weave_hybrid_net_vole_prover(
         },
     };
 
+    // The boundary attestation is a *call* to a separately-emitted Keccak check
+    // (inlining a full Keccak-f would be ~150k statements); add that function.
+    let mut functions = vec![IrAnyFunction::Cfg(func)];
+    if let Some((digest, rounds)) = boundary_attest {
+        functions.push(keccak_check_fn(crate::storage_loop::weave_keccak_check(
+            num_params, rounds, digest, name, None,
+        )));
+    }
     let mut module: IrCfgModule = IrModule {
         name: format!("weaved_hybrid_net_prover_{name}"),
-        functions: vec![IrAnyFunction::Cfg(func)],
+        functions,
         structs: vec![],
         enums: vec![],
         traits: vec![],
@@ -987,6 +1051,7 @@ pub fn weave_hybrid_net_vole_verifier(
     touched_count: usize,
     name: &str,
     linkage: Option<&LinkageSystem>,
+    boundary_attest: Option<(&[bool], usize)>,
 ) -> IrCfgModule {
     assert!(circuit.is_movfuscated(), "weave_hybrid_net_vole_verifier: circuit must be single-block");
     assert!(ts_bits >= 1, "ts_bits must be >= 1");
@@ -1258,9 +1323,19 @@ pub fn weave_hybrid_net_vole_verifier(
         body: IrCfgBody { blocks: vec![block0, block1, block2] },
     };
 
+    // Verifier resume is transport-delegated (`recv_iteration` blocks,
+    // `verifier_bridge` runs internally), so the boundary check is a *function*
+    // the resilient transport calls at the seam (recv the opened `match`,
+    // `assert_one_check` it) rather than a woven block.  Emit it alongside.
+    let mut functions = vec![IrAnyFunction::Cfg(func)];
+    if let Some((digest, rounds)) = boundary_attest {
+        functions.push(keccak_check_fn(crate::storage_loop::weave_keccak_check_verifier(
+            num_params, rounds, digest, name, None,
+        )));
+    }
     let mut module: IrCfgModule = IrModule {
         name: format!("weaved_hybrid_net_verifier_{name}"),
-        functions: vec![IrAnyFunction::Cfg(func)],
+        functions,
         structs: vec![],
         enums: vec![],
         traits: vec![],
@@ -1323,7 +1398,7 @@ mod tests {
     #[test]
     fn test_hybrid_net_prover_compiles() {
         let circuit = build_simple_loop();
-        let module = weave_hybrid_net_vole_prover(&circuit, 4, 1, 2, "test", None);
+        let module = weave_hybrid_net_vole_prover(&circuit, 4, 1, 2, "test", None, None);
         let code = print_hybrid_net_cfg_module(&module);
         run_compile_check_net(&code, "hybrid_net_prover");
     }
@@ -1331,7 +1406,7 @@ mod tests {
     #[test]
     fn test_hybrid_net_verifier_compiles() {
         let circuit = build_simple_loop();
-        let module = weave_hybrid_net_vole_verifier(&circuit, 4, 1, 2, "test", None);
+        let module = weave_hybrid_net_vole_verifier(&circuit, 4, 1, 2, "test", None, None);
         let code = print_hybrid_net_cfg_module(&module);
         run_compile_check_net(&code, "hybrid_net_verifier");
     }
@@ -1339,7 +1414,7 @@ mod tests {
     #[test]
     fn test_hybrid_prover_has_both_paths() {
         let circuit = build_simple_loop();
-        let module = weave_hybrid_net_vole_prover(&circuit, 4, 1, 2, "test", None);
+        let module = weave_hybrid_net_vole_prover(&circuit, 4, 1, 2, "test", None, None);
         let code = print_hybrid_net_cfg_module(&module);
         // ZK path present:
         assert!(code.contains("vole_and_prover_step") || code.contains("vope_one"),
@@ -1357,13 +1432,54 @@ mod tests {
     #[test]
     fn test_hybrid_prover_returns_memory_triple() {
         let circuit = build_simple_loop();
-        let module = weave_hybrid_net_vole_prover(&circuit, 4, 1, 2, "test", None);
+        let module = weave_hybrid_net_vole_prover(&circuit, 4, 1, 2, "test", None, None);
         let code = print_hybrid_net_cfg_module(&module);
         // The accumulator survives the gap because it is part of the anchor
         // bundle carried through every gap block (suffixes _mp/_mc/_ts) and
         // restored to the ZK body on replay; the prover returns it as a triple.
         assert!(code.contains("_mp") && code.contains("_mc") && code.contains("_ts"),
             "expected accumulator carried through gap blocks as anchor bundle");
+    }
+
+    #[test]
+    fn test_hybrid_prover_boundary_attest_default_off() {
+        // The default (None) path is unchanged: no Keccak attestation woven.
+        let circuit = build_simple_loop();
+        let module = weave_hybrid_net_vole_prover(&circuit, 4, 1, 2, "off", None, None);
+        let code = print_hybrid_net_cfg_module(&module);
+        assert!(!code.contains("keccak_check"), "no boundary attestation when disabled");
+    }
+
+    #[test]
+    fn test_hybrid_prover_boundary_attest_compiles() {
+        // Opt-in dual-preimage VOLE-leg attestation at the resume seam: a call to
+        // the (separately-emitted) Keccak check over the boundary-state wires,
+        // whose `match` is opened and sent.  Reduced rounds so `cargo check` is
+        // tractable; correctness of the Keccak circuit itself is covered by the
+        // sha3-anchored gadget + `weave_keccak_check` tests.
+        let circuit = build_simple_loop();
+        let digest = vec![false; 256];
+        let module =
+            weave_hybrid_net_vole_prover(&circuit, 4, 1, 2, "att", None, Some((&digest, 1)));
+        let code = print_hybrid_net_cfg_module(&module);
+        run_compile_check_net(&code, "hybrid_net_prover_attest");
+        assert!(code.contains("keccak_check_att"), "boundary attestation fn emitted + called");
+        assert!(code.contains("kmatch"), "boundary digest match opened at the resume seam");
+        assert!(code.contains("prover_bridge"), "still does the resumption bridge");
+    }
+
+    #[test]
+    fn test_hybrid_verifier_boundary_attest_compiles() {
+        // Verifier resume is transport-delegated, so the attestation is a
+        // function the bridge invokes (recv the opened match + assert_one_check).
+        let circuit = build_simple_loop();
+        let digest = vec![false; 256];
+        let module =
+            weave_hybrid_net_vole_verifier(&circuit, 4, 1, 2, "att", None, Some((&digest, 1)));
+        let code = print_hybrid_net_cfg_module(&module);
+        run_compile_check_net(&code, "hybrid_net_verifier_attest");
+        assert!(code.contains("keccak_check_verify_att"), "boundary attestation verifier emitted");
+        assert!(code.contains("vole_and_verifier_check"), "attestation ANDs checked vs hats");
     }
 
     /// Storage-bearing loop (1-bit address): Write(w1 @ w0); v = Read(@ w0).
@@ -1422,12 +1538,12 @@ mod tests {
     fn test_hybrid_storage_multibit_addr() {
         // 2-bit address ⇒ 4 init/drain cells; ts-sound + network-resilient.
         let circuit = build_storage_hybrid_loop_2bit();
-        let mp = weave_hybrid_net_vole_prover(&circuit, 3, 2, 4, "mb", None);
+        let mp = weave_hybrid_net_vole_prover(&circuit, 3, 2, 4, "mb", None, None);
         let codep = print_hybrid_net_cfg_module(&mp);
         run_compile_check_net(&codep, "hybrid_storage_prover_2bit");
         assert!(codep.contains("touched_final_val"), "sparse drain witnesses");
         assert!(codep.contains("vope_bitpack"), "address + timestamp bit-packed");
-        let mv = weave_hybrid_net_vole_verifier(&circuit, 3, 2, 4, "mb", None);
+        let mv = weave_hybrid_net_vole_verifier(&circuit, 3, 2, 4, "mb", None, None);
         let codev = print_hybrid_net_cfg_module(&mv);
         run_compile_check_net(&codev, "hybrid_storage_verifier_2bit");
         assert!(codev.contains("q_touched_final_val"), "verifier mirrors sparse drain");
@@ -1439,7 +1555,7 @@ mod tests {
         // The unified weaver: storage absorbs in the ZK body + accumulator
         // carried through the gap + transport, all in one prover.
         let circuit = build_storage_hybrid_loop();
-        let module = weave_hybrid_net_vole_prover(&circuit, 4, 1, 2, "test", None);
+        let module = weave_hybrid_net_vole_prover(&circuit, 4, 1, 2, "test", None, None);
         let code = print_hybrid_net_cfg_module(&module);
         run_compile_check_net(&code, "hybrid_storage_unified");
         // Real storage absorbs present, fed by the per-iteration slices:
@@ -1466,7 +1582,7 @@ mod tests {
         // The verifier mirrors the prover's storage absorbs in Q-space and runs
         // the drain check (mem_prod == mem_cons), folding it into the verdict.
         let circuit = build_storage_hybrid_loop();
-        let module = weave_hybrid_net_vole_verifier(&circuit, 4, 1, 2, "test", None);
+        let module = weave_hybrid_net_vole_verifier(&circuit, 4, 1, 2, "test", None, None);
         let code = print_hybrid_net_cfg_module(&module);
         run_compile_check_net(&code, "hybrid_storage_verifier");
         assert!(code.contains("mem_acc_absorb_q"), "expected Q-side storage absorb");

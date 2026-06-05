@@ -170,12 +170,12 @@ pub fn emit_woven_rust(
         }
         #[cfg(feature = "weave-net")]
         (Weaver::HybridNetVoleProver { name, ts_bits, addr_bits, touched_count }, SavedCircuit::Boolar(bir)) => {
-            let module = volar_weaver::weave_hybrid_net_vole_prover(&bir, *ts_bits, *addr_bits, *touched_count, name, None);
+            let module = volar_weaver::weave_hybrid_net_vole_prover(&bir, *ts_bits, *addr_bits, *touched_count, name, None, None);
             volar_weaver::print_hybrid_net_cfg_module(&module)
         }
         #[cfg(feature = "weave-net")]
         (Weaver::HybridNetVoleVerifier { name, ts_bits, addr_bits, touched_count }, SavedCircuit::Boolar(bir)) => {
-            let module = volar_weaver::weave_hybrid_net_vole_verifier(&bir, *ts_bits, *addr_bits, *touched_count, name, None);
+            let module = volar_weaver::weave_hybrid_net_vole_verifier(&bir, *ts_bits, *addr_bits, *touched_count, name, None, None);
             volar_weaver::print_hybrid_net_cfg_module(&module)
         }
         (w, c) => {

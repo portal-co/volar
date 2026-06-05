@@ -15,10 +15,18 @@ hats), cross-checked against the `sha3` crate. **VOLE-leg lowering DONE**:
 equality** (`match = ⋀_i(out_i XNOR d_i)`, prover-opened and verifier
 `assert_one_check`-ed) to VOLE prover/verifier IR; the generated code **compiles**
 (`cargo check`-validated on a reduced-round circuit; the full 24-round lowering +
-printer is exercised structurally). **Remaining**: splice that call into the
-actual hybrid/storage gap prover+verifier at the boundary (wire the live
-boundary state in, stream the χ hats, open `match`). Companion to
-[`vcb-ivc-folding.md`](vcb-ivc-folding.md) §4.
+printer is exercised structurally). **Spliced into the real gap boundary**
+(opt-in, [`hybrid_net.rs`](../crates/compiler/volar-weaver/src/hybrid_net.rs)):
+`weave_hybrid_net_vole_prover/verifier` take a `boundary_attest: Option<(&[bool],
+usize)>`; when set, the prover's resume seams (B5/B8) emit a `keccak_check_<name>`
+call over the committed boundary-state wires, **open** the `match` bit
+(`vope_open_mask`) and **send** it; the verifier emits the matching
+`keccak_check_verify_<name>`. Default `None` is byte-identical to before.
+**Remaining**: the transport-side glue — the resilient `verifier_bridge` invoking
+`keccak_check_verify`, `recv_opening`-ing the match mask, `assert_one_check`-ing
+it, and folding into the `GapVerdict` (a small hook in the `FoldingBridge`
+transport); plus carrying the digest `d` at runtime (currently baked as gate
+structure). Companion to [`vcb-ivc-folding.md`](vcb-ivc-folding.md) §4.
 
 ## Why this is hard
 
