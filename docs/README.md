@@ -51,8 +51,11 @@ matches or exceeds the file's required tier. Both systems are defined in
 | **Tier 3 — Cryptography** | Opus 4.6+ only | Cryptographic spec, primitives, ORAM, Hazmat code |
 
 Lower-tier agents can still contribute productively to higher-tier work by
-producing test scaffolding, hand-off documents, and analysis. See
-[agents-guide.md](agents-guide.md) for the full operating procedure.
+producing test scaffolding, hand-off documents, and analysis — and, with Lean
+tools present, by **proving theorems about Tier-3 constructions** in the
+[`Volar/`](../Volar) library (kernel-checked, so proving is Tier 1). See
+[agents-guide.md](agents-guide.md) for the full operating procedure and
+[lean.md](lean.md) for the proof library.
 
 ---
 
@@ -63,6 +66,7 @@ producing test scaffolding, hand-off documents, and analysis. See
 | Document | What it covers |
 |---|---|
 | [reliability.md](reliability.md) | Reliability levels, AI markers, AI capability tiers, file→tier mapping, promotion/demotion protocol |
+| [lean.md](lean.md) | The `Volar/` Lean proof library: map, build, theorem catalog, axiom whitelist, and the "proofs about higher-tier content" policy |
 | [overview.md](overview.md) | Workspace layout, crate dependency graph, compilation pipeline |
 | [insecure.md](insecure.md) | The `.insecure` extension and current insecure files |
 | [provenance.md](provenance.md) | Per-statement origin tracking through the IR pipeline |

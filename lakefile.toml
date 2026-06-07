@@ -1,3 +1,11 @@
 name = "volar-lean"
 version = "0.1.0"
-defaultTargets = []
+defaultTargets = ["Volar"]
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+rev = "v4.30.0"
+
+[[lean_lib]]
+name = "Volar"

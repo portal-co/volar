@@ -97,6 +97,16 @@ For cryptographic code, the expected output must come from a reference
 implementation or from running the existing code, not from a derivation the
 agent did itself.
 
+### 2.6 Prove a pending Lean theorem
+
+Filling in (or improving) the **proof body** of a theorem in the [`Volar/`](../Volar)
+Lean library is within Tier 1 capability **regardless of the tier of the Rust
+content it models** — the Lean kernel checks the proof, so a wrong proof fails
+`lake build` and cannot corrupt the Rust. You may **not**, at Tier 1, change a
+theorem *statement*, change a *definition*, or add an *axiom* — those are trust
+assertions tiered like the content they model (see § 9). Never replace a real
+proof with `sorry`.
+
 ---
 
 ## 3. The Tier-2 Operating Rules (Compiler & IR Work)
@@ -303,7 +313,42 @@ a record. See [insecure.md](insecure.md).
 
 ---
 
-## 9. Related Documents
+## 9. Working with the Lean Proof Library (agents with Lean tools present)
+
+If your environment exposes Lean tools (the `lean-lsp` MCP: `lean_goal`,
+`lean_diagnostic_messages`, `lean_multi_attempt`, `lean_verify`, `lean_build`,
+…), you can contribute machine-checked correctness evidence for the Tier-3
+crates through the [`Volar/`](../Volar) library. See [lean.md](lean.md) for the
+library map, build steps, and theorem catalog.
+
+**You are encouraged to prove pending statements about higher-tier crates.** The
+Lean kernel is the oracle: a wrong proof fails `lake build`, so proving is safe
+to do at Tier 1 even when the modelled Rust is Tier 3. The capability boundary
+lives at *statements, definitions, and axioms*, not at proofs:
+
+| Action in `Volar/` | Tier | Why |
+|---|---|---|
+| Fill in / improve a **proof body** | 1 | Kernel-checked. |
+| Add a new theorem **whose statement you wrote** about Tier-3 content | 3 | The statement decides *what* is claimed. |
+| Change a **definition** modelling Tier-3 content | 3 | Changes the meaning being proven. |
+| Add/modify an **axiom** (`Volar/Axioms.lean`) | 3 + human | Unchecked trust; whitelist below. |
+
+**The axiom whitelist (non-negotiable).** The only permitted axiom is the
+*functionality* of the external hash (`Volar.Hash`, Keccak/SHA-3). Constructions
+Volar builds — **garbled circuits, VOLE, hash commitments, the length-doubling
+PRG** — must be *proven*. Garbled-circuit correctness in particular is a proof
+target, never an axiom. Hardness-based properties (e.g. commitment binding) are
+stated as *conditional theorems* taking the assumption as a hypothesis.
+
+**Discipline before you finish.** Run `#print axioms <thm>` (or
+`lean_verify Volar.…`) on what you proved and confirm:
+- primitives/spec theorems depend only on `{propext, Classical.choice, Quot.sound}`
+  — **no `Volar.Hash`, no `sorryAx`**;
+- nothing you touched introduced a new axiom or a `sorry`.
+
+`grep -rnE '^[[:space:]]*axiom ' Volar/` must still match only `Volar/Axioms.lean`.
+
+## 10. Related Documents
 
 - [reliability.md](reliability.md) — the authoritative tier system, file
   mappings, and reliability/AI marker policy this guide assumes.
@@ -315,3 +360,5 @@ a record. See [insecure.md](insecure.md).
 - [grafhen-review-plan.md](grafhen-review-plan.md) — example of a properly
   structured review plan a Tier 3 agent should produce for new
   constructions.
+- [lean.md](lean.md) — the Lean proof library: map, build, theorem catalog,
+  and the axiom whitelist.

@@ -148,7 +148,11 @@ implementation focus (VOLE-based ZK, garbled circuits, ORAM, compiler toolchain)
 ## Misc
 
 - [ ] Harden
-  - [ ] Formal security proofs (Lean)
+  - [~] Formal security proofs (Lean) — `Volar/` library live (Mathlib-backed,
+    mirrors `volar-primitives`/`volar-common`/`volar-spec`). Primitives field
+    theorems + Itoh–Tsujii, commitment completeness, VOLE completeness/binding,
+    and garbled-circuit correctness proven; see [docs/lean.md](docs/lean.md).
+    Remaining: deepen VOLE/FAEST soundness coverage.
   - [ ] Use Mythos, if this gets popular
 
 Prefer dynamically creating subgoals to handling entire goals at a time; AI agents, add this to files and memory.

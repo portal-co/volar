@@ -282,6 +282,28 @@ The legal combinations of reliability change and required tier are:
 | Add a brand-new cryptographic construction | 3 | Must enter at Experimental; must include a review plan analogous to [grafhen-review-plan.md](grafhen-review-plan.md). |
 | Add a brand-new compiler pass / IR variant | 2 | Must include both a generator (where applicable) and a property test. |
 | Mechanical refactor (rename, move, split) of any file | The file's required tier | The refactor must be observably equivalent; tests pass before and after. |
+| Write or edit a **Lean proof body** under `Volar/` (about content of *any* tier, including Tier-3 crypto) | **1** | The Lean kernel verifies the proof; a wrong proof fails `lake build` and cannot corrupt the Rust. Must not introduce a `sorry` into a previously-proven theorem. |
+| Change a Lean **theorem statement** or **definition** under `Volar/` that models Tier-3 content | **the modeled content's tier (3)** | A statement/definition is a trust assertion the kernel does not validate — it decides *what* is being proven. |
+| Add or modify an **axiom** in `Volar/Axioms.lean` | **3** + human sign-off | Axioms are unchecked trust. Permitted **solely** for external-primitive *functionality* (Keccak/SHA-3). Never axiomatize Volar's own constructions (garbled circuits, VOLE, commitments). |
+
+### Formal Proofs (Lean) — the second oracle
+
+The [`Volar/`](../Volar) Lean library ([docs/lean.md](lean.md)) mirrors the Tier-3
+crates and proves their completeness/soundness invariants. Because the **Lean kernel
+mechanically checks every proof**, proving is *safe to delegate downward*: a lower-tier
+agent that cannot edit a Tier-3 Rust file may still write Lean proofs about that file's
+construction — the worst a wrong proof can do is fail to compile.
+
+This widens who can contribute correctness evidence **without** weakening the Tier-3 gate
+on the Rust itself. Two hard limits keep the gate intact (see the table rows above):
+
+1. **Statements and definitions are tiered like the content they model.** Deciding *what*
+   to claim about a cryptographic construction is a cryptographic act.
+2. **Axioms are tightly whitelisted.** Only the *functionality* of external primitives
+   we do not implement (Keccak/SHA-3, in [`Volar/Axioms.lean`](../Volar/Axioms.lean)) may
+   be an axiom. Constructions Volar builds must be *proven*; hardness-based properties
+   (e.g. commitment binding ⇐ collision-resistance) are stated as *conditional theorems*,
+   never axioms. Audit with `#print axioms <thm>` / `lean_verify`.
 
 ### What a Lower-Tier Agent Should Do When Blocked
 

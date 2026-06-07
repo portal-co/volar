@@ -59,6 +59,16 @@ merely structural, surface that reasoning to the owner, and wait for an
 explicit go/no-go before proceeding or writing a hand-off document. See
 [`docs/agents-guide.md` § 5](docs/agents-guide.md#5-when-you-are-blocked).
 
+**Formal proofs are the exception.** The [`Volar/`](Volar) Lean library mirrors
+the Tier-3 crates and proves their invariants. Because the Lean kernel checks
+every proof, **writing or editing a Lean *proof body* is Tier 1 even for Tier-3
+content** — a wrong proof just fails `lake build`. Changing a theorem
+*statement*/definition, or adding an *axiom*, stays at the modelled content's
+tier. Axioms are whitelisted to external-primitive functionality only (Keccak/
+SHA-3); Volar's own constructions (garbled circuits, VOLE, commitments) must be
+proven, never axiomatized. See [`docs/lean.md`](docs/lean.md) and
+[`docs/reliability.md` § Formal Proofs (Lean)](docs/reliability.md#formal-proofs-lean--the-second-oracle).
+
 ## Crate Constraints
 
 | Crate | `std` | Notes |
@@ -127,6 +137,7 @@ Load these when working in the relevant area:
 |---|---|---|
 | Reliability + AI tiers | `docs/reliability.md` | Always — first thing before editing |
 | Operating procedure for AI agents | `docs/agents-guide.md` | Always — first thing before editing |
+| **Lean proof library + proving policy** | **`docs/lean.md`** | **When you have Lean tools (the `lean-lsp` MCP) and want to prove/inspect theorems about the Tier-3 crates** |
 | **Full pipeline (multi-pass, weaving feedback)** | **`docs/pipeline.md`** | **Touching any lowering pass, codegen backend, or weaver — the overview.md sketch is not accurate** |
 | User-facing integration | `docs/integration-guide.md` | When answering questions about app integration |
 | IR types, storage, Poly semantics | `docs/agent-context/ir-types-storage.md` | Working on IR, lowering, evaluators, store-forward, fuzzer generators |
