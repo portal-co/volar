@@ -212,7 +212,7 @@ impl<V> Terminator<V> {
 /// Type annotations inside `Op` are [`TypeId`] references into the containing
 /// [`Module::types`] table, consistent with [`Param`](Value::Param) and the
 /// rest of the module.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 #[non_exhaustive]
 pub enum Value<V = ValueId> {
