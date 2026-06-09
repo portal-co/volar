@@ -25,8 +25,8 @@ fn three_block_passthrough() -> BIrBlocks {
     BIrBlocks { blocks: vec![
         BIrBlock {
             params: 1,
-            stmts: vec![],
-            stmt_provs: vec![],
+            stmts: vec![BIrStmt::Zero],
+            stmt_provs: vec![()],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Block(IRBlockId(1)),
                 args: vec![IRVarId(0)],
@@ -34,8 +34,8 @@ fn three_block_passthrough() -> BIrBlocks {
         },
         BIrBlock {
             params: 1,
-            stmts: vec![],
-            stmt_provs: vec![],
+            stmts: vec![BIrStmt::Zero],
+            stmt_provs: vec![()],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Block(IRBlockId(2)),
                 args: vec![IRVarId(0)],
@@ -43,8 +43,8 @@ fn three_block_passthrough() -> BIrBlocks {
         },
         BIrBlock {
             params: 1,
-            stmts: vec![],
-            stmt_provs: vec![],
+            stmts: vec![BIrStmt::Zero],
+            stmt_provs: vec![()],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Return,
                 args: vec![IRVarId(0)],

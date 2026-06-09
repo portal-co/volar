@@ -59,8 +59,8 @@ fn three_block_passthrough() -> (IRBlocks, IRTypes) {
         // block 0: jmp block 1 with x
         IRBlock {
             params: vec![u32_ty],
-            stmts: vec![],
-            stmt_provs: vec![],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 0 }, u32_ty)],
+            stmt_provs: vec![()],
             terminator: IRTerminator::Jmp {
                 func: IRBlockTargetId::Block(IRBlockId(1)),
                 args: vec![IRVarId(0)],
@@ -69,8 +69,8 @@ fn three_block_passthrough() -> (IRBlocks, IRTypes) {
         // block 1: jmp block 2 with x (identical canonical key to block 0)
         IRBlock {
             params: vec![u32_ty],
-            stmts: vec![],
-            stmt_provs: vec![],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 0 }, u32_ty)],
+            stmt_provs: vec![()],
             terminator: IRTerminator::Jmp {
                 func: IRBlockTargetId::Block(IRBlockId(2)),
                 args: vec![IRVarId(0)],
@@ -79,8 +79,8 @@ fn three_block_passthrough() -> (IRBlocks, IRTypes) {
         // block 2: return x
         IRBlock {
             params: vec![u32_ty],
-            stmts: vec![],
-            stmt_provs: vec![],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 0 }, u32_ty)],
+            stmt_provs: vec![()],
             terminator: IRTerminator::Jmp {
                 func: IRBlockTargetId::Return,
                 args: vec![IRVarId(0)],

@@ -74,7 +74,7 @@ pub enum LoweringMode {
 /// - If `blocks` has more than one block (multi-block DAG not yet implemented).
 /// - If a back-edge targets any block other than block 0.
 /// - If `IRBlockTargetId::Dyn` is encountered.
-pub fn lower_to_circuit<P: Clone + Default>(blocks: &BIrBlocks<P>, limit: u32, mode: LoweringMode) -> BIrBlocks<P> {
+pub fn lower_to_circuit<P: Clone>(blocks: &BIrBlocks<P>, limit: u32, mode: LoweringMode) -> BIrBlocks<P> {
     if blocks.is_circuit() {
         return blocks.clone();
     }
@@ -88,6 +88,11 @@ pub fn lower_to_circuit<P: Clone + Default>(blocks: &BIrBlocks<P>, limit: u32, m
 
     let block0 = &blocks.blocks[0];
     let p = block0.params as usize; // number of circuit input params
+
+    // Provenance for infrastructure gates (MUX cascade, loop control constants).
+    // Use the first source statement's provenance; degenerate empty blocks panic.
+    let ctrl_prov: &P = block0.stmt_provs.first()
+        .expect("lower_to_circuit: block has no statements; cannot infer provenance for infrastructure gates");
 
     // Emitter owns the accumulating stmt list and var-ID counter.
     let mut emitter = Emitter::<P>::new(p as u32);
@@ -109,7 +114,7 @@ pub fn lower_to_circuit<P: Clone + Default>(blocks: &BIrBlocks<P>, limit: u32, m
 
         // Re-emit all block stmts with fresh circuit var IDs, carrying provenance.
         for (i, stmt) in block0.stmts.iter().enumerate() {
-            let prov = block0.stmt_provs.get(i).cloned().unwrap_or_default();
+            let prov = block0.stmt_provs.get(i).cloned().unwrap_or_else(|| ctrl_prov.clone());
             let out_id = emitter.emit(subst_stmt(stmt, &var_map), prov);
             // Map original stmt result (p + i) → fresh circuit var.
             var_map.insert(p as u32 + i as u32, out_id);
@@ -117,7 +122,7 @@ pub fn lower_to_circuit<P: Clone + Default>(blocks: &BIrBlocks<P>, limit: u32, m
 
         // Process terminator to extract (done, result, next_args).
         let (done_v, result_v, next_v) =
-            process_terminator(&block0.terminator, &var_map, &mut emitter, &current_state);
+            process_terminator(&block0.terminator, &var_map, &mut emitter, &current_state, ctrl_prov);
 
         done_vars.push(done_v);
         result_wires.push(result_v);
@@ -145,7 +150,7 @@ pub fn lower_to_circuit<P: Clone + Default>(blocks: &BIrBlocks<P>, limit: u32, m
         for b in 0..output_width {
             let a = *result_wires[k].get(b).unwrap_or(&gated[b]);
             let b_wire = gated[b];
-            new_gated.push(emit_mux(&mut emitter, done_vars[k], a, b_wire));
+            new_gated.push(emit_mux(&mut emitter, done_vars[k], a, b_wire, ctrl_prov));
         }
         gated = new_gated;
     }
@@ -153,11 +158,11 @@ pub fn lower_to_circuit<P: Clone + Default>(blocks: &BIrBlocks<P>, limit: u32, m
     // ---- OR cascade for the overall done flag ----
     let overall_done = if done_vars.is_empty() {
         // limit == 0: emit a constant Zero (loop never ran, never terminated).
-        emitter.emit(BIrStmt::Zero, P::default())
+        emitter.emit(BIrStmt::Zero, ctrl_prov.clone())
     } else {
         let mut acc = done_vars[0];
         for k in 1..done_vars.len() {
-            acc = emit_or(&mut emitter, acc, done_vars[k]);
+            acc = emit_or(&mut emitter, acc, done_vars[k], ctrl_prov);
         }
         acc
     };
@@ -204,7 +209,7 @@ pub struct SkipBoundary {
 /// Lower as [`lower_to_circuit`], additionally returning the [`SkipBoundary`] so
 /// a caller can attach the dynamic-skip continuation glue at the segment
 /// boundary.  Static lowering behaviour is identical to [`lower_to_circuit`].
-pub fn lower_to_circuit_with_boundary<P: Clone + Default>(
+pub fn lower_to_circuit_with_boundary<P: Clone>(
     blocks: &BIrBlocks<P>,
     limit: u32,
     mode: LoweringMode,
@@ -230,11 +235,12 @@ pub fn lower_to_circuit_with_boundary<P: Clone + Default>(
 /// - `done_wire`: circuit var that is 1 when this iteration exits.
 /// - `result_wires`: circuit vars for the return value when done.
 /// - `next_args`: circuit vars to use as the next iteration's block params.
-fn process_terminator<P: Clone + Default>(
+fn process_terminator<P: Clone>(
     terminator: &BIrTerminator,
     var_map: &BTreeMap<u32, u32>,
     emitter: &mut Emitter<P>,
     current_state: &[u32],
+    ctrl_prov: &P,
 ) -> (u32, Vec<u32>, Vec<u32>) {
     let lookup = |id: &IRVarId| -> u32 {
         *var_map
@@ -246,14 +252,14 @@ fn process_terminator<P: Clone + Default>(
         BIrTerminator::Jmp(target) => match &target.block {
             IRBlockTargetId::Return => {
                 // Unconditional return: always done.
-                let one_id = emitter.emit(BIrStmt::One, P::default());
+                let one_id = emitter.emit(BIrStmt::One, ctrl_prov.clone());
                 let result_v: Vec<u32> = target.args.iter().map(lookup).collect();
                 // next_args is irrelevant (done=1 will gate it away); reuse result.
                 (one_id, result_v.clone(), result_v)
             }
             IRBlockTargetId::Block(IRBlockId(0)) => {
                 // Unconditional back-edge to block 0: loop continues, never done.
-                let zero_id = emitter.emit(BIrStmt::Zero, P::default());
+                let zero_id = emitter.emit(BIrStmt::Zero, ctrl_prov.clone());
                 let next_v: Vec<u32> = target.args.iter().map(lookup).collect();
                 // result_wires are irrelevant (done=0); use current_state as placeholder.
                 (zero_id, current_state.to_vec(), next_v)
@@ -284,7 +290,7 @@ fn process_terminator<P: Clone + Default>(
 
                 // val=1 → Block(0); val=0 → Return.
                 (IRBlockTargetId::Block(IRBlockId(0)), IRBlockTargetId::Return) => {
-                    let not_val = emitter.emit(BIrStmt::Not(IRVarId(val_cv)), P::default());
+                    let not_val = emitter.emit(BIrStmt::Not(IRVarId(val_cv)), ctrl_prov.clone());
                     let result_v: Vec<u32> = else_target.args.iter().map(lookup).collect();
                     let next_v: Vec<u32> = then_target.args.iter().map(lookup).collect();
                     (not_val, result_v, next_v)
@@ -294,7 +300,7 @@ fn process_terminator<P: Clone + Default>(
                 // next_v uses current_state as a don't-care placeholder so that
                 // subsequent (dead) unrolled iterations still have a valid var_map.
                 (IRBlockTargetId::Return, IRBlockTargetId::Return) => {
-                    let one_id = emitter.emit(BIrStmt::One, P::default());
+                    let one_id = emitter.emit(BIrStmt::One, ctrl_prov.clone());
                     let then_v: Vec<u32> = then_target.args.iter().map(lookup).collect();
                     let else_v: Vec<u32> = else_target.args.iter().map(lookup).collect();
                     assert_eq!(
@@ -305,7 +311,7 @@ fn process_terminator<P: Clone + Default>(
                     let result_v: Vec<u32> = then_v
                         .iter()
                         .zip(else_v.iter())
-                        .map(|(&a, &b)| emit_mux(emitter, val_cv, a, b))
+                        .map(|(&a, &b)| emit_mux(emitter, val_cv, a, b, ctrl_prov))
                         .collect();
                     (one_id, result_v, current_state.to_vec())
                 }
@@ -336,23 +342,21 @@ fn process_terminator<P: Clone + Default>(
 ///
 /// Returns the circuit var ID of the result.
 /// Cost: 1 AND + 2 XOR.
-/// Synthetic MUX gates carry `P::default()` provenance.
-fn emit_mux<P: Clone + Default>(emitter: &mut Emitter<P>, s: u32, a: u32, b: u32) -> u32 {
-    let xab = emitter.emit(BIrStmt::Xor(IRVarId(a), IRVarId(b)), P::default());
-    let sel = emitter.emit(BIrStmt::And(IRVarId(s), IRVarId(xab)), P::default());
-    emitter.emit(BIrStmt::Xor(IRVarId(sel), IRVarId(b)), P::default())
+fn emit_mux<P: Clone>(emitter: &mut Emitter<P>, s: u32, a: u32, b: u32, prov: &P) -> u32 {
+    let xab = emitter.emit(BIrStmt::Xor(IRVarId(a), IRVarId(b)), prov.clone());
+    let sel = emitter.emit(BIrStmt::And(IRVarId(s), IRVarId(xab)), prov.clone());
+    emitter.emit(BIrStmt::Xor(IRVarId(sel), IRVarId(b)), prov.clone())
 }
 
 /// Emit `OR(a, b) = NOT(AND(NOT(a), NOT(b)))`.
 ///
 /// Returns the circuit var ID of the result.
 /// Cost: 2 NOT + 1 AND + 1 NOT = 4 gates.
-/// Synthetic OR gates carry `P::default()` provenance.
-fn emit_or<P: Clone + Default>(emitter: &mut Emitter<P>, a: u32, b: u32) -> u32 {
-    let na = emitter.emit(BIrStmt::Not(IRVarId(a)), P::default());
-    let nb = emitter.emit(BIrStmt::Not(IRVarId(b)), P::default());
-    let nand = emitter.emit(BIrStmt::And(IRVarId(na), IRVarId(nb)), P::default());
-    emitter.emit(BIrStmt::Not(IRVarId(nand)), P::default())
+fn emit_or<P: Clone>(emitter: &mut Emitter<P>, a: u32, b: u32, prov: &P) -> u32 {
+    let na = emitter.emit(BIrStmt::Not(IRVarId(a)), prov.clone());
+    let nb = emitter.emit(BIrStmt::Not(IRVarId(b)), prov.clone());
+    let nand = emitter.emit(BIrStmt::And(IRVarId(na), IRVarId(nb)), prov.clone());
+    emitter.emit(BIrStmt::Not(IRVarId(nand)), prov.clone())
 }
 
 // ============================================================================
@@ -411,13 +415,13 @@ fn subst_stmt(stmt: &BIrStmt, var_map: &BTreeMap<u32, u32>) -> BIrStmt {
 ///
 /// The invariant `next_id == params + stmts.len()` must hold at all times;
 /// call [`emit`](Emitter::emit) once per stmt to maintain it.
-struct Emitter<P: Clone + Default = ()> {
+struct Emitter<P: Clone = ()> {
     stmts: Vec<BIrStmt>,
     stmt_provs: Vec<P>,
     next_id: u32,
 }
 
-impl<P: Clone + Default> Emitter<P> {
+impl<P: Clone> Emitter<P> {
     fn new(first_id: u32) -> Self {
         Self { stmts: Vec::new(), stmt_provs: Vec::new(), next_id: first_id }
     }
@@ -584,8 +588,8 @@ mod tests {
         // CondJmp where both targets return: always done, result = mux(val, then, else).
         let blocks: BIrBlocks<()> = BIrBlocks { blocks: std::vec![BIrBlock {
             params: 2, // two input bits: selector and value
-            stmts: std::vec![],
-            stmt_provs: std::vec![],
+            stmts: std::vec![BIrStmt::Zero],
+            stmt_provs: std::vec![()],
             terminator: BIrTerminator::CondJmp {
                 val: IRVarId(0), // select on bit 0
                 then_target: BIrTarget {
