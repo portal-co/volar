@@ -192,7 +192,7 @@ fn incr(name: &str) -> IrExpr {
 
 /// Loop terminator analysis shared with `net` loop weavers.
 /// Returns `(done_var_id, output_var_id, next_state_var_ids)`.
-fn analyze_loop_terminator<P: Clone + Default>(
+fn analyze_loop_terminator<P: Clone>(
     block: &volar_ir::boolar::BIrBlock<P>,
 ) -> (u32, u32, Vec<IRVarId>) {
     match &block.terminator {

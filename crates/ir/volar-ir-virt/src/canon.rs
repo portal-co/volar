@@ -156,7 +156,7 @@ fn append_ir_terminator_schema(term: &IRTerminator, out: &mut Vec<ImmediateKind>
 
 /// Canonicalise an [`IRBlock`] and return its handler key plus the lifted
 /// immediates.
-pub fn canonicalize_ir_block<P: Clone + Default>(
+pub fn canonicalize_ir_block<P: Clone>(
     block: &IRBlock<P>,
 ) -> (IrHandlerKey, BlockImmediates) {
     let mut consts = Vec::new();
@@ -283,7 +283,7 @@ fn append_bir_terminator_schema(term: &BIrTerminator, out: &mut Vec<ImmediateKin
 
 /// Canonicalise a [`BIrBlock`] and return its handler key plus the lifted
 /// immediates.
-pub fn canonicalize_bir_block<P: Clone + Default>(
+pub fn canonicalize_bir_block<P: Clone>(
     block: &BIrBlock<P>,
 ) -> (BirHandlerKey, BlockImmediates) {
     let mut targets = Vec::new();

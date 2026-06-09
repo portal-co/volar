@@ -219,7 +219,7 @@ fn verifier_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredicate>)
 // ============================================================================
 
 /// `Array::<T, N>::from_fn(|{idx}| {body})`
-fn array_t_from_fn<P: Clone + Default>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
+fn array_t_from_fn<P: Clone>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
     IrExpr::Call {
         func: Box::new(IrExpr::Path {
             segments: vec!["Array".into(), "from_fn".into()],
@@ -240,7 +240,7 @@ fn array_t_from_fn<P: Clone + Default>(idx: &str, body: IrExpr<P>) -> IrExpr<P> 
 }
 
 /// `Array::<T, N>::default()` — the zero vector in the extension field.
-fn array_t_default<P: Clone + Default>() -> IrExpr<P> {
+fn array_t_default<P: Clone>() -> IrExpr<P> {
     IrExpr::Call {
         func: Box::new(IrExpr::Path {
             segments: vec!["Array".into(), "default".into()],
@@ -254,7 +254,7 @@ fn array_t_default<P: Clone + Default>() -> IrExpr<P> {
 }
 
 /// `wire.q[i]` — the verifier's Q share lane.
-fn q_index<P: Clone + Default>(wire_name: &str, idx: &str) -> IrExpr<P> {
+fn q_index<P: Clone>(wire_name: &str, idx: &str) -> IrExpr<P> {
     IrExpr::Index {
         base: Box::new(IrExpr::Field {
             base: Box::new(var(wire_name)),
@@ -265,7 +265,7 @@ fn q_index<P: Clone + Default>(wire_name: &str, idx: &str) -> IrExpr<P> {
 }
 
 /// `delta.delta[i]`
-fn delta_index<P: Clone + Default>(idx: &str) -> IrExpr<P> {
+fn delta_index<P: Clone>(idx: &str) -> IrExpr<P> {
     IrExpr::Index {
         base: Box::new(IrExpr::Field {
             base: Box::new(var("delta")),
@@ -276,7 +276,7 @@ fn delta_index<P: Clone + Default>(idx: &str) -> IrExpr<P> {
 }
 
 /// `Q { q: {body} }`
-fn q_struct<P: Clone + Default>(body: IrExpr<P>) -> IrExpr<P> {
+fn q_struct<P: Clone>(body: IrExpr<P>) -> IrExpr<P> {
     IrExpr::StructExpr {
         kind: StructKind::Custom("Q".into()),
         type_args: vec![],
@@ -350,7 +350,7 @@ fn bool_type() -> IrType {
 ///
 /// `vope_one.clone() + vope_one.clone()` = the zero Vope (since addition is XOR in GF2
 /// and adding a committed wire to itself cancels both bit and MAC).
-fn synth_prover_public_wire<P: Clone + Default>(bool_name: &str) -> IrExpr<P> {
+fn synth_prover_public_wire<P: Clone>(bool_name: &str) -> IrExpr<P> {
     let vope_one = clone_expr(var("vope_one"));
     let vope_zero = IrExpr::Binary {
         op: SpecBinOp::Add,
@@ -374,7 +374,7 @@ fn synth_prover_public_wire<P: Clone + Default>(bool_name: &str) -> IrExpr<P> {
 ///
 /// For a public bit `b=1` the verifier computes `K = M + 1·Δ`; with `M=0` this is `Δ`.
 /// For `b=0`, `K = 0`.  This is consistent with the prover's synthesis above.
-fn synth_verifier_public_wire<P: Clone + Default>(bool_name: &str) -> IrExpr<P> {
+fn synth_verifier_public_wire<P: Clone>(bool_name: &str) -> IrExpr<P> {
     let q_one = q_struct(IrExpr::MethodCall {
         receiver: Box::new(IrExpr::Field {
             base: Box::new(var("delta")),
@@ -402,7 +402,7 @@ fn synth_verifier_public_wire<P: Clone + Default>(bool_name: &str) -> IrExpr<P> 
 
 /// Emit `let (_wire_k, _hat_k) = vole_and_prover_step::<N, T>(wire_a.clone(), wire_b.clone());`
 /// The hat variable is left in scope for the caller to collect into a `FixedArray`.
-fn emit_prover_and_gate<P: Clone + Default>(
+fn emit_prover_and_gate<P: Clone>(
     name_a: &str,
     name_b: &str,
     wire_name: &str,
@@ -434,7 +434,7 @@ fn emit_prover_and_gate<P: Clone + Default>(
 
 /// Emit `let (_wire_k, _ok_k) = vole_and_verifier_check::<N, T>(delta, &wire_a, &wire_b, &q_and_k, &hat_k);`
 /// followed by `all_ok = all_ok && _ok_k;`.
-fn emit_verifier_and_gate<P: Clone + Default>(
+fn emit_verifier_and_gate<P: Clone>(
     name_a: &str,
     name_b: &str,
     wire_name: &str,
@@ -492,7 +492,7 @@ fn sbox_vope_array_type(sbox_count: usize) -> IrType {
 ///
 /// Calls the single-function prover step that returns both the K=1 downstream
 /// wire AND the K=2 hat-free product Vope.
-fn emit_prover_sbox_gate_k2<P: Clone + Default>(
+fn emit_prover_sbox_gate_k2<P: Clone>(
     name_a: &str,
     name_b: &str,
     wire_name: &str,
@@ -523,7 +523,7 @@ fn emit_prover_sbox_gate_k2<P: Clone + Default>(
 
 /// Emit: `let (wire_k, ok_k) = vole_sbox_verifier_check::<N,T>(delta, &q_a, &q_b, sbox_vopes[idx].clone());`
 /// followed by `all_ok = all_ok && ok_k;`.
-fn emit_verifier_sbox_check_k2<P: Clone + Default>(
+fn emit_verifier_sbox_check_k2<P: Clone>(
     name_a: &str,
     name_b: &str,
     wire_name: &str,
@@ -581,30 +581,31 @@ fn emit_verifier_sbox_check_k2<P: Clone + Default>(
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_vole_prover<P: Clone + Default>(
+pub fn weave_vole_prover<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule<IrFunction> {
-    weave_vole_prover_with_handler(circuit, name, linkage, &NoProvenance)
+    let mut module = weave_vole_prover_with_handler(circuit, name, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(&mut module); }
+    module
 }
 
 /// Weave a single-block boolean circuit into a VOLE **prover** `IrModule`,
 /// using `handler` to map input provenance into the output IR.
 ///
 /// All inputs are treated as private committed witnesses (default ZK behaviour).
-/// Use [`weave_vole_prover_with_config`] to mark some as public.
+/// Use [`weave_vole_prover_with_config_and_handler`] to mark some as public.
 pub fn weave_vole_prover_with_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
 {
-    weave_vole_prover_inner(circuit, name, &ZkWitnessConfig::default(), linkage, handler)
+    weave_vole_prover_inner(circuit, name, &ZkWitnessConfig::default(), handler)
 }
 
 /// Weave a single-block boolean circuit into a VOLE **prover** `IrModule` with
@@ -613,13 +614,15 @@ where
 /// Public inputs in `config.public_inputs` are typed as `bool`; the wire
 /// commitment is synthesised from `vope_one` at runtime.  Public action outputs
 /// in `config.action_configs` are similarly typed as `bool` parameters.
-pub fn weave_vole_prover_with_config<P: Clone + Default>(
+pub fn weave_vole_prover_with_config<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule<IrFunction> {
-    weave_vole_prover_inner(circuit, name, config, linkage, &NoProvenance)
+    let mut module = weave_vole_prover_inner(circuit, name, config, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(&mut module); }
+    module
 }
 
 /// Weave with both a [`ZkWitnessConfig`] and a provenance handler.
@@ -627,25 +630,23 @@ pub fn weave_vole_prover_with_config_and_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
     config: &ZkWitnessConfig,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
 {
-    weave_vole_prover_inner(circuit, name, config, linkage, handler)
+    weave_vole_prover_inner(circuit, name, config, handler)
 }
 
 fn weave_vole_prover_inner<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
     config: &ZkWitnessConfig,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
 {
     assert!(
@@ -656,6 +657,9 @@ where
     let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
+    let ctrl_prov: H::Output = block.stmt_provs.first()
+        .map(|p| handler.map(p))
+        .expect("weave_vole_prover_inner: circuit has no statements; cannot derive provenance for infrastructure statements");
 
     // Pre-scan for external primitives (oracle calls, action calls, RNG sources).
     // Track (name, bit_count) for actions so we can look up per-action public configs.
@@ -771,7 +775,7 @@ where
                 ty: None,
                 init: Some(synth_prover_public_wire(&format!("input_{}", i))),
             });
-            stmt_provs.push(H::Output::default());
+            stmt_provs.push(ctrl_prov.clone());
         }
     }
 
@@ -958,9 +962,6 @@ where
 
         consts: vec![],
     };
-    if let Some(ls) = linkage {
-        ls.apply(&mut module);
-    }
     module
 }
 
@@ -975,30 +976,31 @@ where
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_vole_verifier<P: Clone + Default>(
+pub fn weave_vole_verifier<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule<IrFunction> {
-    weave_vole_verifier_with_handler(circuit, name, linkage, &NoProvenance)
+    let mut module = weave_vole_verifier_with_handler(circuit, name, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(&mut module); }
+    module
 }
 
 /// Weave a single-block boolean circuit into a VOLE **verifier** `IrModule`,
 /// using `handler` to map input provenance into the output IR.
 ///
-/// All inputs are private witnesses.  Use [`weave_vole_verifier_with_config`] for
-/// public/private control.
+/// All inputs are private witnesses.  Use [`weave_vole_verifier_with_config_and_handler`]
+/// for public/private control.
 pub fn weave_vole_verifier_with_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
 {
-    weave_vole_verifier_inner(circuit, name, &ZkWitnessConfig::default(), linkage, handler)
+    weave_vole_verifier_inner(circuit, name, &ZkWitnessConfig::default(), handler)
 }
 
 /// Weave a single-block boolean circuit into a VOLE **verifier** `IrModule` with
@@ -1006,13 +1008,15 @@ where
 ///
 /// Public inputs become `bool` parameters; the verifier synthesises Q wires from
 /// `delta` rather than receiving them as VOLE shares.
-pub fn weave_vole_verifier_with_config<P: Clone + Default>(
+pub fn weave_vole_verifier_with_config<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule<IrFunction> {
-    weave_vole_verifier_inner(circuit, name, config, linkage, &NoProvenance)
+    let mut module = weave_vole_verifier_inner(circuit, name, config, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(&mut module); }
+    module
 }
 
 /// Weave with both a [`ZkWitnessConfig`] and a provenance handler.
@@ -1020,25 +1024,23 @@ pub fn weave_vole_verifier_with_config_and_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
     config: &ZkWitnessConfig,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
 {
-    weave_vole_verifier_inner(circuit, name, config, linkage, handler)
+    weave_vole_verifier_inner(circuit, name, config, handler)
 }
 
 fn weave_vole_verifier_inner<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
     config: &ZkWitnessConfig,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
 {
     assert!(
@@ -1049,6 +1051,9 @@ where
     let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
+    let ctrl_prov: H::Output = block.stmt_provs.first()
+        .map(|p| handler.map(p))
+        .expect("weave_vole_verifier_inner: circuit has no statements; cannot derive provenance for infrastructure statements");
 
     let (and_count, sbox_count) = expanded.iter().fold((0usize, 0usize), |(k1, k2), (_, s, prov)| {
         if matches!(s, BIrStmt::And(..)) {
@@ -1180,7 +1185,7 @@ where
         ty: None,
         init: Some(IrExpr::Lit(IrLit::Bool(true))),
     });
-    stmt_provs.push(H::Output::default());
+    stmt_provs.push(ctrl_prov.clone());
 
     // Synthesise Q wires for public inputs from the bool params.
     for i in 0..num_params {
@@ -1190,7 +1195,7 @@ where
                 ty: None,
                 init: Some(synth_verifier_public_wire(&format!("input_{}", i))),
             });
-            stmt_provs.push(H::Output::default());
+            stmt_provs.push(ctrl_prov.clone());
         }
     }
 
@@ -1385,9 +1390,6 @@ where
 
         consts: vec![],
     };
-    if let Some(ls) = linkage {
-        ls.apply(&mut module);
-    }
     module
 }
 
@@ -1396,14 +1398,16 @@ where
 // ============================================================================
 
 /// Backwards-compatible bounded VOLE prover weave.
-pub fn weave_vole_prover_bounded<P: Clone + Default>(
+pub fn weave_vole_prover_bounded<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule<IrFunction> {
-    weave_vole_prover_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
+    let mut module = weave_vole_prover_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(&mut module); }
+    module
 }
 
 /// Bounded VOLE prover weave with provenance handler.
@@ -1412,19 +1416,18 @@ pub fn weave_vole_prover_bounded_with_handler<P, H>(
     name: &str,
     limit: u32,
     mode: LoweringMode,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_vole_prover_inner(&lowered, name, &ZkWitnessConfig::default(), linkage, handler)
+    weave_vole_prover_inner(&lowered, name, &ZkWitnessConfig::default(), handler)
 }
 
 /// Bounded VOLE prover weave with witness config.
-pub fn weave_vole_prover_bounded_with_config<P: Clone + Default>(
+pub fn weave_vole_prover_bounded_with_config<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     config: &ZkWitnessConfig,
@@ -1433,7 +1436,9 @@ pub fn weave_vole_prover_bounded_with_config<P: Clone + Default>(
     linkage: Option<&LinkageSystem>,
 ) -> IrModule<IrFunction> {
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_vole_prover_inner(&lowered, name, config, linkage, &NoProvenance)
+    let mut module = weave_vole_prover_inner(&lowered, name, config, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(&mut module); }
+    module
 }
 
 /// Bounded VOLE prover weave with witness config and provenance handler.
@@ -1443,26 +1448,27 @@ pub fn weave_vole_prover_bounded_with_config_and_handler<P, H>(
     config: &ZkWitnessConfig,
     limit: u32,
     mode: LoweringMode,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_vole_prover_inner(&lowered, name, config, linkage, handler)
+    weave_vole_prover_inner(&lowered, name, config, handler)
 }
 
 /// Backwards-compatible bounded VOLE verifier weave.
-pub fn weave_vole_verifier_bounded<P: Clone + Default>(
+pub fn weave_vole_verifier_bounded<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule<IrFunction> {
-    weave_vole_verifier_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
+    let mut module = weave_vole_verifier_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(&mut module); }
+    module
 }
 
 /// Bounded VOLE verifier weave with provenance handler.
@@ -1471,19 +1477,18 @@ pub fn weave_vole_verifier_bounded_with_handler<P, H>(
     name: &str,
     limit: u32,
     mode: LoweringMode,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_vole_verifier_inner(&lowered, name, &ZkWitnessConfig::default(), linkage, handler)
+    weave_vole_verifier_inner(&lowered, name, &ZkWitnessConfig::default(), handler)
 }
 
 /// Bounded VOLE verifier weave with witness config.
-pub fn weave_vole_verifier_bounded_with_config<P: Clone + Default>(
+pub fn weave_vole_verifier_bounded_with_config<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     config: &ZkWitnessConfig,
@@ -1492,7 +1497,9 @@ pub fn weave_vole_verifier_bounded_with_config<P: Clone + Default>(
     linkage: Option<&LinkageSystem>,
 ) -> IrModule<IrFunction> {
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_vole_verifier_inner(&lowered, name, config, linkage, &NoProvenance)
+    let mut module = weave_vole_verifier_inner(&lowered, name, config, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(&mut module); }
+    module
 }
 
 /// Bounded VOLE verifier weave with witness config and provenance handler.
@@ -1502,15 +1509,14 @@ pub fn weave_vole_verifier_bounded_with_config_and_handler<P, H>(
     config: &ZkWitnessConfig,
     limit: u32,
     mode: LoweringMode,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_vole_verifier_inner(&lowered, name, config, linkage, handler)
+    weave_vole_verifier_inner(&lowered, name, config, handler)
 }
 
 // ============================================================================

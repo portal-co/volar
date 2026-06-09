@@ -336,7 +336,7 @@ pub enum IcmpPred {
 /// before emitting one or more instructions; each instruction inherits the
 /// most recently set provenance.  Backends that do not track provenance use
 /// the default `Prov = ()` and the no-op default impl of `set_prov`.
-pub trait LirTarget<Prov: Clone + Default = ()> {
+pub trait LirTarget<Prov: Clone = ()> {
     type Value: Clone + Eq + core::fmt::Debug;
     type Block: Clone + Eq + core::fmt::Debug;
 

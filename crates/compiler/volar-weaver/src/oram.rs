@@ -481,7 +481,7 @@ struct ConfigTypes {
 /// A new `IRBlocks` with ORAM-backed storage ops replaced, and the
 /// `types` table updated with any newly interned types. The action
 /// declarations from each `OramConfig` are merged into the output.
-pub fn rewrite_storage_to_oram<P: Clone + Default>(
+pub fn rewrite_storage_to_oram<P: Clone>(
     ir: &IRBlocks<P>,
     types: &mut IRTypes,
     configs: &[OramConfig],
@@ -556,7 +556,7 @@ pub fn rewrite_storage_to_oram<P: Clone + Default>(
 const ORAM_TREE_BASE: u32 = 1000;
 
 /// Rewrite a single IR block, replacing ORAM-backed storage ops.
-fn rewrite_block<P: Clone + Default>(
+fn rewrite_block<P: Clone>(
     block: &IRBlock<P>,
     oram_map: &BTreeMap<u32, usize>,
     configs: &[OramConfig],
@@ -682,7 +682,7 @@ fn rewrite_block<P: Clone + Default>(
 ///
 /// Total: 27 statements for a read, 26 for a write (write reuses
 /// the caller-provided data var instead of emitting a zero constant).
-fn emit_oram_access<P: Clone + Default>(
+fn emit_oram_access<P: Clone>(
     stmts: &mut Vec<IRStmt>,
     provs: &mut Vec<P>,
     prov: &P,
@@ -870,7 +870,7 @@ fn emit_oram_access<P: Clone + Default>(
 /// 3. `evict_call = ActionCall("oram_evict_S", guard, [evict_path], [fb_evict])`
 /// 4. `evict_result = ActionOutput(evict_call, 0, path_ty)`
 /// 5. `StorageWrite(ORAM_TREE_S, evict_result, path_ty, evict_leaf)`
-fn emit_eviction_pass<P: Clone + Default>(
+fn emit_eviction_pass<P: Clone>(
     stmts: &mut Vec<IRStmt>,
     provs: &mut Vec<P>,
     prov: &P,

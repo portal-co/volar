@@ -235,29 +235,29 @@ pub trait FheScheme {
     // ── Binary gate path ─────────────────────────────────────────────────────
 
     /// Emit a constant-zero wire.
-    fn emit_zero<Q: Clone + Default>(&self) -> IrExpr<Q>;
+    fn emit_zero<Q: Clone>(&self) -> IrExpr<Q>;
 
     /// Emit a constant-one wire.
-    fn emit_one<Q: Clone + Default>(&self) -> IrExpr<Q>;
+    fn emit_one<Q: Clone>(&self) -> IrExpr<Q>;
 
     /// Emit an XOR of two wires.
-    fn emit_xor<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q>;
+    fn emit_xor<Q: Clone>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q>;
 
     /// Emit a NOT of a wire.
-    fn emit_not<Q: Clone + Default>(&self, a: IrExpr<Q>) -> IrExpr<Q>;
+    fn emit_not<Q: Clone>(&self, a: IrExpr<Q>) -> IrExpr<Q>;
 
     /// Emit an AND of two wires.
     ///
     /// `gate_idx` is a 0-based count of AND gates already emitted, allowing
     /// schemes that need per-gate material (bootstrapping keys, garble tables)
     /// to index into a parameter array.
-    fn emit_and<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>, gate_idx: usize) -> IrExpr<Q>;
+    fn emit_and<Q: Clone>(&self, a: IrExpr<Q>, b: IrExpr<Q>, gate_idx: usize) -> IrExpr<Q>;
 
     /// Emit an OR of two wires.
     ///
     /// Default: De Morgan — `NOT(AND(NOT(a), NOT(b)))`.
     /// TFHE overrides with `tfhe_gate_bootstrapping_or` for composability.
-    fn emit_or<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
+    fn emit_or<Q: Clone>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
         self.emit_not(self.emit_and(self.emit_not(a), self.emit_not(b), 0))
     }
 
@@ -268,7 +268,7 @@ pub trait FheScheme {
     ///
     /// GRAFHEN may override with the efficient `sel · (a ⊕ b) ⊕ b` since
     /// garbled-circuit XOR is free and composable.
-    fn emit_cmux<Q: Clone + Default>(&self, sel: IrExpr<Q>, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
+    fn emit_cmux<Q: Clone>(&self, sel: IrExpr<Q>, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
         // Default: OR(AND(sel, a), AND(NOT(sel), b))
         // Uses clone_expr so the generated code calls .clone() on the sel wire.
         let sel_clone = clone_expr(sel.clone());
@@ -287,7 +287,7 @@ pub trait FheScheme {
     ///
     /// Default: panics at weave time.
     #[allow(unused_variables)]
-    fn emit_oracle_call<Q: Clone + Default>(
+    fn emit_oracle_call<Q: Clone>(
         &self,
         oracle_name: &str,
         arg_exprs: Vec<IrExpr<Q>>,
@@ -306,7 +306,7 @@ pub trait FheScheme {
     ///
     /// Default: panics at weave time.
     #[allow(unused_variables)]
-    fn emit_oracle_bit<Q: Clone + Default>(&self, call_var: &str, bit: usize) -> IrExpr<Q> {
+    fn emit_oracle_bit<Q: Clone>(&self, call_var: &str, bit: usize) -> IrExpr<Q> {
         panic!(
             "FheScheme: emit_oracle_bit not implemented (call_var: '{}', bit: {}).  \
              Either implement this method or avoid circuits with oracle calls.",
@@ -326,7 +326,7 @@ pub trait FheScheme {
     ///
     /// Default: panics at weave time.
     #[allow(unused_variables)]
-    fn emit_action_call<Q: Clone + Default>(
+    fn emit_action_call<Q: Clone>(
         &self,
         action_name: &str,
         guard_expr: IrExpr<Q>,
@@ -347,7 +347,7 @@ pub trait FheScheme {
     ///
     /// Default: panics at weave time.
     #[allow(unused_variables)]
-    fn emit_action_bit<Q: Clone + Default>(&self, call_var: &str, bit: usize) -> IrExpr<Q> {
+    fn emit_action_bit<Q: Clone>(&self, call_var: &str, bit: usize) -> IrExpr<Q> {
         panic!(
             "FheScheme: emit_action_bit not implemented (call_var: '{}', bit: {}).  \
              Either implement this method or avoid circuits with action calls.",
@@ -361,7 +361,7 @@ pub trait FheScheme {
     ///
     /// Default: panics at weave time.
     #[allow(unused_variables)]
-    fn emit_rng<Q: Clone + Default>(&self, rng_name: &str) -> IrExpr<Q> {
+    fn emit_rng<Q: Clone>(&self, rng_name: &str) -> IrExpr<Q> {
         panic!(
             "FheScheme: emit_rng not implemented (rng: '{}').  \
              Either implement this method or avoid circuits with RNG sources.",
@@ -433,7 +433,7 @@ pub trait FheScheme {
     ///
     /// Default: returns `expr` unchanged (identity — for schemes where public
     /// values already have the wire type, or where no promotion is needed).
-    fn promote_to_wire<Q: Clone + Default>(&self, expr: IrExpr<Q>, _width: usize) -> IrExpr<Q> {
+    fn promote_to_wire<Q: Clone>(&self, expr: IrExpr<Q>, _width: usize) -> IrExpr<Q> {
         expr
     }
 
@@ -464,13 +464,14 @@ pub trait FheScheme {
     /// **Default**: recursive binary MUX tree.  Cost: `(next_pow2(N) − 1)` AND
     /// gates.  Override in scheme implementations to use alternative strategies
     /// (e.g. PBS-based lookup).
-    fn emit_oblivious_read<Q: Clone + Default>(
+    fn emit_oblivious_read<Q: Clone>(
         &self,
         cells: &[String],
         addr_wires: &[&str],
         tag: &str,
         stmts: &mut Vec<IrStmt<Q>>,
         stmt_provs: &mut Vec<Q>,
+        ctrl_prov: &Q,
     ) -> String {
         match cells.len() {
             0 => {
@@ -480,7 +481,7 @@ pub trait FheScheme {
                     ty: None,
                     init: Some(self.emit_zero::<Q>()),
                 });
-                stmt_provs.push(Q::default());
+                stmt_provs.push(ctrl_prov.clone());
                 z
             }
             1 => cells[0].clone(),
@@ -497,7 +498,7 @@ pub trait FheScheme {
                         clone_expr(var(&cells[0])),
                     )),
                 });
-                stmt_provs.push(Q::default());
+                stmt_provs.push(ctrl_prov.clone());
                 result
             }
             _ => {
@@ -509,7 +510,7 @@ pub trait FheScheme {
                 let remaining_addr = if addr_wires.len() > 1 { &addr_wires[1..] } else { &[] as &[&str] };
 
                 let left_r = self.emit_oblivious_read(
-                    left, remaining_addr, &format!("{}l", tag), stmts, stmt_provs,
+                    left, remaining_addr, &format!("{}l", tag), stmts, stmt_provs, ctrl_prov,
                 );
                 let right_cells: Vec<String> = if right.is_empty() {
                     let zn = format!("{}rz", tag);
@@ -518,13 +519,13 @@ pub trait FheScheme {
                         ty: None,
                         init: Some(self.emit_zero::<Q>()),
                     });
-                    stmt_provs.push(Q::default());
+                    stmt_provs.push(ctrl_prov.clone());
                     vec![zn]
                 } else {
                     right.to_vec()
                 };
                 let right_r = self.emit_oblivious_read(
-                    &right_cells, remaining_addr, &format!("{}r", tag), stmts, stmt_provs,
+                    &right_cells, remaining_addr, &format!("{}r", tag), stmts, stmt_provs, ctrl_prov,
                 );
 
                 // MUX the two halves: sel=0 → left, sel=1 → right.
@@ -539,7 +540,7 @@ pub trait FheScheme {
                         clone_expr(var(&left_r)),
                     )),
                 });
-                stmt_provs.push(Q::default());
+                stmt_provs.push(ctrl_prov.clone());
                 result
             }
         }
@@ -558,7 +559,7 @@ pub trait FheScheme {
     /// selector (AND of address bit matches) then MUX(sel, old, src).
     /// Cost: roughly `addr_width * N` AND gates.  Override in scheme
     /// implementations to use alternative strategies.
-    fn emit_oblivious_write<Q: Clone + Default>(
+    fn emit_oblivious_write<Q: Clone>(
         &self,
         cells: &[String],
         addr_wires: &[&str],
@@ -566,6 +567,7 @@ pub trait FheScheme {
         tag: &str,
         stmts: &mut Vec<IrStmt<Q>>,
         stmt_provs: &mut Vec<Q>,
+        ctrl_prov: &Q,
     ) -> Vec<String> {
         let count = cells.len();
         let aw = effective_addr_width(count);
@@ -579,7 +581,7 @@ pub trait FheScheme {
                     ty: None,
                     init: Some(self.emit_not::<Q>(var(addr_wires[level]))),
                 });
-                stmt_provs.push(Q::default());
+                stmt_provs.push(ctrl_prov.clone());
                 name
             })
             .collect();
@@ -602,7 +604,7 @@ pub trait FheScheme {
                         ty: None,
                         init: Some(self.emit_and::<Q>(var(&acc), var(bit_wire), 0)),
                     });
-                    stmt_provs.push(Q::default());
+                    stmt_provs.push(ctrl_prov.clone());
                     acc = and_name;
                 }
                 acc
@@ -619,7 +621,7 @@ pub trait FheScheme {
                     clone_expr(var(old_cell)),
                 )),
             });
-            stmt_provs.push(Q::default());
+            stmt_provs.push(ctrl_prov.clone());
 
             new_cells.push(new_cell);
         }
@@ -646,13 +648,14 @@ pub trait FheScheme {
 /// Call this from an [`FheScheme::emit_oblivious_read`] override when the
 /// target supports loops and compact code is preferred over fully unrolled
 /// trees.
-pub fn oblivious_read_loop<S: FheScheme, Q: Clone + Default>(
+pub fn oblivious_read_loop<S: FheScheme, Q: Clone>(
     scheme: &S,
     cells: &[String],
     addr_wires: &[&str],
     tag: &str,
     stmts: &mut Vec<IrStmt<Q>>,
     stmt_provs: &mut Vec<Q>,
+    ctrl_prov: &Q,
 ) -> String {
     let count = cells.len();
     let aw = effective_addr_width(count);
@@ -666,7 +669,7 @@ pub fn oblivious_read_loop<S: FheScheme, Q: Clone + Default>(
                 ty: None,
                 init: Some(scheme.emit_not::<Q>(var(addr_wires[k]))),
             });
-            stmt_provs.push(Q::default());
+            stmt_provs.push(ctrl_prov.clone());
             name
         })
         .collect();
@@ -680,7 +683,7 @@ pub fn oblivious_read_loop<S: FheScheme, Q: Clone + Default>(
             cells.iter().map(|c| clone_expr(var(c))).collect(),
         )),
     });
-    stmt_provs.push(Q::default());
+    stmt_provs.push(ctrl_prov.clone());
 
     // Initialize mutable result: let mut {tag}_result = emit_zero();
     let result_name = format!("{}_result", tag);
@@ -689,7 +692,7 @@ pub fn oblivious_read_loop<S: FheScheme, Q: Clone + Default>(
         ty: None,
         init: Some(scheme.emit_zero::<Q>()),
     });
-    stmt_provs.push(Q::default());
+    stmt_provs.push(ctrl_prov.clone());
 
     // ── Loop body ────────────────────────────────────────────────────────
     let loop_var = format!("{}_i", tag);
@@ -732,7 +735,7 @@ pub fn oblivious_read_loop<S: FheScheme, Q: Clone + Default>(
                 }))),
             }),
         });
-        body_provs.push(Q::default());
+        body_provs.push(ctrl_prov.clone());
         bit_names.push(bit_name);
     }
 
@@ -746,7 +749,7 @@ pub fn oblivious_read_loop<S: FheScheme, Q: Clone + Default>(
             ty: None,
             init: Some(scheme.emit_one::<Q>()),
         });
-        body_provs.push(Q::default());
+        body_provs.push(ctrl_prov.clone());
         s
     } else if aw == 1 {
         bit_names[0].clone()
@@ -759,7 +762,7 @@ pub fn oblivious_read_loop<S: FheScheme, Q: Clone + Default>(
                 ty: None,
                 init: Some(scheme.emit_and::<Q>(var(&acc), var(&bit_names[k]), 0)),
             });
-            body_provs.push(Q::default());
+            body_provs.push(ctrl_prov.clone());
             acc = and_name;
         }
         acc
@@ -775,7 +778,7 @@ pub fn oblivious_read_loop<S: FheScheme, Q: Clone + Default>(
             index: Box::new(var(&loop_var)),
         })),
     });
-    body_provs.push(Q::default());
+    body_provs.push(ctrl_prov.clone());
 
     // MUX(sel, result, cell_val): sel=0 → result, sel=1 → cell_val
     // result = cmux(sel, cell_val, result.clone());
@@ -787,7 +790,7 @@ pub fn oblivious_read_loop<S: FheScheme, Q: Clone + Default>(
             clone_expr(var(&result_name)),
         )),
     }));
-    body_provs.push(Q::default());
+    body_provs.push(ctrl_prov.clone());
 
     // ── Emit the loop ────────────────────────────────────────────────────
     stmts.push(IrStmt::Expr(IrExpr::BoundedLoop {
@@ -807,7 +810,7 @@ pub fn oblivious_read_loop<S: FheScheme, Q: Clone + Default>(
             expr: None,
         },
     }));
-    stmt_provs.push(Q::default());
+    stmt_provs.push(ctrl_prov.clone());
 
     result_name
 }
@@ -826,7 +829,7 @@ pub fn oblivious_read_loop<S: FheScheme, Q: Clone + Default>(
 ///
 /// Call this from an [`FheScheme::emit_oblivious_write`] override when the
 /// target supports loops and compact code is preferred.
-pub fn oblivious_write_loop<S: FheScheme, Q: Clone + Default>(
+pub fn oblivious_write_loop<S: FheScheme, Q: Clone>(
     scheme: &S,
     cells: &[String],
     addr_wires: &[&str],
@@ -834,6 +837,7 @@ pub fn oblivious_write_loop<S: FheScheme, Q: Clone + Default>(
     tag: &str,
     stmts: &mut Vec<IrStmt<Q>>,
     stmt_provs: &mut Vec<Q>,
+    ctrl_prov: &Q,
 ) -> Vec<String> {
     let count = cells.len();
     let aw = effective_addr_width(count);
@@ -847,7 +851,7 @@ pub fn oblivious_write_loop<S: FheScheme, Q: Clone + Default>(
                 ty: None,
                 init: Some(scheme.emit_not::<Q>(var(addr_wires[k]))),
             });
-            stmt_provs.push(Q::default());
+            stmt_provs.push(ctrl_prov.clone());
             name
         })
         .collect();
@@ -861,7 +865,7 @@ pub fn oblivious_write_loop<S: FheScheme, Q: Clone + Default>(
             cells.iter().map(|c| clone_expr(var(c))).collect(),
         )),
     });
-    stmt_provs.push(Q::default());
+    stmt_provs.push(ctrl_prov.clone());
 
     // ── Loop body ────────────────────────────────────────────────────────
     let loop_var = format!("{}_i", tag);
@@ -902,7 +906,7 @@ pub fn oblivious_write_loop<S: FheScheme, Q: Clone + Default>(
                 }))),
             }),
         });
-        body_provs.push(Q::default());
+        body_provs.push(ctrl_prov.clone());
         bit_names.push(bit_name);
     }
 
@@ -914,7 +918,7 @@ pub fn oblivious_write_loop<S: FheScheme, Q: Clone + Default>(
             ty: None,
             init: Some(scheme.emit_one::<Q>()),
         });
-        body_provs.push(Q::default());
+        body_provs.push(ctrl_prov.clone());
         s
     } else if aw == 1 {
         bit_names[0].clone()
@@ -927,7 +931,7 @@ pub fn oblivious_write_loop<S: FheScheme, Q: Clone + Default>(
                 ty: None,
                 init: Some(scheme.emit_and::<Q>(var(&acc), var(&bit_names[k]), 0)),
             });
-            body_provs.push(Q::default());
+            body_provs.push(ctrl_prov.clone());
             acc = and_name;
         }
         acc
@@ -945,7 +949,7 @@ pub fn oblivious_write_loop<S: FheScheme, Q: Clone + Default>(
             index: Box::new(var(&loop_var)),
         })),
     });
-    body_provs.push(Q::default());
+    body_provs.push(ctrl_prov.clone());
 
     // cells_arr[i] = cmux(sel, src, old);
     body_stmts.push(IrStmt::Semi(IrExpr::Assign {
@@ -959,7 +963,7 @@ pub fn oblivious_write_loop<S: FheScheme, Q: Clone + Default>(
             var(&old_name),
         )),
     }));
-    body_provs.push(Q::default());
+    body_provs.push(ctrl_prov.clone());
 
     // ── Emit the loop ────────────────────────────────────────────────────
     stmts.push(IrStmt::Expr(IrExpr::BoundedLoop {
@@ -979,7 +983,7 @@ pub fn oblivious_write_loop<S: FheScheme, Q: Clone + Default>(
             expr: None,
         },
     }));
-    stmt_provs.push(Q::default());
+    stmt_provs.push(ctrl_prov.clone());
 
     // Extract updated cells from the array into individual variables.
     let mut new_cells = Vec::with_capacity(count);
@@ -993,7 +997,7 @@ pub fn oblivious_write_loop<S: FheScheme, Q: Clone + Default>(
                 index: Box::new(IrExpr::Lit(IrLit::Int(ci as i128))),
             })),
         });
-        stmt_provs.push(Q::default());
+        stmt_provs.push(ctrl_prov.clone());
         new_cells.push(new_name);
     }
 
@@ -1076,7 +1080,7 @@ pub fn weave_fhe<S: FheScheme>(
 /// vector (no address bits) yields 1 cell.
 ///
 /// Returns an empty config when the circuit contains no storage operations.
-pub fn derive_storage_config<P: Clone + Default>(circuit: &BIrBlocks<P>) -> FheStorageConfig {
+pub fn derive_storage_config<P: Clone>(circuit: &BIrBlocks<P>) -> FheStorageConfig {
     let mut max_addr_len: BTreeMap<(u32, usize), usize> = BTreeMap::new();
     for block in &circuit.blocks {
         for stmt in &block.stmts {
@@ -1110,7 +1114,7 @@ pub fn derive_storage_config<P: Clone + Default>(circuit: &BIrBlocks<P>) -> FheS
 ///
 /// `cell_count_fn` maps each `(StorageId, IRTypeId)` to a cell count.
 /// If `None`, uses `1` (single-cell) as a conservative default.
-pub fn derive_ir_storage_config<P: Clone + Default>(
+pub fn derive_ir_storage_config<P: Clone>(
     blocks: &IRBlocks<P>,
     cell_count_fn: Option<&dyn Fn(StorageId, IRTypeId) -> usize>,
 ) -> FheStorageConfig {
@@ -1167,7 +1171,11 @@ fn weave_fhe_flat<S: FheScheme>(
             &derived
         }
     };
-    weave_fhe_flat_bir(&circuit, scheme, name, linkage, &NoProvenance, Some(effective_storage))
+    let mut module = weave_fhe_flat_bir(&circuit, scheme, name, &NoProvenance, Some(effective_storage));
+    if let Some(ls) = linkage {
+        ls.apply(&mut module);
+    }
+    module
 }
 
 // ============================================================================
@@ -1204,7 +1212,7 @@ impl FheStorageCtx {
     ///
     /// For each `(sid, bw)` with `count` cells, emits `let _sinit_{sid}_{bw}_{i} =
     /// storage_{sid}_{bw}[{i}].clone();` bindings and tracks the cell names.
-    fn init_cells<Q: Clone + Default>(&mut self, stmts: &mut Vec<IrStmt<Q>>, stmt_provs: &mut Vec<Q>) {
+    fn init_cells<Q: Clone>(&mut self, stmts: &mut Vec<IrStmt<Q>>, stmt_provs: &mut Vec<Q>, ctrl_prov: &Q) {
         for (&(sid, bw), &count) in &self.counts {
             let param_name = format!("storage_{}_{}", sid, bw);
             for ci in 0..count {
@@ -1218,14 +1226,14 @@ impl FheStorageCtx {
                         index: Box::new(IrExpr::Lit(IrLit::Int(ci as i128))),
                     })),
                 });
-                stmt_provs.push(Q::default());
+                stmt_provs.push(ctrl_prov.clone());
                 self.cells.insert((sid, bw, ci), name);
             }
         }
     }
 
     /// Write-back all storage cells to the parameter slices at the end.
-    fn writeback_cells<Q: Clone + Default>(&self, stmts: &mut Vec<IrStmt<Q>>, stmt_provs: &mut Vec<Q>) {
+    fn writeback_cells<Q: Clone>(&self, stmts: &mut Vec<IrStmt<Q>>, stmt_provs: &mut Vec<Q>, ctrl_prov: &Q) {
         for (&(sid, bw), &count) in &self.counts {
             let param_name = format!("storage_{}_{}", sid, bw);
             for ci in 0..count {
@@ -1238,7 +1246,7 @@ impl FheStorageCtx {
                     }),
                     right: Box::new(clone_expr(var(cell_name))),
                 }));
-                stmt_provs.push(Q::default());
+                stmt_provs.push(ctrl_prov.clone());
             }
         }
     }
@@ -1247,7 +1255,7 @@ impl FheStorageCtx {
     ///
     /// Handles edge cases (0 cells → zero, 1 cell → clone) before dispatching
     /// to the scheme's oblivious read implementation for ≥ 2 cells.
-    fn emit_read<S: FheScheme, Q: Clone + Default>(
+    fn emit_read<S: FheScheme, Q: Clone>(
         &mut self,
         out_name: &str,
         storage_id: u32,
@@ -1257,6 +1265,7 @@ impl FheStorageCtx {
         stmts: &mut Vec<IrStmt<Q>>,
         stmt_provs: &mut Vec<Q>,
         _var_names: &mut BTreeMap<u32, String>,
+        ctrl_prov: &Q,
     ) -> String {
         let count = self.counts.get(&(storage_id, bit_width)).copied().unwrap_or(0);
         if count == 0 {
@@ -1267,7 +1276,7 @@ impl FheStorageCtx {
                 ty: None,
                 init: Some(z),
             });
-            stmt_provs.push(Q::default());
+            stmt_provs.push(ctrl_prov.clone());
             return String::from(out_name);
         }
 
@@ -1282,21 +1291,21 @@ impl FheStorageCtx {
                 ty: None,
                 init: Some(clone_expr(var(&cells[0]))),
             });
-            stmt_provs.push(Q::default());
+            stmt_provs.push(ctrl_prov.clone());
             return String::from(out_name);
         }
 
         // Delegate to the scheme's oblivious read (default: MUX tree).
         let tag = format!("_sr_{}", out_name);
         let result = scheme.emit_oblivious_read(
-            &cells, addr_wires, &tag, stmts, stmt_provs,
+            &cells, addr_wires, &tag, stmts, stmt_provs, ctrl_prov,
         );
         stmts.push(IrStmt::Let {
             pattern: IrPattern::ident(out_name),
             ty: None,
             init: Some(clone_expr(var(&result))),
         });
-        stmt_provs.push(Q::default());
+        stmt_provs.push(ctrl_prov.clone());
         String::from(out_name)
     }
 
@@ -1304,7 +1313,7 @@ impl FheStorageCtx {
     ///
     /// Handles edge cases (0 cells → no-op, 1 cell → unconditional write)
     /// before dispatching to the scheme's oblivious write for ≥ 2 cells.
-    fn emit_write<S: FheScheme, Q: Clone + Default>(
+    fn emit_write<S: FheScheme, Q: Clone>(
         &mut self,
         storage_id: u32,
         bit_width: usize,
@@ -1313,6 +1322,7 @@ impl FheStorageCtx {
         scheme: &S,
         stmts: &mut Vec<IrStmt<Q>>,
         stmt_provs: &mut Vec<Q>,
+        ctrl_prov: &Q,
     ) {
         let count = self.counts.get(&(storage_id, bit_width)).copied().unwrap_or(0);
         if count == 0 { return; }
@@ -1325,7 +1335,7 @@ impl FheStorageCtx {
                 ty: None,
                 init: Some(clone_expr(var(src_wire))),
             });
-            stmt_provs.push(Q::default());
+            stmt_provs.push(ctrl_prov.clone());
             self.cells.insert((storage_id, bit_width, 0), new_name);
             return;
         }
@@ -1339,7 +1349,7 @@ impl FheStorageCtx {
 
         // Delegate to the scheme's oblivious write (default: demux + MUX).
         let new_cells = scheme.emit_oblivious_write(
-            &cells, addr_wires, src_wire, &tag, stmts, stmt_provs,
+            &cells, addr_wires, src_wire, &tag, stmts, stmt_provs, ctrl_prov,
         );
 
         // Update tracked cell names.
@@ -1376,12 +1386,11 @@ pub fn weave_fhe_flat_bir<P, H, S>(
     circuit: &BIrBlocks<P>,
     scheme: &S,
     name: &str,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
     storage: Option<&FheStorageConfig>,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     S: FheScheme,
 {
@@ -1434,9 +1443,14 @@ where
     let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut and_gate_idx: usize = 0;
 
+    // Provenance for infrastructure statements (storage init, mux overhead).
+    let ctrl_prov: H::Output = block.stmt_provs.first()
+        .map(|p| handler.map(p))
+        .expect("weave_fhe_flat_bir: circuit has no statements; cannot derive provenance for infrastructure gates");
+
     // Initialize storage cells from parameters.
     let mut stor_ctx = FheStorageCtx::new(&stor_cfg.sizes);
-    stor_ctx.init_cells::<H::Output>(&mut stmts, &mut stmt_provs);
+    stor_ctx.init_cells::<H::Output>(&mut stmts, &mut stmt_provs, &ctrl_prov);
 
     for (result_id, stmt, prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
@@ -1519,6 +1533,7 @@ where
                     &mut stmts,
                     &mut stmt_provs,
                     &mut var_names,
+                    &ctrl_prov,
                 );
                 var_names.insert(result_id.0, let_name);
                 continue; // stmts already emitted by emit_read
@@ -1545,6 +1560,7 @@ where
                     scheme,
                     &mut stmts,
                     &mut stmt_provs,
+                    &ctrl_prov,
                 );
                 // StorageWrite produces a dummy zero.
                 let z: IrExpr<H::Output> = scheme.emit_zero();
@@ -1570,7 +1586,7 @@ where
     }
 
     // Write back storage cells to the parameter slices.
-    stor_ctx.writeback_cells::<H::Output>(&mut stmts, &mut stmt_provs);
+    stor_ctx.writeback_cells::<H::Output>(&mut stmts, &mut stmt_provs, &ctrl_prov);
 
     let (ret_expr, ret_type) = build_return(block, &var_names, wire_ty);
 
@@ -1602,9 +1618,6 @@ where
 
         consts: vec![],
     };
-    if let Some(ls) = linkage {
-        ls.apply(&mut module);
-    }
     module
 }
 
@@ -2686,7 +2699,7 @@ impl FheScheme for GrafhenScheme {
         "grafhen"
     }
 
-    fn emit_zero<Q: Clone + Default>(&self) -> IrExpr<Q> {
+    fn emit_zero<Q: Clone>(&self) -> IrExpr<Q> {
         // GrafhenWord::identity() — the additive identity (all-zero ciphertext).
         IrExpr::Call {
             func: Box::new(IrExpr::Path {
@@ -2697,7 +2710,7 @@ impl FheScheme for GrafhenScheme {
         }
     }
 
-    fn emit_one<Q: Clone + Default>(&self) -> IrExpr<Q> {
+    fn emit_one<Q: Clone>(&self) -> IrExpr<Q> {
         // pk.enc_one.clone()
         clone_expr(IrExpr::Field {
             base: Box::new(var("pk")),
@@ -2705,7 +2718,7 @@ impl FheScheme for GrafhenScheme {
         })
     }
 
-    fn emit_xor<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
+    fn emit_xor<Q: Clone>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
         // grafhen_xor(&a.clone(), &b.clone())
         IrExpr::Call {
             func: Box::new(IrExpr::Path {
@@ -2716,7 +2729,7 @@ impl FheScheme for GrafhenScheme {
         }
     }
 
-    fn emit_not<Q: Clone + Default>(&self, a: IrExpr<Q>) -> IrExpr<Q> {
+    fn emit_not<Q: Clone>(&self, a: IrExpr<Q>) -> IrExpr<Q> {
         // grafhen_not(&a.clone(), pk)
         IrExpr::Call {
             func: Box::new(IrExpr::Path {
@@ -2727,7 +2740,7 @@ impl FheScheme for GrafhenScheme {
         }
     }
 
-    fn emit_and<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>, _gate_idx: usize) -> IrExpr<Q> {
+    fn emit_and<Q: Clone>(&self, a: IrExpr<Q>, b: IrExpr<Q>, _gate_idx: usize) -> IrExpr<Q> {
         // grafhen_and(&a.clone(), &b.clone(), pk)
         IrExpr::Call {
             func: Box::new(IrExpr::Path {
@@ -2738,13 +2751,13 @@ impl FheScheme for GrafhenScheme {
         }
     }
 
-    fn emit_or<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
+    fn emit_or<Q: Clone>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
         // De Morgan: NOT(AND(NOT(a), NOT(b)))
         // GRAFHEN NOT and XOR are free, so only 1 AND gate cost.
         self.emit_not(self.emit_and(self.emit_not(a), self.emit_not(b), 0))
     }
 
-    fn emit_cmux<Q: Clone + Default>(&self, sel: IrExpr<Q>, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
+    fn emit_cmux<Q: Clone>(&self, sel: IrExpr<Q>, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
         // GRAFHEN has free composable XOR, so use the efficient formula:
         // MUX(sel, a, b) = sel · (a ⊕ b) ⊕ b = XOR(AND(sel, XOR(a, b)), b)
         // Only 1 AND gate cost (XOR and NOT are free).
@@ -2753,7 +2766,7 @@ impl FheScheme for GrafhenScheme {
         self.emit_xor(masked, b)
     }
 
-    fn emit_oracle_call<Q: Clone + Default>(
+    fn emit_oracle_call<Q: Clone>(
         &self,
         oracle_name: &str,
         arg_exprs: Vec<IrExpr<Q>>,
@@ -2771,7 +2784,7 @@ impl FheScheme for GrafhenScheme {
         }
     }
 
-    fn emit_oracle_bit<Q: Clone + Default>(&self, call_var: &str, bit: usize) -> IrExpr<Q> {
+    fn emit_oracle_bit<Q: Clone>(&self, call_var: &str, bit: usize) -> IrExpr<Q> {
         // call_var.{bit}.clone()
         clone_expr(IrExpr::Field {
             base: Box::new(var(call_var)),
@@ -2779,7 +2792,7 @@ impl FheScheme for GrafhenScheme {
         })
     }
 
-    fn emit_action_call<Q: Clone + Default>(
+    fn emit_action_call<Q: Clone>(
         &self,
         action_name: &str,
         guard_expr: IrExpr<Q>,
@@ -2799,7 +2812,7 @@ impl FheScheme for GrafhenScheme {
         }
     }
 
-    fn emit_action_bit<Q: Clone + Default>(&self, call_var: &str, bit: usize) -> IrExpr<Q> {
+    fn emit_action_bit<Q: Clone>(&self, call_var: &str, bit: usize) -> IrExpr<Q> {
         // call_var.{bit}.clone()
         clone_expr(IrExpr::Field {
             base: Box::new(var(call_var)),
@@ -2807,7 +2820,7 @@ impl FheScheme for GrafhenScheme {
         })
     }
 
-    fn emit_rng<Q: Clone + Default>(&self, rng_name: &str) -> IrExpr<Q> {
+    fn emit_rng<Q: Clone>(&self, rng_name: &str) -> IrExpr<Q> {
         // grafhen_encrypt({rng_name}(), pk)
         IrExpr::Call {
             func: Box::new(IrExpr::Path {
@@ -2981,7 +2994,7 @@ impl FheScheme for TfheScheme {
         None
     }
 
-    fn promote_to_wire<Q: Clone + Default>(&self, expr: IrExpr<Q>, width: usize) -> IrExpr<Q> {
+    fn promote_to_wire<Q: Clone>(&self, expr: IrExpr<Q>, width: usize) -> IrExpr<Q> {
         // Lift a cleartext value to LweCiphertext<N_LWE>.
         let encrypt = |e: IrExpr<Q>| -> IrExpr<Q> {
             IrExpr::Call {
@@ -3009,7 +3022,7 @@ impl FheScheme for TfheScheme {
         }
     }
 
-    fn emit_zero<Q: Clone + Default>(&self) -> IrExpr<Q> {
+    fn emit_zero<Q: Clone>(&self) -> IrExpr<Q> {
         IrExpr::Call {
             func: Box::new(IrExpr::Path {
                 segments: vec!["tfhe_trivial_zero".into()],
@@ -3019,7 +3032,7 @@ impl FheScheme for TfheScheme {
         }
     }
 
-    fn emit_one<Q: Clone + Default>(&self) -> IrExpr<Q> {
+    fn emit_one<Q: Clone>(&self) -> IrExpr<Q> {
         IrExpr::Call {
             func: Box::new(IrExpr::Path {
                 segments: vec!["tfhe_trivial_one".into()],
@@ -3029,7 +3042,7 @@ impl FheScheme for TfheScheme {
         }
     }
 
-    fn emit_xor<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
+    fn emit_xor<Q: Clone>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
         // TFHE XOR is non-composable ({0, Q4} encoding breaks chaining).
         // Decompose: XOR(a, b) = OR(AND(a, NOT(b)), AND(NOT(a), b))
         // = 2 AND + 1 OR + 2 free NOT = 3 bootstrapping rounds.
@@ -3043,7 +3056,7 @@ impl FheScheme for TfheScheme {
         self.emit_or(a_and_not_b, not_a_and_b)
     }
 
-    fn emit_not<Q: Clone + Default>(&self, a: IrExpr<Q>) -> IrExpr<Q> {
+    fn emit_not<Q: Clone>(&self, a: IrExpr<Q>) -> IrExpr<Q> {
         IrExpr::Call {
             func: Box::new(IrExpr::Path {
                 segments: vec!["tfhe_not".into()],
@@ -3053,7 +3066,7 @@ impl FheScheme for TfheScheme {
         }
     }
 
-    fn emit_and<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>, _gate_idx: usize) -> IrExpr<Q> {
+    fn emit_and<Q: Clone>(&self, a: IrExpr<Q>, b: IrExpr<Q>, _gate_idx: usize) -> IrExpr<Q> {
         IrExpr::Call {
             func: Box::new(IrExpr::Path {
                 segments: vec!["tfhe_gate_bootstrapping_and".into()],
@@ -3063,7 +3076,7 @@ impl FheScheme for TfheScheme {
         }
     }
 
-    fn emit_or<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
+    fn emit_or<Q: Clone>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
         IrExpr::Call {
             func: Box::new(IrExpr::Path {
                 segments: vec!["tfhe_gate_bootstrapping_or".into()],
@@ -4061,7 +4074,7 @@ mod tests {
         let scheme = TfheScheme::flat();
         let config = storage_config_2cells();
         let module = weave_fhe_flat_bir(
-            &circuit, &scheme, "stor_test", None, &NoProvenance, Some(&config),
+            &circuit, &scheme, "stor_test", &NoProvenance, Some(&config),
         );
         // Should produce a function with storage parameters.
         assert_eq!(module.functions.len(), 1);
@@ -4083,7 +4096,7 @@ mod tests {
         let scheme = GrafhenScheme::new(64);
         let config = storage_config_2cells();
         let module = weave_fhe_flat_bir(
-            &circuit, &scheme, "stor_grafhen", None, &NoProvenance, Some(&config),
+            &circuit, &scheme, "stor_grafhen", &NoProvenance, Some(&config),
         );
         assert_eq!(module.functions.len(), 1);
         let func = &module.functions[0];
@@ -4104,7 +4117,7 @@ mod tests {
         let scheme = TfheScheme::flat();
         // Pass None => 0 cells => reads produce zeros, writes are no-ops.
         let module = weave_fhe_flat_bir(
-            &circuit, &scheme, "no_stor", None, &NoProvenance, None,
+            &circuit, &scheme, "no_stor", &NoProvenance, None,
         );
         assert_eq!(module.functions.len(), 1);
     }
@@ -4115,7 +4128,7 @@ mod tests {
         let scheme = TfheScheme::flat();
         let config = storage_config_2cells();
         let module = weave_fhe_flat_bir(
-            &circuit, &scheme, "wb", None, &NoProvenance, Some(&config),
+            &circuit, &scheme, "wb", &NoProvenance, Some(&config),
         );
         let code = print_fhe_flat_module(&module, true);
         // The write-back assigns to storage_5_1[0] and storage_5_1[1].
@@ -4192,12 +4205,12 @@ mod tests {
 
         let manual_config = storage_config_2cells();
         let manual_module = weave_fhe_flat_bir(
-            &circuit, &scheme, "manual", None, &NoProvenance, Some(&manual_config),
+            &circuit, &scheme, "manual", &NoProvenance, Some(&manual_config),
         );
 
         let derived_config = derive_storage_config(&circuit);
         let derived_module = weave_fhe_flat_bir(
-            &circuit, &scheme, "derived", None, &NoProvenance, Some(&derived_config),
+            &circuit, &scheme, "derived", &NoProvenance, Some(&derived_config),
         );
 
         let manual_func = &manual_module.functions[0];
@@ -4244,7 +4257,7 @@ mod tests {
         let mut provs: Vec<()> = Vec::new();
 
         let result = oblivious_read_loop(
-            &scheme, &cell_names, &addr_refs, "rd", &mut stmts, &mut provs,
+            &scheme, &cell_names, &addr_refs, "rd", &mut stmts, &mut provs, &(),
         );
 
         IrModule {
@@ -4300,7 +4313,7 @@ mod tests {
         let mut provs: Vec<()> = Vec::new();
 
         let new_cells = oblivious_write_loop(
-            &scheme, &cell_names, &addr_refs, "src", "wr", &mut stmts, &mut provs,
+            &scheme, &cell_names, &addr_refs, "src", "wr", &mut stmts, &mut provs, &(),
         );
 
         // Return a tuple of the new cells.

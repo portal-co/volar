@@ -124,14 +124,18 @@ impl LinkageSystem {
         self.specs.push(spec);
     }
 
-    /// Merge all **inline** spec declarations into `target`.
+    /// Merge all **inline** spec declarations into a unit-provenance `target`.
     ///
     /// Remote specs are silently skipped — call [`remote_refs`](Self::remote_refs)
     /// to obtain their type names for import generation.
     ///
     /// Items are appended in the order they were added; no deduplication is
     /// performed. Call this once before rendering the target module.
-    pub fn apply<Q: Clone + Default>(&self, target: &mut IrModule<IrFunction<Q>, Q>) {
+    ///
+    /// Spec modules always carry `()` provenance. This method only accepts
+    /// unit-provenance targets so that no provenance is invented. For targets
+    /// with custom provenance use [`apply_converting`].
+    pub fn apply(&self, target: &mut IrModule<IrFunction<()>, ()>) {
         for spec in &self.specs {
             if matches!(spec.kind, LinkageKind::Remote { .. }) {
                 continue;
@@ -139,17 +143,19 @@ impl LinkageSystem {
             target.structs.extend(spec.module.structs.iter().cloned());
             target.enums.extend(spec.module.enums.iter().cloned());
             target.traits.extend(spec.module.traits.iter().cloned());
-            target.impls.extend(spec.module.impls.iter().cloned().map(|i: IrImpl<()>| i.map_prov(&|_| Q::default())));
-            target.functions.extend(spec.module.functions.iter().cloned().map(|f: IrFunction<()>| f.map_prov(&|_| Q::default())));
+            target.impls.extend(spec.module.impls.iter().cloned());
+            target.functions.extend(spec.module.functions.iter().cloned());
             target.type_aliases.extend(spec.module.type_aliases.iter().cloned());
         }
     }
 
-    /// Merge all **inline** spec declarations into a CFG module.
+    /// Merge all **inline** spec declarations into a unit-provenance CFG module.
     ///
     /// Remote specs are skipped. Flat spec functions are wrapped as
     /// [`IrAnyFunction::Flat`].
-    pub fn apply_cfg<Q: Clone + Default>(&self, target: &mut IrCfgModule<Q>) {
+    ///
+    /// For custom-provenance targets use [`apply_cfg_converting`].
+    pub fn apply_cfg(&self, target: &mut IrCfgModule<()>) {
         for spec in &self.specs {
             if matches!(spec.kind, LinkageKind::Remote { .. }) {
                 continue;
@@ -157,10 +163,75 @@ impl LinkageSystem {
             target.structs.extend(spec.module.structs.iter().cloned());
             target.enums.extend(spec.module.enums.iter().cloned());
             target.traits.extend(spec.module.traits.iter().cloned());
-            target.impls.extend(spec.module.impls.iter().cloned().map(|i: IrImpl<()>| i.map_prov(&|_| Q::default())));
+            target.impls.extend(spec.module.impls.iter().cloned());
             target.functions.extend(
-                spec.module.functions.iter().cloned()
-                    .map(|f: IrFunction<()>| IrAnyFunction::Flat(f.map_prov(&|_| Q::default())))
+                spec.module.functions.iter().cloned().map(IrAnyFunction::Flat)
+            );
+            target.type_aliases.extend(spec.module.type_aliases.iter().cloned());
+        }
+    }
+
+    /// Merge all **inline** spec declarations into `target` using `lib_prov`
+    /// to supply the provenance value for every injected spec statement.
+    ///
+    /// Use this when the target carries custom provenance (`Q ≠ ()`).
+    /// The caller is responsible for choosing a meaningful `lib_prov` value
+    /// (e.g. a sentinel indicating "standard library code").
+    pub fn apply_converting<Q: Clone>(
+        &self,
+        target: &mut IrModule<IrFunction<Q>, Q>,
+        lib_prov: impl Fn() -> Q,
+    ) {
+        for spec in &self.specs {
+            if matches!(spec.kind, LinkageKind::Remote { .. }) {
+                continue;
+            }
+            target.structs.extend(spec.module.structs.iter().cloned());
+            target.enums.extend(spec.module.enums.iter().cloned());
+            target.traits.extend(spec.module.traits.iter().cloned());
+            target.impls.extend(
+                spec.module.impls.iter().cloned().map(|i: IrImpl<()>| {
+                    let p = lib_prov();
+                    i.map_prov(&|_| p.clone())
+                }),
+            );
+            target.functions.extend(
+                spec.module.functions.iter().cloned().map(|f: IrFunction<()>| {
+                    let p = lib_prov();
+                    f.map_prov(&|_| p.clone())
+                }),
+            );
+            target.type_aliases.extend(spec.module.type_aliases.iter().cloned());
+        }
+    }
+
+    /// Merge all **inline** spec declarations into a CFG module using `lib_prov`
+    /// to supply provenance for every injected spec statement.
+    ///
+    /// For custom-provenance CFG targets. See also [`apply_cfg`].
+    pub fn apply_cfg_converting<Q: Clone>(
+        &self,
+        target: &mut IrCfgModule<Q>,
+        lib_prov: impl Fn() -> Q,
+    ) {
+        for spec in &self.specs {
+            if matches!(spec.kind, LinkageKind::Remote { .. }) {
+                continue;
+            }
+            target.structs.extend(spec.module.structs.iter().cloned());
+            target.enums.extend(spec.module.enums.iter().cloned());
+            target.traits.extend(spec.module.traits.iter().cloned());
+            target.impls.extend(
+                spec.module.impls.iter().cloned().map(|i: IrImpl<()>| {
+                    let p = lib_prov();
+                    i.map_prov(&|_| p.clone())
+                }),
+            );
+            target.functions.extend(
+                spec.module.functions.iter().cloned().map(|f: IrFunction<()>| {
+                    let p = lib_prov();
+                    IrAnyFunction::Flat(f.map_prov(&|_| p.clone()))
+                }),
             );
             target.type_aliases.extend(spec.module.type_aliases.iter().cloned());
         }

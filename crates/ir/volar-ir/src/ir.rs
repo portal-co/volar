@@ -47,7 +47,7 @@ pub struct IRBlockId(pub u32);
 /// Use `P = ()` (the default) when provenance is not needed.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct IRBlocks<P: Clone + Default = ()> {
+pub struct IRBlocks<P: Clone = ()> {
     /// Oracles declared for this circuit (resolved by the execution environment).
     pub oracles: Vec<OracleDecl>,
     /// Actions declared for this circuit (resolved by the execution environment).
@@ -59,7 +59,7 @@ pub struct IRBlocks<P: Clone + Default = ()> {
     /// Pre-initialised storage segments propagated from WASM data sections.
     pub pre_init: alloc::vec::Vec<PreInitSegment>,
 }
-impl<P: Clone + Default> IRBlocks<P> {
+impl<P: Clone> IRBlocks<P> {
     /// Construct an `IRBlocks` with no oracle, action, or RNG declarations.
     pub fn new(blocks: Vec<IRBlock<P>>) -> Self {
         IRBlocks {
@@ -92,7 +92,7 @@ impl<P: Clone + Default> IRBlocks<P> {
 /// (parallel to `stmts`).  Use `P = ()` when provenance is not needed.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct IRBlock<P: Clone + Default = ()> {
+pub struct IRBlock<P: Clone = ()> {
     pub params: Vec<IRTypeId>,
     pub stmts: Vec<IRStmt>,
     /// Per-statement provenance, same length as `stmts`.
@@ -101,7 +101,7 @@ pub struct IRBlock<P: Clone + Default = ()> {
     pub terminator: IRTerminator,
 }
 
-impl<P: Clone + Default> IRBlock<P> {
+impl<P: Clone> IRBlock<P> {
     /// Append a statement with an explicit provenance annotation.
     /// Returns the [`IRVarId`] for this statement (= index in the block's var space).
     pub fn push_stmt(&mut self, stmt: IRStmt, prov: P) -> IRVarId {
@@ -109,11 +109,6 @@ impl<P: Clone + Default> IRBlock<P> {
         self.stmts.push(stmt);
         self.stmt_provs.push(prov);
         id
-    }
-
-    /// Append a statement using `P::default()` as the provenance.
-    pub fn push_stmt_default(&mut self, stmt: IRStmt) -> IRVarId {
-        self.push_stmt(stmt, P::default())
     }
 
     /// Map provenance annotations using a [`ProvenanceHandler`].
@@ -127,7 +122,7 @@ impl<P: Clone + Default> IRBlock<P> {
     }
 }
 
-impl<P: Clone + Default> IRBlocks<P> {
+impl<P: Clone> IRBlocks<P> {
     /// Map provenance annotations using a [`ProvenanceHandler`].
     pub fn map_prov_with_handler<H: volar_provenance::ProvenanceHandler<P>>(self, handler: &H) -> IRBlocks<H::Output> {
         IRBlocks {

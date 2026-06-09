@@ -33,7 +33,7 @@ use crate::{DedupPolicy, DispatchMode, VirtualizeConfig};
 /// * The input must not read or write any `StorageId` in the bytecode
 ///   range `[cfg.bytecode_storage, cfg.bytecode_storage + total_slots]`.
 ///   Caller responsibility.
-pub fn virtualize_bir<P: Clone + Default>(
+pub fn virtualize_bir<P: Clone>(
     blocks: &BIrBlocks<P>,
     cfg: &VirtualizeConfig,
 ) -> VirtOutput<BIrBlocks<P>> {
@@ -74,6 +74,13 @@ pub fn virtualize_bir<P: Clone + Default>(
     // Compute per-handler slot layout (just target slots for BIR v1).
     let layout = BirSlotLayout::from_dedup(&dedup, handler_bits, pc_bits, cfg.bytecode_storage);
 
+    // Derive ctrl_prov from the first statement in any input block.
+    let ctrl_prov: P = blocks.blocks.iter()
+        .flat_map(|b| b.stmt_provs.iter())
+        .next()
+        .cloned()
+        .expect("virtualize_bir: input circuit has no statements; cannot derive provenance for infrastructure blocks");
+
     // Emit output BIR.
     let out_blocks = emit_output_bir::<P>(
         &cse_blocks,
@@ -83,6 +90,7 @@ pub fn virtualize_bir<P: Clone + Default>(
         cfg,
         pc_bits,
         handler_bits,
+        &ctrl_prov,
     );
 
     let bytecode = if cfg.bytecode_form.wants_external() {
@@ -120,7 +128,7 @@ fn bits_needed(n: usize) -> usize {
     (usize::BITS - (n - 1).leading_zeros()) as usize
 }
 
-fn validate_input<P: Clone + Default>(blocks: &BIrBlocks<P>, common_params: u32) {
+fn validate_input<P: Clone>(blocks: &BIrBlocks<P>, common_params: u32) {
     for (i, b) in blocks.blocks.iter().enumerate() {
         assert_eq!(
             b.params, common_params,
@@ -239,18 +247,18 @@ impl BirBlockUnfinished {
         id
     }
 
-    fn into_bir_block<P: Clone + Default>(self) -> BIrBlock<P> {
+    fn into_bir_block<P: Clone>(self, ctrl_prov: &P) -> BIrBlock<P> {
         let n = self.stmts.len();
         BIrBlock {
             params: self.params,
             stmts: self.stmts,
-            stmt_provs: vec![P::default(); n],
+            stmt_provs: (0..n).map(|_| ctrl_prov.clone()).collect(),
             terminator: self.terminator,
         }
     }
 }
 
-fn emit_output_bir<P: Clone + Default>(
+fn emit_output_bir<P: Clone>(
     _blocks_in: &BIrBlocks<P>,
     common_params: u32,
     dedup: &DedupTable<BirHandlerKey>,
@@ -258,6 +266,7 @@ fn emit_output_bir<P: Clone + Default>(
     cfg: &VirtualizeConfig,
     pc_bits: usize,
     handler_bits: usize,
+    ctrl_prov: &P,
 ) -> BIrBlocks<P> {
     // Block layout:
     //   0: setup
@@ -317,6 +326,7 @@ fn emit_output_bir<P: Clone + Default>(
         dispatcher_entry,
         pc_bits,
         handler_bits,
+        ctrl_prov,
     );
 
     // ---- Dispatcher + interior nodes -------------------------------------
@@ -327,6 +337,7 @@ fn emit_output_bir<P: Clone + Default>(
         handler_bits,
         &handler_ids,
         &interior_ids,
+        ctrl_prov,
     );
 
     // ---- Handler blocks --------------------------------------------------
@@ -338,6 +349,7 @@ fn emit_output_bir<P: Clone + Default>(
             &layout.per_handler[h_idx],
             pc_bits,
             dispatcher_entry,
+            ctrl_prov,
         );
         handler_blocks.push(h_block);
     }
@@ -359,7 +371,7 @@ fn emit_output_bir<P: Clone + Default>(
 // Setup block
 // ============================================================================
 
-fn emit_setup_block<P: Clone + Default>(
+fn emit_setup_block<P: Clone>(
     common_params: u32,
     dedup: &DedupTable<BirHandlerKey>,
     layout: &BirSlotLayout,
@@ -367,6 +379,7 @@ fn emit_setup_block<P: Clone + Default>(
     dispatcher_id: IRBlockId,
     pc_bits: usize,
     handler_bits: usize,
+    ctrl_prov: &P,
 ) -> BIrBlock<P> {
     let mut b = BirBlockUnfinished::new(common_params);
 
@@ -420,7 +433,7 @@ fn emit_setup_block<P: Clone + Default>(
         block: IRBlockTargetId::Block(dispatcher_id),
         args,
     });
-    b.into_bir_block::<P>()
+    b.into_bir_block::<P>(ctrl_prov)
 }
 
 /// Emit Zero/One stmts picking the right constant for each bit of
@@ -447,13 +460,14 @@ fn encode_bits_as_vars(value: usize, n_bits: usize, zero: IRVarId, one: IRVarId)
 /// pragmatically we just test `is_handler_0`, `is_handler_1`, … one at a
 /// time using a small chain of `CondJmp`s with intermediate blocks
 /// carrying the state + pc + remaining-bit-compares.
-fn emit_dispatcher_blocks<P: Clone + Default>(
+fn emit_dispatcher_blocks<P: Clone>(
     common_params: u32,
     base_storage: StorageId,
     pc_bits: usize,
     handler_bits: usize,
     handler_ids: &[IRBlockId],
     interior_ids: &[IRBlockId],
+    ctrl_prov: &P,
 ) -> (BIrBlock<P>, Vec<BIrBlock<P>>) {
     // Dispatcher params: [state..., pc_bit_0..pc_bit_{pc_bits-1}].
     let dispatcher_param_count = common_params + pc_bits as u32;
@@ -526,7 +540,7 @@ fn emit_dispatcher_blocks<P: Clone + Default>(
             block: IRBlockTargetId::Block(handler_ids[0]),
             args: state_pc_args.clone(),
         });
-        return (entry.into_bir_block::<P>(), interior_blocks);
+        return (entry.into_bir_block::<P>(ctrl_prov), interior_blocks);
     }
 
     // Dispatcher entry: test is_handler_0.
@@ -588,22 +602,23 @@ fn emit_dispatcher_blocks<P: Clone + Default>(
                 args: state_pc_args.clone(),
             },
         };
-        interior_blocks.push(node.into_bir_block::<P>());
+        interior_blocks.push(node.into_bir_block::<P>(ctrl_prov));
     }
 
-    (entry.into_bir_block::<P>(), interior_blocks)
+    (entry.into_bir_block::<P>(ctrl_prov), interior_blocks)
 }
 
 // ============================================================================
 // Handler block
 // ============================================================================
 
-fn emit_handler_block<P: Clone + Default>(
+fn emit_handler_block<P: Clone>(
     key: &BirHandlerKey,
     common_params: u32,
     target_slots: &[StorageId],
     pc_bits: usize,
     dispatcher_id: IRBlockId,
+    ctrl_prov: &P,
 ) -> BIrBlock<P> {
     // Handler params: [state..., pc_bit_0..pc_bit_{pc_bits-1}].
     let full_params = common_params + pc_bits as u32;
@@ -660,7 +675,7 @@ fn emit_handler_block<P: Clone + Default>(
     );
     b.terminator = new_term;
 
-    b.into_bir_block::<P>()
+    b.into_bir_block::<P>(ctrl_prov)
 }
 
 // ============================================================================
@@ -672,7 +687,7 @@ fn emit_handler_block<P: Clone + Default>(
 // ============================================================================
 
 /// Merge duplicate `OracleCall` stmts within a single BIR block.
-fn deduplicate_bir_oracle_calls_in_block<P: Clone + Default>(
+fn deduplicate_bir_oracle_calls_in_block<P: Clone>(
     block: &BIrBlock<P>,
 ) -> BIrBlock<P> {
     let n_params = block.params as usize;

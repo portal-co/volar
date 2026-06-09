@@ -24,7 +24,7 @@ use volar_ir_common::Type;
 ///
 /// Before each statement, `target.set_prov(prov)` is called with that
 /// statement's provenance from `block.stmt_provs`.
-pub fn lower_biir<P: Clone + Default, T: LirTarget<P>>(blocks: &BIrBlocks<P>, name: &str, target: &mut T) {
+pub fn lower_biir<P: Clone, T: LirTarget<P>>(blocks: &BIrBlocks<P>, name: &str, target: &mut T) {
     lower_biir_with_handler(blocks, name, target, &volar_provenance::KeepProvenance)
 }
 
@@ -39,7 +39,7 @@ pub fn lower_biir_with_handler<P, T, H>(
     target: &mut T,
     handler: &H,
 ) where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     T: LirTarget<H::Output>,
 {
@@ -101,7 +101,7 @@ pub fn lower_biir_with_handler<P, T, H>(
     target.end_function();
 }
 
-fn lower_biir_stmt<Q: Clone + Default, T: LirTarget<Q>>(stmt: &BIrStmt, vals: &[T::Value], target: &mut T) -> T::Value {
+fn lower_biir_stmt<Q: Clone, T: LirTarget<Q>>(stmt: &BIrStmt, vals: &[T::Value], target: &mut T) -> T::Value {
     match stmt {
         BIrStmt::Zero => target.iconst(LirType::Bool, 0),
         BIrStmt::One => target.iconst(LirType::Bool, 1),
@@ -137,7 +137,7 @@ fn lower_biir_stmt<Q: Clone + Default, T: LirTarget<Q>>(stmt: &BIrStmt, vals: &[
     }
 }
 
-fn lower_biir_terminator<Q: Clone + Default, T: LirTarget<Q>>(
+fn lower_biir_terminator<Q: Clone, T: LirTarget<Q>>(
     term: &BIrTerminator,
     vals: &[T::Value],
     block_handles: &[T::Block],
@@ -166,7 +166,7 @@ fn lower_biir_terminator<Q: Clone + Default, T: LirTarget<Q>>(
     }
 }
 
-fn lower_biir_jump<P: Clone + Default, T: LirTarget<P>>(
+fn lower_biir_jump<P: Clone, T: LirTarget<P>>(
     tgt: &BIrTarget,
     vals: &[T::Value],
     block_handles: &[T::Block],
@@ -187,7 +187,7 @@ fn lower_biir_jump<P: Clone + Default, T: LirTarget<P>>(
     }
 }
 
-fn resolve_biir_target<Q: Clone + Default, T: LirTarget<Q>>(
+fn resolve_biir_target<Q: Clone, T: LirTarget<Q>>(
     tgt: &BIrTarget,
     vals: &[T::Value],
     block_handles: &[T::Block],
@@ -203,7 +203,7 @@ fn resolve_biir_target<Q: Clone + Default, T: LirTarget<Q>>(
 
 /// Pack a slice of Bool values into a single U64 via shl/or/zext.
 /// For a single value, just zext it.
-fn pack_bits_to_u64<P: Clone + Default, T: LirTarget<P>>(bits: &[T::Value], target: &mut T) -> T::Value {
+fn pack_bits_to_u64<P: Clone, T: LirTarget<P>>(bits: &[T::Value], target: &mut T) -> T::Value {
     if bits.is_empty() {
         return target.iconst(LirType::U64, 0);
     }
@@ -227,7 +227,7 @@ fn pack_bits_to_u64<P: Clone + Default, T: LirTarget<P>>(bits: &[T::Value], targ
 /// Lower typed Volar IR (`IRBlocks`) to any `LirTarget`.
 ///
 /// Forwards provenance unchanged (equivalent to `KeepProvenance` handler).
-pub fn lower_ir<P: Clone + Default, T: LirTarget<P>>(
+pub fn lower_ir<P: Clone, T: LirTarget<P>>(
     blocks: &IRBlocks<P>,
     types: &IRTypes,
     name: &str,
@@ -246,7 +246,7 @@ pub fn lower_ir_with_handler<P, T, H>(
     handler: &H,
     config: &IrLoweringConfig,
 ) where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     T: LirTarget<H::Output>,
 {
@@ -398,7 +398,7 @@ fn ir_type_to_lir(ty: &IRType, types: &IRTypes) -> LirType {
     }
 }
 
-fn lower_ir_stmt<Q: Clone + Default, T: LirTarget<Q>>(
+fn lower_ir_stmt<Q: Clone, T: LirTarget<Q>>(
     stmt: &IRStmt,
     vals: &[T::Value],
     types: &IRTypes,
@@ -525,7 +525,7 @@ fn lower_ir_stmt<Q: Clone + Default, T: LirTarget<Q>>(
     }
 }
 
-fn lower_ir_terminator<Q: Clone + Default, T: LirTarget<Q>>(
+fn lower_ir_terminator<Q: Clone, T: LirTarget<Q>>(
     term: &IRTerminator,
     vals: &[T::Value],
     block_handles: &[T::Block],

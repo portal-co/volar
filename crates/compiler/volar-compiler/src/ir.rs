@@ -78,7 +78,7 @@ impl IterMethod {
 /// backend-neutral.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct IrIterChain<P: Clone + Default = ()> {
+pub struct IrIterChain<P: Clone = ()> {
     /// Where the data comes from
     pub source: IterChainSource<P>,
     /// Zero or more intermediate transformations, in order
@@ -90,7 +90,7 @@ pub struct IrIterChain<P: Clone + Default = ()> {
 /// The data source for an iterator chain.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub enum IterChainSource<P: Clone + Default = ()> {
+pub enum IterChainSource<P: Clone = ()> {
     /// `expr.iter()`, `expr.into_iter()`, `expr.chars()`, `expr.bytes()`
     Method {
         collection: Box<IrExpr<P>>,
@@ -112,7 +112,7 @@ pub enum IterChainSource<P: Clone + Default = ()> {
 /// An intermediate transformation step in an iterator pipeline.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub enum IterStep<P: Clone + Default = ()> {
+pub enum IterStep<P: Clone = ()> {
     /// `.map(|var| body)`
     Map { var: IrPattern, body: Box<IrExpr<P>> },
     /// `.filter(|var| body)`
@@ -134,7 +134,7 @@ pub enum IterStep<P: Clone + Default = ()> {
 /// How an iterator pipeline terminates.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub enum IterTerminal<P: Clone + Default = ()> {
+pub enum IterTerminal<P: Clone = ()> {
     /// `.collect()` — materializes into a `Vec` (or other container).
     Collect,
     /// `.collect::<Vec<T>>()` — typed collect for disambiguation
@@ -937,7 +937,7 @@ pub struct IrConst {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct IrModule<F, P: Clone + Default = ()> {
+pub struct IrModule<F, P: Clone = ()> {
     pub name: String,
     pub structs: Vec<IrStruct>,
     pub enums: Vec<IrEnum>,
@@ -948,7 +948,7 @@ pub struct IrModule<F, P: Clone + Default = ()> {
     pub consts: Vec<IrConst>,
 }
 
-impl<F, P: Clone + Default> Default for IrModule<F, P> {
+impl<F, P: Clone> Default for IrModule<F, P> {
     fn default() -> Self {
         Self {
             name: Default::default(),
@@ -1060,7 +1060,7 @@ pub enum IrTraitItem {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct IrImpl<P: Clone + Default = ()> {
+pub struct IrImpl<P: Clone = ()> {
     pub generics: Vec<IrGenericParam>,
     pub trait_: Option<IrTraitRef>,
     pub self_ty: IrType,
@@ -1077,7 +1077,7 @@ pub struct IrTraitRef {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub enum IrImplItem<P: Clone + Default = ()> {
+pub enum IrImplItem<P: Clone = ()> {
     Method(IrFunction<P>),
     AssociatedType { name: AssociatedType, ty: IrType },
 }
@@ -1117,7 +1117,7 @@ pub enum ExternalKind {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct IrFunction<P: Clone + Default = ()> {
+pub struct IrFunction<P: Clone = ()> {
     pub name: String,
     /// Origin module path (without the item name). Empty = synthetic/built-in.
     pub module_path: Vec<String>,
@@ -1196,7 +1196,7 @@ pub struct IrTypeAlias {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct IrBlock<P: Clone + Default = ()> {
+pub struct IrBlock<P: Clone = ()> {
     pub stmts: Vec<IrStmt<P>>,
     pub stmt_provs: Vec<P>,
     pub expr: Option<Box<IrExpr<P>>>,
@@ -1205,7 +1205,7 @@ pub struct IrBlock<P: Clone + Default = ()> {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 #[non_exhaustive]
-pub enum IrStmt<P: Clone + Default = ()> {
+pub enum IrStmt<P: Clone = ()> {
     Let {
         pattern: IrPattern,
         ty: Option<IrType>,
@@ -1217,7 +1217,7 @@ pub enum IrStmt<P: Clone + Default = ()> {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct IrMatchArm<P: Clone + Default = ()> {
+pub struct IrMatchArm<P: Clone = ()> {
     pub pattern: IrPattern,
     pub guard: Option<IrExpr<P>>,
     pub body: IrExpr<P>,
@@ -1397,7 +1397,7 @@ impl fmt::Display for IrTraitBound {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 #[non_exhaustive]
-pub enum IrExpr<P: Clone + Default = ()> {
+pub enum IrExpr<P: Clone = ()> {
     Lit(IrLit),
     Var(String),
     Path {
@@ -2180,12 +2180,12 @@ pub fn builtin_trait_defs() -> Vec<IrTrait> {
 ///
 /// All parameterized IR types implement this trait, enabling generic
 /// provenance-mapping in [`IrModule::map_prov`].
-pub trait MapProv<P: Clone + Default, Q: Clone + Default>: Sized {
+pub trait MapProv<P: Clone, Q: Clone>: Sized {
     type Output;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> Self::Output;
 }
 
-impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrExpr<P> {
+impl<P: Clone, Q: Clone> MapProv<P, Q> for IrExpr<P> {
     type Output = IrExpr<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrExpr<Q> {
         match self {
@@ -2252,7 +2252,7 @@ impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrExpr<P> {
     }
 }
 
-impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrIterChain<P> {
+impl<P: Clone, Q: Clone> MapProv<P, Q> for IrIterChain<P> {
     type Output = IrIterChain<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrIterChain<Q> {
         IrIterChain {
@@ -2263,7 +2263,7 @@ impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrIterChain<P> {
     }
 }
 
-impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IterChainSource<P> {
+impl<P: Clone, Q: Clone> MapProv<P, Q> for IterChainSource<P> {
     type Output = IterChainSource<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IterChainSource<Q> {
         match self {
@@ -2277,7 +2277,7 @@ impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IterChainSource<P
     }
 }
 
-impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IterStep<P> {
+impl<P: Clone, Q: Clone> MapProv<P, Q> for IterStep<P> {
     type Output = IterStep<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IterStep<Q> {
         match self {
@@ -2293,7 +2293,7 @@ impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IterStep<P> {
     }
 }
 
-impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IterTerminal<P> {
+impl<P: Clone, Q: Clone> MapProv<P, Q> for IterTerminal<P> {
     type Output = IterTerminal<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IterTerminal<Q> {
         match self {
@@ -2306,7 +2306,7 @@ impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IterTerminal<P> {
     }
 }
 
-impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrMatchArm<P> {
+impl<P: Clone, Q: Clone> MapProv<P, Q> for IrMatchArm<P> {
     type Output = IrMatchArm<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrMatchArm<Q> {
         IrMatchArm {
@@ -2317,7 +2317,7 @@ impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrMatchArm<P> {
     }
 }
 
-impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrStmt<P> {
+impl<P: Clone, Q: Clone> MapProv<P, Q> for IrStmt<P> {
     type Output = IrStmt<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrStmt<Q> {
         match self {
@@ -2329,7 +2329,7 @@ impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrStmt<P> {
     }
 }
 
-impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrBlock<P> {
+impl<P: Clone, Q: Clone> MapProv<P, Q> for IrBlock<P> {
     type Output = IrBlock<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrBlock<Q> {
         IrBlock {
@@ -2340,7 +2340,7 @@ impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrBlock<P> {
     }
 }
 
-impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrFunction<P> {
+impl<P: Clone, Q: Clone> MapProv<P, Q> for IrFunction<P> {
     type Output = IrFunction<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrFunction<Q> {
         IrFunction {
@@ -2357,7 +2357,7 @@ impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrFunction<P> {
     }
 }
 
-impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrImplItem<P> {
+impl<P: Clone, Q: Clone> MapProv<P, Q> for IrImplItem<P> {
     type Output = IrImplItem<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrImplItem<Q> {
         match self {
@@ -2367,7 +2367,7 @@ impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrImplItem<P> {
     }
 }
 
-impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrImpl<P> {
+impl<P: Clone, Q: Clone> MapProv<P, Q> for IrImpl<P> {
     type Output = IrImpl<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrImpl<Q> {
         IrImpl {
@@ -2380,7 +2380,7 @@ impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrImpl<P> {
     }
 }
 
-impl<F: MapProv<P, Q>, P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrModule<F, P> {
+impl<F: MapProv<P, Q>, P: Clone, Q: Clone> MapProv<P, Q> for IrModule<F, P> {
     type Output = IrModule<F::Output, Q>;
     /// Transform all provenance annotations in this module from `P` to `Q`.
     ///
@@ -2413,7 +2413,7 @@ impl<F: MapProv<P, Q>, P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for
 /// A jump to a target block, carrying block-parameter arguments.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct IrCfgJump<P: Clone + Default = ()> {
+pub struct IrCfgJump<P: Clone = ()> {
     /// 0-indexed block index within the enclosing [`IrCfgBody`].
     pub target: usize,
     /// Expressions passed as arguments to the target block's params.
@@ -2424,7 +2424,7 @@ pub struct IrCfgJump<P: Clone + Default = ()> {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 #[non_exhaustive]
-pub enum IrCfgTerminator<P: Clone + Default = ()> {
+pub enum IrCfgTerminator<P: Clone = ()> {
     /// Function returns, with an optional value expression.
     Return(Option<IrExpr<P>>),
     /// Unconditional jump to another block.
@@ -2443,7 +2443,7 @@ pub enum IrCfgTerminator<P: Clone + Default = ()> {
 /// `args` of incoming jumps (SSA block-argument style, analogous to φ-nodes).
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct IrCfgBlock<P: Clone + Default = ()> {
+pub struct IrCfgBlock<P: Clone = ()> {
     /// SSA block parameters — bound by the `args` of jumps that target this block.
     pub params: Vec<IrParam>,
     pub stmts: Vec<IrStmt<P>>,
@@ -2456,7 +2456,7 @@ pub struct IrCfgBlock<P: Clone + Default = ()> {
 /// Block 0 is the entry.  Control flows between blocks via terminators.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct IrCfgBody<P: Clone + Default = ()> {
+pub struct IrCfgBody<P: Clone = ()> {
     pub blocks: Vec<IrCfgBlock<P>>,
 }
 
@@ -2469,7 +2469,7 @@ pub struct IrCfgBody<P: Clone + Default = ()> {
 /// [`IRBlocks`]: volar_ir::ir::IRBlocks
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct IrCfgFunction<P: Clone + Default = ()> {
+pub struct IrCfgFunction<P: Clone = ()> {
     pub name: String,
     pub generics: Vec<IrGenericParam>,
     pub receiver: Option<IrReceiver>,
@@ -2480,7 +2480,7 @@ pub struct IrCfgFunction<P: Clone + Default = ()> {
     pub body: IrCfgBody<P>,
 }
 
-impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrCfgJump<P> {
+impl<P: Clone, Q: Clone> MapProv<P, Q> for IrCfgJump<P> {
     type Output = IrCfgJump<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrCfgJump<Q> {
         IrCfgJump {
@@ -2490,7 +2490,7 @@ impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrCfgJump<P> {
     }
 }
 
-impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrCfgTerminator<P> {
+impl<P: Clone, Q: Clone> MapProv<P, Q> for IrCfgTerminator<P> {
     type Output = IrCfgTerminator<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrCfgTerminator<Q> {
         match self {
@@ -2505,7 +2505,7 @@ impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrCfgTerminator<P
     }
 }
 
-impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrCfgBlock<P> {
+impl<P: Clone, Q: Clone> MapProv<P, Q> for IrCfgBlock<P> {
     type Output = IrCfgBlock<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrCfgBlock<Q> {
         IrCfgBlock {
@@ -2517,7 +2517,7 @@ impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrCfgBlock<P> {
     }
 }
 
-impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrCfgBody<P> {
+impl<P: Clone, Q: Clone> MapProv<P, Q> for IrCfgBody<P> {
     type Output = IrCfgBody<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrCfgBody<Q> {
         IrCfgBody {
@@ -2526,7 +2526,7 @@ impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrCfgBody<P> {
     }
 }
 
-impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrCfgFunction<P> {
+impl<P: Clone, Q: Clone> MapProv<P, Q> for IrCfgFunction<P> {
     type Output = IrCfgFunction<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrCfgFunction<Q> {
         IrCfgFunction {
@@ -2549,12 +2549,12 @@ impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrCfgFunction<P> 
 /// linked specs via [`LinkageSystem::apply_cfg`].
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub enum IrAnyFunction<P: Clone + Default = ()> {
+pub enum IrAnyFunction<P: Clone = ()> {
     Flat(IrFunction<P>),
     Cfg(IrCfgFunction<P>),
 }
 
-impl<P: Clone + Default, Q: Clone + Default> MapProv<P, Q> for IrAnyFunction<P> {
+impl<P: Clone, Q: Clone> MapProv<P, Q> for IrAnyFunction<P> {
     type Output = IrAnyFunction<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrAnyFunction<Q> {
         match self {

@@ -74,7 +74,7 @@ use volar_ir_common::Constant;
 ///
 /// Panics on `JumpTable` terminators and `Dyn` jump targets (not representable
 /// in `BIrTerminator`).
-pub fn lower_ir_to_boolar<P: Clone + Default>(blocks: &IRBlocks<P>, types: &IRTypes) -> BIrBlocks<P> {
+pub fn lower_ir_to_boolar<P: Clone>(blocks: &IRBlocks<P>, types: &IRTypes) -> BIrBlocks<P> {
     BIrBlocks {
         blocks: blocks.blocks.iter().map(|block| lower_block(block, types)).collect(),
         pre_init: blocks.pre_init.clone(),
@@ -85,7 +85,7 @@ pub fn lower_ir_to_boolar<P: Clone + Default>(blocks: &IRBlocks<P>, types: &IRTy
 // Block lowering
 // ============================================================================
 
-fn lower_block<P: Clone + Default>(block: &IRBlock<P>, types: &IRTypes) -> BIrBlock<P> {
+fn lower_block<P: Clone>(block: &IRBlock<P>, types: &IRTypes) -> BIrBlock<P> {
     // ---- 1. Expand params --------------------------------------------------
     // Each IR param of type T becomes ir_type_bits(T) consecutive Boolar params.
     // var_bits[param_idx] = slice of Boolar param IRVarIds for that param.
@@ -129,7 +129,7 @@ fn lower_block<P: Clone + Default>(block: &IRBlock<P>, types: &IRTypes) -> BIrBl
 // ============================================================================
 
 #[allow(clippy::too_many_arguments)]
-fn lower_stmt<P: Clone + Default>(
+fn lower_stmt<P: Clone>(
     stmt: &IRStmt,
     prov: P,
     ir_var_idx: u32,
@@ -429,7 +429,7 @@ fn infer_poly_width(
 /// Lower the `j`-th output bit of a `Poly` stmt.
 ///
 /// Implements: `result[j] = constant[j] ⊕ ⊕{(mono,coeff): coeff odd} ∧(vars[j])`.
-fn lower_poly_bit<P: Clone + Default>(
+fn lower_poly_bit<P: Clone>(
     coeffs: &alloc::collections::BTreeMap<Vec<IRVarId>, u8>,
     constant: &Constant,
     bit: usize,
@@ -529,13 +529,13 @@ fn constant_bit(c: &Constant, bit: usize) -> bool {
 ///
 /// Boolar var IDs start at `params` (the number of input bit params for the
 /// block) and increment by one for each emitted stmt.
-struct Emitter<P: Clone + Default> {
+struct Emitter<P: Clone> {
     stmts: Vec<BIrStmt>,
     stmt_provs: Vec<P>,
     next_var: u32,
 }
 
-impl<P: Clone + Default> Emitter<P> {
+impl<P: Clone> Emitter<P> {
     fn new(params: u32) -> Self {
         Emitter { stmts: vec![], stmt_provs: vec![], next_var: params }
     }
@@ -691,7 +691,7 @@ mod tests {
                 args: std::vec![IRVarId(0)],
             },
         };
-        block.push_stmt_default(volar_ir::ir::IRStmt::Const(zero_const(), bit_id));
+        block.push_stmt(volar_ir::ir::IRStmt::Const(zero_const(), bit_id), ());
 
         let blocks = IRBlocks::new(std::vec![block]);
         let lowered = lower_ir_to_boolar::<()>(&blocks, &types);
@@ -717,7 +717,7 @@ mod tests {
         };
         // Const = 0b00000001 (value 1, bit 0 = One, rest = Zero).
         let c = Constant { lo: 1, hi: 0 };
-        block.push_stmt_default(volar_ir::ir::IRStmt::Const(c, u8_id));
+        block.push_stmt(volar_ir::ir::IRStmt::Const(c, u8_id), ());
 
         let blocks = IRBlocks::new(std::vec![block]);
         let lowered = lower_ir_to_boolar::<()>(&blocks, &types);

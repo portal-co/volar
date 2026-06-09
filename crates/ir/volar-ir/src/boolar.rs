@@ -11,14 +11,14 @@ use volar_ir_common::{PreInitSegment, StorageId};
 /// Use `P = ()` (the default) when provenance is not needed.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct BIrBlocks<P: Clone + Default = ()> {
+pub struct BIrBlocks<P: Clone = ()> {
     /// The blocks of the circuit, in order. Block 0 is the entry.
     pub blocks: Vec<BIrBlock<P>>,
     /// Pre-initialised storage segments propagated from WASM data sections.
     pub pre_init: alloc::vec::Vec<PreInitSegment>,
 }
 
-impl<P: Clone + Default> BIrBlocks<P> {
+impl<P: Clone> BIrBlocks<P> {
     pub fn is_movfuscated(&self) -> bool {
         return self.blocks.len() == 1;
     }
@@ -40,7 +40,7 @@ impl<P: Clone + Default> BIrBlocks<P> {
 /// (parallel to `stmts`).  Use `P = ()` when provenance is not needed.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct BIrBlock<P: Clone + Default = ()> {
+pub struct BIrBlock<P: Clone = ()> {
     pub params: u32,
     pub stmts: Vec<BIrStmt>,
     /// Per-statement provenance, same length as `stmts`.
@@ -49,16 +49,11 @@ pub struct BIrBlock<P: Clone + Default = ()> {
     pub terminator: BIrTerminator,
 }
 
-impl<P: Clone + Default> BIrBlock<P> {
+impl<P: Clone> BIrBlock<P> {
     /// Append a statement with an explicit provenance annotation.
     pub fn push_stmt(&mut self, stmt: BIrStmt, prov: P) {
         self.stmts.push(stmt);
         self.stmt_provs.push(prov);
-    }
-
-    /// Append a statement using `P::default()` as the provenance.
-    pub fn push_stmt_default(&mut self, stmt: BIrStmt) {
-        self.push_stmt(stmt, P::default());
     }
 
     /// Map provenance annotations using a [`ProvenanceHandler`].
@@ -72,7 +67,7 @@ impl<P: Clone + Default> BIrBlock<P> {
     }
 }
 
-impl<P: Clone + Default> BIrBlocks<P> {
+impl<P: Clone> BIrBlocks<P> {
     /// Map provenance annotations using a [`ProvenanceHandler`].
     pub fn map_prov_with_handler<H: volar_provenance::ProvenanceHandler<P>>(self, handler: &H) -> BIrBlocks<H::Output> {
         BIrBlocks {

@@ -18,7 +18,7 @@ use crate::common::{
 /// Simplify each block of `blocks` in place until no further changes occur.
 ///
 /// Returns `true` if any block was modified.
-pub fn fold_ir_blocks<P: Clone + Default>(blocks: &mut IRBlocks<P>, types: &IRTypes) -> bool {
+pub fn fold_ir_blocks<P: Clone>(blocks: &mut IRBlocks<P>, types: &IRTypes) -> bool {
     let mut any_changed = false;
     for block in blocks.blocks.iter_mut() {
         loop {
@@ -36,7 +36,7 @@ pub fn fold_ir_blocks<P: Clone + Default>(blocks: &mut IRBlocks<P>, types: &IRTy
 // ============================================================================
 
 /// One forward simplification pass over a single Volar IR block.
-fn fold_ir_block_once<P: Clone + Default>(block: &mut IRBlock<P>, types: &IRTypes) -> bool {
+fn fold_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &IRTypes) -> bool {
     let mut const_map: BTreeMap<IRVarId, Constant> = BTreeMap::new();
     let mut type_map: BTreeMap<IRVarId, TypeId> = BTreeMap::new();
     let mut alias_map: BTreeMap<IRVarId, IRVarId> = BTreeMap::new();

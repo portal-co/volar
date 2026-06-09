@@ -166,7 +166,7 @@ pub use noop::{weave_noop, weave_noop_ir, print_noop_module};
 /// Returns a flat list of `(result_var_id, stmt, provenance)` triples with no
 /// `Or` gates.  Synthetic statements (the De Morgan expansion) inherit the
 /// provenance of the original `Or` gate.
-pub(crate) fn expand_ors<P: Clone + Default>(block: &BIrBlock<P>) -> Vec<(IRVarId, BIrStmt, P)> {
+pub(crate) fn expand_ors<P: Clone>(block: &BIrBlock<P>) -> Vec<(IRVarId, BIrStmt, P)> {
     let num_params = block.params as u32;
     let num_stmts = block.stmts.len() as u32;
     let mut next_synthetic = num_params + num_stmts;
@@ -174,7 +174,7 @@ pub(crate) fn expand_ors<P: Clone + Default>(block: &BIrBlock<P>) -> Vec<(IRVarI
 
     for (i, stmt) in block.stmts.iter().enumerate() {
         let result_id = IRVarId(num_params + i as u32);
-        let prov = block.stmt_provs.get(i).cloned().unwrap_or_default();
+        let prov = block.stmt_provs[i].clone();
         match stmt {
             BIrStmt::Or(a, b) => {
                 let not_a = IRVarId(next_synthetic);
@@ -202,7 +202,7 @@ pub(crate) fn expand_ors<P: Clone + Default>(block: &BIrBlock<P>) -> Vec<(IRVarI
 ///
 /// For single-output circuits returns `(Var(wire_N), T)`.
 /// For multi-output returns `(Tuple([...]), Tuple([T; n]))`.
-pub(crate) fn build_return<P: Clone + Default, Q: Clone + Default>(
+pub(crate) fn build_return<P: Clone, Q: Clone>(
     block: &BIrBlock<P>,
     var_names: &BTreeMap<u32, String>,
     elem_ty: IrType,
@@ -235,12 +235,12 @@ pub(crate) fn build_return<P: Clone + Default, Q: Clone + Default>(
 // ============================================================================
 
 /// Variable reference by name.
-pub(crate) fn var<P: Clone + Default>(name: &str) -> IrExpr<P> {
+pub(crate) fn var<P: Clone>(name: &str) -> IrExpr<P> {
     IrExpr::Var(name.into())
 }
 
 /// `expr.clone()`
-pub(crate) fn clone_expr<P: Clone + Default>(expr: IrExpr<P>) -> IrExpr<P> {
+pub(crate) fn clone_expr<P: Clone>(expr: IrExpr<P>) -> IrExpr<P> {
     IrExpr::MethodCall {
         receiver: Box::new(expr),
         method: MethodKind::Known(StdMethod::Clone),
@@ -250,7 +250,7 @@ pub(crate) fn clone_expr<P: Clone + Default>(expr: IrExpr<P>) -> IrExpr<P> {
 }
 
 /// `&expr`
-pub(crate) fn ref_expr<P: Clone + Default>(expr: IrExpr<P>) -> IrExpr<P> {
+pub(crate) fn ref_expr<P: Clone>(expr: IrExpr<P>) -> IrExpr<P> {
     IrExpr::Unary {
         op: SpecUnaryOp::Ref,
         expr: Box::new(expr),
@@ -266,7 +266,7 @@ pub(crate) fn ref_to(ty: IrType) -> IrType {
 }
 
 /// `Array::<u8, N>::default()`
-pub(crate) fn array_default<P: Clone + Default>() -> IrExpr<P> {
+pub(crate) fn array_default<P: Clone>() -> IrExpr<P> {
     IrExpr::Call {
         func: Box::new(IrExpr::Path {
             segments: vec!["Array".into(), "default".into()],
@@ -280,7 +280,7 @@ pub(crate) fn array_default<P: Clone + Default>() -> IrExpr<P> {
 }
 
 /// `Array::<u8, N>::from_fn(|{idx}| {body})`
-pub(crate) fn array_from_fn<P: Clone + Default>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
+pub(crate) fn array_from_fn<P: Clone>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
     IrExpr::Call {
         func: Box::new(IrExpr::Path {
             segments: vec!["Array".into(), "from_fn".into()],
@@ -301,7 +301,7 @@ pub(crate) fn array_from_fn<P: Clone + Default>(idx: &str, body: IrExpr<P>) -> I
 }
 
 /// `wire.base[idx]`
-pub(crate) fn base_index<P: Clone + Default>(wire_name: &str, idx_name: &str) -> IrExpr<P> {
+pub(crate) fn base_index<P: Clone>(wire_name: &str, idx_name: &str) -> IrExpr<P> {
     IrExpr::Index {
         base: Box::new(IrExpr::Field {
             base: Box::new(var(wire_name)),
