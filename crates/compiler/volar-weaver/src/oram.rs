@@ -1031,6 +1031,7 @@ fn remap_stmt(stmt: &IRStmt, remap: &BTreeMap<u32, u32>) -> IRStmt {
             name: name.clone(),
             ty: *ty,
         },
+        _ => panic!("remap_stmt: unhandled IRStmt variant — add variable remapping for this variant"),
     }
 }
 
@@ -1064,6 +1065,7 @@ fn remap_terminator(term: &IRTerminator, remap: &BTreeMap<u32, u32>) -> IRTermin
                 .map(|(k, (target, args))| (*k, (target.clone(), rargs(args))))
                 .collect(),
         },
+        _ => panic!("remap_terminator: unhandled IRTerminator variant — add variable remapping for this variant"),
     }
 }
 

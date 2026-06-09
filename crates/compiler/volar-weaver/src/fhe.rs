@@ -1557,6 +1557,7 @@ where
                 var_names.insert(result_id.0, let_name);
                 continue;
             }
+            _ => panic!("fhe weaver: unhandled BIrStmt variant — add support for this variant"),
         };
 
         stmts.push(IrStmt::Let {
@@ -1668,6 +1669,7 @@ fn ir_stmt_output_ty(stmt: &IRStmt) -> Option<IRTypeId> {
         Stmt::Poly { ty, .. } => Some(*ty),
         // StorageWrite result is a dummy zero (no typed output).
         Stmt::StorageWrite { .. } => None,
+        _ => None,
     }
 }
 
@@ -1798,6 +1800,7 @@ fn analyze_cfg_publicity<S: FheScheme>(
                 add_pred(&mut pred_info, bidx, false_block, false_args);
             }
             IRTerminator::JumpTable { .. } => {}
+            _ => {}
         }
     }
 
@@ -2443,6 +2446,7 @@ fn map_ir_terminator<S: FheScheme>(
                         IRBlockTargetId::Return    => usize::MAX,
                         IRBlockTargetId::Dyn(_)   =>
                             panic!("weave_fhe_cfg: dynamic jump in CondJmp"),
+                        _ => panic!("weave_fhe_cfg: unhandled IRBlockTargetId variant in CondJmp"),
                     };
                     IrCfgJump {
                         target,
@@ -2583,6 +2587,7 @@ fn map_ir_terminator<S: FheScheme>(
         IRTerminator::JumpTable { .. } => {
             panic!("weave_fhe_cfg: JumpTable terminators are not supported in CFG path")
         }
+        _ => panic!("weave_fhe_cfg_terminator: unhandled IRTerminator variant — add CFG codegen for this variant"),
     }
 }
 
@@ -3522,6 +3527,7 @@ impl FheScheme for TfheScheme {
             Stmt::StorageRead { .. } | Stmt::StorageWrite { .. } => {
                 unreachable!("StorageRead/StorageWrite should be handled before emit_ir_stmt")
             }
+            _ => panic!("emit_ir_stmt: unhandled Stmt variant — add FHE codegen for this variant"),
         }
     }
 

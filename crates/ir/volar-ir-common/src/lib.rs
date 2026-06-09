@@ -70,6 +70,7 @@ pub struct TypeId(pub u32);
 /// imports, exports, and higher-order values in VAFFLE modules).
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[non_exhaustive]
 pub enum IrType {
     /// A primitive scalar type (bit, integer, or Galois-field element).
     Primitive(Type),
@@ -284,15 +285,18 @@ impl PreInitSegment {
 
 /// Shared computational statement type for Volar IR and VAFFLE.
 ///
-/// Generic over two parameters:
+/// Generic over four parameters:
 ///
-/// | Parameter | Volar IR | VAFFLE |
-/// |-----------|----------|--------|
-/// | `Var`     | `IRVarId` | `ValueId` |
-/// | `Addr`    | `IRVarId` (= `Var`) | `ValueId` (= `Var`) |
+/// | Parameter | Volar IR        | VAFFLE      | Default     |
+/// |-----------|-----------------|-------------|-------------|
+/// | `Var`     | `IRVarId`       | `ValueId`   | (required)  |
+/// | `Addr`    | `IRVarId`       | `ValueId`   | `Var`       |
+/// | `Ty`      | `TypeId`        | `TypeId`    | `TypeId`    |
+/// | `Stor`    | `StorageId`     | `StorageId` | `StorageId` |
 ///
-/// All type annotations are expressed as [`TypeId`] references into the
-/// module's [`TypeTable`], unifying the type systems of both IRs.
+/// The `Ty` and `Stor` parameters allow transformations (e.g. type-table
+/// remapping, storage relabelling) to be expressed as a single [`Stmt::map`]
+/// call.  Existing usages `Stmt<IRVarId>` continue to compile unchanged.
 ///
 /// # Invariants
 /// * `Poly.coeffs` — monomial keys must be sorted (no duplicates within a key).
@@ -301,27 +305,28 @@ impl PreInitSegment {
 ///   Length equals the output bit-width.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub enum Stmt<Var, Addr = Var> {
+#[non_exhaustive]
+pub enum Stmt<Var, Addr = Var, Ty = TypeId, Stor = StorageId> {
     /// Load a value from a storage location addressed by `addr`.
     StorageRead {
-        storage: StorageId,
-        ty: TypeId,
+        storage: Stor,
+        ty: Ty,
         addr: Addr,
     },
     /// Write `src` to the storage location addressed by `addr`.
     StorageWrite {
-        storage: StorageId,
+        storage: Stor,
         src: Var,
-        ty: TypeId,
+        ty: Ty,
         addr: Addr,
     },
     /// A compile-time constant value of type `ty`.
-    Const(Constant, TypeId),
+    Const(Constant, Ty),
     /// Reinterpret `src` (of type `src_ty`) as `dst_ty` without changing bits.
     Transmute {
         src: Var,
-        src_ty: TypeId,
-        dst_ty: TypeId,
+        src_ty: Ty,
+        dst_ty: Ty,
     },
     /// Multivariate polynomial over variables.
     ///
@@ -339,7 +344,7 @@ pub enum Stmt<Var, Addr = Var> {
     ///   `constant`.  Mixing two distinct non-GF(2) field types is prohibited.
     Poly {
         /// Output (and dominant operand) type.
-        ty: TypeId,
+        ty: Ty,
         #[cfg_attr(feature = "rkyv", rkyv(with = rkyv::with::AsVec))]
         coeffs: BTreeMap<Vec<Var>, u8>,
         constant: Constant,
@@ -347,24 +352,24 @@ pub enum Stmt<Var, Addr = Var> {
     /// Rotate-left `src` (of type `ty`) by `n` bit positions.
     Rol {
         src: Var,
-        ty: TypeId,
+        ty: Ty,
         n: usize,
     },
     /// Rotate-right `src` (of type `ty`) by `n` bit positions.
     Ror {
         src: Var,
-        ty: TypeId,
+        ty: Ty,
         n: usize,
     },
     /// Concatenate `parts` in order (LSB-first) into a wider value of type `ty`.
     Merge {
         parts: Vec<Var>,
-        ty: TypeId,
+        ty: Ty,
     },
     /// Broadcast a single-bit value across every bit position of type `ty`.
     Splat {
         src: Var,
-        ty: TypeId,
+        ty: Ty,
     },
     /// Arbitrary bit shuffle: assemble an output from individually selected bits.
     ///
@@ -372,7 +377,7 @@ pub enum Stmt<Var, Addr = Var> {
     /// from bit `bit_idx` of `var`.  Length equals the output bit-width.
     Shuffle {
         result_bits: Vec<(u8, Var)>,
-        ty: TypeId,
+        ty: Ty,
     },
 
     // ---- External access primitives ----------------------------------------
@@ -389,10 +394,10 @@ pub enum Stmt<Var, Addr = Var> {
         name: alloc::string::String,
         args: Vec<Var>,
         /// Return type of each output, in declaration order.  Non-empty.
-        output_tys: Vec<TypeId>,
+        output_tys: Vec<Ty>,
         /// Pre-interned `TypeId` of `IrType::Tuple(output_tys)`.
         /// Stored at construction time so type inference never mutates the table.
-        result_ty: TypeId,
+        result_ty: Ty,
     },
 
     /// Project output `idx` from an [`OracleCall`] result var.
@@ -402,7 +407,7 @@ pub enum Stmt<Var, Addr = Var> {
     OracleOutput {
         call: Var,
         idx: usize,
-        ty: TypeId,
+        ty: Ty,
     },
 
     /// Conditionally invoke a named impure action, producing a multi-output aggregate result.
@@ -422,9 +427,9 @@ pub enum Stmt<Var, Addr = Var> {
         /// when `guard = 0` and the action is not invoked.
         fallbacks: Vec<Var>,
         /// Return type of each output, in declaration order.  Non-empty.
-        output_tys: Vec<TypeId>,
+        output_tys: Vec<Ty>,
         /// Pre-interned `TypeId` of `IrType::Tuple(output_tys)`.
-        result_ty: TypeId,
+        result_ty: Ty,
     },
 
     /// Project output `idx` from an [`ActionCall`] result var.
@@ -434,7 +439,7 @@ pub enum Stmt<Var, Addr = Var> {
     ActionOutput {
         call: Var,
         idx: usize,
-        ty: TypeId,
+        ty: Ty,
     },
 
     /// Produce a fresh random value drawn uniformly from the type’s domain.
@@ -447,8 +452,275 @@ pub enum Stmt<Var, Addr = Var> {
     Rng {
         /// Name of the declared RNG source (matches an [`RngDecl::name`]).
         name: alloc::string::String,
-        ty: TypeId,
+        ty: Ty,
     },
+}
+
+impl<Var: Ord, Ty, Stor> Stmt<Var, Var, Ty, Stor> {
+    /// Convenience for the common `Addr = Var` case: map `Var` and `Addr`
+    /// with a **single shared callback**, leaving `Ty` and `Stor` to their
+    /// own callbacks.
+    ///
+    /// Avoids the borrow-checker conflict that arises when two closures both
+    /// capture the same `&mut FnMut` to pass to [`Stmt::map`].
+    pub fn map_var<Ctx, NV: Ord, NT, NS, E>(
+        self,
+        ctx: &mut Ctx,
+        go: &mut impl FnMut(&mut Ctx, Var) -> Result<NV, E>,
+        ty_fn: &mut impl FnMut(&mut Ctx, Ty) -> Result<NT, E>,
+        stor_fn: &mut impl FnMut(&mut Ctx, Stor) -> Result<NS, E>,
+    ) -> Result<Stmt<NV, NV, NT, NS>, E> {
+        Ok(match self {
+            Stmt::StorageRead { storage, ty, addr } => Stmt::StorageRead {
+                storage: stor_fn(ctx, storage)?,
+                ty: ty_fn(ctx, ty)?,
+                addr: go(ctx, addr)?,
+            },
+            Stmt::StorageWrite { storage, src, ty, addr } => Stmt::StorageWrite {
+                storage: stor_fn(ctx, storage)?,
+                src: go(ctx, src)?,
+                ty: ty_fn(ctx, ty)?,
+                addr: go(ctx, addr)?,
+            },
+            Stmt::Const(c, ty) => Stmt::Const(c, ty_fn(ctx, ty)?),
+            Stmt::Transmute { src, src_ty, dst_ty } => Stmt::Transmute {
+                src: go(ctx, src)?,
+                src_ty: ty_fn(ctx, src_ty)?,
+                dst_ty: ty_fn(ctx, dst_ty)?,
+            },
+            Stmt::Poly { ty, coeffs, constant } => {
+                let ty = ty_fn(ctx, ty)?;
+                let coeffs = coeffs
+                    .into_iter()
+                    .map(|(mono, coeff)| {
+                        let mono = mono.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?;
+                        Ok((mono, coeff))
+                    })
+                    .collect::<Result<BTreeMap<Vec<NV>, u8>, E>>()?;
+                Stmt::Poly { ty, coeffs, constant }
+            }
+            Stmt::Rol { src, ty, n } => Stmt::Rol { src: go(ctx, src)?, ty: ty_fn(ctx, ty)?, n },
+            Stmt::Ror { src, ty, n } => Stmt::Ror { src: go(ctx, src)?, ty: ty_fn(ctx, ty)?, n },
+            Stmt::Merge { parts, ty } => Stmt::Merge {
+                parts: parts.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+                ty: ty_fn(ctx, ty)?,
+            },
+            Stmt::Splat { src, ty } => Stmt::Splat { src: go(ctx, src)?, ty: ty_fn(ctx, ty)? },
+            Stmt::Shuffle { result_bits, ty } => Stmt::Shuffle {
+                result_bits: result_bits
+                    .into_iter()
+                    .map(|(bit_idx, v)| Ok((bit_idx, go(ctx, v)?)))
+                    .collect::<Result<Vec<(u8, NV)>, E>>()?,
+                ty: ty_fn(ctx, ty)?,
+            },
+            Stmt::OracleCall { name, args, output_tys, result_ty } => Stmt::OracleCall {
+                name,
+                args: args.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+                output_tys: output_tys.into_iter().map(|t| ty_fn(ctx, t)).collect::<Result<Vec<NT>, E>>()?,
+                result_ty: ty_fn(ctx, result_ty)?,
+            },
+            Stmt::OracleOutput { call, idx, ty } => {
+                Stmt::OracleOutput { call: go(ctx, call)?, idx, ty: ty_fn(ctx, ty)? }
+            }
+            Stmt::ActionCall { name, guard, args, fallbacks, output_tys, result_ty } => {
+                Stmt::ActionCall {
+                    name,
+                    guard: go(ctx, guard)?,
+                    args: args.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+                    fallbacks: fallbacks.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+                    output_tys: output_tys.into_iter().map(|t| ty_fn(ctx, t)).collect::<Result<Vec<NT>, E>>()?,
+                    result_ty: ty_fn(ctx, result_ty)?,
+                }
+            }
+            Stmt::ActionOutput { call, idx, ty } => {
+                Stmt::ActionOutput { call: go(ctx, call)?, idx, ty: ty_fn(ctx, ty)? }
+            }
+            Stmt::Rng { name, ty } => Stmt::Rng { name, ty: ty_fn(ctx, ty)? },
+        })
+    }
+}
+
+impl<Var, Addr, Ty, Stor> Stmt<Var, Addr, Ty, Stor> {
+    /// Map all four generic parameters simultaneously, potentially fallibly.
+    ///
+    /// `ctx` is passed by `&mut` to every callback so that all four callbacks
+    /// can share mutable state (e.g., a `TypeTable` under construction or a
+    /// `StorageAllocator`) without borrow conflicts.
+    ///
+    /// # Bounds
+    /// `NV: Ord` is required because `Poly.coeffs` is a `BTreeMap<Vec<Var>, _>`
+    /// and the new keys must remain ordered.
+    ///
+    /// # Non-generic fields
+    /// `name` fields in `OracleCall`, `ActionCall`, and `Rng` are owned
+    /// `String`s that are not parameterised by `Var`/`Addr`/`Ty`/`Stor`.
+    /// They are moved into the result unchanged.
+    pub fn map<Ctx, NV, NA, NT, NS, E>(
+        self,
+        ctx: &mut Ctx,
+        mut var_fn: impl FnMut(&mut Ctx, Var) -> Result<NV, E>,
+        mut addr_fn: impl FnMut(&mut Ctx, Addr) -> Result<NA, E>,
+        mut ty_fn: impl FnMut(&mut Ctx, Ty) -> Result<NT, E>,
+        mut stor_fn: impl FnMut(&mut Ctx, Stor) -> Result<NS, E>,
+    ) -> Result<Stmt<NV, NA, NT, NS>, E>
+    where
+        NV: Ord,
+    {
+        Ok(match self {
+            Stmt::StorageRead { storage, ty, addr } => Stmt::StorageRead {
+                storage: stor_fn(ctx, storage)?,
+                ty: ty_fn(ctx, ty)?,
+                addr: addr_fn(ctx, addr)?,
+            },
+            Stmt::StorageWrite { storage, src, ty, addr } => Stmt::StorageWrite {
+                storage: stor_fn(ctx, storage)?,
+                src: var_fn(ctx, src)?,
+                ty: ty_fn(ctx, ty)?,
+                addr: addr_fn(ctx, addr)?,
+            },
+            Stmt::Const(c, ty) => Stmt::Const(c, ty_fn(ctx, ty)?),
+            Stmt::Transmute { src, src_ty, dst_ty } => Stmt::Transmute {
+                src: var_fn(ctx, src)?,
+                src_ty: ty_fn(ctx, src_ty)?,
+                dst_ty: ty_fn(ctx, dst_ty)?,
+            },
+            Stmt::Poly { ty, coeffs, constant } => {
+                let ty = ty_fn(ctx, ty)?;
+                let coeffs = coeffs
+                    .into_iter()
+                    .map(|(mono, coeff)| {
+                        let mono = mono
+                            .into_iter()
+                            .map(|v| var_fn(ctx, v))
+                            .collect::<Result<Vec<NV>, E>>()?;
+                        Ok((mono, coeff))
+                    })
+                    .collect::<Result<BTreeMap<Vec<NV>, u8>, E>>()?;
+                Stmt::Poly { ty, coeffs, constant }
+            }
+            Stmt::Rol { src, ty, n } => Stmt::Rol {
+                src: var_fn(ctx, src)?,
+                ty: ty_fn(ctx, ty)?,
+                n,
+            },
+            Stmt::Ror { src, ty, n } => Stmt::Ror {
+                src: var_fn(ctx, src)?,
+                ty: ty_fn(ctx, ty)?,
+                n,
+            },
+            Stmt::Merge { parts, ty } => Stmt::Merge {
+                parts: parts.into_iter().map(|v| var_fn(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+                ty: ty_fn(ctx, ty)?,
+            },
+            Stmt::Splat { src, ty } => Stmt::Splat {
+                src: var_fn(ctx, src)?,
+                ty: ty_fn(ctx, ty)?,
+            },
+            Stmt::Shuffle { result_bits, ty } => Stmt::Shuffle {
+                result_bits: result_bits
+                    .into_iter()
+                    .map(|(bit_idx, v)| Ok((bit_idx, var_fn(ctx, v)?)))
+                    .collect::<Result<Vec<(u8, NV)>, E>>()?,
+                ty: ty_fn(ctx, ty)?,
+            },
+            Stmt::OracleCall { name, args, output_tys, result_ty } => Stmt::OracleCall {
+                name,
+                args: args.into_iter().map(|v| var_fn(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+                output_tys: output_tys.into_iter().map(|t| ty_fn(ctx, t)).collect::<Result<Vec<NT>, E>>()?,
+                result_ty: ty_fn(ctx, result_ty)?,
+            },
+            Stmt::OracleOutput { call, idx, ty } => Stmt::OracleOutput {
+                call: var_fn(ctx, call)?,
+                idx,
+                ty: ty_fn(ctx, ty)?,
+            },
+            Stmt::ActionCall { name, guard, args, fallbacks, output_tys, result_ty } => {
+                Stmt::ActionCall {
+                    name,
+                    guard: var_fn(ctx, guard)?,
+                    args: args.into_iter().map(|v| var_fn(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+                    fallbacks: fallbacks.into_iter().map(|v| var_fn(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+                    output_tys: output_tys.into_iter().map(|t| ty_fn(ctx, t)).collect::<Result<Vec<NT>, E>>()?,
+                    result_ty: ty_fn(ctx, result_ty)?,
+                }
+            }
+            Stmt::ActionOutput { call, idx, ty } => Stmt::ActionOutput {
+                call: var_fn(ctx, call)?,
+                idx,
+                ty: ty_fn(ctx, ty)?,
+            },
+            Stmt::Rng { name, ty } => Stmt::Rng { name, ty: ty_fn(ctx, ty)? },
+        })
+    }
+
+    /// Borrow all generic parameters in place.
+    ///
+    /// Returns a `Stmt<&Var, &Addr, &Ty, &Stor>` whose fields are references
+    /// into `self`.
+    ///
+    /// # Cost
+    /// * Most variants: O(1) field borrows.
+    /// * `Poly`: O(n log n) — the BTreeMap is rebuilt with `Vec<&Var>` keys.
+    /// * `OracleCall`, `ActionCall`, `Rng`: the non-generic `name: String` is
+    ///   **cloned** because it is not a generic parameter.
+    ///
+    /// # Bounds
+    /// `Var: Ord` is required to rebuild the `Poly.coeffs` BTreeMap.
+    pub fn as_ref(&self) -> Stmt<&Var, &Addr, &Ty, &Stor>
+    where
+        Var: Ord,
+    {
+        match self {
+            Stmt::StorageRead { storage, ty, addr } => {
+                Stmt::StorageRead { storage, ty, addr }
+            }
+            Stmt::StorageWrite { storage, src, ty, addr } => {
+                Stmt::StorageWrite { storage, src, ty, addr }
+            }
+            Stmt::Const(c, ty) => Stmt::Const(*c, ty),
+            Stmt::Transmute { src, src_ty, dst_ty } => {
+                Stmt::Transmute { src, src_ty, dst_ty }
+            }
+            Stmt::Poly { ty, coeffs, constant } => {
+                let coeffs = coeffs
+                    .iter()
+                    .map(|(mono, coeff)| (mono.iter().collect::<Vec<&Var>>(), *coeff))
+                    .collect::<BTreeMap<Vec<&Var>, u8>>();
+                Stmt::Poly { ty, coeffs, constant: *constant }
+            }
+            Stmt::Rol { src, ty, n } => Stmt::Rol { src, ty, n: *n },
+            Stmt::Ror { src, ty, n } => Stmt::Ror { src, ty, n: *n },
+            Stmt::Merge { parts, ty } => Stmt::Merge { parts: parts.iter().collect(), ty },
+            Stmt::Splat { src, ty } => Stmt::Splat { src, ty },
+            Stmt::Shuffle { result_bits, ty } => Stmt::Shuffle {
+                result_bits: result_bits.iter().map(|(b, v)| (*b, v)).collect(),
+                ty,
+            },
+            Stmt::OracleCall { name, args, output_tys, result_ty } => Stmt::OracleCall {
+                name: name.clone(),
+                args: args.iter().collect(),
+                output_tys: output_tys.iter().collect(),
+                result_ty,
+            },
+            Stmt::OracleOutput { call, idx, ty } => {
+                Stmt::OracleOutput { call, idx: *idx, ty }
+            }
+            Stmt::ActionCall { name, guard, args, fallbacks, output_tys, result_ty } => {
+                Stmt::ActionCall {
+                    name: name.clone(),
+                    guard,
+                    args: args.iter().collect(),
+                    fallbacks: fallbacks.iter().collect(),
+                    output_tys: output_tys.iter().collect(),
+                    result_ty,
+                }
+            }
+            Stmt::ActionOutput { call, idx, ty } => {
+                Stmt::ActionOutput { call, idx: *idx, ty }
+            }
+            Stmt::Rng { name, ty } => Stmt::Rng { name: name.clone(), ty },
+        }
+    }
 }
 
 // ============================================================================

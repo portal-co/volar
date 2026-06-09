@@ -123,6 +123,7 @@ fn apply_one(module: &mut Module, sub: &VaffleSubstitution) -> usize {
                     entry: body.entry,
                 })
             }
+            _ => panic!("substitute_vaffle: unhandled FuncDecl variant — add handling for this variant"),
         };
         module.funcs.push(new_func);
     }
@@ -260,6 +261,7 @@ fn remap_value(
             idx: *idx,
             elem_bits: *elem_bits,
         },
+        _ => panic!("remap_value: unhandled Value variant — add remapping for this variant"),
     }
 }
 

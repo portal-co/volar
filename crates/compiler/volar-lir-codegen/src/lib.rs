@@ -501,6 +501,7 @@ fn lower_stmt<T: LirTarget>(stmt: &IrStmt, ctx: &mut LowerCtx<T>) {
         IrStmt::Semi(expr) | IrStmt::Expr(expr) => {
             lower_expr(expr, ctx);
         }
+        _ => panic!("lower_stmt: unhandled IrStmt variant — add lowering for this variant"),
     }
 }
 
@@ -2130,6 +2131,7 @@ fn lower_cfg_terminator<T: LirTarget>(
                 &else_args,
             );
         }
+        _ => panic!("lower_cfg_terminator: unhandled IrCfgTerminator variant — add lowering for this variant"),
     }
 }
 

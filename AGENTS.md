@@ -130,6 +130,7 @@ Load these when working in the relevant area:
 | **Full pipeline (multi-pass, weaving feedback)** | **`docs/pipeline.md`** | **Touching any lowering pass, codegen backend, or weaver — the overview.md sketch is not accurate** |
 | User-facing integration | `docs/integration-guide.md` | When answering questions about app integration |
 | IR types, storage, Poly semantics | `docs/agent-context/ir-types-storage.md` | Working on IR, lowering, evaluators, store-forward, fuzzer generators |
+| IR `map`/`as_ref`/`as_mut` conventions | `docs/agent-context/ir-map-conventions.md` | Adding IR variants, writing IR transformations, understanding `#[non_exhaustive]` catch-all conventions |
 | Weaving & multi-backend | `docs/agent-context/weaving.md` | Working on FHE/garbled-circuit weaving, compiler printers (Rust/TS/C), action system, CFG emission |
 | TypeScript class witnesses | `docs/agent-context/ts-class-witnesses.md` | Working on TS codegen: `WitnessKind`, `ctx` parameter, type-param-as-value, static method dispatch |
 | ORAM & channel | `docs/agent-context/oram.md` | Working on ORAM crates, channel protocol, ORAM weaver integration |

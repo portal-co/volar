@@ -54,6 +54,7 @@ pub struct SigDecl {
 
 #[derive(Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[non_exhaustive]
 pub enum FuncDecl {
     Import {
         module: String,
@@ -80,26 +81,123 @@ pub struct Block {
 }
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct Target {
+pub struct Target<V = ValueId> {
     pub block: BlockId,
-    pub args: Vec<ValueId>,
+    pub args: Vec<V>,
 }
+
+impl<V> Target<V> {
+    pub fn map<Ctx, NV, E>(
+        self,
+        ctx: &mut Ctx,
+        go: &mut impl FnMut(&mut Ctx, V) -> Result<NV, E>,
+    ) -> Result<Target<NV>, E> {
+        Ok(Target {
+            block: self.block,
+            args: self.args.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+        })
+    }
+
+    pub fn as_ref(&self) -> Target<&V> {
+        Target { block: self.block, args: self.args.iter().collect() }
+    }
+
+    pub fn as_mut(&mut self) -> Target<&mut V> {
+        Target { block: self.block, args: self.args.iter_mut().collect() }
+    }
+}
+
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub enum Terminator {
-    Return { values: Vec<ValueId> },
-    Jump(Target),
-    ReturnCall { func: FuncId, args: Vec<ValueId> },
+#[non_exhaustive]
+pub enum Terminator<V = ValueId> {
+    Return { values: Vec<V> },
+    Jump(Target<V>),
+    ReturnCall { func: FuncId, args: Vec<V> },
     IfNonzero {
-        cond: ValueId,
-        then_target: Target,
-        else_target: Target,
+        cond: V,
+        then_target: Target<V>,
+        else_target: Target<V>,
     },
     Table {
-        index: ValueId,
-        targets: Vec<Target>,
-        default_target: Target,
+        index: V,
+        targets: Vec<Target<V>>,
+        default_target: Target<V>,
     },
+}
+
+impl<V> Terminator<V> {
+    pub fn map<Ctx, NV, E>(
+        self,
+        ctx: &mut Ctx,
+        mut go: impl FnMut(&mut Ctx, V) -> Result<NV, E>,
+    ) -> Result<Terminator<NV>, E> {
+        Ok(match self {
+            Terminator::Return { values } => Terminator::Return {
+                values: values.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+            },
+            Terminator::Jump(t) => Terminator::Jump(t.map(ctx, &mut go)?),
+            Terminator::ReturnCall { func, args } => Terminator::ReturnCall {
+                func,
+                args: args.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+            },
+            Terminator::IfNonzero { cond, then_target, else_target } => Terminator::IfNonzero {
+                cond: go(ctx, cond)?,
+                then_target: then_target.map(ctx, &mut go)?,
+                else_target: else_target.map(ctx, &mut go)?,
+            },
+            Terminator::Table { index, targets, default_target } => Terminator::Table {
+                index: go(ctx, index)?,
+                targets: targets
+                    .into_iter()
+                    .map(|t| t.map(ctx, &mut go))
+                    .collect::<Result<Vec<Target<NV>>, E>>()?,
+                default_target: default_target.map(ctx, &mut go)?,
+            },
+        })
+    }
+
+    pub fn as_ref(&self) -> Terminator<&V> {
+        match self {
+            Terminator::Return { values } => Terminator::Return { values: values.iter().collect() },
+            Terminator::Jump(t) => Terminator::Jump(t.as_ref()),
+            Terminator::ReturnCall { func, args } => {
+                Terminator::ReturnCall { func: *func, args: args.iter().collect() }
+            }
+            Terminator::IfNonzero { cond, then_target, else_target } => Terminator::IfNonzero {
+                cond,
+                then_target: then_target.as_ref(),
+                else_target: else_target.as_ref(),
+            },
+            Terminator::Table { index, targets, default_target } => Terminator::Table {
+                index,
+                targets: targets.iter().map(|t| t.as_ref()).collect(),
+                default_target: default_target.as_ref(),
+            },
+        }
+    }
+
+    pub fn as_mut(&mut self) -> Terminator<&mut V> {
+        match self {
+            Terminator::Return { values } => {
+                Terminator::Return { values: values.iter_mut().collect() }
+            }
+            Terminator::Jump(t) => Terminator::Jump(t.as_mut()),
+            Terminator::ReturnCall { func, args } => {
+                Terminator::ReturnCall { func: *func, args: args.iter_mut().collect() }
+            }
+            Terminator::IfNonzero { cond, then_target, else_target } => Terminator::IfNonzero {
+                cond,
+                then_target: then_target.as_mut(),
+                else_target: else_target.as_mut(),
+            },
+            Terminator::Table { index, targets, default_target } => Terminator::Table {
+                index,
+                targets: targets.iter_mut().map(|t| t.as_mut()).collect(),
+                default_target: default_target.as_mut(),
+            },
+        }
+    }
 }
 
 /// A value in a VAFFLE function body.
@@ -115,7 +213,8 @@ pub enum Terminator {
 /// rest of the module.
 #[derive(Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub enum Value {
+#[non_exhaustive]
+pub enum Value<V = ValueId> {
     Param {
         block: BlockId,
         /// The parameter's type, as a [`TypeId`] into [`Module::types`].
@@ -124,18 +223,18 @@ pub enum Value {
     },
     Call {
         func: FuncId,
-        args: Vec<ValueId>,
+        args: Vec<V>,
     },
     /// Select one output from a multi-result call by index.
     Output {
-        value: ValueId,
+        value: V,
         idx: usize,
     },
     /// A pure computation (constant, polynomial, shuffle, rotate, merge, …).
     ///
     /// Type annotations in the inner [`Stmt`] reference the same
     /// [`Module::types`] table as the rest of the module.
-    Op(Stmt<ValueId>),
+    Op(Stmt<V>),
     /// Allocate `count` elements of `elem_ty` on the function's stack frame.
     ///
     /// Returns a pointer (address bits) into `StorageId::STACK`.  The
@@ -153,21 +252,68 @@ pub enum Value {
     /// `ptr` is a stack address (as emitted by `StackAlloc` or `PtrOffset`).
     /// `pointee_ty` is the type of the loaded value.
     PtrLoad {
-        ptr: ValueId,
+        ptr: V,
         pointee_ty: TypeId,
     },
     /// Store `val` through a stack pointer.  No result value.
     PtrStore {
-        ptr: ValueId,
-        val: ValueId,
+        ptr: V,
+        val: V,
     },
     /// Element-wise pointer offset: `ptr + idx` elements (not bytes).
     ///
     /// `elem_bits` is the element width in storage slots so the lowering
     /// can compute the byte offset without re-inspecting the type table.
     PtrOffset {
-        ptr: ValueId,
-        idx: ValueId,
+        ptr: V,
+        idx: V,
         elem_bits: usize,
     },
+}
+
+impl<V> Value<V> {
+    /// Map the value-id parameter, potentially fallibly.
+    ///
+    /// For `Op(Stmt<V>)`, maps all `Var` and `Addr` positions using `go`,
+    /// leaving `TypeId` and `StorageId` fields unchanged.
+    pub fn map<Ctx, NV, E>(
+        self,
+        ctx: &mut Ctx,
+        mut go: impl FnMut(&mut Ctx, V) -> Result<NV, E>,
+    ) -> Result<Value<NV>, E>
+    where
+        V: Ord,
+        NV: Ord,
+    {
+        Ok(match self {
+            Value::Param { block, ty, idx } => Value::Param { block, ty, idx },
+            Value::Call { func, args } => Value::Call {
+                func,
+                args: args.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+            },
+            Value::Output { value, idx } => Value::Output { value: go(ctx, value)?, idx },
+            Value::Op(stmt) => {
+                Value::Op(stmt.map_var(
+                    ctx,
+                    &mut go,
+                    &mut |_, ty| Ok(ty),
+                    &mut |_, s| Ok(s),
+                )?)
+            }
+            Value::StackAlloc { elem_ty, count, base_slot } => {
+                Value::StackAlloc { elem_ty, count, base_slot }
+            }
+            Value::PtrLoad { ptr, pointee_ty } => {
+                Value::PtrLoad { ptr: go(ctx, ptr)?, pointee_ty }
+            }
+            Value::PtrStore { ptr, val } => {
+                Value::PtrStore { ptr: go(ctx, ptr)?, val: go(ctx, val)? }
+            }
+            Value::PtrOffset { ptr, idx, elem_bits } => Value::PtrOffset {
+                ptr: go(ctx, ptr)?,
+                idx: go(ctx, idx)?,
+                elem_bits,
+            },
+        })
+    }
 }

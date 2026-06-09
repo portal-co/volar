@@ -133,6 +133,7 @@ fn lower_biir_stmt<Q: Clone + Default, T: LirTarget<Q>>(stmt: &BIrStmt, vals: &[
         | BIrStmt::StorageWrite { .. } => {
             unimplemented!("lower_biir_stmt: extended BIrStmt variants not supported in plain LIR lowering")
         }
+        _ => panic!("lower_biir_stmt: unhandled BIrStmt variant — add lowering for this variant"),
     }
 }
 
@@ -161,6 +162,7 @@ fn lower_biir_terminator<Q: Clone + Default, T: LirTarget<Q>>(
                 _ => unimplemented!("CondJmp with Return/Dyn target"),
             }
         }
+        _ => panic!("lower_biir_terminator: unhandled BIrTerminator variant — add lowering for this variant"),
     }
 }
 
@@ -181,6 +183,7 @@ fn lower_biir_jump<P: Clone + Default, T: LirTarget<P>>(
             target.jump(block_handles[id.0 as usize].clone(), &args);
         }
         IRBlockTargetId::Dyn(_) => unimplemented!("dynamic jump target in BIrBlocks lowering"),
+        _ => panic!("lower_biir_jump: unhandled IRBlockTargetId variant — add lowering for this variant"),
     }
 }
 
@@ -194,6 +197,7 @@ fn resolve_biir_target<Q: Clone + Default, T: LirTarget<Q>>(
         IRBlockTargetId::Block(id) => (Some(block_handles[id.0 as usize].clone()), args),
         IRBlockTargetId::Return => (None, args),
         IRBlockTargetId::Dyn(_) => unimplemented!("dynamic jump target in BIrBlocks lowering"),
+        _ => panic!("resolve_biir_target: unhandled IRBlockTargetId variant — add handling for this variant"),
     }
 }
 
@@ -517,6 +521,7 @@ fn lower_ir_stmt<Q: Clone + Default, T: LirTarget<Q>>(
         IRStmt::Rng { .. } => {
             unimplemented!("Rng lowering to LirTarget not yet implemented")
         }
+        _ => panic!("lower_ir_stmt: unhandled IRStmt variant — add lowering for this variant"),
     }
 }
 
@@ -538,6 +543,7 @@ fn lower_ir_terminator<Q: Clone + Default, T: LirTarget<Q>>(
                     target.jump(block_handles[id.0 as usize].clone(), &arg_vals);
                 }
                 IRBlockTargetId::Dyn(_) => unimplemented!("dynamic jump target"),
+                _ => panic!("lower_ir_terminator: unhandled IRBlockTargetId variant — add lowering for this variant"),
             }
         }
         IRTerminator::JumpCond {
@@ -560,5 +566,6 @@ fn lower_ir_terminator<Q: Clone + Default, T: LirTarget<Q>>(
         IRTerminator::JumpTable { .. } => {
             unimplemented!("JumpTable lowering not yet implemented")
         }
+        _ => panic!("lower_ir_terminator: unhandled IRTerminator variant — add lowering for this variant"),
     }
 }

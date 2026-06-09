@@ -451,6 +451,7 @@ fn subst_biir(stmt: &BIrStmt, var_map: &[u32]) -> BIrStmt {
             bit_width: *bit_width,
             addr: addr.iter().map(|v| s(v)).collect(),
         },
+        _ => panic!("subst_biir: unhandled BIrStmt variant — add substitution for this variant"),
     }
 }
 
@@ -506,6 +507,7 @@ impl<P: Clone + Default> BIrCtx<P> {
             IRBlockTargetId::Dyn(_) => {
                 panic!("movfuscate_biir: Dyn jump targets are not supported")
             }
+            _ => panic!("movfuscate_biir: unhandled IRBlockTargetId variant — add handling for this variant"),
         }
     }
 }
@@ -661,6 +663,7 @@ impl<P: Clone + Default> MovfuscCtx for BIrCtx<P> {
                     .collect();
                 TermResult { done, next_pc_bits, next_state, ret_vals }
             }
+            _ => panic!("emit_block_terminator: unhandled BIrTerminator variant — add handling for this variant"),
         }
     }
 
@@ -749,6 +752,7 @@ fn subst_ir(stmt: &IRStmt, var_map: &[u32]) -> IRStmt {
         IRStmt::ActionOutput { call, idx, ty } =>
             IRStmt::ActionOutput { call: s(call), idx: *idx, ty: ty.clone() },
         IRStmt::Rng { name, ty } => IRStmt::Rng { name: name.clone(), ty: ty.clone() },
+        _ => panic!("subst_ir: unhandled IRStmt variant — add substitution for this variant"),
     }
 }
 
@@ -822,6 +826,7 @@ fn infer_stmt_result_type(
         IRStmt::OracleOutput { ty, .. } | IRStmt::ActionOutput { ty, .. } => ty.clone(),
         // RNG produces a fresh value of the declared type.
         IRStmt::Rng { ty, .. } => ty.clone(),
+        _ => panic!("infer_stmt_result_type: unhandled IRStmt variant — add type inference for this variant"),
     }
 }
 
@@ -1134,6 +1139,7 @@ impl<P: Clone + Default> IrCtx<P> {
                     .collect();
                 (done, next_pc_bits, next_state, ret)
             }
+            _ => panic!("process_ir_target: unhandled IRBlockTargetId variant — add handling for this variant"),
         }
     }
 }
@@ -1552,6 +1558,7 @@ impl<P: Clone + Default> MovfuscCtx for IrCtx<P> {
                     ret_vals: ret_acc,
                 }
             }
+            _ => panic!("movfuscate: unhandled IRTerminator variant — add handling for this variant"),
         }
     }
 

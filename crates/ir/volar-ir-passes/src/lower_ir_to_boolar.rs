@@ -343,6 +343,7 @@ fn lower_stmt<P: Clone + Default>(
                 .collect();
             var_bits.insert(ir_var_idx, bits);
         }
+        _ => panic!("lower_ir_to_boolar: unhandled IRStmt variant — add lowering for this variant"),
     }
 }
 
@@ -391,6 +392,7 @@ fn lower_terminator(term: &IRTerminator, var_bits: &BTreeMap<u32, Vec<IRVarId>>)
                  convert to nested JumpCond first"
             )
         }
+        _ => panic!("lower_ir_to_boolar: unhandled IRTerminator variant — add lowering for this variant"),
     }
 }
 
@@ -506,6 +508,7 @@ pub fn ir_type_bits(ty: &IRType, types: &IRTypes) -> usize {
         }
         IRType::Block { .. } | IRType::Func { .. } => 0,
         IRType::Primitive(_) => unimplemented!("ir_type_bits: unknown PrimType variant"),
+        _ => panic!("ir_type_bits: unhandled IrType variant — add bit-width calculation"),
     }
 }
 

@@ -258,6 +258,7 @@ pub(crate) fn apply_aliases_to_biir_terminator(
             changed |= apply_aliases_to_biir_target(then_target, alias_map);
             changed |= apply_aliases_to_biir_target(else_target, alias_map);
         }
+        _ => {}
     }
     changed
 }

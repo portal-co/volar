@@ -226,6 +226,7 @@ fn remap_type_id(
                 .collect();
             IrType::Func { params: params_ir, results: results_ir }
         }
+        _ => panic!("remap_type_id: unhandled IrType variant — add type mapping for this variant"),
     };
     let ir_tid = ir_types.intern(ity);
     map[vtid.0 as usize] = ir_tid;
@@ -889,6 +890,7 @@ fn collect_value_uses(val: &Value, out: &mut BTreeSet<usize>) {
         }
         // Defining occurrences — no operands to record.
         Value::Param { .. } | Value::StackAlloc { .. } => {}
+        _ => {}
     }
 }
 
@@ -924,6 +926,7 @@ fn collect_stmt_uses(stmt: &Stmt<ValueId>, out: &mut BTreeSet<usize>) {
             for f in fallbacks { out.insert(f.0); }
         }
         Stmt::ActionOutput { call, .. } => { out.insert(call.0); }
+        _ => {}
     }
 }
 
@@ -948,6 +951,7 @@ fn collect_terminator_uses(term: &Terminator, out: &mut BTreeSet<usize>) {
             for t in targets { for v in &t.args { out.insert(v.0); } }
             for v in &default_target.args { out.insert(v.0); }
         }
+        _ => {}
     }
 }
 
@@ -970,6 +974,7 @@ fn ir_type_bit_width(types: &IRTypes, tid: TypeId) -> usize {
         IrType::Vec(n, inner) => *n * ir_type_bit_width(types, *inner),
         IrType::Tuple(parts)  => parts.iter().map(|&p| ir_type_bit_width(types, p)).sum(),
         IrType::Block { .. } | IrType::Func { .. } => 32,
+        _ => panic!("ir_type_bit_width: unhandled IrType variant — add bit-width calculation"),
     }
 }
 
@@ -1002,6 +1007,7 @@ fn stmt_result_vtid(stmt: &Stmt<ValueId>) -> TypeId {
         Stmt::OracleOutput { ty, .. }       => *ty,
         Stmt::ActionCall { result_ty, .. }  => *result_ty,
         Stmt::ActionOutput { ty, .. }       => *ty,
+        _ => TypeId(0),
     }
 }
 
@@ -1083,6 +1089,7 @@ fn translate_stmt(
             },
         volar_ir_common::Stmt::ActionOutput { call, idx, ty } =>
             IRStmt::ActionOutput { call: s(call), idx: *idx, ty: t(ty) },
+        _ => panic!("translate_stmt: unhandled Stmt variant — add translation for this variant"),
     }
 }
 

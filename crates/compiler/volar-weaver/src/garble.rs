@@ -268,6 +268,7 @@ where
             | BIrStmt::StorageWrite { .. } => {
                 unimplemented!("garble weaver: extended BIrStmt variants not supported")
             }
+            _ => unimplemented!("garble weaver: unhandled BIrStmt variant — add support for this variant"),
         };
 
         stmts.push(IrStmt::Let {
@@ -469,6 +470,7 @@ where
             | BIrStmt::StorageWrite { .. } => {
                 unimplemented!("garble weaver: extended BIrStmt variants not supported")
             }
+            _ => unimplemented!("garble weaver: unhandled BIrStmt variant — add support for this variant"),
         };
 
         stmts.push(IrStmt::Let {
@@ -652,6 +654,7 @@ where
             | BIrStmt::StorageWrite { .. } => {
                 unimplemented!("garble weaver: extended BIrStmt variants not supported")
             }
+            _ => unimplemented!("garble weaver: unhandled BIrStmt variant — add support for this variant"),
         };
 
         stmts.push(IrStmt::Let {
@@ -853,6 +856,7 @@ where
             | BIrStmt::StorageWrite { .. } => {
                 unimplemented!("garble weaver: extended BIrStmt variants not supported")
             }
+            _ => unimplemented!("garble weaver: unhandled BIrStmt variant — add support for this variant"),
         };
 
         stmts.push(IrStmt::Let {

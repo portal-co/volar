@@ -787,6 +787,7 @@ fn bits_for_lir_type(ty: &LirType, struct_widths: &[usize]) -> usize {
         // Native field elements occupy exactly one IRVarId slot (not N bits).
         LirType::Native(_) => 1,
         LirType::Ptr(_) => panic!("VolarIrTarget: LirType::Ptr is not supported (circuit backends have no memory model)"),
+        _ => panic!("bits_for_lir_type: unhandled LirType variant — add bit-width calculation"),
     }
 }
 
@@ -829,6 +830,7 @@ fn remap_terminator(
                 IRBlockTargetId::Block(IRBlockId(new_blocks[*j as usize] as u32)),
             IRBlockTargetId::Dyn(v) =>
                 IRBlockTargetId::Dyn(var_map[v.0 as usize]),
+            _ => panic!("remap_target: unhandled IRBlockTargetId variant — add remapping for this variant"),
         }
     };
     match term {
@@ -850,6 +852,7 @@ fn remap_terminator(
                 (*k, (remap_target(t), remap_args(args)))
             }).collect(),
         },
+        _ => panic!("remap_terminator: unhandled IRTerminator variant — add remapping for this variant"),
     }
 }
 
@@ -908,6 +911,7 @@ fn subst_stmt(stmt: &IRStmt, var_map: &[IRVarId]) -> IRStmt {
         IRStmt::ActionOutput { call, idx, ty } =>
             IRStmt::ActionOutput { call: s(call), idx: *idx, ty: ty.clone() },
         IRStmt::Rng { name, ty } => IRStmt::Rng { name: name.clone(), ty: ty.clone() },
+        _ => panic!("subst_stmt: unhandled IRStmt variant — add substitution for this variant"),
     }
 }
 

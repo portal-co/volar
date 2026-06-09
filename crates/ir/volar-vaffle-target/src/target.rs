@@ -922,6 +922,7 @@ pub(crate) fn bits_for_lir_type(ty: &LirType, struct_widths: &[usize]) -> usize 
         LirType::Struct(id) => struct_widths[*id as usize],
         LirType::Native(_) => 1,
         LirType::Ptr(_) => PTR_BITS,
+        _ => panic!("bits_for_lir_type: unhandled LirType variant — add bit-width calculation"),
     }
 }
 

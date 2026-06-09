@@ -914,6 +914,7 @@ where
                      use IRBlocks-based weavers (weave_vole_prover_ir) instead"
                 )
             }
+            _ => unimplemented!("vole weaver: unhandled BIrStmt variant — add support for this variant"),
         }
 
         var_names.insert(result_id.0, let_name);
@@ -1347,6 +1348,7 @@ where
                      use IRBlocks-based weavers (weave_vole_verifier_ir) instead"
                 )
             }
+            _ => unimplemented!("vole weaver: unhandled BIrStmt variant — add support for this variant"),
         }
 
         var_names.insert(result_id.0, let_name);
@@ -1761,6 +1763,7 @@ fn count_ir_ands(
             Stmt::Rng { ty, .. } => ty.clone(),
             Stmt::OracleCall { result_ty, .. } | Stmt::ActionCall { result_ty, .. } => result_ty.clone(),
             Stmt::OracleOutput { ty, .. } | Stmt::ActionOutput { ty, .. } => ty.clone(),
+            _ => panic!("count_ir_ands: unhandled Stmt variant — add AND count for this variant"),
         };
         var_types.push(result_ty);
     }
@@ -2733,6 +2736,7 @@ impl VoleIrCtx {
                         self.wires.insert(var_id, WireRepr::Vec(bits));
                     }
                 }
+                _ => panic!("emit_circuit_stmts: unhandled Stmt variant — add circuit emission for this variant"),
             }
         }
     }

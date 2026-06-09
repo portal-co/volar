@@ -413,6 +413,7 @@ impl RegAlloc {
                         visit(target);
                     }
                 }
+                _ => {}
             }
         }
 
@@ -554,6 +555,7 @@ fn stmt_output_type(s: &IRStmt) -> Option<IRTypeId> {
         Stmt::ActionCall { result_ty, .. } => Some(*result_ty),
         Stmt::ActionOutput { ty, .. } => Some(*ty),
         Stmt::Rng { ty, .. } => Some(*ty),
+        _ => None,
     }
 }
 
@@ -671,6 +673,7 @@ fn terminator_arm_shape(t: &IRTerminator) -> Vec<usize> {
         IRTerminator::JumpTable { cases, .. } => {
             cases.values().map(|(_, a)| a.len()).collect()
         }
+        _ => panic!("terminator_arm_shape: unhandled IRTerminator variant — add arm shape calculation for this variant"),
     }
 }
 
@@ -1087,6 +1090,7 @@ fn fill_terminator_slots<P: Clone + Default>(
                     *idx += 1;
                 }
             }
+            _ => panic!("fill_terminator_slots: unhandled IRBlockTargetId variant — add handling for this variant"),
         }
     };
 
@@ -1112,6 +1116,7 @@ fn fill_terminator_slots<P: Clone + Default>(
                 fill_arm(out, &schema.arms[arm_idx], t, a);
             }
         }
+        _ => panic!("fill_terminator_slots: unhandled IRTerminator variant — add handling for this variant"),
     }
 }
 
@@ -1535,6 +1540,7 @@ fn emit_handler_block<P: Clone + Default, H: IrHashAlgorithm>(
                 cases: out_cases,
             }
         }
+        _ => panic!("emit_handler_block: unhandled IRTerminator variant — add handler emission for this variant"),
     };
 
     b.terminator = terminator;
@@ -1894,6 +1900,7 @@ fn remap_ir_terminator_vars(t: &IRTerminator, var_remap: &[IRVarId]) -> IRTermin
                 cases: new_cases,
             }
         }
+        _ => panic!("remap_ir_terminator_vars: unhandled IRTerminator variant — add remapping for this variant"),
     }
 }
 
@@ -2035,6 +2042,7 @@ fn remap_stmt(s: &IRStmt, canonical_var: &[IRVarId]) -> IRStmt {
             name: name.clone(),
             ty: *ty,
         },
+        _ => panic!("remap_stmt: unhandled IRStmt variant — add remapping for this variant"),
     }
 }
 

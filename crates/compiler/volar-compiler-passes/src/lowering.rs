@@ -358,6 +358,7 @@ fn collect_type_refs_in_block(block: &IrBlock, refs: &mut BTreeSet<String>) {
                 }
             }
             IrStmt::Semi(e) | IrStmt::Expr(e) => collect_type_refs_in_expr(e, refs),
+            _ => {}
         }
     }
     if let Some(e) = &block.expr {

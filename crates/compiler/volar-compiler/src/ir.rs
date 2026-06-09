@@ -1204,6 +1204,7 @@ pub struct IrBlock<P: Clone + Default = ()> {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[non_exhaustive]
 pub enum IrStmt<P: Clone + Default = ()> {
     Let {
         pattern: IrPattern,
@@ -1231,6 +1232,7 @@ pub struct IrClosureParam {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[non_exhaustive]
 pub enum IrType {
     Primitive(PrimitiveType),
     Array {
@@ -1394,6 +1396,7 @@ impl fmt::Display for IrTraitBound {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[non_exhaustive]
 pub enum IrExpr<P: Clone + Default = ()> {
     Lit(IrLit),
     Var(String),
@@ -1559,6 +1562,7 @@ pub enum IrExpr<P: Clone + Default = ()> {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[non_exhaustive]
 pub enum IrPattern {
     Ident {
         mutable: bool,
@@ -2419,6 +2423,7 @@ pub struct IrCfgJump<P: Clone + Default = ()> {
 /// Terminates an [`IrCfgBlock`].
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[non_exhaustive]
 pub enum IrCfgTerminator<P: Clone + Default = ()> {
     /// Function returns, with an optional value expression.
     Return(Option<IrExpr<P>>),

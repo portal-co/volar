@@ -474,6 +474,7 @@ fn ir_terminator_succ_blocks(term: &IRTerminator) -> Vec<usize> {
                 }
             }
         }
+        _ => {}
     }
     out
 }
@@ -635,6 +636,7 @@ pub(crate) fn shift_ir_stmt_vars(
                 shift_var(f, old_base, n_stmts, shift);
             }
         }
+        _ => {}
     }
 }
 
@@ -680,6 +682,7 @@ pub(crate) fn shift_ir_terminator_vars(
                 shift_args(args);
             }
         }
+        _ => {}
     }
 }
 
@@ -762,6 +765,7 @@ fn shift_biir_terminator_vars(
             shift_biir_target_vars(then_target, old_base, n_stmts, shift);
             shift_biir_target_vars(else_target, old_base, n_stmts, shift);
         }
+        _ => {}
     }
 }
 
@@ -1190,6 +1194,7 @@ fn biir_terminator_succ_blocks(term: &BIrTerminator) -> Vec<usize> {
                 }
             }
         }
+        _ => {}
     }
     out
 }
@@ -1218,6 +1223,7 @@ fn biir_edge_args(term: &BIrTerminator, target_block: usize) -> Option<Vec<IRVar
             }
             None
         }
+        _ => None,
     }
 }
 
@@ -1247,6 +1253,7 @@ fn add_biir_args_to_edges(
                 }
             }
         }
+        _ => {}
     }
 }
 
@@ -1708,6 +1715,7 @@ fn vaffle_block_succs(term: &vaffle::Terminator) -> Vec<usize> {
             v.push(default_target.block.0);
             v
         }
+        _ => Vec::new(),
     }
 }
 
@@ -1945,6 +1953,7 @@ fn apply_aliases_to_vaffle_stmt(
             if c != *call { *call = c; changed = true; }
         }
         Stmt::Const(_, _) | Stmt::Rng { .. } => {}
+        _ => {}
     }
     changed
 }

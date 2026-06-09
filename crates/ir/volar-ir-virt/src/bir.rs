@@ -147,6 +147,7 @@ fn validate_input<P: Clone + Default>(blocks: &BIrBlocks<P>, common_params: u32)
                     i
                 );
             }
+            _ => {}
         }
     }
 }
@@ -206,6 +207,7 @@ fn count_targets(term: &BIrTerminator) -> usize {
             }
             n
         }
+        _ => 0,
     }
 }
 
@@ -738,6 +740,7 @@ fn remap_bir_terminator_vars(
             then_target: rt(then_target),
             else_target: rt(else_target),
         },
+        _ => panic!("remap_bir_terminator_vars: unhandled BIrTerminator variant — add remapping for this variant"),
     }
 }
 
@@ -804,6 +807,7 @@ fn remap_bir_stmt(s: &BIrStmt, map: &BTreeMap<IRVarId, IRVarId>) -> BIrStmt {
             bit_width: *bit_width,
             addr: remap_vs(addr, map),
         },
+        _ => panic!("remap_bir_stmt: unhandled BIrStmt variant — add remapping for this variant"),
     }
 }
 
@@ -838,6 +842,7 @@ fn rewrite_bir_terminator(
                 args: remap_vs(&t.args, map),
             }),
             IRBlockTargetId::Dyn(_) => unreachable!("validated away"),
+            _ => panic!("rewrite_bir_terminator: unhandled IRBlockTargetId variant — add handling for this variant"),
         },
         BIrTerminator::CondJmp {
             val,
@@ -856,6 +861,7 @@ fn rewrite_bir_terminator(
                     args: remap_vs(&then_target.args, map),
                 },
                 IRBlockTargetId::Dyn(_) => unreachable!(),
+                _ => panic!("rewrite_bir_terminator: unhandled IRBlockTargetId variant in then_target — add handling for this variant"),
             };
             let else_t = match else_target.block {
                 IRBlockTargetId::Block(_) => {
@@ -867,6 +873,7 @@ fn rewrite_bir_terminator(
                     args: remap_vs(&else_target.args, map),
                 },
                 IRBlockTargetId::Dyn(_) => unreachable!(),
+                _ => panic!("rewrite_bir_terminator: unhandled IRBlockTargetId variant in else_target — add handling for this variant"),
             };
             BIrTerminator::CondJmp {
                 val: remap_v(*val, map),
@@ -874,6 +881,7 @@ fn rewrite_bir_terminator(
                 else_target: else_t,
             }
         }
+        _ => panic!("rewrite_bir_terminator: unhandled BIrTerminator variant — add handling for this variant"),
     }
 }
 

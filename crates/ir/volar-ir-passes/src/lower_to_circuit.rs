@@ -268,6 +268,7 @@ fn process_terminator<P: Clone + Default>(
             IRBlockTargetId::Dyn(_) => {
                 panic!("lower_to_circuit: dynamic dispatch (Dyn) is not supported");
             }
+            _ => panic!("lower_to_circuit: unhandled IRBlockTargetId variant — add handling for this variant"),
         },
 
         BIrTerminator::CondJmp { val, then_target, else_target } => {
@@ -323,6 +324,7 @@ fn process_terminator<P: Clone + Default>(
                 ),
             }
         }
+        _ => panic!("lower_to_circuit: unhandled BIrTerminator variant — add handling for this variant"),
     }
 }
 
@@ -401,6 +403,7 @@ fn subst_stmt(stmt: &BIrStmt, var_map: &BTreeMap<u32, u32>) -> BIrStmt {
             bit_width: *bit_width,
             addr: addr.iter().map(|v| s(v)).collect(),
         },
+        _ => panic!("subst_stmt: unhandled BIrStmt variant — add substitution for this variant"),
     }
 }
 

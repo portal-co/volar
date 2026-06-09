@@ -135,6 +135,7 @@ pub fn weave_noop(
                     core::mem::discriminant(stmt)
                 )
             }
+            _ => panic!("noop weaver: unhandled BIrStmt variant — add support for this variant"),
         };
 
         stmts.push(IrStmt::Let {

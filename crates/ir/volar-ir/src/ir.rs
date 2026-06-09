@@ -160,7 +160,8 @@ pub struct IRVarId(pub u32);
 /// `volar-ir-common` so that VAFFLE and Volar IR cannot drift apart when new
 /// operations are added.  Type annotations use the shared [`IRTypeId`]
 /// ([`volar_ir_common::TypeId`]) referencing the module's [`IRTypes`].
-pub type IRStmt<Var = IRVarId, Addr = Var> = volar_ir_common::Stmt<Var, Addr>;
+pub type IRStmt<Var = IRVarId, Addr = Var, Ty = IRTypeId, Stor = volar_ir_common::StorageId> =
+    volar_ir_common::Stmt<Var, Addr, Ty, Stor>;
 
 // ============================================================================
 // Terminators
@@ -168,28 +169,172 @@ pub type IRStmt<Var = IRVarId, Addr = Var> = volar_ir_common::Stmt<Var, Addr>;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub enum IRTerminator {
+#[non_exhaustive]
+pub enum IRTerminator<Var = IRVarId> {
     Jmp {
-        func: IRBlockTargetId,
-        args: Vec<IRVarId>,
+        func: IRBlockTargetId<Var>,
+        args: Vec<Var>,
     },
     JumpCond {
-        condition: IRVarId,
-        true_block: IRBlockTargetId,
-        true_args: Vec<IRVarId>,
-        false_block: IRBlockTargetId,
-        false_args: Vec<IRVarId>,
+        condition: Var,
+        true_block: IRBlockTargetId<Var>,
+        true_args: Vec<Var>,
+        false_block: IRBlockTargetId<Var>,
+        false_args: Vec<Var>,
     },
     JumpTable {
-        index: IRVarId,
-        cases: BTreeMap<Constant, (IRBlockTargetId, Vec<IRVarId>)>,
-        // no default; must be exhaustive
+        index: Var,
+        cases: BTreeMap<Constant, (IRBlockTargetId<Var>, Vec<Var>)>,
     },
 }
+
+impl<Var> IRTerminator<Var> {
+    /// Map the variable parameter, potentially fallibly.
+    ///
+    /// `ctx` is passed to `go` on every call so the callback can share
+    /// mutable state without borrow conflicts.
+    pub fn map<Ctx, NV, E>(
+        self,
+        ctx: &mut Ctx,
+        mut go: impl FnMut(&mut Ctx, Var) -> Result<NV, E>,
+    ) -> Result<IRTerminator<NV>, E>
+    where
+        NV: Ord,
+    {
+        Ok(match self {
+            IRTerminator::Jmp { func, args } => IRTerminator::Jmp {
+                func: func.map(ctx, &mut go)?,
+                args: args.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+            },
+            IRTerminator::JumpCond {
+                condition,
+                true_block,
+                true_args,
+                false_block,
+                false_args,
+            } => IRTerminator::JumpCond {
+                condition: go(ctx, condition)?,
+                true_block: true_block.map(ctx, &mut go)?,
+                true_args: true_args.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+                false_block: false_block.map(ctx, &mut go)?,
+                false_args: false_args.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+            },
+            IRTerminator::JumpTable { index, cases } => IRTerminator::JumpTable {
+                index: go(ctx, index)?,
+                cases: cases
+                    .into_iter()
+                    .map(|(k, (target, args))| {
+                        let target = target.map(ctx, &mut go)?;
+                        let args = args.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?;
+                        Ok((k, (target, args)))
+                    })
+                    .collect::<Result<BTreeMap<Constant, (IRBlockTargetId<NV>, Vec<NV>)>, E>>()?,
+            },
+        })
+    }
+
+    /// Borrow the variable parameter in place.
+    pub fn as_ref(&self) -> IRTerminator<&Var>
+    where
+        Var: Ord,
+    {
+        match self {
+            IRTerminator::Jmp { func, args } => IRTerminator::Jmp {
+                func: func.as_ref(),
+                args: args.iter().collect(),
+            },
+            IRTerminator::JumpCond {
+                condition,
+                true_block,
+                true_args,
+                false_block,
+                false_args,
+            } => IRTerminator::JumpCond {
+                condition,
+                true_block: true_block.as_ref(),
+                true_args: true_args.iter().collect(),
+                false_block: false_block.as_ref(),
+                false_args: false_args.iter().collect(),
+            },
+            IRTerminator::JumpTable { index, cases } => IRTerminator::JumpTable {
+                index,
+                cases: cases
+                    .iter()
+                    .map(|(k, (target, args))| (*k, (target.as_ref(), args.iter().collect())))
+                    .collect(),
+            },
+        }
+    }
+
+    /// Mutably borrow the variable parameter in place.
+    pub fn as_mut(&mut self) -> IRTerminator<&mut Var>
+    where
+        Var: Ord,
+    {
+        match self {
+            IRTerminator::Jmp { func, args } => IRTerminator::Jmp {
+                func: func.as_mut(),
+                args: args.iter_mut().collect(),
+            },
+            IRTerminator::JumpCond {
+                condition,
+                true_block,
+                true_args,
+                false_block,
+                false_args,
+            } => IRTerminator::JumpCond {
+                condition,
+                true_block: true_block.as_mut(),
+                true_args: true_args.iter_mut().collect(),
+                false_block: false_block.as_mut(),
+                false_args: false_args.iter_mut().collect(),
+            },
+            IRTerminator::JumpTable { index, cases } => IRTerminator::JumpTable {
+                index,
+                cases: cases
+                    .iter_mut()
+                    .map(|(k, (target, args))| (*k, (target.as_mut(), args.iter_mut().collect())))
+                    .collect(),
+            },
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub enum IRBlockTargetId {
+#[non_exhaustive]
+pub enum IRBlockTargetId<Var = IRVarId> {
     Block(IRBlockId),
     Return,
-    Dyn(IRVarId),
+    Dyn(Var),
+}
+
+impl<Var> IRBlockTargetId<Var> {
+    pub fn map<Ctx, NV, E>(
+        self,
+        ctx: &mut Ctx,
+        go: &mut impl FnMut(&mut Ctx, Var) -> Result<NV, E>,
+    ) -> Result<IRBlockTargetId<NV>, E> {
+        Ok(match self {
+            IRBlockTargetId::Block(b) => IRBlockTargetId::Block(b),
+            IRBlockTargetId::Return => IRBlockTargetId::Return,
+            IRBlockTargetId::Dyn(v) => IRBlockTargetId::Dyn(go(ctx, v)?),
+        })
+    }
+
+    pub fn as_ref(&self) -> IRBlockTargetId<&Var> {
+        match self {
+            IRBlockTargetId::Block(b) => IRBlockTargetId::Block(*b),
+            IRBlockTargetId::Return => IRBlockTargetId::Return,
+            IRBlockTargetId::Dyn(v) => IRBlockTargetId::Dyn(v),
+        }
+    }
+
+    pub fn as_mut(&mut self) -> IRBlockTargetId<&mut Var> {
+        match self {
+            IRBlockTargetId::Block(b) => IRBlockTargetId::Block(*b),
+            IRBlockTargetId::Return => IRBlockTargetId::Return,
+            IRBlockTargetId::Dyn(v) => IRBlockTargetId::Dyn(v),
+        }
+    }
 }

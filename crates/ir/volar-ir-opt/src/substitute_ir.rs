@@ -526,6 +526,7 @@ fn visit_stmt_vars<F: FnMut(IRVarId)>(stmt: &IRStmt, f: &mut F) {
             fallbacks.iter().for_each(|&a| f(a));
         }
         Stmt::ActionOutput { call, .. }           => f(*call),
+        _ => {}
     }
 }
 
@@ -549,6 +550,7 @@ fn visit_terminator_vars<F: FnMut(IRVarId)>(term: &IRTerminator, f: &mut F) {
                 args.iter().for_each(|&a| f(a));
             });
         }
+        _ => {}
     }
 }
 
@@ -622,6 +624,7 @@ fn remap_block_ids(term: &IRTerminator, offset: usize) -> IRTerminator {
                 index: *index,
                 cases: cases.iter().map(|(c, (t, a))| (*c, (rt(t), a.clone()))).collect(),
             },
+        _ => panic!("remap_block_ids: unhandled IRTerminator variant — add block-id remapping for this variant"),
     }
 }
 

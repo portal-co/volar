@@ -77,6 +77,7 @@ impl NameConfig {
 /// Note: `Clone`, not `Copy` — `Arr` boxes its element type.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[non_exhaustive]
 #[cfg_attr(feature = "rkyv", rkyv(serialize_bounds(
     __S: rkyv::ser::Writer + rkyv::ser::Allocator,
     __S::Error: rkyv::rancor::Source,

@@ -84,14 +84,15 @@ impl<P: Clone + Default> BIrBlocks<P> {
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub enum BIrStmt {
+#[non_exhaustive]
+pub enum BIrStmt<Var = IRVarId, Stor = StorageId> {
     // ---- Boolean primitives ------------------------------------------------
     Zero,
     One,
-    And(IRVarId, IRVarId),
-    Or(IRVarId, IRVarId),
-    Xor(IRVarId, IRVarId),
-    Not(IRVarId),
+    And(Var, Var),
+    Or(Var, Var),
+    Xor(Var, Var),
+    Not(Var),
 
     // ---- External primitives -----------------------------------------------
 
@@ -102,13 +103,13 @@ pub enum BIrStmt {
     /// all oracle result types, expanded to the bit level by the lowering pass).
     OracleCall {
         name: alloc::string::String,
-        args: alloc::vec::Vec<IRVarId>,
+        args: alloc::vec::Vec<Var>,
         num_bits: usize,
     },
 
     /// Project bit `bit` from an [`OracleCall`] call-handle var.
     OracleBit {
-        call: IRVarId,
+        call: Var,
         bit: usize,
     },
 
@@ -120,15 +121,15 @@ pub enum BIrStmt {
     /// `guard = 0` and the action is not invoked.
     ActionCall {
         name: alloc::string::String,
-        guard: IRVarId,
-        args: alloc::vec::Vec<IRVarId>,
-        fallback: alloc::vec::Vec<IRVarId>,
+        guard: Var,
+        args: alloc::vec::Vec<Var>,
+        fallback: alloc::vec::Vec<Var>,
         num_bits: usize,
     },
 
     /// Project bit `bit` from an [`ActionCall`] call-handle var.
     ActionBit {
-        call: IRVarId,
+        call: Var,
         bit: usize,
     },
 
@@ -151,9 +152,9 @@ pub enum BIrStmt {
     /// Boolar handle; individual bits are not separately addressable at this
     /// level.  The lowering pass or weaver expands this as needed.
     StorageRead {
-        storage: StorageId,
+        storage: Stor,
         bit_width: usize,
-        addr: Vec<IRVarId>,
+        addr: Vec<Var>,
     },
 
     /// Write a `bit_width`-wide value `src` to storage, addressed by `addr`.
@@ -164,25 +165,220 @@ pub enum BIrStmt {
     ///
     /// Produces a dummy zero bit (no useful value).
     StorageWrite {
-        storage: StorageId,
-        src: IRVarId,
+        storage: Stor,
+        src: Var,
         bit_width: usize,
-        addr: Vec<IRVarId>,
+        addr: Vec<Var>,
     },
 }
+
+impl<Var, Stor> BIrStmt<Var, Stor> {
+    /// Map variable and storage parameters, potentially fallibly.
+    pub fn map<Ctx, NV, NS, E>(
+        self,
+        ctx: &mut Ctx,
+        mut var_fn: impl FnMut(&mut Ctx, Var) -> Result<NV, E>,
+        mut stor_fn: impl FnMut(&mut Ctx, Stor) -> Result<NS, E>,
+    ) -> Result<BIrStmt<NV, NS>, E> {
+        Ok(match self {
+            BIrStmt::Zero => BIrStmt::Zero,
+            BIrStmt::One => BIrStmt::One,
+            BIrStmt::And(a, b) => BIrStmt::And(var_fn(ctx, a)?, var_fn(ctx, b)?),
+            BIrStmt::Or(a, b) => BIrStmt::Or(var_fn(ctx, a)?, var_fn(ctx, b)?),
+            BIrStmt::Xor(a, b) => BIrStmt::Xor(var_fn(ctx, a)?, var_fn(ctx, b)?),
+            BIrStmt::Not(v) => BIrStmt::Not(var_fn(ctx, v)?),
+            BIrStmt::OracleCall { name, args, num_bits } => BIrStmt::OracleCall {
+                name,
+                args: args.into_iter().map(|v| var_fn(ctx, v)).collect::<Result<_, E>>()?,
+                num_bits,
+            },
+            BIrStmt::OracleBit { call, bit } => BIrStmt::OracleBit { call: var_fn(ctx, call)?, bit },
+            BIrStmt::ActionCall { name, guard, args, fallback, num_bits } => BIrStmt::ActionCall {
+                name,
+                guard: var_fn(ctx, guard)?,
+                args: args.into_iter().map(|v| var_fn(ctx, v)).collect::<Result<_, E>>()?,
+                fallback: fallback.into_iter().map(|v| var_fn(ctx, v)).collect::<Result<_, E>>()?,
+                num_bits,
+            },
+            BIrStmt::ActionBit { call, bit } => BIrStmt::ActionBit { call: var_fn(ctx, call)?, bit },
+            BIrStmt::Rng { name } => BIrStmt::Rng { name },
+            BIrStmt::StorageRead { storage, bit_width, addr } => BIrStmt::StorageRead {
+                storage: stor_fn(ctx, storage)?,
+                bit_width,
+                addr: addr.into_iter().map(|v| var_fn(ctx, v)).collect::<Result<_, E>>()?,
+            },
+            BIrStmt::StorageWrite { storage, src, bit_width, addr } => BIrStmt::StorageWrite {
+                storage: stor_fn(ctx, storage)?,
+                src: var_fn(ctx, src)?,
+                bit_width,
+                addr: addr.into_iter().map(|v| var_fn(ctx, v)).collect::<Result<_, E>>()?,
+            },
+        })
+    }
+
+    /// Borrow variable and storage parameters in place.
+    ///
+    /// `name` fields in `OracleCall`, `ActionCall`, `Rng` are cloned (they
+    /// are not generic parameters).
+    pub fn as_ref(&self) -> BIrStmt<&Var, &Stor> {
+        match self {
+            BIrStmt::Zero => BIrStmt::Zero,
+            BIrStmt::One => BIrStmt::One,
+            BIrStmt::And(a, b) => BIrStmt::And(a, b),
+            BIrStmt::Or(a, b) => BIrStmt::Or(a, b),
+            BIrStmt::Xor(a, b) => BIrStmt::Xor(a, b),
+            BIrStmt::Not(v) => BIrStmt::Not(v),
+            BIrStmt::OracleCall { name, args, num_bits } => BIrStmt::OracleCall {
+                name: name.clone(),
+                args: args.iter().collect(),
+                num_bits: *num_bits,
+            },
+            BIrStmt::OracleBit { call, bit } => BIrStmt::OracleBit { call, bit: *bit },
+            BIrStmt::ActionCall { name, guard, args, fallback, num_bits } => BIrStmt::ActionCall {
+                name: name.clone(),
+                guard,
+                args: args.iter().collect(),
+                fallback: fallback.iter().collect(),
+                num_bits: *num_bits,
+            },
+            BIrStmt::ActionBit { call, bit } => BIrStmt::ActionBit { call, bit: *bit },
+            BIrStmt::Rng { name } => BIrStmt::Rng { name: name.clone() },
+            BIrStmt::StorageRead { storage, bit_width, addr } => BIrStmt::StorageRead {
+                storage,
+                bit_width: *bit_width,
+                addr: addr.iter().collect(),
+            },
+            BIrStmt::StorageWrite { storage, src, bit_width, addr } => BIrStmt::StorageWrite {
+                storage,
+                src,
+                bit_width: *bit_width,
+                addr: addr.iter().collect(),
+            },
+        }
+    }
+
+    /// Mutably borrow variable and storage parameters in place.
+    ///
+    /// `name` fields in `OracleCall`, `ActionCall`, `Rng` are cloned.
+    pub fn as_mut(&mut self) -> BIrStmt<&mut Var, &mut Stor> {
+        match self {
+            BIrStmt::Zero => BIrStmt::Zero,
+            BIrStmt::One => BIrStmt::One,
+            BIrStmt::And(a, b) => BIrStmt::And(a, b),
+            BIrStmt::Or(a, b) => BIrStmt::Or(a, b),
+            BIrStmt::Xor(a, b) => BIrStmt::Xor(a, b),
+            BIrStmt::Not(v) => BIrStmt::Not(v),
+            BIrStmt::OracleCall { name, args, num_bits } => BIrStmt::OracleCall {
+                name: name.clone(),
+                args: args.iter_mut().collect(),
+                num_bits: *num_bits,
+            },
+            BIrStmt::OracleBit { call, bit } => BIrStmt::OracleBit { call, bit: *bit },
+            BIrStmt::ActionCall { name, guard, args, fallback, num_bits } => BIrStmt::ActionCall {
+                name: name.clone(),
+                guard,
+                args: args.iter_mut().collect(),
+                fallback: fallback.iter_mut().collect(),
+                num_bits: *num_bits,
+            },
+            BIrStmt::ActionBit { call, bit } => BIrStmt::ActionBit { call, bit: *bit },
+            BIrStmt::Rng { name } => BIrStmt::Rng { name: name.clone() },
+            BIrStmt::StorageRead { storage, bit_width, addr } => BIrStmt::StorageRead {
+                storage,
+                bit_width: *bit_width,
+                addr: addr.iter_mut().collect(),
+            },
+            BIrStmt::StorageWrite { storage, src, bit_width, addr } => BIrStmt::StorageWrite {
+                storage,
+                src,
+                bit_width: *bit_width,
+                addr: addr.iter_mut().collect(),
+            },
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub enum BIrTerminator {
-    Jmp(BIrTarget),
+#[non_exhaustive]
+pub enum BIrTerminator<Var = IRVarId> {
+    Jmp(BIrTarget<Var>),
     CondJmp {
-        val: IRVarId,
-        then_target: BIrTarget,
-        else_target: BIrTarget,
+        val: Var,
+        then_target: BIrTarget<Var>,
+        else_target: BIrTarget<Var>,
     },
 }
+
+impl<Var> BIrTerminator<Var> {
+    pub fn map<Ctx, NV, E>(
+        self,
+        ctx: &mut Ctx,
+        mut go: impl FnMut(&mut Ctx, Var) -> Result<NV, E>,
+    ) -> Result<BIrTerminator<NV>, E> {
+        Ok(match self {
+            BIrTerminator::Jmp(t) => BIrTerminator::Jmp(t.map(ctx, &mut go)?),
+            BIrTerminator::CondJmp { val, then_target, else_target } => BIrTerminator::CondJmp {
+                val: go(ctx, val)?,
+                then_target: then_target.map(ctx, &mut go)?,
+                else_target: else_target.map(ctx, &mut go)?,
+            },
+        })
+    }
+
+    pub fn as_ref(&self) -> BIrTerminator<&Var> {
+        match self {
+            BIrTerminator::Jmp(t) => BIrTerminator::Jmp(t.as_ref()),
+            BIrTerminator::CondJmp { val, then_target, else_target } => BIrTerminator::CondJmp {
+                val,
+                then_target: then_target.as_ref(),
+                else_target: else_target.as_ref(),
+            },
+        }
+    }
+
+    pub fn as_mut(&mut self) -> BIrTerminator<&mut Var> {
+        match self {
+            BIrTerminator::Jmp(t) => BIrTerminator::Jmp(t.as_mut()),
+            BIrTerminator::CondJmp { val, then_target, else_target } => BIrTerminator::CondJmp {
+                val,
+                then_target: then_target.as_mut(),
+                else_target: else_target.as_mut(),
+            },
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct BIrTarget {
-    pub block: IRBlockTargetId,
-    pub args: Vec<IRVarId>,
+pub struct BIrTarget<Var = IRVarId> {
+    pub block: IRBlockTargetId<Var>,
+    pub args: Vec<Var>,
+}
+
+impl<Var> BIrTarget<Var> {
+    pub fn map<Ctx, NV, E>(
+        self,
+        ctx: &mut Ctx,
+        go: &mut impl FnMut(&mut Ctx, Var) -> Result<NV, E>,
+    ) -> Result<BIrTarget<NV>, E> {
+        Ok(BIrTarget {
+            block: self.block.map(ctx, go)?,
+            args: self.args.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+        })
+    }
+
+    pub fn as_ref(&self) -> BIrTarget<&Var> {
+        BIrTarget {
+            block: self.block.as_ref(),
+            args: self.args.iter().collect(),
+        }
+    }
+
+    pub fn as_mut(&mut self) -> BIrTarget<&mut Var> {
+        BIrTarget {
+            block: self.block.as_mut(),
+            args: self.args.iter_mut().collect(),
+        }
+    }
 }

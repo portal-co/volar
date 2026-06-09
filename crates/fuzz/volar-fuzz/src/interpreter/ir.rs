@@ -162,6 +162,7 @@ fn eval_ir_block(
                 target_args.iter().map(|id| get_ir(&vars, id)).collect();
             resolve_ir_target(target_block, &arg_vals, &vars)
         }
+        _ => panic!("eval_ir: unhandled IRTerminator variant — add evaluation for this variant"),
     };
 
     Some(result)
@@ -190,6 +191,7 @@ fn resolve_ir_target(
                 args: arg_vals.to_vec(),
             }
         }
+        _ => panic!("resolve_ir_target: unhandled IRBlockTargetId variant — add evaluation for this variant"),
     }
 }
 
@@ -329,6 +331,7 @@ fn eval_ir_stmt(
             storage.insert((*store_id, *ty, addr_u64), val);
             vec![] // StorageWrite has no output
         }
+        _ => panic!("eval_ir_stmt: unhandled Stmt variant — add evaluation for this variant"),
     }
 }
 
@@ -346,6 +349,7 @@ pub fn bit_width(ty_id: TypeId, types: &IRTypes) -> usize {
         IrType::Tuple(elems) => elems.iter().map(|&e| bit_width(e, types)).sum(),
         IrType::Block { .. } => 32,
         IrType::Func { .. } => 32,
+        _ => panic!("bit_width: unhandled IrType variant — add bit-width calculation for this variant"),
     }
 }
 

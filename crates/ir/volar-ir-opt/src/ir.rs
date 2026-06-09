@@ -382,6 +382,7 @@ pub(crate) fn apply_aliases_to_ir_terminator(
                 changed |= apply_aliases_to_args(args, alias_map);
             }
         }
+        _ => {}
     }
     changed
 }
