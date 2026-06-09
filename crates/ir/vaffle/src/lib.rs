@@ -13,14 +13,14 @@ extern crate alloc;
 /// [`TypeTable::intern`] / [`TypeTable::primitive`] to populate it.
 #[derive(Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct Module {
+pub struct Module<P: Clone = ()> {
     /// Shared type intern table.
     pub types: TypeTable,
     /// Declared pure oracles available in this module.
     pub oracles: Vec<OracleDecl>,
     /// Declared conditional actions available in this module.
     pub actions: Vec<ActionDecl>,
-    pub funcs: Vec<FuncDecl>,
+    pub funcs: Vec<FuncDecl<P>>,
     pub sigs: Vec<SigDecl>,
     pub exports: BTreeMap<String, FuncId>,
     /// Pre-initialised storage segments (from WASM active data segments).
@@ -55,28 +55,29 @@ pub struct SigDecl {
 #[derive(Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 #[non_exhaustive]
-pub enum FuncDecl {
+pub enum FuncDecl<P: Clone = ()> {
     Import {
         module: String,
         name: String,
         sig: SigId,
     },
-    Body(FuncBody),
+    Body(FuncBody<P>),
 }
 #[derive(Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct FuncBody {
+pub struct FuncBody<P: Clone = ()> {
     pub sig: SigId,
-    pub blocks: Vec<Block>,
+    pub blocks: Vec<Block<P>>,
     pub values: Vec<Value>,
     pub entry: BlockId,
 }
 #[derive(Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct Block {
+pub struct Block<P: Clone = ()> {
     /// Block parameters: `(value_id, type_id)` pairs.
     pub params: Vec<(ValueId, TypeId)>,
     pub stmts: Vec<ValueId>,
+    pub stmt_provs: Vec<P>,
     pub terminator: Terminator,
 }
 #[derive(Clone, Debug)]

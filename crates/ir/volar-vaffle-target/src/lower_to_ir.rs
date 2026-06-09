@@ -1155,18 +1155,16 @@ mod tests {
 
         // Block 0 is the module entry (no params).
         // Block 2 is the function's entry block.  Its params should be
-        // ceil(SP_BITS / PACK_W) = 1 packed word (for SP) + the function param.
+        // ceil(SP_BITS / PACK_W) packed SP words + ceil(1 / PACK_W) param words
+        // (Bool = 1 bit, packed into 1 PACK_TID word).
         assert!(ir_blocks.blocks.len() >= 3);
         let func_entry = &ir_blocks.blocks[2];
-        // SP is packed: ceil(16/64) = 1 word.
-        // Plus 1 bit-level param for the Bool arg (read from frame, not a block param).
-        // The block only has the SP words as params; function params are read
-        // from the frame via StorageRead.
         let sp_packs = (SP_BITS + PACK_W - 1) / PACK_W;
+        let bool_packs = 1_usize; // ceil(1 bit / PACK_W) = 1
         assert_eq!(
-            func_entry.params.len(), sp_packs,
-            "function entry block should have {} packed SP params, got {}",
-            sp_packs, func_entry.params.len()
+            func_entry.params.len(), sp_packs + bool_packs,
+            "function entry block should have {} packed params (SP + Bool), got {}",
+            sp_packs + bool_packs, func_entry.params.len()
         );
         // All params should be PACK_TID.
         for (i, &tid) in func_entry.params.iter().enumerate() {
@@ -1228,6 +1226,7 @@ mod tests {
             blocks: std::vec![Block {
                 params: std::vec![(ValueId(0), bit_tid)],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: Terminator::Return { values: std::vec![ValueId(0)] },
             }],
             values: vals1,
@@ -1245,6 +1244,7 @@ mod tests {
             blocks: std::vec![Block {
                 params: std::vec![(ValueId(0), bit_tid)],
                 stmts: std::vec![ValueId(1), ValueId(2)],
+                stmt_provs: std::vec![(), ()],
                 terminator: Terminator::Return { values: std::vec![ValueId(2)] },
             }],
             values: vals0,
@@ -1261,6 +1261,7 @@ mod tests {
             ],
             sigs: std::vec![sig0, sig1],
             exports: alloc::collections::BTreeMap::new(),
+            pre_init: std::vec![],
         };
 
         let (ir_blocks, _ir_types) = lower_vaffle_to_ir(&module);
@@ -1321,6 +1322,7 @@ mod tests {
             blocks: std::vec![Block {
                 params: std::vec![(ValueId(0), bit_tid)],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: Terminator::Return { values: std::vec![ValueId(0)] },
             }],
             values: vals1,
@@ -1361,6 +1363,7 @@ mod tests {
             blocks: std::vec![Block {
                 params: std::vec![(ValueId(0), bit_tid)],
                 stmts: std::vec![ValueId(1), ValueId(2), ValueId(3), ValueId(4)],
+                stmt_provs: std::vec![(), (), (), ()],
                 terminator: Terminator::Return { values: std::vec![ValueId(4)] },
             }],
             values: vals0,
@@ -1377,6 +1380,7 @@ mod tests {
             ],
             sigs: std::vec![sig0, sig1],
             exports: alloc::collections::BTreeMap::new(),
+            pre_init: std::vec![],
         };
 
         let (ir_blocks, _ir_types) = lower_vaffle_to_ir(&module);
@@ -1437,6 +1441,7 @@ mod tests {
             blocks: std::vec![Block {
                 params: std::vec![(ValueId(0), bit_tid)],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: Terminator::Return { values: std::vec![ValueId(0)] },
             }],
             values: vals1,
@@ -1451,6 +1456,7 @@ mod tests {
             blocks: std::vec![Block {
                 params: std::vec![(ValueId(0), bit_tid)],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: Terminator::ReturnCall {
                     func: FuncId(1),
                     args: std::vec![ValueId(0)],
@@ -1470,6 +1476,7 @@ mod tests {
             ],
             sigs: std::vec![sig0, sig1],
             exports: alloc::collections::BTreeMap::new(),
+            pre_init: std::vec![],
         };
 
         let (ir_blocks, _ir_types) = lower_vaffle_to_ir(&module);
@@ -1529,6 +1536,7 @@ mod tests {
             blocks: std::vec![Block {
                 params: std::vec![(ValueId(0), bit_tid)],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: Terminator::Return { values: std::vec![ValueId(0)] },
             }],
             values: vals1,
@@ -1542,6 +1550,7 @@ mod tests {
             blocks: std::vec![Block {
                 params: std::vec![(ValueId(0), bit_tid)],
                 stmts: std::vec![],
+                stmt_provs: std::vec![],
                 terminator: Terminator::ReturnCall {
                     func: FuncId(1),
                     args: std::vec![ValueId(0)],
@@ -1561,6 +1570,7 @@ mod tests {
             ],
             sigs: std::vec![sig0, sig1],
             exports: alloc::collections::BTreeMap::new(),
+            pre_init: std::vec![],
         };
 
         let (ir_blocks, _) = lower_vaffle_to_ir(&module);

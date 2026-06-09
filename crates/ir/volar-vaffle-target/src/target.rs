@@ -439,6 +439,7 @@ impl LirTarget for VaffleTarget {
         let fb = self.func.take().expect("VaffleTarget: no function in progress");
         let blocks: Vec<Block> = fb.blocks.into_iter().map(|bb| Block {
             params: bb.params,
+            stmt_provs: vec![(); bb.stmts.len()],
             stmts: bb.stmts,
             terminator: bb.terminator.unwrap_or(Terminator::Return { values: vec![] }),
         }).collect();

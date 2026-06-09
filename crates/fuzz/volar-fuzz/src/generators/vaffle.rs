@@ -150,6 +150,7 @@ pub fn interpret_vaffle(
             .enumerate()
             .map(|(i, &tid)| (ValueId(i), tid))
             .collect(),
+        stmt_provs: vec![(); stmt_vids.len()],
         stmts: stmt_vids,
         terminator: Terminator::Return { values: all_vids },
     };
@@ -443,6 +444,7 @@ fn interpret_vaffle_extended_inner(
             .enumerate()
             .map(|(i, &tid)| (ValueId(i), tid))
             .collect(),
+        stmt_provs: vec![(); stmt_vids.len()],
         stmts: stmt_vids,
         terminator: Terminator::Return { values: all_vids },
     };
@@ -560,11 +562,13 @@ pub fn interpret_vaffle_multiblock(
             .enumerate()
             .map(|(i, &tid)| (ValueId(i), tid))
             .collect(),
+        stmt_provs: vec![(); b0_stmt_vids.len()],
         stmts: b0_stmt_vids,
         terminator: b0_term,
     };
     let block1 = Block {
         params: vec![],
+        stmt_provs: vec![(); b1_stmt_vids.len()],
         stmts: b1_stmt_vids,
         terminator: b1_term,
     };
@@ -764,21 +768,25 @@ pub fn interpret_vaffle_diamond(
             .enumerate()
             .map(|(i, &tid)| (ValueId(i), tid))
             .collect(),
+        stmt_provs: vec![(); b0_stmt_vids.len()],
         stmts: b0_stmt_vids,
         terminator: b0_term,
     };
     let block1 = Block {
         params: vec![],
+        stmt_provs: vec![(); b1_stmt_vids.len()],
         stmts: b1_stmt_vids,
         terminator: b1_term,
     };
     let block2 = Block {
         params: vec![],
+        stmt_provs: vec![(); b2_stmt_vids.len()],
         stmts: b2_stmt_vids,
         terminator: b2_term,
     };
     let block3 = Block {
         params: vec![],
+        stmt_provs: vec![(); b3_stmt_vids.len()],
         stmts: b3_stmt_vids,
         terminator: b3_term,
     };
@@ -867,6 +875,7 @@ pub fn interpret_vaffle_two_func(
             .enumerate()
             .map(|(i, &tid)| (ValueId(i), tid))
             .collect(),
+        stmt_provs: vec![(); f1_stmt_vids.len()],
         stmts: f1_stmt_vids,
         terminator: Terminator::Return { values: f1_all_vids },
     };
@@ -972,6 +981,7 @@ pub fn interpret_vaffle_two_func(
             .enumerate()
             .map(|(i, &tid)| (ValueId(i), tid))
             .collect(),
+        stmt_provs: vec![(); f0_stmt_vids.len()],
         stmts: f0_stmt_vids,
         terminator: Terminator::Return { values: f0_return_vids },
     };

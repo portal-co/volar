@@ -113,6 +113,7 @@ fn apply_one(module: &mut Module, sub: &VaffleSubstitution) -> usize {
                     vaffle::Block {
                         params: b.params.iter().map(|(vid, tid)| (*vid, tr.remap(*tid))).collect(),
                         stmts: b.stmts.clone(),
+                        stmt_provs: b.stmt_provs.clone(),
                         terminator: b.terminator.clone(),
                     }
                 }).collect();
@@ -342,6 +343,7 @@ mod tests {
         let block = Block {
             params: vec![],
             stmts: vec![ValueId(0), ValueId(1)],
+            stmt_provs: vec![(), ()],
             terminator: Terminator::Return { values: vec![ValueId(1)] },
         };
         m.funcs.push(FuncDecl::Body(FuncBody {
@@ -365,6 +367,7 @@ mod tests {
         let block = Block {
             params: vec![],
             stmts: vec![ValueId(0)],
+            stmt_provs: vec![()],
             terminator: Terminator::Return { values: vec![ValueId(0)] },
         };
         let entry_fid = vaffle::FuncId(0);
@@ -436,6 +439,7 @@ mod tests {
         let block = Block {
             params: vec![],
             stmts: vec![ValueId(0), ValueId(1)],
+            stmt_provs: vec![(), ()],
             terminator: Terminator::Return { values: vec![ValueId(0), ValueId(1)] },
         };
         m.funcs.push(FuncDecl::Body(FuncBody {
