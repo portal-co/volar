@@ -30,7 +30,7 @@ use volar_ir::ir::{
     Stmt,
 };
 
-use crate::{build_return, expand_ors, var};
+use crate::{build_return, expand_ors, var, ProvenanceHandler};
 
 // ============================================================================
 // Boolar (BIrBlocks) → cleartext bool evaluator
@@ -295,15 +295,137 @@ pub fn weave_noop_ir(
     module
 }
 
-/// Lower a single `IRStmt` (Volar field-level) to a cleartext `IrExpr<()>`.
+/// Generic counterpart to [`weave_noop_ir`] that threads provenance through
+/// `handler` instead of erasing it to `()`.
+///
+/// Each emitted `let w_N = ...;` statement's provenance is
+/// `handler.map(&block.stmt_provs[i])`, the provenance of the source `IRStmt`
+/// it was lowered from.
+///
+/// # Panics
+/// Panics if `circuit` does not satisfy `is_circuit()`, or if an unsupported
+/// `Stmt` variant is encountered.
+pub fn weave_noop_ir_with_handler<P, H>(
+    circuit: &IRBlocks<P>,
+    types: &CirTypes,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+    handler: &H,
+) -> IrModule<IrFunction<H::Output>, H::Output>
+where
+    P: Clone,
+    H: ProvenanceHandler<P>,
+{
+    assert!(
+        circuit.is_circuit(),
+        "weave_noop_ir_with_handler: circuit must satisfy is_circuit() (single block with Return terminator)"
+    );
+
+    let block = &circuit.blocks[0];
+    let num_params = block.params.len();
+
+    // Build a mapping from IRVarId → name string.
+    let mut var_names = BTreeMap::<u32, String>::new();
+    for i in 0..num_params {
+        var_names.insert(i as u32, format!("w_{}", i));
+    }
+
+    // All params are `bool` for the cleartext evaluator.
+    let mut params: Vec<IrParam> = Vec::new();
+    for i in 0..num_params {
+        params.push(IrParam {
+            name: format!("w_{}", i),
+            ty: IrType::Primitive(PrimitiveType::Bool),
+        });
+    }
+
+    let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
+    let mut stmt_provs: Vec<H::Output> = Vec::new();
+
+    for (i, stmt) in block.stmts.iter().enumerate() {
+        let result_id = CirVar(num_params as u32 + i as u32);
+        let let_name = format!("w_{}", result_id.0);
+
+        let init_expr: IrExpr<H::Output> = lower_ir_stmt(stmt, &var_names, types);
+
+        stmts.push(IrStmt::Let {
+            pattern: IrPattern::ident(&let_name),
+            ty: None,
+            init: Some(init_expr),
+        });
+        stmt_provs.push(handler.map(&block.stmt_provs[i]));
+        var_names.insert(result_id.0, let_name);
+    }
+
+    // Build the return expression from the terminator.
+    let ret_args = match &block.terminator {
+        IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+        _ => panic!("weave_noop_ir_with_handler: expected Jmp(Return) terminator"),
+    };
+
+    let (ret_expr, ret_type) = if ret_args.len() == 1 {
+        let expr = var(var_names[&ret_args[0].0].as_str());
+        (expr, IrType::Primitive(PrimitiveType::Bool))
+    } else {
+        let exprs: Vec<IrExpr<H::Output>> = ret_args
+            .iter()
+            .map(|id| var(var_names[&id.0].as_str()))
+            .collect();
+        let tys: Vec<IrType> = ret_args
+            .iter()
+            .map(|_| IrType::Primitive(PrimitiveType::Bool))
+            .collect();
+        (IrExpr::Tuple(exprs), IrType::Tuple(tys))
+    };
+
+    let func = IrFunction {
+        name: format!("noop_ir_{}", name),
+        module_path: vec![],
+        generics: vec![],
+        receiver: None,
+        params,
+        return_type: Some(ret_type),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts,
+            stmt_provs,
+            expr: Some(Box::new(ret_expr)),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    let mut module = IrModule {
+        name: "weaved_noop_ir".into(),
+        functions: vec![func],
+        structs: vec![],
+        enums: vec![],
+        traits: vec![],
+        impls: vec![],
+        type_aliases: vec![],
+        consts: vec![],
+    };
+    if let Some(ls) = linkage {
+        let lib_prov: H::Output = block.stmt_provs.first()
+            .map(|p| handler.map(p))
+            .expect("weave_noop_ir_with_handler: circuit has no statements; cannot derive provenance for linked specs");
+        ls.apply_converting(&mut module, || lib_prov.clone());
+    }
+    module
+}
+
+/// Lower a single `IRStmt` (Volar field-level) to a cleartext `IrExpr<Q>`.
 ///
 /// Only pure boolean/arithmetic statements are handled; unsupported variants
 /// cause a weave-time panic.
-fn lower_ir_stmt(
+///
+/// The emitted expressions (`Lit`, `Var`, `Binary`, `Unary`) never carry
+/// nested blocks, so this is generic over the output provenance `Q` with no
+/// provenance value ever materialized here.
+fn lower_ir_stmt<Q: Clone>(
     stmt: &Stmt<CirVar>,
     var_names: &BTreeMap<u32, String>,
     types: &CirTypes,
-) -> IrExpr {
+) -> IrExpr<Q> {
     match stmt {
         // ---- Constant -------------------------------------------------------
         Stmt::Const(c, ty) => {
@@ -324,7 +446,7 @@ fn lower_ir_stmt(
             let const_val: u8 = constant.lo as u8 & 1;
             // Accumulate each monomial into an expression.
             // Start with the constant term.
-            let mut acc: Option<IrExpr> =
+            let mut acc: Option<IrExpr<Q>> =
                 if const_val != 0 || coeffs.is_empty() {
                     Some(if is_bit {
                         IrExpr::Lit(IrLit::Bool(const_val != 0))
@@ -340,10 +462,10 @@ fn lower_ir_stmt(
                     continue;
                 }
                 // Build the product of vars in the monomial (AND in GF(2)).
-                let mut product: Option<IrExpr> = None;
+                let mut product: Option<IrExpr<Q>> = None;
                 for v in monomial {
                     let vname = var_names[&v.0].clone();
-                    let term = var::<()>(&vname);
+                    let term = var::<Q>(&vname);
                     product = Some(match product {
                         None => term,
                         Some(p) => IrExpr::Binary {
@@ -382,7 +504,7 @@ fn lower_ir_stmt(
         // ---- Transmute (reinterpret bits) -----------------------------------
         Stmt::Transmute { src, .. } => {
             // Cleartext: transmute is identity — just copy the value.
-            var::<()>(&var_names[&src.0])
+            var::<Q>(&var_names[&src.0])
         }
 
         // ---- Storage --------------------------------------------------------
@@ -522,5 +644,44 @@ mod tests {
         let module = weave_noop_ir(&circuit, &types, "and_ir", None);
         let code = print_noop_module(&module);
         run_compile_check(&code, "noop_ir_and");
+    }
+
+    #[test]
+    fn test_weave_noop_ir_with_handler_threads_provenance() {
+        use crate::KeepProvenance;
+        use volar_ir::ir::{
+            IRBlocks, IRBlock as CirBlock, IRBlockTargetId, IRTerminator,
+            IRTypes as CirTypes, IRVarId as CirVar,
+            IRType as CircuitIrType, PrimType,
+            Stmt, Constant as CirConst,
+        };
+
+        // Same AND circuit as `test_weave_noop_ir_compiles`, but with the
+        // single statement's provenance set to 9 instead of `()`.
+        let mut types = CirTypes::new();
+        let bit = types.intern(CircuitIrType::Primitive(PrimType::Bit));
+        let mut coeffs = BTreeMap::new();
+        coeffs.insert(alloc::vec![CirVar(0), CirVar(1)], 1u8);
+
+        let block: CirBlock<u32> = CirBlock {
+            params: alloc::vec![bit, bit],
+            stmts: alloc::vec![
+                Stmt::Poly {
+                    ty: bit,
+                    coeffs,
+                    constant: CirConst { hi: 0, lo: 0 },
+                },
+            ],
+            stmt_provs: alloc::vec![9u32],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: alloc::vec![CirVar(2)],
+            },
+        };
+
+        let circuit = IRBlocks::new(alloc::vec![block]);
+        let module = weave_noop_ir_with_handler(&circuit, &types, "and_ir_prov", None, &KeepProvenance);
+        assert_eq!(module.functions.len(), 1);
+        assert_eq!(module.functions[0].body.stmt_provs, alloc::vec![9u32]);
     }
 }

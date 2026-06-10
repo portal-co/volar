@@ -52,7 +52,7 @@ use volar_compiler::{
         ArrayKind, ArrayLength,
         ExternalKind, IrAnyFunction, IrBlock, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump,
         IrCfgModule, IrCfgTerminator, IrExpr, IrFunction, IrGenericParam, IrGenericParamKind,
-        IrLit, IrModule,
+        IrLit, MapProv, IrModule,
         IrParam, IrPattern, IrStmt, IrTraitBound, IrType, PrimitiveType, SpecBinOp, StructKind, TraitKind,
     },
     linkage::LinkageSystem,
@@ -1034,13 +1034,13 @@ pub struct FheStorageConfig {
 // ============================================================================
 
 /// The output of [`weave_fhe`], parameterised by which weaving path was taken.
-pub enum FheOutput {
+pub enum FheOutput<Q: Clone = ()> {
     /// Produced by the flat path (`cfg_capable == false`).
     /// The circuit was movfuscated and emitted using binary gate methods.
-    Flat(IrModule<IrFunction>),
+    Flat(IrModule<IrFunction<Q>, Q>),
     /// Produced by the CFG path (`cfg_capable == true`).
     /// IRBlocks were processed directly, preserving control-flow structure.
-    Cfg(IrCfgModule),
+    Cfg(IrCfgModule<Q>),
 }
 
 // ============================================================================
@@ -1064,6 +1064,31 @@ pub fn weave_fhe<S: FheScheme>(
         FheOutput::Cfg(weave_fhe_cfg(blocks, types, scheme, name, linkage, storage))
     } else {
         FheOutput::Flat(weave_fhe_flat(blocks, types, scheme, name, linkage, storage))
+    }
+}
+
+/// Generic counterpart to [`weave_fhe`] that threads provenance through
+/// `handler` instead of erasing it via [`NoProvenance`].
+///
+/// Dispatches to [`weave_fhe_cfg_with_handler`] or
+/// [`weave_fhe_flat_ir_with_handler`] based on [`FheScheme::cfg_capable`].
+pub fn weave_fhe_with_handler<P, H, S: FheScheme>(
+    blocks: &IRBlocks<P>,
+    types: &IRTypes,
+    scheme: &S,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+    storage: Option<&FheStorageConfig>,
+    handler: &H,
+) -> FheOutput<H::Output>
+where
+    P: Clone,
+    H: ProvenanceHandler<P>,
+{
+    if scheme.cfg_capable() {
+        FheOutput::Cfg(weave_fhe_cfg_with_handler(blocks, types, scheme, name, linkage, storage, handler))
+    } else {
+        FheOutput::Flat(weave_fhe_flat_ir_with_handler(blocks, types, scheme, name, linkage, storage, handler))
     }
 }
 
@@ -1174,6 +1199,50 @@ fn weave_fhe_flat<S: FheScheme>(
     let mut module = weave_fhe_flat_bir(&circuit, scheme, name, &NoProvenance, Some(effective_storage));
     if let Some(ls) = linkage {
         ls.apply(&mut module);
+    }
+    module
+}
+
+/// Generic counterpart to [`weave_fhe_flat`] that threads provenance through
+/// `handler` instead of erasing it via [`NoProvenance`].
+///
+/// Lowers `blocks` to `BIrBlocks<P>`, movfuscates, and weaves using
+/// [`weave_fhe_flat_bir`] with the supplied `handler`. If `linkage` is set,
+/// injected spec items are stamped with the same provenance derived for the
+/// circuit's infrastructure gates (see `ctrl_prov` in [`weave_fhe_flat_bir`]).
+pub fn weave_fhe_flat_ir_with_handler<P, H, S: FheScheme>(
+    blocks: &IRBlocks<P>,
+    types: &IRTypes,
+    scheme: &S,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+    storage: Option<&FheStorageConfig>,
+    handler: &H,
+) -> IrModule<IrFunction<H::Output>, H::Output>
+where
+    P: Clone,
+    H: ProvenanceHandler<P>,
+{
+    let bir_blocks = lower_ir_to_boolar(blocks, types);
+    let circuit = movfuscate_biir(&bir_blocks);
+    assert!(
+        circuit.is_circuit(),
+        "weave_fhe_flat_ir_with_handler: circuit after movfuscation must satisfy is_circuit()"
+    );
+    let derived;
+    let effective_storage = match storage {
+        Some(cfg) => cfg,
+        None => {
+            derived = derive_storage_config(&circuit);
+            &derived
+        }
+    };
+    let mut module = weave_fhe_flat_bir(&circuit, scheme, name, handler, Some(effective_storage));
+    if let Some(ls) = linkage {
+        let lib_prov: H::Output = circuit.blocks[0].stmt_provs.first()
+            .map(|p| handler.map(p))
+            .expect("weave_fhe_flat_ir_with_handler: circuit has no statements; cannot derive provenance for linked specs");
+        ls.apply_converting(&mut module, || lib_prov.clone());
     }
     module
 }
@@ -2267,13 +2336,16 @@ fn weave_fhe_cfg<S: FheScheme>(
         }
 
         let mut body_stmts: Vec<IrStmt> = Vec::new();
-        let mut body_provs: Vec<()> = Vec::new();
+        // `body_provs` is deliberately left empty (shorter than `body_stmts`):
+        // this statement has no source-statement provenance to attribute, and
+        // an empty `stmt_provs` lets `map_prov` convert this stub without
+        // invoking the mapping closure (see `weave_fhe_cfg_with_handler`).
+        let body_provs: Vec<()> = Vec::new();
         body_stmts.push(IrStmt::Let {
             pattern: IrPattern::Wild,
             ty: None,
             init: Some(IrExpr::Tuple(suppress_vars)),
         });
-        body_provs.push(());
 
         let fallback_exprs: Vec<IrExpr> = (0..action_decl.results.len())
             .map(|i| IrExpr::Var(format!("fallback_{}", i)))
@@ -2348,6 +2420,109 @@ fn weave_fhe_cfg<S: FheScheme>(
     module.functions.extend(scheme.helper_type_stubs().into_iter().map(IrAnyFunction::Flat));
 
     module
+}
+
+/// Generic counterpart to the unit-provenance [`weave_fhe_cfg`] that threads
+/// provenance through `handler` instead of erasing it to `()`.
+///
+/// `weave_fhe_cfg` is hardcoded to `IRBlocks<()>`/`IrCfgModule<()>` throughout
+/// its body. Rather than threading `H`/`P` through every statement-emission
+/// site, this function converts post-hoc:
+///
+/// 1. Derive `block_ctrl_provs[bidx]`, the control provenance for each input
+///    block, from that block's first statement (`stmt_provs.first()`),
+///    mapped through `handler`.
+/// 2. Derive `fallback`: the first available control provenance across any
+///    block, in block order. This is the module-level fallback for blocks
+///    whose own `stmt_provs` is empty.
+/// 3. Erase `blocks`' provenance to `()` and run `weave_fhe_cfg` *without*
+///    linkage (linkage is applied after conversion, so injected spec items
+///    get real provenance instead of `()`).
+/// 4. Convert the result back to `H::Output`:
+///    - The CFG function's blocks each get their `stmt_provs` rewritten to
+///      `block_ctrl_provs[bidx]` (or `fallback` if that block had no
+///      statements of its own).
+///    - Flat stub functions (action fallbacks, `bools_to_usize`, scheme
+///      helper stubs) all carry empty `stmt_provs` by construction, so their
+///      conversion never invokes the mapping closure.
+/// 5. Apply linkage (if any) via [`LinkageSystem::apply_cfg_converting`],
+///    using `fallback` as the provenance for injected spec items.
+///
+/// Panics if the circuit contains no statements at all (so no provenance can
+/// be derived for the control-flow gates), mirroring [`weave_fhe_flat_bir`].
+pub fn weave_fhe_cfg_with_handler<P, H, S: FheScheme>(
+    blocks: &IRBlocks<P>,
+    types: &IRTypes,
+    scheme: &S,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+    storage: Option<&FheStorageConfig>,
+    handler: &H,
+) -> IrCfgModule<H::Output>
+where
+    P: Clone,
+    H: ProvenanceHandler<P>,
+{
+    let block_ctrl_provs: Vec<Option<H::Output>> = blocks.blocks.iter()
+        .map(|b| b.stmt_provs.first().map(|p| handler.map(p)))
+        .collect();
+    let fallback: Option<H::Output> = block_ctrl_provs.iter().find_map(|p| p.clone());
+
+    let unit_blocks: IRBlocks<()> = blocks.clone().map_prov_with_handler(&NoProvenance);
+    let module: IrCfgModule<()> = weave_fhe_cfg(&unit_blocks, types, scheme, name, None, storage);
+
+    let functions: Vec<IrAnyFunction<H::Output>> = module.functions.into_iter().map(|func| match func {
+        IrAnyFunction::Cfg(cfg_fn) => {
+            let cfg_blocks = cfg_fn.body.blocks.into_iter().enumerate().map(|(bidx, block)| {
+                let ctrl = block_ctrl_provs[bidx].clone()
+                    .or_else(|| fallback.clone())
+                    .expect(
+                        "weave_fhe_cfg_with_handler: circuit has no statements; \
+                         cannot derive provenance for control-flow gates"
+                    );
+                block.map_prov(&|_: ()| ctrl.clone())
+            }).collect();
+            IrAnyFunction::Cfg(IrCfgFunction {
+                name: cfg_fn.name,
+                generics: cfg_fn.generics,
+                receiver: cfg_fn.receiver,
+                params: cfg_fn.params,
+                return_type: cfg_fn.return_type,
+                where_clause: cfg_fn.where_clause,
+                external_kind: cfg_fn.external_kind,
+                body: IrCfgBody { blocks: cfg_blocks },
+            })
+        }
+        IrAnyFunction::Flat(flat_fn) => {
+            // Stub functions (action fallbacks, `bools_to_usize`, scheme
+            // helper stubs) all carry empty `stmt_provs` by construction, so
+            // `map_prov` never invokes this closure.
+            IrAnyFunction::Flat(flat_fn.map_prov(&|_: ()| -> H::Output {
+                unreachable!("weave_fhe_cfg_with_handler: stub function unexpectedly carried provenance")
+            }))
+        }
+    }).collect();
+
+    let mut converted: IrCfgModule<H::Output> = IrModule {
+        name: module.name,
+        structs: module.structs,
+        enums: module.enums,
+        traits: module.traits,
+        impls: Vec::new(),
+        functions,
+        type_aliases: module.type_aliases,
+        consts: module.consts,
+    };
+
+    if let Some(ls) = linkage {
+        let lib_prov = fallback.clone().expect(
+            "weave_fhe_cfg_with_handler: circuit has no statements; \
+             cannot derive provenance for linked specs"
+        );
+        ls.apply_cfg_converting(&mut converted, || lib_prov.clone());
+    }
+
+    converted
 }
 
 /// Map an [`IRTerminator`] to an [`IrCfgTerminator`], optionally prepending
@@ -3703,6 +3878,7 @@ mod tests {
         },
     };
     use crate::tests_common::run_compile_check;
+    use crate::KeepProvenance;
 
     // ---- CFG circuit builders -----------------------------------------------
 
@@ -4649,6 +4825,107 @@ mod tests {
         assert!(
             code.contains("tfhe_trivial_encrypt"),
             "public ActionOutput returned should be promoted at return site:\n{code}"
+        );
+    }
+
+    // ── `_with_handler` provenance tests ────────────────────────────────────
+
+    /// Single-block AND circuit (see [`build_ir_and_cfg`]), generic over `P`,
+    /// with its single statement carrying `prov`.
+    fn build_ir_and_cfg_prov<P: Clone>(prov: P) -> (IRBlocks<P>, IRTypes) {
+        let mut types = IRTypes::new();
+        let bit = types.intern(IRType::Primitive(PrimType::Bit));
+        let mut coeffs = BTreeMap::new();
+        coeffs.insert(vec![IRVarId(0), IRVarId(1)], 1u8);
+        let block: IRBlock<P> = IRBlock {
+            params: vec![bit, bit],
+            stmts: vec![IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } }],
+            stmt_provs: vec![prov],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: vec![IRVarId(2)],
+            },
+        };
+        (IRBlocks::new(vec![block]), types)
+    }
+
+    /// Two-block public-branch circuit (see [`build_ir_two_block_public_branch`]),
+    /// generic over `P`: block 0's single statement carries `prov0`, block 1
+    /// carries no statements (and hence no provenance) of its own.
+    fn build_ir_two_block_public_branch_prov<P: Clone>(prov0: P) -> (IRBlocks<P>, IRTypes) {
+        let mut types = IRTypes::new();
+        let bit = types.intern(IRType::Primitive(PrimType::Bit));
+        let zero = Constant { hi: 0, lo: 0 };
+
+        let block0: IRBlock<P> = IRBlock {
+            params: vec![bit, bit],
+            stmts: vec![IRStmt_::Const(zero, bit)],
+            stmt_provs: vec![prov0],
+            terminator: IRTerminator::JumpCond {
+                condition: IRVarId(2), // the Const — public
+                true_block:  IRBlockTargetId::Block(IRBlockId(1)),
+                true_args:   vec![IRVarId(0)],
+                false_block: IRBlockTargetId::Block(IRBlockId(1)),
+                false_args:  vec![IRVarId(1)],
+            },
+        };
+        let block1: IRBlock<P> = IRBlock {
+            params: vec![bit],
+            stmts: vec![],
+            stmt_provs: vec![],
+            terminator: IRTerminator::Jmp {
+                func: IRBlockTargetId::Return,
+                args: vec![IRVarId(0)],
+            },
+        };
+        (IRBlocks::new(vec![block0, block1]), types)
+    }
+
+    #[test]
+    fn test_weave_fhe_flat_ir_with_handler_threads_provenance() {
+        let (blocks, types) = build_ir_and_cfg_prov(5u32);
+        let scheme = TfheScheme::flat();
+        let module = weave_fhe_flat_ir_with_handler(
+            &blocks, &types, &scheme, "and_flat_prov", None, None, &KeepProvenance,
+        );
+        assert_eq!(module.functions.len(), 1);
+        let func = &module.functions[0];
+        assert!(!func.body.stmt_provs.is_empty());
+        assert!(
+            func.body.stmt_provs.iter().all(|&p| p == 5),
+            "all woven statements should carry the source statement's provenance: {:?}",
+            func.body.stmt_provs,
+        );
+    }
+
+    #[test]
+    fn test_weave_fhe_cfg_with_handler_threads_and_falls_back() {
+        let (blocks, types) = build_ir_two_block_public_branch_prov(7u32);
+        let scheme = TfheScheme::cfg();
+        let module = weave_fhe_cfg_with_handler(
+            &blocks, &types, &scheme, "pub_branch_prov", None, None, &KeepProvenance,
+        );
+        let cfg_fn = module.functions.iter().find_map(|f| match f {
+            IrAnyFunction::Cfg(cfg_fn) => Some(cfg_fn),
+            _ => None,
+        }).expect("expected a Cfg function in the woven module");
+        assert_eq!(cfg_fn.body.blocks.len(), 2);
+
+        // Block 0 carries its own statement, so its (non-empty) output
+        // `stmt_provs` should all be the source statement's provenance (7).
+        assert!(!cfg_fn.body.blocks[0].stmt_provs.is_empty());
+        assert!(
+            cfg_fn.body.blocks[0].stmt_provs.iter().all(|&p| p == 7),
+            "block 0's woven statements should carry the source statement's provenance: {:?}",
+            cfg_fn.body.blocks[0].stmt_provs,
+        );
+
+        // Block 1 has no statements of its own; any statements added to it
+        // fall back to the module-level provenance (also 7, the only source).
+        assert!(
+            cfg_fn.body.blocks[1].stmt_provs.iter().all(|&p| p == 7),
+            "block 1's fallback provenance should be 7: {:?}",
+            cfg_fn.body.blocks[1].stmt_provs,
         );
     }
 

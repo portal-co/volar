@@ -146,7 +146,9 @@ pub use glue::{
 };
 
 pub use fhe::{
-    weave_fhe, weave_fhe_flat_bir, derive_storage_config,
+    weave_fhe, weave_fhe_with_handler, weave_fhe_flat_bir,
+    weave_fhe_flat_ir_with_handler, weave_fhe_cfg_with_handler,
+    derive_storage_config,
     oblivious_read_loop, oblivious_write_loop,
     FheScheme, FheOutput, FheStorageConfig, FheStorageSizes,
     FheActionConfig,
@@ -155,7 +157,7 @@ pub use fhe::{
 };
 pub use volar_ir::public::PublicSet;
 
-pub use noop::{weave_noop, weave_noop_ir, print_noop_module};
+pub use noop::{weave_noop, weave_noop_ir, weave_noop_ir_with_handler, print_noop_module};
 
 // ============================================================================
 // Shared: Or-gate lowering
