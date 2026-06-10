@@ -1,5 +1,11 @@
 # IR `#[non_exhaustive]`, `map`, `as_ref`, `as_mut` Conventions
 
+> This file covers the **structural** type parameters (`Var`, `Addr`, `Ty`,
+> `Stor`, `V`) and their `map`/`as_ref`/`as_mut` conventions. For the
+> **provenance** type parameter `P` (`stmt_provs: Vec<P>`,
+> `ProvenanceHandler<P>`, `map_prov_with_handler`, `_with_handler` weaver
+> variants), see [`provenance-pipeline.md`](provenance-pipeline.md).
+
 ## Why `#[non_exhaustive]` on IR operation enums
 
 All IR operation enums are marked `#[non_exhaustive]`. This means:
