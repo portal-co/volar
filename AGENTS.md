@@ -137,3 +137,21 @@ Load these when working in the relevant area:
 | ORAM & channel | `docs/agent-context/oram.md` | Working on ORAM crates, channel protocol, ORAM weaver integration |
 | Progress tracking | `PROGRESS.md` | Starting a new session, reviewing status, planning next steps |
 | Top-level doc index | `docs/README.md` | Looking for a specific subsystem reference |
+
+---
+
+## Compression-aware logging
+
+Token compression proxies can sit between this tool and an LLM provider, compressing output before it reaches the model. When a proxy is active, MORE verbose structured output is net-cheaper than terse plaintext.
+
+Environment variables (set before running any binary or test in this workspace):
+
+| Variable | Effect |
+|---|---|
+| `PORTAL_LOG_JSON=1` | Structured NDJSON output; routes `log::` calls through the sink when subscriber is installed. |
+| `PORTAL_LOG_BATCH=1` | Group events by phase into single JSON arrays. |
+| `PORTAL_AUTOMINIFY=1` | Minify generated code (C, LLVM IR, Rust, IR text) before embedding in error/assertion messages. |
+
+Logger implementation: `crates/helper/volar-log/` (Tier 1 — any agent may modify). Do NOT add logging infrastructure to Tier 3 crates (`volar-spec`, `volar-primitives`, `volar-common`, `volar-oram*`).
+
+These variables have no effect when unset and do not change program correctness.
