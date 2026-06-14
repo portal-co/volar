@@ -11,6 +11,8 @@ use volar_build::Pipeline;
 use volar_ir_text::{SavedIrBlocks, WriteText};
 
 fn main() {
+    let _log = volar_log::LlmtrimLogger::from_env();
+    volar_log::install_as_global_logger(_log);
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("usage: volar-ir-tester <input.wasm> [output.vir]");
