@@ -17,4 +17,5 @@ default = []
 parse = []
 
 [dev-dependencies]
+volar-log = { path = "../../helper/volar-log" }
 volar-lir-saved = { path = "../../compiler/volar-lir-saved" }

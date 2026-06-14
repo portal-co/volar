@@ -12,6 +12,11 @@ use volar_ir_common::Type as NativeType;
 use crate::{ParseText, WriteText};
 use crate::parse::ParseError;
 
+fn display_text(text: &str) -> String {
+    let log = volar_log::LlmtrimLogger::from_env();
+    if log.autominify { volar_log::minify_ir_text(text) } else { text.to_owned() }
+}
+
 // ============================================================================
 // LirType round-trips
 // ============================================================================
@@ -82,7 +87,7 @@ fn rt_call(call: LirCall) {
     let parsed = SavedLirModule::parse_text(&text).expect("parse failed");
     assert_eq!(
         module.calls, parsed.calls,
-        "round-trip failed.\nSerialized:\n{}", text
+        "round-trip failed.\nSerialized:\n{}", display_text(&text)
     );
 }
 
@@ -313,7 +318,7 @@ fn full_module_round_trip() {
     let parsed = SavedLirModule::parse_text(&text).expect("parse failed");
 
     assert_eq!(original.calls, parsed.calls,
-        "full module round-trip failed.\nText:\n{}", text);
+        "full module round-trip failed.\nText:\n{}", display_text(&text));
 }
 
 // ============================================================================
