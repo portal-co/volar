@@ -12,6 +12,7 @@ volar-ir-common.workspace = true
 inkwell.workspace = true
 
 [dev-dependencies]
+volar-log = { path = "../../helper/volar-log" }
 tempfile = "3"
 volar-lir-codegen = { path = "../volar-lir-codegen" }
 volar-compiler = { path = "../volar-compiler" }
