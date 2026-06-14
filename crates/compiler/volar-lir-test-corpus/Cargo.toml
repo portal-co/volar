@@ -7,6 +7,7 @@ description.workspace = true
 repository.workspace = true
 
 [dependencies]
+volar-log = { path = "../../helper/volar-log" }
 volar-lir = { workspace = true }
 volar-ir.workspace = true
 volar-ir-common.workspace = true

@@ -91,9 +91,11 @@ pub fn compile_and_run(c_src: &str, main_body: &str) -> String {
         .arg(&c_path)
         .status()
         .expect("cc not found — install a C compiler");
+    let _portal_log = volar_log::LlmtrimLogger::from_env();
+    let display_src = if _portal_log.autominify { volar_log::minify_c(&full_src) } else { full_src.clone() };
     assert!(
         status.success(),
-        "C compilation failed.\nSource:\n{full_src}"
+        "C compilation failed.\nSource:\n{display_src}"
     );
 
     let output = Command::new(&exe_path)
