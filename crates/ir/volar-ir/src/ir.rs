@@ -106,6 +106,8 @@ impl<P: Clone> IRBlock<P> {
     /// Returns the [`IRVarId`] for this statement (= index in the block's var space).
     pub fn push_stmt(&mut self, stmt: IRStmt, prov: P) -> IRVarId {
         let id = IRVarId(self.params.len() as u32 + self.stmts.len() as u32);
+        #[cfg(feature = "log-trace")]
+        log::trace!(target: "volar::ir", "push_stmt id={}", id.0);
         self.stmts.push(stmt);
         self.stmt_provs.push(prov);
         id
