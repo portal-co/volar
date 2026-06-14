@@ -37,6 +37,7 @@ members = [
     "crates/net/volar-net",
     "crates/fold/volar-fold",
     "crates/tools/volar-ir-tester",
+    "crates/helper/volar-log",
     "xtask",
 ]
 default-members = [
@@ -75,6 +76,7 @@ default-members = [
     "crates/oram/volar-oram-core",
     "crates/macros/volar-macros",
     "crates/net/volar-net",
+    "crates/helper/volar-log",
 ]
 resolver = "3"
 
