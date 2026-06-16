@@ -38,14 +38,22 @@
 
 extern crate alloc;
 
+pub mod adaptive_emit;
+pub mod adaptive_cfg;
 pub mod bir;
 pub mod bytecode;
 pub mod canon;
 pub mod ctx;
 pub mod hash;
 pub mod ir;
+pub mod layout;
+pub mod split;
 
-pub use bytecode::{BytecodeEntry, HandlerImmSchema, VirtBytecode};
+pub use adaptive_cfg::AdaptiveSplitConfig;
+pub use bytecode::{
+    AppendedRegionKind, AppendedRegionMeta, BytecodeEntry, BytecodeRowKind, HandlerImmSchema,
+    OperandMode, TripCount, VirtBytecode,
+};
 pub use canon::{BirHandlerKey, BlockImmediates, HandlerKey, ImmediateKind, IrHandlerKey};
 pub use ctx::VirtOutput;
 pub use hash::{CommitmentConfig, IrEmitter, IrHashAlgorithm, SipHash48, XorFoldHash32};
@@ -126,6 +134,9 @@ pub struct VirtualizeConfig {
     /// dispatch sub-block.  Only supported for IR (`virtualize_ir`); BIR
     /// direct dispatch is not yet implemented (would cause O(n²) block growth).
     pub direct_dispatch: bool,
+    /// Adaptive split: SharedCore cross-block dedup and RerollLoop intra-block
+    /// rerolling. See [`AdaptiveSplitConfig`] and `docs/agent-context/virt-adaptive-split-adr.md`.
+    pub adaptive_split: AdaptiveSplitConfig,
 }
 
 impl Default for VirtualizeConfig {
@@ -136,6 +147,7 @@ impl Default for VirtualizeConfig {
             dedup: DedupPolicy::ConstantsAndTargets,
             bytecode_storage: StorageId::VIRT_BYTECODE,
             direct_dispatch: false,
+            adaptive_split: AdaptiveSplitConfig::default(),
         }
     }
 }

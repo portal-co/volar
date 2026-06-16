@@ -36,6 +36,7 @@ use volar_ir_common::{Constant, Stmt, StorageId, Type as PrimType};
 use crate::canon::{canonicalize_ir_block, BlockImmediates, IrHandlerKey, ZERO_CONSTANT};
 use crate::ctx::{DedupTable, VirtOutput};
 use crate::hash::{bytes_to_constant, constant_to_le_bytes, CommitmentConfig, IrEmitter, IrHashAlgorithm};
+use crate::split::plan_adaptive_split;
 use crate::{DedupPolicy, DispatchMode, VirtualizeConfig};
 
 // ============================================================================
@@ -175,6 +176,16 @@ fn virtualize_ir_impl<P: Clone, H: IrHashAlgorithm>(
         !blocks.blocks.is_empty(),
         "virtualize_ir: input has no blocks"
     );
+    if cfg.adaptive_split.enabled {
+        assert!(
+            commitment.is_none(),
+            "virtualize_ir: adaptive split + commitment is deferred (see virt-adaptive-split-adr.md)"
+        );
+        assert!(
+            matches!(cfg.dispatch, DispatchMode::Public),
+            "virtualize_ir: adaptive split + Oblivious dispatch is deferred"
+        );
+    }
 
     let blocks_in = blocks.blocks.len();
     validate_input(blocks);
@@ -189,6 +200,17 @@ fn virtualize_ir_impl<P: Clone, H: IrHashAlgorithm>(
         blocks: blocks.blocks.iter().map(deduplicate_oracle_calls_in_block).collect(),
         pre_init: blocks.pre_init.clone(),
     };
+
+    let split_plan = plan_adaptive_split(&cse_blocks, &cfg.adaptive_split);
+    if cfg.adaptive_split.enabled && !split_plan.layout.regions.is_empty() {
+        return crate::adaptive_emit::virtualize_ir_adaptive::<P, H>(
+            &cse_blocks,
+            types,
+            cfg,
+            split_plan,
+            blocks_in,
+        );
+    }
 
     // Canonicalise every block — lifts Const values and terminator
     // block-target ids into BlockImmediates.
@@ -278,6 +300,7 @@ fn virtualize_ir_impl<P: Clone, H: IrHashAlgorithm>(
         n_handlers,
         blocks_in,
         key_params,
+        n_appended_regions: 0,
     }
 }
 
@@ -289,14 +312,14 @@ fn validate_input<P: Clone>(_blocks: &IRBlocks<P>) {
 // Small helper for building blocks incrementally
 // ============================================================================
 
-struct IRBlockUnfinished {
-    params: Vec<IRTypeId>,
-    stmts: Vec<IRStmt>,
-    terminator: IRTerminator,
+pub(crate) struct IRBlockUnfinished {
+    pub(crate) params: Vec<IRTypeId>,
+    pub(crate) stmts: Vec<IRStmt>,
+    pub(crate) terminator: IRTerminator,
 }
 
 impl IRBlockUnfinished {
-    fn new(params: Vec<IRTypeId>) -> Self {
+    pub(crate) fn new(params: Vec<IRTypeId>) -> Self {
         Self {
             params,
             stmts: Vec::new(),
@@ -307,13 +330,13 @@ impl IRBlockUnfinished {
         }
     }
 
-    fn push(&mut self, s: IRStmt) -> IRVarId {
+    pub(crate) fn push(&mut self, s: IRStmt) -> IRVarId {
         let id = IRVarId(self.params.len() as u32 + self.stmts.len() as u32);
         self.stmts.push(s);
         id
     }
 
-    fn into_ir_block<P: Clone>(self, ctrl_prov: &P) -> IRBlock<P> {
+    pub(crate) fn into_ir_block<P: Clone>(self, ctrl_prov: &P) -> IRBlock<P> {
         let n = self.stmts.len();
         IRBlock {
             params: self.params,
@@ -324,7 +347,7 @@ impl IRBlockUnfinished {
     }
 }
 
-fn const_u32(x: u32) -> Constant {
+pub(crate) fn const_u32(x: u32) -> Constant {
     Constant {
         hi: 0,
         lo: x as u128,
@@ -356,24 +379,24 @@ fn const_bit(b: bool) -> Constant {
 ///     writes), different blocks can reuse the same low indices.
 ///   * Return registers live above `max_T_params` for their type:
 ///     `return_reg(i, T) = max_T_params + i_th_position_of_type_T`.
-struct RegAlloc {
+pub(crate) struct RegAlloc {
     /// Per original block: for each param slot, the assigned register.
     per_block_params: Vec<Vec<RegRef>>,
     /// Return shape: for each return arg position `i`, the assigned
     /// register.
-    return_regs: Vec<RegRef>,
+    pub(crate) return_regs: Vec<RegRef>,
     /// Dedicated [`StorageId`] for each type's register file.
     storage_per_type: BTreeMap<IRTypeId, StorageId>,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct RegRef {
-    ty: IRTypeId,
+pub(crate) struct RegRef {
+    pub(crate) ty: IRTypeId,
     idx: u32,
 }
 
 impl RegAlloc {
-    fn build<P: Clone>(
+    pub(crate) fn build<P: Clone>(
         blocks: &IRBlocks<P>,
         storage_base: u32,
         ir_types: &[IRType],
@@ -468,7 +491,7 @@ impl RegAlloc {
         }
     }
 
-    fn storage_for(&self, ty: IRTypeId) -> StorageId {
+    pub(crate) fn storage_for(&self, ty: IRTypeId) -> StorageId {
         *self
             .storage_per_type
             .get(&ty)
@@ -599,12 +622,12 @@ struct HandlerSlot {
 }
 
 #[derive(Clone, Debug, Default)]
-struct HandlerSchema {
+pub(crate) struct HandlerSchema {
     slots: Vec<HandlerSlot>,
     /// Slot index for each block-param source register.
     param_src_slot: Vec<usize>,
     /// Slot index for each lifted `Stmt::Const`; `None` for other stmts.
-    const_value_slot: Vec<Option<usize>>,
+    pub(crate) const_value_slot: Vec<Option<usize>>,
     /// Per-arm: slot indices for next_pc, done, arg_dst_regs.
     arms: Vec<ArmSchema>,
 }
@@ -617,7 +640,7 @@ struct ArmSchema {
 }
 
 impl HandlerSchema {
-    fn build(key: &IrHandlerKey, addr_ty: IRTypeId, bit_ty: IRTypeId) -> Self {
+    pub(crate) fn build(key: &IrHandlerKey, addr_ty: IRTypeId, bit_ty: IRTypeId) -> Self {
         let mut schema = HandlerSchema::default();
 
         let mut param_src_slot = Vec::with_capacity(key.params.len());
@@ -688,14 +711,14 @@ fn terminator_arm_shape(t: &IRTerminator) -> Vec<usize> {
 // Global slot layout (one StorageId per global slot id)
 // ============================================================================
 
-struct GlobalLayout {
+pub(crate) struct GlobalLayout {
     /// `per_handler_slot[h][s] = absolute StorageId for handler h's s-th slot`.
-    per_handler_slot: Vec<Vec<StorageId>>,
-    schemas: Vec<HandlerSchema>,
+    pub(crate) per_handler_slot: Vec<Vec<StorageId>>,
+    pub(crate) schemas: Vec<HandlerSchema>,
 }
 
 impl GlobalLayout {
-    fn from_dedup(
+    pub(crate) fn from_dedup(
         dedup: &DedupTable<IrHandlerKey>,
         addr_ty: IRTypeId,
         bit_ty: IRTypeId,
@@ -727,7 +750,7 @@ impl GlobalLayout {
 
     /// Return the first `StorageId` strictly above the bytecode range.
     /// The register file is placed here so the two never collide.
-    fn next_free_storage_after_bytecode(&self, base: StorageId) -> u32 {
+    pub(crate) fn next_free_storage_after_bytecode(&self, base: StorageId) -> u32 {
         let total_slots: u32 = self
             .per_handler_slot
             .iter()
@@ -735,6 +758,23 @@ impl GlobalLayout {
             .sum();
         // +1 because base.0 itself is the handler_idx slot.
         base.0 + 1 + total_slots
+    }
+
+    pub(crate) fn from_keys(
+        handler_keys: &[IrHandlerKey],
+        addr_ty: IRTypeId,
+        bit_ty: IRTypeId,
+        base: StorageId,
+    ) -> Self {
+        let dedup = DedupTable {
+            per_block: handler_keys
+                .iter()
+                .enumerate()
+                .map(|(i, _)| (i as u32, BlockImmediates::default()))
+                .collect(),
+            handler_keys: handler_keys.to_vec(),
+        };
+        GlobalLayout::from_dedup(&dedup, addr_ty, bit_ty, base)
     }
 }
 
@@ -747,9 +787,9 @@ impl GlobalLayout {
 /// Layout: SETUP | DISPATCHER | RETURN | DISPATCH | handler_0 .. handler_n | subblocks
 const SETUP_BID: u32 = 0;
 const DISPATCHER_BID: u32 = 1;
-const RETURN_BID: u32 = 2;
 const DISPATCH_BID: u32 = 3;
 const HANDLER_BID_BASE: u32 = 4;
+pub(crate) const RETURN_BID: u32 = 2;
 
 /// Block-id constants for the direct-dispatch layout.
 ///
@@ -887,7 +927,7 @@ fn emit_output_ir<P: Clone, H: IrHashAlgorithm>(
 // Setup block (block 0)
 // ----------------------------------------------------------------------------
 
-fn emit_setup_block<P: Clone, H: IrHashAlgorithm>(
+pub(crate) fn emit_setup_block<P: Clone, H: IrHashAlgorithm>(
     blocks_in: &IRBlocks<P>,
     entry_params: &[IRTypeId],
     dedup: &DedupTable<IrHandlerKey>,
@@ -1010,7 +1050,7 @@ fn emit_setup_block<P: Clone, H: IrHashAlgorithm>(
 
 /// Compute the concrete Constant value for each slot of a handler
 /// schema, instantiated for a specific original block.
-fn compute_slot_values<P: Clone>(
+pub(crate) fn compute_slot_values<P: Clone>(
     block: &IRBlock<P>,
     block_id: usize,
     schema: &HandlerSchema,
@@ -1136,7 +1176,7 @@ fn fill_terminator_slots<P: Clone>(
 // Dispatcher / Return / Dispatch blocks
 // ----------------------------------------------------------------------------
 
-fn emit_dispatcher_block<P: Clone>(
+pub(crate) fn emit_dispatcher_block<P: Clone>(
     addr_ty: IRTypeId,
     bit_ty: IRTypeId,
     ctrl_prov: &P,
@@ -1155,7 +1195,7 @@ fn emit_dispatcher_block<P: Clone>(
     b.into_ir_block::<P>(ctrl_prov)
 }
 
-fn emit_return_block<P: Clone>(
+pub(crate) fn emit_return_block<P: Clone>(
     reg_alloc: &RegAlloc,
     return_arg_tys: &[IRTypeId],
     addr_ty: IRTypeId,
@@ -1192,7 +1232,7 @@ fn emit_dispatch_block<P: Clone>(
 /// dispatches to the appropriate handler via `JumpTable`.
 /// Used both for the legacy `DISPATCH_BID` block and for the inline
 /// dispatch sub-blocks in direct-dispatch mode.
-fn emit_dispatch_block_with_base<P: Clone>(
+pub(crate) fn emit_dispatch_block_with_base<P: Clone>(
     dedup: &DedupTable<IrHandlerKey>,
     bytecode_storage: StorageId,
     addr_ty: IRTypeId,
@@ -1228,7 +1268,7 @@ fn emit_dispatch_block_with_base<P: Clone>(
 
 /// Emit a handler block for a canonical key.  May emit additional
 /// sub-blocks, one per arm of a conditional terminator.
-fn emit_handler_block<P: Clone, H: IrHashAlgorithm>(
+pub(crate) fn emit_handler_block<P: Clone, H: IrHashAlgorithm>(
     key: &IrHandlerKey,
     schema: &HandlerSchema,
     slot_ids: &[StorageId],
@@ -2202,6 +2242,45 @@ fn build_commitment_ctx<'a, P: Clone, H: IrHashAlgorithm>(
     }
 
     CommitmentCtx { config, per_block, hash_output_ty, key_type_ids, key_schema }
+}
+
+// ============================================================================
+// Adaptive split helpers (used by adaptive_emit.rs)
+// ============================================================================
+
+pub(crate) fn emit_prologue_stmts(
+    b: &mut IRBlockUnfinished,
+    stmts: &[IRStmt],
+    schema: &HandlerSchema,
+    slot_ids: &[StorageId],
+    addr_ty: IRTypeId,
+    pc: IRVarId,
+) {
+    for (i, s) in stmts.iter().enumerate() {
+        match s {
+            Stmt::Const(_, ty) | Stmt::Poly { ty, .. } => {
+                if let Some(slot) = schema.const_value_slot.get(i).and_then(|o| *o) {
+                    let _v = b.push(Stmt::StorageRead {
+                        storage: slot_ids[slot],
+                        ty: *ty,
+                        addr: pc,
+                    });
+                }
+            }
+            Stmt::StorageRead { ty, storage, addr } => {
+                let addr_v = b.push(Stmt::Const(const_u32(0), addr_ty));
+                let _ = b.push(Stmt::StorageRead {
+                    storage: *storage,
+                    ty: *ty,
+                    addr: addr_v,
+                });
+                let _ = addr;
+            }
+            _ => {
+                let _ = s;
+            }
+        }
+    }
 }
 
 // Silence the unused-SETUP_BID warning; kept for clarity in the

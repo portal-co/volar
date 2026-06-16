@@ -154,6 +154,22 @@ fn append_ir_terminator_schema(term: &IRTerminator, out: &mut Vec<ImmediateKind>
     }
 }
 
+/// Canonical key for a stmt subsequence (no params / terminator).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct StmtSliceKey {
+    pub stmts: Vec<IRStmt>,
+}
+
+/// Canonicalise a stmt slice and return its key plus lifted constants.
+pub fn canonicalize_stmt_slice(stmts: &[IRStmt]) -> (StmtSliceKey, Vec<Constant>) {
+    let mut consts = Vec::new();
+    let canon_stmts: Vec<IRStmt> = stmts
+        .iter()
+        .map(|s| canon_ir_stmt(s, &mut consts))
+        .collect();
+    (StmtSliceKey { stmts: canon_stmts }, consts)
+}
+
 /// Canonicalise an [`IRBlock`] and return its handler key plus the lifted
 /// immediates.
 pub fn canonicalize_ir_block<P: Clone>(
@@ -176,6 +192,73 @@ pub fn canonicalize_ir_block<P: Clone>(
     };
 
     (key, BlockImmediates { consts, targets })
+}
+
+pub(crate) fn canon_ir_stmt_public(s: &IRStmt, consts: &mut Vec<Constant>) -> IRStmt {
+    match s {
+        IRStmt::Const(c, ty) => {
+            consts.push(*c);
+            IRStmt::Const(crate::canon::ZERO_CONSTANT, *ty)
+        }
+        IRStmt::Poly { ty, coeffs, constant } => {
+            consts.push(*constant);
+            IRStmt::Poly {
+                ty: *ty,
+                coeffs: coeffs.clone(),
+                constant: crate::canon::ZERO_CONSTANT,
+            }
+        }
+        other => other.clone(),
+    }
+}
+
+pub(crate) fn canon_ir_terminator_public(
+    t: &IRTerminator,
+    targets: &mut Vec<IRBlockId>,
+) -> IRTerminator {
+    match t {
+        IRTerminator::Jmp { func, args } => IRTerminator::Jmp {
+            func: canon_ir_target_public(func, targets),
+            args: args.clone(),
+        },
+        IRTerminator::JumpCond {
+            condition,
+            true_block,
+            true_args,
+            false_block,
+            false_args,
+        } => IRTerminator::JumpCond {
+            condition: *condition,
+            true_block: canon_ir_target_public(true_block, targets),
+            true_args: true_args.clone(),
+            false_block: canon_ir_target_public(false_block, targets),
+            false_args: false_args.clone(),
+        },
+        IRTerminator::JumpTable { index, cases } => {
+            let mut canon_cases: BTreeMap<Constant, (IRBlockTargetId, Vec<IRVarId>)> =
+                BTreeMap::new();
+            for (k, (target, args)) in cases {
+                canon_cases.insert(*k, (canon_ir_target_public(target, targets), args.clone()));
+            }
+            IRTerminator::JumpTable {
+                index: *index,
+                cases: canon_cases,
+            }
+        }
+        _ => panic!("canon_ir_terminator_public: unhandled variant"),
+    }
+}
+
+fn canon_ir_target_public(t: &IRBlockTargetId, targets: &mut Vec<IRBlockId>) -> IRBlockTargetId {
+    match t {
+        IRBlockTargetId::Block(id) => {
+            targets.push(*id);
+            IRBlockTargetId::Block(crate::canon::ZERO_BLOCK_ID)
+        }
+        IRBlockTargetId::Return => IRBlockTargetId::Return,
+        IRBlockTargetId::Dyn(v) => IRBlockTargetId::Dyn(*v),
+        _ => panic!("canon_ir_target_public: unhandled variant"),
+    }
 }
 
 fn canon_ir_stmt(s: &IRStmt, consts: &mut Vec<Constant>) -> IRStmt {

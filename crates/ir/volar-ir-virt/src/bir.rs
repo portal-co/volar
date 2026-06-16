@@ -112,7 +112,8 @@ pub fn virtualize_bir<P: Clone>(
         bytecode,
         n_handlers,
         blocks_in,
-        key_params: alloc::vec![],  // BIR virtualisation does not support keyed commitment
+        key_params: alloc::vec![],
+        n_appended_regions: 0,
     }
 }
 

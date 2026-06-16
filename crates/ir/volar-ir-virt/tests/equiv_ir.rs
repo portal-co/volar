@@ -117,6 +117,24 @@ fn passthrough_semantics_preserved() {
     assert_eq!(ref_out, virt_out);
 }
 
+#[test]
+fn passthrough_semantics_preserved_with_adaptive_split() {
+    let (blocks, mut types) = three_block_passthrough();
+    let u32_ty = types.intern(IRType::Primitive(PrimType::_32));
+    let input = const_to_bits(&Constant { hi: 0, lo: 7 }, bit_width(u32_ty, &types));
+    let ref_out = eval_ir(&blocks, &types, &[input.clone()]).expect("ref");
+    let cfg = VirtualizeConfig {
+        adaptive_split: volar_ir_virt::AdaptiveSplitConfig {
+            enabled: true,
+            ..volar_ir_virt::AdaptiveSplitConfig::default()
+        },
+        ..cfg_default()
+    };
+    let virt = virtualize_ir(&blocks, &mut types, &cfg);
+    let virt_out = eval_ir(&virt.blocks, &types, &[input]).expect("virt");
+    assert_eq!(ref_out, virt_out);
+}
+
 // ============================================================================
 // Test: two blocks with lifted Const immediates
 // ============================================================================

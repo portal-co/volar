@@ -23,6 +23,9 @@ pub struct VirtOutput<B> {
     pub n_handlers: usize,
     /// Number of original blocks in the input module.
     pub blocks_in: usize,
+    /// Appended bytecode regions (SharedCore / RerollLoop); zero when adaptive
+    /// split is disabled or no regions were selected.
+    pub n_appended_regions: usize,
     /// Key parameters prepended to the entry block when a keyed
     /// [`crate::CommitmentConfig`] was supplied.
     ///
@@ -86,16 +89,17 @@ impl<K: HandlerKey> DedupTable<K> {
         let entries: Vec<BytecodeEntry> = self
             .per_block
             .iter()
-            .map(|(h, imm)| BytecodeEntry {
-                handler_idx: *h,
-                consts: imm.consts.clone(),
-                targets: imm.targets.clone(),
+            .map(|(h, imm)| {
+                BytecodeEntry::outer(*h, imm.consts.clone(), imm.targets.clone())
             })
             .collect();
+        let outer_block_count = entries.len();
         VirtBytecode {
             n_handlers: self.handler_keys.len(),
             handler_schemas,
             entries,
+            outer_block_count,
+            regions: Vec::new(),
         }
     }
 }

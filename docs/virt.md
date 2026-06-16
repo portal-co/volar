@@ -267,6 +267,29 @@ backends.
 
 ---
 
+## Adaptive split (optional)
+
+When [`AdaptiveSplitConfig::enabled`](crates/ir/volar-ir-virt/src/adaptive_cfg.rs)
+is `true`, the pass may append **specialized regions** to the unified bytecode
+table (same `bytecode_storage` as outer rows).  Two mechanisms:
+
+| Mechanism | Purpose | Runtime model |
+|-----------|---------|---------------|
+| **SharedCore** | Cross-block stmt dedup | Sub-interpreter opcode stream + `SUB_RETURN` |
+| **RerollLoop** | Intra-block repeated bodies | Descriptor row + trip count; implicit return |
+
+Flat bytecode layout:
+
+```
+pc 0 .. N-1     outer program (one row per original block)
+pc N ..         appended SharedCore steps and/or RerollLoop descriptors
+```
+
+Deferred integrations (commitment, Oblivious, BIR, MUX-tree reroll) are tracked
+in [`docs/agent-context/virt-adaptive-split-adr.md`](agent-context/virt-adaptive-split-adr.md).
+
+---
+
 ## Extension Points and Limitations
 
 **`DedupPolicy::Maximal`** is the natural next step: lift `Rol.n`, `Ror.n`,

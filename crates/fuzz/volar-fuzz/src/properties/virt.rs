@@ -31,6 +31,18 @@ fn cfg_public_in_ir() -> VirtualizeConfig {
     }
 }
 
+fn cfg_adaptive_split() -> VirtualizeConfig {
+    VirtualizeConfig {
+        dispatch: DispatchMode::Public,
+        bytecode_form: BytecodeForm::InIr,
+        adaptive_split: volar_ir_virt::AdaptiveSplitConfig {
+            enabled: true,
+            ..volar_ir_virt::AdaptiveSplitConfig::default()
+        },
+        ..VirtualizeConfig::default()
+    }
+}
+
 proptest! {
     #[test]
     fn prop_virt_ir_preserves_semantics(
@@ -106,6 +118,26 @@ proptest! {
             expected_bits,
             "virtualize_bir (Public/InIr) changed the BIR semantics"
         );
+    }
+
+    #[test]
+    fn prop_virt_ir_adaptive_split_preserves_semantics(
+        (ir, types, inputs) in gen_ir_and_inputs()
+    ) {
+        let ir_out = match eval_ir(&ir, &types, &inputs) {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+
+        let mut types_mut = types.clone();
+        let virt = virtualize_ir::<()>(&ir, &mut types_mut, &cfg_adaptive_split());
+
+        let virt_out = match eval_ir(&virt.blocks, &types_mut, &inputs) {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+
+        prop_assert_eq!(virt_out, ir_out);
     }
 
     #[test]
