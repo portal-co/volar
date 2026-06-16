@@ -4,6 +4,7 @@
 
 use alloc::{
     collections::BTreeMap,
+    vec,
     vec::Vec,
 };
 
@@ -93,8 +94,14 @@ pub fn plan_adaptive_split<P: Clone>(
                 .rposition(|&c| !c)
                 .map(|i| i + 1)
                 .unwrap_or(0);
-            plan.prologue = 0..first;
-            plan.epilogue = last..n_stmts;
+            if first >= last {
+                // Segment(s) cover the whole block (e.g. reroll-only outer shell).
+                plan.prologue = 0..0;
+                plan.epilogue = n_stmts..n_stmts;
+            } else {
+                plan.prologue = 0..first;
+                plan.epilogue = last..n_stmts;
+            }
         }
     }
 
@@ -359,13 +366,14 @@ mod tests {
             stmts.push(Stmt::Const(Constant { hi: 0, lo: k * 10 + 1 }, ty));
             stmts.push(Stmt::Const(Constant { hi: 0, lo: k * 10 + 2 }, ty));
         }
+        let n_stmts = stmts.len();
         let block = IRBlock {
             params: vec![ty],
-            stmt_provs: vec![(); stmts.len()],
+            stmt_provs: vec![(); n_stmts],
             stmts,
             terminator: IRTerminator::Jmp {
                 func: IRBlockTargetId::Return,
-                args: vec![IRVarId(stmts.len() as u32)],
+                args: vec![IRVarId(n_stmts as u32)],
             },
         };
         let blocks = IRBlocks::new(vec![block]);

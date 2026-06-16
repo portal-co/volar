@@ -2,7 +2,7 @@
 name = "volar-log"
 version = "0.1.0"
 edition = "2021"
-publish.workspace = true
+publish = false
 
 [dependencies]
 log = { version = "0.4", optional = true }

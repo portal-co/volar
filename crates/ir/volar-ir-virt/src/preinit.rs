@@ -28,7 +28,7 @@ pub(crate) struct CommitmentPreInit<'a> {
 
 /// Result of the canonical virt storage builder.
 #[derive(Clone, Debug)]
-pub struct VirtStorageInit {
+pub(crate) struct VirtStorageInit {
     pub pre_init: Vec<PreInitSegment>,
     pub bytecode: VirtBytecode,
 }
@@ -82,7 +82,7 @@ fn segments_overlap(a: &PreInitSegment, b: &PreInitSegment) -> bool {
 }
 
 /// Append virt segments after input `pre_init`, asserting no cell overlap.
-pub fn merge_pre_init(
+pub(crate) fn merge_pre_init(
     input: &[PreInitSegment],
     virt: &[PreInitSegment],
 ) -> Vec<PreInitSegment> {
@@ -125,7 +125,7 @@ fn virt_bytecode_from_dedup<K: HandlerKey>(dedup: &DedupTable<K>) -> VirtBytecod
 }
 
 /// Build dense `pre_init` lanes and matching [`VirtBytecode`] for standard IR virt.
-pub fn build_ir_storage_init<P: Clone>(
+pub(crate) fn build_ir_storage_init<P: Clone>(
     blocks_in: &IRBlocks<P>,
     dedup: &DedupTable<IrHandlerKey>,
     layout: &GlobalLayout,
@@ -165,7 +165,7 @@ pub fn build_ir_storage_init<P: Clone>(
 }
 
 /// Adaptive split: outer rows plus appended region rows.
-pub fn build_ir_storage_init_adaptive<P: Clone>(
+pub(crate) fn build_ir_storage_init_adaptive<P: Clone>(
     blocks_in: &IRBlocks<P>,
     dedup: &DedupTable<IrHandlerKey>,
     layout: &GlobalLayout,
@@ -296,7 +296,7 @@ fn fill_ir_outer_rows<P: Clone>(
 }
 
 /// Build BIR bit-stuffed storage lanes and matching [`VirtBytecode`].
-pub fn build_bir_storage_init(
+pub(crate) fn build_bir_storage_init(
     dedup: &DedupTable<BirHandlerKey>,
     per_handler_slots: &[Vec<StorageId>],
     bytecode_storage: StorageId,

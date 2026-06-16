@@ -72,7 +72,7 @@ impl IrHashAlgorithm for NoOpHashAlgorithm {
 
 /// Internal commitment context built once inside `virtualize_ir_impl` and
 /// threaded through to the setup-block and handler emitters.
-struct CommitmentCtx<'a, H: IrHashAlgorithm> {
+pub(crate) struct CommitmentCtx<'a, H: IrHashAlgorithm> {
     config: &'a CommitmentConfig<H>,
     /// Pre-computed native hash for each original block, in block order.
     /// `per_block[i]` is the `Constant`-encoded hash of block `i`'s entry.
@@ -132,7 +132,7 @@ impl IrEmitter for BlockEmitter<'_> {
 /// * The input must not read or write any `StorageId` colliding with
 ///   the bytecode storage or the per-type register-file storages
 ///   (allocated at `StorageId::VIRT_REGISTERS_BASE..`).
-pub fn virtualize_ir<P: Clone>(
+pub fn virtualize_ir<P: Clone + Default>(
     blocks: &IRBlocks<P>,
     types: &mut IRTypes,
     cfg: &VirtualizeConfig,
@@ -152,7 +152,7 @@ pub fn virtualize_ir<P: Clone>(
 /// All preconditions of [`virtualize_ir`] apply.  Additionally,
 /// `commitment_cfg.commitment_storage` must not overlap with
 /// `cfg.bytecode_storage` or the register-file range.
-pub fn virtualize_ir_committed<P: Clone, H: IrHashAlgorithm>(
+pub fn virtualize_ir_committed<P: Clone + Default, H: IrHashAlgorithm>(
     blocks: &IRBlocks<P>,
     types: &mut IRTypes,
     cfg: &VirtualizeConfig,
@@ -165,7 +165,7 @@ pub fn virtualize_ir_committed<P: Clone, H: IrHashAlgorithm>(
 // Core implementation
 // ============================================================================
 
-fn virtualize_ir_impl<P: Clone, H: IrHashAlgorithm>(
+fn virtualize_ir_impl<P: Clone + Default, H: IrHashAlgorithm>(
     blocks: &IRBlocks<P>,
     types: &mut IRTypes,
     cfg: &VirtualizeConfig,
@@ -242,10 +242,8 @@ fn virtualize_ir_impl<P: Clone, H: IrHashAlgorithm>(
     let commitment_hash_ty: Option<IRTypeId> =
         commitment.map(|cfg| cfg.algorithm.output_type_id(types));
 
-    // Now safe to take an immutable slice (no more &mut types borrows until
-    // emit_output_ir, which takes &mut types itself).
-    let ir_types_slice = &types.0;
-    let reg_alloc = RegAlloc::build(&cse_blocks, reg_storage_base, ir_types_slice);
+    // Now safe to use `&types.0` for reg allocation and commitment hashing.
+    let reg_alloc = RegAlloc::build(&cse_blocks, reg_storage_base, &types.0);
 
     // Build commitment context (pre-computes native hashes for every block).
     let commitment_ctx: Option<CommitmentCtx<'_, H>> =
@@ -256,7 +254,7 @@ fn virtualize_ir_impl<P: Clone, H: IrHashAlgorithm>(
                 &dedup,
                 &layout,
                 &reg_alloc,
-                ir_types_slice,
+                &types.0,
                 hash_output_ty,
                 commitment_key_type_ids.clone(),
                 commitment_key_schema.clone(),
@@ -279,7 +277,7 @@ fn virtualize_ir_impl<P: Clone, H: IrHashAlgorithm>(
         .flat_map(|b| b.stmt_provs.iter())
         .next()
         .cloned()
-        .expect("virtualize_ir: input circuit has no statements; cannot derive provenance for infrastructure blocks");
+        .unwrap_or_default();
 
     // Emit the module using the pre-computed layout.
     let out_blocks = emit_output_ir::<P, H>(
@@ -307,7 +305,7 @@ fn virtualize_ir_impl<P: Clone, H: IrHashAlgorithm>(
         &reg_alloc,
         cfg.bytecode_storage,
         addr_ty,
-        ir_types_slice,
+        &types.0,
         commitment_preinit,
     );
     let merged_pre_init = merge_pre_init(&blocks.pre_init, &storage_init.pre_init);
@@ -643,19 +641,19 @@ enum SlotKind {
 }
 
 #[derive(Clone, Debug)]
-struct HandlerSlot {
+pub(crate) struct HandlerSlot {
     /// Semantic kind of the slot.  Currently only used by setup-time
     /// computation of slot values — the handler body looks each slot
     /// up by index via the per-slot `StorageId`.
     #[allow(dead_code)]
     kind: SlotKind,
     /// IR type of the stored value.
-    ty: IRTypeId,
+    pub(crate) ty: IRTypeId,
 }
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct HandlerSchema {
-    slots: Vec<HandlerSlot>,
+    pub(crate) slots: Vec<HandlerSlot>,
     /// Slot index for each block-param source register.
     param_src_slot: Vec<usize>,
     /// Slot index for each lifted `Stmt::Const`; `None` for other stmts.
@@ -834,7 +832,7 @@ const DD_INIT_DISPATCH_BID: u32 = 2;
 const DD_HANDLER_BID_BASE: u32 = 3;
 
 /// Context threaded into handler/sub-block emitters when `direct_dispatch=true`.
-struct DirectDispatch<'a> {
+pub(crate) struct DirectDispatch<'a> {
     dedup: &'a DedupTable<IrHandlerKey>,
     bytecode_storage: StorageId,
 }

@@ -10,6 +10,7 @@ use volar_ir::ir::{
 };
 use volar_ir_common::{Stmt, StorageId, Type as PrimType};
 
+use crate::bytecode::AppendedRegionKind;
 use crate::canon::{
     canon_ir_stmt_public, canon_ir_terminator_public, canonicalize_ir_block,
     canonicalize_stmt_slice, BlockImmediates, IrHandlerKey,
@@ -31,7 +32,7 @@ const ADAPTIVE_SUB_RETURN_BID: u32 = 6;
 const ADAPTIVE_REROLL_DRIVER_BID: u32 = 7;
 const ADAPTIVE_HANDLER_BID_BASE: u32 = 8;
 
-pub(super) fn virtualize_ir_adaptive<P: Clone, H: IrHashAlgorithm>(
+pub(super) fn virtualize_ir_adaptive<P: Clone + Default, H: IrHashAlgorithm>(
     cse_blocks: &IRBlocks<P>,
     types: &mut IRTypes,
     cfg: &VirtualizeConfig,
@@ -45,8 +46,7 @@ pub(super) fn virtualize_ir_adaptive<P: Clone, H: IrHashAlgorithm>(
     let dedup = DedupTable::build(per_block_canon);
     let layout = GlobalLayout::from_dedup(&dedup, addr_ty, bit_ty, cfg.bytecode_storage);
     let reg_storage_base = layout.next_free_storage_after_bytecode(cfg.bytecode_storage);
-    let ir_types_slice = &types.0;
-    let reg_alloc = RegAlloc::build(cse_blocks, reg_storage_base, ir_types_slice);
+    let reg_alloc = RegAlloc::build(cse_blocks, reg_storage_base, &types.0);
 
     let ctrl_prov: P = cse_blocks
         .blocks
@@ -54,7 +54,7 @@ pub(super) fn virtualize_ir_adaptive<P: Clone, H: IrHashAlgorithm>(
         .flat_map(|b| b.stmt_provs.iter())
         .next()
         .cloned()
-        .expect("virtualize_ir: input has no statements");
+        .unwrap_or_default();
 
     let (sub_micro, reroll_bodies, region_pc_bases) =
         build_appended_program(cse_blocks, &split_plan, addr_ty);
@@ -91,7 +91,7 @@ pub(super) fn virtualize_ir_adaptive<P: Clone, H: IrHashAlgorithm>(
         &reg_alloc,
         cfg.bytecode_storage,
         addr_ty,
-        ir_types_slice,
+        &types.0,
         &split_plan,
     );
     let merged_pre_init = merge_pre_init(&cse_blocks.pre_init, &storage_init.pre_init);
@@ -296,7 +296,7 @@ fn emit_adaptive_module<P: Clone, H: IrHashAlgorithm>(
             && block_plan.epilogue.is_empty()
         {
             let handler = emit_reroll_only_handler::<P>(
-                blocks,
+                cse_blocks,
                 block_id,
                 split_plan,
                 &block_plan.segments[0],
@@ -439,35 +439,8 @@ fn emit_composite_handler<P: Clone, H: IrHashAlgorithm>(
         pc_r,
     );
 
-    let term_block = IRBlock {
-        params: block.params.clone(),
-        stmts: block.stmts.clone(),
-        stmt_provs: block.stmt_provs.clone(),
-        terminator: block.terminator.clone(),
-    };
-    let (term_key, _) = canonicalize_ir_block(&term_block);
-    let term_schema = HandlerSchema::build(&term_key, addr_ty, bit_ty);
-    let (_, term_extras) = emit_handler_block::<P, H>(
-        &term_key,
-        &term_schema,
-        slot_ids,
-        reg_alloc,
-        addr_ty,
-        bit_ty,
-        bytecode_storage,
-        types,
-        next_sub_bid,
-        None,
-        None,
-        ctrl_prov,
-    );
-    if let Some(term_handler) = term_extras.first() {
-        resume.terminator = term_handler.terminator.clone();
-    } else {
-        resume.terminator = block.terminator.clone();
-    }
+    resume.terminator = block.terminator.clone();
 
-    let _ = resume_bid;
     (b.into_ir_block::<P>(ctrl_prov), resume.into_ir_block::<P>(ctrl_prov))
 }
 

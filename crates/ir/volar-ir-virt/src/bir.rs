@@ -34,7 +34,7 @@ use crate::{DedupPolicy, DispatchMode, VirtualizeConfig};
 /// * The input must not read or write any `StorageId` in the bytecode
 ///   range `[cfg.bytecode_storage, cfg.bytecode_storage + total_slots]`.
 ///   Caller responsibility.
-pub fn virtualize_bir<P: Clone>(
+pub fn virtualize_bir<P: Clone + Default>(
     blocks: &BIrBlocks<P>,
     cfg: &VirtualizeConfig,
 ) -> VirtOutput<BIrBlocks<P>> {
@@ -80,7 +80,7 @@ pub fn virtualize_bir<P: Clone>(
         .flat_map(|b| b.stmt_provs.iter())
         .next()
         .cloned()
-        .expect("virtualize_bir: input circuit has no statements; cannot derive provenance for infrastructure blocks");
+        .unwrap_or_default();
 
     // Emit output BIR.
     let out_blocks = emit_output_bir::<P>(

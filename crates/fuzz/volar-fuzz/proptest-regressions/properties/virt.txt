@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 81657cafc8676ad50df655ea87b9c6b40f748865aaf80ec41d694929acc32f84 # shrinks to (ir, types, inputs) = (IRBlocks { oracles: [], actions: [], rngs: [], blocks: [IRBlock { params: [], stmts: [], stmt_provs: [], terminator: Jmp { func: Return, args: [] } }], pre_init: [] }, TypeTable([]), [])
+cc 82123fe77e52be8ac2620c3ea78c8419e9c4d8dcef2a046a7e0d01f8737a1c73 # shrinks to (ir, types, inputs) = (IRBlocks { oracles: [], actions: [], rngs: [], blocks: [IRBlock { params: [], stmts: [], stmt_provs: [], terminator: Jmp { func: Return, args: [] } }], pre_init: [] }, TypeTable([]), [])
+cc dc24d1ea1fb02e370e8f70ede48c29e2daa70cf67a68a18c9aeef91a3fdedf29 # shrinks to (ir, types, _inputs) = (IRBlocks { oracles: [], actions: [], rngs: [], blocks: [IRBlock { params: [], stmts: [], stmt_provs: [], terminator: Jmp { func: Return, args: [] } }], pre_init: [] }, TypeTable([]), [])
+cc f67859bf8ce59e2b5daa251b0359b96177d9d7b05d7c87c05e3beb99f661ee1f # shrinks to (ir, types, _inputs) = (IRBlocks { oracles: [], actions: [], rngs: [], blocks: [IRBlock { params: [], stmts: [], stmt_provs: [], terminator: Jmp { func: Return, args: [] } }], pre_init: [] }, TypeTable([]), [])
+cc 57dd452ef36e8441e72bb65424044379a0ffebfc6f5b21498e4aeb178061f228 # shrinks to (ir, types, inputs) = (IRBlocks { oracles: [], actions: [], rngs: [], blocks: [IRBlock { params: [], stmts: [], stmt_provs: [], terminator: Jmp { func: Return, args: [] } }], pre_init: [] }, TypeTable([]), [])
