@@ -30,13 +30,12 @@ use volar_ir::{
     boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
     ir::{IRBlockId, IRBlockTargetId, IRVarId},
 };
-use volar_ir_virt::{virtualize_bir, BytecodeForm, DispatchMode, VirtualizeConfig};
+use volar_ir_virt::{virtualize_bir, DispatchMode, VirtualizeConfig};
 use volar_weaver::fhe::derive_storage_config;
 
 fn cfg_oblivious() -> VirtualizeConfig {
     VirtualizeConfig {
         dispatch: DispatchMode::Oblivious,
-        bytecode_form: BytecodeForm::InIr,
         ..VirtualizeConfig::default()
     }
 }

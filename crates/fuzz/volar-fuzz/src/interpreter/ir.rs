@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use volar_ir::ir::{
     IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRTypes, IRVarId,
 };
-use volar_ir_common::{Constant, IrType, OracleDecl, Stmt, StorageId, Type, TypeId};
+use volar_ir_common::{Constant, IrType, OracleDecl, PreInitSegment, Stmt, StorageId, Type, TypeId};
 
 use crate::generators::oracle::hash_oracle;
 
@@ -53,6 +53,7 @@ pub fn eval_ir(
     let mut current_block: usize = 0;
     let mut current_inputs: Vec<IrValue> = inputs.to_vec();
     let mut storage: StorageMap = BTreeMap::new();
+    apply_pre_init(&mut storage, &blocks.pre_init, types);
 
     loop {
         if current_block == 0 {
@@ -71,6 +72,25 @@ pub fn eval_ir(
                 current_block = target;
                 current_inputs = args;
             }
+        }
+    }
+}
+
+// ============================================================================
+// Pre-init
+// ============================================================================
+
+/// Seed `storage` from module-level [`PreInitSegment`] entries.
+pub fn apply_pre_init(
+    storage: &mut StorageMap,
+    pre_init: &[PreInitSegment],
+    types: &IRTypes,
+) {
+    for seg in pre_init {
+        let w = bit_width(seg.ty, types);
+        for (i, c) in seg.data.iter().enumerate() {
+            let addr = (seg.offset + i) as u64;
+            storage.insert((seg.storage, seg.ty, addr), const_to_bits(c, w));
         }
     }
 }

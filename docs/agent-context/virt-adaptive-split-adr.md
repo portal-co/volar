@@ -23,6 +23,8 @@ v1 adds two mechanisms with different runtime models:
 | **RerollLoop** | Descriptor row + trip count; read operands N times; implicit return |
 
 Both append rows to the **same** bytecode storage after outer program rows.
+Appended rows are seeded via [`build_ir_storage_init_adaptive`](../../crates/ir/volar-ir-virt/src/preinit.rs)
+into `pre_init` (same dense lane model as outer rows).
 
 ## v1 scope (shipped)
 
@@ -50,7 +52,7 @@ Both append rows to the **same** bytecode storage after outer program rows.
 | `virtualize_ir_committed` + split | Hash must cover all global pcs + reroll descriptors | Committed equiv suite with split on |
 | `DispatchMode::Oblivious` + split | `movfuscate_ir` lacks `JumpTable` | Movfuscate JumpTable support |
 | BIR adaptive split | No register file / JumpTable on BIR path | BIR register-file mirroring |
-| Backend `VirtBytecode` printers | In-IR form is v1 correctness story | Separate printer ADR |
+| Backend `VirtBytecode` printers | `pre_init` is canonical; printers may consume either form | Separate printer ADR |
 | **MUX-tree abstraction for reroll** | See motivation below | RAM↔SSA analysis + MUX cost model |
 
 ## Deferred motivation: MUX-tree + RAM for reroll

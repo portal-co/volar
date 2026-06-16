@@ -6,12 +6,11 @@ use volar_ir::ir::{
     IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRType, IRTypes, IRVarId, PrimType,
 };
 use volar_ir_common::{Constant, Stmt};
-use volar_ir_virt::{virtualize_ir, AdaptiveSplitConfig, BytecodeForm, DispatchMode, VirtualizeConfig};
+use volar_ir_virt::{virtualize_ir, AdaptiveSplitConfig, DispatchMode, VirtualizeConfig};
 
 fn cfg_split() -> VirtualizeConfig {
     VirtualizeConfig {
         dispatch: DispatchMode::Public,
-        bytecode_form: BytecodeForm::External,
         adaptive_split: AdaptiveSplitConfig {
             enabled: true,
             min_sequence_len: 4,
@@ -49,7 +48,7 @@ fn shared_core_reduces_handlers_across_blocks() {
     let blocks = IRBlocks::new(vec![mk(0, 1), mk(2, 3), mk(4, 5), mk(6, 7)]);
     let out = virtualize_ir(&blocks, &mut types, &cfg_split());
     assert!(out.n_appended_regions >= 1);
-    let bc = out.bytecode.expect("bytecode");
+    let bc = out.bytecode.as_ref().expect("bytecode always populated");
     assert!(bc.entries.len() > bc.outer_block_count);
     assert!(bc.regions.iter().any(|r| matches!(
         r.kind,

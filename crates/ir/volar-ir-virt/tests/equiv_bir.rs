@@ -7,12 +7,11 @@ use volar_ir::{
     boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
     ir::{IRBlockId, IRBlockTargetId, IRVarId},
 };
-use volar_ir_virt::{virtualize_bir, BytecodeForm, DispatchMode, VirtualizeConfig};
+use volar_ir_virt::{virtualize_bir, DispatchMode, VirtualizeConfig};
 
 fn cfg_default() -> VirtualizeConfig {
     VirtualizeConfig {
         dispatch: DispatchMode::Public,
-        bytecode_form: BytecodeForm::InIr,
         ..VirtualizeConfig::default()
     }
 }
@@ -82,7 +81,6 @@ fn bir_passthrough_oblivious_is_movfuscated_shape() {
     let blocks = three_block_passthrough();
     let cfg = VirtualizeConfig {
         dispatch: DispatchMode::Oblivious,
-        bytecode_form: BytecodeForm::InIr,
         ..VirtualizeConfig::default()
     };
     let virt = virtualize_bir(&blocks, &cfg);

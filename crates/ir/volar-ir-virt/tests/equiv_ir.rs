@@ -18,7 +18,7 @@ use volar_ir::ir::{
     IRVarId, PrimType,
 };
 use volar_ir_common::{Constant, Stmt};
-use volar_ir_virt::{virtualize_ir, BytecodeForm, DispatchMode, VirtualizeConfig};
+use volar_ir_virt::{virtualize_ir, DispatchMode, VirtualizeConfig};
 
 // ============================================================================
 // Helpers
@@ -27,7 +27,6 @@ use volar_ir_virt::{virtualize_ir, BytecodeForm, DispatchMode, VirtualizeConfig}
 fn cfg_default() -> VirtualizeConfig {
     VirtualizeConfig {
         dispatch: DispatchMode::Public,
-        bytecode_form: BytecodeForm::InIr,
         ..VirtualizeConfig::default()
     }
 }

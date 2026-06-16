@@ -26,12 +26,13 @@ DedupTable<IrHandlerKey>          ──────────────► 
         │
         │  GlobalLayout::from_dedup
         │  RegAlloc::build
+        │  build_*_storage_init  ───────────────► PreInitSegment lanes
         │
         │  emit_output_ir
         ▼
 VirtOutput {
-    IRBlocks (handler module),
-    Option<VirtBytecode> (external table),
+    IRBlocks (handler module + pre_init),
+    VirtBytecode (structured side view),
 }
 ```
 
@@ -45,8 +46,9 @@ followed by the handler bodies.
 ### Legacy layout (`direct_dispatch: false`)
 
 ```
-block 0  SETUP          — writes entry params to registers; seeds bytecode
-                          storage (InIr form); jumps to DISPATCHER with (pc=0, done=0)
+block 0  SETUP          — writes entry params to registers (and keyed
+                          commitment params when configured); jumps to
+                          DISPATCHER with (pc=0, done=0)
 block 1  DISPATCHER     — JumpCond(done, RETURN, DISPATCH(pc))
 block 2  RETURN         — reads return registers; Jmp(Return, values)
 block 3  DISPATCH       — reads handler_idx at pc; JumpTable to handler_i(pc)
@@ -225,17 +227,27 @@ calling `volar_ir_passes::movfuscate_ir` on the output of `virtualize_ir`.
 
 ---
 
-## Bytecode Forms
+## Pre-init storage
 
-| `BytecodeForm` | Effect |
-|---|---|
-| `InIr` | SETUP block emits `StorageWrite` for every bytecode row |
-| `External` | `VirtBytecode` artifact returned; IR contains no writes |
-| `Both` (default) | Both forms emitted simultaneously |
+Static bytecode table and per-slot storage lanes are emitted as
+[`PreInitSegment`](crates/ir/volar-ir-common/src/lib.rs) entries on the
+output module's `pre_init` field — the same construct WASM data segments
+and the VOLE weaver use.  Evaluators and backends apply these segments
+before any code runs.
 
-`VirtBytecode` contains a `Vec<BytecodeEntry>` — one row per original block
-— suitable for materializing as a `const` array in Rust / TypeScript / C
-backends.
+The setup block performs only **dynamic** work:
+
+- Keyed commitment param writes (when `CommitmentConfig.key` is set).
+- Entry-block param → register-file routing.
+- Jump to the dispatcher.
+
+Per-PC commitment hash values (when commitment is enabled) also live in
+`pre_init`, not in setup-block `StorageWrite`s.
+
+A structured [`VirtBytecode`](crates/ir/volar-ir-virt/src/bytecode.rs) artifact
+is always returned alongside the module as a convenience for tests and
+backends that prefer `(handler_idx, consts, targets)` tuples over parsing
+storage lanes.
 
 ---
 
@@ -252,9 +264,9 @@ backends.
 
 | Type | Crate / file | Role |
 |---|---|---|
-| `VirtualizeConfig` | `lib.rs` | Knobs: dispatch mode, bytecode form, dedup policy, direct dispatch |
+| `VirtualizeConfig` | `lib.rs` | Knobs: dispatch mode, dedup policy, direct dispatch |
 | `DedupTable<K>` | `ctx.rs` | Maps original blocks to handler indices + immediates |
-| `VirtOutput<M>` | `ctx.rs` | Output module + optional `VirtBytecode` |
+| `VirtOutput<M>` | `ctx.rs` | Output module (`pre_init` + blocks) + `VirtBytecode` |
 | `IrHandlerKey` | `canon.rs` | Canonical (structural) block key for IR |
 | `BirHandlerKey` | `canon.rs` | Canonical block key for BIR |
 | `BlockImmediates` | `canon.rs` | Lifted constants and jump targets for one block |
@@ -262,7 +274,7 @@ backends.
 | `ArmSchema` | `ir.rs` | Slot layout for one terminator arm |
 | `GlobalLayout` | `ir.rs` | Per-handler slot → `StorageId` mapping |
 | `RegAlloc` / `RegRef` | `ir.rs` | Per-type register file assignment |
-| `VirtBytecode` | `bytecode.rs` | External bytecode table artifact |
+| `VirtBytecode` | `bytecode.rs` | Structured bytecode table (mirrors `pre_init` lanes) |
 | `BytecodeEntry` | `bytecode.rs` | One row of the external bytecode table |
 
 ---

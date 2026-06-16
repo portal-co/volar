@@ -7,12 +7,11 @@ use volar_ir::ir::{
     IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRType, IRTypes, IRVarId, PrimType,
 };
 use volar_ir_common::{Constant, Stmt};
-use volar_ir_virt::{virtualize_ir, AdaptiveSplitConfig, BytecodeForm, DispatchMode, VirtualizeConfig};
+use volar_ir_virt::{virtualize_ir, AdaptiveSplitConfig, DispatchMode, VirtualizeConfig};
 
 fn cfg_split() -> VirtualizeConfig {
     VirtualizeConfig {
         dispatch: DispatchMode::Public,
-        bytecode_form: BytecodeForm::InIr,
         adaptive_split: AdaptiveSplitConfig {
             enabled: true,
             cross_block: false,
@@ -50,7 +49,7 @@ fn reroll_appends_descriptor_row() {
     let (blocks, mut types) = repeated_body_block();
     let out = virtualize_ir(&blocks, &mut types, &cfg_split());
     assert_eq!(out.n_appended_regions, 1);
-    let bc = out.bytecode.expect("bytecode");
+    let bc = out.bytecode.as_ref().expect("bytecode always populated");
     assert_eq!(bc.entries.len(), bc.outer_block_count + 1);
 }
 

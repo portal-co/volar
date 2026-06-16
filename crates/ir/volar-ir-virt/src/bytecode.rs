@@ -8,9 +8,8 @@
 //! emitting a `const` array plus a small dispatch shim that reads
 //! `(handler_idx, immediates)` tuples and calls the matching handler.
 //!
-//! The in-IR bytecode form (a setup block full of `StorageWrite`s) is
-//! emitted alongside whenever [`crate::BytecodeForm::wants_in_ir`] is
-//! true; the two forms carry identical information.
+//! The canonical storage form is [`PreInitSegment`] entries on the output
+//! module; this artefact is a structured side view of the same data.
 
 use alloc::vec::Vec;
 

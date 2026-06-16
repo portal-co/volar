@@ -26,15 +26,14 @@
 //!   fallback` accumulators.  Safe for witness-dependent control flow at a
 //!   larger per-step cost.
 //!
-//! # Bytecode forms
+//! # Storage initialization
 //!
-//! * [`BytecodeForm::InIr`] — the setup block `StorageWrite`s every
-//!   bytecode entry into a dedicated [`StorageId`] before dispatch.  Keeps
-//!   the entire transform inside the Volar IR / Boolar IR semantics.
-//! * [`BytecodeForm::External`] — a [`VirtBytecode`] data artifact is
-//!   returned alongside the IR for backends (Rust / TS / C) that prefer to
-//!   materialise the table as a `const` array plus a small runtime shim.
-//! * [`BytecodeForm::Both`] (default) — emit both.
+//! Static bytecode table and per-slot storage lanes are emitted as
+//! [`PreInitSegment`] entries on the output module's `pre_init` field
+//! (same construct WASM data segments and the VOLE weaver use).  The setup
+//! block only performs dynamic work (keyed commitment params, entry-param
+//! register routing).  A structured [`VirtBytecode`] side artifact is always
+//! returned alongside the module for tests and backends.
 
 extern crate alloc;
 
@@ -47,6 +46,7 @@ pub mod ctx;
 pub mod hash;
 pub mod ir;
 pub mod layout;
+pub mod preinit;
 pub mod split;
 
 pub use adaptive_cfg::AdaptiveSplitConfig;
@@ -73,35 +73,6 @@ pub enum DispatchMode {
     Oblivious,
 }
 
-/// Where the bytecode table is materialised.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum BytecodeForm {
-    /// Setup block initialises a [`StorageId`] with the bytecode, and the
-    /// dispatcher fetches entries via [`StorageRead`].
-    ///
-    /// [`StorageRead`]: volar_ir_common::Stmt::StorageRead
-    InIr,
-    /// Bytecode is returned as a [`VirtBytecode`] data artifact on the side.
-    /// The IR output contains a dispatcher that assumes immediates are
-    /// supplied by the backend's runtime shim rather than emitted via
-    /// `StorageRead`.
-    External,
-    /// Emit both forms: the IR setup block seeds the storage, and the
-    /// [`VirtBytecode`] artifact is returned for backends that want it.
-    Both,
-}
-
-impl BytecodeForm {
-    /// Whether this form asks the pass to emit the in-IR setup block.
-    pub fn wants_in_ir(self) -> bool {
-        matches!(self, BytecodeForm::InIr | BytecodeForm::Both)
-    }
-    /// Whether this form asks the pass to return a [`VirtBytecode`] artifact.
-    pub fn wants_external(self) -> bool {
-        matches!(self, BytecodeForm::External | BytecodeForm::Both)
-    }
-}
-
 /// How aggressively blocks are canonicalised before deduplication.
 ///
 /// Only [`DedupPolicy::ConstantsAndTargets`] is implemented in v1.
@@ -122,11 +93,10 @@ pub enum DedupPolicy {
 #[derive(Clone, Debug)]
 pub struct VirtualizeConfig {
     pub dispatch: DispatchMode,
-    pub bytecode_form: BytecodeForm,
     pub dedup: DedupPolicy,
-    /// Storage space used to hold the bytecode table when
-    /// [`BytecodeForm::wants_in_ir`] is true.  Must not collide with any
-    /// `StorageId` the input module already reads from or writes to.
+    /// Storage space used to hold the bytecode table (seeded via `pre_init`).
+    /// Must not collide with any `StorageId` the input module already reads
+    /// from or writes to.
     pub bytecode_storage: StorageId,
     /// When `true`, handlers jump directly to their successor handler via an
     /// inline `JumpTable`, eliminating the two-block dispatcher→dispatch
@@ -143,7 +113,6 @@ impl Default for VirtualizeConfig {
     fn default() -> Self {
         Self {
             dispatch: DispatchMode::Public,
-            bytecode_form: BytecodeForm::Both,
             dedup: DedupPolicy::ConstantsAndTargets,
             bytecode_storage: StorageId::VIRT_BYTECODE,
             direct_dispatch: false,

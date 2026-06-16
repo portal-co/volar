@@ -35,6 +35,9 @@ use volar_ir_common::{Constant, Stmt, StorageId, Type as PrimType};
 
 use crate::canon::{canonicalize_ir_block, BlockImmediates, IrHandlerKey, ZERO_CONSTANT};
 use crate::ctx::{DedupTable, VirtOutput};
+use crate::preinit::{
+    build_ir_storage_init, merge_pre_init, CommitmentPreInit,
+};
 use crate::hash::{bytes_to_constant, constant_to_le_bytes, CommitmentConfig, IrEmitter, IrHashAlgorithm};
 use crate::split::plan_adaptive_split;
 use crate::{DedupPolicy, DispatchMode, VirtualizeConfig};
@@ -279,24 +282,53 @@ fn virtualize_ir_impl<P: Clone, H: IrHashAlgorithm>(
         .expect("virtualize_ir: input circuit has no statements; cannot derive provenance for infrastructure blocks");
 
     // Emit the module using the pre-computed layout.
-    let out_blocks =
-        emit_output_ir::<P, H>(&cse_blocks, &dedup, &layout, &reg_alloc, addr_ty, bit_ty, cfg, types, commitment_ctx.as_ref(), &ctrl_prov);
+    let out_blocks = emit_output_ir::<P, H>(
+        &cse_blocks,
+        &dedup,
+        &layout,
+        &reg_alloc,
+        addr_ty,
+        bit_ty,
+        cfg,
+        types,
+        commitment_ctx.as_ref(),
+        &ctrl_prov,
+    );
 
-    let bytecode = if cfg.bytecode_form.wants_external() {
-        Some(dedup.to_bytecode())
-    } else {
-        None
-    };
+    let commitment_preinit = commitment_ctx.as_ref().map(|ctx| CommitmentPreInit {
+        storage: ctx.config.commitment_storage,
+        hash_output_ty: ctx.hash_output_ty,
+        per_block: &ctx.per_block,
+    });
+    let storage_init = build_ir_storage_init(
+        &cse_blocks,
+        &dedup,
+        &layout,
+        &reg_alloc,
+        cfg.bytecode_storage,
+        addr_ty,
+        ir_types_slice,
+        commitment_preinit,
+    );
+    let merged_pre_init = merge_pre_init(&blocks.pre_init, &storage_init.pre_init);
 
     // Oblivious dispatch runs movfuscate_ir over the Public output.
     let final_blocks = match cfg.dispatch {
-        DispatchMode::Public => out_blocks,
-        DispatchMode::Oblivious => volar_ir_passes::movfuscate_ir(&out_blocks, types),
+        DispatchMode::Public => {
+            let mut blocks = out_blocks;
+            blocks.pre_init = merged_pre_init;
+            blocks
+        }
+        DispatchMode::Oblivious => {
+            let mut blocks = volar_ir_passes::movfuscate_ir(&out_blocks, types);
+            blocks.pre_init = merged_pre_init;
+            blocks
+        }
     };
 
     VirtOutput {
         blocks: final_blocks,
-        bytecode,
+        bytecode: Some(storage_init.bytecode),
         n_handlers,
         blocks_in,
         key_params,
@@ -830,15 +862,11 @@ fn emit_output_ir<P: Clone, H: IrHashAlgorithm>(
 
     // --- setup ---
     let setup = emit_setup_block::<P, H>(
-        blocks_in,
         &entry_params,
-        dedup,
-        layout,
         reg_alloc,
         addr_ty,
         bit_ty,
         cfg,
-        &types.0,
         commitment,
         ctrl_prov,
     );
@@ -919,7 +947,7 @@ fn emit_output_ir<P: Clone, H: IrHashAlgorithm>(
         actions: blocks_in.actions.clone(),
         rngs: blocks_in.rngs.clone(),
         blocks: all_blocks,
-        pre_init: blocks_in.pre_init.clone(),
+        pre_init: Vec::new(),
     }
 }
 
@@ -928,15 +956,11 @@ fn emit_output_ir<P: Clone, H: IrHashAlgorithm>(
 // ----------------------------------------------------------------------------
 
 pub(crate) fn emit_setup_block<P: Clone, H: IrHashAlgorithm>(
-    blocks_in: &IRBlocks<P>,
     entry_params: &[IRTypeId],
-    dedup: &DedupTable<IrHandlerKey>,
-    layout: &GlobalLayout,
     reg_alloc: &RegAlloc,
     addr_ty: IRTypeId,
     bit_ty: IRTypeId,
     cfg: &VirtualizeConfig,
-    ir_types: &[IRType],
     commitment: Option<&CommitmentCtx<'_, H>>,
     ctrl_prov: &P,
 ) -> IRBlock<P> {
@@ -986,52 +1010,7 @@ pub(crate) fn emit_setup_block<P: Clone, H: IrHashAlgorithm>(
         });
     }
 
-    // 2. InIr bytecode — write each row's handler_idx + slot values.
-    if cfg.bytecode_form.wants_in_ir() {
-        for (block_id, block) in blocks_in.blocks.iter().enumerate() {
-            let (h_idx, _imm) = &dedup.per_block[block_id];
-            let pc_const = b.push(Stmt::Const(const_u32(block_id as u32), addr_ty));
-            let hidx_const = b.push(Stmt::Const(const_u32(*h_idx), addr_ty));
-            b.push(Stmt::StorageWrite {
-                storage: cfg.bytecode_storage,
-                ty: addr_ty,
-                addr: pc_const,
-                src: hidx_const,
-            });
-
-            let schema = &layout.schemas[*h_idx as usize];
-            let slot_ids = &layout.per_handler_slot[*h_idx as usize];
-            let slot_values = compute_slot_values(block, block_id, schema, reg_alloc, ir_types);
-            assert_eq!(slot_values.len(), schema.slots.len());
-
-            for (slot_idx, slot) in schema.slots.iter().enumerate() {
-                let storage = slot_ids[slot_idx];
-                let val_const = b.push(Stmt::Const(slot_values[slot_idx], slot.ty));
-                b.push(Stmt::StorageWrite {
-                    storage,
-                    ty: slot.ty,
-                    addr: pc_const,
-                    src: val_const,
-                });
-            }
-        }
-    }
-
-    // 2b. Commitment: write per-PC hash values as constants.
-    if let Some(ctx) = commitment {
-        for (block_id, &commitment_const) in ctx.per_block.iter().enumerate() {
-            let pc_cst = b.push(Stmt::Const(const_u32(block_id as u32), addr_ty));
-            let val_cst = b.push(Stmt::Const(commitment_const, ctx.hash_output_ty));
-            b.push(Stmt::StorageWrite {
-                storage: ctx.config.commitment_storage,
-                ty: ctx.hash_output_ty,
-                addr: pc_cst,
-                src: val_cst,
-            });
-        }
-    }
-
-    // 3. Jump to the first dispatch point.
+    // 2. Jump to the first dispatch point.
     //    Legacy mode: jump to DISPATCHER with (pc=0, done=0).
     //    Direct mode: jump to INIT_DISPATCH with (pc=0).
     let pc = b.push(Stmt::Const(const_u32(0), addr_ty));

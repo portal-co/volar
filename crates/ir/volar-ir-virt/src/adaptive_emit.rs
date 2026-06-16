@@ -10,19 +10,17 @@ use volar_ir::ir::{
 };
 use volar_ir_common::{Stmt, StorageId, Type as PrimType};
 
-use crate::bytecode::{
-    AppendedRegionKind, BytecodeEntry, BytecodeRowKind, HandlerImmSchema, VirtBytecode,
-};
 use crate::canon::{
     canon_ir_stmt_public, canon_ir_terminator_public, canonicalize_ir_block,
     canonicalize_stmt_slice, BlockImmediates, IrHandlerKey,
 };
 use crate::ctx::{DedupTable, VirtOutput};
+use crate::preinit::{build_ir_storage_init_adaptive, merge_pre_init};
 use crate::hash::IrHashAlgorithm;
 use crate::layout::{AdaptiveSplitPlan, BlockCompositePlan, SegmentInvoke};
 use crate::VirtualizeConfig;
 use crate::ir::{
-    compute_slot_values, const_u32, emit_dispatch_block_with_base, emit_dispatcher_block,
+    const_u32, emit_dispatch_block_with_base, emit_dispatcher_block,
     emit_handler_block, emit_prologue_stmts, emit_return_block, emit_setup_block, GlobalLayout,
     HandlerSchema, RegAlloc, IRBlockUnfinished, RETURN_BID,
 };
@@ -86,22 +84,24 @@ pub(super) fn virtualize_ir_adaptive<P: Clone, H: IrHashAlgorithm>(
         &ctrl_prov,
     );
 
-    let bytecode = if cfg.bytecode_form.wants_external() {
-        Some(build_unified_bytecode(
-            &dedup,
-            &merged_layout,
-            &split_plan,
-            cse_blocks,
-            &reg_alloc,
-            ir_types_slice,
-        ))
-    } else {
-        None
-    };
+    let storage_init = build_ir_storage_init_adaptive(
+        cse_blocks,
+        &dedup,
+        &merged_layout,
+        &reg_alloc,
+        cfg.bytecode_storage,
+        addr_ty,
+        ir_types_slice,
+        &split_plan,
+    );
+    let merged_pre_init = merge_pre_init(&cse_blocks.pre_init, &storage_init.pre_init);
 
     VirtOutput {
-        blocks: out_blocks,
-        bytecode,
+        blocks: IRBlocks {
+            pre_init: merged_pre_init,
+            ..out_blocks
+        },
+        bytecode: Some(storage_init.bytecode),
         n_handlers: all_handler_keys.len(),
         blocks_in,
         key_params: Vec::new(),
@@ -232,15 +232,11 @@ fn emit_adaptive_module<P: Clone, H: IrHashAlgorithm>(
     let return_arg_tys: Vec<IRTypeId> = reg_alloc.return_regs.iter().map(|r| r.ty).collect();
 
     let setup = emit_setup_block::<P, H>(
-        cse_blocks,
         &cse_blocks.blocks[0].params.clone(),
-        dedup,
-        layout,
         reg_alloc,
         addr_ty,
         bit_ty,
         cfg,
-        &types.0,
         None,
         ctrl_prov,
     );
@@ -352,7 +348,7 @@ fn emit_adaptive_module<P: Clone, H: IrHashAlgorithm>(
         actions: cse_blocks.actions.clone(),
         rngs: cse_blocks.rngs.clone(),
         blocks: all_blocks,
-        pre_init: cse_blocks.pre_init.clone(),
+        pre_init: Vec::new(),
     }
 }
 
@@ -569,78 +565,4 @@ fn emit_reroll_driver_block<P: Clone>(addr_ty: IRTypeId, ctrl_prov: &P) -> IRBlo
         },
     };
     b.into_ir_block::<P>(ctrl_prov)
-}
-
-fn build_unified_bytecode<P: Clone>(
-    dedup: &DedupTable<IrHandlerKey>,
-    layout: &GlobalLayout,
-    split_plan: &AdaptiveSplitPlan,
-    cse_blocks: &IRBlocks<P>,
-    reg_alloc: &RegAlloc,
-    ir_types: &[IRType],
-) -> VirtBytecode {
-    let handler_schemas: Vec<HandlerImmSchema> = dedup
-        .handler_keys
-        .iter()
-        .map(|k| HandlerImmSchema {
-            kinds: k.immediate_schema(),
-        })
-        .collect();
-
-    let mut entries: Vec<BytecodeEntry> = dedup
-        .per_block
-        .iter()
-        .enumerate()
-        .map(|(block_id, (h, imm))| {
-            let _schema = &layout.schemas[*h as usize];
-            let _block = &cse_blocks.blocks[block_id];
-            let _ = compute_slot_values(
-                &cse_blocks.blocks[block_id],
-                block_id,
-                &layout.schemas[*h as usize],
-                reg_alloc,
-                ir_types,
-            );
-            BytecodeEntry::outer(*h, imm.consts.clone(), imm.targets.clone())
-        })
-        .collect();
-
-    for region in &split_plan.layout.regions {
-        match &region.kind {
-            AppendedRegionKind::SharedCore { .. } => {
-                for _pc in region.pc_start..region.pc_end {
-                    entries.push(BytecodeEntry {
-                        handler_idx: 0,
-                        consts: Vec::new(),
-                        targets: Vec::new(),
-                        row_kind: BytecodeRowKind::SharedCoreStep,
-                    });
-                }
-            }
-            AppendedRegionKind::RerollLoop {
-                trip_count,
-                body_handler_idx,
-                ..
-            } => {
-                let mut consts = Vec::new();
-                if let crate::bytecode::TripCount::Fixed(k) = trip_count {
-                    consts.push(const_u32(*k));
-                }
-                entries.push(BytecodeEntry {
-                    handler_idx: *body_handler_idx,
-                    consts,
-                    targets: Vec::new(),
-                    row_kind: BytecodeRowKind::RerollDescriptor,
-                });
-            }
-        }
-    }
-
-    VirtBytecode {
-        n_handlers: handler_schemas.len(),
-        handler_schemas,
-        entries,
-        outer_block_count: split_plan.layout.outer_block_count,
-        regions: split_plan.layout.regions.clone(),
-    }
 }

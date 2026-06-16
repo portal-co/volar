@@ -16,7 +16,7 @@ use volar_ir::ir::{
 };
 use volar_ir_common::{Constant, Stmt};
 use volar_ir_passes::movfuscate_ir;
-use volar_ir_virt::{virtualize_ir, BytecodeForm, DispatchMode, VirtualizeConfig};
+use volar_ir_virt::{virtualize_ir, DispatchMode, VirtualizeConfig};
 
 // ============================================================================
 // Helpers
@@ -25,7 +25,6 @@ use volar_ir_virt::{virtualize_ir, BytecodeForm, DispatchMode, VirtualizeConfig}
 fn cfg_public() -> VirtualizeConfig {
     VirtualizeConfig {
         dispatch: DispatchMode::Public,
-        bytecode_form: BytecodeForm::InIr,
         ..VirtualizeConfig::default()
     }
 }
@@ -33,7 +32,6 @@ fn cfg_public() -> VirtualizeConfig {
 fn cfg_oblivious() -> VirtualizeConfig {
     VirtualizeConfig {
         dispatch: DispatchMode::Oblivious,
-        bytecode_form: BytecodeForm::InIr,
         ..VirtualizeConfig::default()
     }
 }

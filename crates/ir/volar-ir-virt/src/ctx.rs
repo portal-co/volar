@@ -16,8 +16,7 @@ use crate::canon::{BlockImmediates, HandlerKey};
 pub struct VirtOutput<B> {
     /// The rewritten IR (or BIR) module.
     pub blocks: B,
-    /// The bytecode artefact, present iff the config asked for
-    /// [`crate::BytecodeForm::wants_external`].
+    /// Structured bytecode table derived from the same data as `pre_init`.
     pub bytecode: Option<VirtBytecode>,
     /// Number of unique handlers after deduplication.
     pub n_handlers: usize,
