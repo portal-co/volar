@@ -80,7 +80,7 @@ use volar_ir_common::{Constant, PreInitSegment, StorageId};
 use volar_lir::circuits::{
     StorageEmitter, bc_clz, bc_ctz, bc_popcnt, bc_rotl, bc_rotr, bc_srem, bc_urem,
 };
-use volar_lir::{BitCircuitBuilder, IcmpPred, LirTarget, LirType};
+use volar_lir::{BitCircuitBuilder, BranchTarget, IcmpPred, LirTarget, LirType};
 
 use crate::import_config::{WaffleImportConfig, WaffleImportKind};
 use crate::target::{VaffleBlock, VaffleTarget, VaffleValue, bits_for_lir_type};
@@ -942,7 +942,7 @@ fn lower_term(
             let vb = get_block(bt.block)?;
             let mut args = get_args(&bt.args)?;
             args.extend_from_slice(current_globals);
-            tgt.jump(vb, &args);
+            tgt.jump(vb, BranchTarget::args(args));
         }
 
         Terminator::CondBr {
@@ -963,7 +963,7 @@ fn lower_term(
             then_args.extend_from_slice(current_globals);
             let mut else_args = get_args(&if_false.args)?;
             else_args.extend_from_slice(current_globals);
-            tgt.branch(cond_bool, then_b, &then_args, else_b, &else_args);
+            tgt.branch(cond_bool, then_b, BranchTarget::args(then_args), else_b, BranchTarget::args(else_args));
         }
 
         Terminator::Return { values } => {

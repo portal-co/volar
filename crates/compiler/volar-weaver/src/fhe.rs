@@ -59,7 +59,7 @@ use volar_compiler::{
 };
 use volar_ir::{
     boolar::{BIrBlocks, BIrStmt},
-    ir::{IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypeId, IRTypes, IRVarId, PrimType, StorageId},
+    ir::{IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt, IRTerminator, IRType, IRTypeId, IRTypes, IRVarId, PrimType, StorageId},
     public::PublicSet,
 };
 use volar_ir_passes::{lower_ir_to_boolar, movfuscate_biir};
@@ -1871,15 +1871,12 @@ fn analyze_cfg_publicity<S: FheScheme>(
 
     for (bidx, ir_block) in blocks.blocks.iter().enumerate() {
         match &ir_block.terminator {
-            IRTerminator::Jmp { func, args } => {
-                add_pred(&mut pred_info, bidx, func, args);
+            IRTerminator::Jmp { target } => {
+                add_pred(&mut pred_info, bidx, &target.dest, &target.args);
             }
-            IRTerminator::JumpCond {
-                true_block, true_args,
-                false_block, false_args, ..
-            } => {
-                add_pred(&mut pred_info, bidx, true_block, true_args);
-                add_pred(&mut pred_info, bidx, false_block, false_args);
+            IRTerminator::JumpCond { then_target, else_target, .. } => {
+                add_pred(&mut pred_info, bidx, &then_target.dest, &then_target.args);
+                add_pred(&mut pred_info, bidx, &else_target.dest, &else_target.args);
             }
             IRTerminator::JumpTable { .. } => {}
             _ => {}
@@ -1959,7 +1956,7 @@ fn cfg_return_type<S: FheScheme>(blocks: &IRBlocks, types: &IRTypes, scheme: &S)
 
     for block in &blocks.blocks {
         let ret_args = match &block.terminator {
-            IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+            IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
             _ => continue,
         };
         if ret_args.is_empty() {
@@ -2581,7 +2578,8 @@ fn map_ir_terminator<S: FheScheme>(
     };
 
     match term {
-        IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => {
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => {
+            let args = &target.args;
             // Function return type is wire type (encrypted). Promote public vars.
             let output_exprs: Vec<IrExpr> = args
                 .iter()
@@ -2602,7 +2600,8 @@ fn map_ir_terminator<S: FheScheme>(
             };
             (vec![], IrCfgTerminator::Return(Some(ret_expr)))
         }
-        IRTerminator::Jmp { func: IRBlockTargetId::Block(bid), args } => {
+        IRTerminator::Jmp { target } if let IRBlockTargetId::Block(bid) = target.dest => {
+            let args = &target.args;
             let target_bidx = bid.0 as usize;
             let jump = IrCfgJump {
                 target: target_bidx,
@@ -2611,25 +2610,24 @@ fn map_ir_terminator<S: FheScheme>(
                     .enumerate()
                     .map(|(pidx, id)| jump_arg(id, target_bidx, pidx))
                     .collect(),
+                reentry: target.reentry.clone(),
             };
             (vec![], IrCfgTerminator::Goto(jump))
         }
-        IRTerminator::Jmp { func: IRBlockTargetId::Dyn(_), .. } => {
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Dyn(_)) => {
             panic!("weave_fhe_cfg: dynamic jump targets are not supported in CFG path")
         }
         IRTerminator::JumpCond {
             condition,
-            true_block,
-            true_args,
-            false_block,
-            false_args,
+            then_target,
+            else_target,
         } => {
             let cond_name = resolve(condition);
 
             // Public condition → direct Rust if/else via CondGoto.
             if public_set.is_public(*condition) {
-                let map_jump = |bid: &IRBlockTargetId, args: &[IRVarId]| -> IrCfgJump {
-                    let target = match bid {
+                let map_jump = |branch: &IRBranchTarget| -> IrCfgJump {
+                    let target = match branch.dest {
                         IRBlockTargetId::Block(b) => b.0 as usize,
                         IRBlockTargetId::Return    => usize::MAX,
                         IRBlockTargetId::Dyn(_)   =>
@@ -2638,29 +2636,31 @@ fn map_ir_terminator<S: FheScheme>(
                     };
                     IrCfgJump {
                         target,
-                        args: args
+                        args: branch
+                            .args
                             .iter()
                             .enumerate()
                             .map(|(pidx, id)| jump_arg(id, target, pidx))
                             .collect(),
+                        reentry: branch.reentry.clone(),
                     }
                 };
                 return (
                     vec![],
                     IrCfgTerminator::CondGoto {
                         cond: var(&cond_name),
-                        then_: map_jump(true_block, true_args),
-                        else_: map_jump(false_block, false_args),
+                        then_: map_jump(then_target),
+                        else_: map_jump(else_target),
                     },
                 );
             }
 
             // Encrypted condition: only same-target phi-merge is supported.
-            let true_target_id  = match true_block  {
+            let true_target_id  = match then_target.dest {
                 IRBlockTargetId::Block(b) => b.0,
                 _ => u32::MAX,
             };
-            let false_target_id = match false_block {
+            let false_target_id = match else_target.dest {
                 IRBlockTargetId::Block(b) => b.0,
                 _ => u32::MAX,
             };
@@ -2676,14 +2676,14 @@ fn map_ir_terminator<S: FheScheme>(
             // Same target: merge args with CMUX.
             // For each arg position i: __cmux_arg_{bidx}_{i} = tfhe_cmux(cond, t_i, f_i, bk)
             assert_eq!(
-                true_args.len(), false_args.len(),
+                then_target.args.len(), else_target.args.len(),
                 "weave_fhe_cfg block {bidx}: JumpCond same-target branches have different arg counts"
             );
 
             let mut extra_stmts: Vec<IrStmt> = Vec::new();
             let mut merged_args: Vec<IrExpr>  = Vec::new();
 
-            for (i, (t_id, f_id)) in true_args.iter().zip(false_args.iter()).enumerate() {
+            for (i, (t_id, f_id)) in then_target.args.iter().zip(else_target.args.iter()).enumerate() {
                 let t_name = var_map.get(&t_id.0).cloned()
                     .unwrap_or_else(|| format!("var_{}", t_id.0));
                 let f_name = var_map.get(&f_id.0).cloned()
@@ -2769,6 +2769,7 @@ fn map_ir_terminator<S: FheScheme>(
             let term = IrCfgTerminator::Goto(IrCfgJump {
                 target: true_target_id as usize,
                 args: merged_args,
+                reentry: then_target.reentry.clone(),
             });
             (extra_stmts, term)
         }
@@ -3892,10 +3893,8 @@ mod tests {
             params: vec![bit, bit],
             stmts: vec![IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } }],
             stmt_provs: vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(2)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(2)],
+            ) },
         };
         (IRBlocks::new(vec![block]), types)
     }
@@ -3921,21 +3920,17 @@ mod tests {
             stmts: vec![IRStmt_::Const(zero, bit)],
             stmt_provs: vec![()],
             terminator: IRTerminator::JumpCond {
-                condition: IRVarId(2), // the Const — public
-                true_block:  IRBlockTargetId::Block(IRBlockId(1)),
-                true_args:   vec![IRVarId(0)],
-                false_block: IRBlockTargetId::Block(IRBlockId(1)),
-                false_args:  vec![IRVarId(1)],
+                condition: IRVarId(2),
+                then_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(0)]),
+                else_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(1)]),
             },
         };
         let block1 = IRBlock {
             params: vec![bit],
             stmts: vec![],
             stmt_provs: vec![],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],
+            ) },
         };
         (IRBlocks::new(vec![block0, block1]), types)
     }
@@ -3959,21 +3954,17 @@ mod tests {
             stmts: vec![],
             stmt_provs: vec![],
             terminator: IRTerminator::JumpCond {
-                condition: IRVarId(0), // encrypted — not in public_set
-                true_block:  IRBlockTargetId::Block(IRBlockId(1)),
-                true_args:   vec![IRVarId(0)],
-                false_block: IRBlockTargetId::Block(IRBlockId(1)),
-                false_args:  vec![IRVarId(1)],
+                condition: IRVarId(0),
+                then_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(0)]),
+                else_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(1)]),
             },
         };
         let block1 = IRBlock {
             params: vec![bit],
             stmts: vec![],
             stmt_provs: vec![],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],
+            ) },
         };
         (IRBlocks::new(vec![block0, block1]), types)
     }
@@ -4053,10 +4044,8 @@ mod tests {
             params: vec![],
             stmts: vec![IRStmt_::Const(one, bit)],
             stmt_provs: vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],
+            ) },
         };
         let circuit = IRBlocks::new(vec![block]);
         let scheme = TfheScheme::cfg();
@@ -4096,10 +4085,8 @@ mod tests {
                 IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } },
             ],
             stmt_provs: vec![(), (), ()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(2)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(2)],
+            ) },
         };
         let circuit = IRBlocks::new(vec![block]);
         let scheme = TfheScheme::cfg();
@@ -4137,10 +4124,8 @@ mod tests {
                 IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } },
             ],
             stmt_provs: vec![(), ()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(2)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(2)],
+            ) },
         };
         let circuit = IRBlocks::new(vec![block]);
         let scheme = TfheScheme::cfg();
@@ -4179,19 +4164,15 @@ mod tests {
             params: vec![bit],
             stmts: vec![IRStmt_::Const(zero, bit)],
             stmt_provs: vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Block(IRBlockId(1)),
-                args: vec![IRVarId(1)], // public Const passed as block arg
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(1)], // public Const passed as block arg
+            ) },
         };
         let block1 = IRBlock {
             params: vec![bit],
             stmts: vec![],
             stmt_provs: vec![],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],
+            ) },
         };
         let circuit = IRBlocks::new(vec![block0, block1]);
         let scheme = TfheScheme::cfg();
@@ -4595,19 +4576,15 @@ mod tests {
             params: vec![bit],
             stmts: vec![IRStmt_::Const(one, bit)],
             stmt_provs: vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Block(IRBlockId(1)),
-                args: vec![IRVarId(1)], // Const — public
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(1)], // Const — public
+            ) },
         };
         let block1 = IRBlock {
             params: vec![bit],
             stmts: vec![],
             stmt_provs: vec![],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)], // blk1_p0
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)], // blk1_p0
+            ) },
         };
         let circuit = IRBlocks::new(vec![block0, block1]);
         let scheme = TfheScheme::cfg();
@@ -4673,10 +4650,8 @@ mod tests {
                 IRStmt_::ActionOutput { call: IRVarId(2), idx: 0, ty: bit },
             ],
             stmt_provs: vec![(), (), ()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(3)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(3)],
+            ) },
         };
         let circuit = IRBlocks::new(vec![block]);
         let scheme = TfheScheme::cfg().with_action_config(
@@ -4733,10 +4708,8 @@ mod tests {
                 IRStmt_::ActionOutput { call: IRVarId(2), idx: 0, ty: bit },
             ],
             stmt_provs: vec![(), (), ()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(3)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(3)],
+            ) },
         };
         let circuit = IRBlocks::new(vec![block]);
         let scheme = TfheScheme::cfg().with_action_config(
@@ -4795,10 +4768,8 @@ mod tests {
                 IRStmt_::ActionOutput { call: IRVarId(2), idx: 1, ty: bit }, // encrypted output
             ],
             stmt_provs: vec![(), (), (), ()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(3)], // return the public output
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(3)], // return the public output
+            ) },
         };
         let circuit = IRBlocks::new(vec![block]);
         let scheme = TfheScheme::cfg().with_action_config(
@@ -4841,10 +4812,8 @@ mod tests {
             params: vec![bit, bit],
             stmts: vec![IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } }],
             stmt_provs: vec![prov],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(2)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(2)],
+            ) },
         };
         (IRBlocks::new(vec![block]), types)
     }
@@ -4862,21 +4831,17 @@ mod tests {
             stmts: vec![IRStmt_::Const(zero, bit)],
             stmt_provs: vec![prov0],
             terminator: IRTerminator::JumpCond {
-                condition: IRVarId(2), // the Const — public
-                true_block:  IRBlockTargetId::Block(IRBlockId(1)),
-                true_args:   vec![IRVarId(0)],
-                false_block: IRBlockTargetId::Block(IRBlockId(1)),
-                false_args:  vec![IRVarId(1)],
+                condition: IRVarId(2),
+                then_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(0)]),
+                else_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(1)]),
             },
         };
         let block1: IRBlock<P> = IRBlock {
             params: vec![bit],
             stmts: vec![],
             stmt_provs: vec![],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],
+            ) },
         };
         (IRBlocks::new(vec![block0, block1]), types)
     }

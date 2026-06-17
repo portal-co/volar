@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use volar_fuzz::interpreter::ir::{bit_width, const_to_bits, eval_ir};
 use volar_ir::ir::{
-    IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRTerminator, IRType, IRTypes, IRVarId,
+    IRBlock, IRBlockId, IRBlockTargetId, IRBranchTarget, IRBlocks, IRTerminator, IRType, IRTypes, IRVarId,
     PrimType,
 };
 use volar_ir_common::{Constant, Stmt};
@@ -62,14 +62,14 @@ fn jumptable_three_block() -> (IRBlocks, IRTypes) {
     let mut types = IRTypes(vec![IRType::Primitive(PrimType::Bit)]);
     let u32_ty = types.intern(IRType::Primitive(PrimType::_32));
 
-    let mut cases: BTreeMap<Constant, (IRBlockTargetId, Vec<IRVarId>)> = BTreeMap::new();
+    let mut cases: BTreeMap<Constant, IRBranchTarget> = BTreeMap::new();
     cases.insert(
         Constant { hi: 0, lo: 0 },
-        (IRBlockTargetId::Block(IRBlockId(1)), vec![]),
+        IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![]),
     );
     cases.insert(
         Constant { hi: 0, lo: 1 },
-        (IRBlockTargetId::Block(IRBlockId(2)), vec![]),
+        IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(2)), vec![]),
     );
 
     let blocks = IRBlocks::new(vec![
@@ -88,20 +88,14 @@ fn jumptable_three_block() -> (IRBlocks, IRTypes) {
             params: vec![],
             stmts: vec![Stmt::Const(Constant { hi: 0, lo: 10 }, u32_ty)],
             stmt_provs: vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],) },
         },
         // block 2: return 20
         IRBlock {
             params: vec![],
             stmts: vec![Stmt::Const(Constant { hi: 0, lo: 20 }, u32_ty)],
             stmt_provs: vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],) },
         },
     ]);
     (blocks, types)
@@ -129,20 +123,14 @@ fn dyn_two_block(types: &mut IRTypes) -> IRBlocks {
             params: vec![u32_ty],
             stmts: vec![Stmt::Const(Constant { hi: 0, lo: 1 }, block_ty)],
             stmt_provs: vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Dyn(IRVarId(1)),
-                args: vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Dyn(IRVarId(1)), vec![IRVarId(0)],) },
         },
         // block 1: return x
         IRBlock {
             params: vec![u32_ty],
             stmts: vec![],
             stmt_provs: vec![],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],) },
         },
     ])
 }
@@ -181,7 +169,7 @@ fn movfuscate_jumptable_combined_block_shape() {
         matches!(
             &movf.blocks[0].terminator,
             volar_ir::ir::IRTerminator::JumpCond {
-                true_block: volar_ir::ir::IRBlockTargetId::Return,
+                then_target: volar_ir::ir::IRBranchTarget { dest: volar_ir::ir::IRBlockTargetId::Return, .. },
                 ..
             }
         ),

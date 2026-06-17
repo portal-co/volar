@@ -3,7 +3,7 @@
 //! Constant-folding pass for Volar IR (`IRBlocks`).
 
 use alloc::{collections::BTreeMap, vec::Vec};
-use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRTypes, IRVarId};
+use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBlocks, IRBranchTarget, IRTerminator, IRTypes, IRVarId};
 use volar_ir_common::{Constant, Stmt, TypeId};
 
 use crate::common::{
@@ -356,30 +356,28 @@ pub(crate) fn apply_aliases_to_ir_terminator(
     }
     let mut changed = false;
     match term {
-        IRTerminator::Jmp { func, args } => {
-            changed |= apply_aliases_to_ir_target_id(func, alias_map);
-            changed |= apply_aliases_to_args(args, alias_map);
+        IRTerminator::Jmp { target } => {
+            changed |= apply_aliases_to_ir_target_id(&mut target.dest, alias_map);
+            changed |= apply_aliases_to_args(&mut target.args, alias_map);
         }
         IRTerminator::JumpCond {
             condition,
-            true_block,
-            true_args,
-            false_block,
-            false_args,
+            then_target,
+            else_target,
         } => {
             let c = canon_alias(alias_map, *condition);
             if c != *condition { *condition = c; changed = true; }
-            changed |= apply_aliases_to_ir_target_id(true_block, alias_map);
-            changed |= apply_aliases_to_args(true_args, alias_map);
-            changed |= apply_aliases_to_ir_target_id(false_block, alias_map);
-            changed |= apply_aliases_to_args(false_args, alias_map);
+            changed |= apply_aliases_to_ir_target_id(&mut then_target.dest, alias_map);
+            changed |= apply_aliases_to_args(&mut then_target.args, alias_map);
+            changed |= apply_aliases_to_ir_target_id(&mut else_target.dest, alias_map);
+            changed |= apply_aliases_to_args(&mut else_target.args, alias_map);
         }
         IRTerminator::JumpTable { index, cases } => {
             let c = canon_alias(alias_map, *index);
             if c != *index { *index = c; changed = true; }
-            for (_, (target, args)) in cases.iter_mut() {
-                changed |= apply_aliases_to_ir_target_id(target, alias_map);
-                changed |= apply_aliases_to_args(args, alias_map);
+            for branch in cases.values_mut() {
+                changed |= apply_aliases_to_ir_target_id(&mut branch.dest, alias_map);
+                changed |= apply_aliases_to_args(&mut branch.args, alias_map);
             }
         }
         _ => {}
@@ -400,25 +398,23 @@ fn fold_ir_terminator_dead_branch(
     match term {
         IRTerminator::JumpCond {
             condition,
-            true_block,
-            true_args,
-            false_block,
-            false_args,
+            then_target,
+            else_target,
         } => {
             if let Some(&c) = const_map.get(condition) {
-                let (tgt, args) = if c.lo & 1 != 0 {
-                    (true_block.clone(), true_args.clone())
+                let branch = if c.lo & 1 != 0 {
+                    then_target.clone()
                 } else {
-                    (false_block.clone(), false_args.clone())
+                    else_target.clone()
                 };
-                *term = IRTerminator::Jmp { func: tgt, args };
+                *term = IRTerminator::Jmp { target: branch };
                 return true;
             }
         }
         IRTerminator::JumpTable { index, cases } => {
             if let Some(&c) = const_map.get(index) {
-                if let Some((target, args)) = cases.get(&c).cloned() {
-                    *term = IRTerminator::Jmp { func: target, args };
+                if let Some(branch) = cases.get(&c).cloned() {
+                    *term = IRTerminator::Jmp { target: branch };
                     return true;
                 }
             }

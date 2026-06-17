@@ -16,7 +16,7 @@ use alloc::{collections::BTreeMap, vec::Vec};
 
 use volar_ir::{
     boolar::{BIrBlock, BIrStmt, BIrTarget, BIrTerminator},
-    ir::{IRBlock, IRBlockId, IRBlockTargetId, IRStmt, IRTerminator, IRTypeId, IRVarId},
+    ir::{IRBlock, IRBlockId, IRBlockTargetId, IRBranchTarget, IRStmt, IRTerminator, IRTypeId, IRVarId},
 };
 use volar_ir_common::Constant;
 
@@ -130,22 +130,22 @@ impl IrHandlerKey {
 
 fn append_ir_terminator_schema(term: &IRTerminator, out: &mut Vec<ImmediateKind>) {
     match term {
-        IRTerminator::Jmp { func, .. } => {
-            if let IRBlockTargetId::Block(_) = func {
+        IRTerminator::Jmp { target } => {
+            if let IRBlockTargetId::Block(_) = &target.dest {
                 out.push(ImmediateKind::BlockTarget);
             }
         }
-        IRTerminator::JumpCond { true_block, false_block, .. } => {
-            if let IRBlockTargetId::Block(_) = true_block {
+        IRTerminator::JumpCond { then_target, else_target, .. } => {
+            if let IRBlockTargetId::Block(_) = &then_target.dest {
                 out.push(ImmediateKind::BlockTarget);
             }
-            if let IRBlockTargetId::Block(_) = false_block {
+            if let IRBlockTargetId::Block(_) = &else_target.dest {
                 out.push(ImmediateKind::BlockTarget);
             }
         }
         IRTerminator::JumpTable { cases, .. } => {
-            for (_, (target, _)) in cases {
-                if let IRBlockTargetId::Block(_) = target {
+            for target in cases.values() {
+                if let IRBlockTargetId::Block(_) = &target.dest {
                     out.push(ImmediateKind::BlockTarget);
                 }
             }
@@ -217,33 +217,36 @@ pub(crate) fn canon_ir_terminator_public(
     targets: &mut Vec<IRBlockId>,
 ) -> IRTerminator {
     match t {
-        IRTerminator::Jmp { func, args } => IRTerminator::Jmp {
-            func: canon_ir_target_public(func, targets),
-            args: args.clone(),
+        IRTerminator::Jmp { target } => IRTerminator::Jmp {
+            target: IRBranchTarget {
+                dest: canon_ir_target_public(&target.dest, targets),
+                args: target.args.clone(),
+                reentry: target.reentry.clone(),
+            },
         },
-        IRTerminator::JumpCond {
-            condition,
-            true_block,
-            true_args,
-            false_block,
-            false_args,
-        } => IRTerminator::JumpCond {
+        IRTerminator::JumpCond { condition, then_target, else_target } => IRTerminator::JumpCond {
             condition: *condition,
-            true_block: canon_ir_target_public(true_block, targets),
-            true_args: true_args.clone(),
-            false_block: canon_ir_target_public(false_block, targets),
-            false_args: false_args.clone(),
+            then_target: IRBranchTarget {
+                dest: canon_ir_target_public(&then_target.dest, targets),
+                args: then_target.args.clone(),
+                reentry: then_target.reentry.clone(),
+            },
+            else_target: IRBranchTarget {
+                dest: canon_ir_target_public(&else_target.dest, targets),
+                args: else_target.args.clone(),
+                reentry: else_target.reentry.clone(),
+            },
         },
         IRTerminator::JumpTable { index, cases } => {
-            let mut canon_cases: BTreeMap<Constant, (IRBlockTargetId, Vec<IRVarId>)> =
-                BTreeMap::new();
-            for (k, (target, args)) in cases {
-                canon_cases.insert(*k, (canon_ir_target_public(target, targets), args.clone()));
+            let mut canon_cases: BTreeMap<Constant, IRBranchTarget> = BTreeMap::new();
+            for (k, target) in cases {
+                canon_cases.insert(*k, IRBranchTarget {
+                    dest: canon_ir_target_public(&target.dest, targets),
+                    args: target.args.clone(),
+                    reentry: target.reentry.clone(),
+                });
             }
-            IRTerminator::JumpTable {
-                index: *index,
-                cases: canon_cases,
-            }
+            IRTerminator::JumpTable { index: *index, cases: canon_cases }
         }
         _ => panic!("canon_ir_terminator_public: unhandled variant"),
     }
@@ -289,33 +292,36 @@ fn canon_ir_target(t: &IRBlockTargetId, targets: &mut Vec<IRBlockId>) -> IRBlock
 
 fn canon_ir_terminator(t: &IRTerminator, targets: &mut Vec<IRBlockId>) -> IRTerminator {
     match t {
-        IRTerminator::Jmp { func, args } => IRTerminator::Jmp {
-            func: canon_ir_target(func, targets),
-            args: args.clone(),
+        IRTerminator::Jmp { target } => IRTerminator::Jmp {
+            target: IRBranchTarget {
+                dest: canon_ir_target(&target.dest, targets),
+                args: target.args.clone(),
+                reentry: target.reentry.clone(),
+            },
         },
-        IRTerminator::JumpCond {
-            condition,
-            true_block,
-            true_args,
-            false_block,
-            false_args,
-        } => IRTerminator::JumpCond {
+        IRTerminator::JumpCond { condition, then_target, else_target } => IRTerminator::JumpCond {
             condition: *condition,
-            true_block: canon_ir_target(true_block, targets),
-            true_args: true_args.clone(),
-            false_block: canon_ir_target(false_block, targets),
-            false_args: false_args.clone(),
+            then_target: IRBranchTarget {
+                dest: canon_ir_target(&then_target.dest, targets),
+                args: then_target.args.clone(),
+                reentry: then_target.reentry.clone(),
+            },
+            else_target: IRBranchTarget {
+                dest: canon_ir_target(&else_target.dest, targets),
+                args: else_target.args.clone(),
+                reentry: else_target.reentry.clone(),
+            },
         },
         IRTerminator::JumpTable { index, cases } => {
-            let mut canon_cases: BTreeMap<Constant, (IRBlockTargetId, Vec<IRVarId>)> =
-                BTreeMap::new();
-            for (k, (target, args)) in cases {
-                canon_cases.insert(*k, (canon_ir_target(target, targets), args.clone()));
+            let mut canon_cases: BTreeMap<Constant, IRBranchTarget> = BTreeMap::new();
+            for (k, target) in cases {
+                canon_cases.insert(*k, IRBranchTarget {
+                    dest: canon_ir_target(&target.dest, targets),
+                    args: target.args.clone(),
+                    reentry: target.reentry.clone(),
+                });
             }
-            IRTerminator::JumpTable {
-                index: *index,
-                cases: canon_cases,
-            }
+            IRTerminator::JumpTable { index: *index, cases: canon_cases }
         }
         _ => panic!("canon_ir_terminator: unhandled IRTerminator variant — add canonicalization for this variant"),
     }

@@ -138,26 +138,31 @@ fn eval_ir_block(
     }
 
     let result = match &block.terminator {
-        IRTerminator::Jmp { func, args } => {
-            let arg_vals: Vec<IrValue> = args.iter().map(|id| get_ir(&vars, id)).collect();
-            resolve_ir_target(func, &arg_vals, &vars)
+        IRTerminator::Jmp { target } => {
+            let arg_vals: Vec<IrValue> = target
+                .args
+                .iter()
+                .map(|id| get_ir(&vars, id))
+                .collect();
+            resolve_ir_target(&target.dest, &arg_vals, &vars)
         }
         IRTerminator::JumpCond {
             condition,
-            true_block,
-            true_args,
-            false_block,
-            false_args,
+            then_target,
+            else_target,
         } => {
             let cond_val = get_ir(&vars, condition);
-            let (target_block, target_args) = if cond_val.first().copied().unwrap_or(false) {
-                (true_block, true_args)
+            let branch = if cond_val.first().copied().unwrap_or(false) {
+                then_target
             } else {
-                (false_block, false_args)
+                else_target
             };
-            let arg_vals: Vec<IrValue> =
-                target_args.iter().map(|id| get_ir(&vars, id)).collect();
-            resolve_ir_target(target_block, &arg_vals, &vars)
+            let arg_vals: Vec<IrValue> = branch
+                .args
+                .iter()
+                .map(|id| get_ir(&vars, id))
+                .collect();
+            resolve_ir_target(&branch.dest, &arg_vals, &vars)
         }
         IRTerminator::JumpTable { index, cases } => {
             let idx_val = get_ir(&vars, index);
@@ -175,12 +180,15 @@ fn eval_ir_block(
                 }
             }
             let key = Constant { hi, lo };
-            let (target_block, target_args) = cases
+            let branch = cases
                 .get(&key)
                 .expect("eval_ir: JumpTable case missing for index value");
-            let arg_vals: Vec<IrValue> =
-                target_args.iter().map(|id| get_ir(&vars, id)).collect();
-            resolve_ir_target(target_block, &arg_vals, &vars)
+            let arg_vals: Vec<IrValue> = branch
+                .args
+                .iter()
+                .map(|id| get_ir(&vars, id))
+                .collect();
+            resolve_ir_target(&branch.dest, &arg_vals, &vars)
         }
         _ => panic!("eval_ir: unhandled IRTerminator variant — add evaluation for this variant"),
     };
@@ -555,10 +563,7 @@ mod tests {
         IRBlocks::new(vec![simple_block(
             params,
             stmts,
-            IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: ret_args,
-            },
+            IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, ret_args,) },
         )])
     }
 

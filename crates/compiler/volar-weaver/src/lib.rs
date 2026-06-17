@@ -347,10 +347,8 @@ pub(crate) mod tests_common {
                 BIrStmt::And(IRVarId(0), IRVarId(2)),
             ],
             stmt_provs: vec![(), ()],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Return,
-                args: vec![IRVarId(3)],
-            }),
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(3)],
+            reentry: None }),
         }], pre_init: vec![] }
     }
 
@@ -360,10 +358,8 @@ pub(crate) mod tests_common {
             params: 2,
             stmts: vec![BIrStmt::And(IRVarId(0), IRVarId(1))],
             stmt_provs: vec![()],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Return,
-                args: vec![IRVarId(2)],
-            }),
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(2)],
+            reentry: None }),
         }], pre_init: vec![] }
     }
 
@@ -375,14 +371,10 @@ pub(crate) mod tests_common {
             stmt_provs: vec![()],
             terminator: BIrTerminator::CondJmp {
                 val: IRVarId(0),
-                then_target: BIrTarget {
-                    block: IRBlockTargetId::Return,
-                    args: vec![IRVarId(0)],
-                },
-                else_target: BIrTarget {
-                    block: IRBlockTargetId::Block(IRBlockId(0)),
-                    args: vec![IRVarId(1)],
-                },
+                then_target: BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(0)],
+                reentry: None },
+                else_target: BIrTarget { block: IRBlockTargetId::Block(IRBlockId(0)), args: vec![IRVarId(1)],
+                reentry: None },
             },
         }], pre_init: vec![] }
     }

@@ -16,7 +16,7 @@ use alloc::{
     vec::Vec,
 };
 use volar_ir::ir::{
-    IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRVarId, IRTypes,
+    IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt, IRTerminator, IRVarId, IRTypes,
 };
 use volar_ir_common::{
     Constant, IrType, Stmt, StorageAllocator, StorageId,
@@ -275,15 +275,21 @@ fn apply_one(
                 let fb_bi = fallback_bi_opt.unwrap();
                 IRTerminator::JumpCond {
                     condition: guard,
-                    true_block:  IRBlockTargetId::Block(IRBlockId(repl_entry_bi as u32)),
-                    true_args:   vec![],
-                    false_block: IRBlockTargetId::Block(IRBlockId(fb_bi as u32)),
-                    false_args:  vec![],
+                    then_target: IRBranchTarget::new(
+                        IRBlockTargetId::Block(IRBlockId(repl_entry_bi as u32)),
+                        vec![],
+                    ),
+                    else_target: IRBranchTarget::new(
+                        IRBlockTargetId::Block(IRBlockId(fb_bi as u32)),
+                        vec![],
+                    ),
                 }
             } else {
                 IRTerminator::Jmp {
-                    func: IRBlockTargetId::Block(IRBlockId(repl_entry_bi as u32)),
-                    args: vec![],
+                    target: IRBranchTarget::new(
+                        IRBlockTargetId::Block(IRBlockId(repl_entry_bi as u32)),
+                        vec![],
+                    ),
                 }
             };
         }
@@ -395,8 +401,10 @@ fn build_fallback_block(
     }
 
     let terminator = IRTerminator::Jmp {
-        func: IRBlockTargetId::Block(IRBlockId(cont_bi as u32)),
-        args: vec![],
+        target: IRBranchTarget::new(
+            IRBlockTargetId::Block(IRBlockId(cont_bi as u32)),
+            vec![],
+        ),
     };
     IRBlock { params: vec![], stmts, stmt_provs: provs, terminator }
 }
@@ -532,22 +540,22 @@ fn visit_stmt_vars<F: FnMut(IRVarId)>(stmt: &IRStmt, f: &mut F) {
 
 fn visit_terminator_vars<F: FnMut(IRVarId)>(term: &IRTerminator, f: &mut F) {
     match term {
-        IRTerminator::Jmp { func, args } => {
-            if let IRBlockTargetId::Dyn(v) = func { f(*v); }
-            args.iter().for_each(|&a| f(a));
+        IRTerminator::Jmp { target } => {
+            if let IRBlockTargetId::Dyn(v) = &target.dest { f(*v); }
+            target.args.iter().for_each(|&a| f(a));
         }
-        IRTerminator::JumpCond { condition, true_block, true_args, false_block, false_args } => {
+        IRTerminator::JumpCond { condition, then_target, else_target } => {
             f(*condition);
-            if let IRBlockTargetId::Dyn(v) = true_block  { f(*v); }
-            if let IRBlockTargetId::Dyn(v) = false_block { f(*v); }
-            true_args.iter().for_each(|&a| f(a));
-            false_args.iter().for_each(|&a| f(a));
+            if let IRBlockTargetId::Dyn(v) = &then_target.dest { f(*v); }
+            if let IRBlockTargetId::Dyn(v) = &else_target.dest { f(*v); }
+            then_target.args.iter().for_each(|&a| f(a));
+            else_target.args.iter().for_each(|&a| f(a));
         }
         IRTerminator::JumpTable { index, cases } => {
             f(*index);
-            cases.values().for_each(|(tgt, args)| {
-                if let IRBlockTargetId::Dyn(v) = tgt { f(*v); }
-                args.iter().for_each(|&a| f(a));
+            cases.values().for_each(|target| {
+                if let IRBlockTargetId::Dyn(v) = &target.dest { f(*v); }
+                target.args.iter().for_each(|&a| f(a));
             });
         }
         _ => {}
@@ -611,19 +619,36 @@ fn remap_block_ids(term: &IRTerminator, offset: usize) -> IRTerminator {
         other => other.clone(),
     };
     match term {
-        IRTerminator::Jmp { func, args } =>
-            IRTerminator::Jmp { func: rt(func), args: args.clone() },
-        IRTerminator::JumpCond { condition, true_block, true_args, false_block, false_args } =>
-            IRTerminator::JumpCond {
-                condition: *condition,
-                true_block: rt(true_block), true_args: true_args.clone(),
-                false_block: rt(false_block), false_args: false_args.clone(),
+        IRTerminator::Jmp { target } => IRTerminator::Jmp {
+            target: IRBranchTarget {
+                dest: rt(&target.dest),
+                args: target.args.clone(),
+                reentry: target.reentry.clone(),
             },
-        IRTerminator::JumpTable { index, cases } =>
-            IRTerminator::JumpTable {
-                index: *index,
-                cases: cases.iter().map(|(c, (t, a))| (*c, (rt(t), a.clone()))).collect(),
+        },
+        IRTerminator::JumpCond { condition, then_target, else_target } => IRTerminator::JumpCond {
+            condition: *condition,
+            then_target: IRBranchTarget {
+                dest: rt(&then_target.dest),
+                args: then_target.args.clone(),
+                reentry: then_target.reentry.clone(),
             },
+            else_target: IRBranchTarget {
+                dest: rt(&else_target.dest),
+                args: else_target.args.clone(),
+                reentry: else_target.reentry.clone(),
+            },
+        },
+        IRTerminator::JumpTable { index, cases } => IRTerminator::JumpTable {
+            index: *index,
+            cases: cases.iter().map(|(c, target)| {
+                (*c, IRBranchTarget {
+                    dest: rt(&target.dest),
+                    args: target.args.clone(),
+                    reentry: target.reentry.clone(),
+                })
+            }).collect(),
+        },
         _ => panic!("remap_block_ids: unhandled IRTerminator variant — add block-id remapping for this variant"),
     }
 }
@@ -667,7 +692,7 @@ mod tests {
     use super::{IrSubstitution, ir_storage_allocator, substitute_ir_blocks};
 
     fn ret() -> IRTerminator {
-        IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![] }
+        IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![]) }
     }
 
     fn block(stmts: Vec<IRStmt>, terminator: IRTerminator) -> IRBlock {
@@ -730,10 +755,7 @@ mod tests {
                 addr: IRVarId(2),
             },
         ];
-        let repl_term = IRTerminator::Jmp {
-            func: IRBlockTargetId::Dyn(cont_var),
-            args: vec![],
-        };
+        let repl_term = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Dyn(cont_var), vec![],) };
         let mut repl = IRBlocks::new(vec![block(repl_stmts, repl_term)]);
         repl.oracles.push(OracleDecl {
             name: "h".to_string(),
@@ -913,7 +935,7 @@ mod tests {
             Stmt::Const(Constant { hi: 0, lo: 0 }, u64_ty),        // v3: result value
             Stmt::StorageWrite { storage: StorageId::DEFAULT, src: IRVarId(3), ty: u64_ty, addr: IRVarId(2) },
         ];
-        let term = IRTerminator::Jmp { func: IRBlockTargetId::Dyn(IRVarId(1)), args: vec![] };
+        let term = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Dyn(IRVarId(1)), vec![] ) };
         let mut repl = IRBlocks::new(vec![block(stmts, term)]);
         repl.oracles.push(OracleDecl { name: "h".to_string(), params: vec![], results: vec![u64_ty] });
         repl
@@ -930,7 +952,7 @@ mod tests {
             Stmt::Const(Constant { hi: 0, lo: 0 }, u64_ty),
             Stmt::StorageWrite { storage: StorageId::DEFAULT, src: IRVarId(3), ty: u64_ty, addr: IRVarId(2) },
         ];
-        let term = IRTerminator::Jmp { func: IRBlockTargetId::Dyn(IRVarId(1)), args: vec![] };
+        let term = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Dyn(IRVarId(1)), vec![] ) };
         let mut repl = IRBlocks::new(vec![block(stmts, term)]);
         repl.rngs.push(RngDecl { name: "rand".to_string(), ty: u64_ty });
         repl

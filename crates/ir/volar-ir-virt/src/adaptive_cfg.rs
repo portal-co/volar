@@ -22,6 +22,8 @@ pub struct AdaptiveSplitConfig {
     /// Cost model: minimum stmt savings to accept a region.
     pub sub_interp_entry_cost: usize,
     pub max_appended_regions: usize,
+    /// Prefer reentry-hint CFG loops over structural intra-block reroll search.
+    pub prefer_reentry_hints: bool,
 }
 
 impl Default for AdaptiveSplitConfig {
@@ -36,6 +38,7 @@ impl Default for AdaptiveSplitConfig {
             min_reroll_body_len: 2,
             sub_interp_entry_cost: 4,
             max_appended_regions: 64,
+            prefer_reentry_hints: true,
         }
     }
 }

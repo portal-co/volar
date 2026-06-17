@@ -4,7 +4,7 @@
 //! value must dedup to exactly one handler.
 
 use volar_ir::ir::{
-    IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRType, IRTypes, IRVarId, PrimType,
+    IRBlock, IRBlockTargetId, IRBranchTarget, IRBlocks, IRTerminator, IRType, IRTypes, IRVarId, PrimType,
 };
 use volar_ir_common::{Constant, Stmt, StorageId};
 use volar_ir_virt::{virtualize_ir, DispatchMode, VirtualizeConfig};
@@ -28,10 +28,7 @@ fn sixteen_const_only_blocks_dedup_to_single_handler() {
             params: vec![u32_ty],
             stmts: vec![Stmt::Const(Constant { hi: 0, lo: k }, u32_ty)],
             stmt_provs: vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(1)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)],) },
         })
         .collect();
     let blocks = IRBlocks::new(blocks);
@@ -84,10 +81,7 @@ fn handler_count_monotone_in_structural_variety() {
         params: vec![u32_ty],
         stmts: vec![Stmt::Const(Constant { hi: 0, lo: k }, u32_ty)],
         stmt_provs: vec![()],
-        terminator: IRTerminator::Jmp {
-            func: IRBlockTargetId::Return,
-            args: vec![IRVarId(1)],
-        },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)],) },
     };
 
     // 4 const-return blocks (all dedup) + 1 distinct "jump to block 5
@@ -106,10 +100,7 @@ fn handler_count_monotone_in_structural_variety() {
             params: vec![u32_ty],
             stmts: vec![],
             stmt_provs: vec![],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],) },
         },
     ]);
 

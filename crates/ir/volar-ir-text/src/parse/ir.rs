@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use volar_ir_common::{
     ActionDecl, Constant, IrType, OracleDecl, RngDecl, StorageId, Stmt, Type, TypeId, TypeTable,
 };
-use volar_ir::ir::{
+use volar_ir::ir::{IRBranchTarget, 
     IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRVarId,
 };
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
@@ -303,7 +303,7 @@ fn parse_ir_terminator(kw: &str, lex: &mut Lexer) -> Result<IRTerminator, ParseE
             let func = read_block_target(lex)?;
             lex.expect_key("args")?;
             let args = read_var_id_list(lex)?;
-            Ok(IRTerminator::Jmp { func, args })
+            Ok(IRTerminator::Jmp { target: IRBranchTarget::new(func, args) })
         }
         "jmp_cond" => {
             lex.expect_key("cond")?;
@@ -316,7 +316,7 @@ fn parse_ir_terminator(kw: &str, lex: &mut Lexer) -> Result<IRTerminator, ParseE
             let false_block = read_block_target(lex)?;
             lex.expect_key("else_args")?;
             let false_args = read_var_id_list(lex)?;
-            Ok(IRTerminator::JumpCond { condition, true_block, true_args, false_block, false_args })
+            Ok(IRTerminator::JumpCond { condition, then_target: IRBranchTarget::new(true_block, true_args), else_target: IRBranchTarget::new(false_block, false_args) })
         }
         "jmp_table" => {
             lex.expect_key("index")?;
@@ -330,7 +330,7 @@ fn parse_ir_terminator(kw: &str, lex: &mut Lexer) -> Result<IRTerminator, ParseE
                 let target = read_block_target(lex)?;
                 lex.expect_key("args")?;
                 let args = read_var_id_list(lex)?;
-                cases.insert(constant, (target, args));
+                cases.insert(constant, IRBranchTarget::new(target, args));
             }
             Ok(IRTerminator::JumpTable { index, cases })
         }

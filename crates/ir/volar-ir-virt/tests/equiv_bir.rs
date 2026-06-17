@@ -26,28 +26,19 @@ fn three_block_passthrough() -> BIrBlocks {
             params: 1,
             stmts: vec![BIrStmt::Zero],
             stmt_provs: vec![()],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Block(IRBlockId(1)),
-                args: vec![IRVarId(0)],
-            }),
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Block(IRBlockId(1)), args: vec![IRVarId(0)], }),
         },
         BIrBlock {
             params: 1,
             stmts: vec![BIrStmt::Zero],
             stmt_provs: vec![()],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Block(IRBlockId(2)),
-                args: vec![IRVarId(0)],
-            }),
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Block(IRBlockId(2)), args: vec![IRVarId(0)], }),
         },
         BIrBlock {
             params: 1,
             stmts: vec![BIrStmt::Zero],
             stmt_provs: vec![()],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            }),
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(0)], }),
         },
     ], pre_init: vec![] }
 }
@@ -110,19 +101,13 @@ fn xor_and_chain() -> BIrBlocks {
             params: 2,
             stmts: vec![BIrStmt::Xor(IRVarId(0), IRVarId(1))],
             stmt_provs: vec![()],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Block(IRBlockId(1)),
-                args: vec![IRVarId(2)],
-            }),
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Block(IRBlockId(1)), args: vec![IRVarId(2)], }),
         },
         BIrBlock {
             params: 1,
             stmts: vec![BIrStmt::Not(IRVarId(0))],
             stmt_provs: vec![()],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Return,
-                args: vec![IRVarId(1)],
-            }),
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(1)], }),
         },
     ], pre_init: vec![] }
 }
@@ -148,10 +133,7 @@ fn bir_single_block_is_trivial() {
         params: 1,
         stmts: vec![BIrStmt::Not(IRVarId(0))],
         stmt_provs: vec![()],
-        terminator: BIrTerminator::Jmp(BIrTarget {
-            block: IRBlockTargetId::Return,
-            args: vec![IRVarId(1)],
-        }),
+        terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(1)], }),
     }], pre_init: vec![] };
     let ref_out = eval_biir(&blocks, &[true]).expect("ref eval");
     assert_eq!(ref_out, vec![false]);
@@ -186,33 +168,21 @@ fn bir_condjmp_two_branch() -> BIrBlocks {
             stmt_provs: vec![],
             terminator: BIrTerminator::CondJmp {
                 val: IRVarId(0),
-                then_target: BIrTarget {
-                    block: IRBlockTargetId::Block(IRBlockId(1)),
-                    args: vec![IRVarId(0)],
-                },
-                else_target: BIrTarget {
-                    block: IRBlockTargetId::Block(IRBlockId(2)),
-                    args: vec![IRVarId(0)],
-                },
+                then_target: BIrTarget { block: IRBlockTargetId::Block(IRBlockId(1)), args: vec![IRVarId(0)], },
+                else_target: BIrTarget { block: IRBlockTargetId::Block(IRBlockId(2)), args: vec![IRVarId(0)], },
             },
         },
         BIrBlock {
             params: 1,
             stmts: vec![BIrStmt::One],
             stmt_provs: vec![()],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Return,
-                args: vec![IRVarId(1)],
-            }),
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(1)], }),
         },
         BIrBlock {
             params: 1,
             stmts: vec![BIrStmt::Zero],
             stmt_provs: vec![()],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Return,
-                args: vec![IRVarId(1)],
-            }),
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(1)], }),
         },
     ], pre_init: vec![] }
 }

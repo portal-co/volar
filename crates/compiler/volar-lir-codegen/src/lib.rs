@@ -22,7 +22,8 @@ use volar_compiler::ir::{
     IrPattern, IrStmt, IrType, MethodKind, PrimitiveType, SpecBinOp, SpecUnaryOp, StdMethod,
     StructKind,
 };
-use volar_lir::{IcmpPred, LirTarget, LirType};
+use volar_lir::{BranchTarget, IcmpPred, LirTarget, LirType};
+use volar_ir_common::ReentryHint;
 
 use structs::{
     StructRegistry, EnumRegistry, flatten_count, flatten_scalar_types,
@@ -889,7 +890,7 @@ fn lower_if<T: LirTarget<P>, P: Clone>(
     let else_block = ctx.target.create_block();
 
     // Branch to then/else — join block created lazily below.
-    ctx.target.branch(cond_val, then_block.clone(), &[], else_block.clone(), &[]);
+    ctx.target.branch(cond_val, then_block.clone(), BranchTarget::args([]), else_block.clone(), BranchTarget::args([]));
 
     // Lower the then-branch first so we discover N (the result scalar count).
     ctx.target.switch_to_block(then_block.clone());
@@ -908,7 +909,7 @@ fn lower_if<T: LirTarget<P>, P: Clone>(
         .map(|ty| ctx.target.add_block_param(join_block.clone(), ty.clone()))
         .collect();
 
-    ctx.target.jump(join_block.clone(), &then_vals);
+    ctx.target.jump(join_block.clone(), BranchTarget::args(then_vals.clone()));
 
     // Lower the else-branch.
     ctx.target.switch_to_block(else_block.clone());
@@ -923,7 +924,7 @@ fn lower_if<T: LirTarget<P>, P: Clone>(
         else_vals.len(), n,
         "if/else branches produce different numbers of scalars ({n} vs {})", else_vals.len()
     );
-    ctx.target.jump(join_block.clone(), &else_vals);
+    ctx.target.jump(join_block.clone(), BranchTarget::args(else_vals.clone()));
 
     ctx.target.switch_to_block(join_block.clone());
     ctx.current_block = join_block;
@@ -998,7 +999,7 @@ fn lower_match_arm_chain<'a, T: LirTarget<P>, P: Clone>(
             let cond = ctx.target.icmp(IcmpPred::Eq, scrutinee.clone(), expected);
             let then_block = ctx.target.create_block();
             let else_block = ctx.target.create_block();
-            ctx.target.branch(cond, then_block.clone(), &[], else_block.clone(), &[]);
+            ctx.target.branch(cond, then_block.clone(), BranchTarget::args([]), else_block.clone(), BranchTarget::args([]));
 
             ctx.target.switch_to_block(then_block.clone());
             ctx.current_block = then_block;
@@ -1009,14 +1010,14 @@ fn lower_match_arm_chain<'a, T: LirTarget<P>, P: Clone>(
             let join_params: Vec<T::Value> = scalar_tys.iter()
                 .map(|ty| ctx.target.add_block_param(join_block.clone(), ty.clone()))
                 .collect();
-            ctx.target.jump(join_block.clone(), &then_vals);
+            ctx.target.jump(join_block.clone(), BranchTarget::args(then_vals.clone()));
 
             ctx.target.switch_to_block(else_block.clone());
             ctx.current_block = else_block;
             let else_vals = lower_match_arm_chain(scrutinee, arms, ctx);
             let else_vals = if else_vals.len() == n { else_vals }
                 else { scalar_tys.iter().map(|ty| ctx.target.iconst(ty.clone(), 0)).collect() };
-            ctx.target.jump(join_block.clone(), &else_vals);
+            ctx.target.jump(join_block.clone(), BranchTarget::args(else_vals.clone()));
 
             ctx.target.switch_to_block(join_block.clone());
             ctx.current_block = join_block;
@@ -1028,7 +1029,7 @@ fn lower_match_arm_chain<'a, T: LirTarget<P>, P: Clone>(
             let cond = ctx.target.icmp(IcmpPred::Eq, scrutinee.clone(), expected);
             let then_block = ctx.target.create_block();
             let else_block = ctx.target.create_block();
-            ctx.target.branch(cond, then_block.clone(), &[], else_block.clone(), &[]);
+            ctx.target.branch(cond, then_block.clone(), BranchTarget::args([]), else_block.clone(), BranchTarget::args([]));
 
             ctx.target.switch_to_block(then_block.clone());
             ctx.current_block = then_block;
@@ -1039,14 +1040,14 @@ fn lower_match_arm_chain<'a, T: LirTarget<P>, P: Clone>(
             let join_params: Vec<T::Value> = scalar_tys.iter()
                 .map(|ty| ctx.target.add_block_param(join_block.clone(), ty.clone()))
                 .collect();
-            ctx.target.jump(join_block.clone(), &then_vals);
+            ctx.target.jump(join_block.clone(), BranchTarget::args(then_vals.clone()));
 
             ctx.target.switch_to_block(else_block.clone());
             ctx.current_block = else_block;
             let else_vals = lower_match_arm_chain(scrutinee, arms, ctx);
             let else_vals = if else_vals.len() == n { else_vals }
                 else { scalar_tys.iter().map(|ty| ctx.target.iconst(ty.clone(), 0)).collect() };
-            ctx.target.jump(join_block.clone(), &else_vals);
+            ctx.target.jump(join_block.clone(), BranchTarget::args(else_vals.clone()));
 
             ctx.target.switch_to_block(join_block.clone());
             ctx.current_block = join_block;
@@ -1091,7 +1092,7 @@ fn lower_enum_match<T: LirTarget<P>, P: Clone>(
         let cond = ctx.target.icmp(IcmpPred::Eq, tag.clone(), disc_val);
         let then_block = ctx.target.create_block();
         let else_block = ctx.target.create_block();
-        ctx.target.branch(cond, then_block.clone(), &[], else_block.clone(), &[]);
+        ctx.target.branch(cond, then_block.clone(), BranchTarget::args([]), else_block.clone(), BranchTarget::args([]));
 
         ctx.target.switch_to_block(then_block.clone());
         ctx.current_block = then_block;
@@ -1105,7 +1106,7 @@ fn lower_enum_match<T: LirTarget<P>, P: Clone>(
                 .map(|ty| ctx.target.add_block_param(join_block.clone(), ty.clone()))
                 .collect());
         }
-        ctx.target.jump(join_block.clone(), &then_vals);
+        ctx.target.jump(join_block.clone(), BranchTarget::args(then_vals.clone()));
 
         ctx.target.switch_to_block(else_block.clone());
         ctx.current_block = else_block;
@@ -1128,7 +1129,7 @@ fn lower_enum_match<T: LirTarget<P>, P: Clone>(
         // No variant arms — only catch-all.
         return catch_vals;
     };
-    ctx.target.jump(join_block.clone(), &catch_vals);
+    ctx.target.jump(join_block.clone(), BranchTarget::args(catch_vals.clone()));
     ctx.target.switch_to_block(join_block.clone());
     ctx.current_block = join_block;
     jp
@@ -1213,7 +1214,7 @@ fn lower_try<T: LirTarget<P>, P: Clone>(inner: &IrExpr<P>, ctx: &mut LowerCtx<T,
     let is_ok = ctx.target.icmp(IcmpPred::Eq, tag, ok_disc);
     let ok_block  = ctx.target.create_block();
     let err_block = ctx.target.create_block();
-    ctx.target.branch(is_ok, ok_block.clone(), &[], err_block.clone(), &[]);
+    ctx.target.branch(is_ok, ok_block.clone(), BranchTarget::args([]), err_block.clone(), BranchTarget::args([]));
     // Err path: propagate error via early return.
     ctx.target.switch_to_block(err_block.clone());
     ctx.current_block = err_block;
@@ -1639,13 +1640,13 @@ fn lower_bounded_loop<T: LirTarget<P>, P: Clone>(
     };
     // Ensure values are U64 (the loop uses U64 counters).
     let start_u64 = ctx.target.zext(start_val, LirType::U64);
-    ctx.target.jump(loop_header.clone(), &[start_u64, limit_val.clone()]);
+    ctx.target.jump(loop_header.clone(), BranchTarget::args(vec![start_u64, limit_val.clone()]));
 
     // Loop header.
     ctx.target.switch_to_block(loop_header.clone());
     ctx.current_block = loop_header.clone();
     let cmp = ctx.target.icmp(IcmpPred::Ult, counter.clone(), limit.clone());
-    ctx.target.branch(cmp, body_block.clone(), &[], done_block.clone(), &[]);
+    ctx.target.branch(cmp, body_block.clone(), BranchTarget::args([]), done_block.clone(), BranchTarget::args([]));
 
     // Body block.
     ctx.target.switch_to_block(body_block.clone());
@@ -1655,7 +1656,10 @@ fn lower_bounded_loop<T: LirTarget<P>, P: Clone>(
     lower_block(body, ctx);
     let one = ctx.target.iconst(LirType::U64, 1);
     let next = ctx.target.add(counter, one);
-    ctx.target.jump(loop_header, &[next, limit_val]);
+    ctx.target.jump(
+        loop_header,
+        BranchTarget::args(vec![next, limit_val]).with_reentry(ReentryHint::bounded_loop_ascending()),
+    );
 
     // Done block.
     ctx.target.switch_to_block(done_block.clone());
@@ -2119,7 +2123,7 @@ fn lower_cfg_terminator<T: LirTarget<P>, P: Clone>(
         }
         IrCfgTerminator::Goto(jump) => {
             let args = lower_jump_args(jump, ctx);
-            ctx.target.jump(lir_blocks[jump.target].clone(), &args);
+            ctx.target.jump(lir_blocks[jump.target].clone(), branch_target_from_jump::<T, P>(jump, args));
         }
         IrCfgTerminator::CondGoto { cond, then_, else_ } => {
             let cond_vals = lower_expr(cond, ctx);
@@ -2129,12 +2133,23 @@ fn lower_cfg_terminator<T: LirTarget<P>, P: Clone>(
             ctx.target.branch(
                 cond_val,
                 lir_blocks[then_.target].clone(),
-                &then_args,
+                branch_target_from_jump::<T, P>(then_, then_args),
                 lir_blocks[else_.target].clone(),
-                &else_args,
+                branch_target_from_jump::<T, P>(else_, else_args),
             );
         }
         _ => panic!("lower_cfg_terminator: unhandled IrCfgTerminator variant — add lowering for this variant"),
+    }
+}
+
+
+fn branch_target_from_jump<T: LirTarget<P>, P: Clone>(
+    jump: &IrCfgJump<P>,
+    args: Vec<T::Value>,
+) -> BranchTarget<T::Value> {
+    match &jump.reentry {
+        Some(h) => BranchTarget::args(args).with_reentry(h.clone()),
+        None => BranchTarget::args(args),
     }
 }
 

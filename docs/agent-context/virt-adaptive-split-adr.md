@@ -33,6 +33,9 @@ into `pre_init` (same dense lane model as outer rows).
 - Unified flat bytecode: outer rows `0..N-1`, appended regions after.
 - Cross-block SharedCore planner + sub-interpreter infra.
 - Intra-block RerollLoop planner + reroll driver blocks.
+- **CFG reentry hints** — `cfg_hints` planner uses `IRBranchTarget.reentry` on
+  back-edges (including autoderived `BoundedLoop` hints) before structural
+  reroll search. See [complexity-hints.md](complexity-hints.md).
 - Composite outer handlers (opcodes-before / entry / resume / opcodes-after).
 - Public dispatch, IR-only, no commitment extension.
 - Equivalence tests with split enabled.

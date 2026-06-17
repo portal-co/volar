@@ -62,7 +62,7 @@ use volar_ir_common::{Constant, StorageId, Type};
 use volar_ir::{
     boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
     ir::{
-        IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypeId,
+        IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt, IRTerminator, IRType, IRTypeId,
         IRTypes, IRVarId,
     },
 };
@@ -1171,19 +1171,17 @@ impl<P: Clone> MovfuscCtx for IrCtx<P> {
     fn return_val_width(blocks: &IRBlocks<P>) -> usize {
         for block in &blocks.blocks {
             match &block.terminator {
-                IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => {
+                IRTerminator::Jmp { target: IRBranchTarget { dest: IRBlockTargetId::Return, args, .. } } => {
                     return args.len()
                 }
                 IRTerminator::JumpCond {
-                    true_block: IRBlockTargetId::Return,
-                    true_args,
+                    then_target: IRBranchTarget { dest: IRBlockTargetId::Return, args, .. },
                     ..
-                } => return true_args.len(),
+                } => return args.len(),
                 IRTerminator::JumpCond {
-                    false_block: IRBlockTargetId::Return,
-                    false_args,
+                    else_target: IRBranchTarget { dest: IRBlockTargetId::Return, args, .. },
                     ..
-                } => return false_args.len(),
+                } => return args.len(),
                 _ => {}
             }
         }
@@ -1462,10 +1460,10 @@ impl<P: Clone> MovfuscCtx for IrCtx<P> {
         let ret_width = return_slot_types.len();
 
         match &block.terminator {
-            IRTerminator::Jmp { func, args } => {
+            IRTerminator::Jmp { target } => {
                 let (done, next_pc_bits, next_state, ret_vals) = self.process_ir_target(
-                    func,
-                    args,
+                    &target.dest,
+                    &target.args,
                     block_vals,
                     pc_width,
                     state_slot_types,
@@ -1476,15 +1474,13 @@ impl<P: Clone> MovfuscCtx for IrCtx<P> {
             }
             IRTerminator::JumpCond {
                 condition,
-                true_block,
-                true_args,
-                false_block,
-                false_args,
+                then_target,
+                else_target,
             } => {
                 let cond = block_vals[condition.0 as usize];
                 let (t_done, t_npc, t_ns, t_ret) = self.process_ir_target(
-                    true_block,
-                    true_args,
+                    &then_target.dest,
+                    &then_target.args,
                     block_vals,
                     pc_width,
                     state_slot_types,
@@ -1492,8 +1488,8 @@ impl<P: Clone> MovfuscCtx for IrCtx<P> {
                     blocks,
                 );
                 let (e_done, e_npc, e_ns, e_ret) = self.process_ir_target(
-                    false_block,
-                    false_args,
+                    &else_target.dest,
+                    &else_target.args,
                     block_vals,
                     pc_width,
                     state_slot_types,
@@ -1536,11 +1532,11 @@ impl<P: Clone> MovfuscCtx for IrCtx<P> {
                     .map(|ty| self.emit_zero_slot(ty))
                     .collect();
 
-                for (const_k, (target, args)) in cases {
+                for (const_k, branch_target) in cases {
                     let is_case = self.emit_eq_const_ir(idx_val, *const_k, idx_ty);
                     let (done_k, npc_k, ns_k, ret_k) = self.process_ir_target(
-                        target,
-                        args,
+                        &branch_target.dest,
+                        &branch_target.args,
                         block_vals,
                         pc_width,
                         state_slot_types,
@@ -1588,10 +1584,14 @@ impl<P: Clone> MovfuscCtx for IrCtx<P> {
             stmt_provs: self.stmt_provs,
             terminator: IRTerminator::JumpCond {
                 condition: IRVarId(done_var),
-                true_block: IRBlockTargetId::Return,
-                true_args: ret_vars.into_iter().map(IRVarId).collect(),
-                false_block: IRBlockTargetId::Block(IRBlockId(0)),
-                false_args: loop_vars.into_iter().map(IRVarId).collect(),
+                then_target: IRBranchTarget::new(
+                    IRBlockTargetId::Return,
+                    ret_vars.into_iter().map(IRVarId).collect(),
+                ),
+                else_target: IRBranchTarget::new(
+                    IRBlockTargetId::Block(IRBlockId(0)),
+                    loop_vars.into_iter().map(IRVarId).collect(),
+                ),
             },
         }])
     }
@@ -1689,13 +1689,13 @@ fn compute_return_slot_types<P: Clone>(
     for block in &blocks.blocks {
         let var_types = infer_block_var_types(block, ir_types, bit_type_id);
         let ret_args: Option<&Vec<IRVarId>> = match &block.terminator {
-            IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => Some(args),
+            IRTerminator::Jmp { target: IRBranchTarget { dest: IRBlockTargetId::Return, args, .. } } => Some(args),
             IRTerminator::JumpCond {
-                true_block: IRBlockTargetId::Return, true_args, ..
-            } => Some(true_args),
+                then_target: IRBranchTarget { dest: IRBlockTargetId::Return, args, .. }, ..
+            } => Some(args),
             IRTerminator::JumpCond {
-                false_block: IRBlockTargetId::Return, false_args, ..
-            } => Some(false_args),
+                else_target: IRBranchTarget { dest: IRBlockTargetId::Return, args, .. }, ..
+            } => Some(args),
             _ => None,
         };
         if let Some(args) = ret_args {
@@ -1809,10 +1809,9 @@ mod tests {
     extern crate std;
     use super::*;
     use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
-    use volar_ir::ir::{
-        IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypeId,
-        IRTypes, IRVarId,
-    };
+    use volar_ir::ir::{IRBranchTarget, 
+        IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt, IRTerminator, IRType, IRTypeId,
+        IRTypes, IRVarId, IRBranchTarget};
     use volar_ir_common::Constant;
 
     // =========================================================================
@@ -2018,19 +2017,13 @@ mod tests {
                 params: std::vec![IRTypeId(0)],
                 stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 0 }, IRTypeId(0))],
                 stmt_provs: std::vec![()],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Block(IRBlockId(1)),
-                    args: std::vec![IRVarId(0)],
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), std::vec![IRVarId(0)],) },
             },
             IRBlock {
                 params: std::vec![IRTypeId(0)],
                 stmts: std::vec![],
                 stmt_provs: std::vec![],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    args: std::vec![IRVarId(0)],
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
             },
         ]);
         (blocks, types)
@@ -2043,10 +2036,7 @@ mod tests {
             params: std::vec![IRTypeId(0)],
             stmts: std::vec![],
             stmt_provs: std::vec![],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: std::vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
         }]);
         assert_eq!(movfuscate_ir(&blocks, &mut types), blocks);
     }
@@ -2073,12 +2063,12 @@ mod tests {
         let result = movfuscate_ir(&blocks, &mut types);
         match &result.blocks[0].terminator {
             IRTerminator::JumpCond {
-                true_block, true_args, false_block, false_args, ..
+                then_target, else_target, ..
             } => {
-                assert_eq!(*true_block, IRBlockTargetId::Return);
-                assert_eq!(true_args.len(), 1);
-                assert_eq!(*false_block, IRBlockTargetId::Block(IRBlockId(0)));
-                assert_eq!(false_args.len(), 2);
+                assert_eq!(then_target.dest, IRBlockTargetId::Return);
+                assert_eq!(then_target.args.len(), 1);
+                assert_eq!(else_target.dest, IRBlockTargetId::Block(IRBlockId(0)));
+                assert_eq!(else_target.args.len(), 2);
             }
             other => panic!("expected JumpCond, got {:?}", other),
         }
@@ -2101,19 +2091,13 @@ mod tests {
                 params: std::vec![g8.clone()],
                 stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 0 }, bit)],
                 stmt_provs: std::vec![()],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Block(IRBlockId(1)),
-                    args: std::vec![IRVarId(0)],
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), std::vec![IRVarId(0)],) },
             },
             IRBlock {
                 params: std::vec![g8.clone()],
                 stmts: std::vec![],
                 stmt_provs: std::vec![],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    args: std::vec![IRVarId(0)],
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
             },
         ]);
         (blocks, types)
@@ -2216,10 +2200,7 @@ mod tests {
                 params: std::vec![g8.clone()],
                 stmts: std::vec![],
                 stmt_provs: std::vec![],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    args: std::vec![IRVarId(0)],
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
             },
         ]);
 
@@ -2264,19 +2245,13 @@ mod tests {
                     constant: Constant { hi: 0, lo: 0 },
                 }],
                 stmt_provs: std::vec![()],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Block(IRBlockId(1)),
-                    args: std::vec![IRVarId(1)], // the Poly result
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), std::vec![IRVarId(1)]) }, // the Poly result,
             },
             IRBlock {
                 params: std::vec![g8.clone()],
                 stmts: std::vec![],
                 stmt_provs: std::vec![],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    args: std::vec![IRVarId(0)],
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
             },
         ]);
         let result = movfuscate_ir(&blocks, &mut types);
@@ -2325,10 +2300,7 @@ mod tests {
                 params: std::vec![block_ty_id.clone()],
                 stmts: std::vec![],
                 stmt_provs: std::vec![],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    args: std::vec![],
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![],) },
             },
         ]);
         (blocks, types)
@@ -2362,10 +2334,10 @@ mod tests {
         let (blocks, mut types) = two_block_dyn_param();
         let result = movfuscate_ir(&blocks, &mut types);
         match &result.blocks[0].terminator {
-            IRTerminator::JumpCond { true_block, true_args, false_block, false_args, .. } => {
-                assert_eq!(*true_block, IRBlockTargetId::Return);
+            IRTerminator::JumpCond { then_target, else_target, .. } => {
+                assert_eq!(then_target.dest, IRBlockTargetId::Return);
                 assert_eq!(true_args.len(), 0, "ret_width = 0");
-                assert_eq!(*false_block, IRBlockTargetId::Block(IRBlockId(0)));
+                assert_eq!(else_target.dest, IRBlockTargetId::Block(IRBlockId(0)));
                 assert_eq!(false_args.len(), 2, "loop-back args = pc(1) + state(1)");
             }
             other => panic!("expected JumpCond, got {:?}", other),
@@ -2405,10 +2377,7 @@ mod tests {
                 params: std::vec![],
                 stmts: std::vec![],
                 stmt_provs: std::vec![],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    args: std::vec![],
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![],) },
             },
         ]);
         (blocks, types)
@@ -2485,10 +2454,7 @@ mod tests {
                 params: std::vec![bit.clone()],
                 stmts: std::vec![],
                 stmt_provs: std::vec![],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    args: std::vec![IRVarId(0)],
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
             },
         ]);
         (blocks, types)
@@ -2550,30 +2516,21 @@ mod tests {
                     IRStmt::Const(Constant { hi: 0, lo: 2 }, block_ty_id.clone()),
                 ],
                 stmt_provs: std::vec![()],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Block(IRBlockId(1)),
-                    args: std::vec![IRVarId(0)], // pass the Block ref
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), std::vec![IRVarId(0)]) }, // pass the Block ref,
             },
             // Block 1: holds a cont and Dyn-jumps to it.
             IRBlock {
                 params: std::vec![block_ty_id.clone()],
                 stmts: std::vec![],
                 stmt_provs: std::vec![],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Dyn(IRVarId(0)),
-                    args: std::vec![],
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Dyn(IRVarId(0)), std::vec![],) },
             },
             // Block 2: the target of the continuation.
             IRBlock {
                 params: std::vec![block_ty_id.clone()],
                 stmts: std::vec![],
                 stmt_provs: std::vec![],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    args: std::vec![],
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![],) },
             },
         ]);
         (blocks, types)
@@ -2642,19 +2599,13 @@ mod tests {
                     addr: IRVarId(0),
                 }],
                 stmt_provs: std::vec![()],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Block(IRBlockId(1)),
-                    args: std::vec![IRVarId(0)],
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), std::vec![IRVarId(0)],) },
             },
             IRBlock {
                 params: std::vec![bit.clone()],
                 stmts: std::vec![],
                 stmt_provs: std::vec![],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    args: std::vec![IRVarId(0)],
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
             },
         ]);
         (blocks, types)
@@ -2698,19 +2649,13 @@ mod tests {
                     addr: IRVarId(0),
                 }],
                 stmt_provs: std::vec![()],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Block(IRBlockId(1)),
-                    args: std::vec![IRVarId(1)], // the read result
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), std::vec![IRVarId(1)]) }, // the read result,
             },
             IRBlock {
                 params: std::vec![bit.clone()],
                 stmts: std::vec![],
                 stmt_provs: std::vec![],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    args: std::vec![IRVarId(0)],
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
             },
         ]);
         (blocks, types)
@@ -2772,10 +2717,7 @@ mod tests {
                 params: std::vec![block_ty.clone()],
                 stmts: std::vec![],
                 stmt_provs: std::vec![],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    args: std::vec![],
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![],) },
             },
         ]);
         (blocks, types)

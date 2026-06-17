@@ -13,7 +13,7 @@
 
 use alloc::{collections::BTreeMap, vec, vec::Vec};
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
-use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRVarId};
+use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBlocks, IRBranchTarget, IRTerminator, IRVarId};
 use volar_ir_common::{Constant, StorageId, TypeId, TypeTable};
 use vaffle::{FuncBody, FuncDecl, Module, Value, ValueId};
 
@@ -448,30 +448,23 @@ fn store_forward_ir_block_with_cache<P: Clone>(
 /// Collect successor block indices from an `IRTerminator`.
 fn ir_terminator_succ_blocks(term: &IRTerminator) -> Vec<usize> {
     let mut out = Vec::new();
-    match term {
-        IRTerminator::Jmp { func, .. } => {
-            if let IRBlockTargetId::Block(b) = func {
-                out.push(b.0 as usize);
+    let push_block = |out: &mut Vec<usize>, dest: &IRBlockTargetId| {
+        if let IRBlockTargetId::Block(b) = dest {
+            let idx = b.0 as usize;
+            if !out.contains(&idx) {
+                out.push(idx);
             }
         }
-        IRTerminator::JumpCond { true_block, false_block, .. } => {
-            if let IRBlockTargetId::Block(b) = true_block {
-                out.push(b.0 as usize);
-            }
-            if let IRBlockTargetId::Block(b) = false_block {
-                if !out.contains(&(b.0 as usize)) {
-                    out.push(b.0 as usize);
-                }
-            }
+    };
+    match term {
+        IRTerminator::Jmp { target } => push_block(&mut out, &target.dest),
+        IRTerminator::JumpCond { then_target, else_target, .. } => {
+            push_block(&mut out, &then_target.dest);
+            push_block(&mut out, &else_target.dest);
         }
         IRTerminator::JumpTable { cases, .. } => {
-            for (_, (target, _)) in cases {
-                if let IRBlockTargetId::Block(b) = target {
-                    let idx = b.0 as usize;
-                    if !out.contains(&idx) {
-                        out.push(idx);
-                    }
-                }
+            for target in cases.values() {
+                push_block(&mut out, &target.dest);
             }
         }
         _ => {}
@@ -485,28 +478,23 @@ fn ir_terminator_succ_blocks(term: &IRTerminator) -> Vec<usize> {
 /// go to the same block, only the first (true) edge is returned; the
 /// intersection-based approach handles the second.
 fn ir_edge_args(term: &IRTerminator, target_block: usize) -> Option<Vec<IRVarId>> {
+    let from_target = |t: &IRBranchTarget| {
+        if let IRBlockTargetId::Block(b) = &t.dest {
+            if b.0 as usize == target_block {
+                return Some(t.args.clone());
+            }
+        }
+        None
+    };
     match term {
-        IRTerminator::Jmp { func: IRBlockTargetId::Block(b), args }
-            if b.0 as usize == target_block =>
-        {
-            Some(args.clone())
-        }
-        IRTerminator::JumpCond {
-            true_block: IRBlockTargetId::Block(b), true_args, ..
-        } if b.0 as usize == target_block => {
-            Some(true_args.clone())
-        }
-        IRTerminator::JumpCond {
-            false_block: IRBlockTargetId::Block(b), false_args, ..
-        } if b.0 as usize == target_block => {
-            Some(false_args.clone())
+        IRTerminator::Jmp { target } => from_target(target),
+        IRTerminator::JumpCond { then_target, else_target, .. } => {
+            from_target(then_target).or_else(|| from_target(else_target))
         }
         IRTerminator::JumpTable { cases, .. } => {
-            for (_, (target, args)) in cases {
-                if let IRBlockTargetId::Block(b) = target {
-                    if b.0 as usize == target_block {
-                        return Some(args.clone());
-                    }
+            for target in cases.values() {
+                if let Some(args) = from_target(target) {
+                    return Some(args);
                 }
             }
             None
@@ -517,33 +505,22 @@ fn ir_edge_args(term: &IRTerminator, target_block: usize) -> Option<Vec<IRVarId>
 
 /// Append `extra_args` to every edge in `term` that targets `target_block`.
 fn add_ir_args_to_edges(term: &mut IRTerminator, target_block: usize, extra_args: &[IRVarId]) {
-    match term {
-        IRTerminator::Jmp { func: IRBlockTargetId::Block(b), args }
-            if b.0 as usize == target_block =>
-        {
-            args.extend_from_slice(extra_args);
+    let extend_target = |t: &mut IRBranchTarget| {
+        if let IRBlockTargetId::Block(b) = &t.dest {
+            if b.0 as usize == target_block {
+                t.args.extend_from_slice(extra_args);
+            }
         }
-        IRTerminator::JumpCond {
-            true_block, true_args, false_block, false_args, ..
-        } => {
-            if let IRBlockTargetId::Block(b) = true_block {
-                if b.0 as usize == target_block {
-                    true_args.extend_from_slice(extra_args);
-                }
-            }
-            if let IRBlockTargetId::Block(b) = false_block {
-                if b.0 as usize == target_block {
-                    false_args.extend_from_slice(extra_args);
-                }
-            }
+    };
+    match term {
+        IRTerminator::Jmp { target } => extend_target(target),
+        IRTerminator::JumpCond { then_target, else_target, .. } => {
+            extend_target(then_target);
+            extend_target(else_target);
         }
         IRTerminator::JumpTable { cases, .. } => {
-            for (_, (target, args)) in cases.iter_mut() {
-                if let IRBlockTargetId::Block(b) = target {
-                    if b.0 as usize == target_block {
-                        args.extend_from_slice(extra_args);
-                    }
-                }
+            for target in cases.values_mut() {
+                extend_target(target);
             }
         }
         _ => {}
@@ -658,28 +635,26 @@ pub(crate) fn shift_ir_terminator_vars(
         }
     };
     match term {
-        IRTerminator::Jmp { func, args } => {
-            shift_target_id(func);
-            shift_args(args);
+        IRTerminator::Jmp { target } => {
+            shift_target_id(&mut target.dest);
+            shift_args(&mut target.args);
         }
         IRTerminator::JumpCond {
             condition,
-            true_block,
-            true_args,
-            false_block,
-            false_args,
+            then_target,
+            else_target,
         } => {
             shift_var(condition, old_base, n_stmts, shift);
-            shift_target_id(true_block);
-            shift_args(true_args);
-            shift_target_id(false_block);
-            shift_args(false_args);
+            shift_target_id(&mut then_target.dest);
+            shift_args(&mut then_target.args);
+            shift_target_id(&mut else_target.dest);
+            shift_args(&mut else_target.args);
         }
         IRTerminator::JumpTable { index, cases } => {
             shift_var(index, old_base, n_stmts, shift);
-            for (_, (target, args)) in cases.iter_mut() {
-                shift_target_id(target);
-                shift_args(args);
+            for target in cases.values_mut() {
+                shift_target_id(&mut target.dest);
+                shift_args(&mut target.args);
             }
         }
         _ => {}
@@ -2017,10 +1992,7 @@ mod tests {
     use volar_ir_common::{Constant, Stmt, StorageId, TypeId};
 
     fn jmp_self() -> IRTerminator {
-        IRTerminator::Jmp {
-            func: IRBlockTargetId::Block(IRBlockId(0)),
-            args: vec![],
-        }
+        IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(0)), vec![],) }
     }
 
     fn make_block(params: Vec<TypeId>, stmts: Vec<Stmt<IRVarId, IRVarId>>) -> IRBlock<()> {

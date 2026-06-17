@@ -27,6 +27,8 @@ use alloc::{
 
 use thiserror::Error;
 
+pub use volar_ir_common::{MeasureSpec, ReentryHint, StructRef};
+
 #[derive(Error, Debug)]
 pub enum CompilerError {
     #[error("Parse error: {0}")]
@@ -2418,6 +2420,15 @@ pub struct IrCfgJump<P: Clone = ()> {
     pub target: usize,
     /// Expressions passed as arguments to the target block's params.
     pub args: Vec<IrExpr<P>>,
+    /// Reentry complexity contract when this edge targets a loop header.
+    pub reentry: Option<ReentryHint>,
+}
+
+impl<P: Clone> IrCfgJump<P> {
+    /// Jump with no reentry hint.
+    pub fn new(target: usize, args: Vec<IrExpr<P>>) -> Self {
+        IrCfgJump { target, args, reentry: None }
+    }
 }
 
 /// Terminates an [`IrCfgBlock`].
@@ -2486,6 +2497,7 @@ impl<P: Clone, Q: Clone> MapProv<P, Q> for IrCfgJump<P> {
         IrCfgJump {
             target: self.target,
             args: self.args.into_iter().map(|e| e.map_prov(f)).collect(),
+            reentry: self.reentry,
         }
     }
 }

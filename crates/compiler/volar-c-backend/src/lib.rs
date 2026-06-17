@@ -26,7 +26,7 @@ use std::{
     vec::Vec,
 };
 use volar_ir_common::Type as NativeType;
-use volar_lir::{IcmpPred, LirTarget, LirType, LirAbi, StackAllocExt, StructDef, StructId};
+use volar_lir::{BranchTarget, IcmpPred, LirTarget, LirType, LirAbi, StackAllocExt, StructDef, StructId};
 
 pub use volar_lir::NameConfig;
 
@@ -777,8 +777,8 @@ impl LirTarget for CBackend {
 
     // ---- Terminators --------------------------------------------------------
 
-    fn jump(&mut self, target: CBlock, args: &[CValue]) {
-        let args = args.to_vec();
+    fn jump(&mut self, target: CBlock, branch: BranchTarget<CValue>) {
+        let args = branch.args;
         self.state().emit_jump(target, &args);
     }
 
@@ -786,13 +786,13 @@ impl LirTarget for CBackend {
         &mut self,
         cond: CValue,
         then_block: CBlock,
-        then_args: &[CValue],
+        then_branch: BranchTarget<CValue>,
         else_block: CBlock,
-        else_args: &[CValue],
+        else_branch: BranchTarget<CValue>,
     ) {
         let cond_name = self.state().name_of(cond).to_owned();
-        let then_args = then_args.to_vec();
-        let else_args = else_args.to_vec();
+        let then_args = then_branch.args;
+        let else_args = else_branch.args;
 
         writeln!(self.state().body, "  if ({cond_name}) {{").unwrap();
         {

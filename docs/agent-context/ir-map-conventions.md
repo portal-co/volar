@@ -183,3 +183,17 @@ stmt.map(
 ```
 
 This subsumes `TypeRemapper::remap_stmt_types` (which can be kept as a thin wrapper or removed).
+
+## Reentry hints (`Target` / `IRBranchTarget` / `BranchTarget`)
+
+Complexity hints live in `volar_ir_common::ReentryHint` and attach to branch targets:
+
+| Layer | Field |
+|-------|-------|
+| LIR | `BranchTarget::reentry` |
+| VAFFLE | `Target::reentry` |
+| Volar IR | `IRBranchTarget::reentry` |
+| Compiler CFG | `IrCfgJump::reentry` |
+
+`map` / `as_ref` / `as_mut` on `Target` and `IRBranchTarget` copy `reentry` unchanged
+(hints are not value-mapped). See [complexity-hints.md](complexity-hints.md).

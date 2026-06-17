@@ -11,7 +11,7 @@ use std::vec;
 use volar_ir_common::{
     ActionDecl, Constant, IrType, OracleDecl, RngDecl, StorageId, Stmt, Type, TypeId, TypeTable,
 };
-use volar_ir::ir::{
+use volar_ir::ir::{IRBranchTarget, 
     IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRTerminator, IRVarId,
 };
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
@@ -44,7 +44,7 @@ fn simple_ir_module() -> SavedIrBlocks {
         params:     vec![ty(0)],
         stmts:      vec![Stmt::Const(c(0, 255), ty(1))],
         stmt_provs: vec![()],
-        terminator: IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![v(1)] },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(1)] ) },
     };
 
     SavedIrBlocks {
@@ -96,7 +96,7 @@ fn ir_type_table() {
                 params:     vec![],
                 stmts:      vec![],
                 stmt_provs: vec![],
-                terminator: IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![] },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![] ) },
             }],
         },
     };
@@ -125,7 +125,7 @@ fn ir_decls() {
                 params:     vec![],
                 stmts:      vec![],
                 stmt_provs: vec![],
-                terminator: IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![] },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![] ) },
             }],
         },
     };
@@ -144,7 +144,7 @@ fn ir_stmt_storage_read_write() {
             Stmt::StorageWrite { storage: storage(1), src: v(1), ty: ty(0), addr: v(0) },
         ],
         stmt_provs: vec![(), ()],
-        terminator: IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![v(1)] },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(1)] ) },
     };
     round_trip_ir(SavedIrBlocks {
         types,
@@ -159,7 +159,7 @@ fn ir_stmt_transmute() {
         params:     vec![ty(0)],
         stmts:      vec![Stmt::Transmute { src: v(0), src_ty: ty(0), dst_ty: ty(1) }],
         stmt_provs: vec![()],
-        terminator: IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![v(1)] },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(1)] ) },
     };
     round_trip_ir(SavedIrBlocks {
         types,
@@ -177,7 +177,7 @@ fn ir_stmt_poly() {
         params:     vec![ty(0), ty(0)],  // v0, v1
         stmts:      vec![Stmt::Poly { ty: ty(0), coeffs, constant: c(0, 0) }],
         stmt_provs: vec![()],
-        terminator: IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![v(2)] },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(2)] ) },
     };
     round_trip_ir(SavedIrBlocks {
         types,
@@ -198,7 +198,7 @@ fn ir_stmt_rot_merge_splat_shuffle() {
             Stmt::Shuffle { result_bits: vec![(0, v(0)), (1, v(1))], ty: ty(0) }, // v6
         ],
         stmt_provs: vec![(), (), (), (), ()],
-        terminator: IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![v(6)] },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(6)] ) },
     };
     round_trip_ir(SavedIrBlocks {
         types,
@@ -230,7 +230,7 @@ fn ir_stmt_oracle_action_rng() {
             Stmt::Rng { name: "rng1".into(), ty: ty(0) },
         ],
         stmt_provs: vec![(), (), (), (), ()],
-        terminator: IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![v(6)] },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(6)] ) },
     };
     round_trip_ir(SavedIrBlocks {
         types,
@@ -257,7 +257,7 @@ fn ir_terminator_jmp_cond() {
         params:     vec![ty(0)],
         stmts:      vec![],
         stmt_provs: vec![],
-        terminator: IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![v(0)] },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(0)] ) },
     };
     round_trip_ir(SavedIrBlocks {
         types,
@@ -281,7 +281,7 @@ fn ir_terminator_jmp_table() {
         params:     vec![],
         stmts:      vec![],
         stmt_provs: vec![],
-        terminator: IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![] },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![] ) },
     };
     round_trip_ir(SavedIrBlocks {
         types,
@@ -296,7 +296,7 @@ fn ir_string_escaping() {
         params:     vec![],
         stmts:      vec![Stmt::Rng { name: "a\"b\\c\nd".into(), ty: ty(0) }],
         stmt_provs: vec![()],
-        terminator: IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![v(0)] },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(0)] ) },
     };
     round_trip_ir(SavedIrBlocks {
         types,
@@ -312,7 +312,7 @@ fn ir_constant_large() {
         params:     vec![],
         stmts:      vec![Stmt::Const(big, ty(0))],
         stmt_provs: vec![()],
-        terminator: IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![v(0)] },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(0)] ) },
     };
     round_trip_ir(SavedIrBlocks {
         types,

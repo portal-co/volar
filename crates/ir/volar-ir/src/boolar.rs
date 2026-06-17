@@ -364,16 +364,10 @@ impl<Var> BIrTarget<Var> {
     }
 
     pub fn as_ref(&self) -> BIrTarget<&Var> {
-        BIrTarget {
-            block: self.block.as_ref(),
-            args: self.args.iter().collect(),
-        }
+        BIrTarget { block: self.block.as_ref(), args: self.args.iter().collect() }
     }
 
     pub fn as_mut(&mut self) -> BIrTarget<&mut Var> {
-        BIrTarget {
-            block: self.block.as_mut(),
-            args: self.args.iter_mut().collect(),
-        }
+        BIrTarget { block: self.block.as_mut(), args: self.args.iter_mut().collect() }
     }
 }

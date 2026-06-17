@@ -20,7 +20,7 @@
 extern crate alloc;
 
 use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
-use volar_ir_common::Type as NativeType;
+use volar_ir_common::{ReentryHint, Type as NativeType};
 
 pub mod circuits;
 pub use circuits::{BitCircuitBuilder, StorageEmitter, StackPtr, FrameLayout, PACK_W, n_packs, pack_bits, unpack_words};
@@ -318,6 +318,34 @@ pub enum IcmpPred {
     Sge,
 }
 
+
+// ============================================================================
+// Branch targets (terminators)
+// ============================================================================
+
+/// A jump/branch destination: block arguments plus optional reentry hint.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BranchTarget<V> {
+    pub args: Vec<V>,
+    pub reentry: Option<ReentryHint>,
+}
+
+impl<V> BranchTarget<V> {
+    /// Branch target with arguments and no reentry hint.
+    pub fn args(args: impl Into<Vec<V>>) -> Self {
+        BranchTarget {
+            args: args.into(),
+            reentry: None,
+        }
+    }
+
+    /// Attach a reentry hint to this target.
+    pub fn with_reentry(mut self, hint: ReentryHint) -> Self {
+        self.reentry = Some(hint);
+        self
+    }
+}
+
 // ============================================================================
 // The trait
 // ============================================================================
@@ -449,15 +477,15 @@ pub trait LirTarget<Prov: Clone = ()> {
 
     // ---- Terminators --------------------------------------------------------
 
-    fn jump(&mut self, target: Self::Block, args: &[Self::Value]);
+    fn jump(&mut self, target: Self::Block, branch: BranchTarget<Self::Value>);
 
     fn branch(
         &mut self,
         cond: Self::Value,
         then_block: Self::Block,
-        then_args: &[Self::Value],
+        then_branch: BranchTarget<Self::Value>,
         else_block: Self::Block,
-        else_args: &[Self::Value],
+        else_branch: BranchTarget<Self::Value>,
     );
 
     /// Emit a return.  `vals` is the flat scalar list for the return value

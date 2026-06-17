@@ -29,8 +29,7 @@ use alloc::{collections::BTreeMap, vec, vec::Vec};
 
 use volar_ir::ir::{
     IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypeId, IRTypes,
-    IRVarId,
-};
+    IRVarId, IRBranchTarget};
 use volar_ir_common::{Constant, Stmt, StorageId, Type as PrimType};
 
 use crate::canon::{canonicalize_ir_block, BlockImmediates, IrHandlerKey, ZERO_CONSTANT};
@@ -353,10 +352,7 @@ impl IRBlockUnfinished {
         Self {
             params,
             stmts: Vec::new(),
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: Vec::new(),
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, Vec::new(),) },
         }
     }
 
@@ -463,14 +459,14 @@ impl RegAlloc {
                 }
             };
             match &b.terminator {
-                IRTerminator::Jmp { func, .. } => visit(func),
-                IRTerminator::JumpCond { true_block, false_block, .. } => {
-                    visit(true_block);
-                    visit(false_block);
+                IRTerminator::Jmp { target } => visit(&target.dest),
+                IRTerminator::JumpCond { then_target, else_target, .. } => {
+                    visit(&then_target.dest);
+                    visit(&else_target.dest);
                 }
                 IRTerminator::JumpTable { cases, .. } => {
-                    for (target, _) in cases.values() {
-                        visit(target);
+                    for target in cases.values() {
+                        visit(&target.dest);
                     }
                 }
                 _ => {}
@@ -552,27 +548,21 @@ fn extract_return_shape<P: Clone>(blocks: &IRBlocks<P>) -> Vec<IRTypeId> {
 
     for b in &blocks.blocks {
         match &b.terminator {
-            IRTerminator::Jmp { func, args } if matches!(func, IRBlockTargetId::Return) => {
-                record(args, b);
+            IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => {
+                record(&target.args, b);
             }
-            IRTerminator::JumpCond {
-                true_block,
-                true_args,
-                false_block,
-                false_args,
-                ..
-            } => {
-                if matches!(true_block, IRBlockTargetId::Return) {
-                    record(true_args, b);
+            IRTerminator::JumpCond { then_target, else_target, .. } => {
+                if matches!(then_target.dest, IRBlockTargetId::Return) {
+                    record(&then_target.args, b);
                 }
-                if matches!(false_block, IRBlockTargetId::Return) {
-                    record(false_args, b);
+                if matches!(else_target.dest, IRBlockTargetId::Return) {
+                    record(&else_target.args, b);
                 }
             }
             IRTerminator::JumpTable { cases, .. } => {
-                for (_, (t, a)) in cases {
-                    if matches!(t, IRBlockTargetId::Return) {
-                        record(a, b);
+                for target in cases.values() {
+                    if matches!(target.dest, IRBlockTargetId::Return) {
+                        record(&target.args, b);
                     }
                 }
             }
@@ -724,14 +714,12 @@ fn push_slot(slots: &mut Vec<HandlerSlot>, kind: SlotKind, ty: IRTypeId) -> usiz
 
 fn terminator_arm_shape(t: &IRTerminator) -> Vec<usize> {
     match t {
-        IRTerminator::Jmp { args, .. } => vec![args.len()],
-        IRTerminator::JumpCond {
-            true_args,
-            false_args,
-            ..
-        } => vec![true_args.len(), false_args.len()],
+        IRTerminator::Jmp { target } => vec![target.args.len()],
+        IRTerminator::JumpCond { then_target, else_target, .. } => {
+            vec![then_target.args.len(), else_target.args.len()]
+        }
         IRTerminator::JumpTable { cases, .. } => {
-            cases.values().map(|(_, a)| a.len()).collect()
+            cases.values().map(|t| t.args.len()).collect()
         }
         _ => panic!("terminator_arm_shape: unhandled IRTerminator variant — add arm shape calculation for this variant"),
     }
@@ -1018,10 +1006,7 @@ pub(crate) fn emit_setup_block<P: Clone, H: IrHashAlgorithm>(
         let done = b.push(Stmt::Const(const_bit(false), bit_ty));
         jump_args.push(done);
     }
-    b.terminator = IRTerminator::Jmp {
-        func: IRBlockTargetId::Block(IRBlockId(entry_bid)),
-        args: jump_args,
-    };
+    b.terminator = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(entry_bid)), jump_args,) };
     b.into_ir_block::<P>(ctrl_prov)
 }
 
@@ -1124,25 +1109,19 @@ fn fill_terminator_slots<P: Clone>(
     };
 
     match &block.terminator {
-        IRTerminator::Jmp { func, args } => {
+        IRTerminator::Jmp { target } => {
             assert_eq!(schema.arms.len(), 1);
-            fill_arm(out, &schema.arms[0], func, args);
+            fill_arm(out, &schema.arms[0], &target.dest, &target.args);
         }
-        IRTerminator::JumpCond {
-            true_block,
-            true_args,
-            false_block,
-            false_args,
-            ..
-        } => {
+        IRTerminator::JumpCond { then_target, else_target, .. } => {
             assert_eq!(schema.arms.len(), 2);
-            fill_arm(out, &schema.arms[0], true_block, true_args);
-            fill_arm(out, &schema.arms[1], false_block, false_args);
+            fill_arm(out, &schema.arms[0], &then_target.dest, &then_target.args);
+            fill_arm(out, &schema.arms[1], &else_target.dest, &else_target.args);
         }
         IRTerminator::JumpTable { cases, .. } => {
             assert_eq!(schema.arms.len(), cases.len());
-            for (arm_idx, (_, (t, a))) in cases.iter().enumerate() {
-                fill_arm(out, &schema.arms[arm_idx], t, a);
+            for (arm_idx, (_, target)) in cases.iter().enumerate() {
+                fill_arm(out, &schema.arms[arm_idx], &target.dest, &target.args);
             }
         }
         _ => panic!("fill_terminator_slots: unhandled IRTerminator variant — add handling for this variant"),
@@ -1161,13 +1140,7 @@ pub(crate) fn emit_dispatcher_block<P: Clone>(
     let b = IRBlockUnfinished {
         params: vec![addr_ty, bit_ty],
         stmts: Vec::new(),
-        terminator: IRTerminator::JumpCond {
-            condition: IRVarId(1),
-            true_block: IRBlockTargetId::Block(IRBlockId(RETURN_BID)),
-            true_args: vec![],
-            false_block: IRBlockTargetId::Block(IRBlockId(DISPATCH_BID)),
-            false_args: vec![IRVarId(0)],
-        },
+        terminator: IRTerminator::JumpCond { condition: IRVarId(1), then_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(RETURN_BID)), vec![]), else_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(DISPATCH_BID)), vec![IRVarId(0)]) },
     };
     b.into_ir_block::<P>(ctrl_prov)
 }
@@ -1189,10 +1162,7 @@ pub(crate) fn emit_return_block<P: Clone>(
         });
         val_vars.push(val);
     }
-    b.terminator = IRTerminator::Jmp {
-        func: IRBlockTargetId::Return,
-        args: val_vars,
-    };
+    b.terminator = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, val_vars) };
     b.into_ir_block::<P>(ctrl_prov)
 }
 
@@ -1222,11 +1192,11 @@ pub(crate) fn emit_dispatch_block_with_base<P: Clone>(
         ty: addr_ty,
         addr: IRVarId(0),
     });
-    let mut cases: BTreeMap<Constant, (IRBlockTargetId, Vec<IRVarId>)> = BTreeMap::new();
+    let mut cases: BTreeMap<Constant, IRBranchTarget> = BTreeMap::new();
     for (h_idx, _) in dedup.handler_keys.iter().enumerate() {
         cases.insert(
             const_u32(h_idx as u32),
-            (
+            IRBranchTarget::new(
                 IRBlockTargetId::Block(IRBlockId(handler_bid_base + h_idx as u32)),
                 vec![IRVarId(0)],
             ),
@@ -1353,7 +1323,7 @@ pub(crate) fn emit_handler_block<P: Clone, H: IrHashAlgorithm>(
     let canon_types = canonical_types(key);
 
     let terminator = match &key.terminator {
-        IRTerminator::Jmp { func, args } => {
+        IRTerminator::Jmp { target } => {
             // Single-arm: emit writes inline.
             let arm = &schema.arms[0];
             emit_inline_arm_writes(
@@ -1363,11 +1333,11 @@ pub(crate) fn emit_handler_block<P: Clone, H: IrHashAlgorithm>(
                 reg_alloc,
                 addr_ty,
                 pc,
-                args,
+                &target.args,
                 &canonical_var,
                 &canon_types,
             );
-            match func {
+            match &target.dest {
                 IRBlockTargetId::Dyn(canon_v) => {
                     // For Dyn: next_pc comes from the Block-typed var at runtime.
                     // Commitment protection is not applied to Dyn targets.
@@ -1379,10 +1349,7 @@ pub(crate) fn emit_handler_block<P: Clone, H: IrHashAlgorithm>(
                         dst_ty: addr_ty,
                     });
                     let done = b.push(Stmt::Const(const_bit(false), bit_ty));
-                    IRTerminator::Jmp {
-                        func: IRBlockTargetId::Block(IRBlockId(DISPATCHER_BID)),
-                        args: vec![next_pc, done],
-                    }
+                    IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(DISPATCHER_BID)), vec![next_pc, done],) }
                 }
                 _ => {
                     // Compute commitment protection (zero when valid; XOR'd into next_pc).
@@ -1407,12 +1374,14 @@ pub(crate) fn emit_handler_block<P: Clone, H: IrHashAlgorithm>(
         }
         IRTerminator::JumpCond {
             condition,
-            true_block,
-            true_args,
-            false_block,
-            false_args,
+            then_target,
+            else_target,
         } => {
             let cond_var = canonical_var[condition.0 as usize];
+            let true_block = &then_target.dest;
+            let true_args = &then_target.args;
+            let false_block = &else_target.dest;
+            let false_args = &else_target.args;
             let true_bid = *next_sub_bid;
             *next_sub_bid += 1;
             let false_bid = *next_sub_bid;
@@ -1511,10 +1480,14 @@ pub(crate) fn emit_handler_block<P: Clone, H: IrHashAlgorithm>(
 
             IRTerminator::JumpCond {
                 condition: cond_var,
-                true_block: IRBlockTargetId::Block(IRBlockId(true_bid)),
-                true_args: true_call_args,
-                false_block: IRBlockTargetId::Block(IRBlockId(false_bid)),
-                false_args: false_call_args,
+                then_target: IRBranchTarget::new(
+                    IRBlockTargetId::Block(IRBlockId(true_bid)),
+                    true_call_args,
+                ),
+                else_target: IRBranchTarget::new(
+                    IRBlockTargetId::Block(IRBlockId(false_bid)),
+                    false_call_args,
+                ),
             }
         }
         IRTerminator::JumpTable { index, cases } => {
@@ -1528,9 +1501,10 @@ pub(crate) fn emit_handler_block<P: Clone, H: IrHashAlgorithm>(
                 )
             });
 
-            let mut out_cases: BTreeMap<Constant, (IRBlockTargetId, Vec<IRVarId>)> =
-                BTreeMap::new();
-            for (arm_idx, (k, (target, args))) in cases.iter().enumerate() {
+            let mut out_cases: BTreeMap<Constant, IRBranchTarget> = BTreeMap::new();
+            for (arm_idx, (k, branch)) in cases.iter().enumerate() {
+                let target = &branch.dest;
+                let args = &branch.args;
                 let sub_bid = *next_sub_bid;
                 *next_sub_bid += 1;
                 let arg_tys: Vec<IRTypeId> =
@@ -1567,7 +1541,7 @@ pub(crate) fn emit_handler_block<P: Clone, H: IrHashAlgorithm>(
                         }
                     }
                 };
-                out_cases.insert(*k, (IRBlockTargetId::Block(IRBlockId(sub_bid)), arm_args));
+                out_cases.insert(*k, IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(sub_bid)), arm_args));
             }
             IRTerminator::JumpTable {
                 index: idx_var,
@@ -1644,10 +1618,7 @@ fn build_return_to_dispatcher(
         ty: bit_ty,
         addr: pc,
     });
-    IRTerminator::Jmp {
-        func: IRBlockTargetId::Block(IRBlockId(DISPATCHER_BID)),
-        args: vec![next_pc, done],
-    }
+    IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(DISPATCHER_BID)), vec![next_pc, done],) }
 }
 
 /// Build a direct-dispatch terminator: reads `next_pc` and `done` from
@@ -1697,10 +1668,14 @@ fn build_direct_dispatch_terminator<P: Clone>(
     ));
     IRTerminator::JumpCond {
         condition: done,
-        true_block: IRBlockTargetId::Block(IRBlockId(DD_RETURN_BID)),
-        true_args: vec![],
-        false_block: IRBlockTargetId::Block(IRBlockId(dispatch_sub_bid)),
-        false_args: vec![next_pc],
+        then_target: IRBranchTarget::new(
+            IRBlockTargetId::Block(IRBlockId(DD_RETURN_BID)),
+            vec![],
+        ),
+        else_target: IRBranchTarget::new(
+            IRBlockTargetId::Block(IRBlockId(dispatch_sub_bid)),
+            vec![next_pc],
+        ),
     }
 }
 
@@ -1777,10 +1752,7 @@ fn emit_arm_subblock<P: Clone>(
             ty: bit_ty,
             addr: pc,
         });
-        IRTerminator::Jmp {
-            func: IRBlockTargetId::Block(IRBlockId(DISPATCHER_BID)),
-            args: vec![next_pc, done],
-        }
+        IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(DISPATCHER_BID)), vec![next_pc, done],) }
     };
     (b.into_ir_block::<P>(ctrl_prov), dd_extras)
 }
@@ -1824,10 +1796,7 @@ fn emit_dyn_arm_subblock<P: Clone>(
 
     let next_pc = b.push(Stmt::Transmute { src: dyn_val, src_ty: dyn_var_ty, dst_ty: addr_ty });
     let done    = b.push(Stmt::Const(const_bit(false), bit_ty));
-    b.terminator = IRTerminator::Jmp {
-        func: IRBlockTargetId::Block(IRBlockId(DISPATCHER_BID)),
-        args: vec![next_pc, done],
-    };
+    b.terminator = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(DISPATCHER_BID)), vec![next_pc, done],) };
     b.into_ir_block::<P>(ctrl_prov)
 }
 
@@ -1911,27 +1880,34 @@ fn deduplicate_oracle_calls_in_block<P: Clone>(block: &IRBlock<P>) -> IRBlock<P>
 
 fn remap_ir_terminator_vars(t: &IRTerminator, var_remap: &[IRVarId]) -> IRTerminator {
     match t {
-        IRTerminator::Jmp { func, args } => IRTerminator::Jmp {
-            func: func.clone(),
-            args: remap_vars(args, var_remap),
+        IRTerminator::Jmp { target } => IRTerminator::Jmp {
+            target: IRBranchTarget {
+                dest: target.dest.clone(),
+                args: remap_vars(&target.args, var_remap),
+                reentry: target.reentry.clone(),
+            },
         },
-        IRTerminator::JumpCond {
-            condition,
-            true_block,
-            true_args,
-            false_block,
-            false_args,
-        } => IRTerminator::JumpCond {
+        IRTerminator::JumpCond { condition, then_target, else_target } => IRTerminator::JumpCond {
             condition: remap_var(*condition, var_remap),
-            true_block: true_block.clone(),
-            true_args: remap_vars(true_args, var_remap),
-            false_block: false_block.clone(),
-            false_args: remap_vars(false_args, var_remap),
+            then_target: IRBranchTarget {
+                dest: then_target.dest.clone(),
+                args: remap_vars(&then_target.args, var_remap),
+                reentry: then_target.reentry.clone(),
+            },
+            else_target: IRBranchTarget {
+                dest: else_target.dest.clone(),
+                args: remap_vars(&else_target.args, var_remap),
+                reentry: else_target.reentry.clone(),
+            },
         },
         IRTerminator::JumpTable { index, cases } => {
             let mut new_cases = BTreeMap::new();
-            for (k, (target, args)) in cases {
-                new_cases.insert(*k, (target.clone(), remap_vars(args, var_remap)));
+            for (k, branch) in cases {
+                new_cases.insert(*k, IRBranchTarget {
+                    dest: branch.dest.clone(),
+                    args: remap_vars(&branch.args, var_remap),
+                    reentry: branch.reentry.clone(),
+                });
             }
             IRTerminator::JumpTable {
                 index: remap_var(*index, var_remap),

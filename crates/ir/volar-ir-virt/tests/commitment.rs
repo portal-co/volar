@@ -18,7 +18,7 @@ extern crate alloc;
 
 use volar_fuzz::interpreter::ir::{bit_width, const_to_bits, eval_ir};
 use volar_ir::ir::{
-    IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRTerminator, IRType, IRTypeId, IRTypes,
+    IRBlock, IRBlockId, IRBlockTargetId, IRBranchTarget, IRBlocks, IRTerminator, IRType, IRTypeId, IRTypes,
     IRVarId, PrimType,
 };
 use volar_ir_common::{Constant, Stmt, StorageId};
@@ -67,9 +67,8 @@ fn single_const_return() -> (IRBlocks, IRTypes) {
         stmts: vec![Stmt::Const(Constant { hi: 0, lo: 42 }, u32_ty)],
         stmt_provs: vec![()],
         terminator: IRTerminator::Jmp {
-            func: IRBlockTargetId::Return,
-            args: vec![IRVarId(0)],
-        },
+    target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],)
+},
     }]);
     (blocks, types)
 }
@@ -135,27 +134,24 @@ fn three_block_passthrough() -> (IRBlocks, IRTypes) {
             stmts: vec![Stmt::Const(Constant { hi: 0, lo: 0 }, u32_ty)],
             stmt_provs: vec![()],
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Block(IRBlockId(1)),
-                args: vec![IRVarId(0)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(0)],)
+},
         },
         IRBlock {
             params: vec![u32_ty],
             stmts: vec![],
             stmt_provs: vec![],
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Block(IRBlockId(2)),
-                args: vec![IRVarId(0)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(2)), vec![IRVarId(0)],)
+},
         },
         IRBlock {
             params: vec![u32_ty],
             stmts: vec![],
             stmt_provs: vec![],
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],)
+},
         },
     ]);
     (blocks, types)
@@ -197,11 +193,9 @@ fn jumpcond_two_branch() -> (IRBlocks, IRTypes) {
             stmt_provs: vec![],
             terminator: IRTerminator::JumpCond {
                 condition: IRVarId(0),
-                true_block: IRBlockTargetId::Block(IRBlockId(1)),
-                true_args: vec![IRVarId(0), IRVarId(1)],
-                false_block: IRBlockTargetId::Block(IRBlockId(2)),
-                false_args: vec![IRVarId(0), IRVarId(1)],
-            },
+                then_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(0), IRVarId(1)]),
+                else_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(2)), vec![IRVarId(0), IRVarId(1)]),
+                },
         },
         // block 1: return Const(1)
         IRBlock {
@@ -209,9 +203,8 @@ fn jumpcond_two_branch() -> (IRBlocks, IRTypes) {
             stmts: vec![Stmt::Const(Constant { hi: 0, lo: 1 }, u32_ty)],
             stmt_provs: vec![()],
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Block(IRBlockId(3)),
-                args: vec![IRVarId(0), IRVarId(2)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(3)), vec![IRVarId(0), IRVarId(2)],)
+},
         },
         // block 2: return Const(2)
         IRBlock {
@@ -219,9 +212,8 @@ fn jumpcond_two_branch() -> (IRBlocks, IRTypes) {
             stmts: vec![Stmt::Const(Constant { hi: 0, lo: 2 }, u32_ty)],
             stmt_provs: vec![()],
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Block(IRBlockId(3)),
-                args: vec![IRVarId(0), IRVarId(2)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(3)), vec![IRVarId(0), IRVarId(2)],)
+},
         },
         // block 3: sink
         IRBlock {
@@ -229,9 +221,8 @@ fn jumpcond_two_branch() -> (IRBlocks, IRTypes) {
             stmts: vec![],
             stmt_provs: vec![],
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(1)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)],)
+},
         },
     ]);
     (blocks, types)
@@ -280,9 +271,8 @@ fn committed_dedup_count_unchanged() {
             stmts: vec![Stmt::Const(Constant { hi: 0, lo: k }, u32_ty)],
             stmt_provs: vec![()],
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(1)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)],)
+},
         })
         .collect();
     let blocks = IRBlocks::new(blocks);
@@ -312,27 +302,24 @@ fn committed_lifted_const_same_output() {
             stmts: vec![Stmt::Const(Constant { hi: 0, lo: 5 }, u32_ty)],
             stmt_provs: vec![()],
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Block(IRBlockId(2)),
-                args: vec![IRVarId(1)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(2)), vec![IRVarId(1)],)
+},
         },
         IRBlock {
             params: vec![u32_ty],
             stmts: vec![Stmt::Const(Constant { hi: 0, lo: 10 }, u32_ty)],
             stmt_provs: vec![()],
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Block(IRBlockId(2)),
-                args: vec![IRVarId(1)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(2)), vec![IRVarId(1)],)
+},
         },
         IRBlock {
             params: vec![u32_ty],
             stmts: vec![],
             stmt_provs: vec![],
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],)
+},
         },
     ]);
 

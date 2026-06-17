@@ -44,8 +44,7 @@ use alloc::{collections::BTreeMap, format, string::String, vec, vec::Vec};
 use volar_compiler::linkage::LinkedSpec;
 use volar_ir::ir::{
     ActionDecl, Constant, IRBlock, IRBlocks, IRBlockTargetId, IRStmt, IRTerminator,
-    IRType, IRTypeId, IRTypes, IRVarId, PrimType, StorageId,
-};
+    IRType, IRTypeId, IRTypes, IRVarId, PrimType, StorageId, IRBranchTarget};
 
 use crate::fhe::FheActionConfig;
 
@@ -391,10 +390,7 @@ pub fn oram_begin_circuit(config: &OramConfig) -> (IRBlocks, IRTypes) {
         params: vec![u64_ty],
         stmts,
         stmt_provs: vec![(); 4],
-        terminator: IRTerminator::Jmp {
-            func: IRBlockTargetId::Return,
-            args: vec![IRVarId(4)],
-        },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(4)],) },
     };
 
     let ir = IRBlocks {
@@ -1041,28 +1037,38 @@ fn remap_terminator(term: &IRTerminator, remap: &BTreeMap<u32, u32>) -> IRTermin
     let rargs = |args: &[IRVarId]| -> Vec<IRVarId> { args.iter().map(|v| rv(v)).collect() };
 
     match term {
-        IRTerminator::Jmp { func, args } => IRTerminator::Jmp {
-            func: func.clone(),
-            args: rargs(args),
-        },
+        IRTerminator::Jmp { target } => IRTerminator::Jmp { target: IRBranchTarget { dest: target.dest.clone(), args: rargs(&target.args), reentry: target.reentry.clone() } },
         IRTerminator::JumpCond {
             condition,
-            true_block,
-            true_args,
-            false_block,
-            false_args,
+            then_target,
+            else_target,
         } => IRTerminator::JumpCond {
             condition: rv(condition),
-            true_block: true_block.clone(),
-            true_args: rargs(true_args),
-            false_block: false_block.clone(),
-            false_args: rargs(false_args),
+            then_target: IRBranchTarget {
+                dest: then_target.dest.clone(),
+                args: rargs(&then_target.args),
+                reentry: then_target.reentry.clone(),
+            },
+            else_target: IRBranchTarget {
+                dest: else_target.dest.clone(),
+                args: rargs(&else_target.args),
+                reentry: else_target.reentry.clone(),
+            },
         },
         IRTerminator::JumpTable { index, cases } => IRTerminator::JumpTable {
             index: rv(index),
             cases: cases
                 .iter()
-                .map(|(k, (target, args))| (*k, (target.clone(), rargs(args))))
+                .map(|(k, branch)| {
+                    (
+                        *k,
+                        IRBranchTarget {
+                            dest: branch.dest.clone(),
+                            args: rargs(&branch.args),
+                            reentry: branch.reentry.clone(),
+                        },
+                    )
+                })
                 .collect(),
         },
         _ => panic!("remap_terminator: unhandled IRTerminator variant — add variable remapping for this variant"),
@@ -2332,10 +2338,7 @@ mod tests_linking {
                     },
                 ],
                 stmt_provs: vec![(); 2],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    args: vec![IRVarId(3)], // result of StorageRead (var 2 = StorageWrite dummy, var 3 = StorageRead result)
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(3)]) }, // result of StorageRead (var 2 = StorageWrite dummy, var 3 = StorageRead result)
             }],
         };
 
@@ -2418,10 +2421,7 @@ mod tests_linking {
                     addr: IRVarId(0),
                 }],
                 stmt_provs: vec![()],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    args: vec![IRVarId(1)],
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)],) },
             }],
         };
 

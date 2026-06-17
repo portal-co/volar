@@ -15,7 +15,7 @@
 //! 2. **Interpretation** — [`interpret_ir`] converts raw data into a valid
 //!    `(IRBlocks<()>, IRTypes)` by clamping indices and matching types.
 
-use volar_ir::ir::{IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRVarId};
+use volar_ir::ir::{IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt, IRTerminator, IRVarId};
 use volar_ir_common::{Constant, IrType, OracleDecl, Stmt, StorageId, Type, TypeId, TypeTable};
 
 use crate::interpreter::ir::primitive_width;
@@ -153,10 +153,7 @@ pub fn interpret_ir(
         params: param_type_ids,
         stmts,
         stmt_provs: vec![(); n],
-        terminator: IRTerminator::Jmp {
-            func: IRBlockTargetId::Return,
-            args: ret_args,
-        },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, ret_args,) },
     };
 
     (IRBlocks::new(vec![block]), types, param_widths)
@@ -418,13 +415,11 @@ pub fn interpret_ir_extended(
     let terminator = if let Some(cond) = cond_var {
         IRTerminator::JumpCond {
             condition: cond,
-            true_block: IRBlockTargetId::Return,
-            true_args: ret_args.clone(),
-            false_block: IRBlockTargetId::Return,
-            false_args: ret_args,
+            then_target: IRBranchTarget::new(IRBlockTargetId::Return, ret_args.clone()),
+            else_target: IRBranchTarget::new(IRBlockTargetId::Return, ret_args),
         }
     } else {
-        IRTerminator::Jmp { func: IRBlockTargetId::Return, args: ret_args }
+        IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, ret_args ) }
     };
 
     let block = IRBlock {
@@ -493,10 +488,7 @@ pub fn interpret_ir_multiblock(
     // B0 terminator: jump to Block(1), passing all non-void vars as args.
     let b0_jump_args: Vec<IRVarId> = var_info_b0.iter().map(|(_, _, id)| *id).collect();
     let n_b0_stmts = stmts_b0.len();
-    let b0_term = IRTerminator::Jmp {
-        func: IRBlockTargetId::Block(IRBlockId(1)),
-        args: b0_jump_args,
-    };
+    let b0_term = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), b0_jump_args,) };
 
     // ── Block 1 ──────────────────────────────────────────────────────────────
     // B1 params correspond to B0's non-void vars.
@@ -519,10 +511,7 @@ pub fn interpret_ir_multiblock(
     let total_b1_vars = n_b1_params + stmts_b1.len();
     let b1_ret_args: Vec<IRVarId> = (0..total_b1_vars as u32).map(IRVarId).collect();
     let n_b1_stmts = stmts_b1.len();
-    let b1_term = IRTerminator::Jmp {
-        func: IRBlockTargetId::Return,
-        args: b1_ret_args,
-    };
+    let b1_term = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, b1_ret_args,) };
 
     let block0 = IRBlock {
         params: param_type_ids,
@@ -619,10 +608,14 @@ pub fn interpret_ir_diamond(
     let b0_jump_args: Vec<IRVarId> = var_info_b0.iter().map(|(_, _, id)| *id).collect();
     let b0_term = IRTerminator::JumpCond {
         condition: IRVarId(0),
-        true_block: IRBlockTargetId::Block(IRBlockId(1)),
-        true_args: b0_jump_args.clone(),
-        false_block: IRBlockTargetId::Block(IRBlockId(2)),
-        false_args: b0_jump_args,
+        then_target: IRBranchTarget::new(
+            IRBlockTargetId::Block(IRBlockId(1)),
+            b0_jump_args.clone(),
+        ),
+        else_target: IRBranchTarget::new(
+            IRBlockTargetId::Block(IRBlockId(2)),
+            b0_jump_args,
+        ),
     };
 
     // ── Block 1 (true branch) ────────────────────────────────────────────────
@@ -642,10 +635,7 @@ pub fn interpret_ir_diamond(
 
     // B1→B3: pass only the params (B0 vars re-indexed).
     let b1_to_b3_args: Vec<IRVarId> = (0..n_b1_params as u32).map(IRVarId).collect();
-    let b1_term = IRTerminator::Jmp {
-        func: IRBlockTargetId::Block(IRBlockId(3)),
-        args: b1_to_b3_args,
-    };
+    let b1_term = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(3)), b1_to_b3_args,) };
 
     // ── Block 2 (false branch) ───────────────────────────────────────────────
     let b2_param_types: Vec<TypeId> = var_info_b0.iter().map(|(tid, _, _)| *tid).collect();
@@ -663,10 +653,7 @@ pub fn interpret_ir_diamond(
     let n_b2_stmts = stmts_b2.len();
 
     let b2_to_b3_args: Vec<IRVarId> = (0..n_b2_params as u32).map(IRVarId).collect();
-    let b2_term = IRTerminator::Jmp {
-        func: IRBlockTargetId::Block(IRBlockId(3)),
-        args: b2_to_b3_args,
-    };
+    let b2_term = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(3)), b2_to_b3_args,) };
 
     // ── Block 3 (merge) ──────────────────────────────────────────────────────
     let b3_param_types: Vec<TypeId> = var_info_b0.iter().map(|(tid, _, _)| *tid).collect();
@@ -685,10 +672,7 @@ pub fn interpret_ir_diamond(
 
     let total_b3_vars = n_b3_params + stmts_b3.len();
     let b3_ret_args: Vec<IRVarId> = (0..total_b3_vars as u32).map(IRVarId).collect();
-    let b3_term = IRTerminator::Jmp {
-        func: IRBlockTargetId::Return,
-        args: b3_ret_args,
-    };
+    let b3_term = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, b3_ret_args,) };
 
     let mut blocks = IRBlocks::new(vec![
         IRBlock {

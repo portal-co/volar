@@ -80,11 +80,14 @@ pub struct Block<P: Clone = ()> {
     pub stmt_provs: Vec<P>,
     pub terminator: Terminator,
 }
+use volar_ir_common::ReentryHint;
+
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct Target<V = ValueId> {
     pub block: BlockId,
     pub args: Vec<V>,
+    pub reentry: Option<ReentryHint>,
 }
 
 impl<V> Target<V> {
@@ -96,15 +99,16 @@ impl<V> Target<V> {
         Ok(Target {
             block: self.block,
             args: self.args.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+            reentry: self.reentry,
         })
     }
 
     pub fn as_ref(&self) -> Target<&V> {
-        Target { block: self.block, args: self.args.iter().collect() }
+        Target { block: self.block, args: self.args.iter().collect(), reentry: self.reentry.clone() }
     }
 
     pub fn as_mut(&mut self) -> Target<&mut V> {
-        Target { block: self.block, args: self.args.iter_mut().collect() }
+        Target { block: self.block, args: self.args.iter_mut().collect(), reentry: self.reentry.clone() }
     }
 }
 

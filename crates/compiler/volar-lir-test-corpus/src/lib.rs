@@ -60,9 +60,7 @@ impl CorpusCase {
             "{decls}  printf(\"{fmt}\\n\", {cast}{call});",
             fmt = self.c_ret_fmt,
             cast = self.c_ret_cast,
-            call = self.c_call_template,
-        )
-    }
+            call = self.c_call_template ) }
 }
 
 // ============================================================================
@@ -110,7 +108,8 @@ pub fn compile_and_run(c_src: &str, main_body: &str) -> String {
 
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
 use volar_ir::ir::{
-    IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRTypeId, IRTypes, IRVarId,
+    IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt, IRTerminator, IRTypeId,
+    IRTypes, IRVarId,
 };
 use volar_ir_common::{Constant, IrType as CommonIrType, Type};
 
@@ -120,10 +119,7 @@ pub fn make_biir_identity() -> BIrBlocks {
         params: 1,
         stmts: vec![],
         stmt_provs: vec![],
-        terminator: BIrTerminator::Jmp(BIrTarget {
-            block: IRBlockTargetId::Return,
-            args: vec![IRVarId(0)],
-        }),
+        terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(0)]}),
     }], pre_init: vec![] }
 }
 
@@ -133,10 +129,7 @@ pub fn make_biir_not() -> BIrBlocks {
         params: 1,
         stmts: vec![BIrStmt::Not(IRVarId(0))],
         stmt_provs: vec![],
-        terminator: BIrTerminator::Jmp(BIrTarget {
-            block: IRBlockTargetId::Return,
-            args: vec![IRVarId(1)],
-        }),
+        terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(1)]}),
     }], pre_init: vec![] }
 }
 
@@ -146,10 +139,7 @@ pub fn make_biir_and() -> BIrBlocks {
         params: 2,
         stmts: vec![BIrStmt::And(IRVarId(0), IRVarId(1))],
         stmt_provs: vec![],
-        terminator: BIrTerminator::Jmp(BIrTarget {
-            block: IRBlockTargetId::Return,
-            args: vec![IRVarId(2)],
-        }),
+        terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(2)]}),
     }], pre_init: vec![] }
 }
 
@@ -159,10 +149,7 @@ pub fn make_biir_xor() -> BIrBlocks {
         params: 2,
         stmts: vec![BIrStmt::Xor(IRVarId(0), IRVarId(1))],
         stmt_provs: vec![],
-        terminator: BIrTerminator::Jmp(BIrTarget {
-            block: IRBlockTargetId::Return,
-            args: vec![IRVarId(2)],
-        }),
+        terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(2)]}),
     }], pre_init: vec![] }
 }
 
@@ -175,9 +162,7 @@ pub fn make_biir_half_adder() -> BIrBlocks {
             BIrStmt::And(IRVarId(0), IRVarId(1)), // var 3 = carry
         ],
         stmt_provs: vec![],
-        terminator: BIrTerminator::Jmp(BIrTarget {
-            block: IRBlockTargetId::Return,
-            args: vec![IRVarId(2), IRVarId(3)], // [sum, carry] packed LSB-first
+        terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(2), IRVarId(3)], // [sum, carry] packed LSB-first
         }),
     }], pre_init: vec![] }
 }
@@ -189,19 +174,13 @@ pub fn make_biir_two_block_not() -> BIrBlocks {
             params: 1,
             stmts: vec![],
             stmt_provs: vec![],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Block(IRBlockId(1)),
-                args: vec![IRVarId(0)],
-            }),
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Block(IRBlockId(1)), args: vec![IRVarId(0)]}),
         },
         BIrBlock {
             params: 1,
             stmts: vec![BIrStmt::Not(IRVarId(0))],
             stmt_provs: vec![],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Return,
-                args: vec![IRVarId(1)],
-            }),
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(1)]}),
         },
     ], pre_init: vec![] }
 }
@@ -215,14 +194,8 @@ pub fn make_biir_self_loop() -> BIrBlocks {
         stmt_provs: vec![],
         terminator: BIrTerminator::CondJmp {
             val: IRVarId(0),
-            then_target: BIrTarget {
-                block: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
-            else_target: BIrTarget {
-                block: IRBlockTargetId::Block(IRBlockId(0)),
-                args: vec![IRVarId(1)],
-            },
+            then_target: BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(0)]},
+            else_target: BIrTarget { block: IRBlockTargetId::Block(IRBlockId(0)), args: vec![IRVarId(1)]},
         },
     }], pre_init: vec![] }
 }
@@ -255,10 +228,7 @@ pub fn make_ir_xor() -> (IRBlocks, IRTypes) {
             constant: Constant { hi: 0, lo: 0 },
         }],
         stmt_provs: vec![],
-        terminator: IRTerminator::Jmp {
-            func: IRBlockTargetId::Return,
-            args: vec![IRVarId(2)],
-        },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(2)] ) },
     }]);
     (blocks, types)
 }
@@ -278,10 +248,7 @@ pub fn make_ir_and() -> (IRBlocks, IRTypes) {
             constant: Constant { hi: 0, lo: 0 },
         }],
         stmt_provs: vec![],
-        terminator: IRTerminator::Jmp {
-            func: IRBlockTargetId::Return,
-            args: vec![IRVarId(2)],
-        },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(2)] ) },
     }]);
     (blocks, types)
 }
@@ -299,10 +266,7 @@ pub fn make_ir_not() -> (IRBlocks, IRTypes) {
             constant: Constant { hi: 0, lo: 1 },
         }],
         stmt_provs: vec![],
-        terminator: IRTerminator::Jmp {
-            func: IRBlockTargetId::Return,
-            args: vec![IRVarId(1)],
-        },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)] ) },
     }]);
     (blocks, types)
 }

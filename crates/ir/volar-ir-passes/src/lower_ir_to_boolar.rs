@@ -353,18 +353,18 @@ fn lower_stmt<P: Clone>(
 
 fn lower_terminator(term: &IRTerminator, var_bits: &BTreeMap<u32, Vec<IRVarId>>) -> BIrTerminator {
     match term {
-        IRTerminator::Jmp { func, args } => {
+        IRTerminator::Jmp { target } => {
             assert!(
-                !matches!(func, IRBlockTargetId::Dyn(_)),
+                !matches!(target.dest, IRBlockTargetId::Dyn(_)),
                 "lower_ir_to_boolar: Dyn jump targets are not representable in BIrTerminator"
             );
             BIrTerminator::Jmp(BIrTarget {
-                block: func.clone(),
-                args: flatten_bits(args, var_bits),
+                block: target.dest.clone(),
+                args: flatten_bits(&target.args, var_bits),
             })
         }
 
-        IRTerminator::JumpCond { condition, true_block, true_args, false_block, false_args } => {
+        IRTerminator::JumpCond { condition, then_target, else_target } => {
             let cond_bits = &var_bits[&condition.0];
             assert_eq!(
                 cond_bits.len(),
@@ -376,12 +376,12 @@ fn lower_terminator(term: &IRTerminator, var_bits: &BTreeMap<u32, Vec<IRVarId>>)
             BIrTerminator::CondJmp {
                 val: cond_bits[0],
                 then_target: BIrTarget {
-                    block: true_block.clone(),
-                    args: flatten_bits(true_args, var_bits),
+                    block: then_target.dest.clone(),
+                    args: flatten_bits(&then_target.args, var_bits),
                 },
                 else_target: BIrTarget {
-                    block: false_block.clone(),
-                    args: flatten_bits(false_args, var_bits),
+                    block: else_target.dest.clone(),
+                    args: flatten_bits(&else_target.args, var_bits),
                 },
             }
         }
@@ -664,10 +664,7 @@ mod tests {
             params: std::vec![u8_id],
             stmts: std::vec![],
             stmt_provs: std::vec![],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: std::vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
         };
         let blocks = IRBlocks::<()>::new(std::vec![block]);
         let lowered = lower_ir_to_boolar::<()>(&blocks, &types);
@@ -686,10 +683,7 @@ mod tests {
             params: std::vec![],
             stmts: std::vec![],
             stmt_provs: std::vec![],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: std::vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
         };
         block.push_stmt(volar_ir::ir::IRStmt::Const(zero_const(), bit_id), ());
 
@@ -710,10 +704,7 @@ mod tests {
             params: std::vec![],
             stmts: std::vec![],
             stmt_provs: std::vec![],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: std::vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
         };
         // Const = 0b00000001 (value 1, bit 0 = One, rest = Zero).
         let c = Constant { lo: 1, hi: 0 };
@@ -753,10 +744,7 @@ mod tests {
                 },
             ],
             stmt_provs: std::vec![(), ()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: std::vec![IRVarId(2)], // return the transmuted value
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(2)]) }, // return the transmuted value
         };
         let blocks = IRBlocks::new(std::vec![block]);
         let lowered = lower_ir_to_boolar::<()>(&blocks, &types);
@@ -800,10 +788,7 @@ mod tests {
                 constant: zero_const(),
             }],
             stmt_provs: std::vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: std::vec![IRVarId(2)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(2)],) },
         };
         let blocks = IRBlocks::new(std::vec![block]);
         let lowered = lower_ir_to_boolar::<()>(&blocks, &types);
@@ -845,10 +830,7 @@ mod tests {
             params: std::vec![bit_id],
             stmts: std::vec![volar_ir::ir::IRStmt::Const(c, bit_id)],
             stmt_provs: std::vec![42u32],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: std::vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
         };
         let blocks = IRBlocks::new(std::vec![block]);
         let lowered = lower_ir_to_boolar::<u32>(&blocks, &types);

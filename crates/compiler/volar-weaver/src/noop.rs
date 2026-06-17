@@ -27,8 +27,7 @@ use volar_ir::boolar::{BIrBlocks, BIrStmt};
 use volar_ir::ir::{
     IRBlocks, IRBlockTargetId, IRTerminator,
     IRTypes as CirTypes, IRVarId as CirVar,
-    Stmt,
-};
+    Stmt, IRBranchTarget};
 
 use crate::{build_return, expand_ors, var, ProvenanceHandler};
 
@@ -244,7 +243,7 @@ pub fn weave_noop_ir(
 
     // Build the return expression from the terminator.
     let ret_args = match &block.terminator {
-        IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
         _ => panic!("weave_noop_ir: expected Jmp(Return) terminator"),
     };
 
@@ -359,7 +358,7 @@ where
 
     // Build the return expression from the terminator.
     let ret_args = match &block.terminator {
-        IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
         _ => panic!("weave_noop_ir_with_handler: expected Jmp(Return) terminator"),
     };
 
@@ -634,10 +633,7 @@ mod tests {
                 },
             ],
             stmt_provs: alloc::vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: alloc::vec![CirVar(2)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![CirVar(2)],) },
         };
 
         let circuit = IRBlocks::new(alloc::vec![block]);
@@ -673,10 +669,7 @@ mod tests {
                 },
             ],
             stmt_provs: alloc::vec![9u32],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: alloc::vec![CirVar(2)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![CirVar(2)],) },
         };
 
         let circuit = IRBlocks::new(alloc::vec![block]);

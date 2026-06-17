@@ -4,7 +4,7 @@
 // Run `python3 scripts/gen-lir-corpus.py` to regenerate.
 // Do NOT edit by hand.
 
-use volar_lir::{IcmpPred, LirTarget, LirType};
+use volar_lir::{BranchTarget, IcmpPred, LirTarget, LirType};
 use crate::{CorpusCase, CorpusIo};
 
 /// Build `const_u32` into backend `b`: Return a compile-time constant u32.
@@ -168,7 +168,7 @@ pub fn build_branch_merge_u32<B: LirTarget>(b: &mut B) {
     let cond = pvs[0][0].clone();
     let x    = pvs[1][0].clone();
     let y    = pvs[2][0].clone();
-    b.branch(cond, merge.clone(), &[x], merge.clone(), &[y]);
+    b.branch(cond, merge.clone(), BranchTarget::args(vec![x]), merge.clone(), BranchTarget::args(vec![y]));
     b.switch_to_block(merge);
     b.ret(&[result]);
     b.end_function();
@@ -184,14 +184,20 @@ pub fn build_loop_sum_u32<B: LirTarget>(b: &mut B) {
     let done_result = b.add_block_param(done_block.clone(), LirType::U32);
     b.switch_to_block(entry);
     let zero_init = b.iconst(LirType::U32, 0);
-    b.jump(loop_block.clone(), &[pvs[0][0].clone(), zero_init]);
+    b.jump(loop_block.clone(), BranchTarget::args(vec![pvs[0][0].clone(), zero_init]));
     b.switch_to_block(loop_block.clone());
     let zero = b.iconst(LirType::U32, 0);
     let cond = b.icmp(IcmpPred::Eq, counter.clone(), zero);
     let new_acc = b.add(accum.clone(), counter.clone());
     let one = b.iconst(LirType::U32, 1);
     let new_ctr = b.sub(counter, one);
-    b.branch(cond, done_block.clone(), &[accum], loop_block, &[new_ctr, new_acc]);
+    b.branch(
+        cond,
+        done_block.clone(),
+        BranchTarget::args(vec![accum]),
+        loop_block,
+        BranchTarget::args(vec![new_ctr, new_acc]),
+    );
     b.switch_to_block(done_block);
     b.ret(&[done_result]);
     b.end_function();

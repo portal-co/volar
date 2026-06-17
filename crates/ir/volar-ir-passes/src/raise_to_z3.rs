@@ -378,10 +378,7 @@ mod tests {
             params: vec![bit_id],
             stmts: vec![poly_stmt],
             stmt_provs: vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(1)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)],) },
         };
         let blocks: IRBlocks<()> = IRBlocks::new(vec![block]);
         let lifted = raise_bits_to_z3(&blocks, &mut types);

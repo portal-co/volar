@@ -49,19 +49,13 @@ fn mini_bir() -> BIrBlocks {
             params: 2,
             stmts: vec![BIrStmt::Xor(IRVarId(0), IRVarId(1))],
             stmt_provs: vec![()],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Block(IRBlockId(1)),
-                args: vec![IRVarId(2), IRVarId(1)],
-            }),
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Block(IRBlockId(1)), args: vec![IRVarId(2), IRVarId(1)], }),
         },
         BIrBlock {
             params: 2,
             stmts: vec![BIrStmt::Not(IRVarId(0))],
             stmt_provs: vec![()],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Return,
-                args: vec![IRVarId(2)],
-            }),
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(2)], }),
         },
     ], pre_init: vec![] }
 }

@@ -3,7 +3,7 @@
 //! Cross-block SharedCore dedup with adaptive split enabled.
 
 use volar_ir::ir::{
-    IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRType, IRTypes, IRVarId, PrimType,
+    IRBlock, IRBlockTargetId, IRBranchTarget, IRBlocks, IRTerminator, IRType, IRTypes, IRVarId, PrimType,
 };
 use volar_ir_common::{Constant, Stmt};
 use volar_ir_virt::{virtualize_ir, AdaptiveSplitConfig, DispatchMode, VirtualizeConfig};
@@ -39,10 +39,7 @@ fn shared_core_reduces_handlers_across_blocks() {
             params: vec![ty],
             stmts,
             stmt_provs: vec![(); 6],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(5)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(5)],) },
         }
     };
     let blocks = IRBlocks::new(vec![mk(0, 1), mk(2, 3), mk(4, 5), mk(6, 7)]);

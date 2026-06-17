@@ -53,8 +53,7 @@ use volar_ir::boolar::{BIrBlocks, BIrStmt};
 use volar_ir::ir::{
     IRBlocks, IRBlock as CirBlock, IRBlockTargetId, IRTerminator,
     IRType as CircuitIrType, IRTypeId as CirTyId, IRTypes as CirTypes,
-    IRVarId as CirVar, PrimType, PreInitSegment, Stmt, StorageId,
-};
+    IRVarId as CirVar, PrimType, PreInitSegment, Stmt, StorageId, IRBranchTarget};
 use volar_ir::public::PublicSet;
 use volar_ir_passes::lower_to_circuit::lower_to_circuit;
 pub use volar_ir_passes::lower_to_circuit::LoweringMode;
@@ -2816,7 +2815,7 @@ pub fn weave_vole_prover_ir_with_mode(
     ctx.emit_circuit(block, types, mode, &circuit.pre_init);
 
     let ret_args = match &block.terminator {
-        IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
         _ => panic!("expected Jmp(Return)"),
     };
     let output_expr = if ret_args.len() == 1 {
@@ -2934,7 +2933,7 @@ pub fn weave_vole_verifier_ir_with_mode(
     ctx.emit_circuit(block, types, mode, &circuit.pre_init);
 
     let ret_args = match &block.terminator {
-        IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
         _ => panic!("expected Jmp(Return)"),
     };
     let output_expr = if ret_args.len() == 1 {
@@ -3298,7 +3297,7 @@ pub fn weave_net_vole_prover_ir(
     ctx.stmts.push(IrStmt::Semi(net_transport_try("recv_verdict", vec![])));
 
     let ret_args = match &block.terminator {
-        IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
         _ => panic!("weave_net_vole_prover_ir: expected Jmp(Return)"),
     };
     let output_expr = if ret_args.len() == 1 {
@@ -3380,7 +3379,7 @@ pub fn weave_net_vole_verifier_ir(
     ctx.stmts.push(IrStmt::Semi(net_transport_try("send_verdict", vec![var("all_ok")])));
 
     let ret_args = match &block.terminator {
-        IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
         _ => panic!("weave_net_vole_verifier_ir: expected Jmp(Return)"),
     };
     let output_expr = if ret_args.len() == 1 {
@@ -3463,7 +3462,7 @@ pub fn weave_net_vole_prover_ir_loop(
         params: vec![],
         stmts: vec![],
         stmt_provs: vec![],
-        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args }),
+        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args, reentry: None }),
     };
 
     // ── Block 1: loop body ─────────────────────────────────────────────────
@@ -3488,7 +3487,7 @@ pub fn weave_net_vole_prover_ir_loop(
 
     // Done bit.
     let ret_args = match &block.terminator {
-        IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
         _ => panic!("weave_net_vole_prover_ir_loop: expected Jmp(Return)"),
     };
     let done_wire = ctx.scalar(ret_args.last().expect("ret_args must be non-empty"));
@@ -3521,8 +3520,8 @@ pub fn weave_net_vole_prover_ir_loop(
         stmt_provs: vec![],
         terminator: IrCfgTerminator::CondGoto {
             cond: var("done_bit"),
-            then_: IrCfgJump { target: 2, args: vec![clone_expr(var(&output_wire))] },
-            else_: IrCfgJump { target: 1, args: back_args },
+            then_: IrCfgJump { target: 2, args: vec![clone_expr(var(&output_wire))], reentry: None },
+            else_: IrCfgJump { target: 1, args: back_args, reentry: None },
         },
     };
 
@@ -3605,7 +3604,7 @@ pub fn weave_net_vole_verifier_ir_loop(
         params: vec![],
         stmts: vec![],
         stmt_provs: vec![],
-        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args }),
+        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args, reentry: None }),
     };
 
     // ── Block 1: loop body ─────────────────────────────────────────────────
@@ -3680,7 +3679,7 @@ pub fn weave_net_vole_verifier_ir_loop(
 
     // Extract back-edge args from terminator.
     let ret_args = match &block.terminator {
-        IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
         _ => panic!("weave_net_vole_verifier_ir_loop: expected Jmp(Return)"),
     };
 
@@ -3703,8 +3702,8 @@ pub fn weave_net_vole_verifier_ir_loop(
         stmt_provs: vec![],
         terminator: IrCfgTerminator::CondGoto {
             cond: var("is_sentinel"),
-            then_: IrCfgJump { target: 2, args: vec![var("all_ok")] },
-            else_: IrCfgJump { target: 1, args: back_args },
+            then_: IrCfgJump { target: 2, args: vec![var("all_ok")], reentry: None },
+            else_: IrCfgJump { target: 1, args: back_args, reentry: None },
         },
     };
 
@@ -3848,10 +3847,7 @@ mod tests {
             params: std::vec![bit],
             stmts: std::vec![],
             stmt_provs: std::vec![],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: std::vec![CirVar(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![CirVar(0)],) },
         };
         (IRBlocks::new(std::vec![block]), types)
     }
@@ -3868,10 +3864,7 @@ mod tests {
                 Stmt::Poly { ty: bit, coeffs, constant: CirConst { hi: 0, lo: 0 } },
             ],
             stmt_provs: std::vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: std::vec![CirVar(2)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![CirVar(2)],) },
         };
         (IRBlocks::new(std::vec![block]), types)
     }
@@ -3899,10 +3892,7 @@ mod tests {
                 },
             ],
             stmt_provs: std::vec![(), ()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: std::vec![CirVar(3)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![CirVar(3)],) },
         };
         let mut ss = StorageSizes::new();
         ss.insert((0, 0), 2); // StorageId(0), TypeId(0) → 2 cells

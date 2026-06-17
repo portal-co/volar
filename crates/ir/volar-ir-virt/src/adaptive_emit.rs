@@ -6,8 +6,7 @@ use alloc::{vec, vec::Vec};
 
 use volar_ir::ir::{
     IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypeId,
-    IRTypes, IRVarId,
-};
+    IRTypes, IRVarId, IRBranchTarget};
 use volar_ir_common::{Stmt, StorageId, Type as PrimType};
 
 use crate::bytecode::AppendedRegionKind;
@@ -179,10 +178,7 @@ fn build_appended_program<P: Clone>(
                     let key = IrHandlerKey {
                         params: vec![addr_ty],
                         stmts: vec![stmt],
-                        terminator: IRTerminator::Jmp {
-                            func: IRBlockTargetId::Block(IRBlockId(ADAPTIVE_SUB_RETURN_BID)),
-                            args: vec![IRVarId(0)],
-                        },
+                        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(ADAPTIVE_SUB_RETURN_BID)), vec![IRVarId(0)],) },
                     };
                     push_unique_key(&mut micro.keys, key);
                 }
@@ -195,10 +191,7 @@ fn build_appended_program<P: Clone>(
                 let key = IrHandlerKey {
                     params: vec![addr_ty],
                     stmts: slice_key.stmts,
-                    terminator: IRTerminator::Jmp {
-                        func: IRBlockTargetId::Block(IRBlockId(ADAPTIVE_REROLL_DRIVER_BID)),
-                        args: vec![IRVarId(0)],
-                    },
+                    terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(ADAPTIVE_REROLL_DRIVER_BID)), vec![IRVarId(0)],) },
                 };
                 push_unique_key(&mut reroll.keys, key);
             }
@@ -390,10 +383,7 @@ fn emit_composite_handler<P: Clone, H: IrHashAlgorithm>(
             SegmentInvoke::SharedCore { region_index, .. } => {
                 let entry_pc = region_pc_bases[*region_index];
                 let entry = b.push(Stmt::Const(const_u32(entry_pc), addr_ty));
-                b.terminator = IRTerminator::Jmp {
-                    func: IRBlockTargetId::Block(IRBlockId(ADAPTIVE_SUB_DISPATCHER_BID)),
-                    args: vec![entry],
-                };
+                b.terminator = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(ADAPTIVE_SUB_DISPATCHER_BID)), vec![entry],) };
                 term_set = true;
             }
             SegmentInvoke::RerollLoop { region_index } => {
@@ -415,10 +405,7 @@ fn emit_composite_handler<P: Clone, H: IrHashAlgorithm>(
                         pc,
                     );
                 }
-                b.terminator = IRTerminator::Jmp {
-                    func: IRBlockTargetId::Block(IRBlockId(resume_bid)),
-                    args: vec![pc],
-                };
+                b.terminator = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(resume_bid)), vec![pc],) };
                 term_set = true;
             }
         }
@@ -448,10 +435,7 @@ fn emit_sub_dispatcher_block<P: Clone>(addr_ty: IRTypeId, ctrl_prov: &P) -> IRBl
     let b = IRBlockUnfinished {
         params: vec![addr_ty],
         stmts: Vec::new(),
-        terminator: IRTerminator::Jmp {
-            func: IRBlockTargetId::Block(IRBlockId(ADAPTIVE_SUB_DISPATCH_BID)),
-            args: vec![IRVarId(0)],
-        },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(ADAPTIVE_SUB_DISPATCH_BID)), vec![IRVarId(0)],) },
     };
     b.into_ir_block::<P>(ctrl_prov)
 }
@@ -460,10 +444,7 @@ fn emit_sub_return_block<P: Clone>(addr_ty: IRTypeId, ctrl_prov: &P) -> IRBlock<
     let b = IRBlockUnfinished {
         params: vec![addr_ty],
         stmts: Vec::new(),
-        terminator: IRTerminator::Jmp {
-            func: IRBlockTargetId::Block(IRBlockId(RETURN_BID)),
-            args: vec![],
-        },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(RETURN_BID)), vec![],) },
     };
     b.into_ir_block::<P>(ctrl_prov)
 }
@@ -532,10 +513,7 @@ fn emit_reroll_driver_block<P: Clone>(addr_ty: IRTypeId, ctrl_prov: &P) -> IRBlo
     let b = IRBlockUnfinished {
         params: vec![addr_ty],
         stmts: Vec::new(),
-        terminator: IRTerminator::Jmp {
-            func: IRBlockTargetId::Block(IRBlockId(ADAPTIVE_SUB_RETURN_BID)),
-            args: vec![IRVarId(0)],
-        },
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(ADAPTIVE_SUB_RETURN_BID)), vec![IRVarId(0)],) },
     };
     b.into_ir_block::<P>(ctrl_prov)
 }

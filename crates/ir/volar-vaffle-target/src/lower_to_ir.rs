@@ -58,7 +58,7 @@ use vaffle::{
     BlockId, FuncBody, FuncDecl, FuncId, Module, Terminator, Target, Value, ValueId,
 };
 use volar_ir::ir::{
-    IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator,
+    IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt, IRTerminator,
     IRTypeId, IRTypes, IRVarId, OracleDecl, ActionDecl,
 };
 use volar_ir_common::{Constant, IrType, Stmt, StorageId, Type, TypeId};
@@ -439,12 +439,10 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
         let sp = StackPtr::<IRVarId>::from_const(&mut em, 0, SP_BITS);
 
         if self.func_info.is_empty() {
-            self.blocks.push(em.finish(IRTerminator::Jmp {
-                func: IRBlockTargetId::Return, args: vec![],
-            }));
+            self.blocks.push(em.finish(IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![],) }));
             self.blocks.push(IRBlock {
                 params: vec![], stmts: vec![], stmt_provs: vec![],
-                terminator: IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![] },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![] ) },
             });
             return;
         }
@@ -475,9 +473,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
         let sp_words = pack_bits(&mut em, &new_sp_bits, PACK_W);
 
         let entry_target = IRBlockId(info.entry_block as u32);
-        self.blocks.push(em.finish(IRTerminator::Jmp {
-            func: IRBlockTargetId::Block(entry_target), args: sp_words,
-        }));
+        self.blocks.push(em.finish(IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(entry_target), sp_words,) }));
 
         // Block 1: exit continuation.  Packed params: [sp_words, ret_words].
         // Use the actual total bit-width of the function's return values.
@@ -492,9 +488,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
             .map(IRVarId).collect();
         let ret_bits = unpack_words(&mut exit_em, &ret_word_ids, total_ret_bits, PACK_W);
 
-        self.blocks.push(exit_em.finish(IRTerminator::Jmp {
-            func: IRBlockTargetId::Return, args: ret_bits,
-        }));
+        self.blocks.push(exit_em.finish(IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, ret_bits,) }));
     }
 
     fn lower_function(&mut self, func_idx: usize, body: &FuncBody<P>) {
@@ -657,10 +651,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                             sp_words.extend(arg_words);
 
                             let callee_entry = IRBlockId(callee_info.entry_block as u32);
-                            let block = current_em.finish(IRTerminator::Jmp {
-                                func: IRBlockTargetId::Block(callee_entry),
-                                args: sp_words,
-                            });
+                            let block = current_em.finish(IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(callee_entry), sp_words,) });
                             if self.blocks.len() == ir_bi {
                                 self.blocks.push(block);
                             } else {
@@ -750,7 +741,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
 
         let body = match &self.module.funcs[func_idx] {
             FuncDecl::Body(b) => b,
-            _ => return IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![] },
+            _ => return IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![] ) },
         };
 
         match term {
@@ -783,10 +774,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                 let mut dyn_args = sp_words;
                 dyn_args.extend(ret_words);
 
-                IRTerminator::Jmp {
-                    func: IRBlockTargetId::Dyn(cont_var),
-                    args: dyn_args,
-                }
+                IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Dyn(cont_var), dyn_args,) }
             }
             Terminator::Jump(target) => {
                 let ir_block = IRBlockId((entry_off + target.block.0) as u32);
@@ -794,7 +782,13 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                 let sp_words = pack_bits(em, sp_bits, PACK_W);
                 let mut args: Vec<IRVarId> = sp_words;
                 args.extend(target.args.iter().map(|v| s(v)));
-                IRTerminator::Jmp { func: IRBlockTargetId::Block(ir_block), args }
+                IRTerminator::Jmp {
+                    target: IRBranchTarget {
+                        dest: IRBlockTargetId::Block(ir_block),
+                        args,
+                        reentry: target.reentry.clone(),
+                    },
+                }
             }
             Terminator::IfNonzero { cond, then_target, else_target } => {
                 let then_block = IRBlockId((entry_off + then_target.block.0) as u32);
@@ -806,10 +800,16 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                 else_args.extend(else_target.args.iter().map(|v| s(v)));
                 IRTerminator::JumpCond {
                     condition: s(cond),
-                    true_block: IRBlockTargetId::Block(then_block),
-                    true_args: then_args,
-                    false_block: IRBlockTargetId::Block(else_block),
-                    false_args: else_args,
+                    then_target: IRBranchTarget {
+                        dest: IRBlockTargetId::Block(then_block),
+                        args: then_args,
+                        reentry: then_target.reentry.clone(),
+                    },
+                    else_target: IRBranchTarget {
+                        dest: IRBlockTargetId::Block(else_block),
+                        args: else_args,
+                        reentry: else_target.reentry.clone(),
+                    },
                 }
             }
             Terminator::ReturnCall { func: callee_fid, args: call_args } => {
@@ -818,7 +818,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                 // catch-all for those (they shouldn't appear as tail calls in
                 // well-formed VAFFLE, but be safe).
                 if callee_idx >= self.func_info.len() {
-                    return IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![] };
+                    return IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![] ) };
                 }
                 let callee_info = &self.func_info[callee_idx];
                 let cl = callee_info.callee_layout.clone();
@@ -844,12 +844,9 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                 sp_words.extend(arg_words);
 
                 let callee_entry = IRBlockId(callee_info.entry_block as u32);
-                IRTerminator::Jmp {
-                    func: IRBlockTargetId::Block(callee_entry),
-                    args: sp_words,
-                }
+                IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(callee_entry), sp_words,) }
             }
-            _ => IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![] },
+            _ => IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![] ) },
         }
     }
 
@@ -1524,7 +1521,7 @@ mod tests {
         // func0's entry block (block 2) terminator must be a direct Jmp to func1.
         let func0_block = &ir_blocks.blocks[2];
         match &func0_block.terminator {
-            IRTerminator::Jmp { func: IRBlockTargetId::Block(target), .. } => {
+            IRTerminator::Jmp { target: IRBranchTarget { dest: IRBlockTargetId::Block(target), .. } } => {
                 assert_eq!(
                     *target, func1_entry,
                     "ReturnCall should jump directly to func1's entry block"

@@ -3,7 +3,7 @@
 
 use alloc::{collections::BTreeMap, vec, vec::Vec};
 use volar_ir_config::IrLoweringConfig;
-use volar_lir::{LirTarget, LirType};
+use volar_lir::{BranchTarget, LirTarget, LirType};
 use volar_provenance::ProvenanceHandler;
 
 use volar_ir::{
@@ -157,7 +157,7 @@ fn lower_biir_terminator<Q: Clone, T: LirTarget<Q>>(
             let (else_block, else_args) = resolve_biir_target::<Q, T>(else_target, vals, block_handles);
             match (then_block, else_block) {
                 (Some(tb), Some(eb)) => {
-                    target.branch(cond, tb, &then_args, eb, &else_args);
+                    target.branch(cond, tb, BranchTarget::args(then_args), eb, BranchTarget::args(else_args));
                 }
                 _ => unimplemented!("CondJmp with Return/Dyn target"),
             }
@@ -180,7 +180,7 @@ fn lower_biir_jump<P: Clone, T: LirTarget<P>>(
         }
         IRBlockTargetId::Block(id) => {
             let args: Vec<T::Value> = tgt.args.iter().map(|id| vals[id.0 as usize].clone()).collect();
-            target.jump(block_handles[id.0 as usize].clone(), &args);
+            target.jump(block_handles[id.0 as usize].clone(), BranchTarget::args(args.clone()));
         }
         IRBlockTargetId::Dyn(_) => unimplemented!("dynamic jump target in BIrBlocks lowering"),
         _ => panic!("lower_biir_jump: unhandled IRBlockTargetId variant — add lowering for this variant"),
@@ -532,15 +532,15 @@ fn lower_ir_terminator<Q: Clone, T: LirTarget<Q>>(
     target: &mut T,
 ) {
     match term {
-        IRTerminator::Jmp { func, args } => {
-            let arg_vals: Vec<T::Value> = args.iter().map(|id| vals[id.0 as usize].clone()).collect();
-            match func {
+        IRTerminator::Jmp { target: jump_target } => {
+            let arg_vals: Vec<T::Value> = jump_target.args.iter().map(|id| vals[id.0 as usize].clone()).collect();
+            match &jump_target.dest {
                 IRBlockTargetId::Return => {
                     let ret = pack_bits_to_u64(&arg_vals, target);
                     target.ret(&[ret]);
                 }
                 IRBlockTargetId::Block(id) => {
-                    target.jump(block_handles[id.0 as usize].clone(), &arg_vals);
+                    target.jump(block_handles[id.0 as usize].clone(), BranchTarget::args(arg_vals));
                 }
                 IRBlockTargetId::Dyn(_) => unimplemented!("dynamic jump target"),
                 _ => panic!("lower_ir_terminator: unhandled IRBlockTargetId variant — add lowering for this variant"),
@@ -548,17 +548,15 @@ fn lower_ir_terminator<Q: Clone, T: LirTarget<Q>>(
         }
         IRTerminator::JumpCond {
             condition,
-            true_block,
-            true_args,
-            false_block,
-            false_args,
+            then_target,
+            else_target,
         } => {
             let cond = vals[condition.0 as usize].clone();
-            let true_vals: Vec<T::Value> = true_args.iter().map(|id| vals[id.0 as usize].clone()).collect();
-            let false_vals: Vec<T::Value> = false_args.iter().map(|id| vals[id.0 as usize].clone()).collect();
-            match (true_block, false_block) {
+            let true_vals: Vec<T::Value> = then_target.args.iter().map(|id| vals[id.0 as usize].clone()).collect();
+            let false_vals: Vec<T::Value> = else_target.args.iter().map(|id| vals[id.0 as usize].clone()).collect();
+            match (&then_target.dest, &else_target.dest) {
                 (IRBlockTargetId::Block(t), IRBlockTargetId::Block(f)) => {
-                    target.branch(cond, block_handles[t.0 as usize].clone(), &true_vals, block_handles[f.0 as usize].clone(), &false_vals);
+                    target.branch(cond, block_handles[t.0 as usize].clone(), BranchTarget::args(true_vals), block_handles[f.0 as usize].clone(), BranchTarget::args(false_vals));
                 }
                 _ => unimplemented!("JumpCond with Return/Dyn target"),
             }

@@ -359,6 +359,7 @@ fn mono_cfg_jump(jump: &IrCfgJump, env: &MonoEnv) -> IrCfgJump {
     IrCfgJump {
         target: jump.target,
         args: jump.args.iter().map(|a| mono_expr(a, env)).collect(),
+        reentry: jump.reentry.clone(),
     }
 }
 

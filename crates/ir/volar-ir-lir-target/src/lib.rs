@@ -54,10 +54,9 @@ use std::{string::String, string::ToString, vec, vec::Vec};
 
 use volar_ir::ir::{
     IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypeId,
-    IRTypes, IRVarId, OracleDecl, ActionDecl,
-};
+    IRTypes, IRVarId, OracleDecl, ActionDecl, IRBranchTarget};
 use volar_ir_common::{Constant, IrType, Type as NativeType};
-use volar_lir::{BitCircuitBuilder, IcmpPred, LirTarget, LirType, LirAbi, StructDef, StructId};
+use volar_lir::{BranchTarget, BitCircuitBuilder, IcmpPred, LirTarget, LirType, LirAbi, StructDef, StructId};
 use volar_lir::circuits::{
     bc_abs, bc_add, bc_and_vec, bc_ashr, bc_eq, bc_lshr, bc_mul, bc_ne, bc_neg,
     bc_not_vec, bc_or_vec, bc_sdiv, bc_select_vec, bc_shl, bc_sle, bc_slt,
@@ -604,7 +603,7 @@ impl<P: Clone> VolarIrTarget<P> {
             var_map.push(id);
         }
         match &callee.terminator {
-            IRTerminator::Jmp { func: IRBlockTargetId::Return, args: ret_args } => {
+            IRTerminator::Jmp { target: IRBranchTarget { dest: IRBlockTargetId::Return, args: ret_args, .. } } => {
                 let ret_bits: Vec<IRVarId> =
                     ret_args.iter().map(|id| var_map[id.0 as usize]).collect();
                 match ret_ty {
@@ -646,7 +645,7 @@ impl<P: Clone> VolarIrTarget<P> {
         // Fast path: single-block with a direct unconditional Return — use the
         // simpler inline_callee which avoids allocating a continuation block.
         if callee.blocks.len() == 1 {
-            if let IRTerminator::Jmp { func: IRBlockTargetId::Return, .. } = &callee.blocks[0].terminator {
+            if let IRTerminator::Jmp { target: IRBranchTarget { dest: IRBlockTargetId::Return, .. } } = &callee.blocks[0].terminator {
                 return self.inline_callee(&callee.blocks[0], flat_args, ret_ty);
             }
         }
@@ -846,22 +845,35 @@ fn remap_terminator(
         }
     };
     match term {
-        IRTerminator::Jmp { func, args } => IRTerminator::Jmp {
-            func: remap_target(func),
-            args: remap_args(args),
+        IRTerminator::Jmp { target } => IRTerminator::Jmp {
+            target: IRBranchTarget {
+                dest: remap_target(&target.dest),
+                args: remap_args(&target.args),
+                reentry: target.reentry.clone(),
+            },
         },
-        IRTerminator::JumpCond { condition, true_block, true_args, false_block, false_args } =>
+        IRTerminator::JumpCond { condition, then_target, else_target } =>
             IRTerminator::JumpCond {
                 condition: var_map[condition.0 as usize],
-                true_block:  remap_target(true_block),
-                true_args:   remap_args(true_args),
-                false_block: remap_target(false_block),
-                false_args:  remap_args(false_args),
+                then_target: IRBranchTarget {
+                    dest: remap_target(&then_target.dest),
+                    args: remap_args(&then_target.args),
+                    reentry: then_target.reentry.clone(),
+                },
+                else_target: IRBranchTarget {
+                    dest: remap_target(&else_target.dest),
+                    args: remap_args(&else_target.args),
+                    reentry: else_target.reentry.clone(),
+                },
             },
         IRTerminator::JumpTable { index, cases } => IRTerminator::JumpTable {
             index: var_map[index.0 as usize],
-            cases: cases.iter().map(|(k, (t, args))| {
-                (*k, (remap_target(t), remap_args(args)))
+            cases: cases.iter().map(|(k, target)| {
+                (*k, IRBranchTarget {
+                    dest: remap_target(&target.dest),
+                    args: remap_args(&target.args),
+                    reentry: target.reentry.clone(),
+                })
             }).collect(),
         },
         _ => panic!("remap_terminator: unhandled IRTerminator variant — add remapping for this variant"),
@@ -1186,11 +1198,14 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
 
     // ---- Terminators -------------------------------------------------------
 
-    fn jump(&mut self, target: VolarBlock, args: &[VolarValue]) {
-        let flat = Self::flatten(args);
+    fn jump(&mut self, target: VolarBlock, branch: BranchTarget<VolarValue>) {
+        let flat = Self::flatten(&branch.args);
         self.set_terminator(IRTerminator::Jmp {
-            func: IRBlockTargetId::Block(IRBlockId(target.0 as u32)),
-            args: flat,
+            target: IRBranchTarget {
+                dest: IRBlockTargetId::Block(IRBlockId(target.0 as u32)),
+                args: flat,
+                reentry: branch.reentry.clone(),
+            },
         });
     }
 
@@ -1198,25 +1213,30 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
         &mut self,
         cond: VolarValue,
         then_block: VolarBlock,
-        then_args: &[VolarValue],
+        then_branch: BranchTarget<VolarValue>,
         else_block: VolarBlock,
-        else_args: &[VolarValue],
+        else_branch: BranchTarget<VolarValue>,
     ) {
         let cond_bit = cond.bits[0];
         self.set_terminator(IRTerminator::JumpCond {
             condition: cond_bit,
-            true_block: IRBlockTargetId::Block(IRBlockId(then_block.0 as u32)),
-            true_args: Self::flatten(then_args),
-            false_block: IRBlockTargetId::Block(IRBlockId(else_block.0 as u32)),
-            false_args: Self::flatten(else_args),
+            then_target: IRBranchTarget {
+                dest: IRBlockTargetId::Block(IRBlockId(then_block.0 as u32)),
+                args: Self::flatten(&then_branch.args),
+                reentry: then_branch.reentry.clone(),
+            },
+            else_target: IRBranchTarget {
+                dest: IRBlockTargetId::Block(IRBlockId(else_block.0 as u32)),
+                args: Self::flatten(&else_branch.args),
+                reentry: else_branch.reentry.clone(),
+            },
         });
     }
 
     fn ret(&mut self, vals: &[VolarValue]) {
         let flat = Self::flatten(vals);
         self.set_terminator(IRTerminator::Jmp {
-            func: IRBlockTargetId::Return,
-            args: flat,
+            target: IRBranchTarget::new(IRBlockTargetId::Return, flat),
         });
     }
 
@@ -1527,7 +1547,7 @@ mod tests {
             let cond = params[0][0].clone();
             let then_b = t.create_block();
             let else_b = t.create_block();
-            t.branch(cond, then_b, &[], else_b, &[]);
+            t.branch(cond, then_b, BranchTarget::args([]), else_b, BranchTarget::args([]));
 
             t.switch_to_block(then_b);
             let one = t.iconst(LirType::Bool, 1);
@@ -1551,10 +1571,7 @@ mod tests {
             params: std::vec![bit_tid.clone()],
             stmts: std::vec![],
             stmt_provs: std::vec![],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: std::vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
         }]);
 
         let blocks = build(|t| {
@@ -1609,10 +1626,14 @@ mod tests {
                 stmt_provs: std::vec![],
                 terminator: IRTerminator::JumpCond {
                     condition: IRVarId(0),
-                    true_block:  IRBlockTargetId::Block(IRBlockId(1)),
-                    true_args:   std::vec![],
-                    false_block: IRBlockTargetId::Return,
-                    false_args:  std::vec![IRVarId(0)], // return cond (=0)
+                    then_target: IRBranchTarget::new(
+                        IRBlockTargetId::Block(IRBlockId(1)),
+                        std::vec![],
+                    ),
+                    else_target: IRBranchTarget::new(
+                        IRBlockTargetId::Return,
+                        std::vec![IRVarId(0)],
+                    ), // return cond (=0)
                 },
             },
             // Block 1: unconditional return of 1.
@@ -1620,10 +1641,7 @@ mod tests {
                 params: std::vec![],
                 stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 1 }, bit_tid)],
                 stmt_provs: std::vec![()],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    args: std::vec![IRVarId(0)], // return the Const(1)
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)]) }, // return the Const(1)
             },
         ]);
 

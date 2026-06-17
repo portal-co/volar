@@ -29,7 +29,7 @@ pub use volar_ir_common::IrType as IRType;
 pub use volar_ir_common::TypeTable as IRTypes;
 
 /// Re-export oracle/action/rng declaration types so callers only need `volar_ir`.
-pub use volar_ir_common::{ActionDecl, OracleDecl, PreInitSegment, RngDecl};
+pub use volar_ir_common::{ActionDecl, MeasureSpec, OracleDecl, PreInitSegment, ReentryHint, RngDecl, StructRef};
 
 // ============================================================================
 // Blocks and control flow
@@ -76,10 +76,13 @@ impl<P: Clone> IRBlocks<P> {
     }
     pub fn is_circuit(&self) -> bool {
         self.is_movfuscated()
-            && match self.blocks[0].terminator {
+            && match &self.blocks[0].terminator {
                 IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    ..
+                    target:
+                        IRBranchTarget {
+                            dest: IRBlockTargetId::Return,
+                            ..
+                        },
                 } => true,
                 _ => false,
             }
@@ -161,6 +164,66 @@ pub type IRStmt<Var = IRVarId, Addr = Var, Ty = IRTypeId, Stor = volar_ir_common
     volar_ir_common::Stmt<Var, Addr, Ty, Stor>;
 
 // ============================================================================
+// Branch targets
+// ============================================================================
+
+/// A jump/branch destination with optional reentry complexity hint.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct IRBranchTarget<Var = IRVarId> {
+    pub dest: IRBlockTargetId<Var>,
+    pub args: Vec<Var>,
+    pub reentry: Option<ReentryHint>,
+}
+
+impl<Var> IRBranchTarget<Var> {
+    pub fn new(dest: IRBlockTargetId<Var>, args: Vec<Var>) -> Self {
+        IRBranchTarget { dest, args, reentry: None }
+    }
+
+    pub fn map<Ctx, NV, E>(
+        self,
+        ctx: &mut Ctx,
+        go: &mut impl FnMut(&mut Ctx, Var) -> Result<NV, E>,
+    ) -> Result<IRBranchTarget<NV>, E>
+    where
+        NV: Ord,
+    {
+        Ok(IRBranchTarget {
+            dest: self.dest.map(ctx, go)?,
+            args: self
+                .args
+                .into_iter()
+                .map(|v| go(ctx, v))
+                .collect::<Result<Vec<NV>, E>>()?,
+            reentry: self.reentry,
+        })
+    }
+
+    pub fn as_ref(&self) -> IRBranchTarget<&Var>
+    where
+        Var: Ord,
+    {
+        IRBranchTarget {
+            dest: self.dest.as_ref(),
+            args: self.args.iter().collect(),
+            reentry: self.reentry.clone(),
+        }
+    }
+
+    pub fn as_mut(&mut self) -> IRBranchTarget<&mut Var>
+    where
+        Var: Ord,
+    {
+        IRBranchTarget {
+            dest: self.dest.as_mut(),
+            args: self.args.iter_mut().collect(),
+            reentry: self.reentry.clone(),
+        }
+    }
+}
+
+// ============================================================================
 // Terminators
 // ============================================================================
 
@@ -169,19 +232,16 @@ pub type IRStmt<Var = IRVarId, Addr = Var, Ty = IRTypeId, Stor = volar_ir_common
 #[non_exhaustive]
 pub enum IRTerminator<Var = IRVarId> {
     Jmp {
-        func: IRBlockTargetId<Var>,
-        args: Vec<Var>,
+        target: IRBranchTarget<Var>,
     },
     JumpCond {
         condition: Var,
-        true_block: IRBlockTargetId<Var>,
-        true_args: Vec<Var>,
-        false_block: IRBlockTargetId<Var>,
-        false_args: Vec<Var>,
+        then_target: IRBranchTarget<Var>,
+        else_target: IRBranchTarget<Var>,
     },
     JumpTable {
         index: Var,
-        cases: BTreeMap<Constant, (IRBlockTargetId<Var>, Vec<Var>)>,
+        cases: BTreeMap<Constant, IRBranchTarget<Var>>,
     },
 }
 
@@ -199,33 +259,27 @@ impl<Var> IRTerminator<Var> {
         NV: Ord,
     {
         Ok(match self {
-            IRTerminator::Jmp { func, args } => IRTerminator::Jmp {
-                func: func.map(ctx, &mut go)?,
-                args: args.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+            IRTerminator::Jmp { target } => IRTerminator::Jmp {
+                target: target.map(ctx, &mut go)?,
             },
             IRTerminator::JumpCond {
                 condition,
-                true_block,
-                true_args,
-                false_block,
-                false_args,
+                then_target,
+                else_target,
             } => IRTerminator::JumpCond {
                 condition: go(ctx, condition)?,
-                true_block: true_block.map(ctx, &mut go)?,
-                true_args: true_args.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
-                false_block: false_block.map(ctx, &mut go)?,
-                false_args: false_args.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+                then_target: then_target.map(ctx, &mut go)?,
+                else_target: else_target.map(ctx, &mut go)?,
             },
             IRTerminator::JumpTable { index, cases } => IRTerminator::JumpTable {
                 index: go(ctx, index)?,
                 cases: cases
                     .into_iter()
-                    .map(|(k, (target, args))| {
+                    .map(|(k, target)| {
                         let target = target.map(ctx, &mut go)?;
-                        let args = args.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?;
-                        Ok((k, (target, args)))
+                        Ok((k, target))
                     })
-                    .collect::<Result<BTreeMap<Constant, (IRBlockTargetId<NV>, Vec<NV>)>, E>>()?,
+                    .collect::<Result<BTreeMap<Constant, IRBranchTarget<NV>>, E>>()?,
             },
         })
     }
@@ -236,28 +290,23 @@ impl<Var> IRTerminator<Var> {
         Var: Ord,
     {
         match self {
-            IRTerminator::Jmp { func, args } => IRTerminator::Jmp {
-                func: func.as_ref(),
-                args: args.iter().collect(),
+            IRTerminator::Jmp { target } => IRTerminator::Jmp {
+                target: target.as_ref(),
             },
             IRTerminator::JumpCond {
                 condition,
-                true_block,
-                true_args,
-                false_block,
-                false_args,
+                then_target,
+                else_target,
             } => IRTerminator::JumpCond {
                 condition,
-                true_block: true_block.as_ref(),
-                true_args: true_args.iter().collect(),
-                false_block: false_block.as_ref(),
-                false_args: false_args.iter().collect(),
+                then_target: then_target.as_ref(),
+                else_target: else_target.as_ref(),
             },
             IRTerminator::JumpTable { index, cases } => IRTerminator::JumpTable {
                 index,
                 cases: cases
                     .iter()
-                    .map(|(k, (target, args))| (*k, (target.as_ref(), args.iter().collect())))
+                    .map(|(k, target)| (*k, target.as_ref()))
                     .collect(),
             },
         }
@@ -269,28 +318,23 @@ impl<Var> IRTerminator<Var> {
         Var: Ord,
     {
         match self {
-            IRTerminator::Jmp { func, args } => IRTerminator::Jmp {
-                func: func.as_mut(),
-                args: args.iter_mut().collect(),
+            IRTerminator::Jmp { target } => IRTerminator::Jmp {
+                target: target.as_mut(),
             },
             IRTerminator::JumpCond {
                 condition,
-                true_block,
-                true_args,
-                false_block,
-                false_args,
+                then_target,
+                else_target,
             } => IRTerminator::JumpCond {
                 condition,
-                true_block: true_block.as_mut(),
-                true_args: true_args.iter_mut().collect(),
-                false_block: false_block.as_mut(),
-                false_args: false_args.iter_mut().collect(),
+                then_target: then_target.as_mut(),
+                else_target: else_target.as_mut(),
             },
             IRTerminator::JumpTable { index, cases } => IRTerminator::JumpTable {
                 index,
                 cases: cases
                     .iter_mut()
-                    .map(|(k, (target, args))| (*k, (target.as_mut(), args.iter_mut().collect())))
+                    .map(|(k, target)| (*k, target.as_mut()))
                     .collect(),
             },
         }

@@ -306,10 +306,7 @@ fn fold_vaffle_terminator_dead_branch(
         Terminator::IfNonzero { cond, then_target, else_target } => {
             if let Some(&c) = const_map.get(cond) {
                 let tgt = if c.lo & 1 != 0 { then_target } else { else_target };
-                let new_target = vaffle::Target {
-                    block: tgt.block,
-                    args: tgt.args.clone(),
-                };
+                let new_target = vaffle::Target { block: tgt.block, args: tgt.args.clone(), reentry: tgt.reentry.clone() };
                 *term = Terminator::Jump(new_target);
                 return true;
             }
@@ -318,10 +315,7 @@ fn fold_vaffle_terminator_dead_branch(
             if let Some(&c) = const_map.get(index) {
                 let idx = c.lo as usize;
                 let tgt = if idx < targets.len() { &targets[idx] } else { default_target };
-                let new_target = vaffle::Target {
-                    block: tgt.block,
-                    args: tgt.args.clone(),
-                };
+                let new_target = vaffle::Target { block: tgt.block, args: tgt.args.clone(), reentry: tgt.reentry.clone() };
                 *term = Terminator::Jump(new_target);
                 return true;
             }

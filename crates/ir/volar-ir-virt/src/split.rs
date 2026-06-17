@@ -63,6 +63,14 @@ pub fn plan_adaptive_split<P: Clone>(
     }
 
     if cfg.loop_reroll {
+        crate::cfg_hints::plan_cfg_loops_from_hints(
+            blocks,
+            cfg,
+            &mut block_plans,
+            &mut reroll_loops,
+            &mut layout,
+            &mut used_ranges,
+        );
         plan_reroll_loops(
             blocks,
             cfg,
@@ -310,7 +318,7 @@ fn index_windows<P: Clone>(
 mod tests {
     use super::*;
     use volar_ir::ir::{
-        IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRType, IRTypes, IRVarId, PrimType,
+        IRBlock, IRBlockTargetId, IRBlocks, IRBranchTarget, IRTerminator, IRType, IRTypes, IRVarId, PrimType,
     };
     use volar_ir_common::{Constant, Stmt};
 
@@ -336,10 +344,7 @@ mod tests {
                 params: vec![ty],
                 stmts,
                 stmt_provs: vec![(); 6],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    args: vec![IRVarId(5)],
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(5)],) },
             }
         };
         let blocks = IRBlocks::new(vec![mk_block(10, 20), mk_block(11, 21)]);
@@ -371,10 +376,7 @@ mod tests {
             params: vec![ty],
             stmt_provs: vec![(); n_stmts],
             stmts,
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(n_stmts as u32)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(n_stmts as u32)],) },
         };
         let blocks = IRBlocks::new(vec![block]);
         let cfg = AdaptiveSplitConfig {
@@ -401,10 +403,7 @@ mod tests {
             params: vec![ty],
             stmts: vec![Stmt::Const(Constant { hi: 0, lo: 5 }, ty)],
             stmt_provs: vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(1)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)],) },
         };
         let blocks = IRBlocks::new(vec![block]);
         let plan = plan_adaptive_split(&blocks, &AdaptiveSplitConfig::default());

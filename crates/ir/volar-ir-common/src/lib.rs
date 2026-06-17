@@ -4,6 +4,9 @@
 
 extern crate alloc;
 
+pub mod complexity;
+pub use complexity::{MeasureSpec, ReentryHint, StructRef};
+
 use alloc::{collections::btree_map::BTreeMap, vec::Vec};
 
 /// Primitive (non-compound) types shared across Volar IR and VAFFLE.

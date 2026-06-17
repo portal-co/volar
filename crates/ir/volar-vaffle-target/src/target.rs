@@ -23,7 +23,7 @@ use volar_lir::{
         bc_not_vec, bc_or_vec, bc_sdiv, bc_select_vec, bc_shl, bc_sle, bc_slt,
         bc_sub, bc_udiv, bc_ule, bc_ult, bc_xor_vec, StorageEmitter,
     },
-    BitCircuitBuilder, IcmpPred, LirTarget, LirType, LirAbi, StackAllocExt, StructDef, StructId,
+    BitCircuitBuilder, BranchTarget, IcmpPred, LirTarget, LirType, LirAbi, StackAllocExt, StructDef, StructId,
 };
 
 use vaffle::{
@@ -667,23 +667,42 @@ impl LirTarget for VaffleTarget {
     }
 
     // ---- Terminators -------------------------------------------------------
-    fn jump(&mut self, target: VaffleBlock, args: &[VaffleValue]) {
-        let flat: Vec<ValueId> = args.iter().flat_map(|v| v.bits.iter().copied()).collect();
+    fn jump(&mut self, target: VaffleBlock, branch: BranchTarget<VaffleValue>) {
+        let flat: Vec<ValueId> = branch.args.iter().flat_map(|v| v.bits.iter().copied()).collect();
         let fb = self.fb();
         let cur = fb.current;
-        fb.blocks[cur].terminator = Some(Terminator::Jump(Target { block: BlockId(target.0), args: flat }));
+        fb.blocks[cur].terminator = Some(Terminator::Jump(Target {
+            block: BlockId(target.0),
+            args: flat,
+            reentry: branch.reentry.clone(),
+        }));
     }
 
-    fn branch(&mut self, cond: VaffleValue, then_block: VaffleBlock, then_args: &[VaffleValue], else_block: VaffleBlock, else_args: &[VaffleValue]) {
+    fn branch(
+        &mut self,
+        cond: VaffleValue,
+        then_block: VaffleBlock,
+        then_branch: BranchTarget<VaffleValue>,
+        else_block: VaffleBlock,
+        else_branch: BranchTarget<VaffleValue>,
+    ) {
         let cond_bit = cond.bits[0];
-        let flat_then: Vec<ValueId> = then_args.iter().flat_map(|v| v.bits.iter().copied()).collect();
-        let flat_else: Vec<ValueId> = else_args.iter().flat_map(|v| v.bits.iter().copied()).collect();
+        let flat_then: Vec<ValueId> = then_branch.args.iter().flat_map(|v| v.bits.iter().copied()).collect();
+        let flat_else: Vec<ValueId> = else_branch.args.iter().flat_map(|v| v.bits.iter().copied()).collect();
         let fb = self.fb();
         let cur = fb.current;
         fb.blocks[cur].terminator = Some(Terminator::IfNonzero {
             cond: cond_bit,
-            then_target: Target { block: BlockId(then_block.0), args: flat_then },
-            else_target: Target { block: BlockId(else_block.0), args: flat_else },
+            then_target: Target {
+                block: BlockId(then_block.0),
+                args: flat_then,
+                reentry: then_branch.reentry.clone(),
+            },
+            else_target: Target {
+                block: BlockId(else_block.0),
+                args: flat_else,
+                reentry: else_branch.reentry.clone(),
+            },
         });
     }
 
