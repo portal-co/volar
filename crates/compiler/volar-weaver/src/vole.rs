@@ -57,6 +57,7 @@ use volar_ir::ir::{
 use volar_ir::public::PublicSet;
 use volar_ir_passes::lower_to_circuit::lower_to_circuit;
 pub use volar_ir_passes::lower_to_circuit::LoweringMode;
+use volar_discipline::{Tagged, Zk, Transparent};
 
 use crate::{array_default, build_return, clone_expr, expand_ors, ref_expr, var, NoProvenance, ProvenanceHandler};
 
@@ -584,10 +585,10 @@ pub fn weave_vole_prover<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
-    let mut module = weave_vole_prover_with_handler(circuit, name, &NoProvenance);
-    if let Some(ls) = linkage { ls.apply(&mut module); }
-    module
+) -> Tagged<Zk, IrModule<IrFunction>> {
+    let mut tagged = weave_vole_prover_with_handler(circuit, name, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
+    tagged
 }
 
 /// Weave a single-block boolean circuit into a VOLE **prover** `IrModule`,
@@ -599,12 +600,12 @@ pub fn weave_vole_prover_with_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Zk, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
 {
-    weave_vole_prover_inner(circuit, name, &ZkWitnessConfig::default(), handler)
+    Tagged::seal(weave_vole_prover_inner(circuit, name, &ZkWitnessConfig::default(), handler))
 }
 
 /// Weave a single-block boolean circuit into a VOLE **prover** `IrModule` with
@@ -618,10 +619,10 @@ pub fn weave_vole_prover_with_config<P: Clone>(
     name: &str,
     config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
+) -> Tagged<Zk, IrModule<IrFunction>> {
     let mut module = weave_vole_prover_inner(circuit, name, config, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(&mut module); }
-    module
+    Tagged::seal(module)
 }
 
 /// Weave with both a [`ZkWitnessConfig`] and a provenance handler.
@@ -630,12 +631,12 @@ pub fn weave_vole_prover_with_config_and_handler<P, H>(
     name: &str,
     config: &ZkWitnessConfig,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Zk, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
 {
-    weave_vole_prover_inner(circuit, name, config, handler)
+    Tagged::seal(weave_vole_prover_inner(circuit, name, config, handler))
 }
 
 fn weave_vole_prover_inner<P, H>(
@@ -979,10 +980,10 @@ pub fn weave_vole_verifier<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
-    let mut module = weave_vole_verifier_with_handler(circuit, name, &NoProvenance);
-    if let Some(ls) = linkage { ls.apply(&mut module); }
-    module
+) -> Tagged<Transparent, IrModule<IrFunction>> {
+    let mut tagged = weave_vole_verifier_with_handler(circuit, name, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
+    tagged
 }
 
 /// Weave a single-block boolean circuit into a VOLE **verifier** `IrModule`,
@@ -990,16 +991,19 @@ pub fn weave_vole_verifier<P: Clone>(
 ///
 /// All inputs are private witnesses.  Use [`weave_vole_verifier_with_config_and_handler`]
 /// for public/private control.
+// The verifier-as-a-computation is `Transparent` (non-ZK): the inner VOLE
+// proof already accounts for zero-knowledge, so re-checking it carries no
+// ZK proving secrets of its own.
 pub fn weave_vole_verifier_with_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
 {
-    weave_vole_verifier_inner(circuit, name, &ZkWitnessConfig::default(), handler)
+    Tagged::seal(weave_vole_verifier_inner(circuit, name, &ZkWitnessConfig::default(), handler))
 }
 
 /// Weave a single-block boolean circuit into a VOLE **verifier** `IrModule` with
@@ -1012,10 +1016,10 @@ pub fn weave_vole_verifier_with_config<P: Clone>(
     name: &str,
     config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
+) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut module = weave_vole_verifier_inner(circuit, name, config, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(&mut module); }
-    module
+    Tagged::seal(module)
 }
 
 /// Weave with both a [`ZkWitnessConfig`] and a provenance handler.
@@ -1024,12 +1028,12 @@ pub fn weave_vole_verifier_with_config_and_handler<P, H>(
     name: &str,
     config: &ZkWitnessConfig,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
 {
-    weave_vole_verifier_inner(circuit, name, config, handler)
+    Tagged::seal(weave_vole_verifier_inner(circuit, name, config, handler))
 }
 
 fn weave_vole_verifier_inner<P, H>(
@@ -1403,10 +1407,10 @@ pub fn weave_vole_prover_bounded<P: Clone>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
-    let mut module = weave_vole_prover_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
-    if let Some(ls) = linkage { ls.apply(&mut module); }
-    module
+) -> Tagged<Zk, IrModule<IrFunction>> {
+    let mut tagged = weave_vole_prover_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
+    tagged
 }
 
 /// Bounded VOLE prover weave with provenance handler.
@@ -1416,13 +1420,13 @@ pub fn weave_vole_prover_bounded_with_handler<P, H>(
     limit: u32,
     mode: LoweringMode,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Zk, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_vole_prover_inner(&lowered, name, &ZkWitnessConfig::default(), handler)
+    Tagged::seal(weave_vole_prover_inner(&lowered, name, &ZkWitnessConfig::default(), handler))
 }
 
 /// Bounded VOLE prover weave with witness config.
@@ -1433,11 +1437,11 @@ pub fn weave_vole_prover_bounded_with_config<P: Clone>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
+) -> Tagged<Zk, IrModule<IrFunction>> {
     let lowered = lower_to_circuit(circuit, limit, mode);
     let mut module = weave_vole_prover_inner(&lowered, name, config, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(&mut module); }
-    module
+    Tagged::seal(module)
 }
 
 /// Bounded VOLE prover weave with witness config and provenance handler.
@@ -1448,13 +1452,13 @@ pub fn weave_vole_prover_bounded_with_config_and_handler<P, H>(
     limit: u32,
     mode: LoweringMode,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Zk, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_vole_prover_inner(&lowered, name, config, handler)
+    Tagged::seal(weave_vole_prover_inner(&lowered, name, config, handler))
 }
 
 /// Backwards-compatible bounded VOLE verifier weave.
@@ -1464,10 +1468,10 @@ pub fn weave_vole_verifier_bounded<P: Clone>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
-    let mut module = weave_vole_verifier_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
-    if let Some(ls) = linkage { ls.apply(&mut module); }
-    module
+) -> Tagged<Transparent, IrModule<IrFunction>> {
+    let mut tagged = weave_vole_verifier_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
+    tagged
 }
 
 /// Bounded VOLE verifier weave with provenance handler.
@@ -1477,13 +1481,13 @@ pub fn weave_vole_verifier_bounded_with_handler<P, H>(
     limit: u32,
     mode: LoweringMode,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_vole_verifier_inner(&lowered, name, &ZkWitnessConfig::default(), handler)
+    Tagged::seal(weave_vole_verifier_inner(&lowered, name, &ZkWitnessConfig::default(), handler))
 }
 
 /// Bounded VOLE verifier weave with witness config.
@@ -1494,11 +1498,11 @@ pub fn weave_vole_verifier_bounded_with_config<P: Clone>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
+) -> Tagged<Transparent, IrModule<IrFunction>> {
     let lowered = lower_to_circuit(circuit, limit, mode);
     let mut module = weave_vole_verifier_inner(&lowered, name, config, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(&mut module); }
-    module
+    Tagged::seal(module)
 }
 
 /// Bounded VOLE verifier weave with witness config and provenance handler.
@@ -1509,13 +1513,13 @@ pub fn weave_vole_verifier_bounded_with_config_and_handler<P, H>(
     limit: u32,
     mode: LoweringMode,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_vole_verifier_inner(&lowered, name, config, handler)
+    Tagged::seal(weave_vole_verifier_inner(&lowered, name, config, handler))
 }
 
 // ============================================================================
@@ -2756,7 +2760,7 @@ pub fn weave_vole_prover_ir(
     name: &str,
     storage_sizes: &StorageSizes,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
+) -> Tagged<Zk, IrModule<IrFunction>> {
     let mode = StorageMode::Tree(storage_sizes.clone());
     weave_vole_prover_ir_with_mode(circuit, types, name, &mode, linkage).0
 }
@@ -2773,7 +2777,7 @@ pub fn weave_vole_prover_ir_with_mode(
     name: &str,
     mode: &StorageMode,
     linkage: Option<&LinkageSystem>,
-) -> (IrModule<IrFunction>, MemoryTrace) {
+) -> (Tagged<Zk, IrModule<IrFunction>>, MemoryTrace) {
     assert!(circuit.is_circuit(), "weave_vole_prover_ir: circuit must satisfy is_circuit()");
     let block = &circuit.blocks[0];
     let num_params = block.params.len();
@@ -2850,7 +2854,7 @@ pub fn weave_vole_prover_ir_with_mode(
  consts: vec![],
     };
     if let Some(ls) = linkage { ls.apply(&mut module); }
-    (module, trace)
+    (Tagged::seal(module), trace)
 }
 
 /// Weave a single-block Volar IR circuit into a VOLE **verifier** `IrModule`.
@@ -2862,20 +2866,23 @@ pub fn weave_vole_verifier_ir(
     name: &str,
     storage_sizes: &StorageSizes,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
+) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mode = StorageMode::Tree(storage_sizes.clone());
     weave_vole_verifier_ir_with_mode(circuit, types, name, &mode, linkage).0
 }
 
 /// Weave a single-block Volar IR circuit into a VOLE **verifier** `IrModule`,
 /// with configurable [`StorageMode`].
+///
+/// The verifier-as-a-computation is `Transparent` (non-ZK): the inner VOLE
+/// proof already accounts for zero-knowledge.
 pub fn weave_vole_verifier_ir_with_mode(
     circuit: &IRBlocks,
     types: &CirTypes,
     name: &str,
     mode: &StorageMode,
     linkage: Option<&LinkageSystem>,
-) -> (IrModule<IrFunction>, MemoryTrace) {
+) -> (Tagged<Transparent, IrModule<IrFunction>>, MemoryTrace) {
     assert!(circuit.is_circuit(), "weave_vole_verifier_ir: circuit must satisfy is_circuit()");
     let block = &circuit.blocks[0];
     let num_params = block.params.len();
@@ -2967,7 +2974,7 @@ pub fn weave_vole_verifier_ir_with_mode(
  consts: vec![],
     };
     if let Some(ls) = linkage { ls.apply(&mut module); }
-    (module, trace)
+    (Tagged::seal(module), trace)
 }
 
 // ============================================================================
@@ -3785,7 +3792,7 @@ mod tests {
     fn test_weave_vole_prover_compiles() {
         let circuit = build_xor_and_circuit();
         let module = weave_vole_prover(&circuit, "test_circuit", None);
-        let code = print_weaved_vole_module(&module);
+        let code = print_weaved_vole_module(module.inner());
         run_compile_check(&code, "vole_prover");
     }
 
@@ -3793,7 +3800,7 @@ mod tests {
     fn test_weave_vole_verifier_compiles() {
         let circuit = build_xor_and_circuit();
         let module = weave_vole_verifier(&circuit, "test_circuit", None);
-        let code = print_weaved_vole_module(&module);
+        let code = print_weaved_vole_module(module.inner());
         run_compile_check(&code, "vole_verifier");
     }
 
@@ -3801,7 +3808,7 @@ mod tests {
     fn test_weave_vole_prover_bounded_compiles() {
         let circuit = build_simple_loop();
         let module = weave_vole_prover_bounded(&circuit, "loop_vole", 4, LoweringMode::Unconditional, None);
-        let code = print_weaved_vole_module(&module);
+        let code = print_weaved_vole_module(module.inner());
         run_compile_check(&code, "vole_prover_bounded");
     }
 
@@ -3809,7 +3816,7 @@ mod tests {
     fn test_weave_vole_verifier_bounded_compiles() {
         let circuit = build_simple_loop();
         let module = weave_vole_verifier_bounded(&circuit, "loop_vole", 4, LoweringMode::Unconditional, None);
-        let code = print_weaved_vole_module(&module);
+        let code = print_weaved_vole_module(module.inner());
         run_compile_check(&code, "vole_verifier_bounded");
     }
 
@@ -3817,7 +3824,7 @@ mod tests {
     fn test_vole_prover_returns_fixed_array() {
         let circuit = crate::tests_common::build_xor_and_circuit();
         let module = weave_vole_prover(&circuit, "test_circuit", None);
-        let code = print_weaved_vole_module(&module);
+        let code = print_weaved_vole_module(module.inner());
         // xor_and has 1 AND gate → return type must be `[Array<T, N>; 1]`
         assert!(
             code.contains("[Array<T, N>; 1]"),
@@ -3904,7 +3911,7 @@ mod tests {
         let (circuit, types) = build_ir_identity_circuit();
         let ss = StorageSizes::new();
         let module = weave_vole_prover_ir(&circuit, &types, "identity", &ss, None);
-        let code = print_weaved_vole_module(&module);
+        let code = print_weaved_vole_module(module.inner());
         run_compile_check(&code, "vole_ir_prover_id");
     }
 
@@ -3913,7 +3920,7 @@ mod tests {
         let (circuit, types) = build_ir_identity_circuit();
         let ss = StorageSizes::new();
         let module = weave_vole_verifier_ir(&circuit, &types, "identity", &ss, None);
-        let code = print_weaved_vole_module(&module);
+        let code = print_weaved_vole_module(module.inner());
         run_compile_check(&code, "vole_ir_verifier_id");
     }
 
@@ -3922,7 +3929,7 @@ mod tests {
         let (circuit, types) = build_ir_and_circuit();
         let ss = StorageSizes::new();
         let module = weave_vole_prover_ir(&circuit, &types, "and_gate", &ss, None);
-        let code = print_weaved_vole_module(&module);
+        let code = print_weaved_vole_module(module.inner());
         run_compile_check(&code, "vole_ir_prover_and");
     }
 
@@ -3931,7 +3938,7 @@ mod tests {
         let (circuit, types) = build_ir_and_circuit();
         let ss = StorageSizes::new();
         let module = weave_vole_verifier_ir(&circuit, &types, "and_gate", &ss, None);
-        let code = print_weaved_vole_module(&module);
+        let code = print_weaved_vole_module(module.inner());
         run_compile_check(&code, "vole_ir_verifier_and");
     }
 
@@ -3939,7 +3946,7 @@ mod tests {
     fn test_weave_vole_ir_prover_storage() {
         let (circuit, types, ss) = build_ir_storage_circuit();
         let module = weave_vole_prover_ir(&circuit, &types, "storage", &ss, None);
-        let code = print_weaved_vole_module(&module);
+        let code = print_weaved_vole_module(module.inner());
         run_compile_check(&code, "vole_ir_prover_stor");
     }
 
@@ -3947,7 +3954,7 @@ mod tests {
     fn test_weave_vole_ir_verifier_storage() {
         let (circuit, types, ss) = build_ir_storage_circuit();
         let module = weave_vole_verifier_ir(&circuit, &types, "storage", &ss, None);
-        let code = print_weaved_vole_module(&module);
+        let code = print_weaved_vole_module(module.inner());
         run_compile_check(&code, "vole_ir_verifier_stor");
     }
 
@@ -3960,7 +3967,7 @@ mod tests {
         let (module, trace) = weave_vole_prover_ir_with_mode(
             &circuit, &types, "committed", &mode, None,
         );
-        let code = print_weaved_vole_module(&module);
+        let code = print_weaved_vole_module(module.inner());
         run_compile_check(&code, "vole_ir_prover_commit");
         // Commitment mode should produce a non-empty trace.
         assert!(
@@ -3980,7 +3987,7 @@ mod tests {
         let (module, trace) = weave_vole_verifier_ir_with_mode(
             &circuit, &types, "committed", &mode, None,
         );
-        let code = print_weaved_vole_module(&module);
+        let code = print_weaved_vole_module(module.inner());
         run_compile_check(&code, "vole_ir_verifier_commit");
         assert_eq!(trace.entries.len(), 2);
     }

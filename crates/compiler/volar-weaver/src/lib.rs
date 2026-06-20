@@ -110,6 +110,8 @@ pub use vole::{
     ZkWitnessConfig, ZkActionConfig,
 };
 
+pub use volar_discipline::{Tagged, Zk, Transparent, Discipline, NonZk};
+
 pub use grafhen::{
     print_grafhen_module,
     weave_grafhen, weave_grafhen_with_handler,

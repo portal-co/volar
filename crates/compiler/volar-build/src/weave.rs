@@ -135,19 +135,19 @@ pub fn emit_woven_rust(
             volar_weaver::print_weaved_module(&module, false)
         }
         (Weaver::VoleProver { name }, SavedCircuit::Boolar(bir)) => {
-            let module = volar_weaver::weave_vole_prover(&bir, name, None);
+            let module = volar_weaver::weave_vole_prover(&bir, name, None).into_inner();
             volar_weaver::print_weaved_vole_module(&module)
         }
         (Weaver::VoleVerifier { name }, SavedCircuit::Boolar(bir)) => {
-            let module = volar_weaver::weave_vole_verifier(&bir, name, None);
+            let module = volar_weaver::weave_vole_verifier(&bir, name, None).into_inner();
             volar_weaver::print_weaved_vole_module(&module)
         }
         (Weaver::VoleProverIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
-            let module = volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None);
+            let module = volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None).into_inner();
             volar_weaver::print_weaved_vole_module(&module)
         }
         (Weaver::VoleVerifierIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
-            let module = volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None);
+            let module = volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None).into_inner();
             volar_weaver::print_weaved_vole_module(&module)
         }
         (Weaver::NoOp { name }, SavedCircuit::Boolar(bir)) => {
@@ -280,16 +280,16 @@ fn weave_to_ir_module(
             volar_weaver::weave_garbler(&bir, name, None)
         }
         (Weaver::VoleProver { name }, SavedCircuit::Boolar(bir)) => {
-            volar_weaver::weave_vole_prover(&bir, name, None)
+            volar_weaver::weave_vole_prover(&bir, name, None).into_inner()
         }
         (Weaver::VoleVerifier { name }, SavedCircuit::Boolar(bir)) => {
-            volar_weaver::weave_vole_verifier(&bir, name, None)
+            volar_weaver::weave_vole_verifier(&bir, name, None).into_inner()
         }
         (Weaver::VoleProverIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
-            volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None)
+            volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None).into_inner()
         }
         (Weaver::VoleVerifierIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
-            volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None)
+            volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None).into_inner()
         }
         (Weaver::NoOp { name }, SavedCircuit::Boolar(bir)) => {
             volar_weaver::weave_noop(&bir, name, None)
@@ -358,16 +358,16 @@ pub fn emit_woven_rust_chunked(
                 volar_weaver::weave_garbler(&bir, name, None)
             }
             (Weaver::VoleProver { name }, SavedCircuit::Boolar(bir)) => {
-                volar_weaver::weave_vole_prover(&bir, name, None)
+                volar_weaver::weave_vole_prover(&bir, name, None).into_inner()
             }
             (Weaver::VoleVerifier { name }, SavedCircuit::Boolar(bir)) => {
-                volar_weaver::weave_vole_verifier(&bir, name, None)
+                volar_weaver::weave_vole_verifier(&bir, name, None).into_inner()
             }
             (Weaver::VoleProverIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
-                volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None)
+                volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None).into_inner()
             }
             (Weaver::VoleVerifierIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
-                volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None)
+                volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None).into_inner()
             }
             (Weaver::NoOp { name }, SavedCircuit::Boolar(bir)) => {
                 volar_weaver::weave_noop(&bir, name, None)

@@ -149,7 +149,7 @@ fn vole_spec_parses() {
 fn vole_weaved_module_has_spec_structs() {
     let circuit = make_biir_and();
     let linkage = make_vole_linkage();
-    let module = weave_vole_prover(&circuit, "and_prover", Some(&linkage));
+    let module = weave_vole_prover(&circuit, "and_prover", Some(&linkage)).into_inner();
 
     let struct_names: Vec<&str> = module.structs.iter()
         .filter_map(|s| {
@@ -180,7 +180,7 @@ fn vole_weaved_module_has_spec_structs() {
 #[ignore = "requires lenient registry mode — documents expected failure"]
 fn vole_prover_and_no_linkage_lower() {
     let circuit = make_biir_and();
-    let module = weave_vole_prover(&circuit, "and_prover", None);
+    let module = weave_vole_prover(&circuit, "and_prover", None).into_inner();
 
     assert!(module.structs.is_empty(), "no structs expected without linkage");
 
@@ -205,7 +205,7 @@ fn vole_prover_and_no_linkage_lower() {
 fn vole_prover_and_gate_to_c() {
     let circuit = make_biir_and();
     let linkage = make_vole_linkage();
-    let module = weave_vole_prover(&circuit, "and_prover", Some(&linkage));
+    let module = weave_vole_prover(&circuit, "and_prover", Some(&linkage)).into_inner();
 
     let env = vole_env();
     let mut b = CBackend::new();
@@ -225,7 +225,7 @@ fn vole_prover_and_gate_to_c() {
 fn vole_prover_xor_gate_to_c() {
     let circuit = make_biir_xor();
     let linkage = make_vole_linkage();
-    let module = weave_vole_prover(&circuit, "xor_prover", Some(&linkage));
+    let module = weave_vole_prover(&circuit, "xor_prover", Some(&linkage)).into_inner();
 
     let env = vole_env();
     let mut b = CBackend::new();
@@ -244,7 +244,7 @@ fn vole_prover_xor_gate_to_c() {
 fn vole_prover_half_adder_to_c() {
     let circuit = make_biir_half_adder();
     let linkage = make_vole_linkage();
-    let module = weave_vole_prover(&circuit, "half_adder_prover", Some(&linkage));
+    let module = weave_vole_prover(&circuit, "half_adder_prover", Some(&linkage)).into_inner();
 
     let env = vole_env();
     let mut b = CBackend::new();
@@ -263,7 +263,7 @@ fn vole_prover_half_adder_to_c() {
 fn vole_verifier_and_gate_to_c() {
     let circuit = make_biir_and();
     let linkage = make_vole_linkage();
-    let module = weave_vole_verifier(&circuit, "and_verifier", Some(&linkage));
+    let module = weave_vole_verifier(&circuit, "and_verifier", Some(&linkage)).into_inner();
 
     let env = vole_env();
     let mut b = CBackend::new();
@@ -279,7 +279,7 @@ fn vole_verifier_and_gate_to_c() {
 fn vole_verifier_xor_gate_to_c() {
     let circuit = make_biir_xor();
     let linkage = make_vole_linkage();
-    let module = weave_vole_verifier(&circuit, "xor_verifier", Some(&linkage));
+    let module = weave_vole_verifier(&circuit, "xor_verifier", Some(&linkage)).into_inner();
 
     let env = vole_env();
     let mut b = CBackend::new();
@@ -304,7 +304,7 @@ fn vole_prover_verifier_correctness_e2e() {
     let circuit = make_biir_and();
     let linkage = make_vole_linkage();
     // Prover C already contains vole_and_verifier_check via spec linkage.
-    let module = weave_vole_prover(&circuit, "and_prover", Some(&linkage));
+    let module = weave_vole_prover(&circuit, "and_prover", Some(&linkage)).into_inner();
 
     let env = vole_env();
     let mut b = CBackend::new();
@@ -342,8 +342,8 @@ fn vole_prover_verifier_correctness_e2e() {
 fn dump_vole_and_c_to_tmp() {
     let circuit = make_biir_and();
     let linkage = make_vole_linkage();
-    let module_p = weave_vole_prover(&circuit, "and_prover", Some(&linkage));
-    let module_v = weave_vole_verifier(&circuit, "and_verifier", Some(&linkage));
+    let module_p = weave_vole_prover(&circuit, "and_prover", Some(&linkage)).into_inner();
+    let module_v = weave_vole_verifier(&circuit, "and_verifier", Some(&linkage)).into_inner();
     let env = vole_env();
     let mut bp = CBackend::new();
     lower_module_with_opts(&module_p, &mut bp, &env);
@@ -358,7 +358,7 @@ fn dump_vole_and_c_to_tmp() {
 fn dump_vole_galois_c_to_tmp() {
     let circuit = make_biir_and();
     let linkage = make_vole_linkage_galois();
-    let module_p = weave_vole_prover(&circuit, "and_prover", Some(&linkage));
+    let module_p = weave_vole_prover(&circuit, "and_prover", Some(&linkage)).into_inner();
     let env = galois_vole_env();
     let mut bp = CBackend::new();
     lower_module_with_opts(&module_p, &mut bp, &env);
@@ -398,7 +398,7 @@ fn vole_prover_verifier_ot_setup_e2e() {
     // Standard linkage suffices: Galois is a PrimitiveType, not a custom struct.
     let linkage = make_vole_linkage_galois();
     // Weave the AND-gate prover (includes spec helper functions via linkage).
-    let module = weave_vole_prover(&circuit, "and_prover", Some(&linkage));
+    let module = weave_vole_prover(&circuit, "and_prover", Some(&linkage)).into_inner();
 
     let env = galois_vole_env();
     let mut b = CBackend::new();

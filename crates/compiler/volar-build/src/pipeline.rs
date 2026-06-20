@@ -495,11 +495,11 @@ fn weave_volar_ir_in_memory(
 
     let rust_source: String = match weaver {
         Weaver::VoleProverIr { name, storage_sizes } => {
-            let module = volar_weaver::weave_vole_prover_ir(blocks, types, name, storage_sizes, None);
+            let module = volar_weaver::weave_vole_prover_ir(blocks, types, name, storage_sizes, None).into_inner();
             volar_weaver::print_weaved_vole_module(&module)
         }
         Weaver::VoleVerifierIr { name, storage_sizes } => {
-            let module = volar_weaver::weave_vole_verifier_ir(blocks, types, name, storage_sizes, None);
+            let module = volar_weaver::weave_vole_verifier_ir(blocks, types, name, storage_sizes, None).into_inner();
             volar_weaver::print_weaved_vole_module(&module)
         }
         w => return Err(format!(
@@ -529,10 +529,10 @@ fn weave_volar_ir_chunked(
 
     let module = match weaver {
         crate::Weaver::VoleProverIr { name, storage_sizes } => {
-            volar_weaver::weave_vole_prover_ir(blocks, types, name, storage_sizes, None)
+            volar_weaver::weave_vole_prover_ir(blocks, types, name, storage_sizes, None).into_inner()
         }
         crate::Weaver::VoleVerifierIr { name, storage_sizes } => {
-            volar_weaver::weave_vole_verifier_ir(blocks, types, name, storage_sizes, None)
+            volar_weaver::weave_vole_verifier_ir(blocks, types, name, storage_sizes, None).into_inner()
         }
         w => return Err(format!(
             "Pipeline::emit_woven_rust_chunked: weaver {:?} requires Boolar IR; use emit_woven_rust_chunked (standalone) with a .circuit file instead",
@@ -578,10 +578,10 @@ fn weave_volar_ir_to_ir_module(
     use crate::Weaver;
     let module = match weaver {
         Weaver::VoleProverIr { name, storage_sizes } => {
-            volar_weaver::weave_vole_prover_ir(blocks, types, name, storage_sizes, None)
+            volar_weaver::weave_vole_prover_ir(blocks, types, name, storage_sizes, None).into_inner()
         }
         Weaver::VoleVerifierIr { name, storage_sizes } => {
-            volar_weaver::weave_vole_verifier_ir(blocks, types, name, storage_sizes, None)
+            volar_weaver::weave_vole_verifier_ir(blocks, types, name, storage_sizes, None).into_inner()
         }
         w => return Err(format!(
             "Pipeline TS emit: weaver {:?} requires Boolar IR; use emit_woven_typescript_chunked (standalone) with a .circuit file instead",

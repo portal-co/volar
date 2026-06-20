@@ -273,14 +273,14 @@ static EMPTY_ENUM_REGISTRY: LazyLock<EnumRegistry> =
 /// Lower all functions in `module` to `target` using an empty `MonoEnv`.
 ///
 /// Struct types are registered via `structs::build_struct_registry` before lowering functions.
-pub fn lower_module<T: LirTarget>(module: &IrModule<IrFunction>, target: &mut T) {
+pub fn lower_module<T: LirTarget<P>, P: Clone>(module: &IrModule<IrFunction<P>, P>, target: &mut T) {
     lower_module_with_opts(module, target, &MonoEnv::new(""));
 }
 
 /// Like `lower_module` but with a `MonoEnv` providing concrete generic substitutions
 /// (array lengths, hash suffix) applied on the fly during lowering.
-pub fn lower_module_with_opts<T: LirTarget>(
-    module: &IrModule<IrFunction>,
+pub fn lower_module_with_opts<T: LirTarget<P>, P: Clone>(
+    module: &IrModule<IrFunction<P>, P>,
     target: &mut T,
     env: &MonoEnv,
 ) {
@@ -377,8 +377,8 @@ pub fn lower_module_seeded<T: LirTarget>(
 }
 
 /// Internal: lower a function with full module context (external-fn dispatch).
-fn lower_function_in_module<T: LirTarget>(
-    func: &IrFunction,
+fn lower_function_in_module<T: LirTarget<P>, P: Clone>(
+    func: &IrFunction<P>,
     target: &mut T,
     registry: &StructRegistry,
     enum_registry: &EnumRegistry,
