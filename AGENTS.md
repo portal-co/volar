@@ -119,6 +119,18 @@ explicit go/no-go before proceeding or writing a hand-off document. See
     have the same shadowing and witness patterns as regular `IrModule`
     functions.
 
+11. **ZK / non-ZK proving discipline is a hard boundary**: Proof artifacts
+    carry a compile-time discipline (`volar_discipline::Tagged<Z, _>`,
+    markers `Zk` / `Transparent`, subtrait `NonZk`). A ZK prover
+    (`weave_vole_prover*`, `weave_faest_prover*`) is `Zk`; verifiers, garble,
+    noop, and fhe modules are `Transparent`. Folding / regular-SNARK entry
+    points are bound `where Z: NonZk`, so a `Zk` artifact cannot reach them.
+    **Never** mix the two: do not seal a prover as `Transparent` or a verifier
+    as `Zk`, do not `into_inner()` to push a `Zk` module into a non-ZK
+    consumer, and do not weaken a `NonZk` bound. This boundary is load-bearing
+    — treat changes to it as Tier 3 in spirit. See
+    [`docs/agent-context/discipline.md`](docs/agent-context/discipline.md).
+
 ## Topic Context Files
 
 Load these when working in the relevant area:
@@ -133,6 +145,8 @@ Load these when working in the relevant area:
 | IR `map`/`as_ref`/`as_mut` conventions | `docs/agent-context/ir-map-conventions.md` | Adding IR variants, writing IR transformations, understanding `#[non_exhaustive]` catch-all conventions |
 | Provenance pipeline | `docs/agent-context/provenance-pipeline.md` | Adding provenance to passes, writing `ProvenanceHandler` impls, understanding why `Default`/`synthetic()` are absent |
 | Weaving & multi-backend | `docs/agent-context/weaving.md` | Working on FHE/garbled-circuit weaving, compiler printers (Rust/TS/C), action system, CFG emission |
+| **ZK / non-ZK proving discipline** | `docs/agent-context/discipline.md` | Touching any weaver, `volar-fold`, the build pipeline, or anything that moves a proof `IrModule` — the load-bearing ZK↔non-ZK boundary |
+| Prove-the-verifier folding | `docs/prove-the-verifier.md` | Folding the verifier into a relaxed-R1CS instance, `volar-fold` reuse, memory-commitment boundaries |
 | TypeScript class witnesses | `docs/agent-context/ts-class-witnesses.md` | Working on TS codegen: `WitnessKind`, `ctx` parameter, type-param-as-value, static method dispatch |
 | ORAM & channel | `docs/agent-context/oram.md` | Working on ORAM crates, channel protocol, ORAM weaver integration |
 | Progress tracking | `PROGRESS.md` | Starting a new session, reviewing status, planning next steps |

@@ -1,0 +1,14 @@
+[package]
+name = "volar-verifier-fold"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Prove-the-verifier integration: arithmetization frontend + C-backend terminal over volar-fold"
+repository.workspace = true
+
+[dependencies]
+volar-fold = { path = "../volar-fold" }
+volar-discipline = { workspace = true }
+volar-compiler = { path = "../../compiler/volar-compiler" }
+volar-lir-codegen = { path = "../../compiler/volar-lir-codegen" }
+volar-c-backend = { path = "../../compiler/volar-c-backend" }

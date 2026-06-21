@@ -73,6 +73,7 @@ producing test scaffolding, hand-off documents, and analysis. See
 |---|---|
 | [spec.md](spec.md) | `volar-spec`: VOLE ZK, garbled circuits, MPC types, byte generation, `volar-common`, `volar-primitives` |
 | [vole-weaving.md](vole-weaving.md) | VOLE prover/verifier code generation from boolean circuits (Quicksilver-style) |
+| [prove-the-verifier.md](prove-the-verifier.md) | Folding the VOLE verifier into a single relaxed-R1CS instance (`volar-fold` reuse, no zkSNARK), memory-commitment boundaries, and the ZK↔non-ZK discipline that gates it |
 | [garbling-pipeline.md](garbling-pipeline.md) | Garbler/evaluator code generation for half-gate garbled circuits |
 | [memory-checking.md](memory-checking.md) | Multiset memory checking for VOLE-authenticated storage |
 
@@ -128,6 +129,7 @@ trip-wires that show up most often in code review.
 |---|---|
 | [agent-context/ir-types-storage.md](agent-context/ir-types-storage.md) | IR, lowering, evaluators, store-forward, fuzzer generators |
 | [agent-context/weaving.md](agent-context/weaving.md) | FHE/garbled-circuit weaving, compiler printers, action system, CFG emission |
+| [agent-context/discipline.md](agent-context/discipline.md) | The ZK↔non-ZK proving discipline boundary: weavers, `volar-fold`, build pipeline — binds agents against mixing prover/verifier/fold primitives |
 | [agent-context/oram.md](agent-context/oram.md) | ORAM crates, channel protocol, ORAM weaver integration |
 
 ### Operating procedures

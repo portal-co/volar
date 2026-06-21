@@ -24,7 +24,7 @@
 extern crate alloc;
 
 use alloc::{vec, vec::Vec};
-use volar_lir::{IcmpPred, LirAbi, LirTarget, LirType, StackAllocExt, StructDef, StructId};
+use volar_lir::{BranchTarget, IcmpPred, LirAbi, LirTarget, LirType, StackAllocExt, StructDef, StructId};
 
 // ============================================================================
 // Call log
@@ -359,13 +359,13 @@ impl SavedLirModule {
 
                 LirCall::Jump { target: tgt, args } => {
                     let real_args: Vec<T::Value> = args.iter().map(|a| val!(a)).collect();
-                    target.jump(block!(tgt), &real_args);
+                    target.jump(block!(tgt), BranchTarget::args(real_args));
                 }
 
                 LirCall::Branch { cond, then_block, then_args, else_block, else_args } => {
                     let real_then: Vec<T::Value> = then_args.iter().map(|a| val!(a)).collect();
                     let real_else: Vec<T::Value> = else_args.iter().map(|a| val!(a)).collect();
-                    target.branch(val!(cond), block!(then_block), &real_then, block!(else_block), &real_else);
+                    target.branch(val!(cond), block!(then_block), BranchTarget::args(real_then), block!(else_block), BranchTarget::args(real_else));
                 }
 
                 LirCall::Ret { vals: ret_vals } => {
@@ -707,24 +707,26 @@ impl LirTarget for RecordingTarget {
         outs
     }
 
-    fn jump(&mut self, target: u32, args: &[u32]) {
-        self.module.calls.push(LirCall::Jump { target, args: args.to_vec() });
+    fn jump(&mut self, target: u32, branch: BranchTarget<u32>) {
+        // NOTE: the saved format records block args only; reentry hints are not
+        // persisted (the recorder predates `BranchTarget::reentry`).
+        self.module.calls.push(LirCall::Jump { target, args: branch.args });
     }
 
     fn branch(
         &mut self,
         cond: u32,
         then_block: u32,
-        then_args: &[u32],
+        then_branch: BranchTarget<u32>,
         else_block: u32,
-        else_args: &[u32],
+        else_branch: BranchTarget<u32>,
     ) {
         self.module.calls.push(LirCall::Branch {
             cond,
             then_block,
-            then_args: then_args.to_vec(),
+            then_args: then_branch.args,
             else_block,
-            else_args: else_args.to_vec(),
+            else_args: else_branch.args,
         });
     }
 
