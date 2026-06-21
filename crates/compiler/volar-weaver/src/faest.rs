@@ -323,8 +323,7 @@ mod tests {
             params: 2,
             stmts: std::vec![],
             stmt_provs: std::vec![],
-            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: std::vec![IRVarId(2)],
-            reentry: None }),
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: std::vec![IRVarId(2)] }),
         };
         block.push_stmt(
             BIrStmt::And(IRVarId(0), IRVarId(1)),

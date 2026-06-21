@@ -1540,8 +1540,11 @@ mod tests_rewrite {
 
     fn return_jmp(args: Vec<IRVarId>) -> IRTerminator {
         IRTerminator::Jmp {
-            func: IRBlockTargetId::Return,
-            args,
+            target: IRBranchTarget {
+                dest: IRBlockTargetId::Return,
+                args,
+                reentry: None,
+            },
         }
     }
 
@@ -1813,7 +1816,7 @@ mod tests_rewrite {
         // var1 (StorageRead result) should map to the rd_data ActionOutput.
         // var2 (Const) should map to the last statement index.
         match &block.terminator {
-            IRTerminator::Jmp { args, .. } => {
+            IRTerminator::Jmp { target: IRBranchTarget { args, .. } } => {
                 assert_eq!(args.len(), 2, "terminator should have 2 return args");
                 // Both args should be valid var IDs (< num_params + num_stmts)
                 let max_var = 1 + block.stmts.len() as u32;

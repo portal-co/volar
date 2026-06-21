@@ -22,7 +22,7 @@ use std::path::Path;
 use volar_c_backend::CBackend;
 use volar_compiler::{
     SourceInput, ir::IrType, ir::PrimitiveType,
-    linkage::{LinkageSystem, LinkedSpec},
+    linkage::{LinkageKind, LinkageSystem, LinkedSpec},
     parse_sources,
 };
 use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
@@ -76,7 +76,7 @@ fn parse_vole_spec() -> volar_compiler::ir::IrModule<volar_compiler::ir::IrFunct
 fn make_vole_linkage() -> LinkageSystem {
     let spec_module = parse_vole_spec();
     let mut ls = LinkageSystem::new();
-    ls.add(LinkedSpec { name: "volar_spec".into(), module: spec_module });
+    ls.add(LinkedSpec { name: "volar_spec".into(), module: spec_module, kind: LinkageKind::Inline });
     ls
 }
 

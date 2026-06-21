@@ -31,6 +31,7 @@ use volar_compiler::{
 use volar_compiler::linkage::LinkedSpec;
 use volar_ir::boolar::{BIrBlocks, BIrStmt};
 pub use volar_ir_passes::lower_to_circuit::LoweringMode;
+use volar_discipline::{Tagged, Transparent};
 
 use crate::{
     array_default, array_from_fn, base_index, build_return, clone_expr, expand_ors,
@@ -152,10 +153,10 @@ fn garble_struct<P: Clone>(base_expr: IrExpr<P>) -> IrExpr<P> {
 /// Backwards-compatible evaluator weave — discards provenance.
 ///
 /// See [`weave_evaluator_with_handler`] for the provenance-preserving variant.
-pub fn weave_evaluator<P: Clone>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule<IrFunction> {
-    let mut module = weave_evaluator_with_handler(circuit, name, &NoProvenance);
-    if let Some(ls) = linkage { ls.apply(&mut module); }
-    module
+pub fn weave_evaluator<P: Clone>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> Tagged<Transparent, IrModule<IrFunction>> {
+    let mut tagged = weave_evaluator_with_handler(circuit, name, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
+    tagged
 }
 
 /// Weave a single-block boolean circuit into a garbled-circuit **evaluator** `IrModule`,
@@ -168,7 +169,7 @@ pub fn weave_evaluator_with_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
@@ -303,7 +304,7 @@ where
         external_kind: ExternalKind::Normal,
     };
 
-    let mut module = IrModule {
+    let module = IrModule {
         name: "weaved".into(),
         functions: vec![func],
         structs: vec![],
@@ -314,7 +315,7 @@ where
 
         consts: vec![],
     };
-    module
+    Tagged::seal(module)
 }
 
 // ============================================================================
@@ -335,15 +336,15 @@ where
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
 /// Backwards-compatible garbler weave — discards provenance.
-pub fn weave_garbler<P: Clone>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule<IrFunction> {
-    let mut module = weave_garbler_with_handler(circuit, name, &NoProvenance);
-    if let Some(ls) = linkage { ls.apply(&mut module); }
-    module
+pub fn weave_garbler<P: Clone>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> Tagged<Transparent, IrModule<IrFunction>> {
+    let mut tagged = weave_garbler_with_handler(circuit, name, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
+    tagged
 }
 
 /// Weave a single-block boolean circuit into a garbled-circuit **garbler** `IrModule`,
 /// using `handler` to map input provenance into the output IR.
-pub fn weave_garbler_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, handler: &H) -> IrModule<IrFunction<H::Output>, H::Output>
+pub fn weave_garbler_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, handler: &H) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
@@ -506,7 +507,7 @@ where
         external_kind: ExternalKind::Normal,
     };
 
-    let mut module = IrModule {
+    let module = IrModule {
         name: "weaved_garbler".into(),
         functions: vec![func],
         structs: vec![],
@@ -517,7 +518,7 @@ where
 
         consts: vec![],
     };
-    module
+    Tagged::seal(module)
 }
 
 // ============================================================================
@@ -530,15 +531,15 @@ where
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
 /// Backwards-compatible GarbledCircuit weave — discards provenance.
-pub fn weave_into_gc<P: Clone>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule<IrFunction> {
-    let mut module = weave_into_gc_with_handler(circuit, name, &NoProvenance);
-    if let Some(ls) = linkage { ls.apply(&mut module); }
-    module
+pub fn weave_into_gc<P: Clone>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> Tagged<Transparent, IrModule<IrFunction>> {
+    let mut tagged = weave_into_gc_with_handler(circuit, name, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
+    tagged
 }
 
 /// Weave a single-block boolean circuit into a `GarbledCircuit`-returning function,
 /// using `handler` to map input provenance into the output IR.
-pub fn weave_into_gc_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, handler: &H) -> IrModule<IrFunction<H::Output>, H::Output>
+pub fn weave_into_gc_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, handler: &H) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
@@ -705,7 +706,7 @@ where
         external_kind: ExternalKind::Normal,
     };
 
-    let mut module = IrModule {
+    let module = IrModule {
         name: "weaved_into_gc".into(),
         functions: vec![func],
         structs: vec![],
@@ -716,7 +717,7 @@ where
 
         consts: vec![],
     };
-    module
+    Tagged::seal(module)
 }
 
 // ============================================================================
@@ -733,10 +734,10 @@ pub fn weave_eval_from_setup<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
-    let mut module = weave_eval_from_setup_with_handler(circuit, name, &NoProvenance);
-    if let Some(ls) = linkage { ls.apply(&mut module); }
-    module
+) -> Tagged<Transparent, IrModule<IrFunction>> {
+    let mut tagged = weave_eval_from_setup_with_handler(circuit, name, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
+    tagged
 }
 
 /// Weave a single-block boolean circuit into an EvalSetup-based evaluator,
@@ -745,7 +746,7 @@ pub fn weave_eval_from_setup_with_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
@@ -887,7 +888,7 @@ where
         external_kind: ExternalKind::Normal,
     };
 
-    let mut module = IrModule {
+    let module = IrModule {
         name: "weaved_eval_from_setup".into(),
         functions: vec![func],
         structs: vec![],
@@ -898,7 +899,7 @@ where
 
         consts: vec![],
     };
-    module
+    Tagged::seal(module)
 }
 
 // ============================================================================
@@ -912,9 +913,9 @@ pub fn weave_evaluator_bounded<P: Clone>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
+) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut module = weave_evaluator_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
-    if let Some(ls) = linkage { ls.apply(&mut module); }
+    if let Some(ls) = linkage { ls.apply(module.inner_mut()); }
     module
 }
 
@@ -925,7 +926,7 @@ pub fn weave_evaluator_bounded_with_handler<P, H>(
     limit: u32,
     mode: LoweringMode,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
@@ -942,9 +943,9 @@ pub fn weave_garbler_bounded<P: Clone>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
+) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut module = weave_garbler_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
-    if let Some(ls) = linkage { ls.apply(&mut module); }
+    if let Some(ls) = linkage { ls.apply(module.inner_mut()); }
     module
 }
 
@@ -955,7 +956,7 @@ pub fn weave_garbler_bounded_with_handler<P, H>(
     limit: u32,
     mode: LoweringMode,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
@@ -972,9 +973,9 @@ pub fn weave_into_gc_bounded<P: Clone>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
+) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut module = weave_into_gc_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
-    if let Some(ls) = linkage { ls.apply(&mut module); }
+    if let Some(ls) = linkage { ls.apply(module.inner_mut()); }
     module
 }
 
@@ -985,7 +986,7 @@ pub fn weave_into_gc_bounded_with_handler<P, H>(
     limit: u32,
     mode: LoweringMode,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
@@ -1002,9 +1003,9 @@ pub fn weave_eval_from_setup_bounded<P: Clone>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
+) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut module = weave_eval_from_setup_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
-    if let Some(ls) = linkage { ls.apply(&mut module); }
+    if let Some(ls) = linkage { ls.apply(module.inner_mut()); }
     module
 }
 
@@ -1015,7 +1016,7 @@ pub fn weave_eval_from_setup_bounded_with_handler<P, H>(
     limit: u32,
     mode: LoweringMode,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
@@ -1098,7 +1099,7 @@ mod tests {
     #[test]
     fn test_weave_evaluator_bounded_unconditional_compiles() {
         let circuit = build_simple_loop();
-        let module = weave_evaluator_bounded(&circuit, "loop_eval", 4, LoweringMode::Unconditional, None);
+        let module = weave_evaluator_bounded(&circuit, "loop_eval", 4, LoweringMode::Unconditional, None).into_inner();
         let code = print_weaved_module(&module, false);
         run_compile_check(&code, "bounded_eval_uncond");
     }
@@ -1106,7 +1107,7 @@ mod tests {
     #[test]
     fn test_weave_evaluator_bounded_with_flag_compiles() {
         let circuit = build_simple_loop();
-        let module = weave_evaluator_bounded(&circuit, "loop_eval_flag", 4, LoweringMode::WithTerminationFlag, None);
+        let module = weave_evaluator_bounded(&circuit, "loop_eval_flag", 4, LoweringMode::WithTerminationFlag, None).into_inner();
         let code = print_weaved_module(&module, false);
         run_compile_check(&code, "bounded_eval_flag");
     }
@@ -1114,7 +1115,7 @@ mod tests {
     #[test]
     fn test_weave_garbler_bounded_compiles() {
         let circuit = build_simple_loop();
-        let module = weave_garbler_bounded(&circuit, "loop_garble", 4, LoweringMode::Unconditional, None);
+        let module = weave_garbler_bounded(&circuit, "loop_garble", 4, LoweringMode::Unconditional, None).into_inner();
         let code = print_weaved_module(&module, false);
         run_compile_check(&code, "bounded_garbler");
     }
@@ -1122,7 +1123,7 @@ mod tests {
     #[test]
     fn test_weave_evaluator_compiles() {
         let circuit = build_xor_and_circuit();
-        let module = weave_evaluator(&circuit, "test_circuit", None);
+        let module = weave_evaluator(&circuit, "test_circuit", None).into_inner();
         let code = print_weaved_module(&module, false);
         run_compile_check(&code, "evaluator");
     }
@@ -1130,7 +1131,7 @@ mod tests {
     #[test]
     fn test_weave_garbler_compiles() {
         let circuit = build_xor_and_circuit();
-        let module = weave_garbler(&circuit, "test_circuit", None);
+        let module = weave_garbler(&circuit, "test_circuit", None).into_inner();
         let code = print_weaved_module(&module, false);
         // xor_and has 1 AND gate → return type must be `[GarbleTable<N>; 1]`, not Vec
         assert!(
@@ -1149,7 +1150,7 @@ mod tests {
     #[test]
     fn test_weave_into_gc_compiles() {
         let circuit = build_xor_and_circuit();
-        let module = weave_into_gc(&circuit, "test_circuit", None);
+        let module = weave_into_gc(&circuit, "test_circuit", None).into_inner();
         let code = print_weaved_module(&module, false);
         run_compile_check(&code, "into_gc");
     }
@@ -1157,7 +1158,7 @@ mod tests {
     #[test]
     fn test_weave_eval_from_setup_compiles() {
         let circuit = build_xor_and_circuit();
-        let module = weave_eval_from_setup(&circuit, "test_circuit", None);
+        let module = weave_eval_from_setup(&circuit, "test_circuit", None).into_inner();
         let code = print_weaved_module(&module, false);
         run_compile_check(&code, "eval_from_setup");
     }
@@ -1170,8 +1171,8 @@ mod tests {
 
         let and_circuit = crate::tests_common::build_and_circuit();
 
-        let gc_module = weave_into_gc(&and_circuit, "and2", None);
-        let eval_module = weave_eval_from_setup(&and_circuit, "and2", None);
+        let gc_module = weave_into_gc(&and_circuit, "and2", None).into_inner();
+        let eval_module = weave_eval_from_setup(&and_circuit, "and2", None).into_inner();
 
         let combined_module = IrModule {
             name: "combined".into(),

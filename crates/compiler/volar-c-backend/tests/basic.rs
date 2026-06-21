@@ -2,7 +2,7 @@
 //! Integration tests: emit C, compile with `cc`, run, check stdout.
 
 use volar_c_backend::CBackend;
-use volar_lir::{IcmpPred, LirTarget, LirType};
+use volar_lir::{BranchTarget, IcmpPred, LirTarget, LirType};
 use volar_lir_test_corpus::compile_and_run;
 
 // ============================================================================
@@ -54,7 +54,7 @@ fn test_countdown() {
     let done_result = b.add_block_param(done_block, LirType::U64);
 
     b.switch_to_block(entry);
-    b.jump(loop_block, &[n_init, acc_init]);
+    b.jump(loop_block, BranchTarget::args([n_init, acc_init]));
 
     b.switch_to_block(loop_block);
     let zero    = b.iconst(LirType::U64, 0);
@@ -62,7 +62,13 @@ fn test_countdown() {
     let new_acc = b.add(accum, counter);
     let one     = b.iconst(LirType::U64, 1);
     let new_ctr = b.sub(counter, one);
-    b.branch(cond, done_block, &[accum], loop_block, &[new_ctr, new_acc]);
+    b.branch(
+        cond,
+        done_block,
+        BranchTarget::args([accum]),
+        loop_block,
+        BranchTarget::args([new_ctr, new_acc]),
+    );
 
     b.switch_to_block(done_block);
     b.ret(&[done_result]);
@@ -91,6 +97,7 @@ fn test_if_max_via_codegen() {
 
     let func = IrFunction {
         name: "ir_max".to_owned(),
+        module_path: vec![],
         generics: vec![],
         receiver: None,
         params: vec![
@@ -180,6 +187,7 @@ fn test_array_splat() {
 
     let func = IrFunction {
         name: "arr_sum".to_owned(),
+        module_path: vec![],
         generics: vec![],
         receiver: None,
         params: vec![IrParam { name: "a".to_owned(), ty: arr_ty }],
@@ -195,6 +203,7 @@ fn test_array_splat() {
         enums: vec![],
         traits: vec![],
         impls: vec![],
+        consts: vec![],
         functions: vec![func],
         type_aliases: vec![],
     };
@@ -235,6 +244,7 @@ fn test_struct_splat() {
     // struct Point { x: u32, y: u32 }
     let point_struct = IrStruct {
         kind: StructKind::Custom("Point".to_owned()),
+        module_path: vec![],
         generics: vec![],
         fields: vec![
             IrField { name: "x".to_owned(), ty: IrType::Primitive(PrimitiveType::U32), public: true },
@@ -253,6 +263,7 @@ fn test_struct_splat() {
     // fn manhattan(p: Point) -> u32 { p.x + p.y }
     let func = IrFunction {
         name: "manhattan".to_owned(),
+        module_path: vec![],
         generics: vec![],
         receiver: None,
         params: vec![IrParam { name: "p".to_owned(), ty: point_ty }],
@@ -282,6 +293,7 @@ fn test_struct_splat() {
         enums: vec![],
         traits: vec![],
         impls: vec![],
+        consts: vec![],
         functions: vec![func],
         type_aliases: vec![],
     };
@@ -316,6 +328,7 @@ fn test_phase2_codegen_struct_array() {
     // fn xor_bytes(x: u8, y: u8) -> u8 { x ^ y }
     let func = IrFunction {
         name: "xor_bytes".to_owned(),
+        module_path: vec![],
         generics: vec![],
         receiver: None,
         params: vec![
@@ -342,6 +355,7 @@ fn test_phase2_codegen_struct_array() {
         enums: vec![],
         traits: vec![],
         impls: vec![],
+        consts: vec![],
         functions: vec![func],
         type_aliases: vec![],
     };
@@ -397,6 +411,7 @@ fn test_tuple_pattern_destructuring() {
     // fn make_pair() -> (u32, u32) { (3, 7) }
     let make_pair = IrFunction {
         name: "make_pair".into(),
+        module_path: vec![],
         generics: vec![],
         receiver: None,
         params: vec![],
@@ -422,6 +437,7 @@ fn test_tuple_pattern_destructuring() {
     // }
     let sum_pair = IrFunction {
         name: "sum_pair".into(),
+        module_path: vec![],
         generics: vec![],
         receiver: None,
         params: vec![],
@@ -460,6 +476,7 @@ fn test_tuple_pattern_destructuring() {
         enums: vec![],
         traits: vec![],
         impls: vec![],
+        consts: vec![],
         type_aliases: vec![],
         functions: vec![make_pair, sum_pair],
     };

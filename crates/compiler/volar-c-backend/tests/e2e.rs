@@ -143,7 +143,7 @@ fn biir_movfuscate_two_block_not() {
     let dag = make_biir_two_block_not();
     let movf = movfuscate_biir(&dag);
     assert!(movf.is_movfuscated(), "should be single block after movfuscation");
-    assert_eq!(movf.0[0].params, 2, "combined block has pc(1) + state(1) params");
+    assert_eq!(movf.blocks[0].params, 2, "combined block has pc(1) + state(1) params");
     let circuit = lower_to_circuit(&movf, 4, LoweringMode::Unconditional);
     assert!(circuit.is_circuit(), "should be a flat circuit after lower_to_circuit");
     // [pc=false, state=false] → NOT(false) = 1
@@ -233,10 +233,12 @@ fn compiler_oracle_dispatch() {
         enums: vec![],
         traits: vec![],
         impls: vec![],
+        consts: vec![],
         type_aliases: vec![],
         functions: vec![
             IrFunction {
                 name: "double".to_owned(),
+                module_path: vec![],
                 generics: vec![],
                 receiver: None,
                 params: vec![IrParam {
@@ -250,6 +252,7 @@ fn compiler_oracle_dispatch() {
             },
             IrFunction {
                 name: "call_it".to_owned(),
+                module_path: vec![],
                 generics: vec![],
                 receiver: None,
                 params: vec![IrParam {
@@ -299,10 +302,12 @@ fn compiler_rng_dispatch() {
         enums: vec![],
         traits: vec![],
         impls: vec![],
+        consts: vec![],
         type_aliases: vec![],
         functions: vec![
             IrFunction {
                 name: "get_rand".to_owned(),
+                module_path: vec![],
                 generics: vec![],
                 receiver: None,
                 params: vec![],
@@ -313,6 +318,7 @@ fn compiler_rng_dispatch() {
             },
             IrFunction {
                 name: "use_rng".to_owned(),
+                module_path: vec![],
                 generics: vec![],
                 receiver: None,
                 params: vec![],
@@ -390,6 +396,7 @@ fn enum_option_roundtrip() {
     // fn make_some(x: u32) -> OptionU32 { Some(x) }
     let make_some = IrFunction {
         name: "make_some".into(),
+        module_path: vec![],
         generics: vec![],
         receiver: None,
         params: vec![IrParam { name: "x".into(), ty: IrType::Primitive(PrimitiveType::U32) }],
@@ -412,6 +419,7 @@ fn enum_option_roundtrip() {
     // fn make_none() -> OptionU32 { None }
     let make_none = IrFunction {
         name: "make_none".into(),
+        module_path: vec![],
         generics: vec![],
         receiver: None,
         params: vec![],
@@ -433,6 +441,7 @@ fn enum_option_roundtrip() {
     // }
     let unwrap_or = IrFunction {
         name: "unwrap_or".into(),
+        module_path: vec![],
         generics: vec![],
         receiver: None,
         params: vec![
@@ -474,6 +483,7 @@ fn enum_option_roundtrip() {
         enums: vec![option_enum],
         traits: vec![],
         impls: vec![],
+        consts: vec![],
         type_aliases: vec![],
         functions: vec![make_some, make_none, unwrap_or],
     };
@@ -549,6 +559,7 @@ fn spec_grafhen_word_zero() {
 
     let func = IrFunction {
         name: "make_zero".into(),
+        module_path: vec![],
         generics: vec![],
         receiver: None,
         params: vec![],
@@ -564,6 +575,7 @@ fn spec_grafhen_word_zero() {
         enums: vec![],
         traits: vec![],
         impls: vec![],
+        consts: vec![],
         type_aliases: vec![],
         functions: vec![func],
     };
@@ -621,6 +633,7 @@ fn spec_grafhen_word_nonzero() {
 
     let func = IrFunction {
         name: "make_word".into(),
+        module_path: vec![],
         generics: vec![],
         receiver: None,
         params: vec![],
@@ -636,6 +649,7 @@ fn spec_grafhen_word_nonzero() {
         enums: vec![],
         traits: vec![],
         impls: vec![],
+        consts: vec![],
         type_aliases: vec![],
         functions: vec![func],
     };

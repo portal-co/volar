@@ -57,6 +57,7 @@ use volar_compiler::{
     },
     linkage::LinkageSystem,
 };
+use volar_discipline::{Tagged, Transparent};
 use volar_ir::{
     boolar::{BIrBlocks, BIrStmt},
     ir::{IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt, IRTerminator, IRType, IRTypeId, IRTypes, IRVarId, PrimType, StorageId},
@@ -1088,7 +1089,7 @@ where
     if scheme.cfg_capable() {
         FheOutput::Cfg(weave_fhe_cfg_with_handler(blocks, types, scheme, name, linkage, storage, handler))
     } else {
-        FheOutput::Flat(weave_fhe_flat_ir_with_handler(blocks, types, scheme, name, linkage, storage, handler))
+        FheOutput::Flat(weave_fhe_flat_ir_with_handler(blocks, types, scheme, name, linkage, storage, handler).into_inner())
     }
 }
 
@@ -1196,7 +1197,7 @@ fn weave_fhe_flat<S: FheScheme>(
             &derived
         }
     };
-    let mut module = weave_fhe_flat_bir(&circuit, scheme, name, &NoProvenance, Some(effective_storage));
+    let mut module = weave_fhe_flat_bir(&circuit, scheme, name, &NoProvenance, Some(effective_storage)).into_inner();
     if let Some(ls) = linkage {
         ls.apply(&mut module);
     }
@@ -1218,7 +1219,7 @@ pub fn weave_fhe_flat_ir_with_handler<P, H, S: FheScheme>(
     linkage: Option<&LinkageSystem>,
     storage: Option<&FheStorageConfig>,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
@@ -1242,7 +1243,7 @@ where
         let lib_prov: H::Output = circuit.blocks[0].stmt_provs.first()
             .map(|p| handler.map(p))
             .expect("weave_fhe_flat_ir_with_handler: circuit has no statements; cannot derive provenance for linked specs");
-        ls.apply_converting(&mut module, || lib_prov.clone());
+        ls.apply_converting(module.inner_mut(), || lib_prov.clone());
     }
     module
 }
@@ -1457,7 +1458,7 @@ pub fn weave_fhe_flat_bir<P, H, S>(
     name: &str,
     handler: &H,
     storage: Option<&FheStorageConfig>,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
@@ -1687,7 +1688,7 @@ where
 
         consts: vec![],
     };
-    module
+    Tagged::seal(module)
 }
 
 // ============================================================================
@@ -4232,7 +4233,7 @@ mod tests {
         let config = storage_config_2cells();
         let module = weave_fhe_flat_bir(
             &circuit, &scheme, "stor_test", &NoProvenance, Some(&config),
-        );
+        ).into_inner();
         // Should produce a function with storage parameters.
         assert_eq!(module.functions.len(), 1);
         let func = &module.functions[0];
@@ -4254,7 +4255,7 @@ mod tests {
         let config = storage_config_2cells();
         let module = weave_fhe_flat_bir(
             &circuit, &scheme, "stor_grafhen", &NoProvenance, Some(&config),
-        );
+        ).into_inner();
         assert_eq!(module.functions.len(), 1);
         let func = &module.functions[0];
         // pk + 2 inputs + 1 storage param.
@@ -4275,7 +4276,7 @@ mod tests {
         // Pass None => 0 cells => reads produce zeros, writes are no-ops.
         let module = weave_fhe_flat_bir(
             &circuit, &scheme, "no_stor", &NoProvenance, None,
-        );
+        ).into_inner();
         assert_eq!(module.functions.len(), 1);
     }
 
@@ -4286,7 +4287,7 @@ mod tests {
         let config = storage_config_2cells();
         let module = weave_fhe_flat_bir(
             &circuit, &scheme, "wb", &NoProvenance, Some(&config),
-        );
+        ).into_inner();
         let code = print_fhe_flat_module(&module, true);
         // The write-back assigns to storage_5_1[0] and storage_5_1[1].
         assert!(
@@ -4363,12 +4364,12 @@ mod tests {
         let manual_config = storage_config_2cells();
         let manual_module = weave_fhe_flat_bir(
             &circuit, &scheme, "manual", &NoProvenance, Some(&manual_config),
-        );
+        ).into_inner();
 
         let derived_config = derive_storage_config(&circuit);
         let derived_module = weave_fhe_flat_bir(
             &circuit, &scheme, "derived", &NoProvenance, Some(&derived_config),
-        );
+        ).into_inner();
 
         let manual_func = &manual_module.functions[0];
         let derived_func = &derived_module.functions[0];
@@ -4852,7 +4853,7 @@ mod tests {
         let scheme = TfheScheme::flat();
         let module = weave_fhe_flat_ir_with_handler(
             &blocks, &types, &scheme, "and_flat_prov", None, None, &KeepProvenance,
-        );
+        ).into_inner();
         assert_eq!(module.functions.len(), 1);
         let func = &module.functions[0];
         assert!(!func.body.stmt_provs.is_empty());

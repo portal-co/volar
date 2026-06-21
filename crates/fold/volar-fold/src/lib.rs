@@ -56,5 +56,6 @@ pub mod verify;
 pub mod ivc;
 pub mod link;
 pub mod bridge_adapter;
+pub mod verifier;
 
 pub use scalar::Scalar;

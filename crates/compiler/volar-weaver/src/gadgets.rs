@@ -332,8 +332,7 @@ mod tests {
                 params: 2 * n as u32,
                 stmts,
                 stmt_provs,
-                terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(result)],
-                reentry: None }),
+                terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(result)] }),
             }],
             pre_init: vec![],
         }
@@ -355,8 +354,7 @@ mod tests {
                 params: n as u32,
                 stmts,
                 stmt_provs,
-                terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(outs[out_bit])],
-                reentry: None }),
+                terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(outs[out_bit])] }),
             }],
             pre_init: vec![],
         }

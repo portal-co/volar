@@ -23,6 +23,7 @@ use volar_compiler::{
     },
     linkage::LinkageSystem,
 };
+use volar_discipline::{Tagged, Transparent};
 use volar_ir::boolar::{BIrBlocks, BIrStmt};
 use volar_ir::ir::{
     IRBlocks, IRBlockTargetId, IRTerminator,
@@ -49,7 +50,7 @@ pub fn weave_noop(
     circuit: &BIrBlocks,
     name: &str,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
+) -> Tagged<Transparent, IrModule<IrFunction>> {
     assert!(
         circuit.is_circuit(),
         "weave_noop: circuit must satisfy is_circuit() (single block with Return terminator)"
@@ -178,7 +179,7 @@ pub fn weave_noop(
     if let Some(ls) = linkage {
         ls.apply(&mut module);
     }
-    module
+    Tagged::seal(module)
 }
 
 // ============================================================================
@@ -199,7 +200,7 @@ pub fn weave_noop_ir(
     types: &CirTypes,
     name: &str,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
+) -> Tagged<Transparent, IrModule<IrFunction>> {
     assert!(
         circuit.is_circuit(),
         "weave_noop_ir: circuit must satisfy is_circuit() (single block with Return terminator)"
@@ -291,7 +292,7 @@ pub fn weave_noop_ir(
     if let Some(ls) = linkage {
         ls.apply(&mut module);
     }
-    module
+    Tagged::seal(module)
 }
 
 /// Generic counterpart to [`weave_noop_ir`] that threads provenance through
@@ -310,7 +311,7 @@ pub fn weave_noop_ir_with_handler<P, H>(
     name: &str,
     linkage: Option<&LinkageSystem>,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone,
     H: ProvenanceHandler<P>,
@@ -409,7 +410,7 @@ where
             .expect("weave_noop_ir_with_handler: circuit has no statements; cannot derive provenance for linked specs");
         ls.apply_converting(&mut module, || lib_prov.clone());
     }
-    module
+    Tagged::seal(module)
 }
 
 /// Lower a single `IRStmt` (Volar field-level) to a cleartext `IrExpr<Q>`.
@@ -573,7 +574,7 @@ mod tests {
     #[test]
     fn test_weave_noop_compiles() {
         let circuit = build_xor_and_circuit();
-        let module = weave_noop(&circuit, "test", None);
+        let module = weave_noop(&circuit, "test", None).into_inner();
         let code = print_noop_module(&module);
         run_compile_check(&code, "noop_xor_and");
     }
@@ -581,7 +582,7 @@ mod tests {
     #[test]
     fn test_weave_noop_and_circuit() {
         let circuit = build_and_circuit();
-        let module = weave_noop(&circuit, "and2", None);
+        let module = weave_noop(&circuit, "and2", None).into_inner();
         let code = print_noop_module(&module);
         run_compile_check(&code, "noop_and_circuit");
     }
@@ -589,7 +590,7 @@ mod tests {
     #[test]
     fn test_weave_noop_is_cleartext() {
         let circuit = build_xor_and_circuit();
-        let module = weave_noop(&circuit, "test", None);
+        let module = weave_noop(&circuit, "test", None).into_inner();
         let code = print_noop_module(&module);
         assert!(
             code.contains('^') || code.contains('&'),
@@ -637,7 +638,7 @@ mod tests {
         };
 
         let circuit = IRBlocks::new(alloc::vec![block]);
-        let module = weave_noop_ir(&circuit, &types, "and_ir", None);
+        let module = weave_noop_ir(&circuit, &types, "and_ir", None).into_inner();
         let code = print_noop_module(&module);
         run_compile_check(&code, "noop_ir_and");
     }
@@ -673,7 +674,7 @@ mod tests {
         };
 
         let circuit = IRBlocks::new(alloc::vec![block]);
-        let module = weave_noop_ir_with_handler(&circuit, &types, "and_ir_prov", None, &KeepProvenance);
+        let module = weave_noop_ir_with_handler(&circuit, &types, "and_ir_prov", None, &KeepProvenance).into_inner();
         assert_eq!(module.functions.len(), 1);
         assert_eq!(module.functions[0].body.stmt_provs, alloc::vec![9u32]);
     }
