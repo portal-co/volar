@@ -339,6 +339,31 @@ impl Scalar {
     }
 }
 
+// By-value operator impls so `Scalar` can instantiate the field-generic spec
+// fold primitives (`volar_spec::fold`), which are written in operator style
+// (like `volar_spec::vole::prove`).  These delegate to the inherent methods.
+impl core::ops::Add for Scalar {
+    type Output = Scalar;
+    #[inline]
+    fn add(self, rhs: Scalar) -> Scalar {
+        Scalar::add(&self, &rhs)
+    }
+}
+impl core::ops::Sub for Scalar {
+    type Output = Scalar;
+    #[inline]
+    fn sub(self, rhs: Scalar) -> Scalar {
+        Scalar::sub(&self, &rhs)
+    }
+}
+impl core::ops::Mul for Scalar {
+    type Output = Scalar;
+    #[inline]
+    fn mul(self, rhs: Scalar) -> Scalar {
+        Scalar::mul(&self, &rhs)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;

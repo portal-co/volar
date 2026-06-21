@@ -10,6 +10,7 @@ pub mod garble;
 pub mod ot;
 pub mod vole;
 pub mod curve;
+pub mod fold;
 pub mod mpc;
 pub mod lwe;
 // pub mod xsat;

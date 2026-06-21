@@ -1,0 +1,122 @@
+// @reliability: experimental
+//! Cross-test: the field-generic spec fold primitives (`volar_spec::fold`)
+//! reproduce the `volar-fold` runtime **oracle** (`nifs::prove_fold`) on the
+//! verifier-gate `and_check` R1CS. This is the parity check the plan calls for:
+//! the spec primitives (which the verifier weaver will emit + lower to a backend)
+//! must agree with the reference folding library bit-for-bit.
+
+use volar_fold::nifs::{fresh, prove_fold};
+use volar_fold::pedersen::PedersenParams;
+use volar_fold::scalar::Scalar;
+use volar_fold::verifier::and_check_r1cs;
+use volar_spec::fold as spec;
+
+fn s(x: u64) -> Scalar {
+    Scalar::from_u64(x)
+}
+
+/// An honest gate witness `[k_a,k_b,k_c,Δ,V̂,P₁,P₂]` with `V̂ = K_c·Δ − K_a·K_b`,
+/// built via the spec helper so `P₁ = K_a·K_b`, `P₂ = K_c·Δ`.
+fn gate(k_a: u64, k_b: u64, k_c: u64, delta: u64) -> [Scalar; 7] {
+    let v_hat = s(k_c).mul(&s(delta)).sub(&s(k_a).mul(&s(k_b)));
+    spec::gate_witness(s(k_a), s(k_b), s(k_c), s(delta), v_hat)
+}
+
+#[test]
+fn spec_fold_matches_oracle() {
+    let r1cs = and_check_r1cs();
+    let params = PedersenParams::setup(8, 7);
+    let w1 = gate(3, 4, 5, 6);
+    let w2 = gate(7, 8, 9, 2);
+    let r = s(0xabcd);
+    let r_t = s(0x1357);
+
+    // Oracle fold (the reference library).
+    let (u1, ow1) = fresh(&r1cs, &params, &w1, s(11));
+    let (u2, ow2) = fresh(&r1cs, &params, &w2, s(13));
+    let (_uf, owf, _proof) = prove_fold(&r1cs, &params, &u1, &ow1, &u2, &ow2, &r, &r_t);
+
+    // Spec fold (scalar core): fresh instances have u = 1, E = 0.
+    let e_zero = [Scalar::default(); 3];
+    let t = spec::cross_term(&w1, &u1.u, &w2, &u2.u);
+    let (sw, se) = spec::fold_witness(&w1, &e_zero, &w2, &e_zero, &t, &r);
+
+    assert_eq!(sw.to_vec(), owf.w, "spec folded W must match oracle");
+    assert_eq!(se.to_vec(), owf.e, "spec folded E must match oracle");
+
+    // Relaxed satisfaction agrees between spec and oracle on the folded instance.
+    let uf_u = spec::fold_u(&u1.u, &u2.u, &r);
+    assert!(spec::is_satisfied_relaxed(&sw, &se, &uf_u), "spec relaxed-sat");
+    assert!(r1cs.is_satisfied_relaxed(&owf.w, &owf.e, &uf_u), "oracle relaxed-sat");
+}
+
+#[test]
+fn spec_commit_fold_matches_oracle() {
+    // The spec commitment (instance) fold reproduces the oracle's verify_fold.
+    let r1cs = and_check_r1cs();
+    let params = PedersenParams::setup(8, 7);
+    let w1 = gate(3, 4, 5, 6);
+    let w2 = gate(7, 8, 9, 2);
+    let r = s(0xabcd);
+    let r_t = s(0x1357);
+
+    let (u1, ow1) = fresh(&r1cs, &params, &w1, s(11));
+    let (u2, ow2) = fresh(&r1cs, &params, &w2, s(13));
+    let (uf, _owf, proof) = prove_fold(&r1cs, &params, &u1, &ow1, &u2, &ow2, &r, &r_t);
+
+    let r_le = r.to_bytes_le();
+    let r2_le = r.mul(&r).to_bytes_le();
+    let spec_cw = volar_spec::fold::fold_commit_w(&u1.comm_w, &u2.comm_w, &r_le);
+    let spec_ce =
+        volar_spec::fold::fold_commit_e(&u1.comm_e, &proof.comm_t, &u2.comm_e, &r_le, &r2_le);
+
+    assert_eq!(spec_cw, uf.comm_w, "spec comm_W fold matches oracle");
+    assert_eq!(spec_ce, uf.comm_e, "spec comm_E fold matches oracle");
+}
+
+#[test]
+fn spec_relaxed_sat_accepts_honest_rejects_tampered() {
+    let one = s(1);
+    let zero_e = [Scalar::default(); 3];
+
+    let honest = gate(3, 4, 5, 6);
+    assert!(spec::is_satisfied_relaxed(&honest, &zero_e, &one), "honest gate accepts");
+
+    let mut tampered = gate(3, 4, 5, 6);
+    tampered[4] = tampered[4].add(&one); // break V̂
+    assert!(!spec::is_satisfied_relaxed(&tampered, &zero_e, &one), "tampered gate rejects");
+}
+
+#[test]
+fn spec_fold_chain_matches_oracle() {
+    // Fold three gates sequentially via both paths; final W/E must agree.
+    let r1cs = and_check_r1cs();
+    let params = PedersenParams::setup(8, 99);
+    let gates = [gate(2, 3, 4, 5), gate(4, 5, 6, 7), gate(6, 7, 8, 9)];
+    let rs = [s(0x10), s(0x20)];
+    let rts = [s(0x11), s(0x21)];
+
+    // Oracle chain.
+    let (mut ou, mut ow) = fresh(&r1cs, &params, &gates[0], s(1));
+    // Spec chain (carry W, E, u).
+    let mut sw = gates[0];
+    let mut se = [Scalar::default(); 3];
+    let mut su = ou.u;
+
+    for k in 0..2 {
+        let (nu, nw) = fresh(&r1cs, &params, &gates[k + 1], s(100 + k as u64));
+        let (uf, wf, _) = prove_fold(&r1cs, &params, &ou, &ow, &nu, &nw, &rs[k], &rts[k]);
+        ou = uf;
+        ow = wf;
+
+        let t = spec::cross_term(&sw, &su, &gates[k + 1], &nu.u);
+        let (nsw, nse) = spec::fold_witness(&sw, &se, &gates[k + 1], &[Scalar::default(); 3], &t, &rs[k]);
+        sw = nsw;
+        se = nse;
+        su = spec::fold_u(&su, &nu.u, &rs[k]);
+    }
+
+    assert_eq!(sw.to_vec(), ow.w, "chained spec W matches oracle");
+    assert_eq!(se.to_vec(), ow.e, "chained spec E matches oracle");
+    assert!(r1cs.is_satisfied_relaxed(&ow.w, &ow.e, &su));
+}
