@@ -20,6 +20,12 @@
 //! - `printer`: Pretty-printer for IR
 
 #![no_std]
+// The IR types (`ir.rs`) form a deeply interconnected, mutually-recursive graph
+// (`IrExpr`/`IrBlock`/`IrType`/`IrPattern`/iterator chains). rkyv's `omit_bounds`
+// breaks the recursive trait-bound *generation* (which otherwise causes a
+// multi-GB, multi-hour coherence blowup under `--features rkyv`), but resolving
+// the archived associated types still recurses past the default limit of 128.
+#![recursion_limit = "1024"]
 
 #[cfg(feature = "std")]
 extern crate std;

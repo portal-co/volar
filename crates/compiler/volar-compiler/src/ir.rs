@@ -80,33 +80,53 @@ impl IterMethod {
 /// backend-neutral.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(feature = "rkyv", rkyv(
+    archive_bounds(P: rkyv::Archive),
+    serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source, P: rkyv::Serialize<__S>),
+    deserialize_bounds(__D::Error: rkyv::rancor::Source, P::Archived: rkyv::Deserialize<P, __D>),
+    bytecheck(bounds(__C: rkyv::validation::ArchiveContext, <__C as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source, P::Archived: rkyv::bytecheck::CheckBytes<__C>)),
+))]
 pub struct IrIterChain<P: Clone = ()> {
     /// Where the data comes from
+    #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
     pub source: IterChainSource<P>,
     /// Zero or more intermediate transformations, in order
+    #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
     pub steps: Vec<IterStep<P>>,
     /// How the pipeline terminates
+    #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
     pub terminal: IterTerminal<P>,
 }
 
 /// The data source for an iterator chain.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(feature = "rkyv", rkyv(
+    archive_bounds(P: rkyv::Archive),
+    serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source, P: rkyv::Serialize<__S>),
+    deserialize_bounds(__D::Error: rkyv::rancor::Source, P::Archived: rkyv::Deserialize<P, __D>),
+    bytecheck(bounds(__C: rkyv::validation::ArchiveContext, <__C as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source, P::Archived: rkyv::bytecheck::CheckBytes<__C>)),
+))]
 pub enum IterChainSource<P: Clone = ()> {
     /// `expr.iter()`, `expr.into_iter()`, `expr.chars()`, `expr.bytes()`
     Method {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         collection: Box<IrExpr<P>>,
         method: IterMethod,
     },
     /// A range expression used as an iterator: `start..end` or `start..=end`
     Range {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         start: Box<IrExpr<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         end: Box<IrExpr<P>>,
         inclusive: bool,
     },
     /// Zipping two iterator chains: `a.iter().zip(b.iter())`
     Zip {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         left: Box<IrIterChain<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         right: Box<IrIterChain<P>>,
     },
 }
@@ -114,28 +134,40 @@ pub enum IterChainSource<P: Clone = ()> {
 /// An intermediate transformation step in an iterator pipeline.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(feature = "rkyv", rkyv(
+    archive_bounds(P: rkyv::Archive),
+    serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source, P: rkyv::Serialize<__S>),
+    deserialize_bounds(__D::Error: rkyv::rancor::Source, P::Archived: rkyv::Deserialize<P, __D>),
+    bytecheck(bounds(__C: rkyv::validation::ArchiveContext, <__C as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source, P::Archived: rkyv::bytecheck::CheckBytes<__C>)),
+))]
 pub enum IterStep<P: Clone = ()> {
     /// `.map(|var| body)`
-    Map { var: IrPattern, body: Box<IrExpr<P>> },
+    Map { var: IrPattern, #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] body: Box<IrExpr<P>> },
     /// `.filter(|var| body)`
-    Filter { var: IrPattern, body: Box<IrExpr<P>> },
+    Filter { var: IrPattern, #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] body: Box<IrExpr<P>> },
     /// `.filter_map(|var| body)`
-    FilterMap { var: IrPattern, body: Box<IrExpr<P>> },
+    FilterMap { var: IrPattern, #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] body: Box<IrExpr<P>> },
     /// `.flat_map(|var| body)`
-    FlatMap { var: IrPattern, body: Box<IrExpr<P>> },
+    FlatMap { var: IrPattern, #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] body: Box<IrExpr<P>> },
     /// `.enumerate()`
     Enumerate,
     /// `.take(count)`
-    Take { count: Box<IrExpr<P>> },
+    Take { #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] count: Box<IrExpr<P>> },
     /// `.skip(count)`
-    Skip { count: Box<IrExpr<P>> },
+    Skip { #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] count: Box<IrExpr<P>> },
     /// `.chain(other)` — appends another iterator chain.
-    Chain { other: Box<IrIterChain<P>> },
+    Chain { #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] other: Box<IrIterChain<P>> },
 }
 
 /// How an iterator pipeline terminates.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(feature = "rkyv", rkyv(
+    archive_bounds(P: rkyv::Archive),
+    serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source, P: rkyv::Serialize<__S>),
+    deserialize_bounds(__D::Error: rkyv::rancor::Source, P::Archived: rkyv::Deserialize<P, __D>),
+    bytecheck(bounds(__C: rkyv::validation::ArchiveContext, <__C as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source, P::Archived: rkyv::bytecheck::CheckBytes<__C>)),
+))]
 pub enum IterTerminal<P: Clone = ()> {
     /// `.collect()` — materializes into a `Vec` (or other container).
     Collect,
@@ -143,9 +175,11 @@ pub enum IterTerminal<P: Clone = ()> {
     CollectTyped(IrType),
     /// `.fold(init, |acc, elem| body)`
     Fold {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         init: Box<IrExpr<P>>,
         acc_var: IrPattern,
         elem_var: IrPattern,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         body: Box<IrExpr<P>>,
     },
     /// No terminal — the chain is still lazy (e.g. used as the `collection`
@@ -286,6 +320,11 @@ pub enum ArrayKind {
 /// Array length representation
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(feature = "rkyv", rkyv(
+    serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source),
+    deserialize_bounds(__D::Error: rkyv::rancor::Source),
+    bytecheck(bounds(__C: rkyv::validation::ArchiveContext, <__C as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source)),
+))]
 pub enum ArrayLength {
     /// Constant size
     Const(usize),
@@ -295,6 +334,7 @@ pub enum ArrayLength {
     TypeParam(String),
 
     Projection {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         r#type: Box<IrType>,
         field: String,
         /// Optional trait path for qualified projections like `<T as Logarithm2>::Output`
@@ -1198,30 +1238,53 @@ pub struct IrTypeAlias {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(feature = "rkyv", rkyv(
+    archive_bounds(P: rkyv::Archive),
+    serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source, P: rkyv::Serialize<__S>),
+    deserialize_bounds(__D::Error: rkyv::rancor::Source, P::Archived: rkyv::Deserialize<P, __D>),
+    bytecheck(bounds(__C: rkyv::validation::ArchiveContext, <__C as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source, P::Archived: rkyv::bytecheck::CheckBytes<__C>)),
+))]
 pub struct IrBlock<P: Clone = ()> {
+    #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
     pub stmts: Vec<IrStmt<P>>,
     pub stmt_provs: Vec<P>,
+    #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
     pub expr: Option<Box<IrExpr<P>>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 #[non_exhaustive]
+#[cfg_attr(feature = "rkyv", rkyv(
+    archive_bounds(P: rkyv::Archive),
+    serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source, P: rkyv::Serialize<__S>),
+    deserialize_bounds(__D::Error: rkyv::rancor::Source, P::Archived: rkyv::Deserialize<P, __D>),
+    bytecheck(bounds(__C: rkyv::validation::ArchiveContext, <__C as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source, P::Archived: rkyv::bytecheck::CheckBytes<__C>)),
+))]
 pub enum IrStmt<P: Clone = ()> {
     Let {
         pattern: IrPattern,
         ty: Option<IrType>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         init: Option<IrExpr<P>>,
     },
-    Semi(IrExpr<P>),
-    Expr(IrExpr<P>),
+    Semi(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] IrExpr<P>),
+    Expr(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] IrExpr<P>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(feature = "rkyv", rkyv(
+    archive_bounds(P: rkyv::Archive),
+    serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source, P: rkyv::Serialize<__S>),
+    deserialize_bounds(__D::Error: rkyv::rancor::Source, P::Archived: rkyv::Deserialize<P, __D>),
+    bytecheck(bounds(__C: rkyv::validation::ArchiveContext, <__C as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source, P::Archived: rkyv::bytecheck::CheckBytes<__C>)),
+))]
 pub struct IrMatchArm<P: Clone = ()> {
     pub pattern: IrPattern,
+    #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
     pub guard: Option<IrExpr<P>>,
+    #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
     pub body: IrExpr<P>,
 }
 
@@ -1235,40 +1298,55 @@ pub struct IrClosureParam {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 #[non_exhaustive]
+#[cfg_attr(feature = "rkyv", rkyv(
+    serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source),
+    deserialize_bounds(__D::Error: rkyv::rancor::Source),
+    bytecheck(bounds(__C: rkyv::validation::ArchiveContext, <__C as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source)),
+))]
 pub enum IrType {
     Primitive(PrimitiveType),
     Array {
         kind: ArrayKind,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         elem: Box<IrType>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         len: ArrayLength,
     },
     Vector {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         elem: Box<IrType>,
     },
     Struct {
         kind: StructKind,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         type_args: Vec<IrType>,
     },
     TypeParam(String),
-    Tuple(Vec<IrType>),
+    Tuple(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Vec<IrType>),
     Unit,
     Reference {
         mutable: bool,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         elem: Box<IrType>,
     },
     Projection {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         base: Box<IrType>,
         /// The trait for the projection (e.g., "BlockEncrypt" for <B as BlockEncrypt>::BlockSize)
         trait_path: Option<String>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         trait_args: Vec<IrType>,
         assoc: AssociatedType,
     },
     /// Existential type (impl Trait)
     Existential {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         bounds: Vec<IrTraitBound>,
     },
     FnPtr {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         params: Vec<IrType>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         ret: Box<IrType>,
     },
     Never,
@@ -1362,9 +1440,16 @@ impl fmt::Display for IrType {
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[cfg_attr(feature = "rkyv", rkyv(
+    serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source),
+    deserialize_bounds(__D::Error: rkyv::rancor::Source),
+    bytecheck(bounds(__C: rkyv::validation::ArchiveContext, <__C as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source)),
+))]
 pub struct IrTraitBound {
     pub trait_kind: TraitKind,
+    #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
     pub type_args: Vec<IrType>,
+    #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
     pub assoc_bindings: Vec<(AssociatedType, IrType)>,
 }
 
@@ -1399,6 +1484,12 @@ impl fmt::Display for IrTraitBound {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 #[non_exhaustive]
+#[cfg_attr(feature = "rkyv", rkyv(
+    archive_bounds(P: rkyv::Archive),
+    serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source, P: rkyv::Serialize<__S>),
+    deserialize_bounds(__D::Error: rkyv::rancor::Source, P::Archived: rkyv::Deserialize<P, __D>),
+    bytecheck(bounds(__C: rkyv::validation::ArchiveContext, <__C as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source, P::Archived: rkyv::bytecheck::CheckBytes<__C>)),
+))]
 pub enum IrExpr<P: Clone = ()> {
     Lit(IrLit),
     Var(String),
@@ -1408,49 +1499,64 @@ pub enum IrExpr<P: Clone = ()> {
     },
     Binary {
         op: SpecBinOp,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         left: Box<IrExpr<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         right: Box<IrExpr<P>>,
     },
     Unary {
         op: SpecUnaryOp,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         expr: Box<IrExpr<P>>,
     },
     MethodCall {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         receiver: Box<IrExpr<P>>,
         method: MethodKind,
         type_args: Vec<IrType>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         args: Vec<IrExpr<P>>,
     },
     Call {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         func: Box<IrExpr<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         args: Vec<IrExpr<P>>,
     },
     Field {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         base: Box<IrExpr<P>>,
         field: String,
     },
     Index {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         base: Box<IrExpr<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         index: Box<IrExpr<P>>,
     },
     StructExpr {
         kind: StructKind,
         type_args: Vec<IrType>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         fields: Vec<(String, IrExpr<P>)>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         rest: Option<Box<IrExpr<P>>>,
     },
-    Tuple(Vec<IrExpr<P>>),
-    Array(Vec<IrExpr<P>>),
+    Tuple(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Vec<IrExpr<P>>),
+    Array(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Vec<IrExpr<P>>),
     /// A fixed-size array literal `[a, b, c]` (as opposed to `Array`, which prints as `vec![...]`).
-    FixedArray(Vec<IrExpr<P>>),
+    FixedArray(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Vec<IrExpr<P>>),
     Repeat {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         elem: Box<IrExpr<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         len: Box<IrExpr<P>>,
     },
     ArrayGenerate {
         elem_ty: Option<Box<IrType>>,
         len: ArrayLength,
         index_var: String,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         body: Box<IrExpr<P>>,
     },
     /// Calls `T::default()` for a given type.
@@ -1472,82 +1578,108 @@ pub enum IrExpr<P: Clone = ()> {
     LengthOf(ArrayLength),
     /// A flat iterator pipeline (source → steps → terminal).
     /// Replaces old nested Iter*/Array{Map,Zip,Fold} variants.
-    IterPipeline(IrIterChain<P>),
+    IterPipeline(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] IrIterChain<P>),
 
     /// Non-iterator element-wise map: `receiver.map(|var| body)`
     /// Used for GenericArray::map and [T; N]::map.
     /// Length-preserving; bounded by the receiver's length.
     RawMap {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         receiver: Box<IrExpr<P>>,
         elem_var: IrPattern,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         body: Box<IrExpr<P>>,
     },
 
     /// Non-iterator element-wise zip-with-map: `receiver.zip(other, |a, b| body)`
     /// Used for GenericArray::zip. Length-preserving; bounded.
     RawZip {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         left: Box<IrExpr<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         right: Box<IrExpr<P>>,
         left_var: IrPattern,
         right_var: IrPattern,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         body: Box<IrExpr<P>>,
     },
 
     /// Non-iterator fold over array: `receiver.fold(init, |acc, elem| body)`
     /// When applied directly on GenericArray/[T;N] (no .iter() prefix).
     RawFold {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         receiver: Box<IrExpr<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         init: Box<IrExpr<P>>,
         acc_var: IrPattern,
         elem_var: IrPattern,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         body: Box<IrExpr<P>>,
     },
 
     BoundedLoop {
         var: String,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         start: Box<IrExpr<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         end: Box<IrExpr<P>>,
         inclusive: bool,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         body: IrBlock<P>,
     },
     IterLoop {
         pattern: IrPattern,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         collection: Box<IrExpr<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         body: IrBlock<P>,
     },
-    Block(IrBlock<P>),
+    Block(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] IrBlock<P>),
     If {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         cond: Box<IrExpr<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         then_branch: IrBlock<P>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         else_branch: Option<Box<IrExpr<P>>>,
     },
     Match {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         expr: Box<IrExpr<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         arms: Vec<IrMatchArm<P>>,
     },
     Closure {
         params: Vec<IrClosureParam>,
         ret_type: Option<Box<IrType>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         body: Box<IrExpr<P>>,
     },
     Cast {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         expr: Box<IrExpr<P>>,
         ty: Box<IrType>,
     },
-    Return(Option<Box<IrExpr<P>>>),
-    Break(Option<Box<IrExpr<P>>>),
+    Return(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Option<Box<IrExpr<P>>>),
+    Break(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Option<Box<IrExpr<P>>>),
     Continue,
     Assign {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         left: Box<IrExpr<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         right: Box<IrExpr<P>>,
     },
     AssignOp {
         op: SpecBinOp,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         left: Box<IrExpr<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         right: Box<IrExpr<P>>,
     },
     Range {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         start: Option<Box<IrExpr<P>>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         end: Option<Box<IrExpr<P>>>,
         inclusive: bool,
     },
@@ -1555,40 +1687,51 @@ pub enum IrExpr<P: Clone = ()> {
         ty: Box<IrType>,
     },
     WhileLoop {
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         cond: Box<IrExpr<P>>,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         body: IrBlock<P>,
     },
     Unreachable,
-    Try(Box<IrExpr<P>>),
+    Try(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Box<IrExpr<P>>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 #[non_exhaustive]
+#[cfg_attr(feature = "rkyv", rkyv(
+    serialize_bounds(__S: rkyv::ser::Writer + rkyv::ser::Allocator, __S::Error: rkyv::rancor::Source),
+    deserialize_bounds(__D::Error: rkyv::rancor::Source),
+    bytecheck(bounds(__C: rkyv::validation::ArchiveContext, <__C as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source)),
+))]
 pub enum IrPattern {
     Ident {
         mutable: bool,
         name: String,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         subpat: Option<Box<IrPattern>>,
     },
-    Tuple(Vec<IrPattern>),
+    Tuple(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Vec<IrPattern>),
     Struct {
         kind: StructKind,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         fields: Vec<(String, IrPattern)>,
         rest: bool,
     },
     TupleStruct {
         kind: StructKind,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         elems: Vec<IrPattern>,
     },
-    Slice(Vec<IrPattern>),
+    Slice(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Vec<IrPattern>),
     Wild,
     Lit(IrLit),
     Ref {
         mutable: bool,
+        #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
         pat: Box<IrPattern>,
     },
-    Or(Vec<IrPattern>),
+    Or(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Vec<IrPattern>),
     Rest,
 }
 
