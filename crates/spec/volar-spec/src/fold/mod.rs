@@ -191,3 +191,19 @@ pub fn fold_commit_e(
         &ed_scalar_mul(comm_e2, r2),
     )
 }
+
+/// Pedersen vector commitment `Σ_i x_i·g_i + ρ·H`, with the message scalars
+/// `x` and blinder `ρ` as little-endian byte scalars.  Reproduces the oracle's
+/// `PedersenParams::commit` (its Pippenger MSM computes the same sum).  Used by
+/// the `fresh` step to commit a gate's witness/error before folding.
+///
+/// `x.len()` must be `≤ gens.len()`; only the first `x.len()` generators are used.
+pub fn pedersen_commit(gens: &[EdPoint], h: &EdPoint, x: &[[u8; 32]], blind: &[u8; 32]) -> EdPoint {
+    let mut acc = ed_scalar_mul(h, blind);
+    let mut i = 0usize;
+    while i < x.len() {
+        acc = ed_add(&acc, &ed_scalar_mul(&gens[i], &x[i]));
+        i += 1;
+    }
+    acc
+}

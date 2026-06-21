@@ -75,6 +75,26 @@ fn spec_commit_fold_matches_oracle() {
 }
 
 #[test]
+fn spec_pedersen_commit_matches_oracle() {
+    // The spec Pedersen commit reproduces the oracle's MSM-based commit, for
+    // both witness-length (7) and error-length (3) vectors.
+    let params = PedersenParams::setup(8, 7);
+
+    let w = gate(3, 4, 5, 6);
+    let blind = s(0x9e3);
+    let x_bytes: Vec<[u8; 32]> = w.iter().map(|s| s.to_bytes_le()).collect();
+    let oracle = params.commit(&w, &blind);
+    let spec = volar_spec::fold::pedersen_commit(&params.g, &params.h, &x_bytes, &blind.to_bytes_le());
+    assert_eq!(spec, oracle, "spec witness commit matches oracle");
+
+    let e = [s(11), s(22), s(33)];
+    let e_bytes: Vec<[u8; 32]> = e.iter().map(|s| s.to_bytes_le()).collect();
+    let oracle_e = params.commit(&e, &blind);
+    let spec_e = volar_spec::fold::pedersen_commit(&params.g, &params.h, &e_bytes, &blind.to_bytes_le());
+    assert_eq!(spec_e, oracle_e, "spec error commit matches oracle");
+}
+
+#[test]
 fn spec_relaxed_sat_accepts_honest_rejects_tampered() {
     let one = s(1);
     let zero_e = [Scalar::default(); 3];
