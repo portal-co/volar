@@ -29,6 +29,7 @@
 
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
 use volar_ir::ir::{IRBlockId, IRBlockTargetId, IRVarId, StorageId};
+use volar_ir_common::Node;
 
 // ============================================================================
 // Raw data types
@@ -111,11 +112,9 @@ pub fn interpret_biir(
             let n_vars = n_params + stmts.len() as u32;
             let terminator =
                 make_term(i, n_blocks, n_vars, &param_counts, raw_term, ret_arity);
-            let n = stmts.len();
             BIrBlock {
                 params: n_params,
-                stmts,
-                stmt_provs: vec![(); n],
+                stmts: stmts.into_iter().map(|s| Node::new(s, (), None)).collect(),
                 terminator }
         })
         .collect();
@@ -350,12 +349,10 @@ pub fn interpret_biir_extended(
     // Terminator: return all vars (params + stmts).
     let total = n_params + stmts.len() as u32;
     let ret_args: Vec<IRVarId> = (0..total).map(IRVarId).collect();
-    let n = stmts.len();
 
     let block = BIrBlock {
         params: n_params,
-        stmts,
-        stmt_provs: vec![(); n],
+        stmts: stmts.into_iter().map(|s| Node::new(s, (), None)).collect(),
         terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: ret_args }) };
 
     BIrBlocks { blocks: vec![block], pre_init: vec![] }
@@ -406,7 +403,6 @@ pub fn interpret_biir_multiblock(
     let total_b0 = n_params + stmts_b0.len() as u32;
     // B0 terminator: jump to Block(1), passing ALL vars (including void).
     let b0_args: Vec<IRVarId> = (0..total_b0).map(IRVarId).collect();
-    let n_b0 = stmts_b0.len();
     let b0_term = BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Block(IRBlockId(1)), args: b0_args });
 
     // ── Block 1 ──────────────────────────────────────────────────────────────
@@ -444,18 +440,15 @@ pub fn interpret_biir_multiblock(
 
     let total_b1 = n_b1_params + stmts_b1.len() as u32;
     let b1_ret_args: Vec<IRVarId> = (0..total_b1).map(IRVarId).collect();
-    let n_b1 = stmts_b1.len();
     let b1_term = BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: b1_ret_args });
 
     let block0 = BIrBlock {
         params: n_params,
-        stmts: stmts_b0,
-        stmt_provs: vec![(); n_b0],
+        stmts: stmts_b0.into_iter().map(|s| Node::new(s, (), None)).collect(),
         terminator: b0_term };
     let block1 = BIrBlock {
         params: n_b1_params,
-        stmts: stmts_b1,
-        stmt_provs: vec![(); n_b1],
+        stmts: stmts_b1.into_iter().map(|s| Node::new(s, (), None)).collect(),
         terminator: b1_term };
 
     BIrBlocks { blocks: vec![block0, block1], pre_init: vec![] }
@@ -514,7 +507,6 @@ pub fn interpret_biir_diamond(
 
     let total_b0 = n_params + stmts_b0.len() as u32;
     let b0_all_args: Vec<IRVarId> = (0..total_b0).map(IRVarId).collect();
-    let n_b0 = stmts_b0.len();
     let b0_term = BIrTerminator::CondJmp {
         val: IRVarId(0),
         then_target: BIrTarget { block: IRBlockTargetId::Block(IRBlockId(1)), args: b0_all_args.clone() },
@@ -543,7 +535,6 @@ pub fn interpret_biir_diamond(
         }
     }
 
-    let n_b1 = stmts_b1.len();
     let b1_to_b3_args: Vec<IRVarId> = (0..n_b1_params).map(IRVarId).collect();
     let b1_term = BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Block(IRBlockId(3)), args: b1_to_b3_args });
 
@@ -569,7 +560,6 @@ pub fn interpret_biir_diamond(
         }
     }
 
-    let n_b2 = stmts_b2.len();
     let b2_to_b3_args: Vec<IRVarId> = (0..n_b2_params).map(IRVarId).collect();
     let b2_term = BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Block(IRBlockId(3)), args: b2_to_b3_args });
 
@@ -596,15 +586,18 @@ pub fn interpret_biir_diamond(
     }
 
     let total_b3 = n_b3_params + stmts_b3.len() as u32;
-    let n_b3 = stmts_b3.len();
     let b3_ret_args: Vec<IRVarId> = (0..total_b3).map(IRVarId).collect();
     let b3_term = BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: b3_ret_args });
 
+    let wrap = |stmts: Vec<BIrStmt>| -> Vec<Node<BIrStmt, ()>> {
+        stmts.into_iter().map(|s| Node::new(s, (), None)).collect()
+    };
+
     BIrBlocks { blocks: vec![
-        BIrBlock { params: n_params, stmts: stmts_b0, stmt_provs: vec![(); n_b0], terminator: b0_term },
-        BIrBlock { params: n_b1_params, stmts: stmts_b1, stmt_provs: vec![(); n_b1], terminator: b1_term },
-        BIrBlock { params: n_b2_params, stmts: stmts_b2, stmt_provs: vec![(); n_b2], terminator: b2_term },
-        BIrBlock { params: n_b3_params, stmts: stmts_b3, stmt_provs: vec![(); n_b3], terminator: b3_term },
+        BIrBlock { params: n_params, stmts: wrap(stmts_b0), terminator: b0_term },
+        BIrBlock { params: n_b1_params, stmts: wrap(stmts_b1), terminator: b1_term },
+        BIrBlock { params: n_b2_params, stmts: wrap(stmts_b2), terminator: b2_term },
+        BIrBlock { params: n_b3_params, stmts: wrap(stmts_b3), terminator: b3_term },
     ], pre_init: vec![] }
 }
 

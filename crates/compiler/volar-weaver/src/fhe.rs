@@ -1110,7 +1110,7 @@ pub fn derive_storage_config<P: Clone>(circuit: &BIrBlocks<P>) -> FheStorageConf
     let mut max_addr_len: BTreeMap<(u32, usize), usize> = BTreeMap::new();
     for block in &circuit.blocks {
         for stmt in &block.stmts {
-            match stmt {
+            match &stmt.kind {
                 BIrStmt::StorageRead { storage, bit_width, addr } => {
                     let key = (storage.0, *bit_width);
                     let entry = max_addr_len.entry(key).or_insert(0);
@@ -1147,7 +1147,7 @@ pub fn derive_ir_storage_config<P: Clone>(
     let mut seen: BTreeSet<(u32, usize)> = BTreeSet::new();
     for block in &blocks.blocks {
         for stmt in &block.stmts {
-            match stmt {
+            match &stmt.kind {
                 IRStmt::StorageRead { storage, ty, .. }
                 | IRStmt::StorageWrite { storage, ty, .. } => {
                     seen.insert((storage.0, ty.0 as usize));
@@ -1240,8 +1240,8 @@ where
     };
     let mut module = weave_fhe_flat_bir(&circuit, scheme, name, handler, Some(effective_storage));
     if let Some(ls) = linkage {
-        let lib_prov: H::Output = circuit.blocks[0].stmt_provs.first()
-            .map(|p| handler.map(p))
+        let lib_prov: H::Output = circuit.blocks[0].stmts.first()
+            .map(|n| handler.map(&n.prov))
             .expect("weave_fhe_flat_ir_with_handler: circuit has no statements; cannot derive provenance for linked specs");
         ls.apply_converting(module.inner_mut(), || lib_prov.clone());
     }
@@ -1514,8 +1514,8 @@ where
     let mut and_gate_idx: usize = 0;
 
     // Provenance for infrastructure statements (storage init, mux overhead).
-    let ctrl_prov: H::Output = block.stmt_provs.first()
-        .map(|p| handler.map(p))
+    let ctrl_prov: H::Output = block.stmts.first()
+        .map(|n| handler.map(&n.prov))
         .expect("weave_fhe_flat_bir: circuit has no statements; cannot derive provenance for infrastructure gates");
 
     // Initialize storage cells from parameters.
@@ -1926,7 +1926,7 @@ fn analyze_cfg_publicity<S: FheScheme>(
         let mut action_output_public: BTreeMap<u32, Vec<bool>> = BTreeMap::new();
         for (stmt_idx, ir_stmt) in ir_block.stmts.iter().enumerate() {
             let result_ir_vid = num_params + stmt_idx as u32;
-            track_stmt_publicness(ir_stmt, result_ir_vid, &mut public_set, &mut action_output_public, scheme);
+            track_stmt_publicness(&ir_stmt.kind, result_ir_vid, &mut public_set, &mut action_output_public, scheme);
         }
 
         block_param_public.push(bpp);
@@ -1952,7 +1952,7 @@ fn cfg_return_type<S: FheScheme>(blocks: &IRBlocks, types: &IRTypes, scheme: &S)
             return Some(block.params[idx]);
         }
         let stmt_idx = idx - block.params.len();
-        block.stmts.get(stmt_idx).and_then(ir_stmt_output_ty)
+        block.stmts.get(stmt_idx).and_then(|n| ir_stmt_output_ty(&n.kind))
     }
 
     for block in &blocks.blocks {
@@ -2063,17 +2063,17 @@ fn weave_fhe_cfg<S: FheScheme>(
             let let_name = format!("var_{}", result_ir_vid);
 
             // Track output type for this stmt.
-            if let Some(ty_id) = ir_stmt_output_ty(ir_stmt) {
+            if let Some(ty_id) = ir_stmt_output_ty(&ir_stmt.kind) {
                 type_map.insert(result_ir_vid, ty_id);
             }
             // Track publicness via the shared helper (single source of truth).
-            track_stmt_publicness(ir_stmt, result_ir_vid, &mut public_set, &mut action_output_public, scheme);
+            track_stmt_publicness(&ir_stmt.kind, result_ir_vid, &mut public_set, &mut action_output_public, scheme);
 
             // Handle storage stmts generically (array-indexed parameter access).
             // When the address variable is public (e.g. ORAM leaf from an action),
             // it is typed as `[bool; N]` — we wrap it in `bools_to_usize(&addr)`
             // so it can index a Rust slice.
-            match ir_stmt {
+            match &ir_stmt.kind {
                 IRStmt::StorageRead { storage, ty, addr } => {
                     let addr_name = var_map
                         .get(&addr.0)
@@ -2150,7 +2150,7 @@ fn weave_fhe_cfg<S: FheScheme>(
             }
 
             let init_expr = scheme
-                .emit_ir_stmt(ir_stmt, &var_map, &type_map, types, &public_set)
+                .emit_ir_stmt(&ir_stmt.kind, &var_map, &type_map, types, &public_set)
                 .unwrap_or_else(|| {
                     panic!(
                         "weave_fhe_cfg: scheme cannot handle IRStmt variant in block {} stmt {}: {:?}. \
@@ -2462,7 +2462,7 @@ where
     H: ProvenanceHandler<P>,
 {
     let block_ctrl_provs: Vec<Option<H::Output>> = blocks.blocks.iter()
-        .map(|b| b.stmt_provs.first().map(|p| handler.map(p)))
+        .map(|b| b.stmts.first().map(|n| handler.map(&n.prov)))
         .collect();
     let fallback: Option<H::Output> = block_ctrl_provs.iter().find_map(|p| p.clone());
 

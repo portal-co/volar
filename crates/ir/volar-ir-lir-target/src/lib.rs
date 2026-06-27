@@ -97,14 +97,13 @@ pub struct VolarBlock(pub usize);
 
 struct BlockBuilder<P: Clone = ()> {
     params: Vec<IRTypeId>,
-    stmts: Vec<IRStmt>,
-    stmt_provs: Vec<P>,
+    stmts: Vec<volar_ir_common::Node<IRStmt, P>>,
     terminator: Option<IRTerminator>,
 }
 
 impl<P: Clone> BlockBuilder<P> {
     fn new() -> Self {
-        BlockBuilder { params: vec![], stmts: vec![], stmt_provs: vec![], terminator: None }
+        BlockBuilder { params: vec![], stmts: vec![], terminator: None }
     }
 
     /// Next local var ID = params.len() + stmts.len().
@@ -247,8 +246,7 @@ impl<P: Clone> VolarIrTarget<P> {
         let f = self.func.as_mut().unwrap();
         let blk = &mut f.blocks[f.current];
         let id = blk.next_local_id();
-        blk.stmt_provs.push(self.current_prov.clone());
-        blk.stmts.push(stmt);
+        blk.stmts.push(volar_ir_common::Node::new(stmt, self.current_prov.clone(), None));
         IRVarId(id)
     }
 
@@ -598,7 +596,7 @@ impl<P: Clone> VolarIrTarget<P> {
         );
         let mut var_map: Vec<IRVarId> = flat_args;
         for stmt in &callee.stmts {
-            let mapped = subst_stmt(stmt, &var_map);
+            let mapped = subst_stmt(&stmt.kind, &var_map);
             let id = self.emit(mapped);
             var_map.push(id);
         }
@@ -697,7 +695,7 @@ impl<P: Clone> VolarIrTarget<P> {
 
             let mut var_map: Vec<IRVarId> = block_params[ci].clone();
             for stmt in &callee.blocks[ci].stmts {
-                let mapped = subst_stmt(stmt, &var_map);
+                let mapped = subst_stmt(&stmt.kind, &var_map);
                 let id = self.emit(mapped);
                 var_map.push(id);
             }
@@ -1003,7 +1001,6 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
             .map(|b| IRBlock {
                 params: b.params,
                 stmts: b.stmts,
-                stmt_provs: b.stmt_provs,
                 terminator: b.terminator.expect("VolarIrTarget: block missing terminator"),
             })
             .collect();

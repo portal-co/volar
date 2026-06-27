@@ -657,8 +657,8 @@ where
     let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
-    let ctrl_prov: H::Output = block.stmt_provs.first()
-        .map(|p| handler.map(p))
+    let ctrl_prov: H::Output = block.stmts.first()
+        .map(|n| handler.map(&n.prov))
         .expect("weave_vole_prover_inner: circuit has no statements; cannot derive provenance for infrastructure statements");
 
     // Pre-scan for external primitives (oracle calls, action calls, RNG sources).
@@ -1054,8 +1054,8 @@ where
     let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
-    let ctrl_prov: H::Output = block.stmt_provs.first()
-        .map(|p| handler.map(p))
+    let ctrl_prov: H::Output = block.stmts.first()
+        .map(|n| handler.map(&n.prov))
         .expect("weave_vole_verifier_inner: circuit has no statements; cannot derive provenance for infrastructure statements");
 
     let (and_count, sbox_count) = expanded.iter().fold((0usize, 0usize), |(k1, k2), (_, s, prov)| {
@@ -1738,7 +1738,7 @@ fn count_ir_ands(
     let mut count: usize = 0;
 
     for stmt in &block.stmts {
-        let result_ty: CirTyId = match stmt {
+        let result_ty: CirTyId = match &stmt.kind {
             Stmt::Const(_, ty) => ty.clone(),
             Stmt::Poly { coeffs, .. } => {
                 for (mono, coeff) in coeffs {
@@ -1783,7 +1783,7 @@ fn count_ir_ands(
 fn count_ir_ands_no_storage(block: &CirBlock, types: &CirTypes) -> usize {
     let mut count = 0;
     for stmt in &block.stmts {
-        if let Stmt::Poly { coeffs, .. } = stmt {
+        if let Stmt::Poly { coeffs, .. } = &stmt.kind {
             for (mono, coeff) in coeffs {
                 if *coeff % 2 == 1 && mono.len() >= 2 {
                     count += mono.len() - 1;
@@ -1796,7 +1796,7 @@ fn count_ir_ands_no_storage(block: &CirBlock, types: &CirTypes) -> usize {
 
 /// Count storage reads in the circuit (for oracle parameter sizing).
 fn count_storage_reads(block: &CirBlock) -> usize {
-    block.stmts.iter().filter(|s| matches!(s, Stmt::StorageRead { .. })).count()
+    block.stmts.iter().filter(|s| matches!(&s.kind, Stmt::StorageRead { .. })).count()
 }
 
 /// Per-oracle-call bit layout: total committed bits across all outputs.
@@ -1826,7 +1826,7 @@ fn count_external_primitives(block: &CirBlock, types: &CirTypes) -> ExternalBitC
     let mut rng_widths = Vec::new();
 
     for stmt in &block.stmts {
-        match stmt {
+        match &stmt.kind {
             Stmt::OracleCall { output_tys, .. } => {
                 let total_bits: usize = output_tys.iter().map(|ty| cir_type_width(ty, types)).sum();
                 oracle_calls.push(ExternalCallBits { total_bits });
@@ -2528,7 +2528,7 @@ impl VoleIrCtx {
             let var_id = (p + si) as u32;
             let out_name = format!("w_{}", var_id);
 
-            match stmt {
+            match &stmt.kind {
                 Stmt::Const(c, ty) => {
                     let w = cir_type_width(ty, types);
                     if w == 1 {

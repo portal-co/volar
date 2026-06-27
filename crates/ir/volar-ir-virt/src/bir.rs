@@ -77,7 +77,8 @@ pub fn virtualize_bir<P: Clone + Default>(
 
     // Derive ctrl_prov from the first statement in any input block.
     let ctrl_prov: P = blocks.blocks.iter()
-        .flat_map(|b| b.stmt_provs.iter())
+        .flat_map(|b| b.stmts.iter())
+        .map(|n| &n.prov)
         .next()
         .cloned()
         .unwrap_or_default();
@@ -260,11 +261,11 @@ impl BirBlockUnfinished {
     }
 
     fn into_bir_block<P: Clone>(self, ctrl_prov: &P) -> BIrBlock<P> {
-        let n = self.stmts.len();
         BIrBlock {
             params: self.params,
-            stmts: self.stmts,
-            stmt_provs: (0..n).map(|_| ctrl_prov.clone()).collect(),
+            stmts: self.stmts.into_iter()
+                .map(|s| volar_ir_common::Node::new(s, ctrl_prov.clone(), None))
+                .collect(),
             terminator: self.terminator,
         }
     }
@@ -647,16 +648,15 @@ fn deduplicate_bir_oracle_calls_in_block<P: Clone>(
     let mut var_remap: BTreeMap<IRVarId, IRVarId> = BTreeMap::new();
     // (name, remapped-args) → first-call new var
     let mut seen: BTreeMap<(alloc::string::String, Vec<IRVarId>), IRVarId> = BTreeMap::new();
-    let mut new_stmts: Vec<BIrStmt> = Vec::with_capacity(block.stmts.len());
-    let mut new_provs: Vec<P> = Vec::with_capacity(block.stmts.len());
+    let mut new_stmts: Vec<volar_ir_common::Node<BIrStmt, P>> = Vec::with_capacity(block.stmts.len());
 
     let rv = |v: IRVarId, map: &BTreeMap<IRVarId, IRVarId>| -> IRVarId {
         map.get(&v).copied().unwrap_or(v)
     };
 
-    for (stmt_idx, (s, prov)) in block.stmts.iter().zip(block.stmt_provs.iter()).enumerate() {
+    for (stmt_idx, node) in block.stmts.iter().enumerate() {
         let old_var = IRVarId((n_params + stmt_idx) as u32);
-        match s {
+        match &node.kind {
             BIrStmt::OracleCall { name, args, num_bits } => {
                 let remapped_args: Vec<IRVarId> =
                     args.iter().map(|v| rv(*v, &var_remap)).collect();
@@ -667,19 +667,19 @@ fn deduplicate_bir_oracle_calls_in_block<P: Clone>(
                     let new_var = IRVarId((n_params + new_stmts.len()) as u32);
                     seen.insert(key, new_var);
                     var_remap.insert(old_var, new_var);
-                    new_stmts.push(BIrStmt::OracleCall {
+                    new_stmts.push(volar_ir_common::Node::new(BIrStmt::OracleCall {
                         name: name.clone(),
                         args: remapped_args,
                         num_bits: *num_bits,
-                    });
-                    new_provs.push(prov.clone());
+                    }, node.prov.clone(), node.side));
                 }
             }
             other => {
                 let new_var = IRVarId((n_params + new_stmts.len()) as u32);
                 var_remap.insert(old_var, new_var);
-                new_stmts.push(remap_bir_stmt(other, &var_remap));
-                new_provs.push(prov.clone());
+                new_stmts.push(volar_ir_common::Node::new(
+                    remap_bir_stmt(other, &var_remap), node.prov.clone(), node.side,
+                ));
             }
         }
     }
@@ -687,7 +687,6 @@ fn deduplicate_bir_oracle_calls_in_block<P: Clone>(
     BIrBlock {
         params: block.params,
         stmts: new_stmts,
-        stmt_provs: new_provs,
         terminator: new_terminator,
     }
 }

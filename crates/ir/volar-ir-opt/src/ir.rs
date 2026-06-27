@@ -56,17 +56,17 @@ fn fold_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &IRTypes) -> bool
         let rv = IRVarId(base + i as u32);
 
         // Step 1: apply alias substitutions to this stmt's operands.
-        if apply_aliases_to_stmt(&mut block.stmts[i], &alias_map) {
+        if apply_aliases_to_stmt(&mut block.stmts[i].kind, &alias_map) {
             changed = true;
         }
 
         // Step 2: record output type.
-        if let Some(ty) = stmt_output_type(&block.stmts[i]) {
+        if let Some(ty) = stmt_output_type(&block.stmts[i].kind) {
             type_map.insert(rv, ty);
         }
 
         // Step 3: compute the action to take.
-        let action = compute_action(rv, &block.stmts[i], types, &const_map, &type_map);
+        let action = compute_action(rv, &block.stmts[i].kind, types, &const_map, &type_map);
 
         // Step 4: apply the action.
         match action {
@@ -74,7 +74,7 @@ fn fold_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &IRTypes) -> bool
                 const_map.insert(rv, c);
             }
             IrAction::FoldToConst(c, ty) => {
-                block.stmts[i] = Stmt::Const(c, ty);
+                block.stmts[i].kind = Stmt::Const(c, ty);
                 const_map.insert(rv, c);
                 changed = true;
             }
@@ -91,7 +91,7 @@ fn fold_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &IRTypes) -> bool
                 // Phase A: fold in-place.
                 let ty = type_map.get(&rv).copied().unwrap_or(TypeId(0));
                 {
-                    if let Stmt::Poly { coeffs, constant, .. } = &mut block.stmts[i] {
+                    if let Stmt::Poly { coeffs, constant, .. } = &mut block.stmts[i].kind {
                         if fold_poly_in_place(ty, coeffs, constant, &const_map, &type_map, types) {
                             changed = true;
                         }
@@ -101,7 +101,7 @@ fn fold_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &IRTypes) -> bool
                 // Phase B: poly merging — substitute any singleton key that
                 // refers to a previously seen Poly (with matching TypeId).
                 {
-                    if let Stmt::Poly { coeffs, constant, ty: poly_ty } = &mut block.stmts[i] {
+                    if let Stmt::Poly { coeffs, constant, ty: poly_ty } = &mut block.stmts[i].kind {
                         let poly_ty_val = *poly_ty;
                         let singleton_srcs: Vec<IRVarId> = coeffs
                             .iter()
@@ -136,7 +136,7 @@ fn fold_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &IRTypes) -> bool
                 }
 
                 // Phase C: if poly collapsed, convert to Const or record alias.
-                let replacement = match &block.stmts[i] {
+                let replacement = match &block.stmts[i].kind {
                     Stmt::Poly { coeffs, constant, ty: poly_ty } if coeffs.is_empty() => {
                         Some(IrPolyResult::Const(*constant, *poly_ty))
                     }
@@ -156,7 +156,7 @@ fn fold_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &IRTypes) -> bool
                 };
                 match replacement {
                     Some(IrPolyResult::Const(c, ty)) => {
-                        block.stmts[i] = Stmt::Const(c, ty);
+                        block.stmts[i].kind = Stmt::Const(c, ty);
                         const_map.insert(rv, c);
                         changed = true;
                     }
@@ -169,7 +169,7 @@ fn fold_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &IRTypes) -> bool
                     }
                     None => {
                         // Record surviving Poly in poly_map for downstream merging.
-                        if let Stmt::Poly { coeffs, constant, ty: poly_ty } = &block.stmts[i] {
+                        if let Stmt::Poly { coeffs, constant, ty: poly_ty } = &block.stmts[i].kind {
                             poly_map.insert(rv, (coeffs.clone(), *constant, *poly_ty));
                         }
                     }

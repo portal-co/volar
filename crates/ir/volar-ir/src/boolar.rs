@@ -3,7 +3,8 @@
 // Boolar IR: boolean circuit IR (AND/XOR/NOT basis).
 // Pure data structure definitions; no cryptographic claims.
 use super::{ir::*, *};
-use volar_ir_common::{PreInitSegment, StorageId};
+use volar_ir_common::{Node, PreInitSegment, StorageId};
+use volar_side::SideId;
 
 /// A complete Boolar circuit — a set of boolean-gate blocks.
 ///
@@ -36,32 +37,36 @@ impl<P: Clone> BIrBlocks<P> {
 
 /// A single block in a Boolar circuit.
 ///
-/// The type parameter `P` is an optional per-statement provenance annotation
-/// (parallel to `stmts`).  Use `P = ()` when provenance is not needed.
+/// The type parameter `P` is an optional per-statement provenance annotation.
+/// Each statement also carries an optional [`SideId`] naming which
+/// actor/party/role it belongs to (see `volar-side`); both annotations live
+/// together on the [`Node`] wrapping each statement, so they can never drift
+/// out of sync with `stmts` the way two parallel `Vec`s could.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct BIrBlock<P: Clone = ()> {
     pub params: u32,
-    pub stmts: Vec<BIrStmt>,
-    /// Per-statement provenance, same length as `stmts`.
-    /// Index `i` is the provenance of `stmts[i]`.
-    pub stmt_provs: Vec<P>,
+    pub stmts: Vec<Node<BIrStmt, P>>,
     pub terminator: BIrTerminator,
 }
 
 impl<P: Clone> BIrBlock<P> {
-    /// Append a statement with an explicit provenance annotation.
+    /// Append a statement with an explicit provenance annotation and no side.
     pub fn push_stmt(&mut self, stmt: BIrStmt, prov: P) {
-        self.stmts.push(stmt);
-        self.stmt_provs.push(prov);
+        self.push_stmt_with_side(stmt, prov, None);
     }
 
-    /// Map provenance annotations using a [`ProvenanceHandler`].
+    /// Append a statement with an explicit provenance annotation and side.
+    pub fn push_stmt_with_side(&mut self, stmt: BIrStmt, prov: P, side: Option<SideId>) {
+        self.stmts.push(Node::new(stmt, prov, side));
+    }
+
+    /// Map provenance annotations using a [`ProvenanceHandler`]. `side` is
+    /// untouched — provenance and side are independent axes.
     pub fn map_prov_with_handler<H: volar_provenance::ProvenanceHandler<P>>(self, handler: &H) -> BIrBlock<H::Output> {
         BIrBlock {
             params: self.params,
-            stmts: self.stmts,
-            stmt_provs: self.stmt_provs.into_iter().map(|p| handler.map(&p)).collect(),
+            stmts: self.stmts.into_iter().map(|n| n.map_prov(|p| handler.map(&p))).collect(),
             terminator: self.terminator,
         }
     }

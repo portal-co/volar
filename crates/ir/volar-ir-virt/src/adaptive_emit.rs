@@ -50,7 +50,8 @@ pub(super) fn virtualize_ir_adaptive<P: Clone + Default, H: IrHashAlgorithm>(
     let ctrl_prov: P = cse_blocks
         .blocks
         .iter()
-        .flat_map(|b| b.stmt_provs.iter())
+        .flat_map(|b| b.stmts.iter())
+        .map(|n| &n.prov)
         .next()
         .cloned()
         .unwrap_or_default();
@@ -135,11 +136,11 @@ fn canonicalize_composite_block<P: Clone>(
 
     let prologue: Vec<IRStmt> = block.stmts[plan.prologue.clone()]
         .iter()
-        .map(|s| canon_ir_stmt_public(s, &mut consts))
+        .map(|s| canon_ir_stmt_public(&s.kind, &mut consts))
         .collect();
     let epilogue: Vec<IRStmt> = block.stmts[plan.epilogue.clone()]
         .iter()
-        .map(|s| canon_ir_stmt_public(s, &mut consts))
+        .map(|s| canon_ir_stmt_public(&s.kind, &mut consts))
         .collect();
     let canon_term = canon_ir_terminator_public(&block.terminator, &mut targets);
 
@@ -174,7 +175,7 @@ fn build_appended_program<P: Clone>(
                 let (_, start, end) = members.first().copied().unwrap_or((0, 0, 0));
                 let block = &blocks.blocks[start as usize];
                 for step in start..end {
-                    let stmt = block.stmts[step as usize].clone();
+                    let stmt = block.stmts[step as usize].kind.clone();
                     let key = IrHandlerKey {
                         params: vec![addr_ty],
                         stmts: vec![stmt],
@@ -186,8 +187,9 @@ fn build_appended_program<P: Clone>(
             AppendedRegionKind::RerollLoop { owner_block, .. } => {
                 let spec = &plan.reroll_loops[region_idx];
                 let block = &blocks.blocks[*owner_block];
-                let (slice_key, _) =
-                    canonicalize_stmt_slice(&block.stmts[spec.body_range.clone()]);
+                let kinds: Vec<IRStmt> = block.stmts[spec.body_range.clone()]
+                    .iter().map(|n| n.kind.clone()).collect();
+                let (slice_key, _) = canonicalize_stmt_slice(&kinds);
                 let key = IrHandlerKey {
                     params: vec![addr_ty],
                     stmts: slice_key.stmts,
@@ -370,7 +372,7 @@ fn emit_composite_handler<P: Clone, H: IrHashAlgorithm>(
 
     emit_prologue_stmts(
         &mut b,
-        &block.stmts[plan.prologue.clone()],
+        &block.stmts[plan.prologue.clone()].iter().map(|n| n.kind.clone()).collect::<Vec<_>>(),
         schema,
         slot_ids,
         addr_ty,
@@ -398,7 +400,7 @@ fn emit_composite_handler<P: Clone, H: IrHashAlgorithm>(
                     let end = start + body_len;
                     emit_body_stmts(
                         &mut b,
-                        &block.stmts[start..end],
+                        &block.stmts[start..end].iter().map(|n| n.kind.clone()).collect::<Vec<_>>(),
                         schema,
                         slot_ids,
                         addr_ty,
@@ -419,7 +421,7 @@ fn emit_composite_handler<P: Clone, H: IrHashAlgorithm>(
     let pc_r = IRVarId(0);
     emit_prologue_stmts(
         &mut resume,
-        &block.stmts[plan.epilogue.clone()],
+        &block.stmts[plan.epilogue.clone()].iter().map(|n| n.kind.clone()).collect::<Vec<_>>(),
         schema,
         slot_ids,
         addr_ty,
@@ -470,7 +472,7 @@ fn emit_reroll_only_handler<P: Clone>(
             let start = spec.covered_range.start + rep * body_len;
             let end = start + body_len;
             for s in &block.stmts[start..end] {
-                if let Stmt::Const(c, ty) = s {
+                if let Stmt::Const(c, ty) = &s.kind {
                     let _ = b.push(Stmt::Const(*c, *ty));
                 }
             }

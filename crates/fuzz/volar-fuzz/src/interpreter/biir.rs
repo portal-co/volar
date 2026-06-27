@@ -111,9 +111,9 @@ fn eval_block(block: &BIrBlock<()>, params: &[bool], storage: &mut BIrStorageMap
     }
 
     let base = block.params;
-    for (i, stmt) in block.stmts.iter().enumerate() {
+    for (i, node) in block.stmts.iter().enumerate() {
         let id = base + i as u32;
-        let val = eval_stmt(stmt, id, &vars, &mut oracle_agg, storage);
+        let val = eval_stmt(&node.kind, id, &vars, &mut oracle_agg, storage);
         vars.insert(id, val);
     }
 

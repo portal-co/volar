@@ -83,11 +83,9 @@ pub fn lower_biir_with_handler<P, T, H>(
 
         let vals = &mut vals_per_block[bi];
         // Reserve space for stmt results.
-        for (si, stmt) in block.stmts.iter().enumerate() {
-            if let Some(prov) = block.stmt_provs.get(si) {
-                target.set_prov(handler.map(prov));
-            }
-            let v = lower_biir_stmt(stmt, vals, target);
+        for stmt in block.stmts.iter() {
+            target.set_prov(handler.map(&stmt.prov));
+            let v = lower_biir_stmt(&stmt.kind, vals, target);
             vals.push(v);
         }
 
@@ -288,12 +286,10 @@ pub fn lower_ir_with_handler<P, T, H>(
         // Keyed by the *Call stmt's var index within this block.
         let mut multi_results: BTreeMap<usize, Vec<T::Value>> = BTreeMap::new();
 
-        for (si, stmt) in block.stmts.iter().enumerate() {
-            if let Some(prov) = block.stmt_provs.get(si) {
-                target.set_prov(handler.map(prov));
-            }
+        for stmt in block.stmts.iter() {
+            target.set_prov(handler.map(&stmt.prov));
             let var_idx = vals_per_block[bi].len(); // index of this stmt's result
-            match stmt {
+            match &stmt.kind {
                 // ---- Oracle: emit target.oracle(), stash results ------------
                 IRStmt::OracleCall { name, args, output_tys, .. } => {
                     let arg_vals: Vec<T::Value> = args.iter()

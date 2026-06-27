@@ -8,7 +8,7 @@ use alloc::{
     vec::Vec,
 };
 
-use volar_ir::ir::{IRBlock, IRBlocks};
+use volar_ir::ir::{IRBlock, IRBlocks, IRStmt};
 
 use crate::bytecode::{AppendedRegionKind, OperandMode, TripCount};
 use crate::canon::{canonicalize_stmt_slice, StmtSliceKey};
@@ -273,11 +273,12 @@ fn find_reroll_body<P: Clone>(
         if iterations < cfg.min_reroll_iterations {
             continue;
         }
-        let (key0, _) = canonicalize_stmt_slice(&block.stmts[0..body_len]);
+        let kinds: Vec<IRStmt> = block.stmts.iter().map(|n| n.kind.clone()).collect();
+        let (key0, _) = canonicalize_stmt_slice(&kinds[0..body_len]);
         let mut all_match = true;
         for rep in 1..iterations {
             let start = rep * body_len;
-            let (key, _) = canonicalize_stmt_slice(&block.stmts[start..start + body_len]);
+            let (key, _) = canonicalize_stmt_slice(&kinds[start..start + body_len]);
             if key != key0 {
                 all_match = false;
                 break;
@@ -300,9 +301,10 @@ fn index_windows<P: Clone>(
     if n < min_len {
         return;
     }
+    let kinds: Vec<IRStmt> = block.stmts.iter().map(|n| n.kind.clone()).collect();
     for start in 0..=(n - min_len) {
         for end in (start + min_len)..=n {
-            let (key, _) = canonicalize_stmt_slice(&block.stmts[start..end]);
+            let (key, _) = canonicalize_stmt_slice(&kinds[start..end]);
             window_map
                 .entry(key)
                 .or_default()

@@ -387,11 +387,11 @@ fn store_forward_ir_block_with_cache<P: Clone>(
     for i in 0..block.stmts.len() {
         let rv = IRVarId(base + i as u32);
 
-        if apply_aliases_to_ir_stmt(&mut block.stmts[i], &alias_map) {
+        if apply_aliases_to_ir_stmt(&mut block.stmts[i].kind, &alias_map) {
             changed = true;
         }
 
-        let stmt = block.stmts[i].clone();
+        let stmt = block.stmts[i].kind.clone();
 
         use volar_ir_common::Stmt;
         // Track constants and polynomials for GF(2) disambiguation.
@@ -799,7 +799,7 @@ fn translate_ir_cache_with_injection<P: Clone>(
         // Shift existing stmt IRVarIds (stmts and terminator).
         let n_stmts_u32 = n_stmts as u32;
         for stmt in blocks.blocks[target_idx].stmts.iter_mut() {
-            shift_ir_stmt_vars(stmt, old_n_params, n_stmts_u32, shift);
+            shift_ir_stmt_vars(&mut stmt.kind, old_n_params, n_stmts_u32, shift);
         }
         shift_ir_terminator_vars(&mut blocks.blocks[target_idx].terminator, old_n_params, n_stmts_u32, shift);
 
@@ -939,7 +939,7 @@ fn merge_ir_caches_with_injection<P: Clone>(
         // Shift existing stmt IRVarIds (stmts + terminator).
         let n_stmts_u32 = n_stmts as u32;
         for stmt in blocks.blocks[target_idx].stmts.iter_mut() {
-            shift_ir_stmt_vars(stmt, old_n_params, n_stmts_u32, shift);
+            shift_ir_stmt_vars(&mut stmt.kind, old_n_params, n_stmts_u32, shift);
         }
         shift_ir_terminator_vars(
             &mut blocks.blocks[target_idx].terminator,
@@ -1073,11 +1073,11 @@ fn store_forward_biir_block_with_cache<P: Clone>(
     for i in 0..block.stmts.len() {
         let rv = IRVarId(base + i as u32);
 
-        if crate::biir::apply_aliases_to_biir_stmt(&mut block.stmts[i], &alias_map) {
+        if crate::biir::apply_aliases_to_biir_stmt(&mut block.stmts[i].kind, &alias_map) {
             changed = true;
         }
 
-        let stmt = block.stmts[i].clone();
+        let stmt = block.stmts[i].kind.clone();
 
         // Update known-bits map for this value.
         let known: Option<bool> = match &stmt {
@@ -1284,7 +1284,7 @@ fn translate_biir_cache_with_injection<P: Clone>(
         // Shift existing stmt IRVarIds.
         let n_stmts_u32 = n_stmts as u32;
         for stmt in blocks.blocks[target_idx].stmts.iter_mut() {
-            shift_biir_stmt_vars(stmt, old_n_params, n_stmts_u32, shift);
+            shift_biir_stmt_vars(&mut stmt.kind, old_n_params, n_stmts_u32, shift);
         }
         shift_biir_terminator_vars(&mut blocks.blocks[target_idx].terminator, old_n_params, n_stmts_u32, shift);
 
@@ -1397,7 +1397,7 @@ fn merge_biir_caches_with_injection<P: Clone>(
         // Shift existing stmt IRVarIds.
         let n_stmts_u32 = n_stmts as u32;
         for stmt in blocks.blocks[target_idx].stmts.iter_mut() {
-            shift_biir_stmt_vars(stmt, old_n_params, n_stmts_u32, shift);
+            shift_biir_stmt_vars(&mut stmt.kind, old_n_params, n_stmts_u32, shift);
         }
         shift_biir_terminator_vars(&mut blocks.blocks[target_idx].terminator, old_n_params, n_stmts_u32, shift);
 

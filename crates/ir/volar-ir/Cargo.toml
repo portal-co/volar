@@ -10,9 +10,10 @@ repository.workspace = true
 log = { version = "0.4", optional = true }
 volar-provenance.workspace = true
 volar-ir-common.workspace = true
+volar-side.workspace = true
 volar-lir.workspace = true
 rkyv = { workspace = true, optional = true }
 
 [features]
 log-trace = ["dep:log"]
-rkyv = ["dep:rkyv", "volar-ir-common/rkyv"]
+rkyv = ["dep:rkyv", "volar-ir-common/rkyv", "volar-side/rkyv"]

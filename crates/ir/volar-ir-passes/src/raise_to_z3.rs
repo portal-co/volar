@@ -85,12 +85,11 @@ fn lift_block<P: Clone>(
     let new_stmts = block
         .stmts
         .iter()
-        .map(|s| lift_stmt(s, bit_ty, z3_ty))
+        .map(|s| volar_ir_common::Node::new(lift_stmt(&s.kind, bit_ty, z3_ty), s.prov.clone(), s.side))
         .collect();
     IRBlock {
         params: block.params.clone(),
         stmts: new_stmts,
-        stmt_provs: block.stmt_provs.clone(),
         terminator: block.terminator.clone(),
     }
 }

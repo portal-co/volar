@@ -178,8 +178,8 @@ pub(crate) fn expand_ors<P: Clone>(block: &BIrBlock<P>) -> Vec<(IRVarId, BIrStmt
 
     for (i, stmt) in block.stmts.iter().enumerate() {
         let result_id = IRVarId(num_params + i as u32);
-        let prov = block.stmt_provs[i].clone();
-        match stmt {
+        let prov = stmt.prov.clone();
+        match &stmt.kind {
             BIrStmt::Or(a, b) => {
                 let not_a = IRVarId(next_synthetic);
                 next_synthetic += 1;

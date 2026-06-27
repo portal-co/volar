@@ -273,7 +273,8 @@ fn virtualize_ir_impl<P: Clone + Default, H: IrHashAlgorithm>(
 
     // Derive ctrl_prov from the first statement of any input block.
     let ctrl_prov: P = blocks.blocks.iter()
-        .flat_map(|b| b.stmt_provs.iter())
+        .flat_map(|b| b.stmts.iter())
+        .map(|n| &n.prov)
         .next()
         .cloned()
         .unwrap_or_default();
@@ -363,11 +364,11 @@ impl IRBlockUnfinished {
     }
 
     pub(crate) fn into_ir_block<P: Clone>(self, ctrl_prov: &P) -> IRBlock<P> {
-        let n = self.stmts.len();
         IRBlock {
             params: self.params,
-            stmts: self.stmts,
-            stmt_provs: (0..n).map(|_| ctrl_prov.clone()).collect(),
+            stmts: self.stmts.into_iter()
+                .map(|s| volar_ir_common::Node::new(s, ctrl_prov.clone(), None))
+                .collect(),
             terminator: self.terminator,
         }
     }
@@ -581,7 +582,7 @@ fn resolve_var_type<P: Clone>(block: &IRBlock<P>, v: IRVarId) -> IRTypeId {
     } else {
         let s_idx = (v.0 - n_params) as usize;
         let stmt = &block.stmts[s_idx];
-        stmt_output_type(stmt).expect(
+        stmt_output_type(&stmt.kind).expect(
             "virtualize_ir: Return arg refers to a stmt that does not \
              define a value",
         )
@@ -1031,7 +1032,7 @@ pub(crate) fn compute_slot_values<P: Clone>(
     // Const value slots (also covers Poly.constant).
     for (stmt_idx, slot_opt) in schema.const_value_slot.iter().enumerate() {
         if let Some(slot_idx) = slot_opt {
-            match &block.stmts[stmt_idx] {
+            match &block.stmts[stmt_idx].kind {
                 Stmt::Const(c, _) => {
                     out[*slot_idx] = *c;
                 }
@@ -1836,12 +1837,11 @@ fn deduplicate_oracle_calls_in_block<P: Clone>(block: &IRBlock<P>) -> IRBlock<P>
     let mut var_remap: Vec<IRVarId> = (0..total as u32).map(IRVarId).collect();
     // (name, remapped-args) → first-call new var
     let mut seen: BTreeMap<(alloc::string::String, Vec<IRVarId>), IRVarId> = BTreeMap::new();
-    let mut new_stmts: Vec<IRStmt> = Vec::with_capacity(block.stmts.len());
-    let mut new_provs: Vec<P> = Vec::with_capacity(block.stmts.len());
+    let mut new_stmts: Vec<volar_ir_common::Node<IRStmt, P>> = Vec::with_capacity(block.stmts.len());
 
-    for (stmt_idx, (s, prov)) in block.stmts.iter().zip(block.stmt_provs.iter()).enumerate() {
+    for (stmt_idx, node) in block.stmts.iter().enumerate() {
         let old_var = IRVarId((n_params + stmt_idx) as u32);
-        match s {
+        match &node.kind {
             Stmt::OracleCall { name, args, output_tys, result_ty } => {
                 let remapped_args: Vec<IRVarId> =
                     args.iter().map(|v| var_remap[v.0 as usize]).collect();
@@ -1852,20 +1852,20 @@ fn deduplicate_oracle_calls_in_block<P: Clone>(block: &IRBlock<P>) -> IRBlock<P>
                     let new_var = IRVarId((n_params + new_stmts.len()) as u32);
                     seen.insert(key, new_var);
                     var_remap[old_var.0 as usize] = new_var;
-                    new_stmts.push(Stmt::OracleCall {
+                    new_stmts.push(volar_ir_common::Node::new(Stmt::OracleCall {
                         name: name.clone(),
                         args: remapped_args,
                         output_tys: output_tys.clone(),
                         result_ty: *result_ty,
-                    });
-                    new_provs.push(prov.clone());
+                    }, node.prov.clone(), node.side));
                 }
             }
             other => {
                 let new_var = IRVarId((n_params + new_stmts.len()) as u32);
                 var_remap[old_var.0 as usize] = new_var;
-                new_stmts.push(remap_stmt(other, &var_remap));
-                new_provs.push(prov.clone());
+                new_stmts.push(volar_ir_common::Node::new(
+                    remap_stmt(other, &var_remap), node.prov.clone(), node.side,
+                ));
             }
         }
     }
@@ -1873,7 +1873,6 @@ fn deduplicate_oracle_calls_in_block<P: Clone>(block: &IRBlock<P>) -> IRBlock<P>
     IRBlock {
         params: block.params.clone(),
         stmts: new_stmts,
-        stmt_provs: new_provs,
         terminator: new_terminator,
     }
 }

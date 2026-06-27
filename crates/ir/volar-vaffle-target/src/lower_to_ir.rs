@@ -112,8 +112,7 @@ const PACK_TID: TypeId = TypeId(2);
 
 struct BlockEmitter<P: Clone = ()> {
     params: Vec<IRTypeId>,
-    stmts: Vec<IRStmt>,
-    stmt_provs: Vec<P>,
+    stmts: Vec<volar_ir_common::Node<IRStmt, P>>,
     current_prov: Option<P>,
     next_var: u32,
 }
@@ -121,25 +120,19 @@ struct BlockEmitter<P: Clone = ()> {
 impl<P: Clone> BlockEmitter<P> {
     fn new(params: Vec<IRTypeId>) -> Self {
         let next_var = params.len() as u32;
-        BlockEmitter { params, stmts: Vec::new(), stmt_provs: Vec::new(), current_prov: None, next_var }
+        BlockEmitter { params, stmts: Vec::new(), current_prov: None, next_var }
     }
     fn set_prov(&mut self, prov: P) { self.current_prov = Some(prov); }
     fn emit(&mut self, stmt: IRStmt) -> IRVarId {
         let id = IRVarId(self.next_var);
         self.next_var += 1;
-        self.stmts.push(stmt);
-        if let Some(ref p) = self.current_prov {
-            self.stmt_provs.push(p.clone());
-        }
+        let prov = self.current_prov.clone()
+            .expect("BlockEmitter::emit called before set_prov — every emitted stmt must trace back to a source value's provenance");
+        self.stmts.push(volar_ir_common::Node::new(stmt, prov, None));
         id
     }
     fn finish(self, terminator: IRTerminator) -> IRBlock<P> {
-        let stmt_provs = if self.stmt_provs.len() == self.stmts.len() {
-            self.stmt_provs
-        } else {
-            vec![]
-        };
-        IRBlock { params: self.params, stmts: self.stmts, stmt_provs, terminator }
+        IRBlock { params: self.params, stmts: self.stmts, terminator }
     }
 
     /// Number of packed words needed for `n` bits.
@@ -441,7 +434,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
         if self.func_info.is_empty() {
             self.blocks.push(em.finish(IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![],) }));
             self.blocks.push(IRBlock {
-                params: vec![], stmts: vec![], stmt_provs: vec![],
+                params: vec![], stmts: vec![],
                 terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![] ) },
             });
             return;

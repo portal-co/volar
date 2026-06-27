@@ -131,9 +131,9 @@ fn eval_ir_block(
     }
 
     let base = block.params.len() as u32;
-    for (i, stmt) in block.stmts.iter().enumerate() {
+    for (i, node) in block.stmts.iter().enumerate() {
         let id = base + i as u32;
-        let val = eval_ir_stmt(stmt, id, types, oracles, &vars, &mut oracle_agg, storage);
+        let val = eval_ir_stmt(&node.kind, id, types, oracles, &vars, &mut oracle_agg, storage);
         vars.insert(id, val);
     }
 

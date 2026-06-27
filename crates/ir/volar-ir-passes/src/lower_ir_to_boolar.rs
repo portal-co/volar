@@ -108,9 +108,9 @@ fn lower_block<P: Clone>(block: &IRBlock<P>, types: &IRTypes) -> BIrBlock<P> {
     let mut call_output_bits: BTreeMap<u32, Vec<Vec<IRVarId>>> = BTreeMap::new();
 
     for (si, stmt) in block.stmts.iter().enumerate() {
-        let prov = block.stmt_provs[si].clone();
+        let prov = stmt.prov.clone();
         let ir_var_idx = block.params.len() as u32 + si as u32;
-        lower_stmt(stmt, prov, ir_var_idx, &mut var_bits, &mut call_output_bits, &mut emitter, types);
+        lower_stmt(&stmt.kind, prov, ir_var_idx, &mut var_bits, &mut call_output_bits, &mut emitter, types);
     }
 
     // ---- 3. Convert terminator --------------------------------------------
@@ -119,7 +119,6 @@ fn lower_block<P: Clone>(block: &IRBlock<P>, types: &IRTypes) -> BIrBlock<P> {
     BIrBlock {
         params: total_params,
         stmts: emitter.stmts,
-        stmt_provs: emitter.stmt_provs,
         terminator,
     }
 }
@@ -530,20 +529,18 @@ fn constant_bit(c: &Constant, bit: usize) -> bool {
 /// Boolar var IDs start at `params` (the number of input bit params for the
 /// block) and increment by one for each emitted stmt.
 struct Emitter<P: Clone> {
-    stmts: Vec<BIrStmt>,
-    stmt_provs: Vec<P>,
+    stmts: Vec<volar_ir_common::Node<BIrStmt, P>>,
     next_var: u32,
 }
 
 impl<P: Clone> Emitter<P> {
     fn new(params: u32) -> Self {
-        Emitter { stmts: vec![], stmt_provs: vec![], next_var: params }
+        Emitter { stmts: vec![], next_var: params }
     }
 
     fn emit(&mut self, stmt: BIrStmt, prov: P) -> IRVarId {
         let id = IRVarId(self.next_var);
-        self.stmts.push(stmt);
-        self.stmt_provs.push(prov);
+        self.stmts.push(volar_ir_common::Node::new(stmt, prov, None));
         self.next_var += 1;
         id
     }

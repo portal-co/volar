@@ -227,11 +227,11 @@ pub fn weave_noop_ir(
     let mut stmts: Vec<IrStmt> = Vec::new();
     let mut stmt_provs: Vec<()> = Vec::new();
 
-    for (i, stmt) in block.stmts.iter().enumerate() {
+    for (i, node) in block.stmts.iter().enumerate() {
         let result_id = CirVar(num_params as u32 + i as u32);
         let let_name = format!("w_{}", result_id.0);
 
-        let init_expr = lower_ir_stmt(stmt, &var_names, types);
+        let init_expr = lower_ir_stmt(&node.kind, &var_names, types);
 
         stmts.push(IrStmt::Let {
             pattern: IrPattern::ident(&let_name),
@@ -299,7 +299,7 @@ pub fn weave_noop_ir(
 /// `handler` instead of erasing it to `()`.
 ///
 /// Each emitted `let w_N = ...;` statement's provenance is
-/// `handler.map(&block.stmt_provs[i])`, the provenance of the source `IRStmt`
+/// `handler.map(&block.stmts[i].prov)`, the provenance of the source `IRStmt`
 /// it was lowered from.
 ///
 /// # Panics
@@ -342,18 +342,18 @@ where
     let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
     let mut stmt_provs: Vec<H::Output> = Vec::new();
 
-    for (i, stmt) in block.stmts.iter().enumerate() {
+    for (i, node) in block.stmts.iter().enumerate() {
         let result_id = CirVar(num_params as u32 + i as u32);
         let let_name = format!("w_{}", result_id.0);
 
-        let init_expr: IrExpr<H::Output> = lower_ir_stmt(stmt, &var_names, types);
+        let init_expr: IrExpr<H::Output> = lower_ir_stmt(&node.kind, &var_names, types);
 
         stmts.push(IrStmt::Let {
             pattern: IrPattern::ident(&let_name),
             ty: None,
             init: Some(init_expr),
         });
-        stmt_provs.push(handler.map(&block.stmt_provs[i]));
+        stmt_provs.push(handler.map(&node.prov));
         var_names.insert(result_id.0, let_name);
     }
 
@@ -405,8 +405,8 @@ where
         consts: vec![],
     };
     if let Some(ls) = linkage {
-        let lib_prov: H::Output = block.stmt_provs.first()
-            .map(|p| handler.map(p))
+        let lib_prov: H::Output = block.stmts.first()
+            .map(|n| handler.map(&n.prov))
             .expect("weave_noop_ir_with_handler: circuit has no statements; cannot derive provenance for linked specs");
         ls.apply_converting(&mut module, || lib_prov.clone());
     }

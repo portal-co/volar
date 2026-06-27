@@ -91,37 +91,42 @@ impl<P: Clone> IRBlocks<P> {
 
 /// A single block in a Volar IR circuit.
 ///
-/// The type parameter `P` is an optional per-statement provenance annotation
-/// (parallel to `stmts`).  Use `P = ()` when provenance is not needed.
+/// The type parameter `P` is an optional per-statement provenance annotation.
+/// Each statement also carries an optional `SideId` (see `volar-side`) naming
+/// which actor/party/role it belongs to; both annotations live together on
+/// the [`Node`](volar_ir_common::Node) wrapping each statement, so they can
+/// never drift out of sync with `stmts` the way two parallel `Vec`s could.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IRBlock<P: Clone = ()> {
     pub params: Vec<IRTypeId>,
-    pub stmts: Vec<IRStmt>,
-    /// Per-statement provenance, same length as `stmts`.
-    /// Index `i` is the provenance of `stmts[i]`.
-    pub stmt_provs: Vec<P>,
+    pub stmts: Vec<volar_ir_common::Node<IRStmt, P>>,
     pub terminator: IRTerminator,
 }
 
 impl<P: Clone> IRBlock<P> {
-    /// Append a statement with an explicit provenance annotation.
+    /// Append a statement with an explicit provenance annotation and no side.
     /// Returns the [`IRVarId`] for this statement (= index in the block's var space).
     pub fn push_stmt(&mut self, stmt: IRStmt, prov: P) -> IRVarId {
+        self.push_stmt_with_side(stmt, prov, None)
+    }
+
+    /// Append a statement with an explicit provenance annotation and side.
+    /// Returns the [`IRVarId`] for this statement (= index in the block's var space).
+    pub fn push_stmt_with_side(&mut self, stmt: IRStmt, prov: P, side: Option<volar_side::SideId>) -> IRVarId {
         let id = IRVarId(self.params.len() as u32 + self.stmts.len() as u32);
         #[cfg(feature = "log-trace")]
         log::trace!(target: "volar::ir", "push_stmt id={}", id.0);
-        self.stmts.push(stmt);
-        self.stmt_provs.push(prov);
+        self.stmts.push(volar_ir_common::Node::new(stmt, prov, side));
         id
     }
 
-    /// Map provenance annotations using a [`ProvenanceHandler`].
+    /// Map provenance annotations using a [`ProvenanceHandler`]. `side` is
+    /// untouched — provenance and side are independent axes.
     pub fn map_prov_with_handler<H: volar_provenance::ProvenanceHandler<P>>(self, handler: &H) -> IRBlock<H::Output> {
         IRBlock {
             params: self.params,
-            stmts: self.stmts,
-            stmt_provs: self.stmt_provs.into_iter().map(|p| handler.map(&p)).collect(),
+            stmts: self.stmts.into_iter().map(|n| n.map_prov(|p| handler.map(&p))).collect(),
             terminator: self.terminator,
         }
     }

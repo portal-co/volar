@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
-log = { version = "0.4", optional = true }
+log = { version = "0.4", features = ["std"], optional = true }
 
 [features]
 log-subscriber = ["dep:log"]

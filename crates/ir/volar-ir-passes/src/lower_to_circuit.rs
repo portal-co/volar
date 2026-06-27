@@ -91,7 +91,7 @@ pub fn lower_to_circuit<P: Clone>(blocks: &BIrBlocks<P>, limit: u32, mode: Lower
 
     // Provenance for infrastructure gates (MUX cascade, loop control constants).
     // Use the first source statement's provenance; degenerate empty blocks panic.
-    let ctrl_prov: &P = block0.stmt_provs.first()
+    let ctrl_prov: &P = block0.stmts.first().map(|n| &n.prov)
         .expect("lower_to_circuit: block has no statements; cannot infer provenance for infrastructure gates");
 
     // Emitter owns the accumulating stmt list and var-ID counter.
@@ -114,8 +114,8 @@ pub fn lower_to_circuit<P: Clone>(blocks: &BIrBlocks<P>, limit: u32, mode: Lower
 
         // Re-emit all block stmts with fresh circuit var IDs, carrying provenance.
         for (i, stmt) in block0.stmts.iter().enumerate() {
-            let prov = block0.stmt_provs.get(i).cloned().unwrap_or_else(|| ctrl_prov.clone());
-            let out_id = emitter.emit(subst_stmt(stmt, &var_map), prov);
+            let prov = stmt.prov.clone();
+            let out_id = emitter.emit(subst_stmt(&stmt.kind, &var_map), prov);
             // Map original stmt result (p + i) → fresh circuit var.
             var_map.insert(p as u32 + i as u32, out_id);
         }
@@ -179,7 +179,6 @@ pub fn lower_to_circuit<P: Clone>(blocks: &BIrBlocks<P>, limit: u32, mode: Lower
     let out_block = BIrBlock {
         params: p as u32,
         stmts: emitter.stmts,
-        stmt_provs: emitter.stmt_provs,
         terminator: BIrTerminator::Jmp(BIrTarget {
             block: IRBlockTargetId::Return,
             args: ret_args,
@@ -416,14 +415,13 @@ fn subst_stmt(stmt: &BIrStmt, var_map: &BTreeMap<u32, u32>) -> BIrStmt {
 /// The invariant `next_id == params + stmts.len()` must hold at all times;
 /// call [`emit`](Emitter::emit) once per stmt to maintain it.
 struct Emitter<P: Clone = ()> {
-    stmts: Vec<BIrStmt>,
-    stmt_provs: Vec<P>,
+    stmts: Vec<volar_ir_common::Node<BIrStmt, P>>,
     next_id: u32,
 }
 
 impl<P: Clone> Emitter<P> {
     fn new(first_id: u32) -> Self {
-        Self { stmts: Vec::new(), stmt_provs: Vec::new(), next_id: first_id }
+        Self { stmts: Vec::new(), next_id: first_id }
     }
 
     /// Push `stmt` with a provenance annotation, assign it the next sequential
@@ -431,8 +429,7 @@ impl<P: Clone> Emitter<P> {
     fn emit(&mut self, stmt: BIrStmt, prov: P) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
-        self.stmts.push(stmt);
-        self.stmt_provs.push(prov);
+        self.stmts.push(volar_ir_common::Node::new(stmt, prov, None));
         id
     }
 }

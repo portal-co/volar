@@ -456,22 +456,20 @@ fn subst_biir(stmt: &BIrStmt, var_map: &[u32]) -> BIrStmt {
 }
 
 struct BIrCtx<P: Clone = ()> {
-    stmts: Vec<BIrStmt>,
-    stmt_provs: Vec<P>,
+    stmts: Vec<volar_ir_common::Node<BIrStmt, P>>,
     next_id: u32,
     ctrl_prov: P,
 }
 
 impl<P: Clone> BIrCtx<P> {
     fn new(first_id: u32, ctrl_prov: P) -> Self {
-        Self { stmts: Vec::new(), stmt_provs: Vec::new(), next_id: first_id, ctrl_prov }
+        Self { stmts: Vec::new(), next_id: first_id, ctrl_prov }
     }
 
     fn push(&mut self, stmt: BIrStmt, prov: P) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
-        self.stmts.push(stmt);
-        self.stmt_provs.push(prov);
+        self.stmts.push(volar_ir_common::Node::new(stmt, prov, None));
         id
     }
 
@@ -609,9 +607,9 @@ impl<P: Clone> MovfuscCtx for BIrCtx<P> {
         let p = block.params as usize;
         let mut var_map: Vec<u32> = Vec::with_capacity(p + block.stmts.len());
         var_map.extend_from_slice(&state_vars[..p]);
-        for (i, stmt) in block.stmts.iter().enumerate() {
-            let prov = block.stmt_provs.get(i).cloned().unwrap_or_else(|| self.ctrl_prov.clone());
-            let mapped = subst_biir(stmt, &var_map);
+        for stmt in block.stmts.iter() {
+            let prov = stmt.prov.clone();
+            let mapped = subst_biir(&stmt.kind, &var_map);
             let id = self.push(mapped, prov);
             var_map.push(id);
         }
@@ -684,7 +682,6 @@ impl<P: Clone> MovfuscCtx for BIrCtx<P> {
         BIrBlocks { blocks: vec![BIrBlock {
             params: combined_params as u32,
             stmts: self.stmts,
-            stmt_provs: self.stmt_provs,
             terminator: BIrTerminator::CondJmp {
                 val: IRVarId(done_var),
                 then_target: BIrTarget {
@@ -846,7 +843,7 @@ fn infer_block_var_types<P: Clone>(
 ) -> Vec<IRTypeId> {
     let mut var_types: Vec<IRTypeId> = block.params.clone();
     for stmt in &block.stmts {
-        let ty = infer_stmt_result_type(stmt, &var_types, ir_types, bit_type_id);
+        let ty = infer_stmt_result_type(&stmt.kind, &var_types, ir_types, bit_type_id);
         var_types.push(ty);
     }
     var_types
@@ -875,8 +872,7 @@ fn param_to_slot_map(params: &[IRTypeId], ir_types: &[IRType], pc_width: usize) 
 }
 
 struct IrCtx<P: Clone = ()> {
-    stmts: Vec<IRStmt>,
-    stmt_provs: Vec<P>,
+    stmts: Vec<volar_ir_common::Node<IRStmt, P>>,
     /// Provenance to attach to the next emitted stmt (cloned on `push_typed`).
     /// Set by `emit_block_stmts` before each source stmt; synthetic stmts inherit
     /// the last set provenance (no reset to default).
@@ -923,7 +919,6 @@ impl<P: Clone> IrCtx<P> {
         let var_types = combined_param_types.clone();
         Self {
             stmts: Vec::new(),
-            stmt_provs: Vec::new(),
             pending_prov: ctrl_prov.clone(),
             ctrl_prov,
             next_id: first_id,
@@ -999,9 +994,8 @@ impl<P: Clone> IrCtx<P> {
     fn push_typed(&mut self, stmt: IRStmt, result_type: IRTypeId) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
-        self.stmts.push(stmt);
+        self.stmts.push(volar_ir_common::Node::new(stmt, self.pending_prov.clone(), None));
         self.var_types.push(result_type);
-        self.stmt_provs.push(self.pending_prov.clone());
         id
     }
 
@@ -1318,8 +1312,8 @@ impl<P: Clone> MovfuscCtx for IrCtx<P> {
         // Emit stmts with substitution, handling Block-typed Const specially.
         for (stmt_idx, stmt) in block.stmts.iter().enumerate() {
             // Stage this stmt's source provenance; `push_typed` will clone it.
-            self.pending_prov = block.stmt_provs.get(stmt_idx).cloned().unwrap_or_else(|| self.ctrl_prov.clone());
-            let mapped = subst_ir(stmt, &var_map);
+            self.pending_prov = stmt.prov.clone();
+            let mapped = subst_ir(&stmt.kind, &var_map);
             let orig_var_id = (p + stmt_idx) as u32;
 
             // Block-typed Const: encode the referenced block index as
@@ -1357,7 +1351,7 @@ impl<P: Clone> MovfuscCtx for IrCtx<P> {
                 // `src` is the post-substitution combined-block var ID.
                 // `block_var_to_bits` is keyed by *original* IR var IDs, so
                 // we must look up via the pre-substitution src from `stmt`.
-                let orig_src_id = match stmt {
+                let orig_src_id = match &stmt.kind {
                     IRStmt::StorageWrite { src, .. } => src.0,
                     _ => unreachable!(),
                 };
@@ -1581,7 +1575,6 @@ impl<P: Clone> MovfuscCtx for IrCtx<P> {
             // Combined block's params: [Bit×pc_width, state_slot_types…]
             params: self.combined_param_types,
             stmts: self.stmts,
-            stmt_provs: self.stmt_provs,
             terminator: IRTerminator::JumpCond {
                 condition: IRVarId(done_var),
                 then_target: IRBranchTarget::new(
@@ -1732,7 +1725,7 @@ pub fn movfuscate_biir<P: Clone>(blocks: &BIrBlocks<P>) -> BIrBlocks<P> {
     let pc_width = pc_bits_needed(n);
     let state_width = blocks.blocks.iter().map(|b| b.params as usize).max().unwrap_or(0);
     let combined_params = pc_width + state_width;
-    let ctrl_prov = blocks.blocks.iter().flat_map(|b| b.stmt_provs.iter()).next()
+    let ctrl_prov = blocks.blocks.iter().flat_map(|b| b.stmts.iter()).map(|n| &n.prov).next()
         .cloned()
         .expect("movfuscate_biir: circuit has no statements; cannot derive provenance for infrastructure gates");
     let ctx = BIrCtx::<P>::new(combined_params as u32, ctrl_prov);
@@ -1783,7 +1776,7 @@ pub fn movfuscate_ir<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> IRB
         .collect();
 
     let combined_params = pc_width + state_slot_types.len();
-    let ctrl_prov = blocks.blocks.iter().flat_map(|b| b.stmt_provs.iter()).next()
+    let ctrl_prov = blocks.blocks.iter().flat_map(|b| b.stmts.iter()).map(|n| &n.prov).next()
         .cloned()
         .expect("movfuscate_ir: circuit has no statements; cannot derive provenance for infrastructure gates");
     let ctx = IrCtx::<P>::new(

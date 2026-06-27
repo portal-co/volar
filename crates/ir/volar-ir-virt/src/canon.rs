@@ -180,7 +180,7 @@ pub fn canonicalize_ir_block<P: Clone>(
 
     let mut canon_stmts: Vec<IRStmt> = Vec::with_capacity(block.stmts.len());
     for s in &block.stmts {
-        canon_stmts.push(canon_ir_stmt(s, &mut consts));
+        canon_stmts.push(canon_ir_stmt(&s.kind, &mut consts));
     }
 
     let canon_term = canon_ir_terminator(&block.terminator, &mut targets);
@@ -381,7 +381,7 @@ pub fn canonicalize_bir_block<P: Clone>(
 
     let key = BirHandlerKey {
         params: block.params,
-        stmts: block.stmts.clone(),
+        stmts: block.stmts.iter().map(|n| n.kind.clone()).collect(),
         terminator: canon_term,
     };
 

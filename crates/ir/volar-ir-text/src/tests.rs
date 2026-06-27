@@ -27,6 +27,7 @@ fn v(n: u32) -> IRVarId { IRVarId(n) }
 fn storage(n: u32) -> StorageId { StorageId(n) }
 fn c(hi: u128, lo: u128) -> Constant { Constant { hi, lo } }
 fn block_id(n: u32) -> IRBlockId { IRBlockId(n) }
+fn node<T>(kind: T) -> volar_ir_common::Node<T, ()> { volar_ir_common::Node::new(kind, (), None) }
 
 fn simple_ir_module() -> SavedIrBlocks {
     // Type table: 0=bit, 1=u8, 2=vec(4,u8)
@@ -42,8 +43,7 @@ fn simple_ir_module() -> SavedIrBlocks {
     // One block: param v0:bit, v1 = const 0:255 ty=1, jmp return args=[v1]
     let block = IRBlock {
         params:     vec![ty(0)],
-        stmts:      vec![Stmt::Const(c(0, 255), ty(1))],
-        stmt_provs: vec![()],
+        stmts:      vec![node(Stmt::Const(c(0, 255), ty(1)))],
         terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(1)] ) },
     };
 
@@ -95,7 +95,6 @@ fn ir_type_table() {
             blocks: vec![IRBlock {
                 params:     vec![],
                 stmts:      vec![],
-                stmt_provs: vec![],
                 terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![] ) },
             }],
         },
@@ -124,7 +123,6 @@ fn ir_decls() {
             blocks: vec![IRBlock {
                 params:     vec![],
                 stmts:      vec![],
-                stmt_provs: vec![],
                 terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![] ) },
             }],
         },
@@ -139,11 +137,10 @@ fn ir_stmt_storage_read_write() {
         params:     vec![ty(0)],  // v0
         stmts:      vec![
             // v1 = storage_read storage=0 ty=0 addr=v0
-            Stmt::StorageRead { storage: storage(0), ty: ty(0), addr: v(0) },
+            node(Stmt::StorageRead { storage: storage(0), ty: ty(0), addr: v(0) }),
             // v2 = storage_write storage=1 src=v1 ty=0 addr=v0
-            Stmt::StorageWrite { storage: storage(1), src: v(1), ty: ty(0), addr: v(0) },
+            node(Stmt::StorageWrite { storage: storage(1), src: v(1), ty: ty(0), addr: v(0) }),
         ],
-        stmt_provs: vec![(), ()],
         terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(1)] ) },
     };
     round_trip_ir(SavedIrBlocks {
@@ -157,8 +154,7 @@ fn ir_stmt_transmute() {
     let types = TypeTable(vec![IrType::Primitive(Type::Bit), IrType::Primitive(Type::_8)]);
     let block = IRBlock {
         params:     vec![ty(0)],
-        stmts:      vec![Stmt::Transmute { src: v(0), src_ty: ty(0), dst_ty: ty(1) }],
-        stmt_provs: vec![()],
+        stmts:      vec![node(Stmt::Transmute { src: v(0), src_ty: ty(0), dst_ty: ty(1) })],
         terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(1)] ) },
     };
     round_trip_ir(SavedIrBlocks {
@@ -175,8 +171,7 @@ fn ir_stmt_poly() {
     coeffs.insert(vec![v(0)], 1u8);
     let block = IRBlock {
         params:     vec![ty(0), ty(0)],  // v0, v1
-        stmts:      vec![Stmt::Poly { ty: ty(0), coeffs, constant: c(0, 0) }],
-        stmt_provs: vec![()],
+        stmts:      vec![node(Stmt::Poly { ty: ty(0), coeffs, constant: c(0, 0) })],
         terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(2)] ) },
     };
     round_trip_ir(SavedIrBlocks {
@@ -191,13 +186,12 @@ fn ir_stmt_rot_merge_splat_shuffle() {
     let block = IRBlock {
         params:     vec![ty(0), ty(0)],  // v0, v1
         stmts:      vec![
-            Stmt::Rol { src: v(0), ty: ty(0), n: 3 },                            // v2
-            Stmt::Ror { src: v(1), ty: ty(0), n: 2 },                            // v3
-            Stmt::Merge { parts: vec![v(0), v(1)], ty: ty(0) },                  // v4
-            Stmt::Splat { src: v(0), ty: ty(0) },                                // v5
-            Stmt::Shuffle { result_bits: vec![(0, v(0)), (1, v(1))], ty: ty(0) }, // v6
+            node(Stmt::Rol { src: v(0), ty: ty(0), n: 3 }),                            // v2
+            node(Stmt::Ror { src: v(1), ty: ty(0), n: 2 }),                            // v3
+            node(Stmt::Merge { parts: vec![v(0), v(1)], ty: ty(0) }),                  // v4
+            node(Stmt::Splat { src: v(0), ty: ty(0) }),                                // v5
+            node(Stmt::Shuffle { result_bits: vec![(0, v(0)), (1, v(1))], ty: ty(0) }), // v6
         ],
-        stmt_provs: vec![(), (), (), (), ()],
         terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(6)] ) },
     };
     round_trip_ir(SavedIrBlocks {
@@ -213,23 +207,22 @@ fn ir_stmt_oracle_action_rng() {
         params:     vec![ty(0), ty(0)],  // v0, v1
         stmts:      vec![
             // v2 = oracle_call "oc" args=[v0] out_tys=[0] result_ty=1
-            Stmt::OracleCall {
+            node(Stmt::OracleCall {
                 name: "oc".into(), args: vec![v(0)],
                 output_tys: vec![ty(0)], result_ty: ty(1),
-            },
+            }),
             // v3 = oracle_output call=v2 idx=0 ty=0
-            Stmt::OracleOutput { call: v(2), idx: 0, ty: ty(0) },
+            node(Stmt::OracleOutput { call: v(2), idx: 0, ty: ty(0) }),
             // v4 = action_call "ac" guard=v0 args=[v1] fallbacks=[v0] out_tys=[0] result_ty=1
-            Stmt::ActionCall {
+            node(Stmt::ActionCall {
                 name: "ac".into(), guard: v(0), args: vec![v(1)],
                 fallbacks: vec![v(0)], output_tys: vec![ty(0)], result_ty: ty(1),
-            },
+            }),
             // v5 = action_output call=v4 idx=0 ty=0
-            Stmt::ActionOutput { call: v(4), idx: 0, ty: ty(0) },
+            node(Stmt::ActionOutput { call: v(4), idx: 0, ty: ty(0) }),
             // v6 = rng "rng1" ty=0
-            Stmt::Rng { name: "rng1".into(), ty: ty(0) },
+            node(Stmt::Rng { name: "rng1".into(), ty: ty(0) }),
         ],
-        stmt_provs: vec![(), (), (), (), ()],
         terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(6)] ) },
     };
     round_trip_ir(SavedIrBlocks {
@@ -244,7 +237,6 @@ fn ir_terminator_jmp_cond() {
     let block0 = IRBlock {
         params:     vec![ty(0)],   // v0
         stmts:      vec![],
-        stmt_provs: vec![],
         terminator: IRTerminator::JumpCond {
             condition: v(0),
             true_block:  IRBlockTargetId::Block(block_id(1)),
@@ -256,7 +248,6 @@ fn ir_terminator_jmp_cond() {
     let block1 = IRBlock {
         params:     vec![ty(0)],
         stmts:      vec![],
-        stmt_provs: vec![],
         terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(0)] ) },
     };
     round_trip_ir(SavedIrBlocks {
@@ -274,13 +265,11 @@ fn ir_terminator_jmp_table() {
     let block0 = IRBlock {
         params:     vec![ty(0)],
         stmts:      vec![],
-        stmt_provs: vec![],
         terminator: IRTerminator::JumpTable { index: v(0), cases },
     };
     let block1 = IRBlock {
         params:     vec![],
         stmts:      vec![],
-        stmt_provs: vec![],
         terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![] ) },
     };
     round_trip_ir(SavedIrBlocks {
@@ -294,8 +283,7 @@ fn ir_string_escaping() {
     let types = TypeTable(vec![IrType::Primitive(Type::Bit)]);
     let block = IRBlock {
         params:     vec![],
-        stmts:      vec![Stmt::Rng { name: "a\"b\\c\nd".into(), ty: ty(0) }],
-        stmt_provs: vec![()],
+        stmts:      vec![node(Stmt::Rng { name: "a\"b\\c\nd".into(), ty: ty(0) })],
         terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(0)] ) },
     };
     round_trip_ir(SavedIrBlocks {
@@ -310,8 +298,7 @@ fn ir_constant_large() {
     let big = c(0xdeadbeef_cafebabe_12345678_90abcdef_u128, u128::MAX);
     let block = IRBlock {
         params:     vec![],
-        stmts:      vec![Stmt::Const(big, ty(0))],
-        stmt_provs: vec![()],
+        stmts:      vec![node(Stmt::Const(big, ty(0)))],
         terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(0)] ) },
     };
     round_trip_ir(SavedIrBlocks {
@@ -329,14 +316,13 @@ fn bir_simple_round_trip() {
     let block = BIrBlock {
         params:     2,   // v0, v1
         stmts:      vec![
-            BIrStmt::Zero,                   // v2
-            BIrStmt::One,                    // v3
-            BIrStmt::And(v(0), v(1)),        // v4
-            BIrStmt::Or(v(0), v(1)),         // v5
-            BIrStmt::Xor(v(0), v(1)),        // v6
-            BIrStmt::Not(v(0)),              // v7
+            node(BIrStmt::Zero),                   // v2
+            node(BIrStmt::One),                    // v3
+            node(BIrStmt::And(v(0), v(1))),        // v4
+            node(BIrStmt::Or(v(0), v(1))),         // v5
+            node(BIrStmt::Xor(v(0), v(1))),        // v6
+            node(BIrStmt::Not(v(0))),              // v7
         ],
-        stmt_provs: vec![(), (), (), (), (), ()],
         terminator: BIrTerminator::Jmp(BIrTarget {
             block: IRBlockTargetId::Return, args: vec![v(6)],
         }),
@@ -349,14 +335,13 @@ fn bir_oracle_action_rng() {
     let block = BIrBlock {
         params:     4,   // v0..v3
         stmts:      vec![
-            BIrStmt::OracleCall { name: "oc".into(), args: vec![v(0), v(1)], num_bits: 4 }, // v4
-            BIrStmt::OracleBit  { call: v(4), bit: 2 },                                     // v5
-            BIrStmt::ActionCall { name: "ac".into(), guard: v(0), args: vec![v(1)],
-                                   fallback: vec![v(2)], num_bits: 2 },                      // v6
-            BIrStmt::ActionBit  { call: v(6), bit: 0 },                                     // v7
-            BIrStmt::Rng        { name: "rng1".into() },                                    // v8
+            node(BIrStmt::OracleCall { name: "oc".into(), args: vec![v(0), v(1)], num_bits: 4 }), // v4
+            node(BIrStmt::OracleBit  { call: v(4), bit: 2 }),                                     // v5
+            node(BIrStmt::ActionCall { name: "ac".into(), guard: v(0), args: vec![v(1)],
+                                   fallback: vec![v(2)], num_bits: 2 }),                      // v6
+            node(BIrStmt::ActionBit  { call: v(6), bit: 0 }),                                     // v7
+            node(BIrStmt::Rng        { name: "rng1".into() }),                                    // v8
         ],
-        stmt_provs: vec![(), (), (), (), ()],
         terminator: BIrTerminator::Jmp(BIrTarget {
             block: IRBlockTargetId::Return, args: vec![v(8)],
         }),
@@ -369,10 +354,9 @@ fn bir_storage() {
     let block = BIrBlock {
         params:     4,   // v0..v3 (addr bits)
         stmts:      vec![
-            BIrStmt::StorageRead  { storage: storage(0), bit_width: 8, addr: vec![v(0), v(1)] }, // v4
-            BIrStmt::StorageWrite { storage: storage(1), src: v(4), bit_width: 8, addr: vec![v(2), v(3)] }, // v5
+            node(BIrStmt::StorageRead  { storage: storage(0), bit_width: 8, addr: vec![v(0), v(1)] }), // v4
+            node(BIrStmt::StorageWrite { storage: storage(1), src: v(4), bit_width: 8, addr: vec![v(2), v(3)] }), // v5
         ],
-        stmt_provs: vec![(), ()],
         terminator: BIrTerminator::Jmp(BIrTarget {
             block: IRBlockTargetId::Return, args: vec![v(4)],
         }),
@@ -385,7 +369,6 @@ fn bir_cond_jmp() {
     let block0 = BIrBlock {
         params:     1,  // v0
         stmts:      vec![],
-        stmt_provs: vec![],
         terminator: BIrTerminator::CondJmp {
             val: v(0),
             then_target: BIrTarget { block: IRBlockTargetId::Block(IRBlockId(1)), args: vec![v(0)] },
@@ -395,7 +378,6 @@ fn bir_cond_jmp() {
     let block1 = BIrBlock {
         params:     1,
         stmts:      vec![],
-        stmt_provs: vec![],
         terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![v(0)] }),
     };
     round_trip_bir(SavedBIrBlocks { blocks: BIrBlocks { blocks: vec![block0, block1], pre_init: vec![] } });
@@ -405,16 +387,14 @@ fn bir_cond_jmp() {
 fn bir_multi_block() {
     let block0 = BIrBlock {
         params:     2,
-        stmts:      vec![BIrStmt::And(v(0), v(1))],
-        stmt_provs: vec![()],
+        stmts:      vec![node(BIrStmt::And(v(0), v(1)))],
         terminator: BIrTerminator::Jmp(BIrTarget {
             block: IRBlockTargetId::Block(IRBlockId(1)), args: vec![v(2)],
         }),
     };
     let block1 = BIrBlock {
         params:     1,
-        stmts:      vec![BIrStmt::Not(v(0))],
-        stmt_provs: vec![()],
+        stmts:      vec![node(BIrStmt::Not(v(0)))],
         terminator: BIrTerminator::Jmp(BIrTarget {
             block: IRBlockTargetId::Return, args: vec![v(1)],
         }),

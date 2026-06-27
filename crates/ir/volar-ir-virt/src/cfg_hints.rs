@@ -177,7 +177,7 @@ fn const_u64_from_var<P: Clone>(block: &volar_ir::ir::IRBlock<P>, var: IRVarId) 
         return None;
     }
     let stmt_idx = idx - block.params.len();
-    match block.stmts.get(stmt_idx)? {
+    match &block.stmts.get(stmt_idx)?.kind {
         Stmt::Const(c, _) => Some(c.lo as u64),
         _ => None,
     }

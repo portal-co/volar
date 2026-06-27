@@ -112,7 +112,7 @@ fn apply_one(
     }
     for rb in &repl_blocks.blocks {
         for stmt in &rb.stmts {
-            match stmt {
+            match &stmt.kind {
                 Stmt::StorageRead { storage, .. } | Stmt::StorageWrite { storage, .. } => {
                     storage_map.entry(storage.0).or_insert_with(|| allocator.alloc());
                 }
@@ -128,11 +128,10 @@ fn apply_one(
             params: rb.params.iter().map(|&t| tr.remap(t)).collect(),
             stmts: rb.stmts.iter().map(|s| {
                 let mut s2 = s.clone();
-                tr.remap_stmt_types(&mut s2);
-                remap_storage_in_stmt(&mut s2, &storage_map);
+                tr.remap_stmt_types(&mut s2.kind);
+                remap_storage_in_stmt(&mut s2.kind, &storage_map);
                 s2
             }).collect(),
-            stmt_provs: rb.stmt_provs.clone(),
             terminator: remap_block_ids(&rb.terminator, block_offset),
         };
         blocks.blocks.push(new_block);
@@ -156,7 +155,7 @@ fn apply_one(
         };
 
         // Snapshot call-site info BEFORE any mutation.
-        let (call_args, opt_guard, fallbacks) = snapshot_call(&blocks.blocks[bi].stmts[si], sub);
+        let (call_args, opt_guard, fallbacks) = snapshot_call(&blocks.blocks[bi].stmts[si].kind, sub);
         let n_params = blocks.blocks[bi].params.len();
         let call_vid = IRVarId(n_params as u32 + si as u32);
 
@@ -238,7 +237,6 @@ fn apply_one(
         {
             let block = &mut blocks.blocks[bi];
             block.stmts.truncate(si);
-            block.stmt_provs.truncate(si);
 
             let base = n_params as u32;
 
@@ -330,22 +328,20 @@ fn build_continuation_block(
     let result_prefix = 2 * n_results;
     let _live_prefix   = 2 * n_live;
 
-    let mut stmts: Vec<IRStmt> = Vec::new();
-    let mut provs: Vec<()> = Vec::new();
+    let mut stmts: Vec<volar_ir_common::Node<IRStmt, ()>> = Vec::new();
 
-    let push = |stmts: &mut Vec<IRStmt>, provs: &mut Vec<()>, s: IRStmt| {
-        stmts.push(s);
-        provs.push(());
+    let push = |stmts: &mut Vec<volar_ir_common::Node<IRStmt, ()>>, s: IRStmt| {
+        stmts.push(volar_ir_common::Node::new(s, (), None));
     };
 
     // Result reads: (Const addr, StorageRead) × n_results.
     for j in 0..n_results {
         let addr_var = IRVarId((2 * j) as u32);
-        push(&mut stmts, &mut provs, Stmt::Const(
+        push(&mut stmts, Stmt::Const(
             Constant { hi: 0, lo: (1 + n_args + j) as u128 },
             addr_ty,
         ));
-        push(&mut stmts, &mut provs, Stmt::StorageRead {
+        push(&mut stmts, Stmt::StorageRead {
             storage: spill, ty: output_tys[j], addr: addr_var,
         });
     }
@@ -353,10 +349,10 @@ fn build_continuation_block(
     // Live reloads: (Const addr, StorageRead) × n_live.
     for (k, &(_, lty)) in live_vars.iter().enumerate() {
         let addr_var = IRVarId((result_prefix + 2 * k) as u32);
-        push(&mut stmts, &mut provs, Stmt::Const(
+        push(&mut stmts, Stmt::Const(
             Constant { hi: 0, lo: (live_base + k) as u128 }, addr_ty,
         ));
-        push(&mut stmts, &mut provs, Stmt::StorageRead {
+        push(&mut stmts, Stmt::StorageRead {
             storage: spill, ty: lty, addr: addr_var,
         });
     }
@@ -366,16 +362,16 @@ fn build_continuation_block(
     for (j, stmt) in orig_block.stmts[si + 1..].iter().enumerate() {
         let orig_var = n_params + (si + 1 + j) as u32;
         if eliminated.contains_key(&orig_var) { continue; }
-        let mut s = stmt.clone();
+        let mut s = stmt.kind.clone();
         apply_aliases_to_stmt(&mut s, alias);
-        push(&mut stmts, &mut provs, s);
+        push(&mut stmts, s);
     }
 
     // Terminator: original, var-remapped.
     let mut terminator = orig_block.terminator.clone();
     apply_aliases_to_ir_terminator(&mut terminator, alias);
 
-    IRBlock { params: vec![], stmts, stmt_provs: provs, terminator }
+    IRBlock { params: vec![], stmts, terminator }
 }
 
 fn build_fallback_block(
@@ -387,17 +383,18 @@ fn build_fallback_block(
     addr_ty: TypeId,
     output_tys: &[TypeId],
 ) -> IRBlock {
-    let mut stmts: Vec<IRStmt> = Vec::new();
-    let mut provs: Vec<()> = Vec::new();
+    let mut stmts: Vec<volar_ir_common::Node<IRStmt, ()>> = Vec::new();
 
     for (j, &fb) in fallbacks.iter().enumerate().take(n_results) {
         let addr_var = IRVarId((2 * j) as u32);
-        stmts.push(Stmt::Const(Constant { hi: 0, lo: (1 + n_args + j) as u128 }, addr_ty));
-        provs.push(());
-        stmts.push(Stmt::StorageWrite {
-            storage: spill, src: fb, ty: output_tys.get(j).copied().unwrap_or(TypeId(0)), addr: addr_var,
-        });
-        provs.push(());
+        stmts.push(volar_ir_common::Node::new(
+            Stmt::Const(Constant { hi: 0, lo: (1 + n_args + j) as u128 }, addr_ty), (), None,
+        ));
+        stmts.push(volar_ir_common::Node::new(
+            Stmt::StorageWrite {
+                storage: spill, src: fb, ty: output_tys.get(j).copied().unwrap_or(TypeId(0)), addr: addr_var,
+            }, (), None,
+        ));
     }
 
     let terminator = IRTerminator::Jmp {
@@ -406,7 +403,7 @@ fn build_fallback_block(
             vec![],
         ),
     };
-    IRBlock { params: vec![], stmts, stmt_provs: provs, terminator }
+    IRBlock { params: vec![], stmts, terminator }
 }
 
 // ============================================================================
@@ -443,7 +440,7 @@ fn snapshot_call(
 
 fn find_call_site(block: &IRBlock, name: &str, sub: &IrSubstitution) -> Option<usize> {
     for (si, stmt) in block.stmts.iter().enumerate() {
-        let m = match (sub, stmt) {
+        let m = match (sub, &stmt.kind) {
             (IrSubstitution::Oracle { .. }, Stmt::OracleCall { name: n, .. }) => n == name,
             (IrSubstitution::Action { .. }, Stmt::ActionCall { name: n, .. }) => n == name,
             (IrSubstitution::Rng    { .. }, Stmt::Rng { name: n, .. })        => n == name,
@@ -465,7 +462,7 @@ fn find_eliminated_outputs(
     if matches!(sub, IrSubstitution::Rng { .. }) { return out; }
     for (j, stmt) in block.stmts[si + 1..].iter().enumerate() {
         let orig = n_params as u32 + (si + 1 + j) as u32;
-        match stmt {
+        match &stmt.kind {
             Stmt::OracleOutput { call, idx, .. } if *call == call_vid => { out.insert(orig, *idx); }
             Stmt::ActionOutput { call, idx, .. } if *call == call_vid => { out.insert(orig, *idx); }
             _ => {}
@@ -495,7 +492,7 @@ fn collect_live_vars(
     };
 
     for stmt in &block.stmts[si + 1..] {
-        visit_stmt_vars(stmt, &mut visit);
+        visit_stmt_vars(&stmt.kind, &mut visit);
     }
     visit_terminator_vars(&block.terminator, &mut visit);
 
@@ -509,7 +506,7 @@ fn var_type_in_block(block: &IRBlock, vid: IRVarId, _types: &IRTypes) -> TypeId 
     } else {
         let si = vid.0 as usize - n;
         block.stmts.get(si)
-            .and_then(|s| stmt_output_type(s))
+            .and_then(|s| stmt_output_type(&s.kind))
             .unwrap_or(TypeId(0))
     }
 }
@@ -661,7 +658,7 @@ fn scan_max_storage(blocks: &IRBlocks) -> u32 {
     let mut max = 0u32;
     for block in &blocks.blocks {
         for stmt in &block.stmts {
-            match stmt {
+            match &stmt.kind {
                 Stmt::StorageRead { storage, .. } | Stmt::StorageWrite { storage, .. } => {
                     if storage.0 > max { max = storage.0; }
                 }
@@ -696,8 +693,8 @@ mod tests {
     }
 
     fn block(stmts: Vec<IRStmt>, terminator: IRTerminator) -> IRBlock {
-        let stmt_provs = vec![(); stmts.len()];
-        IRBlock { params: vec![], stmts, stmt_provs, terminator }
+        let stmts = stmts.into_iter().map(|s| volar_ir_common::Node::new(s, (), None)).collect();
+        IRBlock { params: vec![], stmts, terminator }
     }
 
     type IRStmt = volar_ir::ir::IRStmt;

@@ -17,6 +17,7 @@ members = [
     "crates/compiler/volar-compiler-common",
     "crates/ir/volar-ir-common",
     "crates/ir/volar-provenance",
+    "crates/ir/volar-side",
     "crates/ir/volar-discipline",
     "crates/compiler/volar-weaver",
     "crates/ir/volar-lir",
@@ -60,6 +61,7 @@ default-members = [
     "crates/compiler/volar-compiler-common",
     "crates/ir/volar-ir-common",
     "crates/ir/volar-provenance",
+    "crates/ir/volar-side",
     "crates/ir/volar-discipline",
     "crates/compiler/volar-weaver",
     "crates/ir/volar-lir",
@@ -98,6 +100,7 @@ vaffle = {path="crates/ir/vaffle", version = "0.1.0"}
 volar-vaffle-target = {path="crates/ir/volar-vaffle-target", version = "0.1.0"}
 volar-ir-common = {path="crates/ir/volar-ir-common", version = "0.1.0"}
 volar-provenance = {path="crates/ir/volar-provenance", version = "0.1.0"}
+volar-side = {path="crates/ir/volar-side", version = "0.1.0"}
 volar-discipline = {path="crates/ir/volar-discipline", version = "0.1.0"}
 volar-ir-opt = {path="crates/ir/volar-ir-opt", version = "0.1.0"}
 volar-ir-virt = {path="crates/ir/volar-ir-virt", version = "0.1.0"}

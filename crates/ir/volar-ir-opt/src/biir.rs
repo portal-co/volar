@@ -46,13 +46,13 @@ fn fold_biir_block_once<P: Clone>(block: &mut BIrBlock<P>) -> bool {
         let rv = IRVarId(base + i as u32);
 
         // Step 1: apply alias substitutions to this stmt's operands.
-        if apply_aliases_to_biir_stmt(&mut block.stmts[i], &alias_map) {
+        if apply_aliases_to_biir_stmt(&mut block.stmts[i].kind, &alias_map) {
             changed = true;
         }
 
         // Step 2: read (now-updated) operands and compute the simplification action.
         let action = {
-            match &block.stmts[i] {
+            match &block.stmts[i].kind {
                 BIrStmt::Zero => {
                     bool_map.insert(rv, false);
                     None
@@ -115,8 +115,8 @@ fn fold_biir_block_once<P: Clone>(block: &mut BIrBlock<P>) -> bool {
         match action {
             Some(Action::ToConst(val)) => {
                 let new_stmt = if val { BIrStmt::One } else { BIrStmt::Zero };
-                if block.stmts[i] != new_stmt {
-                    block.stmts[i] = new_stmt;
+                if block.stmts[i].kind != new_stmt {
+                    block.stmts[i].kind = new_stmt;
                     changed = true;
                 }
                 bool_map.insert(rv, val);

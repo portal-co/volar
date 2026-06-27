@@ -16,7 +16,7 @@
 //!    `(IRBlocks<()>, IRTypes)` by clamping indices and matching types.
 
 use volar_ir::ir::{IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt, IRTerminator, IRVarId};
-use volar_ir_common::{Constant, IrType, OracleDecl, Stmt, StorageId, Type, TypeId, TypeTable};
+use volar_ir_common::{Constant, IrType, Node, OracleDecl, Stmt, StorageId, Type, TypeId, TypeTable};
 
 use crate::interpreter::ir::primitive_width;
 
@@ -147,12 +147,10 @@ pub fn interpret_ir(
     // Terminator: return every var (params + stmts).
     let total_vars = param_type_ids.len() + stmts.len();
     let ret_args: Vec<IRVarId> = (0..total_vars as u32).map(IRVarId).collect();
-    let n = stmts.len();
 
     let block = IRBlock {
         params: param_type_ids,
-        stmts,
-        stmt_provs: vec![(); n],
+        stmts: stmts.into_iter().map(|s| Node::new(s, (), None)).collect(),
         terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, ret_args,) },
     };
 
@@ -408,7 +406,6 @@ pub fn interpret_ir_extended(
     // Terminator: JumpCond on first Bit-typed var if one exists, else Jmp(Return).
     let total_vars = n_params + stmts.len();
     let ret_args: Vec<IRVarId> = (0..total_vars as u32).map(IRVarId).collect();
-    let n = stmts.len();
 
     let bit_tid = types.primitive(Type::Bit);
     let cond_var = var_info.iter().find(|(tid, _, _)| *tid == bit_tid).map(|(_, _, id)| *id);
@@ -424,8 +421,7 @@ pub fn interpret_ir_extended(
 
     let block = IRBlock {
         params: param_type_ids,
-        stmts,
-        stmt_provs: vec![(); n],
+        stmts: stmts.into_iter().map(|s| Node::new(s, (), None)).collect(),
         terminator,
     };
 
@@ -487,7 +483,6 @@ pub fn interpret_ir_multiblock(
 
     // B0 terminator: jump to Block(1), passing all non-void vars as args.
     let b0_jump_args: Vec<IRVarId> = var_info_b0.iter().map(|(_, _, id)| *id).collect();
-    let n_b0_stmts = stmts_b0.len();
     let b0_term = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), b0_jump_args,) };
 
     // ── Block 1 ──────────────────────────────────────────────────────────────
@@ -510,19 +505,16 @@ pub fn interpret_ir_multiblock(
     // B1 terminator: return all B1 vars (params + stmts).
     let total_b1_vars = n_b1_params + stmts_b1.len();
     let b1_ret_args: Vec<IRVarId> = (0..total_b1_vars as u32).map(IRVarId).collect();
-    let n_b1_stmts = stmts_b1.len();
     let b1_term = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, b1_ret_args,) };
 
     let block0 = IRBlock {
         params: param_type_ids,
-        stmts: stmts_b0,
-        stmt_provs: vec![(); n_b0_stmts],
+        stmts: stmts_b0.into_iter().map(|s| Node::new(s, (), None)).collect(),
         terminator: b0_term,
     };
     let block1 = IRBlock {
         params: b1_param_types,
-        stmts: stmts_b1,
-        stmt_provs: vec![(); n_b1_stmts],
+        stmts: stmts_b1.into_iter().map(|s| Node::new(s, (), None)).collect(),
         terminator: b1_term,
     };
 
@@ -602,7 +594,6 @@ pub fn interpret_ir_diamond(
     let stmts_b0 = build_extended_ir_stmts(
         &mut types, &mut var_info_b0, raw_stmts_b0, n_params as u32, &oracle_decls,
     );
-    let n_b0_stmts = stmts_b0.len();
 
     // B0 terminator: JumpCond on first param (Bit), true→B1, false→B2.
     let b0_jump_args: Vec<IRVarId> = var_info_b0.iter().map(|(_, _, id)| *id).collect();
@@ -631,7 +622,6 @@ pub fn interpret_ir_diamond(
     let stmts_b1 = build_extended_ir_stmts(
         &mut types, &mut var_info_b1, raw_stmts_b1, n_b1_params as u32, &oracle_decls,
     );
-    let n_b1_stmts = stmts_b1.len();
 
     // B1→B3: pass only the params (B0 vars re-indexed).
     let b1_to_b3_args: Vec<IRVarId> = (0..n_b1_params as u32).map(IRVarId).collect();
@@ -650,7 +640,6 @@ pub fn interpret_ir_diamond(
     let stmts_b2 = build_extended_ir_stmts(
         &mut types, &mut var_info_b2, raw_stmts_b2, n_b2_params as u32, &oracle_decls,
     );
-    let n_b2_stmts = stmts_b2.len();
 
     let b2_to_b3_args: Vec<IRVarId> = (0..n_b2_params as u32).map(IRVarId).collect();
     let b2_term = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(3)), b2_to_b3_args,) };
@@ -668,35 +657,34 @@ pub fn interpret_ir_diamond(
     let stmts_b3 = build_extended_ir_stmts(
         &mut types, &mut var_info_b3, raw_stmts_b3, n_b3_params as u32, &oracle_decls,
     );
-    let n_b3_stmts = stmts_b3.len();
 
     let total_b3_vars = n_b3_params + stmts_b3.len();
     let b3_ret_args: Vec<IRVarId> = (0..total_b3_vars as u32).map(IRVarId).collect();
     let b3_term = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, b3_ret_args,) };
 
+    let wrap = |stmts: Vec<IRStmt>| -> Vec<Node<IRStmt, ()>> {
+        stmts.into_iter().map(|s| Node::new(s, (), None)).collect()
+    };
+
     let mut blocks = IRBlocks::new(vec![
         IRBlock {
             params: param_type_ids,
-            stmts: stmts_b0,
-            stmt_provs: vec![(); n_b0_stmts],
+            stmts: wrap(stmts_b0),
             terminator: b0_term,
         },
         IRBlock {
             params: b1_param_types,
-            stmts: stmts_b1,
-            stmt_provs: vec![(); n_b1_stmts],
+            stmts: wrap(stmts_b1),
             terminator: b1_term,
         },
         IRBlock {
             params: b2_param_types,
-            stmts: stmts_b2,
-            stmt_provs: vec![(); n_b2_stmts],
+            stmts: wrap(stmts_b2),
             terminator: b2_term,
         },
         IRBlock {
             params: b3_param_types,
-            stmts: stmts_b3,
-            stmt_provs: vec![(); n_b3_stmts],
+            stmts: wrap(stmts_b3),
             terminator: b3_term,
         },
     ]);

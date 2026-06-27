@@ -364,7 +364,7 @@ fn write_ir_block(id: usize, block: &IRBlock<()>, w: &mut dyn fmt::Write) -> fmt
     w.write_char('\n')?;
     let base = block.params.len() as u32;
     for (i, stmt) in block.stmts.iter().enumerate() {
-        write_ir_stmt(IRVarId(base + i as u32), stmt, w)?;
+        write_ir_stmt(IRVarId(base + i as u32), &stmt.kind, w)?;
     }
     write_ir_terminator(&block.terminator, w)?;
     w.write_str("end_block\n")

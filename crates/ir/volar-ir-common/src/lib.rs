@@ -908,3 +908,69 @@ impl StorageAllocator {
         id
     }
 }
+
+// ============================================================================
+// Node: shared per-value provenance + side wrapper
+// ============================================================================
+
+/// A node wrapping an IR/AST payload `T` with provenance (`P`) and
+/// [`SideId`] metadata.
+///
+/// SSA/arena-style IRs (Volar IR's `IRStmt`, VAFFLE's `Value`) wrap each
+/// statement or arena entry directly — `T` does not itself mention `P`, so
+/// [`map_prov`](Self::map_prov) is the only mapping operation needed.
+/// Tree-shaped IRs whose payload recursively embeds `P` (e.g. a compiler's
+/// expression IR) wrap their recursive `Kind` enum instead; such IRs define
+/// their own recursive provenance-mapping logic over `T`; `Node` only owns
+/// the per-node `prov`/`side` pair, not the recursion.
+///
+/// `side` is never touched by provenance mapping — the two annotations are
+/// independent axes (see the crate-level docs of `volar-side`).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct Node<T, P: Clone = ()> {
+    pub kind: T,
+    pub prov: P,
+    pub side: Option<volar_side::SideId>,
+}
+
+impl<T, P: Clone> Node<T, P> {
+    /// Construct a node from its parts.
+    pub fn new(kind: T, prov: P, side: Option<volar_side::SideId>) -> Self {
+        Node { kind, prov, side }
+    }
+
+    /// Map this node's provenance via `f`. `kind` and `side` pass through
+    /// unchanged — the right operation whenever the payload `T` does not
+    /// itself mention `P` (the common case for SSA/arena statement types).
+    pub fn map_prov<Q: Clone>(self, f: impl FnOnce(P) -> Q) -> Node<T, Q> {
+        Node { kind: self.kind, prov: f(self.prov), side: self.side }
+    }
+}
+
+/// Implemented by a tree-shaped `Kind` payload that itself embeds `P` in
+/// nested [`Node`]s (e.g. a compiler's expression/statement IR, where a
+/// `Binary` variant holds boxed `Node<ExprKind<P>, P>` operands).
+///
+/// `Node<T, P>::map_kind_prov` delegates to this trait to recurse into `T`
+/// and remap every nested `P`, then maps its own top-level `prov`. Payload
+/// types that do not embed `P` (SSA/arena statement kinds) have no need for
+/// this trait — use [`Node::map_prov`] directly instead.
+pub trait MapKind<P: Clone, Q: Clone> {
+    /// The same `Kind` shape with every nested `P` replaced by `Q`.
+    type Output;
+
+    /// Recurse into `self`, replacing every nested `P` via `f`.
+    fn map_kind(self, f: &impl Fn(P) -> Q) -> Self::Output;
+}
+
+impl<T, P: Clone> Node<T, P> {
+    /// Map provenance through a tree-shaped payload that itself embeds `P`,
+    /// recursing via `T::map_kind` and then mapping this node's own `prov`.
+    pub fn map_kind_prov<Q: Clone>(self, f: &impl Fn(P) -> Q) -> Node<T::Output, Q>
+    where
+        T: MapKind<P, Q>,
+    {
+        Node { kind: self.kind.map_kind(f), prov: f(self.prov), side: self.side }
+    }
+}
