@@ -351,7 +351,6 @@ fn mono_cfg_terminator(term: &IrCfgTerminator, env: &MonoEnv) -> IrCfgTerminator
             then_: mono_cfg_jump(then_, env),
             else_: mono_cfg_jump(else_, env),
         },
-        _ => panic!("mono_cfg_terminator: unhandled IrCfgTerminator variant — add monomorphization for this variant"),
     }
 }
 
@@ -469,7 +468,6 @@ fn mono_stmt(stmt: &IrStmt, env: &MonoEnv) -> IrStmt {
         },
         IrStmt::Semi(e) => IrStmt::Semi(mono_expr(e, env)),
         IrStmt::Expr(e) => IrStmt::Expr(mono_expr(e, env)),
-        _ => panic!("mono_stmt: unhandled IrStmt variant — add monomorphization for this variant"),
     }
 }
 

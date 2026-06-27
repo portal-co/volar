@@ -220,8 +220,8 @@ capabilities or evaluation results change materially.
 | Tier | Claude models permitted at this tier | GPT models permitted at this tier |
 |---|---|---|
 | **Tier 1 — Glue** | Any current Claude model (Haiku 4.x, Sonnet ≤ 4.5, Opus ≤ 4.4). | Any current GPT model not listed for Tier 2 or Tier 3, including GPT-5.4-Mini and earlier small/fast variants. |
-| **Tier 2 — Compiler** | Sonnet 4.6 or later; Opus 4.5 or later; Fable 5 or later. | Full GPT-5.2, GPT-5.3-Codex, full GPT-5.4, GPT-5.5, and later non-mini successors in those families. |
-| **Tier 3 — Cryptography** | Opus 4.6 or later; Fable 5 or later. | GPT-5.5 or later. |
+| **Tier 2 — Compiler** | Sonnet 4.6 or later; Opus 4.5 or later. | Full GPT-5.2, GPT-5.3-Codex, full GPT-5.4, GPT-5.5, and later non-mini successors in those families. |
+| **Tier 3 — Cryptography** | Opus 4.6 or later. | GPT-5.5 or later. |
 
 Sonnet (any version), GPT-5.4-Mini, GPT-5.3-Codex, GPT-5.4, and GPT-5.2 are
 **not** permitted at Tier 3, even if one of them is otherwise the strongest

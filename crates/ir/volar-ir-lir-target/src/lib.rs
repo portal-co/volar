@@ -96,14 +96,14 @@ pub struct VolarBlock(pub usize);
 // Internal builders
 // ============================================================================
 
-struct BlockBuilder<P: Clone = ()> {
+struct BlockBuilder<P: Clone + Default = ()> {
     params: Vec<IRTypeId>,
     stmts: Vec<IRStmt>,
     stmt_provs: Vec<P>,
     terminator: Option<IRTerminator>,
 }
 
-impl<P: Clone> BlockBuilder<P> {
+impl<P: Clone + Default> BlockBuilder<P> {
     fn new() -> Self {
         BlockBuilder { params: vec![], stmts: vec![], stmt_provs: vec![], terminator: None }
     }
@@ -114,7 +114,7 @@ impl<P: Clone> BlockBuilder<P> {
     }
 }
 
-struct FuncBuilder<P: Clone = ()> {
+struct FuncBuilder<P: Clone + Default = ()> {
     name: String,
     blocks: Vec<BlockBuilder<P>>,
     /// Index of the block currently being emitted.
@@ -135,7 +135,7 @@ struct FuncBuilder<P: Clone = ()> {
 /// statements.  Call [`set_prov`](volar_lir::LirTarget::set_prov) before
 /// emitting instructions; each instruction is tagged with the most recently
 /// set provenance.  Use `P = ()` (the default) when provenance is not needed.
-pub struct VolarIrTarget<P: Clone = ()> {
+pub struct VolarIrTarget<P: Clone + Default = ()> {
     /// Shared IR types table.  Always contains [`IRType::Bit`] at index 0.
     pub types: IRTypes,
     bit_tid: IRTypeId,
@@ -162,13 +162,10 @@ pub struct VolarIrTarget<P: Clone = ()> {
     pub completed: Vec<(String, IRBlocks<P>)>,
 }
 
-impl<P: Clone> VolarIrTarget<P> {
-    /// Create a new target with an explicit initial provenance value.
-    ///
-    /// The initial provenance is used for any instructions emitted before the
-    /// first [`set_prov`](volar_lir::LirTarget::set_prov) call.  For unit
-    /// provenance use [`VolarIrTarget::new`] instead.
-    pub fn new_with_prov(initial_prov: P) -> Self {
+impl<P: Clone + Default> VolarIrTarget<P> {
+    /// Create a new target.  A fresh `IRTypes` is initialised with
+    /// [`IRType::Bit`] at type-ID 0.
+    pub fn new() -> Self {
         let bit_tid = IRTypeId(0);
         VolarIrTarget {
             types: IRTypes(std::vec![IrType::Primitive(NativeType::Bit)]),
@@ -177,21 +174,12 @@ impl<P: Clone> VolarIrTarget<P> {
             externs: BTreeMap::new(),
             pending_oracles: vec![],
             pending_actions: vec![],
-            current_prov: initial_prov,
+            current_prov: P::default(),
             func: None,
             completed: vec![],
         }
     }
-}
 
-impl VolarIrTarget<()> {
-    /// Create a new unit-provenance target.
-    pub fn new() -> Self {
-        Self::new_with_prov(())
-    }
-}
-
-impl<P: Clone> VolarIrTarget<P> {
     /// Register a named external implementation.
     ///
     /// The implementation must be a **single-block** `IRBlocks` (a plain
@@ -724,7 +712,7 @@ impl<P: Clone> VolarIrTarget<P> {
 // BitCircuitBuilder implementation for VolarIrTarget
 // ============================================================================
 
-impl<P: Clone> BitCircuitBuilder for VolarIrTarget<P> {
+impl<P: Clone + Default> BitCircuitBuilder for VolarIrTarget<P> {
     type Bit = IRVarId;
 
     fn bc_const(&mut self, val: bool) -> IRVarId {
@@ -759,7 +747,7 @@ impl<P: Clone> BitCircuitBuilder for VolarIrTarget<P> {
     }
 }
 
-impl<P: Clone> StorageEmitter for VolarIrTarget<P> {
+impl<P: Clone + Default> StorageEmitter for VolarIrTarget<P> {
     fn compose_address(&mut self, bits: &[IRVarId]) -> IRVarId {
         if bits.len() == 1 {
             return bits[0];
@@ -799,7 +787,6 @@ fn bits_for_lir_type(ty: &LirType, struct_widths: &[usize]) -> usize {
         // Native field elements occupy exactly one IRVarId slot (not N bits).
         LirType::Native(_) => 1,
         LirType::Ptr(_) => panic!("VolarIrTarget: LirType::Ptr is not supported (circuit backends have no memory model)"),
-        _ => panic!("bits_for_lir_type: unhandled LirType variant — add bit-width calculation"),
     }
 }
 
@@ -842,7 +829,6 @@ fn remap_terminator(
                 IRBlockTargetId::Block(IRBlockId(new_blocks[*j as usize] as u32)),
             IRBlockTargetId::Dyn(v) =>
                 IRBlockTargetId::Dyn(var_map[v.0 as usize]),
-            _ => panic!("remap_target: unhandled IRBlockTargetId variant — add remapping for this variant"),
         }
     };
     match term {
@@ -864,7 +850,6 @@ fn remap_terminator(
                 (*k, (remap_target(t), remap_args(args)))
             }).collect(),
         },
-        _ => panic!("remap_terminator: unhandled IRTerminator variant — add remapping for this variant"),
     }
 }
 
@@ -923,7 +908,6 @@ fn subst_stmt(stmt: &IRStmt, var_map: &[IRVarId]) -> IRStmt {
         IRStmt::ActionOutput { call, idx, ty } =>
             IRStmt::ActionOutput { call: s(call), idx: *idx, ty: ty.clone() },
         IRStmt::Rng { name, ty } => IRStmt::Rng { name: name.clone(), ty: ty.clone() },
-        _ => panic!("subst_stmt: unhandled IRStmt variant — add substitution for this variant"),
     }
 }
 
@@ -931,7 +915,7 @@ fn subst_stmt(stmt: &IRStmt, var_map: &[IRVarId]) -> IRStmt {
 // LirTarget implementation
 // ============================================================================
 
-impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
+impl<P: Clone + Default> LirTarget<P> for VolarIrTarget<P> {
     type Value = VolarValue;
     type Block = VolarBlock;
 

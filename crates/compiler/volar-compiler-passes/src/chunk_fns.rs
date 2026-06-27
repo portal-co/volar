@@ -433,7 +433,6 @@ pub fn collect_vars_in_expr(expr: &IrExpr, out: &mut BTreeSet<String>) {
         | IrExpr::Break(None)
         | IrExpr::Continue
         | IrExpr::Unreachable => {}
-        _ => {}
     }
 }
 
@@ -444,7 +443,6 @@ fn collect_vars_in_block(block: &IrBlock, out: &mut BTreeSet<String>) {
             | IrStmt::Semi(e)
             | IrStmt::Expr(e) => collect_vars_in_expr(e, out),
             IrStmt::Let { init: None, .. } => {}
-            _ => {}
         }
     }
     if let Some(e) = &block.expr { collect_vars_in_expr(e, out); }

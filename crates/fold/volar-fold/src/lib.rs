@@ -24,6 +24,9 @@
 //! - [`link`] — the generic [`link::BoundaryLink`] embedding trait (the
 //!   binary-field ↔ prime-field linking is a swappable component).
 //! - [`bridge_adapter`] — `FoldingBridge<L>`, a resilience-bridge strategy.
+//! - [`transport`] — `FoldingTransport`, a concrete `ResilientVoleTransport`
+//!   that drives the bridge from generated code (`prover_bridge` /
+//!   `verifier_bridge` → a real `GapVerdict`).
 //!
 //! ## Status (honest)
 //! The folding machinery is concrete and self-tested: a **Montgomery** scalar
@@ -56,5 +59,6 @@ pub mod verify;
 pub mod ivc;
 pub mod link;
 pub mod bridge_adapter;
+pub mod transport;
 
 pub use scalar::Scalar;

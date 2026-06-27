@@ -61,17 +61,13 @@ use crate::{
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_grafhen<P: Clone>(
+pub fn weave_grafhen<P: Clone + Default>(
     circuit: &BIrBlocks<P>,
     name: &str,
     word_bound: usize,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule<IrFunction> {
-    let mut module = weave_grafhen_with_handler(circuit, name, word_bound, &NoProvenance);
-    if let Some(ls) = linkage {
-        ls.apply(&mut module);
-    }
-    module
+    weave_grafhen_with_handler(circuit, name, word_bound, linkage, &NoProvenance)
 }
 
 /// Weave a boolean circuit into a GRAFHEN homomorphic evaluator,
@@ -83,10 +79,11 @@ pub fn weave_grafhen_with_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
     word_bound: usize,
+    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
 where
-    P: Clone,
+    P: Clone + Default,
     H: ProvenanceHandler<P>,
 {
     assert!(
@@ -94,7 +91,7 @@ where
         "weave_grafhen: circuit must satisfy is_circuit() (single block with Return terminator)"
     );
     let scheme = GrafhenScheme::new(word_bound);
-    weave_fhe_flat_bir(circuit, &scheme, name, handler, None)
+    weave_fhe_flat_bir(circuit, &scheme, name, linkage, handler, None)
 }
 
 // ============================================================================

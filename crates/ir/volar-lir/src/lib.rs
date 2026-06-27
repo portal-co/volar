@@ -77,7 +77,6 @@ impl NameConfig {
 /// Note: `Clone`, not `Copy` — `Arr` boxes its element type.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-#[non_exhaustive]
 #[cfg_attr(feature = "rkyv", rkyv(serialize_bounds(
     __S: rkyv::ser::Writer + rkyv::ser::Allocator,
     __S::Error: rkyv::rancor::Source,
@@ -336,7 +335,7 @@ pub enum IcmpPred {
 /// before emitting one or more instructions; each instruction inherits the
 /// most recently set provenance.  Backends that do not track provenance use
 /// the default `Prov = ()` and the no-op default impl of `set_prov`.
-pub trait LirTarget<Prov: Clone = ()> {
+pub trait LirTarget<Prov: Clone + Default = ()> {
     type Value: Clone + Eq + core::fmt::Debug;
     type Block: Clone + Eq + core::fmt::Debug;
 

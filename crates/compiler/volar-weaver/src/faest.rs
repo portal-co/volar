@@ -217,16 +217,13 @@ pub fn weave_faest_prover(
     config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule<IrFunction<()>, ()> {
-    let mut module = weave_vole_prover_with_config_and_handler(
+    weave_vole_prover_with_config_and_handler(
         circuit,
         name,
         config,
+        linkage,
         &FaestProvenanceHandler,
-    );
-    if let Some(ls) = linkage {
-        ls.apply(&mut module);
-    }
-    module
+    )
 }
 
 /// Weave with [`FaestAesMode`] active.
@@ -241,16 +238,13 @@ pub fn weave_faest_prover_with_mode(
     _mode: &FaestAesMode,
 ) -> IrModule<IrFunction<()>, ()> {
     // The handler already carries the K=2 dispatch via `gate_degree`.
-    let mut module = weave_vole_prover_with_config_and_handler(
+    weave_vole_prover_with_config_and_handler(
         circuit,
         name,
         config,
+        linkage,
         &FaestProvenanceHandler,
-    );
-    if let Some(ls) = linkage {
-        ls.apply(&mut module);
-    }
-    module
+    )
 }
 
 /// Weave an AES OWF circuit into a FAEST verifier module.
@@ -262,16 +256,13 @@ pub fn weave_faest_verifier(
     config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
 ) -> IrModule<IrFunction<()>, ()> {
-    let mut module = weave_vole_verifier_with_config_and_handler(
+    weave_vole_verifier_with_config_and_handler(
         circuit,
         name,
         config,
+        linkage,
         &FaestProvenanceHandler,
-    );
-    if let Some(ls) = linkage {
-        ls.apply(&mut module);
-    }
-    module
+    )
 }
 
 /// Weave with [`FaestAesMode`] active (verifier side).
@@ -282,16 +273,13 @@ pub fn weave_faest_verifier_with_mode(
     linkage: Option<&LinkageSystem>,
     _mode: &FaestAesMode,
 ) -> IrModule<IrFunction<()>, ()> {
-    let mut module = weave_vole_verifier_with_config_and_handler(
+    weave_vole_verifier_with_config_and_handler(
         circuit,
         name,
         config,
+        linkage,
         &FaestProvenanceHandler,
-    );
-    if let Some(ls) = linkage {
-        ls.apply(&mut module);
-    }
-    module
+    )
 }
 
 /// Print a weaved FAEST module to a Rust source string.

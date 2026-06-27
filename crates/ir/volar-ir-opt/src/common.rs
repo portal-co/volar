@@ -157,7 +157,6 @@ pub fn type_bit_width(ty_id: TypeId, types: &TypeTable) -> Option<usize> {
             Some(sum)
         }
         IrType::Block { .. } | IrType::Func { .. } => None,
-        _ => None,
     }
 }
 
@@ -187,7 +186,6 @@ pub fn stmt_output_type<V, A>(stmt: &Stmt<V, A>) -> Option<TypeId> {
         Stmt::Rng { ty, .. } => Some(*ty),
         Stmt::StorageRead { ty, .. } => Some(*ty),
         Stmt::StorageWrite { .. } => None,
-        _ => None,
     }
 }
 
@@ -294,7 +292,6 @@ pub fn apply_aliases_to_stmt<V: Copy + Ord + Clone>(
             let c = canon_alias(alias_map, *call);
             if c != *call { *call = c; changed = true; }
         }
-        _ => {}
     }
 
     changed

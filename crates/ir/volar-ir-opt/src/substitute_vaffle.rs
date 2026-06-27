@@ -13,22 +13,21 @@ use alloc::{
     vec,
     vec::Vec,
 };
-use vaffle::{Block, FuncBody, FuncDecl, FuncId, Module, SigDecl, Value};
+use vaffle::{FuncDecl, FuncId, Module, SigDecl, Value};
 use volar_ir_common::{Stmt, StorageAllocator, TypeRemapper};
-use volar_provenance::DualProvenanceHandler;
 
 /// One substitution entry for a VAFFLE module.
 ///
-/// The replacement is a full [`Module<Q>`].  Its entry function is located via
+/// The replacement is a full [`Module`].  Its entry function is located via
 /// `replacement.exports["entry"]`, or falls back to the sole `FuncDecl::Body`
 /// if there is only one and no export is set.
-pub enum VaffleSubstitution<Q: Clone = ()> {
-    Oracle { name: String, replacement: Module<Q> },
-    Action { name: String, replacement: Module<Q> },
-    Rng    { name: String, replacement: Module<Q> },
+pub enum VaffleSubstitution {
+    Oracle { name: String, replacement: Module },
+    Action { name: String, replacement: Module },
+    Rng    { name: String, replacement: Module },
 }
 
-impl<Q: Clone> VaffleSubstitution<Q> {
+impl VaffleSubstitution {
     fn name(&self) -> &str {
         match self {
             VaffleSubstitution::Oracle { name, .. } => name,
@@ -37,26 +36,14 @@ impl<Q: Clone> VaffleSubstitution<Q> {
         }
     }
 
-    fn replacement(&self) -> &Module<Q> {
+    fn replacement(&self) -> &Module {
         match self {
             VaffleSubstitution::Oracle { replacement, .. } => replacement,
             VaffleSubstitution::Action { replacement, .. } => replacement,
             VaffleSubstitution::Rng    { replacement, .. } => replacement,
         }
     }
-
-    fn kind(&self) -> SubKind {
-        match self {
-            VaffleSubstitution::Oracle { .. } => SubKind::Oracle,
-            VaffleSubstitution::Action { .. } => SubKind::Action,
-            VaffleSubstitution::Rng    { .. } => SubKind::Rng,
-        }
-    }
 }
-
-/// Internal tag for which oracle/action/RNG category a substitution targets.
-#[derive(Clone, Copy)]
-enum SubKind { Oracle, Action, Rng }
 
 /// Apply all substitutions to `module`, replacing oracle/action/RNG call sites
 /// with direct function calls to the replacement bodies.
@@ -68,31 +55,6 @@ pub fn substitute_vaffle(module: &mut Module, subs: &[VaffleSubstitution]) -> us
         total += apply_one(module, sub);
     }
     total
-}
-
-/// Apply all substitutions to a host `Module<P>`, merging replacement `Module<Q>`s,
-/// with provenance converted via `handler`.
-///
-/// Host statements are tagged `handler.map_left`; replacement statements are
-/// tagged `handler.map_right`.  Returns the converted module and the count of
-/// rewritten call sites.
-pub fn substitute_vaffle_with_handler<P, Q, H>(
-    module: Module<P>,
-    subs: &[VaffleSubstitution<Q>],
-    handler: &H,
-) -> (Module<H::Output>, usize)
-where
-    P: Clone,
-    Q: Clone,
-    H: DualProvenanceHandler<P, Q>,
-{
-    let mut out: Module<H::Output> = map_module_prov(module, |p| handler.map_left(p));
-    let mut total = 0;
-    for sub in subs {
-        let repl: Module<H::Output> = clone_map_module_prov(sub.replacement(), |q| handler.map_right(q));
-        total += apply_one_r(&mut out, sub.name(), sub.kind(), repl);
-    }
-    (out, total)
 }
 
 fn apply_one(module: &mut Module, sub: &VaffleSubstitution) -> usize {
@@ -151,7 +113,6 @@ fn apply_one(module: &mut Module, sub: &VaffleSubstitution) -> usize {
                     vaffle::Block {
                         params: b.params.iter().map(|(vid, tid)| (*vid, tr.remap(*tid))).collect(),
                         stmts: b.stmts.clone(),
-                        stmt_provs: b.stmt_provs.clone(),
                         terminator: b.terminator.clone(),
                     }
                 }).collect();
@@ -162,7 +123,6 @@ fn apply_one(module: &mut Module, sub: &VaffleSubstitution) -> usize {
                     entry: body.entry,
                 })
             }
-            _ => panic!("substitute_vaffle: unhandled FuncDecl variant — add handling for this variant"),
         };
         module.funcs.push(new_func);
     }
@@ -180,226 +140,6 @@ fn apply_one(module: &mut Module, sub: &VaffleSubstitution) -> usize {
     }
     count
 }
-
-// ============================================================================
-// Generic (provenance-converting) implementation
-// ============================================================================
-
-/// Generic apply_one: host and replacement are already in the same prov type `R`.
-fn apply_one_r<R: Clone>(
-    module: &mut Module<R>,
-    sub_name: &str,
-    sub_kind: SubKind,
-    replacement: Module<R>,
-) -> usize {
-    // ── 1. Merge type tables ─────────────────────────────────────────────────
-    let tr = TypeRemapper::merge(&mut module.types, &replacement.types);
-
-    // ── 2. Merge nested declarations ─────────────────────────────────────────
-    for mut decl in replacement.oracles {
-        tr.remap_oracle_decl(&mut decl);
-        if !module.oracles.iter().any(|d| d.name == decl.name) {
-            module.oracles.push(decl);
-        }
-    }
-    for mut decl in replacement.actions {
-        tr.remap_action_decl(&mut decl);
-        if !module.actions.iter().any(|d| d.name == decl.name) {
-            module.actions.push(decl);
-        }
-    }
-
-    // ── 3. Remap and add replacement functions ───────────────────────────────
-    let mut sig_map: Vec<vaffle::SigId> = Vec::with_capacity(replacement.sigs.len());
-    for sig in &replacement.sigs {
-        let new_sig = SigDecl {
-            params:  sig.params.iter().map(|&t| tr.remap(t)).collect(),
-            results: sig.results.iter().map(|&t| tr.remap(t)).collect(),
-        };
-        let new_id = vaffle::SigId(module.sigs.len());
-        module.sigs.push(new_sig);
-        sig_map.push(new_id);
-    }
-
-    let func_base = module.funcs.len();
-    let func_map: Vec<FuncId> = (0..replacement.funcs.len())
-        .map(|gi| FuncId(func_base + gi))
-        .collect();
-
-    // ── 4. Find entry FuncId in host (before consuming replacement.funcs) ────
-    let entry_func_id = {
-        if let Some(&guest_fid) = replacement.exports.get("entry") {
-            func_map[guest_fid.0]
-        } else {
-            let mut body_idx = None;
-            for (i, f) in replacement.funcs.iter().enumerate() {
-                if matches!(f, FuncDecl::Body(_)) { body_idx = Some(i); }
-            }
-            func_map[body_idx.expect("replacement module has no Body function and no 'entry' export")]
-        }
-    };
-
-    for func in replacement.funcs {
-        let new_func = match func {
-            FuncDecl::Import { module: m, name: n, sig } => FuncDecl::Import {
-                module: m,
-                name: n,
-                sig: sig_map[sig.0],
-            },
-            FuncDecl::Body(body) => {
-                let new_sig = sig_map[body.sig.0];
-                let new_values: Vec<Value> = body.values.iter().map(|v| {
-                    remap_value(v, &tr, &sig_map, &func_map)
-                }).collect();
-                let new_blocks: Vec<Block<R>> = body.blocks.into_iter().map(|b| Block {
-                    params: b.params.iter().map(|(vid, tid)| (*vid, tr.remap(*tid))).collect(),
-                    stmts: b.stmts,
-                    stmt_provs: b.stmt_provs,
-                    terminator: b.terminator,
-                }).collect();
-                FuncDecl::Body(FuncBody {
-                    sig: new_sig,
-                    blocks: new_blocks,
-                    values: new_values,
-                    entry: body.entry,
-                })
-            }
-            _ => panic!("apply_one_r: unhandled FuncDecl variant"),
-        };
-        module.funcs.push(new_func);
-    }
-
-    // ── 5. Rewrite call sites in pre-existing bodies ─────────────────────────
-    let mut count = 0;
-    for fi in 0..func_base {
-        if let FuncDecl::Body(body) = &mut module.funcs[fi] {
-            count += rewrite_body_r(body, sub_kind, sub_name, entry_func_id);
-        }
-    }
-    count
-}
-
-fn rewrite_body_r<R: Clone>(
-    body: &mut FuncBody<R>,
-    sub_kind: SubKind,
-    name: &str,
-    entry_func_id: FuncId,
-) -> usize {
-    let mut count = 0;
-    let mut replaced_calls: BTreeMap<usize, ()> = BTreeMap::new();
-
-    for (vi, value) in body.values.iter_mut().enumerate() {
-        let Value::Op(ref stmt) = *value else { continue };
-        let rewrite = match (sub_kind, stmt) {
-            (SubKind::Oracle, Stmt::OracleCall { name: n, args, .. }) if n == name => {
-                Some(Value::Call { func: entry_func_id, args: args.clone() })
-            }
-            (SubKind::Action, Stmt::ActionCall { name: n, guard, args, .. }) if n == name => {
-                let mut call_args = vec![*guard];
-                call_args.extend_from_slice(args);
-                Some(Value::Call { func: entry_func_id, args: call_args })
-            }
-            (SubKind::Rng, Stmt::Rng { name: n, .. }) if n == name => {
-                Some(Value::Call { func: entry_func_id, args: Vec::new() })
-            }
-            _ => None,
-        };
-        if let Some(new_val) = rewrite {
-            *value = new_val;
-            replaced_calls.insert(vi, ());
-            count += 1;
-        }
-    }
-
-    for value in body.values.iter_mut() {
-        let Value::Op(ref stmt) = *value else { continue };
-        let rewrite = match stmt {
-            Stmt::OracleOutput { call, idx, .. } if replaced_calls.contains_key(&call.0) => {
-                Some(Value::Output { value: *call, idx: *idx })
-            }
-            Stmt::ActionOutput { call, idx, .. } if replaced_calls.contains_key(&call.0) => {
-                Some(Value::Output { value: *call, idx: *idx })
-            }
-            _ => None,
-        };
-        if let Some(new_val) = rewrite {
-            *value = new_val;
-        }
-    }
-    count
-}
-
-// ============================================================================
-// Provenance mapping helpers
-// ============================================================================
-
-fn map_module_prov<P: Clone, R: Clone>(module: Module<P>, f: impl Fn(&P) -> R) -> Module<R> {
-    Module {
-        types: module.types,
-        oracles: module.oracles,
-        actions: module.actions,
-        funcs: module.funcs.into_iter().map(|fd| map_funcdecl_prov(fd, &f)).collect(),
-        sigs: module.sigs,
-        exports: module.exports,
-        pre_init: module.pre_init,
-    }
-}
-
-fn clone_map_module_prov<Q: Clone, R: Clone>(module: &Module<Q>, f: impl Fn(&Q) -> R) -> Module<R> {
-    Module {
-        types: module.types.clone(),
-        oracles: module.oracles.clone(),
-        actions: module.actions.clone(),
-        funcs: module.funcs.iter().map(|fd| clone_map_funcdecl_prov(fd, &f)).collect(),
-        sigs: module.sigs.clone(),
-        exports: module.exports.clone(),
-        pre_init: module.pre_init.clone(),
-    }
-}
-
-fn map_funcdecl_prov<P: Clone, R: Clone>(fd: FuncDecl<P>, f: &impl Fn(&P) -> R) -> FuncDecl<R> {
-    match fd {
-        FuncDecl::Import { module, name, sig } => FuncDecl::Import { module, name, sig },
-        FuncDecl::Body(body) => FuncDecl::Body(FuncBody {
-            sig: body.sig,
-            blocks: body.blocks.into_iter().map(|b| Block {
-                params: b.params,
-                stmts: b.stmts,
-                stmt_provs: b.stmt_provs.iter().map(f).collect(),
-                terminator: b.terminator,
-            }).collect(),
-            values: body.values,
-            entry: body.entry,
-        }),
-        _ => panic!("map_funcdecl_prov: unhandled FuncDecl variant"),
-    }
-}
-
-fn clone_map_funcdecl_prov<Q: Clone, R: Clone>(fd: &FuncDecl<Q>, f: &impl Fn(&Q) -> R) -> FuncDecl<R> {
-    match fd {
-        FuncDecl::Import { module, name, sig } => FuncDecl::Import {
-            module: module.clone(),
-            name: name.clone(),
-            sig: *sig,
-        },
-        FuncDecl::Body(body) => FuncDecl::Body(FuncBody {
-            sig: body.sig,
-            blocks: body.blocks.iter().map(|b| Block {
-                params: b.params.clone(),
-                stmts: b.stmts.clone(),
-                stmt_provs: b.stmt_provs.iter().map(f).collect(),
-                terminator: b.terminator.clone(),
-            }).collect(),
-            values: body.values.clone(),
-            entry: body.entry,
-        }),
-        _ => panic!("clone_map_funcdecl_prov: unhandled FuncDecl variant"),
-    }
-}
-
-// ============================================================================
-// Unit-case helpers (unchanged)
-// ============================================================================
 
 /// Find the entry [`FuncId`] (in the host's remapped range) for a replacement module.
 fn find_entry(repl: &Module, func_map: &[FuncId]) -> FuncId {
@@ -520,7 +260,6 @@ fn remap_value(
             idx: *idx,
             elem_bits: *elem_bits,
         },
-        _ => panic!("remap_value: unhandled Value variant — add remapping for this variant"),
     }
 }
 
@@ -601,7 +340,6 @@ mod tests {
         let block = Block {
             params: vec![],
             stmts: vec![ValueId(0), ValueId(1)],
-            stmt_provs: vec![(), ()],
             terminator: Terminator::Return { values: vec![ValueId(1)] },
         };
         m.funcs.push(FuncDecl::Body(FuncBody {
@@ -625,7 +363,6 @@ mod tests {
         let block = Block {
             params: vec![],
             stmts: vec![ValueId(0)],
-            stmt_provs: vec![()],
             terminator: Terminator::Return { values: vec![ValueId(0)] },
         };
         let entry_fid = vaffle::FuncId(0);
@@ -697,7 +434,6 @@ mod tests {
         let block = Block {
             params: vec![],
             stmts: vec![ValueId(0), ValueId(1)],
-            stmt_provs: vec![(), ()],
             terminator: Terminator::Return { values: vec![ValueId(0), ValueId(1)] },
         };
         m.funcs.push(FuncDecl::Body(FuncBody {

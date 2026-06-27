@@ -481,7 +481,7 @@ struct ConfigTypes {
 /// A new `IRBlocks` with ORAM-backed storage ops replaced, and the
 /// `types` table updated with any newly interned types. The action
 /// declarations from each `OramConfig` are merged into the output.
-pub fn rewrite_storage_to_oram<P: Clone>(
+pub fn rewrite_storage_to_oram<P: Clone + Default>(
     ir: &IRBlocks<P>,
     types: &mut IRTypes,
     configs: &[OramConfig],
@@ -556,7 +556,7 @@ pub fn rewrite_storage_to_oram<P: Clone>(
 const ORAM_TREE_BASE: u32 = 1000;
 
 /// Rewrite a single IR block, replacing ORAM-backed storage ops.
-fn rewrite_block<P: Clone>(
+fn rewrite_block<P: Clone + Default>(
     block: &IRBlock<P>,
     oram_map: &BTreeMap<u32, usize>,
     configs: &[OramConfig],
@@ -682,7 +682,7 @@ fn rewrite_block<P: Clone>(
 ///
 /// Total: 27 statements for a read, 26 for a write (write reuses
 /// the caller-provided data var instead of emitting a zero constant).
-fn emit_oram_access<P: Clone>(
+fn emit_oram_access<P: Clone + Default>(
     stmts: &mut Vec<IRStmt>,
     provs: &mut Vec<P>,
     prov: &P,
@@ -870,7 +870,7 @@ fn emit_oram_access<P: Clone>(
 /// 3. `evict_call = ActionCall("oram_evict_S", guard, [evict_path], [fb_evict])`
 /// 4. `evict_result = ActionOutput(evict_call, 0, path_ty)`
 /// 5. `StorageWrite(ORAM_TREE_S, evict_result, path_ty, evict_leaf)`
-fn emit_eviction_pass<P: Clone>(
+fn emit_eviction_pass<P: Clone + Default>(
     stmts: &mut Vec<IRStmt>,
     provs: &mut Vec<P>,
     prov: &P,
@@ -1031,7 +1031,6 @@ fn remap_stmt(stmt: &IRStmt, remap: &BTreeMap<u32, u32>) -> IRStmt {
             name: name.clone(),
             ty: *ty,
         },
-        _ => panic!("remap_stmt: unhandled IRStmt variant — add variable remapping for this variant"),
     }
 }
 
@@ -1065,7 +1064,6 @@ fn remap_terminator(term: &IRTerminator, remap: &BTreeMap<u32, u32>) -> IRTermin
                 .map(|(k, (target, args))| (*k, (target.clone(), rargs(args))))
                 .collect(),
         },
-        _ => panic!("remap_terminator: unhandled IRTerminator variant — add variable remapping for this variant"),
     }
 }
 

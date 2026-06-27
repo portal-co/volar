@@ -147,7 +147,6 @@ fn collect_calls_block(
             IrStmt::Let { init: Some(e), .. } => collect_calls_expr(e, name_to_idx, out),
             IrStmt::Semi(e) | IrStmt::Expr(e) => collect_calls_expr(e, name_to_idx, out),
             IrStmt::Let { init: None, .. } => {}
-            _ => {}
         }
     }
     if let Some(e) = &block.expr {
@@ -286,7 +285,6 @@ fn collect_calls_expr(
         | IrExpr::TypenumUsize { .. }
         | IrExpr::Return(None)
         | IrExpr::Break(None) => {}
-        _ => {}
     }
 }
 

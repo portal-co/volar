@@ -327,7 +327,7 @@ pub(crate) fn emit_verifier_and_gate(
 
 // ── Gate count helper ─────────────────────────────────────────────────────────
 
-pub(crate) fn count_and_gates<P: Clone>(circuit: &BIrBlocks<P>) -> usize {
+pub(crate) fn count_and_gates<P: Clone + Default>(circuit: &BIrBlocks<P>) -> usize {
     let block = &circuit.blocks[0];
     expand_ors(block)
         .into_iter()

@@ -1143,7 +1143,6 @@ fn rename_var_in_stmt(stmt: &mut IrStmt, old: &str, new_name: &str) {
         IrStmt::Semi(e) | IrStmt::Expr(e) => {
             rename_var_in_expr(e, old, new_name);
         }
-        _ => {}
     }
 }
 
@@ -1294,7 +1293,6 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
         | IrExpr::Break(None)
         | IrExpr::Continue
         | IrExpr::Unreachable => {}
-        _ => {}
     }
 }
 
@@ -1362,7 +1360,6 @@ fn lower_stmt_dyn(s: &IrStmt, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
         },
         IrStmt::Semi(e) => IrStmt::Semi(lower_expr_dyn(e, ctx, fn_gen)),
         IrStmt::Expr(e) => IrStmt::Expr(lower_expr_dyn(e, ctx, fn_gen)),
-        _ => panic!("lower_stmt_dyn: unhandled IrStmt variant — add lowering for this variant"),
     }
 }
 

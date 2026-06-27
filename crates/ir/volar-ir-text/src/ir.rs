@@ -105,7 +105,6 @@ pub(crate) fn write_block_target(t: &IRBlockTargetId, w: &mut dyn fmt::Write) ->
         IRBlockTargetId::Return      => w.write_str("return"),
         IRBlockTargetId::Block(id)   => write!(w, "block:{}", id.0),
         IRBlockTargetId::Dyn(var)    => { w.write_str("dyn:")?; write_var(*var, w) }
-        _ => w.write_str("<unknown-target>"),
     }
 }
 
@@ -158,7 +157,6 @@ impl WriteText for TypeTable {
                     w.write_str("->")?;
                     write_type_id_list(results, w)?;
                 }
-                _ => { w.write_str("unknown")?; }
             }
             w.write_char('\n')?;
         }
@@ -307,7 +305,6 @@ fn write_ir_stmt(
             write_quoted_str(name, w)?;
             write!(w, " ty={}", ty.0)?;
         }
-        _ => { w.write_str("<unknown-stmt>")?; }
     }
     w.write_char('\n')
 }
@@ -348,7 +345,6 @@ fn write_ir_terminator(term: &IRTerminator, w: &mut dyn fmt::Write) -> fmt::Resu
                 write_var_list(args, w)?;
             }
         }
-        _ => { w.write_str("<unknown-term>")?; }
     }
     w.write_char('\n')
 }

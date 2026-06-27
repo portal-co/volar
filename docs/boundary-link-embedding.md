@@ -22,11 +22,20 @@ usize)>`; when set, the prover's resume seams (B5/B8) emit a `keccak_check_<name
 call over the committed boundary-state wires, **open** the `match` bit
 (`vope_open_mask`) and **send** it; the verifier emits the matching
 `keccak_check_verify_<name>`. Default `None` is byte-identical to before.
-**Remaining**: the transport-side glue — the resilient `verifier_bridge` invoking
-`keccak_check_verify`, `recv_opening`-ing the match mask, `assert_one_check`-ing
-it, and folding into the `GapVerdict` (a small hook in the `FoldingBridge`
-transport); plus carrying the digest `d` at runtime (currently baked as gate
-structure). Companion to [`vcb-ivc-folding.md`](vcb-ivc-folding.md) §4.
+**Transport adapter DONE**: [`FoldingTransport`](../crates/fold/volar-fold/src/transport.rs)
+is a concrete `ResilientVoleTransport` whose `prover_bridge`/`verifier_bridge`
+delegate to `FoldingBridge` — so the generated bridge calls produce a real
+`GapVerdict` (`Proven` iff `native_verify` on the folded gap + both
+`BoundaryLink`s pass), and `send_opening`/`recv_opening` carry the boundary match
+mask; tested honest→`Proven` / boundary-mismatch→`Unproven` through the trait.
+**Remaining (one architectural item)**: the fully **in-circuit** VOLE-leg match
+(the woven `keccak_check_verify` over the boundary `Q`-wires + streamed χ hats,
+`assert_one_check`-ing the opened match) needs a verifier-CFG checkpoint that
+carries the gap-boundary `Q`-state — the current hybrid verifier drops the
+boundary wires before exit and delegates resume to the transport. The
+transport-level check uses the (sound, non-ZK) `KeccakDigestLink` meanwhile; plus
+the digest `d` is still baked as gate structure (runtime-`d` variant passes it as
+public bits). Companion to [`vcb-ivc-folding.md`](vcb-ivc-folding.md) §4.
 
 ## Why this is hard
 

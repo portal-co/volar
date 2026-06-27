@@ -302,7 +302,7 @@ type IrStoreCache = BTreeMap<(StorageId, TypeId, IRVarId), IRVarId>;
 /// param injections to carry source values not already in their param list.
 ///
 /// Returns `true` if any block was modified.
-pub fn store_forward_ir_blocks<P: Clone>(
+pub fn store_forward_ir_blocks<P: Clone + Default>(
     blocks: &mut IRBlocks<P>,
     types: &TypeTable,
 ) -> bool {
@@ -369,7 +369,7 @@ pub fn store_forward_ir_blocks<P: Clone>(
 /// Process a single IR block starting from `incoming` cache.
 ///
 /// Returns `(changed, outgoing_cache)`.
-fn store_forward_ir_block_with_cache<P: Clone>(
+fn store_forward_ir_block_with_cache<P: Clone + Default>(
     block: &mut IRBlock<P>,
     incoming: IrStoreCache,
     types: &TypeTable,
@@ -474,7 +474,6 @@ fn ir_terminator_succ_blocks(term: &IRTerminator) -> Vec<usize> {
                 }
             }
         }
-        _ => {}
     }
     out
 }
@@ -636,7 +635,6 @@ pub(crate) fn shift_ir_stmt_vars(
                 shift_var(f, old_base, n_stmts, shift);
             }
         }
-        _ => {}
     }
 }
 
@@ -682,7 +680,6 @@ pub(crate) fn shift_ir_terminator_vars(
                 shift_args(args);
             }
         }
-        _ => {}
     }
 }
 
@@ -765,7 +762,6 @@ fn shift_biir_terminator_vars(
             shift_biir_target_vars(then_target, old_base, n_stmts, shift);
             shift_biir_target_vars(else_target, old_base, n_stmts, shift);
         }
-        _ => {}
     }
 }
 
@@ -773,7 +769,7 @@ fn shift_biir_terminator_vars(
 /// injecting params when the source var is not already passed as an arg.
 ///
 /// Only used for single-predecessor blocks.
-fn translate_ir_cache_with_injection<P: Clone>(
+fn translate_ir_cache_with_injection<P: Clone + Default>(
     pred_cache: &IrStoreCache,
     pred_idx: usize,
     target_idx: usize,
@@ -850,7 +846,7 @@ fn translate_ir_cache_with_injection<P: Clone>(
 /// translates to the same target param, no injection is needed.  When sources
 /// differ (the "phi" case), a new parameter is injected and each predecessor
 /// passes its own source value as the argument for that param position.
-fn merge_ir_caches_with_injection<P: Clone>(
+fn merge_ir_caches_with_injection<P: Clone + Default>(
     pred_indices: &[usize],
     outgoing_caches: &[Option<IrStoreCache>],
     blocks: &mut IRBlocks<P>,
@@ -1002,7 +998,7 @@ type BiirStoreCache = BTreeMap<(StorageId, usize, Vec<IRVarId>), IRVarId>;
 /// block boundaries with param injection when needed.
 ///
 /// Returns `true` if any block was modified.
-pub fn store_forward_biir_blocks<P: Clone>(blocks: &mut BIrBlocks<P>) -> bool {
+pub fn store_forward_biir_blocks<P: Clone + Default>(blocks: &mut BIrBlocks<P>) -> bool {
     let n = blocks.blocks.len();
     if n == 0 {
         return false;
@@ -1084,7 +1080,7 @@ fn biir_addrs_provably_different(
     false
 }
 
-fn store_forward_biir_block_with_cache<P: Clone>(
+fn store_forward_biir_block_with_cache<P: Clone + Default>(
     block: &mut BIrBlock<P>,
     incoming: BiirStoreCache,
 ) -> (bool, BiirStoreCache) {
@@ -1194,7 +1190,6 @@ fn biir_terminator_succ_blocks(term: &BIrTerminator) -> Vec<usize> {
                 }
             }
         }
-        _ => {}
     }
     out
 }
@@ -1223,7 +1218,6 @@ fn biir_edge_args(term: &BIrTerminator, target_block: usize) -> Option<Vec<IRVar
             }
             None
         }
-        _ => None,
     }
 }
 
@@ -1253,7 +1247,6 @@ fn add_biir_args_to_edges(
                 }
             }
         }
-        _ => {}
     }
 }
 
@@ -1261,7 +1254,7 @@ fn add_biir_args_to_edges(
 /// injecting params when the source var is not already passed as an arg.
 ///
 /// Only used for single-predecessor BIR blocks.
-fn translate_biir_cache_with_injection<P: Clone>(
+fn translate_biir_cache_with_injection<P: Clone + Default>(
     pred_cache: &BiirStoreCache,
     pred_idx: usize,
     target_idx: usize,
@@ -1328,7 +1321,7 @@ fn translate_biir_cache_with_injection<P: Clone>(
 
 /// Merge multiple predecessors' BIR caches into the successor's var space,
 /// with param injection for source values that differ across predecessors.
-fn merge_biir_caches_with_injection<P: Clone>(
+fn merge_biir_caches_with_injection<P: Clone + Default>(
     pred_indices: &[usize],
     outgoing_caches: &[Option<BiirStoreCache>],
     blocks: &mut BIrBlocks<P>,
@@ -1715,7 +1708,6 @@ fn vaffle_block_succs(term: &vaffle::Terminator) -> Vec<usize> {
             v.push(default_target.block.0);
             v
         }
-        _ => Vec::new(),
     }
 }
 
@@ -1953,7 +1945,6 @@ fn apply_aliases_to_vaffle_stmt(
             if c != *call { *call = c; changed = true; }
         }
         Stmt::Const(_, _) | Stmt::Rng { .. } => {}
-        _ => {}
     }
     changed
 }

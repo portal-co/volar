@@ -128,7 +128,7 @@ impl IrEmitter for BlockEmitter<'_> {
 /// * The input must not read or write any `StorageId` colliding with
 ///   the bytecode storage or the per-type register-file storages
 ///   (allocated at `StorageId::VIRT_REGISTERS_BASE..`).
-pub fn virtualize_ir<P: Clone>(
+pub fn virtualize_ir<P: Clone + Default>(
     blocks: &IRBlocks<P>,
     types: &mut IRTypes,
     cfg: &VirtualizeConfig,
@@ -148,7 +148,7 @@ pub fn virtualize_ir<P: Clone>(
 /// All preconditions of [`virtualize_ir`] apply.  Additionally,
 /// `commitment_cfg.commitment_storage` must not overlap with
 /// `cfg.bytecode_storage` or the register-file range.
-pub fn virtualize_ir_committed<P: Clone, H: IrHashAlgorithm>(
+pub fn virtualize_ir_committed<P: Clone + Default, H: IrHashAlgorithm>(
     blocks: &IRBlocks<P>,
     types: &mut IRTypes,
     cfg: &VirtualizeConfig,
@@ -161,7 +161,7 @@ pub fn virtualize_ir_committed<P: Clone, H: IrHashAlgorithm>(
 // Core implementation
 // ============================================================================
 
-fn virtualize_ir_impl<P: Clone, H: IrHashAlgorithm>(
+fn virtualize_ir_impl<P: Clone + Default, H: IrHashAlgorithm>(
     blocks: &IRBlocks<P>,
     types: &mut IRTypes,
     cfg: &VirtualizeConfig,
@@ -249,16 +249,9 @@ fn virtualize_ir_impl<P: Clone, H: IrHashAlgorithm>(
         })
         .unwrap_or_default();
 
-    // Derive ctrl_prov from the first statement of any input block.
-    let ctrl_prov: P = blocks.blocks.iter()
-        .flat_map(|b| b.stmt_provs.iter())
-        .next()
-        .cloned()
-        .expect("virtualize_ir: input circuit has no statements; cannot derive provenance for infrastructure blocks");
-
     // Emit the module using the pre-computed layout.
     let out_blocks =
-        emit_output_ir::<P, H>(&cse_blocks, &dedup, &layout, &reg_alloc, addr_ty, bit_ty, cfg, types, commitment_ctx.as_ref(), &ctrl_prov);
+        emit_output_ir::<P, H>(&cse_blocks, &dedup, &layout, &reg_alloc, addr_ty, bit_ty, cfg, types, commitment_ctx.as_ref());
 
     let bytecode = if cfg.bytecode_form.wants_external() {
         Some(dedup.to_bytecode())
@@ -281,7 +274,7 @@ fn virtualize_ir_impl<P: Clone, H: IrHashAlgorithm>(
     }
 }
 
-fn validate_input<P: Clone>(_blocks: &IRBlocks<P>) {
+fn validate_input<P: Clone + Default>(_blocks: &IRBlocks<P>) {
     // All terminator forms — including Dyn targets — are now valid inputs.
 }
 
@@ -313,12 +306,12 @@ impl IRBlockUnfinished {
         id
     }
 
-    fn into_ir_block<P: Clone>(self, ctrl_prov: &P) -> IRBlock<P> {
+    fn into_ir_block<P: Clone + Default>(self) -> IRBlock<P> {
         let n = self.stmts.len();
         IRBlock {
             params: self.params,
             stmts: self.stmts,
-            stmt_provs: (0..n).map(|_| ctrl_prov.clone()).collect(),
+            stmt_provs: vec![P::default(); n],
             terminator: self.terminator,
         }
     }
@@ -373,7 +366,7 @@ struct RegRef {
 }
 
 impl RegAlloc {
-    fn build<P: Clone>(
+    fn build<P: Clone + Default>(
         blocks: &IRBlocks<P>,
         storage_base: u32,
         ir_types: &[IRType],
@@ -420,7 +413,6 @@ impl RegAlloc {
                         visit(target);
                     }
                 }
-                _ => {}
             }
         }
 
@@ -478,7 +470,7 @@ impl RegAlloc {
 
 /// Walk all `Jmp(Return, args)` terminators and derive the function's
 /// return type list.  Panics if different Return terminators disagree.
-fn extract_return_shape<P: Clone>(blocks: &IRBlocks<P>) -> Vec<IRTypeId> {
+fn extract_return_shape<P: Clone + Default>(blocks: &IRBlocks<P>) -> Vec<IRTypeId> {
     let mut shape: Option<Vec<IRTypeId>> = None;
     let mut record = |args: &[IRVarId], from_block: &IRBlock<P>| {
         let arg_tys: Vec<IRTypeId> = args
@@ -531,7 +523,7 @@ fn extract_return_shape<P: Clone>(blocks: &IRBlocks<P>) -> Vec<IRTypeId> {
 }
 
 /// Look up the IR type of a variable id within a block.
-fn resolve_var_type<P: Clone>(block: &IRBlock<P>, v: IRVarId) -> IRTypeId {
+fn resolve_var_type<P: Clone + Default>(block: &IRBlock<P>, v: IRVarId) -> IRTypeId {
     let n_params = block.params.len() as u32;
     if v.0 < n_params {
         block.params[v.0 as usize]
@@ -562,7 +554,6 @@ fn stmt_output_type(s: &IRStmt) -> Option<IRTypeId> {
         Stmt::ActionCall { result_ty, .. } => Some(*result_ty),
         Stmt::ActionOutput { ty, .. } => Some(*ty),
         Stmt::Rng { ty, .. } => Some(*ty),
-        _ => None,
     }
 }
 
@@ -680,7 +671,6 @@ fn terminator_arm_shape(t: &IRTerminator) -> Vec<usize> {
         IRTerminator::JumpTable { cases, .. } => {
             cases.values().map(|(_, a)| a.len()).collect()
         }
-        _ => panic!("terminator_arm_shape: unhandled IRTerminator variant — add arm shape calculation for this variant"),
     }
 }
 
@@ -767,7 +757,7 @@ struct DirectDispatch<'a> {
     bytecode_storage: StorageId,
 }
 
-fn emit_output_ir<P: Clone, H: IrHashAlgorithm>(
+fn emit_output_ir<P: Clone + Default, H: IrHashAlgorithm>(
     blocks_in: &IRBlocks<P>,
     dedup: &DedupTable<IrHandlerKey>,
     layout: &GlobalLayout,
@@ -777,7 +767,6 @@ fn emit_output_ir<P: Clone, H: IrHashAlgorithm>(
     cfg: &VirtualizeConfig,
     types: &mut IRTypes,
     commitment: Option<&CommitmentCtx<'_, H>>,
-    ctrl_prov: &P,
 ) -> IRBlocks<P> {
     let entry_params = blocks_in.blocks[0].params.clone();
     let return_arg_tys: Vec<IRTypeId> = reg_alloc.return_regs.iter().map(|r| r.ty).collect();
@@ -800,7 +789,6 @@ fn emit_output_ir<P: Clone, H: IrHashAlgorithm>(
         cfg,
         &types.0,
         commitment,
-        ctrl_prov,
     );
 
     let dd = cfg.direct_dispatch.then(|| DirectDispatch {
@@ -825,7 +813,6 @@ fn emit_output_ir<P: Clone, H: IrHashAlgorithm>(
             &mut next_sub_bid,
             dd.as_ref(),
             commitment,
-            ctrl_prov,
         );
         handler_blocks.push(handler);
         extra_subblocks.extend(extras);
@@ -835,13 +822,12 @@ fn emit_output_ir<P: Clone, H: IrHashAlgorithm>(
     let mut all_blocks: Vec<IRBlock<P>>;
     if cfg.direct_dispatch {
         // Layout: SETUP | RETURN | INIT_DISPATCH | handlers | subblocks
-        let return_block = emit_return_block(reg_alloc, &return_arg_tys, addr_ty, ctrl_prov);
+        let return_block = emit_return_block(reg_alloc, &return_arg_tys, addr_ty);
         let init_dispatch = emit_dispatch_block_with_base(
             dedup,
             cfg.bytecode_storage,
             addr_ty,
             DD_HANDLER_BID_BASE,
-            ctrl_prov,
         );
         all_blocks = Vec::with_capacity(3 + n_handlers + extra_subblocks.len());
         all_blocks.push(setup);
@@ -849,9 +835,9 @@ fn emit_output_ir<P: Clone, H: IrHashAlgorithm>(
         all_blocks.push(init_dispatch);
     } else {
         // Layout: SETUP | DISPATCHER | RETURN | DISPATCH | handlers | subblocks
-        let dispatcher = emit_dispatcher_block(addr_ty, bit_ty, ctrl_prov);
-        let return_block = emit_return_block(reg_alloc, &return_arg_tys, addr_ty, ctrl_prov);
-        let dispatch = emit_dispatch_block(dedup, cfg.bytecode_storage, addr_ty, ctrl_prov);
+        let dispatcher = emit_dispatcher_block(addr_ty, bit_ty);
+        let return_block = emit_return_block(reg_alloc, &return_arg_tys, addr_ty);
+        let dispatch = emit_dispatch_block(dedup, cfg.bytecode_storage, addr_ty);
         all_blocks = Vec::with_capacity(4 + n_handlers + extra_subblocks.len());
         all_blocks.push(setup);
         all_blocks.push(dispatcher);
@@ -887,7 +873,7 @@ fn emit_output_ir<P: Clone, H: IrHashAlgorithm>(
 // Setup block (block 0)
 // ----------------------------------------------------------------------------
 
-fn emit_setup_block<P: Clone, H: IrHashAlgorithm>(
+fn emit_setup_block<P: Clone + Default, H: IrHashAlgorithm>(
     blocks_in: &IRBlocks<P>,
     entry_params: &[IRTypeId],
     dedup: &DedupTable<IrHandlerKey>,
@@ -898,7 +884,6 @@ fn emit_setup_block<P: Clone, H: IrHashAlgorithm>(
     cfg: &VirtualizeConfig,
     ir_types: &[IRType],
     commitment: Option<&CommitmentCtx<'_, H>>,
-    ctrl_prov: &P,
 ) -> IRBlock<P> {
     // Build the param list: key words first, then original entry params.
     // The key params are at IRVarId(0..n_key); original params follow.
@@ -1005,12 +990,12 @@ fn emit_setup_block<P: Clone, H: IrHashAlgorithm>(
         func: IRBlockTargetId::Block(IRBlockId(entry_bid)),
         args: jump_args,
     };
-    b.into_ir_block::<P>(ctrl_prov)
+    b.into_ir_block::<P>()
 }
 
 /// Compute the concrete Constant value for each slot of a handler
 /// schema, instantiated for a specific original block.
-fn compute_slot_values<P: Clone>(
+fn compute_slot_values<P: Clone + Default>(
     block: &IRBlock<P>,
     block_id: usize,
     schema: &HandlerSchema,
@@ -1051,7 +1036,7 @@ fn compute_slot_values<P: Clone>(
     out
 }
 
-fn fill_terminator_slots<P: Clone>(
+fn fill_terminator_slots<P: Clone + Default>(
     block: &IRBlock<P>,
     schema: &HandlerSchema,
     reg_alloc: &RegAlloc,
@@ -1102,7 +1087,6 @@ fn fill_terminator_slots<P: Clone>(
                     *idx += 1;
                 }
             }
-            _ => panic!("fill_terminator_slots: unhandled IRBlockTargetId variant — add handling for this variant"),
         }
     };
 
@@ -1128,7 +1112,6 @@ fn fill_terminator_slots<P: Clone>(
                 fill_arm(out, &schema.arms[arm_idx], t, a);
             }
         }
-        _ => panic!("fill_terminator_slots: unhandled IRTerminator variant — add handling for this variant"),
     }
 }
 
@@ -1136,10 +1119,9 @@ fn fill_terminator_slots<P: Clone>(
 // Dispatcher / Return / Dispatch blocks
 // ----------------------------------------------------------------------------
 
-fn emit_dispatcher_block<P: Clone>(
+fn emit_dispatcher_block<P: Clone + Default>(
     addr_ty: IRTypeId,
     bit_ty: IRTypeId,
-    ctrl_prov: &P,
 ) -> IRBlock<P> {
     let b = IRBlockUnfinished {
         params: vec![addr_ty, bit_ty],
@@ -1152,14 +1134,13 @@ fn emit_dispatcher_block<P: Clone>(
             false_args: vec![IRVarId(0)],
         },
     };
-    b.into_ir_block::<P>(ctrl_prov)
+    b.into_ir_block::<P>()
 }
 
-fn emit_return_block<P: Clone>(
+fn emit_return_block<P: Clone + Default>(
     reg_alloc: &RegAlloc,
     return_arg_tys: &[IRTypeId],
     addr_ty: IRTypeId,
-    ctrl_prov: &P,
 ) -> IRBlock<P> {
     let mut b = IRBlockUnfinished::new(vec![]);
     let mut val_vars: Vec<IRVarId> = Vec::with_capacity(return_arg_tys.len());
@@ -1176,28 +1157,26 @@ fn emit_return_block<P: Clone>(
         func: IRBlockTargetId::Return,
         args: val_vars,
     };
-    b.into_ir_block::<P>(ctrl_prov)
+    b.into_ir_block::<P>()
 }
 
-fn emit_dispatch_block<P: Clone>(
+fn emit_dispatch_block<P: Clone + Default>(
     dedup: &DedupTable<IrHandlerKey>,
     bytecode_storage: StorageId,
     addr_ty: IRTypeId,
-    ctrl_prov: &P,
 ) -> IRBlock<P> {
-    emit_dispatch_block_with_base(dedup, bytecode_storage, addr_ty, HANDLER_BID_BASE, ctrl_prov)
+    emit_dispatch_block_with_base(dedup, bytecode_storage, addr_ty, HANDLER_BID_BASE)
 }
 
 /// Emit a block that reads `handler_idx` from bytecode at `pc` and
 /// dispatches to the appropriate handler via `JumpTable`.
 /// Used both for the legacy `DISPATCH_BID` block and for the inline
 /// dispatch sub-blocks in direct-dispatch mode.
-fn emit_dispatch_block_with_base<P: Clone>(
+fn emit_dispatch_block_with_base<P: Clone + Default>(
     dedup: &DedupTable<IrHandlerKey>,
     bytecode_storage: StorageId,
     addr_ty: IRTypeId,
     handler_bid_base: u32,
-    ctrl_prov: &P,
 ) -> IRBlock<P> {
     let mut b = IRBlockUnfinished::new(vec![addr_ty]);
     let handler_idx = b.push(Stmt::StorageRead {
@@ -1219,7 +1198,7 @@ fn emit_dispatch_block_with_base<P: Clone>(
         index: handler_idx,
         cases,
     };
-    b.into_ir_block::<P>(ctrl_prov)
+    b.into_ir_block::<P>()
 }
 
 // ----------------------------------------------------------------------------
@@ -1228,7 +1207,7 @@ fn emit_dispatch_block_with_base<P: Clone>(
 
 /// Emit a handler block for a canonical key.  May emit additional
 /// sub-blocks, one per arm of a conditional terminator.
-fn emit_handler_block<P: Clone, H: IrHashAlgorithm>(
+fn emit_handler_block<P: Clone + Default, H: IrHashAlgorithm>(
     key: &IrHandlerKey,
     schema: &HandlerSchema,
     slot_ids: &[StorageId],
@@ -1240,7 +1219,6 @@ fn emit_handler_block<P: Clone, H: IrHashAlgorithm>(
     next_sub_bid: &mut u32,
     dd: Option<&DirectDispatch<'_>>,
     commitment: Option<&CommitmentCtx<'_, H>>,
-    ctrl_prov: &P,
 ) -> (IRBlock<P>, Vec<IRBlock<P>>) {
     let mut b = IRBlockUnfinished::new(vec![addr_ty]);
     let pc = IRVarId(0);
@@ -1378,7 +1356,7 @@ fn emit_handler_block<P: Clone, H: IrHashAlgorithm>(
                     if let Some(dd) = dd {
                         build_direct_dispatch_terminator(
                             &mut b, arm, slot_ids, addr_ty, bit_ty, pc, dd,
-                            next_sub_bid, &mut extras, protection, ctrl_prov,
+                            next_sub_bid, &mut extras, protection,
                         )
                     } else {
                         build_return_to_dispatcher(
@@ -1421,14 +1399,14 @@ fn emit_handler_block<P: Clone, H: IrHashAlgorithm>(
                     let dyn_ty = canon_types[canon_v.0 as usize];
                     extras.push(emit_dyn_arm_subblock::<P>(
                         &schema.arms[0], slot_ids, reg_alloc, addr_ty, bit_ty,
-                        dyn_ty, &true_arg_tys, ctrl_prov,
+                        dyn_ty, &true_arg_tys,
                     ));
                 }
                 _ => {
                     let (sub, dd_extras) = emit_arm_subblock::<P>(
                         &schema.arms[0], slot_ids, reg_alloc, addr_ty, bit_ty,
                         &true_arg_tys, dd, next_sub_bid,
-                        commitment_protection.is_some(), ctrl_prov,
+                        commitment_protection.is_some(),
                     );
                     extras.push(sub);
                     extras.extend(dd_extras);
@@ -1439,14 +1417,14 @@ fn emit_handler_block<P: Clone, H: IrHashAlgorithm>(
                     let dyn_ty = canon_types[canon_v.0 as usize];
                     extras.push(emit_dyn_arm_subblock::<P>(
                         &schema.arms[1], slot_ids, reg_alloc, addr_ty, bit_ty,
-                        dyn_ty, &false_arg_tys, ctrl_prov,
+                        dyn_ty, &false_arg_tys,
                     ));
                 }
                 _ => {
                     let (sub, dd_extras) = emit_arm_subblock::<P>(
                         &schema.arms[1], slot_ids, reg_alloc, addr_ty, bit_ty,
                         &false_arg_tys, dd, next_sub_bid,
-                        commitment_protection.is_some(), ctrl_prov,
+                        commitment_protection.is_some(),
                     );
                     extras.push(sub);
                     extras.extend(dd_extras);
@@ -1523,7 +1501,7 @@ fn emit_handler_block<P: Clone, H: IrHashAlgorithm>(
                         let dyn_ty = canon_types[canon_v.0 as usize];
                         extras.push(emit_dyn_arm_subblock::<P>(
                             &schema.arms[arm_idx], slot_ids, reg_alloc, addr_ty, bit_ty,
-                            dyn_ty, &arg_tys, ctrl_prov,
+                            dyn_ty, &arg_tys,
                         ));
                         core::iter::once(pc)
                             .chain(core::iter::once(canonical_var[canon_v.0 as usize]))
@@ -1534,7 +1512,7 @@ fn emit_handler_block<P: Clone, H: IrHashAlgorithm>(
                         let (arm_sub, arm_dd_extras) = emit_arm_subblock::<P>(
                             &schema.arms[arm_idx], slot_ids, reg_alloc, addr_ty, bit_ty,
                             &arg_tys, dd, next_sub_bid,
-                            commitment_protection.is_some(), ctrl_prov,
+                            commitment_protection.is_some(),
                         );
                         extras.push(arm_sub);
                         extras.extend(arm_dd_extras);
@@ -1557,11 +1535,10 @@ fn emit_handler_block<P: Clone, H: IrHashAlgorithm>(
                 cases: out_cases,
             }
         }
-        _ => panic!("emit_handler_block: unhandled IRTerminator variant — add handler emission for this variant"),
     };
 
     b.terminator = terminator;
-    (b.into_ir_block::<P>(ctrl_prov), extras)
+    (b.into_ir_block::<P>(), extras)
 }
 
 /// Inline arm-arg forwarding for the non-conditional (single-arm) case.
@@ -1638,7 +1615,7 @@ fn build_return_to_dispatcher(
 /// When `protection` is `Some(diff_var)`, XOR-injects `diff_var` into
 /// `next_pc` before the branch.
 #[allow(clippy::too_many_arguments)]
-fn build_direct_dispatch_terminator<P: Clone>(
+fn build_direct_dispatch_terminator<P: Clone + Default>(
     b: &mut IRBlockUnfinished,
     arm: &ArmSchema,
     slot_ids: &[StorageId],
@@ -1649,7 +1626,6 @@ fn build_direct_dispatch_terminator<P: Clone>(
     next_sub_bid: &mut u32,
     extras: &mut Vec<IRBlock<P>>,
     protection: Option<IRVarId>,
-    ctrl_prov: &P,
 ) -> IRTerminator {
     let next_pc_raw = b.push(Stmt::StorageRead {
         storage: slot_ids[arm.next_pc_slot],
@@ -1676,7 +1652,6 @@ fn build_direct_dispatch_terminator<P: Clone>(
         dd.bytecode_storage,
         addr_ty,
         DD_HANDLER_BID_BASE,
-        ctrl_prov,
     ));
     IRTerminator::JumpCond {
         condition: done,
@@ -1696,7 +1671,7 @@ fn build_direct_dispatch_terminator<P: Clone>(
 /// In direct-dispatch mode (`dd` is `Some`) also returns an inline
 /// dispatch sub-block that routes to the successor handler.
 #[allow(clippy::too_many_arguments)]
-fn emit_arm_subblock<P: Clone>(
+fn emit_arm_subblock<P: Clone + Default>(
     arm: &ArmSchema,
     slot_ids: &[StorageId],
     reg_alloc: &RegAlloc,
@@ -1706,7 +1681,6 @@ fn emit_arm_subblock<P: Clone>(
     dd: Option<&DirectDispatch<'_>>,
     next_sub_bid: &mut u32,
     has_commitment: bool,
-    ctrl_prov: &P,
 ) -> (IRBlock<P>, Vec<IRBlock<P>>) {
     let mut params: Vec<IRTypeId> = vec![addr_ty];
     if has_commitment {
@@ -1739,7 +1713,7 @@ fn emit_arm_subblock<P: Clone>(
         build_direct_dispatch_terminator(
             &mut b, arm, slot_ids, addr_ty, bit_ty, pc, dd,
             next_sub_bid, &mut dd_extras,
-            diff_opt, ctrl_prov,
+            diff_opt,
         )
     } else {
         let next_pc_raw = b.push(Stmt::StorageRead {
@@ -1765,7 +1739,7 @@ fn emit_arm_subblock<P: Clone>(
             args: vec![next_pc, done],
         }
     };
-    (b.into_ir_block::<P>(ctrl_prov), dd_extras)
+    (b.into_ir_block::<P>(), dd_extras)
 }
 
 /// Sub-block for a `Dyn` terminator arm.
@@ -1774,7 +1748,7 @@ fn emit_arm_subblock<P: Clone>(
 /// Body: write each arg to its destination register (indexed from bytecode),
 /// then compute `next_pc = Transmute(dyn_val → addr_ty)` and jump to DISPATCHER.
 #[allow(clippy::too_many_arguments)]
-fn emit_dyn_arm_subblock<P: Clone>(
+fn emit_dyn_arm_subblock<P: Clone + Default>(
     arm: &ArmSchema,
     slot_ids: &[StorageId],
     reg_alloc: &RegAlloc,
@@ -1782,7 +1756,6 @@ fn emit_dyn_arm_subblock<P: Clone>(
     bit_ty: IRTypeId,
     dyn_var_ty: IRTypeId,
     arg_tys: &[IRTypeId],
-    ctrl_prov: &P,
 ) -> IRBlock<P> {
     let mut params: Vec<IRTypeId> = vec![addr_ty, dyn_var_ty];
     params.extend_from_slice(arg_tys);
@@ -1811,7 +1784,7 @@ fn emit_dyn_arm_subblock<P: Clone>(
         func: IRBlockTargetId::Block(IRBlockId(DISPATCHER_BID)),
         args: vec![next_pc, done],
     };
-    b.into_ir_block::<P>(ctrl_prov)
+    b.into_ir_block::<P>()
 }
 
 /// Return the IR type of each canonical SSA id in the handler key:
@@ -1843,7 +1816,7 @@ fn canonical_types(key: &IrHandlerKey) -> Vec<IRTypeId> {
 ///
 /// All subsequent stmt var ids are renumbered to close the gaps, and the
 /// terminator is updated accordingly.
-fn deduplicate_oracle_calls_in_block<P: Clone>(block: &IRBlock<P>) -> IRBlock<P> {
+fn deduplicate_oracle_calls_in_block<P: Clone + Default>(block: &IRBlock<P>) -> IRBlock<P> {
     let n_params = block.params.len();
     let total = n_params + block.stmts.len();
     // var_remap[old_var.0] = new IRVarId (identity until a stmt is dropped)
@@ -1921,7 +1894,6 @@ fn remap_ir_terminator_vars(t: &IRTerminator, var_remap: &[IRVarId]) -> IRTermin
                 cases: new_cases,
             }
         }
-        _ => panic!("remap_ir_terminator_vars: unhandled IRTerminator variant — add remapping for this variant"),
     }
 }
 
@@ -2063,7 +2035,6 @@ fn remap_stmt(s: &IRStmt, canonical_var: &[IRVarId]) -> IRStmt {
             name: name.clone(),
             ty: *ty,
         },
-        _ => panic!("remap_stmt: unhandled IRStmt variant — add remapping for this variant"),
     }
 }
 
@@ -2161,7 +2132,7 @@ fn emit_commitment_check_ir<H: IrHashAlgorithm>(
 /// `hash_output_ty` must already be interned into the module's type table
 /// (the caller computes it via `algorithm.output_type_id(types)` before
 /// creating the context).
-fn build_commitment_ctx<'a, P: Clone, H: IrHashAlgorithm>(
+fn build_commitment_ctx<'a, P: Clone + Default, H: IrHashAlgorithm>(
     config: &'a CommitmentConfig<H>,
     cse_blocks: &IRBlocks<P>,
     dedup: &DedupTable<IrHandlerKey>,

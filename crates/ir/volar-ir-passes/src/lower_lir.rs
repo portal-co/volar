@@ -24,7 +24,7 @@ use volar_ir_common::Type;
 ///
 /// Before each statement, `target.set_prov(prov)` is called with that
 /// statement's provenance from `block.stmt_provs`.
-pub fn lower_biir<P: Clone, T: LirTarget<P>>(blocks: &BIrBlocks<P>, name: &str, target: &mut T) {
+pub fn lower_biir<P: Clone + Default, T: LirTarget<P>>(blocks: &BIrBlocks<P>, name: &str, target: &mut T) {
     lower_biir_with_handler(blocks, name, target, &volar_provenance::KeepProvenance)
 }
 
@@ -39,7 +39,7 @@ pub fn lower_biir_with_handler<P, T, H>(
     target: &mut T,
     handler: &H,
 ) where
-    P: Clone,
+    P: Clone + Default,
     H: ProvenanceHandler<P>,
     T: LirTarget<H::Output>,
 {
@@ -101,7 +101,7 @@ pub fn lower_biir_with_handler<P, T, H>(
     target.end_function();
 }
 
-fn lower_biir_stmt<Q: Clone, T: LirTarget<Q>>(stmt: &BIrStmt, vals: &[T::Value], target: &mut T) -> T::Value {
+fn lower_biir_stmt<Q: Clone + Default, T: LirTarget<Q>>(stmt: &BIrStmt, vals: &[T::Value], target: &mut T) -> T::Value {
     match stmt {
         BIrStmt::Zero => target.iconst(LirType::Bool, 0),
         BIrStmt::One => target.iconst(LirType::Bool, 1),
@@ -133,11 +133,10 @@ fn lower_biir_stmt<Q: Clone, T: LirTarget<Q>>(stmt: &BIrStmt, vals: &[T::Value],
         | BIrStmt::StorageWrite { .. } => {
             unimplemented!("lower_biir_stmt: extended BIrStmt variants not supported in plain LIR lowering")
         }
-        _ => panic!("lower_biir_stmt: unhandled BIrStmt variant — add lowering for this variant"),
     }
 }
 
-fn lower_biir_terminator<Q: Clone, T: LirTarget<Q>>(
+fn lower_biir_terminator<Q: Clone + Default, T: LirTarget<Q>>(
     term: &BIrTerminator,
     vals: &[T::Value],
     block_handles: &[T::Block],
@@ -162,11 +161,10 @@ fn lower_biir_terminator<Q: Clone, T: LirTarget<Q>>(
                 _ => unimplemented!("CondJmp with Return/Dyn target"),
             }
         }
-        _ => panic!("lower_biir_terminator: unhandled BIrTerminator variant — add lowering for this variant"),
     }
 }
 
-fn lower_biir_jump<P: Clone, T: LirTarget<P>>(
+fn lower_biir_jump<P: Clone + Default, T: LirTarget<P>>(
     tgt: &BIrTarget,
     vals: &[T::Value],
     block_handles: &[T::Block],
@@ -183,11 +181,10 @@ fn lower_biir_jump<P: Clone, T: LirTarget<P>>(
             target.jump(block_handles[id.0 as usize].clone(), &args);
         }
         IRBlockTargetId::Dyn(_) => unimplemented!("dynamic jump target in BIrBlocks lowering"),
-        _ => panic!("lower_biir_jump: unhandled IRBlockTargetId variant — add lowering for this variant"),
     }
 }
 
-fn resolve_biir_target<Q: Clone, T: LirTarget<Q>>(
+fn resolve_biir_target<Q: Clone + Default, T: LirTarget<Q>>(
     tgt: &BIrTarget,
     vals: &[T::Value],
     block_handles: &[T::Block],
@@ -197,13 +194,12 @@ fn resolve_biir_target<Q: Clone, T: LirTarget<Q>>(
         IRBlockTargetId::Block(id) => (Some(block_handles[id.0 as usize].clone()), args),
         IRBlockTargetId::Return => (None, args),
         IRBlockTargetId::Dyn(_) => unimplemented!("dynamic jump target in BIrBlocks lowering"),
-        _ => panic!("resolve_biir_target: unhandled IRBlockTargetId variant — add handling for this variant"),
     }
 }
 
 /// Pack a slice of Bool values into a single U64 via shl/or/zext.
 /// For a single value, just zext it.
-fn pack_bits_to_u64<P: Clone, T: LirTarget<P>>(bits: &[T::Value], target: &mut T) -> T::Value {
+fn pack_bits_to_u64<P: Clone + Default, T: LirTarget<P>>(bits: &[T::Value], target: &mut T) -> T::Value {
     if bits.is_empty() {
         return target.iconst(LirType::U64, 0);
     }
@@ -227,7 +223,7 @@ fn pack_bits_to_u64<P: Clone, T: LirTarget<P>>(bits: &[T::Value], target: &mut T
 /// Lower typed Volar IR (`IRBlocks`) to any `LirTarget`.
 ///
 /// Forwards provenance unchanged (equivalent to `KeepProvenance` handler).
-pub fn lower_ir<P: Clone, T: LirTarget<P>>(
+pub fn lower_ir<P: Clone + Default, T: LirTarget<P>>(
     blocks: &IRBlocks<P>,
     types: &IRTypes,
     name: &str,
@@ -246,7 +242,7 @@ pub fn lower_ir_with_handler<P, T, H>(
     handler: &H,
     config: &IrLoweringConfig,
 ) where
-    P: Clone,
+    P: Clone + Default,
     H: ProvenanceHandler<P>,
     T: LirTarget<H::Output>,
 {
@@ -398,7 +394,7 @@ fn ir_type_to_lir(ty: &IRType, types: &IRTypes) -> LirType {
     }
 }
 
-fn lower_ir_stmt<Q: Clone, T: LirTarget<Q>>(
+fn lower_ir_stmt<Q: Clone + Default, T: LirTarget<Q>>(
     stmt: &IRStmt,
     vals: &[T::Value],
     types: &IRTypes,
@@ -521,11 +517,10 @@ fn lower_ir_stmt<Q: Clone, T: LirTarget<Q>>(
         IRStmt::Rng { .. } => {
             unimplemented!("Rng lowering to LirTarget not yet implemented")
         }
-        _ => panic!("lower_ir_stmt: unhandled IRStmt variant — add lowering for this variant"),
     }
 }
 
-fn lower_ir_terminator<Q: Clone, T: LirTarget<Q>>(
+fn lower_ir_terminator<Q: Clone + Default, T: LirTarget<Q>>(
     term: &IRTerminator,
     vals: &[T::Value],
     block_handles: &[T::Block],
@@ -543,7 +538,6 @@ fn lower_ir_terminator<Q: Clone, T: LirTarget<Q>>(
                     target.jump(block_handles[id.0 as usize].clone(), &arg_vals);
                 }
                 IRBlockTargetId::Dyn(_) => unimplemented!("dynamic jump target"),
-                _ => panic!("lower_ir_terminator: unhandled IRBlockTargetId variant — add lowering for this variant"),
             }
         }
         IRTerminator::JumpCond {
@@ -566,6 +560,5 @@ fn lower_ir_terminator<Q: Clone, T: LirTarget<Q>>(
         IRTerminator::JumpTable { .. } => {
             unimplemented!("JumpTable lowering not yet implemented")
         }
-        _ => panic!("lower_ir_terminator: unhandled IRTerminator variant — add lowering for this variant"),
     }
 }

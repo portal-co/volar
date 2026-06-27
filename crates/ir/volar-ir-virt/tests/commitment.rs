@@ -101,8 +101,8 @@ fn three_block_passthrough() -> (IRBlocks, IRTypes) {
     let blocks = IRBlocks::new(vec![
         IRBlock {
             params: vec![u32_ty],
-            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 0 }, u32_ty)],
-            stmt_provs: vec![()],
+            stmts: vec![],
+            stmt_provs: vec![],
             terminator: IRTerminator::Jmp {
                 func: IRBlockTargetId::Block(IRBlockId(1)),
                 args: vec![IRVarId(0)],

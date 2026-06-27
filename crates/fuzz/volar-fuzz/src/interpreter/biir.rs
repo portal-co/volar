@@ -120,7 +120,6 @@ fn eval_block(block: &BIrBlock<()>, params: &[bool], storage: &mut BIrStorageMap
                 resolve_target(else_target, &vars)
             }
         }
-        _ => panic!("eval_biir: unhandled BIrTerminator variant — add evaluation for this variant"),
     };
     Some(result)
 }
@@ -172,7 +171,6 @@ fn eval_stmt(
             storage.insert((*store_id, addr_u64), src_val);
             false // dummy zero bit
         }
-        _ => panic!("eval_biir: unhandled BIrStmt variant — add evaluation for this variant"),
     }
 }
 
@@ -186,7 +184,6 @@ fn resolve_target(target: &BIrTarget, vars: &BTreeMap<u32, bool>) -> BlockResult
             args,
         },
         IRBlockTargetId::Dyn(_) => panic!("eval_biir: Dyn jump target not supported"),
-        _ => panic!("eval_biir: unhandled IRBlockTargetId variant — add evaluation for this variant"),
     }
 }
 

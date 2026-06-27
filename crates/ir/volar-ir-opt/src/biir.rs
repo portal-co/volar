@@ -15,7 +15,7 @@ use crate::common::canon_alias;
 /// Simplify each block of `blocks` in place until no further changes occur.
 ///
 /// Returns `true` if any block was modified.
-pub fn fold_biir_blocks<P: Clone>(blocks: &mut BIrBlocks<P>) -> bool {
+pub fn fold_biir_blocks<P: Clone + Default>(blocks: &mut BIrBlocks<P>) -> bool {
     let mut any_changed = false;
     for block in blocks.blocks.iter_mut() {
         loop {
@@ -35,7 +35,7 @@ pub fn fold_biir_blocks<P: Clone>(blocks: &mut BIrBlocks<P>) -> bool {
 /// One forward simplification pass over a single block.
 ///
 /// Returns `true` if any stmt or terminator operand was changed.
-fn fold_biir_block_once<P: Clone>(block: &mut BIrBlock<P>) -> bool {
+fn fold_biir_block_once<P: Clone + Default>(block: &mut BIrBlock<P>) -> bool {
     let mut bool_map: BTreeMap<IRVarId, bool> = BTreeMap::new();
     let mut alias_map: BTreeMap<IRVarId, IRVarId> = BTreeMap::new();
     let mut changed = false;
@@ -258,7 +258,6 @@ pub(crate) fn apply_aliases_to_biir_terminator(
             changed |= apply_aliases_to_biir_target(then_target, alias_map);
             changed |= apply_aliases_to_biir_target(else_target, alias_map);
         }
-        _ => {}
     }
     changed
 }

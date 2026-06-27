@@ -439,7 +439,6 @@ impl LirTarget for VaffleTarget {
         let fb = self.func.take().expect("VaffleTarget: no function in progress");
         let blocks: Vec<Block> = fb.blocks.into_iter().map(|bb| Block {
             params: bb.params,
-            stmt_provs: vec![(); bb.stmts.len()],
             stmts: bb.stmts,
             terminator: bb.terminator.unwrap_or(Terminator::Return { values: vec![] }),
         }).collect();
@@ -923,7 +922,6 @@ pub(crate) fn bits_for_lir_type(ty: &LirType, struct_widths: &[usize]) -> usize 
         LirType::Struct(id) => struct_widths[*id as usize],
         LirType::Native(_) => 1,
         LirType::Ptr(_) => PTR_BITS,
-        _ => panic!("bits_for_lir_type: unhandled LirType variant — add bit-width calculation"),
     }
 }
 

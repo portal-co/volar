@@ -260,7 +260,6 @@ fn dump_stmt(out: &mut String, stmt: &IrStmt, level: usize) {
             dump_expr(out, expr, level);
             let _ = writeln!(out);
         }
-        _ => { let _ = write!(out, "<unknown-stmt>"); }
     }
 }
 
@@ -325,7 +324,6 @@ fn fmt_pattern(pat: &IrPattern) -> String {
             format!("[{}]", inner.join(", "))
         }
         IrPattern::Rest => "..".to_string(),
-        _ => "<unknown-pat>".to_string(),
     }
 }
 
@@ -684,7 +682,6 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
         IrExpr::Continue => {
             let _ = write!(out, "continue");
         }
-        _ => { let _ = write!(out, "<unknown-expr>"); }
     }
 }
 
