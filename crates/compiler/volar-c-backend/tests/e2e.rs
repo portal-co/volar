@@ -29,6 +29,12 @@ use volar_lir_test_corpus::{
     make_ir_and, make_ir_not, make_ir_xor,
 };
 
+/// Construct a fresh `IrExpr` with no provenance/side — test fixtures here
+/// have no real source to attribute.
+fn ir_expr(kind: volar_compiler::ir::IrExprKind) -> volar_compiler::ir::IrExpr {
+    volar_compiler::ir::IrExpr::new(kind, (), None)
+}
+
 /// Lower `BIrBlocks` to C source via the CBackend.
 fn biir_to_c(blocks: &BIrBlocks, name: &str) -> String {
     let mut b = CBackend::new();
@@ -247,7 +253,7 @@ fn compiler_oracle_dispatch() {
                 }],
                 return_type: Some(IrType::Primitive(PrimitiveType::U64)),
                 where_clause: vec![],
-                body: IrBlock { stmts: vec![], stmt_provs: vec![], expr: None },
+                body: IrBlock { stmts: vec![], expr: None },
                 external_kind: ExternalKind::Oracle,
             },
             IrFunction {
@@ -263,11 +269,10 @@ fn compiler_oracle_dispatch() {
                 where_clause: vec![],
                 body: IrBlock {
                     stmts: vec![],
-                    stmt_provs: vec![],
-                    expr: Some(Box::new(IrExpr::Call {
-                        func: Box::new(IrExpr::Var("double".to_owned())),
-                        args: vec![IrExpr::Var("x".to_owned())],
-                    })),
+                    expr: Some(Box::new(ir_expr(IrExprKind::Call {
+                        func: Box::new(ir_expr(IrExprKind::Var("double".to_owned()))),
+                        args: vec![ir_expr(IrExprKind::Var("x".to_owned()))],
+                    }))),
                 },
                 external_kind: ExternalKind::Normal,
             },
@@ -313,7 +318,7 @@ fn compiler_rng_dispatch() {
                 params: vec![],
                 return_type: Some(IrType::Primitive(PrimitiveType::U64)),
                 where_clause: vec![],
-                body: IrBlock { stmts: vec![], stmt_provs: vec![], expr: None },
+                body: IrBlock { stmts: vec![], expr: None },
                 external_kind: ExternalKind::Rng,
             },
             IrFunction {
@@ -326,11 +331,10 @@ fn compiler_rng_dispatch() {
                 where_clause: vec![],
                 body: IrBlock {
                     stmts: vec![],
-                    stmt_provs: vec![],
-                    expr: Some(Box::new(IrExpr::Call {
-                        func: Box::new(IrExpr::Var("get_rand".to_owned())),
+                    expr: Some(Box::new(ir_expr(IrExprKind::Call {
+                        func: Box::new(ir_expr(IrExprKind::Var("get_rand".to_owned()))),
                         args: vec![],
-                    })),
+                    }))),
                 },
                 external_kind: ExternalKind::Normal,
             },
@@ -359,7 +363,7 @@ fn compiler_rng_dispatch() {
 // Category 6: Enum round-trip
 //
 // Tests for enum representation (tag + payload flat layout), construction,
-// and pattern matching via IrExpr::Match.
+// and pattern matching via ir_expr(IrExprKind::Match).
 //
 // ############################################################################
 
@@ -404,14 +408,13 @@ fn enum_option_roundtrip() {
         where_clause: vec![],
         body: IrBlock {
             stmts: vec![],
-            stmt_provs: vec![],
-            expr: Some(Box::new(IrExpr::Call {
-                func: Box::new(IrExpr::Path {
+            expr: Some(Box::new(ir_expr(IrExprKind::Call {
+                func: Box::new(ir_expr(IrExprKind::Path {
                     segments: vec!["Some".into()],
                     type_args: vec![],
-                }),
-                args: vec![IrExpr::Var("x".into())],
-            })),
+                })),
+                args: vec![ir_expr(IrExprKind::Var("x".into()))],
+            }))),
         },
         external_kind: ExternalKind::Normal,
     };
@@ -427,11 +430,10 @@ fn enum_option_roundtrip() {
         where_clause: vec![],
         body: IrBlock {
             stmts: vec![],
-            stmt_provs: vec![],
-            expr: Some(Box::new(IrExpr::Path {
+            expr: Some(Box::new(ir_expr(IrExprKind::Path {
                 segments: vec!["None".into()],
                 type_args: vec![],
-            })),
+            }))),
         },
         external_kind: ExternalKind::Normal,
     };
@@ -452,9 +454,8 @@ fn enum_option_roundtrip() {
         where_clause: vec![],
         body: IrBlock {
             stmts: vec![],
-            stmt_provs: vec![],
-            expr: Some(Box::new(IrExpr::Match {
-                expr: Box::new(IrExpr::Var("opt".into())),
+            expr: Some(Box::new(ir_expr(IrExprKind::Match {
+                expr: Box::new(ir_expr(IrExprKind::Var("opt".into()))),
                 arms: vec![
                     IrMatchArm {
                         pattern: IrPattern::TupleStruct {
@@ -464,15 +465,15 @@ fn enum_option_roundtrip() {
                             }],
                         },
                         guard: None,
-                        body: IrExpr::Var("v".into()),
+                        body: ir_expr(IrExprKind::Var("v".into())),
                     },
                     IrMatchArm {
                         pattern: IrPattern::Wild,
                         guard: None,
-                        body: IrExpr::Var("default".into()),
+                        body: ir_expr(IrExprKind::Var("default".into())),
                     },
                 ],
-            })),
+            }))),
         },
         external_kind: ExternalKind::Normal,
     };
@@ -524,7 +525,7 @@ fn read_spec_file(name: &str) -> String {
 /// substitution produces correct C.
 #[test]
 fn spec_grafhen_word_zero() {
-    use volar_compiler::{parse_source, ir::{ExternalKind, IrBlock, IrExpr, IrFunction, IrLit, IrModule, IrType, StructKind}};
+    use volar_compiler::{parse_source, ir::{ExternalKind, IrBlock, IrExprKind, IrFunction, IrLit, IrModule, IrType, StructKind}};
     use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
 
     let src = read_spec_file("grafhen.rs");
@@ -542,20 +543,20 @@ fn spec_grafhen_word_zero() {
     };
 
     // fn make_zero() -> GrafhenWord { GrafhenWord { data: [0u8; 4], len: 0 } }
-    let body_expr = IrExpr::StructExpr {
+    let body_expr = ir_expr(IrExprKind::StructExpr {
         kind: StructKind::Custom("GrafhenWord".into()),
         type_args: vec![],
         fields: vec![
-            ("data".into(), IrExpr::FixedArray(vec![
-                IrExpr::Lit(IrLit::Int(0u64.into())),
-                IrExpr::Lit(IrLit::Int(0u64.into())),
-                IrExpr::Lit(IrLit::Int(0u64.into())),
-                IrExpr::Lit(IrLit::Int(0u64.into())),
-            ])),
-            ("len".into(), IrExpr::Lit(IrLit::Int(0u64.into()))),
+            ("data".into(), ir_expr(IrExprKind::FixedArray(vec![
+                ir_expr(IrExprKind::Lit(IrLit::Int(0u64.into()))),
+                ir_expr(IrExprKind::Lit(IrLit::Int(0u64.into()))),
+                ir_expr(IrExprKind::Lit(IrLit::Int(0u64.into()))),
+                ir_expr(IrExprKind::Lit(IrLit::Int(0u64.into()))),
+            ]))),
+            ("len".into(), ir_expr(IrExprKind::Lit(IrLit::Int(0u64.into())))),
         ],
         rest: None,
-    };
+    });
 
     let func = IrFunction {
         name: "make_zero".into(),
@@ -565,7 +566,7 @@ fn spec_grafhen_word_zero() {
         params: vec![],
         return_type: Some(word_ty),
         where_clause: vec![],
-        body: IrBlock { stmts: vec![], stmt_provs: vec![], expr: Some(Box::new(body_expr)) },
+        body: IrBlock { stmts: vec![], expr: Some(Box::new(body_expr)) },
         external_kind: ExternalKind::Normal,
     };
 
@@ -599,7 +600,7 @@ fn spec_grafhen_word_zero() {
 /// the struct-expression lowering handles concrete array literals correctly.
 #[test]
 fn spec_grafhen_word_nonzero() {
-    use volar_compiler::{parse_source, ir::{ExternalKind, IrBlock, IrExpr, IrFunction, IrLit, IrModule, IrType, StructKind}};
+    use volar_compiler::{parse_source, ir::{ExternalKind, IrBlock, IrExprKind, IrFunction, IrLit, IrModule, IrType, StructKind}};
     use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
 
     let src = read_spec_file("grafhen.rs");
@@ -616,20 +617,20 @@ fn spec_grafhen_word_nonzero() {
     };
 
     // fn make_word() -> GrafhenWord { GrafhenWord { data: [1, 2, 3, 4], len: 3 } }
-    let body_expr = IrExpr::StructExpr {
+    let body_expr = ir_expr(IrExprKind::StructExpr {
         kind: StructKind::Custom("GrafhenWord".into()),
         type_args: vec![],
         fields: vec![
-            ("data".into(), IrExpr::FixedArray(vec![
-                IrExpr::Lit(IrLit::Int(1u64.into())),
-                IrExpr::Lit(IrLit::Int(2u64.into())),
-                IrExpr::Lit(IrLit::Int(3u64.into())),
-                IrExpr::Lit(IrLit::Int(4u64.into())),
-            ])),
-            ("len".into(), IrExpr::Lit(IrLit::Int(3u64.into()))),
+            ("data".into(), ir_expr(IrExprKind::FixedArray(vec![
+                ir_expr(IrExprKind::Lit(IrLit::Int(1u64.into()))),
+                ir_expr(IrExprKind::Lit(IrLit::Int(2u64.into()))),
+                ir_expr(IrExprKind::Lit(IrLit::Int(3u64.into()))),
+                ir_expr(IrExprKind::Lit(IrLit::Int(4u64.into()))),
+            ]))),
+            ("len".into(), ir_expr(IrExprKind::Lit(IrLit::Int(3u64.into())))),
         ],
         rest: None,
-    };
+    });
 
     let func = IrFunction {
         name: "make_word".into(),
@@ -639,7 +640,7 @@ fn spec_grafhen_word_nonzero() {
         params: vec![],
         return_type: Some(word_ty),
         where_clause: vec![],
-        body: IrBlock { stmts: vec![], stmt_provs: vec![], expr: Some(Box::new(body_expr)) },
+        body: IrBlock { stmts: vec![], expr: Some(Box::new(body_expr)) },
         external_kind: ExternalKind::Normal,
     };
 

@@ -140,7 +140,7 @@ pub fn emit_verifier_c(
 mod tests {
     use super::*;
     use volar_compiler::ir::{
-        ExternalKind, IrBlock, IrExpr, IrFunction, IrLit, IrModule, IrType, PrimitiveType,
+        ExternalKind, IrBlock, IrExpr, IrExprKind, IrFunction, IrLit, IrModule, IrType, PrimitiveType,
     };
 
     /// Honest gate: pick `K_a,K_b,K_c,Δ` and set `V̂ = K_c·Δ − K_a·K_b`.
@@ -192,8 +192,7 @@ mod tests {
             where_clause: vec![],
             body: IrBlock {
                 stmts: vec![],
-                stmt_provs: vec![],
-                expr: Some(Box::new(IrExpr::Lit(IrLit::Bool(true)))),
+                expr: Some(Box::new(IrExpr::new(IrExprKind::Lit(IrLit::Bool(true)), (), None))),
             },
             external_kind: ExternalKind::Normal,
         };
