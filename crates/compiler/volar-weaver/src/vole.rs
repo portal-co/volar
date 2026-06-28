@@ -382,6 +382,92 @@ impl ZkActionConfig {
 }
 
 // ============================================================================
+// Side-based witness/statement protection (replaces ZkWitnessConfig/
+// ZkActionConfig — see docs/side.md)
+// ============================================================================
+
+/// What a VOLE-side value is: a private committed witness (`Vope`/`Q`), or a
+/// public cleartext statement value (`bool`). The `volar-side` vocabulary for
+/// this weaver — resolved from a [`SideId`] by any [`SideHandler`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VoleProtection {
+    /// Private, VOLE-committed value (`Vope` for the prover, `Q` for the verifier).
+    Witness,
+    /// Public cleartext value (`bool`), known to both parties.
+    Statement,
+}
+
+/// Side assignment for a VOLE circuit's introduction points: circuit input
+/// params and action output bits.
+///
+/// `BIrBlock` params aren't individually `Node`-wrapped (`params` is just a
+/// count), and an action's output bits have no IR node of their own to carry
+/// a side until the action call is lowered — so, exactly like the
+/// `WaffleImportConfig` extension point for WASM-sourced oracle/action
+/// imports, these introduction points take an explicit side from the weaver
+/// caller rather than reading one off the IR.
+#[derive(Clone, Debug, Default)]
+pub struct VoleSideAssignments {
+    /// Side for circuit input param `i` (0-based), if assigned.
+    pub input_sides: BTreeMap<u32, volar_side::SideId>,
+    /// Side for action `name`'s output bit `j` (0-based), if assigned.
+    pub action_sides: BTreeMap<String, BTreeMap<usize, volar_side::SideId>>,
+}
+
+impl VoleSideAssignments {
+    /// Assign `side` to circuit input param `idx`, returning `self` for chaining.
+    pub fn with_input(mut self, idx: u32, side: volar_side::SideId) -> Self {
+        self.input_sides.insert(idx, side);
+        self
+    }
+
+    /// Assign `side` to action `name`'s output bit `bit`, returning `self` for chaining.
+    pub fn with_action_output(mut self, name: &str, bit: usize, side: volar_side::SideId) -> Self {
+        self.action_sides.entry(name.into()).or_default().insert(bit, side);
+        self
+    }
+}
+
+/// Source of witness/statement decisions for [`weave_vole_prover_inner`]/
+/// [`weave_vole_verifier_inner`] — implemented by the legacy [`ZkWitnessConfig`]
+/// and by the side-based [`VoleSideAssignments`] + [`SideHandler`] pairing, so
+/// the weaving logic itself doesn't need to know which is in use.
+trait VoleWitnessSource {
+    fn is_public_input(&self, idx: u32) -> bool;
+    fn is_public_action_output(&self, action_name: &str, bit: usize) -> bool;
+}
+
+impl VoleWitnessSource for ZkWitnessConfig {
+    fn is_public_input(&self, idx: u32) -> bool {
+        self.public_inputs.is_public(CirVar(idx))
+    }
+    fn is_public_action_output(&self, action_name: &str, bit: usize) -> bool {
+        self.action_configs
+            .get(action_name)
+            .map(|c| c.is_output_public(bit))
+            .unwrap_or(false)
+    }
+}
+
+/// Pairs a [`VoleSideAssignments`] table with a [`SideHandler`] to resolve
+/// witness/statement decisions — the side-based [`VoleWitnessSource`].
+struct VoleSideConfig<'a, H> {
+    assignments: &'a VoleSideAssignments,
+    handler: &'a H,
+}
+
+impl<H: volar_side::SideHandler<Protection = VoleProtection>> VoleWitnessSource for VoleSideConfig<'_, H> {
+    fn is_public_input(&self, idx: u32) -> bool {
+        let side = self.assignments.input_sides.get(&idx).copied();
+        self.handler.protection(side) == VoleProtection::Statement
+    }
+    fn is_public_action_output(&self, action_name: &str, bit: usize) -> bool {
+        let side = self.assignments.action_sides.get(action_name).and_then(|m| m.get(&bit)).copied();
+        self.handler.protection(side) == VoleProtection::Statement
+    }
+}
+
+// ============================================================================
 // Public-wire synthesis helpers
 // ============================================================================
 
@@ -689,10 +775,50 @@ where
     Tagged::seal(weave_vole_prover_inner(circuit, name, config, handler))
 }
 
-fn weave_vole_prover_inner<P, H>(
+/// Weave a single-block boolean circuit into a VOLE **prover** `IrModule`,
+/// resolving witness/statement per circuit input and action output bit via
+/// `side_handler` instead of a position-keyed [`ZkWitnessConfig`].
+///
+/// `assignments` supplies the side for each introduction point (circuit
+/// inputs and action output bits have no IR node of their own to read a side
+/// from); `side_handler` then resolves each assigned (or absent) side to a
+/// [`VoleProtection`]. [`TableProtection<VoleProtection>`](volar_side::TableProtection)
+/// is a ready-made `side_handler` for the common case of a small explicit map.
+pub fn weave_vole_prover_with_side<P: Clone, SH>(
     circuit: &BIrBlocks<P>,
     name: &str,
-    config: &ZkWitnessConfig,
+    assignments: &VoleSideAssignments,
+    side_handler: &SH,
+) -> Tagged<Zk, IrModule<IrFunction>>
+where
+    SH: volar_side::SideHandler<Protection = VoleProtection>,
+{
+    let config = VoleSideConfig { assignments, handler: side_handler };
+    Tagged::seal(weave_vole_prover_inner(circuit, name, &config, &NoProvenance))
+}
+
+/// Like [`weave_vole_prover_with_side`] but also threads a [`ProvenanceHandler`].
+pub fn weave_vole_prover_with_side_and_handler<P, SH, H>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    assignments: &VoleSideAssignments,
+    side_handler: &SH,
+    handler: &H,
+) -> Tagged<Zk, IrModule<IrFunction<H::Output>, H::Output>>
+where
+    P: Clone,
+    SH: volar_side::SideHandler<Protection = VoleProtection>,
+    H: ProvenanceHandler<P>,
+    H::Output: Default,
+{
+    let config = VoleSideConfig { assignments, handler: side_handler };
+    Tagged::seal(weave_vole_prover_inner(circuit, name, &config, handler))
+}
+
+fn weave_vole_prover_inner<P, H, C: VoleWitnessSource>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    config: &C,
     handler: &H,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
 where
@@ -754,7 +880,7 @@ where
         ty: vope_type(),
     });
     for i in 0..num_params {
-        let is_pub = config.public_inputs.is_public(CirVar(i as u32));
+        let is_pub = config.is_public_input(i as u32);
         params.push(IrParam {
             name: if is_pub { format!("input_{}", i) } else { format!("vope_input_{}", i) },
             ty: if is_pub { bool_type() } else { vope_type() },
@@ -769,11 +895,10 @@ where
             });
         }
     }
-    // Action output bit commitments — public or private per ZkActionConfig.
+    // Action output bit commitments — public or private per the witness source.
     for (k, (action_name, num_bits)) in action_infos.iter().enumerate() {
-        let action_cfg = config.action_configs.get(action_name.as_str());
         for j in 0..*num_bits {
-            let is_pub = action_cfg.map(|c| c.is_output_public(j)).unwrap_or(false);
+            let is_pub = config.is_public_action_output(action_name, j);
             params.push(IrParam {
                 name: if is_pub {
                     format!("action_{}_bit_{}", k, j)
@@ -819,7 +944,7 @@ where
 
     // Synthesise Vope wires for public inputs from the bool params.
     for i in 0..num_params {
-        if config.public_inputs.is_public(CirVar(i as u32)) {
+        if config.is_public_input(i as u32) {
             stmts.push(ir_stmt_p(IrStmtKind::Let {
                 pattern: IrPattern::ident(&format!("vope_input_{}", i)),
                 ty: None,
@@ -928,10 +1053,7 @@ where
             BIrStmt::ActionBit { call, bit } => {
                 let k = action_handle_map[&call.0];
                 let (action_name, _) = &action_infos[k];
-                let is_pub = config.action_configs
-                    .get(action_name.as_str())
-                    .map(|c| c.is_output_public(*bit))
-                    .unwrap_or(false);
+                let is_pub = config.is_public_action_output(action_name, *bit);
                 let init = if is_pub {
                     synth_prover_public_wire(&format!("action_{}_bit_{}", k, bit))
                 } else {
@@ -1078,10 +1200,42 @@ where
     Tagged::seal(weave_vole_verifier_inner(circuit, name, config, handler))
 }
 
-fn weave_vole_verifier_inner<P, H>(
+/// Like [`weave_vole_prover_with_side`] but for the **verifier**.
+pub fn weave_vole_verifier_with_side<P: Clone, SH>(
     circuit: &BIrBlocks<P>,
     name: &str,
-    config: &ZkWitnessConfig,
+    assignments: &VoleSideAssignments,
+    side_handler: &SH,
+) -> Tagged<Transparent, IrModule<IrFunction>>
+where
+    SH: volar_side::SideHandler<Protection = VoleProtection>,
+{
+    let config = VoleSideConfig { assignments, handler: side_handler };
+    Tagged::seal(weave_vole_verifier_inner(circuit, name, &config, &NoProvenance))
+}
+
+/// Like [`weave_vole_verifier_with_side`] but also threads a [`ProvenanceHandler`].
+pub fn weave_vole_verifier_with_side_and_handler<P, SH, H>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    assignments: &VoleSideAssignments,
+    side_handler: &SH,
+    handler: &H,
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
+where
+    P: Clone,
+    SH: volar_side::SideHandler<Protection = VoleProtection>,
+    H: ProvenanceHandler<P>,
+    H::Output: Default,
+{
+    let config = VoleSideConfig { assignments, handler: side_handler };
+    Tagged::seal(weave_vole_verifier_inner(circuit, name, &config, handler))
+}
+
+fn weave_vole_verifier_inner<P, H, C: VoleWitnessSource>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    config: &C,
     handler: &H,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
 where
@@ -1171,7 +1325,7 @@ where
 
     // Input wire Q shares — or bool for public inputs.
     for i in 0..num_params {
-        let is_pub = config.public_inputs.is_public(CirVar(i as u32));
+        let is_pub = config.is_public_input(i as u32);
         params.push(IrParam {
             name: if is_pub { format!("input_{}", i) } else { format!("q_input_{}", i) },
             ty: if is_pub { bool_type() } else { q_type() },
@@ -1186,11 +1340,10 @@ where
             });
         }
     }
-    // Action output Q shares — public or private per ZkActionConfig.
+    // Action output Q shares — public or private per the witness source.
     for (k, (action_name, num_bits)) in action_infos.iter().enumerate() {
-        let action_cfg = config.action_configs.get(action_name.as_str());
         for j in 0..*num_bits {
-            let is_pub = action_cfg.map(|c| c.is_output_public(j)).unwrap_or(false);
+            let is_pub = config.is_public_action_output(action_name, j);
             params.push(IrParam {
                 name: if is_pub {
                     format!("action_{}_bit_{}", k, j)
@@ -1233,7 +1386,7 @@ where
 
     // Synthesise Q wires for public inputs from the bool params.
     for i in 0..num_params {
-        if config.public_inputs.is_public(CirVar(i as u32)) {
+        if config.is_public_input(i as u32) {
             stmts.push(ir_stmt_p(IrStmtKind::Let {
                 pattern: IrPattern::ident(&format!("q_input_{}", i)),
                 ty: None,
@@ -1353,10 +1506,7 @@ where
             BIrStmt::ActionBit { call, bit } => {
                 let k = action_handle_map[&call.0];
                 let (action_name, _) = &action_infos[k];
-                let is_pub = config.action_configs
-                    .get(action_name.as_str())
-                    .map(|c| c.is_output_public(*bit))
-                    .unwrap_or(false);
+                let is_pub = config.is_public_action_output(action_name, *bit);
                 let init = if is_pub {
                     synth_verifier_public_wire(&format!("action_{}_bit_{}", k, bit))
                 } else {
@@ -3823,6 +3973,66 @@ mod tests {
         let module = weave_vole_verifier(&circuit, "test_circuit", None);
         let code = print_weaved_vole_module(module.inner());
         run_compile_check(&code, "vole_verifier");
+    }
+
+    // ---- Side 2: weave_*_with_side parity with the legacy ZkWitnessConfig path ---
+
+    #[test]
+    fn test_weave_vole_prover_with_side_matches_legacy_config() {
+        use volar_side::{SideId, TableProtection};
+
+        let circuit = build_xor_and_circuit();
+
+        let legacy_config = ZkWitnessConfig {
+            public_inputs: {
+                let mut s = PublicSet::default();
+                s.mark_public(CirVar(0));
+                s
+            },
+            action_configs: BTreeMap::new(),
+        };
+        let legacy = weave_vole_prover_with_config(&circuit, "test_circuit", &legacy_config, None);
+
+        let assignments = VoleSideAssignments::default().with_input(0, SideId(0));
+        let side_handler = TableProtection::new(VoleProtection::Witness)
+            .with(SideId(0), VoleProtection::Statement);
+        let side = weave_vole_prover_with_side(&circuit, "test_circuit", &assignments, &side_handler);
+
+        assert_eq!(
+            print_weaved_vole_module(legacy.inner()),
+            print_weaved_vole_module(side.inner()),
+            "weave_vole_prover_with_side must produce identical output to the \
+             equivalent weave_vole_prover_with_config call"
+        );
+    }
+
+    #[test]
+    fn test_weave_vole_verifier_with_side_matches_legacy_config() {
+        use volar_side::{SideId, TableProtection};
+
+        let circuit = build_xor_and_circuit();
+
+        let legacy_config = ZkWitnessConfig {
+            public_inputs: {
+                let mut s = PublicSet::default();
+                s.mark_public(CirVar(1));
+                s
+            },
+            action_configs: BTreeMap::new(),
+        };
+        let legacy = weave_vole_verifier_with_config(&circuit, "test_circuit", &legacy_config, None);
+
+        let assignments = VoleSideAssignments::default().with_input(1, SideId(0));
+        let side_handler = TableProtection::new(VoleProtection::Witness)
+            .with(SideId(0), VoleProtection::Statement);
+        let side = weave_vole_verifier_with_side(&circuit, "test_circuit", &assignments, &side_handler);
+
+        assert_eq!(
+            print_weaved_vole_module(legacy.inner()),
+            print_weaved_vole_module(side.inner()),
+            "weave_vole_verifier_with_side must produce identical output to the \
+             equivalent weave_vole_verifier_with_config call"
+        );
     }
 
     #[test]
