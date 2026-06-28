@@ -17,6 +17,18 @@ use std::{boxed::Box, collections::BTreeMap, format, string::ToString, vec, vec:
 #[cfg(not(feature = "std"))]
 use alloc::{boxed::Box, collections::BTreeMap, format, string::ToString, vec, vec::Vec};
 
+/// Wrap a freshly-built expression kind with empty provenance/side — dyn
+/// lowering doesn't yet thread real per-value provenance through (see
+/// `volar-side`'s WASM/LIR extension points for where that gets attached).
+fn ir_expr(kind: IrExprKind) -> IrExpr {
+    IrExpr::new(kind, (), None)
+}
+
+/// Wrap a freshly-built statement kind with empty provenance/side.
+fn ir_stmt(kind: IrStmtKind) -> IrStmt {
+    IrStmt::new(kind, (), None)
+}
+
 /// Standard library and compiler-builtin container types that receive special
 /// treatment during dynamic lowering (kept as-is rather than renamed to `*Dyn`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -781,18 +793,18 @@ fn lower_function_dyn(
                         // Rewrite references in the body from old_name to renamed
                         rename_var_in_block(&mut body, &old_name, &renamed);
                     }
-                    unpacks.push(IrStmt::Let {
+                    unpacks.push(ir_stmt(IrStmtKind::Let {
                         pattern: IrPattern::Ident {
                             mutable: false,
                             name: w.clone(),
                             subpat: None,
                         },
                         ty: Some(IrType::Primitive(PrimitiveType::Usize)),
-                        init: Some(IrExpr::Field {
-                            base: Box::new(IrExpr::Var("self".to_string())),
+                        init: Some(ir_expr(IrExprKind::Field {
+                            base: Box::new(ir_expr(IrExprKind::Var("self".to_string()))),
                             field: w.clone(),
-                        }),
-                    });
+                        })),
+                    }));
                 }
                 unpacks.extend(body.stmts);
                 body.stmts = unpacks;
@@ -805,15 +817,15 @@ fn lower_function_dyn(
             for (name, value) in constant_witnesses {
                 // Only add if not already a parameter
                 if !params.iter().any(|p| &p.name == name) {
-                    bindings.push(IrStmt::Let {
+                    bindings.push(ir_stmt(IrStmtKind::Let {
                         pattern: IrPattern::Ident {
                             mutable: false,
                             name: name.clone(),
                             subpat: None,
                         },
                         ty: Some(IrType::Primitive(PrimitiveType::Usize)),
-                        init: Some(IrExpr::Lit(IrLit::Int(*value as i128))),
-                    });
+                        init: Some(ir_expr(IrExprKind::Lit(IrLit::Int(*value as i128)))),
+                    }));
                 }
             }
             bindings.extend(body.stmts);
@@ -1130,8 +1142,8 @@ fn rename_var_in_block(block: &mut IrBlock, old: &str, new_name: &str) {
 }
 
 fn rename_var_in_stmt(stmt: &mut IrStmt, old: &str, new_name: &str) {
-    match stmt {
-        IrStmt::Let {
+    match &mut stmt.kind {
+        IrStmtKind::Let {
             pattern: _, init, ..
         } => {
             // Don't rename the binding itself — if the let introduces a new var
@@ -1140,7 +1152,7 @@ fn rename_var_in_stmt(stmt: &mut IrStmt, old: &str, new_name: &str) {
                 rename_var_in_expr(e, old, new_name);
             }
         }
-        IrStmt::Semi(e) | IrStmt::Expr(e) => {
+        IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
             rename_var_in_expr(e, old, new_name);
         }
         _ => {}
@@ -1148,42 +1160,42 @@ fn rename_var_in_stmt(stmt: &mut IrStmt, old: &str, new_name: &str) {
 }
 
 fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
-    match expr {
-        IrExpr::Var(v) => {
+    match &mut expr.kind {
+        IrExprKind::Var(v) => {
             if v == old {
                 *v = new_name.to_string();
             }
         }
-        IrExpr::Binary { left, right, .. } => {
+        IrExprKind::Binary { left, right, .. } => {
             rename_var_in_expr(left, old, new_name);
             rename_var_in_expr(right, old, new_name);
         }
-        IrExpr::Unary { expr: e, .. } => {
+        IrExprKind::Unary { expr: e, .. } => {
             rename_var_in_expr(e, old, new_name);
         }
-        IrExpr::Field { base, .. } => {
+        IrExprKind::Field { base, .. } => {
             rename_var_in_expr(base, old, new_name);
         }
-        IrExpr::Index { base, index } => {
+        IrExprKind::Index { base, index } => {
             rename_var_in_expr(base, old, new_name);
             rename_var_in_expr(index, old, new_name);
         }
-        IrExpr::Call { func, args } => {
+        IrExprKind::Call { func, args } => {
             rename_var_in_expr(func, old, new_name);
             for a in args {
                 rename_var_in_expr(a, old, new_name);
             }
         }
-        IrExpr::MethodCall { receiver, args, .. } => {
+        IrExprKind::MethodCall { receiver, args, .. } => {
             rename_var_in_expr(receiver, old, new_name);
             for a in args {
                 rename_var_in_expr(a, old, new_name);
             }
         }
-        IrExpr::Block(b) => {
+        IrExprKind::Block(b) => {
             rename_var_in_block(b, old, new_name);
         }
-        IrExpr::If {
+        IrExprKind::If {
             cond,
             then_branch,
             else_branch,
@@ -1194,7 +1206,7 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
                 rename_var_in_expr(eb, old, new_name);
             }
         }
-        IrExpr::StructExpr { fields, rest, .. } => {
+        IrExprKind::StructExpr { fields, rest, .. } => {
             for (_, e) in fields {
                 rename_var_in_expr(e, old, new_name);
             }
@@ -1202,25 +1214,25 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
                 rename_var_in_expr(r, old, new_name);
             }
         }
-        IrExpr::Array(elems) | IrExpr::Tuple(elems) | IrExpr::FixedArray(elems) => {
+        IrExprKind::Array(elems) | IrExprKind::Tuple(elems) | IrExprKind::FixedArray(elems) => {
             for e in elems {
                 rename_var_in_expr(e, old, new_name);
             }
         }
-        IrExpr::Cast { expr: e, .. } | IrExpr::Try(e) => {
+        IrExprKind::Cast { expr: e, .. } | IrExprKind::Try(e) => {
             rename_var_in_expr(e, old, new_name);
         }
-        IrExpr::Return(Some(e)) | IrExpr::Break(Some(e)) => {
+        IrExprKind::Return(Some(e)) | IrExprKind::Break(Some(e)) => {
             rename_var_in_expr(e, old, new_name);
         }
-        IrExpr::Closure { body, .. } => {
+        IrExprKind::Closure { body, .. } => {
             rename_var_in_expr(body, old, new_name);
         }
-        IrExpr::Assign { left, right } | IrExpr::AssignOp { left, right, .. } => {
+        IrExprKind::Assign { left, right } | IrExprKind::AssignOp { left, right, .. } => {
             rename_var_in_expr(left, old, new_name);
             rename_var_in_expr(right, old, new_name);
         }
-        IrExpr::Range { start, end, .. } => {
+        IrExprKind::Range { start, end, .. } => {
             if let Some(s) = start {
                 rename_var_in_expr(s, old, new_name);
             }
@@ -1228,45 +1240,45 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
                 rename_var_in_expr(e, old, new_name);
             }
         }
-        IrExpr::IterPipeline(chain) => {
+        IrExprKind::IterPipeline(chain) => {
             rename_var_in_iter_chain(chain, old, new_name);
         }
-        IrExpr::ArrayGenerate { body, .. } => {
+        IrExprKind::ArrayGenerate { body, .. } => {
             rename_var_in_expr(body, old, new_name);
         }
-        IrExpr::BoundedLoop {
+        IrExprKind::BoundedLoop {
             start, end, body, ..
         } => {
             rename_var_in_expr(start, old, new_name);
             rename_var_in_expr(end, old, new_name);
             rename_var_in_block(body, old, new_name);
         }
-        IrExpr::IterLoop {
+        IrExprKind::IterLoop {
             collection, body, ..
         } => {
             rename_var_in_expr(collection, old, new_name);
             rename_var_in_block(body, old, new_name);
         }
-        IrExpr::WhileLoop { cond, body } => {
+        IrExprKind::WhileLoop { cond, body } => {
             rename_var_in_expr(cond, old, new_name);
             rename_var_in_block(body, old, new_name);
         }
-        IrExpr::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } => {
             rename_var_in_expr(elem, old, new_name);
             rename_var_in_expr(len, old, new_name);
         }
-        IrExpr::RawMap { receiver, body, .. } => {
+        IrExprKind::RawMap { receiver, body, .. } => {
             rename_var_in_expr(receiver, old, new_name);
             rename_var_in_expr(body, old, new_name);
         }
-        IrExpr::RawZip {
+        IrExprKind::RawZip {
             left, right, body, ..
         } => {
             rename_var_in_expr(left, old, new_name);
             rename_var_in_expr(right, old, new_name);
             rename_var_in_expr(body, old, new_name);
         }
-        IrExpr::RawFold {
+        IrExprKind::RawFold {
             receiver,
             init,
             body,
@@ -1276,7 +1288,7 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
             rename_var_in_expr(init, old, new_name);
             rename_var_in_expr(body, old, new_name);
         }
-        IrExpr::Match {
+        IrExprKind::Match {
             expr: scrutinee,
             arms,
         } => {
@@ -1285,15 +1297,15 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
                 rename_var_in_expr(&mut arm.body, old, new_name);
             }
         }
-        IrExpr::DefaultValue { .. }
-        | IrExpr::Lit(_)
-        | IrExpr::Path { .. }
-        | IrExpr::LengthOf(_)
-        | IrExpr::TypenumUsize { .. }
-        | IrExpr::Return(None)
-        | IrExpr::Break(None)
-        | IrExpr::Continue
-        | IrExpr::Unreachable => {}
+        IrExprKind::DefaultValue { .. }
+        | IrExprKind::Lit(_)
+        | IrExprKind::Path { .. }
+        | IrExprKind::LengthOf(_)
+        | IrExprKind::TypenumUsize { .. }
+        | IrExprKind::Return(None)
+        | IrExprKind::Break(None)
+        | IrExprKind::Continue
+        | IrExprKind::Unreachable => {}
         _ => {}
     }
 }
@@ -1345,7 +1357,6 @@ fn lower_block_dyn(block: &IrBlock, ctx: &LoweringContext, fn_gen: &[IrGenericPa
             .iter()
             .map(|s| lower_stmt_dyn(s, ctx, fn_gen))
             .collect(),
-        stmt_provs: Vec::new(),
         expr: block
             .expr
             .as_ref()
@@ -1354,16 +1365,17 @@ fn lower_block_dyn(block: &IrBlock, ctx: &LoweringContext, fn_gen: &[IrGenericPa
 }
 
 fn lower_stmt_dyn(s: &IrStmt, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) -> IrStmt {
-    match s {
-        IrStmt::Let { pattern, ty, init } => IrStmt::Let {
+    let kind = match &s.kind {
+        IrStmtKind::Let { pattern, ty, init } => IrStmtKind::Let {
             pattern: lower_pattern_dyn(pattern, ctx),
             ty: ty.as_ref().map(|t| lower_type_dyn(t, ctx, fn_gen)),
             init: init.as_ref().map(|i| lower_expr_dyn(i, ctx, fn_gen)),
         },
-        IrStmt::Semi(e) => IrStmt::Semi(lower_expr_dyn(e, ctx, fn_gen)),
-        IrStmt::Expr(e) => IrStmt::Expr(lower_expr_dyn(e, ctx, fn_gen)),
+        IrStmtKind::Semi(e) => IrStmtKind::Semi(lower_expr_dyn(e, ctx, fn_gen)),
+        IrStmtKind::Expr(e) => IrStmtKind::Expr(lower_expr_dyn(e, ctx, fn_gen)),
         _ => panic!("lower_stmt_dyn: unhandled IrStmt variant — add lowering for this variant"),
-    }
+    };
+    volar_compiler::ir::IrStmt::new(kind, s.prov.clone(), s.side)
 }
 
 fn lower_pattern_dyn(p: &IrPattern, ctx: &LoweringContext) -> IrPattern {
@@ -1434,9 +1446,9 @@ fn lower_pattern_dyn(p: &IrPattern, ctx: &LoweringContext) -> IrPattern {
 }
 
 fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) -> IrExpr {
-    match e {
-        IrExpr::Lit(_) => e.clone(),
-        IrExpr::Var(v) => {
+    match &e.kind {
+        IrExprKind::Lit(_) => e.clone(),
+        IrExprKind::Var(v) => {
             // Substitute any length-generic parameter (single or multi-char, e.g. N,
             // N_LWE, BIG_N) with its lowercase dyn witness name.
             if fn_gen.iter().any(|p| {
@@ -1444,17 +1456,17 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     && classify_generic_with_aliases(p, &[fn_gen], &ctx.aliases())
                         == GenericKind::Length
             }) {
-                return IrExpr::Var(v.to_lowercase());
+                return ir_expr(IrExprKind::Var(v.to_lowercase()));
             }
             if KnownContainerType::from_str(v).map_or(false, |c| c.is_array_like()) {
-                return IrExpr::Path {
+                return ir_expr(IrExprKind::Path {
                     segments: vec!["Vec".to_string()],
                     type_args: vec![],
-                };
+                });
             }
             e.clone()
         }
-        IrExpr::Path {
+        IrExprKind::Path {
             segments,
             type_args,
         } => {
@@ -1469,7 +1481,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                         && classify_generic_with_aliases(p, &[fn_gen], &ctx.aliases())
                             == GenericKind::Length
                 }) {
-                    return IrExpr::Var(qual.to_lowercase());
+                    return ir_expr(IrExprKind::Var(qual.to_lowercase()));
                 }
                 // Qualified projection: "D::OutputSize" → use array_length_to_expr
                 // infrastructure which handles TypeParam("D::OutputSize") via
@@ -1488,20 +1500,20 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             {
                 segments[0] = "Vec".to_string();
             }
-            IrExpr::Path {
+            ir_expr(IrExprKind::Path {
                 segments,
                 type_args: type_args
                     .iter()
                     .map(|ta| lower_type_dyn(ta, ctx, fn_gen))
                     .collect(),
-            }
+            })
         }
-        IrExpr::Binary { op, left, right } => IrExpr::Binary {
+        IrExprKind::Binary { op, left, right } => ir_expr(IrExprKind::Binary {
             op: *op,
             left: Box::new(lower_expr_dyn(left, ctx, fn_gen)),
             right: Box::new(lower_expr_dyn(right, ctx, fn_gen)),
-        },
-        IrExpr::MethodCall {
+        }),
+        IrExprKind::MethodCall {
             receiver,
             method,
             type_args,
@@ -1517,44 +1529,44 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 if args.len() == 1 {
                     args.insert(
                         0,
-                        IrExpr::Field {
-                            base: Box::new(IrExpr::Var("self".to_string())),
+                        ir_expr(IrExprKind::Field {
+                            base: Box::new(ir_expr(IrExprKind::Var("self".to_string()))),
                             field: "n".to_string(),
-                        },
+                        }),
                     );
                 }
             }
 
             if method == MethodKind::Known(StdMethod::EncryptBlock) {
                 if let Some(a) = args.get(0).cloned() {
-                    args[0] = IrExpr::Call {
-                        func: Box::new(IrExpr::Path {
+                    args[0] = ir_expr(IrExprKind::Call {
+                        func: Box::new(ir_expr(IrExprKind::Path {
                             segments: vec!["Block".to_string(), "from_mut_slice".to_string()],
                             type_args: vec![IrType::TypeParam("B".to_string())],
-                        }),
+                        })),
                         args: vec![a],
-                    };
+                    });
                 }
             }
 
             if method == MethodKind::Known(StdMethod::ToUsize) {
-                match receiver.as_ref() {
-                    IrExpr::Var(v)
+                match &receiver.kind {
+                    IrExprKind::Var(v)
                         if v.len() == 1 && v.chars().next().unwrap().is_uppercase() =>
                     {
-                        return IrExpr::Var(v.to_lowercase());
+                        return ir_expr(IrExprKind::Var(v.to_lowercase()));
                     }
-                    IrExpr::Path { segments, .. }
+                    IrExprKind::Path { segments, .. }
                         if segments.len() == 2 && segments[1] == "OutputSize" =>
                     {
-                        return IrExpr::TypenumUsize {
+                        return ir_expr(IrExprKind::TypenumUsize {
                             ty: Box::new(IrType::Projection {
                                 base: Box::new(IrType::TypeParam(segments[0].clone())),
                                 trait_path: None,
                                 trait_args: Vec::new(),
                                 assoc: AssociatedType::from_str(&segments[1]),
                             }),
-                        };
+                        });
                     }
                     _ => {}
                 }
@@ -1582,14 +1594,14 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                         let mut prepend: Vec<IrExpr> = Vec::new();
                         for param in expected {
                             if in_scope.contains(param) {
-                                prepend.push(IrExpr::Var(param.clone()));
+                                prepend.push(ir_expr(IrExprKind::Var(param.clone())));
                             } else if let Some(last_arg) = args.last() {
                                 // Derive from the last arg's field (strip trailing digits).
                                 let base = param.trim_end_matches(|c: char| c.is_ascii_digit());
-                                prepend.push(IrExpr::Field {
+                                prepend.push(ir_expr(IrExprKind::Field {
                                     base: Box::new(last_arg.clone()),
                                     field: base.to_string(),
-                                });
+                                }));
                             }
                         }
                         if !prepend.is_empty() {
@@ -1599,7 +1611,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     }
                 }
             }
-            let lowered = IrExpr::MethodCall {
+            let lowered = ir_expr(IrExprKind::MethodCall {
                 receiver: Box::new(lower_expr_dyn(receiver, ctx, fn_gen)),
                 method: method.clone(),
                 type_args: type_args
@@ -1607,37 +1619,37 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     .map(|ta| lower_type_dyn(ta, ctx, fn_gen))
                     .collect(),
                 args,
-            };
+            });
             // Digest::finalize() returns GenericArray → wrap with .to_vec()
             if method == MethodKind::Known(StdMethod::Finalize) {
-                IrExpr::MethodCall {
+                ir_expr(IrExprKind::MethodCall {
                     receiver: Box::new(lowered),
                     method: MethodKind::Known(StdMethod::ToVec),
                     type_args: vec![],
                     args: vec![],
-                }
+                })
             } else if method == MethodKind::Known(StdMethod::AsRef) {
                 // Disambiguate as_ref() → AsRef::<[u8]>::as_ref(&x)
                 let lowered_receiver = lower_expr_dyn(receiver, ctx, fn_gen);
-                IrExpr::Call {
-                    func: Box::new(IrExpr::Path {
+                ir_expr(IrExprKind::Call {
+                    func: Box::new(ir_expr(IrExprKind::Path {
                         segments: vec!["AsRef".to_string(), "as_ref".to_string()],
                         type_args: vec![IrType::Array {
                             kind: ArrayKind::Slice,
                             elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
                             len: ArrayLength::TypeParam("_".to_string()),
                         }],
-                    }),
-                    args: vec![IrExpr::Unary {
+                    })),
+                    args: vec![ir_expr(IrExprKind::Unary {
                         op: volar_compiler::ir::SpecUnaryOp::Ref,
                         expr: Box::new(lowered_receiver),
-                    }],
-                }
+                    })],
+                })
             } else {
                 lowered
             }
         }
-        IrExpr::Call { func, args } => {
+        IrExprKind::Call { func, args } => {
             let args: Vec<IrExpr> = args
                 .iter()
                 .map(|a| lower_expr_dyn(a, ctx, fn_gen))
@@ -1647,7 +1659,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             // If the func is a lowercased length param (like n, k, k2),
             // and there are no args, just return the variable
             if args.is_empty() {
-                if let IrExpr::Var(name) = &func {
+                if let IrExprKind::Var(name) = &func.kind {
                     // Check if it looks like a lowercased length param
                     let is_length_var = name
                         .chars()
@@ -1664,15 +1676,17 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             let mut new_func = None;
             // Check for type-param static method calls like B::double(x)
             // These need special wrapping for Vec<u8> ↔ GenericArray bridging
-            let func_name = match &func {
-                IrExpr::Var(name) => Some(name.clone()),
-                IrExpr::Path { segments, .. } if segments.len() >= 1 => {
+            let func_name = match &func.kind {
+                IrExprKind::Var(name) => Some(name.clone()),
+                IrExprKind::Path { segments, .. } if segments.len() >= 1 => {
                     Some(segments.last().unwrap().clone())
                 }
                 _ => None,
             };
-            let func_qualifier = match &func {
-                IrExpr::Path { segments, .. } if segments.len() == 2 => Some(segments[0].clone()),
+            let func_qualifier = match &func.kind {
+                IrExprKind::Path { segments, .. } if segments.len() == 2 => {
+                    Some(segments[0].clone())
+                }
                 _ => None,
             };
             if let Some(name) = &func_name {
@@ -1692,7 +1706,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                                     | TraitKind::BlockCipher
                             ))
                     }) {
-                        new_func = Some(IrExpr::Path {
+                        new_func = Some(ir_expr(IrExprKind::Path {
                             segments: vec![name.clone()],
                             type_args: [IrType::TypeParam(b_param.name.clone())]
                                 .into_iter()
@@ -1705,7 +1719,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                                     }
                                 ])
                                 .collect(),
-                        });
+                        }));
                     } else {
                         todo!(
                             "error: could not find B generic parameter for function {} (fn_gen: {fn_gen:?})",
@@ -1719,10 +1733,10 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                                 .iter()
                                 .any(|b| matches!(&b.trait_kind, TraitKind::Digest))
                     }) {
-                        new_func = Some(IrExpr::Path {
+                        new_func = Some(ir_expr(IrExprKind::Path {
                             segments: vec![name.clone()],
                             type_args: vec![IrType::TypeParam(d_param.name.clone())],
-                        });
+                        }));
                     } else {
                         // No explicit D param found; leave call site unmonomorphized.
                         // The TypeScript runtime resolves it dynamically.
@@ -1748,8 +1762,8 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 // Only inject for bare Var references (top-level function calls).
                 // Path expressions like ["D", "new"] are type-param qualified calls
                 // handled by class witnesses in the TS printer — don't touch them.
-                let callee_name = match &func {
-                    IrExpr::Var(name) => Some(name.as_str()),
+                let callee_name = match &func.kind {
+                    IrExprKind::Var(name) => Some(name.as_str()),
                     _ => None,
                 };
                 // Never inject into constructors (uppercase first letter).
@@ -1779,7 +1793,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                             let mut prepend: Vec<IrExpr> = Vec::new();
                             for param in expected {
                                 if in_scope.contains(param) {
-                                    prepend.push(IrExpr::Var(param.clone()));
+                                    prepend.push(ir_expr(IrExprKind::Var(param.clone())));
                                 }
                             }
                             if !prepend.is_empty() {
@@ -1793,9 +1807,9 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
 
             // Rename tuple struct constructors (e.g., CommitmentCore → CommitmentCoreDyn)
             // and append PhantomData if the struct needs it
-            let func_name = match &func {
-                IrExpr::Path { segments, .. } => segments.last().map(|s| s.clone()),
-                IrExpr::Var(n) => Some(n.clone()),
+            let func_name = match &func.kind {
+                IrExprKind::Path { segments, .. } => segments.last().map(|s| s.clone()),
+                IrExprKind::Var(n) => Some(n.clone()),
                 _ => None,
             };
             if let Some(ref name) = func_name {
@@ -1804,32 +1818,32 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                         || !info.type_params.is_empty();
                     if has_generics {
                         let dyn_name = format!("{}Dyn", name);
-                        match &mut func {
-                            IrExpr::Path { segments, .. } => {
+                        match &mut func.kind {
+                            IrExprKind::Path { segments, .. } => {
                                 if let Some(last) = segments.last_mut() {
                                     *last = dyn_name;
                                 }
                             }
-                            IrExpr::Var(n) => *n = dyn_name,
+                            IrExprKind::Var(n) => *n = dyn_name,
                             _ => {}
                         }
                     }
                     // For tuple struct constructors, append PhantomData if needed
                     if info.needs_phantom {
-                        final_args.push(IrExpr::Path {
+                        final_args.push(ir_expr(IrExprKind::Path {
                             segments: vec!["PhantomData".to_string()],
                             type_args: vec![],
-                        });
+                        }));
                     }
                 }
             }
 
-            IrExpr::Call {
+            ir_expr(IrExprKind::Call {
                 func: Box::new(func),
                 args: final_args,
-            }
+            })
         }
-        IrExpr::StructExpr {
+        IrExprKind::StructExpr {
             kind,
             type_args,
             fields,
@@ -1882,7 +1896,7 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 for w in &info.length_witnesses {
                     if !lowered_fields.iter().any(|(n, _)| n == w) {
                         let value = if let Some(Some(val)) = witness_values.get(w) {
-                            IrExpr::Lit(IrLit::Int(*val as i128))
+                            ir_expr(IrExprKind::Lit(IrLit::Int(*val as i128)))
                         } else {
                             // Check if there's a default value for this witness
                             let default_val = info
@@ -1901,11 +1915,11 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                                 });
 
                             if let Some(def) = default_val {
-                                IrExpr::Lit(IrLit::Int(def as i128))
+                                ir_expr(IrExprKind::Lit(IrLit::Int(def as i128)))
                             } else {
                                 // Use 0 as a placeholder to allow compilation
                                 // The user will need to fix these manually
-                                IrExpr::Lit(IrLit::Int(0))
+                                ir_expr(IrExprKind::Lit(IrLit::Int(0)))
                             }
                         };
                         lowered_fields.push((w.clone(), value));
@@ -1917,15 +1931,15 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     // Add _phantom: PhantomData
                     lowered_fields.push((
                         "_phantom".to_string(),
-                        IrExpr::Path {
+                        ir_expr(IrExprKind::Path {
                             segments: vec!["PhantomData".to_string()],
                             type_args: Vec::new(),
-                        },
+                        }),
                     ));
                 }
             }
 
-            IrExpr::StructExpr {
+            ir_expr(IrExprKind::StructExpr {
                 kind: new_kind,
                 type_args: type_args
                     .iter()
@@ -1935,10 +1949,10 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 rest: rest
                     .as_ref()
                     .map(|r| Box::new(lower_expr_dyn(r, ctx, fn_gen))),
-            }
+            })
         }
         // ArrayGenerate → IterPipeline: (0..len).map(|index_var| body).collect()
-        IrExpr::ArrayGenerate {
+        IrExprKind::ArrayGenerate {
             elem_ty,
             len,
             index_var,
@@ -1949,9 +1963,9 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 Some(ty) => IterTerminal::CollectTyped(lower_type_dyn(ty, ctx, fn_gen)),
                 None => IterTerminal::Collect,
             };
-            IrExpr::IterPipeline(IrIterChain {
+            ir_expr(IrExprKind::IterPipeline(IrIterChain {
                 source: IterChainSource::Range {
-                    start: Box::new(IrExpr::Lit(IrLit::Int(0))),
+                    start: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
                     end: Box::new(len_expr),
                     inclusive: false,
                 },
@@ -1960,71 +1974,71 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
                 }],
                 terminal,
-            })
+            }))
         }
         // DefaultValue → recursively expand into concrete expressions.
         // No DefaultValue nodes should survive past dyn-lowering.
-        IrExpr::DefaultValue { ty } => lower_default_value(ty.as_deref(), ctx, fn_gen),
-        IrExpr::LengthOf(len) => array_length_to_expr(len, fn_gen, ctx),
-        IrExpr::Field { base, field } => IrExpr::Field {
+        IrExprKind::DefaultValue { ty } => lower_default_value(ty.as_deref(), ctx, fn_gen),
+        IrExprKind::LengthOf(len) => array_length_to_expr(len, fn_gen, ctx),
+        IrExprKind::Field { base, field } => ir_expr(IrExprKind::Field {
             base: Box::new(lower_expr_dyn(base, ctx, fn_gen)),
             field: field.clone(),
-        },
-        IrExpr::Index { base, index } => IrExpr::Index {
+        }),
+        IrExprKind::Index { base, index } => ir_expr(IrExprKind::Index {
             base: Box::new(lower_expr_dyn(base, ctx, fn_gen)),
             index: Box::new(lower_expr_dyn(index, ctx, fn_gen)),
-        },
-        IrExpr::Unary { op, expr } => IrExpr::Unary {
+        }),
+        IrExprKind::Unary { op, expr } => ir_expr(IrExprKind::Unary {
             op: *op,
             expr: Box::new(lower_expr_dyn(expr, ctx, fn_gen)),
-        },
-        IrExpr::Block(b) => IrExpr::Block(lower_block_dyn(b, ctx, fn_gen)),
-        IrExpr::If {
+        }),
+        IrExprKind::Block(b) => ir_expr(IrExprKind::Block(lower_block_dyn(b, ctx, fn_gen))),
+        IrExprKind::If {
             cond,
             then_branch,
             else_branch,
-        } => IrExpr::If {
+        } => ir_expr(IrExprKind::If {
             cond: Box::new(lower_expr_dyn(cond, ctx, fn_gen)),
             then_branch: lower_block_dyn(then_branch, ctx, fn_gen),
             else_branch: else_branch
                 .as_ref()
                 .map(|eb| Box::new(lower_expr_dyn(eb, ctx, fn_gen))),
-        },
-        IrExpr::BoundedLoop {
+        }),
+        IrExprKind::BoundedLoop {
             var,
             start,
             end,
             inclusive,
             body,
-        } => IrExpr::BoundedLoop {
+        } => ir_expr(IrExprKind::BoundedLoop {
             var: var.clone(),
             start: Box::new(lower_expr_dyn(start, ctx, fn_gen)),
             end: Box::new(lower_expr_dyn(end, ctx, fn_gen)),
             inclusive: *inclusive,
             body: lower_block_dyn(body, ctx, fn_gen),
-        },
-        IrExpr::IterLoop {
+        }),
+        IrExprKind::IterLoop {
             pattern,
             collection,
             body,
-        } => IrExpr::IterLoop {
+        } => ir_expr(IrExprKind::IterLoop {
             pattern: lower_pattern_dyn(pattern, ctx),
             collection: Box::new(lower_expr_dyn(collection, ctx, fn_gen)),
             body: lower_block_dyn(body, ctx, fn_gen),
-        },
-        IrExpr::WhileLoop { cond, body } => IrExpr::WhileLoop {
+        }),
+        IrExprKind::WhileLoop { cond, body } => ir_expr(IrExprKind::WhileLoop {
             cond: Box::new(lower_expr_dyn(cond, ctx, fn_gen)),
             body: lower_block_dyn(body, ctx, fn_gen),
-        },
-        IrExpr::IterPipeline(chain) => {
-            IrExpr::IterPipeline(lower_iter_chain_dyn(chain, ctx, fn_gen))
+        }),
+        IrExprKind::IterPipeline(chain) => {
+            ir_expr(IrExprKind::IterPipeline(lower_iter_chain_dyn(chain, ctx, fn_gen)))
         }
         // RawMap → receiver.into_iter().map(|var| body).collect()
-        IrExpr::RawMap {
+        IrExprKind::RawMap {
             receiver,
             elem_var,
             body,
-        } => IrExpr::IterPipeline(volar_compiler::ir::IrIterChain {
+        } => ir_expr(IrExprKind::IterPipeline(volar_compiler::ir::IrIterChain {
             source: volar_compiler::ir::IterChainSource::Method {
                 collection: Box::new(lower_expr_dyn(receiver, ctx, fn_gen)),
                 method: volar_compiler::ir::IterMethod::IntoIter,
@@ -2034,15 +2048,15 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
             }],
             terminal: volar_compiler::ir::IterTerminal::Collect,
-        }),
+        })),
         // RawZip → left.into_iter().zip(right.into_iter()).map(|(a,b)| body).collect()
-        IrExpr::RawZip {
+        IrExprKind::RawZip {
             left,
             right,
             left_var,
             right_var,
             body,
-        } => IrExpr::IterPipeline(volar_compiler::ir::IrIterChain {
+        } => ir_expr(IrExprKind::IterPipeline(volar_compiler::ir::IrIterChain {
             source: volar_compiler::ir::IterChainSource::Zip {
                 left: Box::new(volar_compiler::ir::IrIterChain {
                     source: volar_compiler::ir::IterChainSource::Method {
@@ -2066,15 +2080,15 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
             }],
             terminal: volar_compiler::ir::IterTerminal::Collect,
-        }),
+        })),
         // RawFold → receiver.into_iter().fold(init, |acc, elem| body)
-        IrExpr::RawFold {
+        IrExprKind::RawFold {
             receiver,
             init,
             acc_var,
             elem_var,
             body,
-        } => IrExpr::IterPipeline(volar_compiler::ir::IrIterChain {
+        } => ir_expr(IrExprKind::IterPipeline(volar_compiler::ir::IrIterChain {
             source: volar_compiler::ir::IterChainSource::Method {
                 collection: Box::new(lower_expr_dyn(receiver, ctx, fn_gen)),
                 method: volar_compiler::ir::IterMethod::IntoIter,
@@ -2086,8 +2100,8 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 elem_var: elem_var.clone(),
                 body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
             },
-        }),
-        IrExpr::Match { expr, arms } => IrExpr::Match {
+        })),
+        IrExprKind::Match { expr, arms } => ir_expr(IrExprKind::Match {
             expr: Box::new(lower_expr_dyn(expr, ctx, fn_gen)),
             arms: arms
                 .iter()
@@ -2097,84 +2111,84 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                     body: lower_expr_dyn(&arm.body, ctx, fn_gen),
                 })
                 .collect(),
-        },
-        IrExpr::Closure {
+        }),
+        IrExprKind::Closure {
             params,
             ret_type,
             body,
-        } => IrExpr::Closure {
+        } => ir_expr(IrExprKind::Closure {
             params: params.clone(),
             ret_type: ret_type
                 .as_ref()
                 .map(|rt| Box::new(lower_type_dyn(rt, ctx, fn_gen))),
             body: Box::new(lower_expr_dyn(body, ctx, fn_gen)),
-        },
-        IrExpr::Cast { expr, ty } => IrExpr::Cast {
+        }),
+        IrExprKind::Cast { expr, ty } => ir_expr(IrExprKind::Cast {
             expr: Box::new(lower_expr_dyn(expr, ctx, fn_gen)),
             ty: Box::new(lower_type_dyn(ty, ctx, fn_gen)),
-        },
-        IrExpr::Return(e) => IrExpr::Return(
-            e.as_ref()
+        }),
+        IrExprKind::Return(e2) => ir_expr(IrExprKind::Return(
+            e2.as_ref()
                 .map(|expr| Box::new(lower_expr_dyn(expr, ctx, fn_gen))),
-        ),
-        IrExpr::Tuple(elems) => IrExpr::Tuple(
+        )),
+        IrExprKind::Tuple(elems) => ir_expr(IrExprKind::Tuple(
             elems
                 .iter()
                 .map(|e| lower_expr_dyn(e, ctx, fn_gen))
                 .collect(),
-        ),
-        IrExpr::Array(elems) => IrExpr::Array(
+        )),
+        IrExprKind::Array(elems) => ir_expr(IrExprKind::Array(
             elems
                 .iter()
                 .map(|e| lower_expr_dyn(e, ctx, fn_gen))
                 .collect(),
-        ),
-        IrExpr::FixedArray(elems) => IrExpr::FixedArray(
+        )),
+        IrExprKind::FixedArray(elems) => ir_expr(IrExprKind::FixedArray(
             elems
                 .iter()
                 .map(|e| lower_expr_dyn(e, ctx, fn_gen))
                 .collect(),
-        ),
-        IrExpr::Repeat { elem, len } => IrExpr::Repeat {
+        )),
+        IrExprKind::Repeat { elem, len } => ir_expr(IrExprKind::Repeat {
             elem: Box::new(lower_expr_dyn(elem, ctx, fn_gen)),
             len: Box::new(lower_expr_dyn(len, ctx, fn_gen)),
-        },
-        IrExpr::Assign { left, right } => IrExpr::Assign {
+        }),
+        IrExprKind::Assign { left, right } => ir_expr(IrExprKind::Assign {
             left: Box::new(lower_expr_dyn(left, ctx, fn_gen)),
             right: Box::new(lower_expr_dyn(right, ctx, fn_gen)),
-        },
-        IrExpr::Unreachable => IrExpr::Unreachable,
-        IrExpr::Continue => IrExpr::Continue,
-        IrExpr::Break(e) => IrExpr::Break(
-            e.as_ref()
+        }),
+        IrExprKind::Unreachable => ir_expr(IrExprKind::Unreachable),
+        IrExprKind::Continue => ir_expr(IrExprKind::Continue),
+        IrExprKind::Break(e2) => ir_expr(IrExprKind::Break(
+            e2.as_ref()
                 .map(|ex| Box::new(lower_expr_dyn(ex, ctx, fn_gen))),
-        ),
-        IrExpr::AssignOp { op, left, right } => IrExpr::AssignOp {
+        )),
+        IrExprKind::AssignOp { op, left, right } => ir_expr(IrExprKind::AssignOp {
             op: *op,
             left: Box::new(lower_expr_dyn(left, ctx, fn_gen)),
             right: Box::new(lower_expr_dyn(right, ctx, fn_gen)),
-        },
-        IrExpr::Try(e) => IrExpr::Try(Box::new(lower_expr_dyn(e, ctx, fn_gen))),
+        }),
+        IrExprKind::Try(e2) => ir_expr(IrExprKind::Try(Box::new(lower_expr_dyn(e2, ctx, fn_gen)))),
         // TypenumUsize: lower the type; if it's a length TypeParam, emit the witness var.
-        IrExpr::TypenumUsize { ty } => {
+        IrExprKind::TypenumUsize { ty } => {
             if let IrType::TypeParam(name) = ty.as_ref() {
                 if fn_gen.iter().any(|p| {
                     p.name == *name
                         && classify_generic_with_aliases(p, &[fn_gen], &ctx.aliases())
                             == GenericKind::Length
                 }) {
-                    return IrExpr::Var(name.to_lowercase());
+                    return ir_expr(IrExprKind::Var(name.to_lowercase()));
                 }
             }
-            IrExpr::TypenumUsize {
+            ir_expr(IrExprKind::TypenumUsize {
                 ty: Box::new(lower_type_dyn(ty, ctx, fn_gen)),
-            }
+            })
         }
-        IrExpr::Range {
+        IrExprKind::Range {
             start,
             end,
             inclusive,
-        } => IrExpr::Range {
+        } => ir_expr(IrExprKind::Range {
             start: match start.as_ref() {
                 None => None,
                 Some(a) => Some(Box::new(lower_expr_dyn(a, ctx, fn_gen))),
@@ -2184,8 +2198,8 @@ fn lower_expr_dyn(e: &IrExpr, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
                 Some(a) => Some(Box::new(lower_expr_dyn(a, ctx, fn_gen))),
             },
             inclusive: *inclusive,
-        },
-        e => todo!("error: lower_expr_dyn not implemented for {:?}", e),
+        }),
+        _ => todo!("error: lower_expr_dyn not implemented for {:?}", e),
     }
 }
 
@@ -2439,14 +2453,14 @@ fn lower_default_value(
 
     match ty {
         IrType::Primitive(p) => match p {
-            PrimitiveType::Bool => IrExpr::Lit(IrLit::Bool(false)),
+            PrimitiveType::Bool => ir_expr(IrExprKind::Lit(IrLit::Bool(false))),
             PrimitiveType::U8 | PrimitiveType::U32 | PrimitiveType::Usize => {
-                IrExpr::Lit(IrLit::Int(0))
+                ir_expr(IrExprKind::Lit(IrLit::Int(0)))
             }
             PrimitiveType::U64 | PrimitiveType::I128 | PrimitiveType::U128 => {
                 // 0n for bigint — use Int(0), the fold accumulator context
                 // will handle bigint coercion at the call site.
-                IrExpr::Lit(IrLit::Int(0))
+                ir_expr(IrExprKind::Lit(IrLit::Int(0)))
             }
             PrimitiveType::Bit
             | PrimitiveType::Galois
@@ -2457,15 +2471,15 @@ fn lower_default_value(
             | PrimitiveType::BitsInBytes64
             | PrimitiveType::Z3 => {
                 // Emit `Bit.default()`, `Z3.default()`, etc.
-                IrExpr::MethodCall {
-                    receiver: Box::new(IrExpr::Path {
+                ir_expr(IrExprKind::MethodCall {
+                    receiver: Box::new(ir_expr(IrExprKind::Path {
                         segments: vec![format!("{}", p)],
                         type_args: vec![],
-                    }),
+                    })),
                     method: MethodKind::Known(StdMethod::Default),
                     args: vec![],
                     type_args: vec![],
-                }
+                })
             }
         },
 
@@ -2504,9 +2518,9 @@ fn lower_default_value(
             let default_body = lower_default_value(Some(&lowered_elem_ty), ctx, fn_gen);
             let terminal = IterTerminal::CollectTyped(lowered_elem_ty);
 
-            IrExpr::IterPipeline(IrIterChain {
+            ir_expr(IrExprKind::IterPipeline(IrIterChain {
                 source: IterChainSource::Range {
-                    start: Box::new(IrExpr::Lit(IrLit::Int(0))),
+                    start: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
                     end: Box::new(len_expr),
                     inclusive: false,
                 },
@@ -2515,25 +2529,25 @@ fn lower_default_value(
                     body: Box::new(default_body),
                 }],
                 terminal,
-            })
+            }))
         }
 
         IrType::Vector { elem } => {
             // Empty vec default → DefaultValue so the TS printer emits `[]`
-            IrExpr::DefaultValue {
+            ir_expr(IrExprKind::DefaultValue {
                 ty: Some(Box::new(IrType::Vector {
                     elem: Box::new(lower_type_dyn(elem, ctx, fn_gen)),
                 })),
-            }
+            })
         }
 
         IrType::TypeParam(name) => {
             // Keep as DefaultValue — the TS backend's witness system will emit
             // `ctx.defaultT()` at print time.  Dyn lowering is backend-agnostic
             // and should not bake in `ctx` references.
-            IrExpr::DefaultValue {
+            ir_expr(IrExprKind::DefaultValue {
                 ty: Some(Box::new(IrType::TypeParam(name.clone()))),
-            }
+            })
         }
 
         IrType::Infer => {
@@ -2548,9 +2562,9 @@ fn lower_default_value(
         _ => {
             // Fallback for other types (structs, tuples, etc.)
             // Leave as DefaultValue for the printer to handle
-            IrExpr::DefaultValue {
+            ir_expr(IrExprKind::DefaultValue {
                 ty: Some(Box::new(lower_type_dyn(ty, ctx, fn_gen))),
-            }
+            })
         }
     }
 }
@@ -2575,13 +2589,13 @@ fn array_length_to_expr(
             // Convert the base type to a length expression, then wrap in ilog2()
             let inner_len = convert_array_length_from_type_for_lowering(r#type);
             let inner_expr = array_length_to_expr(&inner_len, fn_gen, ctx);
-            return IrExpr::Call {
-                func: Box::new(IrExpr::Path {
+            return ir_expr(IrExprKind::Call {
+                func: Box::new(ir_expr(IrExprKind::Path {
                     segments: vec!["ilog2".to_string()],
                     type_args: vec![],
-                }),
+                })),
                 args: vec![inner_expr],
-            };
+            });
         }
 
         // Try arithmetic resolution for projections on length params
@@ -2608,10 +2622,10 @@ fn array_length_to_expr(
     // Fall back to lower_array_length → convert to expr
     let lowered = lower_array_length(len, fn_gen, ctx);
     match &lowered {
-        ArrayLength::Const(n) => IrExpr::Lit(IrLit::Int(*n as i128)),
-        ArrayLength::TypeParam(p) => IrExpr::Var(p.clone()),
+        ArrayLength::Const(n) => ir_expr(IrExprKind::Lit(IrLit::Int(*n as i128))),
+        ArrayLength::TypeParam(p) => ir_expr(IrExprKind::Var(p.clone())),
         // Projections stay as LengthOf — printed as <<T>::Assoc as Unsigned>::to_usize()
-        _ => IrExpr::LengthOf(lowered),
+        _ => ir_expr(IrExprKind::LengthOf(lowered)),
     }
 }
 
@@ -2687,12 +2701,12 @@ fn resolve_arithmetic_output_expr(
         };
         if let Some(rhs_ty) = bound.type_args.first() {
             let rhs = type_to_length_ir_expr(rhs_ty, fn_gen, ctx)?;
-            let lhs = IrExpr::Var(validate_ident(&param_name.to_lowercase()));
-            return Some(IrExpr::Binary {
+            let lhs = ir_expr(IrExprKind::Var(validate_ident(&param_name.to_lowercase())));
+            return Some(ir_expr(IrExprKind::Binary {
                 left: Box::new(lhs),
                 op,
                 right: Box::new(rhs),
-            });
+            }));
         }
     }
     None
@@ -2707,9 +2721,9 @@ fn type_to_length_ir_expr(
     match ty {
         IrType::TypeParam(p) => {
             if let Some(tn) = TypeNumConst::from_str(p) {
-                Some(IrExpr::Lit(IrLit::Int(tn.to_usize() as i128)))
+                Some(ir_expr(IrExprKind::Lit(IrLit::Int(tn.to_usize() as i128))))
             } else {
-                Some(IrExpr::Var(validate_ident(&p.to_lowercase())))
+                Some(ir_expr(IrExprKind::Var(validate_ident(&p.to_lowercase()))))
             }
         }
         IrType::Projection {
@@ -2727,9 +2741,9 @@ fn type_to_length_ir_expr(
             let lowered =
                 resolve_projection_as_length(base, &field_name, trait_path.as_deref(), fn_gen, ctx);
             match lowered {
-                ArrayLength::Const(n) => Some(IrExpr::Lit(IrLit::Int(n as i128))),
-                ArrayLength::TypeParam(s) => Some(IrExpr::Var(s)),
-                _ => Some(IrExpr::LengthOf(lowered)),
+                ArrayLength::Const(n) => Some(ir_expr(IrExprKind::Lit(IrLit::Int(n as i128)))),
+                ArrayLength::TypeParam(s) => Some(ir_expr(IrExprKind::Var(s))),
+                _ => Some(ir_expr(IrExprKind::LengthOf(lowered))),
             }
         }
         _ => None,
@@ -2834,11 +2848,11 @@ mod tests {
         expected_op: SpecBinOp,
         expected_rhs: &str,
     ) {
-        match expr {
-            IrExpr::Binary { left, op, right } => {
+        match &expr.kind {
+            IrExprKind::Binary { left, op, right } => {
                 assert_eq!(*op, expected_op);
-                assert_eq!(**left, IrExpr::Var(expected_lhs.to_string()));
-                assert_eq!(**right, IrExpr::Var(expected_rhs.to_string()));
+                assert_eq!(left.kind, IrExprKind::Var(expected_lhs.to_string()));
+                assert_eq!(right.kind, IrExprKind::Var(expected_rhs.to_string()));
             }
             other => panic!("Expected Binary, got {:?}", other),
         }
@@ -2851,11 +2865,11 @@ mod tests {
         expected_op: SpecBinOp,
         expected_rhs: i128,
     ) {
-        match expr {
-            IrExpr::Binary { left, op, right } => {
+        match &expr.kind {
+            IrExprKind::Binary { left, op, right } => {
                 assert_eq!(*op, expected_op);
-                assert_eq!(**left, IrExpr::Var(expected_lhs.to_string()));
-                assert_eq!(**right, IrExpr::Lit(IrLit::Int(expected_rhs)));
+                assert_eq!(left.kind, IrExprKind::Var(expected_lhs.to_string()));
+                assert_eq!(right.kind, IrExprKind::Lit(IrLit::Int(expected_rhs)));
             }
             other => panic!("Expected Binary, got {:?}", other),
         }
@@ -2961,7 +2975,7 @@ mod tests {
     fn test_expr_const() {
         let ctx = empty_ctx();
         let result = array_length_to_expr(&ArrayLength::TypeParam("U16".to_string()), &[], &ctx);
-        assert_eq!(result, IrExpr::Lit(IrLit::Int(16)));
+        assert_eq!(result.kind, IrExprKind::Lit(IrLit::Int(16)));
     }
 
     #[test]
@@ -2969,7 +2983,7 @@ mod tests {
         let ctx = empty_ctx();
         let gens = vec![length_param("N", vec![])];
         let result = array_length_to_expr(&ArrayLength::TypeParam("N".to_string()), &gens, &ctx);
-        assert_eq!(result, IrExpr::Var("n".to_string()));
+        assert_eq!(result.kind, IrExprKind::Var("n".to_string()));
     }
 
     #[test]
@@ -2986,8 +3000,8 @@ mod tests {
             &ctx,
         );
         assert!(matches!(
-            result,
-            IrExpr::LengthOf(ArrayLength::Projection { .. })
+            result.kind,
+            IrExprKind::LengthOf(ArrayLength::Projection { .. })
         ));
     }
 
@@ -3110,15 +3124,15 @@ mod tests {
     fn test_lower_lengthof_projection_type_param() {
         let ctx = empty_ctx();
         let gens = vec![type_param("B", vec![custom_bound("LengthDoubler")])];
-        let expr = IrExpr::LengthOf(ArrayLength::Projection {
+        let expr = ir_expr(IrExprKind::LengthOf(ArrayLength::Projection {
             r#type: Box::new(IrType::TypeParam("B".to_string())),
             field: "OutputSize".to_string(),
             trait_path: None,
-        });
+        }));
         let result = lower_expr_dyn(&expr, &ctx, &gens);
         assert!(matches!(
-            result,
-            IrExpr::LengthOf(ArrayLength::Projection { .. })
+            result.kind,
+            IrExprKind::LengthOf(ArrayLength::Projection { .. })
         ));
     }
 
@@ -3129,11 +3143,11 @@ mod tests {
             length_param("K", vec![]),
             length_param("K2", vec![add_bound("K")]),
         ];
-        let expr = IrExpr::LengthOf(ArrayLength::Projection {
+        let expr = ir_expr(IrExprKind::LengthOf(ArrayLength::Projection {
             r#type: Box::new(IrType::TypeParam("K2".to_string())),
             field: "Output".to_string(),
             trait_path: None,
-        });
+        }));
         let result = lower_expr_dyn(&expr, &ctx, &gens);
         assert_binary_var_var(&result, "k2", SpecBinOp::Add, "k");
     }
@@ -3141,9 +3155,9 @@ mod tests {
     #[test]
     fn test_lower_lengthof_const() {
         let ctx = empty_ctx();
-        let expr = IrExpr::LengthOf(ArrayLength::TypeParam("U16".to_string()));
+        let expr = ir_expr(IrExprKind::LengthOf(ArrayLength::TypeParam("U16".to_string())));
         let result = lower_expr_dyn(&expr, &ctx, &[]);
-        assert_eq!(result, IrExpr::Lit(IrLit::Int(16)));
+        assert_eq!(result.kind, IrExprKind::Lit(IrLit::Int(16)));
     }
 
     // ================================================================
@@ -3154,23 +3168,23 @@ mod tests {
     fn test_array_generate_becomes_iter_pipeline() {
         let ctx = empty_ctx();
         let gens = vec![length_param("N", vec![])];
-        let expr = IrExpr::ArrayGenerate {
+        let expr = ir_expr(IrExprKind::ArrayGenerate {
             elem_ty: None,
             len: ArrayLength::TypeParam("N".to_string()),
             index_var: "i".to_string(),
-            body: Box::new(IrExpr::Var("i".to_string())),
-        };
+            body: Box::new(ir_expr(IrExprKind::Var("i".to_string()))),
+        });
         let result = lower_expr_dyn(&expr, &ctx, &gens);
-        match result {
-            IrExpr::IterPipeline(chain) => {
+        match result.kind {
+            IrExprKind::IterPipeline(chain) => {
                 match &chain.source {
                     IterChainSource::Range {
                         start,
                         end,
                         inclusive,
                     } => {
-                        assert_eq!(**start, IrExpr::Lit(IrLit::Int(0)));
-                        assert_eq!(**end, IrExpr::Var("n".to_string()));
+                        assert_eq!(start.kind, IrExprKind::Lit(IrLit::Int(0)));
+                        assert_eq!(end.kind, IrExprKind::Var("n".to_string()));
                         assert!(!inclusive);
                     }
                     other => panic!("Expected Range source, got {:?}", other),
@@ -3179,7 +3193,7 @@ mod tests {
                 match &chain.steps[0] {
                     IterStep::Map { var, body } => {
                         assert_eq!(*var, IrPattern::ident("i"));
-                        assert_eq!(**body, IrExpr::Var("i".to_string()));
+                        assert_eq!(body.kind, IrExprKind::Var("i".to_string()));
                     }
                     other => panic!("Expected Map step, got {:?}", other),
                 }
@@ -3196,7 +3210,7 @@ mod tests {
             length_param("K", vec![]),
             length_param("K2", vec![add_bound("K")]),
         ];
-        let expr = IrExpr::ArrayGenerate {
+        let expr = ir_expr(IrExprKind::ArrayGenerate {
             elem_ty: None,
             len: ArrayLength::Projection {
                 r#type: Box::new(IrType::TypeParam("K2".to_string())),
@@ -3204,11 +3218,11 @@ mod tests {
                 trait_path: None,
             },
             index_var: "j".to_string(),
-            body: Box::new(IrExpr::Var("j".to_string())),
-        };
+            body: Box::new(ir_expr(IrExprKind::Var("j".to_string()))),
+        });
         let result = lower_expr_dyn(&expr, &ctx, &gens);
-        match result {
-            IrExpr::IterPipeline(chain) => match &chain.source {
+        match result.kind {
+            IrExprKind::IterPipeline(chain) => match &chain.source {
                 IterChainSource::Range { end, .. } => {
                     assert_binary_var_var(end, "k2", SpecBinOp::Add, "k");
                 }
@@ -3221,17 +3235,17 @@ mod tests {
     #[test]
     fn test_array_generate_with_const_len() {
         let ctx = empty_ctx();
-        let expr = IrExpr::ArrayGenerate {
+        let expr = ir_expr(IrExprKind::ArrayGenerate {
             elem_ty: None,
             len: ArrayLength::TypeParam("U16".to_string()),
             index_var: "i".to_string(),
-            body: Box::new(IrExpr::Var("i".to_string())),
-        };
+            body: Box::new(ir_expr(IrExprKind::Var("i".to_string()))),
+        });
         let result = lower_expr_dyn(&expr, &ctx, &[]);
-        match result {
-            IrExpr::IterPipeline(chain) => match &chain.source {
+        match result.kind {
+            IrExprKind::IterPipeline(chain) => match &chain.source {
                 IterChainSource::Range { end, .. } => {
-                    assert_eq!(**end, IrExpr::Lit(IrLit::Int(16)));
+                    assert_eq!(end.kind, IrExprKind::Lit(IrLit::Int(16)));
                 }
                 other => panic!("Expected Range source, got {:?}", other),
             },
@@ -3248,13 +3262,13 @@ mod tests {
     fn test_array_default_infer_panics() {
         let ctx = empty_ctx();
         let gens = vec![length_param("N", vec![])];
-        let expr = IrExpr::DefaultValue {
+        let expr = ir_expr(IrExprKind::DefaultValue {
             ty: Some(Box::new(IrType::Array {
                 kind: ArrayKind::GenericArray,
                 elem: Box::new(IrType::Infer),
                 len: ArrayLength::TypeParam("N".to_string()),
             })),
-        };
+        });
         // Should panic because Infer element type is not allowed
         let _ = lower_expr_dyn(&expr, &ctx, &gens);
     }
@@ -3263,20 +3277,20 @@ mod tests {
     fn test_array_default_becomes_iter_pipeline() {
         let ctx = empty_ctx();
         let gens = vec![length_param("N", vec![])];
-        let expr = IrExpr::DefaultValue {
+        let expr = ir_expr(IrExprKind::DefaultValue {
             ty: Some(Box::new(IrType::Array {
                 kind: ArrayKind::GenericArray,
                 elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
                 len: ArrayLength::TypeParam("N".to_string()),
             })),
-        };
+        });
         let result = lower_expr_dyn(&expr, &ctx, &gens);
-        match result {
-            IrExpr::IterPipeline(chain) => {
+        match result.kind {
+            IrExprKind::IterPipeline(chain) => {
                 match &chain.source {
                     IterChainSource::Range { start, end, .. } => {
-                        assert_eq!(**start, IrExpr::Lit(IrLit::Int(0)));
-                        assert_eq!(**end, IrExpr::Var("n".to_string()));
+                        assert_eq!(start.kind, IrExprKind::Lit(IrLit::Int(0)));
+                        assert_eq!(end.kind, IrExprKind::Var("n".to_string()));
                     }
                     other => panic!("Expected Range source, got {:?}", other),
                 }
@@ -3285,7 +3299,7 @@ mod tests {
                     IterStep::Map { var, body } => {
                         assert_eq!(*var, IrPattern::Wild);
                         // u8 element type → lowered to Lit(0)
-                        assert_eq!(**body, IrExpr::Lit(IrLit::Int(0)));
+                        assert_eq!(body.kind, IrExprKind::Lit(IrLit::Int(0)));
                     }
                     other => panic!("Expected Map step, got {:?}", other),
                 }
@@ -3299,22 +3313,22 @@ mod tests {
     fn test_array_default_with_typed_elem() {
         let ctx = empty_ctx();
         let gens = vec![length_param("N", vec![])];
-        let expr = IrExpr::DefaultValue {
+        let expr = ir_expr(IrExprKind::DefaultValue {
             ty: Some(Box::new(IrType::Array {
                 kind: ArrayKind::GenericArray,
                 elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
                 len: ArrayLength::TypeParam("N".to_string()),
             })),
-        };
+        });
         let result = lower_expr_dyn(&expr, &ctx, &gens);
-        match result {
-            IrExpr::IterPipeline(chain) => {
+        match result.kind {
+            IrExprKind::IterPipeline(chain) => {
                 assert_eq!(chain.steps.len(), 1);
                 match &chain.steps[0] {
                     IterStep::Map { var, body } => {
                         assert_eq!(*var, IrPattern::Wild);
                         // u8 element type → lowered to Lit(0)
-                        assert_eq!(**body, IrExpr::Lit(IrLit::Int(0)));
+                        assert_eq!(body.kind, IrExprKind::Lit(IrLit::Int(0)));
                     }
                     other => panic!("Expected Map step, got {:?}", other),
                 }
@@ -3327,7 +3341,7 @@ mod tests {
     fn test_array_default_with_projection_len() {
         let ctx = empty_ctx();
         let gens = vec![type_param("B", vec![custom_bound("LengthDoubler")])];
-        let expr = IrExpr::DefaultValue {
+        let expr = ir_expr(IrExprKind::DefaultValue {
             ty: Some(Box::new(IrType::Array {
                 kind: ArrayKind::GenericArray,
                 elem: Box::new(IrType::Primitive(PrimitiveType::U8)),
@@ -3337,12 +3351,12 @@ mod tests {
                     trait_path: None,
                 },
             })),
-        };
+        });
         let result = lower_expr_dyn(&expr, &ctx, &gens);
-        match result {
-            IrExpr::IterPipeline(chain) => {
+        match result.kind {
+            IrExprKind::IterPipeline(chain) => {
                 match &chain.source {
-                    IterChainSource::Range { end, .. } => {
+                    IterChainSource::Range { end: _, .. } => {
                         // The lowering should convert the Projection length to a ctx field access
                         // (not an ArrayLength::Projection, since it becomes an expr now)
                     }
@@ -3406,10 +3420,10 @@ mod tests {
         };
         let result = array_length_to_expr(&len, &gens, &ctx);
         // Should be Call(ilog2, [LengthOf(<D>::OutputSize)])
-        match &result {
-            IrExpr::Call { func, args } => {
-                match func.as_ref() {
-                    IrExpr::Path { segments, .. } => {
+        match &result.kind {
+            IrExprKind::Call { func, args } => {
+                match &func.kind {
+                    IrExprKind::Path { segments, .. } => {
                         assert_eq!(segments, &["ilog2".to_string()]);
                     }
                     other => panic!("Expected Path func, got {:?}", other),
@@ -3417,8 +3431,8 @@ mod tests {
                 assert_eq!(args.len(), 1);
                 // The inner arg should be LengthOf for D::OutputSize
                 assert!(matches!(
-                    &args[0],
-                    IrExpr::LengthOf(ArrayLength::Projection { .. })
+                    &args[0].kind,
+                    IrExprKind::LengthOf(ArrayLength::Projection { .. })
                 ));
             }
             other => panic!("Expected Call(ilog2), got {:?}", other),
@@ -3434,43 +3448,44 @@ mod rename_tests {
     #[test]
     fn rename_var_in_closure() {
         let mut block = IrBlock {
-            stmts: vec![IrStmt::Expr(IrExpr::MethodCall {
-                receiver: Box::new(IrExpr::Var("self".to_string())),
+            stmts: vec![ir_stmt(IrStmtKind::Expr(ir_expr(IrExprKind::MethodCall {
+                receiver: Box::new(ir_expr(IrExprKind::Var("self".to_string()))),
                 method: MethodKind::Vole(VoleMethod::Remap),
                 type_args: vec![],
                 args: vec![
-                    IrExpr::Field {
-                        base: Box::new(IrExpr::Var("self".to_string())),
+                    ir_expr(IrExprKind::Field {
+                        base: Box::new(ir_expr(IrExprKind::Var("self".to_string()))),
                         field: "n".to_string(),
-                    },
-                    IrExpr::Closure {
+                    }),
+                    ir_expr(IrExprKind::Closure {
                         params: vec![IrClosureParam {
                             pattern: IrPattern::ident("a"),
                             ty: None,
                         }],
                         ret_type: None,
-                        body: Box::new(IrExpr::MethodCall {
-                            receiver: Box::new(IrExpr::Var("a".to_string())),
+                        body: Box::new(ir_expr(IrExprKind::MethodCall {
+                            receiver: Box::new(ir_expr(IrExprKind::Var("a".to_string()))),
                             method: MethodKind::Known(StdMethod::WrappingSub),
                             type_args: vec![],
-                            args: vec![IrExpr::Var("n".to_string())],
-                        }),
-                    },
+                            args: vec![ir_expr(IrExprKind::Var("n".to_string()))],
+                        })),
+                    }),
                 ],
-            })],
-            stmt_provs: Vec::new(),
+            })))],
             expr: None,
         };
         rename_var_in_block(&mut block, "n", "n_param");
         // Check that Var("n") in the closure body was renamed
-        if let IrStmt::Expr(IrExpr::MethodCall { args, .. }) = &block.stmts[0] {
-            if let IrExpr::Closure { body, .. } = &args[1] {
-                if let IrExpr::MethodCall {
-                    args: inner_args, ..
-                } = body.as_ref()
-                {
-                    assert_eq!(inner_args[0], IrExpr::Var("n_param".to_string()));
-                    return;
+        if let IrStmtKind::Expr(e) = &block.stmts[0].kind {
+            if let IrExprKind::MethodCall { args, .. } = &e.kind {
+                if let IrExprKind::Closure { body, .. } = &args[1].kind {
+                    if let IrExprKind::MethodCall {
+                        args: inner_args, ..
+                    } = &body.kind
+                    {
+                        assert_eq!(inner_args[0].kind, IrExprKind::Var("n_param".to_string()));
+                        return;
+                    }
                 }
             }
         }
