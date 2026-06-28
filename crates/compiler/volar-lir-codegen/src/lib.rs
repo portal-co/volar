@@ -18,9 +18,9 @@ use std::sync::LazyLock;
 use std::collections::BTreeMap;
 use volar_compiler::ir::{
     ArrayKind, ArrayLength, ExternalKind, IrAnyFunction, IrBlock, IrCfgFunction,
-    IrCfgJump, IrCfgModule, IrCfgTerminator, IrExpr, IrFunction, IrLit, IrModule,
-    IrPattern, IrStmt, IrType, MethodKind, PrimitiveType, SpecBinOp, SpecUnaryOp, StdMethod,
-    StructKind,
+    IrCfgJump, IrCfgModule, IrCfgTerminator, IrExpr, IrExprKind, IrFunction, IrLit, IrModule,
+    IrPattern, IrStmt, IrStmtKind, IrType, MethodKind, PrimitiveType, SpecBinOp, SpecUnaryOp,
+    StdMethod, StructKind,
 };
 use volar_lir::{BranchTarget, IcmpPred, LirTarget, LirType};
 use volar_ir_common::ReentryHint;
@@ -1753,13 +1753,13 @@ fn lower_method_extern<T: LirTarget<P>, P: Clone>(
 
 fn lower_call<T: LirTarget<P>, P: Clone>(func: &IrExpr<P>, args: &[IrExpr<P>], ctx: &mut LowerCtx<T, P>) -> Vec<T::Value> {
     // Handle Array::from_fn(|i| body) — convert on the fly to ArrayGenerate.
-    if let IrExpr::Path { segments, type_args } = func {
+    if let IrExprKind::Path { segments, type_args } = &func.kind {
         if segments.len() >= 2
             && (segments[segments.len() - 2] == "Array"
                 || segments[segments.len() - 2] == "GenericArray")
             && segments[segments.len() - 1] == "from_fn"
         {
-            if let Some(IrExpr::Closure { params, body, .. }) = args.first() {
+            if let Some(IrExprKind::Closure { params, body, .. }) = args.first().map(|a| &a.kind) {
                 if let Some(volar_compiler::ir::IrClosureParam { pattern: IrPattern::Ident { name: idx, .. }, .. }) = params.first() {
                     // Derive element type and length from the call's type_args.
                     // type_args = [elem_type, length_type] for Array::<T, N>::from_fn
@@ -1773,9 +1773,9 @@ fn lower_call<T: LirTarget<P>, P: Clone>(func: &IrExpr<P>, args: &[IrExpr<P>], c
         }
     }
 
-    let func_name = match func {
-        IrExpr::Path { segments, .. } => segments.join("_"),
-        IrExpr::Var(name) => name.clone(),
+    let func_name = match &func.kind {
+        IrExprKind::Path { segments, .. } => segments.join("_"),
+        IrExprKind::Var(name) => name.clone(),
         _other => unimplemented!("lower_call: non-path func"),
     };
 
