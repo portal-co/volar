@@ -14,7 +14,7 @@ use alloc::{
     vec::Vec,
 };
 use vaffle::{Block, FuncBody, FuncDecl, FuncId, Module, SigDecl, Value};
-use volar_ir_common::{Stmt, StorageAllocator, TypeRemapper};
+use volar_ir_common::{Node, Stmt, StorageAllocator, TypeRemapper};
 use volar_provenance::DualProvenanceHandler;
 
 /// One substitution entry for a VAFFLE module.
@@ -144,14 +144,13 @@ fn apply_one(module: &mut Module, sub: &VaffleSubstitution) -> usize {
             },
             FuncDecl::Body(body) => {
                 let new_sig = sig_map[body.sig.0];
-                let new_values: Vec<Value> = body.values.iter().map(|v| {
+                let new_values: Vec<Node<Value, ()>> = body.values.iter().map(|v| {
                     remap_value(v, &tr, &sig_map, &func_map)
                 }).collect();
                 let new_blocks: Vec<vaffle::Block> = body.blocks.iter().map(|b| {
                     vaffle::Block {
                         params: b.params.iter().map(|(vid, tid)| (*vid, tr.remap(*tid))).collect(),
                         stmts: b.stmts.clone(),
-                        stmt_provs: b.stmt_provs.clone(),
                         terminator: b.terminator.clone(),
                     }
                 }).collect();
@@ -248,13 +247,12 @@ fn apply_one_r<R: Clone>(
             },
             FuncDecl::Body(body) => {
                 let new_sig = sig_map[body.sig.0];
-                let new_values: Vec<Value> = body.values.iter().map(|v| {
+                let new_values: Vec<Node<Value, R>> = body.values.iter().map(|v| {
                     remap_value(v, &tr, &sig_map, &func_map)
                 }).collect();
-                let new_blocks: Vec<Block<R>> = body.blocks.into_iter().map(|b| Block {
+                let new_blocks: Vec<Block> = body.blocks.into_iter().map(|b| Block {
                     params: b.params.iter().map(|(vid, tid)| (*vid, tr.remap(*tid))).collect(),
                     stmts: b.stmts,
-                    stmt_provs: b.stmt_provs,
                     terminator: b.terminator,
                 }).collect();
                 FuncDecl::Body(FuncBody {
@@ -289,7 +287,7 @@ fn rewrite_body_r<R: Clone>(
     let mut replaced_calls: BTreeMap<usize, ()> = BTreeMap::new();
 
     for (vi, value) in body.values.iter_mut().enumerate() {
-        let Value::Op(ref stmt) = *value else { continue };
+        let Value::Op(ref stmt) = value.kind else { continue };
         let rewrite = match (sub_kind, stmt) {
             (SubKind::Oracle, Stmt::OracleCall { name: n, args, .. }) if n == name => {
                 Some(Value::Call { func: entry_func_id, args: args.clone() })
@@ -305,14 +303,14 @@ fn rewrite_body_r<R: Clone>(
             _ => None,
         };
         if let Some(new_val) = rewrite {
-            *value = new_val;
+            value.kind = new_val;
             replaced_calls.insert(vi, ());
             count += 1;
         }
     }
 
     for value in body.values.iter_mut() {
-        let Value::Op(ref stmt) = *value else { continue };
+        let Value::Op(ref stmt) = value.kind else { continue };
         let rewrite = match stmt {
             Stmt::OracleOutput { call, idx, .. } if replaced_calls.contains_key(&call.0) => {
                 Some(Value::Output { value: *call, idx: *idx })
@@ -323,7 +321,7 @@ fn rewrite_body_r<R: Clone>(
             _ => None,
         };
         if let Some(new_val) = rewrite {
-            *value = new_val;
+            value.kind = new_val;
         }
     }
     count
@@ -362,13 +360,11 @@ fn map_funcdecl_prov<P: Clone, R: Clone>(fd: FuncDecl<P>, f: &impl Fn(&P) -> R) 
         FuncDecl::Import { module, name, sig } => FuncDecl::Import { module, name, sig },
         FuncDecl::Body(body) => FuncDecl::Body(FuncBody {
             sig: body.sig,
-            blocks: body.blocks.into_iter().map(|b| Block {
-                params: b.params,
-                stmts: b.stmts,
-                stmt_provs: b.stmt_provs.iter().map(f).collect(),
-                terminator: b.terminator,
-            }).collect(),
-            values: body.values,
+            // `Block` carries no provenance of its own (see its doc comment) —
+            // every value's provenance lives on the `FuncBody::values` arena
+            // entry that each `ValueId` in `stmts` points to.
+            blocks: body.blocks,
+            values: body.values.into_iter().map(|v| v.map_prov(|p| f(&p))).collect(),
             entry: body.entry,
         }),
         _ => panic!("map_funcdecl_prov: unhandled FuncDecl variant"),
@@ -384,13 +380,10 @@ fn clone_map_funcdecl_prov<Q: Clone, R: Clone>(fd: &FuncDecl<Q>, f: &impl Fn(&Q)
         },
         FuncDecl::Body(body) => FuncDecl::Body(FuncBody {
             sig: body.sig,
-            blocks: body.blocks.iter().map(|b| Block {
-                params: b.params.clone(),
-                stmts: b.stmts.clone(),
-                stmt_provs: b.stmt_provs.iter().map(f).collect(),
-                terminator: b.terminator.clone(),
-            }).collect(),
-            values: body.values.clone(),
+            blocks: body.blocks.clone(),
+            values: body.values.iter()
+                .map(|v| Node::new(v.kind.clone(), f(&v.prov), v.side))
+                .collect(),
             entry: body.entry,
         }),
         _ => panic!("clone_map_funcdecl_prov: unhandled FuncDecl variant"),
@@ -430,7 +423,7 @@ fn rewrite_body(
     let mut replaced_calls: BTreeMap<usize, ()> = BTreeMap::new();
 
     for (vi, value) in body.values.iter_mut().enumerate() {
-        let Value::Op(ref stmt) = *value else { continue };
+        let Value::Op(ref stmt) = value.kind else { continue };
         let rewrite = match (sub, stmt) {
             (VaffleSubstitution::Oracle { .. }, Stmt::OracleCall { name: n, args, .. })
                 if n == name =>
@@ -452,7 +445,7 @@ fn rewrite_body(
             _ => None,
         };
         if let Some(new_val) = rewrite {
-            *value = new_val;
+            value.kind = new_val;
             replaced_calls.insert(vi, ());
             count += 1;
         }
@@ -460,7 +453,7 @@ fn rewrite_body(
 
     // Second pass: rewrite OracleOutput/ActionOutput for replaced calls.
     for value in body.values.iter_mut() {
-        let Value::Op(ref stmt) = *value else { continue };
+        let Value::Op(ref stmt) = value.kind else { continue };
         let rewrite = match stmt {
             Stmt::OracleOutput { call, idx, .. }
                 if replaced_calls.contains_key(&call.0) =>
@@ -475,21 +468,23 @@ fn rewrite_body(
             _ => None,
         };
         if let Some(new_val) = rewrite {
-            *value = new_val;
+            value.kind = new_val;
         }
     }
 
     count
 }
 
-/// Clone and remap a single [`Value`] from the replacement module into the host.
-fn remap_value(
-    v: &Value,
+/// Clone and remap a single [`Value`] from the replacement module into the
+/// host, preserving its source [`Node`]'s provenance and side unchanged —
+/// only the type-bearing fields of `kind` are remapped through `tr`.
+fn remap_value<P: Clone>(
+    v: &Node<Value, P>,
     tr: &TypeRemapper,
     _sig_map: &[vaffle::SigId],
     func_map: &[FuncId],
-) -> Value {
-    match v {
+) -> Node<Value, P> {
+    let kind = match &v.kind {
         Value::Param { block, ty, idx } => Value::Param {
             block: *block,
             ty: tr.remap(*ty),
@@ -521,7 +516,8 @@ fn remap_value(
             elem_bits: *elem_bits,
         },
         _ => panic!("remap_value: unhandled Value variant — add remapping for this variant"),
-    }
+    };
+    Node::new(kind, v.prov.clone(), v.side)
 }
 
 /// Build a [`StorageAllocator`] seeded above all `StorageId`s in use in `module`.
@@ -531,7 +527,7 @@ pub fn vaffle_storage_allocator(module: &Module) -> StorageAllocator {
         if let FuncDecl::Body(body) = func {
             for v in &body.values {
                 if let Value::Op(Stmt::StorageRead { storage, .. })
-                    | Value::Op(Stmt::StorageWrite { storage, .. }) = v
+                    | Value::Op(Stmt::StorageWrite { storage, .. }) = &v.kind
                 {
                     if storage.0 > max { max = storage.0; }
                 }
@@ -551,7 +547,7 @@ mod tests {
     use std::collections::BTreeMap;
     use alloc::{string::ToString, vec};
     use vaffle::{Block, BlockId, FuncBody, FuncDecl, Module, SigDecl, Terminator, Value, ValueId};
-    use volar_ir_common::{Constant, IrType, OracleDecl, Stmt, Type, TypeTable};
+    use volar_ir_common::{Constant, IrType, Node, OracleDecl, Stmt, Type, TypeTable};
     use super::{substitute_vaffle, VaffleSubstitution};
 
     fn empty_module_with_types() -> Module {
@@ -590,18 +586,17 @@ mod tests {
         let result_ty = m.types.intern(IrType::Tuple(vec![u64_ty]));
         let v0 = ValueId(0);
         let values = vec![
-            Value::Op(Stmt::OracleCall {
+            Node::new(Value::Op(Stmt::OracleCall {
                 name: "hash".to_string(),
                 args: vec![],
                 output_tys: vec![u64_ty],
                 result_ty,
-            }),
-            Value::Op(Stmt::OracleOutput { call: v0, idx: 0, ty: u64_ty }),
+            }), (), None),
+            Node::new(Value::Op(Stmt::OracleOutput { call: v0, idx: 0, ty: u64_ty }), (), None),
         ];
         let block = Block {
             params: vec![],
             stmts: vec![ValueId(0), ValueId(1)],
-            stmt_provs: vec![(), ()],
             terminator: Terminator::Return { values: vec![ValueId(1)] },
         };
         m.funcs.push(FuncDecl::Body(FuncBody {
@@ -620,12 +615,11 @@ mod tests {
         let sig_id = vaffle::SigId(0);
         m.sigs.push(SigDecl { params: vec![], results: vec![u64_ty] });
         let values = vec![
-            Value::Op(Stmt::Const(Constant { hi: 0, lo: 42 }, u64_ty)),
+            Node::new(Value::Op(Stmt::Const(Constant { hi: 0, lo: 42 }, u64_ty)), (), None),
         ];
         let block = Block {
             params: vec![],
             stmts: vec![ValueId(0)],
-            stmt_provs: vec![()],
             terminator: Terminator::Return { values: vec![ValueId(0)] },
         };
         let entry_fid = vaffle::FuncId(0);
@@ -653,12 +647,12 @@ mod tests {
         // The host function body should contain no more OracleCall stmts.
         if let FuncDecl::Body(body) = &host.funcs[0] {
             for v in &body.values {
-                if let Value::Op(Stmt::OracleCall { name, .. }) = v {
+                if let Value::Op(Stmt::OracleCall { name, .. }) = &v.kind {
                     panic!("OracleCall to '{name}' was not substituted");
                 }
             }
             // At least one Value::Call must exist.
-            let has_call = body.values.iter().any(|v| matches!(v, Value::Call { .. }));
+            let has_call = body.values.iter().any(|v| matches!(&v.kind, Value::Call { .. }));
             assert!(has_call, "expected a Value::Call after substitution");
         } else {
             panic!("expected FuncDecl::Body");
@@ -678,7 +672,7 @@ mod tests {
         if let FuncDecl::Body(body) = &host.funcs[0] {
             for v in &body.values {
                 assert!(
-                    !matches!(v, Value::Op(Stmt::OracleOutput { .. })),
+                    !matches!(&v.kind, Value::Op(Stmt::OracleOutput { .. })),
                     "OracleOutput should have been rewritten to Value::Output"
                 );
             }
@@ -691,13 +685,12 @@ mod tests {
         let u64_ty = m.types.primitive(Type::_64);
         m.sigs.push(SigDecl { params: vec![], results: vec![u64_ty, u64_ty] });
         let values = vec![
-            Value::Op(Stmt::Rng { name: "rand".to_string(), ty: u64_ty }),
-            Value::Op(Stmt::Rng { name: "rand".to_string(), ty: u64_ty }),
+            Node::new(Value::Op(Stmt::Rng { name: "rand".to_string(), ty: u64_ty }), (), None),
+            Node::new(Value::Op(Stmt::Rng { name: "rand".to_string(), ty: u64_ty }), (), None),
         ];
         let block = Block {
             params: vec![],
             stmts: vec![ValueId(0), ValueId(1)],
-            stmt_provs: vec![(), ()],
             terminator: Terminator::Return { values: vec![ValueId(0), ValueId(1)] },
         };
         m.funcs.push(FuncDecl::Body(FuncBody {
@@ -718,11 +711,11 @@ mod tests {
         if let FuncDecl::Body(body) = &m.funcs[0] {
             for v in &body.values {
                 assert!(
-                    !matches!(v, Value::Op(Stmt::Rng { .. })),
+                    !matches!(&v.kind, Value::Op(Stmt::Rng { .. })),
                     "Rng should have been rewritten to Value::Call"
                 );
             }
-            let call_count = body.values.iter().filter(|v| matches!(v, Value::Call { .. })).count();
+            let call_count = body.values.iter().filter(|v| matches!(&v.kind, Value::Call { .. })).count();
             assert_eq!(call_count, 2, "expected two Value::Call nodes");
         }
     }
@@ -740,7 +733,7 @@ mod tests {
         let n_types = host.types.0.len();
         if let FuncDecl::Body(body) = &host.funcs[0] {
             for v in &body.values {
-                match v {
+                match &v.kind {
                     Value::Param { ty, .. } => assert!((ty.0 as usize) < n_types),
                     Value::StackAlloc { elem_ty, .. } => assert!((elem_ty.0 as usize) < n_types),
                     Value::PtrLoad { pointee_ty, .. } => assert!((pointee_ty.0 as usize) < n_types),

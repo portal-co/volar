@@ -2281,7 +2281,7 @@ mod tests {
                     params: vec![],
                     stmts: vec![],
                     stmt_provs: vec![],
-                    terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: vec![] }),
+                    terminator: IrCfgTerminator::Goto(IrCfgJump::new(1, vec![])),
                 },
                 IrCfgBlock {
                     params: vec![],
@@ -2307,7 +2307,7 @@ mod tests {
                     params: vec![],
                     stmts: vec![],
                     stmt_provs: vec![],
-                    terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: vec![] }),
+                    terminator: IrCfgTerminator::Goto(IrCfgJump::new(1, vec![])),
                 },
                 IrCfgBlock {
                     params: vec![],
@@ -2331,7 +2331,7 @@ mod tests {
                     params: vec![],
                     stmts: vec![],
                     stmt_provs: vec![],
-                    terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: vec![] }),
+                    terminator: IrCfgTerminator::Goto(IrCfgJump::new(1, vec![])),
                 },
                 IrCfgBlock {
                     params: vec![],
@@ -2356,10 +2356,10 @@ mod tests {
                     params: vec![],
                     stmts: vec![],
                     stmt_provs: vec![],
-                    terminator: IrCfgTerminator::Goto(IrCfgJump {
-                        target: 1,
-                        args: vec![IrExpr::Lit(IrLit::Bool(false))],
-                    }),
+                    terminator: IrCfgTerminator::Goto(IrCfgJump::new(
+                        1,
+                        vec![IrExpr::Lit(IrLit::Bool(false))],
+                    )),
                 },
                 IrCfgBlock {
                     params: vec![IrParam {
@@ -2389,10 +2389,10 @@ mod tests {
                     params: vec![],
                     stmts: vec![],
                     stmt_provs: vec![],
-                    terminator: IrCfgTerminator::Goto(IrCfgJump {
-                        target: 1,
-                        args: vec![IrExpr::Var("val".to_string())],
-                    }),
+                    terminator: IrCfgTerminator::Goto(IrCfgJump::new(
+                        1,
+                        vec![IrExpr::Var("val".to_string())],
+                    )),
                 },
                 IrCfgBlock {
                     params: vec![IrParam {
@@ -2422,10 +2422,10 @@ mod tests {
                     params: vec![],
                     stmts: vec![],
                     stmt_provs: vec![],
-                    terminator: IrCfgTerminator::Goto(IrCfgJump {
-                        target: 1,
-                        args: vec![IrExpr::Lit(IrLit::Int(0))],
-                    }),
+                    terminator: IrCfgTerminator::Goto(IrCfgJump::new(
+                        1,
+                        vec![IrExpr::Lit(IrLit::Int(0))],
+                    )),
                 },
                 IrCfgBlock {
                     params: vec![IrParam {
@@ -2459,8 +2459,8 @@ mod tests {
                     stmt_provs: vec![],
                     terminator: IrCfgTerminator::CondGoto {
                         cond: IrExpr::Var("flag".to_string()),
-                        then_: IrCfgJump { target: 1, args: vec![] },
-                        else_: IrCfgJump { target: 2, args: vec![] },
+                        then_: IrCfgJump::new(1, vec![]),
+                        else_: IrCfgJump::new(2, vec![]),
                     },
                 },
                 IrCfgBlock {

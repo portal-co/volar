@@ -15,7 +15,7 @@ use alloc::{
 };
 
 use volar_ir_common::{
-    ActionDecl, Constant, IrType, OracleDecl, Stmt, StorageId, Type, TypeId, TypeTable,
+    ActionDecl, Constant, IrType, Node, OracleDecl, Stmt, StorageId, Type, TypeId, TypeTable,
 };
 use volar_lir::{
     circuits::{
@@ -439,11 +439,16 @@ impl LirTarget for VaffleTarget {
         let fb = self.func.take().expect("VaffleTarget: no function in progress");
         let blocks: Vec<Block> = fb.blocks.into_iter().map(|bb| Block {
             params: bb.params,
-            stmt_provs: vec![(); bb.stmts.len()],
             stmts: bb.stmts,
             terminator: bb.terminator.unwrap_or(Terminator::Return { values: vec![] }),
         }).collect();
-        let body = FuncBody { sig: fb.sig_id, blocks, values: fb.all_values, entry: BlockId(0) };
+        // `FuncBuilder` carries no provenance/side of its own — every value
+        // emitted through this builder is genuinely fresh, so `((), None)` is
+        // not a placeholder here, it's the correct annotation.
+        let values: Vec<Node<Value>> = fb.all_values.into_iter()
+            .map(|v| Node::new(v, (), None))
+            .collect();
+        let body = FuncBody { sig: fb.sig_id, blocks, values, entry: BlockId(0) };
         let func_id = FuncId(self.module.funcs.len());
         self.module.funcs.push(FuncDecl::Body(body));
         self.module.exports.insert(fb.name, func_id);
@@ -988,7 +993,7 @@ mod tests {
             vaffle::FuncDecl::Body(b) => b,
             _ => panic!("expected function body"),
         };
-        let has_stack_alloc = body.values.iter().any(|v| matches!(v, Value::StackAlloc { .. }));
+        let has_stack_alloc = body.values.iter().any(|v| matches!(&v.kind, Value::StackAlloc { .. }));
         assert!(has_stack_alloc, "VAFFLE should contain a StackAlloc value");
     }
 
@@ -1019,10 +1024,10 @@ mod tests {
             _ => panic!("expected function body"),
         };
         let has_stack_write = body.values.iter().any(|v| matches!(
-            v, Value::Op(Stmt::StorageWrite { storage, .. }) if *storage == StorageId::STACK
+            &v.kind, Value::Op(Stmt::StorageWrite { storage, .. }) if *storage == StorageId::STACK
         ));
         let has_stack_read = body.values.iter().any(|v| matches!(
-            v, Value::Op(Stmt::StorageRead { storage, .. }) if *storage == StorageId::STACK
+            &v.kind, Value::Op(Stmt::StorageRead { storage, .. }) if *storage == StorageId::STACK
         ));
         assert!(has_stack_write, "ptr_store should emit StorageWrite to STACK");
         assert!(has_stack_read, "ptr_load should emit StorageRead from STACK");
@@ -1051,7 +1056,7 @@ mod tests {
             vaffle::FuncDecl::Body(b) => b,
             _ => panic!("expected function body"),
         };
-        let has_ptr_offset = body.values.iter().any(|v| matches!(v, Value::PtrOffset { elem_bits: 32, .. }));
+        let has_ptr_offset = body.values.iter().any(|v| matches!(&v.kind, Value::PtrOffset { elem_bits: 32, .. }));
         assert!(has_ptr_offset, "VAFFLE should contain a PtrOffset with elem_bits=32");
     }
 
@@ -1072,7 +1077,7 @@ mod tests {
             vaffle::FuncDecl::Body(b) => b,
             _ => panic!("expected function body"),
         };
-        let allocs: std::vec::Vec<_> = body.values.iter().filter_map(|v| match v {
+        let allocs: std::vec::Vec<_> = body.values.iter().filter_map(|v| match &v.kind {
             Value::StackAlloc { base_slot, count, .. } => Some((*base_slot, *count)),
             _ => None,
         }).collect();
@@ -1267,7 +1272,7 @@ mod tests {
         );
 
         // No Value::Call node should be present (tail call, not a regular call).
-        let has_call_node = body.values.iter().any(|v| matches!(v, Value::Call { .. }));
+        let has_call_node = body.values.iter().any(|v| matches!(&v.kind, Value::Call { .. }));
         assert!(!has_call_node, "ret_call must not emit a Value::Call node");
     }
 

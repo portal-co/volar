@@ -178,7 +178,7 @@ fn eval_vaffle_depth(
 #[allow(clippy::too_many_arguments)]
 fn eval_vaffle_value(
     vid: ValueId,
-    values: &[Value],
+    values: &[volar_ir_common::Node<Value>],
     module: &Module,
     value_table: &mut BTreeMap<usize, IrValue>,
     oracle_agg: &mut BTreeMap<usize, Vec<IrValue>>,
@@ -186,7 +186,7 @@ fn eval_vaffle_value(
     storage: &mut StorageMap,
     depth: usize,
 ) -> Option<IrValue> {
-    let val = match &values[vid.0] {
+    let val = match &values[vid.0].kind {
         Value::Param { .. } => get_val(value_table, vid),
         Value::Op(stmt) => eval_vaffle_stmt(stmt, vid.0, &module.types, &module.oracles, value_table, oracle_agg, storage),
         Value::Call { func, args } => {

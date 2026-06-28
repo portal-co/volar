@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 
 use vaffle::{Block, BlockId, FuncBody, FuncDecl, FuncId, Module, SigDecl, SigId, Target, Terminator, Value, ValueId};
-use volar_ir_common::{Constant, IrType, OracleDecl, Stmt, StorageId, Type, TypeId, TypeTable};
+use volar_ir_common::{Constant, IrType, Node, OracleDecl, Stmt, StorageId, Type, TypeId, TypeTable};
 
 use crate::interpreter::ir::primitive_width;
 use crate::generators::ir::{PRIM_TYPES, RawIrStmt, RawTypeIdx};
@@ -150,7 +150,6 @@ pub fn interpret_vaffle(
             .enumerate()
             .map(|(i, &tid)| (ValueId(i), tid))
             .collect(),
-        stmt_provs: vec![(); stmt_vids.len()],
         stmts: stmt_vids,
         terminator: Terminator::Return { values: all_vids },
     };
@@ -158,7 +157,7 @@ pub fn interpret_vaffle(
     let body = FuncBody {
         sig: SigId(0),
         blocks: vec![block],
-        values,
+        values: values.into_iter().map(|v| Node::new(v, (), None)).collect(),
         entry: BlockId(0),
     };
 
@@ -444,7 +443,6 @@ fn interpret_vaffle_extended_inner(
             .enumerate()
             .map(|(i, &tid)| (ValueId(i), tid))
             .collect(),
-        stmt_provs: vec![(); stmt_vids.len()],
         stmts: stmt_vids,
         terminator: Terminator::Return { values: all_vids },
     };
@@ -452,7 +450,7 @@ fn interpret_vaffle_extended_inner(
     let body = FuncBody {
         sig: SigId(0),
         blocks: vec![block],
-        values: new_values,
+        values: new_values.into_iter().map(|v| Node::new(v, (), None)).collect(),
         entry: BlockId(0),
     };
 
@@ -562,13 +560,11 @@ pub fn interpret_vaffle_multiblock(
             .enumerate()
             .map(|(i, &tid)| (ValueId(i), tid))
             .collect(),
-        stmt_provs: vec![(); b0_stmt_vids.len()],
         stmts: b0_stmt_vids,
         terminator: b0_term,
     };
     let block1 = Block {
         params: vec![],
-        stmt_provs: vec![(); b1_stmt_vids.len()],
         stmts: b1_stmt_vids,
         terminator: b1_term,
     };
@@ -576,7 +572,7 @@ pub fn interpret_vaffle_multiblock(
     let body = FuncBody {
         sig: SigId(0),
         blocks: vec![block0, block1],
-        values: all_values,
+        values: all_values.into_iter().map(|v| Node::new(v, (), None)).collect(),
         entry: BlockId(0),
     };
 
@@ -768,25 +764,21 @@ pub fn interpret_vaffle_diamond(
             .enumerate()
             .map(|(i, &tid)| (ValueId(i), tid))
             .collect(),
-        stmt_provs: vec![(); b0_stmt_vids.len()],
         stmts: b0_stmt_vids,
         terminator: b0_term,
     };
     let block1 = Block {
         params: vec![],
-        stmt_provs: vec![(); b1_stmt_vids.len()],
         stmts: b1_stmt_vids,
         terminator: b1_term,
     };
     let block2 = Block {
         params: vec![],
-        stmt_provs: vec![(); b2_stmt_vids.len()],
         stmts: b2_stmt_vids,
         terminator: b2_term,
     };
     let block3 = Block {
         params: vec![],
-        stmt_provs: vec![(); b3_stmt_vids.len()],
         stmts: b3_stmt_vids,
         terminator: b3_term,
     };
@@ -794,7 +786,7 @@ pub fn interpret_vaffle_diamond(
     let body = FuncBody {
         sig: SigId(0),
         blocks: vec![block0, block1, block2, block3],
-        values: all_values,
+        values: all_values.into_iter().map(|v| Node::new(v, (), None)).collect(),
         entry: BlockId(0),
     };
 
@@ -875,7 +867,6 @@ pub fn interpret_vaffle_two_func(
             .enumerate()
             .map(|(i, &tid)| (ValueId(i), tid))
             .collect(),
-        stmt_provs: vec![(); f1_stmt_vids.len()],
         stmts: f1_stmt_vids,
         terminator: Terminator::Return { values: f1_all_vids },
     };
@@ -883,7 +874,7 @@ pub fn interpret_vaffle_two_func(
     let f1_body = FuncBody {
         sig: SigId(1),
         blocks: vec![f1_block],
-        values: f1_values,
+        values: f1_values.into_iter().map(|v| Node::new(v, (), None)).collect(),
         entry: BlockId(0),
     };
 
@@ -981,7 +972,6 @@ pub fn interpret_vaffle_two_func(
             .enumerate()
             .map(|(i, &tid)| (ValueId(i), tid))
             .collect(),
-        stmt_provs: vec![(); f0_stmt_vids.len()],
         stmts: f0_stmt_vids,
         terminator: Terminator::Return { values: f0_return_vids },
     };
@@ -989,7 +979,7 @@ pub fn interpret_vaffle_two_func(
     let f0_body = FuncBody {
         sig: SigId(0),
         blocks: vec![f0_block],
-        values: f0_values,
+        values: f0_values.into_iter().map(|v| Node::new(v, (), None)).collect(),
         entry: BlockId(0),
     };
 

@@ -1309,7 +1309,6 @@ mod tests_config {
         let block = &ir.blocks[0];
         assert_eq!(block.params.len(), 1);
         assert_eq!(block.stmts.len(), 4);
-        assert_eq!(block.stmt_provs.len(), 4);
 
         // Types are well-formed
         let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
@@ -1464,7 +1463,10 @@ mod tests_rewrite {
         stmts: Vec<IRStmt>,
         terminator: IRTerminator,
     ) -> IRBlocks<()> {
-        let num_stmts = stmts.len();
+        let stmts = stmts
+            .into_iter()
+            .map(|s| volar_ir_common::Node::new(s, (), None))
+            .collect();
         IRBlocks {
             oracles: vec![],
             actions: vec![],
@@ -1472,7 +1474,6 @@ mod tests_rewrite {
             blocks: vec![IRBlock {
                 params,
                 stmts,
-                stmt_provs: vec![(); num_stmts],
                 terminator,
             }],
             pre_init: vec![],
@@ -1531,7 +1532,7 @@ mod tests_rewrite {
 
         // The StorageRead on StorageId(5) should pass through unchanged.
         assert_eq!(result.blocks[0].stmts.len(), 1);
-        match &result.blocks[0].stmts[0] {
+        match &result.blocks[0].stmts[0].kind {
             IRStmt::StorageRead { storage, .. } => {
                 assert_eq!(storage.0, 5);
             }
@@ -1573,7 +1574,7 @@ mod tests_rewrite {
         let action_calls: Vec<_> = block
             .stmts
             .iter()
-            .filter(|s| matches!(s, IRStmt::ActionCall { .. }))
+            .filter(|s| matches!(&s.kind, IRStmt::ActionCall { .. }))
             .collect();
         assert_eq!(
             action_calls.len(),
@@ -1582,7 +1583,7 @@ mod tests_rewrite {
         );
 
         // First ActionCall should be "oram_begin_0"
-        match &action_calls[0] {
+        match &action_calls[0].kind {
             IRStmt::ActionCall { name, args, output_tys, .. } => {
                 assert_eq!(name, "oram_begin_0");
                 assert_eq!(args.len(), 1, "begin takes 1 arg (address)");
@@ -1592,7 +1593,7 @@ mod tests_rewrite {
         }
 
         // Second ActionCall should be "oram_process_0"
-        match &action_calls[1] {
+        match &action_calls[1].kind {
             IRStmt::ActionCall { name, args, output_tys, .. } => {
                 assert_eq!(name, "oram_process_0");
                 assert_eq!(args.len(), 3, "process takes 3 args (path, data, is_write)");
@@ -1606,7 +1607,7 @@ mod tests_rewrite {
         let tree_reads: Vec<_> = block
             .stmts
             .iter()
-            .filter(|s| matches!(s, IRStmt::StorageRead { storage, .. } if storage.0 == 1000))
+            .filter(|s| matches!(&s.kind, IRStmt::StorageRead { storage, .. } if storage.0 == 1000))
             .collect();
         assert_eq!(tree_reads.len(), 3, "expected 3 tree StorageReads (1 main + 2 evictions)");
 
@@ -1614,7 +1615,7 @@ mod tests_rewrite {
         let tree_writes: Vec<_> = block
             .stmts
             .iter()
-            .filter(|s| matches!(s, IRStmt::StorageWrite { storage, .. } if storage.0 == 1000))
+            .filter(|s| matches!(&s.kind, IRStmt::StorageWrite { storage, .. } if storage.0 == 1000))
             .collect();
         assert_eq!(tree_writes.len(), 3, "expected 3 tree StorageWrites (1 write-back + 2 evictions)");
 
@@ -1655,7 +1656,7 @@ mod tests_rewrite {
         let action_calls: Vec<_> = block
             .stmts
             .iter()
-            .filter(|s| matches!(s, IRStmt::ActionCall { .. }))
+            .filter(|s| matches!(&s.kind, IRStmt::ActionCall { .. }))
             .collect();
         assert_eq!(action_calls.len(), 4);
 
@@ -1665,7 +1666,7 @@ mod tests_rewrite {
         let write_consts: Vec<_> = block
             .stmts
             .iter()
-            .filter(|s| matches!(s, IRStmt::Const(Constant { hi: 0, lo: 1 }, ty) if *ty == bit_ty))
+            .filter(|s| matches!(&s.kind, IRStmt::Const(Constant { hi: 0, lo: 1 }, ty) if *ty == bit_ty))
             .collect();
         // We expect at least 2 Const(1, Bit): the guard and the is_write flag.
         assert!(
@@ -1703,7 +1704,7 @@ mod tests_rewrite {
         let guard_consts: Vec<_> = block
             .stmts
             .iter()
-            .filter(|s| matches!(s, IRStmt::Const(Constant { hi: 0, lo: 1 }, ty) if *ty == bit_ty))
+            .filter(|s| matches!(&s.kind, IRStmt::Const(Constant { hi: 0, lo: 1 }, ty) if *ty == bit_ty))
             .collect();
         assert_eq!(
             guard_consts.len(),
@@ -1746,7 +1747,7 @@ mod tests_rewrite {
 
         // The last stmt should be Const(42, u64), unchanged.
         let last = block.stmts.last().unwrap();
-        match last {
+        match &last.kind {
             IRStmt::Const(Constant { hi: 0, lo: 42 }, ty) => {
                 assert_eq!(*ty, u64_ty);
             }
@@ -1778,34 +1779,6 @@ mod tests_rewrite {
             }
             other => panic!("expected Jmp terminator, got {:?}", other),
         }
-    }
-
-    // -- Provenance tracking --
-
-    #[test]
-    fn provenance_length_matches_stmts() {
-        let mut types = IRTypes::new();
-        let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
-        let c = test_config();
-        let data_ty = c.data_type(&mut types);
-
-        let ir = make_ir(
-            vec![u64_ty],
-            vec![IRStmt::StorageRead {
-                storage: StorageId(0),
-                ty: data_ty,
-                addr: IRVarId(0),
-            }],
-            return_jmp(vec![IRVarId(1)]),
-        );
-
-        let result = rewrite_storage_to_oram(&ir, &mut types, &[c]);
-        let block = &result.blocks[0];
-        assert_eq!(
-            block.stmts.len(),
-            block.stmt_provs.len(),
-            "stmts and stmt_provs must have equal length"
-        );
     }
 
     // -- Multiple configs --
@@ -1843,7 +1816,7 @@ mod tests_rewrite {
         let action_calls: Vec<_> = block
             .stmts
             .iter()
-            .filter(|s| matches!(s, IRStmt::ActionCall { .. }))
+            .filter(|s| matches!(&s.kind, IRStmt::ActionCall { .. }))
             .collect();
         assert_eq!(action_calls.len(), 8, "expected 8 ActionCalls for 2 ORAM configs");
 
@@ -1851,7 +1824,7 @@ mod tests_rewrite {
         let tree_reads: Vec<u32> = block
             .stmts
             .iter()
-            .filter_map(|s| match s {
+            .filter_map(|s| match &s.kind {
                 IRStmt::StorageRead { storage, .. } if storage.0 >= 1000 => Some(storage.0),
                 _ => None,
             })
@@ -2301,7 +2274,7 @@ mod tests_linking {
         // 8 ActionCalls: 4 per access (begin + process + 2 evicts) x 2 accesses
         let action_calls: Vec<_> = rewritten.blocks[0].stmts
             .iter()
-            .filter(|s| matches!(s, IRStmt::ActionCall { .. }))
+            .filter(|s| matches!(&s.kind, IRStmt::ActionCall { .. }))
             .collect();
         assert_eq!(action_calls.len(), 8, "expected 8 ActionCalls for 2 ORAM accesses");
 

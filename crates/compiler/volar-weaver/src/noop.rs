@@ -627,13 +627,16 @@ mod tests {
         let block = CirBlock {
             params: alloc::vec![bit, bit],
             stmts: alloc::vec![
-                Stmt::Poly {
-                    ty: bit,
-                    coeffs,
-                    constant: CirConst { hi: 0, lo: 0 },
-                },
+                volar_ir_common::Node::new(
+                    Stmt::Poly {
+                        ty: bit,
+                        coeffs,
+                        constant: CirConst { hi: 0, lo: 0 },
+                    },
+                    (),
+                    None,
+                ),
             ],
-            stmt_provs: alloc::vec![()],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![CirVar(2)],) },
         };
 
@@ -663,13 +666,16 @@ mod tests {
         let block: CirBlock<u32> = CirBlock {
             params: alloc::vec![bit, bit],
             stmts: alloc::vec![
-                Stmt::Poly {
-                    ty: bit,
-                    coeffs,
-                    constant: CirConst { hi: 0, lo: 0 },
-                },
+                volar_ir_common::Node::new(
+                    Stmt::Poly {
+                        ty: bit,
+                        coeffs,
+                        constant: CirConst { hi: 0, lo: 0 },
+                    },
+                    9u32,
+                    None,
+                ),
             ],
-            stmt_provs: alloc::vec![9u32],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![CirVar(2)],) },
         };
 

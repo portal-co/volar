@@ -444,6 +444,7 @@ mod tests {
     use super::*;
     use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
     use volar_ir::ir::{IRBlockId, IRBlockTargetId, IRVarId};
+    use volar_ir_common::Node;
 
     /// Single-bit self-loop: params=1, stmts=[One], CondJmp(param[0] → Return, else Block(0) with One).
     ///
@@ -452,8 +453,7 @@ mod tests {
     fn build_simple_loop() -> BIrBlocks {
         BIrBlocks { blocks: std::vec![BIrBlock {
             params: 1,
-            stmts: std::vec![BIrStmt::One], // IRVarId(1) = constant 1
-            stmt_provs: std::vec![()],
+            stmts: std::vec![BIrStmt::One].into_iter().map(|s| Node::new(s, (), None)).collect(), // IRVarId(1) = constant 1
             terminator: BIrTerminator::CondJmp {
                 val: IRVarId(0), // condition = input bit
                 then_target: BIrTarget {
@@ -474,7 +474,6 @@ mod tests {
         let circuit: BIrBlocks<()> = BIrBlocks { blocks: std::vec![BIrBlock {
             params: 1,
             stmts: std::vec![],
-            stmt_provs: std::vec![],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Return,
                 args: std::vec![IRVarId(0)],
@@ -568,8 +567,7 @@ mod tests {
         // Pure loop: always Jmp(Block(0)). Output = state after limit steps.
         let blocks = BIrBlocks { blocks: std::vec![BIrBlock {
             params: 1,
-            stmts: std::vec![BIrStmt::Not(IRVarId(0))], // flip the bit each step
-            stmt_provs: std::vec![()],
+            stmts: std::vec![BIrStmt::Not(IRVarId(0))].into_iter().map(|s| Node::new(s, (), None)).collect(), // flip the bit each step
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Block(IRBlockId(0)),
                 args: std::vec![IRVarId(1)], // loop with NOT(input)
@@ -585,8 +583,7 @@ mod tests {
         // CondJmp where both targets return: always done, result = mux(val, then, else).
         let blocks: BIrBlocks<()> = BIrBlocks { blocks: std::vec![BIrBlock {
             params: 2, // two input bits: selector and value
-            stmts: std::vec![BIrStmt::Zero],
-            stmt_provs: std::vec![()],
+            stmts: std::vec![BIrStmt::Zero].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: BIrTerminator::CondJmp {
                 val: IRVarId(0), // select on bit 0
                 then_target: BIrTarget {

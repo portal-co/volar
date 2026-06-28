@@ -7,6 +7,7 @@ use volar_ir::{
     boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
     ir::{IRBlockId, IRBlockTargetId, IRVarId},
 };
+use volar_ir_common::Node;
 use volar_ir_virt::{virtualize_bir, DispatchMode, VirtualizeConfig};
 
 fn cfg_default() -> VirtualizeConfig {
@@ -24,20 +25,17 @@ fn three_block_passthrough() -> BIrBlocks {
     BIrBlocks { blocks: vec![
         BIrBlock {
             params: 1,
-            stmts: vec![BIrStmt::Zero],
-            stmt_provs: vec![()],
+            stmts: vec![BIrStmt::Zero].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Block(IRBlockId(1)), args: vec![IRVarId(0)], }),
         },
         BIrBlock {
             params: 1,
-            stmts: vec![BIrStmt::Zero],
-            stmt_provs: vec![()],
+            stmts: vec![BIrStmt::Zero].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Block(IRBlockId(2)), args: vec![IRVarId(0)], }),
         },
         BIrBlock {
             params: 1,
-            stmts: vec![BIrStmt::Zero],
-            stmt_provs: vec![()],
+            stmts: vec![BIrStmt::Zero].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(0)], }),
         },
     ], pre_init: vec![] }
@@ -99,14 +97,12 @@ fn xor_and_chain() -> BIrBlocks {
     BIrBlocks { blocks: vec![
         BIrBlock {
             params: 2,
-            stmts: vec![BIrStmt::Xor(IRVarId(0), IRVarId(1))],
-            stmt_provs: vec![()],
+            stmts: vec![BIrStmt::Xor(IRVarId(0), IRVarId(1))].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Block(IRBlockId(1)), args: vec![IRVarId(2)], }),
         },
         BIrBlock {
             params: 1,
-            stmts: vec![BIrStmt::Not(IRVarId(0))],
-            stmt_provs: vec![()],
+            stmts: vec![BIrStmt::Not(IRVarId(0))].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(1)], }),
         },
     ], pre_init: vec![] }
@@ -131,8 +127,7 @@ fn bir_xor_and_chain_semantics() {
 fn bir_single_block_is_trivial() {
     let blocks = BIrBlocks { blocks: vec![BIrBlock {
         params: 1,
-        stmts: vec![BIrStmt::Not(IRVarId(0))],
-        stmt_provs: vec![()],
+        stmts: vec![BIrStmt::Not(IRVarId(0))].into_iter().map(|s| Node::new(s, (), None)).collect(),
         terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(1)], }),
     }], pre_init: vec![] };
     let ref_out = eval_biir(&blocks, &[true]).expect("ref eval");
@@ -165,7 +160,6 @@ fn bir_condjmp_two_branch() -> BIrBlocks {
         BIrBlock {
             params: 1,
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: BIrTerminator::CondJmp {
                 val: IRVarId(0),
                 then_target: BIrTarget { block: IRBlockTargetId::Block(IRBlockId(1)), args: vec![IRVarId(0)], },
@@ -174,14 +168,12 @@ fn bir_condjmp_two_branch() -> BIrBlocks {
         },
         BIrBlock {
             params: 1,
-            stmts: vec![BIrStmt::One],
-            stmt_provs: vec![()],
+            stmts: vec![BIrStmt::One].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(1)], }),
         },
         BIrBlock {
             params: 1,
-            stmts: vec![BIrStmt::Zero],
-            stmt_provs: vec![()],
+            stmts: vec![BIrStmt::Zero].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(1)], }),
         },
     ], pre_init: vec![] }

@@ -3853,7 +3853,6 @@ mod tests {
         let block = CirBlock {
             params: std::vec![bit],
             stmts: std::vec![],
-            stmt_provs: std::vec![],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![CirVar(0)],) },
         };
         (IRBlocks::new(std::vec![block]), types)
@@ -3868,9 +3867,12 @@ mod tests {
         let block = CirBlock {
             params: std::vec![bit, bit],
             stmts: std::vec![
-                Stmt::Poly { ty: bit, coeffs, constant: CirConst { hi: 0, lo: 0 } },
+                volar_ir_common::Node::new(
+                    Stmt::Poly { ty: bit, coeffs, constant: CirConst { hi: 0, lo: 0 } },
+                    (),
+                    None,
+                ),
             ],
-            stmt_provs: std::vec![()],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![CirVar(2)],) },
         };
         (IRBlocks::new(std::vec![block]), types)
@@ -3885,20 +3887,27 @@ mod tests {
             params: std::vec![bit, bit], // param 0 = value, param 1 = addr
             stmts: std::vec![
                 // stmt 0 (var 2): write value to storage
-                Stmt::StorageWrite {
-                    storage: StorageId(0),
-                    src: CirVar(0),
-                    ty: CirTyId(0),
-                    addr: CirVar(1),
-                },
+                volar_ir_common::Node::new(
+                    Stmt::StorageWrite {
+                        storage: StorageId(0),
+                        src: CirVar(0),
+                        ty: CirTyId(0),
+                        addr: CirVar(1),
+                    },
+                    (),
+                    None,
+                ),
                 // stmt 1 (var 3): read back from storage at same address
-                Stmt::StorageRead {
-                    storage: StorageId(0),
-                    ty: CirTyId(0),
-                    addr: CirVar(1),
-                },
+                volar_ir_common::Node::new(
+                    Stmt::StorageRead {
+                        storage: StorageId(0),
+                        ty: CirTyId(0),
+                        addr: CirVar(1),
+                    },
+                    (),
+                    None,
+                ),
             ],
-            stmt_provs: std::vec![(), ()],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![CirVar(3)],) },
         };
         let mut ss = StorageSizes::new();

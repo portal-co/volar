@@ -681,7 +681,7 @@ mod tests {
     extern crate std;
     use alloc::{string::ToString, vec, vec::Vec};
     use volar_ir::ir::{
-        IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRTerminator, IRVarId, IRTypes,
+        IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRTerminator, IRVarId, IRTypes,
     };
     use volar_ir_common::{
         Constant, IrType, OracleDecl, RngDecl, Stmt, StorageId, Type, TypeId,
@@ -800,9 +800,9 @@ mod tests {
         substitute_ir_blocks(&mut host, &mut types, &subs, &mut alloc);
 
         // Pre-call block (index 0) should have no OracleCall.
-        for stmt in &host.blocks[0].stmts {
+        for node in &host.blocks[0].stmts {
             assert!(
-                !matches!(stmt, Stmt::OracleCall { name, .. } if name == "h"),
+                !matches!(&node.kind, Stmt::OracleCall { name, .. } if name == "h"),
                 "OracleCall should have been removed from the pre-call block"
             );
         }
@@ -810,7 +810,7 @@ mod tests {
         assert!(
             matches!(
                 &host.blocks[0].terminator,
-                IRTerminator::Jmp { func: IRBlockTargetId::Block(IRBlockId(1)), .. }
+                IRTerminator::Jmp { target } if target.dest == IRBlockTargetId::Block(IRBlockId(1))
             ),
             "pre-call block should jump to the replacement entry"
         );
@@ -867,8 +867,8 @@ mod tests {
         assert_eq!(count, 1);
 
         // Pre-call block has no Rng stmt.
-        for stmt in &host.blocks[0].stmts {
-            assert!(!matches!(stmt, Stmt::Rng { name, .. } if name == "rand"));
+        for node in &host.blocks[0].stmts {
+            assert!(!matches!(&node.kind, Stmt::Rng { name, .. } if name == "rand"));
         }
     }
 
@@ -907,8 +907,8 @@ mod tests {
         // They must be distinct across the two substitutions.
         let mut spill_ids: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
         for b in &host.blocks {
-            for stmt in &b.stmts {
-                if let Stmt::StorageWrite { storage, .. } = stmt {
+            for node in &b.stmts {
+                if let Stmt::StorageWrite { storage, .. } = &node.kind {
                     spill_ids.insert(storage.0);
                 }
             }

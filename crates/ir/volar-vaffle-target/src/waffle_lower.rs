@@ -1311,7 +1311,7 @@ mod tests {
         let mut has_read = false;
         let mut has_write = false;
         for val in &body.values {
-            if let vaffle::Value::Op(stmt) = val {
+            if let vaffle::Value::Op(stmt) = &val.kind {
                 match stmt {
                     Stmt::StorageRead { storage, .. } => {
                         assert_eq!(storage.0, StorageId::MEMORY_BASE);
@@ -1430,12 +1430,12 @@ mod tests {
         let writes: Vec<_> = body
             .values
             .iter()
-            .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageWrite { .. })))
+            .filter(|v| matches!(&v.kind, vaffle::Value::Op(Stmt::StorageWrite { .. })))
             .collect();
         let reads: Vec<_> = body
             .values
             .iter()
-            .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageRead { .. })))
+            .filter(|v| matches!(&v.kind, vaffle::Value::Op(Stmt::StorageRead { .. })))
             .collect();
         assert_eq!(
             writes.len(),
@@ -1465,7 +1465,7 @@ mod tests {
         let writes: Vec<_> = body
             .values
             .iter()
-            .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageWrite { .. })))
+            .filter(|v| matches!(&v.kind, vaffle::Value::Op(Stmt::StorageWrite { .. })))
             .collect();
         assert_eq!(
             writes.len(),
@@ -1477,7 +1477,7 @@ mod tests {
         let reads: Vec<_> = body
             .values
             .iter()
-            .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageRead { .. })))
+            .filter(|v| matches!(&v.kind, vaffle::Value::Op(Stmt::StorageRead { .. })))
             .collect();
         assert_eq!(
             reads.len(),
@@ -1571,7 +1571,7 @@ mod tests {
         let reads: Vec<_> = body
             .values
             .iter()
-            .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageRead { .. })))
+            .filter(|v| matches!(&v.kind, vaffle::Value::Op(Stmt::StorageRead { .. })))
             .collect();
         assert_eq!(
             reads.len(),

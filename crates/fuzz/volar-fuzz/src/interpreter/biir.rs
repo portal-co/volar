@@ -234,11 +234,9 @@ mod tests {
     }
 
     fn simple_block(params: u32, stmts: Vec<BIrStmt>, term: BIrTerminator) -> BIrBlock<()> {
-        let n = stmts.len();
         BIrBlock {
             params,
-            stmt_provs: vec![(); n],
-            stmts,
+            stmts: stmts.into_iter().map(|s| volar_ir_common::Node::new(s, (), None)).collect(),
             terminator: term,
         }
     }

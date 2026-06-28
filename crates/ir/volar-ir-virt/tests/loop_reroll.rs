@@ -6,7 +6,7 @@ use volar_fuzz::interpreter::ir::{bit_width, const_to_bits, eval_ir};
 use volar_ir::ir::{
     IRBlock, IRBlockTargetId, IRBranchTarget, IRBlocks, IRTerminator, IRType, IRTypes, IRVarId, PrimType,
 };
-use volar_ir_common::{Constant, Stmt};
+use volar_ir_common::{Constant, Node, Stmt};
 use volar_ir_virt::{virtualize_ir, AdaptiveSplitConfig, DispatchMode, VirtualizeConfig};
 
 fn cfg_split() -> VirtualizeConfig {
@@ -34,8 +34,7 @@ fn repeated_body_block() -> (IRBlocks, IRTypes) {
     }
     let blocks = IRBlocks::new(vec![IRBlock {
         params: vec![ty],
-        stmts,
-        stmt_provs: vec![(); 6],
+        stmts: stmts.into_iter().map(|s| Node::new(s, (), None)).collect(),
         terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(5)],) },
     }]);
     (blocks, types)

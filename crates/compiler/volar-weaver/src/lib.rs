@@ -329,6 +329,7 @@ pub(crate) mod tests_common {
         boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
         ir::{IRBlockId, IRBlockTargetId, IRVarId},
     };
+    use volar_ir_common::Node;
 
     /// Workspace root derived from `CARGO_MANIFEST_DIR` at compile time.
     pub fn workspace_root() -> String {
@@ -345,10 +346,9 @@ pub(crate) mod tests_common {
         BIrBlocks { blocks: vec![BIrBlock {
             params: 2,
             stmts: vec![
-                BIrStmt::Xor(IRVarId(0), IRVarId(1)),
-                BIrStmt::And(IRVarId(0), IRVarId(2)),
+                Node::new(BIrStmt::Xor(IRVarId(0), IRVarId(1)), (), None),
+                Node::new(BIrStmt::And(IRVarId(0), IRVarId(2)), (), None),
             ],
-            stmt_provs: vec![(), ()],
             terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(3)] }),
         }], pre_init: vec![] }
     }
@@ -357,8 +357,7 @@ pub(crate) mod tests_common {
     pub fn build_and_circuit() -> BIrBlocks {
         BIrBlocks { blocks: vec![BIrBlock {
             params: 2,
-            stmts: vec![BIrStmt::And(IRVarId(0), IRVarId(1))],
-            stmt_provs: vec![()],
+            stmts: vec![Node::new(BIrStmt::And(IRVarId(0), IRVarId(1)), (), None)],
             terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(2)] }),
         }], pre_init: vec![] }
     }
@@ -367,8 +366,7 @@ pub(crate) mod tests_common {
     pub fn build_simple_loop() -> BIrBlocks {
         BIrBlocks { blocks: vec![BIrBlock {
             params: 1,
-            stmts: vec![BIrStmt::One],
-            stmt_provs: vec![()],
+            stmts: vec![Node::new(BIrStmt::One, (), None)],
             terminator: BIrTerminator::CondJmp {
                 val: IRVarId(0),
                 then_target: BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(0)] },

@@ -531,8 +531,8 @@ pub fn bit_unflatten(bits: &[bool], widths: &[usize]) -> Vec<IrValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use volar_ir::ir::{IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRTerminator, IRVarId};
-    use volar_ir_common::{Constant, IrType, Stmt, Type, TypeId, TypeTable};
+    use volar_ir::ir::{IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRTerminator, IRVarId};
+    use volar_ir_common::{Constant, IrType, Node, Stmt, Type, TypeId, TypeTable};
 
     fn zero_const() -> Constant {
         Constant { hi: 0, lo: 0 }
@@ -546,11 +546,9 @@ mod tests {
         stmts: Vec<IRStmt>,
         terminator: IRTerminator,
     ) -> IRBlock<()> {
-        let n = stmts.len();
         IRBlock {
             params,
-            stmts,
-            stmt_provs: vec![(); n],
+            stmts: stmts.into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator,
         }
     }

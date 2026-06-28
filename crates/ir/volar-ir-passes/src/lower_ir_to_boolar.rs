@@ -556,9 +556,9 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap as StdBTreeMap;
     use volar_ir::ir::{
-        IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRType, IRTypes, IRVarId, PrimType,
+        IRBlock, IRBlockTargetId, IRBlocks, IRBranchTarget, IRTerminator, IRType, IRTypes, IRVarId, PrimType,
     };
-    use volar_ir_common::{Constant, TypeTable};
+    use volar_ir_common::{Constant, Node, TypeTable};
 
     // -- Helpers -------------------------------------------------------------
 
@@ -580,10 +580,8 @@ mod tests {
         let block = IRBlock {
             params,
             stmts: std::vec![],
-            stmt_provs: std::vec![],
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args,
+                target: IRBranchTarget::new(IRBlockTargetId::Return, args),
             },
         };
         (IRBlocks::new(std::vec![block]), types)
@@ -660,7 +658,6 @@ mod tests {
         let block = IRBlock {
             params: std::vec![u8_id],
             stmts: std::vec![],
-            stmt_provs: std::vec![],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
         };
         let blocks = IRBlocks::<()>::new(std::vec![block]);
@@ -679,7 +676,6 @@ mod tests {
         let mut block = IRBlock::<()> {
             params: std::vec![],
             stmts: std::vec![],
-            stmt_provs: std::vec![],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
         };
         block.push_stmt(volar_ir::ir::IRStmt::Const(zero_const(), bit_id), ());
@@ -689,7 +685,7 @@ mod tests {
         let b = &lowered.blocks[0];
         // 1-bit const zero → exactly one BIrStmt::Zero.
         assert_eq!(b.stmts.len(), 1);
-        assert_eq!(b.stmts[0], BIrStmt::Zero);
+        assert_eq!(b.stmts[0].kind, BIrStmt::Zero);
     }
 
     #[test]
@@ -700,7 +696,6 @@ mod tests {
         let mut block = IRBlock::<()> {
             params: std::vec![],
             stmts: std::vec![],
-            stmt_provs: std::vec![],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
         };
         // Const = 0b00000001 (value 1, bit 0 = One, rest = Zero).
@@ -712,10 +707,10 @@ mod tests {
         let b = &lowered.blocks[0];
         assert_eq!(b.stmts.len(), 8);
         // LSB first: bit 0 = 1 → One.
-        assert_eq!(b.stmts[0], BIrStmt::One);
+        assert_eq!(b.stmts[0].kind, BIrStmt::One);
         // All remaining bits are 0 → Zero.
-        for stmt in &b.stmts[1..] {
-            assert_eq!(*stmt, BIrStmt::Zero);
+        for node in &b.stmts[1..] {
+            assert_eq!(node.kind, BIrStmt::Zero);
         }
     }
 
@@ -739,8 +734,7 @@ mod tests {
                     src_ty: u8_src,
                     dst_ty: u8_dst,
                 },
-            ],
-            stmt_provs: std::vec![(), ()],
+            ].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(2)]) }, // return the transmuted value
         };
         let blocks = IRBlocks::new(std::vec![block]);
@@ -783,8 +777,7 @@ mod tests {
                 ty: aes8_id,
                 coeffs,
                 constant: zero_const(),
-            }],
-            stmt_provs: std::vec![()],
+            }].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(2)],) },
         };
         let blocks = IRBlocks::new(std::vec![block]);
@@ -794,11 +787,11 @@ mod tests {
         // one Xor — so 8 stmts emitted.
         assert_eq!(b.params, 16);
         assert_eq!(b.stmts.len(), 8);
-        for stmt in &b.stmts {
+        for node in &b.stmts {
             assert!(
-                matches!(stmt, BIrStmt::Xor(_, _)),
+                matches!(&node.kind, BIrStmt::Xor(_, _)),
                 "expected per-bit Xor for AES8 linear combination, got {:?}",
-                stmt
+                node.kind
             );
         }
     }
@@ -825,15 +818,14 @@ mod tests {
         let c = Constant { lo: 0, hi: 0 };
         let block = IRBlock::<u32> {
             params: std::vec![bit_id],
-            stmts: std::vec![volar_ir::ir::IRStmt::Const(c, bit_id)],
-            stmt_provs: std::vec![42u32],
+            stmts: std::vec![volar_ir::ir::IRStmt::Const(c, bit_id)].into_iter().map(|s| Node::new(s, 42u32, None)).collect(),
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
         };
         let blocks = IRBlocks::new(std::vec![block]);
         let lowered = lower_ir_to_boolar::<u32>(&blocks, &types);
         let b = &lowered.blocks[0];
         // The single Const(Bit, 0) emits one Zero stmt with provenance 42.
-        assert_eq!(b.stmt_provs.len(), 1);
-        assert_eq!(b.stmt_provs[0], 42u32);
+        assert_eq!(b.stmts.len(), 1);
+        assert_eq!(b.stmts[0].prov, 42u32);
     }
 }

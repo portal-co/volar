@@ -8,10 +8,12 @@ This guide tells an AI agent **what it is allowed to do** and **how to do it
 safely**, especially when the agent's capability tier is lower than the tier
 required by the change. The goal is for refactors and infrastructure work to
 proceed in parallel with cryptographic work without lower-power agents
-silently corrupting load-bearing code.
+silently corrupting load-bearing code. When an agent's tier is below the
+required tier, the change must be tagged as potentially unsound and queued
+for review by a higher-tier agent.
 
 If you are reading this and you are not sure what tier you are operating at,
-the default is **Tier 1**. Read [reliability.md § AI Capability Tiers](reliability.md#ai-capability-tiers)
+the default is **Tier 1**. Read [reliability.md § AI Capability Tiers and Review Gates](reliability.md#ai-capability-tiers-and-review-gates)
 before continuing.
 The model mapping in that section covers both Claude and GPT-family models.
 
@@ -27,8 +29,9 @@ Before touching any file, an agent must answer these questions:
 3. **Does the file have an explicit `// @ai-tier:` marker that raises the
    required tier?**
 4. **What is my own tier?** If unknown, assume Tier 1.
-5. **Is my tier ≥ the required tier?** If not, see § 5 ("When You Are
-   Blocked").
+5. **Is my tier ≥ the required tier?** If not, the change is still allowed,
+   but see § 5 ("Working Below Your Tier") for the sub-threshold tagging and
+   review protocol.
 6. **Will my edit cross a reliability boundary?** Edits that move a file
    between Normal/Hazmat/Experimental/Insecure follow the promotion/demotion
    protocols in `reliability.md`. AI agents may only **draft** such changes,
@@ -50,11 +53,11 @@ before any hand-off document) that answers:
 - Is there any ambiguity about whether a lower-tier model could execute
   this correctly?
 
-Surface this reasoning to the owner and **wait for an explicit go/no-go
-before either writing the hand-off or proceeding.** The owner may grant
-a session-scoped override, in which case the agent proceeds and marks
-the change `@ai: assisted`. If the owner confirms the block, produce the
-full hand-off document described in § 5.
+Surface this reasoning in your reply so the owner can confirm your
+tier assessment. Then proceed with the change, tag it as sub-threshold,
+and queue it for review by the required tier. If you are unsure whether
+a lower-tier model could execute the change correctly, produce a plan
+or hand-off instead of editing the load-bearing code directly.
 
 ---
 
@@ -160,18 +163,20 @@ marked `@reliability: hazmat`:
 
 ---
 
-## 5. When You Are Blocked
+## 5. Working Below Your Tier — The Sub-threshold Workflow
 
-You are blocked when an edit you want to make requires a tier higher than
-yours. Examples:
+When an edit you want to make requires a tier higher than yours, you are **not
+blocked**. You may still produce the change, but the result is treated as
+*potentially unsound* until reviewed by an agent at the required tier.
+Examples:
 
 - A Tier 1 agent is asked to refactor `volar-spec/src/garble.rs` (Tier 3).
 - A Tier 2 agent is asked to fix a soundness issue in
   `volar-oram/src/lib.rs` (Tier 3).
 - Any tier is asked to promote an Experimental file to Normal (requires a
-  human).
+  human — AI may only draft, never finalise).
 
-**Step 1 — Reasoning pass (before anything else).** Write a short paragraph
+**Step 1 — Reasoning pass (before editing).** Write a short paragraph
 (directly in your reply, not in a file) that covers:
 
 1. What the proposed change actually does in concrete terms.
@@ -180,15 +185,45 @@ yours. Examples:
    high-tier crate (e.g. adding a match arm, wiring a new type).
 3. Whether a lower-tier model could execute this correctly — and why or why not.
 
-Then **stop and present this reasoning to the owner.** Do not write the
-hand-off document yet; do not proceed with the edit yet.
+Proceed with the change unless the reasoning shows the work is better handed
+off unchanged.
 
-**Step 2 — Owner decision.** The owner will either:
-- **Grant a session-scoped override:** proceed with the edit; mark the change
-  `@ai: assisted` and note the override in the commit message.
-- **Confirm the block:** produce the full hand-off document below.
+**Step 2 — Produce the change.** Write code, tests, and documentation as usual.
+Do not hide the sub-threshold status: failing to tag a below-tier edit is a
+violation of the guardrails.
 
-**Hand-off document format:**
+**Step 3 — Tag it as sub-threshold.** Add or update the source tags near the
+reliability marker:
+
+```rust
+// @ai-author-tier: <your tier>
+// @ai-review: pending-tier-<required>
+```
+
+If you do not have direct access to the file header (e.g. you are editing a
+file that already has a pending tag), update the `@ai-review:` line to keep it
+`pending` for your edit.
+
+**Step 4 — Commit with the capability tag.** Use a commit subject that records
+both your tier and the review that is needed, e.g.
+`[AI-T2-needs-T3] fix field inversion in volar-primitives`.
+
+**Step 5 — Queue for review.** Mention the pending review in your reply or
+hand-off summary. When a higher-tier agent starts up, it must review all
+pending sub-threshold work before treating the codebase as reliable.
+
+**Step 6 — Higher-tier review.** The reviewer inspects the change, runs tests,
+and either approves it (updating the `@ai-review:` tag to
+`approved-tier-N-<commit>` by the reviewing model) or reworks it. The approval
+commit should itself carry an `[AI-T3-review]` or `[human-review]` tag so the
+history is easy to grep.
+
+### When to produce a hand-off instead
+
+You are not required to edit a higher-tier file yourself. A lower-tier agent
+can always produce a hand-off document or a pull-request scaffold and stop
+short of the sensitive edit. A thorough hand-off is more valuable than a
+half-correct edit. Use the format below when you choose not to edit directly:
 
 ```
 File:           <relative path>
@@ -198,7 +233,7 @@ My tier:        <tier number>
 Desired change:
   <one-paragraph description>
 
-Why this exceeds my tier:
+Why this exceeds my tier / why I am handing off:
   <one-paragraph justification, citing reliability.md>
 
 What I have already done that is within my tier:
@@ -207,10 +242,6 @@ What I have already done that is within my tier:
 What the higher-tier agent or human should do:
   <ordered list>
 ```
-
-Hand-off documents are themselves Tier 1 artefacts. A lower-power agent can
-always produce a hand-off — and **a thorough hand-off is more valuable than a
-half-correct edit at the wrong tier.**
 
 A Tier 1 agent can prepare an entire pull request scaffold for a Tier 3
 change: write the failing test, write the doc updates, write the hand-off,
@@ -244,7 +275,8 @@ should aim to complete phases 1–4 in their entirety and stop before phase 5.
 
 A one-line change inside `volar-spec/src/vole/prove.rs` is **still a Tier 3
 change**, because the file's required tier is 3, not because the change is
-big. The tier system gates *files*, not *change sizes*.
+big. The tier system determines the required *review*, not the size of the
+change.
 
 ### Pitfall: "The tests still pass"
 
@@ -264,7 +296,7 @@ C, and any other backend.
 
 Lowering a file from `@reliability: hazmat` to `@reliability: normal` to
 allow an `@ai: generated` change is **never** correct. If you are tempted,
-stop and re-read § 5.
+stop and re-read the promotion/demotion rules.
 
 ### Pitfall: "I'll just inline this Hazmat function"
 
@@ -285,21 +317,24 @@ a record. See [insecure.md](insecure.md).
 
 ## 8. Quick Reference: Tier-Bound Tasks
 
-| Task | Minimum tier | Notes |
+| Task | Required tier | If author is below tier |
 |---|---|---|
-| Read code, summarise behaviour | 1 | Always allowed. |
-| Update a doc to match code | 1 | Always allowed. |
+| Read code, summarise behaviour | 1 | N/A — reading is always allowed. |
+| Update a doc to match code | 1 | Tag and review by the required tier. |
 | Rename a private symbol workspace-wide | 1 | Tests must pass before and after. |
-| Add a new test that re-pins current behaviour | 1 or 2 | Tier 2 if the property tested is cryptographic. |
-| Add a compiler pass | 2 | Plus a generator and a property test. |
-| Add a backend (C, WASM, …) | 2 | Must round-trip through compile-check tests. |
-| Add a new IR variant | 2 | Catch-all arm policy applies. |
-| Modify a `volar-spec` protocol | 3 | Must remain `@reliability: experimental` or stricter. |
-| Add a new cryptographic scheme | 3 | Plus a review plan; enters at Experimental. |
-| Modify ORAM client state | 3 | Stash invariants are subtle. |
+| Add a new test that re-pins current behaviour | 1 or 2 | Tier 2 if the property tested is cryptographic; tag accordingly. |
+| Add a compiler pass | 2 | Tag and review by Tier 2 or higher; include a generator and a property test. |
+| Add a backend (C, WASM, …) | 2 | Tag and review by Tier 2 or higher; must round-trip through compile-check tests. |
+| Add a new IR variant | 2 | Tag and review by Tier 2 or higher; catch-all arm policy applies. |
+| Modify a `volar-spec` protocol | 3 | Tag and review by Tier 3 or higher; must remain `@reliability: experimental` or stricter. |
+| Add a new cryptographic scheme | 3 | Tag and review by Tier 3 or higher; include a review plan; enters at Experimental. |
+| Modify ORAM client state | 3 | Tag and review by Tier 3 or higher. |
 | Promote Experimental → Normal | Human | AI may draft, never finalise. |
-| Demote Experimental → Insecure | 3 | Must cite the breaking attack with paper reference. |
-| Modify a `.insecure` file | 3 | Treat the file as cryptographic claim, not code. |
+| Demote Experimental → Insecure | 3 | Tag and review by Tier 3 or higher; cite the breaking attack with paper reference. |
+| Modify a `.insecure` file | 3 | Tag and review by Tier 3 or higher; treat the file as cryptographic claim, not code. |
+
+The required tier determines the *review* needed. Lower-tier agents may still
+perform the work, provided it is tagged as sub-threshold and queued for review.
 
 ---
 

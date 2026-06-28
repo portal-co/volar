@@ -14,7 +14,7 @@
 use alloc::{collections::BTreeMap, vec, vec::Vec};
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
 use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBlocks, IRBranchTarget, IRTerminator, IRVarId};
-use volar_ir_common::{Constant, StorageId, TypeId, TypeTable};
+use volar_ir_common::{Constant, Node, StorageId, TypeId, TypeTable};
 use vaffle::{FuncBody, FuncDecl, Module, Value, ValueId};
 
 use crate::common::{
@@ -1426,11 +1426,11 @@ fn merge_biir_caches_with_injection<P: Clone>(
 
 /// Extract the GF(2) polynomial representation of a VAFFLE address value.
 fn vaffle_addr_poly(
-    values: &[Value],
+    values: &[Node<Value>],
     v: ValueId,
 ) -> (BTreeMap<Vec<ValueId>, u8>, Constant) {
     use volar_ir_common::Stmt;
-    match &values[v.0] {
+    match &values[v.0].kind {
         Value::Op(Stmt::Const(c, _)) => (BTreeMap::new(), *c),
         Value::Op(Stmt::Poly { coeffs, constant, .. }) => (coeffs.clone(), *constant),
         _ => {
@@ -1442,7 +1442,7 @@ fn vaffle_addr_poly(
 }
 
 /// GF(2) poly check for VAFFLE addresses.
-fn vaffle_polys_xor_nonzero_const(values: &[Value], a: ValueId, b: ValueId) -> bool {
+fn vaffle_polys_xor_nonzero_const(values: &[Node<Value>], a: ValueId, b: ValueId) -> bool {
     let (mut ca, ka) = vaffle_addr_poly(values, a);
     let (cb, kb) = vaffle_addr_poly(values, b);
     for (key, coeff) in cb {
@@ -1456,7 +1456,7 @@ fn vaffle_polys_xor_nonzero_const(values: &[Value], a: ValueId, b: ValueId) -> b
 /// Compute `KnownBits` for one VAFFLE value, given already-computed results for
 /// earlier values (forward pass over the global value table).
 fn vaffle_value_known_bits(
-    values: &[Value],
+    values: &[Node<Value>],
     kb_vec: &[KnownBits],
     width_vec: &[usize],
     v: ValueId,
@@ -1467,7 +1467,7 @@ fn vaffle_value_known_bits(
     let get_kb = |u: ValueId| kb_vec.get(u.0).copied().unwrap_or_default();
     let get_pw = |u: ValueId| width_vec.get(u.0).copied().unwrap_or(0);
 
-    match &values[v.0] {
+    match &values[v.0].kind {
         Value::Op(Stmt::Const(c, ty)) => {
             let w = get_w(*ty);
             (KnownBits::from_const(*c, w), w)
@@ -1566,7 +1566,7 @@ fn compute_vaffle_known_bits(body: &FuncBody, types: &TypeTable) -> alloc::vec::
 
 /// Return `true` iff VAFFLE address values `a` and `b` are provably distinct.
 fn vaffle_addrs_provably_different(
-    values: &[Value],
+    values: &[Node<Value>],
     kb_vec: &[KnownBits],
     a: ValueId,
     b: ValueId,
@@ -1752,7 +1752,7 @@ fn store_forward_vaffle_block_with_cache(
 
         // Extract only the Copy fields we need — Value doesn't implement Clone.
         use volar_ir_common::Stmt;
-        let action: Option<VaffleStoreAction> = match &body.values[vid.0] {
+        let action: Option<VaffleStoreAction> = match &body.values[vid.0].kind {
             Value::Op(Stmt::StorageWrite { storage, src, ty, addr }) => {
                 Some(VaffleStoreAction::Write {
                     storage: *storage,
@@ -1832,14 +1832,14 @@ fn apply_aliases_to_ir_stmt(
 // ============================================================================
 
 fn apply_aliases_to_vaffle_value(
-    value: &mut Value,
+    value: &mut Node<Value>,
     alias_map: &BTreeMap<ValueId, ValueId>,
 ) -> bool {
     if alias_map.is_empty() {
         return false;
     }
-    
-    let stmt = match value {
+
+    let stmt = match &mut value.kind {
         Value::Op(s) => s,
         _ => return false,
     };
@@ -1996,8 +1996,8 @@ mod tests {
     }
 
     fn make_block(params: Vec<TypeId>, stmts: Vec<Stmt<IRVarId, IRVarId>>) -> IRBlock<()> {
-        let n = stmts.len();
-        IRBlock { params, stmts, stmt_provs: vec![(); n], terminator: jmp_self() }
+        let stmts = stmts.into_iter().map(|s| volar_ir_common::Node::new(s, (), None)).collect();
+        IRBlock { params, stmts, terminator: jmp_self() }
     }
 
     fn const_addr(lo: u128) -> Stmt<IRVarId, IRVarId> {

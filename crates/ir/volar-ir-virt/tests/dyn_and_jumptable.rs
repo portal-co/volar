@@ -14,7 +14,7 @@ use volar_ir::ir::{
     IRBlock, IRBlockId, IRBlockTargetId, IRBranchTarget, IRBlocks, IRTerminator, IRType, IRTypes, IRVarId,
     PrimType,
 };
-use volar_ir_common::{Constant, Stmt};
+use volar_ir_common::{Constant, Node, Stmt};
 use volar_ir_passes::movfuscate_ir;
 use volar_ir_virt::{virtualize_ir, DispatchMode, VirtualizeConfig};
 
@@ -77,7 +77,6 @@ fn jumptable_three_block() -> (IRBlocks, IRTypes) {
         IRBlock {
             params: vec![u32_ty],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::JumpTable {
                 index: IRVarId(0),
                 cases,
@@ -86,15 +85,13 @@ fn jumptable_three_block() -> (IRBlocks, IRTypes) {
         // block 1: return 10
         IRBlock {
             params: vec![],
-            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 10 }, u32_ty)],
-            stmt_provs: vec![()],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 10 }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],) },
         },
         // block 2: return 20
         IRBlock {
             params: vec![],
-            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 20 }, u32_ty)],
-            stmt_provs: vec![()],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 20 }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],) },
         },
     ]);
@@ -121,15 +118,13 @@ fn dyn_two_block(types: &mut IRTypes) -> IRBlocks {
         // block 0: Dyn jump to block 1 (encoded as Const(1, block_ty)).
         IRBlock {
             params: vec![u32_ty],
-            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 1 }, block_ty)],
-            stmt_provs: vec![()],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 1 }, block_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Dyn(IRVarId(1)), vec![IRVarId(0)],) },
         },
         // block 1: return x
         IRBlock {
             params: vec![u32_ty],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],) },
         },
     ])

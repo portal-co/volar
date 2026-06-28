@@ -3892,8 +3892,9 @@ mod tests {
         coeffs.insert(vec![IRVarId(0), IRVarId(1)], 1u8);
         let block = IRBlock {
             params: vec![bit, bit],
-            stmts: vec![IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } }],
-            stmt_provs: vec![()],
+            stmts: vec![volar_ir_common::Node::new(
+                IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } }, (), None,
+            )],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(2)],
             ) },
         };
@@ -3918,8 +3919,7 @@ mod tests {
 
         let block0 = IRBlock {
             params: vec![bit, bit],
-            stmts: vec![IRStmt_::Const(zero, bit)],
-            stmt_provs: vec![()],
+            stmts: vec![volar_ir_common::Node::new(IRStmt_::Const(zero, bit), (), None)],
             terminator: IRTerminator::JumpCond {
                 condition: IRVarId(2),
                 then_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(0)]),
@@ -3929,7 +3929,6 @@ mod tests {
         let block1 = IRBlock {
             params: vec![bit],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],
             ) },
         };
@@ -3953,7 +3952,6 @@ mod tests {
         let block0 = IRBlock {
             params: vec![bit, bit],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::JumpCond {
                 condition: IRVarId(0),
                 then_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(0)]),
@@ -3963,7 +3961,6 @@ mod tests {
         let block1 = IRBlock {
             params: vec![bit],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],
             ) },
         };
@@ -4043,8 +4040,7 @@ mod tests {
         let one = Constant { hi: 0, lo: 1 };
         let block = IRBlock {
             params: vec![],
-            stmts: vec![IRStmt_::Const(one, bit)],
-            stmt_provs: vec![()],
+            stmts: vec![volar_ir_common::Node::new(IRStmt_::Const(one, bit), (), None)],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],
             ) },
         };
@@ -4081,11 +4077,12 @@ mod tests {
         let block = IRBlock {
             params: vec![],
             stmts: vec![
-                IRStmt_::Const(one,  bit), // var_0 = 1 (public)
-                IRStmt_::Const(zero, bit), // var_1 = 0 (public)
-                IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } },
+                volar_ir_common::Node::new(IRStmt_::Const(one,  bit), (), None), // var_0 = 1 (public)
+                volar_ir_common::Node::new(IRStmt_::Const(zero, bit), (), None), // var_1 = 0 (public)
+                volar_ir_common::Node::new(
+                    IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } }, (), None,
+                ),
             ],
-            stmt_provs: vec![(), (), ()],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(2)],
             ) },
         };
@@ -4121,10 +4118,11 @@ mod tests {
         let block = IRBlock {
             params: vec![bit],
             stmts: vec![
-                IRStmt_::Const(one, bit), // var_1 = true (public)
-                IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } },
+                volar_ir_common::Node::new(IRStmt_::Const(one, bit), (), None), // var_1 = true (public)
+                volar_ir_common::Node::new(
+                    IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } }, (), None,
+                ),
             ],
-            stmt_provs: vec![(), ()],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(2)],
             ) },
         };
@@ -4163,15 +4161,13 @@ mod tests {
         let zero = Constant { hi: 0, lo: 0 };
         let block0 = IRBlock {
             params: vec![bit],
-            stmts: vec![IRStmt_::Const(zero, bit)],
-            stmt_provs: vec![()],
+            stmts: vec![volar_ir_common::Node::new(IRStmt_::Const(zero, bit), (), None)],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(1)], // public Const passed as block arg
             ) },
         };
         let block1 = IRBlock {
             params: vec![bit],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],
             ) },
         };
@@ -4200,19 +4196,18 @@ mod tests {
         BIrBlocks { blocks: vec![BIrBlock {
             params: 2,
             stmts: vec![
-                BIrStmt::StorageWrite {
+                volar_ir_common::Node::new(BIrStmt::StorageWrite {
                     storage: StorageId(5),
                     src: IRVarId(0),
                     bit_width: 1,
                     addr: vec![IRVarId(1)],
-                },
-                BIrStmt::StorageRead {
+                }, (), None),
+                volar_ir_common::Node::new(BIrStmt::StorageRead {
                     storage: StorageId(5),
                     bit_width: 1,
                     addr: vec![IRVarId(1)],
-                },
+                }, (), None),
             ],
-            stmt_provs: vec![(), ()],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Return,
                 args: vec![IRVarId(3)],
@@ -4314,8 +4309,7 @@ mod tests {
         // A circuit with no storage stmts should produce an empty config.
         let circuit = BIrBlocks { blocks: vec![BIrBlock {
             params: 2,
-            stmts: vec![BIrStmt::Xor(IRVarId(0), IRVarId(1))],
-            stmt_provs: vec![()],
+            stmts: vec![volar_ir_common::Node::new(BIrStmt::Xor(IRVarId(0), IRVarId(1)), (), None)],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Return,
                 args: vec![IRVarId(2)],
@@ -4334,13 +4328,12 @@ mod tests {
         let circuit = BIrBlocks { blocks: vec![BIrBlock {
             params: 3,
             stmts: vec![
-                BIrStmt::StorageRead {
+                volar_ir_common::Node::new(BIrStmt::StorageRead {
                     storage: StorageId(0),
                     bit_width: 1,
                     addr: vec![IRVarId(0), IRVarId(1)],
-                },
+                }, (), None),
             ],
-            stmt_provs: vec![()],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Return,
                 args: vec![IRVarId(3)],
@@ -4575,15 +4568,13 @@ mod tests {
         let one = Constant { hi: 0, lo: 1 };
         let block0 = IRBlock {
             params: vec![bit],
-            stmts: vec![IRStmt_::Const(one, bit)],
-            stmt_provs: vec![()],
+            stmts: vec![volar_ir_common::Node::new(IRStmt_::Const(one, bit), (), None)],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(1)], // Const — public
             ) },
         };
         let block1 = IRBlock {
             params: vec![bit],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)], // blk1_p0
             ) },
         };
@@ -4639,18 +4630,17 @@ mod tests {
         let block = IRBlock {
             params: vec![bit],
             stmts: vec![
-                IRStmt_::Const(one, bit),  // var_1 = true (public guard)
-                IRStmt_::ActionCall {
+                volar_ir_common::Node::new(IRStmt_::Const(one, bit), (), None),  // var_1 = true (public guard)
+                volar_ir_common::Node::new(IRStmt_::ActionCall {
                     name: "my_action".into(),
                     guard: IRVarId(1),
                     args: vec![IRVarId(0)],
                     fallbacks: vec![IRVarId(1)],
                     output_tys: vec![bit],
                     result_ty: tuple_ty,
-                },
-                IRStmt_::ActionOutput { call: IRVarId(2), idx: 0, ty: bit },
+                }, (), None),
+                volar_ir_common::Node::new(IRStmt_::ActionOutput { call: IRVarId(2), idx: 0, ty: bit }, (), None),
             ],
-            stmt_provs: vec![(), (), ()],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(3)],
             ) },
         };
@@ -4697,18 +4687,17 @@ mod tests {
         let block = IRBlock {
             params: vec![bit],
             stmts: vec![
-                IRStmt_::Const(one, bit),  // var_1 = true (fallback, public)
-                IRStmt_::ActionCall {
+                volar_ir_common::Node::new(IRStmt_::Const(one, bit), (), None),  // var_1 = true (fallback, public)
+                volar_ir_common::Node::new(IRStmt_::ActionCall {
                     name: "private_action".into(),
                     guard: IRVarId(0),     // encrypted guard
                     args: vec![IRVarId(0)],
                     fallbacks: vec![IRVarId(1)],
                     output_tys: vec![bit],
                     result_ty: tuple_ty,
-                },
-                IRStmt_::ActionOutput { call: IRVarId(2), idx: 0, ty: bit },
+                }, (), None),
+                volar_ir_common::Node::new(IRStmt_::ActionOutput { call: IRVarId(2), idx: 0, ty: bit }, (), None),
             ],
-            stmt_provs: vec![(), (), ()],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(3)],
             ) },
         };
@@ -4756,19 +4745,18 @@ mod tests {
         let block = IRBlock {
             params: vec![bit],
             stmts: vec![
-                IRStmt_::Const(one, bit), // var_1 = true (public guard)
-                IRStmt_::ActionCall {
+                volar_ir_common::Node::new(IRStmt_::Const(one, bit), (), None), // var_1 = true (public guard)
+                volar_ir_common::Node::new(IRStmt_::ActionCall {
                     name: "mixed_action".into(),
                     guard: IRVarId(1),
                     args: vec![IRVarId(0)],
                     fallbacks: vec![IRVarId(1), IRVarId(0)],
                     output_tys: vec![bit, bit],
                     result_ty: tuple_ty,
-                },
-                IRStmt_::ActionOutput { call: IRVarId(2), idx: 0, ty: bit }, // public output
-                IRStmt_::ActionOutput { call: IRVarId(2), idx: 1, ty: bit }, // encrypted output
+                }, (), None),
+                volar_ir_common::Node::new(IRStmt_::ActionOutput { call: IRVarId(2), idx: 0, ty: bit }, (), None), // public output
+                volar_ir_common::Node::new(IRStmt_::ActionOutput { call: IRVarId(2), idx: 1, ty: bit }, (), None), // encrypted output
             ],
-            stmt_provs: vec![(), (), (), ()],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(3)], // return the public output
             ) },
         };
@@ -4811,8 +4799,9 @@ mod tests {
         coeffs.insert(vec![IRVarId(0), IRVarId(1)], 1u8);
         let block: IRBlock<P> = IRBlock {
             params: vec![bit, bit],
-            stmts: vec![IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } }],
-            stmt_provs: vec![prov],
+            stmts: vec![volar_ir_common::Node::new(
+                IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } }, prov, None,
+            )],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(2)],
             ) },
         };
@@ -4829,8 +4818,7 @@ mod tests {
 
         let block0: IRBlock<P> = IRBlock {
             params: vec![bit, bit],
-            stmts: vec![IRStmt_::Const(zero, bit)],
-            stmt_provs: vec![prov0],
+            stmts: vec![volar_ir_common::Node::new(IRStmt_::Const(zero, bit), prov0, None)],
             terminator: IRTerminator::JumpCond {
                 condition: IRVarId(2),
                 then_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(0)]),
@@ -4840,7 +4828,6 @@ mod tests {
         let block1: IRBlock<P> = IRBlock {
             params: vec![bit],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],
             ) },
         };

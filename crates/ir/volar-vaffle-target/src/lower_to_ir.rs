@@ -429,7 +429,6 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
     fn emit_entry_and_exit(&mut self) {
         // Block 0: entry.  Params: none.  Body: SP = const 0.  Jump to func 0.
         let mut em = BlockEmitter::new(vec![]);
-        let sp = StackPtr::<IRVarId>::from_const(&mut em, 0, SP_BITS);
 
         if self.func_info.is_empty() {
             self.blocks.push(em.finish(IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![],) }));
@@ -439,6 +438,18 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
             });
             return;
         }
+
+        // The entry block's infrastructure statements (SP init, continuation
+        // write) have no VAFFLE source statement of their own — they scaffold
+        // the jump into func 0's body, so they inherit that function's first
+        // value's provenance.
+        let entry_prov = match &self.module.funcs[0] {
+            FuncDecl::Body(b) => b.values.first().map(|n| n.prov.clone()),
+            _ => None,
+        }.expect("emit_entry_and_exit: entry function (func 0) must be a Body with at least one value to seed provenance from");
+        em.set_prov(entry_prov.clone());
+
+        let sp = StackPtr::<IRVarId>::from_const(&mut em, 0, SP_BITS);
 
         let info = &self.func_info[0];
         let callee_layout = &info.callee_layout;
@@ -475,6 +486,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
         let ret_packs = n_packs(total_ret_bits);
         let exit_params: Vec<IRTypeId> = vec![PACK_TID; sp_packs + ret_packs];
         let mut exit_em = BlockEmitter::new(exit_params);
+        exit_em.set_prov(entry_prov);
 
         // Unpack all return bits and forward them as individual Bit args.
         let ret_word_ids: Vec<IRVarId> = (sp_packs as u32 .. (sp_packs + ret_packs) as u32)
@@ -513,10 +525,14 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
 
             let mut em = BlockEmitter::new(params);
             // Infrastructure stmts (SP unpack, param unpack) get the provenance
-            // of the first VAFFLE stmt in this block, if any.
-            if let Some(p) = vaffle_block.stmt_provs.first() {
-                em.set_prov(p.clone());
-            }
+            // of the first VAFFLE stmt in this block; blocks with no stmts of
+            // their own (e.g. an immediate unconditional jump) fall back to the
+            // function's first value, mirroring `emit_entry_and_exit`'s rule.
+            let block_prov = vaffle_block.stmts.first()
+                .map(|&first_vid| body.values[first_vid.0].prov.clone())
+                .or_else(|| body.values.first().map(|n| n.prov.clone()))
+                .expect("lower_function: function has no values to seed block provenance from");
+            em.set_prov(block_prov);
 
             // Unpack SP from packed words.
             let sp_word_ids: Vec<IRVarId> = (0..sp_packs as u32).map(IRVarId).collect();
@@ -549,16 +565,13 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
             let mut current_em = em;
             let mut current_sp_bits = sp_bits.clone();
             let mut current_frame_sp = frame_sp.clone();
-            let mut stmt_offset = 0usize;
 
             while !remaining_stmts.is_empty() {
                 let (before_call, at_call, after_call) = find_call(remaining_stmts, body);
 
-                for (i, &svid) in before_call.iter().enumerate() {
-                    if let Some(p) = vaffle_block.stmt_provs.get(stmt_offset + i) {
-                        current_em.set_prov(p.clone());
-                    }
-                    match &body.values[svid.0] {
+                for &svid in before_call.iter() {
+                    current_em.set_prov(body.values[svid.0].prov.clone());
+                    match &body.values[svid.0].kind {
                         Value::Op(stmt) => {
                             let ir_stmt = translate_stmt(stmt, &val_map, &self.type_map);
                             let id = current_em.emit(ir_stmt);
@@ -583,13 +596,10 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                     }
                 }
 
-                stmt_offset += before_call.len();
                 match at_call {
                     Some(call_vid) => {
-                        if let Some(p) = vaffle_block.stmt_provs.get(stmt_offset) {
-                            current_em.set_prov(p.clone());
-                        }
-                        if let Value::Call { func: callee_fid, args: call_args } = &body.values[call_vid.0] {
+                        current_em.set_prov(body.values[call_vid.0].prov.clone());
+                        if let Value::Call { func: callee_fid, args: call_args } = &body.values[call_vid.0].kind {
                             let callee_idx = callee_fid.0;
                             let callee_info = &self.func_info[callee_idx];
                             let cl = callee_info.callee_layout.clone();
@@ -605,7 +615,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                             let spill_keys: Vec<usize> = val_map.keys().copied()
                                 .filter(|k| future_uses.contains(k))
                                 .filter(|k| !matches!(
-                                    &body.values[*k], Value::StackAlloc { .. }
+                                    &body.values[*k].kind, Value::StackAlloc { .. }
                                 ))
                                 .collect();
                             let spill_bits: Vec<IRVarId> = spill_keys.iter()
@@ -657,9 +667,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                             let cont_params: Vec<IRTypeId> = vec![PACK_TID; sp_packs + ret_packs];
                             let mut cont_em = BlockEmitter::new(cont_params);
                             // Continuation infrastructure gets the call stmt's provenance.
-                            if let Some(p) = vaffle_block.stmt_provs.get(stmt_offset) {
-                                cont_em.set_prov(p.clone());
-                            }
+                            cont_em.set_prov(body.values[call_vid.0].prov.clone());
 
                             // Unpack SP.
                             let cont_sp_word_ids: Vec<IRVarId> = (0..sp_packs as u32).map(IRVarId).collect();
@@ -694,7 +702,6 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                             current_frame_sp = StackPtr::new(current_sp_bits.clone());
                             current_frame_sp.retreat(own_layout.size);
                         }
-                        stmt_offset += 1;
                         remaining_stmts = after_call;
                     }
                     None => {
@@ -865,7 +872,7 @@ fn find_call<'a, P: Clone>(
     body: &FuncBody<P>,
 ) -> (&'a [ValueId], Option<ValueId>, &'a [ValueId]) {
     for (i, &svid) in stmts.iter().enumerate() {
-        if matches!(&body.values[svid.0], Value::Call { .. }) {
+        if matches!(&body.values[svid.0].kind, Value::Call { .. }) {
             return (&stmts[..i], Some(svid), &stmts[i + 1..]);
         }
     }
@@ -885,7 +892,7 @@ fn collect_uses<P: Clone>(
 ) -> BTreeSet<usize> {
     let mut uses = BTreeSet::new();
     for &vid in stmt_ids {
-        collect_value_uses(&body.values[vid.0], &mut uses);
+        collect_value_uses(&body.values[vid.0].kind, &mut uses);
     }
     collect_terminator_uses(term, &mut uses);
     uses
@@ -999,7 +1006,7 @@ fn ir_type_bit_width(types: &IRTypes, tid: TypeId) -> usize {
 
 /// Return the VAFFLE TypeId of a value in a function body.
 fn vaffle_value_vtid<P: Clone>(body: &FuncBody<P>, vid: ValueId) -> TypeId {
-    match &body.values[vid.0] {
+    match &body.values[vid.0].kind {
         Value::Param { ty, .. } => *ty,
         Value::Op(stmt)         => stmt_result_vtid(stmt),
         // Call produces an aggregate; Output extracts one element.
@@ -1152,7 +1159,7 @@ mod tests {
         // Verify that STACK StorageRead/Write appear in the lowered IR.
         let has_stack_ops = ir_blocks.blocks.iter().any(|block| {
             block.stmts.iter().any(|stmt| matches!(
-                stmt,
+                &stmt.kind,
                 IRStmt::StorageRead { storage, .. } | IRStmt::StorageWrite { storage, .. }
                     if *storage == StorageId::STACK
             ))
@@ -1207,13 +1214,13 @@ mod tests {
         // The entry block (block 0) should contain at least one Merge
         // (packing SP bits for the jump to the function entry).
         let has_merge = ir_blocks.blocks[0].stmts.iter()
-            .any(|s| matches!(s, IRStmt::Merge { ty, .. } if *ty == PACK_TID));
+            .any(|s| matches!(&s.kind, IRStmt::Merge { ty, .. } if *ty == PACK_TID));
         assert!(has_merge, "entry block should contain a Merge (pack) with PACK_TID");
 
         // The function entry block should contain Shuffle stmts (unpacking SP).
         let func_entry = &ir_blocks.blocks[2];
         let has_shuffle = func_entry.stmts.iter()
-            .any(|s| matches!(s, IRStmt::Shuffle { ty, .. } if *ty == BIT_TID));
+            .any(|s| matches!(&s.kind, IRStmt::Shuffle { ty, .. } if *ty == BIT_TID));
         assert!(has_shuffle, "function entry should contain Shuffle (unpack) stmts");
     }
 
@@ -1245,10 +1252,9 @@ mod tests {
             blocks: std::vec![Block {
                 params: std::vec![(ValueId(0), bit_tid)],
                 stmts: std::vec![],
-                stmt_provs: std::vec![],
                 terminator: Terminator::Return { values: std::vec![ValueId(0)] },
             }],
-            values: vals1,
+            values: vals1.into_iter().map(|v| volar_ir_common::Node::new(v, (), None)).collect(),
             entry: BlockId(0),
         };
 
@@ -1263,10 +1269,9 @@ mod tests {
             blocks: std::vec![Block {
                 params: std::vec![(ValueId(0), bit_tid)],
                 stmts: std::vec![ValueId(1), ValueId(2)],
-                stmt_provs: std::vec![(), ()],
                 terminator: Terminator::Return { values: std::vec![ValueId(2)] },
             }],
-            values: vals0,
+            values: vals0.into_iter().map(|v| volar_ir_common::Node::new(v, (), None)).collect(),
             entry: BlockId(0),
         };
 
@@ -1301,7 +1306,7 @@ mod tests {
         // the total does not exceed 3 (i.e. no spill writes were added).
         let stack_pack_writes: std::vec::Vec<_> = ir_blocks.blocks.iter()
             .flat_map(|b| b.stmts.iter())
-            .filter(|s| matches!(s, IRStmt::StorageWrite { storage, ty, .. }
+            .filter(|s| matches!(&s.kind, IRStmt::StorageWrite { storage, ty, .. }
                 if *storage == StorageId::STACK && *ty == PACK_TID))
             .collect();
         assert!(
@@ -1341,10 +1346,9 @@ mod tests {
             blocks: std::vec![Block {
                 params: std::vec![(ValueId(0), bit_tid)],
                 stmts: std::vec![],
-                stmt_provs: std::vec![],
                 terminator: Terminator::Return { values: std::vec![ValueId(0)] },
             }],
-            values: vals1,
+            values: vals1.into_iter().map(|v| volar_ir_common::Node::new(v, (), None)).collect(),
             entry: BlockId(0),
         };
 
@@ -1382,10 +1386,9 @@ mod tests {
             blocks: std::vec![Block {
                 params: std::vec![(ValueId(0), bit_tid)],
                 stmts: std::vec![ValueId(1), ValueId(2), ValueId(3), ValueId(4)],
-                stmt_provs: std::vec![(), (), (), ()],
                 terminator: Terminator::Return { values: std::vec![ValueId(4)] },
             }],
-            values: vals0,
+            values: vals0.into_iter().map(|v| volar_ir_common::Node::new(v, (), None)).collect(),
             entry: BlockId(0),
         };
 
@@ -1414,7 +1417,7 @@ mod tests {
         // PACK_TID-typed StorageWrite to STACK must appear (the spill).
         let spill_writes: std::vec::Vec<_> = ir_blocks.blocks.iter()
             .flat_map(|b| b.stmts.iter())
-            .filter(|s| matches!(s, IRStmt::StorageWrite { storage, ty, .. }
+            .filter(|s| matches!(&s.kind, IRStmt::StorageWrite { storage, ty, .. }
                 if *storage == StorageId::STACK && *ty == PACK_TID))
             .collect();
         assert!(
@@ -1426,7 +1429,7 @@ mod tests {
         // continuation block.
         let reload_reads: std::vec::Vec<_> = ir_blocks.blocks.iter()
             .flat_map(|b| b.stmts.iter())
-            .filter(|s| matches!(s, IRStmt::StorageRead { storage, ty, .. }
+            .filter(|s| matches!(&s.kind, IRStmt::StorageRead { storage, ty, .. }
                 if *storage == StorageId::STACK && *ty == PACK_TID))
             .collect();
         assert!(
@@ -1460,10 +1463,9 @@ mod tests {
             blocks: std::vec![Block {
                 params: std::vec![(ValueId(0), bit_tid)],
                 stmts: std::vec![],
-                stmt_provs: std::vec![],
                 terminator: Terminator::Return { values: std::vec![ValueId(0)] },
             }],
-            values: vals1,
+            values: vals1.into_iter().map(|v| volar_ir_common::Node::new(v, (), None)).collect(),
             entry: BlockId(0),
         };
 
@@ -1475,13 +1477,12 @@ mod tests {
             blocks: std::vec![Block {
                 params: std::vec![(ValueId(0), bit_tid)],
                 stmts: std::vec![],
-                stmt_provs: std::vec![],
                 terminator: Terminator::ReturnCall {
                     func: FuncId(1),
                     args: std::vec![ValueId(0)],
                 },
             }],
-            values: vals0,
+            values: vals0.into_iter().map(|v| volar_ir_common::Node::new(v, (), None)).collect(),
             entry: BlockId(0),
         };
 
@@ -1555,10 +1556,9 @@ mod tests {
             blocks: std::vec![Block {
                 params: std::vec![(ValueId(0), bit_tid)],
                 stmts: std::vec![],
-                stmt_provs: std::vec![],
                 terminator: Terminator::Return { values: std::vec![ValueId(0)] },
             }],
-            values: vals1,
+            values: vals1.into_iter().map(|v| volar_ir_common::Node::new(v, (), None)).collect(),
             entry: BlockId(0),
         };
 
@@ -1569,13 +1569,12 @@ mod tests {
             blocks: std::vec![Block {
                 params: std::vec![(ValueId(0), bit_tid)],
                 stmts: std::vec![],
-                stmt_provs: std::vec![],
                 terminator: Terminator::ReturnCall {
                     func: FuncId(1),
                     args: std::vec![ValueId(0)],
                 },
             }],
-            values: vals0,
+            values: vals0.into_iter().map(|v| volar_ir_common::Node::new(v, (), None)).collect(),
             entry: BlockId(0),
         };
 
@@ -1598,7 +1597,7 @@ mod tests {
         // A regular call writes one Block-typed cont; a tail call must NOT.
         let func0_block = &ir_blocks.blocks[2];
         let block_writes = func0_block.stmts.iter().filter(|s| matches!(
-            s, IRStmt::StorageWrite { ty, .. } if *ty != PACK_TID && *ty != BIT_TID
+            &s.kind, IRStmt::StorageWrite { ty, .. } if *ty != PACK_TID && *ty != BIT_TID
         )).count();
         assert_eq!(
             block_writes, 0,

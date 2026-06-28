@@ -322,7 +322,7 @@ mod tests {
     use volar_ir::ir::{
         IRBlock, IRBlockTargetId, IRBlocks, IRBranchTarget, IRTerminator, IRType, IRTypes, IRVarId, PrimType,
     };
-    use volar_ir_common::{Constant, Stmt};
+    use volar_ir_common::{Constant, Node, Stmt};
 
     fn u32_ty(types: &mut IRTypes) -> volar_ir::ir::IRTypeId {
         types.intern(IRType::Primitive(PrimType::_32))
@@ -344,8 +344,7 @@ mod tests {
             stmts.push(Stmt::Const(Constant { hi: 0, lo: suffix }, ty));
             IRBlock {
                 params: vec![ty],
-                stmts,
-                stmt_provs: vec![(); 6],
+                stmts: stmts.into_iter().map(|s| Node::new(s, (), None)).collect(),
                 terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(5)],) },
             }
         };
@@ -376,8 +375,7 @@ mod tests {
         let n_stmts = stmts.len();
         let block = IRBlock {
             params: vec![ty],
-            stmt_provs: vec![(); n_stmts],
-            stmts,
+            stmts: stmts.into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(n_stmts as u32)],) },
         };
         let blocks = IRBlocks::new(vec![block]);
@@ -403,8 +401,7 @@ mod tests {
         let ty = u32_ty(&mut types);
         let block = IRBlock {
             params: vec![ty],
-            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 5 }, ty)],
-            stmt_provs: vec![()],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 5 }, ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)],) },
         };
         let blocks = IRBlocks::new(vec![block]);

@@ -1,7 +1,7 @@
 #![no_std]
 
 use alloc::{collections::btree_map::BTreeMap, string::String, vec::Vec};
-use volar_ir_common::{Constant, IrType, OracleDecl, ActionDecl, PreInitSegment, Stmt, Type, TypeId, TypeTable};
+use volar_ir_common::{Constant, IrType, Node, OracleDecl, ActionDecl, PreInitSegment, Stmt, Type, TypeId, TypeTable};
 
 extern crate alloc;
 
@@ -63,21 +63,28 @@ pub enum FuncDecl<P: Clone = ()> {
     },
     Body(FuncBody<P>),
 }
+/// `values` is a flat arena of every `Value` in the function, addressed by
+/// [`ValueId`]. Each entry carries its own provenance and [`SideId`](volar_side::SideId)
+/// via the [`Node`] wrapper — this is the single source of truth for both
+/// annotations; [`Block::stmts`] is ordering-only and holds no metadata of
+/// its own.
 #[derive(Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct FuncBody<P: Clone = ()> {
     pub sig: SigId,
-    pub blocks: Vec<Block<P>>,
-    pub values: Vec<Value>,
+    pub blocks: Vec<Block>,
+    pub values: Vec<Node<Value, P>>,
     pub entry: BlockId,
 }
-#[derive(Debug)]
+/// `Block` carries no provenance/side metadata of its own — those annotations
+/// live on the [`FuncBody::values`] arena entry that each [`ValueId`] in
+/// `stmts` points to, so `Block` does not need to be generic over `P`.
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct Block<P: Clone = ()> {
+pub struct Block {
     /// Block parameters: `(value_id, type_id)` pairs.
     pub params: Vec<(ValueId, TypeId)>,
     pub stmts: Vec<ValueId>,
-    pub stmt_provs: Vec<P>,
     pub terminator: Terminator,
 }
 use volar_ir_common::ReentryHint;

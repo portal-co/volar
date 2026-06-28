@@ -6,7 +6,7 @@ use volar_ir::ir::{
     IRBlock, IRBlockTargetId, IRBlocks, IRBranchTarget, IRTerminator, IRType, IRTypes, IRVarId,
     PrimType,
 };
-use volar_ir_common::{Constant, ReentryHint, Stmt};
+use volar_ir_common::{Constant, Node, ReentryHint, Stmt};
 use volar_ir_virt::split::plan_adaptive_split;
 use volar_ir_virt::{AdaptiveSplitConfig, DispatchMode, VirtualizeConfig};
 
@@ -36,8 +36,7 @@ fn hinted_cfg_loop() -> (IRBlocks, IRTypes) {
             stmts: vec![
                 Stmt::Const(Constant { hi: 0, lo: 0 }, ty),
                 Stmt::Const(Constant { hi: 0, lo: 3 }, ty),
-            ],
-            stmt_provs: vec![(), ()],
+            ].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp {
                 target: IRBranchTarget::new(
                     IRBlockTargetId::Block(volar_ir::ir::IRBlockId(1)),
@@ -48,7 +47,6 @@ fn hinted_cfg_loop() -> (IRBlocks, IRTypes) {
         IRBlock {
             params: vec![ty, ty],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::JumpCond {
                 condition: IRVarId(2),
                 then_target: IRBranchTarget::new(
@@ -66,8 +64,7 @@ fn hinted_cfg_loop() -> (IRBlocks, IRTypes) {
             stmts: vec![
                 Stmt::Const(Constant { hi: 0, lo: 11 }, ty),
                 Stmt::Const(Constant { hi: 0, lo: 22 }, ty),
-            ],
-            stmt_provs: vec![(), ()],
+            ].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp {
                 target: IRBranchTarget {
                     dest: IRBlockTargetId::Block(volar_ir::ir::IRBlockId(1)),

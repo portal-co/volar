@@ -6,7 +6,7 @@
 use volar_ir::ir::{
     IRBlock, IRBlockTargetId, IRBranchTarget, IRBlocks, IRTerminator, IRType, IRTypes, IRVarId, PrimType,
 };
-use volar_ir_common::{Constant, Stmt, StorageId};
+use volar_ir_common::{Constant, Node, Stmt, StorageId};
 use volar_ir_virt::{virtualize_ir, DispatchMode, VirtualizeConfig};
 
 fn cfg_default() -> VirtualizeConfig {
@@ -26,8 +26,7 @@ fn sixteen_const_only_blocks_dedup_to_single_handler() {
     let blocks: Vec<IRBlock> = (0..16u128)
         .map(|k| IRBlock {
             params: vec![u32_ty],
-            stmts: vec![Stmt::Const(Constant { hi: 0, lo: k }, u32_ty)],
-            stmt_provs: vec![()],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: k }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)],) },
         })
         .collect();
@@ -79,8 +78,7 @@ fn handler_count_monotone_in_structural_variety() {
 
     let mk_const_return = |k: u128| IRBlock {
         params: vec![u32_ty],
-        stmts: vec![Stmt::Const(Constant { hi: 0, lo: k }, u32_ty)],
-        stmt_provs: vec![()],
+        stmts: vec![Stmt::Const(Constant { hi: 0, lo: k }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
         terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)],) },
     };
 
@@ -99,7 +97,6 @@ fn handler_count_monotone_in_structural_variety() {
         IRBlock {
             params: vec![u32_ty],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],) },
         },
     ]);

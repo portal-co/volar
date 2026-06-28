@@ -322,7 +322,6 @@ mod tests {
         let mut block = BIrBlock {
             params: 2,
             stmts: std::vec![],
-            stmt_provs: std::vec![],
             terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: std::vec![IRVarId(2)] }),
         };
         block.push_stmt(

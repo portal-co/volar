@@ -17,7 +17,7 @@ use volar_ir::ir::{
     IRBlock, IRBlockId, IRBlockTargetId, IRBranchTarget, IRBlocks, IRTerminator, IRType, IRTypeId, IRTypes,
     IRVarId, PrimType,
 };
-use volar_ir_common::{Constant, Stmt};
+use volar_ir_common::{Constant, Node, Stmt};
 use volar_ir_virt::{virtualize_ir, DispatchMode, VirtualizeConfig};
 
 // ============================================================================
@@ -58,8 +58,7 @@ fn three_block_passthrough() -> (IRBlocks, IRTypes) {
         // block 0: jmp block 1 with x
         IRBlock {
             params: vec![u32_ty],
-            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 0 }, u32_ty)],
-            stmt_provs: vec![()],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 0 }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp {
     target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(0)],)
 },
@@ -67,8 +66,7 @@ fn three_block_passthrough() -> (IRBlocks, IRTypes) {
         // block 1: jmp block 2 with x (identical canonical key to block 0)
         IRBlock {
             params: vec![u32_ty],
-            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 0 }, u32_ty)],
-            stmt_provs: vec![()],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 0 }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp {
     target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(2)), vec![IRVarId(0)],)
 },
@@ -76,8 +74,7 @@ fn three_block_passthrough() -> (IRBlocks, IRTypes) {
         // block 2: return x
         IRBlock {
             params: vec![u32_ty],
-            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 0 }, u32_ty)],
-            stmt_provs: vec![()],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 0 }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp {
     target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],)
 },
@@ -150,8 +147,7 @@ fn two_const_blocks_reach_sink() -> (IRBlocks, IRTypes) {
 
     let mk_const_block = |val: u128, target: IRBlockId| IRBlock {
         params: vec![u32_ty],
-        stmts: vec![Stmt::Const(Constant { hi: 0, lo: val }, u32_ty)],
-        stmt_provs: vec![()],
+        stmts: vec![Stmt::Const(Constant { hi: 0, lo: val }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
         terminator: IRTerminator::Jmp {
             target: IRBranchTarget::new(IRBlockTargetId::Block(target), vec![IRVarId(1)],),
         },
@@ -169,7 +165,6 @@ fn two_const_blocks_reach_sink() -> (IRBlocks, IRTypes) {
         IRBlock {
             params: vec![u32_ty],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::Jmp {
     target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],)
 },
@@ -226,8 +221,7 @@ fn poly_xor_one() -> (IRBlocks, IRTypes) {
                 ty: bit_ty,
                 coeffs,
                 constant: Constant { hi: 0, lo: 1 }, // XOR 1
-            }],
-            stmt_provs: vec![()],
+            }].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp {
     target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(1)],)
 },
@@ -235,7 +229,6 @@ fn poly_xor_one() -> (IRBlocks, IRTypes) {
         IRBlock {
             params: vec![bit_ty],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::Jmp {
     target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],)
 },
@@ -285,7 +278,6 @@ fn jumpcond_two_branch() -> (IRBlocks, IRTypes) {
         IRBlock {
             params: vec![bit_ty, u32_ty],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::JumpCond {
                 condition: IRVarId(0),
                 then_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(0), IRVarId(1)]),
@@ -294,16 +286,14 @@ fn jumpcond_two_branch() -> (IRBlocks, IRTypes) {
         },
         IRBlock {
             params: vec![bit_ty, u32_ty],
-            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 1 }, u32_ty)],
-            stmt_provs: vec![()],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 1 }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp {
     target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(3)), vec![IRVarId(0), IRVarId(2)],)
 },
         },
         IRBlock {
             params: vec![bit_ty, u32_ty],
-            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 2 }, u32_ty)],
-            stmt_provs: vec![()],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 2 }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp {
     target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(3)), vec![IRVarId(0), IRVarId(2)],)
 },
@@ -311,7 +301,6 @@ fn jumpcond_two_branch() -> (IRBlocks, IRTypes) {
         IRBlock {
             params: vec![bit_ty, u32_ty],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::Jmp {
     target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)],)
 },
@@ -369,8 +358,7 @@ fn storage_read_write() -> (IRBlocks, IRTypes) {
                     ty: u32_ty,
                     addr: IRVarId(1),
                 },
-            ],
-            stmt_provs: vec![(), ()],
+            ].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp {
     target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(0)],)
 },
@@ -385,8 +373,7 @@ fn storage_read_write() -> (IRBlocks, IRTypes) {
                     ty: u32_ty,
                     addr: IRVarId(1),
                 },
-            ],
-            stmt_provs: vec![(), ()],
+            ].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp {
     target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(2)],)
 },
@@ -438,7 +425,6 @@ fn varied_param_blocks() -> (IRBlocks, IRTypes) {
         IRBlock {
             params: vec![u32_ty, u32_ty],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::Jmp {
     target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(0), IRVarId(1), IRVarId(0)],)
 },
@@ -449,8 +435,7 @@ fn varied_param_blocks() -> (IRBlocks, IRTypes) {
                 ty: u32_ty,
                 coeffs,
                 constant: Constant { hi: 0, lo: 0 },
-            }],
-            stmt_provs: vec![()],
+            }].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp {
                 target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(2)), vec![IRVarId(3)],),
             },
@@ -458,7 +443,6 @@ fn varied_param_blocks() -> (IRBlocks, IRTypes) {
         IRBlock {
             params: vec![u32_ty],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::Jmp {
     target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],)
 },
@@ -522,8 +506,7 @@ fn multi_type_return() -> (IRBlocks, IRTypes) {
                 },
                 constant: Constant { hi: 0, lo: 7 },
             },
-        ],
-        stmt_provs: vec![(), ()],
+        ].into_iter().map(|s| Node::new(s, (), None)).collect(),
         terminator: IRTerminator::Jmp {
             // [r, b]
     target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(3), IRVarId(1)],)
@@ -568,8 +551,7 @@ fn jumpcond_return_or_jump() -> (IRBlocks, IRTypes) {
     let blocks = IRBlocks::new(vec![
         IRBlock {
             params: vec![bit_ty, u32_ty],
-            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 42 }, u32_ty)],
-            stmt_provs: vec![()],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 42 }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::JumpCond {
                 condition: IRVarId(0),
                 then_target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(2)]),
@@ -579,7 +561,6 @@ fn jumpcond_return_or_jump() -> (IRBlocks, IRTypes) {
         IRBlock {
             params: vec![u32_ty],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::Jmp {
     target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],)
 },

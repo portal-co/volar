@@ -1567,7 +1567,6 @@ mod tests {
         let extern_impl = IRBlocks::new(std::vec![IRBlock {
             params: std::vec![bit_tid.clone()],
             stmts: std::vec![],
-            stmt_provs: std::vec![],
             terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)],) },
         }]);
 
@@ -1620,7 +1619,6 @@ mod tests {
             IRBlock {
                 params: std::vec![bit_tid],
                 stmts: std::vec![],
-                stmt_provs: std::vec![],
                 terminator: IRTerminator::JumpCond {
                     condition: IRVarId(0),
                     then_target: IRBranchTarget::new(
@@ -1636,8 +1634,9 @@ mod tests {
             // Block 1: unconditional return of 1.
             IRBlock {
                 params: std::vec![],
-                stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 1 }, bit_tid)],
-                stmt_provs: std::vec![()],
+                stmts: std::vec![volar_ir_common::Node::new(
+                    IRStmt::Const(Constant { hi: 0, lo: 1 }, bit_tid), (), None,
+                )],
                 terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)]) }, // return the Const(1)
             },
         ]);
@@ -1671,19 +1670,20 @@ mod tests {
             params: std::vec![bit_tid],
             stmts: std::vec![
                 // stmt 0: NOT(param_0)
-                {
-                    let mut coeffs = std::collections::BTreeMap::new();
-                    coeffs.insert(std::vec![IRVarId(0)], 1u8);
-                    IRStmt::Poly { ty: bit_tid, coeffs, constant: Constant { hi: 0, lo: 1 } }
-                },
+                volar_ir_common::Node::new(
+                    {
+                        let mut coeffs = std::collections::BTreeMap::new();
+                        coeffs.insert(std::vec![IRVarId(0)], 1u8);
+                        IRStmt::Poly { ty: bit_tid, coeffs, constant: Constant { hi: 0, lo: 1 } }
+                    },
+                    (),
+                    None,
+                ),
             ],
-            stmt_provs: std::vec![()],
             terminator: IRTerminator::JumpCond {
                 condition: IRVarId(0),
-                true_block:  IRBlockTargetId::Return,
-                true_args:   std::vec![IRVarId(0)],
-                false_block: IRBlockTargetId::Block(IRBlockId(0)),
-                false_args:  std::vec![IRVarId(1)], // NOT(x)
+                then_target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)]),
+                else_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(0)), std::vec![IRVarId(1)]), // NOT(x)
             },
         }]);
 
