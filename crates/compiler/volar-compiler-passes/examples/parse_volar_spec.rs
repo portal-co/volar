@@ -3,8 +3,8 @@
 use std::fs;
 use std::path::Path;
 use volar_compiler::{
-    ArrayKind, AssociatedType, IrExpr, IrImplItem, IrStmt, IrType, MathTrait,
-    SourceInput, StructKind, TraitKind, parse_sources, print_module,
+    ArrayKind, IrExpr, IrExprKind, IrImplItem, IrStmtKind, IrType, MathTrait, SourceInput,
+    StructKind, TraitKind, parse_sources, print_module,
 };
 use volar_compiler_passes::{OperatorAnalysis, TypeContext, type_to_string};
 
@@ -159,12 +159,12 @@ fn main() {
                 expr: &IrExpr,
                 counts: &mut (usize, usize, usize, usize, usize),
             ) {
-                match expr {
-                    IrExpr::ArrayGenerate { body, .. } => {
+                match &expr.kind {
+                    IrExprKind::ArrayGenerate { body, .. } => {
                         counts.0 += 1;
                         count_loops_in_expr(body, counts);
                     }
-                    IrExpr::IterPipeline(chain) => {
+                    IrExprKind::IterPipeline(chain) => {
                         counts.1 += 1;
                         // Walk into chain step/terminal bodies
                         match &chain.source {
@@ -196,10 +196,10 @@ fn main() {
                             _ => {}
                         }
                     }
-                    IrExpr::BoundedLoop { body, .. } => {
+                    IrExprKind::BoundedLoop { body, .. } => {
                         counts.2 += 1;
                         for stmt in &body.stmts {
-                            if let IrStmt::Semi(e) | IrStmt::Expr(e) = stmt {
+                            if let IrStmtKind::Semi(e) | IrStmtKind::Expr(e) = &stmt.kind {
                                 count_loops_in_expr(e, counts);
                             }
                         }
@@ -207,13 +207,13 @@ fn main() {
                             count_loops_in_expr(e, counts);
                         }
                     }
-                    IrExpr::IterLoop {
+                    IrExprKind::IterLoop {
                         body, collection, ..
                     } => {
                         counts.3 += 1;
                         count_loops_in_expr(collection, counts);
                         for stmt in &body.stmts {
-                            if let IrStmt::Semi(e) | IrStmt::Expr(e) = stmt {
+                            if let IrStmtKind::Semi(e) | IrStmtKind::Expr(e) = &stmt.kind {
                                 count_loops_in_expr(e, counts);
                             }
                         }
@@ -221,11 +221,11 @@ fn main() {
                             count_loops_in_expr(e, counts);
                         }
                     }
-                    IrExpr::WhileLoop { cond, body } => {
+                    IrExprKind::WhileLoop { cond, body } => {
                         counts.2 += 1;
                         count_loops_in_expr(cond, counts);
                         for stmt in &body.stmts {
-                            if let IrStmt::Semi(e) | IrStmt::Expr(e) = stmt {
+                            if let IrStmtKind::Semi(e) | IrStmtKind::Expr(e) = &stmt.kind {
                                 count_loops_in_expr(e, counts);
                             }
                         }
@@ -233,9 +233,9 @@ fn main() {
                             count_loops_in_expr(e, counts);
                         }
                     }
-                    IrExpr::Block(block) => {
+                    IrExprKind::Block(block) => {
                         for stmt in &block.stmts {
-                            if let IrStmt::Semi(e) | IrStmt::Expr(e) = stmt {
+                            if let IrStmtKind::Semi(e) | IrStmtKind::Expr(e) = &stmt.kind {
                                 count_loops_in_expr(e, counts);
                             }
                         }
@@ -243,29 +243,29 @@ fn main() {
                             count_loops_in_expr(e, counts);
                         }
                     }
-                    IrExpr::MethodCall { receiver, args, .. } => {
+                    IrExprKind::MethodCall { receiver, args, .. } => {
                         count_loops_in_expr(receiver, counts);
                         for arg in args {
                             count_loops_in_expr(arg, counts);
                         }
                     }
-                    IrExpr::Call { func, args, .. } => {
+                    IrExprKind::Call { func, args, .. } => {
                         count_loops_in_expr(func, counts);
                         for arg in args {
                             count_loops_in_expr(arg, counts);
                         }
                     }
-                    IrExpr::Closure { body, .. } => {
+                    IrExprKind::Closure { body, .. } => {
                         count_loops_in_expr(body, counts);
                     }
-                    IrExpr::If {
+                    IrExprKind::If {
                         cond,
                         then_branch,
                         else_branch,
                     } => {
                         count_loops_in_expr(cond, counts);
                         for stmt in &then_branch.stmts {
-                            if let IrStmt::Semi(e) | IrStmt::Expr(e) = stmt {
+                            if let IrStmtKind::Semi(e) | IrStmtKind::Expr(e) = &stmt.kind {
                                 count_loops_in_expr(e, counts);
                             }
                         }
@@ -285,7 +285,7 @@ fn main() {
                 for item in &imp.items {
                     if let IrImplItem::Method(f) = item {
                         for stmt in &f.body.stmts {
-                            if let IrStmt::Semi(e) | IrStmt::Expr(e) = stmt {
+                            if let IrStmtKind::Semi(e) | IrStmtKind::Expr(e) = &stmt.kind {
                                 count_loops_in_expr(e, &mut counts);
                             }
                         }
@@ -297,7 +297,7 @@ fn main() {
             }
             for f in &module.functions {
                 for stmt in &f.body.stmts {
-                    if let IrStmt::Semi(e) | IrStmt::Expr(e) = stmt {
+                    if let IrStmtKind::Semi(e) | IrStmtKind::Expr(e) = &stmt.kind {
                         count_loops_in_expr(e, &mut counts);
                     }
                 }
