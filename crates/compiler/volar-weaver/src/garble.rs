@@ -21,9 +21,9 @@ use alloc::{
 
 use volar_compiler::{
     ir::{
-        ExternalKind, IrBlock, IrExpr, IrFunction, IrGenericParam,
-        IrGenericParamKind, IrLit, IrModule, IrParam, IrPattern, IrStmt, IrTraitBound, IrType,
-        MethodKind, SpecBinOp, StructKind, TraitKind,
+        ExternalKind, IrBlock, IrExpr, IrExprKind, IrFunction, IrGenericParam,
+        IrGenericParamKind, IrLit, IrModule, IrParam, IrPattern, IrStmt, IrStmtKind,
+        IrTraitBound, IrType, MethodKind, SpecBinOp, StructKind, TraitKind,
     },
     linkage::LinkageSystem,
 };
@@ -35,8 +35,18 @@ use volar_discipline::{Tagged, Transparent};
 
 use crate::{
     array_default, array_from_fn, base_index, build_return, clone_expr, expand_ors,
-    ref_expr, var, NoProvenance, ProvenanceHandler,
+    ir_expr, ref_expr, var, NoProvenance, ProvenanceHandler,
 };
+
+/// Construct a fresh `IrStmt` with default provenance and no side.
+fn ir_stmt<Q: Clone + Default>(kind: IrStmtKind<Q>) -> IrStmt<Q> {
+    IrStmt::new(kind, Q::default(), None)
+}
+
+/// Construct an `IrStmt` carrying an explicit provenance value (no side).
+fn ir_stmt_p<Q: Clone>(kind: IrStmtKind<Q>, prov: Q) -> IrStmt<Q> {
+    IrStmt::new(kind, prov, None)
+}
 
 // ============================================================================
 // Garble-specific type helpers
@@ -123,12 +133,18 @@ fn generic_params() -> Vec<IrGenericParam> {
 
 /// `Garble { base: {base_expr} }`
 fn garble_struct<P: Clone>(base_expr: IrExpr<P>) -> IrExpr<P> {
-    IrExpr::StructExpr {
-        kind: StructKind::Custom("Garble".into()),
-        type_args: vec![],
-        fields: vec![("base".into(), base_expr)],
-        rest: None,
-    }
+    let prov = base_expr.prov.clone();
+    let side = base_expr.side;
+    IrExpr::new(
+        IrExprKind::StructExpr {
+            kind: StructKind::Custom("Garble".into()),
+            type_args: vec![],
+            fields: vec![("base".into(), base_expr)],
+            rest: None,
+        },
+        prov,
+        side,
+    )
 }
 
 // ============================================================================
@@ -173,6 +189,7 @@ pub fn weave_evaluator_with_handler<P, H>(
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     assert!(
         circuit.is_circuit(),
@@ -212,7 +229,6 @@ where
     }
 
     let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
-    let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut and_counter: usize = 0;
 
     for (result_id, stmt, prov) in &expanded {
@@ -220,23 +236,23 @@ where
         let q = handler.map(prov);
 
         let init_expr = match stmt {
-            BIrStmt::Zero => IrExpr::StructExpr {
+            BIrStmt::Zero => ir_expr(IrExprKind::StructExpr {
                 kind: StructKind::Custom("Eval".into()),
                 type_args: vec![],
                 fields: vec![("target".into(), array_default())],
                 rest: None,
-            },
+            }),
 
             BIrStmt::One => clone_expr(var("one_wire")),
 
             BIrStmt::Xor(a, b) => {
                 let name_a = var_names[&a.0].clone();
                 let name_b = var_names[&b.0].clone();
-                IrExpr::Binary {
+                ir_expr(IrExprKind::Binary {
                     op: SpecBinOp::BitXor,
                     left: Box::new(clone_expr(var(&name_a))),
                     right: Box::new(clone_expr(var(&name_b))),
-                }
+                })
             }
 
             BIrStmt::And(a, b) => {
@@ -244,7 +260,7 @@ where
                 let name_b = var_names[&b.0].clone();
                 let table_name = format!("and_table_{}", and_counter);
                 and_counter += 1;
-                IrExpr::MethodCall {
+                ir_expr(IrExprKind::MethodCall {
                     receiver: Box::new(clone_expr(var(&name_a))),
                     method: MethodKind::Other("and_via_table".into()),
                     type_args: vec![IrType::TypeParam("D".into())],
@@ -252,16 +268,16 @@ where
                         ref_expr(clone_expr(var(&name_b))),
                         var(&table_name),
                     ],
-                }
+                })
             }
 
             BIrStmt::Not(a) => {
                 let name_a = var_names[&a.0].clone();
-                IrExpr::Binary {
+                ir_expr(IrExprKind::Binary {
                     op: SpecBinOp::BitXor,
                     left: Box::new(clone_expr(var(&name_a))),
                     right: Box::new(clone_expr(var("one_wire"))),
-                }
+                })
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
@@ -277,12 +293,11 @@ where
             _ => unimplemented!("garble weaver: unhandled BIrStmt variant — add support for this variant"),
         };
 
-        stmts.push(IrStmt::Let {
+        stmts.push(ir_stmt_p(IrStmtKind::Let {
             pattern: IrPattern::ident(&let_name),
             ty: None,
             init: Some(init_expr),
-        });
-        stmt_provs.push(q);
+        }, q));
         var_names.insert(result_id.0, let_name);
     }
 
@@ -298,7 +313,6 @@ where
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -348,6 +362,7 @@ pub fn weave_garbler_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, hand
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     assert!(
         circuit.is_circuit(),
@@ -391,7 +406,6 @@ where
     ]);
 
     let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
-    let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut table_counter: usize = 0;
     let mut table_names: Vec<String> = Vec::new();
 
@@ -407,11 +421,11 @@ where
                 let name_b = var_names[&b.0].clone();
                 garble_struct(array_from_fn(
                     "j",
-                    IrExpr::Binary {
+                    ir_expr(IrExprKind::Binary {
                         op: SpecBinOp::BitXor,
                         left: Box::new(base_index(&name_a, "j")),
                         right: Box::new(base_index(&name_b, "j")),
-                    },
+                    }),
                 ))
             }
 
@@ -419,19 +433,19 @@ where
                 let name_a = var_names[&a.0].clone();
                 garble_struct(array_from_fn(
                     "j",
-                    IrExpr::Binary {
+                    ir_expr(IrExprKind::Binary {
                         op: SpecBinOp::BitXor,
                         left: Box::new(base_index(&name_a, "j")),
-                        right: Box::new(IrExpr::Index {
-                            base: Box::new(IrExpr::MethodCall {
+                        right: Box::new(ir_expr(IrExprKind::Index {
+                            base: Box::new(ir_expr(IrExprKind::MethodCall {
                                 receiver: Box::new(var("secret")),
                                 method: MethodKind::Other("secret".into()),
                                 type_args: vec![],
                                 args: vec![],
-                            }),
+                            })),
                             index: Box::new(var("j")),
-                        }),
-                    },
+                        })),
+                    }),
                 ))
             }
 
@@ -442,10 +456,10 @@ where
                 table_counter += 1;
                 table_names.push(table_var.clone());
 
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&table_var),
                     ty: None,
-                    init: Some(IrExpr::MethodCall {
+                    init: Some(ir_expr(IrExprKind::MethodCall {
                         receiver: Box::new(var("secret")),
                         method: MethodKind::Other("gen_and_table".into()),
                         type_args: vec![IrType::TypeParam("D".into())],
@@ -453,16 +467,15 @@ where
                             ref_expr(clone_expr(var(&name_a))),
                             ref_expr(clone_expr(var(&name_b))),
                         ],
-                    }),
-                });
-                stmt_provs.push(q.clone());
+                    })),
+                }, q.clone()));
 
-                IrExpr::MethodCall {
+                ir_expr(IrExprKind::MethodCall {
                     receiver: Box::new(var(&name_a)),
                     method: MethodKind::Other("and_result".into()),
                     type_args: vec![IrType::TypeParam("D".into())],
                     args: vec![ref_expr(var(&name_b))],
-                }
+                })
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
@@ -478,18 +491,17 @@ where
             _ => unimplemented!("garble weaver: unhandled BIrStmt variant — add support for this variant"),
         };
 
-        stmts.push(IrStmt::Let {
+        stmts.push(ir_stmt_p(IrStmtKind::Let {
             pattern: IrPattern::ident(&let_name),
             ty: None,
             init: Some(garble_expr),
-        });
-        stmt_provs.push(q);
+        }, q));
         var_names.insert(result_id.0, let_name);
     }
 
     let (output_garble_expr, _) = build_return(block, &var_names, garble_type());
-    let tables_expr = IrExpr::FixedArray(table_names.iter().map(|t| var(t)).collect());
-    let ret_expr = IrExpr::Tuple(vec![tables_expr, output_garble_expr]);
+    let tables_expr = ir_expr(IrExprKind::FixedArray(table_names.iter().map(|t| var(t)).collect()));
+    let ret_expr = ir_expr(IrExprKind::Tuple(vec![tables_expr, output_garble_expr]));
 
     let func = IrFunction {
         name: format!("{}_garble", name),
@@ -501,7 +513,6 @@ where
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -543,6 +554,7 @@ pub fn weave_into_gc_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, hand
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     assert!(
         circuit.is_circuit(),
@@ -576,7 +588,6 @@ where
         .count();
 
     let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
-    let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut table_counter: usize = 0;
 
     for (result_id, stmt, prov) in &expanded {
@@ -591,11 +602,11 @@ where
                 let name_b = var_names[&b.0].clone();
                 garble_struct(array_from_fn(
                     "j",
-                    IrExpr::Binary {
+                    ir_expr(IrExprKind::Binary {
                         op: SpecBinOp::BitXor,
                         left: Box::new(base_index(&name_a, "j")),
                         right: Box::new(base_index(&name_b, "j")),
-                    },
+                    }),
                 ))
             }
 
@@ -603,19 +614,19 @@ where
                 let name_a = var_names[&a.0].clone();
                 garble_struct(array_from_fn(
                     "j",
-                    IrExpr::Binary {
+                    ir_expr(IrExprKind::Binary {
                         op: SpecBinOp::BitXor,
                         left: Box::new(base_index(&name_a, "j")),
-                        right: Box::new(IrExpr::Index {
-                            base: Box::new(IrExpr::MethodCall {
+                        right: Box::new(ir_expr(IrExprKind::Index {
+                            base: Box::new(ir_expr(IrExprKind::MethodCall {
                                 receiver: Box::new(var("secret")),
                                 method: MethodKind::Other("secret".into()),
                                 type_args: vec![],
                                 args: vec![],
-                            }),
+                            })),
                             index: Box::new(var("j")),
-                        }),
-                    },
+                        })),
+                    }),
                 ))
             }
 
@@ -625,10 +636,10 @@ where
                 let table_var = format!("table_{}", table_counter);
                 table_counter += 1;
 
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&table_var),
                     ty: None,
-                    init: Some(IrExpr::MethodCall {
+                    init: Some(ir_expr(IrExprKind::MethodCall {
                         receiver: Box::new(var("secret")),
                         method: MethodKind::Other("gen_and_table".into()),
                         type_args: vec![IrType::TypeParam("D".into())],
@@ -636,16 +647,15 @@ where
                             ref_expr(clone_expr(var(&name_a))),
                             ref_expr(clone_expr(var(&name_b))),
                         ],
-                    }),
-                });
-                stmt_provs.push(q.clone());
+                    })),
+                }, q.clone()));
 
-                IrExpr::MethodCall {
+                ir_expr(IrExprKind::MethodCall {
                     receiver: Box::new(clone_expr(var(&name_a))),
                     method: MethodKind::Other("and_result".into()),
                     type_args: vec![IrType::TypeParam("D".into())],
                     args: vec![ref_expr(var(&name_b))],
-                }
+                })
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
@@ -661,24 +671,23 @@ where
             _ => unimplemented!("garble weaver: unhandled BIrStmt variant — add support for this variant"),
         };
 
-        stmts.push(IrStmt::Let {
+        stmts.push(ir_stmt_p(IrStmtKind::Let {
             pattern: IrPattern::ident(&let_name),
             ty: None,
             init: Some(garble_expr),
-        });
-        stmt_provs.push(q);
+        }, q));
         var_names.insert(result_id.0, let_name);
     }
 
-    let input_labels_expr = IrExpr::FixedArray(
+    let input_labels_expr = ir_expr(IrExprKind::FixedArray(
         (0..num_params).map(|i| var(&format!("input_{}", i))).collect(),
-    );
-    let tables_expr = IrExpr::FixedArray(
+    ));
+    let tables_expr = ir_expr(IrExprKind::FixedArray(
         (0..and_count).map(|k| var(&format!("table_{}", k))).collect(),
-    );
+    ));
 
     let (output_garble_expr, _) = build_return(block, &var_names, garble_type());
-    let ret_expr = IrExpr::StructExpr {
+    let ret_expr = ir_expr(IrExprKind::StructExpr {
         kind: StructKind::Custom("GarbledCircuit".into()),
         type_args: vec![],
         fields: vec![
@@ -688,7 +697,7 @@ where
             ("output_label".into(), output_garble_expr),
         ],
         rest: None,
-    };
+    });
 
     let func = IrFunction {
         name: format!("{}_into_gc", name),
@@ -700,7 +709,6 @@ where
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -750,6 +758,7 @@ pub fn weave_eval_from_setup_with_handler<P, H>(
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     assert!(
         circuit.is_circuit(),
@@ -782,21 +791,20 @@ where
         });
     }
 
-    let setup_one_wire = || -> IrExpr<H::Output> { IrExpr::Field {
+    let setup_one_wire = || -> IrExpr<H::Output> { ir_expr(IrExprKind::Field {
         base: Box::new(var("setup")),
         field: "one_wire".into(),
-    } };
+    }) };
 
-    let setup_table = |k: usize| -> IrExpr<H::Output> { IrExpr::Index {
-        base: Box::new(IrExpr::Field {
+    let setup_table = |k: usize| -> IrExpr<H::Output> { ir_expr(IrExprKind::Index {
+        base: Box::new(ir_expr(IrExprKind::Field {
             base: Box::new(var("setup")),
             field: "tables".into(),
-        }),
-        index: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
-    } };
+        })),
+        index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(k as i128)))),
+    }) };
 
     let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
-    let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut and_counter: usize = 0;
 
     for (result_id, stmt, prov) in &expanded {
@@ -804,23 +812,23 @@ where
         let q = handler.map(prov);
 
         let init_expr = match stmt {
-            BIrStmt::Zero => IrExpr::StructExpr {
+            BIrStmt::Zero => ir_expr(IrExprKind::StructExpr {
                 kind: StructKind::Custom("Eval".into()),
                 type_args: vec![],
                 fields: vec![("target".into(), array_default())],
                 rest: None,
-            },
+            }),
 
             BIrStmt::One => clone_expr(setup_one_wire()),
 
             BIrStmt::Xor(a, b) => {
                 let name_a = var_names[&a.0].clone();
                 let name_b = var_names[&b.0].clone();
-                IrExpr::Binary {
+                ir_expr(IrExprKind::Binary {
                     op: SpecBinOp::BitXor,
                     left: Box::new(clone_expr(var(&name_a))),
                     right: Box::new(clone_expr(var(&name_b))),
-                }
+                })
             }
 
             BIrStmt::And(a, b) => {
@@ -828,7 +836,7 @@ where
                 let name_b = var_names[&b.0].clone();
                 let k = and_counter;
                 and_counter += 1;
-                IrExpr::MethodCall {
+                ir_expr(IrExprKind::MethodCall {
                     receiver: Box::new(clone_expr(var(&name_a))),
                     method: MethodKind::Other("and_via_table".into()),
                     type_args: vec![IrType::TypeParam("D".into())],
@@ -836,16 +844,16 @@ where
                         ref_expr(clone_expr(var(&name_b))),
                         ref_expr(setup_table(k)),
                     ],
-                }
+                })
             }
 
             BIrStmt::Not(a) => {
                 let name_a = var_names[&a.0].clone();
-                IrExpr::Binary {
+                ir_expr(IrExprKind::Binary {
                     op: SpecBinOp::BitXor,
                     left: Box::new(clone_expr(var(&name_a))),
                     right: Box::new(clone_expr(setup_one_wire())),
-                }
+                })
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
@@ -861,12 +869,11 @@ where
             _ => unimplemented!("garble weaver: unhandled BIrStmt variant — add support for this variant"),
         };
 
-        stmts.push(IrStmt::Let {
+        stmts.push(ir_stmt_p(IrStmtKind::Let {
             pattern: IrPattern::ident(&let_name),
             ty: None,
             init: Some(init_expr),
-        });
-        stmt_provs.push(q);
+        }, q));
         var_names.insert(result_id.0, let_name);
     }
 
@@ -882,7 +889,6 @@ where
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -930,6 +936,7 @@ pub fn weave_evaluator_bounded_with_handler<P, H>(
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
@@ -960,6 +967,7 @@ pub fn weave_garbler_bounded_with_handler<P, H>(
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
@@ -990,6 +998,7 @@ pub fn weave_into_gc_bounded_with_handler<P, H>(
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
@@ -1020,6 +1029,7 @@ pub fn weave_eval_from_setup_bounded_with_handler<P, H>(
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
