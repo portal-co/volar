@@ -140,6 +140,28 @@ impl FheActionConfig {
 }
 
 // ============================================================================
+// Side-based cleartext/encrypted protection (vocabulary for the Side system —
+// see docs/side.md). `FheActionConfig` is configured per-`FheScheme` (e.g.
+// `TfheScheme::with_action_config`) rather than as a single top-level
+// function parameter like VOLE's `ZkWitnessConfig`, so migrating the FHE
+// weaver's entry points to read sides through a `SideHandler` is tracked as
+// follow-up work (see docs/side.md) — this vocabulary is what such a
+// migration would resolve a `SideId` to.
+// ============================================================================
+
+/// What an FHE-side value is: a public cleartext value (e.g. `bool`), or a
+/// private encrypted value (e.g. `LweCiphertext`). The `volar-side`
+/// vocabulary for this weaver — resolved from a [`SideId`] by any
+/// [`SideHandler`](volar_side::SideHandler).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FheProtection {
+    /// Public cleartext value, known to both parties.
+    Cleartext,
+    /// Private, FHE-encrypted value.
+    Encrypted,
+}
+
+// ============================================================================
 // Helpers used by FheScheme default implementations
 // ============================================================================
 

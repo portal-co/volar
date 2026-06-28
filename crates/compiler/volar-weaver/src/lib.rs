@@ -170,7 +170,7 @@ pub use fhe::{
     derive_storage_config,
     oblivious_read_loop, oblivious_write_loop,
     FheScheme, FheOutput, FheStorageConfig, FheStorageSizes,
-    FheActionConfig,
+    FheActionConfig, FheProtection,
     GrafhenScheme, TfheScheme,
     print_fhe_cfg_module, print_fhe_flat_module,
 };
