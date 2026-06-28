@@ -28,6 +28,7 @@ use alloc::{
 use thiserror::Error;
 
 pub use volar_ir_common::{MeasureSpec, ReentryHint, StructRef};
+use volar_ir_common::{MapKind, Node};
 
 #[derive(Error, Debug)]
 pub enum CompilerError {
@@ -1247,7 +1248,6 @@ pub struct IrTypeAlias {
 pub struct IrBlock<P: Clone = ()> {
     #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
     pub stmts: Vec<IrStmt<P>>,
-    pub stmt_provs: Vec<P>,
     #[cfg_attr(feature = "rkyv", rkyv(omit_bounds))]
     pub expr: Option<Box<IrExpr<P>>>,
 }
@@ -1261,7 +1261,7 @@ pub struct IrBlock<P: Clone = ()> {
     deserialize_bounds(__D::Error: rkyv::rancor::Source, P::Archived: rkyv::Deserialize<P, __D>),
     bytecheck(bounds(__C: rkyv::validation::ArchiveContext, <__C as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source, P::Archived: rkyv::bytecheck::CheckBytes<__C>)),
 ))]
-pub enum IrStmt<P: Clone = ()> {
+pub enum IrStmtKind<P: Clone = ()> {
     Let {
         pattern: IrPattern,
         ty: Option<IrType>,
@@ -1271,6 +1271,10 @@ pub enum IrStmt<P: Clone = ()> {
     Semi(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] IrExpr<P>),
     Expr(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] IrExpr<P>),
 }
+
+/// A statement, with its own provenance and [side](volar_side::SideId)
+/// annotation carried via the [`Node`] wrapper — see `volar-side`.
+pub type IrStmt<P: Clone = ()> = Node<IrStmtKind<P>, P>;
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
@@ -1490,7 +1494,7 @@ impl fmt::Display for IrTraitBound {
     deserialize_bounds(__D::Error: rkyv::rancor::Source, P::Archived: rkyv::Deserialize<P, __D>),
     bytecheck(bounds(__C: rkyv::validation::ArchiveContext, <__C as rkyv::rancor::Fallible>::Error: rkyv::rancor::Source, P::Archived: rkyv::bytecheck::CheckBytes<__C>)),
 ))]
-pub enum IrExpr<P: Clone = ()> {
+pub enum IrExprKind<P: Clone = ()> {
     Lit(IrLit),
     Var(String),
     Path {
@@ -1695,6 +1699,11 @@ pub enum IrExpr<P: Clone = ()> {
     Unreachable,
     Try(#[cfg_attr(feature = "rkyv", rkyv(omit_bounds))] Box<IrExpr<P>>),
 }
+
+/// An expression, with its own provenance and [side](volar_side::SideId)
+/// annotation carried via the [`Node`] wrapper — see `volar-side`. Every
+/// subexpression (not just every statement) carries its own annotation.
+pub type IrExpr<P: Clone = ()> = Node<IrExprKind<P>, P>;
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
@@ -2330,69 +2339,69 @@ pub trait MapProv<P: Clone, Q: Clone>: Sized {
     fn map_prov(self, f: &impl Fn(P) -> Q) -> Self::Output;
 }
 
-impl<P: Clone, Q: Clone> MapProv<P, Q> for IrExpr<P> {
-    type Output = IrExpr<Q>;
-    fn map_prov(self, f: &impl Fn(P) -> Q) -> IrExpr<Q> {
+impl<P: Clone, Q: Clone> MapKind<P, Q> for IrExprKind<P> {
+    type Output = IrExprKind<Q>;
+    fn map_kind(self, f: &impl Fn(P) -> Q) -> IrExprKind<Q> {
         match self {
-            IrExpr::Lit(l) => IrExpr::Lit(l),
-            IrExpr::Var(v) => IrExpr::Var(v),
-            IrExpr::Path { segments, type_args } => IrExpr::Path { segments, type_args },
-            IrExpr::Binary { op, left, right } =>
-                IrExpr::Binary { op, left: Box::new(left.map_prov(f)), right: Box::new(right.map_prov(f)) },
-            IrExpr::Unary { op, expr } =>
-                IrExpr::Unary { op, expr: Box::new(expr.map_prov(f)) },
-            IrExpr::MethodCall { receiver, method, type_args, args } =>
-                IrExpr::MethodCall { receiver: Box::new(receiver.map_prov(f)), method, type_args, args: args.into_iter().map(|a| a.map_prov(f)).collect() },
-            IrExpr::Call { func, args } =>
-                IrExpr::Call { func: Box::new(func.map_prov(f)), args: args.into_iter().map(|a| a.map_prov(f)).collect() },
-            IrExpr::Field { base, field } =>
-                IrExpr::Field { base: Box::new(base.map_prov(f)), field },
-            IrExpr::Index { base, index } =>
-                IrExpr::Index { base: Box::new(base.map_prov(f)), index: Box::new(index.map_prov(f)) },
-            IrExpr::StructExpr { kind, type_args, fields, rest } =>
-                IrExpr::StructExpr { kind, type_args, fields: fields.into_iter().map(|(n, e)| (n, e.map_prov(f))).collect(), rest: rest.map(|r| Box::new(r.map_prov(f))) },
-            IrExpr::Tuple(es) => IrExpr::Tuple(es.into_iter().map(|e| e.map_prov(f)).collect()),
-            IrExpr::Array(es) => IrExpr::Array(es.into_iter().map(|e| e.map_prov(f)).collect()),
-            IrExpr::FixedArray(es) => IrExpr::FixedArray(es.into_iter().map(|e| e.map_prov(f)).collect()),
-            IrExpr::Repeat { elem, len } =>
-                IrExpr::Repeat { elem: Box::new(elem.map_prov(f)), len: Box::new(len.map_prov(f)) },
-            IrExpr::ArrayGenerate { elem_ty, len, index_var, body } =>
-                IrExpr::ArrayGenerate { elem_ty, len, index_var, body: Box::new(body.map_prov(f)) },
-            IrExpr::DefaultValue { ty } => IrExpr::DefaultValue { ty },
-            IrExpr::LengthOf(l) => IrExpr::LengthOf(l),
-            IrExpr::IterPipeline(chain) => IrExpr::IterPipeline(chain.map_prov(f)),
-            IrExpr::RawMap { receiver, elem_var, body } =>
-                IrExpr::RawMap { receiver: Box::new(receiver.map_prov(f)), elem_var, body: Box::new(body.map_prov(f)) },
-            IrExpr::RawZip { left, right, left_var, right_var, body } =>
-                IrExpr::RawZip { left: Box::new(left.map_prov(f)), right: Box::new(right.map_prov(f)), left_var, right_var, body: Box::new(body.map_prov(f)) },
-            IrExpr::RawFold { receiver, init, acc_var, elem_var, body } =>
-                IrExpr::RawFold { receiver: Box::new(receiver.map_prov(f)), init: Box::new(init.map_prov(f)), acc_var, elem_var, body: Box::new(body.map_prov(f)) },
-            IrExpr::BoundedLoop { var, start, end, inclusive, body } =>
-                IrExpr::BoundedLoop { var, start: Box::new(start.map_prov(f)), end: Box::new(end.map_prov(f)), inclusive, body: body.map_prov(f) },
-            IrExpr::IterLoop { pattern, collection, body } =>
-                IrExpr::IterLoop { pattern, collection: Box::new(collection.map_prov(f)), body: body.map_prov(f) },
-            IrExpr::Block(b) => IrExpr::Block(b.map_prov(f)),
-            IrExpr::If { cond, then_branch, else_branch } =>
-                IrExpr::If { cond: Box::new(cond.map_prov(f)), then_branch: then_branch.map_prov(f), else_branch: else_branch.map(|e| Box::new(e.map_prov(f))) },
-            IrExpr::Match { expr, arms } =>
-                IrExpr::Match { expr: Box::new(expr.map_prov(f)), arms: arms.into_iter().map(|a| a.map_prov(f)).collect() },
-            IrExpr::Closure { params, ret_type, body } =>
-                IrExpr::Closure { params, ret_type, body: Box::new(body.map_prov(f)) },
-            IrExpr::Cast { expr, ty } => IrExpr::Cast { expr: Box::new(expr.map_prov(f)), ty },
-            IrExpr::Return(e) => IrExpr::Return(e.map(|e| Box::new(e.map_prov(f)))),
-            IrExpr::Break(e) => IrExpr::Break(e.map(|e| Box::new(e.map_prov(f)))),
-            IrExpr::Continue => IrExpr::Continue,
-            IrExpr::Assign { left, right } =>
-                IrExpr::Assign { left: Box::new(left.map_prov(f)), right: Box::new(right.map_prov(f)) },
-            IrExpr::AssignOp { op, left, right } =>
-                IrExpr::AssignOp { op, left: Box::new(left.map_prov(f)), right: Box::new(right.map_prov(f)) },
-            IrExpr::Range { start, end, inclusive } =>
-                IrExpr::Range { start: start.map(|e| Box::new(e.map_prov(f))), end: end.map(|e| Box::new(e.map_prov(f))), inclusive },
-            IrExpr::TypenumUsize { ty } => IrExpr::TypenumUsize { ty },
-            IrExpr::WhileLoop { cond, body } =>
-                IrExpr::WhileLoop { cond: Box::new(cond.map_prov(f)), body: body.map_prov(f) },
-            IrExpr::Unreachable => IrExpr::Unreachable,
-            IrExpr::Try(e) => IrExpr::Try(Box::new(e.map_prov(f))),
+            IrExprKind::Lit(l) => IrExprKind::Lit(l),
+            IrExprKind::Var(v) => IrExprKind::Var(v),
+            IrExprKind::Path { segments, type_args } => IrExprKind::Path { segments, type_args },
+            IrExprKind::Binary { op, left, right } =>
+                IrExprKind::Binary { op, left: Box::new(left.map_kind_prov(f)), right: Box::new(right.map_kind_prov(f)) },
+            IrExprKind::Unary { op, expr } =>
+                IrExprKind::Unary { op, expr: Box::new(expr.map_kind_prov(f)) },
+            IrExprKind::MethodCall { receiver, method, type_args, args } =>
+                IrExprKind::MethodCall { receiver: Box::new(receiver.map_kind_prov(f)), method, type_args, args: args.into_iter().map(|a| a.map_kind_prov(f)).collect() },
+            IrExprKind::Call { func, args } =>
+                IrExprKind::Call { func: Box::new(func.map_kind_prov(f)), args: args.into_iter().map(|a| a.map_kind_prov(f)).collect() },
+            IrExprKind::Field { base, field } =>
+                IrExprKind::Field { base: Box::new(base.map_kind_prov(f)), field },
+            IrExprKind::Index { base, index } =>
+                IrExprKind::Index { base: Box::new(base.map_kind_prov(f)), index: Box::new(index.map_kind_prov(f)) },
+            IrExprKind::StructExpr { kind, type_args, fields, rest } =>
+                IrExprKind::StructExpr { kind, type_args, fields: fields.into_iter().map(|(n, e)| (n, e.map_kind_prov(f))).collect(), rest: rest.map(|r| Box::new(r.map_kind_prov(f))) },
+            IrExprKind::Tuple(es) => IrExprKind::Tuple(es.into_iter().map(|e| e.map_kind_prov(f)).collect()),
+            IrExprKind::Array(es) => IrExprKind::Array(es.into_iter().map(|e| e.map_kind_prov(f)).collect()),
+            IrExprKind::FixedArray(es) => IrExprKind::FixedArray(es.into_iter().map(|e| e.map_kind_prov(f)).collect()),
+            IrExprKind::Repeat { elem, len } =>
+                IrExprKind::Repeat { elem: Box::new(elem.map_kind_prov(f)), len: Box::new(len.map_kind_prov(f)) },
+            IrExprKind::ArrayGenerate { elem_ty, len, index_var, body } =>
+                IrExprKind::ArrayGenerate { elem_ty, len, index_var, body: Box::new(body.map_kind_prov(f)) },
+            IrExprKind::DefaultValue { ty } => IrExprKind::DefaultValue { ty },
+            IrExprKind::LengthOf(l) => IrExprKind::LengthOf(l),
+            IrExprKind::IterPipeline(chain) => IrExprKind::IterPipeline(chain.map_prov(f)),
+            IrExprKind::RawMap { receiver, elem_var, body } =>
+                IrExprKind::RawMap { receiver: Box::new(receiver.map_kind_prov(f)), elem_var, body: Box::new(body.map_kind_prov(f)) },
+            IrExprKind::RawZip { left, right, left_var, right_var, body } =>
+                IrExprKind::RawZip { left: Box::new(left.map_kind_prov(f)), right: Box::new(right.map_kind_prov(f)), left_var, right_var, body: Box::new(body.map_kind_prov(f)) },
+            IrExprKind::RawFold { receiver, init, acc_var, elem_var, body } =>
+                IrExprKind::RawFold { receiver: Box::new(receiver.map_kind_prov(f)), init: Box::new(init.map_kind_prov(f)), acc_var, elem_var, body: Box::new(body.map_kind_prov(f)) },
+            IrExprKind::BoundedLoop { var, start, end, inclusive, body } =>
+                IrExprKind::BoundedLoop { var, start: Box::new(start.map_kind_prov(f)), end: Box::new(end.map_kind_prov(f)), inclusive, body: body.map_prov(f) },
+            IrExprKind::IterLoop { pattern, collection, body } =>
+                IrExprKind::IterLoop { pattern, collection: Box::new(collection.map_kind_prov(f)), body: body.map_prov(f) },
+            IrExprKind::Block(b) => IrExprKind::Block(b.map_prov(f)),
+            IrExprKind::If { cond, then_branch, else_branch } =>
+                IrExprKind::If { cond: Box::new(cond.map_kind_prov(f)), then_branch: then_branch.map_prov(f), else_branch: else_branch.map(|e| Box::new(e.map_kind_prov(f))) },
+            IrExprKind::Match { expr, arms } =>
+                IrExprKind::Match { expr: Box::new(expr.map_kind_prov(f)), arms: arms.into_iter().map(|a| a.map_prov(f)).collect() },
+            IrExprKind::Closure { params, ret_type, body } =>
+                IrExprKind::Closure { params, ret_type, body: Box::new(body.map_kind_prov(f)) },
+            IrExprKind::Cast { expr, ty } => IrExprKind::Cast { expr: Box::new(expr.map_kind_prov(f)), ty },
+            IrExprKind::Return(e) => IrExprKind::Return(e.map(|e| Box::new(e.map_kind_prov(f)))),
+            IrExprKind::Break(e) => IrExprKind::Break(e.map(|e| Box::new(e.map_kind_prov(f)))),
+            IrExprKind::Continue => IrExprKind::Continue,
+            IrExprKind::Assign { left, right } =>
+                IrExprKind::Assign { left: Box::new(left.map_kind_prov(f)), right: Box::new(right.map_kind_prov(f)) },
+            IrExprKind::AssignOp { op, left, right } =>
+                IrExprKind::AssignOp { op, left: Box::new(left.map_kind_prov(f)), right: Box::new(right.map_kind_prov(f)) },
+            IrExprKind::Range { start, end, inclusive } =>
+                IrExprKind::Range { start: start.map(|e| Box::new(e.map_kind_prov(f))), end: end.map(|e| Box::new(e.map_kind_prov(f))), inclusive },
+            IrExprKind::TypenumUsize { ty } => IrExprKind::TypenumUsize { ty },
+            IrExprKind::WhileLoop { cond, body } =>
+                IrExprKind::WhileLoop { cond: Box::new(cond.map_kind_prov(f)), body: body.map_prov(f) },
+            IrExprKind::Unreachable => IrExprKind::Unreachable,
+            IrExprKind::Try(e) => IrExprKind::Try(Box::new(e.map_kind_prov(f))),
         }
     }
 }
@@ -2413,9 +2422,9 @@ impl<P: Clone, Q: Clone> MapProv<P, Q> for IterChainSource<P> {
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IterChainSource<Q> {
         match self {
             IterChainSource::Method { collection, method } =>
-                IterChainSource::Method { collection: Box::new(collection.map_prov(f)), method },
+                IterChainSource::Method { collection: Box::new(collection.map_kind_prov(f)), method },
             IterChainSource::Range { start, end, inclusive } =>
-                IterChainSource::Range { start: Box::new(start.map_prov(f)), end: Box::new(end.map_prov(f)), inclusive },
+                IterChainSource::Range { start: Box::new(start.map_kind_prov(f)), end: Box::new(end.map_kind_prov(f)), inclusive },
             IterChainSource::Zip { left, right } =>
                 IterChainSource::Zip { left: Box::new(left.map_prov(f)), right: Box::new(right.map_prov(f)) },
         }
@@ -2426,13 +2435,13 @@ impl<P: Clone, Q: Clone> MapProv<P, Q> for IterStep<P> {
     type Output = IterStep<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IterStep<Q> {
         match self {
-            IterStep::Map { var, body } => IterStep::Map { var, body: Box::new(body.map_prov(f)) },
-            IterStep::Filter { var, body } => IterStep::Filter { var, body: Box::new(body.map_prov(f)) },
-            IterStep::FilterMap { var, body } => IterStep::FilterMap { var, body: Box::new(body.map_prov(f)) },
-            IterStep::FlatMap { var, body } => IterStep::FlatMap { var, body: Box::new(body.map_prov(f)) },
+            IterStep::Map { var, body } => IterStep::Map { var, body: Box::new(body.map_kind_prov(f)) },
+            IterStep::Filter { var, body } => IterStep::Filter { var, body: Box::new(body.map_kind_prov(f)) },
+            IterStep::FilterMap { var, body } => IterStep::FilterMap { var, body: Box::new(body.map_kind_prov(f)) },
+            IterStep::FlatMap { var, body } => IterStep::FlatMap { var, body: Box::new(body.map_kind_prov(f)) },
             IterStep::Enumerate => IterStep::Enumerate,
-            IterStep::Take { count } => IterStep::Take { count: Box::new(count.map_prov(f)) },
-            IterStep::Skip { count } => IterStep::Skip { count: Box::new(count.map_prov(f)) },
+            IterStep::Take { count } => IterStep::Take { count: Box::new(count.map_kind_prov(f)) },
+            IterStep::Skip { count } => IterStep::Skip { count: Box::new(count.map_kind_prov(f)) },
             IterStep::Chain { other } => IterStep::Chain { other: Box::new(other.map_prov(f)) },
         }
     }
@@ -2445,7 +2454,7 @@ impl<P: Clone, Q: Clone> MapProv<P, Q> for IterTerminal<P> {
             IterTerminal::Collect => IterTerminal::Collect,
             IterTerminal::CollectTyped(ty) => IterTerminal::CollectTyped(ty),
             IterTerminal::Fold { init, acc_var, elem_var, body } =>
-                IterTerminal::Fold { init: Box::new(init.map_prov(f)), acc_var, elem_var, body: Box::new(body.map_prov(f)) },
+                IterTerminal::Fold { init: Box::new(init.map_kind_prov(f)), acc_var, elem_var, body: Box::new(body.map_kind_prov(f)) },
             IterTerminal::Lazy => IterTerminal::Lazy,
         }
     }
@@ -2456,20 +2465,20 @@ impl<P: Clone, Q: Clone> MapProv<P, Q> for IrMatchArm<P> {
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrMatchArm<Q> {
         IrMatchArm {
             pattern: self.pattern,
-            guard: self.guard.map(|g| g.map_prov(f)),
-            body: self.body.map_prov(f),
+            guard: self.guard.map(|g| g.map_kind_prov(f)),
+            body: self.body.map_kind_prov(f),
         }
     }
 }
 
-impl<P: Clone, Q: Clone> MapProv<P, Q> for IrStmt<P> {
-    type Output = IrStmt<Q>;
-    fn map_prov(self, f: &impl Fn(P) -> Q) -> IrStmt<Q> {
+impl<P: Clone, Q: Clone> MapKind<P, Q> for IrStmtKind<P> {
+    type Output = IrStmtKind<Q>;
+    fn map_kind(self, f: &impl Fn(P) -> Q) -> IrStmtKind<Q> {
         match self {
-            IrStmt::Let { pattern, ty, init } =>
-                IrStmt::Let { pattern, ty, init: init.map(|e| e.map_prov(f)) },
-            IrStmt::Semi(e) => IrStmt::Semi(e.map_prov(f)),
-            IrStmt::Expr(e) => IrStmt::Expr(e.map_prov(f)),
+            IrStmtKind::Let { pattern, ty, init } =>
+                IrStmtKind::Let { pattern, ty, init: init.map(|e| e.map_kind_prov(f)) },
+            IrStmtKind::Semi(e) => IrStmtKind::Semi(e.map_kind_prov(f)),
+            IrStmtKind::Expr(e) => IrStmtKind::Expr(e.map_kind_prov(f)),
         }
     }
 }
@@ -2478,9 +2487,8 @@ impl<P: Clone, Q: Clone> MapProv<P, Q> for IrBlock<P> {
     type Output = IrBlock<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrBlock<Q> {
         IrBlock {
-            stmts: self.stmts.into_iter().map(|s| s.map_prov(f)).collect(),
-            stmt_provs: self.stmt_provs.into_iter().map(|p| f(p)).collect(),
-            expr: self.expr.map(|e| Box::new(e.map_prov(f))),
+            stmts: self.stmts.into_iter().map(|s| s.map_kind_prov(f)).collect(),
+            expr: self.expr.map(|e| Box::new(e.map_kind_prov(f))),
         }
     }
 }
@@ -2601,7 +2609,6 @@ pub struct IrCfgBlock<P: Clone = ()> {
     /// SSA block parameters — bound by the `args` of jumps that target this block.
     pub params: Vec<IrParam>,
     pub stmts: Vec<IrStmt<P>>,
-    pub stmt_provs: Vec<P>,
     pub terminator: IrCfgTerminator<P>,
 }
 
@@ -2639,7 +2646,7 @@ impl<P: Clone, Q: Clone> MapProv<P, Q> for IrCfgJump<P> {
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrCfgJump<Q> {
         IrCfgJump {
             target: self.target,
-            args: self.args.into_iter().map(|e| e.map_prov(f)).collect(),
+            args: self.args.into_iter().map(|e| e.map_kind_prov(f)).collect(),
             reentry: self.reentry,
         }
     }
@@ -2649,10 +2656,10 @@ impl<P: Clone, Q: Clone> MapProv<P, Q> for IrCfgTerminator<P> {
     type Output = IrCfgTerminator<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrCfgTerminator<Q> {
         match self {
-            IrCfgTerminator::Return(e) => IrCfgTerminator::Return(e.map(|e| e.map_prov(f))),
+            IrCfgTerminator::Return(e) => IrCfgTerminator::Return(e.map(|e| e.map_kind_prov(f))),
             IrCfgTerminator::Goto(j) => IrCfgTerminator::Goto(j.map_prov(f)),
             IrCfgTerminator::CondGoto { cond, then_, else_ } => IrCfgTerminator::CondGoto {
-                cond: cond.map_prov(f),
+                cond: cond.map_kind_prov(f),
                 then_: then_.map_prov(f),
                 else_: else_.map_prov(f),
             },
@@ -2665,8 +2672,7 @@ impl<P: Clone, Q: Clone> MapProv<P, Q> for IrCfgBlock<P> {
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrCfgBlock<Q> {
         IrCfgBlock {
             params: self.params,
-            stmts: self.stmts.into_iter().map(|s| s.map_prov(f)).collect(),
-            stmt_provs: self.stmt_provs.into_iter().map(|p| f(p)).collect(),
+            stmts: self.stmts.into_iter().map(|s| s.map_kind_prov(f)).collect(),
             terminator: self.terminator.map_prov(f),
         }
     }

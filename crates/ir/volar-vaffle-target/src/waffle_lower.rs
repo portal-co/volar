@@ -139,7 +139,7 @@ pub fn lower_waffle_module(
                 _ => continue,
             };
             match kind {
-                WaffleImportKind::Oracle { name } => {
+                WaffleImportKind::Oracle { name, .. } => {
                     let params: alloc::vec::Vec<_> = wasm_params
                         .iter()
                         .filter_map(|&t| waffle_ty(t).ok())
@@ -156,7 +156,7 @@ pub fn lower_waffle_module(
                         results,
                     });
                 }
-                WaffleImportKind::Action { name, n_args } => {
+                WaffleImportKind::Action { name, n_args, .. } => {
                     let action_params: alloc::vec::Vec<_> = wasm_params
                         .iter()
                         .skip(1) // skip guard
@@ -748,19 +748,25 @@ fn lower_op(
                     .collect::<Result<_, _>>()?;
 
                 let results = match kind {
-                    WaffleImportKind::Oracle { name: oracle_name } => {
-                        tgt.call_extern_multi(
+                    WaffleImportKind::Oracle { name: oracle_name, side } => {
+                        tgt.set_side(*side);
+                        let r = tgt.call_extern_multi(
                             &alloc::format!("oracle_{oracle_name}"),
                             &all_arg_vals,
                             &orig_ret_tys,
-                        )
+                        );
+                        tgt.set_side(None);
+                        r
                     }
-                    WaffleImportKind::Action { name: action_name, n_args } => {
+                    WaffleImportKind::Action { name: action_name, n_args, side } => {
                         let guard_vv = all_arg_vals[0].clone();
                         let guard_bit = or_bits(tgt, &guard_vv.bits);
                         let real_args = &all_arg_vals[1..=*n_args];
                         let fallbacks = &all_arg_vals[*n_args + 1..];
-                        tgt.action_call(action_name, guard_bit, real_args, fallbacks, &orig_ret_tys)
+                        tgt.set_side(*side);
+                        let r = tgt.action_call(action_name, guard_bit, real_args, fallbacks, &orig_ret_tys);
+                        tgt.set_side(None);
+                        r
                     }
                 };
 

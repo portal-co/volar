@@ -364,6 +364,14 @@ impl<V> BranchTarget<V> {
 /// before emitting one or more instructions; each instruction inherits the
 /// most recently set provenance.  Backends that do not track provenance use
 /// the default `Prov = ()` and the no-op default impl of `set_prov`.
+///
+/// # Side
+///
+/// Independently of provenance, callers may also attach a [`SideId`] naming
+/// which actor/party/role subsequently emitted instructions belong to (see
+/// `volar-side`).  Call [`set_side`](LirTarget::set_side) the same way as
+/// `set_prov` — each instruction inherits the most recently set side.  The
+/// default implementation is a no-op, exactly like `set_prov`'s default.
 pub trait LirTarget<Prov: Clone = ()> {
     type Value: Clone + Eq + core::fmt::Debug;
     type Block: Clone + Eq + core::fmt::Debug;
@@ -376,6 +384,15 @@ pub trait LirTarget<Prov: Clone = ()> {
     /// The default implementation is a no-op — backends that do not track
     /// provenance need not override this.
     fn set_prov(&mut self, _prov: Prov) {}
+
+    /// Set the side context for subsequently emitted instructions.
+    ///
+    /// Each call overrides the previous value.  Instructions emitted after
+    /// this call (and before the next `set_side`) are tagged with `side`.
+    ///
+    /// The default implementation is a no-op — backends that do not track
+    /// sides need not override this.
+    fn set_side(&mut self, _side: Option<volar_side::SideId>) {}
 
     // ---- Type registration --------------------------------------------------
 

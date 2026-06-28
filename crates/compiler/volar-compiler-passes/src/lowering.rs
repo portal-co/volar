@@ -348,8 +348,8 @@ fn collect_type_refs_in_function(f: &IrFunction, refs: &mut BTreeSet<String>) {
 
 fn collect_type_refs_in_block(block: &IrBlock, refs: &mut BTreeSet<String>) {
     for stmt in &block.stmts {
-        match stmt {
-            IrStmt::Let { ty, init, .. } => {
+        match &stmt.kind {
+            IrStmtKind::Let { ty, init, .. } => {
                 if let Some(t) = ty {
                     collect_type_refs_in_type(t, refs);
                 }
@@ -357,7 +357,7 @@ fn collect_type_refs_in_block(block: &IrBlock, refs: &mut BTreeSet<String>) {
                     collect_type_refs_in_expr(i, refs);
                 }
             }
-            IrStmt::Semi(e) | IrStmt::Expr(e) => collect_type_refs_in_expr(e, refs),
+            IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => collect_type_refs_in_expr(e, refs),
             _ => {}
         }
     }
@@ -367,24 +367,24 @@ fn collect_type_refs_in_block(block: &IrBlock, refs: &mut BTreeSet<String>) {
 }
 
 fn collect_type_refs_in_expr(expr: &IrExpr, refs: &mut BTreeSet<String>) {
-    match expr {
-        IrExpr::Binary { left, right, .. } => {
+    match &expr.kind {
+        IrExprKind::Binary { left, right, .. } => {
             collect_type_refs_in_expr(left, refs);
             collect_type_refs_in_expr(right, refs);
         }
-        IrExpr::MethodCall { receiver, args, .. } => {
+        IrExprKind::MethodCall { receiver, args, .. } => {
             collect_type_refs_in_expr(receiver, refs);
             for arg in args {
                 collect_type_refs_in_expr(arg, refs);
             }
         }
-        IrExpr::Call { func, args } => {
+        IrExprKind::Call { func, args } => {
             collect_type_refs_in_expr(func, refs);
             for arg in args {
                 collect_type_refs_in_expr(arg, refs);
             }
         }
-        IrExpr::Block(b) => collect_type_refs_in_block(b, refs),
+        IrExprKind::Block(b) => collect_type_refs_in_block(b, refs),
         _ => {}
     }
 }

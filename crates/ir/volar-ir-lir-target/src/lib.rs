@@ -153,6 +153,9 @@ pub struct VolarIrTarget<P: Clone = ()> {
     /// Provenance to attach to the next emitted statement.
     current_prov: P,
 
+    /// Side to attach to the next emitted statement.
+    current_side: Option<volar_side::SideId>,
+
     /// State for the function currently being built.
     func: Option<FuncBuilder<P>>,
 
@@ -176,6 +179,7 @@ impl<P: Clone> VolarIrTarget<P> {
             pending_oracles: vec![],
             pending_actions: vec![],
             current_prov: initial_prov,
+            current_side: None,
             func: None,
             completed: vec![],
         }
@@ -246,7 +250,7 @@ impl<P: Clone> VolarIrTarget<P> {
         let f = self.func.as_mut().unwrap();
         let blk = &mut f.blocks[f.current];
         let id = blk.next_local_id();
-        blk.stmts.push(volar_ir_common::Node::new(stmt, self.current_prov.clone(), None));
+        blk.stmts.push(volar_ir_common::Node::new(stmt, self.current_prov.clone(), self.current_side));
         IRVarId(id)
     }
 
@@ -947,6 +951,10 @@ impl<P: Clone> LirTarget<P> for VolarIrTarget<P> {
 
     fn set_prov(&mut self, prov: P) {
         self.current_prov = prov;
+    }
+
+    fn set_side(&mut self, side: Option<volar_side::SideId>) {
+        self.current_side = side;
     }
 
     // ---- Struct registration -----------------------------------------------

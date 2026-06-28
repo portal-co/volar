@@ -1037,9 +1037,16 @@ fn convert_array_length_from_syn_expr(expr: &syn::Expr) -> Result<ArrayLength> {
     }
 }
 
+/// Wrap a freshly-parsed expression kind with empty provenance/side — the
+/// Rust-spec parser doesn't yet attach either (see `volar-side`'s WASM/LIR
+/// extension points for where real per-value annotations get threaded in).
+fn ir_expr(kind: IrExprKind) -> IrExpr {
+    volar_ir_common::Node::new(kind, (), None)
+}
+
 fn convert_expr(expr: &Expr) -> Result<IrExpr> {
     match expr {
-        Expr::Lit(l) => Ok(IrExpr::Lit(convert_lit(&l.lit)?)),
+        Expr::Lit(l) => Ok(ir_expr(IrExprKind::Lit(convert_lit(&l.lit)?))),
         Expr::Path(p) => {
             // Handle qualified paths like `<D::OutputSize as Unsigned>::to_usize()`
             if p.qself.is_some() {
@@ -1077,7 +1084,7 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                 let mut segments: Vec<String> = Vec::new();
                 segments.push(base_str);
                 segments.push(last.ident.to_string());
-                return Ok(IrExpr::Path {
+                return Ok(ir_expr(IrExprKind::Path {
                     segments,
                     type_args: p
                         .path
@@ -1094,7 +1101,7 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                             }
                         })
                         .collect(),
-                });
+                }));
             }
 
             let segments: Vec<String> = p
@@ -1119,51 +1126,51 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                 })
                 .collect();
             if segments.len() == 1 && type_args.is_empty() {
-                Ok(IrExpr::Var(segments[0].clone()))
+                Ok(ir_expr(IrExprKind::Var(segments[0].clone())))
             } else {
-                Ok(IrExpr::Path {
+                Ok(ir_expr(IrExprKind::Path {
                     segments,
                     type_args,
-                })
+                }))
             }
         }
         Expr::Binary(b) => {
             if let Some(base_op) = assign_op_base(&b.op) {
-                Ok(IrExpr::AssignOp {
+                Ok(ir_expr(IrExprKind::AssignOp {
                     op: base_op,
                     left: Box::new(convert_expr(&b.left)?),
                     right: Box::new(convert_expr(&b.right)?),
-                })
+                }))
             } else {
-                Ok(IrExpr::Binary {
+                Ok(ir_expr(IrExprKind::Binary {
                     op: convert_bin_op(b.op),
                     left: Box::new(convert_expr(&b.left)?),
                     right: Box::new(convert_expr(&b.right)?),
-                })
+                }))
             }
         }
-        Expr::Unary(u) => Ok(IrExpr::Unary {
+        Expr::Unary(u) => Ok(ir_expr(IrExprKind::Unary {
             op: convert_unary_op(u.op),
             expr: Box::new(convert_expr(&u.expr)?),
-        }),
+        })),
         Expr::Call(c) => convert_call(&c.func, &c.args.iter().collect::<Vec<_>>()),
         Expr::MethodCall(m) => convert_method_call(
             &m.receiver,
             &m.method.to_string(),
             &m.args.iter().collect::<Vec<_>>(),
         ),
-        Expr::Field(f) => Ok(IrExpr::Field {
+        Expr::Field(f) => Ok(ir_expr(IrExprKind::Field {
             base: Box::new(convert_expr(&f.base)?),
             field: match &f.member {
                 syn::Member::Named(i) => i.to_string(),
                 syn::Member::Unnamed(i) => i.index.to_string(),
             },
-        }),
-        Expr::Index(i) => Ok(IrExpr::Index {
+        })),
+        Expr::Index(i) => Ok(ir_expr(IrExprKind::Index {
             base: Box::new(convert_expr(&i.expr)?),
             index: Box::new(convert_expr(&i.index)?),
-        }),
-        Expr::Range(r) => Ok(IrExpr::Range {
+        })),
+        Expr::Range(r) => Ok(ir_expr(IrExprKind::Range {
             start: r
                 .start
                 .as_ref()
@@ -1177,9 +1184,9 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                 .transpose()?
                 .map(Box::new),
             inclusive: matches!(r.limits, syn::RangeLimits::Closed(_)),
-        }),
+        })),
         Expr::Paren(p) => convert_expr(&p.expr),
-        Expr::Block(b) => Ok(IrExpr::Block(convert_block(&b.block)?)),
+        Expr::Block(b) => Ok(ir_expr(IrExprKind::Block(convert_block(&b.block)?))),
         Expr::If(i) => {
             // Desugar `if let PAT = EXPR { then } else { else }` to a match expression.
             if let Expr::Let(let_cond) = i.cond.as_ref() {
@@ -1191,18 +1198,17 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                     .as_ref()
                     .map(|(_, e)| convert_expr(e))
                     .transpose()?
-                    .unwrap_or(IrExpr::Block(IrBlock {
+                    .unwrap_or(ir_expr(IrExprKind::Block(IrBlock {
                         stmts: vec![],
-                        stmt_provs: vec![],
                         expr: None,
-                    }));
-                Ok(IrExpr::Match {
+                    })));
+                Ok(ir_expr(IrExprKind::Match {
                     expr: Box::new(scrutinee),
                     arms: vec![
                         IrMatchArm {
                             pattern: pat,
                             guard: None,
-                            body: IrExpr::Block(then_block),
+                            body: ir_expr(IrExprKind::Block(then_block)),
                         },
                         IrMatchArm {
                             pattern: IrPattern::Wild,
@@ -1210,9 +1216,9 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                             body: else_arm_body,
                         },
                     ],
-                })
+                }))
             } else {
-                Ok(IrExpr::If {
+                Ok(ir_expr(IrExprKind::If {
                     cond: Box::new(convert_expr(&i.cond)?),
                     then_branch: convert_block(&i.then_branch)?,
                     else_branch: i
@@ -1220,24 +1226,24 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                         .as_ref()
                         .map(|(_, e)| Ok::<_, CompilerError>(Box::new(convert_expr(e)?)))
                         .transpose()?,
-                })
+                }))
             }
         }
         Expr::ForLoop(f) => convert_for_loop(&f.pat, &f.expr, &f.body),
-        Expr::While(w) => Ok(IrExpr::WhileLoop {
+        Expr::While(w) => Ok(ir_expr(IrExprKind::WhileLoop {
             cond: Box::new(convert_expr(&w.cond)?),
             body: convert_block(&w.body)?,
-        }),
+        })),
         Expr::Loop(_) => Err(CompilerError::UnboundedLoop),
-        Expr::Match(m) => Ok(IrExpr::Match {
+        Expr::Match(m) => Ok(ir_expr(IrExprKind::Match {
             expr: Box::new(convert_expr(&m.expr)?),
             arms: m
                 .arms
                 .iter()
                 .map(convert_match_arm)
                 .collect::<Result<Vec<_>>>()?,
-        }),
-        Expr::Closure(c) => Ok(IrExpr::Closure {
+        })),
+        Expr::Closure(c) => Ok(ir_expr(IrExprKind::Closure {
             params: c
                 .inputs
                 .iter()
@@ -1250,37 +1256,37 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                 .collect::<Result<Vec<_>>>()?,
             ret_type: None,
             body: Box::new(convert_expr(&c.body)?),
-        }),
-        Expr::Reference(r) => Ok(IrExpr::Unary {
+        })),
+        Expr::Reference(r) => Ok(ir_expr(IrExprKind::Unary {
             op: if r.mutability.is_some() {
                 SpecUnaryOp::RefMut
             } else {
                 SpecUnaryOp::Ref
             },
             expr: Box::new(convert_expr(&r.expr)?),
-        }),
-        Expr::Cast(c) => Ok(IrExpr::Cast {
+        })),
+        Expr::Cast(c) => Ok(ir_expr(IrExprKind::Cast {
             expr: Box::new(convert_expr(&c.expr)?),
             ty: Box::new(convert_type(&c.ty)?),
-        }),
-        Expr::Return(r) => Ok(IrExpr::Return(
+        })),
+        Expr::Return(r) => Ok(ir_expr(IrExprKind::Return(
             r.expr
                 .as_ref()
                 .map(|e| Ok::<_, CompilerError>(Box::new(convert_expr(e)?)))
                 .transpose()?,
-        )),
-        Expr::Break(b) => Ok(IrExpr::Break(
+        ))),
+        Expr::Break(b) => Ok(ir_expr(IrExprKind::Break(
             b.expr
                 .as_ref()
                 .map(|e| Ok::<_, CompilerError>(Box::new(convert_expr(e)?)))
                 .transpose()?,
-        )),
-        Expr::Continue(_) => Ok(IrExpr::Continue),
-        Expr::Try(t) => Ok(IrExpr::Try(Box::new(convert_expr(&t.expr)?))),
-        Expr::Assign(a) => Ok(IrExpr::Assign {
+        ))),
+        Expr::Continue(_) => Ok(ir_expr(IrExprKind::Continue)),
+        Expr::Try(t) => Ok(ir_expr(IrExprKind::Try(Box::new(convert_expr(&t.expr)?)))),
+        Expr::Assign(a) => Ok(ir_expr(IrExprKind::Assign {
             left: Box::new(convert_expr(&a.left)?),
             right: Box::new(convert_expr(&a.right)?),
-        }),
+        })),
         Expr::Struct(s) => {
             let last = s.path.segments.last().unwrap();
             let type_args = if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
@@ -1300,7 +1306,7 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                 .map(|seg| seg.ident.to_string())
                 .collect::<Vec<_>>()
                 .join("::");
-            Ok(IrExpr::StructExpr {
+            Ok(ir_expr(IrExprKind::StructExpr {
                 kind: StructKind::from_str(&full_name),
                 type_args,
                 fields: s
@@ -1321,40 +1327,40 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                     .as_ref()
                     .map(|e| Ok::<_, CompilerError>(Box::new(convert_expr(e)?)))
                     .transpose()?,
-            })
+            }))
         }
-        Expr::Repeat(r) => Ok(IrExpr::Repeat {
+        Expr::Repeat(r) => Ok(ir_expr(IrExprKind::Repeat {
             elem: Box::new(convert_expr(&r.expr)?),
             len: Box::new(convert_expr(&r.len)?),
-        }),
-        Expr::Array(a) => Ok(IrExpr::Array(
+        })),
+        Expr::Array(a) => Ok(ir_expr(IrExprKind::Array(
             a.elems
                 .iter()
                 .map(convert_expr)
                 .collect::<Result<Vec<_>>>()?,
-        )),
-        Expr::Tuple(t) => Ok(IrExpr::Tuple(
+        ))),
+        Expr::Tuple(t) => Ok(ir_expr(IrExprKind::Tuple(
             t.elems
                 .iter()
                 .map(convert_expr)
                 .collect::<Result<Vec<_>>>()?,
-        )),
+        ))),
         Expr::Macro(m) => {
             let name = m.mac.path.segments.last().unwrap().ident.to_string();
             if name == "unreachable" {
-                return Ok(IrExpr::Unreachable);
+                return Ok(ir_expr(IrExprKind::Unreachable));
             }
             if name == "todo" || name == "unimplemented" {
                 // Treat as a placeholder expression
                 let mut segs = Vec::new();
                 segs.push(format!("{}!", name));
-                return Ok(IrExpr::Call {
-                    func: Box::new(IrExpr::Path {
+                return Ok(ir_expr(IrExprKind::Call {
+                    func: Box::new(ir_expr(IrExprKind::Path {
                         segments: segs,
                         type_args: Vec::new(),
-                    }),
+                    })),
                     args: Vec::new(),
-                });
+                }));
             }
             // For vec!, parse as an array literal
             if name == "vec" {
@@ -1371,10 +1377,10 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                         .iter()
                         .map(convert_expr)
                         .collect::<Result<Vec<_>>>()?;
-                    return Ok(IrExpr::Array(ir_elems));
+                    return Ok(ir_expr(IrExprKind::Array(ir_elems)));
                 }
                 // Fallback: empty vec
-                return Ok(IrExpr::Array(Vec::new()));
+                return Ok(ir_expr(IrExprKind::Array(Vec::new())));
             }
             // For typenum_usize, parse the token stream as a type and convert it
             if name == "typenum_usize" {
@@ -1385,9 +1391,9 @@ fn convert_expr(expr: &Expr) -> Result<IrExpr> {
                     ))
                 })?;
                 let ir_ty = convert_type(&parsed_ty)?;
-                return Ok(IrExpr::TypenumUsize {
+                return Ok(ir_expr(IrExprKind::TypenumUsize {
                     ty: Box::new(ir_ty),
-                });
+                }));
             }
 
             Err(CompilerError::Unsupported(format!("macro: {}", name)))
@@ -1475,12 +1481,12 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
                     )));
                 }
                 let (elem_ty, len) = extract_array_type_params(&params);
-                return Ok(IrExpr::ArrayGenerate {
+                return Ok(ir_expr(IrExprKind::ArrayGenerate {
                     elem_ty,
                     len,
                     index_var: extract_pat_name(&c.inputs[0]),
                     body: Box::new(convert_expr(&c.body)?),
-                });
+                }));
             }
         }
 
@@ -1490,12 +1496,12 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
         {
             if let Expr::Closure(c) = args[0] {
                 let (elem_ty, len) = extract_array_type_params(&params);
-                return Ok(IrExpr::ArrayGenerate {
+                return Ok(ir_expr(IrExprKind::ArrayGenerate {
                     elem_ty,
                     len,
                     index_var: extract_pat_name(&c.inputs[0]),
                     body: Box::new(convert_expr(&c.body)?),
-                });
+                }));
             }
         }
 
@@ -1528,7 +1534,7 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
                         )));
                     }
                 };
-                return Ok(IrExpr::DefaultValue { ty: array_ty });
+                return Ok(ir_expr(IrExprKind::DefaultValue { ty: array_ty }));
             }
         }
 
@@ -1546,7 +1552,7 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
                 .unwrap_or(false)
                 && first.len() <= 3;
             if is_length_param {
-                return Ok(IrExpr::LengthOf(ArrayLength::TypeParam(first.clone())));
+                return Ok(ir_expr(IrExprKind::LengthOf(ArrayLength::TypeParam(first.clone()))));
             }
         }
     }
@@ -1558,19 +1564,19 @@ fn convert_call(func: &Expr, args: &[&Expr]) -> Result<IrExpr> {
                 if last.ident == "to_usize" && args.is_empty() {
                     let base_ty = convert_type(&qself.ty)?;
                     let len = type_to_array_length(&base_ty);
-                    return Ok(IrExpr::LengthOf(len));
+                    return Ok(ir_expr(IrExprKind::LengthOf(len)));
                 }
             }
         }
     }
 
-    Ok(IrExpr::Call {
+    Ok(ir_expr(IrExprKind::Call {
         func: Box::new(convert_expr(func)?),
         args: args
             .iter()
             .map(|a| convert_expr(a))
             .collect::<Result<Vec<_>>>()?,
-    })
+    }))
 }
 
 // ============================================================================
@@ -1768,13 +1774,13 @@ fn peel_iter_chain(syn_expr: &Expr) -> Result<Option<PeeledChain>> {
                 .as_ref()
                 .map(|e| convert_expr(e))
                 .transpose()?
-                .unwrap_or(IrExpr::Lit(IrLit::Int(0)));
+                .unwrap_or(ir_expr(IrExprKind::Lit(IrLit::Int(0))));
             let end = r
                 .end
                 .as_ref()
                 .map(|e| convert_expr(e))
                 .transpose()?
-                .unwrap_or(IrExpr::Lit(IrLit::Int(0)));
+                .unwrap_or(ir_expr(IrExprKind::Lit(IrLit::Int(0))));
             Ok(Some(PeeledChain {
                 source: crate::ir::IterChainSource::Range {
                     start: Box::new(start),
@@ -1998,7 +2004,7 @@ fn try_build_iter_chain(
 fn convert_method_call(receiver: &Expr, method: &str, args: &[&Expr]) -> Result<IrExpr> {
     // First, try to build a flat iterator chain
     if let Some(chain) = try_build_iter_chain(receiver, method, args)? {
-        return Ok(IrExpr::IterPipeline(chain));
+        return Ok(ir_expr(IrExprKind::IterPipeline(chain)));
     }
 
     // Non-iterator .zip(other, |a, b| body) — GenericArray style
@@ -2006,13 +2012,13 @@ fn convert_method_call(receiver: &Expr, method: &str, args: &[&Expr]) -> Result<
         if let Expr::Closure(c) = args[1] {
             let left_var = extract_ir_pattern(&c.inputs[0]);
             let right_var = extract_ir_pattern(&c.inputs[1]);
-            return Ok(IrExpr::RawZip {
+            return Ok(ir_expr(IrExprKind::RawZip {
                 left: Box::new(convert_expr(receiver)?),
                 right: Box::new(convert_expr(args[0])?),
                 left_var,
                 right_var,
                 body: Box::new(convert_expr(&c.body)?),
-            });
+            }));
         }
     }
 
@@ -2020,11 +2026,11 @@ fn convert_method_call(receiver: &Expr, method: &str, args: &[&Expr]) -> Result<
     if method == "map" && args.len() == 1 {
         if let Expr::Closure(c) = args[0] {
             if c.inputs.len() == 1 {
-                return Ok(IrExpr::RawMap {
+                return Ok(ir_expr(IrExprKind::RawMap {
                     receiver: Box::new(convert_expr(receiver)?),
                     elem_var: extract_ir_pattern(&c.inputs[0]),
                     body: Box::new(convert_expr(&c.body)?),
-                });
+                }));
             }
         }
     }
@@ -2033,19 +2039,19 @@ fn convert_method_call(receiver: &Expr, method: &str, args: &[&Expr]) -> Result<
     if method == "fold" && args.len() == 2 {
         if let Expr::Closure(c) = args[1] {
             if c.inputs.len() == 2 {
-                return Ok(IrExpr::RawFold {
+                return Ok(ir_expr(IrExprKind::RawFold {
                     receiver: Box::new(convert_expr(receiver)?),
                     init: Box::new(convert_expr(args[0])?),
                     acc_var: extract_ir_pattern(&c.inputs[0]),
                     elem_var: extract_ir_pattern(&c.inputs[1]),
                     body: Box::new(convert_expr(&c.body)?),
-                });
+                }));
             }
         }
     }
 
     // Default: generic method call
-    Ok(IrExpr::MethodCall {
+    Ok(ir_expr(IrExprKind::MethodCall {
         receiver: Box::new(convert_expr(receiver)?),
         method: MethodKind::from_str(method),
         type_args: Vec::new(),
@@ -2053,36 +2059,36 @@ fn convert_method_call(receiver: &Expr, method: &str, args: &[&Expr]) -> Result<
             .iter()
             .map(|a| convert_expr(a))
             .collect::<Result<Vec<_>>>()?,
-    })
+    }))
 }
 
 fn convert_for_loop(pat: &Pat, iter: &Expr, body: &syn::Block) -> Result<IrExpr> {
     if let Expr::Range(r) = iter {
-        return Ok(IrExpr::BoundedLoop {
+        return Ok(ir_expr(IrExprKind::BoundedLoop {
             var: extract_pat_name(pat),
             start: Box::new(
                 r.start
                     .as_ref()
                     .map(|e| convert_expr(e))
                     .transpose()?
-                    .unwrap_or(IrExpr::Lit(IrLit::Int(0))),
+                    .unwrap_or(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
             ),
             end: Box::new(
                 r.end
                     .as_ref()
                     .map(|e| convert_expr(e))
                     .transpose()?
-                    .unwrap_or(IrExpr::Lit(IrLit::Int(0))),
+                    .unwrap_or(ir_expr(IrExprKind::Lit(IrLit::Int(0)))),
             ),
             inclusive: matches!(r.limits, syn::RangeLimits::Closed(_)),
             body: convert_block(body)?,
-        });
+        }));
     }
-    Ok(IrExpr::IterLoop {
+    Ok(ir_expr(IrExprKind::IterLoop {
         pattern: convert_pattern(pat),
         collection: Box::new(convert_expr(iter)?),
         body: convert_block(body)?,
-    })
+    }))
 }
 
 fn convert_block(block: &syn::Block) -> Result<IrBlock> {
@@ -2098,7 +2104,7 @@ fn convert_block(block: &syn::Block) -> Result<IrBlock> {
                 } else {
                     None
                 };
-                stmts.push(IrStmt::Let {
+                stmts.push(volar_ir_common::Node::new(IrStmtKind::Let {
                     pattern: convert_pattern(&l.pat),
                     ty,
                     init: l
@@ -2106,19 +2112,19 @@ fn convert_block(block: &syn::Block) -> Result<IrBlock> {
                         .as_ref()
                         .map(|init| convert_expr(&init.expr))
                         .transpose()?,
-                });
+                }, (), None));
             }
             syn::Stmt::Expr(e, semi) => {
                 if is_last && semi.is_none() {
                     expr = Some(Box::new(convert_expr(e)?));
                 } else {
-                    stmts.push(IrStmt::Semi(convert_expr(e)?));
+                    stmts.push(volar_ir_common::Node::new(IrStmtKind::Semi(convert_expr(e)?), (), None));
                 }
             }
             _ => {}
         }
     }
-    Ok(IrBlock { stmts, stmt_provs: Vec::new(), expr })
+    Ok(IrBlock { stmts, expr })
 }
 
 fn convert_match_arm(arm: &syn::Arm) -> Result<IrMatchArm> {

@@ -67,10 +67,12 @@ pub(crate) struct FuncBuilder {
     sig_id: SigId,
     blocks: Vec<BlockBuilder>,
     current: usize,
-    all_values: Vec<Value>,
+    all_values: Vec<Node<Value>>,
     bit_tid: TypeId,
     /// Next free stack-storage slot for `StackAlloc` within this function.
     next_stack_slot: u64,
+    /// Side to attach to the next emitted value.
+    current_side: Option<volar_side::SideId>,
 }
 
 impl FuncBuilder {
@@ -83,6 +85,7 @@ impl FuncBuilder {
             all_values: vec![],
             bit_tid,
             next_stack_slot: 0,
+            current_side: None,
         }
     }
 
@@ -92,7 +95,7 @@ impl FuncBuilder {
 
     pub(crate) fn emit_value(&mut self, val: Value) -> ValueId {
         let id = self.next_value_id();
-        self.all_values.push(val);
+        self.all_values.push(Node::new(val, (), self.current_side));
         self.blocks[self.current].stmts.push(id);
         id
     }
@@ -100,7 +103,7 @@ impl FuncBuilder {
     fn emit_block_param(&mut self, block_idx: usize, ty: TypeId) -> ValueId {
         let idx = self.blocks[block_idx].params.len();
         let id = self.next_value_id();
-        self.all_values.push(Value::Param { block: BlockId(block_idx), ty, idx });
+        self.all_values.push(Node::new(Value::Param { block: BlockId(block_idx), ty, idx }, (), self.current_side));
         self.blocks[block_idx].params.push((id, ty));
         id
     }
@@ -357,6 +360,10 @@ impl LirTarget for VaffleTarget {
     type Value = VaffleValue;
     type Block = VaffleBlock;
 
+    fn set_side(&mut self, side: Option<volar_side::SideId>) {
+        self.fb().current_side = side;
+    }
+
     fn define_struct(&mut self, def: StructDef) -> StructId {
         let id = self.struct_widths.len() as StructId;
         let total: usize = def.fields.iter()
@@ -442,13 +449,7 @@ impl LirTarget for VaffleTarget {
             stmts: bb.stmts,
             terminator: bb.terminator.unwrap_or(Terminator::Return { values: vec![] }),
         }).collect();
-        // `FuncBuilder` carries no provenance/side of its own — every value
-        // emitted through this builder is genuinely fresh, so `((), None)` is
-        // not a placeholder here, it's the correct annotation.
-        let values: Vec<Node<Value>> = fb.all_values.into_iter()
-            .map(|v| Node::new(v, (), None))
-            .collect();
-        let body = FuncBody { sig: fb.sig_id, blocks, values, entry: BlockId(0) };
+        let body = FuncBody { sig: fb.sig_id, blocks, values: fb.all_values, entry: BlockId(0) };
         let func_id = FuncId(self.module.funcs.len());
         self.module.funcs.push(FuncDecl::Body(body));
         self.module.exports.insert(fb.name, func_id);
@@ -1162,7 +1163,7 @@ mod tests {
 
         // There should be StorageRead ops for loading the bits.
         let has_stack_read = body.all_values.iter().any(|v| matches!(
-            v, Value::Op(Stmt::StorageRead { storage, .. }) if *storage == StorageId::STACK
+            &v.kind, Value::Op(Stmt::StorageRead { storage, .. }) if *storage == StorageId::STACK
         ));
         assert!(has_stack_read, "optimized ABI should emit StorageReads from STACK");
 
@@ -1208,13 +1209,13 @@ mod tests {
         // There should be StorageWrite ops to STACK.
         let body = t.func.as_ref().unwrap();
         let has_stack_write = body.all_values.iter().any(|v| matches!(
-            v, Value::Op(Stmt::StorageWrite { storage, .. }) if *storage == StorageId::STACK
+            &v.kind, Value::Op(Stmt::StorageWrite { storage, .. }) if *storage == StorageId::STACK
         ));
         assert!(has_stack_write, "optimized call_extern should write large args to STACK");
 
         // The Call node's arg count should be PTR_BITS (the address),
         // NOT 128 (the raw bits).
-        let call_arg_count = body.all_values.iter().find_map(|v| match v {
+        let call_arg_count = body.all_values.iter().find_map(|v| match &v.kind {
             Value::Call { args, .. } => Some(args.len()),
             _ => None,
         });
@@ -1235,7 +1236,7 @@ mod tests {
         t.call_extern("callee", &[LirType::U32], &[val], None);
 
         let body = t.func.as_ref().unwrap();
-        let call_arg_count = body.all_values.iter().find_map(|v| match v {
+        let call_arg_count = body.all_values.iter().find_map(|v| match &v.kind {
             Value::Call { args, .. } => Some(args.len()),
             _ => None,
         });
