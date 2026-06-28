@@ -2485,10 +2485,12 @@ where
         }
         IrAnyFunction::Flat(flat_fn) => {
             // Stub functions (action fallbacks, `bools_to_usize`, scheme
-            // helper stubs) all carry empty `stmt_provs` by construction, so
-            // `map_prov` never invokes this closure.
+            // helper stubs) are synthetic boilerplate with no real circuit
+            // provenance to derive from — every node in their body carries
+            // placeholder `()` provenance from construction, so map it to
+            // the handler's default output rather than a real mapped value.
             IrAnyFunction::Flat(flat_fn.map_prov(&|_: ()| -> H::Output {
-                unreachable!("weave_fhe_cfg_with_handler: stub function unexpectedly carried provenance")
+                H::Output::default()
             }))
         }
     }).collect();
