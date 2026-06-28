@@ -88,6 +88,7 @@ pub fn weave_grafhen_with_handler<P, H>(
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     assert!(
         circuit.is_circuit(),

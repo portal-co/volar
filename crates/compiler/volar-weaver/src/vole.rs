@@ -42,10 +42,10 @@ use alloc::{
 use volar_compiler::{
     ir::{
         AssociatedType, ExternalKind, IrAnyFunction, IrBlock, IrCfgBlock, IrCfgBody, IrCfgFunction,
-        IrCfgJump, IrCfgModule, IrCfgTerminator, IrExpr, IrFunction, IrGenericParam,
-        IrGenericParamKind, IrLit, IrModule, IrParam, IrPattern, IrStmt, IrTraitBound, IrType,
-        IrWherePredicate, MathTrait, MethodKind, PrimitiveType, SpecBinOp, StdMethod, StructKind,
-        TraitKind,
+        IrCfgJump, IrCfgModule, IrCfgTerminator, IrExpr, IrExprKind, IrFunction, IrGenericParam,
+        IrGenericParamKind, IrLit, IrModule, IrParam, IrPattern, IrStmt, IrStmtKind, IrTraitBound,
+        IrType, IrWherePredicate, MathTrait, MethodKind, PrimitiveType, SpecBinOp, StdMethod,
+        StructKind, TraitKind,
     },
     linkage::LinkageSystem,
 };
@@ -60,6 +60,32 @@ pub use volar_ir_passes::lower_to_circuit::LoweringMode;
 use volar_discipline::{Tagged, Zk, Transparent};
 
 use crate::{array_default, build_return, clone_expr, expand_ors, ref_expr, var, NoProvenance, ProvenanceHandler};
+
+/// Construct a fresh `IrExpr` with default provenance and no side — for
+/// genuinely fresh-construction sites with no natural source node to
+/// inherit from. Generic over `Q` so it also serves Quicksilver-generic
+/// (`Q: Clone + Default`) gate-emission helpers in this file.
+fn ir_expr<Q: Clone + Default>(kind: IrExprKind<Q>) -> IrExpr<Q> {
+    IrExpr::new(kind, Q::default(), None)
+}
+
+/// Construct a fresh `IrStmt` with default provenance and no side.
+fn ir_stmt<Q: Clone + Default>(kind: IrStmtKind<Q>) -> IrStmt<Q> {
+    IrStmt::new(kind, Q::default(), None)
+}
+
+/// Construct an `IrExpr` carrying an explicit provenance value (no side) —
+/// used where the surrounding code already has a meaningful per-statement
+/// provenance value (e.g. a mapped `handler.map(prov)` result) to attribute
+/// instead of inventing one.
+fn ir_expr_p<Q: Clone>(kind: IrExprKind<Q>, prov: Q) -> IrExpr<Q> {
+    IrExpr::new(kind, prov, None)
+}
+
+/// Construct an `IrStmt` carrying an explicit provenance value (no side).
+fn ir_stmt_p<Q: Clone>(kind: IrStmtKind<Q>, prov: Q) -> IrStmt<Q> {
+    IrStmt::new(kind, prov, None)
+}
 
 // ============================================================================
 // VOLE-specific type helpers
@@ -220,69 +246,89 @@ fn verifier_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredicate>)
 
 /// `Array::<T, N>::from_fn(|{idx}| {body})`
 fn array_t_from_fn<P: Clone>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
-    IrExpr::Call {
-        func: Box::new(IrExpr::Path {
-            segments: vec!["Array".into(), "from_fn".into()],
-            type_args: vec![
-                IrType::TypeParam("T".into()),
-                IrType::TypeParam("N".into()),
-            ],
-        }),
-        args: vec![IrExpr::Closure {
-            params: vec![volar_compiler::ir::IrClosureParam {
-                pattern: IrPattern::ident(idx),
-                ty: None,
-            }],
-            ret_type: None,
-            body: Box::new(body),
-        }],
-    }
+    let prov = body.prov.clone();
+    let side = body.side;
+    IrExpr::new(
+        IrExprKind::Call {
+            func: Box::new(IrExpr::new(
+                IrExprKind::Path {
+                    segments: vec!["Array".into(), "from_fn".into()],
+                    type_args: vec![
+                        IrType::TypeParam("T".into()),
+                        IrType::TypeParam("N".into()),
+                    ],
+                },
+                prov.clone(),
+                side,
+            )),
+            args: vec![IrExpr::new(
+                IrExprKind::Closure {
+                    params: vec![volar_compiler::ir::IrClosureParam {
+                        pattern: IrPattern::ident(idx),
+                        ty: None,
+                    }],
+                    ret_type: None,
+                    body: Box::new(body),
+                },
+                prov.clone(),
+                side,
+            )],
+        },
+        prov,
+        side,
+    )
 }
 
 /// `Array::<T, N>::default()` — the zero vector in the extension field.
-fn array_t_default<P: Clone>() -> IrExpr<P> {
-    IrExpr::Call {
-        func: Box::new(IrExpr::Path {
+fn array_t_default<P: Clone + Default>() -> IrExpr<P> {
+    ir_expr(IrExprKind::Call {
+        func: Box::new(ir_expr(IrExprKind::Path {
             segments: vec!["Array".into(), "default".into()],
             type_args: vec![
                 IrType::TypeParam("T".into()),
                 IrType::TypeParam("N".into()),
             ],
-        }),
+        })),
         args: vec![],
-    }
+    })
 }
 
 /// `wire.q[i]` — the verifier's Q share lane.
-fn q_index<P: Clone>(wire_name: &str, idx: &str) -> IrExpr<P> {
-    IrExpr::Index {
-        base: Box::new(IrExpr::Field {
+fn q_index<P: Clone + Default>(wire_name: &str, idx: &str) -> IrExpr<P> {
+    ir_expr(IrExprKind::Index {
+        base: Box::new(ir_expr(IrExprKind::Field {
             base: Box::new(var(wire_name)),
             field: "q".into(),
-        }),
+        })),
         index: Box::new(var(idx)),
-    }
+    })
 }
 
 /// `delta.delta[i]`
-fn delta_index<P: Clone>(idx: &str) -> IrExpr<P> {
-    IrExpr::Index {
-        base: Box::new(IrExpr::Field {
+fn delta_index<P: Clone + Default>(idx: &str) -> IrExpr<P> {
+    ir_expr(IrExprKind::Index {
+        base: Box::new(ir_expr(IrExprKind::Field {
             base: Box::new(var("delta")),
             field: "delta".into(),
-        }),
+        })),
         index: Box::new(var(idx)),
-    }
+    })
 }
 
 /// `Q { q: {body} }`
 fn q_struct<P: Clone>(body: IrExpr<P>) -> IrExpr<P> {
-    IrExpr::StructExpr {
-        kind: StructKind::Custom("Q".into()),
-        type_args: vec![],
-        fields: vec![("q".into(), body)],
-        rest: None,
-    }
+    let prov = body.prov.clone();
+    let side = body.side;
+    IrExpr::new(
+        IrExprKind::StructExpr {
+            kind: StructKind::Custom("Q".into()),
+            type_args: vec![],
+            fields: vec![("q".into(), body)],
+            rest: None,
+        },
+        prov,
+        side,
+    )
 }
 
 // ============================================================================
@@ -350,22 +396,21 @@ fn bool_type() -> IrType {
 ///
 /// `vope_one.clone() + vope_one.clone()` = the zero Vope (since addition is XOR in GF2
 /// and adding a committed wire to itself cancels both bit and MAC).
-fn synth_prover_public_wire<P: Clone>(bool_name: &str) -> IrExpr<P> {
+fn synth_prover_public_wire<P: Clone + Default>(bool_name: &str) -> IrExpr<P> {
     let vope_one = clone_expr(var("vope_one"));
-    let vope_zero = IrExpr::Binary {
+    let vope_zero = ir_expr(IrExprKind::Binary {
         op: SpecBinOp::Add,
         left: Box::new(clone_expr(var("vope_one"))),
         right: Box::new(clone_expr(var("vope_one"))),
-    };
-    IrExpr::If {
+    });
+    ir_expr(IrExprKind::If {
         cond: Box::new(var(bool_name)),
         then_branch: IrBlock {
             stmts: vec![],
-            stmt_provs: vec![],
             expr: Some(Box::new(vope_one)),
         },
         else_branch: Some(Box::new(vope_zero)),
-    }
+    })
 }
 
 /// Synthesise a verifier Q wire from a public `bool` variable `bool_name`.
@@ -374,26 +419,25 @@ fn synth_prover_public_wire<P: Clone>(bool_name: &str) -> IrExpr<P> {
 ///
 /// For a public bit `b=1` the verifier computes `K = M + 1·Δ`; with `M=0` this is `Δ`.
 /// For `b=0`, `K = 0`.  This is consistent with the prover's synthesis above.
-fn synth_verifier_public_wire<P: Clone>(bool_name: &str) -> IrExpr<P> {
-    let q_one = q_struct(IrExpr::MethodCall {
-        receiver: Box::new(IrExpr::Field {
+fn synth_verifier_public_wire<P: Clone + Default>(bool_name: &str) -> IrExpr<P> {
+    let q_one = q_struct(ir_expr(IrExprKind::MethodCall {
+        receiver: Box::new(ir_expr(IrExprKind::Field {
             base: Box::new(var("delta")),
             field: "delta".into(),
-        }),
+        })),
         method: MethodKind::Known(StdMethod::Clone),
         type_args: vec![],
         args: vec![],
-    });
+    }));
     let q_zero = q_struct(array_t_default());
-    IrExpr::If {
+    ir_expr(IrExprKind::If {
         cond: Box::new(var(bool_name)),
         then_branch: IrBlock {
             stmts: vec![],
-            stmt_provs: vec![],
             expr: Some(Box::new(q_one)),
         },
         else_branch: Some(Box::new(q_zero)),
-    }
+    })
 }
 
 // ============================================================================
@@ -402,39 +446,40 @@ fn synth_verifier_public_wire<P: Clone>(bool_name: &str) -> IrExpr<P> {
 
 /// Emit `let (_wire_k, _hat_k) = vole_and_prover_step::<N, T>(wire_a.clone(), wire_b.clone());`
 /// The hat variable is left in scope for the caller to collect into a `FixedArray`.
-fn emit_prover_and_gate<P: Clone>(
+fn emit_prover_and_gate<P: Clone + Default>(
     name_a: &str,
     name_b: &str,
     wire_name: &str,
     hat_name: &str,
     stmts: &mut Vec<IrStmt<P>>,
+    prov: P,
 ) {
     // let (wire_k, hat_k) = vole_and_prover_step::<N, T>(wire_a.clone(), wire_b.clone());
-    stmts.push(IrStmt::Let {
+    stmts.push(ir_stmt_p(IrStmtKind::Let {
         pattern: IrPattern::Tuple(vec![
             IrPattern::ident(wire_name),
             IrPattern::ident(hat_name),
         ]),
         ty: None,
-        init: Some(IrExpr::Call {
-            func: Box::new(IrExpr::Path {
+        init: Some(ir_expr_p(IrExprKind::Call {
+            func: Box::new(ir_expr_p(IrExprKind::Path {
                 segments: vec!["vole_and_prover_step".into()],
                 type_args: vec![
                     IrType::TypeParam("N".into()),
                     IrType::TypeParam("T".into()),
                 ],
-            }),
+            }, prov.clone())),
             args: vec![
                 clone_expr(var(name_a)),
                 clone_expr(var(name_b)),
             ],
-        }),
-    });
+        }, prov.clone())),
+    }, prov));
 }
 
 /// Emit `let (_wire_k, _ok_k) = vole_and_verifier_check::<N, T>(delta, &wire_a, &wire_b, &q_and_k, &hat_k);`
 /// followed by `all_ok = all_ok && _ok_k;`.
-fn emit_verifier_and_gate<P: Clone>(
+fn emit_verifier_and_gate<P: Clone + Default>(
     name_a: &str,
     name_b: &str,
     wire_name: &str,
@@ -442,22 +487,23 @@ fn emit_verifier_and_gate<P: Clone>(
     q_and_name: &str,
     hat_name: &str,
     stmts: &mut Vec<IrStmt<P>>,
+    prov: P,
 ) {
     // let (wire_k, ok_k) = vole_and_verifier_check::<N, T>(delta, &wire_a, &wire_b, &q_and_k, &hat_k);
-    stmts.push(IrStmt::Let {
+    stmts.push(ir_stmt_p(IrStmtKind::Let {
         pattern: IrPattern::Tuple(vec![
             IrPattern::ident(wire_name),
             IrPattern::ident(ok_name),
         ]),
         ty: None,
-        init: Some(IrExpr::Call {
-            func: Box::new(IrExpr::Path {
+        init: Some(ir_expr_p(IrExprKind::Call {
+            func: Box::new(ir_expr_p(IrExprKind::Path {
                 segments: vec!["vole_and_verifier_check".into()],
                 type_args: vec![
                     IrType::TypeParam("N".into()),
                     IrType::TypeParam("T".into()),
                 ],
-            }),
+            }, prov.clone())),
             args: vec![
                 var("delta"),
                 ref_expr(var(name_a)),
@@ -465,18 +511,18 @@ fn emit_verifier_and_gate<P: Clone>(
                 ref_expr(var(q_and_name)),
                 ref_expr(var(hat_name)),
             ],
-        }),
-    });
+        }, prov.clone())),
+    }, prov.clone()));
 
     // all_ok = all_ok && ok_k;
-    stmts.push(IrStmt::Semi(IrExpr::Assign {
+    stmts.push(ir_stmt_p(IrStmtKind::Semi(ir_expr_p(IrExprKind::Assign {
         left: Box::new(var("all_ok")),
-        right: Box::new(IrExpr::Binary {
+        right: Box::new(ir_expr_p(IrExprKind::Binary {
             op: SpecBinOp::And,
             left: Box::new(var("all_ok")),
             right: Box::new(var(ok_name)),
-        }),
-    }));
+        }, prov.clone())),
+    }, prov.clone())), prov));
 }
 
 /// `[Vope<N, T, U2>; SBOX_COUNT]` — hat-free K=2 S-box product commitments.
@@ -492,81 +538,83 @@ fn sbox_vope_array_type(sbox_count: usize) -> IrType {
 ///
 /// Calls the single-function prover step that returns both the K=1 downstream
 /// wire AND the K=2 hat-free product Vope.
-fn emit_prover_sbox_gate_k2<P: Clone>(
+fn emit_prover_sbox_gate_k2<P: Clone + Default>(
     name_a: &str,
     name_b: &str,
     wire_name: &str,
     k2_name: &str,
     stmts: &mut Vec<IrStmt<P>>,
+    prov: P,
 ) {
-    stmts.push(IrStmt::Let {
+    stmts.push(ir_stmt_p(IrStmtKind::Let {
         pattern: IrPattern::Tuple(vec![
             IrPattern::ident(wire_name),
             IrPattern::ident(k2_name),
         ]),
         ty: None,
-        init: Some(IrExpr::Call {
-            func: Box::new(IrExpr::Path {
+        init: Some(ir_expr_p(IrExprKind::Call {
+            func: Box::new(ir_expr_p(IrExprKind::Path {
                 segments: vec!["vole_sbox_prover_step".into()],
                 type_args: vec![
                     IrType::TypeParam("N".into()),
                     IrType::TypeParam("T".into()),
                 ],
-            }),
+            }, prov.clone())),
             args: vec![
                 clone_expr(var(name_a)),
                 clone_expr(var(name_b)),
             ],
-        }),
-    });
+        }, prov.clone())),
+    }, prov));
 }
 
 /// Emit: `let (wire_k, ok_k) = vole_sbox_verifier_check::<N,T>(delta, &q_a, &q_b, sbox_vopes[idx].clone());`
 /// followed by `all_ok = all_ok && ok_k;`.
-fn emit_verifier_sbox_check_k2<P: Clone>(
+fn emit_verifier_sbox_check_k2<P: Clone + Default>(
     name_a: &str,
     name_b: &str,
     wire_name: &str,
     ok_name: &str,
     sbox_idx: usize,
     stmts: &mut Vec<IrStmt<P>>,
+    prov: P,
 ) {
     // let (wire_k, ok_k) = vole_sbox_verifier_check::<N,T>(delta, &q_a, &q_b, sbox_vopes[idx].clone());
-    stmts.push(IrStmt::Let {
+    stmts.push(ir_stmt_p(IrStmtKind::Let {
         pattern: IrPattern::Tuple(vec![
             IrPattern::ident(wire_name),
             IrPattern::ident(ok_name),
         ]),
         ty: None,
-        init: Some(IrExpr::Call {
-            func: Box::new(IrExpr::Path {
+        init: Some(ir_expr_p(IrExprKind::Call {
+            func: Box::new(ir_expr_p(IrExprKind::Path {
                 segments: vec!["vole_sbox_verifier_check".into()],
                 type_args: vec![
                     IrType::TypeParam("N".into()),
                     IrType::TypeParam("T".into()),
                 ],
-            }),
+            }, prov.clone())),
             args: vec![
                 var("delta"),
                 ref_expr(var(name_a)),
                 ref_expr(var(name_b)),
-                clone_expr(IrExpr::Index {
+                clone_expr(ir_expr_p(IrExprKind::Index {
                     base: Box::new(var("sbox_vopes")),
-                    index: Box::new(IrExpr::Lit(IrLit::Int(sbox_idx as i128))),
-                }),
+                    index: Box::new(ir_expr_p(IrExprKind::Lit(IrLit::Int(sbox_idx as i128)), prov.clone())),
+                }, prov.clone())),
             ],
-        }),
-    });
+        }, prov.clone())),
+    }, prov.clone()));
 
     // all_ok = all_ok && ok_k;
-    stmts.push(IrStmt::Semi(IrExpr::Assign {
+    stmts.push(ir_stmt_p(IrStmtKind::Semi(ir_expr_p(IrExprKind::Assign {
         left: Box::new(var("all_ok")),
-        right: Box::new(IrExpr::Binary {
+        right: Box::new(ir_expr_p(IrExprKind::Binary {
             op: SpecBinOp::And,
             left: Box::new(var("all_ok")),
             right: Box::new(var(ok_name)),
-        }),
-    }));
+        }, prov.clone())),
+    }, prov.clone())), prov));
 }
 
 // ============================================================================
@@ -604,6 +652,7 @@ pub fn weave_vole_prover_with_handler<P, H>(
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     Tagged::seal(weave_vole_prover_inner(circuit, name, &ZkWitnessConfig::default(), handler))
 }
@@ -635,6 +684,7 @@ pub fn weave_vole_prover_with_config_and_handler<P, H>(
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     Tagged::seal(weave_vole_prover_inner(circuit, name, config, handler))
 }
@@ -648,6 +698,7 @@ fn weave_vole_prover_inner<P, H>(
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     assert!(
         circuit.is_circuit(),
@@ -761,7 +812,6 @@ where
     let (generics, where_clause) = prover_generics_and_where();
 
     let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
-    let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut and_counter: usize = 0;
     let mut sbox_counter: usize = 0;
     let mut hat_names: Vec<String> = Vec::new();
@@ -770,12 +820,11 @@ where
     // Synthesise Vope wires for public inputs from the bool params.
     for i in 0..num_params {
         if config.public_inputs.is_public(CirVar(i as u32)) {
-            stmts.push(IrStmt::Let {
+            stmts.push(ir_stmt_p(IrStmtKind::Let {
                 pattern: IrPattern::ident(&format!("vope_input_{}", i)),
                 ty: None,
                 init: Some(synth_prover_public_wire(&format!("input_{}", i))),
-            });
-            stmt_provs.push(ctrl_prov.clone());
+            }, ctrl_prov.clone()));
         }
     }
 
@@ -785,10 +834,10 @@ where
 
         match stmt {
             BIrStmt::Zero => {
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
-                    init: Some(IrExpr::StructExpr {
+                    init: Some(ir_expr(IrExprKind::StructExpr {
                         kind: StructKind::Custom("Vope".into()),
                         type_args: vec![],
                         fields: vec![
@@ -796,47 +845,43 @@ where
                             ("v".into(), array_t_default()),
                         ],
                         rest: None,
-                    }),
-                });
-                stmt_provs.push(q.clone());
+                    })),
+                }, q.clone()));
             }
 
             BIrStmt::One => {
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
                     init: Some(clone_expr(var("vope_one"))),
-                });
-                stmt_provs.push(q.clone());
+                }, q.clone()));
             }
 
             BIrStmt::Xor(a, b) => {
                 let name_a = var_names[&a.0].clone();
                 let name_b = var_names[&b.0].clone();
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
-                    init: Some(IrExpr::Binary {
+                    init: Some(ir_expr(IrExprKind::Binary {
                         op: SpecBinOp::Add,
                         left: Box::new(clone_expr(var(&name_a))),
                         right: Box::new(clone_expr(var(&name_b))),
-                    }),
-                });
-                stmt_provs.push(q.clone());
+                    })),
+                }, q.clone()));
             }
 
             BIrStmt::Not(a) => {
                 let name_a = var_names[&a.0].clone();
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
-                    init: Some(IrExpr::Binary {
+                    init: Some(ir_expr(IrExprKind::Binary {
                         op: SpecBinOp::Add,
                         left: Box::new(clone_expr(var(&name_a))),
                         right: Box::new(clone_expr(var("vope_one"))),
-                    }),
-                });
-                stmt_provs.push(q.clone());
+                    })),
+                }, q.clone()));
             }
 
             BIrStmt::And(a, b) => {
@@ -847,15 +892,14 @@ where
                     let k2_name = format!("sbox_k2_{}", sbox_counter);
                     sbox_counter += 1;
                     sbox_k2_names.push(k2_name.clone());
-                    emit_prover_sbox_gate_k2(&name_a, &name_b, &let_name, &k2_name, &mut stmts);
+                    emit_prover_sbox_gate_k2(&name_a, &name_b, &let_name, &k2_name, &mut stmts, q.clone());
                 } else {
                     // K=1 standard AND gate: produces K=1 Vope + hat.
                     let hat_name = format!("hat_{}", and_counter);
                     and_counter += 1;
                     hat_names.push(hat_name.clone());
-                    emit_prover_and_gate(&name_a, &name_b, &let_name, &hat_name, &mut stmts);
+                    emit_prover_and_gate(&name_a, &name_b, &let_name, &hat_name, &mut stmts, q.clone());
                 }
-                stmt_provs.push(q.clone());
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
@@ -868,12 +912,11 @@ where
 
             BIrStmt::OracleBit { call, bit } => {
                 let k = oracle_handle_map[&call.0];
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
                     init: Some(clone_expr(var(&format!("vope_oracle_{}_bit_{}", k, bit)))),
-                });
-                stmt_provs.push(q.clone());
+                }, q.clone()));
             }
 
             BIrStmt::ActionCall { .. } => {
@@ -894,22 +937,20 @@ where
                 } else {
                     clone_expr(var(&format!("vope_action_{}_bit_{}", k, bit)))
                 };
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
                     init: Some(init),
-                });
-                stmt_provs.push(q.clone());
+                }, q.clone()));
             }
 
             BIrStmt::Rng { .. } => {
                 let r = rng_var_map[&result_id.0];
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
                     init: Some(clone_expr(var(&format!("vope_rng_{}", r)))),
-                });
-                stmt_provs.push(q.clone());
+                }, q.clone()));
             }
 
             BIrStmt::StorageRead { .. } | BIrStmt::StorageWrite { .. } => {
@@ -927,12 +968,12 @@ where
     // Return (output_wire, [hat_0, hat_1, ...]) or
     //        (output_wire, [hat_0, ...], [sbox_k2_0, ...]) when sbox_count > 0.
     let (output_expr, _) = build_return(block, &var_names, vope_type());
-    let hats_expr = IrExpr::FixedArray(hat_names.iter().map(|h| var(h)).collect());
+    let hats_expr = ir_expr(IrExprKind::FixedArray(hat_names.iter().map(|h| var(h)).collect()));
     let ret_expr = if sbox_k2_names.is_empty() {
-        IrExpr::Tuple(vec![output_expr, hats_expr])
+        ir_expr(IrExprKind::Tuple(vec![output_expr, hats_expr]))
     } else {
-        let sbox_expr = IrExpr::FixedArray(sbox_k2_names.iter().map(|n| var(n)).collect());
-        IrExpr::Tuple(vec![output_expr, hats_expr, sbox_expr])
+        let sbox_expr = ir_expr(IrExprKind::FixedArray(sbox_k2_names.iter().map(|n| var(n)).collect()));
+        ir_expr(IrExprKind::Tuple(vec![output_expr, hats_expr, sbox_expr]))
     };
 
     let func = IrFunction {
@@ -945,7 +986,6 @@ where
         where_clause,
         body: IrBlock {
             stmts,
-            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -1002,6 +1042,7 @@ pub fn weave_vole_verifier_with_handler<P, H>(
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     Tagged::seal(weave_vole_verifier_inner(circuit, name, &ZkWitnessConfig::default(), handler))
 }
@@ -1032,6 +1073,7 @@ pub fn weave_vole_verifier_with_config_and_handler<P, H>(
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     Tagged::seal(weave_vole_verifier_inner(circuit, name, config, handler))
 }
@@ -1045,6 +1087,7 @@ fn weave_vole_verifier_inner<P, H>(
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     assert!(
         circuit.is_circuit(),
@@ -1175,30 +1218,27 @@ where
     let (generics, where_clause) = verifier_generics_and_where();
 
     let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
-    let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut and_counter: usize = 0;
     let mut sbox_counter: usize = 0;
 
-    stmts.push(IrStmt::Let {
+    stmts.push(ir_stmt_p(IrStmtKind::Let {
         pattern: IrPattern::Ident {
             mutable: true,
             name: "all_ok".into(),
             subpat: None,
         },
         ty: None,
-        init: Some(IrExpr::Lit(IrLit::Bool(true))),
-    });
-    stmt_provs.push(ctrl_prov.clone());
+        init: Some(ir_expr_p(IrExprKind::Lit(IrLit::Bool(true)), ctrl_prov.clone())),
+    }, ctrl_prov.clone()));
 
     // Synthesise Q wires for public inputs from the bool params.
     for i in 0..num_params {
         if config.public_inputs.is_public(CirVar(i as u32)) {
-            stmts.push(IrStmt::Let {
+            stmts.push(ir_stmt_p(IrStmtKind::Let {
                 pattern: IrPattern::ident(&format!("q_input_{}", i)),
                 ty: None,
                 init: Some(synth_verifier_public_wire(&format!("input_{}", i))),
-            });
-            stmt_provs.push(ctrl_prov.clone());
+            }, ctrl_prov.clone()));
         }
     }
 
@@ -1208,64 +1248,60 @@ where
 
         match stmt {
             BIrStmt::Zero => {
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
                     init: Some(q_struct(array_t_default())),
-                });
-                stmt_provs.push(q.clone());
+                }, q.clone()));
             }
 
             BIrStmt::One => {
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
-                    init: Some(q_struct(IrExpr::MethodCall {
-                        receiver: Box::new(IrExpr::Field {
+                    init: Some(q_struct(ir_expr_p(IrExprKind::MethodCall {
+                        receiver: Box::new(ir_expr_p(IrExprKind::Field {
                             base: Box::new(var("delta")),
                             field: "delta".into(),
-                        }),
+                        }, q.clone())),
                         method: MethodKind::Known(StdMethod::Clone),
                         type_args: vec![],
                         args: vec![],
-                    })),
-                });
-                stmt_provs.push(q.clone());
+                    }, q.clone()))),
+                }, q.clone()));
             }
 
             BIrStmt::Xor(a, b) => {
                 let name_a = var_names[&a.0].clone();
                 let name_b = var_names[&b.0].clone();
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
                     init: Some(q_struct(array_t_from_fn(
                         "i",
-                        IrExpr::Binary {
+                        ir_expr_p(IrExprKind::Binary {
                             op: SpecBinOp::Add,
                             left: Box::new(clone_expr(q_index(&name_a, "i"))),
                             right: Box::new(clone_expr(q_index(&name_b, "i"))),
-                        },
+                        }, q.clone()),
                     ))),
-                });
-                stmt_provs.push(q.clone());
+                }, q.clone()));
             }
 
             BIrStmt::Not(a) => {
                 let name_a = var_names[&a.0].clone();
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
                     init: Some(q_struct(array_t_from_fn(
                         "i",
-                        IrExpr::Binary {
+                        ir_expr_p(IrExprKind::Binary {
                             op: SpecBinOp::Add,
                             left: Box::new(clone_expr(q_index(&name_a, "i"))),
                             right: Box::new(clone_expr(delta_index("i"))),
-                        },
+                        }, q.clone()),
                     ))),
-                });
-                stmt_provs.push(q.clone());
+                }, q.clone()));
             }
 
             BIrStmt::And(a, b) => {
@@ -1276,12 +1312,9 @@ where
                     // K=2 S-box gate: verify via sbox_vopes[sbox_idx] * delta == q_a * q_b.
                     emit_verifier_sbox_check_k2(
                         &name_a, &name_b, &let_name, &ok_name,
-                        sbox_counter, &mut stmts,
+                        sbox_counter, &mut stmts, q.clone(),
                     );
                     sbox_counter += 1;
-                    stmt_provs.push(q.clone());
-                    stmt_provs.push(q.clone());
-                    stmt_provs.push(q.clone());
                 } else {
                     let q_and_name = format!("q_and_{}", and_counter);
                     let hat_name = format!("hat_{}", and_counter);
@@ -1289,10 +1322,8 @@ where
                     emit_verifier_and_gate(
                         &name_a, &name_b, &let_name, &ok_name,
                         &q_and_name, &hat_name,
-                        &mut stmts,
+                        &mut stmts, q.clone(),
                     );
-                    stmt_provs.push(q.clone());
-                    stmt_provs.push(q.clone());
                 }
             }
 
@@ -1306,12 +1337,11 @@ where
 
             BIrStmt::OracleBit { call, bit } => {
                 let k = oracle_handle_map[&call.0];
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
                     init: Some(clone_expr(var(&format!("q_oracle_{}_bit_{}", k, bit)))),
-                });
-                stmt_provs.push(q.clone());
+                }, q.clone()));
             }
 
             BIrStmt::ActionCall { .. } => {
@@ -1332,22 +1362,20 @@ where
                 } else {
                     clone_expr(var(&format!("q_action_{}_bit_{}", k, bit)))
                 };
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
                     init: Some(init),
-                });
-                stmt_provs.push(q.clone());
+                }, q.clone()));
             }
 
             BIrStmt::Rng { .. } => {
                 let r = rng_var_map[&result_id.0];
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
                     init: Some(clone_expr(var(&format!("q_rng_{}", r)))),
-                });
-                stmt_provs.push(q.clone());
+                }, q.clone()));
             }
 
             BIrStmt::StorageRead { .. } | BIrStmt::StorageWrite { .. } => {
@@ -1364,7 +1392,7 @@ where
 
     // Return (output_wire, all_ok).
     let (output_expr, _) = build_return(block, &var_names, q_type());
-    let ret_expr = IrExpr::Tuple(vec![output_expr, var("all_ok")]);
+    let ret_expr = ir_expr(IrExprKind::Tuple(vec![output_expr, var("all_ok")]));
 
     let func = IrFunction {
         name: format!("vole_verify_{}", name),
@@ -1376,7 +1404,6 @@ where
         where_clause,
         body: IrBlock {
             stmts,
-            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -1424,6 +1451,7 @@ pub fn weave_vole_prover_bounded_with_handler<P, H>(
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
     Tagged::seal(weave_vole_prover_inner(&lowered, name, &ZkWitnessConfig::default(), handler))
@@ -1456,6 +1484,7 @@ pub fn weave_vole_prover_bounded_with_config_and_handler<P, H>(
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
     Tagged::seal(weave_vole_prover_inner(&lowered, name, config, handler))
@@ -1485,6 +1514,7 @@ pub fn weave_vole_verifier_bounded_with_handler<P, H>(
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
     Tagged::seal(weave_vole_verifier_inner(&lowered, name, &ZkWitnessConfig::default(), handler))
@@ -1517,6 +1547,7 @@ pub fn weave_vole_verifier_bounded_with_config_and_handler<P, H>(
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
     Tagged::seal(weave_vole_verifier_inner(&lowered, name, config, handler))
@@ -1933,8 +1964,8 @@ impl VoleIrCtx {
     fn emit_zero(&mut self, name: &str) {
         if self.is_prover {
             // Vope { u: Array::<Array<T,N>, U1>::default(), v: Array::<T,N>::default() }
-            let u_default = IrExpr::Call {
-                func: Box::new(IrExpr::Path {
+            let u_default = ir_expr(IrExprKind::Call {
+                func: Box::new(ir_expr(IrExprKind::Path {
                     segments: vec!["Array".into(), "default".into()],
                     type_args: vec![
                         IrType::Struct {
@@ -1949,13 +1980,13 @@ impl VoleIrCtx {
                             type_args: vec![],
                         },
                     ],
-                }),
+                })),
                 args: vec![],
-            };
-            self.stmts.push(IrStmt::Let {
+            });
+            self.stmts.push(ir_stmt(IrStmtKind::Let {
                 pattern: IrPattern::ident(name),
                 ty: None,
-                init: Some(IrExpr::StructExpr {
+                init: Some(ir_expr(IrExprKind::StructExpr {
                     kind: StructKind::Custom("Vope".into()),
                     type_args: vec![],
                     fields: vec![
@@ -1963,53 +1994,53 @@ impl VoleIrCtx {
                         ("v".into(), array_t_default()),
                     ],
                     rest: None,
-                }),
-            });
+                })),
+            }));
         } else {
-            self.stmts.push(IrStmt::Let {
+            self.stmts.push(ir_stmt(IrStmtKind::Let {
                 pattern: IrPattern::ident(name),
                 ty: None,
                 init: Some(q_struct(array_t_default())),
-            });
+            }));
         }
     }
 
     /// Emit a one-valued wire (clone of the committed-one wire).
     fn emit_one(&mut self, name: &str) {
         let src = if self.is_prover { "vope_one" } else { "q_one" };
-        self.stmts.push(IrStmt::Let {
+        self.stmts.push(ir_stmt(IrStmtKind::Let {
             pattern: IrPattern::ident(name),
             ty: None,
             init: Some(clone_expr(var(src))),
-        });
+        }));
     }
 
     /// Emit XOR (free: prover a + b, verifier element-wise).
     fn emit_xor(&mut self, out: &str, a: &str, b: &str) {
         if self.is_prover {
-            self.stmts.push(IrStmt::Let {
+            self.stmts.push(ir_stmt(IrStmtKind::Let {
                 pattern: IrPattern::ident(out),
                 ty: None,
-                init: Some(IrExpr::Binary {
+                init: Some(ir_expr(IrExprKind::Binary {
                     op: SpecBinOp::Add,
                     left: Box::new(clone_expr(var(a))),
                     right: Box::new(clone_expr(var(b))),
-                }),
-            });
+                })),
+            }));
         } else {
             // Q { q: Array::from_fn(|i| a.q[i].clone() + b.q[i].clone()) }
-            self.stmts.push(IrStmt::Let {
+            self.stmts.push(ir_stmt(IrStmtKind::Let {
                 pattern: IrPattern::ident(out),
                 ty: None,
                 init: Some(q_struct(array_t_from_fn(
                     "i",
-                    IrExpr::Binary {
+                    ir_expr(IrExprKind::Binary {
                         op: SpecBinOp::Add,
                         left: Box::new(clone_expr(q_index(a, "i"))),
                         right: Box::new(clone_expr(q_index(b, "i"))),
-                    },
+                    }),
                 ))),
-            });
+            }));
         }
     }
 
@@ -2019,7 +2050,7 @@ impl VoleIrCtx {
         if self.is_prover {
             let hat_name = format!("hat_{}", self.and_counter);
             self.hat_names.push(hat_name.clone());
-            emit_prover_and_gate(a, b, &wire_name, &hat_name, &mut self.stmts);
+            emit_prover_and_gate(a, b, &wire_name, &hat_name, &mut self.stmts, ());
         } else {
             let ok_name = format!("ok_{}", self.and_counter);
             let q_and_name = format!("q_and_{}", self.and_counter);
@@ -2027,7 +2058,7 @@ impl VoleIrCtx {
             self.ok_names.push(ok_name.clone());
             emit_verifier_and_gate(
                 a, b, &wire_name, &ok_name,
-                &q_and_name, &hat_name, &mut self.stmts,
+                &q_and_name, &hat_name, &mut self.stmts, (),
             );
         }
         self.and_counter += 1;
@@ -2088,20 +2119,20 @@ impl VoleIrCtx {
             0 => self.emit_zero(out_name),
             1 => {
                 // Just clone the single term.
-                self.stmts.push(IrStmt::Let {
+                self.stmts.push(ir_stmt(IrStmtKind::Let {
                     pattern: IrPattern::ident(out_name),
                     ty: None,
                     init: Some(clone_expr(var(&term_names[0]))),
-                });
+                }));
             }
             _ => {
                 let first = term_names[0].clone();
                 let tmp0 = format!("{}_xor0", out_name);
-                self.stmts.push(IrStmt::Let {
+                self.stmts.push(ir_stmt(IrStmtKind::Let {
                     pattern: IrPattern::ident(&tmp0),
                     ty: None,
                     init: Some(clone_expr(var(&first))),
-                });
+                }));
                 let mut acc = tmp0;
                 for (i, tn) in term_names[1..].iter().enumerate() {
                     let next = if i == term_names.len() - 2 {
@@ -2251,11 +2282,11 @@ impl VoleIrCtx {
             } else {
                 format!("{}_{}", out_name, vb)
             };
-            self.stmts.push(IrStmt::Let {
+            self.stmts.push(ir_stmt(IrStmtKind::Let {
                 pattern: IrPattern::ident(&bit_name),
                 ty: None,
                 init: Some(clone_expr(var(&r))),
-            });
+            }));
             result_bits.push(bit_name);
         }
     }
@@ -2333,11 +2364,11 @@ impl VoleIrCtx {
         self.oracle_counter += 1;
 
         // The value is just a clone of the oracle parameter (0 AND gates).
-        self.stmts.push(IrStmt::Let {
+        self.stmts.push(ir_stmt(IrStmtKind::Let {
             pattern: IrPattern::ident(out_name),
             ty: None,
             init: Some(clone_expr(var(&param_name))),
-        });
+        }));
 
         self.trace.entries.push(MemoryTraceEntry {
             addr_var: addr_var.0,
@@ -2383,11 +2414,11 @@ impl VoleIrCtx {
             let (bit_idx, src_var) = &result_bits[0];
             let src_parts = self.vec_parts(src_var);
             let src_name = &src_parts[*bit_idx as usize];
-            self.stmts.push(IrStmt::Let {
+            self.stmts.push(ir_stmt(IrStmtKind::Let {
                 pattern: IrPattern::ident(out_name),
                 ty: None,
                 init: Some(clone_expr(var(src_name))),
-            });
+            }));
             self.wires.insert(out_id, WireRepr::Scalar(out_name.to_string()));
         } else {
             // Multi-bit shuffle → Vec result.
@@ -2395,11 +2426,11 @@ impl VoleIrCtx {
                 let src_parts = self.vec_parts(src_var);
                 let src_name = &src_parts[*bit_idx as usize];
                 let n = format!("{}_{}", out_name, i);
-                self.stmts.push(IrStmt::Let {
+                self.stmts.push(ir_stmt(IrStmtKind::Let {
                     pattern: IrPattern::ident(&n),
                     ty: None,
                     init: Some(clone_expr(var(src_name))),
-                });
+                }));
                 n
             }).collect();
             self.wires.insert(out_id, WireRepr::Vec(names));
@@ -2608,11 +2639,11 @@ impl VoleIrCtx {
                     let s = self.scalar(src).to_string();
                     let bits: Vec<String> = (0..w).map(|j| {
                         let n = format!("{}_{}", out_name, j);
-                        self.stmts.push(IrStmt::Let {
+                        self.stmts.push(ir_stmt(IrStmtKind::Let {
                             pattern: IrPattern::ident(&n),
                             ty: None,
                             init: Some(clone_expr(var(&s))),
-                        });
+                        }));
                         n
                     }).collect();
                     self.wires.insert(var_id, WireRepr::Vec(bits));
@@ -2638,21 +2669,21 @@ impl VoleIrCtx {
                     let prefix = if self.is_prover { "vope" } else { "q" };
                     if w == 1 {
                         let param_name = format!("{}_ext_rng_{}_bit_0", prefix, r);
-                        self.stmts.push(IrStmt::Let {
+                        self.stmts.push(ir_stmt(IrStmtKind::Let {
                             pattern: IrPattern::ident(&out_name),
                             ty: None,
                             init: Some(clone_expr(var(&param_name))),
-                        });
+                        }));
                         self.wires.insert(var_id, WireRepr::Scalar(out_name));
                     } else {
                         let bits: Vec<String> = (0..w).map(|j| {
                             let n = format!("{}_{}", out_name, j);
                             let param_name = format!("{}_ext_rng_{}_bit_{}", prefix, r, j);
-                            self.stmts.push(IrStmt::Let {
+                            self.stmts.push(ir_stmt(IrStmtKind::Let {
                                 pattern: IrPattern::ident(&n),
                                 ty: None,
                                 init: Some(clone_expr(var(&param_name))),
-                            });
+                            }));
                             n
                         }).collect();
                         self.wires.insert(var_id, WireRepr::Vec(bits));
@@ -2683,21 +2714,21 @@ impl VoleIrCtx {
                     let prefix = if self.is_prover { "vope" } else { "q" };
                     if w == 1 {
                         let param_name = format!("{}_ext_oracle_{}_bit_{}", prefix, k, base);
-                        self.stmts.push(IrStmt::Let {
+                        self.stmts.push(ir_stmt(IrStmtKind::Let {
                             pattern: IrPattern::ident(&out_name),
                             ty: None,
                             init: Some(clone_expr(var(&param_name))),
-                        });
+                        }));
                         self.wires.insert(var_id, WireRepr::Scalar(out_name));
                     } else {
                         let bits: Vec<String> = (0..w).map(|j| {
                             let n = format!("{}_{}", out_name, j);
                             let param_name = format!("{}_ext_oracle_{}_bit_{}", prefix, k, base + j);
-                            self.stmts.push(IrStmt::Let {
+                            self.stmts.push(ir_stmt(IrStmtKind::Let {
                                 pattern: IrPattern::ident(&n),
                                 ty: None,
                                 init: Some(clone_expr(var(&param_name))),
-                            });
+                            }));
                             n
                         }).collect();
                         self.wires.insert(var_id, WireRepr::Vec(bits));
@@ -2725,21 +2756,21 @@ impl VoleIrCtx {
                     let prefix = if self.is_prover { "vope" } else { "q" };
                     if w == 1 {
                         let param_name = format!("{}_ext_action_{}_bit_{}", prefix, k, base);
-                        self.stmts.push(IrStmt::Let {
+                        self.stmts.push(ir_stmt(IrStmtKind::Let {
                             pattern: IrPattern::ident(&out_name),
                             ty: None,
                             init: Some(clone_expr(var(&param_name))),
-                        });
+                        }));
                         self.wires.insert(var_id, WireRepr::Scalar(out_name));
                     } else {
                         let bits: Vec<String> = (0..w).map(|j| {
                             let n = format!("{}_{}", out_name, j);
                             let param_name = format!("{}_ext_action_{}_bit_{}", prefix, k, base + j);
-                            self.stmts.push(IrStmt::Let {
+                            self.stmts.push(ir_stmt(IrStmtKind::Let {
                                 pattern: IrPattern::ident(&n),
                                 ty: None,
                                 init: Some(clone_expr(var(&param_name))),
-                            });
+                            }));
                             n
                         }).collect();
                         self.wires.insert(var_id, WireRepr::Vec(bits));
@@ -2825,10 +2856,10 @@ pub fn weave_vole_prover_ir_with_mode(
     let output_expr = if ret_args.len() == 1 {
         clone_expr(var(ctx.scalar(&ret_args[0])))
     } else {
-        IrExpr::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect())
+        ir_expr(IrExprKind::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect()))
     };
-    let hats_expr = IrExpr::FixedArray(ctx.hat_names.iter().map(|h| var(h)).collect());
-    let ret_expr = IrExpr::Tuple(vec![output_expr, hats_expr]);
+    let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| var(h)).collect()));
+    let ret_expr = ir_expr(IrExprKind::Tuple(vec![output_expr, hats_expr]));
     let trace = ctx.trace.clone();
 
     let func = IrFunction {
@@ -2841,7 +2872,6 @@ pub fn weave_vole_prover_ir_with_mode(
         where_clause,
         body: IrBlock {
             stmts: ctx.stmts,
-            stmt_provs: vec![],
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -2931,11 +2961,11 @@ pub fn weave_vole_verifier_ir_with_mode(
     ]);
 
     let mut ctx = VoleIrCtx::new(false);
-    ctx.stmts.push(IrStmt::Let {
+    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
         pattern: IrPattern::Ident { mutable: true, name: "all_ok".into(), subpat: None },
         ty: None,
-        init: Some(IrExpr::Lit(volar_compiler::ir::IrLit::Bool(true))),
-    });
+        init: Some(ir_expr(IrExprKind::Lit(volar_compiler::ir::IrLit::Bool(true)))),
+    }));
 
     ctx.emit_circuit(block, types, mode, &circuit.pre_init);
 
@@ -2946,9 +2976,9 @@ pub fn weave_vole_verifier_ir_with_mode(
     let output_expr = if ret_args.len() == 1 {
         clone_expr(var(ctx.scalar(&ret_args[0])))
     } else {
-        IrExpr::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect())
+        ir_expr(IrExprKind::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect()))
     };
-    let ret_expr = IrExpr::Tuple(vec![output_expr, var("all_ok")]);
+    let ret_expr = ir_expr(IrExprKind::Tuple(vec![output_expr, var("all_ok")]));
     let trace = ctx.trace.clone();
 
     let func = IrFunction {
@@ -2961,7 +2991,6 @@ pub fn weave_vole_verifier_ir_with_mode(
         where_clause,
         body: IrBlock {
             stmts: ctx.stmts,
-            stmt_provs: vec![],
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -2998,71 +3027,71 @@ fn net_tr_error_type() -> IrType {
 
 /// `transport.METHOD(args...)?`
 fn net_transport_try(method: &str, args: Vec<IrExpr>) -> IrExpr {
-    IrExpr::Try(Box::new(IrExpr::MethodCall {
+    ir_expr(IrExprKind::Try(Box::new(ir_expr(IrExprKind::MethodCall {
         receiver: Box::new(var("transport")),
         method: MethodKind::Other(method.into()),
         type_args: vec![],
         args,
-    }))
+    }))))
 }
 
 /// `Ok(expr)`
 fn net_ok_expr(inner: IrExpr) -> IrExpr {
-    IrExpr::Call {
-        func: Box::new(IrExpr::Path { segments: vec!["Ok".into()], type_args: vec![] }),
+    ir_expr(IrExprKind::Call {
+        func: Box::new(ir_expr(IrExprKind::Path { segments: vec!["Ok".into()], type_args: vec![] })),
         args: vec![inner],
-    }
+    })
 }
 
 /// `&[hat_0, ...]` — slice reference to fixed array of named wires.
 fn net_hats_slice(hat_names: &[String]) -> IrExpr {
-    ref_expr(IrExpr::FixedArray(hat_names.iter().map(|h| var(h)).collect()))
+    ref_expr(ir_expr(IrExprKind::FixedArray(hat_names.iter().map(|h| var(h)).collect())))
 }
 
 /// `volar_net::vope_bit(&wire)`
 fn net_vope_bit_call(wire: &str) -> IrExpr {
-    IrExpr::Call {
-        func: Box::new(IrExpr::Path {
+    ir_expr(IrExprKind::Call {
+        func: Box::new(ir_expr(IrExprKind::Path {
             segments: vec!["volar_net".into(), "vope_bit".into()],
             type_args: vec![],
-        }),
+        })),
         args: vec![ref_expr(var(wire))],
-    }
+    })
 }
 
 /// `Q { q: Array::default() }` — zero Q value (verifier zero wire).
 fn net_q_zero_expr() -> IrExpr {
-    IrExpr::StructExpr {
+    ir_expr(IrExprKind::StructExpr {
         kind: StructKind::Custom("Q".into()),
         type_args: vec![],
-        fields: vec![("q".into(), IrExpr::Call {
-            func: Box::new(IrExpr::Path {
+        fields: vec![("q".into(), ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
                 segments: vec!["Array".into(), "default".into()],
                 type_args: vec![IrType::TypeParam("T".into()), IrType::TypeParam("N".into())],
-            }),
+            })),
             args: vec![],
-        })],
+        }))],
         rest: None,
-    }
+    })
 }
 
 /// `Vope { u: Array::default(), v: Array::default() }` — zero prover wire.
 fn net_vope_zero_expr() -> IrExpr {
-    IrExpr::StructExpr {
+    ir_expr(IrExprKind::StructExpr {
         kind: StructKind::Custom("Vope".into()),
         type_args: vec![],
         fields: vec![
             ("u".into(), array_default()),
-            ("v".into(), IrExpr::Call {
-                func: Box::new(IrExpr::Path {
+            ("v".into(), ir_expr(IrExprKind::Call {
+                func: Box::new(ir_expr(IrExprKind::Path {
                     segments: vec!["Array".into(), "default".into()],
                     type_args: vec![IrType::TypeParam("T".into()), IrType::TypeParam("N".into())],
-                }),
+                })),
                 args: vec![],
-            }),
+            })),
         ],
         rest: None,
-    }
+    })
 }
 
 fn net_vole_transport_bound() -> IrTraitBound {
@@ -3135,15 +3164,15 @@ fn net_q_slice_type() -> IrType {
 
 /// Emit `if is_first { then_expr } else { else_expr }` as a let statement.
 fn net_if_first_let(name: &str, then_expr: IrExpr, else_expr: IrExpr) -> IrStmt {
-    IrStmt::Let {
+    ir_stmt(IrStmtKind::Let {
         pattern: IrPattern::ident(name),
         ty: None,
-        init: Some(IrExpr::If {
+        init: Some(ir_expr(IrExprKind::If {
             cond: Box::new(var("is_first")),
-            then_branch: IrBlock { stmts: vec![], stmt_provs: vec![], expr: Some(Box::new(then_expr)) },
+            then_branch: IrBlock { stmts: vec![], expr: Some(Box::new(then_expr)) },
             else_branch: Some(Box::new(else_expr)),
-        }),
-    }
+        })),
+    })
 }
 
 /// For each storage cell, push a `let _sinit_... = if is_first { const } else { param.clone() };`
@@ -3300,8 +3329,8 @@ pub fn weave_net_vole_prover_ir(
     ctx.emit_circuit(block, types, &mode, &circuit.pre_init);
 
     let hats_ref = net_hats_slice(&ctx.hat_names);
-    ctx.stmts.push(IrStmt::Semi(net_transport_try("send_hats", vec![hats_ref])));
-    ctx.stmts.push(IrStmt::Semi(net_transport_try("recv_verdict", vec![])));
+    ctx.stmts.push(ir_stmt(IrStmtKind::Semi(net_transport_try("send_hats", vec![hats_ref]))));
+    ctx.stmts.push(ir_stmt(IrStmtKind::Semi(net_transport_try("recv_verdict", vec![]))));
 
     let ret_args = match &block.terminator {
         IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
@@ -3310,7 +3339,7 @@ pub fn weave_net_vole_prover_ir(
     let output_expr = if ret_args.len() == 1 {
         clone_expr(var(ctx.scalar(&ret_args[0])))
     } else {
-        IrExpr::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect())
+        ir_expr(IrExprKind::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect()))
     };
 
     let func = IrFunction {
@@ -3323,7 +3352,6 @@ pub fn weave_net_vole_prover_ir(
         where_clause,
         body: IrBlock {
             stmts: ctx.stmts,
-            stmt_provs: vec![],
             expr: Some(Box::new(net_ok_expr(output_expr))),
         },
         external_kind: ExternalKind::Normal,
@@ -3376,14 +3404,14 @@ pub fn weave_net_vole_verifier_ir(
     let ret_type = net_result_type(net_bool_type(), net_tr_error_type());
 
     let mut ctx = VoleIrCtx::new(false);
-    ctx.stmts.push(IrStmt::Let {
+    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
         pattern: IrPattern::Ident { mutable: true, name: "all_ok".into(), subpat: None },
         ty: None,
-        init: Some(IrExpr::Lit(IrLit::Bool(true))),
-    });
+        init: Some(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))),
+    }));
     ctx.emit_circuit(block, types, &mode, &circuit.pre_init);
 
-    ctx.stmts.push(IrStmt::Semi(net_transport_try("send_verdict", vec![var("all_ok")])));
+    ctx.stmts.push(ir_stmt(IrStmtKind::Semi(net_transport_try("send_verdict", vec![var("all_ok")]))));
 
     let ret_args = match &block.terminator {
         IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
@@ -3392,7 +3420,7 @@ pub fn weave_net_vole_verifier_ir(
     let output_expr = if ret_args.len() == 1 {
         clone_expr(var(ctx.scalar(&ret_args[0])))
     } else {
-        IrExpr::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect())
+        ir_expr(IrExprKind::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect()))
     };
 
     let func = IrFunction {
@@ -3405,7 +3433,6 @@ pub fn weave_net_vole_verifier_ir(
         where_clause,
         body: IrBlock {
             stmts: ctx.stmts,
-            stmt_provs: vec![],
             expr: Some(Box::new(net_ok_expr(output_expr))),
         },
         external_kind: ExternalKind::Normal,
@@ -3464,11 +3491,10 @@ pub fn weave_net_vole_prover_ir_loop(
         .map(|i| clone_expr(var(&format!("init_w{}", i))))
         .collect();
     b0_args.extend(net_cell_dummy_args(storage_sizes, types, true));
-    b0_args.push(IrExpr::Lit(IrLit::Bool(true))); // is_first = true
+    b0_args.push(ir_expr(IrExprKind::Lit(IrLit::Bool(true)))); // is_first = true
     let block0 = IrCfgBlock {
         params: vec![],
         stmts: vec![],
-        stmt_provs: vec![],
         terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args, reentry: None }),
     };
 
@@ -3498,18 +3524,18 @@ pub fn weave_net_vole_prover_ir_loop(
         _ => panic!("weave_net_vole_prover_ir_loop: expected Jmp(Return)"),
     };
     let done_wire = ctx.scalar(ret_args.last().expect("ret_args must be non-empty"));
-    ctx.stmts.push(IrStmt::Let {
+    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
         pattern: IrPattern::ident("done_bit"),
         ty: None,
         init: Some(net_vope_bit_call(done_wire)),
-    });
+    }));
 
     // Send iteration.
     let hats_ref = net_hats_slice(&ctx.hat_names);
-    ctx.stmts.push(IrStmt::Semi(net_transport_try(
+    ctx.stmts.push(ir_stmt(IrStmtKind::Semi(net_transport_try(
         "send_iteration",
         vec![hats_ref, var("done_bit")],
-    )));
+    ))));
 
     // Back-edge args: next circuit inputs + updated cells + is_first=false.
     let next_state_args: Vec<IrExpr> = ret_args[..ret_args.len().saturating_sub(1)]
@@ -3519,12 +3545,11 @@ pub fn weave_net_vole_prover_ir_loop(
     let output_wire = ctx.scalar(&ret_args[0]).to_string();
     let mut back_args = next_state_args;
     back_args.extend(net_collect_cell_back_args(&ctx, storage_sizes, types));
-    back_args.push(IrExpr::Lit(IrLit::Bool(false))); // is_first = false
+    back_args.push(ir_expr(IrExprKind::Lit(IrLit::Bool(false)))); // is_first = false
 
     let b1 = IrCfgBlock {
         params: b1_params,
         stmts: ctx.stmts,
-        stmt_provs: vec![],
         terminator: IrCfgTerminator::CondGoto {
             cond: var("done_bit"),
             then_: IrCfgJump { target: 2, args: vec![clone_expr(var(&output_wire))], reentry: None },
@@ -3535,8 +3560,7 @@ pub fn weave_net_vole_prover_ir_loop(
     // ── Block 2: exit ─────────────────────────────────────────────────────
     let b2 = IrCfgBlock {
         params: vec![IrParam { name: "output".into(), ty: vope_type() }],
-        stmts: vec![IrStmt::Semi(net_transport_try("recv_verdict", vec![]))],
-        stmt_provs: vec![],
+        stmts: vec![ir_stmt(IrStmtKind::Semi(net_transport_try("recv_verdict", vec![])))],
         terminator: IrCfgTerminator::Return(Some(net_ok_expr(var("output")))),
     };
 
@@ -3604,13 +3628,12 @@ pub fn weave_net_vole_verifier_ir_loop(
         .map(|i| clone_expr(var(&format!("init_q{}", i))))
         .collect();
     b0_args.extend(net_cell_dummy_args(storage_sizes, types, false));
-    b0_args.push(IrExpr::Lit(IrLit::Bool(true)));  // all_ok = true
-    b0_args.push(IrExpr::Lit(IrLit::Int(0)));       // iter = 0
-    b0_args.push(IrExpr::Lit(IrLit::Bool(true)));   // is_first = true
+    b0_args.push(ir_expr(IrExprKind::Lit(IrLit::Bool(true))));  // all_ok = true
+    b0_args.push(ir_expr(IrExprKind::Lit(IrLit::Int(0))));       // iter = 0
+    b0_args.push(ir_expr(IrExprKind::Lit(IrLit::Bool(true))));   // is_first = true
     let block0 = IrCfgBlock {
         params: vec![],
         stmts: vec![],
-        stmt_provs: vec![],
         terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args, reentry: None }),
     };
 
@@ -3626,51 +3649,51 @@ pub fn weave_net_vole_verifier_ir_loop(
     let mut ctx = VoleIrCtx::new(false);
 
     // Receive hats from transport.
-    ctx.stmts.push(IrStmt::Let {
+    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
         pattern: IrPattern::Tuple(vec![
             IrPattern::ident("iter_hats"),
             IrPattern::ident("is_sentinel"),
         ]),
         ty: None,
         init: Some(net_transport_try("recv_iteration", vec![
-            IrExpr::Lit(IrLit::Int(and_count as i128)),
+            ir_expr(IrExprKind::Lit(IrLit::Int(and_count as i128))),
         ])),
-    });
+    }));
 
     // Mutable all_ok accumulator for this iteration.
-    ctx.stmts.push(IrStmt::Let {
+    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
         pattern: IrPattern::Ident { mutable: true, name: "all_ok".into(), subpat: None },
         ty: None,
         init: Some(var("all_ok")),
-    });
+    }));
 
     // Pre-bind q_and_k and hat_k so emit_circuit_stmts can reference them.
     for k in 0..and_count {
-        let q_and_idx = IrExpr::Binary {
+        let q_and_idx = ir_expr(IrExprKind::Binary {
             op: SpecBinOp::Add,
-            left: Box::new(IrExpr::Binary {
+            left: Box::new(ir_expr(IrExprKind::Binary {
                 op: SpecBinOp::Mul,
                 left: Box::new(var("iter")),
-                right: Box::new(IrExpr::Lit(IrLit::Int(and_count as i128))),
-            }),
-            right: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
-        };
-        ctx.stmts.push(IrStmt::Let {
+                right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(and_count as i128)))),
+            })),
+            right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(k as i128)))),
+        });
+        ctx.stmts.push(ir_stmt(IrStmtKind::Let {
             pattern: IrPattern::ident(&format!("q_and_{}", k)),
             ty: None,
-            init: Some(clone_expr(IrExpr::Index {
+            init: Some(clone_expr(ir_expr(IrExprKind::Index {
                 base: Box::new(var("q_ands")),
                 index: Box::new(q_and_idx),
-            })),
-        });
-        ctx.stmts.push(IrStmt::Let {
+            }))),
+        }));
+        ctx.stmts.push(ir_stmt(IrStmtKind::Let {
             pattern: IrPattern::ident(&format!("hat_{}", k)),
             ty: None,
-            init: Some(clone_expr(IrExpr::Index {
+            init: Some(clone_expr(ir_expr(IrExprKind::Index {
                 base: Box::new(var("iter_hats")),
-                index: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
-            })),
-        });
+                index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(k as i128)))),
+            }))),
+        }));
     }
 
     // Register circuit input wires.
@@ -3696,17 +3719,16 @@ pub fn weave_net_vole_verifier_ir_loop(
         .collect();
     back_args.extend(net_collect_cell_back_args(&ctx, storage_sizes, types));
     back_args.push(var("all_ok")); // accumulated all_ok
-    back_args.push(IrExpr::Binary {
+    back_args.push(ir_expr(IrExprKind::Binary {
         op: SpecBinOp::Add,
         left: Box::new(var("iter")),
-        right: Box::new(IrExpr::Lit(IrLit::Int(1))),
-    });
-    back_args.push(IrExpr::Lit(IrLit::Bool(false))); // is_first = false
+        right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(1)))),
+    }));
+    back_args.push(ir_expr(IrExprKind::Lit(IrLit::Bool(false)))); // is_first = false
 
     let b1 = IrCfgBlock {
         params: b1_params,
         stmts: ctx.stmts,
-        stmt_provs: vec![],
         terminator: IrCfgTerminator::CondGoto {
             cond: var("is_sentinel"),
             then_: IrCfgJump { target: 2, args: vec![var("all_ok")], reentry: None },
@@ -3717,8 +3739,7 @@ pub fn weave_net_vole_verifier_ir_loop(
     // ── Block 2: exit ─────────────────────────────────────────────────────
     let b2 = IrCfgBlock {
         params: vec![IrParam { name: "final_ok".into(), ty: net_bool_type() }],
-        stmts: vec![IrStmt::Semi(net_transport_try("send_verdict", vec![var("final_ok")]))],
-        stmt_provs: vec![],
+        stmts: vec![ir_stmt(IrStmtKind::Semi(net_transport_try("send_verdict", vec![var("final_ok")])))],
         terminator: IrCfgTerminator::Return(Some(net_ok_expr(var("final_ok")))),
     };
 
