@@ -69,16 +69,18 @@ use crate::{
     build_return, clone_expr, expand_ors, ref_expr, var, NoProvenance, ProvenanceHandler,
 };
 
-/// Wrap a freshly-built expression kind with empty provenance/side — used at
-/// genuinely fresh-construction sites with concrete `()` provenance (no
-/// natural source node or `ctrl_prov` value to inherit from).
-fn ir_expr(kind: IrExprKind) -> IrExpr {
-    IrExpr::new(kind, (), None)
+/// Wrap a freshly-built expression kind with default provenance and no side
+/// — used at genuinely fresh-construction sites with no natural source node
+/// or `ctrl_prov` value to inherit from. Generic over `Q` (not just `()`) so
+/// it also serves the scheme-generic (`Q: Clone + Default`) gate-emission
+/// helpers in this file.
+fn ir_expr<Q: Clone + Default>(kind: IrExprKind<Q>) -> IrExpr<Q> {
+    IrExpr::new(kind, Q::default(), None)
 }
 
-/// Wrap a freshly-built statement kind with empty provenance/side.
-fn ir_stmt(kind: IrStmtKind) -> IrStmt {
-    IrStmt::new(kind, (), None)
+/// Wrap a freshly-built statement kind with default provenance and no side.
+fn ir_stmt<Q: Clone + Default>(kind: IrStmtKind<Q>) -> IrStmt<Q> {
+    IrStmt::new(kind, Q::default(), None)
 }
 
 /// Wrap a freshly-built expression kind with an explicit provenance value and
@@ -87,13 +89,13 @@ fn ir_stmt(kind: IrStmtKind) -> IrStmt {
 /// a `ctrl_prov: &Q` (or similar) value through parallel `stmt_provs: Vec<Q>`
 /// pushes. Using that same value keeps each `Node`'s own `.prov` consistent
 /// with what's pushed onto `stmt_provs`.
-fn ir_expr_p<Q: Clone + Default>(kind: IrExprKind<Q>, prov: Q) -> IrExpr<Q> {
+fn ir_expr_p<Q: Clone>(kind: IrExprKind<Q>, prov: Q) -> IrExpr<Q> {
     IrExpr::new(kind, prov, None)
 }
 
 /// Wrap a freshly-built statement kind with an explicit provenance value and
 /// no side annotation. See [`ir_expr_p`].
-fn ir_stmt_p<Q: Clone + Default>(kind: IrStmtKind<Q>, prov: Q) -> IrStmt<Q> {
+fn ir_stmt_p<Q: Clone>(kind: IrStmtKind<Q>, prov: Q) -> IrStmt<Q> {
     IrStmt::new(kind, prov, None)
 }
 
@@ -1300,10 +1302,10 @@ impl FheStorageCtx {
                 stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&name),
                     ty: None,
-                    init: Some(clone_expr(IrExpr::Index {
+                    init: Some(clone_expr(ir_expr(IrExprKind::Index {
                         base: Box::new(var(&param_name)),
-                        index: Box::new(IrExpr::Lit(IrLit::Int(ci as i128))),
-                    })),
+                        index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(ci as i128)))),
+                    }))),
                 }, ctrl_prov.clone()));
                 self.cells.insert((sid, bw, ci), name);
             }
@@ -1317,13 +1319,13 @@ impl FheStorageCtx {
             for ci in 0..count {
                 let cell_name = &self.cells[&(sid, bw, ci)];
                 // storage_param[ci] = cell.clone();
-                stmts.push(ir_stmt_p(IrStmtKind::Expr(IrExpr::Assign {
-                    left: Box::new(IrExpr::Index {
+                stmts.push(ir_stmt_p(IrStmtKind::Expr(ir_expr(IrExprKind::Assign {
+                    left: Box::new(ir_expr(IrExprKind::Index {
                         base: Box::new(var(&param_name)),
-                        index: Box::new(IrExpr::Lit(IrLit::Int(ci as i128))),
-                    }),
+                        index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(ci as i128)))),
+                    })),
                     right: Box::new(clone_expr(var(cell_name))),
-                }), ctrl_prov.clone()))
+                })), ctrl_prov.clone()));
             }
         }
     }
@@ -1673,7 +1675,6 @@ where
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -2056,7 +2057,6 @@ fn weave_fhe_cfg<S: FheScheme>(
         }
 
         let mut stmts: Vec<IrStmt> = Vec::new();
-        let mut stmt_provs: Vec<()> = Vec::new();
         // Tracks per-output publicness for ActionCall results in this block.
         let mut action_output_public: BTreeMap<u32, Vec<bool>> = BTreeMap::new();
 
@@ -2180,13 +2180,11 @@ fn weave_fhe_cfg<S: FheScheme>(
         );
         for s in extra_stmts {
             stmts.push(s);
-            stmt_provs.push(());
         }
 
         cfg_blocks.push(IrCfgBlock {
             params: if bidx == 0 { vec![] } else { block_params },
             stmts,
-            stmt_provs,
             terminator,
         });
     }
@@ -2326,30 +2324,27 @@ fn weave_fhe_cfg<S: FheScheme>(
         //   let _ = (guard, arg_0, arg_1, ...);   // suppress unused warnings
         //   (fallback_0, fallback_1, ...)          // return fallback values
         let mut suppress_vars: Vec<IrExpr> = Vec::new();
-        suppress_vars.push(IrExpr::Var("guard".into()));
+        suppress_vars.push(ir_expr(IrExprKind::Var("guard".into())));
         for i in 0..action_decl.params.len() {
-            suppress_vars.push(IrExpr::Var(format!("arg_{}", i)));
+            suppress_vars.push(ir_expr(IrExprKind::Var(format!("arg_{}", i))));
         }
 
         let mut body_stmts: Vec<IrStmt> = Vec::new();
-        // `body_provs` is deliberately left empty (shorter than `body_stmts`):
-        // this statement has no source-statement provenance to attribute, and
-        // an empty `stmt_provs` lets `map_prov` convert this stub without
-        // invoking the mapping closure (see `weave_fhe_cfg_with_handler`).
-        let body_provs: Vec<()> = Vec::new();
-        body_stmts.push(IrStmt::Let {
+        // This statement has no source-statement provenance to attribute;
+        // it gets default `()` provenance like the rest of this stub.
+        body_stmts.push(ir_stmt(IrStmtKind::Let {
             pattern: IrPattern::Wild,
             ty: None,
-            init: Some(IrExpr::Tuple(suppress_vars)),
-        });
+            init: Some(ir_expr(IrExprKind::Tuple(suppress_vars))),
+        }));
 
         let fallback_exprs: Vec<IrExpr> = (0..action_decl.results.len())
-            .map(|i| IrExpr::Var(format!("fallback_{}", i)))
+            .map(|i| ir_expr(IrExprKind::Var(format!("fallback_{}", i))))
             .collect();
         let body_expr = if fallback_exprs.is_empty() {
             None
         } else {
-            Some(Box::new(IrExpr::Tuple(fallback_exprs)))
+            Some(Box::new(ir_expr(IrExprKind::Tuple(fallback_exprs))))
         };
 
         let stub_fn = IrFunction {
@@ -2362,7 +2357,6 @@ fn weave_fhe_cfg<S: FheScheme>(
             where_clause: vec![],
             body: IrBlock {
                 stmts: body_stmts,
-                stmt_provs: body_provs,
                 expr: body_expr,
             },
             external_kind: ExternalKind::Action,
@@ -2400,8 +2394,7 @@ fn weave_fhe_cfg<S: FheScheme>(
                 where_clause: vec![],
                 body: IrBlock {
                     stmts: vec![],
-                    stmt_provs: vec![],
-                    expr: Some(Box::new(IrExpr::Unreachable)),
+                    expr: Some(Box::new(ir_expr(IrExprKind::Unreachable))),
                 },
                 external_kind: ExternalKind::Normal,
             };
@@ -2594,9 +2587,9 @@ fn map_ir_terminator<S: FheScheme>(
                 })
                 .collect();
             let ret_expr = match output_exprs.len() {
-                0 => IrExpr::Tuple(vec![]),
+                0 => ir_expr(IrExprKind::Tuple(vec![])),
                 1 => output_exprs.into_iter().next().unwrap(),
-                _ => IrExpr::Tuple(output_exprs),
+                _ => ir_expr(IrExprKind::Tuple(output_exprs)),
             };
             (vec![], IrCfgTerminator::Return(Some(ret_expr)))
         }
@@ -2705,23 +2698,23 @@ fn map_ir_terminator<S: FheScheme>(
 
                 if width == 1 {
                     // Single-bit CMUX.
-                    let cmux_expr: IrExpr = IrExpr::Call {
-                        func: Box::new(IrExpr::Path {
+                    let cmux_expr: IrExpr = ir_expr(IrExprKind::Call {
+                        func: Box::new(ir_expr(IrExprKind::Path {
                             segments: vec!["tfhe_cmux".into()],
                             type_args: vec![],
-                        }),
+                        })),
                         args: vec![
                             clone_expr(var(&cond_name)),
                             lift_to_ct(t_id, &t_name),
                             lift_to_ct(f_id, &f_name),
                             var("bk"),
                         ],
-                    };
-                    extra_stmts.push(IrStmt::Let {
+                    });
+                    extra_stmts.push(ir_stmt(IrStmtKind::Let {
                         pattern: IrPattern::ident(&merged_name),
                         ty: None,
                         init: Some(cmux_expr),
-                    });
+                    }));
                 } else {
                     // Multi-bit: element-wise CMUX → fixed array.
                     // Public multi-bit vars are [bool; N]; they can't be indexed as LweCiphertext.
@@ -2736,31 +2729,31 @@ fn map_ir_terminator<S: FheScheme>(
                     }
                     let bit_exprs: Vec<IrExpr> = (0..width)
                         .map(|bit| {
-                            IrExpr::Call {
-                                func: Box::new(IrExpr::Path {
+                            ir_expr(IrExprKind::Call {
+                                func: Box::new(ir_expr(IrExprKind::Path {
                                     segments: vec!["tfhe_cmux".into()],
                                     type_args: vec![],
-                                }),
+                                })),
                                 args: vec![
                                     clone_expr(var(&cond_name)),
-                                    clone_expr(IrExpr::Index {
+                                    clone_expr(ir_expr(IrExprKind::Index {
                                         base:  Box::new(var(&t_name)),
-                                        index: Box::new(IrExpr::Lit(IrLit::Int(bit as i128))),
-                                    }),
-                                    clone_expr(IrExpr::Index {
+                                        index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(bit as i128)))),
+                                    })),
+                                    clone_expr(ir_expr(IrExprKind::Index {
                                         base:  Box::new(var(&f_name)),
-                                        index: Box::new(IrExpr::Lit(IrLit::Int(bit as i128))),
-                                    }),
+                                        index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(bit as i128)))),
+                                    })),
                                     var("bk"),
                                 ],
-                            }
+                            })
                         })
                         .collect();
-                    extra_stmts.push(IrStmt::Let {
+                    extra_stmts.push(ir_stmt(IrStmtKind::Let {
                         pattern: IrPattern::ident(&merged_name),
                         ty: None,
-                        init: Some(IrExpr::FixedArray(bit_exprs)),
-                    });
+                        init: Some(ir_expr(IrExprKind::FixedArray(bit_exprs))),
+                    }));
                 }
 
                 merged_args.push(var(&merged_name));
@@ -2877,54 +2870,54 @@ impl FheScheme for GrafhenScheme {
 
     fn emit_zero<Q: Clone + Default>(&self) -> IrExpr<Q> {
         // GrafhenWord::identity() — the additive identity (all-zero ciphertext).
-        IrExpr::Call {
-            func: Box::new(IrExpr::Path {
+        ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
                 segments: vec!["GrafhenWord".into(), "identity".into()],
                 type_args: vec![],
-            }),
+            })),
             args: vec![],
-        }
+        })
     }
 
     fn emit_one<Q: Clone + Default>(&self) -> IrExpr<Q> {
         // pk.enc_one.clone()
-        clone_expr(IrExpr::Field {
+        clone_expr(ir_expr(IrExprKind::Field {
             base: Box::new(var("pk")),
             field: "enc_one".into(),
-        })
+        }))
     }
 
     fn emit_xor<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
         // grafhen_xor(&a.clone(), &b.clone())
-        IrExpr::Call {
-            func: Box::new(IrExpr::Path {
+        ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
                 segments: vec!["grafhen_xor".into()],
                 type_args: vec![],
-            }),
+            })),
             args: vec![ref_expr(clone_expr(a)), ref_expr(clone_expr(b))],
-        }
+        })
     }
 
     fn emit_not<Q: Clone + Default>(&self, a: IrExpr<Q>) -> IrExpr<Q> {
         // grafhen_not(&a.clone(), pk)
-        IrExpr::Call {
-            func: Box::new(IrExpr::Path {
+        ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
                 segments: vec!["grafhen_not".into()],
                 type_args: vec![],
-            }),
+            })),
             args: vec![ref_expr(clone_expr(a)), var("pk")],
-        }
+        })
     }
 
     fn emit_and<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>, _gate_idx: usize) -> IrExpr<Q> {
         // grafhen_and(&a.clone(), &b.clone(), pk)
-        IrExpr::Call {
-            func: Box::new(IrExpr::Path {
+        ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
                 segments: vec!["grafhen_and".into()],
                 type_args: vec![],
-            }),
+            })),
             args: vec![ref_expr(clone_expr(a)), ref_expr(clone_expr(b)), var("pk")],
-        }
+        })
     }
 
     fn emit_or<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
@@ -2951,21 +2944,21 @@ impl FheScheme for GrafhenScheme {
         // {oracle_name}_grafhen(pk, &arg0.clone(), &arg1.clone(), ...)
         let mut args: Vec<IrExpr<Q>> = vec![var("pk")];
         args.extend(arg_exprs.into_iter().map(|a| ref_expr(clone_expr(a))));
-        IrExpr::Call {
-            func: Box::new(IrExpr::Path {
+        ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
                 segments: vec![format!("{}_grafhen", oracle_name)],
                 type_args: vec![],
-            }),
+            })),
             args,
-        }
+        })
     }
 
     fn emit_oracle_bit<Q: Clone + Default>(&self, call_var: &str, bit: usize) -> IrExpr<Q> {
         // call_var.{bit}.clone()
-        clone_expr(IrExpr::Field {
+        clone_expr(ir_expr(IrExprKind::Field {
             base: Box::new(var(call_var)),
             field: format!("{}", bit),
-        })
+        }))
     }
 
     fn emit_action_call<Q: Clone + Default>(
@@ -2979,41 +2972,41 @@ impl FheScheme for GrafhenScheme {
         // {action_name}_action_grafhen(pk, &guard.clone(), &arg0.clone(), ...)
         let mut args: Vec<IrExpr<Q>> = vec![var("pk"), ref_expr(clone_expr(guard_expr))];
         args.extend(arg_exprs.into_iter().map(|a| ref_expr(clone_expr(a))));
-        IrExpr::Call {
-            func: Box::new(IrExpr::Path {
+        ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
                 segments: vec![format!("{}_action_grafhen", action_name)],
                 type_args: vec![],
-            }),
+            })),
             args,
-        }
+        })
     }
 
     fn emit_action_bit<Q: Clone + Default>(&self, call_var: &str, bit: usize) -> IrExpr<Q> {
         // call_var.{bit}.clone()
-        clone_expr(IrExpr::Field {
+        clone_expr(ir_expr(IrExprKind::Field {
             base: Box::new(var(call_var)),
             field: format!("{}", bit),
-        })
+        }))
     }
 
     fn emit_rng<Q: Clone + Default>(&self, rng_name: &str) -> IrExpr<Q> {
         // grafhen_encrypt({rng_name}(), pk)
-        IrExpr::Call {
-            func: Box::new(IrExpr::Path {
+        ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
                 segments: vec!["grafhen_encrypt".into()],
                 type_args: vec![],
-            }),
+            })),
             args: vec![
-                IrExpr::Call {
-                    func: Box::new(IrExpr::Path {
+                ir_expr(IrExprKind::Call {
+                    func: Box::new(ir_expr(IrExprKind::Path {
                         segments: vec![rng_name.into()],
                         type_args: vec![],
-                    }),
+                    })),
                     args: vec![],
-                },
+                }),
                 var("pk"),
             ],
-        }
+        })
     }
 }
 
@@ -3173,49 +3166,49 @@ impl FheScheme for TfheScheme {
     fn promote_to_wire<Q: Clone + Default>(&self, expr: IrExpr<Q>, width: usize) -> IrExpr<Q> {
         // Lift a cleartext value to LweCiphertext<N_LWE>.
         let encrypt = |e: IrExpr<Q>| -> IrExpr<Q> {
-            IrExpr::Call {
-                func: Box::new(IrExpr::Path {
+            ir_expr(IrExprKind::Call {
+                func: Box::new(ir_expr(IrExprKind::Path {
                     segments: vec!["tfhe_trivial_encrypt".into()],
                     type_args: vec![],
-                }),
+                })),
                 args: vec![e],
-            }
+            })
         };
         if width <= 1 {
             encrypt(expr)
         } else {
             // [bool; width] → [LweCiphertext; width]: encrypt each element.
-            IrExpr::FixedArray(
+            ir_expr(IrExprKind::FixedArray(
                 (0..width)
                     .map(|bit| {
-                        encrypt(IrExpr::Index {
+                        encrypt(ir_expr(IrExprKind::Index {
                             base: Box::new(expr.clone()),
-                            index: Box::new(IrExpr::Lit(IrLit::Int(bit as i128))),
-                        })
+                            index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(bit as i128)))),
+                        }))
                     })
                     .collect(),
-            )
+            ))
         }
     }
 
     fn emit_zero<Q: Clone + Default>(&self) -> IrExpr<Q> {
-        IrExpr::Call {
-            func: Box::new(IrExpr::Path {
+        ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
                 segments: vec!["tfhe_trivial_zero".into()],
                 type_args: vec![IrType::TypeParam("N_LWE".into())],
-            }),
+            })),
             args: vec![],
-        }
+        })
     }
 
     fn emit_one<Q: Clone + Default>(&self) -> IrExpr<Q> {
-        IrExpr::Call {
-            func: Box::new(IrExpr::Path {
+        ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
                 segments: vec!["tfhe_trivial_one".into()],
                 type_args: vec![IrType::TypeParam("N_LWE".into())],
-            }),
+            })),
             args: vec![],
-        }
+        })
     }
 
     fn emit_xor<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
@@ -3233,33 +3226,33 @@ impl FheScheme for TfheScheme {
     }
 
     fn emit_not<Q: Clone + Default>(&self, a: IrExpr<Q>) -> IrExpr<Q> {
-        IrExpr::Call {
-            func: Box::new(IrExpr::Path {
+        ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
                 segments: vec!["tfhe_not".into()],
                 type_args: vec![],
-            }),
+            })),
             args: vec![a],
-        }
+        })
     }
 
     fn emit_and<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>, _gate_idx: usize) -> IrExpr<Q> {
-        IrExpr::Call {
-            func: Box::new(IrExpr::Path {
+        ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
                 segments: vec!["tfhe_gate_bootstrapping_and".into()],
                 type_args: vec![],
-            }),
+            })),
             args: vec![a, b, var("bk")],
-        }
+        })
     }
 
     fn emit_or<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
-        IrExpr::Call {
-            func: Box::new(IrExpr::Path {
+        ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
                 segments: vec!["tfhe_gate_bootstrapping_or".into()],
                 type_args: vec![],
-            }),
+            })),
             args: vec![a, b, var("bk")],
-        }
+        })
     }
 
     // ── CFG path ─────────────────────────────────────────────────────────────
@@ -3281,46 +3274,46 @@ impl FheScheme for TfheScheme {
 
         // Helper: emit tfhe_trivial_zero() or tfhe_trivial_one() based on bit `b`.
         let trivial = |bit: bool| -> IrExpr {
-            IrExpr::Call {
-                func: Box::new(IrExpr::Path {
+            ir_expr(IrExprKind::Call {
+                func: Box::new(ir_expr(IrExprKind::Path {
                     segments: vec![if bit { "tfhe_trivial_one" } else { "tfhe_trivial_zero" }.into()],
                     type_args: vec![IrType::TypeParam("N_LWE".into())],
-                }),
+                })),
                 args: vec![],
-            }
+            })
         };
 
         // Helper: emit tfhe_not(a).
         let not1 = |a: IrExpr| -> IrExpr {
-            IrExpr::Call {
-                func: Box::new(IrExpr::Path {
+            ir_expr(IrExprKind::Call {
+                func: Box::new(ir_expr(IrExprKind::Path {
                     segments: vec!["tfhe_not".into()],
                     type_args: vec![],
-                }),
+                })),
                 args: vec![a],
-            }
+            })
         };
 
         // Helper: emit tfhe_gate_bootstrapping_and(a, b, bk).
         let and2 = |a: IrExpr, b: IrExpr| -> IrExpr {
-            IrExpr::Call {
-                func: Box::new(IrExpr::Path {
+            ir_expr(IrExprKind::Call {
+                func: Box::new(ir_expr(IrExprKind::Path {
                     segments: vec!["tfhe_gate_bootstrapping_and".into()],
                     type_args: vec![],
-                }),
+                })),
                 args: vec![a, b, var("bk")],
-            }
+            })
         };
 
         // Helper: emit tfhe_gate_bootstrapping_or(a, b, bk).
         let or2 = |a: IrExpr, b: IrExpr| -> IrExpr {
-            IrExpr::Call {
-                func: Box::new(IrExpr::Path {
+            ir_expr(IrExprKind::Call {
+                func: Box::new(ir_expr(IrExprKind::Path {
                     segments: vec!["tfhe_gate_bootstrapping_or".into()],
                     type_args: vec![],
-                }),
+                })),
                 args: vec![a, b, var("bk")],
-            }
+            })
         };
 
         // Helper: composable XOR decomposition.
@@ -3336,10 +3329,10 @@ impl FheScheme for TfheScheme {
 
         // Helper: index into a multi-bit variable at position `bit`.
         let index_bit = |name: &str, bit: usize| -> IrExpr {
-            IrExpr::Index {
+            ir_expr(IrExprKind::Index {
                 base:  Box::new(var(name)),
-                index: Box::new(IrExpr::Lit(IrLit::Int(bit as i128))),
-            }
+                index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(bit as i128)))),
+            })
         };
 
         match stmt {
@@ -3350,7 +3343,7 @@ impl FheScheme for TfheScheme {
                 let width = ir_type_bit_width(*ty_id, types);
                 if width == 1 {
                     let bit = (constant.lo & 1) != 0;
-                    Some(IrExpr::Lit(IrLit::Bool(bit)))
+                    Some(ir_expr(IrExprKind::Lit(IrLit::Bool(bit))))
                 } else {
                     let elems: Vec<IrExpr> = (0..width)
                         .map(|i| {
@@ -3363,10 +3356,10 @@ impl FheScheme for TfheScheme {
                                 // bits beyond position 255 are always 0.
                                 false
                             };
-                            IrExpr::Lit(IrLit::Bool(bit))
+                            ir_expr(IrExprKind::Lit(IrLit::Bool(bit)))
                         })
                         .collect();
-                    Some(IrExpr::FixedArray(elems))
+                    Some(ir_expr(IrExprKind::FixedArray(elems)))
                 }
             }
 
@@ -3397,28 +3390,28 @@ impl FheScheme for TfheScheme {
 
                 if all_public {
                     // ── All-public: bool arithmetic ──────────────────────────
-                    let mut acc: IrExpr = IrExpr::Lit(IrLit::Bool(const_bit));
+                    let mut acc: IrExpr = ir_expr(IrExprKind::Lit(IrLit::Bool(const_bit)));
                     for (monomial, &coeff) in coeffs.iter() {
                         if coeff == 0 { continue; }
                         let term: IrExpr = match monomial.as_slice() {
-                            [] => IrExpr::Lit(IrLit::Bool(true)), // empty product = 1
+                            [] => ir_expr(IrExprKind::Lit(IrLit::Bool(true))), // empty product = 1
                             [first, rest @ ..] => {
                                 let mut t: IrExpr = clone_expr(var(&vname(first)));
                                 for v in rest {
-                                    t = IrExpr::Binary {
+                                    t = ir_expr(IrExprKind::Binary {
                                         op: SpecBinOp::BitAnd,
                                         left: Box::new(t),
                                         right: Box::new(clone_expr(var(&vname(v)))),
-                                    };
+                                    });
                                 }
                                 t
                             }
                         };
-                        acc = IrExpr::Binary {
+                        acc = ir_expr(IrExprKind::Binary {
                             op: SpecBinOp::BitXor,
                             left: Box::new(acc),
                             right: Box::new(term),
-                        };
+                        });
                     }
                     Some(acc)
                 } else {
@@ -3427,13 +3420,13 @@ impl FheScheme for TfheScheme {
                     let lift = |vid: &IRVarId| -> IrExpr {
                         let name = vname(vid);
                         if public_set.is_public(*vid) {
-                            IrExpr::Call {
-                                func: Box::new(IrExpr::Path {
+                            ir_expr(IrExprKind::Call {
+                                func: Box::new(ir_expr(IrExprKind::Path {
                                     segments: vec!["tfhe_trivial_encrypt".into()],
                                     type_args: vec![],
-                                }),
+                                })),
                                 args: vec![var(&name)],
-                            }
+                            })
                         } else {
                             clone_expr(var(&name))
                         }
@@ -3487,7 +3480,7 @@ impl FheScheme for TfheScheme {
                 let elems: Vec<IrExpr> = (0..width)
                     .map(|i| clone_expr(index_bit(&src_name, (i + width - n) % width)))
                     .collect();
-                Some(IrExpr::FixedArray(elems))
+                Some(ir_expr(IrExprKind::FixedArray(elems)))
             }
             Stmt::Ror { src, ty, n } => {
                 let width = ir_type_bit_width(*ty, types);
@@ -3499,7 +3492,7 @@ impl FheScheme for TfheScheme {
                 let elems: Vec<IrExpr> = (0..width)
                     .map(|i| clone_expr(index_bit(&src_name, (i + n) % width)))
                     .collect();
-                Some(IrExpr::FixedArray(elems))
+                Some(ir_expr(IrExprKind::FixedArray(elems)))
             }
 
             // ── Merge ─────────────────────────────────────────────────────────
@@ -3517,7 +3510,7 @@ impl FheScheme for TfheScheme {
                         }
                     }
                 }
-                Some(IrExpr::FixedArray(elems))
+                Some(ir_expr(IrExprKind::FixedArray(elems)))
             }
 
             // ── Splat ─────────────────────────────────────────────────────────
@@ -3531,7 +3524,7 @@ impl FheScheme for TfheScheme {
                 let elems: Vec<IrExpr> = (0..width)
                     .map(|_| clone_expr(var(&src_name)))
                     .collect();
-                Some(IrExpr::FixedArray(elems))
+                Some(ir_expr(IrExprKind::FixedArray(elems)))
             }
 
             // ── Shuffle ───────────────────────────────────────────────────────
@@ -3549,7 +3542,7 @@ impl FheScheme for TfheScheme {
                         }
                     })
                     .collect();
-                Some(IrExpr::FixedArray(elems))
+                Some(ir_expr(IrExprKind::FixedArray(elems)))
             }
 
             // ── OracleCall / OracleOutput / ActionCall / ActionOutput / Rng ──
@@ -3597,25 +3590,25 @@ impl FheScheme for TfheScheme {
                             .unwrap_or(1);
                         let fname = vname(f);
                         if w == 1 {
-                            IrExpr::Call {
-                                func: Box::new(IrExpr::Path {
+                            ir_expr(IrExprKind::Call {
+                                func: Box::new(ir_expr(IrExprKind::Path {
                                     segments: vec!["tfhe_trivial_encrypt".into()],
                                     type_args: vec![IrType::TypeParam("N_LWE".into())],
-                                }),
+                                })),
                                 args: vec![var(&fname)],
-                            }
+                            })
                         } else {
-                            IrExpr::RawMap {
+                            ir_expr(IrExprKind::RawMap {
                                 receiver: Box::new(var(&fname)),
                                 elem_var: IrPattern::ident("b"),
-                                body: Box::new(IrExpr::Call {
-                                    func: Box::new(IrExpr::Path {
+                                body: Box::new(ir_expr(IrExprKind::Call {
+                                    func: Box::new(ir_expr(IrExprKind::Path {
                                         segments: vec!["tfhe_trivial_encrypt".into()],
                                         type_args: vec![IrType::TypeParam("N_LWE".into())],
-                                    }),
+                                    })),
                                     args: vec![var("b")],
-                                }),
-                            }
+                                })),
+                            })
                         }
                     } else {
                         clone_expr(var(&vname(f)))
@@ -3632,26 +3625,26 @@ impl FheScheme for TfheScheme {
                         let aname = vname(a);
                         if w == 1 {
                             // tfhe_trivial_encrypt::<N_LWE>(var)
-                            IrExpr::Call {
-                                func: Box::new(IrExpr::Path {
+                            ir_expr(IrExprKind::Call {
+                                func: Box::new(ir_expr(IrExprKind::Path {
                                     segments: vec!["tfhe_trivial_encrypt".into()],
                                     type_args: vec![IrType::TypeParam("N_LWE".into())],
-                                }),
+                                })),
                                 args: vec![var(&aname)],
-                            }
+                            })
                         } else {
                             // var.map(|b| tfhe_trivial_encrypt::<N_LWE>(b))
-                            IrExpr::RawMap {
+                            ir_expr(IrExprKind::RawMap {
                                 receiver: Box::new(var(&aname)),
                                 elem_var: IrPattern::ident("b"),
-                                body: Box::new(IrExpr::Call {
-                                    func: Box::new(IrExpr::Path {
+                                body: Box::new(ir_expr(IrExprKind::Call {
+                                    func: Box::new(ir_expr(IrExprKind::Path {
                                         segments: vec!["tfhe_trivial_encrypt".into()],
                                         type_args: vec![IrType::TypeParam("N_LWE".into())],
-                                    }),
+                                    })),
                                     args: vec![var("b")],
-                                }),
-                            }
+                                })),
+                            })
                         }
                     } else {
                         clone_expr(var(&vname(a)))
@@ -3674,7 +3667,7 @@ impl FheScheme for TfheScheme {
                     // oblivious selection internally.  The fallbacks appear twice so
                     // that stripping the outer `true, fallbacks...` prefix yields a
                     // second valid action-call suffix, enabling compositional unwrapping.
-                    call_args.push(IrExpr::Lit(IrLit::Bool(true)));
+                    call_args.push(ir_expr(IrExprKind::Lit(IrLit::Bool(true))));
                     call_args.extend(fb_exprs.clone());
                     call_args.push(clone_expr(var(&guard_name)));
                     call_args.extend(fb_exprs.clone());
@@ -3687,23 +3680,23 @@ impl FheScheme for TfheScheme {
                     IrType::TypeParam(g.name.clone())
                 }).collect();
 
-                Some(IrExpr::Call {
-                    func: Box::new(IrExpr::Path {
+                Some(ir_expr(IrExprKind::Call {
+                    func: Box::new(ir_expr(IrExprKind::Path {
                         segments: vec![name.clone()],
                         type_args: turbofish_args,
-                    }),
+                    })),
                     args: call_args,
-                })
+                }))
             }
             Stmt::ActionOutput { call, idx, .. } => {
                 // Always emit a field projection from the ActionCall result tuple.
                 // Publicness is tracked separately via `public_set`; the expression
                 // is the same regardless of whether the output is clear or encrypted.
                 let call_name = vname(call);
-                Some(IrExpr::Field {
+                Some(ir_expr(IrExprKind::Field {
                     base: Box::new(var(&call_name)),
                     field: format!("{}", idx),
-                })
+                }))
             }
             Stmt::Rng { name, .. } => {
                 panic!(
@@ -3729,8 +3722,7 @@ impl FheScheme for TfheScheme {
         let bk_params = self.extra_params();
         let stub_body = || IrBlock {
             stmts: vec![],
-            stmt_provs: vec![],
-            expr: Some(Box::new(IrExpr::Unreachable)),
+            expr: Some(Box::new(ir_expr(IrExprKind::Unreachable))),
         };
 
         let mut stubs = Vec::new();
@@ -4428,7 +4420,6 @@ mod tests {
                 where_clause: vec![],
                 body: IrBlock {
                     stmts,
-                    stmt_provs: provs,
                     expr: Some(Box::new(var(&result))),
                 },
                 external_kind: ExternalKind::Normal,
@@ -4472,7 +4463,7 @@ mod tests {
         let (ret_expr, ret_ty) = if cell_count == 1 {
             (ret_exprs.into_iter().next().unwrap(), wire_ty)
         } else {
-            (IrExpr::Tuple(ret_exprs), IrType::Tuple(ret_tys))
+            (ir_expr(IrExprKind::Tuple(ret_exprs)), IrType::Tuple(ret_tys))
         };
 
         IrModule {
@@ -4493,7 +4484,6 @@ mod tests {
                 where_clause: vec![],
                 body: IrBlock {
                     stmts,
-                    stmt_provs: provs,
                     expr: Some(Box::new(ret_expr)),
                 },
                 external_kind: ExternalKind::Normal,
@@ -4842,11 +4832,12 @@ mod tests {
         ).into_inner();
         assert_eq!(module.functions.len(), 1);
         let func = &module.functions[0];
-        assert!(!func.body.stmt_provs.is_empty());
+        let provs: Vec<u32> = func.body.stmts.iter().map(|s| s.prov).collect();
+        assert!(!provs.is_empty());
         assert!(
-            func.body.stmt_provs.iter().all(|&p| p == 5),
+            provs.iter().all(|&p| p == 5),
             "all woven statements should carry the source statement's provenance: {:?}",
-            func.body.stmt_provs,
+            provs,
         );
     }
 
@@ -4864,20 +4855,22 @@ mod tests {
         assert_eq!(cfg_fn.body.blocks.len(), 2);
 
         // Block 0 carries its own statement, so its (non-empty) output
-        // `stmt_provs` should all be the source statement's provenance (7).
-        assert!(!cfg_fn.body.blocks[0].stmt_provs.is_empty());
+        // provenance should all be the source statement's provenance (7).
+        let block0_provs: Vec<u32> = cfg_fn.body.blocks[0].stmts.iter().map(|s| s.prov).collect();
+        assert!(!block0_provs.is_empty());
         assert!(
-            cfg_fn.body.blocks[0].stmt_provs.iter().all(|&p| p == 7),
+            block0_provs.iter().all(|&p| p == 7),
             "block 0's woven statements should carry the source statement's provenance: {:?}",
-            cfg_fn.body.blocks[0].stmt_provs,
+            block0_provs,
         );
 
         // Block 1 has no statements of its own; any statements added to it
         // fall back to the module-level provenance (also 7, the only source).
+        let block1_provs: Vec<u32> = cfg_fn.body.blocks[1].stmts.iter().map(|s| s.prov).collect();
         assert!(
-            cfg_fn.body.blocks[1].stmt_provs.iter().all(|&p| p == 7),
+            block1_provs.iter().all(|&p| p == 7),
             "block 1's fallback provenance should be 7: {:?}",
-            cfg_fn.body.blocks[1].stmt_provs,
+            block1_provs,
         );
     }
 
