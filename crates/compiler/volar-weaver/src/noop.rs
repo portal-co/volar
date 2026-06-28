@@ -18,8 +18,8 @@ use alloc::{
 
 use volar_compiler::{
     ir::{
-        ExternalKind, IrBlock, IrExpr, IrFunction, IrLit, IrModule, IrParam,
-        IrPattern, IrStmt, IrType, PrimitiveType, SpecBinOp, SpecUnaryOp,
+        ExternalKind, IrBlock, IrExpr, IrExprKind, IrFunction, IrLit, IrModule, IrParam,
+        IrPattern, IrStmt, IrStmtKind, IrType, PrimitiveType, SpecBinOp, SpecUnaryOp,
     },
     linkage::LinkageSystem,
 };
@@ -30,7 +30,17 @@ use volar_ir::ir::{
     IRTypes as CirTypes, IRVarId as CirVar,
     Stmt, IRBranchTarget};
 
-use crate::{build_return, expand_ors, var, ProvenanceHandler};
+use crate::{build_return, expand_ors, ir_expr, var, ProvenanceHandler};
+
+/// Construct a fresh `IrStmt` with default provenance and no side.
+fn ir_stmt<Q: Clone + Default>(kind: IrStmtKind<Q>) -> IrStmt<Q> {
+    IrStmt::new(kind, Q::default(), None)
+}
+
+/// Construct an `IrStmt` carrying an explicit provenance value (no side).
+fn ir_stmt_p<Q: Clone>(kind: IrStmtKind<Q>, prov: Q) -> IrStmt<Q> {
+    IrStmt::new(kind, prov, None)
+}
 
 // ============================================================================
 // Boolar (BIrBlocks) → cleartext bool evaluator
@@ -74,53 +84,52 @@ pub fn weave_noop(
     }
 
     let mut stmts: Vec<IrStmt> = Vec::new();
-    let mut stmt_provs: Vec<()> = Vec::new();
 
     for (result_id, stmt, _prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
 
         let init_expr = match stmt {
-            BIrStmt::Zero => IrExpr::Lit(IrLit::Bool(false)),
+            BIrStmt::Zero => ir_expr(IrExprKind::Lit(IrLit::Bool(false))),
 
-            BIrStmt::One => IrExpr::Lit(IrLit::Bool(true)),
+            BIrStmt::One => ir_expr(IrExprKind::Lit(IrLit::Bool(true))),
 
             BIrStmt::Xor(a, b) => {
                 let name_a = var_names[&a.0].clone();
                 let name_b = var_names[&b.0].clone();
-                IrExpr::Binary {
+                ir_expr(IrExprKind::Binary {
                     op: SpecBinOp::BitXor,
                     left: Box::new(var(&name_a)),
                     right: Box::new(var(&name_b)),
-                }
+                })
             }
 
             BIrStmt::And(a, b) => {
                 let name_a = var_names[&a.0].clone();
                 let name_b = var_names[&b.0].clone();
-                IrExpr::Binary {
+                ir_expr(IrExprKind::Binary {
                     op: SpecBinOp::BitAnd,
                     left: Box::new(var(&name_a)),
                     right: Box::new(var(&name_b)),
-                }
+                })
             }
 
             BIrStmt::Or(a, b) => {
                 // expand_ors should have removed these, but handle defensively
                 let name_a = var_names[&a.0].clone();
                 let name_b = var_names[&b.0].clone();
-                IrExpr::Binary {
+                ir_expr(IrExprKind::Binary {
                     op: SpecBinOp::BitOr,
                     left: Box::new(var(&name_a)),
                     right: Box::new(var(&name_b)),
-                }
+                })
             }
 
             BIrStmt::Not(a) => {
                 let name_a = var_names[&a.0].clone();
-                IrExpr::Unary {
+                ir_expr(IrExprKind::Unary {
                     op: SpecUnaryOp::Not,
                     expr: Box::new(var(&name_a)),
-                }
+                })
             }
 
             BIrStmt::OracleCall { .. }
@@ -138,12 +147,11 @@ pub fn weave_noop(
             _ => panic!("noop weaver: unhandled BIrStmt variant — add support for this variant"),
         };
 
-        stmts.push(IrStmt::Let {
+        stmts.push(ir_stmt(IrStmtKind::Let {
             pattern: IrPattern::ident(&let_name),
             ty: None,
             init: Some(init_expr),
-        });
-        stmt_provs.push(());
+        }));
         var_names.insert(result_id.0, let_name);
     }
 
@@ -160,7 +168,6 @@ pub fn weave_noop(
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -225,7 +232,6 @@ pub fn weave_noop_ir(
     }
 
     let mut stmts: Vec<IrStmt> = Vec::new();
-    let mut stmt_provs: Vec<()> = Vec::new();
 
     for (i, node) in block.stmts.iter().enumerate() {
         let result_id = CirVar(num_params as u32 + i as u32);
@@ -233,12 +239,11 @@ pub fn weave_noop_ir(
 
         let init_expr = lower_ir_stmt(&node.kind, &var_names, types);
 
-        stmts.push(IrStmt::Let {
+        stmts.push(ir_stmt(IrStmtKind::Let {
             pattern: IrPattern::ident(&let_name),
             ty: None,
             init: Some(init_expr),
-        });
-        stmt_provs.push(());
+        }));
         var_names.insert(result_id.0, let_name);
     }
 
@@ -260,7 +265,7 @@ pub fn weave_noop_ir(
             .iter()
             .map(|_| IrType::Primitive(PrimitiveType::Bool))
             .collect();
-        (IrExpr::Tuple(exprs), IrType::Tuple(tys))
+        (ir_expr(IrExprKind::Tuple(exprs)), IrType::Tuple(tys))
     };
 
     let func = IrFunction {
@@ -273,7 +278,6 @@ pub fn weave_noop_ir(
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -315,6 +319,7 @@ pub fn weave_noop_ir_with_handler<P, H>(
 where
     P: Clone,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     assert!(
         circuit.is_circuit(),
@@ -340,7 +345,6 @@ where
     }
 
     let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
-    let mut stmt_provs: Vec<H::Output> = Vec::new();
 
     for (i, node) in block.stmts.iter().enumerate() {
         let result_id = CirVar(num_params as u32 + i as u32);
@@ -348,12 +352,14 @@ where
 
         let init_expr: IrExpr<H::Output> = lower_ir_stmt(&node.kind, &var_names, types);
 
-        stmts.push(IrStmt::Let {
-            pattern: IrPattern::ident(&let_name),
-            ty: None,
-            init: Some(init_expr),
-        });
-        stmt_provs.push(handler.map(&node.prov));
+        stmts.push(ir_stmt_p(
+            IrStmtKind::Let {
+                pattern: IrPattern::ident(&let_name),
+                ty: None,
+                init: Some(init_expr),
+            },
+            handler.map(&node.prov),
+        ));
         var_names.insert(result_id.0, let_name);
     }
 
@@ -375,7 +381,7 @@ where
             .iter()
             .map(|_| IrType::Primitive(PrimitiveType::Bool))
             .collect();
-        (IrExpr::Tuple(exprs), IrType::Tuple(tys))
+        (ir_expr(IrExprKind::Tuple(exprs)), IrType::Tuple(tys))
     };
 
     let func = IrFunction {
@@ -388,7 +394,6 @@ where
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -421,7 +426,7 @@ where
 /// The emitted expressions (`Lit`, `Var`, `Binary`, `Unary`) never carry
 /// nested blocks, so this is generic over the output provenance `Q` with no
 /// provenance value ever materialized here.
-fn lower_ir_stmt<Q: Clone>(
+fn lower_ir_stmt<Q: Clone + Default>(
     stmt: &Stmt<CirVar>,
     var_names: &BTreeMap<u32, String>,
     types: &CirTypes,
@@ -431,11 +436,11 @@ fn lower_ir_stmt<Q: Clone>(
         Stmt::Const(c, ty) => {
             let is_bit = types.is_bit(*ty);
             if is_bit {
-                IrExpr::Lit(IrLit::Bool(c.lo != 0))
+                ir_expr(IrExprKind::Lit(IrLit::Bool(c.lo != 0)))
             } else {
                 // For wider constants, emit as a u64 integer literal cast; for
                 // the noop evaluator a raw integer literal is good enough.
-                IrExpr::Lit(IrLit::Int(c.lo as i128))
+                ir_expr(IrExprKind::Lit(IrLit::Int(c.lo as i128)))
             }
         }
 
@@ -449,9 +454,9 @@ fn lower_ir_stmt<Q: Clone>(
             let mut acc: Option<IrExpr<Q>> =
                 if const_val != 0 || coeffs.is_empty() {
                     Some(if is_bit {
-                        IrExpr::Lit(IrLit::Bool(const_val != 0))
+                        ir_expr(IrExprKind::Lit(IrLit::Bool(const_val != 0)))
                     } else {
-                        IrExpr::Lit(IrLit::Int(constant.lo as i128))
+                        ir_expr(IrExprKind::Lit(IrLit::Int(constant.lo as i128)))
                     })
                 } else {
                     None
@@ -468,11 +473,11 @@ fn lower_ir_stmt<Q: Clone>(
                     let term = var::<Q>(&vname);
                     product = Some(match product {
                         None => term,
-                        Some(p) => IrExpr::Binary {
+                        Some(p) => ir_expr(IrExprKind::Binary {
                             op: SpecBinOp::BitAnd,
                             left: Box::new(p),
                             right: Box::new(term),
-                        },
+                        }),
                     });
                 }
                 if let Some(p) = product {
@@ -481,11 +486,11 @@ fn lower_ir_stmt<Q: Clone>(
                     if coeff & 1 != 0 {
                         acc = Some(match acc {
                             None => p,
-                            Some(a) => IrExpr::Binary {
+                            Some(a) => ir_expr(IrExprKind::Binary {
                                 op: if is_bit { SpecBinOp::BitXor } else { SpecBinOp::Add },
                                 left: Box::new(a),
                                 right: Box::new(p),
-                            },
+                            }),
                         });
                     }
                 }
@@ -494,9 +499,9 @@ fn lower_ir_stmt<Q: Clone>(
             // If acc is still None (all zero), emit false/0.
             acc.unwrap_or_else(|| {
                 if is_bit {
-                    IrExpr::Lit(IrLit::Bool(false))
+                    ir_expr(IrExprKind::Lit(IrLit::Bool(false)))
                 } else {
-                    IrExpr::Lit(IrLit::Int(0))
+                    ir_expr(IrExprKind::Lit(IrLit::Int(0)))
                 }
             })
         }
@@ -513,7 +518,7 @@ fn lower_ir_stmt<Q: Clone>(
         }
         Stmt::StorageWrite { .. } => {
             // StorageWrite produces a dummy zero bit (matches BIrStmt::StorageWrite semantics).
-            IrExpr::Lit(IrLit::Bool(false))
+            ir_expr(IrExprKind::Lit(IrLit::Bool(false)))
         }
 
         // ---- Unsupported ----------------------------------------------------
@@ -682,6 +687,7 @@ mod tests {
         let circuit = IRBlocks::new(alloc::vec![block]);
         let module = weave_noop_ir_with_handler(&circuit, &types, "and_ir_prov", None, &KeepProvenance).into_inner();
         assert_eq!(module.functions.len(), 1);
-        assert_eq!(module.functions[0].body.stmt_provs, alloc::vec![9u32]);
+        let provs: Vec<u32> = module.functions[0].body.stmts.iter().map(|s| s.prov).collect();
+        assert_eq!(provs, alloc::vec![9u32]);
     }
 }

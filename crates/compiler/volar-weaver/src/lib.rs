@@ -41,9 +41,23 @@ use alloc::{
 };
 
 use volar_compiler::ir::{
-    IrClosureParam, IrExpr, IrPattern, IrType, MethodKind, PrimitiveType,
+    IrClosureParam, IrExpr, IrExprKind, IrPattern, IrType, MethodKind, PrimitiveType,
     SpecUnaryOp, StdMethod,
 };
+
+/// Construct a fresh `IrExpr` with default provenance and no side — for
+/// synthesized scaffolding nodes with no single source node to inherit
+/// metadata from (e.g. a freshly-named variable reference).
+pub(crate) fn ir_expr<P: Clone + Default>(kind: IrExprKind<P>) -> IrExpr<P> {
+    IrExpr::new(kind, P::default(), None)
+}
+
+/// Construct an `IrExpr` that derives directly from `src` (e.g. wrapping it in
+/// `&src` or `src.clone()`) — inherits `src`'s provenance/side rather than
+/// inventing new metadata.
+pub(crate) fn ir_expr_from<P: Clone>(kind: IrExprKind<P>, src: &IrExpr<P>) -> IrExpr<P> {
+    IrExpr::new(kind, src.prov.clone(), src.side)
+}
 use volar_ir::{
     boolar::{BIrBlock, BIrStmt, BIrTerminator},
     ir::{IRBlockTargetId, IRVarId},
@@ -206,7 +220,7 @@ pub(crate) fn expand_ors<P: Clone>(block: &BIrBlock<P>) -> Vec<(IRVarId, BIrStmt
 ///
 /// For single-output circuits returns `(Var(wire_N), T)`.
 /// For multi-output returns `(Tuple([...]), Tuple([T; n]))`.
-pub(crate) fn build_return<P: Clone, Q: Clone>(
+pub(crate) fn build_return<P: Clone, Q: Clone + Default>(
     block: &BIrBlock<P>,
     var_names: &BTreeMap<u32, String>,
     elem_ty: IrType,
@@ -227,7 +241,7 @@ pub(crate) fn build_return<P: Clone, Q: Clone>(
                     .map(|id| var(var_names[&id.0].as_str()))
                     .collect();
                 let tys: Vec<IrType> = args.iter().map(|_| elem_ty.clone()).collect();
-                (IrExpr::Tuple(exprs), IrType::Tuple(tys))
+                (ir_expr(IrExprKind::Tuple(exprs)), IrType::Tuple(tys))
             }
         }
         _ => panic!("build_return: circuit must have a Jmp(Return) terminator"),
@@ -239,26 +253,38 @@ pub(crate) fn build_return<P: Clone, Q: Clone>(
 // ============================================================================
 
 /// Variable reference by name.
-pub(crate) fn var<P: Clone>(name: &str) -> IrExpr<P> {
-    IrExpr::Var(name.into())
+pub(crate) fn var<P: Clone + Default>(name: &str) -> IrExpr<P> {
+    ir_expr(IrExprKind::Var(name.into()))
 }
 
 /// `expr.clone()`
 pub(crate) fn clone_expr<P: Clone>(expr: IrExpr<P>) -> IrExpr<P> {
-    IrExpr::MethodCall {
-        receiver: Box::new(expr),
-        method: MethodKind::Known(StdMethod::Clone),
-        type_args: vec![],
-        args: vec![],
-    }
+    let prov = expr.prov.clone();
+    let side = expr.side;
+    IrExpr::new(
+        IrExprKind::MethodCall {
+            receiver: Box::new(expr),
+            method: MethodKind::Known(StdMethod::Clone),
+            type_args: vec![],
+            args: vec![],
+        },
+        prov,
+        side,
+    )
 }
 
 /// `&expr`
 pub(crate) fn ref_expr<P: Clone>(expr: IrExpr<P>) -> IrExpr<P> {
-    IrExpr::Unary {
-        op: SpecUnaryOp::Ref,
-        expr: Box::new(expr),
-    }
+    let prov = expr.prov.clone();
+    let side = expr.side;
+    IrExpr::new(
+        IrExprKind::Unary {
+            op: SpecUnaryOp::Ref,
+            expr: Box::new(expr),
+        },
+        prov,
+        side,
+    )
 }
 
 /// `&T` reference type.
@@ -270,49 +296,63 @@ pub(crate) fn ref_to(ty: IrType) -> IrType {
 }
 
 /// `Array::<u8, N>::default()`
-pub(crate) fn array_default<P: Clone>() -> IrExpr<P> {
-    IrExpr::Call {
-        func: Box::new(IrExpr::Path {
+pub(crate) fn array_default<P: Clone + Default>() -> IrExpr<P> {
+    ir_expr(IrExprKind::Call {
+        func: Box::new(ir_expr(IrExprKind::Path {
             segments: vec!["Array".into(), "default".into()],
             type_args: vec![
                 IrType::Primitive(PrimitiveType::U8),
                 IrType::TypeParam("N".into()),
             ],
-        }),
+        })),
         args: vec![],
-    }
+    })
 }
 
 /// `Array::<u8, N>::from_fn(|{idx}| {body})`
 pub(crate) fn array_from_fn<P: Clone>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
-    IrExpr::Call {
-        func: Box::new(IrExpr::Path {
-            segments: vec!["Array".into(), "from_fn".into()],
-            type_args: vec![
-                IrType::Primitive(PrimitiveType::U8),
-                IrType::TypeParam("N".into()),
-            ],
-        }),
-        args: vec![IrExpr::Closure {
-            params: vec![IrClosureParam {
-                pattern: IrPattern::ident(idx),
-                ty: None,
-            }],
-            ret_type: None,
-            body: Box::new(body),
-        }],
-    }
+    let prov = body.prov.clone();
+    let side = body.side;
+    IrExpr::new(
+        IrExprKind::Call {
+            func: Box::new(IrExpr::new(
+                IrExprKind::Path {
+                    segments: vec!["Array".into(), "from_fn".into()],
+                    type_args: vec![
+                        IrType::Primitive(PrimitiveType::U8),
+                        IrType::TypeParam("N".into()),
+                    ],
+                },
+                prov.clone(),
+                side,
+            )),
+            args: vec![IrExpr::new(
+                IrExprKind::Closure {
+                    params: vec![IrClosureParam {
+                        pattern: IrPattern::ident(idx),
+                        ty: None,
+                    }],
+                    ret_type: None,
+                    body: Box::new(body),
+                },
+                prov.clone(),
+                side,
+            )],
+        },
+        prov,
+        side,
+    )
 }
 
 /// `wire.base[idx]`
-pub(crate) fn base_index<P: Clone>(wire_name: &str, idx_name: &str) -> IrExpr<P> {
-    IrExpr::Index {
-        base: Box::new(IrExpr::Field {
+pub(crate) fn base_index<P: Clone + Default>(wire_name: &str, idx_name: &str) -> IrExpr<P> {
+    ir_expr(IrExprKind::Index {
+        base: Box::new(ir_expr(IrExprKind::Field {
             base: Box::new(var(wire_name)),
             field: "base".into(),
-        }),
+        })),
         index: Box::new(var(idx_name)),
-    }
+    })
 }
 
 // ============================================================================
