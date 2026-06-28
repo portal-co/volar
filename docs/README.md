@@ -66,6 +66,7 @@ producing test scaffolding, hand-off documents, and analysis. See
 | [overview.md](overview.md) | Workspace layout, crate dependency graph, compilation pipeline |
 | [insecure.md](insecure.md) | The `.insecure` extension and current insecure files |
 | [provenance.md](provenance.md) | Per-statement origin tracking through the IR pipeline |
+| [side.md](side.md) | Per-value actor/role tracking (ZK witness/statement, FHE plaintext/ciphertext) — provenance's sibling |
 
 ### Specifications and protocols
 
@@ -130,6 +131,7 @@ trip-wires that show up most often in code review.
 | [agent-context/ir-types-storage.md](agent-context/ir-types-storage.md) | IR, lowering, evaluators, store-forward, fuzzer generators |
 | [agent-context/weaving.md](agent-context/weaving.md) | FHE/garbled-circuit weaving, compiler printers, action system, CFG emission |
 | [agent-context/discipline.md](agent-context/discipline.md) | The ZK↔non-ZK proving discipline boundary: weavers, `volar-fold`, build pipeline — binds agents against mixing prover/verifier/fold primitives |
+| [agent-context/side.md](agent-context/side.md) | Per-value side tracking: adding `SideId` to an IR container, `SideHandler` impls, replacing `ZkWitnessConfig`/`*ActionConfig`/`PublicSet`-shaped configs |
 | [agent-context/oram.md](agent-context/oram.md) | ORAM crates, channel protocol, ORAM weaver integration |
 
 ### Operating procedures
