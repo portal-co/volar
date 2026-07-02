@@ -16,3 +16,4 @@ volar-discipline = { workspace = true }
 [dev-dependencies]
 sha3.workspace = true
 digest = { version = "0.11.2", default-features = false }
+proptest = "1"

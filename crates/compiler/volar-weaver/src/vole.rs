@@ -432,12 +432,27 @@ impl VoleSideAssignments {
 /// [`weave_vole_verifier_inner`] — implemented by the legacy [`ZkWitnessConfig`]
 /// and by the side-based [`VoleSideAssignments`] + [`SideHandler`] pairing, so
 /// the weaving logic itself doesn't need to know which is in use.
-trait VoleWitnessSource {
+///
+/// Generic over the provenance type `Prov` (defaulted to `()`) purely so
+/// [`trace_sink`](Self::trace_sink) can return a
+/// [`VerifierTraceSink<Prov>`] tied to the *same* `Prov` the calling weave
+/// function uses (`H::Output`) — `ZkWitnessConfig`/`VoleSideConfig` don't
+/// otherwise care about `Prov` at all (their impls are blanket over it), so
+/// this adds no burden on existing callers; only
+/// [`weave_vole_verifier_inner`]'s bound spells out `VoleWitnessSource<H::Output>`
+/// explicitly.
+trait VoleWitnessSource<Prov: Clone + Default = ()> {
     fn is_public_input(&self, idx: u32) -> bool;
     fn is_public_action_output(&self, action_name: &str, bit: usize) -> bool;
+
+    /// Weave-time trace-assembly plugin (see [`VerifierTraceSink`]). Default
+    /// `None` — byte-identical woven output to today.
+    fn trace_sink(&self) -> Option<&dyn VerifierTraceSink<Prov>> {
+        None
+    }
 }
 
-impl VoleWitnessSource for ZkWitnessConfig {
+impl<Prov: Clone + Default> VoleWitnessSource<Prov> for ZkWitnessConfig {
     fn is_public_input(&self, idx: u32) -> bool {
         self.public_inputs.is_public(CirVar(idx))
     }
@@ -456,7 +471,7 @@ struct VoleSideConfig<'a, H> {
     handler: &'a H,
 }
 
-impl<H: volar_side::SideHandler<Protection = VoleProtection>> VoleWitnessSource for VoleSideConfig<'_, H> {
+impl<Prov: Clone + Default, H: volar_side::SideHandler<Protection = VoleProtection>> VoleWitnessSource<Prov> for VoleSideConfig<'_, H> {
     fn is_public_input(&self, idx: u32) -> bool {
         let side = self.assignments.input_sides.get(&idx).copied();
         self.handler.protection(side) == VoleProtection::Statement
@@ -464,6 +479,170 @@ impl<H: volar_side::SideHandler<Protection = VoleProtection>> VoleWitnessSource 
     fn is_public_action_output(&self, action_name: &str, bit: usize) -> bool {
         let side = self.assignments.action_sides.get(action_name).and_then(|m| m.get(&bit)).copied();
         self.handler.protection(side) == VoleProtection::Statement
+    }
+}
+
+// ============================================================================
+// Weave-time dynamic trace assembly (prove-the-verifier: see `volar-fold`'s
+// `verifier` module and `docs/prove-the-verifier.md`)
+// ============================================================================
+
+/// A weave-time plugin that threads a typed fold-accumulator state through
+/// the woven VOLE verifier, updated once per AND gate alongside the existing
+/// `all_ok` check — real typed IR (`AGENTS.md` rule 1: never raw strings as
+/// expression data), not a bare externally-named hook and not implicit
+/// global mutation. This is what makes trace/fold assembly *dynamic*: the
+/// accumulator is built in step with each gate check, inside the verifier's
+/// own loop, so its size never depends on how many gates ran — including a
+/// hidden/variable-length loop (`hybrid_net.rs`/`storage_loop.rs`), which is
+/// the whole point of folding the verifier at all.
+///
+/// Intentionally generic: prove-the-verifier folding (see [`NovaFoldSink`])
+/// is one instantiation of this extension point, not the only possible use.
+///
+/// # The GF(2^k) → F_ℓ embedding is an open seam, not solved here
+///
+/// A gate's `K_a, K_b, K_c, Δ, V̂` live in the VOLE field `T` (e.g. GF(2^8),
+/// `N` parallel lanes); Nova's fold math (`volar_spec::fold`) needs them
+/// lifted into the folding scalar field `F_ℓ`
+/// (`volar_fold::scalar::Scalar`). There is no sound field homomorphism
+/// between GF(2^k) and F_ℓ in general — `docs/prove-the-verifier.md`'s
+/// "Honest scope" and `docs/vcb-ivc-folding.md` §4 both flag the analogous
+/// boundary as a real, open cryptographic question ("needs cryptographic
+/// review"), not an engineering detail this weaver decides. This trait does
+/// **not** choose an embedding: [`NovaFoldSink`] emits calls to
+/// *externally-resolved* names (`FoldScalar`, `FoldAccumulator`,
+/// `fold_accumulator_fresh`, `fold_and_gate`) that are bare, unresolved
+/// identifiers in the woven IR — deliberately not declared as generic
+/// parameters of the woven function, so ordinary Rust name resolution
+/// requires *whoever compiles the woven output* to supply concrete
+/// definitions (a `type FoldScalar = …;` alias, a `fold_and_gate` function,
+/// etc.). That is the pluggable seam: this crate (compile-time) only
+/// guarantees the *call sites* are correctly threaded; the harness
+/// (run-time, see `crates/fold/volar-verifier-runtime`) supplies the
+/// meaning. The harness's default implementation reuses the same lane-0,
+/// reinterpret-as-integer lift `volar_fold::verifier::VerifierStep`/
+/// `GateObservation` already use elsewhere in this codebase (not a new
+/// cryptographic decision, just this mechanism's first concrete plug) —
+/// tracked as still-open, see `docs/agent-context/gf2k-to-fell-embedding.md`.
+///
+/// Generic over the provenance type `P` **at the trait level**, not per
+/// method — `and_gate_step` needs to hand back `IrExpr<P>`, and a per-method
+/// generic would make `dyn VerifierTraceSink<P>` uncompilable (trait objects
+/// can't have generic methods). `weave_vole_verifier_inner`'s own `P`/
+/// `H::Output` is known at every call site, so `dyn VerifierTraceSink<H::Output>`
+/// is what [`VoleWitnessSource::trace_sink`] actually returns.
+pub trait VerifierTraceSink<P: Clone + Default> {
+    /// Bare, externally-resolved type name for the threaded fold-accumulator
+    /// state (e.g. `"FoldAccumulator"`).
+    fn state_type_name(&self) -> &str;
+
+    /// Bare, externally-resolved function name producing the initial
+    /// ("fresh") accumulator state: `fn() -> {state_type_name}`.
+    fn init_state_fn_name(&self) -> &str;
+
+    /// Emit statements folding this AND gate's *actual* IR variables
+    /// (`k_a`, `k_b`, `k_c`, `delta`, `hat` — real variable names bound in
+    /// the woven function, not string placeholders) into `state_var`,
+    /// alongside a newly-introduced per-gate challenge parameter
+    /// (`r_param_name`); return the new state expression to rebind
+    /// `state_var` to. `gate_idx` is this AND gate's 0-based index (matches
+    /// the existing `q_and_{gate_idx}`/`hat_{gate_idx}` param numbering).
+    #[allow(clippy::too_many_arguments)]
+    fn and_gate_step(
+        &self,
+        gate_idx: usize,
+        k_a: &str,
+        k_b: &str,
+        k_c: &str,
+        delta: &str,
+        hat: &str,
+        r_param_name: &str,
+        state_var: &str,
+        prov: P,
+    ) -> IrExpr<P>;
+
+    /// Bare, externally-resolved type name for the per-gate fold challenge
+    /// (e.g. `"FoldScalar"` — resolved to `volar_fold::scalar::Scalar`).
+    fn fold_scalar_type_name(&self) -> &str;
+}
+
+/// The prove-the-verifier fold sink: threads a Nova relaxed-witness
+/// accumulator (`w`, `e`, `u` — no commitments; those are computed once,
+/// outside the loop, from the small fixed-size final witness, since Nova
+/// folding keeps the witness the *same* fixed shape across folds — that is
+/// the succinctness property) through the woven verifier, updated per AND
+/// gate via `fold_and_gate` (externally resolved — see the trait doc's
+/// GF(2^k)→F_ℓ note). Named `FoldAccumulator`/`FoldScalar`/`fold_and_gate`/
+/// `fold_accumulator_fresh` — the harness (`volar-verifier-runtime`) must
+/// supply matching definitions.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NovaFoldSink;
+
+impl<P: Clone + Default> VerifierTraceSink<P> for NovaFoldSink {
+    fn state_type_name(&self) -> &str {
+        "FoldAccumulator"
+    }
+
+    fn init_state_fn_name(&self) -> &str {
+        "fold_accumulator_fresh"
+    }
+
+    fn fold_scalar_type_name(&self) -> &str {
+        "FoldScalar"
+    }
+
+    fn and_gate_step(
+        &self,
+        _gate_idx: usize,
+        k_a: &str,
+        k_b: &str,
+        k_c: &str,
+        delta: &str,
+        hat: &str,
+        r_param_name: &str,
+        state_var: &str,
+        prov: P,
+    ) -> IrExpr<P> {
+        ir_expr_p(IrExprKind::Call {
+            func: Box::new(ir_expr_p(IrExprKind::Path {
+                segments: vec!["fold_and_gate".into()],
+                type_args: vec![],
+            }, prov.clone())),
+            args: vec![
+                clone_expr(var(state_var)),
+                clone_expr(var(k_a)),
+                clone_expr(var(k_b)),
+                clone_expr(var(k_c)),
+                clone_expr(var(delta)),
+                clone_expr(var(hat)),
+                clone_expr(var(r_param_name)),
+            ],
+        }, prov)
+    }
+}
+
+/// Wraps an existing [`VoleWitnessSource`], overriding [`trace_sink`] to
+/// `Some` — the mechanism [`weave_vole_verifier_with_trace`] uses so no
+/// changes are needed to `ZkWitnessConfig`/`VoleSideConfig` themselves. Fixed
+/// (not blanket) over `Prov`, matching the one concrete provenance type its
+/// stored `sink` was built for.
+///
+/// [`trace_sink`]: VoleWitnessSource::trace_sink
+struct TracingConfig<'a, C, Prov: Clone + Default> {
+    inner: &'a C,
+    sink: &'a dyn VerifierTraceSink<Prov>,
+}
+
+impl<'a, C: VoleWitnessSource<Prov>, Prov: Clone + Default> VoleWitnessSource<Prov> for TracingConfig<'a, C, Prov> {
+    fn is_public_input(&self, idx: u32) -> bool {
+        self.inner.is_public_input(idx)
+    }
+    fn is_public_action_output(&self, action_name: &str, bit: usize) -> bool {
+        self.inner.is_public_action_output(action_name, bit)
+    }
+    fn trace_sink(&self) -> Option<&dyn VerifierTraceSink<Prov>> {
+        Some(self.sink)
     }
 }
 
@@ -1185,6 +1364,25 @@ pub fn weave_vole_verifier_with_config<P: Clone>(
     Tagged::seal(module)
 }
 
+/// Like [`weave_vole_verifier_with_config`], but also threads a
+/// [`VerifierTraceSink`] — the woven verifier gains a fold-accumulator state,
+/// updated per AND gate, returned alongside `(output_wire, all_ok)`. See
+/// [`VerifierTraceSink`]'s doc for what "trace sink" means here and the
+/// GF(2^k) → F_ℓ seam it deliberately leaves pluggable.
+pub fn weave_vole_verifier_with_trace<P: Clone>(
+    circuit: &BIrBlocks<P>,
+    name: &str,
+    config: &ZkWitnessConfig,
+    sink: &dyn VerifierTraceSink<()>,
+    linkage: Option<&LinkageSystem>,
+) -> Tagged<Transparent, IrModule<IrFunction>> {
+    // NoProvenance::Output is always () — the sink is fixed over that.
+    let cfg: TracingConfig<'_, ZkWitnessConfig, ()> = TracingConfig { inner: config, sink };
+    let mut module = weave_vole_verifier_inner(circuit, name, &cfg, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(&mut module); }
+    Tagged::seal(module)
+}
+
 /// Weave with both a [`ZkWitnessConfig`] and a provenance handler.
 pub fn weave_vole_verifier_with_config_and_handler<P, H>(
     circuit: &BIrBlocks<P>,
@@ -1232,7 +1430,7 @@ where
     Tagged::seal(weave_vole_verifier_inner(circuit, name, &config, handler))
 }
 
-fn weave_vole_verifier_inner<P, H, C: VoleWitnessSource>(
+fn weave_vole_verifier_inner<P, H, C: VoleWitnessSource<H::Output>>(
     circuit: &BIrBlocks<P>,
     name: &str,
     config: &C,
@@ -1313,6 +1511,14 @@ where
             name: format!("hat_{}", k),
             ty: array_t_n(),
         });
+        // Per-gate fold challenge (trace-sink only) — threaded exactly like
+        // q_and_k/hat_k above, one per K=1 AND gate.
+        if let Some(sink) = config.trace_sink() {
+            params.push(IrParam {
+                name: format!("r_and_{}", k),
+                ty: IrType::TypeParam(sink.fold_scalar_type_name().into()),
+            });
+        }
     }
 
     // K=2 S-box Vopes — one per sbox gate (verifier-side check).
@@ -1362,11 +1568,16 @@ where
         });
     }
 
-    // Return type: (Q<N, T>, bool)
-    let ret_type = IrType::Tuple(vec![
+    // Return type: (Q<N, T>, bool) — or (Q<N, T>, bool, FoldAccumulator) when
+    // a trace sink is configured.
+    let mut ret_elems = vec![
         q_type(),
         IrType::Primitive(PrimitiveType::Bool),
-    ]);
+    ];
+    if let Some(sink) = config.trace_sink() {
+        ret_elems.push(IrType::TypeParam(sink.state_type_name().into()));
+    }
+    let ret_type = IrType::Tuple(ret_elems);
 
     let (generics, where_clause) = verifier_generics_and_where();
 
@@ -1383,6 +1594,26 @@ where
         ty: None,
         init: Some(ir_expr_p(IrExprKind::Lit(IrLit::Bool(true)), ctrl_prov.clone())),
     }, ctrl_prov.clone()));
+
+    // Threaded fold-accumulator state (trace sink only) — parallel to
+    // all_ok above: bound once at entry, reassigned per AND gate, returned.
+    if let Some(sink) = config.trace_sink() {
+        stmts.push(ir_stmt_p(IrStmtKind::Let {
+            pattern: IrPattern::Ident {
+                mutable: true,
+                name: "fold_state".into(),
+                subpat: None,
+            },
+            ty: None,
+            init: Some(ir_expr_p(IrExprKind::Call {
+                func: Box::new(ir_expr_p(IrExprKind::Path {
+                    segments: vec![sink.init_state_fn_name().into()],
+                    type_args: vec![],
+                }, ctrl_prov.clone())),
+                args: vec![],
+            }, ctrl_prov.clone())),
+        }, ctrl_prov.clone()));
+    }
 
     // Synthesise Q wires for public inputs from the bool params.
     for i in 0..num_params {
@@ -1469,14 +1700,26 @@ where
                     );
                     sbox_counter += 1;
                 } else {
-                    let q_and_name = format!("q_and_{}", and_counter);
-                    let hat_name = format!("hat_{}", and_counter);
+                    let gate_idx = and_counter;
+                    let q_and_name = format!("q_and_{}", gate_idx);
+                    let hat_name = format!("hat_{}", gate_idx);
                     and_counter += 1;
                     emit_verifier_and_gate(
                         &name_a, &name_b, &let_name, &ok_name,
                         &q_and_name, &hat_name,
                         &mut stmts, q.clone(),
                     );
+                    if let Some(sink) = config.trace_sink() {
+                        let r_param_name = format!("r_and_{}", gate_idx);
+                        let new_state = sink.and_gate_step(
+                            gate_idx, &name_a, &name_b, &let_name, "delta",
+                            &hat_name, &r_param_name, "fold_state", q.clone(),
+                        );
+                        stmts.push(ir_stmt_p(IrStmtKind::Semi(ir_expr_p(IrExprKind::Assign {
+                            left: Box::new(var("fold_state")),
+                            right: Box::new(new_state),
+                        }, q.clone())), q.clone()));
+                    }
                 }
             }
 
@@ -1540,9 +1783,14 @@ where
         var_names.insert(result_id.0, let_name);
     }
 
-    // Return (output_wire, all_ok).
+    // Return (output_wire, all_ok) — or (output_wire, all_ok, fold_state)
+    // when a trace sink is configured.
     let (output_expr, _) = build_return(block, &var_names, q_type());
-    let ret_expr = ir_expr(IrExprKind::Tuple(vec![output_expr, var("all_ok")]));
+    let mut ret_tuple = vec![output_expr, var("all_ok")];
+    if config.trace_sink().is_some() {
+        ret_tuple.push(var("fold_state"));
+    }
+    let ret_expr = ir_expr(IrExprKind::Tuple(ret_tuple));
 
     let func = IrFunction {
         name: format!("vole_verify_{}", name),
@@ -3973,6 +4221,72 @@ mod tests {
         let module = weave_vole_verifier(&circuit, "test_circuit", None);
         let code = print_weaved_vole_module(module.inner());
         run_compile_check(&code, "vole_verifier");
+    }
+
+    // ---- VerifierTraceSink: default None is a no-op, NovaFoldSink threads
+    // real IR ------------------------------------------------------------
+
+    #[test]
+    fn trace_sink_none_by_default_leaves_verifier_unchanged() {
+        // weave_vole_verifier_with_config never configures a trace sink —
+        // its output must not reference any of the trace-sink machinery.
+        let circuit = build_xor_and_circuit();
+        let config = ZkWitnessConfig::default();
+        let module = weave_vole_verifier_with_config(&circuit, "test_circuit", &config, None);
+        let code = print_weaved_vole_module(module.inner());
+        for needle in ["fold_state", "FoldAccumulator", "fold_and_gate", "fold_accumulator_fresh", "FoldScalar", "r_and_"] {
+            assert!(!code.contains(needle), "trace_sink()=None must not emit {needle:?}, got:\n{code}");
+        }
+        run_compile_check(&code, "vole_verifier_no_sink");
+    }
+
+    #[test]
+    fn trace_sink_none_matches_plain_weave_vole_verifier() {
+        // weave_vole_verifier_with_config(..., trace_sink=None by default)
+        // must be byte-identical to the plain weave_vole_verifier entry
+        // point — the new machinery adds nothing when no sink is configured.
+        let circuit = build_xor_and_circuit();
+        let plain = weave_vole_verifier(&circuit, "test_circuit", None);
+        let via_config =
+            weave_vole_verifier_with_config(&circuit, "test_circuit", &ZkWitnessConfig::default(), None);
+        assert_eq!(
+            print_weaved_vole_module(plain.inner()),
+            print_weaved_vole_module(via_config.inner()),
+        );
+    }
+
+    #[test]
+    fn nova_fold_sink_threads_typed_state_and_real_call_sites() {
+        // build_xor_and_circuit has exactly one AND gate (gate index 0).
+        let circuit = build_xor_and_circuit();
+        let config = ZkWitnessConfig::default();
+        let module =
+            weave_vole_verifier_with_trace(&circuit, "test_circuit", &config, &NovaFoldSink, None);
+        let code = print_weaved_vole_module(module.inner());
+
+        // Threaded state: bound at entry via the externally-resolved init
+        // function, reassigned via the per-gate fold call, returned.
+        assert!(code.contains("fold_accumulator_fresh"), "missing init call:\n{code}");
+        assert!(code.contains("fold_state"), "missing threaded state var:\n{code}");
+        assert!(code.contains("fold_and_gate"), "missing per-gate fold call:\n{code}");
+        assert!(code.contains("FoldAccumulator"), "missing state type:\n{code}");
+
+        // Exactly one per-gate fold challenge param (gate index 0), matching
+        // the circuit's single AND gate — not a second one.
+        assert!(code.contains("r_and_0"), "missing r_and_0 param:\n{code}");
+        assert!(!code.contains("r_and_1"), "unexpected r_and_1 for a single-AND-gate circuit:\n{code}");
+        assert!(code.contains("FoldScalar"), "missing fold-challenge type:\n{code}");
+
+        // Real IR, not a raw string: and_gate_step referenced the gate's
+        // *actual* wire/param names (q_and_0/hat_0-derived wire, delta) —
+        // not placeholders — so they still appear verbatim in the call.
+        assert!(code.contains("hat_0"), "and_gate_step must reference the real hat_0, not a placeholder:\n{code}");
+        assert!(code.contains("delta"), "and_gate_step must reference the real delta param:\n{code}");
+
+        // NOT compile-checked here: FoldAccumulator/fold_and_gate/etc. are
+        // deliberately unresolved (see VerifierTraceSink's doc) — resolving
+        // them is the runtime harness's job (crates/fold/volar-verifier-runtime,
+        // still to be built), not this weave-time test's.
     }
 
     // ---- Side 2: weave_*_with_side parity with the legacy ZkWitnessConfig path ---

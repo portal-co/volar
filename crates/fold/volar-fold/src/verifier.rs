@@ -37,6 +37,25 @@
 //! woven verifier `IrModule` into a [`VerifierTrace`] preserves that tag (it lives
 //! in the build pipeline, which depends on `volar-weaver`; this `no_std` crypto
 //! crate stays dependency-light and consumes the already-tagged trace).
+//!
+//! # Relationship to `volar_spec::fold` (consolidation note)
+//!
+//! `volar_spec::fold` reimplements the same Nova fold formulas
+//! (`cross_term`/`fold_witness`/`fold_u`) but specialized to fixed-size
+//! `[S; AND_VARS]`/`[S; AND_CONS]` arrays for the `and_check` gate — the
+//! shape a weaver spec-link needs, not the dynamically-sized, arbitrary-R1CS
+//! shape [`crate::nifs`]/[`crate::ivc`] provide as the general oracle (used
+//! for Keccak's ~155k-constraint R1CS, network gaps, etc., not just
+//! `and_check`). Collapsing the two onto one implementation isn't possible
+//! without losing one of those two shapes, so [`crate::ivc::prove_gap`]
+//! staying generic (and `spec_fold_parity.rs` staying the deliberate
+//! cross-check between the two) is the right call, not accidental
+//! duplication — same conclusion as [`crate::ivc::prove_gap`]'s `FoldProof`
+//! doc note, for the analogous reason. What *does* consolidate cleanly:
+//! [`VerifierStep::to_fold_step`] builds its witness via
+//! [`volar_spec::fold::gate_witness`] rather than a second, independent
+//! `[k_a,k_b,k_c,delta,v_hat,p1,p2]` construction — there's no reason for two
+//! copies of *that* narrower piece of knowledge.
 
 use alloc::vec::Vec;
 
@@ -121,11 +140,16 @@ pub struct VerifierStep {
 
 impl VerifierStep {
     /// Assemble this step's satisfying R1CS assignment for [`and_check_r1cs`].
+    ///
+    /// Built via [`volar_spec::fold::gate_witness`] — the same witness-layout
+    /// function the weaver spec-links into the woven verifier (see
+    /// `crate::verifier`'s module doc) — rather than a second, hand-rolled
+    /// `[k_a,k_b,k_c,delta,v_hat,p1,p2]` construction, so there's exactly one
+    /// place that knows the `and_check` witness layout.
     fn to_fold_step(&self) -> Step {
-        let p1 = self.k_a.mul(&self.k_b);
-        let p2 = self.k_c.mul(&self.delta);
+        let w = volar_spec::fold::gate_witness(self.k_a, self.k_b, self.k_c, self.delta, self.v_hat);
         Step {
-            w: alloc::vec![self.k_a, self.k_b, self.k_c, self.delta, self.v_hat, p1, p2],
+            w: w.to_vec(),
             r_w: self.r_w,
             r: self.r,
             r_t: self.r_t,
