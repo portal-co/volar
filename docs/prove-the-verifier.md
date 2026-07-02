@@ -49,7 +49,9 @@ typed future seam [`compress_with_snark`](#5-api).
 
 ## 2. The per-step relation as R1CS
 
-Each AND-gate check is one folding step. [`and_check_r1cs`](../crates/fold/volar-fold/src/verifier.rs)
+Each AND-gate check is one folding step. Two encodings exist:
+
+**Legacy batch relation** — [`and_check_r1cs`](../crates/fold/volar-fold/src/verifier.rs)
 encodes `K_a · K_b + V̂ = K_c · Δ` over the folding scalar field as three
 constraints with witness layout `W = [K_a, K_b, K_c, Δ, V̂, P₁, P₂]`
 (`u = z[7]` is the relaxation/constant column):
@@ -60,9 +62,25 @@ constraints with witness layout `W = [K_a, K_b, K_c, Δ, V̂, P₁, P₂]`
 | 2 | `K_c · Δ   = P₂` | right product |
 | 3 | `(P₁ + V̂ − P₂) · u = 0` | the check (`u = 1` in a fresh instance) |
 
-A satisfying assignment exists **iff** the gate check holds, so a satisfying
-opening of the folded instance implies every folded gate held (Nova's folding
-theorem; see [`verify.rs`](../crates/fold/volar-fold/src/verify.rs)).
+This models the check **over `F_ℓ` directly** — sound only if the gate values
+are already `F_ℓ` scalars (as in the hand-constructed `GateObservation` batch
+path, §6), *not* for real `GF(2^k)` MACs, whose multiplication is polynomial
+arithmetic mod an irreducible.
+
+**Expanded gf2k relation** — what the in-loop `fold_and_gate` path (§7)
+actually folds: [`and_check_gf2k`](../crates/fold/volar-fold/src/gf2k.rs)
+expands every `GF(2^k)` value into its GF(2) coefficient bits and emits
+constraints that hold **iff** the Quicksilver check holds *in `GF(2^k)`*
+(spaced-packing carry-less multiplication + binary decomposition + per-column
+evenness; full derivation and soundness argument in
+[`fold-lift-expansion.md`](fold-lift-expansion.md)). For `GF(2^8)` this is
+**174 constraints / 165 witness variables** per gate — larger than the 3/7
+legacy rows, but still constant-size, so folding succinctness is unchanged.
+
+In either encoding a satisfying assignment exists **iff** the (respective)
+gate check holds, so a satisfying opening of the folded instance implies every
+folded gate held (Nova's folding theorem; see
+[`verify.rs`](../crates/fold/volar-fold/src/verify.rs)).
 
 ---
 
@@ -178,20 +196,26 @@ regardless of how many gates run.
 `delta`, `hat`) — `AGENTS.md` rule 1 (never raw strings as expression data).
 
 **Genuinely compiled and executed, not logged:** the fold math
-(`volar_spec::fold::gate_witness`/`cross_term`/`fold_witness`/`fold_u`) runs as
-part of the same compiled binary the verifier itself runs in — via
-`volar-verifier-runtime`'s `fold_and_gate`, executed by real `rustc`
-(§6) — not printed to a log for a separate process to reinterpret later.
+(`volar_fold::gf2k::and_check_gf2k` + `volar_fold::nifs::cross_term_z` and the
+Nova vector fold) runs as part of the same compiled binary the verifier itself
+runs in — via `volar-verifier-runtime`'s `fold_and_gate`, executed by real
+`rustc` (§6) — not printed to a log for a separate process to reinterpret
+later.
 
-**The lift (`FoldLift`) is the one deliberately open seam.** `FoldScalar`,
-`FoldAccumulator`, `fold_accumulator_fresh`, and `fold_and_gate` are bare,
-*externally-resolved* identifiers in the woven IR — not declared as generic
-parameters of the woven function, so ordinary Rust name resolution requires
-whoever compiles the output (`volar-verifier-runtime`, today) to supply concrete
-definitions. See [`agent-context/gf2k-to-fell-embedding.md`](agent-context/gf2k-to-fell-embedding.md)
-for what that means and why it's still open — `tests/e2e_fold_verifier.rs` in
-`volar-verifier-fold` runs the whole thing for real and pins the current,
-known-unsound state of the default lift as a failing assertion, on purpose.
+**The lift (`FoldLift`) is now a bit expansion, not a one-scalar cast.**
+`FoldScalar`, `FoldAccumulator`, `fold_accumulator_fresh`, and `fold_and_gate`
+are bare, *externally-resolved* identifiers in the woven IR — not declared as
+generic parameters of the woven function, so ordinary Rust name resolution
+requires whoever compiles the output (`volar-verifier-runtime`, today) to
+supply concrete definitions. `FoldLift` no longer maps each `GF(2^k)` element
+to a single `F_ℓ` scalar (the old, demonstrably unsound cast — see
+[`agent-context/gf2k-to-fell-embedding.md`](agent-context/gf2k-to-fell-embedding.md));
+it exposes the element's GF(2) coefficient bits (`lift_bits`) plus the field's
+degree/polynomial constants, and `fold_and_gate` expands those bits into the
+gf2k relation of §2. `tests/e2e_fold_verifier.rs` in `volar-verifier-fold`
+runs the whole thing for real and asserts — positively — that an honest
+GF(2^8) VOLE proof's folded witness satisfies `and_check_gf2k`'s R1CS (this
+assert was pinned known-failing while the one-scalar lift was in place).
 
 ---
 
@@ -201,16 +225,19 @@ known-unsound state of the default lift as a failing assertion, on purpose.
   verifier itself produces the fold state as it runs, compiled and executed for
   real (`tests/e2e_fold_verifier.rs`) — no separate capture step needed. The
   batch path (§6) still requires externally-captured `GateObservation`s if used.
-- **The GF(2^k) ↔ F_ℓ embedding is still open** — now with **concrete, empirical
-  evidence** it's unsound as currently implemented (not just a theoretical gap):
-  `tests/e2e_fold_verifier.rs` runs a real GF(2^8) VOLE proof through a woven,
-  compiled, `NovaFoldSink` verifier — the real Quicksilver check passes, but the
-  naively-embedded F_ℓ witness does **not** satisfy `and_check_r1cs`'s relation
-  (`FoldLift for Galois`'s reinterpret-the-byte embedding doesn't preserve
-  GF(2^8)'s actual polynomial multiplication). Tracked in
-  [`agent-context/gf2k-to-fell-embedding.md`](agent-context/gf2k-to-fell-embedding.md) —
-  **Tier 3**, needs cryptographic review before any concrete lift is treated as
-  more than a structural placeholder. This is the same boundary the batch path's
-  `and_check_r1cs` R1CS always modeled over `F_ℓ` rather than the real `GF(2^k)`
-  check; the dynamic path just makes the gap runnable and measurable instead of
-  implicit.
+- **The GF(2^k) ↔ F_ℓ embedding is constructed, not open** — the dynamic path
+  folds the constraint-expansion relation of
+  [`fold-lift-expansion.md`](fold-lift-expansion.md) (`and_check_gf2k`), which
+  comes with a written soundness argument (that doc's §5) and deterministic
+  tests (`volar_fold::gf2k`: exhaustive 2^16 completeness, per-variable tamper
+  probes, negative/naive-embedding counterexamples). The old one-scalar
+  reinterpret-the-byte lift — whose unsoundness `tests/e2e_fold_verifier.rs`
+  used to pin as a known-failing assert — is gone from the in-loop path; the
+  same e2e test now asserts **positive** satisfaction on a real GF(2^8) VOLE
+  proof. Still **Tier 3**: the construction needs cryptographic review before
+  the seam is called closed (per-gate Δ-independence, lane-0 projection, and
+  the missing transcript binding are documented residual simplifications —
+  spec §7). Tracked in
+  [`agent-context/gf2k-to-fell-embedding.md`](agent-context/gf2k-to-fell-embedding.md).
+  The batch path's `and_check_r1cs` still models the check over `F_ℓ` directly
+  and remains legacy/test scaffolding, not a sound `GF(2^k)` encoding.

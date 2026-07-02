@@ -29,47 +29,42 @@
 //!    output" harness (same shape as the existing `garble.rs`/`fhe.rs` test
 //!    harnesses) that actually compiles and runs the linked result.
 //!
-//! ## The GF(2^k) → F_ℓ embedding: tracked, not solved
+//! ## The GF(2^k) → F_ℓ embedding: constraint expansion
+//!
+//! Per-gate folding no longer lifts each GF(2^k) element to a *single*
+//! `F_ℓ` scalar (the old one-scalar `FoldLift`, whose unsoundness
+//! `docs/agent-context/gf2k-to-fell-embedding.md` documents). Instead
+//! [`fold_and_gate`] expands each gate into the **spaced-packing bit
+//! relation** of `docs/fold-lift-expansion.md`: every GF(2^k) value enters
+//! the R1CS as its GF(2) coefficient bits ([`FoldLift::lift_bits`]), and
+//! `volar_fold::gf2k::and_check_gf2k` emits constraints that hold **iff**
+//! the Quicksilver check `K_a·K_b + V̂ + K_c·Δ = 0` holds *in `GF(2^k)`* —
+//! sound by construction per that doc's §5 argument (booleanity + spaced
+//! packing + unique binary decomposition + evenness of the reduced columns).
+//! Deterministic soundness tests live in `volar_fold::gf2k`; the seam is
+//! still **flagged for cryptographic review** before being called closed
+//! (see the spec's §7 for exactly what is and is not claimed — e.g. lane-0
+//! projection and per-gate independent Δ bits remain documented
+//! simplifications).
 //!
 //! [`FoldLift`] is deliberately **not** `std::convert::From`/`Into` — `T`
 //! (e.g. `Galois`, from `volar-primitives`) and `FoldScalar`
 //! (`volar_fold::scalar::Scalar`) are both foreign to any crate that isn't
-//! `volar-fold` itself, so a blanket `impl From<Galois> for Scalar` can only
-//! be written inside `volar-fold` (Rust's orphan rule) — and doing that would
-//! quietly present one specific field embedding as *the* answer, which is
-//! not something this crate should decide. `FoldLift` is a local trait
-//! instead, purely so the orphan rule doesn't force the decision into the
-//! wrong crate. Two implementations are provided, and swapping which one a
-//! given `fold_and_gate::<N, T>` monomorphization uses is exactly a matter of
-//! which `T` the driver instantiates the woven verifier with:
-//!
-//! - `impl FoldLift for Galois` — reinterprets the GF(2^k) element's integer
-//!   representation directly as an `F_ℓ` integer (`Scalar::from_u64`). This
-//!   is the *existing* simplification `volar_fold::verifier::VerifierStep`/
-//!   `GateObservation` already use elsewhere in this codebase (not a new
-//!   cryptographic decision) — kept as the default here for that reason.
-//! - `impl FoldLift for Bit` — the simplest possible embedding (`0 ↦ 0`,
-//!   `1 ↦ 1`), sound *only* for a degenerate `T = GF(2)` weave (`Δ` can only
-//!   be `1`, so this isn't cryptographically meaningful VOLE — it exists to
-//!   keep a genuinely-homomorphic-on-multiplication option pluggable).
-//!   **Known gap, not silently papered over**: `+` is not a ring
-//!   homomorphism here — `1 + 1 = 0` in `GF(2)` (XOR) but `Scalar::ONE +
-//!   Scalar::ONE = 2` in `F_ℓ` (no reduction). The `and_check` relation
-//!   `K_a·K_b + V̂ = K_c·Δ` is multiplication-safe under this embedding but
-//!   can spuriously fail on an *honest* gate whenever `K_a·K_b = 1` and
-//!   `K_c·Δ = 0` (so `V̂` must be `1` to compensate in `GF(2)`, but the
-//!   embedded sum is `2 ≠ 0`). Left as-is rather than "fixed" with an ad hoc
-//!   mod-2 wrap, since the right fix depends on the review this is tracked
-//!   against — see `docs/agent-context/gf2k-to-fell-embedding.md`.
-//!
-//! Neither implementation is presented as sound for the real, non-degenerate
-//! `GF(2^k)` case; both exist so the mechanism is exercised end to end while
-//! that review is pending.
+//! `volar-fold` itself, so a blanket impl could only be written inside
+//! `volar-fold` (Rust's orphan rule) — and doing that would hard-wire one
+//! specific field's expansion parameters into the folding crate. `FoldLift`
+//! is a local trait instead, purely so the orphan rule doesn't force the
+//! decision into the wrong crate: each `T` carries its own degree
+//! ([`FoldLift::BITS`]) and irreducible polynomial ([`FoldLift::POLY`]),
+//! and swapping fields is exactly a matter of which `T` the driver
+//! instantiates the woven verifier with.
 
 use std::fs;
 use std::process::Command;
 
 use volar_discipline::{NonZk, Tagged, Transparent};
+use volar_fold::gf2k::{and_check_gf2k, Gf2kParams};
+use volar_fold::nifs::cross_term_z;
 use volar_fold::pedersen::PedersenParams;
 use volar_fold::scalar::Scalar;
 use volar_fold::verifier::{prove_verifier, verify_folded, VerifierFold, VerifierStep, VerifierTrace};
@@ -161,48 +156,63 @@ pub fn prove_and_verify_folded<Z: NonZk>(
 /// `FoldScalar` bare name resolves to.
 pub type FoldScalar = Scalar;
 
-/// Lifts a single VOLE field element into [`FoldScalar`]. See this module's
-/// doc for why this is a local trait, not `std::convert::From`/`Into`, and
-/// for what each implementation does and does not guarantee.
+/// Expands a single VOLE field element into its LSB-first GF(2) coefficient
+/// bits, plus the field's compile-time expansion parameters — the inputs
+/// [`fold_and_gate`] feeds to `volar_fold::gf2k::and_check_gf2k`. See this
+/// module's doc for why this is a local trait, not
+/// `std::convert::From`/`Into`.
 pub trait FoldLift {
-    fn fold_lift(&self) -> FoldScalar;
+    /// GF(2)-degree k of T.
+    const BITS: usize;
+    /// Irreducible polynomial low bits (x^BITS implicit), LSB = x^0.
+    const POLY: u128;
+    /// LSB-first GF(2) coefficients of self; len == BITS.
+    fn lift_bits(&self) -> Vec<bool>;
 }
 
-/// The default lift: reinterpret the GF(2^k) element's integer
-/// representation directly as an `F_ℓ` integer. Matches the existing
-/// `GateObservation`/`VerifierStep` simplification elsewhere in this
-/// codebase — not a new cryptographic decision.
+/// `GF(2^8)` with the AES polynomial `x^8 + x^4 + x^3 + x + 1`
+/// (`volar_primitives::GF8_POLY`). Sound by construction: the bits feed the
+/// spec §3 constraint expansion, which encodes genuine `GF(2^8)` arithmetic
+/// — not the old integer-reinterpretation lift.
 impl FoldLift for Galois {
-    fn fold_lift(&self) -> FoldScalar {
-        FoldScalar::from_u64(self.0 as u64)
+    const BITS: usize = 8;
+    const POLY: u128 = 0x1b;
+    fn lift_bits(&self) -> Vec<bool> {
+        (0..8).map(|i| (self.0 >> i) & 1 == 1).collect()
     }
 }
 
-/// The simplest possible lift, sound only for a degenerate `T = GF(2)`
-/// weave — see this module's doc for the known `+`-is-not-a-homomorphism gap.
+/// `GF(2)` (`P(x) = x`, no reduction terms). Sound by construction: the
+/// expanded relation keeps addition inside `{0,1}` (the old
+/// `+`-is-not-a-homomorphism gap of the one-scalar lift does not arise —
+/// see `docs/fold-lift-expansion.md` §4's "kept contained" note).
 impl FoldLift for Bit {
-    fn fold_lift(&self) -> FoldScalar {
-        if self.0 { FoldScalar::ONE } else { FoldScalar::ZERO }
+    const BITS: usize = 1;
+    const POLY: u128 = 0;
+    fn lift_bits(&self) -> Vec<bool> {
+        vec![self.0]
     }
 }
 
 /// The threaded fold-accumulator state a `NovaFoldSink`-woven verifier's
 /// `FoldAccumulator` bare name resolves to: `None` until the first gate is
 /// folded in (matching [`volar_fold::ivc::GapAccumulator`]'s `fresh`-vs-fold
-/// split), then the running Nova relaxed witness `(W, E, u)` — no
-/// commitments; those are computed once, outside the loop, from this small
-/// fixed-size witness (see `volar_weaver::vole::NovaFoldSink`'s doc for why
-/// that's still succinct).
+/// split), then the running Nova relaxed witness `(W, E, u)` over the
+/// expanded gf2k relation — larger than the old 7-slot witness (165
+/// variables / 174 error slots for `GF(2^8)`) but still **constant-size per
+/// accumulator**, independent of the gate count, so the
+/// commitments-once-outside-the-loop succinctness story is unchanged (see
+/// `volar_weaver::vole::NovaFoldSink`'s doc).
 #[derive(Clone)]
 pub struct FoldAccumulator {
-    inner: Option<([FoldScalar; 7], [FoldScalar; 3], FoldScalar)>,
+    inner: Option<(Vec<FoldScalar>, Vec<FoldScalar>, FoldScalar)>,
 }
 
 impl FoldAccumulator {
     /// The running witness/error/relaxation-scalar, once at least one gate
     /// has been folded in.
-    pub fn witness(&self) -> Option<(&[FoldScalar; 7], &[FoldScalar; 3], &FoldScalar)> {
-        self.inner.as_ref().map(|(w, e, u)| (w, e, u))
+    pub fn witness(&self) -> Option<(&[FoldScalar], &[FoldScalar], &FoldScalar)> {
+        self.inner.as_ref().map(|(w, e, u)| (w.as_slice(), e.as_slice(), u))
     }
 }
 
@@ -213,10 +223,16 @@ pub fn fold_accumulator_fresh() -> FoldAccumulator {
 }
 
 /// What a `NovaFoldSink`-woven verifier's `fold_and_gate` bare name resolves
-/// to: fold one AND gate's observed values into `state`, real
-/// `volar_spec::fold` calls (`gate_witness`/`cross_term`/`fold_witness`/
-/// `fold_u`) — genuinely spec-linked math, executed as this function runs,
-/// not logged for later interpretation.
+/// to: fold one AND gate's observed values into `state` — the gate expands
+/// into the spaced-packing gf2k relation of `docs/fold-lift-expansion.md` §3
+/// (`volar_fold::gf2k::and_check_gf2k`, R1CS + honest witness built
+/// together), then Nova-folds witness-only via
+/// [`volar_fold::nifs::cross_term_z`]: `W' = W₁ + r·W₂`, `E' = E₁ + r·T`
+/// (the incoming gate is fresh, so its `E`/`r²` term vanishes),
+/// `u' = u₁ + r`. Genuinely executed math, not logged for later
+/// interpretation. The legacy 7-slot batch path (`volar_spec::fold`,
+/// `and_check_r1cs`, [`GateObservation`]/`VerifierStep`) is untouched and
+/// remains available; this in-loop path no longer uses it.
 pub fn fold_and_gate<N, T>(
     state: FoldAccumulator,
     k_a: Q<N, T>,
@@ -230,19 +246,28 @@ where
     N: ArraySize,
     T: FoldLift,
 {
-    let gate_w = volar_spec::fold::gate_witness(
-        k_a.q[0].fold_lift(),
-        k_b.q[0].fold_lift(),
-        k_c.q[0].fold_lift(),
-        delta.delta[0].fold_lift(),
-        hat[0].fold_lift(),
-    );
+    // Lane-0 projection of the N VOLE lanes — unchanged, still a documented
+    // separate simplification (spec §7).
+    let a_bits = k_a.q[0].lift_bits();
+    let b_bits = k_b.q[0].lift_bits();
+    let c_bits = k_c.q[0].lift_bits();
+    let d_bits = delta.delta[0].lift_bits();
+    let v_bits = hat[0].lift_bits();
+
+    let params = Gf2kParams::new(T::BITS, T::POLY);
+    let (r1cs, gate_w) = and_check_gf2k(&params, &a_bits, &b_bits, &c_bits, &d_bits, &v_bits);
+
     match state.inner {
-        None => FoldAccumulator { inner: Some((gate_w, [FoldScalar::ZERO; 3], FoldScalar::ONE)) },
+        None => FoldAccumulator {
+            inner: Some((gate_w, vec![FoldScalar::ZERO; r1cs.num_cons], FoldScalar::ONE)),
+        },
         Some((w1, e1, u1)) => {
-            let t = volar_spec::fold::cross_term(&w1, &u1, &gate_w, &FoldScalar::ONE);
-            let (w, e) = volar_spec::fold::fold_witness(&w1, &e1, &gate_w, &[FoldScalar::ZERO; 3], &t, &r);
-            let u = volar_spec::fold::fold_u(&u1, &FoldScalar::ONE, &r);
+            let t = cross_term_z(&r1cs, &w1, &u1, &gate_w, &FoldScalar::ONE);
+            let w: Vec<FoldScalar> =
+                w1.iter().zip(gate_w.iter()).map(|(x, y)| x.add(&r.mul(y))).collect();
+            let e: Vec<FoldScalar> =
+                e1.iter().zip(t.iter()).map(|(x, ti)| x.add(&r.mul(ti))).collect();
+            let u = u1.add(&r);
             FoldAccumulator { inner: Some((w, e, u)) }
         }
     }
@@ -377,56 +402,173 @@ mod tests {
         assert!(!ok, "a tampered gate observation must fail native verification");
     }
 
+    // ── fold_and_gate over the expanded gf2k relation ────────────────────────
+
+    /// `GF(2^8)` multiply with the AES polynomial (test-local mirror of
+    /// `volar_primitives::gf_mul_u8`, kept here to avoid a new dependency).
+    fn gf_mul(a: u8, b: u8) -> u8 {
+        let mut p = 0u8;
+        let (mut a, mut b) = (a, b);
+        for _ in 0..8 {
+            if b & 1 != 0 {
+                p ^= a;
+            }
+            let hi = a & 0x80;
+            a <<= 1;
+            if hi != 0 {
+                a ^= 0x1b;
+            }
+            b >>= 1;
+        }
+        p
+    }
+
+    /// Fermat inverse `a^(2^8 − 2)` in `GF(2^8)`.
+    fn gf_invert(a: u8) -> u8 {
+        let mut result = 1u8;
+        let mut base = a;
+        let mut e = 254u8;
+        while e > 0 {
+            if e & 1 == 1 {
+                result = gf_mul(result, base);
+            }
+            base = gf_mul(base, base);
+            e >>= 1;
+        }
+        result
+    }
+
+    fn q1(x: u8) -> Q<cipher::consts::U1, Galois> {
+        Q { q: Array::<Galois, cipher::consts::U1>::from_fn(|_| Galois(x)) }
+    }
+    fn delta1(x: u8) -> Delta<cipher::consts::U1, Galois> {
+        Delta { delta: Array::<Galois, cipher::consts::U1>::from_fn(|_| Galois(x)) }
+    }
+    fn hat1(x: u8) -> Array<Galois, cipher::consts::U1> {
+        Array::<Galois, cipher::consts::U1>::from_fn(|_| Galois(x))
+    }
+
+    /// The gf2k R1CS for `GF(2^8)` — shape depends only on the params, so any
+    /// input bits produce the same constraint system.
+    fn gf2k_r1cs_k8() -> volar_fold::r1cs::R1CS {
+        let params = Gf2kParams::new(8, 0x1b);
+        let zeros = [false; 8];
+        let (r1cs, _) = and_check_gf2k(&params, &zeros, &zeros, &zeros, &zeros, &zeros);
+        r1cs
+    }
+
     #[test]
-    fn fold_and_gate_matches_gap_accumulator_over_the_same_witnesses() {
-        // fold_and_gate's own logic must agree with volar_fold::ivc::GapAccumulator
-        // (the one true streaming accumulator) when fed the same and_check
-        // witnesses and challenges — this is the Rust-level analog of the
-        // end-to-end test's real-compile check (see volar-verifier-fold's
-        // end-to-end test), isolating fold_and_gate from the weave/compile
-        // machinery entirely.
+    fn galois_lift_bits_is_lsb_first() {
+        // 0x53 = 0b0101_0011 → LSB-first.
+        assert_eq!(
+            Galois(0x53).lift_bits(),
+            vec![true, true, false, false, true, false, true, false]
+        );
+        assert_eq!(Bit(true).lift_bits(), vec![true]);
+        assert_eq!(Bit(false).lift_bits(), vec![false]);
+    }
+
+    #[test]
+    fn fresh_single_gate_accumulator_is_plain_satisfied() {
+        // One honest GF(2^8) gate: K_c = (K_a·K_b + V̂)·Δ⁻¹.
+        let (ka, kb, vv, delta) = (0x37u8, 0x82u8, 0x5au8, 0xc3u8);
+        let kc = gf_mul(gf_mul(ka, kb) ^ vv, gf_invert(delta));
+
+        let state = fold_and_gate(
+            fold_accumulator_fresh(),
+            q1(ka),
+            q1(kb),
+            q1(kc),
+            &delta1(delta),
+            hat1(vv),
+            FoldScalar::from_u64(0xabcd),
+        );
+        let (w, e, u) = state.witness().expect("folded after one gate");
+        assert_eq!(*u, FoldScalar::ONE, "fresh instance has u = 1");
+        assert_eq!(w.len(), 165, "expanded GF(2^8) witness size");
+        assert_eq!(e.len(), 174, "E has one slot per constraint");
+        assert!(e.iter().all(|x| *x == FoldScalar::ZERO), "fresh instance has E = 0");
+        assert!(gf2k_r1cs_k8().is_satisfied_relaxed(w, e, u));
+    }
+
+    #[test]
+    fn two_gate_fold_satisfies_relaxed_gf2k_relation() {
+        // Two honest GF(2^8) tuples folded through fold_and_gate must leave a
+        // relaxed-satisfying accumulator against and_check_gf2k's R1CS.
+        let tuples: [(u8, u8, u8, u8); 2] = [(0x37, 0x82, 0x5a, 0xc3), (0x01, 0xff, 0x00, 0x1d)];
+
+        let mut state = fold_accumulator_fresh();
+        for (i, &(ka, kb, vv, delta)) in tuples.iter().enumerate() {
+            let kc = gf_mul(gf_mul(ka, kb) ^ vv, gf_invert(delta));
+            let r = FoldScalar::from_u64(0xabcd + i as u64);
+            state = fold_and_gate(state, q1(ka), q1(kb), q1(kc), &delta1(delta), hat1(vv), r);
+        }
+
+        let (w, e, u) = state.witness().expect("folded after two gates");
+        assert!(
+            gf2k_r1cs_k8().is_satisfied_relaxed(w, e, u),
+            "two-gate fold must satisfy the relaxed gf2k relation"
+        );
+        // u = 1 + r₂ after the second fold, no longer 1.
+        assert_eq!(*u, FoldScalar::ONE.add(&FoldScalar::from_u64(0xabce)));
+    }
+
+    #[test]
+    fn fold_and_gate_matches_gap_accumulator_over_gf2k() {
+        // fold_and_gate's own witness-only fold must agree, elementwise, with
+        // volar_fold::ivc::GapAccumulator (the one true streaming accumulator)
+        // when fed the same and_check_gf2k gate witnesses and the same r
+        // challenges — the gf2k-relation revival of the parity test this file
+        // carried over the legacy 7-slot relation before the expansion.
+        // GapAccumulator's challenges are caller-supplied via Step { r, r_t }
+        // (not internally derived), so both legs genuinely fold with identical
+        // r; r_w/r_t only affect the Pedersen commitments, which the
+        // witness-only leg doesn't carry — (W, E, u) are honestly comparable.
         use volar_fold::ivc::{GapAccumulator, Step};
-        use volar_fold::verifier::and_check_r1cs;
 
-        fn q1(x: u64) -> Q<cipher::consts::U1, Galois> {
-            Q { q: Array::<Galois, cipher::consts::U1>::from_fn(|_| Galois(x as u8)) }
-        }
-        fn delta1(x: u64) -> Delta<cipher::consts::U1, Galois> {
-            Delta { delta: Array::<Galois, cipher::consts::U1>::from_fn(|_| Galois(x as u8)) }
-        }
-        fn hat1(x: u64) -> Array<Galois, cipher::consts::U1> {
-            Array::<Galois, cipher::consts::U1>::from_fn(|_| Galois(x as u8))
-        }
-
-        let r1cs = and_check_r1cs();
-        let params = PedersenParams::setup(8, 7);
-        // Both gates honest with K_c·Δ >= K_a·K_b, so V̂ = K_c·Δ - K_a·K_b is a
-        // small non-negative integer that fits in Galois(u8) untruncated.
-        let gates: [(u64, u64, u64, u64); 2] = [(3, 4, 5, 6), (2, 3, 4, 5)];
+        let tuples: [(u8, u8, u8, u8); 3] =
+            [(0x37, 0x82, 0x5a, 0xc3), (0x01, 0xff, 0x00, 0x1d), (0xaa, 0x55, 0x99, 0x02)];
+        let gf2k_params = Gf2kParams::new(8, 0x1b);
+        let r1cs = gf2k_r1cs_k8();
+        // Generators must cover the longest committed vector (E: 174 slots).
+        let pedersen = PedersenParams::setup(r1cs.num_cons, 7);
 
         let mut state = fold_accumulator_fresh();
         let mut acc = GapAccumulator::new();
-        for (i, &(a, b, c, d)) in gates.iter().enumerate() {
-            let v_hat: u64 = c * d - a * b;
+        for (i, &(ka, kb, vv, delta)) in tuples.iter().enumerate() {
+            let kc = gf_mul(gf_mul(ka, kb) ^ vv, gf_invert(delta));
             let r = FoldScalar::from_u64(0xabcd + i as u64);
-            state = fold_and_gate(state, q1(a), q1(b), q1(c), &delta1(d), hat1(v_hat), r);
 
-            let w = volar_spec::fold::gate_witness(
-                FoldScalar::from_u64(a), FoldScalar::from_u64(b), FoldScalar::from_u64(c),
-                FoldScalar::from_u64(d), FoldScalar::from_u64(v_hat),
+            state = fold_and_gate(state, q1(ka), q1(kb), q1(kc), &delta1(delta), hat1(vv), r);
+
+            let (_, gate_w) = and_check_gf2k(
+                &gf2k_params,
+                &Galois(ka).lift_bits(),
+                &Galois(kb).lift_bits(),
+                &Galois(kc).lift_bits(),
+                &Galois(delta).lift_bits(),
+                &Galois(vv).lift_bits(),
             );
-            let step = Step { w: w.to_vec(), r_w: FoldScalar::from_u64(11 + i as u64), r, r_t: FoldScalar::from_u64(99 + i as u64) };
-            acc.push(&r1cs, &params, &step);
+            let step = Step {
+                w: gate_w,
+                r_w: FoldScalar::from_u64(11 + i as u64),
+                r,
+                r_t: FoldScalar::from_u64(99 + i as u64),
+            };
+            acc.push(&r1cs, &pedersen, &step);
         }
 
         let (w, e, u) = state.witness().expect("state must be folded after >=1 gate");
-        let gp = acc.finish(&params, &[FoldScalar::from_u64(1)], &FoldScalar::from_u64(2), &[FoldScalar::from_u64(3)], &FoldScalar::from_u64(4));
-        // GapAccumulator's own witness isn't directly exposed (only the final
-        // committed GapProof is) — cross-check via native_verify instead:
-        // reconstruct a RelaxedWitness from fold_and_gate's state and confirm
-        // it's the R1CS-satisfying witness that gp's committed instance
-        // corresponds to (r1cs is the same and_check_r1cs both legs used).
-        assert!(r1cs.is_satisfied_relaxed(w, e, u), "fold_and_gate's own accumulator must satisfy and_check_r1cs");
-        assert!(volar_fold::verify::native_verify(&r1cs, &params, &gp.final_u, &gp.final_w));
+        let gp = acc.finish(
+            &pedersen,
+            &[FoldScalar::from_u64(1)],
+            &FoldScalar::from_u64(2),
+            &[FoldScalar::from_u64(3)],
+            &FoldScalar::from_u64(4),
+        );
+        assert_eq!(w, gp.final_w.w.as_slice(), "folded W must agree elementwise");
+        assert_eq!(e, gp.final_w.e.as_slice(), "folded E must agree elementwise");
+        assert_eq!(*u, gp.final_u.u, "folded u must agree");
+        assert!(r1cs.is_satisfied_relaxed(w, e, u));
     }
 }
