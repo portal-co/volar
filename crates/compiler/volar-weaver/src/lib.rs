@@ -122,9 +122,11 @@ pub use vole::{
     weave_vole_verifier_with_side, weave_vole_verifier_with_side_and_handler,
     weave_vole_prover_ir, weave_vole_verifier_ir,
     weave_vole_prover_ir_with_mode, weave_vole_verifier_ir_with_mode,
+    weave_vole_verifier_with_trace,
     StorageSizes, StorageMode, MemoryTrace, MemoryTraceEntry,
     ZkWitnessConfig, ZkActionConfig,
     VoleProtection, VoleSideAssignments,
+    VerifierTraceSink, NovaFoldSink,
 };
 
 pub use volar_discipline::{Tagged, Zk, Transparent, Discipline, NonZk};

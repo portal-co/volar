@@ -565,6 +565,23 @@ pub trait VerifierTraceSink<P: Clone + Default> {
     /// Bare, externally-resolved type name for the per-gate fold challenge
     /// (e.g. `"FoldScalar"` — resolved to `volar_fold::scalar::Scalar`).
     fn fold_scalar_type_name(&self) -> &str;
+
+    /// Bare, externally-resolved trait name added to the woven function's
+    /// own `T: …` bound (via `TraitKind::Custom` — the same "open-ended
+    /// user-defined trait" mechanism already used elsewhere in this weaver,
+    /// e.g. `fhe.rs`'s `WordReducer` bound). This is what lets
+    /// [`and_gate_step`](Self::and_gate_step) hand the gate's *whole*
+    /// `Q<N,T>`/`Delta<N,T>`/`Array<T,N>` values to an externally-resolved
+    /// function without the weaver needing to know how to project a `T`
+    /// value down to a scalar itself — `Some("FoldLift")` for
+    /// [`NovaFoldSink`] means the harness must provide `impl FoldLift for
+    /// {whatever T it instantiates}` (its own trait, sidestepping the
+    /// orphan-rule restriction on implementing `std::convert::From`/`Into`
+    /// for two foreign types). `None` if the sink's `and_gate_step` doesn't
+    /// need any extra bound on `T`.
+    fn fold_lift_trait_name(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// The prove-the-verifier fold sink: threads a Nova relaxed-witness
@@ -592,6 +609,10 @@ impl<P: Clone + Default> VerifierTraceSink<P> for NovaFoldSink {
         "FoldScalar"
     }
 
+    fn fold_lift_trait_name(&self) -> Option<&str> {
+        Some("FoldLift")
+    }
+
     fn and_gate_step(
         &self,
         _gate_idx: usize,
@@ -614,7 +635,11 @@ impl<P: Clone + Default> VerifierTraceSink<P> for NovaFoldSink {
                 clone_expr(var(k_a)),
                 clone_expr(var(k_b)),
                 clone_expr(var(k_c)),
-                clone_expr(var(delta)),
+                // delta is already &Delta<N,T> at this point (the woven
+                // function's own param) — fold_and_gate wants a reference
+                // too, so pass it bare, not .clone()'d (which would
+                // auto-deref-then-clone into an owned Delta<N,T>).
+                var(delta),
                 clone_expr(var(hat)),
                 clone_expr(var(r_param_name)),
             ],
@@ -1579,7 +1604,27 @@ where
     }
     let ret_type = IrType::Tuple(ret_elems);
 
-    let (generics, where_clause) = verifier_generics_and_where();
+    let (generics, mut where_clause) = verifier_generics_and_where();
+    // Extend T's bound with the sink's fold-lift trait (bare, externally
+    // resolved — see VerifierTraceSink::fold_lift_trait_name), so
+    // and_gate_step can hand whole Q<N,T>/Delta<N,T>/Array<T,N> values to an
+    // externally-resolved function without this weaver needing to know how
+    // to project T down to a scalar itself.
+    if let Some(sink) = config.trace_sink() {
+        if let Some(trait_name) = sink.fold_lift_trait_name() {
+            if let Some(IrWherePredicate::TypeBound { ty, bounds }) = where_clause
+                .iter_mut()
+                .find(|p| matches!(p, IrWherePredicate::TypeBound { ty: IrType::TypeParam(n), .. } if n == "T"))
+            {
+                let _ = ty;
+                bounds.push(IrTraitBound {
+                    trait_kind: TraitKind::Custom(trait_name.into()),
+                    type_args: vec![],
+                    assoc_bindings: vec![],
+                });
+            }
+        }
+    }
 
     let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
     let mut and_counter: usize = 0;

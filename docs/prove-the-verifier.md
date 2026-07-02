@@ -126,38 +126,91 @@ doctest in `verifier.rs` pins this guarantee.
 
 ## 6. Build wiring
 
-The arithmetization frontend and the pipeline terminal live in
-[`volar-verifier-fold`](../crates/fold/volar-verifier-fold/) — the build-side
-counterpart to `volar_fold::verifier`:
+Compile-time and runtime concerns live in **separate crates**, split along the
+same line as the rest of this plan: `volar-verifier-fold` only ever produces
+*text* (C or Rust source); `volar-verifier-runtime` is the only crate that
+*executes* anything.
+
+**Compile-time — [`volar-verifier-fold`](../crates/fold/volar-verifier-fold/)**
+(depends on `volar-fold`, `volar-compiler`, `volar-lir-codegen`, `volar-c-backend`,
+`volar-weaver` — no `volar-verifier-runtime`):
 
 | Item | Role |
 |---|---|
-| `GateObservation` + `verifier_trace(…)` | **frontend** — assemble a `Tagged<Transparent, VerifierTrace>` from a verifier's per-gate observations + memory boundary |
-| `prove_and_verify_folded<Z: NonZk>(…)` | **terminal (fold leg)** — fold the whole verifier and check it natively |
-| `emit_verifier_c(&Tagged<Transparent, IrModule>, &MonoEnv) -> String` | **terminal (C leg)** — lower the woven verifier to C via `CBackend` |
+| `emit_verifier_c(&Tagged<Transparent, IrModule>, &MonoEnv) -> String` | lower the woven verifier to **C** via `CBackend` (unaffected by the `u128` gap, see [`agent-context/lir-u128-support.md`](agent-context/lir-u128-support.md), as long as the module doesn't touch curve/`u128` spec functions) |
+| `emit_verifier_rust(&Tagged<Transparent, IrModule>) -> String` | lower to **Rust source** via `volar_weaver::vole::print_weaved_vole_module` — the terminal for a `NovaFoldSink`-woven verifier (§7), whose `FoldScalar`/`FoldAccumulator`/etc. names aren't C/LIR-compatible today |
 
-The terminal deliberately lowers through the **C backend**
-([`volar-c-backend`](../crates/compiler/volar-c-backend/), `CBackend`) rather than
-LLVM: it is the executable substrate available everywhere (the LLVM backend in
-[`volar-build`](../crates/compiler/volar-build/) is environment-gated). The C
-verifier is what produces the concrete `GateObservation`s that feed the frontend.
-`volar-verifier-fold` depends only on `volar-fold`, `volar-compiler`,
-`volar-lir-codegen`, and `volar-c-backend`, so it builds and tests without LLVM.
-See [`pipeline.md`](pipeline.md).
+**Run-time — [`volar-verifier-runtime`](../crates/fold/volar-verifier-runtime/)**
+(depends only on `volar-fold`, `volar-spec`, `volar-discipline`, `std` — never
+`volar-compiler`/`volar-lir-codegen`/`volar-c-backend`/`volar-weaver`; it only ever
+consumes already-generated source **text**):
+
+| Item | Role |
+|---|---|
+| `GateObservation` + `verifier_trace(…)` + `prove_and_verify_folded<Z: NonZk>(…)` | the original **batch** path — build a `VerifierTrace` from a fully-materialized `&[GateObservation]` slice and fold it via `volar_fold::verifier`'s general machinery. Still useful for hand-constructed traces/tests; superseded as the production path by §7 |
+| `FoldScalar`, `FoldLift`, `FoldAccumulator`, `fold_accumulator_fresh`, `fold_and_gate` | the concrete definitions a `NovaFoldSink`-woven verifier links against (§7) |
+| `run_folded_verifier(rust_source, driver_src) -> String` | compile + link + **run for real** (`cargo`/`rustc`, same "print → temp Cargo project → real backend" pattern `AGENTS.md` rule 2 mandates) — the terminal that actually executes the Rust leg |
+
+See [`pipeline.md`](pipeline.md) for where both fit in the overall build.
+
+---
+
+## 7. Dynamic (weave-time) trace assembly — `NovaFoldSink`
+
+The batch path above (§6, `GateObservation`/`verifier_trace`) requires
+materializing the *whole* per-gate trace before folding — `O(loop length)`
+memory, and it can't hide the loop length, defeating one motivation for
+prove-the-verifier at all (the VOLE weaver supports looped/resumable circuits,
+`hybrid_net.rs`/`storage_loop.rs`, with potentially hidden iteration counts).
+
+[`VerifierTraceSink`](../crates/compiler/volar-weaver/src/vole.rs) (a weave-time
+extension point on `weave_vole_verifier_with_trace`) and its concrete
+implementation `NovaFoldSink` close this: they thread a **typed Nova
+relaxed-witness accumulator** (`w`, `e`, `u` — no commitments; those are computed
+once, outside the loop, from the small fixed-size final witness, since Nova
+folding keeps the witness the same fixed shape across folds regardless of gate
+count) through the woven verifier, updated via a real `fold_and_gate` call once
+per AND gate, in step with each gate's own check — genuinely `O(1)` state
+regardless of how many gates run.
+
+**Real typed IR, not a string hook:** `and_gate_step` emits actual `IrExpr`/
+`IrStmt` nodes referencing the gate's real variables (`k_a`, `k_b`, `k_c`,
+`delta`, `hat`) — `AGENTS.md` rule 1 (never raw strings as expression data).
+
+**Genuinely compiled and executed, not logged:** the fold math
+(`volar_spec::fold::gate_witness`/`cross_term`/`fold_witness`/`fold_u`) runs as
+part of the same compiled binary the verifier itself runs in — via
+`volar-verifier-runtime`'s `fold_and_gate`, executed by real `rustc`
+(§6) — not printed to a log for a separate process to reinterpret later.
+
+**The lift (`FoldLift`) is the one deliberately open seam.** `FoldScalar`,
+`FoldAccumulator`, `fold_accumulator_fresh`, and `fold_and_gate` are bare,
+*externally-resolved* identifiers in the woven IR — not declared as generic
+parameters of the woven function, so ordinary Rust name resolution requires
+whoever compiles the output (`volar-verifier-runtime`, today) to supply concrete
+definitions. See [`agent-context/gf2k-to-fell-embedding.md`](agent-context/gf2k-to-fell-embedding.md)
+for what that means and why it's still open — `tests/e2e_fold_verifier.rs` in
+`volar-verifier-fold` runs the whole thing for real and pins the current,
+known-unsound state of the default lift as a failing assertion, on purpose.
 
 ---
 
 ## Honest scope
 
-- The R1CS in `and_check_r1cs` models the gate check over the **folding scalar
-  field** `F_ℓ`. The real verifier check is over the binary extension field
-  `GF(2^k)`. Faithfully folding it requires the **binary-field ↔ prime-field
-  embedding** — the same swappable boundary-link component discussed in
-  [`boundary-link-embedding.md`](boundary-link-embedding.md) and implemented for
-  the memory hash by [`keccak_r1cs`](../crates/fold/volar-fold/src/keccak_r1cs.rs).
-  Wiring that embedding into the verifier-step witness is **Tier 3** and is a
-  documented seam, not yet closed.
-- `VerifierTrace` carries concrete per-gate scalar values. The frontend extracts
-  the gate **structure** from the woven verifier IR; the concrete values come
-  from executing the verifier (the C-backend path) on a specific proof. The
-  trace-emission hook is the build-side counterpart of the seam above.
+- **The trace-emission hook is closed** for the dynamic path (§7): the woven
+  verifier itself produces the fold state as it runs, compiled and executed for
+  real (`tests/e2e_fold_verifier.rs`) — no separate capture step needed. The
+  batch path (§6) still requires externally-captured `GateObservation`s if used.
+- **The GF(2^k) ↔ F_ℓ embedding is still open** — now with **concrete, empirical
+  evidence** it's unsound as currently implemented (not just a theoretical gap):
+  `tests/e2e_fold_verifier.rs` runs a real GF(2^8) VOLE proof through a woven,
+  compiled, `NovaFoldSink` verifier — the real Quicksilver check passes, but the
+  naively-embedded F_ℓ witness does **not** satisfy `and_check_r1cs`'s relation
+  (`FoldLift for Galois`'s reinterpret-the-byte embedding doesn't preserve
+  GF(2^8)'s actual polynomial multiplication). Tracked in
+  [`agent-context/gf2k-to-fell-embedding.md`](agent-context/gf2k-to-fell-embedding.md) —
+  **Tier 3**, needs cryptographic review before any concrete lift is treated as
+  more than a structural placeholder. This is the same boundary the batch path's
+  `and_check_r1cs` R1CS always modeled over `F_ℓ` rather than the real `GF(2^k)`
+  check; the dynamic path just makes the gap runnable and measurable instead of
+  implicit.

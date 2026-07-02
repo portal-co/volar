@@ -154,6 +154,10 @@ Load these when working in the relevant area:
 | Weaving & multi-backend | `docs/agent-context/weaving.md` | Working on FHE/garbled-circuit weaving, compiler printers (Rust/TS/C), action system, CFG emission |
 | **ZK / non-ZK proving discipline** | `docs/agent-context/discipline.md` | Touching any weaver, `volar-fold`, the build pipeline, or anything that moves a proof `IrModule` — the load-bearing ZK↔non-ZK boundary |
 | Prove-the-verifier folding | `docs/prove-the-verifier.md` | Folding the verifier into a relaxed-R1CS instance, `volar-fold` reuse, memory-commitment boundaries |
+| **GF(2^k) → F_ℓ embedding (open)** | `docs/agent-context/gf2k-to-fell-embedding.md` | Touching `FoldLift`, `NovaFoldSink`, or anything folding the VOLE verifier's field values into `F_ℓ` — unresolved, needs cryptographic review |
+| `u128` support in LIR/C backend (deferred) | `docs/agent-context/lir-u128-support.md` | Touching `primitive_to_lir`, the C backend, or spec-linking `u128`-using code (`Scalar`, curve arithmetic) |
+| AST-to-AST weaving (future track) | `docs/agent-context/ast-to-ast-weaving.md` | Considering bypassing LIR lowering entirely for a new target (e.g. ZK-proven FHE) |
+| Higher-K gate degree (future track) | `docs/agent-context/higher-k-gates.md` | Touching `BIrStmt::And`'s degree dispatch, `gate_degree`, or K=3+/FAEST AES pinning |
 | TypeScript class witnesses | `docs/agent-context/ts-class-witnesses.md` | Working on TS codegen: `WitnessKind`, `ctx` parameter, type-param-as-value, static method dispatch |
 | ORAM & channel | `docs/agent-context/oram.md` | Working on ORAM crates, channel protocol, ORAM weaver integration |
 | Progress tracking | `PROGRESS.md` | Starting a new session, reviewing status, planning next steps |
