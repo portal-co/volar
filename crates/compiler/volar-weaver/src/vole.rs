@@ -483,8 +483,8 @@ impl<Prov: Clone + Default, H: volar_side::SideHandler<Protection = VoleProtecti
 }
 
 // ============================================================================
-// Weave-time dynamic trace assembly (prove-the-verifier: see `volar-fold`'s
-// `verifier` module and `docs/prove-the-verifier.md`)
+// Weave-time dynamic trace assembly (prove-the-verifier: see
+// `docs/prove-the-verifier-iop.md`)
 // ============================================================================
 
 /// A weave-time plugin that threads a typed fold-accumulator state through
@@ -497,34 +497,24 @@ impl<Prov: Clone + Default, H: volar_side::SideHandler<Protection = VoleProtecti
 /// hidden/variable-length loop (`hybrid_net.rs`/`storage_loop.rs`), which is
 /// the whole point of folding the verifier at all.
 ///
-/// Intentionally generic: prove-the-verifier folding (see [`NovaFoldSink`])
-/// is one instantiation of this extension point, not the only possible use.
+/// Intentionally generic: prove-the-verifier folding (see [`IopSink`]) is
+/// one instantiation of this extension point, not the only possible one.
 ///
-/// # The GF(2^k) → F_ℓ embedding is an open seam, not solved here
+/// # Bare, externally-resolved names are the pluggable seam
 ///
 /// A gate's `K_a, K_b, K_c, Δ, V̂` live in the VOLE field `T` (e.g. GF(2^8),
-/// `N` parallel lanes); Nova's fold math (`volar_spec::fold`) needs them
-/// lifted into the folding scalar field `F_ℓ`
-/// (`volar_fold::scalar::Scalar`). There is no sound field homomorphism
-/// between GF(2^k) and F_ℓ in general — `docs/prove-the-verifier.md`'s
-/// "Honest scope" and `docs/vcb-ivc-folding.md` §4 both flag the analogous
-/// boundary as a real, open cryptographic question ("needs cryptographic
-/// review"), not an engineering detail this weaver decides. This trait does
-/// **not** choose an embedding: [`NovaFoldSink`] emits calls to
-/// *externally-resolved* names (`FoldScalar`, `FoldAccumulator`,
-/// `fold_accumulator_fresh`, `fold_and_gate`) that are bare, unresolved
-/// identifiers in the woven IR — deliberately not declared as generic
-/// parameters of the woven function, so ordinary Rust name resolution
-/// requires *whoever compiles the woven output* to supply concrete
-/// definitions (a `type FoldScalar = …;` alias, a `fold_and_gate` function,
-/// etc.). That is the pluggable seam: this crate (compile-time) only
-/// guarantees the *call sites* are correctly threaded; the harness
-/// (run-time, see `crates/fold/volar-verifier-runtime`) supplies the
-/// meaning. The harness's default implementation reuses the same lane-0,
-/// reinterpret-as-integer lift `volar_fold::verifier::VerifierStep`/
-/// `GateObservation` already use elsewhere in this codebase (not a new
-/// cryptographic decision, just this mechanism's first concrete plug) —
-/// tracked as still-open, see `docs/agent-context/gf2k-to-fell-embedding.md`.
+/// `N` parallel lanes); a fold implementation needs them lifted into
+/// whatever field its accumulator uses. This trait does **not** choose that
+/// embedding: implementations emit calls to *externally-resolved* names
+/// (e.g. `IopChallenge`, `IopAccumulator`, `iop_accumulator_fresh`,
+/// `iop_fold_gate`) that are bare, unresolved identifiers in the woven IR —
+/// deliberately not declared as generic parameters of the woven function,
+/// so ordinary Rust name resolution requires *whoever compiles the woven
+/// output* to supply concrete definitions (a `type IopChallenge = …;`
+/// alias, an `iop_fold_gate` function, etc.). That is the pluggable seam:
+/// this crate (compile-time) only guarantees the *call sites* are correctly
+/// threaded; the harness (run-time, see
+/// `crates/iop/volar-verifier-iop-runtime`) supplies the meaning.
 ///
 /// Generic over the provenance type `P` **at the trait level**, not per
 /// method — `and_gate_step` needs to hand back `IrExpr<P>`, and a per-method
@@ -534,7 +524,7 @@ impl<Prov: Clone + Default, H: volar_side::SideHandler<Protection = VoleProtecti
 /// is what [`VoleWitnessSource::trace_sink`] actually returns.
 pub trait VerifierTraceSink<P: Clone + Default> {
     /// Bare, externally-resolved type name for the threaded fold-accumulator
-    /// state (e.g. `"FoldAccumulator"`).
+    /// state (e.g. `"IopAccumulator"`).
     fn state_type_name(&self) -> &str;
 
     /// Bare, externally-resolved function name producing the initial
@@ -563,7 +553,7 @@ pub trait VerifierTraceSink<P: Clone + Default> {
     ) -> IrExpr<P>;
 
     /// Bare, externally-resolved type name for the per-gate fold challenge
-    /// (e.g. `"FoldScalar"` — resolved to `volar_fold::scalar::Scalar`).
+    /// (e.g. `"IopChallenge"`).
     fn fold_scalar_type_name(&self) -> &str;
 
     /// Bare, externally-resolved trait name added to the woven function's
@@ -573,104 +563,36 @@ pub trait VerifierTraceSink<P: Clone + Default> {
     /// [`and_gate_step`](Self::and_gate_step) hand the gate's *whole*
     /// `Q<N,T>`/`Delta<N,T>`/`Array<T,N>` values to an externally-resolved
     /// function without the weaver needing to know how to project a `T`
-    /// value down to a scalar itself — `Some("FoldLift")` for
-    /// [`NovaFoldSink`] means the harness must provide `impl FoldLift for
-    /// {whatever T it instantiates}` (its own trait, sidestepping the
-    /// orphan-rule restriction on implementing `std::convert::From`/`Into`
-    /// for two foreign types). `None` if the sink's `and_gate_step` doesn't
-    /// need any extra bound on `T`.
+    /// value down to a scalar itself — `Some("IopLift")` for [`IopSink`]
+    /// means the harness must provide `impl IopLift for {whatever T it
+    /// instantiates}` (its own trait, sidestepping the orphan-rule
+    /// restriction on implementing `std::convert::From`/`Into` for two
+    /// foreign types). `None` if the sink's `and_gate_step` doesn't need any
+    /// extra bound on `T`.
     fn fold_lift_trait_name(&self) -> Option<&str> {
         None
     }
 }
 
-/// The prove-the-verifier fold sink: threads a Nova relaxed-witness
-/// accumulator (`w`, `e`, `u` — no commitments; those are computed once,
-/// outside the loop, from the small fixed-size final witness, since Nova
-/// folding keeps the witness the *same* fixed shape across folds — that is
-/// the succinctness property) through the woven verifier, updated per AND
-/// gate via `fold_and_gate` (externally resolved — see the trait doc's
-/// GF(2^k)→F_ℓ note). Named `FoldAccumulator`/`FoldScalar`/`fold_and_gate`/
-/// `fold_accumulator_fresh` — the harness (`volar-verifier-runtime`) must
-/// supply matching definitions.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct NovaFoldSink;
-
-impl<P: Clone + Default> VerifierTraceSink<P> for NovaFoldSink {
-    fn state_type_name(&self) -> &str {
-        "FoldAccumulator"
-    }
-
-    fn init_state_fn_name(&self) -> &str {
-        "fold_accumulator_fresh"
-    }
-
-    fn fold_scalar_type_name(&self) -> &str {
-        "FoldScalar"
-    }
-
-    fn fold_lift_trait_name(&self) -> Option<&str> {
-        Some("FoldLift")
-    }
-
-    fn and_gate_step(
-        &self,
-        _gate_idx: usize,
-        k_a: &str,
-        k_b: &str,
-        k_c: &str,
-        delta: &str,
-        hat: &str,
-        r_param_name: &str,
-        state_var: &str,
-        prov: P,
-    ) -> IrExpr<P> {
-        ir_expr_p(IrExprKind::Call {
-            func: Box::new(ir_expr_p(IrExprKind::Path {
-                segments: vec!["fold_and_gate".into()],
-                type_args: vec![],
-            }, prov.clone())),
-            args: vec![
-                clone_expr(var(state_var)),
-                clone_expr(var(k_a)),
-                clone_expr(var(k_b)),
-                clone_expr(var(k_c)),
-                // delta is already &Delta<N,T> at this point (the woven
-                // function's own param) — fold_and_gate wants a reference
-                // too, so pass it bare, not .clone()'d (which would
-                // auto-deref-then-clone into an owned Delta<N,T>).
-                var(delta),
-                clone_expr(var(hat)),
-                clone_expr(var(r_param_name)),
-            ],
-        }, prov)
-    }
-}
-
-/// The **IOP-based** prove-the-verifier fold sink — a parallel backend to
-/// [`NovaFoldSink`], described in `docs/prove-the-verifier-iop.md`. Threads
-/// a fixed-size accumulator through the woven verifier exactly like
-/// [`NovaFoldSink`] does (same trait, same one-extra-param/one-extra-
-/// return-slot shape), but the harness this links against
-/// (`volar-verifier-iop-runtime`) folds **natively** in a `GF(2^k)` tower
-/// field (`volar_iop::field`) instead of embedding into the Ed25519 scalar
-/// field `F_ℓ`. Named
-/// `IopAccumulator`/`IopChallenge`/`iop_fold_gate`/`iop_accumulator_fresh` —
-/// the harness must supply matching definitions.
+/// The IOP-based prove-the-verifier fold sink, described in
+/// `docs/prove-the-verifier-iop.md`. Threads a fixed-size accumulator
+/// through the woven verifier's loop, updated once per AND gate via
+/// `iop_fold_gate` (externally resolved, § trait doc) — the harness this
+/// links against (`volar-verifier-iop-runtime`) folds **natively** in a
+/// `GF(2^k)` tower field (`volar_iop::field`), no cross-field embedding.
+/// Named `IopAccumulator`/`IopChallenge`/`iop_fold_gate`/
+/// `iop_accumulator_fresh` — the harness must supply matching definitions.
 ///
-/// **A lift trait is still needed — but a trivial, sound one, not
-/// `NovaFoldSink`'s.** `T` (the VOLE's own field, e.g. `Galois` for
-/// `GF(2^8)`) is a different Rust type from the fold's tower field (e.g.
-/// `Gf128`), even though the latter is built as an *extension* of (an
-/// encoding of) the former — Rust still needs an explicit embedding
-/// function. The crucial difference from `NovaFoldSink`'s `FoldLift`: this
-/// embedding is a **canonical, characteristic-preserving ring embedding**
-/// (`T` sits inside the tower field's base level, no bit-decomposition, no
-/// cross-characteristic cast) — not the fraught `GF(2^k)→F_ℓ` seam
-/// `FoldLift`/`fold-lift-expansion.md` exists to safely replace. Named
-/// `IopLift` to keep that distinction visible in the woven code and the
-/// harness, rather than reusing `FoldLift`'s name for a different
-/// contract.
+/// **A lift trait is still needed, but a trivial, sound one.** `T` (the
+/// VOLE's own field, e.g. `Galois` for `GF(2^8)`) is a different Rust type
+/// from the fold's tower field (e.g. `Gf128`), even though the latter is
+/// built as an *extension* of (an encoding of) the former — Rust still
+/// needs an explicit embedding function. This embedding (`IopLift`) is a
+/// **canonical, characteristic-preserving ring embedding** (`T` sits inside
+/// the tower field's base level, no bit-decomposition, no cross-
+/// characteristic cast), sound by construction (the literal definition of a
+/// field extension containing its base field) — ordinary type plumbing,
+/// not a cryptographic design decision needing separate review.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct IopSink;
 
@@ -713,8 +635,7 @@ impl<P: Clone + Default> VerifierTraceSink<P> for IopSink {
                 clone_expr(var(k_a)),
                 clone_expr(var(k_b)),
                 clone_expr(var(k_c)),
-                // Same reasoning as NovaFoldSink::and_gate_step: delta is
-                // already &Delta<N,T> here, so pass it bare (not
+                // delta is already &Delta<N,T> here, so pass it bare (not
                 // .clone()'d, which would auto-deref-then-clone into an
                 // owned Delta<N,T>).
                 var(delta),
@@ -1671,8 +1592,8 @@ where
         });
     }
 
-    // Return type: (Q<N, T>, bool) — or (Q<N, T>, bool, FoldAccumulator) when
-    // a trace sink is configured.
+    // Return type: (Q<N, T>, bool) — or (Q<N, T>, bool, {state_type_name})
+    // when a trace sink is configured.
     let mut ret_elems = vec![
         q_type(),
         IrType::Primitive(PrimitiveType::Bool),
@@ -4346,8 +4267,8 @@ mod tests {
         run_compile_check(&code, "vole_verifier");
     }
 
-    // ---- VerifierTraceSink: default None is a no-op, NovaFoldSink threads
-    // real IR ------------------------------------------------------------
+    // ---- VerifierTraceSink: default None is a no-op, IopSink threads
+    // real IR --------------------------------------------------------
 
     #[test]
     fn trace_sink_none_by_default_leaves_verifier_unchanged() {
@@ -4357,7 +4278,7 @@ mod tests {
         let config = ZkWitnessConfig::default();
         let module = weave_vole_verifier_with_config(&circuit, "test_circuit", &config, None);
         let code = print_weaved_vole_module(module.inner());
-        for needle in ["fold_state", "FoldAccumulator", "fold_and_gate", "fold_accumulator_fresh", "FoldScalar", "r_and_"] {
+        for needle in ["fold_state", "IopAccumulator", "iop_fold_gate", "iop_accumulator_fresh", "IopChallenge", "r_and_"] {
             assert!(!code.contains(needle), "trace_sink()=None must not emit {needle:?}, got:\n{code}");
         }
         run_compile_check(&code, "vole_verifier_no_sink");
@@ -4379,26 +4300,26 @@ mod tests {
     }
 
     #[test]
-    fn nova_fold_sink_threads_typed_state_and_real_call_sites() {
+    fn iop_sink_threads_typed_state_and_real_call_sites() {
         // build_xor_and_circuit has exactly one AND gate (gate index 0).
         let circuit = build_xor_and_circuit();
         let config = ZkWitnessConfig::default();
         let module =
-            weave_vole_verifier_with_trace(&circuit, "test_circuit", &config, &NovaFoldSink, None);
+            weave_vole_verifier_with_trace(&circuit, "test_circuit", &config, &IopSink, None);
         let code = print_weaved_vole_module(module.inner());
 
         // Threaded state: bound at entry via the externally-resolved init
         // function, reassigned via the per-gate fold call, returned.
-        assert!(code.contains("fold_accumulator_fresh"), "missing init call:\n{code}");
+        assert!(code.contains("iop_accumulator_fresh"), "missing init call:\n{code}");
         assert!(code.contains("fold_state"), "missing threaded state var:\n{code}");
-        assert!(code.contains("fold_and_gate"), "missing per-gate fold call:\n{code}");
-        assert!(code.contains("FoldAccumulator"), "missing state type:\n{code}");
+        assert!(code.contains("iop_fold_gate"), "missing per-gate fold call:\n{code}");
+        assert!(code.contains("IopAccumulator"), "missing state type:\n{code}");
 
         // Exactly one per-gate fold challenge param (gate index 0), matching
         // the circuit's single AND gate — not a second one.
         assert!(code.contains("r_and_0"), "missing r_and_0 param:\n{code}");
         assert!(!code.contains("r_and_1"), "unexpected r_and_1 for a single-AND-gate circuit:\n{code}");
-        assert!(code.contains("FoldScalar"), "missing fold-challenge type:\n{code}");
+        assert!(code.contains("IopChallenge"), "missing fold-challenge type:\n{code}");
 
         // Real IR, not a raw string: and_gate_step referenced the gate's
         // *actual* wire/param names (q_and_0/hat_0-derived wire, delta) —
@@ -4406,10 +4327,10 @@ mod tests {
         assert!(code.contains("hat_0"), "and_gate_step must reference the real hat_0, not a placeholder:\n{code}");
         assert!(code.contains("delta"), "and_gate_step must reference the real delta param:\n{code}");
 
-        // NOT compile-checked here: FoldAccumulator/fold_and_gate/etc. are
+        // NOT compile-checked here: IopAccumulator/iop_fold_gate/etc. are
         // deliberately unresolved (see VerifierTraceSink's doc) — resolving
-        // them is the runtime harness's job (crates/fold/volar-verifier-runtime,
-        // still to be built), not this weave-time test's.
+        // them is the runtime harness's job (crates/iop/volar-verifier-iop-runtime),
+        // not this weave-time test's.
     }
 
     // ---- Side 2: weave_*_with_side parity with the legacy ZkWitnessConfig path ---

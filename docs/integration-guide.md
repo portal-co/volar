@@ -33,7 +33,6 @@ broad capabilities:
 | Multi-party computation type skeletons | `volar-spec` (`mpc`) | Experimental, status `design` | **No.** Stubs only. |
 | Recursive Path ORAM (client + server) | `volar-oram`, `volar-oram-core` | Experimental | **No.** Prototyping only. |
 | Generic protocol abstraction (transport-agnostic) | `volar-channel` | Experimental | **No.** Prototyping only. |
-| GRAFHEN homomorphic evaluation (correctness layer) | `volar-spec` (`grafhen`), `volar-weaver` | Experimental, **IND-CPA broken** | **No, never** as a confidentiality primitive. See [grafhen.md](grafhen.md) and [grafhen-appsec.md](grafhen-appsec.md). |
 | Compiler from `volar-spec` Rust to dynamic Rust, TypeScript, or C | `volar-compiler`, `volar-weaver`, `volar-c-backend`, `volar-lir-codegen` | Normal | Yes — for the compiler itself; the *output* inherits the reliability of the spec it compiled. |
 
 The compiler is more mature than the protocols it compiles. If you need
@@ -300,9 +299,6 @@ Practical rules:
    call site.
 5. **Never link an `.insecure` file.** Their extension is the only thing
    stopping `rustc` from compiling them; do not move or rename them.
-6. **GRAFHEN is not a confidentiality primitive.** If you use it at all,
-   use it the way [grafhen-appsec.md](grafhen-appsec.md) describes:
-   inside a ZK correctness proof, not as a way to hide data.
 
 For applications that can defer cryptographic deployment, the safest
 posture today is:
@@ -351,12 +347,6 @@ is the canonical Rust pattern.
 compile time. If your application can use type-level lengths, use
 `volar-spec` directly: it has stronger compile-time correctness and
 better codegen.
-
-### Mistake: Treating GRAFHEN ciphertexts as confidential
-
-GRAFHEN ciphertexts are distinguishable. Treat them as **public**
-artefacts and rely on a separate ZK proof for correctness. See
-[grafhen-appsec.md](grafhen-appsec.md).
 
 ### Mistake: Calling spec functions in tight TS loops without batching
 
@@ -407,8 +397,6 @@ real applications depend on get reviewed first.
 - [vole-weaving.md](vole-weaving.md) — how the VOLE ZK weaver works.
 - [garbling-pipeline.md](garbling-pipeline.md) — how the garbling weaver
   works.
-- [grafhen.md](grafhen.md), [grafhen-appsec.md](grafhen-appsec.md) —
-  GRAFHEN construction and its IND-CPA break.
 - [insecure.md](insecure.md) — what the `.insecure` extension means.
 - [text-format-spec.md](text-format-spec.md) — IR text formats for
   serialised artefacts.

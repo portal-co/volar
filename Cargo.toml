@@ -39,7 +39,6 @@ members = [
     "crates/net/volar-net",
     "crates/fold/volar-fold",
     "crates/fold/volar-verifier-fold",
-    "crates/fold/volar-verifier-runtime",
     "crates/iop/volar-iop",
     "crates/iop/volar-verifier-iop-runtime",
     "crates/tools/volar-ir-tester",

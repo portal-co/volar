@@ -126,7 +126,9 @@ implementation focus (VOLE-based ZK, garbled circuits, ORAM, compiler toolchain)
 - [ ] additional garbled circuit schemes
 
 ### Encryption schemes
-- [ ] GRAFHEN: replace/fix current stub with full scheme design (currently experimental placeholder)
+- [x] ~~GRAFHEN~~ — removed: unconditional IND-CPA break (ePrint 2026/700), no
+      patch possible in its design family; TFHE already covers its
+      ZK-correctness-layer use case
 - [ ] CKKS: approximate homomorphic encryption for real-number computation
 - [ ] BFV/BGV: exact integer homomorphic encryption schemes
 - [ ] TFHE: fully homomorphic encryption over binary circuits (bootstrapping-based)

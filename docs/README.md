@@ -48,7 +48,7 @@ matches or exceeds the file's required tier. Both systems are defined in
 |---|---|---|
 | **Tier 1 — Glue** | Any current Claude model | Documentation, formatting, mechanical refactors |
 | **Tier 2 — Compiler** | Sonnet 4.6+ or Opus 4.5+ | Compiler, IR, lowering, weavers, backends, fuzzing |
-| **Tier 3 — Cryptography** | Opus 4.6+ only | Cryptographic spec, primitives, ORAM, Hazmat code |
+| **Tier 3 — Cryptography** | Sonnet 5+, Opus 4.6+, or Fable 5+ | Cryptographic spec, primitives, ORAM, Hazmat code |
 
 Lower-tier agents can still contribute productively to higher-tier work by
 producing test scaffolding, hand-off documents, and analysis. See
@@ -74,8 +74,7 @@ producing test scaffolding, hand-off documents, and analysis. See
 |---|---|
 | [spec.md](spec.md) | `volar-spec`: VOLE ZK, garbled circuits, MPC types, byte generation, `volar-common`, `volar-primitives` |
 | [vole-weaving.md](vole-weaving.md) | VOLE prover/verifier code generation from boolean circuits (Quicksilver-style) |
-| [prove-the-verifier.md](prove-the-verifier.md) | Folding the VOLE verifier into a single relaxed-R1CS instance (`volar-fold` reuse, no zkSNARK), memory-commitment boundaries, and the ZK↔non-ZK discipline that gates it |
-| [prove-the-verifier-iop.md](prove-the-verifier-iop.md) | Parallel IOP-based backend: native `GF(2^k)` fold + a Merkle+Fiat–Shamir finalization proof (`volar-iop`), no `GF(2^k)→F_ℓ` embedding |
+| [prove-the-verifier-iop.md](prove-the-verifier-iop.md) | Prove-the-verifier: native `GF(2^k)` fold + a Merkle+Fiat–Shamir finalization proof (`volar-iop`), including the memory-accumulator boundary, and the ZK↔non-ZK discipline that gates it |
 | [garbling-pipeline.md](garbling-pipeline.md) | Garbler/evaluator code generation for half-gate garbled circuits |
 | [memory-checking.md](memory-checking.md) | Multiset memory checking for VOLE-authenticated storage |
 
@@ -97,9 +96,6 @@ producing test scaffolding, hand-off documents, and analysis. See
 | Document | What it covers |
 |---|---|
 | [fhe-weaver.md](fhe-weaver.md) | The generic FHE scheme abstraction and weaver |
-| [grafhen.md](grafhen.md) | GRAFHEN construction, ZK architecture, and the IND-CPA break |
-| [grafhen-appsec.md](grafhen-appsec.md) | Operational security rules for any GRAFHEN deployment |
-| [grafhen-review-plan.md](grafhen-review-plan.md) | Review plan tracking GRAFHEN toward higher reliability |
 
 ### ORAM and channel
 
@@ -119,7 +115,6 @@ producing test scaffolding, hand-off documents, and analysis. See
 | Document | Status |
 |---|---|
 | [external-primitives-plan.md](external-primitives-plan.md) | Oracles, Actions, and Native RNG — partial implementation; ActionCall is in use |
-| [grafhen-review-plan.md](grafhen-review-plan.md) | Active review tracker |
 
 ### Agent-context briefings
 

@@ -6,12 +6,12 @@
 //! The VOLE verifier's per-gate check lives in `GF(2^8)`
 //! ([`volar_primitives::Galois`]), which has only 256 elements — far too
 //! small a challenge space for negligible Fiat–Shamir/query soundness
-//! error. Rather than embed into an unrelated prime field (the
-//! `GF(2^k)→F_ℓ` seam `docs/agent-context/gf2k-to-fell-embedding.md` flags
-//! as a Tier-3 open question for the *folding* path), this module builds a
-//! **binary tower field** on top of `Galois` by repeated quadratic
-//! extension — the standard construction behind binary-field SNARKs
-//! (Wiedemann towers): each level is `F_{i+1} = F_i[x]/(x^2 + x + β_i)`.
+//! error. Rather than embed into an unrelated prime field (a real, generally-
+//! open cryptographic question for any construction that needs to bridge a
+//! binary field into a prime field), this module builds a **binary tower
+//! field** on top of `Galois` by repeated quadratic extension — the
+//! standard construction behind binary-field SNARKs (Wiedemann towers):
+//! each level is `F_{i+1} = F_i[x]/(x^2 + x + β_i)`.
 //!
 //! ## Why quadratic-tower, not a single degree-`m` extension
 //!

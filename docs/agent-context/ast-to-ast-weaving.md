@@ -19,10 +19,10 @@ complete than it is today to support the full FHE surface.
 ## Status
 
 Not started. Raised while scoping the prove-the-verifier folding work
-(`docs/prove-the-verifier.md`) as a related-but-separate idea — that work
-explicitly does **not** need this (it goes through `print_module`, which already
-exists and is the established "real backend" test pattern per `AGENTS.md` rule 2,
-not a new AST-to-AST mechanism).
+(`docs/prove-the-verifier-iop.md`) as a related-but-separate idea — that
+work explicitly does **not** need this (it goes through `print_module`, which
+already exists and is the established "real backend" test pattern per
+`AGENTS.md` rule 2, not a new AST-to-AST mechanism).
 
 ## What starting this would involve
 

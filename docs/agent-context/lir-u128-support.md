@@ -19,13 +19,17 @@ Montgomery reduction, u128-widened products throughout — both the fast path an
 the "reference" `mul_ref` path) from ever being spec-linked and lowered through
 the C backend, not just `volar_spec::curve`.
 
-## Why this matters (context from the prove-the-verifier folding work)
+## Why this matters (context from the continuation bridge's folding work)
 
-The fold-accumulating VOLE verifier (`NovaFoldSink`, `volar-weaver`'s
-`vole.rs`) currently executes via `print_module` → real `rustc`
-(`volar-verifier-runtime::run_folded_verifier`), specifically *because* this gap
-blocks the C/LIR path for anything touching `Scalar`/curve arithmetic. See
-`docs/prove-the-verifier.md` for how that's wired.
+Anything touching `volar_fold::scalar::Scalar` (the continuation bridge's
+`F_ℓ` folding scalar) or `volar_spec::curve`'s `Fe25519`/`EdPoint` currently
+has to execute via `print_module` → real `rustc`, specifically *because*
+this gap blocks the C/LIR path. (Separately, the IOP-based prove-the-verifier
+path's `IopSink`-woven verifiers, `docs/prove-the-verifier-iop.md`, also use
+the `rustc` path via `emit_verifier_rust` — but for an unrelated reason: its
+`IopChallenge`/`IopAccumulator`/`iop_fold_gate` bare names aren't part of the
+IR's own type system, not a `u128` issue — its `Gf128` tower field doesn't
+use `u128` arithmetic at all.)
 
 ## What closing this would unlock
 

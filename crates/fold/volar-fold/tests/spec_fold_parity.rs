@@ -8,12 +8,39 @@
 use proptest::prelude::*;
 use volar_fold::nifs::{fresh, prove_fold};
 use volar_fold::pedersen::PedersenParams;
+use volar_fold::r1cs::R1CS;
 use volar_fold::scalar::Scalar;
-use volar_fold::verifier::and_check_r1cs;
 use volar_spec::fold as spec;
 
 fn s(x: u64) -> Scalar {
     Scalar::from_u64(x)
+}
+
+/// The verifier-gate R1CS `K_a·K_b + V̂ = K_c·Δ` — witness layout
+/// `W = [K_a, K_b, K_c, Δ, V̂, P₁, P₂]` (`z = [W ‖ u]`, `spec::AND_VARS`/
+/// `spec::AND_CONS` document the same fixed shape on the spec side this
+/// test cross-checks against). Kept local to this test: it's the fixed
+/// relation `volar_spec::fold` was written to be cross-tested against, not
+/// production prove-the-verifier machinery (that now lives natively in
+/// `volar-iop::fold::and_check_r1cs`, over a different field).
+fn and_check_r1cs() -> R1CS {
+    let one = Scalar::ONE;
+    let neg_one = one.neg();
+    const K_A: usize = 0;
+    const K_B: usize = 1;
+    const K_C: usize = 2;
+    const DELTA: usize = 3;
+    const V_HAT: usize = 4;
+    const P1: usize = 5;
+    const P2: usize = 6;
+    const U: usize = 7;
+    R1CS {
+        num_cons: 3,
+        num_vars: 8,
+        a: vec![(0, K_A, one), (1, K_C, one), (2, P1, one), (2, V_HAT, one), (2, P2, neg_one)],
+        b: vec![(0, K_B, one), (1, DELTA, one), (2, U, one)],
+        c: vec![(0, P1, one), (1, P2, one)],
+    }
 }
 
 /// An honest gate witness `[k_a,k_b,k_c,Δ,V̂,P₁,P₂]` with `V̂ = K_c·Δ − K_a·K_b`,

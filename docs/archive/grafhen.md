@@ -1,8 +1,17 @@
 # GRAFHEN: Technical Reference
 
-> **WARNING: IND-CPA BROKEN.** See [§ The IND-CPA Break](#the-ind-cpa-break) below.
-> This document exists to support academic study and the ZK-correctness use case.
-> GRAFHEN **must not** be used as a confidentiality primitive.
+> **ARCHIVED — REMOVED FROM THE CODEBASE.** GRAFHEN's implementation
+> (`volar-spec::grafhen`, `volar-weaver::grafhen`, `GrafhenScheme`) has been
+> deleted: its IND-CPA break (§ below) is unconditional and unpatchable in
+> its whole design family, and its only retained use case — a fast
+> ZK-correctness layer for homomorphic evaluation — is already covered by
+> TFHE (`volar_spec::tfhe`), which has no such break. Kept here as a
+> historical/academic record only; nothing in this document describes live
+> code.
+>
+> **Original warning (kept for context): IND-CPA BROKEN.** See
+> [§ The IND-CPA Break](#the-ind-cpa-break) below. GRAFHEN **must not** be
+> used as a confidentiality primitive.
 
 ## Overview
 

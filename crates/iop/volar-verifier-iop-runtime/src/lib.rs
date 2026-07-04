@@ -4,13 +4,13 @@
 //! *executes* an `IopSink`-woven VOLE verifier and produces/checks its
 //! finalization proof — the counterpart to `volar-verifier-fold`'s
 //! compile-time-only `emit_verifier_c`/`emit_verifier_rust` terminals
-//! (unchanged, backend-agnostic — see `docs/prove-the-verifier-iop.md`).
-//! Mirrors `crates/fold/volar-verifier-runtime/src/lib.rs`'s shape exactly,
-//! one level down: deliberately depends only on `volar-iop`/`volar-spec`/
-//! `volar-discipline` (+ `std`), never on
-//! `volar-compiler`/`volar-lir-codegen`/`volar-c-backend`/`volar-weaver`.
+//! (backend-agnostic — see `docs/prove-the-verifier-iop.md`). Deliberately
+//! depends only on `volar-iop`/`volar-spec`/`volar-discipline` (+ `std`),
+//! never on `volar-compiler`/`volar-lir-codegen`/`volar-c-backend`/
+//! `volar-weaver`, so the compiler-crate dependency graph stays
+//! one-directional (weave → print → text → this crate).
 //!
-//! Two halves, mirroring `volar-verifier-runtime`'s own split:
+//! Two halves:
 //!
 //! 1. **In-loop fold-linking definitions** ([`IopLift`], [`IopChallenge`],
 //!    [`IopAccumulator`], [`iop_accumulator_fresh`], [`iop_fold_gate`]) —
@@ -21,25 +21,18 @@
 //!    doc, for why those names are left unresolved at weave time).
 //! 2. [`prove_and_verify_iop`] — the pipeline terminal (Phase 2) — and
 //!    [`run_iop_verifier`], the generic "print → temp Cargo project → real
-//!    `cargo`/`rustc`" harness (same shape as `volar-verifier-runtime`'s
-//!    `run_folded_verifier` and this repo's other such harnesses,
-//!    `AGENTS.md` rule 2).
+//!    `cargo`/`rustc`" harness (`AGENTS.md` rule 2).
 //!
-//! ## Why `IopLift` is a *sound* embedding, unlike the old one-scalar `FoldLift`
+//! ## Why `IopLift` is a sound embedding
 //!
 //! `T` (the VOLE's own field, e.g. `Galois` for `GF(2^8)`) is a different
 //! Rust type from [`Gf128`] (this crate's fold/challenge field), even though
 //! `Gf128` is built as a tower *extension* of (an encoding of) `Galois` —
-//! Rust still needs an explicit conversion. Unlike `NovaFoldSink`'s
-//! `FoldLift` (whose *old*, one-scalar version was an unsound
-//! reinterpret-as-integer cast into an unrelated prime field — see
-//! `docs/agent-context/gf2k-to-fell-embedding.md` — since fixed by bit
-//! expansion, `volar_fold::gf2k`), [`IopLift::iop_embed`] is a **canonical
-//! ring embedding**: it places `T`'s value at the tower's base level with
-//! every higher limb zero. This is sound *by construction* (it's the
-//! literal definition of a field extension containing its base field) —
-//! not a cryptographic design decision needing the same review `FoldLift`'s
-//! bit-expansion needed, just ordinary type plumbing.
+//! Rust still needs an explicit conversion. [`IopLift::iop_embed`] is a
+//! **canonical ring embedding**: it places `T`'s value at the tower's base
+//! level with every higher limb zero. This is sound *by construction* (it's
+//! the literal definition of a field extension containing its base field)
+//! — ordinary type plumbing, not a cryptographic design decision.
 
 use volar_discipline::{NonZk, Tagged, Transparent};
 use volar_iop::field::{Field as IopField, Gf128};
@@ -64,7 +57,7 @@ pub type IopAccumulator = volar_iop::fold::IopAccumulator<Gf128>;
 
 /// Canonical, characteristic-preserving embedding of a VOLE field element
 /// into [`Gf128`] — see this module's doc for why this is sound by
-/// construction, unlike `volar_verifier_runtime::FoldLift`.
+/// construction (a plain ring embedding, not a cross-field cast).
 pub trait IopLift {
     fn iop_embed(&self) -> Gf128;
 }
@@ -95,12 +88,10 @@ pub fn iop_accumulator_fresh() -> IopAccumulator {
 
 /// What an `IopSink`-woven verifier's `iop_fold_gate` bare name resolves
 /// to: fold one AND gate's observed values into `state`, natively in
-/// `Gf128` — no bit-expansion, no R1CS-embedding gadget (contrast
-/// `volar_verifier_runtime::fold_and_gate`, which needs
-/// `volar_fold::gf2k::and_check_gf2k` specifically to stay sound over a
-/// *different* field). Lane-0 projection of the `N` parallel VOLE lanes —
-/// the same documented simplification `fold_and_gate` already carries
-/// (`crates/fold/volar-verifier-runtime/src/lib.rs:249-255`).
+/// `Gf128` — no bit-expansion, no R1CS-embedding gadget needed. Lane-0
+/// projection of the `N` parallel VOLE lanes — a documented simplification
+/// (per-gate Δ-independence across lanes is a separate, already-flagged
+/// concern; see `docs/prove-the-verifier-iop.md`'s honest scope).
 pub fn iop_fold_gate<N, T>(
     state: IopAccumulator,
     k_a: Q<N, T>,
@@ -129,21 +120,27 @@ where
 /// **Pipeline terminal (finalization leg).** Fold the whole verifier
 /// (Phase 1, already folded into `acc` by the woven verifier calling
 /// [`iop_fold_gate`] once per gate) and produce + check the finalization
-/// proof (Phase 2). Returns the proof and whether it verifies.
+/// proof (Phase 2), including the memory-accumulator boundary
+/// `(mem_acc_in, mem_acc_out)` — pass empty slices for a circuit with no
+/// committed storage. `expected_mem_acc`, if given, additionally checks the
+/// proof's recovered memory boundary against a caller-supplied expectation.
+/// Returns the proof and whether it verifies.
 ///
 /// Bound `where Z: NonZk`: a [`volar_discipline::Zk`] artifact cannot reach
-/// here (compile error) — mirrors
-/// `volar_verifier_runtime::prove_and_verify_folded` exactly.
+/// here (compile error).
 pub fn prove_and_verify_iop<Z: NonZk>(
     acc: Tagged<Z, IopAccumulator>,
+    mem_acc_in: &[Gf128],
+    mem_acc_out: &[Gf128],
+    expected_mem_acc: Option<(&[Gf128], &[Gf128])>,
 ) -> (Tagged<Transparent, LigeroProof<Gf128>>, bool) {
-    let proof = volar_iop::prove_verifier_iop(acc);
-    let ok = volar_iop::verify_iop(&proof);
+    let proof = volar_iop::prove_verifier_iop(acc, mem_acc_in, mem_acc_out);
+    let ok = volar_iop::verify_iop(&proof, expected_mem_acc);
     (proof, ok)
 }
 
 // ============================================================================
-// Generic compile-and-run harness (mirrors volar-verifier-runtime's own)
+// Generic compile-and-run harness
 // ============================================================================
 
 fn workspace_root() -> std::string::String {
@@ -158,9 +155,8 @@ fn workspace_root() -> std::string::String {
 /// `volar_verifier_fold::emit_verifier_rust`) together with `driver_src` (a
 /// hand-written `#[test]` module that calls into it) as a real, standalone
 /// Cargo project — same "print → temp Cargo project → cargo test → capture
-/// output" shape as `volar-verifier-runtime::run_folded_verifier` and this
-/// repo's other such harnesses (`AGENTS.md` rule 2). Returns captured
-/// stdout on success; panics with stdout+stderr on failure.
+/// output" shape as this repo's other such harnesses (`AGENTS.md` rule 2).
+/// Returns captured stdout on success; panics with stdout+stderr on failure.
 pub fn run_iop_verifier(rust_source: &str, driver_src: &str) -> std::string::String {
     let root = workspace_root();
     let tmpdir = std::env::temp_dir().join(std::format!(
@@ -227,8 +223,7 @@ mod tests {
     use volar_iop::transcript::FromBytes as _;
 
     fn honest_gate(a: u8, b: u8, d: u8) -> (Galois, Galois, Galois, Galois, Galois) {
-        // GF(2^8) multiply/inverse mirrored locally (same as
-        // volar-verifier-runtime's own test-local mirror) to avoid a new
+        // GF(2^8) multiply/inverse implemented locally to avoid a new
         // dependency, and to pick k_c so v_hat = 0.
         fn gf_mul(a: u8, b: u8) -> u8 {
             let mut p = 0u8;
@@ -306,9 +301,38 @@ mod tests {
             state = iop_fold_gate(state, q1(ka), q1(kb), q1(kc), &delta1(delta), hat1(vv), r);
         }
         let tagged: Tagged<Transparent, _> = Tagged::seal(state);
-        let (proof, ok) = prove_and_verify_iop(tagged);
+        let (proof, ok) = prove_and_verify_iop(tagged, &[], &[], None);
         assert!(ok, "honest chain of gates must produce a verifying finalization proof");
         assert_eq!(proof.discipline(), volar_discipline::Discipline::Transparent);
+    }
+
+    #[test]
+    fn whole_verifier_with_memory_boundary_verifies() {
+        let mut state = iop_accumulator_fresh();
+        for (i, &(a, b, d)) in [(0x37u8, 0x82u8, 0xc3u8), (0x01, 0xff, 0x1d)].iter().enumerate() {
+            let (ka, kb, kc, delta, vv) = honest_gate(a, b, d);
+            let r = IopChallenge::from_u64(0xabcd + i as u64);
+            state = iop_fold_gate(state, q1(ka), q1(kb), q1(kc), &delta1(delta), hat1(vv), r);
+        }
+        let tagged: Tagged<Transparent, _> = Tagged::seal(state);
+        let mem_in = [IopChallenge::from_u64(1)];
+        let mem_out = [IopChallenge::from_u64(2)];
+        let (proof, ok) = prove_and_verify_iop(tagged, &mem_in, &mem_out, Some((&mem_in, &mem_out)));
+        assert!(ok, "honest chain + matching memory-boundary expectation must verify");
+        let _ = proof;
+    }
+
+    #[test]
+    fn memory_boundary_mismatch_is_rejected() {
+        let mut state = iop_accumulator_fresh();
+        let (ka, kb, kc, delta, vv) = honest_gate(0x37, 0x82, 0xc3);
+        state = iop_fold_gate(state, q1(ka), q1(kb), q1(kc), &delta1(delta), hat1(vv), IopChallenge::from_u64(1));
+        let tagged: Tagged<Transparent, _> = Tagged::seal(state);
+        let mem_in = [IopChallenge::from_u64(1)];
+        let mem_out = [IopChallenge::from_u64(2)];
+        let wrong_out = [IopChallenge::from_u64(999)];
+        let (_, ok) = prove_and_verify_iop(tagged, &mem_in, &mem_out, Some((&mem_in, &wrong_out)));
+        assert!(!ok, "a caller-expected memory boundary that doesn't match must be rejected");
     }
 
     #[test]
@@ -324,7 +348,7 @@ mod tests {
             state = iop_fold_gate(state, q1(ka), q1(kb), q1(kc), &delta1(delta), hat1(vv), r);
         }
         let tagged: Tagged<Transparent, _> = Tagged::seal(state);
-        let (_, ok) = prove_and_verify_iop(tagged);
+        let (_, ok) = prove_and_verify_iop(tagged, &[], &[], None);
         assert!(!ok, "a tampered gate observation must fail the finalization proof");
     }
 }

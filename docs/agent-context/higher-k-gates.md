@@ -28,8 +28,9 @@ alongside.
 ## Status
 
 Not started. Explicitly out of scope for the prove-the-verifier folding plan
-(`docs/prove-the-verifier.md`) — that work's completeness tests deliberately do
-not exercise K=3/FAEST paths, and any *future* completeness tests for this gap,
+(`docs/prove-the-verifier-iop.md`) — that work's completeness tests
+deliberately do not exercise K=3/FAEST paths, and any *future* completeness
+tests for this gap,
 once it's implemented, should stay scoped to what K-generalization actually
 changes (gate emission, witness/hat handling) rather than pulling in
 FAEST/AES-pinning-specific behavior as part of testing the generalization itself.

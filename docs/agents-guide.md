@@ -122,11 +122,9 @@ convenience.
    conflict.
 4. **`volar-spec` must remain deterministic.** No `rand` crate. The spec
    layer uses `SpecRng`.
-5. **Do not change `grafhen_xor`.** Garbled circuits depend on free
-   composable XOR.
-6. **CFG and flat AST are not interconvertible.** The flat AST is total; the
+5. **CFG and flat AST are not interconvertible.** The flat AST is total; the
    CFG is not.
-7. **Use `IrExpr::RawMap` for `[T; N]::map`-style expressions.** Never
+6. **Use `IrExpr::RawMap` for `[T; N]::map`-style expressions.** Never
    `MethodCall` + `Closure`.
 
 ---
@@ -136,17 +134,19 @@ convenience.
 When working on `crates/spec/`, `crates/spec/volar-primitives/`,
 `crates/spec/volar-common/`, `crates/oram/volar-oram-core/`,
 `crates/oram/volar-oram/`, the cryptographic schemes inside
-`crates/compiler/volar-weaver/` (`grafhen.rs`, `garble`, `vole`), or any file
+`crates/compiler/volar-weaver/` (`garble`, `vole`), or any file
 marked `@reliability: hazmat`:
 
 1. **New cryptographic constructions enter at Experimental.** Never start at
    Normal or Hazmat. Use `// @reliability: experimental` and add the file to
    the *Current Experimental Files* table.
 2. **Each new construction needs a review plan.** Write a document analogous
-   to [grafhen-review-plan.md](grafhen-review-plan.md): an ordered list of
-   internal review, correctness review, and integration review phases, each
-   with explicit reviewer requirements. AI cannot complete Phase 3
-   (integration review) alone.
+   to [archive/grafhen-review-plan.md](archive/grafhen-review-plan.md)
+   (archived — the construction it reviewed was later removed, but the
+   review-plan shape is still a good template): an ordered list of internal
+   review, correctness review, and integration review phases, each with
+   explicit reviewer requirements. AI cannot complete Phase 3 (integration
+   review) alone.
 3. **Reference implementations are mandatory.** Cite the paper, the section,
    and the equation/algorithm number for every new construction. If you
    diverge from the reference, mark the divergence inline and explain why.
@@ -347,6 +347,6 @@ perform the work, provided it is tagged as sub-threshold and queued for review.
 - [integration-guide.md](integration-guide.md) — for *users* integrating
   Volar into applications, not for AI agents modifying Volar itself.
 - [insecure.md](insecure.md) — policy for the `.insecure` file extension.
-- [grafhen-review-plan.md](grafhen-review-plan.md) — example of a properly
-  structured review plan a Tier 3 agent should produce for new
-  constructions.
+- [archive/grafhen-review-plan.md](archive/grafhen-review-plan.md) — archived
+  example of a properly structured review plan a Tier 3 agent should produce
+  for new constructions.

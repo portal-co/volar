@@ -37,7 +37,7 @@ says how trusted the *AI agent* must be to self-review a change to it.
 |---|---|---|---|
 | **Tier 1 — Glue** | Any current Claude model | Any current GPT model not listed for Tier 2 or Tier 3, including GPT-5.4-Mini and earlier small/fast variants | Documentation, formatting, mechanical refactors, test scaffolding |
 | **Tier 2 — Compiler** | Sonnet 4.6+ or Opus 4.5+ | Full GPT-5.2, GPT-5.3-Codex, full GPT-5.4, GPT-5.5, and later non-mini successors | Compiler, IR, lowering, weavers, backends, fuzzing |
-| **Tier 3 — Cryptography** | **Opus 4.6+ only** (Sonnet not permitted at this tier) | **GPT-5.5+ only** | `volar-spec`, `volar-primitives`, `volar-common`, `volar-oram*`, GRAFHEN/TFHE schemes, Hazmat code |
+| **Tier 3 — Cryptography** | **Sonnet 5+, Opus 4.6+, or Fable 5+** (Sonnet ≤ 4.5 not permitted at this tier) | **GPT-5.5+ only** | `volar-spec`, `volar-primitives`, `volar-common`, `volar-oram*`, TFHE schemes, Hazmat code |
 
 **Crate-default tiers:**
 
@@ -102,7 +102,7 @@ the next session. See [`docs/agents-guide.md` § 5](docs/agents-guide.md#5-worki
    contain unreviewed cryptographic code. New code depending on these must
    not be deployed without separate review. `@ai: none` / `@ai: assisted`
    tags indicate AI involvement. **Tier 3 files** (see above) may only be
-   modified by Opus 4.6+ or GPT-5.5+.
+   modified by Sonnet 5+, Opus 4.6+, Fable 5+, or GPT-5.5+.
 
 4. **Catch-all arms**: Use `_ =>` catch-alls on IR type matches to support
    parallel development.
@@ -112,13 +112,10 @@ the next session. See [`docs/agents-guide.md` § 5](docs/agents-guide.md#5-worki
 
 6. **Never specialize on test cases**: Extend tests instead.
 
-7. **GRAFHEN XOR**: Garbled circuits have truly free composable XOR. Do
-   not change `grafhen_xor`.
-
-8. **CFG vs flat AST**: Cannot convert CFG AST to normal AST — the normal
+7. **CFG vs flat AST**: Cannot convert CFG AST to normal AST — the normal
    AST is total while the CPS AST doesn't need to be.
 
-9. **`IrExpr::RawMap`**: Use for portable `[T; N]::map` expressions (not
+8. **`IrExpr::RawMap`**: Use for portable `[T; N]::map` expressions (not
    `MethodCall` + `Closure`).
 
 10. **Keep witness analysis and deshadowing for CFG modules**: The CFG
@@ -153,8 +150,7 @@ Load these when working in the relevant area:
 | Provenance pipeline | `docs/agent-context/provenance-pipeline.md` | Adding provenance to passes, writing `ProvenanceHandler` impls, understanding why `Default`/`synthetic()` are absent |
 | Weaving & multi-backend | `docs/agent-context/weaving.md` | Working on FHE/garbled-circuit weaving, compiler printers (Rust/TS/C), action system, CFG emission |
 | **ZK / non-ZK proving discipline** | `docs/agent-context/discipline.md` | Touching any weaver, `volar-fold`, the build pipeline, or anything that moves a proof `IrModule` — the load-bearing ZK↔non-ZK boundary |
-| Prove-the-verifier folding | `docs/prove-the-verifier.md` | Folding the verifier into a relaxed-R1CS instance, `volar-fold` reuse, memory-commitment boundaries |
-| **GF(2^k) → F_ℓ embedding (open)** | `docs/agent-context/gf2k-to-fell-embedding.md` | Touching `FoldLift`, `NovaFoldSink`, or anything folding the VOLE verifier's field values into `F_ℓ` — unresolved, needs cryptographic review |
+| Prove-the-verifier (IOP-based) | `docs/prove-the-verifier-iop.md` | Folding the verifier natively into `GF(2^k)`, the Merkle+Fiat–Shamir finalization proof, memory-accumulator boundary |
 | `u128` support in LIR/C backend (deferred) | `docs/agent-context/lir-u128-support.md` | Touching `primitive_to_lir`, the C backend, or spec-linking `u128`-using code (`Scalar`, curve arithmetic) |
 | AST-to-AST weaving (future track) | `docs/agent-context/ast-to-ast-weaving.md` | Considering bypassing LIR lowering entirely for a new target (e.g. ZK-proven FHE) |
 | Higher-K gate degree (future track) | `docs/agent-context/higher-k-gates.md` | Touching `BIrStmt::And`'s degree dispatch, `gate_degree`, or K=3+/FAEST AES pinning |

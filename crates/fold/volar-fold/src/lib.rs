@@ -53,11 +53,9 @@ pub(crate) mod r1cs_builder;
 pub mod keccak_r1cs;
 pub mod r1cs;
 pub mod nifs;
-pub mod gf2k;
 pub mod verify;
 pub mod ivc;
 pub mod link;
 pub mod bridge_adapter;
-pub mod verifier;
 
 pub use scalar::Scalar;

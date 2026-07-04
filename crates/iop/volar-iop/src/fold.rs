@@ -1,23 +1,21 @@
 // @reliability: experimental
 // @ai: assisted
-//! **Phase 1**: the per-gate fold — O(1) memory, structurally identical to
-//! `NovaFoldSink`/`fold_and_gate`
-//! (`crates/fold/volar-verifier-runtime/src/lib.rs:236`), but **native** to
-//! this crate's `GF(2^k)` tower field ([`crate::field`]) instead of the
-//! Ed25519 scalar field `F_ℓ`. See `docs/prove-the-verifier-iop.md` for the
-//! full design and the honest caveat on per-gate Fiat–Shamir soundness.
+//! **Phase 1**: the per-gate fold — O(1) memory: a fixed-size accumulator
+//! `(W, E, u)` threaded through the woven verifier's loop and updated once
+//! per AND gate via Nova-style relaxed-R1CS cross-term folding algebra
+//! (same shape as `volar_fold::nifs`'s `cross_term_z`/fold formulas), but
+//! **native** to this crate's `GF(2^k)` tower field ([`crate::field`])
+//! rather than an unrelated prime field. See `docs/prove-the-verifier-iop.md`
+//! for the full design and the honest caveat on per-gate Fiat–Shamir
+//! soundness.
 //!
-//! Because there is no cross-field cast here, the target relation reuses
-//! `and_check_r1cs`'s exact 3-constraint/8-variable shape
-//! (`crates/fold/volar-fold/src/verifier.rs:70-101`) directly — **not**
-//! `and_check_gf2k`'s 174-constraint bit-expansion
-//! (`crates/fold/volar-fold/src/gf2k.rs`), which exists specifically to make
-//! the check sound over a *different* field. This module is a deliberate,
-//! parallel reimplementation (not a shared generic) of
-//! `crates/fold/volar-fold/src/{r1cs,nifs}.rs`'s algebra — kept separate so
-//! `volar-fold`'s own `Scalar`/`EdPoint`/Pedersen types never need
-//! genericizing, per this plan's "don't disturb the existing path"
-//! principle.
+//! Because there is no cross-field cast here, the target relation is
+//! `and_check_r1cs`'s original 3-constraint/8-variable shape, used
+//! directly — no bit-expansion gadget of the kind a cross-field embedding
+//! would otherwise require. This module is a deliberate, standalone
+//! reimplementation (not a shared generic with `volar-fold`) — kept
+//! separate so `volar-fold`'s own `Scalar`/`EdPoint`/Pedersen types never
+//! need genericizing.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -66,8 +64,7 @@ impl<F: Field> R1CS<F> {
     }
 }
 
-/// Column indices for [`and_check_r1cs`]'s 7-witness-slot layout — mirrors
-/// `crates/fold/volar-fold/src/verifier.rs:70-101` exactly.
+/// Column indices for [`and_check_r1cs`]'s 7-witness-slot layout.
 pub const K_A: usize = 0;
 pub const K_B: usize = 1;
 pub const K_C: usize = 2;
@@ -77,9 +74,8 @@ pub const P1: usize = 5;
 pub const P2: usize = 6;
 const U_COL: usize = 7;
 
-/// The per-gate verifier check `K_a·K_b + V̂ = K_c·Δ`, native to `F` — same
-/// shape as `volar_fold::verifier::and_check_r1cs`, just field-generic (no
-/// `GF(2^k)→F_ℓ` cast, so no bit-expansion is needed to keep it sound).
+/// The per-gate verifier check `K_a·K_b + V̂ = K_c·Δ`, native to `F` — no
+/// `GF(2^k)→F_ℓ` cast, so no bit-expansion is needed to keep it sound.
 pub fn and_check_r1cs<F: Field>() -> R1CS<F> {
     let one = F::ONE;
     let neg_one = one.neg();
@@ -119,8 +115,7 @@ pub fn cross_term_z<F: Field>(r1cs: &R1CS<F>, w1: &[F], u1: &F, w2: &[F], u2: &F
 /// The threaded fold-accumulator state: `None` until the first gate is
 /// folded in, then the running `(W, E, u)` — genuinely fixed-size
 /// (`W`: 7 slots, `E`: 3 slots) regardless of how many gates have been
-/// folded, exactly like `FoldAccumulator`
-/// (`crates/fold/volar-verifier-runtime/src/lib.rs:206-217`).
+/// folded.
 #[derive(Clone)]
 pub struct IopAccumulator<F: Field> {
     inner: Option<(Vec<F>, Vec<F>, F)>,
@@ -142,9 +137,9 @@ impl<F: Field> IopAccumulator<F> {
 }
 
 /// Fold one AND gate's native-field values into `state` via the fixed
-/// `and_check_r1cs` shape — no bit-expansion, no `GF(2^k)→F_ℓ` lift, unlike
-/// `fold_and_gate`. `r` is this gate's fold challenge (see the module doc's
-/// pointer to the per-gate Fiat–Shamir honest-scope note).
+/// `and_check_r1cs` shape — no bit-expansion, no `GF(2^k)→F_ℓ` lift needed.
+/// `r` is this gate's fold challenge (see the module doc's pointer to the
+/// per-gate Fiat–Shamir honest-scope note).
 pub fn fold_gate<F: Field>(state: IopAccumulator<F>, k_a: F, k_b: F, k_c: F, delta: F, v_hat: F, r: F) -> IopAccumulator<F> {
     let r1cs = and_check_r1cs::<F>();
     let gate_w = gate_witness(k_a, k_b, k_c, delta, v_hat);
@@ -154,7 +149,7 @@ pub fn fold_gate<F: Field>(state: IopAccumulator<F>, k_a: F, k_b: F, k_c: F, del
             let t = cross_term_z(&r1cs, &w1, &u1, &gate_w, &F::ONE);
             let w: Vec<F> = w1.iter().zip(gate_w.iter()).map(|(x, y)| x.add(&r.mul(y))).collect();
             // The incoming gate is fresh (u2 = 1, E2 = 0), so its r² term
-            // vanishes — same simplification `fold_and_gate` makes.
+            // vanishes.
             let e: Vec<F> = e1.iter().zip(t.iter()).map(|(x, ti)| x.add(&r.mul(ti))).collect();
             let u = u1.add(&r);
             IopAccumulator { inner: Some((w, e, u)) }

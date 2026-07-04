@@ -1,8 +1,16 @@
 # Agent Context: the GF(2^k) → F_ℓ embedding (implemented, needs cryptographic review)
 
-**Load this when:** touching `volar-verifier-runtime`'s `FoldLift`, `NovaFoldSink`
-(`volar-weaver`'s `vole.rs`), or anything folding the VOLE verifier
-(`docs/prove-the-verifier.md`).
+> **ARCHIVED — REMOVED FROM THE CODEBASE.** `FoldLift`, `NovaFoldSink`, and
+> `volar-verifier-runtime` no longer exist — the Nova-based prove-the-verifier
+> path was removed once the IOP-based path
+> (`../prove-the-verifier-iop.md`) subsumed it, staying native to `GF(2^k)`
+> and needing no embedding at all. Kept here as a historical/academic record
+> of this open cryptographic seam and how it was closed for the (now
+> removed) construction; nothing in this document describes live code.
+
+**Load this when:** (historical) touching `volar-verifier-runtime`'s
+`FoldLift`, `NovaFoldSink` (`volar-weaver`'s `vole.rs`), or anything folding
+the VOLE verifier (`docs/archive/prove-the-verifier.md`).
 
 > **Update:** a constraint-expansion construction replacing the one-scalar lift
 > is now specified **and implemented** per `docs/fold-lift-expansion.md`

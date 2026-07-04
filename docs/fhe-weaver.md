@@ -22,7 +22,6 @@ Currently implemented schemes:
 
 | Scheme | Kind | Crate | Path |
 |--------|------|-------|------|
-| **GRAFHEN** | Garbled-circuit hybrid | `volar-weaver` | `crates/compiler/volar-weaver/src/grafhen.rs` |
 | **TFHE** | Torus FHE gate-bootstrapping | `volar-spec` | `crates/spec/volar-spec/src/tfhe.rs` |
 
 ---
@@ -207,23 +206,6 @@ For zero-AND-gate storage, use the VOLE Commitment mode instead (see
 
 ---
 
-## GRAFHEN Scheme
-
-GRAFHEN is a garbled-circuit hybrid where gate outputs are encrypted word-level
-values rather than individual bits.  See `docs/grafhen.md` for the full protocol.
-
-The `GrafhenScheme` struct implements `FheScheme` with:
-- `wire_type()` → `GrafhenWord<WBOUND>`
-- `input_type()` → `&GrafhenWord<WBOUND>` (pass by reference)
-- `extra_params()` → `bk: &GrafhenBootstrappingKey<…>` (bootstrapping key)
-- `fn_name_suffix()` → `"grafhen"`
-- `emit_and` → emits a bootstrapping call via `grafhen_and(bk, a, b)`
-
-GRAFHEN is not a standard FHE scheme; it uses garbled circuits internally and
-has no IND-CPA security claim.  See `docs/insecure.md` for the security caveats.
-
----
-
 ## TFHE Scheme
 
 > **File**: `crates/spec/volar-spec/src/tfhe.rs`
@@ -317,7 +299,6 @@ and scheme imports.  `self_contained = false` emits only the function bodies.
 
 ## See Also
 
-- [GRAFHEN scheme](grafhen.md) — word-level garbled circuit hybrid
 - [VOLE storage modes](vole-weaving.md) — zero-AND-gate memory checking
 - [Memory checking protocol](memory-checking.md) — multiset hash specification
-- [Reliability](reliability.md) — experimental status of TFHE and GRAFHEN
+- [Reliability](reliability.md) — experimental status of TFHE

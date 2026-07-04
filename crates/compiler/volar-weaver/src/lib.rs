@@ -73,7 +73,6 @@ pub mod garble;
 pub mod vole;
 pub(crate) mod vole_common;
 pub mod faest;
-pub mod grafhen;
 pub mod fhe;
 pub mod oram;
 pub mod gadgets;
@@ -126,15 +125,10 @@ pub use vole::{
     StorageSizes, StorageMode, MemoryTrace, MemoryTraceEntry,
     ZkWitnessConfig, ZkActionConfig,
     VoleProtection, VoleSideAssignments,
-    VerifierTraceSink, NovaFoldSink, IopSink,
+    VerifierTraceSink, IopSink,
 };
 
 pub use volar_discipline::{Tagged, Zk, Transparent, Discipline, NonZk};
-
-pub use grafhen::{
-    print_grafhen_module,
-    weave_grafhen, weave_grafhen_with_handler,
-};
 
 pub use faest::{
     weave_faest_prover, weave_faest_verifier,
@@ -173,7 +167,7 @@ pub use fhe::{
     oblivious_read_loop, oblivious_write_loop,
     FheScheme, FheOutput, FheStorageConfig, FheStorageSizes,
     FheActionConfig, FheProtection,
-    GrafhenScheme, TfheScheme,
+    TfheScheme,
     print_fhe_cfg_module, print_fhe_flat_module,
 };
 pub use volar_ir::public::PublicSet;

@@ -1,10 +1,22 @@
 # Prove-the-Verifier Folding
 
-> **Reliability:** the folding core (`volar-fold`) is `@reliability: experimental`.
-> The binary-field ↔ prime-field embedding of the verifier check is a
-> **Tier 3** cryptographic seam (see [§ Honest scope](#honest-scope)).
-> Agents: read [`agent-context/discipline.md`](agent-context/discipline.md) before
-> touching anything on the ZK ↔ non-ZK boundary.
+> **ARCHIVED — REMOVED FROM THE CODEBASE.** This Nova-based prove-the-verifier
+> path (`NovaFoldSink`, `volar-fold::{verifier,gf2k}`, `volar-verifier-runtime`)
+> has been deleted: it's fully subsumed by the IOP-based path
+> (`../prove-the-verifier-iop.md`), which does the same job natively in
+> `GF(2^k)` — no `GF(2^k)→F_ℓ` embedding (this doc's central open Tier-3
+> seam, below) — and produces a genuinely succinct Merkle+Fiat–Shamir proof
+> instead of a native `O(|F|)` opening. The **continuation bridge**
+> (`docs/vcb-ivc-folding.md`, `bridge_adapter.rs`, `link.rs`) is unrelated
+> and still uses this same Nova/Pedersen/Ed25519 machinery — only the
+> prove-the-verifier-specific pieces described in this document were
+> removed. Kept here as a historical/academic record only; nothing in this
+> document describes live code.
+>
+> **Original status note (kept for context):** the folding core
+> (`volar-fold`) was `@reliability: experimental`. The binary-field ↔
+> prime-field embedding of the verifier check was a **Tier 3** cryptographic
+> seam (see [§ Honest scope](#honest-scope)).
 
 This document describes the **prove-the-verifier** flow: after the pre-ZK passes
 and the ZK weave, the VOLE **verifier** is itself folded into a single

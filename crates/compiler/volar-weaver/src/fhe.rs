@@ -221,7 +221,7 @@ pub trait FheScheme {
     /// The Rust type of a circuit *input* parameter.
     ///
     /// Defaults to [`wire_type`].  Override when inputs have a different type
-    /// (e.g. GRAFHEN passes inputs by reference: `&GrafhenWord<WBOUND>`).
+    /// (e.g. a scheme that passes inputs by reference).
     fn input_type(&self) -> IrType {
         self.wire_type()
     }
@@ -271,7 +271,8 @@ pub trait FheScheme {
 
     /// Generic type parameters on the emitted function.
     ///
-    /// Example: GRAFHEN emits `<R: WordReducer<WBOUND>>`.
+    /// Example: a scheme with a pluggable reducer/backend could emit
+    /// `<R: SomeReducerTrait<N>>` here.
     /// Default: no generics.
     fn generics(&self) -> Vec<IrGenericParam> {
         vec![]
@@ -280,7 +281,7 @@ pub trait FheScheme {
     /// Suffix appended to the circuit name to form the emitted function name.
     ///
     /// The function is named `{circuit_name}_{suffix}`.
-    /// Default: `"fhe"`.  GRAFHEN overrides to `"grafhen"`.
+    /// Default: `"fhe"`.
     fn fn_name_suffix(&self) -> &str {
         "fhe"
     }
@@ -319,8 +320,8 @@ pub trait FheScheme {
     /// **TFHE default**: `OR(AND(sel, a), AND(NOT(sel), b))` — fully composable
     /// because it avoids non-composable XOR.
     ///
-    /// GRAFHEN may override with the efficient `sel · (a ⊕ b) ⊕ b` since
-    /// garbled-circuit XOR is free and composable.
+    /// A scheme with free, composable XOR could override with the more
+    /// efficient `sel · (a ⊕ b) ⊕ b` instead.
     fn emit_cmux<Q: Clone + Default>(&self, sel: IrExpr<Q>, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
         // Default: OR(AND(sel, a), AND(NOT(sel), b))
         // Uses clone_expr so the generated code calls .clone() on the sel wire.
@@ -1464,8 +1465,8 @@ impl FheStorageCtx {
 /// [`ProvenanceHandler`] and produces an `IrModule<H::Output>`.
 ///
 /// This is the low-level entry point used by both [`weave_fhe`] and by
-/// callers (such as `weave_grafhen_with_handler`) that already hold a
-/// `BIrBlocks` and want to preserve per-statement provenance.
+/// callers that already hold a `BIrBlocks` and want to preserve
+/// per-statement provenance.
 ///
 /// # Storage
 ///
@@ -2798,243 +2799,6 @@ fn map_ir_terminator<S: FheScheme>(
 }
 
 // ============================================================================
-// Reference implementation: GrafhenScheme
-// ============================================================================
-
-/// [`FheScheme`] implementation for GRAFHEN homomorphic evaluation.
-///
-/// Delegates gate emission to the `grafhen_*` family of functions from
-/// `volar-spec`.  Inputs are passed as `&GrafhenWord<WBOUND>` references;
-/// gate outputs are owned `GrafhenWord<WBOUND>` values.
-///
-/// The emitted function has signature:
-/// ```text
-/// fn {name}_grafhen<R: WordReducer<WBOUND>>(
-///     pk: &GrafhenPublic<R, WBOUND>,
-///     input_0: &GrafhenWord<WBOUND>,
-///     ...
-/// ) -> GrafhenWord<WBOUND>
-/// ```
-///
-/// **WARNING: IND-CPA BROKEN.** See `docs/grafhen.md` and ePrint 2026/700.
-/// Use only inside a ZK proof for correctness; never as a confidentiality
-/// primitive.
-///
-/// Supports oracle calls (`{oracle}_grafhen(pk, &arg, ...)`),
-/// action calls (`{action}_action_grafhen(pk, &guard, &arg, ...)`),
-/// and RNG (`grafhen_encrypt({rng}(), pk)`).
-pub struct GrafhenScheme {
-    /// Concrete bit-width baked into `GrafhenWord<WBOUND>` and
-    /// `GrafhenPublic<R, WBOUND>`.
-    pub word_bound: usize,
-}
-
-impl GrafhenScheme {
-    pub fn new(word_bound: usize) -> Self {
-        GrafhenScheme { word_bound }
-    }
-
-    fn word_ty(&self) -> IrType {
-        IrType::Struct {
-            kind: StructKind::Custom("GrafhenWord".into()),
-            type_args: vec![IrType::TypeParam(format!("{}", self.word_bound))],
-        }
-    }
-
-    fn public_ty(&self) -> IrType {
-        IrType::Struct {
-            kind: StructKind::Custom("GrafhenPublic".into()),
-            type_args: vec![
-                IrType::TypeParam("R".into()),
-                IrType::TypeParam(format!("{}", self.word_bound)),
-            ],
-        }
-    }
-}
-
-impl FheScheme for GrafhenScheme {
-    fn wire_type(&self) -> IrType {
-        self.word_ty()
-    }
-
-    fn input_type(&self) -> IrType {
-        IrType::Reference {
-            mutable: false,
-            elem: Box::new(self.word_ty()),
-        }
-    }
-
-    fn extra_params(&self) -> Vec<IrParam> {
-        vec![IrParam {
-            name: "pk".into(),
-            ty: IrType::Reference {
-                mutable: false,
-                elem: Box::new(self.public_ty()),
-            },
-        }]
-    }
-
-    fn generics(&self) -> Vec<IrGenericParam> {
-        vec![IrGenericParam {
-            name: "R".into(),
-            kind: IrGenericParamKind::Type,
-            const_ty: None,
-            bounds: vec![IrTraitBound {
-                trait_kind: TraitKind::Custom("WordReducer".into()),
-                type_args: vec![IrType::TypeParam(format!("{}", self.word_bound))],
-                assoc_bindings: vec![],
-            }],
-            default: None,
-        }]
-    }
-
-    fn fn_name_suffix(&self) -> &str {
-        "grafhen"
-    }
-
-    fn emit_zero<Q: Clone + Default>(&self) -> IrExpr<Q> {
-        // GrafhenWord::identity() — the additive identity (all-zero ciphertext).
-        ir_expr(IrExprKind::Call {
-            func: Box::new(ir_expr(IrExprKind::Path {
-                segments: vec!["GrafhenWord".into(), "identity".into()],
-                type_args: vec![],
-            })),
-            args: vec![],
-        })
-    }
-
-    fn emit_one<Q: Clone + Default>(&self) -> IrExpr<Q> {
-        // pk.enc_one.clone()
-        clone_expr(ir_expr(IrExprKind::Field {
-            base: Box::new(var("pk")),
-            field: "enc_one".into(),
-        }))
-    }
-
-    fn emit_xor<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
-        // grafhen_xor(&a.clone(), &b.clone())
-        ir_expr(IrExprKind::Call {
-            func: Box::new(ir_expr(IrExprKind::Path {
-                segments: vec!["grafhen_xor".into()],
-                type_args: vec![],
-            })),
-            args: vec![ref_expr(clone_expr(a)), ref_expr(clone_expr(b))],
-        })
-    }
-
-    fn emit_not<Q: Clone + Default>(&self, a: IrExpr<Q>) -> IrExpr<Q> {
-        // grafhen_not(&a.clone(), pk)
-        ir_expr(IrExprKind::Call {
-            func: Box::new(ir_expr(IrExprKind::Path {
-                segments: vec!["grafhen_not".into()],
-                type_args: vec![],
-            })),
-            args: vec![ref_expr(clone_expr(a)), var("pk")],
-        })
-    }
-
-    fn emit_and<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>, _gate_idx: usize) -> IrExpr<Q> {
-        // grafhen_and(&a.clone(), &b.clone(), pk)
-        ir_expr(IrExprKind::Call {
-            func: Box::new(ir_expr(IrExprKind::Path {
-                segments: vec!["grafhen_and".into()],
-                type_args: vec![],
-            })),
-            args: vec![ref_expr(clone_expr(a)), ref_expr(clone_expr(b)), var("pk")],
-        })
-    }
-
-    fn emit_or<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
-        // De Morgan: NOT(AND(NOT(a), NOT(b)))
-        // GRAFHEN NOT and XOR are free, so only 1 AND gate cost.
-        self.emit_not(self.emit_and(self.emit_not(a), self.emit_not(b), 0))
-    }
-
-    fn emit_cmux<Q: Clone + Default>(&self, sel: IrExpr<Q>, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
-        // GRAFHEN has free composable XOR, so use the efficient formula:
-        // MUX(sel, a, b) = sel · (a ⊕ b) ⊕ b = XOR(AND(sel, XOR(a, b)), b)
-        // Only 1 AND gate cost (XOR and NOT are free).
-        let diff = self.emit_xor(a, clone_expr(b.clone()));
-        let masked = self.emit_and(sel, diff, 0);
-        self.emit_xor(masked, b)
-    }
-
-    fn emit_oracle_call<Q: Clone + Default>(
-        &self,
-        oracle_name: &str,
-        arg_exprs: Vec<IrExpr<Q>>,
-        _num_bits: usize,
-    ) -> IrExpr<Q> {
-        // {oracle_name}_grafhen(pk, &arg0.clone(), &arg1.clone(), ...)
-        let mut args: Vec<IrExpr<Q>> = vec![var("pk")];
-        args.extend(arg_exprs.into_iter().map(|a| ref_expr(clone_expr(a))));
-        ir_expr(IrExprKind::Call {
-            func: Box::new(ir_expr(IrExprKind::Path {
-                segments: vec![format!("{}_grafhen", oracle_name)],
-                type_args: vec![],
-            })),
-            args,
-        })
-    }
-
-    fn emit_oracle_bit<Q: Clone + Default>(&self, call_var: &str, bit: usize) -> IrExpr<Q> {
-        // call_var.{bit}.clone()
-        clone_expr(ir_expr(IrExprKind::Field {
-            base: Box::new(var(call_var)),
-            field: format!("{}", bit),
-        }))
-    }
-
-    fn emit_action_call<Q: Clone + Default>(
-        &self,
-        action_name: &str,
-        guard_expr: IrExpr<Q>,
-        arg_exprs: Vec<IrExpr<Q>>,
-        _fallback_exprs: Vec<IrExpr<Q>>,
-        _num_bits: usize,
-    ) -> IrExpr<Q> {
-        // {action_name}_action_grafhen(pk, &guard.clone(), &arg0.clone(), ...)
-        let mut args: Vec<IrExpr<Q>> = vec![var("pk"), ref_expr(clone_expr(guard_expr))];
-        args.extend(arg_exprs.into_iter().map(|a| ref_expr(clone_expr(a))));
-        ir_expr(IrExprKind::Call {
-            func: Box::new(ir_expr(IrExprKind::Path {
-                segments: vec![format!("{}_action_grafhen", action_name)],
-                type_args: vec![],
-            })),
-            args,
-        })
-    }
-
-    fn emit_action_bit<Q: Clone + Default>(&self, call_var: &str, bit: usize) -> IrExpr<Q> {
-        // call_var.{bit}.clone()
-        clone_expr(ir_expr(IrExprKind::Field {
-            base: Box::new(var(call_var)),
-            field: format!("{}", bit),
-        }))
-    }
-
-    fn emit_rng<Q: Clone + Default>(&self, rng_name: &str) -> IrExpr<Q> {
-        // grafhen_encrypt({rng_name}(), pk)
-        ir_expr(IrExprKind::Call {
-            func: Box::new(ir_expr(IrExprKind::Path {
-                segments: vec!["grafhen_encrypt".into()],
-                type_args: vec![],
-            })),
-            args: vec![
-                ir_expr(IrExprKind::Call {
-                    func: Box::new(ir_expr(IrExprKind::Path {
-                        segments: vec![rng_name.into()],
-                        type_args: vec![],
-                    })),
-                    args: vec![],
-                }),
-                var("pk"),
-            ],
-        })
-    }
-}
-
-// ============================================================================
 // TFHE scheme
 // ============================================================================
 
@@ -4254,26 +4018,6 @@ mod tests {
             func.params.len()
         );
         // The last param should be the storage slice.
-        let stor_param = func.params.last().unwrap();
-        assert_eq!(stor_param.name, "storage_5_1");
-    }
-
-    #[test]
-    fn test_grafhen_flat_with_storage_does_not_panic() {
-        let circuit = build_storage_circuit();
-        let scheme = GrafhenScheme::new(64);
-        let config = storage_config_2cells();
-        let module = weave_fhe_flat_bir(
-            &circuit, &scheme, "stor_grafhen", &NoProvenance, Some(&config),
-        ).into_inner();
-        assert_eq!(module.functions.len(), 1);
-        let func = &module.functions[0];
-        // pk + 2 inputs + 1 storage param.
-        assert!(
-            func.params.len() >= 4,
-            "expected >=4 params, got {}",
-            func.params.len()
-        );
         let stor_param = func.params.last().unwrap();
         assert_eq!(stor_param.name, "storage_5_1");
     }

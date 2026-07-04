@@ -3,30 +3,32 @@
 //! **Prove-the-verifier integration: compile-time side.** The build-side
 //! terminals that lower a woven `Transparent` VOLE verifier `IrModule` to an
 //! executable substrate — the compile-time counterpart to
-//! `volar-verifier-runtime`, which owns everything that *executes* the
+//! `volar-verifier-iop-runtime`, which owns everything that *executes* the
 //! result (see that crate's doc for the split).
 //!
-//! Two terminals, same input shape (`Tagged<Transparent, IrModule<IrFunction>>`):
+//! Both terminals are backend-agnostic: they lower whatever
+//! `Tagged<Transparent, IrModule<IrFunction>>` they're given, regardless of
+//! which `VerifierTraceSink` (see `crates/compiler/volar-weaver/src/vole.rs`)
+//! wove it — no sink-specific bare names appear in either function.
 //!
 //! - [`emit_verifier_c`]: lower to **C source** via [`volar_c_backend::CBackend`].
 //!   Unaffected by the `u128`/`LirType` gap (see `docs/agent-context/lir-u128-support.md`)
 //!   as long as the module doesn't reference curve/`u128` spec functions — the
 //!   VOLE gate-check path itself is fine.
 //! - [`emit_verifier_rust`]: lower to **Rust source** via
-//!   [`volar_weaver::vole::print_weaved_vole_module`] — the terminal for a
-//!   `NovaFoldSink`-woven verifier (see that sink's doc), whose `FoldScalar`/
-//!   `FoldAccumulator`/etc. bare names and (for the curve/commitment leg,
-//!   were it ever woven in) `u128` usage can't go through the C/LIR path
-//!   today. Same shape as the repo's other "print → real `rustc`" test
-//!   harnesses (`AGENTS.md` rule 2) — `volar-verifier-runtime`'s
-//!   `run_folded_verifier` is what actually compiles and runs it.
+//!   [`volar_weaver::vole::print_weaved_vole_module`] — the terminal for an
+//!   `IopSink`-woven verifier (see that sink's doc), whose `IopChallenge`/
+//!   `IopAccumulator`/etc. bare names can't go through the C/LIR path today.
+//!   Same shape as the repo's other "print → real `rustc`" test harnesses
+//!   (`AGENTS.md` rule 2) — `volar-verifier-iop-runtime`'s `run_iop_verifier`
+//!   is what actually compiles and runs it.
 //!
 //! ## Discipline
 //!
 //! Both terminals take a [`Transparent`]-tagged module only: the verifier is
 //! proven *without* zero-knowledge because the inner VOLE proof already
 //! accounts for it — see `docs/agent-context/discipline.md` and
-//! `docs/prove-the-verifier.md`.
+//! `docs/prove-the-verifier-iop.md`.
 
 use volar_compiler::ir::{IrFunction, IrModule};
 use volar_c_backend::CBackend;
@@ -58,8 +60,8 @@ pub fn emit_verifier_c(
 /// executable substrate here, not the C/LIR pipeline (see this module's
 /// doc). The returned source still references any bare, externally-resolved
 /// names a [`volar_weaver::vole::VerifierTraceSink`] introduced (e.g.
-/// `FoldScalar`/`FoldAccumulator`/`fold_and_gate` for
-/// `volar_weaver::vole::NovaFoldSink`) — `volar-verifier-runtime` supplies
+/// `IopChallenge`/`IopAccumulator`/`iop_fold_gate` for
+/// [`volar_weaver::vole::IopSink`]) — `volar-verifier-iop-runtime` supplies
 /// those when it actually compiles and runs this.
 pub fn emit_verifier_rust(verifier: &Tagged<Transparent, IrModule<IrFunction>>) -> String {
     volar_weaver::vole::print_weaved_vole_module(verifier.inner())

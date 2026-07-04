@@ -1,5 +1,16 @@
 # FoldLift constraint expansion: the spaced-packing GF(2^k) → F_ℓ embedding
 
+> **ARCHIVED — REMOVED FROM THE CODEBASE.** `FoldLift`, `NovaFoldSink`, and
+> `volar_fold::gf2k::and_check_gf2k` (the construction this document
+> specifies) have been deleted along with the rest of the Nova-based
+> prove-the-verifier path — see `../prove-the-verifier.md`'s own archive
+> banner. The IOP-based prove-the-verifier path
+> (`../prove-the-verifier-iop.md`) needs no such embedding at all (it stays
+> native to `GF(2^k)`), which is what made this whole construction
+> unnecessary rather than merely superseded-by-something-similar. Kept here
+> as a historical/academic record of the embedding technique and its
+> soundness argument; nothing in this document describes live code.
+
 Status: **specified; implementation tracked here**. Supersedes the one-scalar
 `FoldLift` lift whose unsoundness `docs/agent-context/gf2k-to-fell-embedding.md`
 documents (and which `e2e_fold_verifier.rs` pins as a known-failing assert).

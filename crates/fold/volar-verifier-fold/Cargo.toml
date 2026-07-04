@@ -7,7 +7,6 @@ description = "Prove-the-verifier integration: arithmetization frontend + C-back
 repository.workspace = true
 
 [dependencies]
-volar-fold = { path = "../volar-fold" }
 volar-discipline = { workspace = true }
 volar-compiler = { path = "../../compiler/volar-compiler" }
 volar-lir-codegen = { path = "../../compiler/volar-lir-codegen" }
@@ -15,7 +14,6 @@ volar-c-backend = { path = "../../compiler/volar-c-backend" }
 volar-weaver = { path = "../../compiler/volar-weaver" }
 
 [dev-dependencies]
-volar-verifier-runtime = { path = "../volar-verifier-runtime" }
 volar-verifier-iop-runtime = { path = "../../iop/volar-verifier-iop-runtime" }
 volar-ir = { path = "../../ir/volar-ir" }
 volar-ir-common = { path = "../../ir/volar-ir-common" }

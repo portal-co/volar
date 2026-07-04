@@ -1,17 +1,14 @@
 // @reliability: experimental
 //! End-to-end test for the **IOP-based** prove-the-verifier path
-//! (`docs/prove-the-verifier-iop.md`), mirroring
-//! `e2e_fold_verifier.rs` exactly in shape: weave a small AND-only circuit
+//! (`docs/prove-the-verifier-iop.md`): weave a small AND-only circuit
 //! with `IopSink`, lower it to real Rust source, compile and run it for
 //! real (via `volar_verifier_iop_runtime::run_iop_verifier`), and confirm
 //! the recovered `fold_state` genuinely satisfies `and_check_r1cs` natively
-//! (no `GF(2^k)->F_ell` embedding — the concrete payoff of going native).
+//! (no cross-field embedding needed).
 //!
-//! `emit_verifier_rust` (this crate) is unchanged and reused as-is for this
-//! path — it's generic over any `Tagged<Transparent, IrModule>` and doesn't
-//! reference `NovaFoldSink`'s bare names anywhere, confirming
-//! `docs/prove-the-verifier-iop.md`'s "`volar-verifier-iop-fold` needs zero
-//! new code" claim.
+//! `emit_verifier_rust` (this crate) is generic over any
+//! `Tagged<Transparent, IrModule>` and doesn't reference any sink's bare
+//! names — confirming it needs zero backend-specific code.
 
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
 use volar_ir::ir::{IRBlockTargetId, IRVarId};
@@ -93,9 +90,7 @@ fn iop_sink_verifier_compiles_runs_and_finalization_proof_verifies() {
 
             // Structural correctness of the threaded state: single (first)
             // gate is the "fresh" case (u = 1, E = 0) over and_check_r1cs's
-            // *native*, unexpanded 7-slot/3-constraint shape — no
-            // GF(2^k)->F_ell bit expansion needed (contrast the Nova path's
-            // 165/174-slot expanded relation).
+            // native, unexpanded 7-slot/3-constraint shape.
             let (w, e, u) = fold_state.witness().expect("fold_state must be Some after one gate");
             assert_eq!(w.len(), 7, "native and_check_r1cs witness size (no bit-expansion)");
             assert_eq!(e.len(), 3, "native and_check_r1cs constraint count (no bit-expansion)");
@@ -106,11 +101,12 @@ fn iop_sink_verifier_compiles_runs_and_finalization_proof_verifies() {
                 "an honest GF(2^8) VOLE proof's native-folded witness must satisfy and_check_r1cs"
             );
 
-            // The actual new IOP-based backend: the finalization proof over
-            // this small accumulator must verify.
+            // The finalization proof (Phase 2, Merkle+Fiat-Shamir) over this
+            // small accumulator must verify — no memory boundary for this
+            // AND-only circuit (empty mem_acc_in/out, no expectation).
             let tagged: volar_discipline::Tagged<volar_discipline::Transparent, _> =
                 volar_discipline::Tagged::seal(fold_state);
-            let (_proof, ok) = prove_and_verify_iop(tagged);
+            let (_proof, ok) = prove_and_verify_iop(tagged, &[], &[], None);
             assert!(ok, "the Merkle+Fiat-Shamir finalization proof must verify for an honest gate");
         }
     "#;

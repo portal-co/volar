@@ -217,7 +217,7 @@ at the start of a new session).
 |---|---|---|
 | **Tier 1 — Glue** | Documentation edits, dependency bumps, formatting, mechanical refactors (renames, file moves, splitting/merging modules with no semantic change), test scaffolding that does not assert new properties, reading and summarising code. | Higher-tier files (compiler/IR/spec/crypto) must be reviewed by the required tier. |
 | **Tier 2 — Compiler** | Anything Tier 1 may do, plus: write and refactor compiler/IR/lowering/printer/weaver code; add tests that compile and run generated code; add backends; modify ABI policy; touch `volar-fuzz` generators and properties. | Cryptographic files (`crates/spec/`, primitives, common, hazmat, ORAM state, etc.) must be reviewed by Tier 3. |
-| **Tier 3 — Cryptography** | Anything Tier 2 may do, plus: design and modify cryptographic constructions in `volar-spec`, `volar-primitives`, `volar-common`, the GRAFHEN and TFHE schemes, ORAM client-side state machines, and any code marked `@reliability: hazmat`. May introduce new Experimental constructions and write the accompanying review documents. | Promotion out of Experimental still requires an external human reviewer to sign off. |
+| **Tier 3 — Cryptography** | Anything Tier 2 may do, plus: design and modify cryptographic constructions in `volar-spec`, `volar-primitives`, `volar-common`, the TFHE scheme, ORAM client-side state machines, and any code marked `@reliability: hazmat`. May introduce new Experimental constructions and write the accompanying review documents. | Promotion out of Experimental still requires an external human reviewer to sign off. |
 
 Tiers are inclusive: Tier 3 may do everything Tier 2 may do, and Tier 2
 everything Tier 1 may do.
@@ -233,14 +233,14 @@ capabilities or evaluation results change materially.
 | **Tier 2 — Compiler** | Sonnet 4.6 or later; Opus 4.5 or later; Fable 5 or later. | Full GPT-5.2, GPT-5.3-Codex, full GPT-5.4, GPT-5.5, and later non-mini successors in those families. | Cursor Composer 2.5 or later or Kimi K2.7 Code or later, when involved with (creating or executing) a plan |
 | **Tier 3 — Cryptography** | Sonnet 5 or later; Opus 4.6 or later; Fable 5 or later. | GPT-5.5 or later. | N/A |
 
-Sonnet (any version), GPT-5.4-Mini, GPT-5.3-Codex, GPT-5.4, and GPT-5.2 are
-**not permitted to self-review Tier 3 cryptographic work**, even if one of
-them is otherwise the strongest model available in a session. Cryptographic
-correctness arguments are subtle enough that we require Opus-class or frontier
-GPT reasoning depth here. If the strongest available agent is a Tier-2 model
-and a Tier 3 change is needed, the Tier-2 agent may still produce the change,
-but it must mark the result as `pending-tier-3` review and queue it for an
-appropriate reviewer. Do not treat the change as self-reviewed.
+Sonnet ≤ 4.5, GPT-5.4-Mini, GPT-5.3-Codex, GPT-5.4, and GPT-5.2 are
+**not permitted to self-review Tier 3 cryptographic work** — but **Sonnet 5
+and later are** (per the table above), alongside Opus-class and frontier GPT
+models. If the strongest available agent is below Tier 3 (e.g. Sonnet ≤ 4.5,
+or a Tier-2-only GPT model) and a Tier 3 change is needed, that agent may
+still produce the change, but it must mark the result as `pending-tier-3`
+review and queue it for an appropriate reviewer. Do not treat the change as
+self-reviewed in that case.
 
 Models from families not listed above follow whatever mapping the project
 owner publishes in [`AGENTS.md`](../AGENTS.md). In the absence of an explicit
@@ -328,7 +328,7 @@ Required tier and review rules for changes:
 | Edit an Experimental compiler/infra file | 2 | Review by Tier 2 or higher; tag `@ai-review: pending-tier-2` until approved. | Standard review; AI marker accuracy. |
 | Promote Experimental → Normal or Hazmat | Human reviewer (AI agent may draft only) | N/A | Full promotion protocol below. AI cannot self-promote. |
 | Demote Experimental → Insecure | 3 (with named external attack reference) | Review by Tier 3 or higher if initiated by AI. | Full demotion protocol; record the attack in [insecure.md](insecure.md). |
-| Add a brand-new cryptographic construction | 3 | Review by Tier 3 or higher; tag `@ai-review: pending-tier-3` until approved. | Must enter at Experimental; must include a review plan analogous to [grafhen-review-plan.md](grafhen-review-plan.md). |
+| Add a brand-new cryptographic construction | 3 | Review by Tier 3 or higher; tag `@ai-review: pending-tier-3` until approved. | Must enter at Experimental; must include a review plan analogous to [archive/grafhen-review-plan.md](archive/grafhen-review-plan.md) (archived example; the construction it reviewed was later removed, but the review-plan shape is still a good template). |
 | Add a brand-new compiler pass / IR variant | 2 | Review by Tier 2 or higher; tag `@ai-review: pending-tier-2` until approved. | Must include both a generator (where applicable) and a property test. |
 | Mechanical refactor (rename, move, split) of any file | The file's required tier | If the author is below the file's required tier, tag and review as above. | The refactor must be observably equivalent; tests pass before and after. |
 
@@ -439,8 +439,6 @@ All require the `volar_experimental` feature to be enabled.
 | `crates/volar-spec/src/mpc.rs` | `79ee6d7` (experiment: mpc) | design | MPC party type skeleton; semantics TBD |
 | `crates/volar-spec/src/byte_gen/prover.rs` | `263eab1` (fix name) | review-pending | Revised after `cda059c` (actually unsound, oops) |
 | `crates/volar-spec/src/byte_gen/verifier.rs` | `263eab1` (fix name) | review-pending | Same revision cycle; `58e8f84` last structural change |
-| `crates/volar-spec/src/grafhen.rs` | (pending merge) | design | GRAFHEN FHE over symmetric groups; **IND-CPA broken** (ePrint 2026/700); ZK-correctness use only |
-| `crates/volar-weaver/src/grafhen.rs` | (pending merge) | design | Weaver pass for GRAFHEN homomorphic evaluation |
 
 ---
 
