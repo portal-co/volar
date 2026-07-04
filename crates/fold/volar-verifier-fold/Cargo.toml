@@ -16,5 +16,6 @@ volar-weaver = { path = "../../compiler/volar-weaver" }
 
 [dev-dependencies]
 volar-verifier-runtime = { path = "../volar-verifier-runtime" }
+volar-verifier-iop-runtime = { path = "../../iop/volar-verifier-iop-runtime" }
 volar-ir = { path = "../../ir/volar-ir" }
 volar-ir-common = { path = "../../ir/volar-ir-common" }

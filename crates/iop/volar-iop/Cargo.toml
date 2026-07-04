@@ -1,0 +1,16 @@
+[package]
+name = "volar-iop"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+
+[dependencies]
+volar-primitives = { path = "../../spec/volar-primitives" }
+volar-discipline = { workspace = true }
+sha3.workspace = true
+digest = { version = "0.11.2", default-features = false }
+
+[dev-dependencies]
+proptest = "1"

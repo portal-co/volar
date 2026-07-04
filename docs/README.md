@@ -75,6 +75,7 @@ producing test scaffolding, hand-off documents, and analysis. See
 | [spec.md](spec.md) | `volar-spec`: VOLE ZK, garbled circuits, MPC types, byte generation, `volar-common`, `volar-primitives` |
 | [vole-weaving.md](vole-weaving.md) | VOLE prover/verifier code generation from boolean circuits (Quicksilver-style) |
 | [prove-the-verifier.md](prove-the-verifier.md) | Folding the VOLE verifier into a single relaxed-R1CS instance (`volar-fold` reuse, no zkSNARK), memory-commitment boundaries, and the ZK↔non-ZK discipline that gates it |
+| [prove-the-verifier-iop.md](prove-the-verifier-iop.md) | Parallel IOP-based backend: native `GF(2^k)` fold + a Merkle+Fiat–Shamir finalization proof (`volar-iop`), no `GF(2^k)→F_ℓ` embedding |
 | [garbling-pipeline.md](garbling-pipeline.md) | Garbler/evaluator code generation for half-gate garbled circuits |
 | [memory-checking.md](memory-checking.md) | Multiset memory checking for VOLE-authenticated storage |
 

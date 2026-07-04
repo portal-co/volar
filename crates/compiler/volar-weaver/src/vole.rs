@@ -647,6 +647,84 @@ impl<P: Clone + Default> VerifierTraceSink<P> for NovaFoldSink {
     }
 }
 
+/// The **IOP-based** prove-the-verifier fold sink — a parallel backend to
+/// [`NovaFoldSink`], described in `docs/prove-the-verifier-iop.md`. Threads
+/// a fixed-size accumulator through the woven verifier exactly like
+/// [`NovaFoldSink`] does (same trait, same one-extra-param/one-extra-
+/// return-slot shape), but the harness this links against
+/// (`volar-verifier-iop-runtime`) folds **natively** in a `GF(2^k)` tower
+/// field (`volar_iop::field`) instead of embedding into the Ed25519 scalar
+/// field `F_ℓ`. Named
+/// `IopAccumulator`/`IopChallenge`/`iop_fold_gate`/`iop_accumulator_fresh` —
+/// the harness must supply matching definitions.
+///
+/// **A lift trait is still needed — but a trivial, sound one, not
+/// `NovaFoldSink`'s.** `T` (the VOLE's own field, e.g. `Galois` for
+/// `GF(2^8)`) is a different Rust type from the fold's tower field (e.g.
+/// `Gf128`), even though the latter is built as an *extension* of (an
+/// encoding of) the former — Rust still needs an explicit embedding
+/// function. The crucial difference from `NovaFoldSink`'s `FoldLift`: this
+/// embedding is a **canonical, characteristic-preserving ring embedding**
+/// (`T` sits inside the tower field's base level, no bit-decomposition, no
+/// cross-characteristic cast) — not the fraught `GF(2^k)→F_ℓ` seam
+/// `FoldLift`/`fold-lift-expansion.md` exists to safely replace. Named
+/// `IopLift` to keep that distinction visible in the woven code and the
+/// harness, rather than reusing `FoldLift`'s name for a different
+/// contract.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct IopSink;
+
+impl<P: Clone + Default> VerifierTraceSink<P> for IopSink {
+    fn state_type_name(&self) -> &str {
+        "IopAccumulator"
+    }
+
+    fn init_state_fn_name(&self) -> &str {
+        "iop_accumulator_fresh"
+    }
+
+    fn fold_scalar_type_name(&self) -> &str {
+        "IopChallenge"
+    }
+
+    fn fold_lift_trait_name(&self) -> Option<&str> {
+        Some("IopLift")
+    }
+
+    fn and_gate_step(
+        &self,
+        _gate_idx: usize,
+        k_a: &str,
+        k_b: &str,
+        k_c: &str,
+        delta: &str,
+        hat: &str,
+        r_param_name: &str,
+        state_var: &str,
+        prov: P,
+    ) -> IrExpr<P> {
+        ir_expr_p(IrExprKind::Call {
+            func: Box::new(ir_expr_p(IrExprKind::Path {
+                segments: vec!["iop_fold_gate".into()],
+                type_args: vec![],
+            }, prov.clone())),
+            args: vec![
+                clone_expr(var(state_var)),
+                clone_expr(var(k_a)),
+                clone_expr(var(k_b)),
+                clone_expr(var(k_c)),
+                // Same reasoning as NovaFoldSink::and_gate_step: delta is
+                // already &Delta<N,T> here, so pass it bare (not
+                // .clone()'d, which would auto-deref-then-clone into an
+                // owned Delta<N,T>).
+                var(delta),
+                clone_expr(var(hat)),
+                clone_expr(var(r_param_name)),
+            ],
+        }, prov)
+    }
+}
+
 /// Wraps an existing [`VoleWitnessSource`], overriding [`trace_sink`] to
 /// `Some` — the mechanism [`weave_vole_verifier_with_trace`] uses so no
 /// changes are needed to `ZkWitnessConfig`/`VoleSideConfig` themselves. Fixed

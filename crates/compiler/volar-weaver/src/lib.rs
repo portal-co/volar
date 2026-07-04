@@ -126,7 +126,7 @@ pub use vole::{
     StorageSizes, StorageMode, MemoryTrace, MemoryTraceEntry,
     ZkWitnessConfig, ZkActionConfig,
     VoleProtection, VoleSideAssignments,
-    VerifierTraceSink, NovaFoldSink,
+    VerifierTraceSink, NovaFoldSink, IopSink,
 };
 
 pub use volar_discipline::{Tagged, Zk, Transparent, Discipline, NonZk};
