@@ -372,6 +372,7 @@ mod tests {
     ) {
         use volar_ir::ir::IRType;
         use volar_ir_common::Type;
+        use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
         use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir};
 
         let wasm_bytes = wat::parse_str(&test_program_wat()).expect("wat should assemble");
@@ -385,11 +386,45 @@ mod tests {
         );
         assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
 
-        let (ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
-        let movfuscated = movfuscate_ir(&ir_blocks, &mut types);
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+
+        // Optimize *before* movfuscation, to fixpoint: constant-fold and
+        // store-forward feed each other (folding can turn a computed address
+        // into a constant that store-forwarding can then match, and vice
+        // versa), so alternate both until neither changes anything.
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+
+        let mut movfuscated = movfuscate_ir(&ir_blocks, &mut types);
+
+        // Optimize *after* movfuscation too: the accumulate-and-select
+        // machinery introduces its own constant-foldable structure (e.g. a
+        // block whose `is_active` is provably impossible given other
+        // constant-folded state) that only exists post-movfuscation.
+        optimize_to_fixpoint(&mut movfuscated, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+
         let bit_ty = types.intern(IRType::Primitive(Type::Bit));
         let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, limit, mode);
         (ir_blocks, movfuscated, circuit, types, bit_ty)
+    }
+
+    /// Alternate two boolean-returning "did anything change" passes until
+    /// neither reports a change -- the minimal fixpoint driver so
+    /// `fold_ir_blocks`/`store_forward_ir_blocks` (which can each unlock
+    /// further opportunities for the other) both run to exhaustion rather
+    /// than just once each.
+    fn optimize_to_fixpoint<P: Clone>(
+        blocks: &mut volar_ir::ir::IRBlocks<P>,
+        types: &volar_ir::ir::IRTypes,
+        pass_a: &mut dyn FnMut(&mut volar_ir::ir::IRBlocks<P>, &volar_ir::ir::IRTypes) -> bool,
+        pass_b: &mut dyn FnMut(&mut volar_ir::ir::IRBlocks<P>, &volar_ir::ir::IRTypes) -> bool,
+    ) {
+        loop {
+            let a = pass_a(blocks, types);
+            let b = pass_b(blocks, types);
+            if !a && !b {
+                break;
+            }
+        }
     }
 
     /// M1.3: weave the real interpreter's one-step batch circuit into VOLE
@@ -431,5 +466,43 @@ mod tests {
         // API; data RAM is the one that actually matters for soundness).
         assert!(!prover_trace.entries.is_empty(), "expected a non-empty memory trace for one interpreter step");
         assert_eq!(prover_trace.entries.len(), verifier_trace.entries.len());
+    }
+
+    /// Cheap sanity check (no printing -- that alone was 51GB RSS on the
+    /// unreduced circuit): count woven statements directly, before and
+    /// after the pre/post-movfuscation optimization passes, to see
+    /// whether fold_ir_blocks/store_forward_ir_blocks are actually
+    /// shrinking anything.
+    #[test]
+    fn count_woven_statements_after_optimization() {
+        use volar_ir_passes::LoweringMode;
+        use volar_weaver::{StorageMode, weave_vole_prover_ir_with_mode};
+
+        let (ir_blocks, movfuscated, circuit, types, _bit_ty) =
+            lower_interpreter(1, LoweringMode::WithTerminationFlag);
+        eprintln!("pre-movfuscation blocks: {}", ir_blocks.blocks.len());
+        eprintln!(
+            "pre-movfuscation total stmts: {}",
+            ir_blocks.blocks.iter().map(|b| b.stmts.len()).sum::<usize>()
+        );
+        eprintln!("movfuscated blocks: {}", movfuscated.blocks.len());
+        eprintln!(
+            "movfuscated total stmts: {}",
+            movfuscated.blocks.iter().map(|b| b.stmts.len()).sum::<usize>()
+        );
+        eprintln!("circuit (post lower_to_circuit_ir) blocks: {}", circuit.blocks.len());
+        eprintln!(
+            "circuit total stmts: {}",
+            circuit.blocks.iter().map(|b| b.stmts.len()).sum::<usize>()
+        );
+
+        let mode = StorageMode::Commitment;
+        let (module, trace) =
+            weave_vole_prover_ir_with_mode(&circuit, &types, "riscv_step", &mode, None);
+        let total_woven_stmts: usize =
+            module.inner().functions.iter().map(|f| f.body.stmts.len()).sum();
+        eprintln!("woven prover total stmts: {total_woven_stmts}");
+        eprintln!("memory trace entries: {}", trace.entries.len());
+        panic!("size check only -- not a real assertion");
     }
 }

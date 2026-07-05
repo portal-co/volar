@@ -22,6 +22,7 @@ rv-asm = { git = "https://github.com/portal-co/rv-utils.git" }
 hybrid-array = { workspace = true }
 cipher = { workspace = true }
 anyhow = { version = "^1.0", default-features = false }
+volar-ir-opt = { version = "0.1.0", path = "../../ir/volar-ir-opt" }
 
 [dev-dependencies]
 volar-verifier-fold = { path = "../../fold/volar-verifier-fold" }
