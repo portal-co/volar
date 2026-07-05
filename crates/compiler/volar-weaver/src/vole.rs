@@ -2282,8 +2282,15 @@ fn count_ir_ands_no_storage(block: &CirBlock, types: &CirTypes) -> usize {
 }
 
 /// Count storage reads in the circuit (for oracle parameter sizing).
-fn count_storage_reads(block: &CirBlock) -> usize {
-    block.stmts.iter().filter(|s| matches!(&s.kind, Stmt::StorageRead { .. })).count()
+/// Total committed-oracle bits needed for every `StorageRead` in `block`:
+/// one `oracle_rd_{k}` parameter **per bit lane**, not per statement — a
+/// `_32`-typed read needs 32, matching [`VoleIrCtx::emit_storage_read_committed`]'s
+/// own per-lane oracle-param allocation.
+fn count_storage_reads(block: &CirBlock, types: &CirTypes) -> usize {
+    block.stmts.iter().filter_map(|s| match &s.kind {
+        Stmt::StorageRead { ty, .. } => Some(cir_type_width(ty, types)),
+        _ => None,
+    }).sum()
 }
 
 /// Per-oracle-call bit layout: total committed bits across all outputs.
@@ -2575,17 +2582,40 @@ impl<'a> VoleIrCtx<'a> {
 
     // ---- Poly (generalised gate) ------------------------------------------
 
-    fn emit_poly(
+    /// Fetch the bit-wire name for operand `v` at `lane` of a (possibly
+    /// wide) `Poly` statement.
+    ///
+    /// Introspects `v`'s **own** representation rather than assuming it
+    /// matches the statement's declared output width: a monomial can
+    /// legitimately mix a scalar `Bit` selector with a wide value in the
+    /// same term (e.g. `movfuscate_ir`'s own `is_active · val` gate
+    /// formula, `Poly{[is_active, val]: 1}}`, where `is_active` is always
+    /// `Bit` regardless of `val`'s width) — a scalar operand is reused
+    /// verbatim at every lane (exactly the broadcast a selector bit needs),
+    /// while a `Vec` operand is indexed per lane.
+    fn operand_lane(&self, v: &CirVar, lane: usize) -> String {
+        match &self.wires[&v.0] {
+            WireRepr::Scalar(s) => s.clone(),
+            WireRepr::Vec(parts) => parts[lane].clone(),
+        }
+    }
+
+    /// Emit one bit-lane of a (possibly wide) `Poly` statement: the exact
+    /// single-bit Quicksilver AND/XOR-chain formula this function has
+    /// always used, parameterized by `lane` so [`Self::emit_poly`] can
+    /// broadcast it across every bit of a `>1`-bit-wide value.
+    fn emit_poly_lane(
         &mut self,
         out_name: &str,
         coeffs: &alloc::collections::BTreeMap<Vec<CirVar>, u8>,
-        constant: &volar_ir::ir::Constant,
+        const_bit: bool,
+        lane: usize,
     ) {
         // Collect terms with odd coefficients.
         let mut term_names: Vec<String> = Vec::new();
 
-        // Constant term.
-        if constant.lo & 1 == 1 {
+        // Constant term (this lane's bit of the statement's constant).
+        if const_bit {
             let cname = format!("{}_cst", out_name);
             self.emit_one(&cname);
             term_names.push(cname);
@@ -2602,13 +2632,13 @@ impl<'a> VoleIrCtx<'a> {
                 }
                 1 => {
                     // degree-1: just the wire itself (clone)
-                    term_names.push(self.scalar(&mono[0]).to_string());
+                    term_names.push(self.operand_lane(&mono[0], lane));
                 }
                 _ => {
                     // degree ≥ 2: chain of ANDs
-                    let mut acc = self.scalar(&mono[0]).to_string();
+                    let mut acc = self.operand_lane(&mono[0], lane);
                     for k in 1..mono.len() {
-                        let b = self.scalar(&mono[k]).to_string();
+                        let b = self.operand_lane(&mono[k], lane);
                         acc = self.emit_and(&acc, &b);
                     }
                     term_names.push(acc);
@@ -2646,6 +2676,48 @@ impl<'a> VoleIrCtx<'a> {
                     acc = next;
                 }
             }
+        }
+    }
+
+    /// Emit a (possibly wide) `Poly` statement: one Quicksilver AND/XOR
+    /// chain per bit lane of `width` ([`Self::emit_poly_lane`]),
+    /// broadcasting the same monomial structure and each lane's own
+    /// constant bit independently at every lane. Sound because every
+    /// `IRStmt::Poly` this weaver ever sees is a **bitwise** GF(2)
+    /// combination — VAFFLE bit-decomposes carry-dependent arithmetic
+    /// (add/sub/mul) into per-bit statements with their own explicit carry
+    /// logic elsewhere, so `Poly` itself never needs cross-lane state — the
+    /// same per-lane formula applies uniformly. `width == 1` is the
+    /// original single-bit behaviour (a [`WireRepr::Scalar`]); `width > 1`
+    /// produces a [`WireRepr::Vec`] of `width` per-lane wire names (so
+    /// downstream `Shuffle`/`StorageWrite`/etc. can address individual
+    /// bits via `vec_parts`, exactly as they already do for `Vec`/`Merge`-
+    /// constructed wide values).
+    fn emit_poly(
+        &mut self,
+        out_name: &str,
+        coeffs: &alloc::collections::BTreeMap<Vec<CirVar>, u8>,
+        constant: &volar_ir::ir::Constant,
+        width: usize,
+    ) -> WireRepr {
+        if width <= 1 {
+            let bit0 = constant.lo & 1 == 1;
+            self.emit_poly_lane(out_name, coeffs, bit0, 0);
+            WireRepr::Scalar(out_name.to_string())
+        } else {
+            let names: Vec<String> = (0..width)
+                .map(|lane| {
+                    let lane_name = format!("{}_{}", out_name, lane);
+                    let bit = if lane < 128 {
+                        (constant.lo >> lane) & 1 == 1
+                    } else {
+                        (constant.hi >> (lane - 128)) & 1 == 1
+                    };
+                    self.emit_poly_lane(&lane_name, coeffs, bit, lane);
+                    lane_name
+                })
+                .collect();
+            WireRepr::Vec(names)
         }
     }
 
@@ -2851,7 +2923,13 @@ impl<'a> VoleIrCtx<'a> {
 
     // ---- Commitment-mode storage (0 AND gates) ----------------------------
 
-    /// Commitment-mode read: use an oracle parameter as the value.
+    /// Commitment-mode read: use one oracle parameter **per bit lane** as
+    /// the value (0 AND gates either way) — a `_32`-typed read needs 32
+    /// independent committed bits, not one, matching [`count_storage_reads`]'s
+    /// per-lane counting. Returns the [`WireRepr`] the caller should record
+    /// for this var (`Scalar` at width 1, `Vec` of `width` lane names
+    /// otherwise — same convention [`VoleIrCtx::emit_storage_read`] (Tree
+    /// mode) already uses).
     fn emit_storage_read_committed(
         &mut self,
         out_name: &str,
@@ -2861,16 +2939,33 @@ impl<'a> VoleIrCtx<'a> {
         addr_var: &CirVar,
         types: &CirTypes,
         val_ty: &CirTyId,
-    ) {
-        let param_name = format!("oracle_rd_{}", self.oracle_counter);
-        self.oracle_counter += 1;
-
-        // The value is just a clone of the oracle parameter (0 AND gates).
-        self.stmts.push(ir_stmt(IrStmtKind::Let {
-            pattern: IrPattern::ident(out_name),
-            ty: None,
-            init: Some(clone_expr(var(&param_name))),
-        }));
+    ) -> WireRepr {
+        let width = cir_type_width(val_ty, types);
+        let repr = if width <= 1 {
+            let param_name = format!("oracle_rd_{}", self.oracle_counter);
+            self.oracle_counter += 1;
+            self.stmts.push(ir_stmt(IrStmtKind::Let {
+                pattern: IrPattern::ident(out_name),
+                ty: None,
+                init: Some(clone_expr(var(&param_name))),
+            }));
+            WireRepr::Scalar(out_name.to_string())
+        } else {
+            let names: Vec<String> = (0..width)
+                .map(|lane| {
+                    let param_name = format!("oracle_rd_{}", self.oracle_counter);
+                    self.oracle_counter += 1;
+                    let lane_name = format!("{}_{}", out_name, lane);
+                    self.stmts.push(ir_stmt(IrStmtKind::Let {
+                        pattern: IrPattern::ident(&lane_name),
+                        ty: None,
+                        init: Some(clone_expr(var(&param_name))),
+                    }));
+                    lane_name
+                })
+                .collect();
+            WireRepr::Vec(names)
+        };
 
         self.trace.entries.push(MemoryTraceEntry {
             addr_var: addr_var.0,
@@ -2881,6 +2976,7 @@ impl<'a> VoleIrCtx<'a> {
             timestamp: self.mem_timestamp,
         });
         self.mem_timestamp += 1;
+        repr
     }
 
     /// Commitment-mode write: record in trace, no circuit gates.
@@ -2905,8 +3001,20 @@ impl<'a> VoleIrCtx<'a> {
 
     // ---- Merge / Shuffle (structural, free) --------------------------------
 
+    /// Concatenate `parts`' bit-wires (LSB-first, per `docs/wasm-feature-support.md`'s
+    /// memory-model note) into one wider `Vec`. Each part contributes its
+    /// **own** width, not necessarily one bit — e.g. `i32.load` merges four
+    /// already-`_8`-wide (`Vec`-of-8) byte reads into one `_32` value, not
+    /// four individual bits — so a scalar part contributes 1 name and a
+    /// `Vec` part contributes all of its names, in order.
     fn emit_merge(&mut self, out_id: u32, parts: &[CirVar]) {
-        let names: Vec<String> = parts.iter().map(|v| self.scalar(v).to_string()).collect();
+        let mut names: Vec<String> = Vec::new();
+        for v in parts {
+            match &self.wires[&v.0] {
+                WireRepr::Scalar(s) => names.push(s.clone()),
+                WireRepr::Vec(bits) => names.extend(bits.iter().cloned()),
+            }
+        }
         self.wires.insert(out_id, WireRepr::Vec(names));
         // No runtime code emitted — purely a tracking operation.
     }
@@ -2950,10 +3058,18 @@ impl<'a> VoleIrCtx<'a> {
     ) {
         let p = block.params.len();
 
-        // Register input wires.
+        // Register input wires -- width-aware: a `_32`-typed (or `Vec(32,_)`)
+        // input param needs 32 independent per-lane parameter wires
+        // (`w_{i}_{j}`), not one, matching the param-list generation in
+        // `weave_vole_prover_ir_with_mode`/`weave_vole_verifier_ir_with_mode(_and_trace)`.
         for i in 0..p {
-            let name = format!("w_{}", i);
-            self.wires.insert(i as u32, WireRepr::Scalar(name));
+            let w = cir_type_width(&block.params[i], types);
+            if w <= 1 {
+                self.wires.insert(i as u32, WireRepr::Scalar(format!("w_{}", i)));
+            } else {
+                let bits: Vec<String> = (0..w).map(|j| format!("w_{}_{}", i, j)).collect();
+                self.wires.insert(i as u32, WireRepr::Vec(bits));
+            }
         }
 
         // Initialize storage cells (Tree mode only).
@@ -3080,9 +3196,10 @@ impl<'a> VoleIrCtx<'a> {
                     }
                 }
 
-                Stmt::Poly { coeffs, constant, .. } => {
-                    self.emit_poly(&out_name, coeffs, constant);
-                    self.wires.insert(var_id, WireRepr::Scalar(out_name));
+                Stmt::Poly { ty, coeffs, constant } => {
+                    let width = cir_type_width(ty, types);
+                    let repr = self.emit_poly(&out_name, coeffs, constant, width);
+                    self.wires.insert(var_id, repr);
                 }
 
                 Stmt::Merge { parts, .. } => {
@@ -3106,10 +3223,10 @@ impl<'a> VoleIrCtx<'a> {
                             }
                         }
                         StorageMode::Commitment => {
-                            self.emit_storage_read_committed(
+                            let repr = self.emit_storage_read_committed(
                                 &out_name, var_id, storage.0, ty.0, addr, types, ty,
                             );
-                            self.wires.insert(var_id, WireRepr::Scalar(out_name));
+                            self.wires.insert(var_id, repr);
                         }
                     }
                 }
@@ -3316,13 +3433,20 @@ pub fn weave_vole_prover_ir_with_mode(
     let num_params = block.params.len();
     let and_count = count_ir_ands(block, types, mode);
     let num_oracle_reads = if matches!(mode, StorageMode::Commitment) {
-        count_storage_reads(block)
+        count_storage_reads(block, types)
     } else { 0 };
     let (generics, where_clause) = prover_generics_and_where();
 
     let mut params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
     for i in 0..num_params {
-        params.push(IrParam { name: format!("w_{}", i), ty: vope_type() });
+        let w = cir_type_width(&block.params[i], types);
+        if w <= 1 {
+            params.push(IrParam { name: format!("w_{}", i), ty: vope_type() });
+        } else {
+            for j in 0..w {
+                params.push(IrParam { name: format!("w_{}_{}", i, j), ty: vope_type() });
+            }
+        }
     }
     // Oracle read parameters (Commitment mode).
     for i in 0..num_oracle_reads {
@@ -3420,7 +3544,7 @@ pub fn weave_vole_verifier_ir_with_mode(
     let num_params = block.params.len();
     let and_count = count_ir_ands(block, types, mode);
     let num_oracle_reads = if matches!(mode, StorageMode::Commitment) {
-        count_storage_reads(block)
+        count_storage_reads(block, types)
     } else { 0 };
     let (generics, where_clause) = verifier_generics_and_where();
 
@@ -3433,7 +3557,14 @@ pub fn weave_vole_verifier_ir_with_mode(
     }
     params.push(IrParam { name: "q_one".into(), ty: q_type() });
     for i in 0..num_params {
-        params.push(IrParam { name: format!("w_{}", i), ty: q_type() });
+        let w = cir_type_width(&block.params[i], types);
+        if w <= 1 {
+            params.push(IrParam { name: format!("w_{}", i), ty: q_type() });
+        } else {
+            for j in 0..w {
+                params.push(IrParam { name: format!("w_{}_{}", i, j), ty: q_type() });
+            }
+        }
     }
     // Oracle read parameters (Commitment mode).
     for i in 0..num_oracle_reads {
@@ -3538,7 +3669,7 @@ pub fn weave_vole_verifier_ir_with_mode_and_trace(
     let num_params = block.params.len();
     let and_count = count_ir_ands(block, types, mode);
     let num_oracle_reads = if matches!(mode, StorageMode::Commitment) {
-        count_storage_reads(block)
+        count_storage_reads(block, types)
     } else { 0 };
     let (generics, mut where_clause) = verifier_generics_and_where();
 
@@ -3570,7 +3701,14 @@ pub fn weave_vole_verifier_ir_with_mode_and_trace(
     }
     params.push(IrParam { name: "q_one".into(), ty: q_type() });
     for i in 0..num_params {
-        params.push(IrParam { name: format!("w_{}", i), ty: q_type() });
+        let w = cir_type_width(&block.params[i], types);
+        if w <= 1 {
+            params.push(IrParam { name: format!("w_{}", i), ty: q_type() });
+        } else {
+            for j in 0..w {
+                params.push(IrParam { name: format!("w_{}_{}", i, j), ty: q_type() });
+            }
+        }
     }
     // Oracle read parameters (Commitment mode).
     for i in 0..num_oracle_reads {
