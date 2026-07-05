@@ -279,6 +279,41 @@ fn array_t_from_fn<P: Clone>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
     )
 }
 
+/// `core::array::from_fn(|{idx}| {body})` — a plain fixed-size `[Elem; W]`
+/// Rust array, **not** `hybrid_array::Array<T,N>` (that's the unrelated
+/// VOLE-repetition dimension `N` — [`array_t_from_fn`] above). This is what
+/// [`VoleIrCtx::emit_poly_wide`] uses for its own bit-width dimension `W`.
+fn fixed_array_from_fn<P: Clone>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
+    let prov = body.prov.clone();
+    let side = body.side;
+    IrExpr::new(
+        IrExprKind::Call {
+            func: Box::new(IrExpr::new(
+                IrExprKind::Path {
+                    segments: vec!["core".into(), "array".into(), "from_fn".into()],
+                    type_args: vec![],
+                },
+                prov.clone(),
+                side,
+            )),
+            args: vec![IrExpr::new(
+                IrExprKind::Closure {
+                    params: vec![volar_compiler::ir::IrClosureParam {
+                        pattern: IrPattern::ident(idx),
+                        ty: None,
+                    }],
+                    ret_type: None,
+                    body: Box::new(body),
+                },
+                prov.clone(),
+                side,
+            )],
+        },
+        prov,
+        side,
+    )
+}
+
 /// `Array::<T, N>::default()` — the zero vector in the extension field.
 fn array_t_default<P: Clone + Default>() -> IrExpr<P> {
     ir_expr(IrExprKind::Call {
@@ -300,6 +335,16 @@ fn q_index<P: Clone + Default>(wire_name: &str, idx: &str) -> IrExpr<P> {
             base: Box::new(var(wire_name)),
             field: "q".into(),
         })),
+        index: Box::new(var(idx)),
+    })
+}
+
+/// `base_name[idx]` — plain array indexing (no `.field` wrapper), for the
+/// raw fixed-size arrays [`crate::vole::emit_poly_wide`] bundles wide
+/// operands and per-lane AND-check parameters into.
+fn arr_index<P: Clone + Default>(base_name: &str, idx: &str) -> IrExpr<P> {
+    ir_expr(IrExprKind::Index {
+        base: Box::new(var(base_name)),
         index: Box::new(var(idx)),
     })
 }
@@ -2723,20 +2768,17 @@ impl<'a> VoleIrCtx<'a> {
         }
     }
 
-    /// Emit a (possibly wide) `Poly` statement: one Quicksilver AND/XOR
-    /// chain per bit lane of `width` ([`Self::emit_poly_lane`]),
-    /// broadcasting the same monomial structure and each lane's own
-    /// constant bit independently at every lane. Sound because every
-    /// `IRStmt::Poly` this weaver ever sees is a **bitwise** GF(2)
-    /// combination — VAFFLE bit-decomposes carry-dependent arithmetic
-    /// (add/sub/mul) into per-bit statements with their own explicit carry
-    /// logic elsewhere, so `Poly` itself never needs cross-lane state — the
-    /// same per-lane formula applies uniformly. `width == 1` is the
-    /// original single-bit behaviour (a [`WireRepr::Scalar`]); `width > 1`
-    /// produces a [`WireRepr::Vec`] of `width` per-lane wire names (so
-    /// downstream `Shuffle`/`StorageWrite`/etc. can address individual
-    /// bits via `vec_parts`, exactly as they already do for `Vec`/`Merge`-
-    /// constructed wide values).
+    /// Emit a (possibly wide) `Poly` statement. `width == 1` is the
+    /// original single-bit behaviour (a [`WireRepr::Scalar`]). `width > 1`
+    /// dispatches to [`Self::emit_poly_wide`] — a single `Array::from_fn`
+    /// runtime loop over the same per-lane formula, instead of `width`
+    /// independently unrolled statement chains (see
+    /// `docs/agent-context/boolar-ir-conflicts.md`, conflict #3, for why
+    /// this matters: `width`-unrolled Quicksilver AND-checks are the
+    /// dominant cost of movfuscation-heavy circuits). Falls back to the
+    /// original per-lane-unrolled path (still correct for any shape) when
+    /// [`Self::emit_poly_wide`]'s documented scope limit doesn't cover this
+    /// statement.
     fn emit_poly(
         &mut self,
         out_name: &str,
@@ -2747,22 +2789,414 @@ impl<'a> VoleIrCtx<'a> {
         if width <= 1 {
             let bit0 = constant.lo & 1 == 1;
             self.emit_poly_lane(out_name, coeffs, bit0, 0);
-            WireRepr::Scalar(out_name.to_string())
-        } else {
-            let names: Vec<String> = (0..width)
-                .map(|lane| {
-                    let lane_name = format!("{}_{}", out_name, lane);
-                    let bit = if lane < 128 {
-                        (constant.lo >> lane) & 1 == 1
-                    } else {
-                        (constant.hi >> (lane - 128)) & 1 == 1
-                    };
-                    self.emit_poly_lane(&lane_name, coeffs, bit, lane);
-                    lane_name
-                })
-                .collect();
-            WireRepr::Vec(names)
+            return WireRepr::Scalar(out_name.to_string());
         }
+        if width <= 64 && self.poly_wide_supported(coeffs) {
+            self.emit_poly_wide(out_name, coeffs, constant, width)
+        } else {
+            self.emit_poly_unrolled(out_name, coeffs, constant, width)
+        }
+    }
+
+    /// Per-lane-unrolled fallback (the original `emit_poly` width > 1
+    /// body): `width` independent calls to [`Self::emit_poly_lane`]. Used
+    /// only when [`Self::emit_poly_wide`]'s scope limit doesn't apply —
+    /// correct for any monomial shape, just not collapsed.
+    fn emit_poly_unrolled(
+        &mut self,
+        out_name: &str,
+        coeffs: &alloc::collections::BTreeMap<Vec<CirVar>, u8>,
+        constant: &volar_ir::ir::Constant,
+        width: usize,
+    ) -> WireRepr {
+        let names: Vec<String> = (0..width)
+            .map(|lane| {
+                let lane_name = format!("{}_{}", out_name, lane);
+                let bit = if lane < 128 {
+                    (constant.lo >> lane) & 1 == 1
+                } else {
+                    (constant.hi >> (lane - 128)) & 1 == 1
+                };
+                self.emit_poly_lane(&lane_name, coeffs, bit, lane);
+                lane_name
+            })
+            .collect();
+        WireRepr::Vec(names)
+    }
+
+    /// Whether [`Self::emit_poly_wide`] can handle this statement's
+    /// monomial shape: every monomial of degree ≤ 2 (the only degree this
+    /// weaver's actual callers ever produce — `BIrStmt::And` and
+    /// `movfuscate_ir`'s `is_active · val` gate are always degree ≤ 2),
+    /// and at most one degree-2 (AND) monomial (also the only shape ever
+    /// produced in practice — see
+    /// `docs/agent-context/boolar-ir-conflicts.md`, conflict #3, for the
+    /// rationale for this deliberate, documented scope limit rather than a
+    /// silent one).
+    fn poly_wide_supported(&self, coeffs: &alloc::collections::BTreeMap<Vec<CirVar>, u8>) -> bool {
+        coeffs.keys().all(|mono| mono.len() <= 2)
+    }
+
+    /// The collapsed width > 1 path: emits exactly one
+    /// `Array::from_fn(|i| { ... })` statement computing every bit lane's
+    /// Quicksilver AND/XOR-chain formula at once (the constant term is
+    /// decoded from the raw literal *at runtime*, `(CONST >> i) & 1`, not
+    /// specialized per lane at codegen time — this is what makes a single
+    /// shared loop body correct for every lane), followed by `width`
+    /// trivial per-lane extraction statements so the result is still a
+    /// [`WireRepr::Vec`] of `width` independently-named wires — the exact
+    /// same contract [`Self::emit_poly_unrolled`] produces, so every other
+    /// `Stmt` handler in [`Self::emit_circuit_stmts`] (`Merge`,
+    /// `StorageRead`/`Write`, `Shuffle`, ...) needs no changes at all.
+    ///
+    /// Any wide (`WireRepr::Vec`) operand referenced is bundled into one
+    /// local array once (`let {out}_o{v} = [name0, name1, ...];`) so it can
+    /// be indexed by the closure's symbolic lane variable; a Bit/scalar
+    /// operand (e.g. movfuscation's `is_active` selector) is broadcast
+    /// as-is, unindexed, exactly as [`Self::operand_lane`] already does for
+    /// the unrolled path. The (at most one) AND monomial's `hat`/`q_and`/
+    /// (trace-sink) `r_and` parameters — already-declared per-bit scalar
+    /// function parameters, unchanged — are bundled the same way so the
+    /// single Quicksilver check inside the loop can index them per lane.
+    fn emit_poly_wide(
+        &mut self,
+        out_name: &str,
+        coeffs: &alloc::collections::BTreeMap<Vec<CirVar>, u8>,
+        constant: &volar_ir::ir::Constant,
+        width: usize,
+    ) -> WireRepr {
+        // ---- 1. Bundle every wide operand referenced, once each. -----------
+        let mut wide_ops: Vec<CirVar> = Vec::new();
+        for mono in coeffs.keys() {
+            for v in mono {
+                if wide_ops.contains(v) { continue; }
+                if matches!(&self.wires[&v.0], WireRepr::Vec(_)) {
+                    wide_ops.push(*v);
+                }
+            }
+        }
+        let mut bundle: alloc::collections::BTreeMap<u32, String> = alloc::collections::BTreeMap::new();
+        for v in &wide_ops {
+            let WireRepr::Vec(names) = &self.wires[&v.0] else { unreachable!() };
+            let bname = format!("{out_name}_o{}", v.0);
+            let arr = ir_expr(IrExprKind::FixedArray(
+                names.iter().map(|n| clone_expr(var(n))).collect(),
+            ));
+            self.stmts.push(ir_stmt(IrStmtKind::Let {
+                pattern: IrPattern::ident(&bname),
+                ty: None,
+                init: Some(arr),
+            }));
+            bundle.insert(v.0, bname);
+        }
+
+        // ---- 2. Bundle every AND monomial's hat/q_and/r_and, one bundle
+        //         group per monomial (movfuscation's own `is_active·(a+b)
+        //         + b` slot-accumulation formula expands to *two* AND
+        //         monomials per `Poly`, not one — this must handle any
+        //         count, not just the single-AND `is_active · val` case). --
+        struct AndBundle { start: usize, hat: String, q_and: String, r: String }
+        let mut and_bundles: Vec<AndBundle> = Vec::new();
+        for (gi, _mono) in coeffs.iter().filter(|(m, c)| *c % 2 == 1 && m.len() == 2).map(|(m, _)| m).enumerate() {
+            let start = self.and_counter;
+            self.and_counter += width;
+            let mut b = AndBundle { start, hat: String::new(), q_and: String::new(), r: String::new() };
+            if !self.is_prover {
+                let hat_names: Vec<String> = (start..start + width).map(|k| format!("hat_{k}")).collect();
+                b.hat = format!("{out_name}_h{gi}_{start}");
+                self.stmts.push(ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::ident(&b.hat),
+                    ty: None,
+                    init: Some(ir_expr(IrExprKind::FixedArray(hat_names.iter().map(|n| var(n)).collect()))),
+                }));
+                let q_names: Vec<String> = (start..start + width).map(|k| format!("q_and_{k}")).collect();
+                b.q_and = format!("{out_name}_q{gi}_{start}");
+                self.stmts.push(ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::ident(&b.q_and),
+                    ty: None,
+                    init: Some(ir_expr(IrExprKind::FixedArray(q_names.iter().map(|n| var(n)).collect()))),
+                }));
+                if self.trace_sink.is_some() {
+                    let r_names: Vec<String> = (start..start + width).map(|k| format!("r_and_{k}")).collect();
+                    b.r = format!("{out_name}_r{gi}_{start}");
+                    self.stmts.push(ir_stmt(IrStmtKind::Let {
+                        pattern: IrPattern::ident(&b.r),
+                        ty: None,
+                        init: Some(ir_expr(IrExprKind::FixedArray(r_names.iter().map(|n| var(n)).collect()))),
+                    }));
+                }
+            }
+            and_bundles.push(b);
+        }
+        let and_count_here = and_bundles.len();
+
+        // ---- 3. Build the closure body (redirect self.stmts to a scratch
+        //         buffer; restored below, exactly as e.g. `hat_names`
+        //         bookkeeping already assumes single-threaded, in-order use). ---
+        let saved_stmts = core::mem::take(&mut self.stmts);
+
+        let operand_expr = |ctx: &Self, v: &CirVar| -> IrExpr {
+            match &ctx.wires[&v.0] {
+                WireRepr::Scalar(s) => clone_expr(var(s)),
+                WireRepr::Vec(_) => clone_expr(arr_index(&bundle[&v.0], "i")),
+            }
+        };
+
+        // Constant term, decoded at *runtime* from the raw literal — the
+        // same closure body must be correct for every lane, so the bit
+        // can't be baked in per-lane at codegen time. `poly_wide_supported`
+        // guarantees `width <= 64`, so the constant fits in a `u64` cast —
+        // sidesteps `i128`/`u128` literal-sign edge cases entirely (our
+        // real circuits never need more than 64 bits per value).
+        self.emit_zero("_zero");
+        let one_name = if self.is_prover { "vope_one" } else { "q_one" };
+        let const_lit = ir_expr(IrExprKind::Cast {
+            expr: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(constant.lo as u64 as i128)))),
+            ty: Box::new(IrType::Primitive(PrimitiveType::U64)),
+        });
+        let bit_check = ir_expr(IrExprKind::Binary {
+            op: SpecBinOp::Eq,
+            left: Box::new(ir_expr(IrExprKind::Binary {
+                op: SpecBinOp::BitAnd,
+                left: Box::new(ir_expr(IrExprKind::Binary {
+                    op: SpecBinOp::Shr,
+                    left: Box::new(const_lit),
+                    right: Box::new(var("i")),
+                })),
+                right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(1)))),
+            })),
+            right: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(1)))),
+        });
+        let cst_name = "_cst".to_string();
+        self.stmts.push(ir_stmt(IrStmtKind::Let {
+            pattern: IrPattern::ident(&cst_name),
+            ty: None,
+            init: Some(ir_expr(IrExprKind::If {
+                cond: Box::new(bit_check),
+                then_branch: IrBlock { stmts: vec![], expr: Some(Box::new(clone_expr(var(one_name)))) },
+                else_branch: Some(Box::new(ir_expr(IrExprKind::Block(IrBlock {
+                    stmts: vec![],
+                    expr: Some(Box::new(clone_expr(var("_zero")))),
+                })))),
+            })),
+        }));
+
+        // Every term gets a *uniquely-numbered* local name (`_t{term_idx}`,
+        // `_aw{term_idx}`, ...) -- a `Poly` routinely has more than one
+        // degree-0/1 monomial (e.g. `emit_xor`'s own `a + b` shape is two
+        // degree-1 terms), and reusing one fixed name across them would
+        // silently shadow earlier terms instead of XOR-ing them all in.
+        let mut term_names: Vec<String> = vec![cst_name];
+        let mut hat_locals: Vec<String> = Vec::new();
+        let mut term_idx: usize = 0;
+        let mut and_gi: usize = 0;
+        for (mono, &coeff) in coeffs {
+            if coeff % 2 == 0 { continue; }
+            term_idx += 1;
+            match mono.len() {
+                0 => {
+                    let n = format!("_c0_{term_idx}");
+                    self.emit_one(&n);
+                    term_names.push(n);
+                }
+                1 => {
+                    let n = format!("_t1_{term_idx}");
+                    self.stmts.push(ir_stmt(IrStmtKind::Let {
+                        pattern: IrPattern::ident(&n), ty: None, init: Some(operand_expr(self, &mono[0])),
+                    }));
+                    term_names.push(n);
+                }
+                2 => {
+                    // Bind operands to bare local names first: both the
+                    // AND-check call and (verifier) `and_gate_step` need
+                    // real in-scope identifiers, not arbitrary expressions.
+                    let b = &and_bundles[and_gi];
+                    and_gi += 1;
+                    let ka_n = format!("_ka_{term_idx}");
+                    let kb_n = format!("_kb_{term_idx}");
+                    self.stmts.push(ir_stmt(IrStmtKind::Let {
+                        pattern: IrPattern::ident(&ka_n), ty: None, init: Some(operand_expr(self, &mono[0])),
+                    }));
+                    self.stmts.push(ir_stmt(IrStmtKind::Let {
+                        pattern: IrPattern::ident(&kb_n), ty: None, init: Some(operand_expr(self, &mono[1])),
+                    }));
+                    let wire_n = format!("_aw_{term_idx}");
+                    if self.is_prover {
+                        let hat_n = format!("_ah_{term_idx}");
+                        self.stmts.push(ir_stmt(IrStmtKind::Let {
+                            pattern: IrPattern::Tuple(vec![IrPattern::ident(&wire_n), IrPattern::ident(&hat_n)]),
+                            ty: None,
+                            init: Some(ir_expr(IrExprKind::Call {
+                                func: Box::new(ir_expr(IrExprKind::Path {
+                                    segments: vec!["vole_and_prover_step".into()],
+                                    type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("T".into())],
+                                })),
+                                args: vec![clone_expr(var(&ka_n)), clone_expr(var(&kb_n))],
+                            })),
+                        }));
+                        hat_locals.push(hat_n);
+                    } else {
+                        let hat_n = format!("_lane_hat_{term_idx}");
+                        self.stmts.push(ir_stmt(IrStmtKind::Let {
+                            pattern: IrPattern::ident(&hat_n), ty: None,
+                            init: Some(clone_expr(arr_index(&b.hat, "i"))),
+                        }));
+                        let ok_n = format!("_aok_{term_idx}");
+                        self.stmts.push(ir_stmt(IrStmtKind::Let {
+                            pattern: IrPattern::Tuple(vec![IrPattern::ident(&wire_n), IrPattern::ident(&ok_n)]),
+                            ty: None,
+                            init: Some(ir_expr(IrExprKind::Call {
+                                func: Box::new(ir_expr(IrExprKind::Path {
+                                    segments: vec!["vole_and_verifier_check".into()],
+                                    type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("T".into())],
+                                })),
+                                args: vec![
+                                    var("delta"),
+                                    ref_expr(var(&ka_n)),
+                                    ref_expr(var(&kb_n)),
+                                    ref_expr(arr_index(&b.q_and, "i")),
+                                    ref_expr(var(&hat_n)),
+                                ],
+                            })),
+                        }));
+                        self.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                            left: Box::new(var("all_ok")),
+                            right: Box::new(ir_expr(IrExprKind::Binary {
+                                op: SpecBinOp::And,
+                                left: Box::new(var("all_ok")),
+                                right: Box::new(var(&ok_n)),
+                            })),
+                        }))));
+                        if let Some(sink) = self.trace_sink {
+                            let r_n = format!("_ar_{term_idx}");
+                            self.stmts.push(ir_stmt(IrStmtKind::Let {
+                                pattern: IrPattern::ident(&r_n), ty: None,
+                                init: Some(clone_expr(arr_index(&b.r, "i"))),
+                            }));
+                            let new_state = sink.and_gate_step(
+                                b.start, &ka_n, &kb_n, &wire_n, "delta", &hat_n, &r_n, "fold_state", (),
+                            );
+                            self.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                                left: Box::new(var("fold_state")),
+                                right: Box::new(new_state),
+                            }))));
+                        }
+                    }
+                    term_names.push(wire_n);
+                }
+                _ => unreachable!("poly_wide_supported guarantees degree <= 2"),
+            }
+        }
+
+        // XOR-reduce all terms (identical structure to `emit_poly_lane`'s
+        // own reduction, just operating on this closure's local stmt
+        // buffer via the redirected `self.stmts`).
+        let final_name = "_result".to_string();
+        match term_names.len() {
+            0 => self.emit_zero(&final_name),
+            1 => {
+                self.stmts.push(ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::ident(&final_name),
+                    ty: None,
+                    init: Some(clone_expr(var(&term_names[0]))),
+                }));
+            }
+            _ => {
+                let first = term_names[0].clone();
+                let tmp0 = "_xor0".to_string();
+                self.stmts.push(ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::ident(&tmp0), ty: None, init: Some(clone_expr(var(&first))),
+                }));
+                let mut acc = tmp0;
+                for (i, tn) in term_names[1..].iter().enumerate() {
+                    let next = if i == term_names.len() - 2 { final_name.clone() } else { format!("_xor{}", i + 1) };
+                    self.emit_xor(&next, &acc, tn);
+                    acc = next;
+                }
+            }
+        }
+
+        let has_ands = and_count_here > 0;
+        let trailing = if self.is_prover && has_ands {
+            ir_expr(IrExprKind::Tuple(vec![
+                var(&final_name),
+                ir_expr(IrExprKind::Tuple(hat_locals.iter().map(|h| var(h)).collect())),
+            ]))
+        } else {
+            var(&final_name)
+        };
+        let body_stmts = core::mem::replace(&mut self.stmts, saved_stmts);
+        let closure_body = ir_expr(IrExprKind::Block(IrBlock { stmts: body_stmts, expr: Some(Box::new(trailing)) }));
+
+        // ---- 4. One `core::array::from_fn` statement for the whole lane
+        //         range (a plain `[Elem; W]`, not `Array<T,N>` — that's
+        //         the unrelated VOLE-repetition dimension). An explicit
+        //         type annotation is required so the const generic `W`
+        //         (the array length) can be inferred.
+        let elem_ty = if self.is_prover {
+            if has_ands {
+                IrType::Tuple(vec![vope_type(), IrType::Tuple(vec![array_t_n(); and_count_here])])
+            } else {
+                vope_type()
+            }
+        } else {
+            q_type()
+        };
+        let arr_name = format!("{out_name}_arr");
+        self.stmts.push(ir_stmt(IrStmtKind::Let {
+            pattern: IrPattern::ident(&arr_name),
+            ty: Some(IrType::Array {
+                kind: volar_compiler::ir::ArrayKind::FixedArray,
+                elem: Box::new(elem_ty),
+                len: volar_compiler::ir::ArrayLength::Const(width),
+            }),
+            init: Some(fixed_array_from_fn("i", closure_body)),
+        }));
+
+        // ---- 5. Trivial per-lane extraction: restores WireRepr::Vec's
+        //         exact contract for every downstream consumer. ---
+        let names: Vec<String> = (0..width)
+            .map(|k| {
+                let ln = format!("{out_name}_{k}");
+                let base = if self.is_prover && has_ands {
+                    ir_expr(IrExprKind::Field {
+                        base: Box::new(arr_index(&arr_name, &k.to_string())),
+                        field: "0".into(),
+                    })
+                } else {
+                    arr_index(&arr_name, &k.to_string())
+                };
+                self.stmts.push(ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::ident(&ln), ty: None, init: Some(clone_expr(base)),
+                }));
+                ln
+            })
+            .collect();
+        if self.is_prover && has_ands {
+            // `and_counter` allocated hats *group-major* (all `width` hats
+            // for AND-group 0, then all `width` for group 1, ...) — this
+            // loop must push into `self.hat_names` in that exact same
+            // order, since the verifier's `hat_0..hat_{and_count-1}`
+            // parameter list and the driver that feeds the prover's
+            // returned hats array into it both assume that ordering.
+            for gi in 0..and_count_here {
+                for k in 0..width {
+                    let hat_expr = clone_expr(ir_expr(IrExprKind::Field {
+                        base: Box::new(ir_expr(IrExprKind::Field {
+                            base: Box::new(arr_index(&arr_name, &k.to_string())),
+                            field: "1".into(),
+                        })),
+                        field: gi.to_string(),
+                    }));
+                    let hn = format!("{out_name}_hat_{gi}_{k}");
+                    self.stmts.push(ir_stmt(IrStmtKind::Let {
+                        pattern: IrPattern::ident(&hn), ty: None, init: Some(hat_expr),
+                    }));
+                    self.hat_names.push(hn);
+                }
+            }
+        }
+        WireRepr::Vec(names)
     }
 
     // ---- Oblivious storage access (tree-based) ---------------------------

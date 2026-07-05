@@ -473,7 +473,20 @@ mod tests {
     /// after the pre/post-movfuscation optimization passes, to see
     /// whether fold_ir_blocks/store_forward_ir_blocks are actually
     /// shrinking anything.
+    /// Diagnostic only (not a correctness assertion) -- run manually with
+    /// `cargo test -p volar-riscv-e2e count_woven_statements -- --ignored --nocapture`
+    /// to inspect circuit-size counts and the movfuscated Poly-statement
+    /// shape distribution (width/degree/AND-monomial-count histograms).
+    /// Real finding from this: **99% of Poly statements here are already
+    /// width 1** (`volar-vaffle-target` bit-decomposes every i32/i64 value
+    /// before movfuscation ever runs), so the width-collapsed weave path
+    /// (`emit_poly_wide`) can only ever touch ~1% of them -- the dominant
+    /// cost is movfuscation's own *statement count* (accumulate-every-slot-
+    /// in-every-block), not per-statement width. See
+    /// `docs/agent-context/boolar-ir-conflicts.md` conflict #3 for the
+    /// full writeup and what this redirects future optimization work to.
     #[test]
+    #[ignore]
     fn count_woven_statements_after_optimization() {
         use volar_ir_passes::LoweringMode;
         use volar_weaver::{StorageMode, weave_vole_prover_ir_with_mode};
@@ -496,6 +509,50 @@ mod tests {
             circuit.blocks.iter().map(|b| b.stmts.len()).sum::<usize>()
         );
 
+        // Diagnostic: distribution of Poly statement shapes in the
+        // movfuscated circuit, to see how many actually qualify for the
+        // width-collapsed weave path (width > 1, max monomial degree <= 2)
+        // vs. fall back to per-lane unrolling.
+        use volar_ir::ir::Stmt;
+        use volar_ir_common::{IrType, Type};
+        fn test_type_width(ty: &volar_ir::ir::IRTypeId, types: &volar_ir::ir::IRTypes) -> usize {
+            match &types.0[ty.0 as usize] {
+                IrType::Primitive(Type::Bit) => 1,
+                IrType::Primitive(Type::_8) => 8,
+                IrType::Primitive(Type::_16) => 16,
+                IrType::Primitive(Type::_32) => 32,
+                IrType::Primitive(Type::_64) => 64,
+                IrType::Primitive(Type::_128) => 128,
+                IrType::Primitive(Type::_256) => 256,
+                IrType::Vec(k, _) => *k,
+                _ => 1,
+            }
+        }
+        let mut poly_total = 0usize;
+        let mut poly_wide = 0usize;
+        let mut poly_wide_supported = 0usize;
+        let mut max_degree_hist: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+        let mut and_monos_hist: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+        for stmt in &circuit.blocks[0].stmts {
+            if let Stmt::Poly { ty, coeffs, .. } = &stmt.kind {
+                poly_total += 1;
+                let width = test_type_width(ty, &types);
+                let max_deg = coeffs.keys().map(|m| m.len()).max().unwrap_or(0);
+                let and_count = coeffs.iter().filter(|(m, c)| *c % 2 == 1 && m.len() == 2).count();
+                *max_degree_hist.entry(max_deg).or_insert(0) += 1;
+                if width > 1 {
+                    poly_wide += 1;
+                    *and_monos_hist.entry(and_count).or_insert(0) += 1;
+                    if max_deg <= 2 {
+                        poly_wide_supported += 1;
+                    }
+                }
+            }
+        }
+        eprintln!("poly stmts total: {poly_total}, wide (width>1): {poly_wide}, wide+degree<=2: {poly_wide_supported}");
+        eprintln!("max-degree histogram: {max_degree_hist:?}");
+        eprintln!("and-monomial-count histogram (wide only): {and_monos_hist:?}");
+
         let mode = StorageMode::Commitment;
         let (module, trace) =
             weave_vole_prover_ir_with_mode(&circuit, &types, "riscv_step", &mode, None);
@@ -503,6 +560,5 @@ mod tests {
             module.inner().functions.iter().map(|f| f.body.stmts.len()).sum();
         eprintln!("woven prover total stmts: {total_woven_stmts}");
         eprintln!("memory trace entries: {}", trace.entries.len());
-        panic!("size check only -- not a real assertion");
     }
 }
