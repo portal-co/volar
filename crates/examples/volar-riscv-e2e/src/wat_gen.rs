@@ -322,4 +322,50 @@ mod tests {
         assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
         assert_eq!(target.module.funcs.len(), 1, "expected exactly one lowered function");
     }
+
+    /// The next step of the same claim: the lowered VAFFLE module continues
+    /// through `lower_vaffle_to_ir` (Volar IR), `movfuscate_ir` (collapse the
+    /// real branches/loop into a single self-looping block), and
+    /// `lower_to_circuit_ir` (bounded unroll into a genuine `is_circuit()`
+    /// circuit) -- with zero detour through Boolar IR. This is the real
+    /// interpreter's control flow (opcode dispatch + the loop back-edge),
+    /// not a hand-built fixture.
+    #[test]
+    fn interpreter_ir_movfuscates_and_unrolls_to_a_circuit() {
+        use volar_ir::ir::{IRType, IRTypes};
+        use volar_ir_common::Type;
+        use volar_ir_passes::{LoweringMode, lower_to_circuit_ir, movfuscate_ir};
+
+        let wasm_bytes = wat::parse_str(&test_program_wat()).expect("wat should assemble");
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        let (ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        assert!(
+            ir_blocks.blocks.len() > 1,
+            "the real interpreter has real control flow -- expected multiple blocks, got {}",
+            ir_blocks.blocks.len()
+        );
+        assert!(!ir_blocks.is_circuit());
+
+        let movfuscated = movfuscate_ir(&ir_blocks, &mut types);
+        assert_eq!(movfuscated.blocks.len(), 1, "movfuscate_ir must collapse to a single block");
+        assert!(
+            !movfuscated.is_circuit(),
+            "the movfuscated block still self-loops (JumpCond back to Block(0)); \
+             is_circuit() requires an unconditional Jmp(Return), which only the \
+             *unrolled* circuit has"
+        );
+
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, crate::interp::MAX_STEPS as u32, LoweringMode::Unconditional);
+        assert!(circuit.is_circuit(), "unrolled interpreter must satisfy is_circuit()");
+    }
 }

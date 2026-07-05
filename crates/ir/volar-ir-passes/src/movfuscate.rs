@@ -703,7 +703,7 @@ impl<P: Clone> MovfuscCtx for BIrCtx<P> {
 
 // ---- Substitution ----------------------------------------------------------
 
-fn subst_ir(stmt: &IRStmt, var_map: &[u32]) -> IRStmt {
+pub(crate) fn subst_ir(stmt: &IRStmt, var_map: &[u32]) -> IRStmt {
     let s = |id: &IRVarId| IRVarId(var_map[id.0 as usize]);
     match stmt {
         IRStmt::StorageRead { storage, ty, addr } => IRStmt::StorageRead { storage: *storage, ty: ty.clone(), addr: s(addr) },

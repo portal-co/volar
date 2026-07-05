@@ -12,6 +12,7 @@ volar-ir = { workspace = true }
 volar-ir-common = { workspace = true }
 volar-vaffle-target = { workspace = true }
 vaffle = { workspace = true }
+volar-ir-passes = { path = "../../ir/volar-ir-passes" }
 volar-weaver = { path = "../../compiler/volar-weaver" }
 volar-discipline = { workspace = true }
 volar-spec = { path = "../../spec/volar-spec" }
