@@ -645,15 +645,29 @@ fn process_terminator_ir<P: Clone>(
 
             match (&then_target.dest, &else_target.dest) {
                 (IRBlockTargetId::Return, IRBlockTargetId::Block(IRBlockId(0))) => {
-                    let result_v: Vec<u32> = then_target.args.iter().map(lookup).collect();
+                    let mut result_v: Vec<u32> = then_target.args.iter().map(lookup).collect();
                     let next_v: Vec<u32> = else_target.args.iter().map(lookup).collect();
+                    // A "done" return that carries fewer values than there are
+                    // loop-carried params (e.g. a void WASM function, or one
+                    // returning only a subset of its live state) must not
+                    // truncate the *resumable* state a multi-call driver needs
+                    // to thread into the next call when NOT done. Pad with the
+                    // next-iteration value, which is only ever observed when
+                    // done=true anyway (don't-care by construction there,
+                    // since no further call happens).
+                    for idx in result_v.len()..current_state.len() {
+                        result_v.push(*next_v.get(idx).unwrap_or(&current_state[idx]));
+                    }
                     (val_cv, result_v, next_v)
                 }
 
                 (IRBlockTargetId::Block(IRBlockId(0)), IRBlockTargetId::Return) => {
                     let not_val = emitter.emit_not(val_cv);
-                    let result_v: Vec<u32> = else_target.args.iter().map(lookup).collect();
+                    let mut result_v: Vec<u32> = else_target.args.iter().map(lookup).collect();
                     let next_v: Vec<u32> = then_target.args.iter().map(lookup).collect();
+                    for idx in result_v.len()..current_state.len() {
+                        result_v.push(*next_v.get(idx).unwrap_or(&current_state[idx]));
+                    }
                     (not_val, result_v, next_v)
                 }
 
@@ -666,6 +680,12 @@ fn process_terminator_ir<P: Clone>(
                         else_v.len(),
                         "lower_to_circuit_ir: JumpCond Return targets have different arg counts"
                     );
+                    // Both paths return -- no `Block(0)` continuation exists
+                    // anywhere in this terminator, so there is no multi-call
+                    // "next state" concern here (unlike the asymmetric arms
+                    // above): the mux'd result is genuinely the *entire*
+                    // output by design, not a truncated view of a larger
+                    // resumable state. Left un-padded on purpose.
                     let result_v: Vec<u32> = then_v
                         .iter()
                         .zip(else_v.iter())
@@ -774,8 +794,18 @@ pub fn lower_to_circuit_ir<P: Clone>(
     }
 
     let output_width = result_wires.first().map_or(current_state.len(), |r| r.len());
-    let output_types: Vec<IRTypeId> = return_target_types(&block0.terminator, &orig_var_types)
+    let mut output_types: Vec<IRTypeId> = return_target_types(&block0.terminator, &orig_var_types)
         .unwrap_or_else(|| block0.params.clone());
+    // Mirror `process_terminator_ir`'s result_v padding (only actually
+    // grows `output_types` for the asymmetric Return/Block(0) arms, since
+    // `output_width` already reflects whichever shape `result_v` ended up
+    // with -- the "both return" arm is deliberately left unpadded, and
+    // `output_width` matches that too). Padding slot `idx`'s type is always
+    // the corresponding param's own type (the filler value literally *is*
+    // that param, per `process_terminator_ir`'s padding).
+    for idx in output_types.len()..output_width {
+        output_types.push(block0.params[idx].clone());
+    }
 
     // ---- MUX cascade (right-to-left over iterations), typed per output slot ----
     let mut gated: Vec<u32> = {

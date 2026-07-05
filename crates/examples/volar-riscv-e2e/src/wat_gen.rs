@@ -431,11 +431,26 @@ mod tests {
     /// prover + verifier modules with `StorageMode::Commitment` (the data
     /// RAM) and `IopSink` fold-trace threading on the verifier -- the exact
     /// combination Milestone 1 needs, all real, none hand-built.
+    ///
+    /// Deliberately does **not** call `print_weaved_vole_module` on this
+    /// circuit: after the width-at-rest fix + the `lower_to_circuit_ir`
+    /// return-padding fix (both `docs/agent-context/boolar-ir-conflicts.md`),
+    /// this circuit's woven prover is ~3.27M statements -- stringifying
+    /// that (measured directly: killed at 125GB+ physical footprint on a
+    /// 32GB machine, climbing) is not safe to run as part of the default
+    /// test suite. Every property this test checks is checked structurally
+    /// instead (function names, param shapes, non-empty trace) -- no
+    /// printing needed. See `count_woven_statements_after_optimization`
+    /// (already `#[ignore]`d) for the one place this repo intentionally
+    /// measures this circuit's full scale, and
+    /// `docs/agent-context/circuit-size-optimization-backlog.md` for
+    /// further size-reduction work that would make printing this circuit
+    /// safe again.
     #[test]
     fn interpreter_batch_circuit_weaves_with_commitment_and_trace() {
         use volar_ir_passes::LoweringMode;
         use volar_weaver::{
-            IopSink, StorageMode, print_weaved_vole_module, weave_vole_prover_ir_with_mode,
+            IopSink, StorageMode, weave_vole_prover_ir_with_mode,
             weave_vole_verifier_ir_with_mode_and_trace,
         };
 
@@ -450,16 +465,24 @@ mod tests {
 
         let (prover_module, prover_trace) =
             weave_vole_prover_ir_with_mode(&circuit, &types, "riscv_step", &mode, None);
-        let prover_code = print_weaved_vole_module(prover_module.inner());
-        assert!(prover_code.contains("fn vole_prove_ir_riscv_step"), "missing woven prover fn:\n{prover_code}");
+        let pf = &prover_module.inner().functions[0];
+        assert_eq!(pf.name, "vole_prove_ir_riscv_step", "missing woven prover fn");
 
         let (verifier_module, verifier_trace) = weave_vole_verifier_ir_with_mode_and_trace(
             &circuit, &types, "riscv_step", &mode, &IopSink, None,
         );
-        let verifier_code = print_weaved_vole_module(verifier_module.inner());
-        assert!(verifier_code.contains("fn vole_verify_ir_riscv_step"), "missing woven verifier fn:\n{verifier_code}");
-        assert!(verifier_code.contains("iop_fold_gate"), "verifier must fold every AND gate:\n{verifier_code}");
-        assert!(verifier_code.contains("oracle_rd_"), "commitment-mode reads must be oracle params:\n{verifier_code}");
+        let vf = &verifier_module.inner().functions[0];
+        assert_eq!(vf.name, "vole_verify_ir_riscv_step", "missing woven verifier fn");
+        assert!(
+            vf.params.iter().any(|p| p.name.starts_with("oracle_rd_")),
+            "commitment-mode reads must be oracle params: {:?}",
+            vf.params.iter().map(|p| &p.name).collect::<Vec<_>>()
+        );
+        assert!(
+            vf.params.iter().any(|p| p.name.starts_with("q_and_")),
+            "at least one AND gate expected (IopSink folds every one via iop_fold_gate): {:?}",
+            vf.params.iter().map(|p| &p.name).collect::<Vec<_>>()
+        );
 
         // Commitment mode: both memories' reads/writes are traced (code
         // fetch is public-but-still-committed under today's uniform-mode
@@ -477,14 +500,17 @@ mod tests {
     /// `cargo test -p volar-riscv-e2e count_woven_statements -- --ignored --nocapture`
     /// to inspect circuit-size counts and the movfuscated Poly-statement
     /// shape distribution (width/degree/AND-monomial-count histograms).
-    /// Real finding from this: **99% of Poly statements here are already
-    /// width 1** (`volar-vaffle-target` bit-decomposes every i32/i64 value
-    /// before movfuscation ever runs), so the width-collapsed weave path
-    /// (`emit_poly_wide`) can only ever touch ~1% of them -- the dominant
-    /// cost is movfuscation's own *statement count* (accumulate-every-slot-
-    /// in-every-block), not per-statement width. See
-    /// `docs/agent-context/boolar-ir-conflicts.md` conflict #3 for the
-    /// full writeup and what this redirects future optimization work to.
+    /// Historical finding (pre-width-at-rest-fix): 99% of Poly statements
+    /// were width 1, since `volar-vaffle-target` bit-decomposed every
+    /// i32/i64 value across block boundaries before movfuscation ever ran
+    /// -- see `docs/agent-context/boolar-ir-conflicts.md` conflicts #3-4.
+    /// Fixed: block params/branch args now stay packed at rest (only
+    /// unpacked on-the-fly inside a block), which alone cut woven prover
+    /// statements from 5,342,031 to 3,272,222 (~55% off the original
+    /// 7,249,314 baseline). Further optimization ideas (bitwise-op
+    /// widening, movfuscation-level dedup, polynomial merging) are
+    /// deliberately deferred -- see
+    /// `docs/agent-context/circuit-size-optimization-backlog.md`.
     #[test]
     #[ignore]
     fn count_woven_statements_after_optimization() {
@@ -508,6 +534,40 @@ mod tests {
             "circuit total stmts: {}",
             circuit.blocks.iter().map(|b| b.stmts.len()).sum::<usize>()
         );
+
+        // and_count: mirrors volar_weaver::vole's private count_ir_ands --
+        // total per-lane AND checks (one q_and/hat/r_and triple each in
+        // the woven verifier), the thing that actually drives verifier
+        // weave cost (not just Poly-statement count).
+        {
+            use volar_ir::ir::Stmt as DiagStmt;
+            fn diag_width(ty: &volar_ir::ir::IRTypeId, types: &volar_ir::ir::IRTypes) -> usize {
+                use volar_ir_common::{IrType, Type};
+                match &types.0[ty.0 as usize] {
+                    IrType::Primitive(Type::Bit) => 1,
+                    IrType::Primitive(Type::_8) => 8,
+                    IrType::Primitive(Type::_16) => 16,
+                    IrType::Primitive(Type::_32) => 32,
+                    IrType::Primitive(Type::_64) => 64,
+                    IrType::Primitive(Type::_128) => 128,
+                    IrType::Primitive(Type::_256) => 256,
+                    IrType::Vec(k, _) => *k,
+                    _ => 1,
+                }
+            }
+            let mut and_count = 0usize;
+            for stmt in &circuit.blocks[0].stmts {
+                if let DiagStmt::Poly { ty, coeffs, .. } = &stmt.kind {
+                    let width = diag_width(ty, &types);
+                    for (mono, coeff) in coeffs {
+                        if *coeff % 2 == 1 && mono.len() >= 2 {
+                            and_count += (mono.len() - 1) * width;
+                        }
+                    }
+                }
+            }
+            eprintln!("and_count (verifier q_and/hat/r_and param triples): {and_count}");
+        }
 
         // Diagnostic: distribution of Poly statement shapes in the
         // movfuscated circuit, to see how many actually qualify for the

@@ -243,6 +243,18 @@ where
         H::finalize_eq(&self.produce, &self.consume)
     }
 
+    /// The raw `H_produce` accumulator, for callers that need to export it
+    /// (e.g. as a boundary attestation to an external finalization proof,
+    /// alongside `H_consume`) rather than only checking `verify()` locally.
+    pub fn produce(&self) -> &H::State {
+        &self.produce
+    }
+
+    /// The raw `H_consume` accumulator — see [`Self::produce`].
+    pub fn consume(&self) -> &H::State {
+        &self.consume
+    }
+
     // -- internal helpers ---------------------------------------------------
 
     /// Multiply a field element by a public u64 via repeated doubling.
