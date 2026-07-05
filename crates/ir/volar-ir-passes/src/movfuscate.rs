@@ -154,6 +154,14 @@ pub trait MovfuscCtx {
     /// Number of values in the return tuple shared by all `Return` exits.
     fn return_val_width(blocks: &Self::Blocks) -> usize;
 
+    /// Current next-var-id counter, i.e. how many vars (params + stmts)
+    /// have been allocated so far. A pure query -- emits nothing -- used
+    /// by [`movfuscate`] to record each original block's own contiguous
+    /// var-id range in the combined output, for later splitting (Milestone
+    /// 1.5 Step B: `crates/compiler/volar-weaver` weaves one Rust function
+    /// per range instead of one function for the whole combined block).
+    fn stmt_position(&self) -> u32;
+
     // ---- Primitive Bit operations (PC bits and done signal) ----------------
 
     fn emit_zero_bit(&mut self) -> u32;
@@ -296,23 +304,53 @@ impl<'a, C: MovfuscCtx + ?Sized> crate::dispatch_accumulator::DispatchBitPrimiti
 // Generic movfuscation algorithm
 // ============================================================================
 
+/// Milestone 1.5 Step B boundary metadata: one original block `i`'s own
+/// contiguous var-id range `[start, end)` in the combined movfuscated
+/// output's stmt list, plus the specific var ids the *trailing* cross-block
+/// accumulation phase (`Σ_i is_active_i · x_i`, emitted right after every
+/// block's own range) reads from this block. A weaver splitting `[start,
+/// end)` into its own function must expose `is_active`/`done`/
+/// `next_pc_bits`/`next_state`/`ret_vals` as that function's return values
+/// -- the accumulation phase (or a combiner reproducing it) becomes that
+/// function's caller.
+///
+/// Only meaningful for a circuit produced with `limit == 1` in a
+/// subsequent `lower_to_circuit_ir` call: that's the only case where
+/// `lower_to_circuit_ir`'s own var-id numbering for the unrolled output is
+/// guaranteed identical to the movfuscated input's (identity `var_map` for
+/// one iteration) -- these ranges do not (yet) account for the renumbering
+/// `lower_to_circuit_ir` does when unrolling more than once.
+#[derive(Clone, Debug)]
+pub struct MovfuscBlockBoundary {
+    pub start: u32,
+    pub end: u32,
+    pub is_active: u32,
+    pub done: u32,
+    pub next_pc_bits: Vec<u32>,
+    pub next_state: Vec<u32>,
+    pub ret_vals: Vec<u32>,
+}
+
 /// Combine all blocks of `blocks` into a single self-looping block.
 ///
 /// `state_slot_types[k]` — type of state slot `k` (length = max block param
 /// count).  `return_slot_types[m]` — type of return value `m`.
 ///
-/// Returns the single-block module.  If `blocks` already has one block, it
-/// is returned unchanged via `Clone`.
+/// Returns the single-block module, plus each original block's own
+/// [`MovfuscBlockBoundary`] (empty if `blocks` already had one block --
+/// nothing was combined, so there is nothing to report boundaries for). If
+/// `blocks` already has one block, the module is returned unchanged via
+/// `Clone`.
 pub fn movfuscate<C: MovfuscCtx>(
     mut ctx: C,
     blocks: &C::Blocks,
     state_slot_types: Vec<C::SlotTy>,
     return_slot_types: Vec<C::SlotTy>,
-) -> C::Blocks {
+) -> (C::Blocks, Vec<MovfuscBlockBoundary>) {
     let n = C::num_blocks(blocks);
     assert!(n >= 1, "movfuscate: empty block list");
     if n == 1 {
-        return blocks.clone();
+        return (blocks.clone(), Vec::new());
     }
 
     let pc_width = pc_bits_needed(n);
@@ -340,7 +378,15 @@ pub fn movfuscate<C: MovfuscCtx>(
     }
 
     let mut results: Vec<BlockResult> = Vec::with_capacity(n);
+    // Milestone 1.5 Step B: record each original block's own contiguous
+    // var-id range in the combined output (`stmt_position()` before/after
+    // its `is_active`/stmts/terminator processing), so a later weaving
+    // pass can split the combined block's gates back out per original
+    // block without re-deriving these boundaries. Purely additive --
+    // does not affect what `ctx` emits or the resulting `C::Blocks`.
+    let mut block_ranges: Vec<(u32, u32)> = Vec::with_capacity(n);
     for i in 0..n {
+        let range_start = ctx.stmt_position();
         let is_active = ctx.emit_is_block(&pc_vars, i);
         let block_vals = ctx.emit_block_stmts(blocks, i, &state_vars);
         let term = ctx.emit_block_terminator(
@@ -351,6 +397,7 @@ pub fn movfuscate<C: MovfuscCtx>(
             &state_slot_types,
             &return_slot_types,
         );
+        block_ranges.push((range_start, ctx.stmt_position()));
         results.push(BlockResult {
             is_active,
             done: term.done,
@@ -359,6 +406,26 @@ pub fn movfuscate<C: MovfuscCtx>(
             ret_vals: term.ret_vals,
         });
     }
+
+    // Boundary metadata: each block's own stmt range plus its "exported"
+    // interface -- the exact var ids the *trailing* cross-block
+    // accumulation phase (below) reads from this block. A weaver splitting
+    // this block's range into its own function must expose these as that
+    // function's return values (the combiner/trailing phase becomes that
+    // function's caller).
+    let block_boundaries: Vec<MovfuscBlockBoundary> = block_ranges
+        .into_iter()
+        .zip(results.iter())
+        .map(|((start, end), br)| MovfuscBlockBoundary {
+            start,
+            end,
+            is_active: br.is_active,
+            done: br.done,
+            next_pc_bits: br.next_pc_bits.clone(),
+            next_state: br.next_state.clone(),
+            ret_vals: br.ret_vals.clone(),
+        })
+        .collect();
 
     // ---- Accumulate across mutually-exclusive active bits ------------------
     //
@@ -409,7 +476,7 @@ pub fn movfuscate<C: MovfuscCtx>(
     loop_vars.extend_from_slice(&next_pc);
     loop_vars.extend_from_slice(&next_state);
 
-    ctx.build_output(combined_params, done_acc, loop_vars, ret_vals)
+    (ctx.build_output(combined_params, done_acc, loop_vars, ret_vals), block_boundaries)
 }
 
 // ============================================================================
@@ -523,6 +590,10 @@ impl<P: Clone> MovfuscCtx for BIrCtx<P> {
 
     fn block_param_count(blocks: &BIrBlocks<P>, i: usize) -> usize {
         blocks.blocks[i].params as usize
+    }
+
+    fn stmt_position(&self) -> u32 {
+        self.next_id
     }
 
     fn return_val_width(blocks: &BIrBlocks<P>) -> usize {
@@ -1162,6 +1233,10 @@ impl<P: Clone> MovfuscCtx for IrCtx<P> {
         blocks.blocks[i].params.len()
     }
 
+    fn stmt_position(&self) -> u32 {
+        self.next_id
+    }
+
     fn return_val_width(blocks: &IRBlocks<P>) -> usize {
         for block in &blocks.blocks {
             match &block.terminator {
@@ -1732,7 +1807,7 @@ pub fn movfuscate_biir<P: Clone>(blocks: &BIrBlocks<P>) -> BIrBlocks<P> {
     let state_slot_types = vec![(); state_width];
     let ret_width = BIrCtx::<P>::return_val_width(blocks);
     let return_slot_types = vec![(); ret_width];
-    let mut result = movfuscate(ctx, blocks, state_slot_types, return_slot_types);
+    let (mut result, _block_ranges) = movfuscate(ctx, blocks, state_slot_types, return_slot_types);
     result.pre_init = blocks.pre_init.clone();
     result
 }
@@ -1747,11 +1822,28 @@ pub fn movfuscate_biir<P: Clone>(blocks: &BIrBlocks<P>) -> BIrBlocks<P> {
 /// `types` is used for type inference; an `IRType::Bit` entry is added if
 /// absent.  Single-block input is returned unchanged.
 pub fn movfuscate_ir<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> IRBlocks<P> {
+    movfuscate_ir_impl(blocks, types).0
+}
+
+/// As [`movfuscate_ir`], but additionally returns each original block's own
+/// [`MovfuscBlockBoundary`] -- Milestone 1.5 Step B boundary metadata a
+/// weaver can use to split the combined block's gates back out per
+/// original block (e.g. one woven Rust function per range) instead of
+/// weaving one function for the whole thing. Empty if `blocks` already had
+/// one block.
+pub fn movfuscate_ir_with_boundary<P: Clone>(
+    blocks: &IRBlocks<P>,
+    types: &mut IRTypes,
+) -> (IRBlocks<P>, Vec<MovfuscBlockBoundary>) {
+    movfuscate_ir_impl(blocks, types)
+}
+
+fn movfuscate_ir_impl<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> (IRBlocks<P>, Vec<MovfuscBlockBoundary>) {
     // Ensure IRType::Bit is present in the types table.
     let bit_type_id = types.intern(IRType::Primitive(Type::Bit));
 
     let n = blocks.blocks.len();
-    if n == 1 { return blocks.clone(); }
+    if n == 1 { return (blocks.clone(), Vec::new()); }
 
     // Intern Vec(pc_width, Bit) for block-reference storage.
     let pc_width = pc_bits_needed(n);
@@ -1788,9 +1880,9 @@ pub fn movfuscate_ir<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> IRB
         pc_width,
         ctrl_prov,
     );
-    let mut result = movfuscate(ctx, blocks, state_slot_types, return_slot_types);
+    let (mut result, block_ranges) = movfuscate(ctx, blocks, state_slot_types, return_slot_types);
     result.pre_init = blocks.pre_init.clone();
-    result
+    (result, block_ranges)
 }
 
 // ============================================================================
@@ -2053,6 +2145,55 @@ mod tests {
             }
             other => panic!("expected JumpCond, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_ir_bit_two_block_boundary_ranges_are_contiguous_and_cover_all_stmts() {
+        let (blocks, mut types) = two_block_ir_bit();
+        let (result, block_ranges) = movfuscate_ir_with_boundary(&blocks, &mut types);
+        assert_eq!(block_ranges.len(), 2, "one range per original block");
+
+        let combined_params = result.blocks[0].params.len() as u32;
+        // Contiguous: block 0 starts right after params (plus the one
+        // shared `bit_zero` stmt emitted before the per-block loop), block
+        // 1 starts right where block 0 ends, and block 1 ends at the last
+        // stmt.
+        assert_eq!(block_ranges[0].start, combined_params + 1, "first range starts right after params + bit_zero");
+        assert_eq!(block_ranges[0].end, block_ranges[1].start, "ranges are back-to-back, no gap");
+        // The last range ends before the final cross-block accumulation
+        // phase (done/next_pc/next_state/ret_vals, combining *all* blocks'
+        // results together) -- that phase necessarily comes after every
+        // per-block range, so it's strictly less than the combined block's
+        // total stmt count, not equal to it.
+        let total_stmts = combined_params + result.blocks[0].stmts.len() as u32;
+        assert!(
+            block_ranges[1].end < total_stmts,
+            "last range ({}) must end before the final accumulation phase's stmts ({total_stmts})",
+            block_ranges[1].end
+        );
+        // Every range is non-empty and strictly increasing. Exported var
+        // ids are always defined by the time this block's range ends --
+        // but not necessarily *within* [start, end) itself: `is_active`
+        // for a single-PC-bit block can be the PC param var directly (no
+        // gate needed for "bit == 1"), so it may reference a param
+        // (var id < combined_params) rather than a freshly emitted stmt.
+        for b in &block_ranges {
+            assert!(b.start < b.end, "range ({}, {}) must be non-empty", b.start, b.end);
+            assert!(b.is_active < b.end);
+            assert!(b.done < b.end);
+        }
+    }
+
+    #[test]
+    fn test_ir_bit_two_block_boundary_matches_plain_movfuscate_ir() {
+        // movfuscate_ir_with_boundary must produce byte-identical IRBlocks
+        // output to movfuscate_ir -- the boundary tracking is purely
+        // additive, must never change what gets emitted.
+        let (blocks, mut types_a) = two_block_ir_bit();
+        let mut types_b = types_a.clone();
+        let plain = movfuscate_ir(&blocks, &mut types_a);
+        let (with_boundary, _ranges) = movfuscate_ir_with_boundary(&blocks, &mut types_b);
+        assert_eq!(plain, with_boundary);
     }
 
     // =========================================================================

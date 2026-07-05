@@ -26,6 +26,127 @@ Milestone 1's remaining steps (driving a real proof end-to-end). This doc
 exists so whoever picks up further circuit-size work next doesn't have to
 rediscover the plan from scratch.
 
+## Milestone 1.5 Step A: `virtualize_ir` dedup — attempted, reverted, real bugs found
+
+**Status: not adopted.** Wiring `volar_ir_virt::virtualize_ir` (block-skeleton
+dedup: "one body per unique handler rather than one body per original
+block") in as a pre-movfuscation pass on the interpreter's `ir_blocks`
+(`crates/examples/volar-riscv-e2e/src/wat_gen.rs`'s `lower_interpreter`,
+between `optimize_to_fixpoint` and `movfuscate_ir`) surfaced two real,
+non-trivial bugs before it could be measured for actual `and_count`
+reduction. The wiring itself has been **fully reverted** — `lower_interpreter`
+is back to calling `movfuscate_ir(&ir_blocks, ...)` directly, no `volar-ir-virt`
+dependency in `volar-riscv-e2e`'s `Cargo.toml` — so this doesn't block
+anything; it's parked here for whoever picks Step A back up.
+
+### Bug 1 (found, real, but **not fixed** — fixing it in isolation broke something else)
+
+`crates/ir/volar-vaffle-target/src/lower_to_ir.rs`'s `plan_functions`
+interns the module-entry↔function-0 call continuation's `Block` type via
+`intern_cont_block_type(total_ret_bits)`, where `total_ret_bits` comes from
+`self.module.sigs[body.sig.0].results`. For the interpreter's WAT-authored
+`(func (export "run") (result i32) ...)`, this signature's `results` field
+came back **empty** (`sig.results.len() == 0`), even though the function's
+actual `Terminator::Return { values: [..] }` genuinely returns one i32 —
+confirmed by direct instrumentation (`panic!`-based, since both this crate
+and `volar-ir-virt` are `#![no_std]` and can't use `std::eprintln!`).
+This makes the interned continuation type one param too narrow (`[SP_word]`
+instead of `[SP_word, ret_word]`), which `volar-ir-virt`'s
+`fill_terminator_slots` (`crates/ir/volar-ir-virt/src/ir.rs:1102`) — the
+first code in this pipeline to actually cross-check a `Dyn` jump's `args.len()`
+against its `Block` type's declared `params.len()` — correctly flags as an
+index-out-of-bounds (`args.len()=2` but `sig.len()=1`).
+
+**Why it wasn't fixed**: the natural fix (compute `total_ret_bits` by
+scanning the function body's own blocks for a real `Terminator::Return` and
+using its actual value widths, since `translate_terminator`'s own
+`Terminator::Return` handling already does exactly this and never consults
+`sig.results` either) is *correct* in isolation, but re-sizes continuation
+block 1 (the module's synthetic exit continuation) to 2 params instead of 1.
+`movfuscate_ir`'s `compute_expanded_state_slot_types`
+(`crates/ir/volar-ir-passes/src/movfuscate.rs:1607`) requires **every**
+block's param at a given positional index to agree on type — and this
+2-param exit-continuation block collides, at position 1, with an unrelated
+block's own (differently-typed) param 1. In other words: the *original*,
+too-narrow continuation type was accidentally load-bearing — its wrong
+width happened to numerically match whatever the interpreter's own blocks
+declare at that position, and `movfuscate_ir` (which has never itself
+cross-checked `Dyn`-target arity against args) silently tolerated the
+type-confusion. Fixing bug 1 in isolation regresses the *already-working*
+`movfuscate_ir`/`lower_to_circuit_ir` baseline (confirmed directly: with the
+fix applied and `virtualize_ir` *not* even in the picture,
+`interpreter_ir_movfuscates_and_unrolls_to_a_circuit` fails with
+`movfuscate_ir: block 3 has type Vec(32, TypeId(0)) at param 1, but an
+earlier block had a different non-Block type there`). The fix was reverted.
+
+**What this really means**: `movfuscate_ir` implicitly assumes the *entire*
+block list it's given (including `lower_to_ir.rs`'s special module-entry
+block 0 and exit-continuation block 1, which are logically one-shot
+trampoline blocks, not part of the interpreter's own per-step execution
+loop) shares one uniform per-position state-slot layout. That assumption is
+currently only kept true by an unrelated, accidental type-narrowness bug.
+Fixing this for real needs `movfuscate_ir` (or `lower_to_ir.rs`) to either
+(a) genuinely unify block 0/1's param layout with the interpreter's own
+loop-carried state layout, or (b) exclude the one-shot entry/exit blocks
+from the uniform-slot-type invariant entirely (they execute at most once,
+outside the interpreter's own repeating step). Both are real design work,
+out of scope for a quick fix.
+
+### Bug 2 (found, not fixed, deeper — this is why Step A itself is parked)
+
+Independent of bug 1: even with `DispatchMode::Public` (per `docs/virt.md`,
+the *correct* mode to combine with a subsequent `movfuscate_ir` call —
+`DispatchMode::Oblivious` is listed there as a **deferred integration**, not
+a working end-to-end path, so don't reach for it), `virtualize_ir`'s own
+output (dispatcher + deduped handler blocks + setup block) does not
+produce a uniform per-position param-type layout across all its blocks
+either — hit the *same* `movfuscate_ir:1647` assertion (`block 50 has type
+Vec(64, TypeId(0)) at param 1, but an earlier block had a different
+non-Block type there`), this time from virt's own block shapes, not the
+entry/exit trampoline. `virtualize_ir`'s dispatcher/handler/setup blocks
+each have param shapes suited to their *own* individual purpose (matching
+a per-handler register-file view, per `docs/virt.md`'s register-routing
+description) — nothing in `virtualize_ir` currently guarantees these
+compose into one positionally-uniform state vector across the whole output,
+which is exactly what `movfuscate_ir` needs from *any* input it's given.
+
+**Where this leaves Step A**: `virtualize_ir` and `movfuscate_ir` are both
+real, both tested (in isolation), but **not yet compatible with each other**
+for a program shaped like this interpreter, despite `docs/virt.md` explicitly
+describing the combination as the intended way to get oblivious dispatch.
+Making them compose would need either (a) `movfuscate_ir` accepting a
+non-uniform-across-blocks input and unifying/padding it itself, or (b)
+`virtualize_ir` gaining a "unify all output blocks to one canonical
+positional state layout" mode. Neither is a quick fix; this needs dedicated
+design work in `volar-ir-virt` and/or `volar-ir-passes`, ideally starting
+from a *much* smaller repro (a 2-3-block virt-dedup case, not the full
+~120-block interpreter) to isolate the invariant precisely before touching
+either crate's real logic.
+
+**Recommendation**: per the plan's own framing ("Step B — the primary,
+general mechanism, preferred regardless of Step A's result"), Milestone 1.5
+proceeds on Step B alone. Revisit Step A only if Step B's split-per-block
+gains turn out insufficient on their own, or once RV32I's larger
+instruction set (Milestone 2) makes the register-dispatch repetition (the
+thing Step A specifically targets) numerically bigger and worth the
+composability work above.
+
+**Bug 1's real-world urgency, upgraded**: this isn't purely a virt-integration
+tail risk — per direction received while writing this up, Bug 1
+(`compute_expanded_state_slot_types`'s per-position type-uniformity
+assumption, currently kept true only by an accidental narrow-continuation-type
+bug) will very likely need real fixing **in Milestone 2**, independent of
+whether `virtualize_ir` is ever revisited: Milestone 2's Rust-compiled
+interpreter introduces genuinely **multiple WASM functions** with real
+call/return continuations (unlike Milestone 1's single self-contained loop,
+where the only continuation is the synthetic module-entry↔function-0
+trampoline), plus more distinct types and more block shapes than a single
+instruction-dispatch loop has. That's exactly the shape that stresses this
+assumption harder than Milestone 1 does. See the plan's own Milestone 2
+section ("Anticipated blocker, flag early") for the concrete recommendation
+— budget real investigation time for this early in Milestone 2, starting
+from a small two-function repro before scaling up.
+
 ## Deferred: bitwise-op widening
 
 **Idea:** AND/OR/XOR/NOT on now-wide (`Vec(k,Bit)`-typed) values currently

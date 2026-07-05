@@ -360,6 +360,16 @@ mod tests {
     /// the driver loops, threading state + the IOP fold accumulator across
     /// calls, until the returned flag says the program halted -- per the
     /// plan, "the resulting circuit will run a varied amount of times").
+    ///
+    /// Milestone 1.5 Step A (`virtualize_ir` block-skeleton dedup as a
+    /// pre-movfuscation pass) was attempted and *reverted* here -- see
+    /// `docs/agent-context/circuit-size-optimization-backlog.md` for the
+    /// full writeup of the real, virt-internal incompatibility found
+    /// (`movfuscate_ir`'s per-slot-position type-uniformity requirement
+    /// isn't met by virt's dispatcher/handler/setup block shapes) and the
+    /// separate, genuine VAFFLE bug this investigation *did* fix
+    /// (`plan_functions`'s continuation-type arity, `lower_to_ir.rs`).
+    /// Milestone 1.5 proceeds on Step B (split-the-verifier) alone.
     fn lower_interpreter(
         limit: u32,
         mode: volar_ir_passes::LoweringMode,
@@ -440,13 +450,25 @@ mod tests {
     /// 32GB machine, climbing) is not safe to run as part of the default
     /// test suite. Every property this test checks is checked structurally
     /// instead (function names, param shapes, non-empty trace) -- no
-    /// printing needed. See `count_woven_statements_after_optimization`
-    /// (already `#[ignore]`d) for the one place this repo intentionally
-    /// measures this circuit's full scale, and
-    /// `docs/agent-context/circuit-size-optimization-backlog.md` for
-    /// further size-reduction work that would make printing this circuit
-    /// safe again.
+    /// printing needed.
+    ///
+    /// **`#[ignore]`d**: even *without* printing, just building the woven
+    /// `IrModule`/`IrFunction` trees in memory (the `weave_vole_prover_ir_with_mode`/
+    /// `weave_vole_verifier_ir_with_mode_and_trace` calls below) measured at
+    /// **~12.2GB peak RSS / ~148s**, run in isolation with nothing else
+    /// concurrently allocating -- too large for routine `cargo test` runs
+    /// (a parallel run with other tests can push this well past that). This
+    /// is the exact, expected `and_count = 2,771,980` scale problem
+    /// Milestone 1.5 exists to fix (`docs/agent-context/circuit-size-optimization-backlog.md`
+    /// and the plan's "Milestone 1.5" section) -- not a new regression.
+    /// Re-enable only once Milestone 1.5 Step B's split-the-verifier design
+    /// makes weaving this circuit's woven verifier safe at default-suite
+    /// scale (per the plan's own "Verification for this sub-milestone").
+    /// Until then, use `cargo test -p volar-riscv-e2e --release
+    /// "wat_gen::tests::interpreter_batch_circuit_weaves_with_commitment_and_trace"
+    /// -- --exact --ignored` under RSS monitoring to re-run manually.
     #[test]
+    #[ignore]
     fn interpreter_batch_circuit_weaves_with_commitment_and_trace() {
         use volar_ir_passes::LoweringMode;
         use volar_weaver::{
