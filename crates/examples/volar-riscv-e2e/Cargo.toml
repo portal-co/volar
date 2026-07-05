@@ -1,0 +1,30 @@
+[package]
+name = "volar-riscv-e2e"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "First e2e test: a RISC-V interpreter proven through the real WASM->Volar-IR pipeline"
+repository.workspace = true
+publish = false
+
+[dependencies]
+volar-ir = { workspace = true }
+volar-ir-common = { workspace = true }
+volar-vaffle-target = { workspace = true }
+vaffle = { workspace = true }
+volar-weaver = { path = "../../compiler/volar-weaver" }
+volar-discipline = { workspace = true }
+volar-spec = { path = "../../spec/volar-spec" }
+portal-pc-waffle-ir = { workspace = true }
+portal-pc-waffle-frontend = { workspace = true }
+rv-asm = { git = "https://github.com/portal-co/rv-utils.git" }
+hybrid-array = { workspace = true }
+cipher = { workspace = true }
+anyhow = { version = "^1.0", default-features = false }
+
+[dev-dependencies]
+volar-verifier-fold = { path = "../../fold/volar-verifier-fold" }
+volar-verifier-iop-runtime = { path = "../../iop/volar-verifier-iop-runtime" }
+volar-iop = { path = "../../iop/volar-iop" }
+wat = "1.212.0"
+wasmtime = "46.0.1"

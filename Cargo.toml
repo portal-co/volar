@@ -43,6 +43,7 @@ members = [
     "crates/iop/volar-verifier-iop-runtime",
     "crates/tools/volar-ir-tester",
     "crates/helper/volar-log",
+    "crates/examples/volar-riscv-e2e",
     "xtask",
 ]
 default-members = [

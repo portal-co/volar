@@ -330,12 +330,13 @@ pub fn lower_waffle_function(
                         target,
                         wasm,
                         config,
+                        body,
                     )? {
                         val_map.insert(wval, vv);
                     }
                 }
                 ValueDef::PickOutput(from_val, idx, ty) => {
-                    if let Some(call_vv) = val_map.get(from_val) {
+                    if let Some(call_vv) = resolve_wval(body, &val_map, *from_val) {
                         let lir_ty = waffle_ty(*ty)?;
                         let n = bits_for_lir_type(&lir_ty, &[]);
                         // Compute correct bit offset using the source op's result types.
@@ -351,7 +352,7 @@ pub fn lower_waffle_function(
                     }
                 }
                 ValueDef::Alias(target_val) => {
-                    if let Some(vv) = val_map.get(target_val).cloned() {
+                    if let Some(vv) = resolve_wval(body, &val_map, *target_val) {
                         val_map.insert(wval, vv);
                     }
                 }
@@ -368,6 +369,7 @@ pub fn lower_waffle_function(
             &ret_lir,
             &current_globals,
             target,
+            body,
         )?;
     }
 
@@ -395,6 +397,41 @@ fn compute_pick_offset(body: &FunctionBody, from_val: &WValue, idx: usize) -> us
     }
 }
 
+/// Resolve a WAFFLE value to its already-lowered `VaffleValue`, following
+/// `ValueDef::Alias` chains that were never independently scheduled into
+/// any block's `insts` list.
+///
+/// WAFFLE's frontend can produce "loose" aliases this way — e.g. a pure
+/// rename of an existing value, such as re-reading a local that hasn't
+/// been written since its zero-initialization — without ever listing them
+/// in an `insts` array (aliases don't need scheduling; they're a pure
+/// indirection meant to be resolved transparently at read time). A plain
+/// `val_map` lookup alone misses these even though the value is perfectly
+/// well-defined, which previously surfaced as a spurious
+/// `UnsupportedOp("undefined value ...")` on any real program complex
+/// enough to trigger WAFFLE's alias-based local handling (never hit by
+/// the hand-built `FunctionBody` fixtures in this crate's own tests, since
+/// those never produce bare aliases).
+fn resolve_wval(
+    body: &FunctionBody,
+    val_map: &BTreeMap<WValue, VaffleValue>,
+    mut wval: WValue,
+) -> Option<VaffleValue> {
+    // Bounded, not a `while let` over a `HashSet`-tracked visited set: a
+    // well-formed alias chain is only ever a few hops; this guards against
+    // a malformed cycle without paying for cycle bookkeeping on every call.
+    for _ in 0..10_000 {
+        if let Some(vv) = val_map.get(&wval) {
+            return Some(vv.clone());
+        }
+        match &body.values[wval] {
+            ValueDef::Alias(target) => wval = *target,
+            _ => return None,
+        }
+    }
+    None
+}
+
 fn lower_op(
     op: &Operator,
     args: &[WValue],
@@ -406,11 +443,10 @@ fn lower_op(
     tgt: &mut VaffleTarget,
     wasm: &WModule,
     config: &WaffleImportConfig,
+    body: &FunctionBody,
 ) -> Result<Option<VaffleValue>, UnsupportedOp> {
     let get = |i: usize| -> Result<VaffleValue, UnsupportedOp> {
-        val_map
-            .get(&args[i])
-            .cloned()
+        resolve_wval(body, val_map, args[i])
             .ok_or_else(|| UnsupportedOp(alloc::format!("undefined value {:?}", args[i])))
     };
 
@@ -918,11 +954,10 @@ fn lower_term(
     ret_lir: &[LirType],
     current_globals: &[VaffleValue],
     tgt: &mut VaffleTarget,
+    body: &FunctionBody,
 ) -> Result<(), UnsupportedOp> {
     let get = |wv: &WValue| -> Result<VaffleValue, UnsupportedOp> {
-        val_map
-            .get(wv)
-            .cloned()
+        resolve_wval(body, val_map, *wv)
             .ok_or_else(|| UnsupportedOp(alloc::format!("undefined {:?}", wv)))
     };
     let get_block = |wb: portal_pc_waffle_ir::Block| -> Result<VaffleBlock, UnsupportedOp> {
@@ -935,9 +970,7 @@ fn lower_term(
         wargs
             .iter()
             .map(|wv| {
-                val_map
-                    .get(wv)
-                    .cloned()
+                resolve_wval(body, val_map, *wv)
                     .ok_or_else(|| UnsupportedOp(alloc::format!("undefined {:?}", wv)))
             })
             .collect()
