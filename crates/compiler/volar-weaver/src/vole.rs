@@ -2227,13 +2227,18 @@ fn count_ir_ands(
     for stmt in &block.stmts {
         let result_ty: CirTyId = match &stmt.kind {
             Stmt::Const(_, ty) => ty.clone(),
-            Stmt::Poly { coeffs, .. } => {
+            Stmt::Poly { ty, coeffs, .. } => {
+                // Width-aware: `emit_poly` broadcasts each degree-≥2
+                // monomial's AND-chain across every bit lane of `ty`
+                // (`VoleIrCtx::emit_poly_lane`), so a `_32`-typed AND needs
+                // 32 `(mono.len() - 1)`-gate chains, not 1.
+                let width = cir_type_width(ty, types);
                 for (mono, coeff) in coeffs {
                     if *coeff % 2 == 1 && mono.len() >= 2 {
-                        count += mono.len() - 1;
+                        count += (mono.len() - 1) * width;
                     }
                 }
-                bit_tid
+                ty.clone()
             }
             Stmt::Merge { ty, .. } | Stmt::Splat { ty, .. }
             | Stmt::Rol { ty, .. } | Stmt::Ror { ty, .. }
@@ -2266,14 +2271,21 @@ fn count_ir_ands(
     count
 }
 
-/// AND count for commitment mode: only Poly stmts contribute.
+/// AND count for commitment mode: only Poly stmts contribute (storage costs
+/// 0 ANDs under `StorageMode::Commitment`).
+///
+/// Width-aware: `emit_poly` broadcasts each degree-≥2 monomial's AND-chain
+/// across every bit lane of the statement's declared type
+/// (`VoleIrCtx::emit_poly_lane`), so a `_32`-typed AND needs 32
+/// `(mono.len() - 1)`-gate chains, not 1.
 fn count_ir_ands_no_storage(block: &CirBlock, types: &CirTypes) -> usize {
     let mut count = 0;
     for stmt in &block.stmts {
-        if let Stmt::Poly { coeffs, .. } = &stmt.kind {
+        if let Stmt::Poly { ty, coeffs, .. } = &stmt.kind {
+            let width = cir_type_width(ty, types);
             for (mono, coeff) in coeffs {
                 if *coeff % 2 == 1 && mono.len() >= 2 {
-                    count += mono.len() - 1;
+                    count += (mono.len() - 1) * width;
                 }
             }
         }
@@ -2453,6 +2465,38 @@ impl<'a> VoleIrCtx<'a> {
         match &self.wires[&v.0] {
             WireRepr::Vec(v) => v,
             WireRepr::Scalar(_) => panic!("expected vec wire"),
+        }
+    }
+
+    /// The `IrExpr` for a return-slot variable, honouring its actual width:
+    /// a scalar wire is a plain `clone()`; a `Vec` wire becomes a
+    /// **fixed-size array** expression (`[a.clone(), b.clone(), ...]`), not
+    /// a tuple of repeated elements — arrays are more efficient on
+    /// supported targets and lower gracefully to a dynamic array via
+    /// `lowering_dyn` when a runtime-sized version is needed later. Tuples
+    /// are reserved for combining genuinely different return slots (see
+    /// callers), not for repeating one type.
+    fn slot_expr(&self, v: &CirVar) -> IrExpr {
+        match &self.wires[&v.0] {
+            WireRepr::Scalar(s) => clone_expr(var(s)),
+            WireRepr::Vec(names) => {
+                ir_expr(IrExprKind::FixedArray(names.iter().map(|n| clone_expr(var(n))).collect()))
+            }
+        }
+    }
+
+    /// The `IrType` for a return-slot variable: `base_ty` (e.g.
+    /// `vope_type()`/`q_type()`) for a scalar wire, or a fixed-size array
+    /// of `base_ty` for a `Vec` wire — the type counterpart of
+    /// [`Self::slot_expr`], same array-not-tuple rationale.
+    fn slot_type(&self, v: &CirVar, base_ty: &IrType) -> IrType {
+        match &self.wires[&v.0] {
+            WireRepr::Scalar(_) => base_ty.clone(),
+            WireRepr::Vec(names) => IrType::Array {
+                kind: volar_compiler::ir::ArrayKind::FixedArray,
+                elem: Box::new(base_ty.clone()),
+                len: volar_compiler::ir::ArrayLength::Const(names.len()),
+            },
         }
     }
 
@@ -3470,8 +3514,6 @@ pub fn weave_vole_prover_ir_with_mode(
         }
     }
 
-    let ret_type = IrType::Tuple(vec![vope_type(), hat_array_type(and_count)]);
-
     let mut ctx = VoleIrCtx::new(true);
     ctx.emit_circuit(block, types, mode, &circuit.pre_init);
 
@@ -3479,10 +3521,18 @@ pub fn weave_vole_prover_ir_with_mode(
         IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
         _ => panic!("expected Jmp(Return)"),
     };
-    let output_expr = if ret_args.len() == 1 {
-        clone_expr(var(ctx.scalar(&ret_args[0])))
+    // Computed after emit_circuit: each slot's width (scalar vs array) is
+    // only known once `ctx.wires` has been populated.
+    let output_ty = if ret_args.len() == 1 {
+        ctx.slot_type(&ret_args[0], &vope_type())
     } else {
-        ir_expr(IrExprKind::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect()))
+        IrType::Tuple(ret_args.iter().map(|v| ctx.slot_type(v, &vope_type())).collect())
+    };
+    let ret_type = IrType::Tuple(vec![output_ty, hat_array_type(and_count)]);
+    let output_expr = if ret_args.len() == 1 {
+        ctx.slot_expr(&ret_args[0])
+    } else {
+        ir_expr(IrExprKind::Tuple(ret_args.iter().map(|v| ctx.slot_expr(v)).collect()))
     };
     let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| var(h)).collect()));
     let ret_expr = ir_expr(IrExprKind::Tuple(vec![output_expr, hats_expr]));
@@ -3588,11 +3638,6 @@ pub fn weave_vole_verifier_ir_with_mode(
         }
     }
 
-    let ret_type = IrType::Tuple(vec![
-        q_type(),
-        IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool),
-    ]);
-
     let mut ctx = VoleIrCtx::new(false);
     ctx.stmts.push(ir_stmt(IrStmtKind::Let {
         pattern: IrPattern::Ident { mutable: true, name: "all_ok".into(), subpat: None },
@@ -3606,10 +3651,19 @@ pub fn weave_vole_verifier_ir_with_mode(
         IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
         _ => panic!("expected Jmp(Return)"),
     };
-    let output_expr = if ret_args.len() == 1 {
-        clone_expr(var(ctx.scalar(&ret_args[0])))
+    let output_ty = if ret_args.len() == 1 {
+        ctx.slot_type(&ret_args[0], &q_type())
     } else {
-        ir_expr(IrExprKind::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect()))
+        IrType::Tuple(ret_args.iter().map(|v| ctx.slot_type(v, &q_type())).collect())
+    };
+    let ret_type = IrType::Tuple(vec![
+        output_ty,
+        IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool),
+    ]);
+    let output_expr = if ret_args.len() == 1 {
+        ctx.slot_expr(&ret_args[0])
+    } else {
+        ir_expr(IrExprKind::Tuple(ret_args.iter().map(|v| ctx.slot_expr(v)).collect()))
     };
     let ret_expr = ir_expr(IrExprKind::Tuple(vec![output_expr, var("all_ok")]));
     let trace = ctx.trace.clone();
@@ -3732,12 +3786,6 @@ pub fn weave_vole_verifier_ir_with_mode_and_trace(
         }
     }
 
-    let ret_type = IrType::Tuple(vec![
-        q_type(),
-        IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool),
-        IrType::TypeParam(sink.state_type_name().into()),
-    ]);
-
     let mut ctx = VoleIrCtx::new_verifier_with_trace_sink(sink);
     ctx.stmts.push(ir_stmt(IrStmtKind::Let {
         pattern: IrPattern::Ident { mutable: true, name: "all_ok".into(), subpat: None },
@@ -3764,10 +3812,20 @@ pub fn weave_vole_verifier_ir_with_mode_and_trace(
         IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
         _ => panic!("expected Jmp(Return)"),
     };
-    let output_expr = if ret_args.len() == 1 {
-        clone_expr(var(ctx.scalar(&ret_args[0])))
+    let output_ty = if ret_args.len() == 1 {
+        ctx.slot_type(&ret_args[0], &q_type())
     } else {
-        ir_expr(IrExprKind::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect()))
+        IrType::Tuple(ret_args.iter().map(|v| ctx.slot_type(v, &q_type())).collect())
+    };
+    let ret_type = IrType::Tuple(vec![
+        output_ty,
+        IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool),
+        IrType::TypeParam(sink.state_type_name().into()),
+    ]);
+    let output_expr = if ret_args.len() == 1 {
+        ctx.slot_expr(&ret_args[0])
+    } else {
+        ir_expr(IrExprKind::Tuple(ret_args.iter().map(|v| ctx.slot_expr(v)).collect()))
     };
     let ret_expr = ir_expr(IrExprKind::Tuple(vec![output_expr, var("all_ok"), var("fold_state")]));
     let trace = ctx.trace.clone();
@@ -5029,5 +5087,192 @@ mod tests {
         assert!(code.contains("r_and_0"), "missing r_and_0 for the one AND gate:\n{code}");
         assert!(!code.contains("r_and_1"), "storage ops must not contribute extra fold params:\n{code}");
         assert_eq!(trace.entries.len(), 2, "one write + one read");
+    }
+
+    // ==========================================================================
+    // Multi-bit (width > 1) regression tests -- every existing IR fixture above
+    // is Bit-only (width 1); these lock in the width-awareness fixes to
+    // `emit_poly`/`operand_lane`/`emit_storage_read_committed`/
+    // `count_storage_reads`/`count_ir_ands(_no_storage)`/the input-wire and
+    // return-value handling in `emit_circuit`/`weave_vole_*_ir_with_mode*` --
+    // all of which previously assumed width == 1 and were only ever
+    // exercised at width 1 before the RISC-V interpreter e2e test (real
+    // `_32`-typed registers) surfaced the gap.
+    // ==========================================================================
+
+    /// Two `_8`-typed params, one Poly computing their AND (a real 8-lane
+    /// Quicksilver AND-gate chain via `emit_poly_lane`, not one).
+    fn build_ir_wide_and_circuit() -> (IRBlocks, CirTypes) {
+        let mut types = CirTypes::new();
+        let byte = types.intern(CircuitIrType::Primitive(PrimTy::_8));
+        let mut coeffs = alloc::collections::BTreeMap::new();
+        coeffs.insert(std::vec![CirVar(0), CirVar(1)], 1u8);
+        let block = CirBlock {
+            params: std::vec![byte, byte],
+            stmts: std::vec![
+                volar_ir_common::Node::new(
+                    Stmt::Poly { ty: byte, coeffs, constant: CirConst { hi: 0, lo: 0 } },
+                    (),
+                    None,
+                ),
+            ],
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![CirVar(2)]) },
+        };
+        (IRBlocks::new(std::vec![block]), types)
+    }
+
+    #[test]
+    fn test_wide_and_count_scales_with_width() {
+        let (circuit, types) = build_ir_wide_and_circuit();
+        let block = &circuit.blocks[0];
+        // 1 degree-2 monomial × 8 lanes = 8 AND gates, not 1.
+        assert_eq!(count_ir_ands(block, &types, &StorageMode::Tree(StorageSizes::new())), 8);
+        assert_eq!(count_ir_ands_no_storage(block, &types), 8);
+    }
+
+    #[test]
+    fn test_weave_vole_ir_prover_wide_and_compiles() {
+        let (circuit, types) = build_ir_wide_and_circuit();
+        let mode = StorageMode::Tree(StorageSizes::new());
+        let (module, _trace) = weave_vole_prover_ir_with_mode(&circuit, &types, "wide_and", &mode, None);
+        let code = print_weaved_vole_module(module.inner());
+        run_compile_check(&code, "vole_ir_prover_wide_and");
+    }
+
+    #[test]
+    fn test_weave_vole_ir_verifier_wide_and_compiles() {
+        let (circuit, types) = build_ir_wide_and_circuit();
+        let mode = StorageMode::Tree(StorageSizes::new());
+        let (module, _trace) = weave_vole_verifier_ir_with_mode(&circuit, &types, "wide_and", &mode, None);
+        let code = print_weaved_vole_module(module.inner());
+        // The single (array-typed) return slot must be an array literal of
+        // 8 elements, not a tuple of 8 identical types.
+        assert!(code.contains('['), "wide return slot must be a fixed-size array, not a tuple:\n{code}");
+        run_compile_check(&code, "vole_ir_verifier_wide_and");
+    }
+
+    #[test]
+    fn test_wide_and_trace_sink_folds_all_eight_lanes() {
+        let (circuit, types) = build_ir_wide_and_circuit();
+        let mode = StorageMode::Tree(StorageSizes::new());
+        let (module, _trace) = weave_vole_verifier_ir_with_mode_and_trace(
+            &circuit, &types, "wide_and", &mode, &IopSink, None,
+        );
+        let code = print_weaved_vole_module(module.inner());
+        // 8 lanes → 8 independent AND-gate folds, one r_and_k each.
+        for k in 0..8 {
+            assert!(code.contains(&format!("r_and_{k}")), "missing r_and_{k} for lane {k}:\n{code}");
+        }
+        assert!(!code.contains("r_and_8"), "8-lane AND must not produce a 9th fold param:\n{code}");
+    }
+
+    /// A `_8`-typed value written to and read back from committed storage --
+    /// `emit_storage_read_committed` must allocate 8 oracle params (one per
+    /// lane), not 1, and the result must be a `WireRepr::Vec` of 8 names.
+    fn build_ir_wide_committed_circuit() -> (IRBlocks, CirTypes) {
+        let mut types = CirTypes::new();
+        let byte = types.intern(CircuitIrType::Primitive(PrimTy::_8));
+        let bit = types.intern(CircuitIrType::Primitive(PrimTy::Bit));
+        let block = CirBlock {
+            params: std::vec![byte, bit], // value, addr
+            stmts: std::vec![
+                volar_ir_common::Node::new(
+                    Stmt::StorageWrite { storage: StorageId(0), src: CirVar(0), ty: CirTyId(byte.0), addr: CirVar(1) },
+                    (),
+                    None,
+                ),
+                volar_ir_common::Node::new(
+                    Stmt::StorageRead { storage: StorageId(0), ty: CirTyId(byte.0), addr: CirVar(1) },
+                    (),
+                    None,
+                ),
+            ],
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![CirVar(3)]) },
+        };
+        (IRBlocks::new(std::vec![block]), types)
+    }
+
+    #[test]
+    fn test_wide_committed_storage_allocates_one_oracle_param_per_lane() {
+        let (circuit, types) = build_ir_wide_committed_circuit();
+        let block = &circuit.blocks[0];
+        assert_eq!(count_storage_reads(block, &types), 8, "one _8 read = 8 committed bits");
+    }
+
+    #[test]
+    fn test_weave_vole_ir_prover_wide_committed_compiles() {
+        let (circuit, types) = build_ir_wide_committed_circuit();
+        let mode = StorageMode::Commitment;
+        let (module, trace) = weave_vole_prover_ir_with_mode(&circuit, &types, "wide_commit", &mode, None);
+        let code = print_weaved_vole_module(module.inner());
+        assert_eq!(trace.entries.len(), 2, "one write + one read");
+        run_compile_check(&code, "vole_ir_prover_wide_commit");
+    }
+
+    #[test]
+    fn test_weave_vole_ir_verifier_wide_committed_compiles() {
+        let (circuit, types) = build_ir_wide_committed_circuit();
+        let mode = StorageMode::Commitment;
+        let (module, trace) = weave_vole_verifier_ir_with_mode(&circuit, &types, "wide_commit", &mode, None);
+        let code = print_weaved_vole_module(module.inner());
+        for j in 0..8 {
+            assert!(code.contains(&format!("oracle_rd_{j}")), "missing per-lane oracle param oracle_rd_{j}:\n{code}");
+        }
+        assert_eq!(trace.entries.len(), 2);
+        run_compile_check(&code, "vole_ir_verifier_wide_commit");
+    }
+
+    /// Two already-`_8`-wide committed reads, `Merge`d into one `_16` value
+    /// -- `emit_merge` must concatenate each part's own 8 bits (16 total),
+    /// not treat each part as a single bit (which would produce a
+    /// 2-bit, not 16-bit, result and panic on the first `vec_parts` call
+    /// downstream).
+    fn build_ir_wide_merge_circuit() -> (IRBlocks, CirTypes) {
+        let mut types = CirTypes::new();
+        let byte = types.intern(CircuitIrType::Primitive(PrimTy::_8));
+        let half = types.intern(CircuitIrType::Primitive(PrimTy::_16));
+        let block = CirBlock {
+            params: std::vec![byte, byte], // addr0, addr1 (byte-typed but used only as addresses -- fine, tests don't touch StorageMode arithmetic on them)
+            stmts: std::vec![
+                volar_ir_common::Node::new(
+                    Stmt::StorageRead { storage: StorageId(0), ty: CirTyId(byte.0), addr: CirVar(0) },
+                    (),
+                    None,
+                ),
+                volar_ir_common::Node::new(
+                    Stmt::StorageRead { storage: StorageId(0), ty: CirTyId(byte.0), addr: CirVar(1) },
+                    (),
+                    None,
+                ),
+                volar_ir_common::Node::new(
+                    Stmt::Merge { parts: std::vec![CirVar(2), CirVar(3)], ty: half },
+                    (),
+                    None,
+                ),
+            ],
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![CirVar(4)]) },
+        };
+        (IRBlocks::new(std::vec![block]), types)
+    }
+
+    #[test]
+    fn test_weave_vole_ir_prover_wide_merge_compiles() {
+        let (circuit, types) = build_ir_wide_merge_circuit();
+        let mode = StorageMode::Commitment;
+        let (module, trace) = weave_vole_prover_ir_with_mode(&circuit, &types, "wide_merge", &mode, None);
+        let code = print_weaved_vole_module(module.inner());
+        assert_eq!(trace.entries.len(), 2, "two reads, no writes");
+        run_compile_check(&code, "vole_ir_prover_wide_merge");
+    }
+
+    #[test]
+    fn test_weave_vole_ir_verifier_wide_merge_compiles() {
+        let (circuit, types) = build_ir_wide_merge_circuit();
+        let mode = StorageMode::Commitment;
+        let (module, _trace) = weave_vole_verifier_ir_with_mode(&circuit, &types, "wide_merge", &mode, None);
+        let code = print_weaved_vole_module(module.inner());
+        // The merged _16 result is the sole return value -- 16 elements.
+        assert!(code.contains('['), "merged 16-bit result must be a fixed-size array:\n{code}");
+        run_compile_check(&code, "vole_ir_verifier_wide_merge");
     }
 }
