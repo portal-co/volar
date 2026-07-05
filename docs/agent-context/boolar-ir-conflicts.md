@@ -164,3 +164,85 @@ are at git commit `6df0d11f09143f2700354711670b1ffc99d3034c` (`git show
 **Status:** Resolved (shipped, tested, measured) — but superseded in
 priority by the movfuscation-level finding above for anyone picking up
 further optimization work here.
+
+### 4. Frontend bit-decomposition: keeping i32/i64 "wide at rest" across block boundaries
+
+**Symptom:** Per conflict #3's finding, `volar-vaffle-target` bit-decomposed
+every i32/i64 value down to individual `Bit`-typed SSA values *before*
+movfuscation ever ran, so movfuscation's own per-block, per-slot
+`is_active · val` accumulation was operating on ~117K individual scalar
+(width-1) `Poly` statements — one movfuscation state slot *per bit*, not
+per logical value. This is a Boolar-IR-shaped assumption again: Boolar IR
+is Bit-only by construction, and `VaffleValue { bits: Vec<ValueId>, ty }`
+(one `ValueId` per bit, always) mirrors that, even though nothing about
+VAFFLE's own representation or the Volar-IR movfuscation path requires it.
+
+**Resolution:** Not a shim — a narrow, surgical fix at exactly the two
+places that determine movfuscation's state-slot *count*: block-parameter
+declaration and branch-argument passing (`crates/ir/volar-vaffle-target/src/target.rs`).
+`add_block_param` now declares **one** packed (`Vec(n, Bit)`, or bare `Bit`
+if `n <= 1`) VAFFLE block param instead of `n` separate `Bit` params, then
+immediately unpacks it via `n` calls to the pre-existing, already-tested
+`StorageEmitter::extract_bit` — so `VaffleValue.bits` still presents `n`
+individually-addressable bit `ValueId`s to every existing caller, unchanged.
+`jump`/`branch` symmetrically pack each argument via `StorageEmitter::compose_address`
+before crossing the block boundary (with `.filter(|v| !v.bits.is_empty())`
+preserved so an empty-bits value still contributes zero positional args).
+Every WASM operator's own internal logic (`add`/`and`/`shl`/... via
+`BitCircuitBuilder`) is completely untouched — it still operates bit-by-bit
+inside a block; only the *between-blocks* representation changed.
+
+**A second, pre-existing bug this exposed:** `lower_to_ir.rs`'s
+`lower_function` (VAFFLE → Volar IR) pushed non-entry blocks' param types
+by copying the raw **VAFFLE** `TypeId` directly into the IR block's param
+list, instead of remapping it through `self.type_map` (the VAFFLE-TypeId →
+IR-TypeId table built by `remap_type_id`). This was invisible before this
+fix because every VAFFLE block param was `Bit`-typed, and `Bit` happens to
+be reserved as id 0 in *both* type tables — so the unmapped raw id was
+coincidentally correct. Once block params became genuinely wide
+(`Vec(32, Bit)`), the raw VAFFLE id no longer matched the IR id at the same
+position (e.g. it collided with `ADDR_TID`, the IR-level `Vec(16, Bit)`
+stack-address type reserved at IR `TypeId(1)`), causing
+`index out of bounds` panics deep in the weaver's `emit_shuffle` (a
+downstream symptom of an upstream type-table mismatch, not a weaver bug).
+Fixed with a one-line remap: `params.push(self.type_map[ty_id.0 as usize])`.
+This is a genuine, unrelated latent bug fix, not a Boolar-IR shim — logged
+here because it was found and fixed in the same pass as this frontend
+change and is easy to otherwise lose track of.
+
+**Measured impact — the width-at-rest fix alone was decisive.** On the
+same Milestone-1 RISC-V interpreter one-step circuit used throughout this
+log:
+- Movfuscated `Poly` statement count: 117,692 → 20,182 (an ~83% drop in
+  raw statement count, since state is now packed per logical value instead
+  of exploded per bit).
+- Of those, the *wide* (`width > 1`) fraction jumped from ~1% (1,228) to
+  ~22% (4,375) — `emit_poly_wide` (conflict #3) now actually applies to a
+  meaningful share of the circuit instead of a rounding error.
+- Woven prover statement count: 5,342,031 → **3,272,222** (~39% further
+  reduction on top of conflict #3's `emit_poly_wide` win, ~55% total
+  reduction from the original, pre-any-optimization baseline of 7,249,314).
+
+Per the user's own stated conditional ("unless the decreased state width
+alone is that big of a win"), this qualifies — a ~55% total reduction from
+one narrowly-scoped fix (two functions in `target.rs`, one one-line fix in
+`lower_to_ir.rs`) is enough to defer the remaining planned optimizations
+(bitwise-op-level widening, movfuscation-level tunnelled-state/`is_active`
+dedup, polynomial merging) rather than implement them speculatively before
+re-measuring against real further use of this pipeline (Milestone 2's
+RV32I expansion).
+
+**Status:** Resolved (shipped, tested, measured). All of
+`volar-vaffle-target`'s and `volar-riscv-e2e`'s test suites pass with this
+change (see below for the one known-unrelated pre-existing failure).
+
+**Unrelated pre-existing failure, not caused by this change:**
+`volar-vaffle-target::lower_to_ir::tests::test_pack_unpack_stmts_present`
+fails both with and without this session's changes (verified by reverting
+`target.rs` to its pre-session state via `git show HEAD:...` and re-running
+the test in isolation — same failure both ways), with
+`"emit_entry_and_exit: entry function (func 0) must be a Body with at least
+one value to seed provenance from"`. This is in the SP-threading/spill-reload
+trampoline mechanism, unrelated on the surface to i32/i64 width handling.
+Not fixed here — out of scope for this change, left as a known gap for
+whoever next touches `emit_entry_and_exit`.

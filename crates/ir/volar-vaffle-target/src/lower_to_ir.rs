@@ -519,7 +519,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                 params.extend(vec![PACK_TID; n_param_words]);
             } else {
                 for &(_vid, ty_id) in &vaffle_block.params {
-                    params.push(ty_id);
+                    params.push(self.type_map[ty_id.0 as usize]);
                 }
             }
 

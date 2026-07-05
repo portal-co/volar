@@ -462,10 +462,26 @@ impl LirTarget for VaffleTarget {
         VaffleBlock(idx)
     }
 
+    /// Declares **one** VAFFLE block param of the packed (`Vec(n, Bit)`,
+    /// or bare `Bit` when `n == 1`) type — not `n` separate `Bit` params —
+    /// then immediately unpacks it back into `n` individual bit `ValueId`s
+    /// via [`StorageEmitter::extract_bit`] so every existing caller (which
+    /// expects `VaffleValue.bits` to be `n` individually-addressable bit
+    /// ids) sees an unchanged contract. This is what keeps a WASM i32/i64
+    /// loop-carried value "wide at rest" *between* blocks (one movfuscation
+    /// state slot, not `n`) while every operator's internal logic — which
+    /// still operates bit-by-bit via `BitCircuitBuilder` — is completely
+    /// unaffected. See `docs/agent-context/boolar-ir-conflicts.md`.
     fn add_block_param(&mut self, block: VaffleBlock, ty: LirType) -> VaffleValue {
         let n = bits_for_lir_type(&ty, &self.struct_widths);
         let bit_tid = self.bit_tid();
-        let bits: Vec<ValueId> = (0..n).map(|_| self.fb().emit_block_param(block.0, bit_tid)).collect();
+        let param_tid = if n <= 1 { bit_tid } else { self.intern_type(IrType::Vec(n, bit_tid)) };
+        let packed = self.fb().emit_block_param(block.0, param_tid);
+        let bits: Vec<ValueId> = if n <= 1 {
+            vec![packed]
+        } else {
+            (0..n as u8).map(|i| self.extract_bit(packed, i)).collect()
+        };
         VaffleValue { bits, ty }
     }
 
@@ -673,8 +689,15 @@ impl LirTarget for VaffleTarget {
     }
 
     // ---- Terminators -------------------------------------------------------
+    // Each argument is packed into **one** value via `compose_address`
+    // (a no-op passthrough when it's already a single bit) to match
+    // `add_block_param`'s one-param-per-value contract, not flattened into
+    // `n` individual bit ids. See `add_block_param`'s doc.
     fn jump(&mut self, target: VaffleBlock, branch: BranchTarget<VaffleValue>) {
-        let flat: Vec<ValueId> = branch.args.iter().flat_map(|v| v.bits.iter().copied()).collect();
+        let flat: Vec<ValueId> = branch.args.iter()
+            .filter(|v| !v.bits.is_empty())
+            .map(|v| self.compose_address(&v.bits))
+            .collect();
         let fb = self.fb();
         let cur = fb.current;
         fb.blocks[cur].terminator = Some(Terminator::Jump(Target {
@@ -693,8 +716,14 @@ impl LirTarget for VaffleTarget {
         else_branch: BranchTarget<VaffleValue>,
     ) {
         let cond_bit = cond.bits[0];
-        let flat_then: Vec<ValueId> = then_branch.args.iter().flat_map(|v| v.bits.iter().copied()).collect();
-        let flat_else: Vec<ValueId> = else_branch.args.iter().flat_map(|v| v.bits.iter().copied()).collect();
+        let flat_then: Vec<ValueId> = then_branch.args.iter()
+            .filter(|v| !v.bits.is_empty())
+            .map(|v| self.compose_address(&v.bits))
+            .collect();
+        let flat_else: Vec<ValueId> = else_branch.args.iter()
+            .filter(|v| !v.bits.is_empty())
+            .map(|v| self.compose_address(&v.bits))
+            .collect();
         let fb = self.fb();
         let cur = fb.current;
         fb.blocks[cur].terminator = Some(Terminator::IfNonzero {
