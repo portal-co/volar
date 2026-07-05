@@ -51,7 +51,7 @@ use volar_compiler::{
 };
 use volar_ir::boolar::{BIrBlocks, BIrStmt};
 use volar_ir::ir::{
-    IRBlocks, IRBlock as CirBlock, IRBlockTargetId, IRTerminator,
+    IRBlocks, IRBlock as CirBlock, IRBlockTargetId, IRStmt, IRTerminator,
     IRType as CircuitIrType, IRTypeId as CirTyId, IRTypes as CirTypes,
     IRVarId as CirVar, PrimType, PreInitSegment, Stmt, StorageId, IRBranchTarget};
 use volar_ir::public::PublicSet;
@@ -2324,8 +2324,16 @@ fn count_ir_ands(
 /// (`VoleIrCtx::emit_poly_lane`), so a `_32`-typed AND needs 32
 /// `(mono.len() - 1)`-gate chains, not 1.
 fn count_ir_ands_no_storage(block: &CirBlock, types: &CirTypes) -> usize {
+    count_ir_ands_no_storage_range(&block.stmts, types)
+}
+
+/// As [`count_ir_ands_no_storage`], but over an arbitrary stmt slice --
+/// Milestone 1.5 Step B: sizing one split (per-`MovfuscBlockBoundary`)
+/// function's own `q_and`/`hat`/`r_and` params, bounded by that block's own
+/// AND-gate count instead of the whole circuit's.
+fn count_ir_ands_no_storage_range(stmts: &[volar_ir_common::Node<IRStmt, ()>], types: &CirTypes) -> usize {
     let mut count = 0;
-    for stmt in &block.stmts {
+    for stmt in stmts {
         if let Stmt::Poly { ty, coeffs, .. } = &stmt.kind {
             let width = cir_type_width(ty, types);
             for (mono, coeff) in coeffs {
@@ -2344,7 +2352,14 @@ fn count_ir_ands_no_storage(block: &CirBlock, types: &CirTypes) -> usize {
 /// `_32`-typed read needs 32, matching [`VoleIrCtx::emit_storage_read_committed`]'s
 /// own per-lane oracle-param allocation.
 fn count_storage_reads(block: &CirBlock, types: &CirTypes) -> usize {
-    block.stmts.iter().filter_map(|s| match &s.kind {
+    count_storage_reads_range(&block.stmts, types)
+}
+
+/// As [`count_storage_reads`], but over an arbitrary stmt slice (Milestone
+/// 1.5 Step B per-block sizing, same rationale as
+/// [`count_ir_ands_no_storage_range`]).
+fn count_storage_reads_range(stmts: &[volar_ir_common::Node<IRStmt, ()>], types: &CirTypes) -> usize {
+    stmts.iter().filter_map(|s| match &s.kind {
         Stmt::StorageRead { ty, .. } => Some(cir_type_width(ty, types)),
         _ => None,
     }).sum()
@@ -2372,11 +2387,18 @@ struct ExternalBitCounts {
 /// The order of the scan must match the order that [`VoleIrCtx::emit_circuit`]
 /// processes statements, so that indices align.
 fn count_external_primitives(block: &CirBlock, types: &CirTypes) -> ExternalBitCounts {
+    count_external_primitives_range(&block.stmts, types)
+}
+
+/// As [`count_external_primitives`], but over an arbitrary stmt slice
+/// (Milestone 1.5 Step B per-block sizing, same rationale as
+/// [`count_ir_ands_no_storage_range`]).
+fn count_external_primitives_range(stmts: &[volar_ir_common::Node<IRStmt, ()>], types: &CirTypes) -> ExternalBitCounts {
     let mut oracle_calls = Vec::new();
     let mut action_calls = Vec::new();
     let mut rng_widths = Vec::new();
 
-    for stmt in &block.stmts {
+    for stmt in stmts {
         match &stmt.kind {
             Stmt::OracleCall { output_tys, .. } => {
                 let total_bits: usize = output_tys.iter().map(|ty| cir_type_width(ty, types)).sum();
@@ -3648,10 +3670,32 @@ impl<'a> VoleIrCtx<'a> {
     /// Caller must pre-populate `self.wires` (input wires) and `self.stor` (storage cells)
     /// before calling, then may read back `self.stor` for updated cell names after.
     fn emit_circuit_stmts(&mut self, block: &CirBlock, types: &CirTypes, mode: &StorageMode) {
+        self.emit_circuit_stmts_range(block, types, mode, 0..block.stmts.len());
+    }
+
+    /// As [`Self::emit_circuit_stmts`], but processes only `stmt_range`
+    /// (absolute indices into `block.stmts`) instead of the whole block --
+    /// Milestone 1.5 Step B: weaving one Rust function per original
+    /// (pre-movfuscation) block's own `MovfuscBlockBoundary` range instead
+    /// of one function for the whole combined circuit. `si` (used for
+    /// `var_id = p + si`) is the *absolute* stmt index, so wires/gates
+    /// emitted here use the exact same names/numbering as a full-block
+    /// `emit_circuit_stmts` call would -- callers process disjoint ranges
+    /// across separate `VoleIrCtx`/`IrFunction` instances that only share
+    /// `w_i`-input-param wires (never stmt-defined vars across ranges,
+    /// since blocks are independent given the shared entry state).
+    fn emit_circuit_stmts_range(
+        &mut self,
+        block: &CirBlock,
+        types: &CirTypes,
+        mode: &StorageMode,
+        stmt_range: core::ops::Range<usize>,
+    ) {
         let p = block.params.len();
 
         // Process stmts.
-        for (si, stmt) in block.stmts.iter().enumerate() {
+        for si in stmt_range {
+            let stmt = &block.stmts[si];
             let var_id = (p + si) as u32;
             let out_name = format!("w_{}", var_id);
 
@@ -4287,6 +4331,412 @@ pub fn weave_vole_verifier_ir_with_mode_and_trace(
     };
     if let Some(ls) = linkage { ls.apply(&mut module); }
     (Tagged::seal(module), trace)
+}
+
+/// One original block's exported interface, as seen from the combiner: the
+/// return type/expr pieces the block's own woven function produces, plus
+/// enough shape info (width per `next_state`/`ret_vals` slot) for the
+/// combiner to declare matching incoming params.
+struct SplitBlockInterface {
+    is_active_ty: IrType,
+    done_ty: IrType,
+    next_pc_bit_tys: Vec<IrType>,
+    next_state_tys: Vec<IrType>,
+    ret_val_tys: Vec<IrType>,
+}
+
+/// Milestone 1.5 Step B: as [`weave_vole_verifier_ir_with_mode_and_trace`],
+/// but split into one Rust function per original (pre-movfuscation) block
+/// (per `boundary`, from `movfuscate_ir_with_boundary`) plus one trailing
+/// "combiner" function for the cross-block accumulation phase and final
+/// terminator -- no single function ever declares an `and_count`-sized
+/// param list. Each block function's own params are bounded by that
+/// block's own AND-gate/oracle-read count; the combiner's params are
+/// bounded by `n_blocks × state_width`, not `and_count`.
+///
+/// `emit_fn` is called once per generated function, in order (block 0,
+/// block 1, ..., block `n-1`, then the combiner) -- callers should print
+/// and drop each one (Step B.4) before the next call returns, so peak
+/// codegen memory is bounded by one function's own size, not the whole
+/// circuit's. Correspondingly, at *runtime*, callers drive these the same
+/// way: call block function `i`'s prover and verifier counterparts, fold
+/// `all_ok`/`fold_state`, discard that block's `hat`s, then move to block
+/// `i+1` -- see Milestone 1.5's own `docs/agent-context/circuit-size-optimization-backlog.md`
+/// investigation for why this needs no `volar-net`/streaming abstraction:
+/// ordinary sequential Rust calls already bound both codegen and runtime
+/// peak memory to one block's own size.
+///
+/// Requires `boundary` to be non-empty and to come from
+/// `movfuscate_ir_with_boundary` on the *same* circuit (only valid for
+/// `limit == 1` in the `lower_to_circuit_ir` call that produced `circuit`
+/// -- see [`MovfuscBlockBoundary`]'s own doc).
+pub fn weave_vole_verifier_ir_split_with_trace(
+    circuit: &IRBlocks,
+    types: &CirTypes,
+    name: &str,
+    mode: &StorageMode,
+    sink: &dyn VerifierTraceSink<()>,
+    boundary: &[volar_ir_passes::MovfuscBlockBoundary],
+    linkage: Option<&LinkageSystem>,
+    mut emit_fn: impl FnMut(IrFunction),
+) -> MemoryTrace {
+    assert!(circuit.is_circuit(), "weave_vole_verifier_ir_split_with_trace: circuit must satisfy is_circuit()");
+    assert!(!boundary.is_empty(), "weave_vole_verifier_ir_split_with_trace: boundary must be non-empty");
+    let block = &circuit.blocks[0];
+    let num_params = block.params.len();
+
+    let (generics, base_where_clause) = verifier_generics_and_where();
+    let where_clause_for = |sink: &dyn VerifierTraceSink<()>| -> Vec<IrWherePredicate> {
+        let mut wc = base_where_clause.clone();
+        if let Some(trait_name) = sink.fold_lift_trait_name() {
+            if let Some(IrWherePredicate::TypeBound { bounds, .. }) = wc
+                .iter_mut()
+                .find(|p| matches!(p, IrWherePredicate::TypeBound { ty: IrType::TypeParam(n), .. } if n == "T"))
+            {
+                bounds.push(IrTraitBound {
+                    trait_kind: TraitKind::Custom(trait_name.into()),
+                    type_args: vec![],
+                    assoc_bindings: vec![],
+                });
+            }
+        }
+        wc
+    };
+
+    // Shared entry-state params (`w_i`), identical across every block
+    // function and the combiner -- every block reads the *same* incoming
+    // state, per movfuscation's own "every handler sees the shared state"
+    // design.
+    let mut w_params: Vec<IrParam> = Vec::new();
+    for i in 0..num_params {
+        let w = cir_type_width(&block.params[i], types);
+        if w <= 1 {
+            w_params.push(IrParam { name: format!("w_{}", i), ty: q_type() });
+        } else {
+            for j in 0..w {
+                w_params.push(IrParam { name: format!("w_{}_{}", i, j), ty: q_type() });
+            }
+        }
+    }
+    let insert_w_wires = |ctx: &mut VoleIrCtx| {
+        for i in 0..num_params {
+            let w = cir_type_width(&block.params[i], types);
+            if w <= 1 {
+                ctx.wires.insert(i as u32, WireRepr::Scalar(format!("w_{}", i)));
+            } else {
+                let bits: Vec<String> = (0..w).map(|j| format!("w_{}_{}", i, j)).collect();
+                ctx.wires.insert(i as u32, WireRepr::Vec(bits));
+            }
+        }
+    };
+
+    // Pre-init trace entries: pure metadata (Commitment mode only touches
+    // real wires for the fresh `oracle_rd_k` params of each real
+    // `StorageRead`, per `emit_storage_read_committed` -- these constant
+    // pre-init wires are never read back by anything), so replicate just
+    // the numeric var-id/entry bookkeeping `emit_circuit`'s pre_init pass
+    // does, with no ctx/ctx.stmts needed. Var ids mirror the original
+    // scheme (`p + n_stmts` onward) so they stay meaningful against
+    // `circuit.blocks[0]` for anything cross-referencing them.
+    let mut overall_trace_entries: Vec<MemoryTraceEntry> = Vec::new();
+    let mut global_ts: u32 = 0;
+    if matches!(mode, StorageMode::Commitment) && !circuit.pre_init.is_empty() {
+        let n_stmts = block.stmts.len() as u32;
+        let mut syn_id = num_params as u32 + n_stmts;
+        for seg in &circuit.pre_init {
+            let sid = seg.storage.0;
+            let tid = seg.ty.0;
+            for (local, _c) in seg.data.iter().enumerate() {
+                let _ci = seg.offset + local;
+                let val_id = syn_id; syn_id += 1;
+                let addr_id = syn_id; syn_id += 1;
+                overall_trace_entries.push(MemoryTraceEntry {
+                    addr_var: addr_id,
+                    value_var: val_id,
+                    storage_id: sid,
+                    type_id: tid,
+                    is_write: true,
+                    timestamp: global_ts,
+                });
+                global_ts += 1;
+            }
+        }
+    }
+
+    // `movfuscate`'s core loop emits a handful of statements *before* the
+    // per-block loop starts (currently just the shared `bit_zero` constant
+    // used for the PC/done accumulators) -- these var ids sit outside every
+    // block's own `MovfuscBlockBoundary` range, but a block's own
+    // terminator-handling stmts (e.g. a "done = 0" / "next_state padding"
+    // that reuses the shared zero rather than emitting its own) can
+    // reference them. Every ctx (each block's own, and the combiner's)
+    // needs this shared prefix processed first so those references
+    // resolve, exactly as the unsplit weave's single continuous pass would
+    // have had them already defined.
+    let shared_prefix: core::ops::Range<usize> = 0..(boundary[0].start as usize - num_params);
+
+    let mut interfaces: Vec<SplitBlockInterface> = Vec::with_capacity(boundary.len());
+
+    for (i, b) in boundary.iter().enumerate() {
+        let start = (b.start - num_params as u32) as usize;
+        let end = (b.end - num_params as u32) as usize;
+        let local_stmts = &block.stmts[start..end];
+        let local_and_count = count_ir_ands_no_storage_range(local_stmts, types);
+        let local_oracle_reads = if matches!(mode, StorageMode::Commitment) {
+            count_storage_reads_range(local_stmts, types)
+        } else { 0 };
+        let local_ext = count_external_primitives_range(local_stmts, types);
+
+        let mut params: Vec<IrParam> = vec![
+            IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
+        ];
+        for k in 0..local_and_count {
+            params.push(IrParam { name: format!("q_and_{}", k), ty: q_type() });
+            params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
+            params.push(IrParam {
+                name: format!("r_and_{}", k),
+                ty: IrType::TypeParam(sink.fold_scalar_type_name().into()),
+            });
+        }
+        params.push(IrParam { name: "q_one".into(), ty: q_type() });
+        params.extend(w_params.iter().cloned());
+        for j in 0..local_oracle_reads {
+            params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
+        }
+        for (k, call) in local_ext.oracle_calls.iter().enumerate() {
+            for j in 0..call.total_bits {
+                params.push(IrParam { name: format!("q_ext_oracle_{}_bit_{}", k, j), ty: q_type() });
+            }
+        }
+        for (k, call) in local_ext.action_calls.iter().enumerate() {
+            for j in 0..call.total_bits {
+                params.push(IrParam { name: format!("q_ext_action_{}_bit_{}", k, j), ty: q_type() });
+            }
+        }
+        for (r, &width) in local_ext.rng_widths.iter().enumerate() {
+            for j in 0..width {
+                params.push(IrParam { name: format!("q_ext_rng_{}_bit_{}", r, j), ty: q_type() });
+            }
+        }
+        params.push(IrParam { name: "all_ok_in".into(), ty: IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool) });
+        params.push(IrParam { name: "fold_state_in".into(), ty: IrType::TypeParam(sink.state_type_name().into()) });
+
+        let mut ctx = VoleIrCtx::new_verifier_with_trace_sink(sink);
+        insert_w_wires(&mut ctx);
+        ctx.stmts.push(ir_stmt(IrStmtKind::Let {
+            pattern: IrPattern::Ident { mutable: true, name: "all_ok".into(), subpat: None },
+            ty: None,
+            init: Some(var("all_ok_in")),
+        }));
+        ctx.stmts.push(ir_stmt(IrStmtKind::Let {
+            pattern: IrPattern::Ident { mutable: true, name: "fold_state".into(), subpat: None },
+            ty: None,
+            init: Some(var("fold_state_in")),
+        }));
+        // Shared pre-loop prefix (currently just `bit_zero`) first, so any
+        // reference to it from this block's own terminator-handling stmts
+        // resolves. Assumed gate/oracle-free (see `local_and_count`/
+        // `local_oracle_reads`, computed from `local_stmts` alone, above).
+        debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
+        ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
+        ctx.emit_circuit_stmts_range(block, types, mode, start..end);
+
+        // Rebase this block's own (locally-zeroed) trace timestamps onto
+        // the running global offset before merging.
+        let local_entry_count = ctx.trace.entries.len() as u32;
+        for mut e in ctx.trace.entries.clone() {
+            e.timestamp += global_ts;
+            overall_trace_entries.push(e);
+        }
+        global_ts += local_entry_count.max(ctx.mem_timestamp);
+
+        let is_active_v = CirVar(b.is_active);
+        let done_v = CirVar(b.done);
+        let is_active_expr = ctx.slot_expr(&is_active_v);
+        let done_expr = ctx.slot_expr(&done_v);
+        let is_active_ty = ctx.slot_type(&is_active_v, &q_type());
+        let done_ty = ctx.slot_type(&done_v, &q_type());
+        let next_pc_exprs: Vec<IrExpr> = b.next_pc_bits.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
+        let next_pc_bit_tys: Vec<IrType> = b.next_pc_bits.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
+        let next_state_exprs: Vec<IrExpr> = b.next_state.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
+        let next_state_tys: Vec<IrType> = b.next_state.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
+        let ret_val_exprs: Vec<IrExpr> = b.ret_vals.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
+        let ret_val_tys: Vec<IrType> = b.ret_vals.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
+
+        let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
+        ret_tuple_tys.extend(next_pc_bit_tys.iter().cloned());
+        ret_tuple_tys.extend(next_state_tys.iter().cloned());
+        ret_tuple_tys.extend(ret_val_tys.iter().cloned());
+        ret_tuple_tys.push(IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool));
+        ret_tuple_tys.push(IrType::TypeParam(sink.state_type_name().into()));
+
+        let mut ret_tuple_exprs = vec![is_active_expr, done_expr];
+        ret_tuple_exprs.extend(next_pc_exprs);
+        ret_tuple_exprs.extend(next_state_exprs);
+        ret_tuple_exprs.extend(ret_val_exprs);
+        ret_tuple_exprs.push(var("all_ok"));
+        ret_tuple_exprs.push(var("fold_state"));
+
+        let func = IrFunction {
+            name: format!("vole_verify_ir_{}_block_{}", name, i),
+            module_path: vec![],
+            generics: generics.clone(),
+            receiver: None,
+            params,
+            return_type: Some(IrType::Tuple(ret_tuple_tys)),
+            where_clause: where_clause_for(sink),
+            body: IrBlock {
+                stmts: ctx.stmts,
+                expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))),
+            },
+            external_kind: ExternalKind::Normal,
+        };
+        emit_fn(func);
+
+        interfaces.push(SplitBlockInterface { is_active_ty, done_ty, next_pc_bit_tys, next_state_tys, ret_val_tys });
+    }
+
+    // ---- Combiner: cross-block accumulation + final terminator ----------
+    let last = boundary.last().expect("boundary is non-empty (asserted above)");
+    let trail_start = (last.end - num_params as u32) as usize;
+    let trail_end = block.stmts.len();
+    let trail_stmts = &block.stmts[trail_start..trail_end];
+    let trail_and_count = count_ir_ands_no_storage_range(trail_stmts, types);
+    let trail_oracle_reads = if matches!(mode, StorageMode::Commitment) {
+        count_storage_reads_range(trail_stmts, types)
+    } else { 0 };
+    let trail_ext = count_external_primitives_range(trail_stmts, types);
+
+    let mut params: Vec<IrParam> = vec![
+        IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
+    ];
+    for k in 0..trail_and_count {
+        params.push(IrParam { name: format!("q_and_{}", k), ty: q_type() });
+        params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
+        params.push(IrParam {
+            name: format!("r_and_{}", k),
+            ty: IrType::TypeParam(sink.fold_scalar_type_name().into()),
+        });
+    }
+    params.push(IrParam { name: "q_one".into(), ty: q_type() });
+    params.extend(w_params.iter().cloned());
+    for j in 0..trail_oracle_reads {
+        params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
+    }
+    for (k, call) in trail_ext.oracle_calls.iter().enumerate() {
+        for j in 0..call.total_bits {
+            params.push(IrParam { name: format!("q_ext_oracle_{}_bit_{}", k, j), ty: q_type() });
+        }
+    }
+    for (k, call) in trail_ext.action_calls.iter().enumerate() {
+        for j in 0..call.total_bits {
+            params.push(IrParam { name: format!("q_ext_action_{}_bit_{}", k, j), ty: q_type() });
+        }
+    }
+    for (r, &width) in trail_ext.rng_widths.iter().enumerate() {
+        for j in 0..width {
+            params.push(IrParam { name: format!("q_ext_rng_{}_bit_{}", r, j), ty: q_type() });
+        }
+    }
+
+    let mut ctx = VoleIrCtx::new_verifier_with_trace_sink(sink);
+    insert_w_wires(&mut ctx);
+
+    // Bind each block's exported vars, at their *original* var ids, to
+    // fresh incoming params -- so the trailing stmts' own references to
+    // (e.g.) `b.is_active`/`b.next_state[k]` resolve exactly as they would
+    // have in the unsplit circuit.
+    for (i, b) in boundary.iter().enumerate() {
+        let iface = &interfaces[i];
+        let bind_scalar = |ctx: &mut VoleIrCtx, params: &mut Vec<IrParam>, var_id: u32, base_name: String, ty: IrType| {
+            match &ty {
+                IrType::Array { elem, len: volar_compiler::ir::ArrayLength::Const(n), .. } => {
+                    let names: Vec<String> = (0..*n).map(|j| format!("{base_name}_{j}")).collect();
+                    for nm in &names {
+                        params.push(IrParam { name: nm.clone(), ty: (**elem).clone() });
+                    }
+                    ctx.wires.insert(var_id, WireRepr::Vec(names));
+                }
+                _ => {
+                    params.push(IrParam { name: base_name.clone(), ty });
+                    ctx.wires.insert(var_id, WireRepr::Scalar(base_name));
+                }
+            }
+        };
+        bind_scalar(&mut ctx, &mut params, b.is_active, format!("is_active_{i}"), iface.is_active_ty.clone());
+        bind_scalar(&mut ctx, &mut params, b.done, format!("done_{i}"), iface.done_ty.clone());
+        for (j, &v) in b.next_pc_bits.iter().enumerate() {
+            bind_scalar(&mut ctx, &mut params, v, format!("next_pc_{i}_{j}"), iface.next_pc_bit_tys[j].clone());
+        }
+        for (k, &v) in b.next_state.iter().enumerate() {
+            bind_scalar(&mut ctx, &mut params, v, format!("next_state_{i}_{k}"), iface.next_state_tys[k].clone());
+        }
+        for (m, &v) in b.ret_vals.iter().enumerate() {
+            bind_scalar(&mut ctx, &mut params, v, format!("ret_val_{i}_{m}"), iface.ret_val_tys[m].clone());
+        }
+    }
+    params.push(IrParam { name: "all_ok_in".into(), ty: IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool) });
+    params.push(IrParam { name: "fold_state_in".into(), ty: IrType::TypeParam(sink.state_type_name().into()) });
+
+    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
+        pattern: IrPattern::Ident { mutable: true, name: "all_ok".into(), subpat: None },
+        ty: None,
+        init: Some(var("all_ok_in")),
+    }));
+    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
+        pattern: IrPattern::Ident { mutable: true, name: "fold_state".into(), subpat: None },
+        ty: None,
+        init: Some(var("fold_state_in")),
+    }));
+    ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
+    ctx.emit_circuit_stmts_range(block, types, mode, trail_start..trail_end);
+
+    let local_entry_count = ctx.trace.entries.len() as u32;
+    for mut e in ctx.trace.entries.clone() {
+        e.timestamp += global_ts;
+        overall_trace_entries.push(e);
+    }
+    global_ts += local_entry_count.max(ctx.mem_timestamp);
+    let _ = global_ts;
+
+    let ret_args = match &block.terminator {
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
+        _ => panic!("expected Jmp(Return)"),
+    };
+    let output_ty = if ret_args.len() == 1 {
+        ctx.slot_type(&ret_args[0], &q_type())
+    } else {
+        IrType::Tuple(ret_args.iter().map(|v| ctx.slot_type(v, &q_type())).collect())
+    };
+    let ret_type = IrType::Tuple(vec![
+        output_ty,
+        IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool),
+        IrType::TypeParam(sink.state_type_name().into()),
+    ]);
+    let output_expr = if ret_args.len() == 1 {
+        ctx.slot_expr(&ret_args[0])
+    } else {
+        ir_expr(IrExprKind::Tuple(ret_args.iter().map(|v| ctx.slot_expr(v)).collect()))
+    };
+    let ret_expr = ir_expr(IrExprKind::Tuple(vec![output_expr, var("all_ok"), var("fold_state")]));
+
+    let combine_func = IrFunction {
+        name: format!("vole_verify_ir_{}_combine", name),
+        module_path: vec![],
+        generics,
+        receiver: None,
+        params,
+        return_type: Some(ret_type),
+        where_clause: where_clause_for(sink),
+        body: IrBlock {
+            stmts: ctx.stmts,
+            expr: Some(Box::new(ret_expr)),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+    emit_fn(combine_func);
+
+    MemoryTrace { entries: overall_trace_entries }
 }
 
 // ============================================================================
@@ -5708,5 +6158,110 @@ mod tests {
         // The merged _16 result is the sole return value -- 16 elements.
         assert!(code.contains('['), "merged 16-bit result must be a fixed-size array:\n{code}");
         run_compile_check(&code, "vole_ir_verifier_wide_merge");
+    }
+
+    // ---- Milestone 1.5 Step B: split verifier weaving ----------------------
+
+    /// Two real (pre-movfuscation) blocks, each with one AND gate; block 0
+    /// additionally has a `StorageRead` -- small enough to hand-check the
+    /// split function count/param sizes directly, but genuinely exercises
+    /// AND-gate accounting + Commitment-mode oracle reads per block.
+    fn build_ir_two_block_and_storage() -> (IRBlocks, CirTypes) {
+        let mut types = CirTypes::new();
+        let bit = types.intern(CircuitIrType::Primitive(PrimTy::Bit));
+        let mut coeffs0 = alloc::collections::BTreeMap::new();
+        coeffs0.insert(std::vec![CirVar(0), CirVar(3)], 1u8); // a AND (storage read)
+        let mut coeffs1 = alloc::collections::BTreeMap::new();
+        coeffs1.insert(std::vec![CirVar(0), CirVar(1)], 1u8); // x AND y
+        let blocks = IRBlocks::new(std::vec![
+            CirBlock {
+                params: std::vec![bit, bit], // a, b
+                stmts: std::vec![
+                    volar_ir_common::Node::new(Stmt::Const(CirConst { hi: 0, lo: 0 }, bit), (), None), // var 2: addr
+                    volar_ir_common::Node::new(
+                        Stmt::StorageRead { storage: StorageId(0), ty: bit, addr: CirVar(2) },
+                        (), None,
+                    ), // var 3
+                    volar_ir_common::Node::new(
+                        Stmt::Poly { ty: bit, coeffs: coeffs0, constant: CirConst { hi: 0, lo: 0 } },
+                        (), None,
+                    ), // var 4: a AND read
+                ],
+                terminator: IRTerminator::Jmp {
+                    target: IRBranchTarget::new(IRBlockTargetId::Block(volar_ir::ir::IRBlockId(1)), std::vec![CirVar(4), CirVar(1)]),
+                },
+            },
+            CirBlock {
+                params: std::vec![bit, bit], // x, y
+                stmts: std::vec![
+                    volar_ir_common::Node::new(
+                        Stmt::Poly { ty: bit, coeffs: coeffs1, constant: CirConst { hi: 0, lo: 0 } },
+                        (), None,
+                    ), // var 2: x AND y
+                ],
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![CirVar(2)]) },
+            },
+        ]);
+        (blocks, types)
+    }
+
+    #[test]
+    fn test_split_verifier_produces_one_function_per_block_plus_combiner() {
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+
+        let (blocks, mut types) = build_ir_two_block_and_storage();
+        let (movfuscated, boundary) = movfuscate_ir_with_boundary(&blocks, &mut types);
+        assert_eq!(boundary.len(), 2, "one boundary entry per original block");
+
+        let bit_ty = types.intern(CircuitIrType::Primitive(PrimTy::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::Unconditional);
+        assert!(circuit.is_circuit());
+
+        let mode = StorageMode::Commitment;
+        let mut funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
+        let trace = weave_vole_verifier_ir_split_with_trace(
+            &circuit, &types, "split_test", &mode, &IopSink, &boundary, None,
+            |f| funcs.push(f),
+        );
+
+        assert_eq!(funcs.len(), 3, "2 blocks + 1 combiner");
+        assert_eq!(funcs[0].name, "vole_verify_ir_split_test_block_0");
+        assert_eq!(funcs[1].name, "vole_verify_ir_split_test_block_1");
+        assert_eq!(funcs[2].name, "vole_verify_ir_split_test_combine");
+
+        // Real, structural bound: the *split* param counts must sum back to
+        // exactly the whole (unsplit) circuit's and_count (nothing lost,
+        // nothing double-counted across block 0 / block 1 / the combiner's
+        // own trailing-accumulation gates) -- checked directly, rather than
+        // assuming a specific number, since movfuscation's own accumulation
+        // overhead (Σ is_active·next_state[k] per slot, done-accumulation,
+        // etc.) contributes its own AND gates on top of the 2 "real" ones
+        // from this fixture's own Poly stmts, and dominates at this toy
+        // scale (the whole point of Milestone 1.5: at real and_count=2.77M
+        // scale this overhead is comparatively negligible).
+        let total_and_count = count_ir_ands_no_storage(&circuit.blocks[0], &types);
+        let q_and_count = |f: &IrFunction| f.params.iter().filter(|p| p.name.starts_with("q_and_")).count();
+        let split_and_sum: usize = funcs.iter().map(q_and_count).sum();
+        assert_eq!(split_and_sum, total_and_count, "split gate counts must sum back to the whole circuit's");
+
+        // Each of the two real blocks owns at least its own genuine AND
+        // gate (the fixture's `a AND read`/`x AND y`), and strictly less
+        // than the *whole* circuit's count -- the actual point of the split.
+        assert!(q_and_count(&funcs[0]) >= 1 && q_and_count(&funcs[0]) < total_and_count);
+        assert!(q_and_count(&funcs[1]) >= 1 && q_and_count(&funcs[1]) < total_and_count);
+
+        // Block 0's own oracle read must appear as a param on block 0's
+        // function specifically (not smeared across the others).
+        assert!(funcs[0].params.iter().any(|p| p.name == "oracle_rd_0"));
+        assert!(!funcs[1].params.iter().any(|p| p.name.starts_with("oracle_rd_")));
+
+        // Every function shares the same w_i entry-state params.
+        for f in &funcs {
+            assert!(f.params.iter().any(|p| p.name == "w_0"), "{} missing w_0", f.name);
+            assert!(f.params.iter().any(|p| p.name == "w_1"), "{} missing w_1", f.name);
+        }
+
+        // Commitment mode: the one real StorageRead produced a trace entry.
+        assert_eq!(trace.entries.len(), 1, "one StorageRead in the whole circuit");
     }
 }
