@@ -332,9 +332,47 @@ mod tests {
     /// not a hand-built fixture.
     #[test]
     fn interpreter_ir_movfuscates_and_unrolls_to_a_circuit() {
-        use volar_ir::ir::{IRType, IRTypes};
+        use volar_ir_passes::LoweringMode;
+
+        let (ir_blocks, movfuscated, circuit, _types, _bit_ty) =
+            lower_interpreter(crate::interp::MAX_STEPS as u32, LoweringMode::Unconditional);
+        assert!(
+            ir_blocks.blocks.len() > 1,
+            "the real interpreter has real control flow -- expected multiple blocks, got {}",
+            ir_blocks.blocks.len()
+        );
+        assert!(!ir_blocks.is_circuit());
+        assert_eq!(movfuscated.blocks.len(), 1, "movfuscate_ir must collapse to a single block");
+        assert!(
+            !movfuscated.is_circuit(),
+            "the movfuscated block still self-loops (JumpCond back to Block(0)); \
+             is_circuit() requires an unconditional Jmp(Return), which only the \
+             *unrolled* circuit has"
+        );
+        assert!(circuit.is_circuit(), "unrolled interpreter must satisfy is_circuit()");
+    }
+
+    /// Shared helper: parse+lower the interpreter WAT all the way to a
+    /// genuine `is_circuit()` IR circuit, unrolled `limit` times in `mode`.
+    /// Returns every intermediate stage so callers can assert on whichever
+    /// they need. `limit=1` with `WithTerminationFlag` is the shape the
+    /// real driver uses (the movfuscated block already *is* "one step";
+    /// the driver loops, threading state + the IOP fold accumulator across
+    /// calls, until the returned flag says the program halted -- per the
+    /// plan, "the resulting circuit will run a varied amount of times").
+    fn lower_interpreter(
+        limit: u32,
+        mode: volar_ir_passes::LoweringMode,
+    ) -> (
+        volar_ir::ir::IRBlocks,
+        volar_ir::ir::IRBlocks,
+        volar_ir::ir::IRBlocks,
+        volar_ir::ir::IRTypes,
+        volar_ir::ir::IRTypeId,
+    ) {
+        use volar_ir::ir::IRType;
         use volar_ir_common::Type;
-        use volar_ir_passes::{LoweringMode, lower_to_circuit_ir, movfuscate_ir};
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir};
 
         let wasm_bytes = wat::parse_str(&test_program_wat()).expect("wat should assemble");
         let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
@@ -348,24 +386,50 @@ mod tests {
         assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
 
         let (ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
-        assert!(
-            ir_blocks.blocks.len() > 1,
-            "the real interpreter has real control flow -- expected multiple blocks, got {}",
-            ir_blocks.blocks.len()
-        );
-        assert!(!ir_blocks.is_circuit());
-
         let movfuscated = movfuscate_ir(&ir_blocks, &mut types);
-        assert_eq!(movfuscated.blocks.len(), 1, "movfuscate_ir must collapse to a single block");
-        assert!(
-            !movfuscated.is_circuit(),
-            "the movfuscated block still self-loops (JumpCond back to Block(0)); \
-             is_circuit() requires an unconditional Jmp(Return), which only the \
-             *unrolled* circuit has"
-        );
-
         let bit_ty = types.intern(IRType::Primitive(Type::Bit));
-        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, crate::interp::MAX_STEPS as u32, LoweringMode::Unconditional);
-        assert!(circuit.is_circuit(), "unrolled interpreter must satisfy is_circuit()");
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, limit, mode);
+        (ir_blocks, movfuscated, circuit, types, bit_ty)
+    }
+
+    /// M1.3: weave the real interpreter's one-step batch circuit into VOLE
+    /// prover + verifier modules with `StorageMode::Commitment` (the data
+    /// RAM) and `IopSink` fold-trace threading on the verifier -- the exact
+    /// combination Milestone 1 needs, all real, none hand-built.
+    #[test]
+    fn interpreter_batch_circuit_weaves_with_commitment_and_trace() {
+        use volar_ir_passes::LoweringMode;
+        use volar_weaver::{
+            IopSink, StorageMode, print_weaved_vole_module, weave_vole_prover_ir_with_mode,
+            weave_vole_verifier_ir_with_mode_and_trace,
+        };
+
+        // limit=1, WithTerminationFlag: the movfuscated block already *is*
+        // one step; the driver (M1.5/M1.6) loops, threading state and the
+        // IOP fold accumulator across calls, until the returned flag says
+        // the program halted.
+        let (_ir_blocks, _movfuscated, circuit, types, _bit_ty) =
+            lower_interpreter(1, LoweringMode::WithTerminationFlag);
+
+        let mode = StorageMode::Commitment;
+
+        let (prover_module, prover_trace) =
+            weave_vole_prover_ir_with_mode(&circuit, &types, "riscv_step", &mode, None);
+        let prover_code = print_weaved_vole_module(prover_module.inner());
+        assert!(prover_code.contains("fn vole_prove_ir_riscv_step"), "missing woven prover fn:\n{prover_code}");
+
+        let (verifier_module, verifier_trace) = weave_vole_verifier_ir_with_mode_and_trace(
+            &circuit, &types, "riscv_step", &mode, &IopSink, None,
+        );
+        let verifier_code = print_weaved_vole_module(verifier_module.inner());
+        assert!(verifier_code.contains("fn vole_verify_ir_riscv_step"), "missing woven verifier fn:\n{verifier_code}");
+        assert!(verifier_code.contains("iop_fold_gate"), "verifier must fold every AND gate:\n{verifier_code}");
+        assert!(verifier_code.contains("oracle_rd_"), "commitment-mode reads must be oracle params:\n{verifier_code}");
+
+        // Commitment mode: both memories' reads/writes are traced (code
+        // fetch is public-but-still-committed under today's uniform-mode
+        // API; data RAM is the one that actually matters for soundness).
+        assert!(!prover_trace.entries.is_empty(), "expected a non-empty memory trace for one interpreter step");
+        assert_eq!(prover_trace.entries.len(), verifier_trace.entries.len());
     }
 }

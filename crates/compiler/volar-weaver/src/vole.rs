@@ -2187,9 +2187,23 @@ enum WireRepr {
 }
 
 /// Width of a circuit type in bits (1 for Bit, K for Vec(K, Bit)).
+///
+/// `Primitive(_8/_16/_32/.../_256)` (packed-integer markers -- e.g. the byte
+/// cells `volar-vaffle-target` uses for byte-addressed memory, or i32/i64
+/// arithmetic results) are, at this bit-circuit level, still exactly that
+/// many independent GF(2) wires -- VAFFLE bit-decomposes every integer
+/// value via `BitCircuitBuilder` regardless of which of the two "N related
+/// bits" type tags (`Vec(K, Bit)` vs `Primitive(_K)`) ends up on a given
+/// `IRStmt`. Same treatment as `Vec(k, _)`, just a different width source.
 fn cir_type_width(ty: &CirTyId, types: &CirTypes) -> usize {
     match &types.0[ty.0 as usize] {
         CircuitIrType::Primitive(PrimType::Bit) => 1,
+        CircuitIrType::Primitive(PrimType::_8) => 8,
+        CircuitIrType::Primitive(PrimType::_16) => 16,
+        CircuitIrType::Primitive(PrimType::_32) => 32,
+        CircuitIrType::Primitive(PrimType::_64) => 64,
+        CircuitIrType::Primitive(PrimType::_128) => 128,
+        CircuitIrType::Primitive(PrimType::_256) => 256,
         CircuitIrType::Vec(k, _inner) => *k,
         other => panic!("unsupported type in VOLE IR weaving: {:?}", other),
     }
@@ -2319,7 +2333,7 @@ fn count_external_primitives(block: &CirBlock, types: &CirTypes) -> ExternalBitC
 }
 
 /// Context for emitting VOLE-authenticated wire computations.
-struct VoleIrCtx {
+struct VoleIrCtx<'a> {
     stmts: Vec<IrStmt>,
     wires: alloc::collections::BTreeMap<u32, WireRepr>,
     and_counter: usize,
@@ -2334,6 +2348,12 @@ struct VoleIrCtx {
     /// Running timestamp for memory operations.
     mem_timestamp: u32,
     is_prover: bool,
+    /// Weave-time trace-assembly plugin (verifier side only; see
+    /// [`VerifierTraceSink`]) -- `None` is byte-identical to today's output.
+    /// Threaded through [`VoleIrCtx::emit_and`], the single place every
+    /// Quicksilver AND-gate check (including each degree-≥2 monomial inside
+    /// [`VoleIrCtx::emit_poly`]) is emitted for both prover and verifier.
+    trace_sink: Option<&'a dyn VerifierTraceSink<()>>,
     // ---- External primitive tracking (oracle calls, action calls, RNG) --------
     /// var_id of OracleCall → (oracle_index, per-output bit offsets).
     ext_oracle_map: alloc::collections::BTreeMap<u32, (usize, Vec<usize>)>,
@@ -2363,7 +2383,7 @@ fn lookup_pre_init_value(
     None
 }
 
-impl VoleIrCtx {
+impl VoleIrCtx<'static> {
     fn new(is_prover: bool) -> Self {
         VoleIrCtx {
             stmts: Vec::new(),
@@ -2376,6 +2396,35 @@ impl VoleIrCtx {
             trace: MemoryTrace::default(),
             mem_timestamp: 0,
             is_prover,
+            trace_sink: None,
+            ext_oracle_map: alloc::collections::BTreeMap::new(),
+            ext_action_map: alloc::collections::BTreeMap::new(),
+            ext_oracle_counter: 0,
+            ext_action_counter: 0,
+            ext_rng_counter: 0,
+        }
+    }
+}
+
+impl<'a> VoleIrCtx<'a> {
+    /// Verifier-only constructor with a [`VerifierTraceSink`] attached (see
+    /// `trace_sink`'s field doc). `is_prover` is always `false`: a prover
+    /// artifact must never observe the verifier's fold-accumulator plumbing
+    /// (there is nothing for the prover to fold -- `and_gate_step` needs the
+    /// verifier's own `K_a, K_b, K_c` Q-shares).
+    fn new_verifier_with_trace_sink(sink: &'a dyn VerifierTraceSink<()>) -> Self {
+        VoleIrCtx {
+            stmts: Vec::new(),
+            wires: alloc::collections::BTreeMap::new(),
+            and_counter: 0,
+            hat_names: Vec::new(),
+            ok_names: Vec::new(),
+            stor: alloc::collections::BTreeMap::new(),
+            oracle_counter: 0,
+            trace: MemoryTrace::default(),
+            mem_timestamp: 0,
+            is_prover: false,
+            trace_sink: Some(sink),
             ext_oracle_map: alloc::collections::BTreeMap::new(),
             ext_action_map: alloc::collections::BTreeMap::new(),
             ext_oracle_counter: 0,
@@ -2502,6 +2551,17 @@ impl VoleIrCtx {
                 a, b, &wire_name, &ok_name,
                 &q_and_name, &hat_name, &mut self.stmts, (),
             );
+            if let Some(sink) = self.trace_sink {
+                let r_param_name = format!("r_and_{}", self.and_counter);
+                let new_state = sink.and_gate_step(
+                    self.and_counter, a, b, &wire_name, "delta",
+                    &hat_name, &r_param_name, "fold_state", (),
+                );
+                self.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                    left: Box::new(var("fold_state")),
+                    right: Box::new(new_state),
+                }))));
+            }
         }
         self.and_counter += 1;
         wire_name
@@ -3443,6 +3503,157 @@ pub fn weave_vole_verifier_ir_with_mode(
         functions: vec![func],
         structs: vec![], enums: vec![], traits: vec![], impls: vec![], type_aliases: vec![],
  consts: vec![],
+    };
+    if let Some(ls) = linkage { ls.apply(&mut module); }
+    (Tagged::seal(module), trace)
+}
+
+/// As [`weave_vole_verifier_ir_with_mode`], additionally threading a
+/// [`VerifierTraceSink`] fold-accumulator through the woven verifier —
+/// the Volar-IR analogue of [`weave_vole_verifier_with_trace`] (BIrBlocks).
+/// Every Quicksilver AND-gate check counted by `and_count` (including each
+/// degree-≥2 monomial inside an `IRStmt::Poly`, per
+/// [`VoleIrCtx::emit_and`]) folds into `fold_state` via one `r_and_{k}`
+/// challenge parameter each, mirroring `q_and_{k}`/`hat_{k}`'s existing
+/// numbering exactly. `T`'s bound gains the sink's `fold_lift_trait_name()`
+/// (if any) so `and_gate_step` can hand it whole `Q<N,T>`/`Array<T,N>`
+/// values without this weaver needing to know how to project `T` itself —
+/// this repo's only two `IopLift` impls (`Galois`, `Bit`) already cover
+/// every scalar type this circuit's `IRStmt::Poly` degree-≥2 terms ever
+/// operate on (RV32I's `Vec(K, Bit)` register/RAM words are bit-decomposed
+/// into `K` independent scalar `Poly` statements well before this weaver
+/// sees them — see `docs/wasm-feature-support.md` / `waffle_lower.rs`'s own
+/// "bit-decomposed via `BitCircuitBuilder`" note — so no new lift logic is
+/// needed here).
+pub fn weave_vole_verifier_ir_with_mode_and_trace(
+    circuit: &IRBlocks,
+    types: &CirTypes,
+    name: &str,
+    mode: &StorageMode,
+    sink: &dyn VerifierTraceSink<()>,
+    linkage: Option<&LinkageSystem>,
+) -> (Tagged<Transparent, IrModule<IrFunction>>, MemoryTrace) {
+    assert!(circuit.is_circuit(), "weave_vole_verifier_ir_with_trace: circuit must satisfy is_circuit()");
+    let block = &circuit.blocks[0];
+    let num_params = block.params.len();
+    let and_count = count_ir_ands(block, types, mode);
+    let num_oracle_reads = if matches!(mode, StorageMode::Commitment) {
+        count_storage_reads(block)
+    } else { 0 };
+    let (generics, mut where_clause) = verifier_generics_and_where();
+
+    // Extend T's bound with the sink's fold-lift trait (bare, externally
+    // resolved), mirroring `weave_vole_verifier_inner`'s identical step.
+    if let Some(trait_name) = sink.fold_lift_trait_name() {
+        if let Some(IrWherePredicate::TypeBound { bounds, .. }) = where_clause
+            .iter_mut()
+            .find(|p| matches!(p, IrWherePredicate::TypeBound { ty: IrType::TypeParam(n), .. } if n == "T"))
+        {
+            bounds.push(IrTraitBound {
+                trait_kind: TraitKind::Custom(trait_name.into()),
+                type_args: vec![],
+                assoc_bindings: vec![],
+            });
+        }
+    }
+
+    let mut params: Vec<IrParam> = vec![
+        IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
+    ];
+    for k in 0..and_count {
+        params.push(IrParam { name: format!("q_and_{}", k), ty: q_type() });
+        params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
+        params.push(IrParam {
+            name: format!("r_and_{}", k),
+            ty: IrType::TypeParam(sink.fold_scalar_type_name().into()),
+        });
+    }
+    params.push(IrParam { name: "q_one".into(), ty: q_type() });
+    for i in 0..num_params {
+        params.push(IrParam { name: format!("w_{}", i), ty: q_type() });
+    }
+    // Oracle read parameters (Commitment mode).
+    for i in 0..num_oracle_reads {
+        params.push(IrParam { name: format!("oracle_rd_{}", i), ty: q_type() });
+    }
+    // External primitive parameters (oracle calls, action calls, rng).
+    let ext = count_external_primitives(block, types);
+    for (k, call) in ext.oracle_calls.iter().enumerate() {
+        for j in 0..call.total_bits {
+            params.push(IrParam { name: format!("q_ext_oracle_{}_bit_{}", k, j), ty: q_type() });
+        }
+    }
+    for (k, call) in ext.action_calls.iter().enumerate() {
+        for j in 0..call.total_bits {
+            params.push(IrParam { name: format!("q_ext_action_{}_bit_{}", k, j), ty: q_type() });
+        }
+    }
+    for (r, &width) in ext.rng_widths.iter().enumerate() {
+        for j in 0..width {
+            params.push(IrParam { name: format!("q_ext_rng_{}_bit_{}", r, j), ty: q_type() });
+        }
+    }
+
+    let ret_type = IrType::Tuple(vec![
+        q_type(),
+        IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool),
+        IrType::TypeParam(sink.state_type_name().into()),
+    ]);
+
+    let mut ctx = VoleIrCtx::new_verifier_with_trace_sink(sink);
+    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
+        pattern: IrPattern::Ident { mutable: true, name: "all_ok".into(), subpat: None },
+        ty: None,
+        init: Some(ir_expr(IrExprKind::Lit(volar_compiler::ir::IrLit::Bool(true)))),
+    }));
+    // Threaded fold-accumulator state -- bound once at entry, reassigned per
+    // AND gate (inside `VoleIrCtx::emit_and`), returned alongside `all_ok`.
+    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
+        pattern: IrPattern::Ident { mutable: true, name: "fold_state".into(), subpat: None },
+        ty: None,
+        init: Some(ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
+                segments: vec![sink.init_state_fn_name().into()],
+                type_args: vec![],
+            })),
+            args: vec![],
+        })),
+    }));
+
+    ctx.emit_circuit(block, types, mode, &circuit.pre_init);
+
+    let ret_args = match &block.terminator {
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
+        _ => panic!("expected Jmp(Return)"),
+    };
+    let output_expr = if ret_args.len() == 1 {
+        clone_expr(var(ctx.scalar(&ret_args[0])))
+    } else {
+        ir_expr(IrExprKind::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect()))
+    };
+    let ret_expr = ir_expr(IrExprKind::Tuple(vec![output_expr, var("all_ok"), var("fold_state")]));
+    let trace = ctx.trace.clone();
+
+    let func = IrFunction {
+        name: format!("vole_verify_ir_{}", name),
+        module_path: vec![],
+        generics,
+        receiver: None,
+        params,
+        return_type: Some(ret_type),
+        where_clause,
+        body: IrBlock {
+            stmts: ctx.stmts,
+            expr: Some(Box::new(ret_expr)),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    let mut module = IrModule {
+        name: "weaved_vole_ir_verifier".into(),
+        functions: vec![func],
+        structs: vec![], enums: vec![], traits: vec![], impls: vec![], type_aliases: vec![],
+        consts: vec![],
     };
     if let Some(ls) = linkage { ls.apply(&mut module); }
     (Tagged::seal(module), trace)
@@ -4600,5 +4811,85 @@ mod tests {
         // Commitment mode: 0 AND gates for storage.
         let commit_ands = count_ir_ands(block, &types, &StorageMode::Commitment);
         assert_eq!(commit_ands, 0, "Commitment mode should have 0 AND gates");
+    }
+
+    // ---- IR path: VerifierTraceSink (IopSink) threading --------------------
+    // The Volar-IR analogue of `iop_sink_threads_typed_state_and_real_call_sites`.
+
+    #[test]
+    fn ir_trace_sink_threads_typed_state_and_real_call_sites() {
+        // build_ir_and_circuit has exactly one AND gate (a degree-2 monomial
+        // inside its single `Stmt::Poly`, per `VoleIrCtx::emit_and`).
+        let (circuit, types) = build_ir_and_circuit();
+        let mode = StorageMode::Tree(StorageSizes::new());
+        let (module, _trace) = weave_vole_verifier_ir_with_mode_and_trace(
+            &circuit, &types, "and_gate", &mode, &IopSink, None,
+        );
+        let code = print_weaved_vole_module(module.inner());
+
+        assert!(code.contains("iop_accumulator_fresh"), "missing init call:\n{code}");
+        assert!(code.contains("fold_state"), "missing threaded state var:\n{code}");
+        assert!(code.contains("iop_fold_gate"), "missing per-gate fold call:\n{code}");
+        assert!(code.contains("IopAccumulator"), "missing state type:\n{code}");
+
+        assert!(code.contains("r_and_0"), "missing r_and_0 param:\n{code}");
+        assert!(!code.contains("r_and_1"), "unexpected r_and_1 for a single-AND-gate circuit:\n{code}");
+        assert!(code.contains("IopChallenge"), "missing fold-challenge type:\n{code}");
+
+        assert!(code.contains("hat_0"), "and_gate_step must reference the real hat_0, not a placeholder:\n{code}");
+        assert!(code.contains("delta"), "and_gate_step must reference the real delta param:\n{code}");
+
+        // Not compile-checked (same reason as the BIrBlocks test): IopAccumulator
+        // / iop_fold_gate / etc. are deliberately unresolved bare names.
+    }
+
+    #[test]
+    fn ir_trace_sink_composes_with_commitment_mode_storage() {
+        // A circuit with both a real AND gate and committed storage -- the
+        // exact combination the RISC-V interpreter needs (data RAM reads/
+        // writes alongside real ALU/branch AND-gate checks). Commitment
+        // mode's own storage ops contribute 0 ANDs (test_commitment_mode_zero_ands),
+        // so the only fold_gate call this circuit produces comes from the
+        // Poly-based AND gate below, not from storage.
+        let mut types = CirTypes::new();
+        let bit = types.intern(CircuitIrType::Primitive(PrimTy::Bit));
+        let mut coeffs = alloc::collections::BTreeMap::new();
+        coeffs.insert(std::vec![CirVar(0), CirVar(1)], 1u8);
+        let block = CirBlock {
+            params: std::vec![bit, bit, bit], // value, addr, and-operand
+            stmts: std::vec![
+                // var 3: and_result = param0 * param1
+                volar_ir_common::Node::new(
+                    Stmt::Poly { ty: bit, coeffs, constant: CirConst { hi: 0, lo: 0 } },
+                    (),
+                    None,
+                ),
+                // var 4: write and_result to storage at addr = param2
+                volar_ir_common::Node::new(
+                    Stmt::StorageWrite { storage: StorageId(0), src: CirVar(3), ty: CirTyId(0), addr: CirVar(2) },
+                    (),
+                    None,
+                ),
+                // var 5: read it back
+                volar_ir_common::Node::new(
+                    Stmt::StorageRead { storage: StorageId(0), ty: CirTyId(0), addr: CirVar(2) },
+                    (),
+                    None,
+                ),
+            ],
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![CirVar(5)]) },
+        };
+        let circuit = IRBlocks::new(std::vec![block]);
+        let mode = StorageMode::Commitment;
+
+        let (module, trace) = weave_vole_verifier_ir_with_mode_and_trace(
+            &circuit, &types, "and_then_commit", &mode, &IopSink, None,
+        );
+        let code = print_weaved_vole_module(module.inner());
+
+        assert!(code.contains("iop_fold_gate"), "missing per-gate fold call:\n{code}");
+        assert!(code.contains("r_and_0"), "missing r_and_0 for the one AND gate:\n{code}");
+        assert!(!code.contains("r_and_1"), "storage ops must not contribute extra fold params:\n{code}");
+        assert_eq!(trace.entries.len(), 2, "one write + one read");
     }
 }
