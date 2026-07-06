@@ -331,26 +331,77 @@ pub struct MovfuscBlockBoundary {
     pub ret_vals: Vec<u32>,
 }
 
+/// The fixed, one-time initialization of the cross-block accumulation
+/// phase's running state (`done_acc = bit_zero`, `next_pc = [bit_zero; k]`,
+/// `next_state`/`ret_vals` zero-slots) -- analogous to the main per-block
+/// loop's shared `bit_zero` prefix, but specific to the accumulation phase.
+/// `[start, end)` is small and gate-free (`state_width + ret_width` zero
+/// allocations); the `_init` fields are the running-state var ids *before*
+/// any block's contribution has been folded in.
+#[derive(Clone, Debug)]
+pub struct MovfuscAccumInit {
+    pub start: u32,
+    pub end: u32,
+    pub done_acc: u32,
+    pub next_pc: Vec<u32>,
+    pub next_state: Vec<u32>,
+    pub ret_vals: Vec<u32>,
+}
+
+/// One original block `i`'s own contiguous contribution to the cross-block
+/// accumulation phase (`Σ_i is_active_i · x_i` folded in block-major order,
+/// so every accumulation kind -- done/next_pc/next_state/ret_vals -- for
+/// block `i` lands in one range), plus the running accumulator state
+/// *after* folding it in. A weaver chunking the accumulation phase into
+/// groups of blocks needs: for a chunk covering blocks `[lo, hi)`, the
+/// *running state* from `steps[lo-1]` (or [`MovfuscAccumInit`] if
+/// `lo == 0`) as that chunk-function's own input, and `steps[hi-1]`'s
+/// running state as its output -- turning the "one combiner needs every
+/// block's state at once" problem into "each chunk-function needs only
+/// its own chunk's blocks' state, plus the previous chunk's running total".
+#[derive(Clone, Debug)]
+pub struct MovfuscAccumStep {
+    pub start: u32,
+    pub end: u32,
+    pub done_acc: u32,
+    pub next_pc: Vec<u32>,
+    pub next_state: Vec<u32>,
+    pub ret_vals: Vec<u32>,
+}
+
+/// The whole cross-block accumulation phase's boundary metadata: the
+/// one-time [`MovfuscAccumInit`] followed by one [`MovfuscAccumStep`] per
+/// original block, in order.
+#[derive(Clone, Debug)]
+pub struct MovfuscAccumInfo {
+    pub init: MovfuscAccumInit,
+    pub steps: Vec<MovfuscAccumStep>,
+}
+
 /// Combine all blocks of `blocks` into a single self-looping block.
 ///
 /// `state_slot_types[k]` — type of state slot `k` (length = max block param
 /// count).  `return_slot_types[m]` — type of return value `m`.
 ///
-/// Returns the single-block module, plus each original block's own
+/// Returns the single-block module, each original block's own
 /// [`MovfuscBlockBoundary`] (empty if `blocks` already had one block --
-/// nothing was combined, so there is nothing to report boundaries for). If
-/// `blocks` already has one block, the module is returned unchanged via
+/// nothing was combined, so there is nothing to report boundaries for),
+/// and the accumulation phase's own [`MovfuscAccumInfo`] (its `steps` is
+/// also empty in the single-block case, since there is no accumulation
+/// phase at all then). If `blocks` already has one block, the module is
+/// returned unchanged via
 /// `Clone`.
 pub fn movfuscate<C: MovfuscCtx>(
     mut ctx: C,
     blocks: &C::Blocks,
     state_slot_types: Vec<C::SlotTy>,
     return_slot_types: Vec<C::SlotTy>,
-) -> (C::Blocks, Vec<MovfuscBlockBoundary>) {
+) -> (C::Blocks, Vec<MovfuscBlockBoundary>, MovfuscAccumInfo) {
     let n = C::num_blocks(blocks);
     assert!(n >= 1, "movfuscate: empty block list");
     if n == 1 {
-        return (blocks.clone(), Vec::new());
+        let empty_init = MovfuscAccumInit { start: 0, end: 0, done_acc: 0, next_pc: Vec::new(), next_state: Vec::new(), ret_vals: Vec::new() };
+        return (blocks.clone(), Vec::new(), MovfuscAccumInfo { init: empty_init, steps: Vec::new() });
     }
 
     let pc_width = pc_bits_needed(n);
@@ -432,51 +483,75 @@ pub fn movfuscate<C: MovfuscCtx>(
     // Exactly one is_active_i = 1 per valid step.  Scalar-mult then field-add
     // selects the active block's contribution:
     //   result = Σ_i  (is_active_i · x_i)
+    //
+    // Block-major (each block's full done/next_pc/next_state/ret_vals
+    // contribution in one contiguous range, rather than four separate
+    // all-blocks loops) -- purely a reordering of the same commutative/
+    // associative XOR/field-add operations, so it doesn't change the
+    // final `done_acc`/`next_pc`/`next_state`/`ret_vals` values, only the
+    // intermediate statement order. This lets a later weaver chunk the
+    // accumulation phase too (Milestone 1.5 Step B: the combiner itself
+    // must not need every block's exported state simultaneously) via
+    // `accum_init`/`accum_steps` below.
 
-    // done and PC: Bit accumulation
+    let accum_init_start = ctx.stmt_position();
     let mut done_acc = bit_zero;
-    for br in &results {
-        let g = ctx.emit_and_bit(br.is_active, br.done);
-        done_acc = ctx.emit_xor_bit(done_acc, g);
-    }
-
     let mut next_pc = vec![bit_zero; pc_width];
-    for br in &results {
-        for j in 0..pc_width {
-            let g = ctx.emit_and_bit(br.is_active, br.next_pc_bits[j]);
-            next_pc[j] = ctx.emit_xor_bit(next_pc[j], g);
-        }
-    }
-
-    // state and return: typed (field) accumulation
     let mut next_state: Vec<u32> = state_slot_types
         .iter()
         .map(|ty| ctx.emit_zero_slot(ty))
         .collect();
-    for br in &results {
-        for k in 0..state_width {
-            let g = ctx.emit_gate(br.is_active, br.next_state[k], &state_slot_types[k]);
-            next_state[k] = ctx.emit_field_add(next_state[k], g, &state_slot_types[k]);
-        }
-    }
-
     let mut ret_vals: Vec<u32> = return_slot_types
         .iter()
         .map(|ty| ctx.emit_zero_slot(ty))
         .collect();
+    let accum_init = MovfuscAccumInit {
+        start: accum_init_start,
+        end: ctx.stmt_position(),
+        done_acc,
+        next_pc: next_pc.clone(),
+        next_state: next_state.clone(),
+        ret_vals: ret_vals.clone(),
+    };
+
+    let mut accum_steps: Vec<MovfuscAccumStep> = Vec::with_capacity(n);
     for br in &results {
+        let range_start = ctx.stmt_position();
+        let g = ctx.emit_and_bit(br.is_active, br.done);
+        done_acc = ctx.emit_xor_bit(done_acc, g);
+        for j in 0..pc_width {
+            let g = ctx.emit_and_bit(br.is_active, br.next_pc_bits[j]);
+            next_pc[j] = ctx.emit_xor_bit(next_pc[j], g);
+        }
+        for k in 0..state_width {
+            let g = ctx.emit_gate(br.is_active, br.next_state[k], &state_slot_types[k]);
+            next_state[k] = ctx.emit_field_add(next_state[k], g, &state_slot_types[k]);
+        }
         for m in 0..ret_width {
             let g = ctx.emit_gate(br.is_active, br.ret_vals[m], &return_slot_types[m]);
             ret_vals[m] = ctx.emit_field_add(ret_vals[m], g, &return_slot_types[m]);
         }
+        accum_steps.push(MovfuscAccumStep {
+            start: range_start,
+            end: ctx.stmt_position(),
+            done_acc,
+            next_pc: next_pc.clone(),
+            next_state: next_state.clone(),
+            ret_vals: ret_vals.clone(),
+        });
     }
+    let accum_info = MovfuscAccumInfo { init: accum_init, steps: accum_steps };
 
     // loop_vars = [next_pc_bits…, next_state…]
     let mut loop_vars = Vec::with_capacity(combined_params);
     loop_vars.extend_from_slice(&next_pc);
     loop_vars.extend_from_slice(&next_state);
 
-    (ctx.build_output(combined_params, done_acc, loop_vars, ret_vals), block_boundaries)
+    (
+        ctx.build_output(combined_params, done_acc, loop_vars, ret_vals),
+        block_boundaries,
+        accum_info,
+    )
 }
 
 // ============================================================================
@@ -1807,7 +1882,7 @@ pub fn movfuscate_biir<P: Clone>(blocks: &BIrBlocks<P>) -> BIrBlocks<P> {
     let state_slot_types = vec![(); state_width];
     let ret_width = BIrCtx::<P>::return_val_width(blocks);
     let return_slot_types = vec![(); ret_width];
-    let (mut result, _block_ranges) = movfuscate(ctx, blocks, state_slot_types, return_slot_types);
+    let (mut result, _block_ranges, _accum_info) = movfuscate(ctx, blocks, state_slot_types, return_slot_types);
     result.pre_init = blocks.pre_init.clone();
     result
 }
@@ -1829,21 +1904,26 @@ pub fn movfuscate_ir<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> IRB
 /// [`MovfuscBlockBoundary`] -- Milestone 1.5 Step B boundary metadata a
 /// weaver can use to split the combined block's gates back out per
 /// original block (e.g. one woven Rust function per range) instead of
-/// weaving one function for the whole thing. Empty if `blocks` already had
-/// one block.
+/// weaving one function for the whole thing -- and the accumulation
+/// phase's own [`MovfuscAccumInfo`], letting the combiner itself be
+/// chunked into groups of blocks instead of needing every block's state
+/// at once. Both empty (their `steps`) if `blocks` already had one block.
 pub fn movfuscate_ir_with_boundary<P: Clone>(
     blocks: &IRBlocks<P>,
     types: &mut IRTypes,
-) -> (IRBlocks<P>, Vec<MovfuscBlockBoundary>) {
+) -> (IRBlocks<P>, Vec<MovfuscBlockBoundary>, MovfuscAccumInfo) {
     movfuscate_ir_impl(blocks, types)
 }
 
-fn movfuscate_ir_impl<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> (IRBlocks<P>, Vec<MovfuscBlockBoundary>) {
+fn movfuscate_ir_impl<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> (IRBlocks<P>, Vec<MovfuscBlockBoundary>, MovfuscAccumInfo) {
     // Ensure IRType::Bit is present in the types table.
     let bit_type_id = types.intern(IRType::Primitive(Type::Bit));
 
     let n = blocks.blocks.len();
-    if n == 1 { return (blocks.clone(), Vec::new()); }
+    if n == 1 {
+        let empty_init = MovfuscAccumInit { start: 0, end: 0, done_acc: 0, next_pc: Vec::new(), next_state: Vec::new(), ret_vals: Vec::new() };
+        return (blocks.clone(), Vec::new(), MovfuscAccumInfo { init: empty_init, steps: Vec::new() });
+    }
 
     // Intern Vec(pc_width, Bit) for block-reference storage.
     let pc_width = pc_bits_needed(n);
@@ -1880,9 +1960,9 @@ fn movfuscate_ir_impl<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> (I
         pc_width,
         ctrl_prov,
     );
-    let (mut result, block_ranges) = movfuscate(ctx, blocks, state_slot_types, return_slot_types);
+    let (mut result, block_ranges, accum_info) = movfuscate(ctx, blocks, state_slot_types, return_slot_types);
     result.pre_init = blocks.pre_init.clone();
-    (result, block_ranges)
+    (result, block_ranges, accum_info)
 }
 
 // ============================================================================
@@ -2150,7 +2230,7 @@ mod tests {
     #[test]
     fn test_ir_bit_two_block_boundary_ranges_are_contiguous_and_cover_all_stmts() {
         let (blocks, mut types) = two_block_ir_bit();
-        let (result, block_ranges) = movfuscate_ir_with_boundary(&blocks, &mut types);
+        let (result, block_ranges, _accum_info) = movfuscate_ir_with_boundary(&blocks, &mut types);
         assert_eq!(block_ranges.len(), 2, "one range per original block");
 
         let combined_params = result.blocks[0].params.len() as u32;
@@ -2192,7 +2272,7 @@ mod tests {
         let (blocks, mut types_a) = two_block_ir_bit();
         let mut types_b = types_a.clone();
         let plain = movfuscate_ir(&blocks, &mut types_a);
-        let (with_boundary, _ranges) = movfuscate_ir_with_boundary(&blocks, &mut types_b);
+        let (with_boundary, _ranges, _accum_info) = movfuscate_ir_with_boundary(&blocks, &mut types_b);
         assert_eq!(plain, with_boundary);
     }
 

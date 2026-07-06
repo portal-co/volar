@@ -122,6 +122,7 @@ pub use vole::{
     weave_vole_prover_ir, weave_vole_verifier_ir,
     weave_vole_prover_ir_with_mode, weave_vole_verifier_ir_with_mode,
     weave_vole_verifier_ir_with_mode_and_trace,
+    weave_vole_prover_ir_split, weave_vole_verifier_ir_split_with_trace,
     weave_vole_verifier_with_trace,
     StorageSizes, StorageMode, MemoryTrace, MemoryTraceEntry,
     ZkWitnessConfig, ZkActionConfig,

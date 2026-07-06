@@ -28,5 +28,6 @@ volar-ir-opt = { version = "0.1.0", path = "../../ir/volar-ir-opt" }
 volar-verifier-fold = { path = "../../fold/volar-verifier-fold" }
 volar-verifier-iop-runtime = { path = "../../iop/volar-verifier-iop-runtime" }
 volar-iop = { path = "../../iop/volar-iop" }
+volar-compiler = { path = "../../compiler/volar-compiler" }
 wat = "1.212.0"
 wasmtime = "46.0.1"

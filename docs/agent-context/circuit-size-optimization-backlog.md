@@ -26,6 +26,13 @@ Milestone 1's remaining steps (driving a real proof end-to-end). This doc
 exists so whoever picks up further circuit-size work next doesn't have to
 rediscover the plan from scratch.
 
+Since then, Milestone 1.5 Step B (splitting the woven verifier/prover into
+one function per block plus a *chunked* accumulator, dropping
+post-movfuscation optimization) has been completed and validated at real
+interpreter scale — see the two "Milestone 1.5 Step B" sections below.
+The circuit that previously required 8GB+ RSS (climbing, killed before
+completion) to weave now weaves in ~2.5s with negligible memory.
+
 ## Milestone 1.5 Step A: `virtualize_ir` dedup — attempted, reverted, real bugs found
 
 **Status: not adopted.** Wiring `volar_ir_virt::virtualize_ir` (block-skeleton
@@ -146,6 +153,126 @@ assumption harder than Milestone 1 does. See the plan's own Milestone 2
 section ("Anticipated blocker, flag early") for the concrete recommendation
 — budget real investigation time for this early in Milestone 2, starting
 from a small two-function repro before scaling up.
+
+## Milestone 1.5 Step B: `store_forward_ir_blocks` appears to *increase*
+## and_count 24x post-movfuscation — deferred, dropped for now
+
+**Status: not fixed — post-movfuscation optimization is simply skipped for
+the split-weaving path.** While building and measuring Milestone 1.5's
+split verifier/prover weave (`weave_vole_verifier_ir_split_with_trace`/
+`weave_vole_prover_ir_split`, `crates/compiler/volar-weaver/src/vole.rs`)
+against the real interpreter circuit, a direct A/B measurement (same
+movfuscated starting point, and_count computed both ways via the *real*
+weaver's own `q_and_`-param counting, not a re-implemented diagnostic
+formula) found:
+
+- **Without** the post-movfuscation `optimize_to_fixpoint` pass
+  (`fold_ir_blocks`/`store_forward_ir_blocks`, run by `lower_interpreter`
+  between `movfuscate_ir` and `lower_to_circuit_ir`): and_count = **115,780**.
+- **With** it (the pipeline every earlier measurement in this doc used):
+  and_count = **2,771,980** — **~24x larger**.
+
+This is backwards from what "optimization" should do, and is the likely
+explanation for why post-movfuscation optimization never actually helped
+as much as expected (see the width-at-rest section above, which measured
+*statement* count reduction, not and_count, and didn't isolate this
+effect). The suspected mechanism (not yet confirmed by reading
+`store_forward_ir_blocks`'s implementation closely): "store forwarding" —
+substituting a computed value's full defining expression at its use
+site(s) instead of referencing a shared intermediate — is a sound, common
+optimization for ordinary imperative code (fewer live registers), but for
+a *circuit*, forwarding an expression with **multiple uses** duplicates
+whatever gates that expression contains at every use site. If the forwarded
+expression contains AND-monomials (degree ≥ 2) and has more than one use,
+each duplication is a real, extra Quicksilver check — a "fewer named
+intermediates, more actual gates" trade that looks like an improvement by
+statement count while making and_count (the thing that actually drives
+verifier-weave cost) worse.
+
+**Why this wasn't chased further right now:** per direction received,
+"expensive" AND-heavy duplicated expressions are frequently the *easy* case
+to optimize back down — especially when they're layered with memory
+indirection (a `StorageRead`'s result gets forwarded to multiple AND sites,
+each re-paying the read's own downstream gate cost) — but confirming and
+fixing this precisely (likely: only forward single-use values, or CSE-dedupe
+instead of forwarding when a value has multiple uses and contains any
+AND-monomial) is real, separate investigation work, deferred here rather
+than blocking Milestone 1.5's combiner-splitting work.
+
+**What's actually done now:** the split-weaving pipeline
+(`lower_interpreter` in `crates/examples/volar-riscv-e2e/src/wat_gen.rs`)
+simply **skips post-movfuscation optimization** — both because it's the
+regression's proximate cause and because
+`movfuscate_ir_with_boundary`'s boundary metadata is invalid after
+`fold_ir_blocks`/`store_forward_ir_blocks` run anyway (confirmed directly:
+reusing boundary post-optimization panics with "no entry found for key" in
+the weaver, since these passes renumber/delete statements). This is a
+straightforward win with no known downside *for this pipeline* — the
+smaller and_count came from *not* optimizing, so there's nothing lost by
+skipping a pass that was hurting.
+
+**Where to pick this up:** `crates/ir/volar-ir-opt/src/store_forward.rs`
+(read the actual forwarding decision logic — does it check use-count
+before forwarding at all, or forward unconditionally on any store/load
+match?), measured against the same real interpreter circuit via
+`weave_vole_verifier_ir_split_with_trace`'s q_and-param counting (the A/B
+harness already exists as
+`crates/examples/volar-riscv-e2e/src/wat_gen.rs`'s
+`compare_and_count_with_and_without_post_movfuscation_optimization`,
+`#[ignore]`d). If fixed, boundary-metadata compatibility with
+post-movfuscation optimization would need re-establishing too (currently
+just not attempted, since skipping the pass sidesteps the question
+entirely).
+
+## Milestone 1.5 Step B (continued): the combiner itself, chunked — done, validated at real scale
+
+**Status: fixed and measured.** Splitting the verifier/prover into one
+function per original (pre-movfuscation) block (above) still left a single
+trailing "combiner" function that bound *every* block's exported state
+simultaneously — on the real interpreter circuit (120 blocks) this combiner
+alone needed ~2.5M Rust function parameters, i.e. the same order of
+magnitude as the original unsplit problem, just moved to one function
+instead of the whole verifier.
+
+Fix: `movfuscate_ir`'s own accumulation loop (`Σ_i is_active_i · x_i`,
+"movfuscate.rs") was restructured to be **block-major** — one contiguous
+statement range per block covering all four accumulated quantities
+(`done_acc`/`next_pc`/`next_state`/`ret_vals`) instead of four separate
+all-blocks loops — and exposed as `MovfuscAccumInfo { init, steps }`
+(`MovfuscAccumInit` + one `MovfuscAccumStep` per block), alongside the
+existing per-block `MovfuscBlockBoundary`. The weaver
+(`weave_vole_verifier_ir_split_with_trace` / `weave_vole_prover_ir_split`,
+both now taking `accum_info: &MovfuscAccumInfo, chunk_size: usize`) folds
+these accumulation steps in groups of `chunk_size` blocks at a time
+("`..._accum_chunk_{i}`" functions), threading a running accumulator
+(done_acc/next_pc/next_state/ret_vals — plus, prover-side, each chunk's own
+local `hat`s, since the accumulation's own `is_active_i AND done_i`-style
+selection logic is itself real AND-gates) between chunks, followed by one
+final "`..._finish`" function for whatever trails the last accumulation
+step (the terminator-select/return-padding `lower_to_circuit_ir` adds).
+
+**Real-scale measurement** (`measure_split_weave_on_real_interpreter`,
+`crates/examples/volar-riscv-e2e/src/wat_gen.rs`, `#[ignore]`d,
+`chunk_size = 8`, 120 blocks): the whole weave — 120 block functions + 15
+accumulator chunks + 1 finish function, both prover and verifier — now
+**completes in ~2.5s with negligible RSS** (previously: 8GB+ RSS and
+climbing, killed before completion, on the unsplit combiner). Per-function
+param counts: the 120 block functions are all small (669–4,529 params);
+the 15 chunk functions and 1 finish function are the new bottleneck, up to
+**~236K params** (verifier) / **~220K params** (prover) for the
+largest chunk — a real ~10-35x reduction from the prior ~2.5M-8.3M-param
+single combiner, and easily tractable (fits comfortably in memory, no
+special handling needed). This variance comes from block-to-block
+and_count skew (most blocks measure 6-1,282 AND gates; a run of ~17 blocks
+near the end of the circuit each measure ~5,000-6,000, so any chunk
+containing several of those is proportionally larger) — `chunk_size` is a
+tunable knob (smaller chunk_size → smaller max chunk, more functions) if
+finer bounding is ever needed; 8 was not specially tuned and already
+suffices.
+
+**Verified consistent**: `verifier_and_counts == prover_hats_counts`
+per-function (same chunk boundaries on both sides, required for
+interleaved driving) — asserted directly in the measurement test, passes.
 
 ## Deferred: bitwise-op widening
 

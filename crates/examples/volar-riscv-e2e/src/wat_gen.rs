@@ -334,7 +334,7 @@ mod tests {
     fn interpreter_ir_movfuscates_and_unrolls_to_a_circuit() {
         use volar_ir_passes::LoweringMode;
 
-        let (ir_blocks, movfuscated, circuit, _types, _bit_ty) =
+        let (ir_blocks, movfuscated, circuit, _types, _bit_ty, _boundary, _accum_info) =
             lower_interpreter(crate::interp::MAX_STEPS as u32, LoweringMode::Unconditional);
         assert!(
             ir_blocks.blocks.len() > 1,
@@ -369,7 +369,19 @@ mod tests {
     /// isn't met by virt's dispatcher/handler/setup block shapes) and the
     /// separate, genuine VAFFLE bug this investigation *did* fix
     /// (`plan_functions`'s continuation-type arity, `lower_to_ir.rs`).
-    /// Milestone 1.5 proceeds on Step B (split-the-verifier) alone.
+    ///
+    /// Milestone 1.5 Step B: no longer runs post-movfuscation
+    /// `optimize_to_fixpoint` -- a direct A/B measurement found it
+    /// *increases* and_count ~24x (115,780 -> 2,771,980) on this circuit,
+    /// almost certainly `store_forward_ir_blocks` duplicating AND-gate-
+    /// containing expressions across multiple use sites (see the backlog
+    /// doc's "Step B: store_forward_ir_blocks" section -- deferred, not
+    /// fixed, since dropping the pass alone is a strict improvement here
+    /// with no known downside). This also sidesteps a separate, confirmed
+    /// incompatibility: `movfuscate_ir_with_boundary`'s boundary metadata
+    /// is invalidated by that same optimization pass (it renumbers/deletes
+    /// statements), so returning boundary metadata directly from this
+    /// shared helper (below) requires skipping it anyway.
     fn lower_interpreter(
         limit: u32,
         mode: volar_ir_passes::LoweringMode,
@@ -379,11 +391,13 @@ mod tests {
         volar_ir::ir::IRBlocks,
         volar_ir::ir::IRTypes,
         volar_ir::ir::IRTypeId,
+        std::vec::Vec<volar_ir_passes::MovfuscBlockBoundary>,
+        volar_ir_passes::MovfuscAccumInfo,
     ) {
         use volar_ir::ir::IRType;
         use volar_ir_common::Type;
         use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
-        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir};
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary};
 
         let wasm_bytes = wat::parse_str(&test_program_wat()).expect("wat should assemble");
         let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
@@ -401,20 +415,16 @@ mod tests {
         // Optimize *before* movfuscation, to fixpoint: constant-fold and
         // store-forward feed each other (folding can turn a computed address
         // into a constant that store-forwarding can then match, and vice
-        // versa), so alternate both until neither changes anything.
+        // versa), so alternate both until neither changes anything. Safe
+        // here (unlike post-movfuscation) since it runs *before*
+        // `movfuscate_ir_with_boundary` even computes boundary metadata.
         optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
 
-        let mut movfuscated = movfuscate_ir(&ir_blocks, &mut types);
-
-        // Optimize *after* movfuscation too: the accumulate-and-select
-        // machinery introduces its own constant-foldable structure (e.g. a
-        // block whose `is_active` is provably impossible given other
-        // constant-folded state) that only exists post-movfuscation.
-        optimize_to_fixpoint(&mut movfuscated, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+        let (movfuscated, boundary, accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
 
         let bit_ty = types.intern(IRType::Primitive(Type::Bit));
         let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, limit, mode);
-        (ir_blocks, movfuscated, circuit, types, bit_ty)
+        (ir_blocks, movfuscated, circuit, types, bit_ty, boundary, accum_info)
     }
 
     /// Alternate two boolean-returning "did anything change" passes until
@@ -480,7 +490,7 @@ mod tests {
         // one step; the driver (M1.5/M1.6) loops, threading state and the
         // IOP fold accumulator across calls, until the returned flag says
         // the program halted.
-        let (_ir_blocks, _movfuscated, circuit, types, _bit_ty) =
+        let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, _boundary, _accum_info) =
             lower_interpreter(1, LoweringMode::WithTerminationFlag);
 
         let mode = StorageMode::Commitment;
@@ -539,7 +549,7 @@ mod tests {
         use volar_ir_passes::LoweringMode;
         use volar_weaver::{StorageMode, weave_vole_prover_ir_with_mode};
 
-        let (ir_blocks, movfuscated, circuit, types, _bit_ty) =
+        let (ir_blocks, movfuscated, circuit, types, _bit_ty, _boundary, _accum_info) =
             lower_interpreter(1, LoweringMode::WithTerminationFlag);
         eprintln!("pre-movfuscation blocks: {}", ir_blocks.blocks.len());
         eprintln!(
@@ -642,5 +652,143 @@ mod tests {
             module.inner().functions.iter().map(|f| f.body.stmts.len()).sum();
         eprintln!("woven prover total stmts: {total_woven_stmts}");
         eprintln!("memory trace entries: {}", trace.entries.len());
+    }
+
+    /// Direct A/B check of a surprising Step B measurement (now documented
+    /// in `docs/agent-context/circuit-size-optimization-backlog.md`): does
+    /// post-movfuscation `optimize_to_fixpoint` (`fold_ir_blocks`/
+    /// `store_forward_ir_blocks` -- `lower_interpreter` itself no longer
+    /// runs this post-movfuscation, precisely because of this finding)
+    /// actually *increase* and_count on the real interpreter circuit,
+    /// rather than decrease it as its name suggests? Computes and_count
+    /// both ways from the exact same movfuscated starting point, via the
+    /// real weaver (`weave_vole_verifier_ir_split_with_trace`'s own
+    /// q_and-param counting -- not a re-implemented diagnostic formula),
+    /// so this is directly trustworthy either way. Kept as a permanent
+    /// regression-guard for the finding, not just a one-off measurement.
+    /// `#[ignore]`d (real interpreter scale); run manually under RSS
+    /// monitoring.
+    #[test]
+    #[ignore]
+    fn compare_and_count_with_and_without_post_movfuscation_optimization() {
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_weaver::{StorageMode, weave_vole_verifier_ir_split_with_trace, IopSink};
+
+        let wasm_bytes = wat::parse_str(&test_program_wat()).expect("wat should assemble");
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty());
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+
+        let and_count_via_real_weaver = |movfuscated_types: &mut volar_ir::ir::IRTypes, movfuscated: &volar_ir::ir::IRBlocks, boundary: &[volar_ir_passes::MovfuscBlockBoundary], accum_info: &volar_ir_passes::MovfuscAccumInfo| -> usize {
+            let bit_ty = movfuscated_types.intern(IRType::Primitive(Type::Bit));
+            let circuit = lower_to_circuit_ir(movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+            let mut total = 0usize;
+            weave_vole_verifier_ir_split_with_trace(
+                &circuit, movfuscated_types, "cmp", &StorageMode::Commitment, &IopSink, boundary, accum_info, 1,
+                |f| total += f.params.iter().filter(|p| p.name.starts_with("q_and_")).count(),
+            );
+            total
+        };
+
+        // WITHOUT post-movfuscation optimization.
+        let mut types_no_opt = types.clone();
+        let (movfuscated_no_opt, boundary_no_opt, accum_info_no_opt) = movfuscate_ir_with_boundary(&ir_blocks, &mut types_no_opt);
+        let and_count_no_opt = and_count_via_real_weaver(&mut types_no_opt, &movfuscated_no_opt, &boundary_no_opt, &accum_info_no_opt);
+
+        // WITH post-movfuscation optimization.
+        let mut types_with_opt = types.clone();
+        let (mut movfuscated_with_opt, boundary_with_opt, accum_info_with_opt) = movfuscate_ir_with_boundary(&ir_blocks, &mut types_with_opt);
+        optimize_to_fixpoint(&mut movfuscated_with_opt, &types_with_opt, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+        // NOTE: boundary_with_opt/accum_info_with_opt are almost certainly
+        // invalid after this optimization pass -- if the real weaver panics
+        // or produces a nonsensical count here, *that itself* is the answer
+        // to "is boundary safe to reuse post-optimization" (no).
+        let and_count_with_opt_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            and_count_via_real_weaver(&mut types_with_opt, &movfuscated_with_opt, &boundary_with_opt, &accum_info_with_opt)
+        }));
+
+        eprintln!("and_count WITHOUT post-movfuscation optimization: {and_count_no_opt}");
+        match &and_count_with_opt_result {
+            Ok(n) => eprintln!("and_count WITH post-movfuscation optimization (boundary reused, may be invalid): {n}"),
+            Err(_) => eprintln!("and_count WITH post-movfuscation optimization: PANICKED (boundary is stale/invalid post-optimization, as suspected)"),
+        }
+    }
+
+    /// Milestone 1.5 Step B measurement: does the split verifier/prover
+    /// weave actually bound per-function size on the *real* interpreter
+    /// circuit -- the whole point of the split, checked directly rather
+    /// than assumed. `#[ignore]`d (real interpreter scale); run manually
+    /// under RSS monitoring:
+    /// `cargo test -p volar-riscv-e2e --release measure_split_weave_on_real_interpreter -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn measure_split_weave_on_real_interpreter() {
+        use volar_ir_passes::LoweringMode;
+        use volar_weaver::{StorageMode, weave_vole_prover_ir_split, weave_vole_verifier_ir_split_with_trace, IopSink};
+
+        let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, boundary, accum_info) =
+            lower_interpreter(1, LoweringMode::WithTerminationFlag);
+        eprintln!("n_blocks (boundary entries): {}", boundary.len());
+
+        let mode = StorageMode::Commitment;
+        // chunk_size=8: bounds the accumulator's own params to O(8 * state
+        // width) instead of O(n_blocks * state width) -- the whole point of
+        // Milestone 1.5 Step B's combiner-splitting.
+        let chunk_size = 8usize;
+
+        let mut verifier_and_counts: std::vec::Vec<usize> = std::vec::Vec::new();
+        let mut verifier_param_counts: std::vec::Vec<usize> = std::vec::Vec::new();
+        let verifier_trace = weave_vole_verifier_ir_split_with_trace(
+            &circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size,
+            |f| {
+                let and_count = f.params.iter().filter(|p| p.name.starts_with("q_and_")).count();
+                verifier_and_counts.push(and_count);
+                verifier_param_counts.push(f.params.len());
+                // Drop `f` here (Step B.4): in a real driver this is where
+                // print_weaved_vole_module(&IrModule{functions: vec![f], ..})
+                // would run, immediately followed by dropping the printed
+                // string too, before the next function is even built.
+            },
+        );
+
+        let mut prover_hats_counts: std::vec::Vec<usize> = std::vec::Vec::new();
+        let mut prover_param_counts: std::vec::Vec<usize> = std::vec::Vec::new();
+        let prover_trace = weave_vole_prover_ir_split(
+            &circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size,
+            |f| {
+                let hats_len = match f.return_type.as_ref().unwrap() {
+                    volar_compiler::ir::IrType::Tuple(elems) => match elems.last().unwrap() {
+                        volar_compiler::ir::IrType::Array { len: volar_compiler::ir::ArrayLength::Const(n), .. } => *n,
+                        _ => 0,
+                    },
+                    _ => 0,
+                };
+                prover_hats_counts.push(hats_len);
+                prover_param_counts.push(f.params.len());
+            },
+        );
+
+        eprintln!("verifier per-function q_and counts: {verifier_and_counts:?}");
+        eprintln!("verifier per-function param counts: {verifier_param_counts:?}");
+        eprintln!("verifier max param count: {}", verifier_param_counts.iter().max().unwrap());
+        eprintln!("verifier total and_count (sum across functions): {}", verifier_and_counts.iter().sum::<usize>());
+        eprintln!("prover per-function hats counts: {prover_hats_counts:?}");
+        eprintln!("prover per-function param counts: {prover_param_counts:?}");
+        eprintln!("prover max param count: {}", prover_param_counts.iter().max().unwrap());
+        eprintln!("verifier trace entries: {}", verifier_trace.entries.len());
+        eprintln!("prover trace entries: {}", prover_trace.entries.len());
+
+        assert_eq!(
+            verifier_and_counts, prover_hats_counts,
+            "prover hats and verifier q_and must line up per block/combiner for interleaved driving"
+        );
     }
 }
