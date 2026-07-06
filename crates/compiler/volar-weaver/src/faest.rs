@@ -217,18 +217,28 @@ pub fn weave_faest_prover(
     name: &str,
     config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
+<<<<<<< HEAD
 ) -> Tagged<Zk, IrModule<IrFunction<()>, ()>> {
     // FAEST is a zero-knowledge proof system → `Zk` discipline.
     let mut module = weave_vole_prover_with_config_and_handler(
+=======
+) -> IrModule<IrFunction<()>, ()> {
+    weave_vole_prover_with_config_and_handler(
+>>>>>>> origin/main
         circuit,
         name,
         config,
+        linkage,
         &FaestProvenanceHandler,
+<<<<<<< HEAD
     );
     if let Some(ls) = linkage {
         ls.apply(module.inner_mut());
     }
     module
+=======
+    )
+>>>>>>> origin/main
 }
 
 /// Weave with [`FaestAesMode`] active.
@@ -243,16 +253,21 @@ pub fn weave_faest_prover_with_mode(
     _mode: &FaestAesMode,
 ) -> Tagged<Zk, IrModule<IrFunction<()>, ()>> {
     // The handler already carries the K=2 dispatch via `gate_degree`.
-    let mut module = weave_vole_prover_with_config_and_handler(
+    weave_vole_prover_with_config_and_handler(
         circuit,
         name,
         config,
+        linkage,
         &FaestProvenanceHandler,
+<<<<<<< HEAD
     );
     if let Some(ls) = linkage {
         ls.apply(module.inner_mut());
     }
     module
+=======
+    )
+>>>>>>> origin/main
 }
 
 /// Weave an AES OWF circuit into a FAEST verifier module.
@@ -263,19 +278,29 @@ pub fn weave_faest_verifier(
     name: &str,
     config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
+<<<<<<< HEAD
 ) -> Tagged<Transparent, IrModule<IrFunction<()>, ()>> {
     // The verifier-as-a-computation is non-ZK (`Transparent`): the inner VOLE
     // proof already accounts for zero-knowledge.
     let mut module = weave_vole_verifier_with_config_and_handler(
+=======
+) -> IrModule<IrFunction<()>, ()> {
+    weave_vole_verifier_with_config_and_handler(
+>>>>>>> origin/main
         circuit,
         name,
         config,
+        linkage,
         &FaestProvenanceHandler,
+<<<<<<< HEAD
     );
     if let Some(ls) = linkage {
         ls.apply(module.inner_mut());
     }
     module
+=======
+    )
+>>>>>>> origin/main
 }
 
 /// Weave with [`FaestAesMode`] active (verifier side).
@@ -285,17 +310,27 @@ pub fn weave_faest_verifier_with_mode(
     config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
     _mode: &FaestAesMode,
+<<<<<<< HEAD
 ) -> Tagged<Transparent, IrModule<IrFunction<()>, ()>> {
     let mut module = weave_vole_verifier_with_config_and_handler(
+=======
+) -> IrModule<IrFunction<()>, ()> {
+    weave_vole_verifier_with_config_and_handler(
+>>>>>>> origin/main
         circuit,
         name,
         config,
+        linkage,
         &FaestProvenanceHandler,
+<<<<<<< HEAD
     );
     if let Some(ls) = linkage {
         ls.apply(module.inner_mut());
     }
     module
+=======
+    )
+>>>>>>> origin/main
 }
 
 /// Print a weaved FAEST module to a Rust source string.

@@ -141,7 +141,7 @@ correlations** during the gap.
 
 | Component | State |
 |---|---|
-| `F_ℓ` (Montgomery), Pedersen + Pippenger MSM, R1CS, NIFS, native verify, IVC, FoldingBridge | **implemented + tested** (31 unit tests) |
+| `F_ℓ` (Montgomery), Pedersen + Pippenger MSM, R1CS, NIFS, native verify, IVC, FoldingBridge, **FoldingTransport** (concrete `ResilientVoleTransport`) | **implemented + tested** (41 unit tests) |
 | Binding generators (hash-to-curve) | **DONE** — `hash_to_curve` ([§5](#5-other-caveats-honest), `hash-to-curve-generators.md`) |
 | Fast field + MSM | **DONE** — Montgomery + Pippenger, verified vs reference |
 | `BoundaryLink` embedding | **dual-preimage Keccak, both circuits + VOLE lowering DONE**: folding leg = `keccak_r1cs` + `KeccakDigestLink` (+ e2e bridge tests); VOLE leg = `emit_keccak256` gadget **and** `weave_keccak_check{,_verifier}` lowering it + the public-digest equality (`match`, opened/`assert_one_check`-ed) to compilable prover/verifier IR; all cross-checked vs `sha3`; **spliced into the real `hybrid_net` gap boundary** (opt-in `boundary_attest`: prover B5/B8 emit the `keccak_check` call + open + send `match`; verifier emits the check fn). **Remaining**: transport-side glue (`verifier_bridge` invokes the check, `recv_opening`/`assert_one_check`s the match, folds the `GapVerdict`) + runtime digest `d` |

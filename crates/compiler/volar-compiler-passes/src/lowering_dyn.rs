@@ -1155,7 +1155,6 @@ fn rename_var_in_stmt(stmt: &mut IrStmt, old: &str, new_name: &str) {
         IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
             rename_var_in_expr(e, old, new_name);
         }
-        _ => {}
     }
 }
 
@@ -1297,6 +1296,7 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
                 rename_var_in_expr(&mut arm.body, old, new_name);
             }
         }
+<<<<<<< HEAD
         IrExprKind::DefaultValue { .. }
         | IrExprKind::Lit(_)
         | IrExprKind::Path { .. }
@@ -1307,6 +1307,17 @@ fn rename_var_in_expr(expr: &mut IrExpr, old: &str, new_name: &str) {
         | IrExprKind::Continue
         | IrExprKind::Unreachable => {}
         _ => {}
+=======
+        IrExpr::DefaultValue { .. }
+        | IrExpr::Lit(_)
+        | IrExpr::Path { .. }
+        | IrExpr::LengthOf(_)
+        | IrExpr::TypenumUsize { .. }
+        | IrExpr::Return(None)
+        | IrExpr::Break(None)
+        | IrExpr::Continue
+        | IrExpr::Unreachable => {}
+>>>>>>> origin/main
     }
 }
 
@@ -1371,11 +1382,17 @@ fn lower_stmt_dyn(s: &IrStmt, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
             ty: ty.as_ref().map(|t| lower_type_dyn(t, ctx, fn_gen)),
             init: init.as_ref().map(|i| lower_expr_dyn(i, ctx, fn_gen)),
         },
+<<<<<<< HEAD
         IrStmtKind::Semi(e) => IrStmtKind::Semi(lower_expr_dyn(e, ctx, fn_gen)),
         IrStmtKind::Expr(e) => IrStmtKind::Expr(lower_expr_dyn(e, ctx, fn_gen)),
         _ => panic!("lower_stmt_dyn: unhandled IrStmt variant — add lowering for this variant"),
     };
     volar_compiler::ir::IrStmt::new(kind, s.prov.clone(), s.side)
+=======
+        IrStmt::Semi(e) => IrStmt::Semi(lower_expr_dyn(e, ctx, fn_gen)),
+        IrStmt::Expr(e) => IrStmt::Expr(lower_expr_dyn(e, ctx, fn_gen)),
+    }
+>>>>>>> origin/main
 }
 
 fn lower_pattern_dyn(p: &IrPattern, ctx: &LoweringContext) -> IrPattern {

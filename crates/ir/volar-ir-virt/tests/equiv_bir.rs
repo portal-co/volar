@@ -25,6 +25,7 @@ fn three_block_passthrough() -> BIrBlocks {
     BIrBlocks { blocks: vec![
         BIrBlock {
             params: 1,
+<<<<<<< HEAD
             stmts: vec![BIrStmt::Zero].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Block(IRBlockId(1)), args: vec![IRVarId(0)], }),
         },
@@ -37,6 +38,32 @@ fn three_block_passthrough() -> BIrBlocks {
             params: 1,
             stmts: vec![BIrStmt::Zero].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(0)], }),
+=======
+            stmts: vec![],
+            stmt_provs: vec![],
+            terminator: BIrTerminator::Jmp(BIrTarget {
+                block: IRBlockTargetId::Block(IRBlockId(1)),
+                args: vec![IRVarId(0)],
+            }),
+        },
+        BIrBlock {
+            params: 1,
+            stmts: vec![],
+            stmt_provs: vec![],
+            terminator: BIrTerminator::Jmp(BIrTarget {
+                block: IRBlockTargetId::Block(IRBlockId(2)),
+                args: vec![IRVarId(0)],
+            }),
+        },
+        BIrBlock {
+            params: 1,
+            stmts: vec![],
+            stmt_provs: vec![],
+            terminator: BIrTerminator::Jmp(BIrTarget {
+                block: IRBlockTargetId::Return,
+                args: vec![IRVarId(0)],
+            }),
+>>>>>>> origin/main
         },
     ], pre_init: vec![] }
 }

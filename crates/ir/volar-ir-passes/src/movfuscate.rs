@@ -593,19 +593,29 @@ fn subst_biir(stmt: &BIrStmt, var_map: &[u32]) -> BIrStmt {
             bit_width: *bit_width,
             addr: addr.iter().map(|v| s(v)).collect(),
         },
-        _ => panic!("subst_biir: unhandled BIrStmt variant — add substitution for this variant"),
     }
 }
 
+<<<<<<< HEAD
 struct BIrCtx<P: Clone = ()> {
     stmts: Vec<volar_ir_common::Node<BIrStmt, P>>,
+=======
+struct BIrCtx<P: Clone + Default = ()> {
+    stmts: Vec<BIrStmt>,
+    stmt_provs: Vec<P>,
+>>>>>>> origin/main
     next_id: u32,
-    ctrl_prov: P,
 }
 
+<<<<<<< HEAD
 impl<P: Clone> BIrCtx<P> {
     fn new(first_id: u32, ctrl_prov: P) -> Self {
         Self { stmts: Vec::new(), next_id: first_id, ctrl_prov }
+=======
+impl<P: Clone + Default> BIrCtx<P> {
+    fn new(first_id: u32) -> Self {
+        Self { stmts: Vec::new(), stmt_provs: Vec::new(), next_id: first_id }
+>>>>>>> origin/main
     }
 
     fn push(&mut self, stmt: BIrStmt, prov: P) -> u32 {
@@ -648,13 +658,12 @@ impl<P: Clone> BIrCtx<P> {
             IRBlockTargetId::Dyn(_) => {
                 panic!("movfuscate_biir: Dyn jump targets are not supported")
             }
-            _ => panic!("movfuscate_biir: unhandled IRBlockTargetId variant — add handling for this variant"),
         }
     }
 }
 
 
-impl<P: Clone> MovfuscCtx for BIrCtx<P> {
+impl<P: Clone + Default> MovfuscCtx for BIrCtx<P> {
     type Blocks = BIrBlocks<P>;
     /// All BIr slots are `Bit`; no type information needed.
     type SlotTy = ();
@@ -696,35 +705,29 @@ impl<P: Clone> MovfuscCtx for BIrCtx<P> {
     // Bit ops ----------------------------------------------------------------
 
     fn emit_zero_bit(&mut self) -> u32 {
-        let p = self.ctrl_prov.clone();
-        self.push(BIrStmt::Zero, p)
+        self.push(BIrStmt::Zero, P::default())
     }
 
     fn emit_one_bit(&mut self) -> u32 {
-        let p = self.ctrl_prov.clone();
-        self.push(BIrStmt::One, p)
+        self.push(BIrStmt::One, P::default())
     }
 
     fn emit_and_bit(&mut self, a: u32, b: u32) -> u32 {
         if a == b {
             return a; // idempotent
         }
-        let p = self.ctrl_prov.clone();
-        self.push(BIrStmt::And(IRVarId(a), IRVarId(b)), p)
+        self.push(BIrStmt::And(IRVarId(a), IRVarId(b)), P::default())
     }
 
     fn emit_xor_bit(&mut self, a: u32, b: u32) -> u32 {
         if a == b {
-            let p = self.ctrl_prov.clone();
-            return self.push(BIrStmt::Zero, p);
+            return self.push(BIrStmt::Zero, P::default());
         }
-        let p = self.ctrl_prov.clone();
-        self.push(BIrStmt::Xor(IRVarId(a), IRVarId(b)), p)
+        self.push(BIrStmt::Xor(IRVarId(a), IRVarId(b)), P::default())
     }
 
     fn emit_not(&mut self, a: u32) -> u32 {
-        let p = self.ctrl_prov.clone();
-        self.push(BIrStmt::Not(IRVarId(a)), p)
+        self.push(BIrStmt::Not(IRVarId(a)), P::default())
     }
 
     // Slot ops (SlotTy = ()) = Bit ops --------------------------------------
@@ -753,9 +756,15 @@ impl<P: Clone> MovfuscCtx for BIrCtx<P> {
         let p = block.params as usize;
         let mut var_map: Vec<u32> = Vec::with_capacity(p + block.stmts.len());
         var_map.extend_from_slice(&state_vars[..p]);
+<<<<<<< HEAD
         for stmt in block.stmts.iter() {
             let prov = stmt.prov.clone();
             let mapped = subst_biir(&stmt.kind, &var_map);
+=======
+        for (i, stmt) in block.stmts.iter().enumerate() {
+            let prov = block.stmt_provs.get(i).cloned().unwrap_or_default();
+            let mapped = subst_biir(stmt, &var_map);
+>>>>>>> origin/main
             let id = self.push(mapped, prov);
             var_map.push(id);
         }
@@ -814,7 +823,6 @@ impl<P: Clone> MovfuscCtx for BIrCtx<P> {
                     .collect();
                 TermResult { done, next_pc_bits, next_state, ret_vals }
             }
-            _ => panic!("emit_block_terminator: unhandled BIrTerminator variant — add handling for this variant"),
         }
     }
 
@@ -902,7 +910,6 @@ pub(crate) fn subst_ir(stmt: &IRStmt, var_map: &[u32]) -> IRStmt {
         IRStmt::ActionOutput { call, idx, ty } =>
             IRStmt::ActionOutput { call: s(call), idx: *idx, ty: ty.clone() },
         IRStmt::Rng { name, ty } => IRStmt::Rng { name: name.clone(), ty: ty.clone() },
-        _ => panic!("subst_ir: unhandled IRStmt variant — add substitution for this variant"),
     }
 }
 
@@ -976,13 +983,12 @@ fn infer_stmt_result_type(
         IRStmt::OracleOutput { ty, .. } | IRStmt::ActionOutput { ty, .. } => ty.clone(),
         // RNG produces a fresh value of the declared type.
         IRStmt::Rng { ty, .. } => ty.clone(),
-        _ => panic!("infer_stmt_result_type: unhandled IRStmt variant — add type inference for this variant"),
     }
 }
 
 // ---- Pre-pass: infer all variable types in a block (static, before emission)
 
-fn infer_block_var_types<P: Clone>(
+fn infer_block_var_types<P: Clone + Default>(
     block: &IRBlock<P>,
     ir_types: &[IRType],
     bit_type_id: &IRTypeId,
@@ -1017,16 +1023,21 @@ fn param_to_slot_map(params: &[IRTypeId], ir_types: &[IRType], pc_width: usize) 
     map
 }
 
+<<<<<<< HEAD
 struct IrCtx<P: Clone = ()> {
     stmts: Vec<volar_ir_common::Node<IRStmt, P>>,
     /// Provenance to attach to the next emitted stmt (cloned on `push_typed`).
     /// Set by `emit_block_stmts` before each source stmt; synthetic stmts inherit
     /// the last set provenance (no reset to default).
+=======
+struct IrCtx<P: Clone + Default = ()> {
+    stmts: Vec<IRStmt>,
+    stmt_provs: Vec<P>,
+    /// Provenance to attach to the next emitted stmt (consumed on `push_typed`).
+    /// Set to `P::default()` after each consumption, so synthetic stmts always
+    /// carry a default provenance unless explicitly staged here first.
+>>>>>>> origin/main
     pending_prov: P,
-    /// Fallback provenance for infrastructure gates that have no direct source
-    /// (e.g. block-dispatch constants, loop control).  Derived from the first
-    /// available source statement in the input circuit.
-    ctrl_prov: P,
     next_id: u32,
     bit_type_id: IRTypeId,
     /// `Vec(pc_width, Bit)` — the type used for block-references in storage.
@@ -1052,7 +1063,7 @@ struct IrCtx<P: Clone = ()> {
     block_var_to_bits: BTreeMap<u32, (Vec<u32>, Vec<IRTypeId>)>,
 }
 
-impl<P: Clone> IrCtx<P> {
+impl<P: Clone + Default> IrCtx<P> {
     fn new(
         first_id: u32,
         bit_type_id: IRTypeId,
@@ -1060,13 +1071,17 @@ impl<P: Clone> IrCtx<P> {
         combined_param_types: Vec<IRTypeId>,
         ir_types: Vec<IRType>,
         pc_width: usize,
-        ctrl_prov: P,
     ) -> Self {
         let var_types = combined_param_types.clone();
         Self {
             stmts: Vec::new(),
+<<<<<<< HEAD
             pending_prov: ctrl_prov.clone(),
             ctrl_prov,
+=======
+            stmt_provs: Vec::new(),
+            pending_prov: P::default(),
+>>>>>>> origin/main
             next_id: first_id,
             bit_type_id,
             vec_pc_type_id,
@@ -1134,14 +1149,19 @@ impl<P: Clone> IrCtx<P> {
 
     /// Emit a stmt and record its result type.
     ///
-    /// Clones `self.pending_prov` without resetting it, so subsequent synthetic
-    /// stmts inherit the last staged source provenance rather than a default.
-    /// Source stmts set `pending_prov` via `emit_block_stmts` before calling here.
+    /// Consumes `self.pending_prov` (resetting it to `P::default()`) so that
+    /// source stmts staged via `pending_prov = prov` carry the right provenance,
+    /// while all synthetic stmts automatically get `P::default()`.
     fn push_typed(&mut self, stmt: IRStmt, result_type: IRTypeId) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
         self.stmts.push(volar_ir_common::Node::new(stmt, self.pending_prov.clone(), None));
         self.var_types.push(result_type);
+<<<<<<< HEAD
+=======
+        let prov = core::mem::replace(&mut self.pending_prov, P::default());
+        self.stmt_provs.push(prov);
+>>>>>>> origin/main
         id
     }
 
@@ -1291,12 +1311,11 @@ impl<P: Clone> IrCtx<P> {
                     .collect();
                 (done, next_pc_bits, next_state, ret)
             }
-            _ => panic!("process_ir_target: unhandled IRBlockTargetId variant — add handling for this variant"),
         }
     }
 }
 
-impl<P: Clone> MovfuscCtx for IrCtx<P> {
+impl<P: Clone + Default> MovfuscCtx for IrCtx<P> {
     type Blocks = IRBlocks<P>;
     type SlotTy = IRTypeId;
 
@@ -1461,9 +1480,15 @@ impl<P: Clone> MovfuscCtx for IrCtx<P> {
 
         // Emit stmts with substitution, handling Block-typed Const specially.
         for (stmt_idx, stmt) in block.stmts.iter().enumerate() {
+<<<<<<< HEAD
             // Stage this stmt's source provenance; `push_typed` will clone it.
             self.pending_prov = stmt.prov.clone();
             let mapped = subst_ir(&stmt.kind, &var_map);
+=======
+            // Stage this stmt's source provenance; `push_typed` will consume it.
+            self.pending_prov = block.stmt_provs.get(stmt_idx).cloned().unwrap_or_default();
+            let mapped = subst_ir(stmt, &var_map);
+>>>>>>> origin/main
             let orig_var_id = (p + stmt_idx) as u32;
 
             // Block-typed Const: encode the referenced block index as
@@ -1710,7 +1735,6 @@ impl<P: Clone> MovfuscCtx for IrCtx<P> {
                     ret_vals: ret_acc,
                 }
             }
-            _ => panic!("movfuscate: unhandled IRTerminator variant — add handling for this variant"),
         }
     }
 
@@ -1754,7 +1778,7 @@ impl<P: Clone> MovfuscCtx for IrCtx<P> {
 /// Non-`Block` types must additionally be identical.
 /// Mixing `Block` and plain `Bit` is allowed when `pc_width == 1` (both
 /// expand to exactly one `Bit` slot).
-fn compute_expanded_state_slot_types<P: Clone>(
+fn compute_expanded_state_slot_types<P: Clone + Default>(
     blocks: &IRBlocks<P>,
     ir_types: &[IRType],
     bit_type_id: &IRTypeId,
@@ -1823,7 +1847,7 @@ fn compute_expanded_state_slot_types<P: Clone>(
 /// `Return` terminator found in the module.
 ///
 /// `Block`-typed return values are expanded to `pc_width` `Bit` slots each.
-fn compute_return_slot_types<P: Clone>(
+fn compute_return_slot_types<P: Clone + Default>(
     blocks: &IRBlocks<P>,
     ir_types: &[IRType],
     bit_type_id: &IRTypeId,
@@ -1869,16 +1893,19 @@ fn compute_return_slot_types<P: Clone>(
 /// Single-block input is returned unchanged.
 /// Source statement provenances are carried through; synthetic dispatch gates
 /// receive `P::default()`.
-pub fn movfuscate_biir<P: Clone>(blocks: &BIrBlocks<P>) -> BIrBlocks<P> {
+pub fn movfuscate_biir<P: Clone + Default>(blocks: &BIrBlocks<P>) -> BIrBlocks<P> {
     let n = blocks.blocks.len();
-    if n == 1 { return blocks.clone(); }
     let pc_width = pc_bits_needed(n);
     let state_width = blocks.blocks.iter().map(|b| b.params as usize).max().unwrap_or(0);
     let combined_params = pc_width + state_width;
+<<<<<<< HEAD
     let ctrl_prov = blocks.blocks.iter().flat_map(|b| b.stmts.iter()).map(|n| &n.prov).next()
         .cloned()
         .expect("movfuscate_biir: circuit has no statements; cannot derive provenance for infrastructure gates");
     let ctx = BIrCtx::<P>::new(combined_params as u32, ctrl_prov);
+=======
+    let ctx = BIrCtx::<P>::new(combined_params as u32);
+>>>>>>> origin/main
     let state_slot_types = vec![(); state_width];
     let ret_width = BIrCtx::<P>::return_val_width(blocks);
     let return_slot_types = vec![(); ret_width];
@@ -1896,6 +1923,7 @@ pub fn movfuscate_biir<P: Clone>(blocks: &BIrBlocks<P>) -> BIrBlocks<P> {
 ///
 /// `types` is used for type inference; an `IRType::Bit` entry is added if
 /// absent.  Single-block input is returned unchanged.
+<<<<<<< HEAD
 pub fn movfuscate_ir<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> IRBlocks<P> {
     movfuscate_ir_impl(blocks, types).0
 }
@@ -1925,7 +1953,14 @@ fn movfuscate_ir_impl<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> (I
         return (blocks.clone(), Vec::new(), MovfuscAccumInfo { init: empty_init, steps: Vec::new() });
     }
 
+=======
+pub fn movfuscate_ir<P: Clone + Default>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> IRBlocks<P> {
+    // Ensure IRType::Bit is present in the types table.
+    let bit_type_id = types.intern(IRType::Primitive(Type::Bit));
+
+>>>>>>> origin/main
     // Intern Vec(pc_width, Bit) for block-reference storage.
+    let n = blocks.blocks.len();
     let pc_width = pc_bits_needed(n);
     let vec_pc_type_id = if pc_width > 0 {
         types.intern(IRType::Vec(pc_width, bit_type_id))
@@ -1948,9 +1983,12 @@ fn movfuscate_ir_impl<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> (I
         .collect();
 
     let combined_params = pc_width + state_slot_types.len();
+<<<<<<< HEAD
     let ctrl_prov = blocks.blocks.iter().flat_map(|b| b.stmts.iter()).map(|n| &n.prov).next()
         .cloned()
         .expect("movfuscate_ir: circuit has no statements; cannot derive provenance for infrastructure gates");
+=======
+>>>>>>> origin/main
     let ctx = IrCtx::<P>::new(
         combined_params as u32,
         bit_type_id,
@@ -1958,7 +1996,6 @@ fn movfuscate_ir_impl<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> (I
         combined_param_types,
         ir_types,
         pc_width,
-        ctrl_prov,
     );
     let (mut result, block_ranges, accum_info) = movfuscate(ctx, blocks, state_slot_types, return_slot_types);
     result.pre_init = blocks.pre_init.clone();
@@ -2134,7 +2171,12 @@ mod tests {
     fn test_biir_four_block_pc_width() {
         let make_pass = |dst: u32| BIrBlock::<()> {
             params: 1,
+<<<<<<< HEAD
             stmts: std::vec![BIrStmt::Zero].into_iter().map(|s| Node::new(s, (), None)).collect(),
+=======
+            stmts: std::vec![],
+            stmt_provs: std::vec![],
+>>>>>>> origin/main
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Block(IRBlockId(dst)),
                 args: std::vec![IRVarId(0)],
@@ -2171,8 +2213,17 @@ mod tests {
         let blocks = IRBlocks::new(std::vec![
             IRBlock {
                 params: std::vec![IRTypeId(0)],
+<<<<<<< HEAD
                 stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 0 }, IRTypeId(0))].into_iter().map(|s| Node::new(s, (), None)).collect(),
                 terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), std::vec![IRVarId(0)],) },
+=======
+                stmts: std::vec![],
+                stmt_provs: std::vec![],
+                terminator: IRTerminator::Jmp {
+                    func: IRBlockTargetId::Block(IRBlockId(1)),
+                    args: std::vec![IRVarId(0)],
+                },
+>>>>>>> origin/main
             },
             IRBlock {
                 params: std::vec![IRTypeId(0)],
@@ -2287,12 +2338,20 @@ mod tests {
         // types[0] = Bit, types[1] = Galois8AES
         let types = IRTypes(std::vec![IRType::Primitive(Type::Bit), IRType::Primitive(Type::AES8)]);
         let g8 = IRTypeId(1);
-        let bit = IRTypeId(0);
         let blocks = IRBlocks::new(std::vec![
             IRBlock {
                 params: std::vec![g8.clone()],
+<<<<<<< HEAD
                 stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 0 }, bit)].into_iter().map(|s| Node::new(s, (), None)).collect(),
                 terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), std::vec![IRVarId(0)],) },
+=======
+                stmts: std::vec![],
+                stmt_provs: std::vec![],
+                terminator: IRTerminator::Jmp {
+                    func: IRBlockTargetId::Block(IRBlockId(1)),
+                    args: std::vec![IRVarId(0)],
+                },
+>>>>>>> origin/main
             },
             IRBlock {
                 params: std::vec![g8.clone()],
@@ -2386,7 +2445,12 @@ mod tests {
         let blocks: IRBlocks<()> = IRBlocks::new(std::vec![
             IRBlock {
                 params: std::vec![g8.clone(), bit.clone()],
+<<<<<<< HEAD
                 stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 0 }, bit.clone())].into_iter().map(|s| Node::new(s, (), None)).collect(),
+=======
+                stmts: std::vec![],
+                stmt_provs: std::vec![],
+>>>>>>> origin/main
                 terminator: IRTerminator::JumpCond {
                     condition: IRVarId(1), // b
                     then_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), std::vec![IRVarId(0)]), // a
@@ -2482,7 +2546,12 @@ mod tests {
             // Block 0: Dyn(cont, [])
             IRBlock {
                 params: std::vec![block_ty_id.clone()],
+<<<<<<< HEAD
                 stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 0 }, bit.clone())].into_iter().map(|s| Node::new(s, (), None)).collect(),
+=======
+                stmts: std::vec![],
+                stmt_provs: std::vec![],
+>>>>>>> origin/main
                 terminator: IRTerminator::Jmp {
                     target: IRBranchTarget::new(IRBlockTargetId::Dyn(IRVarId(0)), std::vec![]), // cont
                 },

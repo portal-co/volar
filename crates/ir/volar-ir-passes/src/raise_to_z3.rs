@@ -53,7 +53,7 @@ use volar_ir_common::{Constant, IrType, Stmt, Type as PrimType};
 /// # Panics
 /// Panics if any Bit-typed polynomial has more than 20 distinct variables
 /// (unreachable in practice — see module documentation).
-pub fn raise_bits_to_z3<P: Clone>(
+pub fn raise_bits_to_z3<P: Clone + Default>(
     blocks: &IRBlocks<P>,
     types: &mut IRTypes,
 ) -> IRBlocks<P> {
@@ -77,7 +77,7 @@ pub fn raise_bits_to_z3<P: Clone>(
 // Block lifting
 // ============================================================================
 
-fn lift_block<P: Clone>(
+fn lift_block<P: Clone + Default>(
     block: &IRBlock<P>,
     bit_ty: IRTypeId,
     z3_ty: IRTypeId,

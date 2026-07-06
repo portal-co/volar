@@ -47,7 +47,7 @@ pub struct IRBlockId(pub u32);
 /// Use `P = ()` (the default) when provenance is not needed.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct IRBlocks<P: Clone = ()> {
+pub struct IRBlocks<P: Clone + Default = ()> {
     /// Oracles declared for this circuit (resolved by the execution environment).
     pub oracles: Vec<OracleDecl>,
     /// Actions declared for this circuit (resolved by the execution environment).
@@ -59,7 +59,7 @@ pub struct IRBlocks<P: Clone = ()> {
     /// Pre-initialised storage segments propagated from WASM data sections.
     pub pre_init: alloc::vec::Vec<PreInitSegment>,
 }
-impl<P: Clone> IRBlocks<P> {
+impl<P: Clone + Default> IRBlocks<P> {
     /// Construct an `IRBlocks` with no oracle, action, or RNG declarations.
     pub fn new(blocks: Vec<IRBlock<P>>) -> Self {
         IRBlocks {
@@ -98,14 +98,19 @@ impl<P: Clone> IRBlocks<P> {
 /// never drift out of sync with `stmts` the way two parallel `Vec`s could.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct IRBlock<P: Clone = ()> {
+pub struct IRBlock<P: Clone + Default = ()> {
     pub params: Vec<IRTypeId>,
     pub stmts: Vec<volar_ir_common::Node<IRStmt, P>>,
     pub terminator: IRTerminator,
 }
 
+<<<<<<< HEAD
 impl<P: Clone> IRBlock<P> {
     /// Append a statement with an explicit provenance annotation and no side.
+=======
+impl<P: Clone + Default> IRBlock<P> {
+    /// Append a statement with an explicit provenance annotation.
+>>>>>>> origin/main
     /// Returns the [`IRVarId`] for this statement (= index in the block's var space).
     pub fn push_stmt(&mut self, stmt: IRStmt, prov: P) -> IRVarId {
         self.push_stmt_with_side(stmt, prov, None)
@@ -121,8 +126,17 @@ impl<P: Clone> IRBlock<P> {
         id
     }
 
+<<<<<<< HEAD
     /// Map provenance annotations using a [`ProvenanceHandler`]. `side` is
     /// untouched — provenance and side are independent axes.
+=======
+    /// Append a statement using `P::default()` as the provenance.
+    pub fn push_stmt_default(&mut self, stmt: IRStmt) -> IRVarId {
+        self.push_stmt(stmt, P::default())
+    }
+
+    /// Map provenance annotations using a [`ProvenanceHandler`].
+>>>>>>> origin/main
     pub fn map_prov_with_handler<H: volar_provenance::ProvenanceHandler<P>>(self, handler: &H) -> IRBlock<H::Output> {
         IRBlock {
             params: self.params,
@@ -132,7 +146,7 @@ impl<P: Clone> IRBlock<P> {
     }
 }
 
-impl<P: Clone> IRBlocks<P> {
+impl<P: Clone + Default> IRBlocks<P> {
     /// Map provenance annotations using a [`ProvenanceHandler`].
     pub fn map_prov_with_handler<H: volar_provenance::ProvenanceHandler<P>>(self, handler: &H) -> IRBlocks<H::Output> {
         IRBlocks {
@@ -165,8 +179,7 @@ pub struct IRVarId(pub u32);
 /// `volar-ir-common` so that VAFFLE and Volar IR cannot drift apart when new
 /// operations are added.  Type annotations use the shared [`IRTypeId`]
 /// ([`volar_ir_common::TypeId`]) referencing the module's [`IRTypes`].
-pub type IRStmt<Var = IRVarId, Addr = Var, Ty = IRTypeId, Stor = volar_ir_common::StorageId> =
-    volar_ir_common::Stmt<Var, Addr, Ty, Stor>;
+pub type IRStmt<Var = IRVarId, Addr = Var> = volar_ir_common::Stmt<Var, Addr>;
 
 // ============================================================================
 // Branch targets
@@ -234,9 +247,9 @@ impl<Var> IRBranchTarget<Var> {
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-#[non_exhaustive]
-pub enum IRTerminator<Var = IRVarId> {
+pub enum IRTerminator {
     Jmp {
+<<<<<<< HEAD
         target: IRBranchTarget<Var>,
     },
     JumpCond {
@@ -346,41 +359,28 @@ impl<Var> IRTerminator<Var> {
     }
 }
 
+=======
+        func: IRBlockTargetId,
+        args: Vec<IRVarId>,
+    },
+    JumpCond {
+        condition: IRVarId,
+        true_block: IRBlockTargetId,
+        true_args: Vec<IRVarId>,
+        false_block: IRBlockTargetId,
+        false_args: Vec<IRVarId>,
+    },
+    JumpTable {
+        index: IRVarId,
+        cases: BTreeMap<Constant, (IRBlockTargetId, Vec<IRVarId>)>,
+        // no default; must be exhaustive
+    },
+}
+>>>>>>> origin/main
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-#[non_exhaustive]
-pub enum IRBlockTargetId<Var = IRVarId> {
+pub enum IRBlockTargetId {
     Block(IRBlockId),
     Return,
-    Dyn(Var),
-}
-
-impl<Var> IRBlockTargetId<Var> {
-    pub fn map<Ctx, NV, E>(
-        self,
-        ctx: &mut Ctx,
-        go: &mut impl FnMut(&mut Ctx, Var) -> Result<NV, E>,
-    ) -> Result<IRBlockTargetId<NV>, E> {
-        Ok(match self {
-            IRBlockTargetId::Block(b) => IRBlockTargetId::Block(b),
-            IRBlockTargetId::Return => IRBlockTargetId::Return,
-            IRBlockTargetId::Dyn(v) => IRBlockTargetId::Dyn(go(ctx, v)?),
-        })
-    }
-
-    pub fn as_ref(&self) -> IRBlockTargetId<&Var> {
-        match self {
-            IRBlockTargetId::Block(b) => IRBlockTargetId::Block(*b),
-            IRBlockTargetId::Return => IRBlockTargetId::Return,
-            IRBlockTargetId::Dyn(v) => IRBlockTargetId::Dyn(v),
-        }
-    }
-
-    pub fn as_mut(&mut self) -> IRBlockTargetId<&mut Var> {
-        match self {
-            IRBlockTargetId::Block(b) => IRBlockTargetId::Block(*b),
-            IRBlockTargetId::Return => IRBlockTargetId::Return,
-            IRBlockTargetId::Dyn(v) => IRBlockTargetId::Dyn(v),
-        }
-    }
+    Dyn(IRVarId),
 }

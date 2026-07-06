@@ -227,11 +227,19 @@ everything Tier 1 may do.
 This mapping is the project's current calibration; revisit it whenever model
 capabilities or evaluation results change materially.
 
+<<<<<<< HEAD
 | Tier | Claude models permitted at this tier | GPT models permitted at this tier | Other models permitted at this tier |
 |---|---|---|---|
 | **Tier 1 — Glue** | Any current Claude model (Haiku 4.x, Sonnet ≤ 4.5, Opus ≤ 4.4). | Any current GPT model not listed for Tier 2 or Tier 3, including GPT-5.4-Mini and earlier small/fast variants. | Any other model |
 | **Tier 2 — Compiler** | Sonnet 4.6 or later; Opus 4.5 or later; Fable 5 or later. | Full GPT-5.2, GPT-5.3-Codex, full GPT-5.4, GPT-5.5, and later non-mini successors in those families. | Cursor Composer 2.5 or later or Kimi K2.7 Code or later, when involved with (creating or executing) a plan |
 | **Tier 3 — Cryptography** | Sonnet 5 or later; Opus 4.6 or later; Fable 5 or later. | GPT-5.5 or later. | N/A |
+=======
+| Tier | Claude models permitted at this tier | GPT models permitted at this tier |
+|---|---|---|
+| **Tier 1 — Glue** | Any current Claude model (Haiku 4.x, Sonnet ≤ 4.5, Opus ≤ 4.4). | Any current GPT model not listed for Tier 2 or Tier 3, including GPT-5.4-Mini and earlier small/fast variants. |
+| **Tier 2 — Compiler** | Sonnet 4.6 or later; Opus 4.5 or later. | Full GPT-5.2, GPT-5.3-Codex, full GPT-5.4, GPT-5.5, and later non-mini successors in those families. |
+| **Tier 3 — Cryptography** | Opus 4.6 or later. | GPT-5.5 or later. |
+>>>>>>> origin/main
 
 Sonnet ≤ 4.5, GPT-5.4-Mini, GPT-5.3-Codex, GPT-5.4, and GPT-5.2 are
 **not permitted to self-review Tier 3 cryptographic work** — but **Sonnet 5

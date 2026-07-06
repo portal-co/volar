@@ -350,7 +350,6 @@ fn mono_cfg_terminator(term: &IrCfgTerminator, env: &MonoEnv) -> IrCfgTerminator
             then_: mono_cfg_jump(then_, env),
             else_: mono_cfg_jump(else_, env),
         },
-        _ => panic!("mono_cfg_terminator: unhandled IrCfgTerminator variant — add monomorphization for this variant"),
     }
 }
 
@@ -466,11 +465,17 @@ fn mono_stmt(stmt: &IrStmt, env: &MonoEnv) -> IrStmt {
             ty: ty.as_ref().map(|t| mono_type(t, env)),
             init: init.as_ref().map(|e| mono_expr(e, env)),
         },
+<<<<<<< HEAD
         IrStmtKind::Semi(e) => IrStmtKind::Semi(mono_expr(e, env)),
         IrStmtKind::Expr(e) => IrStmtKind::Expr(mono_expr(e, env)),
         _ => panic!("mono_stmt: unhandled IrStmt variant — add monomorphization for this variant"),
     };
     IrStmt::new(kind, stmt.prov.clone(), stmt.side)
+=======
+        IrStmt::Semi(e) => IrStmt::Semi(mono_expr(e, env)),
+        IrStmt::Expr(e) => IrStmt::Expr(mono_expr(e, env)),
+    }
+>>>>>>> origin/main
 }
 
 fn mono_expr(expr: &IrExpr, env: &MonoEnv) -> IrExpr {

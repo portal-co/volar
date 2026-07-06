@@ -130,7 +130,12 @@ fn three_block_passthrough() -> (IRBlocks, IRTypes) {
     let blocks = IRBlocks::new(vec![
         IRBlock {
             params: vec![u32_ty],
+<<<<<<< HEAD
             stmts: vec![Stmt::Const(Constant { hi: 0, lo: 0 }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
+=======
+            stmts: vec![],
+            stmt_provs: vec![],
+>>>>>>> origin/main
             terminator: IRTerminator::Jmp {
     target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(0)],)
 },

@@ -107,7 +107,6 @@ fn write_bir_stmt(result: IRVarId, stmt: &BIrStmt, w: &mut dyn fmt::Write) -> fm
             write!(w, " bit_width={} addr=", bit_width)?;
             write_var_list(addr, w)?;
         }
-        _ => { w.write_str("<unknown-stmt>")?; }
     }
     w.write_char('\n')
 }
@@ -136,7 +135,6 @@ fn write_bir_terminator(term: &BIrTerminator, w: &mut dyn fmt::Write) -> fmt::Re
             w.write_str(" else_args=")?;
             write_var_list(&else_target.args, w)?;
         }
-        _ => { w.write_str("<unknown-term>")?; }
     }
     w.write_char('\n')
 }

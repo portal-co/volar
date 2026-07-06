@@ -30,6 +30,7 @@ use volar_ir::ir::{
     IRTypes as CirTypes, IRVarId as CirVar,
     Stmt, IRBranchTarget};
 
+<<<<<<< HEAD
 use crate::{build_return, expand_ors, ir_expr, var, ProvenanceHandler};
 
 /// Construct a fresh `IrStmt` with default provenance and no side.
@@ -41,6 +42,9 @@ fn ir_stmt<Q: Clone + Default>(kind: IrStmtKind<Q>) -> IrStmt<Q> {
 fn ir_stmt_p<Q: Clone>(kind: IrStmtKind<Q>, prov: Q) -> IrStmt<Q> {
     IrStmt::new(kind, prov, None)
 }
+=======
+use crate::{build_return, expand_ors, var};
+>>>>>>> origin/main
 
 // ============================================================================
 // Boolar (BIrBlocks) → cleartext bool evaluator
@@ -144,7 +148,6 @@ pub fn weave_noop(
                     core::mem::discriminant(stmt)
                 )
             }
-            _ => panic!("noop weaver: unhandled BIrStmt variant — add support for this variant"),
         };
 
         stmts.push(ir_stmt(IrStmtKind::Let {
@@ -299,6 +302,7 @@ pub fn weave_noop_ir(
     Tagged::seal(module)
 }
 
+<<<<<<< HEAD
 /// Generic counterpart to [`weave_noop_ir`] that threads provenance through
 /// `handler` instead of erasing it to `()`.
 ///
@@ -427,10 +431,17 @@ where
 /// nested blocks, so this is generic over the output provenance `Q` with no
 /// provenance value ever materialized here.
 fn lower_ir_stmt<Q: Clone + Default>(
+=======
+/// Lower a single `IRStmt` (Volar field-level) to a cleartext `IrExpr<()>`.
+///
+/// Only pure boolean/arithmetic statements are handled; unsupported variants
+/// cause a weave-time panic.
+fn lower_ir_stmt(
+>>>>>>> origin/main
     stmt: &Stmt<CirVar>,
     var_names: &BTreeMap<u32, String>,
     types: &CirTypes,
-) -> IrExpr<Q> {
+) -> IrExpr {
     match stmt {
         // ---- Constant -------------------------------------------------------
         Stmt::Const(c, ty) => {
@@ -451,7 +462,7 @@ fn lower_ir_stmt<Q: Clone + Default>(
             let const_val: u8 = constant.lo as u8 & 1;
             // Accumulate each monomial into an expression.
             // Start with the constant term.
-            let mut acc: Option<IrExpr<Q>> =
+            let mut acc: Option<IrExpr> =
                 if const_val != 0 || coeffs.is_empty() {
                     Some(if is_bit {
                         ir_expr(IrExprKind::Lit(IrLit::Bool(const_val != 0)))
@@ -467,10 +478,10 @@ fn lower_ir_stmt<Q: Clone + Default>(
                     continue;
                 }
                 // Build the product of vars in the monomial (AND in GF(2)).
-                let mut product: Option<IrExpr<Q>> = None;
+                let mut product: Option<IrExpr> = None;
                 for v in monomial {
                     let vname = var_names[&v.0].clone();
-                    let term = var::<Q>(&vname);
+                    let term = var::<()>(&vname);
                     product = Some(match product {
                         None => term,
                         Some(p) => ir_expr(IrExprKind::Binary {
@@ -509,7 +520,7 @@ fn lower_ir_stmt<Q: Clone + Default>(
         // ---- Transmute (reinterpret bits) -----------------------------------
         Stmt::Transmute { src, .. } => {
             // Cleartext: transmute is identity — just copy the value.
-            var::<Q>(&var_names[&src.0])
+            var::<()>(&var_names[&src.0])
         }
 
         // ---- Storage --------------------------------------------------------
@@ -650,6 +661,7 @@ mod tests {
         let code = print_noop_module(&module);
         run_compile_check(&code, "noop_ir_and");
     }
+<<<<<<< HEAD
 
     #[test]
     fn test_weave_noop_ir_with_handler_threads_provenance() {
@@ -690,4 +702,6 @@ mod tests {
         let provs: Vec<u32> = module.functions[0].body.stmts.iter().map(|s| s.prov).collect();
         assert_eq!(provs, alloc::vec![9u32]);
     }
+=======
+>>>>>>> origin/main
 }
