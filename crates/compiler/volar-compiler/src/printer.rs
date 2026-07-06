@@ -672,6 +672,9 @@ impl<'a> RustBackend for FunctionWriter<'a> {
         if self.f.external_kind == ExternalKind::Action {
             writeln!(f, "{}#[volar_action]", indent)?;
         }
+        if self.f.no_inline {
+            writeln!(f, "{}#[inline(never)]", indent)?;
+        }
         // Decide whether to emit `async fn`.  Trait-impl methods are always
         // excluded (ctx is already None for those; guard is defensive).
         let is_async = !self.is_trait_item

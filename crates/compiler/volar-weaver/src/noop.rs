@@ -158,7 +158,7 @@ pub fn weave_noop(
     let (ret_expr, ret_type) =
         build_return(block, &var_names, IrType::Primitive(PrimitiveType::Bool));
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: format!("noop_{}", name),
         module_path: vec![],
         generics: vec![],
@@ -268,7 +268,7 @@ pub fn weave_noop_ir(
         (ir_expr(IrExprKind::Tuple(exprs)), IrType::Tuple(tys))
     };
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: format!("noop_ir_{}", name),
         module_path: vec![],
         generics: vec![],
@@ -384,7 +384,7 @@ where
         (ir_expr(IrExprKind::Tuple(exprs)), IrType::Tuple(tys))
     };
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: format!("noop_ir_{}", name),
         module_path: vec![],
         generics: vec![],

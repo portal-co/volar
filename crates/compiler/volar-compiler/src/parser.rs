@@ -433,7 +433,7 @@ fn convert_impl(i: &syn::ItemImpl) -> Result<IrImpl> {
 
 fn convert_impl_item(item: &syn::ImplItem) -> Result<Option<IrImplItem>> {
     match item {
-        syn::ImplItem::Fn(m) => Ok(Some(IrImplItem::Method(IrFunction {
+        syn::ImplItem::Fn(m) => Ok(Some(IrImplItem::Method(IrFunction { no_inline: false,
             name: m.sig.ident.to_string(),
             module_path: vec![],
             generics: m
@@ -492,7 +492,7 @@ fn convert_impl_item(item: &syn::ImplItem) -> Result<Option<IrImplItem>> {
 
 fn convert_function(f: &syn::ItemFn) -> Result<IrFunction> {
     let external_kind = parse_external_kind(&f.attrs);
-    Ok(IrFunction {
+    Ok(IrFunction { no_inline: false,
         name: f.sig.ident.to_string(),
         module_path: vec![],
         generics: f

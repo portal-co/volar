@@ -78,7 +78,7 @@ mod tests {
     /// lower without spec linkage.  Exercises [`emit_verifier_c`] end-to-end
     /// (the real verifier→C path is covered by `volar-c-backend`'s vole tests).
     fn minimal_module() -> Tagged<Transparent, IrModule<IrFunction>> {
-        let func = IrFunction {
+        let func = IrFunction { no_inline: false,
             name: "verifier_ok".into(),
             module_path: vec![],
             generics: vec![],

@@ -106,7 +106,7 @@ fn test_if_max_via_codegen() {
     };
     use volar_lir_codegen::lower_function;
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: "ir_max".to_owned(),
         module_path: vec![],
         generics: vec![],
@@ -194,7 +194,7 @@ fn test_array_splat() {
         right: Box::new(cast_index(3)),
     });
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: "arr_sum".to_owned(),
         module_path: vec![],
         generics: vec![],
@@ -270,7 +270,7 @@ fn test_struct_splat() {
     };
 
     // fn manhattan(p: Point) -> u32 { p.x + p.y }
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: "manhattan".to_owned(),
         module_path: vec![],
         generics: vec![],
@@ -334,7 +334,7 @@ fn test_phase2_codegen_struct_array() {
     use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
 
     // fn xor_bytes(x: u8, y: u8) -> u8 { x ^ y }
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: "xor_bytes".to_owned(),
         module_path: vec![],
         generics: vec![],
@@ -416,7 +416,7 @@ fn test_tuple_pattern_destructuring() {
     use volar_lir_codegen::{lower_module_with_opts, mono::MonoEnv};
 
     // fn make_pair() -> (u32, u32) { (3, 7) }
-    let make_pair = IrFunction {
+    let make_pair = IrFunction { no_inline: false,
         name: "make_pair".into(),
         module_path: vec![],
         generics: vec![],
@@ -441,7 +441,7 @@ fn test_tuple_pattern_destructuring() {
     //     let (a, b) = make_pair();
     //     a + b
     // }
-    let sum_pair = IrFunction {
+    let sum_pair = IrFunction { no_inline: false,
         name: "sum_pair".into(),
         module_path: vec![],
         generics: vec![],

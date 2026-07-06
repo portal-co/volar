@@ -88,7 +88,7 @@ fn strip_bodies(module: &IrModule<IrFunction>) -> IrModule<IrFunction> {
     };
 
     let strip_function = |f: &IrFunction| -> IrFunction {
-        IrFunction {
+        IrFunction { no_inline: false,
             name: f.name.clone(),
             module_path: f.module_path.clone(),
             generics: f.generics.clone(),

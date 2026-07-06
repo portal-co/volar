@@ -243,7 +243,7 @@ fn chunk_one_function(func: &IrFunction, threshold: usize) -> (IrFunction, Vec<I
             }))
         };
 
-        helpers.push(IrFunction {
+        helpers.push(IrFunction { no_inline: false,
             name: helper_name,
             module_path: func.module_path.clone(),
             generics: func.generics.clone(),
@@ -304,7 +304,7 @@ fn build_dispatcher(
                 stmts: body_stmts,
                 expr: Some(Box::new(call_expr)),
             };
-            return IrFunction {
+            return IrFunction { no_inline: false,
                 name: func.name.clone(),
                 module_path: func.module_path.clone(),
                 generics: func.generics.clone(),

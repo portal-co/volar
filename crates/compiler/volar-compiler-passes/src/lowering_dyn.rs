@@ -851,7 +851,7 @@ fn lower_function_dyn(
         }
     }
 
-    IrFunction {
+    IrFunction { no_inline: false,
         name: f.name.clone(),
         module_path: f.module_path.clone(),
         generics: lower_generics_dyn(&f.generics, impl_gen, ctx),

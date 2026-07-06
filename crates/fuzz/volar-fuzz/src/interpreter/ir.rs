@@ -76,6 +76,32 @@ pub fn eval_ir(
     }
 }
 
+/// Evaluate a single, already-unrolled circuit block (i.e. one satisfying
+/// `IRBlocks::is_circuit()` -- a single block ending in `Jmp(Return)`) with
+/// an externally-supplied, persistent [`StorageMap`], so callers can thread
+/// real committed-memory contents across multiple such calls (e.g. one call
+/// per outer proving step) -- unlike [`eval_ir`], which always starts from
+/// an empty storage map and cannot carry state between calls.
+///
+/// Panics if the block's terminator does not resolve to a `Jmp(Return)`
+/// (i.e. `block` does not actually satisfy `is_circuit()`) or if evaluation
+/// otherwise fails.
+pub fn eval_ir_circuit_step(
+    block: &volar_ir::ir::IRBlock<()>,
+    types: &IRTypes,
+    oracles: &[OracleDecl],
+    inputs: &[IrValue],
+    storage: &mut StorageMap,
+) -> Vec<IrValue> {
+    match eval_ir_block(block, types, oracles, inputs, storage) {
+        Some(IrBlockResult::Return(vals)) => vals,
+        Some(IrBlockResult::Jump { .. }) => {
+            panic!("eval_ir_circuit_step: block did not end in Jmp(Return) -- not a circuit?")
+        }
+        None => panic!("eval_ir_circuit_step: evaluation failed"),
+    }
+}
+
 // ============================================================================
 // Pre-init
 // ============================================================================
@@ -245,18 +271,18 @@ fn eval_ir_stmt(
             let dst_w = bit_width(*dst_ty, types);
             transmute_bits(&src_val, dst_w)
         }
-        Stmt::Poly { coeffs, constant, .. } => {
-            // Determine the output width from the first monomial's first var,
-            // or from a constant-only poly (width = 1 bit as default).
-            let width = if let Some((key, _)) = coeffs.iter().next() {
-                if let Some(first_var) = key.first() {
-                    get_ir(vars, first_var).len()
-                } else {
-                    1
-                }
-            } else {
-                1
-            };
+        Stmt::Poly { ty, coeffs, constant } => {
+            // Width comes from the statement's own declared type (matching
+            // every other variant here, and matching the weaver's
+            // `cir_type_width(ty)`) -- NOT inferred by peeking at an
+            // operand's already-evaluated width. A monomial can legitimately
+            // mix a scalar `Bit` selector with a wide operand in the same
+            // term (e.g. movfuscation's `is_active · val` gate formula), so
+            // "first monomial's first var" is not a reliable width source:
+            // if that var happens to be the scalar selector, this silently
+            // produced a width-1 result even when `ty` (and every real
+            // consumer of this statement, e.g. the weaver) says otherwise.
+            let width = bit_width(*ty, types);
             eval_poly(coeffs, constant, width, vars)
         }
         Stmt::Rol { src, ty, n } => {
@@ -471,9 +497,18 @@ pub fn eval_poly(
             if coeff & 1 == 0 {
                 continue;
             }
-            // AND of bit k of every variable in the monomial.
+            // AND of bit k of every variable in the monomial. A scalar
+            // (width-1) operand broadcasts its single bit to every lane
+            // (e.g. movfuscation's `is_active · val` selector, where
+            // `is_active` is always `Bit` regardless of `val`'s width) --
+            // matches the weaver's own `operand_lane` broadcast semantics
+            // exactly (`vole.rs`'s doc: "a scalar operand is reused
+            // verbatim at every lane"). Previously this read `.get(k)`
+            // unconditionally, silently treating a scalar operand as `0`
+            // at every lane past its own single bit.
             let product = monomial.iter().all(|var| {
-                get_ir(vars, var).get(k).copied().unwrap_or(false)
+                let v = get_ir(vars, var);
+                if v.len() == 1 { v[0] } else { v.get(k).copied().unwrap_or(false) }
             });
             acc ^= product;
         }

@@ -29,5 +29,6 @@ volar-verifier-fold = { path = "../../fold/volar-verifier-fold" }
 volar-verifier-iop-runtime = { path = "../../iop/volar-verifier-iop-runtime" }
 volar-iop = { path = "../../iop/volar-iop" }
 volar-compiler = { path = "../../compiler/volar-compiler" }
+volar-fuzz = { path = "../../fuzz/volar-fuzz" }
 wat = "1.212.0"
 wasmtime = "46.0.1"

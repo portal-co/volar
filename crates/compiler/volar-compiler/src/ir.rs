@@ -1173,6 +1173,14 @@ pub struct IrFunction<P: Clone = ()> {
     /// What kind of external primitive this function represents.
     /// Default: `ExternalKind::Normal`.
     pub external_kind: ExternalKind,
+    /// Emit `#[inline(never)]` on this function. Set `true` for large,
+    /// independently-compiled "backend component" functions (e.g. the VOLE
+    /// weaver's woven prover/verifier/`QSim` functions) so rustc treats
+    /// each as its own codegen unit rather than a candidate for inlining
+    /// into its (typically tiny) call site — inlining a many-thousand-
+    /// statement generated function is expensive to no benefit here, since
+    /// these functions are called at most a handful of times.
+    pub no_inline: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -2496,7 +2504,7 @@ impl<P: Clone, Q: Clone> MapProv<P, Q> for IrBlock<P> {
 impl<P: Clone, Q: Clone> MapProv<P, Q> for IrFunction<P> {
     type Output = IrFunction<Q>;
     fn map_prov(self, f: &impl Fn(P) -> Q) -> IrFunction<Q> {
-        IrFunction {
+        IrFunction { no_inline: false,
             name: self.name,
             module_path: self.module_path,
             generics: self.generics,

@@ -477,7 +477,7 @@ pub fn weave_net_vole_prover(
     let (output_expr, _) = crate::build_return(block, &var_names, vope_type());
     let ret_expr = ok_expr(output_expr);
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: format!("vole_prove_net_{}", name),
         module_path: vec![],
         generics,
@@ -748,7 +748,7 @@ pub fn weave_net_vole_verifier(
 
     let ret_expr = ok_expr(var("all_ok"));
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: format!("vole_verify_net_{}", name),
         module_path: vec![],
         generics,

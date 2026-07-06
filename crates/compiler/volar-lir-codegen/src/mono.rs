@@ -185,7 +185,7 @@ fn monomorphize_struct(s: &IrStruct, env: &MonoEnv) -> IrStruct {
 // ============================================================================
 
 pub fn monomorphize_function(func: &IrFunction, env: &MonoEnv) -> IrFunction {
-    IrFunction {
+    IrFunction { no_inline: false,
         name: func.name.clone(),
         module_path: func.module_path.clone(),
         generics: func

@@ -242,7 +242,7 @@ fn compiler_oracle_dispatch() {
         consts: vec![],
         type_aliases: vec![],
         functions: vec![
-            IrFunction {
+            IrFunction { no_inline: false,
                 name: "double".to_owned(),
                 module_path: vec![],
                 generics: vec![],
@@ -256,7 +256,7 @@ fn compiler_oracle_dispatch() {
                 body: IrBlock { stmts: vec![], expr: None },
                 external_kind: ExternalKind::Oracle,
             },
-            IrFunction {
+            IrFunction { no_inline: false,
                 name: "call_it".to_owned(),
                 module_path: vec![],
                 generics: vec![],
@@ -310,7 +310,7 @@ fn compiler_rng_dispatch() {
         consts: vec![],
         type_aliases: vec![],
         functions: vec![
-            IrFunction {
+            IrFunction { no_inline: false,
                 name: "get_rand".to_owned(),
                 module_path: vec![],
                 generics: vec![],
@@ -321,7 +321,7 @@ fn compiler_rng_dispatch() {
                 body: IrBlock { stmts: vec![], expr: None },
                 external_kind: ExternalKind::Rng,
             },
-            IrFunction {
+            IrFunction { no_inline: false,
                 name: "use_rng".to_owned(),
                 module_path: vec![],
                 generics: vec![],
@@ -398,7 +398,7 @@ fn enum_option_roundtrip() {
     };
 
     // fn make_some(x: u32) -> OptionU32 { Some(x) }
-    let make_some = IrFunction {
+    let make_some = IrFunction { no_inline: false,
         name: "make_some".into(),
         module_path: vec![],
         generics: vec![],
@@ -420,7 +420,7 @@ fn enum_option_roundtrip() {
     };
 
     // fn make_none() -> OptionU32 { None }
-    let make_none = IrFunction {
+    let make_none = IrFunction { no_inline: false,
         name: "make_none".into(),
         module_path: vec![],
         generics: vec![],
@@ -441,7 +441,7 @@ fn enum_option_roundtrip() {
     // fn unwrap_or(opt: OptionU32, default: u32) -> u32 {
     //     match opt { Some(v) => v, None => default, _ => default }
     // }
-    let unwrap_or = IrFunction {
+    let unwrap_or = IrFunction { no_inline: false,
         name: "unwrap_or".into(),
         module_path: vec![],
         generics: vec![],

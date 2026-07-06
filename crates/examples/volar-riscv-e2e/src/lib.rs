@@ -20,6 +20,8 @@ pub mod commit_mem_e2e;
 pub mod interp;
 pub mod mem_probe;
 pub mod signature;
+#[cfg(test)]
+pub(crate) mod split_driver;
 pub mod wat_gen;
 
 /// Parse a WASM binary into a fully-expanded WAFFLE `Module`, ready for

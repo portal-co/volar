@@ -303,7 +303,7 @@ where
 
     let (ret_expr, ret_type) = build_return(block, &var_names, eval_type());
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: name.into(),
         module_path: vec![],
         generics: generic_params(),
@@ -503,7 +503,7 @@ where
     let tables_expr = ir_expr(IrExprKind::FixedArray(table_names.iter().map(|t| var(t)).collect()));
     let ret_expr = ir_expr(IrExprKind::Tuple(vec![tables_expr, output_garble_expr]));
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: format!("{}_garble", name),
         module_path: vec![],
         generics: generic_params(),
@@ -699,7 +699,7 @@ where
         rest: None,
     });
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: format!("{}_into_gc", name),
         module_path: vec![],
         generics: generic_params(),
@@ -879,7 +879,7 @@ where
 
     let (ret_expr, ret_type) = build_return(block, &var_names, eval_type());
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: format!("{}_eval_from_setup", name),
         module_path: vec![],
         generics: generic_params(),

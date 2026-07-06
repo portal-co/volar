@@ -126,6 +126,17 @@ fn hat_array_type(and_count: usize) -> IrType {
     }
 }
 
+/// `[Q<N, T>; AND_COUNT]` — fixed-size array of derived `q_and` values
+/// returned by a `QSim` function (Milestone 1.6) — the `Q`-typed
+/// counterpart of [`hat_array_type`].
+fn q_and_array_type(and_count: usize) -> IrType {
+    IrType::Array {
+        kind: volar_compiler::ir::ArrayKind::FixedArray,
+        elem: Box::new(q_type()),
+        len: volar_compiler::ir::ArrayLength::Const(and_count),
+    }
+}
+
 /// `&T` reference helper. See [`crate::vole_common::ref_to_vole`].
 fn ref_to_vole(ty: IrType) -> IrType {
     crate::vole_common::ref_to_vole(ty)
@@ -236,6 +247,30 @@ fn verifier_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredicate>)
     // Extend the T bound to also include PartialEq.
     if let Some(IrWherePredicate::TypeBound { bounds, .. }) = where_clause.last_mut() {
         bounds.push(partial_eq_t());
+    }
+    (generics, where_clause)
+}
+
+/// `T: Invert` bound (custom, not a `MathTrait` variant) -- required by
+/// `derive_and_q` (`volar_spec::vole::setup::derive_and_q`), which inverts
+/// `Δ`. Milestone 1.6's `QSim` role is the only weaver output that calls
+/// `derive_and_q`, hence the only one needing this bound.
+fn invert_t() -> IrTraitBound {
+    IrTraitBound {
+        trait_kind: TraitKind::Custom("Invert".into()),
+        type_args: vec![],
+        assoc_bindings: vec![],
+    }
+}
+
+/// Generic params and where clause for `QSim` (adds `T: Invert`, needed by
+/// `derive_and_q` -- see [`invert_t`]). Deliberately does *not* add
+/// `PartialEq` (unlike [`verifier_generics_and_where`]): `QSim` never
+/// calls `vole_and_verifier_check`.
+fn qsim_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredicate>) {
+    let (generics, mut where_clause) = prover_generics_and_where();
+    if let Some(IrWherePredicate::TypeBound { bounds, .. }) = where_clause.last_mut() {
+        bounds.push(invert_t());
     }
     (generics, where_clause)
 }
@@ -859,6 +894,51 @@ fn emit_verifier_and_gate<P: Clone + Default>(
     }, prov.clone())), prov));
 }
 
+/// Emit `let q_and_k = derive_and_q::<N, T>(delta, &wire_a, &wire_b, &hat_k);`
+/// followed by `let wire_k = q_and_k.clone();` — `QSim`'s AND-gate handling
+/// (Milestone 1.6): unlike [`emit_verifier_and_gate`], this *derives*
+/// `q_and` from an externally-supplied `hat_k` (same shape `Verifier`
+/// already takes) instead of taking `q_and_k` itself as an external
+/// parameter and checking it. No `ok`/`all_ok`/fold plumbing — `QSim`
+/// never folds, that's `Verifier`'s job once handed these derived values.
+fn emit_qsim_and_gate<P: Clone + Default>(
+    name_a: &str,
+    name_b: &str,
+    wire_name: &str,
+    q_and_name: &str,
+    hat_name: &str,
+    stmts: &mut Vec<IrStmt<P>>,
+    prov: P,
+) {
+    // let q_and_k = derive_and_q::<N, T>(delta, &wire_a, &wire_b, &hat_k);
+    stmts.push(ir_stmt_p(IrStmtKind::Let {
+        pattern: IrPattern::ident(q_and_name),
+        ty: None,
+        init: Some(ir_expr_p(IrExprKind::Call {
+            func: Box::new(ir_expr_p(IrExprKind::Path {
+                segments: vec!["derive_and_q".into()],
+                type_args: vec![
+                    IrType::TypeParam("N".into()),
+                    IrType::TypeParam("T".into()),
+                ],
+            }, prov.clone())),
+            args: vec![
+                var("delta"),
+                ref_expr(var(name_a)),
+                ref_expr(var(name_b)),
+                ref_expr(var(hat_name)),
+            ],
+        }, prov.clone())),
+    }, prov.clone()));
+
+    // let wire_k = q_and_k.clone();
+    stmts.push(ir_stmt_p(IrStmtKind::Let {
+        pattern: IrPattern::ident(wire_name),
+        ty: None,
+        init: Some(clone_expr(var(q_and_name))),
+    }, prov));
+}
+
 /// `[Vope<N, T, U2>; SBOX_COUNT]` — hat-free K=2 S-box product commitments.
 fn sbox_vope_array_type(sbox_count: usize) -> IrType {
     IrType::Array {
@@ -1346,7 +1426,7 @@ where
         ir_expr(IrExprKind::Tuple(vec![output_expr, hats_expr, sbox_expr]))
     };
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: true,
         name: format!("vole_prove_{}", name),
         module_path: vec![],
         generics,
@@ -1881,7 +1961,7 @@ where
     }
     let ret_expr = ir_expr(IrExprKind::Tuple(ret_tuple));
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: true,
         name: format!("vole_verify_{}", name),
         module_path: vec![],
         generics,
@@ -2418,6 +2498,33 @@ fn count_external_primitives_range(stmts: &[volar_ir_common::Node<IRStmt, ()>], 
     ExternalBitCounts { oracle_calls, action_calls, rng_widths }
 }
 
+/// Which role a [`VoleIrCtx`] is generating code for. `Prover` and
+/// `Verifier` are today's original two roles (byte-identical codegen to
+/// before this enum existed); `QSim` is a third, weaver-generated role
+/// (Milestone 1.6) that derives `q_and` values for chained AND gates via
+/// `derive_and_q` (taking `hat_k` as an input, same shape `Verifier`
+/// already does) instead of taking `q_and_k` as an external parameter and
+/// checking it. Everywhere except [`VoleIrCtx::emit_and`], `QSim` shares
+/// `Verifier`'s exact codegen (see [`VoleRole::is_prover`]) -- the shared
+/// per-statement dispatch (`Poly`/`Merge`/`Shuffle`/`Storage*`) is what
+/// keeps "the actual semantics of more complex operations" in one place
+/// across all three roles.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VoleRole {
+    Prover,
+    Verifier,
+    QSim,
+}
+
+impl VoleRole {
+    /// `true` only for `Prover` -- `QSim` intentionally takes the same
+    /// (`false`) branch as `Verifier` at every existing `is_prover` call
+    /// site except `emit_and`, which matches on `VoleRole` directly.
+    fn is_prover(&self) -> bool {
+        matches!(self, VoleRole::Prover)
+    }
+}
+
 /// Context for emitting VOLE-authenticated wire computations.
 struct VoleIrCtx<'a> {
     stmts: Vec<IrStmt>,
@@ -2425,6 +2532,10 @@ struct VoleIrCtx<'a> {
     and_counter: usize,
     hat_names: Vec<String>,
     ok_names: Vec<String>,
+    /// `QSim`-only: derived `q_and` values, collected in gate order, to be
+    /// returned as this function's own output (the `Verifier`-side
+    /// counterpart of `hat_names`, but an output instead of an input).
+    q_and_names: Vec<String>,
     /// Current var name for each storage cell (Tree mode only).
     stor: alloc::collections::BTreeMap<(u32, u32, usize), String>,
     /// Counter for oracle-read parameters (Commitment mode).
@@ -2433,7 +2544,7 @@ struct VoleIrCtx<'a> {
     trace: MemoryTrace,
     /// Running timestamp for memory operations.
     mem_timestamp: u32,
-    is_prover: bool,
+    role: VoleRole,
     /// Weave-time trace-assembly plugin (verifier side only; see
     /// [`VerifierTraceSink`]) -- `None` is byte-identical to today's output.
     /// Threaded through [`VoleIrCtx::emit_and`], the single place every
@@ -2477,11 +2588,39 @@ impl VoleIrCtx<'static> {
             and_counter: 0,
             hat_names: Vec::new(),
             ok_names: Vec::new(),
+            q_and_names: Vec::new(),
             stor: alloc::collections::BTreeMap::new(),
             oracle_counter: 0,
             trace: MemoryTrace::default(),
             mem_timestamp: 0,
-            is_prover,
+            role: if is_prover { VoleRole::Prover } else { VoleRole::Verifier },
+            trace_sink: None,
+            ext_oracle_map: alloc::collections::BTreeMap::new(),
+            ext_action_map: alloc::collections::BTreeMap::new(),
+            ext_oracle_counter: 0,
+            ext_action_counter: 0,
+            ext_rng_counter: 0,
+        }
+    }
+
+    /// `QSim`-role constructor (Milestone 1.6): derives `q_and` values via
+    /// `derive_and_q` instead of taking them as external parameters. Never
+    /// folds (`trace_sink: None`) -- folding is `Verifier`-only, since
+    /// `QSim`'s whole job is producing the `q_and`s the real `Verifier`
+    /// function will itself fold.
+    fn new_qsim() -> Self {
+        VoleIrCtx {
+            stmts: Vec::new(),
+            wires: alloc::collections::BTreeMap::new(),
+            and_counter: 0,
+            hat_names: Vec::new(),
+            ok_names: Vec::new(),
+            q_and_names: Vec::new(),
+            stor: alloc::collections::BTreeMap::new(),
+            oracle_counter: 0,
+            trace: MemoryTrace::default(),
+            mem_timestamp: 0,
+            role: VoleRole::QSim,
             trace_sink: None,
             ext_oracle_map: alloc::collections::BTreeMap::new(),
             ext_action_map: alloc::collections::BTreeMap::new(),
@@ -2494,10 +2633,11 @@ impl VoleIrCtx<'static> {
 
 impl<'a> VoleIrCtx<'a> {
     /// Verifier-only constructor with a [`VerifierTraceSink`] attached (see
-    /// `trace_sink`'s field doc). `is_prover` is always `false`: a prover
+    /// `trace_sink`'s field doc). Role is always `Verifier`: a prover
     /// artifact must never observe the verifier's fold-accumulator plumbing
     /// (there is nothing for the prover to fold -- `and_gate_step` needs the
-    /// verifier's own `K_a, K_b, K_c` Q-shares).
+    /// verifier's own `K_a, K_b, K_c` Q-shares), and `QSim` never folds at
+    /// all (see [`VoleIrCtx::new_qsim`]).
     fn new_verifier_with_trace_sink(sink: &'a dyn VerifierTraceSink<()>) -> Self {
         VoleIrCtx {
             stmts: Vec::new(),
@@ -2505,11 +2645,12 @@ impl<'a> VoleIrCtx<'a> {
             and_counter: 0,
             hat_names: Vec::new(),
             ok_names: Vec::new(),
+            q_and_names: Vec::new(),
             stor: alloc::collections::BTreeMap::new(),
             oracle_counter: 0,
             trace: MemoryTrace::default(),
             mem_timestamp: 0,
-            is_prover: false,
+            role: VoleRole::Verifier,
             trace_sink: Some(sink),
             ext_oracle_map: alloc::collections::BTreeMap::new(),
             ext_action_map: alloc::collections::BTreeMap::new(),
@@ -2571,7 +2712,7 @@ impl<'a> VoleIrCtx<'a> {
 
     /// Emit a zero-valued wire (prover: Vope::default, verifier: Q::default).
     fn emit_zero(&mut self, name: &str) {
-        if self.is_prover {
+        if self.role.is_prover() {
             // Vope { u: Array::<Array<T,N>, U1>::default(), v: Array::<T,N>::default() }
             let u_default = ir_expr(IrExprKind::Call {
                 func: Box::new(ir_expr(IrExprKind::Path {
@@ -2616,7 +2757,7 @@ impl<'a> VoleIrCtx<'a> {
 
     /// Emit a one-valued wire (clone of the committed-one wire).
     fn emit_one(&mut self, name: &str) {
-        let src = if self.is_prover { "vope_one" } else { "q_one" };
+        let src = if self.role.is_prover() { "vope_one" } else { "q_one" };
         self.stmts.push(ir_stmt(IrStmtKind::Let {
             pattern: IrPattern::ident(name),
             ty: None,
@@ -2626,7 +2767,7 @@ impl<'a> VoleIrCtx<'a> {
 
     /// Emit XOR (free: prover a + b, verifier element-wise).
     fn emit_xor(&mut self, out: &str, a: &str, b: &str) {
-        if self.is_prover {
+        if self.role.is_prover() {
             self.stmts.push(ir_stmt(IrStmtKind::Let {
                 pattern: IrPattern::ident(out),
                 ty: None,
@@ -2656,29 +2797,42 @@ impl<'a> VoleIrCtx<'a> {
     /// Emit AND gate.  Returns the name of the output wire.
     fn emit_and(&mut self, a: &str, b: &str) -> String {
         let wire_name = format!("and_w_{}", self.and_counter);
-        if self.is_prover {
-            let hat_name = format!("hat_{}", self.and_counter);
-            self.hat_names.push(hat_name.clone());
-            emit_prover_and_gate(a, b, &wire_name, &hat_name, &mut self.stmts, ());
-        } else {
-            let ok_name = format!("ok_{}", self.and_counter);
-            let q_and_name = format!("q_and_{}", self.and_counter);
-            let hat_name = format!("hat_{}", self.and_counter);
-            self.ok_names.push(ok_name.clone());
-            emit_verifier_and_gate(
-                a, b, &wire_name, &ok_name,
-                &q_and_name, &hat_name, &mut self.stmts, (),
-            );
-            if let Some(sink) = self.trace_sink {
-                let r_param_name = format!("r_and_{}", self.and_counter);
-                let new_state = sink.and_gate_step(
-                    self.and_counter, a, b, &wire_name, "delta",
-                    &hat_name, &r_param_name, "fold_state", (),
+        match self.role {
+            VoleRole::Prover => {
+                let hat_name = format!("hat_{}", self.and_counter);
+                self.hat_names.push(hat_name.clone());
+                emit_prover_and_gate(a, b, &wire_name, &hat_name, &mut self.stmts, ());
+            }
+            VoleRole::Verifier => {
+                let ok_name = format!("ok_{}", self.and_counter);
+                let q_and_name = format!("q_and_{}", self.and_counter);
+                let hat_name = format!("hat_{}", self.and_counter);
+                self.ok_names.push(ok_name.clone());
+                emit_verifier_and_gate(
+                    a, b, &wire_name, &ok_name,
+                    &q_and_name, &hat_name, &mut self.stmts, (),
                 );
-                self.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
-                    left: Box::new(var("fold_state")),
-                    right: Box::new(new_state),
-                }))));
+                if let Some(sink) = self.trace_sink {
+                    let r_param_name = format!("r_and_{}", self.and_counter);
+                    let new_state = sink.and_gate_step(
+                        self.and_counter, a, b, &wire_name, "delta",
+                        &hat_name, &r_param_name, "fold_state", (),
+                    );
+                    self.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                        left: Box::new(var("fold_state")),
+                        right: Box::new(new_state),
+                    }))));
+                }
+            }
+            VoleRole::QSim => {
+                // hat_k is a required *input* param (same shape Verifier
+                // already takes); q_and_k is *derived* here and collected
+                // as this function's own output (see `q_and_names`).
+                let hat_name = format!("hat_{}", self.and_counter);
+                self.hat_names.push(hat_name.clone());
+                let q_and_name = format!("q_and_{}", self.and_counter);
+                self.q_and_names.push(q_and_name.clone());
+                emit_qsim_and_gate(a, b, &wire_name, &q_and_name, &hat_name, &mut self.stmts, ());
             }
         }
         self.and_counter += 1;
@@ -2687,7 +2841,7 @@ impl<'a> VoleIrCtx<'a> {
 
     /// Emit NOT (free: a + one).
     fn emit_not(&mut self, out: &str, a: &str) {
-        let one = if self.is_prover { "vope_one" } else { "q_one" };
+        let one = if self.role.is_prover() { "vope_one" } else { "q_one" };
         self.emit_xor(out, a, one);
     }
 
@@ -2923,28 +3077,43 @@ impl<'a> VoleIrCtx<'a> {
             let start = self.and_counter;
             self.and_counter += width;
             let mut b = AndBundle { start, hat: String::new(), q_and: String::new(), r: String::new() };
-            if !self.is_prover {
-                let hat_names: Vec<String> = (start..start + width).map(|k| format!("hat_{k}")).collect();
-                b.hat = format!("{out_name}_h{gi}_{start}");
-                self.stmts.push(ir_stmt(IrStmtKind::Let {
-                    pattern: IrPattern::ident(&b.hat),
-                    ty: None,
-                    init: Some(ir_expr(IrExprKind::FixedArray(hat_names.iter().map(|n| var(n)).collect()))),
-                }));
-                let q_names: Vec<String> = (start..start + width).map(|k| format!("q_and_{k}")).collect();
-                b.q_and = format!("{out_name}_q{gi}_{start}");
-                self.stmts.push(ir_stmt(IrStmtKind::Let {
-                    pattern: IrPattern::ident(&b.q_and),
-                    ty: None,
-                    init: Some(ir_expr(IrExprKind::FixedArray(q_names.iter().map(|n| var(n)).collect()))),
-                }));
-                if self.trace_sink.is_some() {
-                    let r_names: Vec<String> = (start..start + width).map(|k| format!("r_and_{k}")).collect();
-                    b.r = format!("{out_name}_r{gi}_{start}");
+            match self.role {
+                VoleRole::Prover => {}
+                VoleRole::Verifier => {
+                    let hat_names: Vec<String> = (start..start + width).map(|k| format!("hat_{k}")).collect();
+                    b.hat = format!("{out_name}_h{gi}_{start}");
                     self.stmts.push(ir_stmt(IrStmtKind::Let {
-                        pattern: IrPattern::ident(&b.r),
+                        pattern: IrPattern::ident(&b.hat),
                         ty: None,
-                        init: Some(ir_expr(IrExprKind::FixedArray(r_names.iter().map(|n| var(n)).collect()))),
+                        init: Some(ir_expr(IrExprKind::FixedArray(hat_names.iter().map(|n| var(n)).collect()))),
+                    }));
+                    let q_names: Vec<String> = (start..start + width).map(|k| format!("q_and_{k}")).collect();
+                    b.q_and = format!("{out_name}_q{gi}_{start}");
+                    self.stmts.push(ir_stmt(IrStmtKind::Let {
+                        pattern: IrPattern::ident(&b.q_and),
+                        ty: None,
+                        init: Some(ir_expr(IrExprKind::FixedArray(q_names.iter().map(|n| var(n)).collect()))),
+                    }));
+                    if self.trace_sink.is_some() {
+                        let r_names: Vec<String> = (start..start + width).map(|k| format!("r_and_{k}")).collect();
+                        b.r = format!("{out_name}_r{gi}_{start}");
+                        self.stmts.push(ir_stmt(IrStmtKind::Let {
+                            pattern: IrPattern::ident(&b.r),
+                            ty: None,
+                            init: Some(ir_expr(IrExprKind::FixedArray(r_names.iter().map(|n| var(n)).collect()))),
+                        }));
+                    }
+                }
+                VoleRole::QSim => {
+                    // Only `hat` is bundled as an *input* (same shape
+                    // Verifier takes) -- `q_and` is *derived* per lane
+                    // below and collected as an output, no `r` (no fold).
+                    let hat_names: Vec<String> = (start..start + width).map(|k| format!("hat_{k}")).collect();
+                    b.hat = format!("{out_name}_h{gi}_{start}");
+                    self.stmts.push(ir_stmt(IrStmtKind::Let {
+                        pattern: IrPattern::ident(&b.hat),
+                        ty: None,
+                        init: Some(ir_expr(IrExprKind::FixedArray(hat_names.iter().map(|n| var(n)).collect()))),
                     }));
                 }
             }
@@ -2971,7 +3140,7 @@ impl<'a> VoleIrCtx<'a> {
         // sidesteps `i128`/`u128` literal-sign edge cases entirely (our
         // real circuits never need more than 64 bits per value).
         self.emit_zero("_zero");
-        let one_name = if self.is_prover { "vope_one" } else { "q_one" };
+        let one_name = if self.role.is_prover() { "vope_one" } else { "q_one" };
         let const_lit = ir_expr(IrExprKind::Cast {
             expr: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(constant.lo as u64 as i128)))),
             ty: Box::new(IrType::Primitive(PrimitiveType::U64)),
@@ -3010,6 +3179,7 @@ impl<'a> VoleIrCtx<'a> {
         // silently shadow earlier terms instead of XOR-ing them all in.
         let mut term_names: Vec<String> = vec![cst_name];
         let mut hat_locals: Vec<String> = Vec::new();
+        let mut q_and_locals: Vec<String> = Vec::new();
         let mut term_idx: usize = 0;
         let mut and_gi: usize = 0;
         for (mono, &coeff) in coeffs {
@@ -3043,7 +3213,8 @@ impl<'a> VoleIrCtx<'a> {
                         pattern: IrPattern::ident(&kb_n), ty: None, init: Some(operand_expr(self, &mono[1])),
                     }));
                     let wire_n = format!("_aw_{term_idx}");
-                    if self.is_prover {
+                    match self.role {
+                        VoleRole::Prover => {
                         let hat_n = format!("_ah_{term_idx}");
                         self.stmts.push(ir_stmt(IrStmtKind::Let {
                             pattern: IrPattern::Tuple(vec![IrPattern::ident(&wire_n), IrPattern::ident(&hat_n)]),
@@ -3057,7 +3228,8 @@ impl<'a> VoleIrCtx<'a> {
                             })),
                         }));
                         hat_locals.push(hat_n);
-                    } else {
+                        }
+                        VoleRole::Verifier => {
                         let hat_n = format!("_lane_hat_{term_idx}");
                         self.stmts.push(ir_stmt(IrStmtKind::Let {
                             pattern: IrPattern::ident(&hat_n), ty: None,
@@ -3103,6 +3275,33 @@ impl<'a> VoleIrCtx<'a> {
                                 right: Box::new(new_state),
                             }))));
                         }
+                        }
+                        VoleRole::QSim => {
+                        // let hat_n = b.hat[i].clone();
+                        // let wire_n = derive_and_q::<N, T>(delta, &ka_n, &kb_n, &hat_n);
+                        let hat_n = format!("_lane_hat_{term_idx}");
+                        self.stmts.push(ir_stmt(IrStmtKind::Let {
+                            pattern: IrPattern::ident(&hat_n), ty: None,
+                            init: Some(clone_expr(arr_index(&b.hat, "i"))),
+                        }));
+                        self.stmts.push(ir_stmt(IrStmtKind::Let {
+                            pattern: IrPattern::ident(&wire_n),
+                            ty: None,
+                            init: Some(ir_expr(IrExprKind::Call {
+                                func: Box::new(ir_expr(IrExprKind::Path {
+                                    segments: vec!["derive_and_q".into()],
+                                    type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("T".into())],
+                                })),
+                                args: vec![
+                                    var("delta"),
+                                    ref_expr(var(&ka_n)),
+                                    ref_expr(var(&kb_n)),
+                                    ref_expr(var(&hat_n)),
+                                ],
+                            })),
+                        }));
+                        q_and_locals.push(wire_n.clone());
+                        }
                     }
                     term_names.push(wire_n);
                 }
@@ -3139,13 +3338,16 @@ impl<'a> VoleIrCtx<'a> {
         }
 
         let has_ands = and_count_here > 0;
-        let trailing = if self.is_prover && has_ands {
-            ir_expr(IrExprKind::Tuple(vec![
+        let trailing = match self.role {
+            VoleRole::Prover if has_ands => ir_expr(IrExprKind::Tuple(vec![
                 var(&final_name),
                 ir_expr(IrExprKind::Tuple(hat_locals.iter().map(|h| var(h)).collect())),
-            ]))
-        } else {
-            var(&final_name)
+            ])),
+            VoleRole::QSim if has_ands => ir_expr(IrExprKind::Tuple(vec![
+                var(&final_name),
+                ir_expr(IrExprKind::Tuple(q_and_locals.iter().map(|q| var(q)).collect())),
+            ])),
+            _ => var(&final_name),
         };
         let body_stmts = core::mem::replace(&mut self.stmts, saved_stmts);
         let closure_body = ir_expr(IrExprKind::Block(IrBlock { stmts: body_stmts, expr: Some(Box::new(trailing)) }));
@@ -3155,14 +3357,11 @@ impl<'a> VoleIrCtx<'a> {
         //         the unrelated VOLE-repetition dimension). An explicit
         //         type annotation is required so the const generic `W`
         //         (the array length) can be inferred.
-        let elem_ty = if self.is_prover {
-            if has_ands {
-                IrType::Tuple(vec![vope_type(), IrType::Tuple(vec![array_t_n(); and_count_here])])
-            } else {
-                vope_type()
-            }
-        } else {
-            q_type()
+        let elem_ty = match self.role {
+            VoleRole::Prover if has_ands => IrType::Tuple(vec![vope_type(), IrType::Tuple(vec![array_t_n(); and_count_here])]),
+            VoleRole::Prover => vope_type(),
+            VoleRole::QSim if has_ands => IrType::Tuple(vec![q_type(), IrType::Tuple(vec![q_type(); and_count_here])]),
+            VoleRole::Verifier | VoleRole::QSim => q_type(),
         };
         let arr_name = format!("{out_name}_arr");
         self.stmts.push(ir_stmt(IrStmtKind::Let {
@@ -3177,10 +3376,11 @@ impl<'a> VoleIrCtx<'a> {
 
         // ---- 5. Trivial per-lane extraction: restores WireRepr::Vec's
         //         exact contract for every downstream consumer. ---
+        let extracts_pair = has_ands && matches!(self.role, VoleRole::Prover | VoleRole::QSim);
         let names: Vec<String> = (0..width)
             .map(|k| {
                 let ln = format!("{out_name}_{k}");
-                let base = if self.is_prover && has_ands {
+                let base = if extracts_pair {
                     ir_expr(IrExprKind::Field {
                         base: Box::new(arr_index(&arr_name, &k.to_string())),
                         field: "0".into(),
@@ -3194,7 +3394,7 @@ impl<'a> VoleIrCtx<'a> {
                 ln
             })
             .collect();
-        if self.is_prover && has_ands {
+        if self.role.is_prover() && has_ands {
             // `and_counter` allocated hats *group-major* (all `width` hats
             // for AND-group 0, then all `width` for group 1, ...) — this
             // loop must push into `self.hat_names` in that exact same
@@ -3215,6 +3415,28 @@ impl<'a> VoleIrCtx<'a> {
                         pattern: IrPattern::ident(&hn), ty: None, init: Some(hat_expr),
                     }));
                     self.hat_names.push(hn);
+                }
+            }
+        }
+        if self.role == VoleRole::QSim && has_ands {
+            // Same group-major ordering as the prover's `hat_names` above
+            // (and as `emit_and`'s narrow-path `q_and_names` pushes) --
+            // this is what `weave_vole_qsim_ir_with_mode`/`_split` read to
+            // build the returned `q_and` array, in `and_counter` order.
+            for gi in 0..and_count_here {
+                for k in 0..width {
+                    let q_and_expr = clone_expr(ir_expr(IrExprKind::Field {
+                        base: Box::new(ir_expr(IrExprKind::Field {
+                            base: Box::new(arr_index(&arr_name, &k.to_string())),
+                            field: "1".into(),
+                        })),
+                        field: gi.to_string(),
+                    }));
+                    let qn = format!("{out_name}_qand_{gi}_{k}");
+                    self.stmts.push(ir_stmt(IrStmtKind::Let {
+                        pattern: IrPattern::ident(&qn), ty: None, init: Some(q_and_expr),
+                    }));
+                    self.q_and_names.push(qn);
                 }
             }
         }
@@ -3807,7 +4029,7 @@ impl<'a> VoleIrCtx<'a> {
                     let r = self.ext_rng_counter;
                     self.ext_rng_counter += 1;
                     let w = cir_type_width(ty, types);
-                    let prefix = if self.is_prover { "vope" } else { "q" };
+                    let prefix = if self.role.is_prover() { "vope" } else { "q" };
                     if w == 1 {
                         let param_name = format!("{}_ext_rng_{}_bit_0", prefix, r);
                         self.stmts.push(ir_stmt(IrStmtKind::Let {
@@ -3852,7 +4074,7 @@ impl<'a> VoleIrCtx<'a> {
                     let (k, bit_offsets) = self.ext_oracle_map[&call.0].clone();
                     let base = bit_offsets[*idx];
                     let w = cir_type_width(ty, types);
-                    let prefix = if self.is_prover { "vope" } else { "q" };
+                    let prefix = if self.role.is_prover() { "vope" } else { "q" };
                     if w == 1 {
                         let param_name = format!("{}_ext_oracle_{}_bit_{}", prefix, k, base);
                         self.stmts.push(ir_stmt(IrStmtKind::Let {
@@ -3894,7 +4116,7 @@ impl<'a> VoleIrCtx<'a> {
                     let (k, bit_offsets) = self.ext_action_map[&call.0].clone();
                     let base = bit_offsets[*idx];
                     let w = cir_type_width(ty, types);
-                    let prefix = if self.is_prover { "vope" } else { "q" };
+                    let prefix = if self.role.is_prover() { "vope" } else { "q" };
                     if w == 1 {
                         let param_name = format!("{}_ext_action_{}_bit_{}", prefix, k, base);
                         self.stmts.push(ir_stmt(IrStmtKind::Let {
@@ -4016,7 +4238,7 @@ pub fn weave_vole_prover_ir_with_mode(
     let ret_expr = ir_expr(IrExprKind::Tuple(vec![output_expr, hats_expr]));
     let trace = ctx.trace.clone();
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: true,
         name: format!("vole_prove_ir_{}", name),
         module_path: vec![],
         generics,
@@ -4200,7 +4422,7 @@ pub fn weave_vole_prover_ir_split(
         ret_tuple_exprs.extend(ret_val_exprs);
         ret_tuple_exprs.push(hats_expr);
 
-        let func = IrFunction {
+        let func = IrFunction { no_inline: true,
             name: format!("vole_prove_ir_{}_block_{}", name, i),
             module_path: vec![],
             generics: generics.clone(),
@@ -4355,7 +4577,7 @@ pub fn weave_vole_prover_ir_split(
         let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| var(h)).collect()));
         ret_tuple_exprs.push(hats_expr);
 
-        let chunk_func = IrFunction {
+        let chunk_func = IrFunction { no_inline: true,
             name: format!("vole_prove_ir_{}_accum_chunk_{}", name, chunk_idx),
             module_path: vec![],
             generics: generics.clone(),
@@ -4434,7 +4656,7 @@ pub fn weave_vole_prover_ir_split(
     };
     let ret_expr = ir_expr(IrExprKind::Tuple(vec![output_expr, hats_expr]));
 
-    let finish_func = IrFunction {
+    let finish_func = IrFunction { no_inline: true,
         name: format!("vole_prove_ir_{}_finish", name),
         module_path: vec![],
         generics,
@@ -4558,7 +4780,7 @@ pub fn weave_vole_verifier_ir_with_mode(
     let ret_expr = ir_expr(IrExprKind::Tuple(vec![output_expr, var("all_ok")]));
     let trace = ctx.trace.clone();
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: true,
         name: format!("vole_verify_ir_{}", name),
         module_path: vec![],
         generics,
@@ -4720,7 +4942,7 @@ pub fn weave_vole_verifier_ir_with_mode_and_trace(
     let ret_expr = ir_expr(IrExprKind::Tuple(vec![output_expr, var("all_ok"), var("fold_state")]));
     let trace = ctx.trace.clone();
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: true,
         name: format!("vole_verify_ir_{}", name),
         module_path: vec![],
         generics,
@@ -4743,6 +4965,555 @@ pub fn weave_vole_verifier_ir_with_mode_and_trace(
     };
     if let Some(ls) = linkage { ls.apply(&mut module); }
     (Tagged::seal(module), trace)
+}
+
+/// Milestone 1.6: weave a single-block Volar IR circuit into a **`QSim`**
+/// `IrModule` — a third, weaver-generated role (see [`VoleRole`]) that,
+/// once compiled and run, *derives* the `q_and` values a real `Verifier`
+/// function needs for its own chained AND gates, instead of a driver
+/// hand-computing (or hand-mirroring the weaver to compute) them.
+///
+/// Unsplit counterpart to [`weave_vole_verifier_ir_with_mode_and_trace`],
+/// matching its exact param/return shape **minus** the fold-only pieces
+/// (`q_and_k` as an *input*, `r_and_k`, `all_ok`, `fold_state` — `QSim`
+/// never folds, that's `Verifier`'s job once handed these derived values)
+/// **plus** `hat_k` as an input per gate (same shape `Verifier` already
+/// takes — the same real `hats` the compiled prover function returns) and
+/// the derived `q_and` array as an output, alongside the circuit's own
+/// output.
+///
+/// No `VerifierTraceSink`/linkage parameter: `QSim` has no fold-accumulator
+/// plumbing to thread and produces a plain (untagged) `IrModule` — it is
+/// driver-invoked scaffolding around the real `Verifier` call, not itself a
+/// `Transparent`/`Zk` proving artifact.
+pub fn weave_vole_qsim_ir_with_mode(
+    circuit: &IRBlocks,
+    types: &CirTypes,
+    name: &str,
+    mode: &StorageMode,
+) -> (IrModule<IrFunction>, MemoryTrace) {
+    assert!(circuit.is_circuit(), "weave_vole_qsim_ir_with_mode: circuit must satisfy is_circuit()");
+    let block = &circuit.blocks[0];
+    let num_params = block.params.len();
+    let and_count = count_ir_ands(block, types, mode);
+    let num_oracle_reads = if matches!(mode, StorageMode::Commitment) {
+        count_storage_reads(block, types)
+    } else { 0 };
+    let (generics, where_clause) = qsim_generics_and_where();
+
+    let mut params: Vec<IrParam> = vec![
+        IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
+    ];
+    for k in 0..and_count {
+        params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
+    }
+    params.push(IrParam { name: "q_one".into(), ty: q_type() });
+    for i in 0..num_params {
+        let w = cir_type_width(&block.params[i], types);
+        if w <= 1 {
+            params.push(IrParam { name: format!("w_{}", i), ty: q_type() });
+        } else {
+            for j in 0..w {
+                params.push(IrParam { name: format!("w_{}_{}", i, j), ty: q_type() });
+            }
+        }
+    }
+    // Oracle read parameters (Commitment mode) -- same real committed
+    // memory Q-values as the Verifier call receives (the driver computes
+    // these once and feeds them to both calls).
+    for i in 0..num_oracle_reads {
+        params.push(IrParam { name: format!("oracle_rd_{}", i), ty: q_type() });
+    }
+    // External primitive parameters (oracle calls, action calls, rng).
+    let ext = count_external_primitives(block, types);
+    for (k, call) in ext.oracle_calls.iter().enumerate() {
+        for j in 0..call.total_bits {
+            params.push(IrParam { name: format!("q_ext_oracle_{}_bit_{}", k, j), ty: q_type() });
+        }
+    }
+    for (k, call) in ext.action_calls.iter().enumerate() {
+        for j in 0..call.total_bits {
+            params.push(IrParam { name: format!("q_ext_action_{}_bit_{}", k, j), ty: q_type() });
+        }
+    }
+    for (r, &width) in ext.rng_widths.iter().enumerate() {
+        for j in 0..width {
+            params.push(IrParam { name: format!("q_ext_rng_{}_bit_{}", r, j), ty: q_type() });
+        }
+    }
+
+    let mut ctx = VoleIrCtx::new_qsim();
+    ctx.emit_circuit(block, types, mode, &circuit.pre_init);
+
+    let ret_args = match &block.terminator {
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
+        _ => panic!("expected Jmp(Return)"),
+    };
+    let output_ty = if ret_args.len() == 1 {
+        ctx.slot_type(&ret_args[0], &q_type())
+    } else {
+        IrType::Tuple(ret_args.iter().map(|v| ctx.slot_type(v, &q_type())).collect())
+    };
+    let q_and_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|n| var(n)).collect()));
+    let ret_type = IrType::Tuple(vec![output_ty, q_and_array_type(ctx.q_and_names.len())]);
+    let output_expr = if ret_args.len() == 1 {
+        ctx.slot_expr(&ret_args[0])
+    } else {
+        ir_expr(IrExprKind::Tuple(ret_args.iter().map(|v| ctx.slot_expr(v)).collect()))
+    };
+    let ret_expr = ir_expr(IrExprKind::Tuple(vec![output_expr, q_and_expr]));
+    let trace = ctx.trace.clone();
+
+    let func = IrFunction { no_inline: true,
+        name: format!("vole_qsim_ir_{}", name),
+        module_path: vec![],
+        generics,
+        receiver: None,
+        params,
+        return_type: Some(ret_type),
+        where_clause,
+        body: IrBlock {
+            stmts: ctx.stmts,
+            expr: Some(Box::new(ret_expr)),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    let module = IrModule {
+        name: "weaved_vole_ir_qsim".into(),
+        functions: vec![func],
+        structs: vec![], enums: vec![], traits: vec![], impls: vec![], type_aliases: vec![],
+        consts: vec![],
+    };
+    (module, trace)
+}
+
+/// Milestone 1.6, Stage 2: as [`weave_vole_qsim_ir_with_mode`], but split
+/// into one Rust function per original (pre-movfuscation) block plus a
+/// *chunked* accumulator chain plus a trailing "finish" function --
+/// mirroring [`weave_vole_verifier_ir_split_with_trace`]'s exact split
+/// structure (same `boundary`/`accum_info`/`chunk_size` shape, same
+/// per-function boundaries) **minus** the fold-only pieces (`q_and_k` as
+/// an *input*, `r_and_k`, `all_ok`, `fold_state` -- `QSim` never folds)
+/// **plus** `hat_k` as an input per gate (same shape `Verifier` takes --
+/// the real `hat`s the matching, equally-split real prover function
+/// returns) and a derived `q_and` array as an output, alongside each
+/// function's own exported state.
+///
+/// A single unsplit `QSim` function was found to compile pathologically
+/// slowly even for a *small* (~2,740-gate) real circuit -- confirmed via
+/// direct LLVM profiling to be a single-function-size limitation in the
+/// backend (`BranchRelaxation`/`AArch64PointerAuth`, both scaling poorly
+/// with one very large function's statement count), not something
+/// `#[inline(never)]` alone fixes. This split, already proven to weave
+/// (and, for Prover/Verifier, compile) fast at real interpreter scale
+/// (Milestone 1.5), is required for `QSim` too -- not just an optional
+/// nicety for larger circuits.
+pub fn weave_vole_qsim_ir_split(
+    circuit: &IRBlocks,
+    types: &CirTypes,
+    name: &str,
+    mode: &StorageMode,
+    boundary: &[volar_ir_passes::MovfuscBlockBoundary],
+    accum_info: &volar_ir_passes::MovfuscAccumInfo,
+    chunk_size: usize,
+    mut emit_fn: impl FnMut(IrFunction),
+) -> MemoryTrace {
+    assert!(circuit.is_circuit(), "weave_vole_qsim_ir_split: circuit must satisfy is_circuit()");
+    assert!(!boundary.is_empty(), "weave_vole_qsim_ir_split: boundary must be non-empty");
+    assert_eq!(accum_info.steps.len(), boundary.len(), "accum_info must come from the same movfuscate_ir_with_boundary call as boundary");
+    let chunk_size = chunk_size.max(1);
+    let block = &circuit.blocks[0];
+    let num_params = block.params.len();
+
+    let (generics, where_clause) = qsim_generics_and_where();
+
+    let mut w_params: Vec<IrParam> = Vec::new();
+    for i in 0..num_params {
+        let w = cir_type_width(&block.params[i], types);
+        if w <= 1 {
+            w_params.push(IrParam { name: format!("w_{}", i), ty: q_type() });
+        } else {
+            for j in 0..w {
+                w_params.push(IrParam { name: format!("w_{}_{}", i, j), ty: q_type() });
+            }
+        }
+    }
+    let insert_w_wires = |ctx: &mut VoleIrCtx| {
+        for i in 0..num_params {
+            let w = cir_type_width(&block.params[i], types);
+            if w <= 1 {
+                ctx.wires.insert(i as u32, WireRepr::Scalar(format!("w_{}", i)));
+            } else {
+                let bits: Vec<String> = (0..w).map(|j| format!("w_{}_{}", i, j)).collect();
+                ctx.wires.insert(i as u32, WireRepr::Vec(bits));
+            }
+        }
+    };
+
+    let mut overall_trace_entries: Vec<MemoryTraceEntry> = Vec::new();
+    let mut global_ts: u32 = 0;
+    if matches!(mode, StorageMode::Commitment) && !circuit.pre_init.is_empty() {
+        let n_stmts = block.stmts.len() as u32;
+        let mut syn_id = num_params as u32 + n_stmts;
+        for seg in &circuit.pre_init {
+            let sid = seg.storage.0;
+            let tid = seg.ty.0;
+            for (local, _c) in seg.data.iter().enumerate() {
+                let _ci = seg.offset + local;
+                let val_id = syn_id; syn_id += 1;
+                let addr_id = syn_id; syn_id += 1;
+                overall_trace_entries.push(MemoryTraceEntry {
+                    addr_var: addr_id,
+                    value_var: val_id,
+                    storage_id: sid,
+                    type_id: tid,
+                    is_write: true,
+                    timestamp: global_ts,
+                });
+                global_ts += 1;
+            }
+        }
+    }
+
+    let shared_prefix: core::ops::Range<usize> = 0..(boundary[0].start as usize - num_params);
+
+    fn bind_scalar(ctx: &mut VoleIrCtx, params: &mut Vec<IrParam>, var_id: u32, base_name: String, ty: IrType) {
+        match &ty {
+            IrType::Array { elem, len: volar_compiler::ir::ArrayLength::Const(n), .. } => {
+                let names: Vec<String> = (0..*n).map(|j| format!("{base_name}_{j}")).collect();
+                for nm in &names {
+                    params.push(IrParam { name: nm.clone(), ty: (**elem).clone() });
+                }
+                ctx.wires.insert(var_id, WireRepr::Vec(names));
+            }
+            _ => {
+                params.push(IrParam { name: base_name.clone(), ty });
+                ctx.wires.insert(var_id, WireRepr::Scalar(base_name));
+            }
+        }
+    }
+
+    let mut interfaces: Vec<SplitBlockInterface> = Vec::with_capacity(boundary.len());
+
+    for (i, b) in boundary.iter().enumerate() {
+        let start = (b.start - num_params as u32) as usize;
+        let end = (b.end - num_params as u32) as usize;
+        let local_stmts = &block.stmts[start..end];
+        let local_and_count = count_ir_ands_no_storage_range(local_stmts, types);
+        let local_oracle_reads = if matches!(mode, StorageMode::Commitment) {
+            count_storage_reads_range(local_stmts, types)
+        } else { 0 };
+        let local_ext = count_external_primitives_range(local_stmts, types);
+
+        let mut params: Vec<IrParam> = vec![
+            IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
+        ];
+        for k in 0..local_and_count {
+            params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
+        }
+        params.push(IrParam { name: "q_one".into(), ty: q_type() });
+        params.extend(w_params.iter().cloned());
+        for j in 0..local_oracle_reads {
+            params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
+        }
+        for (k, call) in local_ext.oracle_calls.iter().enumerate() {
+            for j in 0..call.total_bits {
+                params.push(IrParam { name: format!("q_ext_oracle_{}_bit_{}", k, j), ty: q_type() });
+            }
+        }
+        for (k, call) in local_ext.action_calls.iter().enumerate() {
+            for j in 0..call.total_bits {
+                params.push(IrParam { name: format!("q_ext_action_{}_bit_{}", k, j), ty: q_type() });
+            }
+        }
+        for (r, &width) in local_ext.rng_widths.iter().enumerate() {
+            for j in 0..width {
+                params.push(IrParam { name: format!("q_ext_rng_{}_bit_{}", r, j), ty: q_type() });
+            }
+        }
+
+        let mut ctx = VoleIrCtx::new_qsim();
+        insert_w_wires(&mut ctx);
+        debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
+        ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
+        ctx.emit_circuit_stmts_range(block, types, mode, start..end);
+
+        let local_entry_count = ctx.trace.entries.len() as u32;
+        for mut e in ctx.trace.entries.clone() {
+            e.timestamp += global_ts;
+            overall_trace_entries.push(e);
+        }
+        global_ts += local_entry_count.max(ctx.mem_timestamp);
+
+        let is_active_v = CirVar(b.is_active);
+        let done_v = CirVar(b.done);
+        let is_active_expr = ctx.slot_expr(&is_active_v);
+        let done_expr = ctx.slot_expr(&done_v);
+        let is_active_ty = ctx.slot_type(&is_active_v, &q_type());
+        let done_ty = ctx.slot_type(&done_v, &q_type());
+        let next_pc_exprs: Vec<IrExpr> = b.next_pc_bits.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
+        let next_pc_bit_tys: Vec<IrType> = b.next_pc_bits.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
+        let next_state_exprs: Vec<IrExpr> = b.next_state.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
+        let next_state_tys: Vec<IrType> = b.next_state.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
+        let ret_val_exprs: Vec<IrExpr> = b.ret_vals.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
+        let ret_val_tys: Vec<IrType> = b.ret_vals.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
+
+        let hats_ty = q_and_array_type(ctx.q_and_names.len());
+        let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|h| var(h)).collect()));
+
+        let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
+        ret_tuple_tys.extend(next_pc_bit_tys.iter().cloned());
+        ret_tuple_tys.extend(next_state_tys.iter().cloned());
+        ret_tuple_tys.extend(ret_val_tys.iter().cloned());
+        ret_tuple_tys.push(hats_ty);
+
+        let mut ret_tuple_exprs = vec![is_active_expr, done_expr];
+        ret_tuple_exprs.extend(next_pc_exprs);
+        ret_tuple_exprs.extend(next_state_exprs);
+        ret_tuple_exprs.extend(ret_val_exprs);
+        ret_tuple_exprs.push(hats_expr);
+
+        let func = IrFunction { no_inline: true,
+            name: format!("vole_qsim_ir_{}_block_{}", name, i),
+            module_path: vec![],
+            generics: generics.clone(),
+            receiver: None,
+            params,
+            return_type: Some(IrType::Tuple(ret_tuple_tys)),
+            where_clause: where_clause.clone(),
+            body: IrBlock {
+                stmts: ctx.stmts,
+                expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))),
+            },
+            external_kind: ExternalKind::Normal,
+        };
+        emit_fn(func);
+
+        interfaces.push(SplitBlockInterface { is_active_ty, done_ty, next_pc_bit_tys, next_state_tys, ret_val_tys });
+    }
+
+    let (init_next_state_tys, init_ret_val_tys) = {
+        let mut probe_ctx = VoleIrCtx::new_qsim();
+        let init_start = (accum_info.init.start - num_params as u32) as usize;
+        let init_end = (accum_info.init.end - num_params as u32) as usize;
+        probe_ctx.emit_circuit_stmts_range(block, types, mode, init_start..init_end);
+        let next_state_tys: Vec<IrType> = accum_info.init.next_state.iter()
+            .map(|&v| probe_ctx.slot_type(&CirVar(v), &q_type())).collect();
+        let ret_val_tys: Vec<IrType> = accum_info.init.ret_vals.iter()
+            .map(|&v| probe_ctx.slot_type(&CirVar(v), &q_type())).collect();
+        (next_state_tys, ret_val_tys)
+    };
+
+    let bind_running = |ctx: &mut VoleIrCtx, params: &mut Vec<IrParam>, prefix: &str,
+                         done_acc: u32, next_pc: &[u32], next_state: &[u32], ret_vals: &[u32]| {
+        bind_scalar(ctx, params, done_acc, format!("{prefix}_done_acc"), q_type());
+        for (j, &v) in next_pc.iter().enumerate() {
+            bind_scalar(ctx, params, v, format!("{prefix}_next_pc_{j}"), q_type());
+        }
+        for (k, &v) in next_state.iter().enumerate() {
+            bind_scalar(ctx, params, v, format!("{prefix}_next_state_{k}"), init_next_state_tys[k].clone());
+        }
+        for (m, &v) in ret_vals.iter().enumerate() {
+            bind_scalar(ctx, params, v, format!("{prefix}_ret_val_{m}"), init_ret_val_tys[m].clone());
+        }
+    };
+    let running_tys = |pc_width: usize| -> Vec<IrType> {
+        let mut tys = vec![q_type()];
+        tys.extend((0..pc_width).map(|_| q_type()));
+        tys.extend(init_next_state_tys.iter().cloned());
+        tys.extend(init_ret_val_tys.iter().cloned());
+        tys
+    };
+    let running_exprs = |ctx: &VoleIrCtx, done_acc: u32, next_pc: &[u32], next_state: &[u32], ret_vals: &[u32]| -> Vec<IrExpr> {
+        let mut exprs = vec![ctx.slot_expr(&CirVar(done_acc))];
+        exprs.extend(next_pc.iter().map(|&v| ctx.slot_expr(&CirVar(v))));
+        exprs.extend(next_state.iter().map(|&v| ctx.slot_expr(&CirVar(v))));
+        exprs.extend(ret_vals.iter().map(|&v| ctx.slot_expr(&CirVar(v))));
+        exprs
+    };
+
+    let n_blocks = boundary.len();
+    let mut running_done_acc = accum_info.init.done_acc;
+    let mut running_next_pc = accum_info.init.next_pc.clone();
+    let mut running_next_state = accum_info.init.next_state.clone();
+    let mut running_ret_vals = accum_info.init.ret_vals.clone();
+
+    let mut lo = 0usize;
+    let mut chunk_idx = 0usize;
+    while lo < n_blocks {
+        let hi = (lo + chunk_size).min(n_blocks);
+        let chunk_start = (accum_info.steps[lo].start - num_params as u32) as usize;
+        let chunk_end = (accum_info.steps[hi - 1].end - num_params as u32) as usize;
+        let chunk_stmts = &block.stmts[chunk_start..chunk_end];
+        let chunk_oracle_reads = if matches!(mode, StorageMode::Commitment) {
+            count_storage_reads_range(chunk_stmts, types)
+        } else { 0 };
+        let chunk_ext = count_external_primitives_range(chunk_stmts, types);
+        let chunk_and_count = count_ir_ands_no_storage_range(chunk_stmts, types);
+
+        let mut params: Vec<IrParam> = vec![
+            IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
+        ];
+        for k in 0..chunk_and_count {
+            params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
+        }
+        params.push(IrParam { name: "q_one".into(), ty: q_type() });
+        params.extend(w_params.iter().cloned());
+        for j in 0..chunk_oracle_reads {
+            params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
+        }
+        for (k, call) in chunk_ext.oracle_calls.iter().enumerate() {
+            for j in 0..call.total_bits { params.push(IrParam { name: format!("q_ext_oracle_{}_bit_{}", k, j), ty: q_type() }); }
+        }
+        for (k, call) in chunk_ext.action_calls.iter().enumerate() {
+            for j in 0..call.total_bits { params.push(IrParam { name: format!("q_ext_action_{}_bit_{}", k, j), ty: q_type() }); }
+        }
+        for (r, &width) in chunk_ext.rng_widths.iter().enumerate() {
+            for j in 0..width { params.push(IrParam { name: format!("q_ext_rng_{}_bit_{}", r, j), ty: q_type() }); }
+        }
+
+        let mut ctx = VoleIrCtx::new_qsim();
+        insert_w_wires(&mut ctx);
+        bind_running(&mut ctx, &mut params, "in", running_done_acc, &running_next_pc, &running_next_state, &running_ret_vals);
+        for i in lo..hi {
+            let b = &boundary[i];
+            let iface = &interfaces[i];
+            bind_scalar(&mut ctx, &mut params, b.is_active, format!("is_active_{i}"), iface.is_active_ty.clone());
+            bind_scalar(&mut ctx, &mut params, b.done, format!("done_{i}"), iface.done_ty.clone());
+            for (j, &v) in b.next_pc_bits.iter().enumerate() {
+                bind_scalar(&mut ctx, &mut params, v, format!("next_pc_{i}_{j}"), iface.next_pc_bit_tys[j].clone());
+            }
+            for (k, &v) in b.next_state.iter().enumerate() {
+                bind_scalar(&mut ctx, &mut params, v, format!("next_state_{i}_{k}"), iface.next_state_tys[k].clone());
+            }
+            for (m, &v) in b.ret_vals.iter().enumerate() {
+                bind_scalar(&mut ctx, &mut params, v, format!("ret_val_{i}_{m}"), iface.ret_val_tys[m].clone());
+            }
+        }
+
+        debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
+        ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
+        ctx.emit_circuit_stmts_range(block, types, mode, chunk_start..chunk_end);
+
+        let local_entry_count = ctx.trace.entries.len() as u32;
+        for mut e in ctx.trace.entries.clone() {
+            e.timestamp += global_ts;
+            overall_trace_entries.push(e);
+        }
+        global_ts += local_entry_count.max(ctx.mem_timestamp);
+
+        let out_step = &accum_info.steps[hi - 1];
+        let mut ret_tuple_tys = running_tys(accum_info.init.next_pc.len());
+        let hats_ty = q_and_array_type(ctx.q_and_names.len());
+        ret_tuple_tys.push(hats_ty);
+        let mut ret_tuple_exprs = running_exprs(&ctx, out_step.done_acc, &out_step.next_pc, &out_step.next_state, &out_step.ret_vals);
+        let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|h| var(h)).collect()));
+        ret_tuple_exprs.push(hats_expr);
+
+        let chunk_func = IrFunction { no_inline: true,
+            name: format!("vole_qsim_ir_{}_accum_chunk_{}", name, chunk_idx),
+            module_path: vec![],
+            generics: generics.clone(),
+            receiver: None,
+            params,
+            return_type: Some(IrType::Tuple(ret_tuple_tys)),
+            where_clause: where_clause.clone(),
+            body: IrBlock { stmts: ctx.stmts, expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))) },
+            external_kind: ExternalKind::Normal,
+        };
+        emit_fn(chunk_func);
+
+        running_done_acc = out_step.done_acc;
+        running_next_pc = out_step.next_pc.clone();
+        running_next_state = out_step.next_state.clone();
+        running_ret_vals = out_step.ret_vals.clone();
+        lo = hi;
+        chunk_idx += 1;
+    }
+
+    // ---- Finish: whatever remains after the accumulation phase ----
+    let finish_start = (accum_info.steps.last().expect("boundary is non-empty (asserted above)").end - num_params as u32) as usize;
+    let finish_end = block.stmts.len();
+    let finish_stmts = &block.stmts[finish_start..finish_end];
+    let finish_oracle_reads = if matches!(mode, StorageMode::Commitment) {
+        count_storage_reads_range(finish_stmts, types)
+    } else { 0 };
+    let finish_ext = count_external_primitives_range(finish_stmts, types);
+    let finish_and_count = count_ir_ands_no_storage_range(finish_stmts, types);
+
+    let mut params: Vec<IrParam> = vec![
+        IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
+    ];
+    for k in 0..finish_and_count {
+        params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
+    }
+    params.push(IrParam { name: "q_one".into(), ty: q_type() });
+    params.extend(w_params.iter().cloned());
+    for j in 0..finish_oracle_reads {
+        params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
+    }
+    for (k, call) in finish_ext.oracle_calls.iter().enumerate() {
+        for j in 0..call.total_bits { params.push(IrParam { name: format!("q_ext_oracle_{}_bit_{}", k, j), ty: q_type() }); }
+    }
+    for (k, call) in finish_ext.action_calls.iter().enumerate() {
+        for j in 0..call.total_bits { params.push(IrParam { name: format!("q_ext_action_{}_bit_{}", k, j), ty: q_type() }); }
+    }
+    for (r, &width) in finish_ext.rng_widths.iter().enumerate() {
+        for j in 0..width { params.push(IrParam { name: format!("q_ext_rng_{}_bit_{}", r, j), ty: q_type() }); }
+    }
+
+    let mut ctx = VoleIrCtx::new_qsim();
+    insert_w_wires(&mut ctx);
+    bind_running(&mut ctx, &mut params, "in", running_done_acc, &running_next_pc, &running_next_state, &running_ret_vals);
+
+    debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
+    ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
+    ctx.emit_circuit_stmts_range(block, types, mode, finish_start..finish_end);
+
+    let local_entry_count = ctx.trace.entries.len() as u32;
+    for mut e in ctx.trace.entries.clone() {
+        e.timestamp += global_ts;
+        overall_trace_entries.push(e);
+    }
+    global_ts += local_entry_count.max(ctx.mem_timestamp);
+    let _ = global_ts;
+
+    let ret_args = match &block.terminator {
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
+        _ => panic!("expected Jmp(Return)"),
+    };
+    let output_ty = if ret_args.len() == 1 {
+        ctx.slot_type(&ret_args[0], &q_type())
+    } else {
+        IrType::Tuple(ret_args.iter().map(|v| ctx.slot_type(v, &q_type())).collect())
+    };
+    let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|h| var(h)).collect()));
+    let ret_type = IrType::Tuple(vec![output_ty, q_and_array_type(ctx.q_and_names.len())]);
+    let output_expr = if ret_args.len() == 1 {
+        ctx.slot_expr(&ret_args[0])
+    } else {
+        ir_expr(IrExprKind::Tuple(ret_args.iter().map(|v| ctx.slot_expr(v)).collect()))
+    };
+    let ret_expr = ir_expr(IrExprKind::Tuple(vec![output_expr, hats_expr]));
+
+    let finish_func = IrFunction { no_inline: true,
+        name: format!("vole_qsim_ir_{}_finish", name),
+        module_path: vec![],
+        generics,
+        receiver: None,
+        params,
+        return_type: Some(ret_type),
+        where_clause,
+        body: IrBlock {
+            stmts: ctx.stmts,
+            expr: Some(Box::new(ret_expr)),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+    emit_fn(finish_func);
+
+    MemoryTrace { entries: overall_trace_entries }
 }
 
 /// One original block's exported interface, as seen from the combiner: the
@@ -5035,7 +5806,7 @@ pub fn weave_vole_verifier_ir_split_with_trace(
         ret_tuple_exprs.push(var("all_ok"));
         ret_tuple_exprs.push(var("fold_state"));
 
-        let func = IrFunction {
+        let func = IrFunction { no_inline: true,
             name: format!("vole_verify_ir_{}_block_{}", name, i),
             module_path: vec![],
             generics: generics.clone(),
@@ -5189,7 +5960,7 @@ pub fn weave_vole_verifier_ir_split_with_trace(
         ret_tuple_exprs.push(var("all_ok"));
         ret_tuple_exprs.push(var("fold_state"));
 
-        let chunk_func = IrFunction {
+        let chunk_func = IrFunction { no_inline: true,
             name: format!("vole_verify_ir_{}_accum_chunk_{}", name, chunk_idx),
             module_path: vec![],
             generics: generics.clone(),
@@ -5288,7 +6059,7 @@ pub fn weave_vole_verifier_ir_split_with_trace(
     };
     let ret_expr = ir_expr(IrExprKind::Tuple(vec![output_expr, var("all_ok"), var("fold_state")]));
 
-    let finish_func = IrFunction {
+    let finish_func = IrFunction { no_inline: true,
         name: format!("vole_verify_ir_{}_finish", name),
         module_path: vec![],
         generics,
@@ -5643,7 +6414,7 @@ pub fn weave_net_vole_prover_ir(
         ir_expr(IrExprKind::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect()))
     };
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: true,
         name: format!("vole_prove_net_ir_{}", name),
         module_path: vec![],
         generics,
@@ -5724,7 +6495,7 @@ pub fn weave_net_vole_verifier_ir(
         ir_expr(IrExprKind::Tuple(ret_args.iter().map(|v| clone_expr(var(ctx.scalar(v)))).collect()))
     };
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: true,
         name: format!("vole_verify_net_ir_{}", name),
         module_path: vec![],
         generics,
@@ -6090,6 +6861,8 @@ pub fn print_weaved_vole_module(module: &IrModule<IrFunction>) -> String {
         "use cipher::consts::U1;\n",
         "use volar_spec::vole::{Delta, Q, Vope, VoleArray};\n",
         "use volar_spec::vole::prove::{vole_and_prover_step, vole_and_verifier_check};\n",
+        "use volar_spec::vole::setup::derive_and_q;\n",
+        "use volar_spec::field::Invert;\n",
         "\n",
     );
 
@@ -6399,6 +7172,27 @@ mod tests {
         run_compile_check(&code, "vole_ir_verifier_and");
     }
 
+    /// Milestone 1.6: the new `QSim` role compiles, and its generated code
+    /// derives `q_and` (via `derive_and_q`) rather than taking it as an
+    /// external parameter -- the structural signature of the fix (real
+    /// numeric validation, including chained gates, happens in
+    /// `volar-riscv-e2e`'s `mem_probe`/`commit_mem_e2e`-style driven tests).
+    #[test]
+    fn test_weave_vole_ir_qsim_and() {
+        let (circuit, types) = build_ir_and_circuit();
+        let mode = StorageMode::Tree(StorageSizes::new());
+        let (module, _trace) = weave_vole_qsim_ir_with_mode(&circuit, &types, "and_gate", &mode);
+        let func = &module.functions[0];
+        assert!(func.params.iter().any(|p| p.name == "hat_0"), "QSim must take hat_0 as an input: {:?}", func.params.iter().map(|p| &p.name).collect::<std::vec::Vec<_>>());
+        assert!(!func.params.iter().any(|p| p.name == "q_and_0"), "QSim must NOT take q_and_0 as an input (it derives it): {:?}", func.params.iter().map(|p| &p.name).collect::<std::vec::Vec<_>>());
+        assert!(func.no_inline, "QSim functions must be marked no_inline (see Milestone 1.6's compile-time fix)");
+        let code = print_weaved_vole_module(&module);
+        assert!(code.contains("#[inline(never)]"), "QSim's no_inline flag must be printed as #[inline(never)]:\n{code}");
+        assert!(code.contains("derive_and_q::"), "QSim must derive q_and via derive_and_q:\n{code}");
+        assert!(!code.contains("vole_and_verifier_check::"), "QSim must not call the verifier's check-only path:\n{code}");
+        run_compile_check(&code, "vole_ir_qsim_and");
+    }
+
     #[test]
     fn test_weave_vole_ir_prover_storage() {
         let (circuit, types, ss) = build_ir_storage_circuit();
@@ -6616,6 +7410,35 @@ mod tests {
             assert!(code.contains(&format!("r_and_{k}")), "missing r_and_{k} for lane {k}:\n{code}");
         }
         assert!(!code.contains("r_and_8"), "8-lane AND must not produce a 9th fold param:\n{code}");
+    }
+
+    /// Milestone 1.6's real scaling fix: `QSim` must use the *compact*
+    /// `emit_poly_wide` path (one `core::array::from_fn` runtime loop) for
+    /// wide AND monomials, not the per-lane-unrolled fallback -- a real
+    /// driven test on a 2,740-gate circuit hit a catastrophic LLVM codegen
+    /// blowup (28GB+ RSS, 400+s, still failing) when `QSim` was forced
+    /// through the unrolled path. Regression guard: 8 lanes must still
+    /// only cost 8 `derive_and_q` calls in ONE compact loop body, not 8
+    /// separately unrolled chains.
+    #[test]
+    fn test_weave_vole_ir_qsim_wide_and_uses_compact_path() {
+        let (circuit, types) = build_ir_wide_and_circuit();
+        let mode = StorageMode::Tree(StorageSizes::new());
+        let (module, _trace) = weave_vole_qsim_ir_with_mode(&circuit, &types, "wide_and", &mode);
+        let func = &module.functions[0];
+        assert!(func.params.iter().any(|p| p.name == "hat_0"), "QSim must take hat_0..7 as inputs: {:?}", func.params.iter().map(|p| &p.name).collect::<std::vec::Vec<_>>());
+        assert!(func.params.iter().any(|p| p.name == "hat_7"));
+        assert!(!func.params.iter().any(|p| p.name == "q_and_0"), "QSim must not take q_and_k as an input");
+        let code = print_weaved_vole_module(&module);
+        assert!(code.contains("derive_and_q::"), "QSim must derive q_and via derive_and_q:\n{code}");
+        // The compact path emits exactly one `core::array::from_fn` for the
+        // whole 8-lane Poly; the unrolled fallback would instead emit 8
+        // separate `derive_and_q` call sites textually. Count occurrences
+        // of the call to distinguish: compact = 1 call site (inside the
+        // closure, executed 8 times at runtime); unrolled = 8 call sites.
+        let call_sites = code.matches("derive_and_q::").count();
+        assert_eq!(call_sites, 1, "expected exactly one derive_and_q call site (compact wide path), found {call_sites}:\n{code}");
+        run_compile_check(&code, "vole_ir_qsim_wide_and");
     }
 
     /// A `_8`-typed value written to and read back from committed storage --
@@ -6950,5 +7773,70 @@ mod tests {
                 "block {i}: prover and verifier must agree on oracle-read count"
             );
         }
+    }
+
+    /// Milestone 1.6, Stage 2: `weave_vole_qsim_ir_split` must produce the
+    /// same function-per-block-plus-chunked-accumulator-plus-finish shape
+    /// as the prover/verifier splits, and its per-function `hat_k` input
+    /// count / derived `q_and` output count must line up with the
+    /// corresponding prover/verifier split functions, block by block --
+    /// the three-way interleaved-driving contract (prover -> qsim ->
+    /// verifier) this milestone's real driven tests rely on.
+    #[test]
+    fn test_split_qsim_matches_prover_and_verifier_block_shapes() {
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+
+        let (blocks, mut types) = build_ir_two_block_and_storage();
+        let (movfuscated, boundary, accum_info) = movfuscate_ir_with_boundary(&blocks, &mut types);
+        let bit_ty = types.intern(CircuitIrType::Primitive(PrimTy::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::Unconditional);
+        let mode = StorageMode::Commitment;
+
+        let mut prover_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
+        weave_vole_prover_ir_split(&circuit, &types, "qs", &mode, &boundary, &accum_info, 1, |f| prover_funcs.push(f));
+        let mut verifier_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
+        weave_vole_verifier_ir_split_with_trace(&circuit, &types, "qs", &mode, &IopSink, &boundary, &accum_info, 1, |f| verifier_funcs.push(f));
+        let mut qsim_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
+        let trace = weave_vole_qsim_ir_split(&circuit, &types, "qs", &mode, &boundary, &accum_info, 1, |f| qsim_funcs.push(f));
+
+        assert_eq!(qsim_funcs.len(), 5, "2 blocks + 2 accumulator chunks (chunk_size=1) + 1 finish");
+        assert_eq!(qsim_funcs[0].name, "vole_qsim_ir_qs_block_0");
+        assert_eq!(qsim_funcs[1].name, "vole_qsim_ir_qs_block_1");
+        assert_eq!(qsim_funcs[2].name, "vole_qsim_ir_qs_accum_chunk_0");
+        assert_eq!(qsim_funcs[3].name, "vole_qsim_ir_qs_accum_chunk_1");
+        assert_eq!(qsim_funcs[4].name, "vole_qsim_ir_qs_finish");
+        assert_eq!(qsim_funcs.len(), prover_funcs.len());
+        assert_eq!(qsim_funcs.len(), verifier_funcs.len());
+
+        for f in &qsim_funcs {
+            assert!(f.no_inline, "{} must be marked no_inline", f.name);
+            assert!(!f.params.iter().any(|p| p.name.starts_with("q_and_")), "{} must not take q_and_k as input", f.name);
+        }
+
+        let hat_count_of = |f: &IrFunction| f.params.iter().filter(|p| p.name.starts_with("hat_")).count();
+        let q_and_count_of = |f: &IrFunction| f.params.iter().filter(|p| p.name.starts_with("q_and_")).count();
+        let hats_len = |f: &IrFunction| match f.return_type.as_ref().unwrap() {
+            IrType::Tuple(elems) => match elems.last().unwrap() {
+                IrType::Array { len: volar_compiler::ir::ArrayLength::Const(n), .. } => *n,
+                other => panic!("expected trailing array type, got {other:?}"),
+            },
+            other => panic!("expected tuple return type, got {other:?}"),
+        };
+        for i in 0..qsim_funcs.len() {
+            // QSim's own hat_k input count must match the prover's own
+            // returned hats count for that same function (same real hats,
+            // fed straight through).
+            assert_eq!(
+                hat_count_of(&qsim_funcs[i]), hats_len(&prover_funcs[i]),
+                "function {i}: qsim's hat_k input count must match the prover's own hats output count"
+            );
+            // QSim's own derived q_and output count must match the
+            // verifier's own consumed q_and_k count for that same function.
+            assert_eq!(
+                hats_len(&qsim_funcs[i]), q_and_count_of(&verifier_funcs[i]),
+                "function {i}: qsim's derived q_and count must match the verifier's own q_and_k input count"
+            );
+        }
+        assert_eq!(trace.entries.len(), 1, "one StorageRead in the whole circuit");
     }
 }
