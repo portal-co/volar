@@ -16,7 +16,7 @@ use alloc::{
     vec::Vec,
 };
 use volar_ir::ir::{
-    IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRVarId, IRTypes,
+    IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt, IRTerminator, IRVarId, IRTypes,
 };
 use volar_ir_common::{
     Constant, IrType, Stmt, StorageAllocator, StorageId,
@@ -112,7 +112,7 @@ fn apply_one(
     }
     for rb in &repl_blocks.blocks {
         for stmt in &rb.stmts {
-            match stmt {
+            match &stmt.kind {
                 Stmt::StorageRead { storage, .. } | Stmt::StorageWrite { storage, .. } => {
                     storage_map.entry(storage.0).or_insert_with(|| allocator.alloc());
                 }
@@ -128,11 +128,10 @@ fn apply_one(
             params: rb.params.iter().map(|&t| tr.remap(t)).collect(),
             stmts: rb.stmts.iter().map(|s| {
                 let mut s2 = s.clone();
-                tr.remap_stmt_types(&mut s2);
-                remap_storage_in_stmt(&mut s2, &storage_map);
+                tr.remap_stmt_types(&mut s2.kind);
+                remap_storage_in_stmt(&mut s2.kind, &storage_map);
                 s2
             }).collect(),
-            stmt_provs: rb.stmt_provs.clone(),
             terminator: remap_block_ids(&rb.terminator, block_offset),
         };
         blocks.blocks.push(new_block);
@@ -156,7 +155,7 @@ fn apply_one(
         };
 
         // Snapshot call-site info BEFORE any mutation.
-        let (call_args, opt_guard, fallbacks) = snapshot_call(&blocks.blocks[bi].stmts[si], sub);
+        let (call_args, opt_guard, fallbacks) = snapshot_call(&blocks.blocks[bi].stmts[si].kind, sub);
         let n_params = blocks.blocks[bi].params.len();
         let call_vid = IRVarId(n_params as u32 + si as u32);
 
@@ -238,7 +237,6 @@ fn apply_one(
         {
             let block = &mut blocks.blocks[bi];
             block.stmts.truncate(si);
-            block.stmt_provs.truncate(si);
 
             let base = n_params as u32;
 
@@ -275,15 +273,21 @@ fn apply_one(
                 let fb_bi = fallback_bi_opt.unwrap();
                 IRTerminator::JumpCond {
                     condition: guard,
-                    true_block:  IRBlockTargetId::Block(IRBlockId(repl_entry_bi as u32)),
-                    true_args:   vec![],
-                    false_block: IRBlockTargetId::Block(IRBlockId(fb_bi as u32)),
-                    false_args:  vec![],
+                    then_target: IRBranchTarget::new(
+                        IRBlockTargetId::Block(IRBlockId(repl_entry_bi as u32)),
+                        vec![],
+                    ),
+                    else_target: IRBranchTarget::new(
+                        IRBlockTargetId::Block(IRBlockId(fb_bi as u32)),
+                        vec![],
+                    ),
                 }
             } else {
                 IRTerminator::Jmp {
-                    func: IRBlockTargetId::Block(IRBlockId(repl_entry_bi as u32)),
-                    args: vec![],
+                    target: IRBranchTarget::new(
+                        IRBlockTargetId::Block(IRBlockId(repl_entry_bi as u32)),
+                        vec![],
+                    ),
                 }
             };
         }
@@ -324,22 +328,20 @@ fn build_continuation_block(
     let result_prefix = 2 * n_results;
     let _live_prefix   = 2 * n_live;
 
-    let mut stmts: Vec<IRStmt> = Vec::new();
-    let mut provs: Vec<()> = Vec::new();
+    let mut stmts: Vec<volar_ir_common::Node<IRStmt, ()>> = Vec::new();
 
-    let push = |stmts: &mut Vec<IRStmt>, provs: &mut Vec<()>, s: IRStmt| {
-        stmts.push(s);
-        provs.push(());
+    let push = |stmts: &mut Vec<volar_ir_common::Node<IRStmt, ()>>, s: IRStmt| {
+        stmts.push(volar_ir_common::Node::new(s, (), None));
     };
 
     // Result reads: (Const addr, StorageRead) × n_results.
     for j in 0..n_results {
         let addr_var = IRVarId((2 * j) as u32);
-        push(&mut stmts, &mut provs, Stmt::Const(
+        push(&mut stmts, Stmt::Const(
             Constant { hi: 0, lo: (1 + n_args + j) as u128 },
             addr_ty,
         ));
-        push(&mut stmts, &mut provs, Stmt::StorageRead {
+        push(&mut stmts, Stmt::StorageRead {
             storage: spill, ty: output_tys[j], addr: addr_var,
         });
     }
@@ -347,10 +349,10 @@ fn build_continuation_block(
     // Live reloads: (Const addr, StorageRead) × n_live.
     for (k, &(_, lty)) in live_vars.iter().enumerate() {
         let addr_var = IRVarId((result_prefix + 2 * k) as u32);
-        push(&mut stmts, &mut provs, Stmt::Const(
+        push(&mut stmts, Stmt::Const(
             Constant { hi: 0, lo: (live_base + k) as u128 }, addr_ty,
         ));
-        push(&mut stmts, &mut provs, Stmt::StorageRead {
+        push(&mut stmts, Stmt::StorageRead {
             storage: spill, ty: lty, addr: addr_var,
         });
     }
@@ -360,16 +362,16 @@ fn build_continuation_block(
     for (j, stmt) in orig_block.stmts[si + 1..].iter().enumerate() {
         let orig_var = n_params + (si + 1 + j) as u32;
         if eliminated.contains_key(&orig_var) { continue; }
-        let mut s = stmt.clone();
+        let mut s = stmt.kind.clone();
         apply_aliases_to_stmt(&mut s, alias);
-        push(&mut stmts, &mut provs, s);
+        push(&mut stmts, s);
     }
 
     // Terminator: original, var-remapped.
     let mut terminator = orig_block.terminator.clone();
     apply_aliases_to_ir_terminator(&mut terminator, alias);
 
-    IRBlock { params: vec![], stmts, stmt_provs: provs, terminator }
+    IRBlock { params: vec![], stmts, terminator }
 }
 
 fn build_fallback_block(
@@ -381,24 +383,27 @@ fn build_fallback_block(
     addr_ty: TypeId,
     output_tys: &[TypeId],
 ) -> IRBlock {
-    let mut stmts: Vec<IRStmt> = Vec::new();
-    let mut provs: Vec<()> = Vec::new();
+    let mut stmts: Vec<volar_ir_common::Node<IRStmt, ()>> = Vec::new();
 
     for (j, &fb) in fallbacks.iter().enumerate().take(n_results) {
         let addr_var = IRVarId((2 * j) as u32);
-        stmts.push(Stmt::Const(Constant { hi: 0, lo: (1 + n_args + j) as u128 }, addr_ty));
-        provs.push(());
-        stmts.push(Stmt::StorageWrite {
-            storage: spill, src: fb, ty: output_tys.get(j).copied().unwrap_or(TypeId(0)), addr: addr_var,
-        });
-        provs.push(());
+        stmts.push(volar_ir_common::Node::new(
+            Stmt::Const(Constant { hi: 0, lo: (1 + n_args + j) as u128 }, addr_ty), (), None,
+        ));
+        stmts.push(volar_ir_common::Node::new(
+            Stmt::StorageWrite {
+                storage: spill, src: fb, ty: output_tys.get(j).copied().unwrap_or(TypeId(0)), addr: addr_var,
+            }, (), None,
+        ));
     }
 
     let terminator = IRTerminator::Jmp {
-        func: IRBlockTargetId::Block(IRBlockId(cont_bi as u32)),
-        args: vec![],
+        target: IRBranchTarget::new(
+            IRBlockTargetId::Block(IRBlockId(cont_bi as u32)),
+            vec![],
+        ),
     };
-    IRBlock { params: vec![], stmts, stmt_provs: provs, terminator }
+    IRBlock { params: vec![], stmts, terminator }
 }
 
 // ============================================================================
@@ -435,7 +440,7 @@ fn snapshot_call(
 
 fn find_call_site(block: &IRBlock, name: &str, sub: &IrSubstitution) -> Option<usize> {
     for (si, stmt) in block.stmts.iter().enumerate() {
-        let m = match (sub, stmt) {
+        let m = match (sub, &stmt.kind) {
             (IrSubstitution::Oracle { .. }, Stmt::OracleCall { name: n, .. }) => n == name,
             (IrSubstitution::Action { .. }, Stmt::ActionCall { name: n, .. }) => n == name,
             (IrSubstitution::Rng    { .. }, Stmt::Rng { name: n, .. })        => n == name,
@@ -457,7 +462,7 @@ fn find_eliminated_outputs(
     if matches!(sub, IrSubstitution::Rng { .. }) { return out; }
     for (j, stmt) in block.stmts[si + 1..].iter().enumerate() {
         let orig = n_params as u32 + (si + 1 + j) as u32;
-        match stmt {
+        match &stmt.kind {
             Stmt::OracleOutput { call, idx, .. } if *call == call_vid => { out.insert(orig, *idx); }
             Stmt::ActionOutput { call, idx, .. } if *call == call_vid => { out.insert(orig, *idx); }
             _ => {}
@@ -487,7 +492,7 @@ fn collect_live_vars(
     };
 
     for stmt in &block.stmts[si + 1..] {
-        visit_stmt_vars(stmt, &mut visit);
+        visit_stmt_vars(&stmt.kind, &mut visit);
     }
     visit_terminator_vars(&block.terminator, &mut visit);
 
@@ -501,7 +506,7 @@ fn var_type_in_block(block: &IRBlock, vid: IRVarId, _types: &IRTypes) -> TypeId 
     } else {
         let si = vid.0 as usize - n;
         block.stmts.get(si)
-            .and_then(|s| stmt_output_type(s))
+            .and_then(|s| stmt_output_type(&s.kind))
             .unwrap_or(TypeId(0))
     }
 }
@@ -531,22 +536,22 @@ fn visit_stmt_vars<F: FnMut(IRVarId)>(stmt: &IRStmt, f: &mut F) {
 
 fn visit_terminator_vars<F: FnMut(IRVarId)>(term: &IRTerminator, f: &mut F) {
     match term {
-        IRTerminator::Jmp { func, args } => {
-            if let IRBlockTargetId::Dyn(v) = func { f(*v); }
-            args.iter().for_each(|&a| f(a));
+        IRTerminator::Jmp { target } => {
+            if let IRBlockTargetId::Dyn(v) = &target.dest { f(*v); }
+            target.args.iter().for_each(|&a| f(a));
         }
-        IRTerminator::JumpCond { condition, true_block, true_args, false_block, false_args } => {
+        IRTerminator::JumpCond { condition, then_target, else_target } => {
             f(*condition);
-            if let IRBlockTargetId::Dyn(v) = true_block  { f(*v); }
-            if let IRBlockTargetId::Dyn(v) = false_block { f(*v); }
-            true_args.iter().for_each(|&a| f(a));
-            false_args.iter().for_each(|&a| f(a));
+            if let IRBlockTargetId::Dyn(v) = &then_target.dest { f(*v); }
+            if let IRBlockTargetId::Dyn(v) = &else_target.dest { f(*v); }
+            then_target.args.iter().for_each(|&a| f(a));
+            else_target.args.iter().for_each(|&a| f(a));
         }
         IRTerminator::JumpTable { index, cases } => {
             f(*index);
-            cases.values().for_each(|(tgt, args)| {
-                if let IRBlockTargetId::Dyn(v) = tgt { f(*v); }
-                args.iter().for_each(|&a| f(a));
+            cases.values().for_each(|target| {
+                if let IRBlockTargetId::Dyn(v) = &target.dest { f(*v); }
+                target.args.iter().for_each(|&a| f(a));
             });
         }
     }
@@ -609,19 +614,40 @@ fn remap_block_ids(term: &IRTerminator, offset: usize) -> IRTerminator {
         other => other.clone(),
     };
     match term {
-        IRTerminator::Jmp { func, args } =>
-            IRTerminator::Jmp { func: rt(func), args: args.clone() },
-        IRTerminator::JumpCond { condition, true_block, true_args, false_block, false_args } =>
-            IRTerminator::JumpCond {
-                condition: *condition,
-                true_block: rt(true_block), true_args: true_args.clone(),
-                false_block: rt(false_block), false_args: false_args.clone(),
+        IRTerminator::Jmp { target } => IRTerminator::Jmp {
+            target: IRBranchTarget {
+                dest: rt(&target.dest),
+                args: target.args.clone(),
+                reentry: target.reentry.clone(),
             },
-        IRTerminator::JumpTable { index, cases } =>
-            IRTerminator::JumpTable {
-                index: *index,
-                cases: cases.iter().map(|(c, (t, a))| (*c, (rt(t), a.clone()))).collect(),
+        },
+        IRTerminator::JumpCond { condition, then_target, else_target } => IRTerminator::JumpCond {
+            condition: *condition,
+            then_target: IRBranchTarget {
+                dest: rt(&then_target.dest),
+                args: then_target.args.clone(),
+                reentry: then_target.reentry.clone(),
             },
+<<<<<<< HEAD
+            else_target: IRBranchTarget {
+                dest: rt(&else_target.dest),
+                args: else_target.args.clone(),
+                reentry: else_target.reentry.clone(),
+            },
+        },
+        IRTerminator::JumpTable { index, cases } => IRTerminator::JumpTable {
+            index: *index,
+            cases: cases.iter().map(|(c, target)| {
+                (*c, IRBranchTarget {
+                    dest: rt(&target.dest),
+                    args: target.args.clone(),
+                    reentry: target.reentry.clone(),
+                })
+            }).collect(),
+        },
+        _ => panic!("remap_block_ids: unhandled IRTerminator variant — add block-id remapping for this variant"),
+=======
+>>>>>>> origin/main
     }
 }
 
@@ -633,7 +659,7 @@ fn scan_max_storage(blocks: &IRBlocks) -> u32 {
     let mut max = 0u32;
     for block in &blocks.blocks {
         for stmt in &block.stmts {
-            match stmt {
+            match &stmt.kind {
                 Stmt::StorageRead { storage, .. } | Stmt::StorageWrite { storage, .. } => {
                     if storage.0 > max { max = storage.0; }
                 }
@@ -656,7 +682,7 @@ mod tests {
     extern crate std;
     use alloc::{string::ToString, vec, vec::Vec};
     use volar_ir::ir::{
-        IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRTerminator, IRVarId, IRTypes,
+        IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRTerminator, IRVarId, IRTypes,
     };
     use volar_ir_common::{
         Constant, IrType, OracleDecl, RngDecl, Stmt, StorageId, Type, TypeId,
@@ -664,12 +690,12 @@ mod tests {
     use super::{IrSubstitution, ir_storage_allocator, substitute_ir_blocks};
 
     fn ret() -> IRTerminator {
-        IRTerminator::Jmp { func: IRBlockTargetId::Return, args: vec![] }
+        IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![]) }
     }
 
     fn block(stmts: Vec<IRStmt>, terminator: IRTerminator) -> IRBlock {
-        let stmt_provs = vec![(); stmts.len()];
-        IRBlock { params: vec![], stmts, stmt_provs, terminator }
+        let stmts = stmts.into_iter().map(|s| volar_ir_common::Node::new(s, (), None)).collect();
+        IRBlock { params: vec![], stmts, terminator }
     }
 
     type IRStmt = volar_ir::ir::IRStmt;
@@ -727,10 +753,7 @@ mod tests {
                 addr: IRVarId(2),
             },
         ];
-        let repl_term = IRTerminator::Jmp {
-            func: IRBlockTargetId::Dyn(cont_var),
-            args: vec![],
-        };
+        let repl_term = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Dyn(cont_var), vec![],) };
         let mut repl = IRBlocks::new(vec![block(repl_stmts, repl_term)]);
         repl.oracles.push(OracleDecl {
             name: "h".to_string(),
@@ -778,9 +801,9 @@ mod tests {
         substitute_ir_blocks(&mut host, &mut types, &subs, &mut alloc);
 
         // Pre-call block (index 0) should have no OracleCall.
-        for stmt in &host.blocks[0].stmts {
+        for node in &host.blocks[0].stmts {
             assert!(
-                !matches!(stmt, Stmt::OracleCall { name, .. } if name == "h"),
+                !matches!(&node.kind, Stmt::OracleCall { name, .. } if name == "h"),
                 "OracleCall should have been removed from the pre-call block"
             );
         }
@@ -788,7 +811,7 @@ mod tests {
         assert!(
             matches!(
                 &host.blocks[0].terminator,
-                IRTerminator::Jmp { func: IRBlockTargetId::Block(IRBlockId(1)), .. }
+                IRTerminator::Jmp { target } if target.dest == IRBlockTargetId::Block(IRBlockId(1))
             ),
             "pre-call block should jump to the replacement entry"
         );
@@ -845,8 +868,8 @@ mod tests {
         assert_eq!(count, 1);
 
         // Pre-call block has no Rng stmt.
-        for stmt in &host.blocks[0].stmts {
-            assert!(!matches!(stmt, Stmt::Rng { name, .. } if name == "rand"));
+        for node in &host.blocks[0].stmts {
+            assert!(!matches!(&node.kind, Stmt::Rng { name, .. } if name == "rand"));
         }
     }
 
@@ -885,8 +908,8 @@ mod tests {
         // They must be distinct across the two substitutions.
         let mut spill_ids: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
         for b in &host.blocks {
-            for stmt in &b.stmts {
-                if let Stmt::StorageWrite { storage, .. } = stmt {
+            for node in &b.stmts {
+                if let Stmt::StorageWrite { storage, .. } = &node.kind {
                     spill_ids.insert(storage.0);
                 }
             }
@@ -910,7 +933,7 @@ mod tests {
             Stmt::Const(Constant { hi: 0, lo: 0 }, u64_ty),        // v3: result value
             Stmt::StorageWrite { storage: StorageId::DEFAULT, src: IRVarId(3), ty: u64_ty, addr: IRVarId(2) },
         ];
-        let term = IRTerminator::Jmp { func: IRBlockTargetId::Dyn(IRVarId(1)), args: vec![] };
+        let term = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Dyn(IRVarId(1)), vec![] ) };
         let mut repl = IRBlocks::new(vec![block(stmts, term)]);
         repl.oracles.push(OracleDecl { name: "h".to_string(), params: vec![], results: vec![u64_ty] });
         repl
@@ -927,7 +950,7 @@ mod tests {
             Stmt::Const(Constant { hi: 0, lo: 0 }, u64_ty),
             Stmt::StorageWrite { storage: StorageId::DEFAULT, src: IRVarId(3), ty: u64_ty, addr: IRVarId(2) },
         ];
-        let term = IRTerminator::Jmp { func: IRBlockTargetId::Dyn(IRVarId(1)), args: vec![] };
+        let term = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Dyn(IRVarId(1)), vec![] ) };
         let mut repl = IRBlocks::new(vec![block(stmts, term)]);
         repl.rngs.push(RngDecl { name: "rand".to_string(), ty: u64_ty });
         repl

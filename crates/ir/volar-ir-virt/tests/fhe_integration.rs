@@ -30,13 +30,13 @@ use volar_ir::{
     boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
     ir::{IRBlockId, IRBlockTargetId, IRVarId},
 };
-use volar_ir_virt::{virtualize_bir, BytecodeForm, DispatchMode, VirtualizeConfig};
+use volar_ir_common::Node;
+use volar_ir_virt::{virtualize_bir, DispatchMode, VirtualizeConfig};
 use volar_weaver::fhe::derive_storage_config;
 
 fn cfg_oblivious() -> VirtualizeConfig {
     VirtualizeConfig {
         dispatch: DispatchMode::Oblivious,
-        bytecode_form: BytecodeForm::InIr,
         ..VirtualizeConfig::default()
     }
 }
@@ -48,21 +48,13 @@ fn mini_bir() -> BIrBlocks {
     BIrBlocks { blocks: vec![
         BIrBlock {
             params: 2,
-            stmts: vec![BIrStmt::Xor(IRVarId(0), IRVarId(1))],
-            stmt_provs: vec![()],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Block(IRBlockId(1)),
-                args: vec![IRVarId(2), IRVarId(1)],
-            }),
+            stmts: vec![BIrStmt::Xor(IRVarId(0), IRVarId(1))].into_iter().map(|s| Node::new(s, (), None)).collect(),
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Block(IRBlockId(1)), args: vec![IRVarId(2), IRVarId(1)], }),
         },
         BIrBlock {
             params: 2,
-            stmts: vec![BIrStmt::Not(IRVarId(0))],
-            stmt_provs: vec![()],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Return,
-                args: vec![IRVarId(2)],
-            }),
+            stmts: vec![BIrStmt::Not(IRVarId(0))].into_iter().map(|s| Node::new(s, (), None)).collect(),
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(2)], }),
         },
     ], pre_init: vec![] }
 }

@@ -302,7 +302,7 @@ mod tests {
         let mut vals: Vec<bool> = inputs.to_vec();
         debug_assert_eq!(vals.len(), np);
         for stmt in &block.stmts {
-            let v = match stmt {
+            let v = match &stmt.kind {
                 BIrStmt::Zero => false,
                 BIrStmt::One => true,
                 BIrStmt::And(a, b) => vals[a.0 as usize] && vals[b.0 as usize],
@@ -325,17 +325,16 @@ mod tests {
         let b: Vec<u32> = (n as u32..2 * n as u32).collect();
         let mut buf = GateBuf::new(2 * n as u32);
         let result = emit_lt(&a, &b, &mut buf);
-        let stmts: Vec<BIrStmt> = buf.gates.iter().map(|(_, s)| s.clone()).collect();
-        let stmt_provs = vec![(); stmts.len()];
+        let stmts: Vec<volar_ir_common::Node<BIrStmt>> = buf
+            .gates
+            .iter()
+            .map(|(_, s)| volar_ir_common::Node::new(s.clone(), (), None))
+            .collect();
         BIrBlocks {
             blocks: vec![BIrBlock {
                 params: 2 * n as u32,
                 stmts,
-                stmt_provs,
-                terminator: BIrTerminator::Jmp(BIrTarget {
-                    block: IRBlockTargetId::Return,
-                    args: vec![IRVarId(result)],
-                }),
+                terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(result)] }),
             }],
             pre_init: vec![],
         }
@@ -350,17 +349,16 @@ mod tests {
         let a: Vec<u32> = (0..n as u32).collect();
         let mut buf = GateBuf::new(n as u32);
         let outs = emit_incr(&a, &mut buf);
-        let stmts: Vec<BIrStmt> = buf.gates.iter().map(|(_, s)| s.clone()).collect();
-        let stmt_provs = vec![(); stmts.len()];
+        let stmts: Vec<volar_ir_common::Node<BIrStmt>> = buf
+            .gates
+            .iter()
+            .map(|(_, s)| volar_ir_common::Node::new(s.clone(), (), None))
+            .collect();
         BIrBlocks {
             blocks: vec![BIrBlock {
                 params: n as u32,
                 stmts,
-                stmt_provs,
-                terminator: BIrTerminator::Jmp(BIrTarget {
-                    block: IRBlockTargetId::Return,
-                    args: vec![IRVarId(outs[out_bit])],
-                }),
+                terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(outs[out_bit])] }),
             }],
             pre_init: vec![],
         }

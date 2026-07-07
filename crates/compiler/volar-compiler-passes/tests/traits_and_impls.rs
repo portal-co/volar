@@ -894,7 +894,11 @@ fn test_display_rust_module_writer() {
 
 #[test]
 fn test_display_rust_expr_writer() {
-    let expr = volar_compiler::IrExpr::Lit(volar_compiler::IrLit::Int(42));
+    let expr = volar_compiler::IrExpr::new(
+        volar_compiler::IrExprKind::Lit(volar_compiler::IrLit::Int(42)),
+        (),
+        None,
+    );
     let s = format!("{}", DisplayRust(ExprWriter { expr: &expr }));
     assert_eq!(s, "42");
 }

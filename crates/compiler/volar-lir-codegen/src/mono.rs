@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 use volar_compiler::ir::{
     ArrayKind, ArrayLength, IrAnyFunction, IrCfgBlock, IrCfgBody, IrCfgFunction,
     IrCfgJump, IrCfgModule, IrCfgTerminator, IrEnum, IrEnumVariant, IrEnumVariantData, IrExpr,
-    IrField, IrFunction, IrImpl, IrImplItem, IrModule, IrParam, IrStmt, IrStruct, IrType,
-    IrTypeAlias, StructKind, TypeNumConst,
+    IrExprKind, IrField, IrFunction, IrImpl, IrImplItem, IrModule, IrParam, IrStmt, IrStmtKind,
+    IrStruct, IrType, IrTypeAlias, StructKind, TypeNumConst,
 };
 
 // ============================================================================
@@ -185,7 +185,7 @@ fn monomorphize_struct(s: &IrStruct, env: &MonoEnv) -> IrStruct {
 // ============================================================================
 
 pub fn monomorphize_function(func: &IrFunction, env: &MonoEnv) -> IrFunction {
-    IrFunction {
+    IrFunction { no_inline: false,
         name: func.name.clone(),
         module_path: func.module_path.clone(),
         generics: func
@@ -335,7 +335,6 @@ fn mono_cfg_block(block: &IrCfgBlock, env: &MonoEnv) -> IrCfgBlock {
             .map(|p| IrParam { name: p.name.clone(), ty: mono_type(&p.ty, env) })
             .collect(),
         stmts: block.stmts.iter().map(|s| mono_stmt(s, env)).collect(),
-        stmt_provs: Vec::new(),
         terminator: mono_cfg_terminator(&block.terminator, env),
     }
 }
@@ -358,6 +357,7 @@ fn mono_cfg_jump(jump: &IrCfgJump, env: &MonoEnv) -> IrCfgJump {
     IrCfgJump {
         target: jump.target,
         args: jump.args.iter().map(|a| mono_expr(a, env)).collect(),
+        reentry: jump.reentry.clone(),
     }
 }
 
@@ -454,27 +454,34 @@ pub(crate) fn mono_len(len: &ArrayLength, env: &MonoEnv) -> ArrayLength {
 fn mono_block(block: &volar_compiler::ir::IrBlock, env: &MonoEnv) -> volar_compiler::ir::IrBlock {
     volar_compiler::ir::IrBlock {
         stmts: block.stmts.iter().map(|s| mono_stmt(s, env)).collect(),
-        stmt_provs: Vec::new(),
         expr: block.expr.as_ref().map(|e| Box::new(mono_expr(e, env))),
     }
 }
 
 fn mono_stmt(stmt: &IrStmt, env: &MonoEnv) -> IrStmt {
-    match stmt {
-        IrStmt::Let { pattern, ty, init } => IrStmt::Let {
+    let kind = match &stmt.kind {
+        IrStmtKind::Let { pattern, ty, init } => IrStmtKind::Let {
             pattern: pattern.clone(),
             ty: ty.as_ref().map(|t| mono_type(t, env)),
             init: init.as_ref().map(|e| mono_expr(e, env)),
         },
+<<<<<<< HEAD
+        IrStmtKind::Semi(e) => IrStmtKind::Semi(mono_expr(e, env)),
+        IrStmtKind::Expr(e) => IrStmtKind::Expr(mono_expr(e, env)),
+        _ => panic!("mono_stmt: unhandled IrStmt variant — add monomorphization for this variant"),
+    };
+    IrStmt::new(kind, stmt.prov.clone(), stmt.side)
+=======
         IrStmt::Semi(e) => IrStmt::Semi(mono_expr(e, env)),
         IrStmt::Expr(e) => IrStmt::Expr(mono_expr(e, env)),
     }
+>>>>>>> origin/main
 }
 
 fn mono_expr(expr: &IrExpr, env: &MonoEnv) -> IrExpr {
-    use IrExpr::*;
-    match expr {
-        Lit(_) | Var(_) | Continue => expr.clone(),
+    use IrExprKind::*;
+    let kind = match &expr.kind {
+        Lit(_) | Var(_) | Continue => expr.kind.clone(),
 
         Path { segments, type_args } => Path {
             segments: segments.clone(),
@@ -627,8 +634,9 @@ fn mono_expr(expr: &IrExpr, env: &MonoEnv) -> IrExpr {
             body: Box::new(mono_expr(body, env)),
         },
 
-        IterPipeline(_) | Range { .. } => expr.clone(),
+        IterPipeline(_) | Range { .. } => expr.kind.clone(),
 
         other => other.clone(),
-    }
+    };
+    IrExpr::new(kind, expr.prov.clone(), expr.side)
 }

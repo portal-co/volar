@@ -18,19 +18,33 @@ use alloc::{
 
 use volar_compiler::{
     ir::{
-        ExternalKind, IrBlock, IrExpr, IrFunction, IrLit, IrModule, IrParam,
-        IrPattern, IrStmt, IrType, PrimitiveType, SpecBinOp, SpecUnaryOp,
+        ExternalKind, IrBlock, IrExpr, IrExprKind, IrFunction, IrLit, IrModule, IrParam,
+        IrPattern, IrStmt, IrStmtKind, IrType, PrimitiveType, SpecBinOp, SpecUnaryOp,
     },
     linkage::LinkageSystem,
 };
+use volar_discipline::{Tagged, Transparent};
 use volar_ir::boolar::{BIrBlocks, BIrStmt};
 use volar_ir::ir::{
     IRBlocks, IRBlockTargetId, IRTerminator,
     IRTypes as CirTypes, IRVarId as CirVar,
-    Stmt,
-};
+    Stmt, IRBranchTarget};
 
+<<<<<<< HEAD
+use crate::{build_return, expand_ors, ir_expr, var, ProvenanceHandler};
+
+/// Construct a fresh `IrStmt` with default provenance and no side.
+fn ir_stmt<Q: Clone + Default>(kind: IrStmtKind<Q>) -> IrStmt<Q> {
+    IrStmt::new(kind, Q::default(), None)
+}
+
+/// Construct an `IrStmt` carrying an explicit provenance value (no side).
+fn ir_stmt_p<Q: Clone>(kind: IrStmtKind<Q>, prov: Q) -> IrStmt<Q> {
+    IrStmt::new(kind, prov, None)
+}
+=======
 use crate::{build_return, expand_ors, var};
+>>>>>>> origin/main
 
 // ============================================================================
 // Boolar (BIrBlocks) → cleartext bool evaluator
@@ -50,7 +64,7 @@ pub fn weave_noop(
     circuit: &BIrBlocks,
     name: &str,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
+) -> Tagged<Transparent, IrModule<IrFunction>> {
     assert!(
         circuit.is_circuit(),
         "weave_noop: circuit must satisfy is_circuit() (single block with Return terminator)"
@@ -74,53 +88,52 @@ pub fn weave_noop(
     }
 
     let mut stmts: Vec<IrStmt> = Vec::new();
-    let mut stmt_provs: Vec<()> = Vec::new();
 
     for (result_id, stmt, _prov) in &expanded {
         let let_name = format!("wire_{}", result_id.0);
 
         let init_expr = match stmt {
-            BIrStmt::Zero => IrExpr::Lit(IrLit::Bool(false)),
+            BIrStmt::Zero => ir_expr(IrExprKind::Lit(IrLit::Bool(false))),
 
-            BIrStmt::One => IrExpr::Lit(IrLit::Bool(true)),
+            BIrStmt::One => ir_expr(IrExprKind::Lit(IrLit::Bool(true))),
 
             BIrStmt::Xor(a, b) => {
                 let name_a = var_names[&a.0].clone();
                 let name_b = var_names[&b.0].clone();
-                IrExpr::Binary {
+                ir_expr(IrExprKind::Binary {
                     op: SpecBinOp::BitXor,
                     left: Box::new(var(&name_a)),
                     right: Box::new(var(&name_b)),
-                }
+                })
             }
 
             BIrStmt::And(a, b) => {
                 let name_a = var_names[&a.0].clone();
                 let name_b = var_names[&b.0].clone();
-                IrExpr::Binary {
+                ir_expr(IrExprKind::Binary {
                     op: SpecBinOp::BitAnd,
                     left: Box::new(var(&name_a)),
                     right: Box::new(var(&name_b)),
-                }
+                })
             }
 
             BIrStmt::Or(a, b) => {
                 // expand_ors should have removed these, but handle defensively
                 let name_a = var_names[&a.0].clone();
                 let name_b = var_names[&b.0].clone();
-                IrExpr::Binary {
+                ir_expr(IrExprKind::Binary {
                     op: SpecBinOp::BitOr,
                     left: Box::new(var(&name_a)),
                     right: Box::new(var(&name_b)),
-                }
+                })
             }
 
             BIrStmt::Not(a) => {
                 let name_a = var_names[&a.0].clone();
-                IrExpr::Unary {
+                ir_expr(IrExprKind::Unary {
                     op: SpecUnaryOp::Not,
                     expr: Box::new(var(&name_a)),
-                }
+                })
             }
 
             BIrStmt::OracleCall { .. }
@@ -137,19 +150,18 @@ pub fn weave_noop(
             }
         };
 
-        stmts.push(IrStmt::Let {
+        stmts.push(ir_stmt(IrStmtKind::Let {
             pattern: IrPattern::ident(&let_name),
             ty: None,
             init: Some(init_expr),
-        });
-        stmt_provs.push(());
+        }));
         var_names.insert(result_id.0, let_name);
     }
 
     let (ret_expr, ret_type) =
         build_return(block, &var_names, IrType::Primitive(PrimitiveType::Bool));
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: format!("noop_{}", name),
         module_path: vec![],
         generics: vec![],
@@ -159,7 +171,6 @@ pub fn weave_noop(
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -178,7 +189,7 @@ pub fn weave_noop(
     if let Some(ls) = linkage {
         ls.apply(&mut module);
     }
-    module
+    Tagged::seal(module)
 }
 
 // ============================================================================
@@ -199,7 +210,7 @@ pub fn weave_noop_ir(
     types: &CirTypes,
     name: &str,
     linkage: Option<&LinkageSystem>,
-) -> IrModule<IrFunction> {
+) -> Tagged<Transparent, IrModule<IrFunction>> {
     assert!(
         circuit.is_circuit(),
         "weave_noop_ir: circuit must satisfy is_circuit() (single block with Return terminator)"
@@ -224,26 +235,24 @@ pub fn weave_noop_ir(
     }
 
     let mut stmts: Vec<IrStmt> = Vec::new();
-    let mut stmt_provs: Vec<()> = Vec::new();
 
-    for (i, stmt) in block.stmts.iter().enumerate() {
+    for (i, node) in block.stmts.iter().enumerate() {
         let result_id = CirVar(num_params as u32 + i as u32);
         let let_name = format!("w_{}", result_id.0);
 
-        let init_expr = lower_ir_stmt(stmt, &var_names, types);
+        let init_expr = lower_ir_stmt(&node.kind, &var_names, types);
 
-        stmts.push(IrStmt::Let {
+        stmts.push(ir_stmt(IrStmtKind::Let {
             pattern: IrPattern::ident(&let_name),
             ty: None,
             init: Some(init_expr),
-        });
-        stmt_provs.push(());
+        }));
         var_names.insert(result_id.0, let_name);
     }
 
     // Build the return expression from the terminator.
     let ret_args = match &block.terminator {
-        IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
         _ => panic!("weave_noop_ir: expected Jmp(Return) terminator"),
     };
 
@@ -259,10 +268,10 @@ pub fn weave_noop_ir(
             .iter()
             .map(|_| IrType::Primitive(PrimitiveType::Bool))
             .collect();
-        (IrExpr::Tuple(exprs), IrType::Tuple(tys))
+        (ir_expr(IrExprKind::Tuple(exprs)), IrType::Tuple(tys))
     };
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: format!("noop_ir_{}", name),
         module_path: vec![],
         generics: vec![],
@@ -272,7 +281,6 @@ pub fn weave_noop_ir(
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -291,14 +299,145 @@ pub fn weave_noop_ir(
     if let Some(ls) = linkage {
         ls.apply(&mut module);
     }
-    module
+    Tagged::seal(module)
 }
 
+<<<<<<< HEAD
+/// Generic counterpart to [`weave_noop_ir`] that threads provenance through
+/// `handler` instead of erasing it to `()`.
+///
+/// Each emitted `let w_N = ...;` statement's provenance is
+/// `handler.map(&block.stmts[i].prov)`, the provenance of the source `IRStmt`
+/// it was lowered from.
+///
+/// # Panics
+/// Panics if `circuit` does not satisfy `is_circuit()`, or if an unsupported
+/// `Stmt` variant is encountered.
+pub fn weave_noop_ir_with_handler<P, H>(
+    circuit: &IRBlocks<P>,
+    types: &CirTypes,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+    handler: &H,
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
+where
+    P: Clone,
+    H: ProvenanceHandler<P>,
+    H::Output: Default,
+{
+    assert!(
+        circuit.is_circuit(),
+        "weave_noop_ir_with_handler: circuit must satisfy is_circuit() (single block with Return terminator)"
+    );
+
+    let block = &circuit.blocks[0];
+    let num_params = block.params.len();
+
+    // Build a mapping from IRVarId → name string.
+    let mut var_names = BTreeMap::<u32, String>::new();
+    for i in 0..num_params {
+        var_names.insert(i as u32, format!("w_{}", i));
+    }
+
+    // All params are `bool` for the cleartext evaluator.
+    let mut params: Vec<IrParam> = Vec::new();
+    for i in 0..num_params {
+        params.push(IrParam {
+            name: format!("w_{}", i),
+            ty: IrType::Primitive(PrimitiveType::Bool),
+        });
+    }
+
+    let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
+
+    for (i, node) in block.stmts.iter().enumerate() {
+        let result_id = CirVar(num_params as u32 + i as u32);
+        let let_name = format!("w_{}", result_id.0);
+
+        let init_expr: IrExpr<H::Output> = lower_ir_stmt(&node.kind, &var_names, types);
+
+        stmts.push(ir_stmt_p(
+            IrStmtKind::Let {
+                pattern: IrPattern::ident(&let_name),
+                ty: None,
+                init: Some(init_expr),
+            },
+            handler.map(&node.prov),
+        ));
+        var_names.insert(result_id.0, let_name);
+    }
+
+    // Build the return expression from the terminator.
+    let ret_args = match &block.terminator {
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
+        _ => panic!("weave_noop_ir_with_handler: expected Jmp(Return) terminator"),
+    };
+
+    let (ret_expr, ret_type) = if ret_args.len() == 1 {
+        let expr = var(var_names[&ret_args[0].0].as_str());
+        (expr, IrType::Primitive(PrimitiveType::Bool))
+    } else {
+        let exprs: Vec<IrExpr<H::Output>> = ret_args
+            .iter()
+            .map(|id| var(var_names[&id.0].as_str()))
+            .collect();
+        let tys: Vec<IrType> = ret_args
+            .iter()
+            .map(|_| IrType::Primitive(PrimitiveType::Bool))
+            .collect();
+        (ir_expr(IrExprKind::Tuple(exprs)), IrType::Tuple(tys))
+    };
+
+    let func = IrFunction { no_inline: false,
+        name: format!("noop_ir_{}", name),
+        module_path: vec![],
+        generics: vec![],
+        receiver: None,
+        params,
+        return_type: Some(ret_type),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts,
+            expr: Some(Box::new(ret_expr)),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+
+    let mut module = IrModule {
+        name: "weaved_noop_ir".into(),
+        functions: vec![func],
+        structs: vec![],
+        enums: vec![],
+        traits: vec![],
+        impls: vec![],
+        type_aliases: vec![],
+        consts: vec![],
+    };
+    if let Some(ls) = linkage {
+        let lib_prov: H::Output = block.stmts.first()
+            .map(|n| handler.map(&n.prov))
+            .expect("weave_noop_ir_with_handler: circuit has no statements; cannot derive provenance for linked specs");
+        ls.apply_converting(&mut module, || lib_prov.clone());
+    }
+    Tagged::seal(module)
+}
+
+/// Lower a single `IRStmt` (Volar field-level) to a cleartext `IrExpr<Q>`.
+///
+/// Only pure boolean/arithmetic statements are handled; unsupported variants
+/// cause a weave-time panic.
+///
+/// The emitted expressions (`Lit`, `Var`, `Binary`, `Unary`) never carry
+/// nested blocks, so this is generic over the output provenance `Q` with no
+/// provenance value ever materialized here.
+fn lower_ir_stmt<Q: Clone + Default>(
+=======
 /// Lower a single `IRStmt` (Volar field-level) to a cleartext `IrExpr<()>`.
 ///
 /// Only pure boolean/arithmetic statements are handled; unsupported variants
 /// cause a weave-time panic.
 fn lower_ir_stmt(
+>>>>>>> origin/main
     stmt: &Stmt<CirVar>,
     var_names: &BTreeMap<u32, String>,
     types: &CirTypes,
@@ -308,11 +447,11 @@ fn lower_ir_stmt(
         Stmt::Const(c, ty) => {
             let is_bit = types.is_bit(*ty);
             if is_bit {
-                IrExpr::Lit(IrLit::Bool(c.lo != 0))
+                ir_expr(IrExprKind::Lit(IrLit::Bool(c.lo != 0)))
             } else {
                 // For wider constants, emit as a u64 integer literal cast; for
                 // the noop evaluator a raw integer literal is good enough.
-                IrExpr::Lit(IrLit::Int(c.lo as i128))
+                ir_expr(IrExprKind::Lit(IrLit::Int(c.lo as i128)))
             }
         }
 
@@ -326,9 +465,9 @@ fn lower_ir_stmt(
             let mut acc: Option<IrExpr> =
                 if const_val != 0 || coeffs.is_empty() {
                     Some(if is_bit {
-                        IrExpr::Lit(IrLit::Bool(const_val != 0))
+                        ir_expr(IrExprKind::Lit(IrLit::Bool(const_val != 0)))
                     } else {
-                        IrExpr::Lit(IrLit::Int(constant.lo as i128))
+                        ir_expr(IrExprKind::Lit(IrLit::Int(constant.lo as i128)))
                     })
                 } else {
                     None
@@ -345,11 +484,11 @@ fn lower_ir_stmt(
                     let term = var::<()>(&vname);
                     product = Some(match product {
                         None => term,
-                        Some(p) => IrExpr::Binary {
+                        Some(p) => ir_expr(IrExprKind::Binary {
                             op: SpecBinOp::BitAnd,
                             left: Box::new(p),
                             right: Box::new(term),
-                        },
+                        }),
                     });
                 }
                 if let Some(p) = product {
@@ -358,11 +497,11 @@ fn lower_ir_stmt(
                     if coeff & 1 != 0 {
                         acc = Some(match acc {
                             None => p,
-                            Some(a) => IrExpr::Binary {
+                            Some(a) => ir_expr(IrExprKind::Binary {
                                 op: if is_bit { SpecBinOp::BitXor } else { SpecBinOp::Add },
                                 left: Box::new(a),
                                 right: Box::new(p),
-                            },
+                            }),
                         });
                     }
                 }
@@ -371,9 +510,9 @@ fn lower_ir_stmt(
             // If acc is still None (all zero), emit false/0.
             acc.unwrap_or_else(|| {
                 if is_bit {
-                    IrExpr::Lit(IrLit::Bool(false))
+                    ir_expr(IrExprKind::Lit(IrLit::Bool(false)))
                 } else {
-                    IrExpr::Lit(IrLit::Int(0))
+                    ir_expr(IrExprKind::Lit(IrLit::Int(0)))
                 }
             })
         }
@@ -390,7 +529,7 @@ fn lower_ir_stmt(
         }
         Stmt::StorageWrite { .. } => {
             // StorageWrite produces a dummy zero bit (matches BIrStmt::StorageWrite semantics).
-            IrExpr::Lit(IrLit::Bool(false))
+            ir_expr(IrExprKind::Lit(IrLit::Bool(false)))
         }
 
         // ---- Unsupported ----------------------------------------------------
@@ -451,7 +590,7 @@ mod tests {
     #[test]
     fn test_weave_noop_compiles() {
         let circuit = build_xor_and_circuit();
-        let module = weave_noop(&circuit, "test", None);
+        let module = weave_noop(&circuit, "test", None).into_inner();
         let code = print_noop_module(&module);
         run_compile_check(&code, "noop_xor_and");
     }
@@ -459,7 +598,7 @@ mod tests {
     #[test]
     fn test_weave_noop_and_circuit() {
         let circuit = build_and_circuit();
-        let module = weave_noop(&circuit, "and2", None);
+        let module = weave_noop(&circuit, "and2", None).into_inner();
         let code = print_noop_module(&module);
         run_compile_check(&code, "noop_and_circuit");
     }
@@ -467,7 +606,7 @@ mod tests {
     #[test]
     fn test_weave_noop_is_cleartext() {
         let circuit = build_xor_and_circuit();
-        let module = weave_noop(&circuit, "test", None);
+        let module = weave_noop(&circuit, "test", None).into_inner();
         let code = print_noop_module(&module);
         assert!(
             code.contains('^') || code.contains('&'),
@@ -504,22 +643,65 @@ mod tests {
         let block = CirBlock {
             params: alloc::vec![bit, bit],
             stmts: alloc::vec![
-                Stmt::Poly {
-                    ty: bit,
-                    coeffs,
-                    constant: CirConst { hi: 0, lo: 0 },
-                },
+                volar_ir_common::Node::new(
+                    Stmt::Poly {
+                        ty: bit,
+                        coeffs,
+                        constant: CirConst { hi: 0, lo: 0 },
+                    },
+                    (),
+                    None,
+                ),
             ],
-            stmt_provs: alloc::vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: alloc::vec![CirVar(2)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![CirVar(2)],) },
         };
 
         let circuit = IRBlocks::new(alloc::vec![block]);
-        let module = weave_noop_ir(&circuit, &types, "and_ir", None);
+        let module = weave_noop_ir(&circuit, &types, "and_ir", None).into_inner();
         let code = print_noop_module(&module);
         run_compile_check(&code, "noop_ir_and");
     }
+<<<<<<< HEAD
+
+    #[test]
+    fn test_weave_noop_ir_with_handler_threads_provenance() {
+        use crate::KeepProvenance;
+        use volar_ir::ir::{
+            IRBlocks, IRBlock as CirBlock, IRBlockTargetId, IRTerminator,
+            IRTypes as CirTypes, IRVarId as CirVar,
+            IRType as CircuitIrType, PrimType,
+            Stmt, Constant as CirConst,
+        };
+
+        // Same AND circuit as `test_weave_noop_ir_compiles`, but with the
+        // single statement's provenance set to 9 instead of `()`.
+        let mut types = CirTypes::new();
+        let bit = types.intern(CircuitIrType::Primitive(PrimType::Bit));
+        let mut coeffs = BTreeMap::new();
+        coeffs.insert(alloc::vec![CirVar(0), CirVar(1)], 1u8);
+
+        let block: CirBlock<u32> = CirBlock {
+            params: alloc::vec![bit, bit],
+            stmts: alloc::vec![
+                volar_ir_common::Node::new(
+                    Stmt::Poly {
+                        ty: bit,
+                        coeffs,
+                        constant: CirConst { hi: 0, lo: 0 },
+                    },
+                    9u32,
+                    None,
+                ),
+            ],
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![CirVar(2)],) },
+        };
+
+        let circuit = IRBlocks::new(alloc::vec![block]);
+        let module = weave_noop_ir_with_handler(&circuit, &types, "and_ir_prov", None, &KeepProvenance).into_inner();
+        assert_eq!(module.functions.len(), 1);
+        let provs: Vec<u32> = module.functions[0].body.stmts.iter().map(|s| s.prov).collect();
+        assert_eq!(provs, alloc::vec![9u32]);
+    }
+=======
+>>>>>>> origin/main
 }

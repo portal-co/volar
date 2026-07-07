@@ -20,7 +20,7 @@
 extern crate alloc;
 
 use alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec};
-use volar_ir_common::Type as NativeType;
+use volar_ir_common::{ReentryHint, Type as NativeType};
 
 pub mod circuits;
 pub use circuits::{BitCircuitBuilder, StorageEmitter, StackPtr, FrameLayout, PACK_W, n_packs, pack_bits, unpack_words};
@@ -317,6 +317,34 @@ pub enum IcmpPred {
     Sge,
 }
 
+
+// ============================================================================
+// Branch targets (terminators)
+// ============================================================================
+
+/// A jump/branch destination: block arguments plus optional reentry hint.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BranchTarget<V> {
+    pub args: Vec<V>,
+    pub reentry: Option<ReentryHint>,
+}
+
+impl<V> BranchTarget<V> {
+    /// Branch target with arguments and no reentry hint.
+    pub fn args(args: impl Into<Vec<V>>) -> Self {
+        BranchTarget {
+            args: args.into(),
+            reentry: None,
+        }
+    }
+
+    /// Attach a reentry hint to this target.
+    pub fn with_reentry(mut self, hint: ReentryHint) -> Self {
+        self.reentry = Some(hint);
+        self
+    }
+}
+
 // ============================================================================
 // The trait
 // ============================================================================
@@ -335,7 +363,19 @@ pub enum IcmpPred {
 /// before emitting one or more instructions; each instruction inherits the
 /// most recently set provenance.  Backends that do not track provenance use
 /// the default `Prov = ()` and the no-op default impl of `set_prov`.
+<<<<<<< HEAD
+///
+/// # Side
+///
+/// Independently of provenance, callers may also attach a [`SideId`] naming
+/// which actor/party/role subsequently emitted instructions belong to (see
+/// `volar-side`).  Call [`set_side`](LirTarget::set_side) the same way as
+/// `set_prov` — each instruction inherits the most recently set side.  The
+/// default implementation is a no-op, exactly like `set_prov`'s default.
+pub trait LirTarget<Prov: Clone = ()> {
+=======
 pub trait LirTarget<Prov: Clone + Default = ()> {
+>>>>>>> origin/main
     type Value: Clone + Eq + core::fmt::Debug;
     type Block: Clone + Eq + core::fmt::Debug;
 
@@ -347,6 +387,15 @@ pub trait LirTarget<Prov: Clone + Default = ()> {
     /// The default implementation is a no-op — backends that do not track
     /// provenance need not override this.
     fn set_prov(&mut self, _prov: Prov) {}
+
+    /// Set the side context for subsequently emitted instructions.
+    ///
+    /// Each call overrides the previous value.  Instructions emitted after
+    /// this call (and before the next `set_side`) are tagged with `side`.
+    ///
+    /// The default implementation is a no-op — backends that do not track
+    /// sides need not override this.
+    fn set_side(&mut self, _side: Option<volar_side::SideId>) {}
 
     // ---- Type registration --------------------------------------------------
 
@@ -448,15 +497,15 @@ pub trait LirTarget<Prov: Clone + Default = ()> {
 
     // ---- Terminators --------------------------------------------------------
 
-    fn jump(&mut self, target: Self::Block, args: &[Self::Value]);
+    fn jump(&mut self, target: Self::Block, branch: BranchTarget<Self::Value>);
 
     fn branch(
         &mut self,
         cond: Self::Value,
         then_block: Self::Block,
-        then_args: &[Self::Value],
+        then_branch: BranchTarget<Self::Value>,
         else_block: Self::Block,
-        else_args: &[Self::Value],
+        else_branch: BranchTarget<Self::Value>,
     );
 
     /// Emit a return.  `vals` is the flat scalar list for the return value

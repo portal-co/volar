@@ -15,7 +15,7 @@
 //! story for v1 and is exercised below.
 
 use proptest::prelude::*;
-use volar_ir_virt::{virtualize_bir, virtualize_ir, BytecodeForm, DispatchMode, VirtualizeConfig};
+use volar_ir_virt::{virtualize_bir, virtualize_ir, DispatchMode, VirtualizeConfig};
 
 use crate::generators::ir::gen_ir_and_inputs;
 use crate::interpreter::biir::eval_biir;
@@ -23,10 +23,20 @@ use crate::interpreter::ir::eval_ir;
 use volar_ir::ir::IRBlocks;
 use volar_ir_passes::lower_ir_to_boolar;
 
-fn cfg_public_in_ir() -> VirtualizeConfig {
+fn cfg_public() -> VirtualizeConfig {
     VirtualizeConfig {
         dispatch: DispatchMode::Public,
-        bytecode_form: BytecodeForm::InIr,
+        ..VirtualizeConfig::default()
+    }
+}
+
+fn cfg_adaptive_split() -> VirtualizeConfig {
+    VirtualizeConfig {
+        dispatch: DispatchMode::Public,
+        adaptive_split: volar_ir_virt::AdaptiveSplitConfig {
+            enabled: true,
+            ..volar_ir_virt::AdaptiveSplitConfig::default()
+        },
         ..VirtualizeConfig::default()
     }
 }
@@ -46,7 +56,7 @@ proptest! {
         };
 
         let mut types_mut = types.clone();
-        let virt = virtualize_ir::<()>(&ir, &mut types_mut, &cfg_public_in_ir());
+        let virt = virtualize_ir::<()>(&ir, &mut types_mut, &cfg_public());
 
         let virt_out = match eval_ir(&virt.blocks, &types_mut, &inputs) {
             Some(v) => v,
@@ -61,7 +71,7 @@ proptest! {
 
         prop_assert_eq!(
             virt_out, ir_out,
-            "virtualize_ir (Public/InIr) changed the IR semantics"
+            "virtualize_ir (Public) changed the IR semantics"
         );
     }
 
@@ -86,7 +96,7 @@ proptest! {
             return Ok(());
         };
 
-        let virt = virtualize_bir(&bir, &cfg_public_in_ir());
+        let virt = virtualize_bir(&bir, &cfg_public());
 
         let virt_out = match eval_biir(&virt.blocks, &flat_inputs) {
             Some(v) => v,
@@ -104,8 +114,28 @@ proptest! {
         prop_assert_eq!(
             virt_out,
             expected_bits,
-            "virtualize_bir (Public/InIr) changed the BIR semantics"
+            "virtualize_bir (Public) changed the BIR semantics"
         );
+    }
+
+    #[test]
+    fn prop_virt_ir_adaptive_split_preserves_semantics(
+        (ir, types, inputs) in gen_ir_and_inputs()
+    ) {
+        let ir_out = match eval_ir(&ir, &types, &inputs) {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+
+        let mut types_mut = types.clone();
+        let virt = virtualize_ir::<()>(&ir, &mut types_mut, &cfg_adaptive_split());
+
+        let virt_out = match eval_ir(&virt.blocks, &types_mut, &inputs) {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+
+        prop_assert_eq!(virt_out, ir_out);
     }
 
     #[test]
@@ -113,7 +143,7 @@ proptest! {
         (ir, types, _inputs) in gen_ir_and_inputs()
     ) {
         let mut types_mut = types.clone();
-        let _ = virtualize_ir::<()>(&ir, &mut types_mut, &cfg_public_in_ir());
+        let _ = virtualize_ir::<()>(&ir, &mut types_mut, &cfg_public());
     }
 
     #[test]
@@ -121,7 +151,7 @@ proptest! {
         (ir, types, _inputs) in gen_ir_and_inputs()
     ) {
         let bir: volar_ir::boolar::BIrBlocks = lower_ir_to_boolar(&ir, &types);
-        let _ = virtualize_bir(&bir, &cfg_public_in_ir());
+        let _ = virtualize_bir(&bir, &cfg_public());
     }
 }
 

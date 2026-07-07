@@ -33,6 +33,7 @@ use alloc::{
 };
 
 use volar_compiler::{ir::{IrFunction, IrModule}, linkage::LinkageSystem};
+use volar_discipline::{Tagged, Transparent, Zk};
 use volar_ir::boolar::BIrBlocks;
 use volar_provenance::ProvenanceHandler;
 
@@ -216,14 +217,28 @@ pub fn weave_faest_prover(
     name: &str,
     config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
+<<<<<<< HEAD
+) -> Tagged<Zk, IrModule<IrFunction<()>, ()>> {
+    // FAEST is a zero-knowledge proof system → `Zk` discipline.
+    let mut module = weave_vole_prover_with_config_and_handler(
+=======
 ) -> IrModule<IrFunction<()>, ()> {
     weave_vole_prover_with_config_and_handler(
+>>>>>>> origin/main
         circuit,
         name,
         config,
         linkage,
         &FaestProvenanceHandler,
+<<<<<<< HEAD
+    );
+    if let Some(ls) = linkage {
+        ls.apply(module.inner_mut());
+    }
+    module
+=======
     )
+>>>>>>> origin/main
 }
 
 /// Weave with [`FaestAesMode`] active.
@@ -236,7 +251,7 @@ pub fn weave_faest_prover_with_mode(
     config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
     _mode: &FaestAesMode,
-) -> IrModule<IrFunction<()>, ()> {
+) -> Tagged<Zk, IrModule<IrFunction<()>, ()>> {
     // The handler already carries the K=2 dispatch via `gate_degree`.
     weave_vole_prover_with_config_and_handler(
         circuit,
@@ -244,7 +259,15 @@ pub fn weave_faest_prover_with_mode(
         config,
         linkage,
         &FaestProvenanceHandler,
+<<<<<<< HEAD
+    );
+    if let Some(ls) = linkage {
+        ls.apply(module.inner_mut());
+    }
+    module
+=======
     )
+>>>>>>> origin/main
 }
 
 /// Weave an AES OWF circuit into a FAEST verifier module.
@@ -255,14 +278,29 @@ pub fn weave_faest_verifier(
     name: &str,
     config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
+<<<<<<< HEAD
+) -> Tagged<Transparent, IrModule<IrFunction<()>, ()>> {
+    // The verifier-as-a-computation is non-ZK (`Transparent`): the inner VOLE
+    // proof already accounts for zero-knowledge.
+    let mut module = weave_vole_verifier_with_config_and_handler(
+=======
 ) -> IrModule<IrFunction<()>, ()> {
     weave_vole_verifier_with_config_and_handler(
+>>>>>>> origin/main
         circuit,
         name,
         config,
         linkage,
         &FaestProvenanceHandler,
+<<<<<<< HEAD
+    );
+    if let Some(ls) = linkage {
+        ls.apply(module.inner_mut());
+    }
+    module
+=======
     )
+>>>>>>> origin/main
 }
 
 /// Weave with [`FaestAesMode`] active (verifier side).
@@ -272,14 +310,27 @@ pub fn weave_faest_verifier_with_mode(
     config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
     _mode: &FaestAesMode,
+<<<<<<< HEAD
+) -> Tagged<Transparent, IrModule<IrFunction<()>, ()>> {
+    let mut module = weave_vole_verifier_with_config_and_handler(
+=======
 ) -> IrModule<IrFunction<()>, ()> {
     weave_vole_verifier_with_config_and_handler(
+>>>>>>> origin/main
         circuit,
         name,
         config,
         linkage,
         &FaestProvenanceHandler,
+<<<<<<< HEAD
+    );
+    if let Some(ls) = linkage {
+        ls.apply(module.inner_mut());
+    }
+    module
+=======
     )
+>>>>>>> origin/main
 }
 
 /// Print a weaved FAEST module to a Rust source string.
@@ -306,11 +357,7 @@ mod tests {
         let mut block = BIrBlock {
             params: 2,
             stmts: std::vec![],
-            stmt_provs: std::vec![],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Return,
-                args: std::vec![IRVarId(2)],
-            }),
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: std::vec![IRVarId(2)] }),
         };
         block.push_stmt(
             BIrStmt::And(IRVarId(0), IRVarId(1)),
@@ -360,7 +407,7 @@ mod tests {
         let circuit = minimal_and_circuit(false);
         let config = ZkWitnessConfig::default();
         let module = weave_faest_prover(&circuit, "test_prover", &config, None);
-        let src = print_weaved_faest_module(&module);
+        let src = print_weaved_faest_module(module.inner());
         // Verify the output contains the expected Rust entry points.
         assert!(src.contains("test_prover"), "module name should appear in output");
         assert!(src.contains("Vope"), "VOLE wire type should appear in output");
@@ -371,7 +418,7 @@ mod tests {
         let circuit = minimal_and_circuit(false);
         let config = ZkWitnessConfig::default();
         let module = weave_faest_verifier(&circuit, "test_verifier", &config, None);
-        let src = print_weaved_faest_module(&module);
+        let src = print_weaved_faest_module(module.inner());
         assert!(src.contains("test_verifier"));
         assert!(src.contains("Delta"), "verifier uses Delta type");
     }
@@ -382,7 +429,7 @@ mod tests {
         let circuit = minimal_and_circuit(true);
         let config = ZkWitnessConfig::default();
         let prover = weave_faest_prover(&circuit, "sbox_prover", &config, None);
-        let src = print_weaved_faest_module(&prover);
+        let src = print_weaved_faest_module(prover.inner());
         assert!(src.contains("vole_sbox_prover_step"), "sbox gates must use K=2 dispatch");
         // When all AND gates are sbox (K=2), no hat array is present in the return type.
         assert!(!src.contains("hat_0"), "sbox-only circuit must not produce K=1 hats");
@@ -394,7 +441,7 @@ mod tests {
         let circuit = minimal_and_circuit(false);
         let config = ZkWitnessConfig::default();
         let prover = weave_faest_prover(&circuit, "k1_prover", &config, None);
-        let src = print_weaved_faest_module(&prover);
+        let src = print_weaved_faest_module(prover.inner());
         // K=1 path: hat_0 appears in the return tuple.
         assert!(src.contains("hat_0"), "non-sbox gates must produce K=1 hats");
         assert!(!src.contains("sbox_k2_0"), "non-sbox must not produce sbox K=2 Vopes");
@@ -407,7 +454,7 @@ mod tests {
         let config = ZkWitnessConfig::default();
         let mode = FaestAesMode { params: FaestParams::Faest128s };
         let prover = weave_faest_prover_with_mode(&circuit, "mode_prover", &config, None, &mode);
-        let src = print_weaved_faest_module(&prover);
+        let src = print_weaved_faest_module(prover.inner());
         assert!(src.contains("vole_sbox_prover_step"));
     }
 
@@ -416,7 +463,7 @@ mod tests {
         let circuit = minimal_and_circuit(true);
         let config = ZkWitnessConfig::default();
         let verifier = weave_faest_verifier(&circuit, "sbox_verifier", &config, None);
-        let src = print_weaved_faest_module(&verifier);
+        let src = print_weaved_faest_module(verifier.inner());
         assert!(src.contains("vole_sbox_verifier_check"), "sbox verifier must use K=2 check");
         assert!(src.contains("sbox_vopes"), "verifier must accept sbox_vopes param");
     }

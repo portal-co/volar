@@ -29,6 +29,8 @@ code has often diverged. Use the active docs in `docs/` instead.
 | [`primitives-compiler-plan.md`](primitives-compiler-plan.md) | Phases 1, 3, 4 complete; Phase 2 (registry-driven primitives) explicitly deferred |
 | [`oram-channel-plan.md`](oram-channel-plan.md) | Implemented in `volar-channel`, `volar-oram`, `volar-oram-core`; see [`../agent-context/oram.md`](../agent-context/oram.md) |
 | [`fhe-memory-enhancement-plan.md`](fhe-memory-enhancement-plan.md) | Superseded by ORAM weaver work; Phase 2b (PBS storage) deliberately skipped |
+| [`grafhen.md`](grafhen.md), [`grafhen-appsec.md`](grafhen-appsec.md), [`grafhen-review-plan.md`](grafhen-review-plan.md) | Implementation removed: unconditional IND-CPA break (ePrint 2026/700), no patch possible in its design family; its ZK-correctness-layer use case is already covered by TFHE |
+| [`prove-the-verifier.md`](prove-the-verifier.md), [`fold-lift-expansion.md`](fold-lift-expansion.md), [`gf2k-to-fell-embedding.md`](gf2k-to-fell-embedding.md) | Nova-based prove-the-verifier (`NovaFoldSink`, `volar-fold::{verifier,gf2k}`, `volar-verifier-runtime`) removed: subsumed by the IOP-based path (`../prove-the-verifier-iop.md`), which stays native to `GF(2^k)` and needs no `GF(2^k)→F_ℓ` embedding at all. The continuation bridge's own (unrelated) Nova usage is untouched. |
 
 ## Removing an archived plan
 

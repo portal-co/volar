@@ -29,7 +29,7 @@ pub use volar_ir_common::IrType as IRType;
 pub use volar_ir_common::TypeTable as IRTypes;
 
 /// Re-export oracle/action/rng declaration types so callers only need `volar_ir`.
-pub use volar_ir_common::{ActionDecl, OracleDecl, PreInitSegment, RngDecl};
+pub use volar_ir_common::{ActionDecl, MeasureSpec, OracleDecl, PreInitSegment, ReentryHint, RngDecl, StructRef};
 
 // ============================================================================
 // Blocks and control flow
@@ -76,10 +76,13 @@ impl<P: Clone + Default> IRBlocks<P> {
     }
     pub fn is_circuit(&self) -> bool {
         self.is_movfuscated()
-            && match self.blocks[0].terminator {
+            && match &self.blocks[0].terminator {
                 IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    ..
+                    target:
+                        IRBranchTarget {
+                            dest: IRBlockTargetId::Return,
+                            ..
+                        },
                 } => true,
                 _ => false,
             }
@@ -88,40 +91,56 @@ impl<P: Clone + Default> IRBlocks<P> {
 
 /// A single block in a Volar IR circuit.
 ///
-/// The type parameter `P` is an optional per-statement provenance annotation
-/// (parallel to `stmts`).  Use `P = ()` when provenance is not needed.
+/// The type parameter `P` is an optional per-statement provenance annotation.
+/// Each statement also carries an optional `SideId` (see `volar-side`) naming
+/// which actor/party/role it belongs to; both annotations live together on
+/// the [`Node`](volar_ir_common::Node) wrapping each statement, so they can
+/// never drift out of sync with `stmts` the way two parallel `Vec`s could.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IRBlock<P: Clone + Default = ()> {
     pub params: Vec<IRTypeId>,
-    pub stmts: Vec<IRStmt>,
-    /// Per-statement provenance, same length as `stmts`.
-    /// Index `i` is the provenance of `stmts[i]`.
-    pub stmt_provs: Vec<P>,
+    pub stmts: Vec<volar_ir_common::Node<IRStmt, P>>,
     pub terminator: IRTerminator,
 }
 
+<<<<<<< HEAD
+impl<P: Clone> IRBlock<P> {
+    /// Append a statement with an explicit provenance annotation and no side.
+=======
 impl<P: Clone + Default> IRBlock<P> {
     /// Append a statement with an explicit provenance annotation.
+>>>>>>> origin/main
     /// Returns the [`IRVarId`] for this statement (= index in the block's var space).
     pub fn push_stmt(&mut self, stmt: IRStmt, prov: P) -> IRVarId {
+        self.push_stmt_with_side(stmt, prov, None)
+    }
+
+    /// Append a statement with an explicit provenance annotation and side.
+    /// Returns the [`IRVarId`] for this statement (= index in the block's var space).
+    pub fn push_stmt_with_side(&mut self, stmt: IRStmt, prov: P, side: Option<volar_side::SideId>) -> IRVarId {
         let id = IRVarId(self.params.len() as u32 + self.stmts.len() as u32);
-        self.stmts.push(stmt);
-        self.stmt_provs.push(prov);
+        #[cfg(feature = "log-trace")]
+        log::trace!(target: "volar::ir", "push_stmt id={}", id.0);
+        self.stmts.push(volar_ir_common::Node::new(stmt, prov, side));
         id
     }
 
+<<<<<<< HEAD
+    /// Map provenance annotations using a [`ProvenanceHandler`]. `side` is
+    /// untouched — provenance and side are independent axes.
+=======
     /// Append a statement using `P::default()` as the provenance.
     pub fn push_stmt_default(&mut self, stmt: IRStmt) -> IRVarId {
         self.push_stmt(stmt, P::default())
     }
 
     /// Map provenance annotations using a [`ProvenanceHandler`].
+>>>>>>> origin/main
     pub fn map_prov_with_handler<H: volar_provenance::ProvenanceHandler<P>>(self, handler: &H) -> IRBlock<H::Output> {
         IRBlock {
             params: self.params,
-            stmts: self.stmts,
-            stmt_provs: self.stmt_provs.into_iter().map(|p| handler.map(&p)).collect(),
+            stmts: self.stmts.into_iter().map(|n| n.map_prov(|p| handler.map(&p))).collect(),
             terminator: self.terminator,
         }
     }
@@ -163,6 +182,66 @@ pub struct IRVarId(pub u32);
 pub type IRStmt<Var = IRVarId, Addr = Var> = volar_ir_common::Stmt<Var, Addr>;
 
 // ============================================================================
+// Branch targets
+// ============================================================================
+
+/// A jump/branch destination with optional reentry complexity hint.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct IRBranchTarget<Var = IRVarId> {
+    pub dest: IRBlockTargetId<Var>,
+    pub args: Vec<Var>,
+    pub reentry: Option<ReentryHint>,
+}
+
+impl<Var> IRBranchTarget<Var> {
+    pub fn new(dest: IRBlockTargetId<Var>, args: Vec<Var>) -> Self {
+        IRBranchTarget { dest, args, reentry: None }
+    }
+
+    pub fn map<Ctx, NV, E>(
+        self,
+        ctx: &mut Ctx,
+        go: &mut impl FnMut(&mut Ctx, Var) -> Result<NV, E>,
+    ) -> Result<IRBranchTarget<NV>, E>
+    where
+        NV: Ord,
+    {
+        Ok(IRBranchTarget {
+            dest: self.dest.map(ctx, go)?,
+            args: self
+                .args
+                .into_iter()
+                .map(|v| go(ctx, v))
+                .collect::<Result<Vec<NV>, E>>()?,
+            reentry: self.reentry,
+        })
+    }
+
+    pub fn as_ref(&self) -> IRBranchTarget<&Var>
+    where
+        Var: Ord,
+    {
+        IRBranchTarget {
+            dest: self.dest.as_ref(),
+            args: self.args.iter().collect(),
+            reentry: self.reentry.clone(),
+        }
+    }
+
+    pub fn as_mut(&mut self) -> IRBranchTarget<&mut Var>
+    where
+        Var: Ord,
+    {
+        IRBranchTarget {
+            dest: self.dest.as_mut(),
+            args: self.args.iter_mut().collect(),
+            reentry: self.reentry.clone(),
+        }
+    }
+}
+
+// ============================================================================
 // Terminators
 // ============================================================================
 
@@ -170,6 +249,117 @@ pub type IRStmt<Var = IRVarId, Addr = Var> = volar_ir_common::Stmt<Var, Addr>;
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IRTerminator {
     Jmp {
+<<<<<<< HEAD
+        target: IRBranchTarget<Var>,
+    },
+    JumpCond {
+        condition: Var,
+        then_target: IRBranchTarget<Var>,
+        else_target: IRBranchTarget<Var>,
+    },
+    JumpTable {
+        index: Var,
+        cases: BTreeMap<Constant, IRBranchTarget<Var>>,
+    },
+}
+
+impl<Var> IRTerminator<Var> {
+    /// Map the variable parameter, potentially fallibly.
+    ///
+    /// `ctx` is passed to `go` on every call so the callback can share
+    /// mutable state without borrow conflicts.
+    pub fn map<Ctx, NV, E>(
+        self,
+        ctx: &mut Ctx,
+        mut go: impl FnMut(&mut Ctx, Var) -> Result<NV, E>,
+    ) -> Result<IRTerminator<NV>, E>
+    where
+        NV: Ord,
+    {
+        Ok(match self {
+            IRTerminator::Jmp { target } => IRTerminator::Jmp {
+                target: target.map(ctx, &mut go)?,
+            },
+            IRTerminator::JumpCond {
+                condition,
+                then_target,
+                else_target,
+            } => IRTerminator::JumpCond {
+                condition: go(ctx, condition)?,
+                then_target: then_target.map(ctx, &mut go)?,
+                else_target: else_target.map(ctx, &mut go)?,
+            },
+            IRTerminator::JumpTable { index, cases } => IRTerminator::JumpTable {
+                index: go(ctx, index)?,
+                cases: cases
+                    .into_iter()
+                    .map(|(k, target)| {
+                        let target = target.map(ctx, &mut go)?;
+                        Ok((k, target))
+                    })
+                    .collect::<Result<BTreeMap<Constant, IRBranchTarget<NV>>, E>>()?,
+            },
+        })
+    }
+
+    /// Borrow the variable parameter in place.
+    pub fn as_ref(&self) -> IRTerminator<&Var>
+    where
+        Var: Ord,
+    {
+        match self {
+            IRTerminator::Jmp { target } => IRTerminator::Jmp {
+                target: target.as_ref(),
+            },
+            IRTerminator::JumpCond {
+                condition,
+                then_target,
+                else_target,
+            } => IRTerminator::JumpCond {
+                condition,
+                then_target: then_target.as_ref(),
+                else_target: else_target.as_ref(),
+            },
+            IRTerminator::JumpTable { index, cases } => IRTerminator::JumpTable {
+                index,
+                cases: cases
+                    .iter()
+                    .map(|(k, target)| (*k, target.as_ref()))
+                    .collect(),
+            },
+        }
+    }
+
+    /// Mutably borrow the variable parameter in place.
+    pub fn as_mut(&mut self) -> IRTerminator<&mut Var>
+    where
+        Var: Ord,
+    {
+        match self {
+            IRTerminator::Jmp { target } => IRTerminator::Jmp {
+                target: target.as_mut(),
+            },
+            IRTerminator::JumpCond {
+                condition,
+                then_target,
+                else_target,
+            } => IRTerminator::JumpCond {
+                condition,
+                then_target: then_target.as_mut(),
+                else_target: else_target.as_mut(),
+            },
+            IRTerminator::JumpTable { index, cases } => IRTerminator::JumpTable {
+                index,
+                cases: cases
+                    .iter_mut()
+                    .map(|(k, target)| (*k, target.as_mut()))
+                    .collect(),
+            },
+        }
+    }
+}
+
+=======
         func: IRBlockTargetId,
         args: Vec<IRVarId>,
     },
@@ -186,6 +376,7 @@ pub enum IRTerminator {
         // no default; must be exhaustive
     },
 }
+>>>>>>> origin/main
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum IRBlockTargetId {

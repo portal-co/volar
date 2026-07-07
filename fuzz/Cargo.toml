@@ -14,6 +14,9 @@ volar-ir-passes = { path = "../crates/ir/volar-ir-passes" }
 volar-ir-opt = { path = "../crates/ir/volar-ir-opt" }
 volar-ir-virt = { path = "../crates/ir/volar-ir-virt" }
 volar-vaffle-target = { path = "../crates/ir/volar-vaffle-target" }
+volar-spec = { path = "../crates/spec/volar-spec" }
+hybrid-array = { version = "0.4.8", default-features = false }
+cipher = { version = "0.5.1", default-features = false }
 
 # Cargo-fuzz requires a separate workspace so it does not inherit
 # workspace settings from the main Cargo.toml.
@@ -88,5 +91,11 @@ doc = false
 [[bin]]
 name = "fuzz_bir_virt"
 path = "fuzz_targets/fuzz_bir_virt.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_vole_circuit_completeness"
+path = "fuzz_targets/fuzz_vole_circuit_completeness.rs"
 test = false
 doc = false

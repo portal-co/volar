@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 volar-ir.workspace = true
 volar-ir-common.workspace = true
+volar-side.workspace = true
 volar-lir.workspace = true
 volar-lir-codegen  = { path = "../../compiler/volar-lir-codegen" }
 volar-compiler     = { path = "../../compiler/volar-compiler" }

@@ -7,8 +7,10 @@ description.workspace = true
 repository.workspace = true
 
 [features]
+log-trace = ["dep:log"]
 rkyv = ["dep:rkyv", "volar-ir-common/rkyv"]
 
 [dependencies]
+log = { version = "0.4", optional = true }
 volar-ir-common.workspace = true
 rkyv = { workspace = true, optional = true }

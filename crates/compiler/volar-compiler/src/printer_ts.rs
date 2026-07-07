@@ -110,11 +110,11 @@ impl WitnessNeeds {
 
 /// Recursively scan an expression for witness requirements.
 fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics: &[String]) {
-    match expr {
+    match &expr.kind {
         // DefaultValue with a type-param type → need a default witness.
         // DefaultValue with an Array type → scan the length for projections,
         // and recursively scan the element type for default witnesses.
-        IrExpr::DefaultValue { ty: Some(ty) } => {
+        IrExprKind::DefaultValue { ty: Some(ty) } => {
             match ty.as_ref() {
                 IrType::TypeParam(name) => {
                     if declared_generics.contains(name) || is_crypto_type_param(name) {
@@ -132,11 +132,11 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
             }
         }
         // LengthOf with a Projection → need a projection witness
-        IrExpr::LengthOf(len) => {
+        IrExprKind::LengthOf(len) => {
             scan_array_length_witnesses(len, out);
         }
         // ArrayGenerate may contain a projection in its length
-        IrExpr::ArrayGenerate {
+        IrExprKind::ArrayGenerate {
             len,
             index_var: _,
             body,
@@ -146,7 +146,7 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
             scan_expr_witnesses(body, out, declared_generics);
         }
         // TypenumUsize with a Projection type
-        IrExpr::TypenumUsize { ty } => {
+        IrExprKind::TypenumUsize { ty } => {
             if let IrType::Projection { base, assoc, .. } = ty.as_ref() {
                 if let IrType::TypeParam(name) = base.as_ref() {
                     out.add(WitnessKind::Projection {
@@ -157,8 +157,8 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
             }
         }
         // Call to T::new(), T::default(), or any other T::method() on a type param
-        IrExpr::Call { func, args } => {
-            if let IrExpr::Path { segments, .. } = func.as_ref() {
+        IrExprKind::Call { func, args } => {
+            if let IrExprKind::Path { segments, .. } = &func.kind {
                 if segments.len() == 2 {
                     let type_name = &segments[0];
                     let method = &segments[1];
@@ -193,7 +193,7 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
                 }
             }
             // size_of_val as a bare Var (most common in lowered IR)
-            if let IrExpr::Var(n) = func.as_ref() {
+            if let IrExprKind::Var(n) = &func.kind {
                 if n == "size_of_val" || n == "size_of" {
                     for tp in declared_generics {
                         out.add(WitnessKind::SizeOf { type_param: tp.clone() });
@@ -206,32 +206,32 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
             }
         }
         // Recurse into all sub-expressions
-        IrExpr::Binary { left, right, .. } | IrExpr::Assign { left, right } => {
+        IrExprKind::Binary { left, right, .. } | IrExprKind::Assign { left, right } => {
             scan_expr_witnesses(left, out, declared_generics);
             scan_expr_witnesses(right, out, declared_generics);
         }
-        IrExpr::AssignOp { left, right, .. } => {
+        IrExprKind::AssignOp { left, right, .. } => {
             scan_expr_witnesses(left, out, declared_generics);
             scan_expr_witnesses(right, out, declared_generics);
         }
-        IrExpr::Unary { expr, .. }
-        | IrExpr::Return(Some(expr))
-        | IrExpr::Cast { expr, .. }
-        | IrExpr::Try(expr) => {
+        IrExprKind::Unary { expr, .. }
+        | IrExprKind::Return(Some(expr))
+        | IrExprKind::Cast { expr, .. }
+        | IrExprKind::Try(expr) => {
             scan_expr_witnesses(expr, out, declared_generics);
         }
-        IrExpr::MethodCall { receiver, args, .. } => {
+        IrExprKind::MethodCall { receiver, args, .. } => {
             scan_expr_witnesses(receiver, out, declared_generics);
             for a in args {
                 scan_expr_witnesses(a, out, declared_generics);
             }
         }
-        IrExpr::Field { base, .. } => scan_expr_witnesses(base, out, declared_generics),
-        IrExpr::Index { base, index } => {
+        IrExprKind::Field { base, .. } => scan_expr_witnesses(base, out, declared_generics),
+        IrExprKind::Index { base, index } => {
             scan_expr_witnesses(base, out, declared_generics);
             scan_expr_witnesses(index, out, declared_generics);
         }
-        IrExpr::StructExpr { fields, rest, .. } => {
+        IrExprKind::StructExpr { fields, rest, .. } => {
             for (_, e) in fields {
                 scan_expr_witnesses(e, out, declared_generics);
             }
@@ -239,17 +239,17 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
                 scan_expr_witnesses(r, out, declared_generics);
             }
         }
-        IrExpr::Tuple(es) | IrExpr::Array(es) | IrExpr::FixedArray(es) => {
+        IrExprKind::Tuple(es) | IrExprKind::Array(es) | IrExprKind::FixedArray(es) => {
             for e in es {
                 scan_expr_witnesses(e, out, declared_generics);
             }
         }
-        IrExpr::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } => {
             scan_expr_witnesses(elem, out, declared_generics);
             scan_expr_witnesses(len, out, declared_generics);
         }
-        IrExpr::Block(b) => scan_block_witnesses(b, out, declared_generics),
-        IrExpr::If {
+        IrExprKind::Block(b) => scan_block_witnesses(b, out, declared_generics),
+        IrExprKind::If {
             cond,
             then_branch,
             else_branch,
@@ -260,25 +260,25 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
                 scan_expr_witnesses(eb, out, declared_generics);
             }
         }
-        IrExpr::BoundedLoop {
+        IrExprKind::BoundedLoop {
             start, end, body, ..
         } => {
             scan_expr_witnesses(start, out, declared_generics);
             scan_expr_witnesses(end, out, declared_generics);
             scan_block_witnesses(body, out, declared_generics);
         }
-        IrExpr::IterLoop {
+        IrExprKind::IterLoop {
             collection, body, ..
         } => {
             scan_expr_witnesses(collection, out, declared_generics);
             scan_block_witnesses(body, out, declared_generics);
         }
-        IrExpr::WhileLoop { cond, body } => {
+        IrExprKind::WhileLoop { cond, body } => {
             scan_expr_witnesses(cond, out, declared_generics);
             scan_block_witnesses(body, out, declared_generics);
         }
-        IrExpr::Closure { body, .. } => scan_expr_witnesses(body, out, declared_generics),
-        IrExpr::Range { start, end, .. } => {
+        IrExprKind::Closure { body, .. } => scan_expr_witnesses(body, out, declared_generics),
+        IrExprKind::Range { start, end, .. } => {
             if let Some(s) = start {
                 scan_expr_witnesses(s, out, declared_generics);
             }
@@ -286,25 +286,25 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
                 scan_expr_witnesses(e, out, declared_generics);
             }
         }
-        IrExpr::Match { expr, arms } => {
+        IrExprKind::Match { expr, arms } => {
             scan_expr_witnesses(expr, out, declared_generics);
             for arm in arms {
                 scan_expr_witnesses(&arm.body, out, declared_generics);
             }
         }
-        IrExpr::IterPipeline(chain) => scan_iter_chain_witnesses(chain, out, declared_generics),
-        IrExpr::RawMap { receiver, body, .. } => {
+        IrExprKind::IterPipeline(chain) => scan_iter_chain_witnesses(chain, out, declared_generics),
+        IrExprKind::RawMap { receiver, body, .. } => {
             scan_expr_witnesses(receiver, out, declared_generics);
             scan_expr_witnesses(body, out, declared_generics);
         }
-        IrExpr::RawZip {
+        IrExprKind::RawZip {
             left, right, body, ..
         } => {
             scan_expr_witnesses(left, out, declared_generics);
             scan_expr_witnesses(right, out, declared_generics);
             scan_expr_witnesses(body, out, declared_generics);
         }
-        IrExpr::RawFold {
+        IrExprKind::RawFold {
             receiver,
             init,
             body,
@@ -315,12 +315,12 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
             scan_expr_witnesses(body, out, declared_generics);
         }
         // Bare `T` used as a value (e.g. passed to a function expecting a class)
-        IrExpr::Var(name) => {
+        IrExprKind::Var(name) => {
             if declared_generics.contains(name) || is_crypto_type_param(name) {
                 out.add(WitnessKind::Class { type_param: name.clone() });
             }
         }
-        IrExpr::Path { segments, .. } if segments.len() == 1 => {
+        IrExprKind::Path { segments, .. } if segments.len() == 1 => {
             let name = &segments[0];
             if declared_generics.contains(name) || is_crypto_type_param(name) {
                 out.add(WitnessKind::Class { type_param: name.clone() });
@@ -332,8 +332,8 @@ fn scan_expr_witnesses(expr: &IrExpr, out: &mut WitnessNeeds, declared_generics:
 
 fn scan_block_witnesses(block: &IrBlock, out: &mut WitnessNeeds, declared_generics: &[String]) {
     for stmt in &block.stmts {
-        match stmt {
-            IrStmt::Let { init: Some(e), .. } | IrStmt::Semi(e) | IrStmt::Expr(e) => {
+        match &stmt.kind {
+            IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
                 scan_expr_witnesses(e, out, declared_generics);
             }
             _ => {}
@@ -671,8 +671,8 @@ fn collect_call_targets(block: &IrBlock) -> Vec<String> {
 
 fn collect_call_targets_block(block: &IrBlock, targets: &mut Vec<String>) {
     for stmt in &block.stmts {
-        match stmt {
-            IrStmt::Let { init: Some(e), .. } | IrStmt::Semi(e) | IrStmt::Expr(e) => {
+        match &stmt.kind {
+            IrStmtKind::Let { init: Some(e), .. } | IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => {
                 collect_call_targets_expr(e, targets);
             }
             _ => {}
@@ -684,9 +684,9 @@ fn collect_call_targets_block(block: &IrBlock, targets: &mut Vec<String>) {
 }
 
 fn collect_call_targets_expr(expr: &IrExpr, targets: &mut Vec<String>) {
-    match expr {
-        IrExpr::Call { func, args } => {
-            if let IrExpr::Path { segments, .. } = func.as_ref() {
+    match &expr.kind {
+        IrExprKind::Call { func, args } => {
+            if let IrExprKind::Path { segments, .. } = &func.kind {
                 if segments.len() == 1 {
                     targets.push(segments[0].clone());
                 }
@@ -696,30 +696,30 @@ fn collect_call_targets_expr(expr: &IrExpr, targets: &mut Vec<String>) {
                 collect_call_targets_expr(a, targets);
             }
         }
-        IrExpr::Binary { left, right, .. }
-        | IrExpr::Assign { left, right }
-        | IrExpr::AssignOp { left, right, .. } => {
+        IrExprKind::Binary { left, right, .. }
+        | IrExprKind::Assign { left, right }
+        | IrExprKind::AssignOp { left, right, .. } => {
             collect_call_targets_expr(left, targets);
             collect_call_targets_expr(right, targets);
         }
-        IrExpr::Unary { expr, .. }
-        | IrExpr::Return(Some(expr))
-        | IrExpr::Cast { expr, .. }
-        | IrExpr::Try(expr)
-        | IrExpr::Field { base: expr, .. } => {
+        IrExprKind::Unary { expr, .. }
+        | IrExprKind::Return(Some(expr))
+        | IrExprKind::Cast { expr, .. }
+        | IrExprKind::Try(expr)
+        | IrExprKind::Field { base: expr, .. } => {
             collect_call_targets_expr(expr, targets);
         }
-        IrExpr::MethodCall { receiver, args, .. } => {
+        IrExprKind::MethodCall { receiver, args, .. } => {
             collect_call_targets_expr(receiver, targets);
             for a in args {
                 collect_call_targets_expr(a, targets);
             }
         }
-        IrExpr::Index { base, index } => {
+        IrExprKind::Index { base, index } => {
             collect_call_targets_expr(base, targets);
             collect_call_targets_expr(index, targets);
         }
-        IrExpr::StructExpr { fields, rest, .. } => {
+        IrExprKind::StructExpr { fields, rest, .. } => {
             for (_, e) in fields {
                 collect_call_targets_expr(e, targets);
             }
@@ -727,17 +727,17 @@ fn collect_call_targets_expr(expr: &IrExpr, targets: &mut Vec<String>) {
                 collect_call_targets_expr(r, targets);
             }
         }
-        IrExpr::Tuple(es) | IrExpr::Array(es) | IrExpr::FixedArray(es) => {
+        IrExprKind::Tuple(es) | IrExprKind::Array(es) | IrExprKind::FixedArray(es) => {
             for e in es {
                 collect_call_targets_expr(e, targets);
             }
         }
-        IrExpr::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } => {
             collect_call_targets_expr(elem, targets);
             collect_call_targets_expr(len, targets);
         }
-        IrExpr::Block(b) => collect_call_targets_block(b, targets),
-        IrExpr::If {
+        IrExprKind::Block(b) => collect_call_targets_block(b, targets),
+        IrExprKind::If {
             cond,
             then_branch,
             else_branch,
@@ -748,25 +748,25 @@ fn collect_call_targets_expr(expr: &IrExpr, targets: &mut Vec<String>) {
                 collect_call_targets_expr(eb, targets);
             }
         }
-        IrExpr::BoundedLoop {
+        IrExprKind::BoundedLoop {
             start, end, body, ..
         } => {
             collect_call_targets_expr(start, targets);
             collect_call_targets_expr(end, targets);
             collect_call_targets_block(body, targets);
         }
-        IrExpr::IterLoop {
+        IrExprKind::IterLoop {
             collection, body, ..
         } => {
             collect_call_targets_expr(collection, targets);
             collect_call_targets_block(body, targets);
         }
-        IrExpr::WhileLoop { cond, body } => {
+        IrExprKind::WhileLoop { cond, body } => {
             collect_call_targets_expr(cond, targets);
             collect_call_targets_block(body, targets);
         }
-        IrExpr::Closure { body, .. } => collect_call_targets_expr(body, targets),
-        IrExpr::Range { start, end, .. } => {
+        IrExprKind::Closure { body, .. } => collect_call_targets_expr(body, targets),
+        IrExprKind::Range { start, end, .. } => {
             if let Some(s) = start {
                 collect_call_targets_expr(s, targets);
             }
@@ -774,18 +774,18 @@ fn collect_call_targets_expr(expr: &IrExpr, targets: &mut Vec<String>) {
                 collect_call_targets_expr(e, targets);
             }
         }
-        IrExpr::Match { expr, arms } => {
+        IrExprKind::Match { expr, arms } => {
             collect_call_targets_expr(expr, targets);
             for arm in arms {
                 collect_call_targets_expr(&arm.body, targets);
             }
         }
-        IrExpr::IterPipeline(chain) => collect_call_targets_chain(chain, targets),
-        IrExpr::RawMap { receiver, body, .. } | IrExpr::RawFold { receiver, body, .. } => {
+        IrExprKind::IterPipeline(chain) => collect_call_targets_chain(chain, targets),
+        IrExprKind::RawMap { receiver, body, .. } | IrExprKind::RawFold { receiver, body, .. } => {
             collect_call_targets_expr(receiver, targets);
             collect_call_targets_expr(body, targets);
         }
-        IrExpr::RawZip {
+        IrExprKind::RawZip {
             left, right, body, ..
         } => {
             collect_call_targets_expr(left, targets);
@@ -1547,13 +1547,13 @@ fn runtime_type_check(ty: &IrType, struct_fields: &[IrField]) -> Option<String> 
 /// after `return` in TypeScript (i.e. it's inherently a statement, not an
 /// expression that produces a value).
 fn is_statement_like(expr: &IrExpr) -> bool {
-    match expr {
-        IrExpr::BoundedLoop { .. } | IrExpr::IterLoop { .. } | IrExpr::WhileLoop { .. } => true,
+    match &expr.kind {
+        IrExprKind::BoundedLoop { .. } | IrExprKind::IterLoop { .. } | IrExprKind::WhileLoop { .. } => true,
         // An `if` without an else branch, or where branches are statement-like
-        IrExpr::If {
+        IrExprKind::If {
             else_branch: None, ..
         } => true,
-        IrExpr::If {
+        IrExprKind::If {
             then_branch,
             else_branch: Some(eb),
             ..
@@ -1566,8 +1566,8 @@ fn is_statement_like(expr: &IrExpr) -> bool {
             let else_is_stmt = is_statement_like(eb);
             then_is_stmt && else_is_stmt
         }
-        IrExpr::Block(b) => b.expr.as_ref().map_or(true, |e| is_statement_like(e)),
-        IrExpr::Assign { .. } | IrExpr::AssignOp { .. } => true,
+        IrExprKind::Block(b) => b.expr.as_ref().map_or(true, |e| is_statement_like(e)),
+        IrExprKind::Assign { .. } | IrExprKind::AssignOp { .. } => true,
         _ => false,
     }
 }
@@ -2691,8 +2691,8 @@ fn emit_statement_expr(
     f: &mut fmt::Formatter<'_>,
     cx: &TsContext<'_>,
 ) -> fmt::Result {
-    match e {
-        IrExpr::BoundedLoop {
+    match &e.kind {
+        IrExprKind::BoundedLoop {
             var,
             start,
             end,
@@ -2711,7 +2711,7 @@ fn emit_statement_expr(
             }
             .ts_fmt(f, cx)?;
         }
-        IrExpr::IterLoop {
+        IrExprKind::IterLoop {
             pattern,
             collection,
             body,
@@ -2720,7 +2720,7 @@ fn emit_statement_expr(
             // The {"*": value} shape is used conceptually; writes go through to the array
             // via index tracking (ad-hoc optimization: direct indexed write, not getter/setter).
             // Future: replace with getter/setter reference objects for general correctness.
-            if let IrExpr::MethodCall { receiver, method, args, .. } = collection.as_ref() {
+            if let IrExprKind::MethodCall { receiver, method, args, .. } = &collection.kind {
                 if matches!(method, MethodKind::Other(s) if s == "iter_mut") && args.is_empty() {
                     let arr_str = format!("{}", TsFmt(TsExprWriter { expr: receiver }, cx));
                     let idx_var = format!("__mut_{}", indent);  // fresh per indent level
@@ -2751,13 +2751,13 @@ fn emit_statement_expr(
             }
             .ts_fmt(f, cx)?;
         }
-        IrExpr::WhileLoop { cond, body } => {
+        IrExprKind::WhileLoop { cond, body } => {
             write!(f, "while (")?;
             TsExprWriter { expr: cond }.ts_fmt(f, cx)?;
             write!(f, ") ")?;
             TsBlockWriter { block: body, indent }.ts_fmt(f, cx)?;
         }
-        IrExpr::If {
+        IrExprKind::If {
             cond,
             then_branch,
             else_branch,
@@ -2772,28 +2772,28 @@ fn emit_statement_expr(
             .ts_fmt(f, cx)?;
             if let Some(eb) = else_branch {
                 write!(f, " else ")?;
-                match eb.as_ref() {
-                    IrExpr::Block(b) => {
+                match &eb.kind {
+                    IrExprKind::Block(b) => {
                         TsBlockWriter { block: b, indent }.ts_fmt(f, cx)?;
                     }
-                    other if is_statement_like(other) => {
-                        emit_statement_expr(other, indent, f, cx)?;
+                    _ if is_statement_like(eb) => {
+                        emit_statement_expr(eb, indent, f, cx)?;
                     }
-                    other => {
+                    _ => {
                         write!(f, "{{ ")?;
-                        TsExprWriter { expr: other }.ts_fmt(f, cx)?;
+                        TsExprWriter { expr: eb }.ts_fmt(f, cx)?;
                         write!(f, "; }}")?;
                     }
                 }
             }
         }
-        IrExpr::Block(b) => {
+        IrExprKind::Block(b) => {
             TsBlockWriter { block: b, indent }.ts_fmt(f, cx)?;
         }
-        IrExpr::Assign { left, right } => {
+        IrExprKind::Assign { left, right } => {
             // `*byte = expr` where byte is a mutable ref → `arr[Number(i)] = expr`
-            if let IrExpr::Unary { op: SpecUnaryOp::Deref, expr: inner } = left.as_ref() {
-                if let IrExpr::Var(v) = inner.as_ref() {
+            if let IrExprKind::Unary { op: SpecUnaryOp::Deref, expr: inner } = &left.kind {
+                if let IrExprKind::Var(v) = &inner.kind {
                     if let Some(r) = cx.find_mut_ref(v) {
                         let arr = r.array_expr.clone();
                         let idx = r.index_var.clone();
@@ -2808,7 +2808,7 @@ fn emit_statement_expr(
             TsExprWriter { expr: right }.ts_fmt(f, cx)?;
             write!(f, ";")?;
         }
-        IrExpr::AssignOp { op, left, right } => {
+        IrExprKind::AssignOp { op, left, right } => {
             // For ops that work on field elements (bitxor, shl, etc.), desugar
             // `x op= y` → `x = fieldOp(x, y)` so the helper can dispatch on type.
             if let Some(helper) = bin_op_helper(*op) {
@@ -2825,9 +2825,9 @@ fn emit_statement_expr(
                 write!(f, ";")?;
             }
         }
-        other => {
+        _ => {
             // Fallback: just emit as expression statement
-            TsExprWriter { expr: other }.ts_fmt(f, cx)?;
+            TsExprWriter { expr: e }.ts_fmt(f, cx)?;
             write!(f, ";")?;
         }
     }
@@ -2846,8 +2846,8 @@ struct TsStmtWriter<'a> {
 impl<'a> TsBackend for TsStmtWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
         let ind = "  ".repeat(self.indent);
-        match self.stmt {
-            IrStmt::Let { pattern, ty, init } => {
+        match &self.stmt.kind {
+            IrStmtKind::Let { pattern, ty, init } => {
                 // Track `let x: T = ...` bindings so size_of_val(x) → ctx.sizeOfT.
                 if let Some(IrType::TypeParam(tp)) = ty {
                     collect_pattern_var_types(pattern, tp, cx);
@@ -2866,9 +2866,9 @@ impl<'a> TsBackend for TsStmtWriter<'a> {
                     // the wrapper struct was erased, so `y` IS the array. Skip the `[0]`.
                     let is_vec_binding = matches!(ty,
                         Some(IrType::Vector { .. }) | Some(IrType::Array { .. }));
-                    let init_is_field_zero = matches!(i, IrExpr::Field { field, .. } if field == "0");
+                    let init_is_field_zero = matches!(&i.kind, IrExprKind::Field { field, .. } if field == "0");
                     if is_vec_binding && init_is_field_zero {
-                        if let IrExpr::Field { base, .. } = i {
+                        if let IrExprKind::Field { base, .. } = &i.kind {
                             TsExprWriter { expr: base }.ts_fmt(f, cx)?;
                         } else {
                             TsExprWriter { expr: i }.ts_fmt(f, cx)?;
@@ -2879,7 +2879,7 @@ impl<'a> TsBackend for TsStmtWriter<'a> {
                 }
                 writeln!(f, ";")?;
             }
-            IrStmt::Semi(e) => {
+            IrStmtKind::Semi(e) => {
                 // Statement-like expressions get special treatment
                 if is_statement_like(e) {
                     write!(f, "{}", ind)?;
@@ -2891,7 +2891,7 @@ impl<'a> TsBackend for TsStmtWriter<'a> {
                     writeln!(f, ";")?;
                 }
             }
-            IrStmt::Expr(e) => {
+            IrStmtKind::Expr(e) => {
                 if is_statement_like(e) {
                     write!(f, "{}", ind)?;
                     emit_statement_expr(e, self.indent, f, cx)?;
@@ -2917,9 +2917,9 @@ struct TsExprWriter<'a> {
 
 impl<'a> TsBackend for TsExprWriter<'a> {
     fn ts_fmt(&self, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
-        match self.expr {
-            IrExpr::Lit(l) => ts_literal(l, f)?,
-            IrExpr::Var(v) => {
+        match &self.expr.kind {
+            IrExprKind::Lit(l) => ts_literal(l, f)?,
+            IrExprKind::Var(v) => {
                 let name = if v == "self" {
                     "this".to_string()
                 } else if v == "None" {
@@ -2932,7 +2932,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 };
                 write!(f, "{}", name)?;
             }
-            IrExpr::Binary { op, left, right } => {
+            IrExprKind::Binary { op, left, right } => {
                 match op {
                     SpecBinOp::Eq => {
                         write!(f, "__equals(")?;
@@ -2964,7 +2964,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     write!(f, ")")?;
                 }
             }
-            IrExpr::Unary { op, expr } => match op {
+            IrExprKind::Unary { op, expr } => match op {
                 SpecUnaryOp::Neg => {
                     write!(f, "-")?;
                     TsExprWriter { expr }.ts_fmt(f, cx)?;
@@ -2975,7 +2975,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 }
                 SpecUnaryOp::Deref => {
                     // Deref a mutable reference `{"*": v}` → emit `var["*"]`
-                    if let IrExpr::Var(v) = expr.as_ref() {
+                    if let IrExprKind::Var(v) = &expr.kind {
                         if let Some(r) = cx.find_mut_ref(v) {
                             return write!(f, "{}[Number({})]", r.array_expr, r.index_var);
                         }
@@ -2986,7 +2986,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     TsExprWriter { expr }.ts_fmt(f, cx)?;
                 }
             },
-            IrExpr::MethodCall {
+            IrExprKind::MethodCall {
                 receiver,
                 method,
                 args,
@@ -2994,9 +2994,9 @@ impl<'a> TsBackend for TsExprWriter<'a> {
             } => {
                 emit_method_call(receiver, method, args, f, cx)?;
             }
-            IrExpr::Call { func, args } => {
+            IrExprKind::Call { func, args } => {
                 // Check for Some(x)/None via Path or Var
-                if let IrExpr::Path { segments, .. } = func.as_ref() {
+                if let IrExprKind::Path { segments, .. } = &func.kind {
                     if segments.len() == 1 {
                         let name = &segments[0];
                         match name.as_str() {
@@ -3029,7 +3029,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         }
                     }
                 }
-                if let IrExpr::Var(v) = func.as_ref() {
+                if let IrExprKind::Var(v) = &func.kind {
                     match v.as_str() {
                         "Some" if args.len() == 1 => {
                             return TsExprWriter { expr: &args[0] }.ts_fmt(f, cx);
@@ -3049,7 +3049,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         "size_of_val" | "size_of" => {
                             let tp = if !args.is_empty() {
                                 let inner = unwrap_ref_expr(&args[0]);
-                                if let IrExpr::Var(name) = inner { cx.lookup_var_type(name) } else { None }
+                                if let IrExprKind::Var(name) = &inner.kind { cx.lookup_var_type(name) } else { None }
                             } else { None };
                             return if let Some(tp) = tp {
                                 write!(f, "ctx.sizeOf{}", tp)
@@ -3071,7 +3071,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                         return write!(f, ")");
                     }
                 }
-                if let IrExpr::Path { segments, .. } = func.as_ref() {
+                if let IrExprKind::Path { segments, .. } = &func.kind {
                     if segments.len() == 2 {
                         // Trait-qualified calls on external traits: `DigestUpdate::update(h, x)`
                         // → `h.update(x)`. The first arg becomes the receiver.
@@ -3153,7 +3153,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                             // Try to resolve from var_types; fall back to first SizeOf witness
                             let tp = if !args.is_empty() {
                                 let inner = unwrap_ref_expr(&args[0]);
-                                if let IrExpr::Var(name) = inner {
+                                if let IrExprKind::Var(name) = &inner.kind {
                                     cx.lookup_var_type(name)
                                 } else { None }
                             } else { None };
@@ -3204,9 +3204,9 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     }
                 }
                 // oracle/action/rng call sites: prepend `await` or `yield*`.
-                let callee_name: Option<&str> = match func.as_ref() {
-                    IrExpr::Var(n) => Some(n.as_str()),
-                    IrExpr::Path { segments, .. } if segments.len() == 1 => Some(segments[0].as_str()),
+                let callee_name: Option<&str> = match &func.kind {
+                    IrExprKind::Var(n) => Some(n.as_str()),
+                    IrExprKind::Path { segments, .. } if segments.len() == 1 => Some(segments[0].as_str()),
                     _ => None,
                 };
                 let is_suspension = callee_name
@@ -3224,19 +3224,19 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 }
                 write!(f, ")")?;
             }
-            IrExpr::Field { base, field } => {
+            IrExprKind::Field { base, field } => {
                 TsExprWriter { expr: base }.ts_fmt(f, cx)?;
                 write!(f, "{}", ts_field_access(field))?;
             }
-            IrExpr::Index { base, index } => {
+            IrExprKind::Index { base, index } => {
                 // TODO: Slice operations should be represented as a dedicated
                 // IrExpr::Slice variant in the IR rather than Index+Range.
                 // For now, detect Index with a Range index and emit .slice().
-                if let IrExpr::Range {
+                if let IrExprKind::Range {
                     start,
                     end,
                     inclusive,
-                } = index.as_ref()
+                } = &index.kind
                 {
                     // .slice() takes number args — wrap bigint with Number()
                     TsExprWriter { expr: base }.ts_fmt(f, cx)?;
@@ -3264,7 +3264,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     write!(f, ")]")?;
                 }
             }
-            IrExpr::Path { segments, .. } => {
+            IrExprKind::Path { segments, .. } => {
                 // Single-segment path that is a class witness → ctx.TClass
                 if segments.len() == 1 && cx.class_witnesses.contains(&segments[0]) {
                     write!(f, "ctx.{}Class", &segments[0])?;
@@ -3280,7 +3280,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     emit_path(&resolved, f)?;
                 }
             }
-            IrExpr::StructExpr { kind, fields, .. } => {
+            IrExprKind::StructExpr { kind, fields, .. } => {
                 // Strip Rust module prefixes (super::, crate::, self::) from type names.
                 let raw = kind.to_string();
                 let base = raw.rsplit("::").next().unwrap_or(raw.as_str());
@@ -3306,7 +3306,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 }
                 write!(f, " }})")?;
             }
-            IrExpr::Tuple(elems) => {
+            IrExprKind::Tuple(elems) => {
                 write!(f, "[")?;
                 for (i, e) in elems.iter().enumerate() {
                     if i > 0 {
@@ -3316,7 +3316,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 }
                 write!(f, "]")?;
             }
-            IrExpr::Array(elems) | IrExpr::FixedArray(elems) => {
+            IrExprKind::Array(elems) | IrExprKind::FixedArray(elems) => {
                 write!(f, "[")?;
                 for (i, e) in elems.iter().enumerate() {
                     if i > 0 {
@@ -3330,14 +3330,14 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     write!(f, "]")?;
                 }
             }
-            IrExpr::Repeat { elem, len } => {
+            IrExprKind::Repeat { elem, len } => {
                 write!(f, "Array.from({{length: Number(")?;
                 TsExprWriter { expr: len }.ts_fmt(f, cx)?;
                 write!(f, ")}}, () => ")?;
                 TsExprWriter { expr: elem }.ts_fmt(f, cx)?;
                 write!(f, ")")?;
             }
-            IrExpr::Block(b) => {
+            IrExprKind::Block(b) => {
                 // Expression-position block → IIFE
                 write!(f, "(() => ")?;
                 TsBlockWriter {
@@ -3347,7 +3347,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 .ts_fmt(f, cx)?;
                 write!(f, ")()")?;
             }
-            IrExpr::If {
+            IrExprKind::If {
                 cond,
                 then_branch,
                 else_branch,
@@ -3363,15 +3363,15 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 .ts_fmt(f, cx)?;
                 if let Some(eb) = else_branch {
                     write!(f, " else ")?;
-                    match eb.as_ref() {
-                        IrExpr::Block(b) => {
+                    match &eb.kind {
+                        IrExprKind::Block(b) => {
                             TsBlockWriter {
                                 block: b,
                                 indent: 0,
                             }
                             .ts_fmt(f, cx)?;
                         }
-                        IrExpr::If { .. } => {
+                        IrExprKind::If { .. } => {
                             // Nested if-else — recurse but strip IIFE wrapper
                             emit_if_chain(eb, f, cx)?;
                         }
@@ -3385,7 +3385,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 write!(f, " }})()")?;
             }
             // Loops as expressions — wrap in IIFE when they appear in expr context
-            IrExpr::BoundedLoop {
+            IrExprKind::BoundedLoop {
                 var,
                 start,
                 end,
@@ -3403,7 +3403,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 }
                 .ts_fmt(f, cx)?;
             }
-            IrExpr::IterLoop {
+            IrExprKind::IterLoop {
                 pattern,
                 collection,
                 body,
@@ -3419,16 +3419,16 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 }
                 .ts_fmt(f, cx)?;
             }
-            IrExpr::WhileLoop { cond, body } => {
+            IrExprKind::WhileLoop { cond, body } => {
                 write!(f, "while (")?;
                 TsExprWriter { expr: cond }.ts_fmt(f, cx)?;
                 write!(f, ") ")?;
                 TsBlockWriter { block: body, indent: 0 }.ts_fmt(f, cx)?;
             }
-            IrExpr::IterPipeline(chain) => {
+            IrExprKind::IterPipeline(chain) => {
                 TsIterChainWriter { chain }.ts_fmt(f, cx)?;
             }
-            IrExpr::RawMap {
+            IrExprKind::RawMap {
                 receiver,
                 elem_var,
                 body,
@@ -3440,7 +3440,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 TsExprWriter { expr: body }.ts_fmt(f, cx)?;
                 write!(f, ")")?;
             }
-            IrExpr::RawZip {
+            IrExprKind::RawZip {
                 left,
                 right,
                 left_var,
@@ -3458,7 +3458,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 TsExprWriter { expr: body }.ts_fmt(f, cx)?;
                 write!(f, "; }})")?;
             }
-            IrExpr::RawFold {
+            IrExprKind::RawFold {
                 receiver,
                 init,
                 acc_var,
@@ -3476,7 +3476,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 TsExprWriter { expr: init }.ts_fmt(f, cx)?;
                 write!(f, ")")?;
             }
-            IrExpr::Closure { params, body, .. } => {
+            IrExprKind::Closure { params, body, .. } => {
                 write!(f, "(")?;
                 for (i, p) in params.iter().enumerate() {
                     if i > 0 {
@@ -3491,7 +3491,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 write!(f, ") => ")?;
                 TsExprWriter { expr: body }.ts_fmt(f, cx)?;
             }
-            IrExpr::Range {
+            IrExprKind::Range {
                 start,
                 end,
                 inclusive,
@@ -3516,12 +3516,12 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 }
                 write!(f, ")")?;
             }
-            IrExpr::Assign { left, right } => {
+            IrExprKind::Assign { left, right } => {
                 TsExprWriter { expr: left }.ts_fmt(f, cx)?;
                 write!(f, " = ")?;
                 TsExprWriter { expr: right }.ts_fmt(f, cx)?;
             }
-            IrExpr::AssignOp { op, left, right } => {
+            IrExprKind::AssignOp { op, left, right } => {
                 if let Some(helper) = bin_op_helper(*op) {
                     TsExprWriter { expr: left }.ts_fmt(f, cx)?;
                     write!(f, " = {}(", helper)?;
@@ -3535,14 +3535,14 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     TsExprWriter { expr: right }.ts_fmt(f, cx)?;
                 }
             }
-            IrExpr::Return(e) => {
+            IrExprKind::Return(e) => {
                 write!(f, "return")?;
                 if let Some(e) = e {
                     write!(f, " ")?;
                     TsExprWriter { expr: e }.ts_fmt(f, cx)?;
                 }
             }
-            IrExpr::Cast { expr, ty } => match ty.as_ref() {
+            IrExprKind::Cast { expr, ty } => match ty.as_ref() {
                 IrType::Primitive(PrimitiveType::U32) => {
                     write!(f, "Number(")?;
                     TsExprWriter { expr }.ts_fmt(f, cx)?;
@@ -3571,7 +3571,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     write!(f, ")")?;
                 }
             },
-            IrExpr::TypenumUsize { ty } => {
+            IrExprKind::TypenumUsize { ty } => {
                 // If this is a projection on a type param, use the witness
                 if let IrType::Projection { base, assoc, .. } = ty.as_ref() {
                     if let IrType::TypeParam(name) = base.as_ref() {
@@ -3591,8 +3591,8 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     write!(f, " as Unsigned>.USIZE */")?;
                 }
             }
-            IrExpr::Unreachable => write!(f, "(() => {{ throw new Error(\"unreachable\"); }})()")?,
-            IrExpr::DefaultValue { ty } => {
+            IrExprKind::Unreachable => write!(f, "(() => {{ throw new Error(\"unreachable\"); }})()")?,
+            IrExprKind::DefaultValue { ty } => {
                 if let Some(t) = ty {
                     match t.as_ref() {
                         IrType::TypeParam(name) => {
@@ -3614,10 +3614,10 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     write!(f, "undefined")?;
                 }
             }
-            IrExpr::LengthOf(len) => {
+            IrExprKind::LengthOf(len) => {
                 ts_length(len, f, cx)?;
             }
-            IrExpr::ArrayGenerate {
+            IrExprKind::ArrayGenerate {
                 len,
                 index_var,
                 body,
@@ -3630,7 +3630,7 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 TsExprWriter { expr: body }.ts_fmt(f, cx)?;
                 write!(f, "; }})")?;
             }
-            IrExpr::Match { expr, arms } => {
+            IrExprKind::Match { expr, arms } => {
                 write!(f, "(() => {{ ")?;
                 write!(f, "const __match = ")?;
                 TsExprWriter { expr }.ts_fmt(f, cx)?;
@@ -3648,10 +3648,10 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                     }
                     ts_emit_pattern_bindings(&arm.pattern, "__match", f)?;
                     // Don't double-wrap if the body is already a return/break.
-                    if let IrExpr::Return(Some(inner)) = &arm.body {
+                    if let IrExprKind::Return(Some(inner)) = &arm.body.kind {
                         write!(f, "return ")?;
                         TsExprWriter { expr: inner }.ts_fmt(f, cx)?;
-                    } else if let IrExpr::Return(None) = &arm.body {
+                    } else if let IrExprKind::Return(None) = &arm.body.kind {
                         write!(f, "return undefined")?;
                     } else {
                         write!(f, "return ")?;
@@ -3661,9 +3661,9 @@ impl<'a> TsBackend for TsExprWriter<'a> {
                 }
                 write!(f, " }})()")?;
             }
-            IrExpr::Break(_) => write!(f, "break")?,
-            IrExpr::Continue => write!(f, "continue")?,
-            IrExpr::Try(e) => {
+            IrExprKind::Break(_) => write!(f, "break")?,
+            IrExprKind::Continue => write!(f, "continue")?,
+            IrExprKind::Try(e) => {
                 TsExprWriter { expr: e }.ts_fmt(f, cx)?;
             }
             _ => {
@@ -3681,11 +3681,11 @@ impl<'a> TsBackend for TsExprWriter<'a> {
 /// Emit an `if` chain without the outer IIFE wrapper.
 /// Used for `else if` chains inside an already-open IIFE.
 fn emit_if_chain(expr: &IrExpr, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) -> fmt::Result {
-    if let IrExpr::If {
+    if let IrExprKind::If {
         cond,
         then_branch,
         else_branch,
-    } = expr
+    } = &expr.kind
     {
         write!(f, "if (")?;
         TsExprWriter { expr: cond }.ts_fmt(f, cx)?;
@@ -3697,15 +3697,15 @@ fn emit_if_chain(expr: &IrExpr, f: &mut fmt::Formatter<'_>, cx: &TsContext<'_>) 
         .ts_fmt(f, cx)?;
         if let Some(eb) = else_branch {
             write!(f, " else ")?;
-            match eb.as_ref() {
-                IrExpr::Block(b) => {
+            match &eb.kind {
+                IrExprKind::Block(b) => {
                     TsBlockWriter {
                         block: b,
                         indent: 0,
                     }
                     .ts_fmt(f, cx)?;
                 }
-                IrExpr::If { .. } => {
+                IrExprKind::If { .. } => {
                     emit_if_chain(eb, f, cx)?;
                 }
                 _ => {
@@ -4223,7 +4223,7 @@ fn emit_other_method_call(
         _ => {}
     }
     // Numeric literals need parens before method access in JS/TS (e.g. `(1).method()`).
-    let needs_parens = matches!(receiver, IrExpr::Lit(IrLit::Int(_) | IrLit::Float(_)));
+    let needs_parens = matches!(&receiver.kind, IrExprKind::Lit(IrLit::Int(_) | IrLit::Float(_)));
     if needs_parens { write!(f, "(")?; }
     TsExprWriter { expr: receiver }.ts_fmt(f, cx)?;
     if needs_parens { write!(f, ")")?; }
@@ -4769,7 +4769,7 @@ fn is_phantom_field(field: &IrField) -> bool {
 
 /// TS has no PhantomData — drop any call argument that is a bare `PhantomData` path.
 fn is_phantom_arg(expr: &IrExpr) -> bool {
-    matches!(expr, IrExpr::Path { segments, .. } if segments.last().map(|s| s == "PhantomData").unwrap_or(false))
+    matches!(&expr.kind, IrExprKind::Path { segments, .. } if segments.last().map(|s| s == "PhantomData").unwrap_or(false))
 }
 
 fn pattern_is_mutable(pat: &IrPattern) -> bool {
@@ -4908,9 +4908,9 @@ fn unwrap_ref(ty: &IrType) -> &IrType {
 }
 
 fn unwrap_ref_expr(e: &IrExpr) -> &IrExpr {
-    match e {
-        IrExpr::Unary { op: SpecUnaryOp::Ref | SpecUnaryOp::RefMut, expr } => unwrap_ref_expr(expr),
-        other => other,
+    match &e.kind {
+        IrExprKind::Unary { op: SpecUnaryOp::Ref | SpecUnaryOp::RefMut, expr } => unwrap_ref_expr(expr),
+        _ => e,
     }
 }
 

@@ -11,6 +11,8 @@ use volar_build::Pipeline;
 use volar_ir_text::{SavedIrBlocks, WriteText};
 
 fn main() {
+    let _log = volar_log::LlmtrimLogger::from_env();
+    volar_log::install_as_global_logger(_log);
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("usage: volar-ir-tester <input.wasm> [output.vir]");
@@ -35,12 +37,24 @@ fn main() {
     let stmt_count: usize = saved.blocks.blocks.iter().map(|b| b.stmts.len()).sum();
     let text_bytes = text.len();
 
-    println!("blocks:     {block_count}");
-    println!("stmts:      {stmt_count}");
-    println!("text bytes: {text_bytes}");
-
-    if let Some(p) = out_path {
-        fs::write(p, &text).unwrap_or_else(|e| eprintln!("warn: write failed: {e}"));
-        println!("wrote:      {}", p.display());
+    if _log.json_mode {
+        let mut batch = _log.begin_batch("volar-ir-tester");
+        batch.event("INFO", "metrics", "IR analysis complete", &[
+            ("blocks", &block_count.to_string()),
+            ("stmts", &stmt_count.to_string()),
+            ("text_bytes", &text_bytes.to_string()),
+        ]);
+        if let Some(p) = out_path {
+            fs::write(p, &text).unwrap_or_else(|e| eprintln!("warn: write failed: {e}"));
+            batch.event("INFO", "write", "wrote output", &[("path", &p.display().to_string())]);
+        }
+    } else {
+        println!("blocks:     {block_count}");
+        println!("stmts:      {stmt_count}");
+        println!("text bytes: {text_bytes}");
+        if let Some(p) = out_path {
+            fs::write(p, &text).unwrap_or_else(|e| eprintln!("warn: write failed: {e}"));
+            println!("wrote:      {}", p.display());
+        }
     }
 }

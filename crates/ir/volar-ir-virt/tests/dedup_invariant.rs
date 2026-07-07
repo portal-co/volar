@@ -4,15 +4,14 @@
 //! value must dedup to exactly one handler.
 
 use volar_ir::ir::{
-    IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRType, IRTypes, IRVarId, PrimType,
+    IRBlock, IRBlockTargetId, IRBranchTarget, IRBlocks, IRTerminator, IRType, IRTypes, IRVarId, PrimType,
 };
-use volar_ir_common::{Constant, Stmt};
-use volar_ir_virt::{virtualize_ir, BytecodeForm, DispatchMode, VirtualizeConfig};
+use volar_ir_common::{Constant, Node, Stmt, StorageId};
+use volar_ir_virt::{virtualize_ir, DispatchMode, VirtualizeConfig};
 
 fn cfg_default() -> VirtualizeConfig {
     VirtualizeConfig {
         dispatch: DispatchMode::Public,
-        bytecode_form: BytecodeForm::External,
         ..VirtualizeConfig::default()
     }
 }
@@ -27,12 +26,8 @@ fn sixteen_const_only_blocks_dedup_to_single_handler() {
     let blocks: Vec<IRBlock> = (0..16u128)
         .map(|k| IRBlock {
             params: vec![u32_ty],
-            stmts: vec![Stmt::Const(Constant { hi: 0, lo: k }, u32_ty)],
-            stmt_provs: vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(1)],
-            },
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: k }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)],) },
         })
         .collect();
     let blocks = IRBlocks::new(blocks);
@@ -52,13 +47,25 @@ fn sixteen_const_only_blocks_dedup_to_single_handler() {
 
     // External bytecode should have 16 entries, each pointing at
     // handler 0, with a single `Constant` immediate slot.
-    let bc = out.bytecode.expect("external bytecode requested");
+    let bc = out.bytecode.as_ref().expect("bytecode always populated");
     assert_eq!(bc.n_handlers, 1);
     assert_eq!(bc.entries.len(), 16);
     for (pc, entry) in bc.entries.iter().enumerate() {
         assert_eq!(entry.handler_idx, 0, "pc={}", pc);
         assert_eq!(entry.consts.len(), 1, "pc={}", pc);
         assert_eq!(entry.consts[0].lo, pc as u128, "pc={}", pc);
+    }
+
+    // handler_idx lane in pre_init matches bytecode artifact.
+    let handler_lane = out
+        .blocks
+        .pre_init
+        .iter()
+        .find(|s| s.storage == StorageId::VIRT_BYTECODE && s.ty == u32_ty)
+        .expect("handler_idx pre_init lane");
+    assert_eq!(handler_lane.data.len(), 16);
+    for (pc, c) in handler_lane.data.iter().enumerate() {
+        assert_eq!(c.lo, 0, "all rows use handler 0 at pc={}", pc);
     }
 }
 
@@ -71,12 +78,8 @@ fn handler_count_monotone_in_structural_variety() {
 
     let mk_const_return = |k: u128| IRBlock {
         params: vec![u32_ty],
-        stmts: vec![Stmt::Const(Constant { hi: 0, lo: k }, u32_ty)],
-        stmt_provs: vec![()],
-        terminator: IRTerminator::Jmp {
-            func: IRBlockTargetId::Return,
-            args: vec![IRVarId(1)],
-        },
+        stmts: vec![Stmt::Const(Constant { hi: 0, lo: k }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)],) },
     };
 
     // 4 const-return blocks (all dedup) + 1 distinct "jump to block 5
@@ -94,11 +97,7 @@ fn handler_count_monotone_in_structural_variety() {
         IRBlock {
             params: vec![u32_ty],
             stmts: vec![],
-            stmt_provs: vec![],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],) },
         },
     ]);
 

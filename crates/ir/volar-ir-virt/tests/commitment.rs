@@ -7,8 +7,8 @@
 //! valid (commitment diff == 0 → next_pc XOR 0 == next_pc).
 //!
 //! We reuse the `eval_ir` interpreter from `volar-fuzz` which:
-//! 1. Executes the setup block, populating both bytecode storage and
-//!    commitment storage with `Stmt::Const` / `StorageWrite` pairs.
+//! 1. Applies `pre_init` segments (bytecode + commitment lanes), then
+//!    runs the setup block (register routing only).
 //! 2. Runs the dispatch loop through all handler blocks.
 //! 3. Returns the values read from return-registers.
 //!
@@ -18,12 +18,12 @@ extern crate alloc;
 
 use volar_fuzz::interpreter::ir::{bit_width, const_to_bits, eval_ir};
 use volar_ir::ir::{
-    IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRTerminator, IRType, IRTypeId, IRTypes,
+    IRBlock, IRBlockId, IRBlockTargetId, IRBranchTarget, IRBlocks, IRTerminator, IRType, IRTypeId, IRTypes,
     IRVarId, PrimType,
 };
-use volar_ir_common::{Constant, Stmt, StorageId};
+use volar_ir_common::{Constant, Node, Stmt, StorageId};
 use volar_ir_virt::{
-    virtualize_ir, virtualize_ir_committed, BytecodeForm, CommitmentConfig, DispatchMode,
+    virtualize_ir, virtualize_ir_committed, CommitmentConfig, DispatchMode,
     VirtualizeConfig, XorFoldHash32,
 };
 
@@ -31,10 +31,9 @@ use volar_ir_virt::{
 // Helpers
 // ============================================================================
 
-fn cfg_in_ir() -> VirtualizeConfig {
+fn cfg_default() -> VirtualizeConfig {
     VirtualizeConfig {
         dispatch: DispatchMode::Public,
-        bytecode_form: BytecodeForm::InIr,
         ..VirtualizeConfig::default()
     }
 }
@@ -65,12 +64,10 @@ fn single_const_return() -> (IRBlocks, IRTypes) {
 
     let blocks = IRBlocks::new(vec![IRBlock {
         params: vec![],
-        stmts: vec![Stmt::Const(Constant { hi: 0, lo: 42 }, u32_ty)],
-        stmt_provs: vec![()],
+        stmts: vec![Stmt::Const(Constant { hi: 0, lo: 42 }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
         terminator: IRTerminator::Jmp {
-            func: IRBlockTargetId::Return,
-            args: vec![IRVarId(0)],
-        },
+    target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],)
+},
     }]);
     (blocks, types)
 }
@@ -79,14 +76,46 @@ fn single_const_return() -> (IRBlocks, IRTypes) {
 fn committed_single_block_same_output() {
     let (blocks, mut types) = single_const_return();
 
-    let plain = virtualize_ir(&blocks, &mut types, &cfg_in_ir());
+    let plain = virtualize_ir(&blocks, &mut types, &cfg_default());
     let plain_out = eval_ir(&plain.blocks, &types, &[]).expect("plain eval");
 
-    let committed = virtualize_ir_committed(&blocks, &mut types, &cfg_in_ir(), &commitment_cfg());
+    let committed = virtualize_ir_committed(&blocks, &mut types, &cfg_default(), &commitment_cfg());
     let commit_out = eval_ir(&committed.blocks, &types, &[]).expect("committed eval");
 
     assert_eq!(plain_out, commit_out, "single-block committed output must match plain");
     assert_eq!(bits_to_u32(&commit_out[0]), 42);
+}
+
+#[test]
+fn committed_storage_lives_in_pre_init_not_setup() {
+    let (blocks, mut types) = single_const_return();
+    let cfg = commitment_cfg();
+    let committed =
+        virtualize_ir_committed(&blocks, &mut types, &cfg_default(), &cfg);
+
+    let setup = &committed.blocks.blocks[0];
+    for node in &setup.stmts {
+        if let Stmt::StorageWrite { storage, .. } = &node.kind {
+            assert_ne!(
+                storage.0,
+                cfg.commitment_storage.0,
+                "setup must not seed commitment storage (pre_init does)"
+            );
+            assert_ne!(
+                storage.0,
+                StorageId::VIRT_BYTECODE.0,
+                "setup must not seed bytecode storage (pre_init does)"
+            );
+        }
+    }
+
+    let commit_lane = committed
+        .blocks
+        .pre_init
+        .iter()
+        .find(|s| s.storage == cfg.commitment_storage)
+        .expect("commitment pre_init lane");
+    assert_eq!(commit_lane.data.len(), 1, "one block → one commitment cell");
 }
 
 // ============================================================================
@@ -101,30 +130,29 @@ fn three_block_passthrough() -> (IRBlocks, IRTypes) {
     let blocks = IRBlocks::new(vec![
         IRBlock {
             params: vec![u32_ty],
+<<<<<<< HEAD
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 0 }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
+=======
             stmts: vec![],
             stmt_provs: vec![],
+>>>>>>> origin/main
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Block(IRBlockId(1)),
-                args: vec![IRVarId(0)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(0)],)
+},
         },
         IRBlock {
             params: vec![u32_ty],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Block(IRBlockId(2)),
-                args: vec![IRVarId(0)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(2)), vec![IRVarId(0)],)
+},
         },
         IRBlock {
             params: vec![u32_ty],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],)
+},
         },
     ]);
     (blocks, types)
@@ -136,11 +164,11 @@ fn committed_passthrough_same_output() {
     let u32_ty = types.intern(IRType::Primitive(PrimType::_32));
     let input = const_to_bits(&Constant { hi: 0, lo: 7 }, bit_width(u32_ty, &types));
 
-    let plain = virtualize_ir(&blocks, &mut types, &cfg_in_ir());
+    let plain = virtualize_ir(&blocks, &mut types, &cfg_default());
     let plain_out = eval_ir(&plain.blocks, &types, &[input.clone()]).expect("plain");
 
     let committed =
-        virtualize_ir_committed(&blocks, &mut types, &cfg_in_ir(), &commitment_cfg());
+        virtualize_ir_committed(&blocks, &mut types, &cfg_default(), &commitment_cfg());
     let commit_out =
         eval_ir(&committed.blocks, &types, &[input]).expect("committed");
 
@@ -163,44 +191,35 @@ fn jumpcond_two_branch() -> (IRBlocks, IRTypes) {
         IRBlock {
             params: vec![bit_ty, u32_ty],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::JumpCond {
                 condition: IRVarId(0),
-                true_block: IRBlockTargetId::Block(IRBlockId(1)),
-                true_args: vec![IRVarId(0), IRVarId(1)],
-                false_block: IRBlockTargetId::Block(IRBlockId(2)),
-                false_args: vec![IRVarId(0), IRVarId(1)],
-            },
+                then_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(0), IRVarId(1)]),
+                else_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(2)), vec![IRVarId(0), IRVarId(1)]),
+                },
         },
         // block 1: return Const(1)
         IRBlock {
             params: vec![bit_ty, u32_ty],
-            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 1 }, u32_ty)],
-            stmt_provs: vec![()],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 1 }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Block(IRBlockId(3)),
-                args: vec![IRVarId(0), IRVarId(2)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(3)), vec![IRVarId(0), IRVarId(2)],)
+},
         },
         // block 2: return Const(2)
         IRBlock {
             params: vec![bit_ty, u32_ty],
-            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 2 }, u32_ty)],
-            stmt_provs: vec![()],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 2 }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Block(IRBlockId(3)),
-                args: vec![IRVarId(0), IRVarId(2)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(3)), vec![IRVarId(0), IRVarId(2)],)
+},
         },
         // block 3: sink
         IRBlock {
             params: vec![bit_ty, u32_ty],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(1)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)],)
+},
         },
     ]);
     (blocks, types)
@@ -216,12 +235,12 @@ fn committed_jumpcond_same_output() {
     let c_f = const_to_bits(&Constant { hi: 0, lo: 0 }, bit_width(bit_ty, &types));
     let x = const_to_bits(&Constant { hi: 0, lo: 99 }, bit_width(u32_ty, &types));
 
-    let plain = virtualize_ir(&blocks, &mut types, &cfg_in_ir());
+    let plain = virtualize_ir(&blocks, &mut types, &cfg_default());
     let plain_t = eval_ir(&plain.blocks, &types, &[c_t.clone(), x.clone()]).expect("plain t");
     let plain_f = eval_ir(&plain.blocks, &types, &[c_f.clone(), x.clone()]).expect("plain f");
 
     let committed =
-        virtualize_ir_committed(&blocks, &mut types, &cfg_in_ir(), &commitment_cfg());
+        virtualize_ir_committed(&blocks, &mut types, &cfg_default(), &commitment_cfg());
     let commit_t =
         eval_ir(&committed.blocks, &types, &[c_t, x.clone()]).expect("committed t");
     let commit_f =
@@ -246,18 +265,16 @@ fn committed_dedup_count_unchanged() {
     let blocks: Vec<IRBlock> = (0..16u128)
         .map(|k| IRBlock {
             params: vec![u32_ty],
-            stmts: vec![Stmt::Const(Constant { hi: 0, lo: k }, u32_ty)],
-            stmt_provs: vec![()],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: k }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(1)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)],)
+},
         })
         .collect();
     let blocks = IRBlocks::new(blocks);
 
     let committed =
-        virtualize_ir_committed(&blocks, &mut types, &cfg_in_ir(), &commitment_cfg());
+        virtualize_ir_committed(&blocks, &mut types, &cfg_default(), &commitment_cfg());
     assert_eq!(committed.n_handlers, 1, "dedup count must not change with commitment");
     assert_eq!(committed.blocks_in, 16);
 }
@@ -278,43 +295,37 @@ fn committed_lifted_const_same_output() {
     let blocks = IRBlocks::new(vec![
         IRBlock {
             params: vec![u32_ty],
-            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 5 }, u32_ty)],
-            stmt_provs: vec![()],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 5 }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Block(IRBlockId(2)),
-                args: vec![IRVarId(1)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(2)), vec![IRVarId(1)],)
+},
         },
         IRBlock {
             params: vec![u32_ty],
-            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 10 }, u32_ty)],
-            stmt_provs: vec![()],
+            stmts: vec![Stmt::Const(Constant { hi: 0, lo: 10 }, u32_ty)].into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Block(IRBlockId(2)),
-                args: vec![IRVarId(1)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(2)), vec![IRVarId(1)],)
+},
         },
         IRBlock {
             params: vec![u32_ty],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
+    target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],)
+},
         },
     ]);
 
     let input = const_to_bits(&Constant { hi: 0, lo: 0 }, bit_width(u32_ty, &types));
 
     // Plain result: entry is block 0 which emits Const(5).
-    let plain = virtualize_ir(&blocks, &mut types, &cfg_in_ir());
+    let plain = virtualize_ir(&blocks, &mut types, &cfg_default());
     let plain_out = eval_ir(&plain.blocks, &types, &[input.clone()]).expect("plain");
     assert_eq!(bits_to_u32(&plain_out[0]), 5);
 
     // Committed result must match.
     let committed =
-        virtualize_ir_committed(&blocks, &mut types, &cfg_in_ir(), &commitment_cfg());
+        virtualize_ir_committed(&blocks, &mut types, &cfg_default(), &commitment_cfg());
     let commit_out = eval_ir(&committed.blocks, &types, &[input]).expect("committed");
 
     assert_eq!(
@@ -375,11 +386,11 @@ where
 fn siphash48_committed_single_block_same_output() {
     let (blocks, mut types) = single_const_return();
 
-    let plain = virtualize_ir(&blocks, &mut types, &cfg_in_ir());
+    let plain = virtualize_ir(&blocks, &mut types, &cfg_default());
     let plain_out = eval_ir(&plain.blocks, &types, &[]).expect("plain eval");
 
     let committed =
-        virtualize_ir_committed(&blocks, &mut types, &cfg_in_ir(), &siphash_commitment_cfg());
+        virtualize_ir_committed(&blocks, &mut types, &cfg_default(), &siphash_commitment_cfg());
     // The pass adds two key params at the front; supply them.
     assert_eq!(committed.key_params.len(), 2, "SipHash48 must add 2 key params");
     let commit_out = eval_with_sip_key(&committed.blocks, &types, []);
@@ -392,7 +403,7 @@ fn siphash48_committed_single_block_same_output() {
 fn siphash48_key_params_reported_correctly() {
     let (blocks, mut types) = single_const_return();
     let committed =
-        virtualize_ir_committed(&blocks, &mut types, &cfg_in_ir(), &siphash_commitment_cfg());
+        virtualize_ir_committed(&blocks, &mut types, &cfg_default(), &siphash_commitment_cfg());
 
     // key_params must carry the two compile-time key constants.
     assert_eq!(committed.key_params.len(), 2);
@@ -406,12 +417,12 @@ fn siphash48_committed_passthrough_same_output() {
     let u32_ty = types.intern(IRType::Primitive(volar_ir::ir::PrimType::_32));
     let input = const_to_bits(&Constant { hi: 0, lo: 7 }, bit_width(u32_ty, &types));
 
-    let plain = virtualize_ir(&blocks, &mut types, &cfg_in_ir());
+    let plain = virtualize_ir(&blocks, &mut types, &cfg_default());
     let plain_out =
         eval_ir(&plain.blocks, &types, &[input.clone()]).expect("plain");
 
     let committed =
-        virtualize_ir_committed(&blocks, &mut types, &cfg_in_ir(), &siphash_commitment_cfg());
+        virtualize_ir_committed(&blocks, &mut types, &cfg_default(), &siphash_commitment_cfg());
     let commit_out = eval_with_sip_key(&committed.blocks, &types, [input]);
 
     assert_eq!(plain_out, commit_out, "SipHash48 passthrough must match plain");
@@ -428,12 +439,12 @@ fn siphash48_committed_jumpcond_same_output() {
     let c_f = const_to_bits(&Constant { hi: 0, lo: 0 }, bit_width(bit_ty, &types));
     let x = const_to_bits(&Constant { hi: 0, lo: 99 }, bit_width(u32_ty, &types));
 
-    let plain = virtualize_ir(&blocks, &mut types, &cfg_in_ir());
+    let plain = virtualize_ir(&blocks, &mut types, &cfg_default());
     let plain_t = eval_ir(&plain.blocks, &types, &[c_t.clone(), x.clone()]).expect("plain t");
     let plain_f = eval_ir(&plain.blocks, &types, &[c_f.clone(), x.clone()]).expect("plain f");
 
     let committed =
-        virtualize_ir_committed(&blocks, &mut types, &cfg_in_ir(), &siphash_commitment_cfg());
+        virtualize_ir_committed(&blocks, &mut types, &cfg_default(), &siphash_commitment_cfg());
     let commit_t = eval_with_sip_key(&committed.blocks, &types, [c_t, x.clone()]);
     let commit_f = eval_with_sip_key(&committed.blocks, &types, [c_f, x]);
 

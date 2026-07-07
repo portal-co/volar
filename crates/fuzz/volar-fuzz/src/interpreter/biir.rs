@@ -16,6 +16,7 @@ use std::collections::BTreeMap;
 
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
 use volar_ir::ir::{IRBlockTargetId, IRVarId, StorageId};
+use volar_ir_common::PreInitSegment;
 
 /// Storage map for BIR evaluation: keyed by `(StorageId, address_as_u64)`.
 ///
@@ -50,6 +51,7 @@ pub fn eval_biir_with_limit(
     let mut current_block: usize = 0;
     let mut current_inputs: Vec<bool> = inputs.to_vec();
     let mut storage: BIrStorageMap = BTreeMap::new();
+    apply_pre_init(&mut storage, &blocks.pre_init);
 
     loop {
         if current_block == 0 {
@@ -68,6 +70,16 @@ pub fn eval_biir_with_limit(
                 current_block = target;
                 current_inputs = args;
             }
+        }
+    }
+}
+
+/// Seed BIR storage from module-level pre-init segments (virt uses `TypeId(0)` = Bit).
+pub fn apply_pre_init(storage: &mut BIrStorageMap, pre_init: &[PreInitSegment]) {
+    for seg in pre_init {
+        for (i, c) in seg.data.iter().enumerate() {
+            let addr = (seg.offset + i) as u64;
+            storage.insert((seg.storage, addr), c.lo & 1 != 0);
         }
     }
 }
@@ -99,9 +111,9 @@ fn eval_block(block: &BIrBlock<()>, params: &[bool], storage: &mut BIrStorageMap
     }
 
     let base = block.params;
-    for (i, stmt) in block.stmts.iter().enumerate() {
+    for (i, node) in block.stmts.iter().enumerate() {
         let id = base + i as u32;
-        let val = eval_stmt(stmt, id, &vars, &mut oracle_agg, storage);
+        let val = eval_stmt(&node.kind, id, &vars, &mut oracle_agg, storage);
         vars.insert(id, val);
     }
 
@@ -219,11 +231,9 @@ mod tests {
     }
 
     fn simple_block(params: u32, stmts: Vec<BIrStmt>, term: BIrTerminator) -> BIrBlock<()> {
-        let n = stmts.len();
         BIrBlock {
             params,
-            stmt_provs: vec![(); n],
-            stmts,
+            stmts: stmts.into_iter().map(|s| volar_ir_common::Node::new(s, (), None)).collect(),
             terminator: term,
         }
     }

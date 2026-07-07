@@ -26,31 +26,41 @@
 //!   fallback` accumulators.  Safe for witness-dependent control flow at a
 //!   larger per-step cost.
 //!
-//! # Bytecode forms
+//! # Storage initialization
 //!
-//! * [`BytecodeForm::InIr`] — the setup block `StorageWrite`s every
-//!   bytecode entry into a dedicated [`StorageId`] before dispatch.  Keeps
-//!   the entire transform inside the Volar IR / Boolar IR semantics.
-//! * [`BytecodeForm::External`] — a [`VirtBytecode`] data artifact is
-//!   returned alongside the IR for backends (Rust / TS / C) that prefer to
-//!   materialise the table as a `const` array plus a small runtime shim.
-//! * [`BytecodeForm::Both`] (default) — emit both.
+//! Static bytecode table and per-slot storage lanes are emitted as
+//! [`PreInitSegment`] entries on the output module's `pre_init` field
+//! (same construct WASM data segments and the VOLE weaver use).  The setup
+//! block only performs dynamic work (keyed commitment params, entry-param
+//! register routing).  A structured [`VirtBytecode`] side artifact is always
+//! returned alongside the module for tests and backends.
 
 extern crate alloc;
 
+pub mod adaptive_emit;
+pub mod adaptive_cfg;
 pub mod bir;
 pub mod bytecode;
 pub mod canon;
 pub mod ctx;
 pub mod hash;
 pub mod ir;
+pub mod layout;
+pub mod preinit;
+pub mod cfg_hints;
+pub mod split;
 
-pub use bytecode::{BytecodeEntry, HandlerImmSchema, VirtBytecode};
+pub use adaptive_cfg::AdaptiveSplitConfig;
+pub use bytecode::{
+    AppendedRegionKind, AppendedRegionMeta, BytecodeEntry, BytecodeRowKind, HandlerImmSchema,
+    OperandMode, TripCount, VirtBytecode,
+};
 pub use canon::{BirHandlerKey, BlockImmediates, HandlerKey, ImmediateKind, IrHandlerKey};
 pub use ctx::VirtOutput;
 pub use hash::{CommitmentConfig, IrEmitter, IrHashAlgorithm, SipHash48, XorFoldHash32};
 pub use ir::{virtualize_ir, virtualize_ir_committed};
 pub use bir::virtualize_bir;
+pub use split::plan_adaptive_split;
 
 use volar_ir_common::StorageId;
 
@@ -63,35 +73,6 @@ pub enum DispatchMode {
     /// Oblivious dispatch via movfuscate-style accumulators — every handler
     /// runs every step, outputs combined with `is_active · val + fallback`.
     Oblivious,
-}
-
-/// Where the bytecode table is materialised.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum BytecodeForm {
-    /// Setup block initialises a [`StorageId`] with the bytecode, and the
-    /// dispatcher fetches entries via [`StorageRead`].
-    ///
-    /// [`StorageRead`]: volar_ir_common::Stmt::StorageRead
-    InIr,
-    /// Bytecode is returned as a [`VirtBytecode`] data artifact on the side.
-    /// The IR output contains a dispatcher that assumes immediates are
-    /// supplied by the backend's runtime shim rather than emitted via
-    /// `StorageRead`.
-    External,
-    /// Emit both forms: the IR setup block seeds the storage, and the
-    /// [`VirtBytecode`] artifact is returned for backends that want it.
-    Both,
-}
-
-impl BytecodeForm {
-    /// Whether this form asks the pass to emit the in-IR setup block.
-    pub fn wants_in_ir(self) -> bool {
-        matches!(self, BytecodeForm::InIr | BytecodeForm::Both)
-    }
-    /// Whether this form asks the pass to return a [`VirtBytecode`] artifact.
-    pub fn wants_external(self) -> bool {
-        matches!(self, BytecodeForm::External | BytecodeForm::Both)
-    }
 }
 
 /// How aggressively blocks are canonicalised before deduplication.
@@ -114,11 +95,10 @@ pub enum DedupPolicy {
 #[derive(Clone, Debug)]
 pub struct VirtualizeConfig {
     pub dispatch: DispatchMode,
-    pub bytecode_form: BytecodeForm,
     pub dedup: DedupPolicy,
-    /// Storage space used to hold the bytecode table when
-    /// [`BytecodeForm::wants_in_ir`] is true.  Must not collide with any
-    /// `StorageId` the input module already reads from or writes to.
+    /// Storage space used to hold the bytecode table (seeded via `pre_init`).
+    /// Must not collide with any `StorageId` the input module already reads
+    /// from or writes to.
     pub bytecode_storage: StorageId,
     /// When `true`, handlers jump directly to their successor handler via an
     /// inline `JumpTable`, eliminating the two-block dispatcher→dispatch
@@ -126,16 +106,19 @@ pub struct VirtualizeConfig {
     /// dispatch sub-block.  Only supported for IR (`virtualize_ir`); BIR
     /// direct dispatch is not yet implemented (would cause O(n²) block growth).
     pub direct_dispatch: bool,
+    /// Adaptive split: SharedCore cross-block dedup and RerollLoop intra-block
+    /// rerolling. See [`AdaptiveSplitConfig`] and `docs/agent-context/virt-adaptive-split-adr.md`.
+    pub adaptive_split: AdaptiveSplitConfig,
 }
 
 impl Default for VirtualizeConfig {
     fn default() -> Self {
         Self {
             dispatch: DispatchMode::Public,
-            bytecode_form: BytecodeForm::Both,
             dedup: DedupPolicy::ConstantsAndTargets,
             bytecode_storage: StorageId::VIRT_BYTECODE,
             direct_dispatch: false,
+            adaptive_split: AdaptiveSplitConfig::default(),
         }
     }
 }

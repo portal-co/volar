@@ -41,9 +41,23 @@ use alloc::{
 };
 
 use volar_compiler::ir::{
-    IrClosureParam, IrExpr, IrPattern, IrType, MethodKind, PrimitiveType,
+    IrClosureParam, IrExpr, IrExprKind, IrPattern, IrType, MethodKind, PrimitiveType,
     SpecUnaryOp, StdMethod,
 };
+
+/// Construct a fresh `IrExpr` with default provenance and no side — for
+/// synthesized scaffolding nodes with no single source node to inherit
+/// metadata from (e.g. a freshly-named variable reference).
+pub(crate) fn ir_expr<P: Clone + Default>(kind: IrExprKind<P>) -> IrExpr<P> {
+    IrExpr::new(kind, P::default(), None)
+}
+
+/// Construct an `IrExpr` that derives directly from `src` (e.g. wrapping it in
+/// `&src` or `src.clone()`) — inherits `src`'s provenance/side rather than
+/// inventing new metadata.
+pub(crate) fn ir_expr_from<P: Clone>(kind: IrExprKind<P>, src: &IrExpr<P>) -> IrExpr<P> {
+    IrExpr::new(kind, src.prov.clone(), src.side)
+}
 use volar_ir::{
     boolar::{BIrBlock, BIrStmt, BIrTerminator},
     ir::{IRBlockTargetId, IRVarId},
@@ -59,7 +73,6 @@ pub mod garble;
 pub mod vole;
 pub(crate) mod vole_common;
 pub mod faest;
-pub mod grafhen;
 pub mod fhe;
 pub mod oram;
 pub mod gadgets;
@@ -104,16 +117,20 @@ pub use vole::{
     weave_vole_verifier_with_config, weave_vole_verifier_with_config_and_handler,
     weave_vole_prover_bounded_with_config, weave_vole_prover_bounded_with_config_and_handler,
     weave_vole_verifier_bounded_with_config, weave_vole_verifier_bounded_with_config_and_handler,
+    weave_vole_prover_with_side, weave_vole_prover_with_side_and_handler,
+    weave_vole_verifier_with_side, weave_vole_verifier_with_side_and_handler,
     weave_vole_prover_ir, weave_vole_verifier_ir,
     weave_vole_prover_ir_with_mode, weave_vole_verifier_ir_with_mode,
+    weave_vole_verifier_ir_with_mode_and_trace, weave_vole_qsim_ir_with_mode,
+    weave_vole_prover_ir_split, weave_vole_verifier_ir_split_with_trace, weave_vole_qsim_ir_split,
+    weave_vole_verifier_with_trace,
     StorageSizes, StorageMode, MemoryTrace, MemoryTraceEntry,
     ZkWitnessConfig, ZkActionConfig,
+    VoleProtection, VoleSideAssignments,
+    VerifierTraceSink, IopSink,
 };
 
-pub use grafhen::{
-    print_grafhen_module,
-    weave_grafhen, weave_grafhen_with_handler,
-};
+pub use volar_discipline::{Tagged, Zk, Transparent, Discipline, NonZk};
 
 pub use faest::{
     weave_faest_prover, weave_faest_verifier,
@@ -149,8 +166,8 @@ pub use fhe::{
     weave_fhe, weave_fhe_flat_bir, derive_storage_config,
     oblivious_read_loop, oblivious_write_loop,
     FheScheme, FheOutput, FheStorageConfig, FheStorageSizes,
-    FheActionConfig,
-    GrafhenScheme, TfheScheme,
+    FheActionConfig, FheProtection,
+    TfheScheme,
     print_fhe_cfg_module, print_fhe_flat_module,
 };
 pub use volar_ir::public::PublicSet;
@@ -174,8 +191,13 @@ pub(crate) fn expand_ors<P: Clone + Default>(block: &BIrBlock<P>) -> Vec<(IRVarI
 
     for (i, stmt) in block.stmts.iter().enumerate() {
         let result_id = IRVarId(num_params + i as u32);
+<<<<<<< HEAD
+        let prov = stmt.prov.clone();
+        match &stmt.kind {
+=======
         let prov = block.stmt_provs.get(i).cloned().unwrap_or_default();
         match stmt {
+>>>>>>> origin/main
             BIrStmt::Or(a, b) => {
                 let not_a = IRVarId(next_synthetic);
                 next_synthetic += 1;
@@ -202,7 +224,11 @@ pub(crate) fn expand_ors<P: Clone + Default>(block: &BIrBlock<P>) -> Vec<(IRVarI
 ///
 /// For single-output circuits returns `(Var(wire_N), T)`.
 /// For multi-output returns `(Tuple([...]), Tuple([T; n]))`.
+<<<<<<< HEAD
+pub(crate) fn build_return<P: Clone, Q: Clone + Default>(
+=======
 pub(crate) fn build_return<P: Clone + Default, Q: Clone + Default>(
+>>>>>>> origin/main
     block: &BIrBlock<P>,
     var_names: &BTreeMap<u32, String>,
     elem_ty: IrType,
@@ -223,7 +249,7 @@ pub(crate) fn build_return<P: Clone + Default, Q: Clone + Default>(
                     .map(|id| var(var_names[&id.0].as_str()))
                     .collect();
                 let tys: Vec<IrType> = args.iter().map(|_| elem_ty.clone()).collect();
-                (IrExpr::Tuple(exprs), IrType::Tuple(tys))
+                (ir_expr(IrExprKind::Tuple(exprs)), IrType::Tuple(tys))
             }
         }
         _ => panic!("build_return: circuit must have a Jmp(Return) terminator"),
@@ -236,6 +262,39 @@ pub(crate) fn build_return<P: Clone + Default, Q: Clone + Default>(
 
 /// Variable reference by name.
 pub(crate) fn var<P: Clone + Default>(name: &str) -> IrExpr<P> {
+<<<<<<< HEAD
+    ir_expr(IrExprKind::Var(name.into()))
+}
+
+/// `expr.clone()`
+pub(crate) fn clone_expr<P: Clone>(expr: IrExpr<P>) -> IrExpr<P> {
+    let prov = expr.prov.clone();
+    let side = expr.side;
+    IrExpr::new(
+        IrExprKind::MethodCall {
+            receiver: Box::new(expr),
+            method: MethodKind::Known(StdMethod::Clone),
+            type_args: vec![],
+            args: vec![],
+        },
+        prov,
+        side,
+    )
+}
+
+/// `&expr`
+pub(crate) fn ref_expr<P: Clone>(expr: IrExpr<P>) -> IrExpr<P> {
+    let prov = expr.prov.clone();
+    let side = expr.side;
+    IrExpr::new(
+        IrExprKind::Unary {
+            op: SpecUnaryOp::Ref,
+            expr: Box::new(expr),
+        },
+        prov,
+        side,
+    )
+=======
     IrExpr::Var(name.into())
 }
 
@@ -255,6 +314,7 @@ pub(crate) fn ref_expr<P: Clone + Default>(expr: IrExpr<P>) -> IrExpr<P> {
         op: SpecUnaryOp::Ref,
         expr: Box::new(expr),
     }
+>>>>>>> origin/main
 }
 
 /// `&T` reference type.
@@ -267,19 +327,58 @@ pub(crate) fn ref_to(ty: IrType) -> IrType {
 
 /// `Array::<u8, N>::default()`
 pub(crate) fn array_default<P: Clone + Default>() -> IrExpr<P> {
+<<<<<<< HEAD
+    ir_expr(IrExprKind::Call {
+        func: Box::new(ir_expr(IrExprKind::Path {
+=======
     IrExpr::Call {
         func: Box::new(IrExpr::Path {
+>>>>>>> origin/main
             segments: vec!["Array".into(), "default".into()],
             type_args: vec![
                 IrType::Primitive(PrimitiveType::U8),
                 IrType::TypeParam("N".into()),
             ],
-        }),
+        })),
         args: vec![],
-    }
+    })
 }
 
 /// `Array::<u8, N>::from_fn(|{idx}| {body})`
+<<<<<<< HEAD
+pub(crate) fn array_from_fn<P: Clone>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
+    let prov = body.prov.clone();
+    let side = body.side;
+    IrExpr::new(
+        IrExprKind::Call {
+            func: Box::new(IrExpr::new(
+                IrExprKind::Path {
+                    segments: vec!["Array".into(), "from_fn".into()],
+                    type_args: vec![
+                        IrType::Primitive(PrimitiveType::U8),
+                        IrType::TypeParam("N".into()),
+                    ],
+                },
+                prov.clone(),
+                side,
+            )),
+            args: vec![IrExpr::new(
+                IrExprKind::Closure {
+                    params: vec![IrClosureParam {
+                        pattern: IrPattern::ident(idx),
+                        ty: None,
+                    }],
+                    ret_type: None,
+                    body: Box::new(body),
+                },
+                prov.clone(),
+                side,
+            )],
+        },
+        prov,
+        side,
+    )
+=======
 pub(crate) fn array_from_fn<P: Clone + Default>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
     IrExpr::Call {
         func: Box::new(IrExpr::Path {
@@ -298,17 +397,23 @@ pub(crate) fn array_from_fn<P: Clone + Default>(idx: &str, body: IrExpr<P>) -> I
             body: Box::new(body),
         }],
     }
+>>>>>>> origin/main
 }
 
 /// `wire.base[idx]`
 pub(crate) fn base_index<P: Clone + Default>(wire_name: &str, idx_name: &str) -> IrExpr<P> {
+<<<<<<< HEAD
+    ir_expr(IrExprKind::Index {
+        base: Box::new(ir_expr(IrExprKind::Field {
+=======
     IrExpr::Index {
         base: Box::new(IrExpr::Field {
+>>>>>>> origin/main
             base: Box::new(var(wire_name)),
             field: "base".into(),
-        }),
+        })),
         index: Box::new(var(idx_name)),
-    }
+    })
 }
 
 // ============================================================================
@@ -325,6 +430,7 @@ pub(crate) mod tests_common {
         boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
         ir::{IRBlockId, IRBlockTargetId, IRVarId},
     };
+    use volar_ir_common::Node;
 
     /// Workspace root derived from `CARGO_MANIFEST_DIR` at compile time.
     pub fn workspace_root() -> String {
@@ -341,14 +447,10 @@ pub(crate) mod tests_common {
         BIrBlocks { blocks: vec![BIrBlock {
             params: 2,
             stmts: vec![
-                BIrStmt::Xor(IRVarId(0), IRVarId(1)),
-                BIrStmt::And(IRVarId(0), IRVarId(2)),
+                Node::new(BIrStmt::Xor(IRVarId(0), IRVarId(1)), (), None),
+                Node::new(BIrStmt::And(IRVarId(0), IRVarId(2)), (), None),
             ],
-            stmt_provs: vec![(), ()],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Return,
-                args: vec![IRVarId(3)],
-            }),
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(3)] }),
         }], pre_init: vec![] }
     }
 
@@ -356,12 +458,8 @@ pub(crate) mod tests_common {
     pub fn build_and_circuit() -> BIrBlocks {
         BIrBlocks { blocks: vec![BIrBlock {
             params: 2,
-            stmts: vec![BIrStmt::And(IRVarId(0), IRVarId(1))],
-            stmt_provs: vec![()],
-            terminator: BIrTerminator::Jmp(BIrTarget {
-                block: IRBlockTargetId::Return,
-                args: vec![IRVarId(2)],
-            }),
+            stmts: vec![Node::new(BIrStmt::And(IRVarId(0), IRVarId(1)), (), None)],
+            terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(2)] }),
         }], pre_init: vec![] }
     }
 
@@ -369,18 +467,11 @@ pub(crate) mod tests_common {
     pub fn build_simple_loop() -> BIrBlocks {
         BIrBlocks { blocks: vec![BIrBlock {
             params: 1,
-            stmts: vec![BIrStmt::One],
-            stmt_provs: vec![()],
+            stmts: vec![Node::new(BIrStmt::One, (), None)],
             terminator: BIrTerminator::CondJmp {
                 val: IRVarId(0),
-                then_target: BIrTarget {
-                    block: IRBlockTargetId::Return,
-                    args: vec![IRVarId(0)],
-                },
-                else_target: BIrTarget {
-                    block: IRBlockTargetId::Block(IRBlockId(0)),
-                    args: vec![IRVarId(1)],
-                },
+                then_target: BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(0)] },
+                else_target: BIrTarget { block: IRBlockTargetId::Block(IRBlockId(0)), args: vec![IRVarId(1)] },
             },
         }], pre_init: vec![] }
     }

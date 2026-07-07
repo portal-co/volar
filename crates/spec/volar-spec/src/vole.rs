@@ -10,6 +10,7 @@ use cipher::consts::U1;
 use super::*;
 pub mod field_rotate;
 mod impls;
+pub mod memory;
 pub mod poly;
 pub mod setup;
 

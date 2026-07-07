@@ -51,15 +51,22 @@ use volar_compiler::{
     ir::{
         ArrayKind, ArrayLength,
         ExternalKind, IrAnyFunction, IrBlock, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump,
+<<<<<<< HEAD
+        IrCfgModule, IrCfgTerminator, IrExpr, IrExprKind, IrFunction, IrGenericParam, IrGenericParamKind,
+        IrLit, MapProv, IrModule,
+        IrParam, IrPattern, IrStmt, IrStmtKind, IrTraitBound, IrType, PrimitiveType, SpecBinOp, StructKind, TraitKind,
+=======
         IrCfgModule, IrCfgTerminator, IrExpr, IrFunction, IrGenericParam, IrGenericParamKind,
         IrLit, IrModule,
         IrParam, IrPattern, IrStmt, IrTraitBound, IrType, PrimitiveType, SpecBinOp, StructKind, TraitKind,
+>>>>>>> origin/main
     },
     linkage::LinkageSystem,
 };
+use volar_discipline::{Tagged, Transparent};
 use volar_ir::{
     boolar::{BIrBlocks, BIrStmt},
-    ir::{IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRType, IRTypeId, IRTypes, IRVarId, PrimType, StorageId},
+    ir::{IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt, IRTerminator, IRType, IRTypeId, IRTypes, IRVarId, PrimType, StorageId},
     public::PublicSet,
 };
 use volar_ir_passes::{lower_ir_to_boolar, movfuscate_biir};
@@ -67,6 +74,36 @@ use volar_ir_passes::{lower_ir_to_boolar, movfuscate_biir};
 use crate::{
     build_return, clone_expr, expand_ors, ref_expr, var, NoProvenance, ProvenanceHandler,
 };
+
+/// Wrap a freshly-built expression kind with default provenance and no side
+/// — used at genuinely fresh-construction sites with no natural source node
+/// or `ctrl_prov` value to inherit from. Generic over `Q` (not just `()`) so
+/// it also serves the scheme-generic (`Q: Clone + Default`) gate-emission
+/// helpers in this file.
+fn ir_expr<Q: Clone + Default>(kind: IrExprKind<Q>) -> IrExpr<Q> {
+    IrExpr::new(kind, Q::default(), None)
+}
+
+/// Wrap a freshly-built statement kind with default provenance and no side.
+fn ir_stmt<Q: Clone + Default>(kind: IrStmtKind<Q>) -> IrStmt<Q> {
+    IrStmt::new(kind, Q::default(), None)
+}
+
+/// Wrap a freshly-built expression kind with an explicit provenance value and
+/// no side annotation — used throughout the scheme-generic (`Q: Clone`) gate-
+/// emission helpers in this file, where the surrounding code already threads
+/// a `ctrl_prov: &Q` (or similar) value through parallel `stmt_provs: Vec<Q>`
+/// pushes. Using that same value keeps each `Node`'s own `.prov` consistent
+/// with what's pushed onto `stmt_provs`.
+fn ir_expr_p<Q: Clone>(kind: IrExprKind<Q>, prov: Q) -> IrExpr<Q> {
+    IrExpr::new(kind, prov, None)
+}
+
+/// Wrap a freshly-built statement kind with an explicit provenance value and
+/// no side annotation. See [`ir_expr_p`].
+fn ir_stmt_p<Q: Clone>(kind: IrStmtKind<Q>, prov: Q) -> IrStmt<Q> {
+    IrStmt::new(kind, prov, None)
+}
 
 // ============================================================================
 // Action configuration types
@@ -106,6 +143,28 @@ impl FheActionConfig {
     pub fn all_outputs_public(&self) -> bool {
         self.output_public.is_empty() || self.output_public.iter().all(|&p| p)
     }
+}
+
+// ============================================================================
+// Side-based cleartext/encrypted protection (vocabulary for the Side system —
+// see docs/side.md). `FheActionConfig` is configured per-`FheScheme` (e.g.
+// `TfheScheme::with_action_config`) rather than as a single top-level
+// function parameter like VOLE's `ZkWitnessConfig`, so migrating the FHE
+// weaver's entry points to read sides through a `SideHandler` is tracked as
+// follow-up work (see docs/side.md) — this vocabulary is what such a
+// migration would resolve a `SideId` to.
+// ============================================================================
+
+/// What an FHE-side value is: a public cleartext value (e.g. `bool`), or a
+/// private encrypted value (e.g. `LweCiphertext`). The `volar-side`
+/// vocabulary for this weaver — resolved from a [`SideId`] by any
+/// [`SideHandler`](volar_side::SideHandler).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FheProtection {
+    /// Public cleartext value, known to both parties.
+    Cleartext,
+    /// Private, FHE-encrypted value.
+    Encrypted,
 }
 
 // ============================================================================
@@ -168,7 +227,7 @@ pub trait FheScheme {
     /// The Rust type of a circuit *input* parameter.
     ///
     /// Defaults to [`wire_type`].  Override when inputs have a different type
-    /// (e.g. GRAFHEN passes inputs by reference: `&GrafhenWord<WBOUND>`).
+    /// (e.g. a scheme that passes inputs by reference).
     fn input_type(&self) -> IrType {
         self.wire_type()
     }
@@ -218,7 +277,8 @@ pub trait FheScheme {
 
     /// Generic type parameters on the emitted function.
     ///
-    /// Example: GRAFHEN emits `<R: WordReducer<WBOUND>>`.
+    /// Example: a scheme with a pluggable reducer/backend could emit
+    /// `<R: SomeReducerTrait<N>>` here.
     /// Default: no generics.
     fn generics(&self) -> Vec<IrGenericParam> {
         vec![]
@@ -227,7 +287,7 @@ pub trait FheScheme {
     /// Suffix appended to the circuit name to form the emitted function name.
     ///
     /// The function is named `{circuit_name}_{suffix}`.
-    /// Default: `"fhe"`.  GRAFHEN overrides to `"grafhen"`.
+    /// Default: `"fhe"`.
     fn fn_name_suffix(&self) -> &str {
         "fhe"
     }
@@ -266,8 +326,13 @@ pub trait FheScheme {
     /// **TFHE default**: `OR(AND(sel, a), AND(NOT(sel), b))` — fully composable
     /// because it avoids non-composable XOR.
     ///
+<<<<<<< HEAD
+    /// A scheme with free, composable XOR could override with the more
+    /// efficient `sel · (a ⊕ b) ⊕ b` instead.
+=======
     /// GRAFHEN may override with the efficient `sel · (a ⊕ b) ⊕ b` since
     /// garbled-circuit XOR is free and composable.
+>>>>>>> origin/main
     fn emit_cmux<Q: Clone + Default>(&self, sel: IrExpr<Q>, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
         // Default: OR(AND(sel, a), AND(NOT(sel), b))
         // Uses clone_expr so the generated code calls .clone() on the sel wire.
@@ -396,9 +461,9 @@ pub trait FheScheme {
     /// Default: single output → bare name; multiple outputs → tuple.
     fn emit_cfg_return(&self, output_vars: &[String]) -> IrExpr {
         match output_vars {
-            [] => IrExpr::Tuple(vec![]),
+            [] => ir_expr(IrExprKind::Tuple(vec![])),
             [single] => var(single),
-            many => IrExpr::Tuple(many.iter().map(|s| var(s.as_str())).collect()),
+            many => ir_expr(IrExprKind::Tuple(many.iter().map(|s| var(s.as_str())).collect())),
         }
     }
 
@@ -475,12 +540,16 @@ pub trait FheScheme {
         match cells.len() {
             0 => {
                 let z = format!("{}_z", tag);
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&z),
                     ty: None,
                     init: Some(self.emit_zero::<Q>()),
+<<<<<<< HEAD
+                }, ctrl_prov.clone()));
+=======
                 });
                 stmt_provs.push(Q::default());
+>>>>>>> origin/main
                 z
             }
             1 => cells[0].clone(),
@@ -488,7 +557,7 @@ pub trait FheScheme {
                 // MUX(sel, cell[0], cell[1]): sel=0 → cell[0], sel=1 → cell[1]
                 let sel = addr_wires.first().copied().unwrap_or("_zero");
                 let result = format!("{}_r", tag);
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&result),
                     ty: None,
                     init: Some(self.emit_cmux::<Q>(
@@ -496,8 +565,12 @@ pub trait FheScheme {
                         clone_expr(var(&cells[1])),
                         clone_expr(var(&cells[0])),
                     )),
+<<<<<<< HEAD
+                }, ctrl_prov.clone()));
+=======
                 });
                 stmt_provs.push(Q::default());
+>>>>>>> origin/main
                 result
             }
             _ => {
@@ -513,12 +586,16 @@ pub trait FheScheme {
                 );
                 let right_cells: Vec<String> = if right.is_empty() {
                     let zn = format!("{}rz", tag);
-                    stmts.push(IrStmt::Let {
+                    stmts.push(ir_stmt_p(IrStmtKind::Let {
                         pattern: IrPattern::ident(&zn),
                         ty: None,
                         init: Some(self.emit_zero::<Q>()),
+<<<<<<< HEAD
+                    }, ctrl_prov.clone()));
+=======
                     });
                     stmt_provs.push(Q::default());
+>>>>>>> origin/main
                     vec![zn]
                 } else {
                     right.to_vec()
@@ -530,7 +607,7 @@ pub trait FheScheme {
                 // MUX the two halves: sel=0 → left, sel=1 → right.
                 let sel = addr_wires.first().copied().unwrap_or("_zero");
                 let result = format!("{}_r", tag);
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&result),
                     ty: None,
                     init: Some(self.emit_cmux::<Q>(
@@ -538,8 +615,12 @@ pub trait FheScheme {
                         clone_expr(var(&right_r)),
                         clone_expr(var(&left_r)),
                     )),
+<<<<<<< HEAD
+                }, ctrl_prov.clone()));
+=======
                 });
                 stmt_provs.push(Q::default());
+>>>>>>> origin/main
                 result
             }
         }
@@ -574,12 +655,16 @@ pub trait FheScheme {
         let not_addr: Vec<String> = (0..aw)
             .map(|level| {
                 let name = format!("{}_not{}", tag, level);
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&name),
                     ty: None,
                     init: Some(self.emit_not::<Q>(var(addr_wires[level]))),
+<<<<<<< HEAD
+                }, ctrl_prov.clone()));
+=======
                 });
                 stmt_provs.push(Q::default());
+>>>>>>> origin/main
                 name
             })
             .collect();
@@ -597,12 +682,16 @@ pub trait FheScheme {
                 for k in 1..aw {
                     let bit_wire = if (ci >> k) & 1 == 0 { &not_addr[k] } else { addr_wires[k] };
                     let and_name = format!("{}_s{}b{}", tag, ci, k);
-                    stmts.push(IrStmt::Let {
+                    stmts.push(ir_stmt_p(IrStmtKind::Let {
                         pattern: IrPattern::ident(&and_name),
                         ty: None,
                         init: Some(self.emit_and::<Q>(var(&acc), var(bit_wire), 0)),
+<<<<<<< HEAD
+                    }, ctrl_prov.clone()));
+=======
                     });
                     stmt_provs.push(Q::default());
+>>>>>>> origin/main
                     acc = and_name;
                 }
                 acc
@@ -610,7 +699,7 @@ pub trait FheScheme {
 
             // MUX(sel, old_cell, src): sel=0 → old, sel=1 → src
             let new_cell = format!("{}_c{}", tag, ci);
-            stmts.push(IrStmt::Let {
+            stmts.push(ir_stmt_p(IrStmtKind::Let {
                 pattern: IrPattern::ident(&new_cell),
                 ty: None,
                 init: Some(self.emit_cmux::<Q>(
@@ -618,8 +707,12 @@ pub trait FheScheme {
                     clone_expr(var(src_wire)),
                     clone_expr(var(old_cell)),
                 )),
+<<<<<<< HEAD
+            }, ctrl_prov.clone()));
+=======
             });
             stmt_provs.push(Q::default());
+>>>>>>> origin/main
 
             new_cells.push(new_cell);
         }
@@ -661,35 +754,48 @@ pub fn oblivious_read_loop<S: FheScheme, Q: Clone + Default>(
     let not_addr: Vec<String> = (0..aw)
         .map(|k| {
             let name = format!("{}_not{}", tag, k);
-            stmts.push(IrStmt::Let {
+            stmts.push(ir_stmt_p(IrStmtKind::Let {
                 pattern: IrPattern::ident(&name),
                 ty: None,
                 init: Some(scheme.emit_not::<Q>(var(addr_wires[k]))),
+<<<<<<< HEAD
+            }, ctrl_prov.clone()));
+=======
             });
             stmt_provs.push(Q::default());
+>>>>>>> origin/main
             name
         })
         .collect();
 
     // Build the cells array: let {tag}_arr = [c0.clone(), c1.clone(), ...];
     let arr_name = format!("{}_arr", tag);
-    stmts.push(IrStmt::Let {
+    stmts.push(ir_stmt_p(IrStmtKind::Let {
         pattern: IrPattern::ident(&arr_name),
         ty: None,
-        init: Some(IrExpr::FixedArray(
+        init: Some(ir_expr_p(IrExprKind::FixedArray(
             cells.iter().map(|c| clone_expr(var(c))).collect(),
+<<<<<<< HEAD
+        ), ctrl_prov.clone())),
+    }, ctrl_prov.clone()));
+=======
         )),
     });
     stmt_provs.push(Q::default());
+>>>>>>> origin/main
 
     // Initialize mutable result: let mut {tag}_result = emit_zero();
     let result_name = format!("{}_result", tag);
-    stmts.push(IrStmt::Let {
+    stmts.push(ir_stmt_p(IrStmtKind::Let {
         pattern: IrPattern::ident(&result_name).as_mut(),
         ty: None,
         init: Some(scheme.emit_zero::<Q>()),
+<<<<<<< HEAD
+    }, ctrl_prov.clone()));
+=======
     });
     stmt_provs.push(Q::default());
+>>>>>>> origin/main
 
     // ── Loop body ────────────────────────────────────────────────────────
     let loop_var = format!("{}_i", tag);
@@ -702,37 +808,42 @@ pub fn oblivious_read_loop<S: FheScheme, Q: Clone + Default>(
     let mut bit_names: Vec<String> = Vec::new();
     for k in 0..aw {
         let bit_name = format!("{}_b{}", tag, k);
-        let cond = IrExpr::Binary {
+        let cond = ir_expr_p(IrExprKind::Binary {
             op: SpecBinOp::Eq,
-            left: Box::new(IrExpr::Binary {
+            left: Box::new(ir_expr_p(IrExprKind::Binary {
                 op: SpecBinOp::BitAnd,
-                left: Box::new(IrExpr::Binary {
+                left: Box::new(ir_expr_p(IrExprKind::Binary {
                     op: SpecBinOp::Shr,
                     left: Box::new(var(&loop_var)),
-                    right: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
-                }),
-                right: Box::new(IrExpr::Lit(IrLit::Int(1))),
-            }),
-            right: Box::new(IrExpr::Lit(IrLit::Int(0))),
-        };
-        body_stmts.push(IrStmt::Let {
+                    right: Box::new(ir_expr_p(IrExprKind::Lit(IrLit::Int(k as i128)), ctrl_prov.clone())),
+                }, ctrl_prov.clone())),
+                right: Box::new(ir_expr_p(IrExprKind::Lit(IrLit::Int(1)), ctrl_prov.clone())),
+            }, ctrl_prov.clone())),
+            right: Box::new(ir_expr_p(IrExprKind::Lit(IrLit::Int(0)), ctrl_prov.clone())),
+        }, ctrl_prov.clone());
+        body_stmts.push(ir_stmt_p(IrStmtKind::Let {
             pattern: IrPattern::ident(&bit_name),
             ty: None,
-            init: Some(IrExpr::If {
+            init: Some(ir_expr_p(IrExprKind::If {
                 cond: Box::new(cond),
                 then_branch: IrBlock {
                     stmts: vec![],
-                    stmt_provs: vec![],
                     expr: Some(Box::new(clone_expr(var(&not_addr[k])))),
                 },
-                else_branch: Some(Box::new(IrExpr::Block(IrBlock {
+                else_branch: Some(Box::new(ir_expr_p(IrExprKind::Block(IrBlock {
                     stmts: vec![],
-                    stmt_provs: vec![],
                     expr: Some(Box::new(clone_expr(var(addr_wires[k])))),
+<<<<<<< HEAD
+                }), ctrl_prov.clone()))),
+            }, ctrl_prov.clone())),
+        }, ctrl_prov.clone()));
+        body_provs.push(ctrl_prov.clone());
+=======
                 }))),
             }),
         });
         body_provs.push(Q::default());
+>>>>>>> origin/main
         bit_names.push(bit_name);
     }
 
@@ -741,12 +852,17 @@ pub fn oblivious_read_loop<S: FheScheme, Q: Clone + Default>(
         // No address bits — always match (edge case, shouldn't reach here
         // since the caller handles count ≤ 1).
         let s = format!("{}_sel", tag);
-        body_stmts.push(IrStmt::Let {
+        body_stmts.push(ir_stmt_p(IrStmtKind::Let {
             pattern: IrPattern::ident(&s),
             ty: None,
             init: Some(scheme.emit_one::<Q>()),
+<<<<<<< HEAD
+        }, ctrl_prov.clone()));
+        body_provs.push(ctrl_prov.clone());
+=======
         });
         body_provs.push(Q::default());
+>>>>>>> origin/main
         s
     } else if aw == 1 {
         bit_names[0].clone()
@@ -754,12 +870,17 @@ pub fn oblivious_read_loop<S: FheScheme, Q: Clone + Default>(
         let mut acc = bit_names[0].clone();
         for k in 1..aw {
             let and_name = format!("{}_sel{}", tag, k);
-            body_stmts.push(IrStmt::Let {
+            body_stmts.push(ir_stmt_p(IrStmtKind::Let {
                 pattern: IrPattern::ident(&and_name),
                 ty: None,
                 init: Some(scheme.emit_and::<Q>(var(&acc), var(&bit_names[k]), 0)),
+<<<<<<< HEAD
+            }, ctrl_prov.clone()));
+            body_provs.push(ctrl_prov.clone());
+=======
             });
             body_provs.push(Q::default());
+>>>>>>> origin/main
             acc = and_name;
         }
         acc
@@ -767,47 +888,61 @@ pub fn oblivious_read_loop<S: FheScheme, Q: Clone + Default>(
 
     // let cv = cells_arr[i].clone();
     let cv_name = format!("{}_cv", tag);
-    body_stmts.push(IrStmt::Let {
+    body_stmts.push(ir_stmt_p(IrStmtKind::Let {
         pattern: IrPattern::ident(&cv_name),
         ty: None,
-        init: Some(clone_expr(IrExpr::Index {
+        init: Some(clone_expr(ir_expr_p(IrExprKind::Index {
             base: Box::new(var(&arr_name)),
             index: Box::new(var(&loop_var)),
+<<<<<<< HEAD
+        }, ctrl_prov.clone()))),
+    }, ctrl_prov.clone()));
+    body_provs.push(ctrl_prov.clone());
+=======
         })),
     });
     body_provs.push(Q::default());
+>>>>>>> origin/main
 
     // MUX(sel, result, cell_val): sel=0 → result, sel=1 → cell_val
     // result = cmux(sel, cell_val, result.clone());
-    body_stmts.push(IrStmt::Semi(IrExpr::Assign {
+    body_stmts.push(ir_stmt_p(IrStmtKind::Semi(ir_expr_p(IrExprKind::Assign {
         left: Box::new(var(&result_name)),
         right: Box::new(scheme.emit_cmux::<Q>(
             var(&sel_name),
             var(&cv_name),
             clone_expr(var(&result_name)),
         )),
+<<<<<<< HEAD
+    }, ctrl_prov.clone())), ctrl_prov.clone()));
+    body_provs.push(ctrl_prov.clone());
+=======
     }));
     body_provs.push(Q::default());
+>>>>>>> origin/main
 
     // ── Emit the loop ────────────────────────────────────────────────────
-    stmts.push(IrStmt::Expr(IrExpr::BoundedLoop {
+    stmts.push(ir_stmt_p(IrStmtKind::Expr(ir_expr_p(IrExprKind::BoundedLoop {
         var: loop_var,
-        start: Box::new(IrExpr::Cast {
-            expr: Box::new(IrExpr::Lit(IrLit::Int(0))),
+        start: Box::new(ir_expr_p(IrExprKind::Cast {
+            expr: Box::new(ir_expr_p(IrExprKind::Lit(IrLit::Int(0)), ctrl_prov.clone())),
             ty: Box::new(IrType::Primitive(PrimitiveType::Usize)),
-        }),
-        end: Box::new(IrExpr::Cast {
-            expr: Box::new(IrExpr::Lit(IrLit::Int(count as i128))),
+        }, ctrl_prov.clone())),
+        end: Box::new(ir_expr_p(IrExprKind::Cast {
+            expr: Box::new(ir_expr_p(IrExprKind::Lit(IrLit::Int(count as i128)), ctrl_prov.clone())),
             ty: Box::new(IrType::Primitive(PrimitiveType::Usize)),
-        }),
+        }, ctrl_prov.clone())),
         inclusive: false,
         body: IrBlock {
             stmts: body_stmts,
-            stmt_provs: body_provs,
             expr: None,
         },
+<<<<<<< HEAD
+    }, ctrl_prov.clone())), ctrl_prov.clone()));
+=======
     }));
     stmt_provs.push(Q::default());
+>>>>>>> origin/main
 
     result_name
 }
@@ -842,26 +977,35 @@ pub fn oblivious_write_loop<S: FheScheme, Q: Clone + Default>(
     let not_addr: Vec<String> = (0..aw)
         .map(|k| {
             let name = format!("{}_not{}", tag, k);
-            stmts.push(IrStmt::Let {
+            stmts.push(ir_stmt_p(IrStmtKind::Let {
                 pattern: IrPattern::ident(&name),
                 ty: None,
                 init: Some(scheme.emit_not::<Q>(var(addr_wires[k]))),
+<<<<<<< HEAD
+            }, ctrl_prov.clone()));
+=======
             });
             stmt_provs.push(Q::default());
+>>>>>>> origin/main
             name
         })
         .collect();
 
     // Build mutable cells array: let mut {tag}_arr = [c0.clone(), ...];
     let arr_name = format!("{}_arr", tag);
-    stmts.push(IrStmt::Let {
+    stmts.push(ir_stmt_p(IrStmtKind::Let {
         pattern: IrPattern::ident(&arr_name).as_mut(),
         ty: None,
-        init: Some(IrExpr::FixedArray(
+        init: Some(ir_expr_p(IrExprKind::FixedArray(
             cells.iter().map(|c| clone_expr(var(c))).collect(),
+<<<<<<< HEAD
+        ), ctrl_prov.clone())),
+    }, ctrl_prov.clone()));
+=======
         )),
     });
     stmt_provs.push(Q::default());
+>>>>>>> origin/main
 
     // ── Loop body ────────────────────────────────────────────────────────
     let loop_var = format!("{}_i", tag);
@@ -872,49 +1016,59 @@ pub fn oblivious_write_loop<S: FheScheme, Q: Clone + Default>(
     let mut bit_names: Vec<String> = Vec::new();
     for k in 0..aw {
         let bit_name = format!("{}_b{}", tag, k);
-        let cond = IrExpr::Binary {
+        let cond = ir_expr_p(IrExprKind::Binary {
             op: SpecBinOp::Eq,
-            left: Box::new(IrExpr::Binary {
+            left: Box::new(ir_expr_p(IrExprKind::Binary {
                 op: SpecBinOp::BitAnd,
-                left: Box::new(IrExpr::Binary {
+                left: Box::new(ir_expr_p(IrExprKind::Binary {
                     op: SpecBinOp::Shr,
                     left: Box::new(var(&loop_var)),
-                    right: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
-                }),
-                right: Box::new(IrExpr::Lit(IrLit::Int(1))),
-            }),
-            right: Box::new(IrExpr::Lit(IrLit::Int(0))),
-        };
-        body_stmts.push(IrStmt::Let {
+                    right: Box::new(ir_expr_p(IrExprKind::Lit(IrLit::Int(k as i128)), ctrl_prov.clone())),
+                }, ctrl_prov.clone())),
+                right: Box::new(ir_expr_p(IrExprKind::Lit(IrLit::Int(1)), ctrl_prov.clone())),
+            }, ctrl_prov.clone())),
+            right: Box::new(ir_expr_p(IrExprKind::Lit(IrLit::Int(0)), ctrl_prov.clone())),
+        }, ctrl_prov.clone());
+        body_stmts.push(ir_stmt_p(IrStmtKind::Let {
             pattern: IrPattern::ident(&bit_name),
             ty: None,
-            init: Some(IrExpr::If {
+            init: Some(ir_expr_p(IrExprKind::If {
                 cond: Box::new(cond),
                 then_branch: IrBlock {
                     stmts: vec![],
-                    stmt_provs: vec![],
                     expr: Some(Box::new(clone_expr(var(&not_addr[k])))),
                 },
-                else_branch: Some(Box::new(IrExpr::Block(IrBlock {
+                else_branch: Some(Box::new(ir_expr_p(IrExprKind::Block(IrBlock {
                     stmts: vec![],
-                    stmt_provs: vec![],
                     expr: Some(Box::new(clone_expr(var(addr_wires[k])))),
+<<<<<<< HEAD
+                }), ctrl_prov.clone()))),
+            }, ctrl_prov.clone())),
+        }, ctrl_prov.clone()));
+        body_provs.push(ctrl_prov.clone());
+=======
                 }))),
             }),
         });
         body_provs.push(Q::default());
+>>>>>>> origin/main
         bit_names.push(bit_name);
     }
 
     // Build one-hot selector (same chaining as read loop).
     let sel_name = if aw == 0 {
         let s = format!("{}_sel", tag);
-        body_stmts.push(IrStmt::Let {
+        body_stmts.push(ir_stmt_p(IrStmtKind::Let {
             pattern: IrPattern::ident(&s),
             ty: None,
             init: Some(scheme.emit_one::<Q>()),
+<<<<<<< HEAD
+        }, ctrl_prov.clone()));
+        body_provs.push(ctrl_prov.clone());
+=======
         });
         body_provs.push(Q::default());
+>>>>>>> origin/main
         s
     } else if aw == 1 {
         bit_names[0].clone()
@@ -922,12 +1076,17 @@ pub fn oblivious_write_loop<S: FheScheme, Q: Clone + Default>(
         let mut acc = bit_names[0].clone();
         for k in 1..aw {
             let and_name = format!("{}_sel{}", tag, k);
-            body_stmts.push(IrStmt::Let {
+            body_stmts.push(ir_stmt_p(IrStmtKind::Let {
                 pattern: IrPattern::ident(&and_name),
                 ty: None,
                 init: Some(scheme.emit_and::<Q>(var(&acc), var(&bit_names[k]), 0)),
+<<<<<<< HEAD
+            }, ctrl_prov.clone()));
+            body_provs.push(ctrl_prov.clone());
+=======
             });
             body_provs.push(Q::default());
+>>>>>>> origin/main
             acc = and_name;
         }
         acc
@@ -937,63 +1096,83 @@ pub fn oblivious_write_loop<S: FheScheme, Q: Clone + Default>(
     // MUX(sel, old, src): sel=0 → old, sel=1 → src
     // Clone old from the array, then cmux.
     let old_name = format!("{}_old", tag);
-    body_stmts.push(IrStmt::Let {
+    body_stmts.push(ir_stmt_p(IrStmtKind::Let {
         pattern: IrPattern::ident(&old_name),
         ty: None,
-        init: Some(clone_expr(IrExpr::Index {
+        init: Some(clone_expr(ir_expr_p(IrExprKind::Index {
             base: Box::new(var(&arr_name)),
             index: Box::new(var(&loop_var)),
+<<<<<<< HEAD
+        }, ctrl_prov.clone()))),
+    }, ctrl_prov.clone()));
+    body_provs.push(ctrl_prov.clone());
+=======
         })),
     });
     body_provs.push(Q::default());
+>>>>>>> origin/main
 
     // cells_arr[i] = cmux(sel, src, old);
-    body_stmts.push(IrStmt::Semi(IrExpr::Assign {
-        left: Box::new(IrExpr::Index {
+    body_stmts.push(ir_stmt_p(IrStmtKind::Semi(ir_expr_p(IrExprKind::Assign {
+        left: Box::new(ir_expr_p(IrExprKind::Index {
             base: Box::new(var(&arr_name)),
             index: Box::new(var(&loop_var)),
-        }),
+        }, ctrl_prov.clone())),
         right: Box::new(scheme.emit_cmux::<Q>(
             var(&sel_name),
             clone_expr(var(src_wire)),
             var(&old_name),
         )),
+<<<<<<< HEAD
+    }, ctrl_prov.clone())), ctrl_prov.clone()));
+    body_provs.push(ctrl_prov.clone());
+=======
     }));
     body_provs.push(Q::default());
+>>>>>>> origin/main
 
     // ── Emit the loop ────────────────────────────────────────────────────
-    stmts.push(IrStmt::Expr(IrExpr::BoundedLoop {
+    stmts.push(ir_stmt_p(IrStmtKind::Expr(ir_expr_p(IrExprKind::BoundedLoop {
         var: loop_var,
-        start: Box::new(IrExpr::Cast {
-            expr: Box::new(IrExpr::Lit(IrLit::Int(0))),
+        start: Box::new(ir_expr_p(IrExprKind::Cast {
+            expr: Box::new(ir_expr_p(IrExprKind::Lit(IrLit::Int(0)), ctrl_prov.clone())),
             ty: Box::new(IrType::Primitive(PrimitiveType::Usize)),
-        }),
-        end: Box::new(IrExpr::Cast {
-            expr: Box::new(IrExpr::Lit(IrLit::Int(count as i128))),
+        }, ctrl_prov.clone())),
+        end: Box::new(ir_expr_p(IrExprKind::Cast {
+            expr: Box::new(ir_expr_p(IrExprKind::Lit(IrLit::Int(count as i128)), ctrl_prov.clone())),
             ty: Box::new(IrType::Primitive(PrimitiveType::Usize)),
-        }),
+        }, ctrl_prov.clone())),
         inclusive: false,
         body: IrBlock {
             stmts: body_stmts,
-            stmt_provs: body_provs,
             expr: None,
         },
+<<<<<<< HEAD
+    }, ctrl_prov.clone())), ctrl_prov.clone()));
+=======
     }));
     stmt_provs.push(Q::default());
+>>>>>>> origin/main
 
     // Extract updated cells from the array into individual variables.
     let mut new_cells = Vec::with_capacity(count);
     for ci in 0..count {
         let new_name = format!("{}_c{}", tag, ci);
-        stmts.push(IrStmt::Let {
+        stmts.push(ir_stmt_p(IrStmtKind::Let {
             pattern: IrPattern::ident(&new_name),
             ty: None,
-            init: Some(clone_expr(IrExpr::Index {
+            init: Some(clone_expr(ir_expr_p(IrExprKind::Index {
                 base: Box::new(var(&arr_name)),
+<<<<<<< HEAD
+                index: Box::new(ir_expr_p(IrExprKind::Lit(IrLit::Int(ci as i128)), ctrl_prov.clone())),
+            }, ctrl_prov.clone()))),
+        }, ctrl_prov.clone()));
+=======
                 index: Box::new(IrExpr::Lit(IrLit::Int(ci as i128))),
             })),
         });
         stmt_provs.push(Q::default());
+>>>>>>> origin/main
         new_cells.push(new_name);
     }
 
@@ -1063,6 +1242,35 @@ pub fn weave_fhe<S: FheScheme>(
     }
 }
 
+<<<<<<< HEAD
+/// Generic counterpart to [`weave_fhe`] that threads provenance through
+/// `handler` instead of erasing it via [`NoProvenance`].
+///
+/// Dispatches to [`weave_fhe_cfg_with_handler`] or
+/// [`weave_fhe_flat_ir_with_handler`] based on [`FheScheme::cfg_capable`].
+pub fn weave_fhe_with_handler<P, H, S: FheScheme>(
+    blocks: &IRBlocks<P>,
+    types: &IRTypes,
+    scheme: &S,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+    storage: Option<&FheStorageConfig>,
+    handler: &H,
+) -> FheOutput<H::Output>
+where
+    P: Clone,
+    H: ProvenanceHandler<P>,
+    H::Output: Default,
+{
+    if scheme.cfg_capable() {
+        FheOutput::Cfg(weave_fhe_cfg_with_handler(blocks, types, scheme, name, linkage, storage, handler))
+    } else {
+        FheOutput::Flat(weave_fhe_flat_ir_with_handler(blocks, types, scheme, name, linkage, storage, handler).into_inner())
+    }
+}
+
+=======
+>>>>>>> origin/main
 // ============================================================================
 // Auto-derive storage configuration from BIR circuit
 // ============================================================================
@@ -1080,7 +1288,7 @@ pub fn derive_storage_config<P: Clone + Default>(circuit: &BIrBlocks<P>) -> FheS
     let mut max_addr_len: BTreeMap<(u32, usize), usize> = BTreeMap::new();
     for block in &circuit.blocks {
         for stmt in &block.stmts {
-            match stmt {
+            match &stmt.kind {
                 BIrStmt::StorageRead { storage, bit_width, addr } => {
                     let key = (storage.0, *bit_width);
                     let entry = max_addr_len.entry(key).or_insert(0);
@@ -1117,7 +1325,7 @@ pub fn derive_ir_storage_config<P: Clone + Default>(
     let mut seen: BTreeSet<(u32, usize)> = BTreeSet::new();
     for block in &blocks.blocks {
         for stmt in &block.stmts {
-            match stmt {
+            match &stmt.kind {
                 IRStmt::StorageRead { storage, ty, .. }
                 | IRStmt::StorageWrite { storage, ty, .. } => {
                     seen.insert((storage.0, ty.0 as usize));
@@ -1167,7 +1375,60 @@ fn weave_fhe_flat<S: FheScheme>(
             &derived
         }
     };
+<<<<<<< HEAD
+    let mut module = weave_fhe_flat_bir(&circuit, scheme, name, &NoProvenance, Some(effective_storage)).into_inner();
+    if let Some(ls) = linkage {
+        ls.apply(&mut module);
+    }
+    module
+}
+
+/// Generic counterpart to [`weave_fhe_flat`] that threads provenance through
+/// `handler` instead of erasing it via [`NoProvenance`].
+///
+/// Lowers `blocks` to `BIrBlocks<P>`, movfuscates, and weaves using
+/// [`weave_fhe_flat_bir`] with the supplied `handler`. If `linkage` is set,
+/// injected spec items are stamped with the same provenance derived for the
+/// circuit's infrastructure gates (see `ctrl_prov` in [`weave_fhe_flat_bir`]).
+pub fn weave_fhe_flat_ir_with_handler<P, H, S: FheScheme>(
+    blocks: &IRBlocks<P>,
+    types: &IRTypes,
+    scheme: &S,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+    storage: Option<&FheStorageConfig>,
+    handler: &H,
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
+where
+    P: Clone,
+    H: ProvenanceHandler<P>,
+    H::Output: Default,
+{
+    let bir_blocks = lower_ir_to_boolar(blocks, types);
+    let circuit = movfuscate_biir(&bir_blocks);
+    assert!(
+        circuit.is_circuit(),
+        "weave_fhe_flat_ir_with_handler: circuit after movfuscation must satisfy is_circuit()"
+    );
+    let derived;
+    let effective_storage = match storage {
+        Some(cfg) => cfg,
+        None => {
+            derived = derive_storage_config(&circuit);
+            &derived
+        }
+    };
+    let mut module = weave_fhe_flat_bir(&circuit, scheme, name, handler, Some(effective_storage));
+    if let Some(ls) = linkage {
+        let lib_prov: H::Output = circuit.blocks[0].stmts.first()
+            .map(|n| handler.map(&n.prov))
+            .expect("weave_fhe_flat_ir_with_handler: circuit has no statements; cannot derive provenance for linked specs");
+        ls.apply_converting(module.inner_mut(), || lib_prov.clone());
+    }
+    module
+=======
     weave_fhe_flat_bir(&circuit, scheme, name, linkage, &NoProvenance, Some(effective_storage))
+>>>>>>> origin/main
 }
 
 // ============================================================================
@@ -1204,41 +1465,59 @@ impl FheStorageCtx {
     ///
     /// For each `(sid, bw)` with `count` cells, emits `let _sinit_{sid}_{bw}_{i} =
     /// storage_{sid}_{bw}[{i}].clone();` bindings and tracks the cell names.
+<<<<<<< HEAD
+    fn init_cells<Q: Clone + Default>(&mut self, stmts: &mut Vec<IrStmt<Q>>, stmt_provs: &mut Vec<Q>, ctrl_prov: &Q) {
+=======
     fn init_cells<Q: Clone + Default>(&mut self, stmts: &mut Vec<IrStmt<Q>>, stmt_provs: &mut Vec<Q>) {
+>>>>>>> origin/main
         for (&(sid, bw), &count) in &self.counts {
             let param_name = format!("storage_{}_{}", sid, bw);
             for ci in 0..count {
                 let name = format!("_sinit_{}_{}_{}", sid, bw, ci);
                 // storage_param[ci].clone()
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&name),
                     ty: None,
-                    init: Some(clone_expr(IrExpr::Index {
+                    init: Some(clone_expr(ir_expr(IrExprKind::Index {
                         base: Box::new(var(&param_name)),
+<<<<<<< HEAD
+                        index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(ci as i128)))),
+                    }))),
+                }, ctrl_prov.clone()));
+=======
                         index: Box::new(IrExpr::Lit(IrLit::Int(ci as i128))),
                     })),
                 });
                 stmt_provs.push(Q::default());
+>>>>>>> origin/main
                 self.cells.insert((sid, bw, ci), name);
             }
         }
     }
 
     /// Write-back all storage cells to the parameter slices at the end.
+<<<<<<< HEAD
+    fn writeback_cells<Q: Clone + Default>(&self, stmts: &mut Vec<IrStmt<Q>>, stmt_provs: &mut Vec<Q>, ctrl_prov: &Q) {
+=======
     fn writeback_cells<Q: Clone + Default>(&self, stmts: &mut Vec<IrStmt<Q>>, stmt_provs: &mut Vec<Q>) {
+>>>>>>> origin/main
         for (&(sid, bw), &count) in &self.counts {
             let param_name = format!("storage_{}_{}", sid, bw);
             for ci in 0..count {
                 let cell_name = &self.cells[&(sid, bw, ci)];
                 // storage_param[ci] = cell.clone();
-                stmts.push(IrStmt::Expr(IrExpr::Assign {
-                    left: Box::new(IrExpr::Index {
+                stmts.push(ir_stmt_p(IrStmtKind::Expr(ir_expr(IrExprKind::Assign {
+                    left: Box::new(ir_expr(IrExprKind::Index {
                         base: Box::new(var(&param_name)),
-                        index: Box::new(IrExpr::Lit(IrLit::Int(ci as i128))),
-                    }),
+                        index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(ci as i128)))),
+                    })),
                     right: Box::new(clone_expr(var(cell_name))),
+<<<<<<< HEAD
+                })), ctrl_prov.clone()));
+=======
                 }));
                 stmt_provs.push(Q::default());
+>>>>>>> origin/main
             }
         }
     }
@@ -1262,12 +1541,16 @@ impl FheStorageCtx {
         if count == 0 {
             // No cells — return zero.
             let z = scheme.emit_zero::<Q>();
-            stmts.push(IrStmt::Let {
+            stmts.push(ir_stmt_p(IrStmtKind::Let {
                 pattern: IrPattern::ident(out_name),
                 ty: None,
                 init: Some(z),
+<<<<<<< HEAD
+            }, ctrl_prov.clone()));
+=======
             });
             stmt_provs.push(Q::default());
+>>>>>>> origin/main
             return String::from(out_name);
         }
 
@@ -1277,12 +1560,16 @@ impl FheStorageCtx {
 
         // Simple 1-cell case: just clone the cell.
         if count == 1 {
-            stmts.push(IrStmt::Let {
+            stmts.push(ir_stmt_p(IrStmtKind::Let {
                 pattern: IrPattern::ident(out_name),
                 ty: None,
                 init: Some(clone_expr(var(&cells[0]))),
+<<<<<<< HEAD
+            }, ctrl_prov.clone()));
+=======
             });
             stmt_provs.push(Q::default());
+>>>>>>> origin/main
             return String::from(out_name);
         }
 
@@ -1291,12 +1578,16 @@ impl FheStorageCtx {
         let result = scheme.emit_oblivious_read(
             &cells, addr_wires, &tag, stmts, stmt_provs,
         );
-        stmts.push(IrStmt::Let {
+        stmts.push(ir_stmt_p(IrStmtKind::Let {
             pattern: IrPattern::ident(out_name),
             ty: None,
             init: Some(clone_expr(var(&result))),
+<<<<<<< HEAD
+        }, ctrl_prov.clone()));
+=======
         });
         stmt_provs.push(Q::default());
+>>>>>>> origin/main
         String::from(out_name)
     }
 
@@ -1320,12 +1611,16 @@ impl FheStorageCtx {
             // Only one cell — unconditional write.
             let new_name = format!("_sw_{}_{}", storage_id, self.mux_counter);
             self.mux_counter += 1;
-            stmts.push(IrStmt::Let {
+            stmts.push(ir_stmt_p(IrStmtKind::Let {
                 pattern: IrPattern::ident(&new_name),
                 ty: None,
                 init: Some(clone_expr(var(src_wire))),
+<<<<<<< HEAD
+            }, ctrl_prov.clone()));
+=======
             });
             stmt_provs.push(Q::default());
+>>>>>>> origin/main
             self.cells.insert((storage_id, bit_width, 0), new_name);
             return;
         }
@@ -1357,8 +1652,8 @@ impl FheStorageCtx {
 /// [`ProvenanceHandler`] and produces an `IrModule<H::Output>`.
 ///
 /// This is the low-level entry point used by both [`weave_fhe`] and by
-/// callers (such as `weave_grafhen_with_handler`) that already hold a
-/// `BIrBlocks` and want to preserve per-statement provenance.
+/// callers that already hold a `BIrBlocks` and want to preserve
+/// per-statement provenance.
 ///
 /// # Storage
 ///
@@ -1379,10 +1674,11 @@ pub fn weave_fhe_flat_bir<P, H, S>(
     linkage: Option<&LinkageSystem>,
     handler: &H,
     storage: Option<&FheStorageConfig>,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
     S: FheScheme,
 {
     assert!(
@@ -1434,6 +1730,14 @@ where
     let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut and_gate_idx: usize = 0;
 
+<<<<<<< HEAD
+    // Provenance for infrastructure statements (storage init, mux overhead).
+    let ctrl_prov: H::Output = block.stmts.first()
+        .map(|n| handler.map(&n.prov))
+        .expect("weave_fhe_flat_bir: circuit has no statements; cannot derive provenance for infrastructure gates");
+
+=======
+>>>>>>> origin/main
     // Initialize storage cells from parameters.
     let mut stor_ctx = FheStorageCtx::new(&stor_cfg.sizes);
     stor_ctx.init_cells::<H::Output>(&mut stmts, &mut stmt_provs);
@@ -1548,23 +1852,21 @@ where
                 );
                 // StorageWrite produces a dummy zero.
                 let z: IrExpr<H::Output> = scheme.emit_zero();
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&let_name),
                     ty: None,
                     init: Some(z),
-                });
-                stmt_provs.push(q);
+                }, q));
                 var_names.insert(result_id.0, let_name);
                 continue;
             }
         };
 
-        stmts.push(IrStmt::Let {
+        stmts.push(ir_stmt_p(IrStmtKind::Let {
             pattern: IrPattern::ident(&let_name),
             ty: None,
             init: Some(init_expr),
-        });
-        stmt_provs.push(q);
+        }, q));
         var_names.insert(result_id.0, let_name);
     }
 
@@ -1574,7 +1876,7 @@ where
     let (ret_expr, ret_type) = build_return(block, &var_names, wire_ty);
 
     let fn_name = format!("{}_{}", name, scheme.fn_name_suffix());
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: fn_name.clone(),
         module_path: vec![],
         generics: scheme.generics(),
@@ -1584,7 +1886,6 @@ where
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
@@ -1601,10 +1902,14 @@ where
 
         consts: vec![],
     };
+<<<<<<< HEAD
+    Tagged::seal(module)
+=======
     if let Some(ls) = linkage {
         ls.apply(&mut module);
     }
     module
+>>>>>>> origin/main
 }
 
 // ============================================================================
@@ -1787,15 +2092,12 @@ fn analyze_cfg_publicity<S: FheScheme>(
 
     for (bidx, ir_block) in blocks.blocks.iter().enumerate() {
         match &ir_block.terminator {
-            IRTerminator::Jmp { func, args } => {
-                add_pred(&mut pred_info, bidx, func, args);
+            IRTerminator::Jmp { target } => {
+                add_pred(&mut pred_info, bidx, &target.dest, &target.args);
             }
-            IRTerminator::JumpCond {
-                true_block, true_args,
-                false_block, false_args, ..
-            } => {
-                add_pred(&mut pred_info, bidx, true_block, true_args);
-                add_pred(&mut pred_info, bidx, false_block, false_args);
+            IRTerminator::JumpCond { then_target, else_target, .. } => {
+                add_pred(&mut pred_info, bidx, &then_target.dest, &then_target.args);
+                add_pred(&mut pred_info, bidx, &else_target.dest, &else_target.args);
             }
             IRTerminator::JumpTable { .. } => {}
         }
@@ -1843,7 +2145,7 @@ fn analyze_cfg_publicity<S: FheScheme>(
         let mut action_output_public: BTreeMap<u32, Vec<bool>> = BTreeMap::new();
         for (stmt_idx, ir_stmt) in ir_block.stmts.iter().enumerate() {
             let result_ir_vid = num_params + stmt_idx as u32;
-            track_stmt_publicness(ir_stmt, result_ir_vid, &mut public_set, &mut action_output_public, scheme);
+            track_stmt_publicness(&ir_stmt.kind, result_ir_vid, &mut public_set, &mut action_output_public, scheme);
         }
 
         block_param_public.push(bpp);
@@ -1869,12 +2171,12 @@ fn cfg_return_type<S: FheScheme>(blocks: &IRBlocks, types: &IRTypes, scheme: &S)
             return Some(block.params[idx]);
         }
         let stmt_idx = idx - block.params.len();
-        block.stmts.get(stmt_idx).and_then(ir_stmt_output_ty)
+        block.stmts.get(stmt_idx).and_then(|n| ir_stmt_output_ty(&n.kind))
     }
 
     for block in &blocks.blocks {
         let ret_args = match &block.terminator {
-            IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => args,
+            IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => &target.args,
             _ => continue,
         };
         if ret_args.is_empty() {
@@ -1971,7 +2273,6 @@ fn weave_fhe_cfg<S: FheScheme>(
         }
 
         let mut stmts: Vec<IrStmt> = Vec::new();
-        let mut stmt_provs: Vec<()> = Vec::new();
         // Tracks per-output publicness for ActionCall results in this block.
         let mut action_output_public: BTreeMap<u32, Vec<bool>> = BTreeMap::new();
 
@@ -1980,17 +2281,17 @@ fn weave_fhe_cfg<S: FheScheme>(
             let let_name = format!("var_{}", result_ir_vid);
 
             // Track output type for this stmt.
-            if let Some(ty_id) = ir_stmt_output_ty(ir_stmt) {
+            if let Some(ty_id) = ir_stmt_output_ty(&ir_stmt.kind) {
                 type_map.insert(result_ir_vid, ty_id);
             }
             // Track publicness via the shared helper (single source of truth).
-            track_stmt_publicness(ir_stmt, result_ir_vid, &mut public_set, &mut action_output_public, scheme);
+            track_stmt_publicness(&ir_stmt.kind, result_ir_vid, &mut public_set, &mut action_output_public, scheme);
 
             // Handle storage stmts generically (array-indexed parameter access).
             // When the address variable is public (e.g. ORAM leaf from an action),
             // it is typed as `[bool; N]` — we wrap it in `bools_to_usize(&addr)`
             // so it can index a Rust slice.
-            match ir_stmt {
+            match &ir_stmt.kind {
                 IRStmt::StorageRead { storage, ty, addr } => {
                     let addr_name = var_map
                         .get(&addr.0)
@@ -1999,26 +2300,25 @@ fn weave_fhe_cfg<S: FheScheme>(
                     let param_name = format!("storage_{}_{}", storage.0, ty.0);
                     let index_expr = if public_set.is_public(*addr) {
                         needs_bools_to_usize = true;
-                        IrExpr::Call {
-                            func: Box::new(IrExpr::Path {
+                        ir_expr(IrExprKind::Call {
+                            func: Box::new(ir_expr(IrExprKind::Path {
                                 segments: vec!["bools_to_usize".into()],
                                 type_args: vec![],
-                            }),
+                            })),
                             args: vec![ref_expr(var(&addr_name))],
-                        }
+                        })
                     } else {
                         var(&addr_name)
                     };
                     // let var_N = storage_S_T[addr].clone();
-                    stmts.push(IrStmt::Let {
+                    stmts.push(ir_stmt_p(IrStmtKind::Let {
                         pattern: IrPattern::ident(&let_name),
                         ty: None,
-                        init: Some(clone_expr(IrExpr::Index {
+                        init: Some(clone_expr(ir_expr(IrExprKind::Index {
                             base: Box::new(var(&param_name)),
                             index: Box::new(index_expr),
-                        })),
-                    });
-                    stmt_provs.push(());
+                        }))),
+                    }, ()));
                     var_map.insert(result_ir_vid, let_name);
                     continue;
                 }
@@ -2034,32 +2334,30 @@ fn weave_fhe_cfg<S: FheScheme>(
                     let param_name = format!("storage_{}_{}", storage.0, ty.0);
                     let index_expr = if public_set.is_public(*addr) {
                         needs_bools_to_usize = true;
-                        IrExpr::Call {
-                            func: Box::new(IrExpr::Path {
+                        ir_expr(IrExprKind::Call {
+                            func: Box::new(ir_expr(IrExprKind::Path {
                                 segments: vec!["bools_to_usize".into()],
                                 type_args: vec![],
-                            }),
+                            })),
                             args: vec![ref_expr(var(&addr_name))],
-                        }
+                        })
                     } else {
                         var(&addr_name)
                     };
                     // storage_S_T[addr] = src.clone();
-                    stmts.push(IrStmt::Semi(IrExpr::Assign {
-                        left: Box::new(IrExpr::Index {
+                    stmts.push(ir_stmt_p(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
+                        left: Box::new(ir_expr(IrExprKind::Index {
                             base: Box::new(var(&param_name)),
                             index: Box::new(index_expr),
-                        }),
+                        })),
                         right: Box::new(clone_expr(var(&src_name))),
-                    }));
-                    stmt_provs.push(());
+                    })), ()));
                     // Dummy zero result for the write.
-                    stmts.push(IrStmt::Let {
+                    stmts.push(ir_stmt_p(IrStmtKind::Let {
                         pattern: IrPattern::ident(&let_name),
                         ty: None,
                         init: Some(scheme.emit_zero()),
-                    });
-                    stmt_provs.push(());
+                    }, ()));
                     var_map.insert(result_ir_vid, let_name);
                     continue;
                 }
@@ -2067,7 +2365,7 @@ fn weave_fhe_cfg<S: FheScheme>(
             }
 
             let init_expr = scheme
-                .emit_ir_stmt(ir_stmt, &var_map, &type_map, types, &public_set)
+                .emit_ir_stmt(&ir_stmt.kind, &var_map, &type_map, types, &public_set)
                 .unwrap_or_else(|| {
                     panic!(
                         "weave_fhe_cfg: scheme cannot handle IRStmt variant in block {} stmt {}: {:?}. \
@@ -2077,12 +2375,11 @@ fn weave_fhe_cfg<S: FheScheme>(
                     )
                 });
 
-            stmts.push(IrStmt::Let {
+            stmts.push(ir_stmt_p(IrStmtKind::Let {
                 pattern: IrPattern::ident(&let_name),
                 ty: None,
                 init: Some(init_expr),
-            });
-            stmt_provs.push(());
+            }, ()));
             var_map.insert(result_ir_vid, let_name);
         }
 
@@ -2099,13 +2396,11 @@ fn weave_fhe_cfg<S: FheScheme>(
         );
         for s in extra_stmts {
             stmts.push(s);
-            stmt_provs.push(());
         }
 
         cfg_blocks.push(IrCfgBlock {
             params: if bidx == 0 { vec![] } else { block_params },
             stmts,
-            stmt_provs,
             terminator,
         });
     }
@@ -2245,12 +2540,21 @@ fn weave_fhe_cfg<S: FheScheme>(
         //   let _ = (guard, arg_0, arg_1, ...);   // suppress unused warnings
         //   (fallback_0, fallback_1, ...)          // return fallback values
         let mut suppress_vars: Vec<IrExpr> = Vec::new();
-        suppress_vars.push(IrExpr::Var("guard".into()));
+        suppress_vars.push(ir_expr(IrExprKind::Var("guard".into())));
         for i in 0..action_decl.params.len() {
-            suppress_vars.push(IrExpr::Var(format!("arg_{}", i)));
+            suppress_vars.push(ir_expr(IrExprKind::Var(format!("arg_{}", i))));
         }
 
         let mut body_stmts: Vec<IrStmt> = Vec::new();
+<<<<<<< HEAD
+        // This statement has no source-statement provenance to attribute;
+        // it gets default `()` provenance like the rest of this stub.
+        body_stmts.push(ir_stmt(IrStmtKind::Let {
+            pattern: IrPattern::Wild,
+            ty: None,
+            init: Some(ir_expr(IrExprKind::Tuple(suppress_vars))),
+        }));
+=======
         let mut body_provs: Vec<()> = Vec::new();
         body_stmts.push(IrStmt::Let {
             pattern: IrPattern::Wild,
@@ -2258,17 +2562,18 @@ fn weave_fhe_cfg<S: FheScheme>(
             init: Some(IrExpr::Tuple(suppress_vars)),
         });
         body_provs.push(());
+>>>>>>> origin/main
 
         let fallback_exprs: Vec<IrExpr> = (0..action_decl.results.len())
-            .map(|i| IrExpr::Var(format!("fallback_{}", i)))
+            .map(|i| ir_expr(IrExprKind::Var(format!("fallback_{}", i))))
             .collect();
         let body_expr = if fallback_exprs.is_empty() {
             None
         } else {
-            Some(Box::new(IrExpr::Tuple(fallback_exprs)))
+            Some(Box::new(ir_expr(IrExprKind::Tuple(fallback_exprs))))
         };
 
-        let stub_fn = IrFunction {
+        let stub_fn = IrFunction { no_inline: false,
             name: action_decl.name.clone(),
             module_path: vec![],
             generics: scheme.generics(),
@@ -2278,7 +2583,6 @@ fn weave_fhe_cfg<S: FheScheme>(
             where_clause: vec![],
             body: IrBlock {
                 stmts: body_stmts,
-                stmt_provs: body_provs,
                 expr: body_expr,
             },
             external_kind: ExternalKind::Action,
@@ -2296,7 +2600,7 @@ fn weave_fhe_cfg<S: FheScheme>(
             matches!(f, IrAnyFunction::Flat(f) if f.name == "bools_to_usize")
         });
         if !already_linked {
-            let helper = IrFunction {
+            let helper = IrFunction { no_inline: false,
                 name: "bools_to_usize".into(),
                 module_path: vec![],
                 generics: vec![],
@@ -2316,8 +2620,7 @@ fn weave_fhe_cfg<S: FheScheme>(
                 where_clause: vec![],
                 body: IrBlock {
                     stmts: vec![],
-                    stmt_provs: vec![],
-                    expr: Some(Box::new(IrExpr::Unreachable)),
+                    expr: Some(Box::new(ir_expr(IrExprKind::Unreachable))),
                 },
                 external_kind: ExternalKind::Normal,
             };
@@ -2334,6 +2637,115 @@ fn weave_fhe_cfg<S: FheScheme>(
     module
 }
 
+<<<<<<< HEAD
+/// Generic counterpart to the unit-provenance [`weave_fhe_cfg`] that threads
+/// provenance through `handler` instead of erasing it to `()`.
+///
+/// `weave_fhe_cfg` is hardcoded to `IRBlocks<()>`/`IrCfgModule<()>` throughout
+/// its body. Rather than threading `H`/`P` through every statement-emission
+/// site, this function converts post-hoc:
+///
+/// 1. Derive `block_ctrl_provs[bidx]`, the control provenance for each input
+///    block, from that block's first statement (`stmt_provs.first()`),
+///    mapped through `handler`.
+/// 2. Derive `fallback`: the first available control provenance across any
+///    block, in block order. This is the module-level fallback for blocks
+///    whose own `stmt_provs` is empty.
+/// 3. Erase `blocks`' provenance to `()` and run `weave_fhe_cfg` *without*
+///    linkage (linkage is applied after conversion, so injected spec items
+///    get real provenance instead of `()`).
+/// 4. Convert the result back to `H::Output`:
+///    - The CFG function's blocks each get their `stmt_provs` rewritten to
+///      `block_ctrl_provs[bidx]` (or `fallback` if that block had no
+///      statements of its own).
+///    - Flat stub functions (action fallbacks, `bools_to_usize`, scheme
+///      helper stubs) all carry empty `stmt_provs` by construction, so their
+///      conversion never invokes the mapping closure.
+/// 5. Apply linkage (if any) via [`LinkageSystem::apply_cfg_converting`],
+///    using `fallback` as the provenance for injected spec items.
+///
+/// Panics if the circuit contains no statements at all (so no provenance can
+/// be derived for the control-flow gates), mirroring [`weave_fhe_flat_bir`].
+pub fn weave_fhe_cfg_with_handler<P, H, S: FheScheme>(
+    blocks: &IRBlocks<P>,
+    types: &IRTypes,
+    scheme: &S,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+    storage: Option<&FheStorageConfig>,
+    handler: &H,
+) -> IrCfgModule<H::Output>
+where
+    P: Clone,
+    H: ProvenanceHandler<P>,
+    H::Output: Default,
+{
+    let block_ctrl_provs: Vec<Option<H::Output>> = blocks.blocks.iter()
+        .map(|b| b.stmts.first().map(|n| handler.map(&n.prov)))
+        .collect();
+    let fallback: Option<H::Output> = block_ctrl_provs.iter().find_map(|p| p.clone());
+
+    let unit_blocks: IRBlocks<()> = blocks.clone().map_prov_with_handler(&NoProvenance);
+    let module: IrCfgModule<()> = weave_fhe_cfg(&unit_blocks, types, scheme, name, None, storage);
+
+    let functions: Vec<IrAnyFunction<H::Output>> = module.functions.into_iter().map(|func| match func {
+        IrAnyFunction::Cfg(cfg_fn) => {
+            let cfg_blocks = cfg_fn.body.blocks.into_iter().enumerate().map(|(bidx, block)| {
+                let ctrl = block_ctrl_provs[bidx].clone()
+                    .or_else(|| fallback.clone())
+                    .expect(
+                        "weave_fhe_cfg_with_handler: circuit has no statements; \
+                         cannot derive provenance for control-flow gates"
+                    );
+                block.map_prov(&|_: ()| ctrl.clone())
+            }).collect();
+            IrAnyFunction::Cfg(IrCfgFunction {
+                name: cfg_fn.name,
+                generics: cfg_fn.generics,
+                receiver: cfg_fn.receiver,
+                params: cfg_fn.params,
+                return_type: cfg_fn.return_type,
+                where_clause: cfg_fn.where_clause,
+                external_kind: cfg_fn.external_kind,
+                body: IrCfgBody { blocks: cfg_blocks },
+            })
+        }
+        IrAnyFunction::Flat(flat_fn) => {
+            // Stub functions (action fallbacks, `bools_to_usize`, scheme
+            // helper stubs) are synthetic boilerplate with no real circuit
+            // provenance to derive from — every node in their body carries
+            // placeholder `()` provenance from construction, so map it to
+            // the handler's default output rather than a real mapped value.
+            IrAnyFunction::Flat(flat_fn.map_prov(&|_: ()| -> H::Output {
+                H::Output::default()
+            }))
+        }
+    }).collect();
+
+    let mut converted: IrCfgModule<H::Output> = IrModule {
+        name: module.name,
+        structs: module.structs,
+        enums: module.enums,
+        traits: module.traits,
+        impls: Vec::new(),
+        functions,
+        type_aliases: module.type_aliases,
+        consts: module.consts,
+    };
+
+    if let Some(ls) = linkage {
+        let lib_prov = fallback.clone().expect(
+            "weave_fhe_cfg_with_handler: circuit has no statements; \
+             cannot derive provenance for linked specs"
+        );
+        ls.apply_cfg_converting(&mut converted, || lib_prov.clone());
+    }
+
+    converted
+}
+
+=======
+>>>>>>> origin/main
 /// Map an [`IRTerminator`] to an [`IrCfgTerminator`], optionally prepending
 /// CMUX statements for encrypted branch merges.
 ///
@@ -2390,7 +2802,8 @@ fn map_ir_terminator<S: FheScheme>(
     };
 
     match term {
-        IRTerminator::Jmp { func: IRBlockTargetId::Return, args } => {
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => {
+            let args = &target.args;
             // Function return type is wire type (encrypted). Promote public vars.
             let output_exprs: Vec<IrExpr> = args
                 .iter()
@@ -2405,13 +2818,14 @@ fn map_ir_terminator<S: FheScheme>(
                 })
                 .collect();
             let ret_expr = match output_exprs.len() {
-                0 => IrExpr::Tuple(vec![]),
+                0 => ir_expr(IrExprKind::Tuple(vec![])),
                 1 => output_exprs.into_iter().next().unwrap(),
-                _ => IrExpr::Tuple(output_exprs),
+                _ => ir_expr(IrExprKind::Tuple(output_exprs)),
             };
             (vec![], IrCfgTerminator::Return(Some(ret_expr)))
         }
-        IRTerminator::Jmp { func: IRBlockTargetId::Block(bid), args } => {
+        IRTerminator::Jmp { target } if let IRBlockTargetId::Block(bid) = target.dest => {
+            let args = &target.args;
             let target_bidx = bid.0 as usize;
             let jump = IrCfgJump {
                 target: target_bidx,
@@ -2420,25 +2834,24 @@ fn map_ir_terminator<S: FheScheme>(
                     .enumerate()
                     .map(|(pidx, id)| jump_arg(id, target_bidx, pidx))
                     .collect(),
+                reentry: target.reentry.clone(),
             };
             (vec![], IrCfgTerminator::Goto(jump))
         }
-        IRTerminator::Jmp { func: IRBlockTargetId::Dyn(_), .. } => {
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Dyn(_)) => {
             panic!("weave_fhe_cfg: dynamic jump targets are not supported in CFG path")
         }
         IRTerminator::JumpCond {
             condition,
-            true_block,
-            true_args,
-            false_block,
-            false_args,
+            then_target,
+            else_target,
         } => {
             let cond_name = resolve(condition);
 
             // Public condition → direct Rust if/else via CondGoto.
             if public_set.is_public(*condition) {
-                let map_jump = |bid: &IRBlockTargetId, args: &[IRVarId]| -> IrCfgJump {
-                    let target = match bid {
+                let map_jump = |branch: &IRBranchTarget| -> IrCfgJump {
+                    let target = match branch.dest {
                         IRBlockTargetId::Block(b) => b.0 as usize,
                         IRBlockTargetId::Return    => usize::MAX,
                         IRBlockTargetId::Dyn(_)   =>
@@ -2446,29 +2859,31 @@ fn map_ir_terminator<S: FheScheme>(
                     };
                     IrCfgJump {
                         target,
-                        args: args
+                        args: branch
+                            .args
                             .iter()
                             .enumerate()
                             .map(|(pidx, id)| jump_arg(id, target, pidx))
                             .collect(),
+                        reentry: branch.reentry.clone(),
                     }
                 };
                 return (
                     vec![],
                     IrCfgTerminator::CondGoto {
                         cond: var(&cond_name),
-                        then_: map_jump(true_block, true_args),
-                        else_: map_jump(false_block, false_args),
+                        then_: map_jump(then_target),
+                        else_: map_jump(else_target),
                     },
                 );
             }
 
             // Encrypted condition: only same-target phi-merge is supported.
-            let true_target_id  = match true_block  {
+            let true_target_id  = match then_target.dest {
                 IRBlockTargetId::Block(b) => b.0,
                 _ => u32::MAX,
             };
-            let false_target_id = match false_block {
+            let false_target_id = match else_target.dest {
                 IRBlockTargetId::Block(b) => b.0,
                 _ => u32::MAX,
             };
@@ -2484,14 +2899,14 @@ fn map_ir_terminator<S: FheScheme>(
             // Same target: merge args with CMUX.
             // For each arg position i: __cmux_arg_{bidx}_{i} = tfhe_cmux(cond, t_i, f_i, bk)
             assert_eq!(
-                true_args.len(), false_args.len(),
+                then_target.args.len(), else_target.args.len(),
                 "weave_fhe_cfg block {bidx}: JumpCond same-target branches have different arg counts"
             );
 
             let mut extra_stmts: Vec<IrStmt> = Vec::new();
             let mut merged_args: Vec<IrExpr>  = Vec::new();
 
-            for (i, (t_id, f_id)) in true_args.iter().zip(false_args.iter()).enumerate() {
+            for (i, (t_id, f_id)) in then_target.args.iter().zip(else_target.args.iter()).enumerate() {
                 let t_name = var_map.get(&t_id.0).cloned()
                     .unwrap_or_else(|| format!("var_{}", t_id.0));
                 let f_name = var_map.get(&f_id.0).cloned()
@@ -2513,23 +2928,23 @@ fn map_ir_terminator<S: FheScheme>(
 
                 if width == 1 {
                     // Single-bit CMUX.
-                    let cmux_expr: IrExpr = IrExpr::Call {
-                        func: Box::new(IrExpr::Path {
+                    let cmux_expr: IrExpr = ir_expr(IrExprKind::Call {
+                        func: Box::new(ir_expr(IrExprKind::Path {
                             segments: vec!["tfhe_cmux".into()],
                             type_args: vec![],
-                        }),
+                        })),
                         args: vec![
                             clone_expr(var(&cond_name)),
                             lift_to_ct(t_id, &t_name),
                             lift_to_ct(f_id, &f_name),
                             var("bk"),
                         ],
-                    };
-                    extra_stmts.push(IrStmt::Let {
+                    });
+                    extra_stmts.push(ir_stmt(IrStmtKind::Let {
                         pattern: IrPattern::ident(&merged_name),
                         ty: None,
                         init: Some(cmux_expr),
-                    });
+                    }));
                 } else {
                     // Multi-bit: element-wise CMUX → fixed array.
                     // Public multi-bit vars are [bool; N]; they can't be indexed as LweCiphertext.
@@ -2544,31 +2959,31 @@ fn map_ir_terminator<S: FheScheme>(
                     }
                     let bit_exprs: Vec<IrExpr> = (0..width)
                         .map(|bit| {
-                            IrExpr::Call {
-                                func: Box::new(IrExpr::Path {
+                            ir_expr(IrExprKind::Call {
+                                func: Box::new(ir_expr(IrExprKind::Path {
                                     segments: vec!["tfhe_cmux".into()],
                                     type_args: vec![],
-                                }),
+                                })),
                                 args: vec![
                                     clone_expr(var(&cond_name)),
-                                    clone_expr(IrExpr::Index {
+                                    clone_expr(ir_expr(IrExprKind::Index {
                                         base:  Box::new(var(&t_name)),
-                                        index: Box::new(IrExpr::Lit(IrLit::Int(bit as i128))),
-                                    }),
-                                    clone_expr(IrExpr::Index {
+                                        index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(bit as i128)))),
+                                    })),
+                                    clone_expr(ir_expr(IrExprKind::Index {
                                         base:  Box::new(var(&f_name)),
-                                        index: Box::new(IrExpr::Lit(IrLit::Int(bit as i128))),
-                                    }),
+                                        index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(bit as i128)))),
+                                    })),
                                     var("bk"),
                                 ],
-                            }
+                            })
                         })
                         .collect();
-                    extra_stmts.push(IrStmt::Let {
+                    extra_stmts.push(ir_stmt(IrStmtKind::Let {
                         pattern: IrPattern::ident(&merged_name),
                         ty: None,
-                        init: Some(IrExpr::FixedArray(bit_exprs)),
-                    });
+                        init: Some(ir_expr(IrExprKind::FixedArray(bit_exprs))),
+                    }));
                 }
 
                 merged_args.push(var(&merged_name));
@@ -2577,6 +2992,7 @@ fn map_ir_terminator<S: FheScheme>(
             let term = IrCfgTerminator::Goto(IrCfgJump {
                 target: true_target_id as usize,
                 args: merged_args,
+                reentry: then_target.reentry.clone(),
             });
             (extra_stmts, term)
         }
@@ -2587,6 +3003,8 @@ fn map_ir_terminator<S: FheScheme>(
 }
 
 // ============================================================================
+<<<<<<< HEAD
+=======
 // Reference implementation: GrafhenScheme
 // ============================================================================
 
@@ -2824,6 +3242,7 @@ impl FheScheme for GrafhenScheme {
 }
 
 // ============================================================================
+>>>>>>> origin/main
 // TFHE scheme
 // ============================================================================
 
@@ -2979,49 +3398,59 @@ impl FheScheme for TfheScheme {
     fn promote_to_wire<Q: Clone + Default>(&self, expr: IrExpr<Q>, width: usize) -> IrExpr<Q> {
         // Lift a cleartext value to LweCiphertext<N_LWE>.
         let encrypt = |e: IrExpr<Q>| -> IrExpr<Q> {
-            IrExpr::Call {
-                func: Box::new(IrExpr::Path {
+            ir_expr(IrExprKind::Call {
+                func: Box::new(ir_expr(IrExprKind::Path {
                     segments: vec!["tfhe_trivial_encrypt".into()],
                     type_args: vec![],
-                }),
+                })),
                 args: vec![e],
-            }
+            })
         };
         if width <= 1 {
             encrypt(expr)
         } else {
             // [bool; width] → [LweCiphertext; width]: encrypt each element.
-            IrExpr::FixedArray(
+            ir_expr(IrExprKind::FixedArray(
                 (0..width)
                     .map(|bit| {
-                        encrypt(IrExpr::Index {
+                        encrypt(ir_expr(IrExprKind::Index {
                             base: Box::new(expr.clone()),
-                            index: Box::new(IrExpr::Lit(IrLit::Int(bit as i128))),
-                        })
+                            index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(bit as i128)))),
+                        }))
                     })
                     .collect(),
-            )
+            ))
         }
     }
 
     fn emit_zero<Q: Clone + Default>(&self) -> IrExpr<Q> {
+<<<<<<< HEAD
+        ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
+=======
         IrExpr::Call {
             func: Box::new(IrExpr::Path {
+>>>>>>> origin/main
                 segments: vec!["tfhe_trivial_zero".into()],
                 type_args: vec![IrType::TypeParam("N_LWE".into())],
-            }),
+            })),
             args: vec![],
-        }
+        })
     }
 
     fn emit_one<Q: Clone + Default>(&self) -> IrExpr<Q> {
+<<<<<<< HEAD
+        ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
+=======
         IrExpr::Call {
             func: Box::new(IrExpr::Path {
+>>>>>>> origin/main
                 segments: vec!["tfhe_trivial_one".into()],
                 type_args: vec![IrType::TypeParam("N_LWE".into())],
-            }),
+            })),
             args: vec![],
-        }
+        })
     }
 
     fn emit_xor<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
@@ -3039,33 +3468,48 @@ impl FheScheme for TfheScheme {
     }
 
     fn emit_not<Q: Clone + Default>(&self, a: IrExpr<Q>) -> IrExpr<Q> {
+<<<<<<< HEAD
+        ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
+=======
         IrExpr::Call {
             func: Box::new(IrExpr::Path {
+>>>>>>> origin/main
                 segments: vec!["tfhe_not".into()],
                 type_args: vec![],
-            }),
+            })),
             args: vec![a],
-        }
+        })
     }
 
     fn emit_and<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>, _gate_idx: usize) -> IrExpr<Q> {
+<<<<<<< HEAD
+        ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
+=======
         IrExpr::Call {
             func: Box::new(IrExpr::Path {
+>>>>>>> origin/main
                 segments: vec!["tfhe_gate_bootstrapping_and".into()],
                 type_args: vec![],
-            }),
+            })),
             args: vec![a, b, var("bk")],
-        }
+        })
     }
 
     fn emit_or<Q: Clone + Default>(&self, a: IrExpr<Q>, b: IrExpr<Q>) -> IrExpr<Q> {
+<<<<<<< HEAD
+        ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Path {
+=======
         IrExpr::Call {
             func: Box::new(IrExpr::Path {
+>>>>>>> origin/main
                 segments: vec!["tfhe_gate_bootstrapping_or".into()],
                 type_args: vec![],
-            }),
+            })),
             args: vec![a, b, var("bk")],
-        }
+        })
     }
 
     // ── CFG path ─────────────────────────────────────────────────────────────
@@ -3087,46 +3531,46 @@ impl FheScheme for TfheScheme {
 
         // Helper: emit tfhe_trivial_zero() or tfhe_trivial_one() based on bit `b`.
         let trivial = |bit: bool| -> IrExpr {
-            IrExpr::Call {
-                func: Box::new(IrExpr::Path {
+            ir_expr(IrExprKind::Call {
+                func: Box::new(ir_expr(IrExprKind::Path {
                     segments: vec![if bit { "tfhe_trivial_one" } else { "tfhe_trivial_zero" }.into()],
                     type_args: vec![IrType::TypeParam("N_LWE".into())],
-                }),
+                })),
                 args: vec![],
-            }
+            })
         };
 
         // Helper: emit tfhe_not(a).
         let not1 = |a: IrExpr| -> IrExpr {
-            IrExpr::Call {
-                func: Box::new(IrExpr::Path {
+            ir_expr(IrExprKind::Call {
+                func: Box::new(ir_expr(IrExprKind::Path {
                     segments: vec!["tfhe_not".into()],
                     type_args: vec![],
-                }),
+                })),
                 args: vec![a],
-            }
+            })
         };
 
         // Helper: emit tfhe_gate_bootstrapping_and(a, b, bk).
         let and2 = |a: IrExpr, b: IrExpr| -> IrExpr {
-            IrExpr::Call {
-                func: Box::new(IrExpr::Path {
+            ir_expr(IrExprKind::Call {
+                func: Box::new(ir_expr(IrExprKind::Path {
                     segments: vec!["tfhe_gate_bootstrapping_and".into()],
                     type_args: vec![],
-                }),
+                })),
                 args: vec![a, b, var("bk")],
-            }
+            })
         };
 
         // Helper: emit tfhe_gate_bootstrapping_or(a, b, bk).
         let or2 = |a: IrExpr, b: IrExpr| -> IrExpr {
-            IrExpr::Call {
-                func: Box::new(IrExpr::Path {
+            ir_expr(IrExprKind::Call {
+                func: Box::new(ir_expr(IrExprKind::Path {
                     segments: vec!["tfhe_gate_bootstrapping_or".into()],
                     type_args: vec![],
-                }),
+                })),
                 args: vec![a, b, var("bk")],
-            }
+            })
         };
 
         // Helper: composable XOR decomposition.
@@ -3142,10 +3586,10 @@ impl FheScheme for TfheScheme {
 
         // Helper: index into a multi-bit variable at position `bit`.
         let index_bit = |name: &str, bit: usize| -> IrExpr {
-            IrExpr::Index {
+            ir_expr(IrExprKind::Index {
                 base:  Box::new(var(name)),
-                index: Box::new(IrExpr::Lit(IrLit::Int(bit as i128))),
-            }
+                index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(bit as i128)))),
+            })
         };
 
         match stmt {
@@ -3156,7 +3600,7 @@ impl FheScheme for TfheScheme {
                 let width = ir_type_bit_width(*ty_id, types);
                 if width == 1 {
                     let bit = (constant.lo & 1) != 0;
-                    Some(IrExpr::Lit(IrLit::Bool(bit)))
+                    Some(ir_expr(IrExprKind::Lit(IrLit::Bool(bit))))
                 } else {
                     let elems: Vec<IrExpr> = (0..width)
                         .map(|i| {
@@ -3169,10 +3613,10 @@ impl FheScheme for TfheScheme {
                                 // bits beyond position 255 are always 0.
                                 false
                             };
-                            IrExpr::Lit(IrLit::Bool(bit))
+                            ir_expr(IrExprKind::Lit(IrLit::Bool(bit)))
                         })
                         .collect();
-                    Some(IrExpr::FixedArray(elems))
+                    Some(ir_expr(IrExprKind::FixedArray(elems)))
                 }
             }
 
@@ -3203,28 +3647,28 @@ impl FheScheme for TfheScheme {
 
                 if all_public {
                     // ── All-public: bool arithmetic ──────────────────────────
-                    let mut acc: IrExpr = IrExpr::Lit(IrLit::Bool(const_bit));
+                    let mut acc: IrExpr = ir_expr(IrExprKind::Lit(IrLit::Bool(const_bit)));
                     for (monomial, &coeff) in coeffs.iter() {
                         if coeff == 0 { continue; }
                         let term: IrExpr = match monomial.as_slice() {
-                            [] => IrExpr::Lit(IrLit::Bool(true)), // empty product = 1
+                            [] => ir_expr(IrExprKind::Lit(IrLit::Bool(true))), // empty product = 1
                             [first, rest @ ..] => {
                                 let mut t: IrExpr = clone_expr(var(&vname(first)));
                                 for v in rest {
-                                    t = IrExpr::Binary {
+                                    t = ir_expr(IrExprKind::Binary {
                                         op: SpecBinOp::BitAnd,
                                         left: Box::new(t),
                                         right: Box::new(clone_expr(var(&vname(v)))),
-                                    };
+                                    });
                                 }
                                 t
                             }
                         };
-                        acc = IrExpr::Binary {
+                        acc = ir_expr(IrExprKind::Binary {
                             op: SpecBinOp::BitXor,
                             left: Box::new(acc),
                             right: Box::new(term),
-                        };
+                        });
                     }
                     Some(acc)
                 } else {
@@ -3233,13 +3677,13 @@ impl FheScheme for TfheScheme {
                     let lift = |vid: &IRVarId| -> IrExpr {
                         let name = vname(vid);
                         if public_set.is_public(*vid) {
-                            IrExpr::Call {
-                                func: Box::new(IrExpr::Path {
+                            ir_expr(IrExprKind::Call {
+                                func: Box::new(ir_expr(IrExprKind::Path {
                                     segments: vec!["tfhe_trivial_encrypt".into()],
                                     type_args: vec![],
-                                }),
+                                })),
                                 args: vec![var(&name)],
-                            }
+                            })
                         } else {
                             clone_expr(var(&name))
                         }
@@ -3293,7 +3737,7 @@ impl FheScheme for TfheScheme {
                 let elems: Vec<IrExpr> = (0..width)
                     .map(|i| clone_expr(index_bit(&src_name, (i + width - n) % width)))
                     .collect();
-                Some(IrExpr::FixedArray(elems))
+                Some(ir_expr(IrExprKind::FixedArray(elems)))
             }
             Stmt::Ror { src, ty, n } => {
                 let width = ir_type_bit_width(*ty, types);
@@ -3305,7 +3749,7 @@ impl FheScheme for TfheScheme {
                 let elems: Vec<IrExpr> = (0..width)
                     .map(|i| clone_expr(index_bit(&src_name, (i + n) % width)))
                     .collect();
-                Some(IrExpr::FixedArray(elems))
+                Some(ir_expr(IrExprKind::FixedArray(elems)))
             }
 
             // ── Merge ─────────────────────────────────────────────────────────
@@ -3323,7 +3767,7 @@ impl FheScheme for TfheScheme {
                         }
                     }
                 }
-                Some(IrExpr::FixedArray(elems))
+                Some(ir_expr(IrExprKind::FixedArray(elems)))
             }
 
             // ── Splat ─────────────────────────────────────────────────────────
@@ -3337,7 +3781,7 @@ impl FheScheme for TfheScheme {
                 let elems: Vec<IrExpr> = (0..width)
                     .map(|_| clone_expr(var(&src_name)))
                     .collect();
-                Some(IrExpr::FixedArray(elems))
+                Some(ir_expr(IrExprKind::FixedArray(elems)))
             }
 
             // ── Shuffle ───────────────────────────────────────────────────────
@@ -3355,7 +3799,7 @@ impl FheScheme for TfheScheme {
                         }
                     })
                     .collect();
-                Some(IrExpr::FixedArray(elems))
+                Some(ir_expr(IrExprKind::FixedArray(elems)))
             }
 
             // ── OracleCall / OracleOutput / ActionCall / ActionOutput / Rng ──
@@ -3403,25 +3847,25 @@ impl FheScheme for TfheScheme {
                             .unwrap_or(1);
                         let fname = vname(f);
                         if w == 1 {
-                            IrExpr::Call {
-                                func: Box::new(IrExpr::Path {
+                            ir_expr(IrExprKind::Call {
+                                func: Box::new(ir_expr(IrExprKind::Path {
                                     segments: vec!["tfhe_trivial_encrypt".into()],
                                     type_args: vec![IrType::TypeParam("N_LWE".into())],
-                                }),
+                                })),
                                 args: vec![var(&fname)],
-                            }
+                            })
                         } else {
-                            IrExpr::RawMap {
+                            ir_expr(IrExprKind::RawMap {
                                 receiver: Box::new(var(&fname)),
                                 elem_var: IrPattern::ident("b"),
-                                body: Box::new(IrExpr::Call {
-                                    func: Box::new(IrExpr::Path {
+                                body: Box::new(ir_expr(IrExprKind::Call {
+                                    func: Box::new(ir_expr(IrExprKind::Path {
                                         segments: vec!["tfhe_trivial_encrypt".into()],
                                         type_args: vec![IrType::TypeParam("N_LWE".into())],
-                                    }),
+                                    })),
                                     args: vec![var("b")],
-                                }),
-                            }
+                                })),
+                            })
                         }
                     } else {
                         clone_expr(var(&vname(f)))
@@ -3438,26 +3882,26 @@ impl FheScheme for TfheScheme {
                         let aname = vname(a);
                         if w == 1 {
                             // tfhe_trivial_encrypt::<N_LWE>(var)
-                            IrExpr::Call {
-                                func: Box::new(IrExpr::Path {
+                            ir_expr(IrExprKind::Call {
+                                func: Box::new(ir_expr(IrExprKind::Path {
                                     segments: vec!["tfhe_trivial_encrypt".into()],
                                     type_args: vec![IrType::TypeParam("N_LWE".into())],
-                                }),
+                                })),
                                 args: vec![var(&aname)],
-                            }
+                            })
                         } else {
                             // var.map(|b| tfhe_trivial_encrypt::<N_LWE>(b))
-                            IrExpr::RawMap {
+                            ir_expr(IrExprKind::RawMap {
                                 receiver: Box::new(var(&aname)),
                                 elem_var: IrPattern::ident("b"),
-                                body: Box::new(IrExpr::Call {
-                                    func: Box::new(IrExpr::Path {
+                                body: Box::new(ir_expr(IrExprKind::Call {
+                                    func: Box::new(ir_expr(IrExprKind::Path {
                                         segments: vec!["tfhe_trivial_encrypt".into()],
                                         type_args: vec![IrType::TypeParam("N_LWE".into())],
-                                    }),
+                                    })),
                                     args: vec![var("b")],
-                                }),
-                            }
+                                })),
+                            })
                         }
                     } else {
                         clone_expr(var(&vname(a)))
@@ -3480,7 +3924,7 @@ impl FheScheme for TfheScheme {
                     // oblivious selection internally.  The fallbacks appear twice so
                     // that stripping the outer `true, fallbacks...` prefix yields a
                     // second valid action-call suffix, enabling compositional unwrapping.
-                    call_args.push(IrExpr::Lit(IrLit::Bool(true)));
+                    call_args.push(ir_expr(IrExprKind::Lit(IrLit::Bool(true))));
                     call_args.extend(fb_exprs.clone());
                     call_args.push(clone_expr(var(&guard_name)));
                     call_args.extend(fb_exprs.clone());
@@ -3493,23 +3937,23 @@ impl FheScheme for TfheScheme {
                     IrType::TypeParam(g.name.clone())
                 }).collect();
 
-                Some(IrExpr::Call {
-                    func: Box::new(IrExpr::Path {
+                Some(ir_expr(IrExprKind::Call {
+                    func: Box::new(ir_expr(IrExprKind::Path {
                         segments: vec![name.clone()],
                         type_args: turbofish_args,
-                    }),
+                    })),
                     args: call_args,
-                })
+                }))
             }
             Stmt::ActionOutput { call, idx, .. } => {
                 // Always emit a field projection from the ActionCall result tuple.
                 // Publicness is tracked separately via `public_set`; the expression
                 // is the same regardless of whether the output is clear or encrypted.
                 let call_name = vname(call);
-                Some(IrExpr::Field {
+                Some(ir_expr(IrExprKind::Field {
                     base: Box::new(var(&call_name)),
                     field: format!("{}", idx),
-                })
+                }))
             }
             Stmt::Rng { name, .. } => {
                 panic!(
@@ -3534,14 +3978,13 @@ impl FheScheme for TfheScheme {
         let bk_params = self.extra_params();
         let stub_body = || IrBlock {
             stmts: vec![],
-            stmt_provs: vec![],
-            expr: Some(Box::new(IrExpr::Unreachable)),
+            expr: Some(Box::new(ir_expr(IrExprKind::Unreachable))),
         };
 
         let mut stubs = Vec::new();
 
         // tfhe_trivial_encrypt(b: bool) -> wire_type
-        stubs.push(IrFunction {
+        stubs.push(IrFunction { no_inline: false,
             name: "tfhe_trivial_encrypt".into(),
             module_path: vec![],
             generics: n_lwe_gen.clone(),
@@ -3557,7 +4000,7 @@ impl FheScheme for TfheScheme {
         });
 
         // tfhe_trivial_zero() -> wire_type
-        stubs.push(IrFunction {
+        stubs.push(IrFunction { no_inline: false,
             name: "tfhe_trivial_zero".into(),
             module_path: vec![],
             generics: n_lwe_gen.clone(),
@@ -3570,7 +4013,7 @@ impl FheScheme for TfheScheme {
         });
 
         // tfhe_trivial_one() -> wire_type
-        stubs.push(IrFunction {
+        stubs.push(IrFunction { no_inline: false,
             name: "tfhe_trivial_one".into(),
             module_path: vec![],
             generics: n_lwe_gen,
@@ -3589,7 +4032,7 @@ impl FheScheme for TfheScheme {
             IrParam { name: "b".into(), ty: wire_ty.clone() },
         ];
         cmux_params.extend(bk_params);
-        stubs.push(IrFunction {
+        stubs.push(IrFunction { no_inline: false,
             name: "tfhe_cmux".into(),
             module_path: vec![],
             generics: all_gens,
@@ -3695,12 +4138,11 @@ mod tests {
         coeffs.insert(vec![IRVarId(0), IRVarId(1)], 1u8);
         let block = IRBlock {
             params: vec![bit, bit],
-            stmts: vec![IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } }],
-            stmt_provs: vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(2)],
-            },
+            stmts: vec![volar_ir_common::Node::new(
+                IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } }, (), None,
+            )],
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(2)],
+            ) },
         };
         (IRBlocks::new(vec![block]), types)
     }
@@ -3723,24 +4165,18 @@ mod tests {
 
         let block0 = IRBlock {
             params: vec![bit, bit],
-            stmts: vec![IRStmt_::Const(zero, bit)],
-            stmt_provs: vec![()],
+            stmts: vec![volar_ir_common::Node::new(IRStmt_::Const(zero, bit), (), None)],
             terminator: IRTerminator::JumpCond {
-                condition: IRVarId(2), // the Const — public
-                true_block:  IRBlockTargetId::Block(IRBlockId(1)),
-                true_args:   vec![IRVarId(0)],
-                false_block: IRBlockTargetId::Block(IRBlockId(1)),
-                false_args:  vec![IRVarId(1)],
+                condition: IRVarId(2),
+                then_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(0)]),
+                else_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(1)]),
             },
         };
         let block1 = IRBlock {
             params: vec![bit],
             stmts: vec![],
-            stmt_provs: vec![],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],
+            ) },
         };
         (IRBlocks::new(vec![block0, block1]), types)
     }
@@ -3762,23 +4198,17 @@ mod tests {
         let block0 = IRBlock {
             params: vec![bit, bit],
             stmts: vec![],
-            stmt_provs: vec![],
             terminator: IRTerminator::JumpCond {
-                condition: IRVarId(0), // encrypted — not in public_set
-                true_block:  IRBlockTargetId::Block(IRBlockId(1)),
-                true_args:   vec![IRVarId(0)],
-                false_block: IRBlockTargetId::Block(IRBlockId(1)),
-                false_args:  vec![IRVarId(1)],
+                condition: IRVarId(0),
+                then_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(0)]),
+                else_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(1)]),
             },
         };
         let block1 = IRBlock {
             params: vec![bit],
             stmts: vec![],
-            stmt_provs: vec![],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],
+            ) },
         };
         (IRBlocks::new(vec![block0, block1]), types)
     }
@@ -3856,12 +4286,9 @@ mod tests {
         let one = Constant { hi: 0, lo: 1 };
         let block = IRBlock {
             params: vec![],
-            stmts: vec![IRStmt_::Const(one, bit)],
-            stmt_provs: vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
+            stmts: vec![volar_ir_common::Node::new(IRStmt_::Const(one, bit), (), None)],
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],
+            ) },
         };
         let circuit = IRBlocks::new(vec![block]);
         let scheme = TfheScheme::cfg();
@@ -3896,15 +4323,14 @@ mod tests {
         let block = IRBlock {
             params: vec![],
             stmts: vec![
-                IRStmt_::Const(one,  bit), // var_0 = 1 (public)
-                IRStmt_::Const(zero, bit), // var_1 = 0 (public)
-                IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } },
+                volar_ir_common::Node::new(IRStmt_::Const(one,  bit), (), None), // var_0 = 1 (public)
+                volar_ir_common::Node::new(IRStmt_::Const(zero, bit), (), None), // var_1 = 0 (public)
+                volar_ir_common::Node::new(
+                    IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } }, (), None,
+                ),
             ],
-            stmt_provs: vec![(), (), ()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(2)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(2)],
+            ) },
         };
         let circuit = IRBlocks::new(vec![block]);
         let scheme = TfheScheme::cfg();
@@ -3938,14 +4364,13 @@ mod tests {
         let block = IRBlock {
             params: vec![bit],
             stmts: vec![
-                IRStmt_::Const(one, bit), // var_1 = true (public)
-                IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } },
+                volar_ir_common::Node::new(IRStmt_::Const(one, bit), (), None), // var_1 = true (public)
+                volar_ir_common::Node::new(
+                    IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } }, (), None,
+                ),
             ],
-            stmt_provs: vec![(), ()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(2)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(2)],
+            ) },
         };
         let circuit = IRBlocks::new(vec![block]);
         let scheme = TfheScheme::cfg();
@@ -3982,21 +4407,15 @@ mod tests {
         let zero = Constant { hi: 0, lo: 0 };
         let block0 = IRBlock {
             params: vec![bit],
-            stmts: vec![IRStmt_::Const(zero, bit)],
-            stmt_provs: vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Block(IRBlockId(1)),
-                args: vec![IRVarId(1)], // public Const passed as block arg
-            },
+            stmts: vec![volar_ir_common::Node::new(IRStmt_::Const(zero, bit), (), None)],
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(1)], // public Const passed as block arg
+            ) },
         };
         let block1 = IRBlock {
             params: vec![bit],
             stmts: vec![],
-            stmt_provs: vec![],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],
+            ) },
         };
         let circuit = IRBlocks::new(vec![block0, block1]);
         let scheme = TfheScheme::cfg();
@@ -4023,19 +4442,18 @@ mod tests {
         BIrBlocks { blocks: vec![BIrBlock {
             params: 2,
             stmts: vec![
-                BIrStmt::StorageWrite {
+                volar_ir_common::Node::new(BIrStmt::StorageWrite {
                     storage: StorageId(5),
                     src: IRVarId(0),
                     bit_width: 1,
                     addr: vec![IRVarId(1)],
-                },
-                BIrStmt::StorageRead {
+                }, (), None),
+                volar_ir_common::Node::new(BIrStmt::StorageRead {
                     storage: StorageId(5),
                     bit_width: 1,
                     addr: vec![IRVarId(1)],
-                },
+                }, (), None),
             ],
-            stmt_provs: vec![(), ()],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Return,
                 args: vec![IRVarId(3)],
@@ -4055,8 +4473,13 @@ mod tests {
         let scheme = TfheScheme::flat();
         let config = storage_config_2cells();
         let module = weave_fhe_flat_bir(
+<<<<<<< HEAD
+            &circuit, &scheme, "stor_test", &NoProvenance, Some(&config),
+        ).into_inner();
+=======
             &circuit, &scheme, "stor_test", None, &NoProvenance, Some(&config),
         );
+>>>>>>> origin/main
         // Should produce a function with storage parameters.
         assert_eq!(module.functions.len(), 1);
         let func = &module.functions[0];
@@ -4072,6 +4495,8 @@ mod tests {
     }
 
     #[test]
+<<<<<<< HEAD
+=======
     fn test_grafhen_flat_with_storage_does_not_panic() {
         let circuit = build_storage_circuit();
         let scheme = GrafhenScheme::new(64);
@@ -4092,14 +4517,20 @@ mod tests {
     }
 
     #[test]
+>>>>>>> origin/main
     fn test_flat_storage_no_config_panics_gracefully() {
         // Without storage config, storage ops produce zero wires (empty cells).
         let circuit = build_storage_circuit();
         let scheme = TfheScheme::flat();
         // Pass None => 0 cells => reads produce zeros, writes are no-ops.
         let module = weave_fhe_flat_bir(
+<<<<<<< HEAD
+            &circuit, &scheme, "no_stor", &NoProvenance, None,
+        ).into_inner();
+=======
             &circuit, &scheme, "no_stor", None, &NoProvenance, None,
         );
+>>>>>>> origin/main
         assert_eq!(module.functions.len(), 1);
     }
 
@@ -4109,8 +4540,13 @@ mod tests {
         let scheme = TfheScheme::flat();
         let config = storage_config_2cells();
         let module = weave_fhe_flat_bir(
+<<<<<<< HEAD
+            &circuit, &scheme, "wb", &NoProvenance, Some(&config),
+        ).into_inner();
+=======
             &circuit, &scheme, "wb", None, &NoProvenance, Some(&config),
         );
+>>>>>>> origin/main
         let code = print_fhe_flat_module(&module, true);
         // The write-back assigns to storage_5_1[0] and storage_5_1[1].
         assert!(
@@ -4137,8 +4573,7 @@ mod tests {
         // A circuit with no storage stmts should produce an empty config.
         let circuit = BIrBlocks { blocks: vec![BIrBlock {
             params: 2,
-            stmts: vec![BIrStmt::Xor(IRVarId(0), IRVarId(1))],
-            stmt_provs: vec![()],
+            stmts: vec![volar_ir_common::Node::new(BIrStmt::Xor(IRVarId(0), IRVarId(1)), (), None)],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Return,
                 args: vec![IRVarId(2)],
@@ -4157,13 +4592,12 @@ mod tests {
         let circuit = BIrBlocks { blocks: vec![BIrBlock {
             params: 3,
             stmts: vec![
-                BIrStmt::StorageRead {
+                volar_ir_common::Node::new(BIrStmt::StorageRead {
                     storage: StorageId(0),
                     bit_width: 1,
                     addr: vec![IRVarId(0), IRVarId(1)],
-                },
+                }, (), None),
             ],
-            stmt_provs: vec![()],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Return,
                 args: vec![IRVarId(3)],
@@ -4186,6 +4620,15 @@ mod tests {
 
         let manual_config = storage_config_2cells();
         let manual_module = weave_fhe_flat_bir(
+<<<<<<< HEAD
+            &circuit, &scheme, "manual", &NoProvenance, Some(&manual_config),
+        ).into_inner();
+
+        let derived_config = derive_storage_config(&circuit);
+        let derived_module = weave_fhe_flat_bir(
+            &circuit, &scheme, "derived", &NoProvenance, Some(&derived_config),
+        ).into_inner();
+=======
             &circuit, &scheme, "manual", None, &NoProvenance, Some(&manual_config),
         );
 
@@ -4193,6 +4636,7 @@ mod tests {
         let derived_module = weave_fhe_flat_bir(
             &circuit, &scheme, "derived", None, &NoProvenance, Some(&derived_config),
         );
+>>>>>>> origin/main
 
         let manual_func = &manual_module.functions[0];
         let derived_func = &derived_module.functions[0];
@@ -4249,7 +4693,7 @@ mod tests {
             impls: vec![],
             type_aliases: vec![],
             consts: vec![],
-            functions: vec![IrFunction {
+            functions: vec![IrFunction { no_inline: false,
                 name: "loop_read_tfhe".into(),
                 module_path: vec![],
                 generics: scheme.generics(),
@@ -4259,7 +4703,6 @@ mod tests {
                 where_clause: vec![],
                 body: IrBlock {
                     stmts,
-                    stmt_provs: provs,
                     expr: Some(Box::new(var(&result))),
                 },
                 external_kind: ExternalKind::Normal,
@@ -4303,7 +4746,7 @@ mod tests {
         let (ret_expr, ret_ty) = if cell_count == 1 {
             (ret_exprs.into_iter().next().unwrap(), wire_ty)
         } else {
-            (IrExpr::Tuple(ret_exprs), IrType::Tuple(ret_tys))
+            (ir_expr(IrExprKind::Tuple(ret_exprs)), IrType::Tuple(ret_tys))
         };
 
         IrModule {
@@ -4314,7 +4757,7 @@ mod tests {
             impls: vec![],
             type_aliases: vec![],
             consts: vec![],
-            functions: vec![IrFunction {
+            functions: vec![IrFunction { no_inline: false,
                 name: "loop_write_tfhe".into(),
                 module_path: vec![],
                 generics: scheme.generics(),
@@ -4324,7 +4767,6 @@ mod tests {
                 where_clause: vec![],
                 body: IrBlock {
                     stmts,
-                    stmt_provs: provs,
                     expr: Some(Box::new(ret_expr)),
                 },
                 external_kind: ExternalKind::Normal,
@@ -4398,21 +4840,15 @@ mod tests {
         let one = Constant { hi: 0, lo: 1 };
         let block0 = IRBlock {
             params: vec![bit],
-            stmts: vec![IRStmt_::Const(one, bit)],
-            stmt_provs: vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Block(IRBlockId(1)),
-                args: vec![IRVarId(1)], // Const — public
-            },
+            stmts: vec![volar_ir_common::Node::new(IRStmt_::Const(one, bit), (), None)],
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(1)], // Const — public
+            ) },
         };
         let block1 = IRBlock {
             params: vec![bit],
             stmts: vec![],
-            stmt_provs: vec![],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(0)], // blk1_p0
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)], // blk1_p0
+            ) },
         };
         let circuit = IRBlocks::new(vec![block0, block1]);
         let scheme = TfheScheme::cfg();
@@ -4466,22 +4902,19 @@ mod tests {
         let block = IRBlock {
             params: vec![bit],
             stmts: vec![
-                IRStmt_::Const(one, bit),  // var_1 = true (public guard)
-                IRStmt_::ActionCall {
+                volar_ir_common::Node::new(IRStmt_::Const(one, bit), (), None),  // var_1 = true (public guard)
+                volar_ir_common::Node::new(IRStmt_::ActionCall {
                     name: "my_action".into(),
                     guard: IRVarId(1),
                     args: vec![IRVarId(0)],
                     fallbacks: vec![IRVarId(1)],
                     output_tys: vec![bit],
                     result_ty: tuple_ty,
-                },
-                IRStmt_::ActionOutput { call: IRVarId(2), idx: 0, ty: bit },
+                }, (), None),
+                volar_ir_common::Node::new(IRStmt_::ActionOutput { call: IRVarId(2), idx: 0, ty: bit }, (), None),
             ],
-            stmt_provs: vec![(), (), ()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(3)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(3)],
+            ) },
         };
         let circuit = IRBlocks::new(vec![block]);
         let scheme = TfheScheme::cfg().with_action_config(
@@ -4526,22 +4959,19 @@ mod tests {
         let block = IRBlock {
             params: vec![bit],
             stmts: vec![
-                IRStmt_::Const(one, bit),  // var_1 = true (fallback, public)
-                IRStmt_::ActionCall {
+                volar_ir_common::Node::new(IRStmt_::Const(one, bit), (), None),  // var_1 = true (fallback, public)
+                volar_ir_common::Node::new(IRStmt_::ActionCall {
                     name: "private_action".into(),
                     guard: IRVarId(0),     // encrypted guard
                     args: vec![IRVarId(0)],
                     fallbacks: vec![IRVarId(1)],
                     output_tys: vec![bit],
                     result_ty: tuple_ty,
-                },
-                IRStmt_::ActionOutput { call: IRVarId(2), idx: 0, ty: bit },
+                }, (), None),
+                volar_ir_common::Node::new(IRStmt_::ActionOutput { call: IRVarId(2), idx: 0, ty: bit }, (), None),
             ],
-            stmt_provs: vec![(), (), ()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(3)],
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(3)],
+            ) },
         };
         let circuit = IRBlocks::new(vec![block]);
         let scheme = TfheScheme::cfg().with_action_config(
@@ -4587,23 +5017,20 @@ mod tests {
         let block = IRBlock {
             params: vec![bit],
             stmts: vec![
-                IRStmt_::Const(one, bit), // var_1 = true (public guard)
-                IRStmt_::ActionCall {
+                volar_ir_common::Node::new(IRStmt_::Const(one, bit), (), None), // var_1 = true (public guard)
+                volar_ir_common::Node::new(IRStmt_::ActionCall {
                     name: "mixed_action".into(),
                     guard: IRVarId(1),
                     args: vec![IRVarId(0)],
                     fallbacks: vec![IRVarId(1), IRVarId(0)],
                     output_tys: vec![bit, bit],
                     result_ty: tuple_ty,
-                },
-                IRStmt_::ActionOutput { call: IRVarId(2), idx: 0, ty: bit }, // public output
-                IRStmt_::ActionOutput { call: IRVarId(2), idx: 1, ty: bit }, // encrypted output
+                }, (), None),
+                volar_ir_common::Node::new(IRStmt_::ActionOutput { call: IRVarId(2), idx: 0, ty: bit }, (), None), // public output
+                volar_ir_common::Node::new(IRStmt_::ActionOutput { call: IRVarId(2), idx: 1, ty: bit }, (), None), // encrypted output
             ],
-            stmt_provs: vec![(), (), (), ()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(3)], // return the public output
-            },
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(3)], // return the public output
+            ) },
         };
         let circuit = IRBlocks::new(vec![block]);
         let scheme = TfheScheme::cfg().with_action_config(
@@ -4633,6 +5060,106 @@ mod tests {
         );
     }
 
+<<<<<<< HEAD
+    // ── `_with_handler` provenance tests ────────────────────────────────────
+
+    /// Single-block AND circuit (see [`build_ir_and_cfg`]), generic over `P`,
+    /// with its single statement carrying `prov`.
+    fn build_ir_and_cfg_prov<P: Clone>(prov: P) -> (IRBlocks<P>, IRTypes) {
+        let mut types = IRTypes::new();
+        let bit = types.intern(IRType::Primitive(PrimType::Bit));
+        let mut coeffs = BTreeMap::new();
+        coeffs.insert(vec![IRVarId(0), IRVarId(1)], 1u8);
+        let block: IRBlock<P> = IRBlock {
+            params: vec![bit, bit],
+            stmts: vec![volar_ir_common::Node::new(
+                IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } }, prov, None,
+            )],
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(2)],
+            ) },
+        };
+        (IRBlocks::new(vec![block]), types)
+    }
+
+    /// Two-block public-branch circuit (see [`build_ir_two_block_public_branch`]),
+    /// generic over `P`: block 0's single statement carries `prov0`, block 1
+    /// carries no statements (and hence no provenance) of its own.
+    fn build_ir_two_block_public_branch_prov<P: Clone>(prov0: P) -> (IRBlocks<P>, IRTypes) {
+        let mut types = IRTypes::new();
+        let bit = types.intern(IRType::Primitive(PrimType::Bit));
+        let zero = Constant { hi: 0, lo: 0 };
+
+        let block0: IRBlock<P> = IRBlock {
+            params: vec![bit, bit],
+            stmts: vec![volar_ir_common::Node::new(IRStmt_::Const(zero, bit), prov0, None)],
+            terminator: IRTerminator::JumpCond {
+                condition: IRVarId(2),
+                then_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(0)]),
+                else_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), vec![IRVarId(1)]),
+            },
+        };
+        let block1: IRBlock<P> = IRBlock {
+            params: vec![bit],
+            stmts: vec![],
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(0)],
+            ) },
+        };
+        (IRBlocks::new(vec![block0, block1]), types)
+    }
+
+    #[test]
+    fn test_weave_fhe_flat_ir_with_handler_threads_provenance() {
+        let (blocks, types) = build_ir_and_cfg_prov(5u32);
+        let scheme = TfheScheme::flat();
+        let module = weave_fhe_flat_ir_with_handler(
+            &blocks, &types, &scheme, "and_flat_prov", None, None, &KeepProvenance,
+        ).into_inner();
+        assert_eq!(module.functions.len(), 1);
+        let func = &module.functions[0];
+        let provs: Vec<u32> = func.body.stmts.iter().map(|s| s.prov).collect();
+        assert!(!provs.is_empty());
+        assert!(
+            provs.iter().all(|&p| p == 5),
+            "all woven statements should carry the source statement's provenance: {:?}",
+            provs,
+        );
+    }
+
+    #[test]
+    fn test_weave_fhe_cfg_with_handler_threads_and_falls_back() {
+        let (blocks, types) = build_ir_two_block_public_branch_prov(7u32);
+        let scheme = TfheScheme::cfg();
+        let module = weave_fhe_cfg_with_handler(
+            &blocks, &types, &scheme, "pub_branch_prov", None, None, &KeepProvenance,
+        );
+        let cfg_fn = module.functions.iter().find_map(|f| match f {
+            IrAnyFunction::Cfg(cfg_fn) => Some(cfg_fn),
+            _ => None,
+        }).expect("expected a Cfg function in the woven module");
+        assert_eq!(cfg_fn.body.blocks.len(), 2);
+
+        // Block 0 carries its own statement, so its (non-empty) output
+        // provenance should all be the source statement's provenance (7).
+        let block0_provs: Vec<u32> = cfg_fn.body.blocks[0].stmts.iter().map(|s| s.prov).collect();
+        assert!(!block0_provs.is_empty());
+        assert!(
+            block0_provs.iter().all(|&p| p == 7),
+            "block 0's woven statements should carry the source statement's provenance: {:?}",
+            block0_provs,
+        );
+
+        // Block 1 has no statements of its own; any statements added to it
+        // fall back to the module-level provenance (also 7, the only source).
+        let block1_provs: Vec<u32> = cfg_fn.body.blocks[1].stmts.iter().map(|s| s.prov).collect();
+        assert!(
+            block1_provs.iter().all(|&p| p == 7),
+            "block 1's fallback provenance should be 7: {:?}",
+            block1_provs,
+        );
+    }
+
+=======
+>>>>>>> origin/main
     // ── E2E execution tests ─────────────────────────────────────────────
 
     /// End-to-end test: weave a simple AND circuit through TFHE, compile

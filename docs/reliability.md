@@ -3,8 +3,10 @@
 Volar develops and refines program-related cryptography publicly. A core part
 of that mission is being transparent about how much each piece of code can be
 trusted. Volar uses a four-tier reliability classification for all source code
-and documentation.
-The tier determines:
+and documentation, and a separate AI capability tier that determines when
+an AI agent may treat a change as self-reviewed versus when it must label the
+change as potentially unsound and queue it for review by a higher-tier agent.
+The reliability tier determines:
 - Whether the file is compiled as part of any crate.
 - What source-level markers must appear.
 - What documentation and review requirements apply.
@@ -193,21 +195,29 @@ corrected by a human is `supervised`, not `generated`.
 
 ---
 
-## AI Capability Tiers
+## AI Capability Tiers and Review Gates
 
 The reliability level says how much the *code* can be trusted. The capability
-tier says how much an *AI agent* can be trusted to modify a given file. The
-tier is the second factor in the reliability policy: a change is allowed only
-when the agent's tier is high enough for the file's tier requirement, in
-addition to satisfying every other requirement on this page.
+tier says how much an *AI agent* can be trusted to self-review a change to a
+given file. These tiers are the code-level guardrails of the project: they
+exist, they are recorded in source markers and commit tags, and they must not
+be silently violated.
+
+A change is **allowed** from any tier, but it is only *self-reviewed* when the
+agent's tier is at least the file's required tier. When the agent's tier is
+below the required tier, the change must be tagged as *potentially unsound*
+and reviewed by an agent at the required tier (or higher) before the code is
+treated as reliable. Higher-tier agents handle the most demanding tasks, and
+they review all higher-tier work that lower-tier agents produced (especially
+at the start of a new session).
 
 ### The Three Tiers
 
-| Tier | What an agent at this tier may do | What it must not do |
+| Tier | What an agent at this tier may author without further review | What it authors above its tier must have reviewed |
 |---|---|---|
-| **Tier 1 — Glue** | Documentation edits, dependency bumps, formatting, mechanical refactors (renames, file moves, splitting/merging modules with no semantic change), test scaffolding that does not assert new properties, reading and summarising code. | Modify compiler/IR semantics. Modify any cryptographic spec. Introduce or change `unsafe`. Change reliability or AI markers. |
-| **Tier 2 — Compiler** | Anything Tier 1 may do, plus: write and refactor compiler/IR/lowering/printer/weaver code; add tests that compile and run generated code; add backends; modify ABI policy; touch `volar-fuzz` generators and properties. | Modify any file under `crates/spec/` that defines a cryptographic protocol. Promote a file out of Experimental. Change `// @reliability` from a stricter to a looser level. |
-| **Tier 3 — Cryptography** | Anything Tier 2 may do, plus: design and modify cryptographic constructions in `volar-spec`, `volar-primitives`, `volar-common`, the GRAFHEN and TFHE schemes, ORAM client-side state machines, and any code marked `@reliability: hazmat`. May introduce new Experimental constructions and write the accompanying review documents. | Promote a file from Experimental to Normal/Hazmat without an external human reviewer signing off (the promotion protocol below). |
+| **Tier 1 — Glue** | Documentation edits, dependency bumps, formatting, mechanical refactors (renames, file moves, splitting/merging modules with no semantic change), test scaffolding that does not assert new properties, reading and summarising code. | Higher-tier files (compiler/IR/spec/crypto) must be reviewed by the required tier. |
+| **Tier 2 — Compiler** | Anything Tier 1 may do, plus: write and refactor compiler/IR/lowering/printer/weaver code; add tests that compile and run generated code; add backends; modify ABI policy; touch `volar-fuzz` generators and properties. | Cryptographic files (`crates/spec/`, primitives, common, hazmat, ORAM state, etc.) must be reviewed by Tier 3. |
+| **Tier 3 — Cryptography** | Anything Tier 2 may do, plus: design and modify cryptographic constructions in `volar-spec`, `volar-primitives`, `volar-common`, the TFHE scheme, ORAM client-side state machines, and any code marked `@reliability: hazmat`. May introduce new Experimental constructions and write the accompanying review documents. | Promotion out of Experimental still requires an external human reviewer to sign off. |
 
 Tiers are inclusive: Tier 3 may do everything Tier 2 may do, and Tier 2
 everything Tier 1 may do.
@@ -217,22 +227,69 @@ everything Tier 1 may do.
 This mapping is the project's current calibration; revisit it whenever model
 capabilities or evaluation results change materially.
 
+<<<<<<< HEAD
+| Tier | Claude models permitted at this tier | GPT models permitted at this tier | Other models permitted at this tier |
+|---|---|---|---|
+| **Tier 1 — Glue** | Any current Claude model (Haiku 4.x, Sonnet ≤ 4.5, Opus ≤ 4.4). | Any current GPT model not listed for Tier 2 or Tier 3, including GPT-5.4-Mini and earlier small/fast variants. | Any other model |
+| **Tier 2 — Compiler** | Sonnet 4.6 or later; Opus 4.5 or later; Fable 5 or later. | Full GPT-5.2, GPT-5.3-Codex, full GPT-5.4, GPT-5.5, and later non-mini successors in those families. | Cursor Composer 2.5 or later or Kimi K2.7 Code or later, when involved with (creating or executing) a plan |
+| **Tier 3 — Cryptography** | Sonnet 5 or later; Opus 4.6 or later; Fable 5 or later. | GPT-5.5 or later. | N/A |
+=======
 | Tier | Claude models permitted at this tier | GPT models permitted at this tier |
 |---|---|---|
 | **Tier 1 — Glue** | Any current Claude model (Haiku 4.x, Sonnet ≤ 4.5, Opus ≤ 4.4). | Any current GPT model not listed for Tier 2 or Tier 3, including GPT-5.4-Mini and earlier small/fast variants. |
 | **Tier 2 — Compiler** | Sonnet 4.6 or later; Opus 4.5 or later. | Full GPT-5.2, GPT-5.3-Codex, full GPT-5.4, GPT-5.5, and later non-mini successors in those families. |
 | **Tier 3 — Cryptography** | Opus 4.6 or later. | GPT-5.5 or later. |
+>>>>>>> origin/main
 
-Sonnet (any version), GPT-5.4-Mini, GPT-5.3-Codex, GPT-5.4, and GPT-5.2 are
-**not** permitted at Tier 3, even if one of them is otherwise the strongest
-model available in a session. Cryptographic correctness arguments are subtle
-enough that we require Opus-class or frontier GPT reasoning depth here. If the
-strongest available agent is a Tier-2 model and a Tier 3 change is needed, the
-agent must stop and surface the situation rather than proceeding.
+Sonnet ≤ 4.5, GPT-5.4-Mini, GPT-5.3-Codex, GPT-5.4, and GPT-5.2 are
+**not permitted to self-review Tier 3 cryptographic work** — but **Sonnet 5
+and later are** (per the table above), alongside Opus-class and frontier GPT
+models. If the strongest available agent is below Tier 3 (e.g. Sonnet ≤ 4.5,
+or a Tier-2-only GPT model) and a Tier 3 change is needed, that agent may
+still produce the change, but it must mark the result as `pending-tier-3`
+review and queue it for an appropriate reviewer. Do not treat the change as
+self-reviewed in that case.
 
 Models from families not listed above follow whatever mapping the project
 owner publishes in [`AGENTS.md`](../AGENTS.md). In the absence of an explicit
 mapping, default to Tier 1.
+
+### Sub-threshold Source Tags
+
+When an AI agent edits a file whose required tier is higher than the agent's
+own tier, the result is treated as *potentially unsound* until reviewed. The
+file must carry a sub-threshold tag near the existing reliability and AI
+markers:
+
+```rust
+// @reliability: normal
+// @ai-author-tier: 2
+// @ai-review: pending-tier-3
+```
+
+- `@ai-author-tier:` records the tier of the agent that last made a
+  sub-threshold edit. It is omitted on files where the author's tier is at or
+  above the required tier.
+- `@ai-review:` records the required review tier and its status. While
+  pending, the file must be considered unreliable regardless of its
+  `@reliability` marker.
+
+When the work is reviewed and approved by an agent at the required tier, the
+tag is updated to:
+
+```rust
+// @reliability: normal
+// @ai-author-tier: 2
+// @ai-review: approved-tier-3-abc1234 by <model>
+```
+
+where `abc1234` is the commit hash of the review-approved state. At that point
+the file is treated as reliable for its current content.
+
+If a later sub-threshold edit is made, the tag reverts to `pending`.
+
+**Where to place the tags.** Add them at the same location as the
+`@reliability` marker — typically the first non-header lines of the file.
 
 ### File-to-Tier Mapping
 
@@ -268,51 +325,54 @@ unless it raises the requirement above the crate default.
 
 ### Combined Reliability × Tier Rules
 
-The legal combinations of reliability change and required tier are:
+Required tier and review rules for changes:
 
-| Change | Minimum tier | Additional requirement |
-|---|---|---|
-| Edit a Normal file in a Tier-2 crate | 2 | Tests must compile and pass. |
-| Edit a Normal file in a Tier-3 crate | 3 | Tests must compile and pass. |
-| Edit a Hazmat file | 3 | The `@hazmat-reason` and `# Safety` documentation must remain accurate; new call sites require `// SAFETY(hazmat):` comments. |
-| Edit an Experimental cryptographic file | 3 | The change is itself an experimental revision; the AI marker may need to update (e.g. `assisted` → `unreviewed` if the change was not human-reviewed). |
-| Edit an Experimental compiler/infra file | 2 | Standard review; AI marker accuracy. |
-| Promote Experimental → Normal or Hazmat | Human reviewer (AI agent may draft only) | Full promotion protocol below. AI cannot self-promote. |
-| Demote Experimental → Insecure | 3 (with named external attack reference) | Full demotion protocol; record the attack in [insecure.md](insecure.md). |
-| Add a brand-new cryptographic construction | 3 | Must enter at Experimental; must include a review plan analogous to [grafhen-review-plan.md](grafhen-review-plan.md). |
-| Add a brand-new compiler pass / IR variant | 2 | Must include both a generator (where applicable) and a property test. |
-| Mechanical refactor (rename, move, split) of any file | The file's required tier | The refactor must be observably equivalent; tests pass before and after. |
+| Change | Required tier | If author is below tier | Additional requirement |
+|---|---|---|---|
+| Edit a Normal file in a Tier-2 crate | 2 | Review by Tier 2 or higher; tag `@ai-review: pending-tier-2` until approved. | Tests must compile and pass. |
+| Edit a Normal file in a Tier-3 crate | 3 | Review by Tier 3 or higher; tag `@ai-review: pending-tier-3` until approved. | Tests must compile and pass. |
+| Edit a Hazmat file | 3 | Review by Tier 3 or higher; tag `@ai-review: pending-tier-3` until approved. | The `@hazmat-reason` and `# Safety` documentation must remain accurate; new call sites require `// SAFETY(hazmat):` comments. |
+| Edit an Experimental cryptographic file | 3 | Review by Tier 3 or higher; tag `@ai-review: pending-tier-3` until approved. | The change is itself an experimental revision; the AI marker may need to update (e.g. `assisted` → `unreviewed` if the change was not human-reviewed). |
+| Edit an Experimental compiler/infra file | 2 | Review by Tier 2 or higher; tag `@ai-review: pending-tier-2` until approved. | Standard review; AI marker accuracy. |
+| Promote Experimental → Normal or Hazmat | Human reviewer (AI agent may draft only) | N/A | Full promotion protocol below. AI cannot self-promote. |
+| Demote Experimental → Insecure | 3 (with named external attack reference) | Review by Tier 3 or higher if initiated by AI. | Full demotion protocol; record the attack in [insecure.md](insecure.md). |
+| Add a brand-new cryptographic construction | 3 | Review by Tier 3 or higher; tag `@ai-review: pending-tier-3` until approved. | Must enter at Experimental; must include a review plan analogous to [archive/grafhen-review-plan.md](archive/grafhen-review-plan.md) (archived example; the construction it reviewed was later removed, but the review-plan shape is still a good template). |
+| Add a brand-new compiler pass / IR variant | 2 | Review by Tier 2 or higher; tag `@ai-review: pending-tier-2` until approved. | Must include both a generator (where applicable) and a property test. |
+| Mechanical refactor (rename, move, split) of any file | The file's required tier | If the author is below the file's required tier, tag and review as above. | The refactor must be observably equivalent; tests pass before and after. |
 
-### What a Lower-Tier Agent Should Do When Blocked
+### Working Below Your Tier — The Escalation Protocol
 
-If an agent at Tier *k* needs to make a change that requires Tier *k+1*:
+If the file you are editing has a required tier higher than your tier, you are
+not blocked. You may produce the change, but you must treat the result as
+potentially unsound until a higher-tier agent reviews it.
 
-1. **Reasoning pass first.** Before writing a hand-off or stopping, reason
-   through the situation in your reply:
-   - Is the change actually *cryptographic* (new protocol logic, soundness
-     argument, secret-randomness invariant) or merely structural/mechanical
-     (adding an enum variant, wiring a new type, fixing a compile error in
-     a high-tier crate)?
-   - What specifically makes this file sensitive at its tier?
-   - Could a lower-tier model execute this correctly?
-2. **Surface the reasoning to the owner and wait.** Do not produce a
-   hand-off document yet; do not proceed with the edit yet. The owner may
-   grant a session-scoped override (agent proceeds, marks change
-   `@ai: assisted`) or confirm the block (agent produces the hand-off
-   below).
-3. **On confirmed block:** Produce a written description of the desired
-   change, the file's required tier, and the reason the change exceeds the
-   agent's tier (e.g. "this file is at `crates/spec/volar-spec/src/vole/prove.rs`,
-   default Tier 3, and the agent is Tier 2").
-4. Hand the description to a human or to a higher-tier agent.
+1. **Determine the required tier.** Use the [File-to-Tier Mapping](#file-to-tier-mapping)
+   above. If uncertain, err on the side of a higher tier.
+2. **Produce the change.** Write code, tests, and documentation as usual.
+3. **Tag it as sub-threshold.** Add or update the source tags:
+   ```rust
+   // @ai-author-tier: <your tier>
+   // @ai-review: pending-tier-<required>
+   ```
+4. **Commit with the capability tag.** Use a commit subject that records both
+   your tier and the review that is needed, e.g.
+   `[AI-T2-needs-T3] fix field inversion in volar-primitives`.
+5. **Queue for review.** Mention the pending review in any hand-off summary.
+   When a higher-tier agent starts up, it must review all pending sub-threshold
+   work before treating the codebase as reliable.
+6. **Higher-tier review.** The reviewer inspects the change, runs tests, and
+   either approves it (updating `@ai-review:` to `approved-tier-N-<commit>`) or
+   reworks it. The approval commit should itself carry an `[AI-T3-review]` or
+   `[human-review]` tag so the history is easy to grep.
 
 Producing an analysis or plan that a higher-tier agent will execute is
-**always** within Tier 1 capability and is the recommended fallback. See
+**always** within Tier 1 capability and is the recommended fallback when you are
+unsure how to implement a higher-tier change safely. See
 [agents-guide.md](agents-guide.md) for the full operating procedure.
 
 ### AI Markers and Reliability Levels
 
-The following combinations are valid:
+The following combinations are valid for the `@ai:` marker:
 
 | Reliability \ AI | none | supervised | assisted | generated | unreviewed |
 |---|---|---|---|---|---|
@@ -320,6 +380,11 @@ The following combinations are valid:
 | Hazmat | ✅ | ✅ | ⚠ (extra care) | ❌ | ❌ |
 | Experimental | ✅ | ✅ | ✅ | ✅ | ✅ (signals review needed) |
 | Insecure | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+When a sub-threshold edit is made, the file **also** carries an `@ai-author-tier:`
+and `@ai-review:` tag regardless of the `@ai:` marker. The combination of the
+`@ai:` marker (review process) and the `@ai-review:` tag (capability review
+state) gives the full picture.
 
 Hazmat files must not be `generated` because the subtle correctness constraints
 require human understanding of the cryptographic context, not just structural
@@ -332,15 +397,38 @@ provide.
 ### Commit Message Convention
 
 The commit history in this repo already uses informal AI labels:
-`[AI]`, `[AI+human]`, `[human]`. These map to the formal markers as follows:
+`[AI]`, `[AI+human]`, `[human]`. Because capability tier now drives review
+gates, commit messages should also record the authoring tier and any pending
+review. Use these forms:
 
-| Commit prefix | Equivalent AI marker |
-|---|---|
-| `[human]` | `none` or `supervised` |
-| `[AI+human]` | `assisted` or `supervised` |
-| `[AI]` | `generated` or `unreviewed` |
-| *(no prefix)* | Determined by content; default assume `assisted` for human-led sessions |
-| `experiment: …` | No AI implication; marks experimental reliability level |
+| Commit prefix | Meaning | Typical AI marker |
+|---|---|---|
+| `[human]` | Human-authored or human line-by-line reviewed. | `none` or `supervised` |
+| `[AI+human]` | Human and AI collaborated; human reviewed key decisions. | `assisted` or `supervised` |
+| `[AI]` | Predominantly AI-authored at or above the required tier; self-reviewed by that tier. | `generated` or `assisted` |
+| `[AI-T<k>]` | AI at tier `k` authored the change and the file's required tier was `≤ k`. | `generated` or `assisted` |
+| `[AI-T<k>-needs-T<n>]` | AI at tier `k` authored changes that require tier `n > k` review. Equivalent to `@ai-review: pending-tier-n`. | `assisted` or `generated` |
+| `[AI-T<n>-review@<hash>]` | A tier-`n` agent or human approved a previously sub-threshold change at commit `<hash>`. | Updates `@ai-review:` to `approved-tier-n-<hash>`. |
+| `[human-review@<hash>]` | Human approved a previously sub-threshold change at commit `<hash>`. | Updates `@ai-review:` to `approved-tier-human-<hash>`. |
+| *(no prefix)* | Determined by content; default assume `assisted` for human-led sessions. | `assisted` |
+| `experiment: …` | No AI implication; marks experimental reliability level. | No AI implication |
+
+**Why this helps.** A reviewer can quickly surface all potentially unsound work
+with a few `git log`/`git diff` commands:
+
+```bash
+# Show all commits waiting for Tier-3 review.
+git log --oneline --grep='needs-T3'
+
+# Show the diff for a pending change.
+git diff <needs-T3-commit>~1 <needs-T3-commit>
+
+# Show all Tier-3 reviews.
+git log --oneline --grep='AI-T3-review'
+```
+
+The goal is to make the review boundary explicit in both the source and the
+commit history.
 
 ---
 
@@ -359,8 +447,6 @@ All require the `volar_experimental` feature to be enabled.
 | `crates/volar-spec/src/mpc.rs` | `79ee6d7` (experiment: mpc) | design | MPC party type skeleton; semantics TBD |
 | `crates/volar-spec/src/byte_gen/prover.rs` | `263eab1` (fix name) | review-pending | Revised after `cda059c` (actually unsound, oops) |
 | `crates/volar-spec/src/byte_gen/verifier.rs` | `263eab1` (fix name) | review-pending | Same revision cycle; `58e8f84` last structural change |
-| `crates/volar-spec/src/grafhen.rs` | (pending merge) | design | GRAFHEN FHE over symmetric groups; **IND-CPA broken** (ePrint 2026/700); ZK-correctness use only |
-| `crates/volar-weaver/src/grafhen.rs` | (pending merge) | design | Weaver pass for GRAFHEN homomorphic evaluation |
 
 ---
 

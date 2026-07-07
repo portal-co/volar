@@ -477,7 +477,7 @@ pub fn weave_net_vole_prover(
     let (output_expr, _) = crate::build_return(block, &var_names, vope_type());
     let ret_expr = ok_expr(output_expr);
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: format!("vole_prove_net_{}", name),
         module_path: vec![],
         generics,
@@ -748,7 +748,7 @@ pub fn weave_net_vole_verifier(
 
     let ret_expr = ok_expr(var("all_ok"));
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: format!("vole_verify_net_{}", name),
         module_path: vec![],
         generics,
@@ -844,7 +844,7 @@ pub fn weave_net_vole_prover_loop(
         params: vec![],
         stmts: vec![],
         stmt_provs: vec![],
-        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args }),
+        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args, reentry: None }),
     };
 
     // ── Block 1: loop body ────────────────────────────────────────────────
@@ -987,7 +987,7 @@ pub fn weave_net_vole_prover_loop(
             target: 2,
             args: vec![clone_expr(var(&output_wire_name))],
         },
-        else_: IrCfgJump { target: 1, args: back_edge_args },
+        else_: IrCfgJump { target: 1, args: back_edge_args, reentry: None },
     };
 
     let block1 = IrCfgBlock {
@@ -1097,7 +1097,7 @@ pub fn weave_net_vole_verifier_loop(
         params: vec![],
         stmts: vec![],
         stmt_provs: vec![],
-        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args }),
+        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args, reentry: None }),
     };
 
     // ── Block 1: loop body ─────────────────────────────────────────────────
@@ -1365,8 +1365,8 @@ pub fn weave_net_vole_verifier_loop(
 
     let b1_terminator = IrCfgTerminator::CondGoto {
         cond: var("is_sentinel"),
-        then_: IrCfgJump { target: 2, args: vec![var("all_ok_new")] },
-        else_: IrCfgJump { target: 1, args: back_args },
+        then_: IrCfgJump { target: 2, args: vec![var("all_ok_new")], reentry: None },
+        else_: IrCfgJump { target: 1, args: back_args, reentry: None },
     };
 
     let block1 = IrCfgBlock {

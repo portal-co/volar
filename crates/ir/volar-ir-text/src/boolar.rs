@@ -148,7 +148,7 @@ fn write_bir_block(id: usize, block: &BIrBlock<()>, w: &mut dyn fmt::Write) -> f
     write!(w, "params {}\n", block.params)?;
     let base = block.params;
     for (i, stmt) in block.stmts.iter().enumerate() {
-        write_bir_stmt(IRVarId(base + i as u32), stmt, w)?;
+        write_bir_stmt(IRVarId(base + i as u32), &stmt.kind, w)?;
     }
     write_bir_terminator(&block.terminator, w)?;
     w.write_str("end_block\n")

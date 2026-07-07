@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 rkyv = { workspace = true, optional = true }
+volar-side.workspace = true
 
 [features]
-rkyv = ["dep:rkyv"]
+rkyv = ["dep:rkyv", "volar-side/rkyv"]

@@ -780,7 +780,7 @@ pub fn weave_storage_commit_loop_prover(
         params: vec![],
         stmts: vec![],
         stmt_provs: vec![],
-        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args }),
+        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args, reentry: None }),
     };
 
     // ── Block 1: loop body ─────────────────────────────────────────────────
@@ -940,8 +940,8 @@ pub fn weave_storage_commit_loop_prover(
         stmt_provs: vec![],
         terminator: IrCfgTerminator::CondGoto {
             cond: var("done_bit"),
-            then_: IrCfgJump { target: 2, args: b2_args },
-            else_: IrCfgJump { target: 1, args: back_args },
+            then_: IrCfgJump { target: 2, args: b2_args, reentry: None },
+            else_: IrCfgJump { target: 1, args: back_args, reentry: None },
         },
     };
 
@@ -1335,7 +1335,7 @@ pub fn weave_ts_storage_loop_prover(
         params: vec![],
         stmts: b0_stmts,
         stmt_provs: vec![],
-        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args }),
+        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args, reentry: None }),
     };
 
     // ── Block 1: loop body ─────────────────────────────────────────────────
@@ -1475,8 +1475,8 @@ pub fn weave_ts_storage_loop_prover(
         stmt_provs: vec![],
         terminator: IrCfgTerminator::CondGoto {
             cond: var("done_bit"),
-            then_: IrCfgJump { target: 2, args: b2_args },
-            else_: IrCfgJump { target: 1, args: back_args },
+            then_: IrCfgJump { target: 2, args: b2_args, reentry: None },
+            else_: IrCfgJump { target: 1, args: back_args, reentry: None },
         },
     };
 
@@ -1728,7 +1728,7 @@ pub fn weave_ts_storage_loop_verifier(
         params: vec![],
         stmts: b0_stmts,
         stmt_provs: vec![],
-        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args }),
+        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args, reentry: None }),
     };
 
     // ── Block 1: loop body ─────────────────────────────────────────────────
@@ -1869,8 +1869,8 @@ pub fn weave_ts_storage_loop_verifier(
         stmt_provs: vec![],
         terminator: IrCfgTerminator::CondGoto {
             cond: var("is_sentinel"),
-            then_: IrCfgJump { target: 2, args: b2_args },
-            else_: IrCfgJump { target: 1, args: back_args },
+            then_: IrCfgJump { target: 2, args: b2_args, reentry: None },
+            else_: IrCfgJump { target: 1, args: back_args, reentry: None },
         },
     };
 
@@ -2414,10 +2414,8 @@ mod tests {
                     },
                 ],
                 stmt_provs: vec![(), ()],
-                terminator: BIrTerminator::Jmp(BIrTarget {
-                    block: IRBlockTargetId::Return,
-                    args: vec![IRVarId(0), IRVarId(1), IRVarId(2), IRVarId(5), IRVarId(3)],
-                }),
+                terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(0), IRVarId(1), IRVarId(2), IRVarId(5), IRVarId(3)],
+                reentry: None }),
             }],
             pre_init: vec![],
         }

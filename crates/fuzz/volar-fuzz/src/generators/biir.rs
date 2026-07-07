@@ -29,6 +29,7 @@
 
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
 use volar_ir::ir::{IRBlockId, IRBlockTargetId, IRVarId, StorageId};
+use volar_ir_common::Node;
 
 // ============================================================================
 // Raw data types
@@ -65,8 +66,7 @@ pub type RawBlock = (Vec<RawStmt>, RawTerm);
 pub fn interpret_biir(
     param_counts: Vec<u32>,
     raw_blocks: Vec<RawBlock>,
-    raw_ret_arity: u8,
-) -> BIrBlocks<()> {
+    raw_ret_arity: u8) -> BIrBlocks<()> {
     let n_blocks = param_counts.len();
     assert_eq!(raw_blocks.len(), n_blocks);
     assert!(n_blocks >= 1);
@@ -112,13 +112,10 @@ pub fn interpret_biir(
             let n_vars = n_params + stmts.len() as u32;
             let terminator =
                 make_term(i, n_blocks, n_vars, &param_counts, raw_term, ret_arity);
-            let n = stmts.len();
             BIrBlock {
                 params: n_params,
-                stmts,
-                stmt_provs: vec![(); n],
-                terminator,
-            }
+                stmts: stmts.into_iter().map(|s| Node::new(s, (), None)).collect(),
+                terminator }
         })
         .collect();
 
@@ -146,8 +143,7 @@ fn make_stmt(kind: u8, a: u32, b: u32, n_avail: u32) -> BIrStmt {
             2 => BIrStmt::And(IRVarId(av), IRVarId(bv)),
             3 => BIrStmt::Or(IRVarId(av), IRVarId(bv)),
             4 => BIrStmt::Xor(IRVarId(av), IRVarId(bv)),
-            _ => BIrStmt::Not(IRVarId(av)),
-        }
+            _ => BIrStmt::Not(IRVarId(av)) }
     }
 }
 
@@ -157,8 +153,7 @@ fn make_term(
     n_vars: u32,
     param_counts: &[u32],
     raw_term: &RawTerm,
-    ret_arity: u32,
-) -> BIrTerminator {
+    ret_arity: u32) -> BIrTerminator {
     let (kind, cond, then_raw, else_raw) = raw_term;
     let then_target =
         make_target(block_idx, n_blocks, n_vars, param_counts, then_raw, ret_arity);
@@ -172,8 +167,7 @@ fn make_term(
         BIrTerminator::CondJmp {
             val: IRVarId(cond % n_vars),
             then_target,
-            else_target,
-        }
+            else_target }
     }
 }
 
@@ -183,18 +177,14 @@ fn make_target(
     n_vars: u32,
     param_counts: &[u32],
     raw: &RawTarget,
-    ret_arity: u32,
-) -> BIrTarget {
+    ret_arity: u32) -> BIrTarget {
     let (choice, raw_args) = raw;
 
     // If no vars are available we cannot supply args to any target that needs
     // them.  Since ret_arity == 0 is guaranteed when min_vars == 0 (and thus
     // n_vars == 0), Return is always safe here.
     if n_vars == 0 {
-        return BIrTarget {
-            block: IRBlockTargetId::Return,
-            args: vec![],
-        };
+        return BIrTarget { block: IRBlockTargetId::Return, args: vec![] };
     }
 
     // Valid choices: 0 = Return, 1..=n_forward = forward block indices.
@@ -217,8 +207,7 @@ fn make_target(
         };
         BIrTarget {
             block: IRBlockTargetId::Return,
-            args,
-        }
+            args }
     } else {
         // Forward block: choice_idx-1 forward slots after block_idx.
         let target_block = block_idx + choice_idx;
@@ -232,8 +221,7 @@ fn make_target(
             .collect();
         BIrTarget {
             block: IRBlockTargetId::Block(IRBlockId(target_block as u32)),
-            args,
-        }
+            args }
     }
 }
 
@@ -259,8 +247,7 @@ fn make_stmt_extended(
     a: u32,
     b: u32,
     n_avail: u32,
-    oracle_calls: &[(u32, usize)],
-) -> (BIrStmt, bool) {
+    oracle_calls: &[(u32, usize)]) -> (BIrStmt, bool) {
     if n_avail == 0 {
         if kind & 1 == 0 {
             (BIrStmt::Zero, false)
@@ -284,8 +271,7 @@ fn make_stmt_extended(
                     storage: store_id,
                     src: IRVarId(av),
                     bit_width: 1,
-                    addr: vec![IRVarId(bv)],
-                }, true) // void
+                    addr: vec![IRVarId(bv)] }, true) // void
             }
             7 => {
                 // StorageRead: read from addr=av, bit_width=1
@@ -293,8 +279,7 @@ fn make_stmt_extended(
                 (BIrStmt::StorageRead {
                     storage: store_id,
                     bit_width: 1,
-                    addr: vec![IRVarId(av)],
-                }, false)
+                    addr: vec![IRVarId(av)] }, false)
             }
             8 => {
                 // OracleCall: one input bit, produces `num_bits` output bits.
@@ -304,8 +289,7 @@ fn make_stmt_extended(
                 (BIrStmt::OracleCall {
                     name: oracle_name,
                     args: vec![IRVarId(av)],
-                    num_bits,
-                }, true) // OracleCall is void; bits extracted by OracleBit
+                    num_bits }, true) // OracleCall is void; bits extracted by OracleBit
             }
             _ => {
                 // OracleBit: extract one bit from a prior OracleCall.
@@ -334,8 +318,7 @@ fn make_stmt_extended(
 /// Produces a single-block program that returns all vars.
 pub fn interpret_biir_extended(
     n_params: u32,
-    raw_stmts: &[RawStmt],
-) -> BIrBlocks<()> {
+    raw_stmts: &[RawStmt]) -> BIrBlocks<()> {
     let mut stmts: Vec<BIrStmt> = Vec::with_capacity(raw_stmts.len());
     // Track indices of usable (non-void) vars.  Params 0..n_params are all
     // usable.  StorageWrite and OracleCall results are void and excluded.
@@ -366,17 +349,11 @@ pub fn interpret_biir_extended(
     // Terminator: return all vars (params + stmts).
     let total = n_params + stmts.len() as u32;
     let ret_args: Vec<IRVarId> = (0..total).map(IRVarId).collect();
-    let n = stmts.len();
 
     let block = BIrBlock {
         params: n_params,
-        stmts,
-        stmt_provs: vec![(); n],
-        terminator: BIrTerminator::Jmp(BIrTarget {
-            block: IRBlockTargetId::Return,
-            args: ret_args,
-        }),
-    };
+        stmts: stmts.into_iter().map(|s| Node::new(s, (), None)).collect(),
+        terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: ret_args }) };
 
     BIrBlocks { blocks: vec![block], pre_init: vec![] }
 }
@@ -399,8 +376,7 @@ pub fn interpret_biir_extended(
 pub fn interpret_biir_multiblock(
     n_params: u32,
     raw_stmts_b0: &[RawStmt],
-    raw_stmts_b1: &[RawStmt],
-) -> BIrBlocks<()> {
+    raw_stmts_b1: &[RawStmt]) -> BIrBlocks<()> {
     // ── Block 0 ──────────────────────────────────────────────────────────────
     let mut stmts_b0: Vec<BIrStmt> = Vec::with_capacity(raw_stmts_b0.len());
     let mut usable_b0: Vec<u32> = (0..n_params).collect();
@@ -427,11 +403,7 @@ pub fn interpret_biir_multiblock(
     let total_b0 = n_params + stmts_b0.len() as u32;
     // B0 terminator: jump to Block(1), passing ALL vars (including void).
     let b0_args: Vec<IRVarId> = (0..total_b0).map(IRVarId).collect();
-    let n_b0 = stmts_b0.len();
-    let b0_term = BIrTerminator::Jmp(BIrTarget {
-        block: IRBlockTargetId::Block(IRBlockId(1)),
-        args: b0_args,
-    });
+    let b0_term = BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Block(IRBlockId(1)), args: b0_args });
 
     // ── Block 1 ──────────────────────────────────────────────────────────────
     // B1 params = total_b0 (all B0 vars passed as args).
@@ -468,24 +440,16 @@ pub fn interpret_biir_multiblock(
 
     let total_b1 = n_b1_params + stmts_b1.len() as u32;
     let b1_ret_args: Vec<IRVarId> = (0..total_b1).map(IRVarId).collect();
-    let n_b1 = stmts_b1.len();
-    let b1_term = BIrTerminator::Jmp(BIrTarget {
-        block: IRBlockTargetId::Return,
-        args: b1_ret_args,
-    });
+    let b1_term = BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: b1_ret_args });
 
     let block0 = BIrBlock {
         params: n_params,
-        stmts: stmts_b0,
-        stmt_provs: vec![(); n_b0],
-        terminator: b0_term,
-    };
+        stmts: stmts_b0.into_iter().map(|s| Node::new(s, (), None)).collect(),
+        terminator: b0_term };
     let block1 = BIrBlock {
         params: n_b1_params,
-        stmts: stmts_b1,
-        stmt_provs: vec![(); n_b1],
-        terminator: b1_term,
-    };
+        stmts: stmts_b1.into_iter().map(|s| Node::new(s, (), None)).collect(),
+        terminator: b1_term };
 
     BIrBlocks { blocks: vec![block0, block1], pre_init: vec![] }
 }
@@ -517,8 +481,7 @@ pub fn interpret_biir_diamond(
     raw_stmts_b0: &[RawStmt],
     raw_stmts_b1: &[RawStmt],
     raw_stmts_b2: &[RawStmt],
-    raw_stmts_b3: &[RawStmt],
-) -> BIrBlocks<()> {
+    raw_stmts_b3: &[RawStmt]) -> BIrBlocks<()> {
     let n_params = n_params.max(1); // need at least 1 for the condition
 
     // ── Block 0 ──────────────────────────────────────────────────────────────
@@ -544,18 +507,10 @@ pub fn interpret_biir_diamond(
 
     let total_b0 = n_params + stmts_b0.len() as u32;
     let b0_all_args: Vec<IRVarId> = (0..total_b0).map(IRVarId).collect();
-    let n_b0 = stmts_b0.len();
     let b0_term = BIrTerminator::CondJmp {
         val: IRVarId(0),
-        then_target: BIrTarget {
-            block: IRBlockTargetId::Block(IRBlockId(1)),
-            args: b0_all_args.clone(),
-        },
-        else_target: BIrTarget {
-            block: IRBlockTargetId::Block(IRBlockId(2)),
-            args: b0_all_args,
-        },
-    };
+        then_target: BIrTarget { block: IRBlockTargetId::Block(IRBlockId(1)), args: b0_all_args.clone() },
+        else_target: BIrTarget { block: IRBlockTargetId::Block(IRBlockId(2)), args: b0_all_args } };
 
     // ── Block 1 (true branch) ────────────────────────────────────────────────
     let n_b1_params = total_b0;
@@ -580,12 +535,8 @@ pub fn interpret_biir_diamond(
         }
     }
 
-    let n_b1 = stmts_b1.len();
     let b1_to_b3_args: Vec<IRVarId> = (0..n_b1_params).map(IRVarId).collect();
-    let b1_term = BIrTerminator::Jmp(BIrTarget {
-        block: IRBlockTargetId::Block(IRBlockId(3)),
-        args: b1_to_b3_args,
-    });
+    let b1_term = BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Block(IRBlockId(3)), args: b1_to_b3_args });
 
     // ── Block 2 (false branch) ───────────────────────────────────────────────
     let n_b2_params = total_b0;
@@ -609,12 +560,8 @@ pub fn interpret_biir_diamond(
         }
     }
 
-    let n_b2 = stmts_b2.len();
     let b2_to_b3_args: Vec<IRVarId> = (0..n_b2_params).map(IRVarId).collect();
-    let b2_term = BIrTerminator::Jmp(BIrTarget {
-        block: IRBlockTargetId::Block(IRBlockId(3)),
-        args: b2_to_b3_args,
-    });
+    let b2_term = BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Block(IRBlockId(3)), args: b2_to_b3_args });
 
     // ── Block 3 (merge) ──────────────────────────────────────────────────────
     let n_b3_params = total_b0;
@@ -639,18 +586,18 @@ pub fn interpret_biir_diamond(
     }
 
     let total_b3 = n_b3_params + stmts_b3.len() as u32;
-    let n_b3 = stmts_b3.len();
     let b3_ret_args: Vec<IRVarId> = (0..total_b3).map(IRVarId).collect();
-    let b3_term = BIrTerminator::Jmp(BIrTarget {
-        block: IRBlockTargetId::Return,
-        args: b3_ret_args,
-    });
+    let b3_term = BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: b3_ret_args });
+
+    let wrap = |stmts: Vec<BIrStmt>| -> Vec<Node<BIrStmt, ()>> {
+        stmts.into_iter().map(|s| Node::new(s, (), None)).collect()
+    };
 
     BIrBlocks { blocks: vec![
-        BIrBlock { params: n_params, stmts: stmts_b0, stmt_provs: vec![(); n_b0], terminator: b0_term },
-        BIrBlock { params: n_b1_params, stmts: stmts_b1, stmt_provs: vec![(); n_b1], terminator: b1_term },
-        BIrBlock { params: n_b2_params, stmts: stmts_b2, stmt_provs: vec![(); n_b2], terminator: b2_term },
-        BIrBlock { params: n_b3_params, stmts: stmts_b3, stmt_provs: vec![(); n_b3], terminator: b3_term },
+        BIrBlock { params: n_params, stmts: wrap(stmts_b0), terminator: b0_term },
+        BIrBlock { params: n_b1_params, stmts: wrap(stmts_b1), terminator: b1_term },
+        BIrBlock { params: n_b2_params, stmts: wrap(stmts_b2), terminator: b2_term },
+        BIrBlock { params: n_b3_params, stmts: wrap(stmts_b3), terminator: b3_term },
     ], pre_init: vec![] }
 }
 
@@ -691,10 +638,8 @@ mod strategies {
                     (raw_blocks_strat, inputs_strat, ret_arity_strat).prop_map(
                         move |(raw_blocks, inputs, raw_ret_arity)| {
                             (interpret_biir(pc.clone(), raw_blocks, raw_ret_arity), inputs)
-                        },
-                    )
-                },
-            )
+                        })
+                })
         })
     }
 
@@ -704,8 +649,7 @@ mod strategies {
         (0u32..=4u32).prop_flat_map(|n_params| {
             let raw_stmts = proptest::collection::vec(
                 (any::<u8>(), any::<u32>(), any::<u32>()),
-                0usize..=8usize,
-            );
+                0usize..=8usize);
             let inputs = proptest::collection::vec(any::<bool>(), n_params as usize);
 
             (raw_stmts, inputs).prop_map(move |(raw_stmts, inputs)| {
@@ -726,8 +670,7 @@ mod strategies {
             (raw_stmts_b0, raw_stmts_b1, inputs).prop_map(
                 move |(raw_stmts_b0, raw_stmts_b1, inputs)| {
                     (interpret_biir_multiblock(n_params, &raw_stmts_b0, &raw_stmts_b1), inputs)
-                },
-            )
+                })
         })
     }
 
@@ -748,16 +691,14 @@ mod strategies {
             (raw_stmts_b0, raw_stmts_b1, raw_stmts_b2, raw_stmts_b3, inputs).prop_map(
                 move |(raw_stmts_b0, raw_stmts_b1, raw_stmts_b2, raw_stmts_b3, inputs)| {
                     (interpret_biir_diamond(n_params, &raw_stmts_b0, &raw_stmts_b1, &raw_stmts_b2, &raw_stmts_b3), inputs)
-                },
-            )
+                })
         })
     }
 
     fn gen_raw_block() -> impl Strategy<Value = RawBlock> {
         let raw_stmts = proptest::collection::vec(
             (any::<u8>(), any::<u32>(), any::<u32>()),
-            0usize..=8usize,
-        );
+            0usize..=8usize);
         let raw_term = gen_raw_term();
         (raw_stmts, raw_term)
     }
@@ -767,14 +708,12 @@ mod strategies {
             any::<u8>(),
             any::<u32>(),
             gen_raw_target(),
-            gen_raw_target(),
-        )
+            gen_raw_target())
     }
 
     fn gen_raw_target() -> impl Strategy<Value = RawTarget> {
         (
             any::<u8>(),
-            proptest::collection::vec(any::<u32>(), 0usize..=4usize),
-        )
+            proptest::collection::vec(any::<u32>(), 0usize..=4usize))
     }
 }

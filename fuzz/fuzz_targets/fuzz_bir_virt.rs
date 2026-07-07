@@ -1,4 +1,4 @@
-//! cargo-fuzz target: virtualize_bir (Public/InIr) via lower_ir_to_boolar preserves semantics.
+//! cargo-fuzz target: virtualize_bir (Public) via lower_ir_to_boolar preserves semantics.
 
 #![no_main]
 
@@ -7,7 +7,7 @@ use volar_fuzz::arbitrary::ir::ArbitraryIr;
 use volar_fuzz::interpreter::biir::eval_biir;
 use volar_fuzz::interpreter::ir::{bit_flatten, bit_unflatten, eval_ir};
 use volar_ir_passes::lower_ir_to_boolar;
-use volar_ir_virt::{virtualize_bir, BytecodeForm, DispatchMode, VirtualizeConfig};
+use volar_ir_virt::{virtualize_bir, DispatchMode, VirtualizeConfig};
 
 fuzz_target!(|data: ArbitraryIr| {
     let ArbitraryIr { blocks: ir, types, inputs } = data;
@@ -20,7 +20,6 @@ fuzz_target!(|data: ArbitraryIr| {
     let bir = lower_ir_to_boolar(&ir, &types);
     let cfg = VirtualizeConfig {
         dispatch: DispatchMode::Public,
-        bytecode_form: BytecodeForm::InIr,
         ..VirtualizeConfig::default()
     };
     let virt = virtualize_bir::<()>(&bir, &cfg);

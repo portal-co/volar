@@ -39,10 +39,19 @@
 
 use volar_ir::{
     boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
-    ir::{IRBlockId, IRBlockTargetId, IRVarId},
+    ir::{
+        IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt, IRTerminator,
+        IRTypeId, IRVarId,
+    },
 };
+use volar_ir_common::Constant;
 use alloc::{vec, vec::Vec};
 use alloc::collections::BTreeMap;
+
+use crate::dispatch_accumulator::{
+    DispatchBitPrimitives, DispatchSlotPrimitives, emit_select_bit, emit_select_slot,
+};
+use crate::movfuscate::subst_ir;
 
 // ============================================================================
 // Public API
@@ -89,6 +98,14 @@ pub fn lower_to_circuit<P: Clone + Default>(blocks: &BIrBlocks<P>, limit: u32, m
     let block0 = &blocks.blocks[0];
     let p = block0.params as usize; // number of circuit input params
 
+<<<<<<< HEAD
+    // Provenance for infrastructure gates (MUX cascade, loop control constants).
+    // Use the first source statement's provenance; degenerate empty blocks panic.
+    let ctrl_prov: &P = block0.stmts.first().map(|n| &n.prov)
+        .expect("lower_to_circuit: block has no statements; cannot infer provenance for infrastructure gates");
+
+=======
+>>>>>>> origin/main
     // Emitter owns the accumulating stmt list and var-ID counter.
     let mut emitter = Emitter::<P>::new(p as u32);
 
@@ -109,8 +126,13 @@ pub fn lower_to_circuit<P: Clone + Default>(blocks: &BIrBlocks<P>, limit: u32, m
 
         // Re-emit all block stmts with fresh circuit var IDs, carrying provenance.
         for (i, stmt) in block0.stmts.iter().enumerate() {
+<<<<<<< HEAD
+            let prov = stmt.prov.clone();
+            let out_id = emitter.emit(subst_stmt(&stmt.kind, &var_map), prov);
+=======
             let prov = block0.stmt_provs.get(i).cloned().unwrap_or_default();
             let out_id = emitter.emit(subst_stmt(stmt, &var_map), prov);
+>>>>>>> origin/main
             // Map original stmt result (p + i) → fresh circuit var.
             var_map.insert(p as u32 + i as u32, out_id);
         }
@@ -174,7 +196,6 @@ pub fn lower_to_circuit<P: Clone + Default>(blocks: &BIrBlocks<P>, limit: u32, m
     let out_block = BIrBlock {
         params: p as u32,
         stmts: emitter.stmts,
-        stmt_provs: emitter.stmt_provs,
         terminator: BIrTerminator::Jmp(BIrTarget {
             block: IRBlockTargetId::Return,
             args: ret_args,
@@ -408,15 +429,20 @@ fn subst_stmt(stmt: &BIrStmt, var_map: &BTreeMap<u32, u32>) -> BIrStmt {
 ///
 /// The invariant `next_id == params + stmts.len()` must hold at all times;
 /// call [`emit`](Emitter::emit) once per stmt to maintain it.
+<<<<<<< HEAD
+struct Emitter<P: Clone = ()> {
+    stmts: Vec<volar_ir_common::Node<BIrStmt, P>>,
+=======
 struct Emitter<P: Clone + Default = ()> {
     stmts: Vec<BIrStmt>,
     stmt_provs: Vec<P>,
+>>>>>>> origin/main
     next_id: u32,
 }
 
 impl<P: Clone + Default> Emitter<P> {
     fn new(first_id: u32) -> Self {
-        Self { stmts: Vec::new(), stmt_provs: Vec::new(), next_id: first_id }
+        Self { stmts: Vec::new(), next_id: first_id }
     }
 
     /// Push `stmt` with a provenance annotation, assign it the next sequential
@@ -424,9 +450,432 @@ impl<P: Clone + Default> Emitter<P> {
     fn emit(&mut self, stmt: BIrStmt, prov: P) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
-        self.stmts.push(stmt);
-        self.stmt_provs.push(prov);
+        self.stmts.push(volar_ir_common::Node::new(stmt, prov, None));
         id
+    }
+}
+
+// ============================================================================
+// Volar IR (`IRBlocks`) support
+// ============================================================================
+//
+// A parallel entry point for `movfuscate_ir`'s output, rather than routing
+// through Boolar IR (`lower_ir_to_boolar`) first: booleanizing loses
+// multi-output/handle structure that maps awkwardly onto "exactly one bit
+// per value", and this pipeline never needs a boolean circuit at all —
+// `weave_vole_prover_ir_with_mode`/`weave_vole_verifier_ir_with_mode`
+// already consume `IRBlocks` directly (and are the only entry points that
+// support `StorageMode::Commitment`). Same shape as [`lower_to_circuit`]
+// (unroll the self-loop, mux-cascade the per-iteration results, OR-cascade
+// the done flags) — reusing the exact arithmetic `movfuscate_ir` itself
+// uses ([`crate::dispatch_accumulator`]'s `emit_select_bit`/
+// `emit_select_slot`) and its exact statement-substitution function
+// ([`subst_ir`]), so the two passes share formulas, not just shape.
+
+/// Sequential var-ID allocator + stmt accumulator for [`lower_to_circuit_ir`].
+///
+/// [`DispatchBitPrimitives`]/[`DispatchSlotPrimitives`] methods take no
+/// provenance parameter, so the provenance for the *next* emitted stmt is
+/// staged via [`set_prov`](Self::set_prov) before each call — the same
+/// pattern `movfuscate::IrCtx` uses internally.
+struct IrEmitter<P: Clone> {
+    stmts: Vec<volar_ir_common::Node<IRStmt, P>>,
+    next_id: u32,
+    bit_type_id: IRTypeId,
+    prov: P,
+}
+
+impl<P: Clone> IrEmitter<P> {
+    fn new(first_id: u32, bit_type_id: IRTypeId, ctrl_prov: P) -> Self {
+        Self { stmts: Vec::new(), next_id: first_id, bit_type_id, prov: ctrl_prov }
+    }
+
+    fn set_prov(&mut self, prov: P) {
+        self.prov = prov;
+    }
+
+    fn push(&mut self, stmt: IRStmt) -> u32 {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.stmts.push(volar_ir_common::Node::new(stmt, self.prov.clone(), None));
+        id
+    }
+
+    fn emit_poly(&mut self, coeffs: BTreeMap<Vec<IRVarId>, u8>, constant_lo: u128, ty: IRTypeId) -> u32 {
+        self.push(IRStmt::Poly { ty, coeffs, constant: Constant { hi: 0, lo: constant_lo } })
+    }
+}
+
+impl<P: Clone> DispatchBitPrimitives for IrEmitter<P> {
+    fn emit_zero_bit(&mut self) -> u32 {
+        let bt = self.bit_type_id.clone();
+        self.push(IRStmt::Const(Constant { hi: 0, lo: 0 }, bt))
+    }
+    fn emit_one_bit(&mut self) -> u32 {
+        let bt = self.bit_type_id.clone();
+        self.push(IRStmt::Const(Constant { hi: 0, lo: 1 }, bt))
+    }
+    fn emit_and_bit(&mut self, a: u32, b: u32) -> u32 {
+        if a == b {
+            return a;
+        }
+        let mut key = vec![IRVarId(a), IRVarId(b)];
+        key.sort();
+        let mut coeffs = BTreeMap::new();
+        coeffs.insert(key, 1u8);
+        let bt = self.bit_type_id.clone();
+        self.emit_poly(coeffs, 0, bt)
+    }
+    fn emit_xor_bit(&mut self, a: u32, b: u32) -> u32 {
+        if a == b {
+            return self.emit_zero_bit();
+        }
+        let mut coeffs: BTreeMap<Vec<IRVarId>, u8> = BTreeMap::new();
+        coeffs.insert(vec![IRVarId(a)], 1);
+        coeffs.insert(vec![IRVarId(b)], 1);
+        let bt = self.bit_type_id.clone();
+        self.emit_poly(coeffs, 0, bt)
+    }
+    fn emit_not(&mut self, a: u32) -> u32 {
+        let mut coeffs: BTreeMap<Vec<IRVarId>, u8> = BTreeMap::new();
+        coeffs.insert(vec![IRVarId(a)], 1);
+        let bt = self.bit_type_id.clone();
+        self.emit_poly(coeffs, 1, bt)
+    }
+}
+
+impl<P: Clone> DispatchSlotPrimitives for IrEmitter<P> {
+    type SlotTy = IRTypeId;
+
+    fn emit_zero_slot(&mut self, ty: &IRTypeId) -> u32 {
+        let t = ty.clone();
+        self.push(IRStmt::Const(Constant { hi: 0, lo: 0 }, t))
+    }
+    fn emit_gate(&mut self, is_active: u32, val: u32, ty: &IRTypeId) -> u32 {
+        if is_active == val {
+            return is_active;
+        }
+        let mut key = vec![IRVarId(is_active), IRVarId(val)];
+        key.sort();
+        let mut coeffs = BTreeMap::new();
+        coeffs.insert(key, 1u8);
+        self.emit_poly(coeffs, 0, ty.clone())
+    }
+    fn emit_field_add(&mut self, a: u32, b: u32, ty: &IRTypeId) -> u32 {
+        if a == b {
+            return self.emit_zero_slot(ty);
+        }
+        let mut coeffs: BTreeMap<Vec<IRVarId>, u8> = BTreeMap::new();
+        coeffs.insert(vec![IRVarId(a)], 1);
+        coeffs.insert(vec![IRVarId(b)], 1);
+        self.emit_poly(coeffs, 0, ty.clone())
+    }
+}
+
+/// Extract the result type embedded in an `IRStmt`. Mirrors [`subst_ir`]'s
+/// variant coverage exactly (same enum, read instead of rewritten);
+/// `StorageWrite` carries no payload type of its own and is conventionally
+/// `Bit` (an ack marker), matching `movfuscate::IrCtx`'s own convention for
+/// the same statement kind.
+fn ir_stmt_result_type(stmt: &IRStmt, bit_type_id: &IRTypeId) -> IRTypeId {
+    match stmt {
+        IRStmt::StorageRead { ty, .. } => ty.clone(),
+        IRStmt::StorageWrite { .. } => bit_type_id.clone(),
+        IRStmt::Const(_, ty) => ty.clone(),
+        IRStmt::Transmute { dst_ty, .. } => dst_ty.clone(),
+        IRStmt::Poly { ty, .. } => ty.clone(),
+        IRStmt::Rol { ty, .. } => ty.clone(),
+        IRStmt::Ror { ty, .. } => ty.clone(),
+        IRStmt::Merge { ty, .. } => ty.clone(),
+        IRStmt::Splat { ty, .. } => ty.clone(),
+        IRStmt::Shuffle { ty, .. } => ty.clone(),
+        IRStmt::OracleCall { result_ty, .. } => result_ty.clone(),
+        IRStmt::OracleOutput { ty, .. } => ty.clone(),
+        IRStmt::ActionCall { result_ty, .. } => result_ty.clone(),
+        IRStmt::ActionOutput { ty, .. } => ty.clone(),
+        IRStmt::Rng { ty, .. } => ty.clone(),
+        _ => panic!("ir_stmt_result_type: unhandled IRStmt variant — add a case for this variant"),
+    }
+}
+
+/// If `terminator` has a `Return` target (`Jmp` or either arm of a
+/// `JumpCond`), resolve each of its args' types via `orig_var_types`.
+fn return_target_types(terminator: &IRTerminator, orig_var_types: &[IRTypeId]) -> Option<Vec<IRTypeId>> {
+    let ret_args: &[IRVarId] = match terminator {
+        IRTerminator::Jmp { target: IRBranchTarget { dest: IRBlockTargetId::Return, args, .. } } => args,
+        IRTerminator::JumpCond {
+            then_target: IRBranchTarget { dest: IRBlockTargetId::Return, args, .. }, ..
+        } => args,
+        IRTerminator::JumpCond {
+            else_target: IRBranchTarget { dest: IRBlockTargetId::Return, args, .. }, ..
+        } => args,
+        _ => return None,
+    };
+    Some(ret_args.iter().map(|id| orig_var_types[id.0 as usize].clone()).collect())
+}
+
+/// Analyse an `IRTerminator` and return `(done_wire, result_wires, next_args)`.
+/// Mirrors [`process_terminator`] exactly, for `IRTerminator`'s `Jmp`/
+/// `JumpCond` shape instead of `BIrTerminator`'s `Jmp`/`CondJmp`. Caller must
+/// have already staged the control provenance via `emitter.set_prov(..)`.
+fn process_terminator_ir<P: Clone>(
+    terminator: &IRTerminator,
+    var_map: &[u32],
+    emitter: &mut IrEmitter<P>,
+    current_state: &[u32],
+    orig_var_types: &[IRTypeId],
+) -> (u32, Vec<u32>, Vec<u32>) {
+    let lookup = |id: &IRVarId| -> u32 { var_map[id.0 as usize] };
+
+    match terminator {
+        IRTerminator::Jmp { target } => match &target.dest {
+            IRBlockTargetId::Return => {
+                let one_id = emitter.emit_one_bit();
+                let result_v: Vec<u32> = target.args.iter().map(lookup).collect();
+                (one_id, result_v.clone(), result_v)
+            }
+            IRBlockTargetId::Block(IRBlockId(0)) => {
+                let zero_id = emitter.emit_zero_bit();
+                let next_v: Vec<u32> = target.args.iter().map(lookup).collect();
+                (zero_id, current_state.to_vec(), next_v)
+            }
+            IRBlockTargetId::Block(IRBlockId(b)) => {
+                panic!(
+                    "lower_to_circuit_ir: Jmp to non-zero block {} is not supported \
+                     (only back-edges to block 0 are handled)",
+                    b
+                );
+            }
+            IRBlockTargetId::Dyn(_) => {
+                panic!("lower_to_circuit_ir: dynamic dispatch (Dyn) is not supported");
+            }
+            _ => panic!("lower_to_circuit_ir: unhandled IRBlockTargetId variant — add handling for this variant"),
+        },
+
+        IRTerminator::JumpCond { condition, then_target, else_target } => {
+            let val_cv = lookup(condition);
+
+            match (&then_target.dest, &else_target.dest) {
+                (IRBlockTargetId::Return, IRBlockTargetId::Block(IRBlockId(0))) => {
+                    let mut result_v: Vec<u32> = then_target.args.iter().map(lookup).collect();
+                    let next_v: Vec<u32> = else_target.args.iter().map(lookup).collect();
+                    // A "done" return that carries fewer values than there are
+                    // loop-carried params (e.g. a void WASM function, or one
+                    // returning only a subset of its live state) must not
+                    // truncate the *resumable* state a multi-call driver needs
+                    // to thread into the next call when NOT done. Pad with the
+                    // next-iteration value, which is only ever observed when
+                    // done=true anyway (don't-care by construction there,
+                    // since no further call happens).
+                    for idx in result_v.len()..current_state.len() {
+                        result_v.push(*next_v.get(idx).unwrap_or(&current_state[idx]));
+                    }
+                    (val_cv, result_v, next_v)
+                }
+
+                (IRBlockTargetId::Block(IRBlockId(0)), IRBlockTargetId::Return) => {
+                    let not_val = emitter.emit_not(val_cv);
+                    let mut result_v: Vec<u32> = else_target.args.iter().map(lookup).collect();
+                    let next_v: Vec<u32> = then_target.args.iter().map(lookup).collect();
+                    for idx in result_v.len()..current_state.len() {
+                        result_v.push(*next_v.get(idx).unwrap_or(&current_state[idx]));
+                    }
+                    (not_val, result_v, next_v)
+                }
+
+                (IRBlockTargetId::Return, IRBlockTargetId::Return) => {
+                    let one_id = emitter.emit_one_bit();
+                    let then_v: Vec<u32> = then_target.args.iter().map(lookup).collect();
+                    let else_v: Vec<u32> = else_target.args.iter().map(lookup).collect();
+                    assert_eq!(
+                        then_v.len(),
+                        else_v.len(),
+                        "lower_to_circuit_ir: JumpCond Return targets have different arg counts"
+                    );
+                    // Both paths return -- no `Block(0)` continuation exists
+                    // anywhere in this terminator, so there is no multi-call
+                    // "next state" concern here (unlike the asymmetric arms
+                    // above): the mux'd result is genuinely the *entire*
+                    // output by design, not a truncated view of a larger
+                    // resumable state. Left un-padded on purpose.
+                    let result_v: Vec<u32> = then_v
+                        .iter()
+                        .zip(else_v.iter())
+                        .zip(then_target.args.iter())
+                        .map(|((&a, &b), orig_id)| {
+                            let ty = orig_var_types[orig_id.0 as usize].clone();
+                            emit_select_slot(emitter, val_cv, a, b, &ty)
+                        })
+                        .collect();
+                    (one_id, result_v, current_state.to_vec())
+                }
+
+                (IRBlockTargetId::Block(IRBlockId(a)), IRBlockTargetId::Block(IRBlockId(b))) => {
+                    panic!(
+                        "lower_to_circuit_ir: JumpCond with both targets being blocks \
+                         ({}, {}) is not supported",
+                        a, b
+                    );
+                }
+
+                _ => panic!(
+                    "lower_to_circuit_ir: unsupported JumpCond target combination \
+                     (Dyn or non-zero Block)"
+                ),
+            }
+        }
+        IRTerminator::JumpTable { .. } => {
+            panic!("lower_to_circuit_ir: JumpTable is not supported")
+        }
+        _ => panic!("lower_to_circuit_ir: unhandled IRTerminator variant — add handling for this variant"),
+    }
+}
+
+/// Lower a movfuscated `IRBlocks` (i.e. [`crate::movfuscate::movfuscate_ir`]'s
+/// output) to a single-block circuit, satisfying `IRBlocks::is_circuit()` —
+/// the direct Volar-IR analogue of [`lower_to_circuit`]. `bit_type_id` is the
+/// `IRTypeId` for `IRType::Bit` in the caller's type table (already interned
+/// by `movfuscate_ir` itself).
+///
+/// - If `blocks.is_circuit()` is already true, returns `blocks.clone()` with no work.
+/// - For a **single-block self-loop** (`JumpCond` with one target `Block(0)`
+///   and the other `Return`): unrolls `limit` iterations, MUX-cascading the
+///   per-iteration results with [`crate::dispatch_accumulator::emit_select_slot`]
+///   (typed — state/return slots need not be `Bit`).
+/// - For a **single-block unconditional loop** (`Jmp(Block(0))`): unrolls
+///   `limit` iterations; the output is the state after `limit` steps.
+///
+/// # Panics
+/// - If `blocks` has more than one block (multi-block DAG not yet implemented).
+/// - If a back-edge targets any block other than block 0.
+/// - If `IRBlockTargetId::Dyn` or `IRTerminator::JumpTable` is encountered.
+pub fn lower_to_circuit_ir<P: Clone>(
+    blocks: &IRBlocks<P>,
+    bit_type_id: &IRTypeId,
+    limit: u32,
+    mode: LoweringMode,
+) -> IRBlocks<P> {
+    if blocks.is_circuit() {
+        return blocks.clone();
+    }
+
+    assert_eq!(
+        blocks.blocks.len(),
+        1,
+        "lower_to_circuit_ir: multi-block DAG lowering is not yet implemented; \
+         only single-block self-loops (movfuscate_ir's output) are currently supported"
+    );
+
+    let block0 = &blocks.blocks[0];
+    let p = block0.params.len();
+
+    let ctrl_prov: P = block0.stmts.first().map(|n| n.prov.clone())
+        .expect("lower_to_circuit_ir: block has no statements; cannot infer provenance for infrastructure gates");
+
+    // Each original var's result type, computed once: params first, then one
+    // per stmt (substitution never changes types, only var-id references, so
+    // this table is valid for every unrolled iteration).
+    let mut orig_var_types: Vec<IRTypeId> = block0.params.clone();
+    for stmt in &block0.stmts {
+        orig_var_types.push(ir_stmt_result_type(&stmt.kind, bit_type_id));
+    }
+
+    let mut emitter = IrEmitter::<P>::new(p as u32, bit_type_id.clone(), ctrl_prov.clone());
+    let mut current_state: Vec<u32> = (0..p as u32).collect();
+
+    let mut done_vars: Vec<u32> = Vec::new();
+    let mut result_wires: Vec<Vec<u32>> = Vec::new();
+
+    for _k in 0..limit as usize {
+        let mut var_map: Vec<u32> = current_state.clone();
+
+        for stmt in &block0.stmts {
+            emitter.set_prov(stmt.prov.clone());
+            let mapped = subst_ir(&stmt.kind, &var_map);
+            let out_id = emitter.push(mapped);
+            var_map.push(out_id);
+        }
+
+        emitter.set_prov(ctrl_prov.clone());
+        let (done_v, result_v, next_v) =
+            process_terminator_ir(&block0.terminator, &var_map, &mut emitter, &current_state, &orig_var_types);
+
+        done_vars.push(done_v);
+        result_wires.push(result_v);
+        current_state = next_v;
+    }
+
+    let output_width = result_wires.first().map_or(current_state.len(), |r| r.len());
+    let mut output_types: Vec<IRTypeId> = return_target_types(&block0.terminator, &orig_var_types)
+        .unwrap_or_else(|| block0.params.clone());
+    // Mirror `process_terminator_ir`'s result_v padding (only actually
+    // grows `output_types` for the asymmetric Return/Block(0) arms, since
+    // `output_width` already reflects whichever shape `result_v` ended up
+    // with -- the "both return" arm is deliberately left unpadded, and
+    // `output_width` matches that too). Padding slot `idx`'s type is always
+    // the corresponding param's own type (the filler value literally *is*
+    // that param, per `process_terminator_ir`'s padding).
+    for idx in output_types.len()..output_width {
+        output_types.push(block0.params[idx].clone());
+    }
+
+    // ---- MUX cascade (right-to-left over iterations), typed per output slot ----
+    let mut gated: Vec<u32> = {
+        let mut v = current_state.clone();
+        v.resize(output_width, *v.last().unwrap_or(&0));
+        v
+    };
+
+    for k in (0..done_vars.len()).rev() {
+        let mut new_gated = Vec::with_capacity(output_width);
+        for b in 0..output_width {
+            let a = *result_wires[k].get(b).unwrap_or(&gated[b]);
+            let b_wire = gated[b];
+            emitter.set_prov(ctrl_prov.clone());
+            let ty = output_types.get(b).cloned().unwrap_or_else(|| bit_type_id.clone());
+            new_gated.push(emit_select_slot(&mut emitter, done_vars[k], a, b_wire, &ty));
+        }
+        gated = new_gated;
+    }
+
+    // ---- OR cascade for the overall done flag: OR(a,b) = select(a, 1, b) ----
+    let overall_done = if done_vars.is_empty() {
+        emitter.set_prov(ctrl_prov.clone());
+        emitter.emit_zero_bit()
+    } else {
+        emitter.set_prov(ctrl_prov.clone());
+        let one_bit = emitter.emit_one_bit();
+        let mut acc = done_vars[0];
+        for k in 1..done_vars.len() {
+            emitter.set_prov(ctrl_prov.clone());
+            acc = emit_select_bit(&mut emitter, acc, one_bit, done_vars[k]);
+        }
+        acc
+    };
+
+    // ---- Assemble output circuit ----
+    let mut ret_args: Vec<IRVarId> = Vec::new();
+    if mode == LoweringMode::WithTerminationFlag {
+        ret_args.push(IRVarId(overall_done));
+    }
+    for &g in &gated {
+        ret_args.push(IRVarId(g));
+    }
+
+    let out_block = IRBlock {
+        params: block0.params.clone(),
+        stmts: emitter.stmts,
+        terminator: IRTerminator::Jmp {
+            target: IRBranchTarget::new(IRBlockTargetId::Return, ret_args),
+        },
+    };
+
+    IRBlocks {
+        oracles: blocks.oracles.clone(),
+        actions: blocks.actions.clone(),
+        rngs: blocks.rngs.clone(),
+        blocks: vec![out_block],
+        pre_init: blocks.pre_init.clone(),
     }
 }
 
@@ -440,6 +889,7 @@ mod tests {
     use super::*;
     use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
     use volar_ir::ir::{IRBlockId, IRBlockTargetId, IRVarId};
+    use volar_ir_common::Node;
 
     /// Single-bit self-loop: params=1, stmts=[One], CondJmp(param[0] → Return, else Block(0) with One).
     ///
@@ -448,8 +898,7 @@ mod tests {
     fn build_simple_loop() -> BIrBlocks {
         BIrBlocks { blocks: std::vec![BIrBlock {
             params: 1,
-            stmts: std::vec![BIrStmt::One], // IRVarId(1) = constant 1
-            stmt_provs: std::vec![()],
+            stmts: std::vec![BIrStmt::One].into_iter().map(|s| Node::new(s, (), None)).collect(), // IRVarId(1) = constant 1
             terminator: BIrTerminator::CondJmp {
                 val: IRVarId(0), // condition = input bit
                 then_target: BIrTarget {
@@ -470,7 +919,6 @@ mod tests {
         let circuit: BIrBlocks<()> = BIrBlocks { blocks: std::vec![BIrBlock {
             params: 1,
             stmts: std::vec![],
-            stmt_provs: std::vec![],
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Return,
                 args: std::vec![IRVarId(0)],
@@ -564,8 +1012,7 @@ mod tests {
         // Pure loop: always Jmp(Block(0)). Output = state after limit steps.
         let blocks = BIrBlocks { blocks: std::vec![BIrBlock {
             params: 1,
-            stmts: std::vec![BIrStmt::Not(IRVarId(0))], // flip the bit each step
-            stmt_provs: std::vec![()],
+            stmts: std::vec![BIrStmt::Not(IRVarId(0))].into_iter().map(|s| Node::new(s, (), None)).collect(), // flip the bit each step
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Block(IRBlockId(0)),
                 args: std::vec![IRVarId(1)], // loop with NOT(input)
@@ -581,8 +1028,12 @@ mod tests {
         // CondJmp where both targets return: always done, result = mux(val, then, else).
         let blocks: BIrBlocks<()> = BIrBlocks { blocks: std::vec![BIrBlock {
             params: 2, // two input bits: selector and value
+<<<<<<< HEAD
+            stmts: std::vec![BIrStmt::Zero].into_iter().map(|s| Node::new(s, (), None)).collect(),
+=======
             stmts: std::vec![],
             stmt_provs: std::vec![],
+>>>>>>> origin/main
             terminator: BIrTerminator::CondJmp {
                 val: IRVarId(0), // select on bit 0
                 then_target: BIrTarget {
@@ -603,6 +1054,154 @@ mod tests {
         match &lowered.blocks[0].terminator {
             BIrTerminator::Jmp(t) => assert_eq!(t.args.len(), 1),
             _ => panic!(),
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // `lower_to_circuit_ir` (Volar IR) — same fixtures, ported to `IRStmt`/
+    // `IRTerminator`, checking the same structural properties.
+    // ------------------------------------------------------------------------
+    mod ir {
+        use super::*;
+        use volar_ir::ir::{IRType, IRTypes};
+        use volar_ir_common::Type;
+
+        /// Single-bit self-loop, Volar-IR shape: params=[Bit], stmts=[Const(1)],
+        /// JumpCond(param[0] → Return, else Block(0) with the constant).
+        /// Same semantics as `build_simple_loop`: "if input bit is 1, return
+        /// it; else loop with 1".
+        fn build_simple_ir_loop() -> (IRBlocks<()>, IRTypeId) {
+            let mut types = IRTypes(std::vec![]);
+            let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+            let blocks = IRBlocks {
+                oracles: std::vec![],
+                actions: std::vec![],
+                rngs: std::vec![],
+                blocks: std::vec![IRBlock {
+                    params: std::vec![bit_ty],
+                    stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 1 }, bit_ty)]
+                        .into_iter()
+                        .map(|s| Node::new(s, (), None))
+                        .collect(),
+                    terminator: IRTerminator::JumpCond {
+                        condition: IRVarId(0),
+                        then_target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)]),
+                        else_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(0)), std::vec![IRVarId(1)]),
+                    },
+                }],
+                pre_init: std::vec![],
+            };
+            (blocks, bit_ty)
+        }
+
+        #[test]
+        fn test_lower_simple_ir_loop_is_circuit() {
+            let (blocks, bit_ty) = build_simple_ir_loop();
+            assert!(!blocks.is_circuit(), "precondition: not yet a circuit");
+            let lowered = lower_to_circuit_ir(&blocks, &bit_ty, 3, LoweringMode::Unconditional);
+            assert!(lowered.is_circuit(), "lowered result must satisfy is_circuit()");
+            assert_eq!(lowered.blocks[0].params, std::vec![bit_ty], "param types must be preserved");
+        }
+
+        #[test]
+        fn test_lower_ir_unconditional_return_width() {
+            let (blocks, bit_ty) = build_simple_ir_loop();
+            let lowered = lower_to_circuit_ir(&blocks, &bit_ty, 3, LoweringMode::Unconditional);
+            match &lowered.blocks[0].terminator {
+                IRTerminator::Jmp { target } => {
+                    assert_eq!(target.args.len(), 1, "Unconditional mode: return arg count must match original (1)");
+                    assert_eq!(target.dest, IRBlockTargetId::Return);
+                }
+                _ => panic!("expected Jmp(Return) terminator"),
+            }
+        }
+
+        #[test]
+        fn test_lower_ir_with_termination_flag_return_width() {
+            let (blocks, bit_ty) = build_simple_ir_loop();
+            let lowered = lower_to_circuit_ir(&blocks, &bit_ty, 3, LoweringMode::WithTerminationFlag);
+            assert!(lowered.is_circuit());
+            match &lowered.blocks[0].terminator {
+                IRTerminator::Jmp { target } => {
+                    assert_eq!(target.args.len(), 2, "WithTerminationFlag mode: 1 (done) + 1 (output)");
+                }
+                _ => panic!("expected Jmp(Return) terminator"),
+            }
+        }
+
+        #[test]
+        fn test_ir_gate_count_grows_with_limit() {
+            let (blocks, bit_ty) = build_simple_ir_loop();
+            let l3 = lower_to_circuit_ir(&blocks, &bit_ty, 3, LoweringMode::Unconditional);
+            let l6 = lower_to_circuit_ir(&blocks, &bit_ty, 6, LoweringMode::Unconditional);
+            assert!(l6.blocks[0].stmts.len() > l3.blocks[0].stmts.len(), "more iterations → more gates");
+        }
+
+        #[test]
+        fn test_lower_ir_unconditional_jmp_block0() {
+            // Pure loop: always Jmp(Block(0)). Output = state after limit steps.
+            let mut types = IRTypes(std::vec![]);
+            let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+            let blocks: IRBlocks<()> = IRBlocks {
+                oracles: std::vec![],
+                actions: std::vec![],
+                rngs: std::vec![],
+                blocks: std::vec![IRBlock {
+                    params: std::vec![bit_ty],
+                    // flip the bit each step: NOT(param0) = Poly{[0]:1, const:1}
+                    stmts: std::vec![IRStmt::Poly {
+                        ty: bit_ty,
+                        coeffs: {
+                            let mut m = BTreeMap::new();
+                            m.insert(std::vec![IRVarId(0)], 1u8);
+                            m
+                        },
+                        constant: Constant { hi: 0, lo: 1 },
+                    }]
+                    .into_iter()
+                    .map(|s| Node::new(s, (), None))
+                    .collect(),
+                    terminator: IRTerminator::Jmp {
+                        target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(0)), std::vec![IRVarId(1)]),
+                    },
+                }],
+                pre_init: std::vec![],
+            };
+            let lowered = lower_to_circuit_ir(&blocks, &bit_ty, 4, LoweringMode::Unconditional);
+            assert!(lowered.is_circuit());
+            assert_eq!(lowered.blocks[0].params, std::vec![bit_ty]);
+        }
+
+        #[test]
+        fn test_lower_ir_both_return_jumpcond() {
+            // JumpCond where both targets return: always done, result = mux(val, then, else).
+            let mut types = IRTypes(std::vec![]);
+            let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+            let blocks: IRBlocks<()> = IRBlocks {
+                oracles: std::vec![],
+                actions: std::vec![],
+                rngs: std::vec![],
+                blocks: std::vec![IRBlock {
+                    params: std::vec![bit_ty, bit_ty], // selector, value
+                    stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 0 }, bit_ty)]
+                        .into_iter()
+                        .map(|s| Node::new(s, (), None))
+                        .collect(),
+                    terminator: IRTerminator::JumpCond {
+                        condition: IRVarId(0),
+                        then_target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(1)]),
+                        else_target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)]),
+                    },
+                }],
+                pre_init: std::vec![],
+            };
+            assert!(!blocks.is_circuit());
+            let lowered = lower_to_circuit_ir(&blocks, &bit_ty, 1, LoweringMode::Unconditional);
+            assert!(lowered.is_circuit());
+            match &lowered.blocks[0].terminator {
+                IRTerminator::Jmp { target } => assert_eq!(target.args.len(), 1),
+                _ => panic!(),
+            }
         }
     }
 }

@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 use volar_compiler::{
-    ArrayKind, AssociatedType, IrExpr, IrImplItem, IrPattern, IrStmt, IrType, MathTrait,
+    ArrayKind, AssociatedType, IrExprKind, IrImplItem, IrPattern, IrStmtKind, IrType, MathTrait,
     MethodKind, PrimitiveType, SourceInput, StructKind, TraitKind, VoleMethod, parse_sources,
 };
 
@@ -220,7 +220,7 @@ fn test_method_classification() {
         }
     "#;
 
-    use volar_compiler::{IrExpr, IrStmt, parse_source};
+    use volar_compiler::{IrExprKind, IrStmtKind, parse_source};
 
     let spec = parse_source(source, "test", &[]).unwrap();
 
@@ -231,11 +231,11 @@ fn test_method_classification() {
     let mut iter_methods = 0;
 
     for stmt in &f.body.stmts {
-        if let IrStmt::Let {
+        if let IrStmtKind::Let {
             init: Some(expr), ..
-        } = stmt
+        } = &stmt.kind
         {
-            if let IrExpr::MethodCall { method, .. } = expr {
+            if let IrExprKind::MethodCall { method, .. } = &expr.kind {
                 match method {
                     MethodKind::Vole(v) => {
                         vole_methods += 1;
@@ -275,7 +275,7 @@ fn test_array_operations() {
         }
     "#;
 
-    use volar_compiler::{IrExpr, IrStmt, parse_source};
+    use volar_compiler::{IrExprKind, IrStmtKind, parse_source};
 
     let spec = parse_source(source, "test", &[]).unwrap();
 
@@ -286,20 +286,20 @@ fn test_array_operations() {
     let mut zip_count = 0;
 
     for stmt in &f.body.stmts {
-        if let IrStmt::Let {
+        if let IrStmtKind::Let {
             init: Some(expr), ..
-        } = stmt
+        } = &stmt.kind
         {
-            match expr {
-                IrExpr::ArrayGenerate { index_var, .. } => {
+            match &expr.kind {
+                IrExprKind::ArrayGenerate { index_var, .. } => {
                     generate_count += 1;
                     println!("ArrayGenerate with index var: {}", index_var);
                 }
-                IrExpr::RawMap { elem_var, .. } => {
+                IrExprKind::RawMap { elem_var, .. } => {
                     method_map_count += 1;
                     println!("RawMap with var: {:?}", elem_var);
                 }
-                IrExpr::RawZip {
+                IrExprKind::RawZip {
                     left_var,
                     right_var,
                     ..
@@ -341,7 +341,7 @@ fn test_bounded_loops() {
         }
     "#;
 
-    use volar_compiler::{IrExpr, IrStmt, parse_source};
+    use volar_compiler::{IrExprKind, IrStmtKind, parse_source};
 
     let spec = parse_source(source, "test", &[]).unwrap();
 
@@ -352,13 +352,13 @@ fn test_bounded_loops() {
 
     println!("Statements in function body: {}", f.body.stmts.len());
     for (i, stmt) in f.body.stmts.iter().enumerate() {
-        match stmt {
-            IrStmt::Semi(expr) | IrStmt::Expr(expr) => match expr {
-                IrExpr::BoundedLoop { var, .. } => {
+        match &stmt.kind {
+            IrStmtKind::Semi(expr) | IrStmtKind::Expr(expr) => match &expr.kind {
+                IrExprKind::BoundedLoop { var, .. } => {
                     bounded_loops += 1;
                     println!("  Stmt {}: BoundedLoop with var: {}", i, var);
                 }
-                IrExpr::IterLoop { .. } => {
+                IrExprKind::IterLoop { .. } => {
                     iter_loops += 1;
                     println!("  Stmt {}: IterLoop found", i);
                 }
@@ -531,11 +531,11 @@ fn test_iter_chain_simple_fold() {
     let module = parse_source(source, "test", &[]).unwrap();
     let f = &module.functions[0];
 
-    if let IrStmt::Let {
+    if let IrStmtKind::Let {
         init: Some(expr), ..
-    } = &f.body.stmts[0]
+    } = &f.body.stmts[0].kind
     {
-        if let IrExpr::IterPipeline(chain) = expr {
+        if let IrExprKind::IterPipeline(chain) = &expr.kind {
             // Source should be Method { collection: arr, method: Iter }
             match &chain.source {
                 IterChainSource::Method { method, .. } => {
@@ -575,11 +575,13 @@ fn test_iter_chain_enumerate_filter_map_fold() {
     let module = parse_source(source, "test", &[]).unwrap();
     let f = &module.functions[0];
 
-    if let IrStmt::Let {
-        init: Some(IrExpr::IterPipeline(chain)),
-        ..
-    } = &f.body.stmts[0]
+    if let IrStmtKind::Let {
+        init: Some(expr), ..
+    } = &f.body.stmts[0].kind
     {
+        let IrExprKind::IterPipeline(chain) = &expr.kind else {
+            panic!("Expected IterPipeline");
+        };
         // Source
         assert!(matches!(
             &chain.source,
@@ -618,11 +620,13 @@ fn test_iter_chain_map_collect() {
     let module = parse_source(source, "test", &[]).unwrap();
     let f = &module.functions[0];
 
-    if let IrStmt::Let {
-        init: Some(IrExpr::IterPipeline(chain)),
-        ..
-    } = &f.body.stmts[0]
+    if let IrStmtKind::Let {
+        init: Some(expr), ..
+    } = &f.body.stmts[0].kind
     {
+        let IrExprKind::IterPipeline(chain) = &expr.kind else {
+            panic!("Expected IterPipeline");
+        };
         assert!(matches!(
             &chain.source,
             IterChainSource::Method {
@@ -653,13 +657,13 @@ fn test_non_iterator_map_is_raw_map() {
     let module = parse_source(source, "test", &[]).unwrap();
     let f = &module.functions[0];
 
-    if let IrStmt::Let {
+    if let IrStmtKind::Let {
         init: Some(expr), ..
-    } = &f.body.stmts[0]
+    } = &f.body.stmts[0].kind
     {
         // No .iter() → not an iter chain → should be RawMap
         assert!(
-            matches!(expr, IrExpr::RawMap { .. }),
+            matches!(&expr.kind, IrExprKind::RawMap { .. }),
             "arr.map() without .iter() should be RawMap, got {:?}",
             expr
         );
@@ -680,11 +684,13 @@ fn test_iter_chain_range_fold() {
     let module = parse_source(source, "test", &[]).unwrap();
     let f = &module.functions[0];
 
-    if let IrStmt::Let {
-        init: Some(IrExpr::IterPipeline(chain)),
-        ..
-    } = &f.body.stmts[0]
+    if let IrStmtKind::Let {
+        init: Some(expr), ..
+    } = &f.body.stmts[0].kind
     {
+        let IrExprKind::IterPipeline(chain) = &expr.kind else {
+            panic!("Expected IterPipeline with Range source");
+        };
         assert!(matches!(
             &chain.source,
             IterChainSource::Range {
@@ -714,8 +720,11 @@ fn test_iter_chain_for_loop_uses_lazy_chain() {
     let f = &module.functions[0];
 
     // Should be IterLoop with collection = IterPipeline(Lazy chain)
-    if let IrStmt::Semi(IrExpr::IterLoop { collection, .. }) = &f.body.stmts[0] {
-        if let IrExpr::IterPipeline(chain) = collection.as_ref() {
+    let IrStmtKind::Semi(loop_expr) = &f.body.stmts[0].kind else {
+        panic!("Expected IterLoop statement");
+    };
+    if let IrExprKind::IterLoop { collection, .. } = &loop_expr.kind {
+        if let IrExprKind::IterPipeline(chain) = &collection.as_ref().kind {
             assert!(matches!(
                 &chain.source,
                 IterChainSource::Method {

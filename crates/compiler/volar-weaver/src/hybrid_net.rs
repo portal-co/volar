@@ -597,7 +597,7 @@ pub fn weave_hybrid_net_vole_prover(
         params: vec![],
         stmts: b0_stmts,
         stmt_provs: vec![],
-        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args }),
+        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args, reentry: None }),
     };
 
     // ── Block 1: ZK loop body ──────────────────────────────────────────────
@@ -751,8 +751,8 @@ pub fn weave_hybrid_net_vole_prover(
         stmt_provs: vec![],
         terminator: IrCfgTerminator::CondGoto {
             cond: var("cont"),
-            then_: IrCfgJump { target: 2, args: b2_args },
-            else_: IrCfgJump { target: 4, args: b4_args },
+            then_: IrCfgJump { target: 2, args: b2_args, reentry: None },
+            else_: IrCfgJump { target: 4, args: b4_args, reentry: None },
         },
     };
 
@@ -791,7 +791,7 @@ pub fn weave_hybrid_net_vole_prover(
                 target: 3,
                 args: vec![var("out"), var("mem_prod"), var("mem_cons"), var("order_ok")],
             },
-            else_: IrCfgJump { target: 1, args: b1_back },
+            else_: IrCfgJump { target: 1, args: b1_back, reentry: None },
         },
     };
 
@@ -903,8 +903,8 @@ pub fn weave_hybrid_net_vole_prover(
         stmt_provs: vec![],
         terminator: IrCfgTerminator::CondGoto {
             cond: var("reconnected"),
-            then_: IrCfgJump { target: 5, args: b5_args },
-            else_: IrCfgJump { target: 6, args: b6_args },
+            then_: IrCfgJump { target: 5, args: b5_args, reentry: None },
+            else_: IrCfgJump { target: 6, args: b6_args, reentry: None },
         },
     };
 
@@ -926,7 +926,7 @@ pub fn weave_hybrid_net_vole_prover(
         stmts: b5_stmts,
         stmt_provs: vec![],
         // Goto B1 with the anchor wires → replay the gap iterations under VOLE.
-        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: aw_move_args("rw") }),
+        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: aw_move_args("rw"), reentry: None }),
     };
 
     // ── Block 6: gap dispatch (finished-offline vs continue gap) ───────────
@@ -945,8 +945,8 @@ pub fn weave_hybrid_net_vole_prover(
         terminator: IrCfgTerminator::CondGoto {
             cond: var("gpdone"),
             // finished offline -> B7 [gw..., gl] (still must replay on reconnect)
-            then_: IrCfgJump { target: 7, args: { let mut a = aw_clone_args("gw"); a.push(var("gl")); a } },
-            else_: IrCfgJump { target: 4, args: b4_cont_args },
+            then_: IrCfgJump { target: 7, args: { let mut a = aw_clone_args("gw"); a.push(var("gl")); a, reentry: None } },
+            else_: IrCfgJump { target: 4, args: b4_cont_args, reentry: None },
         },
     };
 
@@ -959,8 +959,8 @@ pub fn weave_hybrid_net_vole_prover(
         stmt_provs: vec![],
         terminator: IrCfgTerminator::CondGoto {
             cond: var("connected"),
-            then_: IrCfgJump { target: 8, args: { let mut a = aw_clone_args("sw"); a.push(var("gl")); a } },
-            else_: IrCfgJump { target: 7, args: { let mut a = aw_clone_args("sw"); a.push(var("gl")); a } },
+            then_: IrCfgJump { target: 8, args: { let mut a = aw_clone_args("sw"); a.push(var("gl")); a, reentry: None } },
+            else_: IrCfgJump { target: 7, args: { let mut a = aw_clone_args("sw"); a.push(var("gl")); a, reentry: None } },
         },
     };
 
@@ -982,7 +982,7 @@ pub fn weave_hybrid_net_vole_prover(
         stmts: b8_stmts,
         stmt_provs: vec![],
         // Replay from anchor even after an offline finish (authoritative proof).
-        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: aw_move_args("fw") }),
+        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: aw_move_args("fw"), reentry: None }),
     };
 
     let func = IrCfgFunction {
@@ -1137,7 +1137,7 @@ pub fn weave_hybrid_net_vole_verifier(
         params: vec![],
         stmts: b0_stmts,
         stmt_provs: vec![],
-        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args }),
+        terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: b0_args, reentry: None }),
     };
 
     // ── Block 1: receive-or-disconnect dispatch ────────────────────────────
@@ -1234,7 +1234,7 @@ pub fn weave_hybrid_net_vole_verifier(
                 target: 2,
                 args: vec![var("all_ok_new"), var(&cur_prod), var(&cur_cons), var(&cur_order)],
             },
-            else_: IrCfgJump { target: 1, args: back_args },
+            else_: IrCfgJump { target: 1, args: back_args, reentry: None },
         },
     };
 
@@ -1499,10 +1499,8 @@ mod tests {
                     },
                 ],
                 stmt_provs: vec![(), ()],
-                terminator: BIrTerminator::Jmp(BIrTarget {
-                    block: IRBlockTargetId::Return,
-                    args: vec![IRVarId(0), IRVarId(1), IRVarId(4), IRVarId(2)],
-                }),
+                terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(0), IRVarId(1), IRVarId(4), IRVarId(2)],
+                reentry: None }),
             }],
             pre_init: vec![],
         }
@@ -1525,10 +1523,8 @@ mod tests {
                     },
                 ],
                 stmt_provs: vec![(), ()],
-                terminator: BIrTerminator::Jmp(BIrTarget {
-                    block: IRBlockTargetId::Return,
-                    args: vec![IRVarId(0), IRVarId(1), IRVarId(2), IRVarId(5), IRVarId(3)],
-                }),
+                terminator: BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: vec![IRVarId(0), IRVarId(1), IRVarId(2), IRVarId(5), IRVarId(3)],
+                reentry: None }),
             }],
             pre_init: vec![],
         }

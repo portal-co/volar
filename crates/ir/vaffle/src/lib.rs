@@ -1,7 +1,7 @@
 #![no_std]
 
 use alloc::{collections::btree_map::BTreeMap, string::String, vec::Vec};
-use volar_ir_common::{Constant, IrType, OracleDecl, ActionDecl, PreInitSegment, Stmt, Type, TypeId, TypeTable};
+use volar_ir_common::{Constant, IrType, Node, OracleDecl, ActionDecl, PreInitSegment, Stmt, Type, TypeId, TypeTable};
 
 extern crate alloc;
 
@@ -62,15 +62,27 @@ pub enum FuncDecl {
     },
     Body(FuncBody),
 }
+/// `values` is a flat arena of every `Value` in the function, addressed by
+/// [`ValueId`]. Each entry carries its own provenance and [`SideId`](volar_side::SideId)
+/// via the [`Node`] wrapper — this is the single source of truth for both
+/// annotations; [`Block::stmts`] is ordering-only and holds no metadata of
+/// its own.
 #[derive(Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct FuncBody {
     pub sig: SigId,
     pub blocks: Vec<Block>,
+<<<<<<< HEAD
+    pub values: Vec<Node<Value, P>>,
+=======
     pub values: Vec<Value>,
+>>>>>>> origin/main
     pub entry: BlockId,
 }
-#[derive(Debug)]
+/// `Block` carries no provenance/side metadata of its own — those annotations
+/// live on the [`FuncBody::values`] arena entry that each [`ValueId`] in
+/// `stmts` points to, so `Block` does not need to be generic over `P`.
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct Block {
     /// Block parameters: `(value_id, type_id)` pairs.
@@ -78,12 +90,43 @@ pub struct Block {
     pub stmts: Vec<ValueId>,
     pub terminator: Terminator,
 }
+use volar_ir_common::ReentryHint;
+
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct Target {
     pub block: BlockId,
+<<<<<<< HEAD
+    pub args: Vec<V>,
+    pub reentry: Option<ReentryHint>,
+}
+
+impl<V> Target<V> {
+    pub fn map<Ctx, NV, E>(
+        self,
+        ctx: &mut Ctx,
+        go: &mut impl FnMut(&mut Ctx, V) -> Result<NV, E>,
+    ) -> Result<Target<NV>, E> {
+        Ok(Target {
+            block: self.block,
+            args: self.args.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+            reentry: self.reentry,
+        })
+    }
+
+    pub fn as_ref(&self) -> Target<&V> {
+        Target { block: self.block, args: self.args.iter().collect(), reentry: self.reentry.clone() }
+    }
+
+    pub fn as_mut(&mut self) -> Target<&mut V> {
+        Target { block: self.block, args: self.args.iter_mut().collect(), reentry: self.reentry.clone() }
+    }
+}
+
+=======
     pub args: Vec<ValueId>,
 }
+>>>>>>> origin/main
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub enum Terminator {

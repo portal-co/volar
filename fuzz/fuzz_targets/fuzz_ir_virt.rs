@@ -1,11 +1,11 @@
-//! cargo-fuzz target: virtualize_ir (Public/InIr) preserves semantics.
+//! cargo-fuzz target: virtualize_ir (Public) preserves semantics.
 
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
 use volar_fuzz::arbitrary::ir::ArbitraryIr;
 use volar_fuzz::interpreter::ir::eval_ir;
-use volar_ir_virt::{virtualize_ir, BytecodeForm, DispatchMode, VirtualizeConfig};
+use volar_ir_virt::{virtualize_ir, DispatchMode, VirtualizeConfig};
 
 fuzz_target!(|data: ArbitraryIr| {
     let ArbitraryIr { blocks: ir, types, inputs } = data;
@@ -18,7 +18,6 @@ fuzz_target!(|data: ArbitraryIr| {
     let mut types_mut = types.clone();
     let cfg = VirtualizeConfig {
         dispatch: DispatchMode::Public,
-        bytecode_form: BytecodeForm::InIr,
         ..VirtualizeConfig::default()
     };
     let virt = virtualize_ir::<()>(&ir, &mut types_mut, &cfg);

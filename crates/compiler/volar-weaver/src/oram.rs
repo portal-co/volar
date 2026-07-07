@@ -44,8 +44,9 @@ use alloc::{collections::BTreeMap, format, string::String, vec, vec::Vec};
 use volar_compiler::linkage::LinkedSpec;
 use volar_ir::ir::{
     ActionDecl, Constant, IRBlock, IRBlocks, IRBlockTargetId, IRStmt, IRTerminator,
-    IRType, IRTypeId, IRTypes, IRVarId, PrimType, StorageId,
-};
+    IRType, IRTypeId, IRTypes, IRVarId, PrimType, StorageId, IRBranchTarget};
+use volar_ir_common::Node;
+use volar_side::SideId;
 
 use crate::fhe::FheActionConfig;
 
@@ -389,12 +390,8 @@ pub fn oram_begin_circuit(config: &OramConfig) -> (IRBlocks, IRTypes) {
 
     let block = IRBlock {
         params: vec![u64_ty],
-        stmts,
-        stmt_provs: vec![(); 4],
-        terminator: IRTerminator::Jmp {
-            func: IRBlockTargetId::Return,
-            args: vec![IRVarId(4)],
-        },
+        stmts: stmts.into_iter().map(|s| Node::new(s, (), None)).collect(),
+        terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(4)],) },
     };
 
     let ir = IRBlocks {
@@ -573,6 +570,7 @@ fn rewrite_block<P: Clone + Default>(
     // we emit one or more new statements. The var-remap maps old IRVarId → new IRVarId.
     let mut new_stmts: Vec<IRStmt> = Vec::new();
     let mut new_provs: Vec<P> = Vec::new();
+    let mut new_sides: Vec<Option<SideId>> = Vec::new();
     let mut var_remap: BTreeMap<u32, u32> = BTreeMap::new();
 
     // Block params keep their IDs (0..num_params).
@@ -580,7 +578,10 @@ fn rewrite_block<P: Clone + Default>(
         var_remap.insert(p, p);
     }
 
-    for (stmt_idx, (stmt, prov)) in block.stmts.iter().zip(block.stmt_provs.iter()).enumerate() {
+    for (stmt_idx, node) in block.stmts.iter().enumerate() {
+        let stmt = &node.kind;
+        let prov = &node.prov;
+        let side = node.side;
         let old_var = num_params + stmt_idx as u32;
 
         match stmt {
@@ -594,11 +595,14 @@ fn rewrite_block<P: Clone + Default>(
                 let remapped_addr = IRVarId(var_remap[&addr.0]);
 
                 // Emit the ORAM read expansion. Returns the new IRVarId
-                // for the read data result.
+                // for the read data result. Every emitted statement
+                // inherits the source statement's side (expansion rule).
                 let result_var = emit_oram_access(
                     &mut new_stmts,
                     &mut new_provs,
+                    &mut new_sides,
                     prov,
+                    side,
                     c,
                     ct,
                     types,
@@ -627,7 +631,9 @@ fn rewrite_block<P: Clone + Default>(
                 let result_var = emit_oram_access(
                     &mut new_stmts,
                     &mut new_provs,
+                    &mut new_sides,
                     prov,
+                    side,
                     c,
                     ct,
                     types,
@@ -641,11 +647,12 @@ fn rewrite_block<P: Clone + Default>(
                 var_remap.insert(old_var, result_var);
             }
 
-            // Non-ORAM statement — emit as-is with remapped vars.
+            // Non-ORAM statement — emit as-is with remapped vars and side.
             other => {
                 let remapped = remap_stmt(other, &var_remap);
                 new_stmts.push(remapped);
                 new_provs.push(prov.clone());
+                new_sides.push(side);
                 var_remap.insert(old_var, num_params + new_stmts.len() as u32 - 1);
             }
         }
@@ -656,8 +663,12 @@ fn rewrite_block<P: Clone + Default>(
 
     IRBlock {
         params: block.params.clone(),
-        stmts: new_stmts,
-        stmt_provs: new_provs,
+        stmts: new_stmts
+            .into_iter()
+            .zip(new_provs)
+            .zip(new_sides)
+            .map(|((stmt, prov), side)| Node::new(stmt, prov, side))
+            .collect(),
         terminator: new_terminator,
     }
 }
@@ -685,7 +696,9 @@ fn rewrite_block<P: Clone + Default>(
 fn emit_oram_access<P: Clone + Default>(
     stmts: &mut Vec<IRStmt>,
     provs: &mut Vec<P>,
+    sides: &mut Vec<Option<SideId>>,
     prov: &P,
+    side: Option<SideId>,
     config: &OramConfig,
     ct: &ConfigTypes,
     _types: &mut IRTypes,
@@ -695,10 +708,11 @@ fn emit_oram_access<P: Clone + Default>(
     addr_var: IRVarId,
     write_data: Option<IRVarId>,
 ) -> u32 {
-    let push = |stmt: IRStmt, provs_vec: &mut Vec<P>, stmts_vec: &mut Vec<IRStmt>| -> u32 {
-        let id = num_params + stmts_vec.len() as u32;
-        stmts_vec.push(stmt);
-        provs_vec.push(prov.clone());
+    let mut push = |stmt: IRStmt| -> u32 {
+        let id = num_params + stmts.len() as u32;
+        stmts.push(stmt);
+        provs.push(prov.clone());
+        sides.push(side);
         id
     };
 
@@ -707,151 +721,91 @@ fn emit_oram_access<P: Clone + Default>(
     // --- Begin action: addr → leaf ---
 
     // v_guard = Const(1, Bit)
-    let v_guard = push(IRStmt::Const(Constant { hi: 0, lo: 1 }, bit_ty), provs, stmts);
+    let v_guard = push(IRStmt::Const(Constant { hi: 0, lo: 1 }, bit_ty));
 
     // v_fb_leaf = Const(0, u64) — fallback
-    let v_fb_leaf = push(IRStmt::Const(Constant { hi: 0, lo: 0 }, u64_ty), provs, stmts);
+    let v_fb_leaf = push(IRStmt::Const(Constant { hi: 0, lo: 0 }, u64_ty));
 
     // v_begin = ActionCall("oram_begin_S", ...)
-    let v_begin = push(
-        IRStmt::ActionCall {
-            name: config.begin_action_name(),
-            guard: IRVarId(v_guard),
-            args: vec![addr_var],
-            fallbacks: vec![IRVarId(v_fb_leaf)],
-            output_tys: vec![u64_ty],
-            result_ty: ct.begin_result_ty,
-        },
-        provs,
-        stmts,
-    );
+    let v_begin = push(IRStmt::ActionCall {
+        name: config.begin_action_name(),
+        guard: IRVarId(v_guard),
+        args: vec![addr_var],
+        fallbacks: vec![IRVarId(v_fb_leaf)],
+        output_tys: vec![u64_ty],
+        result_ty: ct.begin_result_ty,
+    });
 
     // v_leaf = ActionOutput(begin, 0, u64) — plaintext leaf
-    let v_leaf = push(
-        IRStmt::ActionOutput { call: IRVarId(v_begin), idx: 0, ty: u64_ty },
-        provs,
-        stmts,
-    );
+    let v_leaf = push(IRStmt::ActionOutput { call: IRVarId(v_begin), idx: 0, ty: u64_ty });
 
     // --- Read tree path at plaintext leaf ---
 
     // v_path = StorageRead(ORAM_TREE_S, path_ty, leaf)
-    let v_path = push(
-        IRStmt::StorageRead {
-            storage: tree_storage,
-            ty: ct.path_ty,
-            addr: IRVarId(v_leaf),
-        },
-        provs,
-        stmts,
-    );
+    let v_path = push(IRStmt::StorageRead {
+        storage: tree_storage,
+        ty: ct.path_ty,
+        addr: IRVarId(v_leaf),
+    });
 
     // --- Process action: path, data, is_write → wb_path, data, evict1, evict2 ---
 
     // Write data or zero (for reads)
     let v_data_arg = match write_data {
         Some(src) => src.0,
-        None => push(
-            IRStmt::Const(Constant { hi: 0, lo: 0 }, ct.data_ty),
-            provs,
-            stmts,
-        ),
+        None => push(IRStmt::Const(Constant { hi: 0, lo: 0 }, ct.data_ty)),
     };
 
     // is_write flag
     let is_write_val = if write_data.is_some() { 1u128 } else { 0u128 };
-    let v_is_write = push(
-        IRStmt::Const(Constant { hi: 0, lo: is_write_val }, bit_ty),
-        provs,
-        stmts,
-    );
+    let v_is_write = push(IRStmt::Const(Constant { hi: 0, lo: is_write_val }, bit_ty));
 
     // Fallbacks for process action (4 outputs: path, data, u64, u64)
-    let v_fb_path = push(
-        IRStmt::Const(Constant { hi: 0, lo: 0 }, ct.path_ty),
-        provs,
-        stmts,
-    );
-    let v_fb_data = push(
-        IRStmt::Const(Constant { hi: 0, lo: 0 }, ct.data_ty),
-        provs,
-        stmts,
-    );
-    let v_fb_ev1 = push(
-        IRStmt::Const(Constant { hi: 0, lo: 0 }, u64_ty),
-        provs,
-        stmts,
-    );
-    let v_fb_ev2 = push(
-        IRStmt::Const(Constant { hi: 0, lo: 0 }, u64_ty),
-        provs,
-        stmts,
-    );
+    let v_fb_path = push(IRStmt::Const(Constant { hi: 0, lo: 0 }, ct.path_ty));
+    let v_fb_data = push(IRStmt::Const(Constant { hi: 0, lo: 0 }, ct.data_ty));
+    let v_fb_ev1 = push(IRStmt::Const(Constant { hi: 0, lo: 0 }, u64_ty));
+    let v_fb_ev2 = push(IRStmt::Const(Constant { hi: 0, lo: 0 }, u64_ty));
 
     // v_process = ActionCall("oram_process_S", ...)
-    let v_process = push(
-        IRStmt::ActionCall {
-            name: config.process_action_name(),
-            guard: IRVarId(v_guard),
-            args: vec![IRVarId(v_path), IRVarId(v_data_arg), IRVarId(v_is_write)],
-            fallbacks: vec![
-                IRVarId(v_fb_path),
-                IRVarId(v_fb_data),
-                IRVarId(v_fb_ev1),
-                IRVarId(v_fb_ev2),
-            ],
-            output_tys: vec![ct.path_ty, ct.data_ty, u64_ty, u64_ty],
-            result_ty: ct.process_result_ty,
-        },
-        provs,
-        stmts,
-    );
+    let v_process = push(IRStmt::ActionCall {
+        name: config.process_action_name(),
+        guard: IRVarId(v_guard),
+        args: vec![IRVarId(v_path), IRVarId(v_data_arg), IRVarId(v_is_write)],
+        fallbacks: vec![
+            IRVarId(v_fb_path),
+            IRVarId(v_fb_data),
+            IRVarId(v_fb_ev1),
+            IRVarId(v_fb_ev2),
+        ],
+        output_tys: vec![ct.path_ty, ct.data_ty, u64_ty, u64_ty],
+        result_ty: ct.process_result_ty,
+    });
 
     // Project process outputs
-    let v_wb_path = push(
-        IRStmt::ActionOutput { call: IRVarId(v_process), idx: 0, ty: ct.path_ty },
-        provs,
-        stmts,
-    );
-    let v_rd_data = push(
-        IRStmt::ActionOutput { call: IRVarId(v_process), idx: 1, ty: ct.data_ty },
-        provs,
-        stmts,
-    );
-    let v_evict1 = push(
-        IRStmt::ActionOutput { call: IRVarId(v_process), idx: 2, ty: u64_ty },
-        provs,
-        stmts,
-    );
-    let v_evict2 = push(
-        IRStmt::ActionOutput { call: IRVarId(v_process), idx: 3, ty: u64_ty },
-        provs,
-        stmts,
-    );
+    let v_wb_path = push(IRStmt::ActionOutput { call: IRVarId(v_process), idx: 0, ty: ct.path_ty });
+    let v_rd_data = push(IRStmt::ActionOutput { call: IRVarId(v_process), idx: 1, ty: ct.data_ty });
+    let v_evict1 = push(IRStmt::ActionOutput { call: IRVarId(v_process), idx: 2, ty: u64_ty });
+    let v_evict2 = push(IRStmt::ActionOutput { call: IRVarId(v_process), idx: 3, ty: u64_ty });
 
     // --- Write back updated path ---
 
     // StorageWrite(ORAM_TREE_S, wb_path, path_ty, leaf)
-    let _v_wb = push(
-        IRStmt::StorageWrite {
-            storage: tree_storage,
-            src: IRVarId(v_wb_path),
-            ty: ct.path_ty,
-            addr: IRVarId(v_leaf),
-        },
-        provs,
-        stmts,
-    );
+    let _v_wb = push(IRStmt::StorageWrite {
+        storage: tree_storage,
+        src: IRVarId(v_wb_path),
+        ty: ct.path_ty,
+        addr: IRVarId(v_leaf),
+    });
 
     // --- Eviction pass 1: read path at evict_leaf_1, evict, write back ---
     emit_eviction_pass(
-        stmts, provs, prov, config, ct, num_params,
+        stmts, provs, sides, prov, side, config, ct, num_params,
         tree_storage, v_guard, v_evict1,
     );
 
     // --- Eviction pass 2: read path at evict_leaf_2, evict, write back ---
     emit_eviction_pass(
-        stmts, provs, prov, config, ct, num_params,
+        stmts, provs, sides, prov, side, config, ct, num_params,
         tree_storage, v_guard, v_evict2,
     );
 
@@ -873,7 +827,9 @@ fn emit_oram_access<P: Clone + Default>(
 fn emit_eviction_pass<P: Clone + Default>(
     stmts: &mut Vec<IRStmt>,
     provs: &mut Vec<P>,
+    sides: &mut Vec<Option<SideId>>,
     prov: &P,
+    side: Option<SideId>,
     config: &OramConfig,
     ct: &ConfigTypes,
     num_params: u32,
@@ -881,63 +837,44 @@ fn emit_eviction_pass<P: Clone + Default>(
     v_guard: u32,
     v_evict_leaf: u32,
 ) {
-    let push = |stmt: IRStmt, provs_vec: &mut Vec<P>, stmts_vec: &mut Vec<IRStmt>| -> u32 {
-        let id = num_params + stmts_vec.len() as u32;
-        stmts_vec.push(stmt);
-        provs_vec.push(prov.clone());
+    let mut push = |stmt: IRStmt| -> u32 {
+        let id = num_params + stmts.len() as u32;
+        stmts.push(stmt);
+        provs.push(prov.clone());
+        sides.push(side);
         id
     };
 
     // Read tree path at eviction leaf
-    let v_evict_path = push(
-        IRStmt::StorageRead {
-            storage: tree_storage,
-            ty: ct.path_ty,
-            addr: IRVarId(v_evict_leaf),
-        },
-        provs,
-        stmts,
-    );
+    let v_evict_path = push(IRStmt::StorageRead {
+        storage: tree_storage,
+        ty: ct.path_ty,
+        addr: IRVarId(v_evict_leaf),
+    });
 
     // Fallback for evict action
-    let v_fb_evict = push(
-        IRStmt::Const(Constant { hi: 0, lo: 0 }, ct.path_ty),
-        provs,
-        stmts,
-    );
+    let v_fb_evict = push(IRStmt::Const(Constant { hi: 0, lo: 0 }, ct.path_ty));
 
     // Evict action call
-    let v_evict_call = push(
-        IRStmt::ActionCall {
-            name: config.evict_action_name(),
-            guard: IRVarId(v_guard),
-            args: vec![IRVarId(v_evict_path)],
-            fallbacks: vec![IRVarId(v_fb_evict)],
-            output_tys: vec![ct.path_ty],
-            result_ty: ct.evict_result_ty,
-        },
-        provs,
-        stmts,
-    );
+    let v_evict_call = push(IRStmt::ActionCall {
+        name: config.evict_action_name(),
+        guard: IRVarId(v_guard),
+        args: vec![IRVarId(v_evict_path)],
+        fallbacks: vec![IRVarId(v_fb_evict)],
+        output_tys: vec![ct.path_ty],
+        result_ty: ct.evict_result_ty,
+    });
 
     // Project evict result
-    let v_evict_result = push(
-        IRStmt::ActionOutput { call: IRVarId(v_evict_call), idx: 0, ty: ct.path_ty },
-        provs,
-        stmts,
-    );
+    let v_evict_result = push(IRStmt::ActionOutput { call: IRVarId(v_evict_call), idx: 0, ty: ct.path_ty });
 
     // Write back evicted path
-    let _v_evict_wb = push(
-        IRStmt::StorageWrite {
-            storage: tree_storage,
-            src: IRVarId(v_evict_result),
-            ty: ct.path_ty,
-            addr: IRVarId(v_evict_leaf),
-        },
-        provs,
-        stmts,
-    );
+    let _v_evict_wb = push(IRStmt::StorageWrite {
+        storage: tree_storage,
+        src: IRVarId(v_evict_result),
+        ty: ct.path_ty,
+        addr: IRVarId(v_evict_leaf),
+    });
 }
 
 // ============================================================================
@@ -1040,28 +977,38 @@ fn remap_terminator(term: &IRTerminator, remap: &BTreeMap<u32, u32>) -> IRTermin
     let rargs = |args: &[IRVarId]| -> Vec<IRVarId> { args.iter().map(|v| rv(v)).collect() };
 
     match term {
-        IRTerminator::Jmp { func, args } => IRTerminator::Jmp {
-            func: func.clone(),
-            args: rargs(args),
-        },
+        IRTerminator::Jmp { target } => IRTerminator::Jmp { target: IRBranchTarget { dest: target.dest.clone(), args: rargs(&target.args), reentry: target.reentry.clone() } },
         IRTerminator::JumpCond {
             condition,
-            true_block,
-            true_args,
-            false_block,
-            false_args,
+            then_target,
+            else_target,
         } => IRTerminator::JumpCond {
             condition: rv(condition),
-            true_block: true_block.clone(),
-            true_args: rargs(true_args),
-            false_block: false_block.clone(),
-            false_args: rargs(false_args),
+            then_target: IRBranchTarget {
+                dest: then_target.dest.clone(),
+                args: rargs(&then_target.args),
+                reentry: then_target.reentry.clone(),
+            },
+            else_target: IRBranchTarget {
+                dest: else_target.dest.clone(),
+                args: rargs(&else_target.args),
+                reentry: else_target.reentry.clone(),
+            },
         },
         IRTerminator::JumpTable { index, cases } => IRTerminator::JumpTable {
             index: rv(index),
             cases: cases
                 .iter()
-                .map(|(k, (target, args))| (*k, (target.clone(), rargs(args))))
+                .map(|(k, branch)| {
+                    (
+                        *k,
+                        IRBranchTarget {
+                            dest: branch.dest.clone(),
+                            args: rargs(&branch.args),
+                            reentry: branch.reentry.clone(),
+                        },
+                    )
+                })
                 .collect(),
         },
     }
@@ -1360,7 +1307,6 @@ mod tests_config {
         let block = &ir.blocks[0];
         assert_eq!(block.params.len(), 1);
         assert_eq!(block.stmts.len(), 4);
-        assert_eq!(block.stmt_provs.len(), 4);
 
         // Types are well-formed
         let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
@@ -1515,7 +1461,10 @@ mod tests_rewrite {
         stmts: Vec<IRStmt>,
         terminator: IRTerminator,
     ) -> IRBlocks<()> {
-        let num_stmts = stmts.len();
+        let stmts = stmts
+            .into_iter()
+            .map(|s| volar_ir_common::Node::new(s, (), None))
+            .collect();
         IRBlocks {
             oracles: vec![],
             actions: vec![],
@@ -1523,7 +1472,6 @@ mod tests_rewrite {
             blocks: vec![IRBlock {
                 params,
                 stmts,
-                stmt_provs: vec![(); num_stmts],
                 terminator,
             }],
             pre_init: vec![],
@@ -1532,8 +1480,11 @@ mod tests_rewrite {
 
     fn return_jmp(args: Vec<IRVarId>) -> IRTerminator {
         IRTerminator::Jmp {
-            func: IRBlockTargetId::Return,
-            args,
+            target: IRBranchTarget {
+                dest: IRBlockTargetId::Return,
+                args,
+                reentry: None,
+            },
         }
     }
 
@@ -1579,7 +1530,7 @@ mod tests_rewrite {
 
         // The StorageRead on StorageId(5) should pass through unchanged.
         assert_eq!(result.blocks[0].stmts.len(), 1);
-        match &result.blocks[0].stmts[0] {
+        match &result.blocks[0].stmts[0].kind {
             IRStmt::StorageRead { storage, .. } => {
                 assert_eq!(storage.0, 5);
             }
@@ -1621,7 +1572,7 @@ mod tests_rewrite {
         let action_calls: Vec<_> = block
             .stmts
             .iter()
-            .filter(|s| matches!(s, IRStmt::ActionCall { .. }))
+            .filter(|s| matches!(&s.kind, IRStmt::ActionCall { .. }))
             .collect();
         assert_eq!(
             action_calls.len(),
@@ -1630,7 +1581,7 @@ mod tests_rewrite {
         );
 
         // First ActionCall should be "oram_begin_0"
-        match &action_calls[0] {
+        match &action_calls[0].kind {
             IRStmt::ActionCall { name, args, output_tys, .. } => {
                 assert_eq!(name, "oram_begin_0");
                 assert_eq!(args.len(), 1, "begin takes 1 arg (address)");
@@ -1640,7 +1591,7 @@ mod tests_rewrite {
         }
 
         // Second ActionCall should be "oram_process_0"
-        match &action_calls[1] {
+        match &action_calls[1].kind {
             IRStmt::ActionCall { name, args, output_tys, .. } => {
                 assert_eq!(name, "oram_process_0");
                 assert_eq!(args.len(), 3, "process takes 3 args (path, data, is_write)");
@@ -1654,7 +1605,7 @@ mod tests_rewrite {
         let tree_reads: Vec<_> = block
             .stmts
             .iter()
-            .filter(|s| matches!(s, IRStmt::StorageRead { storage, .. } if storage.0 == 1000))
+            .filter(|s| matches!(&s.kind, IRStmt::StorageRead { storage, .. } if storage.0 == 1000))
             .collect();
         assert_eq!(tree_reads.len(), 3, "expected 3 tree StorageReads (1 main + 2 evictions)");
 
@@ -1662,7 +1613,7 @@ mod tests_rewrite {
         let tree_writes: Vec<_> = block
             .stmts
             .iter()
-            .filter(|s| matches!(s, IRStmt::StorageWrite { storage, .. } if storage.0 == 1000))
+            .filter(|s| matches!(&s.kind, IRStmt::StorageWrite { storage, .. } if storage.0 == 1000))
             .collect();
         assert_eq!(tree_writes.len(), 3, "expected 3 tree StorageWrites (1 write-back + 2 evictions)");
 
@@ -1703,7 +1654,7 @@ mod tests_rewrite {
         let action_calls: Vec<_> = block
             .stmts
             .iter()
-            .filter(|s| matches!(s, IRStmt::ActionCall { .. }))
+            .filter(|s| matches!(&s.kind, IRStmt::ActionCall { .. }))
             .collect();
         assert_eq!(action_calls.len(), 4);
 
@@ -1713,7 +1664,7 @@ mod tests_rewrite {
         let write_consts: Vec<_> = block
             .stmts
             .iter()
-            .filter(|s| matches!(s, IRStmt::Const(Constant { hi: 0, lo: 1 }, ty) if *ty == bit_ty))
+            .filter(|s| matches!(&s.kind, IRStmt::Const(Constant { hi: 0, lo: 1 }, ty) if *ty == bit_ty))
             .collect();
         // We expect at least 2 Const(1, Bit): the guard and the is_write flag.
         assert!(
@@ -1751,7 +1702,7 @@ mod tests_rewrite {
         let guard_consts: Vec<_> = block
             .stmts
             .iter()
-            .filter(|s| matches!(s, IRStmt::Const(Constant { hi: 0, lo: 1 }, ty) if *ty == bit_ty))
+            .filter(|s| matches!(&s.kind, IRStmt::Const(Constant { hi: 0, lo: 1 }, ty) if *ty == bit_ty))
             .collect();
         assert_eq!(
             guard_consts.len(),
@@ -1794,7 +1745,7 @@ mod tests_rewrite {
 
         // The last stmt should be Const(42, u64), unchanged.
         let last = block.stmts.last().unwrap();
-        match last {
+        match &last.kind {
             IRStmt::Const(Constant { hi: 0, lo: 42 }, ty) => {
                 assert_eq!(*ty, u64_ty);
             }
@@ -1805,7 +1756,7 @@ mod tests_rewrite {
         // var1 (StorageRead result) should map to the rd_data ActionOutput.
         // var2 (Const) should map to the last statement index.
         match &block.terminator {
-            IRTerminator::Jmp { args, .. } => {
+            IRTerminator::Jmp { target: IRBranchTarget { args, .. } } => {
                 assert_eq!(args.len(), 2, "terminator should have 2 return args");
                 // Both args should be valid var IDs (< num_params + num_stmts)
                 let max_var = 1 + block.stmts.len() as u32;
@@ -1826,34 +1777,6 @@ mod tests_rewrite {
             }
             other => panic!("expected Jmp terminator, got {:?}", other),
         }
-    }
-
-    // -- Provenance tracking --
-
-    #[test]
-    fn provenance_length_matches_stmts() {
-        let mut types = IRTypes::new();
-        let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
-        let c = test_config();
-        let data_ty = c.data_type(&mut types);
-
-        let ir = make_ir(
-            vec![u64_ty],
-            vec![IRStmt::StorageRead {
-                storage: StorageId(0),
-                ty: data_ty,
-                addr: IRVarId(0),
-            }],
-            return_jmp(vec![IRVarId(1)]),
-        );
-
-        let result = rewrite_storage_to_oram(&ir, &mut types, &[c]);
-        let block = &result.blocks[0];
-        assert_eq!(
-            block.stmts.len(),
-            block.stmt_provs.len(),
-            "stmts and stmt_provs must have equal length"
-        );
     }
 
     // -- Multiple configs --
@@ -1891,7 +1814,7 @@ mod tests_rewrite {
         let action_calls: Vec<_> = block
             .stmts
             .iter()
-            .filter(|s| matches!(s, IRStmt::ActionCall { .. }))
+            .filter(|s| matches!(&s.kind, IRStmt::ActionCall { .. }))
             .collect();
         assert_eq!(action_calls.len(), 8, "expected 8 ActionCalls for 2 ORAM configs");
 
@@ -1899,7 +1822,7 @@ mod tests_rewrite {
         let tree_reads: Vec<u32> = block
             .stmts
             .iter()
-            .filter_map(|s| match s {
+            .filter_map(|s| match &s.kind {
                 IRStmt::StorageRead { storage, .. } if storage.0 >= 1000 => Some(storage.0),
                 _ => None,
             })
@@ -2330,10 +2253,7 @@ mod tests_linking {
                     },
                 ],
                 stmt_provs: vec![(); 2],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    args: vec![IRVarId(3)], // result of StorageRead (var 2 = StorageWrite dummy, var 3 = StorageRead result)
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(3)]) }, // result of StorageRead (var 2 = StorageWrite dummy, var 3 = StorageRead result)
             }],
         };
 
@@ -2352,7 +2272,7 @@ mod tests_linking {
         // 8 ActionCalls: 4 per access (begin + process + 2 evicts) x 2 accesses
         let action_calls: Vec<_> = rewritten.blocks[0].stmts
             .iter()
-            .filter(|s| matches!(s, IRStmt::ActionCall { .. }))
+            .filter(|s| matches!(&s.kind, IRStmt::ActionCall { .. }))
             .collect();
         assert_eq!(action_calls.len(), 8, "expected 8 ActionCalls for 2 ORAM accesses");
 
@@ -2416,10 +2336,7 @@ mod tests_linking {
                     addr: IRVarId(0),
                 }],
                 stmt_provs: vec![()],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Return,
-                    args: vec![IRVarId(1)],
-                },
+                terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)],) },
             }],
         };
 

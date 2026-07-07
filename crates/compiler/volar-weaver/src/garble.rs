@@ -21,9 +21,9 @@ use alloc::{
 
 use volar_compiler::{
     ir::{
-        ExternalKind, IrBlock, IrExpr, IrFunction, IrGenericParam,
-        IrGenericParamKind, IrLit, IrModule, IrParam, IrPattern, IrStmt, IrTraitBound, IrType,
-        MethodKind, SpecBinOp, StructKind, TraitKind,
+        ExternalKind, IrBlock, IrExpr, IrExprKind, IrFunction, IrGenericParam,
+        IrGenericParamKind, IrLit, IrModule, IrParam, IrPattern, IrStmt, IrStmtKind,
+        IrTraitBound, IrType, MethodKind, SpecBinOp, StructKind, TraitKind,
     },
     linkage::LinkageSystem,
 };
@@ -31,11 +31,22 @@ use volar_compiler::{
 use volar_compiler::linkage::LinkedSpec;
 use volar_ir::boolar::{BIrBlocks, BIrStmt};
 pub use volar_ir_passes::lower_to_circuit::LoweringMode;
+use volar_discipline::{Tagged, Transparent};
 
 use crate::{
     array_default, array_from_fn, base_index, build_return, clone_expr, expand_ors,
-    ref_expr, var, NoProvenance, ProvenanceHandler,
+    ir_expr, ref_expr, var, NoProvenance, ProvenanceHandler,
 };
+
+/// Construct a fresh `IrStmt` with default provenance and no side.
+fn ir_stmt<Q: Clone + Default>(kind: IrStmtKind<Q>) -> IrStmt<Q> {
+    IrStmt::new(kind, Q::default(), None)
+}
+
+/// Construct an `IrStmt` carrying an explicit provenance value (no side).
+fn ir_stmt_p<Q: Clone>(kind: IrStmtKind<Q>, prov: Q) -> IrStmt<Q> {
+    IrStmt::new(kind, prov, None)
+}
 
 // ============================================================================
 // Garble-specific type helpers
@@ -121,6 +132,21 @@ fn generic_params() -> Vec<IrGenericParam> {
 }
 
 /// `Garble { base: {base_expr} }`
+<<<<<<< HEAD
+fn garble_struct<P: Clone>(base_expr: IrExpr<P>) -> IrExpr<P> {
+    let prov = base_expr.prov.clone();
+    let side = base_expr.side;
+    IrExpr::new(
+        IrExprKind::StructExpr {
+            kind: StructKind::Custom("Garble".into()),
+            type_args: vec![],
+            fields: vec![("base".into(), base_expr)],
+            rest: None,
+        },
+        prov,
+        side,
+    )
+=======
 fn garble_struct<P: Clone + Default>(base_expr: IrExpr<P>) -> IrExpr<P> {
     IrExpr::StructExpr {
         kind: StructKind::Custom("Garble".into()),
@@ -128,6 +154,7 @@ fn garble_struct<P: Clone + Default>(base_expr: IrExpr<P>) -> IrExpr<P> {
         fields: vec![("base".into(), base_expr)],
         rest: None,
     }
+>>>>>>> origin/main
 }
 
 // ============================================================================
@@ -152,8 +179,15 @@ fn garble_struct<P: Clone + Default>(base_expr: IrExpr<P>) -> IrExpr<P> {
 /// Backwards-compatible evaluator weave — discards provenance.
 ///
 /// See [`weave_evaluator_with_handler`] for the provenance-preserving variant.
+<<<<<<< HEAD
+pub fn weave_evaluator<P: Clone>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> Tagged<Transparent, IrModule<IrFunction>> {
+    let mut tagged = weave_evaluator_with_handler(circuit, name, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
+    tagged
+=======
 pub fn weave_evaluator<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule<IrFunction> {
     weave_evaluator_with_handler(circuit, name, linkage, &NoProvenance)
+>>>>>>> origin/main
 }
 
 /// Weave a single-block boolean circuit into a garbled-circuit **evaluator** `IrModule`,
@@ -163,10 +197,11 @@ pub fn weave_evaluator_with_handler<P, H>(
     name: &str,
     linkage: Option<&LinkageSystem>,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     assert!(
         circuit.is_circuit(),
@@ -206,7 +241,6 @@ where
     }
 
     let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
-    let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut and_counter: usize = 0;
 
     for (result_id, stmt, prov) in &expanded {
@@ -214,23 +248,23 @@ where
         let q = handler.map(prov);
 
         let init_expr = match stmt {
-            BIrStmt::Zero => IrExpr::StructExpr {
+            BIrStmt::Zero => ir_expr(IrExprKind::StructExpr {
                 kind: StructKind::Custom("Eval".into()),
                 type_args: vec![],
                 fields: vec![("target".into(), array_default())],
                 rest: None,
-            },
+            }),
 
             BIrStmt::One => clone_expr(var("one_wire")),
 
             BIrStmt::Xor(a, b) => {
                 let name_a = var_names[&a.0].clone();
                 let name_b = var_names[&b.0].clone();
-                IrExpr::Binary {
+                ir_expr(IrExprKind::Binary {
                     op: SpecBinOp::BitXor,
                     left: Box::new(clone_expr(var(&name_a))),
                     right: Box::new(clone_expr(var(&name_b))),
-                }
+                })
             }
 
             BIrStmt::And(a, b) => {
@@ -238,7 +272,7 @@ where
                 let name_b = var_names[&b.0].clone();
                 let table_name = format!("and_table_{}", and_counter);
                 and_counter += 1;
-                IrExpr::MethodCall {
+                ir_expr(IrExprKind::MethodCall {
                     receiver: Box::new(clone_expr(var(&name_a))),
                     method: MethodKind::Other("and_via_table".into()),
                     type_args: vec![IrType::TypeParam("D".into())],
@@ -246,16 +280,16 @@ where
                         ref_expr(clone_expr(var(&name_b))),
                         var(&table_name),
                     ],
-                }
+                })
             }
 
             BIrStmt::Not(a) => {
                 let name_a = var_names[&a.0].clone();
-                IrExpr::Binary {
+                ir_expr(IrExprKind::Binary {
                     op: SpecBinOp::BitXor,
                     left: Box::new(clone_expr(var(&name_a))),
                     right: Box::new(clone_expr(var("one_wire"))),
-                }
+                })
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
@@ -270,18 +304,17 @@ where
             }
         };
 
-        stmts.push(IrStmt::Let {
+        stmts.push(ir_stmt_p(IrStmtKind::Let {
             pattern: IrPattern::ident(&let_name),
             ty: None,
             init: Some(init_expr),
-        });
-        stmt_provs.push(q);
+        }, q));
         var_names.insert(result_id.0, let_name);
     }
 
     let (ret_expr, ret_type) = build_return(block, &var_names, eval_type());
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: name.into(),
         module_path: vec![],
         generics: generic_params(),
@@ -291,13 +324,12 @@ where
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
     };
 
-    let mut module = IrModule {
+    let module = IrModule {
         name: "weaved".into(),
         functions: vec![func],
         structs: vec![],
@@ -308,10 +340,14 @@ where
 
         consts: vec![],
     };
+<<<<<<< HEAD
+    Tagged::seal(module)
+=======
     if let Some(ls) = linkage {
         ls.apply(&mut module);
     }
     module
+>>>>>>> origin/main
 }
 
 // ============================================================================
@@ -332,16 +368,28 @@ where
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
 /// Backwards-compatible garbler weave — discards provenance.
+<<<<<<< HEAD
+pub fn weave_garbler<P: Clone>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> Tagged<Transparent, IrModule<IrFunction>> {
+    let mut tagged = weave_garbler_with_handler(circuit, name, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
+    tagged
+=======
 pub fn weave_garbler<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule<IrFunction> {
     weave_garbler_with_handler(circuit, name, linkage, &NoProvenance)
+>>>>>>> origin/main
 }
 
 /// Weave a single-block boolean circuit into a garbled-circuit **garbler** `IrModule`,
 /// using `handler` to map input provenance into the output IR.
+<<<<<<< HEAD
+pub fn weave_garbler_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, handler: &H) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
+=======
 pub fn weave_garbler_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>, handler: &H) -> IrModule<IrFunction<H::Output>, H::Output>
+>>>>>>> origin/main
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     assert!(
         circuit.is_circuit(),
@@ -385,7 +433,6 @@ where
     ]);
 
     let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
-    let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut table_counter: usize = 0;
     let mut table_names: Vec<String> = Vec::new();
 
@@ -401,11 +448,11 @@ where
                 let name_b = var_names[&b.0].clone();
                 garble_struct(array_from_fn(
                     "j",
-                    IrExpr::Binary {
+                    ir_expr(IrExprKind::Binary {
                         op: SpecBinOp::BitXor,
                         left: Box::new(base_index(&name_a, "j")),
                         right: Box::new(base_index(&name_b, "j")),
-                    },
+                    }),
                 ))
             }
 
@@ -413,19 +460,19 @@ where
                 let name_a = var_names[&a.0].clone();
                 garble_struct(array_from_fn(
                     "j",
-                    IrExpr::Binary {
+                    ir_expr(IrExprKind::Binary {
                         op: SpecBinOp::BitXor,
                         left: Box::new(base_index(&name_a, "j")),
-                        right: Box::new(IrExpr::Index {
-                            base: Box::new(IrExpr::MethodCall {
+                        right: Box::new(ir_expr(IrExprKind::Index {
+                            base: Box::new(ir_expr(IrExprKind::MethodCall {
                                 receiver: Box::new(var("secret")),
                                 method: MethodKind::Other("secret".into()),
                                 type_args: vec![],
                                 args: vec![],
-                            }),
+                            })),
                             index: Box::new(var("j")),
-                        }),
-                    },
+                        })),
+                    }),
                 ))
             }
 
@@ -436,10 +483,10 @@ where
                 table_counter += 1;
                 table_names.push(table_var.clone());
 
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&table_var),
                     ty: None,
-                    init: Some(IrExpr::MethodCall {
+                    init: Some(ir_expr(IrExprKind::MethodCall {
                         receiver: Box::new(var("secret")),
                         method: MethodKind::Other("gen_and_table".into()),
                         type_args: vec![IrType::TypeParam("D".into())],
@@ -447,16 +494,15 @@ where
                             ref_expr(clone_expr(var(&name_a))),
                             ref_expr(clone_expr(var(&name_b))),
                         ],
-                    }),
-                });
-                stmt_provs.push(q.clone());
+                    })),
+                }, q.clone()));
 
-                IrExpr::MethodCall {
+                ir_expr(IrExprKind::MethodCall {
                     receiver: Box::new(var(&name_a)),
                     method: MethodKind::Other("and_result".into()),
                     type_args: vec![IrType::TypeParam("D".into())],
                     args: vec![ref_expr(var(&name_b))],
-                }
+                })
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
@@ -471,20 +517,19 @@ where
             }
         };
 
-        stmts.push(IrStmt::Let {
+        stmts.push(ir_stmt_p(IrStmtKind::Let {
             pattern: IrPattern::ident(&let_name),
             ty: None,
             init: Some(garble_expr),
-        });
-        stmt_provs.push(q);
+        }, q));
         var_names.insert(result_id.0, let_name);
     }
 
     let (output_garble_expr, _) = build_return(block, &var_names, garble_type());
-    let tables_expr = IrExpr::FixedArray(table_names.iter().map(|t| var(t)).collect());
-    let ret_expr = IrExpr::Tuple(vec![tables_expr, output_garble_expr]);
+    let tables_expr = ir_expr(IrExprKind::FixedArray(table_names.iter().map(|t| var(t)).collect()));
+    let ret_expr = ir_expr(IrExprKind::Tuple(vec![tables_expr, output_garble_expr]));
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: format!("{}_garble", name),
         module_path: vec![],
         generics: generic_params(),
@@ -494,13 +539,12 @@ where
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
     };
 
-    let mut module = IrModule {
+    let module = IrModule {
         name: "weaved_garbler".into(),
         functions: vec![func],
         structs: vec![],
@@ -511,10 +555,14 @@ where
 
         consts: vec![],
     };
+<<<<<<< HEAD
+    Tagged::seal(module)
+=======
     if let Some(ls) = linkage {
         ls.apply(&mut module);
     }
     module
+>>>>>>> origin/main
 }
 
 // ============================================================================
@@ -527,16 +575,28 @@ where
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
 /// Backwards-compatible GarbledCircuit weave — discards provenance.
+<<<<<<< HEAD
+pub fn weave_into_gc<P: Clone>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> Tagged<Transparent, IrModule<IrFunction>> {
+    let mut tagged = weave_into_gc_with_handler(circuit, name, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
+    tagged
+=======
 pub fn weave_into_gc<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule<IrFunction> {
     weave_into_gc_with_handler(circuit, name, linkage, &NoProvenance)
+>>>>>>> origin/main
 }
 
 /// Weave a single-block boolean circuit into a `GarbledCircuit`-returning function,
 /// using `handler` to map input provenance into the output IR.
+<<<<<<< HEAD
+pub fn weave_into_gc_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, handler: &H) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
+=======
 pub fn weave_into_gc_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>, handler: &H) -> IrModule<IrFunction<H::Output>, H::Output>
+>>>>>>> origin/main
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     assert!(
         circuit.is_circuit(),
@@ -570,7 +630,6 @@ where
         .count();
 
     let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
-    let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut table_counter: usize = 0;
 
     for (result_id, stmt, prov) in &expanded {
@@ -585,11 +644,11 @@ where
                 let name_b = var_names[&b.0].clone();
                 garble_struct(array_from_fn(
                     "j",
-                    IrExpr::Binary {
+                    ir_expr(IrExprKind::Binary {
                         op: SpecBinOp::BitXor,
                         left: Box::new(base_index(&name_a, "j")),
                         right: Box::new(base_index(&name_b, "j")),
-                    },
+                    }),
                 ))
             }
 
@@ -597,19 +656,19 @@ where
                 let name_a = var_names[&a.0].clone();
                 garble_struct(array_from_fn(
                     "j",
-                    IrExpr::Binary {
+                    ir_expr(IrExprKind::Binary {
                         op: SpecBinOp::BitXor,
                         left: Box::new(base_index(&name_a, "j")),
-                        right: Box::new(IrExpr::Index {
-                            base: Box::new(IrExpr::MethodCall {
+                        right: Box::new(ir_expr(IrExprKind::Index {
+                            base: Box::new(ir_expr(IrExprKind::MethodCall {
                                 receiver: Box::new(var("secret")),
                                 method: MethodKind::Other("secret".into()),
                                 type_args: vec![],
                                 args: vec![],
-                            }),
+                            })),
                             index: Box::new(var("j")),
-                        }),
-                    },
+                        })),
+                    }),
                 ))
             }
 
@@ -619,10 +678,10 @@ where
                 let table_var = format!("table_{}", table_counter);
                 table_counter += 1;
 
-                stmts.push(IrStmt::Let {
+                stmts.push(ir_stmt_p(IrStmtKind::Let {
                     pattern: IrPattern::ident(&table_var),
                     ty: None,
-                    init: Some(IrExpr::MethodCall {
+                    init: Some(ir_expr(IrExprKind::MethodCall {
                         receiver: Box::new(var("secret")),
                         method: MethodKind::Other("gen_and_table".into()),
                         type_args: vec![IrType::TypeParam("D".into())],
@@ -630,16 +689,15 @@ where
                             ref_expr(clone_expr(var(&name_a))),
                             ref_expr(clone_expr(var(&name_b))),
                         ],
-                    }),
-                });
-                stmt_provs.push(q.clone());
+                    })),
+                }, q.clone()));
 
-                IrExpr::MethodCall {
+                ir_expr(IrExprKind::MethodCall {
                     receiver: Box::new(clone_expr(var(&name_a))),
                     method: MethodKind::Other("and_result".into()),
                     type_args: vec![IrType::TypeParam("D".into())],
                     args: vec![ref_expr(var(&name_b))],
-                }
+                })
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
@@ -654,24 +712,23 @@ where
             }
         };
 
-        stmts.push(IrStmt::Let {
+        stmts.push(ir_stmt_p(IrStmtKind::Let {
             pattern: IrPattern::ident(&let_name),
             ty: None,
             init: Some(garble_expr),
-        });
-        stmt_provs.push(q);
+        }, q));
         var_names.insert(result_id.0, let_name);
     }
 
-    let input_labels_expr = IrExpr::FixedArray(
+    let input_labels_expr = ir_expr(IrExprKind::FixedArray(
         (0..num_params).map(|i| var(&format!("input_{}", i))).collect(),
-    );
-    let tables_expr = IrExpr::FixedArray(
+    ));
+    let tables_expr = ir_expr(IrExprKind::FixedArray(
         (0..and_count).map(|k| var(&format!("table_{}", k))).collect(),
-    );
+    ));
 
     let (output_garble_expr, _) = build_return(block, &var_names, garble_type());
-    let ret_expr = IrExpr::StructExpr {
+    let ret_expr = ir_expr(IrExprKind::StructExpr {
         kind: StructKind::Custom("GarbledCircuit".into()),
         type_args: vec![],
         fields: vec![
@@ -681,9 +738,9 @@ where
             ("output_label".into(), output_garble_expr),
         ],
         rest: None,
-    };
+    });
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: format!("{}_into_gc", name),
         module_path: vec![],
         generics: generic_params(),
@@ -693,13 +750,12 @@ where
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
     };
 
-    let mut module = IrModule {
+    let module = IrModule {
         name: "weaved_into_gc".into(),
         functions: vec![func],
         structs: vec![],
@@ -710,10 +766,14 @@ where
 
         consts: vec![],
     };
+<<<<<<< HEAD
+    Tagged::seal(module)
+=======
     if let Some(ls) = linkage {
         ls.apply(&mut module);
     }
     module
+>>>>>>> origin/main
 }
 
 // ============================================================================
@@ -730,8 +790,15 @@ pub fn weave_eval_from_setup<P: Clone + Default>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
+<<<<<<< HEAD
+) -> Tagged<Transparent, IrModule<IrFunction>> {
+    let mut tagged = weave_eval_from_setup_with_handler(circuit, name, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
+    tagged
+=======
 ) -> IrModule<IrFunction> {
     weave_eval_from_setup_with_handler(circuit, name, linkage, &NoProvenance)
+>>>>>>> origin/main
 }
 
 /// Weave a single-block boolean circuit into an EvalSetup-based evaluator,
@@ -741,10 +808,11 @@ pub fn weave_eval_from_setup_with_handler<P, H>(
     name: &str,
     linkage: Option<&LinkageSystem>,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     assert!(
         circuit.is_circuit(),
@@ -777,21 +845,20 @@ where
         });
     }
 
-    let setup_one_wire = || -> IrExpr<H::Output> { IrExpr::Field {
+    let setup_one_wire = || -> IrExpr<H::Output> { ir_expr(IrExprKind::Field {
         base: Box::new(var("setup")),
         field: "one_wire".into(),
-    } };
+    }) };
 
-    let setup_table = |k: usize| -> IrExpr<H::Output> { IrExpr::Index {
-        base: Box::new(IrExpr::Field {
+    let setup_table = |k: usize| -> IrExpr<H::Output> { ir_expr(IrExprKind::Index {
+        base: Box::new(ir_expr(IrExprKind::Field {
             base: Box::new(var("setup")),
             field: "tables".into(),
-        }),
-        index: Box::new(IrExpr::Lit(IrLit::Int(k as i128))),
-    } };
+        })),
+        index: Box::new(ir_expr(IrExprKind::Lit(IrLit::Int(k as i128)))),
+    }) };
 
     let mut stmts: Vec<IrStmt<H::Output>> = Vec::new();
-    let mut stmt_provs: Vec<H::Output> = Vec::new();
     let mut and_counter: usize = 0;
 
     for (result_id, stmt, prov) in &expanded {
@@ -799,23 +866,23 @@ where
         let q = handler.map(prov);
 
         let init_expr = match stmt {
-            BIrStmt::Zero => IrExpr::StructExpr {
+            BIrStmt::Zero => ir_expr(IrExprKind::StructExpr {
                 kind: StructKind::Custom("Eval".into()),
                 type_args: vec![],
                 fields: vec![("target".into(), array_default())],
                 rest: None,
-            },
+            }),
 
             BIrStmt::One => clone_expr(setup_one_wire()),
 
             BIrStmt::Xor(a, b) => {
                 let name_a = var_names[&a.0].clone();
                 let name_b = var_names[&b.0].clone();
-                IrExpr::Binary {
+                ir_expr(IrExprKind::Binary {
                     op: SpecBinOp::BitXor,
                     left: Box::new(clone_expr(var(&name_a))),
                     right: Box::new(clone_expr(var(&name_b))),
-                }
+                })
             }
 
             BIrStmt::And(a, b) => {
@@ -823,7 +890,7 @@ where
                 let name_b = var_names[&b.0].clone();
                 let k = and_counter;
                 and_counter += 1;
-                IrExpr::MethodCall {
+                ir_expr(IrExprKind::MethodCall {
                     receiver: Box::new(clone_expr(var(&name_a))),
                     method: MethodKind::Other("and_via_table".into()),
                     type_args: vec![IrType::TypeParam("D".into())],
@@ -831,16 +898,16 @@ where
                         ref_expr(clone_expr(var(&name_b))),
                         ref_expr(setup_table(k)),
                     ],
-                }
+                })
             }
 
             BIrStmt::Not(a) => {
                 let name_a = var_names[&a.0].clone();
-                IrExpr::Binary {
+                ir_expr(IrExprKind::Binary {
                     op: SpecBinOp::BitXor,
                     left: Box::new(clone_expr(var(&name_a))),
                     right: Box::new(clone_expr(setup_one_wire())),
-                }
+                })
             }
 
             BIrStmt::Or(..) => unreachable!("Or gates must be expanded before weaving"),
@@ -855,18 +922,17 @@ where
             }
         };
 
-        stmts.push(IrStmt::Let {
+        stmts.push(ir_stmt_p(IrStmtKind::Let {
             pattern: IrPattern::ident(&let_name),
             ty: None,
             init: Some(init_expr),
-        });
-        stmt_provs.push(q);
+        }, q));
         var_names.insert(result_id.0, let_name);
     }
 
     let (ret_expr, ret_type) = build_return(block, &var_names, eval_type());
 
-    let func = IrFunction {
+    let func = IrFunction { no_inline: false,
         name: format!("{}_eval_from_setup", name),
         module_path: vec![],
         generics: generic_params(),
@@ -876,13 +942,12 @@ where
         where_clause: vec![],
         body: IrBlock {
             stmts,
-            stmt_provs,
             expr: Some(Box::new(ret_expr)),
         },
         external_kind: ExternalKind::Normal,
     };
 
-    let mut module = IrModule {
+    let module = IrModule {
         name: "weaved_eval_from_setup".into(),
         functions: vec![func],
         structs: vec![],
@@ -893,10 +958,14 @@ where
 
         consts: vec![],
     };
+<<<<<<< HEAD
+    Tagged::seal(module)
+=======
     if let Some(ls) = linkage {
         ls.apply(&mut module);
     }
     module
+>>>>>>> origin/main
 }
 
 // ============================================================================
@@ -910,8 +979,15 @@ pub fn weave_evaluator_bounded<P: Clone + Default>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
+<<<<<<< HEAD
+) -> Tagged<Transparent, IrModule<IrFunction>> {
+    let mut module = weave_evaluator_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(module.inner_mut()); }
+    module
+=======
 ) -> IrModule<IrFunction> {
     weave_evaluator_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
+>>>>>>> origin/main
 }
 
 /// Bounded evaluator weave with provenance handler.
@@ -922,10 +998,11 @@ pub fn weave_evaluator_bounded_with_handler<P, H>(
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
@@ -939,8 +1016,15 @@ pub fn weave_garbler_bounded<P: Clone + Default>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
+<<<<<<< HEAD
+) -> Tagged<Transparent, IrModule<IrFunction>> {
+    let mut module = weave_garbler_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(module.inner_mut()); }
+    module
+=======
 ) -> IrModule<IrFunction> {
     weave_garbler_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
+>>>>>>> origin/main
 }
 
 /// Bounded garbler weave with provenance handler.
@@ -951,10 +1035,11 @@ pub fn weave_garbler_bounded_with_handler<P, H>(
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
@@ -968,8 +1053,15 @@ pub fn weave_into_gc_bounded<P: Clone + Default>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
+<<<<<<< HEAD
+) -> Tagged<Transparent, IrModule<IrFunction>> {
+    let mut module = weave_into_gc_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(module.inner_mut()); }
+    module
+=======
 ) -> IrModule<IrFunction> {
     weave_into_gc_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
+>>>>>>> origin/main
 }
 
 /// Bounded GarbledCircuit weave with provenance handler.
@@ -980,10 +1072,11 @@ pub fn weave_into_gc_bounded_with_handler<P, H>(
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
@@ -997,8 +1090,15 @@ pub fn weave_eval_from_setup_bounded<P: Clone + Default>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
+<<<<<<< HEAD
+) -> Tagged<Transparent, IrModule<IrFunction>> {
+    let mut module = weave_eval_from_setup_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
+    if let Some(ls) = linkage { ls.apply(module.inner_mut()); }
+    module
+=======
 ) -> IrModule<IrFunction> {
     weave_eval_from_setup_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
+>>>>>>> origin/main
 }
 
 /// Bounded EvalSetup weave with provenance handler.
@@ -1009,10 +1109,11 @@ pub fn weave_eval_from_setup_bounded_with_handler<P, H>(
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
     handler: &H,
-) -> IrModule<IrFunction<H::Output>, H::Output>
+) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
     P: Clone + Default,
     H: ProvenanceHandler<P>,
+    H::Output: Default,
 {
     use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
@@ -1092,7 +1193,7 @@ mod tests {
     #[test]
     fn test_weave_evaluator_bounded_unconditional_compiles() {
         let circuit = build_simple_loop();
-        let module = weave_evaluator_bounded(&circuit, "loop_eval", 4, LoweringMode::Unconditional, None);
+        let module = weave_evaluator_bounded(&circuit, "loop_eval", 4, LoweringMode::Unconditional, None).into_inner();
         let code = print_weaved_module(&module, false);
         run_compile_check(&code, "bounded_eval_uncond");
     }
@@ -1100,7 +1201,7 @@ mod tests {
     #[test]
     fn test_weave_evaluator_bounded_with_flag_compiles() {
         let circuit = build_simple_loop();
-        let module = weave_evaluator_bounded(&circuit, "loop_eval_flag", 4, LoweringMode::WithTerminationFlag, None);
+        let module = weave_evaluator_bounded(&circuit, "loop_eval_flag", 4, LoweringMode::WithTerminationFlag, None).into_inner();
         let code = print_weaved_module(&module, false);
         run_compile_check(&code, "bounded_eval_flag");
     }
@@ -1108,7 +1209,7 @@ mod tests {
     #[test]
     fn test_weave_garbler_bounded_compiles() {
         let circuit = build_simple_loop();
-        let module = weave_garbler_bounded(&circuit, "loop_garble", 4, LoweringMode::Unconditional, None);
+        let module = weave_garbler_bounded(&circuit, "loop_garble", 4, LoweringMode::Unconditional, None).into_inner();
         let code = print_weaved_module(&module, false);
         run_compile_check(&code, "bounded_garbler");
     }
@@ -1116,7 +1217,7 @@ mod tests {
     #[test]
     fn test_weave_evaluator_compiles() {
         let circuit = build_xor_and_circuit();
-        let module = weave_evaluator(&circuit, "test_circuit", None);
+        let module = weave_evaluator(&circuit, "test_circuit", None).into_inner();
         let code = print_weaved_module(&module, false);
         run_compile_check(&code, "evaluator");
     }
@@ -1124,7 +1225,7 @@ mod tests {
     #[test]
     fn test_weave_garbler_compiles() {
         let circuit = build_xor_and_circuit();
-        let module = weave_garbler(&circuit, "test_circuit", None);
+        let module = weave_garbler(&circuit, "test_circuit", None).into_inner();
         let code = print_weaved_module(&module, false);
         // xor_and has 1 AND gate → return type must be `[GarbleTable<N>; 1]`, not Vec
         assert!(
@@ -1143,7 +1244,7 @@ mod tests {
     #[test]
     fn test_weave_into_gc_compiles() {
         let circuit = build_xor_and_circuit();
-        let module = weave_into_gc(&circuit, "test_circuit", None);
+        let module = weave_into_gc(&circuit, "test_circuit", None).into_inner();
         let code = print_weaved_module(&module, false);
         run_compile_check(&code, "into_gc");
     }
@@ -1151,7 +1252,7 @@ mod tests {
     #[test]
     fn test_weave_eval_from_setup_compiles() {
         let circuit = build_xor_and_circuit();
-        let module = weave_eval_from_setup(&circuit, "test_circuit", None);
+        let module = weave_eval_from_setup(&circuit, "test_circuit", None).into_inner();
         let code = print_weaved_module(&module, false);
         run_compile_check(&code, "eval_from_setup");
     }
@@ -1164,8 +1265,8 @@ mod tests {
 
         let and_circuit = crate::tests_common::build_and_circuit();
 
-        let gc_module = weave_into_gc(&and_circuit, "and2", None);
-        let eval_module = weave_eval_from_setup(&and_circuit, "and2", None);
+        let gc_module = weave_into_gc(&and_circuit, "and2", None).into_inner();
+        let eval_module = weave_eval_from_setup(&and_circuit, "and2", None).into_inner();
 
         let combined_module = IrModule {
             name: "combined".into(),

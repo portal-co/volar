@@ -80,7 +80,7 @@ use volar_ir_common::{Constant, PreInitSegment, StorageId};
 use volar_lir::circuits::{
     StorageEmitter, bc_clz, bc_ctz, bc_popcnt, bc_rotl, bc_rotr, bc_srem, bc_urem,
 };
-use volar_lir::{BitCircuitBuilder, IcmpPred, LirTarget, LirType};
+use volar_lir::{BitCircuitBuilder, BranchTarget, IcmpPred, LirTarget, LirType};
 
 use crate::import_config::{WaffleImportConfig, WaffleImportKind};
 use crate::target::{VaffleBlock, VaffleTarget, VaffleValue, bits_for_lir_type};
@@ -139,7 +139,7 @@ pub fn lower_waffle_module(
                 _ => continue,
             };
             match kind {
-                WaffleImportKind::Oracle { name } => {
+                WaffleImportKind::Oracle { name, .. } => {
                     let params: alloc::vec::Vec<_> = wasm_params
                         .iter()
                         .filter_map(|&t| waffle_ty(t).ok())
@@ -156,7 +156,7 @@ pub fn lower_waffle_module(
                         results,
                     });
                 }
-                WaffleImportKind::Action { name, n_args } => {
+                WaffleImportKind::Action { name, n_args, .. } => {
                     let action_params: alloc::vec::Vec<_> = wasm_params
                         .iter()
                         .skip(1) // skip guard
@@ -330,12 +330,13 @@ pub fn lower_waffle_function(
                         target,
                         wasm,
                         config,
+                        body,
                     )? {
                         val_map.insert(wval, vv);
                     }
                 }
                 ValueDef::PickOutput(from_val, idx, ty) => {
-                    if let Some(call_vv) = val_map.get(from_val) {
+                    if let Some(call_vv) = resolve_wval(body, &val_map, *from_val) {
                         let lir_ty = waffle_ty(*ty)?;
                         let n = bits_for_lir_type(&lir_ty, &[]);
                         // Compute correct bit offset using the source op's result types.
@@ -351,7 +352,7 @@ pub fn lower_waffle_function(
                     }
                 }
                 ValueDef::Alias(target_val) => {
-                    if let Some(vv) = val_map.get(target_val).cloned() {
+                    if let Some(vv) = resolve_wval(body, &val_map, *target_val) {
                         val_map.insert(wval, vv);
                     }
                 }
@@ -368,6 +369,7 @@ pub fn lower_waffle_function(
             &ret_lir,
             &current_globals,
             target,
+            body,
         )?;
     }
 
@@ -395,6 +397,41 @@ fn compute_pick_offset(body: &FunctionBody, from_val: &WValue, idx: usize) -> us
     }
 }
 
+/// Resolve a WAFFLE value to its already-lowered `VaffleValue`, following
+/// `ValueDef::Alias` chains that were never independently scheduled into
+/// any block's `insts` list.
+///
+/// WAFFLE's frontend can produce "loose" aliases this way — e.g. a pure
+/// rename of an existing value, such as re-reading a local that hasn't
+/// been written since its zero-initialization — without ever listing them
+/// in an `insts` array (aliases don't need scheduling; they're a pure
+/// indirection meant to be resolved transparently at read time). A plain
+/// `val_map` lookup alone misses these even though the value is perfectly
+/// well-defined, which previously surfaced as a spurious
+/// `UnsupportedOp("undefined value ...")` on any real program complex
+/// enough to trigger WAFFLE's alias-based local handling (never hit by
+/// the hand-built `FunctionBody` fixtures in this crate's own tests, since
+/// those never produce bare aliases).
+fn resolve_wval(
+    body: &FunctionBody,
+    val_map: &BTreeMap<WValue, VaffleValue>,
+    mut wval: WValue,
+) -> Option<VaffleValue> {
+    // Bounded, not a `while let` over a `HashSet`-tracked visited set: a
+    // well-formed alias chain is only ever a few hops; this guards against
+    // a malformed cycle without paying for cycle bookkeeping on every call.
+    for _ in 0..10_000 {
+        if let Some(vv) = val_map.get(&wval) {
+            return Some(vv.clone());
+        }
+        match &body.values[wval] {
+            ValueDef::Alias(target) => wval = *target,
+            _ => return None,
+        }
+    }
+    None
+}
+
 fn lower_op(
     op: &Operator,
     args: &[WValue],
@@ -406,11 +443,10 @@ fn lower_op(
     tgt: &mut VaffleTarget,
     wasm: &WModule,
     config: &WaffleImportConfig,
+    body: &FunctionBody,
 ) -> Result<Option<VaffleValue>, UnsupportedOp> {
     let get = |i: usize| -> Result<VaffleValue, UnsupportedOp> {
-        val_map
-            .get(&args[i])
-            .cloned()
+        resolve_wval(body, val_map, args[i])
             .ok_or_else(|| UnsupportedOp(alloc::format!("undefined value {:?}", args[i])))
     };
 
@@ -748,19 +784,25 @@ fn lower_op(
                     .collect::<Result<_, _>>()?;
 
                 let results = match kind {
-                    WaffleImportKind::Oracle { name: oracle_name } => {
-                        tgt.call_extern_multi(
+                    WaffleImportKind::Oracle { name: oracle_name, side } => {
+                        tgt.set_side(*side);
+                        let r = tgt.call_extern_multi(
                             &alloc::format!("oracle_{oracle_name}"),
                             &all_arg_vals,
                             &orig_ret_tys,
-                        )
+                        );
+                        tgt.set_side(None);
+                        r
                     }
-                    WaffleImportKind::Action { name: action_name, n_args } => {
+                    WaffleImportKind::Action { name: action_name, n_args, side } => {
                         let guard_vv = all_arg_vals[0].clone();
                         let guard_bit = or_bits(tgt, &guard_vv.bits);
                         let real_args = &all_arg_vals[1..=*n_args];
                         let fallbacks = &all_arg_vals[*n_args + 1..];
-                        tgt.action_call(action_name, guard_bit, real_args, fallbacks, &orig_ret_tys)
+                        tgt.set_side(*side);
+                        let r = tgt.action_call(action_name, guard_bit, real_args, fallbacks, &orig_ret_tys);
+                        tgt.set_side(None);
+                        r
                     }
                 };
 
@@ -912,11 +954,10 @@ fn lower_term(
     ret_lir: &[LirType],
     current_globals: &[VaffleValue],
     tgt: &mut VaffleTarget,
+    body: &FunctionBody,
 ) -> Result<(), UnsupportedOp> {
     let get = |wv: &WValue| -> Result<VaffleValue, UnsupportedOp> {
-        val_map
-            .get(wv)
-            .cloned()
+        resolve_wval(body, val_map, *wv)
             .ok_or_else(|| UnsupportedOp(alloc::format!("undefined {:?}", wv)))
     };
     let get_block = |wb: portal_pc_waffle_ir::Block| -> Result<VaffleBlock, UnsupportedOp> {
@@ -929,9 +970,7 @@ fn lower_term(
         wargs
             .iter()
             .map(|wv| {
-                val_map
-                    .get(wv)
-                    .cloned()
+                resolve_wval(body, val_map, *wv)
                     .ok_or_else(|| UnsupportedOp(alloc::format!("undefined {:?}", wv)))
             })
             .collect()
@@ -942,7 +981,7 @@ fn lower_term(
             let vb = get_block(bt.block)?;
             let mut args = get_args(&bt.args)?;
             args.extend_from_slice(current_globals);
-            tgt.jump(vb, &args);
+            tgt.jump(vb, BranchTarget::args(args));
         }
 
         Terminator::CondBr {
@@ -963,7 +1002,7 @@ fn lower_term(
             then_args.extend_from_slice(current_globals);
             let mut else_args = get_args(&if_false.args)?;
             else_args.extend_from_slice(current_globals);
-            tgt.branch(cond_bool, then_b, &then_args, else_b, &else_args);
+            tgt.branch(cond_bool, then_b, BranchTarget::args(then_args), else_b, BranchTarget::args(else_args));
         }
 
         Terminator::Return { values } => {
@@ -1311,7 +1350,7 @@ mod tests {
         let mut has_read = false;
         let mut has_write = false;
         for val in &body.values {
-            if let vaffle::Value::Op(stmt) = val {
+            if let vaffle::Value::Op(stmt) = &val.kind {
                 match stmt {
                     Stmt::StorageRead { storage, .. } => {
                         assert_eq!(storage.0, StorageId::MEMORY_BASE);
@@ -1430,12 +1469,12 @@ mod tests {
         let writes: Vec<_> = body
             .values
             .iter()
-            .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageWrite { .. })))
+            .filter(|v| matches!(&v.kind, vaffle::Value::Op(Stmt::StorageWrite { .. })))
             .collect();
         let reads: Vec<_> = body
             .values
             .iter()
-            .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageRead { .. })))
+            .filter(|v| matches!(&v.kind, vaffle::Value::Op(Stmt::StorageRead { .. })))
             .collect();
         assert_eq!(
             writes.len(),
@@ -1465,7 +1504,7 @@ mod tests {
         let writes: Vec<_> = body
             .values
             .iter()
-            .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageWrite { .. })))
+            .filter(|v| matches!(&v.kind, vaffle::Value::Op(Stmt::StorageWrite { .. })))
             .collect();
         assert_eq!(
             writes.len(),
@@ -1477,7 +1516,7 @@ mod tests {
         let reads: Vec<_> = body
             .values
             .iter()
-            .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageRead { .. })))
+            .filter(|v| matches!(&v.kind, vaffle::Value::Op(Stmt::StorageRead { .. })))
             .collect();
         assert_eq!(
             reads.len(),
@@ -1571,7 +1610,7 @@ mod tests {
         let reads: Vec<_> = body
             .values
             .iter()
-            .filter(|v| matches!(v, vaffle::Value::Op(Stmt::StorageRead { .. })))
+            .filter(|v| matches!(&v.kind, vaffle::Value::Op(Stmt::StorageRead { .. })))
             .collect();
         assert_eq!(
             reads.len(),

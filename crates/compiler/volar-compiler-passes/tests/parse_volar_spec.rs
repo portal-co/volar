@@ -294,8 +294,8 @@ impl Foo {
             .expr
             .as_ref()
             .expect("body should have tail expression");
-        match tail.as_ref() {
-            volar_compiler::ir::IrExpr::ArrayGenerate { len, .. } => match len {
+        match &tail.kind {
+            volar_compiler::ir::IrExprKind::ArrayGenerate { len, .. } => match len {
                 volar_compiler::ir::ArrayLength::Projection {
                     field, trait_path, ..
                 } => {

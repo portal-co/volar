@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use volar_ir_common::{
     ActionDecl, Constant, IrType, OracleDecl, RngDecl, StorageId, Stmt, Type, TypeId, TypeTable,
 };
-use volar_ir::ir::{
+use volar_ir::ir::{IRBranchTarget, 
     IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRVarId,
 };
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
@@ -303,7 +303,7 @@ fn parse_ir_terminator(kw: &str, lex: &mut Lexer) -> Result<IRTerminator, ParseE
             let func = read_block_target(lex)?;
             lex.expect_key("args")?;
             let args = read_var_id_list(lex)?;
-            Ok(IRTerminator::Jmp { func, args })
+            Ok(IRTerminator::Jmp { target: IRBranchTarget::new(func, args) })
         }
         "jmp_cond" => {
             lex.expect_key("cond")?;
@@ -316,7 +316,7 @@ fn parse_ir_terminator(kw: &str, lex: &mut Lexer) -> Result<IRTerminator, ParseE
             let false_block = read_block_target(lex)?;
             lex.expect_key("else_args")?;
             let false_args = read_var_id_list(lex)?;
-            Ok(IRTerminator::JumpCond { condition, true_block, true_args, false_block, false_args })
+            Ok(IRTerminator::JumpCond { condition, then_target: IRBranchTarget::new(true_block, true_args), else_target: IRBranchTarget::new(false_block, false_args) })
         }
         "jmp_table" => {
             lex.expect_key("index")?;
@@ -330,7 +330,7 @@ fn parse_ir_terminator(kw: &str, lex: &mut Lexer) -> Result<IRTerminator, ParseE
                 let target = read_block_target(lex)?;
                 lex.expect_key("args")?;
                 let args = read_var_id_list(lex)?;
-                cases.insert(constant, (target, args));
+                cases.insert(constant, IRBranchTarget::new(target, args));
             }
             Ok(IRTerminator::JumpTable { index, cases })
         }
@@ -356,8 +356,7 @@ fn parse_ir_block(lex: &mut Lexer) -> Result<IRBlock<()>, ParseError> {
     }
     let param_ids: Vec<TypeId> = read_type_id_list(lex)?;
 
-    let mut stmts: Vec<Stmt<IRVarId>> = Vec::new();
-    let mut stmt_provs: Vec<()> = Vec::new();
+    let mut stmts: Vec<volar_ir_common::Node<Stmt<IRVarId>, ()>> = Vec::new();
     let mut terminator: Option<IRTerminator> = None;
 
     loop {
@@ -374,8 +373,7 @@ fn parse_ir_block(lex: &mut Lexer) -> Result<IRBlock<()>, ParseError> {
             lex.expect_byte(b'=')?;
             let stmt_kw = lex.read_ident()?;
             let stmt = parse_ir_stmt(stmt_kw, lex)?;
-            stmts.push(stmt);
-            stmt_provs.push(());
+            stmts.push(volar_ir_common::Node::new(stmt, (), None));
         } else {
             // keyword: either terminator or `end_block`
             let kw = lex.read_ident()?;
@@ -399,7 +397,6 @@ fn parse_ir_block(lex: &mut Lexer) -> Result<IRBlock<()>, ParseError> {
     Ok(IRBlock {
         params: param_ids,
         stmts,
-        stmt_provs,
         terminator,
     })
 }
@@ -607,8 +604,7 @@ fn parse_bir_block(lex: &mut Lexer) -> Result<BIrBlock<()>, ParseError> {
     if kw != "params" { return Err(ParseError::MissingField("params".into())); }
     let param_count = lex.read_u32()?;
 
-    let mut stmts:      Vec<BIrStmt> = Vec::new();
-    let mut stmt_provs: Vec<()>      = Vec::new();
+    let mut stmts: Vec<volar_ir_common::Node<BIrStmt, ()>> = Vec::new();
     let mut terminator: Option<BIrTerminator> = None;
 
     loop {
@@ -621,8 +617,7 @@ fn parse_bir_block(lex: &mut Lexer) -> Result<BIrBlock<()>, ParseError> {
             lex.expect_byte(b'=')?;
             let stmt_kw = lex.read_ident()?;
             let stmt = parse_bir_stmt(stmt_kw, lex)?;
-            stmts.push(stmt);
-            stmt_provs.push(());
+            stmts.push(volar_ir_common::Node::new(stmt, (), None));
         } else {
             let kw = lex.read_ident()?;
             if kw == "end_block" { break; }
@@ -641,7 +636,7 @@ fn parse_bir_block(lex: &mut Lexer) -> Result<BIrBlock<()>, ParseError> {
 
     let terminator = terminator.ok_or(ParseError::MissingField("terminator".into()))?;
 
-    Ok(BIrBlock { params: param_count, stmts, stmt_provs, terminator })
+    Ok(BIrBlock { params: param_count, stmts, terminator })
 }
 
 // ============================================================================

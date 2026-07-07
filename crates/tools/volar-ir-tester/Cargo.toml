@@ -9,5 +9,6 @@ name = "volar-ir-tester"
 path = "src/main.rs"
 
 [dependencies]
+volar-log = { path = "../../helper/volar-log", features = ["log-subscriber"] }
 volar-build   = { path = "../../compiler/volar-build", features = ["pipeline-wasm"] }
 volar-ir-text = { workspace = true }

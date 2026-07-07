@@ -237,8 +237,8 @@ fn dump_block(out: &mut String, block: &IrBlock, level: usize) {
 }
 
 fn dump_stmt(out: &mut String, stmt: &IrStmt, level: usize) {
-    match stmt {
-        IrStmt::Let { pattern, ty, init } => {
+    match &stmt.kind {
+        IrStmtKind::Let { pattern, ty, init } => {
             indent(out, level);
             let _ = write!(out, "let {}", fmt_pattern(pattern));
             if let Some(t) = ty {
@@ -250,12 +250,12 @@ fn dump_stmt(out: &mut String, stmt: &IrStmt, level: usize) {
             }
             let _ = writeln!(out, ";");
         }
-        IrStmt::Semi(expr) => {
+        IrStmtKind::Semi(expr) => {
             indent(out, level);
             dump_expr(out, expr, level);
             let _ = writeln!(out, ";");
         }
-        IrStmt::Expr(expr) => {
+        IrStmtKind::Expr(expr) => {
             indent(out, level);
             dump_expr(out, expr, level);
             let _ = writeln!(out);
@@ -330,25 +330,25 @@ fn fmt_pattern(pat: &IrPattern) -> String {
 // ── expressions ─────────────────────────────────────────────────────────────
 
 fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
-    match expr {
-        IrExpr::Lit(lit) => {
+    match &expr.kind {
+        IrExprKind::Lit(lit) => {
             let _ = write!(out, "{}", lit);
         }
-        IrExpr::Var(name) => {
+        IrExprKind::Var(name) => {
             let _ = write!(out, "{}", name);
         }
-        IrExpr::Binary { op, left, right } => {
+        IrExprKind::Binary { op, left, right } => {
             let _ = write!(out, "(");
             dump_expr(out, left, level);
             let _ = write!(out, " {:?} ", op);
             dump_expr(out, right, level);
             let _ = write!(out, ")");
         }
-        IrExpr::Unary { op, expr: inner } => {
+        IrExprKind::Unary { op, expr: inner } => {
             let _ = write!(out, "{:?}", op);
             dump_expr(out, inner, level);
         }
-        IrExpr::Call { func, args } => {
+        IrExprKind::Call { func, args } => {
             dump_expr(out, func, level);
             let _ = write!(out, "(");
             for (i, arg) in args.iter().enumerate() {
@@ -359,7 +359,7 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             }
             let _ = write!(out, ")");
         }
-        IrExpr::MethodCall {
+        IrExprKind::MethodCall {
             receiver,
             method,
             args,
@@ -375,23 +375,23 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             }
             let _ = write!(out, ")");
         }
-        IrExpr::Field { base, field } => {
+        IrExprKind::Field { base, field } => {
             dump_expr(out, base, level);
             let _ = write!(out, ".{}", field);
         }
-        IrExpr::Index { base, index } => {
+        IrExprKind::Index { base, index } => {
             dump_expr(out, base, level);
             let _ = write!(out, "[");
             dump_expr(out, index, level);
             let _ = write!(out, "]");
         }
-        IrExpr::Block(block) => {
+        IrExprKind::Block(block) => {
             let _ = writeln!(out, "{{");
             dump_block(out, block, level + 1);
             indent(out, level);
             let _ = write!(out, "}}");
         }
-        IrExpr::If {
+        IrExprKind::If {
             cond,
             then_branch,
             else_branch,
@@ -408,24 +408,24 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
                 let _ = write!(out, "}}");
             }
         }
-        IrExpr::Return(inner) => {
+        IrExprKind::Return(inner) => {
             let _ = write!(out, "return");
             if let Some(v) = inner {
                 let _ = write!(out, " ");
                 dump_expr(out, v, level);
             }
         }
-        IrExpr::Assign { left, right } => {
+        IrExprKind::Assign { left, right } => {
             dump_expr(out, left, level);
             let _ = write!(out, " = ");
             dump_expr(out, right, level);
         }
-        IrExpr::AssignOp { op, left, right } => {
+        IrExprKind::AssignOp { op, left, right } => {
             dump_expr(out, left, level);
             let _ = write!(out, " {:?}= ", op);
             dump_expr(out, right, level);
         }
-        IrExpr::Range {
+        IrExprKind::Range {
             start,
             end,
             inclusive,
@@ -438,11 +438,11 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
                 dump_expr(out, e, level);
             }
         }
-        IrExpr::Cast { expr: inner, ty } => {
+        IrExprKind::Cast { expr: inner, ty } => {
             dump_expr(out, inner, level);
             let _ = write!(out, " as {}", ty);
         }
-        IrExpr::Closure {
+        IrExprKind::Closure {
             params,
             body,
             ret_type,
@@ -466,7 +466,7 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             }
             dump_expr(out, body, level);
         }
-        IrExpr::StructExpr {
+        IrExprKind::StructExpr {
             kind,
             type_args,
             fields,
@@ -491,7 +491,7 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             }
             let _ = write!(out, " }}");
         }
-        IrExpr::Tuple(elems) => {
+        IrExprKind::Tuple(elems) => {
             let _ = write!(out, "(");
             for (i, e) in elems.iter().enumerate() {
                 if i > 0 {
@@ -501,7 +501,7 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             }
             let _ = write!(out, ")");
         }
-        IrExpr::Path {
+        IrExprKind::Path {
             segments,
             type_args,
         } => {
@@ -511,7 +511,7 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
                 let _ = write!(out, "::<{}>", args.join(", "));
             }
         }
-        IrExpr::BoundedLoop {
+        IrExprKind::BoundedLoop {
             var,
             start,
             end,
@@ -527,10 +527,10 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             indent(out, level);
             let _ = write!(out, "}}");
         }
-        IrExpr::IterPipeline(chain) => {
+        IrExprKind::IterPipeline(chain) => {
             dump_iter_chain(out, chain, level);
         }
-        IrExpr::Match {
+        IrExprKind::Match {
             expr: scrutinee,
             arms,
         } => {
@@ -551,7 +551,7 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             indent(out, level);
             let _ = write!(out, "}}");
         }
-        IrExpr::DefaultValue { ty } => match ty {
+        IrExprKind::DefaultValue { ty } => match ty {
             Some(t) => {
                 let _ = write!(out, "DefaultValue({})", t);
             }
@@ -559,10 +559,10 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
                 let _ = write!(out, "DefaultValue(?)");
             }
         },
-        IrExpr::LengthOf(len) => {
+        IrExprKind::LengthOf(len) => {
             let _ = write!(out, "LengthOf({:?})", len);
         }
-        IrExpr::ArrayGenerate {
+        IrExprKind::ArrayGenerate {
             elem_ty,
             len,
             index_var,
@@ -577,17 +577,17 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             dump_expr(out, body, level);
             let _ = write!(out, "]");
         }
-        IrExpr::TypenumUsize { ty } => {
+        IrExprKind::TypenumUsize { ty } => {
             let _ = write!(out, "TypenumUsize({})", ty);
         }
-        IrExpr::Unreachable => {
+        IrExprKind::Unreachable => {
             let _ = write!(out, "unreachable!()");
         }
-        IrExpr::Try(inner) => {
+        IrExprKind::Try(inner) => {
             dump_expr(out, inner, level);
             let _ = write!(out, "?");
         }
-        IrExpr::Array(elems) | IrExpr::FixedArray(elems) => {
+        IrExprKind::Array(elems) | IrExprKind::FixedArray(elems) => {
             let _ = write!(out, "[");
             for (i, e) in elems.iter().enumerate() {
                 if i > 0 {
@@ -597,14 +597,14 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             }
             let _ = write!(out, "]");
         }
-        IrExpr::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } => {
             let _ = write!(out, "[");
             dump_expr(out, elem, level);
             let _ = write!(out, "; ");
             dump_expr(out, len, level);
             let _ = write!(out, "]");
         }
-        IrExpr::RawMap {
+        IrExprKind::RawMap {
             receiver,
             elem_var,
             body,
@@ -614,7 +614,7 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             dump_expr(out, body, level);
             let _ = write!(out, ")");
         }
-        IrExpr::RawZip {
+        IrExprKind::RawZip {
             left,
             right,
             left_var,
@@ -633,7 +633,7 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             dump_expr(out, body, level);
             let _ = write!(out, ")");
         }
-        IrExpr::RawFold {
+        IrExprKind::RawFold {
             receiver,
             init,
             acc_var,
@@ -652,7 +652,7 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             dump_expr(out, body, level);
             let _ = write!(out, ")");
         }
-        IrExpr::IterLoop {
+        IrExprKind::IterLoop {
             pattern,
             collection,
             body,
@@ -664,7 +664,7 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             indent(out, level);
             let _ = write!(out, "}}");
         }
-        IrExpr::WhileLoop { cond, body } => {
+        IrExprKind::WhileLoop { cond, body } => {
             let _ = write!(out, "while ");
             dump_expr(out, cond, level);
             let _ = writeln!(out, " {{");
@@ -672,14 +672,14 @@ fn dump_expr(out: &mut String, expr: &IrExpr, level: usize) {
             indent(out, level);
             let _ = write!(out, "}}");
         }
-        IrExpr::Break(val) => {
+        IrExprKind::Break(val) => {
             let _ = write!(out, "break");
             if let Some(v) = val {
                 let _ = write!(out, " ");
                 dump_expr(out, v, level);
             }
         }
-        IrExpr::Continue => {
+        IrExprKind::Continue => {
             let _ = write!(out, "continue");
         }
     }

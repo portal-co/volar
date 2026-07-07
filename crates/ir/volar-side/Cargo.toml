@@ -1,0 +1,13 @@
+[package]
+name = "volar-side"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Generic per-value side tagging for multi-actor/multi-party IR pipelines"
+repository.workspace = true
+
+[dependencies]
+rkyv = { workspace = true, optional = true }
+
+[features]
+rkyv = ["dep:rkyv"]

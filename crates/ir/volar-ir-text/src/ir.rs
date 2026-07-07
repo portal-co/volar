@@ -27,7 +27,7 @@ use core::fmt;
 use volar_ir_common::{
     ActionDecl, Constant, IrType, OracleDecl, RngDecl, StorageId, Stmt, Type, TypeId, TypeTable,
 };
-use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRVarId};
+use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBlocks, IRBranchTarget, IRTerminator, IRVarId};
 use crate::WriteText;
 
 pub(crate) const FORMAT_HEADER: &str = "volar-ir v1";
@@ -315,34 +315,34 @@ fn write_ir_stmt(
 
 fn write_ir_terminator(term: &IRTerminator, w: &mut dyn fmt::Write) -> fmt::Result {
     match term {
-        IRTerminator::Jmp { func, args } => {
+        IRTerminator::Jmp { target } => {
             w.write_str("jmp ")?;
-            write_block_target(func, w)?;
+            write_block_target(&target.dest, w)?;
             w.write_str(" args=")?;
-            write_var_list(args, w)?;
+            write_var_list(&target.args, w)?;
         }
-        IRTerminator::JumpCond { condition, true_block, true_args, false_block, false_args } => {
+        IRTerminator::JumpCond { condition, then_target, else_target } => {
             w.write_str("jmp_cond cond=")?;
             write_var(*condition, w)?;
             w.write_str(" then=")?;
-            write_block_target(true_block, w)?;
+            write_block_target(&then_target.dest, w)?;
             w.write_str(" then_args=")?;
-            write_var_list(true_args, w)?;
+            write_var_list(&then_target.args, w)?;
             w.write_str(" else=")?;
-            write_block_target(false_block, w)?;
+            write_block_target(&else_target.dest, w)?;
             w.write_str(" else_args=")?;
-            write_var_list(false_args, w)?;
+            write_var_list(&else_target.args, w)?;
         }
         IRTerminator::JumpTable { index, cases } => {
             w.write_str("jmp_table index=")?;
             write_var(*index, w)?;
-            for (constant, (target, args)) in cases {
+            for (constant, branch) in cases {
                 w.write_str(" case ")?;
                 write_constant(constant, w)?;
                 w.write_str(" -> ")?;
-                write_block_target(target, w)?;
+                write_block_target(&branch.dest, w)?;
                 w.write_str(" args=")?;
-                write_var_list(args, w)?;
+                write_var_list(&branch.args, w)?;
             }
         }
     }
@@ -360,7 +360,7 @@ fn write_ir_block(id: usize, block: &IRBlock<()>, w: &mut dyn fmt::Write) -> fmt
     w.write_char('\n')?;
     let base = block.params.len() as u32;
     for (i, stmt) in block.stmts.iter().enumerate() {
-        write_ir_stmt(IRVarId(base + i as u32), stmt, w)?;
+        write_ir_stmt(IRVarId(base + i as u32), &stmt.kind, w)?;
     }
     write_ir_terminator(&block.terminator, w)?;
     w.write_str("end_block\n")

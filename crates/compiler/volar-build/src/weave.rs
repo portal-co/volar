@@ -127,35 +127,35 @@ pub fn emit_woven_rust(
 
     let rust_source: String = match (weaver, circuit) {
         (Weaver::GarbleEvaluator { name }, SavedCircuit::Boolar(bir)) => {
-            let module = volar_weaver::weave_evaluator(&bir, name, None);
+            let module = volar_weaver::weave_evaluator(&bir, name, None).into_inner();
             volar_weaver::print_weaved_module(&module, false)
         }
         (Weaver::GarbleGarbler { name }, SavedCircuit::Boolar(bir)) => {
-            let module = volar_weaver::weave_garbler(&bir, name, None);
+            let module = volar_weaver::weave_garbler(&bir, name, None).into_inner();
             volar_weaver::print_weaved_module(&module, false)
         }
         (Weaver::VoleProver { name }, SavedCircuit::Boolar(bir)) => {
-            let module = volar_weaver::weave_vole_prover(&bir, name, None);
+            let module = volar_weaver::weave_vole_prover(&bir, name, None).into_inner();
             volar_weaver::print_weaved_vole_module(&module)
         }
         (Weaver::VoleVerifier { name }, SavedCircuit::Boolar(bir)) => {
-            let module = volar_weaver::weave_vole_verifier(&bir, name, None);
+            let module = volar_weaver::weave_vole_verifier(&bir, name, None).into_inner();
             volar_weaver::print_weaved_vole_module(&module)
         }
         (Weaver::VoleProverIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
-            let module = volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None);
+            let module = volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None).into_inner();
             volar_weaver::print_weaved_vole_module(&module)
         }
         (Weaver::VoleVerifierIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
-            let module = volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None);
+            let module = volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None).into_inner();
             volar_weaver::print_weaved_vole_module(&module)
         }
         (Weaver::NoOp { name }, SavedCircuit::Boolar(bir)) => {
-            let module = volar_weaver::weave_noop(&bir, name, None);
+            let module = volar_weaver::weave_noop(&bir, name, None).into_inner();
             volar_weaver::print_noop_module(&module)
         }
         (Weaver::NoOpIr { name }, SavedCircuit::Volar(ir, types)) => {
-            let module = volar_weaver::weave_noop_ir(&ir, &types, name, None);
+            let module = volar_weaver::weave_noop_ir(&ir, &types, name, None).into_inner();
             volar_weaver::print_noop_module(&module)
         }
         #[cfg(feature = "weave-net")]
@@ -274,28 +274,28 @@ fn weave_to_ir_module(
 ) -> Result<volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction>, Box<dyn std::error::Error>> {
     let module = match (weaver, circuit) {
         (Weaver::GarbleEvaluator { name }, SavedCircuit::Boolar(bir)) => {
-            volar_weaver::weave_evaluator(&bir, name, None)
+            volar_weaver::weave_evaluator(&bir, name, None).into_inner()
         }
         (Weaver::GarbleGarbler { name }, SavedCircuit::Boolar(bir)) => {
-            volar_weaver::weave_garbler(&bir, name, None)
+            volar_weaver::weave_garbler(&bir, name, None).into_inner()
         }
         (Weaver::VoleProver { name }, SavedCircuit::Boolar(bir)) => {
-            volar_weaver::weave_vole_prover(&bir, name, None)
+            volar_weaver::weave_vole_prover(&bir, name, None).into_inner()
         }
         (Weaver::VoleVerifier { name }, SavedCircuit::Boolar(bir)) => {
-            volar_weaver::weave_vole_verifier(&bir, name, None)
+            volar_weaver::weave_vole_verifier(&bir, name, None).into_inner()
         }
         (Weaver::VoleProverIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
-            volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None)
+            volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None).into_inner()
         }
         (Weaver::VoleVerifierIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
-            volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None)
+            volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None).into_inner()
         }
         (Weaver::NoOp { name }, SavedCircuit::Boolar(bir)) => {
-            volar_weaver::weave_noop(&bir, name, None)
+            volar_weaver::weave_noop(&bir, name, None).into_inner()
         }
         (Weaver::NoOpIr { name }, SavedCircuit::Volar(ir, types)) => {
-            volar_weaver::weave_noop_ir(&ir, &types, name, None)
+            volar_weaver::weave_noop_ir(&ir, &types, name, None).into_inner()
         }
         #[cfg(feature = "weave-net")]
         (Weaver::NetVoleProver { name }, SavedCircuit::Boolar(bir)) => {
@@ -352,28 +352,28 @@ pub fn emit_woven_rust_chunked(
     let module: volar_compiler::ir::IrModule<volar_compiler::ir::IrFunction> =
         match (weaver, circuit) {
             (Weaver::GarbleEvaluator { name }, SavedCircuit::Boolar(bir)) => {
-                volar_weaver::weave_evaluator(&bir, name, None)
+                volar_weaver::weave_evaluator(&bir, name, None).into_inner()
             }
             (Weaver::GarbleGarbler { name }, SavedCircuit::Boolar(bir)) => {
-                volar_weaver::weave_garbler(&bir, name, None)
+                volar_weaver::weave_garbler(&bir, name, None).into_inner()
             }
             (Weaver::VoleProver { name }, SavedCircuit::Boolar(bir)) => {
-                volar_weaver::weave_vole_prover(&bir, name, None)
+                volar_weaver::weave_vole_prover(&bir, name, None).into_inner()
             }
             (Weaver::VoleVerifier { name }, SavedCircuit::Boolar(bir)) => {
-                volar_weaver::weave_vole_verifier(&bir, name, None)
+                volar_weaver::weave_vole_verifier(&bir, name, None).into_inner()
             }
             (Weaver::VoleProverIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
-                volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None)
+                volar_weaver::weave_vole_prover_ir(&ir, &types, name, storage_sizes, None).into_inner()
             }
             (Weaver::VoleVerifierIr { name, storage_sizes }, SavedCircuit::Volar(ir, types)) => {
-                volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None)
+                volar_weaver::weave_vole_verifier_ir(&ir, &types, name, storage_sizes, None).into_inner()
             }
             (Weaver::NoOp { name }, SavedCircuit::Boolar(bir)) => {
-                volar_weaver::weave_noop(&bir, name, None)
+                volar_weaver::weave_noop(&bir, name, None).into_inner()
             }
             (Weaver::NoOpIr { name }, SavedCircuit::Volar(ir, types)) => {
-                volar_weaver::weave_noop_ir(&ir, &types, name, None)
+                volar_weaver::weave_noop_ir(&ir, &types, name, None).into_inner()
             }
             #[cfg(feature = "weave-net")]
             (Weaver::NetVoleProver { name }, SavedCircuit::Boolar(bir)) => {

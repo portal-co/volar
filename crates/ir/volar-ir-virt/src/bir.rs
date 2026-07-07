@@ -18,6 +18,7 @@ use volar_ir_common::StorageId;
 
 use crate::canon::{canonicalize_bir_block, BirHandlerKey, BlockImmediates};
 use crate::ctx::{DedupTable, VirtOutput};
+use crate::preinit::{build_bir_storage_init, merge_pre_init};
 use crate::{DedupPolicy, DispatchMode, VirtualizeConfig};
 
 // ============================================================================
@@ -74,6 +75,17 @@ pub fn virtualize_bir<P: Clone + Default>(
     // Compute per-handler slot layout (just target slots for BIR v1).
     let layout = BirSlotLayout::from_dedup(&dedup, handler_bits, pc_bits, cfg.bytecode_storage);
 
+<<<<<<< HEAD
+    // Derive ctrl_prov from the first statement in any input block.
+    let ctrl_prov: P = blocks.blocks.iter()
+        .flat_map(|b| b.stmts.iter())
+        .map(|n| &n.prov)
+        .next()
+        .cloned()
+        .unwrap_or_default();
+
+=======
+>>>>>>> origin/main
     // Emit output BIR.
     let out_blocks = emit_output_bir::<P>(
         &cse_blocks,
@@ -85,26 +97,37 @@ pub fn virtualize_bir<P: Clone + Default>(
         handler_bits,
     );
 
-    let bytecode = if cfg.bytecode_form.wants_external() {
-        Some(dedup.to_bytecode())
-    } else {
-        None
-    };
+    let storage_init = build_bir_storage_init(
+        &dedup,
+        &layout.per_handler,
+        cfg.bytecode_storage,
+        handler_bits,
+        pc_bits,
+    );
+    let merged_pre_init = merge_pre_init(&blocks.pre_init, &storage_init.pre_init);
 
     // Oblivious dispatch: hand the Public-dispatch output to
     // `movfuscate_biir`, which collapses it to a single self-looping
     // block using the shared slot-accumulator helpers.
     let final_blocks = match cfg.dispatch {
-        DispatchMode::Public => out_blocks,
-        DispatchMode::Oblivious => volar_ir_passes::movfuscate_biir(&out_blocks),
+        DispatchMode::Public => BIrBlocks {
+            pre_init: merged_pre_init,
+            ..out_blocks
+        },
+        DispatchMode::Oblivious => {
+            let mut blocks = volar_ir_passes::movfuscate_biir(&out_blocks);
+            blocks.pre_init = merged_pre_init;
+            blocks
+        }
     };
 
     VirtOutput {
         blocks: final_blocks,
-        bytecode,
+        bytecode: Some(storage_init.bytecode),
         n_handlers,
         blocks_in,
-        key_params: alloc::vec![],  // BIR virtualisation does not support keyed commitment
+        key_params: alloc::vec![],
+        n_appended_regions: 0,
     }
 }
 
@@ -158,7 +181,7 @@ fn validate_input<P: Clone + Default>(blocks: &BIrBlocks<P>, common_params: u32)
 struct BirSlotLayout {
     /// `per_handler[h]` = list of target-slot base storage ids (each is
     /// a `pc_bits`-wide stored value).
-    per_handler: Vec<Vec<StorageId>>,
+    pub(crate) per_handler: Vec<Vec<StorageId>>,
 }
 
 impl BirSlotLayout {
@@ -237,12 +260,21 @@ impl BirBlockUnfinished {
         id
     }
 
+<<<<<<< HEAD
+    fn into_bir_block<P: Clone>(self, ctrl_prov: &P) -> BIrBlock<P> {
+        BIrBlock {
+            params: self.params,
+            stmts: self.stmts.into_iter()
+                .map(|s| volar_ir_common::Node::new(s, ctrl_prov.clone(), None))
+                .collect(),
+=======
     fn into_bir_block<P: Clone + Default>(self) -> BIrBlock<P> {
         let n = self.stmts.len();
         BIrBlock {
             params: self.params,
             stmts: self.stmts,
             stmt_provs: vec![P::default(); n],
+>>>>>>> origin/main
             terminator: self.terminator,
         }
     }
@@ -309,12 +341,13 @@ fn emit_output_bir<P: Clone + Default>(
     // ---- Setup block -----------------------------------------------------
     let setup = emit_setup_block(
         common_params,
-        dedup,
-        layout,
-        cfg,
         dispatcher_entry,
         pc_bits,
+<<<<<<< HEAD
+        ctrl_prov,
+=======
         handler_bits,
+>>>>>>> origin/main
     );
 
     // ---- Dispatcher + interior nodes -------------------------------------
@@ -350,7 +383,7 @@ fn emit_output_bir<P: Clone + Default>(
     debug_assert_eq!(out_blocks.len(), 2 + n_interior + n_handlers);
     let _ = setup_id;
 
-    BIrBlocks { blocks: out_blocks, pre_init: _blocks_in.pre_init.clone() }
+    BIrBlocks { blocks: out_blocks, pre_init: Vec::new() }
 }
 
 // ============================================================================
@@ -359,55 +392,18 @@ fn emit_output_bir<P: Clone + Default>(
 
 fn emit_setup_block<P: Clone + Default>(
     common_params: u32,
-    dedup: &DedupTable<BirHandlerKey>,
-    layout: &BirSlotLayout,
-    cfg: &VirtualizeConfig,
     dispatcher_id: IRBlockId,
     pc_bits: usize,
+<<<<<<< HEAD
+    ctrl_prov: &P,
+=======
     handler_bits: usize,
+>>>>>>> origin/main
 ) -> BIrBlock<P> {
     let mut b = BirBlockUnfinished::new(common_params);
 
-    // zero/one constants we may need.
+    // zero constant for pc=0 address encoding in jump args.
     let zero = b.push(BIrStmt::Zero);
-    let one = b.push(BIrStmt::One);
-
-    if cfg.bytecode_form.wants_in_ir() {
-        // For each pc row, write handler_idx (encoded as handler_bits
-        // bits) and every target slot (encoded as pc_bits bits).
-        for (pc, (h_idx, imm)) in dedup.per_block.iter().enumerate() {
-            let pc_addr = encode_bits_as_vars(pc, pc_bits, zero, one);
-
-            // Write handler_idx bits.
-            for k in 0..handler_bits {
-                let bit = (*h_idx as usize >> k) & 1;
-                let src = if bit == 1 { one } else { zero };
-                b.push(BIrStmt::StorageWrite {
-                    storage: StorageId(cfg.bytecode_storage.0 + k as u32),
-                    src,
-                    bit_width: 1,
-                    addr: pc_addr.clone(),
-                });
-            }
-
-            // Write target slot bits.  The target list for this handler
-            // is `imm.targets`.
-            let slots = &layout.per_handler[*h_idx as usize];
-            for (slot_idx, tgt) in imm.targets.iter().enumerate() {
-                let slot_storage = slots[slot_idx];
-                for k in 0..pc_bits {
-                    let bit = ((tgt.0 as usize) >> k) & 1;
-                    let src = if bit == 1 { one } else { zero };
-                    b.push(BIrStmt::StorageWrite {
-                        storage: StorageId(slot_storage.0 + k as u32),
-                        src,
-                        bit_width: 1,
-                        addr: pc_addr.clone(),
-                    });
-                }
-            }
-        }
-    }
 
     // Jump to dispatcher with state ++ pc=0 (encoded as pc_bits zero-bits).
     let mut args: Vec<IRVarId> = (0..common_params).map(IRVarId).collect();
@@ -419,19 +415,6 @@ fn emit_setup_block<P: Clone + Default>(
         args,
     });
     b.into_bir_block::<P>()
-}
-
-/// Emit Zero/One stmts picking the right constant for each bit of
-/// `value` and return the resulting IRVarId vector (LSB-first).
-///
-/// The caller has already allocated shared `zero` and `one` vars.
-fn encode_bits_as_vars(value: usize, n_bits: usize, zero: IRVarId, one: IRVarId) -> Vec<IRVarId> {
-    let mut out = Vec::with_capacity(n_bits);
-    for k in 0..n_bits {
-        let bit = (value >> k) & 1;
-        out.push(if bit == 1 { one } else { zero });
-    }
-    out
 }
 
 // ============================================================================
@@ -677,16 +660,15 @@ fn deduplicate_bir_oracle_calls_in_block<P: Clone + Default>(
     let mut var_remap: BTreeMap<IRVarId, IRVarId> = BTreeMap::new();
     // (name, remapped-args) → first-call new var
     let mut seen: BTreeMap<(alloc::string::String, Vec<IRVarId>), IRVarId> = BTreeMap::new();
-    let mut new_stmts: Vec<BIrStmt> = Vec::with_capacity(block.stmts.len());
-    let mut new_provs: Vec<P> = Vec::with_capacity(block.stmts.len());
+    let mut new_stmts: Vec<volar_ir_common::Node<BIrStmt, P>> = Vec::with_capacity(block.stmts.len());
 
     let rv = |v: IRVarId, map: &BTreeMap<IRVarId, IRVarId>| -> IRVarId {
         map.get(&v).copied().unwrap_or(v)
     };
 
-    for (stmt_idx, (s, prov)) in block.stmts.iter().zip(block.stmt_provs.iter()).enumerate() {
+    for (stmt_idx, node) in block.stmts.iter().enumerate() {
         let old_var = IRVarId((n_params + stmt_idx) as u32);
-        match s {
+        match &node.kind {
             BIrStmt::OracleCall { name, args, num_bits } => {
                 let remapped_args: Vec<IRVarId> =
                     args.iter().map(|v| rv(*v, &var_remap)).collect();
@@ -697,19 +679,19 @@ fn deduplicate_bir_oracle_calls_in_block<P: Clone + Default>(
                     let new_var = IRVarId((n_params + new_stmts.len()) as u32);
                     seen.insert(key, new_var);
                     var_remap.insert(old_var, new_var);
-                    new_stmts.push(BIrStmt::OracleCall {
+                    new_stmts.push(volar_ir_common::Node::new(BIrStmt::OracleCall {
                         name: name.clone(),
                         args: remapped_args,
                         num_bits: *num_bits,
-                    });
-                    new_provs.push(prov.clone());
+                    }, node.prov.clone(), node.side));
                 }
             }
             other => {
                 let new_var = IRVarId((n_params + new_stmts.len()) as u32);
                 var_remap.insert(old_var, new_var);
-                new_stmts.push(remap_bir_stmt(other, &var_remap));
-                new_provs.push(prov.clone());
+                new_stmts.push(volar_ir_common::Node::new(
+                    remap_bir_stmt(other, &var_remap), node.prov.clone(), node.side,
+                ));
             }
         }
     }
@@ -717,7 +699,6 @@ fn deduplicate_bir_oracle_calls_in_block<P: Clone + Default>(
     BIrBlock {
         params: block.params,
         stmts: new_stmts,
-        stmt_provs: new_provs,
         terminator: new_terminator,
     }
 }

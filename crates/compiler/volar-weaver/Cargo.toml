@@ -9,14 +9,17 @@ repository.workspace = true
 [features]
 # Enable parsing-based spec linkage (makes weave output self-contained).
 linking = ["volar-compiler/parsing"]
-rkyv = ["volar-compiler/rkyv"]
+rkyv = ["volar-compiler/rkyv", "volar-ir-common/rkyv", "volar-side/rkyv"]
 # Enable the network-protocol weaving pass (volar_net::VoleTransport interface).
 net = ["dep:volar-net"]
 
 [dependencies]
 volar-compiler = {path="../volar-compiler"}
 volar-compiler-common ={path="../volar-compiler-common"}
+volar-discipline = { workspace = true }
 volar-provenance.workspace = true
+volar-ir-common.workspace = true
+volar-side.workspace = true
 volar-ir.workspace = true
 volar-ir-passes = {path="../../ir/volar-ir-passes"}
 volar-lir = {path="../../ir/volar-lir"}

@@ -70,18 +70,25 @@ pub struct TypeManifest {
 fn strip_bodies(module: &IrModule<IrFunction>) -> IrModule<IrFunction> {
     let stub_block = IrBlock {
         stmts: Vec::new(),
-        stmt_provs: Vec::new(),
-        expr: Some(Box::new(IrExpr::Call {
-            func: Box::new(IrExpr::Path {
-                segments: vec!["todo!".into()],
-                type_args: Vec::new(),
-            }),
-            args: Vec::new(),
-        })),
+        expr: Some(Box::new(volar_ir_common::Node::new(
+            IrExprKind::Call {
+                func: Box::new(volar_ir_common::Node::new(
+                    IrExprKind::Path {
+                        segments: vec!["todo!".into()],
+                        type_args: Vec::new(),
+                    },
+                    (),
+                    None,
+                )),
+                args: Vec::new(),
+            },
+            (),
+            None,
+        ))),
     };
 
     let strip_function = |f: &IrFunction| -> IrFunction {
-        IrFunction {
+        IrFunction { no_inline: false,
             name: f.name.clone(),
             module_path: f.module_path.clone(),
             generics: f.generics.clone(),

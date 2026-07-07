@@ -67,34 +67,6 @@ pub struct ViaDigestPuncturableRandomizerDyn<D: Digest> {
 #[derive(Debug, Default)]
 pub struct CommitmentCoreDyn<D: Digest>(pub Vec<u8>, pub PhantomData<D>);
 
-#[derive(Clone, Copy, Default)]
-pub struct NoReduction {
-}
-
-#[derive(Clone, Copy)]
-pub struct GrafhenWordDyn {
-    pub wbound: usize,
-    pub data: [u8; WBOUND],
-    pub len: usize,
-}
-
-#[derive(Clone)]
-pub struct GrafhenKeyDyn {
-    pub n: usize,
-    pub d: usize,
-    pub gens: [[u8; N]; D],
-    pub inv_gens: [[u8; N]; D],
-}
-
-#[derive(Clone)]
-pub struct GrafhenPublicDyn<R> {
-    pub wbound: usize,
-    pub enc_one: GrafhenWordDyn,
-    pub and_w1: GrafhenWordDyn,
-    pub and_w2: GrafhenWordDyn,
-    pub reducer: R,
-}
-
 #[derive(Debug, Default)]
 pub struct DeltaDyn<T> {
     pub n: usize,
@@ -509,10 +481,6 @@ pub trait Invert {
 }
 
 pub trait PuncturableLengthDoubler: LengthDoubler {
-}
-
-pub trait WordReducer: Clone {
-    fn reduce(&self, word: &mut GrafhenWordDyn);
 }
 
 pub trait LeafCommit {
@@ -934,19 +902,6 @@ impl <D: Digest> CommitmentCoreDyn<D> {
     {
         let recomputed: CommitmentCoreDyn<D> = commit::<D>(opened_message, opened_rand);
         (&recomputed.0 == &self.0)
-    }
-}
-
-impl  WordReducer<WBOUND> for NoReduction {
-    fn reduce(&self, mut _word: &mut GrafhenWordDyn)
-    {
-    }
-}
-
-impl  GrafhenWordDyn {
-    pub fn identity(mut wbound: usize) -> Self
-    {
-        GrafhenWordDyn { data: [0; wbound], len: 0, wbound: 0 }
     }
 }
 
@@ -2307,7 +2262,7 @@ impl  EvalSetupDyn {
     {
         let n: usize = self.n;
         let a: usize = self.a;
-        ((result.open(&self.output_label)[0] & 1) != 0)
+        ((result.open(&self.output_label.t, &self.output_label.u, &self.output_label.m, &self.output_label)[0] & 1) != 0)
     }
 }
 
@@ -2730,87 +2685,6 @@ pub fn commit<D: Digest>(mut message: &impl AsRef<[u8]>, mut rand: &impl AsRef<[
     hasher.update(AsRef::<[u8]>::as_ref(&message));
     hasher.update(AsRef::<[u8]>::as_ref(&rand));
     CommitmentCoreDyn(hasher.finalize().to_vec(), PhantomData)
-}
-
-pub fn concat_words(mut wbound: usize, mut a: &GrafhenWordDyn, mut b: &GrafhenWordDyn) -> Option<GrafhenWordDyn>
-{
-    let new_len = match a.len.checked_add(b.len) {
-    Some(n) => n,
-    _ => return None,
-};
-    let mut result = GrafhenWord::identity();
-    result.data[..a.len].copy_from_slice(&a.data[..a.len]);
-    result.data[a.len..new_len].copy_from_slice(&b.data[..b.len]);
-    result.len = new_len;
-    Some(result)
-}
-
-pub fn grafhen_zero(mut wbound: usize) -> GrafhenWordDyn
-{
-    GrafhenWord::identity()
-}
-
-pub fn grafhen_xor(mut wbound: usize, mut a: &GrafhenWordDyn, mut b: &GrafhenWordDyn) -> GrafhenWordDyn
-{
-    concat_words(wbound, a, b).expect("grafhen_xor: combined word length exceeds WBOUND")
-}
-
-pub fn grafhen_not<R>(mut wbound: usize, mut a: &GrafhenWordDyn, mut pk: &GrafhenPublicDyn<R>) -> GrafhenWordDyn
-{
-    grafhen_xor(wbound, a, &pk.enc_one)
-}
-
-pub fn grafhen_and<R>(mut wbound: usize, mut enc_a: &GrafhenWordDyn, mut enc_b: &GrafhenWordDyn, mut pk: &GrafhenPublicDyn<R>) -> GrafhenWordDyn
-{
-    let w1 = enc_a;
-    let w2 = enc_b;
-    let a = &pk.and_w1;
-    let b = &pk.and_w2;
-    let segs: [&GrafhenWordDyn; 12] = vec![w1, a, w1, w2, b, w2, w1, a, w1, w2, b, w2];
-    let total_len: usize = segs.iter().map(|s| s.len).sum();
-    let mut result = GrafhenWord::identity();
-    let mut pos = 0;
-    for seg in &segs{
-    result.data[pos..(pos + seg.len)].copy_from_slice(&seg.data[..seg.len]);
-    pos += seg.len;
-};
-    result.len = total_len;
-    pk.reducer.reduce(&mut result);
-    result
-}
-
-pub fn grafhen_encrypt<R>(mut wbound: usize, mut bit: bool, mut zero_cipher: &GrafhenWordDyn, mut pk: &GrafhenPublicDyn<R>) -> GrafhenWordDyn
-{
-    if bit{
-    grafhen_xor(wbound, zero_cipher, &pk.enc_one)
-} else {
-    *zero_cipher
-}
-}
-
-pub fn eval_word_to_perm(mut n: usize, mut d: usize, mut wbound: usize, mut key: &GrafhenKeyDyn, mut word: &GrafhenWordDyn) -> [u8; N]
-{
-    let mut perm: [u8; N] = (0..n).map(|i| (i as u8)).collect::<Vec<_>>();
-    for .. in &word.data[..word.len]{
-    let g = (g as usize);
-    let generator: &[u8; N] = if (g < d){
-    &key.gens[g]
-} else {
-    &key.inv_gens[(g - d)]
-};
-    perm = (0..n).map(|i| generator[(perm[i] as usize)]).collect::<Vec<_>>();
-};
-    perm
-}
-
-pub fn grafhen_decrypt(mut n: usize, mut d: usize, mut wbound: usize, mut key: &GrafhenKeyDyn, mut word: &GrafhenWordDyn) -> Option<bool>
-{
-    let perm = eval_word_to_perm(n, d, wbound, key, word);
-    match perm[0] {
-    .. => Some(false),
-    .. => Some(true),
-    _ => None,
-}
 }
 
 pub fn gf_mul(mut a: u8, mut b: u8) -> u8
@@ -3386,6 +3260,102 @@ pub fn create_vole_from_material_expanded<B: LengthDoubler, X: AsRef<[u8]>, Y: A
     VopeDyn { u: (0..1).map(|_| u.clone()).collect::<Vec<Vec<u8>>>(), v: v, n: 0, k: 1 }
 }
 
+pub fn vole_rekey_prover<N, T>(mut n: usize, mut wire: VopeDyn<T>, mut key: VopeDyn<T>) -> VopeDyn<T> where T: Clone + Add<Output = T> + Default, VopeDyn<T>: Add<Output = Vope<N, T, U1>>
+{
+    (wire + key)
+}
+
+pub fn vole_rekey_verifier_check<N, T>(mut n: usize, mut q_wire: &QDyn<T>, mut q_key: &QDyn<T>, mut q_rekeyed: &QDyn<T>) -> bool where T: Clone + Add<Output = T> + PartialEq
+{
+    let mut ok = true;
+    for i in 0.. n{
+    let expect = (q_wire.q[i].clone() + q_key.q[i].clone());
+    ok = (ok && (q_rekeyed.q[i].clone() == expect));
+};
+    ok
+}
+
+pub fn mem_acc_absorb<T>(mut acc: T, mut r0: T, mut r1: T, mut r2: T, mut r3: T, mut addr: T, mut value: T, mut ts: T) -> T where T: Clone + Add<Output = T> + Mul<Output = T>
+{
+    ((((acc + r0) + (addr * r1)) + (value * r2)) + (ts * r3))
+}
+
+pub fn vope_scale_const<N, T>(mut n: usize, mut w: &VopeDyn<T>, mut c: &T) -> VopeDyn<T> where T: Clone + Mul<Output = T> + Default
+{
+    VopeDyn { u: (0..1).map(|_| {
+    (0..n).map(|i| (w.u[0][i].clone() * c.clone())).collect::<Vec<T>>()
+}).collect::<Vec<Vec<T>>>(), v: (0..n).map(|i| (w.v[i].clone() * c.clone())).collect::<Vec<T>>(), n: 0, k: 1 }
+}
+
+pub fn mem_acc_absorb_vope<N, T>(mut n: usize, mut acc: VopeDyn<T>, mut one: &VopeDyn<T>, mut addr: &VopeDyn<T>, mut value: &VopeDyn<T>, mut ts: &VopeDyn<T>, mut r0: &T, mut r1: &T, mut r2: &T, mut r3: &T) -> VopeDyn<T> where T: Clone + Add<Output = T> + Mul<Output = T> + Default, VopeDyn<T>: Add<Output = Vope<N, T, U1>>
+{
+    ((((acc + vope_scale_const(n, one, r0)) + vope_scale_const(n, addr, r1)) + vope_scale_const(n, value, r2)) + vope_scale_const(n, ts, r3))
+}
+
+pub fn vope_bitpack<N, T>(mut n: usize, mut bits: &[VopeDyn<T>], mut pow2: &[T]) -> VopeDyn<T> where T: Clone + Add<Output = T> + Mul<Output = T> + Default, VopeDyn<T>: Add<Output = Vope<N, T, U1>>
+{
+    let mut acc = VopeDyn { u: (0..1).map(|_| (0..n).map(|_| T::default()).collect::<Vec<T>>()).collect::<Vec<Vec<T>>>(), v: (0..n).map(|_| T::default()).collect::<Vec<T>>(), n: 0, k: 1 };
+    for (b, p) in bits.iter().zip(pow2.iter()){
+    acc = (acc + vope_scale_const(n, b, p));
+};
+    acc
+}
+
+pub fn q_scale_const<N, T>(mut n: usize, mut q: &QDyn<T>, mut c: &T) -> QDyn<T> where T: Clone + Mul<Output = T>
+{
+    QDyn { q: (0..n).map(|i| (q.q[i].clone() * c.clone())).collect::<Vec<T>>(), n: 0 }
+}
+
+pub fn mem_acc_absorb_q<N, T>(mut n: usize, mut acc: QDyn<T>, mut one: &QDyn<T>, mut addr: &QDyn<T>, mut value: &QDyn<T>, mut ts: &QDyn<T>, mut r0: &T, mut r1: &T, mut r2: &T, mut r3: &T) -> QDyn<T> where T: Clone + Add<Output = T> + Mul<Output = T>
+{
+    let c = q_scale_const(n, one, r0);
+    let a = q_scale_const(n, addr, r1);
+    let v = q_scale_const(n, value, r2);
+    let t = q_scale_const(n, ts, r3);
+    QDyn { q: (0..n).map(|i| {
+    ((((acc.q[i].clone() + c.q[i].clone()) + a.q[i].clone()) + v.q[i].clone()) + t.q[i].clone())
+}).collect::<Vec<T>>(), n: 0 }
+}
+
+pub fn q_bitpack<N, T>(mut n: usize, mut bits: &[QDyn<T>], mut pow2: &[T]) -> QDyn<T> where T: Clone + Add<Output = T> + Mul<Output = T> + Default
+{
+    let mut acc = QDyn { q: (0..n).map(|_| T::default()).collect::<Vec<T>>(), n: 0 };
+    for (b, p) in bits.iter().zip(pow2.iter()){
+    let scaled = q_scale_const(n, b, p);
+    acc = QDyn { q: (0..n).map(|i| (acc.q[i].clone() + scaled.q[i].clone())).collect::<Vec<T>>(), n: 0 };
+};
+    acc
+}
+
+pub fn mem_drain_open<N, T>(mut n: usize, mut prod: &VopeDyn<T>, mut cons: &VopeDyn<T>) -> Vec<T> where T: Clone + Add<Output = T>
+{
+    (0..n).map(|i| (prod.v[i].clone() + cons.v[i].clone())).collect::<Vec<T>>()
+}
+
+pub fn mem_drain_check<N, T>(mut n: usize, mut prod_q: &QDyn<T>, mut cons_q: &QDyn<T>, mut opening: &Vec<T>) -> bool where T: Clone + Add<Output = T> + PartialEq
+{
+    let mut ok = true;
+    for i in 0.. n{
+    let k_diff = (prod_q.q[i].clone() + cons_q.q[i].clone());
+    ok = (ok && (k_diff == opening[i].clone()));
+};
+    ok
+}
+
+pub fn vope_open_mask<N, T>(mut n: usize, mut w: &VopeDyn<T>) -> Vec<T> where T: Clone
+{
+    w.v.clone()
+}
+
+pub fn assert_one_check<N, T>(mut n: usize, mut q: &QDyn<T>, mut opening: &Vec<T>, mut delta: &DeltaDyn<T>) -> bool where T: Clone + Add<Output = T> + PartialEq
+{
+    let mut ok = true;
+    for i in 0.. n{
+    ok = (ok && ((q.q[i].clone() + opening[i].clone()) == delta.delta[i].clone()));
+};
+    ok
+}
+
 pub fn memory_check_per_lane<N, T>(mut n: usize, mut challenges: Vec<T>) -> Vec<MemoryCheckStateDyn<T, AdditiveHasher>> where T: Clone + Default + Add<Output = T> + Mul<Output = T> + PartialEq
 {
     (0..n).map(|i| {
@@ -3422,7 +3392,7 @@ pub fn vole_and_verifier_check<N, T>(mut n: usize, mut delta: &DeltaDyn<T>, mut 
 
 pub fn vole_sbox_prover_step<N, T>(mut n: usize, mut vope_a: VopeDyn<T>, mut vope_b: VopeDyn<T>) -> (VopeDyn<T>, VopeDyn<T>) where T: Add<Output = T> + Mul<Output = T> + Default + Clone
 {
-    let k2: VopeDyn<T> = vope_a.mul_generalized(&vope_b);
+    let k2: VopeDyn<T> = vope_a.mul_generalized(&vope_b.k, &vope_b);
     let k1 = VopeDyn { u: (0..1).map(|_| k2.u[1].clone()).collect::<Vec<Vec<T>>>(), v: k2.u[0].clone(), n: 0, k: 1 };
     (k1, k2)
 }
@@ -3439,8 +3409,8 @@ pub fn vole_sbox_verifier_check<N, T>(mut n: usize, mut delta: &DeltaDyn<T>, mut
 
 pub fn vole_mul3_prover_step<N, T>(mut n: usize, mut vope_a: &VopeDyn<T>, mut vope_b: &VopeDyn<T>, mut vope_d: &VopeDyn<T>) -> VopeDyn<T> where T: Add<Output = T> + Mul<Output = T> + Default + Clone
 {
-    let ab: VopeDyn<T> = vope_a.mul_generalized(vope_b);
-    ab.mul_generalized(vope_d)
+    let ab: VopeDyn<T> = vope_a.mul_generalized(vope_b.k, vope_b);
+    ab.mul_generalized(vope_d.k, vope_d)
 }
 
 pub fn vole_mul3_verifier_check<N, T>(mut n: usize, mut delta: &DeltaDyn<T>, mut q_a: &QDyn<T>, mut q_b: &QDyn<T>, mut q_d: &QDyn<T>, mut vope_abd: VopeDyn<T>) -> (QDyn<T>, bool) where T: Clone + Add<Output = T> + Mul<Output = T> + PartialEq + Default + Into<T>
@@ -3977,6 +3947,105 @@ pub fn small_noise<R: SpecRng>(mut noise_bits: u32, mut rng: &mut R) -> u32
 }
 }
 
+pub fn full_z<S: Clone>(mut w: &[S; AND_VARS], mut u: &S) -> [S; 8]
+{
+    vec![w[0].clone(), w[1].clone(), w[2].clone(), w[3].clone(), w[4].clone(), w[5].clone(), w[6].clone(), u.clone()]
+}
+
+pub fn eval_abc<S>(mut z: &[S; 8]) -> ([S; AND_CONS], [S; AND_CONS], [S; AND_CONS])
+{
+    let az = vec![z[K_A].clone(), z[K_C].clone(), ((z[P1].clone() + z[V_HAT].clone()) - z[P2].clone())];
+    let bz = vec![z[K_B].clone(), z[DELTA].clone(), z[U].clone()];
+    let cz = vec![z[P1].clone(), z[P2].clone(), S::default()];
+    (az, bz, cz)
+}
+
+pub fn is_satisfied_relaxed<S>(mut w: &[S; AND_VARS], mut e: &[S; AND_CONS], mut u: &S) -> bool
+{
+    let z = full_z(w, u);
+    let (az, bz, cz) = eval_abc(&z);
+    let mut ok = true;
+    for i in 0.. AND_CONS{
+    let lhs = (az[i].clone() * bz[i].clone());
+    let rhs = ((u.clone() * cz[i].clone()) + e[i].clone());
+    ok = (ok && (lhs == rhs));
+};
+    ok
+}
+
+pub fn gate_witness<S>(mut k_a: S, mut k_b: S, mut k_c: S, mut delta: S, mut v_hat: S) -> [S; AND_VARS]
+{
+    let p1 = (k_a.clone() * k_b.clone());
+    let p2 = (k_c.clone() * delta.clone());
+    vec![k_a, k_b, k_c, delta, v_hat, p1, p2]
+}
+
+pub fn cross_term<S>(mut w1: &[S; AND_VARS], mut u1: &S, mut w2: &[S; AND_VARS], mut u2: &S) -> [S; AND_CONS]
+{
+    let z1 = full_z(w1, u1);
+    let z2 = full_z(w2, u2);
+    let (az1, bz1, cz1) = eval_abc(&z1);
+    let (az2, bz2, cz2) = eval_abc(&z2);
+    let mut t = vec![S::default(), S::default(), S::default()];
+    for i in 0.. AND_CONS{
+    let cross = ((az1[i].clone() * bz2[i].clone()) + (az2[i].clone() * bz1[i].clone()));
+    let sub = ((u1.clone() * cz2[i].clone()) + (u2.clone() * cz1[i].clone()));
+    t[i] = (cross - sub);
+};
+    t
+}
+
+pub fn fold_witness<S>(mut w1: &[S; AND_VARS], mut e1: &[S; AND_CONS], mut w2: &[S; AND_VARS], mut e2: &[S; AND_CONS], mut t: &[S; AND_CONS], mut r: &S) -> ([S; AND_VARS], [S; AND_CONS])
+{
+    let r2 = (r.clone() * r.clone());
+    let mut w = vec![S::default(), S::default(), S::default(), S::default(), S::default(), S::default(), S::default()];
+    for i in 0.. AND_VARS{
+    w[i] = (w1[i].clone() + (r.clone() * w2[i].clone()));
+};
+    let mut e = vec![S::default(), S::default(), S::default()];
+    for i in 0.. AND_CONS{
+    e[i] = ((e1[i].clone() + (r.clone() * t[i].clone())) + (r2.clone() * e2[i].clone()));
+};
+    (w, e)
+}
+
+pub fn fold_u<S>(mut u1: &S, mut u2: &S, mut r: &S) -> S
+{
+    (u1.clone() + (r.clone() * u2.clone()))
+}
+
+pub fn fold_blinder<S>(mut rho1: &S, mut rho2: &S, mut r: &S) -> S
+{
+    (rho1.clone() + (r.clone() * rho2.clone()))
+}
+
+pub fn fold_error_blinder<S>(mut re1: &S, mut rt: &S, mut re2: &S, mut r: &S) -> S
+{
+    let r2 = (r.clone() * r.clone());
+    ((re1.clone() + (r.clone() * rt.clone())) + (r2 * re2.clone()))
+}
+
+pub fn fold_commit_w(mut comm_w1: &EdPoint, mut comm_w2: &EdPoint, mut r: &[u8; 32]) -> EdPoint
+{
+    ed_add(comm_w1, &ed_scalar_mul(comm_w2, r))
+}
+
+pub fn fold_commit_e(mut comm_e1: &EdPoint, mut comm_t: &EdPoint, mut comm_e2: &EdPoint, mut r: &[u8; 32], mut r2: &[u8; 32]) -> EdPoint
+{
+    ed_add(&ed_add(comm_e1, &ed_scalar_mul(comm_t, r)), &ed_scalar_mul(comm_e2, r2))
+}
+
+pub fn pedersen_commit(mut gens: &[EdPoint], mut h: &EdPoint, mut x: &[[u8; 32]], mut blind: &[u8; 32]) -> EdPoint
+{
+    let mut acc = ed_scalar_mul(h, blind);
+    let mut i = 0;
+    while (i < x.len()){
+    acc = ed_add(&acc, &ed_scalar_mul(&gens[i], &x[i]));
+    i += 1;
+};
+    acc
+}
+
 pub fn prg_with_index<D: Digest>(mut seed: &[u8], mut idx: u32, mut out: &mut [u8])
 {
     let mut counter: u32 = 0;
@@ -4486,6 +4555,54 @@ pub fn fe_sq(mut a: &Fe25519) -> Fe25519
     fe_mul(a, a)
 }
 
+pub fn fe_pow(mut base: &Fe25519, mut exp: &[u64; 4]) -> Fe25519
+{
+    let mut acc = Fe25519::ONE;
+    for limb_idx in 0..4.rev(){
+    for bit in 0..64.rev(){
+    acc = fe_sq(&acc);
+    if (((exp[limb_idx] >> bit) & 1) == 1){
+    acc = fe_mul(&acc, base);
+}
+}
+};
+    acc
+}
+
+pub fn sqrt_m1() -> Fe25519
+{
+    fe_pow(&Fe25519(vec![2, 0, 0, 0]), &E)
+}
+
+pub fn fe_sqrt(mut w: &Fe25519) -> Option<Fe25519>
+{
+    let c = fe_pow(w, &E);
+    let c2 = fe_sq(&c);
+    if (c2 == *w){
+    Some(c)
+} else if (c2 == fe_neg(w)){
+    Some(fe_mul(&c, &sqrt_m1()))
+} else {
+    None
+}
+}
+
+pub fn is_square(mut w: &Fe25519) -> bool
+{
+    fe_sqrt(w).is_some()
+}
+
+pub fn fe_from_bytes_le(mut b: &[u8; 32]) -> Fe25519
+{
+    let mut limbs = [0; 4];
+    for i in 0.. 4{
+    let mut chunk = [0; 8];
+    chunk.copy_from_slice(&b[(i * 8)..((i * 8) + 8)]);
+    limbs[i] = u64::from_le_bytes(chunk);
+};
+    reduce_wide(&vec![limbs[0], limbs[1], limbs[2], limbs[3], 0, 0, 0, 0])
+}
+
 pub fn fe_invert(mut a: &Fe25519) -> Fe25519
 {
     let exp_limbs: [u64; 4] = vec![18446744073709551595, 18446744073709551615, 18446744073709551615, 9223372036854775807];
@@ -4552,5 +4669,44 @@ pub fn ed_scalar_mul(mut p: &EdPoint, mut k: &[u8; 32]) -> EdPoint
 }
 };
     acc
+}
+
+pub fn ed_mul_cofactor(mut p: &EdPoint) -> EdPoint
+{
+    ed_double(&ed_double(&ed_double(p)))
+}
+
+pub fn hash_to_curve(mut domain: &[u8], mut index: u64) -> EdPoint
+{
+    for ctr in 0.. 0{
+    let mut h = Sha3_256::new();
+    h.update(domain);
+    h.update(index.to_le_bytes());
+    h.update(ctr.to_le_bytes());
+    let out = h.finalize().to_vec();
+    let mut xb = [0; 32];
+    xb.copy_from_slice(&out);
+    let sign = ((xb[31] >> 7) & 1);
+    xb[31] &= 127;
+    let x = fe_from_bytes_le(&xb);
+    let xx = fe_sq(&x);
+    let num = fe_add(&Fe25519::ONE, &xx);
+    let den = fe_sub(&Fe25519::ONE, &fe_mul(&D, &xx));
+    if den.is_zero(){
+    continue;
+};
+    let yy = fe_mul(&num, &fe_invert(&den));
+    let Some(mut y) = fe_sqrt(&yy);
+    if ((y.to_bytes()[0] & 1) != sign){
+    y = fe_neg(&y);
+};
+    let point = EdPoint { x: x, y: y, z: Fe25519::ONE, t: fe_mul(&x, &y) };
+    let p8 = ed_mul_cofactor(&point);
+    if (p8 == EdPoint::IDENTITY){
+    continue;
+};
+    return p8;
+};
+    unreachable!()
 }
 

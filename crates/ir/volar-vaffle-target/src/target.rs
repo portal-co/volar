@@ -15,7 +15,7 @@ use alloc::{
 };
 
 use volar_ir_common::{
-    ActionDecl, Constant, IrType, OracleDecl, Stmt, StorageId, Type, TypeId, TypeTable,
+    ActionDecl, Constant, IrType, Node, OracleDecl, Stmt, StorageId, Type, TypeId, TypeTable,
 };
 use volar_lir::{
     circuits::{
@@ -23,7 +23,7 @@ use volar_lir::{
         bc_not_vec, bc_or_vec, bc_sdiv, bc_select_vec, bc_shl, bc_sle, bc_slt,
         bc_sub, bc_udiv, bc_ule, bc_ult, bc_xor_vec, StorageEmitter,
     },
-    BitCircuitBuilder, IcmpPred, LirTarget, LirType, LirAbi, StackAllocExt, StructDef, StructId,
+    BitCircuitBuilder, BranchTarget, IcmpPred, LirTarget, LirType, LirAbi, StackAllocExt, StructDef, StructId,
 };
 
 use vaffle::{
@@ -67,10 +67,12 @@ pub(crate) struct FuncBuilder {
     sig_id: SigId,
     blocks: Vec<BlockBuilder>,
     current: usize,
-    all_values: Vec<Value>,
+    all_values: Vec<Node<Value>>,
     bit_tid: TypeId,
     /// Next free stack-storage slot for `StackAlloc` within this function.
     next_stack_slot: u64,
+    /// Side to attach to the next emitted value.
+    current_side: Option<volar_side::SideId>,
 }
 
 impl FuncBuilder {
@@ -83,6 +85,7 @@ impl FuncBuilder {
             all_values: vec![],
             bit_tid,
             next_stack_slot: 0,
+            current_side: None,
         }
     }
 
@@ -92,7 +95,7 @@ impl FuncBuilder {
 
     pub(crate) fn emit_value(&mut self, val: Value) -> ValueId {
         let id = self.next_value_id();
-        self.all_values.push(val);
+        self.all_values.push(Node::new(val, (), self.current_side));
         self.blocks[self.current].stmts.push(id);
         id
     }
@@ -100,7 +103,7 @@ impl FuncBuilder {
     fn emit_block_param(&mut self, block_idx: usize, ty: TypeId) -> ValueId {
         let idx = self.blocks[block_idx].params.len();
         let id = self.next_value_id();
-        self.all_values.push(Value::Param { block: BlockId(block_idx), ty, idx });
+        self.all_values.push(Node::new(Value::Param { block: BlockId(block_idx), ty, idx }, (), self.current_side));
         self.blocks[block_idx].params.push((id, ty));
         id
     }
@@ -357,6 +360,10 @@ impl LirTarget for VaffleTarget {
     type Value = VaffleValue;
     type Block = VaffleBlock;
 
+    fn set_side(&mut self, side: Option<volar_side::SideId>) {
+        self.fb().current_side = side;
+    }
+
     fn define_struct(&mut self, def: StructDef) -> StructId {
         let id = self.struct_widths.len() as StructId;
         let total: usize = def.fields.iter()
@@ -455,10 +462,26 @@ impl LirTarget for VaffleTarget {
         VaffleBlock(idx)
     }
 
+    /// Declares **one** VAFFLE block param of the packed (`Vec(n, Bit)`,
+    /// or bare `Bit` when `n == 1`) type — not `n` separate `Bit` params —
+    /// then immediately unpacks it back into `n` individual bit `ValueId`s
+    /// via [`StorageEmitter::extract_bit`] so every existing caller (which
+    /// expects `VaffleValue.bits` to be `n` individually-addressable bit
+    /// ids) sees an unchanged contract. This is what keeps a WASM i32/i64
+    /// loop-carried value "wide at rest" *between* blocks (one movfuscation
+    /// state slot, not `n`) while every operator's internal logic — which
+    /// still operates bit-by-bit via `BitCircuitBuilder` — is completely
+    /// unaffected. See `docs/agent-context/boolar-ir-conflicts.md`.
     fn add_block_param(&mut self, block: VaffleBlock, ty: LirType) -> VaffleValue {
         let n = bits_for_lir_type(&ty, &self.struct_widths);
         let bit_tid = self.bit_tid();
-        let bits: Vec<ValueId> = (0..n).map(|_| self.fb().emit_block_param(block.0, bit_tid)).collect();
+        let param_tid = if n <= 1 { bit_tid } else { self.intern_type(IrType::Vec(n, bit_tid)) };
+        let packed = self.fb().emit_block_param(block.0, param_tid);
+        let bits: Vec<ValueId> = if n <= 1 {
+            vec![packed]
+        } else {
+            (0..n as u8).map(|i| self.extract_bit(packed, i)).collect()
+        };
         VaffleValue { bits, ty }
     }
 
@@ -666,23 +689,55 @@ impl LirTarget for VaffleTarget {
     }
 
     // ---- Terminators -------------------------------------------------------
-    fn jump(&mut self, target: VaffleBlock, args: &[VaffleValue]) {
-        let flat: Vec<ValueId> = args.iter().flat_map(|v| v.bits.iter().copied()).collect();
+    // Each argument is packed into **one** value via `compose_address`
+    // (a no-op passthrough when it's already a single bit) to match
+    // `add_block_param`'s one-param-per-value contract, not flattened into
+    // `n` individual bit ids. See `add_block_param`'s doc.
+    fn jump(&mut self, target: VaffleBlock, branch: BranchTarget<VaffleValue>) {
+        let flat: Vec<ValueId> = branch.args.iter()
+            .filter(|v| !v.bits.is_empty())
+            .map(|v| self.compose_address(&v.bits))
+            .collect();
         let fb = self.fb();
         let cur = fb.current;
-        fb.blocks[cur].terminator = Some(Terminator::Jump(Target { block: BlockId(target.0), args: flat }));
+        fb.blocks[cur].terminator = Some(Terminator::Jump(Target {
+            block: BlockId(target.0),
+            args: flat,
+            reentry: branch.reentry.clone(),
+        }));
     }
 
-    fn branch(&mut self, cond: VaffleValue, then_block: VaffleBlock, then_args: &[VaffleValue], else_block: VaffleBlock, else_args: &[VaffleValue]) {
+    fn branch(
+        &mut self,
+        cond: VaffleValue,
+        then_block: VaffleBlock,
+        then_branch: BranchTarget<VaffleValue>,
+        else_block: VaffleBlock,
+        else_branch: BranchTarget<VaffleValue>,
+    ) {
         let cond_bit = cond.bits[0];
-        let flat_then: Vec<ValueId> = then_args.iter().flat_map(|v| v.bits.iter().copied()).collect();
-        let flat_else: Vec<ValueId> = else_args.iter().flat_map(|v| v.bits.iter().copied()).collect();
+        let flat_then: Vec<ValueId> = then_branch.args.iter()
+            .filter(|v| !v.bits.is_empty())
+            .map(|v| self.compose_address(&v.bits))
+            .collect();
+        let flat_else: Vec<ValueId> = else_branch.args.iter()
+            .filter(|v| !v.bits.is_empty())
+            .map(|v| self.compose_address(&v.bits))
+            .collect();
         let fb = self.fb();
         let cur = fb.current;
         fb.blocks[cur].terminator = Some(Terminator::IfNonzero {
             cond: cond_bit,
-            then_target: Target { block: BlockId(then_block.0), args: flat_then },
-            else_target: Target { block: BlockId(else_block.0), args: flat_else },
+            then_target: Target {
+                block: BlockId(then_block.0),
+                args: flat_then,
+                reentry: then_branch.reentry.clone(),
+            },
+            else_target: Target {
+                block: BlockId(else_block.0),
+                args: flat_else,
+                reentry: else_branch.reentry.clone(),
+            },
         });
     }
 
@@ -967,7 +1022,7 @@ mod tests {
             vaffle::FuncDecl::Body(b) => b,
             _ => panic!("expected function body"),
         };
-        let has_stack_alloc = body.values.iter().any(|v| matches!(v, Value::StackAlloc { .. }));
+        let has_stack_alloc = body.values.iter().any(|v| matches!(&v.kind, Value::StackAlloc { .. }));
         assert!(has_stack_alloc, "VAFFLE should contain a StackAlloc value");
     }
 
@@ -998,10 +1053,10 @@ mod tests {
             _ => panic!("expected function body"),
         };
         let has_stack_write = body.values.iter().any(|v| matches!(
-            v, Value::Op(Stmt::StorageWrite { storage, .. }) if *storage == StorageId::STACK
+            &v.kind, Value::Op(Stmt::StorageWrite { storage, .. }) if *storage == StorageId::STACK
         ));
         let has_stack_read = body.values.iter().any(|v| matches!(
-            v, Value::Op(Stmt::StorageRead { storage, .. }) if *storage == StorageId::STACK
+            &v.kind, Value::Op(Stmt::StorageRead { storage, .. }) if *storage == StorageId::STACK
         ));
         assert!(has_stack_write, "ptr_store should emit StorageWrite to STACK");
         assert!(has_stack_read, "ptr_load should emit StorageRead from STACK");
@@ -1030,7 +1085,7 @@ mod tests {
             vaffle::FuncDecl::Body(b) => b,
             _ => panic!("expected function body"),
         };
-        let has_ptr_offset = body.values.iter().any(|v| matches!(v, Value::PtrOffset { elem_bits: 32, .. }));
+        let has_ptr_offset = body.values.iter().any(|v| matches!(&v.kind, Value::PtrOffset { elem_bits: 32, .. }));
         assert!(has_ptr_offset, "VAFFLE should contain a PtrOffset with elem_bits=32");
     }
 
@@ -1051,7 +1106,7 @@ mod tests {
             vaffle::FuncDecl::Body(b) => b,
             _ => panic!("expected function body"),
         };
-        let allocs: std::vec::Vec<_> = body.values.iter().filter_map(|v| match v {
+        let allocs: std::vec::Vec<_> = body.values.iter().filter_map(|v| match &v.kind {
             Value::StackAlloc { base_slot, count, .. } => Some((*base_slot, *count)),
             _ => None,
         }).collect();
@@ -1136,7 +1191,7 @@ mod tests {
 
         // There should be StorageRead ops for loading the bits.
         let has_stack_read = body.all_values.iter().any(|v| matches!(
-            v, Value::Op(Stmt::StorageRead { storage, .. }) if *storage == StorageId::STACK
+            &v.kind, Value::Op(Stmt::StorageRead { storage, .. }) if *storage == StorageId::STACK
         ));
         assert!(has_stack_read, "optimized ABI should emit StorageReads from STACK");
 
@@ -1182,13 +1237,13 @@ mod tests {
         // There should be StorageWrite ops to STACK.
         let body = t.func.as_ref().unwrap();
         let has_stack_write = body.all_values.iter().any(|v| matches!(
-            v, Value::Op(Stmt::StorageWrite { storage, .. }) if *storage == StorageId::STACK
+            &v.kind, Value::Op(Stmt::StorageWrite { storage, .. }) if *storage == StorageId::STACK
         ));
         assert!(has_stack_write, "optimized call_extern should write large args to STACK");
 
         // The Call node's arg count should be PTR_BITS (the address),
         // NOT 128 (the raw bits).
-        let call_arg_count = body.all_values.iter().find_map(|v| match v {
+        let call_arg_count = body.all_values.iter().find_map(|v| match &v.kind {
             Value::Call { args, .. } => Some(args.len()),
             _ => None,
         });
@@ -1209,7 +1264,7 @@ mod tests {
         t.call_extern("callee", &[LirType::U32], &[val], None);
 
         let body = t.func.as_ref().unwrap();
-        let call_arg_count = body.all_values.iter().find_map(|v| match v {
+        let call_arg_count = body.all_values.iter().find_map(|v| match &v.kind {
             Value::Call { args, .. } => Some(args.len()),
             _ => None,
         });
@@ -1246,7 +1301,7 @@ mod tests {
         );
 
         // No Value::Call node should be present (tail call, not a regular call).
-        let has_call_node = body.values.iter().any(|v| matches!(v, Value::Call { .. }));
+        let has_call_node = body.values.iter().any(|v| matches!(&v.kind, Value::Call { .. }));
         assert!(!has_call_node, "ret_call must not emit a Value::Call node");
     }
 

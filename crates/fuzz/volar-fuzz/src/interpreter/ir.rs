@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use volar_ir::ir::{
     IRBlockId, IRBlockTargetId, IRBlocks, IRStmt, IRTerminator, IRTypes, IRVarId,
 };
-use volar_ir_common::{Constant, IrType, OracleDecl, Stmt, StorageId, Type, TypeId};
+use volar_ir_common::{Constant, IrType, OracleDecl, PreInitSegment, Stmt, StorageId, Type, TypeId};
 
 use crate::generators::oracle::hash_oracle;
 
@@ -53,6 +53,7 @@ pub fn eval_ir(
     let mut current_block: usize = 0;
     let mut current_inputs: Vec<IrValue> = inputs.to_vec();
     let mut storage: StorageMap = BTreeMap::new();
+    apply_pre_init(&mut storage, &blocks.pre_init, types);
 
     loop {
         if current_block == 0 {
@@ -71,6 +72,51 @@ pub fn eval_ir(
                 current_block = target;
                 current_inputs = args;
             }
+        }
+    }
+}
+
+/// Evaluate a single, already-unrolled circuit block (i.e. one satisfying
+/// `IRBlocks::is_circuit()` -- a single block ending in `Jmp(Return)`) with
+/// an externally-supplied, persistent [`StorageMap`], so callers can thread
+/// real committed-memory contents across multiple such calls (e.g. one call
+/// per outer proving step) -- unlike [`eval_ir`], which always starts from
+/// an empty storage map and cannot carry state between calls.
+///
+/// Panics if the block's terminator does not resolve to a `Jmp(Return)`
+/// (i.e. `block` does not actually satisfy `is_circuit()`) or if evaluation
+/// otherwise fails.
+pub fn eval_ir_circuit_step(
+    block: &volar_ir::ir::IRBlock<()>,
+    types: &IRTypes,
+    oracles: &[OracleDecl],
+    inputs: &[IrValue],
+    storage: &mut StorageMap,
+) -> Vec<IrValue> {
+    match eval_ir_block(block, types, oracles, inputs, storage) {
+        Some(IrBlockResult::Return(vals)) => vals,
+        Some(IrBlockResult::Jump { .. }) => {
+            panic!("eval_ir_circuit_step: block did not end in Jmp(Return) -- not a circuit?")
+        }
+        None => panic!("eval_ir_circuit_step: evaluation failed"),
+    }
+}
+
+// ============================================================================
+// Pre-init
+// ============================================================================
+
+/// Seed `storage` from module-level [`PreInitSegment`] entries.
+pub fn apply_pre_init(
+    storage: &mut StorageMap,
+    pre_init: &[PreInitSegment],
+    types: &IRTypes,
+) {
+    for seg in pre_init {
+        let w = bit_width(seg.ty, types);
+        for (i, c) in seg.data.iter().enumerate() {
+            let addr = (seg.offset + i) as u64;
+            storage.insert((seg.storage, seg.ty, addr), const_to_bits(c, w));
         }
     }
 }
@@ -111,33 +157,38 @@ fn eval_ir_block(
     }
 
     let base = block.params.len() as u32;
-    for (i, stmt) in block.stmts.iter().enumerate() {
+    for (i, node) in block.stmts.iter().enumerate() {
         let id = base + i as u32;
-        let val = eval_ir_stmt(stmt, id, types, oracles, &vars, &mut oracle_agg, storage);
+        let val = eval_ir_stmt(&node.kind, id, types, oracles, &vars, &mut oracle_agg, storage);
         vars.insert(id, val);
     }
 
     let result = match &block.terminator {
-        IRTerminator::Jmp { func, args } => {
-            let arg_vals: Vec<IrValue> = args.iter().map(|id| get_ir(&vars, id)).collect();
-            resolve_ir_target(func, &arg_vals, &vars)
+        IRTerminator::Jmp { target } => {
+            let arg_vals: Vec<IrValue> = target
+                .args
+                .iter()
+                .map(|id| get_ir(&vars, id))
+                .collect();
+            resolve_ir_target(&target.dest, &arg_vals, &vars)
         }
         IRTerminator::JumpCond {
             condition,
-            true_block,
-            true_args,
-            false_block,
-            false_args,
+            then_target,
+            else_target,
         } => {
             let cond_val = get_ir(&vars, condition);
-            let (target_block, target_args) = if cond_val.first().copied().unwrap_or(false) {
-                (true_block, true_args)
+            let branch = if cond_val.first().copied().unwrap_or(false) {
+                then_target
             } else {
-                (false_block, false_args)
+                else_target
             };
-            let arg_vals: Vec<IrValue> =
-                target_args.iter().map(|id| get_ir(&vars, id)).collect();
-            resolve_ir_target(target_block, &arg_vals, &vars)
+            let arg_vals: Vec<IrValue> = branch
+                .args
+                .iter()
+                .map(|id| get_ir(&vars, id))
+                .collect();
+            resolve_ir_target(&branch.dest, &arg_vals, &vars)
         }
         IRTerminator::JumpTable { index, cases } => {
             let idx_val = get_ir(&vars, index);
@@ -155,12 +206,15 @@ fn eval_ir_block(
                 }
             }
             let key = Constant { hi, lo };
-            let (target_block, target_args) = cases
+            let branch = cases
                 .get(&key)
                 .expect("eval_ir: JumpTable case missing for index value");
-            let arg_vals: Vec<IrValue> =
-                target_args.iter().map(|id| get_ir(&vars, id)).collect();
-            resolve_ir_target(target_block, &arg_vals, &vars)
+            let arg_vals: Vec<IrValue> = branch
+                .args
+                .iter()
+                .map(|id| get_ir(&vars, id))
+                .collect();
+            resolve_ir_target(&branch.dest, &arg_vals, &vars)
         }
     };
 
@@ -215,18 +269,18 @@ fn eval_ir_stmt(
             let dst_w = bit_width(*dst_ty, types);
             transmute_bits(&src_val, dst_w)
         }
-        Stmt::Poly { coeffs, constant, .. } => {
-            // Determine the output width from the first monomial's first var,
-            // or from a constant-only poly (width = 1 bit as default).
-            let width = if let Some((key, _)) = coeffs.iter().next() {
-                if let Some(first_var) = key.first() {
-                    get_ir(vars, first_var).len()
-                } else {
-                    1
-                }
-            } else {
-                1
-            };
+        Stmt::Poly { ty, coeffs, constant } => {
+            // Width comes from the statement's own declared type (matching
+            // every other variant here, and matching the weaver's
+            // `cir_type_width(ty)`) -- NOT inferred by peeking at an
+            // operand's already-evaluated width. A monomial can legitimately
+            // mix a scalar `Bit` selector with a wide operand in the same
+            // term (e.g. movfuscation's `is_active · val` gate formula), so
+            // "first monomial's first var" is not a reliable width source:
+            // if that var happens to be the scalar selector, this silently
+            // produced a width-1 result even when `ty` (and every real
+            // consumer of this statement, e.g. the weaver) says otherwise.
+            let width = bit_width(*ty, types);
             eval_poly(coeffs, constant, width, vars)
         }
         Stmt::Rol { src, ty, n } => {
@@ -439,9 +493,18 @@ pub fn eval_poly(
             if coeff & 1 == 0 {
                 continue;
             }
-            // AND of bit k of every variable in the monomial.
+            // AND of bit k of every variable in the monomial. A scalar
+            // (width-1) operand broadcasts its single bit to every lane
+            // (e.g. movfuscation's `is_active · val` selector, where
+            // `is_active` is always `Bit` regardless of `val`'s width) --
+            // matches the weaver's own `operand_lane` broadcast semantics
+            // exactly (`vole.rs`'s doc: "a scalar operand is reused
+            // verbatim at every lane"). Previously this read `.get(k)`
+            // unconditionally, silently treating a scalar operand as `0`
+            // at every lane past its own single bit.
             let product = monomial.iter().all(|var| {
-                get_ir(vars, var).get(k).copied().unwrap_or(false)
+                let v = get_ir(vars, var);
+                if v.len() == 1 { v[0] } else { v.get(k).copied().unwrap_or(false) }
             });
             acc ^= product;
         }
@@ -499,8 +562,8 @@ pub fn bit_unflatten(bits: &[bool], widths: &[usize]) -> Vec<IrValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use volar_ir::ir::{IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRTerminator, IRVarId};
-    use volar_ir_common::{Constant, IrType, Stmt, Type, TypeId, TypeTable};
+    use volar_ir::ir::{IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRTerminator, IRVarId};
+    use volar_ir_common::{Constant, IrType, Node, Stmt, Type, TypeId, TypeTable};
 
     fn zero_const() -> Constant {
         Constant { hi: 0, lo: 0 }
@@ -514,11 +577,9 @@ mod tests {
         stmts: Vec<IRStmt>,
         terminator: IRTerminator,
     ) -> IRBlock<()> {
-        let n = stmts.len();
         IRBlock {
             params,
-            stmts,
-            stmt_provs: vec![(); n],
+            stmts: stmts.into_iter().map(|s| Node::new(s, (), None)).collect(),
             terminator,
         }
     }
@@ -531,10 +592,7 @@ mod tests {
         IRBlocks::new(vec![simple_block(
             params,
             stmts,
-            IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: ret_args,
-            },
+            IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, ret_args,) },
         )])
     }
 

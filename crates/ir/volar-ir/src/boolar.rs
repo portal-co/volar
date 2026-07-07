@@ -3,7 +3,8 @@
 // Boolar IR: boolean circuit IR (AND/XOR/NOT basis).
 // Pure data structure definitions; no cryptographic claims.
 use super::{ir::*, *};
-use volar_ir_common::{PreInitSegment, StorageId};
+use volar_ir_common::{Node, PreInitSegment, StorageId};
+use volar_side::SideId;
 
 /// A complete Boolar circuit — a set of boolean-gate blocks.
 ///
@@ -36,37 +37,50 @@ impl<P: Clone + Default> BIrBlocks<P> {
 
 /// A single block in a Boolar circuit.
 ///
-/// The type parameter `P` is an optional per-statement provenance annotation
-/// (parallel to `stmts`).  Use `P = ()` when provenance is not needed.
+/// The type parameter `P` is an optional per-statement provenance annotation.
+/// Each statement also carries an optional [`SideId`] naming which
+/// actor/party/role it belongs to (see `volar-side`); both annotations live
+/// together on the [`Node`] wrapping each statement, so they can never drift
+/// out of sync with `stmts` the way two parallel `Vec`s could.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct BIrBlock<P: Clone + Default = ()> {
     pub params: u32,
-    pub stmts: Vec<BIrStmt>,
-    /// Per-statement provenance, same length as `stmts`.
-    /// Index `i` is the provenance of `stmts[i]`.
-    pub stmt_provs: Vec<P>,
+    pub stmts: Vec<Node<BIrStmt, P>>,
     pub terminator: BIrTerminator,
 }
 
+<<<<<<< HEAD
+impl<P: Clone> BIrBlock<P> {
+    /// Append a statement with an explicit provenance annotation and no side.
+=======
 impl<P: Clone + Default> BIrBlock<P> {
     /// Append a statement with an explicit provenance annotation.
+>>>>>>> origin/main
     pub fn push_stmt(&mut self, stmt: BIrStmt, prov: P) {
-        self.stmts.push(stmt);
-        self.stmt_provs.push(prov);
+        self.push_stmt_with_side(stmt, prov, None);
     }
 
+<<<<<<< HEAD
+    /// Append a statement with an explicit provenance annotation and side.
+    pub fn push_stmt_with_side(&mut self, stmt: BIrStmt, prov: P, side: Option<SideId>) {
+        self.stmts.push(Node::new(stmt, prov, side));
+    }
+
+    /// Map provenance annotations using a [`ProvenanceHandler`]. `side` is
+    /// untouched — provenance and side are independent axes.
+=======
     /// Append a statement using `P::default()` as the provenance.
     pub fn push_stmt_default(&mut self, stmt: BIrStmt) {
         self.push_stmt(stmt, P::default());
     }
 
     /// Map provenance annotations using a [`ProvenanceHandler`].
+>>>>>>> origin/main
     pub fn map_prov_with_handler<H: volar_provenance::ProvenanceHandler<P>>(self, handler: &H) -> BIrBlock<H::Output> {
         BIrBlock {
             params: self.params,
-            stmts: self.stmts,
-            stmt_provs: self.stmt_provs.into_iter().map(|p| handler.map(&p)).collect(),
+            stmts: self.stmts.into_iter().map(|n| n.map_prov(|p| handler.map(&p))).collect(),
             terminator: self.terminator,
         }
     }
@@ -182,7 +196,34 @@ pub enum BIrTerminator {
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+<<<<<<< HEAD
+pub struct BIrTarget<Var = IRVarId> {
+    pub block: IRBlockTargetId<Var>,
+    pub args: Vec<Var>,
+}
+
+impl<Var> BIrTarget<Var> {
+    pub fn map<Ctx, NV, E>(
+        self,
+        ctx: &mut Ctx,
+        go: &mut impl FnMut(&mut Ctx, Var) -> Result<NV, E>,
+    ) -> Result<BIrTarget<NV>, E> {
+        Ok(BIrTarget {
+            block: self.block.map(ctx, go)?,
+            args: self.args.into_iter().map(|v| go(ctx, v)).collect::<Result<Vec<NV>, E>>()?,
+        })
+    }
+
+    pub fn as_ref(&self) -> BIrTarget<&Var> {
+        BIrTarget { block: self.block.as_ref(), args: self.args.iter().collect() }
+    }
+
+    pub fn as_mut(&mut self) -> BIrTarget<&mut Var> {
+        BIrTarget { block: self.block.as_mut(), args: self.args.iter_mut().collect() }
+    }
+=======
 pub struct BIrTarget {
     pub block: IRBlockTargetId,
     pub args: Vec<IRVarId>,
+>>>>>>> origin/main
 }

@@ -18,11 +18,12 @@ use std::sync::LazyLock;
 use std::collections::BTreeMap;
 use volar_compiler::ir::{
     ArrayKind, ArrayLength, ExternalKind, IrAnyFunction, IrBlock, IrCfgFunction,
-    IrCfgJump, IrCfgModule, IrCfgTerminator, IrExpr, IrFunction, IrLit, IrModule,
-    IrPattern, IrStmt, IrType, MethodKind, PrimitiveType, SpecBinOp, SpecUnaryOp, StdMethod,
-    StructKind,
+    IrCfgJump, IrCfgModule, IrCfgTerminator, IrExpr, IrExprKind, IrFunction, IrLit, IrModule,
+    IrPattern, IrStmt, IrStmtKind, IrType, MethodKind, PrimitiveType, SpecBinOp, SpecUnaryOp,
+    StdMethod, StructKind,
 };
-use volar_lir::{IcmpPred, LirTarget, LirType};
+use volar_lir::{BranchTarget, IcmpPred, LirTarget, LirType};
+use volar_ir_common::ReentryHint;
 
 use structs::{
     StructRegistry, EnumRegistry, flatten_count, flatten_scalar_types,
@@ -153,11 +154,17 @@ impl<'t, T: LirTarget> LowerCtx<'t, T> {
 
     /// Infer the IrType of an expression using env_types and module struct defs.
     /// Returns `None` for unsupported or uninferable expressions.
+<<<<<<< HEAD
+    fn infer_type(&self, expr: &IrExpr<P>) -> Option<IrType> {
+        match &expr.kind {
+            IrExprKind::Var(name) => self.env_types.get(name).cloned(),
+=======
     fn infer_type(&self, expr: &IrExpr) -> Option<IrType> {
         match expr {
             IrExpr::Var(name) => self.env_types.get(name).cloned(),
+>>>>>>> origin/main
 
-            IrExpr::Field { base, field } => {
+            IrExprKind::Field { base, field } => {
                 let base_ty = self.infer_type(base)?;
                 // Handle tuple field access (e.g., `.0`, `.1`).
                 if let IrType::Tuple(elems) = &base_ty {
@@ -173,7 +180,7 @@ impl<'t, T: LirTarget> LowerCtx<'t, T> {
                 Some(field_def.ty.clone())
             }
 
-            IrExpr::Index { base, .. } => {
+            IrExprKind::Index { base, .. } => {
                 let base_ty = self.infer_type(base)?;
                 match &base_ty {
                     IrType::Array { elem, .. } => Some(*elem.clone()),
@@ -186,7 +193,7 @@ impl<'t, T: LirTarget> LowerCtx<'t, T> {
                 }
             }
 
-            IrExpr::MethodCall {
+            IrExprKind::MethodCall {
                 receiver,
                 method: MethodKind::Known(StdMethod::Clone | StdMethod::Deref),
                 ..
@@ -194,12 +201,12 @@ impl<'t, T: LirTarget> LowerCtx<'t, T> {
                 self.infer_type(receiver)
             }
 
-            IrExpr::Unary {
+            IrExprKind::Unary {
                 op: SpecUnaryOp::Ref | SpecUnaryOp::RefMut,
                 expr: inner,
             } => self.infer_type(inner),
 
-            IrExpr::Unary { op: SpecUnaryOp::Deref, expr: inner } => {
+            IrExprKind::Unary { op: SpecUnaryOp::Deref, expr: inner } => {
                 let ty = self.infer_type(inner)?;
                 match ty {
                     IrType::Reference { elem, .. } => Some(*elem),
@@ -208,8 +215,8 @@ impl<'t, T: LirTarget> LowerCtx<'t, T> {
             }
 
             // Call: look up the function name's return type.
-            IrExpr::Call { func, .. } => {
-                if let IrExpr::Path { segments, .. } = func.as_ref() {
+            IrExprKind::Call { func, .. } => {
+                if let IrExprKind::Path { segments, .. } = &func.kind {
                     let name = segments.last()?;
                     self.ir_func_ret_types.get(name).cloned()
                 } else {
@@ -218,7 +225,7 @@ impl<'t, T: LirTarget> LowerCtx<'t, T> {
             }
 
             // Literal: infer primitive type from the literal variant.
-            IrExpr::Lit(lit) => match lit {
+            IrExprKind::Lit(lit) => match lit {
                 IrLit::Bool(_) => Some(IrType::Primitive(PrimitiveType::Bool)),
                 IrLit::Int(_) => Some(IrType::Primitive(PrimitiveType::U64)),
                 IrLit::Unit => Some(IrType::Unit),
@@ -226,7 +233,7 @@ impl<'t, T: LirTarget> LowerCtx<'t, T> {
             },
 
             // FixedArray: infer element type from the first element + count.
-            IrExpr::FixedArray(elems) => {
+            IrExprKind::FixedArray(elems) => {
                 if elems.is_empty() {
                     return None;
                 }
@@ -270,14 +277,14 @@ static EMPTY_ENUM_REGISTRY: LazyLock<EnumRegistry> =
 /// Lower all functions in `module` to `target` using an empty `MonoEnv`.
 ///
 /// Struct types are registered via `structs::build_struct_registry` before lowering functions.
-pub fn lower_module<T: LirTarget>(module: &IrModule<IrFunction>, target: &mut T) {
+pub fn lower_module<T: LirTarget<P>, P: Clone>(module: &IrModule<IrFunction<P>, P>, target: &mut T) {
     lower_module_with_opts(module, target, &MonoEnv::new(""));
 }
 
 /// Like `lower_module` but with a `MonoEnv` providing concrete generic substitutions
 /// (array lengths, hash suffix) applied on the fly during lowering.
-pub fn lower_module_with_opts<T: LirTarget>(
-    module: &IrModule<IrFunction>,
+pub fn lower_module_with_opts<T: LirTarget<P>, P: Clone>(
+    module: &IrModule<IrFunction<P>, P>,
     target: &mut T,
     env: &MonoEnv,
 ) {
@@ -374,8 +381,8 @@ pub fn lower_module_seeded<T: LirTarget>(
 }
 
 /// Internal: lower a function with full module context (external-fn dispatch).
-fn lower_function_in_module<T: LirTarget>(
-    func: &IrFunction,
+fn lower_function_in_module<T: LirTarget<P>, P: Clone>(
+    func: &IrFunction<P>,
     target: &mut T,
     registry: &StructRegistry,
     enum_registry: &EnumRegistry,
@@ -463,22 +470,35 @@ pub fn lower_function_with_registry<T: LirTarget>(
 
 /// Lower a block, returning the flat scalar list produced by its trailing
 /// expression (or an empty vec for unit-typed blocks).
+<<<<<<< HEAD
+fn lower_block<T: LirTarget<P>, P: Clone>(block: &IrBlock<P>, ctx: &mut LowerCtx<T, P>) -> Vec<T::Value> {
+    for stmt in &block.stmts {
+        ctx.target.set_prov(stmt.prov.clone());
+        ctx.target.set_side(stmt.side);
+=======
 fn lower_block<T: LirTarget>(block: &IrBlock, ctx: &mut LowerCtx<T>) -> Vec<T::Value> {
     for stmt in &block.stmts {
+>>>>>>> origin/main
         lower_stmt(stmt, ctx);
     }
     block.expr.as_deref().map(|e| lower_expr(e, ctx)).unwrap_or_default()
 }
 
+<<<<<<< HEAD
+fn lower_stmt<T: LirTarget<P>, P: Clone>(stmt: &IrStmt<P>, ctx: &mut LowerCtx<T, P>) {
+    match &stmt.kind {
+        IrStmtKind::Let { pattern, ty, init } => {
+=======
 fn lower_stmt<T: LirTarget>(stmt: &IrStmt, ctx: &mut LowerCtx<T>) {
     match stmt {
         IrStmt::Let { pattern, ty, init } => {
+>>>>>>> origin/main
             if let Some(init_expr) = init {
                 // When the init expression is a literal and we have a type
                 // annotation, pass the type hint so the literal gets the
                 // correct narrow type (e.g. U8 instead of U64).
-                let vals = match init_expr {
-                    IrExpr::Lit(lit) => {
+                let vals = match &init_expr.kind {
+                    IrExprKind::Lit(lit) => {
                         vec![lower_lit(lit, ctx, ty.as_ref())]
                     }
                     _ => lower_expr(init_expr, ctx),
@@ -498,7 +518,7 @@ fn lower_stmt<T: LirTarget>(stmt: &IrStmt, ctx: &mut LowerCtx<T>) {
                 bind_pattern(pattern, vals, None, ctx);
             }
         }
-        IrStmt::Semi(expr) | IrStmt::Expr(expr) => {
+        IrStmtKind::Semi(expr) | IrStmtKind::Expr(expr) => {
             lower_expr(expr, ctx);
         }
     }
@@ -581,17 +601,23 @@ fn bind_pattern<T: LirTarget>(
 /// Lower an expression, returning the flat scalar list for its value.
 /// Scalar-typed expressions return a single-element vec.
 /// Aggregate-typed expressions return multiple scalars (array = N elems, struct = all fields).
+<<<<<<< HEAD
+fn lower_expr<T: LirTarget<P>, P: Clone>(expr: &IrExpr<P>, ctx: &mut LowerCtx<T, P>) -> Vec<T::Value> {
+    match &expr.kind {
+        IrExprKind::Lit(lit) => vec![lower_lit(lit, ctx, None)],
+=======
 fn lower_expr<T: LirTarget>(expr: &IrExpr, ctx: &mut LowerCtx<T>) -> Vec<T::Value> {
     match expr {
         IrExpr::Lit(lit) => vec![lower_lit(lit, ctx, None)],
+>>>>>>> origin/main
 
-        IrExpr::Var(name) => ctx
+        IrExprKind::Var(name) => ctx
             .env
             .get(name.as_str())
             .cloned()
             .unwrap_or_else(|| panic!("undefined variable: {name}")),
 
-        IrExpr::Binary { op, left, right } => {
+        IrExprKind::Binary { op, left, right } => {
             let lv = lower_expr(left, ctx);
             let rv = lower_expr(right, ctx);
             if lv.len() == 1 && rv.len() == 1 {
@@ -604,7 +630,7 @@ fn lower_expr<T: LirTarget>(expr: &IrExpr, ctx: &mut LowerCtx<T>) -> Vec<T::Valu
             }
         }
 
-        IrExpr::Unary { op, expr: inner } => {
+        IrExprKind::Unary { op, expr: inner } => {
             // Ref / RefMut / Deref are transparent in value-semantics LIR and must
             // pass through all flat scalars of the inner expression (e.g. `&arr`
             // must keep 64 scalars, not squeeze to 1).
@@ -619,29 +645,29 @@ fn lower_expr<T: LirTarget>(expr: &IrExpr, ctx: &mut LowerCtx<T>) -> Vec<T::Valu
             }
         }
 
-        IrExpr::Block(b) => lower_block(b, ctx),
+        IrExprKind::Block(b) => lower_block(b, ctx),
 
-        IrExpr::If { cond, then_branch, else_branch } => {
+        IrExprKind::If { cond, then_branch, else_branch } => {
             lower_if(cond, then_branch, else_branch.as_deref(), ctx)
         }
 
         // ---- Match (enum discriminant or primitive switch) ------------------
 
-        IrExpr::Match { expr: scrutinee, arms } => {
+        IrExprKind::Match { expr: scrutinee, arms } => {
             lower_match(scrutinee, arms, ctx)
         }
 
         // ---- Try (`?` operator) ---------------------------------------------
 
-        IrExpr::Try(inner) => lower_try(inner, ctx),
+        IrExprKind::Try(inner) => lower_try(inner, ctx),
 
-        IrExpr::Cast { expr: inner, ty } => {
+        IrExprKind::Cast { expr: inner, ty } => {
             let v = into_scalar(lower_expr(inner, ctx), "cast operand");
             let dst = ir_type_to_lir_prim(ty, ctx.mono);
             vec![ctx.target.zext(v, dst)]
         }
 
-        IrExpr::Return(val) => {
+        IrExprKind::Return(val) => {
             let ret_vals = val.as_deref().map(|e| lower_expr(e, ctx)).unwrap_or_default();
             ctx.target.ret(&ret_vals);
             vec![] // unreachable placeholder
@@ -649,77 +675,77 @@ fn lower_expr<T: LirTarget>(expr: &IrExpr, ctx: &mut LowerCtx<T>) -> Vec<T::Valu
 
         // ---- Phase 2: field access ------------------------------------------
 
-        IrExpr::Field { base, field } => lower_field(base, field, ctx),
+        IrExprKind::Field { base, field } => lower_field(base, field, ctx),
 
         // ---- Phase 2: array index -------------------------------------------
 
-        IrExpr::Index { base, index } => lower_index(base, index, ctx),
+        IrExprKind::Index { base, index } => lower_index(base, index, ctx),
 
         // ---- Phase 2: struct construction -----------------------------------
 
-        IrExpr::StructExpr { kind, fields, .. } => lower_struct_expr(kind, fields, ctx),
+        IrExprKind::StructExpr { kind, fields, .. } => lower_struct_expr(kind, fields, ctx),
 
         // ---- Tuple construction ---------------------------------------------
 
-        IrExpr::Tuple(elems) => {
+        IrExprKind::Tuple(elems) => {
             // Flatten all tuple elements into a single scalar list.
             elems.iter().flat_map(|e| lower_expr(e, ctx)).collect()
         }
 
         // ---- Phase 2: fixed-size array literal ------------------------------
 
-        IrExpr::FixedArray(elems) => lower_fixed_array(elems, ctx),
-        IrExpr::Array(elems) => lower_fixed_array(elems, ctx),
+        IrExprKind::FixedArray(elems) => lower_fixed_array(elems, ctx),
+        IrExprKind::Array(elems) => lower_fixed_array(elems, ctx),
 
         // ---- Phase 2: array generation via closure --------------------------
 
-        IrExpr::ArrayGenerate { elem_ty, len, index_var, body } => {
+        IrExprKind::ArrayGenerate { elem_ty, len, index_var, body } => {
             lower_array_generate(elem_ty.as_deref(), len, index_var, body, ctx)
         }
 
         // ---- Phase 2: element-wise map (RawMap) -----------------------------
 
-        IrExpr::RawMap { receiver, elem_var, body } => {
+        IrExprKind::RawMap { receiver, elem_var, body } => {
             lower_raw_map(receiver, elem_var, body, ctx)
         }
 
         // ---- Phase 2: element-wise zip (RawZip) -----------------------------
 
-        IrExpr::RawZip { left, right, left_var, right_var, body } => {
+        IrExprKind::RawZip { left, right, left_var, right_var, body } => {
             lower_raw_zip(left, right, left_var, right_var, body, ctx)
         }
 
         // ---- Phase 2: bounded loop ------------------------------------------
 
-        IrExpr::BoundedLoop { var, start, end, inclusive, body } => {
+        IrExprKind::BoundedLoop { var, start, end, inclusive, body } => {
             lower_bounded_loop(var, start, end, *inclusive, body, ctx);
             vec![] // loops are ()-typed
         }
 
         // ---- Phase 2: method calls ------------------------------------------
 
-        IrExpr::MethodCall { receiver, method, type_args, args } => {
+        IrExprKind::MethodCall { receiver, method, type_args, args } => {
             lower_method_call(receiver, method, type_args, args, ctx)
         }
 
         // ---- Phase 2: free function calls -----------------------------------
 
-        IrExpr::Call { func, args } => lower_call(func, args, ctx),
+        IrExprKind::Call { func, args } => lower_call(func, args, ctx),
 
         // ---- Assignment (storage writes, etc.) ------------------------------
 
-        IrExpr::Assign { left, right } => {
+        IrExprKind::Assign { left, right } => {
             lower_assign(left, right, ctx);
             vec![]
         }
 
         // ---- Compound assignment (x op= rhs) --------------------------------
 
-        IrExpr::AssignOp { op, left, right } => {
+        IrExprKind::AssignOp { op, left, right } => {
             let lv = into_scalar(lower_expr(left, ctx), "assignop lhs");
             let rv = into_scalar(lower_expr(right, ctx), "assignop rhs");
             let result = lower_binop(*op, lv, rv, ctx);
-            if let IrExpr::Var(name) = left.as_ref() {
+            if let IrExprKind::Var(name) = &left.kind {
                 ctx.env.insert(name.clone(), vec![result]);
             } else {
                 unimplemented!("AssignOp on non-variable lhs: {:?}", left);
@@ -729,7 +755,7 @@ fn lower_expr<T: LirTarget>(expr: &IrExpr, ctx: &mut LowerCtx<T>) -> Vec<T::Valu
 
         // ---- TypenumUsize and LengthOf — resolve to concrete usize const ------
 
-        IrExpr::TypenumUsize { ty } => {
+        IrExprKind::TypenumUsize { ty } => {
             // `T::USIZE` — resolve T as a const param.
             let n = match ty.as_ref() {
                 IrType::TypeParam(name) => ctx.mono.const_params.get(name.as_str()).copied()
@@ -739,14 +765,14 @@ fn lower_expr<T: LirTarget>(expr: &IrExpr, ctx: &mut LowerCtx<T>) -> Vec<T::Valu
             vec![ctx.target.iconst(LirType::U64, n as i64)]
         }
 
-        IrExpr::LengthOf(len) => {
+        IrExprKind::LengthOf(len) => {
             let n = const_len(len, ctx.mono);
             vec![ctx.target.iconst(LirType::U64, n as i64)]
         }
 
         // ---- Default / zero value -------------------------------------------
 
-        IrExpr::DefaultValue { ty } => {
+        IrExprKind::DefaultValue { ty } => {
             let lir_ty = ty.as_ref()
                 .map(|t| ctx.registry.ir_type_to_lir(t, ctx.mono))
                 .unwrap_or(LirType::Bool);
@@ -758,13 +784,13 @@ fn lower_expr<T: LirTarget>(expr: &IrExpr, ctx: &mut LowerCtx<T>) -> Vec<T::Valu
 
         // ---- Fold (unrolled accumulation over array) -------------------------
 
-        IrExpr::RawFold { receiver, init, acc_var, elem_var, body } => {
+        IrExprKind::RawFold { receiver, init, acc_var, elem_var, body } => {
             lower_raw_fold(receiver, init, acc_var, elem_var, body, ctx)
         }
 
         // ---- Path: may be a unit enum variant or a type-level size constant --
 
-        IrExpr::Path { segments, .. } => {
+        IrExprKind::Path { segments, .. } => {
             // `T::USIZE` pattern — access const generic usize from MonoEnv.
             if segments.len() == 2 && segments[1] == "USIZE" {
                 let ty_name = &segments[0];
@@ -885,7 +911,7 @@ fn lower_if<T: LirTarget>(
     let else_block = ctx.target.create_block();
 
     // Branch to then/else — join block created lazily below.
-    ctx.target.branch(cond_val, then_block.clone(), &[], else_block.clone(), &[]);
+    ctx.target.branch(cond_val, then_block.clone(), BranchTarget::args([]), else_block.clone(), BranchTarget::args([]));
 
     // Lower the then-branch first so we discover N (the result scalar count).
     ctx.target.switch_to_block(then_block.clone());
@@ -904,7 +930,7 @@ fn lower_if<T: LirTarget>(
         .map(|ty| ctx.target.add_block_param(join_block.clone(), ty.clone()))
         .collect();
 
-    ctx.target.jump(join_block.clone(), &then_vals);
+    ctx.target.jump(join_block.clone(), BranchTarget::args(then_vals.clone()));
 
     // Lower the else-branch.
     ctx.target.switch_to_block(else_block.clone());
@@ -919,7 +945,7 @@ fn lower_if<T: LirTarget>(
         else_vals.len(), n,
         "if/else branches produce different numbers of scalars ({n} vs {})", else_vals.len()
     );
-    ctx.target.jump(join_block.clone(), &else_vals);
+    ctx.target.jump(join_block.clone(), BranchTarget::args(else_vals.clone()));
 
     ctx.target.switch_to_block(join_block.clone());
     ctx.current_block = join_block;
@@ -994,7 +1020,7 @@ fn lower_match_arm_chain<'a, T: LirTarget>(
             let cond = ctx.target.icmp(IcmpPred::Eq, scrutinee.clone(), expected);
             let then_block = ctx.target.create_block();
             let else_block = ctx.target.create_block();
-            ctx.target.branch(cond, then_block.clone(), &[], else_block.clone(), &[]);
+            ctx.target.branch(cond, then_block.clone(), BranchTarget::args([]), else_block.clone(), BranchTarget::args([]));
 
             ctx.target.switch_to_block(then_block.clone());
             ctx.current_block = then_block;
@@ -1005,14 +1031,14 @@ fn lower_match_arm_chain<'a, T: LirTarget>(
             let join_params: Vec<T::Value> = scalar_tys.iter()
                 .map(|ty| ctx.target.add_block_param(join_block.clone(), ty.clone()))
                 .collect();
-            ctx.target.jump(join_block.clone(), &then_vals);
+            ctx.target.jump(join_block.clone(), BranchTarget::args(then_vals.clone()));
 
             ctx.target.switch_to_block(else_block.clone());
             ctx.current_block = else_block;
             let else_vals = lower_match_arm_chain(scrutinee, arms, ctx);
             let else_vals = if else_vals.len() == n { else_vals }
                 else { scalar_tys.iter().map(|ty| ctx.target.iconst(ty.clone(), 0)).collect() };
-            ctx.target.jump(join_block.clone(), &else_vals);
+            ctx.target.jump(join_block.clone(), BranchTarget::args(else_vals.clone()));
 
             ctx.target.switch_to_block(join_block.clone());
             ctx.current_block = join_block;
@@ -1024,7 +1050,7 @@ fn lower_match_arm_chain<'a, T: LirTarget>(
             let cond = ctx.target.icmp(IcmpPred::Eq, scrutinee.clone(), expected);
             let then_block = ctx.target.create_block();
             let else_block = ctx.target.create_block();
-            ctx.target.branch(cond, then_block.clone(), &[], else_block.clone(), &[]);
+            ctx.target.branch(cond, then_block.clone(), BranchTarget::args([]), else_block.clone(), BranchTarget::args([]));
 
             ctx.target.switch_to_block(then_block.clone());
             ctx.current_block = then_block;
@@ -1035,14 +1061,14 @@ fn lower_match_arm_chain<'a, T: LirTarget>(
             let join_params: Vec<T::Value> = scalar_tys.iter()
                 .map(|ty| ctx.target.add_block_param(join_block.clone(), ty.clone()))
                 .collect();
-            ctx.target.jump(join_block.clone(), &then_vals);
+            ctx.target.jump(join_block.clone(), BranchTarget::args(then_vals.clone()));
 
             ctx.target.switch_to_block(else_block.clone());
             ctx.current_block = else_block;
             let else_vals = lower_match_arm_chain(scrutinee, arms, ctx);
             let else_vals = if else_vals.len() == n { else_vals }
                 else { scalar_tys.iter().map(|ty| ctx.target.iconst(ty.clone(), 0)).collect() };
-            ctx.target.jump(join_block.clone(), &else_vals);
+            ctx.target.jump(join_block.clone(), BranchTarget::args(else_vals.clone()));
 
             ctx.target.switch_to_block(join_block.clone());
             ctx.current_block = join_block;
@@ -1087,7 +1113,7 @@ fn lower_enum_match<T: LirTarget>(
         let cond = ctx.target.icmp(IcmpPred::Eq, tag.clone(), disc_val);
         let then_block = ctx.target.create_block();
         let else_block = ctx.target.create_block();
-        ctx.target.branch(cond, then_block.clone(), &[], else_block.clone(), &[]);
+        ctx.target.branch(cond, then_block.clone(), BranchTarget::args([]), else_block.clone(), BranchTarget::args([]));
 
         ctx.target.switch_to_block(then_block.clone());
         ctx.current_block = then_block;
@@ -1101,7 +1127,7 @@ fn lower_enum_match<T: LirTarget>(
                 .map(|ty| ctx.target.add_block_param(join_block.clone(), ty.clone()))
                 .collect());
         }
-        ctx.target.jump(join_block.clone(), &then_vals);
+        ctx.target.jump(join_block.clone(), BranchTarget::args(then_vals.clone()));
 
         ctx.target.switch_to_block(else_block.clone());
         ctx.current_block = else_block;
@@ -1124,7 +1150,7 @@ fn lower_enum_match<T: LirTarget>(
         // No variant arms — only catch-all.
         return catch_vals;
     };
-    ctx.target.jump(join_block.clone(), &catch_vals);
+    ctx.target.jump(join_block.clone(), BranchTarget::args(catch_vals.clone()));
     ctx.target.switch_to_block(join_block.clone());
     ctx.current_block = join_block;
     jp
@@ -1209,7 +1235,7 @@ fn lower_try<T: LirTarget>(inner: &IrExpr, ctx: &mut LowerCtx<T>) -> Vec<T::Valu
     let is_ok = ctx.target.icmp(IcmpPred::Eq, tag, ok_disc);
     let ok_block  = ctx.target.create_block();
     let err_block = ctx.target.create_block();
-    ctx.target.branch(is_ok, ok_block.clone(), &[], err_block.clone(), &[]);
+    ctx.target.branch(is_ok, ok_block.clone(), BranchTarget::args([]), err_block.clone(), BranchTarget::args([]));
     // Err path: propagate error via early return.
     ctx.target.switch_to_block(err_block.clone());
     ctx.current_block = err_block;
@@ -1524,9 +1550,9 @@ fn lower_assign<T: LirTarget>(
     right: &IrExpr,
     ctx: &mut LowerCtx<T>,
 ) {
-    match left {
+    match &left.kind {
         // Assignment to an indexed location: base[index] = rhs
-        IrExpr::Index { base, index } => {
+        IrExprKind::Index { base, index } => {
             let base_ir_ty = ctx.infer_type(base)
                 .unwrap_or_else(|| panic!("Assign: could not infer base type"));
 
@@ -1550,7 +1576,7 @@ fn lower_assign<T: LirTarget>(
                 let rhs_vals = lower_expr(right, ctx);
 
                 // We need the variable name to update env.
-                if let IrExpr::Var(name) = base.as_ref() {
+                if let IrExprKind::Var(name) = &base.kind {
                     let mut arr_vals = ctx.env.get(name).cloned()
                         .unwrap_or_else(|| panic!("undefined variable: {name}"));
                     // For each element position, conditionally update using select.
@@ -1571,7 +1597,7 @@ fn lower_assign<T: LirTarget>(
             }
         }
         // Simple variable assignment: `x = rhs`
-        IrExpr::Var(name) => {
+        IrExprKind::Var(name) => {
             let rhs_vals = lower_expr(right, ctx);
             let inferred_ty = ctx.infer_type(right);
             if let Some(ty) = inferred_ty {
@@ -1635,13 +1661,13 @@ fn lower_bounded_loop<T: LirTarget>(
     };
     // Ensure values are U64 (the loop uses U64 counters).
     let start_u64 = ctx.target.zext(start_val, LirType::U64);
-    ctx.target.jump(loop_header.clone(), &[start_u64, limit_val.clone()]);
+    ctx.target.jump(loop_header.clone(), BranchTarget::args(vec![start_u64, limit_val.clone()]));
 
     // Loop header.
     ctx.target.switch_to_block(loop_header.clone());
     ctx.current_block = loop_header.clone();
     let cmp = ctx.target.icmp(IcmpPred::Ult, counter.clone(), limit.clone());
-    ctx.target.branch(cmp, body_block.clone(), &[], done_block.clone(), &[]);
+    ctx.target.branch(cmp, body_block.clone(), BranchTarget::args([]), done_block.clone(), BranchTarget::args([]));
 
     // Body block.
     ctx.target.switch_to_block(body_block.clone());
@@ -1651,7 +1677,10 @@ fn lower_bounded_loop<T: LirTarget>(
     lower_block(body, ctx);
     let one = ctx.target.iconst(LirType::U64, 1);
     let next = ctx.target.add(counter, one);
-    ctx.target.jump(loop_header, &[next, limit_val]);
+    ctx.target.jump(
+        loop_header,
+        BranchTarget::args(vec![next, limit_val]).with_reentry(ReentryHint::bounded_loop_ascending()),
+    );
 
     // Done block.
     ctx.target.switch_to_block(done_block.clone());
@@ -1744,13 +1773,13 @@ fn lower_method_extern<T: LirTarget>(
 
 fn lower_call<T: LirTarget>(func: &IrExpr, args: &[IrExpr], ctx: &mut LowerCtx<T>) -> Vec<T::Value> {
     // Handle Array::from_fn(|i| body) — convert on the fly to ArrayGenerate.
-    if let IrExpr::Path { segments, type_args } = func {
+    if let IrExprKind::Path { segments, type_args } = &func.kind {
         if segments.len() >= 2
             && (segments[segments.len() - 2] == "Array"
                 || segments[segments.len() - 2] == "GenericArray")
             && segments[segments.len() - 1] == "from_fn"
         {
-            if let Some(IrExpr::Closure { params, body, .. }) = args.first() {
+            if let Some(IrExprKind::Closure { params, body, .. }) = args.first().map(|a| &a.kind) {
                 if let Some(volar_compiler::ir::IrClosureParam { pattern: IrPattern::Ident { name: idx, .. }, .. }) = params.first() {
                     // Derive element type and length from the call's type_args.
                     // type_args = [elem_type, length_type] for Array::<T, N>::from_fn
@@ -1764,10 +1793,17 @@ fn lower_call<T: LirTarget>(func: &IrExpr, args: &[IrExpr], ctx: &mut LowerCtx<T
         }
     }
 
+<<<<<<< HEAD
+    let func_name = match &func.kind {
+        IrExprKind::Path { segments, .. } => segments.join("_"),
+        IrExprKind::Var(name) => name.clone(),
+        _other => unimplemented!("lower_call: non-path func"),
+=======
     let func_name = match func {
         IrExpr::Path { segments, .. } => segments.join("_"),
         IrExpr::Var(name) => name.clone(),
         other => unimplemented!("lower_call: non-path func {:?}", other),
+>>>>>>> origin/main
     };
 
     // ---- Enum variant construction (Tuple variant) -------------------------
@@ -2115,7 +2151,7 @@ fn lower_cfg_terminator<T: LirTarget>(
         }
         IrCfgTerminator::Goto(jump) => {
             let args = lower_jump_args(jump, ctx);
-            ctx.target.jump(lir_blocks[jump.target].clone(), &args);
+            ctx.target.jump(lir_blocks[jump.target].clone(), branch_target_from_jump::<T, P>(jump, args));
         }
         IrCfgTerminator::CondGoto { cond, then_, else_ } => {
             let cond_vals = lower_expr(cond, ctx);
@@ -2125,11 +2161,22 @@ fn lower_cfg_terminator<T: LirTarget>(
             ctx.target.branch(
                 cond_val,
                 lir_blocks[then_.target].clone(),
-                &then_args,
+                branch_target_from_jump::<T, P>(then_, then_args),
                 lir_blocks[else_.target].clone(),
-                &else_args,
+                branch_target_from_jump::<T, P>(else_, else_args),
             );
         }
+    }
+}
+
+
+fn branch_target_from_jump<T: LirTarget<P>, P: Clone>(
+    jump: &IrCfgJump<P>,
+    args: Vec<T::Value>,
+) -> BranchTarget<T::Value> {
+    match &jump.reentry {
+        Some(h) => BranchTarget::args(args).with_reentry(h.clone()),
+        None => BranchTarget::args(args),
     }
 }
 

@@ -9,6 +9,11 @@ use inkwell::context::Context;
 use volar_llvm_backend::LlvmBackend;
 use volar_lir::{IcmpPred, LirTarget, LirType, StackAllocExt};
 
+fn display_ir(ir: &str) -> String {
+    let log = volar_log::LlmtrimLogger::from_env();
+    if log.autominify { volar_log::minify_llvm_ir(ir) } else { ir.to_owned() }
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -50,7 +55,7 @@ fn test_iconst_return() {
     let m = b.finish();
     m.verify().expect("verify");
     let ir = m.print_to_string().to_string();
-    assert!(ir.contains("ret i64 42"), "expected 'ret i64 42' in:\n{ir}");
+    assert!(ir.contains("ret i64 42"), "expected 'ret i64 42' in:\n{}", display_ir(&ir));
 }
 
 // ============================================================================
@@ -146,7 +151,7 @@ fn test_not_bool() {
     m.verify().expect("verify");
     // bool NOT should be xor with true (i1 1)
     let ir = m.print_to_string().to_string();
-    assert!(ir.contains("xor i1"), "expected xor i1 for bool not in:\n{ir}");
+    assert!(ir.contains("xor i1"), "expected xor i1 for bool not in:\n{}", display_ir(&ir));
 }
 
 #[test]
@@ -196,7 +201,7 @@ fn test_icmp_signed() {
     let m = b.finish();
     m.verify().expect("verify");
     let ir = m.print_to_string().to_string();
-    assert!(ir.contains("icmp slt"), "expected 'icmp slt' in:\n{ir}");
+    assert!(ir.contains("icmp slt"), "expected 'icmp slt' in:\n{}", display_ir(&ir));
 }
 
 // ============================================================================
@@ -215,7 +220,7 @@ fn test_zext() {
     let m = b.finish();
     m.verify().expect("verify");
     let ir = m.print_to_string().to_string();
-    assert!(ir.contains("zext i8"), "expected 'zext i8' in:\n{ir}");
+    assert!(ir.contains("zext i8"), "expected 'zext i8' in:\n{}", display_ir(&ir));
 }
 
 #[test]
@@ -230,7 +235,7 @@ fn test_sext() {
     let m = b.finish();
     m.verify().expect("verify");
     let ir = m.print_to_string().to_string();
-    assert!(ir.contains("sext i8"), "expected 'sext i8' in:\n{ir}");
+    assert!(ir.contains("sext i8"), "expected 'sext i8' in:\n{}", display_ir(&ir));
 }
 
 #[test]
@@ -298,7 +303,7 @@ fn test_block_param_phi() {
     let m = b.finish();
     m.verify().expect("verify");
     let ir = m.print_to_string().to_string();
-    assert!(ir.contains("phi i64"), "expected phi node in:\n{ir}");
+    assert!(ir.contains("phi i64"), "expected phi node in:\n{}", display_ir(&ir));
 }
 
 /// Loop: count down from n to 0, return 0.
@@ -460,7 +465,7 @@ fn test_call_extern_dedup() {
     let count = ir.matches("dup_extern").count();
     // 1 declaration + 2 call sites = 3 occurrences, but only 1 `declare`
     assert_eq!(ir.matches("declare").filter(|_| true).count(), 1, "ir:\n{ir}");
-    assert!(count >= 3, "expected 3+ references to dup_extern, got {count}:\n{ir}");
+    assert!(count >= 3, "expected 3+ references to dup_extern, got {count}:\n{}", display_ir(&ir));
 }
 
 // ============================================================================

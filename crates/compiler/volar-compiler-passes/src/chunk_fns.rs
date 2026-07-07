@@ -50,9 +50,17 @@ use alloc::vec::Vec;
 
 use volar_compiler::deshadow::pattern_names;
 use volar_compiler::ir::{
-    ExternalKind, IrBlock, IrExpr, IrFunction, IrIterChain, IrModule, IrParam, IrPattern, IrStmt,
-    IrType, IterChainSource, IterStep, IterTerminal,
+    ExternalKind, IrBlock, IrExpr, IrExprKind, IrFunction, IrIterChain, IrModule, IrParam,
+    IrPattern, IrStmt, IrStmtKind, IrType, IterChainSource, IterStep, IterTerminal,
 };
+
+fn ir_expr(kind: IrExprKind) -> IrExpr {
+    IrExpr::new(kind, (), None)
+}
+
+fn ir_stmt(kind: IrStmtKind) -> IrStmt {
+    IrStmt::new(kind, (), None)
+}
 
 // ============================================================================
 // Public API
@@ -98,7 +106,7 @@ fn is_eligible(func: &IrFunction, threshold: usize) -> bool {
     func.external_kind == ExternalKind::Normal
         && func.receiver.is_none()
         && func.body.stmts.len() > threshold
-        && func.body.stmts.iter().all(|s| matches!(s, IrStmt::Let { ty: Some(_), .. }))
+        && func.body.stmts.iter().all(|s| matches!(&s.kind, IrStmtKind::Let { ty: Some(_), .. }))
 }
 
 // ============================================================================
@@ -113,7 +121,7 @@ fn chunk_one_function(func: &IrFunction, threshold: usize) -> (IrFunction, Vec<I
     // Collect (name, type) for every Let-bound variable.
     let mut binding_types: BTreeMap<String, IrType> = BTreeMap::new();
     for stmt in stmts {
-        if let IrStmt::Let { pattern, ty: Some(ty), .. } = stmt {
+        if let IrStmtKind::Let { pattern, ty: Some(ty), .. } = &stmt.kind {
             for name in pattern_names(pattern) {
                 binding_types.insert(name, ty.clone());
             }
@@ -129,7 +137,7 @@ fn chunk_one_function(func: &IrFunction, threshold: usize) -> (IrFunction, Vec<I
         // defined_before = all names bound in stmts[0..split]
         let mut defined_before: BTreeSet<String> = BTreeSet::new();
         for stmt in &stmts[..split] {
-            if let IrStmt::Let { pattern, .. } = stmt {
+            if let IrStmtKind::Let { pattern, .. } = &stmt.kind {
                 for name in pattern_names(pattern) {
                     defined_before.insert(name);
                 }
@@ -138,7 +146,7 @@ fn chunk_one_function(func: &IrFunction, threshold: usize) -> (IrFunction, Vec<I
         // used_after = all Var-refs in stmts[split..] and body.expr
         let mut used_after: BTreeSet<String> = BTreeSet::new();
         for stmt in &stmts[split..] {
-            if let IrStmt::Let { init: Some(e), .. } = stmt {
+            if let IrStmtKind::Let { init: Some(e), .. } = &stmt.kind {
                 collect_vars_in_expr(e, &mut used_after);
             }
         }
@@ -211,11 +219,11 @@ fn chunk_one_function(func: &IrFunction, threshold: usize) -> (IrFunction, Vec<I
                     subpat: None,
                 }).collect()
             );
-            body_stmts.push(IrStmt::Let {
+            body_stmts.push(ir_stmt(IrStmtKind::Let {
                 pattern: tuple_pat,
                 ty: None,
-                init: Some(IrExpr::Var("_chunk_in".into())),
-            });
+                init: Some(ir_expr(IrExprKind::Var("_chunk_in".into()))),
+            }));
         }
 
         // The segment's own statements.
@@ -226,16 +234,16 @@ fn chunk_one_function(func: &IrFunction, threshold: usize) -> (IrFunction, Vec<I
             func.body.expr.clone()
         } else {
             let tuple_exprs: Vec<IrExpr> = live_out.iter()
-                .map(|(name, _)| IrExpr::Var(name.clone()))
+                .map(|(name, _)| ir_expr(IrExprKind::Var(name.clone())))
                 .collect();
             Some(Box::new(if tuple_exprs.len() == 1 {
                 tuple_exprs.into_iter().next().unwrap()
             } else {
-                IrExpr::Tuple(tuple_exprs)
+                ir_expr(IrExprKind::Tuple(tuple_exprs))
             }))
         };
 
-        helpers.push(IrFunction {
+        helpers.push(IrFunction { no_inline: false,
             name: helper_name,
             module_path: func.module_path.clone(),
             generics: func.generics.clone(),
@@ -243,7 +251,7 @@ fn chunk_one_function(func: &IrFunction, threshold: usize) -> (IrFunction, Vec<I
             params: helper_params,
             return_type,
             where_clause: func.where_clause.clone(),
-            body: IrBlock { stmts: body_stmts, stmt_provs: Vec::new(), expr: body_expr },
+            body: IrBlock { stmts: body_stmts, expr: body_expr },
             external_kind: ExternalKind::Normal,
         });
     }
@@ -266,7 +274,7 @@ fn build_dispatcher(
 ) -> IrFunction {
     // Original param names for forwarding.
     let param_exprs: Vec<IrExpr> = func.params.iter()
-        .map(|p| IrExpr::Var(p.name.clone()))
+        .map(|p| ir_expr(IrExprKind::Var(p.name.clone())))
         .collect();
 
     let mut body_stmts: Vec<IrStmt> = Vec::new();
@@ -277,27 +285,26 @@ fn build_dispatcher(
 
         // chunk_in arg: () for first, _c{k-1} for others.
         let chunk_in_arg = if chunk_idx == 0 {
-            IrExpr::Tuple(Vec::new())
+            ir_expr(IrExprKind::Tuple(Vec::new()))
         } else {
-            IrExpr::Var(format!("_c{}", chunk_idx - 1))
+            ir_expr(IrExprKind::Var(format!("_c{}", chunk_idx - 1)))
         };
 
         let mut call_args: Vec<IrExpr> = param_exprs.clone();
         call_args.push(chunk_in_arg);
 
-        let call_expr = IrExpr::Call {
-            func: Box::new(IrExpr::Var(helper_name.clone())),
+        let call_expr = ir_expr(IrExprKind::Call {
+            func: Box::new(ir_expr(IrExprKind::Var(helper_name.clone()))),
             args: call_args,
-        };
+        });
 
         if is_last {
             // Final call becomes the block's tail expression (no let-binding).
             let disp_body = IrBlock {
                 stmts: body_stmts,
-                stmt_provs: Vec::new(),
                 expr: Some(Box::new(call_expr)),
             };
-            return IrFunction {
+            return IrFunction { no_inline: false,
                 name: func.name.clone(),
                 module_path: func.module_path.clone(),
                 generics: func.generics.clone(),
@@ -318,7 +325,7 @@ fn build_dispatcher(
                     IrType::Tuple(live_out.iter().map(|(_, ty)| ty.clone()).collect())
                 }
             };
-            body_stmts.push(IrStmt::Let {
+            body_stmts.push(ir_stmt(IrStmtKind::Let {
                 pattern: IrPattern::Ident {
                     mutable: false,
                     name: format!("_c{chunk_idx}"),
@@ -326,7 +333,7 @@ fn build_dispatcher(
                 },
                 ty: Some(out_ty),
                 init: Some(call_expr),
-            });
+            }));
         }
     }
 
@@ -340,90 +347,102 @@ fn build_dispatcher(
 
 /// Collect all `IrExpr::Var` names reachable in `expr` into `out`.
 pub fn collect_vars_in_expr(expr: &IrExpr, out: &mut BTreeSet<String>) {
-    match expr {
-        IrExpr::Var(v) => { out.insert(v.clone()); }
-        IrExpr::Binary { left, right, .. }
-        | IrExpr::Assign { left, right }
-        | IrExpr::AssignOp { left, right, .. } => {
+    match &expr.kind {
+        IrExprKind::Var(v) => { out.insert(v.clone()); }
+        IrExprKind::Binary { left, right, .. }
+        | IrExprKind::Assign { left, right }
+        | IrExprKind::AssignOp { left, right, .. } => {
             collect_vars_in_expr(left, out);
             collect_vars_in_expr(right, out);
         }
-        IrExpr::Unary { expr: e, .. }
-        | IrExpr::Cast { expr: e, .. }
-        | IrExpr::Try(e)
-        | IrExpr::Return(Some(e))
-        | IrExpr::Break(Some(e)) => collect_vars_in_expr(e, out),
-        IrExpr::Field { base, .. } => collect_vars_in_expr(base, out),
-        IrExpr::Index { base, index } => {
+        IrExprKind::Unary { expr: e, .. }
+        | IrExprKind::Cast { expr: e, .. }
+        | IrExprKind::Try(e)
+        | IrExprKind::Return(Some(e))
+        | IrExprKind::Break(Some(e)) => collect_vars_in_expr(e, out),
+        IrExprKind::Field { base, .. } => collect_vars_in_expr(base, out),
+        IrExprKind::Index { base, index } => {
             collect_vars_in_expr(base, out);
             collect_vars_in_expr(index, out);
         }
-        IrExpr::Call { func, args } => {
+        IrExprKind::Call { func, args } => {
             collect_vars_in_expr(func, out);
             for a in args { collect_vars_in_expr(a, out); }
         }
-        IrExpr::MethodCall { receiver, args, .. } => {
+        IrExprKind::MethodCall { receiver, args, .. } => {
             collect_vars_in_expr(receiver, out);
             for a in args { collect_vars_in_expr(a, out); }
         }
-        IrExpr::Block(b) => collect_vars_in_block(b, out),
-        IrExpr::If { cond, then_branch, else_branch } => {
+        IrExprKind::Block(b) => collect_vars_in_block(b, out),
+        IrExprKind::If { cond, then_branch, else_branch } => {
             collect_vars_in_expr(cond, out);
             collect_vars_in_block(then_branch, out);
             if let Some(e) = else_branch { collect_vars_in_expr(e, out); }
         }
-        IrExpr::StructExpr { fields, rest, .. } => {
+        IrExprKind::StructExpr { fields, rest, .. } => {
             for (_, e) in fields { collect_vars_in_expr(e, out); }
             if let Some(r) = rest { collect_vars_in_expr(r, out); }
         }
-        IrExpr::Array(elems) | IrExpr::Tuple(elems) | IrExpr::FixedArray(elems) => {
+        IrExprKind::Array(elems) | IrExprKind::Tuple(elems) | IrExprKind::FixedArray(elems) => {
             for e in elems { collect_vars_in_expr(e, out); }
         }
-        IrExpr::Closure { body, .. } => collect_vars_in_expr(body, out),
-        IrExpr::Range { start, end, .. } => {
+        IrExprKind::Closure { body, .. } => collect_vars_in_expr(body, out),
+        IrExprKind::Range { start, end, .. } => {
             if let Some(s) = start { collect_vars_in_expr(s, out); }
             if let Some(e) = end { collect_vars_in_expr(e, out); }
         }
-        IrExpr::IterPipeline(chain) => collect_vars_in_iter_chain(chain, out),
-        IrExpr::ArrayGenerate { body, .. } => collect_vars_in_expr(body, out),
-        IrExpr::BoundedLoop { start, end, body, .. } => {
+        IrExprKind::IterPipeline(chain) => collect_vars_in_iter_chain(chain, out),
+        IrExprKind::ArrayGenerate { body, .. } => collect_vars_in_expr(body, out),
+        IrExprKind::BoundedLoop { start, end, body, .. } => {
             collect_vars_in_expr(start, out);
             collect_vars_in_expr(end, out);
             collect_vars_in_block(body, out);
         }
-        IrExpr::IterLoop { collection, body, .. } => {
+        IrExprKind::IterLoop { collection, body, .. } => {
             collect_vars_in_expr(collection, out);
             collect_vars_in_block(body, out);
         }
-        IrExpr::WhileLoop { cond, body } => {
+        IrExprKind::WhileLoop { cond, body } => {
             collect_vars_in_expr(cond, out);
             collect_vars_in_block(body, out);
         }
-        IrExpr::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } => {
             collect_vars_in_expr(elem, out);
             collect_vars_in_expr(len, out);
         }
-        IrExpr::RawMap { receiver, body, .. } => {
+        IrExprKind::RawMap { receiver, body, .. } => {
             collect_vars_in_expr(receiver, out);
             collect_vars_in_expr(body, out);
         }
-        IrExpr::RawZip { left, right, body, .. } => {
+        IrExprKind::RawZip { left, right, body, .. } => {
             collect_vars_in_expr(left, out);
             collect_vars_in_expr(right, out);
             collect_vars_in_expr(body, out);
         }
-        IrExpr::RawFold { receiver, init, body, .. } => {
+        IrExprKind::RawFold { receiver, init, body, .. } => {
             collect_vars_in_expr(receiver, out);
             collect_vars_in_expr(init, out);
             collect_vars_in_expr(body, out);
         }
-        IrExpr::Match { expr: scrutinee, arms } => {
+        IrExprKind::Match { expr: scrutinee, arms } => {
             collect_vars_in_expr(scrutinee, out);
             for arm in arms {
                 if let Some(g) = &arm.guard { collect_vars_in_expr(g, out); }
                 collect_vars_in_expr(&arm.body, out);
             }
         }
+<<<<<<< HEAD
+        IrExprKind::Lit(_)
+        | IrExprKind::Path { .. }
+        | IrExprKind::DefaultValue { .. }
+        | IrExprKind::LengthOf(_)
+        | IrExprKind::TypenumUsize { .. }
+        | IrExprKind::Return(None)
+        | IrExprKind::Break(None)
+        | IrExprKind::Continue
+        | IrExprKind::Unreachable => {}
+        _ => {}
+=======
         IrExpr::Lit(_)
         | IrExpr::Path { .. }
         | IrExpr::DefaultValue { .. }
@@ -433,16 +452,26 @@ pub fn collect_vars_in_expr(expr: &IrExpr, out: &mut BTreeSet<String>) {
         | IrExpr::Break(None)
         | IrExpr::Continue
         | IrExpr::Unreachable => {}
+>>>>>>> origin/main
     }
 }
 
 fn collect_vars_in_block(block: &IrBlock, out: &mut BTreeSet<String>) {
     for stmt in &block.stmts {
+<<<<<<< HEAD
+        match &stmt.kind {
+            IrStmtKind::Let { init: Some(e), .. }
+            | IrStmtKind::Semi(e)
+            | IrStmtKind::Expr(e) => collect_vars_in_expr(e, out),
+            IrStmtKind::Let { init: None, .. } => {}
+            _ => {}
+=======
         match stmt {
             IrStmt::Let { init: Some(e), .. }
             | IrStmt::Semi(e)
             | IrStmt::Expr(e) => collect_vars_in_expr(e, out),
             IrStmt::Let { init: None, .. } => {}
+>>>>>>> origin/main
         }
     }
     if let Some(e) = &block.expr { collect_vars_in_expr(e, out); }

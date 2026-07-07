@@ -59,16 +59,19 @@ pub fn fresh(
     (inst, witness)
 }
 
-/// Compute the cross term `T` (length `num_cons`).
-fn cross_term(
+/// Cross term `T` (length `num_cons`) from raw witness slices — the witness-only
+/// half of the fold math, reusable outside a Pedersen-committed
+/// [`RelaxedWitness`] (e.g. [`crate::gf2k`]'s fold test, or a future
+/// witness-only fold path).
+pub fn cross_term_z(
     r1cs: &R1CS,
-    w1: &RelaxedWitness,
+    w1: &[Scalar],
     u1: &Scalar,
-    w2: &RelaxedWitness,
+    w2: &[Scalar],
     u2: &Scalar,
 ) -> Vec<Scalar> {
-    let z1 = r1cs.full_z(&w1.w, u1);
-    let z2 = r1cs.full_z(&w2.w, u2);
+    let z1 = r1cs.full_z(w1, u1);
+    let z2 = r1cs.full_z(w2, u2);
     let (az1, bz1, cz1) = r1cs.eval_abc(&z1);
     let (az2, bz2, cz2) = r1cs.eval_abc(&z2);
     (0..r1cs.num_cons)
@@ -78,6 +81,17 @@ fn cross_term(
             cross.sub(&sub)
         })
         .collect()
+}
+
+/// Compute the cross term `T` (length `num_cons`) from relaxed witnesses.
+fn cross_term(
+    r1cs: &R1CS,
+    w1: &RelaxedWitness,
+    u1: &Scalar,
+    w2: &RelaxedWitness,
+    u2: &Scalar,
+) -> Vec<Scalar> {
+    cross_term_z(r1cs, &w1.w, u1, &w2.w, u2)
 }
 
 /// **Prover** fold: returns the folded instance + witness and the `FoldProof`.

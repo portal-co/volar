@@ -53,10 +53,84 @@ pub fn commit_state(params: &PedersenParams, state: &[Scalar], blind: &Scalar) -
     params.commit(state, blind)
 }
 
+/// Streaming counterpart to [`prove_gap`]: fold one [`Step`] at a time instead of
+/// requiring the whole `&[Step]` slice materialized up front. `push` never grows —
+/// the accumulator stays a single `(RelaxedInstance, RelaxedWitness)` pair
+/// regardless of how many steps have been pushed, so a caller driving this from a
+/// loop of unknown (or hidden) length gets a fold that stays succinct.
+#[derive(Default)]
+pub struct GapAccumulator {
+    acc: Option<(RelaxedInstance, RelaxedWitness)>,
+    steps: usize,
+}
+
+impl GapAccumulator {
+    pub fn new() -> Self {
+        Self { acc: None, steps: 0 }
+    }
+
+    /// Fold in one more step: `fresh()` for the first push, `prove_fold()`
+    /// against the running accumulator thereafter.
+    pub fn push(&mut self, r1cs: &R1CS, params: &PedersenParams, step: &Step) {
+        self.acc = Some(match self.acc.take() {
+            None => fresh(r1cs, params, &step.w, step.r_w),
+            Some((acc_u, acc_w)) => {
+                let (su, sw) = fresh(r1cs, params, &step.w, step.r_w);
+                let (uf, wf, _) = prove_fold(r1cs, params, &acc_u, &acc_w, &su, &sw, &step.r, &step.r_t);
+                (uf, wf)
+            }
+        });
+        self.steps += 1;
+    }
+
+    /// Commit the boundary states and assemble the final [`GapProof`].
+    ///
+    /// # Panics
+    /// Panics if no step has been [`push`](Self::push)ed.
+    pub fn finish(
+        self,
+        params: &PedersenParams,
+        s_in: &[Scalar],
+        r_in: &Scalar,
+        s_out: &[Scalar],
+        r_out: &Scalar,
+    ) -> GapProof {
+        let (final_u, final_w) = self.acc.expect("GapAccumulator::finish: need at least one push");
+        GapProof {
+            final_u,
+            final_w,
+            c_in: commit_state(params, s_in, r_in),
+            c_out: commit_state(params, s_out, r_out),
+            steps: self.steps,
+        }
+    }
+}
+
 /// Fold all gap steps into one relaxed instance and commit the boundaries.
 ///
 /// `s_in` / `s_out` are the boundary state vectors (`S_k` / `S_{k+m}`) with
 /// blinders `r_in` / `r_out`.  Requires at least one step.
+///
+/// Thin wrapper over [`GapAccumulator`] — kept as the batch entry point for
+/// callers that already have the whole step slice; [`GapAccumulator`] is the one
+/// to use when steps arrive one at a time (e.g. from a running loop).
+///
+/// # Why this discards [`crate::nifs::FoldProof`] (intentional)
+///
+/// Each step's [`crate::nifs::FoldProof`] (from `prove_fold`) is dropped here
+/// (`let (uf, wf, _) = prove_fold(..)`) — `GapProof` has no field for it.
+/// `FoldProof` is consumed only by [`crate::nifs::verify_fold`], an
+/// instance-only, no-witness reconstruction of the folded instance; this
+/// design instead has the verifier check the folded instance natively, on the
+/// *opened* witness (see [`crate::verify::native_verify`]), so `verify_fold`
+/// is never called outside its own unit tests. `tests/fold_proof_parity.rs`
+/// confirms this is a no-loss simplification for this design specifically:
+/// reconstructing the instance-only leg by keeping every `FoldProof` and
+/// folding via `verify_fold` instead always agrees with this function's
+/// output, bit-for-bit, on both honest *and* dishonest step chains — the
+/// discarded `FoldProof`s carry no information `native_verify` doesn't
+/// already provide here. `FoldProof`/`verify_fold` remain as tested-but-unwired
+/// scaffolding for a possible future instance-only verification mode.
 #[allow(clippy::too_many_arguments)]
 pub fn prove_gap(
     r1cs: &R1CS,
@@ -68,22 +142,11 @@ pub fn prove_gap(
     r_out: &Scalar,
 ) -> GapProof {
     assert!(!steps.is_empty(), "prove_gap: need at least one step");
-    // Base case: first step is a fresh instance.
-    let (mut acc_u, mut acc_w) = fresh(r1cs, params, &steps[0].w, steps[0].r_w);
-    // Fold the remaining steps.
-    for st in &steps[1..] {
-        let (su, sw) = fresh(r1cs, params, &st.w, st.r_w);
-        let (uf, wf, _) = prove_fold(r1cs, params, &acc_u, &acc_w, &su, &sw, &st.r, &st.r_t);
-        acc_u = uf;
-        acc_w = wf;
+    let mut acc = GapAccumulator::new();
+    for st in steps {
+        acc.push(r1cs, params, st);
     }
-    GapProof {
-        final_u: acc_u,
-        final_w: acc_w,
-        c_in: commit_state(params, s_in, r_in),
-        c_out: commit_state(params, s_out, r_out),
-        steps: steps.len(),
-    }
+    acc.finish(params, s_in, r_in, s_out, r_out)
 }
 
 #[cfg(test)]
@@ -140,5 +203,47 @@ mod tests {
         let s_out = vec![Scalar::from_u64(2)];
         let gp = prove_gap(&r1cs, &params, &steps, &s_in, &Scalar::from_u64(2), &s_out, &Scalar::from_u64(3));
         assert!(!native_verify(&r1cs, &params, &gp.final_u, &gp.final_w), "lying step must fail");
+    }
+
+    #[test]
+    fn gap_accumulator_matches_prove_gap() {
+        // Pushing steps one at a time into a GapAccumulator (as a streaming
+        // caller would) must produce the same GapProof as batch prove_gap over
+        // the same steps — the accumulator never grows past a single
+        // (RelaxedInstance, RelaxedWitness) pair regardless of how many steps
+        // are pushed.
+        let r1cs = mul_gate();
+        let params = PedersenParams::setup(4, 31);
+        let steps: Vec<Step> = (1..=8u64).map(|i| step(i, i + 1, i * (i + 1), i)).collect();
+        let s_in = vec![Scalar::from_u64(1)];
+        let s_out = vec![Scalar::from_u64(99)];
+        let r_in = Scalar::from_u64(2);
+        let r_out = Scalar::from_u64(3);
+
+        let batch = prove_gap(&r1cs, &params, &steps, &s_in, &r_in, &s_out, &r_out);
+
+        let mut acc = GapAccumulator::new();
+        for st in &steps {
+            acc.push(&r1cs, &params, st);
+        }
+        let streamed = acc.finish(&params, &s_in, &r_in, &s_out, &r_out);
+
+        assert_eq!(streamed.steps, batch.steps);
+        assert_eq!(streamed.final_u.comm_w, batch.final_u.comm_w);
+        assert_eq!(streamed.final_u.comm_e, batch.final_u.comm_e);
+        assert_eq!(streamed.final_u.u, batch.final_u.u);
+        assert_eq!(streamed.c_in, batch.c_in);
+        assert_eq!(streamed.c_out, batch.c_out);
+        assert!(native_verify(&r1cs, &params, &streamed.final_u, &streamed.final_w));
+    }
+
+    #[test]
+    #[should_panic(expected = "GapAccumulator::finish: need at least one push")]
+    fn gap_accumulator_finish_without_push_panics() {
+        let params = PedersenParams::setup(4, 31);
+        let s_in = vec![Scalar::from_u64(1)];
+        let s_out = vec![Scalar::from_u64(2)];
+        let acc = GapAccumulator::new();
+        let _ = acc.finish(&params, &s_in, &Scalar::from_u64(2), &s_out, &Scalar::from_u64(3));
     }
 }

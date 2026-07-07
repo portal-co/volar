@@ -10,6 +10,7 @@ repository.workspace = true
 vaffle.workspace = true
 volar-ir.workspace = true
 volar-ir-common.workspace = true
+volar-side.workspace = true
 volar-lir.workspace = true
 portal-pc-waffle-ir.workspace = true
 

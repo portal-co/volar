@@ -33,8 +33,8 @@
 //!
 //! # Security
 //!
-//! Unlike GRAFHEN, TFHE is a standard cryptographic scheme with published security
-//! proofs. It is IND-CPA secure under the RLWE hardness assumption.
+//! TFHE is a standard cryptographic scheme with published security proofs.
+//! It is IND-CPA secure under the RLWE hardness assumption.
 //!
 //! Suggested 128-bit-security parameters (not validated by this codebase):
 //! `N_LWE = 630, BIG_N = 1024, BS_ELL = 2, KS_ELL = 5, BS_BG_LOG = 10, KS_BG_LOG = 3`.

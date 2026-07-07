@@ -1,0 +1,11 @@
+[package]
+name = "volar-log"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+log = { version = "0.4", features = ["std"], optional = true }
+
+[features]
+log-subscriber = ["dep:log"]

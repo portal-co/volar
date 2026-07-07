@@ -1,0 +1,19 @@
+[package]
+name = "volar-verifier-fold"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Prove-the-verifier integration: arithmetization frontend + C-backend terminal over volar-fold"
+repository.workspace = true
+
+[dependencies]
+volar-discipline = { workspace = true }
+volar-compiler = { path = "../../compiler/volar-compiler" }
+volar-lir-codegen = { path = "../../compiler/volar-lir-codegen" }
+volar-c-backend = { path = "../../compiler/volar-c-backend" }
+volar-weaver = { path = "../../compiler/volar-weaver" }
+
+[dev-dependencies]
+volar-verifier-iop-runtime = { path = "../../iop/volar-verifier-iop-runtime" }
+volar-ir = { path = "../../ir/volar-ir" }
+volar-ir-common = { path = "../../ir/volar-ir-common" }

@@ -3,7 +3,7 @@
 //! Constant-folding pass for Volar IR (`IRBlocks`).
 
 use alloc::{collections::BTreeMap, vec::Vec};
-use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRTypes, IRVarId};
+use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBlocks, IRBranchTarget, IRTerminator, IRTypes, IRVarId};
 use volar_ir_common::{Constant, Stmt, TypeId};
 
 use crate::common::{
@@ -56,17 +56,17 @@ fn fold_ir_block_once<P: Clone + Default>(block: &mut IRBlock<P>, types: &IRType
         let rv = IRVarId(base + i as u32);
 
         // Step 1: apply alias substitutions to this stmt's operands.
-        if apply_aliases_to_stmt(&mut block.stmts[i], &alias_map) {
+        if apply_aliases_to_stmt(&mut block.stmts[i].kind, &alias_map) {
             changed = true;
         }
 
         // Step 2: record output type.
-        if let Some(ty) = stmt_output_type(&block.stmts[i]) {
+        if let Some(ty) = stmt_output_type(&block.stmts[i].kind) {
             type_map.insert(rv, ty);
         }
 
         // Step 3: compute the action to take.
-        let action = compute_action(rv, &block.stmts[i], types, &const_map, &type_map);
+        let action = compute_action(rv, &block.stmts[i].kind, types, &const_map, &type_map);
 
         // Step 4: apply the action.
         match action {
@@ -74,7 +74,7 @@ fn fold_ir_block_once<P: Clone + Default>(block: &mut IRBlock<P>, types: &IRType
                 const_map.insert(rv, c);
             }
             IrAction::FoldToConst(c, ty) => {
-                block.stmts[i] = Stmt::Const(c, ty);
+                block.stmts[i].kind = Stmt::Const(c, ty);
                 const_map.insert(rv, c);
                 changed = true;
             }
@@ -91,7 +91,7 @@ fn fold_ir_block_once<P: Clone + Default>(block: &mut IRBlock<P>, types: &IRType
                 // Phase A: fold in-place.
                 let ty = type_map.get(&rv).copied().unwrap_or(TypeId(0));
                 {
-                    if let Stmt::Poly { coeffs, constant, .. } = &mut block.stmts[i] {
+                    if let Stmt::Poly { coeffs, constant, .. } = &mut block.stmts[i].kind {
                         if fold_poly_in_place(ty, coeffs, constant, &const_map, &type_map, types) {
                             changed = true;
                         }
@@ -101,7 +101,7 @@ fn fold_ir_block_once<P: Clone + Default>(block: &mut IRBlock<P>, types: &IRType
                 // Phase B: poly merging — substitute any singleton key that
                 // refers to a previously seen Poly (with matching TypeId).
                 {
-                    if let Stmt::Poly { coeffs, constant, ty: poly_ty } = &mut block.stmts[i] {
+                    if let Stmt::Poly { coeffs, constant, ty: poly_ty } = &mut block.stmts[i].kind {
                         let poly_ty_val = *poly_ty;
                         let singleton_srcs: Vec<IRVarId> = coeffs
                             .iter()
@@ -136,7 +136,7 @@ fn fold_ir_block_once<P: Clone + Default>(block: &mut IRBlock<P>, types: &IRType
                 }
 
                 // Phase C: if poly collapsed, convert to Const or record alias.
-                let replacement = match &block.stmts[i] {
+                let replacement = match &block.stmts[i].kind {
                     Stmt::Poly { coeffs, constant, ty: poly_ty } if coeffs.is_empty() => {
                         Some(IrPolyResult::Const(*constant, *poly_ty))
                     }
@@ -156,7 +156,7 @@ fn fold_ir_block_once<P: Clone + Default>(block: &mut IRBlock<P>, types: &IRType
                 };
                 match replacement {
                     Some(IrPolyResult::Const(c, ty)) => {
-                        block.stmts[i] = Stmt::Const(c, ty);
+                        block.stmts[i].kind = Stmt::Const(c, ty);
                         const_map.insert(rv, c);
                         changed = true;
                     }
@@ -169,7 +169,7 @@ fn fold_ir_block_once<P: Clone + Default>(block: &mut IRBlock<P>, types: &IRType
                     }
                     None => {
                         // Record surviving Poly in poly_map for downstream merging.
-                        if let Stmt::Poly { coeffs, constant, ty: poly_ty } = &block.stmts[i] {
+                        if let Stmt::Poly { coeffs, constant, ty: poly_ty } = &block.stmts[i].kind {
                             poly_map.insert(rv, (coeffs.clone(), *constant, *poly_ty));
                         }
                     }
@@ -356,30 +356,28 @@ pub(crate) fn apply_aliases_to_ir_terminator(
     }
     let mut changed = false;
     match term {
-        IRTerminator::Jmp { func, args } => {
-            changed |= apply_aliases_to_ir_target_id(func, alias_map);
-            changed |= apply_aliases_to_args(args, alias_map);
+        IRTerminator::Jmp { target } => {
+            changed |= apply_aliases_to_ir_target_id(&mut target.dest, alias_map);
+            changed |= apply_aliases_to_args(&mut target.args, alias_map);
         }
         IRTerminator::JumpCond {
             condition,
-            true_block,
-            true_args,
-            false_block,
-            false_args,
+            then_target,
+            else_target,
         } => {
             let c = canon_alias(alias_map, *condition);
             if c != *condition { *condition = c; changed = true; }
-            changed |= apply_aliases_to_ir_target_id(true_block, alias_map);
-            changed |= apply_aliases_to_args(true_args, alias_map);
-            changed |= apply_aliases_to_ir_target_id(false_block, alias_map);
-            changed |= apply_aliases_to_args(false_args, alias_map);
+            changed |= apply_aliases_to_ir_target_id(&mut then_target.dest, alias_map);
+            changed |= apply_aliases_to_args(&mut then_target.args, alias_map);
+            changed |= apply_aliases_to_ir_target_id(&mut else_target.dest, alias_map);
+            changed |= apply_aliases_to_args(&mut else_target.args, alias_map);
         }
         IRTerminator::JumpTable { index, cases } => {
             let c = canon_alias(alias_map, *index);
             if c != *index { *index = c; changed = true; }
-            for (_, (target, args)) in cases.iter_mut() {
-                changed |= apply_aliases_to_ir_target_id(target, alias_map);
-                changed |= apply_aliases_to_args(args, alias_map);
+            for branch in cases.values_mut() {
+                changed |= apply_aliases_to_ir_target_id(&mut branch.dest, alias_map);
+                changed |= apply_aliases_to_args(&mut branch.args, alias_map);
             }
         }
     }
@@ -399,25 +397,23 @@ fn fold_ir_terminator_dead_branch(
     match term {
         IRTerminator::JumpCond {
             condition,
-            true_block,
-            true_args,
-            false_block,
-            false_args,
+            then_target,
+            else_target,
         } => {
             if let Some(&c) = const_map.get(condition) {
-                let (tgt, args) = if c.lo & 1 != 0 {
-                    (true_block.clone(), true_args.clone())
+                let branch = if c.lo & 1 != 0 {
+                    then_target.clone()
                 } else {
-                    (false_block.clone(), false_args.clone())
+                    else_target.clone()
                 };
-                *term = IRTerminator::Jmp { func: tgt, args };
+                *term = IRTerminator::Jmp { target: branch };
                 return true;
             }
         }
         IRTerminator::JumpTable { index, cases } => {
             if let Some(&c) = const_map.get(index) {
-                if let Some((target, args)) = cases.get(&c).cloned() {
-                    *term = IRTerminator::Jmp { func: target, args };
+                if let Some(branch) = cases.get(&c).cloned() {
+                    *term = IRTerminator::Jmp { target: branch };
                     return true;
                 }
             }

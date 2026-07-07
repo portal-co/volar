@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 
 use vaffle::{Block, BlockId, FuncBody, FuncDecl, FuncId, Module, SigDecl, SigId, Target, Terminator, Value, ValueId};
-use volar_ir_common::{Constant, IrType, OracleDecl, Stmt, StorageId, Type, TypeId, TypeTable};
+use volar_ir_common::{Constant, IrType, Node, OracleDecl, Stmt, StorageId, Type, TypeId, TypeTable};
 
 use crate::interpreter::ir::primitive_width;
 use crate::generators::ir::{PRIM_TYPES, RawIrStmt, RawTypeIdx};
@@ -157,7 +157,7 @@ pub fn interpret_vaffle(
     let body = FuncBody {
         sig: SigId(0),
         blocks: vec![block],
-        values,
+        values: values.into_iter().map(|v| Node::new(v, (), None)).collect(),
         entry: BlockId(0),
     };
 
@@ -450,7 +450,7 @@ fn interpret_vaffle_extended_inner(
     let body = FuncBody {
         sig: SigId(0),
         blocks: vec![block],
-        values: new_values,
+        values: new_values.into_iter().map(|v| Node::new(v, (), None)).collect(),
         entry: BlockId(0),
     };
 
@@ -510,7 +510,7 @@ pub fn interpret_vaffle_multiblock(
 
     // Block 0 terminator: Jump to Block 1 with no args.
     // Block 1 has no params — it references B0 values via global ValueIds.
-    let b0_term = Terminator::Jump(Target { block: BlockId(1), args: vec![] });
+    let b0_term = Terminator::Jump(Target { block: BlockId(1), args: vec![] , reentry: None });
 
     // --- Block 1 ---
     // var_info carries over all of B0's non-void vars so B1 stmts can reference them.
@@ -572,7 +572,7 @@ pub fn interpret_vaffle_multiblock(
     let body = FuncBody {
         sig: SigId(0),
         blocks: vec![block0, block1],
-        values: all_values,
+        values: all_values.into_iter().map(|v| Node::new(v, (), None)).collect(),
         entry: BlockId(0),
     };
 
@@ -648,8 +648,8 @@ pub fn interpret_vaffle_diamond(
     // B0 terminator: IfNonzero on first param (ValueId(0)), then→B1, else→B2.
     let b0_term = Terminator::IfNonzero {
         cond: ValueId(0),
-        then_target: Target { block: BlockId(1), args: vec![] },
-        else_target: Target { block: BlockId(2), args: vec![] },
+        then_target: Target { block: BlockId(1), args: vec![] , reentry: None },
+        else_target: Target { block: BlockId(2), args: vec![] , reentry: None },
     };
 
     // ── Block 1 (true branch) ────────────────────────────────────────────────
@@ -667,7 +667,7 @@ pub fn interpret_vaffle_diamond(
     let b1_value_count = b1_values.len();
 
     // B1 → B3
-    let b1_term = Terminator::Jump(Target { block: BlockId(3), args: vec![] });
+    let b1_term = Terminator::Jump(Target { block: BlockId(3), args: vec![] , reentry: None });
 
     // ── Block 2 (false branch) ───────────────────────────────────────────────
     let b2_value_offset = b0_value_count + b1_value_count;
@@ -684,7 +684,7 @@ pub fn interpret_vaffle_diamond(
     let b2_value_count = b2_values.len();
 
     // B2 → B3
-    let b2_term = Terminator::Jump(Target { block: BlockId(3), args: vec![] });
+    let b2_term = Terminator::Jump(Target { block: BlockId(3), args: vec![] , reentry: None });
 
     // ── Block 3 (merge) ──────────────────────────────────────────────────────
     let b3_value_offset = b0_value_count + b1_value_count + b2_value_count;
@@ -786,7 +786,7 @@ pub fn interpret_vaffle_diamond(
     let body = FuncBody {
         sig: SigId(0),
         blocks: vec![block0, block1, block2, block3],
-        values: all_values,
+        values: all_values.into_iter().map(|v| Node::new(v, (), None)).collect(),
         entry: BlockId(0),
     };
 
@@ -874,7 +874,7 @@ pub fn interpret_vaffle_two_func(
     let f1_body = FuncBody {
         sig: SigId(1),
         blocks: vec![f1_block],
-        values: f1_values,
+        values: f1_values.into_iter().map(|v| Node::new(v, (), None)).collect(),
         entry: BlockId(0),
     };
 
@@ -979,7 +979,7 @@ pub fn interpret_vaffle_two_func(
     let f0_body = FuncBody {
         sig: SigId(0),
         blocks: vec![f0_block],
-        values: f0_values,
+        values: f0_values.into_iter().map(|v| Node::new(v, (), None)).collect(),
         entry: BlockId(0),
     };
 

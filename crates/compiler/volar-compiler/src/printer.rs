@@ -42,11 +42,11 @@ pub struct RustCtx {
 
 /// Collect direct callee names (by bare identifier) from an expression tree.
 fn collect_callee_names_expr(expr: &IrExpr, out: &mut BTreeSet<String>) {
-    match expr {
-        IrExpr::Call { func, args } => {
-            match func.as_ref() {
-                IrExpr::Var(n) => { out.insert(n.clone()); }
-                IrExpr::Path { segments, .. } if segments.len() == 1 => {
+    match &expr.kind {
+        IrExprKind::Call { func, args } => {
+            match &func.kind {
+                IrExprKind::Var(n) => { out.insert(n.clone()); }
+                IrExprKind::Path { segments, .. } if segments.len() == 1 => {
                     out.insert(segments[0].clone());
                 }
                 _ => {}
@@ -54,91 +54,91 @@ fn collect_callee_names_expr(expr: &IrExpr, out: &mut BTreeSet<String>) {
             collect_callee_names_expr(func, out);
             for a in args { collect_callee_names_expr(a, out); }
         }
-        IrExpr::MethodCall { receiver, args, .. } => {
+        IrExprKind::MethodCall { receiver, args, .. } => {
             collect_callee_names_expr(receiver, out);
             for a in args { collect_callee_names_expr(a, out); }
         }
-        IrExpr::Binary { left, right, .. }
-        | IrExpr::Assign { left, right }
-        | IrExpr::AssignOp { left, right, .. } => {
+        IrExprKind::Binary { left, right, .. }
+        | IrExprKind::Assign { left, right }
+        | IrExprKind::AssignOp { left, right, .. } => {
             collect_callee_names_expr(left, out);
             collect_callee_names_expr(right, out);
         }
-        IrExpr::Unary { expr, .. }
-        | IrExpr::Return(Some(expr))
-        | IrExpr::Break(Some(expr))
-        | IrExpr::Cast { expr, .. }
-        | IrExpr::Try(expr)
-        | IrExpr::Field { base: expr, .. } => {
+        IrExprKind::Unary { expr, .. }
+        | IrExprKind::Return(Some(expr))
+        | IrExprKind::Break(Some(expr))
+        | IrExprKind::Cast { expr, .. }
+        | IrExprKind::Try(expr)
+        | IrExprKind::Field { base: expr, .. } => {
             collect_callee_names_expr(expr, out);
         }
-        IrExpr::Index { base, index } => {
+        IrExprKind::Index { base, index } => {
             collect_callee_names_expr(base, out);
             collect_callee_names_expr(index, out);
         }
-        IrExpr::Block(b) => collect_callee_names_block(b, out),
-        IrExpr::If { cond, then_branch, else_branch } => {
+        IrExprKind::Block(b) => collect_callee_names_block(b, out),
+        IrExprKind::If { cond, then_branch, else_branch } => {
             collect_callee_names_expr(cond, out);
             collect_callee_names_block(then_branch, out);
             if let Some(e) = else_branch { collect_callee_names_expr(e, out); }
         }
-        IrExpr::BoundedLoop { start, end, body, .. } => {
+        IrExprKind::BoundedLoop { start, end, body, .. } => {
             collect_callee_names_expr(start, out);
             collect_callee_names_expr(end, out);
             collect_callee_names_block(body, out);
         }
-        IrExpr::IterLoop { collection, body, .. } => {
+        IrExprKind::IterLoop { collection, body, .. } => {
             collect_callee_names_expr(collection, out);
             collect_callee_names_block(body, out);
         }
-        IrExpr::WhileLoop { cond, body } => {
+        IrExprKind::WhileLoop { cond, body } => {
             collect_callee_names_expr(cond, out);
             collect_callee_names_block(body, out);
         }
-        IrExpr::Closure { body, .. } => collect_callee_names_expr(body, out),
-        IrExpr::RawMap { receiver, body, .. } => {
+        IrExprKind::Closure { body, .. } => collect_callee_names_expr(body, out),
+        IrExprKind::RawMap { receiver, body, .. } => {
             collect_callee_names_expr(receiver, out);
             collect_callee_names_expr(body, out);
         }
-        IrExpr::RawZip { left, right, body, .. } => {
+        IrExprKind::RawZip { left, right, body, .. } => {
             collect_callee_names_expr(left, out);
             collect_callee_names_expr(right, out);
             collect_callee_names_expr(body, out);
         }
-        IrExpr::RawFold { receiver, init, body, .. } => {
+        IrExprKind::RawFold { receiver, init, body, .. } => {
             collect_callee_names_expr(receiver, out);
             collect_callee_names_expr(init, out);
             collect_callee_names_expr(body, out);
         }
-        IrExpr::StructExpr { fields, rest, .. } => {
+        IrExprKind::StructExpr { fields, rest, .. } => {
             for (_, e) in fields { collect_callee_names_expr(e, out); }
             if let Some(r) = rest { collect_callee_names_expr(r, out); }
         }
-        IrExpr::Tuple(es) | IrExpr::Array(es) | IrExpr::FixedArray(es) => {
+        IrExprKind::Tuple(es) | IrExprKind::Array(es) | IrExprKind::FixedArray(es) => {
             for e in es { collect_callee_names_expr(e, out); }
         }
-        IrExpr::Repeat { elem, len } => {
+        IrExprKind::Repeat { elem, len } => {
             collect_callee_names_expr(elem, out);
             collect_callee_names_expr(len, out);
         }
-        IrExpr::Range { start, end, .. } => {
+        IrExprKind::Range { start, end, .. } => {
             if let Some(e) = start { collect_callee_names_expr(e, out); }
             if let Some(e) = end   { collect_callee_names_expr(e, out); }
         }
-        IrExpr::Match { expr, arms } => {
+        IrExprKind::Match { expr, arms } => {
             collect_callee_names_expr(expr, out);
             for arm in arms { collect_callee_names_expr(&arm.body, out); }
         }
-        IrExpr::ArrayGenerate { body, .. } => collect_callee_names_expr(body, out),
+        IrExprKind::ArrayGenerate { body, .. } => collect_callee_names_expr(body, out),
         _ => {}
     }
 }
 
 fn collect_callee_names_block(block: &IrBlock, out: &mut BTreeSet<String>) {
     for stmt in &block.stmts {
-        match stmt {
-            IrStmt::Let { init: Some(e), .. } => collect_callee_names_expr(e, out),
-            IrStmt::Semi(e) | IrStmt::Expr(e) => collect_callee_names_expr(e, out),
+        match &stmt.kind {
+            IrStmtKind::Let { init: Some(e), .. } => collect_callee_names_expr(e, out),
+            IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => collect_callee_names_expr(e, out),
             _ => {}
         }
     }
@@ -147,9 +147,9 @@ fn collect_callee_names_block(block: &IrBlock, out: &mut BTreeSet<String>) {
 
 fn collect_callee_names_cfg_block(block: &IrCfgBlock, out: &mut BTreeSet<String>) {
     for stmt in &block.stmts {
-        match stmt {
-            IrStmt::Let { init: Some(e), .. } => collect_callee_names_expr(e, out),
-            IrStmt::Semi(e) | IrStmt::Expr(e) => collect_callee_names_expr(e, out),
+        match &stmt.kind {
+            IrStmtKind::Let { init: Some(e), .. } => collect_callee_names_expr(e, out),
+            IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => collect_callee_names_expr(e, out),
             _ => {}
         }
     }
@@ -277,9 +277,9 @@ pub fn compute_async_fns_cfg(module: &IrCfgModule) -> (BTreeSet<String>, BTreeSe
 
 /// Returns `true` if the expression is a call to a function in `names`.
 fn expr_calls_fn_in(func: &IrExpr, names: &BTreeSet<String>) -> bool {
-    match func {
-        IrExpr::Var(n) => names.contains(n),
-        IrExpr::Path { segments, .. } if segments.len() == 1 => names.contains(&segments[0]),
+    match &func.kind {
+        IrExprKind::Var(n) => names.contains(n),
+        IrExprKind::Path { segments, .. } if segments.len() == 1 => names.contains(&segments[0]),
         _ => false,
     }
 }
@@ -672,6 +672,9 @@ impl<'a> RustBackend for FunctionWriter<'a> {
         if self.f.external_kind == ExternalKind::Action {
             writeln!(f, "{}#[volar_action]", indent)?;
         }
+        if self.f.no_inline {
+            writeln!(f, "{}#[inline(never)]", indent)?;
+        }
         // Decide whether to emit `async fn`.  Trait-impl methods are always
         // excluded (ctx is already None for those; guard is defensive).
         let is_async = !self.is_trait_item
@@ -951,8 +954,8 @@ impl<'a> RustBackend for StmtWriter<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let indent = "    ".repeat(self.level);
         write!(f, "{}", indent)?;
-        match self.stmt {
-            IrStmt::Let { pattern, ty, init } => {
+        match &self.stmt.kind {
+            IrStmtKind::Let { pattern, ty, init } => {
                 write!(f, "let ")?;
                 PatternWriter { pat: pattern }.fmt(f)?;
                 if let Some(t) = ty {
@@ -965,11 +968,11 @@ impl<'a> RustBackend for StmtWriter<'a> {
                 }
                 writeln!(f, ";")?;
             }
-            IrStmt::Semi(e) => {
+            IrStmtKind::Semi(e) => {
                 ExprWriter { expr: e, ctx: self.ctx }.fmt(f)?;
                 writeln!(f, ";")?;
             }
-            IrStmt::Expr(e) => {
+            IrStmtKind::Expr(e) => {
                 ExprWriter { expr: e, ctx: self.ctx }.fmt(f)?;
                 writeln!(f)?;
             }
@@ -1117,8 +1120,8 @@ impl<'a> RustBackend for IterChainWriter<'a> {
 
 impl<'a> RustBackend for ExprChainWriter<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.expr {
-            IrExpr::MethodCall {
+        match &self.expr.kind {
+            IrExprKind::MethodCall {
                 receiver,
                 method,
                 args,
@@ -1146,10 +1149,10 @@ impl<'a> RustBackend for ExprChainWriter<'a> {
                 }
                 write!(f, ")")?;
             }
-            IrExpr::IterPipeline(chain) => {
+            IrExprKind::IterPipeline(chain) => {
                 IterChainWriter { chain }.fmt_no_terminal(f)?;
             }
-            IrExpr::RawMap { .. } | IrExpr::RawZip { .. } | IrExpr::RawFold { .. } => {
+            IrExprKind::RawMap { .. } | IrExprKind::RawZip { .. } | IrExprKind::RawFold { .. } => {
                 // In chain context, emit the raw op then .into_iter()
                 ExprWriter { expr: self.expr, ctx: None }.fmt(f)?;
                 write!(f, ".into_iter()")?;
@@ -1165,24 +1168,24 @@ impl<'a> RustBackend for ExprChainWriter<'a> {
 
 impl<'a> RustBackend for ExprWriter<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.expr {
-            IrExpr::Lit(l) => write!(f, "{}", l)?,
-            IrExpr::Var(v) => {
+        match &self.expr.kind {
+            IrExprKind::Lit(l) => write!(f, "{}", l)?,
+            IrExprKind::Var(v) => {
                 debug_assert!(
                     v == "self" || v.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
-                    "IrExpr::Var contains non-ident string {:?}. Use Path, Call, or other IR nodes.",
+                    "IrExprKind::Var contains non-ident string {:?}. Use Path, Call, or other IR nodes.",
                     v
                 );
                 write!(f, "{}", v)?;
             }
-            IrExpr::Binary { op, left, right } => {
+            IrExprKind::Binary { op, left, right } => {
                 write!(f, "(")?;
                 self.sub(left).fmt(f)?;
                 write!(f, " {} ", bin_op_str(*op))?;
                 self.sub(right).fmt(f)?;
                 write!(f, ")")?;
             }
-            IrExpr::MethodCall {
+            IrExprKind::MethodCall {
                 receiver,
                 method,
                 args,
@@ -1210,7 +1213,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 }
                 write!(f, ")")?;
             }
-            IrExpr::Call { func, args } => {
+            IrExprKind::Call { func, args } => {
                 // In async mode, oracle/action/rng calls get `.await`.
                 let is_oracle = self.ctx.map_or(false, |c| {
                     c.emit_async && expr_calls_fn_in(func, &c.oracle_fn_names)
@@ -1231,7 +1234,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     write!(f, ").await")?;
                 }
             }
-            IrExpr::Field { base, field } => {
+            IrExprKind::Field { base, field } => {
                 debug_assert!(
                     field.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
                         || field.parse::<usize>().is_ok(),
@@ -1241,14 +1244,14 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 self.sub(base).fmt(f)?;
                 write!(f, ".{}", field)?;
             }
-            IrExpr::Index { base, index } => {
+            IrExprKind::Index { base, index } => {
                 self.sub(base).fmt(f)?;
                 write!(f, "[")?;
                 self.sub(index).fmt(f)?;
                 write!(f, "]")?;
             }
-            IrExpr::Block(b) => self.block(b, 0).fmt(f)?,
-            IrExpr::If {
+            IrExprKind::Block(b) => self.block(b, 0).fmt(f)?,
+            IrExprKind::If {
                 cond,
                 then_branch,
                 else_branch,
@@ -1261,7 +1264,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     self.sub(eb).fmt(f)?;
                 }
             }
-            IrExpr::BoundedLoop {
+            IrExprKind::BoundedLoop {
                 var,
                 start,
                 end,
@@ -1279,7 +1282,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 self.sub(end).fmt(f)?;
                 self.block(body, 0).fmt(f)?;
             }
-            IrExpr::IterLoop {
+            IrExprKind::IterLoop {
                 pattern,
                 collection,
                 body,
@@ -1290,15 +1293,15 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 self.sub(collection).fmt(f)?;
                 self.block(body, 0).fmt(f)?;
             }
-            IrExpr::WhileLoop { cond, body } => {
+            IrExprKind::WhileLoop { cond, body } => {
                 write!(f, "while ")?;
                 self.sub(cond).fmt(f)?;
                 self.block(body, 0).fmt(f)?;
             }
-            IrExpr::IterPipeline(chain) => {
+            IrExprKind::IterPipeline(chain) => {
                 IterChainWriter { chain }.fmt(f)?;
             }
-            IrExpr::RawMap {
+            IrExprKind::RawMap {
                 receiver,
                 elem_var,
                 body,
@@ -1310,7 +1313,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 self.sub(body).fmt(f)?;
                 write!(f, ")")?;
             }
-            IrExpr::RawZip {
+            IrExprKind::RawZip {
                 left,
                 right,
                 left_var,
@@ -1328,7 +1331,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 self.sub(body).fmt(f)?;
                 write!(f, ")")?;
             }
-            IrExpr::RawFold {
+            IrExprKind::RawFold {
                 receiver,
                 init,
                 acc_var,
@@ -1346,7 +1349,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 self.sub(body).fmt(f)?;
                 write!(f, ")")?;
             }
-            IrExpr::Path {
+            IrExprKind::Path {
                 segments,
                 type_args,
             } => {
@@ -1388,7 +1391,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     }
                 }
             }
-            IrExpr::Closure { params, body, .. } => {
+            IrExprKind::Closure { params, body, .. } => {
                 write!(f, "|")?;
                 for (i, p) in params.iter().enumerate() {
                     if i > 0 {
@@ -1399,7 +1402,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 write!(f, "| ")?;
                 self.sub(body).fmt(f)?;
             }
-            IrExpr::Range {
+            IrExprKind::Range {
                 start,
                 end,
                 inclusive,
@@ -1412,12 +1415,12 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     self.sub(e).fmt(f)?;
                 }
             }
-            IrExpr::Assign { left, right } => {
+            IrExprKind::Assign { left, right } => {
                 self.sub(left).fmt(f)?;
                 write!(f, " = ")?;
                 self.sub(right).fmt(f)?;
             }
-            IrExpr::StructExpr { kind, fields, .. } => {
+            IrExprKind::StructExpr { kind, fields, .. } => {
                 write!(f, "{} {{ ", kind)?;
                 for (i, (name, val)) in fields.iter().enumerate() {
                     if i > 0 {
@@ -1428,7 +1431,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 }
                 write!(f, " }}")?;
             }
-            IrExpr::Tuple(elems) => {
+            IrExprKind::Tuple(elems) => {
                 write!(f, "(")?;
                 for (i, e) in elems.iter().enumerate() {
                     if i > 0 {
@@ -1442,7 +1445,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 }
                 write!(f, ")")?;
             }
-            IrExpr::Array(elems) => {
+            IrExprKind::Array(elems) => {
                 write!(f, "vec![")?;
                 for (i, e) in elems.iter().enumerate() {
                     if i > 0 {
@@ -1452,7 +1455,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 }
                 write!(f, "]")?;
             }
-            IrExpr::FixedArray(elems) => {
+            IrExprKind::FixedArray(elems) => {
                 write!(f, "[")?;
                 for (i, e) in elems.iter().enumerate() {
                     if i > 0 {
@@ -1462,51 +1465,51 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 }
                 write!(f, "]")?;
             }
-            IrExpr::Repeat { elem, len } => {
+            IrExprKind::Repeat { elem, len } => {
                 write!(f, "[")?;
                 self.sub(elem).fmt(f)?;
                 write!(f, "; ")?;
                 self.sub(len).fmt(f)?;
                 write!(f, "]")?;
             }
-            IrExpr::Cast { expr, ty } => {
+            IrExprKind::Cast { expr, ty } => {
                 write!(f, "(")?;
                 self.sub(expr).fmt(f)?;
                 write!(f, " as ")?;
                 TypeWriter { ty }.fmt(f)?;
                 write!(f, ")")?;
             }
-            IrExpr::Return(e) => {
+            IrExprKind::Return(e) => {
                 write!(f, "return")?;
                 if let Some(e) = e {
                     write!(f, " ")?;
                     self.sub(e).fmt(f)?;
                 }
             }
-            IrExpr::Break(e) => {
+            IrExprKind::Break(e) => {
                 write!(f, "break")?;
                 if let Some(e) = e {
                     write!(f, " ")?;
                     self.sub(e).fmt(f)?;
                 }
             }
-            IrExpr::Continue => write!(f, "continue")?,
-            IrExpr::AssignOp { op, left, right } => {
+            IrExprKind::Continue => write!(f, "continue")?,
+            IrExprKind::AssignOp { op, left, right } => {
                 self.sub(left).fmt(f)?;
                 write!(f, " {}= ", bin_op_str(*op))?;
                 self.sub(right).fmt(f)?;
             }
-            IrExpr::Try(e) => {
+            IrExprKind::Try(e) => {
                 self.sub(e).fmt(f)?;
                 write!(f, "?")?;
             }
-            IrExpr::TypenumUsize { ty } => {
+            IrExprKind::TypenumUsize { ty } => {
                 write!(f, "<")?;
                 TypeWriter { ty }.fmt(f)?;
                 write!(f, " as typenum::Unsigned>::USIZE")?;
             }
-            IrExpr::Unreachable => write!(f, "unreachable!()")?,
-            IrExpr::DefaultValue { ty } => {
+            IrExprKind::Unreachable => write!(f, "unreachable!()")?,
+            IrExprKind::DefaultValue { ty } => {
                 if let Some(t) = ty {
                     // Array/Vector types: vec![<elem>::default(); len]
                     if let IrType::Array { elem, len, .. } = t.as_ref() {
@@ -1541,7 +1544,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     write!(f, "Default::default()")?;
                 }
             }
-            IrExpr::LengthOf(len) => {
+            IrExprKind::LengthOf(len) => {
                 match len {
                     ArrayLength::Const(n) => write!(f, "{}", n)?,
                     ArrayLength::TypeParam(p) => write!(f, "{}::USIZE", p)?,
@@ -1554,7 +1557,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     _ => write!(f, "0")?,
                 }
             }
-            IrExpr::ArrayGenerate {
+            IrExprKind::ArrayGenerate {
                 elem_ty,
                 len,
                 index_var,
@@ -1580,7 +1583,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                 self.sub(body).fmt(f)?;
                 write!(f, ")")?;
             }
-            IrExpr::Unary { op, expr } => match op {
+            IrExprKind::Unary { op, expr } => match op {
                 SpecUnaryOp::Neg => {
                     write!(f, "-")?;
                     self.sub(expr).fmt(f)?;
@@ -1602,7 +1605,7 @@ impl<'a> RustBackend for ExprWriter<'a> {
                     self.sub(expr).fmt(f)?;
                 }
             },
-            IrExpr::Match { expr, arms } => {
+            IrExprKind::Match { expr, arms } => {
                 write!(f, "match ")?;
                 self.sub(expr).fmt(f)?;
                 writeln!(f, " {{")?;
@@ -2211,8 +2214,12 @@ mod tests {
     use crate::parser::parse_source;
     use crate::ir::{
         ExternalKind, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump, IrCfgTerminator, IrExpr,
-        IrLit, IrParam, IrType, PrimitiveType,
+        IrExprKind, IrLit, IrParam, IrType, PrimitiveType,
     };
+
+    fn ir_expr(kind: IrExprKind) -> IrExpr {
+        volar_ir_common::Node::new(kind, (), None)
+    }
 
     fn minimal_cfg_fn(name: &str, blocks: Vec<IrCfgBlock>) -> IrCfgFunction {
         IrCfgFunction {
@@ -2240,7 +2247,6 @@ mod tests {
             vec![IrCfgBlock {
                 params: vec![],
                 stmts: vec![],
-                stmt_provs: vec![],
                 terminator: IrCfgTerminator::Return(None),
             }],
         );
@@ -2261,8 +2267,7 @@ mod tests {
             vec![IrCfgBlock {
                 params: vec![],
                 stmts: vec![],
-                stmt_provs: vec![],
-                terminator: IrCfgTerminator::Return(Some(IrExpr::Lit(IrLit::Bool(true)))),
+                terminator: IrCfgTerminator::Return(Some(ir_expr(IrExprKind::Lit(IrLit::Bool(true))))),
             }],
         );
         let out = render(&func);
@@ -2280,13 +2285,11 @@ mod tests {
                 IrCfgBlock {
                     params: vec![],
                     stmts: vec![],
-                    stmt_provs: vec![],
-                    terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: vec![] }),
+                    terminator: IrCfgTerminator::Goto(IrCfgJump::new(1, vec![])),
                 },
                 IrCfgBlock {
                     params: vec![],
                     stmts: vec![],
-                    stmt_provs: vec![],
                     terminator: IrCfgTerminator::Return(None),
                 },
             ],
@@ -2306,13 +2309,11 @@ mod tests {
                 IrCfgBlock {
                     params: vec![],
                     stmts: vec![],
-                    stmt_provs: vec![],
-                    terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: vec![] }),
+                    terminator: IrCfgTerminator::Goto(IrCfgJump::new(1, vec![])),
                 },
                 IrCfgBlock {
                     params: vec![],
                     stmts: vec![],
-                    stmt_provs: vec![],
                     terminator: IrCfgTerminator::Return(None),
                 },
             ],
@@ -2330,14 +2331,12 @@ mod tests {
                 IrCfgBlock {
                     params: vec![],
                     stmts: vec![],
-                    stmt_provs: vec![],
-                    terminator: IrCfgTerminator::Goto(IrCfgJump { target: 1, args: vec![] }),
+                    terminator: IrCfgTerminator::Goto(IrCfgJump::new(1, vec![])),
                 },
                 IrCfgBlock {
                     params: vec![],
                     stmts: vec![],
-                    stmt_provs: vec![],
-                    terminator: IrCfgTerminator::Return(Some(IrExpr::Lit(IrLit::Int(42)))),
+                    terminator: IrCfgTerminator::Return(Some(ir_expr(IrExprKind::Lit(IrLit::Int(42))))),
                 },
             ],
         );
@@ -2355,11 +2354,10 @@ mod tests {
                 IrCfgBlock {
                     params: vec![],
                     stmts: vec![],
-                    stmt_provs: vec![],
-                    terminator: IrCfgTerminator::Goto(IrCfgJump {
-                        target: 1,
-                        args: vec![IrExpr::Lit(IrLit::Bool(false))],
-                    }),
+                    terminator: IrCfgTerminator::Goto(IrCfgJump::new(
+                        1,
+                        vec![ir_expr(IrExprKind::Lit(IrLit::Bool(false)))],
+                    )),
                 },
                 IrCfgBlock {
                     params: vec![IrParam {
@@ -2367,7 +2365,6 @@ mod tests {
                         ty: IrType::Primitive(PrimitiveType::Bool),
                     }],
                     stmts: vec![],
-                    stmt_provs: vec![],
                     terminator: IrCfgTerminator::Return(None),
                 },
             ],
@@ -2388,11 +2385,10 @@ mod tests {
                 IrCfgBlock {
                     params: vec![],
                     stmts: vec![],
-                    stmt_provs: vec![],
-                    terminator: IrCfgTerminator::Goto(IrCfgJump {
-                        target: 1,
-                        args: vec![IrExpr::Var("val".to_string())],
-                    }),
+                    terminator: IrCfgTerminator::Goto(IrCfgJump::new(
+                        1,
+                        vec![ir_expr(IrExprKind::Var("val".to_string()))],
+                    )),
                 },
                 IrCfgBlock {
                     params: vec![IrParam {
@@ -2400,7 +2396,6 @@ mod tests {
                         ty: IrType::Primitive(PrimitiveType::Bool),
                     }],
                     stmts: vec![],
-                    stmt_provs: vec![],
                     terminator: IrCfgTerminator::Return(None),
                 },
             ],
@@ -2421,11 +2416,10 @@ mod tests {
                 IrCfgBlock {
                     params: vec![],
                     stmts: vec![],
-                    stmt_provs: vec![],
-                    terminator: IrCfgTerminator::Goto(IrCfgJump {
-                        target: 1,
-                        args: vec![IrExpr::Lit(IrLit::Int(0))],
-                    }),
+                    terminator: IrCfgTerminator::Goto(IrCfgJump::new(
+                        1,
+                        vec![ir_expr(IrExprKind::Lit(IrLit::Int(0)))],
+                    )),
                 },
                 IrCfgBlock {
                     params: vec![IrParam {
@@ -2433,7 +2427,6 @@ mod tests {
                         ty: IrType::Primitive(PrimitiveType::U32),
                     }],
                     stmts: vec![],
-                    stmt_provs: vec![],
                     terminator: IrCfgTerminator::Return(None),
                 },
             ],
@@ -2456,23 +2449,20 @@ mod tests {
                 IrCfgBlock {
                     params: vec![],
                     stmts: vec![],
-                    stmt_provs: vec![],
                     terminator: IrCfgTerminator::CondGoto {
-                        cond: IrExpr::Var("flag".to_string()),
-                        then_: IrCfgJump { target: 1, args: vec![] },
-                        else_: IrCfgJump { target: 2, args: vec![] },
+                        cond: ir_expr(IrExprKind::Var("flag".to_string())),
+                        then_: IrCfgJump::new(1, vec![]),
+                        else_: IrCfgJump::new(2, vec![]),
                     },
                 },
                 IrCfgBlock {
                     params: vec![],
                     stmts: vec![],
-                    stmt_provs: vec![],
                     terminator: IrCfgTerminator::Return(None),
                 },
                 IrCfgBlock {
                     params: vec![],
                     stmts: vec![],
-                    stmt_provs: vec![],
                     terminator: IrCfgTerminator::Return(None),
                 },
             ],

@@ -162,7 +162,7 @@ fn lir_type_tag(ty: &LirType) -> String {
 /// Recursively scan an `IrType` for tuple types and register them as
 /// synthetic structs in the registry.  Must be called before `ir_type_to_lir`
 /// encounters any tuple types.
-pub fn register_tuples_in_type<T: LirTarget>(
+pub fn register_tuples_in_type<T: LirTarget<P>, P: Clone>(
     ty: &IrType,
     registry: &mut StructRegistry,
     target: &mut T,
@@ -216,7 +216,7 @@ pub fn register_tuples_in_type<T: LirTarget>(
 /// Structs are registered in the order they appear in `module.structs`.
 /// The caller must ensure the ordering is dependency-safe (fields of struct S
 /// must not reference struct T unless T appears earlier in the list).
-pub fn build_struct_registry<T: LirTarget>(module: &IrModule<IrFunction>, target: &mut T, env: &MonoEnv) -> StructRegistry {
+pub fn build_struct_registry<T: LirTarget<P>, P: Clone>(module: &IrModule<IrFunction<P>, P>, target: &mut T, env: &MonoEnv) -> StructRegistry {
     let mut registry = StructRegistry::new();
 
     for ir_struct in &module.structs {
@@ -570,7 +570,7 @@ impl EnumRegistry {
 /// 2. Computes `max_payload_width = max over all variants of their flat scalar counts`.
 /// 3. Registers a synthetic struct `__Enum_{kind}` in `struct_registry` so that
 ///    `ir_type_to_lir` can return a `LirType::Struct(id)` for enum-typed values.
-pub fn build_enum_registry<T: LirTarget>(
+pub fn build_enum_registry<T: LirTarget<P>, P: Clone>(
     enums: &[IrEnum],
     struct_registry: &mut StructRegistry,
     target: &mut T,

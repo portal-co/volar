@@ -85,12 +85,11 @@ fn lift_block<P: Clone + Default>(
     let new_stmts = block
         .stmts
         .iter()
-        .map(|s| lift_stmt(s, bit_ty, z3_ty))
+        .map(|s| volar_ir_common::Node::new(lift_stmt(&s.kind, bit_ty, z3_ty), s.prov.clone(), s.side))
         .collect();
     IRBlock {
         params: block.params.clone(),
         stmts: new_stmts,
-        stmt_provs: block.stmt_provs.clone(),
         terminator: block.terminator.clone(),
     }
 }
@@ -363,7 +362,8 @@ mod tests {
     fn test_raise_bits_updates_type() {
         // Build a trivial one-block IRBlocks with a Poly{Bit} statement
         // and verify the output has a Poly{Z3} statement.
-        use volar_ir::ir::{IRBlock, IRBlockTargetId, IRTerminator};
+        use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBranchTarget, IRTerminator};
+        use volar_ir_common::Node;
 
         let mut types = TypeTable::new();
         let bit_id = types.intern(IrType::Primitive(PrimType::Bit));
@@ -376,19 +376,15 @@ mod tests {
         };
         let block = IRBlock {
             params: vec![bit_id],
-            stmts: vec![poly_stmt],
-            stmt_provs: vec![()],
-            terminator: IRTerminator::Jmp {
-                func: IRBlockTargetId::Return,
-                args: vec![IRVarId(1)],
-            },
+            stmts: vec![poly_stmt].into_iter().map(|s| Node::new(s, (), None)).collect(),
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(1)],) },
         };
         let blocks: IRBlocks<()> = IRBlocks::new(vec![block]);
         let lifted = raise_bits_to_z3(&blocks, &mut types);
 
         let z3_id = types.intern(IrType::Primitive(PrimType::Z3));
         assert!(matches!(
-            &lifted.blocks[0].stmts[0],
+            &lifted.blocks[0].stmts[0].kind,
             Stmt::Poly { ty, .. } if *ty == z3_id
         ));
     }
