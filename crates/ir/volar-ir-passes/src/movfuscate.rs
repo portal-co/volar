@@ -57,7 +57,7 @@
 
 use alloc::{vec, vec::Vec};
 use alloc::collections::BTreeMap;
-use volar_ir_common::{Constant, StorageId, Type};
+use volar_ir_common::{Constant, PreInitSegment, StorageId, Type};
 
 use volar_ir::{
     boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
@@ -1961,7 +1961,27 @@ fn movfuscate_ir_impl<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> (I
         ctrl_prov,
     );
     let (mut result, block_ranges, accum_info) = movfuscate(ctx, blocks, state_slot_types, return_slot_types);
-    result.pre_init = blocks.pre_init.clone();
+    // `pre_init` segments name storage lanes in the *pre-movfuscation*
+    // numbering, but every StorageRead/StorageWrite statement just emitted
+    // above was remapped to `id*2` (Block-typed value) or `id*2+1`
+    // (everything else) -- see the per-statement remap a few dozen lines up
+    // in `combine_block`. Left un-remapped, a segment's initial bytes are
+    // seeded into a storage lane no statement in the combined block ever
+    // reads from, so the circuit silently runs against all-zero memory
+    // instead of the real pre-initialized contents.
+    result.pre_init = blocks
+        .pre_init
+        .iter()
+        .map(|seg| {
+            let is_block = matches!(types.0[seg.ty.0 as usize], IRType::Block { .. });
+            let new_storage = if is_block {
+                StorageId(seg.storage.0 * 2)
+            } else {
+                StorageId(seg.storage.0 * 2 + 1)
+            };
+            PreInitSegment { storage: new_storage, ..seg.clone() }
+        })
+        .collect();
     (result, block_ranges, accum_info)
 }
 

@@ -382,7 +382,7 @@ mod tests {
     /// is invalidated by that same optimization pass (it renumbers/deletes
     /// statements), so returning boundary metadata directly from this
     /// shared helper (below) requires skipping it anyway.
-    fn lower_interpreter(
+    pub(crate) fn lower_interpreter(
         limit: u32,
         mode: volar_ir_passes::LoweringMode,
     ) -> (
@@ -790,5 +790,214 @@ mod tests {
             verifier_and_counts, prover_hats_counts,
             "prover hats and verifier q_and must line up per block/combiner for interleaved driving"
         );
+    }
+
+    /// Trace the *plain* (non-cryptographic) values flowing through the
+    /// real interpreter circuit across real steps, via `volar_fuzz`'s IR
+    /// interpreter with a persistent storage map seeded from
+    /// `circuit.pre_init` (unlike `mem_probe`'s own trace test, whose
+    /// circuit happens to have an *empty* `pre_init` -- this circuit's
+    /// pre_init is real and non-trivial, the actual program bytes + initial
+    /// RAM words, so seeding it is required, not optional) -- establishes
+    /// ground truth for the real driven test and cross-checks this
+    /// interpreter (run through the real WASM pipeline + movfuscation)
+    /// against `interp::native_reference`, an independent, hand-written
+    /// oracle.
+    ///
+    /// **Currently fails, and is expected to** (kept as a regression guard
+    /// for whoever picks this up, not a "should pass today" test): the
+    /// circuit halts after ~7 real steps instead of the real program's 27,
+    /// with a wrong final result. Root-caused: `VaffleTarget::begin_function`
+    /// (`crates/ir/volar-vaffle-target/src/target.rs`) discards the WAT
+    /// function's real `(result i32)` return-type hint, so the movfuscated
+    /// exit continuation's arity (sized from the discarded, always-empty
+    /// `sig.results`) disagrees with the real `Terminator::Return`'s actual
+    /// arg count -- a real, confirmed bug. Fixing *that* one line, though,
+    /// exposes a second, deeper one: `movfuscate_ir`'s
+    /// `compute_expanded_state_slot_types` (`crates/ir/volar-ir-passes/src/movfuscate.rs`)
+    /// requires every block sharing a state-slot position to agree on one
+    /// type, and the exit block's now-correct 2-arg arity collides with an
+    /// unrelated real SSA value elsewhere in the interpreter's 118-block
+    /// body -- the same class of "movfuscate_ir needs to support
+    /// heterogeneous block shapes" gap already flagged (undone, deferred)
+    /// in `docs/agent-context/circuit-size-optimization-backlog.md`'s
+    /// virt-integration writeup, not a quick fix. Left un-fixed here
+    /// deliberately, per the plan's own honest risk note: a genuine design
+    /// gap, not something to improvise past.
+    ///
+    /// `#[ignore]`d: real interpreter scale, run manually:
+    /// `cargo test -p volar-riscv-e2e --release trace_interpreter_plain_values_matches_native_reference -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn trace_interpreter_plain_values_matches_native_reference() {
+        use volar_ir_passes::LoweringMode;
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, apply_pre_init, StorageMap};
+
+        let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, _boundary, _accum_info) =
+            lower_interpreter(1, LoweringMode::WithTerminationFlag);
+
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("param widths: {param_widths:?}");
+
+        let mut storage: StorageMap = StorageMap::new();
+        apply_pre_init(&mut storage, &circuit.pre_init, &types);
+        eprintln!("storage map after pre_init: {} entries", storage.len());
+
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+
+        let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let mut done = false;
+        let mut step = 0usize;
+        while !done && step < MAX_STEPS as usize {
+            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            done = outputs[0].iter().any(|&b| b);
+            let pc_bits: u64 = (1..8).map(|i| to_u64(&outputs[i]) << ((i - 1) * 1)).sum::<u64>();
+            let _ = pc_bits;
+            let pc_val: Vec<u64> = (1..8).map(|i| to_u64(&outputs[i])).collect();
+            eprintln!("step {step}: done={done} next_pc_bits={pc_val:?} state[0..4]={:?}", (8..12).map(|i| to_u64(&outputs[i])).collect::<Vec<_>>());
+            inputs = outputs[1..].to_vec();
+            step += 1;
+        }
+        eprintln!("halted after {step} steps (done={done})");
+        assert!(done, "interpreter circuit must halt within MAX_STEPS via its own termination flag");
+
+        // Find whichever (StorageId, TypeId) pair holds the data RAM's
+        // real byte contents (the one with pre-init data whose length
+        // matches `initial_data_bytes()`) and read the result word back --
+        // don't assume a specific storage id, discover it. Exact-length
+        // match (not `>=`): the *code* segment is also `>= RESULT_ADDR + 4`
+        // bytes long (32 vs. the data segment's 20), so `>=` matched both
+        // and silently read the result word back from program bytes on a
+        // wrong-but-plausible-looking address instead of real data RAM.
+        let expected: i32 = crate::interp::initial_data_words().iter().sum();
+        let mut found = false;
+        for seg in &circuit.pre_init {
+            if seg.data.len() as i32 == RESULT_ADDR + 4 {
+                let bytes: Vec<u8> = (0..4).map(|i| {
+                    let addr = (RESULT_ADDR + i) as u64;
+                    let bits = &storage[&(seg.storage, seg.ty, addr)];
+                    bits.iter().enumerate().map(|(j, &b)| (b as u8) << j).fold(0u8, |a, b| a | b)
+                }).collect();
+                let word = i32::from_le_bytes(bytes.try_into().unwrap());
+                eprintln!("data RAM (storage={}) result word: {word} (expected {expected})", seg.storage.0);
+                if word == expected {
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "some pre_init-seeded storage must hold the correct result word after real steps");
+    }
+
+    /// Diagnostic (not a correctness assertion): dump the real circuit's
+    /// entry-state param widths and every real `StorageRead`/`StorageWrite`'s
+    /// storage id -- needed to write a real driver rather than guess these
+    /// (widths and storage-id assignment are both driven by WAFFLE/movfuscation
+    /// internals, not the WAT source's declaration order; see
+    /// `mem_probe.rs`'s own `dump_mem_probe_signatures` for the precedent
+    /// that a single declared memory does NOT land at `StorageId::memory(0)`).
+    /// Run manually: `cargo test -p volar-riscv-e2e dump_interpreter_signatures -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn dump_interpreter_signatures() {
+        use volar_ir_passes::LoweringMode;
+
+        let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, boundary, accum_info) =
+            lower_interpreter(1, LoweringMode::WithTerminationFlag);
+        eprintln!("n_blocks: {}", boundary.len());
+        eprintln!("circuit params: {:?}", circuit.blocks[0].params);
+        let widths: std::vec::Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("circuit param widths: {widths:?}");
+        eprintln!("circuit terminator: {:?}", circuit.blocks[0].terminator);
+
+        let mut storage_ids: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+        let mut read_count = 0usize;
+        let mut write_count = 0usize;
+        for stmt in circuit.blocks[0].stmts.iter() {
+            match &stmt.kind {
+                volar_ir::ir::Stmt::StorageRead { storage, ty, .. } => {
+                    storage_ids.insert(storage.0);
+                    read_count += 1;
+                    let _ = ty;
+                }
+                volar_ir::ir::Stmt::StorageWrite { storage, ty, .. } => {
+                    storage_ids.insert(storage.0);
+                    write_count += 1;
+                    let _ = ty;
+                }
+                _ => {}
+            }
+        }
+        eprintln!("distinct storage ids referenced: {storage_ids:?}");
+        eprintln!("total StorageRead count: {read_count}, StorageWrite count: {write_count}");
+        eprintln!("pre_init segments:");
+        for seg in &circuit.pre_init {
+            eprintln!("  storage={} ty={} offset={} len={}", seg.storage.0, seg.ty.0, seg.offset, seg.data.len());
+        }
+        eprintln!("accum_info.init: done_acc={} next_pc.len()={} next_state.len()={} ret_vals.len()={}",
+            accum_info.init.done_acc, accum_info.init.next_pc.len(), accum_info.init.next_state.len(), accum_info.init.ret_vals.len());
+    }
+
+    /// Feasibility check (not exercised by default) for Stage 2: does the
+    /// *largest* generated split-verifier function (a chunk combiner, per
+    /// `measure_split_weave_on_real_interpreter`'s own measurement, up to
+    /// ~236K params) actually print+compile, on its own, before investing
+    /// in the full interleaved driver?
+    ///
+    /// **Currently fails, and is expected to**: `rustc` hard-caps functions
+    /// at 65535 arguments (`error: function can not have more than 65535
+    /// arguments`) -- a real, non-negotiable compiler limit, not a
+    /// performance/RSS issue that `--release` or more chunking headroom can
+    /// route around. `chunk_size=8`'s largest chunk (`accum_chunk_6`) alone
+    /// exceeds it. This is Stage 2's second genuine architectural blocker
+    /// (see `trace_interpreter_plain_values_matches_native_reference`'s doc
+    /// for the first) -- the fix is real design work Milestone 1.5's own
+    /// plan flagged as a "complementary, fold in if it fits naturally"
+    /// optimization and deferred: batch each function's own `hat`/`q_and`/
+    /// `r_and` parameters into `[T; k]` array params (matching `entry_w`'s
+    /// own `w_i_j` convention) instead of one scalar param per AND-gate
+    /// lane, not a smaller `chunk_size` alone (per-block skew means some
+    /// *single* blocks already carry thousands of gates). Left unfixed
+    /// here deliberately, per the plan's own honest risk note.
+    ///
+    /// Run manually: `cargo test -p volar-riscv-e2e --release largest_chunk_function_compiles -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn largest_chunk_function_compiles() {
+        use volar_ir_passes::LoweringMode;
+        use volar_weaver::{StorageMode, weave_vole_verifier_ir_split_with_trace, print_weaved_vole_module, IopSink};
+
+        let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, boundary, accum_info) =
+            lower_interpreter(1, LoweringMode::WithTerminationFlag);
+        let mode = StorageMode::Commitment;
+        let chunk_size = 8usize;
+
+        let mut biggest: Option<volar_compiler::ir::IrFunction> = None;
+        weave_vole_verifier_ir_split_with_trace(
+            &circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size,
+            |f| {
+                if biggest.as_ref().map(|b| b.params.len()).unwrap_or(0) < f.params.len() {
+                    biggest = Some(f);
+                }
+            },
+        );
+        let f = biggest.expect("at least one function woven");
+        eprintln!("largest function: {} with {} params", f.name, f.params.len());
+
+        let module = volar_compiler::ir::IrModule {
+            name: "riscv_step".into(), functions: vec![f], structs: vec![], enums: vec![],
+            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+        };
+        let code = print_weaved_vole_module(&module);
+        eprintln!("printed source length: {} bytes", code.len());
+        // Reuse the same "print -> temp Cargo project -> cargo test --release"
+        // harness the real driven tests use (rather than volar-weaver's own
+        // internal, crate-private `run_compile_check`, inaccessible from
+        // here) -- a no-op driver is enough to force a real compile.
+        volar_verifier_iop_runtime::run_iop_verifier(&code, "#[test]\nfn compiles() {}\n");
+        eprintln!("compiled successfully");
     }
 }
