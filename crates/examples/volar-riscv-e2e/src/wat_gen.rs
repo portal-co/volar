@@ -814,25 +814,29 @@ mod tests {
     /// oracle.
     ///
     /// **Currently fails, and is expected to** (kept as a regression guard
-    /// for whoever picks this up, not a "should pass today" test): the
-    /// circuit halts after ~7 real steps instead of the real program's 27,
-    /// with a wrong final result. Root-caused: `VaffleTarget::begin_function`
-    /// (`crates/ir/volar-vaffle-target/src/target.rs`) discards the WAT
-    /// function's real `(result i32)` return-type hint, so the movfuscated
-    /// exit continuation's arity (sized from the discarded, always-empty
-    /// `sig.results`) disagrees with the real `Terminator::Return`'s actual
-    /// arg count -- a real, confirmed bug. Fixing *that* one line, though,
-    /// exposes a second, deeper one: `movfuscate_ir`'s
-    /// `compute_expanded_state_slot_types` (`crates/ir/volar-ir-passes/src/movfuscate.rs`)
-    /// requires every block sharing a state-slot position to agree on one
-    /// type, and the exit block's now-correct 2-arg arity collides with an
-    /// unrelated real SSA value elsewhere in the interpreter's 118-block
-    /// body -- the same class of "movfuscate_ir needs to support
-    /// heterogeneous block shapes" gap already flagged (undone, deferred)
-    /// in `docs/agent-context/circuit-size-optimization-backlog.md`'s
-    /// virt-integration writeup, not a quick fix. Left un-fixed here
-    /// deliberately, per the plan's own honest risk note: a genuine design
-    /// gap, not something to improvise past.
+    /// for whoever picks this up, not a "should pass today" test). The two
+    /// originally-suspected blockers here (`VaffleTarget::begin_function`'s
+    /// discarded return-type hint; `movfuscate_ir`'s state-slot type
+    /// agreement) are both fixed (see `movfuscate.rs`'s `SlotSig`/
+    /// `compute_position_groups`) -- the movfuscated circuit now compiles
+    /// and its declared param/return shapes agree (27 state slots, 32
+    /// return-value bits). A newer, deeper bug remains: driven with
+    /// `eval_ir_circuit_step` in a loop (feeding each step's own
+    /// `outputs[1..1+state_width]` back in as the next step's inputs, per
+    /// `lower_to_circuit_ir`'s documented "state segment padded with
+    /// don't-care filler" contract), the circuit's `done` flag never
+    /// fires and its entire 20-slot register state stays permanently zero
+    /// -- confirmed even with a 5000-step budget (~140x the real program's
+    /// 27 real instructions), with the 7-bit movfuscated "active block"
+    /// counter cycling through a stable, exact period-350 loop forever.
+    /// This means the self-loop's own next-state export (movfuscate_ir's
+    /// `Σ_i is_active_i · next_state_i[k]` accumulation) is not actually
+    /// threading real register writes (e.g. the first instruction's
+    /// `ADDI x5, x0, 4`) into the state it feeds back to itself -- a
+    /// genuine, unscoped correctness bug independent of both prior fixes
+    /// and of this test's own driving loop (confirmed by dumping the full
+    /// state, not just a narrow slice). Not yet root-caused further; left
+    /// un-fixed here deliberately, per the plan's own honest risk note.
     ///
     /// `#[ignore]`d: real interpreter scale, run manually:
     /// `cargo test -p volar-riscv-e2e --release trace_interpreter_plain_values_matches_native_reference -- --ignored --nocapture`.
@@ -862,11 +866,16 @@ mod tests {
         while !done && step < MAX_STEPS as usize {
             let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
             done = outputs[0].iter().any(|&b| b);
-            let pc_bits: u64 = (1..8).map(|i| to_u64(&outputs[i]) << ((i - 1) * 1)).sum::<u64>();
-            let _ = pc_bits;
             let pc_val: Vec<u64> = (1..8).map(|i| to_u64(&outputs[i])).collect();
-            eprintln!("step {step}: done={done} next_pc_bits={pc_val:?} state[0..4]={:?}", (8..12).map(|i| to_u64(&outputs[i])).collect::<Vec<_>>());
-            inputs = outputs[1..].to_vec();
+            eprintln!("step {step}: done={done} next_pc_bits={pc_val:?}");
+            // `outputs` is `[done, gated[0..output_width]]`, where
+            // `output_width = max(state_width, return_width)` --
+            // `lower_to_circuit_ir` pads the shorter side (here, state) by
+            // repeating its own last element, a value that's only ever
+            // "don't care" filler, never read when `done` is false. Only
+            // the first `param_widths.len()` slots are real next-state;
+            // anything past that is trailing return-value-shaped padding.
+            inputs = outputs[1..1 + param_widths.len()].to_vec();
             step += 1;
         }
         eprintln!("halted after {step} steps (done={done})");
