@@ -22,19 +22,23 @@
 //! - Block `i`'s own exported `is_active`/`done`/`next_pc_bits`/
 //!   `next_state`/`ret_vals` are consumed by the accumulator chunk that
 //!   covers it as `is_active_{i}`/`done_{i}`/`next_pc_{i}_{j}`/
-//!   `next_state_{i}_{k}[_{j}]`/`ret_val_{i}_{m}[_{j}]` (the `_{j}` suffix
-//!   only for wide slots, one scalar param per lane).
+//!   `next_state_{i}_{k}`/`ret_val_{i}_{m}` (`next_pc` bits are always
+//!   scalar, one param per bit; `next_state`/`ret_val` slots are
+//!   array-batched -- one param per slot, `[T; width]`-typed for a wide
+//!   slot, plain-typed for a scalar one -- not one param per lane).
 //! - Chunk `c`'s own running accumulator (`done_acc`/`next_pc`/
 //!   `next_state`/`ret_vals`) is consumed by chunk `c+1` (or `finish`, if
 //!   `c` is the last chunk) as `in_done_acc`/`in_next_pc_{j}`/
-//!   `in_next_state_{k}[_{j}]`/`in_ret_val_{m}[_{j}]`. Chunk 0's own inputs
-//!   are always literal zero (movfuscation's own accumulator seed).
+//!   `in_next_state_{k}`/`in_ret_val_{m}` (same array-batching as above).
+//!   Chunk 0's own inputs are always literal zero (movfuscation's own
+//!   accumulator seed).
 //! - A block/chunk/finish function's own trailing `hat`s (prover) are fed
 //!   *directly* to the matching (same name, same index) `QSim` function's
-//!   `hat_k` inputs; that `QSim` function's own derived `q_and` values are
-//!   fed to the matching `Verifier` function's `q_and_k` inputs -- this
-//!   threading is *within* one function-index, across roles, not between
-//!   function indices.
+//!   `hat` input (one array param covering every local AND gate, not one
+//!   scalar per gate); that `QSim` function's own derived `q_and` values
+//!   are fed to the matching `Verifier` function's `q_and` input the same
+//!   way -- this threading is *within* one function-index, across roles,
+//!   not between function indices.
 //! - The verifier's `all_ok`/`fold_state` thread linearly across *every*
 //!   verifier-role call in call order (block 0, block 1, ..., chunk 0, ...,
 //!   finish) -- unlike next_state, this is a single continuous chain, not
@@ -56,19 +60,6 @@ use volar_ir_passes::{MovfuscAccumInfo, MovfuscBlockBoundary};
 pub enum Slot {
     Scalar(String),
     Array(String, usize),
-}
-
-impl Slot {
-    /// Expand into the exact positional argument expressions a callee's
-    /// own params expect for this slot (one `name.clone()`, or `n` separate
-    /// `name[j].clone()`s for a wide slot -- matching `bind_scalar`'s own
-    /// param-splitting convention exactly).
-    fn args(&self) -> Vec<String> {
-        match self {
-            Slot::Scalar(n) => vec![format!("{n}.clone()")],
-            Slot::Array(n, w) => (0..*w).map(|j| format!("{n}[{j}].clone()")).collect(),
-        }
-    }
 }
 
 fn slot_from_ty(local_name: &str, ty: &IrType) -> Slot {
@@ -98,19 +89,12 @@ fn tuple_literal(items: &[String]) -> String {
 }
 
 /// Record an exported slot under `base_name` for later lookup by a
-/// consuming function's own params -- for a *wide* slot, this means `n`
-/// separate `{base_name}_{j}` entries (matching `bind_scalar`'s own
-/// per-lane param-splitting convention exactly), not one `{base_name}`
-/// entry pointing at an array.
+/// consuming function's own params -- `bind_scalar` (`vole.rs`) now
+/// array-batches a wide slot into *one* param named exactly `base_name`
+/// (not `n` separate `{base_name}_{j}` scalar params), so this is a plain
+/// insert regardless of whether `slot` is scalar or array-valued.
 fn insert_export(exported: &mut BTreeMap<String, Slot>, base_name: String, slot: Slot) {
-    match slot {
-        Slot::Scalar(_) => { exported.insert(base_name, slot); }
-        Slot::Array(name, w) => {
-            for j in 0..w {
-                exported.insert(format!("{base_name}_{j}"), Slot::Scalar(format!("{name}[{j}]")));
-            }
-        }
-    }
+    exported.insert(base_name, slot);
 }
 
 fn tuple_elems(ty: &IrType) -> Vec<IrType> {
@@ -144,26 +128,42 @@ fn destructure_finish_output(out: &mut String, f: &IrFunction, state_local: &str
 }
 
 /// Count of params whose name starts with `prefix` -- used to read back
-/// how many `hat_k`/`oracle_rd_k`/etc. a given woven function declares,
-/// directly from its own real signature (never assumed).
+/// how many `oracle_rd_k`/etc. a given woven function declares (still one
+/// scalar param per read; oracle reads aren't array-batched), directly
+/// from its own real signature (never assumed).
 fn count_params_prefixed(f: &IrFunction, prefix: &str) -> usize {
     f.params.iter().filter(|p| p.name.starts_with(prefix)).count()
 }
 
+/// This function's own per-gate AND-check count -- read back from its
+/// `q_and` param's own declared array length (`q_and`/`hat`/`r_and` are
+/// array-batched, one param each, not one scalar per gate), or 0 if the
+/// function has no AND gates at all (param absent).
+fn and_count_of(f: &IrFunction) -> usize {
+    match f.params.iter().find(|p| p.name == "q_and") {
+        Some(p) => match &p.ty {
+            IrType::Array { len: ArrayLength::Const(n), .. } => *n,
+            other => panic!("expected q_and to be an array param, got {other:?}"),
+        },
+        None => 0,
+    }
+}
+
 /// Per-slot width (1 = scalar, >1 = wide/array), read back from a chunk
-/// function's own `{prefix}{k}` / `{prefix}{k}_{j}` running-accumulator
-/// param names -- e.g. `prefix = "in_next_state_"` -- rather than assumed,
-/// since `MovfuscAccumInfo` itself only records slot *count*, not width.
+/// function's own `{prefix}{k}` running-accumulator param's own declared
+/// type -- e.g. `prefix = "in_next_state_"` -- rather than assumed, since
+/// `MovfuscAccumInfo` itself only records slot *count*, not width.
+/// `bind_scalar` array-batches a wide slot into one param (no `_{j}`
+/// suffix), so the width is read directly off the param's own type.
 fn slot_widths_from_params(f: &IrFunction, prefix: &str, n_slots: usize) -> Vec<usize> {
     let mut widths = vec![1usize; n_slots];
     for p in &f.params {
         if let Some(rest) = p.name.strip_prefix(prefix) {
-            let parts: Vec<&str> = rest.split('_').collect();
-            let k: usize = parts[0].parse().unwrap();
-            if let Some(j_str) = parts.get(1) {
-                let j: usize = j_str.parse().unwrap();
-                widths[k] = widths[k].max(j + 1);
-            }
+            let k: usize = rest.parse().unwrap();
+            widths[k] = match &p.ty {
+                IrType::Array { len: ArrayLength::Const(n), .. } => *n,
+                _ => 1,
+            };
         }
     }
     widths
@@ -301,43 +301,34 @@ pub fn generate_split_step(
             let n = &p.name;
             if n == "delta" { args.push("&delta".to_string()); continue; }
             if n == "vope_one" || n == "q_one" { args.push(role_one.to_string()); continue; }
-            if n.starts_with("hat_") {
-                let idx: usize = n.rsplit('_').next().unwrap().parse().unwrap();
-                let arr = hat_in.expect("hat_k param but no hat input array given");
+            if n == "hat" {
+                let arr = hat_in.expect("hat param but no hat input array given");
                 match arr {
-                    Slot::Array(base, _) => args.push(format!("{base}[{idx}].clone()")),
-                    Slot::Scalar(_) => unreachable!("hats array must be Slot::Array"),
+                    Slot::Array(base, _) => args.push(format!("{base}.clone()")),
+                    Slot::Scalar(_) => unreachable!("hat array must be Slot::Array"),
                 }
                 continue;
             }
-            if n.starts_with("q_and_") {
-                let idx: usize = n.rsplit('_').next().unwrap().parse().unwrap();
-                let arr = q_and_in.expect("q_and_k param but no q_and input array given");
+            if n == "q_and" {
+                let arr = q_and_in.expect("q_and param but no q_and input array given");
                 match arr {
-                    Slot::Array(base, _) => args.push(format!("{base}[{idx}].clone()")),
+                    Slot::Array(base, _) => args.push(format!("{base}.clone()")),
                     Slot::Scalar(_) => unreachable!("q_and array must be Slot::Array"),
                 }
                 continue;
             }
-            if n.starts_with("r_and_") {
-                let idx: usize = n.rsplit('_').next().unwrap().parse().unwrap();
-                let r = r_ands.expect("r_and_k param but no r_ands array given");
-                args.push(format!("{r}[{idx}].clone()"));
+            if n == "r_and" {
+                let r = r_ands.expect("r_and param but no r_ands array given");
+                args.push(format!("{r}.clone()"));
                 continue;
             }
             if n.starts_with("w_") {
-                // w_{i} or w_{i}_{j}
-                let rest = &n["w_".len()..];
-                let i: usize = rest.split('_').next().unwrap().parse().unwrap();
+                // Always exactly `w_{i}` now -- wide entry-state params are
+                // array-batched (one `w_{i}: [T; width]` param), no more
+                // `w_{i}_{j}` per-lane scalars.
+                let i: usize = n["w_".len()..].parse().unwrap();
                 let slot = if entry_w_index == 0 { &entry_w[i].0 } else { &entry_w[i].1 };
-                match slot {
-                    Slot::Scalar(name) => { args.push(format!("{name}.clone()")); }
-                    Slot::Array(name, w) => {
-                        let j: usize = rest.rsplitn(2, '_').next().unwrap().parse().unwrap_or(0);
-                        let _ = w;
-                        args.push(format!("{name}[{j}].clone()"));
-                    }
-                }
+                args.push(format!("{}.clone()", slot_name(slot)));
                 continue;
             }
             if n.starts_with("oracle_rd_") {
@@ -362,45 +353,32 @@ pub fn generate_split_step(
                 // (each slot can be a different concrete type), so they're
                 // built as a Rust *tuple* (`.{k}` field access), not an
                 // array -- unlike `in_next_pc_`, which is uniform Q and
-                // uses a real array.
-                let rest = &n["in_next_state_".len()..];
-                let parts: Vec<&str> = rest.split('_').collect();
-                let k: usize = parts[0].parse().unwrap();
+                // uses a real array. Always exactly `in_next_state_{k}`
+                // now (`bind_scalar` array-batches a wide slot into one
+                // param, no more `_{j}` suffix) -- the tuple field itself
+                // is already either a scalar or a whole `[T; w]` array
+                // (built that way host-side, see the zero-init/chunk
+                // accumulator construction below), matching the param's
+                // own (possibly array) type directly.
+                let k: usize = n["in_next_state_".len()..].parse().unwrap();
                 let tup = running_in.unwrap().2;
-                if parts.len() > 1 {
-                    let j: usize = parts[1].parse().unwrap();
-                    args.push(format!("{tup}.{k}[{j}].clone()"));
-                } else {
-                    args.push(format!("{tup}.{k}.clone()"));
-                }
+                args.push(format!("{tup}.{k}.clone()"));
                 continue;
             }
             if n.starts_with("in_ret_val_") {
-                let rest = &n["in_ret_val_".len()..];
-                let parts: Vec<&str> = rest.split('_').collect();
-                let m: usize = parts[0].parse().unwrap();
+                let m: usize = n["in_ret_val_".len()..].parse().unwrap();
                 let tup = running_in.unwrap().3;
-                if parts.len() > 1 {
-                    let j: usize = parts[1].parse().unwrap();
-                    args.push(format!("{tup}.{m}[{j}].clone()"));
-                } else {
-                    args.push(format!("{tup}.{m}.clone()"));
-                }
+                args.push(format!("{tup}.{m}.clone()"));
                 continue;
             }
             if n.starts_with("is_active_") || n.starts_with("done_")
                 || n.starts_with("next_pc_") || n.starts_with("next_state_") || n.starts_with("ret_val_")
             {
                 let slot = block_exports.get(n).unwrap_or_else(|| panic!("missing export for param {n}"));
-                match slot {
-                    Slot::Scalar(name) => args.push(format!("{name}.clone()")),
-                    Slot::Array(name, _) => {
-                        // Shouldn't happen: exported entries are stored
-                        // pre-split per-lane for wide slots (see caller),
-                        // so a direct name match implies scalar.
-                        args.push(format!("{name}.clone()"));
-                    }
-                }
+                // `bind_scalar` array-batches a wide export into one param
+                // (no per-lane `_{j}` suffix), so `slot` may be a whole
+                // array here -- clone it directly either way.
+                args.push(format!("{}.clone()", slot_name(slot)));
                 continue;
             }
             panic!("unrecognized param name: {n}");
@@ -471,7 +449,7 @@ pub fn generate_split_step(
         let q_and_arr = q_slots[idx].clone();
 
         // r_and challenges for this block's own gate count.
-        let and_count = count_params_prefixed(vf, "q_and_");
+        let and_count = and_count_of(vf);
         let r_ands_name = format!("_rands_{uid}");
         and_gate_seed += 1;
         out.push_str(&format!(
@@ -655,7 +633,7 @@ pub fn generate_split_step(
         );
         let q_and_arr = q_outcome.finish_output.last().unwrap().clone();
 
-        let and_count = count_params_prefixed(vf, "q_and_");
+        let and_count = and_count_of(vf);
         let r_ands_name = format!("_rands_{uid}");
         and_gate_seed += 1;
         out.push_str(&format!(
@@ -758,7 +736,7 @@ pub fn generate_split_step(
         let q_terminator_out = destructure_finish_output(&mut out, qf, &q_state_local, &format!("q_{uid}"));
         let q_output: Vec<Slot> = q_terminator_out[1..].to_vec();
 
-        let and_count = count_params_prefixed(vf, "q_and_");
+        let and_count = and_count_of(vf);
         let r_ands_name = format!("_rands_{uid}");
         and_gate_seed += 1;
         out.push_str(&format!(

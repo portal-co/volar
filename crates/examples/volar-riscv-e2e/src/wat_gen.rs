@@ -749,7 +749,16 @@ mod tests {
         let verifier_trace = weave_vole_verifier_ir_split_with_trace(
             &circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size,
             |f| {
-                let and_count = f.params.iter().filter(|p| p.name.starts_with("q_and_")).count();
+                // `q_and` is one array-batched param (Milestone 1.6's
+                // 65535-arg-limit fix), not one scalar per gate -- read
+                // its own declared array length instead of counting params.
+                let and_count = match f.params.iter().find(|p| p.name == "q_and") {
+                    Some(p) => match &p.ty {
+                        volar_compiler::ir::IrType::Array { len: volar_compiler::ir::ArrayLength::Const(n), .. } => *n,
+                        _ => 0,
+                    },
+                    None => 0,
+                };
                 verifier_and_counts.push(and_count);
                 verifier_param_counts.push(f.params.len());
                 // Drop `f` here (Step B.4): in a real driver this is where
