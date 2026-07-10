@@ -376,7 +376,7 @@ impl LirTarget for VaffleTarget {
         &mut self,
         name: &str,
         params: &[LirType],
-        _ret: Option<LirType>,
+        ret: Option<LirType>,
     ) -> (VaffleBlock, Vec<Vec<VaffleValue>>) {
         let bit_tid = self.bit_tid();
         let threshold = self.abi().aggregate_byval_limit;
@@ -395,8 +395,24 @@ impl LirTarget for VaffleTarget {
             .map(|&(n, is_ptr)| if is_ptr { PTR_BITS } else { n })
             .flat_map(|count| (0..count).map(|_| bit_tid))
             .collect();
+        // Return type: N Bit slots (direct return-by-value), matching the
+        // param side's own direct-return convention -- `ret` was previously
+        // discarded here, always producing `results: vec![]` even for a
+        // function that genuinely returns a value (e.g. a WAT `(result
+        // i32)` function), which desyncs `plan_functions`' `total_ret_bits`
+        // (computed from this sig) from the real `Terminator::Return`'s own
+        // actual arg count downstream. Large-aggregate returns needing an
+        // out-pointer ABI (mirroring `is_ptr` params above) aren't handled
+        // -- not needed by any real caller yet; only direct scalar/small
+        // returns are covered.
+        let sig_results: Vec<TypeId> = ret.iter()
+            .flat_map(|ty| {
+                let n = bits_for_lir_type(ty, &self.struct_widths);
+                (0..n).map(|_| bit_tid)
+            })
+            .collect();
         let sig_id = SigId(self.module.sigs.len());
-        self.module.sigs.push(SigDecl { params: sig_params, results: vec![] });
+        self.module.sigs.push(SigDecl { params: sig_params, results: sig_results });
 
         let mut fb = FuncBuilder::new(name.to_string(), sig_id, bit_tid);
         let mut groups: Vec<Vec<VaffleValue>> = Vec::new();

@@ -997,24 +997,37 @@ fn infer_block_var_types<P: Clone>(
 
 // ---- IrCtx -----------------------------------------------------------------
 
-/// Compute the expanded state-slot layout for one block's params.
+/// Compute the expanded state-slot layout for one block's own params.
 ///
 /// Each `Block`-typed param expands to `pc_width` `Bit` slots; every other
 /// param occupies exactly one slot.  Returns `[(slot_start, slot_count), …]`
-/// in original-param order.
-fn param_to_slot_map(params: &[IRTypeId], ir_types: &[IRType], pc_width: usize) -> Vec<(usize, usize)> {
-    let mut map = Vec::with_capacity(params.len());
-    let mut offset = 0;
-    for ty_id in params {
-        let count = if matches!(ir_types[ty_id.0 as usize], IRType::Block { .. }) {
-            pc_width
-        } else {
-            1
-        };
-        map.push((offset, count));
-        offset += count;
-    }
-    map
+/// in original-param order. Resolves each param's own global slot offset by
+/// matching its `SlotSig` against `position_groups[k]` (usually exactly one
+/// group; a position with more than one — a genuine cross-block type
+/// disagreement — is resolved to *this* param's own matching group, not a
+/// blind positional accumulation, since different blocks can map to
+/// different groups at the same raw position).
+fn param_to_slot_map(
+    params: &[IRTypeId],
+    ir_types: &[IRType],
+    pc_width: usize,
+    bit_type_id: &IRTypeId,
+    position_groups: &[Vec<(SlotSig, usize, usize)>],
+) -> Vec<(usize, usize)> {
+    params.iter().enumerate().map(|(k, ty_id)| {
+        let sig = SlotSig::of(ty_id, ir_types, pc_width, bit_type_id);
+        let groups = position_groups.get(k).unwrap_or_else(|| {
+            panic!("movfuscate_ir: param position {k} has no slot group (position_groups too short)")
+        });
+        let (_, offset, count) = groups.iter().find(|(s, _, _)| *s == sig).unwrap_or_else(|| {
+            panic!(
+                "movfuscate_ir: param position {k} has signature {sig:?} with no matching \
+                 slot group (known groups: {groups:?}) -- position_groups must be computed \
+                 from the same block set this param list comes from"
+            )
+        });
+        (*offset, *count)
+    }).collect()
 }
 
 struct IrCtx<P: Clone = ()> {
@@ -1050,6 +1063,12 @@ struct IrCtx<P: Clone = ()> {
     ///
     /// Cleared at the start of each `emit_block_stmts` call.
     block_var_to_bits: BTreeMap<u32, (Vec<u32>, Vec<IRTypeId>)>,
+    /// Per-position slot groups (see `compute_position_groups`) — needed by
+    /// `param_to_slot_map` to resolve a block's own param at position `k`
+    /// to the *matching* (by type signature) global slot offset, since a
+    /// position with more than one group can no longer be resolved by
+    /// blind positional accumulation alone.
+    position_groups: Vec<Vec<(SlotSig, usize, usize)>>,
 }
 
 impl<P: Clone> IrCtx<P> {
@@ -1061,6 +1080,7 @@ impl<P: Clone> IrCtx<P> {
         ir_types: Vec<IRType>,
         pc_width: usize,
         ctrl_prov: P,
+        position_groups: Vec<Vec<(SlotSig, usize, usize)>>,
     ) -> Self {
         let var_types = combined_param_types.clone();
         Self {
@@ -1075,6 +1095,7 @@ impl<P: Clone> IrCtx<P> {
             combined_param_types,
             pc_width,
             block_var_to_bits: BTreeMap::new(),
+            position_groups,
         }
     }
 
@@ -1129,7 +1150,7 @@ impl<P: Clone> IrCtx<P> {
     /// Build the `target_slot_map` for a Dyn jump target whose expected
     /// parameter types come from a `Block { params: sig }` type.
     fn slot_map_from_sig(&self, sig: &[IRTypeId]) -> Vec<(usize, usize)> {
-        param_to_slot_map(sig, &self.ir_types, self.pc_width)
+        param_to_slot_map(sig, &self.ir_types, self.pc_width, &self.bit_type_id, &self.position_groups)
     }
 
     /// Emit a stmt and record its result type.
@@ -1248,6 +1269,8 @@ impl<P: Clone> IrCtx<P> {
                     &blocks.blocks[*j as usize].params,
                     &self.ir_types,
                     self.pc_width,
+                    &self.bit_type_id,
+                    &self.position_groups,
                 );
                 let next_state = self.scatter_args_to_state(
                     args, block_vals, &target_slot_map, state_slot_types,
@@ -1438,7 +1461,7 @@ impl<P: Clone> MovfuscCtx for IrCtx<P> {
         // Map each original param to its combined-block state var(s).
         // Block-typed params expand to `pc_width` consecutive Bit state vars;
         // all other params are 1-to-1.
-        let slot_map = param_to_slot_map(&block.params, &self.ir_types, self.pc_width);
+        let slot_map = param_to_slot_map(&block.params, &self.ir_types, self.pc_width, &self.bit_type_id, &self.position_groups);
         for (k, (slot_start, slot_count)) in slot_map.iter().enumerate() {
             let is_block =
                 matches!(self.ir_types[block.params[k].0 as usize], IRType::Block { .. });
@@ -1744,14 +1767,105 @@ impl<P: Clone> MovfuscCtx for IrCtx<P> {
 // Pre-pass helpers for IRBlocks entry point
 // ============================================================================
 
+/// What distinguishes one position's expansion from another's, for the
+/// purposes of deciding whether two blocks' params at the same raw position
+/// `k` can share one combined-block slot (sub-)group or need separate ones.
+///
+/// `Block`-typed params always expand identically regardless of their own
+/// `params` signature (the signature only matters for `Dyn`-target
+/// argument scattering, handled separately via `block_var_to_bits`), so
+/// `Block` itself carries no further payload here. At `pc_width == 1`, a
+/// `Block`-typed param and a plain `Bit`-typed param both expand to exactly
+/// one `Bit` slot and are historically treated as interchangeable at a
+/// shared position (`compute_position_groups` folds this case into one
+/// `Scalar(bit_type_id)` signature, not two).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SlotSig {
+    Block,
+    Scalar(u32),
+}
+
+impl SlotSig {
+    fn of(ty_id: &IRTypeId, ir_types: &[IRType], pc_width: usize, bit_type_id: &IRTypeId) -> Self {
+        if matches!(ir_types[ty_id.0 as usize], IRType::Block { .. }) {
+            if pc_width == 1 {
+                SlotSig::Scalar(bit_type_id.0)
+            } else {
+                SlotSig::Block
+            }
+        } else {
+            SlotSig::Scalar(ty_id.0)
+        }
+    }
+
+    fn slot_count(&self, pc_width: usize) -> usize {
+        match self {
+            SlotSig::Block => pc_width,
+            SlotSig::Scalar(_) => 1,
+        }
+    }
+}
+
+/// Per-position, the distinct `(signature, global slot offset, slot count)`
+/// groups observed across all blocks that have a param at that position.
+///
+/// Usually exactly one group per position (every block agrees on type
+/// there) — more than one only when blocks genuinely disagree (e.g. one
+/// block's param at position `k` is a real 32-bit loop-carried value while
+/// another's is an unrelated 64-bit transport word that merely happens to
+/// share the same raw position by accident, as movfuscation's own
+/// synthetic trampoline/exit-continuation blocks can produce). Each group
+/// gets its own, non-overlapping slot range in the combined block's flat
+/// state-slot layout — a block whose own param at `k` doesn't match a
+/// given group simply doesn't own that group's slots (the exact same
+/// "doesn't own this slot" principle `scatter_args_to_state`'s zero-fill
+/// already applies for pure arity gaps, generalized to cover genuine type
+/// disagreements too, instead of asserting/panicking on them).
+fn compute_position_groups<P: Clone>(
+    blocks: &IRBlocks<P>,
+    ir_types: &[IRType],
+    bit_type_id: &IRTypeId,
+    pc_width: usize,
+) -> Vec<Vec<(SlotSig, usize, usize)>> {
+    let max_param_count = blocks.blocks.iter().map(|b| b.params.len()).max().unwrap_or(0);
+    let mut position_groups: Vec<Vec<(SlotSig, usize, usize)>> = Vec::with_capacity(max_param_count);
+    let mut next_offset = 0usize;
+
+    for k in 0..max_param_count {
+        // First-seen order (not sorted) — deterministic given `blocks` is
+        // itself an ordered `Vec`, and keeps the common (single-group)
+        // case's slot ordering identical to the old, pre-generalization
+        // layout (so existing, already-working circuits are unaffected).
+        let mut groups: Vec<(SlotSig, usize, usize)> = Vec::new();
+        for block in &blocks.blocks {
+            if k >= block.params.len() {
+                continue;
+            }
+            let ty_id = &block.params[k];
+            let sig = SlotSig::of(ty_id, ir_types, pc_width, bit_type_id);
+            if groups.iter().any(|(s, _, _)| *s == sig) {
+                continue;
+            }
+            let count = sig.slot_count(pc_width);
+            groups.push((sig, next_offset, count));
+            next_offset += count;
+        }
+        assert!(!groups.is_empty(), "movfuscate_ir: param position without any owning block");
+        position_groups.push(groups);
+    }
+
+    position_groups
+}
+
 /// Compute the expanded state-slot types across all blocks.
 ///
 /// Each original param position `k` contributes one or more slots:
 /// - `IRType::Block { .. }` → `pc_width` consecutive `Bit` slots.
 /// - Any other type           → one slot of that type.
 ///
-/// All blocks that have a param at position `k` must agree on expansion size.
-/// Non-`Block` types must additionally be identical.
+/// Blocks that disagree on type/count at a shared position `k` (a genuine
+/// collision, not just one block lacking a param there) get *separate*
+/// slot groups rather than asserting — see `compute_position_groups`.
 /// Mixing `Block` and plain `Bit` is allowed when `pc_width == 1` (both
 /// expand to exactly one `Bit` slot).
 fn compute_expanded_state_slot_types<P: Clone>(
@@ -1759,64 +1873,31 @@ fn compute_expanded_state_slot_types<P: Clone>(
     ir_types: &[IRType],
     bit_type_id: &IRTypeId,
     pc_width: usize,
-) -> Vec<IRTypeId> {
-    let max_param_count = blocks.blocks.iter().map(|b| b.params.len()).max().unwrap_or(0);
+) -> (Vec<IRTypeId>, Vec<Vec<(SlotSig, usize, usize)>>) {
+    let position_groups = compute_position_groups(blocks, ir_types, bit_type_id, pc_width);
+
+    // Flatten every position's group(s), in the same (position, then
+    // first-seen-group) order `compute_position_groups` assigned offsets
+    // in, into the combined block's one flat slot-type list downstream
+    // consumers already expect (they only need a flat, uniformly-typed
+    // slot list -- nothing depends on its length matching the original
+    // per-block param count, so a position that split into >1 group simply
+    // contributes more than one slot's worth of types here).
     let mut result = Vec::new();
-
-    for k in 0..max_param_count {
-        let mut agreed_count: Option<usize> = None;
-        let mut non_block_ty: Option<IRTypeId> = None;
-        let mut any_block = false;
-
-        for (bi, block) in blocks.blocks.iter().enumerate() {
-            if k >= block.params.len() {
-                continue;
+    for groups in &position_groups {
+        for (sig, _offset, count) in groups {
+            match sig {
+                SlotSig::Block => {
+                    for _ in 0..*count {
+                        result.push(bit_type_id.clone());
+                    }
+                }
+                SlotSig::Scalar(tid) => result.push(IRTypeId(*tid)),
             }
-            let ty_id = &block.params[k];
-            let (count, is_block) =
-                if matches!(ir_types[ty_id.0 as usize], IRType::Block { .. }) {
-                    (pc_width, true)
-                } else {
-                    (1, false)
-                };
-
-            if let Some(prev) = agreed_count {
-                assert_eq!(
-                    prev, count,
-                    "movfuscate_ir: Block-type expansion size mismatch at param {k} \
-                     in block {bi}: earlier blocks expand to {prev} slot(s) but \
-                     this block expands to {count}"
-                );
-            } else {
-                agreed_count = Some(count);
-            }
-
-            if is_block {
-                any_block = true;
-            } else if let Some(ref existing) = non_block_ty {
-                assert_eq!(
-                    existing.0, ty_id.0,
-                    "movfuscate_ir: block {bi} has type {:?} at param {k}, \
-                     but an earlier block had a different non-Block type there",
-                    ir_types[ty_id.0 as usize]
-                );
-            } else {
-                non_block_ty = Some(ty_id.clone());
-            }
-        }
-
-        let count = agreed_count.expect("param position without any owning block");
-        if any_block {
-            // Block expansion: all slots are Bit.
-            for _ in 0..count {
-                result.push(bit_type_id.clone());
-            }
-        } else {
-            result.push(non_block_ty.expect("non-Block param without concrete type"));
         }
     }
 
-    result
+    (result, position_groups)
 }
 
 /// Infer the expanded types of the return values by scanning the first
@@ -1936,7 +2017,7 @@ fn movfuscate_ir_impl<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> (I
     let ir_types = types.0.clone();
 
     // Compute per-slot types from the original blocks, expanding Block params.
-    let state_slot_types =
+    let (state_slot_types, position_groups) =
         compute_expanded_state_slot_types(blocks, &ir_types, &bit_type_id, pc_width);
     let return_slot_types =
         compute_return_slot_types(blocks, &ir_types, &bit_type_id, pc_width);
@@ -1959,6 +2040,7 @@ fn movfuscate_ir_impl<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> (I
         ir_types,
         pc_width,
         ctrl_prov,
+        position_groups,
     );
     let (mut result, block_ranges, accum_info) = movfuscate(ctx, blocks, state_slot_types, return_slot_types);
     // `pre_init` segments name storage lanes in the *pre-movfuscation*
@@ -2438,6 +2520,76 @@ mod tests {
             }
             other => panic!("expected JumpCond, got {:?}", other),
         }
+    }
+
+    /// A genuine position-type *collision* (not just an arity gap): both
+    /// blocks have a param at position 0 *and* position 1, but the types
+    /// are swapped between them (block 0: [Bit, G8], block 1: [G8, Bit]).
+    /// Before this fix, `movfuscate_ir` would panic here ("block 1 has type
+    /// ... but an earlier block had a different non-Block type there") --
+    /// this is exactly the class of bug found in the real RISC-V
+    /// interpreter's own movfuscated circuit (a synthetic trampoline
+    /// block's param colliding, by raw position only, with an unrelated
+    /// real loop-body block's own differently-typed param). Each colliding
+    /// position must now split into two separate, non-aliasing slot groups
+    /// instead.
+    #[test]
+    fn test_ir_position_type_collision_splits_into_separate_slots() {
+        let mut types = IRTypes(std::vec![IRType::Primitive(Type::Bit), IRType::Primitive(Type::AES8)]);
+        let bit = IRTypeId(0);
+        let g8 = IRTypeId(1);
+
+        let blocks: IRBlocks<()> = IRBlocks::new(std::vec![
+            IRBlock {
+                params: std::vec![bit.clone(), g8.clone()], // position 0: Bit, position 1: G8
+                // A trivial stmt -- `movfuscate_ir` needs at least one
+                // real statement somewhere to derive provenance for its
+                // own synthetic infrastructure gates.
+                stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 0 }, bit.clone())].into_iter().map(|s| Node::new(s, (), None)).collect(),
+                // Jump to block 1, which expects [G8, Bit] -- swap args to
+                // stay internally type-correct (var 1 is G8, var 0 is Bit).
+                terminator: IRTerminator::Jmp {
+                    target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), std::vec![IRVarId(1), IRVarId(0)]),
+                },
+            },
+            IRBlock {
+                params: std::vec![g8.clone(), bit.clone()], // position 0: G8 (collides with block 0's Bit), position 1: Bit (collides with block 0's G8)
+                stmts: std::vec![],
+                terminator: IRTerminator::Jmp {
+                    target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0), IRVarId(1)]),
+                },
+            },
+        ]);
+
+        // Must not panic -- the real point of this test.
+        let result = movfuscate_ir(&blocks, &mut types);
+        assert!(result.is_movfuscated());
+
+        // Both positions collided, so each contributes 2 slots (one per
+        // distinct type observed there) instead of 1: pc(1) + state(4).
+        assert_eq!(result.blocks[0].params.len(), 5, "pc(1) + state(2 positions x 2 colliding types each)");
+
+        // Exactly one Bit and one G8 slot per colliding position, in
+        // first-seen order (block 0 seen first: Bit before G8 at position
+        // 0's group, then G8 before Bit at position 1's group).
+        let p = &result.blocks[0].params;
+        let is_bit = |tid: &IRTypeId| matches!(types.0[tid.0 as usize], IRType::Primitive(Type::Bit));
+        let is_g8 = |tid: &IRTypeId| matches!(types.0[tid.0 as usize], IRType::Primitive(Type::AES8));
+        assert!(is_bit(&p[0]), "PC slot must be Bit");
+        assert!(is_bit(&p[1]) && is_g8(&p[2]), "position 0's groups: block 0's Bit first, then block 1's G8");
+        assert!(is_g8(&p[3]) && is_bit(&p[4]), "position 1's groups: block 0's G8 first, then block 1's Bit");
+    }
+
+    /// Regression guard for the common case: blocks that genuinely *agree*
+    /// on type at a shared position must still consolidate onto one slot
+    /// (no spurious splitting just because collision-splitting now exists).
+    #[test]
+    fn test_ir_position_type_agreement_still_dedups() {
+        let (blocks, mut types) = two_block_ir_g8();
+        let result = movfuscate_ir(&blocks, &mut types);
+        assert!(result.is_movfuscated());
+        // pc(1) + state(1) -- both blocks agree G8 at position 0, one slot.
+        assert_eq!(result.blocks[0].params.len(), 2, "agreeing blocks must not split into extra slots");
     }
 
     // =========================================================================
