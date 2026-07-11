@@ -1224,7 +1224,7 @@ mod tests {
         let mut done = false;
         let mut step = 0usize;
         let mut ever_saw_4: bool = false;
-        while !done && step < 10 {
+        while !done && step < 300 {
             let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
             done = outputs[0].iter().any(|&b| b);
             let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
@@ -1314,7 +1314,7 @@ mod tests {
         let mut done = false;
         let mut step = 0usize;
         let mut ever_saw_4: bool = false;
-        while !done && step < 10 {
+        while !done && step < 300 {
             let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
             done = outputs[0].iter().any(|&b| b);
             let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
@@ -1332,5 +1332,71 @@ mod tests {
         // pre-movfuscation optimizer is not the cause (identical result
         // with it skipped entirely).
         assert!(ever_saw_4, "the dispatched register write (r1=4) must become visible in some state slot");
+    }
+
+    /// Smallest possible repro: exactly one `if (cond) (then local.set $r1
+    /// val))`, no loop. Dumps the *raw VAFFLE* module (before any Volar-IR
+    /// lowering at all) directly, to inspect the if/else diamond's own
+    /// block/value structure by hand.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release dump_smallest_dispatch_vaffle -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn dump_smallest_dispatch_vaffle() {
+        let wat = r#"(module
+  (func (export "run") (result i32)
+    (local $r1 i32) (local $idx i32) (local $val i32)
+    (local.set $idx (i32.const 1))
+    (local.set $val (i32.const 4))
+    (if (i32.eq (local.get $idx) (i32.const 1))
+      (then (local.set $r1 (local.get $val))))
+    (local.get $r1)
+  )
+)
+"#;
+        let wasm_bytes = wat::parse_str(wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        for (fid, func) in module.funcs.entries() {
+            eprintln!("=== waffle func {fid:?}: {func:#?}");
+        }
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        for (fi, func) in target.module.funcs.iter().enumerate() {
+            eprintln!("=== func {fi}: {func:#?}", );
+        }
+
+        let (ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        for (i, b) in ir_blocks.blocks.iter().enumerate() {
+            eprintln!("block {i}: params={:?} term={:?}", b.params, b.terminator);
+            for (j, s) in b.stmts.iter().enumerate() {
+                eprintln!("  stmt {j}: {:?}", s.kind);
+            }
+        }
+
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("param widths: {param_widths:?}");
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let mut storage: StorageMap = StorageMap::new();
+        let inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+        eprintln!("done={:?}", outputs[0]);
+        let full_state: Vec<u64> = (1..outputs.len()).map(|i| to_u64(&outputs[i])).collect();
+        eprintln!("full_state={full_state:?}");
     }
 }

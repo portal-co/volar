@@ -255,6 +255,12 @@ struct FuncInfo {
     n_params: usize,
     /// Total bit-width of all return values (sum of bit-widths of sig.results).
     total_ret_bits: usize,
+    /// VAFFLE `ValueId.0` indices that need spilling/reloading across block
+    /// boundaries (see [`compute_cross_block_values`]) -- disjoint from
+    /// `own_layout`'s own packed-word call-spill region: individually
+    /// `Bit`-typed slots at `cross_block_base + ValueId.0`.
+    cross_block_values: BTreeSet<usize>,
+    cross_block_base: u64,
 }
 
 struct LowerCtx<'m, P: Clone = ()> {
@@ -343,6 +349,8 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                         n_param_words: 0,
                         n_params: 0,
                         total_ret_bits: 0,
+                        cross_block_values: BTreeSet::new(),
+                        cross_block_base: 0,
                     });
                     continue;
                 }
@@ -379,10 +387,16 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                 size: callee_size, storage: StorageId::STACK,
             };
 
-            // Own layout: this function's spill slots.
+            // Own layout: this function's call-spill slots (packed words).
             let n_spill_words = n_packs(n_values) as u64;
             let spill_base = callee_size;
-            let own_size = callee_size + n_spill_words;
+
+            // Cross-block value slots: a genuinely separate, individually
+            // `Bit`-typed region placed right after the packed call-spill
+            // region (see `compute_cross_block_values`'s own doc comment).
+            let cross_block_values = compute_cross_block_values(body);
+            let cross_block_base = spill_base + n_spill_words;
+            let own_size = cross_block_base + n_values as u64;
 
             let own_layout = FrameLayout {
                 params: vec![],
@@ -399,6 +413,8 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                 own_layout,
                 n_param_words,
                 n_params,
+                cross_block_values,
+                cross_block_base,
                 total_ret_bits,
             });
             block_offset += body.blocks.len();
@@ -505,6 +521,8 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
         let sp_packs = n_packs(SP_BITS);
         let n_param_words = info.n_param_words;
         let n_params = info.n_params;
+        let cross_block_values = info.cross_block_values.clone();
+        let cross_block_base = info.cross_block_base;
 
         for (vaffle_bi, vaffle_block) in body.blocks.iter().enumerate() {
             let ir_bi = entry_block_offset + vaffle_bi;
@@ -561,6 +579,30 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                 }
             }
 
+            // Cross-block value handling (see `compute_cross_block_values`):
+            // spill any of this block's own params that a later block needs
+            // via VAFFLE's flat, dominance-based value space (not re-threaded
+            // as an explicit arg/param), then reload only what *this*
+            // specific block actually references (via its own uses, not the
+            // whole function's cross-block set -- reloading everything
+            // needed *anywhere* at the start of *every* block scales as
+            // n_blocks * n_cross_block_values and blows up on real-sized
+            // functions).
+            for (&vid, &var) in val_map.iter() {
+                if cross_block_values.contains(&vid) {
+                    frame_spill(&mut em, &frame_sp, &own_layout,
+                        cross_block_base + vid as u64, var, BIT_TID);
+                }
+            }
+            let block_uses = collect_uses(body, &vaffle_block.stmts, &vaffle_block.terminator);
+            for &vid in &cross_block_values {
+                if block_uses.contains(&vid) && !val_map.contains_key(&vid) {
+                    let reloaded = frame_reload(&mut em, &frame_sp, &own_layout,
+                        cross_block_base + vid as u64, BIT_TID);
+                    val_map.insert(vid, reloaded);
+                }
+            }
+
             let mut remaining_stmts: &[ValueId] = &vaffle_block.stmts;
             let mut current_em = em;
             let mut current_sp_bits = sp_bits.clone();
@@ -593,6 +635,17 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                             val_map.insert(svid.0, s);
                         }
                         _ => {}
+                    }
+                    // Cross-block spill: this value's own VAFFLE-level
+                    // dominance scope extends past this block (see
+                    // `compute_cross_block_values`), so a later block that
+                    // references it directly (not via an explicit param/arg)
+                    // needs to be able to reload it.
+                    if cross_block_values.contains(&svid.0) {
+                        if let Some(&var) = val_map.get(&svid.0) {
+                            frame_spill(&mut current_em, &current_frame_sp,
+                                &own_layout, cross_block_base + svid.0 as u64, var, BIT_TID);
+                        }
                     }
                 }
 
@@ -684,6 +737,16 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                             // Packed reload.
                             let mut cont_frame_sp = StackPtr::new(cont_sp_bits.clone());
                             cont_frame_sp.retreat(own_layout.size);
+
+                            // Cross-block spill of the call's own result (see
+                            // the `before_call` loop's identical comment).
+                            if cross_block_values.contains(&call_vid.0) {
+                                if let Some(&var) = val_map.get(&call_vid.0) {
+                                    frame_spill(&mut cont_em, &cont_frame_sp,
+                                        &own_layout, cross_block_base + call_vid.0 as u64, var, BIT_TID);
+                                }
+                            }
+
                             let n_spill_words = spill_words.len();
                             let mut reloaded_words = Vec::with_capacity(n_spill_words);
                             for wi in 0..n_spill_words {
@@ -979,6 +1042,41 @@ fn collect_terminator_uses(term: &Terminator, out: &mut BTreeSet<usize>) {
         }
         _ => {}
     }
+}
+
+/// Compute the set of VAFFLE `ValueId.0` indices that are referenced by a
+/// block other than the one that defines them (as a param or a stmt).
+///
+/// VAFFLE (like WAFFLE) uses a flat, dominance-based value space where any
+/// block may reference any value computed by a dominating block directly by
+/// ID, without it being re-threaded as an explicit block param -- but
+/// `lower_function`'s own per-block `val_map` is reset fresh for each
+/// translated block (mirroring the target `IRBlock`'s own explicit-param-only
+/// scoping). Left unhandled, such a cross-block reference silently resolves
+/// to `IRVarId(0)` via `translate_stmt`/`translate_terminator`'s `s(vid)`
+/// fallback instead of the real value -- exactly the bug this function's
+/// result (`lower_function`'s spill/reload of every value in this set) is
+/// built to fix.
+fn compute_cross_block_values<P: Clone>(body: &FuncBody<P>) -> BTreeSet<usize> {
+    let mut owner: BTreeMap<usize, usize> = BTreeMap::new();
+    for (bi, block) in body.blocks.iter().enumerate() {
+        for &(vid, _ty) in &block.params {
+            owner.insert(vid.0, bi);
+        }
+        for &vid in &block.stmts {
+            owner.insert(vid.0, bi);
+        }
+    }
+
+    let mut cross: BTreeSet<usize> = BTreeSet::new();
+    for (bi, block) in body.blocks.iter().enumerate() {
+        for u in collect_uses(body, &block.stmts, &block.terminator) {
+            if owner.get(&u).copied() != Some(bi) {
+                cross.insert(u);
+            }
+        }
+    }
+    cross
 }
 
 /// Compute the bit-width of an IR type recursively.
