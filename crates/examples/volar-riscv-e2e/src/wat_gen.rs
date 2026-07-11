@@ -814,29 +814,41 @@ mod tests {
     /// oracle.
     ///
     /// **Currently fails, and is expected to** (kept as a regression guard
-    /// for whoever picks this up, not a "should pass today" test). The two
-    /// originally-suspected blockers here (`VaffleTarget::begin_function`'s
-    /// discarded return-type hint; `movfuscate_ir`'s state-slot type
-    /// agreement) are both fixed (see `movfuscate.rs`'s `SlotSig`/
-    /// `compute_position_groups`) -- the movfuscated circuit now compiles
-    /// and its declared param/return shapes agree (27 state slots, 32
-    /// return-value bits). A newer, deeper bug remains: driven with
-    /// `eval_ir_circuit_step` in a loop (feeding each step's own
-    /// `outputs[1..1+state_width]` back in as the next step's inputs, per
-    /// `lower_to_circuit_ir`'s documented "state segment padded with
-    /// don't-care filler" contract), the circuit's `done` flag never
-    /// fires and its entire 20-slot register state stays permanently zero
-    /// -- confirmed even with a 5000-step budget (~140x the real program's
-    /// 27 real instructions), with the 7-bit movfuscated "active block"
-    /// counter cycling through a stable, exact period-350 loop forever.
-    /// This means the self-loop's own next-state export (movfuscate_ir's
-    /// `Σ_i is_active_i · next_state_i[k]` accumulation) is not actually
-    /// threading real register writes (e.g. the first instruction's
-    /// `ADDI x5, x0, 4`) into the state it feeds back to itself -- a
-    /// genuine, unscoped correctness bug independent of both prior fixes
-    /// and of this test's own driving loop (confirmed by dumping the full
-    /// state, not just a narrow slice). Not yet root-caused further; left
-    /// un-fixed here deliberately, per the plan's own honest risk note.
+    /// for whoever picks this up, not a "should pass today" test). Three
+    /// bugs found and fixed so far, each confirmed via a minimal isolated
+    /// repro before touching the real interpreter (see
+    /// `minimal_state_write_repro`/`minimal_state_write_repro_no_result`):
+    ///
+    /// 1. `VaffleTarget::begin_function`'s discarded return-type hint --
+    ///    fixed (`target.rs`).
+    /// 2. `movfuscate_ir`'s state-slot type agreement (one type per
+    ///    position, regardless of block) -- fixed generically via
+    ///    `movfuscate.rs`'s `SlotSig`/`compute_position_groups`.
+    /// 3. `lower_to_circuit_ir`'s MUX cascade (`process_terminator_ir` +
+    ///    the output-assembly step) used to overlay the return value on
+    ///    top of the loop-carried state at the *same* physical output
+    ///    slots whenever `ret_width` differed from `state_width`, typed
+    ///    per-slot using the *return's* own types even for slots that
+    ///    were genuinely state -- corrupting wide state slots (e.g. a
+    ///    64-bit pack word muxed with `ty: Bit`) on every step where
+    ///    `done` was false, i.e. almost always. Fixed by making state and
+    ///    return two separate, always-both-present, non-overlapping
+    ///    output segments (state copied verbatim from `current_state`,
+    ///    no cross-iteration MUX needed at all; only the return segment
+    ///    gets the right-to-left "first done wins" cascade, typed with
+    ///    its own real types).
+    ///
+    /// With all three fixed, the circuit now halts correctly (`done`
+    /// fires, confirmed) -- but via the WAT's own safety-net bound
+    /// (`$steps >= MAX_STEPS`), not the program's real `SW`-triggered
+    /// halt, and the final RAM result is still wrong (0, not the expected
+    /// 65). Registers read via the flat `get_reg`/`set_reg` dispatch
+    /// (`if (i32.eq idx K) (then ...)`) still show as permanently zero in
+    /// the traced state -- a further, narrower, **not yet fixed** bug
+    /// specific to the interpreter's register file (branches/decode
+    /// evaluating as if every register read is always zero), independent
+    /// of the three fixes above (the minimal repro's own unconditional,
+    /// non-dispatched register write threads correctly).
     ///
     /// `#[ignore]`d: real interpreter scale, run manually:
     /// `cargo test -p volar-riscv-e2e --release trace_interpreter_plain_values_matches_native_reference -- --ignored --nocapture`.
@@ -866,15 +878,11 @@ mod tests {
         while !done && step < MAX_STEPS as usize {
             let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
             done = outputs[0].iter().any(|&b| b);
-            let pc_val: Vec<u64> = (1..8).map(|i| to_u64(&outputs[i])).collect();
-            eprintln!("step {step}: done={done} next_pc_bits={pc_val:?}");
-            // `outputs` is `[done, gated[0..output_width]]`, where
-            // `output_width = max(state_width, return_width)` --
-            // `lower_to_circuit_ir` pads the shorter side (here, state) by
-            // repeating its own last element, a value that's only ever
-            // "don't care" filler, never read when `done` is false. Only
-            // the first `param_widths.len()` slots are real next-state;
-            // anything past that is trailing return-value-shaped padding.
+            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            eprintln!("step {step}: done={done} full_state={full_state:?}");
+            // `outputs` is `[done, state[0..state_width], ret[0..ret_width]]` --
+            // state and return are separate, non-overlapping segments; only
+            // the first `param_widths.len()` slots are real next-state.
             inputs = outputs[1..1 + param_widths.len()].to_vec();
             step += 1;
         }
@@ -1017,5 +1025,115 @@ mod tests {
         // here) -- a no-op driver is enough to force a real compile.
         volar_verifier_iop_runtime::run_iop_verifier(&code, "#[test]\nfn compiles() {}\n");
         eprintln!("compiled successfully");
+    }
+
+    /// Minimal isolation repro for the "circuit state never changes" bug
+    /// found while investigating `trace_interpreter_plain_values_matches_native_reference`:
+    /// a tiny loop that just writes a constant into a local once, then
+    /// halts -- exercises the *same* self-loop/movfuscation/circuit-lowering
+    /// mechanism as the real interpreter, at a scale small enough to reason
+    /// about by hand, with **no** register-dispatch `if`-chains and **no**
+    /// memory, to isolate whether the bug is in the core loop-carried-state
+    /// mechanism itself or specific to the interpreter's larger shape.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release minimal_state_write_repro -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn minimal_state_write_repro() {
+        minimal_state_write_repro_inner(true);
+    }
+
+    /// Same repro, but with `(result i32)` removed (mem_probe.rs's own
+    /// shape) -- A/B tests whether Fix B's now-correct return-type
+    /// handling is what's newly breaking state threading, vs. a
+    /// pre-existing bug unrelated to it.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release minimal_state_write_repro_no_result -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn minimal_state_write_repro_no_result() {
+        minimal_state_write_repro_inner(false);
+    }
+
+    fn minimal_state_write_repro_inner(with_result: bool) {
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+
+        let wat = if with_result {
+            r#"(module
+  (func (export "run") (result i32)
+    (local $r1 i32) (local $steps i32) (local $halted i32)
+    (block $exit
+      (loop $L
+        (br_if $exit (i32.ge_s (local.get $steps) (i32.const 3)))
+        (local.set $steps (i32.add (local.get $steps) (i32.const 1)))
+        (br_if $exit (local.get $halted))
+        (local.set $r1 (i32.const 4))
+        (local.set $halted (i32.const 1))
+        (br $L)
+      )
+    )
+    (local.get $r1)
+  )
+)
+"#.to_string()
+        } else {
+            r#"(module
+  (func (export "run")
+    (local $r1 i32) (local $steps i32) (local $halted i32)
+    (block $exit
+      (loop $L
+        (br_if $exit (i32.ge_s (local.get $steps) (i32.const 3)))
+        (local.set $steps (i32.add (local.get $steps) (i32.const 1)))
+        (br_if $exit (local.get $halted))
+        (local.set $r1 (i32.const 4))
+        (local.set $halted (i32.const 1))
+        (br $L)
+      )
+    )
+  )
+)
+"#.to_string()
+        };
+        let wasm_bytes = wat::parse_str(&wat).expect("wat should assemble");
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+
+        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("param widths: {param_widths:?}");
+        eprintln!("circuit terminator: {:?}", circuit.blocks[0].terminator);
+
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let mut storage: StorageMap = StorageMap::new();
+        let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let mut done = false;
+        let mut step = 0usize;
+        while !done && step < 10 {
+            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            done = outputs[0].iter().any(|&b| b);
+            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            eprintln!("step {step}: done={done} full_state={full_state:?}");
+            inputs = outputs[1..1 + param_widths.len()].to_vec();
+            step += 1;
+        }
+        eprintln!("halted after {step} steps (done={done})");
+        assert!(done, "minimal repro must halt");
     }
 }

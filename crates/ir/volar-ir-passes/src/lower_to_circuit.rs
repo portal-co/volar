@@ -623,9 +623,14 @@ fn process_terminator_ir<P: Clone>(
                 (one_id, result_v.clone(), result_v)
             }
             IRBlockTargetId::Block(IRBlockId(0)) => {
+                // `done` is always false here, so `result_v` is never
+                // selected by the caller's return-segment MUX cascade
+                // (see `emit_select_slot`'s `a` operand) -- empty rather
+                // than state-shaped, since it holds no real return
+                // contribution to pad or otherwise size against.
                 let zero_id = emitter.emit_zero_bit();
                 let next_v: Vec<u32> = target.args.iter().map(lookup).collect();
-                (zero_id, current_state.to_vec(), next_v)
+                (zero_id, Vec::new(), next_v)
             }
             IRBlockTargetId::Block(IRBlockId(b)) => {
                 panic!(
@@ -645,29 +650,22 @@ fn process_terminator_ir<P: Clone>(
 
             match (&then_target.dest, &else_target.dest) {
                 (IRBlockTargetId::Return, IRBlockTargetId::Block(IRBlockId(0))) => {
-                    let mut result_v: Vec<u32> = then_target.args.iter().map(lookup).collect();
+                    // `result_v` is exactly the Return arm's own args -- no
+                    // padding to `current_state.len()`. State and return are
+                    // separate, non-overlapping output segments (see the
+                    // caller's assembly step): the resumable state a
+                    // multi-call driver threads into the next call is
+                    // `next_v` (already returned below, unconditionally),
+                    // never a truncated/padded view of the return value.
+                    let result_v: Vec<u32> = then_target.args.iter().map(lookup).collect();
                     let next_v: Vec<u32> = else_target.args.iter().map(lookup).collect();
-                    // A "done" return that carries fewer values than there are
-                    // loop-carried params (e.g. a void WASM function, or one
-                    // returning only a subset of its live state) must not
-                    // truncate the *resumable* state a multi-call driver needs
-                    // to thread into the next call when NOT done. Pad with the
-                    // next-iteration value, which is only ever observed when
-                    // done=true anyway (don't-care by construction there,
-                    // since no further call happens).
-                    for idx in result_v.len()..current_state.len() {
-                        result_v.push(*next_v.get(idx).unwrap_or(&current_state[idx]));
-                    }
                     (val_cv, result_v, next_v)
                 }
 
                 (IRBlockTargetId::Block(IRBlockId(0)), IRBlockTargetId::Return) => {
                     let not_val = emitter.emit_not(val_cv);
-                    let mut result_v: Vec<u32> = else_target.args.iter().map(lookup).collect();
+                    let result_v: Vec<u32> = else_target.args.iter().map(lookup).collect();
                     let next_v: Vec<u32> = then_target.args.iter().map(lookup).collect();
-                    for idx in result_v.len()..current_state.len() {
-                        result_v.push(*next_v.get(idx).unwrap_or(&current_state[idx]));
-                    }
                     (not_val, result_v, next_v)
                 }
 
@@ -793,38 +791,33 @@ pub fn lower_to_circuit_ir<P: Clone>(
         current_state = next_v;
     }
 
-    let output_width = result_wires.first().map_or(current_state.len(), |r| r.len());
-    let mut output_types: Vec<IRTypeId> = return_target_types(&block0.terminator, &orig_var_types)
-        .unwrap_or_else(|| block0.params.clone());
-    // Mirror `process_terminator_ir`'s result_v padding (only actually
-    // grows `output_types` for the asymmetric Return/Block(0) arms, since
-    // `output_width` already reflects whichever shape `result_v` ended up
-    // with -- the "both return" arm is deliberately left unpadded, and
-    // `output_width` matches that too). Padding slot `idx`'s type is always
-    // the corresponding param's own type (the filler value literally *is*
-    // that param, per `process_terminator_ir`'s padding).
-    for idx in output_types.len()..output_width {
-        output_types.push(block0.params[idx].clone());
-    }
+    // State and return are separate, non-overlapping output segments --
+    // never MUX'd against each other, since their real per-slot types can
+    // (and for a scalar-returning loop with wider loop-carried state,
+    // genuinely do) differ. State needs no cross-iteration MUX at all:
+    // `current_state` already holds the correct final next-state, threaded
+    // by plain reassignment each unrolled iteration above. Only the return
+    // value needs the right-to-left "first done wins" cascade, since later
+    // unrolled iterations may keep "executing" (garbage past the real
+    // halt) and must not overwrite an earlier iteration's real result.
+    let ret_types: Vec<IRTypeId> = return_target_types(&block0.terminator, &orig_var_types)
+        .unwrap_or_default();
+    let ret_width = ret_types.len();
 
-    // ---- MUX cascade (right-to-left over iterations), typed per output slot ----
-    let mut gated: Vec<u32> = {
-        let mut v = current_state.clone();
-        v.resize(output_width, *v.last().unwrap_or(&0));
-        v
-    };
-
+    let mut ret_gated: Vec<u32> = vec![0u32; ret_width];
     for k in (0..done_vars.len()).rev() {
-        let mut new_gated = Vec::with_capacity(output_width);
-        for b in 0..output_width {
-            let a = *result_wires[k].get(b).unwrap_or(&gated[b]);
-            let b_wire = gated[b];
+        let mut new_ret_gated = Vec::with_capacity(ret_width);
+        for b in 0..ret_width {
+            let a = *result_wires[k].get(b).unwrap_or(&ret_gated[b]);
+            let b_wire = ret_gated[b];
             emitter.set_prov(ctrl_prov.clone());
-            let ty = output_types.get(b).cloned().unwrap_or_else(|| bit_type_id.clone());
-            new_gated.push(emit_select_slot(&mut emitter, done_vars[k], a, b_wire, &ty));
+            new_ret_gated.push(emit_select_slot(&mut emitter, done_vars[k], a, b_wire, &ret_types[b]));
         }
-        gated = new_gated;
+        ret_gated = new_ret_gated;
     }
+
+    let mut gated: Vec<u32> = current_state.clone();
+    gated.extend(ret_gated);
 
     // ---- OR cascade for the overall done flag: OR(a,b) = select(a, 1, b) ----
     let overall_done = if done_vars.is_empty() {
@@ -1088,11 +1081,13 @@ mod tests {
 
         #[test]
         fn test_lower_ir_unconditional_return_width() {
+            // State (1 slot) and return (1 slot) are separate, always-both-
+            // present, non-overlapping output segments -- 2 total, not 1.
             let (blocks, bit_ty) = build_simple_ir_loop();
             let lowered = lower_to_circuit_ir(&blocks, &bit_ty, 3, LoweringMode::Unconditional);
             match &lowered.blocks[0].terminator {
                 IRTerminator::Jmp { target } => {
-                    assert_eq!(target.args.len(), 1, "Unconditional mode: return arg count must match original (1)");
+                    assert_eq!(target.args.len(), 2, "Unconditional mode: 1 (state) + 1 (return)");
                     assert_eq!(target.dest, IRBlockTargetId::Return);
                 }
                 _ => panic!("expected Jmp(Return) terminator"),
@@ -1106,7 +1101,7 @@ mod tests {
             assert!(lowered.is_circuit());
             match &lowered.blocks[0].terminator {
                 IRTerminator::Jmp { target } => {
-                    assert_eq!(target.args.len(), 2, "WithTerminationFlag mode: 1 (done) + 1 (output)");
+                    assert_eq!(target.args.len(), 3, "WithTerminationFlag mode: 1 (done) + 1 (state) + 1 (return)");
                 }
                 _ => panic!("expected Jmp(Return) terminator"),
             }
@@ -1158,6 +1153,9 @@ mod tests {
         #[test]
         fn test_lower_ir_both_return_jumpcond() {
             // JumpCond where both targets return: always done, result = mux(val, then, else).
+            // State (2 slots, unconditionally passed through unchanged since
+            // neither arm has a Block(0) continuation) and return (1 slot)
+            // are still separate, always-both-present segments -- 3 total.
             let mut types = IRTypes(std::vec![]);
             let bit_ty = types.intern(IRType::Primitive(Type::Bit));
             let blocks: IRBlocks<()> = IRBlocks {
@@ -1182,7 +1180,7 @@ mod tests {
             let lowered = lower_to_circuit_ir(&blocks, &bit_ty, 1, LoweringMode::Unconditional);
             assert!(lowered.is_circuit());
             match &lowered.blocks[0].terminator {
-                IRTerminator::Jmp { target } => assert_eq!(target.args.len(), 1),
+                IRTerminator::Jmp { target } => assert_eq!(target.args.len(), 3),
                 _ => panic!(),
             }
         }
