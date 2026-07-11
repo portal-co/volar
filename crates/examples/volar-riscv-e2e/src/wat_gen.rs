@@ -838,24 +838,34 @@ mod tests {
     ///    didn't itself thread it forward as an explicit arg (confirmed
     ///    via `minimal_dispatch_write_repro`, which now passes).
     ///
-    /// With all five fixed, the circuit now shows **genuine, healthy
+    /// With all five fixed, the circuit shows **genuine, healthy
     /// progress** -- real values flowing and incrementing correctly (a
-    /// `$steps`-shaped counter reaching 7, an address-shaped value
-    /// stepping by 4 each time, matching a real word-array traversal) --
-    /// confirmed via a manual 250-raw-step run. It does **not** yet halt
-    /// within that budget, though: each real RISC-V instruction spans
-    /// roughly ~30 raw movfuscated circuit calls (fetch/decode/dispatch
-    /// through many of the interpreter's 120 original blocks), not 1, so
-    /// the real program's ~27 instructions need on the order of 800-900
-    /// raw steps -- far more than `interp::MAX_STEPS` (a *real-WASM-loop*
-    /// bound, a different, smaller granularity than *raw circuit calls*).
-    /// `eval_ir_circuit_step` itself is slow at this circuit's scale
-    /// (~1s/step, since movfuscation runs every original block's own
-    /// logic every single call) -- a real, expensive, but bounded cost of
-    /// this debugging path, not a hang. Not yet run to actual completion;
-    /// do that (with a step budget in the low thousands) before assuming
-    /// anything beyond "halts and produces the right answer" remains
-    /// broken.
+    /// `$steps`-shaped counter, an address-shaped value stepping by 4
+    /// each time, matching a real word-array traversal) -- confirmed via
+    /// manual runs up to 1200 raw steps. `eval_ir_circuit_step` is slow
+    /// at this circuit's scale (~1s/step, since movfuscation runs every
+    /// original block's own logic every single call, ~1000s total for a
+    /// 1200-step run) -- a real, expensive, but bounded cost of this
+    /// debugging path, not a hang.
+    ///
+    /// **Does not yet halt naturally within 1200 raw steps.** The
+    /// `$steps`-shaped counter climbed *past* 27 (the real program's own
+    /// instruction count, per `interp::native_reference`) and kept
+    /// climbing linearly through 34 by step ~1180 with no sign of
+    /// slowing toward a halt -- either (a) that counter isn't actually
+    /// `$steps` (never independently confirmed which state slot is which
+    /// -- an easy, low-risk thing to nail down before assuming anything
+    /// deeper is wrong), or (b) the real program's own `BEQ`/branch exit
+    /// condition genuinely isn't being met, so it's heading toward the
+    /// WAT's own `$steps >= MAX_STEPS(40)` *safety net* rather than its
+    /// real `SW`-triggered halt -- which would itself be a genuine,
+    /// currently-unlocated bug (not one of the five above; those are all
+    /// confirmed fixed via the minimal repros). Needs a wider raw-step
+    /// budget (~1600+, to see whether it hits the `MAX_STEPS` safety net
+    /// specifically) and/or per-slot identification (dump which state
+    /// slot maps to which WAT local, e.g. by giving each local a
+    /// distinctive constant value in a smaller test program) before
+    /// concluding anything further.
     ///
     /// `#[ignore]`d: real interpreter scale, run manually:
     /// `cargo test -p volar-riscv-e2e --release trace_interpreter_plain_values_matches_native_reference -- --ignored --nocapture`.
