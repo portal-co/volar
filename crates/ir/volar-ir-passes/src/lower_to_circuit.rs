@@ -148,8 +148,16 @@ pub fn lower_to_circuit<P: Clone>(blocks: &BIrBlocks<P>, limit: u32, mode: Lower
     // Start from the fallback: the state after all `limit` steps.
     let mut gated: Vec<u32> = {
         let mut v = current_state.clone();
-        // Normalise length to output_width (pads or truncates if needed —
-        // should never be needed for well-formed circuits).
+        // Normalise length to output_width. NOT actually dead: unlike
+        // `lower_to_circuit_ir` (which keeps state/return as separate,
+        // non-overlapping segments -- see its own `process_terminator_ir`),
+        // this older BIr entry point still conflates them the way bug #2
+        // (see `docs/agent-context`/memory) found and fixed for the IR path
+        // only. Confirmed still exercised by a legitimate existing unit
+        // test (`test_lower_both_return_condjmp`, state width 2 vs return
+        // width 1) -- this is deliberately untouched legacy Boolar-IR
+        // behavior (see `docs/agent-context/boolar-ir-conflicts.md`), not
+        // dead code; don't assume it's safe to remove or assert against.
         v.resize(output_width, *v.last().unwrap_or(&0));
         v
     };

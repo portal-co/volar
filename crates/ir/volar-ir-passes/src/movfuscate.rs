@@ -1269,6 +1269,26 @@ impl<P: Clone> IrCtx<P> {
                         ret.push(block_vals[arg.0 as usize]);
                     }
                 }
+                // DIAG: this zero-pad loop assumes every Return-bearing
+                // block's own arg shape matches `return_slot_types` (taken
+                // from whichever Return-bearing block `compute_return_slot_types`
+                // happens to see first) -- had no assertion backing that
+                // assumption. Panic if it's ever actually exercised (short)
+                // or silently overflowed (long), to find out.
+                assert!(
+                    ret.len() <= ret_width,
+                    "DIAG: movfuscate_ir return-slot overflow -- this block's own \
+                     Return args expand to {} slots, wider than the global \
+                     ret_width={} (taken from a different Return-bearing block)",
+                    ret.len(), ret_width,
+                );
+                assert_eq!(
+                    ret.len(), ret_width,
+                    "DIAG: movfuscate_ir return-slot underflow -- this block's own \
+                     Return args expand to {} slots, narrower than the global \
+                     ret_width={} (the zero-pad loop would have silently fired here)",
+                    ret.len(), ret_width,
+                );
                 for m in ret.len()..ret_width {
                     let ty = return_slot_types[m].clone();
                     ret.push(self.emit_zero_slot(&ty));

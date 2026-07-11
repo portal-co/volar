@@ -840,32 +840,45 @@ mod tests {
     ///
     /// With all five fixed, the circuit shows **genuine, healthy
     /// progress** -- real values flowing and incrementing correctly (a
-    /// `$steps`-shaped counter, an address-shaped value stepping by 4
-    /// each time, matching a real word-array traversal) -- confirmed via
-    /// manual runs up to 1200 raw steps. `eval_ir_circuit_step` is slow
-    /// at this circuit's scale (~1s/step, since movfuscation runs every
-    /// original block's own logic every single call, ~1000s total for a
-    /// 1200-step run) -- a real, expensive, but bounded cost of this
-    /// debugging path, not a hang.
+    /// step-shaped counter, an address-shaped value stepping by 4 each
+    /// time, matching a real word-array traversal).
     ///
-    /// **Does not yet halt naturally within 1200 raw steps.** The
-    /// `$steps`-shaped counter climbed *past* 27 (the real program's own
-    /// instruction count, per `interp::native_reference`) and kept
-    /// climbing linearly through 34 by step ~1180 with no sign of
-    /// slowing toward a halt -- either (a) that counter isn't actually
-    /// `$steps` (never independently confirmed which state slot is which
-    /// -- an easy, low-risk thing to nail down before assuming anything
-    /// deeper is wrong), or (b) the real program's own `BEQ`/branch exit
-    /// condition genuinely isn't being met, so it's heading toward the
-    /// WAT's own `$steps >= MAX_STEPS(40)` *safety net* rather than its
-    /// real `SW`-triggered halt -- which would itself be a genuine,
-    /// currently-unlocated bug (not one of the five above; those are all
-    /// confirmed fixed via the minimal repros). Needs a wider raw-step
-    /// budget (~1600+, to see whether it hits the `MAX_STEPS` safety net
-    /// specifically) and/or per-slot identification (dump which state
-    /// slot maps to which WAT local, e.g. by giving each local a
-    /// distinctive constant value in a smaller test program) before
-    /// concluding anything further.
+    /// **CORRECTED (was: "does not halt within 1200 raw steps" / "genuine
+    /// never-breaking period-140 cycle").** Both of those were wrong. At
+    /// a 2600-raw-step budget, the circuit genuinely halts (`done=true`)
+    /// at **step 1405** -- ~4.7x the ~300-step estimate ("~30 raw calls
+    /// per real instruction * 27 instructions") this doc comment used to
+    /// cite, and far past the 1200-step budget the earlier "never halts"
+    /// conclusion was drawn from; that conclusion mistook "hasn't halted
+    /// by an under-provisioned budget" for "will never halt" (the same
+    /// class of mistake `minimal_dispatch_feedback_loop_repro`'s own
+    /// step-budget false positive made, see memory). **But the halted
+    /// result is wrong**: `data RAM result word: 0 (expected 65)`. This
+    /// is now a real, reproducible, well-characterized correctness bug,
+    /// not a halting bug: the real program's loop only needs 4
+    /// iterations (`N_WORDS=4`, see `interp.rs`), but the address-shaped
+    /// state slot climbed to ~160 (40 iterations' worth of `ptr += 4`)
+    /// before the circuit finally halted -- strongly suggesting the
+    /// `BEQ`/loop-exit comparison (`i == bound`, bound is a fixed
+    /// constant 4 set once via `ADDI`) either computes wrong, or reads a
+    /// corrupted `bound` value, letting the loop run ~10x too many
+    /// iterations before something (not the real exit condition)
+    /// eventually satisfies `done`. Leading hypothesis, not yet
+    /// confirmed: `movfuscate.rs`'s `(position, type-signature)`-keyed
+    /// slot dedup (Fix B) guarantees type agreement for state slots
+    /// shared across different original blocks, but not liveness/
+    /// identity stability -- if `bound`'s slot is shared with some other
+    /// i32 local that a *different* original block writes on a
+    /// *different* dispatch pass, `bound` could be transiently or
+    /// permanently clobbered. Per-slot identification (dump which state
+    /// slot maps to which WAT local -- e.g. temporarily give each local
+    /// in a smaller test program a distinctive constant value) is the
+    /// natural next step, not a repro shape change.
+    ///
+    /// `eval_ir_circuit_step` is slow at this circuit's scale (~0.8s/
+    /// step, since movfuscation runs every original block's own logic
+    /// every single call) -- the 1405-step halting run took ~19 minutes.
+    /// A real, expensive, but bounded cost of this debugging path.
     ///
     /// `#[ignore]`d: real interpreter scale, run manually:
     /// `cargo test -p volar-riscv-e2e --release trace_interpreter_plain_values_matches_native_reference -- --ignored --nocapture`.
@@ -892,12 +905,13 @@ mod tests {
         let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
         let mut done = false;
         let mut step = 0usize;
-        // ~30 raw circuit calls per real instruction (see this test's own
-        // doc comment) -- 27 real instructions need on the order of
-        // 800-900, not `interp::MAX_STEPS` (a different, real-WASM-loop
-        // granularity). ~1s/step at this circuit's scale; budget real time
-        // to run this.
-        const RAW_STEP_BUDGET: usize = 1200;
+        // Confirmed halts (done=true) at step 1405 -- far past the naive
+        // "~30 raw calls/instruction * 27 instructions ~= 800-900"
+        // estimate (see this test's own doc comment for why: the real
+        // loop runs ~10x more iterations than its own 4-iteration bound
+        // implies, a real correctness bug, not a halting one). ~0.8s/step
+        // at this circuit's scale; budget real time to run this.
+        const RAW_STEP_BUDGET: usize = 1700;
         while !done && step < RAW_STEP_BUDGET {
             let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
             done = outputs[0].iter().any(|&b| b);
