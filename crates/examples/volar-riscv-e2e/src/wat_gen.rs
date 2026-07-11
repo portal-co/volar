@@ -1404,4 +1404,291 @@ mod tests {
         let full_state: Vec<u64> = (1..outputs.len()).map(|i| to_u64(&outputs[i])).collect();
         eprintln!("full_state={full_state:?}");
     }
+
+    /// Isolates the real interpreter's own **two-`br_if`-to-the-same-`$exit`**
+    /// loop-exit pattern (`br_if $exit (steps>=max)`, then later
+    /// `br_if $exit (halted)`, both targeting the *same* block) -- never
+    /// exercised by any earlier repro this session (all had exactly one
+    /// exit check). If this alone reproduces "stuck forever, done never
+    /// fires", the bug is in how WAFFLE/lower_to_ir.rs/movfuscate_ir
+    /// handle multiple distinct branches converging on one target, not
+    /// in anything already fixed this session.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release minimal_double_exit_repro -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn minimal_double_exit_repro() {
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+
+        let wat = r#"(module
+  (func (export "run") (result i32)
+    (local $steps i32) (local $halted i32) (local $r3 i32)
+    (block $exit
+      (loop $L
+        (br_if $exit (i32.ge_s (local.get $steps) (i32.const 5)))
+        (local.set $steps (i32.add (local.get $steps) (i32.const 1)))
+        (br_if $exit (local.get $halted))
+        (local.set $r3 (i32.add (local.get $r3) (i32.const 1)))
+        (if (i32.eq (local.get $steps) (i32.const 3))
+          (then (local.set $halted (i32.const 1))))
+        (br $L)
+      )
+    )
+    (local.get $r3)
+  )
+)
+"#;
+        let wasm_bytes = wat::parse_str(wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+
+        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("param widths: {param_widths:?}");
+
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let mut storage: StorageMap = StorageMap::new();
+        let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let mut done = false;
+        let mut step = 0usize;
+        while !done && step < 60 {
+            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            done = outputs[0].iter().any(|&b| b);
+            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            eprintln!("step {step}: done={done} full_state={full_state:?}");
+            inputs = outputs[1..1 + param_widths.len()].to_vec();
+            step += 1;
+        }
+        eprintln!("halted after {step} steps (done={done})");
+        assert!(done, "minimal double-exit repro must halt (expected via the halted-check: steps reaches 3, sets halted=1, exits with r3=3 on the next pass)");
+    }
+
+    /// Combines the two patterns already individually confirmed correct
+    /// (`minimal_dispatch_write_repro`'s flat `get_reg`/`set_reg` dispatch
+    /// chain, `minimal_double_exit_repro`'s two-`br_if`-to-`$exit` loop) --
+    /// but, unlike either alone, the loop's own exit condition is decided
+    /// by a value that made a full **read (dispatch) -> compute -> write
+    /// (dispatch) -> next-iteration read (dispatch)** round trip, exactly
+    /// like the real interpreter's `ADDI`/register-loop pattern (`get_rs1v`
+    /// each iteration, dispatch-write `$result` to `$rd`, then next
+    /// iteration's `get_rs1v` must see the new value to eventually satisfy
+    /// a data-dependent branch). Neither existing repro exercises a
+    /// register value that must survive a real dispatch round trip *and*
+    /// feed a loop-exit decision.
+    ///
+    /// **CONFIRMED REPRODUCES THE BUG**: fails (`done` never fires within
+    /// 60 raw steps) -- this is the first small, fast (~2s), fully-lowering
+    /// repro of the real interpreter's own "never halts" behavior. Isolated
+    /// from `minimal_dispatch_feedback_single_exit_repro` (below): the
+    /// interacting ingredient is the dispatch read-modify-write round trip
+    /// surviving *across the loop's own back-edge* (i.e. a value written
+    /// via dispatch in iteration N must still read back correctly via
+    /// dispatch in iteration N+1) -- not the double-exit structure itself
+    /// (already ruled out) and not dispatch-write alone (already confirmed
+    /// working, but only ever checked *within* one pass, never read back
+    /// through dispatch again on a later iteration). Not yet root-caused
+    /// further within the available investigation budget; the next step is
+    /// comparing `scatter_args_to_state`'s (`movfuscate.rs`) per-slot
+    /// pass-through fallback (the fix already landed for the *single-hop*
+    /// case, `1d` in `docs/agent-context`/memory) against what happens when
+    /// the *same* slot must survive a full loop back-edge, not just one
+    /// block-to-block hop.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release minimal_dispatch_feedback_loop_repro -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn minimal_dispatch_feedback_loop_repro() {
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+
+        let wat = format!(
+            r#"(module
+  (func (export "run") (result i32)
+    (local $r1 i32) (local $r2 i32) (local $r3 i32) (local $r4 i32) (local $r5 i32)
+    (local $idx i32) (local $val i32) (local $cur i32)
+    (local $steps i32) (local $halted i32)
+    (block $exit
+      (loop $L
+        (br_if $exit (i32.ge_s (local.get $steps) (i32.const 10)))
+        (local.set $steps (i32.add (local.get $steps) (i32.const 1)))
+        (br_if $exit (local.get $halted))
+
+        ;; read r3 via the flat dispatch chain (like real `get_rs1v`).
+        (local.set $idx (i32.const 3))
+{get_cur}
+        ;; compute + write back via the flat dispatch chain (like real
+        ;; `ADDI`'s `set_result_to_rd`).
+        (local.set $val (i32.add (local.get $cur) (i32.const 1)))
+{set_val}
+        ;; loop-exit decision depends on the value *read back* through
+        ;; dispatch, not a plain local -- the untested combination.
+        (if (i32.eq (local.get $cur) (i32.const 3))
+          (then (local.set $halted (i32.const 1))))
+
+        (br $L)
+      )
+    )
+    (local.get $r3)
+  )
+)
+"#,
+            get_cur = get_reg("$idx", "$cur"),
+            set_val = set_reg("$idx", "$val"),
+        );
+        let wasm_bytes = wat::parse_str(&wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+
+        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("param widths: {param_widths:?}");
+
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let mut storage: StorageMap = StorageMap::new();
+        let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let mut done = false;
+        let mut step = 0usize;
+        while !done && step < 60 {
+            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            done = outputs[0].iter().any(|&b| b);
+            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            eprintln!("step {step}: done={done} full_state={full_state:?}");
+            inputs = outputs[1..1 + param_widths.len()].to_vec();
+            step += 1;
+        }
+        eprintln!("halted after {step} steps (done={done})");
+        assert!(done, "dispatch-feedback-loop repro must halt (r3 climbs 1 per iteration via dispatch round trip, halts when it reads back as 3)");
+    }
+
+    /// Same as `minimal_dispatch_feedback_loop_repro`, but with the
+    /// two-`br_if`-to-`$exit` structure collapsed to a **single** `br_if`
+    /// (the safety-net check becomes a plain `if` that also just sets
+    /// `$halted`, like the data-dependent check already does) -- isolates
+    /// whether "double exit" is actually the interacting ingredient, or
+    /// whether the dispatch read/compute/write round trip alone is enough
+    /// to break the loop regardless of how many `br_if $exit`s there are.
+    ///
+    /// **Result: a different, earlier failure** -- this shape doesn't even
+    /// get past `lower_waffle_module` (`UnsupportedOp("undefined v364")`),
+    /// so it can't test the hypothesis it was built for. This is a real,
+    /// separate, previously-unknown WAFFLE-frontend lowering gap in its own
+    /// right (a loop with one `br_if $exit` plus two later plain `if`s that
+    /// both assign the same local, one of them the loop's own safety net --
+    /// not yet investigated further), but is NOT evidence about whether
+    /// double-exit specifically matters for the read-modify-write bug --
+    /// that comparison remains unresolved.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release minimal_dispatch_feedback_single_exit_repro -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn minimal_dispatch_feedback_single_exit_repro() {
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+
+        let wat = format!(
+            r#"(module
+  (func (export "run") (result i32)
+    (local $r1 i32) (local $r2 i32) (local $r3 i32) (local $r4 i32) (local $r5 i32)
+    (local $idx i32) (local $val i32) (local $cur i32)
+    (local $steps i32) (local $halted i32)
+    (block $exit
+      (loop $L
+        (br_if $exit (local.get $halted))
+        (local.set $steps (i32.add (local.get $steps) (i32.const 1)))
+        (if (i32.ge_s (local.get $steps) (i32.const 10))
+          (then (local.set $halted (i32.const 1))))
+
+        (local.set $idx (i32.const 3))
+{get_cur}
+        (local.set $val (i32.add (local.get $cur) (i32.const 1)))
+{set_val}
+        (if (i32.eq (local.get $cur) (i32.const 3))
+          (then (local.set $halted (i32.const 1))))
+
+        (br $L)
+      )
+    )
+    (local.get $r3)
+  )
+)
+"#,
+            get_cur = get_reg("$idx", "$cur"),
+            set_val = set_reg("$idx", "$val"),
+        );
+        let wasm_bytes = wat::parse_str(&wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+
+        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("param widths: {param_widths:?}");
+
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let mut storage: StorageMap = StorageMap::new();
+        let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let mut done = false;
+        let mut step = 0usize;
+        while !done && step < 60 {
+            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            done = outputs[0].iter().any(|&b| b);
+            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            eprintln!("step {step}: done={done} full_state={full_state:?}");
+            inputs = outputs[1..1 + param_widths.len()].to_vec();
+            step += 1;
+        }
+        eprintln!("halted after {step} steps (done={done})");
+        assert!(done, "single-exit dispatch-feedback-loop repro must halt");
+    }
 }
