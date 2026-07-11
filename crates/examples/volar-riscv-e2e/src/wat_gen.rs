@@ -510,8 +510,11 @@ mod tests {
             "commitment-mode reads must be oracle params: {:?}",
             vf.params.iter().map(|p| &p.name).collect::<Vec<_>>()
         );
+        // Fix A array-batched `q_and_0`, `q_and_1`, ... into one bare
+        // `q_and` array param -- match the array param itself, not a
+        // per-gate name prefix.
         assert!(
-            vf.params.iter().any(|p| p.name.starts_with("q_and_")),
+            vf.params.iter().any(|p| p.name == "q_and"),
             "at least one AND gate expected (IopSink folds every one via iop_fold_gate): {:?}",
             vf.params.iter().map(|p| &p.name).collect::<Vec<_>>()
         );
@@ -1135,5 +1138,199 @@ mod tests {
         }
         eprintln!("halted after {step} steps (done={done})");
         assert!(done, "minimal repro must halt");
+    }
+
+    /// Second-stage isolation repro: adds *conditional*, index-dispatched
+    /// register writes (`set_reg`'s own exact shape -- a flat sequence of
+    /// independent `if (i32.eq idx K) (then local.set $rK ...)`) on top of
+    /// `minimal_state_write_repro`'s already-confirmed-working unconditional
+    /// write, to check whether the real interpreter's remaining "registers
+    /// stay zero" bug is reproducible from the dispatch pattern alone (no
+    /// memory, no fetch/decode, no `(result i32)`).
+    ///
+    /// It reproduces: `r1`/`r2`/`r3` (the only three 32-bit state slots
+    /// that survive to the combined param list -- WAFFLE evidently
+    /// dedups/eliminates some of the five registers here, a separate
+    /// detail not chased further) stay zero across every step despite an
+    /// unconditionally-fired `idx==1` write. Dumping the pre-movfuscation
+    /// IR (via a temporary per-block/per-stmt `eprintln!`, since removed)
+    /// showed WAFFLE lowering every inter-block transition through a
+    /// 64-bit bit-packed "transport word" (`Merge`/`Shuffle` bit-pack and
+    /// -unpack sequences around a `Vec(64,Bit)`-typed param), rather than
+    /// keeping locals as separate SSA params across these diamonds --
+    /// the same pack/unpack machinery already flagged as broken by the
+    /// pre-existing, unrelated `test_pack_unpack_stmts_present` failure in
+    /// `volar-vaffle-target`'s `lower_to_ir.rs`. Root-caused only this
+    /// far; the actual pack/unpack bug itself is not yet located or fixed.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release minimal_dispatch_write_repro -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn minimal_dispatch_write_repro() {
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+
+        let wat = format!(
+            r#"(module
+  (func (export "run")
+    (local $r1 i32) (local $r2 i32) (local $r3 i32) (local $r4 i32) (local $r5 i32)
+    (local $idx i32) (local $val i32)
+    (local $steps i32) (local $halted i32)
+    (block $exit
+      (loop $L
+        (br_if $exit (i32.ge_s (local.get $steps) (i32.const 3)))
+        (local.set $steps (i32.add (local.get $steps) (i32.const 1)))
+        (br_if $exit (local.get $halted))
+        (local.set $idx (i32.const 1))
+        (local.set $val (i32.const 4))
+{set_reg}
+        (local.set $halted (i32.const 1))
+        (br $L)
+      )
+    )
+  )
+)
+"#,
+            set_reg = set_reg("$idx", "$val"),
+        );
+        let wasm_bytes = wat::parse_str(&wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+
+        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("param widths: {param_widths:?}");
+
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let mut storage: StorageMap = StorageMap::new();
+        let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let mut done = false;
+        let mut step = 0usize;
+        let mut ever_saw_4: bool = false;
+        while !done && step < 10 {
+            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            done = outputs[0].iter().any(|&b| b);
+            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            eprintln!("step {step}: done={done} full_state={full_state:?}");
+            if full_state.iter().any(|&v| v == 4) {
+                ever_saw_4 = true;
+            }
+            inputs = outputs[1..1 + param_widths.len()].to_vec();
+            step += 1;
+        }
+        eprintln!("halted after {step} steps (done={done})");
+        assert!(done, "minimal dispatch repro must halt");
+        // **Currently fails, and is expected to** -- the register write
+        // (idx=1, val=4, then `set_reg`'s own `if (idx==1) then r1=val`
+        // dispatch) never takes visible effect in any state slot across
+        // the whole trace, even though the unconditional-write repro
+        // (`minimal_state_write_repro`) and halt detection both work.
+        // Kept as a regression guard for the pack/unpack lowering bug
+        // this isolates (see this test's own doc comment).
+        assert!(ever_saw_4, "the dispatched register write (r1=4) must become visible in some state slot");
+    }
+
+    /// Same as `minimal_dispatch_write_repro`, but skips the pre-movfuscation
+    /// optimizer (`fold_ir_blocks`/`store_forward_ir_blocks`) entirely --
+    /// A/B tests whether constant-folding a *statically-foldable* dispatch
+    /// condition (this repro's `idx`/`val` are both compile-time constants)
+    /// is what's discarding the conditional write's effect, vs. a bug in
+    /// movfuscation/circuit-lowering themselves.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release minimal_dispatch_write_repro_no_optimize -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn minimal_dispatch_write_repro_no_optimize() {
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+
+        let wat = format!(
+            r#"(module
+  (func (export "run")
+    (local $r1 i32) (local $r2 i32) (local $r3 i32) (local $r4 i32) (local $r5 i32)
+    (local $idx i32) (local $val i32)
+    (local $steps i32) (local $halted i32)
+    (block $exit
+      (loop $L
+        (br_if $exit (i32.ge_s (local.get $steps) (i32.const 3)))
+        (local.set $steps (i32.add (local.get $steps) (i32.const 1)))
+        (br_if $exit (local.get $halted))
+        (local.set $idx (i32.const 1))
+        (local.set $val (i32.const 4))
+{set_reg}
+        (local.set $halted (i32.const 1))
+        (br $L)
+      )
+    )
+  )
+)
+"#,
+            set_reg = set_reg("$idx", "$val"),
+        );
+        let wasm_bytes = wat::parse_str(&wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        let (ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        eprintln!("block count (no optimize): {}", ir_blocks.blocks.len());
+
+        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("param widths: {param_widths:?}");
+
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let mut storage: StorageMap = StorageMap::new();
+        let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let mut done = false;
+        let mut step = 0usize;
+        let mut ever_saw_4: bool = false;
+        while !done && step < 10 {
+            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            done = outputs[0].iter().any(|&b| b);
+            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            eprintln!("step {step}: done={done} full_state={full_state:?}");
+            if full_state.iter().any(|&v| v == 4) {
+                ever_saw_4 = true;
+            }
+            inputs = outputs[1..1 + param_widths.len()].to_vec();
+            step += 1;
+        }
+        eprintln!("halted after {step} steps (done={done})");
+        assert!(done, "minimal dispatch repro (no optimize) must halt");
+        // **Currently fails, and is expected to** -- see
+        // `minimal_dispatch_write_repro`'s own doc comment; confirms the
+        // pre-movfuscation optimizer is not the cause (identical result
+        // with it skipped entirely).
+        assert!(ever_saw_4, "the dispatched register write (r1=4) must become visible in some state slot");
     }
 }
