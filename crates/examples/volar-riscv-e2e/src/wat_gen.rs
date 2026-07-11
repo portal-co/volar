@@ -817,41 +817,45 @@ mod tests {
     /// oracle.
     ///
     /// **Currently fails, and is expected to** (kept as a regression guard
-    /// for whoever picks this up, not a "should pass today" test). Three
+    /// for whoever picks this up, not a "should pass today" test). Five
     /// bugs found and fixed so far, each confirmed via a minimal isolated
-    /// repro before touching the real interpreter (see
-    /// `minimal_state_write_repro`/`minimal_state_write_repro_no_result`):
+    /// repro before touching the real interpreter:
     ///
-    /// 1. `VaffleTarget::begin_function`'s discarded return-type hint --
-    ///    fixed (`target.rs`).
-    /// 2. `movfuscate_ir`'s state-slot type agreement (one type per
-    ///    position, regardless of block) -- fixed generically via
-    ///    `movfuscate.rs`'s `SlotSig`/`compute_position_groups`.
-    /// 3. `lower_to_circuit_ir`'s MUX cascade (`process_terminator_ir` +
-    ///    the output-assembly step) used to overlay the return value on
-    ///    top of the loop-carried state at the *same* physical output
-    ///    slots whenever `ret_width` differed from `state_width`, typed
-    ///    per-slot using the *return's* own types even for slots that
-    ///    were genuinely state -- corrupting wide state slots (e.g. a
-    ///    64-bit pack word muxed with `ty: Bit`) on every step where
-    ///    `done` was false, i.e. almost always. Fixed by making state and
-    ///    return two separate, always-both-present, non-overlapping
-    ///    output segments (state copied verbatim from `current_state`,
-    ///    no cross-iteration MUX needed at all; only the return segment
-    ///    gets the right-to-left "first done wins" cascade, typed with
-    ///    its own real types).
+    /// 1. `VaffleTarget::begin_function`'s discarded return-type hint.
+    /// 2. `movfuscate_ir`'s state-slot type agreement (`SlotSig`/
+    ///    `compute_position_groups`).
+    /// 3. `lower_to_circuit_ir`'s MUX cascade conflating state and return
+    ///    at the same output slots -- fixed by making them separate,
+    ///    non-overlapping segments.
+    /// 4. `lower_to_ir.rs`'s per-block `val_map` silently resolving any
+    ///    VAFFLE cross-block (dominance-based) value reference to
+    ///    `IRVarId(0)` -- fixed with `compute_cross_block_values` (spill
+    ///    at definition, reload only where actually used).
+    /// 5. `movfuscate.rs`'s `scatter_args_to_state` zero-filling any state
+    ///    slot a jump target didn't explicitly cover, instead of passing
+    ///    the combined block's own current value through -- silently
+    ///    wiping loop-carried state the moment *any* block along a path
+    ///    didn't itself thread it forward as an explicit arg (confirmed
+    ///    via `minimal_dispatch_write_repro`, which now passes).
     ///
-    /// With all three fixed, the circuit now halts correctly (`done`
-    /// fires, confirmed) -- but via the WAT's own safety-net bound
-    /// (`$steps >= MAX_STEPS`), not the program's real `SW`-triggered
-    /// halt, and the final RAM result is still wrong (0, not the expected
-    /// 65). Registers read via the flat `get_reg`/`set_reg` dispatch
-    /// (`if (i32.eq idx K) (then ...)`) still show as permanently zero in
-    /// the traced state -- a further, narrower, **not yet fixed** bug
-    /// specific to the interpreter's register file (branches/decode
-    /// evaluating as if every register read is always zero), independent
-    /// of the three fixes above (the minimal repro's own unconditional,
-    /// non-dispatched register write threads correctly).
+    /// With all five fixed, the circuit now shows **genuine, healthy
+    /// progress** -- real values flowing and incrementing correctly (a
+    /// `$steps`-shaped counter reaching 7, an address-shaped value
+    /// stepping by 4 each time, matching a real word-array traversal) --
+    /// confirmed via a manual 250-raw-step run. It does **not** yet halt
+    /// within that budget, though: each real RISC-V instruction spans
+    /// roughly ~30 raw movfuscated circuit calls (fetch/decode/dispatch
+    /// through many of the interpreter's 120 original blocks), not 1, so
+    /// the real program's ~27 instructions need on the order of 800-900
+    /// raw steps -- far more than `interp::MAX_STEPS` (a *real-WASM-loop*
+    /// bound, a different, smaller granularity than *raw circuit calls*).
+    /// `eval_ir_circuit_step` itself is slow at this circuit's scale
+    /// (~1s/step, since movfuscation runs every original block's own
+    /// logic every single call) -- a real, expensive, but bounded cost of
+    /// this debugging path, not a hang. Not yet run to actual completion;
+    /// do that (with a step budget in the low thousands) before assuming
+    /// anything beyond "halts and produces the right answer" remains
+    /// broken.
     ///
     /// `#[ignore]`d: real interpreter scale, run manually:
     /// `cargo test -p volar-riscv-e2e --release trace_interpreter_plain_values_matches_native_reference -- --ignored --nocapture`.
@@ -878,11 +882,17 @@ mod tests {
         let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
         let mut done = false;
         let mut step = 0usize;
-        while !done && step < MAX_STEPS as usize {
+        // ~30 raw circuit calls per real instruction (see this test's own
+        // doc comment) -- 27 real instructions need on the order of
+        // 800-900, not `interp::MAX_STEPS` (a different, real-WASM-loop
+        // granularity). ~1s/step at this circuit's scale; budget real time
+        // to run this.
+        const RAW_STEP_BUDGET: usize = 1200;
+        while !done && step < RAW_STEP_BUDGET {
             let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
             done = outputs[0].iter().any(|&b| b);
             let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
-            eprintln!("step {step}: done={done} full_state={full_state:?}");
+            if step % 20 == 0 || done { eprintln!("step {step}: done={done} full_state={full_state:?}"); }
             // `outputs` is `[done, state[0..state_width], ret[0..ret_width]]` --
             // state and return are separate, non-overlapping segments; only
             // the first `param_widths.len()` slots are real next-state.
@@ -890,7 +900,7 @@ mod tests {
             step += 1;
         }
         eprintln!("halted after {step} steps (done={done})");
-        assert!(done, "interpreter circuit must halt within MAX_STEPS via its own termination flag");
+        assert!(done, "interpreter circuit must halt within RAW_STEP_BUDGET raw steps via its own termination flag");
 
         // Find whichever (StorageId, TypeId) pair holds the data RAM's
         // real byte contents (the one with pre-init data whose length
@@ -1144,24 +1154,20 @@ mod tests {
     /// register writes (`set_reg`'s own exact shape -- a flat sequence of
     /// independent `if (i32.eq idx K) (then local.set $rK ...)`) on top of
     /// `minimal_state_write_repro`'s already-confirmed-working unconditional
-    /// write, to check whether the real interpreter's remaining "registers
-    /// stay zero" bug is reproducible from the dispatch pattern alone (no
-    /// memory, no fetch/decode, no `(result i32)`).
+    /// write.
     ///
-    /// It reproduces: `r1`/`r2`/`r3` (the only three 32-bit state slots
-    /// that survive to the combined param list -- WAFFLE evidently
-    /// dedups/eliminates some of the five registers here, a separate
-    /// detail not chased further) stay zero across every step despite an
-    /// unconditionally-fired `idx==1` write. Dumping the pre-movfuscation
-    /// IR (via a temporary per-block/per-stmt `eprintln!`, since removed)
-    /// showed WAFFLE lowering every inter-block transition through a
-    /// 64-bit bit-packed "transport word" (`Merge`/`Shuffle` bit-pack and
-    /// -unpack sequences around a `Vec(64,Bit)`-typed param), rather than
-    /// keeping locals as separate SSA params across these diamonds --
-    /// the same pack/unpack machinery already flagged as broken by the
-    /// pre-existing, unrelated `test_pack_unpack_stmts_present` failure in
-    /// `volar-vaffle-target`'s `lower_to_ir.rs`. Root-caused only this
-    /// far; the actual pack/unpack bug itself is not yet located or fixed.
+    /// **Now passes**, after two real bugs were found and fixed:
+    /// 1. `lower_to_ir.rs`'s cross-block VAFFLE value resolution (see
+    ///    `compute_cross_block_values`) -- VAFFLE, like WAFFLE, uses a flat,
+    ///    dominance-based value space, but `lower_function`'s per-block
+    ///    `val_map` silently resolved any cross-block reference to
+    ///    `IRVarId(0)` instead of the real value.
+    /// 2. `movfuscate.rs`'s `scatter_args_to_state` zero-filled any state
+    ///    slot a jump target didn't explicitly cover, instead of passing
+    ///    the combined block's own current value through -- silently
+    ///    wiping loop-carried state (like this program's own `halted` exit
+    ///    flag) the moment *any* block along a dispatch chain didn't
+    ///    itself thread it forward as an explicit arg.
     /// Run manually: `cargo test -p volar-riscv-e2e --release minimal_dispatch_write_repro -- --ignored --nocapture`.
     #[test]
     #[ignore]
@@ -1224,7 +1230,7 @@ mod tests {
         let mut done = false;
         let mut step = 0usize;
         let mut ever_saw_4: bool = false;
-        while !done && step < 300 {
+        while !done && step < 30 {
             let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
             done = outputs[0].iter().any(|&b| b);
             let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
@@ -1237,13 +1243,6 @@ mod tests {
         }
         eprintln!("halted after {step} steps (done={done})");
         assert!(done, "minimal dispatch repro must halt");
-        // **Currently fails, and is expected to** -- the register write
-        // (idx=1, val=4, then `set_reg`'s own `if (idx==1) then r1=val`
-        // dispatch) never takes visible effect in any state slot across
-        // the whole trace, even though the unconditional-write repro
-        // (`minimal_state_write_repro`) and halt detection both work.
-        // Kept as a regression guard for the pack/unpack lowering bug
-        // this isolates (see this test's own doc comment).
         assert!(ever_saw_4, "the dispatched register write (r1=4) must become visible in some state slot");
     }
 
@@ -1314,7 +1313,7 @@ mod tests {
         let mut done = false;
         let mut step = 0usize;
         let mut ever_saw_4: bool = false;
-        while !done && step < 300 {
+        while !done && step < 30 {
             let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
             done = outputs[0].iter().any(|&b| b);
             let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
@@ -1327,10 +1326,6 @@ mod tests {
         }
         eprintln!("halted after {step} steps (done={done})");
         assert!(done, "minimal dispatch repro (no optimize) must halt");
-        // **Currently fails, and is expected to** -- see
-        // `minimal_dispatch_write_repro`'s own doc comment; confirms the
-        // pre-movfuscation optimizer is not the cause (identical result
-        // with it skipped entirely).
         assert!(ever_saw_4, "the dispatched register write (r1=4) must become visible in some state slot");
     }
 

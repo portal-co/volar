@@ -1134,16 +1134,31 @@ impl<P: Clone> IrCtx<P> {
             }
         }
 
-        // Fill unset slots with typed zero constants.
+        // Fill unset slots by passing the combined block's own *current*
+        // incoming value straight through, instead of zeroing them.
+        //
+        // A block that jumps to a target not covering slot `k` isn't
+        // declaring "slot k is now zero" -- it simply doesn't touch slot
+        // `k`, the same "doesn't own this slot" principle already used for
+        // arity/type-mismatched params elsewhere in this file. Zero-filling
+        // here was silently wiping any state a block doesn't explicitly
+        // thread through on every hop between the block that last wrote it
+        // and the block that next reads it -- fine for a single, linear
+        // chain of blocks (never previously exercised any other shape), but
+        // wrong the moment a real program's control flow has *any* block
+        // along that chain that doesn't itself care about slot `k` (e.g. a
+        // register-dispatch diamond's own trampoline blocks), which
+        // shows up as loop-carried state (like a program's own `halted`
+        // exit flag) reverting to zero the very next step after being set.
+        // Slot `k` is the combined block's own param `pc_width + k`
+        // (`combined_param_types` is `[Bit×pc_width] ++ state_slot_types`,
+        // and `IrCtx::new`'s own `first_id` starts right after those
+        // params), so this is just that var id, not a fresh computation.
+        let pc_width = self.pc_width as u32;
         next_state
             .into_iter()
             .enumerate()
-            .map(|(k, v)| {
-                v.unwrap_or_else(|| {
-                    let ty = state_slot_types[k].clone();
-                    self.emit_zero_slot(&ty)
-                })
-            })
+            .map(|(k, v)| v.unwrap_or(pc_width + k as u32))
             .collect()
     }
 
