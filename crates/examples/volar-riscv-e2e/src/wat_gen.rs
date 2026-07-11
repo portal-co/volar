@@ -1494,23 +1494,32 @@ mod tests {
     /// register value that must survive a real dispatch round trip *and*
     /// feed a loop-exit decision.
     ///
-    /// **CONFIRMED REPRODUCES THE BUG**: fails (`done` never fires within
-    /// 60 raw steps) -- this is the first small, fast (~2s), fully-lowering
-    /// repro of the real interpreter's own "never halts" behavior. Isolated
-    /// from `minimal_dispatch_feedback_single_exit_repro` (below): the
-    /// interacting ingredient is the dispatch read-modify-write round trip
-    /// surviving *across the loop's own back-edge* (i.e. a value written
-    /// via dispatch in iteration N must still read back correctly via
-    /// dispatch in iteration N+1) -- not the double-exit structure itself
-    /// (already ruled out) and not dispatch-write alone (already confirmed
-    /// working, but only ever checked *within* one pass, never read back
-    /// through dispatch again on a later iteration). Not yet root-caused
-    /// further within the available investigation budget; the next step is
-    /// comparing `scatter_args_to_state`'s (`movfuscate.rs`) per-slot
-    /// pass-through fallback (the fix already landed for the *single-hop*
-    /// case, `1d` in `docs/agent-context`/memory) against what happens when
-    /// the *same* slot must survive a full loop back-edge, not just one
-    /// block-to-block hop.
+    /// **DOES NOT REPRODUCE THE BUG -- was a step-budget false positive.**
+    /// A prior investigation session read a 60-raw-step failure here as
+    /// confirmation that a dispatch read-modify-write value fails to
+    /// survive the loop's own back-edge. That conclusion was wrong: each
+    /// WAT-level `loop $L` iteration costs ~26 raw movfuscated-circuit
+    /// steps (the `get_reg`/`set_reg` flat dispatch chains alone are ~10
+    /// `if`-diamonds), and `$r3` genuinely does climb by 1 per WAT
+    /// iteration via the dispatch round trip (confirmed by hand-decoding
+    /// the PC bits and state slots of the 60-step trace: `r3` reads back
+    /// as 0, 1, 2 on its first three loop-header revisits, each ~26 steps
+    /// apart) -- the repro simply needs ~107 raw steps to actually reach
+    /// `r3 == 3` and halt, not 60. Re-run with a 150-step budget: passes
+    /// cleanly, `done` fires at step 106 (halted after 107 steps).
+    /// **This means the dispatch-write-then-read-across-a-back-edge
+    /// pattern is not, by itself, broken** -- it does *not* isolate
+    /// whatever is causing the real interpreter's own non-halting
+    /// behavior (which was confirmed via a full 1200-step PC decode to be
+    /// a genuine, never-breaking period-140 cycle, not merely "needs more
+    /// steps"). Whoever resumes that investigation should look elsewhere
+    /// for a repro that isolates it (e.g. something that forces the same
+    /// physical state slot to be read by *two different* original blocks
+    /// depending on which logical loop iteration it is, since `movfuscate.rs`'s
+    /// `(position, type-signature)`-keyed slot dedup only guarantees type
+    /// agreement, not that a slot's *identity* is stable across a real
+    /// multi-iteration back-edge) rather than assuming this repro's shape
+    /// already covers it.
     /// Run manually: `cargo test -p volar-riscv-e2e --release minimal_dispatch_feedback_loop_repro -- --ignored --nocapture`.
     #[test]
     #[ignore]
@@ -1583,7 +1592,8 @@ mod tests {
         let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
         let mut done = false;
         let mut step = 0usize;
-        while !done && step < 60 {
+        // ~26 raw steps/WAT-loop-iteration * 4 iterations to reach r3==3, + margin.
+        while !done && step < 150 {
             let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
             done = outputs[0].iter().any(|&b| b);
             let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
