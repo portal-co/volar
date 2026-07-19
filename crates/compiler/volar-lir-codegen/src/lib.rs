@@ -1,6 +1,4 @@
 // @reliability: normal
-// @ai-author-tier: 1
-// @ai-review: pending-tier-2
 // @ai: assisted
 //! Lower `IrModule` (spec/compiler IR) to any `LirTarget`.
 //!
@@ -28,11 +26,11 @@ use volar_ir_common::ReentryHint;
 use volar_lir::{BranchTarget, IcmpPred, LirTarget, LirType};
 
 use mono::{
-    FunctionInstanceKey, MonoEnv, MonoPlan, mono_len, mono_type, normalized_args, type_args_to_len,
+    mono_len, mono_type, normalized_args, type_args_to_len, FunctionInstanceKey, MonoEnv, MonoPlan,
 };
 use structs::{
-    EnumRegistry, StructRegistry, flatten_count, flatten_scalar_types, primitive_to_lir,
-    struct_field_scalar_offset, struct_field_scalar_width,
+    flatten_count, flatten_scalar_types, primitive_to_lir, struct_field_scalar_offset,
+    struct_field_scalar_width, EnumRegistry, StructRegistry,
 };
 use volar_compiler::ir::IrEnum;
 
@@ -228,11 +226,26 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                 }
             }
 
-            // Call: look up the function name's return type.
+            // Call: resolve the planned local specialization before falling back
+            // to an unmangled source-name lookup. This preserves the concrete
+            // return layout for `let value = helper::<N>(...)`.
             IrExprKind::Call { func, .. } => {
-                if let IrExprKind::Path { segments, .. } = &func.kind {
-                    let name = segments.last()?;
-                    self.ir_func_ret_types.get(name).cloned()
+                if let IrExprKind::Path {
+                    segments,
+                    type_args,
+                } = &func.kind
+                {
+                    let name = segments.join("_");
+                    if let (Some(plan), Some(caller)) = (self.mono_plan, self.current_instance) {
+                        let args = normalized_args(type_args, self.mono);
+                        if let Some(callee) = plan.local_call(caller, &name, &args) {
+                            return self
+                                .ir_func_ret_types
+                                .get(plan.emitted_name(callee))
+                                .cloned();
+                        }
+                    }
+                    self.ir_func_ret_types.get(&name).cloned()
                 } else {
                     None
                 }
@@ -256,6 +269,29 @@ impl<'t, T: LirTarget<P>, P: Clone> LowerCtx<'t, T, P> {
                     kind: ArrayKind::FixedArray,
                     elem: Box::new(elem_ty),
                     len: ArrayLength::Const(elems.len()),
+                })
+            }
+
+            // Parsed `[value; N]`: preserve the concrete or const-generic
+            // length so later indexed assignments can update the flattened
+            // local array.
+            IrExprKind::Repeat { elem, len } => {
+                let elem_ty = self.infer_type(elem)?;
+                let len = match &len.kind {
+                    IrExprKind::Lit(IrLit::Int(value)) => ArrayLength::Const(*value as usize),
+                    IrExprKind::Var(name) => self
+                        .mono
+                        .const_params
+                        .get(name)
+                        .copied()
+                        .map(ArrayLength::Const)
+                        .unwrap_or_else(|| ArrayLength::TypeParam(name.clone())),
+                    _ => return None,
+                };
+                Some(IrType::Array {
+                    kind: ArrayKind::FixedArray,
+                    elem: Box::new(elem_ty),
+                    len,
                 })
             }
 
@@ -811,11 +847,17 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
     match &expr.kind {
         IrExprKind::Lit(lit) => vec![lower_lit(lit, ctx, None)],
 
-        IrExprKind::Var(name) => ctx
-            .env
-            .get(name.as_str())
-            .cloned()
-            .unwrap_or_else(|| panic!("undefined variable: {name}")),
+        IrExprKind::Var(name) => {
+            if let Some(values) = ctx.env.get(name.as_str()) {
+                return values.clone();
+            }
+            // Const-generic names in parsed repeat lengths and type-level
+            // arithmetic are expression nodes, not runtime locals.
+            if let Some(&value) = ctx.mono.const_params.get(name.as_str()) {
+                return vec![ctx.target.iconst(LirType::U64, value as i64)];
+            }
+            panic!("undefined variable: {name}")
+        }
 
         IrExprKind::Binary { op, left, right } => {
             let lv = lower_expr(left, ctx);
@@ -908,6 +950,7 @@ fn lower_expr<T: LirTarget<P>, P: Clone>(
         // ---- Phase 2: fixed-size array literal ------------------------------
         IrExprKind::FixedArray(elems) => lower_fixed_array(elems, ctx),
         IrExprKind::Array(elems) => lower_fixed_array(elems, ctx),
+        IrExprKind::Repeat { elem, len } => lower_repeat_array(elem, len, ctx),
 
         // ---- Phase 2: array generation via closure --------------------------
         IrExprKind::ArrayGenerate {
@@ -1678,6 +1721,35 @@ fn lower_fixed_array<T: LirTarget<P>, P: Clone>(
     elems.iter().flat_map(|e| lower_expr(e, ctx)).collect()
 }
 
+/// Lower a fixed-size `[value; N]` literal by concretely unrolling it.
+///
+/// LIR arrays are flattened values, so this must duplicate the element's
+/// lowered scalar values rather than emit a target-specific aggregate literal.
+fn lower_repeat_array<T: LirTarget<P>, P: Clone>(
+    elem: &IrExpr<P>,
+    len: &IrExpr<P>,
+    ctx: &mut LowerCtx<T, P>,
+) -> Vec<T::Value> {
+    let n = match &len.kind {
+        IrExprKind::Lit(IrLit::Int(value)) => *value as usize,
+        IrExprKind::Var(name) => ctx
+            .mono
+            .const_params
+            .get(name)
+            .copied()
+            .unwrap_or_else(|| panic!("repeat array length '{name}' is not concrete")),
+        IrExprKind::Path { segments, .. } if segments.len() == 2 && segments[1] == "USIZE" => ctx
+            .mono
+            .const_params
+            .get(&segments[0])
+            .copied()
+            .unwrap_or_else(|| panic!("repeat array length '{}' is not concrete", segments[0])),
+        _ => panic!("repeat array length must be a concrete integer"),
+    };
+    let values = lower_expr(elem, ctx);
+    (0..n).flat_map(|_| values.iter().cloned()).collect()
+}
+
 // ============================================================================
 // Phase 2: ArrayGenerate (from_fn / closure-based array fill)
 // ============================================================================
@@ -1994,6 +2066,20 @@ fn lower_assign<T: LirTarget<P>, P: Clone>(
 // Phase 2: BoundedLoop
 // ============================================================================
 
+fn concrete_usize_expr<T: LirTarget<P>, P: Clone>(
+    expr: &IrExpr<P>,
+    ctx: &LowerCtx<T, P>,
+) -> Option<usize> {
+    match &expr.kind {
+        IrExprKind::Lit(IrLit::Int(value)) => usize::try_from(*value).ok(),
+        IrExprKind::Var(name) => ctx.mono.const_params.get(name).copied(),
+        IrExprKind::Path { segments, .. } if segments.len() == 2 && segments[1] == "USIZE" => {
+            ctx.mono.const_params.get(&segments[0]).copied()
+        }
+        _ => None,
+    }
+}
+
 fn lower_bounded_loop<T: LirTarget<P>, P: Clone>(
     var: &str,
     start: &IrExpr<P>,
@@ -2002,6 +2088,39 @@ fn lower_bounded_loop<T: LirTarget<P>, P: Clone>(
     body: &IrBlock<P>,
     ctx: &mut LowerCtx<T, P>,
 ) {
+    // Const-generic spec loops have a concrete trip count after planning.
+    // Unroll them so updates to flattened local aggregates remain ordinary SSA
+    // bindings. A CFG back-edge can only carry block parameters; the old path
+    // carried `i` but silently discarded assignments to e.g. `result[i]`.
+    if let (Some(start), Some(end)) = (
+        concrete_usize_expr(start, ctx),
+        concrete_usize_expr(end, ctx),
+    ) {
+        let end = end
+            .checked_add(usize::from(inclusive))
+            .expect("loop bound overflow");
+        let prior_values = ctx.env.remove(var);
+        let prior_type = ctx.env_types.remove(var);
+        for index in start..end {
+            let value = ctx.target.iconst(LirType::U64, index as i64);
+            ctx.env.insert(var.to_owned(), vec![value]);
+            ctx.env_types
+                .insert(var.to_owned(), IrType::Primitive(PrimitiveType::Usize));
+            lower_block(body, ctx);
+        }
+        if let Some(values) = prior_values {
+            ctx.env.insert(var.to_owned(), values);
+        } else {
+            ctx.env.remove(var);
+        }
+        if let Some(ty) = prior_type {
+            ctx.env_types.insert(var.to_owned(), ty);
+        } else {
+            ctx.env_types.remove(var);
+        }
+        return;
+    }
+
     // Strategy: loop_header(counter: U64, limit: U64)
     //
     // before:
@@ -2102,6 +2221,25 @@ fn lower_method_call<T: LirTarget<P>, P: Clone>(
     match method {
         // `.clone()` and `.deref()` are transparent in value semantics.
         MethodKind::Known(StdMethod::Clone | StdMethod::Deref) => lower_expr(receiver, ctx),
+
+        // Integer wrapping operations are the target's native modular
+        // operations. Emitting an extern here incorrectly requires a runtime
+        // symbol such as `wrapping_add` for parsed spec helpers.
+        MethodKind::Known(StdMethod::WrappingAdd) => {
+            let rhs = into_scalar(lower_expr(&args[0], ctx), "wrapping_add rhs");
+            let lhs = into_scalar(lower_expr(receiver, ctx), "wrapping_add receiver");
+            vec![ctx.target.add(lhs, rhs)]
+        }
+        MethodKind::Known(StdMethod::WrappingSub) => {
+            let rhs = into_scalar(lower_expr(&args[0], ctx), "wrapping_sub rhs");
+            let lhs = into_scalar(lower_expr(receiver, ctx), "wrapping_sub receiver");
+            vec![ctx.target.sub(lhs, rhs)]
+        }
+        MethodKind::Known(StdMethod::WrappingMul) => {
+            let rhs = into_scalar(lower_expr(&args[0], ctx), "wrapping_mul rhs");
+            let lhs = into_scalar(lower_expr(receiver, ctx), "wrapping_mul receiver");
+            vec![ctx.target.mul(lhs, rhs)]
+        }
 
         // Reference methods — transparent.
         MethodKind::Known(StdMethod::AsRef | StdMethod::AsSlice) => lower_expr(receiver, ctx),

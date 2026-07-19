@@ -1,6 +1,4 @@
 // @reliability: normal
-// @ai-author-tier: 1
-// @ai-review: pending-tier-2
 // @ai: assisted
 #![allow(dead_code)]
 //! Monomorphization support for IR→LIR lowering.
@@ -27,6 +25,12 @@ use volar_compiler::ir::{
 pub(crate) fn type_args_to_len(len_ty: Option<&IrType>, env: &MonoEnv) -> ArrayLength {
     match len_ty {
         Some(IrType::TypeParam(name)) => {
+            // The parser represents an integer const argument such as `::<2>`
+            // as a TypeParam. Recognize it before looking for an in-scope
+            // caller substitution.
+            if let Ok(value) = name.parse::<usize>() {
+                return ArrayLength::Const(value);
+            }
             // Check const_params first (most common: `N` → 16).
             if let Some(&n) = env.const_params.get(name.as_str()) {
                 return ArrayLength::Const(n);
