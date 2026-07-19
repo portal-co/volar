@@ -1,4 +1,6 @@
 // @reliability: normal
+// @ai-author-tier: 1
+// @ai-review: pending-tier-2
 // @ai: assisted
 #![allow(dead_code)]
 //! Monomorphization support for IR→LIR lowering.
@@ -8,12 +10,12 @@
 //! apply these substitutions on the fly — no separate pre-lowering pass needed.
 //! Trait-dispatch parameters (e.g. `D: Digest`) use `MonoEnv::hash_suffix`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use volar_compiler::ir::{
-    ArrayKind, ArrayLength, IrAnyFunction, IrCfgBlock, IrCfgBody, IrCfgFunction,
-    IrCfgJump, IrCfgModule, IrCfgTerminator, IrEnum, IrEnumVariant, IrEnumVariantData, IrExpr,
-    IrExprKind, IrField, IrFunction, IrImpl, IrImplItem, IrModule, IrParam, IrStmt, IrStmtKind,
-    IrStruct, IrType, IrTypeAlias, StructKind, TypeNumConst,
+    ArrayKind, ArrayLength, IrAnyFunction, IrCfgBlock, IrCfgBody, IrCfgFunction, IrCfgJump,
+    IrCfgModule, IrCfgTerminator, IrEnum, IrEnumVariant, IrEnumVariantData, IrExpr, IrExprKind,
+    IrField, IrFunction, IrImpl, IrImplItem, IrModule, IrParam, IrStmt, IrStmtKind, IrStruct,
+    IrType, IrTypeAlias, StructKind, TypeNumConst,
 };
 
 // ============================================================================
@@ -35,7 +37,10 @@ pub(crate) fn type_args_to_len(len_ty: Option<&IrType>, env: &MonoEnv) -> ArrayL
             }
             ArrayLength::TypeParam(name.clone())
         }
-        Some(IrType::Struct { kind: StructKind::Custom(name), type_args }) if type_args.is_empty() => {
+        Some(IrType::Struct {
+            kind: StructKind::Custom(name),
+            type_args,
+        }) if type_args.is_empty() => {
             // Typenum constant used as a type argument (e.g. `U1`, `U16`).
             // Try to parse it as a typenum name.
             if let Some(tn) = TypeNumConst::from_str(name) {
@@ -58,6 +63,7 @@ pub(crate) fn type_args_to_len(len_ty: Option<&IrType>, env: &MonoEnv) -> ArrayL
 // ============================================================================
 
 /// Monomorphization environment: concrete values for type/const parameters.
+#[derive(Clone, Debug, PartialEq)]
 pub struct MonoEnv {
     /// Substitutions for array-length type parameters.
     /// e.g., `"N" → 16` for `Array<u8, N>` → `Array<u8, 16>`.
@@ -106,6 +112,341 @@ impl MonoEnv {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MonoError {
+    message: String,
+}
+
+impl MonoError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl core::fmt::Display for MonoError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+impl std::error::Error for MonoError {}
+
+/// Concrete identity of one source function instantiation.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct FunctionInstanceKey {
+    pub source_name: String,
+    pub canonical_env: String,
+}
+
+/// A closed, deterministic collection of emitted local function instances.
+pub(crate) struct MonoPlan {
+    pub instances: BTreeMap<FunctionInstanceKey, MonoEnv>,
+    pub emitted_names: BTreeMap<FunctionInstanceKey, String>,
+    pub calls: BTreeMap<(FunctionInstanceKey, String, String), FunctionInstanceKey>,
+}
+
+impl MonoPlan {
+    pub fn emitted_name(&self, key: &FunctionInstanceKey) -> &str {
+        self.emitted_names
+            .get(key)
+            .expect("planned instance has an emitted name")
+    }
+    pub fn local_call(
+        &self,
+        caller: &FunctionInstanceKey,
+        callee: &str,
+        args: &str,
+    ) -> Option<&FunctionInstanceKey> {
+        self.calls
+            .get(&(caller.clone(), callee.to_owned(), args.to_owned()))
+    }
+}
+
+impl MonoEnv {
+    /// Canonical deterministic identity used in function-instance keys.
+    pub(crate) fn canonical(&self) -> String {
+        let mut out = String::new();
+        for (name, value) in &self.const_params {
+            out.push_str(&format!("L:{name}={value};"));
+        }
+        for (name, value) in &self.type_params {
+            out.push_str(&format!("T:{name}={};", canonical_type(value)));
+        }
+        for ((base, assoc), value) in &self.projections {
+            out.push_str(&format!("P:{base}::{assoc}={};", canonical_type(value)));
+        }
+        out.push_str("H:");
+        out.push_str(&self.hash_suffix);
+        out
+    }
+}
+
+fn canonical_type(ty: &IrType) -> String {
+    format!("{ty:?}")
+}
+pub(crate) fn normalized_args(type_args: &[IrType], env: &MonoEnv) -> String {
+    type_args
+        .iter()
+        .map(|arg| canonical_type(&mono_type(arg, env)))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+fn instance_key(name: &str, env: &MonoEnv) -> FunctionInstanceKey {
+    FunctionInstanceKey {
+        source_name: name.to_owned(),
+        canonical_env: env.canonical(),
+    }
+}
+fn mangle(name: &str, env: &MonoEnv, generic: bool) -> String {
+    if !generic {
+        return name.to_owned();
+    }
+    let suffix: String = env
+        .canonical()
+        .bytes()
+        .map(|byte| match byte {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' => byte as char,
+            _ => '_',
+        })
+        .collect();
+    format!("{name}__mono_{suffix}")
+}
+
+/// Plan all direct local specializations reachable from `roots`.
+/// Generic local calls require explicit type arguments; full type inference
+/// remains outside this backend-local monomorphizer.
+pub(crate) fn plan_flat_module<P: Clone>(
+    module: &IrModule<IrFunction<P>, P>,
+    roots: &[crate::MonoRoot],
+    max_instances: usize,
+) -> Result<MonoPlan, MonoError> {
+    let definitions: BTreeMap<String, &IrFunction<P>> = module
+        .functions
+        .iter()
+        .map(|function| (function.name.clone(), function))
+        .collect();
+    let selected: Vec<(String, MonoEnv)> = if roots.is_empty() {
+        module
+            .functions
+            .iter()
+            .filter(|function| {
+                function.external_kind == volar_compiler::ir::ExternalKind::Normal
+                    && function.generics.is_empty()
+            })
+            .map(|function| (function.name.clone(), MonoEnv::new("")))
+            .collect()
+    } else {
+        roots
+            .iter()
+            .map(|root| (root.function.clone(), root.env.clone()))
+            .collect()
+    };
+    let mut instances = BTreeMap::new();
+    let mut calls = BTreeMap::new();
+    let mut queue = VecDeque::new();
+    for (name, env) in selected {
+        let Some(definition) = definitions.get(&name) else {
+            return Err(MonoError::new(format!(
+                "monomorphization root '{name}' is not a local function"
+            )));
+        };
+        if definition.external_kind == volar_compiler::ir::ExternalKind::Normal {
+            queue.push_back((instance_key(&name, &env), env));
+        }
+    }
+    while let Some((key, env)) = queue.pop_front() {
+        if instances.contains_key(&key) {
+            continue;
+        }
+        if instances.len() >= max_instances {
+            return Err(MonoError::new(format!(
+                "non-finite local specialization: exceeded {max_instances} instances while planning '{}'",
+                key.source_name
+            )));
+        }
+        let definition = definitions
+            .get(&key.source_name)
+            .expect("queued source definition exists");
+        instances.insert(key.clone(), env.clone());
+        for (callee, type_args) in direct_calls(&definition.body) {
+            let Some(callee_def) = definitions.get(&callee) else {
+                continue;
+            };
+            if callee_def.external_kind != volar_compiler::ir::ExternalKind::Normal {
+                continue;
+            }
+            let callee_env = bind_explicit_args(callee_def, &type_args, &env)?;
+            let args = normalized_args(&type_args, &env);
+            let callee_key = instance_key(&callee, &callee_env);
+            calls.insert((key.clone(), callee.clone(), args), callee_key.clone());
+            if !instances.contains_key(&callee_key) {
+                queue.push_back((callee_key, callee_env));
+            }
+        }
+    }
+    let emitted_names = instances
+        .iter()
+        .map(|(key, env)| {
+            let generic = definitions
+                .get(&key.source_name)
+                .expect("planned source exists")
+                .generics
+                .len()
+                > 0;
+            (key.clone(), mangle(&key.source_name, env, generic))
+        })
+        .collect();
+    Ok(MonoPlan {
+        instances,
+        emitted_names,
+        calls,
+    })
+}
+
+fn bind_explicit_args<P: Clone>(
+    function: &IrFunction<P>,
+    type_args: &[IrType],
+    caller_env: &MonoEnv,
+) -> Result<MonoEnv, MonoError> {
+    if function.generics.is_empty() {
+        if !type_args.is_empty() {
+            return Err(MonoError::new(format!(
+                "non-generic local function '{}' was called with type arguments",
+                function.name
+            )));
+        }
+        return Ok(MonoEnv::new(caller_env.hash_suffix.clone()));
+    }
+    if type_args.len() != function.generics.len() {
+        return Err(MonoError::new(format!(
+            "generic local call '{}' requires {} explicit type arguments; found {}",
+            function.name,
+            function.generics.len(),
+            type_args.len()
+        )));
+    }
+    let mut env = MonoEnv::new(caller_env.hash_suffix.clone());
+    for (parameter, argument) in function.generics.iter().zip(type_args) {
+        let argument = mono_type(argument, caller_env);
+        match parameter.kind {
+            volar_compiler::ir::IrGenericParamKind::Type => {
+                env.type_params.insert(parameter.name.clone(), argument);
+            }
+            volar_compiler::ir::IrGenericParamKind::Const => {
+                match mono_len(&type_args_to_len(Some(&argument), caller_env), caller_env) {
+                    ArrayLength::Const(value) => {
+                        env.const_params.insert(parameter.name.clone(), value);
+                    }
+                    ArrayLength::TypeNum(value) => {
+                        env.const_params
+                            .insert(parameter.name.clone(), value.to_usize());
+                    }
+                    other => {
+                        return Err(MonoError::new(format!(
+                            "generic local call '{}': const parameter '{}' is unresolved ({other:?})",
+                            function.name, parameter.name
+                        )));
+                    }
+                }
+            }
+            volar_compiler::ir::IrGenericParamKind::Lifetime => {}
+        }
+    }
+    Ok(env)
+}
+
+fn direct_calls<P: Clone>(block: &volar_compiler::ir::IrBlock<P>) -> Vec<(String, Vec<IrType>)> {
+    let mut calls = Vec::new();
+    for stmt in &block.stmts {
+        collect_stmt_calls(stmt, &mut calls);
+    }
+    if let Some(expr) = &block.expr {
+        collect_expr_calls(expr, &mut calls);
+    }
+    calls
+}
+fn collect_stmt_calls<P: Clone>(stmt: &IrStmt<P>, calls: &mut Vec<(String, Vec<IrType>)>) {
+    match &stmt.kind {
+        IrStmtKind::Let {
+            init: Some(expr), ..
+        }
+        | IrStmtKind::Semi(expr)
+        | IrStmtKind::Expr(expr) => collect_expr_calls(expr, calls),
+        _ => {}
+    }
+}
+fn collect_expr_calls<P: Clone>(expr: &IrExpr<P>, calls: &mut Vec<(String, Vec<IrType>)>) {
+    use IrExprKind::*;
+    match &expr.kind {
+        Call { func, args } => {
+            if let Path {
+                segments,
+                type_args,
+            } = &func.kind
+            {
+                calls.push((segments.join("_"), type_args.clone()));
+            }
+            for arg in args {
+                collect_expr_calls(arg, calls);
+            }
+        }
+        Binary { left, right, .. }
+        | Assign { left, right }
+        | AssignOp { left, right, .. }
+        | RawZip { left, right, .. } => {
+            collect_expr_calls(left, calls);
+            collect_expr_calls(right, calls);
+        }
+        Unary { expr, .. }
+        | Field { base: expr, .. }
+        | Try(expr)
+        | Cast { expr, .. }
+        | RawMap { receiver: expr, .. }
+        | RawFold { receiver: expr, .. } => collect_expr_calls(expr, calls),
+        Index { base, index } => {
+            collect_expr_calls(base, calls);
+            collect_expr_calls(index, calls);
+        }
+        Block(block) | BoundedLoop { body: block, .. } => {
+            for stmt in &block.stmts {
+                collect_stmt_calls(stmt, calls);
+            }
+            if let Some(expr) = &block.expr {
+                collect_expr_calls(expr, calls);
+            }
+        }
+        If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            collect_expr_calls(cond, calls);
+            for stmt in &then_branch.stmts {
+                collect_stmt_calls(stmt, calls);
+            }
+            if let Some(expr) = &then_branch.expr {
+                collect_expr_calls(expr, calls);
+            }
+            if let Some(expr) = else_branch {
+                collect_expr_calls(expr, calls);
+            }
+        }
+        Tuple(values) | Array(values) | FixedArray(values) => {
+            for value in values {
+                collect_expr_calls(value, calls);
+            }
+        }
+        StructExpr { fields, .. } => {
+            for (_, value) in fields {
+                collect_expr_calls(value, calls);
+            }
+        }
+        Return(Some(expr)) => collect_expr_calls(expr, calls),
+        _ => {}
+    }
+}
+
 // ============================================================================
 // Module entry point
 // ============================================================================
@@ -115,15 +456,38 @@ impl MonoEnv {
 ///
 /// No longer needed as a separate pass — `lower_module_with_opts` accepts a
 /// `MonoEnv` and applies substitutions on the fly.  Kept for completeness.
-pub(crate) fn monomorphize_module(module: &IrModule<IrFunction>, env: &MonoEnv) -> IrModule<IrFunction> {
+pub(crate) fn monomorphize_module(
+    module: &IrModule<IrFunction>,
+    env: &MonoEnv,
+) -> IrModule<IrFunction> {
     IrModule {
         name: module.name.clone(),
-        structs: module.structs.iter().map(|s| monomorphize_struct(s, env)).collect(),
-        enums: module.enums.iter().map(|e| monomorphize_enum(e, env)).collect(),
+        structs: module
+            .structs
+            .iter()
+            .map(|s| monomorphize_struct(s, env))
+            .collect(),
+        enums: module
+            .enums
+            .iter()
+            .map(|e| monomorphize_enum(e, env))
+            .collect(),
         traits: module.traits.clone(),
-        impls: module.impls.iter().map(|i| monomorphize_impl(i, env)).collect(),
-        functions: module.functions.iter().map(|f| monomorphize_function(f, env)).collect(),
-        type_aliases: module.type_aliases.iter().map(|a| monomorphize_type_alias(a, env)).collect(),
+        impls: module
+            .impls
+            .iter()
+            .map(|i| monomorphize_impl(i, env))
+            .collect(),
+        functions: module
+            .functions
+            .iter()
+            .map(|f| monomorphize_function(f, env))
+            .collect(),
+        type_aliases: module
+            .type_aliases
+            .iter()
+            .map(|a| monomorphize_type_alias(a, env))
+            .collect(),
         consts: module.consts.clone(),
     }
 }
@@ -137,15 +501,35 @@ pub(crate) fn monomorphize_module(module: &IrModule<IrFunction>, env: &MonoEnv) 
 pub(crate) fn monomorphize_cfg_module(module: &IrCfgModule, env: &MonoEnv) -> IrCfgModule {
     IrModule {
         name: module.name.clone(),
-        structs: module.structs.iter().map(|s| monomorphize_struct(s, env)).collect(),
-        enums: module.enums.iter().map(|e| monomorphize_enum(e, env)).collect(),
+        structs: module
+            .structs
+            .iter()
+            .map(|s| monomorphize_struct(s, env))
+            .collect(),
+        enums: module
+            .enums
+            .iter()
+            .map(|e| monomorphize_enum(e, env))
+            .collect(),
         traits: module.traits.clone(),
-        impls: module.impls.iter().map(|i| monomorphize_impl(i, env)).collect(),
-        functions: module.functions.iter().map(|f| match f {
-            IrAnyFunction::Cfg(f) => IrAnyFunction::Cfg(monomorphize_cfg_function(f, env)),
-            IrAnyFunction::Flat(f) => IrAnyFunction::Flat(monomorphize_function(f, env)),
-        }).collect(),
-        type_aliases: module.type_aliases.iter().map(|a| monomorphize_type_alias(a, env)).collect(),
+        impls: module
+            .impls
+            .iter()
+            .map(|i| monomorphize_impl(i, env))
+            .collect(),
+        functions: module
+            .functions
+            .iter()
+            .map(|f| match f {
+                IrAnyFunction::Cfg(f) => IrAnyFunction::Cfg(monomorphize_cfg_function(f, env)),
+                IrAnyFunction::Flat(f) => IrAnyFunction::Flat(monomorphize_function(f, env)),
+            })
+            .collect(),
+        type_aliases: module
+            .type_aliases
+            .iter()
+            .map(|a| monomorphize_type_alias(a, env))
+            .collect(),
         consts: module.consts.clone(),
     }
 }
@@ -185,7 +569,8 @@ fn monomorphize_struct(s: &IrStruct, env: &MonoEnv) -> IrStruct {
 // ============================================================================
 
 pub fn monomorphize_function(func: &IrFunction, env: &MonoEnv) -> IrFunction {
-    IrFunction { no_inline: false,
+    IrFunction {
+        no_inline: false,
         name: func.name.clone(),
         module_path: func.module_path.clone(),
         generics: func
@@ -198,7 +583,10 @@ pub fn monomorphize_function(func: &IrFunction, env: &MonoEnv) -> IrFunction {
         params: func
             .params
             .iter()
-            .map(|p| IrParam { name: p.name.clone(), ty: mono_type(&p.ty, env) })
+            .map(|p| IrParam {
+                name: p.name.clone(),
+                ty: mono_type(&p.ty, env),
+            })
             .collect(),
         return_type: func.return_type.as_ref().map(|t| mono_type(t, env)),
         where_clause: func.where_clause.clone(),
@@ -230,18 +618,16 @@ fn monomorphize_enum(e: &IrEnum, env: &MonoEnv) -> IrEnum {
                     IrEnumVariantData::Tuple(tys) => {
                         IrEnumVariantData::Tuple(tys.iter().map(|t| mono_type(t, env)).collect())
                     }
-                    IrEnumVariantData::Struct(fields) => {
-                        IrEnumVariantData::Struct(
-                            fields
-                                .iter()
-                                .map(|f| IrField {
-                                    name: f.name.clone(),
-                                    ty: mono_type(&f.ty, env),
-                                    public: f.public,
-                                })
-                                .collect(),
-                        )
-                    }
+                    IrEnumVariantData::Struct(fields) => IrEnumVariantData::Struct(
+                        fields
+                            .iter()
+                            .map(|f| IrField {
+                                name: f.name.clone(),
+                                ty: mono_type(&f.ty, env),
+                                public: f.public,
+                            })
+                            .collect(),
+                    ),
                 },
             })
             .collect(),
@@ -269,9 +655,10 @@ fn monomorphize_impl(imp: &IrImpl, env: &MonoEnv) -> IrImpl {
             .iter()
             .map(|item| match item {
                 IrImplItem::Method(f) => IrImplItem::Method(monomorphize_function(f, env)),
-                IrImplItem::AssociatedType { name, ty } => {
-                    IrImplItem::AssociatedType { name: name.clone(), ty: mono_type(ty, env) }
-                }
+                IrImplItem::AssociatedType { name, ty } => IrImplItem::AssociatedType {
+                    name: name.clone(),
+                    ty: mono_type(ty, env),
+                },
             })
             .collect(),
     }
@@ -312,7 +699,10 @@ fn monomorphize_cfg_function(func: &IrCfgFunction, env: &MonoEnv) -> IrCfgFuncti
         params: func
             .params
             .iter()
-            .map(|p| IrParam { name: p.name.clone(), ty: mono_type(&p.ty, env) })
+            .map(|p| IrParam {
+                name: p.name.clone(),
+                ty: mono_type(&p.ty, env),
+            })
             .collect(),
         return_type: func.return_type.as_ref().map(|t| mono_type(t, env)),
         where_clause: func.where_clause.clone(),
@@ -332,7 +722,10 @@ fn mono_cfg_block(block: &IrCfgBlock, env: &MonoEnv) -> IrCfgBlock {
         params: block
             .params
             .iter()
-            .map(|p| IrParam { name: p.name.clone(), ty: mono_type(&p.ty, env) })
+            .map(|p| IrParam {
+                name: p.name.clone(),
+                ty: mono_type(&p.ty, env),
+            })
             .collect(),
         stmts: block.stmts.iter().map(|s| mono_stmt(s, env)).collect(),
         terminator: mono_cfg_terminator(&block.terminator, env),
@@ -350,7 +743,9 @@ fn mono_cfg_terminator(term: &IrCfgTerminator, env: &MonoEnv) -> IrCfgTerminator
             then_: mono_cfg_jump(then_, env),
             else_: mono_cfg_jump(else_, env),
         },
-        _ => panic!("mono_cfg_terminator: unhandled IrCfgTerminator variant — add monomorphization for this variant"),
+        _ => panic!(
+            "mono_cfg_terminator: unhandled IrCfgTerminator variant — add monomorphization for this variant"
+        ),
     }
 }
 
@@ -407,9 +802,9 @@ pub fn mono_type(ty: &IrType, env: &MonoEnv) -> IrType {
             elem: Box::new(mono_type(elem, env)),
         },
         IrType::Tuple(elems) => IrType::Tuple(elems.iter().map(|e| mono_type(e, env)).collect()),
-        IrType::Vector { elem } => {
-            IrType::Vector { elem: Box::new(mono_type(elem, env)) }
-        }
+        IrType::Vector { elem } => IrType::Vector {
+            elem: Box::new(mono_type(elem, env)),
+        },
         IrType::Projection { base, assoc, .. } => {
             if let IrType::TypeParam(name) = base.as_ref() {
                 let assoc_str = assoc.to_string();
@@ -422,9 +817,17 @@ pub fn mono_type(ty: &IrType, env: &MonoEnv) -> IrType {
                 base: Box::new(mono_type(base, env)),
                 trait_path: {
                     // preserve the trait_path field
-                    match ty { IrType::Projection { trait_path, .. } => trait_path.clone(), _ => unreachable!() }
+                    match ty {
+                        IrType::Projection { trait_path, .. } => trait_path.clone(),
+                        _ => unreachable!(),
+                    }
                 },
-                trait_args: match ty { IrType::Projection { trait_args, .. } => trait_args.iter().map(|a| mono_type(a, env)).collect(), _ => unreachable!() },
+                trait_args: match ty {
+                    IrType::Projection { trait_args, .. } => {
+                        trait_args.iter().map(|a| mono_type(a, env)).collect()
+                    }
+                    _ => unreachable!(),
+                },
                 assoc: assoc.clone(),
             }
         }
@@ -478,7 +881,10 @@ fn mono_expr(expr: &IrExpr, env: &MonoEnv) -> IrExpr {
     let kind = match &expr.kind {
         Lit(_) | Var(_) | Continue => expr.kind.clone(),
 
-        Path { segments, type_args } => Path {
+        Path {
+            segments,
+            type_args,
+        } => Path {
             segments: segments.clone(),
             type_args: type_args.iter().map(|a| mono_type(a, env)).collect(),
         },
@@ -489,9 +895,17 @@ fn mono_expr(expr: &IrExpr, env: &MonoEnv) -> IrExpr {
             right: Box::new(mono_expr(right, env)),
         },
 
-        Unary { op, expr: inner } => Unary { op: *op, expr: Box::new(mono_expr(inner, env)) },
+        Unary { op, expr: inner } => Unary {
+            op: *op,
+            expr: Box::new(mono_expr(inner, env)),
+        },
 
-        MethodCall { receiver, method, type_args, args } => MethodCall {
+        MethodCall {
+            receiver,
+            method,
+            type_args,
+            args,
+        } => MethodCall {
             receiver: Box::new(mono_expr(receiver, env)),
             method: method.clone(),
             type_args: type_args.iter().map(|a| mono_type(a, env)).collect(),
@@ -503,16 +917,22 @@ fn mono_expr(expr: &IrExpr, env: &MonoEnv) -> IrExpr {
             args: args.iter().map(|a| mono_expr(a, env)).collect(),
         },
 
-        Field { base, field } => {
-            Field { base: Box::new(mono_expr(base, env)), field: field.clone() }
-        }
+        Field { base, field } => Field {
+            base: Box::new(mono_expr(base, env)),
+            field: field.clone(),
+        },
 
         Index { base, index } => Index {
             base: Box::new(mono_expr(base, env)),
             index: Box::new(mono_expr(index, env)),
         },
 
-        StructExpr { kind, type_args, fields, rest } => StructExpr {
+        StructExpr {
+            kind,
+            type_args,
+            fields,
+            rest,
+        } => StructExpr {
             kind: kind.clone(),
             type_args: type_args.iter().map(|a| mono_type(a, env)).collect(),
             fields: fields
@@ -526,24 +946,36 @@ fn mono_expr(expr: &IrExpr, env: &MonoEnv) -> IrExpr {
         Array(elems) => Array(elems.iter().map(|e| mono_expr(e, env)).collect()),
         FixedArray(elems) => FixedArray(elems.iter().map(|e| mono_expr(e, env)).collect()),
 
-        Repeat { elem, len } => {
-            Repeat { elem: Box::new(mono_expr(elem, env)), len: Box::new(mono_expr(len, env)) }
-        }
+        Repeat { elem, len } => Repeat {
+            elem: Box::new(mono_expr(elem, env)),
+            len: Box::new(mono_expr(len, env)),
+        },
 
-        ArrayGenerate { elem_ty, len, index_var, body } => ArrayGenerate {
+        ArrayGenerate {
+            elem_ty,
+            len,
+            index_var,
+            body,
+        } => ArrayGenerate {
             elem_ty: elem_ty.as_ref().map(|t| Box::new(mono_type(t, env))),
             len: mono_len(len, env),
             index_var: index_var.clone(),
             body: Box::new(mono_expr(body, env)),
         },
 
-        DefaultValue { ty } => {
-            DefaultValue { ty: ty.as_ref().map(|t| Box::new(mono_type(t, env))) }
-        }
+        DefaultValue { ty } => DefaultValue {
+            ty: ty.as_ref().map(|t| Box::new(mono_type(t, env))),
+        },
 
         LengthOf(len) => LengthOf(mono_len(len, env)),
 
-        BoundedLoop { var, start, end, inclusive, body } => BoundedLoop {
+        BoundedLoop {
+            var,
+            start,
+            end,
+            inclusive,
+            body,
+        } => BoundedLoop {
             var: var.clone(),
             start: Box::new(mono_expr(start, env)),
             end: Box::new(mono_expr(end, env)),
@@ -551,7 +983,11 @@ fn mono_expr(expr: &IrExpr, env: &MonoEnv) -> IrExpr {
             body: mono_block(body, env),
         },
 
-        IterLoop { pattern, collection, body } => IterLoop {
+        IterLoop {
+            pattern,
+            collection,
+            body,
+        } => IterLoop {
             pattern: pattern.clone(),
             collection: Box::new(mono_expr(collection, env)),
             body: mono_block(body, env),
@@ -559,7 +995,11 @@ fn mono_expr(expr: &IrExpr, env: &MonoEnv) -> IrExpr {
 
         Block(b) => Block(mono_block(b, env)),
 
-        If { cond, then_branch, else_branch } => If {
+        If {
+            cond,
+            then_branch,
+            else_branch,
+        } => If {
             cond: Box::new(mono_expr(cond, env)),
             then_branch: mono_block(then_branch, env),
             else_branch: else_branch.as_ref().map(|e| Box::new(mono_expr(e, env))),
@@ -577,7 +1017,11 @@ fn mono_expr(expr: &IrExpr, env: &MonoEnv) -> IrExpr {
                 .collect(),
         },
 
-        Closure { params, ret_type, body } => Closure {
+        Closure {
+            params,
+            ret_type,
+            body,
+        } => Closure {
             params: params
                 .iter()
                 .map(|p| volar_compiler::ir::IrClosureParam {
@@ -589,9 +1033,10 @@ fn mono_expr(expr: &IrExpr, env: &MonoEnv) -> IrExpr {
             body: Box::new(mono_expr(body, env)),
         },
 
-        Cast { expr: inner, ty } => {
-            Cast { expr: Box::new(mono_expr(inner, env)), ty: Box::new(mono_type(ty, env)) }
-        }
+        Cast { expr: inner, ty } => Cast {
+            expr: Box::new(mono_expr(inner, env)),
+            ty: Box::new(mono_type(ty, env)),
+        },
 
         Return(val) => Return(val.as_ref().map(|e| Box::new(mono_expr(e, env)))),
         Break(val) => Break(val.as_ref().map(|e| Box::new(mono_expr(e, env)))),
@@ -607,13 +1052,23 @@ fn mono_expr(expr: &IrExpr, env: &MonoEnv) -> IrExpr {
             right: Box::new(mono_expr(right, env)),
         },
 
-        RawMap { receiver, elem_var, body } => RawMap {
+        RawMap {
+            receiver,
+            elem_var,
+            body,
+        } => RawMap {
             receiver: Box::new(mono_expr(receiver, env)),
             elem_var: elem_var.clone(),
             body: Box::new(mono_expr(body, env)),
         },
 
-        RawZip { left, right, left_var, right_var, body } => RawZip {
+        RawZip {
+            left,
+            right,
+            left_var,
+            right_var,
+            body,
+        } => RawZip {
             left: Box::new(mono_expr(left, env)),
             right: Box::new(mono_expr(right, env)),
             left_var: left_var.clone(),
@@ -621,7 +1076,13 @@ fn mono_expr(expr: &IrExpr, env: &MonoEnv) -> IrExpr {
             body: Box::new(mono_expr(body, env)),
         },
 
-        RawFold { receiver, init, acc_var, elem_var, body } => RawFold {
+        RawFold {
+            receiver,
+            init,
+            acc_var,
+            elem_var,
+            body,
+        } => RawFold {
             receiver: Box::new(mono_expr(receiver, env)),
             init: Box::new(mono_expr(init, env)),
             acc_var: acc_var.clone(),
