@@ -251,8 +251,14 @@ pub(crate) mod tests {
         // The real committed byte (storage 33, address 0) must increment
         // 0 -> 1 -> 2 -> 3 exactly as `mem_probe_wat_matches_expected_via_wasmtime`
         // already confirms via a real wasmtime run -- cross-checks this
-        // interpreter against that independent oracle.
-        let byte_bits = &storage[&(volar_ir_common::StorageId(33), volar_ir_common::TypeId(4), 0)];
+        // interpreter against that independent oracle. Look the entry up
+        // by (storage, addr) alone rather than a hardcoded TypeId -- the
+        // exact numeric TypeId assigned to a byte cell depends on
+        // TypeTable interning order elsewhere in the pipeline and isn't
+        // itself part of this test's own contract.
+        let (_, byte_bits) = storage.iter()
+            .find(|((sid, _ty, addr), _)| sid.0 == 33 && *addr == 0)
+            .expect("storage entry for (StorageId(33), _, addr=0) must exist");
         let byte: u32 = byte_bits.iter().enumerate().map(|(i, &b)| (b as u32) << i).sum();
         assert_eq!(byte, STEPS as u32, "committed byte must equal STEPS after 3 real steps");
     }

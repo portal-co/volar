@@ -16,6 +16,7 @@ pub mod import_config;
 pub mod target;
 pub mod waffle_lower;
 pub mod lower_to_ir;
+pub mod vaffle_ssa;
 
 pub use import_config::{WaffleImportConfig, WaffleImportKind};
 pub use target::{VaffleBlock, VaffleTarget, VaffleValue};

@@ -55,7 +55,7 @@ use alloc::{
 };
 
 use vaffle::{
-    BlockId, FuncBody, FuncDecl, FuncId, Module, Terminator, Target, Value, ValueId,
+    Block, BlockId, FuncBody, FuncDecl, FuncId, Module, SigDecl, Terminator, Target, Value, ValueId,
 };
 use volar_ir::ir::{
     IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt, IRTerminator,
@@ -71,7 +71,24 @@ use volar_lir::circuits::{
 };
 
 /// Width of the stack-pointer address in bits.
-pub const SP_BITS: usize = 16;
+///
+/// Must be wide enough to hold not just `own_size` (a function's own
+/// frame size, i.e. the SP value once its own body starts executing --
+/// see `emit_entry_and_exit`'s `new_sp.advance(own_size)`) but `own_size`
+/// *plus* the largest offset addressable within that same frame (every
+/// cross-block spill/reload address is `SP + offset`, `offset` up to
+/// `own_size - 1`) -- i.e. on the order of `2 * own_size`, not
+/// `own_size` alone. 16 bits (max ~65535) silently overflows for any
+/// function whose own `own_size` exceeds roughly half that (~32768):
+/// addresses wrap modulo `2^SP_BITS` and alias unrelated storage, with
+/// no panic or other visible signal -- confirmed as the root cause of a
+/// real interpreter's wrong-answer bug (a 120-block RISC-V interpreter
+/// with `own_size` = 44995, i.e. `SP` alone already exceeded the usable
+/// per-offset headroom `65536 - 44995 = 20541`). 32 bits costs nothing
+/// extra in practice: `n_packs(SP_BITS)` (the packed-word count for SP
+/// at every block boundary/spill site) is `ceil(SP_BITS / PACK_W)`, and
+/// `PACK_W = 64`, so 16→32 doesn't even change the packed word count.
+pub const SP_BITS: usize = 32;
 
 /// Number of bits packed into a single `Vec(PACK_W, Bit)` word at block
 /// boundaries, spill/reload slots, and frame argument slots.
@@ -92,9 +109,24 @@ pub const SP_BITS: usize = 16;
 /// expanded by call-site splitting).  The first function in the module is
 /// treated as the entry point.
 pub fn lower_vaffle_to_ir<P: Clone>(module: &Module<P>) -> (IRBlocks<P>, IRTypes) {
-    let mut ctx = LowerCtx::new(module);
+    let ssa_module = crate::vaffle_ssa::ssa_ify_module(module);
+    let mut ctx = LowerCtx::new(&ssa_module);
     ctx.lower_all();
     ctx.finish()
+}
+
+/// Temporary diagnostic variant of [`lower_vaffle_to_ir`] that also returns
+/// every cross-block spill/reload's own `(vaffle_block, vid, address)` log
+/// line -- lets a caller cross-reference write vs. read sites for a given
+/// `vid` without re-running the (slow) circuit simulator. Not used by any
+/// real pipeline.
+pub fn lower_vaffle_to_ir_with_spill_trace<P: Clone>(module: &Module<P>) -> (IRBlocks<P>, IRTypes, alloc::vec::Vec<alloc::string::String>) {
+    let ssa_module = crate::vaffle_ssa::ssa_ify_module(module);
+    let mut ctx = LowerCtx::new(&ssa_module);
+    ctx.lower_all();
+    let trace = ctx.spill_trace.clone();
+    let (blocks, types) = ctx.finish();
+    (blocks, types, trace)
 }
 
 // ============================================================================
@@ -276,6 +308,11 @@ struct LowerCtx<'m, P: Clone = ()> {
     /// function blocks).  Each entry is `(block_def)`.
     extra_blocks: Vec<IRBlock<P>>,
     pre_init: alloc::vec::Vec<volar_ir_common::PreInitSegment>,
+    /// Temporary diagnostic: logs every cross-block spill/reload's own
+    /// `(vaffle_block, vid, address)`, for tracing write-vs-read mismatches
+    /// without re-running the (slow) circuit simulator. Not read by any
+    /// real pipeline; drained via `lower_vaffle_to_ir_with_spill_trace`.
+    spill_trace: Vec<alloc::string::String>,
 }
 
 impl<'m, P: Clone> LowerCtx<'m, P> {
@@ -312,6 +349,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
             actions: module.actions.clone(),
             extra_blocks: Vec::new(),
             pre_init,
+            spill_trace: Vec::new(),
         }
     }
 
@@ -522,7 +560,6 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
         let n_param_words = info.n_param_words;
         let n_params = info.n_params;
         let cross_block_values = info.cross_block_values.clone();
-        let cross_block_base = info.cross_block_base;
 
         for (vaffle_bi, vaffle_block) in body.blocks.iter().enumerate() {
             let ir_bi = entry_block_offset + vaffle_bi;
@@ -588,17 +625,27 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
             // needed *anywhere* at the start of *every* block scales as
             // n_blocks * n_cross_block_values and blows up on real-sized
             // functions).
+            // `frame_spill`/`frame_reload` add `layout.spill_base`
+            // internally (see their own doc comments: `idx` is a
+            // zero-based "spill slot" offset *within* the spill region,
+            // matching the real-call-spill call sites below which pass a
+            // bare zero-based word index `wi`). `cross_block_base` already
+            // *includes* `spill_base` (`cross_block_base = spill_base +
+            // n_spill_words`), so passing it directly here double-counts
+            // `spill_base`. Pass the region-relative offset instead.
             for (&vid, &var) in val_map.iter() {
                 if cross_block_values.contains(&vid) {
+                    self.spill_trace.push(alloc::format!("SPILL(entry) vaffle_bi={vaffle_bi} vid={vid} addr={} src_var={}", own_layout.n_spill + vid as u64, var.0));
                     frame_spill(&mut em, &frame_sp, &own_layout,
-                        cross_block_base + vid as u64, var, BIT_TID);
+                        own_layout.n_spill + vid as u64, var, BIT_TID);
                 }
             }
-            let block_uses = collect_uses(body, &vaffle_block.stmts, &vaffle_block.terminator);
+            let block_uses = collect_uses(&body.values, &vaffle_block.stmts, &vaffle_block.terminator);
             for &vid in &cross_block_values {
                 if block_uses.contains(&vid) && !val_map.contains_key(&vid) {
+                    self.spill_trace.push(alloc::format!("RELOAD(entry) vaffle_bi={vaffle_bi} vid={vid} addr={}", own_layout.n_spill + vid as u64));
                     let reloaded = frame_reload(&mut em, &frame_sp, &own_layout,
-                        cross_block_base + vid as u64, BIT_TID);
+                        own_layout.n_spill + vid as u64, BIT_TID);
                     val_map.insert(vid, reloaded);
                 }
             }
@@ -643,8 +690,9 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                     // needs to be able to reload it.
                     if cross_block_values.contains(&svid.0) {
                         if let Some(&var) = val_map.get(&svid.0) {
+                            self.spill_trace.push(alloc::format!("SPILL(stmt) vaffle_bi={vaffle_bi} vid={} addr={} src_var={}", svid.0, own_layout.n_spill + svid.0 as u64, var.0));
                             frame_spill(&mut current_em, &current_frame_sp,
-                                &own_layout, cross_block_base + svid.0 as u64, var, BIT_TID);
+                                &own_layout, own_layout.n_spill + svid.0 as u64, var, BIT_TID);
                         }
                     }
                 }
@@ -663,7 +711,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                             //    StackAlloc addresses are compile-time
                             //    constants and never need to be spilled.
                             let future_uses = collect_uses(
-                                body, after_call, &vaffle_block.terminator,
+                                &body.values, after_call, &vaffle_block.terminator,
                             );
                             let spill_keys: Vec<usize> = val_map.keys().copied()
                                 .filter(|k| future_uses.contains(k))
@@ -743,7 +791,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                             if cross_block_values.contains(&call_vid.0) {
                                 if let Some(&var) = val_map.get(&call_vid.0) {
                                     frame_spill(&mut cont_em, &cont_frame_sp,
-                                        &own_layout, cross_block_base + call_vid.0 as u64, var, BIT_TID);
+                                        &own_layout, own_layout.n_spill + call_vid.0 as u64, var, BIT_TID);
                                 }
                             }
 
@@ -814,7 +862,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                 let mut all_ret_bits: Vec<IRVarId> = Vec::new();
                 for vid in values {
                     let ir_var = s(vid);
-                    let vtid = vaffle_value_vtid(body, *vid);
+                    let vtid = vaffle_value_vtid(self.module, &body.values, *vid);
                     let ir_tid = self.type_map[vtid.0 as usize];
                     let n_bits = ir_type_bit_width(&self.types, ir_tid);
                     all_ret_bits.extend(explode_to_bits(em, ir_var, n_bits));
@@ -948,14 +996,14 @@ fn find_call<'a, P: Clone>(
 /// These are the values that must be *live* (available in `val_map`) after a
 /// call site that precedes `stmt_ids` in the same block.  Only operand
 /// references are collected — the defining occurrence of a value is not.
-fn collect_uses<P: Clone>(
-    body: &FuncBody<P>,
+pub(crate) fn collect_uses<P: Clone>(
+    values: &[volar_ir_common::Node<Value, P>],
     stmt_ids: &[ValueId],
     term: &Terminator,
 ) -> BTreeSet<usize> {
     let mut uses = BTreeSet::new();
     for &vid in stmt_ids {
-        collect_value_uses(&body.values[vid.0].kind, &mut uses);
+        collect_value_uses(&values[vid.0].kind, &mut uses);
     }
     collect_terminator_uses(term, &mut uses);
     uses
@@ -1057,9 +1105,26 @@ fn collect_terminator_uses(term: &Terminator, out: &mut BTreeSet<usize>) {
 /// fallback instead of the real value -- exactly the bug this function's
 /// result (`lower_function`'s spill/reload of every value in this set) is
 /// built to fix.
-fn compute_cross_block_values<P: Clone>(body: &FuncBody<P>) -> BTreeSet<usize> {
-    let mut owner: BTreeMap<usize, usize> = BTreeMap::new();
+pub(crate) fn compute_cross_block_values<P: Clone>(body: &FuncBody<P>) -> BTreeSet<usize> {
+    let owner = compute_owner(&body.blocks);
+
+    let mut cross: BTreeSet<usize> = BTreeSet::new();
     for (bi, block) in body.blocks.iter().enumerate() {
+        for u in collect_uses(&body.values, &block.stmts, &block.terminator) {
+            if owner.get(&u).copied() != Some(bi) {
+                cross.insert(u);
+            }
+        }
+    }
+    cross
+}
+
+/// Map every VAFFLE `ValueId.0` to the index of the block that owns its
+/// defining occurrence (as a param or a stmt). Shared by
+/// [`compute_cross_block_values`] and `vaffle_ssa`'s param-threading pass.
+pub(crate) fn compute_owner(blocks: &[Block]) -> BTreeMap<usize, usize> {
+    let mut owner: BTreeMap<usize, usize> = BTreeMap::new();
+    for (bi, block) in blocks.iter().enumerate() {
         for &(vid, _ty) in &block.params {
             owner.insert(vid.0, bi);
         }
@@ -1067,16 +1132,7 @@ fn compute_cross_block_values<P: Clone>(body: &FuncBody<P>) -> BTreeSet<usize> {
             owner.insert(vid.0, bi);
         }
     }
-
-    let mut cross: BTreeSet<usize> = BTreeSet::new();
-    for (bi, block) in body.blocks.iter().enumerate() {
-        for u in collect_uses(body, &block.stmts, &block.terminator) {
-            if owner.get(&u).copied() != Some(bi) {
-                cross.insert(u);
-            }
-        }
-    }
-    cross
+    owner
 }
 
 /// Compute the bit-width of an IR type recursively.
@@ -1103,18 +1159,46 @@ fn ir_type_bit_width(types: &IRTypes, tid: TypeId) -> usize {
 }
 
 /// Return the VAFFLE TypeId of a value in a function body.
-fn vaffle_value_vtid<P: Clone>(body: &FuncBody<P>, vid: ValueId) -> TypeId {
-    match &body.values[vid.0].kind {
+///
+/// `Output`/single-result `Call` need the callee's own [`SigDecl`] to type
+/// correctly (a `Call`'s own values entry carries no type of its own) —
+/// `module` is threaded through for that lookup. Falls back to `BIT_TID`
+/// only for shapes with no well-defined single-value scalar type
+/// (`StackAlloc`/`PtrLoad`/`PtrStore`/`PtrOffset`, which `lower_function`
+/// already treats as `Bit`-typed addresses independently of this helper).
+pub(crate) fn vaffle_value_vtid<P: Clone>(module: &Module<P>, values: &[volar_ir_common::Node<Value, P>], vid: ValueId) -> TypeId {
+    match &values[vid.0].kind {
         Value::Param { ty, .. } => *ty,
         Value::Op(stmt)         => stmt_result_vtid(stmt),
-        // Call produces an aggregate; Output extracts one element.
-        // Type lookup requires following the callee sig — fall back to Bit.
-        Value::Call { .. } | Value::Output { .. } | _ => TypeId(0),
+        Value::Output { value, idx } => {
+            match &values[value.0].kind {
+                Value::Call { func, .. } => sig_of(module, *func).results[*idx],
+                _ => TypeId(0),
+            }
+        }
+        Value::Call { func, .. } => {
+            let results = &sig_of(module, *func).results;
+            // A multi-result Call referenced directly (not through an
+            // Output) is a malformed value graph — callers should only
+            // ever reference a single-result Call this way.
+            if results.len() == 1 { results[0] } else { TypeId(0) }
+        }
+        _ => TypeId(0),
     }
 }
 
+/// Look up a callee's signature declaration by [`FuncId`].
+fn sig_of<P: Clone>(module: &Module<P>, func: FuncId) -> &SigDecl {
+    let sig_id = match &module.funcs[func.0] {
+        FuncDecl::Import { sig, .. } => *sig,
+        FuncDecl::Body(b) => b.sig,
+        _ => panic!("sig_of: unexpected FuncDecl variant"),
+    };
+    &module.sigs[sig_id.0]
+}
+
 /// Return the result TypeId of a VAFFLE Stmt.
-fn stmt_result_vtid(stmt: &Stmt<ValueId>) -> TypeId {
+pub(crate) fn stmt_result_vtid(stmt: &Stmt<ValueId>) -> TypeId {
     match stmt {
         Stmt::Const(_, ty)             => *ty,
         Stmt::Poly { ty, .. }          => *ty,

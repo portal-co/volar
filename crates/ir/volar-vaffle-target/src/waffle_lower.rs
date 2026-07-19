@@ -190,14 +190,24 @@ pub fn lower_waffle_module(
     }
 
     // Collect WASM active data-segment pre-initialisations.
-    // WASM linear memories use 8-bit byte cells, so ty = the u8 TypeId.
-    let u8_tid = target.lir_type_to_tid(&volar_lir::LirType::U8);
+    // WASM linear memories use 8-bit byte cells, addressed by
+    // `mem_load_bytes`/`mem_store_bytes`'s own `StorageId::memory(..)` +
+    // `byte_tid()` (interns `IrType::Vec(8, Bit)`) -- pre_init segments
+    // must be typed identically, or every runtime StorageRead permanently
+    // misses them (the interpreter's storage map is keyed by
+    // `(StorageId, TypeId, addr)`; a `TypeId` mismatch alone makes a
+    // correctly-populated entry unreachable, silently reading back as
+    // the default/zero value). Previously used `lir_type_to_tid(U8)`,
+    // which interns the *structurally different* `IrType::Primitive(_8)`
+    // -- a distinct TypeTable entry despite representing the same "one
+    // byte" concept, since `TypeTable::intern` interns structurally.
+    let byte_tid = target.byte_tid();
     for (mem_ref, mem_data) in wasm.memories.entries() {
         let storage = StorageId::memory(mem_ref.index() as u32);
         for seg in &mem_data.segments {
             target.module.pre_init.push(PreInitSegment {
                 storage,
-                ty: u8_tid,
+                ty: byte_tid,
                 offset: seg.offset,
                 data: seg.data.iter()
                     .map(|&b| Constant { hi: 0, lo: b as u128 })

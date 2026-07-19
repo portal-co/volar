@@ -242,6 +242,14 @@ impl StorageId {
     pub const MEMORY_BASE: u32 = 16;
     /// Convenience: StorageId for WASM memory index `i`.
     pub const fn memory(i: u32) -> StorageId { StorageId(Self::MEMORY_BASE + i) }
+    /// Dedicated scratch space for `vaffle_ssa`'s own cross-block value
+    /// spilling (`crates/ir/volar-vaffle-target/src/vaffle_ssa.rs`).
+    /// Addressed directly by the spilled VAFFLE `ValueId` itself (not
+    /// SP-relative, no frame-layout coordination needed) — chosen well
+    /// outside the WASM memory range (like [`VIRT_BYTECODE`]) so a module
+    /// with any realistic number of declared memories can't collide with
+    /// it.
+    pub const VAFFLE_SSA_SPILL: StorageId = StorageId(1_000_000);
 }
 
 /// A contiguous run of pre-initialised typed elements for a storage space.
