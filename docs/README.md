@@ -90,6 +90,8 @@ producing test scaffolding, hand-off documents, and analysis. See
 | [text-format-spec.md](text-format-spec.md) | Stable text formats for serialised IR artefacts |
 | [waffle-lowering.md](waffle-lowering.md) | WAFFLE → VAFFLE lowering for WASM-compiled circuits |
 | [wasm-feature-support.md](wasm-feature-support.md) | Which WASM features are supported at each pipeline layer |
+| [metadata-container-plan.md](metadata-container-plan.md) | Prerequisite generic per-node metadata refactor: default propagation, explicit multi-source policy, and extension remapping |
+| [instruction-groups-plan.md](instruction-groups-plan.md) | Planned typed instruction regions, their WASM marker ABI, and their VAFFLE/Volar-IR propagation (after the metadata refactor) |
 
 ### FHE / homomorphic evaluation
 
@@ -117,6 +119,8 @@ producing test scaffolding, hand-off documents, and analysis. See
 | [external-primitives-plan.md](external-primitives-plan.md) | Oracles, Actions, and Native RNG — partial implementation; ActionCall is in use |
 | [spec-static-shapes-plan.md](spec-static-shapes-plan.md) | Security-parameter genericity and static protocol/table shapes for `volar-spec` — partially implemented |
 | [tfhe-multi-input-pbs-weaver-plan.md](tfhe-multi-input-pbs-weaver-plan.md) | Experimental multi-input PBS, composable XOR, and direct-IR TFHE cone fusion — **partially implemented** (opt-in two-bit LUT XOR; wider selector deferred) |
+| [metadata-container-plan.md](metadata-container-plan.md) | Generic per-node metadata propagation and remapping refactor — **prerequisite for instruction groups** |
+| [instruction-groups-plan.md](instruction-groups-plan.md) | Typed instruction regions for batching and dedicated bounded-loop lowering — planning, after metadata refactor |
 
 ### Agent-context briefings
 
