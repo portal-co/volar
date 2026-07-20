@@ -139,19 +139,21 @@ where
 /// less-than gadget for ordering) to the single field element the multiset
 /// `encode` consumes — a free linear combination (public `pow2` powers).  Use
 /// the same `pow2` on prover and verifier.
-pub fn vope_bitpack<N, T>(bits: &[Vope<N, T, U1>], pow2: &[T]) -> Vope<N, T, U1>
+pub fn vope_bitpack<const BITS: usize, N, T>(
+    bits: &[Vope<N, T, U1>; BITS],
+    pow2: &[T; BITS],
+) -> Vope<N, T, U1>
 where
     N: VoleArray<T>,
     T: Clone + Add<Output = T> + Mul<Output = T> + Default,
     Vope<N, T, U1>: Add<Output = Vope<N, T, U1>>,
 {
-    assert_eq!(bits.len(), pow2.len(), "vope_bitpack: length mismatch");
     let mut acc = Vope {
         u: Array::<Array<T, N>, U1>::from_fn(|_| Array::<T, N>::from_fn(|_| T::default())),
         v: Array::<T, N>::from_fn(|_| T::default()),
     };
-    for (b, p) in bits.iter().zip(pow2.iter()) {
-        acc = acc + vope_scale_const(b, p);
+    for index in 0..BITS {
+        acc = acc + vope_scale_const(&bits[index], &pow2[index]);
     }
     acc
 }
@@ -198,15 +200,14 @@ where
 }
 
 /// Verifier mirror of [`vope_bitpack`]: `Σ bits[i] · pow2[i]` over `Q` shares.
-pub fn q_bitpack<N, T>(bits: &[Q<N, T>], pow2: &[T]) -> Q<N, T>
+pub fn q_bitpack<const BITS: usize, N, T>(bits: &[Q<N, T>; BITS], pow2: &[T; BITS]) -> Q<N, T>
 where
     N: ArraySize,
     T: Clone + Add<Output = T> + Mul<Output = T> + Default,
 {
-    assert_eq!(bits.len(), pow2.len(), "q_bitpack: length mismatch");
     let mut acc = Q { q: Array::<T, N>::from_fn(|_| T::default()) };
-    for (b, p) in bits.iter().zip(pow2.iter()) {
-        let scaled = q_scale_const(b, p);
+    for index in 0..BITS {
+        let scaled = q_scale_const(&bits[index], &pow2[index]);
         acc = Q { q: Array::<T, N>::from_fn(|i| acc.q[i].clone() + scaled.q[i].clone()) };
     }
     acc
@@ -284,7 +285,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use cipher::consts::U2;
     use hybrid_array::Array;
 
@@ -369,12 +369,12 @@ mod tests {
     #[test]
     fn bitpack_packs_le_bits() {
         // bits = [1,0,1] (=5), pow2 = [1,2,4]  ->  field value 5 in lane u[0].
-        let bits = vec![vope(1, 0), vope(0, 0), vope(1, 0)];
-        let pow2 = vec![1u64, 2, 4];
+        let bits = [vope(1, 0), vope(0, 0), vope(1, 0)];
+        let pow2 = [1u64, 2, 4];
         let packed = vope_bitpack(&bits, &pow2);
         assert_eq!(packed.u[0][0], 5);
         // Q mirror.
-        let qbits = vec![q::<1, 1>(), q::<0, 0>(), q::<1, 1>()];
+        let qbits = [q::<1, 1>(), q::<0, 0>(), q::<1, 1>()];
         let qpacked = q_bitpack(&qbits, &pow2);
         assert_eq!(qpacked.q[0], 5);
     }

@@ -2809,12 +2809,14 @@ fn map_ir_terminator<S: FheScheme>(
 /// - AND gate: `tfhe_gate_bootstrapping_and` (full GINX blind rotation + key switching)
 /// - CMUX: `tfhe_cmux` (used for encrypted branch merging in CFG path)
 ///
-/// The generated function is generic over four const usize parameters:
-/// `N_LWE`, `BIG_N`, `BS_ELL`, `KS_ELL` — corresponding to the TFHE parameters
-/// in `volar_spec::tfhe::BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>`.
+/// The generated function is generic over six const parameters:
+/// `N_LWE`, `BIG_N`, `BS_ELL`, `KS_ELL`, `BS_BG_LOG`, and `KS_BG_LOG`.
+/// The decomposition-base logs are part of the concrete bootstrapping-key
+/// identity, so an emitted circuit cannot mix a key with a different base.
 ///
 /// Wire type: `LweCiphertext<N_LWE>` (a single-bit LWE ciphertext).
-/// Extra parameter: `bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>`.
+/// Extra parameter: `bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL,
+/// BS_BG_LOG, KS_BG_LOG>`.
 ///
 /// # Paths
 ///
@@ -2831,9 +2833,11 @@ fn map_ir_terminator<S: FheScheme>(
 ///     const BIG_N: usize,
 ///     const BS_ELL: usize,
 ///     const KS_ELL: usize,
+///     const BS_BG_LOG: usize,
+///     const KS_BG_LOG: usize,
 /// >(
 ///     input: LweCiphertext<N_LWE>,
-///     bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+///     bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, BS_BG_LOG, KS_BG_LOG>,
 /// ) -> LweCiphertext<N_LWE> { ... }
 /// ```
 pub struct TfheScheme {
@@ -2894,6 +2898,8 @@ impl FheScheme for TfheScheme {
                         IrType::TypeParam("BIG_N".into()),
                         IrType::TypeParam("BS_ELL".into()),
                         IrType::TypeParam("KS_ELL".into()),
+                        IrType::TypeParam("BS_BG_LOG".into()),
+                        IrType::TypeParam("KS_BG_LOG".into()),
                     ],
                 }),
             },
@@ -2925,6 +2931,20 @@ impl FheScheme for TfheScheme {
             },
             IrGenericParam {
                 name: "KS_ELL".into(),
+                kind: IrGenericParamKind::Const,
+                const_ty: None,
+                bounds: vec![],
+                default: None,
+            },
+            IrGenericParam {
+                name: "BS_BG_LOG".into(),
+                kind: IrGenericParamKind::Const,
+                const_ty: None,
+                bounds: vec![],
+                default: None,
+            },
+            IrGenericParam {
+                name: "KS_BG_LOG".into(),
                 kind: IrGenericParamKind::Const,
                 const_ty: None,
                 bounds: vec![],
@@ -4704,21 +4724,23 @@ const N: usize = 8;
 const BN: usize = 64;
 const BSE: usize = 2;
 const KSE: usize = 2;
+const BS_BG: usize = 16;
+const KS_BG: usize = 16;
 
 #[test]
 fn and_truth_table() {
     let mut rng = TestRng::new(42);
     let lwe_sk = gen_lwe_secret_key::<N, _>(&mut rng);
     let rlwe_sk = gen_rlwe_secret_key::<BN, _>(&mut rng);
-    let bk = gen_bootstrapping_key::<N, BN, BSE, KSE, _>(
-        &lwe_sk, &rlwe_sk, 16, 16, 0, 0, &mut rng,
+    let bk = gen_bootstrapping_key::<N, BN, BSE, KSE, BS_BG, KS_BG, _>(
+        &lwe_sk, &rlwe_sk, 0, 0, &mut rng,
     );
 
     for a in [false, true] {
         for b in [false, true] {
             let ct_a = lwe_encrypt(a, &lwe_sk, 0, &mut TestRng::new(100));
             let ct_b = lwe_encrypt(b, &lwe_sk, 0, &mut TestRng::new(200));
-            let result = and_cfg_tfhe_cfg::<N, BN, BSE, KSE>(&bk, ct_a, ct_b);
+            let result = and_cfg_tfhe_cfg::<N, BN, BSE, KSE, BS_BG, KS_BG>(&bk, ct_a, ct_b);
             let decrypted = lwe_decrypt(&result, &lwe_sk);
             assert_eq!(
                 decrypted, a && b,
@@ -4771,6 +4793,10 @@ fn and_truth_table() {
                 "CARGO_TARGET_DIR",
                 String::from(tmpdir.join("target").to_str().unwrap()),
             )
+            // The temporary crate is assembled entirely from workspace/path
+            // dependencies already built by this test. Avoid a network lookup
+            // during an otherwise deterministic compile-and-run check.
+            .env("CARGO_NET_OFFLINE", "true")
             .output()
             .expect("failed to run cargo test");
 

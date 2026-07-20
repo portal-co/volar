@@ -115,6 +115,7 @@ producing test scaffolding, hand-off documents, and analysis. See
 | Document | Status |
 |---|---|
 | [external-primitives-plan.md](external-primitives-plan.md) | Oracles, Actions, and Native RNG — partial implementation; ActionCall is in use |
+| [spec-static-shapes-plan.md](spec-static-shapes-plan.md) | Security-parameter genericity and static protocol/table shapes for `volar-spec` — partially implemented |
 
 ### Agent-context briefings
 
