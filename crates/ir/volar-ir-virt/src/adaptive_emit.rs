@@ -51,7 +51,7 @@ pub(super) fn virtualize_ir_adaptive<P: Clone + Default, H: IrHashAlgorithm>(
         .blocks
         .iter()
         .flat_map(|b| b.stmts.iter())
-        .map(|n| &n.prov)
+        .map(|n| n.provenance())
         .next()
         .cloned()
         .unwrap_or_default();

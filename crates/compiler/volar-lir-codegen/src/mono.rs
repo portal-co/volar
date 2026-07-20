@@ -877,7 +877,7 @@ fn mono_stmt(stmt: &IrStmt, env: &MonoEnv) -> IrStmt {
         IrStmtKind::Expr(e) => IrStmtKind::Expr(mono_expr(e, env)),
         _ => panic!("mono_stmt: unhandled IrStmt variant — add monomorphization for this variant"),
     };
-    IrStmt::new(kind, stmt.prov.clone(), stmt.side)
+    IrStmt::new(kind, stmt.provenance().clone(), stmt.side())
 }
 
 fn mono_expr(expr: &IrExpr, env: &MonoEnv) -> IrExpr {
@@ -1098,5 +1098,5 @@ fn mono_expr(expr: &IrExpr, env: &MonoEnv) -> IrExpr {
 
         other => other.clone(),
     };
-    IrExpr::new(kind, expr.prov.clone(), expr.side)
+    IrExpr::new(kind, expr.provenance().clone(), expr.side())
 }

@@ -108,7 +108,7 @@ fn lower_block<P: Clone>(block: &IRBlock<P>, types: &IRTypes) -> BIrBlock<P> {
     let mut call_output_bits: BTreeMap<u32, Vec<Vec<IRVarId>>> = BTreeMap::new();
 
     for (si, stmt) in block.stmts.iter().enumerate() {
-        let prov = stmt.prov.clone();
+        let prov = stmt.provenance().clone();
         let ir_var_idx = block.params.len() as u32 + si as u32;
         lower_stmt(&stmt.kind, prov, ir_var_idx, &mut var_bits, &mut call_output_bits, &mut emitter, types);
     }
@@ -529,7 +529,7 @@ fn constant_bit(c: &Constant, bit: usize) -> bool {
 /// Boolar var IDs start at `params` (the number of input bit params for the
 /// block) and increment by one for each emitted stmt.
 struct Emitter<P: Clone> {
-    stmts: Vec<volar_ir_common::Node<BIrStmt, P>>,
+    stmts: Vec<volar_ir_common::Node<BIrStmt, volar_ir_common::StandardMetadata<P>>>,
     next_var: u32,
 }
 
@@ -826,6 +826,6 @@ mod tests {
         let b = &lowered.blocks[0];
         // The single Const(Bit, 0) emits one Zero stmt with provenance 42.
         assert_eq!(b.stmts.len(), 1);
-        assert_eq!(b.stmts[0].prov, 42u32);
+        assert_eq!(*b.stmts[0].provenance(), 42u32);
     }
 }

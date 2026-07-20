@@ -144,7 +144,7 @@ const PACK_TID: TypeId = TypeId(2);
 
 struct BlockEmitter<P: Clone = ()> {
     params: Vec<IRTypeId>,
-    stmts: Vec<volar_ir_common::Node<IRStmt, P>>,
+    stmts: Vec<volar_ir_common::Node<IRStmt, volar_ir_common::StandardMetadata<P>>>,
     current_prov: Option<P>,
     next_var: u32,
 }
@@ -498,7 +498,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
         // the jump into func 0's body, so they inherit that function's first
         // value's provenance.
         let entry_prov = match &self.module.funcs[0] {
-            FuncDecl::Body(b) => b.values.first().map(|n| n.prov.clone()),
+            FuncDecl::Body(b) => b.values.first().map(|n| n.provenance().clone()),
             _ => None,
         }.expect("emit_entry_and_exit: entry function (func 0) must be a Body with at least one value to seed provenance from");
         em.set_prov(entry_prov.clone());
@@ -584,8 +584,8 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
             // their own (e.g. an immediate unconditional jump) fall back to the
             // function's first value, mirroring `emit_entry_and_exit`'s rule.
             let block_prov = vaffle_block.stmts.first()
-                .map(|&first_vid| body.values[first_vid.0].prov.clone())
-                .or_else(|| body.values.first().map(|n| n.prov.clone()))
+                .map(|&first_vid| body.values[first_vid.0].provenance().clone())
+                .or_else(|| body.values.first().map(|n| n.provenance().clone()))
                 .expect("lower_function: function has no values to seed block provenance from");
             em.set_prov(block_prov);
 
@@ -659,7 +659,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                 let (before_call, at_call, after_call) = find_call(remaining_stmts, body);
 
                 for &svid in before_call.iter() {
-                    current_em.set_prov(body.values[svid.0].prov.clone());
+                    current_em.set_prov(body.values[svid.0].provenance().clone());
                     match &body.values[svid.0].kind {
                         Value::Op(stmt) => {
                             let ir_stmt = translate_stmt(stmt, &val_map, &self.type_map);
@@ -699,7 +699,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
 
                 match at_call {
                     Some(call_vid) => {
-                        current_em.set_prov(body.values[call_vid.0].prov.clone());
+                        current_em.set_prov(body.values[call_vid.0].provenance().clone());
                         if let Value::Call { func: callee_fid, args: call_args } = &body.values[call_vid.0].kind {
                             let callee_idx = callee_fid.0;
                             let callee_info = &self.func_info[callee_idx];
@@ -768,7 +768,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
                             let cont_params: Vec<IRTypeId> = vec![PACK_TID; sp_packs + ret_packs];
                             let mut cont_em = BlockEmitter::new(cont_params);
                             // Continuation infrastructure gets the call stmt's provenance.
-                            cont_em.set_prov(body.values[call_vid.0].prov.clone());
+                            cont_em.set_prov(body.values[call_vid.0].provenance().clone());
 
                             // Unpack SP.
                             let cont_sp_word_ids: Vec<IRVarId> = (0..sp_packs as u32).map(IRVarId).collect();
@@ -997,7 +997,7 @@ fn find_call<'a, P: Clone>(
 /// call site that precedes `stmt_ids` in the same block.  Only operand
 /// references are collected — the defining occurrence of a value is not.
 pub(crate) fn collect_uses<P: Clone>(
-    values: &[volar_ir_common::Node<Value, P>],
+    values: &[volar_ir_common::Node<Value, volar_ir_common::StandardMetadata<P>>],
     stmt_ids: &[ValueId],
     term: &Terminator,
 ) -> BTreeSet<usize> {
@@ -1166,7 +1166,7 @@ fn ir_type_bit_width(types: &IRTypes, tid: TypeId) -> usize {
 /// only for shapes with no well-defined single-value scalar type
 /// (`StackAlloc`/`PtrLoad`/`PtrStore`/`PtrOffset`, which `lower_function`
 /// already treats as `Bit`-typed addresses independently of this helper).
-pub(crate) fn vaffle_value_vtid<P: Clone>(module: &Module<P>, values: &[volar_ir_common::Node<Value, P>], vid: ValueId) -> TypeId {
+pub(crate) fn vaffle_value_vtid<P: Clone>(module: &Module<P>, values: &[volar_ir_common::Node<Value, volar_ir_common::StandardMetadata<P>>], vid: ValueId) -> TypeId {
     match &values[vid.0].kind {
         Value::Param { ty, .. } => *ty,
         Value::Op(stmt)         => stmt_result_vtid(stmt),

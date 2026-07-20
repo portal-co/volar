@@ -918,52 +918,299 @@ impl StorageAllocator {
 }
 
 // ============================================================================
-// Node: shared per-value provenance + side wrapper
+// Node: shared per-value metadata wrapper
 // ============================================================================
 
-/// A node wrapping an IR/AST payload `T` with provenance (`P`) and
-/// [`SideId`] metadata.
+/// The complete metadata carried by an IR node.
 ///
-/// SSA/arena-style IRs (Volar IR's `IRStmt`, VAFFLE's `Value`) wrap each
-/// statement or arena entry directly — `T` does not itself mention `P`, so
-/// [`map_prov`](Self::map_prov) is the only mapping operation needed.
-/// Tree-shaped IRs whose payload recursively embeds `P` (e.g. a compiler's
-/// expression IR) wrap their recursive `Kind` enum instead; such IRs define
-/// their own recursive provenance-mapping logic over `T`; `Node` only owns
-/// the per-node `prov`/`side` pair, not the recursion.
+/// `Node` has exactly one metadata type parameter. Implementations use
+/// associated types for metadata whose representation varies between IR users,
+/// rather than adding another type parameter to `Node` for every metadata axis.
+pub trait NodeMetadata: Clone {
+    /// Source/debug provenance associated with this node.
+    type Provenance: Clone;
+    /// Per-value party/role annotation associated with this node.
+    type Side: Clone;
+
+    /// Borrow this node's provenance annotation.
+    fn provenance(&self) -> &Self::Provenance;
+    /// Borrow this node's side annotation.
+    fn side(&self) -> &Self::Side;
+}
+
+/// The standard metadata used by Volar's IR pipeline.
 ///
-/// `side` is never touched by provenance mapping — the two annotations are
-/// independent axes (see the crate-level docs of `volar-side`).
+/// Fields are private so a payload rewrite cannot accidentally omit a future
+/// metadata axis. Use [`Node::derived`], [`Node::map_kind`], or the focused
+/// accessors/mappers instead.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
-pub struct Node<T, P: Clone = ()> {
-    pub kind: T,
-    pub prov: P,
-    pub side: Option<volar_side::SideId>,
+pub struct StandardMetadata<P: Clone = ()> {
+    provenance: P,
+    side: Option<volar_side::SideId>,
 }
 
-impl<T, P: Clone> Node<T, P> {
-    /// Construct a node from its parts.
-    pub fn new(kind: T, prov: P, side: Option<volar_side::SideId>) -> Self {
-        Node { kind, prov, side }
+impl<P: Clone> StandardMetadata<P> {
+    /// Create standard metadata from explicit provenance and side annotations.
+    pub fn new(provenance: P, side: Option<volar_side::SideId>) -> Self {
+        Self { provenance, side }
     }
 
-    /// Map this node's provenance via `f`. `kind` and `side` pass through
-    /// unchanged — the right operation whenever the payload `T` does not
-    /// itself mention `P` (the common case for SSA/arena statement types).
-    pub fn map_prov<Q: Clone>(self, f: impl FnOnce(P) -> Q) -> Node<T, Q> {
-        Node { kind: self.kind, prov: f(self.prov), side: self.side }
+    /// Map provenance without changing the side annotation.
+    pub fn map_provenance<Q: Clone, E>(
+        self,
+        f: impl FnOnce(P) -> Result<Q, E>,
+    ) -> Result<StandardMetadata<Q>, E> {
+        Ok(StandardMetadata { provenance: f(self.provenance)?, side: self.side })
+    }
+
+    /// Replace the side annotation without changing provenance.
+    pub fn with_side(mut self, side: Option<volar_side::SideId>) -> Self {
+        self.side = side;
+        self
+    }
+
+    /// Fallibly map the side annotation without changing provenance.
+    pub fn map_side<E>(
+        mut self,
+        f: impl FnOnce(Option<volar_side::SideId>) -> Result<Option<volar_side::SideId>, E>,
+    ) -> Result<Self, E> {
+        self.side = f(self.side)?;
+        Ok(self)
     }
 }
 
-/// Implemented by a tree-shaped `Kind` payload that itself embeds `P` in
-/// nested [`Node`]s (e.g. a compiler's expression/statement IR, where a
-/// `Binary` variant holds boxed `Node<ExprKind<P>, P>` operands).
+impl<P: Clone> NodeMetadata for StandardMetadata<P> {
+    type Provenance = P;
+    type Side = Option<volar_side::SideId>;
+
+    fn provenance(&self) -> &P { &self.provenance }
+    fn side(&self) -> &Option<volar_side::SideId> { &self.side }
+}
+
+/// Error returned by [`Node::map2`].
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[non_exhaustive]
+pub enum Map2Error<PayloadError, MetadataError> {
+    /// The mapper for the two payloads failed.
+    Payload(PayloadError),
+    /// The mapper for the two metadata values failed.
+    Metadata(MetadataError),
+}
+
+/// Policy for combining metadata from two source nodes.
 ///
-/// `Node<T, P>::map_kind_prov` delegates to this trait to recurse into `T`
-/// and remap every nested `P`, then maps its own top-level `prov`. Payload
-/// types that do not embed `P` (SSA/arena statement kinds) have no need for
-/// this trait — use [`Node::map_prov`] directly instead.
+/// There is deliberately no implicit "use the left metadata" behaviour:
+/// callers combining two values must name a policy.
+pub trait MapMetadata2<L: NodeMetadata, R: NodeMetadata> {
+    /// Metadata carried by the merged node.
+    type Output: NodeMetadata;
+    /// Error reported when metadata cannot be combined.
+    type Error;
+
+    /// Combine complete left and right metadata values.
+    fn map_metadata2(&self, left: L, right: R) -> Result<Self::Output, Self::Error>;
+}
+
+/// Policy for combining the standard side metadata axis.
+pub trait MapSide2 {
+    /// Error reported by side combination.
+    type Error;
+
+    /// Combine two side annotations.
+    fn map_side2(
+        &self,
+        left: Option<volar_side::SideId>,
+        right: Option<volar_side::SideId>,
+    ) -> Result<Option<volar_side::SideId>, Self::Error>;
+}
+
+/// The normal two-source side policy: retain the common side, otherwise none.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct DefaultSideMap2;
+
+impl MapSide2 for DefaultSideMap2 {
+    type Error = core::convert::Infallible;
+
+    fn map_side2(
+        &self,
+        left: Option<volar_side::SideId>,
+        right: Option<volar_side::SideId>,
+    ) -> Result<Option<volar_side::SideId>, Self::Error> {
+        Ok(volar_side::propagate(&[left, right]))
+    }
+}
+
+/// Error reported by [`StandardMetadataMap2`].
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[non_exhaustive]
+pub enum StandardMetadataMap2Error<E> {
+    /// The configured side policy rejected the pair.
+    Side(E),
+}
+
+/// Standard metadata merge policy.
+///
+/// Provenance is combined by a [`volar_provenance::DualProvenanceHandler`];
+/// side uses [`DefaultSideMap2`] unless a specialised side policy is supplied.
+pub struct StandardMetadataMap2<Prov, Side = DefaultSideMap2> {
+    /// Provenance merge policy.
+    pub provenance: Prov,
+    /// Side merge policy.
+    pub side: Side,
+}
+
+impl<Prov> StandardMetadataMap2<Prov, DefaultSideMap2> {
+    /// Construct the standard policy with default side propagation.
+    pub fn new(provenance: Prov) -> Self {
+        Self { provenance, side: DefaultSideMap2 }
+    }
+}
+
+impl<P1, P2, Prov, Side> MapMetadata2<StandardMetadata<P1>, StandardMetadata<P2>>
+    for StandardMetadataMap2<Prov, Side>
+where
+    P1: Clone,
+    P2: Clone,
+    Prov: volar_provenance::DualProvenanceHandler<P1, P2>,
+    Side: MapSide2,
+{
+    type Output = StandardMetadata<Prov::Output>;
+    type Error = StandardMetadataMap2Error<Side::Error>;
+
+    fn map_metadata2(
+        &self,
+        left: StandardMetadata<P1>,
+        right: StandardMetadata<P2>,
+    ) -> Result<Self::Output, Self::Error> {
+        let side = self.side.map_side2(left.side, right.side)
+            .map_err(StandardMetadataMap2Error::Side)?;
+        Ok(StandardMetadata::new(
+            self.provenance.merge(&left.provenance, &right.provenance),
+            side,
+        ))
+    }
+}
+
+impl<Prov, Side> StandardMetadataMap2<Prov, Side> {
+    /// Map metadata originating solely from the left source.
+    ///
+    /// The side annotation is copied: a one-source derivation is not a side
+    /// merge and therefore does not invoke the two-source side policy.
+    pub fn map_left<P1: Clone, P2: Clone>(
+        &self,
+        left: StandardMetadata<P1>,
+    ) -> Result<StandardMetadata<Prov::Output>, core::convert::Infallible>
+    where
+        Prov: volar_provenance::DualProvenanceHandler<P1, P2>,
+    {
+        Ok(StandardMetadata::new(
+            self.provenance.map_left(&left.provenance),
+            left.side,
+        ))
+    }
+
+    /// Map metadata originating solely from the right source.
+    ///
+    /// The side annotation is copied: a one-source derivation is not a side
+    /// merge and therefore does not invoke the two-source side policy.
+    pub fn map_right<P1: Clone, P2: Clone>(
+        &self,
+        right: StandardMetadata<P2>,
+    ) -> Result<StandardMetadata<Prov::Output>, core::convert::Infallible>
+    where
+        Prov: volar_provenance::DualProvenanceHandler<P1, P2>,
+    {
+        Ok(StandardMetadata::new(
+            self.provenance.map_right(&right.provenance),
+            right.side,
+        ))
+    }
+}
+
+/// A node wrapping an IR/AST payload `T` and complete metadata `M`.
+///
+/// The default metadata type carries ordinary Volar provenance and side
+/// annotations. Derived nodes copy their complete metadata; transformations
+/// that merge two sources use [`Node::map2`] with a [`MapMetadata2`] policy.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct Node<T, M: NodeMetadata = StandardMetadata<()>> {
+    pub kind: T,
+    metadata: M,
+}
+
+impl<T, M: NodeMetadata> Node<T, M> {
+    /// Construct a node with explicit complete metadata.
+    pub fn with_metadata(kind: T, metadata: M) -> Self {
+        Node { kind, metadata }
+    }
+
+    /// Derive a node with a new payload and an exact clone of this node's
+    /// complete metadata.
+    pub fn derived<U>(&self, kind: U) -> Node<U, M> {
+        Node { kind, metadata: self.metadata.clone() }
+    }
+
+    /// Fallibly map the payload while preserving complete metadata.
+    pub fn map_kind<U, E>(self, f: impl FnOnce(T) -> Result<U, E>) -> Result<Node<U, M>, E> {
+        Ok(Node { kind: f(self.kind)?, metadata: self.metadata })
+    }
+
+    /// Fallibly map complete metadata while preserving the payload.
+    pub fn map_metadata<N: NodeMetadata, E>(
+        self,
+        f: impl FnOnce(M) -> Result<N, E>,
+    ) -> Result<Node<T, N>, E> {
+        Ok(Node { kind: self.kind, metadata: f(self.metadata)? })
+    }
+
+    /// Fallibly combine two payloads and their metadata through explicit
+    /// policies. No metadata axis is inherited implicitly from either input.
+    pub fn map2<U, N, V, PE, MM>(
+        self,
+        other: Node<U, N>,
+        map_kind: impl FnOnce(T, U) -> Result<V, PE>,
+        map_metadata: &MM,
+    ) -> Result<Node<V, MM::Output>, Map2Error<PE, MM::Error>>
+    where
+        N: NodeMetadata,
+        MM: MapMetadata2<M, N>,
+    {
+        let kind = map_kind(self.kind, other.kind).map_err(Map2Error::Payload)?;
+        let metadata = map_metadata
+            .map_metadata2(self.metadata, other.metadata)
+            .map_err(Map2Error::Metadata)?;
+        Ok(Node { kind, metadata })
+    }
+
+    /// Borrow this node's complete metadata.
+    pub fn metadata(&self) -> &M { &self.metadata }
+}
+
+impl<T, P: Clone> Node<T, StandardMetadata<P>> {
+    /// Construct a standard-metadata node from provenance and side annotations.
+    pub fn new(kind: T, prov: P, side: Option<volar_side::SideId>) -> Self {
+        Node::with_metadata(kind, StandardMetadata::new(prov, side))
+    }
+
+    /// Borrow this node's provenance annotation.
+    pub fn provenance(&self) -> &P { &self.metadata.provenance }
+
+    /// Return this node's side annotation.
+    pub fn side(&self) -> Option<volar_side::SideId> { self.metadata.side }
+
+    /// Fallibly map this node's provenance while preserving all other metadata.
+    pub fn map_prov<Q: Clone, E>(
+        self,
+        f: impl FnOnce(P) -> Result<Q, E>,
+    ) -> Result<Node<T, StandardMetadata<Q>>, E> {
+        self.map_metadata(|metadata| metadata.map_provenance(f))
+    }
+}
+
+/// Implemented by a tree-shaped `Kind` payload that itself embeds provenance
+/// in nested [`Node`]s.
 pub trait MapKind<P: Clone, Q: Clone> {
     /// The same `Kind` shape with every nested `P` replaced by `Q`.
     type Output;
@@ -972,13 +1219,99 @@ pub trait MapKind<P: Clone, Q: Clone> {
     fn map_kind(self, f: &impl Fn(P) -> Q) -> Self::Output;
 }
 
-impl<T, P: Clone> Node<T, P> {
-    /// Map provenance through a tree-shaped payload that itself embeds `P`,
-    /// recursing via `T::map_kind` and then mapping this node's own `prov`.
-    pub fn map_kind_prov<Q: Clone>(self, f: &impl Fn(P) -> Q) -> Node<T::Output, Q>
+impl<T, P: Clone> Node<T, StandardMetadata<P>> {
+    /// Map provenance through a tree-shaped payload that itself embeds
+    /// provenance in nested nodes, preserving all other metadata.
+    ///
+    /// This compatibility adapter preserves the historic tree-IR mapping
+    /// contract. New fallible transformations should use the container-level
+    /// [`Node::map_kind`] and [`Node::map_metadata`] APIs.
+    pub fn map_kind_prov<Q: Clone>(
+        self,
+        f: &impl Fn(P) -> Q,
+    ) -> Node<T::Output, StandardMetadata<Q>>
     where
         T: MapKind<P, Q>,
     {
-        Node { kind: self.kind.map_kind(f), prov: f(self.prov), side: self.side }
+        let metadata = self.metadata.map_provenance(|p| Ok::<_, core::convert::Infallible>(f(p)))
+            .expect("infallible tree provenance mapping");
+        let kind = self.kind.map_kind(f);
+        Node { kind, metadata }
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    extern crate std;
+
+    use alloc::borrow::ToOwned;
+    use super::*;
+    use volar_provenance::MergePair;
+
+    #[test]
+    fn derived_and_map_kind_preserve_complete_standard_metadata() {
+        let node = Node::new(3u32, "source", Some(volar_side::SideId(4)));
+        let derived = node.derived("derived");
+        assert_eq!(derived.kind, "derived");
+        assert_eq!(derived.provenance(), &"source");
+        assert_eq!(derived.side(), Some(volar_side::SideId(4)));
+
+        let mapped = node
+            .map_kind(|kind| Ok::<_, ()>(kind + 1))
+            .expect("infallible payload mapping");
+        assert_eq!(mapped.kind, 4);
+        assert_eq!(mapped.provenance(), &"source");
+        assert_eq!(mapped.side(), Some(volar_side::SideId(4)));
+    }
+
+    #[test]
+    fn map2_uses_dual_provenance_and_default_side_policy() {
+        let left = Node::new(2u32, "left", Some(volar_side::SideId(9)));
+        let right = Node::new(3u32, "right", Some(volar_side::SideId(9)));
+        let mapper = StandardMetadataMap2::new(MergePair(
+            |left: &&str| (*left).to_owned(),
+            |right: &&str| (*right).to_owned(),
+            |left: &&str, right: &&str| std::format!("{left}+{right}"),
+        ));
+
+        let mapped = left
+            .map2(right, |left, right| Ok::<_, ()>(left + right), &mapper)
+            .expect("infallible metadata mapping");
+        assert_eq!(mapped.kind, 5);
+        assert_eq!(mapped.provenance(), "left+right");
+        assert_eq!(mapped.side(), Some(volar_side::SideId(9)));
+    }
+
+    struct RejectSide;
+
+    impl MapSide2 for RejectSide {
+        type Error = u8;
+
+        fn map_side2(
+            &self,
+            _: Option<volar_side::SideId>,
+            _: Option<volar_side::SideId>,
+        ) -> Result<Option<volar_side::SideId>, Self::Error> {
+            Err(7)
+        }
+    }
+
+    #[test]
+    fn map2_distinguishes_payload_and_metadata_errors() {
+        let left = Node::new(1u32, (), None);
+        let right = Node::new(2u32, (), None);
+        let mapper = StandardMetadataMap2 {
+            provenance: MergePair(|_: &()| (), |_: &()| (), |_: &(), _: &()| ()),
+            side: RejectSide,
+        };
+
+        assert!(matches!(
+            left.clone().map2(right.clone(), |_, _| Err::<u32, _>(5u16), &mapper),
+            Err(Map2Error::Payload(5)),
+        ));
+        assert!(matches!(
+            left.map2(right, |a, b| Ok::<_, u16>(a + b), &mapper),
+            Err(Map2Error::Metadata(StandardMetadataMap2Error::Side(7))),
+        ));
     }
 }

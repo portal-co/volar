@@ -3,7 +3,7 @@
 // Boolar IR: boolean circuit IR (AND/XOR/NOT basis).
 // Pure data structure definitions; no cryptographic claims.
 use super::{ir::*, *};
-use volar_ir_common::{Node, PreInitSegment, StorageId};
+use volar_ir_common::{Node, PreInitSegment, StandardMetadata, StorageId};
 use volar_side::SideId;
 
 /// A complete Boolar circuit — a set of boolean-gate blocks.
@@ -46,7 +46,7 @@ impl<P: Clone> BIrBlocks<P> {
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct BIrBlock<P: Clone = ()> {
     pub params: u32,
-    pub stmts: Vec<Node<BIrStmt, P>>,
+    pub stmts: Vec<Node<BIrStmt, StandardMetadata<P>>>,
     pub terminator: BIrTerminator,
 }
 
@@ -66,7 +66,7 @@ impl<P: Clone> BIrBlock<P> {
     pub fn map_prov_with_handler<H: volar_provenance::ProvenanceHandler<P>>(self, handler: &H) -> BIrBlock<H::Output> {
         BIrBlock {
             params: self.params,
-            stmts: self.stmts.into_iter().map(|n| n.map_prov(|p| handler.map(&p))).collect(),
+            stmts: self.stmts.into_iter().map(|n| n.map_prov(|p| Ok::<_, core::convert::Infallible>(handler.map(&p))).expect("infallible provenance handler mapping")).collect(),
             terminator: self.terminator,
         }
     }

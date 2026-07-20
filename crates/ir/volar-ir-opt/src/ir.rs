@@ -184,7 +184,7 @@ fn dce_ir_block_once<P: Clone>(block: &mut IRBlock<P>) -> (bool, BTreeMap<u32, u
                 &mut |_, ty| Ok(ty),
                 &mut |_, s| Ok(s),
             ).unwrap();
-            new_stmts.push(Node { kind: new_kind, ..node });
+            new_stmts.push(node.map_kind(|_| Ok::<_, core::convert::Infallible>(new_kind)).expect("infallible DCE payload remap"));
         }
     }
     let new_term = block.terminator.clone().map(

@@ -100,7 +100,7 @@ impl<P: Clone> IRBlocks<P> {
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IRBlock<P: Clone = ()> {
     pub params: Vec<IRTypeId>,
-    pub stmts: Vec<volar_ir_common::Node<IRStmt, P>>,
+    pub stmts: Vec<volar_ir_common::Node<IRStmt, volar_ir_common::StandardMetadata<P>>>,
     pub terminator: IRTerminator,
 }
 
@@ -126,7 +126,7 @@ impl<P: Clone> IRBlock<P> {
     pub fn map_prov_with_handler<H: volar_provenance::ProvenanceHandler<P>>(self, handler: &H) -> IRBlock<H::Output> {
         IRBlock {
             params: self.params,
-            stmts: self.stmts.into_iter().map(|n| n.map_prov(|p| handler.map(&p))).collect(),
+            stmts: self.stmts.into_iter().map(|n| n.map_prov(|p| Ok::<_, core::convert::Infallible>(handler.map(&p))).expect("infallible provenance handler mapping")).collect(),
             terminator: self.terminator,
         }
     }

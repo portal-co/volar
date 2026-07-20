@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 rkyv = { workspace = true, optional = true }
+volar-provenance.workspace = true
 volar-side.workspace = true
 
 [features]

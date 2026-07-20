@@ -100,7 +100,7 @@ pub fn lower_to_circuit<P: Clone>(blocks: &BIrBlocks<P>, limit: u32, mode: Lower
 
     // Provenance for infrastructure gates (MUX cascade, loop control constants).
     // Use the first source statement's provenance; degenerate empty blocks panic.
-    let ctrl_prov: &P = block0.stmts.first().map(|n| &n.prov)
+    let ctrl_prov: &P = block0.stmts.first().map(|n| n.provenance())
         .expect("lower_to_circuit: block has no statements; cannot infer provenance for infrastructure gates");
 
     // Emitter owns the accumulating stmt list and var-ID counter.
@@ -123,7 +123,7 @@ pub fn lower_to_circuit<P: Clone>(blocks: &BIrBlocks<P>, limit: u32, mode: Lower
 
         // Re-emit all block stmts with fresh circuit var IDs, carrying provenance.
         for (i, stmt) in block0.stmts.iter().enumerate() {
-            let prov = stmt.prov.clone();
+            let prov = stmt.provenance().clone();
             let out_id = emitter.emit(subst_stmt(&stmt.kind, &var_map), prov);
             // Map original stmt result (p + i) → fresh circuit var.
             var_map.insert(p as u32 + i as u32, out_id);
@@ -432,7 +432,7 @@ fn subst_stmt(stmt: &BIrStmt, var_map: &BTreeMap<u32, u32>) -> BIrStmt {
 /// The invariant `next_id == params + stmts.len()` must hold at all times;
 /// call [`emit`](Emitter::emit) once per stmt to maintain it.
 struct Emitter<P: Clone = ()> {
-    stmts: Vec<volar_ir_common::Node<BIrStmt, P>>,
+    stmts: Vec<volar_ir_common::Node<BIrStmt, volar_ir_common::StandardMetadata<P>>>,
     next_id: u32,
 }
 
@@ -475,7 +475,7 @@ impl<P: Clone> Emitter<P> {
 /// staged via [`set_prov`](Self::set_prov) before each call — the same
 /// pattern `movfuscate::IrCtx` uses internally.
 struct IrEmitter<P: Clone> {
-    stmts: Vec<volar_ir_common::Node<IRStmt, P>>,
+    stmts: Vec<volar_ir_common::Node<IRStmt, volar_ir_common::StandardMetadata<P>>>,
     next_id: u32,
     bit_type_id: IRTypeId,
     prov: P,
@@ -763,7 +763,7 @@ pub fn lower_to_circuit_ir<P: Clone>(
     let block0 = &blocks.blocks[0];
     let p = block0.params.len();
 
-    let ctrl_prov: P = block0.stmts.first().map(|n| n.prov.clone())
+    let ctrl_prov: P = block0.stmts.first().map(|n| n.provenance().clone())
         .expect("lower_to_circuit_ir: block has no statements; cannot infer provenance for infrastructure gates");
 
     // Each original var's result type, computed once: params first, then one
@@ -784,7 +784,7 @@ pub fn lower_to_circuit_ir<P: Clone>(
         let mut var_map: Vec<u32> = current_state.clone();
 
         for stmt in &block0.stmts {
-            emitter.set_prov(stmt.prov.clone());
+            emitter.set_prov(stmt.provenance().clone());
             let mapped = subst_ir(&stmt.kind, &var_map);
             let out_id = emitter.push(mapped);
             var_map.push(out_id);

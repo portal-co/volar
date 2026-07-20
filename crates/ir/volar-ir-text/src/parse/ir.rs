@@ -356,7 +356,7 @@ fn parse_ir_block(lex: &mut Lexer) -> Result<IRBlock<()>, ParseError> {
     }
     let param_ids: Vec<TypeId> = read_type_id_list(lex)?;
 
-    let mut stmts: Vec<volar_ir_common::Node<Stmt<IRVarId>, ()>> = Vec::new();
+    let mut stmts: Vec<volar_ir_common::Node<Stmt<IRVarId>, volar_ir_common::StandardMetadata<()>>> = Vec::new();
     let mut terminator: Option<IRTerminator> = None;
 
     loop {
@@ -604,7 +604,7 @@ fn parse_bir_block(lex: &mut Lexer) -> Result<BIrBlock<()>, ParseError> {
     if kw != "params" { return Err(ParseError::MissingField("params".into())); }
     let param_count = lex.read_u32()?;
 
-    let mut stmts: Vec<volar_ir_common::Node<BIrStmt, ()>> = Vec::new();
+    let mut stmts: Vec<volar_ir_common::Node<BIrStmt, volar_ir_common::StandardMetadata<()>>> = Vec::new();
     let mut terminator: Option<BIrTerminator> = None;
 
     loop {

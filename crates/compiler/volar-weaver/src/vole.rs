@@ -311,8 +311,8 @@ fn qsim_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredicate>) {
 
 /// `Array::<T, N>::from_fn(|{idx}| {body})`
 fn array_t_from_fn<P: Clone>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
-    let prov = body.prov.clone();
-    let side = body.side;
+    let prov = body.provenance().clone();
+    let side = body.side();
     IrExpr::new(
         IrExprKind::Call {
             func: Box::new(IrExpr::new(
@@ -349,8 +349,8 @@ fn array_t_from_fn<P: Clone>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
 /// VOLE-repetition dimension `N` — [`array_t_from_fn`] above). This is what
 /// [`VoleIrCtx::emit_poly_wide`] uses for its own bit-width dimension `W`.
 fn fixed_array_from_fn<P: Clone>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
-    let prov = body.prov.clone();
-    let side = body.side;
+    let prov = body.provenance().clone();
+    let side = body.side();
     IrExpr::new(
         IrExprKind::Call {
             func: Box::new(IrExpr::new(
@@ -427,8 +427,8 @@ fn delta_index<P: Clone + Default>(idx: &str) -> IrExpr<P> {
 
 /// `Q { q: {body} }`
 fn q_struct<P: Clone>(body: IrExpr<P>) -> IrExpr<P> {
-    let prov = body.prov.clone();
-    let side = body.side;
+    let prov = body.provenance().clone();
+    let side = body.side();
     IrExpr::new(
         IrExprKind::StructExpr {
             kind: StructKind::Custom("Q".into()),
@@ -1201,7 +1201,7 @@ where
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
     let ctrl_prov: H::Output = block.stmts.first()
-        .map(|n| handler.map(&n.prov))
+        .map(|n| handler.map(&n.provenance()))
         .expect("weave_vole_prover_inner: circuit has no statements; cannot derive provenance for infrastructure statements");
 
     // Pre-scan for external primitives (oracle calls, action calls, RNG sources).
@@ -1637,7 +1637,7 @@ where
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
     let ctrl_prov: H::Output = block.stmts.first()
-        .map(|n| handler.map(&n.prov))
+        .map(|n| handler.map(&n.provenance()))
         .expect("weave_vole_verifier_inner: circuit has no statements; cannot derive provenance for infrastructure statements");
 
     let (and_count, sbox_count) = expanded.iter().fold((0usize, 0usize), |(k1, k2), (_, s, prov)| {
@@ -2449,7 +2449,7 @@ fn count_ir_ands_no_storage(block: &CirBlock, types: &CirTypes) -> usize {
 /// Milestone 1.5 Step B: sizing one split (per-`MovfuscBlockBoundary`)
 /// function's own `q_and`/`hat`/`r_and` params, bounded by that block's own
 /// AND-gate count instead of the whole circuit's.
-fn count_ir_ands_no_storage_range(stmts: &[volar_ir_common::Node<IRStmt, ()>], types: &CirTypes) -> usize {
+fn count_ir_ands_no_storage_range(stmts: &[volar_ir_common::Node<IRStmt, volar_ir_common::StandardMetadata<()>>], types: &CirTypes) -> usize {
     let mut count = 0;
     for stmt in stmts {
         if let Stmt::Poly { ty, coeffs, .. } = &stmt.kind {
@@ -2476,7 +2476,7 @@ fn count_storage_reads(block: &CirBlock, types: &CirTypes) -> usize {
 /// As [`count_storage_reads`], but over an arbitrary stmt slice (Milestone
 /// 1.5 Step B per-block sizing, same rationale as
 /// [`count_ir_ands_no_storage_range`]).
-fn count_storage_reads_range(stmts: &[volar_ir_common::Node<IRStmt, ()>], types: &CirTypes) -> usize {
+fn count_storage_reads_range(stmts: &[volar_ir_common::Node<IRStmt, volar_ir_common::StandardMetadata<()>>], types: &CirTypes) -> usize {
     stmts.iter().filter_map(|s| match &s.kind {
         Stmt::StorageRead { ty, .. } => Some(cir_type_width(ty, types)),
         _ => None,
@@ -2511,7 +2511,7 @@ fn count_external_primitives(block: &CirBlock, types: &CirTypes) -> ExternalBitC
 /// As [`count_external_primitives`], but over an arbitrary stmt slice
 /// (Milestone 1.5 Step B per-block sizing, same rationale as
 /// [`count_ir_ands_no_storage_range`]).
-fn count_external_primitives_range(stmts: &[volar_ir_common::Node<IRStmt, ()>], types: &CirTypes) -> ExternalBitCounts {
+fn count_external_primitives_range(stmts: &[volar_ir_common::Node<IRStmt, volar_ir_common::StandardMetadata<()>>], types: &CirTypes) -> ExternalBitCounts {
     let mut oracle_calls = Vec::new();
     let mut action_calls = Vec::new();
     let mut rng_widths = Vec::new();

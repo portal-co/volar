@@ -144,7 +144,7 @@ fn apply_one(module: &mut Module, sub: &VaffleSubstitution) -> usize {
             },
             FuncDecl::Body(body) => {
                 let new_sig = sig_map[body.sig.0];
-                let new_values: Vec<Node<Value, ()>> = body.values.iter().map(|v| {
+                let new_values: Vec<Node<Value, volar_ir_common::StandardMetadata<()>>> = body.values.iter().map(|v| {
                     remap_value(v, &tr, &sig_map, &func_map)
                 }).collect();
                 let new_blocks: Vec<vaffle::Block> = body.blocks.iter().map(|b| {
@@ -247,7 +247,7 @@ fn apply_one_r<R: Clone>(
             },
             FuncDecl::Body(body) => {
                 let new_sig = sig_map[body.sig.0];
-                let new_values: Vec<Node<Value, R>> = body.values.iter().map(|v| {
+                let new_values: Vec<Node<Value, volar_ir_common::StandardMetadata<R>>> = body.values.iter().map(|v| {
                     remap_value(v, &tr, &sig_map, &func_map)
                 }).collect();
                 let new_blocks: Vec<Block> = body.blocks.into_iter().map(|b| Block {
@@ -364,7 +364,7 @@ fn map_funcdecl_prov<P: Clone, R: Clone>(fd: FuncDecl<P>, f: &impl Fn(&P) -> R) 
             // every value's provenance lives on the `FuncBody::values` arena
             // entry that each `ValueId` in `stmts` points to.
             blocks: body.blocks,
-            values: body.values.into_iter().map(|v| v.map_prov(|p| f(&p))).collect(),
+            values: body.values.into_iter().map(|v| v.map_prov(|p| Ok::<_, core::convert::Infallible>(f(&p))).expect("infallible provenance mapping")).collect(),
             entry: body.entry,
         }),
         _ => panic!("map_funcdecl_prov: unhandled FuncDecl variant"),
@@ -382,7 +382,7 @@ fn clone_map_funcdecl_prov<Q: Clone, R: Clone>(fd: &FuncDecl<Q>, f: &impl Fn(&Q)
             sig: body.sig,
             blocks: body.blocks.clone(),
             values: body.values.iter()
-                .map(|v| Node::new(v.kind.clone(), f(&v.prov), v.side))
+                .map(|v| Node::new(v.kind.clone(), f(v.provenance()), v.side()))
                 .collect(),
             entry: body.entry,
         }),
@@ -479,11 +479,11 @@ fn rewrite_body(
 /// host, preserving its source [`Node`]'s provenance and side unchanged —
 /// only the type-bearing fields of `kind` are remapped through `tr`.
 fn remap_value<P: Clone>(
-    v: &Node<Value, P>,
+    v: &Node<Value, volar_ir_common::StandardMetadata<P>>,
     tr: &TypeRemapper,
     _sig_map: &[vaffle::SigId],
     func_map: &[FuncId],
-) -> Node<Value, P> {
+) -> Node<Value, volar_ir_common::StandardMetadata<P>> {
     let kind = match &v.kind {
         Value::Param { block, ty, idx } => Value::Param {
             block: *block,
@@ -517,7 +517,7 @@ fn remap_value<P: Clone>(
         },
         _ => panic!("remap_value: unhandled Value variant — add remapping for this variant"),
     };
-    Node::new(kind, v.prov.clone(), v.side)
+    Node::new(kind, v.provenance().clone(), v.side())
 }
 
 /// Build a [`StorageAllocator`] seeded above all `StorageId`s in use in `module`.

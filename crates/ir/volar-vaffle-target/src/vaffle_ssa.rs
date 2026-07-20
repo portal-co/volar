@@ -104,7 +104,7 @@ fn compute_sp_step<P: Clone>(module: &Module<P>) -> u128 {
 /// carry adder every other VAFFLE-emitting path in this crate uses,
 /// instead of hand-rolling bit arithmetic.
 struct VecBuilder<'a, P: Clone> {
-    values: &'a mut Vec<Node<Value, P>>,
+    values: &'a mut Vec<Node<Value, volar_ir_common::StandardMetadata<P>>>,
     prov: P,
     side: Option<volar_side::SideId>,
     bit_tid: TypeId,
@@ -188,7 +188,7 @@ pub fn ssa_ify_function<P: Clone>(
     is_entry: bool,
 ) -> FuncBody<P> {
     let mut blocks: Vec<Block> = body.blocks.clone();
-    let mut values: Vec<Node<Value, P>> = body.values.clone();
+    let mut values: Vec<Node<Value, volar_ir_common::StandardMetadata<P>>> = body.values.clone();
     let entry = body.entry.0;
 
     let preds = build_preds(&blocks);
@@ -250,8 +250,8 @@ pub fn ssa_ify_function<P: Clone>(
         let vid = ValueId(v);
         let owner_bi = owner[&v];
         let ty = vaffle_value_vtid(module, &values, vid);
-        let prov = values[v].prov.clone();
-        let side = values[v].side;
+        let prov = values[v].provenance().clone();
+        let side = values[v].side();
         let sp_bits = sp_bits_for[&owner_bi].clone();
         let (mut new_stmts, addr_vid) = emit_spill_address(&mut values, prov.clone(), side, bit_tid, addr_tid, &sp_bits, v);
         new_stmts.push(values.len() as u32);
@@ -280,8 +280,8 @@ pub fn ssa_ify_function<P: Clone>(
         for &v in uses {
             let vid = ValueId(v);
             let ty = vaffle_value_vtid(module, &values, vid);
-            let prov = values[v].prov.clone();
-            let side = values[v].side;
+            let prov = values[v].provenance().clone();
+            let side = values[v].side();
             let (new_stmts, addr_vid) = emit_spill_address(&mut values, prov.clone(), side, bit_tid, addr_tid, &sp_bits, v);
             let reload_vid = values.len();
             values.push(Node::new(
@@ -323,7 +323,7 @@ pub fn ssa_ify_function<P: Clone>(
 /// ids created (in emission order, ending with the sum's own top-level
 /// `Merge` id) and that `Merge`'s own `ValueId.0` (the address to use).
 fn emit_spill_address<P: Clone>(
-    values: &mut Vec<Node<Value, P>>,
+    values: &mut Vec<Node<Value, volar_ir_common::StandardMetadata<P>>>,
     prov: P,
     side: Option<volar_side::SideId>,
     bit_tid: TypeId,
@@ -356,7 +356,7 @@ fn emit_spill_address<P: Clone>(
 /// [`wire_call_sites`]).
 fn thread_sp<P: Clone>(
     blocks: &mut [Block],
-    values: &mut Vec<Node<Value, P>>,
+    values: &mut Vec<Node<Value, volar_ir_common::StandardMetadata<P>>>,
     rpo: &[usize],
     preds: &[BTreeSet<usize>],
     entry: usize,
@@ -368,8 +368,8 @@ fn thread_sp<P: Clone>(
     for &bi in rpo {
         let bits: Vec<ValueId> = if bi == entry {
             if is_entry_function {
-                let prov = values[0].prov.clone();
-                let side = values[0].side;
+                let prov = values[0].provenance().clone();
+                let side = values[0].side();
                 let mut builder = VecBuilder { values, prov, side, bit_tid };
                 (0..SPILL_ADDR_BITS).map(|_| builder.bc_const(false)).collect()
             } else {
@@ -413,7 +413,7 @@ fn thread_sp<P: Clone>(
                 else_target.args.extend(sp.iter().copied());
             }
             Terminator::Table { targets, .. } => {
-                for t in targets.values_mut() {
+                for t in targets {
                     t.args.extend(sp.iter().copied());
                 }
             }
@@ -433,7 +433,7 @@ fn thread_sp<P: Clone>(
 /// since nothing inside the module is expected to call it.
 fn wire_call_sites<P: Clone>(
     blocks: &mut [Block],
-    values: &mut Vec<Node<Value, P>>,
+    values: &mut Vec<Node<Value, volar_ir_common::StandardMetadata<P>>>,
     sp_bits_for: &BTreeMap<usize, Vec<ValueId>>,
     sp_step: u128,
     bit_tid: TypeId,
@@ -449,8 +449,8 @@ fn wire_call_sites<P: Clone>(
                 }
                 continue;
             }
-            let prov = values[svid.0].prov.clone();
-            let side = values[svid.0].side;
+            let prov = values[svid.0].provenance().clone();
+            let side = values[svid.0].side();
             let callee_sp = advance_sp(values, prov, side, bit_tid, &sp, sp_step);
             if let Value::Call { args, .. } = &mut values[svid.0].kind {
                 args.extend(callee_sp);
@@ -458,8 +458,8 @@ fn wire_call_sites<P: Clone>(
         }
         if let Terminator::ReturnCall { func, args } = &mut blocks[bi].terminator {
             assert_ne!(func.0, 0, "vaffle_ssa: a tail-call site targets the module's own entry function (FuncId(0)) -- unsupported");
-            let prov = values[0].prov.clone();
-            let side = values[0].side;
+            let prov = values[0].provenance().clone();
+            let side = values[0].side();
             let callee_sp = advance_sp(values, prov, side, bit_tid, &sp, sp_step);
             args.extend(callee_sp);
         }
@@ -467,7 +467,7 @@ fn wire_call_sites<P: Clone>(
 }
 
 fn advance_sp<P: Clone>(
-    values: &mut Vec<Node<Value, P>>,
+    values: &mut Vec<Node<Value, volar_ir_common::StandardMetadata<P>>>,
     prov: P,
     side: Option<volar_side::SideId>,
     bit_tid: TypeId,
@@ -489,7 +489,7 @@ fn block_successors(term: &Terminator) -> Vec<usize> {
             alloc::vec![then_target.block.0, else_target.block.0]
         }
         Terminator::Table { targets, default_target, .. } => {
-            let mut v: Vec<usize> = targets.values().map(|t| t.block.0).collect();
+            let mut v: Vec<usize> = targets.iter().map(|t| t.block.0).collect();
             v.push(default_target.block.0);
             v
         }
@@ -630,7 +630,7 @@ mod tests {
         }
     }
 
-    fn node(v: Value) -> Node<Value, ()> {
+    fn node(v: Value) -> Node<Value, volar_ir_common::StandardMetadata<()>> {
         Node::new(v, (), None)
     }
 
@@ -644,10 +644,10 @@ mod tests {
         (bit_tid, addr_tid, 1u128 << 20)
     }
 
-    fn is_storage_write(values: &[Node<Value, ()>], vid: ValueId) -> bool {
+    fn is_storage_write(values: &[Node<Value, volar_ir_common::StandardMetadata<()>>], vid: ValueId) -> bool {
         matches!(&values[vid.0].kind, Value::Op(CommonStmt::StorageWrite { storage, .. }) if *storage == StorageId::VAFFLE_SSA_SPILL)
     }
-    fn is_storage_read(values: &[Node<Value, ()>], vid: ValueId) -> bool {
+    fn is_storage_read(values: &[Node<Value, volar_ir_common::StandardMetadata<()>>], vid: ValueId) -> bool {
         matches!(&values[vid.0].kind, Value::Op(CommonStmt::StorageRead { storage, .. }) if *storage == StorageId::VAFFLE_SSA_SPILL)
     }
 

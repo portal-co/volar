@@ -133,8 +133,8 @@ fn generic_params() -> Vec<IrGenericParam> {
 
 /// `Garble { base: {base_expr} }`
 fn garble_struct<P: Clone>(base_expr: IrExpr<P>) -> IrExpr<P> {
-    let prov = base_expr.prov.clone();
-    let side = base_expr.side;
+    let prov = base_expr.provenance().clone();
+    let side = base_expr.side();
     IrExpr::new(
         IrExprKind::StructExpr {
             kind: StructKind::Custom("Garble".into()),

@@ -78,7 +78,7 @@ pub fn virtualize_bir<P: Clone + Default>(
     // Derive ctrl_prov from the first statement in any input block.
     let ctrl_prov: P = blocks.blocks.iter()
         .flat_map(|b| b.stmts.iter())
-        .map(|n| &n.prov)
+        .map(|n| n.provenance())
         .next()
         .cloned()
         .unwrap_or_default();
@@ -648,7 +648,7 @@ fn deduplicate_bir_oracle_calls_in_block<P: Clone>(
     let mut var_remap: BTreeMap<IRVarId, IRVarId> = BTreeMap::new();
     // (name, remapped-args) → first-call new var
     let mut seen: BTreeMap<(alloc::string::String, Vec<IRVarId>), IRVarId> = BTreeMap::new();
-    let mut new_stmts: Vec<volar_ir_common::Node<BIrStmt, P>> = Vec::with_capacity(block.stmts.len());
+    let mut new_stmts: Vec<volar_ir_common::Node<BIrStmt, volar_ir_common::StandardMetadata<P>>> = Vec::with_capacity(block.stmts.len());
 
     let rv = |v: IRVarId, map: &BTreeMap<IRVarId, IRVarId>| -> IRVarId {
         map.get(&v).copied().unwrap_or(v)
@@ -667,19 +667,17 @@ fn deduplicate_bir_oracle_calls_in_block<P: Clone>(
                     let new_var = IRVarId((n_params + new_stmts.len()) as u32);
                     seen.insert(key, new_var);
                     var_remap.insert(old_var, new_var);
-                    new_stmts.push(volar_ir_common::Node::new(BIrStmt::OracleCall {
+                    new_stmts.push(node.derived(BIrStmt::OracleCall {
                         name: name.clone(),
                         args: remapped_args,
                         num_bits: *num_bits,
-                    }, node.prov.clone(), node.side));
+                    }));
                 }
             }
             other => {
                 let new_var = IRVarId((n_params + new_stmts.len()) as u32);
                 var_remap.insert(old_var, new_var);
-                new_stmts.push(volar_ir_common::Node::new(
-                    remap_bir_stmt(other, &var_remap), node.prov.clone(), node.side,
-                ));
+                new_stmts.push(node.derived(remap_bir_stmt(other, &var_remap)));
             }
         }
     }

@@ -580,8 +580,8 @@ fn rewrite_block<P: Clone>(
 
     for (stmt_idx, node) in block.stmts.iter().enumerate() {
         let stmt = &node.kind;
-        let prov = &node.prov;
-        let side = node.side;
+        let prov = node.provenance();
+        let side = node.side();
         let old_var = num_params + stmt_idx as u32;
 
         match stmt {

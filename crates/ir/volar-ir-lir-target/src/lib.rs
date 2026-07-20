@@ -97,7 +97,7 @@ pub struct VolarBlock(pub usize);
 
 struct BlockBuilder<P: Clone = ()> {
     params: Vec<IRTypeId>,
-    stmts: Vec<volar_ir_common::Node<IRStmt, P>>,
+    stmts: Vec<volar_ir_common::Node<IRStmt, volar_ir_common::StandardMetadata<P>>>,
     terminator: Option<IRTerminator>,
 }
 

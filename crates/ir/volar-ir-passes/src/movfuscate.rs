@@ -704,7 +704,7 @@ fn subst_biir(stmt: &BIrStmt, var_map: &[u32]) -> BIrStmt {
 }
 
 struct BIrCtx<P: Clone = ()> {
-    stmts: Vec<volar_ir_common::Node<BIrStmt, P>>,
+    stmts: Vec<volar_ir_common::Node<BIrStmt, volar_ir_common::StandardMetadata<P>>>,
     next_id: u32,
     ctrl_prov: P,
 }
@@ -868,7 +868,7 @@ impl<P: Clone> MovfuscCtx for BIrCtx<P> {
         let mut var_map: Vec<u32> = Vec::with_capacity(p + block.stmts.len());
         var_map.extend_from_slice(&state_vars[..p]);
         for stmt in block.stmts.iter() {
-            let prov = stmt.prov.clone();
+            let prov = stmt.provenance().clone();
             let mapped = subst_biir(&stmt.kind, &var_map);
             let id = self.push(mapped, prov);
             var_map.push(id);
@@ -1126,7 +1126,7 @@ enum SlotAllocation {
 }
 
 struct IrCtx<P: Clone = ()> {
-    stmts: Vec<volar_ir_common::Node<IRStmt, P>>,
+    stmts: Vec<volar_ir_common::Node<IRStmt, volar_ir_common::StandardMetadata<P>>>,
     /// Provenance to attach to the next emitted stmt (cloned on `push_typed`).
     /// Set by `emit_block_stmts` before each source stmt; synthetic stmts inherit
     /// the last set provenance (no reset to default).
@@ -1635,7 +1635,7 @@ impl<P: Clone> MovfuscCtx for IrCtx<P> {
         // Emit stmts with substitution, handling Block-typed Const specially.
         for (stmt_idx, stmt) in block.stmts.iter().enumerate() {
             // Stage this stmt's source provenance; `push_typed` will clone it.
-            self.pending_prov = stmt.prov.clone();
+            self.pending_prov = stmt.provenance().clone();
             let mapped = subst_ir(&stmt.kind, &var_map);
             let orig_var_id = (p + stmt_idx) as u32;
 
@@ -2362,7 +2362,7 @@ pub fn movfuscate_biir<P: Clone>(blocks: &BIrBlocks<P>) -> BIrBlocks<P> {
     let pc_width = pc_bits_needed(n);
     let state_width = blocks.blocks.iter().map(|b| b.params as usize).max().unwrap_or(0);
     let combined_params = pc_width + state_width;
-    let ctrl_prov = blocks.blocks.iter().flat_map(|b| b.stmts.iter()).map(|n| &n.prov).next()
+    let ctrl_prov = blocks.blocks.iter().flat_map(|b| b.stmts.iter()).map(|n| n.provenance()).next()
         .cloned()
         .expect("movfuscate_biir: circuit has no statements; cannot derive provenance for infrastructure gates");
     let ctx = BIrCtx::<P>::new(combined_params as u32, ctrl_prov);
@@ -2492,7 +2492,7 @@ fn movfuscate_ir_impl<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes, watch
         .collect();
 
     let combined_params = pc_width + state_slot_types.len();
-    let ctrl_prov = blocks.blocks.iter().flat_map(|b| b.stmts.iter()).map(|n| &n.prov).next()
+    let ctrl_prov = blocks.blocks.iter().flat_map(|b| b.stmts.iter()).map(|n| n.provenance()).next()
         .cloned()
         .expect("movfuscate_ir: circuit has no statements; cannot derive provenance for infrastructure gates");
     let ctx = IrCtx::<P>::new(

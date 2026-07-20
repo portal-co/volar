@@ -113,7 +113,7 @@ use volar_ir::ir::{
 };
 use volar_ir_common::{Constant, IrType as CommonIrType, Type};
 
-fn node<T>(kind: T) -> volar_ir_common::Node<T, ()> { volar_ir_common::Node::new(kind, (), None) }
+fn node<T>(kind: T) -> volar_ir_common::Node<T, volar_ir_common::StandardMetadata<()>> { volar_ir_common::Node::new(kind, (), None) }
 
 /// 1-bit identity: return the input.
 pub fn make_biir_identity() -> BIrBlocks {

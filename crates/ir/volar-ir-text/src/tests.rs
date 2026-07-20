@@ -27,7 +27,7 @@ fn v(n: u32) -> IRVarId { IRVarId(n) }
 fn storage(n: u32) -> StorageId { StorageId(n) }
 fn c(hi: u128, lo: u128) -> Constant { Constant { hi, lo } }
 fn block_id(n: u32) -> IRBlockId { IRBlockId(n) }
-fn node<T>(kind: T) -> volar_ir_common::Node<T, ()> { volar_ir_common::Node::new(kind, (), None) }
+fn node<T>(kind: T) -> volar_ir_common::Node<T, volar_ir_common::StandardMetadata<()>> { volar_ir_common::Node::new(kind, (), None) }
 
 fn simple_ir_module() -> SavedIrBlocks {
     // Type table: 0=bit, 1=u8, 2=vec(4,u8)

@@ -589,7 +589,7 @@ pub fn interpret_biir_diamond(
     let b3_ret_args: Vec<IRVarId> = (0..total_b3).map(IRVarId).collect();
     let b3_term = BIrTerminator::Jmp(BIrTarget { block: IRBlockTargetId::Return, args: b3_ret_args });
 
-    let wrap = |stmts: Vec<BIrStmt>| -> Vec<Node<BIrStmt, ()>> {
+    let wrap = |stmts: Vec<BIrStmt>| -> Vec<Node<BIrStmt, volar_ir_common::StandardMetadata<()>>> {
         stmts.into_iter().map(|s| Node::new(s, (), None)).collect()
     };
 

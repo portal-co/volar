@@ -662,7 +662,7 @@ pub fn interpret_ir_diamond(
     let b3_ret_args: Vec<IRVarId> = (0..total_b3_vars as u32).map(IRVarId).collect();
     let b3_term = IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, b3_ret_args,) };
 
-    let wrap = |stmts: Vec<IRStmt>| -> Vec<Node<IRStmt, ()>> {
+    let wrap = |stmts: Vec<IRStmt>| -> Vec<Node<IRStmt, volar_ir_common::StandardMetadata<()>>> {
         stmts.into_iter().map(|s| Node::new(s, (), None)).collect()
     };
 

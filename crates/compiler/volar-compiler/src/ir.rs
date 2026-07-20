@@ -1282,7 +1282,7 @@ pub enum IrStmtKind<P: Clone = ()> {
 
 /// A statement, with its own provenance and [side](volar_side::SideId)
 /// annotation carried via the [`Node`] wrapper — see `volar-side`.
-pub type IrStmt<P: Clone = ()> = Node<IrStmtKind<P>, P>;
+pub type IrStmt<P = ()> = Node<IrStmtKind<P>, volar_ir_common::StandardMetadata<P>>;
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
@@ -1711,7 +1711,7 @@ pub enum IrExprKind<P: Clone = ()> {
 /// An expression, with its own provenance and [side](volar_side::SideId)
 /// annotation carried via the [`Node`] wrapper — see `volar-side`. Every
 /// subexpression (not just every statement) carries its own annotation.
-pub type IrExpr<P: Clone = ()> = Node<IrExprKind<P>, P>;
+pub type IrExpr<P = ()> = Node<IrExprKind<P>, volar_ir_common::StandardMetadata<P>>;
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]

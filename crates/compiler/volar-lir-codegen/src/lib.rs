@@ -709,8 +709,8 @@ fn lower_block<T: LirTarget<P>, P: Clone>(
     ctx: &mut LowerCtx<T, P>,
 ) -> Vec<T::Value> {
     for stmt in &block.stmts {
-        ctx.target.set_prov(stmt.prov.clone());
-        ctx.target.set_side(stmt.side);
+        ctx.target.set_prov(stmt.provenance().clone());
+        ctx.target.set_side(stmt.side());
         lower_stmt(stmt, ctx);
     }
     block

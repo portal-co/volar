@@ -303,7 +303,7 @@ pub fn weave_noop_ir(
 /// `handler` instead of erasing it to `()`.
 ///
 /// Each emitted `let w_N = ...;` statement's provenance is
-/// `handler.map(&block.stmts[i].prov)`, the provenance of the source `IRStmt`
+/// `handler.map(&block.stmts[i].provenance())`, the provenance of the source `IRStmt`
 /// it was lowered from.
 ///
 /// # Panics
@@ -358,7 +358,7 @@ where
                 ty: None,
                 init: Some(init_expr),
             },
-            handler.map(&node.prov),
+            handler.map(&node.provenance()),
         ));
         var_names.insert(result_id.0, let_name);
     }
@@ -411,7 +411,7 @@ where
     };
     if let Some(ls) = linkage {
         let lib_prov: H::Output = block.stmts.first()
-            .map(|n| handler.map(&n.prov))
+            .map(|n| handler.map(&n.provenance()))
             .expect("weave_noop_ir_with_handler: circuit has no statements; cannot derive provenance for linked specs");
         ls.apply_converting(&mut module, || lib_prov.clone());
     }
@@ -687,7 +687,7 @@ mod tests {
         let circuit = IRBlocks::new(alloc::vec![block]);
         let module = weave_noop_ir_with_handler(&circuit, &types, "and_ir_prov", None, &KeepProvenance).into_inner();
         assert_eq!(module.functions.len(), 1);
-        let provs: Vec<u32> = module.functions[0].body.stmts.iter().map(|s| s.prov).collect();
+        let provs: Vec<u32> = module.functions[0].body.stmts.iter().map(|s| s.provenance()).collect();
         assert_eq!(provs, alloc::vec![9u32]);
     }
 }

@@ -274,7 +274,7 @@ fn virtualize_ir_impl<P: Clone + Default, H: IrHashAlgorithm>(
     // Derive ctrl_prov from the first statement of any input block.
     let ctrl_prov: P = blocks.blocks.iter()
         .flat_map(|b| b.stmts.iter())
-        .map(|n| &n.prov)
+        .map(|n| n.provenance())
         .next()
         .cloned()
         .unwrap_or_default();
@@ -1837,7 +1837,7 @@ fn deduplicate_oracle_calls_in_block<P: Clone>(block: &IRBlock<P>) -> IRBlock<P>
     let mut var_remap: Vec<IRVarId> = (0..total as u32).map(IRVarId).collect();
     // (name, remapped-args) → first-call new var
     let mut seen: BTreeMap<(alloc::string::String, Vec<IRVarId>), IRVarId> = BTreeMap::new();
-    let mut new_stmts: Vec<volar_ir_common::Node<IRStmt, P>> = Vec::with_capacity(block.stmts.len());
+    let mut new_stmts: Vec<volar_ir_common::Node<IRStmt, volar_ir_common::StandardMetadata<P>>> = Vec::with_capacity(block.stmts.len());
 
     for (stmt_idx, node) in block.stmts.iter().enumerate() {
         let old_var = IRVarId((n_params + stmt_idx) as u32);
@@ -1852,20 +1852,18 @@ fn deduplicate_oracle_calls_in_block<P: Clone>(block: &IRBlock<P>) -> IRBlock<P>
                     let new_var = IRVarId((n_params + new_stmts.len()) as u32);
                     seen.insert(key, new_var);
                     var_remap[old_var.0 as usize] = new_var;
-                    new_stmts.push(volar_ir_common::Node::new(Stmt::OracleCall {
+                    new_stmts.push(node.derived(Stmt::OracleCall {
                         name: name.clone(),
                         args: remapped_args,
                         output_tys: output_tys.clone(),
                         result_ty: *result_ty,
-                    }, node.prov.clone(), node.side));
+                    }));
                 }
             }
             other => {
                 let new_var = IRVarId((n_params + new_stmts.len()) as u32);
                 var_remap[old_var.0 as usize] = new_var;
-                new_stmts.push(volar_ir_common::Node::new(
-                    remap_stmt(other, &var_remap), node.prov.clone(), node.side,
-                ));
+                new_stmts.push(node.derived(remap_stmt(other, &var_remap)));
             }
         }
     }

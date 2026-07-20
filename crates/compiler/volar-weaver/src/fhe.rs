@@ -87,7 +87,7 @@ fn ir_stmt<Q: Clone + Default>(kind: IrStmtKind<Q>) -> IrStmt<Q> {
 /// no side annotation — used throughout the scheme-generic (`Q: Clone`) gate-
 /// emission helpers in this file, where the surrounding code already threads
 /// a `ctrl_prov: &Q` (or similar) value through parallel `stmt_provs: Vec<Q>`
-/// pushes. Using that same value keeps each `Node`'s own `.prov` consistent
+/// pushes. Using that same value keeps each `Node`'s own `.provenance()` consistent
 /// with what's pushed onto `stmt_provs`.
 fn ir_expr_p<Q: Clone>(kind: IrExprKind<Q>, prov: Q) -> IrExpr<Q> {
     IrExpr::new(kind, prov, None)
@@ -1432,7 +1432,7 @@ where
     for (stmt_index, node) in block.stmts.iter().enumerate() {
         let root = IRVarId(block.params.len() as u32 + stmt_index as u32);
         let root_name = format!("var_{}", root.0);
-        let provenance = handler.map(&node.prov);
+        let provenance = handler.map(&node.provenance());
         let output_ty = ir_stmt_output_ty(&node.kind)
             .ok_or(TfheLutIrError::UnsupportedStatement { index: stmt_index })?;
         if !is_ir_bit(output_ty, types) {
@@ -1596,7 +1596,7 @@ where
         let provenance = block
             .stmts
             .first()
-            .map(|node| handler.map(&node.prov))
+            .map(|node| handler.map(&node.provenance()))
             .ok_or(TfheLutIrError::MissingProvenanceForLinkage)?;
         linkage.apply_converting(&mut module, || provenance.clone());
     }
@@ -1688,7 +1688,7 @@ where
     let mut module = weave_fhe_flat_bir(&circuit, scheme, name, handler, Some(effective_storage));
     if let Some(ls) = linkage {
         let lib_prov: H::Output = circuit.blocks[0].stmts.first()
-            .map(|n| handler.map(&n.prov))
+            .map(|n| handler.map(&n.provenance()))
             .expect("weave_fhe_flat_ir_with_handler: circuit has no statements; cannot derive provenance for linked specs");
         ls.apply_converting(module.inner_mut(), || lib_prov.clone());
     }
@@ -1957,7 +1957,7 @@ where
 
     // Provenance for infrastructure statements (storage init, mux overhead).
     let ctrl_prov: H::Output = block.stmts.first()
-        .map(|n| handler.map(&n.prov))
+        .map(|n| handler.map(&n.provenance()))
         .expect("weave_fhe_flat_bir: circuit has no statements; cannot derive provenance for infrastructure gates");
 
     // Initialize storage cells from parameters.
@@ -2890,7 +2890,7 @@ where
     H::Output: Default,
 {
     let block_ctrl_provs: Vec<Option<H::Output>> = blocks.blocks.iter()
-        .map(|b| b.stmts.first().map(|n| handler.map(&n.prov)))
+        .map(|b| b.stmts.first().map(|n| handler.map(&n.provenance())))
         .collect();
     let fallback: Option<H::Output> = block_ctrl_provs.iter().find_map(|p| p.clone());
 
@@ -5068,7 +5068,7 @@ mod tests {
         ).into_inner();
         assert_eq!(module.functions.len(), 1);
         let func = &module.functions[0];
-        let provs: Vec<u32> = func.body.stmts.iter().map(|s| s.prov).collect();
+        let provs: Vec<u32> = func.body.stmts.iter().map(|s| s.provenance()).collect();
         assert!(!provs.is_empty());
         assert!(
             provs.iter().all(|&p| p == 5),
@@ -5092,7 +5092,7 @@ mod tests {
 
         // Block 0 carries its own statement, so its (non-empty) output
         // provenance should all be the source statement's provenance (7).
-        let block0_provs: Vec<u32> = cfg_fn.body.blocks[0].stmts.iter().map(|s| s.prov).collect();
+        let block0_provs: Vec<u32> = cfg_fn.body.blocks[0].stmts.iter().map(|s| s.provenance()).collect();
         assert!(!block0_provs.is_empty());
         assert!(
             block0_provs.iter().all(|&p| p == 7),
@@ -5102,7 +5102,7 @@ mod tests {
 
         // Block 1 has no statements of its own; any statements added to it
         // fall back to the module-level provenance (also 7, the only source).
-        let block1_provs: Vec<u32> = cfg_fn.body.blocks[1].stmts.iter().map(|s| s.prov).collect();
+        let block1_provs: Vec<u32> = cfg_fn.body.blocks[1].stmts.iter().map(|s| s.provenance()).collect();
         assert!(
             block1_provs.iter().all(|&p| p == 7),
             "block 1's fallback provenance should be 7: {:?}",

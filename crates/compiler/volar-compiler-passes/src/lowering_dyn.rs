@@ -1375,7 +1375,7 @@ fn lower_stmt_dyn(s: &IrStmt, ctx: &LoweringContext, fn_gen: &[IrGenericParam]) 
         IrStmtKind::Expr(e) => IrStmtKind::Expr(lower_expr_dyn(e, ctx, fn_gen)),
         _ => panic!("lower_stmt_dyn: unhandled IrStmt variant — add lowering for this variant"),
     };
-    volar_compiler::ir::IrStmt::new(kind, s.prov.clone(), s.side)
+    volar_compiler::ir::IrStmt::new(kind, s.provenance().clone(), s.side())
 }
 
 fn lower_pattern_dyn(p: &IrPattern, ctx: &LoweringContext) -> IrPattern {

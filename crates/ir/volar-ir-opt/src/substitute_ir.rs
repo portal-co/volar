@@ -328,9 +328,9 @@ fn build_continuation_block(
     let result_prefix = 2 * n_results;
     let _live_prefix   = 2 * n_live;
 
-    let mut stmts: Vec<volar_ir_common::Node<IRStmt, ()>> = Vec::new();
+    let mut stmts: Vec<volar_ir_common::Node<IRStmt, volar_ir_common::StandardMetadata<()>>> = Vec::new();
 
-    let push = |stmts: &mut Vec<volar_ir_common::Node<IRStmt, ()>>, s: IRStmt| {
+    let push = |stmts: &mut Vec<volar_ir_common::Node<IRStmt, volar_ir_common::StandardMetadata<()>>>, s: IRStmt| {
         stmts.push(volar_ir_common::Node::new(s, (), None));
     };
 
@@ -383,7 +383,7 @@ fn build_fallback_block(
     addr_ty: TypeId,
     output_tys: &[TypeId],
 ) -> IRBlock {
-    let mut stmts: Vec<volar_ir_common::Node<IRStmt, ()>> = Vec::new();
+    let mut stmts: Vec<volar_ir_common::Node<IRStmt, volar_ir_common::StandardMetadata<()>>> = Vec::new();
 
     for (j, &fb) in fallbacks.iter().enumerate().take(n_results) {
         let addr_var = IRVarId((2 * j) as u32);

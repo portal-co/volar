@@ -56,7 +56,7 @@ pub(crate) fn ir_expr<P: Clone + Default>(kind: IrExprKind<P>) -> IrExpr<P> {
 /// `&src` or `src.clone()`) — inherits `src`'s provenance/side rather than
 /// inventing new metadata.
 pub(crate) fn ir_expr_from<P: Clone>(kind: IrExprKind<P>, src: &IrExpr<P>) -> IrExpr<P> {
-    IrExpr::new(kind, src.prov.clone(), src.side)
+    IrExpr::new(kind, src.provenance().clone(), src.side())
 }
 use volar_ir::{
     boolar::{BIrBlock, BIrStmt, BIrTerminator},
@@ -193,7 +193,7 @@ pub(crate) fn expand_ors<P: Clone>(block: &BIrBlock<P>) -> Vec<(IRVarId, BIrStmt
 
     for (i, stmt) in block.stmts.iter().enumerate() {
         let result_id = IRVarId(num_params + i as u32);
-        let prov = stmt.prov.clone();
+        let prov = stmt.provenance().clone();
         match &stmt.kind {
             BIrStmt::Or(a, b) => {
                 let not_a = IRVarId(next_synthetic);
@@ -260,8 +260,8 @@ pub(crate) fn var<P: Clone + Default>(name: &str) -> IrExpr<P> {
 
 /// `expr.clone()`
 pub(crate) fn clone_expr<P: Clone>(expr: IrExpr<P>) -> IrExpr<P> {
-    let prov = expr.prov.clone();
-    let side = expr.side;
+    let prov = expr.provenance().clone();
+    let side = expr.side();
     IrExpr::new(
         IrExprKind::MethodCall {
             receiver: Box::new(expr),
@@ -276,8 +276,8 @@ pub(crate) fn clone_expr<P: Clone>(expr: IrExpr<P>) -> IrExpr<P> {
 
 /// `&expr`
 pub(crate) fn ref_expr<P: Clone>(expr: IrExpr<P>) -> IrExpr<P> {
-    let prov = expr.prov.clone();
-    let side = expr.side;
+    let prov = expr.provenance().clone();
+    let side = expr.side();
     IrExpr::new(
         IrExprKind::Unary {
             op: SpecUnaryOp::Ref,
@@ -312,8 +312,8 @@ pub(crate) fn array_default<P: Clone + Default>() -> IrExpr<P> {
 
 /// `Array::<u8, N>::from_fn(|{idx}| {body})`
 pub(crate) fn array_from_fn<P: Clone>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
-    let prov = body.prov.clone();
-    let side = body.side;
+    let prov = body.provenance().clone();
+    let side = body.side();
     IrExpr::new(
         IrExprKind::Call {
             func: Box::new(IrExpr::new(

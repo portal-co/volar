@@ -73,7 +73,7 @@ pub enum FuncDecl<P: Clone = ()> {
 pub struct FuncBody<P: Clone = ()> {
     pub sig: SigId,
     pub blocks: Vec<Block>,
-    pub values: Vec<Node<Value, P>>,
+    pub values: Vec<Node<Value, volar_ir_common::StandardMetadata<P>>>,
     pub entry: BlockId,
 }
 /// `Block` carries no provenance/side metadata of its own — those annotations
