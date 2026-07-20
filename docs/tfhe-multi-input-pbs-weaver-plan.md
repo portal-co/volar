@@ -1,6 +1,6 @@
 # Plan: Multi-Input PBS and Direct-IR TFHE Fusion
 
-**Status:** proposed  
+**Status:** partially implemented — the two-address-bit LUT-first direct-IR XOR path is implemented and remains opt-in; wider address tables are explicitly deferred to the generalized selector/encoding review
 **Primary scope:** `crates/spec/volar-spec/src/tfhe.rs`, `crates/compiler/volar-weaver/src/fhe.rs`, and the direct `IRBlocks` path  
 **Related work:** [spec-static-shapes-plan.md](spec-static-shapes-plan.md), [fhe-weaver.md](fhe-weaver.md), [pipeline.md](pipeline.md), [agent-context/boolar-ir-conflicts.md](agent-context/boolar-ir-conflicts.md), [agent-context/ast-to-ast-weaving.md](agent-context/ast-to-ast-weaving.md)  
 **Required implementation tier:** **Tier 3** for TFHE table/phase/encoding semantics and the fusion equivalence argument; **Tier 2** for isolated IR/planner infrastructure after the Tier-3 semantic contract is fixed.
@@ -50,9 +50,15 @@ The existing LUT substrate already implements a restricted multi-input PBS:
 a fixed encrypted address bundle selects one fixed Boolean-table result in one
 blind rotation, producing **one encrypted Boolean output**. Its current
 representability rule is deliberately narrow: nonconstant logical table entries
-at positions separated by half the logical domain must be complements. The
-`TfheBootstrapTable` constructor checks this and rejects a table that is not
-representable by its current negacyclic image.
+at positions separated by half the logical domain must be complements. Under
+the current standard `{0, Q4}` Boolean-wire encoding and selector arithmetic,
+the exact target-facing subset is additionally limited to **at most two
+address bits**: a third least-significant selector weight would be `Q4/2`,
+which the current per-coefficient integer scaling does not apply as an exact
+ciphertext-linear operation. `TfheBootstrapTable::new` therefore rejects
+`ADDR_BITS > 2` as `InputEncodingUnsupported`; this is a semantic constraint,
+not merely a ring-capacity or negacyclic-table constraint. Wider tables require
+the reviewed generalized selector/encoding construction in Track 2.
 
 A **layered negacyclic plan** is a compile-time-generated, topologically
 ordered schedule of those existing table operations. Each layer request has a
@@ -380,12 +386,15 @@ mapping:
 1. Input bits are least-significant first, matching `tfhe_lut_read`.
 2. The logical domain is exactly `TABLE_LEN == 2^ADDR_BITS`.
 3. Capacity is `TABLE_LEN <= 2 * BIG_N`, `BIG_N` is nonzero and a power of two.
-4. Nonconstant tables obey the existing half-domain complement/negacyclic
+4. Address width is at most two under the current standard `{0, Q4}` wire
+   encoding; a wider selector is a new reviewed construction, not a LUT-first
+   planner option.
+5. Nonconstant tables obey the existing half-domain complement/negacyclic
    rule; constant functions use their explicit trivial-ciphertext case.
-5. Test polynomial coefficients, centering offset, and post-bootstrap
+6. Test polynomial coefficients, centering offset, and post-bootstrap
    `Q4/2` normalization are **exactly** those of the reviewed existing
    `TfheBootstrapTable::new` and `tfhe_lut_read` implementation.
-6. Every layer consumes standard `{0, Q4}` Boolean ciphertext inputs and
+7. Every layer consumes standard `{0, Q4}` Boolean ciphertext inputs and
    returns the same standard encoding before it can feed the next layer.
 
 The corresponding planner work is allowed to recognize only tables that pass
@@ -578,15 +587,19 @@ all of the following are true:
 - It is Boolean and pure.
 - Its leaves can be ordered into the current LUT address domain.
 - Its exact derived logical table passes `TfheBootstrapTable` validation.
+- Its leaves fit the current two-address-bit standard-wire selector; a larger
+  address bundle is rejected pending the generalized selector/encoding review.
 - Its root is immediately materializable with the existing standard output
   encoding.
 - It contains no externally observable intermediate needed elsewhere.
 
-The existing relation is intentionally not universal. For example, with the
-current two-address-bit construction, XOR’s table `[false, true, true, false]`
+The existing relation is intentionally not universal. With the current
+**two-address-bit** construction, XOR’s table `[false, true, true, false]`
 satisfies the half-domain complement relation, whereas ordinary two-input AND
-and OR tables do not. The planner must obtain this result by running the
-validator, not by keeping a hand-maintained function allowlist.
+and OR tables do not. `ADDR_BITS > 2` is additionally rejected by the current
+standard-wire selector contract, before planner fusion is considered. The
+planner must obtain these results by running the validator, not by keeping a
+hand-maintained function allowlist.
 
 Examples:
 
@@ -594,7 +607,7 @@ Examples:
 |---|---|---|
 | `xor(a, b)` | one validated two-bit XOR LUT/PBS; standard output | one two-input XOR PBS |
 | `not(xor(a,b))` if its table validates | one validated LUT/PBS | one two-input table PBS |
-| `or(xor(a,b), c)` | one LUT request only if its exact three-input table validates; otherwise emit a XOR LUT layer then a legacy OR/gate fallback | one three-input table PBS when reviewed |
+| `or(xor(a,b), c)` | one XOR LUT layer then a legacy OR/gate fallback; a three-address-bit table is rejected by the current standard-wire selector | one three-input table PBS when reviewed |
 | `and(xor(a,b), xor(c,d))` | deterministic valid sublayers plus legacy fallback where needed; never claim one table without validation | one four-input table PBS if arity/capacity/error review permits |
 | `tmp = xor(a,b); use(tmp, c)` in two roots | do not fuse through shared `tmp`; emit one composable XOR LUT/PBS for it or leave it unfused | same initial liveness rule |
 | storage MUX, action output, branch condition across block boundary | no initial fusion | no initial fusion |
@@ -782,11 +795,17 @@ contract is fixed.
       target subset supports it, with an equivalent linked fixed helper as a
       documented fallback. Do not synthesize polynomial arithmetic in weaver
       code.
-- [ ] Introduce an opt-in direct-IR LUT weave API that emits typed
-      `tfhe_lut_read` calls and does not traverse Boolar.
-- [ ] Route a representable XOR through one LUT/PBS and stop applying the
+- [x] Introduce an opt-in direct-IR LUT weave API that emits typed
+      `tfhe_lut_read` calls and does not traverse Boolar. The shipped first
+      surface is the fixed two-address-bit XOR table wrapper.
+- [x] Route a representable XOR through one LUT/PBS and stop applying the
       three-bootstrap XOR workaround on that direct path. Unsupported roots
       retain their legacy reviewed fallback during migration.
+- [x] Reject `ADDR_BITS > 2` for the current `{0, Q4}` standard-wire selector:
+      three-bit syntactic negacyclic tables require a `Q4/2` LSB selector
+      weight, which the current scaling path cannot apply exactly. Wider-table
+      batching is deferred to Phase 2's separately reviewed selector/encoding
+      construction.
 
 **Exit gate:** a real direct-IR generated-code E2E test executes a validated
 XOR table and at least one layered schedule; every layer matches the plaintext

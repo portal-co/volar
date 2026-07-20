@@ -116,7 +116,7 @@ producing test scaffolding, hand-off documents, and analysis. See
 |---|---|
 | [external-primitives-plan.md](external-primitives-plan.md) | Oracles, Actions, and Native RNG — partial implementation; ActionCall is in use |
 | [spec-static-shapes-plan.md](spec-static-shapes-plan.md) | Security-parameter genericity and static protocol/table shapes for `volar-spec` — partially implemented |
-| [tfhe-multi-input-pbs-weaver-plan.md](tfhe-multi-input-pbs-weaver-plan.md) | Experimental multi-input PBS, composable XOR, and direct-IR TFHE cone fusion — proposed |
+| [tfhe-multi-input-pbs-weaver-plan.md](tfhe-multi-input-pbs-weaver-plan.md) | Experimental multi-input PBS, composable XOR, and direct-IR TFHE cone fusion — **partially implemented** (opt-in two-bit LUT XOR; wider selector deferred) |
 
 ### Agent-context briefings
 

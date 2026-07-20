@@ -425,6 +425,9 @@ pub enum TfheBootstrapTableError {
     RingCapacityExceeded,
     /// The table is not compatible with the negacyclic image relation.
     NegacyclicIncompatible,
+    /// The table cannot be selected exactly from the current standard
+    /// `{0, Q4}` Boolean-wire encoding.
+    InputEncodingUnsupported,
 }
 
 impl<const ADDR_BITS: usize, const TABLE_LEN: usize, const BIG_N: usize>
@@ -442,6 +445,17 @@ impl<const ADDR_BITS: usize, const TABLE_LEN: usize, const BIG_N: usize>
         let max_addr_bits = usize::BITS as usize - 1;
         if ADDR_BITS == 0 || ADDR_BITS > max_addr_bits {
             return Err(TfheBootstrapTableError::AddressWidthOutOfRange);
+        }
+        // A standard Boolean wire is encoded at Q4. For one or two address
+        // bits, every selector weight is an integral torus multiple of that
+        // encoding. At three bits the least-significant weight would be
+        // Q4/2; the current per-coefficient integer division in
+        // `tfhe_lut_read` is not an exact ciphertext-linear operation. Do not
+        // accept a shape whose syntactic negacyclic table is representable but
+        // whose standard-wire selector is not. A wider address needs the
+        // separately reviewed generalized selector/encoding construction.
+        if ADDR_BITS > 2 {
+            return Err(TfheBootstrapTableError::InputEncodingUnsupported);
         }
         let domain = 1usize << ADDR_BITS;
         if TABLE_LEN != domain {
@@ -1700,8 +1714,15 @@ mod tests {
             Err(TfheBootstrapTableError::TableLengthMismatch),
         );
         assert_eq!(
-            TfheBootstrapTable::<8, 256, T_BIG_N>::new([false; 256]),
+            TfheBootstrapTable::<2, 4, 1>::new([false, true, true, false]),
             Err(TfheBootstrapTableError::RingCapacityExceeded),
+        );
+        assert_eq!(
+            TfheBootstrapTable::<3, 8, T_BIG_N>::new([
+                false, false, false, true, true, true, true, false,
+            ]),
+            Err(TfheBootstrapTableError::InputEncodingUnsupported),
+            "the current Q4 standard-wire selector must not claim three-bit LUT support",
         );
     }
 
