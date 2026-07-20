@@ -1202,6 +1202,419 @@ pub fn derive_ir_storage_config<P: Clone>(
 }
 
 // ============================================================================
+// Direct IR LUT-first path — constrained negacyclic layers
+// ============================================================================
+
+/// The one fixed logical table emitted by the initial direct-IR LUT planner.
+///
+/// Index bits are least-significant first: index `a + 2*b` maps to `a XOR b`.
+/// The target-side [`volar_spec::tfhe::TfheBootstrapTable`] associated constant
+/// validates and materializes this table using the spec's canonical
+/// negacyclic-polynomial mapping; the weaver never emits a raw polynomial.
+const NEGACYCLIC_XOR_TABLE: [bool; 4] = [false, true, true, false];
+
+/// A source for one compile-time planned negacyclic LUT layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NegacyclicLayerInput {
+    Wire(IRVarId),
+    PriorLayer(usize),
+}
+
+/// One two-input negacyclic LUT request within an affine Boolean `Poly` root.
+///
+/// The initial direct path emits only the existing, validated XOR table. The
+/// representation nevertheless records the full table and LSB-first input
+/// ordering, keeping a future broader table family from being implicit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct NegacyclicLayerRequest {
+    root: IRVarId,
+    inputs_lsb_first: [NegacyclicLayerInput; 2],
+    logical_table: [bool; 4],
+}
+
+/// A deterministic schedule for one direct-IR affine Boolean root.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AffineNegacyclicPlan {
+    root: IRVarId,
+    layers: Vec<NegacyclicLayerRequest>,
+    invert_output: bool,
+}
+
+/// A reason why the opt-in direct LUT path cannot accept an input circuit.
+///
+/// Rejection is deliberately conservative: callers may choose the legacy
+/// Boolar route, but this entry point never silently lowers through Boolar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TfheLutIrError {
+    /// The initial path accepts only one block returning directly from that block.
+    NotSingleReturnCircuit,
+    /// The first direct path is bit-only and has no storage/effect lowering.
+    UnsupportedStatement { index: usize },
+    /// A supported statement or operand was not an IR `Bit`.
+    NonBitValue { index: usize },
+    /// Linkage needs an actual source statement from which to derive provenance.
+    MissingProvenanceForLinkage,
+}
+
+fn is_ir_bit(ty: IRTypeId, types: &IRTypes) -> bool {
+    matches!(
+        types.0.get(ty.0 as usize),
+        Some(IRType::Primitive(PrimType::Bit))
+    )
+}
+
+/// Derive a fixed XOR-LUT layer schedule for an affine GF(2) polynomial.
+///
+/// A plan exists only for a polynomial consisting of a constant plus distinct
+/// degree-one terms. Each emitted layer uses the target-side fixed XOR table;
+/// a final inversion is represented by `tfhe_not`, which preserves the
+/// standard Boolean-wire encoding. Any nonlinear term is intentionally left to
+/// the direct binary fallback.
+fn plan_affine_negacyclic_layers(
+    root: IRVarId,
+    ty: IRTypeId,
+    coeffs: &BTreeMap<Vec<IRVarId>, u8>,
+    constant: bool,
+    types: &IRTypes,
+    var_types: &BTreeMap<u32, IRTypeId>,
+) -> Option<AffineNegacyclicPlan> {
+    if !is_ir_bit(ty, types) {
+        return None;
+    }
+
+    let mut leaves = Vec::new();
+    for (monomial, coeff) in coeffs {
+        if coeff & 1 == 0 {
+            continue;
+        }
+        match monomial.as_slice() {
+            [] => return None,
+            [leaf]
+                if var_types
+                    .get(&leaf.0)
+                    .is_some_and(|leaf_ty| is_ir_bit(*leaf_ty, types)) =>
+            {
+                leaves.push(*leaf)
+            }
+            _ => return None,
+        }
+    }
+    leaves.sort();
+    leaves.dedup();
+    if leaves.len() < 2 {
+        return None;
+    }
+
+    let mut layers = Vec::new();
+    let mut prior = NegacyclicLayerInput::Wire(leaves[0]);
+    for leaf in leaves.into_iter().skip(1) {
+        let layer_index = layers.len();
+        layers.push(NegacyclicLayerRequest {
+            root,
+            inputs_lsb_first: [prior, NegacyclicLayerInput::Wire(leaf)],
+            logical_table: NEGACYCLIC_XOR_TABLE,
+        });
+        prior = NegacyclicLayerInput::PriorLayer(layer_index);
+    }
+
+    Some(AffineNegacyclicPlan {
+        root,
+        layers,
+        invert_output: constant,
+    })
+}
+
+fn direct_poly_fallback<Q: Clone + Default>(
+    coeffs: &BTreeMap<Vec<IRVarId>, u8>,
+    constant: bool,
+    var_names: &BTreeMap<u32, String>,
+    scheme: &TfheScheme,
+) -> IrExpr<Q> {
+    let mut acc = if constant {
+        scheme.emit_one::<Q>()
+    } else {
+        scheme.emit_zero::<Q>()
+    };
+    for (monomial, coeff) in coeffs {
+        if coeff & 1 == 0 {
+            continue;
+        }
+        let term = match monomial.as_slice() {
+            [] => scheme.emit_one::<Q>(),
+            [first, rest @ ..] => {
+                let first_name = &var_names[&first.0];
+                let mut term = clone_expr(var(first_name));
+                for input in rest {
+                    let input_name = &var_names[&input.0];
+                    term = scheme.emit_and(term, clone_expr(var(input_name)), 0);
+                }
+                term
+            }
+        };
+        acc = scheme.emit_xor(acc, term);
+    }
+    acc
+}
+
+fn direct_lut_return<Q: Clone + Default>(
+    args: &[IRVarId],
+    var_names: &BTreeMap<u32, String>,
+    wire_ty: IrType,
+) -> (IrExpr<Q>, IrType) {
+    let values: Vec<IrExpr<Q>> = args
+        .iter()
+        .map(|id| clone_expr(var(&var_names[&id.0])))
+        .collect();
+    match values.len() {
+        0 => (ir_expr(IrExprKind::Tuple(vec![])), IrType::Tuple(vec![])),
+        1 => (values.into_iter().next().unwrap(), wire_ty),
+        count => (
+            ir_expr(IrExprKind::Tuple(values)),
+            IrType::Tuple((0..count).map(|_| wire_ty.clone()).collect()),
+        ),
+    }
+}
+
+/// Weave a same-block Bit circuit directly to fixed negacyclic TFHE LUT layers.
+///
+/// This opt-in path never calls `lower_ir_to_boolar`, `movfuscate_biir`, or
+/// `expand_ors`. It recognizes affine `IRStmt::Poly` roots with at least two
+/// encrypted Bit leaves and emits a deterministic chain of
+/// `tfhe_lut_xor([a, b], bk)` calls. Every such call reaches the spec's fixed
+/// `TfheBootstrapTable::<2, 4, BIG_N>::XOR` value, preserving its validation,
+/// centering, and standard Boolean output normalization.
+///
+/// Nonlinear `Poly` roots remain on direct binary TFHE emission inside this
+/// function. Unsupported/effectful/cross-block input is rejected explicitly
+/// instead of being silently converted to Boolar.
+pub fn weave_tfhe_lut_ir_with_handler<P, H>(
+    blocks: &IRBlocks<P>,
+    types: &IRTypes,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+    handler: &H,
+) -> Result<Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>, TfheLutIrError>
+where
+    P: Clone,
+    H: ProvenanceHandler<P>,
+    H::Output: Default,
+{
+    if !blocks.is_circuit() {
+        return Err(TfheLutIrError::NotSingleReturnCircuit);
+    }
+    let block = &blocks.blocks[0];
+    let return_args = match &block.terminator {
+        IRTerminator::Jmp { target } if matches!(target.dest, IRBlockTargetId::Return) => {
+            &target.args
+        }
+        _ => return Err(TfheLutIrError::NotSingleReturnCircuit),
+    };
+
+    let scheme = TfheScheme::flat();
+    let wire_ty = scheme.wire_type();
+    let mut params = scheme.extra_params();
+    let mut var_names = BTreeMap::new();
+    let mut var_types = BTreeMap::new();
+    for (index, ty) in block.params.iter().copied().enumerate() {
+        if !is_ir_bit(ty, types) {
+            return Err(TfheLutIrError::NonBitValue { index });
+        }
+        let name = format!("input_{index}");
+        params.push(IrParam {
+            name: name.clone(),
+            ty: scheme.wire_type_for_ir(ty, types),
+        });
+        var_names.insert(index as u32, name);
+        var_types.insert(index as u32, ty);
+    }
+
+    let mut stmts = Vec::new();
+    for (stmt_index, node) in block.stmts.iter().enumerate() {
+        let root = IRVarId(block.params.len() as u32 + stmt_index as u32);
+        let root_name = format!("var_{}", root.0);
+        let provenance = handler.map(&node.prov);
+        let output_ty = ir_stmt_output_ty(&node.kind)
+            .ok_or(TfheLutIrError::UnsupportedStatement { index: stmt_index })?;
+        if !is_ir_bit(output_ty, types) {
+            return Err(TfheLutIrError::NonBitValue { index: stmt_index });
+        }
+
+        match &node.kind {
+            IRStmt::Const(constant, _) => {
+                let init = if constant.lo & 1 == 0 {
+                    scheme.emit_zero()
+                } else {
+                    scheme.emit_one()
+                };
+                stmts.push(ir_stmt_p(
+                    IrStmtKind::Let {
+                        pattern: IrPattern::ident(&root_name),
+                        ty: None,
+                        init: Some(init),
+                    },
+                    provenance,
+                ));
+            }
+            IRStmt::Transmute { src, .. } => {
+                let source = var_names
+                    .get(&src.0)
+                    .ok_or(TfheLutIrError::UnsupportedStatement { index: stmt_index })?;
+                stmts.push(ir_stmt_p(
+                    IrStmtKind::Let {
+                        pattern: IrPattern::ident(&root_name),
+                        ty: None,
+                        init: Some(clone_expr(var(source))),
+                    },
+                    provenance,
+                ));
+            }
+            IRStmt::Poly {
+                ty,
+                coeffs,
+                constant,
+            } => {
+                let constant = constant.lo & 1 != 0;
+                if let Some(plan) =
+                    plan_affine_negacyclic_layers(root, *ty, coeffs, constant, types, &var_types)
+                {
+                    let mut layer_names: Vec<String> = Vec::new();
+                    for (layer_index, request) in plan.layers.iter().enumerate() {
+                        debug_assert_eq!(request.root, root);
+                        debug_assert_eq!(request.logical_table, NEGACYCLIC_XOR_TABLE);
+                        let source_name = |input: NegacyclicLayerInput| match input {
+                            NegacyclicLayerInput::Wire(id) => var_names[&id.0].clone(),
+                            NegacyclicLayerInput::PriorLayer(index) => layer_names[index].clone(),
+                        };
+                        let [left, right] = request.inputs_lsb_first;
+                        let left = source_name(left);
+                        let right = source_name(right);
+                        let is_final = layer_index + 1 == plan.layers.len() && !plan.invert_output;
+                        let layer_name = if is_final {
+                            root_name.clone()
+                        } else {
+                            format!("_lut_xor_{}_{}", root.0, layer_index)
+                        };
+                        let lut_call = ir_expr_p(
+                            IrExprKind::Call {
+                                func: Box::new(ir_expr_p(
+                                    IrExprKind::Path {
+                                        segments: vec!["tfhe_lut_xor".into()],
+                                        type_args: vec![],
+                                    },
+                                    provenance.clone(),
+                                )),
+                                args: vec![
+                                    ref_expr(ir_expr_p(
+                                        IrExprKind::FixedArray(vec![
+                                            clone_expr(var(&left)),
+                                            clone_expr(var(&right)),
+                                        ]),
+                                        provenance.clone(),
+                                    )),
+                                    var("bk"),
+                                ],
+                            },
+                            provenance.clone(),
+                        );
+                        stmts.push(ir_stmt_p(
+                            IrStmtKind::Let {
+                                pattern: IrPattern::ident(&layer_name),
+                                ty: None,
+                                init: Some(lut_call),
+                            },
+                            provenance.clone(),
+                        ));
+                        layer_names.push(layer_name);
+                    }
+                    if plan.invert_output {
+                        let last = layer_names
+                            .last()
+                            .expect("affine plan has at least one XOR layer");
+                        stmts.push(ir_stmt_p(
+                            IrStmtKind::Let {
+                                pattern: IrPattern::ident(&root_name),
+                                ty: None,
+                                init: Some(scheme.emit_not(var(last))),
+                            },
+                            provenance,
+                        ));
+                    }
+                } else {
+                    let init = direct_poly_fallback(coeffs, constant, &var_names, &scheme);
+                    stmts.push(ir_stmt_p(
+                        IrStmtKind::Let {
+                            pattern: IrPattern::ident(&root_name),
+                            ty: None,
+                            init: Some(init),
+                        },
+                        provenance,
+                    ));
+                }
+            }
+            _ => return Err(TfheLutIrError::UnsupportedStatement { index: stmt_index }),
+        }
+
+        var_names.insert(root.0, root_name);
+        var_types.insert(root.0, output_ty);
+    }
+
+    let (return_expr, return_type) = direct_lut_return(return_args, &var_names, wire_ty);
+    let function_name = format!("{}_tfhe_lut", name);
+    let function = IrFunction {
+        no_inline: false,
+        name: function_name.clone(),
+        module_path: vec![],
+        generics: scheme.generics(),
+        receiver: None,
+        params,
+        return_type: Some(return_type),
+        where_clause: vec![],
+        body: IrBlock {
+            stmts,
+            expr: Some(Box::new(return_expr)),
+        },
+        external_kind: ExternalKind::Normal,
+    };
+    let mut module = IrModule {
+        name: format!("weaved_{function_name}"),
+        functions: vec![function],
+        structs: vec![],
+        enums: vec![],
+        traits: vec![],
+        impls: vec![],
+        type_aliases: vec![],
+        consts: vec![],
+    };
+    module.functions.extend(
+        scheme
+            .helper_type_stubs()
+            .into_iter()
+            .map(|stub| stub.map_prov(&|_: ()| H::Output::default())),
+    );
+
+    if let Some(linkage) = linkage {
+        let provenance = block
+            .stmts
+            .first()
+            .map(|node| handler.map(&node.prov))
+            .ok_or(TfheLutIrError::MissingProvenanceForLinkage)?;
+        linkage.apply_converting(&mut module, || provenance.clone());
+    }
+
+    Ok(Tagged::seal(module))
+}
+
+/// Unit-provenance convenience wrapper for [`weave_tfhe_lut_ir_with_handler`].
+pub fn weave_tfhe_lut_ir(
+    blocks: &IRBlocks,
+    types: &IRTypes,
+    name: &str,
+    linkage: Option<&LinkageSystem>,
+) -> Result<Tagged<Transparent, IrModule<IrFunction>>, TfheLutIrError> {
+    weave_tfhe_lut_ir_with_handler(blocks, types, name, linkage, &NoProvenance)
+}
+
+// ============================================================================
 // Flat path — high-level entry (lowers IRBlocks first)
 // ============================================================================
 
@@ -3692,10 +4105,45 @@ mod tests {
         let block = IRBlock {
             params: vec![bit, bit],
             stmts: vec![volar_ir_common::Node::new(
-                IRStmt_::Poly { ty: bit, coeffs, constant: Constant { hi: 0, lo: 0 } }, (), None,
+                IRStmt_::Poly {
+                    ty: bit,
+                    coeffs,
+                    constant: Constant { hi: 0, lo: 0 },
+                },
+                (),
+                None,
             )],
-            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(2)],
-            ) },
+            terminator: IRTerminator::Jmp {
+                target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(2)]),
+            },
+        };
+        (IRBlocks::new(vec![block]), types)
+    }
+
+    /// Single-block affine XOR circuit: `a ^ b ^ c`, represented as one
+    /// direct Volar-IR `Poly`. The LUT-first planner must schedule two
+    /// validated two-input XOR layers without entering Boolar.
+    fn build_ir_three_input_xor() -> (IRBlocks, IRTypes) {
+        let mut types = IRTypes::new();
+        let bit = types.intern(IRType::Primitive(PrimType::Bit));
+        let mut coeffs = BTreeMap::new();
+        coeffs.insert(vec![IRVarId(0)], 1u8);
+        coeffs.insert(vec![IRVarId(1)], 1u8);
+        coeffs.insert(vec![IRVarId(2)], 1u8);
+        let block = IRBlock {
+            params: vec![bit, bit, bit],
+            stmts: vec![volar_ir_common::Node::new(
+                IRStmt_::Poly {
+                    ty: bit,
+                    coeffs,
+                    constant: Constant { hi: 0, lo: 0 },
+                },
+                (),
+                None,
+            )],
+            terminator: IRTerminator::Jmp {
+                target: IRBranchTarget::new(IRBlockTargetId::Return, vec![IRVarId(3)]),
+            },
         };
         (IRBlocks::new(vec![block]), types)
     }
@@ -4670,6 +5118,126 @@ mod tests {
     ///
     /// This is the first test that actually *runs* generated FHE code rather
     /// than just compile-checking it.
+    #[test]
+    fn test_tfhe_lut_direct_ir_executes_three_input_xor() {
+        let (circuit, types) = build_ir_three_input_xor();
+        let module = weave_tfhe_lut_ir(&circuit, &types, "xor3_lut", None)
+            .expect("three-input affine XOR must be accepted by the direct LUT path")
+            .into_inner();
+        let code = print_fhe_flat_module(&module, true);
+        assert!(
+            code.matches("tfhe_lut_xor").count() == 2,
+            "three-input XOR must emit exactly two validated LUT layers:\n{code}"
+        );
+        assert!(
+            !code.contains("tfhe_gate_bootstrapping_and")
+                && !code.contains("tfhe_gate_bootstrapping_or")
+                && !code.contains("tfhe_xor"),
+            "direct LUT XOR layers must not use the legacy binary XOR expansion:\n{code}"
+        );
+
+        let uses = "\
+use volar_spec::tfhe::{\
+    BootstrappingKey, LweCiphertext, tfhe_lut_xor, tfhe_not, \
+    gen_lwe_secret_key, gen_rlwe_secret_key, gen_bootstrapping_key, \
+    lwe_encrypt, lwe_decrypt};\n";
+        let code_with_imports = if let Some(nl) = code.find('\n') {
+            let (head, tail) = code.split_at(nl + 1);
+            format!("{head}{uses}{tail}")
+        } else {
+            format!("{uses}{code}")
+        };
+        let test_harness = r#"
+
+struct TestRng(u64);
+impl TestRng { fn new(seed: u64) -> Self { Self(seed) } }
+impl volar_spec::SpecRng for TestRng {
+    fn next_u32(&mut self) -> u32 {
+        self.0 = self.0.wrapping_add(0x9e3779b97f4a7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+        (z ^ (z >> 31)) as u32
+    }
+}
+
+const N: usize = 8;
+const BN: usize = 64;
+const BSE: usize = 2;
+const KSE: usize = 2;
+const BS_BG: usize = 16;
+const KS_BG: usize = 16;
+
+#[test]
+fn xor3_truth_table() {
+    let mut rng = TestRng::new(71);
+    let lwe_sk = gen_lwe_secret_key::<N, _>(&mut rng);
+    let rlwe_sk = gen_rlwe_secret_key::<BN, _>(&mut rng);
+    let bk = gen_bootstrapping_key::<N, BN, BSE, KSE, BS_BG, KS_BG, _>(
+        &lwe_sk, &rlwe_sk, 0, 0, &mut rng,
+    );
+    for a in [false, true] {
+        for b in [false, true] {
+            for c in [false, true] {
+                let ct_a = lwe_encrypt(a, &lwe_sk, 0, &mut TestRng::new(81));
+                let ct_b = lwe_encrypt(b, &lwe_sk, 0, &mut TestRng::new(82));
+                let ct_c = lwe_encrypt(c, &lwe_sk, 0, &mut TestRng::new(83));
+                let output = xor3_lut_tfhe_lut::<N, BN, BSE, KSE, BS_BG, KS_BG>(
+                    &bk, ct_a, ct_b, ct_c,
+                );
+                assert_eq!(lwe_decrypt(&output, &lwe_sk), a ^ b ^ c);
+            }
+        }
+    }
+}
+"#;
+        let test_code = format!("{code_with_imports}{test_harness}");
+        let root = crate::tests_common::workspace_root();
+        let tmpdir = std::env::temp_dir().join("volar_weaver_tfhe_lut_xor_e2e");
+        let srcdir = tmpdir.join("src");
+        std::fs::create_dir_all(&srcdir).unwrap();
+        let cargo_toml = std::format!(
+            "[package]\n\
+             name = \"weave-exec-tfhe-lut-xor\"\n\
+             version = \"0.1.0\"\n\
+             edition = \"2024\"\n\
+             \n\
+             [[test]]\n\
+             name = \"tfhe_lut_xor\"\n\
+             path = \"src/lib.rs\"\n\
+             \n\
+             [dependencies]\n\
+             volar-spec = {{ path = \"{root}/crates/spec/volar-spec\" }}\n\
+             volar-primitives = {{ path = \"{root}/crates/spec/volar-primitives\" }}\n\
+             volar-common = {{ path = \"{root}/crates/spec/volar-common\" }}\n\
+             hybrid-array = \"0.4.8\"\n\
+             digest = {{ version = \"0.11.2\", default-features = false }}\n\
+             cipher = {{ version = \"0.5.1\", default-features = false }}\n\
+             rand = {{ version = \"0.9.2\", default-features = false }}\n\
+             typenum = {{ version = \"1.17\", default-features = false }}\n\
+             elliptic-curve = {{ version = \"0.13.8\", features = [\"arithmetic\"], default-features = false }}\n",
+            root = root,
+        );
+        std::fs::write(tmpdir.join("Cargo.toml"), cargo_toml).unwrap();
+        std::fs::write(srcdir.join("lib.rs"), &test_code).unwrap();
+        let output = std::process::Command::new("cargo")
+            .args(["test", "--quiet", "--test", "tfhe_lut_xor"])
+            .current_dir(&tmpdir)
+            .env("CARGO_TARGET_DIR", tmpdir.join("target"))
+            .env("CARGO_NET_OFFLINE", "true")
+            .output()
+            .expect("failed to run LUT-XOR E2E test");
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let _ = std::fs::remove_dir_all(&tmpdir);
+        if !output.status.success() {
+            panic!(
+                "TFHE direct-LUT XOR E2E test failed\n--- code ---\n{}\n--- stdout ---\n{}\n--- stderr ---\n{}",
+                test_code, stdout, stderr
+            );
+        }
+    }
+
     #[test]
     fn test_tfhe_cfg_and_executes_correctly() {
         let (circuit, types) = build_ir_and_cfg();

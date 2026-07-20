@@ -434,7 +434,11 @@ impl<const ADDR_BITS: usize, const TABLE_LEN: usize, const BIG_N: usize>
     /// convention. Constant tables are represented explicitly and bootstrap as
     /// a trivial ciphertext because a constant function has no ordinary
     /// negacyclic polynomial representation.
-    pub fn new(logical: [bool; TABLE_LEN]) -> Result<Self, TfheBootstrapTableError> {
+    ///
+    /// This is `const` so a fixed logical table selected by a weaver can be
+    /// materialized at compile time. The same validation/mapping is used by
+    /// host-side tests and every target-facing fixed-table factory.
+    pub const fn new(logical: [bool; TABLE_LEN]) -> Result<Self, TfheBootstrapTableError> {
         let max_addr_bits = usize::BITS as usize - 1;
         if ADDR_BITS == 0 || ADDR_BITS > max_addr_bits {
             return Err(TfheBootstrapTableError::AddressWidthOutOfRange);
@@ -451,26 +455,38 @@ impl<const ADDR_BITS: usize, const TABLE_LEN: usize, const BIG_N: usize>
             return Err(TfheBootstrapTableError::RingCapacityExceeded);
         }
 
-        let is_constant = logical.iter().all(|&entry| entry == logical[0]);
+        let mut is_constant = true;
+        let mut index = 1;
+        while index < TABLE_LEN {
+            if logical[index] != logical[0] {
+                is_constant = false;
+                break;
+            }
+            index += 1;
+        }
         if !is_constant {
             let half = TABLE_LEN / 2;
-            for index in 0..half {
+            index = 0;
+            while index < half {
                 if logical[index] == logical[index + half] {
                     return Err(TfheBootstrapTableError::NegacyclicIncompatible);
                 }
+                index += 1;
             }
     }
 
     let half_q4 = Q4 >> 1;
         let poly_step = BIG_N / (TABLE_LEN / 2);
     let mut test_poly = [0u32; BIG_N];
-        for index in 0..BIG_N {
+        index = 0;
+        while index < BIG_N {
             let entry = index / poly_step;
             test_poly[index] = if logical[entry] {
             half_q4
         } else {
             half_q4.wrapping_neg()
         };
+            index += 1;
     }
 
         Ok(Self {
@@ -484,6 +500,47 @@ impl<const ADDR_BITS: usize, const TABLE_LEN: usize, const BIG_N: usize>
     pub fn entries(&self) -> &[bool; TABLE_LEN] {
         &self.logical
     }
+}
+
+impl<const BIG_N: usize> TfheBootstrapTable<2, 4, BIG_N> {
+    /// The standard two-input XOR table, indexed by `[a, b]` least-significant
+    /// first: `[false, true, true, false]`.
+    ///
+    /// This associated constant is constructed through [`Self::new`], so it
+    /// retains the exact current negacyclic validation and polynomial mapping.
+    /// A compile-time failure here means the table cannot be represented for
+    /// the requested ring degree under this LUT construction.
+    pub const XOR: Self = match Self::new([false, true, true, false]) {
+        Ok(table) => table,
+        Err(_) => panic!("the fixed XOR LUT must be negacyclic-representable"),
+    };
+}
+
+/// Evaluate a composable two-input XOR through the fixed negacyclic LUT path.
+///
+/// Inputs are `[a, b]` least-significant first. This is deliberately distinct
+/// from [`tfhe_xor`], whose raw torus-linear result is not a standard Boolean
+/// wire for further PBS composition. The output has the same standard
+/// `{0, Q4}` encoding guarantee as [`tfhe_lut_read`].
+///
+/// The direct-IR FHE weaver uses this narrow wrapper for validated XOR layers;
+/// it does not construct a test polynomial or table at runtime.
+pub fn tfhe_lut_xor<
+    const N_LWE: usize,
+    const BIG_N: usize,
+    const BS_ELL: usize,
+    const KS_ELL: usize,
+    const BS_BG_LOG: usize,
+    const KS_BG_LOG: usize,
+>(
+    inputs_lsb_first: &[LweCiphertext<N_LWE>; 2],
+    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, BS_BG_LOG, KS_BG_LOG>,
+) -> LweCiphertext<N_LWE> {
+    tfhe_lut_read(
+        inputs_lsb_first,
+        &TfheBootstrapTable::<2, 4, BIG_N>::XOR,
+        bk,
+    )
 }
 
 /// Read a fixed-shape cleartext table using programmable bootstrapping.
@@ -1571,6 +1628,32 @@ mod tests {
                 got, expected,
                 "LUT[{addr_val}] = {got}, expected {expected} (lut = {lut:?})"
             );
+        }
+    }
+
+    #[test]
+    fn lut_xor_is_standard_encoded_and_composes() {
+        let (sk, _, bk) = test_keys(42);
+        for a in [false, true] {
+            for b in [false, true] {
+                for c in [false, true] {
+                    let ct_a = encrypt(a, &sk, 1_000);
+                    let ct_b = encrypt(b, &sk, 1_001);
+                    let ct_c = encrypt(c, &sk, 1_002);
+                    let ab = tfhe_lut_xor(&[ct_a, ct_b], &bk);
+                    assert_eq!(
+                        lwe_decrypt(&ab, &sk),
+                        a ^ b,
+                        "first LUT XOR layer must normalize XOR({a}, {b})"
+                    );
+                    let abc = tfhe_lut_xor(&[ab, ct_c], &bk);
+                    assert_eq!(
+                        lwe_decrypt(&abc, &sk),
+                        a ^ b ^ c,
+                        "second LUT XOR layer must accept the first layer's standard encoding"
+                    );
+                }
+            }
         }
     }
 

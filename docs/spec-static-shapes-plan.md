@@ -2,7 +2,7 @@
 
 **Status:** partially implemented — TFHE parameter binding and fixed-shape boolean LUTs landed; broader protocol audit and multi-input PBS remain proposed  
 **Primary scope:** `crates/spec/volar-spec/`  
-**Related work:** [`agent-context/ast-to-ast-weaving.md`](agent-context/ast-to-ast-weaving.md), [`fhe-weaver.md`](fhe-weaver.md), [`lir-lowering-monomorphization-plan.md`](lir-lowering-monomorphization-plan.md)  
+**Related work:** [`tfhe-multi-input-pbs-weaver-plan.md`](tfhe-multi-input-pbs-weaver-plan.md), [`agent-context/ast-to-ast-weaving.md`](agent-context/ast-to-ast-weaving.md), [`fhe-weaver.md`](fhe-weaver.md), [`lir-lowering-monomorphization-plan.md`](lir-lowering-monomorphization-plan.md)
 **Required implementation tier:** Tier 3 — the work changes cryptographic-spec APIs, parameter binding, and programmable-bootstrap semantics. The mechanical inventory, test harnesses, and compiler-support work may be split into Tier-1/Tier-2 commits, but no parameter set may be presented as secure without Tier-3 cryptographic review and the existing experimental-status process.
 
 ## Implementation status
@@ -97,9 +97,12 @@ phase:
 - The low-level `tfhe_programmable_bootstrap` still accepts a raw fixed
   polynomial for reviewed specialized callers. Logical boolean tables should
   use `TfheBootstrapTable`; richer output encodings remain future work.
-- The first fixed table API supports a statically sized address bundle but does
-  not yet establish a reviewed multi-input phase-packing/noise analysis for
-  program-segment bootstraps.
+- The existing fixed table API is also a constrained, usable negacyclic PBS
+  substrate: a future direct-IR optimizer may plan and emit compile-time fixed
+  layers accepted by `TfheBootstrapTable`/`tfhe_lut_read` before a broader
+  multi-input selector construction is selected. The layered contract and its
+  separate generalized-PBS track are specified in
+  [`tfhe-multi-input-pbs-weaver-plan.md`](tfhe-multi-input-pbs-weaver-plan.md).
 
 The spec crate also retains dynamic collections where their role differs:
 
@@ -480,30 +483,51 @@ compile and execute without type/layout confusion.
 layout from runtime slice lengths, and every constructed table carries enough
 shape/encoding information to be checked before bootstrapping.
 
-### Phase 3 — Multi-input programmable bootstrap design and first instance
+### Phase 3 — Layered negacyclic optimization and generalized multi-input PBS
 
-**Files:** TFHE specification/docs and `tfhe.rs`; Tier-3 cryptographic design
-review required before code lands.
+**Files:** direct-IR TFHE weaver work, TFHE specification/docs and `tfhe.rs`.
+The work has two separately reviewable tracks.
+
+**Track A — LUT-first layered negacyclic optimization:**
+
+1. Define a direct-IR planner request whose input wires, logical Boolean table,
+   `TfheBootstrapTable` shape, and dependencies are fixed at compile time.
+2. Derive each candidate’s truth table from a pure same-block Boolean cone and
+   accept it only by running the existing table validator; do not duplicate or
+   approximate the negacyclic rule in the weaver.
+3. Emit a topological sequence of valid table layers through `tfhe_lut_read`.
+   Each layer returns the existing standard Boolean encoding and may feed a
+   later layer. Invalid whole cones may be partitioned only into independently
+   valid closed layers; otherwise they fall back unchanged.
+4. Start with tables/operations that the existing implementation demonstrably
+   accepts (including composable XOR where valid), exhaustively test each
+   plaintext domain, and compile/run the generated target path.
+
+This track does not claim arbitrary Boolean-table support or a new noise
+analysis; it is bounded by the established `TfheBootstrapTable` contract.
+
+**Track B — generalized multi-input programmable bootstrap:**
 
 1. Write a focused companion design/review note citing the applicable TFHE/
    PBS reference algorithm. State the combined-input phase formula, error
    budget, domain indexing, polynomial construction, and output encoding.
-2. Define a `TfheBootstrapTable`/input-bundle representation that can express
-   a fixed number of input ciphertexts and a larger logical table while
-   retaining the ring polynomial's fixed `BIG_N` layout.
-3. Implement exactly one bounded multi-input instance (normally the smallest
-   useful arity) with an exhaustive plaintext oracle over its entire domain,
-   deterministic reference vectors, and differential tests against the prior
-   AND/OR behavior where applicable.
-4. Prove in tests that incompatible input count, table dimensions, ring
-   degree, decomposition configuration, and output encoding cannot be mixed
-   at a typed call site. Test invalid descriptor construction separately.
-5. Only after the first instance is reviewed, expose a generic extension point
-   for weaver-selected compatible program segments. The weaver must pass a
-   prevalidated table descriptor, not a runtime `Vec<bool>`.
+2. Define a separate descriptor/validation path if the new construction
+   materially expands the existing table family; do not silently change the
+   meaning of `TfheBootstrapTable`.
+3. Implement exactly one bounded generalized multi-input instance (normally
+   the smallest useful arity) with an exhaustive plaintext oracle over its
+   entire domain, deterministic reference vectors, and differential tests
+   against prior AND/OR behavior where applicable.
+4. Prove in tests that incompatible input count, table dimensions, ring degree,
+   decomposition configuration, and output encoding cannot be mixed at a typed
+   call site. Test invalid descriptor construction separately.
+5. Only after the first generalized instance is reviewed, enable one-PBS
+   program-segment fusion beyond the LUT-first table family. The weaver must
+   pass a prevalidated descriptor, not a runtime `Vec<bool>`.
 
-**Exit criteria:** the API can encode a reviewed multi-input PBS instance with
-no runtime-computed shape; no unsupported generality is implied for arbitrary
+**Exit criteria:** Track A can ship a constrained direct-IR optimization with
+no runtime-computed shape and no generalized-PBS claim. Track B can encode a
+reviewed broader instance with no unsupported generality implied for arbitrary
 program tables.
 
 ### Phase 4 — Convert remaining fixed protocol shapes
@@ -545,8 +569,11 @@ before implementation.
    length or `Vec`-dependent layout. This is a diagnostic, not a fallback that
    silently chooses a runtime representation.
 4. Add a weaver-facing table-construction hand-off API whose inputs are static
-   program/circuit metadata. Its first consumer is test-only until the
-   multi-input PBS scheme and optimization policy receive their own review.
+   program/circuit metadata. Its first consumer is the constrained
+   LUT-first/direct-IR path specified in
+   [`tfhe-multi-input-pbs-weaver-plan.md`](tfhe-multi-input-pbs-weaver-plan.md);
+   generalized program-segment tables remain disabled until their separate
+   construction and optimization policy receive review.
 5. Preserve the ZK/non-ZK discipline boundary. TFHE is transparent; this
    refactor must not use `into_inner()`, change artifact tags, or loosen a
    `NonZk` bound to route a newly shaped module into another proving pipeline.
@@ -623,9 +650,10 @@ text shape as the primary correctness signal.
   length calculations.
 - The raw test polynomial is not a general public escape hatch that bypasses
   table/encoding validation.
-- At least one reviewed multi-input PBS shape can be represented without a
-  runtime-computed input or table length; broader program-segment optimization
-  is deliberately deferred until its own analysis.
+- At least one constrained, reviewed existing-LUT negacyclic layer can be
+  represented with no runtime-computed input or table length; a broader
+  multi-input PBS/program-segment representation remains deliberately deferred
+  until its separate reference and error analysis.
 - Every remaining `Vec`/slice in `volar-spec` is either test-only, a documented
   genuinely dynamic API, or has a scheduled fixed-shape replacement.
 - Multiple small concrete parameter configurations and multiple fixed table
