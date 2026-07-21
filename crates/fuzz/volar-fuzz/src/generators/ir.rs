@@ -15,8 +15,15 @@
 //! 2. **Interpretation** — [`interpret_ir`] converts raw data into a valid
 //!    `(IRBlocks<()>, IRTypes)` by clamping indices and matching types.
 
-use volar_ir::ir::{IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt, IRTerminator, IRVarId};
-use volar_ir_common::{Constant, IrType, Node, OracleDecl, Stmt, StorageId, Type, TypeId, TypeTable};
+use volar_ir::ir::{
+    IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRGroupValueRef, IRStmt,
+    IRTerminator, IRVarId,
+};
+use volar_ir_common::{
+    Constant, GroupDisposition, GroupMembership, InstructionGroupDecl, InstructionGroupDeclId,
+    InstructionGroupId, InstructionGroupInstance, IrType, Node, OracleDecl, Stmt, StorageId,
+    Type, TypeId, TypeTable,
+};
 
 use crate::interpreter::ir::primitive_width;
 
@@ -155,6 +162,42 @@ pub fn interpret_ir(
     };
 
     (IRBlocks::new(vec![block]), types, param_widths)
+}
+
+/// Like [`interpret_ir`], but attaches one well-formed advisory group around
+/// every generated statement. The optional captured input is the entry
+/// parameter when present; otherwise the group has an empty signature.
+///
+/// This fixture deliberately remains advisory so ordinary semantic fuzzing can
+/// evaluate it without requiring a specialised group consumer.
+pub fn interpret_ir_with_advisory_group(
+    raw_param_type_idxs: &[RawTypeIdx],
+    raw_stmts: &[RawIrStmt],
+) -> (IRBlocks<()>, TypeTable, Vec<usize>) {
+    let (mut blocks, types, param_widths) = interpret_ir(raw_param_type_idxs, raw_stmts);
+    let entry = &mut blocks.blocks[0];
+    let (params, inputs) = match entry.params.first().copied() {
+        Some(ty) => (
+            vec![ty],
+            vec![IRGroupValueRef { block: IRBlockId(0), vars: vec![IRVarId(0)], ty }],
+        ),
+        None => (vec![], vec![]),
+    };
+    blocks.instruction_groups.push(InstructionGroupDecl {
+        name: "fuzz_batch".into(),
+        params,
+        disposition: GroupDisposition::Advisory,
+    });
+    blocks.instruction_group_instances.push(InstructionGroupInstance {
+        id: InstructionGroupId(0),
+        decl: InstructionGroupDeclId(0),
+        inputs,
+    });
+    let membership = GroupMembership::new(vec![InstructionGroupId(0)]);
+    for stmt in &mut entry.stmts {
+        *stmt = stmt.clone().with_instruction_groups(membership.clone());
+    }
+    (blocks, types, param_widths)
 }
 
 /// Zero-out bits above `width` in a `Constant` (keeps c.lo if width <= 128).
@@ -745,6 +788,38 @@ mod strategies {
                             .collect()
                     };
 
+                    (blocks, types, inputs)
+                })
+            },
+        )
+    }
+
+    /// Generate a valid single-block `IRBlocks<()>` wrapped in one advisory
+    /// instruction group. The fixture is suitable for metadata-preservation
+    /// properties, not for lossy lowerings that require a group consumer.
+    pub fn gen_ir_with_advisory_group_and_inputs(
+    ) -> impl Strategy<Value = (IRBlocks<()>, TypeTable, Vec<IrValue>)> {
+        proptest::collection::vec(any::<u8>(), 0usize..=4usize).prop_flat_map(
+            |raw_param_types| {
+                let widths: Vec<usize> = raw_param_types
+                    .iter()
+                    .map(|&idx| primitive_width(PRIM_TYPES[idx as usize % PRIM_TYPES.len()]))
+                    .collect();
+                let total_bits: usize = widths.iter().sum();
+                let raw_stmts = proptest::collection::vec(
+                    (any::<u8>(), any::<u32>(), any::<u32>(), any::<u128>(), any::<u128>()),
+                    1usize..=8usize,
+                );
+                let input_bits = proptest::collection::vec(any::<bool>(), total_bits);
+                (raw_stmts, input_bits).prop_map(move |(raw_stmts, input_bits)| {
+                    let (blocks, types, _) =
+                        interpret_ir_with_advisory_group(&raw_param_types, &raw_stmts);
+                    let mut offset = 0;
+                    let inputs = widths.iter().map(|&width| {
+                        let value = input_bits[offset..offset + width].to_vec();
+                        offset += width;
+                        value
+                    }).collect();
                     (blocks, types, inputs)
                 })
             },

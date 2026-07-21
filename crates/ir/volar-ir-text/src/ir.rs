@@ -1,10 +1,11 @@
 // @reliability: experimental
 // @ai: assisted
-//! [`WriteText`] + [`ParseText`] for [`SavedIrBlocks`] (the `.vir` format).
+//! [`WriteText`] + [`ParseText`] for [`SavedIrBlocks`] (the `.vir` format,
+//! version 2).
 //!
 //! Format summary:
 //! ```text
-//! volar-ir v1
+//! volar-ir v2
 //! type 0 prim bit
 //! type 1 prim u8
 //! type 2 vec 4 1
@@ -14,6 +15,8 @@
 //! oracle "foo" params=[0] results=[1]
 //! action "bar" params=[0] results=[1]
 //! rng "baz" ty=0
+//! group_decl 0 "batch" params=[0] disposition=advisory
+//! group_instance id=0 decl=0 inputs=[{block=0 vars=[v0] ty=0}]
 //! begin_block 0
 //! params [0,1]
 //! v2 = const 0x0:0xff ty=1
@@ -25,12 +28,16 @@
 
 use core::fmt;
 use volar_ir_common::{
-    ActionDecl, Constant, IrType, OracleDecl, RngDecl, StorageId, Stmt, Type, TypeId, TypeTable,
+    ActionDecl, Constant, GroupDisposition, GroupMembership, InstructionGroupDecl,
+    InstructionGroupInstance, IrType, OracleDecl,
+    RngDecl, StorageId, Stmt, Type, TypeId, TypeTable,
 };
-use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBlocks, IRBranchTarget, IRTerminator, IRVarId};
+use volar_ir::ir::{
+    IRBlock, IRBlockTargetId, IRBlocks, IRGroupValueRef, IRTerminator, IRVarId,
+};
 use crate::WriteText;
 
-pub(crate) const FORMAT_HEADER: &str = "volar-ir v1";
+pub(crate) const FORMAT_HEADER: &str = "volar-ir v2";
 
 // ============================================================================
 // SavedIrBlocks — public struct
@@ -196,6 +203,38 @@ fn write_rng_decl(d: &RngDecl, w: &mut dyn fmt::Write) -> fmt::Result {
     write!(w, " ty={}\n", d.ty.0)
 }
 
+fn write_instruction_group_decl(
+    id: usize,
+    decl: &InstructionGroupDecl,
+    w: &mut dyn fmt::Write,
+) -> fmt::Result {
+    write!(w, "group_decl {} ", id)?;
+    write_quoted_str(&decl.name, w)?;
+    w.write_str(" params=")?;
+    write_type_id_list(&decl.params, w)?;
+    w.write_str(" disposition=")?;
+    w.write_str(match decl.disposition {
+        GroupDisposition::Advisory => "advisory",
+        GroupDisposition::MustConsumeBeforeMovfuscation => "must_consume_before_movfuscation",
+        _ => "unknown",
+    })?;
+    w.write_char('\n')
+}
+
+fn write_instruction_group_instance(
+    instance: &InstructionGroupInstance<IRGroupValueRef>,
+    w: &mut dyn fmt::Write,
+) -> fmt::Result {
+    write!(w, "group_instance id={} decl={} inputs=[", instance.id.0, instance.decl.0)?;
+    for (i, input) in instance.inputs.iter().enumerate() {
+        if i > 0 { w.write_char(',')?; }
+        write!(w, "{{block={} vars=", input.block.0)?;
+        write_var_list(&input.vars, w)?;
+        write!(w, " ty={}}}", input.ty.0)?;
+    }
+    w.write_str("]\n")
+}
+
 // ============================================================================
 // WriteText for IRStmt  (Stmt<IRVarId>)
 // ============================================================================
@@ -203,6 +242,7 @@ fn write_rng_decl(d: &RngDecl, w: &mut dyn fmt::Write) -> fmt::Result {
 fn write_ir_stmt(
     result: IRVarId,
     stmt:   &Stmt<IRVarId>,
+    groups: &GroupMembership,
     w:      &mut dyn fmt::Write,
 ) -> fmt::Result {
     write_var(result, w)?;
@@ -309,12 +349,16 @@ fn write_ir_stmt(
         }
         _ => { w.write_str("<unknown-stmt>")?; }
     }
-    w.write_char('\n')
+    w.write_str(" groups=[")?;
+    for (i, id) in groups.stack().iter().enumerate() {
+        if i > 0 { w.write_char(',')?; }
+        write!(w, "{}", id.0)?;
+    }
+    w.write_str("]\n")
 }
 
 // ============================================================================
 // WriteText for IRTerminator
-// ============================================================================
 
 fn write_ir_terminator(term: &IRTerminator, w: &mut dyn fmt::Write) -> fmt::Result {
     match term {
@@ -364,7 +408,7 @@ fn write_ir_block(id: usize, block: &IRBlock<()>, w: &mut dyn fmt::Write) -> fmt
     w.write_char('\n')?;
     let base = block.params.len() as u32;
     for (i, stmt) in block.stmts.iter().enumerate() {
-        write_ir_stmt(IRVarId(base + i as u32), &stmt.kind, w)?;
+        write_ir_stmt(IRVarId(base + i as u32), &stmt.kind, stmt.instruction_groups(), w)?;
     }
     write_ir_terminator(&block.terminator, w)?;
     w.write_str("end_block\n")
@@ -382,6 +426,12 @@ impl WriteText for SavedIrBlocks {
         for d in &self.blocks.oracles { write_oracle_decl(d, w)?; }
         for d in &self.blocks.actions { write_action_decl(d, w)?; }
         for d in &self.blocks.rngs    { write_rng_decl(d, w)?;    }
+        for (id, decl) in self.blocks.instruction_groups.iter().enumerate() {
+            write_instruction_group_decl(id, decl, w)?;
+        }
+        for instance in &self.blocks.instruction_group_instances {
+            write_instruction_group_instance(instance, w)?;
+        }
         for (i, block) in self.blocks.blocks.iter().enumerate() {
             write_ir_block(i, block, w)?;
         }

@@ -9,10 +9,13 @@ use std::collections::BTreeMap;
 use std::vec;
 
 use volar_ir_common::{
-    ActionDecl, Constant, IrType, OracleDecl, RngDecl, StorageId, Stmt, Type, TypeId, TypeTable,
+    ActionDecl, Constant, GroupDisposition, GroupMembership, InstructionGroupDecl,
+    InstructionGroupDeclId, InstructionGroupId, InstructionGroupInstance, IrType, OracleDecl,
+    RngDecl, StorageId, Stmt, Type, TypeId, TypeTable,
 };
-use volar_ir::ir::{IRBranchTarget, 
-    IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRTerminator, IRVarId,
+use volar_ir::ir::{
+    IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRGroupValueRef,
+    IRTerminator, IRVarId,
 };
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
 
@@ -28,6 +31,12 @@ fn storage(n: u32) -> StorageId { StorageId(n) }
 fn c(hi: u128, lo: u128) -> Constant { Constant { hi, lo } }
 fn block_id(n: u32) -> IRBlockId { IRBlockId(n) }
 fn node<T>(kind: T) -> volar_ir_common::Node<T, volar_ir_common::StandardMetadata<()>> { volar_ir_common::Node::new(kind, (), None) }
+
+fn grouped_node<T>(kind: T, groups: &[u32]) -> volar_ir_common::Node<T, volar_ir_common::StandardMetadata<()>> {
+    volar_ir_common::Node::new(kind, (), None).with_instruction_groups(
+        GroupMembership::new(groups.iter().copied().map(InstructionGroupId).collect()),
+    )
+}
 
 fn simple_ir_module() -> SavedIrBlocks {
     // Type table: 0=bit, 1=u8, 2=vec(4,u8)
@@ -49,7 +58,7 @@ fn simple_ir_module() -> SavedIrBlocks {
 
     SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], instruction_groups: vec![], instruction_group_instances: vec![], pre_init: vec![], blocks: vec![block] },
     }
 }
 
@@ -91,7 +100,7 @@ fn ir_type_table() {
     let m = SavedIrBlocks {
         types,
         blocks: IRBlocks {
-            oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![],
+            oracles: vec![], actions: vec![], rngs: vec![], instruction_groups: vec![], instruction_group_instances: vec![], pre_init: vec![],
             blocks: vec![IRBlock {
                 params:     vec![],
                 stmts:      vec![],
@@ -119,6 +128,7 @@ fn ir_decls() {
             oracles: vec![OracleDecl { name: "my_oracle".into(), params: vec![ty(0)], results: vec![ty(1)] }],
             actions: vec![ActionDecl { name: "my_action".into(), params: vec![ty(1)], results: vec![ty(0)] }],
             rngs:    vec![RngDecl { name: "my_rng".into(), ty: ty(0) }],
+            instruction_groups: vec![], instruction_group_instances: vec![],
             pre_init: vec![],
             blocks: vec![IRBlock {
                 params:     vec![],
@@ -128,6 +138,52 @@ fn ir_decls() {
         },
     };
     round_trip_ir(m);
+}
+
+#[test]
+fn ir_instruction_groups_round_trip() {
+    let types = TypeTable(vec![IrType::Primitive(Type::Bit), IrType::Primitive(Type::_8)]);
+    let block = IRBlock {
+        params: vec![ty(0)],
+        stmts: vec![grouped_node(Stmt::Const(c(0, 1), ty(1)), &[7, 9])],
+        terminator: IRTerminator::Jmp {
+            target: IRBranchTarget::new(IRBlockTargetId::Return, vec![v(1)]),
+        },
+    };
+    round_trip_ir(SavedIrBlocks {
+        types,
+        blocks: IRBlocks {
+            oracles: vec![],
+            actions: vec![],
+            rngs: vec![],
+            instruction_groups: vec![
+                InstructionGroupDecl {
+                    name: "batch".into(),
+                    params: vec![ty(0)],
+                    disposition: GroupDisposition::Advisory,
+                },
+                InstructionGroupDecl {
+                    name: "bounded_loop".into(),
+                    params: vec![ty(1)],
+                    disposition: GroupDisposition::MustConsumeBeforeMovfuscation,
+                },
+            ],
+            instruction_group_instances: vec![
+                InstructionGroupInstance {
+                    id: InstructionGroupId(7),
+                    decl: InstructionGroupDeclId(0),
+                    inputs: vec![IRGroupValueRef { block: block_id(0), vars: vec![v(0)], ty: ty(0) }],
+                },
+                InstructionGroupInstance {
+                    id: InstructionGroupId(9),
+                    decl: InstructionGroupDeclId(1),
+                    inputs: vec![IRGroupValueRef { block: block_id(0), vars: vec![v(1)], ty: ty(1) }],
+                },
+            ],
+            pre_init: vec![],
+            blocks: vec![block],
+        },
+    });
 }
 
 #[test]
@@ -145,7 +201,7 @@ fn ir_stmt_storage_read_write() {
     };
     round_trip_ir(SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], instruction_groups: vec![], instruction_group_instances: vec![], pre_init: vec![], blocks: vec![block] },
     });
 }
 
@@ -159,7 +215,7 @@ fn ir_stmt_transmute() {
     };
     round_trip_ir(SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], instruction_groups: vec![], instruction_group_instances: vec![], pre_init: vec![], blocks: vec![block] },
     });
 }
 
@@ -176,7 +232,7 @@ fn ir_stmt_poly() {
     };
     round_trip_ir(SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], instruction_groups: vec![], instruction_group_instances: vec![], pre_init: vec![], blocks: vec![block] },
     });
 }
 
@@ -196,7 +252,7 @@ fn ir_stmt_rot_merge_splat_shuffle() {
     };
     round_trip_ir(SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], instruction_groups: vec![], instruction_group_instances: vec![], pre_init: vec![], blocks: vec![block] },
     });
 }
 
@@ -227,7 +283,7 @@ fn ir_stmt_oracle_action_rng() {
     };
     round_trip_ir(SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], instruction_groups: vec![], instruction_group_instances: vec![], pre_init: vec![], blocks: vec![block] },
     });
 }
 
@@ -239,10 +295,8 @@ fn ir_terminator_jmp_cond() {
         stmts:      vec![],
         terminator: IRTerminator::JumpCond {
             condition: v(0),
-            true_block:  IRBlockTargetId::Block(block_id(1)),
-            true_args:   vec![v(0)],
-            false_block: IRBlockTargetId::Return,
-            false_args:  vec![],
+            then_target: IRBranchTarget::new(IRBlockTargetId::Block(block_id(1)), vec![v(0)]),
+            else_target: IRBranchTarget::new(IRBlockTargetId::Return, vec![]),
         },
     };
     let block1 = IRBlock {
@@ -252,7 +306,7 @@ fn ir_terminator_jmp_cond() {
     };
     round_trip_ir(SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block0, block1] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], instruction_groups: vec![], instruction_group_instances: vec![], pre_init: vec![], blocks: vec![block0, block1] },
     });
 }
 
@@ -260,8 +314,8 @@ fn ir_terminator_jmp_cond() {
 fn ir_terminator_jmp_table() {
     let types = TypeTable(vec![IrType::Primitive(Type::_8)]);
     let mut cases = BTreeMap::new();
-    cases.insert(c(0, 1), (IRBlockTargetId::Block(block_id(1)), vec![]));
-    cases.insert(c(0, 2), (IRBlockTargetId::Return, vec![]));
+    cases.insert(c(0, 1), IRBranchTarget::new(IRBlockTargetId::Block(block_id(1)), vec![]));
+    cases.insert(c(0, 2), IRBranchTarget::new(IRBlockTargetId::Return, vec![]));
     let block0 = IRBlock {
         params:     vec![ty(0)],
         stmts:      vec![],
@@ -274,7 +328,7 @@ fn ir_terminator_jmp_table() {
     };
     round_trip_ir(SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block0, block1] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], instruction_groups: vec![], instruction_group_instances: vec![], pre_init: vec![], blocks: vec![block0, block1] },
     });
 }
 
@@ -288,7 +342,7 @@ fn ir_string_escaping() {
     };
     round_trip_ir(SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], instruction_groups: vec![], instruction_group_instances: vec![], pre_init: vec![], blocks: vec![block] },
     });
 }
 
@@ -303,7 +357,7 @@ fn ir_constant_large() {
     };
     round_trip_ir(SavedIrBlocks {
         types,
-        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], pre_init: vec![], blocks: vec![block] },
+        blocks: IRBlocks { oracles: vec![], actions: vec![], rngs: vec![], instruction_groups: vec![], instruction_group_instances: vec![], pre_init: vec![], blocks: vec![block] },
     });
 }
 
@@ -437,7 +491,7 @@ fn error_bir_wrong_version() {
 #[test]
 fn comments_and_blank_lines_ir() {
     let text = std::format!(
-        "volar-ir v1\n; type table\n\ntype 0 prim bit\n\n; blocks\nbegin_block 0\nparams []\njmp return args=[]\nend_block\n"
+        "volar-ir v2\n; type table\n\ntype 0 prim bit\n\n; blocks\nbegin_block 0\nparams []\njmp return args=[]\nend_block\n"
     );
     let parsed = SavedIrBlocks::parse_text(&text).unwrap_or_else(|e| panic!("parse with comments should work: {:?}", e));
     let text2 = parsed.to_text_string();

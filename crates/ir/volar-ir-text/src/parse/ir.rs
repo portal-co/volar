@@ -4,13 +4,16 @@
 
 use alloc::collections::BTreeMap;
 use alloc::string::ToString;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use volar_ir_common::{
-    ActionDecl, Constant, IrType, OracleDecl, RngDecl, StorageId, Stmt, Type, TypeId, TypeTable,
+    ActionDecl, Constant, GroupDisposition, GroupMembership, InstructionGroupDecl,
+    InstructionGroupDeclId, InstructionGroupId, InstructionGroupInstance, IrType, OracleDecl,
+    RngDecl, StorageId, Stmt, Type, TypeId, TypeTable,
 };
-use volar_ir::ir::{IRBranchTarget, 
-    IRBlock, IRBlockTargetId, IRBlocks, IRTerminator, IRVarId,
+use volar_ir::ir::{
+    IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRGroupValueRef, IRTerminator, IRVarId,
 };
 use volar_ir::boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator};
 
@@ -49,6 +52,51 @@ fn read_var_id_list(lex: &mut Lexer) -> Result<Vec<IRVarId>, ParseError> {
 
 fn read_type_id_list(lex: &mut Lexer) -> Result<Vec<TypeId>, ParseError> {
     Ok(lex.read_u32_list()?.into_iter().map(mk_type).collect())
+}
+
+fn read_group_membership(lex: &mut Lexer) -> Result<GroupMembership, ParseError> {
+    lex.expect_key("groups")?;
+    Ok(GroupMembership::new(
+        lex.read_u32_list()?.into_iter().map(InstructionGroupId).collect(),
+    ))
+}
+
+fn parse_group_disposition(lex: &mut Lexer) -> Result<GroupDisposition, ParseError> {
+    match lex.read_ident()? {
+        "advisory" => Ok(GroupDisposition::Advisory),
+        "must_consume_before_movfuscation" => Ok(GroupDisposition::MustConsumeBeforeMovfuscation),
+        other => Err(ParseError::UnknownDirective(other.into())),
+    }
+}
+
+fn parse_instruction_group_instance(
+    lex: &mut Lexer,
+) -> Result<InstructionGroupInstance<IRGroupValueRef>, ParseError> {
+    lex.expect_key("id")?;
+    let id = InstructionGroupId(lex.read_u32()?);
+    lex.expect_key("decl")?;
+    let decl = InstructionGroupDeclId(lex.read_u32()?);
+    lex.expect_key("inputs")?;
+    lex.expect_byte(b'[')?;
+    let mut inputs = Vec::new();
+    loop {
+        lex.skip();
+        if lex.try_byte(b']') { break; }
+        lex.expect_byte(b'{')?;
+        lex.expect_key("block")?;
+        let block = mk_block_id(lex.read_u32()?);
+        lex.expect_key("vars")?;
+        let vars = read_var_id_list(lex)?;
+        lex.expect_key("ty")?;
+        let ty = mk_type(lex.read_u32()?);
+        lex.expect_byte(b'}')?;
+        inputs.push(IRGroupValueRef { block, vars, ty });
+        lex.skip();
+        if lex.try_byte(b',') { continue; }
+        lex.expect_byte(b']')?;
+        break;
+    }
+    Ok(InstructionGroupInstance { id, decl, inputs })
 }
 
 // ============================================================================
@@ -373,7 +421,8 @@ fn parse_ir_block(lex: &mut Lexer) -> Result<IRBlock<()>, ParseError> {
             lex.expect_byte(b'=')?;
             let stmt_kw = lex.read_ident()?;
             let stmt = parse_ir_stmt(stmt_kw, lex)?;
-            stmts.push(volar_ir_common::Node::new(stmt, (), None));
+            let groups = read_group_membership(lex)?;
+            stmts.push(volar_ir_common::Node::new(stmt, (), None).with_instruction_groups(groups));
         } else {
             // keyword: either terminator or `end_block`
             let kw = lex.read_ident()?;
@@ -424,6 +473,8 @@ pub(crate) fn parse_saved_ir_blocks(s: &str) -> Result<SavedIrBlocks, ParseError
     let mut oracles: Vec<OracleDecl> = Vec::new();
     let mut actions: Vec<ActionDecl> = Vec::new();
     let mut rngs:    Vec<RngDecl>    = Vec::new();
+    let mut instruction_groups: Vec<InstructionGroupDecl> = Vec::new();
+    let mut instruction_group_instances: Vec<InstructionGroupInstance<IRGroupValueRef>> = Vec::new();
     let mut blocks:  Vec<IRBlock<()>> = Vec::new();
 
     loop {
@@ -461,6 +512,25 @@ pub(crate) fn parse_saved_ir_blocks(s: &str) -> Result<SavedIrBlocks, ParseError
                 let ty = mk_type(lex.read_u32()?);
                 rngs.push(RngDecl { name, ty });
             }
+            "group_decl" => {
+                let index = lex.read_u32()? as usize;
+                if index != instruction_groups.len() {
+                    return Err(ParseError::UnexpectedToken {
+                        line: lex.pos().line,
+                        col: lex.pos().col,
+                        got: "non-sequential instruction-group declaration ID".into(),
+                    });
+                }
+                let name = lex.read_string()?;
+                lex.expect_key("params")?;
+                let params = read_type_id_list(&mut lex)?;
+                lex.expect_key("disposition")?;
+                let disposition = parse_group_disposition(&mut lex)?;
+                instruction_groups.push(InstructionGroupDecl { name, params, disposition });
+            }
+            "group_instance" => {
+                instruction_group_instances.push(parse_instruction_group_instance(&mut lex)?);
+            }
             "begin_block" => {
                 let _block_id = lex.read_u32()?; // ignored; sequential
                 let block = parse_ir_block(&mut lex)?;
@@ -472,7 +542,15 @@ pub(crate) fn parse_saved_ir_blocks(s: &str) -> Result<SavedIrBlocks, ParseError
 
     Ok(SavedIrBlocks {
         types: TypeTable(types),
-        blocks: IRBlocks { oracles, actions, rngs, blocks, pre_init: vec![] },
+        blocks: IRBlocks {
+            oracles,
+            actions,
+            rngs,
+            instruction_groups,
+            instruction_group_instances,
+            blocks,
+            pre_init: vec![],
+        },
     })
 }
 

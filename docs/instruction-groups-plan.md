@@ -1,6 +1,6 @@
 # Instruction Groups for VAFFLE and Volar IR
 
-**Status:** Partially implemented: shared metadata/types, host-configured WASM markers, VAFFLE/Volar-IR propagation, substitution remapping, and lossy-pass barriers are in place. Dedicated group consumers, text/serialization support, and generator coverage remain pending.
+**Status:** Partially implemented: shared metadata/types, host-configured WASM markers, VAFFLE/Volar-IR propagation, substitution remapping, lossy-pass barriers, Volar-IR v2 text round-tripping, `rkyv` derives, and advisory-group fuzz fixtures are in place. Dedicated group consumers and a VAFFLE text format remain pending.
 **Prerequisite:** The implemented per-node metadata system described in [`metadata-container-plan.md`](metadata-container-plan.md).
 **Scope:** Tier-2 compiler/IR infrastructure.
 **@ai:** assisted
@@ -521,12 +521,20 @@ movfuscated code.
 
 ### 7.3 Text, serialisation, fuzzing, and interpreters
 
-Before group-bearing artefacts become persistent or fuzzable, update:
+- Volar-IR v2 text format prints/parses declaration tables, instances, typed
+  block-qualified inputs, and per-node stacks; older v1 snapshots are rejected
+  rather than silently dropping group metadata.
+- `rkyv` derives cover the core shared, VAFFLE, and Volar-IR group containers.
+- Advisory-group fuzz fixtures generate a valid declaration, instance, typed
+  capture, and per-node membership for both VAFFLE and Volar IR. They exercise
+  preservation/lowering metadata only; they must not be fed into a lossy pass
+  before a consumer exists.
 
-- Volar-IR and VAFFLE text formats to print declaration tables, instance
-  inputs, and per-node stack annotations;
-- `rkyv` derives and any stable serialisation schema;
-- random generators with well-nested, CFG-valid group fixtures; and
+A VAFFLE text format still does not exist and remains separate future work.
+Before group-bearing artefacts become persistent or fuzzable, continue to update:
+
+- any future VAFFLE text format to print declaration tables, typed packed
+  instance inputs, and per-value stack annotations; and
 - interpreters to ignore group metadata **only after validation**, since groups
   do not independently change ordinary computation semantics.
 

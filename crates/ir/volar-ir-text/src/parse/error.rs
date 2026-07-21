@@ -6,7 +6,7 @@ use alloc::string::String;
 
 #[derive(Debug)]
 pub enum ParseError {
-    /// No `volar-ir v1` / `volar-bir v1` header found.
+    /// No `volar-ir v2` / `volar-bir v1` header found.
     MissingVersionLine,
     /// Header found but the version number is not supported.
     UnsupportedVersion(String),

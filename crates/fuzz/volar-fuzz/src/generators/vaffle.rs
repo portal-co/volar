@@ -20,7 +20,11 @@
 use std::collections::BTreeMap;
 
 use vaffle::{Block, BlockId, FuncBody, FuncDecl, FuncId, Module, SigDecl, SigId, Target, Terminator, Value, ValueId};
-use volar_ir_common::{Constant, IrType, Node, OracleDecl, Stmt, StorageId, Type, TypeId, TypeTable};
+use volar_ir_common::{
+    Constant, GroupDisposition, GroupMembership, InstructionGroupDecl, InstructionGroupDeclId,
+    InstructionGroupId, InstructionGroupInstance, IrType, Node, OracleDecl, Stmt, StorageId,
+    Type, TypeId, TypeTable,
+};
 
 use crate::interpreter::ir::primitive_width;
 use crate::generators::ir::{PRIM_TYPES, RawIrStmt, RawTypeIdx};
@@ -174,6 +178,40 @@ pub fn interpret_vaffle(
     };
 
     (module, FuncId(0), param_widths)
+}
+
+/// Like [`interpret_vaffle`], but marks every generated operation as one
+/// well-nested advisory group. The group captures the first entry parameter
+/// when present, retaining its typed packed VAFFLE representation.
+pub fn interpret_vaffle_with_advisory_group(
+    raw_param_type_idxs: &[RawTypeIdx],
+    raw_stmts: &[RawIrStmt],
+) -> (Module, FuncId, Vec<usize>) {
+    let (mut module, func_id, param_widths) = interpret_vaffle(raw_param_type_idxs, raw_stmts);
+    let FuncDecl::Body(body) = &mut module.funcs[func_id.0] else {
+        unreachable!("interpret_vaffle always creates a function body")
+    };
+    let input = body.blocks[0].params.first().map(|(value, ty)| vaffle::PackedValue {
+        values: vec![*value],
+        ty: *ty,
+    });
+    module.instruction_groups.push(InstructionGroupDecl {
+        name: "fuzz_batch".into(),
+        params: input.as_ref().map_or_else(Vec::new, |input| vec![input.ty]),
+        disposition: GroupDisposition::Advisory,
+    });
+    body.instruction_group_instances.push(InstructionGroupInstance {
+        id: InstructionGroupId(0),
+        decl: InstructionGroupDeclId(0),
+        inputs: input.into_iter().collect(),
+    });
+    let membership = GroupMembership::new(vec![InstructionGroupId(0)]);
+    for value in &mut body.values {
+        if !matches!(value.kind, Value::Param { .. }) {
+            *value = value.clone().with_instruction_groups(membership.clone());
+        }
+    }
+    (module, func_id, param_widths)
 }
 
 // ============================================================================
@@ -1095,6 +1133,35 @@ mod strategies {
                             .collect()
                     };
 
+                    (module, func_id, inputs)
+                })
+            },
+        )
+    }
+
+    pub fn gen_vaffle_with_advisory_group_and_inputs(
+    ) -> impl Strategy<Value = (Module, FuncId, Vec<IrValue>)> {
+        proptest::collection::vec(any::<u8>(), 0usize..=4usize).prop_flat_map(
+            |raw_param_types| {
+                let widths: Vec<usize> = raw_param_types
+                    .iter()
+                    .map(|&idx| primitive_width(PRIM_TYPES[idx as usize % PRIM_TYPES.len()]))
+                    .collect();
+                let total_bits: usize = widths.iter().sum();
+                let raw_stmts = proptest::collection::vec(
+                    (any::<u8>(), any::<u32>(), any::<u32>(), any::<u128>(), any::<u128>()),
+                    1usize..=8usize,
+                );
+                let input_bits = proptest::collection::vec(any::<bool>(), total_bits);
+                (raw_stmts, input_bits).prop_map(move |(raw_stmts, input_bits)| {
+                    let (module, func_id, _) =
+                        interpret_vaffle_with_advisory_group(&raw_param_types, &raw_stmts);
+                    let mut offset = 0;
+                    let inputs = widths.iter().map(|&width| {
+                        let value = input_bits[offset..offset + width].to_vec();
+                        offset += width;
+                        value
+                    }).collect();
                     (module, func_id, inputs)
                 })
             },
