@@ -15,6 +15,8 @@ pub mod mpc;
 pub mod lwe;
 // pub mod xsat;
 pub mod tfhe;
+#[cfg(test)]
+mod tfhe_ginx_oracle;
 pub mod faest;
 pub use volar_primitives as field;
 
