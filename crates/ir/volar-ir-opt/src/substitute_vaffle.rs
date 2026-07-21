@@ -14,7 +14,10 @@ use alloc::{
     vec::Vec,
 };
 use vaffle::{Block, FuncBody, FuncDecl, FuncId, Module, SigDecl, Value};
-use volar_ir_common::{Node, Stmt, StorageAllocator, TypeRemapper};
+use volar_ir_common::{
+    InstructionGroupDeclId, InstructionGroupId, InstructionGroupInstance, Node,
+    Stmt, StorageAllocator, TypeRemapper,
+};
 use volar_provenance::DualProvenanceHandler;
 
 /// One substitution entry for a VAFFLE module.
@@ -116,6 +119,31 @@ fn apply_one(module: &mut Module, sub: &VaffleSubstitution) -> usize {
     }
 
     // ── 3. Remap and add replacement functions ───────────────────────────────
+    let mut group_id_map: BTreeMap<u32, InstructionGroupId> = BTreeMap::new();
+    let mut group_decl_map: BTreeMap<u32, InstructionGroupDeclId> = BTreeMap::new();
+    let mut next_group_id = module.funcs.iter().filter_map(|function| match function {
+        FuncDecl::Body(body) => body.instruction_group_instances.iter().map(|instance| instance.id.0).max(),
+        _ => None,
+    }).max().map_or(0, |id| id + 1);
+    for (old, declaration) in repl.instruction_groups.iter().enumerate() {
+        let mut declaration = declaration.clone();
+        tr.remap_instruction_group_decl(&mut declaration);
+        let decl = InstructionGroupDeclId(module.instruction_groups.len() as u32);
+        module.instruction_groups.push(declaration);
+        group_decl_map.insert(old as u32, decl);
+    }
+    for function in &repl.funcs {
+        if let FuncDecl::Body(body) = function {
+            for instance in &body.instruction_group_instances {
+                group_id_map.entry(instance.id.0).or_insert_with(|| {
+                    let id = InstructionGroupId(next_group_id);
+                    next_group_id += 1;
+                    id
+                });
+            }
+        }
+    }
+
     // Map guest SigId → host SigId.
     let mut sig_map: Vec<vaffle::SigId> = Vec::with_capacity(repl.sigs.len());
     for sig in &repl.sigs {
@@ -145,7 +173,7 @@ fn apply_one(module: &mut Module, sub: &VaffleSubstitution) -> usize {
             FuncDecl::Body(body) => {
                 let new_sig = sig_map[body.sig.0];
                 let new_values: Vec<Node<Value, volar_ir_common::StandardMetadata<()>>> = body.values.iter().map(|v| {
-                    remap_value(v, &tr, &sig_map, &func_map)
+                    remap_value(v, &tr, &sig_map, &func_map, &group_id_map)
                 }).collect();
                 let new_blocks: Vec<vaffle::Block> = body.blocks.iter().map(|b| {
                     vaffle::Block {
@@ -158,6 +186,12 @@ fn apply_one(module: &mut Module, sub: &VaffleSubstitution) -> usize {
                     sig: new_sig,
                     blocks: new_blocks,
                     values: new_values,
+                    instruction_group_instances: remap_group_instances(
+                        &body.instruction_group_instances,
+                        &group_id_map,
+                        &group_decl_map,
+                        &tr,
+                    ),
                     entry: body.entry,
                 })
             }
@@ -209,6 +243,31 @@ fn apply_one_r<R: Clone>(
     }
 
     // ── 3. Remap and add replacement functions ───────────────────────────────
+    let mut group_id_map: BTreeMap<u32, InstructionGroupId> = BTreeMap::new();
+    let mut group_decl_map: BTreeMap<u32, InstructionGroupDeclId> = BTreeMap::new();
+    let mut next_group_id = module.funcs.iter().filter_map(|function| match function {
+        FuncDecl::Body(body) => body.instruction_group_instances.iter().map(|instance| instance.id.0).max(),
+        _ => None,
+    }).max().map_or(0, |id| id + 1);
+    for (old, declaration) in replacement.instruction_groups.iter().enumerate() {
+        let mut declaration = declaration.clone();
+        tr.remap_instruction_group_decl(&mut declaration);
+        let decl = InstructionGroupDeclId(module.instruction_groups.len() as u32);
+        module.instruction_groups.push(declaration);
+        group_decl_map.insert(old as u32, decl);
+    }
+    for function in &replacement.funcs {
+        if let FuncDecl::Body(body) = function {
+            for instance in &body.instruction_group_instances {
+                group_id_map.entry(instance.id.0).or_insert_with(|| {
+                    let id = InstructionGroupId(next_group_id);
+                    next_group_id += 1;
+                    id
+                });
+            }
+        }
+    }
+
     let mut sig_map: Vec<vaffle::SigId> = Vec::with_capacity(replacement.sigs.len());
     for sig in &replacement.sigs {
         let new_sig = SigDecl {
@@ -248,7 +307,7 @@ fn apply_one_r<R: Clone>(
             FuncDecl::Body(body) => {
                 let new_sig = sig_map[body.sig.0];
                 let new_values: Vec<Node<Value, volar_ir_common::StandardMetadata<R>>> = body.values.iter().map(|v| {
-                    remap_value(v, &tr, &sig_map, &func_map)
+                    remap_value(v, &tr, &sig_map, &func_map, &group_id_map)
                 }).collect();
                 let new_blocks: Vec<Block> = body.blocks.into_iter().map(|b| Block {
                     params: b.params.iter().map(|(vid, tid)| (*vid, tr.remap(*tid))).collect(),
@@ -259,6 +318,12 @@ fn apply_one_r<R: Clone>(
                     sig: new_sig,
                     blocks: new_blocks,
                     values: new_values,
+                    instruction_group_instances: remap_group_instances(
+                        &body.instruction_group_instances,
+                        &group_id_map,
+                        &group_decl_map,
+                        &tr,
+                    ),
                     entry: body.entry,
                 })
             }
@@ -336,6 +401,7 @@ fn map_module_prov<P: Clone, R: Clone>(module: Module<P>, f: impl Fn(&P) -> R) -
         types: module.types,
         oracles: module.oracles,
         actions: module.actions,
+        instruction_groups: module.instruction_groups,
         funcs: module.funcs.into_iter().map(|fd| map_funcdecl_prov(fd, &f)).collect(),
         sigs: module.sigs,
         exports: module.exports,
@@ -348,6 +414,7 @@ fn clone_map_module_prov<Q: Clone, R: Clone>(module: &Module<Q>, f: impl Fn(&Q) 
         types: module.types.clone(),
         oracles: module.oracles.clone(),
         actions: module.actions.clone(),
+        instruction_groups: module.instruction_groups.clone(),
         funcs: module.funcs.iter().map(|fd| clone_map_funcdecl_prov(fd, &f)).collect(),
         sigs: module.sigs.clone(),
         exports: module.exports.clone(),
@@ -365,6 +432,7 @@ fn map_funcdecl_prov<P: Clone, R: Clone>(fd: FuncDecl<P>, f: &impl Fn(&P) -> R) 
             // entry that each `ValueId` in `stmts` points to.
             blocks: body.blocks,
             values: body.values.into_iter().map(|v| v.map_prov(|p| Ok::<_, core::convert::Infallible>(f(&p))).expect("infallible provenance mapping")).collect(),
+            instruction_group_instances: body.instruction_group_instances,
             entry: body.entry,
         }),
         _ => panic!("map_funcdecl_prov: unhandled FuncDecl variant"),
@@ -382,8 +450,11 @@ fn clone_map_funcdecl_prov<Q: Clone, R: Clone>(fd: &FuncDecl<Q>, f: &impl Fn(&Q)
             sig: body.sig,
             blocks: body.blocks.clone(),
             values: body.values.iter()
-                .map(|v| Node::new(v.kind.clone(), f(v.provenance()), v.side()))
+                .cloned()
+                .map(|v| v.map_prov(|p| Ok::<_, core::convert::Infallible>(f(&p)))
+                    .expect("infallible provenance mapping"))
                 .collect(),
+            instruction_group_instances: body.instruction_group_instances.clone(),
             entry: body.entry,
         }),
         _ => panic!("clone_map_funcdecl_prov: unhandled FuncDecl variant"),
@@ -483,6 +554,7 @@ fn remap_value<P: Clone>(
     tr: &TypeRemapper,
     _sig_map: &[vaffle::SigId],
     func_map: &[FuncId],
+    group_ids: &BTreeMap<u32, InstructionGroupId>,
 ) -> Node<Value, volar_ir_common::StandardMetadata<P>> {
     let kind = match &v.kind {
         Value::Param { block, ty, idx } => Value::Param {
@@ -517,7 +589,29 @@ fn remap_value<P: Clone>(
         },
         _ => panic!("remap_value: unhandled Value variant — add remapping for this variant"),
     };
-    Node::new(kind, v.provenance().clone(), v.side())
+    v.derived(kind)
+        .map_instruction_groups(|groups| groups.map_ids(|id| {
+            group_ids.get(&id.0).copied().ok_or(())
+        }))
+        .expect("every group membership ID must be remapped during cloning")
+}
+
+fn remap_group_instances(
+    instances: &[InstructionGroupInstance<vaffle::PackedValue>],
+    ids: &BTreeMap<u32, InstructionGroupId>,
+    declarations: &BTreeMap<u32, InstructionGroupDeclId>,
+    types: &TypeRemapper,
+) -> Vec<InstructionGroupInstance<vaffle::PackedValue>> {
+    instances.iter().cloned().map(|instance| InstructionGroupInstance {
+        id: *ids.get(&instance.id.0)
+            .expect("instruction-group instance ID was not allocated during cloning"),
+        decl: *declarations.get(&instance.decl.0)
+            .expect("instruction-group declaration was not remapped during cloning"),
+        inputs: instance.inputs.into_iter().map(|input| vaffle::PackedValue {
+            values: input.values,
+            ty: types.remap(input.ty),
+        }).collect(),
+    }).collect()
 }
 
 /// Build a [`StorageAllocator`] seeded above all `StorageId`s in use in `module`.
@@ -555,6 +649,7 @@ mod tests {
             types: TypeTable::new(),
             oracles: vec![],
             actions: vec![],
+            instruction_groups: alloc::vec![],
             funcs: vec![],
             sigs: vec![],
             exports: BTreeMap::new(),
@@ -603,6 +698,7 @@ mod tests {
             sig: sig_id,
             blocks: vec![block],
             values,
+            instruction_group_instances: alloc::vec![],
             entry: BlockId(0),
         }));
         (m, sig_id)
@@ -627,6 +723,7 @@ mod tests {
             sig: sig_id,
             blocks: vec![block],
             values,
+            instruction_group_instances: alloc::vec![],
             entry: BlockId(0),
         }));
         m.exports.insert("entry".to_string(), entry_fid);
@@ -697,6 +794,7 @@ mod tests {
             sig: vaffle::SigId(0),
             blocks: vec![block],
             values,
+            instruction_group_instances: alloc::vec![],
             entry: BlockId(0),
         }));
 

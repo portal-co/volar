@@ -1,7 +1,8 @@
 use alloc::{collections::BTreeMap, string::String};
+use volar_ir_common::{InstructionGroupDecl, InstructionGroupDeclId};
 use volar_side::SideId;
 
-/// How a WAFFLE function import maps to an oracle or action.
+/// How a WAFFLE function import maps to an oracle, action, or group marker.
 pub enum WaffleImportKind {
     /// Pure oracle — all WAFFLE params → `OracleDecl::params`; WAFFLE results → `OracleDecl::results`.
     Oracle {
@@ -20,9 +21,25 @@ pub enum WaffleImportKind {
         /// site, if any (see `volar-side`).
         side: Option<SideId>,
     },
+    /// Paired begin/end markers for a static instruction group.
+    ///
+    /// The declaration is host-configured. Marker calls disappear during
+    /// frontend lowering and never become runtime external calls.
+    InstructionGroup {
+        declaration: InstructionGroupDecl,
+        declaration_id: InstructionGroupDeclId,
+        marker: InstructionGroupMarker,
+    },
 }
 
-/// Maps WAFFLE import names to their oracle/action declarations.
+/// Which marker role an instruction-group import has.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InstructionGroupMarker {
+    Begin,
+    End,
+}
+
+/// Maps WAFFLE import names to external declarations and group markers.
 ///
 /// Pass to [`lower_waffle_module`](crate::lower_waffle_module) so that
 /// matching imports are registered as `OracleDecl`/`ActionDecl` entries in
@@ -62,8 +79,50 @@ impl WaffleImportConfig {
         self
     }
 
-    /// Like [`with_oracle`](Self::with_oracle), but attaches `side` to every
-    /// call/output value emitted at this oracle's call sites.
+    pub fn with_instruction_group(
+        mut self,
+        begin_waffle_name: impl Into<String>,
+        end_waffle_name: impl Into<String>,
+        declaration: InstructionGroupDecl,
+    ) -> Self {
+        let declaration_id = InstructionGroupDeclId(
+            self.imports.values().filter_map(|kind| match kind {
+                WaffleImportKind::InstructionGroup { declaration_id, .. } => Some(declaration_id.0),
+                _ => None,
+            }).max().map_or(0, |id| id + 1),
+        );
+        self.imports.insert(
+            begin_waffle_name.into(),
+            WaffleImportKind::InstructionGroup {
+                declaration: declaration.clone(),
+                declaration_id,
+                marker: InstructionGroupMarker::Begin,
+            },
+        );
+        self.imports.insert(
+            end_waffle_name.into(),
+            WaffleImportKind::InstructionGroup {
+                declaration,
+                declaration_id,
+                marker: InstructionGroupMarker::End,
+            },
+        );
+        self
+    }
+
+    /// Return the unique configured instruction-group declarations in their
+    /// stable declaration-ID order.
+    pub fn instruction_groups(&self) -> alloc::vec::Vec<(InstructionGroupDeclId, InstructionGroupDecl)> {
+        let mut groups = BTreeMap::new();
+        for kind in self.imports.values() {
+            if let WaffleImportKind::InstructionGroup { declaration, declaration_id, .. } = kind {
+                groups.entry(declaration_id.0).or_insert_with(|| declaration.clone());
+            }
+        }
+        groups.into_iter()
+            .map(|(id, declaration)| (InstructionGroupDeclId(id), declaration))
+            .collect()
+    }
     pub fn with_oracle_side(
         mut self,
         waffle_name: impl Into<String>,

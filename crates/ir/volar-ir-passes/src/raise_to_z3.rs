@@ -64,6 +64,8 @@ pub fn raise_bits_to_z3<P: Clone>(
         oracles: blocks.oracles.clone(),
         actions: blocks.actions.clone(),
         rngs: blocks.rngs.clone(),
+        instruction_groups: blocks.instruction_groups.clone(),
+        instruction_group_instances: blocks.instruction_group_instances.clone(),
         blocks: blocks
             .blocks
             .iter()
@@ -85,7 +87,7 @@ fn lift_block<P: Clone>(
     let new_stmts = block
         .stmts
         .iter()
-        .map(|s| volar_ir_common::Node::new(lift_stmt(&s.kind, bit_ty, z3_ty), s.provenance().clone(), s.side()))
+        .map(|s| s.derived(lift_stmt(&s.kind, bit_ty, z3_ty)))
         .collect();
     IRBlock {
         params: block.params.clone(),

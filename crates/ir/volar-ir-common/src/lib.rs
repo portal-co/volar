@@ -7,7 +7,7 @@ extern crate alloc;
 pub mod complexity;
 pub use complexity::{MeasureSpec, ReentryHint, StructRef};
 
-use alloc::{collections::btree_map::BTreeMap, vec::Vec};
+use alloc::{collections::btree_map::BTreeMap, string::String, vec::Vec};
 
 /// Primitive (non-compound) types shared across Volar IR and VAFFLE.
 ///
@@ -208,6 +208,72 @@ pub struct RngDecl {
     pub name: alloc::string::String,
     /// Type of the fresh random value produced on each call.
     pub ty: TypeId,
+}
+
+/// Declaration of a static instruction-group kind.
+///
+/// Instruction groups annotate a validated, lexically nested region of ordinary
+/// IR operations. They are compiler metadata rather than runtime calls.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct InstructionGroupDecl {
+    /// Host-configured name of this group kind.
+    pub name: String,
+    /// Captured-input types in declaration order.
+    pub params: Vec<TypeId>,
+    /// Whether the group must be consumed before a lossy lowering boundary.
+    pub disposition: GroupDisposition,
+}
+
+/// Compiler contract for an instruction-group declaration.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[non_exhaustive]
+pub enum GroupDisposition {
+    /// A consumer may explicitly erase this group after declining to specialise it.
+    Advisory,
+    /// A consumer must validate and lower this group before movfuscation.
+    MustConsumeBeforeMovfuscation,
+}
+
+/// Identity of one instruction-group declaration in a module table.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct InstructionGroupDeclId(pub u32);
+
+/// Module-unique identity of one static begin/end group instance.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct InstructionGroupId(pub u32);
+
+/// A declared instruction-group instance and its captured typed inputs.
+///
+/// `V` is representation-specific: VAFFLE stores packed values, while Volar
+/// IR stores block-qualified SSA references.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct InstructionGroupInstance<V> {
+    /// Module-unique static instance identity.
+    pub id: InstructionGroupId,
+    /// Declared group kind.
+    pub decl: InstructionGroupDeclId,
+    /// Typed values captured by the begin marker.
+    pub inputs: Vec<V>,
+}
+
+impl<V> InstructionGroupInstance<V> {
+    /// Fallibly map the instance's captured value references without changing
+    /// its identity or declaration.
+    pub fn map_inputs<U, E>(
+        self,
+        f: impl FnMut(V) -> Result<U, E>,
+    ) -> Result<InstructionGroupInstance<U>, E> {
+        Ok(InstructionGroupInstance {
+            id: self.id,
+            decl: self.decl,
+            inputs: self.inputs.into_iter().map(f).collect::<Result<Vec<_>, _>>()?,
+        })
+    }
 }
 
 // ============================================================================
@@ -889,6 +955,11 @@ impl TypeRemapper {
     pub fn remap_rng_decl(&self, decl: &mut RngDecl) {
         decl.ty = self.remap(decl.ty);
     }
+
+    /// Remap captured-input [`TypeId`]s inside an [`InstructionGroupDecl`].
+    pub fn remap_instruction_group_decl(&self, decl: &mut InstructionGroupDecl) {
+        for ty in &mut decl.params { *ty = self.remap(*ty); }
+    }
 }
 
 /// Allocates fresh [`StorageId`]s above the range already in use.
@@ -938,6 +1009,98 @@ pub trait NodeMetadata: Clone {
     fn side(&self) -> &Self::Side;
 }
 
+/// A lexically ordered stack of static instruction-group instances.
+///
+/// The stack is private so additions/remapping go through explicit operations;
+/// the outermost group is at index zero.
+#[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct GroupMembership {
+    stack: Vec<InstructionGroupId>,
+}
+
+impl GroupMembership {
+    /// Construct an empty group stack.
+    pub fn empty() -> Self { Self { stack: Vec::new() } }
+
+    /// Construct a membership stack from already validated outer-to-inner IDs.
+    pub fn new(stack: Vec<InstructionGroupId>) -> Self { Self { stack } }
+
+    /// Borrow the outer-to-inner static instance IDs.
+    pub fn stack(&self) -> &[InstructionGroupId] { &self.stack }
+
+    /// Whether this node belongs to no instruction group.
+    pub fn is_empty(&self) -> bool { self.stack.is_empty() }
+
+    /// Fallibly remap every static instance ID.
+    ///
+    /// This remaps node metadata during cloning, inlining, or module-level ID
+    /// renumbering. It intentionally does not touch captured SSA references in
+    /// [`InstructionGroupInstance`] tables.
+    pub fn map_ids<E>(
+        self,
+        mut f: impl FnMut(InstructionGroupId) -> Result<InstructionGroupId, E>,
+    ) -> Result<Self, E> {
+        Ok(Self { stack: self.stack.into_iter().map(&mut f).collect::<Result<Vec<_>, _>>()? })
+    }
+}
+
+/// Policy for combining two instruction-group membership stacks.
+///
+/// A two-source transformation must state this policy rather than inheriting a
+/// stack from an arbitrary source.
+pub trait MapGroupMembership2 {
+    /// Error returned when the two memberships cannot be combined.
+    type Error;
+
+    /// Produce the membership for the combined result.
+    fn map_instruction_groups2(
+        &self,
+        left: GroupMembership,
+        right: GroupMembership,
+    ) -> Result<GroupMembership, Self::Error>;
+}
+
+/// Error returned by [`RequireEqualGroupMembership`] when source stacks differ.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct GroupMembershipMismatch;
+
+/// Two-source group policy that preserves a stack only when both inputs have
+/// exactly the same membership.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct RequireEqualGroupMembership;
+
+impl MapGroupMembership2 for RequireEqualGroupMembership {
+    type Error = GroupMembershipMismatch;
+
+    fn map_instruction_groups2(
+        &self,
+        left: GroupMembership,
+        right: GroupMembership,
+    ) -> Result<GroupMembership, Self::Error> {
+        if left == right { Ok(left) } else { Err(GroupMembershipMismatch) }
+    }
+}
+
+/// Function-backed instruction-group merge policy for an audited specialised
+/// consumer, such as a group replacement lowering.
+pub struct GroupMembershipMap2<F>(pub F);
+
+impl<F, E> MapGroupMembership2 for GroupMembershipMap2<F>
+where
+    F: Fn(GroupMembership, GroupMembership) -> Result<GroupMembership, E>,
+{
+    type Error = E;
+
+    fn map_instruction_groups2(
+        &self,
+        left: GroupMembership,
+        right: GroupMembership,
+    ) -> Result<GroupMembership, Self::Error> {
+        (self.0)(left, right)
+    }
+}
+
 /// The standard metadata used by Volar's IR pipeline.
 ///
 /// Fields are private so a payload rewrite cannot accidentally omit a future
@@ -948,12 +1111,13 @@ pub trait NodeMetadata: Clone {
 pub struct StandardMetadata<P: Clone = ()> {
     provenance: P,
     side: Option<volar_side::SideId>,
+    instruction_groups: GroupMembership,
 }
 
 impl<P: Clone> StandardMetadata<P> {
     /// Create standard metadata from explicit provenance and side annotations.
     pub fn new(provenance: P, side: Option<volar_side::SideId>) -> Self {
-        Self { provenance, side }
+        Self { provenance, side, instruction_groups: GroupMembership::empty() }
     }
 
     /// Map provenance without changing the side annotation.
@@ -961,8 +1125,30 @@ impl<P: Clone> StandardMetadata<P> {
         self,
         f: impl FnOnce(P) -> Result<Q, E>,
     ) -> Result<StandardMetadata<Q>, E> {
-        Ok(StandardMetadata { provenance: f(self.provenance)?, side: self.side })
+        Ok(StandardMetadata {
+            provenance: f(self.provenance)?,
+            side: self.side,
+            instruction_groups: self.instruction_groups,
+        })
     }
+
+    /// Replace instruction-group membership without changing other metadata.
+    pub fn with_instruction_groups(mut self, groups: GroupMembership) -> Self {
+        self.instruction_groups = groups;
+        self
+    }
+
+    /// Fallibly map instruction-group membership without changing other metadata.
+    pub fn map_instruction_groups<E>(
+        mut self,
+        f: impl FnOnce(GroupMembership) -> Result<GroupMembership, E>,
+    ) -> Result<Self, E> {
+        self.instruction_groups = f(self.instruction_groups)?;
+        Ok(self)
+    }
+
+    /// Borrow this node's instruction-group membership.
+    pub fn instruction_groups(&self) -> &GroupMembership { &self.instruction_groups }
 
     /// Replace the side annotation without changing provenance.
     pub fn with_side(mut self, side: Option<volar_side::SideId>) -> Self {
@@ -1044,39 +1230,54 @@ impl MapSide2 for DefaultSideMap2 {
 /// Error reported by [`StandardMetadataMap2`].
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[non_exhaustive]
-pub enum StandardMetadataMap2Error<E> {
+pub enum StandardMetadataMap2Error<SideError, GroupError> {
     /// The configured side policy rejected the pair.
-    Side(E),
+    Side(SideError),
+    /// The configured instruction-group policy rejected the pair.
+    InstructionGroups(GroupError),
 }
 
 /// Standard metadata merge policy.
 ///
 /// Provenance is combined by a [`volar_provenance::DualProvenanceHandler`];
-/// side uses [`DefaultSideMap2`] unless a specialised side policy is supplied.
-pub struct StandardMetadataMap2<Prov, Side = DefaultSideMap2> {
+/// side uses [`DefaultSideMap2`] and group membership requires exact equality
+/// unless specialised policies are supplied.
+pub struct StandardMetadataMap2<
+    Prov,
+    Side = DefaultSideMap2,
+    Groups = RequireEqualGroupMembership,
+> {
     /// Provenance merge policy.
     pub provenance: Prov,
     /// Side merge policy.
     pub side: Side,
+    /// Instruction-group membership merge policy.
+    pub instruction_groups: Groups,
 }
 
-impl<Prov> StandardMetadataMap2<Prov, DefaultSideMap2> {
-    /// Construct the standard policy with default side propagation.
+impl<Prov> StandardMetadataMap2<Prov, DefaultSideMap2, RequireEqualGroupMembership> {
+    /// Construct the standard policy with default side propagation and exact
+    /// instruction-group stack preservation.
     pub fn new(provenance: Prov) -> Self {
-        Self { provenance, side: DefaultSideMap2 }
+        Self {
+            provenance,
+            side: DefaultSideMap2,
+            instruction_groups: RequireEqualGroupMembership,
+        }
     }
 }
 
-impl<P1, P2, Prov, Side> MapMetadata2<StandardMetadata<P1>, StandardMetadata<P2>>
-    for StandardMetadataMap2<Prov, Side>
+impl<P1, P2, Prov, Side, Groups> MapMetadata2<StandardMetadata<P1>, StandardMetadata<P2>>
+    for StandardMetadataMap2<Prov, Side, Groups>
 where
     P1: Clone,
     P2: Clone,
     Prov: volar_provenance::DualProvenanceHandler<P1, P2>,
     Side: MapSide2,
+    Groups: MapGroupMembership2,
 {
     type Output = StandardMetadata<Prov::Output>;
-    type Error = StandardMetadataMap2Error<Side::Error>;
+    type Error = StandardMetadataMap2Error<Side::Error, Groups::Error>;
 
     fn map_metadata2(
         &self,
@@ -1085,14 +1286,19 @@ where
     ) -> Result<Self::Output, Self::Error> {
         let side = self.side.map_side2(left.side, right.side)
             .map_err(StandardMetadataMap2Error::Side)?;
-        Ok(StandardMetadata::new(
-            self.provenance.merge(&left.provenance, &right.provenance),
+        let instruction_groups = self
+            .instruction_groups
+            .map_instruction_groups2(left.instruction_groups, right.instruction_groups)
+            .map_err(StandardMetadataMap2Error::InstructionGroups)?;
+        Ok(StandardMetadata {
+            provenance: self.provenance.merge(&left.provenance, &right.provenance),
             side,
-        ))
+            instruction_groups,
+        })
     }
 }
 
-impl<Prov, Side> StandardMetadataMap2<Prov, Side> {
+impl<Prov, Side, Groups> StandardMetadataMap2<Prov, Side, Groups> {
     /// Map metadata originating solely from the left source.
     ///
     /// The side annotation is copied: a one-source derivation is not a side
@@ -1107,7 +1313,7 @@ impl<Prov, Side> StandardMetadataMap2<Prov, Side> {
         Ok(StandardMetadata::new(
             self.provenance.map_left(&left.provenance),
             left.side,
-        ))
+        ).with_instruction_groups(left.instruction_groups))
     }
 
     /// Map metadata originating solely from the right source.
@@ -1124,7 +1330,7 @@ impl<Prov, Side> StandardMetadataMap2<Prov, Side> {
         Ok(StandardMetadata::new(
             self.provenance.map_right(&right.provenance),
             right.side,
-        ))
+        ).with_instruction_groups(right.instruction_groups))
     }
 }
 
@@ -1200,6 +1406,24 @@ impl<T, P: Clone> Node<T, StandardMetadata<P>> {
     /// Return this node's side annotation.
     pub fn side(&self) -> Option<volar_side::SideId> { self.metadata.side }
 
+    /// Borrow this node's instruction-group membership.
+    pub fn instruction_groups(&self) -> &GroupMembership { self.metadata.instruction_groups() }
+
+    /// Replace this node's instruction-group membership while preserving
+    /// provenance and side annotations.
+    pub fn with_instruction_groups(self, groups: GroupMembership) -> Self {
+        Node::with_metadata(self.kind, self.metadata.with_instruction_groups(groups))
+    }
+
+    /// Fallibly map this node's instruction-group membership while preserving
+    /// provenance and side annotations.
+    pub fn map_instruction_groups<E>(
+        self,
+        f: impl FnOnce(GroupMembership) -> Result<GroupMembership, E>,
+    ) -> Result<Self, E> {
+        self.map_metadata(|metadata| metadata.map_instruction_groups(f))
+    }
+
     /// Fallibly map this node's provenance while preserving all other metadata.
     pub fn map_prov<Q: Clone, E>(
         self,
@@ -1244,7 +1468,7 @@ impl<T, P: Clone> Node<T, StandardMetadata<P>> {
 mod metadata_tests {
     extern crate std;
 
-    use alloc::borrow::ToOwned;
+    use alloc::{borrow::ToOwned, vec};
     use super::*;
     use volar_provenance::MergePair;
 
@@ -1303,6 +1527,7 @@ mod metadata_tests {
         let mapper = StandardMetadataMap2 {
             provenance: MergePair(|_: &()| (), |_: &()| (), |_: &(), _: &()| ()),
             side: RejectSide,
+            instruction_groups: RequireEqualGroupMembership,
         };
 
         assert!(matches!(
@@ -1313,5 +1538,48 @@ mod metadata_tests {
             left.map2(right, |a, b| Ok::<_, u16>(a + b), &mapper),
             Err(Map2Error::Metadata(StandardMetadataMap2Error::Side(7))),
         ));
+    }
+
+    #[test]
+    fn group_membership_is_preserved_and_requires_an_explicit_valid_merge() {
+        let groups = GroupMembership::new(vec![InstructionGroupId(2), InstructionGroupId(5)]);
+        let node = Node::new(3u32, "source", None).with_instruction_groups(groups.clone());
+        assert_eq!(node.derived(4u32).instruction_groups(), &groups);
+        assert_eq!(
+            node.clone()
+                .map_kind(|kind| Ok::<_, ()>(kind + 1))
+                .expect("infallible payload mapping")
+                .instruction_groups(),
+            &groups,
+        );
+
+        let mapper = StandardMetadataMap2::new(MergePair(
+            |left: &&str| (*left).to_owned(),
+            |right: &&str| (*right).to_owned(),
+            |left: &&str, right: &&str| std::format!("{left}+{right}"),
+        ));
+        assert!(node.clone().map2(
+            Node::new(4u32, "other", None),
+            |left, right| Ok::<_, ()>(left + right),
+            &mapper,
+        ).is_err());
+
+        let mapped = node.map2(
+            Node::new(4u32, "other", None).with_instruction_groups(groups.clone()),
+            |left, right| Ok::<_, ()>(left + right),
+            &mapper,
+        ).expect("equal group membership");
+        assert_eq!(mapped.instruction_groups(), &groups);
+    }
+
+    #[test]
+    fn group_membership_id_mapping_is_fallible() {
+        let groups = GroupMembership::new(vec![InstructionGroupId(2), InstructionGroupId(5)]);
+        let remapped = groups.clone().map_ids(|id| Ok::<_, ()>(InstructionGroupId(id.0 + 10)))
+            .expect("infallible ID remapping");
+        assert_eq!(remapped.stack(), &[InstructionGroupId(12), InstructionGroupId(15)]);
+        assert!(groups.map_ids(|id| {
+            if id == InstructionGroupId(5) { Err(()) } else { Ok(id) }
+        }).is_err());
     }
 }

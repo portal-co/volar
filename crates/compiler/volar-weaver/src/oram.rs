@@ -398,6 +398,8 @@ pub fn oram_begin_circuit(config: &OramConfig) -> (IRBlocks, IRTypes) {
         oracles: vec![],
         actions: vec![begin_decl],
         rngs: vec![],
+            instruction_groups: alloc::vec![],
+            instruction_group_instances: alloc::vec![],
         blocks: vec![block],
         pre_init: vec![],
     };
@@ -494,6 +496,10 @@ pub fn rewrite_storage_to_oram<P: Clone>(
     if oram_map.is_empty() {
         return ir.clone();
     }
+    volar_ir_passes::movfuscate::reject_unconsumed_instruction_groups(
+        ir,
+        "rewrite_storage_to_oram",
+    );
 
     // Pre-intern shared types.
     let u64_ty = types.intern(IRType::Primitive(PrimType::_64));
@@ -544,6 +550,8 @@ pub fn rewrite_storage_to_oram<P: Clone>(
         oracles: ir.oracles.clone(),
         actions: new_actions,
         rngs: ir.rngs.clone(),
+        instruction_groups: ir.instruction_groups.clone(),
+        instruction_group_instances: ir.instruction_group_instances.clone(),
         blocks: new_blocks,
         pre_init: ir.pre_init.clone(),
     }
@@ -571,6 +579,7 @@ fn rewrite_block<P: Clone>(
     let mut new_stmts: Vec<IRStmt> = Vec::new();
     let mut new_provs: Vec<P> = Vec::new();
     let mut new_sides: Vec<Option<SideId>> = Vec::new();
+    let mut new_groups = Vec::new();
     let mut var_remap: BTreeMap<u32, u32> = BTreeMap::new();
 
     // Block params keep their IDs (0..num_params).
@@ -582,6 +591,7 @@ fn rewrite_block<P: Clone>(
         let stmt = &node.kind;
         let prov = node.provenance();
         let side = node.side();
+        let groups = node.instruction_groups().clone();
         let old_var = num_params + stmt_idx as u32;
 
         match stmt {
@@ -612,6 +622,7 @@ fn rewrite_block<P: Clone>(
                     remapped_addr,
                     None, // No write data → read mode
                 );
+                new_groups.resize(new_stmts.len(), groups.clone());
 
                 var_remap.insert(old_var, result_var);
             }
@@ -643,6 +654,7 @@ fn rewrite_block<P: Clone>(
                     remapped_addr,
                     Some(remapped_src), // Write data → write mode
                 );
+                new_groups.resize(new_stmts.len(), groups.clone());
 
                 var_remap.insert(old_var, result_var);
             }
@@ -653,6 +665,7 @@ fn rewrite_block<P: Clone>(
                 new_stmts.push(remapped);
                 new_provs.push(prov.clone());
                 new_sides.push(side);
+                new_groups.push(groups);
                 var_remap.insert(old_var, num_params + new_stmts.len() as u32 - 1);
             }
         }
@@ -667,7 +680,8 @@ fn rewrite_block<P: Clone>(
             .into_iter()
             .zip(new_provs)
             .zip(new_sides)
-            .map(|((stmt, prov), side)| Node::new(stmt, prov, side))
+            .zip(new_groups)
+            .map(|(((stmt, prov), side), groups)| Node::new(stmt, prov, side).with_instruction_groups(groups))
             .collect(),
         terminator: new_terminator,
     }
@@ -1471,6 +1485,8 @@ mod tests_rewrite {
             oracles: vec![],
             actions: vec![],
             rngs: vec![],
+            instruction_groups: alloc::vec![],
+            instruction_group_instances: alloc::vec![],
             blocks: vec![IRBlock {
                 params,
                 stmts,
@@ -2238,6 +2254,8 @@ mod tests_linking {
             oracles: vec![],
             actions: vec![],
             rngs: vec![],
+            instruction_groups: alloc::vec![],
+            instruction_group_instances: alloc::vec![],
             pre_init: vec![],
             blocks: vec![IRBlock {
                 params: vec![u64_ty, data_ty],
@@ -2329,6 +2347,8 @@ mod tests_linking {
             oracles: vec![],
             actions: vec![],
             rngs: vec![],
+            instruction_groups: alloc::vec![],
+            instruction_group_instances: alloc::vec![],
             pre_init: vec![],
             blocks: vec![IRBlock {
                 params: vec![u64_ty],

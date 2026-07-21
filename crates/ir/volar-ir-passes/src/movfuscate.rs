@@ -2374,6 +2374,44 @@ pub fn movfuscate_biir<P: Clone>(blocks: &BIrBlocks<P>) -> BIrBlocks<P> {
     result
 }
 
+/// Reject groups that a pass cannot preserve without an explicit group
+/// consumer. Required groups always fail; advisory groups may pass only when
+/// their instances have no captured SSA references and no node is a member,
+/// so retaining the declaration table is structurally safe.
+pub fn reject_unconsumed_instruction_groups<P>(blocks: &IRBlocks<P>, pass: &str)
+where
+    P: Clone,
+{
+    for instance in &blocks.instruction_group_instances {
+        let declaration = blocks.instruction_groups.get(instance.decl.0 as usize)
+            .unwrap_or_else(|| panic!(
+                "{pass}: instruction-group instance {:?} references missing declaration {:?}",
+                instance.id, instance.decl,
+            ));
+        if matches!(declaration.disposition, volar_ir_common::GroupDisposition::MustConsumeBeforeMovfuscation) {
+            panic!(
+                "{pass}: required instruction group {:?} ({}) was not consumed before lossy lowering",
+                instance.id, declaration.name,
+            );
+        }
+        if !instance.inputs.is_empty() {
+            panic!(
+                "{pass}: advisory instruction group {:?} ({}) has captured SSA inputs that this pass cannot remap",
+                instance.id, declaration.name,
+            );
+        }
+    }
+    for block in &blocks.blocks {
+        for node in &block.stmts {
+            if !node.instruction_groups().is_empty() {
+                panic!(
+                    "{pass}: instruction-group membership cannot cross this pass without an explicit consumer"
+                );
+            }
+        }
+    }
+}
+
 /// Movfuscate an `IRBlocks` module into a single self-looping block.
 ///
 /// Supports any scalar `IRType` in block params: `Bit`, `Galois8AES`,
@@ -2384,6 +2422,7 @@ pub fn movfuscate_biir<P: Clone>(blocks: &BIrBlocks<P>) -> BIrBlocks<P> {
 /// `types` is used for type inference; an `IRType::Bit` entry is added if
 /// absent.  Single-block input is returned unchanged.
 pub fn movfuscate_ir<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> IRBlocks<P> {
+    reject_unconsumed_instruction_groups(blocks, "movfuscate_ir");
     movfuscate_ir_impl(blocks, types, &[]).0
 }
 
@@ -2399,6 +2438,7 @@ pub fn movfuscate_ir_with_boundary<P: Clone>(
     blocks: &IRBlocks<P>,
     types: &mut IRTypes,
 ) -> (IRBlocks<P>, Vec<MovfuscBlockBoundary>, MovfuscAccumInfo) {
+    reject_unconsumed_instruction_groups(blocks, "movfuscate_ir_with_boundary");
     let (result, boundaries, accum_info, _watch) = movfuscate_ir_impl(blocks, types, &[]);
     (result, boundaries, accum_info)
 }
@@ -2414,6 +2454,7 @@ pub fn movfuscate_ir_with_boundary_and_watch<P: Clone>(
     types: &mut IRTypes,
     watch: &[(usize, u32)],
 ) -> (IRBlocks<P>, Vec<MovfuscBlockBoundary>, MovfuscAccumInfo, Vec<(usize, u32, u32)>) {
+    reject_unconsumed_instruction_groups(blocks, "movfuscate_ir_with_boundary_and_watch");
     movfuscate_ir_impl(blocks, types, watch)
 }
 
@@ -2506,6 +2547,8 @@ fn movfuscate_ir_impl<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes, watch
         slot_alloc,
     );
     let (mut result, block_ranges, accum_info, watch_results) = movfuscate(ctx, blocks, state_slot_types, return_slot_types, watch);
+    result.instruction_groups = blocks.instruction_groups.clone();
+    result.instruction_group_instances = blocks.instruction_group_instances.clone();
     // `pre_init` segments name storage lanes in the *pre-movfuscation*
     // numbering, but every StorageRead/StorageWrite statement just emitted
     // above was remapped to `id*2` (Block-typed value) or `id*2+1`
@@ -2543,7 +2586,10 @@ mod tests {
     use volar_ir::ir::{
         IRBlock, IRBlockId, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt, IRTerminator, IRType, IRTypeId,
         IRTypes, IRVarId};
-    use volar_ir_common::{Constant, Node};
+    use volar_ir_common::{
+        Constant, GroupDisposition, GroupMembership, InstructionGroupDecl, InstructionGroupDeclId,
+        InstructionGroupId, InstructionGroupInstance, Node, Type,
+    };
 
     // =========================================================================
     // pc_bits_needed
@@ -2747,6 +2793,60 @@ mod tests {
             },
         ]);
         (blocks, types)
+    }
+
+    #[test]
+    #[should_panic(expected = "required instruction group")]
+    fn required_group_is_rejected_before_movfuscation() {
+        let (mut blocks, mut types) = two_block_ir_bit();
+        blocks.instruction_groups.push(InstructionGroupDecl {
+            name: "bounded_loop".into(),
+            params: vec![],
+            disposition: GroupDisposition::MustConsumeBeforeMovfuscation,
+        });
+        blocks.instruction_group_instances.push(InstructionGroupInstance {
+            id: InstructionGroupId(0),
+            decl: InstructionGroupDeclId(0),
+            inputs: vec![],
+        });
+        movfuscate_ir(&blocks, &mut types);
+    }
+
+    #[test]
+    #[should_panic(expected = "membership cannot cross")]
+    fn advisory_member_is_rejected_before_movfuscation() {
+        let (mut blocks, mut types) = two_block_ir_bit();
+        blocks.instruction_groups.push(InstructionGroupDecl {
+            name: "batch".into(),
+            params: vec![],
+            disposition: GroupDisposition::Advisory,
+        });
+        blocks.instruction_group_instances.push(InstructionGroupInstance {
+            id: InstructionGroupId(0),
+            decl: InstructionGroupDeclId(0),
+            inputs: vec![],
+        });
+        blocks.blocks[0].stmts[0] = blocks.blocks[0].stmts[0].clone()
+            .with_instruction_groups(GroupMembership::new(std::vec![InstructionGroupId(0)]));
+        movfuscate_ir(&blocks, &mut types);
+    }
+
+    #[test]
+    fn advisory_empty_group_is_preserved_by_movfuscation() {
+        let (mut blocks, mut types) = two_block_ir_bit();
+        blocks.instruction_groups.push(InstructionGroupDecl {
+            name: "batch".into(),
+            params: vec![],
+            disposition: GroupDisposition::Advisory,
+        });
+        blocks.instruction_group_instances.push(InstructionGroupInstance {
+            id: InstructionGroupId(0),
+            decl: InstructionGroupDeclId(0),
+            inputs: vec![],
+        });
+        let lowered = movfuscate_ir(&blocks, &mut types);
+        assert_eq!(lowered.instruction_groups, blocks.instruction_groups);
+        assert_eq!(lowered.instruction_group_instances, blocks.instruction_group_instances);
     }
 
     #[test]

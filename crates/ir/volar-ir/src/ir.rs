@@ -29,7 +29,11 @@ pub use volar_ir_common::IrType as IRType;
 pub use volar_ir_common::TypeTable as IRTypes;
 
 /// Re-export oracle/action/rng declaration types so callers only need `volar_ir`.
-pub use volar_ir_common::{ActionDecl, MeasureSpec, OracleDecl, PreInitSegment, ReentryHint, RngDecl, StructRef};
+pub use volar_ir_common::{
+    ActionDecl, GroupDisposition, InstructionGroupDecl, InstructionGroupDeclId,
+    InstructionGroupId, InstructionGroupInstance, MeasureSpec, OracleDecl,
+    PreInitSegment, ReentryHint, RngDecl, StructRef,
+};
 
 // ============================================================================
 // Blocks and control flow
@@ -54,18 +58,24 @@ pub struct IRBlocks<P: Clone = ()> {
     pub actions: Vec<ActionDecl>,
     /// RNG sources declared for this circuit (resolved by the execution environment).
     pub rngs: Vec<RngDecl>,
+    /// Declared static instruction-group kinds available in this circuit.
+    pub instruction_groups: Vec<InstructionGroupDecl>,
+    /// Group instances and their block-qualified captured SSA inputs.
+    pub instruction_group_instances: Vec<InstructionGroupInstance<IRGroupValueRef>>,
     /// The blocks of the circuit, in order.  Block 0 is the entry.
     pub blocks: Vec<IRBlock<P>>,
     /// Pre-initialised storage segments propagated from WASM data sections.
     pub pre_init: alloc::vec::Vec<PreInitSegment>,
 }
 impl<P: Clone> IRBlocks<P> {
-    /// Construct an `IRBlocks` with no oracle, action, or RNG declarations.
+    /// Construct an `IRBlocks` with no oracle, action, RNG, or instruction-group declarations.
     pub fn new(blocks: Vec<IRBlock<P>>) -> Self {
         IRBlocks {
             oracles: alloc::vec![],
             actions: alloc::vec![],
             rngs: alloc::vec![],
+            instruction_groups: alloc::vec![],
+            instruction_group_instances: alloc::vec![],
             blocks,
             pre_init: alloc::vec![],
         }
@@ -111,14 +121,34 @@ impl<P: Clone> IRBlock<P> {
         self.push_stmt_with_side(stmt, prov, None)
     }
 
-    /// Append a statement with an explicit provenance annotation and side.
+    /// Append a statement with explicit provenance, side, and group membership.
     /// Returns the [`IRVarId`] for this statement (= index in the block's var space).
-    pub fn push_stmt_with_side(&mut self, stmt: IRStmt, prov: P, side: Option<volar_side::SideId>) -> IRVarId {
+    pub fn push_stmt_with_metadata(
+        &mut self,
+        stmt: IRStmt,
+        prov: P,
+        side: Option<volar_side::SideId>,
+        instruction_groups: volar_ir_common::GroupMembership,
+    ) -> IRVarId {
         let id = IRVarId(self.params.len() as u32 + self.stmts.len() as u32);
         #[cfg(feature = "log-trace")]
         log::trace!(target: "volar::ir", "push_stmt id={}", id.0);
-        self.stmts.push(volar_ir_common::Node::new(stmt, prov, side));
+        self.stmts.push(
+            volar_ir_common::Node::new(stmt, prov, side)
+                .with_instruction_groups(instruction_groups),
+        );
         id
+    }
+
+    /// Append a statement with an explicit provenance annotation and side.
+    /// Returns the [`IRVarId`] for this statement (= index in the block's var space).
+    pub fn push_stmt_with_side(&mut self, stmt: IRStmt, prov: P, side: Option<volar_side::SideId>) -> IRVarId {
+        self.push_stmt_with_metadata(
+            stmt,
+            prov,
+            side,
+            volar_ir_common::GroupMembership::empty(),
+        )
     }
 
     /// Map provenance annotations using a [`ProvenanceHandler`]. `side` is
@@ -139,6 +169,8 @@ impl<P: Clone> IRBlocks<P> {
             oracles: self.oracles,
             actions: self.actions,
             rngs: self.rngs,
+            instruction_groups: self.instruction_groups,
+            instruction_group_instances: self.instruction_group_instances,
             blocks: self.blocks.into_iter().map(|b| b.map_prov_with_handler(handler)).collect(),
             pre_init: self.pre_init,
         }
@@ -152,6 +184,17 @@ impl<P: Clone> IRBlocks<P> {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct IRVarId(pub u32);
+
+/// A block-qualified typed packed Volar-IR value captured by an
+/// instruction-group begin marker. `IRVarId`s are block-local, so the owning
+/// block is retained with the complete packed representation.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct IRGroupValueRef {
+    pub block: IRBlockId,
+    pub vars: Vec<IRVarId>,
+    pub ty: IRTypeId,
+}
 
 // ============================================================================
 // Statement type

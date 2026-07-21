@@ -1,8 +1,8 @@
 # Instruction Groups for VAFFLE and Volar IR
 
-**Status:** Planning — no implementation has landed.  
-**Prerequisite:** Complete [`metadata-container-plan.md`](metadata-container-plan.md) first.  
-**Scope:** Tier-2 compiler/IR infrastructure.  
+**Status:** Partially implemented: shared metadata/types, host-configured WASM markers, VAFFLE/Volar-IR propagation, substitution remapping, and lossy-pass barriers are in place. Dedicated group consumers, text/serialization support, and generator coverage remain pending.
+**Prerequisite:** The implemented per-node metadata system described in [`metadata-container-plan.md`](metadata-container-plan.md).
+**Scope:** Tier-2 compiler/IR infrastructure.
 **@ai:** assisted
 
 ---
@@ -24,11 +24,12 @@ intentions through the WASM → WAFFLE → VAFFLE → Volar-IR pipeline:
 2. a loop has a declared bound and must be handled by a dedicated loop
    lowering rather than being flattened by generic movfuscation.
 
-Before this plan introduces group membership, the per-node metadata-container
-refactor in [`metadata-container-plan.md`](metadata-container-plan.md) must be
-complete. Its `Node` derivation APIs make metadata propagate automatically
-through ordinary rewrites; group-specific passes then only need to implement
-the deliberate membership/instance-ID remapping described here.
+The per-node metadata refactor is now the foundation for this feature:
+`Node<T, M: NodeMetadata = StandardMetadata<()>>` owns private complete
+metadata, and ordinary rewrites use `Node::derived` or `Node::map_kind` to
+preserve it.  Instruction groups must extend
+`StandardMetadata<P>` and its focused APIs; they must not restore a public
+field or introduce a parallel membership vector.
 
 The initial source surface is a pair of WASM imports per group type:
 `begin_{region}(args...)` and `end_{region}()`.  They are compiler markers,
@@ -177,37 +178,121 @@ consumer may impose stricter policy through its own configuration.
 The exact Rust names can be adjusted during implementation, but the separation
 between declaration identity, instance identity, and membership is required.
 
-### 4.2 Per-instruction membership
+### 4.2 Group membership as a `StandardMetadata` axis
 
-The shared node metadata container defined by
-[`metadata-container-plan.md`](metadata-container-plan.md) is the required
-home for membership. It keeps future metadata axes coupled to a node while
-letting ordinary transformations propagate the complete container through
-`Node::derived`/`Node::map_kind` without knowing every individual field.
+`volar_ir_common` now provides the concrete foundation:
 
-Instruction groups extend that container with membership after the refactor is
-complete; they must not add another direct field to `Node`.
+```rust
+pub struct Node<T, M: NodeMetadata = StandardMetadata<()>> {
+    pub kind: T,
+    metadata: M, // private
+}
 
-A generated instruction must use one of these deliberate policies:
+pub struct StandardMetadata<P> {
+    provenance: P,
+    side: Option<SideId>,
+    // instruction_groups is added here, not to Node.
+}
+```
 
-1. **one source instruction → derived instructions:** copy the source stack to
-   every derived instruction;
-2. **combining sources:** retain the common stack prefix only if the consumer
-   can justify the merge, otherwise do not combine across group boundaries;
-3. **control-flow/frame scaffolding:** use empty membership unless it is
-   semantically part of the source operation being transformed; and
-4. **group consumer output:** either retain a replacement group stack or
-   consume the group and remove its membership only after recording the
-   equivalent specialised lowering.
+The group implementation adds a private, always-present `GroupMembership`
+field to `StandardMetadata<P>`:
 
-This keeps a source-level region from accidentally absorbing unrelated
-call-frame packing, spill/reload, or virtual-machine bookkeeping merely
-because that scaffolding was emitted nearby.
+```rust
+pub struct GroupMembership {
+    /// Static instance IDs, ordered outermost to innermost.
+    stack: Vec<InstructionGroupId>,
+}
+```
 
-### 4.3 Instance tables
+`StandardMetadata::new(provenance, side)` must initialise this field to the
+empty stack, so existing `Node::new(kind, provenance, side)` introduction
+sites keep their established meaning: nodes introduced outside a group have no
+membership.  No `Default` or synthetic metadata constructor is added.
 
-A declaration alone does not store captured SSA values.  Each IR layer needs
-an instance table.
+Expose focused methods rather than the field itself, at least:
+
+```rust
+impl<P: Clone> StandardMetadata<P> {
+    pub fn instruction_groups(&self) -> &GroupMembership;
+    pub fn with_instruction_groups(self, groups: GroupMembership) -> Self;
+    pub fn map_instruction_groups<E>(
+        self,
+        f: impl FnOnce(GroupMembership) -> Result<GroupMembership, E>,
+    ) -> Result<Self, E>;
+}
+
+impl<T, P: Clone> Node<T, StandardMetadata<P>> {
+    pub fn instruction_groups(&self) -> &GroupMembership;
+    pub fn with_instruction_groups(self, groups: GroupMembership) -> Self;
+    pub fn map_instruction_groups<E>(
+        self,
+        f: impl FnOnce(GroupMembership) -> Result<GroupMembership, E>,
+    ) -> Result<Self, E>;
+}
+```
+
+The node helper is a thin, auditable wrapper over the existing fallible
+`Node::map_metadata`; it does not expose or reconstruct provenance and side.
+Its error is exactly the error returned by `f`.  `GroupMembership` itself
+provides a fallible ID remapper, whose callback is invoked once for every
+stored `InstructionGroupId`.  It is for cloning/inlining/renumbering static
+instances only; it does **not** remap captured SSA references in instance
+tables.
+
+The existing default node operations have precise group behaviour:
+
+1. `source.derived(new_kind)` clones the *entire* metadata container, including
+   the exact group stack;
+2. `source.map_kind(...)` moves the container unchanged when its infallible
+   payload callback succeeds; and
+3. a true frontend introduction constructs ordinary `StandardMetadata` with an
+   empty group stack, then explicitly calls `with_instruction_groups` only
+   when the validated source program point is inside a group.
+
+Thus one-source and one-source-to-many transforms do not have to mention
+instruction groups merely to preserve them.
+
+### 4.3 Merges are explicit `map2` metadata policies
+
+The implemented generic merge API is:
+
+```rust
+left.map2(right, payload_mapper, metadata_mapper)
+```
+
+where both mappers are fallible and failure is reported as either
+`Map2Error::Payload` or `Map2Error::Metadata`.  For standard metadata,
+`StandardMetadataMap2` already delegates provenance to
+`DualProvenanceHandler` and delegates side handling to a `MapSide2` policy
+(the default is `volar_side::propagate`).
+
+Adding group membership must extend this standard merge policy with a
+**required group-stack policy**.  It must not silently inherit the left stack,
+clear both stacks, or take a common prefix merely because that is convenient.
+The standard policy constructor used by a merge must name one of:
+
+- an equality/preservation policy that succeeds only for equal stacks;
+- a consumer-specific policy that proves a common-prefix or other replacement
+  stack is valid; or
+- a rejecting policy for transformations that must not combine grouped values.
+
+The group policy is fallible, participates in the metadata branch of
+`Map2Error`, and is independent of the provenance and side policies.  It is
+normal for an SSA simplification, CSE candidate, phi construction, or
+inlining rewrite to reject a proposed merge when the group policy cannot
+justify it.
+
+For a result that has only one semantic source, do **not** use `map2`:
+`derived`/`map_kind` is the correct automatic propagation path.  The existing
+`StandardMetadataMap2::map_left` and `map_right` helpers are appropriate when
+a provenance conversion policy deliberately selects exactly one input; they
+copy that input's side and, after this extension, its exact group stack.
+
+### 4.4 Instance tables remain module-level metadata
+
+A group declaration alone does not store captured SSA values.  Each IR layer
+needs an instance table.
 
 ```rust
 pub struct InstructionGroupInstance<V> {
@@ -224,14 +309,35 @@ pub struct InstructionGroupInstance<V> {
   inputs use an explicit block-qualified reference, conceptually
   `IRGroupValueRef { block: IRBlockId, var: IRVarId }`, because an `IRVarId`
   is local to an IR block.
-- A dedicated map/remap helper must update group input references when blocks
-  are split, cloned, inlined, or SSA values are substituted.  Group inputs are
-  data uses, not strings or debug coordinates.
+- A dedicated **fallible** table-reference remapper must update group input
+  references when blocks are split, cloned, inlined, or SSA values are
+  substituted.  Its callback error propagates to the calling pass.  It is
+  separate from `GroupMembership::map_ids`: group inputs are data uses, not
+  metadata IDs, strings, or debug coordinates.
 
 A module-wide allocator must ensure that `InstructionGroupId` stays unique
 when VAFFLE functions are lowered into the single `IRBlocks` block collection.
 
-### 4.4 Optimisation boundary rules
+### 4.5 Explicit introduction, consumption, and scaffolding policy
+
+A generated instruction must use one of these deliberate policies:
+
+1. **one source instruction → derived instructions:** use `derived` or
+   `map_kind`, which automatically preserves the exact complete metadata;
+2. **combining sources:** use `map2` with an explicit group-stack metadata
+   policy; reject the rewrite if the policy cannot justify the result;
+3. **control-flow/frame scaffolding:** construct fresh standard metadata, hence
+   an empty group stack, unless it is semantically part of the source operation
+   being transformed; and
+4. **group consumer output:** either retain an explicitly selected replacement
+   stack or consume the group and remove its membership only after recording
+   the equivalent specialised lowering.
+
+This keeps a source-level region from accidentally absorbing unrelated
+call-frame packing, spill/reload, or virtual-machine bookkeeping merely
+because that scaffolding was emitted nearby.
+
+### 4.6 Optimisation boundary rules
 
 Membership is semantic optimisation metadata.  Until a group is consumed,
 passes must not silently change which computations are members of a group.
@@ -384,10 +490,12 @@ packing, spill/reload, and recursion-frame machinery is consequently only
 used outside instruction groups.
 
 `vaffle_ssa`, store forwarding, substitution, inlining, type remapping, and
-all `Value::map`/`Stmt::map`-based rewrites need group-aware preservation and
-input-reference remapping.  This is the same completeness work required for
-oracle/action/RNG variants, but group metadata cannot rely on a `Stmt` match
-arm alone because it lives on `Node` and in instance tables.
+all `Value::map`/`Stmt::map`-based rewrites must rely on `derived`/
+`map_kind` for one-source results and use `map2` with an explicit
+`MapMetadata2` policy for genuine merges.  They also need the separate
+fallible instance-table input-reference remapper.  Group metadata cannot rely
+on a `Stmt` match arm alone because it lives in `StandardMetadata` and the
+instance tables.
 
 ### 7.2 Consumption barrier
 
@@ -476,23 +584,26 @@ the core merely gives it a stable, typed region to inspect.
 
 ## 9. Implementation sequence
 
-This sequence is gated on completion of the metadata-container refactor in
-[`metadata-container-plan.md`](metadata-container-plan.md). In particular,
-this work must use its default metadata propagation and focused remapping APIs
-rather than adding a new direct `Node` field or propagating group stacks by
-parallel vectors.
+This sequence begins from the implemented `NodeMetadata` / `StandardMetadata`
+foundation.  It must use `Node::derived`, `Node::map_kind`, fallible
+`Node::map_metadata`, and fallible `Node::map2`; it must not add a direct
+`Node` field or reintroduce parallel stack propagation.
 
-1. **Design tests and error model.** Define the public group types and a
-   dedicated validation error enum. Add WASM fixtures for nested same-type
-   groups, CFG joins, loops, mismatched ends, and captured values.
-2. **Shared group extension.** Add declaration/ID/membership/instance types in
-   `volar-ir-common`; extend the completed metadata container with
-   group-membership accessors and a focused group-ID remapper. Capture
-   aggregate inputs as typed packed values, not bare bit-ID vectors. Update
-   mapping and archive derives.
+1. **Metadata-extension contract and tests.** Add `GroupMembership` as the
+   private `StandardMetadata` axis; add the focused fallible membership/ID
+   remappers; extend `StandardMetadataMap2` with the required group-stack
+   policy; and test one-source preservation, rejected merges, approved merges,
+   and ID remapping errors.  Define the group validation error enum and add
+   WASM fixtures for nested same-type groups, CFG joins, loops, mismatched
+   ends, and captured values.
+2. **Shared group and instance types.** Add declaration/ID/instance types in
+   `volar-ir-common`, including the separate fallible table-reference remapper.
+   Capture aggregate inputs as typed packed values, not bare bit-ID vectors.
+   Update mapping and archive derives.
 3. **VAFFLE containers and target.** Add declaration and instance tables;
-   teach `VaffleTarget` to set/copy the current group stack; update all module
-   constructors and cloning/remapping helpers.
+   teach `VaffleTarget` to apply an already-validated current group stack via
+   the focused metadata API; update all module constructors and
+   cloning/remapping helpers.
 4. **WASM marker frontend.** Extend `WaffleImportConfig`, classify marker
    imports, run CFG-stack validation, omit marker calls, and attach group
    membership to normal emitted values. A direct non-recursive call inside a
@@ -503,8 +614,9 @@ parallel vectors.
    defence-in-depth rejection for a group-bearing `Value::Call`.
 6. **Pass audit.** Update optimisers, substitution, virtualisation,
    movfuscation, Boolar lowering, text IR, serialisation, generators, and
-   interpreters. Add a hard rejection for unconsumed required groups at each
-   lossy boundary.
+   interpreters. Use `derived` for one-source outputs and audited `map2`
+   policies for merges; add a hard rejection for unconsumed required groups at
+   each lossy boundary.
 7. **Consumer framework.** Add the dispatch/consumption stage plus a no-op
    advisory consumer for controlled fallback.
 8. **Bounded-loop consumer.** Implement and validate the first required

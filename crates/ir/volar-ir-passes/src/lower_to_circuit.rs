@@ -749,6 +749,7 @@ pub fn lower_to_circuit_ir<P: Clone>(
     limit: u32,
     mode: LoweringMode,
 ) -> IRBlocks<P> {
+    crate::movfuscate::reject_unconsumed_instruction_groups(blocks, "lower_to_circuit_ir");
     if blocks.is_circuit() {
         return blocks.clone();
     }
@@ -863,6 +864,8 @@ pub fn lower_to_circuit_ir<P: Clone>(
         oracles: blocks.oracles.clone(),
         actions: blocks.actions.clone(),
         rngs: blocks.rngs.clone(),
+        instruction_groups: blocks.instruction_groups.clone(),
+        instruction_group_instances: blocks.instruction_group_instances.clone(),
         blocks: vec![out_block],
         pre_init: blocks.pre_init.clone(),
     }
@@ -1061,6 +1064,8 @@ mod tests {
                 oracles: std::vec![],
                 actions: std::vec![],
                 rngs: std::vec![],
+            instruction_groups: alloc::vec![],
+            instruction_group_instances: alloc::vec![],
                 blocks: std::vec![IRBlock {
                     params: std::vec![bit_ty],
                     stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 1 }, bit_ty)]
@@ -1132,6 +1137,8 @@ mod tests {
                 oracles: std::vec![],
                 actions: std::vec![],
                 rngs: std::vec![],
+            instruction_groups: alloc::vec![],
+            instruction_group_instances: alloc::vec![],
                 blocks: std::vec![IRBlock {
                     params: std::vec![bit_ty],
                     // flip the bit each step: NOT(param0) = Poly{[0]:1, const:1}
@@ -1170,6 +1177,8 @@ mod tests {
                 oracles: std::vec![],
                 actions: std::vec![],
                 rngs: std::vec![],
+            instruction_groups: alloc::vec![],
+            instruction_group_instances: alloc::vec![],
                 blocks: std::vec![IRBlock {
                     params: std::vec![bit_ty, bit_ty], // selector, value
                     stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 0 }, bit_ty)]

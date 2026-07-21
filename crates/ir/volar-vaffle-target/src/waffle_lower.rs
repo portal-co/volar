@@ -82,7 +82,8 @@ use volar_lir::circuits::{
 };
 use volar_lir::{BitCircuitBuilder, BranchTarget, IcmpPred, LirTarget, LirType};
 
-use crate::import_config::{WaffleImportConfig, WaffleImportKind};
+use crate::import_config::{InstructionGroupMarker, WaffleImportConfig, WaffleImportKind};
+use volar_ir_common::{GroupMembership, InstructionGroupDeclId, InstructionGroupId, InstructionGroupInstance};
 use crate::target::{VaffleBlock, VaffleTarget, VaffleValue, bits_for_lir_type};
 use vaffle::ValueId;
 
@@ -112,6 +113,136 @@ fn waffle_ty(ty: WType) -> Result<LirType, UnsupportedOp> {
 }
 
 // ============================================================================
+// Instruction-group marker planning
+// ============================================================================
+
+#[derive(Clone, Copy)]
+struct GroupMarker {
+    declaration: InstructionGroupDeclId,
+    id: Option<InstructionGroupId>,
+    role: InstructionGroupMarker,
+}
+
+/// CFG-validated group state for one WAFFLE function.
+///
+/// `before` stores the active stack immediately before each non-marker
+/// instruction. Markers emit no VAFFLE instruction.
+struct GroupPlan {
+    entry: BTreeMap<portal_pc_waffle_ir::Block, GroupMembership>,
+    before: BTreeMap<WValue, GroupMembership>,
+    markers: BTreeMap<WValue, GroupMarker>,
+}
+
+fn plan_instruction_groups(
+    body: &FunctionBody,
+    wasm: &WModule,
+    config: &WaffleImportConfig,
+    target: &mut VaffleTarget,
+) -> Result<GroupPlan, UnsupportedOp> {
+    let mut markers = BTreeMap::new();
+    let mut declaration_for_id = BTreeMap::new();
+    for (_block, block_def) in body.blocks.entries() {
+        for record in &block_def.insts {
+            let wval = record.value;
+            let ValueDef::Operator(Operator::Call { function_index }, args_ref, tys_ref) = &body.values[wval] else {
+                continue;
+            };
+            let name = callee_name(wasm, *function_index);
+            let Some(WaffleImportKind::InstructionGroup { declaration, declaration_id, marker }) = config.imports.get(&name) else {
+                continue;
+            };
+            if !body.type_pool[*tys_ref].is_empty() {
+                return Err(UnsupportedOp(alloc::format!(
+                    "instruction-group marker {name} must not return values"
+                )));
+            }
+            let argument_count = body.arg_pool[*args_ref].len();
+            match marker {
+                InstructionGroupMarker::Begin if argument_count != declaration.params.len() => {
+                    return Err(UnsupportedOp(alloc::format!(
+                        "instruction-group begin {name} has {argument_count} arguments, expected {}",
+                        declaration.params.len(),
+                    )));
+                }
+                InstructionGroupMarker::End if argument_count != 0 => {
+                    return Err(UnsupportedOp(alloc::format!(
+                        "instruction-group end {name} must not take arguments"
+                    )));
+                }
+                _ => {}
+            }
+            if target.module.instruction_groups.get(declaration_id.0 as usize) != Some(declaration) {
+                return Err(UnsupportedOp(alloc::format!(
+                    "instruction-group marker {name} has no matching registered declaration"
+                )));
+            }
+            let id = match marker {
+                InstructionGroupMarker::Begin => Some(target.fresh_instruction_group_id()),
+                InstructionGroupMarker::End => None,
+            };
+            if let Some(id) = id {
+                declaration_for_id.insert(id, *declaration_id);
+            }
+            markers.insert(wval, GroupMarker { declaration: *declaration_id, id, role: *marker });
+        }
+    }
+
+    let mut incoming: BTreeMap<portal_pc_waffle_ir::Block, Vec<InstructionGroupId>> = BTreeMap::new();
+    incoming.insert(body.entry, Vec::new());
+    let mut work = vec![body.entry];
+    while let Some(block) = work.pop() {
+        let mut stack = incoming[&block].clone();
+        for record in &body.blocks[block].insts {
+            let Some(marker) = markers.get(&record.value) else { continue };
+            match marker.role {
+                InstructionGroupMarker::Begin => stack.push(marker.id.expect("begin markers have IDs")),
+                InstructionGroupMarker::End => {
+                    let Some(id) = stack.pop() else {
+                        return Err(UnsupportedOp("instruction-group end without an active begin".into()));
+                    };
+                    if declaration_for_id.get(&id) != Some(&marker.declaration) {
+                        return Err(UnsupportedOp("instruction-group end does not match active begin".into()));
+                    }
+                }
+            }
+        }
+        if body.blocks[block].succs.is_empty() && !stack.is_empty() {
+            return Err(UnsupportedOp("instruction-group escapes a function exit".into()));
+        }
+        for &successor in &body.blocks[block].succs {
+            match incoming.get(&successor) {
+                Some(previous) if previous != &stack => {
+                    return Err(UnsupportedOp("instruction-group stacks differ at a CFG join".into()));
+                }
+                Some(_) => {}
+                None => {
+                    incoming.insert(successor, stack.clone());
+                    work.push(successor);
+                }
+            }
+        }
+    }
+
+    let mut before = BTreeMap::new();
+    let entry = incoming.iter().map(|(&block, stack)| {
+        (block, GroupMembership::new(stack.clone()))
+    }).collect();
+    for (block, mut active) in incoming {
+        for record in &body.blocks[block].insts {
+            if let Some(marker) = markers.get(&record.value) {
+                match marker.role {
+                    InstructionGroupMarker::Begin => active.push(marker.id.expect("begin markers have IDs")),
+                    InstructionGroupMarker::End => { active.pop(); }
+                }
+            } else {
+                before.insert(record.value, GroupMembership::new(active.clone()));
+            }
+        }
+    }
+    Ok(GroupPlan { entry, before, markers })
+}
+
+// ============================================================================
 // Public entry points
 // ============================================================================
 
@@ -127,6 +258,11 @@ pub fn lower_waffle_module(
     target: &mut VaffleTarget,
     config: &WaffleImportConfig,
 ) -> Vec<(String, UnsupportedOp)> {
+    for (decl_id, declaration) in config.instruction_groups() {
+        let registered = target.register_instruction_group(declaration);
+        assert_eq!(registered, decl_id, "instruction-group declaration IDs must be contiguous");
+    }
+
     // Pre-register OracleDecl / ActionDecl for imports named in config.
     for (_func_ref, decl) in wasm.funcs.entries() {
         if let FuncDecl::Import(sig, import_name) = decl {
@@ -175,6 +311,7 @@ pub fn lower_waffle_module(
                         results,
                     });
                 }
+                WaffleImportKind::InstructionGroup { .. } => {}
             }
         }
     }
@@ -234,6 +371,8 @@ pub fn lower_waffle_function(
     target: &mut VaffleTarget,
     config: &WaffleImportConfig,
 ) -> Result<(), UnsupportedOp> {
+    let group_plan = plan_instruction_groups(body, wasm, config, target)?;
+
     // ---- Collect mutable globals for threading ---------------------------
     let mut global_lir_tys: Vec<LirType> = Vec::new();
     let mut global_idx_map: BTreeMap<usize, usize> = BTreeMap::new();
@@ -307,6 +446,9 @@ pub fn lower_waffle_function(
     for (wblock, block_def) in body.blocks.entries() {
         let vblock = block_map[&wblock];
         target.switch_to_block(vblock);
+        let block_groups = group_plan.entry.get(&wblock).cloned()
+            .unwrap_or_else(GroupMembership::empty);
+        target.set_instruction_groups(block_groups);
 
         // Non-entry block params become VAFFLE block params.
         if wblock != body.entry {
@@ -325,6 +467,36 @@ pub fn lower_waffle_function(
         // Instructions: each ValueRecord wraps a Value index.
         for record in &block_def.insts {
             let wval = record.value;
+            if let Some(marker) = group_plan.markers.get(&wval) {
+                if marker.role == InstructionGroupMarker::Begin {
+                    let ValueDef::Operator(_, args_ref, _) = &body.values[wval] else { unreachable!() };
+                    let inputs = body.arg_pool[*args_ref].iter().map(|&arg| {
+                        resolve_wval(body, &val_map, arg)
+                            .ok_or_else(|| UnsupportedOp(alloc::format!(
+                                "instruction-group begin captures undefined value {arg:?}"
+                            )))
+                            .map(|value| target.packed_value(&value))
+                    }).collect::<Result<Vec<_>, _>>()?;
+                    let declaration = target.module.instruction_groups
+                        .get(marker.declaration.0 as usize)
+                        .expect("validated instruction-group declaration");
+                    if inputs.iter().map(|input| input.ty).collect::<Vec<_>>() != declaration.params {
+                        return Err(UnsupportedOp(alloc::format!(
+                            "instruction-group begin marker has captured input types that do not match declaration {}",
+                            declaration.name,
+                        )));
+                    }
+                    target.register_instruction_group_instance(InstructionGroupInstance {
+                        id: marker.id.expect("begin markers have IDs"),
+                        decl: marker.declaration,
+                        inputs,
+                    });
+                }
+                continue;
+            }
+            target.set_instruction_groups(
+                group_plan.before.get(&wval).cloned().unwrap_or_else(GroupMembership::empty),
+            );
             match &body.values[wval] {
                 ValueDef::Operator(op, args_ref, tys_ref) => {
                     let args: Vec<WValue> = body.arg_pool[*args_ref].to_vec();
@@ -814,6 +986,11 @@ fn lower_op(
                         tgt.set_side(None);
                         r
                     }
+                    WaffleImportKind::InstructionGroup { .. } => {
+                        return Err(UnsupportedOp(alloc::format!(
+                            "instruction-group marker {name} was not handled before ordinary call lowering"
+                        )));
+                    }
                 };
 
                 return Ok(match results.len() {
@@ -1253,7 +1430,77 @@ mod tests {
         BlockTarget, Global, GlobalData, Memory, MemoryData, Module as WModule, Operator,
         Signature, SignatureData, Terminator as WTerminator, Type as WType, ValueDef,
     };
-    use volar_ir_common::Stmt;
+    use volar_ir_common::{InstructionGroupDecl, GroupDisposition, Stmt};
+
+    #[test]
+    fn test_instruction_group_markers_capture_inputs_and_tag_emitted_values() {
+        let mut signatures: EntityVec<Signature, SignatureData> = EntityVec::default();
+        let marker_sig = signatures.push(SignatureData::Func {
+            params: vec![WType::I32], returns: vec![], shared: false,
+        });
+        let end_sig = signatures.push(SignatureData::Func {
+            params: vec![], returns: vec![], shared: false,
+        });
+        let caller_sig = signatures.push(SignatureData::Func {
+            params: vec![WType::I32], returns: vec![WType::I32], shared: false,
+        });
+        let mut module = WModule {
+            orig_bytes: None,
+            funcs: EntityVec::default(),
+            signatures,
+            globals: EntityVec::default(),
+            tables: EntityVec::default(),
+            imports: vec![],
+            exports: vec![],
+            memories: EntityVec::default(),
+            control_tags: EntityVec::default(),
+            start_func: None,
+            debug: Default::default(),
+            debug_map: Default::default(),
+            custom_sections: Default::default(),
+        };
+        let begin = module.funcs.push(portal_pc_waffle_ir::FuncDecl::Import(marker_sig, "begin_batch".into()));
+        let end = module.funcs.push(portal_pc_waffle_ir::FuncDecl::Import(end_sig, "end_batch".into()));
+        let mut body = portal_pc_waffle_ir::FunctionBody::new(&module, caller_sig);
+        let entry = body.entry;
+        let input = body.blocks[entry].params[0].1;
+        body.add_op(entry, Operator::Call { function_index: begin }, &[input], &[]);
+        let increment = body.add_op(entry, Operator::I32Const { value: 1 }, &[], &[WType::I32]);
+        let result = body.add_op(entry, Operator::I32Add, &[input, increment], &[WType::I32]);
+        body.add_op(entry, Operator::Call { function_index: end }, &[], &[]);
+        body.set_terminator(entry, WTerminator::Return { values: vec![result] });
+        module.funcs.push(portal_pc_waffle_ir::FuncDecl::Body(caller_sig, "grouped".into(), body));
+
+        let config = WaffleImportConfig::new().with_instruction_group(
+            "begin_batch",
+            "end_batch",
+            InstructionGroupDecl {
+                name: "batch".into(),
+                // Bit is always TypeId(0); begin_function interns the i32
+                // parameter before marker capture, making `_32` TypeId(1).
+                params: vec![volar_ir_common::TypeId(1)],
+                disposition: GroupDisposition::Advisory,
+            },
+        );
+        let mut target = VaffleTarget::new();
+        assert!(lower_waffle_module(&module, &mut target, &config).is_empty());
+        assert_eq!(target.module.instruction_groups.len(), 1);
+        let vaffle::FuncDecl::Body(body) = &target.module.funcs[0] else { panic!("body expected") };
+        assert_eq!(body.instruction_group_instances.len(), 1);
+        assert_eq!(body.instruction_group_instances[0].inputs.len(), 1);
+        assert!(body.values.iter().any(|node| !node.instruction_groups().is_empty()));
+        assert!(body.values.iter().all(|node| {
+            node.instruction_groups().is_empty()
+                || node.instruction_groups().stack() == &[body.instruction_group_instances[0].id]
+        }));
+
+        let (ir, _) = crate::lower_to_ir::lower_vaffle_to_ir(&target.module);
+        assert_eq!(ir.instruction_groups.len(), 1);
+        assert_eq!(ir.instruction_group_instances.len(), 1);
+        assert_eq!(ir.instruction_group_instances[0].inputs.len(), 1);
+        assert!(ir.blocks.iter().flat_map(|block| block.stmts.iter())
+            .any(|node| !node.instruction_groups().is_empty()));
+    }
 
     /// Build a minimal WAFFLE module with one memory and a function that
     /// does `i32.store(addr=param0, val=param1)` then `i32.load(addr=param0) → return`.

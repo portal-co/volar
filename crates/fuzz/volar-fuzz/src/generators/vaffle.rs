@@ -158,6 +158,7 @@ pub fn interpret_vaffle(
         sig: SigId(0),
         blocks: vec![block],
         values: values.into_iter().map(|v| Node::new(v, (), None)).collect(),
+        instruction_group_instances: vec![],
         entry: BlockId(0),
     };
 
@@ -165,6 +166,7 @@ pub fn interpret_vaffle(
         types: type_table,
         oracles: vec![],
         actions: vec![],
+        instruction_groups: vec![],
         funcs: vec![FuncDecl::Body(body)],
         sigs: vec![sig],
         exports: BTreeMap::new(),
@@ -451,6 +453,7 @@ fn interpret_vaffle_extended_inner(
         sig: SigId(0),
         blocks: vec![block],
         values: new_values.into_iter().map(|v| Node::new(v, (), None)).collect(),
+        instruction_group_instances: vec![],
         entry: BlockId(0),
     };
 
@@ -458,6 +461,7 @@ fn interpret_vaffle_extended_inner(
         types: type_table,
         oracles: oracle_decls,
         actions: vec![],
+        instruction_groups: vec![],
         funcs: vec![FuncDecl::Body(body)],
         sigs: vec![sig],
         exports: std::collections::BTreeMap::new(),
@@ -573,6 +577,7 @@ pub fn interpret_vaffle_multiblock(
         sig: SigId(0),
         blocks: vec![block0, block1],
         values: all_values.into_iter().map(|v| Node::new(v, (), None)).collect(),
+        instruction_group_instances: vec![],
         entry: BlockId(0),
     };
 
@@ -580,6 +585,7 @@ pub fn interpret_vaffle_multiblock(
         types: type_table,
         oracles: vec![],
         actions: vec![],
+        instruction_groups: vec![],
         funcs: vec![FuncDecl::Body(body)],
         sigs: vec![sig],
         exports: std::collections::BTreeMap::new(),
@@ -787,6 +793,7 @@ pub fn interpret_vaffle_diamond(
         sig: SigId(0),
         blocks: vec![block0, block1, block2, block3],
         values: all_values.into_iter().map(|v| Node::new(v, (), None)).collect(),
+        instruction_group_instances: vec![],
         entry: BlockId(0),
     };
 
@@ -794,6 +801,7 @@ pub fn interpret_vaffle_diamond(
         types: type_table,
         oracles: oracle_decls,
         actions: vec![],
+        instruction_groups: vec![],
         funcs: vec![FuncDecl::Body(body)],
         sigs: vec![sig],
         exports: std::collections::BTreeMap::new(),
@@ -875,6 +883,7 @@ pub fn interpret_vaffle_two_func(
         sig: SigId(1),
         blocks: vec![f1_block],
         values: f1_values.into_iter().map(|v| Node::new(v, (), None)).collect(),
+        instruction_group_instances: vec![],
         entry: BlockId(0),
     };
 
@@ -980,6 +989,7 @@ pub fn interpret_vaffle_two_func(
         sig: SigId(0),
         blocks: vec![f0_block],
         values: f0_values.into_iter().map(|v| Node::new(v, (), None)).collect(),
+        instruction_group_instances: vec![],
         entry: BlockId(0),
     };
 
@@ -987,6 +997,7 @@ pub fn interpret_vaffle_two_func(
         types: type_table,
         oracles: oracle_decls,
         actions: vec![],
+        instruction_groups: vec![],
         funcs: vec![FuncDecl::Body(f0_body), FuncDecl::Body(f1_body)],
         sigs: vec![f0_sig, f1_sig],
         exports: std::collections::BTreeMap::new(),

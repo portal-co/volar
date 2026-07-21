@@ -51,6 +51,7 @@ pub fn fold_ir_blocks<P: Clone>(blocks: &mut IRBlocks<P>, types: &IRTypes) -> bo
 ///
 /// Returns `true` if any block was modified.
 pub fn dce_ir_blocks<P: Clone>(blocks: &mut IRBlocks<P>, _types: &IRTypes) -> bool {
+    assert_no_grouped_statements(blocks, "dce_ir_blocks");
     let mut any_changed = false;
     for block in blocks.blocks.iter_mut() {
         if dce_ir_block_once(block).0 {
@@ -76,6 +77,7 @@ pub fn dce_ir_blocks_with_remap<P: Clone>(
     blocks: &mut IRBlocks<P>,
     _types: &IRTypes,
 ) -> (bool, Vec<BTreeMap<u32, u32>>) {
+    assert_no_grouped_statements(blocks, "dce_ir_blocks_with_remap");
     let mut any_changed = false;
     let mut remaps = Vec::with_capacity(blocks.blocks.len());
     for block in blocks.blocks.iter_mut() {
@@ -84,6 +86,15 @@ pub fn dce_ir_blocks_with_remap<P: Clone>(
         remaps.push(remap);
     }
     (any_changed, remaps)
+}
+
+fn assert_no_grouped_statements<P: Clone>(blocks: &IRBlocks<P>, pass: &str) {
+    if !blocks.instruction_group_instances.is_empty()
+        || blocks.blocks.iter().flat_map(|block| &block.stmts)
+            .any(|node| !node.instruction_groups().is_empty())
+    {
+        panic!("{pass}: instruction-group metadata requires an explicit consumer");
+    }
 }
 
 fn collect_terminator_vars(term: &IRTerminator) -> Vec<IRVarId> {
@@ -632,6 +643,23 @@ mod dce_tests {
             IRTerminator::Jmp { target } => assert_eq!(target.args, alloc::vec![IRVarId(1)], "terminator's own var reference must be renumbered after removal"),
             other => panic!("expected Jmp, got {other:?}"),
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "instruction-group metadata requires an explicit consumer")]
+    fn dce_rejects_group_membership() {
+        let mut types = types_with_bit();
+        let mut blocks: IRBlocks = IRBlocks::new(alloc::vec![IRBlock {
+            params: alloc::vec![],
+            stmts: alloc::vec![Node::new(Stmt::Const(Constant { hi: 0, lo: 1 }, bit()), (), None)
+                .with_instruction_groups(volar_ir_common::GroupMembership::new(alloc::vec![
+                    volar_ir_common::InstructionGroupId(0),
+                ]))],
+            terminator: IRTerminator::Jmp {
+                target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![]),
+            },
+        }]);
+        dce_ir_blocks(&mut blocks, &mut types);
     }
 
     #[test]

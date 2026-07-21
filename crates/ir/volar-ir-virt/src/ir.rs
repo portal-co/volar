@@ -136,6 +136,7 @@ pub fn virtualize_ir<P: Clone + Default>(
     types: &mut IRTypes,
     cfg: &VirtualizeConfig,
 ) -> VirtOutput<IRBlocks<P>> {
+    volar_ir_passes::movfuscate::reject_unconsumed_instruction_groups(blocks, "virtualize_ir");
     virtualize_ir_impl::<P, NoOpHashAlgorithm>(blocks, types, cfg, None)
 }
 
@@ -157,6 +158,7 @@ pub fn virtualize_ir_committed<P: Clone + Default, H: IrHashAlgorithm>(
     cfg: &VirtualizeConfig,
     commitment_cfg: &CommitmentConfig<H>,
 ) -> VirtOutput<IRBlocks<P>> {
+    volar_ir_passes::movfuscate::reject_unconsumed_instruction_groups(blocks, "virtualize_ir_committed");
     virtualize_ir_impl(blocks, types, cfg, Some(commitment_cfg))
 }
 
@@ -199,6 +201,8 @@ fn virtualize_ir_impl<P: Clone + Default, H: IrHashAlgorithm>(
         oracles: blocks.oracles.clone(),
         actions: blocks.actions.clone(),
         rngs: blocks.rngs.clone(),
+        instruction_groups: blocks.instruction_groups.clone(),
+        instruction_group_instances: blocks.instruction_group_instances.clone(),
         blocks: blocks.blocks.iter().map(deduplicate_oracle_calls_in_block).collect(),
         pre_init: blocks.pre_init.clone(),
     };
@@ -933,6 +937,8 @@ fn emit_output_ir<P: Clone, H: IrHashAlgorithm>(
         oracles: out_oracles,
         actions: blocks_in.actions.clone(),
         rngs: blocks_in.rngs.clone(),
+        instruction_groups: blocks_in.instruction_groups.clone(),
+        instruction_group_instances: blocks_in.instruction_group_instances.clone(),
         blocks: all_blocks,
         pre_init: Vec::new(),
     }

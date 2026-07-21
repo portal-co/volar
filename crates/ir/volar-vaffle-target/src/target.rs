@@ -15,7 +15,9 @@ use alloc::{
 };
 
 use volar_ir_common::{
-    ActionDecl, Constant, IrType, Node, OracleDecl, Stmt, StorageId, Type, TypeId, TypeTable,
+    ActionDecl, Constant, GroupMembership, InstructionGroupDecl, InstructionGroupDeclId,
+    InstructionGroupId, InstructionGroupInstance, IrType, Node, OracleDecl, PreInitSegment, Stmt,
+    StorageId, Type, TypeId, TypeTable,
 };
 use volar_lir::{
     circuits::{
@@ -28,7 +30,7 @@ use volar_lir::{
 
 use vaffle::{
     Block, BlockId, FuncBody, FuncDecl, FuncId, Module, SigDecl, SigId,
-    Target, Terminator, Value, ValueId,
+    Target, Terminator, Value, ValueId, PackedValue,
 };
 
 // ============================================================================
@@ -73,6 +75,10 @@ pub(crate) struct FuncBuilder {
     next_stack_slot: u64,
     /// Side to attach to the next emitted value.
     current_side: Option<volar_side::SideId>,
+    /// Active validated instruction-group membership for newly emitted values.
+    current_groups: GroupMembership,
+    /// Group instances defined by marker lowering in this function.
+    instruction_group_instances: Vec<InstructionGroupInstance<PackedValue>>,
 }
 
 impl FuncBuilder {
@@ -86,6 +92,8 @@ impl FuncBuilder {
             bit_tid,
             next_stack_slot: 0,
             current_side: None,
+            current_groups: GroupMembership::empty(),
+            instruction_group_instances: Vec::new(),
         }
     }
 
@@ -95,7 +103,10 @@ impl FuncBuilder {
 
     pub(crate) fn emit_value(&mut self, val: Value) -> ValueId {
         let id = self.next_value_id();
-        self.all_values.push(Node::new(val, (), self.current_side));
+        self.all_values.push(
+            Node::new(val, (), self.current_side)
+                .with_instruction_groups(self.current_groups.clone()),
+        );
         self.blocks[self.current].stmts.push(id);
         id
     }
@@ -103,7 +114,10 @@ impl FuncBuilder {
     fn emit_block_param(&mut self, block_idx: usize, ty: TypeId) -> ValueId {
         let idx = self.blocks[block_idx].params.len();
         let id = self.next_value_id();
-        self.all_values.push(Node::new(Value::Param { block: BlockId(block_idx), ty, idx }, (), self.current_side));
+        self.all_values.push(
+            Node::new(Value::Param { block: BlockId(block_idx), ty, idx }, (), self.current_side)
+                .with_instruction_groups(self.current_groups.clone()),
+        );
         self.blocks[block_idx].params.push((id, ty));
         id
     }
@@ -123,7 +137,10 @@ impl FuncBuilder {
 /// block-parameter counts and spill/reload overhead in `lower_to_ir`, at the
 /// cost of extra `StorageRead`/`StorageWrite` operations.
 pub struct VaffleTarget {
+    /// Finished module under construction.
     pub module: Module,
+    /// Next module-unique static instruction-group instance ID.
+    next_instruction_group_id: u32,
     func: Option<FuncBuilder>,
     struct_widths: Vec<usize>,
     /// When `true`, parameters wider than `LirAbi::VAFFLE_OPTIMIZED.aggregate_byval_limit`
@@ -145,7 +162,9 @@ impl VaffleTarget {
                 sigs: vec![],
                 exports: BTreeMap::new(),
                 pre_init: vec![],
+                instruction_groups: vec![],
             },
+            next_instruction_group_id: 0,
             func: None,
             struct_widths: vec![],
             optimized_abi: false,
@@ -205,6 +224,41 @@ impl VaffleTarget {
     pub fn register_oracle(&mut self, decl: OracleDecl) { self.module.oracles.push(decl); }
     pub fn register_action(&mut self, decl: ActionDecl) { self.module.actions.push(decl); }
 
+    /// Register a host-configured instruction-group declaration and return its
+    /// module-local declaration ID.
+    pub fn register_instruction_group(&mut self, decl: InstructionGroupDecl) -> InstructionGroupDeclId {
+        let id = InstructionGroupDeclId(self.module.instruction_groups.len() as u32);
+        self.module.instruction_groups.push(decl);
+        id
+    }
+
+    /// Allocate a module-unique static instruction-group instance ID.
+    pub(crate) fn fresh_instruction_group_id(&mut self) -> InstructionGroupId {
+        let id = InstructionGroupId(self.next_instruction_group_id);
+        self.next_instruction_group_id = self.next_instruction_group_id
+            .checked_add(1)
+            .expect("instruction-group ID space exhausted");
+        id
+    }
+
+    /// Set the validated active group stack for values emitted subsequently.
+    pub fn set_instruction_groups(&mut self, groups: GroupMembership) {
+        self.fb().current_groups = groups;
+    }
+
+    /// Borrow the active instruction-group stack.
+    pub fn instruction_groups(&mut self) -> GroupMembership {
+        self.fb().current_groups.clone()
+    }
+
+    /// Register one group instance in the function currently being emitted.
+    pub fn register_instruction_group_instance(
+        &mut self,
+        instance: InstructionGroupInstance<PackedValue>,
+    ) {
+        self.fb().instruction_group_instances.push(instance);
+    }
+
     /// Emit an action call: calls `action_{name}`, then muxes each result with
     /// its fallback — `guard_bit=1` uses the result, `guard_bit=0` uses the fallback.
     pub fn action_call(
@@ -229,6 +283,13 @@ impl VaffleTarget {
                 VaffleValue { bits, ty }
             })
             .collect()
+    }
+
+    pub(crate) fn packed_value(&mut self, value: &VaffleValue) -> PackedValue {
+        PackedValue {
+            values: value.bits.clone(),
+            ty: self.lir_type_to_tid(&value.ty),
+        }
     }
 
     /// Convert a `LirType` to a `TypeId` in the module's type table.
@@ -465,7 +526,13 @@ impl LirTarget for VaffleTarget {
             stmts: bb.stmts,
             terminator: bb.terminator.unwrap_or(Terminator::Return { values: vec![] }),
         }).collect();
-        let body = FuncBody { sig: fb.sig_id, blocks, values: fb.all_values, entry: BlockId(0) };
+        let body = FuncBody {
+            sig: fb.sig_id,
+            blocks,
+            values: fb.all_values,
+            instruction_group_instances: fb.instruction_group_instances,
+            entry: BlockId(0),
+        };
         let func_id = FuncId(self.module.funcs.len());
         self.module.funcs.push(FuncDecl::Body(body));
         self.module.exports.insert(fb.name, func_id);

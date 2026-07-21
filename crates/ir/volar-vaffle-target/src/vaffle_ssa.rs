@@ -162,6 +162,7 @@ pub fn ssa_ify_module<P: Clone>(module: &Module<P>) -> Module<P> {
         types,
         oracles: module.oracles.clone(),
         actions: module.actions.clone(),
+        instruction_groups: module.instruction_groups.clone(),
         funcs,
         sigs: module.sigs.clone(),
         exports: module.exports.clone(),
@@ -308,7 +309,13 @@ pub fn ssa_ify_function<P: Clone>(
         blocks[bi].terminator = old_term.map(&mut (), |_: &mut (), v: ValueId| subst_fn(v)).unwrap();
     }
 
-    let out = FuncBody { sig: body.sig, blocks, values, entry: body.entry };
+    let out = FuncBody {
+        sig: body.sig,
+        blocks,
+        values,
+        instruction_group_instances: body.instruction_group_instances.clone(),
+        entry: body.entry,
+    };
     debug_assert!(
         compute_cross_block_values(&out).is_empty(),
         "vaffle_ssa: postcondition violated -- cross-block values remain after spilling"
@@ -623,6 +630,7 @@ mod tests {
             types,
             oracles: Vec::new(),
             actions: Vec::new(),
+            instruction_groups: Vec::new(),
             funcs: Vec::new(),
             sigs: alloc::vec![SigDecl { params: Vec::new(), results: Vec::new() }],
             exports: BTreeMap::new(),
@@ -660,7 +668,7 @@ mod tests {
             Block { params: Vec::new(), stmts: vec![ValueId(0)], terminator: Terminator::Jump(Target { block: BlockId(1), args: Vec::new(), reentry: None }) },
             Block { params: Vec::new(), stmts: vec![ValueId(1)], terminator: Terminator::Return { values: vec![ValueId(1)] } },
         ];
-        let body = FuncBody { sig: SigId(0), blocks, values, entry: BlockId(0) };
+        let body = FuncBody { sig: SigId(0), blocks, values, instruction_group_instances: alloc::vec![], entry: BlockId(0) };
         let mut module = mk_module(1);
         let (bit_tid, addr_tid, sp_step) = setup(&mut module);
 
@@ -681,7 +689,7 @@ mod tests {
         let blocks = vec![
             Block { params: Vec::new(), stmts: vec![ValueId(0)], terminator: Terminator::Return { values: vec![ValueId(0)] } },
         ];
-        let body = FuncBody { sig: SigId(0), blocks, values, entry: BlockId(0) };
+        let body = FuncBody { sig: SigId(0), blocks, values, instruction_group_instances: alloc::vec![], entry: BlockId(0) };
         let mut module = mk_module(1);
         let (bit_tid, addr_tid, sp_step) = setup(&mut module);
 
@@ -718,7 +726,7 @@ mod tests {
                 terminator: Terminator::Return { values: vec![ValueId(0)] },
             },
         ];
-        let body = FuncBody { sig: SigId(0), blocks, values, entry: BlockId(0) };
+        let body = FuncBody { sig: SigId(0), blocks, values, instruction_group_instances: alloc::vec![], entry: BlockId(0) };
         let mut module = mk_module(1);
         let (bit_tid, addr_tid, sp_step) = setup(&mut module);
 
@@ -749,13 +757,13 @@ mod tests {
         let f0_blocks = vec![
             Block { params: Vec::new(), stmts: vec![ValueId(0), ValueId(1)], terminator: Terminator::Return { values: vec![ValueId(1)] } },
         ];
-        let f0 = FuncBody { sig: SigId(0), blocks: f0_blocks, values: f0_values, entry: BlockId(0) };
+        let f0 = FuncBody { sig: SigId(0), blocks: f0_blocks, values: f0_values, instruction_group_instances: alloc::vec![], entry: BlockId(0) };
 
         let f1_values = vec![node(const_op(7))];
         let f1_blocks = vec![
             Block { params: Vec::new(), stmts: vec![ValueId(0)], terminator: Terminator::Return { values: vec![ValueId(0)] } },
         ];
-        let f1 = FuncBody { sig: SigId(0), blocks: f1_blocks, values: f1_values, entry: BlockId(0) };
+        let f1 = FuncBody { sig: SigId(0), blocks: f1_blocks, values: f1_values, instruction_group_instances: alloc::vec![], entry: BlockId(0) };
 
         let mut module = mk_module(1);
         module.funcs.push(FuncDecl::Body(f0));
@@ -786,13 +794,13 @@ mod tests {
         let f0_blocks = vec![
             Block { params: Vec::new(), stmts: vec![ValueId(0)], terminator: Terminator::Return { values: vec![ValueId(0)] } },
         ];
-        let f0 = FuncBody { sig: SigId(0), blocks: f0_blocks, values: f0_values, entry: BlockId(0) };
+        let f0 = FuncBody { sig: SigId(0), blocks: f0_blocks, values: f0_values, instruction_group_instances: alloc::vec![], entry: BlockId(0) };
 
         let f1_values = vec![node(Value::Call { func: FuncId(0), args: Vec::new() })];
         let f1_blocks = vec![
             Block { params: Vec::new(), stmts: vec![ValueId(0)], terminator: Terminator::Return { values: Vec::new() } },
         ];
-        let f1 = FuncBody { sig: SigId(0), blocks: f1_blocks, values: f1_values, entry: BlockId(0) };
+        let f1 = FuncBody { sig: SigId(0), blocks: f1_blocks, values: f1_values, instruction_group_instances: alloc::vec![], entry: BlockId(0) };
 
         let mut module = mk_module(1);
         module.funcs.push(FuncDecl::Body(f0));
@@ -808,7 +816,7 @@ mod tests {
             Block { params: Vec::new(), stmts: vec![ValueId(0)], terminator: Terminator::Return { values: Vec::new() } },
             Block { params: Vec::new(), stmts: Vec::new(), terminator: Terminator::Return { values: vec![ValueId(0)] } },
         ];
-        let body = FuncBody { sig: SigId(0), blocks, values, entry: BlockId(0) };
+        let body = FuncBody { sig: SigId(0), blocks, values, instruction_group_instances: alloc::vec![], entry: BlockId(0) };
         let mut module = mk_module(1);
         let (bit_tid, addr_tid, sp_step) = setup(&mut module);
         let _ = ssa_ify_function(&module, &body, addr_tid, bit_tid, sp_step, true);

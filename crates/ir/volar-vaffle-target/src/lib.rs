@@ -18,7 +18,7 @@ pub mod waffle_lower;
 pub mod lower_to_ir;
 pub mod vaffle_ssa;
 
-pub use import_config::{WaffleImportConfig, WaffleImportKind};
+pub use import_config::{InstructionGroupMarker, WaffleImportConfig, WaffleImportKind};
 pub use target::{VaffleBlock, VaffleTarget, VaffleValue};
 pub use waffle_lower::{lower_waffle_function, lower_waffle_module, UnsupportedOp};
 pub use lower_to_ir::lower_vaffle_to_ir;

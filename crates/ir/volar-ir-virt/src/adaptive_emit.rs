@@ -342,6 +342,8 @@ fn emit_adaptive_module<P: Clone, H: IrHashAlgorithm>(
         oracles: cse_blocks.oracles.clone(),
         actions: cse_blocks.actions.clone(),
         rngs: cse_blocks.rngs.clone(),
+        instruction_groups: cse_blocks.instruction_groups.clone(),
+        instruction_group_instances: cse_blocks.instruction_group_instances.clone(),
         blocks: all_blocks,
         pre_init: Vec::new(),
     }

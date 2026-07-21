@@ -1,9 +1,44 @@
 #![no_std]
 
 use alloc::{collections::btree_map::BTreeMap, string::String, vec::Vec};
-use volar_ir_common::{Constant, IrType, Node, OracleDecl, ActionDecl, PreInitSegment, Stmt, Type, TypeId, TypeTable};
-
+use volar_ir_common::{
+    ActionDecl, InstructionGroupDecl, InstructionGroupInstance, Node, OracleDecl,
+    PreInitSegment, Stmt, TypeId, TypeTable,
+};
 extern crate alloc;
+
+#[cfg(test)]
+mod instruction_group_tests {
+    extern crate std;
+
+    use super::*;
+    use alloc::vec;
+    use volar_ir_common::{GroupDisposition, InstructionGroupDeclId, InstructionGroupId};
+
+    #[test]
+    fn packed_instance_inputs_remap_fallibly() {
+        let instance = InstructionGroupInstance {
+            id: InstructionGroupId(7),
+            decl: InstructionGroupDeclId(2),
+            inputs: vec![PackedValue { values: vec![ValueId(1), ValueId(3)], ty: TypeId(4) }],
+        };
+        let mapped = instance.map_inputs(|input| input.map(|value| {
+            Ok::<_, ()>(ValueId(value.0 + 10))
+        })).expect("infallible input remapping");
+        assert_eq!(mapped.inputs[0].values, vec![ValueId(11), ValueId(13)]);
+        assert!(mapped.map_inputs(|_| Err::<PackedValue, _>(())).is_err());
+    }
+
+    #[test]
+    fn group_declaration_keeps_typed_parameters() {
+        let declaration = InstructionGroupDecl {
+            name: "batch".into(),
+            params: vec![TypeId(1)],
+            disposition: GroupDisposition::Advisory,
+        };
+        assert_eq!(declaration.params, vec![TypeId(1)]);
+    }
+}
 
 /// A VAFFLE module: the top-level container for types, signatures, functions,
 /// and the symbol table.
@@ -20,6 +55,8 @@ pub struct Module<P: Clone = ()> {
     pub oracles: Vec<OracleDecl>,
     /// Declared conditional actions available in this module.
     pub actions: Vec<ActionDecl>,
+    /// Declared static instruction-group kinds available in this module.
+    pub instruction_groups: Vec<InstructionGroupDecl>,
     pub funcs: Vec<FuncDecl<P>>,
     pub sigs: Vec<SigDecl>,
     pub exports: BTreeMap<String, FuncId>,
@@ -38,6 +75,27 @@ pub struct BlockId(pub usize);
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
 pub struct ValueId(pub usize);
+
+/// A typed packed value captured by an instruction-group begin marker.
+///
+/// The individual values are the bit-level representation used by VAFFLE,
+/// while `ty` preserves the source aggregate type for a group consumer.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+pub struct PackedValue<V = ValueId> {
+    pub values: Vec<V>,
+    pub ty: TypeId,
+}
+
+impl<V> PackedValue<V> {
+    /// Fallibly remap the packed value's underlying SSA references.
+    pub fn map<U, E>(self, f: impl FnMut(V) -> Result<U, E>) -> Result<PackedValue<U>, E> {
+        Ok(PackedValue {
+            values: self.values.into_iter().map(f).collect::<Result<Vec<_>, _>>()?,
+            ty: self.ty,
+        })
+    }
+}
 
 /// A function signature: parameter types and result types, expressed as
 /// [`TypeId`] references into the containing [`Module::types`] table.
@@ -74,6 +132,8 @@ pub struct FuncBody<P: Clone = ()> {
     pub sig: SigId,
     pub blocks: Vec<Block>,
     pub values: Vec<Node<Value, volar_ir_common::StandardMetadata<P>>>,
+    /// Static instruction-group instances defined in this function.
+    pub instruction_group_instances: Vec<InstructionGroupInstance<PackedValue>>,
     pub entry: BlockId,
 }
 /// `Block` carries no provenance/side metadata of its own — those annotations
