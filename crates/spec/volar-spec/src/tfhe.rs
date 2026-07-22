@@ -1,11 +1,12 @@
-// @reliability: experimental
-// @experimental-status: unreviewed
+// @pinnedness: unpinned
+// @stability: very-unstable
 // @ai: assisted
-//! TFHE (Torus Fully Homomorphic Encryption) — gate-bootstrapping implementation.
+//! Legacy TFHE-shaped toy arithmetic for self-consistency experiments.
 //!
-//! This module implements TFHE over boolean circuits using the GINX blind-rotation
-//! bootstrapping scheme (Chillotti et al., J. Cryptology 2020; Micciancio & Polyakov,
-//! ePrint 2020/086).
+//! This is not a claim of TFHE/GINX conformance, a secure parameter set, or a
+//! generally usable homomorphic-encryption implementation. Its public surface
+//! is deliberately limited to operations that pass the deterministic toy
+//! cross-tests recorded in `docs/tfhe-two-track-cleanup-plan.md`.
 //!
 //! # Parameters
 //!
@@ -21,7 +22,6 @@
 //!
 //! | Gate | Cost |
 //! |------|------|
-//! | XOR  | free (LWE addition) |
 //! | NOT  | free (LWE negation + constant shift) |
 //! | AND  | one gate bootstrapping (blind rotation + key switching) |
 //!
@@ -31,21 +31,11 @@
 //! over fixed-size arrays using `u32` modular arithmetic (mod 2^32 ≈ torus).
 //! Polynomial multiplication uses schoolbook O(N²) negacyclic convolution.
 //!
-//! # Security
+//! # Scope
 //!
-//! TFHE is a standard cryptographic scheme with published security proofs.
-//! It is IND-CPA secure under the RLWE hardness assumption.
-//!
-//! Suggested 128-bit-security parameters (not validated by this codebase):
-//! `N_LWE = 630, BIG_N = 1024, BS_ELL = 2, KS_ELL = 5, BS_BG_LOG = 10, KS_BG_LOG = 3`.
-//! The implementation carries all six layout/decomposition values as const
-//! parameters. The small values used in this module's tests are noiseless
-//! correctness fixtures, not deployable parameter sets.
-//!
-//! # CAUTION
-//!
-//! This code has not been reviewed by a cryptographer. Do not use in production
-//! without independent expert review.
+//! The small values in this module's tests are noiseless functional fixtures,
+//! not deployable parameters. The module has no security, failure-probability,
+//! interoperability, or production-use claim.
 
 use crate::SpecRng;
 
@@ -182,33 +172,6 @@ pub fn tfhe_trivial_encrypt<const N_LWE: usize>(b: bool) -> LweCiphertext<N_LWE>
         tfhe_trivial_one()
     } else {
         tfhe_trivial_zero()
-    }
-}
-
-/// XOR gate — free: `ct_xor = ct_a + ct_b` (componentwise wrapping addition).
-///
-/// # Composability warning
-///
-/// This is a **linear** (non-bootstrapped) gate.  Its output always decrypts
-/// correctly, but the output **phase** may not be in the standard `{0, Q4}`
-/// range.  In particular, `XOR(true, true)` produces phase `2·Q4 = 0x80000000`
-/// instead of `0`.
-///
-/// **Do not** feed the output of this gate into a bootstrapped gate (AND, OR,
-/// CMUX, PBS) unless you are certain both inputs cannot simultaneously be
-/// `true`.  For composable boolean operations, use bootstrapped alternatives
-/// (e.g. `tfhe_cmux` uses `OR(AND, AND)` internally).
-pub fn tfhe_xor<const N_LWE: usize>(
-    a: LweCiphertext<N_LWE>,
-    b: LweCiphertext<N_LWE>,
-) -> LweCiphertext<N_LWE> {
-    let mut out_a = [0u32; N_LWE];
-    for i in 0..N_LWE {
-        out_a[i] = a.a[i].wrapping_add(b.a[i]);
-    }
-    LweCiphertext {
-        a: out_a,
-        b: a.b.wrapping_add(b.b),
     }
 }
 
@@ -487,21 +450,21 @@ impl<const ADDR_BITS: usize, const TABLE_LEN: usize, const BIG_N: usize>
                 }
                 index += 1;
             }
-    }
+        }
 
-    let half_q4 = Q4 >> 1;
+        let half_q4 = Q4 >> 1;
         let poly_step = BIG_N / (TABLE_LEN / 2);
-    let mut test_poly = [0u32; BIG_N];
+        let mut test_poly = [0u32; BIG_N];
         index = 0;
         while index < BIG_N {
             let entry = index / poly_step;
             test_poly[index] = if logical[entry] {
-            half_q4
-        } else {
-            half_q4.wrapping_neg()
-        };
+                half_q4
+            } else {
+                half_q4.wrapping_neg()
+            };
             index += 1;
-    }
+        }
 
         Ok(Self {
             logical,
@@ -528,33 +491,6 @@ impl<const BIG_N: usize> TfheBootstrapTable<2, 4, BIG_N> {
         Ok(table) => table,
         Err(_) => panic!("the fixed XOR LUT must be negacyclic-representable"),
     };
-}
-
-/// Evaluate a composable two-input XOR through the fixed negacyclic LUT path.
-///
-/// Inputs are `[a, b]` least-significant first. This is deliberately distinct
-/// from [`tfhe_xor`], whose raw torus-linear result is not a standard Boolean
-/// wire for further PBS composition. The output has the same standard
-/// `{0, Q4}` encoding guarantee as [`tfhe_lut_read`].
-///
-/// The direct-IR FHE weaver uses this narrow wrapper for validated XOR layers;
-/// it does not construct a test polynomial or table at runtime.
-pub fn tfhe_lut_xor<
-    const N_LWE: usize,
-    const BIG_N: usize,
-    const BS_ELL: usize,
-    const KS_ELL: usize,
-    const BS_BG_LOG: usize,
-    const KS_BG_LOG: usize,
->(
-    inputs_lsb_first: &[LweCiphertext<N_LWE>; 2],
-    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, BS_BG_LOG, KS_BG_LOG>,
-) -> LweCiphertext<N_LWE> {
-    tfhe_lut_read(
-        inputs_lsb_first,
-        &TfheBootstrapTable::<2, 4, BIG_N>::XOR,
-        bk,
-    )
 }
 
 /// Read a fixed-shape cleartext table using programmable bootstrapping.
@@ -704,14 +640,14 @@ pub fn gen_bootstrapping_key<
     });
 
     let ksk_array: [[LweCiphertext<N_LWE>; KS_ELL]; BIG_N] = core::array::from_fn(|i| {
-            let s_bit = rlwe_sk.key[i];
-            core::array::from_fn(|j| {
-                // level j: encrypt s'[i] * floor(2^32 / BG_KS^{j+1})
+        let s_bit = rlwe_sk.key[i];
+        core::array::from_fn(|j| {
+            // level j: encrypt s'[i] * floor(2^32 / BG_KS^{j+1})
             let shift = 32u32.saturating_sub((KS_BG_LOG * (j + 1)) as u32);
-                let msg_val = s_bit.wrapping_shl(shift);
-                lwe_encrypt_raw(msg_val, lwe_sk, ks_noise_bits, rng)
-            })
-        });
+            let msg_val = s_bit.wrapping_shl(shift);
+            lwe_encrypt_raw(msg_val, lwe_sk, ks_noise_bits, rng)
+        })
+    });
 
     let ksk = KeySwitchingKey { ksk: ksk_array };
     BootstrappingKey { bsk, ksk }
@@ -1310,6 +1246,89 @@ mod tests {
         lwe_encrypt(m, sk, T_NOISE_BITS, &mut rng)
     }
 
+    /// Recover the exact torus phase independently of the public decoder.
+    /// The zero-noise toy profile requires a composable Boolean wire to be
+    /// exactly one of its two canonical representatives, not merely to land in
+    /// the decoder interval.
+    fn phase(ct: &Ct, sk: &LweSecretKey<T_N_LWE>) -> u32 {
+        let mut dot = 0u32;
+        for i in 0..T_N_LWE {
+            dot = dot.wrapping_add(ct.a[i].wrapping_mul(sk.key[i] as u32));
+        }
+        ct.b.wrapping_sub(dot)
+    }
+
+    fn assert_canonical(ct: &Ct, expected: bool, sk: &LweSecretKey<T_N_LWE>, context: &str) {
+        let expected_phase = if expected { Q4 } else { 0 };
+        assert_eq!(
+            phase(ct, sk),
+            expected_phase,
+            "{context}: output must be exactly canonical in the zero-noise toy profile"
+        );
+        assert_eq!(
+            lwe_decrypt(ct, sk),
+            expected,
+            "{context}: decrypted Boolean result"
+        );
+    }
+
+    // ── Cross-operation completeness tests ───────────────────────────────
+
+    #[test]
+    fn toy_cross_operations_are_boolean_and_canonical() {
+        // This is intentionally exhaustive over Boolean inputs and a fixed
+        // seed corpus, rather than another decoder-only truth-table test. It
+        // is the Track-S admission test for the remaining legacy public wire
+        // operations; it makes no parameter or security claim.
+        for key_seed in [0, 1, 42, 0x5eed_cafe] {
+            let (sk, _, bk) = test_keys(key_seed);
+            for a in [false, true] {
+                for b in [false, true] {
+                    for c in [false, true] {
+                        let ct_a = encrypt(a, &sk, 100 + key_seed);
+                        let ct_b = encrypt(b, &sk, 200 + key_seed);
+                        let ct_c = encrypt(c, &sk, 300 + key_seed);
+                        assert_canonical(&ct_a, a, &sk, "encrypt(a)");
+                        assert_canonical(&ct_b, b, &sk, "encrypt(b)");
+                        assert_canonical(&ct_c, c, &sk, "encrypt(c)");
+                        assert_canonical(
+                            &tfhe_trivial_encrypt::<T_N_LWE>(a),
+                            a,
+                            &sk,
+                            "trivial encrypt(a)",
+                        );
+
+                        let not_a = tfhe_not(ct_a);
+                        assert_canonical(&not_a, !a, &sk, "NOT");
+
+                        let and_ab = tfhe_gate_bootstrapping_and(ct_a, ct_b, &bk);
+                        assert_canonical(&and_ab, a & b, &sk, "AND");
+
+                        let or_ab = tfhe_gate_bootstrapping_or(ct_a, ct_b, &bk);
+                        assert_canonical(&or_ab, a | b, &sk, "OR");
+
+                        let selected = tfhe_cmux(ct_a, ct_b, ct_c, &bk);
+                        assert_canonical(&selected, if a { b } else { c }, &sk, "CMUX");
+
+                        // Each result is immediately reused by a different
+                        // surviving operation, so a decoder-correct but raw
+                        // intermediate cannot pass this corpus.
+                        let chained = tfhe_gate_bootstrapping_and(or_ab, not_a, &bk);
+                        assert_canonical(&chained, (a | b) & !a, &sk, "AND(OR(a,b),NOT(a))");
+
+                        let selected_then_or = tfhe_gate_bootstrapping_or(selected, and_ab, &bk);
+                        assert_canonical(
+                            &selected_then_or,
+                            (if a { b } else { c }) | (a & b),
+                            &sk,
+                            "OR(CMUX(a,b,c),AND(a,b))",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // ── Basic roundtrip test ─────────────────────────────────────────────
 
     #[test]
@@ -1646,32 +1665,6 @@ mod tests {
     }
 
     #[test]
-    fn lut_xor_is_standard_encoded_and_composes() {
-        let (sk, _, bk) = test_keys(42);
-        for a in [false, true] {
-            for b in [false, true] {
-                for c in [false, true] {
-                    let ct_a = encrypt(a, &sk, 1_000);
-                    let ct_b = encrypt(b, &sk, 1_001);
-                    let ct_c = encrypt(c, &sk, 1_002);
-                    let ab = tfhe_lut_xor(&[ct_a, ct_b], &bk);
-                    assert_eq!(
-                        lwe_decrypt(&ab, &sk),
-                        a ^ b,
-                        "first LUT XOR layer must normalize XOR({a}, {b})"
-                    );
-                    let abc = tfhe_lut_xor(&[ab, ct_c], &bk);
-                    assert_eq!(
-                        lwe_decrypt(&abc, &sk),
-                        a ^ b ^ c,
-                        "second LUT XOR layer must accept the first layer's standard encoding"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
     fn lut_read_all_false() {
         // LUT of all false entries — any address should decrypt to false.
         let (sk, _, bk) = test_keys(42);
@@ -1747,7 +1740,15 @@ mod tests {
         let mut rng = TestRng::new(111);
         let p: [u32; T_BIG_N] = core::array::from_fn(|_| rng.next_u32());
 
-        for &exp in &[0usize, 1, 2, T_BIG_N - 1, T_BIG_N, T_BIG_N + 1, 2 * T_BIG_N - 1] {
+        for &exp in &[
+            0usize,
+            1,
+            2,
+            T_BIG_N - 1,
+            T_BIG_N,
+            T_BIG_N + 1,
+            2 * T_BIG_N - 1,
+        ] {
             // Build the monomial X^exp mod (X^N+1) directly: coefficient 1
             // at position (exp mod N), negated if exp >= N (one wraparound).
             let mut mono = [0u32; T_BIG_N];
@@ -1781,7 +1782,9 @@ mod tests {
         let scale_shift = 32 - two_n.trailing_zeros();
         let step = 1u32 << scale_shift;
         let test_poly: [u32; T_BIG_N] = core::array::from_fn(|i| {
-            (i as u32).wrapping_mul(0x6d2b_79f5).wrapping_add(0x1357_9bdf)
+            (i as u32)
+                .wrapping_mul(0x6d2b_79f5)
+                .wrapping_add(0x1357_9bdf)
         });
 
         // Deliberately does not call `poly_rotate`: multiply by X^exp in
@@ -1872,8 +1875,14 @@ mod tests {
         let mut rng = TestRng::new(222);
         let rlwe_sk = gen_rlwe_secret_key::<T_BIG_N, _>(&mut rng);
 
-        let mut d0 = RlweCiphertext { a: [0u32; T_BIG_N], b: [0u32; T_BIG_N] };
-        let mut d1 = RlweCiphertext { a: [0u32; T_BIG_N], b: [0u32; T_BIG_N] };
+        let mut d0 = RlweCiphertext {
+            a: [0u32; T_BIG_N],
+            b: [0u32; T_BIG_N],
+        };
+        let mut d1 = RlweCiphertext {
+            a: [0u32; T_BIG_N],
+            b: [0u32; T_BIG_N],
+        };
         for i in 0..T_BIG_N {
             d0.b[i] = (i as u32).wrapping_mul(0x1111_1111);
             d1.b[i] = (i as u32).wrapping_mul(0x2222_2222).wrapping_add(0x9999);
@@ -1895,7 +1904,11 @@ mod tests {
             let mut dot0 = 0u32;
             let mut dot1 = 0u32;
             for k in 0..T_BIG_N {
-                let (idx, negate) = if i >= k { (i - k, false) } else { (T_BIG_N + i - k, true) };
+                let (idx, negate) = if i >= k {
+                    (i - k, false)
+                } else {
+                    (T_BIG_N + i - k, true)
+                };
                 let c0 = out0.a[k].wrapping_mul(rlwe_sk.key[idx]);
                 let c1 = out1.a[k].wrapping_mul(rlwe_sk.key[idx]);
                 if negate {
@@ -1908,8 +1921,14 @@ mod tests {
             }
             let phase0 = out0.b[i].wrapping_sub(dot0);
             let phase1 = out1.b[i].wrapping_sub(dot1);
-            assert_eq!(phase0, d0.b[i], "CMUX(sel=0,...) coeff {i} mismatch (expected d0)");
-            assert_eq!(phase1, d1.b[i], "CMUX(sel=1,...) coeff {i} mismatch (expected d1)");
+            assert_eq!(
+                phase0, d0.b[i],
+                "CMUX(sel=0,...) coeff {i} mismatch (expected d0)"
+            );
+            assert_eq!(
+                phase1, d1.b[i],
+                "CMUX(sel=1,...) coeff {i} mismatch (expected d1)"
+            );
         }
     }
 
@@ -2011,8 +2030,14 @@ mod tests {
             }
             let signed_phase = ct_out_signed.b.wrapping_sub(dot);
 
-            let expected_signed = if a & b { half_q4 } else { half_q4.wrapping_neg() };
-            let err = (signed_phase as i32).wrapping_sub(expected_signed as i32).unsigned_abs();
+            let expected_signed = if a & b {
+                half_q4
+            } else {
+                half_q4.wrapping_neg()
+            };
+            let err = (signed_phase as i32)
+                .wrapping_sub(expected_signed as i32)
+                .unsigned_abs();
             assert!(
                 err < Q4 / 4,
                 "AND({a},{b}) signed pre-restoration phase {signed_phase:#010x} not close to expected {expected_signed:#010x}"
@@ -2052,21 +2077,7 @@ mod tests {
             prop_assert_eq!(got, a & b, "AND({}, {})", a, b);
         }
 
-        /// XOR gate (free — no bootstrapping): decrypt(XOR(enc(a), enc(b))) == a ^ b
-        #[test]
-        fn prop_xor_correct(
-            a in any::<bool>(),
-            b in any::<bool>(),
-            key_seed in 0u64..100,
-            enc_seed in 0u64..100000,
-        ) {
-            let (sk, _, _bk) = test_keys(key_seed);
-            let ct_a = encrypt(a, &sk, enc_seed);
-            let ct_b = encrypt(b, &sk, enc_seed.wrapping_add(1));
-            let ct_out = tfhe_xor(ct_a, ct_b);
-            let got = lwe_decrypt(&ct_out, &sk);
-            prop_assert_eq!(got, a ^ b, "XOR({}, {})", a, b);
-        }
+
 
         /// NOT gate (free — no bootstrapping): decrypt(NOT(enc(a))) == !a
         #[test]
@@ -2142,7 +2153,7 @@ mod tests {
             prop_assert_eq!(got, a & b & c, "AND(AND({}, {}), {})", a, b, c);
         }
 
-        /// XOR(AND(a, b), NOT(AND(c, d))) — mixed gate chain
+        /// OR(AND(a, b), NOT(AND(c, d))) — mixed composable gate chain
         #[test]
         fn prop_mixed_chain(
             a in any::<bool>(),
@@ -2161,12 +2172,12 @@ mod tests {
             let ab = tfhe_gate_bootstrapping_and(ct_a, ct_b, &bk);
             let cd = tfhe_gate_bootstrapping_and(ct_c, ct_d, &bk);
             let not_cd = tfhe_not(cd);
-            let result = tfhe_xor(ab, not_cd);
+            let result = tfhe_gate_bootstrapping_or(ab, not_cd, &bk);
 
             let got = lwe_decrypt(&result, &sk);
-            let expected = (a & b) ^ !(c & d);
+            let expected = (a & b) | !(c & d);
             prop_assert_eq!(got, expected,
-                "XOR(AND({},{}), NOT(AND({},{})))", a, b, c, d);
+                "OR(AND({},{}), NOT(AND({},{})))", a, b, c, d);
         }
 
         // ── LUT read ────────────────────────────────────────────────────
@@ -2222,8 +2233,7 @@ mod tests {
         // encrypted inputs.  After executing 1-5 random operations, decrypts
         // every intermediate value and compares with the plaintext oracle.
         //
-        // Note: free XOR is excluded because it produces non-standard phases
-        // that break composability (see `tfhe_xor` doc comment).
+
 
         #[test]
         fn prop_random_circuit(
@@ -2274,6 +2284,8 @@ mod tests {
             for (i, (&expected, ct)) in plain.iter().zip(enc.iter()).enumerate() {
                 let got = lwe_decrypt(ct, &sk);
                 prop_assert_eq!(got, expected, "pool[{}]", i);
+                let expected_phase = if expected { Q4 } else { 0 };
+                prop_assert_eq!(phase(ct, &sk), expected_phase, "pool[{}] canonical phase", i);
             }
         }
     }

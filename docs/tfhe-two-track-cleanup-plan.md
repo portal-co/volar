@@ -55,10 +55,19 @@ a claim that a replacement XOR has been constructed.
 
 Similarly, legacy caller-provided programmable bootstrap and fixed-table/LUT
 surfaces combine incomplete accumulator/selector semantics with generated
-weaver dependence. They have no stable Track-S contract and are removed rather
-than broadened or repaired. This includes their table descriptor and the
-specialized LUT-XOR wrapper. Their removal does not decide whether V2 will have
-PBS or LUTs.
+weaver dependence. They have no stable Track-S contract and are scheduled for
+removal rather than broadening or repair. This includes their table descriptor
+and the specialized LUT-XOR wrapper. Their removal does not decide whether V2
+will have PBS or LUTs.
+
+**Current cleanup snapshot:** direct raw `tfhe_xor` and the specialized
+`tfhe_lut_xor` wrapper have been removed. The generic caller-programmable
+bootstrap/table surfaces remain only until their dedicated canonicality and
+composition decision is recorded; they are not Track-S admission evidence and
+must not be used to restore weaver compatibility. At this cleanup snapshot,
+`cargo test -p volar-spec --lib --no-fail-fast` passes 165 tests, including the
+new deterministic canonical-phase cross-operation test. That is only
+zero-noise toy-profile self-consistency evidence for the named survivors.
 
 ## Track S acceptance rule and initial subset
 
