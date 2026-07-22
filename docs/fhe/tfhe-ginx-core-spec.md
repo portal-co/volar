@@ -1,6 +1,6 @@
 # TFHE / GINX Core Mathematical Specification (Draft)
 
-**Status:** draft, Phase 1 deliverable of `docs/tfhe-pbs-rework-plan.md`. This
+**Status:** draft, Phase 1 deliverable of `docs/fhe/tfhe-pbs-rework-plan.md`. This
 document is a **paper-derived mathematical model**, checked by an independent
 cleartext oracle (`crates/spec/volar-spec/src/tfhe_ginx_oracle.rs`, test-only).
 It is **not** a statement that the existing ciphertext-level implementation in
@@ -29,7 +29,7 @@ by page render where noted):
 
 ## Merged-tree update — 2026-07-22
 
-Evidence: `08d1d33`, the [TFHE validation handoff](handoffs/merge-recovery/tfhe-ginx-validation.md), and `cargo test -p volar-spec` (2026-07-22).
+Evidence: `08d1d33`, the [TFHE validation handoff](../handoffs/merge-recovery/tfhe-ginx-validation.md), and `cargo test -p volar-spec` (2026-07-22).
 
 The independent test-only oracle is paper-pinned at `75db00c` by
 [`reviews/tfhe-ginx-oracle-paper-binding.md`](reviews/tfhe-ginx-oracle-paper-binding.md).
@@ -313,7 +313,7 @@ precisely the ones the paper derived; a generic table (e.g. arbitrary 3-input
 functions that are not expressible as a threshold-of-a-linear-combination)
 requires either a different, individually-derived affine map and proof, or
 falls back to circuit bootstrapping / a packed LUT evaluation (out of this
-document's scope — see `docs/tfhe-pbs-rework-plan.md` §9).
+document's scope — see `docs/fhe/tfhe-pbs-rework-plan.md` §9).
 
 ### 4.3 Composability
 
@@ -346,7 +346,7 @@ third bootstrap because of a semantic invariant on its two operands."
 
 ## 5. What this document does **not** establish
 
-Per `docs/tfhe-pbs-rework-plan.md` §3–§4, the following remain explicitly
+Per `docs/fhe/tfhe-pbs-rework-plan.md` §3–§4, the following remain explicitly
 unresolved by this draft and must not be treated as validated:
 
 - Whether `crates/spec/volar-spec/src/tfhe.rs`'s concrete `u32`-torus

@@ -4,10 +4,10 @@
   `46dce80`, with static-shape interaction in `63e2ddc`/`8604107`. Current
   TFHE evidence snapshot: `75db00c`.
 - **Evidence:** Pi session `019f82d8-65e9-71a0-b6c8-c82198c83420`, Git diffs,
-  [`docs/tfhe-pbs-rework-plan.md`](../../tfhe-pbs-rework-plan.md),
-  [`docs/tfhe-ginx-core-spec.md`](../../tfhe-ginx-core-spec.md), the
-  [oracle paper binding](../../reviews/tfhe-ginx-oracle-paper-binding.md), and
-  the [tfhe-go reference record](../../reviews/tfhe-ginx-tfhe-go-reference.md).
+  [`docs/fhe/tfhe-pbs-rework-plan.md`](../../fhe/tfhe-pbs-rework-plan.md),
+  [`docs/fhe/tfhe-ginx-core-spec.md`](../../fhe/tfhe-ginx-core-spec.md), the
+  [oracle paper binding](../../fhe/reviews/tfhe-ginx-oracle-paper-binding.md), and
+  the [tfhe-go reference record](../../fhe/reviews/tfhe-ginx-tfhe-go-reference.md).
 - **Implemented and verified:** Phase 1's clear oracle is paper-pinned at
   `75db00c` with direct operation citations and PDF hashes. The Phase 2 suite
   now independently checks polynomial rotation, exact-grid whole blind
@@ -46,6 +46,6 @@
   or reviewer-approved implementation, and generated-code weave → print →
   keygen → encrypt → execute → decrypt tests. Passing the current unit suite is
   necessary but not sufficient.
-- **Documents to update before coding:** `docs/tfhe-pbs-rework-plan.md`,
-  `docs/tfhe-ginx-core-spec.md`, `docs/tfhe-multi-input-pbs-weaver-plan.md`,
+- **Documents to update before coding:** `docs/fhe/tfhe-pbs-rework-plan.md`,
+  `docs/fhe/tfhe-ginx-core-spec.md`, `docs/fhe/tfhe-multi-input-pbs-weaver-plan.md`,
   `docs/spec-static-shapes-plan.md`, and this handoff.

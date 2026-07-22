@@ -7,13 +7,18 @@ and `crates/compiler/volar-weaver/src/fhe.rs`. TFHE semantic changes require
 paper-bound cryptographic review; compiler integration requires generated-code
 compile-and-run evidence.
 
-**Pinnedness/stability:** `tfhe.rs` retains a legacy `experimental` marker and
-is therefore treated as Unpinned and Very unstable during migration. The present
+**Pinnedness/stability:** `tfhe.rs` is explicitly marked Unpinned and Very
+unstable. The present
 implementation must not be advertised as having a validated security level, a
 production failure probability, or interoperable TFHE semantics.
 
 **Decision requested from the owner/reviewers:** approve a validation-first
-**possible full rework**, not a PBS API migration. The old plan incorrectly
+**possible full rework**, not a PBS API migration.
+
+**Track-S supersession:** the [two-track plan](tfhe-two-track-cleanup-plan.md)
+authorizes removal of known-inconsistent legacy surfaces and a speculative,
+evidence-led steady state. This plan remains the gate for any new PBS semantic
+claim or weaver integration; it does not prohibit Track-S cleanup. The old plan incorrectly
 assumed enough about the current kernel to make a new table encoder and an IR
 planner the next step. The paper review and the failed prototype show that this
 assumption is not justified.
@@ -23,7 +28,7 @@ assumption is not justified.
 
 ## Merged-tree update — 2026-07-22
 
-Evidence: `08d1d33`, the [TFHE validation handoff](handoffs/merge-recovery/tfhe-ginx-validation.md), and `cargo test -p volar-spec` (2026-07-22).
+Evidence: `08d1d33`, the [TFHE validation handoff](../handoffs/merge-recovery/tfhe-ginx-validation.md), and `cargo test -p volar-spec` (2026-07-22).
 
 This plan is the validation gate for all TFHE work. The test-only clear oracle
 (Phase 1) is now paper-pinned by
@@ -39,8 +44,8 @@ This is functional evidence, not Gate B or Gate C acceptance: independent
 reference vectors, nonzero-noise, parameter, and security review remain open.
 Do not enable or generalize PBS work from these tests.
 
-**Policy update:** under the pinnedness/stability policy, this legacy
-`experimental` TFHE work is Unpinned and Very unstable. That classification
+**Policy update:** under the pinnedness/stability policy, this TFHE work is
+explicitly Unpinned and Very unstable. That classification
 neither authorizes implementation nor weakens any validation gate.
 
 ## 1. Executive decision
@@ -189,7 +194,7 @@ new semantics build on the code.
 
 ## 4. Target mathematical contract (must exist before API design)
 
-Write `docs/tfhe-ginx-core-spec.md` before changing cryptographic code. It must
+Write `docs/fhe/tfhe-ginx-core-spec.md` before changing cryptographic code. It must
 be a self-contained, paper-cited description of **the exact implementation
 variant**, including all signs and indices. Its normative contents are:
 

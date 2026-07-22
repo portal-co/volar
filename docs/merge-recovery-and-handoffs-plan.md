@@ -137,8 +137,8 @@ conformance suite but written against pre-static-shapes helper signatures.
 3. Run the TFHE unit suite, the clear oracle tests, and both test parameter
    configurations. Then execute the existing generated-code FHE test path;
    compilation-only checks cannot establish the Boolean-result invariant.
-4. Compare the repaired tests against `docs/tfhe-ginx-core-spec.md` and
-   `docs/tfhe-pbs-rework-plan.md`. Any disagreement about phase, sign,
+4. Compare the repaired tests against `docs/fhe/tfhe-ginx-core-spec.md` and
+   `docs/fhe/tfhe-pbs-rework-plan.md`. Any disagreement about phase, sign,
    rotation, extraction, key-switch, output restoration, or noise is a
    stop-and-handoff, not a fixture fix.
 
@@ -304,9 +304,9 @@ next agent implement its stale wording.
 | Document | Required reconciliation |
 |---|---|
 | `AGENTS.md`, `docs/agents-guide.md`, `docs/reliability.md`, `docs/README.md` | Remove stale capability-tier, model-gating, sub-threshold-tag, and `volar_experimental` claims. The later policy update also replaces reliability levels with pinnedness/stability axes. Preserve model-neutral evidence rules and no-raw-IR / deterministic-spec / ZK-discipline requirements. |
-| `docs/tfhe-pbs-rework-plan.md` | Mark as the validation gate for TFHE work; correct its now-obsolete claim that Experimental must use a Cargo feature. State which phases have landed only after the repaired tests prove it. |
-| `docs/tfhe-ginx-core-spec.md` | Keep the current “draft/model, not conformance proof” wording. Add only verified conformance-test status; do not promote it into a parameter/security claim. |
-| `docs/tfhe-multi-input-pbs-weaver-plan.md` | Add a prominent dependency/supersession note: LUT-first/XOR and generalized-PBS work are blocked behind the rework plan's core audit. Retain the current two-address-bit limit and the rejection of arbitrary wider tables. Remove capability-tier instructions rather than merely renaming a model. |
+| `docs/fhe/tfhe-pbs-rework-plan.md` | Mark as the validation gate for TFHE work; correct its now-obsolete claim that Experimental must use a Cargo feature. State which phases have landed only after the repaired tests prove it. |
+| `docs/fhe/tfhe-ginx-core-spec.md` | Keep the current “draft/model, not conformance proof” wording. Add only verified conformance-test status; do not promote it into a parameter/security claim. |
+| `docs/fhe/tfhe-multi-input-pbs-weaver-plan.md` | Add a prominent dependency/supersession note: LUT-first/XOR and generalized-PBS work are blocked behind the rework plan's core audit. Retain the current two-address-bit limit and the rejection of arbitrary wider tables. Remove capability-tier instructions rather than merely renaming a model. |
 | `docs/spec-static-shapes-plan.md` | Point its TFHE Track B to the validation gate; record what is actually static and which generated/dynamic backend checks remain broken or unverified. |
 | `docs/metadata-container-plan.md`, `docs/instruction-groups-plan.md` | Replace stale “planning/no implementation” status with a fact-checked implementation ledger and a list of incomplete consumers/coverage. Keep the prerequisite ordering and required-consumption invariant. |
 | `docs/lir-lowering-monomorphization-plan.md` and `PROGRESS.md` | Reconcile status with merged code and the handoffs. Do not claim generic mono, virtualisation, or real-interpreter E2E success until their compile-and-run evidence is current. |

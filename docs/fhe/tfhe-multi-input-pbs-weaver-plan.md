@@ -1,8 +1,8 @@
 # Plan: Multi-Input PBS and Direct-IR TFHE Fusion
 
-**Status:** partially implemented — the two-address-bit LUT-first direct-IR XOR path is implemented and remains opt-in; wider address tables are explicitly deferred to the generalized selector/encoding review
-**Primary scope:** `crates/spec/volar-spec/src/tfhe.rs`, `crates/compiler/volar-weaver/src/fhe.rs`, and the direct `IRBlocks` path
-**Related work:** [spec-static-shapes-plan.md](spec-static-shapes-plan.md), [fhe-weaver.md](fhe-weaver.md), [pipeline.md](pipeline.md), [agent-context/boolar-ir-conflicts.md](agent-context/boolar-ir-conflicts.md), [agent-context/ast-to-ast-weaving.md](agent-context/ast-to-ast-weaving.md)
+**Status:** superseded integration proposal. The legacy raw and LUT-XOR surfaces are removed; do not restore them for the weaver. The active directions are Track S's [evidence-led speculative steady state](tfhe-steady-state-evidence.md) and the separate V2 draft.
+**Primary historical scope:** `crates/spec/volar-spec/src/tfhe.rs`, `crates/compiler/volar-weaver/src/fhe.rs`, and the direct `IRBlocks` path
+**Related work:** [spec-static-shapes-plan.md](../spec-static-shapes-plan.md), [weaver.md](weaver.md), [pipeline.md](../pipeline.md), [agent-context/boolar-ir-conflicts.md](../agent-context/boolar-ir-conflicts.md), [agent-context/ast-to-ast-weaving.md](../agent-context/ast-to-ast-weaving.md)
 **Review boundary:** TFHE table/phase/encoding semantics and fusion equivalence
 need paper-bound cryptographic review. Isolated IR/planner work begins only
 after that semantic contract is fixed and must retain generated-code
@@ -11,7 +11,7 @@ compile-and-run coverage.
 
 ## Merged-tree update — 2026-07-22
 
-Evidence: `08d1d33`, the [TFHE validation handoff](handoffs/merge-recovery/tfhe-ginx-validation.md), and the [static-shapes handoff](handoffs/merge-recovery/static-shapes-and-monomorphization.md).
+Evidence: `08d1d33`, the [TFHE validation handoff](../handoffs/merge-recovery/tfhe-ginx-validation.md), and the [static-shapes handoff](../handoffs/merge-recovery/static-shapes-and-monomorphization.md).
 
 **Dependency/supersession notice:** LUT-first/XOR and every generalized-PBS
 proposal are blocked behind the core audit in `tfhe-pbs-rework-plan.md`. The
@@ -57,12 +57,10 @@ legacy-marker migration, not merely compiler optimization:
   equivalence with that cone, preserve ordering/effects/provenance, and never
   silently cross a control-flow or external-effect boundary.
 
-The current TFHE module retains the legacy `@reliability: experimental` and
-`@experimental-status: unreviewed` markers, so the migration policy treats it
-as Unpinned and Very unstable. Nothing in this plan establishes a secure
+The current TFHE module is explicitly marked Unpinned and Very unstable. Nothing in this plan establishes a secure
 parameter set, a concrete security level, a noise bound, or a production-ready
 bootstrap implementation. Any non-default pinnedness or stability decision
-remains a human decision under [reliability.md](reliability.md).
+remains a human decision under [reliability.md](../reliability.md).
 
 ### 0.1 What “multi-input PBS” and “layered negacyclic” mean here
 

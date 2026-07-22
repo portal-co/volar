@@ -2,7 +2,7 @@
 
 **Status:** partially implemented — TFHE parameter binding and fixed-shape boolean LUTs landed; broader protocol audit and multi-input PBS remain proposed
 **Primary scope:** `crates/spec/volar-spec/`
-**Related work:** [`tfhe-multi-input-pbs-weaver-plan.md`](tfhe-multi-input-pbs-weaver-plan.md), [`agent-context/ast-to-ast-weaving.md`](agent-context/ast-to-ast-weaving.md), [`fhe-weaver.md`](fhe-weaver.md), [`lir-lowering-monomorphization-plan.md`](lir-lowering-monomorphization-plan.md)
+**Related work:** [`fhe/tfhe-multi-input-pbs-weaver-plan.md`](fhe/tfhe-multi-input-pbs-weaver-plan.md), [`agent-context/ast-to-ast-weaving.md`](agent-context/ast-to-ast-weaving.md), [`fhe/weaver.md`](fhe/weaver.md), [`lir-lowering-monomorphization-plan.md`](lir-lowering-monomorphization-plan.md)
 **Review boundary:** cryptographic-spec API, parameter-binding, and PBS-semantic changes require paper-bound cryptographic review. Mechanical inventory, test harnesses, and compiler support still need reproducible behavior and generated-code evidence. No parameter set may be presented as secure without independent human cryptographic review.
 
 ## Merged-tree update — 2026-07-22
@@ -11,7 +11,7 @@ Evidence: `08d1d33`, [TFHE validation handoff](handoffs/merge-recovery/tfhe-ginx
 
 TFHE decomposition bases and fixed-shape LUT inputs/tables are static, and the
 repaired focused `cargo test -p volar-spec` suite passes. Track B is gated by
-`tfhe-pbs-rework-plan.md`; do not treat static shapes as a PBS/security result.
+`fhe/tfhe-pbs-rework-plan.md`; do not treat static shapes as a PBS/security result.
 The dynamic generated crate has a pre-existing generated associated-type parse
 failure for `cargo fmt --check`, and the LIR/C widening ring stops at unresolved
 const parameter `L` in `encrypt_branch`. Neither backend remains verified for
@@ -116,7 +116,7 @@ phase:
   layers accepted by `TfheBootstrapTable`/`tfhe_lut_read` before a broader
   multi-input selector construction is selected. The layered contract and its
   separate generalized-PBS track are specified in
-  [`tfhe-multi-input-pbs-weaver-plan.md`](tfhe-multi-input-pbs-weaver-plan.md).
+  [`fhe/tfhe-multi-input-pbs-weaver-plan.md`](fhe/tfhe-multi-input-pbs-weaver-plan.md).
 
 The spec crate also retains dynamic collections where their role differs:
 
@@ -586,7 +586,7 @@ before implementation.
 4. Add a weaver-facing table-construction hand-off API whose inputs are static
    program/circuit metadata. Its first consumer is the constrained
    LUT-first/direct-IR path specified in
-   [`tfhe-multi-input-pbs-weaver-plan.md`](tfhe-multi-input-pbs-weaver-plan.md);
+   [`fhe/tfhe-multi-input-pbs-weaver-plan.md`](fhe/tfhe-multi-input-pbs-weaver-plan.md);
    generalized program-segment tables remain disabled until their separate
    construction and optimization policy receive review.
 5. Preserve the ZK/non-ZK discipline boundary. TFHE is transparent; this

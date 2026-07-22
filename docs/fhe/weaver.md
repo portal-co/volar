@@ -2,7 +2,10 @@
 
 > **Referenced by**: `volar-weaver/src/fhe.rs`, `volar-spec/src/tfhe.rs`
 >
-> **Status**: legacy `@reliability: experimental`; treated as Unpinned and Very unstable until reclassified
+> **Status**: historical generic-weaver design. The former TFHE integration
+> references removed legacy XOR surfaces and is not a Track-S compatibility
+> target. Treat it as Unpinned and Very unstable; any future Track-S weaving is
+> a separately evidenced experiment.
 
 ---
 
@@ -18,11 +21,11 @@ scheme implements.  This decouples the shared weaving infrastructure (movfuscati
 storage lowering, provenance, CFG traversal) from scheme-specific details (wire
 types, bootstrapping keys, bootstrap costs).
 
-Currently implemented schemes:
+Historical scheme integration:
 
-| Scheme | Kind | Crate | Path |
-|--------|------|-------|------|
-| **TFHE** | Torus FHE gate-bootstrapping | `volar-spec` | `crates/spec/volar-spec/src/tfhe.rs` |
+| Scheme | Record | Current status |
+|--------|--------|----------------|
+| **TFHE** | `volar-spec` legacy toy module | The old emitted surface is not preserved. See the [Track-S evidence ledger](tfhe-steady-state-evidence.md). |
 
 ---
 
@@ -299,6 +302,6 @@ and scheme imports.  `self_contained = false` emits only the function bodies.
 
 ## See Also
 
-- [VOLE storage modes](vole-weaving.md) — zero-AND-gate memory checking
-- [Memory checking protocol](memory-checking.md) — multiset hash specification
-- [Pinnedness and stability](reliability.md) — legacy TFHE marker and migration policy
+- [VOLE storage modes](../vole-weaving.md) — zero-AND-gate memory checking
+- [Memory checking protocol](../memory-checking.md) — multiset hash specification
+- [Pinnedness and stability](../reliability.md) — TFHE classification and migration policy
