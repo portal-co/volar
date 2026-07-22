@@ -31,10 +31,16 @@ by page render where noted):
 
 Evidence: `08d1d33`, the [TFHE validation handoff](handoffs/merge-recovery/tfhe-ginx-validation.md), and `cargo test -p volar-spec` (2026-07-22).
 
-The independent test-only oracle and repaired conformance tests now pass for
-the focused suite. This remains a draft mathematical model, not a ciphertext
-conformance proof, parameter claim, noise result, or promotion artifact. Gates
-B and C in the rework plan remain open.
+The independent test-only oracle is paper-pinned at `75db00c` by
+[`reviews/tfhe-ginx-oracle-paper-binding.md`](reviews/tfhe-ginx-oracle-paper-binding.md).
+The focused conformance suite now includes an exact-grid whole blind-rotation
+check with independently calculated accumulator/decryption results, alongside
+rotation, CMUX, extraction, and key-switch checks. This remains a draft
+mathematical model, not a ciphertext conformance proof, parameter claim, noise
+result, or promotion artifact. The selected external-reference reconnaissance
+is recorded in
+[`reviews/tfhe-ginx-tfhe-go-reference.md`](reviews/tfhe-ginx-tfhe-go-reference.md);
+Gates B and C remain open.
 
 ## 1. Domains and encodings
 

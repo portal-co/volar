@@ -26,10 +26,18 @@ assumption is not justified.
 Evidence: `08d1d33`, the [TFHE validation handoff](handoffs/merge-recovery/tfhe-ginx-validation.md), and `cargo test -p volar-spec` (2026-07-22).
 
 This plan is the validation gate for all TFHE work. The test-only clear oracle
-(Phase 1) and repaired, stage-oriented conformance suite (Phase 2) are present
-and the focused suite passes. That is functional evidence, not Gate B or Gate
-C acceptance: independent-reference, nonzero-noise, parameter, and security
-review remain open. Do not enable or generalize PBS work from these tests.
+(Phase 1) is now paper-pinned by
+[`reviews/tfhe-ginx-oracle-paper-binding.md`](reviews/tfhe-ginx-oracle-paper-binding.md)
+at `75db00c`. The repaired, stage-oriented Phase 2 suite now includes an
+exact-grid, independently decrypted blind-rotation accumulator check in
+addition to rotation, CMUX, extraction, and key-switch checks; the focused
+suite passes. The selected `tfhe-go` revision has been executed and its
+conventions recorded in
+[`reviews/tfhe-ginx-tfhe-go-reference.md`](reviews/tfhe-ginx-tfhe-go-reference.md),
+but parameter/layout incompatibility prevents a ciphertext differential test.
+This is functional evidence, not Gate B or Gate C acceptance: independent
+reference vectors, nonzero-noise, parameter, and security review remain open.
+Do not enable or generalize PBS work from these tests.
 
 **Policy update:** under the pinnedness/stability policy, this legacy
 `experimental` TFHE work is Unpinned and Very unstable. That classification
