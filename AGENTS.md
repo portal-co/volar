@@ -28,6 +28,10 @@ choices that:
 - Follow the reliability system: new cryptographic constructions start at
   Experimental, not Normal.
 
+## Chengelog
+
+July 22, 2026: Maintainer here, I removed most enforcement-style components entirely from the reliability system, including the capability tier system entirely. This is because 1. most agents were (under that formulation) Tier 2 or Tier 3 anyway, and non-self-identifying models like GPT had trouble recognizing their tier, 2. agent identification has shown to be ineffective, still leading to subtle bugs (EVEN for authorized agents), when paper-binding, the resolution to those bugs, was incredibly effective (like most agents' Plan Modes are), and 3. I want to save tokens.
+
 ## Crate Constraints
 
 | Crate | `std` | Notes |
