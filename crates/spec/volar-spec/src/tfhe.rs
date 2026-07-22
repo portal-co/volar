@@ -1726,6 +1726,198 @@ mod tests {
         );
     }
 
+    // ── Phase 2 conformance tests (docs/tfhe-pbs-rework-plan.md, Gate B) ──
+    //
+    // Each test below independently recomputes an "expected" value using a
+    // separately written formula or algorithm — never by calling the same
+    // helper under test a second time, and never by comparing only against
+    // `lwe_decrypt`'s final true/false classification. These isolate one
+    // pipeline stage each: negacyclic rotation, CMUX/external product,
+    // sample extraction, key switching, and the signed pre-restoration
+    // bootstrap output. See `docs/tfhe-ginx-core-spec.md` §2–§3 for the
+    // paper-cited definitions each test checks against.
+
+    /// `poly_rotate` (index-shift-with-sign-flip) must agree with
+    /// multiplication by the monomial `X^exp` computed via the independent
+    /// O(N^2) schoolbook convolution in `poly_mul_neg`, across exponents
+    /// covering both wrap cases (`exp < N`, `N <= exp < 2N`) and their
+    /// boundaries.
+    #[test]
+    fn conformance_poly_rotate_matches_monomial_multiplication() {
+        let mut rng = TestRng::new(111);
+        let p: [u32; T_BIG_N] = core::array::from_fn(|_| rng.next_u32());
+
+        for &exp in &[0usize, 1, 2, T_BIG_N - 1, T_BIG_N, T_BIG_N + 1, 2 * T_BIG_N - 1] {
+            // Build the monomial X^exp mod (X^N+1) directly: coefficient 1
+            // at position (exp mod N), negated if exp >= N (one wraparound).
+            let mut mono = [0u32; T_BIG_N];
+            let reduced = exp % T_BIG_N;
+            if exp < T_BIG_N {
+                mono[reduced] = 1;
+            } else {
+                mono[reduced] = 1u32.wrapping_neg();
+            }
+
+            let via_rotate = poly_rotate(&p, exp);
+            let via_mul = poly_mul_neg(&p, &mono);
+
+            assert_eq!(
+                via_rotate, via_mul,
+                "poly_rotate(p, {exp}) != poly_mul_neg(p, X^{exp}) at BIG_N={T_BIG_N}"
+            );
+        }
+    }
+
+    /// CMUX must select the correct trivial-RLWE operand across *arbitrary*
+    /// (non-constant) polynomial content, decrypted via an independently
+    /// written negacyclic convolution — not `sample_extract` or
+    /// `poly_mul_neg`, and not just the constant-coefficient case already
+    /// covered by `debug_cmux_trivial`.
+    #[test]
+    fn conformance_cmux_selects_arbitrary_polynomials() {
+        let mut rng = TestRng::new(222);
+        let rlwe_sk = gen_rlwe_secret_key::<T_BIG_N, _>(&mut rng);
+
+        let mut d0 = RlweCiphertext { a: [0u32; T_BIG_N], b: [0u32; T_BIG_N] };
+        let mut d1 = RlweCiphertext { a: [0u32; T_BIG_N], b: [0u32; T_BIG_N] };
+        for i in 0..T_BIG_N {
+            d0.b[i] = (i as u32).wrapping_mul(0x1111_1111);
+            d1.b[i] = (i as u32).wrapping_mul(0x2222_2222).wrapping_add(0x9999);
+        }
+
+        let rgsw0: RgswCiphertext<T_BIG_N, T_BS_ELL> = rgsw_encrypt(false, &rlwe_sk, T_BS_BG_LOG, 0, &mut rng);
+        let rgsw1: RgswCiphertext<T_BIG_N, T_BS_ELL> = rgsw_encrypt(true, &rlwe_sk, T_BS_BG_LOG, 0, &mut rng);
+
+        let out0 = cmux(&rgsw0, &d1, &d0, T_BS_BG_LOG); // selector 0 -> expect d0
+        let out1 = cmux(&rgsw1, &d1, &d0, T_BS_BG_LOG); // selector 1 -> expect d1
+
+        // d0/d1 are trivial (a=0), so their plaintext IS their b polynomial
+        // directly. Decrypt out0/out1 coefficient-by-coefficient using an
+        // independently written negacyclic convolution (not poly_mul_neg,
+        // not sample_extract) and compare against the expected operand.
+        for i in 0..T_BIG_N {
+            let mut dot0 = 0u32;
+            let mut dot1 = 0u32;
+            for k in 0..T_BIG_N {
+                let (idx, negate) = if i >= k { (i - k, false) } else { (T_BIG_N + i - k, true) };
+                let c0 = out0.a[k].wrapping_mul(rlwe_sk.key[idx]);
+                let c1 = out1.a[k].wrapping_mul(rlwe_sk.key[idx]);
+                if negate {
+                    dot0 = dot0.wrapping_sub(c0);
+                    dot1 = dot1.wrapping_sub(c1);
+                } else {
+                    dot0 = dot0.wrapping_add(c0);
+                    dot1 = dot1.wrapping_add(c1);
+                }
+            }
+            let phase0 = out0.b[i].wrapping_sub(dot0);
+            let phase1 = out1.b[i].wrapping_sub(dot1);
+            assert_eq!(phase0, d0.b[i], "CMUX(sel=0,...) coeff {i} mismatch (expected d0)");
+            assert_eq!(phase1, d1.b[i], "CMUX(sel=1,...) coeff {i} mismatch (expected d1)");
+        }
+    }
+
+    /// `sample_extract`'s output, decrypted under the RLWE key reused
+    /// directly as an LWE key, must equal direct RLWE decryption of the
+    /// ciphertext's constant coefficient — computed here via an
+    /// independently written convolution at degree 0, matching the
+    /// negacyclic identity `dot(a_lwe, s) == (a * s)[0]` implied by
+    /// 2020/086 p.11's sign-permuted extraction key.
+    #[test]
+    fn conformance_sample_extract_matches_direct_rlwe_decryption() {
+        let mut rng = TestRng::new(333);
+        let rlwe_sk = gen_rlwe_secret_key::<T_BIG_N, _>(&mut rng);
+
+        let mut msg_poly = [0u32; T_BIG_N];
+        for i in 0..T_BIG_N {
+            msg_poly[i] = (i as u32).wrapping_mul(0x1234_5678).wrapping_add(7);
+        }
+        let ct = rlwe_encrypt_poly(&msg_poly, &rlwe_sk, 0, &mut rng);
+
+        // Direct RLWE decryption at coefficient 0: phase = b[0] - (a*s)[0],
+        // with (a*s)[0] computed by an explicit independent convolution.
+        let mut conv0 = ct.a[0].wrapping_mul(rlwe_sk.key[0]);
+        for i in 1..T_BIG_N {
+            conv0 = conv0.wrapping_sub(ct.a[i].wrapping_mul(rlwe_sk.key[T_BIG_N - i]));
+        }
+        let direct_phase = ct.b[0].wrapping_sub(conv0);
+
+        let extracted = sample_extract(&ct);
+        let mut dot = 0u32;
+        for i in 0..T_BIG_N {
+            dot = dot.wrapping_add(extracted.a[i].wrapping_mul(rlwe_sk.key[i]));
+        }
+        let extracted_phase = extracted.b.wrapping_sub(dot);
+
+        assert_eq!(
+            extracted_phase, direct_phase,
+            "sample_extract phase {extracted_phase:#010x} != direct RLWE decryption phase {direct_phase:#010x}"
+        );
+    }
+
+    /// `key_switch` must faithfully convert an `LweCiphertext<BIG_N>`
+    /// encrypted under the RLWE key (reinterpreted as an LWE key) into an
+    /// `LweCiphertext<N_LWE>` that decrypts to the same message under the
+    /// destination key — checked via `lwe_decrypt` on a differently-keyed,
+    /// differently-dimensioned ciphertext, not by re-deriving key_switch's
+    /// own arithmetic.
+    #[test]
+    fn conformance_key_switch_roundtrip() {
+        let mut rng = TestRng::new(444);
+        let lwe_sk = gen_lwe_secret_key::<T_N_LWE, _>(&mut rng);
+        let rlwe_sk = gen_rlwe_secret_key::<T_BIG_N, _>(&mut rng);
+        let bk = gen_bootstrapping_key::<T_N_LWE, T_BIG_N, T_BS_ELL, T_KS_ELL, _>(
+            &lwe_sk, &rlwe_sk, T_BS_BG_LOG, T_KS_BG_LOG, 0, 0, &mut rng,
+        );
+
+        let source_sk = LweSecretKey::<T_BIG_N> {
+            key: core::array::from_fn(|i| rlwe_sk.key[i] as u8),
+        };
+
+        for m in [false, true] {
+            let ct_big = lwe_encrypt::<T_BIG_N, _>(m, &source_sk, 0, &mut rng);
+            let ct_small = key_switch(&ct_big, &bk.ksk);
+            let got = lwe_decrypt(&ct_small, &lwe_sk);
+            assert_eq!(got, m, "key_switch roundtrip failed for m={m}");
+        }
+    }
+
+    /// Before the `+Q4/2` output-restoration offset, the raw AND bootstrap
+    /// result must be the *signed* `{-Q4/2, +Q4/2}` value predicted by the
+    /// paper-cited AND certificate class for each of the four Boolean input
+    /// combinations (`docs/tfhe-ginx-core-spec.md` §4), not merely the final
+    /// decrypted true/false already checked by `and_gate_all_combos`.
+    #[test]
+    fn conformance_and_signed_output_matches_paper_classification() {
+        let (sk, _, bk) = test_keys(4242);
+        let half_q4 = Q4 >> 1;
+
+        for (a, b) in [(false, false), (false, true), (true, false), (true, true)] {
+            let ct_a = encrypt(a, &sk, 1100);
+            let ct_b = encrypt(b, &sk, 1200);
+
+            let mut ct = lwe_add(ct_a, ct_b);
+            ct.b = ct.b.wrapping_sub(half_q4);
+
+            let acc = blind_rotate(&ct, &bk);
+            let lwe_big = sample_extract(&acc);
+            let ct_out_signed = key_switch(&lwe_big, &bk.ksk);
+
+            let mut dot = 0u32;
+            for i in 0..T_N_LWE {
+                dot = dot.wrapping_add(ct_out_signed.a[i].wrapping_mul(sk.key[i] as u32));
+            }
+            let signed_phase = ct_out_signed.b.wrapping_sub(dot);
+
+            let expected_signed = if a & b { half_q4 } else { half_q4.wrapping_neg() };
+            let err = (signed_phase as i32).wrapping_sub(expected_signed as i32).unsigned_abs();
+            assert!(
+                err < Q4 / 4,
+                "AND({a},{b}) signed pre-restoration phase {signed_phase:#010x} not close to expected {expected_signed:#010x}"
+            );
+        }
+    }
+
     // ── Property-based tests ─────────────────────────────────────────────
     //
     // Fuzz TFHE operations by running them on encrypted inputs in parallel

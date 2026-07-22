@@ -6,3 +6,5 @@
 # everyone who runs the test benefits from these saved cases.
 cc af48245364b350442f8b7c4175f792794f88749e7a21d227290a9979aebac3a6 # shrinks to sel = false, a = true, b = true, key_seed = 0, enc_seed = 0
 cc 33f36e5e75cfba5603769b060be094936dcbe622c9558d35fce7a6cc52b42ea3 # shrinks to inputs = [true, false, false, true], raw_ops = [(1, 1531780912441829787, 785557379332192395), (0, 5864184858265371789, 176893129273659825)], key_seed = 0, enc_seed = 0
+cc d3ce5e61494ffc42b4d9c646ba354e51e475a0b9027f0675f781a270a3e37b43 # shrinks to val0 = true, is_constant = false, addr = false, key_seed = 24, enc_seed = 5598
+cc 366dcfc7f76ce45e5891ce395303f0dc32fd2e6a32a1051fde0fd7ba692b340a # shrinks to val0 = false, val1 = false, addr0 = false, addr1 = false, key_seed = 48, enc_seed = 18675
