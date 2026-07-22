@@ -1768,6 +1768,100 @@ mod tests {
         }
     }
 
+    /// Blind rotation on an exact torus grid must decrypt to the clear,
+    /// negacyclicly rotated accumulator polynomial. This checks `X^{-b}`
+    /// initialization and every `X^{a_i}` conditional update with independent
+    /// clear rotation/decryption code. Its sign and order are Algorithm 4 in
+    /// [CGGI18, p.23]; the accumulator/update abstraction is [MP20,
+    /// pp. 10–14, Figures 1, 2, and 4].
+    #[test]
+    fn conformance_blind_rotate_matches_clear_accumulator_on_exact_grid() {
+        let (lwe_sk, rlwe_sk, bk) = test_keys(555);
+        let two_n = 2 * T_BIG_N;
+        let scale_shift = 32 - two_n.trailing_zeros();
+        let step = 1u32 << scale_shift;
+        let test_poly: [u32; T_BIG_N] = core::array::from_fn(|i| {
+            (i as u32).wrapping_mul(0x6d2b_79f5).wrapping_add(0x1357_9bdf)
+        });
+
+        // Deliberately does not call `poly_rotate`: multiply by X^exp in
+        // Z/2^32Z[X]/(X^N + 1) by placing coefficients at their destinations.
+        fn clear_rotate<const N: usize>(poly: &[u32; N], exp: usize) -> [u32; N] {
+            let exp = exp % (2 * N);
+            let base = exp % N;
+            let sign = exp >= N;
+            let mut out = [0u32; N];
+            for (i, &coefficient) in poly.iter().enumerate() {
+                let destination = i + base;
+                let wraps = destination >= N;
+                let value = if sign ^ wraps {
+                    coefficient.wrapping_neg()
+                } else {
+                    coefficient
+                };
+                out[destination % N] = out[destination % N].wrapping_add(value);
+            }
+            out
+        }
+
+        // Also avoids `sample_extract`: decrypt every coefficient using an
+        // independently written negacyclic product.
+        fn clear_decrypt<const N: usize>(ct: &RlweCiphertext<N>, sk: &[u32; N]) -> [u32; N] {
+            let mut phase = [0u32; N];
+            for i in 0..N {
+                let mut product = 0u32;
+                for k in 0..N {
+                    let term = ct.a[k].wrapping_mul(sk[if i >= k { i - k } else { N + i - k }]);
+                    product = if i >= k {
+                        product.wrapping_add(term)
+                    } else {
+                        product.wrapping_sub(term)
+                    };
+                }
+                phase[i] = ct.b[i].wrapping_sub(product);
+            }
+            phase
+        }
+
+        // Exact-grid masks exercise both selector values and all quadrants of
+        // Z/(2N). `phase_exp` is the clear exponent b - <a,s> mod 2N.
+        for &phase_exp in &[0usize, 1, 31, 63, 64, 96, 127] {
+            let mut a = [0u32; T_N_LWE];
+            let mut mask_exp_sum = 0usize;
+            for i in 0..T_N_LWE {
+                let a_exp = (11 * i + 3) % two_n;
+                a[i] = (a_exp as u32).wrapping_mul(step);
+                mask_exp_sum = (mask_exp_sum + a_exp * lwe_sk.key[i] as usize) % two_n;
+            }
+            let body_exp = (phase_exp + mask_exp_sum) % two_n;
+            let ct = LweCiphertext {
+                a,
+                b: (body_exp as u32).wrapping_mul(step),
+            };
+
+            assert_eq!(
+                torus_to_exp(ct.b, scale_shift, two_n),
+                body_exp,
+                "exact-grid body did not quantize to its chosen exponent"
+            );
+            for i in 0..T_N_LWE {
+                assert_eq!(
+                    torus_to_exp(ct.a[i], scale_shift, two_n),
+                    (11 * i + 3) % two_n,
+                    "exact-grid mask[{i}] did not quantize to its chosen exponent"
+                );
+            }
+
+            let acc = blind_rotate_with_poly(&ct, test_poly, &bk);
+            let got = clear_decrypt(&acc, &rlwe_sk.key);
+            let expected = clear_rotate(&test_poly, (two_n - phase_exp) % two_n);
+            assert_eq!(
+                got, expected,
+                "blind rotation disagrees with X^(-phase) accumulator at phase exponent {phase_exp}"
+            );
+        }
+    }
+
     /// CMUX must select the correct trivial-RLWE operand across *arbitrary*
     /// (non-constant) polynomial content, decrypted via an independently
     /// written negacyclic convolution — not `sample_extract` or

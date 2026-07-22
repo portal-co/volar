@@ -1,9 +1,15 @@
-// @reliability: experimental
-// @experimental-status: design
+// @pinnedness: paper-pinned
+// @paper: Micciancio & Polyakov, “Bootstrapping in FHEW-like Cryptosystems”,
+//   ePrint 2020/086, pp. 9–15, Figures 1–4 and Table 1
+// @paper: Chillotti, Gama, Georgieva & Izabachène, “TFHE: Fast Fully
+//   Homomorphic Encryption over the Torus”, ePrint 2018/421, pp. 23, 41–44
+// @paper-binding: docs/reviews/tfhe-ginx-oracle-paper-binding.md
+// @stability: very-unstable
 // @ai: assisted
 //! Independent cleartext oracle for the paper-derived GINX/FHEW Boolean-gate
-//! certificates documented in `docs/tfhe-ginx-core-spec.md` (§4, citing
-//! Micciancio & Polyakov, ePrint 2020/086, Table 1, p.15).
+//! certificates documented in `docs/tfhe-ginx-core-spec.md` (§4). The exact
+//! source-to-operation bindings, source hashes, and scope are recorded in
+//! `docs/reviews/tfhe-ginx-oracle-paper-binding.md`.
 //!
 //! # Purpose (Phase 1 of `docs/tfhe-pbs-rework-plan.md`)
 //!
@@ -32,9 +38,13 @@
 
 #![allow(dead_code)]
 
-/// A gate certificate: an affine preparation (as a function of the
-/// input phases) plus an interval `[lo, hi)` (mod `q`) that decides the
-/// `+q/8`-vs-`-q/8` signed bootstrap outcome, per core spec §4.
+/// A gate certificate: an affine preparation (as a function of the input
+/// phases) plus the half-open interval `[lo, hi)` (mod `q`) that decides the
+/// `+q/8`-vs-`-q/8` signed bootstrap outcome.
+///
+/// Direct source: [MP20, p.15, Table 1]. The signed output and its canonical
+/// restoration are derived immediately above that table; see
+/// `evaluate_certificate`.
 ///
 /// `interval_true` is stored as `(lo, hi)` such that `hi` may be `< lo` to
 /// represent a wraparound interval mod `q` (matching the paper's use of
@@ -67,9 +77,10 @@ fn in_interval_mod(x: u64, lo: u64, hi: u64, q: u64) -> bool {
 /// Evaluate a certificate against ciphertext-phase inputs (each in canonical
 /// `{0, q/4}` encoding), returning the canonical `{0, q/4}` output.
 ///
-/// This directly implements core spec §4's "Output restoration": the signed
-/// bootstrap output in `{-q/8, +q/8}` has `q/8` added to land back in
-/// `{0, q/4}`.
+/// This directly implements the signed-output restoration in [MP20, p.15]:
+/// the signed bootstrap output in `{-q/8, +q/8}` has `q/8` added to land back
+/// in `{0, q/4}`. This is an integer model of the cited arithmetic, not a
+/// ciphertext bootstrap or a noise claim.
 fn evaluate_certificate(cert: &GateCertificate, inputs: &[u64], q: u64) -> u64 {
     assert_eq!(inputs.len(), cert.arity, "certificate {} arity mismatch", cert.name);
     let prepared = (cert.prepare)(inputs, q) % q;
@@ -107,27 +118,29 @@ fn evaluate_gate(cert_eighths: &GateCertificate, inputs: &[u64], q: u64) -> u64 
     evaluate_certificate(&scaled, inputs, q)
 }
 
-/// AND: `c1+c2`, true region `[3q/8, 7q/8)`.
+/// AND: `c1+c2`, true region `[3q/8, 7q/8)` ([MP20, p.15, Table 1]).
 fn cert_and() -> GateCertificate {
     GateCertificate { name: "AND", arity: 2, prepare: |c, q| (c[0] + c[1]) % q, interval_true: (3, 7) }
 }
 
-/// NAND: `c1+c2`, true region `[-q/8, 3q/8)` i.e. `(7, 3)` wrapping in eighths.
+/// NAND: `c1+c2`, true region `[-q/8, 3q/8)` ([MP20, p.15, Table 1]);
+/// represented as `(7, 3)` wrapping in eighths.
 fn cert_nand() -> GateCertificate {
     GateCertificate { name: "NAND", arity: 2, prepare: |c, q| (c[0] + c[1]) % q, interval_true: (7, 3) }
 }
 
-/// OR: `c1+c2`, true region `[q/8, 5q/8)`.
+/// OR: `c1+c2`, true region `[q/8, 5q/8)` ([MP20, p.15, Table 1]).
 fn cert_or() -> GateCertificate {
     GateCertificate { name: "OR", arity: 2, prepare: |c, q| (c[0] + c[1]) % q, interval_true: (1, 5) }
 }
 
-/// NOR: `c1+c2`, true region `[-3q/8, q/8)` i.e. `(5, 1)` wrapping in eighths.
+/// NOR: `c1+c2`, true region `[-3q/8, q/8)` ([MP20, p.15, Table 1]);
+/// represented as `(5, 1)` wrapping in eighths.
 fn cert_nor() -> GateCertificate {
     GateCertificate { name: "NOR", arity: 2, prepare: |c, q| (c[0] + c[1]) % q, interval_true: (5, 1) }
 }
 
-/// XOR: `2*(c1-c2)`, true region `[q/8, 5q/8)`.
+/// XOR: `2*(c1-c2)`, true region `[q/8, 5q/8)` ([MP20, p.15, Table 1]).
 fn cert_xor() -> GateCertificate {
     GateCertificate {
         name: "XOR",
@@ -140,7 +153,8 @@ fn cert_xor() -> GateCertificate {
     }
 }
 
-/// XNOR: `2*(c1-c2)`, true region `[-3q/8, q/8)` i.e. `(5, 1)` wrapping.
+/// XNOR: `2*(c1-c2)`, true region `[-3q/8, q/8)` ([MP20, p.15, Table 1]);
+/// represented as `(5, 1)` wrapping in eighths.
 fn cert_xnor() -> GateCertificate {
     GateCertificate {
         name: "XNOR",
@@ -153,9 +167,9 @@ fn cert_xnor() -> GateCertificate {
     }
 }
 
-/// Majority: `c1+c2+c3`, true region `[3q/8, 7q/8)` — same interval as AND,
-/// but 3-ary. This is the paper-cited counterexample to "arity >= 3 needs
-/// circuit bootstrapping" (core spec §4.1).
+/// Majority: `c1+c2+c3`, true region `[3q/8, 7q/8)` ([MP20, p.15,
+/// Table 1]) — the table's one-bootstrap 3-input gate. This does not justify
+/// arbitrary 3-input tables or circuit bootstrapping.
 fn cert_majority() -> GateCertificate {
     GateCertificate {
         name: "Majority",
@@ -165,10 +179,9 @@ fn cert_majority() -> GateCertificate {
     }
 }
 
-/// NOT is not bootstrapped (core spec §3.5/§4 table): `(-a, -b + q/4)`. At
-/// the phase level (ignoring the mask `a`), this is simply negation plus a
-/// `q/4` shift, evaluated directly (no interval test, no signed-eighth
-/// restoration — this bypasses `evaluate_gate` entirely).
+/// NOT is not bootstrapped: `(-a, -b + q/4)` ([MP20, p.15] and [CGGI18,
+/// p.44]). At the phase level (ignoring mask `a`) this is negation plus `q/4`,
+/// so it bypasses the interval and signed-output-restoration model entirely.
 fn eval_not(c: u64, q: u64) -> u64 {
     let true_v = q / 4;
     (true_v as i64 - c as i64).rem_euclid(q as i64) as u64
