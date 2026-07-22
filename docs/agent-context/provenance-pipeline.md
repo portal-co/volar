@@ -59,10 +59,12 @@ available source statement in the relevant scope** — see
 and [`weave_fhe_cfg_with_handler`'s `block_ctrl_provs`/`fallback`](../../crates/compiler/volar-weaver/src/fhe.rs)
 for the canonical examples.
 
-If a circuit has *no* statements at all, there is nothing to derive
-infrastructure provenance from — these functions `panic!` rather than
-inventing a value. This is a deliberate "fail loudly on a degenerate input"
-choice, not an oversight.
+If a circuit has *no* statements at all, a normal entry point has nothing to
+derive infrastructure provenance from and therefore `panic!`s rather than
+inventing a value. Callers that know the enclosing frontend/control source may
+instead use the corresponding `*_with_control_provenance` entry point and pass
+that existing provenance explicitly. This is the only supported statement-free
+path; no pass may manufacture a `P` value.
 
 ### `ProvenanceHandler<P>`
 

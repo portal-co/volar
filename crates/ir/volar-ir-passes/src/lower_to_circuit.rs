@@ -84,6 +84,27 @@ pub enum LoweringMode {
 /// - If a back-edge targets any block other than block 0.
 /// - If `IRBlockTargetId::Dyn` is encountered.
 pub fn lower_to_circuit<P: Clone>(blocks: &BIrBlocks<P>, limit: u32, mode: LoweringMode) -> BIrBlocks<P> {
+    lower_to_circuit_impl(blocks, limit, mode, None)
+}
+
+/// As [`lower_to_circuit`], but accepts explicit control provenance for a
+/// statement-free loop. The provenance must identify the source control
+/// context responsible for the generated circuit infrastructure.
+pub fn lower_to_circuit_with_control_provenance<P: Clone>(
+    blocks: &BIrBlocks<P>,
+    limit: u32,
+    mode: LoweringMode,
+    control_prov: &P,
+) -> BIrBlocks<P> {
+    lower_to_circuit_impl(blocks, limit, mode, Some(control_prov))
+}
+
+fn lower_to_circuit_impl<P: Clone>(
+    blocks: &BIrBlocks<P>,
+    limit: u32,
+    mode: LoweringMode,
+    control_prov: Option<&P>,
+) -> BIrBlocks<P> {
     if blocks.is_circuit() {
         return blocks.clone();
     }
@@ -99,9 +120,11 @@ pub fn lower_to_circuit<P: Clone>(blocks: &BIrBlocks<P>, limit: u32, mode: Lower
     let p = block0.params as usize; // number of circuit input params
 
     // Provenance for infrastructure gates (MUX cascade, loop control constants).
-    // Use the first source statement's provenance; degenerate empty blocks panic.
+    // Prefer an actual statement and otherwise require the caller's explicit
+    // frontend/control provenance.
     let ctrl_prov: &P = block0.stmts.first().map(|n| &n.prov)
-        .expect("lower_to_circuit: block has no statements; cannot infer provenance for infrastructure gates");
+        .or(control_prov)
+        .expect("lower_to_circuit: block has no statements; supply explicit control provenance");
 
     // Emitter owns the accumulating stmt list and var-ID counter.
     let mut emitter = Emitter::<P>::new(p as u32);
@@ -749,6 +772,28 @@ pub fn lower_to_circuit_ir<P: Clone>(
     limit: u32,
     mode: LoweringMode,
 ) -> IRBlocks<P> {
+    lower_to_circuit_ir_impl(blocks, bit_type_id, limit, mode, None)
+}
+
+/// As [`lower_to_circuit_ir`], but accepts explicit control provenance for a
+/// statement-free loop.
+pub fn lower_to_circuit_ir_with_control_provenance<P: Clone>(
+    blocks: &IRBlocks<P>,
+    bit_type_id: &IRTypeId,
+    limit: u32,
+    mode: LoweringMode,
+    control_prov: &P,
+) -> IRBlocks<P> {
+    lower_to_circuit_ir_impl(blocks, bit_type_id, limit, mode, Some(control_prov))
+}
+
+fn lower_to_circuit_ir_impl<P: Clone>(
+    blocks: &IRBlocks<P>,
+    bit_type_id: &IRTypeId,
+    limit: u32,
+    mode: LoweringMode,
+    control_prov: Option<&P>,
+) -> IRBlocks<P> {
     if blocks.is_circuit() {
         return blocks.clone();
     }
@@ -764,7 +809,8 @@ pub fn lower_to_circuit_ir<P: Clone>(
     let p = block0.params.len();
 
     let ctrl_prov: P = block0.stmts.first().map(|n| n.prov.clone())
-        .expect("lower_to_circuit_ir: block has no statements; cannot infer provenance for infrastructure gates");
+        .or_else(|| control_prov.cloned())
+        .expect("lower_to_circuit_ir: block has no statements; supply explicit control provenance");
 
     // Each original var's result type, computed once: params first, then one
     // per stmt (substitution never changes types, only var-id references, so

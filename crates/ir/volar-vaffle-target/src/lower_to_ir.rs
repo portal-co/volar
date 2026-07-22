@@ -115,6 +115,21 @@ pub fn lower_vaffle_to_ir<P: Clone>(module: &Module<P>) -> (IRBlocks<P>, IRTypes
     ctx.finish()
 }
 
+/// Lower a VAFFLE module that may contain a statement-free entry body.
+///
+/// `control_prov` must be the existing frontend/control provenance for the
+/// enclosing module. It is used only for lowering infrastructure when no
+/// source value can supply a provenance; this lowering never invents one.
+pub fn lower_vaffle_to_ir_with_control_provenance<P: Clone>(
+    module: &Module<P>,
+    control_prov: &P,
+) -> (IRBlocks<P>, IRTypes) {
+    let ssa_module = crate::vaffle_ssa::ssa_ify_module(module);
+    let mut ctx = LowerCtx::new_with_control_provenance(&ssa_module, control_prov.clone());
+    ctx.lower_all();
+    ctx.finish()
+}
+
 /// Temporary diagnostic variant of [`lower_vaffle_to_ir`] that also returns
 /// every cross-block spill/reload's own `(vaffle_block, vid, address)` log
 /// line -- lets a caller cross-reference write vs. read sites for a given
@@ -313,6 +328,9 @@ struct LowerCtx<'m, P: Clone = ()> {
     /// without re-running the (slow) circuit simulator. Not read by any
     /// real pipeline; drained via `lower_vaffle_to_ir_with_spill_trace`.
     spill_trace: Vec<alloc::string::String>,
+    /// Explicit frontend/control provenance for infrastructure in a
+    /// statement-free function. It is supplied by the caller, never invented.
+    control_prov: Option<P>,
 }
 
 impl<'m, P: Clone> LowerCtx<'m, P> {
@@ -350,7 +368,14 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
             extra_blocks: Vec::new(),
             pre_init,
             spill_trace: Vec::new(),
+            control_prov: None,
         }
+    }
+
+    fn new_with_control_provenance(module: &'m Module<P>, control_prov: P) -> Self {
+        let mut ctx = Self::new(module);
+        ctx.control_prov = Some(control_prov);
+        ctx
     }
 
     /// Intern a Block type for a continuation that receives packed
@@ -500,7 +525,8 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
         let entry_prov = match &self.module.funcs[0] {
             FuncDecl::Body(b) => b.values.first().map(|n| n.prov.clone()),
             _ => None,
-        }.expect("emit_entry_and_exit: entry function (func 0) must be a Body with at least one value to seed provenance from");
+        }.or_else(|| self.control_prov.clone())
+            .expect("emit_entry_and_exit: entry function has no source value; supply explicit control provenance");
         em.set_prov(entry_prov.clone());
 
         let sp = StackPtr::<IRVarId>::from_const(&mut em, 0, SP_BITS);
@@ -586,7 +612,8 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
             let block_prov = vaffle_block.stmts.first()
                 .map(|&first_vid| body.values[first_vid.0].prov.clone())
                 .or_else(|| body.values.first().map(|n| n.prov.clone()))
-                .expect("lower_function: function has no values to seed block provenance from");
+                .or_else(|| self.control_prov.clone())
+                .expect("lower_function: function has no source value; supply explicit control provenance");
             em.set_prov(block_prov);
 
             // Unpack SP from packed words.
@@ -1391,7 +1418,7 @@ mod tests {
         t.ret(&[]);
         t.end_function();
 
-        let (ir_blocks, _) = lower_vaffle_to_ir(&t.module);
+        let (ir_blocks, _) = lower_vaffle_to_ir_with_control_provenance(&t.module, &());
 
         // The entry block (block 0) should contain at least one Merge
         // (packing SP bits for the jump to the function entry).

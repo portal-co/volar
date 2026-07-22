@@ -3,7 +3,7 @@
 
 use proptest::prelude::*;
 use volar_ir_passes::lower_ir_to_boolar;
-use volar_vaffle_target::lower_vaffle_to_ir;
+use volar_vaffle_target::lower_vaffle_to_ir_with_control_provenance;
 
 use crate::generators::ir::gen_ir_and_inputs;
 use crate::generators::vaffle::gen_vaffle_and_inputs;
@@ -79,7 +79,7 @@ proptest! {
             None => return Ok(()),
         };
 
-        let (ir, ir_types) = lower_vaffle_to_ir(&module);
+        let (ir, ir_types) = lower_vaffle_to_ir_with_control_provenance(&module, &());
 
         // Block 0 of the lowered IR takes no params (CPS entry sets up the stack).
         let ir_out = match eval_ir(&ir, &ir_types, &[]) {
@@ -98,6 +98,6 @@ proptest! {
     fn prop_j_lower_vaffle_to_ir_does_not_panic(
         (module, _func_id, _inputs) in gen_vaffle_and_inputs()
     ) {
-        let _ = lower_vaffle_to_ir(&module);
+        let _ = lower_vaffle_to_ir_with_control_provenance(&module, &());
     }
 }

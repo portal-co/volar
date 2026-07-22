@@ -2354,9 +2354,27 @@ fn compute_return_slot_types<P: Clone>(
 ///
 /// All slot types are `Bit` (the only type in Boolar IR).
 /// Single-block input is returned unchanged.
-/// Source statement provenances are carried through; synthetic dispatch gates
-/// receive `P::default()`.
+/// Source statement provenances are carried through. Infrastructure gates use
+/// the first source-statement provenance in the circuit; use
+/// [`movfuscate_biir_with_control_provenance`] when a valid circuit has no
+/// statements and the caller has an explicit control provenance.
 pub fn movfuscate_biir<P: Clone>(blocks: &BIrBlocks<P>) -> BIrBlocks<P> {
+    movfuscate_biir_impl(blocks, None)
+}
+
+/// As [`movfuscate_biir`], but permits a statement-free multi-block circuit.
+///
+/// `control_prov` must name the enclosing frontend/control source responsible
+/// for the circuit. It is used only when no input statement can supply the
+/// provenance for generated dispatch gates; it is never synthesized here.
+pub fn movfuscate_biir_with_control_provenance<P: Clone>(
+    blocks: &BIrBlocks<P>,
+    control_prov: &P,
+) -> BIrBlocks<P> {
+    movfuscate_biir_impl(blocks, Some(control_prov))
+}
+
+fn movfuscate_biir_impl<P: Clone>(blocks: &BIrBlocks<P>, control_prov: Option<&P>) -> BIrBlocks<P> {
     let n = blocks.blocks.len();
     if n == 1 { return blocks.clone(); }
     let pc_width = pc_bits_needed(n);
@@ -2364,7 +2382,8 @@ pub fn movfuscate_biir<P: Clone>(blocks: &BIrBlocks<P>) -> BIrBlocks<P> {
     let combined_params = pc_width + state_width;
     let ctrl_prov = blocks.blocks.iter().flat_map(|b| b.stmts.iter()).map(|n| &n.prov).next()
         .cloned()
-        .expect("movfuscate_biir: circuit has no statements; cannot derive provenance for infrastructure gates");
+        .or_else(|| control_prov.cloned())
+        .expect("movfuscate_biir: circuit has no statements; supply explicit control provenance");
     let ctx = BIrCtx::<P>::new(combined_params as u32, ctrl_prov);
     let state_slot_types = vec![(); state_width];
     let ret_width = BIrCtx::<P>::return_val_width(blocks);
@@ -2384,7 +2403,19 @@ pub fn movfuscate_biir<P: Clone>(blocks: &BIrBlocks<P>) -> BIrBlocks<P> {
 /// `types` is used for type inference; an `IRType::Bit` entry is added if
 /// absent.  Single-block input is returned unchanged.
 pub fn movfuscate_ir<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> IRBlocks<P> {
-    movfuscate_ir_impl(blocks, types, &[]).0
+    movfuscate_ir_impl(blocks, types, &[], None).0
+}
+
+/// As [`movfuscate_ir`], but permits a statement-free multi-block circuit.
+///
+/// `control_prov` must identify the enclosing frontend/control source for
+/// infrastructure statements when no input statement can provide it.
+pub fn movfuscate_ir_with_control_provenance<P: Clone>(
+    blocks: &IRBlocks<P>,
+    types: &mut IRTypes,
+    control_prov: &P,
+) -> IRBlocks<P> {
+    movfuscate_ir_impl(blocks, types, &[], Some(control_prov)).0
 }
 
 /// As [`movfuscate_ir`], but additionally returns each original block's own
@@ -2399,7 +2430,7 @@ pub fn movfuscate_ir_with_boundary<P: Clone>(
     blocks: &IRBlocks<P>,
     types: &mut IRTypes,
 ) -> (IRBlocks<P>, Vec<MovfuscBlockBoundary>, MovfuscAccumInfo) {
-    let (result, boundaries, accum_info, _watch) = movfuscate_ir_impl(blocks, types, &[]);
+    let (result, boundaries, accum_info, _watch) = movfuscate_ir_impl(blocks, types, &[], None);
     (result, boundaries, accum_info)
 }
 
@@ -2414,7 +2445,7 @@ pub fn movfuscate_ir_with_boundary_and_watch<P: Clone>(
     types: &mut IRTypes,
     watch: &[(usize, u32)],
 ) -> (IRBlocks<P>, Vec<MovfuscBlockBoundary>, MovfuscAccumInfo, Vec<(usize, u32, u32)>) {
-    movfuscate_ir_impl(blocks, types, watch)
+    movfuscate_ir_impl(blocks, types, watch, None)
 }
 
 /// Diagnostic (temporary, not used by any real pipeline): dumps
@@ -2453,7 +2484,12 @@ pub fn debug_dump_slot_of<P: Clone>(blocks: &IRBlocks<P>, types: &IRTypes) -> al
     out
 }
 
-fn movfuscate_ir_impl<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes, watch: &[(usize, u32)]) -> (IRBlocks<P>, Vec<MovfuscBlockBoundary>, MovfuscAccumInfo, Vec<(usize, u32, u32)>) {
+fn movfuscate_ir_impl<P: Clone>(
+    blocks: &IRBlocks<P>,
+    types: &mut IRTypes,
+    watch: &[(usize, u32)],
+    control_prov: Option<&P>,
+) -> (IRBlocks<P>, Vec<MovfuscBlockBoundary>, MovfuscAccumInfo, Vec<(usize, u32, u32)>) {
     // Ensure IRType::Bit is present in the types table.
     let bit_type_id = types.intern(IRType::Primitive(Type::Bit));
 
@@ -2494,7 +2530,8 @@ fn movfuscate_ir_impl<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes, watch
     let combined_params = pc_width + state_slot_types.len();
     let ctrl_prov = blocks.blocks.iter().flat_map(|b| b.stmts.iter()).map(|n| &n.prov).next()
         .cloned()
-        .expect("movfuscate_ir: circuit has no statements; cannot derive provenance for infrastructure gates");
+        .or_else(|| control_prov.cloned())
+        .expect("movfuscate_ir: circuit has no statements; supply explicit control provenance");
     let ctx = IrCtx::<P>::new(
         combined_params as u32,
         bit_type_id,

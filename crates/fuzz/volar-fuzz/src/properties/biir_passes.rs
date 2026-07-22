@@ -12,8 +12,8 @@
 //! `movfuscate_biir` and `lower_to_circuit` complete without panicking.
 
 use proptest::prelude::*;
-use volar_ir_passes::lower_to_circuit::lower_to_circuit;
-use volar_ir_passes::{movfuscate_biir, pc_bits_needed, LoweringMode};
+use volar_ir_passes::lower_to_circuit::lower_to_circuit_with_control_provenance;
+use volar_ir_passes::{movfuscate_biir_with_control_provenance, pc_bits_needed, LoweringMode};
 
 use crate::generators::biir::gen_biir_and_inputs;
 use crate::interpreter::biir::{eval_biir, eval_biir_with_limit};
@@ -58,8 +58,9 @@ proptest! {
             None => return Ok(()), // original doesn't terminate — skip
         };
 
-        // Movfuscate and evaluate with correctly padded inputs.
-        let movfuscated = movfuscate_biir(&cfg);
+        // The `()` control provenance explicitly represents the fuzzer's
+        // provenance-free input when its circuit has no source statements.
+        let movfuscated = movfuscate_biir_with_control_provenance(&cfg, &());
         let m_inputs = movfuscated_inputs(&cfg, &inputs);
         let actual = match eval_biir(&movfuscated, &m_inputs) {
             Some(v) => v,
@@ -76,7 +77,7 @@ proptest! {
     fn prop_b_lower_to_circuit_preserves_semantics(
         (cfg, inputs) in gen_biir_and_inputs()
     ) {
-        let movfuscated = movfuscate_biir(&cfg);
+        let movfuscated = movfuscate_biir_with_control_provenance(&cfg, &());
         let m_inputs = movfuscated_inputs(&cfg, &inputs);
 
         // Evaluate the movfuscated form with the same loop limit we'll use
@@ -88,8 +89,12 @@ proptest! {
                 None => return Ok(()), // doesn't terminate within limit — skip
             };
 
-        let circuit =
-            lower_to_circuit(&movfuscated, LOWER_LIMIT, LoweringMode::Unconditional);
+        let circuit = lower_to_circuit_with_control_provenance(
+            &movfuscated,
+            LOWER_LIMIT,
+            LoweringMode::Unconditional,
+            &(),
+        );
         let actual = eval_biir(&circuit, &m_inputs)
             .expect("lowered circuit (DAG) must always terminate");
 
@@ -103,15 +108,25 @@ proptest! {
     fn prop_c_movfuscate_does_not_panic(
         (cfg, _inputs) in gen_biir_and_inputs()
     ) {
-        let _ = movfuscate_biir(&cfg);
+        let _ = movfuscate_biir_with_control_provenance(&cfg, &());
     }
 
     #[test]
     fn prop_c_lower_to_circuit_does_not_panic(
         (cfg, _inputs) in gen_biir_and_inputs()
     ) {
-        let movfuscated = movfuscate_biir(&cfg);
-        let _ = lower_to_circuit(&movfuscated, LOWER_LIMIT, LoweringMode::Unconditional);
-        let _ = lower_to_circuit(&movfuscated, LOWER_LIMIT, LoweringMode::WithTerminationFlag);
+        let movfuscated = movfuscate_biir_with_control_provenance(&cfg, &());
+        let _ = lower_to_circuit_with_control_provenance(
+            &movfuscated,
+            LOWER_LIMIT,
+            LoweringMode::Unconditional,
+            &(),
+        );
+        let _ = lower_to_circuit_with_control_provenance(
+            &movfuscated,
+            LOWER_LIMIT,
+            LoweringMode::WithTerminationFlag,
+            &(),
+        );
     }
 }

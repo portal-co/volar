@@ -1785,11 +1785,13 @@ mod tests {
             d1.b[i] = (i as u32).wrapping_mul(0x2222_2222).wrapping_add(0x9999);
         }
 
-        let rgsw0: RgswCiphertext<T_BIG_N, T_BS_ELL> = rgsw_encrypt(false, &rlwe_sk, T_BS_BG_LOG, 0, &mut rng);
-        let rgsw1: RgswCiphertext<T_BIG_N, T_BS_ELL> = rgsw_encrypt(true, &rlwe_sk, T_BS_BG_LOG, 0, &mut rng);
+        let rgsw0: RgswCiphertext<T_BIG_N, T_BS_ELL> =
+            rgsw_encrypt::<T_BIG_N, T_BS_ELL, T_BS_BG_LOG, _>(false, &rlwe_sk, 0, &mut rng);
+        let rgsw1: RgswCiphertext<T_BIG_N, T_BS_ELL> =
+            rgsw_encrypt::<T_BIG_N, T_BS_ELL, T_BS_BG_LOG, _>(true, &rlwe_sk, 0, &mut rng);
 
-        let out0 = cmux(&rgsw0, &d1, &d0, T_BS_BG_LOG); // selector 0 -> expect d0
-        let out1 = cmux(&rgsw1, &d1, &d0, T_BS_BG_LOG); // selector 1 -> expect d1
+        let out0 = cmux::<T_BIG_N, T_BS_ELL, T_BS_BG_LOG>(&rgsw0, &d1, &d0); // selector 0 -> expect d0
+        let out1 = cmux::<T_BIG_N, T_BS_ELL, T_BS_BG_LOG>(&rgsw1, &d1, &d0); // selector 1 -> expect d1
 
         // d0/d1 are trivial (a=0), so their plaintext IS their b polynomial
         // directly. Decrypt out0/out1 coefficient-by-coefficient using an
@@ -1866,9 +1868,15 @@ mod tests {
         let mut rng = TestRng::new(444);
         let lwe_sk = gen_lwe_secret_key::<T_N_LWE, _>(&mut rng);
         let rlwe_sk = gen_rlwe_secret_key::<T_BIG_N, _>(&mut rng);
-        let bk = gen_bootstrapping_key::<T_N_LWE, T_BIG_N, T_BS_ELL, T_KS_ELL, _>(
-            &lwe_sk, &rlwe_sk, T_BS_BG_LOG, T_KS_BG_LOG, 0, 0, &mut rng,
-        );
+        let bk = gen_bootstrapping_key::<
+            T_N_LWE,
+            T_BIG_N,
+            T_BS_ELL,
+            T_KS_ELL,
+            T_BS_BG_LOG,
+            T_KS_BG_LOG,
+            _,
+        >(&lwe_sk, &rlwe_sk, 0, 0, &mut rng);
 
         let source_sk = LweSecretKey::<T_BIG_N> {
             key: core::array::from_fn(|i| rlwe_sk.key[i] as u8),
