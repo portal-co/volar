@@ -56,8 +56,8 @@
 //!   `Poly` stmts.
 
 use alloc::{vec, vec::Vec};
-use alloc::collections::BTreeMap;
-use volar_ir_common::{Constant, StorageId, Type};
+use alloc::collections::{BTreeMap, BTreeSet};
+use volar_ir_common::{Constant, PreInitSegment, StorageId, Type};
 
 use volar_ir::{
     boolar::{BIrBlock, BIrBlocks, BIrStmt, BIrTarget, BIrTerminator},
@@ -193,12 +193,28 @@ pub trait MovfuscCtx {
     /// Re-emit the stmts of `block_idx`, mapping its params to the first
     /// `block_param_count(blocks, block_idx)` entries of `state_vars`.
     ///
+    /// `is_active` is `block_idx`'s own dispatch condition (from
+    /// `emit_is_block`, computed once by the caller right before this
+    /// call). Every mid-block statement here runs unconditionally on
+    /// every combined-block invocation regardless of which original
+    /// block is logically active (movfuscation gates only the four
+    /// *terminator* outputs — done/next_pc/next_state/ret — via the
+    /// caller's own `Σ_i is_active_i · x_i` accumulation). Side-effecting
+    /// statements have no such accumulation to fall back on, so
+    /// implementations that emit `StorageWrite` MUST gate its own
+    /// effective value with `is_active` themselves (e.g. read the
+    /// current value at the same address and `emit_select_slot(is_active,
+    /// real_src, current_value, ty)` as the write's `src`), or every
+    /// inactive block's own stale/irrelevant local recomputation
+    /// silently corrupts storage on every step it isn't genuinely active.
+    ///
     /// Returns the full var table `[remapped_params…, fresh_stmt_vars…]`.
     fn emit_block_stmts(
         &mut self,
         blocks: &Self::Blocks,
         block_idx: usize,
         state_vars: &[u32],
+        is_active: u32,
     ) -> Vec<u32>;
 
     /// Decompose `block_idx`'s terminator into the four dispatch outputs.
@@ -378,6 +394,74 @@ pub struct MovfuscAccumInfo {
     pub steps: Vec<MovfuscAccumStep>,
 }
 
+/// Translate every var id in `boundary` through `remap` (old `IRVarId.0` ->
+/// new `IRVarId.0`, e.g. from [`volar_ir_opt::ir::dce_ir_blocks_with_remap`]
+/// — not depended on directly by this crate, since `volar-ir-passes` has no
+/// dependency on `volar-ir-opt`; callers own the remap and just pass it
+/// through). `fold_ir_blocks`/`store_forward_ir_blocks` need no equivalent
+/// call here — neither ever changes a statement's own index (constant
+/// folding rewrites in place; store forwarding only redirects operand
+/// references via an alias map), so `[start, end)` ranges and every
+/// individually-named var id in the boundary structs stay valid across
+/// both unmodified. Only a pass that actually deletes/reorders statements
+/// (currently: DCE) requires this.
+///
+/// Panics if `remap` has no entry for a referenced var — this would mean
+/// the pass considered that var dead and removed it, even though the
+/// boundary metadata still needs it; that's a real bug in whichever pass
+/// produced `remap` (or in how it's being applied), not something to
+/// paper over silently.
+pub fn remap_movfusc_boundary(boundary: &MovfuscBlockBoundary, remap: &BTreeMap<u32, u32>) -> MovfuscBlockBoundary {
+    let r = |v: u32| *remap.get(&v).unwrap_or_else(|| panic!(
+        "remap_movfusc_boundary: var {v} referenced by boundary metadata has no remap entry -- \
+         a downstream pass removed a variable this boundary still needs"
+    ));
+    MovfuscBlockBoundary {
+        start: r(boundary.start),
+        end: r(boundary.end),
+        is_active: r(boundary.is_active),
+        done: r(boundary.done),
+        next_pc_bits: boundary.next_pc_bits.iter().map(|&v| r(v)).collect(),
+        next_state: boundary.next_state.iter().map(|&v| r(v)).collect(),
+        ret_vals: boundary.ret_vals.iter().map(|&v| r(v)).collect(),
+    }
+}
+
+/// As [`remap_movfusc_boundary`], applied to every boundary in a slice —
+/// the common case (one boundary per original block).
+pub fn remap_movfusc_boundaries(boundaries: &[MovfuscBlockBoundary], remap: &BTreeMap<u32, u32>) -> Vec<MovfuscBlockBoundary> {
+    boundaries.iter().map(|b| remap_movfusc_boundary(b, remap)).collect()
+}
+
+/// As [`remap_movfusc_boundary`], for the cross-block accumulation phase's
+/// own boundary metadata.
+pub fn remap_movfusc_accum_info(info: &MovfuscAccumInfo, remap: &BTreeMap<u32, u32>) -> MovfuscAccumInfo {
+    let r = |v: u32| *remap.get(&v).unwrap_or_else(|| panic!(
+        "remap_movfusc_accum_info: var {v} referenced by accum-info metadata has no remap entry -- \
+         a downstream pass removed a variable this metadata still needs"
+    ));
+    let remap_init = |init: &MovfuscAccumInit| MovfuscAccumInit {
+        start: r(init.start),
+        end: r(init.end),
+        done_acc: r(init.done_acc),
+        next_pc: init.next_pc.iter().map(|&v| r(v)).collect(),
+        next_state: init.next_state.iter().map(|&v| r(v)).collect(),
+        ret_vals: init.ret_vals.iter().map(|&v| r(v)).collect(),
+    };
+    let remap_step = |step: &MovfuscAccumStep| MovfuscAccumStep {
+        start: r(step.start),
+        end: r(step.end),
+        done_acc: r(step.done_acc),
+        next_pc: step.next_pc.iter().map(|&v| r(v)).collect(),
+        next_state: step.next_state.iter().map(|&v| r(v)).collect(),
+        ret_vals: step.ret_vals.iter().map(|&v| r(v)).collect(),
+    };
+    MovfuscAccumInfo {
+        init: remap_init(&info.init),
+        steps: info.steps.iter().map(remap_step).collect(),
+    }
+}
+
 /// Combine all blocks of `blocks` into a single self-looping block.
 ///
 /// `state_slot_types[k]` — type of state slot `k` (length = max block param
@@ -391,17 +475,30 @@ pub struct MovfuscAccumInfo {
 /// phase at all then). If `blocks` already has one block, the module is
 /// returned unchanged via
 /// `Clone`.
+/// `watch`: `(orig_block_idx, orig_var_id)` pairs -- for each, on that
+/// block's own emission, records `(orig_block_idx, orig_var_id,
+/// combined_block_var_id)` into the returned `Vec` (via `block_vals`,
+/// which IS the orig-var-id-indexed map from the block's own emission).
+/// Temporary diagnostic hook: lets a caller find where an arbitrary
+/// pre-movfuscation value (e.g. a specific `JumpCond`'s own condition
+/// var, identified via a static def-use trace) ends up in the *combined*
+/// circuit's own var numbering, without re-deriving the emission-order
+/// offset by hand (error-prone -- `emit_is_block` emits a variable,
+/// unknown-in-advance number of statements before `emit_block_stmts`
+/// even starts). Empty `watch` costs nothing beyond one slice-is-empty
+/// check per block.
 pub fn movfuscate<C: MovfuscCtx>(
     mut ctx: C,
     blocks: &C::Blocks,
     state_slot_types: Vec<C::SlotTy>,
     return_slot_types: Vec<C::SlotTy>,
-) -> (C::Blocks, Vec<MovfuscBlockBoundary>, MovfuscAccumInfo) {
+    watch: &[(usize, u32)],
+) -> (C::Blocks, Vec<MovfuscBlockBoundary>, MovfuscAccumInfo, Vec<(usize, u32, u32)>) {
     let n = C::num_blocks(blocks);
     assert!(n >= 1, "movfuscate: empty block list");
     if n == 1 {
         let empty_init = MovfuscAccumInit { start: 0, end: 0, done_acc: 0, next_pc: Vec::new(), next_state: Vec::new(), ret_vals: Vec::new() };
-        return (blocks.clone(), Vec::new(), MovfuscAccumInfo { init: empty_init, steps: Vec::new() });
+        return (blocks.clone(), Vec::new(), MovfuscAccumInfo { init: empty_init, steps: Vec::new() }, Vec::new());
     }
 
     let pc_width = pc_bits_needed(n);
@@ -436,10 +533,18 @@ pub fn movfuscate<C: MovfuscCtx>(
     // block without re-deriving these boundaries. Purely additive --
     // does not affect what `ctx` emits or the resulting `C::Blocks`.
     let mut block_ranges: Vec<(u32, u32)> = Vec::with_capacity(n);
+    let mut watch_results: Vec<(usize, u32, u32)> = Vec::new();
     for i in 0..n {
         let range_start = ctx.stmt_position();
         let is_active = ctx.emit_is_block(&pc_vars, i);
-        let block_vals = ctx.emit_block_stmts(blocks, i, &state_vars);
+        let block_vals = ctx.emit_block_stmts(blocks, i, &state_vars, is_active);
+        for &(wb, wv) in watch {
+            if wb == i {
+                if let Some(&combined) = block_vals.get(wv as usize) {
+                    watch_results.push((wb, wv, combined));
+                }
+            }
+        }
         let term = ctx.emit_block_terminator(
             blocks,
             i,
@@ -551,6 +656,7 @@ pub fn movfuscate<C: MovfuscCtx>(
         ctx.build_output(combined_params, done_acc, loop_vars, ret_vals),
         block_boundaries,
         accum_info,
+        watch_results,
     )
 }
 
@@ -593,29 +699,19 @@ fn subst_biir(stmt: &BIrStmt, var_map: &[u32]) -> BIrStmt {
             bit_width: *bit_width,
             addr: addr.iter().map(|v| s(v)).collect(),
         },
+        _ => panic!("subst_biir: unhandled BIrStmt variant — add substitution for this variant"),
     }
 }
 
-<<<<<<< HEAD
 struct BIrCtx<P: Clone = ()> {
     stmts: Vec<volar_ir_common::Node<BIrStmt, P>>,
-=======
-struct BIrCtx<P: Clone + Default = ()> {
-    stmts: Vec<BIrStmt>,
-    stmt_provs: Vec<P>,
->>>>>>> origin/main
     next_id: u32,
+    ctrl_prov: P,
 }
 
-<<<<<<< HEAD
 impl<P: Clone> BIrCtx<P> {
     fn new(first_id: u32, ctrl_prov: P) -> Self {
         Self { stmts: Vec::new(), next_id: first_id, ctrl_prov }
-=======
-impl<P: Clone + Default> BIrCtx<P> {
-    fn new(first_id: u32) -> Self {
-        Self { stmts: Vec::new(), stmt_provs: Vec::new(), next_id: first_id }
->>>>>>> origin/main
     }
 
     fn push(&mut self, stmt: BIrStmt, prov: P) -> u32 {
@@ -658,12 +754,13 @@ impl<P: Clone + Default> BIrCtx<P> {
             IRBlockTargetId::Dyn(_) => {
                 panic!("movfuscate_biir: Dyn jump targets are not supported")
             }
+            _ => panic!("movfuscate_biir: unhandled IRBlockTargetId variant — add handling for this variant"),
         }
     }
 }
 
 
-impl<P: Clone + Default> MovfuscCtx for BIrCtx<P> {
+impl<P: Clone> MovfuscCtx for BIrCtx<P> {
     type Blocks = BIrBlocks<P>;
     /// All BIr slots are `Bit`; no type information needed.
     type SlotTy = ();
@@ -705,29 +802,35 @@ impl<P: Clone + Default> MovfuscCtx for BIrCtx<P> {
     // Bit ops ----------------------------------------------------------------
 
     fn emit_zero_bit(&mut self) -> u32 {
-        self.push(BIrStmt::Zero, P::default())
+        let p = self.ctrl_prov.clone();
+        self.push(BIrStmt::Zero, p)
     }
 
     fn emit_one_bit(&mut self) -> u32 {
-        self.push(BIrStmt::One, P::default())
+        let p = self.ctrl_prov.clone();
+        self.push(BIrStmt::One, p)
     }
 
     fn emit_and_bit(&mut self, a: u32, b: u32) -> u32 {
         if a == b {
             return a; // idempotent
         }
-        self.push(BIrStmt::And(IRVarId(a), IRVarId(b)), P::default())
+        let p = self.ctrl_prov.clone();
+        self.push(BIrStmt::And(IRVarId(a), IRVarId(b)), p)
     }
 
     fn emit_xor_bit(&mut self, a: u32, b: u32) -> u32 {
         if a == b {
-            return self.push(BIrStmt::Zero, P::default());
+            let p = self.ctrl_prov.clone();
+            return self.push(BIrStmt::Zero, p);
         }
-        self.push(BIrStmt::Xor(IRVarId(a), IRVarId(b)), P::default())
+        let p = self.ctrl_prov.clone();
+        self.push(BIrStmt::Xor(IRVarId(a), IRVarId(b)), p)
     }
 
     fn emit_not(&mut self, a: u32) -> u32 {
-        self.push(BIrStmt::Not(IRVarId(a)), P::default())
+        let p = self.ctrl_prov.clone();
+        self.push(BIrStmt::Not(IRVarId(a)), p)
     }
 
     // Slot ops (SlotTy = ()) = Bit ops --------------------------------------
@@ -751,20 +854,22 @@ impl<P: Clone + Default> MovfuscCtx for BIrCtx<P> {
         blocks: &BIrBlocks<P>,
         block_idx: usize,
         state_vars: &[u32],
+        _is_active: u32,
     ) -> Vec<u32> {
+        // NOTE: unlike the IRBlocks impl below, this legacy BIr path does
+        // not special-case StorageWrite (or gate it on `_is_active`) --
+        // per `docs/agent-context/boolar-ir-conflicts.md`, Boolar-IR/BIr
+        // is deliberately left untouched unless a real caller needs it
+        // fixed. If BIr-level circuits ever use StorageWrite for real,
+        // this has the same ungated-side-effect issue the IRBlocks impl
+        // just fixed.
         let block = &blocks.blocks[block_idx];
         let p = block.params as usize;
         let mut var_map: Vec<u32> = Vec::with_capacity(p + block.stmts.len());
         var_map.extend_from_slice(&state_vars[..p]);
-<<<<<<< HEAD
         for stmt in block.stmts.iter() {
             let prov = stmt.prov.clone();
             let mapped = subst_biir(&stmt.kind, &var_map);
-=======
-        for (i, stmt) in block.stmts.iter().enumerate() {
-            let prov = block.stmt_provs.get(i).cloned().unwrap_or_default();
-            let mapped = subst_biir(stmt, &var_map);
->>>>>>> origin/main
             let id = self.push(mapped, prov);
             var_map.push(id);
         }
@@ -823,6 +928,7 @@ impl<P: Clone + Default> MovfuscCtx for BIrCtx<P> {
                     .collect();
                 TermResult { done, next_pc_bits, next_state, ret_vals }
             }
+            _ => panic!("emit_block_terminator: unhandled BIrTerminator variant — add handling for this variant"),
         }
     }
 
@@ -910,6 +1016,7 @@ pub(crate) fn subst_ir(stmt: &IRStmt, var_map: &[u32]) -> IRStmt {
         IRStmt::ActionOutput { call, idx, ty } =>
             IRStmt::ActionOutput { call: s(call), idx: *idx, ty: ty.clone() },
         IRStmt::Rng { name, ty } => IRStmt::Rng { name: name.clone(), ty: ty.clone() },
+        _ => panic!("subst_ir: unhandled IRStmt variant — add substitution for this variant"),
     }
 }
 
@@ -983,12 +1090,13 @@ fn infer_stmt_result_type(
         IRStmt::OracleOutput { ty, .. } | IRStmt::ActionOutput { ty, .. } => ty.clone(),
         // RNG produces a fresh value of the declared type.
         IRStmt::Rng { ty, .. } => ty.clone(),
+        _ => panic!("infer_stmt_result_type: unhandled IRStmt variant — add type inference for this variant"),
     }
 }
 
 // ---- Pre-pass: infer all variable types in a block (static, before emission)
 
-fn infer_block_var_types<P: Clone + Default>(
+fn infer_block_var_types<P: Clone>(
     block: &IRBlock<P>,
     ir_types: &[IRType],
     bit_type_id: &IRTypeId,
@@ -1003,41 +1111,30 @@ fn infer_block_var_types<P: Clone + Default>(
 
 // ---- IrCtx -----------------------------------------------------------------
 
-/// Compute the expanded state-slot layout for one block's params.
-///
-/// Each `Block`-typed param expands to `pc_width` `Bit` slots; every other
-/// param occupies exactly one slot.  Returns `[(slot_start, slot_count), …]`
-/// in original-param order.
-fn param_to_slot_map(params: &[IRTypeId], ir_types: &[IRType], pc_width: usize) -> Vec<(usize, usize)> {
-    let mut map = Vec::with_capacity(params.len());
-    let mut offset = 0;
-    for ty_id in params {
-        let count = if matches!(ir_types[ty_id.0 as usize], IRType::Block { .. }) {
-            pc_width
-        } else {
-            1
-        };
-        map.push((offset, count));
-        offset += count;
-    }
-    map
+/// How a block's own param at a given position resolves to a physical
+/// state slot in the combined block's flat state vector — always built by
+/// [`compute_static_slot_classes`]'s sound, edge-aware analysis.
+enum SlotAllocation {
+    /// `slot_of[block_idx][position]` for a specific, known block, plus
+    /// `sig_fallback[type-signature]` for a `Dyn` target's own runtime
+    /// dispatch (see `compute_static_slot_classes`'s own doc comment on
+    /// why both are needed).
+    PerBlock {
+        slot_of: Vec<Vec<(usize, usize)>>,
+        sig_fallback: BTreeMap<Vec<u32>, Vec<(usize, usize)>>,
+    },
 }
 
-<<<<<<< HEAD
 struct IrCtx<P: Clone = ()> {
     stmts: Vec<volar_ir_common::Node<IRStmt, P>>,
     /// Provenance to attach to the next emitted stmt (cloned on `push_typed`).
     /// Set by `emit_block_stmts` before each source stmt; synthetic stmts inherit
     /// the last set provenance (no reset to default).
-=======
-struct IrCtx<P: Clone + Default = ()> {
-    stmts: Vec<IRStmt>,
-    stmt_provs: Vec<P>,
-    /// Provenance to attach to the next emitted stmt (consumed on `push_typed`).
-    /// Set to `P::default()` after each consumption, so synthetic stmts always
-    /// carry a default provenance unless explicitly staged here first.
->>>>>>> origin/main
     pending_prov: P,
+    /// Fallback provenance for infrastructure gates that have no direct source
+    /// (e.g. block-dispatch constants, loop control).  Derived from the first
+    /// available source statement in the input circuit.
+    ctrl_prov: P,
     next_id: u32,
     bit_type_id: IRTypeId,
     /// `Vec(pc_width, Bit)` — the type used for block-references in storage.
@@ -1061,9 +1158,12 @@ struct IrCtx<P: Clone + Default = ()> {
     ///
     /// Cleared at the start of each `emit_block_stmts` call.
     block_var_to_bits: BTreeMap<u32, (Vec<u32>, Vec<IRTypeId>)>,
+    /// How a block's own param at position `k` resolves to a physical
+    /// state slot — see [`SlotAllocation`].
+    slot_alloc: SlotAllocation,
 }
 
-impl<P: Clone + Default> IrCtx<P> {
+impl<P: Clone> IrCtx<P> {
     fn new(
         first_id: u32,
         bit_type_id: IRTypeId,
@@ -1071,17 +1171,14 @@ impl<P: Clone + Default> IrCtx<P> {
         combined_param_types: Vec<IRTypeId>,
         ir_types: Vec<IRType>,
         pc_width: usize,
+        ctrl_prov: P,
+        slot_alloc: SlotAllocation,
     ) -> Self {
         let var_types = combined_param_types.clone();
         Self {
             stmts: Vec::new(),
-<<<<<<< HEAD
             pending_prov: ctrl_prov.clone(),
             ctrl_prov,
-=======
-            stmt_provs: Vec::new(),
-            pending_prov: P::default(),
->>>>>>> origin/main
             next_id: first_id,
             bit_type_id,
             vec_pc_type_id,
@@ -1090,6 +1187,34 @@ impl<P: Clone + Default> IrCtx<P> {
             combined_param_types,
             pc_width,
             block_var_to_bits: BTreeMap::new(),
+            slot_alloc,
+        }
+    }
+
+    /// Resolve `params` (a block's own param-type list, in original-param
+    /// order) to `[(slot_start, slot_count), …]` — see [`SlotAllocation`]
+    /// for the two schemes this can dispatch to. `block_idx` must be the
+    /// *actual* block these params belong to when known (needed by
+    /// `PerBlock`); pass `None` only for a `Dyn` target's own signature,
+    /// where no concrete target block is known ahead of time.
+    fn slot_map_for(&self, block_idx: Option<usize>, params: &[IRTypeId]) -> Vec<(usize, usize)> {
+        let SlotAllocation::PerBlock { slot_of, sig_fallback } = &self.slot_alloc;
+        match block_idx {
+            Some(b) => slot_of[b].clone(),
+            // A zero-width signature needs no lookup -- there's nothing to
+            // scatter, regardless of whether any actual block happens to
+            // declare an (unrelated) empty param list.
+            None if params.is_empty() => Vec::new(),
+            None => {
+                let key: Vec<u32> = params.iter().map(|t| t.0).collect();
+                sig_fallback.get(&key).unwrap_or_else(|| {
+                    panic!(
+                        "movfuscate_ir: Dyn target signature {key:?} has no matching block \
+                         anywhere in the function -- sig_fallback must be built from the same \
+                         block set this signature comes from"
+                    )
+                }).clone()
+            }
         }
     }
 
@@ -1128,40 +1253,50 @@ impl<P: Clone + Default> IrCtx<P> {
             }
         }
 
-        // Fill unset slots with typed zero constants.
+        // Fill unset slots by passing the combined block's own *current*
+        // incoming value straight through, instead of zeroing them.
+        //
+        // A block that jumps to a target not covering slot `k` isn't
+        // declaring "slot k is now zero" -- it simply doesn't touch slot
+        // `k`, the same "doesn't own this slot" principle already used for
+        // arity/type-mismatched params elsewhere in this file. Zero-filling
+        // here was silently wiping any state a block doesn't explicitly
+        // thread through on every hop between the block that last wrote it
+        // and the block that next reads it -- fine for a single, linear
+        // chain of blocks (never previously exercised any other shape), but
+        // wrong the moment a real program's control flow has *any* block
+        // along that chain that doesn't itself care about slot `k` (e.g. a
+        // register-dispatch diamond's own trampoline blocks), which
+        // shows up as loop-carried state (like a program's own `halted`
+        // exit flag) reverting to zero the very next step after being set.
+        // Slot `k` is the combined block's own param `pc_width + k`
+        // (`combined_param_types` is `[Bit×pc_width] ++ state_slot_types`,
+        // and `IrCtx::new`'s own `first_id` starts right after those
+        // params), so this is just that var id, not a fresh computation.
+        let pc_width = self.pc_width as u32;
         next_state
             .into_iter()
             .enumerate()
-            .map(|(k, v)| {
-                v.unwrap_or_else(|| {
-                    let ty = state_slot_types[k].clone();
-                    self.emit_zero_slot(&ty)
-                })
-            })
+            .map(|(k, v)| v.unwrap_or(pc_width + k as u32))
             .collect()
     }
 
     /// Build the `target_slot_map` for a Dyn jump target whose expected
     /// parameter types come from a `Block { params: sig }` type.
     fn slot_map_from_sig(&self, sig: &[IRTypeId]) -> Vec<(usize, usize)> {
-        param_to_slot_map(sig, &self.ir_types, self.pc_width)
+        self.slot_map_for(None, sig)
     }
 
     /// Emit a stmt and record its result type.
     ///
-    /// Consumes `self.pending_prov` (resetting it to `P::default()`) so that
-    /// source stmts staged via `pending_prov = prov` carry the right provenance,
-    /// while all synthetic stmts automatically get `P::default()`.
+    /// Clones `self.pending_prov` without resetting it, so subsequent synthetic
+    /// stmts inherit the last staged source provenance rather than a default.
+    /// Source stmts set `pending_prov` via `emit_block_stmts` before calling here.
     fn push_typed(&mut self, stmt: IRStmt, result_type: IRTypeId) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
         self.stmts.push(volar_ir_common::Node::new(stmt, self.pending_prov.clone(), None));
         self.var_types.push(result_type);
-<<<<<<< HEAD
-=======
-        let prov = core::mem::replace(&mut self.pending_prov, P::default());
-        self.stmt_provs.push(prov);
->>>>>>> origin/main
         id
     }
 
@@ -1253,6 +1388,26 @@ impl<P: Clone + Default> IrCtx<P> {
                         ret.push(block_vals[arg.0 as usize]);
                     }
                 }
+                // DIAG: this zero-pad loop assumes every Return-bearing
+                // block's own arg shape matches `return_slot_types` (taken
+                // from whichever Return-bearing block `compute_return_slot_types`
+                // happens to see first) -- had no assertion backing that
+                // assumption. Panic if it's ever actually exercised (short)
+                // or silently overflowed (long), to find out.
+                assert!(
+                    ret.len() <= ret_width,
+                    "DIAG: movfuscate_ir return-slot overflow -- this block's own \
+                     Return args expand to {} slots, wider than the global \
+                     ret_width={} (taken from a different Return-bearing block)",
+                    ret.len(), ret_width,
+                );
+                assert_eq!(
+                    ret.len(), ret_width,
+                    "DIAG: movfuscate_ir return-slot underflow -- this block's own \
+                     Return args expand to {} slots, narrower than the global \
+                     ret_width={} (the zero-pad loop would have silently fired here)",
+                    ret.len(), ret_width,
+                );
                 for m in ret.len()..ret_width {
                     let ty = return_slot_types[m].clone();
                     ret.push(self.emit_zero_slot(&ty));
@@ -1264,11 +1419,8 @@ impl<P: Clone + Default> IrCtx<P> {
                 let next_pc = self.encode_pc_bits(*j as usize, pc_width);
                 // Use the target block's expanded param layout to scatter args
                 // into the correct global state slots (Block args → Bit slots).
-                let target_slot_map = param_to_slot_map(
-                    &blocks.blocks[*j as usize].params,
-                    &self.ir_types,
-                    self.pc_width,
-                );
+                let target_slot_map =
+                    self.slot_map_for(Some(*j as usize), &blocks.blocks[*j as usize].params);
                 let next_state = self.scatter_args_to_state(
                     args, block_vals, &target_slot_map, state_slot_types,
                 );
@@ -1311,11 +1463,12 @@ impl<P: Clone + Default> IrCtx<P> {
                     .collect();
                 (done, next_pc_bits, next_state, ret)
             }
+            _ => panic!("process_ir_target: unhandled IRBlockTargetId variant — add handling for this variant"),
         }
     }
 }
 
-impl<P: Clone + Default> MovfuscCtx for IrCtx<P> {
+impl<P: Clone> MovfuscCtx for IrCtx<P> {
     type Blocks = IRBlocks<P>;
     type SlotTy = IRTypeId;
 
@@ -1446,6 +1599,7 @@ impl<P: Clone + Default> MovfuscCtx for IrCtx<P> {
         blocks: &IRBlocks<P>,
         block_idx: usize,
         state_vars: &[u32],
+        is_active: u32,
     ) -> Vec<u32> {
         let block = &blocks.blocks[block_idx];
         let p = block.params.len();
@@ -1457,7 +1611,7 @@ impl<P: Clone + Default> MovfuscCtx for IrCtx<P> {
         // Map each original param to its combined-block state var(s).
         // Block-typed params expand to `pc_width` consecutive Bit state vars;
         // all other params are 1-to-1.
-        let slot_map = param_to_slot_map(&block.params, &self.ir_types, self.pc_width);
+        let slot_map = self.slot_map_for(Some(block_idx), &block.params);
         for (k, (slot_start, slot_count)) in slot_map.iter().enumerate() {
             let is_block =
                 matches!(self.ir_types[block.params[k].0 as usize], IRType::Block { .. });
@@ -1480,15 +1634,9 @@ impl<P: Clone + Default> MovfuscCtx for IrCtx<P> {
 
         // Emit stmts with substitution, handling Block-typed Const specially.
         for (stmt_idx, stmt) in block.stmts.iter().enumerate() {
-<<<<<<< HEAD
             // Stage this stmt's source provenance; `push_typed` will clone it.
             self.pending_prov = stmt.prov.clone();
             let mapped = subst_ir(&stmt.kind, &var_map);
-=======
-            // Stage this stmt's source provenance; `push_typed` will consume it.
-            self.pending_prov = block.stmt_provs.get(stmt_idx).cloned().unwrap_or_default();
-            let mapped = subst_ir(stmt, &var_map);
->>>>>>> origin/main
             let orig_var_id = (p + stmt_idx) as u32;
 
             // Block-typed Const: encode the referenced block index as
@@ -1533,13 +1681,29 @@ impl<P: Clone + Default> MovfuscCtx for IrCtx<P> {
                 if let Some((bits, _sig)) = self.block_var_to_bits.get(&orig_src_id).cloned() {
                     // Block-typed write: merge PC bits into Vec and store in even lane.
                     let parts: Vec<IRVarId> = bits.iter().map(|&b| IRVarId(b)).collect();
+                    let vec_pc_ty = self.vec_pc_type_id;
                     let merged = self.push_typed(
-                        IRStmt::Merge { parts, ty: self.vec_pc_type_id },
-                        self.vec_pc_type_id,
+                        IRStmt::Merge { parts, ty: vec_pc_ty },
+                        vec_pc_ty,
                     );
                     let new_storage = StorageId(storage.0 * 2);
+                    let write_addr = *addr;
+                    // Gate the write's own effective value on `is_active`:
+                    // mid-block statements (including this one) run on
+                    // EVERY combined-block call regardless of whether
+                    // block_idx is the block actually dispatched this step
+                    // (movfuscation only gates the four terminator outputs,
+                    // not side-effecting statements — see this trait
+                    // method's own doc comment). Without this, every
+                    // inactive block's own stale recomputation silently
+                    // overwrites storage on every step it isn't active.
+                    let current = self.push_typed(
+                        IRStmt::StorageRead { storage: new_storage, ty: vec_pc_ty, addr: write_addr },
+                        vec_pc_ty,
+                    );
+                    let gated_src = self.emit_select_slot(is_active, merged, current, &vec_pc_ty);
                     let id = self.push_typed(
-                        IRStmt::StorageWrite { storage: new_storage, src: IRVarId(merged), ty: self.vec_pc_type_id, addr: *addr },
+                        IRStmt::StorageWrite { storage: new_storage, src: IRVarId(gated_src), ty: vec_pc_ty, addr: write_addr },
                         self.bit_type_id,
                     );
                     var_map.push(id);
@@ -1548,8 +1712,17 @@ impl<P: Clone + Default> MovfuscCtx for IrCtx<P> {
                     // Non-block write: remap to odd storage lane.
                     let new_storage = StorageId(storage.0 * 2 + 1);
                     let res_ty = infer_stmt_result_type(&mapped, &self.var_types, &self.ir_types, &self.bit_type_id);
+                    let write_ty = *ty;
+                    let write_addr = *addr;
+                    let write_src = *src;
+                    // Same is_active gating as the Block-typed arm above.
+                    let current = self.push_typed(
+                        IRStmt::StorageRead { storage: new_storage, ty: write_ty, addr: write_addr },
+                        write_ty,
+                    );
+                    let gated_src = self.emit_select_slot(is_active, write_src.0, current, &write_ty);
                     let id = self.push_typed(
-                        IRStmt::StorageWrite { storage: new_storage, src: *src, ty: *ty, addr: *addr },
+                        IRStmt::StorageWrite { storage: new_storage, src: IRVarId(gated_src), ty: write_ty, addr: write_addr },
                         res_ty,
                     );
                     var_map.push(id);
@@ -1735,6 +1908,7 @@ impl<P: Clone + Default> MovfuscCtx for IrCtx<P> {
                     ret_vals: ret_acc,
                 }
             }
+            _ => panic!("movfuscate: unhandled IRTerminator variant — add handling for this variant"),
         }
     }
 
@@ -1768,86 +1942,375 @@ impl<P: Clone + Default> MovfuscCtx for IrCtx<P> {
 // Pre-pass helpers for IRBlocks entry point
 // ============================================================================
 
-/// Compute the expanded state-slot types across all blocks.
+/// What distinguishes one position's expansion from another's, for the
+/// purposes of deciding whether two blocks' params at the same raw position
+/// `k` can share one combined-block slot (sub-)group or need separate ones.
 ///
-/// Each original param position `k` contributes one or more slots:
-/// - `IRType::Block { .. }` → `pc_width` consecutive `Bit` slots.
-/// - Any other type           → one slot of that type.
+/// `Block`-typed params always expand identically regardless of their own
+/// `params` signature (the signature only matters for `Dyn`-target
+/// argument scattering, handled separately via `block_var_to_bits`), so
+/// `Block` itself carries no further payload here. At `pc_width == 1`, a
+/// `Block`-typed param and a plain `Bit`-typed param both expand to exactly
+/// one `Bit` slot and are historically treated as interchangeable at a
+/// shared position (`compute_position_groups` folds this case into one
+/// `Scalar(bit_type_id)` signature, not two).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum SlotSig {
+    Block,
+    Scalar(u32),
+}
+
+impl SlotSig {
+    fn of(ty_id: &IRTypeId, ir_types: &[IRType], pc_width: usize, bit_type_id: &IRTypeId) -> Self {
+        if matches!(ir_types[ty_id.0 as usize], IRType::Block { .. }) {
+            if pc_width == 1 {
+                SlotSig::Scalar(bit_type_id.0)
+            } else {
+                SlotSig::Block
+            }
+        } else {
+            SlotSig::Scalar(ty_id.0)
+        }
+    }
+
+    fn slot_count(&self, pc_width: usize) -> usize {
+        match self {
+            SlotSig::Block => pc_width,
+            SlotSig::Scalar(_) => 1,
+        }
+    }
+}
+
+/// Minimal union-find (disjoint-set) over `usize` node ids, path-compressed
+/// on `find`. Used by [`compute_static_slot_classes`] to group `(block,
+/// position)` param occurrences that provably carry the *same* logical
+/// value, instead of ones that merely happen to share a raw structural
+/// position (see that function's own doc comment for why the distinction
+/// matters).
+struct UnionFind {
+    parent: Vec<u32>,
+}
+
+impl UnionFind {
+    fn new(n: usize) -> Self {
+        UnionFind { parent: (0..n as u32).collect() }
+    }
+
+    fn find(&mut self, x: usize) -> usize {
+        let mut root = x;
+        while self.parent[root] as usize != root {
+            root = self.parent[root] as usize;
+        }
+        let mut cur = x;
+        while cur != root {
+            let next = self.parent[cur] as usize;
+            self.parent[cur] = root as u32;
+            cur = next;
+        }
+        root
+    }
+
+    fn union(&mut self, a: usize, b: usize) {
+        let ra = self.find(a);
+        let rb = self.find(b);
+        if ra != rb {
+            self.parent[ra] = rb as u32;
+        }
+    }
+}
+
+/// Resolve an `IRBlockTargetId::Dyn(v)` target to a concrete block index,
+/// when `v` is provably a compile-time-constant block reference within
+/// `block`'s own statements (an `IRStmt::Const` of `IRType::Block { .. }`
+/// type). VAFFLE's own lowering (`lower_to_ir.rs`) always encodes call
+/// -return continuations this way — syntactically a `Dyn` jump, but `v`
+/// itself is always a literal reference to one specific, statically-known
+/// block, never a genuinely runtime-varying value; movfuscate's own
+/// emission (`emit_block_stmts`'s Block-typed-`Const` handling) already
+/// relies on exactly this fact (`cnst.lo as usize` as the target block
+/// index) to build `block_var_to_bits`. Returns `None` for a `v` that
+/// isn't such a constant (e.g. a param, or itself the result of a real
+/// runtime merge of multiple possible continuations) — genuinely
+/// unresolvable, not just untried.
+fn resolve_dyn_target<P: Clone>(block: &IRBlock<P>, v: IRVarId, n_blocks: usize) -> Option<usize> {
+    let idx = v.0 as usize;
+    if idx < block.params.len() {
+        return None;
+    }
+    let stmt = block.stmts.get(idx - block.params.len())?;
+    let IRStmt::Const(cnst, _ty) = &stmt.kind else { return None };
+    let target = cnst.lo as usize;
+    (target < n_blocks).then_some(target)
+}
+
+/// Sound, edge-aware replacement for [`compute_position_groups`]/
+/// [`compute_expanded_state_slot_types`]'s `(position, type)`-keyed
+/// dedup, which only agrees to share one physical slot when two blocks'
+/// params happen to structurally coincide — completely unaware of whether
+/// they're actually the *same logical value*. Two unrelated blocks (e.g.
+/// two independent copies of the same generic "5-way register dispatch"
+/// diamond chain, one for reading `rs1`, one for writing `rd` after an
+/// unrelated opcode) can have same-typed params at the same raw position
+/// purely by structural coincidence, and get silently aliased onto one
+/// physical slot — a real value written by one gets clobbered by the
+/// other's completely unrelated write the next time either fires. This
+/// was the confirmed root cause of Milestone 1.6's "real interpreter
+/// halts but computes the wrong answer" bug (see project memory).
 ///
-/// All blocks that have a param at position `k` must agree on expansion size.
-/// Non-`Block` types must additionally be identical.
-/// Mixing `Block` and plain `Bit` is allowed when `pc_width == 1` (both
-/// expand to exactly one `Bit` slot).
-fn compute_expanded_state_slot_types<P: Clone + Default>(
+/// This function instead grants a `(block, position)` param a *shared*
+/// physical slot with another `(block', position')` only when there's a
+/// concrete, provable dataflow edge connecting them: a jump's arg at that
+/// position is a **literal pass-through** of the jumping block's own
+/// incoming param (checked via `IRBlock::push_stmt`'s own numbering
+/// convention — a block's params occupy var ids `0..params.len()`, so
+/// `arg.0 < params.len()` means "this is one of my own incoming params,
+/// unmodified", not a freshly computed value). Freshly computed values
+/// simply seed a new slot at the target position; ordinary SSA merges
+/// (some predecessors pass-through, others supply a fresh value) work
+/// correctly as-is, since union-find just accumulates whichever edges
+/// happen to alias. Under-merging (treating a same-value chain that isn't
+/// a *literal* var-for-var pass-through as "fresh") is always safe — it
+/// only costs an extra slot, never causes aliasing; the reverse
+/// (over-merging) is what caused the bug, so this errs conservative.
+///
+/// A `Dyn(v)` target is traced exactly like a static `Block(j)` edge
+/// whenever [`resolve_dyn_target`] can prove `v` is a literal constant
+/// reference to block `j` (the overwhelmingly common case for VAFFLE
+/// -lowered IR — see that function's own doc comment).
+///
+/// A *genuinely* unresolvable `Dyn` target (e.g. a continuation loaded
+/// from the stack — real runtime polymorphism, not just an untraced
+/// constant) is handled conservatively instead of aborting: `v`'s own
+/// declared type (`IRType::Block { params: sig }`) is inferred, and the
+/// edge is unioned against *every* block in the whole function whose own
+/// param-type list equals `sig` — i.e. every block this Dyn value could
+/// possibly resolve to at runtime, since its actual target isn't known
+/// until PC dispatch. This is strictly more precise than the old
+/// position-only `compute_position_groups` scheme (it's still real edge
+/// tracing, just fanned out to every plausible landing site instead of
+/// one certain one), and — same as the pass-through/fresh-value
+/// distinction elsewhere in this function — errs toward *extra* slots
+/// rather than ever aliasing two unrelated values.
+/// Collect every one of `block`'s own params that `start` (a var id within
+/// `block`) transitively data-depends on, into `found` (stops accumulating,
+/// but still marks visited, once `found.len() > 1` — the caller only ever
+/// cares whether the result is "exactly one", so further detail past
+/// ambiguity is wasted work).
+///
+/// A literal reference (`start` itself is a param) is the trivial base case
+/// (subsumes the old `arg.0 < params.len()` check, which only handled this
+/// exact case). Otherwise, walks `start`'s own defining statement's
+/// operands (via `Stmt::map_var`, so every current and future `IRStmt`
+/// variant is covered without a hand-maintained match) and recurses.
+/// `visited` memoizes per-var results within one query so a wide fan-in
+/// (e.g. a 64-part `Merge`) doesn't revisit shared sub-expressions — bounds
+/// total work to `O(block.stmts)` per query regardless of the block's own
+/// internal DAG shape.
+///
+/// This is the generalization that makes `x1 = x1 + 1` (a `Poly`, not a
+/// literal var reference) recognized as "the same value, updated", and a
+/// same-block *argument swap* (`Jmp` args `[p1, p0]` instead of `[p0,
+/// p1]`) recognized as "target position 0 is source's own position 1,
+/// unchanged" — real Volar IR practically never threads a value across a
+/// block boundary as a bare literal param reference at the *same* index
+/// (WAFFLE materializes even unchanged pass-throughs as their own
+/// statement), so the old literal-only, same-index-only check found
+/// ~zero pass-throughs on real circuits. A value that depends on *zero*
+/// params (e.g. a `Const` placeholder for a position this edge doesn't
+/// care about) or *multiple* params (a genuine combination, e.g. `x1 +
+/// x5`) is correctly left unlinked either way — only an unambiguous
+/// single-param dependency establishes "same identity".
+fn reachable_params<P: Clone>(
+    block: &IRBlock<P>,
+    start: IRVarId,
+    visited: &mut BTreeSet<u32>,
+    found: &mut BTreeSet<u32>,
+) {
+    if (start.0 as usize) < block.params.len() {
+        found.insert(start.0);
+        return;
+    }
+    if found.len() > 1 || !visited.insert(start.0) {
+        return;
+    }
+    let Some(stmt) = block.stmts.get(start.0 as usize - block.params.len()) else { return };
+    let _ = stmt.kind.clone().map_var(
+        &mut (),
+        &mut |_ctx: &mut (), v: IRVarId| -> Result<IRVarId, core::convert::Infallible> {
+            reachable_params(block, v, visited, found);
+            Ok(v)
+        },
+        &mut |_ctx: &mut (), ty: IRTypeId| -> Result<IRTypeId, core::convert::Infallible> { Ok(ty) },
+        &mut |_ctx: &mut (), s: StorageId| -> Result<StorageId, core::convert::Infallible> { Ok(s) },
+    );
+}
+
+fn compute_static_slot_classes<P: Clone>(
     blocks: &IRBlocks<P>,
     ir_types: &[IRType],
     bit_type_id: &IRTypeId,
     pc_width: usize,
-) -> Vec<IRTypeId> {
-    let max_param_count = blocks.blocks.iter().map(|b| b.params.len()).max().unwrap_or(0);
-    let mut result = Vec::new();
+) -> (Vec<IRTypeId>, Vec<Vec<(usize, usize)>>, BTreeMap<Vec<u32>, Vec<(usize, usize)>>) {
+    let n = blocks.blocks.len();
+    let mut node_base = vec![0usize; n];
+    let mut total_nodes = 0usize;
+    for (i, b) in blocks.blocks.iter().enumerate() {
+        node_base[i] = total_nodes;
+        total_nodes += b.params.len();
+    }
+    let node_id = |block_idx: usize, position: usize| node_base[block_idx] + position;
+    let mut uf = UnionFind::new(total_nodes);
 
-    for k in 0..max_param_count {
-        let mut agreed_count: Option<usize> = None;
-        let mut non_block_ty: Option<IRTypeId> = None;
-        let mut any_block = false;
+    // Every block's own param-type signature, keyed by content, for the
+    // unresolvable-Dyn fallback below. `IRTypeId` doesn't implement `Ord`
+    // and this is a tiny, once-per-function table, so a linear scan per
+    // lookup is fine — avoids a bespoke `Ord`/hash impl just for this.
+    let block_sig = |i: usize| -> &[IRTypeId] { &blocks.blocks[i].params };
+    let same_sig = |a: &[IRTypeId], b: &[IRTypeId]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.0 == y.0);
 
-        for (bi, block) in blocks.blocks.iter().enumerate() {
-            if k >= block.params.len() {
-                continue;
+    let union_with_target = |uf: &mut UnionFind, src_block: usize, tgt: usize, args: &[IRVarId]| {
+        let tgt_params = blocks.blocks[tgt].params.len();
+        for (idx, arg) in args.iter().enumerate() {
+            if idx >= tgt_params {
+                break;
             }
-            let ty_id = &block.params[k];
-            let (count, is_block) =
-                if matches!(ir_types[ty_id.0 as usize], IRType::Block { .. }) {
-                    (pc_width, true)
-                } else {
-                    (1, false)
-                };
-
-            if let Some(prev) = agreed_count {
-                assert_eq!(
-                    prev, count,
-                    "movfuscate_ir: Block-type expansion size mismatch at param {k} \
-                     in block {bi}: earlier blocks expand to {prev} slot(s) but \
-                     this block expands to {count}"
-                );
-            } else {
-                agreed_count = Some(count);
-            }
-
-            if is_block {
-                any_block = true;
-            } else if let Some(ref existing) = non_block_ty {
-                assert_eq!(
-                    existing.0, ty_id.0,
-                    "movfuscate_ir: block {bi} has type {:?} at param {k}, \
-                     but an earlier block had a different non-Block type there",
-                    ir_types[ty_id.0 as usize]
-                );
-            } else {
-                non_block_ty = Some(ty_id.clone());
+            // Which (if any) single one of src_block's own params does
+            // this arg unambiguously trace back to? Zero (a fresh/
+            // independent value, e.g. a `Const` placeholder) or multiple
+            // (a genuine combination, e.g. `x1 + x5`) both correctly stay
+            // unlinked -- only "exactly one" establishes "same identity,
+            // possibly updated, possibly reordered".
+            let mut visited = BTreeSet::new();
+            let mut found = BTreeSet::new();
+            reachable_params(&blocks.blocks[src_block], *arg, &mut visited, &mut found);
+            if found.len() == 1 {
+                let p = *found.iter().next().unwrap() as usize;
+                // The same source param can be the sole traced dependency
+                // for more than one arg position in the same edge (e.g.
+                // broadcast to two differently-typed targets) -- only
+                // union when the types actually agree, else this is not
+                // really "the same slot", just a coincidental data
+                // dependency; leave it unlinked (a fresh slot) rather
+                // than forcing a type-conflicting merge.
+                if blocks.blocks[src_block].params[p].0 == blocks.blocks[tgt].params[idx].0 {
+                    uf.union(node_id(src_block, p), node_id(tgt, idx));
+                }
             }
         }
+    };
 
-        let count = agreed_count.expect("param position without any owning block");
-        if any_block {
-            // Block expansion: all slots are Bit.
-            for _ in 0..count {
-                result.push(bit_type_id.clone());
+    let visit_edge = |uf: &mut UnionFind, src_block: usize, dest: &IRBlockTargetId, args: &[IRVarId]| {
+        match dest {
+            IRBlockTargetId::Block(IRBlockId(j)) => union_with_target(uf, src_block, *j as usize, args),
+            IRBlockTargetId::Dyn(v) => {
+                if let Some(j) = resolve_dyn_target(&blocks.blocks[src_block], *v, n) {
+                    union_with_target(uf, src_block, j, args);
+                } else {
+                    let var_types = infer_block_var_types(&blocks.blocks[src_block], ir_types, bit_type_id);
+                    if let Some(ty) = var_types.get(v.0 as usize) {
+                        if let IRType::Block { params: sig } = &ir_types[ty.0 as usize] {
+                            for tgt in 0..n {
+                                if same_sig(block_sig(tgt), sig) {
+                                    union_with_target(uf, src_block, tgt, args);
+                                }
+                            }
+                        }
+                    }
+                }
             }
-        } else {
-            result.push(non_block_ty.expect("non-Block param without concrete type"));
+            IRBlockTargetId::Return => {}
+            _ => {}
+        }
+    };
+
+    for (i, block) in blocks.blocks.iter().enumerate() {
+        match &block.terminator {
+            IRTerminator::Jmp { target } => visit_edge(&mut uf, i, &target.dest, &target.args),
+            IRTerminator::JumpCond { then_target, else_target, .. } => {
+                visit_edge(&mut uf, i, &then_target.dest, &then_target.args);
+                visit_edge(&mut uf, i, &else_target.dest, &else_target.args);
+            }
+            IRTerminator::JumpTable { cases, .. } => {
+                for target in cases.values() {
+                    visit_edge(&mut uf, i, &target.dest, &target.args);
+                }
+            }
+            _ => {}
         }
     }
 
-    result
+    // Assign physical slots: walk (block, position) in a fixed,
+    // deterministic order (block index, then param index); the first time
+    // a given union-find root is seen, hand it the next available offset.
+    let mut root_to_slot: BTreeMap<usize, (SlotSig, usize, usize)> = BTreeMap::new();
+    let mut state_slot_types: Vec<IRTypeId> = Vec::new();
+    let mut next_offset = 0usize;
+    let mut slot_of: Vec<Vec<(usize, usize)>> = Vec::with_capacity(n);
+    for (i, block) in blocks.blocks.iter().enumerate() {
+        let mut this_block_slots = Vec::with_capacity(block.params.len());
+        for (p, ty_id) in block.params.iter().enumerate() {
+            let root = uf.find(node_id(i, p));
+            let sig = SlotSig::of(ty_id, ir_types, pc_width, bit_type_id);
+            let (offset, count) = match root_to_slot.get(&root) {
+                Some(&(existing_sig, offset, count)) => {
+                    assert_eq!(
+                        existing_sig, sig,
+                        "movfuscate_ir: DIAG same-value slot class disagrees on type at \
+                         block {i} position {p} (existing={existing_sig:?} new={sig:?}) -- \
+                         a literal var-for-var pass-through edge should always be well-typed; \
+                         this indicates an ill-typed edge was traced as a pass-through",
+                    );
+                    (offset, count)
+                }
+                None => {
+                    let count = sig.slot_count(pc_width);
+                    let offset = next_offset;
+                    next_offset += count;
+                    match sig {
+                        SlotSig::Block => {
+                            for _ in 0..count {
+                                state_slot_types.push(bit_type_id.clone());
+                            }
+                        }
+                        SlotSig::Scalar(tid) => state_slot_types.push(IRTypeId(tid)),
+                    }
+                    root_to_slot.insert(root, (sig, offset, count));
+                    (offset, count)
+                }
+            };
+            this_block_slots.push((offset, count));
+        }
+        slot_of.push(this_block_slots);
+    }
+
+    // `Dyn` targets are traced above by resolved *target block index* (or
+    // fanned out across every same-signature block when unresolvable), but
+    // at actual emission time (`process_ir_target`'s own `Dyn` arm) only
+    // the target's *type signature* is known -- the whole point of a `Dyn`
+    // jump is that its concrete destination is chosen at runtime, encoded
+    // as bits in the state vector itself, not statically known even when
+    // `resolve_dyn_target` *could* prove one particular value of it.
+    // Since every block sharing a given signature was guaranteed above to
+    // end up with an identical slot layout (either because it's the one
+    // resolved target of some edge, or because the signature-fallback
+    // path unions *all* same-signature blocks together whenever any edge
+    // needs it), picking any one representative block with that signature
+    // is sound and sufficient for `slot_map_from_sig` to resolve by
+    // signature alone.
+    let mut sig_fallback: BTreeMap<Vec<u32>, Vec<(usize, usize)>> = BTreeMap::new();
+    for (i, block) in blocks.blocks.iter().enumerate() {
+        let key: Vec<u32> = block.params.iter().map(|t| t.0).collect();
+        sig_fallback.entry(key).or_insert_with(|| slot_of[i].clone());
+    }
+
+    (state_slot_types, slot_of, sig_fallback)
 }
 
 /// Infer the expanded types of the return values by scanning the first
 /// `Return` terminator found in the module.
 ///
 /// `Block`-typed return values are expanded to `pc_width` `Bit` slots each.
-fn compute_return_slot_types<P: Clone + Default>(
+fn compute_return_slot_types<P: Clone>(
     blocks: &IRBlocks<P>,
     ir_types: &[IRType],
     bit_type_id: &IRTypeId,
@@ -1893,23 +2356,20 @@ fn compute_return_slot_types<P: Clone + Default>(
 /// Single-block input is returned unchanged.
 /// Source statement provenances are carried through; synthetic dispatch gates
 /// receive `P::default()`.
-pub fn movfuscate_biir<P: Clone + Default>(blocks: &BIrBlocks<P>) -> BIrBlocks<P> {
+pub fn movfuscate_biir<P: Clone>(blocks: &BIrBlocks<P>) -> BIrBlocks<P> {
     let n = blocks.blocks.len();
+    if n == 1 { return blocks.clone(); }
     let pc_width = pc_bits_needed(n);
     let state_width = blocks.blocks.iter().map(|b| b.params as usize).max().unwrap_or(0);
     let combined_params = pc_width + state_width;
-<<<<<<< HEAD
     let ctrl_prov = blocks.blocks.iter().flat_map(|b| b.stmts.iter()).map(|n| &n.prov).next()
         .cloned()
         .expect("movfuscate_biir: circuit has no statements; cannot derive provenance for infrastructure gates");
     let ctx = BIrCtx::<P>::new(combined_params as u32, ctrl_prov);
-=======
-    let ctx = BIrCtx::<P>::new(combined_params as u32);
->>>>>>> origin/main
     let state_slot_types = vec![(); state_width];
     let ret_width = BIrCtx::<P>::return_val_width(blocks);
     let return_slot_types = vec![(); ret_width];
-    let (mut result, _block_ranges, _accum_info) = movfuscate(ctx, blocks, state_slot_types, return_slot_types);
+    let (mut result, _block_ranges, _accum_info, _watch) = movfuscate(ctx, blocks, state_slot_types, return_slot_types, &[]);
     result.pre_init = blocks.pre_init.clone();
     result
 }
@@ -1923,9 +2383,8 @@ pub fn movfuscate_biir<P: Clone + Default>(blocks: &BIrBlocks<P>) -> BIrBlocks<P
 ///
 /// `types` is used for type inference; an `IRType::Bit` entry is added if
 /// absent.  Single-block input is returned unchanged.
-<<<<<<< HEAD
 pub fn movfuscate_ir<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> IRBlocks<P> {
-    movfuscate_ir_impl(blocks, types).0
+    movfuscate_ir_impl(blocks, types, &[]).0
 }
 
 /// As [`movfuscate_ir`], but additionally returns each original block's own
@@ -1940,27 +2399,71 @@ pub fn movfuscate_ir_with_boundary<P: Clone>(
     blocks: &IRBlocks<P>,
     types: &mut IRTypes,
 ) -> (IRBlocks<P>, Vec<MovfuscBlockBoundary>, MovfuscAccumInfo) {
-    movfuscate_ir_impl(blocks, types)
+    let (result, boundaries, accum_info, _watch) = movfuscate_ir_impl(blocks, types, &[]);
+    (result, boundaries, accum_info)
 }
 
-fn movfuscate_ir_impl<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> (IRBlocks<P>, Vec<MovfuscBlockBoundary>, MovfuscAccumInfo) {
+/// Like [`movfuscate_ir_with_boundary`], but also resolves each
+/// `(orig_block_idx, orig_var_id)` pair in `watch` to its own combined-
+/// circuit var id (see [`movfuscate`]'s own doc comment on `watch`).
+/// Temporary diagnostic entry point: lets a caller trace an arbitrary
+/// pre-movfuscation value's runtime bit values via `eval_ir_circuit_step`
+/// without re-deriving where it landed in the combined block by hand.
+pub fn movfuscate_ir_with_boundary_and_watch<P: Clone>(
+    blocks: &IRBlocks<P>,
+    types: &mut IRTypes,
+    watch: &[(usize, u32)],
+) -> (IRBlocks<P>, Vec<MovfuscBlockBoundary>, MovfuscAccumInfo, Vec<(usize, u32, u32)>) {
+    movfuscate_ir_impl(blocks, types, watch)
+}
+
+/// Diagnostic (temporary, not used by any real pipeline): dumps
+/// `compute_static_slot_classes`'s own `slot_of[block_idx][position]`
+/// layout plus `state_slot_types.len()`, so a caller in a different crate
+/// can inspect the new edge-aware allocation directly without running a
+/// full (slow) circuit evaluation.
+/// Dump a single statement's shape by `(block, var)` -- `var` may be a
+/// param (no stmt) or index into `stmts` (`var.0 - params.len()`).
+pub fn debug_dump_stmt<P: Clone>(blocks: &IRBlocks<P>, block_idx: usize, var: IRVarId) -> alloc::string::String {
+    let b = &blocks.blocks[block_idx];
+    if (var.0 as usize) < b.params.len() {
+        alloc::format!("var {} = param #{} (ty={:?})", var.0, var.0, b.params[var.0 as usize])
+    } else {
+        let si = var.0 as usize - b.params.len();
+        alloc::format!("var {} = stmts[{si}] = {:?}", var.0, b.stmts[si].kind)
+    }
+}
+
+pub fn debug_dump_slot_of<P: Clone>(blocks: &IRBlocks<P>, types: &IRTypes) -> alloc::string::String {
+    use alloc::string::String;
+    use core::fmt::Write;
+    let bit_type_id = {
+        let existing = types.0.iter().position(|t| matches!(t, IRType::Primitive(Type::Bit)));
+        IRTypeId(existing.expect("Bit type must already be interned") as u32)
+    };
+    let pc_width = pc_bits_needed(blocks.blocks.len());
+    let (state_slot_types, slot_of, _sig_fallback) =
+        compute_static_slot_classes(blocks, &types.0, &bit_type_id, pc_width);
+    let mut out = String::new();
+    let _ = writeln!(out, "n_blocks={} pc_width={} state_width={}", blocks.blocks.len(), pc_width, state_slot_types.len());
+    for (i, slots) in slot_of.iter().enumerate() {
+        let b = &blocks.blocks[i];
+        let _ = writeln!(out, "block {i}: params={:?} n_stmts={} slots={slots:?} term={:?}", b.params, b.stmts.len(), b.terminator);
+    }
+    out
+}
+
+fn movfuscate_ir_impl<P: Clone>(blocks: &IRBlocks<P>, types: &mut IRTypes, watch: &[(usize, u32)]) -> (IRBlocks<P>, Vec<MovfuscBlockBoundary>, MovfuscAccumInfo, Vec<(usize, u32, u32)>) {
     // Ensure IRType::Bit is present in the types table.
     let bit_type_id = types.intern(IRType::Primitive(Type::Bit));
 
     let n = blocks.blocks.len();
     if n == 1 {
         let empty_init = MovfuscAccumInit { start: 0, end: 0, done_acc: 0, next_pc: Vec::new(), next_state: Vec::new(), ret_vals: Vec::new() };
-        return (blocks.clone(), Vec::new(), MovfuscAccumInfo { init: empty_init, steps: Vec::new() });
+        return (blocks.clone(), Vec::new(), MovfuscAccumInfo { init: empty_init, steps: Vec::new() }, Vec::new());
     }
 
-=======
-pub fn movfuscate_ir<P: Clone + Default>(blocks: &IRBlocks<P>, types: &mut IRTypes) -> IRBlocks<P> {
-    // Ensure IRType::Bit is present in the types table.
-    let bit_type_id = types.intern(IRType::Primitive(Type::Bit));
-
->>>>>>> origin/main
     // Intern Vec(pc_width, Bit) for block-reference storage.
-    let n = blocks.blocks.len();
     let pc_width = pc_bits_needed(n);
     let vec_pc_type_id = if pc_width > 0 {
         types.intern(IRType::Vec(pc_width, bit_type_id))
@@ -1970,9 +2473,15 @@ pub fn movfuscate_ir<P: Clone + Default>(blocks: &IRBlocks<P>, types: &mut IRTyp
 
     let ir_types = types.0.clone();
 
-    // Compute per-slot types from the original blocks, expanding Block params.
-    let state_slot_types =
-        compute_expanded_state_slot_types(blocks, &ir_types, &bit_type_id, pc_width);
+    // Compute per-slot types from the original blocks, expanding Block
+    // params, via the sound, edge-aware scheme -- including `Dyn` targets,
+    // resolved either to one known constant block (VAFFLE's own call
+    // -return continuations are always this shape) or, for a genuinely
+    // unresolvable one, conservatively fanned out to every block sharing
+    // its type signature (see `compute_static_slot_classes`'s own doc
+    // comment).
+    let (state_slot_types, slot_of, sig_fallback) = compute_static_slot_classes(blocks, &ir_types, &bit_type_id, pc_width);
+    let slot_alloc = SlotAllocation::PerBlock { slot_of, sig_fallback };
     let return_slot_types =
         compute_return_slot_types(blocks, &ir_types, &bit_type_id, pc_width);
 
@@ -1983,12 +2492,9 @@ pub fn movfuscate_ir<P: Clone + Default>(blocks: &IRBlocks<P>, types: &mut IRTyp
         .collect();
 
     let combined_params = pc_width + state_slot_types.len();
-<<<<<<< HEAD
     let ctrl_prov = blocks.blocks.iter().flat_map(|b| b.stmts.iter()).map(|n| &n.prov).next()
         .cloned()
         .expect("movfuscate_ir: circuit has no statements; cannot derive provenance for infrastructure gates");
-=======
->>>>>>> origin/main
     let ctx = IrCtx::<P>::new(
         combined_params as u32,
         bit_type_id,
@@ -1996,11 +2502,34 @@ pub fn movfuscate_ir<P: Clone + Default>(blocks: &IRBlocks<P>, types: &mut IRTyp
         combined_param_types,
         ir_types,
         pc_width,
+        ctrl_prov,
+        slot_alloc,
     );
-    let (mut result, block_ranges, accum_info) = movfuscate(ctx, blocks, state_slot_types, return_slot_types);
-    result.pre_init = blocks.pre_init.clone();
-    (result, block_ranges, accum_info)
+    let (mut result, block_ranges, accum_info, watch_results) = movfuscate(ctx, blocks, state_slot_types, return_slot_types, watch);
+    // `pre_init` segments name storage lanes in the *pre-movfuscation*
+    // numbering, but every StorageRead/StorageWrite statement just emitted
+    // above was remapped to `id*2` (Block-typed value) or `id*2+1`
+    // (everything else) -- see the per-statement remap a few dozen lines up
+    // in `combine_block`. Left un-remapped, a segment's initial bytes are
+    // seeded into a storage lane no statement in the combined block ever
+    // reads from, so the circuit silently runs against all-zero memory
+    // instead of the real pre-initialized contents.
+    result.pre_init = blocks
+        .pre_init
+        .iter()
+        .map(|seg| {
+            let is_block = matches!(types.0[seg.ty.0 as usize], IRType::Block { .. });
+            let new_storage = if is_block {
+                StorageId(seg.storage.0 * 2)
+            } else {
+                StorageId(seg.storage.0 * 2 + 1)
+            };
+            PreInitSegment { storage: new_storage, ..seg.clone() }
+        })
+        .collect();
+    (result, block_ranges, accum_info, watch_results)
 }
+
 
 // ============================================================================
 // Tests
@@ -2171,12 +2700,7 @@ mod tests {
     fn test_biir_four_block_pc_width() {
         let make_pass = |dst: u32| BIrBlock::<()> {
             params: 1,
-<<<<<<< HEAD
             stmts: std::vec![BIrStmt::Zero].into_iter().map(|s| Node::new(s, (), None)).collect(),
-=======
-            stmts: std::vec![],
-            stmt_provs: std::vec![],
->>>>>>> origin/main
             terminator: BIrTerminator::Jmp(BIrTarget {
                 block: IRBlockTargetId::Block(IRBlockId(dst)),
                 args: std::vec![IRVarId(0)],
@@ -2213,17 +2737,8 @@ mod tests {
         let blocks = IRBlocks::new(std::vec![
             IRBlock {
                 params: std::vec![IRTypeId(0)],
-<<<<<<< HEAD
                 stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 0 }, IRTypeId(0))].into_iter().map(|s| Node::new(s, (), None)).collect(),
                 terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), std::vec![IRVarId(0)],) },
-=======
-                stmts: std::vec![],
-                stmt_provs: std::vec![],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Block(IRBlockId(1)),
-                    args: std::vec![IRVarId(0)],
-                },
->>>>>>> origin/main
             },
             IRBlock {
                 params: std::vec![IRTypeId(0)],
@@ -2338,20 +2853,12 @@ mod tests {
         // types[0] = Bit, types[1] = Galois8AES
         let types = IRTypes(std::vec![IRType::Primitive(Type::Bit), IRType::Primitive(Type::AES8)]);
         let g8 = IRTypeId(1);
+        let bit = IRTypeId(0);
         let blocks = IRBlocks::new(std::vec![
             IRBlock {
                 params: std::vec![g8.clone()],
-<<<<<<< HEAD
                 stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 0 }, bit)].into_iter().map(|s| Node::new(s, (), None)).collect(),
                 terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), std::vec![IRVarId(0)],) },
-=======
-                stmts: std::vec![],
-                stmt_provs: std::vec![],
-                terminator: IRTerminator::Jmp {
-                    func: IRBlockTargetId::Block(IRBlockId(1)),
-                    args: std::vec![IRVarId(0)],
-                },
->>>>>>> origin/main
             },
             IRBlock {
                 params: std::vec![g8.clone()],
@@ -2445,12 +2952,7 @@ mod tests {
         let blocks: IRBlocks<()> = IRBlocks::new(std::vec![
             IRBlock {
                 params: std::vec![g8.clone(), bit.clone()],
-<<<<<<< HEAD
                 stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 0 }, bit.clone())].into_iter().map(|s| Node::new(s, (), None)).collect(),
-=======
-                stmts: std::vec![],
-                stmt_provs: std::vec![],
->>>>>>> origin/main
                 terminator: IRTerminator::JumpCond {
                     condition: IRVarId(1), // b
                     then_target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), std::vec![IRVarId(0)]), // a
@@ -2482,6 +2984,127 @@ mod tests {
             }
             other => panic!("expected JumpCond, got {:?}", other),
         }
+    }
+
+    /// A genuine position-type *collision* (not just an arity gap): both
+    /// blocks have a param at position 0 *and* position 1, but the types
+    /// are swapped between them (block 0: [Bit, G8], block 1: [G8, Bit]).
+    /// Before this fix, `movfuscate_ir` would panic here ("block 1 has type
+    /// ... but an earlier block had a different non-Block type there") --
+    /// this is exactly the class of bug found in the real RISC-V
+    /// interpreter's own movfuscated circuit (a synthetic trampoline
+    /// block's param colliding, by raw position only, with an unrelated
+    /// real loop-body block's own differently-typed param). Each colliding
+    /// position must now split into two separate, non-aliasing slot groups
+    /// instead.
+    #[test]
+    fn test_ir_position_type_collision_splits_into_separate_slots() {
+        let mut types = IRTypes(std::vec![IRType::Primitive(Type::Bit), IRType::Primitive(Type::AES8)]);
+        let bit = IRTypeId(0);
+        let g8 = IRTypeId(1);
+
+        let blocks: IRBlocks<()> = IRBlocks::new(std::vec![
+            IRBlock {
+                params: std::vec![bit.clone(), g8.clone()], // position 0: Bit, position 1: G8
+                // A trivial stmt -- `movfuscate_ir` needs at least one
+                // real statement somewhere to derive provenance for its
+                // own synthetic infrastructure gates.
+                stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 0 }, bit.clone())].into_iter().map(|s| Node::new(s, (), None)).collect(),
+                // Jump to block 1, which expects [G8, Bit] -- swap args to
+                // stay internally type-correct (var 1 is G8, var 0 is Bit).
+                terminator: IRTerminator::Jmp {
+                    target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), std::vec![IRVarId(1), IRVarId(0)]),
+                },
+            },
+            IRBlock {
+                params: std::vec![g8.clone(), bit.clone()], // position 0: G8 (collides with block 0's Bit), position 1: Bit (collides with block 0's G8)
+                stmts: std::vec![],
+                terminator: IRTerminator::Jmp {
+                    target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0), IRVarId(1)]),
+                },
+            },
+        ]);
+
+        // Must not panic -- the real point of this test.
+        let result = movfuscate_ir(&blocks, &mut types);
+        assert!(result.is_movfuscated());
+
+        // This is a *structural* position collision (block 0's position 0
+        // is Bit, block 1's position 0 is G8) but NOT a genuine same-slot
+        // collision: block 0's own Jmp explicitly swaps its args
+        // (`[IRVarId(1), IRVarId(0)]`), so block 0's position-1 G8 param
+        // is what actually flows into block 1's position-0 G8 param (and
+        // block 0's position-0 Bit param into block 1's position-1 Bit
+        // param) -- a real, provable dataflow edge, not a coincidence.
+        // `compute_static_slot_classes`'s edge-aware allocation traces
+        // this correctly and unifies each pair onto ONE shared slot
+        // (2 slots total), rather than the old position+type-keyed
+        // `compute_position_groups`'s blind 4-slot split (which didn't
+        // look at args at all, just positions) -- pc(1) + state(2).
+        assert_eq!(result.blocks[0].params.len(), 3, "pc(1) + state(2 dataflow-unified slots, not 4 positionally-split ones)");
+
+        let p = &result.blocks[0].params;
+        let is_bit = |tid: &IRTypeId| matches!(types.0[tid.0 as usize], IRType::Primitive(Type::Bit));
+        let is_g8 = |tid: &IRTypeId| matches!(types.0[tid.0 as usize], IRType::Primitive(Type::AES8));
+        assert!(is_bit(&p[0]), "PC slot must be Bit");
+        assert!(
+            (is_g8(&p[1]) && is_bit(&p[2])) || (is_bit(&p[1]) && is_g8(&p[2])),
+            "exactly one Bit and one G8 state slot, order depends on traversal order"
+        );
+    }
+
+    /// A *genuine* position+type collision (no edge connects the two
+    /// blocks at all, so there's no dataflow evidence they're the same
+    /// value) must still resolve safely -- i.e. NOT be merged onto one
+    /// slot just because they coincidentally share position+type. This is
+    /// exactly the shape of bug `compute_position_groups`'s pure
+    /// structural matching couldn't tell apart from a real shared value
+    /// (see project memory: Milestone 1.6's "real interpreter computes
+    /// the wrong answer" bug).
+    #[test]
+    fn test_ir_unrelated_same_position_same_type_blocks_get_separate_slots() {
+        let mut types = IRTypes(std::vec![IRType::Primitive(Type::Bit)]);
+        let bit = IRTypeId(0);
+
+        let blocks: IRBlocks<()> = IRBlocks::new(std::vec![
+            // Block 0: entry, unconditionally jumps to block 1 with a
+            // FRESH value (not one of its own params) -- e.g. a constant.
+            IRBlock {
+                params: std::vec![],
+                stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 0 }, bit.clone())]
+                    .into_iter().map(|s| Node::new(s, (), None)).collect(),
+                terminator: IRTerminator::Jmp {
+                    target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), std::vec![IRVarId(0)]),
+                },
+            },
+            // Block 1: position 0 is Bit -- receives block 0's constant.
+            IRBlock {
+                params: std::vec![bit.clone()],
+                stmts: std::vec![],
+                terminator: IRTerminator::Jmp {
+                    target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)]),
+                },
+            },
+        ]);
+
+        let result = movfuscate_ir(&blocks, &mut types);
+        assert!(result.is_movfuscated());
+        // Block 1 is never re-entered and block 0 has no params of its own
+        // to alias with it, so block 1's own position-0 slot is entirely
+        // private to it: pc(1) + state(1).
+        assert_eq!(result.blocks[0].params.len(), 2, "pc(1) + state(1 private slot)");
+    }
+
+    /// Regression guard for the common case: blocks that genuinely *agree*
+    /// on type at a shared position must still consolidate onto one slot
+    /// (no spurious splitting just because collision-splitting now exists).
+    #[test]
+    fn test_ir_position_type_agreement_still_dedups() {
+        let (blocks, mut types) = two_block_ir_g8();
+        let result = movfuscate_ir(&blocks, &mut types);
+        assert!(result.is_movfuscated());
+        // pc(1) + state(1) -- both blocks agree G8 at position 0, one slot.
+        assert_eq!(result.blocks[0].params.len(), 2, "agreeing blocks must not split into extra slots");
     }
 
     // =========================================================================
@@ -2546,12 +3169,7 @@ mod tests {
             // Block 0: Dyn(cont, [])
             IRBlock {
                 params: std::vec![block_ty_id.clone()],
-<<<<<<< HEAD
                 stmts: std::vec![IRStmt::Const(Constant { hi: 0, lo: 0 }, bit.clone())].into_iter().map(|s| Node::new(s, (), None)).collect(),
-=======
-                stmts: std::vec![],
-                stmt_provs: std::vec![],
->>>>>>> origin/main
                 terminator: IRTerminator::Jmp {
                     target: IRBranchTarget::new(IRBlockTargetId::Dyn(IRVarId(0)), std::vec![]), // cont
                 },
@@ -2577,9 +3195,18 @@ mod tests {
     fn test_ir_block_dyn_param_combined_param_count() {
         let (blocks, mut types) = two_block_dyn_param();
         let result = movfuscate_ir(&blocks, &mut types);
-        // pc_width=1 (2 blocks), state_width=1 (Block expands to 1 Bit slot)
-        // → combined params = 2
-        assert_eq!(result.blocks[0].params.len(), 2, "pc(1) + state(1 Bit for Block)");
+        // pc_width=1 (2 blocks). Both blocks' own `cont` param has type
+        // `Block{params: []}` -- an empty signature that doesn't actually
+        // equal *either* block's own real (1-param) declared param list,
+        // so `compute_static_slot_classes`'s signature-based Dyn fallback
+        // (matching a Dyn value's own inferred signature against real
+        // blocks' declared param lists) finds no candidate to union with
+        // and each block's `cont` gets its own private slot -- 2 state
+        // slots, not 1 shared one like the old position+type scheme. Same
+        // "extra slots, never aliasing" safety tradeoff as
+        // `test_ir_block_pass_arg_param_layout`; see its own comment.
+        // Combined params: [pc0, state0, state1] = 3.
+        assert_eq!(result.blocks[0].params.len(), 3, "pc(1) + state(2 separate Block-param slots)");
         // Both combined params must be Bit.
         for tid in &result.blocks[0].params {
             assert!(
@@ -2598,7 +3225,9 @@ mod tests {
                 assert_eq!(then_target.dest, IRBlockTargetId::Return);
                 assert_eq!(then_target.args.len(), 0, "ret_width = 0");
                 assert_eq!(else_target.dest, IRBlockTargetId::Block(IRBlockId(0)));
-                assert_eq!(else_target.args.len(), 2, "loop-back args = pc(1) + state(1)");
+                // See `test_ir_block_dyn_param_combined_param_count`'s own
+                // comment for why this is 3 (pc(1) + state(2)), not 2.
+                assert_eq!(else_target.args.len(), 3, "loop-back args = pc(1) + state(2)");
             }
             other => panic!("expected JumpCond, got {:?}", other),
         }
@@ -2798,13 +3427,23 @@ mod tests {
         let (blocks, mut types) = three_block_pass_block_arg();
         let result = movfuscate_ir(&blocks, &mut types);
         // 3 blocks → pc_width = 2.
-        // state_width = max expanded param count:
-        //   block 0: 0 params → 0 expanded slots
-        //   block 1: 1 Block param → 2 Bit slots
-        //   block 2: 1 Block param → 2 Bit slots
-        // → state_width = 2 Bit slots.
-        // Combined params: [pc0: Bit, pc1: Bit, state0: Bit, state1: Bit] = 4.
-        assert_eq!(result.blocks[0].params.len(), 4, "pc(2) + state(2 Bit for Block)");
+        //
+        // `compute_static_slot_classes`'s edge-aware allocation gives
+        // block 1's own `cont` param and block 2's own `cont` param
+        // SEPARATE slots here (2 Bit slots each = 4 Bit state), not one
+        // shared pair (2 Bit) like the old position+type scheme -- it
+        // only traces a `Dyn(v)` target to a literal constant when `v`
+        // is a `Const` *within the same block* (see `resolve_dyn_target`);
+        // here the constant reference to block 2 is created in block 0
+        // and threaded one hop through block 1's own param before being
+        // Dyn-jumped, so it isn't traced as a literal, and the signature
+        // -based fallback can't help either (nothing else in this tiny
+        // fixture shares `cont`'s exact `Block{[]}` signature by a real
+        // edge). This is strictly *safe* (never aliases two different
+        // values; costs extra slots, not correctness) -- see
+        // `compute_static_slot_classes`'s own doc comment.
+        // Combined params: [pc0, pc1, state0..3] = 6.
+        assert_eq!(result.blocks[0].params.len(), 6, "pc(2) + state(4 Bit: 2 separate Block conts)");
         for tid in &result.blocks[0].params {
             assert!(matches!(types.0[tid.0 as usize], IRType::Primitive(Type::Bit)));
         }
@@ -2817,7 +3456,9 @@ mod tests {
         match &result.blocks[0].terminator {
             IRTerminator::JumpCond { then_target, else_target, .. } => {
                 assert_eq!(then_target.args.len(), 0, "ret_width = 0");
-                assert_eq!(else_target.args.len(), 4, "loop-back = pc(2) + state(2)");
+                // See `test_ir_block_pass_arg_param_layout`'s own comment
+                // for why this is 6 (pc(2) + state(4)), not 4.
+                assert_eq!(else_target.args.len(), 6, "loop-back = pc(2) + state(4)");
             }
             other => panic!("expected JumpCond, got {:?}", other),
         }
@@ -2994,5 +3635,96 @@ mod tests {
             matches!(&node.kind, IRStmt::Merge { .. })
         });
         assert!(has_merge, "Block-typed StorageWrite must emit a Merge stmt to pack PC bits");
+    }
+
+    // =========================================================================
+    // remap_movfusc_boundary / remap_movfusc_accum_info
+    // =========================================================================
+
+    fn sample_boundary() -> MovfuscBlockBoundary {
+        MovfuscBlockBoundary {
+            start: 10, end: 20, is_active: 11, done: 12,
+            next_pc_bits: vec![13, 14], next_state: vec![15, 16], ret_vals: vec![17],
+        }
+    }
+
+    fn sample_accum_info() -> MovfuscAccumInfo {
+        MovfuscAccumInfo {
+            init: MovfuscAccumInit {
+                start: 0, end: 5, done_acc: 1, next_pc: vec![2], next_state: vec![3], ret_vals: vec![4],
+            },
+            steps: vec![MovfuscAccumStep {
+                start: 5, end: 10, done_acc: 6, next_pc: vec![7], next_state: vec![8], ret_vals: vec![9],
+            }],
+        }
+    }
+
+    #[test]
+    fn test_remap_movfusc_boundary_identity() {
+        let boundary = sample_boundary();
+        let identity: BTreeMap<u32, u32> = (0..30).map(|v| (v, v)).collect();
+        let remapped = remap_movfusc_boundary(&boundary, &identity);
+        assert_eq!(remapped.start, boundary.start);
+        assert_eq!(remapped.end, boundary.end);
+        assert_eq!(remapped.is_active, boundary.is_active);
+        assert_eq!(remapped.done, boundary.done);
+        assert_eq!(remapped.next_pc_bits, boundary.next_pc_bits);
+        assert_eq!(remapped.next_state, boundary.next_state);
+        assert_eq!(remapped.ret_vals, boundary.ret_vals);
+    }
+
+    #[test]
+    fn test_remap_movfusc_boundary_translates_every_field() {
+        let boundary = sample_boundary();
+        // Shift every referenced id up by 100 (simulating DCE renumbering
+        // after removing 100 earlier dead statements).
+        let mut remap: BTreeMap<u32, u32> = BTreeMap::new();
+        for v in [10u32, 20, 11, 12, 13, 14, 15, 16, 17] {
+            remap.insert(v, v + 100);
+        }
+        let remapped = remap_movfusc_boundary(&boundary, &remap);
+        assert_eq!(remapped.start, 110);
+        assert_eq!(remapped.end, 120);
+        assert_eq!(remapped.is_active, 111);
+        assert_eq!(remapped.done, 112);
+        assert_eq!(remapped.next_pc_bits, vec![113, 114]);
+        assert_eq!(remapped.next_state, vec![115, 116]);
+        assert_eq!(remapped.ret_vals, vec![117]);
+    }
+
+    #[test]
+    #[should_panic(expected = "no remap entry")]
+    fn test_remap_movfusc_boundary_panics_on_missing_entry() {
+        let boundary = sample_boundary();
+        let empty: BTreeMap<u32, u32> = BTreeMap::new();
+        let _ = remap_movfusc_boundary(&boundary, &empty);
+    }
+
+    #[test]
+    fn test_remap_movfusc_accum_info_translates_every_field() {
+        let info = sample_accum_info();
+        let remap: BTreeMap<u32, u32> = (0..=10u32).map(|v| (v, v + 1000)).collect();
+        let remapped = remap_movfusc_accum_info(&info, &remap);
+        assert_eq!(remapped.init.start, 1000);
+        assert_eq!(remapped.init.end, 1005);
+        assert_eq!(remapped.init.done_acc, 1001);
+        assert_eq!(remapped.init.next_pc, vec![1002]);
+        assert_eq!(remapped.init.next_state, vec![1003]);
+        assert_eq!(remapped.init.ret_vals, vec![1004]);
+        assert_eq!(remapped.steps.len(), 1);
+        assert_eq!(remapped.steps[0].start, 1005);
+        assert_eq!(remapped.steps[0].done_acc, 1006);
+        assert_eq!(remapped.steps[0].next_pc, vec![1007]);
+        assert_eq!(remapped.steps[0].next_state, vec![1008]);
+        assert_eq!(remapped.steps[0].ret_vals, vec![1009]);
+    }
+
+    #[test]
+    fn test_remap_movfusc_boundaries_maps_a_slice() {
+        let boundaries = vec![sample_boundary(), sample_boundary()];
+        let identity: BTreeMap<u32, u32> = (0..30).map(|v| (v, v)).collect();
+        let remapped = remap_movfusc_boundaries(&boundaries, &identity);
+        assert_eq!(remapped.len(), 2);
+        assert_eq!(remapped[0].start, boundaries[0].start);
     }
 }

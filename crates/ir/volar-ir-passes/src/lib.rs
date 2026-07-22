@@ -13,6 +13,7 @@ pub use lower_ir_to_boolar::{ir_type_bits, lower_ir_to_boolar};
 pub use lower_to_circuit::{LoweringMode, lower_to_circuit, lower_to_circuit_ir};
 pub use movfuscate::{
     movfuscate_biir, movfuscate_ir, movfuscate_ir_with_boundary, pc_bits_needed,
+    remap_movfusc_accum_info, remap_movfusc_boundaries, remap_movfusc_boundary,
     MovfuscAccumInfo, MovfuscAccumInit, MovfuscAccumStep, MovfuscBlockBoundary,
 };
 pub use raise_to_z3::raise_bits_to_z3;

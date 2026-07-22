@@ -199,7 +199,7 @@ pub fn run_iop_verifier(rust_source: &str, driver_src: &str) -> std::string::Str
     std::fs::write(srcdir.join("lib.rs"), &full_src).expect("write src/lib.rs");
 
     let output = std::process::Command::new("cargo")
-        .args(["test", "--quiet", "--test", "driver", "--", "--nocapture"])
+        .args(["test", "--release", "--quiet", "--test", "driver", "--", "--nocapture"])
         .current_dir(&tmpdir)
         .env("CARGO_TARGET_DIR", tmpdir.join("target").to_string_lossy().into_owned())
         .output()

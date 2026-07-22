@@ -56,6 +56,7 @@ fn eval_vaffle_depth(
     let body = match &module.funcs[func_id.0] {
         FuncDecl::Body(b) => b,
         FuncDecl::Import { .. } => panic!("eval_vaffle: cannot evaluate an imported function"),
+        _ => panic!("eval_vaffle: unhandled FuncDecl variant — add evaluation for this variant"),
     };
 
     let mut value_table: BTreeMap<usize, IrValue> = BTreeMap::new();
@@ -165,6 +166,7 @@ fn eval_vaffle_depth(
                 }
                 current_block_id = target.block;
             }
+            _ => panic!("eval_vaffle: unhandled Terminator variant — add evaluation for this variant"),
         }
     }
 }
@@ -206,6 +208,7 @@ fn eval_vaffle_value(
         Value::PtrLoad { .. } => panic!("eval_vaffle: PtrLoad not supported"),
         Value::PtrStore { .. } => panic!("eval_vaffle: PtrStore not supported"),
         Value::PtrOffset { .. } => panic!("eval_vaffle: PtrOffset not supported"),
+        _ => panic!("eval_vaffle_value: unhandled Value variant — add evaluation for this variant"),
     };
     Some(val)
 }
@@ -328,6 +331,7 @@ fn eval_vaffle_stmt(
             storage.insert((*sid, *ty, addr_u64), val);
             vec![] // StorageWrite has no output
         }
+        _ => panic!("eval_vaffle_stmt: unhandled Stmt variant — add evaluation for this variant"),
     }
 }
 

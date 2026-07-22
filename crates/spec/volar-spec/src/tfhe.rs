@@ -38,6 +38,9 @@
 //!
 //! Suggested 128-bit-security parameters (not validated by this codebase):
 //! `N_LWE = 630, BIG_N = 1024, BS_ELL = 2, KS_ELL = 5, BS_BG_LOG = 10, KS_BG_LOG = 3`.
+//! The implementation carries all six layout/decomposition values as const
+//! parameters. The small values used in this module's tests are noiseless
+//! correctness fixtures, not deployable parameter sets.
 //!
 //! # CAUTION
 //!
@@ -106,23 +109,37 @@ pub struct RgswCiphertext<const BIG_N: usize, const BS_ELL: usize> {
 
 /// The key-switching key: for each of the `BIG_N` RLWE-key bits `s'_i`,
 /// `KS_ELL` LWE ciphertexts of `s'_i · ⌊2^32 / BG_KS^j⌋` under the LWE key.
+///
+/// `KS_BG_LOG` is part of the type identity: a key generated for one
+/// decomposition base cannot be used with operations configured for another.
 #[derive(Clone, Debug)]
-pub struct KeySwitchingKey<const N_LWE: usize, const BIG_N: usize, const KS_ELL: usize> {
+pub struct KeySwitchingKey<
+    const N_LWE: usize,
+    const BIG_N: usize,
+    const KS_ELL: usize,
+    const KS_BG_LOG: usize,
+> {
     /// `ksk[i][j]` encrypts `s'[i] · floor(2^32 / BG_KS^{j+1})` under LWE key.
     pub ksk: [[LweCiphertext<N_LWE>; KS_ELL]; BIG_N],
-    /// Log2 of the key-switching decomposition base.
-    pub ks_bg_log: u32,
 }
 
 /// The complete bootstrapping key: BSK + KSK.
+///
+/// Both decomposition bases are type-level parameters. They are layout and
+/// interpretation facts of the key, not caller-selected runtime options.
 #[derive(Clone, Debug)]
-pub struct BootstrappingKey<const N_LWE: usize, const BIG_N: usize, const BS_ELL: usize, const KS_ELL: usize> {
+pub struct BootstrappingKey<
+    const N_LWE: usize,
+    const BIG_N: usize,
+    const BS_ELL: usize,
+    const KS_ELL: usize,
+    const BS_BG_LOG: usize,
+    const KS_BG_LOG: usize,
+> {
     /// Bootstrapping key: `bsk[i]` is an RGSW encryption of LWE key bit `s[i]` under RLWE key.
     pub bsk: [RgswCiphertext<BIG_N, BS_ELL>; N_LWE],
     /// Key-switching key: converts `LweCiphertext<BIG_N>` → `LweCiphertext<N_LWE>`.
-    pub ksk: KeySwitchingKey<N_LWE, BIG_N, KS_ELL>,
-    /// Log2 of the bootstrapping decomposition base.
-    pub bs_bg_log: u32,
+    pub ksk: KeySwitchingKey<N_LWE, BIG_N, KS_ELL, KS_BG_LOG>,
 }
 
 /// LWE secret key: a binary vector of length `N_LWE`.
@@ -141,12 +158,18 @@ pub struct RlweSecretKey<const BIG_N: usize> {
 
 /// Return a trivial encryption of `0` (mask = 0, body = 0).
 pub fn tfhe_trivial_zero<const N_LWE: usize>() -> LweCiphertext<N_LWE> {
-    LweCiphertext { a: [0u32; N_LWE], b: 0 }
+    LweCiphertext {
+        a: [0u32; N_LWE],
+        b: 0,
+    }
 }
 
 /// Return a trivial encryption of `1` (mask = 0, body = Q4 = 2^30).
 pub fn tfhe_trivial_one<const N_LWE: usize>() -> LweCiphertext<N_LWE> {
-    LweCiphertext { a: [0u32; N_LWE], b: Q4 }
+    LweCiphertext {
+        a: [0u32; N_LWE],
+        b: Q4,
+    }
 }
 
 /// Return a trivial encryption of a cleartext boolean `b`.
@@ -155,7 +178,11 @@ pub fn tfhe_trivial_one<const N_LWE: usize>() -> LweCiphertext<N_LWE> {
 /// Used to promote public (cleartext) values into the ciphertext domain when
 /// they must be passed to gates that require `LweCiphertext` operands.
 pub fn tfhe_trivial_encrypt<const N_LWE: usize>(b: bool) -> LweCiphertext<N_LWE> {
-    if b { tfhe_trivial_one() } else { tfhe_trivial_zero() }
+    if b {
+        tfhe_trivial_one()
+    } else {
+        tfhe_trivial_zero()
+    }
 }
 
 /// XOR gate — free: `ct_xor = ct_a + ct_b` (componentwise wrapping addition).
@@ -179,7 +206,10 @@ pub fn tfhe_xor<const N_LWE: usize>(
     for i in 0..N_LWE {
         out_a[i] = a.a[i].wrapping_add(b.a[i]);
     }
-    LweCiphertext { a: out_a, b: a.b.wrapping_add(b.b) }
+    LweCiphertext {
+        a: out_a,
+        b: a.b.wrapping_add(b.b),
+    }
 }
 
 /// NOT gate — free: `ct_not = -ct_a + Q4` (negate all components, shift body).
@@ -188,7 +218,10 @@ pub fn tfhe_not<const N_LWE: usize>(a: LweCiphertext<N_LWE>) -> LweCiphertext<N_
     for i in 0..N_LWE {
         out_a[i] = a.a[i].wrapping_neg();
     }
-    LweCiphertext { a: out_a, b: Q4.wrapping_sub(a.b) }
+    LweCiphertext {
+        a: out_a,
+        b: Q4.wrapping_sub(a.b),
+    }
 }
 
 // ── Gate bootstrapping — AND ──────────────────────────────────────────────────
@@ -209,10 +242,12 @@ pub fn tfhe_gate_bootstrapping_and<
     const BIG_N: usize,
     const BS_ELL: usize,
     const KS_ELL: usize,
+    const BS_BG_LOG: usize,
+    const KS_BG_LOG: usize,
 >(
     ct_a: LweCiphertext<N_LWE>,
     ct_b: LweCiphertext<N_LWE>,
-    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, BS_BG_LOG, KS_BG_LOG>,
 ) -> LweCiphertext<N_LWE> {
     // Step 1: combine inputs; subtract Q4/2 = 2^29 to center AND gate threshold
     let mut ct = lwe_add(ct_a, ct_b);
@@ -253,10 +288,12 @@ pub fn tfhe_gate_bootstrapping_or<
     const BIG_N: usize,
     const BS_ELL: usize,
     const KS_ELL: usize,
+    const BS_BG_LOG: usize,
+    const KS_BG_LOG: usize,
 >(
     ct_a: LweCiphertext<N_LWE>,
     ct_b: LweCiphertext<N_LWE>,
-    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, BS_BG_LOG, KS_BG_LOG>,
 ) -> LweCiphertext<N_LWE> {
     // Step 1: combine inputs; ADD Q4/2 to center OR gate threshold
     let mut ct = lwe_add(ct_a, ct_b);
@@ -297,11 +334,13 @@ pub fn tfhe_cmux<
     const BIG_N: usize,
     const BS_ELL: usize,
     const KS_ELL: usize,
+    const BS_BG_LOG: usize,
+    const KS_BG_LOG: usize,
 >(
     sel: LweCiphertext<N_LWE>,
     a: LweCiphertext<N_LWE>,
     b: LweCiphertext<N_LWE>,
-    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, BS_BG_LOG, KS_BG_LOG>,
 ) -> LweCiphertext<N_LWE> {
     let not_sel = tfhe_not(sel);
     let sel_and_a = tfhe_gate_bootstrapping_and(sel, a, bk);
@@ -311,8 +350,13 @@ pub fn tfhe_cmux<
 
 // ── Programmable bootstrapping ───────────────────────────────────────────────
 
-/// Programmable bootstrapping — evaluate an arbitrary function encoded as a
-/// lookup table (test polynomial) on an encrypted input.
+/// Programmable bootstrapping primitive over a caller-provided test polynomial.
+///
+/// This is the low-level fixed-polynomial operation used by the typed table
+/// API. Callers that encode logical boolean tables should use
+/// [`TfheBootstrapTable`] with [`tfhe_lut_read`] so table shape, negacyclic
+/// compatibility, constant-table handling, and the standard output offset are
+/// validated in one place.
 ///
 /// Given an LWE ciphertext `ct` encrypting value `v`, and a test polynomial
 /// `test_poly` encoding function `f`, returns an LWE ciphertext encrypting
@@ -329,9 +373,8 @@ pub fn tfhe_cmux<
 ///
 /// # Use cases
 ///
-/// - Arbitrary boolean functions via LUT.
-/// - Read-only table lookups (e.g. AES S-box) where table contents are known
-///   at compile time and the index is encrypted.
+/// - Internal fixed polynomial operations and reviewed specialized tables.
+/// - The validated [`TfheBootstrapTable`] API for read-only boolean lookups.
 /// - **NOT** suitable for reading from encrypted storage cells (cell values
 ///   cannot be packed into a cleartext test polynomial). Use MUX-tree or
 ///   loop-based oblivious access for encrypted storage.
@@ -340,10 +383,12 @@ pub fn tfhe_programmable_bootstrap<
     const BIG_N: usize,
     const BS_ELL: usize,
     const KS_ELL: usize,
+    const BS_BG_LOG: usize,
+    const KS_BG_LOG: usize,
 >(
     ct: LweCiphertext<N_LWE>,
     test_poly: [u32; BIG_N],
-    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, BS_BG_LOG, KS_BG_LOG>,
 ) -> LweCiphertext<N_LWE> {
     // Blind rotate with the caller-supplied test polynomial.
     let acc = blind_rotate_with_poly(&ct, test_poly, bk);
@@ -355,104 +400,198 @@ pub fn tfhe_programmable_bootstrap<
     key_switch(&lwe_big, &bk.ksk)
 }
 
-/// Read from a cleartext lookup table using programmable bootstrapping.
+/// A validated, fixed-shape boolean table for one programmable bootstrap.
 ///
-/// `addr_bits` is a slice of LWE ciphertexts, each encrypting a single address
-/// bit (bit 0 = LSB).  `lut` is a cleartext boolean lookup table with up to
-/// `2 * BIG_N` entries (the maximum addressable by a single blind rotation in
-/// the negacyclic ring of degree `BIG_N`).
+/// `ADDR_BITS` is the number of encrypted address bits (least significant
+/// first), `TABLE_LEN` is the logical table size, and `BIG_N` is the degree of
+/// the negacyclic ring used to encode the table. The constructor checks all
+/// representation conditions before producing the test polynomial consumed by
+/// the private blind-rotation primitive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TfheBootstrapTable<const ADDR_BITS: usize, const TABLE_LEN: usize, const BIG_N: usize> {
+    logical: [bool; TABLE_LEN],
+    test_poly: [u32; BIG_N],
+    is_constant: bool,
+}
+
+/// A failure to encode a fixed logical table in one negacyclic bootstrap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TfheBootstrapTableError {
+    /// An address width must describe a non-empty power-of-two domain.
+    AddressWidthOutOfRange,
+    /// The table length must equal the domain size selected by `ADDR_BITS`.
+    TableLengthMismatch,
+    /// The table exceeds the `2 * BIG_N` negacyclic test-vector capacity.
+    RingCapacityExceeded,
+    /// The table is not compatible with the negacyclic image relation.
+    NegacyclicIncompatible,
+    /// The table cannot be selected exactly from the current standard
+    /// `{0, Q4}` Boolean-wire encoding.
+    InputEncodingUnsupported,
+}
+
+impl<const ADDR_BITS: usize, const TABLE_LEN: usize, const BIG_N: usize>
+    TfheBootstrapTable<ADDR_BITS, TABLE_LEN, BIG_N>
+{
+    /// Construct a table whose entries use the standard boolean output
+    /// convention. Constant tables are represented explicitly and bootstrap as
+    /// a trivial ciphertext because a constant function has no ordinary
+    /// negacyclic polynomial representation.
+    ///
+    /// This is `const` so a fixed logical table selected by a weaver can be
+    /// materialized at compile time. The same validation/mapping is used by
+    /// host-side tests and every target-facing fixed-table factory.
+    pub const fn new(logical: [bool; TABLE_LEN]) -> Result<Self, TfheBootstrapTableError> {
+        let max_addr_bits = usize::BITS as usize - 1;
+        if ADDR_BITS == 0 || ADDR_BITS > max_addr_bits {
+            return Err(TfheBootstrapTableError::AddressWidthOutOfRange);
+        }
+        // A standard Boolean wire is encoded at Q4. For one or two address
+        // bits, every selector weight is an integral torus multiple of that
+        // encoding. At three bits the least-significant weight would be
+        // Q4/2; the current per-coefficient integer division in
+        // `tfhe_lut_read` is not an exact ciphertext-linear operation. Do not
+        // accept a shape whose syntactic negacyclic table is representable but
+        // whose standard-wire selector is not. A wider address needs the
+        // separately reviewed generalized selector/encoding construction.
+        if ADDR_BITS > 2 {
+            return Err(TfheBootstrapTableError::InputEncodingUnsupported);
+        }
+        let domain = 1usize << ADDR_BITS;
+        if TABLE_LEN != domain {
+            return Err(TfheBootstrapTableError::TableLengthMismatch);
+        }
+        let capacity = match BIG_N.checked_mul(2) {
+            Some(capacity) => capacity,
+            None => return Err(TfheBootstrapTableError::RingCapacityExceeded),
+        };
+        if TABLE_LEN > capacity || BIG_N == 0 || !BIG_N.is_power_of_two() {
+            return Err(TfheBootstrapTableError::RingCapacityExceeded);
+        }
+
+        let mut is_constant = true;
+        let mut index = 1;
+        while index < TABLE_LEN {
+            if logical[index] != logical[0] {
+                is_constant = false;
+                break;
+            }
+            index += 1;
+        }
+        if !is_constant {
+            let half = TABLE_LEN / 2;
+            index = 0;
+            while index < half {
+                if logical[index] == logical[index + half] {
+                    return Err(TfheBootstrapTableError::NegacyclicIncompatible);
+                }
+                index += 1;
+            }
+    }
+
+    let half_q4 = Q4 >> 1;
+        let poly_step = BIG_N / (TABLE_LEN / 2);
+    let mut test_poly = [0u32; BIG_N];
+        index = 0;
+        while index < BIG_N {
+            let entry = index / poly_step;
+            test_poly[index] = if logical[entry] {
+            half_q4
+        } else {
+            half_q4.wrapping_neg()
+        };
+            index += 1;
+    }
+
+        Ok(Self {
+            logical,
+            test_poly,
+            is_constant,
+        })
+    }
+
+    /// Return the logical table entry at a statically valid index.
+    pub fn entries(&self) -> &[bool; TABLE_LEN] {
+        &self.logical
+    }
+}
+
+impl<const BIG_N: usize> TfheBootstrapTable<2, 4, BIG_N> {
+    /// The standard two-input XOR table, indexed by `[a, b]` least-significant
+    /// first: `[false, true, true, false]`.
+    ///
+    /// This associated constant is constructed through [`Self::new`], so it
+    /// retains the exact current negacyclic validation and polynomial mapping.
+    /// A compile-time failure here means the table cannot be represented for
+    /// the requested ring degree under this LUT construction.
+    pub const XOR: Self = match Self::new([false, true, true, false]) {
+        Ok(table) => table,
+        Err(_) => panic!("the fixed XOR LUT must be negacyclic-representable"),
+    };
+}
+
+/// Evaluate a composable two-input XOR through the fixed negacyclic LUT path.
 ///
-/// The function linearly combines the address-bit ciphertexts into a single
-/// multi-bit address ciphertext, builds a test polynomial encoding the LUT
-/// values, and performs one programmable bootstrapping.
+/// Inputs are `[a, b]` least-significant first. This is deliberately distinct
+/// from [`tfhe_xor`], whose raw torus-linear result is not a standard Boolean
+/// wire for further PBS composition. The output has the same standard
+/// `{0, Q4}` encoding guarantee as [`tfhe_lut_read`].
 ///
-/// # Cost
+/// The direct-IR FHE weaver uses this narrow wrapper for validated XOR layers;
+/// it does not construct a test polynomial or table at runtime.
+pub fn tfhe_lut_xor<
+    const N_LWE: usize,
+    const BIG_N: usize,
+    const BS_ELL: usize,
+    const KS_ELL: usize,
+    const BS_BG_LOG: usize,
+    const KS_BG_LOG: usize,
+>(
+    inputs_lsb_first: &[LweCiphertext<N_LWE>; 2],
+    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, BS_BG_LOG, KS_BG_LOG>,
+) -> LweCiphertext<N_LWE> {
+    tfhe_lut_read(
+        inputs_lsb_first,
+        &TfheBootstrapTable::<2, 4, BIG_N>::XOR,
+        bk,
+    )
+}
+
+/// Read a fixed-shape cleartext table using programmable bootstrapping.
 ///
-/// One blind rotation per call (regardless of table size), plus free LWE
-/// additions for address combination.
-///
-/// # Panics
-///
-/// Panics if `lut.len() > 2 * BIG_N` (exceeds negacyclic ring capacity).
-///
-/// # Limitations
-///
-/// The lookup table is **cleartext** — this function is suitable for read-only
-/// tables (e.g. S-boxes, truth tables) where the contents are public constants.
-/// For encrypted mutable storage, use MUX-tree or loop-based oblivious access.
+/// The address bits are ordered least-significant first. `TABLE_LEN` must equal
+/// `2^ADDR_BITS` and fit in the `2 * BIG_N` negacyclic test-vector capacity;
+/// [`TfheBootstrapTable::new`] checks these requirements before this function
+/// can be called. This target-facing API has no runtime-computed input or table
+/// length.
 pub fn tfhe_lut_read<
     const N_LWE: usize,
     const BIG_N: usize,
     const BS_ELL: usize,
     const KS_ELL: usize,
+    const BS_BG_LOG: usize,
+    const KS_BG_LOG: usize,
+    const ADDR_BITS: usize,
+    const TABLE_LEN: usize,
 >(
-    addr_bits: &[LweCiphertext<N_LWE>],
-    lut: &[bool],
-    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+    encrypted_addr_bits: &[LweCiphertext<N_LWE>; ADDR_BITS],
+    table: &TfheBootstrapTable<ADDR_BITS, TABLE_LEN, BIG_N>,
+    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, BS_BG_LOG, KS_BG_LOG>,
 ) -> LweCiphertext<N_LWE> {
-    let two_n = 2 * BIG_N;
-    assert!(
-        lut.len() <= two_n,
-        "tfhe_lut_read: LUT size {} exceeds 2*BIG_N = {} (negacyclic ring capacity)",
-        lut.len(),
-        two_n,
-    );
-
-    let k = lut.len().max(1).next_power_of_two(); // padded LUT size
-
-    // ── Special case: constant LUT ───────────────────────────────────────
-    //
-    // A LUT where all entries are the same is a constant function.
-    // The negacyclic ring forces f(x+K/2) = ¬f(x), so a constant function
-    // cannot be represented by a single blind rotation.  Return a trivial
-    // encryption of the constant value directly.
-    if !lut.is_empty() && lut.iter().all(|&v| v == lut[0]) {
-        let msg = if lut[0] { Q4 } else { 0u32 };
-        return LweCiphertext { a: [0u32; N_LWE], b: msg };
+    if table.is_constant {
+        return tfhe_trivial_encrypt(table.logical[0]);
     }
 
-    // ── Build test polynomial (signed range-fill) ────────────────────────
-    //
-    // The negacyclic ring Z[X]/(X^N+1) represents a test vector v of
-    // length 2N via polynomial f of degree N−1:
-    //   v[j]   = f[j]    for j ∈ [0, N)
-    //   v[j+N] = −f[j]   (negacyclic image)
-    //
-    // For a K-entry LUT with step = 2N/K, entry `a` occupies test vector
-    // positions [a·step, (a+1)·step).  The first K/2 entries map directly
-    // to polynomial coefficients [0, N); entries K/2..K are the negacyclic
-    // images and satisfy lut[a+K/2] = ¬lut[a].
-    //
-    // We use signed encoding: true → Q4/2, false → −Q4/2.
-    // Each range of `step/2` consecutive polynomial coefficients is filled
-    // with the same value, giving step/2 tolerance for rotation error in
-    // each direction.
-    let half_q4 = Q4 >> 1;
-    let step = two_n / k;
-    let half_k = k / 2;
-    let poly_step = BIG_N / half_k; // coefficients per entry in polynomial
-
-    let mut test_poly = [0u32; BIG_N];
-    for j in 0..BIG_N {
-        let entry_idx = j / poly_step;
-        let val = if entry_idx < lut.len() && lut[entry_idx] {
-            half_q4
-        } else {
-            half_q4.wrapping_neg()
-        };
-        test_poly[j] = val;
-    }
-
-    // ── Combine address bits into a single multi-bit LWE ciphertext ──────
-    //
-    // Address value = sum_{j} addr_bits[j] · 2^j.
-    // Each bit encrypts {0, Q4}.  We rescale so bit j contributes 2^j · Δ
-    // to the torus phase, where Δ = 2^32 / K.
-    let delta = (1u64 << 32) / (k as u64); // Δ = 2^32 / K
-
-    let mut combined = LweCiphertext { a: [0u32; N_LWE], b: 0 };
-    for (j, addr_ct) in addr_bits.iter().enumerate() {
-        let target = (1u64 << j) * delta; // 2^j · Δ
+    // Address value = sum_j addr_bits[j] · 2^j. Each bit starts in the
+    // standard {0, Q4} encoding and is rescaled to the table domain.
+    let delta = (1u64 << 32) / (TABLE_LEN as u64);
+    let mut combined = LweCiphertext {
+        a: [0u32; N_LWE],
+        b: 0,
+    };
+    for j in 0..ADDR_BITS {
+        let addr_ct = &encrypted_addr_bits[j];
+        let target = (1u64 << j) * delta;
         for i in 0..N_LWE {
             let scaled = (addr_ct.a[i] as u64).wrapping_mul(target) / (Q4 as u64);
             combined.a[i] = combined.a[i].wrapping_add(scaled as u32);
@@ -461,22 +600,12 @@ pub fn tfhe_lut_read<
         combined.b = combined.b.wrapping_add(scaled_b as u32);
     }
 
-    // ── Centering offset ─────────────────────────────────────────────────
-    //
-    // Without this offset, address `a` maps to phase_exp = a·step, which
-    // sits at the LEFT EDGE of the test vector range [a·step, (a+1)·step).
-    // Adding Δ/2 shifts the phase to (a+½)·step — the CENTER of the range
-    // — giving step/2 tolerance for torus_to_exp rounding in BOTH directions.
-    let centering = (delta / 2) as u32;
-    combined.b = combined.b.wrapping_add(centering);
-
-    // ── Programmable bootstrap + composability offset ─────────────────────
-    //
-    // The PBS output is in signed encoding {−Q4/2, Q4/2}.
-    // Add Q4/2 to convert to the standard {0, Q4} encoding expected by
-    // lwe_decrypt and downstream gates.
-    let mut ct_out = tfhe_programmable_bootstrap(combined, test_poly, bk);
-    ct_out.b = ct_out.b.wrapping_add(half_q4);
+    // Center each logical-table range to tolerate torus-to-ring rounding in
+    // both directions. PBS returns signed {−Q4/2, Q4/2}; add Q4/2 to restore
+    // the standard composable {0, Q4} boolean encoding.
+    combined.b = combined.b.wrapping_add((delta / 2) as u32);
+    let mut ct_out = tfhe_programmable_bootstrap(combined, table.test_poly, bk);
+    ct_out.b = ct_out.b.wrapping_add(Q4 >> 1);
     ct_out
 }
 
@@ -529,9 +658,7 @@ pub fn lwe_decrypt<const N_LWE: usize>(
 // ── Key generation ────────────────────────────────────────────────────────────
 
 /// Generate a random binary LWE secret key.
-pub fn gen_lwe_secret_key<const N_LWE: usize, R: SpecRng>(
-    rng: &mut R,
-) -> LweSecretKey<N_LWE> {
+pub fn gen_lwe_secret_key<const N_LWE: usize, R: SpecRng>(rng: &mut R) -> LweSecretKey<N_LWE> {
     let mut key = [0u8; N_LWE];
     for k in key.iter_mut() {
         *k = (rng.next_u8() & 1) as u8;
@@ -540,9 +667,7 @@ pub fn gen_lwe_secret_key<const N_LWE: usize, R: SpecRng>(
 }
 
 /// Generate a random binary RLWE secret key polynomial.
-pub fn gen_rlwe_secret_key<const BIG_N: usize, R: SpecRng>(
-    rng: &mut R,
-) -> RlweSecretKey<BIG_N> {
+pub fn gen_rlwe_secret_key<const BIG_N: usize, R: SpecRng>(rng: &mut R) -> RlweSecretKey<BIG_N> {
     let mut key = [0u32; BIG_N];
     for k in key.iter_mut() {
         *k = (rng.next_u8() & 1) as u32;
@@ -553,10 +678,8 @@ pub fn gen_rlwe_secret_key<const BIG_N: usize, R: SpecRng>(
 /// Generate the full bootstrapping key (BSK + KSK).
 ///
 /// # Parameters
-/// - `lwe_sk`: the LWE secret key (binary, dimension N_LWE)
-/// - `rlwe_sk`: the RLWE secret key (binary polynomial, degree < BIG_N)
-/// - `bs_bg_log`: log2 of bootstrapping gadget base (e.g. 10 → base 1024)
-/// - `ks_bg_log`: log2 of key-switching gadget base (e.g. 3 → base 8)
+/// - `BS_BG_LOG`: log2 of the bootstrapping gadget base (e.g. 10 → base 1024)
+/// - `KS_BG_LOG`: log2 of the key-switching gadget base (e.g. 3 → base 8)
 /// - `bs_noise_bits`: noise level for BSK RLWE encryptions
 /// - `ks_noise_bits`: noise level for KSK LWE encryptions
 pub fn gen_bootstrapping_key<
@@ -564,48 +687,34 @@ pub fn gen_bootstrapping_key<
     const BIG_N: usize,
     const BS_ELL: usize,
     const KS_ELL: usize,
+    const BS_BG_LOG: usize,
+    const KS_BG_LOG: usize,
     R: SpecRng,
 >(
     lwe_sk: &LweSecretKey<N_LWE>,
     rlwe_sk: &RlweSecretKey<BIG_N>,
-    bs_bg_log: u32,
-    ks_bg_log: u32,
     bs_noise_bits: u32,
     ks_noise_bits: u32,
     rng: &mut R,
-) -> BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL> {
-    // Build BSK: for each LWE key bit, encrypt it as RGSW under the RLWE key
+) -> BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, BS_BG_LOG, KS_BG_LOG> {
+    // Build BSK: for each LWE key bit, encrypt it as RGSW under the RLWE key.
     let bsk = core::array::from_fn(|i| {
         let bit = lwe_sk.key[i] != 0;
-        rgsw_encrypt(bit, rlwe_sk, bs_bg_log, bs_noise_bits, rng)
+        rgsw_encrypt::<BIG_N, BS_ELL, BS_BG_LOG, _>(bit, rlwe_sk, bs_noise_bits, rng)
     });
 
-    // Build KSK: for each RLWE key bit s'[i], encrypt s'[i] * floor(2^32/BG_KS^j) under LWE key
-    // We create a temporary LWE-style key from the RLWE key bits for this purpose
-    let rlwe_as_lwe = LweSecretKey::<BIG_N> {
-        key: core::array::from_fn(|i| rlwe_sk.key[i] as u8),
-    };
-
-    let ksk_array: [[LweCiphertext<N_LWE>; KS_ELL]; BIG_N] =
-        core::array::from_fn(|i| {
+    let ksk_array: [[LweCiphertext<N_LWE>; KS_ELL]; BIG_N] = core::array::from_fn(|i| {
             let s_bit = rlwe_sk.key[i];
             core::array::from_fn(|j| {
                 // level j: encrypt s'[i] * floor(2^32 / BG_KS^{j+1})
-                // = s'[i] * 2^{32 - ks_bg_log*(j+1)}
-                let shift = 32u32.saturating_sub(ks_bg_log.saturating_mul(j as u32 + 1));
+            let shift = 32u32.saturating_sub((KS_BG_LOG * (j + 1)) as u32);
                 let msg_val = s_bit.wrapping_shl(shift);
-                // Encrypt as LWE with message on the body directly (no Q4 encoding)
                 lwe_encrypt_raw(msg_val, lwe_sk, ks_noise_bits, rng)
             })
         });
-    let _ = rlwe_as_lwe; // suppress unused warning
 
-    let ksk = KeySwitchingKey {
-        ksk: ksk_array,
-        ks_bg_log,
-    };
-
-    BootstrappingKey { bsk, ksk, bs_bg_log }
+    let ksk = KeySwitchingKey { ksk: ksk_array };
+    BootstrappingKey { bsk, ksk }
 }
 
 // ── Internal: RLWE encryption ─────────────────────────────────────────────────
@@ -621,7 +730,9 @@ fn rlwe_encrypt_scalar<const BIG_N: usize, R: SpecRng>(
     let a: [u32; BIG_N] = core::array::from_fn(|_| rng.next_u32());
     // b = a * s + e + m (constant term)
     let mut b = poly_mul_neg(&a, &sk.key);
-    b[0] = b[0].wrapping_add(small_noise(noise_bits, rng)).wrapping_add(m);
+    b[0] = b[0]
+        .wrapping_add(small_noise(noise_bits, rng))
+        .wrapping_add(m);
     RlweCiphertext { a, b }
 }
 
@@ -657,10 +768,9 @@ fn rlwe_encrypt_poly<const BIG_N: usize, R: SpecRng>(
 ///
 /// In standard RGSW the message is embedded in both rows of the `G` factor.
 /// We use the GINX representation: one RGSW per LWE key bit.
-fn rgsw_encrypt<const BIG_N: usize, const BS_ELL: usize, R: SpecRng>(
+fn rgsw_encrypt<const BIG_N: usize, const BS_ELL: usize, const BS_BG_LOG: usize, R: SpecRng>(
     m: bool,
     sk: &RlweSecretKey<BIG_N>,
-    bs_bg_log: u32,
     noise_bits: u32,
     rng: &mut R,
 ) -> RgswCiphertext<BIG_N, BS_ELL> {
@@ -668,7 +778,7 @@ fn rgsw_encrypt<const BIG_N: usize, const BS_ELL: usize, R: SpecRng>(
 
     let rows = core::array::from_fn(|j| {
         // Gadget factor at level j: 2^{32 - bs_bg_log*(j+1)}
-        let shift = 32u32.saturating_sub(bs_bg_log.saturating_mul(j as u32 + 1));
+        let shift = 32u32.saturating_sub((BS_BG_LOG * (j + 1)) as u32);
         let g_factor = 1u32.wrapping_shl(shift);
         let contrib = msg_bit.wrapping_mul(g_factor);
 
@@ -706,10 +816,12 @@ fn blind_rotate_with_poly<
     const BIG_N: usize,
     const BS_ELL: usize,
     const KS_ELL: usize,
+    const BS_BG_LOG: usize,
+    const KS_BG_LOG: usize,
 >(
     ct: &LweCiphertext<N_LWE>,
     test_poly: [u32; BIG_N],
-    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, BS_BG_LOG, KS_BG_LOG>,
 ) -> RlweCiphertext<BIG_N> {
     // Trivial RLWE encryption of test_poly (a = 0, b = test_poly)
     let mut acc = RlweCiphertext {
@@ -736,7 +848,7 @@ fn blind_rotate_with_poly<
             // d1 = acc * X^{a_exp}
             let acc_rotated = rlwe_rotate(&acc, a_exp);
             // CMUX(BSK[i], d1, d0=acc)
-            acc = cmux(&bk.bsk[i], &acc_rotated, &acc, bk.bs_bg_log);
+            acc = cmux::<BIG_N, BS_ELL, BS_BG_LOG>(&bk.bsk[i], &acc_rotated, &acc);
         }
         // If a_exp == 0, CMUX(BSK[i], acc, acc) = acc, so we skip it.
     }
@@ -770,9 +882,11 @@ fn blind_rotate<
     const BIG_N: usize,
     const BS_ELL: usize,
     const KS_ELL: usize,
+    const BS_BG_LOG: usize,
+    const KS_BG_LOG: usize,
 >(
     ct: &LweCiphertext<N_LWE>,
-    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL>,
+    bk: &BootstrappingKey<N_LWE, BIG_N, BS_ELL, KS_ELL, BS_BG_LOG, KS_BG_LOG>,
 ) -> RlweCiphertext<BIG_N> {
     blind_rotate_with_poly(ct, and_test_poly(), bk)
 }
@@ -785,7 +899,11 @@ fn blind_rotate<
 #[inline]
 fn torus_to_exp(x: u32, scale_shift: u32, two_n: usize) -> usize {
     // Add half of the discarded range to round-to-nearest instead of floor.
-    let half = if scale_shift > 0 { 1u32 << (scale_shift - 1) } else { 0 };
+    let half = if scale_shift > 0 {
+        1u32 << (scale_shift - 1)
+    } else {
+        0
+    };
     let exp = (x.wrapping_add(half) >> scale_shift) as usize;
     exp & (two_n - 1) // two_n is power-of-two
 }
@@ -804,7 +922,10 @@ fn sample_extract<const BIG_N: usize>(rlwe: &RlweCiphertext<BIG_N>) -> LweCipher
         // Coefficient i of a(X) contributes negatively to the i-th LWE key element
         a_lwe[i] = rlwe.a[BIG_N - i].wrapping_neg();
     }
-    LweCiphertext { a: a_lwe, b: rlwe.b[0] }
+    LweCiphertext {
+        a: a_lwe,
+        b: rlwe.b[0],
+    }
 }
 
 // ── Internal: key switching ───────────────────────────────────────────────────
@@ -816,15 +937,20 @@ fn sample_extract<const BIG_N: usize>(rlwe: &RlweCiphertext<BIG_N>) -> LweCipher
 /// 2. For each of the BIG_N components `a[i]`:
 ///    - Decompose `a[i]` into KS_ELL digits with base `2^ks_bg_log`.
 ///    - Subtract `digit[j] · KSK[i][j]` from the running sum.
-fn key_switch<const N_LWE: usize, const BIG_N: usize, const KS_ELL: usize>(
+fn key_switch<
+    const N_LWE: usize,
+    const BIG_N: usize,
+    const KS_ELL: usize,
+    const KS_BG_LOG: usize,
+>(
     ct_big: &LweCiphertext<BIG_N>,
-    ksk: &KeySwitchingKey<N_LWE, BIG_N, KS_ELL>,
+    ksk: &KeySwitchingKey<N_LWE, BIG_N, KS_ELL, KS_BG_LOG>,
 ) -> LweCiphertext<N_LWE> {
     let mut out_a = [0u32; N_LWE];
     let mut out_b = ct_big.b;
 
     for i in 0..BIG_N {
-        let digits = ks_decompose::<KS_ELL>(ct_big.a[i], ksk.ks_bg_log);
+        let digits = ks_decompose::<KS_ELL, KS_BG_LOG>(ct_big.a[i]);
         for j in 0..KS_ELL {
             let d = digits[j] as u32;
             if d == 0 {
@@ -846,19 +972,19 @@ fn key_switch<const N_LWE: usize, const BIG_N: usize, const KS_ELL: usize>(
 ///
 /// Decomposes `x` into `KS_ELL` unsigned digits in base `2^bg_log`, rounding
 /// the most-significant unrepresented portion.
-fn ks_decompose<const KS_ELL: usize>(x: u32, bg_log: u32) -> [u32; KS_ELL] {
-    let bg = 1u64 << bg_log;
+fn ks_decompose<const KS_ELL: usize, const KS_BG_LOG: usize>(x: u32) -> [u32; KS_ELL] {
+    let bg = 1u64 << KS_BG_LOG;
     let mask = bg - 1;
     let mut rem = x as u64;
     // Round up the truncated tail (skip when decomposition is exact, i.e. tail_shift == 0)
-    let tail_shift = 32u32.saturating_sub(bg_log.saturating_mul(KS_ELL as u32));
+    let tail_shift = 32u32.saturating_sub((KS_BG_LOG * KS_ELL) as u32);
     if tail_shift > 0 && tail_shift < 32 {
         let half_tail = 1u64 << (tail_shift - 1);
         rem = rem.wrapping_add(half_tail);
     }
     let mut digits = [0u32; KS_ELL];
     for j in (0..KS_ELL).rev() {
-        let shift = 32u32.saturating_sub(bg_log.saturating_mul(j as u32 + 1));
+        let shift = 32u32.saturating_sub((KS_BG_LOG * (j + 1)) as u32);
         if shift < 32 {
             digits[j] = ((rem >> shift) & mask) as u32;
         }
@@ -869,14 +995,13 @@ fn ks_decompose<const KS_ELL: usize>(x: u32, bg_log: u32) -> [u32; KS_ELL] {
 // ── Internal: CMUX and external product ──────────────────────────────────────
 
 /// CMUX gate: `CMUX(C, d1, d0) = d0 + C ⊡ (d1 − d0)`.
-fn cmux<const BIG_N: usize, const BS_ELL: usize>(
+fn cmux<const BIG_N: usize, const BS_ELL: usize, const BS_BG_LOG: usize>(
     c: &RgswCiphertext<BIG_N, BS_ELL>,
     d1: &RlweCiphertext<BIG_N>,
     d0: &RlweCiphertext<BIG_N>,
-    bs_bg_log: u32,
 ) -> RlweCiphertext<BIG_N> {
     let diff = rlwe_sub(d1, d0);
-    let prod = external_product(c, &diff, bs_bg_log);
+    let prod = external_product::<BIG_N, BS_ELL, BS_BG_LOG>(c, &diff);
     rlwe_add(d0, &prod)
 }
 
@@ -884,14 +1009,13 @@ fn cmux<const BIG_N: usize, const BS_ELL: usize>(
 ///
 /// Decomposes each coefficient of the RLWE ciphertext using the gadget
 /// decomposition, then multiplies by the corresponding RGSW rows.
-fn external_product<const BIG_N: usize, const BS_ELL: usize>(
+fn external_product<const BIG_N: usize, const BS_ELL: usize, const BS_BG_LOG: usize>(
     rgsw: &RgswCiphertext<BIG_N, BS_ELL>,
     rlwe: &RlweCiphertext<BIG_N>,
-    bs_bg_log: u32,
 ) -> RlweCiphertext<BIG_N> {
     // Decompose a and b polynomials of the RLWE ciphertext
-    let a_decomp = poly_decompose::<BIG_N, BS_ELL>(&rlwe.a, bs_bg_log);
-    let b_decomp = poly_decompose::<BIG_N, BS_ELL>(&rlwe.b, bs_bg_log);
+    let a_decomp = poly_decompose::<BIG_N, BS_ELL, BS_BG_LOG>(&rlwe.a);
+    let b_decomp = poly_decompose::<BIG_N, BS_ELL, BS_BG_LOG>(&rlwe.b);
 
     let mut out_a = [0u32; BIG_N];
     let mut out_b = [0u32; BIG_N];
@@ -906,12 +1030,8 @@ fn external_product<const BIG_N: usize, const BS_ELL: usize>(
         let prod_b1 = poly_mul_neg(&b_decomp[j], &row.rlwe1.b);
 
         for k in 0..BIG_N {
-            out_a[k] = out_a[k]
-                .wrapping_add(prod_a0[k])
-                .wrapping_add(prod_b0[k]);
-            out_b[k] = out_b[k]
-                .wrapping_add(prod_a1[k])
-                .wrapping_add(prod_b1[k]);
+            out_a[k] = out_a[k].wrapping_add(prod_a0[k]).wrapping_add(prod_b0[k]);
+            out_b[k] = out_b[k].wrapping_add(prod_a1[k]).wrapping_add(prod_b1[k]);
         }
     }
 
@@ -926,11 +1046,10 @@ fn external_product<const BIG_N: usize, const BS_ELL: usize>(
 ///
 /// Level 0 is the most significant digit: bits `[32 - bg_log, 32)`.
 /// Level j extracts bits `[32 - bg_log*(j+1), 32 - bg_log*j)`.
-fn poly_decompose<const BIG_N: usize, const BS_ELL: usize>(
+fn poly_decompose<const BIG_N: usize, const BS_ELL: usize, const BS_BG_LOG: usize>(
     p: &[u32; BIG_N],
-    bg_log: u32,
 ) -> [[u32; BIG_N]; BS_ELL] {
-    let bg = 1u64 << bg_log;
+    let bg = 1u64 << BS_BG_LOG;
     let mask = (bg - 1) as u32;
     let mut result = [[0u32; BIG_N]; BS_ELL];
 
@@ -938,7 +1057,7 @@ fn poly_decompose<const BIG_N: usize, const BS_ELL: usize>(
         let x = p[i];
         // Optional rounding: add half of the first non-represented bit
         // to reduce decomposition error.
-        let tail_bits = 32u32.saturating_sub(bg_log.saturating_mul(BS_ELL as u32));
+        let tail_bits = 32u32.saturating_sub((BS_BG_LOG * BS_ELL) as u32);
         let rounded = if tail_bits > 0 && tail_bits < 32 {
             x.wrapping_add(1u32 << (tail_bits - 1))
         } else {
@@ -947,7 +1066,7 @@ fn poly_decompose<const BIG_N: usize, const BS_ELL: usize>(
         for j in 0..BS_ELL {
             // Level j: shift to extract the j-th digit from the top.
             // Digit j occupies bits [32 - bg_log*(j+1), 32 - bg_log*j).
-            let shift = 32u32.saturating_sub(bg_log.saturating_mul(j as u32 + 1));
+            let shift = 32u32.saturating_sub((BS_BG_LOG * (j + 1)) as u32);
             result[j][i] = if shift < 32 {
                 (rounded >> shift) & mask
             } else {
@@ -1007,7 +1126,10 @@ fn lwe_add<const N_LWE: usize>(
     for i in 0..N_LWE {
         out_a[i] = a.a[i].wrapping_add(b.a[i]);
     }
-    LweCiphertext { a: out_a, b: a.b.wrapping_add(b.b) }
+    LweCiphertext {
+        a: out_a,
+        b: a.b.wrapping_add(b.b),
+    }
 }
 
 /// Encrypt `msg` directly on the body (no Q4 encoding) — used for KSK construction.
@@ -1157,12 +1279,14 @@ mod tests {
     // ring positions — more than enough.
     //
     // Decomposition: BS_ELL * BS_BG_LOG = 2 * 16 = 32 bits → exact for u32.
+    // This fixture is deliberately small and noiseless. It validates
+    // implementation behavior only; it is not a cryptographic parameter set.
     const T_N_LWE: usize = 8;
     const T_BIG_N: usize = 64;
     const T_BS_ELL: usize = 2;
     const T_KS_ELL: usize = 2;
-    const T_BS_BG_LOG: u32 = 16;
-    const T_KS_BG_LOG: u32 = 16;
+    const T_BS_BG_LOG: usize = 16;
+    const T_KS_BG_LOG: usize = 16;
     const T_NOISE_BITS: u32 = 0; // noiseless — spec correctness tests
 
     type Ct = LweCiphertext<T_N_LWE>;
@@ -1172,20 +1296,12 @@ mod tests {
     ) -> (
         LweSecretKey<T_N_LWE>,
         RlweSecretKey<T_BIG_N>,
-        BootstrappingKey<T_N_LWE, T_BIG_N, T_BS_ELL, T_KS_ELL>,
+        BootstrappingKey<T_N_LWE, T_BIG_N, T_BS_ELL, T_KS_ELL, T_BS_BG_LOG, T_KS_BG_LOG>,
     ) {
         let mut rng = TestRng::new(seed);
         let lwe_sk = gen_lwe_secret_key::<T_N_LWE, _>(&mut rng);
         let rlwe_sk = gen_rlwe_secret_key::<T_BIG_N, _>(&mut rng);
-        let bk = gen_bootstrapping_key(
-            &lwe_sk,
-            &rlwe_sk,
-            T_BS_BG_LOG,
-            T_KS_BG_LOG,
-            T_NOISE_BITS,
-            T_NOISE_BITS,
-            &mut rng,
-        );
+        let bk = gen_bootstrapping_key(&lwe_sk, &rlwe_sk, T_NOISE_BITS, T_NOISE_BITS, &mut rng);
         (lwe_sk, rlwe_sk, bk)
     }
 
@@ -1195,6 +1311,35 @@ mod tests {
     }
 
     // ── Basic roundtrip test ─────────────────────────────────────────────
+
+    #[test]
+    fn alternate_noiseless_parameter_fixture_and_truth_table() {
+        // A distinct small, noiseless configuration checks that dimensions and
+        // decomposition bases are propagated through the key type rather than
+        // captured by the primary test fixture. It is not a security claim.
+        const N_LWE: usize = 4;
+        const BIG_N: usize = 32;
+        const BS_ELL: usize = 2;
+        const KS_ELL: usize = 2;
+        const BS_BG_LOG: usize = 16;
+        const KS_BG_LOG: usize = 16;
+
+        let mut rng = TestRng::new(0xA11C_E5E5);
+        let lwe_sk = gen_lwe_secret_key::<N_LWE, _>(&mut rng);
+        let rlwe_sk = gen_rlwe_secret_key::<BIG_N, _>(&mut rng);
+        let bk = gen_bootstrapping_key::<N_LWE, BIG_N, BS_ELL, KS_ELL, BS_BG_LOG, KS_BG_LOG, _>(
+            &lwe_sk, &rlwe_sk, 0, 0, &mut rng,
+        );
+
+        for (a, b) in [(false, false), (false, true), (true, false), (true, true)] {
+            let mut a_rng = TestRng::new(100 + a as u64);
+            let mut b_rng = TestRng::new(200 + b as u64);
+            let ct_a = lwe_encrypt(a, &lwe_sk, 0, &mut a_rng);
+            let ct_b = lwe_encrypt(b, &lwe_sk, 0, &mut b_rng);
+            let result = tfhe_gate_bootstrapping_and(ct_a, ct_b, &bk);
+            assert_eq!(lwe_decrypt(&result, &lwe_sk), a & b);
+        }
+    }
 
     #[test]
     fn encrypt_decrypt_roundtrip() {
@@ -1229,12 +1374,14 @@ mod tests {
         };
 
         // RGSW encrypting 0 → CMUX should select d0
-        let rgsw0: RgswCiphertext<T_BIG_N, T_BS_ELL> = rgsw_encrypt(false, &rlwe_sk, T_BS_BG_LOG, 0, &mut rng);
-        let out0 = cmux(&rgsw0, &d1, &d0, T_BS_BG_LOG);
+        let rgsw0: RgswCiphertext<T_BIG_N, T_BS_ELL> =
+            rgsw_encrypt::<T_BIG_N, T_BS_ELL, T_BS_BG_LOG, _>(false, &rlwe_sk, 0, &mut rng);
+        let out0 = cmux::<T_BIG_N, T_BS_ELL, T_BS_BG_LOG>(&rgsw0, &d1, &d0);
 
         // RGSW encrypting 1 → CMUX should select d1
-        let rgsw1: RgswCiphertext<T_BIG_N, T_BS_ELL> = rgsw_encrypt(true, &rlwe_sk, T_BS_BG_LOG, 0, &mut rng);
-        let out1 = cmux(&rgsw1, &d1, &d0, T_BS_BG_LOG);
+        let rgsw1: RgswCiphertext<T_BIG_N, T_BS_ELL> =
+            rgsw_encrypt::<T_BIG_N, T_BS_ELL, T_BS_BG_LOG, _>(true, &rlwe_sk, 0, &mut rng);
+        let out1 = cmux::<T_BIG_N, T_BS_ELL, T_BS_BG_LOG>(&rgsw1, &d1, &d0);
 
         // Decrypt: extract constant coefficient, check it
         // For trivial d0/d1 with a=0, the phase is just b[0].
@@ -1282,14 +1429,8 @@ mod tests {
         let mut rng = TestRng::new(42);
         let lwe_sk = gen_lwe_secret_key::<1, _>(&mut rng); // N_LWE = 1
         let rlwe_sk = gen_rlwe_secret_key::<T_BIG_N, _>(&mut rng);
-        let bk: BootstrappingKey<1, T_BIG_N, T_BS_ELL, T_KS_ELL> = gen_bootstrapping_key(
-            &lwe_sk,
-            &rlwe_sk,
-            T_BS_BG_LOG,
-            T_KS_BG_LOG,
-            0, 0,
-            &mut rng,
-        );
+        let bk: BootstrappingKey<1, T_BIG_N, T_BS_ELL, T_KS_ELL, T_BS_BG_LOG, T_KS_BG_LOG> =
+            gen_bootstrapping_key(&lwe_sk, &rlwe_sk, 0, 0, &mut rng);
 
         // Encrypt true: b = dot(a, s) + Q4
         let ct_a = lwe_encrypt(true, &lwe_sk, 0, &mut rng);
@@ -1456,22 +1597,30 @@ mod tests {
 
         // LUT: [false, true] → addr 0 = false, addr 1 = true (identity)
         let lut = [false, true];
+        let table = TfheBootstrapTable::<1, 2, T_BIG_N>::new(lut).unwrap();
         for addr_val in 0u8..2 {
             let addr_bit = encrypt(addr_val != 0, &sk, 500 + addr_val as u64);
-            let ct_out = tfhe_lut_read(&[addr_bit], &lut, &bk);
+            let ct_out = tfhe_lut_read(&[addr_bit], &table, &bk);
             let got = lwe_decrypt(&ct_out, &sk);
             let expected = lut[addr_val as usize];
-            assert_eq!(got, expected, "LUT[{addr_val}] = {got}, expected {expected}");
+            assert_eq!(
+                got, expected,
+                "LUT[{addr_val}] = {got}, expected {expected}"
+            );
         }
 
         // LUT: [true, false] → addr 0 = true, addr 1 = false (NOT)
         let lut_not = [true, false];
+        let table_not = TfheBootstrapTable::<1, 2, T_BIG_N>::new(lut_not).unwrap();
         for addr_val in 0u8..2 {
             let addr_bit = encrypt(addr_val != 0, &sk, 600 + addr_val as u64);
-            let ct_out = tfhe_lut_read(&[addr_bit], &lut_not, &bk);
+            let ct_out = tfhe_lut_read(&[addr_bit], &table_not, &bk);
             let got = lwe_decrypt(&ct_out, &sk);
             let expected = lut_not[addr_val as usize];
-            assert_eq!(got, expected, "LUT_NOT[{addr_val}] = {got}, expected {expected}");
+            assert_eq!(
+                got, expected,
+                "LUT_NOT[{addr_val}] = {got}, expected {expected}"
+            );
         }
     }
 
@@ -1481,11 +1630,12 @@ mod tests {
         // Negacyclic constraint: LUT[0] != LUT[2] and LUT[1] != LUT[3]
         let (sk, _, bk) = test_keys(42);
         let lut = [true, false, false, true];
+        let table = TfheBootstrapTable::<2, 4, T_BIG_N>::new(lut).unwrap();
 
         for addr_val in 0u8..4 {
             let bit0 = encrypt((addr_val & 1) != 0, &sk, 700 + addr_val as u64 * 2);
             let bit1 = encrypt((addr_val & 2) != 0, &sk, 701 + addr_val as u64 * 2);
-            let ct_out = tfhe_lut_read(&[bit0, bit1], &lut, &bk);
+            let ct_out = tfhe_lut_read(&[bit0, bit1], &table, &bk);
             let got = lwe_decrypt(&ct_out, &sk);
             let expected = lut[addr_val as usize];
             assert_eq!(
@@ -1496,14 +1646,41 @@ mod tests {
     }
 
     #[test]
+    fn lut_xor_is_standard_encoded_and_composes() {
+        let (sk, _, bk) = test_keys(42);
+        for a in [false, true] {
+            for b in [false, true] {
+                for c in [false, true] {
+                    let ct_a = encrypt(a, &sk, 1_000);
+                    let ct_b = encrypt(b, &sk, 1_001);
+                    let ct_c = encrypt(c, &sk, 1_002);
+                    let ab = tfhe_lut_xor(&[ct_a, ct_b], &bk);
+                    assert_eq!(
+                        lwe_decrypt(&ab, &sk),
+                        a ^ b,
+                        "first LUT XOR layer must normalize XOR({a}, {b})"
+                    );
+                    let abc = tfhe_lut_xor(&[ab, ct_c], &bk);
+                    assert_eq!(
+                        lwe_decrypt(&abc, &sk),
+                        a ^ b ^ c,
+                        "second LUT XOR layer must accept the first layer's standard encoding"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn lut_read_all_false() {
         // LUT of all false entries — any address should decrypt to false.
         let (sk, _, bk) = test_keys(42);
         let lut = [false, false];
+        let table = TfheBootstrapTable::<1, 2, T_BIG_N>::new(lut).unwrap();
 
         for addr_val in 0u8..2 {
             let addr_bit = encrypt(addr_val != 0, &sk, 800 + addr_val as u64);
-            let ct_out = tfhe_lut_read(&[addr_bit], &lut, &bk);
+            let ct_out = tfhe_lut_read(&[addr_bit], &table, &bk);
             let got = lwe_decrypt(&ct_out, &sk);
             assert!(!got, "all-false LUT[{addr_val}] should be false, got true");
         }
@@ -1516,10 +1693,11 @@ mod tests {
         // single PBS.  Test an alternating [true, false] pattern instead.
         let (sk, _, bk) = test_keys(42);
         let lut = [true, false];
+        let table = TfheBootstrapTable::<1, 2, T_BIG_N>::new(lut).unwrap();
 
         for addr_val in 0u8..2 {
             let addr_bit = encrypt(addr_val != 0, &sk, 900 + addr_val as u64);
-            let ct_out = tfhe_lut_read(&[addr_bit], &lut, &bk);
+            let ct_out = tfhe_lut_read(&[addr_bit], &table, &bk);
             let got = lwe_decrypt(&ct_out, &sk);
             let expected = lut[addr_val as usize];
             assert_eq!(
@@ -1530,13 +1708,22 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "LUT size")]
-    fn lut_read_panics_on_oversized_lut() {
-        let (sk, _, bk) = test_keys(42);
-        // BIG_N = 64, so 2*BIG_N = 128. LUT of 129 entries should panic.
-        let lut = [false; 129];
-        let addr_bit = encrypt(false, &sk, 1000);
-        let _ = tfhe_lut_read(&[addr_bit], &lut, &bk);
+    fn lut_table_rejects_invalid_static_shape() {
+        assert_eq!(
+            TfheBootstrapTable::<1, 4, T_BIG_N>::new([false; 4]),
+            Err(TfheBootstrapTableError::TableLengthMismatch),
+        );
+        assert_eq!(
+            TfheBootstrapTable::<2, 4, 1>::new([false, true, true, false]),
+            Err(TfheBootstrapTableError::RingCapacityExceeded),
+        );
+        assert_eq!(
+            TfheBootstrapTable::<3, 8, T_BIG_N>::new([
+                false, false, false, true, true, true, true, false,
+            ]),
+            Err(TfheBootstrapTableError::InputEncodingUnsupported),
+            "the current Q4 standard-wire selector must not claim three-bit LUT support",
+        );
     }
 
     // ── Property-based tests ─────────────────────────────────────────────
@@ -1706,7 +1893,8 @@ mod tests {
             };
             let (sk, _, bk) = test_keys(key_seed);
             let ct_addr = encrypt(addr, &sk, enc_seed);
-            let ct_out = tfhe_lut_read(&[ct_addr], &lut, &bk);
+            let table = TfheBootstrapTable::<1, 2, T_BIG_N>::new(lut).unwrap();
+            let ct_out = tfhe_lut_read(&[ct_addr], &table, &bk);
             let got = lwe_decrypt(&ct_out, &sk);
             let expected = lut[addr as usize];
             prop_assert_eq!(got, expected, "LUT({:?})[{}]", lut, addr as usize);
@@ -1727,7 +1915,8 @@ mod tests {
             let (sk, _, bk) = test_keys(key_seed);
             let ct_addr0 = encrypt(addr0, &sk, enc_seed);
             let ct_addr1 = encrypt(addr1, &sk, enc_seed + 1);
-            let ct_out = tfhe_lut_read(&[ct_addr0, ct_addr1], &lut, &bk);
+            let table = TfheBootstrapTable::<2, 4, T_BIG_N>::new(lut).unwrap();
+            let ct_out = tfhe_lut_read(&[ct_addr0, ct_addr1], &table, &bk);
             let got = lwe_decrypt(&ct_out, &sk);
             let expected = lut[addr_val];
             prop_assert_eq!(got, expected, "LUT({:?})[{}]", lut, addr_val);

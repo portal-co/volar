@@ -264,7 +264,7 @@ mod tests {
                     let r_and_0 = Gf128::from_u64(0xabcd_0000 + step);
 
                     let (out_q, all_ok, verifier_fold_state) =
-                        vole_verify_ir_flip::<N, Galois>(&delta, q_and_0, hat_0, r_and_0, q_one(&delta), q_oracle);
+                        vole_verify_ir_flip::<N, Galois>(&delta, [q_and_0], [hat_0], [r_and_0], q_one(&delta), q_oracle);
                     let _ = out_q;
 
                     assert!(all_ok, "honest flip-bit run must pass the woven verifier's own check");

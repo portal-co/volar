@@ -34,7 +34,10 @@ pub enum PipelinePass {
     /// Lower a VAFFLE module to Volar IR.  Source must be Vaffle or Wasm.
     #[cfg(feature = "pipeline-vaffle")]
     LowerToVolarIr,
-    /// Constant-fold Volar IR until stable.  Source must be VolarIr.
+    /// Constant-fold and dead-code-eliminate Volar IR until stable (a joint
+    /// fixpoint -- folding can expose newly-dead statements, and removing
+    /// dead statements can expose further folding opportunities). Source
+    /// must be VolarIr.
     FoldIr,
     /// Movfuscate Volar IR into a single self-looping block.  Source must be VolarIr.
     Movfuscate,
@@ -367,7 +370,13 @@ fn apply_pass(
         },
         PipelinePass::FoldIr => match stage {
             RuntimeStage::VolarIr(mut blocks, types) => {
-                while volar_ir_opt::ir::fold_ir_blocks(&mut blocks, &types) {}
+                loop {
+                    let folded = volar_ir_opt::ir::fold_ir_blocks(&mut blocks, &types);
+                    let deadcode = volar_ir_opt::ir::dce_ir_blocks(&mut blocks, &types);
+                    if !folded && !deadcode {
+                        break;
+                    }
+                }
                 Ok(RuntimeStage::VolarIr(blocks, types))
             }
             _ => Err("FoldIr pass requires VolarIr stage".into()),

@@ -431,7 +431,6 @@ pub fn collect_vars_in_expr(expr: &IrExpr, out: &mut BTreeSet<String>) {
                 collect_vars_in_expr(&arm.body, out);
             }
         }
-<<<<<<< HEAD
         IrExprKind::Lit(_)
         | IrExprKind::Path { .. }
         | IrExprKind::DefaultValue { .. }
@@ -442,36 +441,17 @@ pub fn collect_vars_in_expr(expr: &IrExpr, out: &mut BTreeSet<String>) {
         | IrExprKind::Continue
         | IrExprKind::Unreachable => {}
         _ => {}
-=======
-        IrExpr::Lit(_)
-        | IrExpr::Path { .. }
-        | IrExpr::DefaultValue { .. }
-        | IrExpr::LengthOf(_)
-        | IrExpr::TypenumUsize { .. }
-        | IrExpr::Return(None)
-        | IrExpr::Break(None)
-        | IrExpr::Continue
-        | IrExpr::Unreachable => {}
->>>>>>> origin/main
     }
 }
 
 fn collect_vars_in_block(block: &IrBlock, out: &mut BTreeSet<String>) {
     for stmt in &block.stmts {
-<<<<<<< HEAD
         match &stmt.kind {
             IrStmtKind::Let { init: Some(e), .. }
             | IrStmtKind::Semi(e)
             | IrStmtKind::Expr(e) => collect_vars_in_expr(e, out),
             IrStmtKind::Let { init: None, .. } => {}
             _ => {}
-=======
-        match stmt {
-            IrStmt::Let { init: Some(e), .. }
-            | IrStmt::Semi(e)
-            | IrStmt::Expr(e) => collect_vars_in_expr(e, out),
-            IrStmt::Let { init: None, .. } => {}
->>>>>>> origin/main
         }
     }
     if let Some(e) = &block.expr { collect_vars_in_expr(e, out); }

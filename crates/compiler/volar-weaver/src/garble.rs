@@ -132,7 +132,6 @@ fn generic_params() -> Vec<IrGenericParam> {
 }
 
 /// `Garble { base: {base_expr} }`
-<<<<<<< HEAD
 fn garble_struct<P: Clone>(base_expr: IrExpr<P>) -> IrExpr<P> {
     let prov = base_expr.prov.clone();
     let side = base_expr.side;
@@ -146,15 +145,6 @@ fn garble_struct<P: Clone>(base_expr: IrExpr<P>) -> IrExpr<P> {
         prov,
         side,
     )
-=======
-fn garble_struct<P: Clone + Default>(base_expr: IrExpr<P>) -> IrExpr<P> {
-    IrExpr::StructExpr {
-        kind: StructKind::Custom("Garble".into()),
-        type_args: vec![],
-        fields: vec![("base".into(), base_expr)],
-        rest: None,
-    }
->>>>>>> origin/main
 }
 
 // ============================================================================
@@ -179,27 +169,25 @@ fn garble_struct<P: Clone + Default>(base_expr: IrExpr<P>) -> IrExpr<P> {
 /// Backwards-compatible evaluator weave — discards provenance.
 ///
 /// See [`weave_evaluator_with_handler`] for the provenance-preserving variant.
-<<<<<<< HEAD
 pub fn weave_evaluator<P: Clone>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut tagged = weave_evaluator_with_handler(circuit, name, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
     tagged
-=======
-pub fn weave_evaluator<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule<IrFunction> {
-    weave_evaluator_with_handler(circuit, name, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Weave a single-block boolean circuit into a garbled-circuit **evaluator** `IrModule`,
 /// using `handler` to map input provenance into the output IR.
+///
+/// Linkage spec injection is not performed here — use the backwards-compatible
+/// [`weave_evaluator`] wrapper or call [`LinkageSystem::apply_converting`] after
+/// weaving for custom-provenance targets.
 pub fn weave_evaluator_with_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
@@ -302,6 +290,7 @@ where
             | BIrStmt::StorageWrite { .. } => {
                 unimplemented!("garble weaver: extended BIrStmt variants not supported")
             }
+            _ => unimplemented!("garble weaver: unhandled BIrStmt variant — add support for this variant"),
         };
 
         stmts.push(ir_stmt_p(IrStmtKind::Let {
@@ -340,14 +329,7 @@ where
 
         consts: vec![],
     };
-<<<<<<< HEAD
     Tagged::seal(module)
-=======
-    if let Some(ls) = linkage {
-        ls.apply(&mut module);
-    }
-    module
->>>>>>> origin/main
 }
 
 // ============================================================================
@@ -368,26 +350,17 @@ where
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
 /// Backwards-compatible garbler weave — discards provenance.
-<<<<<<< HEAD
 pub fn weave_garbler<P: Clone>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut tagged = weave_garbler_with_handler(circuit, name, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
     tagged
-=======
-pub fn weave_garbler<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule<IrFunction> {
-    weave_garbler_with_handler(circuit, name, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Weave a single-block boolean circuit into a garbled-circuit **garbler** `IrModule`,
 /// using `handler` to map input provenance into the output IR.
-<<<<<<< HEAD
 pub fn weave_garbler_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, handler: &H) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
-=======
-pub fn weave_garbler_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>, handler: &H) -> IrModule<IrFunction<H::Output>, H::Output>
->>>>>>> origin/main
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
@@ -515,6 +488,7 @@ where
             | BIrStmt::StorageWrite { .. } => {
                 unimplemented!("garble weaver: extended BIrStmt variants not supported")
             }
+            _ => unimplemented!("garble weaver: unhandled BIrStmt variant — add support for this variant"),
         };
 
         stmts.push(ir_stmt_p(IrStmtKind::Let {
@@ -555,14 +529,7 @@ where
 
         consts: vec![],
     };
-<<<<<<< HEAD
     Tagged::seal(module)
-=======
-    if let Some(ls) = linkage {
-        ls.apply(&mut module);
-    }
-    module
->>>>>>> origin/main
 }
 
 // ============================================================================
@@ -575,26 +542,17 @@ where
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
 /// Backwards-compatible GarbledCircuit weave — discards provenance.
-<<<<<<< HEAD
 pub fn weave_into_gc<P: Clone>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut tagged = weave_into_gc_with_handler(circuit, name, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
     tagged
-=======
-pub fn weave_into_gc<P: Clone + Default>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>) -> IrModule<IrFunction> {
-    weave_into_gc_with_handler(circuit, name, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Weave a single-block boolean circuit into a `GarbledCircuit`-returning function,
 /// using `handler` to map input provenance into the output IR.
-<<<<<<< HEAD
 pub fn weave_into_gc_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, handler: &H) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
-=======
-pub fn weave_into_gc_with_handler<P, H>(circuit: &BIrBlocks<P>, name: &str, linkage: Option<&LinkageSystem>, handler: &H) -> IrModule<IrFunction<H::Output>, H::Output>
->>>>>>> origin/main
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
@@ -710,6 +668,7 @@ where
             | BIrStmt::StorageWrite { .. } => {
                 unimplemented!("garble weaver: extended BIrStmt variants not supported")
             }
+            _ => unimplemented!("garble weaver: unhandled BIrStmt variant — add support for this variant"),
         };
 
         stmts.push(ir_stmt_p(IrStmtKind::Let {
@@ -766,14 +725,7 @@ where
 
         consts: vec![],
     };
-<<<<<<< HEAD
     Tagged::seal(module)
-=======
-    if let Some(ls) = linkage {
-        ls.apply(&mut module);
-    }
-    module
->>>>>>> origin/main
 }
 
 // ============================================================================
@@ -786,19 +738,14 @@ where
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
 /// Backwards-compatible EvalSetup weave — discards provenance.
-pub fn weave_eval_from_setup<P: Clone + Default>(
+pub fn weave_eval_from_setup<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
-<<<<<<< HEAD
 ) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut tagged = weave_eval_from_setup_with_handler(circuit, name, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
     tagged
-=======
-) -> IrModule<IrFunction> {
-    weave_eval_from_setup_with_handler(circuit, name, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Weave a single-block boolean circuit into an EvalSetup-based evaluator,
@@ -806,11 +753,10 @@ pub fn weave_eval_from_setup<P: Clone + Default>(
 pub fn weave_eval_from_setup_with_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
@@ -920,6 +866,7 @@ where
             | BIrStmt::StorageWrite { .. } => {
                 unimplemented!("garble weaver: extended BIrStmt variants not supported")
             }
+            _ => unimplemented!("garble weaver: unhandled BIrStmt variant — add support for this variant"),
         };
 
         stmts.push(ir_stmt_p(IrStmtKind::Let {
@@ -958,14 +905,7 @@ where
 
         consts: vec![],
     };
-<<<<<<< HEAD
     Tagged::seal(module)
-=======
-    if let Some(ls) = linkage {
-        ls.apply(&mut module);
-    }
-    module
->>>>>>> origin/main
 }
 
 // ============================================================================
@@ -973,21 +913,16 @@ where
 // ============================================================================
 
 /// Backwards-compatible bounded evaluator weave — discards provenance.
-pub fn weave_evaluator_bounded<P: Clone + Default>(
+pub fn weave_evaluator_bounded<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-<<<<<<< HEAD
 ) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut module = weave_evaluator_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(module.inner_mut()); }
     module
-=======
-) -> IrModule<IrFunction> {
-    weave_evaluator_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Bounded evaluator weave with provenance handler.
@@ -996,35 +931,29 @@ pub fn weave_evaluator_bounded_with_handler<P, H>(
     name: &str,
     limit: u32,
     mode: LoweringMode,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
     use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_evaluator_with_handler(&lowered, name, linkage, handler)
+    weave_evaluator_with_handler(&lowered, name, handler)
 }
 
 /// Backwards-compatible bounded garbler weave — discards provenance.
-pub fn weave_garbler_bounded<P: Clone + Default>(
+pub fn weave_garbler_bounded<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-<<<<<<< HEAD
 ) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut module = weave_garbler_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(module.inner_mut()); }
     module
-=======
-) -> IrModule<IrFunction> {
-    weave_garbler_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Bounded garbler weave with provenance handler.
@@ -1033,35 +962,29 @@ pub fn weave_garbler_bounded_with_handler<P, H>(
     name: &str,
     limit: u32,
     mode: LoweringMode,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
     use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_garbler_with_handler(&lowered, name, linkage, handler)
+    weave_garbler_with_handler(&lowered, name, handler)
 }
 
 /// Backwards-compatible bounded GarbledCircuit weave — discards provenance.
-pub fn weave_into_gc_bounded<P: Clone + Default>(
+pub fn weave_into_gc_bounded<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-<<<<<<< HEAD
 ) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut module = weave_into_gc_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(module.inner_mut()); }
     module
-=======
-) -> IrModule<IrFunction> {
-    weave_into_gc_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Bounded GarbledCircuit weave with provenance handler.
@@ -1070,35 +993,29 @@ pub fn weave_into_gc_bounded_with_handler<P, H>(
     name: &str,
     limit: u32,
     mode: LoweringMode,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
     use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_into_gc_with_handler(&lowered, name, linkage, handler)
+    weave_into_gc_with_handler(&lowered, name, handler)
 }
 
 /// Backwards-compatible bounded EvalSetup weave — discards provenance.
-pub fn weave_eval_from_setup_bounded<P: Clone + Default>(
+pub fn weave_eval_from_setup_bounded<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-<<<<<<< HEAD
 ) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut module = weave_eval_from_setup_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(module.inner_mut()); }
     module
-=======
-) -> IrModule<IrFunction> {
-    weave_eval_from_setup_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Bounded EvalSetup weave with provenance handler.
@@ -1107,17 +1024,16 @@ pub fn weave_eval_from_setup_bounded_with_handler<P, H>(
     name: &str,
     limit: u32,
     mode: LoweringMode,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
     use volar_ir_passes::lower_to_circuit::lower_to_circuit;
     let lowered = lower_to_circuit(circuit, limit, mode);
-    weave_eval_from_setup_with_handler(&lowered, name, linkage, handler)
+    weave_eval_from_setup_with_handler(&lowered, name, handler)
 }
 
 // ============================================================================

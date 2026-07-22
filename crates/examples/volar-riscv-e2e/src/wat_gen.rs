@@ -382,7 +382,7 @@ mod tests {
     /// is invalidated by that same optimization pass (it renumbers/deletes
     /// statements), so returning boundary metadata directly from this
     /// shared helper (below) requires skipping it anyway.
-    fn lower_interpreter(
+    pub(crate) fn lower_interpreter(
         limit: u32,
         mode: volar_ir_passes::LoweringMode,
     ) -> (
@@ -441,10 +441,56 @@ mod tests {
         loop {
             let a = pass_a(blocks, types);
             let b = pass_b(blocks, types);
-            if !a && !b {
+            // Dead-code elimination after the baseline passes: folding/
+            // store-forwarding can expose newly-dead statements (and DCE
+            // shrinking a block can occasionally expose further folding),
+            // so it's part of the same fixpoint, not a one-shot final step.
+            let c = volar_ir_opt::ir::dce_ir_blocks(blocks, types);
+            if !a && !b && !c {
                 break;
             }
         }
+    }
+
+    /// Like [`optimize_to_fixpoint`], but for the post-movfuscation
+    /// single-block case: also tracks and returns the CUMULATIVE var-id
+    /// remap induced by DCE across every fixpoint iteration (identity if
+    /// DCE never fires), so a caller holding `MovfuscBlockBoundary`/
+    /// `MovfuscAccumInfo` (computed against the *pre*-optimization block)
+    /// can translate it via `volar_ir_passes::remap_movfusc_boundaries`/
+    /// `remap_movfusc_accum_info` to stay valid post-optimization.
+    /// `fold_ir_blocks`/`store_forward_ir_blocks` contribute no remap --
+    /// see `dce_ir_blocks_with_remap`'s own doc comment for why neither
+    /// ever changes a statement's own index.
+    fn optimize_to_fixpoint_with_remap<P: Clone>(
+        blocks: &mut volar_ir::ir::IRBlocks<P>,
+        types: &volar_ir::ir::IRTypes,
+        pass_a: &mut dyn FnMut(&mut volar_ir::ir::IRBlocks<P>, &volar_ir::ir::IRTypes) -> bool,
+        pass_b: &mut dyn FnMut(&mut volar_ir::ir::IRBlocks<P>, &volar_ir::ir::IRTypes) -> bool,
+    ) -> std::collections::BTreeMap<u32, u32> {
+        assert_eq!(
+            blocks.blocks.len(), 1,
+            "optimize_to_fixpoint_with_remap: only meaningful for a single \
+             (post-movfuscation) block -- MovfuscBlockBoundary/MovfuscAccumInfo \
+             var ids are only well-defined against exactly one block",
+        );
+        let n0 = (blocks.blocks[0].params.len() + blocks.blocks[0].stmts.len()) as u32;
+        let mut cumulative: std::collections::BTreeMap<u32, u32> = (0..n0).map(|v| (v, v)).collect();
+        loop {
+            let a = pass_a(blocks, types);
+            let b = pass_b(blocks, types);
+            let (c, mut remaps) = volar_ir_opt::ir::dce_ir_blocks_with_remap(blocks, types);
+            if c {
+                let step_remap = remaps.remove(0);
+                cumulative = cumulative.into_iter()
+                    .filter_map(|(old, mid)| step_remap.get(&mid).map(|&new| (old, new)))
+                    .collect();
+            }
+            if !a && !b && !c {
+                break;
+            }
+        }
+        cumulative
     }
 
     /// M1.3: weave the real interpreter's one-step batch circuit into VOLE
@@ -510,8 +556,11 @@ mod tests {
             "commitment-mode reads must be oracle params: {:?}",
             vf.params.iter().map(|p| &p.name).collect::<Vec<_>>()
         );
+        // Fix A array-batched `q_and_0`, `q_and_1`, ... into one bare
+        // `q_and` array param -- match the array param itself, not a
+        // per-gate name prefix.
         assert!(
-            vf.params.iter().any(|p| p.name.starts_with("q_and_")),
+            vf.params.iter().any(|p| p.name == "q_and"),
             "at least one AND gate expected (IopSink folds every one via iop_fold_gate): {:?}",
             vf.params.iter().map(|p| &p.name).collect::<Vec<_>>()
         );
@@ -703,23 +752,23 @@ mod tests {
         let (movfuscated_no_opt, boundary_no_opt, accum_info_no_opt) = movfuscate_ir_with_boundary(&ir_blocks, &mut types_no_opt);
         let and_count_no_opt = and_count_via_real_weaver(&mut types_no_opt, &movfuscated_no_opt, &boundary_no_opt, &accum_info_no_opt);
 
-        // WITH post-movfuscation optimization.
+        // WITH post-movfuscation optimization. `optimize_to_fixpoint_with_remap`
+        // (unlike the plain `optimize_to_fixpoint` used for the WITHOUT case
+        // above) tracks DCE's own cumulative var-id remap across the whole
+        // fixpoint and hands it back -- `remap_movfusc_boundaries`/
+        // `remap_movfusc_accum_info` then translate the PRE-optimization
+        // boundary/accum-info to stay valid, instead of reusing them stale
+        // (fold_ir_blocks/store_forward_ir_blocks need no remap contribution;
+        // only DCE renumbers -- see `dce_ir_blocks_with_remap`'s doc comment).
         let mut types_with_opt = types.clone();
         let (mut movfuscated_with_opt, boundary_with_opt, accum_info_with_opt) = movfuscate_ir_with_boundary(&ir_blocks, &mut types_with_opt);
-        optimize_to_fixpoint(&mut movfuscated_with_opt, &types_with_opt, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
-        // NOTE: boundary_with_opt/accum_info_with_opt are almost certainly
-        // invalid after this optimization pass -- if the real weaver panics
-        // or produces a nonsensical count here, *that itself* is the answer
-        // to "is boundary safe to reuse post-optimization" (no).
-        let and_count_with_opt_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            and_count_via_real_weaver(&mut types_with_opt, &movfuscated_with_opt, &boundary_with_opt, &accum_info_with_opt)
-        }));
+        let remap = optimize_to_fixpoint_with_remap(&mut movfuscated_with_opt, &types_with_opt, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+        let boundary_with_opt = volar_ir_passes::remap_movfusc_boundaries(&boundary_with_opt, &remap);
+        let accum_info_with_opt = volar_ir_passes::remap_movfusc_accum_info(&accum_info_with_opt, &remap);
+        let and_count_with_opt = and_count_via_real_weaver(&mut types_with_opt, &movfuscated_with_opt, &boundary_with_opt, &accum_info_with_opt);
 
         eprintln!("and_count WITHOUT post-movfuscation optimization: {and_count_no_opt}");
-        match &and_count_with_opt_result {
-            Ok(n) => eprintln!("and_count WITH post-movfuscation optimization (boundary reused, may be invalid): {n}"),
-            Err(_) => eprintln!("and_count WITH post-movfuscation optimization: PANICKED (boundary is stale/invalid post-optimization, as suspected)"),
-        }
+        eprintln!("and_count WITH post-movfuscation optimization (boundary remapped through DCE): {and_count_with_opt}");
     }
 
     /// Milestone 1.5 Step B measurement: does the split verifier/prover
@@ -749,7 +798,16 @@ mod tests {
         let verifier_trace = weave_vole_verifier_ir_split_with_trace(
             &circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size,
             |f| {
-                let and_count = f.params.iter().filter(|p| p.name.starts_with("q_and_")).count();
+                // `q_and` is one array-batched param (Milestone 1.6's
+                // 65535-arg-limit fix), not one scalar per gate -- read
+                // its own declared array length instead of counting params.
+                let and_count = match f.params.iter().find(|p| p.name == "q_and") {
+                    Some(p) => match &p.ty {
+                        volar_compiler::ir::IrType::Array { len: volar_compiler::ir::ArrayLength::Const(n), .. } => *n,
+                        _ => 0,
+                    },
+                    None => 0,
+                };
                 verifier_and_counts.push(and_count);
                 verifier_param_counts.push(f.params.len());
                 // Drop `f` here (Step B.4): in a real driver this is where
@@ -790,5 +848,1450 @@ mod tests {
             verifier_and_counts, prover_hats_counts,
             "prover hats and verifier q_and must line up per block/combiner for interleaved driving"
         );
+    }
+
+    /// Trace the *plain* (non-cryptographic) values flowing through the
+    /// real interpreter circuit across real steps, via `volar_fuzz`'s IR
+    /// interpreter with a persistent storage map seeded from
+    /// `circuit.pre_init` (unlike `mem_probe`'s own trace test, whose
+    /// circuit happens to have an *empty* `pre_init` -- this circuit's
+    /// pre_init is real and non-trivial, the actual program bytes + initial
+    /// RAM words, so seeding it is required, not optional) -- establishes
+    /// ground truth for the real driven test and cross-checks this
+    /// interpreter (run through the real WASM pipeline + movfuscation)
+    /// against `interp::native_reference`, an independent, hand-written
+    /// oracle.
+    ///
+    /// **Currently fails, and is expected to** (kept as a regression guard
+    /// for whoever picks this up, not a "should pass today" test). Five
+    /// bugs found and fixed so far, each confirmed via a minimal isolated
+    /// repro before touching the real interpreter:
+    ///
+    /// 1. `VaffleTarget::begin_function`'s discarded return-type hint.
+    /// 2. `movfuscate_ir`'s state-slot type agreement (`SlotSig`/
+    ///    `compute_position_groups`).
+    /// 3. `lower_to_circuit_ir`'s MUX cascade conflating state and return
+    ///    at the same output slots -- fixed by making them separate,
+    ///    non-overlapping segments.
+    /// 4. `lower_to_ir.rs`'s per-block `val_map` silently resolving any
+    ///    VAFFLE cross-block (dominance-based) value reference to
+    ///    `IRVarId(0)` -- fixed with `compute_cross_block_values` (spill
+    ///    at definition, reload only where actually used).
+    /// 5. `movfuscate.rs`'s `scatter_args_to_state` zero-filling any state
+    ///    slot a jump target didn't explicitly cover, instead of passing
+    ///    the combined block's own current value through -- silently
+    ///    wiping loop-carried state the moment *any* block along a path
+    ///    didn't itself thread it forward as an explicit arg (confirmed
+    ///    via `minimal_dispatch_write_repro`, which now passes).
+    ///
+    /// With all five fixed, the circuit shows **genuine, healthy
+    /// progress** -- real values flowing and incrementing correctly (a
+    /// step-shaped counter, an address-shaped value stepping by 4 each
+    /// time, matching a real word-array traversal).
+    ///
+    /// **CORRECTED (was: "does not halt within 1200 raw steps" / "genuine
+    /// never-breaking period-140 cycle").** Both of those were wrong. At
+    /// a 2600-raw-step budget, the circuit genuinely halts (`done=true`)
+    /// at **step 1405** -- ~4.7x the ~300-step estimate ("~30 raw calls
+    /// per real instruction * 27 instructions") this doc comment used to
+    /// cite, and far past the 1200-step budget the earlier "never halts"
+    /// conclusion was drawn from; that conclusion mistook "hasn't halted
+    /// by an under-provisioned budget" for "will never halt" (the same
+    /// class of mistake `minimal_dispatch_feedback_loop_repro`'s own
+    /// step-budget false positive made, see memory). **But the halted
+    /// result is wrong**: `data RAM result word: 0 (expected 65)`. This
+    /// is now a real, reproducible, well-characterized correctness bug,
+    /// not a halting bug: the real program's loop only needs 4
+    /// iterations (`N_WORDS=4`, see `interp.rs`), but the address-shaped
+    /// state slot climbed to ~160 (40 iterations' worth of `ptr += 4`)
+    /// before the circuit finally halted -- strongly suggesting the
+    /// `BEQ`/loop-exit comparison (`i == bound`, bound is a fixed
+    /// constant 4 set once via `ADDI`) either computes wrong, or reads a
+    /// corrupted `bound` value, letting the loop run ~10x too many
+    /// iterations before something (not the real exit condition)
+    /// eventually satisfies `done`. Leading hypothesis, not yet
+    /// confirmed: `movfuscate.rs`'s `(position, type-signature)`-keyed
+    /// slot dedup (Fix B) guarantees type agreement for state slots
+    /// shared across different original blocks, but not liveness/
+    /// identity stability -- if `bound`'s slot is shared with some other
+    /// i32 local that a *different* original block writes on a
+    /// *different* dispatch pass, `bound` could be transiently or
+    /// permanently clobbered. Per-slot identification (dump which state
+    /// slot maps to which WAT local -- e.g. temporarily give each local
+    /// in a smaller test program a distinctive constant value) is the
+    /// natural next step, not a repro shape change.
+    ///
+    /// `eval_ir_circuit_step` is slow at this circuit's scale (~0.8s/
+    /// step, since movfuscation runs every original block's own logic
+    /// every single call) -- the 1405-step halting run took ~19 minutes.
+    /// A real, expensive, but bounded cost of this debugging path.
+    ///
+    /// `#[ignore]`d: real interpreter scale, run manually:
+    /// `cargo test -p volar-riscv-e2e --release trace_interpreter_plain_values_matches_native_reference -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn trace_interpreter_plain_values_matches_native_reference() {
+        use volar_ir_passes::LoweringMode;
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, apply_pre_init, StorageMap};
+
+        let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, _boundary, _accum_info) =
+            lower_interpreter(1, LoweringMode::WithTerminationFlag);
+
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("param widths: {param_widths:?}");
+
+        let mut storage: StorageMap = StorageMap::new();
+        apply_pre_init(&mut storage, &circuit.pre_init, &types);
+        eprintln!("storage map after pre_init: {} entries", storage.len());
+
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+
+        let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let mut done = false;
+        let mut step = 0usize;
+        // Confirmed halts (done=true) at step 1405 -- far past the naive
+        // "~30 raw calls/instruction * 27 instructions ~= 800-900"
+        // estimate (see this test's own doc comment for why: the real
+        // loop runs ~10x more iterations than its own 4-iteration bound
+        // implies, a real correctness bug, not a halting one). ~0.8s/step
+        // at this circuit's scale; budget real time to run this.
+        const RAW_STEP_BUDGET: usize = 1700;
+        while !done && step < RAW_STEP_BUDGET {
+            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            done = outputs[0].iter().any(|&b| b);
+            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            if step % 20 == 0 || done { eprintln!("step {step}: done={done} full_state={full_state:?}"); }
+            // `outputs` is `[done, state[0..state_width], ret[0..ret_width]]` --
+            // state and return are separate, non-overlapping segments; only
+            // the first `param_widths.len()` slots are real next-state.
+            inputs = outputs[1..1 + param_widths.len()].to_vec();
+            step += 1;
+        }
+        eprintln!("halted after {step} steps (done={done})");
+        assert!(done, "interpreter circuit must halt within RAW_STEP_BUDGET raw steps via its own termination flag");
+
+        // Find whichever (StorageId, TypeId) pair holds the data RAM's
+        // real byte contents (the one with pre-init data whose length
+        // matches `initial_data_bytes()`) and read the result word back --
+        // don't assume a specific storage id, discover it. Exact-length
+        // match (not `>=`): the *code* segment is also `>= RESULT_ADDR + 4`
+        // bytes long (32 vs. the data segment's 20), so `>=` matched both
+        // and silently read the result word back from program bytes on a
+        // wrong-but-plausible-looking address instead of real data RAM.
+        let expected: i32 = crate::interp::initial_data_words().iter().sum();
+        let mut found = false;
+        for seg in &circuit.pre_init {
+            if seg.data.len() as i32 == RESULT_ADDR + 4 {
+                let bytes: Vec<u8> = (0..4).map(|i| {
+                    let addr = (RESULT_ADDR + i) as u64;
+                    let bits = &storage[&(seg.storage, seg.ty, addr)];
+                    bits.iter().enumerate().map(|(j, &b)| (b as u8) << j).fold(0u8, |a, b| a | b)
+                }).collect();
+                let word = i32::from_le_bytes(bytes.try_into().unwrap());
+                eprintln!("data RAM (storage={}) result word: {word} (expected {expected})", seg.storage.0);
+                if word == expected {
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "some pre_init-seeded storage must hold the correct result word after real steps");
+    }
+
+    /// Cheap sanity check for `bound_register_survives_across_dispatch`'s
+    /// own hand-assembled program -- decodes each word back and asserts it
+    /// matches the intended instruction, so an encoding mistake (e.g. a
+    /// wrong branch/jump offset) can't masquerade as an interpreter bug.
+    #[test]
+    fn bound_register_program_round_trips_through_decode() {
+        use rv_asm::{Imm, Inst, Reg, Xlen};
+        const X1: Reg = Reg::RA;
+        const X5: Reg = Reg::T0;
+        let e = |inst: Inst| inst.encode_normal(Xlen::Rv32);
+        let program: Vec<(u32, Inst)> = vec![
+            (e(Inst::Addi { imm: Imm::new_i32(4), dest: X5, src1: Reg::ZERO }), Inst::Addi { imm: Imm::new_i32(4), dest: X5, src1: Reg::ZERO }),
+            (e(Inst::Addi { imm: Imm::new_i32(0), dest: X1, src1: Reg::ZERO }), Inst::Addi { imm: Imm::new_i32(0), dest: X1, src1: Reg::ZERO }),
+            (e(Inst::Beq { offset: Imm::new_i32(12), src1: X1, src2: X5 }), Inst::Beq { offset: Imm::new_i32(12), src1: X1, src2: X5 }),
+            (e(Inst::Addi { imm: Imm::new_i32(1), dest: X1, src1: X1 }), Inst::Addi { imm: Imm::new_i32(1), dest: X1, src1: X1 }),
+            (e(Inst::Jal { offset: Imm::new_i32(-8), dest: Reg::ZERO }), Inst::Jal { offset: Imm::new_i32(-8), dest: Reg::ZERO }),
+            (e(Inst::Sw { offset: Imm::new_i32(RESULT_ADDR), src: X1, base: Reg::ZERO }), Inst::Sw { offset: Imm::new_i32(RESULT_ADDR), src: X1, base: Reg::ZERO }),
+        ];
+        for (i, (word, intended)) in program.iter().enumerate() {
+            let (decoded, is_compressed) = Inst::decode(*word, Xlen::Rv32).expect("word should decode");
+            assert_eq!(is_compressed, rv_asm::IsCompressed::No);
+            assert_eq!(&decoded, intended, "instruction {i} (pc={}) decoded wrong -- encoding bug in the repro itself", i * 4);
+        }
+    }
+
+    /// Isolates the "loop bound register written once, compared many raw
+    /// steps later" hypothesis (see
+    /// `trace_interpreter_plain_values_matches_native_reference`'s own doc
+    /// comment / memory) against the **real opcode-dispatch machinery**
+    /// (`interpreter_wat`'s decode/opcode-`if`-chain), not a hand-rolled
+    /// stand-in like `minimal_dispatch_feedback_loop_repro` -- that repro
+    /// skips opcode fetch/decode entirely, so it can't exercise whatever
+    /// interaction between the decode blocks and the register-dispatch
+    /// blocks might be corrupting a register's physical slot.
+    ///
+    /// Program: `x5 = 4` (bound, written once), `x1 = 0` (loop counter),
+    /// then a genuine 4-iteration `BEQ`-guarded loop (`ADDI`/`BEQ`/`JAL`,
+    /// all real opcodes dispatched through the real interpreter), storing
+    /// the final loop counter to RAM. If `x5` survives correctly, the
+    /// loop runs exactly 4 times and the stored result is `4`. If it's
+    /// getting clobbered (this session's leading hypothesis for the real
+    /// interpreter's wrong-answer bug), the loop will run some other
+    /// number of times (or never satisfy `BEQ`, hitting `MAX_STEPS`).
+    ///
+    /// Sanity-checks the *encoding itself* of
+    /// `bound_register_survives_across_dispatch`'s program, independent of
+    /// any lowering/movfuscation machinery -- rules out a unit/shift bug in
+    /// how `rv_asm::Imm` offsets are constructed (raised as a live
+    /// hypothesis this session: RV32 B/J-type immediates are packed with
+    /// the low bit implicit, so a wrong assumption about byte-offset vs.
+    /// pre-shifted units would silently double every branch/jump target).
+    /// Decodes each assembled word back via `Inst::decode` (rv_asm's own,
+    /// independent of `interpreter_wat`'s hand-rolled bit-shuffle) and
+    /// checks every field, including the actual numeric offset, against
+    /// what was intended.
+    #[test]
+    fn bound_register_program_decodes_correctly() {
+        use rv_asm::{Imm, Inst, Reg, Xlen};
+        const X1: Reg = Reg::RA;
+        const X5: Reg = Reg::T0;
+        let e = |inst: Inst| inst.encode_normal(Xlen::Rv32);
+        let program: Vec<u32> = vec![
+            e(Inst::Addi { imm: Imm::new_i32(4), dest: X5, src1: Reg::ZERO }),
+            e(Inst::Addi { imm: Imm::new_i32(0), dest: X1, src1: Reg::ZERO }),
+            e(Inst::Beq { offset: Imm::new_i32(12), src1: X1, src2: X5 }),
+            e(Inst::Addi { imm: Imm::new_i32(1), dest: X1, src1: X1 }),
+            e(Inst::Jal { offset: Imm::new_i32(-8), dest: Reg::ZERO }),
+            e(Inst::Sw { offset: Imm::new_i32(RESULT_ADDR), src: X1, base: Reg::ZERO }),
+        ];
+        // Independently verify the *program's own logic* (not just its
+        // encoding) via `interp::native_reference` -- rules out a hand-trace
+        // mistake in this repro's own instruction sequence before blaming
+        // the movfuscation/circuit pipeline. `native_reference`'s return
+        // value is hardcoded to `R_SUM` (x3, unused here); what matters is
+        // the side effect it leaves in `mem` via this program's own `SW`.
+        let mut mem = vec![0u8; (RESULT_ADDR as usize) + 4];
+        let _ = crate::interp::native_reference(&program, &mut mem);
+        let stored = i32::from_le_bytes(mem[RESULT_ADDR as usize..RESULT_ADDR as usize + 4].try_into().unwrap());
+        assert_eq!(stored, 4, "this repro's own program logic (independent of any circuit/movfuscation pipeline) must store 4");
+
+        for (i, &word) in program.iter().enumerate() {
+            let (inst, is_compressed) = Inst::decode(word, Xlen::Rv32).expect("every assembled word must decode");
+            assert_eq!(is_compressed, rv_asm::IsCompressed::No);
+            eprintln!("word {i} = {word:#010x}");
+            match (i, inst) {
+                (0, Inst::Addi { imm, dest, src1 }) => {
+                    assert_eq!(imm.as_i32(), 4); assert_eq!(dest, X5); assert_eq!(src1, Reg::ZERO);
+                }
+                (1, Inst::Addi { imm, dest, src1 }) => {
+                    assert_eq!(imm.as_i32(), 0); assert_eq!(dest, X1); assert_eq!(src1, Reg::ZERO);
+                }
+                (2, Inst::Beq { offset, src1, src2 }) => {
+                    assert_eq!(offset.as_i32(), 12, "BEQ offset must decode as +12 bytes (pc=8 -> pc=20)");
+                    assert_eq!(src1, X1); assert_eq!(src2, X5);
+                }
+                (3, Inst::Addi { imm, dest, src1 }) => {
+                    assert_eq!(imm.as_i32(), 1); assert_eq!(dest, X1); assert_eq!(src1, X1);
+                }
+                (4, Inst::Jal { offset, dest }) => {
+                    assert_eq!(offset.as_i32(), -8, "JAL offset must decode as -8 bytes (pc=16 -> pc=8)");
+                    assert_eq!(dest, Reg::ZERO);
+                }
+                (5, Inst::Sw { offset, src, base }) => {
+                    assert_eq!(offset.as_i32(), RESULT_ADDR); assert_eq!(src, X1); assert_eq!(base, Reg::ZERO);
+                }
+                (i, other) => panic!("word {i}: unexpected decode shape (not necessarily wrong variant, but check manually): opcode-discriminant mismatch, got a variant that isn't the {i}-th expected one; inst={other:?}"),
+            }
+        }
+    }
+
+    /// Regression test for the 7th architectural bug this milestone: a
+    /// `TypeId` mismatch between how WASM active data-segment pre-init
+    /// content gets typed (`waffle_lower.rs`'s pre_init construction) and
+    /// how every runtime `StorageRead`/`StorageWrite` types the same
+    /// memory (`mem_load_bytes`/`mem_store_bytes`'s `byte_tid()`, i.e.
+    /// `Vec(8, Bit)`). Before the fix, pre_init used a *structurally
+    /// different* `Primitive(_8)` TypeId (via `lir_type_to_tid(U8)`), so
+    /// any read of pre-initialized memory that was never subsequently
+    /// overwritten by a runtime store -- e.g. the program's own code
+    /// bytes -- permanently missed its own correctly-populated entry in
+    /// the interpreter's `(StorageId, TypeId, addr)`-keyed storage map,
+    /// silently reading back as zero. This made every opcode dispatch
+    /// check false, so the loop always ran to the `$steps >= MAX_STEPS`
+    /// safety net (~1400 raw steps) instead of a real `$halted`-triggered
+    /// exit.
+    ///
+    /// Program: `x1 = 77; mem[RESULT_ADDR] = x1` (2 real RISC-V
+    /// instructions). Verified via the plain pre-movfuscation CFG
+    /// interpreter (`eval_ir_with_trace`) -- cheap (raw block hops, not
+    /// movfuscated-circuit steps), and sufficient to catch this class of
+    /// bug without needing the (much slower) real circuit simulation.
+    #[test]
+    fn halted_flag_triggers_loop_exit_immediately() {
+        use rv_asm::{Imm, Inst, Reg, Xlen};
+
+        const X1: Reg = Reg::RA;
+        let e = |inst: Inst| inst.encode_normal(Xlen::Rv32);
+        let program: Vec<u32> = vec![
+            e(Inst::Addi { imm: Imm::new_i32(77), dest: X1, src1: Reg::ZERO }), // pc=0: x1=77
+            e(Inst::Sw { offset: Imm::new_i32(RESULT_ADDR), src: X1, base: Reg::ZERO }), // pc=4: mem[RESULT_ADDR]=77; halt
+        ];
+        let code_bytes: Vec<u8> = program.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let data_bytes = vec![0u8; (RESULT_ADDR as usize) + 4];
+
+        let wasm_bytes = wat::parse_str(&interpreter_wat(&code_bytes, &data_bytes)).expect("wat should assemble");
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        // `lower_vaffle_to_ir` runs the `vaffle_ssa` max-SSA pass
+        // internally, so cross-block values are already explicit block
+        // params/jump-args by the time this returns -- no separate call
+        // needed here.
+        let (ir_blocks, types) = volar_vaffle_target::lower_to_ir::lower_vaffle_to_ir(&target.module);
+
+        let entry_widths: Vec<usize> = ir_blocks.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        let entry_inputs: Vec<Vec<bool>> = entry_widths.iter().map(|&w| vec![false; w]).collect();
+        let (ret, storage, visited, _watched) =
+            volar_fuzz::interpreter::ir::eval_ir_with_trace(&ir_blocks, &types, &entry_inputs, &[]);
+
+        assert!(ret.is_some(), "interpreter should return, not hit MAX_ITERS");
+        assert!(
+            visited.len() < 200,
+            "halted after {} raw block hops -- expected a real $halted-triggered exit \
+             (~80-100 hops for this 2-instruction program), not the ~1400-hop \
+             $steps >= MAX_STEPS safety net",
+            visited.len(),
+        );
+
+        let (result_sid, result_ty) = ir_blocks.pre_init.iter()
+            .find(|seg| seg.data.len() as i32 == RESULT_ADDR + 4)
+            .map(|seg| (seg.storage, seg.ty))
+            .expect("result-holding pre_init segment must exist");
+        let bytes: Vec<u8> = (0..4).map(|i| {
+            let addr = (RESULT_ADDR + i) as u64;
+            match storage.get(&(result_sid, result_ty, addr)) {
+                Some(b) => b.iter().enumerate().map(|(j, &bit)| (bit as u8) << j).fold(0u8, |a, b| a | b),
+                None => 0,
+            }
+        }).collect();
+        let stored = i32::from_le_bytes(bytes.try_into().unwrap());
+        assert_eq!(stored, 77, "RESULT_ADDR should hold 77 after the SW instruction runs");
+    }
+
+    /// Does `BEQ` ever take its "equal" branch at all, for two registers
+    /// set to the *same* value moments earlier (no loop, no far-apart
+    /// spill/reload)? Straight-line: `x1=5; x5=5; beq x1,x5,+8 (skip);
+    /// sw 0xBAD (should NOT execute); skip: sw 0xGOOD`. If the stored
+    /// result is 0xBAD, BEQ's "equal" branch never fires even in the
+    /// simplest possible case -- a genuine comparison/branch-selection
+    /// bug, independent of loops or spill/reload liveness.
+    #[test]
+    fn beq_equal_branch_fires_straight_line() {
+        use rv_asm::{Imm, Inst, Reg, Xlen};
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, apply_pre_init, StorageMap};
+
+        const X1: Reg = Reg::RA;
+        const X5: Reg = Reg::T0;
+        let e = |inst: Inst| inst.encode_normal(Xlen::Rv32);
+        let program: Vec<u32> = vec![
+            e(Inst::Addi { imm: Imm::new_i32(5), dest: X1, src1: Reg::ZERO }), // pc=0: x1=5
+            e(Inst::Addi { imm: Imm::new_i32(5), dest: X5, src1: Reg::ZERO }), // pc=4: x5=5
+            e(Inst::Beq { offset: Imm::new_i32(12), src1: X1, src2: X5 }),     // pc=8: if x1==x5 goto pc=20 (should fire, they're equal)
+            e(Inst::Sw { offset: Imm::new_i32(RESULT_ADDR), src: X1, base: Reg::ZERO }), // pc=12: BAD path -- should be skipped
+            e(Inst::Jal { offset: Imm::new_i32(0), dest: Reg::ZERO }),         // pc=16: (padding, unreachable if BEQ works)
+            e(Inst::Addi { imm: Imm::new_i32(9), dest: X1, src1: Reg::ZERO }), // pc=20: GOOD path -- x1=9
+            e(Inst::Sw { offset: Imm::new_i32(RESULT_ADDR), src: X1, base: Reg::ZERO }), // pc=24: store 9
+        ];
+        let code_bytes: Vec<u8> = program.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let data_bytes = vec![0u8; (RESULT_ADDR as usize) + 4];
+
+        let mut mem = data_bytes.clone();
+        let native = crate::interp::native_reference(&program, &mut mem);
+        let native_stored = i32::from_le_bytes(mem[RESULT_ADDR as usize..RESULT_ADDR as usize + 4].try_into().unwrap());
+        eprintln!("native: returned x3={native} stored={native_stored}");
+        assert_eq!(native_stored, 9, "this repro's own program logic must store 9 via the GOOD path");
+
+        let wasm_bytes = wat::parse_str(&interpreter_wat(&code_bytes, &data_bytes)).expect("wat should assemble");
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+
+        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        let mut storage: StorageMap = StorageMap::new();
+        apply_pre_init(&mut storage, &circuit.pre_init, &types);
+
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let mut done = false;
+        let mut step = 0usize;
+        while !done && step < 1700 {
+            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            done = outputs[0].iter().any(|&b| b);
+            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            if step % 20 == 0 || done { eprintln!("step {step}: done={done} full_state={full_state:?}"); }
+            inputs = outputs[1..1 + param_widths.len()].to_vec();
+            step += 1;
+        }
+        eprintln!("halted after {step} steps (done={done})");
+        assert!(done, "circuit must halt within budget");
+
+        let mut found_word = None;
+        for seg in &circuit.pre_init {
+            if seg.data.len() as i32 == RESULT_ADDR + 4 {
+                let bytes: Vec<u8> = (0..4).map(|i| {
+                    let addr = (RESULT_ADDR + i) as u64;
+                    let bits = &storage[&(seg.storage, seg.ty, addr)];
+                    bits.iter().enumerate().map(|(j, &b)| (b as u8) << j).fold(0u8, |a, b| a | b)
+                }).collect();
+                found_word = Some(i32::from_le_bytes(bytes.try_into().unwrap()));
+            }
+        }
+        eprintln!("circuit stored result: {found_word:?} (expect Some(9) if BEQ's equal branch fired; Some(5) if it didn't)");
+        assert_eq!(found_word, Some(9), "BEQ must take its equal branch when comparing two equal registers");
+    }
+
+    /// Isolates whether `JAL`'s *negative*-offset backward branch works
+    /// correctly through the real interpreter machinery -- the one
+    /// negative offset in `bound_register_survives_across_dispatch`'s own
+    /// program (`BEQ`'s own offset there is positive). A 3-instruction
+    /// infinite loop with no exit: `i=0; loop: i+=1; jal loop`. If JAL's
+    /// backward offset resolves correctly, `i`'s slot should climb
+    /// cleanly by 1 every ~2 real instructions worth of raw steps,
+    /// forever. If the offset's sign-extension is broken (e.g. `shr_s`
+    /// silently behaving as unsigned), the computed jump target would be
+    /// a huge wrong address, landing in zero-padded memory (opcode 0,
+    /// matches nothing, `next_pc` defaults to `pc+4` every step) -- `i`
+    /// would freeze at whatever value it last reached and never move
+    /// again, while `pc` marches forward forever until `MAX_STEPS`.
+    #[test]
+    fn jal_negative_offset_backward_branch() {
+        use rv_asm::{Imm, Inst, Reg, Xlen};
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, apply_pre_init, StorageMap};
+
+        const X1: Reg = Reg::RA;
+        let e = |inst: Inst| inst.encode_normal(Xlen::Rv32);
+        let program: Vec<u32> = vec![
+            e(Inst::Addi { imm: Imm::new_i32(0), dest: X1, src1: Reg::ZERO }), // pc=0: i=0
+            e(Inst::Addi { imm: Imm::new_i32(1), dest: X1, src1: X1 }),        // pc=4: i+=1 (loop target)
+            e(Inst::Jal { offset: Imm::new_i32(-4), dest: Reg::ZERO }),        // pc=8: goto pc=4
+        ];
+        let code_bytes: Vec<u8> = program.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let data_bytes = vec![0u8; (RESULT_ADDR as usize) + 4];
+
+        let wasm_bytes = wat::parse_str(&interpreter_wat(&code_bytes, &data_bytes)).expect("wat should assemble");
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+
+        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        let mut storage: StorageMap = StorageMap::new();
+        apply_pre_init(&mut storage, &circuit.pre_init, &types);
+
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        // ~30 raw steps/instruction * 3 instructions/iteration -> budget
+        // for several loop iterations' worth of raw steps.
+        for step in 0..500 {
+            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            if step % 10 == 0 { eprintln!("step {step}: full_state={full_state:?}"); }
+            inputs = outputs[1..1 + param_widths.len()].to_vec();
+        }
+    }
+
+    /// Fast diagnostic sibling of `bound_register_survives_across_dispatch`
+    /// (below): dumps the new edge-aware slot layout for the same 6
+    /// -instruction program WITHOUT running the (slow, ~1s/raw-step) full
+    /// circuit evaluation loop -- lets us directly inspect whether x1
+    /// (loop counter) and x5 (bound) end up on separate physical slots,
+    /// in seconds rather than minutes.
+    #[test]
+    fn dump_bound_register_slot_layout() {
+        use rv_asm::{Imm, Inst, Reg, Xlen};
+        use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
+
+        const X1: Reg = Reg::RA;
+        const X5: Reg = Reg::T0;
+        let e = |inst: Inst| inst.encode_normal(Xlen::Rv32);
+        let program: Vec<u32> = vec![
+            e(Inst::Addi { imm: Imm::new_i32(4), dest: X5, src1: Reg::ZERO }),
+            e(Inst::Addi { imm: Imm::new_i32(0), dest: X1, src1: Reg::ZERO }),
+            e(Inst::Beq { offset: Imm::new_i32(12), src1: X1, src2: X5 }),
+            e(Inst::Addi { imm: Imm::new_i32(1), dest: X1, src1: X1 }),
+            e(Inst::Jal { offset: Imm::new_i32(-8), dest: Reg::ZERO }),
+            e(Inst::Sw { offset: Imm::new_i32(RESULT_ADDR), src: X1, base: Reg::ZERO }),
+        ];
+        let code_bytes: Vec<u8> = program.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let data_bytes = vec![0u8; (RESULT_ADDR as usize) + 4];
+
+        let wasm_bytes = wat::parse_str(&interpreter_wat(&code_bytes, &data_bytes)).expect("wat should assemble");
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        eprintln!("VAFFLE module: {} funcs", target.module.funcs.len());
+        for (fi, fd) in target.module.funcs.iter().enumerate() {
+            match fd {
+                vaffle::FuncDecl::Body(body) => {
+                    let n_calls: usize = body.blocks.iter().flat_map(|b| b.stmts.iter())
+                        .filter(|&&vid| matches!(&body.values[vid.0].kind, vaffle::Value::Call { .. })).count();
+                    eprintln!("  func {fi}: {} blocks, {n_calls} Value::Call stmts", body.blocks.len());
+                }
+                _ => eprintln!("  func {fi}: non-Body"),
+            }
+        }
+
+        let (mut ir_blocks, types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+
+        eprintln!("{}", volar_ir_passes::movfuscate::debug_dump_slot_of(&ir_blocks, &types));
+    }
+
+    /// `#[ignore]`d: still real-interpreter-scale codegen (though a much
+    /// shorter run than the full 4-word-sum program). Run manually:
+    /// `cargo test -p volar-riscv-e2e --release bound_register_survives_across_dispatch -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bound_register_survives_across_dispatch() {
+        use rv_asm::{Imm, Inst, Reg, Xlen};
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, apply_pre_init, StorageMap};
+
+        const X1: Reg = Reg::RA; // loop counter
+        const X5: Reg = Reg::T0; // bound, written once
+
+        let e = |inst: Inst| inst.encode_normal(Xlen::Rv32);
+        let program: Vec<u32> = vec![
+            e(Inst::Addi { imm: Imm::new_i32(4), dest: X5, src1: Reg::ZERO }),   // pc=0:  x5 = 4
+            e(Inst::Addi { imm: Imm::new_i32(0), dest: X1, src1: Reg::ZERO }),   // pc=4:  x1 = 0
+            e(Inst::Beq { offset: Imm::new_i32(12), src1: X1, src2: X5 }),       // pc=8:  if x1==x5 goto pc=20
+            e(Inst::Addi { imm: Imm::new_i32(1), dest: X1, src1: X1 }),          // pc=12: x1 += 1
+            e(Inst::Jal { offset: Imm::new_i32(-8), dest: Reg::ZERO }),          // pc=16: goto pc=8
+            e(Inst::Sw { offset: Imm::new_i32(RESULT_ADDR), src: X1, base: Reg::ZERO }), // pc=20: mem[16] = x1; halt
+        ];
+        let code_bytes: Vec<u8> = program.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let data_bytes = vec![0u8; (RESULT_ADDR as usize) + 4];
+
+        let wasm_bytes = wat::parse_str(&interpreter_wat(&code_bytes, &data_bytes))
+            .expect("wat should assemble");
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        let pre_opt_stmts: usize = ir_blocks.blocks.iter().map(|b| b.stmts.len()).sum();
+        // SKIP_OPT env var lets this repro be run with optimize_to_fixpoint
+        // disabled entirely, to A/B whether fold_ir_blocks/
+        // store_forward_ir_blocks (not movfuscation) are mixing/zeroing
+        // values -- run manually: `SKIP_OPT=1 cargo test ... --ignored --nocapture`.
+        let skip_opt = std::env::var("SKIP_OPT").is_ok();
+        if !skip_opt {
+            optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+        }
+        let post_opt_stmts: usize = ir_blocks.blocks.iter().map(|b| b.stmts.len()).sum();
+        eprintln!("skip_opt={skip_opt} pre_opt_stmts={pre_opt_stmts} post_opt_stmts={post_opt_stmts}");
+
+        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("param widths: {param_widths:?}");
+        let pc_width = volar_ir_passes::movfuscate::pc_bits_needed(120);
+        eprintln!("pc_width={pc_width} (first {pc_width} params are the active-block-index bits)");
+
+        let mut storage: StorageMap = StorageMap::new();
+        apply_pre_init(&mut storage, &circuit.pre_init, &types);
+
+        // `full_state` only reflects circuit.blocks[0]'s own params (the
+        // movfuscated state vector). A cross-block VAFFLE value spilled by
+        // `compute_cross_block_values` (lower_to_ir.rs) lives in the
+        // persistent `storage` map instead, under `StorageId::STACK` (=1),
+        // completely invisible to `full_state`. Dump every nonzero STACK
+        // entry at checkpoints to see whether x5's spilled bits (set once,
+        // early) survive unchanged, or get clobbered.
+        // movfuscation remaps every StorageId(n) to two lanes (see
+        // movfuscate.rs: "Non-Block StorageWrite remaps to storage ID
+        // 2n+1 (odd)", Block-typed to 2n even) -- StorageId::STACK (=1)
+        // becomes lanes 2 and 3 in the *movfuscated* circuit, not literal
+        // id 1. Dump every distinct nonzero storage id's entry count so
+        // this isn't blind to the remap.
+        let dump_stack = |storage: &StorageMap, label: &str| {
+            let mut by_sid: std::collections::BTreeMap<u32, Vec<(u64, u64)>> = std::collections::BTreeMap::new();
+            for ((sid, _ty, addr), bits) in storage.iter() {
+                if bits.iter().any(|&b| b) {
+                    let val = bits.iter().enumerate().map(|(i, &b)| (b as u64) << i).fold(0u64, |a, b| a | b);
+                    by_sid.entry(sid.0).or_default().push((*addr, val));
+                }
+            }
+            eprintln!("{label}: nonzero entries by storage id: {:?}", by_sid.iter().map(|(k, v)| (k, v.len())).collect::<Vec<_>>());
+            for (sid, entries) in &by_sid {
+                if *sid != 35 { // storage 35 is the data RAM (already tracked separately below)
+                    eprintln!("    sid={sid}: {entries:?}");
+                }
+            }
+        };
+
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let mut done = false;
+        let mut step = 0usize;
+        while !done && step < 2000 {
+            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            done = outputs[0].iter().any(|&b| b);
+            // outputs[1..1+pc_width] are the pc_width individual-Bit params
+            // encoding "which of the 120 original VAFFLE blocks is active
+            // next" -- decode LSB-first into a block index, independent of
+            // knowing which physical state slot holds any given WASM local.
+            let active_block: u64 = (0..pc_width).map(|b| (outputs[1 + b][0] as u64) << b).sum();
+            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            if step % 100 == 0 || done {
+                eprintln!("step {step}: done={done} active_block={active_block} full_state={full_state:?}");
+                dump_stack(&storage, &format!("  after step {step}"));
+            }
+            inputs = outputs[1..1 + param_widths.len()].to_vec();
+            step += 1;
+        }
+        eprintln!("halted after {step} steps (done={done})");
+        assert!(done, "circuit must halt within budget via its own termination flag");
+
+        let expected: i32 = 4;
+        let mut found = false;
+        for seg in &circuit.pre_init {
+            if seg.data.len() as i32 == RESULT_ADDR + 4 {
+                let bytes: Vec<u8> = (0..4).map(|i| {
+                    let addr = (RESULT_ADDR + i) as u64;
+                    let bits = &storage[&(seg.storage, seg.ty, addr)];
+                    bits.iter().enumerate().map(|(j, &b)| (b as u8) << j).fold(0u8, |a, b| a | b)
+                }).collect();
+                let word = i32::from_le_bytes(bytes.try_into().unwrap());
+                eprintln!("data RAM (storage={}) result word: {word} (expected {expected})", seg.storage.0);
+                if word == expected {
+                    found = true;
+                }
+            }
+        }
+        assert!(found, "loop counter must read back as exactly 4 -- if not, x5 (bound) was corrupted mid-loop");
+    }
+
+    /// Diagnostic (not a correctness assertion): dump the real circuit's
+    /// entry-state param widths and every real `StorageRead`/`StorageWrite`'s
+    /// storage id -- needed to write a real driver rather than guess these
+    /// (widths and storage-id assignment are both driven by WAFFLE/movfuscation
+    /// internals, not the WAT source's declaration order; see
+    /// `mem_probe.rs`'s own `dump_mem_probe_signatures` for the precedent
+    /// that a single declared memory does NOT land at `StorageId::memory(0)`).
+    /// Run manually: `cargo test -p volar-riscv-e2e dump_interpreter_signatures -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn dump_interpreter_signatures() {
+        use volar_ir_passes::LoweringMode;
+
+        let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, boundary, accum_info) =
+            lower_interpreter(1, LoweringMode::WithTerminationFlag);
+        eprintln!("n_blocks: {}", boundary.len());
+        eprintln!("circuit params: {:?}", circuit.blocks[0].params);
+        let widths: std::vec::Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("circuit param widths: {widths:?}");
+        eprintln!("circuit terminator: {:?}", circuit.blocks[0].terminator);
+
+        let mut storage_ids: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+        let mut read_count = 0usize;
+        let mut write_count = 0usize;
+        for stmt in circuit.blocks[0].stmts.iter() {
+            match &stmt.kind {
+                volar_ir::ir::Stmt::StorageRead { storage, ty, .. } => {
+                    storage_ids.insert(storage.0);
+                    read_count += 1;
+                    let _ = ty;
+                }
+                volar_ir::ir::Stmt::StorageWrite { storage, ty, .. } => {
+                    storage_ids.insert(storage.0);
+                    write_count += 1;
+                    let _ = ty;
+                }
+                _ => {}
+            }
+        }
+        eprintln!("distinct storage ids referenced: {storage_ids:?}");
+        eprintln!("total StorageRead count: {read_count}, StorageWrite count: {write_count}");
+        eprintln!("pre_init segments:");
+        for seg in &circuit.pre_init {
+            eprintln!("  storage={} ty={} offset={} len={}", seg.storage.0, seg.ty.0, seg.offset, seg.data.len());
+        }
+        eprintln!("accum_info.init: done_acc={} next_pc.len()={} next_state.len()={} ret_vals.len()={}",
+            accum_info.init.done_acc, accum_info.init.next_pc.len(), accum_info.init.next_state.len(), accum_info.init.ret_vals.len());
+    }
+
+    /// Feasibility check (not exercised by default) for Stage 2: does the
+    /// *largest* generated split-verifier function (a chunk combiner, per
+    /// `measure_split_weave_on_real_interpreter`'s own measurement, up to
+    /// ~236K params) actually print+compile, on its own, before investing
+    /// in the full interleaved driver?
+    ///
+    /// **Currently fails, and is expected to**: `rustc` hard-caps functions
+    /// at 65535 arguments (`error: function can not have more than 65535
+    /// arguments`) -- a real, non-negotiable compiler limit, not a
+    /// performance/RSS issue that `--release` or more chunking headroom can
+    /// route around. `chunk_size=8`'s largest chunk (`accum_chunk_6`) alone
+    /// exceeds it. This is Stage 2's second genuine architectural blocker
+    /// (see `trace_interpreter_plain_values_matches_native_reference`'s doc
+    /// for the first) -- the fix is real design work Milestone 1.5's own
+    /// plan flagged as a "complementary, fold in if it fits naturally"
+    /// optimization and deferred: batch each function's own `hat`/`q_and`/
+    /// `r_and` parameters into `[T; k]` array params (matching `entry_w`'s
+    /// own `w_i_j` convention) instead of one scalar param per AND-gate
+    /// lane, not a smaller `chunk_size` alone (per-block skew means some
+    /// *single* blocks already carry thousands of gates). Left unfixed
+    /// here deliberately, per the plan's own honest risk note.
+    ///
+    /// Run manually: `cargo test -p volar-riscv-e2e --release largest_chunk_function_compiles -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn largest_chunk_function_compiles() {
+        use volar_ir_passes::LoweringMode;
+        use volar_weaver::{StorageMode, weave_vole_verifier_ir_split_with_trace, print_weaved_vole_module, IopSink};
+
+        let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, boundary, accum_info) =
+            lower_interpreter(1, LoweringMode::WithTerminationFlag);
+        let mode = StorageMode::Commitment;
+        let chunk_size = 8usize;
+
+        let mut biggest: Option<volar_compiler::ir::IrFunction> = None;
+        weave_vole_verifier_ir_split_with_trace(
+            &circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size,
+            |f| {
+                if biggest.as_ref().map(|b| b.params.len()).unwrap_or(0) < f.params.len() {
+                    biggest = Some(f);
+                }
+            },
+        );
+        let f = biggest.expect("at least one function woven");
+        eprintln!("largest function: {} with {} params", f.name, f.params.len());
+
+        let module = volar_compiler::ir::IrModule {
+            name: "riscv_step".into(), functions: vec![f], structs: vec![], enums: vec![],
+            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+        };
+        let code = print_weaved_vole_module(&module);
+        eprintln!("printed source length: {} bytes", code.len());
+        // Reuse the same "print -> temp Cargo project -> cargo test --release"
+        // harness the real driven tests use (rather than volar-weaver's own
+        // internal, crate-private `run_compile_check`, inaccessible from
+        // here) -- a no-op driver is enough to force a real compile.
+        volar_verifier_iop_runtime::run_iop_verifier(&code, "#[test]\nfn compiles() {}\n");
+        eprintln!("compiled successfully");
+    }
+
+    /// Minimal isolation repro for the "circuit state never changes" bug
+    /// found while investigating `trace_interpreter_plain_values_matches_native_reference`:
+    /// a tiny loop that just writes a constant into a local once, then
+    /// halts -- exercises the *same* self-loop/movfuscation/circuit-lowering
+    /// mechanism as the real interpreter, at a scale small enough to reason
+    /// about by hand, with **no** register-dispatch `if`-chains and **no**
+    /// memory, to isolate whether the bug is in the core loop-carried-state
+    /// mechanism itself or specific to the interpreter's larger shape.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release minimal_state_write_repro -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn minimal_state_write_repro() {
+        minimal_state_write_repro_inner(true);
+    }
+
+    /// Same repro, but with `(result i32)` removed (mem_probe.rs's own
+    /// shape) -- A/B tests whether Fix B's now-correct return-type
+    /// handling is what's newly breaking state threading, vs. a
+    /// pre-existing bug unrelated to it.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release minimal_state_write_repro_no_result -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn minimal_state_write_repro_no_result() {
+        minimal_state_write_repro_inner(false);
+    }
+
+    fn minimal_state_write_repro_inner(with_result: bool) {
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+
+        let wat = if with_result {
+            r#"(module
+  (func (export "run") (result i32)
+    (local $r1 i32) (local $steps i32) (local $halted i32)
+    (block $exit
+      (loop $L
+        (br_if $exit (i32.ge_s (local.get $steps) (i32.const 3)))
+        (local.set $steps (i32.add (local.get $steps) (i32.const 1)))
+        (br_if $exit (local.get $halted))
+        (local.set $r1 (i32.const 4))
+        (local.set $halted (i32.const 1))
+        (br $L)
+      )
+    )
+    (local.get $r1)
+  )
+)
+"#.to_string()
+        } else {
+            r#"(module
+  (func (export "run")
+    (local $r1 i32) (local $steps i32) (local $halted i32)
+    (block $exit
+      (loop $L
+        (br_if $exit (i32.ge_s (local.get $steps) (i32.const 3)))
+        (local.set $steps (i32.add (local.get $steps) (i32.const 1)))
+        (br_if $exit (local.get $halted))
+        (local.set $r1 (i32.const 4))
+        (local.set $halted (i32.const 1))
+        (br $L)
+      )
+    )
+  )
+)
+"#.to_string()
+        };
+        let wasm_bytes = wat::parse_str(&wat).expect("wat should assemble");
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+
+        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("param widths: {param_widths:?}");
+        eprintln!("circuit terminator: {:?}", circuit.blocks[0].terminator);
+
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let mut storage: StorageMap = StorageMap::new();
+        let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let mut done = false;
+        let mut step = 0usize;
+        while !done && step < 10 {
+            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            done = outputs[0].iter().any(|&b| b);
+            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            eprintln!("step {step}: done={done} full_state={full_state:?}");
+            inputs = outputs[1..1 + param_widths.len()].to_vec();
+            step += 1;
+        }
+        eprintln!("halted after {step} steps (done={done})");
+        assert!(done, "minimal repro must halt");
+    }
+
+    /// Second-stage isolation repro: adds *conditional*, index-dispatched
+    /// register writes (`set_reg`'s own exact shape -- a flat sequence of
+    /// independent `if (i32.eq idx K) (then local.set $rK ...)`) on top of
+    /// `minimal_state_write_repro`'s already-confirmed-working unconditional
+    /// write.
+    ///
+    /// **Now passes**, after two real bugs were found and fixed:
+    /// 1. `lower_to_ir.rs`'s cross-block VAFFLE value resolution (see
+    ///    `compute_cross_block_values`) -- VAFFLE, like WAFFLE, uses a flat,
+    ///    dominance-based value space, but `lower_function`'s per-block
+    ///    `val_map` silently resolved any cross-block reference to
+    ///    `IRVarId(0)` instead of the real value.
+    /// 2. `movfuscate.rs`'s `scatter_args_to_state` zero-filled any state
+    ///    slot a jump target didn't explicitly cover, instead of passing
+    ///    the combined block's own current value through -- silently
+    ///    wiping loop-carried state (like this program's own `halted` exit
+    ///    flag) the moment *any* block along a dispatch chain didn't
+    ///    itself thread it forward as an explicit arg.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release minimal_dispatch_write_repro -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn minimal_dispatch_write_repro() {
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+
+        let wat = format!(
+            r#"(module
+  (func (export "run")
+    (local $r1 i32) (local $r2 i32) (local $r3 i32) (local $r4 i32) (local $r5 i32)
+    (local $idx i32) (local $val i32)
+    (local $steps i32) (local $halted i32)
+    (block $exit
+      (loop $L
+        (br_if $exit (i32.ge_s (local.get $steps) (i32.const 3)))
+        (local.set $steps (i32.add (local.get $steps) (i32.const 1)))
+        (br_if $exit (local.get $halted))
+        (local.set $idx (i32.const 1))
+        (local.set $val (i32.const 4))
+{set_reg}
+        (local.set $halted (i32.const 1))
+        (br $L)
+      )
+    )
+  )
+)
+"#,
+            set_reg = set_reg("$idx", "$val"),
+        );
+        let wasm_bytes = wat::parse_str(&wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+
+        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("param widths: {param_widths:?}");
+
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let mut storage: StorageMap = StorageMap::new();
+        let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let mut done = false;
+        let mut step = 0usize;
+        let mut ever_saw_4: bool = false;
+        while !done && step < 30 {
+            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            done = outputs[0].iter().any(|&b| b);
+            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            eprintln!("step {step}: done={done} full_state={full_state:?}");
+            if full_state.iter().any(|&v| v == 4) {
+                ever_saw_4 = true;
+            }
+            inputs = outputs[1..1 + param_widths.len()].to_vec();
+            step += 1;
+        }
+        eprintln!("halted after {step} steps (done={done})");
+        assert!(done, "minimal dispatch repro must halt");
+        assert!(ever_saw_4, "the dispatched register write (r1=4) must become visible in some state slot");
+    }
+
+    /// Same as `minimal_dispatch_write_repro`, but skips the pre-movfuscation
+    /// optimizer (`fold_ir_blocks`/`store_forward_ir_blocks`) entirely --
+    /// A/B tests whether constant-folding a *statically-foldable* dispatch
+    /// condition (this repro's `idx`/`val` are both compile-time constants)
+    /// is what's discarding the conditional write's effect, vs. a bug in
+    /// movfuscation/circuit-lowering themselves.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release minimal_dispatch_write_repro_no_optimize -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn minimal_dispatch_write_repro_no_optimize() {
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+
+        let wat = format!(
+            r#"(module
+  (func (export "run")
+    (local $r1 i32) (local $r2 i32) (local $r3 i32) (local $r4 i32) (local $r5 i32)
+    (local $idx i32) (local $val i32)
+    (local $steps i32) (local $halted i32)
+    (block $exit
+      (loop $L
+        (br_if $exit (i32.ge_s (local.get $steps) (i32.const 3)))
+        (local.set $steps (i32.add (local.get $steps) (i32.const 1)))
+        (br_if $exit (local.get $halted))
+        (local.set $idx (i32.const 1))
+        (local.set $val (i32.const 4))
+{set_reg}
+        (local.set $halted (i32.const 1))
+        (br $L)
+      )
+    )
+  )
+)
+"#,
+            set_reg = set_reg("$idx", "$val"),
+        );
+        let wasm_bytes = wat::parse_str(&wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        let (ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        eprintln!("block count (no optimize): {}", ir_blocks.blocks.len());
+
+        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("param widths: {param_widths:?}");
+
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let mut storage: StorageMap = StorageMap::new();
+        let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let mut done = false;
+        let mut step = 0usize;
+        let mut ever_saw_4: bool = false;
+        while !done && step < 30 {
+            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            done = outputs[0].iter().any(|&b| b);
+            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            eprintln!("step {step}: done={done} full_state={full_state:?}");
+            if full_state.iter().any(|&v| v == 4) {
+                ever_saw_4 = true;
+            }
+            inputs = outputs[1..1 + param_widths.len()].to_vec();
+            step += 1;
+        }
+        eprintln!("halted after {step} steps (done={done})");
+        assert!(done, "minimal dispatch repro (no optimize) must halt");
+        assert!(ever_saw_4, "the dispatched register write (r1=4) must become visible in some state slot");
+    }
+
+    /// Smallest possible repro: exactly one `if (cond) (then local.set $r1
+    /// val))`, no loop. Dumps the *raw VAFFLE* module (before any Volar-IR
+    /// lowering at all) directly, to inspect the if/else diamond's own
+    /// block/value structure by hand.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release dump_smallest_dispatch_vaffle -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn dump_smallest_dispatch_vaffle() {
+        let wat = r#"(module
+  (func (export "run") (result i32)
+    (local $r1 i32) (local $idx i32) (local $val i32)
+    (local.set $idx (i32.const 1))
+    (local.set $val (i32.const 4))
+    (if (i32.eq (local.get $idx) (i32.const 1))
+      (then (local.set $r1 (local.get $val))))
+    (local.get $r1)
+  )
+)
+"#;
+        let wasm_bytes = wat::parse_str(wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        for (fid, func) in module.funcs.entries() {
+            eprintln!("=== waffle func {fid:?}: {func:#?}");
+        }
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        for (fi, func) in target.module.funcs.iter().enumerate() {
+            eprintln!("=== func {fi}: {func:#?}", );
+        }
+
+        let (ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        for (i, b) in ir_blocks.blocks.iter().enumerate() {
+            eprintln!("block {i}: params={:?} term={:?}", b.params, b.terminator);
+            for (j, s) in b.stmts.iter().enumerate() {
+                eprintln!("  stmt {j}: {:?}", s.kind);
+            }
+        }
+
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("param widths: {param_widths:?}");
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let mut storage: StorageMap = StorageMap::new();
+        let inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+        eprintln!("done={:?}", outputs[0]);
+        let full_state: Vec<u64> = (1..outputs.len()).map(|i| to_u64(&outputs[i])).collect();
+        eprintln!("full_state={full_state:?}");
+    }
+
+    /// Isolates the real interpreter's own **two-`br_if`-to-the-same-`$exit`**
+    /// loop-exit pattern (`br_if $exit (steps>=max)`, then later
+    /// `br_if $exit (halted)`, both targeting the *same* block) -- never
+    /// exercised by any earlier repro this session (all had exactly one
+    /// exit check). If this alone reproduces "stuck forever, done never
+    /// fires", the bug is in how WAFFLE/lower_to_ir.rs/movfuscate_ir
+    /// handle multiple distinct branches converging on one target, not
+    /// in anything already fixed this session.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release minimal_double_exit_repro -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn minimal_double_exit_repro() {
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+
+        let wat = r#"(module
+  (func (export "run") (result i32)
+    (local $steps i32) (local $halted i32) (local $r3 i32)
+    (block $exit
+      (loop $L
+        (br_if $exit (i32.ge_s (local.get $steps) (i32.const 5)))
+        (local.set $steps (i32.add (local.get $steps) (i32.const 1)))
+        (br_if $exit (local.get $halted))
+        (local.set $r3 (i32.add (local.get $r3) (i32.const 1)))
+        (if (i32.eq (local.get $steps) (i32.const 3))
+          (then (local.set $halted (i32.const 1))))
+        (br $L)
+      )
+    )
+    (local.get $r3)
+  )
+)
+"#;
+        let wasm_bytes = wat::parse_str(wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+
+        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("param widths: {param_widths:?}");
+
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let mut storage: StorageMap = StorageMap::new();
+        let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let mut done = false;
+        let mut step = 0usize;
+        while !done && step < 60 {
+            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            done = outputs[0].iter().any(|&b| b);
+            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            eprintln!("step {step}: done={done} full_state={full_state:?}");
+            inputs = outputs[1..1 + param_widths.len()].to_vec();
+            step += 1;
+        }
+        eprintln!("halted after {step} steps (done={done})");
+        assert!(done, "minimal double-exit repro must halt (expected via the halted-check: steps reaches 3, sets halted=1, exits with r3=3 on the next pass)");
+    }
+
+    /// Combines the two patterns already individually confirmed correct
+    /// (`minimal_dispatch_write_repro`'s flat `get_reg`/`set_reg` dispatch
+    /// chain, `minimal_double_exit_repro`'s two-`br_if`-to-`$exit` loop) --
+    /// but, unlike either alone, the loop's own exit condition is decided
+    /// by a value that made a full **read (dispatch) -> compute -> write
+    /// (dispatch) -> next-iteration read (dispatch)** round trip, exactly
+    /// like the real interpreter's `ADDI`/register-loop pattern (`get_rs1v`
+    /// each iteration, dispatch-write `$result` to `$rd`, then next
+    /// iteration's `get_rs1v` must see the new value to eventually satisfy
+    /// a data-dependent branch). Neither existing repro exercises a
+    /// register value that must survive a real dispatch round trip *and*
+    /// feed a loop-exit decision.
+    ///
+    /// **DOES NOT REPRODUCE THE BUG -- was a step-budget false positive.**
+    /// A prior investigation session read a 60-raw-step failure here as
+    /// confirmation that a dispatch read-modify-write value fails to
+    /// survive the loop's own back-edge. That conclusion was wrong: each
+    /// WAT-level `loop $L` iteration costs ~26 raw movfuscated-circuit
+    /// steps (the `get_reg`/`set_reg` flat dispatch chains alone are ~10
+    /// `if`-diamonds), and `$r3` genuinely does climb by 1 per WAT
+    /// iteration via the dispatch round trip (confirmed by hand-decoding
+    /// the PC bits and state slots of the 60-step trace: `r3` reads back
+    /// as 0, 1, 2 on its first three loop-header revisits, each ~26 steps
+    /// apart) -- the repro simply needs ~107 raw steps to actually reach
+    /// `r3 == 3` and halt, not 60. Re-run with a 150-step budget: passes
+    /// cleanly, `done` fires at step 106 (halted after 107 steps).
+    /// **This means the dispatch-write-then-read-across-a-back-edge
+    /// pattern is not, by itself, broken** -- it does *not* isolate
+    /// whatever is causing the real interpreter's own non-halting
+    /// behavior (which was confirmed via a full 1200-step PC decode to be
+    /// a genuine, never-breaking period-140 cycle, not merely "needs more
+    /// steps"). Whoever resumes that investigation should look elsewhere
+    /// for a repro that isolates it (e.g. something that forces the same
+    /// physical state slot to be read by *two different* original blocks
+    /// depending on which logical loop iteration it is, since `movfuscate.rs`'s
+    /// `(position, type-signature)`-keyed slot dedup only guarantees type
+    /// agreement, not that a slot's *identity* is stable across a real
+    /// multi-iteration back-edge) rather than assuming this repro's shape
+    /// already covers it.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release minimal_dispatch_feedback_loop_repro -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn minimal_dispatch_feedback_loop_repro() {
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+
+        let wat = format!(
+            r#"(module
+  (func (export "run") (result i32)
+    (local $r1 i32) (local $r2 i32) (local $r3 i32) (local $r4 i32) (local $r5 i32)
+    (local $idx i32) (local $val i32) (local $cur i32)
+    (local $steps i32) (local $halted i32)
+    (block $exit
+      (loop $L
+        (br_if $exit (i32.ge_s (local.get $steps) (i32.const 10)))
+        (local.set $steps (i32.add (local.get $steps) (i32.const 1)))
+        (br_if $exit (local.get $halted))
+
+        ;; read r3 via the flat dispatch chain (like real `get_rs1v`).
+        (local.set $idx (i32.const 3))
+{get_cur}
+        ;; compute + write back via the flat dispatch chain (like real
+        ;; `ADDI`'s `set_result_to_rd`).
+        (local.set $val (i32.add (local.get $cur) (i32.const 1)))
+{set_val}
+        ;; loop-exit decision depends on the value *read back* through
+        ;; dispatch, not a plain local -- the untested combination.
+        (if (i32.eq (local.get $cur) (i32.const 3))
+          (then (local.set $halted (i32.const 1))))
+
+        (br $L)
+      )
+    )
+    (local.get $r3)
+  )
+)
+"#,
+            get_cur = get_reg("$idx", "$cur"),
+            set_val = set_reg("$idx", "$val"),
+        );
+        let wasm_bytes = wat::parse_str(&wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+
+        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("param widths: {param_widths:?}");
+
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let mut storage: StorageMap = StorageMap::new();
+        let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let mut done = false;
+        let mut step = 0usize;
+        // ~26 raw steps/WAT-loop-iteration * 4 iterations to reach r3==3, + margin.
+        while !done && step < 150 {
+            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            done = outputs[0].iter().any(|&b| b);
+            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            eprintln!("step {step}: done={done} full_state={full_state:?}");
+            inputs = outputs[1..1 + param_widths.len()].to_vec();
+            step += 1;
+        }
+        eprintln!("halted after {step} steps (done={done})");
+        assert!(done, "dispatch-feedback-loop repro must halt (r3 climbs 1 per iteration via dispatch round trip, halts when it reads back as 3)");
+    }
+
+    /// Same as `minimal_dispatch_feedback_loop_repro`, but with the
+    /// two-`br_if`-to-`$exit` structure collapsed to a **single** `br_if`
+    /// (the safety-net check becomes a plain `if` that also just sets
+    /// `$halted`, like the data-dependent check already does) -- isolates
+    /// whether "double exit" is actually the interacting ingredient, or
+    /// whether the dispatch read/compute/write round trip alone is enough
+    /// to break the loop regardless of how many `br_if $exit`s there are.
+    ///
+    /// **Result: a different, earlier failure** -- this shape doesn't even
+    /// get past `lower_waffle_module` (`UnsupportedOp("undefined v364")`),
+    /// so it can't test the hypothesis it was built for. This is a real,
+    /// separate, previously-unknown WAFFLE-frontend lowering gap in its own
+    /// right (a loop with one `br_if $exit` plus two later plain `if`s that
+    /// both assign the same local, one of them the loop's own safety net --
+    /// not yet investigated further), but is NOT evidence about whether
+    /// double-exit specifically matters for the read-modify-write bug --
+    /// that comparison remains unresolved.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release minimal_dispatch_feedback_single_exit_repro -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn minimal_dispatch_feedback_single_exit_repro() {
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_opt::{ir::fold_ir_blocks, store_forward::store_forward_ir_blocks};
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, LoweringMode};
+        use volar_fuzz::interpreter::ir::{eval_ir_circuit_step, StorageMap};
+
+        let wat = format!(
+            r#"(module
+  (func (export "run") (result i32)
+    (local $r1 i32) (local $r2 i32) (local $r3 i32) (local $r4 i32) (local $r5 i32)
+    (local $idx i32) (local $val i32) (local $cur i32)
+    (local $steps i32) (local $halted i32)
+    (block $exit
+      (loop $L
+        (br_if $exit (local.get $halted))
+        (local.set $steps (i32.add (local.get $steps) (i32.const 1)))
+        (if (i32.ge_s (local.get $steps) (i32.const 10))
+          (then (local.set $halted (i32.const 1))))
+
+        (local.set $idx (i32.const 3))
+{get_cur}
+        (local.set $val (i32.add (local.get $cur) (i32.const 1)))
+{set_val}
+        (if (i32.eq (local.get $cur) (i32.const 3))
+          (then (local.set $halted (i32.const 1))))
+
+        (br $L)
+      )
+    )
+    (local.get $r3)
+  )
+)
+"#,
+            get_cur = get_reg("$idx", "$cur"),
+            set_val = set_reg("$idx", "$val"),
+        );
+        let wasm_bytes = wat::parse_str(&wat).unwrap_or_else(|e| panic!("wat failed to assemble: {e}\n\n{wat}"));
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module,
+            &mut target,
+            &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty(), "unexpected lowering errors: {errors:?}");
+
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+
+        let (movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+
+        let param_widths: Vec<usize> = circuit.blocks[0].params.iter()
+            .map(|&tid| volar_fuzz::interpreter::ir::bit_width(tid, &types))
+            .collect();
+        eprintln!("param widths: {param_widths:?}");
+
+        let to_u64 = |v: &[bool]| -> u64 { v.iter().enumerate().map(|(i, &b)| (b as u64) << i).sum() };
+        let mut storage: StorageMap = StorageMap::new();
+        let mut inputs: Vec<Vec<bool>> = param_widths.iter().map(|&w| vec![false; w]).collect();
+        let mut done = false;
+        let mut step = 0usize;
+        while !done && step < 60 {
+            let outputs = eval_ir_circuit_step(&circuit.blocks[0], &types, &circuit.oracles, &inputs, &mut storage);
+            done = outputs[0].iter().any(|&b| b);
+            let full_state: Vec<u64> = (1..1 + param_widths.len()).map(|i| to_u64(&outputs[i])).collect();
+            eprintln!("step {step}: done={done} full_state={full_state:?}");
+            inputs = outputs[1..1 + param_widths.len()].to_vec();
+            step += 1;
+        }
+        eprintln!("halted after {step} steps (done={done})");
+        assert!(done, "single-exit dispatch-feedback-loop repro must halt");
     }
 }

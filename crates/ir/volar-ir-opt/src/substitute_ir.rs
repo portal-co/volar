@@ -242,30 +242,30 @@ fn apply_one(
 
             // Const(cont_bi) → cont_ref_var.
             let cont_ref_var = IRVarId(base + block.stmts.len() as u32);
-            block.push_stmt_default(Stmt::Const(
+            block.push_stmt(Stmt::Const(
                 Constant { hi: 0, lo: cont_bi as u128 }, block_ty,
-            ));
+            ), ());
 
             // Write cont ref to slot 0.
             let a0 = emit_const_addr(block, base, 0, addr_ty);
-            block.push_stmt_default(Stmt::StorageWrite {
+            block.push_stmt(Stmt::StorageWrite {
                 storage: spill_storage, src: cont_ref_var, ty: block_ty, addr: a0,
-            });
+            }, ());
 
             // Write args to slots 1..1+n_args (using pre-computed types).
             for (j, (&arg, &aty)) in call_args.iter().zip(arg_tys.iter()).enumerate() {
                 let a = emit_const_addr(block, base, 1 + j, addr_ty);
-                block.push_stmt_default(Stmt::StorageWrite {
+                block.push_stmt(Stmt::StorageWrite {
                     storage: spill_storage, src: arg, ty: aty, addr: a,
-                });
+                }, ());
             }
 
             // Write live vars to slots live_base..
             for (k, &(lv, lty)) in live_vars.iter().enumerate() {
                 let a = emit_const_addr(block, base, live_base + k, addr_ty);
-                block.push_stmt_default(Stmt::StorageWrite {
+                block.push_stmt(Stmt::StorageWrite {
                     storage: spill_storage, src: lv, ty: lty, addr: a,
-                });
+                }, ());
             }
 
             // Set terminator.
@@ -412,7 +412,7 @@ fn build_fallback_block(
 
 fn emit_const_addr(block: &mut IRBlock, base: u32, slot: usize, addr_ty: TypeId) -> IRVarId {
     let vid = IRVarId(base + block.stmts.len() as u32);
-    block.push_stmt_default(Stmt::Const(Constant { hi: 0, lo: slot as u128 }, addr_ty));
+    block.push_stmt(Stmt::Const(Constant { hi: 0, lo: slot as u128 }, addr_ty), ());
     vid
 }
 
@@ -531,6 +531,7 @@ fn visit_stmt_vars<F: FnMut(IRVarId)>(stmt: &IRStmt, f: &mut F) {
             fallbacks.iter().for_each(|&a| f(a));
         }
         Stmt::ActionOutput { call, .. }           => f(*call),
+        _ => {}
     }
 }
 
@@ -554,6 +555,7 @@ fn visit_terminator_vars<F: FnMut(IRVarId)>(term: &IRTerminator, f: &mut F) {
                 target.args.iter().for_each(|&a| f(a));
             });
         }
+        _ => {}
     }
 }
 
@@ -628,7 +630,6 @@ fn remap_block_ids(term: &IRTerminator, offset: usize) -> IRTerminator {
                 args: then_target.args.clone(),
                 reentry: then_target.reentry.clone(),
             },
-<<<<<<< HEAD
             else_target: IRBranchTarget {
                 dest: rt(&else_target.dest),
                 args: else_target.args.clone(),
@@ -646,8 +647,6 @@ fn remap_block_ids(term: &IRTerminator, offset: usize) -> IRTerminator {
             }).collect(),
         },
         _ => panic!("remap_block_ids: unhandled IRTerminator variant — add block-id remapping for this variant"),
-=======
->>>>>>> origin/main
     }
 }
 

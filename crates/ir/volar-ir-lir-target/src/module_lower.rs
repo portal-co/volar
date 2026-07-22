@@ -143,18 +143,11 @@ fn collect_calls_block(
     out: &mut BTreeSet<usize>,
 ) {
     for stmt in &block.stmts {
-<<<<<<< HEAD
         match &stmt.kind {
             IrStmtKind::Let { init: Some(e), .. } => collect_calls_expr(e, name_to_idx, out),
             IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => collect_calls_expr(e, name_to_idx, out),
             IrStmtKind::Let { init: None, .. } => {}
             _ => {}
-=======
-        match stmt {
-            IrStmt::Let { init: Some(e), .. } => collect_calls_expr(e, name_to_idx, out),
-            IrStmt::Semi(e) | IrStmt::Expr(e) => collect_calls_expr(e, name_to_idx, out),
-            IrStmt::Let { init: None, .. } => {}
->>>>>>> origin/main
         }
     }
     if let Some(e) = &block.expr {
@@ -283,7 +276,6 @@ fn collect_calls_expr(
             if let Some(e) = end   { collect_calls_expr(e, name_to_idx, out); }
         }
         // Leaf nodes — no sub-expressions containing calls.
-<<<<<<< HEAD
         IrExprKind::Lit(_)
         | IrExprKind::Var(_)
         | IrExprKind::Path { .. }
@@ -295,18 +287,6 @@ fn collect_calls_expr(
         | IrExprKind::Return(None)
         | IrExprKind::Break(None) => {}
         _ => {}
-=======
-        IrExpr::Lit(_)
-        | IrExpr::Var(_)
-        | IrExpr::Path { .. }
-        | IrExpr::Continue
-        | IrExpr::Unreachable
-        | IrExpr::LengthOf(_)
-        | IrExpr::DefaultValue { .. }
-        | IrExpr::TypenumUsize { .. }
-        | IrExpr::Return(None)
-        | IrExpr::Break(None) => {}
->>>>>>> origin/main
     }
 }
 

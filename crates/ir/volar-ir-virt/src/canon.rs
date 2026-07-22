@@ -150,6 +150,7 @@ fn append_ir_terminator_schema(term: &IRTerminator, out: &mut Vec<ImmediateKind>
                 }
             }
         }
+        _ => {}
     }
 }
 
@@ -171,7 +172,7 @@ pub fn canonicalize_stmt_slice(stmts: &[IRStmt]) -> (StmtSliceKey, Vec<Constant>
 
 /// Canonicalise an [`IRBlock`] and return its handler key plus the lifted
 /// immediates.
-pub fn canonicalize_ir_block<P: Clone + Default>(
+pub fn canonicalize_ir_block<P: Clone>(
     block: &IRBlock<P>,
 ) -> (IrHandlerKey, BlockImmediates) {
     let mut consts = Vec::new();
@@ -285,6 +286,7 @@ fn canon_ir_target(t: &IRBlockTargetId, targets: &mut Vec<IRBlockId>) -> IRBlock
         }
         IRBlockTargetId::Return => IRBlockTargetId::Return,
         IRBlockTargetId::Dyn(v) => IRBlockTargetId::Dyn(*v),
+        _ => panic!("canon_ir_target: unhandled IRBlockTargetId variant — add canonicalization for this variant"),
     }
 }
 
@@ -321,6 +323,7 @@ fn canon_ir_terminator(t: &IRTerminator, targets: &mut Vec<IRBlockId>) -> IRTerm
             }
             IRTerminator::JumpTable { index: *index, cases: canon_cases }
         }
+        _ => panic!("canon_ir_terminator: unhandled IRTerminator variant — add canonicalization for this variant"),
     }
 }
 
@@ -363,12 +366,13 @@ fn append_bir_terminator_schema(term: &BIrTerminator, out: &mut Vec<ImmediateKin
                 out.push(ImmediateKind::BlockTarget);
             }
         }
+        _ => {}
     }
 }
 
 /// Canonicalise a [`BIrBlock`] and return its handler key plus the lifted
 /// immediates.
-pub fn canonicalize_bir_block<P: Clone + Default>(
+pub fn canonicalize_bir_block<P: Clone>(
     block: &BIrBlock<P>,
 ) -> (BirHandlerKey, BlockImmediates) {
     let mut targets = Vec::new();
@@ -407,6 +411,7 @@ fn canon_bir_target(t: &BIrTarget, targets: &mut Vec<IRBlockId>) -> BIrTarget {
             block: IRBlockTargetId::Dyn(v),
             args: t.args.clone(),
         },
+        _ => panic!("canon_bir_target: unhandled IRBlockTargetId variant — add canonicalization for this variant"),
     }
 }
 
@@ -422,6 +427,7 @@ fn canon_bir_terminator(t: &BIrTerminator, targets: &mut Vec<IRBlockId>) -> BIrT
             then_target: canon_bir_target(then_target, targets),
             else_target: canon_bir_target(else_target, targets),
         },
+        _ => panic!("canon_bir_terminator: unhandled BIrTerminator variant — add canonicalization for this variant"),
     }
 }
 

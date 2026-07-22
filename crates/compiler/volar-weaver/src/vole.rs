@@ -137,6 +137,36 @@ fn q_and_array_type(and_count: usize) -> IrType {
     }
 }
 
+/// `[{fold_scalar_type_name}; AND_COUNT]` — fixed-size array of per-gate
+/// fold challenges, array-batched on the *param* side to stay under
+/// `rustc`'s hard 65535-argument function limit (a real interpreter's
+/// largest split-weave chunk function needs hundreds of thousands of
+/// per-gate params if left scalar-per-gate — see
+/// `docs/agent-context/circuit-size-optimization-backlog.md`). Unlike
+/// `hat`/`q_and`, `r_and` never has a return-side counterpart (it's a
+/// per-gate fold-challenge input only), so this is the params-only sibling
+/// of `hat_array_type`/`q_and_array_type`.
+fn r_and_array_type(and_count: usize, fold_scalar_type_name: &str) -> IrType {
+    IrType::Array {
+        kind: volar_compiler::ir::ArrayKind::FixedArray,
+        elem: Box::new(IrType::TypeParam(fold_scalar_type_name.into())),
+        len: volar_compiler::ir::ArrayLength::Const(and_count),
+    }
+}
+
+/// `[elem; n]` — generic fixed-size array param type, the params-side
+/// batching every wide entry-state (`w_i`) / cross-block export
+/// (`is_active_i`/`next_state_i_k`/etc., via `bind_scalar`) param uses
+/// instead of `n` separate scalar params (same 65535-arg-limit reason as
+/// `hat_array_type`/`q_and_array_type`/`r_and_array_type` above).
+fn wide_array_type(elem: IrType, n: usize) -> IrType {
+    IrType::Array {
+        kind: volar_compiler::ir::ArrayKind::FixedArray,
+        elem: Box::new(elem),
+        len: volar_compiler::ir::ArrayLength::Const(n),
+    }
+}
+
 /// `&T` reference helper. See [`crate::vole_common::ref_to_vole`].
 fn ref_to_vole(ty: IrType) -> IrType {
     crate::vole_common::ref_to_vole(ty)
@@ -280,7 +310,6 @@ fn qsim_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredicate>) {
 // ============================================================================
 
 /// `Array::<T, N>::from_fn(|{idx}| {body})`
-<<<<<<< HEAD
 fn array_t_from_fn<P: Clone>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
     let prov = body.prov.clone();
     let side = body.side;
@@ -348,37 +377,12 @@ fn fixed_array_from_fn<P: Clone>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
         prov,
         side,
     )
-=======
-fn array_t_from_fn<P: Clone + Default>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
-    IrExpr::Call {
-        func: Box::new(IrExpr::Path {
-            segments: vec!["Array".into(), "from_fn".into()],
-            type_args: vec![
-                IrType::TypeParam("T".into()),
-                IrType::TypeParam("N".into()),
-            ],
-        }),
-        args: vec![IrExpr::Closure {
-            params: vec![volar_compiler::ir::IrClosureParam {
-                pattern: IrPattern::ident(idx),
-                ty: None,
-            }],
-            ret_type: None,
-            body: Box::new(body),
-        }],
-    }
->>>>>>> origin/main
 }
 
 /// `Array::<T, N>::default()` — the zero vector in the extension field.
 fn array_t_default<P: Clone + Default>() -> IrExpr<P> {
-<<<<<<< HEAD
     ir_expr(IrExprKind::Call {
         func: Box::new(ir_expr(IrExprKind::Path {
-=======
-    IrExpr::Call {
-        func: Box::new(IrExpr::Path {
->>>>>>> origin/main
             segments: vec!["Array".into(), "default".into()],
             type_args: vec![
                 IrType::TypeParam("T".into()),
@@ -391,13 +395,8 @@ fn array_t_default<P: Clone + Default>() -> IrExpr<P> {
 
 /// `wire.q[i]` — the verifier's Q share lane.
 fn q_index<P: Clone + Default>(wire_name: &str, idx: &str) -> IrExpr<P> {
-<<<<<<< HEAD
     ir_expr(IrExprKind::Index {
         base: Box::new(ir_expr(IrExprKind::Field {
-=======
-    IrExpr::Index {
-        base: Box::new(IrExpr::Field {
->>>>>>> origin/main
             base: Box::new(var(wire_name)),
             field: "q".into(),
         })),
@@ -417,13 +416,8 @@ fn arr_index<P: Clone + Default>(base_name: &str, idx: &str) -> IrExpr<P> {
 
 /// `delta.delta[i]`
 fn delta_index<P: Clone + Default>(idx: &str) -> IrExpr<P> {
-<<<<<<< HEAD
     ir_expr(IrExprKind::Index {
         base: Box::new(ir_expr(IrExprKind::Field {
-=======
-    IrExpr::Index {
-        base: Box::new(IrExpr::Field {
->>>>>>> origin/main
             base: Box::new(var("delta")),
             field: "delta".into(),
         })),
@@ -432,7 +426,6 @@ fn delta_index<P: Clone + Default>(idx: &str) -> IrExpr<P> {
 }
 
 /// `Q { q: {body} }`
-<<<<<<< HEAD
 fn q_struct<P: Clone>(body: IrExpr<P>) -> IrExpr<P> {
     let prov = body.prov.clone();
     let side = body.side;
@@ -446,15 +439,6 @@ fn q_struct<P: Clone>(body: IrExpr<P>) -> IrExpr<P> {
         prov,
         side,
     )
-=======
-fn q_struct<P: Clone + Default>(body: IrExpr<P>) -> IrExpr<P> {
-    IrExpr::StructExpr {
-        kind: StructKind::Custom("Q".into()),
-        type_args: vec![],
-        fields: vec![("q".into(), body)],
-        rest: None,
-    }
->>>>>>> origin/main
 }
 
 // ============================================================================
@@ -658,12 +642,13 @@ pub trait VerifierTraceSink<P: Clone + Default> {
     fn init_state_fn_name(&self) -> &str;
 
     /// Emit statements folding this AND gate's *actual* IR variables
-    /// (`k_a`, `k_b`, `k_c`, `delta`, `hat` — real variable names bound in
-    /// the woven function, not string placeholders) into `state_var`,
-    /// alongside a newly-introduced per-gate challenge parameter
-    /// (`r_param_name`); return the new state expression to rebind
-    /// `state_var` to. `gate_idx` is this AND gate's 0-based index (matches
-    /// the existing `q_and_{gate_idx}`/`hat_{gate_idx}` param numbering).
+    /// (`k_a`, `k_b`, `k_c`, `delta` — real variable names bound in the
+    /// woven function, not string placeholders; `hat`/`r_and` are
+    /// already-built read expressions — a bare param reference for the
+    /// legacy Boolar-IR path, or an array-index expression for the
+    /// array-batched Volar-IR path, see [`emit_verifier_and_gate`]'s own
+    /// doc) into `state_var`; return the new state expression to rebind
+    /// `state_var` to. `gate_idx` is this AND gate's 0-based index.
     #[allow(clippy::too_many_arguments)]
     fn and_gate_step(
         &self,
@@ -672,8 +657,8 @@ pub trait VerifierTraceSink<P: Clone + Default> {
         k_b: &str,
         k_c: &str,
         delta: &str,
-        hat: &str,
-        r_param_name: &str,
+        hat: IrExpr<P>,
+        r_and: IrExpr<P>,
         state_var: &str,
         prov: P,
     ) -> IrExpr<P>;
@@ -746,8 +731,8 @@ impl<P: Clone + Default> VerifierTraceSink<P> for IopSink {
         k_b: &str,
         k_c: &str,
         delta: &str,
-        hat: &str,
-        r_param_name: &str,
+        hat: IrExpr<P>,
+        r_and: IrExpr<P>,
         state_var: &str,
         prov: P,
     ) -> IrExpr<P> {
@@ -765,8 +750,8 @@ impl<P: Clone + Default> VerifierTraceSink<P> for IopSink {
                 // .clone()'d, which would auto-deref-then-clone into an
                 // owned Delta<N,T>).
                 var(delta),
-                clone_expr(var(hat)),
-                clone_expr(var(r_param_name)),
+                clone_expr(hat),
+                clone_expr(r_and),
             ],
         }, prov)
     }
@@ -835,13 +820,8 @@ fn synth_prover_public_wire<P: Clone + Default>(bool_name: &str) -> IrExpr<P> {
 /// For a public bit `b=1` the verifier computes `K = M + 1·Δ`; with `M=0` this is `Δ`.
 /// For `b=0`, `K = 0`.  This is consistent with the prover's synthesis above.
 fn synth_verifier_public_wire<P: Clone + Default>(bool_name: &str) -> IrExpr<P> {
-<<<<<<< HEAD
     let q_one = q_struct(ir_expr(IrExprKind::MethodCall {
         receiver: Box::new(ir_expr(IrExprKind::Field {
-=======
-    let q_one = q_struct(IrExpr::MethodCall {
-        receiver: Box::new(IrExpr::Field {
->>>>>>> origin/main
             base: Box::new(var("delta")),
             field: "delta".into(),
         })),
@@ -897,19 +877,23 @@ fn emit_prover_and_gate<P: Clone + Default>(
     }, prov));
 }
 
-/// Emit `let (_wire_k, _ok_k) = vole_and_verifier_check::<N, T>(delta, &wire_a, &wire_b, &q_and_k, &hat_k);`
-/// followed by `all_ok = all_ok && _ok_k;`.
+/// Emit `let (_wire_k, _ok_k) = vole_and_verifier_check::<N, T>(delta, &wire_a, &wire_b, &q_and_expr, &hat_expr);`
+/// followed by `all_ok = all_ok && _ok_k;`. `q_and_expr`/`hat_expr` are
+/// already-built read expressions (a bare param `var("q_and_5")` for the
+/// legacy Boolar-IR path, or `arr_index("q_and", "5")` for the array-batched
+/// Volar-IR path) — this function only borrows them, never decides how
+/// they're sourced.
 fn emit_verifier_and_gate<P: Clone + Default>(
     name_a: &str,
     name_b: &str,
     wire_name: &str,
     ok_name: &str,
-    q_and_name: &str,
-    hat_name: &str,
+    q_and_expr: IrExpr<P>,
+    hat_expr: IrExpr<P>,
     stmts: &mut Vec<IrStmt<P>>,
     prov: P,
 ) {
-    // let (wire_k, ok_k) = vole_and_verifier_check::<N, T>(delta, &wire_a, &wire_b, &q_and_k, &hat_k);
+    // let (wire_k, ok_k) = vole_and_verifier_check::<N, T>(delta, &wire_a, &wire_b, &q_and, &hat);
     stmts.push(ir_stmt_p(IrStmtKind::Let {
         pattern: IrPattern::Tuple(vec![
             IrPattern::ident(wire_name),
@@ -928,8 +912,8 @@ fn emit_verifier_and_gate<P: Clone + Default>(
                 var("delta"),
                 ref_expr(var(name_a)),
                 ref_expr(var(name_b)),
-                ref_expr(var(q_and_name)),
-                ref_expr(var(hat_name)),
+                ref_expr(q_and_expr),
+                ref_expr(hat_expr),
             ],
         }, prov.clone())),
     }, prov.clone()));
@@ -945,23 +929,26 @@ fn emit_verifier_and_gate<P: Clone + Default>(
     }, prov.clone())), prov));
 }
 
-/// Emit `let q_and_k = derive_and_q::<N, T>(delta, &wire_a, &wire_b, &hat_k);`
+/// Emit `let q_and_k = derive_and_q::<N, T>(delta, &wire_a, &wire_b, &hat_expr);`
 /// followed by `let wire_k = q_and_k.clone();` — `QSim`'s AND-gate handling
 /// (Milestone 1.6): unlike [`emit_verifier_and_gate`], this *derives*
-/// `q_and` from an externally-supplied `hat_k` (same shape `Verifier`
+/// `q_and` from an externally-supplied `hat` (same shape `Verifier`
 /// already takes) instead of taking `q_and_k` itself as an external
 /// parameter and checking it. No `ok`/`all_ok`/fold plumbing — `QSim`
 /// never folds, that's `Verifier`'s job once handed these derived values.
+/// `hat_expr` is an already-built read expression, same convention as
+/// [`emit_verifier_and_gate`]; `q_and_name` is a genuine local binding
+/// target (this function's own derived output), not a param read.
 fn emit_qsim_and_gate<P: Clone + Default>(
     name_a: &str,
     name_b: &str,
     wire_name: &str,
     q_and_name: &str,
-    hat_name: &str,
+    hat_expr: IrExpr<P>,
     stmts: &mut Vec<IrStmt<P>>,
     prov: P,
 ) {
-    // let q_and_k = derive_and_q::<N, T>(delta, &wire_a, &wire_b, &hat_k);
+    // let q_and_k = derive_and_q::<N, T>(delta, &wire_a, &wire_b, &hat);
     stmts.push(ir_stmt_p(IrStmtKind::Let {
         pattern: IrPattern::ident(q_and_name),
         ty: None,
@@ -977,7 +964,7 @@ fn emit_qsim_and_gate<P: Clone + Default>(
                 var("delta"),
                 ref_expr(var(name_a)),
                 ref_expr(var(name_b)),
-                ref_expr(var(hat_name)),
+                ref_expr(hat_expr),
             ],
         }, prov.clone())),
     }, prov.clone()));
@@ -1094,42 +1081,32 @@ fn emit_verifier_sbox_check_k2<P: Clone + Default>(
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_vole_prover<P: Clone + Default>(
+pub fn weave_vole_prover<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
-<<<<<<< HEAD
 ) -> Tagged<Zk, IrModule<IrFunction>> {
     let mut tagged = weave_vole_prover_with_handler(circuit, name, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
     tagged
-=======
-) -> IrModule<IrFunction> {
-    weave_vole_prover_with_handler(circuit, name, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Weave a single-block boolean circuit into a VOLE **prover** `IrModule`,
 /// using `handler` to map input provenance into the output IR.
 ///
 /// All inputs are treated as private committed witnesses (default ZK behaviour).
-/// Use [`weave_vole_prover_with_config`] to mark some as public.
+/// Use [`weave_vole_prover_with_config_and_handler`] to mark some as public.
 pub fn weave_vole_prover_with_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> Tagged<Zk, IrModule<IrFunction<H::Output>, H::Output>>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
-<<<<<<< HEAD
     Tagged::seal(weave_vole_prover_inner(circuit, name, &ZkWitnessConfig::default(), handler))
-=======
-    weave_vole_prover_inner(circuit, name, &ZkWitnessConfig::default(), linkage, handler)
->>>>>>> origin/main
 }
 
 /// Weave a single-block boolean circuit into a VOLE **prover** `IrModule` with
@@ -1138,20 +1115,15 @@ where
 /// Public inputs in `config.public_inputs` are typed as `bool`; the wire
 /// commitment is synthesised from `vope_one` at runtime.  Public action outputs
 /// in `config.action_configs` are similarly typed as `bool` parameters.
-pub fn weave_vole_prover_with_config<P: Clone + Default>(
+pub fn weave_vole_prover_with_config<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
-<<<<<<< HEAD
 ) -> Tagged<Zk, IrModule<IrFunction>> {
     let mut module = weave_vole_prover_inner(circuit, name, config, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(&mut module); }
     Tagged::seal(module)
-=======
-) -> IrModule<IrFunction> {
-    weave_vole_prover_inner(circuit, name, config, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Weave with both a [`ZkWitnessConfig`] and a provenance handler.
@@ -1159,19 +1131,14 @@ pub fn weave_vole_prover_with_config_and_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
     config: &ZkWitnessConfig,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> Tagged<Zk, IrModule<IrFunction<H::Output>, H::Output>>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
-<<<<<<< HEAD
     Tagged::seal(weave_vole_prover_inner(circuit, name, config, handler))
-=======
-    weave_vole_prover_inner(circuit, name, config, linkage, handler)
->>>>>>> origin/main
 }
 
 /// Weave a single-block boolean circuit into a VOLE **prover** `IrModule`,
@@ -1186,7 +1153,6 @@ where
 pub fn weave_vole_prover_with_side<P: Clone, SH>(
     circuit: &BIrBlocks<P>,
     name: &str,
-<<<<<<< HEAD
     assignments: &VoleSideAssignments,
     side_handler: &SH,
 ) -> Tagged<Zk, IrModule<IrFunction>>
@@ -1219,14 +1185,10 @@ fn weave_vole_prover_inner<P, H, C: VoleWitnessSource>(
     circuit: &BIrBlocks<P>,
     name: &str,
     config: &C,
-=======
-    config: &ZkWitnessConfig,
-    linkage: Option<&LinkageSystem>,
->>>>>>> origin/main
     handler: &H,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
@@ -1238,12 +1200,9 @@ where
     let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
-<<<<<<< HEAD
     let ctrl_prov: H::Output = block.stmts.first()
         .map(|n| handler.map(&n.prov))
         .expect("weave_vole_prover_inner: circuit has no statements; cannot derive provenance for infrastructure statements");
-=======
->>>>>>> origin/main
 
     // Pre-scan for external primitives (oracle calls, action calls, RNG sources).
     // Track (name, bit_count) for actions so we can look up per-action public configs.
@@ -1356,12 +1315,7 @@ where
                 pattern: IrPattern::ident(&format!("vope_input_{}", i)),
                 ty: None,
                 init: Some(synth_prover_public_wire(&format!("input_{}", i))),
-<<<<<<< HEAD
             }, ctrl_prov.clone()));
-=======
-            });
-            stmt_provs.push(H::Output::default());
->>>>>>> origin/main
         }
     }
 
@@ -1493,6 +1447,7 @@ where
                      use IRBlocks-based weavers (weave_vole_prover_ir) instead"
                 )
             }
+            _ => unimplemented!("vole weaver: unhandled BIrStmt variant — add support for this variant"),
         }
 
         var_names.insert(result_id.0, let_name);
@@ -1535,9 +1490,6 @@ where
 
         consts: vec![],
     };
-    if let Some(ls) = linkage {
-        ls.apply(&mut module);
-    }
     module
 }
 
@@ -1552,50 +1504,35 @@ where
 ///
 /// # Panics
 /// Panics if `circuit` does not satisfy `is_circuit()`.
-pub fn weave_vole_verifier<P: Clone + Default>(
+pub fn weave_vole_verifier<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
-<<<<<<< HEAD
 ) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut tagged = weave_vole_verifier_with_handler(circuit, name, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
     tagged
-=======
-) -> IrModule<IrFunction> {
-    weave_vole_verifier_with_handler(circuit, name, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Weave a single-block boolean circuit into a VOLE **verifier** `IrModule`,
 /// using `handler` to map input provenance into the output IR.
 ///
-<<<<<<< HEAD
 /// All inputs are private witnesses.  Use [`weave_vole_verifier_with_config_and_handler`]
 /// for public/private control.
 // The verifier-as-a-computation is `Transparent` (non-ZK): the inner VOLE
 // proof already accounts for zero-knowledge, so re-checking it carries no
 // ZK proving secrets of its own.
-=======
-/// All inputs are private witnesses.  Use [`weave_vole_verifier_with_config`] for
-/// public/private control.
->>>>>>> origin/main
 pub fn weave_vole_verifier_with_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
-<<<<<<< HEAD
     Tagged::seal(weave_vole_verifier_inner(circuit, name, &ZkWitnessConfig::default(), handler))
-=======
-    weave_vole_verifier_inner(circuit, name, &ZkWitnessConfig::default(), linkage, handler)
->>>>>>> origin/main
 }
 
 /// Weave a single-block boolean circuit into a VOLE **verifier** `IrModule` with
@@ -1603,12 +1540,11 @@ where
 ///
 /// Public inputs become `bool` parameters; the verifier synthesises Q wires from
 /// `delta` rather than receiving them as VOLE shares.
-pub fn weave_vole_verifier_with_config<P: Clone + Default>(
+pub fn weave_vole_verifier_with_config<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
-<<<<<<< HEAD
 ) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut module = weave_vole_verifier_inner(circuit, name, config, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(&mut module); }
@@ -1632,10 +1568,6 @@ pub fn weave_vole_verifier_with_trace<P: Clone>(
     let mut module = weave_vole_verifier_inner(circuit, name, &cfg, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(&mut module); }
     Tagged::seal(module)
-=======
-) -> IrModule<IrFunction> {
-    weave_vole_verifier_inner(circuit, name, config, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Weave with both a [`ZkWitnessConfig`] and a provenance handler.
@@ -1643,26 +1575,20 @@ pub fn weave_vole_verifier_with_config_and_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
     config: &ZkWitnessConfig,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
-<<<<<<< HEAD
     Tagged::seal(weave_vole_verifier_inner(circuit, name, config, handler))
-=======
-    weave_vole_verifier_inner(circuit, name, config, linkage, handler)
->>>>>>> origin/main
 }
 
 /// Like [`weave_vole_prover_with_side`] but for the **verifier**.
 pub fn weave_vole_verifier_with_side<P: Clone, SH>(
     circuit: &BIrBlocks<P>,
     name: &str,
-<<<<<<< HEAD
     assignments: &VoleSideAssignments,
     side_handler: &SH,
 ) -> Tagged<Transparent, IrModule<IrFunction>>
@@ -1695,14 +1621,10 @@ fn weave_vole_verifier_inner<P, H, C: VoleWitnessSource<H::Output>>(
     circuit: &BIrBlocks<P>,
     name: &str,
     config: &C,
-=======
-    config: &ZkWitnessConfig,
-    linkage: Option<&LinkageSystem>,
->>>>>>> origin/main
     handler: &H,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
@@ -1714,12 +1636,9 @@ where
     let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
-<<<<<<< HEAD
     let ctrl_prov: H::Output = block.stmts.first()
         .map(|n| handler.map(&n.prov))
         .expect("weave_vole_verifier_inner: circuit has no statements; cannot derive provenance for infrastructure statements");
-=======
->>>>>>> origin/main
 
     let (and_count, sbox_count) = expanded.iter().fold((0usize, 0usize), |(k1, k2), (_, s, prov)| {
         if matches!(s, BIrStmt::And(..)) {
@@ -1880,7 +1799,6 @@ where
             subpat: None,
         },
         ty: None,
-<<<<<<< HEAD
         init: Some(ir_expr_p(IrExprKind::Lit(IrLit::Bool(true)), ctrl_prov.clone())),
     }, ctrl_prov.clone()));
 
@@ -1903,11 +1821,6 @@ where
             }, ctrl_prov.clone())),
         }, ctrl_prov.clone()));
     }
-=======
-        init: Some(IrExpr::Lit(IrLit::Bool(true))),
-    });
-    stmt_provs.push(H::Output::default());
->>>>>>> origin/main
 
     // Synthesise Q wires for public inputs from the bool params.
     for i in 0..num_params {
@@ -1916,12 +1829,7 @@ where
                 pattern: IrPattern::ident(&format!("q_input_{}", i)),
                 ty: None,
                 init: Some(synth_verifier_public_wire(&format!("input_{}", i))),
-<<<<<<< HEAD
             }, ctrl_prov.clone()));
-=======
-            });
-            stmt_provs.push(H::Output::default());
->>>>>>> origin/main
         }
     }
 
@@ -2005,14 +1913,14 @@ where
                     and_counter += 1;
                     emit_verifier_and_gate(
                         &name_a, &name_b, &let_name, &ok_name,
-                        &q_and_name, &hat_name,
+                        var(&q_and_name), var(&hat_name),
                         &mut stmts, q.clone(),
                     );
                     if let Some(sink) = config.trace_sink() {
                         let r_param_name = format!("r_and_{}", gate_idx);
                         let new_state = sink.and_gate_step(
                             gate_idx, &name_a, &name_b, &let_name, "delta",
-                            &hat_name, &r_param_name, "fold_state", q.clone(),
+                            var(&hat_name), var(&r_param_name), "fold_state", q.clone(),
                         );
                         stmts.push(ir_stmt_p(IrStmtKind::Semi(ir_expr_p(IrExprKind::Assign {
                             left: Box::new(var("fold_state")),
@@ -2076,6 +1984,7 @@ where
                      use IRBlocks-based weavers (weave_vole_verifier_ir) instead"
                 )
             }
+            _ => unimplemented!("vole weaver: unhandled BIrStmt variant — add support for this variant"),
         }
 
         var_names.insert(result_id.0, let_name);
@@ -2116,9 +2025,6 @@ where
 
         consts: vec![],
     };
-    if let Some(ls) = linkage {
-        ls.apply(&mut module);
-    }
     module
 }
 
@@ -2127,21 +2033,16 @@ where
 // ============================================================================
 
 /// Backwards-compatible bounded VOLE prover weave.
-pub fn weave_vole_prover_bounded<P: Clone + Default>(
+pub fn weave_vole_prover_bounded<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-<<<<<<< HEAD
 ) -> Tagged<Zk, IrModule<IrFunction>> {
     let mut tagged = weave_vole_prover_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
     tagged
-=======
-) -> IrModule<IrFunction> {
-    weave_vole_prover_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Bounded VOLE prover weave with provenance handler.
@@ -2150,24 +2051,19 @@ pub fn weave_vole_prover_bounded_with_handler<P, H>(
     name: &str,
     limit: u32,
     mode: LoweringMode,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> Tagged<Zk, IrModule<IrFunction<H::Output>, H::Output>>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-<<<<<<< HEAD
     Tagged::seal(weave_vole_prover_inner(&lowered, name, &ZkWitnessConfig::default(), handler))
-=======
-    weave_vole_prover_inner(&lowered, name, &ZkWitnessConfig::default(), linkage, handler)
->>>>>>> origin/main
 }
 
 /// Bounded VOLE prover weave with witness config.
-pub fn weave_vole_prover_bounded_with_config<P: Clone + Default>(
+pub fn weave_vole_prover_bounded_with_config<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     config: &ZkWitnessConfig,
@@ -2176,13 +2072,9 @@ pub fn weave_vole_prover_bounded_with_config<P: Clone + Default>(
     linkage: Option<&LinkageSystem>,
 ) -> Tagged<Zk, IrModule<IrFunction>> {
     let lowered = lower_to_circuit(circuit, limit, mode);
-<<<<<<< HEAD
     let mut module = weave_vole_prover_inner(&lowered, name, config, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(&mut module); }
     Tagged::seal(module)
-=======
-    weave_vole_prover_inner(&lowered, name, config, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Bounded VOLE prover weave with witness config and provenance handler.
@@ -2192,38 +2084,28 @@ pub fn weave_vole_prover_bounded_with_config_and_handler<P, H>(
     config: &ZkWitnessConfig,
     limit: u32,
     mode: LoweringMode,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> Tagged<Zk, IrModule<IrFunction<H::Output>, H::Output>>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-<<<<<<< HEAD
     Tagged::seal(weave_vole_prover_inner(&lowered, name, config, handler))
-=======
-    weave_vole_prover_inner(&lowered, name, config, linkage, handler)
->>>>>>> origin/main
 }
 
 /// Backwards-compatible bounded VOLE verifier weave.
-pub fn weave_vole_verifier_bounded<P: Clone + Default>(
+pub fn weave_vole_verifier_bounded<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-<<<<<<< HEAD
 ) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut tagged = weave_vole_verifier_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
     tagged
-=======
-) -> IrModule<IrFunction> {
-    weave_vole_verifier_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Bounded VOLE verifier weave with provenance handler.
@@ -2232,24 +2114,19 @@ pub fn weave_vole_verifier_bounded_with_handler<P, H>(
     name: &str,
     limit: u32,
     mode: LoweringMode,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-<<<<<<< HEAD
     Tagged::seal(weave_vole_verifier_inner(&lowered, name, &ZkWitnessConfig::default(), handler))
-=======
-    weave_vole_verifier_inner(&lowered, name, &ZkWitnessConfig::default(), linkage, handler)
->>>>>>> origin/main
 }
 
 /// Bounded VOLE verifier weave with witness config.
-pub fn weave_vole_verifier_bounded_with_config<P: Clone + Default>(
+pub fn weave_vole_verifier_bounded_with_config<P: Clone>(
     circuit: &BIrBlocks<P>,
     name: &str,
     config: &ZkWitnessConfig,
@@ -2258,13 +2135,9 @@ pub fn weave_vole_verifier_bounded_with_config<P: Clone + Default>(
     linkage: Option<&LinkageSystem>,
 ) -> Tagged<Transparent, IrModule<IrFunction>> {
     let lowered = lower_to_circuit(circuit, limit, mode);
-<<<<<<< HEAD
     let mut module = weave_vole_verifier_inner(&lowered, name, config, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(&mut module); }
     Tagged::seal(module)
-=======
-    weave_vole_verifier_inner(&lowered, name, config, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Bounded VOLE verifier weave with witness config and provenance handler.
@@ -2274,20 +2147,15 @@ pub fn weave_vole_verifier_bounded_with_config_and_handler<P, H>(
     config: &ZkWitnessConfig,
     limit: u32,
     mode: LoweringMode,
-    linkage: Option<&LinkageSystem>,
     handler: &H,
 ) -> Tagged<Transparent, IrModule<IrFunction<H::Output>, H::Output>>
 where
-    P: Clone + Default,
+    P: Clone,
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-<<<<<<< HEAD
     Tagged::seal(weave_vole_verifier_inner(&lowered, name, config, handler))
-=======
-    weave_vole_verifier_inner(&lowered, name, config, linkage, handler)
->>>>>>> origin/main
 }
 
 // ============================================================================
@@ -2559,6 +2427,7 @@ fn count_ir_ands(
             Stmt::Rng { ty, .. } => ty.clone(),
             Stmt::OracleCall { result_ty, .. } | Stmt::ActionCall { result_ty, .. } => result_ty.clone(),
             Stmt::OracleOutput { ty, .. } | Stmt::ActionOutput { ty, .. } => ty.clone(),
+            _ => panic!("count_ir_ands: unhandled Stmt variant — add AND count for this variant"),
         };
         var_types.push(result_ty);
     }
@@ -2974,18 +2843,16 @@ impl<'a> VoleIrCtx<'a> {
             }
             VoleRole::Verifier => {
                 let ok_name = format!("ok_{}", self.and_counter);
-                let q_and_name = format!("q_and_{}", self.and_counter);
-                let hat_name = format!("hat_{}", self.and_counter);
+                let idx = self.and_counter.to_string();
                 self.ok_names.push(ok_name.clone());
                 emit_verifier_and_gate(
                     a, b, &wire_name, &ok_name,
-                    &q_and_name, &hat_name, &mut self.stmts, (),
+                    arr_index("q_and", &idx), arr_index("hat", &idx), &mut self.stmts, (),
                 );
                 if let Some(sink) = self.trace_sink {
-                    let r_param_name = format!("r_and_{}", self.and_counter);
                     let new_state = sink.and_gate_step(
                         self.and_counter, a, b, &wire_name, "delta",
-                        &hat_name, &r_param_name, "fold_state", (),
+                        arr_index("hat", &idx), arr_index("r_and", &idx), "fold_state", (),
                     );
                     self.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
                         left: Box::new(var("fold_state")),
@@ -2994,14 +2861,15 @@ impl<'a> VoleIrCtx<'a> {
                 }
             }
             VoleRole::QSim => {
-                // hat_k is a required *input* param (same shape Verifier
-                // already takes); q_and_k is *derived* here and collected
-                // as this function's own output (see `q_and_names`).
-                let hat_name = format!("hat_{}", self.and_counter);
-                self.hat_names.push(hat_name.clone());
+                // hat is a required *input* param (same shape Verifier
+                // already takes, now array-batched — indexed by gate
+                // number rather than named per-gate); q_and_k is *derived*
+                // here and collected as this function's own output (see
+                // `q_and_names`).
+                let idx = self.and_counter.to_string();
                 let q_and_name = format!("q_and_{}", self.and_counter);
                 self.q_and_names.push(q_and_name.clone());
-                emit_qsim_and_gate(a, b, &wire_name, &q_and_name, &hat_name, &mut self.stmts, ());
+                emit_qsim_and_gate(a, b, &wire_name, &q_and_name, arr_index("hat", &idx), &mut self.stmts, ());
             }
         }
         self.and_counter += 1;
@@ -3249,27 +3117,37 @@ impl<'a> VoleIrCtx<'a> {
             match self.role {
                 VoleRole::Prover => {}
                 VoleRole::Verifier => {
-                    let hat_names: Vec<String> = (start..start + width).map(|k| format!("hat_{k}")).collect();
+                    // Read from the array-batched `hat`/`q_and`/`r_and`
+                    // params by index (`clone`, since Rust can't move an
+                    // element out of an array by index) rather than moving
+                    // named per-gate scalar params — the only place in this
+                    // function that needs a real semantic change, not just
+                    // a rename, since every other reader already reads
+                    // through this local bundle by runtime lane index.
                     b.hat = format!("{out_name}_h{gi}_{start}");
                     self.stmts.push(ir_stmt(IrStmtKind::Let {
                         pattern: IrPattern::ident(&b.hat),
                         ty: None,
-                        init: Some(ir_expr(IrExprKind::FixedArray(hat_names.iter().map(|n| var(n)).collect()))),
+                        init: Some(ir_expr(IrExprKind::FixedArray(
+                            (start..start + width).map(|k| clone_expr(arr_index("hat", &k.to_string()))).collect(),
+                        ))),
                     }));
-                    let q_names: Vec<String> = (start..start + width).map(|k| format!("q_and_{k}")).collect();
                     b.q_and = format!("{out_name}_q{gi}_{start}");
                     self.stmts.push(ir_stmt(IrStmtKind::Let {
                         pattern: IrPattern::ident(&b.q_and),
                         ty: None,
-                        init: Some(ir_expr(IrExprKind::FixedArray(q_names.iter().map(|n| var(n)).collect()))),
+                        init: Some(ir_expr(IrExprKind::FixedArray(
+                            (start..start + width).map(|k| clone_expr(arr_index("q_and", &k.to_string()))).collect(),
+                        ))),
                     }));
                     if self.trace_sink.is_some() {
-                        let r_names: Vec<String> = (start..start + width).map(|k| format!("r_and_{k}")).collect();
                         b.r = format!("{out_name}_r{gi}_{start}");
                         self.stmts.push(ir_stmt(IrStmtKind::Let {
                             pattern: IrPattern::ident(&b.r),
                             ty: None,
-                            init: Some(ir_expr(IrExprKind::FixedArray(r_names.iter().map(|n| var(n)).collect()))),
+                            init: Some(ir_expr(IrExprKind::FixedArray(
+                                (start..start + width).map(|k| clone_expr(arr_index("r_and", &k.to_string()))).collect(),
+                            ))),
                         }));
                     }
                 }
@@ -3277,12 +3155,13 @@ impl<'a> VoleIrCtx<'a> {
                     // Only `hat` is bundled as an *input* (same shape
                     // Verifier takes) -- `q_and` is *derived* per lane
                     // below and collected as an output, no `r` (no fold).
-                    let hat_names: Vec<String> = (start..start + width).map(|k| format!("hat_{k}")).collect();
                     b.hat = format!("{out_name}_h{gi}_{start}");
                     self.stmts.push(ir_stmt(IrStmtKind::Let {
                         pattern: IrPattern::ident(&b.hat),
                         ty: None,
-                        init: Some(ir_expr(IrExprKind::FixedArray(hat_names.iter().map(|n| var(n)).collect()))),
+                        init: Some(ir_expr(IrExprKind::FixedArray(
+                            (start..start + width).map(|k| clone_expr(arr_index("hat", &k.to_string()))).collect(),
+                        ))),
                     }));
                 }
             }
@@ -3437,7 +3316,7 @@ impl<'a> VoleIrCtx<'a> {
                                 init: Some(clone_expr(arr_index(&b.r, "i"))),
                             }));
                             let new_state = sink.and_gate_step(
-                                b.start, &ka_n, &kb_n, &wire_n, "delta", &hat_n, &r_n, "fold_state", (),
+                                b.start, &ka_n, &kb_n, &wire_n, "delta", var(&hat_n), var(&r_n), "fold_state", (),
                             );
                             self.stmts.push(ir_stmt(IrStmtKind::Semi(ir_expr(IrExprKind::Assign {
                                 left: Box::new(var("fold_state")),
@@ -3950,15 +3829,31 @@ impl<'a> VoleIrCtx<'a> {
         let p = block.params.len();
 
         // Register input wires -- width-aware: a `_32`-typed (or `Vec(32,_)`)
-        // input param needs 32 independent per-lane parameter wires
-        // (`w_{i}_{j}`), not one, matching the param-list generation in
-        // `weave_vole_prover_ir_with_mode`/`weave_vole_verifier_ir_with_mode(_and_trace)`.
+        // input param needs 32 independent per-lane wires, matching the
+        // param-list generation in `weave_vole_prover_ir_with_mode`/
+        // `weave_vole_verifier_ir_with_mode(_and_trace)`. Array-batched on
+        // the *param* side (one `w_{i}: [T; width]` array, not `width`
+        // scalar params -- see `docs/agent-context/circuit-size-optimization-backlog.md`'s
+        // 65535-arg-limit finding) but every *downstream* consumer still
+        // expects `width` individually-named locals (`WireRepr::Vec`'s
+        // long-standing contract), so extract them immediately here via
+        // per-lane `let w_{i}_{j} = w_{i}[j].clone();` statements -- the
+        // same "array param in, named locals out" pattern already used for
+        // `hat`/`q_and`/`r_and`'s per-gate reads.
         for i in 0..p {
             let w = cir_type_width(&block.params[i], types);
             if w <= 1 {
                 self.wires.insert(i as u32, WireRepr::Scalar(format!("w_{}", i)));
             } else {
+                let arr_name = format!("w_{}", i);
                 let bits: Vec<String> = (0..w).map(|j| format!("w_{}_{}", i, j)).collect();
+                for (j, bname) in bits.iter().enumerate() {
+                    self.stmts.push(ir_stmt(IrStmtKind::Let {
+                        pattern: IrPattern::ident(bname),
+                        ty: None,
+                        init: Some(clone_expr(arr_index(&arr_name, &j.to_string()))),
+                    }));
+                }
                 self.wires.insert(i as u32, WireRepr::Vec(bits));
             }
         }
@@ -4308,6 +4203,7 @@ impl<'a> VoleIrCtx<'a> {
                         self.wires.insert(var_id, WireRepr::Vec(bits));
                     }
                 }
+                _ => panic!("emit_circuit_stmts: unhandled Stmt variant — add circuit emission for this variant"),
             }
         }
     }
@@ -4355,9 +4251,7 @@ pub fn weave_vole_prover_ir_with_mode(
         if w <= 1 {
             params.push(IrParam { name: format!("w_{}", i), ty: vope_type() });
         } else {
-            for j in 0..w {
-                params.push(IrParam { name: format!("w_{}_{}", i, j), ty: vope_type() });
-            }
+            params.push(IrParam { name: format!("w_{}", i), ty: wide_array_type(vope_type(), w) });
         }
     }
     // Oracle read parameters (Commitment mode).
@@ -4472,9 +4366,7 @@ pub fn weave_vole_prover_ir_split(
         if w <= 1 {
             w_params.push(IrParam { name: format!("w_{}", i), ty: vope_type() });
         } else {
-            for j in 0..w {
-                w_params.push(IrParam { name: format!("w_{}_{}", i, j), ty: vope_type() });
-            }
+            w_params.push(IrParam { name: format!("w_{}", i), ty: wide_array_type(vope_type(), w) });
         }
     }
     let insert_w_wires = |ctx: &mut VoleIrCtx| {
@@ -4483,7 +4375,15 @@ pub fn weave_vole_prover_ir_split(
             if w <= 1 {
                 ctx.wires.insert(i as u32, WireRepr::Scalar(format!("w_{}", i)));
             } else {
+                let arr_name = format!("w_{}", i);
                 let bits: Vec<String> = (0..w).map(|j| format!("w_{}_{}", i, j)).collect();
+                for (j, bname) in bits.iter().enumerate() {
+                    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
+                        pattern: IrPattern::ident(bname),
+                        ty: None,
+                        init: Some(clone_expr(arr_index(&arr_name, &j.to_string()))),
+                    }));
+                }
                 ctx.wires.insert(i as u32, WireRepr::Vec(bits));
             }
         }
@@ -4621,9 +4521,20 @@ pub fn weave_vole_prover_ir_split(
     fn bind_scalar(ctx: &mut VoleIrCtx, params: &mut Vec<IrParam>, var_id: u32, base_name: String, ty: IrType) {
         match &ty {
             IrType::Array { elem, len: volar_compiler::ir::ArrayLength::Const(n), .. } => {
+                // Array-batched on the *param* side (one array param, not
+                // `n` scalar params — same 65535-arg-limit reason as
+                // `hat`/`q_and`/`r_and`/`w_i`), but every downstream
+                // consumer still expects `n` individually-named locals
+                // (`WireRepr::Vec`'s contract) — extract them immediately,
+                // same "array param in, named locals out" pattern.
+                params.push(IrParam { name: base_name.clone(), ty: wide_array_type((**elem).clone(), *n) });
                 let names: Vec<String> = (0..*n).map(|j| format!("{base_name}_{j}")).collect();
-                for nm in &names {
-                    params.push(IrParam { name: nm.clone(), ty: (**elem).clone() });
+                for (j, nm) in names.iter().enumerate() {
+                    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
+                        pattern: IrPattern::ident(nm),
+                        ty: None,
+                        init: Some(clone_expr(arr_index(&base_name, &j.to_string()))),
+                    }));
                 }
                 ctx.wires.insert(var_id, WireRepr::Vec(names));
             }
@@ -4881,9 +4792,9 @@ pub fn weave_vole_verifier_ir_with_mode(
     let mut params: Vec<IrParam> = vec![
         IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
     ];
-    for k in 0..and_count {
-        params.push(IrParam { name: format!("q_and_{}", k), ty: q_type() });
-        params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
+    if and_count > 0 {
+        params.push(IrParam { name: "q_and".into(), ty: q_and_array_type(and_count) });
+        params.push(IrParam { name: "hat".into(), ty: hat_array_type(and_count) });
     }
     params.push(IrParam { name: "q_one".into(), ty: q_type() });
     for i in 0..num_params {
@@ -4891,9 +4802,7 @@ pub fn weave_vole_verifier_ir_with_mode(
         if w <= 1 {
             params.push(IrParam { name: format!("w_{}", i), ty: q_type() });
         } else {
-            for j in 0..w {
-                params.push(IrParam { name: format!("w_{}_{}", i, j), ty: q_type() });
-            }
+            params.push(IrParam { name: format!("w_{}", i), ty: wide_array_type(q_type(), w) });
         }
     }
     // Oracle read parameters (Commitment mode).
@@ -5025,12 +4934,12 @@ pub fn weave_vole_verifier_ir_with_mode_and_trace(
     let mut params: Vec<IrParam> = vec![
         IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
     ];
-    for k in 0..and_count {
-        params.push(IrParam { name: format!("q_and_{}", k), ty: q_type() });
-        params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
+    if and_count > 0 {
+        params.push(IrParam { name: "q_and".into(), ty: q_and_array_type(and_count) });
+        params.push(IrParam { name: "hat".into(), ty: hat_array_type(and_count) });
         params.push(IrParam {
-            name: format!("r_and_{}", k),
-            ty: IrType::TypeParam(sink.fold_scalar_type_name().into()),
+            name: "r_and".into(),
+            ty: r_and_array_type(and_count, sink.fold_scalar_type_name()),
         });
     }
     params.push(IrParam { name: "q_one".into(), ty: q_type() });
@@ -5039,9 +4948,7 @@ pub fn weave_vole_verifier_ir_with_mode_and_trace(
         if w <= 1 {
             params.push(IrParam { name: format!("w_{}", i), ty: q_type() });
         } else {
-            for j in 0..w {
-                params.push(IrParam { name: format!("w_{}_{}", i, j), ty: q_type() });
-            }
+            params.push(IrParam { name: format!("w_{}", i), ty: wide_array_type(q_type(), w) });
         }
     }
     // Oracle read parameters (Commitment mode).
@@ -5172,8 +5079,8 @@ pub fn weave_vole_qsim_ir_with_mode(
     let mut params: Vec<IrParam> = vec![
         IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
     ];
-    for k in 0..and_count {
-        params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
+    if and_count > 0 {
+        params.push(IrParam { name: "hat".into(), ty: hat_array_type(and_count) });
     }
     params.push(IrParam { name: "q_one".into(), ty: q_type() });
     for i in 0..num_params {
@@ -5181,9 +5088,7 @@ pub fn weave_vole_qsim_ir_with_mode(
         if w <= 1 {
             params.push(IrParam { name: format!("w_{}", i), ty: q_type() });
         } else {
-            for j in 0..w {
-                params.push(IrParam { name: format!("w_{}_{}", i, j), ty: q_type() });
-            }
+            params.push(IrParam { name: format!("w_{}", i), ty: wide_array_type(q_type(), w) });
         }
     }
     // Oracle read parameters (Commitment mode) -- same real committed
@@ -5302,9 +5207,7 @@ pub fn weave_vole_qsim_ir_split(
         if w <= 1 {
             w_params.push(IrParam { name: format!("w_{}", i), ty: q_type() });
         } else {
-            for j in 0..w {
-                w_params.push(IrParam { name: format!("w_{}_{}", i, j), ty: q_type() });
-            }
+            w_params.push(IrParam { name: format!("w_{}", i), ty: wide_array_type(q_type(), w) });
         }
     }
     let insert_w_wires = |ctx: &mut VoleIrCtx| {
@@ -5313,7 +5216,15 @@ pub fn weave_vole_qsim_ir_split(
             if w <= 1 {
                 ctx.wires.insert(i as u32, WireRepr::Scalar(format!("w_{}", i)));
             } else {
+                let arr_name = format!("w_{}", i);
                 let bits: Vec<String> = (0..w).map(|j| format!("w_{}_{}", i, j)).collect();
+                for (j, bname) in bits.iter().enumerate() {
+                    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
+                        pattern: IrPattern::ident(bname),
+                        ty: None,
+                        init: Some(clone_expr(arr_index(&arr_name, &j.to_string()))),
+                    }));
+                }
                 ctx.wires.insert(i as u32, WireRepr::Vec(bits));
             }
         }
@@ -5349,9 +5260,20 @@ pub fn weave_vole_qsim_ir_split(
     fn bind_scalar(ctx: &mut VoleIrCtx, params: &mut Vec<IrParam>, var_id: u32, base_name: String, ty: IrType) {
         match &ty {
             IrType::Array { elem, len: volar_compiler::ir::ArrayLength::Const(n), .. } => {
+                // Array-batched on the *param* side (one array param, not
+                // `n` scalar params — same 65535-arg-limit reason as
+                // `hat`/`q_and`/`r_and`/`w_i`), but every downstream
+                // consumer still expects `n` individually-named locals
+                // (`WireRepr::Vec`'s contract) — extract them immediately,
+                // same "array param in, named locals out" pattern.
+                params.push(IrParam { name: base_name.clone(), ty: wide_array_type((**elem).clone(), *n) });
                 let names: Vec<String> = (0..*n).map(|j| format!("{base_name}_{j}")).collect();
-                for nm in &names {
-                    params.push(IrParam { name: nm.clone(), ty: (**elem).clone() });
+                for (j, nm) in names.iter().enumerate() {
+                    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
+                        pattern: IrPattern::ident(nm),
+                        ty: None,
+                        init: Some(clone_expr(arr_index(&base_name, &j.to_string()))),
+                    }));
                 }
                 ctx.wires.insert(var_id, WireRepr::Vec(names));
             }
@@ -5377,8 +5299,8 @@ pub fn weave_vole_qsim_ir_split(
         let mut params: Vec<IrParam> = vec![
             IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
         ];
-        for k in 0..local_and_count {
-            params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
+        if local_and_count > 0 {
+            params.push(IrParam { name: "hat".into(), ty: hat_array_type(local_and_count) });
         }
         params.push(IrParam { name: "q_one".into(), ty: q_type() });
         params.extend(w_params.iter().cloned());
@@ -5523,8 +5445,8 @@ pub fn weave_vole_qsim_ir_split(
         let mut params: Vec<IrParam> = vec![
             IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
         ];
-        for k in 0..chunk_and_count {
-            params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
+        if chunk_and_count > 0 {
+            params.push(IrParam { name: "hat".into(), ty: hat_array_type(chunk_and_count) });
         }
         params.push(IrParam { name: "q_one".into(), ty: q_type() });
         params.extend(w_params.iter().cloned());
@@ -5613,8 +5535,8 @@ pub fn weave_vole_qsim_ir_split(
     let mut params: Vec<IrParam> = vec![
         IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
     ];
-    for k in 0..finish_and_count {
-        params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
+    if finish_and_count > 0 {
+        params.push(IrParam { name: "hat".into(), ty: hat_array_type(finish_and_count) });
     }
     params.push(IrParam { name: "q_one".into(), ty: q_type() });
     params.extend(w_params.iter().cloned());
@@ -5789,9 +5711,7 @@ pub fn weave_vole_verifier_ir_split_with_trace(
         if w <= 1 {
             w_params.push(IrParam { name: format!("w_{}", i), ty: q_type() });
         } else {
-            for j in 0..w {
-                w_params.push(IrParam { name: format!("w_{}_{}", i, j), ty: q_type() });
-            }
+            w_params.push(IrParam { name: format!("w_{}", i), ty: wide_array_type(q_type(), w) });
         }
     }
     let insert_w_wires = |ctx: &mut VoleIrCtx| {
@@ -5800,7 +5720,15 @@ pub fn weave_vole_verifier_ir_split_with_trace(
             if w <= 1 {
                 ctx.wires.insert(i as u32, WireRepr::Scalar(format!("w_{}", i)));
             } else {
+                let arr_name = format!("w_{}", i);
                 let bits: Vec<String> = (0..w).map(|j| format!("w_{}_{}", i, j)).collect();
+                for (j, bname) in bits.iter().enumerate() {
+                    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
+                        pattern: IrPattern::ident(bname),
+                        ty: None,
+                        init: Some(clone_expr(arr_index(&arr_name, &j.to_string()))),
+                    }));
+                }
                 ctx.wires.insert(i as u32, WireRepr::Vec(bits));
             }
         }
@@ -5859,9 +5787,20 @@ pub fn weave_vole_verifier_ir_split_with_trace(
     fn bind_scalar(ctx: &mut VoleIrCtx, params: &mut Vec<IrParam>, var_id: u32, base_name: String, ty: IrType) {
         match &ty {
             IrType::Array { elem, len: volar_compiler::ir::ArrayLength::Const(n), .. } => {
+                // Array-batched on the *param* side (one array param, not
+                // `n` scalar params — same 65535-arg-limit reason as
+                // `hat`/`q_and`/`r_and`/`w_i`), but every downstream
+                // consumer still expects `n` individually-named locals
+                // (`WireRepr::Vec`'s contract) — extract them immediately,
+                // same "array param in, named locals out" pattern.
+                params.push(IrParam { name: base_name.clone(), ty: wide_array_type((**elem).clone(), *n) });
                 let names: Vec<String> = (0..*n).map(|j| format!("{base_name}_{j}")).collect();
-                for nm in &names {
-                    params.push(IrParam { name: nm.clone(), ty: (**elem).clone() });
+                for (j, nm) in names.iter().enumerate() {
+                    ctx.stmts.push(ir_stmt(IrStmtKind::Let {
+                        pattern: IrPattern::ident(nm),
+                        ty: None,
+                        init: Some(clone_expr(arr_index(&base_name, &j.to_string()))),
+                    }));
                 }
                 ctx.wires.insert(var_id, WireRepr::Vec(names));
             }
@@ -5887,12 +5826,12 @@ pub fn weave_vole_verifier_ir_split_with_trace(
         let mut params: Vec<IrParam> = vec![
             IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
         ];
-        for k in 0..local_and_count {
-            params.push(IrParam { name: format!("q_and_{}", k), ty: q_type() });
-            params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
+        if local_and_count > 0 {
+            params.push(IrParam { name: "q_and".into(), ty: q_and_array_type(local_and_count) });
+            params.push(IrParam { name: "hat".into(), ty: hat_array_type(local_and_count) });
             params.push(IrParam {
-                name: format!("r_and_{}", k),
-                ty: IrType::TypeParam(sink.fold_scalar_type_name().into()),
+                name: "r_and".into(),
+                ty: r_and_array_type(local_and_count, sink.fold_scalar_type_name()),
             });
         }
         params.push(IrParam { name: "q_one".into(), ty: q_type() });
@@ -6062,10 +6001,10 @@ pub fn weave_vole_verifier_ir_split_with_trace(
         let mut params: Vec<IrParam> = vec![
             IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
         ];
-        for k in 0..chunk_and_count {
-            params.push(IrParam { name: format!("q_and_{}", k), ty: q_type() });
-            params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
-            params.push(IrParam { name: format!("r_and_{}", k), ty: IrType::TypeParam(sink.fold_scalar_type_name().into()) });
+        if chunk_and_count > 0 {
+            params.push(IrParam { name: "q_and".into(), ty: q_and_array_type(chunk_and_count) });
+            params.push(IrParam { name: "hat".into(), ty: hat_array_type(chunk_and_count) });
+            params.push(IrParam { name: "r_and".into(), ty: r_and_array_type(chunk_and_count, sink.fold_scalar_type_name()) });
         }
         params.push(IrParam { name: "q_one".into(), ty: q_type() });
         params.extend(w_params.iter().cloned());
@@ -6162,10 +6101,10 @@ pub fn weave_vole_verifier_ir_split_with_trace(
     let mut params: Vec<IrParam> = vec![
         IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
     ];
-    for k in 0..finish_and_count {
-        params.push(IrParam { name: format!("q_and_{}", k), ty: q_type() });
-        params.push(IrParam { name: format!("hat_{}", k), ty: array_t_n() });
-        params.push(IrParam { name: format!("r_and_{}", k), ty: IrType::TypeParam(sink.fold_scalar_type_name().into()) });
+    if finish_and_count > 0 {
+        params.push(IrParam { name: "q_and".into(), ty: q_and_array_type(finish_and_count) });
+        params.push(IrParam { name: "hat".into(), ty: hat_array_type(finish_and_count) });
+        params.push(IrParam { name: "r_and".into(), ty: r_and_array_type(finish_and_count, sink.fold_scalar_type_name()) });
     }
     params.push(IrParam { name: "q_one".into(), ty: q_type() });
     params.extend(w_params.iter().cloned());
@@ -7351,8 +7290,8 @@ mod tests {
         let mode = StorageMode::Tree(StorageSizes::new());
         let (module, _trace) = weave_vole_qsim_ir_with_mode(&circuit, &types, "and_gate", &mode);
         let func = &module.functions[0];
-        assert!(func.params.iter().any(|p| p.name == "hat_0"), "QSim must take hat_0 as an input: {:?}", func.params.iter().map(|p| &p.name).collect::<std::vec::Vec<_>>());
-        assert!(!func.params.iter().any(|p| p.name == "q_and_0"), "QSim must NOT take q_and_0 as an input (it derives it): {:?}", func.params.iter().map(|p| &p.name).collect::<std::vec::Vec<_>>());
+        assert!(func.params.iter().any(|p| p.name == "hat"), "QSim must take a batched hat array as an input: {:?}", func.params.iter().map(|p| &p.name).collect::<std::vec::Vec<_>>());
+        assert!(!func.params.iter().any(|p| p.name == "q_and"), "QSim must NOT take q_and as an input (it derives it): {:?}", func.params.iter().map(|p| &p.name).collect::<std::vec::Vec<_>>());
         assert!(func.no_inline, "QSim functions must be marked no_inline (see Milestone 1.6's compile-time fix)");
         let code = print_weaved_vole_module(&module);
         assert!(code.contains("#[inline(never)]"), "QSim's no_inline flag must be printed as #[inline(never)]:\n{code}");
@@ -7442,11 +7381,10 @@ mod tests {
         assert!(code.contains("iop_fold_gate"), "missing per-gate fold call:\n{code}");
         assert!(code.contains("IopAccumulator"), "missing state type:\n{code}");
 
-        assert!(code.contains("r_and_0"), "missing r_and_0 param:\n{code}");
-        assert!(!code.contains("r_and_1"), "unexpected r_and_1 for a single-AND-gate circuit:\n{code}");
+        assert!(code.contains("r_and: [IopChallenge; 1]"), "missing batched r_and param covering the one AND gate:\n{code}");
         assert!(code.contains("IopChallenge"), "missing fold-challenge type:\n{code}");
 
-        assert!(code.contains("hat_0"), "and_gate_step must reference the real hat_0, not a placeholder:\n{code}");
+        assert!(code.contains("hat[0]"), "and_gate_step must reference the real hat[0], not a placeholder:\n{code}");
         assert!(code.contains("delta"), "and_gate_step must reference the real delta param:\n{code}");
 
         // Not compile-checked (same reason as the BIrBlocks test): IopAccumulator
@@ -7498,8 +7436,7 @@ mod tests {
         let code = print_weaved_vole_module(module.inner());
 
         assert!(code.contains("iop_fold_gate"), "missing per-gate fold call:\n{code}");
-        assert!(code.contains("r_and_0"), "missing r_and_0 for the one AND gate:\n{code}");
-        assert!(!code.contains("r_and_1"), "storage ops must not contribute extra fold params:\n{code}");
+        assert!(code.contains("r_and: [IopChallenge; 1]"), "missing batched r_and param covering the one AND gate (storage ops must not contribute extra fold params):\n{code}");
         assert_eq!(trace.entries.len(), 2, "one write + one read");
     }
 
@@ -7573,11 +7510,11 @@ mod tests {
             &circuit, &types, "wide_and", &mode, &IopSink, None,
         );
         let code = print_weaved_vole_module(module.inner());
-        // 8 lanes → 8 independent AND-gate folds, one r_and_k each.
-        for k in 0..8 {
-            assert!(code.contains(&format!("r_and_{k}")), "missing r_and_{k} for lane {k}:\n{code}");
-        }
-        assert!(!code.contains("r_and_8"), "8-lane AND must not produce a 9th fold param:\n{code}");
+        // 8 lanes → 8 independent AND-gate folds, one batched r_and array
+        // covering all 8, each lane folded via an indexed read inside the
+        // one compact loop body (not one param per lane).
+        assert!(code.contains("r_and: [IopChallenge; 8]"), "missing batched r_and array covering all 8 lanes:\n{code}");
+        assert!(code.contains("r_and[0]") && code.contains("r_and[7]"), "expected the bundling step to read every lane (r_and[0]..r_and[7]) out of the batched param:\n{code}");
     }
 
     /// Milestone 1.6's real scaling fix: `QSim` must use the *compact*
@@ -7594,9 +7531,13 @@ mod tests {
         let mode = StorageMode::Tree(StorageSizes::new());
         let (module, _trace) = weave_vole_qsim_ir_with_mode(&circuit, &types, "wide_and", &mode);
         let func = &module.functions[0];
-        assert!(func.params.iter().any(|p| p.name == "hat_0"), "QSim must take hat_0..7 as inputs: {:?}", func.params.iter().map(|p| &p.name).collect::<std::vec::Vec<_>>());
-        assert!(func.params.iter().any(|p| p.name == "hat_7"));
-        assert!(!func.params.iter().any(|p| p.name == "q_and_0"), "QSim must not take q_and_k as an input");
+        let hat_param = func.params.iter().find(|p| p.name == "hat");
+        assert!(hat_param.is_some(), "QSim must take a batched hat array covering all 8 lanes: {:?}", func.params.iter().map(|p| &p.name).collect::<std::vec::Vec<_>>());
+        assert!(
+            matches!(&hat_param.unwrap().ty, volar_compiler::ir::IrType::Array { len: volar_compiler::ir::ArrayLength::Const(8), .. }),
+            "hat array must cover all 8 AND-gate lanes: {:?}", hat_param.unwrap().ty
+        );
+        assert!(!func.params.iter().any(|p| p.name == "q_and"), "QSim must not take q_and as an input");
         let code = print_weaved_vole_module(&module);
         assert!(code.contains("derive_and_q::"), "QSim must derive q_and via derive_and_q:\n{code}");
         // The compact path emits exactly one `core::array::from_fn` for the
@@ -7815,7 +7756,15 @@ mod tests {
         // scale (the whole point of Milestone 1.5: at real and_count=2.77M
         // scale this overhead is comparatively negligible).
         let total_and_count = count_ir_ands_no_storage(&circuit.blocks[0], &types);
-        let q_and_count = |f: &IrFunction| f.params.iter().filter(|p| p.name.starts_with("q_and_")).count();
+        // `q_and` is now one array-batched param, not one scalar per gate —
+        // read the array's own declared length instead of counting params.
+        let q_and_count = |f: &IrFunction| match f.params.iter().find(|p| p.name == "q_and") {
+            Some(p) => match &p.ty {
+                IrType::Array { len: volar_compiler::ir::ArrayLength::Const(n), .. } => *n,
+                other => panic!("expected q_and to be an array param, got {other:?}"),
+            },
+            None => 0,
+        };
         let split_and_sum: usize = funcs.iter().map(q_and_count).sum();
         assert_eq!(split_and_sum, total_and_count, "split gate counts must sum back to the whole circuit's");
 
@@ -7916,7 +7865,15 @@ mod tests {
         weave_vole_verifier_ir_split_with_trace(&circuit, &types, "il", &mode, &IopSink, &boundary, &accum_info, 1, |f| verifier_funcs.push(f));
 
         assert_eq!(prover_funcs.len(), verifier_funcs.len());
-        let and_count_of = |f: &IrFunction| f.params.iter().filter(|p| p.name.starts_with("q_and_")).count();
+        // `q_and` is now one array-batched param, not one scalar per gate —
+        // read the array's own declared length instead of counting params.
+        let and_count_of = |f: &IrFunction| match f.params.iter().find(|p| p.name == "q_and") {
+            Some(p) => match &p.ty {
+                IrType::Array { len: volar_compiler::ir::ArrayLength::Const(n), .. } => *n,
+                other => panic!("expected q_and to be an array param, got {other:?}"),
+            },
+            None => 0,
+        };
         let oracle_count_of = |f: &IrFunction| f.params.iter().filter(|p| p.name.starts_with("oracle_rd_")).count();
         let hats_len = |f: &IrFunction| match f.return_type.as_ref().unwrap() {
             IrType::Tuple(elems) => match elems.last().unwrap() {
@@ -7978,11 +7935,26 @@ mod tests {
 
         for f in &qsim_funcs {
             assert!(f.no_inline, "{} must be marked no_inline", f.name);
-            assert!(!f.params.iter().any(|p| p.name.starts_with("q_and_")), "{} must not take q_and_k as input", f.name);
+            assert!(!f.params.iter().any(|p| p.name == "q_and"), "{} must not take q_and as input", f.name);
         }
 
-        let hat_count_of = |f: &IrFunction| f.params.iter().filter(|p| p.name.starts_with("hat_")).count();
-        let q_and_count_of = |f: &IrFunction| f.params.iter().filter(|p| p.name.starts_with("q_and_")).count();
+        // `hat`/`q_and` are now one array-batched param each, not one
+        // scalar per gate — read the array's own declared length instead
+        // of counting params.
+        let hat_count_of = |f: &IrFunction| match f.params.iter().find(|p| p.name == "hat") {
+            Some(p) => match &p.ty {
+                IrType::Array { len: volar_compiler::ir::ArrayLength::Const(n), .. } => *n,
+                other => panic!("expected hat to be an array param, got {other:?}"),
+            },
+            None => 0,
+        };
+        let q_and_count_of = |f: &IrFunction| match f.params.iter().find(|p| p.name == "q_and") {
+            Some(p) => match &p.ty {
+                IrType::Array { len: volar_compiler::ir::ArrayLength::Const(n), .. } => *n,
+                other => panic!("expected q_and to be an array param, got {other:?}"),
+            },
+            None => 0,
+        };
         let hats_len = |f: &IrFunction| match f.return_type.as_ref().unwrap() {
             IrType::Tuple(elems) => match elems.last().unwrap() {
                 IrType::Array { len: volar_compiler::ir::ArrayLength::Const(n), .. } => *n,

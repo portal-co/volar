@@ -49,6 +49,23 @@ pub fn eval_ir(
     types: &IRTypes,
     inputs: &[IrValue],
 ) -> Option<Vec<IrValue>> {
+    eval_ir_with_storage(blocks, types, inputs).0
+}
+
+/// Like [`eval_ir`], but also returns the final [`StorageMap`] -- lets
+/// callers inspect committed memory contents (e.g. a result written via
+/// `StorageWrite`) after evaluation, not just the returned register values.
+/// Runs the plain, pre-movfuscation CFG by branching block-to-block (only
+/// the active block's own statements are evaluated per iteration), so it's
+/// dramatically cheaper than driving the movfuscated always-on circuit
+/// through `eval_ir_circuit_step` for the same program -- useful to check
+/// whether a fix resolves an interpreter bug before paying the cost of
+/// confirming it also holds through movfuscation.
+pub fn eval_ir_with_storage(
+    blocks: &IRBlocks<()>,
+    types: &IRTypes,
+    inputs: &[IrValue],
+) -> (Option<Vec<IrValue>>, StorageMap) {
     let mut loop_count = 0usize;
     let mut current_block: usize = 0;
     let mut current_inputs: Vec<IrValue> = inputs.to_vec();
@@ -59,15 +76,70 @@ pub fn eval_ir(
         if current_block == 0 {
             loop_count += 1;
             if loop_count > crate::interpreter::biir::MAX_ITERS {
-                return None;
+                return (None, storage);
             }
         }
 
         let block = &blocks.blocks[current_block];
-        let result = eval_ir_block(block, types, &blocks.oracles, &current_inputs, &mut storage)?;
+        let (result, _watch) = eval_ir_block(block, types, &blocks.oracles, &current_inputs, &mut storage, &[]);
+        let result = match result {
+            Some(r) => r,
+            None => return (None, storage),
+        };
 
         match result {
-            IrBlockResult::Return(vals) => return Some(vals),
+            IrBlockResult::Return(vals) => return (Some(vals), storage),
+            IrBlockResult::Jump { target, args } => {
+                current_block = target;
+                current_inputs = args;
+            }
+        }
+    }
+}
+
+/// Like [`eval_ir_with_storage`], but also returns the block-visit sequence
+/// (which original, pre-movfuscation block index ran on each hop) and the
+/// values of requested `(orig_block_idx, orig_var_id)` pairs whenever that
+/// block is visited. Since this runs the plain CFG directly, `orig_var_id`
+/// is already in that block's own native numbering -- no movfuscate-style
+/// combined-id resolution needed, unlike tracing through the movfuscated
+/// circuit.
+pub fn eval_ir_with_trace(
+    blocks: &IRBlocks<()>,
+    types: &IRTypes,
+    inputs: &[IrValue],
+    watch: &[(usize, u32)],
+) -> (Option<Vec<IrValue>>, StorageMap, Vec<usize>, Vec<(usize, u32, IrValue)>) {
+    let mut loop_count = 0usize;
+    let mut current_block: usize = 0;
+    let mut current_inputs: Vec<IrValue> = inputs.to_vec();
+    let mut storage: StorageMap = BTreeMap::new();
+    apply_pre_init(&mut storage, &blocks.pre_init, types);
+    let mut visited = Vec::new();
+    let mut watched_out = Vec::new();
+
+    loop {
+        visited.push(current_block);
+        if current_block == 0 {
+            loop_count += 1;
+            if loop_count > crate::interpreter::biir::MAX_ITERS {
+                return (None, storage, visited, watched_out);
+            }
+        }
+
+        let block = &blocks.blocks[current_block];
+        let block_watch: Vec<u32> = watch.iter().filter(|&&(b, _)| b == current_block).map(|&(_, v)| v).collect();
+        let (result, watch_vals) = eval_ir_block(block, types, &blocks.oracles, &current_inputs, &mut storage, &block_watch);
+        for (v, val) in watch_vals {
+            watched_out.push((current_block, v, val));
+        }
+        let result = match result {
+            Some(r) => r,
+            None => return (None, storage, visited, watched_out),
+        };
+
+        match result {
+            IrBlockResult::Return(vals) => return (Some(vals), storage, visited, watched_out),
             IrBlockResult::Jump { target, args } => {
                 current_block = target;
                 current_inputs = args;
@@ -93,13 +165,41 @@ pub fn eval_ir_circuit_step(
     inputs: &[IrValue],
     storage: &mut StorageMap,
 ) -> Vec<IrValue> {
-    match eval_ir_block(block, types, oracles, inputs, storage) {
+    let (result, _watch) = eval_ir_block(block, types, oracles, inputs, storage, &[]);
+    match result {
         Some(IrBlockResult::Return(vals)) => vals,
         Some(IrBlockResult::Jump { .. }) => {
             panic!("eval_ir_circuit_step: block did not end in Jmp(Return) -- not a circuit?")
         }
         None => panic!("eval_ir_circuit_step: evaluation failed"),
     }
+}
+
+/// Like [`eval_ir_circuit_step`], but also returns the current value of
+/// every var id in `watch` (silently omitted if that id never got a
+/// value this step -- e.g. dead code eliminated it). Temporary
+/// diagnostic entry point: combine with [`crate`]-level `IRVarId`s
+/// resolved via `movfuscate::movfuscate_ir_with_boundary_and_watch`'s own
+/// `(orig_block_idx, orig_var_id) -> combined_var_id` resolution, to
+/// trace an arbitrary pre-movfuscation value's real bit values across a
+/// running simulation without re-deriving where it landed by hand.
+pub fn eval_ir_circuit_step_with_watch(
+    block: &volar_ir::ir::IRBlock<()>,
+    types: &IRTypes,
+    oracles: &[OracleDecl],
+    inputs: &[IrValue],
+    storage: &mut StorageMap,
+    watch: &[u32],
+) -> (Vec<IrValue>, Vec<(u32, IrValue)>) {
+    let (result, watched) = eval_ir_block(block, types, oracles, inputs, storage, watch);
+    let vals = match result {
+        Some(IrBlockResult::Return(vals)) => vals,
+        Some(IrBlockResult::Jump { .. }) => {
+            panic!("eval_ir_circuit_step_with_watch: block did not end in Jmp(Return) -- not a circuit?")
+        }
+        None => panic!("eval_ir_circuit_step_with_watch: evaluation failed"),
+    };
+    (vals, watched)
 }
 
 // ============================================================================
@@ -139,7 +239,8 @@ fn eval_ir_block(
     oracles: &[OracleDecl],
     params: &[IrValue],
     storage: &mut StorageMap,
-) -> Option<IrBlockResult> {
+    watch: &[u32],
+) -> (Option<IrBlockResult>, Vec<(u32, IrValue)>) {
     assert_eq!(
         params.len(),
         block.params.len(),
@@ -216,9 +317,13 @@ fn eval_ir_block(
                 .collect();
             resolve_ir_target(&branch.dest, &arg_vals, &vars)
         }
+        _ => panic!("eval_ir: unhandled IRTerminator variant — add evaluation for this variant"),
     };
 
-    Some(result)
+    let watched: Vec<(u32, IrValue)> = watch.iter()
+        .filter_map(|&id| vars.get(&id).map(|v| (id, v.clone())))
+        .collect();
+    (Some(result), watched)
 }
 
 /// Resolve an `IRBlockTargetId` to an `IrBlockResult`.
@@ -244,6 +349,7 @@ fn resolve_ir_target(
                 args: arg_vals.to_vec(),
             }
         }
+        _ => panic!("resolve_ir_target: unhandled IRBlockTargetId variant — add evaluation for this variant"),
     }
 }
 
@@ -383,6 +489,7 @@ fn eval_ir_stmt(
             storage.insert((*store_id, *ty, addr_u64), val);
             vec![] // StorageWrite has no output
         }
+        _ => panic!("eval_ir_stmt: unhandled Stmt variant — add evaluation for this variant"),
     }
 }
 
@@ -400,6 +507,7 @@ pub fn bit_width(ty_id: TypeId, types: &IRTypes) -> usize {
         IrType::Tuple(elems) => elems.iter().map(|&e| bit_width(e, types)).sum(),
         IrType::Block { .. } => 32,
         IrType::Func { .. } => 32,
+        _ => panic!("bit_width: unhandled IrType variant — add bit-width calculation for this variant"),
     }
 }
 

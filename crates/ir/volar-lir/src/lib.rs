@@ -77,6 +77,7 @@ impl NameConfig {
 /// Note: `Clone`, not `Copy` — `Arr` boxes its element type.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 #[cfg_attr(feature = "rkyv", derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize))]
+#[non_exhaustive]
 #[cfg_attr(feature = "rkyv", rkyv(serialize_bounds(
     __S: rkyv::ser::Writer + rkyv::ser::Allocator,
     __S::Error: rkyv::rancor::Source,
@@ -363,7 +364,6 @@ impl<V> BranchTarget<V> {
 /// before emitting one or more instructions; each instruction inherits the
 /// most recently set provenance.  Backends that do not track provenance use
 /// the default `Prov = ()` and the no-op default impl of `set_prov`.
-<<<<<<< HEAD
 ///
 /// # Side
 ///
@@ -373,9 +373,6 @@ impl<V> BranchTarget<V> {
 /// `set_prov` — each instruction inherits the most recently set side.  The
 /// default implementation is a no-op, exactly like `set_prov`'s default.
 pub trait LirTarget<Prov: Clone = ()> {
-=======
-pub trait LirTarget<Prov: Clone + Default = ()> {
->>>>>>> origin/main
     type Value: Clone + Eq + core::fmt::Debug;
     type Block: Clone + Eq + core::fmt::Debug;
 

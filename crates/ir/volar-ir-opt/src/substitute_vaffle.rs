@@ -13,27 +13,22 @@ use alloc::{
     vec,
     vec::Vec,
 };
-<<<<<<< HEAD
 use vaffle::{Block, FuncBody, FuncDecl, FuncId, Module, SigDecl, Value};
 use volar_ir_common::{Node, Stmt, StorageAllocator, TypeRemapper};
 use volar_provenance::DualProvenanceHandler;
-=======
-use vaffle::{FuncDecl, FuncId, Module, SigDecl, Value};
-use volar_ir_common::{Stmt, StorageAllocator, TypeRemapper};
->>>>>>> origin/main
 
 /// One substitution entry for a VAFFLE module.
 ///
-/// The replacement is a full [`Module`].  Its entry function is located via
+/// The replacement is a full [`Module<Q>`].  Its entry function is located via
 /// `replacement.exports["entry"]`, or falls back to the sole `FuncDecl::Body`
 /// if there is only one and no export is set.
-pub enum VaffleSubstitution {
-    Oracle { name: String, replacement: Module },
-    Action { name: String, replacement: Module },
-    Rng    { name: String, replacement: Module },
+pub enum VaffleSubstitution<Q: Clone = ()> {
+    Oracle { name: String, replacement: Module<Q> },
+    Action { name: String, replacement: Module<Q> },
+    Rng    { name: String, replacement: Module<Q> },
 }
 
-impl VaffleSubstitution {
+impl<Q: Clone> VaffleSubstitution<Q> {
     fn name(&self) -> &str {
         match self {
             VaffleSubstitution::Oracle { name, .. } => name,
@@ -42,14 +37,26 @@ impl VaffleSubstitution {
         }
     }
 
-    fn replacement(&self) -> &Module {
+    fn replacement(&self) -> &Module<Q> {
         match self {
             VaffleSubstitution::Oracle { replacement, .. } => replacement,
             VaffleSubstitution::Action { replacement, .. } => replacement,
             VaffleSubstitution::Rng    { replacement, .. } => replacement,
         }
     }
+
+    fn kind(&self) -> SubKind {
+        match self {
+            VaffleSubstitution::Oracle { .. } => SubKind::Oracle,
+            VaffleSubstitution::Action { .. } => SubKind::Action,
+            VaffleSubstitution::Rng    { .. } => SubKind::Rng,
+        }
+    }
 }
+
+/// Internal tag for which oracle/action/RNG category a substitution targets.
+#[derive(Clone, Copy)]
+enum SubKind { Oracle, Action, Rng }
 
 /// Apply all substitutions to `module`, replacing oracle/action/RNG call sites
 /// with direct function calls to the replacement bodies.
@@ -61,6 +68,31 @@ pub fn substitute_vaffle(module: &mut Module, subs: &[VaffleSubstitution]) -> us
         total += apply_one(module, sub);
     }
     total
+}
+
+/// Apply all substitutions to a host `Module<P>`, merging replacement `Module<Q>`s,
+/// with provenance converted via `handler`.
+///
+/// Host statements are tagged `handler.map_left`; replacement statements are
+/// tagged `handler.map_right`.  Returns the converted module and the count of
+/// rewritten call sites.
+pub fn substitute_vaffle_with_handler<P, Q, H>(
+    module: Module<P>,
+    subs: &[VaffleSubstitution<Q>],
+    handler: &H,
+) -> (Module<H::Output>, usize)
+where
+    P: Clone,
+    Q: Clone,
+    H: DualProvenanceHandler<P, Q>,
+{
+    let mut out: Module<H::Output> = map_module_prov(module, |p| handler.map_left(p));
+    let mut total = 0;
+    for sub in subs {
+        let repl: Module<H::Output> = clone_map_module_prov(sub.replacement(), |q| handler.map_right(q));
+        total += apply_one_r(&mut out, sub.name(), sub.kind(), repl);
+    }
+    (out, total)
 }
 
 fn apply_one(module: &mut Module, sub: &VaffleSubstitution) -> usize {
@@ -129,6 +161,7 @@ fn apply_one(module: &mut Module, sub: &VaffleSubstitution) -> usize {
                     entry: body.entry,
                 })
             }
+            _ => panic!("substitute_vaffle: unhandled FuncDecl variant — add handling for this variant"),
         };
         module.funcs.push(new_func);
     }
@@ -147,7 +180,6 @@ fn apply_one(module: &mut Module, sub: &VaffleSubstitution) -> usize {
     count
 }
 
-<<<<<<< HEAD
 // ============================================================================
 // Generic (provenance-converting) implementation
 // ============================================================================
@@ -362,8 +394,6 @@ fn clone_map_funcdecl_prov<Q: Clone, R: Clone>(fd: &FuncDecl<Q>, f: &impl Fn(&Q)
 // Unit-case helpers (unchanged)
 // ============================================================================
 
-=======
->>>>>>> origin/main
 /// Find the entry [`FuncId`] (in the host's remapped range) for a replacement module.
 fn find_entry(repl: &Module, func_map: &[FuncId]) -> FuncId {
     if let Some(&guest_fid) = repl.exports.get("entry") {
@@ -485,13 +515,9 @@ fn remap_value<P: Clone>(
             idx: *idx,
             elem_bits: *elem_bits,
         },
-<<<<<<< HEAD
         _ => panic!("remap_value: unhandled Value variant — add remapping for this variant"),
     };
     Node::new(kind, v.prov.clone(), v.side)
-=======
-    }
->>>>>>> origin/main
 }
 
 /// Build a [`StorageAllocator`] seeded above all `StorageId`s in use in `module`.

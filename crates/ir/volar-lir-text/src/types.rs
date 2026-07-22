@@ -41,6 +41,7 @@ impl WriteText for LirType {
                 inner.write_text(w)?;
                 w.write_char(']')
             }
+            _ => w.write_str("<unknown>"),
         }
     }
 }

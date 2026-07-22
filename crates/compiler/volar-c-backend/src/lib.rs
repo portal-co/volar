@@ -1040,6 +1040,7 @@ fn lir_type_to_c_free(ty: &LirType, struct_names: &[String]) -> String {
         LirType::Native(t) => native_type_to_c(*t).to_string(),
         // Pointer: emit as `inner_type*`.
         LirType::Ptr(inner) => format!("{}*", lir_type_to_c_free(inner, struct_names)),
+        _ => panic!("lir_type_to_c_free: unhandled LirType variant — add C type mapping for this variant"),
     }
 }
 
@@ -1061,6 +1062,7 @@ fn lir_type_suffix(ty: &LirType) -> String {
         LirType::Struct(id) => format!("S{id}"),
         LirType::Native(t) => format!("Native_{t:?}"),
         LirType::Ptr(inner) => format!("Ptr_{}", lir_type_suffix(inner)),
+        _ => panic!("lir_type_suffix: unhandled LirType variant — add suffix for this variant"),
     }
 }
 
@@ -1081,6 +1083,7 @@ fn signed_variant(ty: &LirType) -> &'static str {
         LirType::Native(t) => native_type_signed(*t),
         LirType::Arr(_, _) | LirType::Struct(_) => panic!("signed_variant: aggregate type"),
         LirType::Ptr(_) => panic!("signed_variant: Ptr has no signed variant"),
+        _ => panic!("signed_variant: unhandled LirType variant — add signed C type for this variant"),
     }
 }
 

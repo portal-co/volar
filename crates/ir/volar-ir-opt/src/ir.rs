@@ -2,9 +2,9 @@
 // @ai: assisted
 //! Constant-folding pass for Volar IR (`IRBlocks`).
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::{collections::BTreeMap, vec, vec::Vec};
 use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBlocks, IRBranchTarget, IRTerminator, IRTypes, IRVarId};
-use volar_ir_common::{Constant, Stmt, TypeId};
+use volar_ir_common::{Constant, Node, Stmt, TypeId};
 
 use crate::common::{
     apply_aliases_to_stmt, canon_alias, constant_is_zero, constant_rol, constant_ror, fold_poly_in_place, mask_constant, merge_poly_into, stmt_output_type,
@@ -18,7 +18,7 @@ use crate::common::{
 /// Simplify each block of `blocks` in place until no further changes occur.
 ///
 /// Returns `true` if any block was modified.
-pub fn fold_ir_blocks<P: Clone + Default>(blocks: &mut IRBlocks<P>, types: &IRTypes) -> bool {
+pub fn fold_ir_blocks<P: Clone>(blocks: &mut IRBlocks<P>, types: &IRTypes) -> bool {
     let mut any_changed = false;
     for block in blocks.blocks.iter_mut() {
         loop {
@@ -31,12 +31,178 @@ pub fn fold_ir_blocks<P: Clone + Default>(blocks: &mut IRBlocks<P>, types: &IRTy
     any_changed
 }
 
+/// Remove statements whose result is never referenced by anything live
+/// (a later statement, or the terminator), per block.
+///
+/// Sound at per-block granularity: Volar IR blocks are self-contained --
+/// nothing outside a block can reference one of its statements except via
+/// the block's own declared params (never removed here), so a statement
+/// unreferenced within its own block is unreferenced, period.
+///
+/// Side-effecting statements are never removed regardless of whether
+/// their result is used, per `Stmt`'s own documented semantics:
+/// `StorageWrite` and `ActionCall` always; every `ActionOutput` is kept
+/// alive as long as its own `ActionCall` is (which is unconditional, so
+/// transitively every `ActionOutput` is too). `OracleCall`/`OracleOutput`
+/// and `Rng` are ordinary DCE candidates (pure, or "may be DCE'd only
+/// when demonstrably unused" for `Rng`) -- no special-casing needed
+/// beyond normal liveness, since `OracleOutput`'s own `call` operand
+/// naturally keeps a still-referenced `OracleCall` alive.
+///
+/// Returns `true` if any block was modified.
+pub fn dce_ir_blocks<P: Clone>(blocks: &mut IRBlocks<P>, _types: &IRTypes) -> bool {
+    let mut any_changed = false;
+    for block in blocks.blocks.iter_mut() {
+        if dce_ir_block_once(block).0 {
+            any_changed = true;
+        }
+    }
+    any_changed
+}
+
+/// Like [`dce_ir_blocks`], but also returns each block's own cumulative
+/// var-id remap (old `IRVarId.0` -> new `IRVarId.0`; identity for a block
+/// DCE left untouched) — lets a caller holding external var-id-based
+/// metadata computed against the *pre*-DCE block (e.g. movfuscation's own
+/// [`MovfuscBlockBoundary`]/[`MovfuscAccumInfo`], neither of which live in
+/// this crate) translate that metadata to stay valid post-DCE, instead of
+/// it silently going stale. `fold_ir_blocks`/`store_forward_ir_blocks`
+/// need no equivalent: both only rewrite statements in place (constant
+/// folding) or redirect operand references via an alias map (store
+/// forwarding) — neither ever changes a statement's own index or a
+/// block's own `stmts.len()`, so var ids they touch are stable by
+/// construction.
+pub fn dce_ir_blocks_with_remap<P: Clone>(
+    blocks: &mut IRBlocks<P>,
+    _types: &IRTypes,
+) -> (bool, Vec<BTreeMap<u32, u32>>) {
+    let mut any_changed = false;
+    let mut remaps = Vec::with_capacity(blocks.blocks.len());
+    for block in blocks.blocks.iter_mut() {
+        let (changed, remap) = dce_ir_block_once(block);
+        any_changed |= changed;
+        remaps.push(remap);
+    }
+    (any_changed, remaps)
+}
+
+fn collect_terminator_vars(term: &IRTerminator) -> Vec<IRVarId> {
+    let mut out = Vec::new();
+    let _ = term.clone().map(&mut out, |acc: &mut Vec<IRVarId>, v: IRVarId| -> Result<IRVarId, core::convert::Infallible> {
+        acc.push(v);
+        Ok(v)
+    });
+    out
+}
+
+fn collect_stmt_vars(stmt: &volar_ir::ir::IRStmt) -> Vec<IRVarId> {
+    let mut out = Vec::new();
+    let _ = stmt.clone().map_var(
+        &mut out,
+        &mut |acc: &mut Vec<IRVarId>, v: IRVarId| -> Result<IRVarId, core::convert::Infallible> { acc.push(v); Ok(v) },
+        &mut |_, ty| Ok(ty),
+        &mut |_, s| Ok(s),
+    );
+    out
+}
+
+/// Returns `(changed, remap)` — `remap` maps every pre-call `IRVarId.0` to
+/// its post-call `IRVarId.0` (identity for every id when `changed` is
+/// `false`).
+fn dce_ir_block_once<P: Clone>(block: &mut IRBlock<P>) -> (bool, BTreeMap<u32, u32>) {
+    let n_params = block.params.len();
+    let n_stmts = block.stmts.len();
+    let mut must_keep = vec![false; n_stmts];
+    for i in 0..n_stmts {
+        if matches!(&block.stmts[i].kind, Stmt::StorageWrite { .. } | Stmt::ActionCall { .. }) {
+            must_keep[i] = true;
+        }
+    }
+    for i in 0..n_stmts {
+        if let Stmt::ActionOutput { call, .. } = &block.stmts[i].kind {
+            if (call.0 as usize) >= n_params {
+                let call_idx = call.0 as usize - n_params;
+                if must_keep.get(call_idx).copied().unwrap_or(false) {
+                    must_keep[i] = true;
+                }
+            }
+        }
+    }
+
+    let mut live = must_keep.clone();
+    for v in collect_terminator_vars(&block.terminator) {
+        if (v.0 as usize) >= n_params {
+            let idx = v.0 as usize - n_params;
+            if idx < n_stmts {
+                live[idx] = true;
+            }
+        }
+    }
+    for i in (0..n_stmts).rev() {
+        if live[i] {
+            for v in collect_stmt_vars(&block.stmts[i].kind) {
+                if (v.0 as usize) >= n_params {
+                    let oidx = v.0 as usize - n_params;
+                    if oidx < i {
+                        live[oidx] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if live.iter().all(|&l| l) {
+        let identity: BTreeMap<u32, u32> = (0..(n_params + n_stmts) as u32).map(|v| (v, v)).collect();
+        return (false, identity);
+    }
+
+    let mut remap: BTreeMap<u32, u32> = BTreeMap::new();
+    for p in 0..n_params {
+        remap.insert(p as u32, p as u32);
+    }
+    let mut new_idx = n_params as u32;
+    for i in 0..n_stmts {
+        if live[i] {
+            remap.insert((n_params + i) as u32, new_idx);
+            new_idx += 1;
+        }
+    }
+    let remap_var = |v: IRVarId| -> IRVarId {
+        IRVarId(*remap.get(&v.0).unwrap_or_else(|| panic!(
+            "dce_ir_block_once: var {} referenced by a live statement/terminator but not itself live -- \
+             violates the invariant that operands are always defined earlier in the same block", v.0,
+        )))
+    };
+
+    let mut new_stmts = Vec::with_capacity(new_idx as usize - n_params);
+    for i in 0..n_stmts {
+        if live[i] {
+            let node = block.stmts[i].clone();
+            let new_kind = node.kind.clone().map_var(
+                &mut (),
+                &mut |_: &mut (), v: IRVarId| -> Result<IRVarId, core::convert::Infallible> { Ok(remap_var(v)) },
+                &mut |_, ty| Ok(ty),
+                &mut |_, s| Ok(s),
+            ).unwrap();
+            new_stmts.push(Node { kind: new_kind, ..node });
+        }
+    }
+    let new_term = block.terminator.clone().map(
+        &mut (),
+        |_: &mut (), v: IRVarId| -> Result<IRVarId, core::convert::Infallible> { Ok(remap_var(v)) },
+    ).unwrap();
+
+    block.stmts = new_stmts;
+    block.terminator = new_term;
+    (true, remap)
+}
+
 // ============================================================================
 // Internal helpers
 // ============================================================================
 
 /// One forward simplification pass over a single Volar IR block.
-fn fold_ir_block_once<P: Clone + Default>(block: &mut IRBlock<P>, types: &IRTypes) -> bool {
+fn fold_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &IRTypes) -> bool {
     let mut const_map: BTreeMap<IRVarId, Constant> = BTreeMap::new();
     let mut type_map: BTreeMap<IRVarId, TypeId> = BTreeMap::new();
     let mut alias_map: BTreeMap<IRVarId, IRVarId> = BTreeMap::new();
@@ -380,6 +546,7 @@ pub(crate) fn apply_aliases_to_ir_terminator(
                 changed |= apply_aliases_to_args(&mut branch.args, alias_map);
             }
         }
+        _ => {}
     }
     changed
 }
@@ -421,4 +588,71 @@ fn fold_ir_terminator_dead_branch(
         _ => {}
     }
     false
+}
+
+#[cfg(test)]
+mod dce_tests {
+    use super::*;
+    use volar_ir::ir::{IRBlock, IRType, IRTypeId};
+    use volar_ir_common::Type;
+
+    fn bit() -> IRTypeId { IRTypeId(0) }
+    fn types_with_bit() -> IRTypes {
+        IRTypes(alloc::vec![IRType::Primitive(Type::Bit)])
+    }
+
+    #[test]
+    fn dce_removes_genuinely_dead_stmt_and_renumbers_survivors() {
+        // params: [p0: Bit]
+        // stmts: [0]=Const(1,Bit) DEAD (never referenced),
+        //        [1]=Const(0,Bit) live (used by terminator's Jmp arg)
+        // terminator: Jmp(Return, [var 2])  -- var 2 = stmts[1], i.e. the live Const(0)
+        let mut types = types_with_bit();
+        let block = IRBlock {
+            params: alloc::vec![bit()],
+            stmts: alloc::vec![
+                Node::new(Stmt::Const(Constant { hi: 0, lo: 1 }, bit()), (), None),
+                Node::new(Stmt::Const(Constant { hi: 0, lo: 0 }, bit()), (), None),
+            ],
+            terminator: IRTerminator::Jmp {
+                target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![IRVarId(2)]),
+            },
+        };
+        let mut blocks: IRBlocks = IRBlocks::new(alloc::vec![block]);
+        let changed = dce_ir_blocks(&mut blocks, &mut types);
+        assert!(changed, "the dead Const(1) statement must be removed");
+        assert_eq!(blocks.blocks[0].stmts.len(), 1, "only the live Const(0) statement should remain");
+        match &blocks.blocks[0].stmts[0].kind {
+            Stmt::Const(c, _) => assert_eq!(c.lo, 0, "the surviving statement must be the live Const(0), not the dead Const(1)"),
+            other => panic!("expected a Const stmt, got {other:?}"),
+        }
+        // Terminator's own var reference must be renumbered: stmts[1] moved to index 0,
+        // so its var id shifts from 2 (params.len()=1 + stmt-index 1) to 1 (params.len()=1 + stmt-index 0).
+        match &blocks.blocks[0].terminator {
+            IRTerminator::Jmp { target } => assert_eq!(target.args, alloc::vec![IRVarId(1)], "terminator's own var reference must be renumbered after removal"),
+            other => panic!("expected Jmp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dce_keeps_storage_write_even_though_unused() {
+        // A StorageWrite's own "result" is never referenced by anything,
+        // but the statement itself must survive (it's a side effect).
+        let mut types = types_with_bit();
+        let block = IRBlock {
+            params: alloc::vec![bit(), bit()], // [addr, src]
+            stmts: alloc::vec![
+                Node::new(Stmt::StorageWrite {
+                    storage: volar_ir_common::StorageId(0), src: IRVarId(1), ty: bit(), addr: IRVarId(0),
+                }, (), None),
+            ],
+            terminator: IRTerminator::Jmp {
+                target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![]),
+            },
+        };
+        let mut blocks: IRBlocks = IRBlocks::new(alloc::vec![block]);
+        let changed = dce_ir_blocks(&mut blocks, &mut types);
+        assert!(!changed, "a StorageWrite must never be removed, even though its own result is unused");
+        assert_eq!(blocks.blocks[0].stmts.len(), 1);
+    }
 }
