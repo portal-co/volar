@@ -3,9 +3,7 @@
 Volar develops and refines program-related cryptography publicly. A core part
 of that mission is being transparent about how much each piece of code can be
 trusted. Volar uses a four-tier reliability classification for all source code
-and documentation, and a separate AI capability tier that determines when
-an AI agent may treat a change as self-reviewed versus when it must label the
-change as potentially unsound and queue it for review by a higher-tier agent.
+and documentation.
 The reliability tier determines:
 - Whether the file is compiled as part of any crate.
 - What source-level markers must appear.
@@ -96,11 +94,7 @@ under `experiment: mpc`), `volar-spec/src/byte_gen/prover.rs` and
 commit message `actually unsound, oops` demonstrates the commit history of
 active experimental revision).
 
-**File extension:** `.rs` (compiled), but the module **must** be gated behind
-a `volar_experimental` Cargo feature so that downstream users opt in explicitly.
-The feature is defined in each crate's `Cargo.toml` and is not enabled by
-default.
-
+**File extension:** `.rs` (compiled)
 **Required source markers:**
 ```rust
 // @reliability: experimental
@@ -161,7 +155,7 @@ compiling it. **Never** `.rs`.
 |---|---|---|---|---|
 | Normal | `.rs` | ✅ Always | ❌ | Established, proven |
 | Hazmat | `.rs` | ✅ Always | ❌ | Proven, expert use only |
-| Experimental | `.rs` | ✅ With feature | `volar_experimental` | Novel, unproven |
+| Experimental | `.rs` | ✅ With feature | no | Novel, unproven |
 | Insecure | `.rs.insecure` | ❌ Never | N/A | Known/suspected broken |
 
 ---
@@ -427,11 +421,7 @@ commit history.
 ## Current Experimental Files
 
 The following compiled files are at the experimental reliability level.
-All require the `volar_experimental` feature to be enabled.
 
-> **Note:** The `volar_experimental` feature gate is a goal of the reliability
-> system; not all files listed below are yet gated behind it in the actual
-> `Cargo.toml`. Gating them is a tracked task.
 
 | File | Experimental since | Status | Notes |
 |---|---|---|---|
@@ -459,8 +449,7 @@ All require the `volar_experimental` feature to be enabled.
    then removed once review is complete.
 3. The file is re-marked `@reliability: normal` or `@reliability: hazmat`
    as appropriate.
-4. The `volar_experimental` feature gate is removed from the module.
-5. The entry is removed from the [Current Experimental Files](#current-experimental-files)
+4. The entry is removed from the [Current Experimental Files](#current-experimental-files)
    table and added to [spec.md](spec.md) or the relevant crate doc.
 
 ### Experimental → Insecure

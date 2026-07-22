@@ -28,43 +28,9 @@ choices that:
 - Follow the reliability system: new cryptographic constructions start at
   Experimental, not Normal.
 
-## AI Capability Tiers (review-gate policy)
+## Chengelog
 
-The reliability level says how trusted the *code* is. The capability tier
-says how trusted the *AI agent* must be to self-review a change to it.
-
-| Tier | Claude models | GPT models | What this tier may author without further review |
-|---|---|---|---|
-| **Tier 1 — Glue** | Any current Claude model | Any current GPT model not listed for Tier 2 or Tier 3, including GPT-5.4-Mini and earlier small/fast variants | Documentation, formatting, mechanical refactors, test scaffolding |
-| **Tier 2 — Compiler** | Sonnet 4.6+ or Opus 4.5+ | Full GPT-5.2, GPT-5.3-Codex, full GPT-5.4, GPT-5.5, and later non-mini successors | Compiler, IR, lowering, weavers, backends, fuzzing |
-| **Tier 3 — Cryptography** | **Sonnet 5+, Opus 4.6+, or Fable 5+** (Sonnet ≤ 4.5 not permitted at this tier) | **GPT-5.5+ only** | `volar-spec`, `volar-primitives`, `volar-common`, `volar-oram*`, TFHE schemes, Hazmat code |
-
-**Crate-default tiers:**
-
-| Path | Default required tier |
-|---|---|
-| `crates/spec/volar-spec/`, `crates/spec/volar-primitives/`, `crates/spec/volar-common/` | **3** |
-| `crates/oram/volar-oram-core/`, `crates/oram/volar-oram/` | **3** |
-| `crates/compiler/`, `crates/ir/`, `crates/macros/` | 2 |
-| `crates/channel/volar-channel/`, `crates/fuzz/volar-fuzz/`, `crates/spec/volar-spec-dyn/`, `crates/spec/volar-dyn/` | 2 |
-| `docs/`, `*.md`, `Cargo.toml`/`Cargo.lock` | 1 (Cargo files: 2) |
-
-A file may explicitly raise its required tier with `// @ai-tier: 3` placed
-next to its `@reliability` marker. The marker can only raise the
-requirement, never lower it.
-
-**If your tier is below the file's required tier, you are not blocked.**
-Perform a reasoning pass first — reason through whether the change is
-genuinely cryptographic or merely structural, surface that reasoning in
-your reply, then proceed with the change and tag it as sub-threshold:
-
-```rust
-// @ai-author-tier: <your tier>
-// @ai-review: pending-tier-<required>
-```
-
-Queue the work for review by the required tier, typically at the start of
-the next session. See [`docs/agents-guide.md` § 5](docs/agents-guide.md#5-working-below-your-tier--the-sub-threshold-workflow).
+July 22, 2026: Maintainer here, I removed most enforcement-style components entirely from the reliability system, including the capability tier system entirely. This is because 1. most agents were (under that formulation) Tier 2 or Tier 3 anyway, and non-self-identifying models like GPT had trouble recognizing their tier, 2. agent identification has shown to be ineffective, still leading to subtle bugs (EVEN for authorized agents), when paper-binding, the resolution to those bugs, was incredibly effective (like most agents' Plan Modes are), and 3. I want to save tokens. If unsure during the migration, check in with the user to confirm
 
 ## Crate Constraints
 
