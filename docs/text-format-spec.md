@@ -351,14 +351,17 @@ output — it serialises the IR nodes directly so that round-tripping is lossles
 
 ---
 
-## 7. Reliability tags
+## 7. Pinnedness, stability, and legacy markers
 
-All crates in this format family are tagged:
+This format family currently carries legacy source markers such as:
 
 ```rust
 // @reliability: experimental
 // @ai: assisted
 ```
 
-New cryptographic infrastructure depending on these crates requires separate review
-before deployment.
+Under the migration policy these markers are not independent evidence. Treat
+legacy `experimental` code as Unpinned and Very unstable until a source-level
+classification names its evidence and dependent contract. New cryptographic
+infrastructure depending on these crates requires separate review before any
+deployment claim.

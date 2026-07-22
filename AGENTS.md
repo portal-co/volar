@@ -24,17 +24,18 @@ choices that:
   applications (not just the current VOLEitH construction).
 - Keep the IR, compiler, and spec layer general enough to support future
   protocols.
-- Follow the reliability system: new cryptographic constructions start at
-  Experimental, not Normal.
+- Follow the pinnedness/stability policy: new cryptographic constructions start
+  Unpinned and Very unstable unless stronger evidence and intended use are
+  documented.
 
 ## Changelog
 
 ## Merged-tree update — 2026-07-22
 
 The maintainer removed capability-tier enforcement, model identification, and
-sub-threshold review tags. All agents may contribute; correctness claims now
-rest on reproducible evidence, paper binding/review plans for cryptography, and
-human decisions where the reliability policy requires them. See
+sub-threshold review tags. All agents may contribute; correctness claims rest on
+reproducible evidence, pinnedness records, stability commitments, and human
+decisions where policy requires them. See
 [`docs/handoffs/merge-recovery/policy-and-reliability.md`](docs/handoffs/merge-recovery/policy-and-reliability.md).
 
 ## Crate Constraints
@@ -69,12 +70,13 @@ human decisions where the reliability policy requires them. See
    structure unless verifying a hard-to-change structural invariant. The
    correctness signal is: the generated code compiles and runs correctly.
 
-3. **Reliability Tags**: Files tagged `// @reliability: experimental`
-   contain unreviewed cryptographic code. New code depending on these must
-   not be deployed without separate review. `@ai: none` / `@ai: assisted`
-   tags record AI involvement. They do not gate a contribution by model;
-   cryptographic correctness still requires the review evidence in
-   `docs/reliability.md`.
+3. **Pinnedness and Stability Tags**: `// @pinnedness:` records evidence
+   binding; `// @stability:` records the dependent-facing change expectation.
+   They are independent, except Forever requires Proven. Legacy
+   `// @reliability:` markers are migration-only and make no positive claim.
+   `@ai: none` / `@ai: assisted` tags record AI involvement, not authority.
+   Model identity does not gate a contribution; cryptographic correctness still
+   requires the evidence in `docs/reliability.md`.
 
 4. **Catch-all arms**: Use `_ =>` catch-alls on IR type matches to support
    parallel development.

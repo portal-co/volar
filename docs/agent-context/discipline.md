@@ -65,16 +65,15 @@ bound `where Z: NonZk`, so a `Tagged<Zk, _>` cannot reach them.
    discipline is only known at runtime, recover the static tag through `require`
    and handle `DisciplineError`.
 
-## Tier note
+## Review note
 
-The discipline boundary is precisely the kind of cross-cutting invariant that is
-easy for a **Tier 1/2** agent to break while doing otherwise-routine work
-(wiring a new backend consumer, adding a weaver variant, fixing a build error).
-The boundary itself (`volar-discipline`, the `NonZk` bounds, the verifier tag) is
-**load-bearing — treat changes to it as Tier 3 in spirit**: if your change makes
-ZK and non-ZK artifacts assignable to one another, you are doing something wrong.
-When in doubt, write a hand-off per [`agents-guide.md`](../agents-guide.md) § 5
-rather than relaxing a tag or a bound.
+The discipline boundary is a cross-cutting invariant that routine work can break
+while wiring a backend consumer, adding a weaver variant, or fixing a build
+error. The boundary itself (`volar-discipline`, the `NonZk` bounds, and the
+verifier tag) is **load-bearing and cryptographically sensitive**: if a change
+makes ZK and non-ZK artifacts assignable to one another, it is wrong. Record a
+small reproducer and handoff rather than relaxing a tag or bound; retain the
+paper/review evidence required by the pinnedness policy.
 
 ## Trip-wires (most common in review)
 

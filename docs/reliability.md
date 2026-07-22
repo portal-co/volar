@@ -1,278 +1,217 @@
-# Code Reliability Levels
+# Code Pinnedness and Stability
 
-Volar develops and refines program-related cryptography publicly. A core part
-of that mission is being transparent about how much each piece of code can be
-trusted. Volar uses a four-level reliability classification for all source code
-and documentation.
-The reliability level determines:
-- Whether the file is compiled as part of any crate.
-- What source-level markers must appear.
-- What documentation and review requirements apply.
-- How AI contributions are labelled (see [AI Markers](#ai-markers)).
+Volar records two independent properties of source code and documentation:
 
----
+- **Pinnedness** records the strength of the evidence tying a claim or
+  implementation to an external specification, review, or formal proof.
+- **Stability** records how suitable the code is for dependents and how likely
+  its semantics, API, performance profile, or implementation are to change.
 
-## The Four Levels
+Neither axis follows from the other. In particular, a paper-pinned component can
+still be very unstable, and a stable API is not thereby secure or reviewed. The
+one intentional coupling is that **Forever** stability requires **Proven**
+pinnedness.
 
-### Level 1 — Normal
+This policy replaces the former single `@reliability:` classification. It does
+not change the model-neutral contribution policy: all agents may contribute,
+but a claim requires evidence appropriate to the claim and the human decisions
+identified below.
 
-**Definition:** Code based on established cryptographic constructions with
-published security proofs. Implementations follow the reference design
-faithfully, have been reviewed against the specification, and have passing
-tests. No novel cryptographic claims are made.
+## Pinnedness
 
-**Examples:** `volar-primitives` (standard field arithmetic), `volar-common`
-(standard hash commitments and PRG doubling), `volar-compiler` (a compiler and
-transpiler — enables cross-target deployment of spec-layer protocols; no
-cryptographic claims of its own), `volar-ir` (circuit IR data structures).
+Pinnedness is ordered by the evidence available for the precise version and
+claim at issue.
 
-**File extension:** `.rs` (normal Rust source; compiled as part of the crate).
+| Pinnedness | Meaning | Minimum evidence |
+|---|---|---|
+| **Unpinned** | No complete binding from this code and its claims to a reviewed external artifact. This is the current state of most code. | Tests and ordinary review may exist, but they do not establish a paper, external-review, or formal-proof binding. |
+| **Paper-pinned** | The implementation and claims are bound to a specific paper or published specification, but have not received the required independent external review. | Citation, relevant theorem/algorithm/section, assumptions, and a project binding artifact that maps them to the code version. |
+| **Reviewed** | An independent external review has assessed the paper binding and implementation claim. | The paper-binding evidence plus a named reviewer/review record, scope, findings, and reviewed commit/version. |
+| **Proven** | The claimed security or correctness property is formally proved in Lean or a comparable proof assistant, with a documented connection to this implementation. | Proof artifact, theorem name, artifact revision, assumptions, and an implementation/refinement or verified-code link. |
 
-**Required source marker:**
+A proof about an abstract construction does not make an implementation Proven
+unless the documented link covers the relevant implementation behavior. Likewise,
+a paper citation alone does not make code Paper-pinned.
+
+## Stability
+
+Stability is ordered from the strongest long-term commitment to the weakest.
+It is an intrinsic usability and change-expectation statement, not a security
+claim.
+
+| Stability | Meaning |
+|---|---|
+| **Forever** | The public semantics and dependency contract are intended to remain usable indefinitely. This tier requires **Proven** pinnedness. Breaking it requires a documented exceptional decision, not an ordinary release choice. |
+| **Stable** | Suitable for ordinary dependents; changes are exceptional and come with a migration path. It has no implied paper, review, or proof claim. |
+| **Semver** | The public API follows semantic versioning: compatible changes are made within a major version and breaking changes require a major version. Semver does not promise Forever or Stable semantics. |
+| **Unstable** | The field, API, semantics, or performance profile is still evolving, or known inefficiencies make dependents likely to need adaptation. |
+| **Very unstable** | A novel field, unvalidated approach, or impractical performance profile makes rework, replacement, or substantial dependent changes likely. Do not present it as a generally usable deployment component. |
+
+Only the Forever → Proven implication is automatic. A maintainer must record
+why any other stability tier is appropriate, especially when a cryptographic
+construction is made Stable or Semver.
+
+## Source markers and evidence records
+
+New or reclassified source that makes a cryptographic, security, correctness,
+or dependency-stability claim must record both axes near its module header:
+
 ```rust
-// @reliability: normal
+// @pinnedness: unpinned
+// @stability: very-unstable
 ```
-Place at the top of the file, below any copyright/license header but before
-`use` declarations.
 
-**Obligations:**
-- All public functions must have doc comments explaining their behaviour.
-- Tests must exist for all non-trivial logic.
-- Deviations from the reference construction must be noted inline.
+Permitted values are exactly the table labels in kebab case:
+`unpinned`, `paper-pinned`, `reviewed`, `proven`; and `forever`, `stable`,
+`semver`, `unstable`, `very-unstable`.
 
----
+A non-default pinnedness needs its evidence beside the marker or in a linked,
+versioned review artifact:
 
-### Level 2 — Hazmat
-
-**Definition:** Code that is cryptographically correct but requires specialized
-knowledge to use safely. The construction itself is sound (either based on
-established work or verified through the experimental pipeline), but misuse
-breaks security properties in non-obvious ways. Named after the hazardous
-materials convention: the substance is real and handled by experts, not
-discarded.
-
-**Examples:** `volar-spec/src/vole/vope/ai_hazmat.rs` (degree-K VOLE polynomial
-multiplication — correct only inside a Quicksilver-style constraint check).
-
-**File extension:** `.rs` (normal Rust source; compiled as part of the crate).
-
-**Required source marker:**
 ```rust
-// @reliability: hazmat
-// @hazmat-reason: <one-line explanation of what breaks on misuse>
+// @pinnedness: paper-pinned
+// @paper: Author et al., Title (year), §4 / Algorithm 2
+// @paper-binding: docs/reviews/example-binding.md@<commit>
+// @stability: unstable
 ```
 
-**Obligations:**
-- The `@hazmat-reason` must name the specific security property that breaks on
-  misuse (e.g. "zero-knowledge" rather than just "security").
-- The module-level doc comment must contain a `# Safety` section explaining the
-  correct usage context and at minimum one example of incorrect usage.
-- Callers inside the crate that call hazmat functions must annotate the call
-  site with a `// SAFETY(hazmat): <justification>` comment.
+`reviewed` additionally names the independent review record and reviewed
+revision. `proven` additionally names the proof artifact, theorem, revision,
+and implementation/refinement link. `forever` additionally names the owner
+commitment and the Proven evidence it relies on. Do not use a URL, an AI marker,
+or passing tests as a substitute for these records.
 
----
+New cryptographic constructions start **Unpinned** and **Very unstable** unless
+a maintainer documents stronger evidence and a less volatile intended use. They
+must have an executable main-use-case test and a paper-bound review plan before
+they can be Paper-pinned. Promotion on either axis is a human decision; a
+stability promotion never upgrades pinnedness.
 
-### Level 3 — Experimental
+## Hazmat and insecure code
 
-**Definition:** Novel constructions designed in this codebase that do not yet
-have a published security proof or peer review. The code is compiled and tested,
-but is explicitly not yet trusted. The intended lifecycle is:
+Hazmat and insecure are not positions on either axis.
 
-```
-experimental → (peer review / publication) → hazmat or normal
-           ↘ (disproven or found insecure) → insecure
-```
+### Hazmat
 
-Experimental code is the only correct destination for new cryptographic
-constructions. Writing new cryptography directly at the normal or hazmat level
-is prohibited.
+A Hazmat marker is an additional use-safety classification for code whose
+misuse breaks a named security property. It may apply at any pinnedness or
+stability level. Hazmat code retains:
 
-**Examples:** `volar-spec/src/garble.rs` (garbled circuit scheme, introduced
-under `experiment: garbling`), `volar-spec/src/mpc.rs` (MPC types, introduced
-under `experiment: mpc`), `volar-spec/src/byte_gen/prover.rs` and
-`byte_gen/verifier.rs` (prover/verifier byte generation — the `cda059c`
-commit message `actually unsound, oops` demonstrates the commit history of
-active experimental revision).
-
-**File extension:** `.rs` (compiled)
-**Required source markers:**
 ```rust
-// @reliability: experimental
-// @experimental-status: <one of: design | review-pending | review-in-progress>
-// @experimental-since: <git commit hash or date when this was first added>
-```
-
-**Obligations:**
-- Must compile cleanly with no warnings in its supported build configuration.
-- Must have at least one test that exercises the main intended use case, even if
-  the test cannot yet verify cryptographic soundness.
-- Must have a corresponding entry in this document's [Current Experimental
-  Files](#current-experimental-files) table.
-- Its callers and documentation must preserve its Experimental status; it may
-  not be used to imply a deployment, parameter, or security claim.
-
----
-
-### Level 4 — Insecure
-
-**Definition:** Code that is known or suspected to be cryptographically broken
-and cannot be compiled or used. May have been demoted from experimental after
-being disproven, or may have been placed here directly upon initial discovery
-of a fundamental flaw. The only two valid next states are:
-
-- **→ experimental:** A complete rework addresses the root flaw (e.g. replacing
-  a hash-based construction with an LWE-based one). The old insecure file
-  remains as a research record.
-- **→ deprecated/removed:** The line of work is abandoned and documented as
-  definitively false or out of scope.
-
-**Examples:** `crates/volar-spec/src/xsat.rs.insecure` — demoted from experimental
-(`bf2e4b9 experiment: deprecate xsat`) after the hash-based witness encryption
-approach was found to be information-theoretically impossible.
-
-**File extension:** `.rs.insecure` — the `.insecure` suffix prevents Rust from
-compiling it. **Never** `.rs`.
-
-**Required source marker** (inside the file, as a comment, for documentation purposes):
 ```rust
-// @reliability: insecure
-// @insecure-reason: <summary of why this is insecure>
-// @insecure-since: <git commit hash that demoted this file>
+// @hazmat-reason: <specific property that misuse breaks>
+```
 ```
 
-**Obligations:**
-- Never appears in a `mod` declaration or `include!` macro.
-- Must have a corresponding entry in `docs/insecure.md` explaining in detail
-  why it is insecure.
-- May only be promoted to experimental via a documented rework (not a rename).
+Its module documentation must have a `# Safety` section with correct usage and
+an incorrect-usage example. Every internal caller retains a
+`// SAFETY(hazmat): <justification>` comment. When a Hazmat file is next
+reclassified, add the two axis markers; do not infer either axis from Hazmat.
 
----
+### Insecure quarantine
 
-## Summary Table
+A `.rs.insecure` file is a quarantine record for a known or suspected broken
+construction. It is never compiled and is not assigned a stability tier or a
+positive pinnedness tier. It retains:
 
-| Level | Extension | Compiled | Security claim |
-|---|---|---|---|
-| Normal | `.rs` | Always | Established, proven |
-| Hazmat | `.rs` | Always | Proven but requires expert use |
-| Experimental | `.rs` | Supported build configuration | Novel; designed for review, not yet trusted |
-| Insecure | `.rs.insecure` | Never | Known/suspected broken; research record only |
+```rust
+```rust
+// @insecure-reason: <why the construction is broken>
+// @insecure-since: <demotion commit>
+```
+```
 
+It must not appear in `mod` or `include!`, and it must have a detailed entry in
+[insecure.md](insecure.md). A replacement must be a new `.rs` file with a
+separate construction and begins Unpinned and Very unstable; never rename the
+quarantined file into use.
 
-## AI Markers
+## AI markers
 
 Files meaningfully shaped by an AI assistant carry a module-level `//! @ai:`
-marker. It records authorship and review history, not authority or a substitute
-for evidence.
+marker. It records authorship and review history, not authority, pinnedness,
+stability, or correctness.
 
 | Marker | Meaning |
 |---|---|
 | `none` | No AI involvement. |
 | `supervised` | AI drafted work that a human reviewed line by line. |
-| `assisted` | AI and human collaborated; the human reviewed the intent and output. |
+| `assisted` | AI and human collaborated; the human reviewed intent and output. |
 | `generated` | AI produced most content; review was high-level. |
-| `unreviewed` | AI-produced content without meaningful review; permitted only in Experimental or Insecure material. |
+| `unreviewed` | AI-produced content without meaningful review. |
 
-Normal and Hazmat files must not be marked `unreviewed`; Hazmat files must not
-be marked `generated`. Update the marker when it no longer describes the actual
-review history.
-
+An AI marker never supplies the independent review required for Reviewed or the
+formal artifact required for Proven.
 
 ## Evidence-based contribution and review
 
-All agents may contribute. Capability tiers, model allowlists, model
-identification, and sub-threshold source tags are not part of this policy. The
-required guardrail is evidence appropriate to the claim:
+All agents may contribute. Model identity, capability tiers, and sub-threshold
+source tags are not policy mechanisms. The required guardrail is evidence
+appropriate to the claim:
 
-- Normal code changes need focused tests; compiler and backend changes need
-  generated-code compile-and-run evidence where applicable.
-- Hazmat changes retain their `@hazmat-reason`, `# Safety` documentation, and
-  `SAFETY(hazmat)` call-site justifications.
-- Experimental cryptographic work remains explicitly Experimental, has an
-  executable main-use-case test and a paper-bound review artifact, and cannot
-  justify a security, parameter, noise, or deployment claim without the
-  independent/human review named by that artifact.
-- New cryptographic constructions enter at Experimental. Promotion from
-  Experimental, production parameter/security claims, and reliability-policy
-  changes require a human decision.
-- Generated files are updated through their generator pipeline. A failure caused
-  by a missing environment dependency is recorded separately from a source
-  failure.
+- Compiler and backend changes need focused tests and generated-code
+  compile-and-run evidence where applicable.
+- Cryptographic changes need the paper-binding, review, and human decision
+  required by their pinnedness claim; they may not use a stability label to
+  imply a parameter, noise, security, or deployment result.
+- Hazmat changes retain their safety documentation and call-site justification.
+- Generated files are changed only through their generator pipeline. A missing
+  environment dependency is recorded separately from a source failure.
+- A review or handoff records the exact reproducer, source evidence, invariants,
+  unresolved blockers, and next smallest safe action.
 
-A review/handoff records the exact reproducer, source evidence, relevant
-invariants, unresolved blockers, and next smallest safe action. The
-[merge-recovery policy handoff](handoffs/merge-recovery/policy-and-reliability.md)
-records the migration that adopted this model-neutral policy.
+## Legacy-marker migration
 
+`// @reliability: normal`, `hazmat`, and `experimental` are deprecated
+migration markers. They are not a pinnedness or stability claim and must not be
+used to infer one. No project-wide mechanical conversion is performed because
+that would make unsupported classifications.
 
-## Commit Message Convention
+Until a file is reclassified with both new markers:
 
-Commit prefixes such as `[AI]`, `[AI+human]`, `[human]`, and `experiment:` may
-record authorship or reliability history, but they do not establish correctness.
-Use the AI marker and the change's test/review evidence to describe the actual
-state.
+- unmarked and legacy-marked compiled files are treated as **Unpinned** and
+  **Unstable**;
+- legacy `experimental` is additionally a conservative signal to treat the
+  work as **Very unstable** until assessed;
+- legacy `hazmat` remains a use-safety obligation only; and
+- `.rs.insecure` remains quarantined as described above.
 
+When touching a legacy-marked file for a substantive change, replace its
+`@reliability:` marker with explicit axis markers if its current evidence and
+intended dependent contract can be stated honestly. Otherwise leave the legacy
+marker in place and record the missing classification in the handoff; do not
+invent a paper binding, review, proof, or stability commitment merely to finish
+the migration.
 
-## Merged-tree update — 2026-07-22
+## Reclassification protocol
 
-Evidence: policy stream `6596629` → `d783cb1` and
-[policy-and-reliability handoff](handoffs/merge-recovery/policy-and-reliability.md).
-Removed capability-tier enforcement, model gating, sub-threshold tags, and the
-obsolete `volar_experimental` feature requirement. Reliability levels, AI
-provenance markers, paper binding, and human promotion decisions remain.
+1. Record the current commit, evidence, exact claim, and intended dependents in
+   a review artifact or handoff.
+2. Add or update both source markers and the supporting paper/review/proof or
+   stability record.
+3. Run the applicable tests, generated-code execution, and target checks; keep
+   environment blockers distinct.
+4. Obtain the required human decision for any non-default pinnedness, Forever
+   stability, deployment claim, parameter/security claim, or policy change.
+5. Update the relevant plan, documentation index, and this policy's inventory
+   only when the evidence is current.
 
+Pinnedness can advance without changing stability, and stability can be revised
+downward without changing the evidence record. Demote to `.insecure` whenever a
+fundamental flaw makes the construction unsafe to compile or use.
 
-## Current Experimental Files
+## Current classification inventory
 
-The following compiled files are at the experimental reliability level.
+No project-wide source reclassification has been performed under this policy.
+Existing reliability markers are governed by the legacy migration rules above.
+The first classifications must be evidence-led, not inferred from crate names,
+old labels, or model identity.
 
+## Policy update — 2026-07-22
 
-| File | Experimental since | Status | Notes |
-|---|---|---|---|
-| `crates/volar-spec/src/garble.rs` | `929a03c` (experiment: garbling) | design | Half-gate garbling over VOLE; no security proof yet |
-| `crates/volar-spec/src/mpc.rs` | `79ee6d7` (experiment: mpc) | design | MPC party type skeleton; semantics TBD |
-| `crates/volar-spec/src/byte_gen/prover.rs` | `263eab1` (fix name) | review-pending | Revised after `cda059c` (actually unsound, oops) |
-| `crates/volar-spec/src/byte_gen/verifier.rs` | `263eab1` (fix name) | review-pending | Same revision cycle; `58e8f84` last structural change |
-
----
-
-## Current Insecure Files
-
-| File | Demoted | Reason summary |
-|---|---|---|
-| `crates/volar-spec/src/xsat.rs.insecure` | `bf2e4b9` (experiment: deprecate xsat) | Hash-based witness encryption is information-theoretically impossible; see [insecure.md](insecure.md) |
-
----
-
-## Promotion and Demotion Protocol
-
-### Experimental → Normal or Hazmat
-
-1. A peer review or publication establishes the security of the construction.
-2. The `@experimental-status` marker is updated to `review-in-progress` and
-   then removed once review is complete.
-3. The file is re-marked `@reliability: normal` or `@reliability: hazmat`
-   as appropriate.
-4. The entry is removed from the [Current Experimental Files](#current-experimental-files)
-   table and added to [spec.md](spec.md) or the relevant crate doc.
-
-### Experimental → Insecure
-
-1. A fundamental flaw is discovered (e.g. information-theoretic impossibility,
-   specific attack, reduction to a false assumption).
-2. The file is renamed from `foo.rs` to `foo.rs.insecure`.
-3. The `mod foo;` declaration in `lib.rs` is removed (or commented with a note).
-4. The `@reliability: insecure` marker and `@insecure-reason` are added.
-5. A detailed entry is added to [insecure.md](insecure.md).
-6. The entry in [Current Experimental Files](#current-experimental-files) is
-   moved to [Current Insecure Files](#current-insecure-files).
-
-### Insecure → Experimental (rework)
-
-A rework must address the root flaw with a different construction, not merely
-patch the existing one. The protocol:
-
-1. Write a new file (e.g. `foo_v2.rs`) at the experimental level explaining
-   how it differs from the insecure version and why the flaw does not apply.
-2. Add a `@insecure-predecessor: <old file>` marker in the new file.
-3. The old `.rs.insecure` file is **not renamed** — it stays as a record.
-4. Update `insecure.md` to note the rework and link to the new file.
+Evidence: owner-directed policy update following merge-recovery Phase 3
+(`63e8988`) and the [policy-and-reliability handoff](handoffs/merge-recovery/policy-and-reliability.md).
+This update replaces the single reliability ladder with independent pinnedness
+and stability axes while preserving model-neutral contribution rules, Hazmat
+safety obligations, insecure quarantine, typed IR, provenance, deterministic
+specification, generated-code testing, and the ZK/non-ZK discipline.

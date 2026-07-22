@@ -10,7 +10,7 @@ Volar's goals are:
 
 1. **Implement** program-related cryptography in auditable, `no_std` Rust, starting with the constructions the team understands well and expanding outward.
 2. **Compile** those implementations to other targets (dynamic Rust, TypeScript, C) so the same cryptographic kernel can run in browsers, servers, and embedded systems without re-implementation drift.
-3. **Develop and refine publicly** — new constructions enter at the Experimental reliability tier, earn review, and graduate to Normal or Hazmat. Broken constructions are preserved as Insecure with analysis explaining why.
+3. **Develop and refine publicly** — new constructions begin Unpinned and Very unstable, gain paper bindings, independent review, or formal proof only when evidenced, and make a separate stability commitment to dependents. Broken constructions are preserved as `.insecure` with analysis explaining why.
 
 The current implementation focus is **VOLE-based zero-knowledge proofs** (specifically the Quicksilver-style VOLEitH construction) and **garbled circuits**, because these share a clean common substrate (VOLE correlations, boolean circuits, field arithmetic) that the compiler and IR were designed around. Other ZK schemes, MPC protocols, and related constructions will follow as the infrastructure matures.
 
@@ -96,7 +96,7 @@ The `volar-codegen` binary drives this pipeline. The manifest system captures st
 - The Hypercube technique is used to derive separate VOLE commitments from a single ABO generation.
 - All `volar-spec` crates are `#![no_std]` and depend only on `cipher`, `rand`, `digest`, and `typenum`/`generic-array` from the RustCrypto ecosystem.
 - The `multi_party` feature on `volar-spec` extends 2-party protocols to N-party; the N-party ABO protocol has a noted soundness caveat.
-- Code is annotated with `@reliability` tags (`normal`, `experimental`, `hazmat`) and `@ai` tags indicating AI involvement in authoring.
+- Code is being migrated from legacy `@reliability` tags to independent `@pinnedness` (evidence) and `@stability` (dependent contract) tags; `@ai` tags record AI involvement in authoring.
 
 ## License
 

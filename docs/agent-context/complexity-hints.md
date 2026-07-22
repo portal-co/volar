@@ -1,6 +1,6 @@
 # Complexity hints (reentry metadata)
 
-> Tier 2 — Compiler / IR. See [virt-adaptive-split-adr.md](virt-adaptive-split-adr.md).
+> Compiler / IR context. See [virt-adaptive-split-adr.md](virt-adaptive-split-adr.md).
 
 ## Purpose
 

@@ -8,14 +8,14 @@ This guide is for **integrators** — people writing applications that need
 zero-knowledge proofs, garbled circuits, oblivious RAM, or
 program-related cryptography in general, and who want to use Volar to do
 it. It is opinionated about which APIs to depend on, in part because the
-[reliability system](reliability.md) constrains what is currently safe to
-deploy.
+[pinnedness/stability policy](reliability.md) records what evidence exists and
+what dependents may expect.
 
-> **Volar is early-stage.** Most cryptographic constructions in this
-> repository are at the **Experimental** reliability level. Read
-> [reliability.md](reliability.md) before depending on any spec-layer
-> crate. The exception is the field-arithmetic primitives in
-> `volar-primitives`, which are at Normal reliability.
+> **Volar is early-stage.** Most code is currently Unpinned, and no
+> project-wide stability reclassification has been completed. Read
+> [reliability.md](reliability.md) before depending on any crate. A legacy
+> `@reliability:` marker is not a deployment, paper-binding, review, proof, or
+> stability claim.
 
 ---
 
@@ -24,16 +24,16 @@ deploy.
 Volar is a Rust workspace plus generated TypeScript that exposes four
 broad capabilities:
 
-| Capability | Crate(s) | Reliability | Production-ready? |
+| Capability | Crate(s) | Current migration status | Deployment position |
 |---|---|---|---|
-| Field arithmetic over GF(2), GF(2⁸), GF(2⁶⁴), GF(2¹²⁸), GF(2²⁵⁶) | `volar-primitives` | Normal | Yes |
-| Hash commitments and length-doubling PRG | `volar-common` | Normal | Yes |
-| VOLE-based zero-knowledge proofs (Quicksilver-style VOLEitH) | `volar-spec` | Experimental (most parts) | **No.** Prototyping only. |
-| Garbled circuits (half-gate scheme) | `volar-spec` (`garble`) | Experimental | **No.** Prototyping only. |
-| Multi-party computation type skeletons | `volar-spec` (`mpc`) | Experimental, status `design` | **No.** Stubs only. |
-| Recursive Path ORAM (client + server) | `volar-oram`, `volar-oram-core` | Experimental | **No.** Prototyping only. |
-| Generic protocol abstraction (transport-agnostic) | `volar-channel` | Experimental | **No.** Prototyping only. |
-| Compiler from `volar-spec` Rust to dynamic Rust, TypeScript, or C | `volar-compiler`, `volar-weaver`, `volar-c-backend`, `volar-lir-codegen` | Normal | Yes — for the compiler itself; the *output* inherits the reliability of the spec it compiled. |
+| Field arithmetic over GF(2), GF(2⁸), GF(2⁶⁴), GF(2¹²⁸), GF(2²⁵⁶) | `volar-primitives` | Legacy marker; no explicit two-axis classification | Assess the exact pinned commit and evidence before deployment. |
+| Hash commitments and length-doubling PRG | `volar-common` | Legacy marker; no explicit two-axis classification | Assess the exact pinned commit and evidence before deployment. |
+| VOLE-based zero-knowledge proofs (Quicksilver-style VOLEitH) | `volar-spec` | Mostly legacy `experimental`; treat as Unpinned and Very unstable | **No.** Prototyping only. |
+| Garbled circuits (half-gate scheme) | `volar-spec` (`garble`) | Legacy `experimental`; treat as Unpinned and Very unstable | **No.** Prototyping only. |
+| Multi-party computation type skeletons | `volar-spec` (`mpc`) | Legacy `experimental`; treat as Unpinned and Very unstable | **No.** Stubs only. |
+| Recursive Path ORAM (client + server) | `volar-oram`, `volar-oram-core` | Legacy `experimental`; treat as Unpinned and Very unstable | **No.** Prototyping only. |
+| Generic protocol abstraction (transport-agnostic) | `volar-channel` | Legacy `experimental`; treat as Unpinned and Very unstable | **No.** Prototyping only. |
+| Compiler from `volar-spec` Rust to dynamic Rust, TypeScript, or C | `volar-compiler`, `volar-weaver`, `volar-c-backend`, `volar-lir-codegen` | Legacy markers; no explicit two-axis classification | Generated output inherits the evidence and stability position of its input. |
 
 The compiler is more mature than the protocols it compiles. If you need
 something that runs cross-target (browser + server) but is not security
@@ -61,9 +61,9 @@ volar-spec       = { git = "https://github.com/portal-co/volar.git" }
 ```
 
 You import the primitive types and call the Rust APIs directly.
-Reliability tags on the source files apply: do not deploy code that
-depends on `// @reliability: experimental` modules in production without a
-review.
+Pinnedness and stability records on the source files apply. During migration,
+treat legacy `experimental` modules as Unpinned and Very unstable; do not
+deploy them without the required independent evidence and human decision.
 
 ### 2.2 Dynamic Rust (`volar-spec-dyn`)
 
@@ -145,9 +145,10 @@ emits `unimplemented!` for `_128` / `_256` primitive types. See
 
 ## 3. Three Worked Integrations
 
-### 3.1 Computing in GF(2¹²⁸) (production-safe)
+### 3.1 Computing in GF(2¹²⁸)
 
-`volar-primitives` is at Normal reliability. You can use it today.
+`volar-primitives` has not yet received an explicit two-axis classification.
+Pin and assess the exact revision before any deployment decision.
 
 ```rust
 use volar_primitives::{Galois128, gf_invert_128};
@@ -176,7 +177,7 @@ const product = fieldMul(a, b);
 
 ### 3.2 Hash commitments
 
-Production-safe.
+Pin and assess the exact revision before any deployment decision.
 
 ```rust
 use volar_common::hash_commitment::commit;
@@ -193,10 +194,11 @@ The TypeScript equivalent is `commit(message, nonce)` from
 > `nonce` is unpredictable and unique per commitment. Generate it from a
 > CSPRNG; never reuse it across commitments to different messages.
 
-### 3.3 Building a VOLE ZK proof of a circuit (Experimental)
+### 3.3 Building a VOLE ZK proof of a circuit (Unpinned, Very unstable)
 
-This is an Experimental construction. The integration shape is given so
-you can prototype, but **do not deploy** without an external review.
+This legacy-Experimental construction is treated as Unpinned and Very unstable.
+The integration shape is given so you can prototype, but **do not deploy**
+without the required external review and documented reclassification.
 
 The end-to-end flow is:
 
@@ -256,7 +258,7 @@ your own driver (a TCP loop, a WebSocket loop, a request/response RPC
 handler, …). Because `step` is pure, the same `Protocol` implementation
 runs over any transport without modification.
 
-### 3.5 Using ORAM (Experimental)
+### 3.5 Using ORAM (Unpinned, Very unstable)
 
 The `volar-oram` crate provides Recursive Path ORAM with deterministic
 eviction.
@@ -281,48 +283,49 @@ integration via the FHE weaver, see [agent-context/oram.md](agent-context/oram.m
 
 ---
 
-## 4. Reliability Hygiene for Integrators
+## 4. Pinnedness and Stability Hygiene for Integrators
 
-Integrators inherit the reliability tier of every Volar module they use.
-Practical rules:
+Integrators inherit the evidence and dependent contract of every Volar module
+they use. Practical rules:
 
-1. **Pin the commit**, not the version. Volar is pre-1.0 and the
-   reliability of any given module can change between commits. Pin to a
-   specific git revision and review the diff before bumping it.
-2. **Never enable the `volar_experimental` Cargo feature in
-   production**, even transitively. It is the explicit opt-in for code
-   that has not been reviewed.
-3. **Read each `// @reliability` marker on the modules you import.** If
-   any of them is `experimental`, you depend on unproven cryptography.
-4. **Read the `# Safety` section of every Hazmat module you call.** The
-   misuse condition is the security property you must enforce at every
-   call site.
-5. **Never link an `.insecure` file.** Their extension is the only thing
-   stopping `rustc` from compiling them; do not move or rename them.
+1. **Pin the commit**, not the version. Volar is pre-1.0; pinnedness and
+   stability may change between commits. Pin to a specific revision and review
+   the diff before bumping it.
+2. **Read both `// @pinnedness` and `// @stability` markers and their evidence
+   records.** An Unpinned component has no complete external binding; a Very
+   unstable component is not a general deployment dependency.
+3. **Treat legacy `@reliability: experimental` as Unpinned and Very unstable.**
+   A legacy `normal` or `hazmat` marker is not an automatic paper, review,
+   proof, or stability claim.
+4. **Read the `# Safety` section of every Hazmat module you call.** The misuse
+   condition is the security property you must enforce at every call site.
+5. **Never link an `.insecure` file.** Its extension keeps it out of Rust
+   module discovery; do not move or rename it into use.
 
-For applications that can defer cryptographic deployment, the safest
-posture today is:
-
-- Use `volar-primitives` and `volar-common` directly in production.
-- Use `volar-compiler` to lower toy or research circuits for prototyping
-  on Rust dyn, TypeScript, or C.
-- Treat every other crate as research code: vendor it, audit your subset,
-  and re-derive your own reliability assessment.
+For applications that can defer cryptographic deployment, the safest posture
+today is to use Volar for prototyping, vendor and audit the exact subset you
+need, and make an evidence-led downstream assessment. Do not infer deployment
+readiness from a legacy marker, an AI marker, passing tests alone, or generated
+output.
 
 ---
 
 ## 5. Versioning and Stability Promises
 
-| Area | Stability promise |
+The explicit `@stability` marker, not a legacy reliability label, defines a
+component's contract:
+
+| Stability | Integrator expectation |
 |---|---|
-| `// @reliability: normal` Rust APIs | Source-compatible within a minor version once Volar reaches 1.0. Today: best-effort only. |
-| `// @reliability: experimental` Rust APIs | None. May change without notice. May be demoted to insecure. |
-| `// @reliability: hazmat` Rust APIs | Source-compatible within a major version, but the safety contract can be tightened. |
-| Generated TypeScript | Tracks the underlying spec; regenerate from your pinned commit. The function signatures may change between commits. |
-| Generated C | Currently for testing; not stable. |
-| `.volar.d` manifest format | Stable within a major version of `volar-compiler`. |
-| Volar IR text format (`volar-ir-text`, `volar-compiler-text`) | Draft. `volar-lir-text` is stable at v1; see [text-format-spec.md](text-format-spec.md). |
-| `LirTarget` trait | Adding methods is non-breaking only behind a feature gate. |
+| `forever` | Intended to remain usable indefinitely; it must also be Proven. |
+| `stable` | Changes are exceptional and include a migration path. |
+| `semver` | Compatibility follows semantic versioning; breaking changes require a major version. |
+| `unstable` | Expect evolution and plan for adaptation. |
+| `very-unstable` | Expect replacement or substantial adaptation; do not use as a general deployment dependency. |
+
+Generated TypeScript and C track their pinned input revision. Generated C is
+currently for testing. Until a component carries an explicit stability marker,
+treat it as Unstable under the migration policy.
 
 ---
 
@@ -361,12 +364,12 @@ Field operations on small types are cheap; field operations on
 implement its own driver that moves messages across the actual
 transport.
 
-### Mistake: Promoting an Experimental dependency in your own fork
+### Mistake: Reclassifying a dependency in your own fork without evidence
 
-If you fork Volar and re-mark a file from `experimental` to `normal` to
-unlock something for your downstream, you now own the reliability
-argument for that file. Keep the original markers and add your own
-tracking on top — do not erase Volar's signals.
+If you fork Volar and change an Unpinned/Very unstable or legacy marker to make
+it appear deployable, you now own the evidence and dependent-contract argument.
+Keep Volar's markers and evidence records, add your own review artifact, and do
+not erase the migration signal.
 
 ---
 
@@ -376,22 +379,21 @@ If you are building something on Volar and want it tracked in the
 project:
 
 1. File an issue describing the use case.
-2. Note which crates and which `@reliability` levels your application
+2. Note which crates and which pinnedness/stability markers your application
    depends on.
-3. If the application reaches the point of needing a previously
-   Experimental construction promoted, that is signal that the project
-   should prioritise the review work for that construction.
+3. If the application needs a less volatile contract or stronger evidence for a
+   dependency, that is a signal to prioritise its review or proof work.
 
-This feeds the project's reliability planning: the constructions that
-real applications depend on get reviewed first.
+This feeds the project's classification planning: the constructions that real
+applications depend on get evidence and stability work first.
 
 ---
 
 ## 8. Related Documents
 
 - [overview.md](overview.md) — workspace layout and pipeline.
-- [reliability.md](reliability.md) — reliability levels, AI tier system,
-  promotion/demotion protocol.
+- [reliability.md](reliability.md) — pinnedness, stability, AI markers,
+  legacy migration, and reclassification protocol.
 - [spec.md](spec.md) — full `volar-spec` reference.
 - [compiler.md](compiler.md) — `volar-compiler` reference.
 - [vole-weaving.md](vole-weaving.md) — how the VOLE ZK weaver works.

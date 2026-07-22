@@ -1,16 +1,16 @@
 # The `.insecure` File Extension
 
-> This document covers the **Insecure** reliability level in detail.
-> For the full four-level reliability system (Normal, Hazmat, Experimental,
-> Insecure) including source markers, AI markers, and the promotion/demotion
-> protocol, see [reliability.md](reliability.md).
+> This document covers the non-compiled insecure quarantine. It is not a
+> pinnedness or stability tier. For the two-axis policy, legacy-marker
+> migration, AI markers, and reclassification protocol, see
+> [reliability.md](reliability.md).
 
 ## Purpose
 
-The `.insecure` extension is **Level 4** in the Volar reliability system.
-Files at this level contain cryptographically broken or unproven constructions
-kept as a research record. They are never compiled and must not be imported or
-depended upon by production code.
+The `.insecure` extension quarantines cryptographically broken or suspected
+broken constructions as a research record. These files are never compiled and
+must not be imported or depended upon by production code. They receive neither
+a stability tier nor a positive pinnedness tier.
 
 The extension serves as an explicit, machine-checkable signal:
 - It cannot be accidentally included via `mod foo;` (Rust only recognizes `.rs`).
@@ -30,9 +30,11 @@ The extension serves as an explicit, machine-checkable signal:
 4. **Leave `.insecure` files in the repository.** They are a research record;
    deleting them loses context. Use `git log` and the comment header to
    understand their history.
-5. **The only valid promotions** are to the Experimental level via a documented
-   rework (not a rename), or to deprecated/removed if the line of work is
-   definitively abandoned. See [reliability.md — Insecure → Experimental](reliability.md#insecure--experimental-rework).
+5. **The only valid return to compiled code** is a documented rework in a new
+   `.rs` file, beginning Unpinned and Very unstable; never rename the
+   quarantined file. The other outcome is deprecated/removed if the line of
+   work is definitively abandoned. See
+   [reliability.md — Insecure quarantine](reliability.md#insecure-quarantine).
 
 ---
 
@@ -288,8 +290,9 @@ until a construction with a proper security proof is identified.
 
 ## Future `.insecure` Candidates
 
-These constructions are currently at the **Experimental** level but may be
-demoted to Insecure if a fundamental flaw is found:
+These constructions retain legacy `@reliability: experimental` markers and,
+until evidence-led reclassification, are treated as Unpinned and Very unstable.
+They may be quarantined as `.insecure` if a fundamental flaw is found:
 
 - **Preprocessing-phase protocols** (`byte_gen/prover.rs`, `byte_gen/verifier.rs`)
   that assume honest behavior from a semi-honest majority — the `cda059c`
@@ -299,9 +302,9 @@ demoted to Insecure if a fundamental flaw is found:
   but the VOLE-specific binding has not been reviewed.
 - **MPC types** (`mpc.rs`) — minimal stub; semantics not yet defined.
 
-New constructions should be introduced at the Experimental level, not added
-directly as `.insecure` files. See [reliability.md](reliability.md) for
-the correct introduction protocol.
+New constructions should be introduced as compiled code at Unpinned and Very
+unstable, not added directly as `.insecure` files. See
+[reliability.md](reliability.md) for the reclassification protocol.
 
 ---
 

@@ -2,7 +2,7 @@
 
 > **Referenced by**: `crates/oram/volar-oram/src/lib.rs` (proptest module)
 >
-> **Status**: @reliability: experimental
+> **Status**: legacy `@reliability: experimental`; treated as Unpinned and Very unstable until reclassified
 
 ---
 

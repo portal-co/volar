@@ -1,10 +1,11 @@
 # Prove-the-Verifier: IOP-based (Merkle + Fiat–Shamir) Backend
 
-> **Reliability:** the whole construction (`volar-iop`) is
-> `@reliability: experimental` — **Tier 3**, needs cryptographic review
-> before production trust. Agents: read
-> [`agent-context/discipline.md`](agent-context/discipline.md) before
-> touching anything on the ZK ↔ non-ZK boundary.
+> **Pinnedness/stability:** `volar-iop` retains a legacy
+> `@reliability: experimental` marker and is treated as Unpinned and Very
+> unstable until evidence-led reclassification. It needs cryptographic review
+> before any production-trust claim. Agents: read
+> [`agent-context/discipline.md`](agent-context/discipline.md) before touching
+> anything on the ZK ↔ non-ZK boundary.
 
 This document describes **prove-the-verifier**: after the pre-ZK passes and
 the ZK weave, the VOLE **verifier** is itself a computation — a stream of
@@ -223,7 +224,7 @@ produces.
 
 ## Honest scope
 
-- **Tier 3 / needs cryptographic review**: the tower field's soundness
+- **Needs cryptographic review**: the tower field's soundness
   parameters, the native-field fold algebra, the Merkle domain separation,
   the Fiat–Shamir absorb ordering in the finalization IOP, and the `k`→`n`/`q`
   sizing formulas (§1.2) — all a reasonable first choice, not a

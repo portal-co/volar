@@ -2,7 +2,7 @@
 
 > **Referenced by**: `volar-spec/src/vole/memory.rs`, `volar-weaver/src/vole.rs`
 >
-> **Status**: @reliability: experimental
+> **Status**: legacy `@reliability: experimental`; treated as Unpinned and Very unstable until reclassified
 
 ## Overview
 

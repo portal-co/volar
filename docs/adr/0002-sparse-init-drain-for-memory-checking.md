@@ -5,9 +5,10 @@
 sortedness + the `r0` constant-term `encode` hardening; the `addr_bits` cap is
 lifted to `1..=64` and init/drain are `Θ(K)`. Option B (sorted-trace permutation)
 remains the future gold-standard for fully uniform RAM.
-**Tier of recommendations:** Tier 2 (touches `volar-weaver`; reuses existing
-`volar-spec` primitives — no new spec surface required for the recommended path).
-**Prepared by:** Opus 4.8, session 2026-06-03, VCB timestamp-soundness arc.
+**Review boundary:** compiler/weaver evidence plus generated-code execution
+(touches `volar-weaver`; reuses existing `volar-spec` primitives — no new spec
+surface required for the recommended path).
+**Prepared:** session 2026-06-03, VCB timestamp-soundness arc.
 
 ---
 

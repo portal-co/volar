@@ -26,25 +26,26 @@ documents live in [`archive/`](archive/README.md).
 
 ---
 
-## Reliability and Evidence at a Glance
+## Pinnedness, Stability, and Evidence at a Glance
 
-Every source file carries a `// @reliability:` marker and, where applicable, a
-`//! @ai:` marker. All agents may contribute; neither marker nor a model identity
-establishes correctness. [reliability.md](reliability.md) defines the evidence,
-review-plan, and human-decision requirements for a claim.
+Pinnedness records the evidence supporting a claim; stability records the
+commitment and expected change rate for dependents. They are independent, except
+that **Forever** stability requires **Proven** pinnedness. All agents may
+contribute; neither these markers nor a model identity establishes correctness.
+[reliability.md](reliability.md) defines the required evidence and human
+decisions.
 
-| Level | Extension | Compiled | Meaning |
-|---|---|---|---|
-| **Normal** | `.rs` | Always | Established construction with reviewed implementation evidence |
-| **Hazmat** | `.rs` | Always | Proven but expert-only use; misuse breaks a named property |
-| **Experimental** | `.rs` | Supported build configuration | Novel, explicitly untrusted work under review |
-| **Insecure** | `.rs.insecure` | Never | Known/suspected broken research record |
+| Axis | Values | Meaning |
+|---|---|---|
+| **Pinnedness** | Unpinned → Paper-pinned → Reviewed → Proven | Evidence from no complete external binding through formal proof connected to the implementation |
+| **Stability** | Forever → Stable → Semver → Unstable → Very unstable | Dependent-facing longevity and change expectation; not a security claim |
 
-For a new cryptographic construction, begin at Experimental with a
-paper-bound review artifact. Promotion, parameter/security claims, and
-reliability-policy changes require the human decisions stated in
-[reliability.md](reliability.md). Compiler and backend changes need real
-compile-and-run evidence where applicable.
+New cryptographic work begins Unpinned and Very unstable. Paper bindings,
+independent review, proof, and every non-default stability commitment require
+documented evidence. Legacy `@reliability:` markers are migration-only; Hazmat
+is a separate use-safety classification and `.insecure` remains a non-compiled
+quarantine. Compiler and backend changes need real compile-and-run evidence
+where applicable.
 
 
 ## Topic Index
@@ -53,7 +54,7 @@ compile-and-run evidence where applicable.
 
 | Document | What it covers |
 |---|---|
-| [reliability.md](reliability.md) | Reliability levels, AI markers, evidence requirements, promotion/demotion protocol |
+| [reliability.md](reliability.md) | Pinnedness, stability, legacy-marker migration, AI markers, and reclassification protocol |
 | [overview.md](overview.md) | Workspace layout, crate dependency graph, compilation pipeline |
 | [insecure.md](insecure.md) | The `.insecure` extension and current insecure files |
 | [provenance.md](provenance.md) | Per-statement origin tracking through the IR pipeline |
@@ -149,7 +150,7 @@ historical context.
 ```
                 ┌─────────────────────────┐
                 │      reliability.md     │  ← single source of truth
-                │  (levels + evidence)    │     for what is safe to claim
+                │ (pinnedness + stability)│     for what is safe to claim
                 └────────────┬────────────┘
                              │
             ┌────────────────┼────────────────┐

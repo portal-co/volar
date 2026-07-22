@@ -15,7 +15,9 @@ repaired focused `cargo test -p volar-spec` suite passes. Track B is gated by
 The dynamic generated crate has a pre-existing generated associated-type parse
 failure for `cargo fmt --check`, and the LIR/C widening ring stops at unresolved
 const parameter `L` in `encrypt_branch`. Neither backend remains verified for
-these target-facing static paths.
+these target-facing static paths. Under the pinnedness/stability policy, the
+legacy TFHE marker maps to Unpinned and Very unstable until evidence supports a
+documented reclassification.
 
 ## Implementation status
 
@@ -417,8 +419,9 @@ confirmed compiler representation gap in its own workstream.
 
 Each phase should be separately reviewable. Phases that alter only tests,
 metadata, or mechanical adapters can be prepared independently; any phase
-that changes a cryptographic interpretation requires review and should retain the
-module's Experimental status.
+that changes a cryptographic interpretation requires review and should retain
+its Unpinned, Very unstable classification unless current evidence supports a
+human-approved reclassification.
 
 ### Phase 0 — Baseline, inventory, and target-support matrix
 
@@ -647,8 +650,8 @@ text shape as the primary correctness signal.
 | Inventory, documentation, non-semantic test harness | Reproducible review appropriate to the changed behavior |
 | Parser/IR/LIR representation or backend support | Generated-code compile-and-run coverage |
 | Moving TFHE parameter binding from runtime to type-level | Cryptographic review and differential behavior evidence |
-| New table encoding, multi-input packing, output encoding, or noise claim | Cited cryptographic reference/correctness review; retains Experimental status |
-| Naming a production security parameter set or promotion from Experimental | Independent cryptographic/human review per `reliability.md`; never AI-only |
+| New table encoding, multi-input packing, output encoding, or noise claim | Cited reference/correctness review; remains Unpinned and Very unstable unless reclassified with current evidence |
+| Naming a production security parameter set or non-default pinnedness/stability | Independent cryptographic/human review per `reliability.md`; never AI-only |
 
 ## Acceptance criteria
 
@@ -670,6 +673,6 @@ text shape as the primary correctness signal.
   genuinely dynamic API, or has a scheduled fixed-shape replacement.
 - Multiple small concrete parameter configurations and multiple fixed table
   shapes pass Rust behavior tests and real LIR → C compile-and-run tests.
-- No change weakens the Experimental reliability status of TFHE, makes a
+- No change makes a non-default TFHE pinnedness/stability claim, a
   security-level claim for an unreviewed parameter set, or crosses the
   ZK/non-ZK artifact boundary.

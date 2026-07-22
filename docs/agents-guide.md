@@ -24,11 +24,13 @@ and the human decisions named by the relevant policy.
 
 ## Evidence and review
 
-- Reliability markers and AI markers describe code and authorship/review
-  history; they are not model-gating mechanisms.
-- New cryptographic work starts Experimental and needs a paper-bound review
-  artifact. Promotion, parameter/security claims, and reliability-policy
-  changes remain human decisions under [reliability.md](reliability.md).
+- Pinnedness and stability markers describe evidence and dependent-facing
+  change expectations; AI markers describe authorship/review history. None is
+  a model-gating mechanism.
+- New cryptographic work starts Unpinned and Very unstable and needs a
+  paper-bound review plan. Non-default pinnedness, Forever stability,
+  parameter/security claims, and policy changes remain human decisions under
+  [reliability.md](reliability.md).
 - Hazmat work retains its safety documentation and call-site justification.
 - Generated artifacts are changed only through their generator pipeline.
 - A handoff must record the reproducer, evidence, invariants, and next smallest
@@ -36,8 +38,8 @@ and the human decisions named by the relevant policy.
 
 ## Related documents
 
-- [reliability.md](reliability.md) — reliability levels, AI markers, and
-  promotion/demotion protocol.
+- [reliability.md](reliability.md) — pinnedness, stability, AI markers, and
+  reclassification protocol.
 - [handoffs/merge-recovery/index.md](handoffs/merge-recovery/index.md) —
   current merged-tree recovery evidence and open blockers.
 - [insecure.md](insecure.md) — policy for the `.insecure` file extension.
@@ -49,5 +51,5 @@ and the human decisions named by the relevant policy.
 Evidence: policy stream `6596629` → `d783cb1` and the
 [policy-and-reliability handoff](handoffs/merge-recovery/policy-and-reliability.md).
 Capability tiers, model identification, and sub-threshold tags were removed.
-The evidence requirements above, reliability levels, and human decision points
-remain in force.
+The evidence requirements above, pinnedness/stability distinctions, and human
+decision points remain in force.

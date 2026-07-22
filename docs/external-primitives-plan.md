@@ -1,10 +1,18 @@
 # External Access Primitives: Oracles, Actions, and Native RNG
 
-**Status**: Planning — awaiting review before implementation.  
-**Reliability tier for new code**: Experimental.  
+**Status**: Planning — awaiting review before implementation.
+**Pinnedness/stability for new cryptographic code**: Unpinned and Very unstable until evidence-led reclassification.
 **@ai: assisted**
 
 ---
+
+## Pinnedness/stability update — 2026-07-22
+
+Evidence: owner-directed policy update after `63e8988` and the
+[policy-and-reliability handoff](handoffs/merge-recovery/policy-and-reliability.md).
+This plan's new cryptographic work begins Unpinned and Very unstable; its
+required-consumption and generated-code evidence remain independent of any
+later paper binding, review, proof, or stability commitment.
 
 ## 1. Motivation
 
@@ -153,10 +161,10 @@ pub enum Stmt<Var, Addr = Var> {
 }
 ```
 
-**Why call + projection?**  
+**Why call + projection?**
 The previous draft correlated multi-output action stmts by name within a block. This breaks after any pass that reorders, renames, or splits stmts — including movfuscation, CSE, and the planned lowering passes. The `call: Var` field is a stable SSA variable ID that survives all passes.
 
-**Why `result_ty` stored in `*Call` stmts?**  
+**Why `result_ty` stored in `*Call` stmts?**
 `infer_stmt_result_type` takes a shared `&[IRType]` and must not mutate the type table. Interning `IrType::Tuple(output_tys)` lazily would require `&mut IRTypes`. Storing the pre-interned `TypeId` at construction time keeps inference read-only. The cost is one extra `TypeId` field per `*Call` stmt, which is acceptable.
 
 ### 3.2 Oracle and action tables in Volar IR

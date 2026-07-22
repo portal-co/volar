@@ -20,6 +20,10 @@ validation to enable broader work. The rejected arbitrary-table/three-bit
 selector prototype remains rejected; never infer a wider table or generic PBS
 claim from the current API.
 
+**Policy update:** the legacy TFHE marker maps to Unpinned and Very unstable
+until evidence supports a documented reclassification. This does not relax the
+core-audit dependency or any non-goal below.
+
 ## 0. Decision record and safety status
 
 This plan has two deliberately separable tracks:
@@ -39,8 +43,8 @@ This plan has two deliberately separable tracks:
    That is cryptographic work requiring an exact reference selection and must
    not be treated as a prerequisite for the LUT-first optimizer.
 
-Both tracks remain experimental cryptographic work, not merely compiler
-optimization:
+Both tracks remain Unpinned, Very unstable cryptographic work during the
+legacy-marker migration, not merely compiler optimization:
 
 - A table must correctly encode a Boolean function in the negacyclic test
   polynomial.
@@ -53,11 +57,12 @@ optimization:
   equivalence with that cone, preserve ordering/effects/provenance, and never
   silently cross a control-flow or external-effect boundary.
 
-The current TFHE module remains `@reliability: experimental` and
-`@experimental-status: unreviewed`. Nothing in this plan establishes a secure
+The current TFHE module retains the legacy `@reliability: experimental` and
+`@experimental-status: unreviewed` markers, so the migration policy treats it
+as Unpinned and Very unstable. Nothing in this plan establishes a secure
 parameter set, a concrete security level, a noise bound, or a production-ready
-bootstrap implementation. Promotion remains a human decision under
-[reliability.md](reliability.md).
+bootstrap implementation. Any non-default pinnedness or stability decision
+remains a human decision under [reliability.md](reliability.md).
 
 ### 0.1 What “multi-input PBS” and “layered negacyclic” mean here
 
@@ -655,7 +660,7 @@ semantics and use typed `IrExpr`/`IrStmt` nodes only.
 
 Migration stages:
 
-1. New API is opt-in and test-only/experimental.
+1. New API is opt-in, test-only, Unpinned, and Very unstable.
 2. TFHE’s flat scheme selects it only after direct-IR coverage demonstrates
    equivalence and the old Boolar path remains available as a reference.
 3. CFG integration is considered separately; no CFG control-flow fusion lands
@@ -883,7 +888,7 @@ exists; no unsupported cone is fused; fallback output remains equivalent.
 **Exit gate:** the direct-IR contract is reusable by a future AST-to-AST
 weaver, while Boolar remains a compatibility shim rather than a blocker.
 
-### Phase 5 — External review and promotion decision
+### Phase 5 — External review and reclassification decision
 
 **Review:** independent human cryptographic review; an AI contribution alone cannot complete this phase.
 
@@ -892,9 +897,10 @@ weaver, while Boolar remains a compatibility shim rather than a blocker.
       any generalized selector/error/encoding derivation separately.
 - [ ] Integration review of generated Rust/C output and the Transparent
       discipline boundary.
-- [ ] Decide whether the feature remains opt-in Experimental, is revised, or
-      is demoted if a correctness flaw is found.
-- [ ] Do not change TFHE reliability level without the required human action.
+- [ ] Decide whether the feature remains opt-in, Unpinned, and Very unstable,
+      is revised, or is quarantined if a correctness flaw is found.
+- [ ] Do not change TFHE pinnedness or stability without the required human action
+      and current evidence record.
 
 ## 7. Review matrix
 
@@ -906,7 +912,7 @@ weaver, while Boolar remains a compatibility shim rather than a blocker.
 | Fusion equivalence review | Cryptographic reviewer plus compiler reviewer | Does every accepted cone map to exactly the requested validated table or layer schedule without crossing liveness/effect/CFG boundaries? |
 | Backend integration review | Backend reviewer | Does generated Rust/LIR/C preserve concrete table/key dimensions, use typed IR nodes, and compile/run? |
 | ZK-discipline review | Cryptographic reviewer | Does the new transparent FHE route preserve tags and avoid ZK/non-ZK escape hatches? |
-| External/promotion review | Human cryptographic reviewer | Are any deployment/security claims warranted? |
+| External/reclassification review | Human cryptographic reviewer | Are any deployment/security claims warranted, and is a pinnedness or stability change justified? |
 
 ## 8. Explicit non-goals
 
@@ -943,8 +949,8 @@ following hold:
 - [ ] Tests cover exhaustive small-domain tables, descriptor rejection, two
       distinct non-deployable parameter fixtures, generated Rust execution,
       and LIR/C execution where the static target surface supports it.
-- [ ] The feature remains Experimental/opt-in and no ZK/non-ZK boundary is
-      weakened.
+- [ ] The feature remains Unpinned, Very unstable, and opt-in unless a documented
+      reclassification justifies otherwise; no ZK/non-ZK boundary is weakened.
 
 The **generalized PBS milestone** additionally requires:
 

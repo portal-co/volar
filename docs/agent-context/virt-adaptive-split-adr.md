@@ -1,7 +1,7 @@
 # ADR: Adaptive split & specialized regions (`volar-ir-virt`)
 
-> Intra-tier ADR for [`virtualize_ir` adaptive split](../virt.md). Tier 2 —
-> Compiler. See [reliability.md](../reliability.md).
+> ADR for [`virtualize_ir` adaptive split](../virt.md). Compiler context; see
+> [reliability.md](../reliability.md) for the pinnedness/stability policy.
 
 ## Status
 

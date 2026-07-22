@@ -1,8 +1,9 @@
 # Handoff: Generic Field Bumping (`BumpField` / `Bumped<F>`)
 
-**Status:** Deferred — requires Tier 3 (Opus 4.6+)  
-**Blocking component:** `volar-spec`, `volar-primitives`, `volar-common`  
-**Prepared by:** Sonnet 4.6 (Tier 2), session 2026-05-11
+**Status:** Deferred — requires cryptographic review and an evidence-led
+pinnedness/stability classification.
+**Blocking component:** `volar-spec`, `volar-primitives`, `volar-common`
+**Prepared:** session 2026-05-11
 
 ---
 
@@ -19,7 +20,8 @@ The prototype already exists for the simplest case:
 - `Bit` lives in GF(2) = {0, 1}.
 - `Z3` lives in GF(3) = {0, 1, 2}.  `Z3(2)` is the `None` sentinel.
 
-This document captures the design so a Tier-3 agent can complete it.
+This document captures the design so a reviewer can complete it with the
+required cryptographic evidence.
 
 ---
 
@@ -119,7 +121,7 @@ are the prerequisite building blocks.
 
 ---
 
-## Remaining work (for Tier 3)
+## Remaining work (requiring cryptographic review)
 
 1. Define `BumpField` trait in `crates/spec/volar-spec/src/lib.rs`.
 2. Define `Bumped<F>` newtype in the same file.
@@ -128,18 +130,20 @@ are the prerequisite building blocks.
 5. Add compiler lowering of `Bumped::into_option()` → `IrExpr::If` in the
    `volar-compiler-passes` lowering pipeline.
 6. Add TFHE-backend handling for `Z3` selectors in the weaver.
-7. Update `docs/reliability.md` to track `BumpField` as Experimental until
-   the PBS bootstrapping path is reviewed.
+7. Add `@pinnedness: unpinned` and `@stability: very-unstable` markers with a
+   paper-bound review plan until the PBS bootstrapping path is reviewed.
 
 ---
 
-## Files that must not be touched by Tier 2
+## Cryptographically sensitive files
 
-- `crates/spec/volar-spec/src/lib.rs` — `@ai-tier: 3`
-- `crates/spec/volar-primitives/src/lib.rs` — `@ai-tier: 3`  
-  (already modified this session under explicit owner direction for `Z3` only;
-  `BumpField` impl is the remaining Tier-3 work)
+- `crates/spec/volar-spec/src/lib.rs`
+- `crates/spec/volar-primitives/src/lib.rs`
+
+`BumpField` needs a paper-bound review plan and evidence-led classification;
+old `@ai-tier` tags are removed policy and do not gate edits.
 
 ---
 
-*This document was generated as a Tier-2 handoff per `docs/agents-guide.md § 5`.*
+*This handoff predates the pinnedness/stability policy; its historical model and
+tier wording has been removed.*

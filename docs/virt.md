@@ -1,6 +1,6 @@
 # Virtualization Pass
 
-`crates/ir/volar-ir-virt` — marked `@reliability: experimental`
+`crates/ir/volar-ir-virt` retains legacy `@reliability: experimental`; it is treated as Unpinned and Very unstable until reclassified.
 
 The pass converts a multi-block `IRBlocks` (or `BIrBlocks`) into a
 **handler-per-unique-skeleton** module plus a bytecode table.  The key

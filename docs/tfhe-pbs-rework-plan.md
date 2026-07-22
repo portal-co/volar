@@ -7,9 +7,10 @@ and `crates/compiler/volar-weaver/src/fhe.rs`. TFHE semantic changes require
 paper-bound cryptographic review; compiler integration requires generated-code
 compile-and-run evidence.
 
-**Reliability:** remain Experimental. The present implementation must not be
-advertised as having a validated security level, a production failure
-probability, or interoperable TFHE semantics.
+**Pinnedness/stability:** `tfhe.rs` retains a legacy `experimental` marker and
+is therefore treated as Unpinned and Very unstable during migration. The present
+implementation must not be advertised as having a validated security level, a
+production failure probability, or interoperable TFHE semantics.
 
 **Decision requested from the owner/reviewers:** approve a validation-first
 **possible full rework**, not a PBS API migration. The old plan incorrectly
@@ -29,6 +30,10 @@ This plan is the validation gate for all TFHE work. The test-only clear oracle
 and the focused suite passes. That is functional evidence, not Gate B or Gate
 C acceptance: independent-reference, nonzero-noise, parameter, and security
 review remain open. Do not enable or generalize PBS work from these tests.
+
+**Policy update:** under the pinnedness/stability policy, this legacy
+`experimental` TFHE work is Unpinned and Very unstable. That classification
+neither authorizes implementation nor weakens any validation gate.
 
 ## 1. Executive decision
 
@@ -54,15 +59,15 @@ Only after that audit may the project choose one of the following paths:
 1. **Repair in place:** the core is shown equivalent to the chosen reference
    model and only has localized, reviewed defects. Build a narrowly specified
    gate/PBS layer on top of it.
-2. **New experimental implementation:** the representation, RGSW layout,
-   decomposition, key switching, or phase conventions differ materially from
-   the reference model. Preserve the current code as an experimental research
-   record and implement a separately named, module-isolated rework; do not
-   silently “fix” individual gates in place.
+2. **New Unpinned, Very unstable implementation:** the representation, RGSW
+   layout, decomposition, key switching, or phase conventions differ materially
+   from the reference model. Preserve the current code as a migration record and
+   implement a separately named, module-isolated rework; do not silently “fix”
+   individual gates in place.
 3. **Suspend native TFHE semantics:** the team does not want to own the
-   validation burden. Keep the current code experimental and do not extend the
-   weaver beyond validated behavior; investigate binding to an independently
-   maintained TFHE implementation instead.
+   validation burden. Keep the current code Unpinned and Very unstable and do
+   not extend the weaver beyond validated behavior; investigate binding to an
+   independently maintained TFHE implementation instead.
 
 This plan deliberately permits outcome 2. A working toy/noiseless truth-table
 suite is not evidence that a hand-written GINX implementation is a suitable
@@ -226,8 +231,8 @@ spec and must not be mixed into this one.
 
 - [ ] Inventory every public TFHE symbol, generated mirror, compiler component
   test, and runtime reference. Do **not** delete or rename any API yet.
-- [ ] Add a capability/reliability header identifying the implementation as
-  Experimental and record this plan as its pending review artifact.
+- [ ] Add a pinnedness/stability header identifying the implementation as
+  Unpinned and Very unstable and record this plan as its pending paper-binding/review artifact.
 - [ ] Record the known direct-XOR composition counterexample as a regression:
   its standalone decoder result is insufficient evidence that it can be fed to
   a later bootstrapped operation.
@@ -293,9 +298,9 @@ vectors, and any divergence has a written explanation in the core spec.
 - If the current representation can be mapped faithfully to the reference,
   continue with a limited repair-in-place.
 - If it cannot, create a new module such as `tfhe_rework`/`tfhe_ginx_v2` with a
-  new experimental API and migration plan. Leave the legacy implementation
-  available only as a clearly documented experimental record until a human
-  decides its disposition.
+  new Unpinned, Very unstable API and migration plan. Leave the legacy
+  implementation available only as a clearly documented migration record until
+  a human decides its disposition.
 
 ### Phase 4 — narrow, certificate-based gate PBS API
 
@@ -374,12 +379,12 @@ The user-requested isolation mechanism is a Rust module, not a Cargo feature:
 `tfhe::pbs` (or a new rework module) keeps source-discovering compiler paths
 able to parse `volar-spec/src/tfhe.rs`.
 
-Experimental code is not Cargo-feature gated. A Rust module is valid API
-isolation and preserves `volar-compiler` source discovery, but it does not
-substitute for the validation gates or alter the code's Experimental status.
-Before exposing a new API, record its review artifact, supported target path,
-and the human decision required for any parameter, security, or deployment
-claim.
+Unpinned or Very unstable code is not Cargo-feature gated. A Rust module is
+valid API isolation and preserves `volar-compiler` source discovery, but it
+does not substitute for validation gates or alter either axis. Before exposing
+a new API, record its paper-binding/review artifact, supported target path, and
+the human decision required for any parameter, security, deployment, or
+non-default pinnedness/stability claim.
 
 ---
 
@@ -416,7 +421,7 @@ No implementation may be called ready for cryptographic review unless:
 | Oracle/certificates | Independent reviewer | Does the clear model use paper-derived semantics and catch the realistic convention mistakes? |
 | Parameters/noise | Human cryptographer | Is the secret/noise/modulus/key-switch model coherent, and what failure/security claim is actually justified? |
 | Compiler integration | Compiler reviewer plus cryptographic sign-off | Does typed IR preserve semantics/publicness/provenance and retain `Transparent` discipline? |
-| Reliability policy | Human owner | Does module isolation preserve Experimental status without implying a deployment claim? |
+| Pinnedness/stability policy | Human owner | Does module isolation preserve the Unpinned, Very unstable classification without implying a deployment claim? |
 
 ---
 

@@ -2,7 +2,7 @@
 
 > **Referenced by**: `volar-weaver/src/fhe.rs`, `volar-spec/src/tfhe.rs`
 >
-> **Status**: @reliability: experimental
+> **Status**: legacy `@reliability: experimental`; treated as Unpinned and Very unstable until reclassified
 
 ---
 
@@ -209,7 +209,7 @@ For zero-AND-gate storage, use the VOLE Commitment mode instead (see
 ## TFHE Scheme
 
 > **File**: `crates/spec/volar-spec/src/tfhe.rs`
-> **Status**: @reliability: experimental, @experimental-status: unreviewed
+> **Status**: legacy `@reliability: experimental`, `@experimental-status: unreviewed`; treated as Unpinned and Very unstable until reclassified
 
 TFHE (Chillotti et al., *J. Cryptology* 2020; Micciancio & Polyakov, ePrint
 2020/086) implements boolean gate evaluation via GINX blind-rotation bootstrapping
@@ -301,4 +301,4 @@ and scheme imports.  `self_contained = false` emits only the function bodies.
 
 - [VOLE storage modes](vole-weaving.md) — zero-AND-gate memory checking
 - [Memory checking protocol](memory-checking.md) — multiset hash specification
-- [Reliability](reliability.md) — experimental status of TFHE
+- [Pinnedness and stability](reliability.md) — legacy TFHE marker and migration policy

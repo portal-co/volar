@@ -2,7 +2,7 @@
 
 > **Referenced by**: `crates/ir/volar-vaffle-target/src/waffle_lower.rs`
 >
-> **Status**: @reliability: experimental
+> **Status**: legacy `@reliability: experimental`; treated as Unpinned and Very unstable until reclassified
 
 ---
 

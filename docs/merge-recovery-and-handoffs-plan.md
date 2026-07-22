@@ -85,7 +85,7 @@ choice, not mistaken for either branch's original intent.
 
 | Stream | Tip / source | What must be reconciled |
 |---|---|---|
-| Relaxed policy | `6596629` → `d783cb1`; `AGENTS.md`, `docs/agents-guide.md`, `docs/reliability.md` | Capability-tier enforcement, sub-threshold tags, and mandatory model identification were intentionally removed. Reliability levels, experimental/hazmat requirements, review plans, paper binding, and the ZK/non-ZK discipline were **not** removed. |
+| Relaxed policy | `6596629` → `d783cb1`; later owner policy update in `63e8988` tree | Capability-tier enforcement, sub-threshold tags, and mandatory model identification were intentionally removed. The later two-axis policy retains pinnedness/stability evidence, Hazmat obligations, insecure quarantine, review plans, paper binding, and the ZK/non-ZK discipline. |
 | Static shapes + mono | `63e2ddc`, `8604107`, `e914e00` | TFHE decomposition-base parameters became const-generic and LUT width was constrained. New GINX tests must call the actual parameterized APIs rather than old runtime-argument forms. |
 | Metadata + instruction groups | `9aa70b0`, `da42b31`, `979b35a` | Node provenance/membership and text/fuzz coverage were added. Empty-program and generated-infrastructure provenance must have an explicit, total policy that preserves provenance rather than a panic or invented attribution. |
 | Faster FHE / GINX audit | `fc1c5b2`, `b7da7eb`, `46dce80` | The test-only clear oracle and Phase-2 conformance tests land with a validation-first plan. The failed arbitrary-table prototype was rejected; no general PBS, 3+-input selector, parameter/security claim, or raw composable XOR may be inferred from the merge. |
@@ -287,8 +287,10 @@ Required initial handoffs are:
 Reconciled the policy documents and all active plans named below against
 `08d1d33` and the model-neutral handoffs. Each changed plan has a dated
 merged-tree update that links its successor handoff. The documents now preserve
-reliability/evidence requirements without capability tiers, model gating,
-sub-threshold tags, or the removed Experimental Cargo feature. The TFHE plans
+the then-current reliability/evidence requirements without capability tiers,
+model gating, sub-threshold tags, or the removed Experimental Cargo feature.
+A later owner-directed policy update supersedes the single reliability ladder
+with pinnedness and stability axes; see `docs/reliability.md`. The TFHE plans
 record the focused oracle/conformance evidence as a validation gate rather than
 a parameter, security, PBS-generalization, or deployment result; the metadata,
 instruction-group, static-shape, and LIR plans record their actual landed state
@@ -301,7 +303,7 @@ next agent implement its stale wording.
 
 | Document | Required reconciliation |
 |---|---|
-| `AGENTS.md`, `docs/agents-guide.md`, `docs/reliability.md`, `docs/README.md` | Remove stale capability-tier, model-gating, sub-threshold-tag, and `volar_experimental` claims. Replace with a concise model-neutral rule: all agents may contribute; correctness claims require the appropriate evidence, paper binding/review plan where relevant, and human decisions where policy says so. Preserve reliability levels and no-raw-IR / deterministic-spec / ZK-discipline requirements. |
+| `AGENTS.md`, `docs/agents-guide.md`, `docs/reliability.md`, `docs/README.md` | Remove stale capability-tier, model-gating, sub-threshold-tag, and `volar_experimental` claims. The later policy update also replaces reliability levels with pinnedness/stability axes. Preserve model-neutral evidence rules and no-raw-IR / deterministic-spec / ZK-discipline requirements. |
 | `docs/tfhe-pbs-rework-plan.md` | Mark as the validation gate for TFHE work; correct its now-obsolete claim that Experimental must use a Cargo feature. State which phases have landed only after the repaired tests prove it. |
 | `docs/tfhe-ginx-core-spec.md` | Keep the current “draft/model, not conformance proof” wording. Add only verified conformance-test status; do not promote it into a parameter/security claim. |
 | `docs/tfhe-multi-input-pbs-weaver-plan.md` | Add a prominent dependency/supersession note: LUT-first/XOR and generalized-PBS work are blocked behind the rework plan's core audit. Retain the current two-address-bit limit and the rejection of arbitrary wider tables. Remove capability-tier instructions rather than merely renaming a model. |

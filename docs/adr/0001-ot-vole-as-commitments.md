@@ -1,8 +1,9 @@
 # ADR 0001: OT and VOLE primitives as commitments-with-deferred-opening
 
 **Status:** Findings — drives trait surface for FAEST work, not yet implemented
-**Tier of recommendations:** Tier 3 (touches `volar-spec`)
-**Prepared by:** Opus 4.7, session 2026-05-14, M0a of the FAEST plan
+**Review boundary:** cryptographic review and an evidence-led
+pinnedness/stability classification are required because this touches `volar-spec`.
+**Prepared:** session 2026-05-14, M0a of the FAEST plan
 
 ---
 
@@ -102,7 +103,7 @@ does not need to know which camp the setup came from.**
 
 The audit confirms the plan's proposed traits cover the existing
 primitives cleanly. Concretely, these traits should land in `volar-spec`
-during the FAEST work (Tier 3, Opus only), with retrofitted impls for
+during the FAEST work with cryptographic review, with retrofitted impls for
 existing OT primitives in a follow-up:
 
 ### `LinearHomomorphicCommitment` (per FAEST plan Diversity §1)
@@ -171,7 +172,7 @@ transcript.
    traits above in `volar-spec/src/commitment/` (new module) during M2,
    and define BAVC as `impl VectorCommitment + impl PublicCoinOpening`.
 2. **Retrofit Camp A primitives as `DeferredOpening` impls in a
-   follow-up.** This is a low-risk Tier 3 task: add the impl block,
+   follow-up.** This remains cryptographically sensitive: add the impl block,
    add a small test verifying the trait contract holds, no behavioural
    change. Keep it out of the FAEST critical path.
 3. **The FAEST weaver in M5 should take a `&impl PublicCoinOpening` for

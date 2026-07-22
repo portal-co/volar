@@ -14,7 +14,8 @@ stops at unresolved `L` while lowering `encrypt_branch` through the C backend;
 this is distinct from the LLVM environment blocker. Do not claim workspace,
 generic monomorphization, virtualisation, or real-interpreter E2E success until
 current compile-and-run evidence is recorded. Historical entries below are not
-current status assertions.
+current status assertions; their `normal`/`experimental` reliability labels are
+legacy markers superseded by the pinnedness/stability migration policy.
 
 ## Current Goal
 

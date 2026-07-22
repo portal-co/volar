@@ -2,7 +2,7 @@
 
 > **Referenced by**: `crates/fuzz/volar-fuzz/`, `fuzz/`
 >
-> **Status**: @reliability: experimental
+> **Status**: legacy `@reliability: experimental`; treated as Unpinned and Very unstable until reclassified
 
 ---
 
