@@ -26,35 +26,26 @@ documents live in [`archive/`](archive/README.md).
 
 ---
 
-## Reliability and AI Capability At a Glance
+## Reliability and Evidence at a Glance
 
-Every source file carries a `// @reliability:` marker and a `//! @ai:`
-marker. AI agents must additionally satisfy a **capability tier** that
-matches or exceeds the file's required tier. Both systems are defined in
-[reliability.md](reliability.md).
-
-### Reliability levels
+Every source file carries a `// @reliability:` marker and, where applicable, a
+`//! @ai:` marker. All agents may contribute; neither marker nor a model identity
+establishes correctness. [reliability.md](reliability.md) defines the evidence,
+review-plan, and human-decision requirements for a claim.
 
 | Level | Extension | Compiled | Meaning |
 |---|---|---|---|
-| **Normal** | `.rs` | Always | Established constructions, proven security |
-| **Hazmat** | `.rs` | Always | Proven but requires expert use; misuse breaks security |
-| **Experimental** | `.rs` | `volar_experimental` feature | Novel; designed for review, not yet trusted |
-| **Insecure** | `.rs.insecure` | Never | Known/suspected broken; research record only |
+| **Normal** | `.rs` | Always | Established construction with reviewed implementation evidence |
+| **Hazmat** | `.rs` | Always | Proven but expert-only use; misuse breaks a named property |
+| **Experimental** | `.rs` | Supported build configuration | Novel, explicitly untrusted work under review |
+| **Insecure** | `.rs.insecure` | Never | Known/suspected broken research record |
 
-### AI capability tiers
+For a new cryptographic construction, begin at Experimental with a
+paper-bound review artifact. Promotion, parameter/security claims, and
+reliability-policy changes require the human decisions stated in
+[reliability.md](reliability.md). Compiler and backend changes need real
+compile-and-run evidence where applicable.
 
-| Tier | Claude models permitted | What this tier may modify |
-|---|---|---|
-| **Tier 1 — Glue** | Any current Claude model | Documentation, formatting, mechanical refactors |
-| **Tier 2 — Compiler** | Sonnet 4.6+ or Opus 4.5+ | Compiler, IR, lowering, weavers, backends, fuzzing |
-| **Tier 3 — Cryptography** | Sonnet 5+, Opus 4.6+, or Fable 5+ | Cryptographic spec, primitives, ORAM, Hazmat code |
-
-Lower-tier agents can still contribute productively to higher-tier work by
-producing test scaffolding, hand-off documents, and analysis. See
-[agents-guide.md](agents-guide.md) for the full operating procedure.
-
----
 
 ## Topic Index
 
@@ -62,7 +53,7 @@ producing test scaffolding, hand-off documents, and analysis. See
 
 | Document | What it covers |
 |---|---|
-| [reliability.md](reliability.md) | Reliability levels, AI markers, AI capability tiers, file→tier mapping, promotion/demotion protocol |
+| [reliability.md](reliability.md) | Reliability levels, AI markers, evidence requirements, promotion/demotion protocol |
 | [overview.md](overview.md) | Workspace layout, crate dependency graph, compilation pipeline |
 | [insecure.md](insecure.md) | The `.insecure` extension and current insecure files |
 | [provenance.md](provenance.md) | Per-statement origin tracking through the IR pipeline |
@@ -90,8 +81,8 @@ producing test scaffolding, hand-off documents, and analysis. See
 | [text-format-spec.md](text-format-spec.md) | Stable text formats for serialised IR artefacts |
 | [waffle-lowering.md](waffle-lowering.md) | WAFFLE → VAFFLE lowering for WASM-compiled circuits |
 | [wasm-feature-support.md](wasm-feature-support.md) | Which WASM features are supported at each pipeline layer |
-| [metadata-container-plan.md](metadata-container-plan.md) | Prerequisite generic per-node metadata refactor: default propagation, explicit multi-source policy, and extension remapping |
-| [instruction-groups-plan.md](instruction-groups-plan.md) | Planned typed instruction regions, their WASM marker ABI, and their VAFFLE/Volar-IR propagation (after the metadata refactor) |
+| [metadata-container-plan.md](metadata-container-plan.md) | Implemented metadata container and propagation ledger; remaining consumer/coverage work |
+| [instruction-groups-plan.md](instruction-groups-plan.md) | Implemented instruction-group infrastructure ledger; remaining consumers and generated-backend coverage |
 
 ### FHE / homomorphic evaluation
 
@@ -117,10 +108,13 @@ producing test scaffolding, hand-off documents, and analysis. See
 | Document | Status |
 |---|---|
 | [external-primitives-plan.md](external-primitives-plan.md) | Oracles, Actions, and Native RNG — partial implementation; ActionCall is in use |
-| [spec-static-shapes-plan.md](spec-static-shapes-plan.md) | Security-parameter genericity and static protocol/table shapes for `volar-spec` — partially implemented |
-| [tfhe-multi-input-pbs-weaver-plan.md](tfhe-multi-input-pbs-weaver-plan.md) | Experimental multi-input PBS, composable XOR, and direct-IR TFHE cone fusion — **partially implemented** (opt-in two-bit LUT XOR; wider selector deferred) |
-| [metadata-container-plan.md](metadata-container-plan.md) | Generic per-node metadata propagation and remapping refactor — **prerequisite for instruction groups** |
-| [instruction-groups-plan.md](instruction-groups-plan.md) | Typed instruction regions for batching and dedicated bounded-loop lowering — planning, after metadata refactor |
+| [tfhe-pbs-rework-plan.md](tfhe-pbs-rework-plan.md) | **Validation gate** for TFHE work; Gate A oracle and Phase-2 conformance suite landed, Gates B–C remain |
+| [tfhe-multi-input-pbs-weaver-plan.md](tfhe-multi-input-pbs-weaver-plan.md) | LUT-first/generalized PBS work blocked behind the TFHE validation gate; current selector remains two address bits |
+| [spec-static-shapes-plan.md](spec-static-shapes-plan.md) | Static TFHE shapes landed; dynamic and LIR/C validation gaps are recorded |
+| [metadata-container-plan.md](metadata-container-plan.md) | Implemented metadata refactor ledger and incomplete consumer/coverage work |
+| [instruction-groups-plan.md](instruction-groups-plan.md) | Implemented group infrastructure ledger and incomplete consumer/coverage work |
+| [lir-lowering-monomorphization-plan.md](lir-lowering-monomorphization-plan.md) | Proposed instance-aware lowering; unresolved const `L` blocks widening-ring C evidence |
+| [handoffs/merge-recovery/index.md](handoffs/merge-recovery/index.md) | Merged-tree recovery evidence, blockers, and model-neutral next actions |
 
 ### Agent-context briefings
 
@@ -155,7 +149,7 @@ historical context.
 ```
                 ┌─────────────────────────┐
                 │      reliability.md     │  ← single source of truth
-                │  (levels + AI tiers)    │     for what is safe to do
+                │  (levels + evidence)    │     for what is safe to claim
                 └────────────┬────────────┘
                              │
             ┌────────────────┼────────────────┐
@@ -183,9 +177,18 @@ If you are an AI agent and you are unsure where to read first, the
 correct order is:
 
 1. [`AGENTS.md`](../AGENTS.md) — always-applied workspace rules.
-2. [agents-guide.md](agents-guide.md) — what your tier may do.
-3. [reliability.md](reliability.md) — the file/tier mapping.
-4. The topic-specific document for the area you are touching.
+2. [agents-guide.md](agents-guide.md) — evidence-based operating procedure.
+3. [reliability.md](reliability.md) — reliability and review evidence.
+4. [handoffs/merge-recovery/index.md](handoffs/merge-recovery/index.md) — current merged-tree blockers.
+5. The topic-specific document for the area you are touching.
 
 If you are a human integrator: start with
 [integration-guide.md](integration-guide.md).
+
+
+## Merged-tree update — 2026-07-22
+
+Evidence: [policy-and-reliability handoff](handoffs/merge-recovery/policy-and-reliability.md)
+and [merge-recovery index](handoffs/merge-recovery/index.md). Capability tiers,
+model gating, and Experimental Cargo-feature requirements were removed. This
+index now routes contributors by evidence and current handoffs instead.

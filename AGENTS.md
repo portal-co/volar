@@ -1,9 +1,8 @@
 # Volar Agent Context
 
 > **Before editing any file, read [`docs/agents-guide.md`](docs/agents-guide.md)
-> and [`docs/reliability.md`](docs/reliability.md).** Volar uses capability
-> tiers as review gates in addition to reliability levels. The summary lives in
-> this file; the authoritative version is in `docs/reliability.md`.
+> and [`docs/reliability.md`](docs/reliability.md).** The authoritative
+> reliability policy is in `docs/reliability.md`.
 
 ## Project Mission
 
@@ -28,9 +27,15 @@ choices that:
 - Follow the reliability system: new cryptographic constructions start at
   Experimental, not Normal.
 
-## Chengelog
+## Changelog
 
-July 22, 2026: Maintainer here, I removed most enforcement-style components entirely from the reliability system, including the capability tier system entirely. This is because 1. most agents were (under that formulation) Tier 2 or Tier 3 anyway, and non-self-identifying models like GPT had trouble recognizing their tier, 2. agent identification has shown to be ineffective, still leading to subtle bugs (EVEN for authorized agents), when paper-binding, the resolution to those bugs, was incredibly effective (like most agents' Plan Modes are), and 3. I want to save tokens. If unsure during the migration, check in with the user to confirm
+## Merged-tree update — 2026-07-22
+
+The maintainer removed capability-tier enforcement, model identification, and
+sub-threshold review tags. All agents may contribute; correctness claims now
+rest on reproducible evidence, paper binding/review plans for cryptography, and
+human decisions where the reliability policy requires them. See
+[`docs/handoffs/merge-recovery/policy-and-reliability.md`](docs/handoffs/merge-recovery/policy-and-reliability.md).
 
 ## Crate Constraints
 
@@ -67,8 +72,9 @@ July 22, 2026: Maintainer here, I removed most enforcement-style components enti
 3. **Reliability Tags**: Files tagged `// @reliability: experimental`
    contain unreviewed cryptographic code. New code depending on these must
    not be deployed without separate review. `@ai: none` / `@ai: assisted`
-   tags indicate AI involvement. **Tier 3 files** (see above) may only be
-   modified by Sonnet 5+, Opus 4.6+, Fable 5+, or GPT-5.5+.
+   tags record AI involvement. They do not gate a contribution by model;
+   cryptographic correctness still requires the review evidence in
+   `docs/reliability.md`.
 
 4. **Catch-all arms**: Use `_ =>` catch-alls on IR type matches to support
    parallel development.
@@ -98,7 +104,7 @@ July 22, 2026: Maintainer here, I removed most enforcement-style components enti
     **Never** mix the two: do not seal a prover as `Transparent` or a verifier
     as `Zk`, do not `into_inner()` to push a `Zk` module into a non-ZK
     consumer, and do not weaken a `NonZk` bound. This boundary is load-bearing
-    — treat changes to it as Tier 3 in spirit. See
+    — treat changes to it as cryptographically sensitive. See
     [`docs/agent-context/discipline.md`](docs/agent-context/discipline.md).
 
 ## Topic Context Files
@@ -107,7 +113,7 @@ Load these when working in the relevant area:
 
 | Topic | File | When to load |
 |---|---|---|
-| Reliability + AI tiers | `docs/reliability.md` | Always — first thing before editing |
+| Reliability policy | `docs/reliability.md` | Always — first thing before editing |
 | Operating procedure for AI agents | `docs/agents-guide.md` | Always — first thing before editing |
 | **Full pipeline (multi-pass, weaving feedback)** | **`docs/pipeline.md`** | **Touching any lowering pass, codegen backend, or weaver — the overview.md sketch is not accurate** |
 | User-facing integration | `docs/integration-guide.md` | When answering questions about app integration |
@@ -139,6 +145,6 @@ Environment variables (set before running any binary or test in this workspace):
 | `PORTAL_LOG_BATCH=1` | Group events by phase into single JSON arrays. |
 | `PORTAL_AUTOMINIFY=1` | Minify generated code (C, LLVM IR, Rust, IR text) before embedding in error/assertion messages. |
 
-Logger implementation: `crates/helper/volar-log/` (Tier 1 — any agent may modify). Do NOT add logging infrastructure to Tier 3 crates (`volar-spec`, `volar-primitives`, `volar-common`, `volar-oram*`).
+Logger implementation: `crates/helper/volar-log/`. Do NOT add logging infrastructure to cryptographic crates (`volar-spec`, `volar-primitives`, `volar-common`, `volar-oram*`).
 
 These variables have no effect when unset and do not change program correctness.

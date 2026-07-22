@@ -2,9 +2,23 @@
 
 > Load at the start of a session to see what's done and what's next.
 
+## Merged-tree update — 2026-07-22
+
+Evidence: `08d1d33` and [merge-recovery handoffs](docs/handoffs/merge-recovery/index.md).
+
+Phase 1 repaired TFHE conformance-test API drift, statement-free provenance
+paths, empty-program fuzz coverage, and the VOLE memory scalar loop. Focused
+`volar-spec`, `volar-vaffle-target`, `volar-ir-passes`, `volar-ir-opt`,
+`volar-ir-virt`, and `volar-fuzz` suites passed on 2026-07-22. The next ring
+stops at unresolved `L` while lowering `encrypt_branch` through the C backend;
+this is distinct from the LLVM environment blocker. Do not claim workspace,
+generic monomorphization, virtualisation, or real-interpreter E2E success until
+current compile-and-run evidence is recorded. Historical entries below are not
+current status assertions.
+
 ## Current Goal
 
-Implement **weaver integration** — compiling the ORAM runtime through the volar-compiler pipeline and stitching it into the circuit (NOT by adding special modes to the existing FHE weaver).
+Complete merged-tree reconciliation before new feature work: diagnose the unresolved LIR const parameter `L`, then widen generated-backend evidence. See `docs/handoffs/merge-recovery/index.md`.
 
 ## Completed
 
@@ -113,7 +127,7 @@ Implement **weaver integration** — compiling the ORAM runtime through the vola
 - Added 2 property-based tests (`prop_o_three_phase_equivalence`, `prop_p_three_phase_no_duplicates`) — 200 cases each
 
 ### Virtualisation Pass (new crate)
-- New crate `crates/ir/volar-ir-virt/` (Tier 2, `experimental` + `assisted`)
+- New crate `crates/ir/volar-ir-virt/` (`experimental` + `assisted`)
   with `virtualize_ir` and `virtualize_bir`: deduplicates blocks into unique
   *instruction handlers*, rewrites the module into dispatcher + handlers,
   and emits a bytecode table (in-IR `StorageWrite`s at `StorageId::VIRT_BYTECODE`

@@ -1,9 +1,24 @@
 # Plan: Multi-Input PBS and Direct-IR TFHE Fusion
 
 **Status:** partially implemented — the two-address-bit LUT-first direct-IR XOR path is implemented and remains opt-in; wider address tables are explicitly deferred to the generalized selector/encoding review
-**Primary scope:** `crates/spec/volar-spec/src/tfhe.rs`, `crates/compiler/volar-weaver/src/fhe.rs`, and the direct `IRBlocks` path  
-**Related work:** [spec-static-shapes-plan.md](spec-static-shapes-plan.md), [fhe-weaver.md](fhe-weaver.md), [pipeline.md](pipeline.md), [agent-context/boolar-ir-conflicts.md](agent-context/boolar-ir-conflicts.md), [agent-context/ast-to-ast-weaving.md](agent-context/ast-to-ast-weaving.md)  
-**Required implementation tier:** **Tier 3** for TFHE table/phase/encoding semantics and the fusion equivalence argument; **Tier 2** for isolated IR/planner infrastructure after the Tier-3 semantic contract is fixed.
+**Primary scope:** `crates/spec/volar-spec/src/tfhe.rs`, `crates/compiler/volar-weaver/src/fhe.rs`, and the direct `IRBlocks` path
+**Related work:** [spec-static-shapes-plan.md](spec-static-shapes-plan.md), [fhe-weaver.md](fhe-weaver.md), [pipeline.md](pipeline.md), [agent-context/boolar-ir-conflicts.md](agent-context/boolar-ir-conflicts.md), [agent-context/ast-to-ast-weaving.md](agent-context/ast-to-ast-weaving.md)
+**Review boundary:** TFHE table/phase/encoding semantics and fusion equivalence
+need paper-bound cryptographic review. Isolated IR/planner work begins only
+after that semantic contract is fixed and must retain generated-code
+compile-and-run coverage.
+
+
+## Merged-tree update — 2026-07-22
+
+Evidence: `08d1d33`, the [TFHE validation handoff](handoffs/merge-recovery/tfhe-ginx-validation.md), and the [static-shapes handoff](handoffs/merge-recovery/static-shapes-and-monomorphization.md).
+
+**Dependency/supersession notice:** LUT-first/XOR and every generalized-PBS
+proposal are blocked behind the core audit in `tfhe-pbs-rework-plan.md`. The
+implemented opt-in two-address-bit surface is a regression target, not
+validation to enable broader work. The rejected arbitrary-table/three-bit
+selector prototype remains rejected; never infer a wider table or generic PBS
+claim from the current API.
 
 ## 0. Decision record and safety status
 
@@ -380,7 +395,7 @@ scope.
 ### 3.3 LUT-first table contract, then generalized selector contract
 
 The **LUT-first track** adopts the current implementation as its narrow
-semantic contract, subject to Tier-3 review of each new factory and fusion
+semantic contract, subject to cryptographic review of each new factory and fusion
 mapping:
 
 1. Input bits are least-significant first, matching `tfhe_lut_read`.
@@ -654,7 +669,7 @@ Migration stages:
 
 The **LUT-first implementation** must document and preserve the current
 `TfheBootstrapTable`/`tfhe_lut_read` algorithm as its baseline. It needs a
-Tier-3 internal semantic review of the existing mapping, exact input ordering,
+cryptographic semantic review of the existing mapping, exact input ordering,
 negacyclic validation, centering, and output normalization; it does **not**
 wait for a newly selected paper merely to plan and emit tables already accepted
 by that implementation. Existing module citations to Chillotti, Gama,
@@ -742,8 +757,7 @@ Before enabling fusion by default:
 
 ### Phase 0A — Freeze and review the implemented LUT baseline
 
-**Tier:** 3 for the semantic baseline; Tier 1 may prepare inventory and test
-harness scaffolding.
+**Review:** cryptographic review for the semantic baseline; any contributor may prepare inventory and test-harness scaffolding.
 
 - [ ] Record current deterministic vectors for AND, OR, raw XOR, NOT, CMUX,
       one-bit LUTs, and two-bit LUTs.
@@ -764,7 +778,7 @@ safe outcome for every other table.
 
 ### Phase 0B — Generalized PBS reference selection (independent/deferred)
 
-**Tier:** 3.
+**Review:** cryptographic review.
 
 - [ ] Select and cite the exact reference algorithm for a generalized
       multi-input selector. Record equation/algorithm identifiers.
@@ -779,9 +793,7 @@ validator.
 
 ### Phase 1 — LUT-first direct-IR negacyclic layers
 
-**Tier:** Tier 3 review for the existing-table semantic mapping and output
-encoding; Tier 2 may implement isolated planner/emitter machinery after that
-contract is fixed.
+**Review:** cryptographic review for existing-table semantics and output encoding; isolated planner/emitter work may proceed after that contract is fixed.
 
 - [ ] Add the pure, deterministic same-block `IRBlocks` analyzer and
       `NegacyclicLayerRequest` plan object.
@@ -814,7 +826,7 @@ cone/table oracle, and the route avoids `lower_ir_to_boolar`,
 
 ### Phase 2 — Generalized typed Boolean PBS core (optional later track)
 
-**Tier:** 3.
+**Review:** cryptographic review.
 
 - [ ] Refactor existing raw blind rotation behind one private implementation
       only if doing so preserves Phase-1 LUT behavior byte-for-byte or by
@@ -834,8 +846,7 @@ LUT-first path.
 
 ### Phase 3 — Broader cone fusion and cost policy
 
-**Tier:** 3 review for the generalized fusion equivalence/cost policy; Tier 2
-machinery.
+**Review:** cryptographic review for generalized fusion equivalence/cost policy; compiler machinery follows that contract.
 
 - [ ] Permit a generalized table request only under the reviewed arity/error
       limit.
@@ -855,8 +866,7 @@ exists; no unsupported cone is fused; fallback output remains equivalent.
 
 ### Phase 4 — Broader direct-IR and AST-to-AST readiness
 
-**Tier:** Tier 2 infrastructure plus Tier 3 review of each new operation
-class/semantic lowering.
+**Review:** compiler infrastructure plus cryptographic review of each new operation class and semantic lowering.
 
 - [ ] Extend from Bit-only cones to independently provable lane-local wide
       values where direct `IRBlocks` retains width.
@@ -875,8 +885,7 @@ weaver, while Boolar remains a compatibility shim rather than a blocker.
 
 ### Phase 5 — External review and promotion decision
 
-**Tier:** independent human cryptographic review; AI cannot complete this
-phase alone.
+**Review:** independent human cryptographic review; an AI contribution alone cannot complete this phase.
 
 - [ ] Internal implementation review of `tfhe.rs`, planner, and weaver.
 - [ ] Review the LUT-first mapping against its intended reference and review
@@ -891,12 +900,12 @@ phase alone.
 
 | Review phase | Reviewer requirement | Must answer |
 |---|---|---|
-| LUT baseline / layer review | Tier-3 reviewer familiar with `tfhe.rs` plus human engineer familiar with the weaver | Does every emitted request use the exact existing validator/mapping, preserve input order/centering/output encoding, and keep raw-polynomial construction out of the planner? |
+| LUT baseline / layer review | Cryptographic reviewer familiar with `tfhe.rs` plus human engineer familiar with the weaver | Does every emitted request use the exact existing validator/mapping, preserve input order/centering/output encoding, and keep raw-polynomial construction out of the planner? |
 | Generalized PBS correctness review | Cryptographer who reads the exact selected PBS source | Does the new selector/table/negacyclic/output construction match the cited algorithm and error conditions, without changing LUT-first semantics? |
 | XOR/encoding review | Same or separate TFHE reviewer | Does every LUT/generalized XOR emitted by the weaver return a composable standard wire? Is raw-phase addition contained and accurately named? |
-| Fusion equivalence review | Tier-3 reviewer plus compiler reviewer | Does every accepted cone map to exactly the requested validated table or layer schedule without crossing liveness/effect/CFG boundaries? |
-| Backend integration review | Tier-2 backend reviewer | Does generated Rust/LIR/C preserve concrete table/key dimensions, use typed IR nodes, and compile/run? |
-| ZK-discipline review | Tier-3 reviewer | Does the new transparent FHE route preserve tags and avoid ZK/non-ZK escape hatches? |
+| Fusion equivalence review | Cryptographic reviewer plus compiler reviewer | Does every accepted cone map to exactly the requested validated table or layer schedule without crossing liveness/effect/CFG boundaries? |
+| Backend integration review | Backend reviewer | Does generated Rust/LIR/C preserve concrete table/key dimensions, use typed IR nodes, and compile/run? |
+| ZK-discipline review | Cryptographic reviewer | Does the new transparent FHE route preserve tags and avoid ZK/non-ZK escape hatches? |
 | External/promotion review | Human cryptographic reviewer | Are any deployment/security claims warranted? |
 
 ## 8. Explicit non-goals

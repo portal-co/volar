@@ -1,6 +1,6 @@
 # Merge Recovery, Test Reconciliation, and Universal Handoff Plan
 
-**Status:** Phase 2 handoffs completed on merged-tree base `08d1d33` (2026-07-22); Phase 3 reconciliation remains.
+**Status:** Phase 3 documentation reconciliation completed on merged-tree base `08d1d33` (2026-07-22). Recovery remains open on the unresolved LIR const parameter `L` and the separate LLVM environment prerequisite.
 **@ai:** assisted  
 **Owner decision needed:** whether to install/configure LLVM locally or treat the
 LLVM-dependent workspace targets as CI-only until that environment is available.
@@ -281,6 +281,19 @@ Required initial handoffs are:
    evidence only and state its preconditions instead of merging it by default.
 
 ## Phase 3 — Reconcile active plans and policy documentation
+
+### Phase 3 implementation log (2026-07-22)
+
+Reconciled the policy documents and all active plans named below against
+`08d1d33` and the model-neutral handoffs. Each changed plan has a dated
+merged-tree update that links its successor handoff. The documents now preserve
+reliability/evidence requirements without capability tiers, model gating,
+sub-threshold tags, or the removed Experimental Cargo feature. The TFHE plans
+record the focused oracle/conformance evidence as a validation gate rather than
+a parameter, security, PBS-generalization, or deployment result; the metadata,
+instruction-group, static-shape, and LIR plans record their actual landed state
+and remaining target coverage. This completes documentation reconciliation only:
+the source diagnosis and full LLVM-capable matrix remain open.
 
 Do this after the handoffs identify the present code state, but before any new
 feature work. Prefer a small pre-edit of an inaccurate plan over letting the

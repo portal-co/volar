@@ -7,7 +7,7 @@ It is **not** a statement that the existing ciphertext-level implementation in
 `crates/spec/volar-spec/src/tfhe.rs` conforms to it — that comparison is
 Phase 2/3 of the rework plan and is explicitly **not done by this document**.
 
-**Reliability:** this file is documentation only (Tier 1). It contains no
+**Reliability:** this file is documentation only. It contains no
 executable cryptography. The oracle it specifies is compiled test-only and
 makes no security claims (see the oracle file's own header).
 
@@ -25,6 +25,16 @@ by page render where noted):
   and the native Boolean-gate formulas.
 
 ---
+
+
+## Merged-tree update — 2026-07-22
+
+Evidence: `08d1d33`, the [TFHE validation handoff](handoffs/merge-recovery/tfhe-ginx-validation.md), and `cargo test -p volar-spec` (2026-07-22).
+
+The independent test-only oracle and repaired conformance tests now pass for
+the focused suite. This remains a draft mathematical model, not a ciphertext
+conformance proof, parameter claim, noise result, or promotion artifact. Gates
+B and C in the rework plan remain open.
 
 ## 1. Domains and encodings
 

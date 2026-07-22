@@ -1,10 +1,23 @@
 # Per-Node Metadata Container Refactor
 
-**Status:** Planning — prerequisite to instruction groups.  
-**Scope:** Tier-2 compiler/IR infrastructure.  
+**Status:** substantially implemented; this document is now an implementation ledger and coverage plan.
+**Scope:** compiler/IR infrastructure.
 **@ai:** assisted
 
 ---
+
+## Merged-tree update — 2026-07-22
+
+Evidence: `08d1d33` and the [metadata/instruction-groups handoff](handoffs/merge-recovery/metadata-and-instruction-groups.md).
+
+The container, typed captures, membership propagation, marker validation,
+required-consumption barriers, Volar-IR v2 text support, and advisory-group
+generator/property coverage landed before the merge. Phase 1 additionally
+established explicit enclosing-control provenance for statement-free
+movfuscation, circuit lowering, and VAFFLE lowering; focused VAFFLE, IR-passes,
+and fuzz/virt tests pass. Remaining work is the consumer/emission-site audit,
+legal-empty-program backend compile-and-run regression, malformed-no-body
+diagnostic, and coverage at every lossy boundary.
 
 ## 1. Purpose
 
@@ -550,7 +563,7 @@ compiler/IR testing policy.
 
 ## 8. Implementation phases
 
-### Phase 0 — Audit and invariants
+### Phase 0 — Audit and invariants (partially complete)
 
 - Inventory all `Node` constructors, literal struct construction, direct
   `.prov`/`.side` access, and node-rebuilding helpers.
@@ -558,7 +571,7 @@ compiler/IR testing policy.
 - Document any existing exception that lacks a source provenance and verify it
   already uses the established control/fallback provenance policy.
 
-### Phase 1 — Core container
+### Phase 1 — Core container (implemented)
 
 - Add `NodeMetadata` plus `StandardMetadata<P>` and migrate `Node` to
   `kind + metadata` with one metadata type parameter.
@@ -567,7 +580,7 @@ compiler/IR testing policy.
 - Preserve no-std and `rkyv` compatibility.
 - Add core unit tests for the propagation contract.
 
-### Phase 2 — Mechanical propagation migration
+### Phase 2 — Mechanical propagation migration (implemented; audit coverage remains)
 
 - Migrate every first-party node producer/rebuilder to `derived`, fallible
   `map_kind`, `map2`, or `with_metadata` as appropriate.
@@ -576,7 +589,7 @@ compiler/IR testing policy.
   direct field access unavailable.
 - Run affected crate checks continuously, then full compiler/IR checks.
 
-### Phase 3 — Explicit multi-source audit
+### Phase 3 — Explicit multi-source audit (incomplete)
 
 - Review CSE, substitution, inlining, phi/block-argument lowering, and
   weaving for operations that combine sources.
@@ -585,7 +598,7 @@ compiler/IR testing policy.
   first-source inheritance.
 - Add regression tests for each distinct policy.
 
-### Phase 4 — Remapping convention
+### Phase 4 — Remapping convention (implemented baseline; extension audits remain)
 
 - Add the generic documentation and test harness for focused metadata-ID
   remapping.
@@ -593,7 +606,7 @@ compiler/IR testing policy.
 - Do not add a generic untyped remapping callback to every pass; remappers
   belong to the extension and are invoked only by namespace-changing passes.
 
-### Phase 5 — Gate instruction groups
+### Phase 5 — Gate instruction groups (infrastructure landed; consumers incomplete)
 
 Mark this plan complete only when all normal node transformations preserve the
 container without knowing its individual fields.  Then start the instruction

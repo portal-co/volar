@@ -2,9 +2,10 @@
 
 **Status:** review document — **no implementation is authorized by this plan.**
 
-**Scope:** `crates/spec/volar-spec/src/tfhe.rs` (Tier 3), its generated
-artifacts, and `crates/compiler/volar-weaver/src/fhe.rs` (Tier 2, treated as
-Tier 3 for this work).
+**Scope:** `crates/spec/volar-spec/src/tfhe.rs`, its generated artifacts,
+and `crates/compiler/volar-weaver/src/fhe.rs`. TFHE semantic changes require
+paper-bound cryptographic review; compiler integration requires generated-code
+compile-and-run evidence.
 
 **Reliability:** remain Experimental. The present implementation must not be
 advertised as having a validated security level, a production failure
@@ -17,6 +18,17 @@ planner the next step. The paper review and the failed prototype show that this
 assumption is not justified.
 
 ---
+
+
+## Merged-tree update — 2026-07-22
+
+Evidence: `08d1d33`, the [TFHE validation handoff](handoffs/merge-recovery/tfhe-ginx-validation.md), and `cargo test -p volar-spec` (2026-07-22).
+
+This plan is the validation gate for all TFHE work. The test-only clear oracle
+(Phase 1) and repaired, stage-oriented conformance suite (Phase 2) are present
+and the focused suite passes. That is functional evidence, not Gate B or Gate
+C acceptance: independent-reference, nonzero-noise, parameter, and security
+review remain open. Do not enable or generalize PBS work from these tests.
 
 ## 1. Executive decision
 
@@ -64,7 +76,7 @@ base for a more general PBS system.
 
 The following local papers were reread using their selectable-text PDF layer
 with bundled PDF.js. Page numbers below are physical PDF pages. Formulae and
-algorithm layout must be visually checked by the Tier-3 reviewer against the
+algorithm layout must be visually checked by a cryptographic reviewer against the
 original PDF before they are transcribed into code.
 
 | Source | Re-read evidence | What it establishes here |
@@ -340,7 +352,7 @@ no rendered-Rust workaround is permitted. FHE output remains
 
 ### Phase 6 — separate circuit-bootstrap / arbitrary-LUT specification
 
-This is a new Tier-3 project, not Phase 4 feature work. It must specify:
+This is a new cryptographic project, not Phase 4 feature work. It must specify:
 
 - TLWE→TRGSW circuit bootstrap and its multi-level keys;
 - output TRGSW/RLWE types and ownership/lifetime in Rust, TS, and C targets;
@@ -362,26 +374,18 @@ The user-requested isolation mechanism is a Rust module, not a Cargo feature:
 `tfhe::pbs` (or a new rework module) keeps source-discovering compiler paths
 able to parse `volar-spec/src/tfhe.rs`.
 
-However, `docs/reliability.md` currently says Experimental code must also be
-behind a `volar_experimental` Cargo feature, while the crate presently exposes
-`tfhe` unconditionally and the compiler recursively discovers source files.
-These facts conflict. This plan does not silently waive either requirement.
-Before exposing a new API, a human owner must choose and document one of:
-
-1. add compiler-aware experimental exclusion/import handling;
-2. make a documented project-policy exception for source-discovered experimental
-   spec modules; or
-3. redesign the source-discovery boundary.
-
-A Rust module is valid API isolation and preserves `volar-compiler`
-compatibility; it is not by itself a substitute for an unresolved reliability
-policy decision.
+Experimental code is not Cargo-feature gated. A Rust module is valid API
+isolation and preserves `volar-compiler` source discovery, but it does not
+substitute for the validation gates or alter the code's Experimental status.
+Before exposing a new API, record its review artifact, supported target path,
+and the human decision required for any parameter, security, or deployment
+claim.
 
 ---
 
 ## 7. Test and review acceptance criteria
 
-No implementation may be called ready for Tier-3 cryptographic review unless:
+No implementation may be called ready for cryptographic review unless:
 
 - the mathematical core spec exists and names the exact paper algorithms/pages;
 - the clear oracle validates AND, OR, XOR/XNOR, and Majority certificates, with
@@ -408,11 +412,11 @@ No implementation may be called ready for Tier-3 cryptographic review unless:
 
 | Review | Required reviewer | Blocking question |
 |---|---|---|
-| Core algebra | Tier-3 lattice/FHE reviewer | Do phases, signs, rotations, RGSW layout, decomposition, extraction, and key switch faithfully implement the selected GINX model? |
+| Core algebra | Cryptographic reviewer familiar with lattice/FHE work | Do phases, signs, rotations, RGSW layout, decomposition, extraction, and key switch faithfully implement the selected GINX model? |
 | Oracle/certificates | Independent reviewer | Does the clear model use paper-derived semantics and catch the realistic convention mistakes? |
 | Parameters/noise | Human cryptographer | Is the secret/noise/modulus/key-switch model coherent, and what failure/security claim is actually justified? |
-| Compiler integration | Tier-2+ compiler reviewer plus Tier-3 sign-off | Does typed IR preserve semantics/publicness/provenance and retain `Transparent` discipline? |
-| Reliability policy | Human owner | How is module isolation reconciled with the documented Experimental feature-gate policy? |
+| Compiler integration | Compiler reviewer plus cryptographic sign-off | Does typed IR preserve semantics/publicness/provenance and retain `Transparent` discipline? |
+| Reliability policy | Human owner | Does module isolation preserve Experimental status without implying a deployment claim? |
 
 ---
 

@@ -15,6 +15,16 @@ source, this index, and current owner decisions override them.
 5. [Real interpreter and virtualisation](real-interpreter-and-virtualisation.md)
 6. [AST-to-AST and more proofs](ast-to-ast-and-more-proofs.md)
 
+## Phase 3 documentation reconciliation
+
+The active policy and plan documents now reflect the model-neutral,
+evidence-based policy and current merged-tree status. See the dated
+merged-tree updates in `AGENTS.md`, `docs/agents-guide.md`,
+`docs/reliability.md`, `docs/README.md`, and the plans named in
+[`merge-recovery-and-handoffs-plan.md`](../../merge-recovery-and-handoffs-plan.md).
+This resolves documentation drift only; the source and environment blockers
+below remain open.
+
 ## Current recovery evidence
 
 Phase 1 repaired the TFHE test API drift, statement-free provenance entry

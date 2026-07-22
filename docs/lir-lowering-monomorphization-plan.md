@@ -1,7 +1,19 @@
 # Plan: Lowering-Time Monomorphization in `volar-lir-codegen`
 
-**Status:** proposed  
-**Implementation scope:** `crates/compiler/volar-lir-codegen/` only (plus this plan and that crate's test-only manifest changes). Breaking public API changes in that crate are acceptable.
+**Status:** proposed; widening currently exposes an unresolved const-parameter failure.
+**Implementation scope:** centered on `crates/compiler/volar-lir-codegen/`, but callers, instance/layout planning, CFG/auxiliary paths, and target consumers must be traced before declaring a backend-only fix. Breaking codegen APIs may be appropriate only with downstream reconciliation.
+
+## Merged-tree update — 2026-07-22
+
+Evidence: `08d1d33` and the [static-shapes/monomorphization handoff](handoffs/merge-recovery/static-shapes-and-monomorphization.md).
+
+The current widening reproducer, `cargo test -p volar-weaver -p
+volar-lir-codegen -p volar-c-backend`, reaches C-backend lowering of
+`encrypt_branch` with unresolved const parameter `L`. This is a source
+reconciliation failure, distinct from the missing-LLVM environment blocker.
+Do not choose a test-only `L` or limit diagnosis to C tests: trace roots,
+callee bindings, nominal layouts, `MonoEnv` callers, and CFG/auxiliary paths;
+then add a C compile-and-run regression for more than one specialization.
 
 ## Goal
 
@@ -360,9 +372,8 @@ All behavioral tests should lower to the real C backend, compile with `cc`,
 and execute the result; do not assert only on generated names or IR shape.
 Because the implementation remains inside codegen, place new integration-like
 tests in `volar-lir-codegen` and add only the necessary **dev** dependencies
-there (or use an existing no-cycle test harness if one is available). Existing
-C-backend tests remain useful consumers but need not be edited for this
-refactor.
+there (or use an existing no-cycle test harness if one is available). Existing C-backend tests are active consumers of the current failure and may
+need a regression once the instance-planning diagnosis is known.
 
 1. **One generic function, two lengths:** a concrete root calls one generic
    array function at two different lengths. Compile and run a C `main` that
@@ -405,6 +416,6 @@ refactor.
   coverage.
 - Failure to determine a static layout is a contextual `MonoError`, not an
   accidental unresolved-type panic.
-- Implementation changes are confined to `volar-lir-codegen` (and its
-  dev-only test configuration); no spec, compiler-IR, backend, weaver, or
+- The primary implementation may be in `volar-lir-codegen`, but caller and
+  target-facing regressions must be reconciled across compiler-IR, backend, weaver, and
   pipeline semantic change is required.

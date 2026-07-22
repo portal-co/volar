@@ -1,9 +1,21 @@
 # Plan: Static, Security-Parameterized `volar-spec`
 
-**Status:** partially implemented — TFHE parameter binding and fixed-shape boolean LUTs landed; broader protocol audit and multi-input PBS remain proposed  
-**Primary scope:** `crates/spec/volar-spec/`  
+**Status:** partially implemented — TFHE parameter binding and fixed-shape boolean LUTs landed; broader protocol audit and multi-input PBS remain proposed
+**Primary scope:** `crates/spec/volar-spec/`
 **Related work:** [`tfhe-multi-input-pbs-weaver-plan.md`](tfhe-multi-input-pbs-weaver-plan.md), [`agent-context/ast-to-ast-weaving.md`](agent-context/ast-to-ast-weaving.md), [`fhe-weaver.md`](fhe-weaver.md), [`lir-lowering-monomorphization-plan.md`](lir-lowering-monomorphization-plan.md)
-**Required implementation tier:** Tier 3 — the work changes cryptographic-spec APIs, parameter binding, and programmable-bootstrap semantics. The mechanical inventory, test harnesses, and compiler-support work may be split into Tier-1/Tier-2 commits, but no parameter set may be presented as secure without Tier-3 cryptographic review and the existing experimental-status process.
+**Review boundary:** cryptographic-spec API, parameter-binding, and PBS-semantic changes require paper-bound cryptographic review. Mechanical inventory, test harnesses, and compiler support still need reproducible behavior and generated-code evidence. No parameter set may be presented as secure without independent human cryptographic review.
+
+## Merged-tree update — 2026-07-22
+
+Evidence: `08d1d33`, [TFHE validation handoff](handoffs/merge-recovery/tfhe-ginx-validation.md), and [static-shapes handoff](handoffs/merge-recovery/static-shapes-and-monomorphization.md).
+
+TFHE decomposition bases and fixed-shape LUT inputs/tables are static, and the
+repaired focused `cargo test -p volar-spec` suite passes. Track B is gated by
+`tfhe-pbs-rework-plan.md`; do not treat static shapes as a PBS/security result.
+The dynamic generated crate has a pre-existing generated associated-type parse
+failure for `cargo fmt --check`, and the LIR/C widening ring stops at unresolved
+const parameter `L` in `encrypt_branch`. Neither backend remains verified for
+these target-facing static paths.
 
 ## Implementation status
 
@@ -340,7 +352,7 @@ This gives the later optimizer a clear route to combine inputs: it chooses a
 fixed `INPUTS`, constructs a compatible segment table, proves/validates the
 segment's input-domain and output encoding, then calls one typed PBS. The
 optimizer's segmentation policy and any claim about bootstrap equivalence are
-separate Tier-3 work.
+separate cryptographic work.
 
 ### 4. Separate general multi-input PBS from boolean gate wrappers
 
@@ -399,13 +411,13 @@ already accepted across the Rust source, parser, dynamic lowering, and target
 paths. Prefer Rust `[T; N]` for newly target-facing TFHE interfaces now that
 LIR monomorphization supports concrete numeric const arguments. Do not add a
 second generic-array abstraction merely to avoid a focused compiler gap; fix a
-confirmed compiler representation gap in its own Tier-2 workstream.
+confirmed compiler representation gap in its own workstream.
 
 ## Implementation phases
 
 Each phase should be separately reviewable. Phases that alter only tests,
 metadata, or mechanical adapters can be prepared independently; any phase
-that changes a cryptographic interpretation is Tier 3 and should retain the
+that changes a cryptographic interpretation requires review and should retain the
 module's Experimental status.
 
 ### Phase 0 — Baseline, inventory, and target-support matrix
@@ -437,7 +449,7 @@ unsupported Rust feature.
 
 ### Phase 1 — Parameterize TFHE without changing bootstrap semantics
 
-**Files:** primarily `crates/spec/volar-spec/src/tfhe.rs`, with Tier-3 review.
+**Files:** primarily `crates/spec/volar-spec/src/tfhe.rs`, with cryptographic review.
 
 1. Define the canonical const-parameter order and apply it to TFHE key types,
    private helpers, and public gate/PBS functions whose behavior depends on
@@ -554,7 +566,7 @@ collections have a documented semantic reason.
 
 ### Phase 5 — Compiler/weaver integration readiness
 
-**Files:** Tier-2 compiler/weaver work plus spec-facing tests; load
+**Files:** compiler/weaver work plus spec-facing tests; load
 `pipeline.md`, `agent-context/weaving.md`, and the ZK/non-ZK discipline note
 before implementation.
 
@@ -632,10 +644,10 @@ text shape as the primary correctness signal.
 
 | Change | Minimum review |
 |---|---|
-| Inventory, documentation, non-semantic test harness | Tier 1 / normal review |
-| Parser/IR/LIR representation or backend support | Tier 2, compile-and-run coverage |
-| Moving TFHE parameter binding from runtime to type-level | Tier 3, differential behavior review |
-| New table encoding, multi-input packing, output encoding, or noise claim | Tier 3 plus cited reference/correctness review; retains Experimental status |
+| Inventory, documentation, non-semantic test harness | Reproducible review appropriate to the changed behavior |
+| Parser/IR/LIR representation or backend support | Generated-code compile-and-run coverage |
+| Moving TFHE parameter binding from runtime to type-level | Cryptographic review and differential behavior evidence |
+| New table encoding, multi-input packing, output encoding, or noise claim | Cited cryptographic reference/correctness review; retains Experimental status |
 | Naming a production security parameter set or promotion from Experimental | Independent cryptographic/human review per `reliability.md`; never AI-only |
 
 ## Acceptance criteria

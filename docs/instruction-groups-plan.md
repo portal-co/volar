@@ -1,11 +1,23 @@
 # Instruction Groups for VAFFLE and Volar IR
 
-**Status:** Planning — no implementation has landed.  
-**Prerequisite:** Complete [`metadata-container-plan.md`](metadata-container-plan.md) first.  
-**Scope:** Tier-2 compiler/IR infrastructure.  
+**Status:** core infrastructure landed; consumers and generated-backend coverage remain incomplete.
+**Prerequisite:** the metadata container is implemented; preserve its propagation/remapping rules.
+**Scope:** compiler/IR infrastructure.
 **@ai:** assisted
 
 ---
+
+## Merged-tree update — 2026-07-22
+
+Evidence: `08d1d33` and the [metadata/instruction-groups handoff](handoffs/merge-recovery/metadata-and-instruction-groups.md).
+
+Merged code includes declarations, instances, typed captures, membership
+propagation, marker recognition/validation, required-consumption barriers,
+Volar-IR v2 text support, and advisory-group generator/property coverage.
+Do not describe the feature as planning-only. The remaining ledger is required
+consumer implementation, preservation/remapping audits, legal-empty-program
+backend execution, malformed-input diagnostics, and rejection coverage at each
+lossy boundary.
 
 ## 1. Problem
 
@@ -474,38 +486,38 @@ A batch group is not a claim that every enclosed instruction independently
 runs once per lane.  Its declaration-specific consumer defines that mapping;
 the core merely gives it a stable, typed region to inspect.
 
-## 9. Implementation sequence
+## 9. Implementation ledger and remaining sequence
 
-This sequence is gated on completion of the metadata-container refactor in
+The remaining sequence uses the completed metadata-container refactor in
 [`metadata-container-plan.md`](metadata-container-plan.md). In particular,
 this work must use its default metadata propagation and focused remapping APIs
 rather than adding a new direct `Node` field or propagating group stacks by
 parallel vectors.
 
-1. **Design tests and error model.** Define the public group types and a
+1. **Design tests and error model (implemented baseline; extend coverage).** Define the public group types and a
    dedicated validation error enum. Add WASM fixtures for nested same-type
    groups, CFG joins, loops, mismatched ends, and captured values.
-2. **Shared group extension.** Add declaration/ID/membership/instance types in
+2. **Shared group extension (implemented baseline; audit remappers).** Add declaration/ID/membership/instance types in
    `volar-ir-common`; extend the completed metadata container with
    group-membership accessors and a focused group-ID remapper. Capture
    aggregate inputs as typed packed values, not bare bit-ID vectors. Update
    mapping and archive derives.
-3. **VAFFLE containers and target.** Add declaration and instance tables;
+3. **VAFFLE containers and target (implemented baseline; audit propagation).** Add declaration and instance tables;
    teach `VaffleTarget` to set/copy the current group stack; update all module
    constructors and cloning/remapping helpers.
-4. **WASM marker frontend.** Extend `WaffleImportConfig`, classify marker
+4. **WASM marker frontend (implemented baseline; audit diagnostics).** Extend `WaffleImportConfig`, classify marker
    imports, run CFG-stack validation, omit marker calls, and attach group
    membership to normal emitted values. A direct non-recursive call inside a
    group must be inlined at this stage or rejected; indirect/imported
    non-marker and recursive calls in a group are rejected.
-5. **VAFFLE-to-IR propagation.** Transfer declarations, instances, stacks,
+5. **VAFFLE-to-IR propagation (implemented baseline; audit call rejection).** Transfer declarations, instances, stacks,
    and captured input references through `vaffle_ssa` and `lower_to_ir`; add a
    defence-in-depth rejection for a group-bearing `Value::Call`.
-6. **Pass audit.** Update optimisers, substitution, virtualisation,
+6. **Pass audit (incomplete).** Update optimisers, substitution, virtualisation,
    movfuscation, Boolar lowering, text IR, serialisation, generators, and
    interpreters. Add a hard rejection for unconsumed required groups at each
    lossy boundary.
-7. **Consumer framework.** Add the dispatch/consumption stage plus a no-op
+7. **Consumer framework (barrier infrastructure landed; consumers incomplete).** Add the dispatch/consumption stage plus a no-op
    advisory consumer for controlled fallback.
 8. **Bounded-loop consumer.** Implement and validate the first required
    consumer before exposing `begin_bounded_loop` as a supported public API.
