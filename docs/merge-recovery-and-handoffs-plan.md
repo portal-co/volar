@@ -1,6 +1,6 @@
 # Merge Recovery, Test Reconciliation, and Universal Handoff Plan
 
-**Status:** Phase 1 in progress for merge tip `70f2ba3` (2026-07-22).  
+**Status:** Phase 2 handoffs completed on merged-tree base `08d1d33` (2026-07-22); Phase 3 reconciliation remains.
 **@ai:** assisted  
 **Owner decision needed:** whether to install/configure LLVM locally or treat the
 LLVM-dependent workspace targets as CI-only until that environment is available.
@@ -202,6 +202,17 @@ when the environment is available, no stale generated files, and a written
 explanation for every intentionally unsupported target.
 
 ## Phase 2 — Recover conversations into universal handoffs
+
+### Phase 2 implementation log (2026-07-22)
+
+The source inventory and required model-neutral handoffs are now available at
+[`docs/handoffs/merge-recovery/`](handoffs/merge-recovery/index.md). They record
+Phase-1 test evidence and distinguish the unresolved LIR const-parameter `L`
+failure from the LLVM environment blocker. In particular, the static-shapes and
+monomorphization handoff warns that the failure may expose effects of the
+in-progress lowering-time monomorphization refactor beyond the original
+transcript's assumed scope; it must be traced across callers and instance/layout
+planning rather than patched as a C-backend-only test issue.
 
 ### Source inventory (do not commit raw transcripts)
 
