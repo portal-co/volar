@@ -111,6 +111,7 @@ where applicable.
 | [external-primitives-plan.md](external-primitives-plan.md) | Oracles, Actions, and Native RNG — partial implementation; ActionCall is in use |
 | [tfhe-pbs-rework-plan.md](tfhe-pbs-rework-plan.md) | **Validation gate** for TFHE work; Gate A oracle and Phase-2 conformance suite landed, Gates B–C remain |
 | [tfhe-mlkem-rework-draft.md](tfhe-mlkem-rework-draft.md) | Proposed isolated, integer-sampled TFHE rework and ciphertext/cleartext completeness harness; no parameter set or implementation is authorized |
+| [tfhe-two-track-cleanup-plan.md](tfhe-two-track-cleanup-plan.md) | Active legacy self-consistency cleanup versus separate V2 research boundary; neither preserves weaver compatibility |
 | [tfhe-multi-input-pbs-weaver-plan.md](tfhe-multi-input-pbs-weaver-plan.md) | LUT-first/generalized PBS work blocked behind the TFHE validation gate; current selector remains two address bits |
 | [spec-static-shapes-plan.md](spec-static-shapes-plan.md) | Static TFHE shapes landed; dynamic and LIR/C validation gaps are recorded |
 | [metadata-container-plan.md](metadata-container-plan.md) | Implemented metadata refactor ledger and incomplete consumer/coverage work |
