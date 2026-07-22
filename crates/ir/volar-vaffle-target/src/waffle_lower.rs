@@ -63,6 +63,8 @@ use alloc::{
 };
 
 use portal_pc_waffle_ir::{
+    entity::EntityRef, // for .index() on Func/Block/etc.
+    Func,
     FuncDecl,
     FunctionBody,
     MemoryArg,
@@ -73,17 +75,16 @@ use portal_pc_waffle_ir::{
     Type as WType,
     Value as WValue,
     ValueDef,
-    entity::EntityRef, // for .index() on Func/Block/etc.
 };
 
 use volar_ir_common::{Constant, PreInitSegment, StorageId};
 use volar_lir::circuits::{
-    StorageEmitter, bc_clz, bc_ctz, bc_popcnt, bc_rotl, bc_rotr, bc_srem, bc_urem,
+    bc_clz, bc_ctz, bc_popcnt, bc_rotl, bc_rotr, bc_srem, bc_urem, StorageEmitter,
 };
 use volar_lir::{BitCircuitBuilder, BranchTarget, IcmpPred, LirTarget, LirType};
 
 use crate::import_config::{WaffleImportConfig, WaffleImportKind};
-use crate::target::{VaffleBlock, VaffleTarget, VaffleValue, bits_for_lir_type};
+use crate::target::{bits_for_lir_type, VaffleBlock, VaffleTarget, VaffleValue};
 use vaffle::ValueId;
 
 // ============================================================================
@@ -130,12 +131,14 @@ pub fn lower_waffle_module(
     // Pre-register OracleDecl / ActionDecl for imports named in config.
     for (_func_ref, decl) in wasm.funcs.entries() {
         if let FuncDecl::Import(sig, import_name) = decl {
-            let Some(kind) = config.imports.get(import_name) else { continue };
+            let Some(kind) = config.imports.get(import_name) else {
+                continue;
+            };
             let sig_data = &wasm.signatures[*sig];
             let (wasm_params, wasm_results) = match sig_data {
-                portal_pc_waffle_ir::SignatureData::Func { params, returns, .. } => {
-                    (params.as_slice(), returns.as_slice())
-                }
+                portal_pc_waffle_ir::SignatureData::Func {
+                    params, returns, ..
+                } => (params.as_slice(), returns.as_slice()),
                 _ => continue,
             };
             match kind {
@@ -180,11 +183,13 @@ pub fn lower_waffle_module(
     }
 
     let mut errors = Vec::new();
-    // EntityVec::entries() yields (Func, &FuncDecl) pairs.
-    for (_func_ref, decl) in wasm.funcs.entries() {
-        if let FuncDecl::Body(_, name, body) = decl {
-            if let Err(e) = lower_waffle_function(body, name.as_str(), wasm, target, config) {
-                errors.push((name.clone(), e));
+    // The compatibility materializer deliberately resolves every non-import
+    // function through the same single-function lazy boundary.
+    for (func_ref, decl) in wasm.funcs.entries() {
+        if !matches!(decl, FuncDecl::Import(..)) {
+            let name = decl.name().to_string();
+            if let Err(error) = lower_waffle_function_lazy(wasm, func_ref, target, config) {
+                errors.push((name, error));
             }
         }
     }
@@ -209,14 +214,44 @@ pub fn lower_waffle_module(
                 storage,
                 ty: byte_tid,
                 offset: seg.offset,
-                data: seg.data.iter()
-                    .map(|&b| Constant { hi: 0, lo: b as u128 })
+                data: seg
+                    .data
+                    .iter()
+                    .map(|&b| Constant {
+                        hi: 0,
+                        lo: b as u128,
+                    })
                     .collect(),
             });
         }
     }
 
     errors
+}
+
+/// Expand and lower one selected WAFFLE function.
+///
+/// This is the lazy frontend boundary used by demand planners. For a
+/// `FuncDecl::Lazy`, only `function` is parsed into a body; sibling function
+/// bodies remain deferred. Synthetic module providers can use the same route
+/// because they produce a normal WAFFLE module without serializing WASM bytes.
+pub fn lower_waffle_function_lazy(
+    wasm: &WModule,
+    function: Func,
+    target: &mut VaffleTarget,
+    config: &WaffleImportConfig,
+) -> Result<(), UnsupportedOp> {
+    let declaration = &wasm.funcs[function];
+    if matches!(declaration, FuncDecl::Import(..)) {
+        return Err(UnsupportedOp(alloc::format!(
+            "cannot lower imported function {}",
+            declaration.name()
+        )));
+    }
+    let name = declaration.name().to_string();
+    let body = portal_pc_waffle_frontend::clone_and_expand_body(wasm, function)
+        .map_err(|error| UnsupportedOp(alloc::format!("failed to expand {name}: {error}")))?;
+    lower_waffle_function(&body, &name, wasm, target, config)
 }
 
 /// Lower a single WAFFLE `FunctionBody` into `target`.
@@ -779,22 +814,24 @@ fn lower_op(
 
             // Oracle / action dispatch: bypass globals threading.
             if let Some(kind) = config.imports.get(&name) {
-                let all_arg_vals: Vec<VaffleValue> = args
-                    .iter()
-                    .map(|wv| {
-                        val_map
-                            .get(wv)
-                            .cloned()
-                            .ok_or_else(|| UnsupportedOp(alloc::format!("undefined arg {:?}", wv)))
-                    })
-                    .collect::<Result<_, _>>()?;
+                let all_arg_vals: Vec<VaffleValue> =
+                    args.iter()
+                        .map(|wv| {
+                            val_map.get(wv).cloned().ok_or_else(|| {
+                                UnsupportedOp(alloc::format!("undefined arg {:?}", wv))
+                            })
+                        })
+                        .collect::<Result<_, _>>()?;
                 let orig_ret_tys: Vec<LirType> = result_tys
                     .iter()
                     .map(|&t| waffle_ty(t))
                     .collect::<Result<_, _>>()?;
 
                 let results = match kind {
-                    WaffleImportKind::Oracle { name: oracle_name, side } => {
+                    WaffleImportKind::Oracle {
+                        name: oracle_name,
+                        side,
+                    } => {
                         tgt.set_side(*side);
                         let r = tgt.call_extern_multi(
                             &alloc::format!("oracle_{oracle_name}"),
@@ -804,13 +841,23 @@ fn lower_op(
                         tgt.set_side(None);
                         r
                     }
-                    WaffleImportKind::Action { name: action_name, n_args, side } => {
+                    WaffleImportKind::Action {
+                        name: action_name,
+                        n_args,
+                        side,
+                    } => {
                         let guard_vv = all_arg_vals[0].clone();
                         let guard_bit = or_bits(tgt, &guard_vv.bits);
                         let real_args = &all_arg_vals[1..=*n_args];
                         let fallbacks = &all_arg_vals[*n_args + 1..];
                         tgt.set_side(*side);
-                        let r = tgt.action_call(action_name, guard_bit, real_args, fallbacks, &orig_ret_tys);
+                        let r = tgt.action_call(
+                            action_name,
+                            guard_bit,
+                            real_args,
+                            fallbacks,
+                            &orig_ret_tys,
+                        );
                         tgt.set_side(None);
                         r
                     }
@@ -1012,7 +1059,13 @@ fn lower_term(
             then_args.extend_from_slice(current_globals);
             let mut else_args = get_args(&if_false.args)?;
             else_args.extend_from_slice(current_globals);
-            tgt.branch(cond_bool, then_b, BranchTarget::args(then_args), else_b, BranchTarget::args(else_args));
+            tgt.branch(
+                cond_bool,
+                then_b,
+                BranchTarget::args(then_args),
+                else_b,
+                BranchTarget::args(else_args),
+            );
         }
 
         Terminator::Return { values } => {
@@ -1154,8 +1207,8 @@ fn mem_store_bytes(
 
         // Merge 8 bits into a byte-typed value.
         let byte_var = tgt.compose_address(&bits); // compose_address creates Merge → Vec(8, Bit)
-        // Actually compose_address creates Vec(N, Bit) where N = bits.len().
-        // For 8 bits this gives us Vec(8, Bit) = byte_tid. Perfect.
+                                                   // Actually compose_address creates Vec(N, Bit) where N = bits.len().
+                                                   // For 8 bits this gives us Vec(8, Bit) = byte_tid. Perfect.
 
         tgt.emit_write(storage, byte_var, byte_tid, &addr_val.bits);
     }
@@ -2178,7 +2231,9 @@ mod tests {
         // h = oracle_hash(p0, p1)
         let h = body.add_op(
             entry,
-            Operator::Call { function_index: oracle_func },
+            Operator::Call {
+                function_index: oracle_func,
+            },
             &[p0, p1],
             &[WType::I32],
         );
@@ -2189,12 +2244,19 @@ mod tests {
         // result = action_send(p2, h, fallback)
         let result = body.add_op(
             entry,
-            Operator::Call { function_index: action_func },
+            Operator::Call {
+                function_index: action_func,
+            },
             &[p2, h, fallback],
             &[WType::I32],
         );
 
-        body.set_terminator(entry, WTerminator::Return { values: vec![result] });
+        body.set_terminator(
+            entry,
+            WTerminator::Return {
+                values: vec![result],
+            },
+        );
 
         module.funcs.push(portal_pc_waffle_ir::FuncDecl::Body(
             caller_sig,
@@ -2219,17 +2281,37 @@ mod tests {
         // OracleDecl for "hash" should be registered.
         assert_eq!(target.module.oracles.len(), 1, "expected one oracle");
         assert_eq!(target.module.oracles[0].name, "hash");
-        assert_eq!(target.module.oracles[0].params.len(), 2, "oracle has 2 params");
-        assert_eq!(target.module.oracles[0].results.len(), 1, "oracle has 1 result");
+        assert_eq!(
+            target.module.oracles[0].params.len(),
+            2,
+            "oracle has 2 params"
+        );
+        assert_eq!(
+            target.module.oracles[0].results.len(),
+            1,
+            "oracle has 1 result"
+        );
 
         // ActionDecl for "send" should be registered.
         assert_eq!(target.module.actions.len(), 1, "expected one action");
         assert_eq!(target.module.actions[0].name, "send");
-        assert_eq!(target.module.actions[0].params.len(), 1, "action has 1 real arg");
-        assert_eq!(target.module.actions[0].results.len(), 1, "action has 1 result");
+        assert_eq!(
+            target.module.actions[0].params.len(),
+            1,
+            "action has 1 real arg"
+        );
+        assert_eq!(
+            target.module.actions[0].results.len(),
+            1,
+            "action has 1 result"
+        );
 
         // The caller function should have lowered successfully.
-        let caller = target.module.funcs.iter().find(|f| matches!(f, vaffle::FuncDecl::Body(_)));
+        let caller = target
+            .module
+            .funcs
+            .iter()
+            .find(|f| matches!(f, vaffle::FuncDecl::Body(_)));
         assert!(caller.is_some(), "caller function body should be present");
     }
 }

@@ -13,6 +13,7 @@ volar-ir-common.workspace = true
 volar-side.workspace = true
 volar-lir.workspace = true
 portal-pc-waffle-ir.workspace = true
+portal-pc-waffle-frontend.workspace = true
 
 [dev-dependencies]
 volar-lir-test-corpus = { workspace = true }
