@@ -280,7 +280,6 @@ fn qsim_generics_and_where() -> (Vec<IrGenericParam>, Vec<IrWherePredicate>) {
 // ============================================================================
 
 /// `Array::<T, N>::from_fn(|{idx}| {body})`
-<<<<<<< HEAD
 fn array_t_from_fn<P: Clone>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
     let prov = body.prov.clone();
     let side = body.side;
@@ -348,37 +347,12 @@ fn fixed_array_from_fn<P: Clone>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
         prov,
         side,
     )
-=======
-fn array_t_from_fn<P: Clone + Default>(idx: &str, body: IrExpr<P>) -> IrExpr<P> {
-    IrExpr::Call {
-        func: Box::new(IrExpr::Path {
-            segments: vec!["Array".into(), "from_fn".into()],
-            type_args: vec![
-                IrType::TypeParam("T".into()),
-                IrType::TypeParam("N".into()),
-            ],
-        }),
-        args: vec![IrExpr::Closure {
-            params: vec![volar_compiler::ir::IrClosureParam {
-                pattern: IrPattern::ident(idx),
-                ty: None,
-            }],
-            ret_type: None,
-            body: Box::new(body),
-        }],
-    }
->>>>>>> origin/main
 }
 
 /// `Array::<T, N>::default()` — the zero vector in the extension field.
 fn array_t_default<P: Clone + Default>() -> IrExpr<P> {
-<<<<<<< HEAD
     ir_expr(IrExprKind::Call {
         func: Box::new(ir_expr(IrExprKind::Path {
-=======
-    IrExpr::Call {
-        func: Box::new(IrExpr::Path {
->>>>>>> origin/main
             segments: vec!["Array".into(), "default".into()],
             type_args: vec![
                 IrType::TypeParam("T".into()),
@@ -391,13 +365,8 @@ fn array_t_default<P: Clone + Default>() -> IrExpr<P> {
 
 /// `wire.q[i]` — the verifier's Q share lane.
 fn q_index<P: Clone + Default>(wire_name: &str, idx: &str) -> IrExpr<P> {
-<<<<<<< HEAD
     ir_expr(IrExprKind::Index {
         base: Box::new(ir_expr(IrExprKind::Field {
-=======
-    IrExpr::Index {
-        base: Box::new(IrExpr::Field {
->>>>>>> origin/main
             base: Box::new(var(wire_name)),
             field: "q".into(),
         })),
@@ -417,13 +386,8 @@ fn arr_index<P: Clone + Default>(base_name: &str, idx: &str) -> IrExpr<P> {
 
 /// `delta.delta[i]`
 fn delta_index<P: Clone + Default>(idx: &str) -> IrExpr<P> {
-<<<<<<< HEAD
     ir_expr(IrExprKind::Index {
         base: Box::new(ir_expr(IrExprKind::Field {
-=======
-    IrExpr::Index {
-        base: Box::new(IrExpr::Field {
->>>>>>> origin/main
             base: Box::new(var("delta")),
             field: "delta".into(),
         })),
@@ -432,7 +396,6 @@ fn delta_index<P: Clone + Default>(idx: &str) -> IrExpr<P> {
 }
 
 /// `Q { q: {body} }`
-<<<<<<< HEAD
 fn q_struct<P: Clone>(body: IrExpr<P>) -> IrExpr<P> {
     let prov = body.prov.clone();
     let side = body.side;
@@ -446,15 +409,6 @@ fn q_struct<P: Clone>(body: IrExpr<P>) -> IrExpr<P> {
         prov,
         side,
     )
-=======
-fn q_struct<P: Clone + Default>(body: IrExpr<P>) -> IrExpr<P> {
-    IrExpr::StructExpr {
-        kind: StructKind::Custom("Q".into()),
-        type_args: vec![],
-        fields: vec![("q".into(), body)],
-        rest: None,
-    }
->>>>>>> origin/main
 }
 
 // ============================================================================
@@ -1356,12 +1310,7 @@ where
                 pattern: IrPattern::ident(&format!("vope_input_{}", i)),
                 ty: None,
                 init: Some(synth_prover_public_wire(&format!("input_{}", i))),
-<<<<<<< HEAD
             }, ctrl_prov.clone()));
-=======
-            });
-            stmt_provs.push(H::Output::default());
->>>>>>> origin/main
         }
     }
 
@@ -1556,30 +1505,20 @@ pub fn weave_vole_verifier<P: Clone + Default>(
     circuit: &BIrBlocks<P>,
     name: &str,
     linkage: Option<&LinkageSystem>,
-<<<<<<< HEAD
 ) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut tagged = weave_vole_verifier_with_handler(circuit, name, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
     tagged
-=======
-) -> IrModule<IrFunction> {
-    weave_vole_verifier_with_handler(circuit, name, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Weave a single-block boolean circuit into a VOLE **verifier** `IrModule`,
 /// using `handler` to map input provenance into the output IR.
 ///
-<<<<<<< HEAD
 /// All inputs are private witnesses.  Use [`weave_vole_verifier_with_config_and_handler`]
 /// for public/private control.
 // The verifier-as-a-computation is `Transparent` (non-ZK): the inner VOLE
 // proof already accounts for zero-knowledge, so re-checking it carries no
 // ZK proving secrets of its own.
-=======
-/// All inputs are private witnesses.  Use [`weave_vole_verifier_with_config`] for
-/// public/private control.
->>>>>>> origin/main
 pub fn weave_vole_verifier_with_handler<P, H>(
     circuit: &BIrBlocks<P>,
     name: &str,
@@ -1591,11 +1530,7 @@ where
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
-<<<<<<< HEAD
     Tagged::seal(weave_vole_verifier_inner(circuit, name, &ZkWitnessConfig::default(), handler))
-=======
-    weave_vole_verifier_inner(circuit, name, &ZkWitnessConfig::default(), linkage, handler)
->>>>>>> origin/main
 }
 
 /// Weave a single-block boolean circuit into a VOLE **verifier** `IrModule` with
@@ -1608,7 +1543,6 @@ pub fn weave_vole_verifier_with_config<P: Clone + Default>(
     name: &str,
     config: &ZkWitnessConfig,
     linkage: Option<&LinkageSystem>,
-<<<<<<< HEAD
 ) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut module = weave_vole_verifier_inner(circuit, name, config, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(&mut module); }
@@ -1632,10 +1566,6 @@ pub fn weave_vole_verifier_with_trace<P: Clone>(
     let mut module = weave_vole_verifier_inner(circuit, name, &cfg, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(&mut module); }
     Tagged::seal(module)
-=======
-) -> IrModule<IrFunction> {
-    weave_vole_verifier_inner(circuit, name, config, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Weave with both a [`ZkWitnessConfig`] and a provenance handler.
@@ -1651,18 +1581,13 @@ where
     H: ProvenanceHandler<P>,
     H::Output: Default,
 {
-<<<<<<< HEAD
     Tagged::seal(weave_vole_verifier_inner(circuit, name, config, handler))
-=======
-    weave_vole_verifier_inner(circuit, name, config, linkage, handler)
->>>>>>> origin/main
 }
 
 /// Like [`weave_vole_prover_with_side`] but for the **verifier**.
 pub fn weave_vole_verifier_with_side<P: Clone, SH>(
     circuit: &BIrBlocks<P>,
     name: &str,
-<<<<<<< HEAD
     assignments: &VoleSideAssignments,
     side_handler: &SH,
 ) -> Tagged<Transparent, IrModule<IrFunction>>
@@ -1695,10 +1620,6 @@ fn weave_vole_verifier_inner<P, H, C: VoleWitnessSource<H::Output>>(
     circuit: &BIrBlocks<P>,
     name: &str,
     config: &C,
-=======
-    config: &ZkWitnessConfig,
-    linkage: Option<&LinkageSystem>,
->>>>>>> origin/main
     handler: &H,
 ) -> IrModule<IrFunction<H::Output>, H::Output>
 where
@@ -1714,12 +1635,9 @@ where
     let block = &circuit.blocks[0];
     let num_params = block.params as usize;
     let expanded = expand_ors(block);
-<<<<<<< HEAD
     let ctrl_prov: H::Output = block.stmts.first()
         .map(|n| handler.map(&n.prov))
         .expect("weave_vole_verifier_inner: circuit has no statements; cannot derive provenance for infrastructure statements");
-=======
->>>>>>> origin/main
 
     let (and_count, sbox_count) = expanded.iter().fold((0usize, 0usize), |(k1, k2), (_, s, prov)| {
         if matches!(s, BIrStmt::And(..)) {
@@ -1880,7 +1798,6 @@ where
             subpat: None,
         },
         ty: None,
-<<<<<<< HEAD
         init: Some(ir_expr_p(IrExprKind::Lit(IrLit::Bool(true)), ctrl_prov.clone())),
     }, ctrl_prov.clone()));
 
@@ -1903,11 +1820,6 @@ where
             }, ctrl_prov.clone())),
         }, ctrl_prov.clone()));
     }
-=======
-        init: Some(IrExpr::Lit(IrLit::Bool(true))),
-    });
-    stmt_provs.push(H::Output::default());
->>>>>>> origin/main
 
     // Synthesise Q wires for public inputs from the bool params.
     for i in 0..num_params {
@@ -1916,12 +1828,7 @@ where
                 pattern: IrPattern::ident(&format!("q_input_{}", i)),
                 ty: None,
                 init: Some(synth_verifier_public_wire(&format!("input_{}", i))),
-<<<<<<< HEAD
             }, ctrl_prov.clone()));
-=======
-            });
-            stmt_provs.push(H::Output::default());
->>>>>>> origin/main
         }
     }
 
@@ -2133,15 +2040,10 @@ pub fn weave_vole_prover_bounded<P: Clone + Default>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-<<<<<<< HEAD
 ) -> Tagged<Zk, IrModule<IrFunction>> {
     let mut tagged = weave_vole_prover_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
     tagged
-=======
-) -> IrModule<IrFunction> {
-    weave_vole_prover_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Bounded VOLE prover weave with provenance handler.
@@ -2159,11 +2061,7 @@ where
     H::Output: Default,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-<<<<<<< HEAD
     Tagged::seal(weave_vole_prover_inner(&lowered, name, &ZkWitnessConfig::default(), handler))
-=======
-    weave_vole_prover_inner(&lowered, name, &ZkWitnessConfig::default(), linkage, handler)
->>>>>>> origin/main
 }
 
 /// Bounded VOLE prover weave with witness config.
@@ -2176,13 +2074,9 @@ pub fn weave_vole_prover_bounded_with_config<P: Clone + Default>(
     linkage: Option<&LinkageSystem>,
 ) -> Tagged<Zk, IrModule<IrFunction>> {
     let lowered = lower_to_circuit(circuit, limit, mode);
-<<<<<<< HEAD
     let mut module = weave_vole_prover_inner(&lowered, name, config, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(&mut module); }
     Tagged::seal(module)
-=======
-    weave_vole_prover_inner(&lowered, name, config, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Bounded VOLE prover weave with witness config and provenance handler.
@@ -2201,11 +2095,7 @@ where
     H::Output: Default,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-<<<<<<< HEAD
     Tagged::seal(weave_vole_prover_inner(&lowered, name, config, handler))
-=======
-    weave_vole_prover_inner(&lowered, name, config, linkage, handler)
->>>>>>> origin/main
 }
 
 /// Backwards-compatible bounded VOLE verifier weave.
@@ -2215,15 +2105,10 @@ pub fn weave_vole_verifier_bounded<P: Clone + Default>(
     limit: u32,
     mode: LoweringMode,
     linkage: Option<&LinkageSystem>,
-<<<<<<< HEAD
 ) -> Tagged<Transparent, IrModule<IrFunction>> {
     let mut tagged = weave_vole_verifier_bounded_with_handler(circuit, name, limit, mode, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(tagged.inner_mut()); }
     tagged
-=======
-) -> IrModule<IrFunction> {
-    weave_vole_verifier_bounded_with_handler(circuit, name, limit, mode, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Bounded VOLE verifier weave with provenance handler.
@@ -2241,11 +2126,7 @@ where
     H::Output: Default,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-<<<<<<< HEAD
     Tagged::seal(weave_vole_verifier_inner(&lowered, name, &ZkWitnessConfig::default(), handler))
-=======
-    weave_vole_verifier_inner(&lowered, name, &ZkWitnessConfig::default(), linkage, handler)
->>>>>>> origin/main
 }
 
 /// Bounded VOLE verifier weave with witness config.
@@ -2258,13 +2139,9 @@ pub fn weave_vole_verifier_bounded_with_config<P: Clone + Default>(
     linkage: Option<&LinkageSystem>,
 ) -> Tagged<Transparent, IrModule<IrFunction>> {
     let lowered = lower_to_circuit(circuit, limit, mode);
-<<<<<<< HEAD
     let mut module = weave_vole_verifier_inner(&lowered, name, config, &NoProvenance);
     if let Some(ls) = linkage { ls.apply(&mut module); }
     Tagged::seal(module)
-=======
-    weave_vole_verifier_inner(&lowered, name, config, linkage, &NoProvenance)
->>>>>>> origin/main
 }
 
 /// Bounded VOLE verifier weave with witness config and provenance handler.
@@ -2283,11 +2160,7 @@ where
     H::Output: Default,
 {
     let lowered = lower_to_circuit(circuit, limit, mode);
-<<<<<<< HEAD
     Tagged::seal(weave_vole_verifier_inner(&lowered, name, config, handler))
-=======
-    weave_vole_verifier_inner(&lowered, name, config, linkage, handler)
->>>>>>> origin/main
 }
 
 // ============================================================================
