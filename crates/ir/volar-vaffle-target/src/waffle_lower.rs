@@ -116,6 +116,18 @@ fn waffle_ty(ty: WType) -> Result<LirType, UnsupportedOp> {
 // Public entry points
 // ============================================================================
 
+/// Whether WAFFLE lowering consumes its source-neutral WSMM custom section.
+///
+/// `RespectUnstable` is the v0.1 opt-in: it allows layout declarations to
+/// reduce emitted storage immediately, while keeping authentication a separate
+/// caller choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum WasmMetadataMode {
+    Ignore,
+    #[default]
+    RespectUnstable,
+}
+
 /// Lower all function bodies in a WAFFLE module into `target`, skipping
 /// unsupported functions.  Returns a list of (name, error) for skipped functions.
 ///
@@ -128,6 +140,21 @@ pub fn lower_waffle_module(
     target: &mut VaffleTarget,
     config: &WaffleImportConfig,
 ) -> Vec<(String, UnsupportedOp)> {
+    lower_waffle_module_with_metadata(wasm, target, config, WasmMetadataMode::RespectUnstable)
+}
+
+/// As [`lower_waffle_module`], with an explicit source-neutral metadata mode.
+pub fn lower_waffle_module_with_metadata(
+    wasm: &WModule,
+    target: &mut VaffleTarget,
+    config: &WaffleImportConfig,
+    metadata_mode: WasmMetadataMode,
+) -> Vec<(String, UnsupportedOp)> {
+    let unused_ranges = if metadata_mode == WasmMetadataMode::RespectUnstable {
+        wasm.wsmm_manifest().ok().flatten().map(unused_memory_ranges).unwrap_or_default()
+    } else {
+        BTreeMap::new()
+    };
     // Pre-register OracleDecl / ActionDecl for imports named in config.
     for (_func_ref, decl) in wasm.funcs.entries() {
         if let FuncDecl::Import(sig, import_name) = decl {
@@ -210,6 +237,16 @@ pub fn lower_waffle_module(
     for (mem_ref, mem_data) in wasm.memories.entries() {
         let storage = StorageId::memory(mem_ref.index() as u32);
         for seg in &mem_data.segments {
+            // Under the explicit unstable manifest mode, an entire segment in
+            // a declared-unused range has no represented storage to initialise.
+            // The `Ignore` mode and malformed/absent manifests retain the
+            // legacy complete materialization path.
+            if unused_ranges
+                .get(&(mem_ref.index() as u32))
+                .is_some_and(|ranges| ranges.iter().any(|&(start, end)| seg.offset >= start && seg.offset.saturating_add(seg.data.len()) <= end))
+            {
+                continue;
+            }
             target.module.pre_init.push(PreInitSegment {
                 storage,
                 ty: byte_tid,
@@ -227,6 +264,25 @@ pub fn lower_waffle_module(
     }
 
     errors
+}
+
+fn unused_memory_ranges(manifest: wax_meta::Manifest) -> BTreeMap<u32, Vec<(usize, usize)>> {
+    let mut ranges = BTreeMap::new();
+    for (key, value) in manifest.entries() {
+        let Some(index) = key.strip_prefix("memory/").and_then(|tail| tail.strip_suffix("/unused")) else { continue; };
+        let Ok(memory) = index.parse::<u32>() else { continue; };
+        let wax_meta::Value::List(items) = value else { continue; };
+        let mut parsed = Vec::new();
+        for item in items {
+            let wax_meta::Value::Map(fields) = item else { continue; };
+            let (Some(wax_meta::Value::U64(start)), Some(wax_meta::Value::U64(length))) = (fields.get("start"), fields.get("length")) else { continue; };
+            let Ok(start) = usize::try_from(*start) else { continue; };
+            let Ok(length) = usize::try_from(*length) else { continue; };
+            if let Some(end) = start.checked_add(length) { parsed.push((start, end)); }
+        }
+        ranges.insert(memory, parsed);
+    }
+    ranges
 }
 
 /// Expand and lower one selected WAFFLE function.
@@ -1303,10 +1359,37 @@ mod tests {
     use super::*;
     use portal_pc_waffle_ir::entity::EntityVec;
     use portal_pc_waffle_ir::{
-        BlockTarget, Global, GlobalData, Memory, MemoryData, Module as WModule, Operator,
+        BlockTarget, Global, GlobalData, Memory, MemoryData, MemorySegment, Module as WModule, Operator,
         Signature, SignatureData, Terminator as WTerminator, Type as WType, ValueDef,
     };
     use volar_ir_common::Stmt;
+
+    #[test]
+    fn respect_unstable_skips_declared_unused_data_storage() {
+        let mut wasm = WModule::empty();
+        wasm.memories.push(MemoryData {
+            initial_pages: 1,
+            maximum_pages: Some(1),
+            segments: vec![MemorySegment { offset: 32, data: vec![1, 2, 3] }],
+            memory64: false,
+            shared: false,
+            page_size_log2: None,
+        });
+        let mut range = BTreeMap::new();
+        range.insert("length".into(), wax_meta::Value::U64(3));
+        range.insert("start".into(), wax_meta::Value::U64(32));
+        let mut manifest = wax_meta::Manifest::new();
+        manifest.insert("memory/0/unused".into(), wax_meta::Value::List(vec![wax_meta::Value::Map(range)])).unwrap();
+        wasm.set_wsmm_manifest(&manifest).unwrap();
+
+        let mut respected = VaffleTarget::new();
+        lower_waffle_module_with_metadata(&wasm, &mut respected, &WaffleImportConfig::default(), WasmMetadataMode::RespectUnstable);
+        assert!(respected.module.pre_init.is_empty());
+
+        let mut ignored = VaffleTarget::new();
+        lower_waffle_module_with_metadata(&wasm, &mut ignored, &WaffleImportConfig::default(), WasmMetadataMode::Ignore);
+        assert_eq!(ignored.module.pre_init.len(), 1);
+    }
 
     /// Build a minimal WAFFLE module with one memory and a function that
     /// does `i32.store(addr=param0, val=param1)` then `i32.load(addr=param0) → return`.

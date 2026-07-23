@@ -22,5 +22,6 @@ pub use import_config::{WaffleImportConfig, WaffleImportKind};
 pub use lower_to_ir::{lower_vaffle_to_ir, lower_vaffle_to_ir_with_control_provenance};
 pub use target::{VaffleBlock, VaffleTarget, VaffleValue};
 pub use waffle_lower::{
-    lower_waffle_function, lower_waffle_function_lazy, lower_waffle_module, UnsupportedOp,
+    lower_waffle_function, lower_waffle_function_lazy, lower_waffle_module,
+    lower_waffle_module_with_metadata, UnsupportedOp, WasmMetadataMode,
 };
