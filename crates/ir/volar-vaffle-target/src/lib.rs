@@ -14,6 +14,8 @@ extern crate alloc;
 
 pub mod import_config;
 pub mod lower_to_ir;
+#[cfg(feature = "lazy-ir-plan")]
+pub mod plan;
 pub mod target;
 pub mod vaffle_ssa;
 pub mod waffle_lower;

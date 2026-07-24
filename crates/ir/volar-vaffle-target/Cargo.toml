@@ -15,6 +15,13 @@ volar-lir.workspace = true
 portal-pc-waffle-ir.workspace = true
 portal-pc-waffle-frontend.workspace = true
 wax-meta.workspace = true
+portal-lazy-transform = { path = "../../../../portal-lazy-transform", optional = true }
+
+[features]
+# Opt-in lazy VAFFLE-to-IR entry point built on portal-lazy-transform. Off by
+# default: with this feature disabled, lower_vaffle_to_ir is unchanged and no
+# new dependency is compiled in.
+lazy-ir-plan = ["dep:portal-lazy-transform"]
 
 [dev-dependencies]
 volar-lir-test-corpus = { workspace = true }

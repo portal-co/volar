@@ -310,7 +310,7 @@ struct FuncInfo {
     cross_block_base: u64,
 }
 
-struct LowerCtx<'m, P: Clone = ()> {
+pub(crate) struct LowerCtx<'m, P: Clone = ()> {
     module: &'m Module<P>,
     types: IRTypes,
     /// Maps VAFFLE TypeId → IR TypeId (index = VAFFLE TypeId.0).
@@ -334,7 +334,7 @@ struct LowerCtx<'m, P: Clone = ()> {
 }
 
 impl<'m, P: Clone> LowerCtx<'m, P> {
-    fn new(module: &'m Module<P>) -> Self {
+    pub(crate) fn new(module: &'m Module<P>) -> Self {
         let mut types = IRTypes::new();
         types.push(IrType::Primitive(Type::Bit));           // index 0 = BIT_TID
         types.push(IrType::Vec(SP_BITS, BIT_TID));          // index 1 = ADDR_TID
@@ -389,7 +389,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
 
     // ---- Planning ----------------------------------------------------------
 
-    fn plan_functions(&mut self) {
+    pub(crate) fn plan_functions(&mut self) {
         // Reserve block 0 for the module entry; block 1 for the exit continuation.
         let mut block_offset = 2usize;
 
@@ -505,7 +505,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
         self.blocks.append(&mut self.extra_blocks);
     }
 
-    fn emit_entry_and_exit(&mut self) {
+    pub(crate) fn emit_entry_and_exit(&mut self) {
         // Block 0: entry.  Params: none.  Body: SP = const 0.  Jump to func 0.
         let mut em = BlockEmitter::new(vec![]);
 
@@ -576,7 +576,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
         self.blocks.push(exit_em.finish(IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, ret_bits,) }));
     }
 
-    fn lower_function(&mut self, func_idx: usize, body: &FuncBody<P>) {
+    pub(crate) fn lower_function(&mut self, func_idx: usize, body: &FuncBody<P>) {
         let info = &self.func_info[func_idx];
         let entry_block_offset = info.entry_block;
         let own_layout = info.own_layout.clone();
@@ -988,7 +988,7 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
         }
     }
 
-    fn finish(self) -> (IRBlocks<P>, IRTypes) {
+    pub(crate) fn finish(self) -> (IRBlocks<P>, IRTypes) {
         (IRBlocks {
             oracles: self.oracles,
             actions: self.actions,
@@ -996,6 +996,53 @@ impl<'m, P: Clone> LowerCtx<'m, P> {
             blocks: self.blocks,
             pre_init: self.pre_init,
         }, self.types)
+    }
+
+    /// Number of primary blocks committed so far. Used by the lazy-plan
+    /// driver (`plan.rs`) to bracket which blocks a given `lower_function`
+    /// call just added, for sub-element tracing.
+    pub(crate) fn blocks_len(&self) -> usize {
+        self.blocks.len()
+    }
+
+    /// Number of extra (call-split continuation) blocks committed so far.
+    pub(crate) fn extra_blocks_len(&self) -> usize {
+        self.extra_blocks.len()
+    }
+
+    /// Total `IRStmt`s appended to either `blocks` or `extra_blocks` since
+    /// `(blocks_before, extra_before)` were captured (typically via
+    /// `blocks_len`/`extra_blocks_len` just before a `lower_function` call).
+    pub(crate) fn stmt_count_since(&self, blocks_before: usize, extra_before: usize) -> usize {
+        self.blocks[blocks_before..].iter().map(|b| b.stmts.len()).sum::<usize>()
+            + self.extra_blocks[extra_before..].iter().map(|b| b.stmts.len()).sum::<usize>()
+    }
+
+    /// Append accumulated call-split continuation blocks to the primary
+    /// sequence -- the same step `lower_all` performs before `finish()`.
+    /// Must be called (once) after every function has been either lowered
+    /// or placeholder-reserved.
+    pub(crate) fn append_extra_blocks(&mut self) {
+        self.blocks.append(&mut self.extra_blocks);
+    }
+
+    /// Push `count` placeholder (unreachable) `IRBlock`s directly into the
+    /// primary block sequence -- used by the lazy-plan driver to preserve
+    /// `plan_functions`'s precomputed block-offset arithmetic for a function
+    /// that was not in the requested/reachable closure, without paying for
+    /// its real `lower_function` translation cost. Matches the same
+    /// "nothing real to jump to" trap shape `emit_entry_and_exit` already
+    /// uses for its own degenerate case.
+    pub(crate) fn reserve_placeholder_blocks(&mut self, count: usize) {
+        for _ in 0..count {
+            self.blocks.push(IRBlock {
+                params: vec![],
+                stmts: vec![],
+                terminator: IRTerminator::Jmp {
+                    target: IRBranchTarget::new(IRBlockTargetId::Return, vec![]),
+                },
+            });
+        }
     }
 }
 
