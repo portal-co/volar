@@ -36,10 +36,15 @@ pub fn print_module_noir(module: &IrModule<IrFunction>) -> Result<String, Vec<No
     let mut errors = Vec::new();
 
     // Empirically confirmed (`nargo check`): unlike Rust, Noir does not
-    // put `Add`/`Sub`/`Mul`/etc. in scope for `impl` purposes without an
-    // explicit `use` -- a bare `impl Add for Galois` fails with "Trait Add
-    // not found" otherwise. Collect exactly the trait names actually used
-    // so the import list doesn't grow unboundedly.
+    // put `Add`/`Sub`/`Mul`/etc. -- nor `WrappingAdd`/`WrappingSub`, which
+    // are trait-backed methods here too -- in scope without an explicit
+    // `use` ("Trait Add not found" / "trait ... which provides
+    // wrapping_add is implemented but not in scope" otherwise, unlike
+    // Rust). `min`/`max` are free functions in Noir (`std::cmp::min`),
+    // *not* methods the way Rust's `Ord::min`/`Ord::max` are -- also
+    // confirmed empirically, correcting an initial assumption that they'd
+    // be plain methods. Collect exactly what's used so the import list
+    // doesn't grow unboundedly.
     let mut used_traits = Vec::new();
     for imp in &module.impls {
         if let Some(tr) = &imp.trait_ {
@@ -50,8 +55,25 @@ pub fn print_module_noir(module: &IrModule<IrFunction>) -> Result<String, Vec<No
             }
         }
     }
+    let mut needs_cmp = false;
+    for function in &module.functions {
+        collect_needed_imports(&function.body, &mut used_traits, &mut needs_cmp);
+    }
+    for imp in &module.impls {
+        for item in &imp.items {
+            if let volar_compiler::ir::IrImplItem::Method(f) = item {
+                collect_needed_imports(&f.body, &mut used_traits, &mut needs_cmp);
+            }
+        }
+    }
     if !used_traits.is_empty() {
-        out.push_str(&format!("use std::ops::{{{}}};\n\n", used_traits.join(", ")));
+        out.push_str(&format!("use std::ops::{{{}}};\n", used_traits.join(", ")));
+    }
+    if needs_cmp {
+        out.push_str("use std::cmp::{min, max};\n");
+    }
+    if !used_traits.is_empty() || needs_cmp {
+        out.push('\n');
     }
 
     for s in &module.structs {
@@ -162,6 +184,83 @@ fn trait_kind_to_noir_name(kind: &volar_compiler::ir::TraitKind) -> Result<&'sta
     }
 }
 
+/// Walk a function body collecting which `use` imports its `StdMethod`
+/// calls will need (see the doc comment at the `print_module_noir` call
+/// site for what was empirically confirmed here). A separate, narrower
+/// walker than `lowering_noir`'s validation pass -- this only collects,
+/// never rejects.
+fn collect_needed_imports(block: &IrBlock, traits: &mut Vec<&'static str>, needs_cmp: &mut bool) {
+    for stmt in &block.stmts {
+        match &stmt.kind {
+            IrStmtKind::Let { init: Some(e), .. } => collect_needed_imports_expr(e, traits, needs_cmp),
+            IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => collect_needed_imports_expr(e, traits, needs_cmp),
+            _ => {}
+        }
+    }
+    if let Some(tail) = &block.expr {
+        collect_needed_imports_expr(tail, traits, needs_cmp);
+    }
+}
+
+fn collect_needed_imports_expr(expr: &IrExpr, traits: &mut Vec<&'static str>, needs_cmp: &mut bool) {
+    use volar_compiler::ir::{MethodKind, StdMethod};
+    if let IrExprKind::MethodCall { receiver, method, args, .. } = &expr.kind {
+        match method {
+            MethodKind::Known(StdMethod::WrappingAdd) if !traits.contains(&"WrappingAdd") => {
+                traits.push("WrappingAdd");
+            }
+            MethodKind::Known(StdMethod::WrappingSub) if !traits.contains(&"WrappingSub") => {
+                traits.push("WrappingSub");
+            }
+            MethodKind::Known(StdMethod::Min) | MethodKind::Known(StdMethod::Max) => {
+                *needs_cmp = true;
+            }
+            _ => {}
+        }
+        collect_needed_imports_expr(receiver, traits, needs_cmp);
+        for a in args {
+            collect_needed_imports_expr(a, traits, needs_cmp);
+        }
+        return;
+    }
+    // Recurse into the handful of shapes that can nest a MethodCall in
+    // practice for the fixtures this backend targets. Not an exhaustive
+    // walk of every IrExprKind variant (unlike lowering_noir's validation
+    // pass, missing a nesting shape here only means an import gets missed
+    // -- Noir's own compiler still catches that loudly as a real "trait
+    // not in scope" error, it just wouldn't be this printer's job to
+    // pre-empt it for every possible nesting).
+    match &expr.kind {
+        IrExprKind::Binary { left, right, .. } | IrExprKind::Assign { left, right }
+        | IrExprKind::AssignOp { left, right, .. } => {
+            collect_needed_imports_expr(left, traits, needs_cmp);
+            collect_needed_imports_expr(right, traits, needs_cmp);
+        }
+        IrExprKind::Unary { expr, .. } | IrExprKind::Return(Some(expr)) | IrExprKind::Cast { expr, .. }
+        | IrExprKind::Field { base: expr, .. } => {
+            collect_needed_imports_expr(expr, traits, needs_cmp);
+        }
+        IrExprKind::Call { func, args } => {
+            collect_needed_imports_expr(func, traits, needs_cmp);
+            for a in args {
+                collect_needed_imports_expr(a, traits, needs_cmp);
+            }
+        }
+        IrExprKind::Block(b) => collect_needed_imports(b, traits, needs_cmp),
+        IrExprKind::If { cond, then_branch, else_branch } => {
+            collect_needed_imports_expr(cond, traits, needs_cmp);
+            collect_needed_imports(then_branch, traits, needs_cmp);
+            if let Some(e) = else_branch {
+                collect_needed_imports_expr(e, traits, needs_cmp);
+            }
+        }
+        IrExprKind::BoundedLoop { body, .. } | IrExprKind::IterLoop { body, .. } => {
+            collect_needed_imports(body, traits, needs_cmp);
+        }
+        _ => {}
+    }
+}
+
 fn print_struct(s: &volar_compiler::ir::IrStruct) -> Result<String, NoirCodegenError> {
     let name = s.kind.to_string();
     // Empirically confirmed (`nargo check`): Noir has no tuple-struct
@@ -186,6 +285,15 @@ fn print_struct(s: &volar_compiler::ir::IrStruct) -> Result<String, NoirCodegenE
     let generics_text = print_generics(&s.generics, &name)?;
     let mut fields = Vec::new();
     for f in &s.fields {
+        // A reference *stored* in a struct field is the other "escapes"
+        // case the plan calls out -- same reasoning as the returned-
+        // reference check in `print_function`.
+        if let IrType::Reference { .. } = &f.ty {
+            return Err(NoirCodegenError::EscapingReference {
+                function: name.clone(),
+                reason: format!("field `{}` cannot store a reference in Noir", f.name),
+            });
+        }
         fields.push(format!("    {}: {},", f.name, type_to_noir(&f.ty, &name)?));
     }
     Ok(format!(
@@ -219,6 +327,22 @@ fn print_function(function: &IrFunction) -> Result<String, NoirCodegenError> {
     // cannot retrieve a private witness, so a `main` returning a value at
     // all must return it publicly. Only `main` is an entry point — other
     // functions' return types are ordinary (private) values.
+    // A reference *returned* from a function is the "escapes" case the
+    // plan calls out explicitly: unlike a reference used only in
+    // parameter position (transparently unwrapped in `type_to_noir` --
+    // safe, since a pure function reading through `&T` observes the same
+    // values as reading an owned copy), a returned reference implies the
+    // caller keeps aliasing/borrowing semantics Noir has no way to
+    // express. Caught here, before `type_to_noir`'s blanket unwrap would
+    // otherwise silently turn it into a same-looking-but-different-
+    // semantics owned return value.
+    if let Some(IrType::Reference { .. }) = &function.return_type {
+        return Err(NoirCodegenError::EscapingReference {
+            function: function.name.clone(),
+            reason: "a reference cannot be returned from a function in Noir".into(),
+        });
+    }
+
     let ret = match &function.return_type {
         None | Some(IrType::Unit) => String::new(),
         Some(ty) => {
@@ -527,10 +651,7 @@ fn print_expr(expr: &IrExpr, fn_name: &str, generics: &[IrGenericParam]) -> Resu
 
         // `MethodKind::Other(name)` is a plain user-defined method (e.g.
         // an inherent or trait-impl method reachable via `print_impl`) --
-        // direct 1:1 translation, `receiver.name(args)`. `Known(StdMethod)`
-        // (a curated safe subset -- `Len`/`WrappingAdd`/`WrappingSub`/
-        // `Min`/`Max`/`Pow`, per the plan) and `Vole(_)` (backend-specific,
-        // not applicable to Noir) are both deferred to milestone 6.
+        // direct 1:1 translation, `receiver.name(args)`.
         IrExprKind::MethodCall { receiver, method: volar_compiler::ir::MethodKind::Other(name), args, .. } => {
             let receiver_text = print_expr(receiver, fn_name, generics)?;
             let mut arg_texts = Vec::new();
@@ -539,11 +660,50 @@ fn print_expr(expr: &IrExpr, fn_name: &str, generics: &[IrGenericParam]) -> Resu
             }
             Ok(format!("{receiver_text}.{name}({})", arg_texts.join(", ")))
         }
+
+        // Curated `StdMethod` v1 subset (per the approved plan). `Len`,
+        // `WrappingAdd`/`WrappingSub` are genuine Noir methods (the
+        // latter two need the `use std::ops::{...}` import collected by
+        // `collect_needed_imports`). `Min`/`Max` are empirically confirmed
+        // to be *free functions* in Noir (`std::cmp::min`/`max`), not
+        // methods the way Rust's `Ord::min`/`max` are -- rewritten from
+        // method-call to free-function-call syntax accordingly. `Pow` is
+        // deliberately left unsupported: no working integer `.pow()`
+        // pattern has been verified yet (Noir's `pow` appears to be
+        // `Field`-only), and this shouldn't be guessed.
+        IrExprKind::MethodCall { receiver, method: volar_compiler::ir::MethodKind::Known(std_method), args, .. } => {
+            use volar_compiler::ir::StdMethod;
+            match std_method {
+                StdMethod::Len if args.is_empty() => {
+                    Ok(format!("{}.len()", print_expr(receiver, fn_name, generics)?))
+                }
+                StdMethod::WrappingAdd | StdMethod::WrappingSub if args.len() == 1 => {
+                    let method_name = if matches!(std_method, StdMethod::WrappingAdd) { "wrapping_add" } else { "wrapping_sub" };
+                    Ok(format!(
+                        "{}.{method_name}({})",
+                        print_expr(receiver, fn_name, generics)?,
+                        print_expr(&args[0], fn_name, generics)?,
+                    ))
+                }
+                StdMethod::Min | StdMethod::Max if args.len() == 1 => {
+                    let fn_text = if matches!(std_method, StdMethod::Min) { "min" } else { "max" };
+                    Ok(format!(
+                        "{fn_text}({}, {})",
+                        print_expr(receiver, fn_name, generics)?,
+                        print_expr(&args[0], fn_name, generics)?,
+                    ))
+                }
+                other => Err(NoirCodegenError::Unsupported {
+                    function: fn_name.into(),
+                    reason: format!("StdMethod `{other:?}` is not yet translated to Noir"),
+                }),
+            }
+        }
         IrExprKind::MethodCall { method, .. } => Err(NoirCodegenError::Unsupported {
             function: fn_name.into(),
             reason: format!(
-                "method kind `{method:?}` is not yet translated to Noir (see milestone 6 \
-                 for the curated StdMethod subset)"
+                "method kind `{method:?}` is not yet translated to Noir (Vole-kind \
+                 methods are backend-specific and not applicable to Noir)"
             ),
         }),
 
@@ -1271,14 +1431,101 @@ mod tests {
     }
 
     #[test]
-    fn known_std_method_call_is_unsupported_in_v1() {
+    fn unhandled_std_method_call_is_unsupported_in_v1() {
+        // `Pow` deliberately excluded from the v1 subset -- no verified
+        // working integer `.pow()` pattern (Noir's `pow` appears to be
+        // Field-only), left unsupported rather than guessed.
+        let e = expr(IrExprKind::MethodCall {
+            receiver: Box::new(expr(IrExprKind::Var("a".into()))),
+            method: volar_compiler::ir::MethodKind::Known(volar_compiler::ir::StdMethod::Pow),
+            type_args: Vec::new(),
+            args: vec![expr(IrExprKind::Lit(IrLit::Int(2)))],
+        });
+        assert!(print_expr(&e, "f", &[]).is_err());
+    }
+
+    #[test]
+    fn len_method_call_prints_directly() {
         let e = expr(IrExprKind::MethodCall {
             receiver: Box::new(expr(IrExprKind::Var("arr".into()))),
             method: volar_compiler::ir::MethodKind::Known(volar_compiler::ir::StdMethod::Len),
             type_args: Vec::new(),
             args: Vec::new(),
         });
-        assert!(print_expr(&e, "f", &[]).is_err());
+        assert_eq!(print_expr(&e, "f", &[]).unwrap(), "arr.len()");
+    }
+
+    #[test]
+    fn wrapping_add_prints_as_method_call() {
+        let e = expr(IrExprKind::MethodCall {
+            receiver: Box::new(expr(IrExprKind::Var("a".into()))),
+            method: volar_compiler::ir::MethodKind::Known(volar_compiler::ir::StdMethod::WrappingAdd),
+            type_args: Vec::new(),
+            args: vec![expr(IrExprKind::Var("b".into()))],
+        });
+        assert_eq!(print_expr(&e, "f", &[]).unwrap(), "a.wrapping_add(b)");
+    }
+
+    #[test]
+    fn min_rewrites_to_free_function_call() {
+        // Empirically confirmed: Noir's min/max are free functions
+        // (`std::cmp::min`), not methods the way Rust's Ord::min is.
+        let e = expr(IrExprKind::MethodCall {
+            receiver: Box::new(expr(IrExprKind::Var("a".into()))),
+            method: volar_compiler::ir::MethodKind::Known(volar_compiler::ir::StdMethod::Min),
+            type_args: Vec::new(),
+            args: vec![expr(IrExprKind::Var("b".into()))],
+        });
+        assert_eq!(print_expr(&e, "f", &[]).unwrap(), "min(a, b)");
+    }
+
+    #[test]
+    fn returning_a_reference_is_escaping_reference_error() {
+        let f = function(
+            "get_ref",
+            vec![],
+            Some(IrType::Reference { mutable: false, elem: Box::new(IrType::Primitive(PrimitiveType::U32)) }),
+            block(vec![], None),
+        );
+        let err = print_function(&f).unwrap_err();
+        assert!(matches!(err, NoirCodegenError::EscapingReference { .. }));
+    }
+
+    #[test]
+    fn storing_a_reference_in_a_struct_field_is_escaping_reference_error() {
+        let s = volar_compiler::ir::IrStruct {
+            kind: volar_compiler::ir::StructKind::Custom("Holder".into()),
+            module_path: Vec::new(),
+            generics: Vec::new(),
+            fields: vec![volar_compiler::ir::IrField {
+                name: "r".into(),
+                ty: IrType::Reference { mutable: false, elem: Box::new(IrType::Primitive(PrimitiveType::U32)) },
+                public: true,
+            }],
+            is_tuple: false,
+            native_volar_type: None,
+            derives: Vec::new(),
+        };
+        let err = print_struct(&s).unwrap_err();
+        assert!(matches!(err, NoirCodegenError::EscapingReference { .. }));
+    }
+
+    #[test]
+    fn tuple_struct_is_rejected_clearly() {
+        let s = volar_compiler::ir::IrStruct {
+            kind: volar_compiler::ir::StructKind::Custom("Galois".into()),
+            module_path: Vec::new(),
+            generics: Vec::new(),
+            fields: vec![volar_compiler::ir::IrField {
+                name: String::new(),
+                ty: IrType::Primitive(PrimitiveType::U8),
+                public: true,
+            }],
+            is_tuple: true,
+            native_volar_type: None,
+            derives: Vec::new(),
+        };
+        assert!(print_struct(&s).is_err());
     }
 
     #[test]

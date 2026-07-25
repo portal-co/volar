@@ -114,6 +114,76 @@ fn if_else_round_trips_through_nargo() {
 }
 
 #[test]
+fn std_method_subset_round_trips_through_nargo() {
+    if !nargo_available() {
+        eprintln!("skipping: nargo not on PATH");
+        return;
+    }
+
+    // Exercises the curated v1 StdMethod subset: `len` (plain method,
+    // no import needed), `wrapping_add` (method, needs `use
+    // std::ops::WrappingAdd`), and `min`/`max` (rewritten from method-call
+    // to free-function-call syntax -- empirically confirmed Noir has no
+    // `u32::min`/`max` *method*, only `std::cmp::min`/`max` functions).
+    let source = r#"
+        fn main(a: u32, b: u32, arr: [u32; 4]) -> u32 {
+            let l = arr.len() as u32;
+            let w = a.wrapping_add(b);
+            let mn = a.min(b);
+            let mx = a.max(b);
+            l + w + mn + mx
+        }
+    "#;
+    let module = parse_source(source, "smoke_stdmethod", &["smoke_stdmethod".to_string()])
+        .expect("parse failed");
+    let noir_source = print_module_noir(&module).expect("codegen failed");
+    assert!(noir_source.contains("use std::ops::{WrappingAdd};"), "generated:\n{noir_source}");
+    assert!(noir_source.contains("use std::cmp::{min, max};"), "generated:\n{noir_source}");
+    assert!(noir_source.contains("arr.len()"), "generated:\n{noir_source}");
+    assert!(noir_source.contains("a.wrapping_add(b)"), "generated:\n{noir_source}");
+    assert!(noir_source.contains("min(a, b)"), "generated:\n{noir_source}");
+    assert!(noir_source.contains("max(a, b)"), "generated:\n{noir_source}");
+
+    let dir = scratch_project("std_method_subset");
+    fs::write(dir.join("src/main.nr"), &noir_source).unwrap();
+    fs::write(dir.join("Prover.toml"), "a = \"3\"\nb = \"7\"\narr = [\"1\", \"2\", \"3\", \"4\"]\n").unwrap();
+
+    let execute = run_nargo(&dir, &["execute"]);
+    assert!(
+        execute.status.success(),
+        "nargo execute failed:\nstdout: {}\nstderr: {}\n---\n{}",
+        String::from_utf8_lossy(&execute.stdout),
+        String::from_utf8_lossy(&execute.stderr),
+        noir_source,
+    );
+}
+
+#[test]
+fn seeded_printing_drops_unreachable_functions() {
+    // print_module_noir_seeded should emit only what's reachable from the
+    // given seeds -- `unused_helper` must not appear in the output.
+    let source = r#"
+        fn used_helper(x: u32) -> u32 {
+            x + 1
+        }
+
+        fn unused_helper(x: u32) -> u32 {
+            x + 999
+        }
+
+        fn main(a: u32) -> u32 {
+            used_helper(a)
+        }
+    "#;
+    let module = parse_source(source, "smoke_seeded", &["smoke_seeded".to_string()]).expect("parse failed");
+    let noir_source = volar_compiler_noir_codegen::print_module_noir_seeded(&module, &["main"])
+        .expect("codegen failed");
+    assert!(noir_source.contains("fn used_helper"), "generated:\n{noir_source}");
+    assert!(noir_source.contains("fn main"), "generated:\n{noir_source}");
+    assert!(!noir_source.contains("unused_helper"), "generated:\n{noir_source}");
+}
+
+#[test]
 fn operator_overload_impl_round_trips_through_nargo() {
     if !nargo_available() {
         eprintln!("skipping: nargo not on PATH");
