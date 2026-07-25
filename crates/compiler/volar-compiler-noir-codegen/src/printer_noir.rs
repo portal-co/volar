@@ -34,6 +34,23 @@ pub fn print_module_noir(module: &IrModule<IrFunction>) -> Result<String, Vec<No
 
     let mut out = String::new();
     let mut errors = Vec::new();
+    for s in &module.structs {
+        // `GenericArray` is a structural alias for Volar's own generic-
+        // array crate type, not a user struct declaration Noir needs to
+        // see -- Noir already has native fixed-size arrays. Not yet
+        // empirically verified against a real GenericArray fixture; skip
+        // rather than guess a (possibly wrong) declaration.
+        if s.kind == volar_compiler::ir::StructKind::GenericArray {
+            continue;
+        }
+        match print_struct(s) {
+            Ok(text) => {
+                out.push_str(&text);
+                out.push_str("\n\n");
+            }
+            Err(e) => errors.push(e),
+        }
+    }
     for function in &module.functions {
         match print_function(function) {
             Ok(text) => {
@@ -48,6 +65,21 @@ pub fn print_module_noir(module: &IrModule<IrFunction>) -> Result<String, Vec<No
     } else {
         Err(errors)
     }
+}
+
+fn print_struct(s: &volar_compiler::ir::IrStruct) -> Result<String, NoirCodegenError> {
+    let name = s.kind.to_string();
+    let generics_text = print_generics(&s.generics, &name)?;
+    let mut fields = Vec::new();
+    for f in &s.fields {
+        fields.push(format!("    {}: {},", f.name, type_to_noir(&f.ty, &name)?));
+    }
+    Ok(format!(
+        "struct {}{} {{\n{}\n}}",
+        name,
+        generics_text,
+        fields.join("\n"),
+    ))
 }
 
 fn print_function(function: &IrFunction) -> Result<String, NoirCodegenError> {
@@ -162,20 +194,49 @@ fn type_to_noir(ty: &IrType, fn_name: &str) -> Result<String, NoirCodegenError> 
             function: fn_name.into(),
             reason: "mutable reference types (&mut T) are not yet supported".into(),
         }),
-        IrType::Array { .. } => Err(NoirCodegenError::Unsupported {
-            function: fn_name.into(),
-            reason: "array types are not yet supported (see milestone 5)".into(),
-        }),
+        // `kind` (GenericArray/FixedArray/Slice) doesn't affect the Noir
+        // type text -- Noir has one fixed-array construct. `Slice`
+        // conceptually *is* a runtime-length view (Rust `[T]`), so it's
+        // rejected the same way `Vector` is below, via the same length
+        // resolution failing to apply (a slice's `len` isn't a real
+        // `ArrayLength` in the first place at this layer).
+        IrType::Array { elem, len, .. } => {
+            let elem_text = type_to_noir(elem, fn_name)?;
+            let len_text = crate::const_eval::eval_array_length(len, &[])
+                .map(|c| c.to_string())
+                .ok_or_else(|| NoirCodegenError::UnsupportedArrayLength {
+                    function: fn_name.into(),
+                    reason: format!("array length {len:?} does not resolve to a Noir constant"),
+                })?;
+            Ok(format!("[{elem_text}; {len_text}]"))
+        }
         IrType::Vector { .. } => Err(NoirCodegenError::Unsupported {
             function: fn_name.into(),
             reason: "Vector has no compile-time length in Noir; use a fixed-size array \
                      ([T; N]) instead"
                 .into(),
         }),
-        IrType::Struct { .. } => Err(NoirCodegenError::Unsupported {
-            function: fn_name.into(),
-            reason: "struct types are not yet supported (see milestone 5)".into(),
-        }),
+        IrType::Struct { kind: volar_compiler::ir::StructKind::GenericArray, type_args } => {
+            Err(NoirCodegenError::Unsupported {
+                function: fn_name.into(),
+                reason: format!(
+                    "GenericArray<{}> is not yet supported -- its type_args shape hasn't \
+                     been verified against a real fixture yet (see milestone 5 notes)",
+                    type_args.len()
+                ),
+            })
+        }
+        IrType::Struct { kind, type_args } => {
+            if type_args.is_empty() {
+                Ok(kind.to_string())
+            } else {
+                let mut parts = Vec::new();
+                for t in type_args {
+                    parts.push(type_to_noir(t, fn_name)?);
+                }
+                Ok(format!("{kind}<{}>", parts.join(", ")))
+            }
+        }
         // A `TypeParam` reference to a declared generic prints as its bare
         // name; `print_generics` is responsible for rejecting anything
         // Noir can't express in the generic-parameter list itself, so by
@@ -328,6 +389,73 @@ fn print_expr(expr: &IrExpr, fn_name: &str, generics: &[IrGenericParam]) -> Resu
 
         IrExprKind::Cast { expr, ty } => {
             Ok(format!("({} as {})", print_expr(expr, fn_name, generics)?, type_to_noir(ty, fn_name)?))
+        }
+
+        IrExprKind::Field { base, field } => {
+            Ok(format!("{}.{field}", print_expr(base, fn_name, generics)?))
+        }
+
+        IrExprKind::Index { base, index } => Ok(format!(
+            "{}[{}]",
+            print_expr(base, fn_name, generics)?,
+            print_expr(index, fn_name, generics)?,
+        )),
+
+        // Array literal `[a, b, c]` -- direct 1:1 translation, Noir's
+        // array-literal syntax matches Rust's (empirically confirmed via
+        // nargo execute, see the milestone-5 integration tests).
+        //
+        // `Array` and `FixedArray` print identically here, matching the
+        // TS printer's own precedent (`printer_ts.rs`, `IrExprKind::Array
+        // | IrExprKind::FixedArray` share an arm). This corrects an
+        // initial assumption in this file: despite `FixedArray`'s doc
+        // comment framing `Array` as "the vec![]-shaped variant," the
+        // parser (`parser.rs`, `Expr::Array` handling) actually produces
+        // plain `IrExprKind::Array` for *every* real `[a, b, c]` literal in
+        // parsed Rust source -- `vec![...]` heap-allocation is a choice the
+        // *Rust-dyn printer* makes for its own output, not a distinction
+        // the AST itself carries. A Noir backend has no heap/Vec at all,
+        // so both variants mean exactly the same thing here: a fixed-size
+        // array literal.
+        IrExprKind::Array(elems) | IrExprKind::FixedArray(elems) => {
+            let mut parts = Vec::new();
+            for e in elems {
+                parts.push(print_expr(e, fn_name, generics)?);
+            }
+            Ok(format!("[{}]", parts.join(", ")))
+        }
+        IrExprKind::Repeat { elem, len } => Ok(format!(
+            "[{}; {}]",
+            print_expr(elem, fn_name, generics)?,
+            print_expr(len, fn_name, generics)?,
+        )),
+        IrExprKind::Tuple(elems) => {
+            let mut parts = Vec::new();
+            for e in elems {
+                parts.push(print_expr(e, fn_name, generics)?);
+            }
+            Ok(format!("({})", parts.join(", ")))
+        }
+
+        // Struct-update syntax (`..rest`) is not yet supported -- Noir's
+        // exact support for it hasn't been empirically verified, and
+        // expanding it correctly requires knowing the struct's full field
+        // list (available from the module's struct table, not plumbed
+        // into this expression printer yet). Plain field-by-field literals
+        // work today; `rest` is a clean v1 boundary.
+        IrExprKind::StructExpr { kind, rest: Some(_), .. } => Err(NoirCodegenError::Unsupported {
+            function: fn_name.into(),
+            reason: format!(
+                "struct-update syntax (`..rest`) on `{kind}` is not yet supported \
+                 (see milestone 5 notes) -- use an explicit field-by-field literal"
+            ),
+        }),
+        IrExprKind::StructExpr { kind, fields, rest: None, .. } => {
+            let mut parts = Vec::new();
+            for (name, value) in fields {
+                parts.push(format!("{name}: {}", print_expr(value, fn_name, generics)?));
+            }
+            Ok(format!("{kind} {{ {} }}", parts.join(", ")))
         }
 
         IrExprKind::Assign { left, right } => {
@@ -728,5 +856,134 @@ mod tests {
     fn mutable_reference_type_is_unsupported_in_v1() {
         let ty = IrType::Reference { mutable: true, elem: Box::new(IrType::Primitive(PrimitiveType::U32)) };
         assert!(type_to_noir(&ty, "f").is_err());
+    }
+
+    #[test]
+    fn array_type_with_const_length() {
+        let ty = IrType::Array {
+            kind: volar_compiler::ir::ArrayKind::FixedArray,
+            elem: Box::new(IrType::Primitive(PrimitiveType::U32)),
+            len: volar_compiler::ir::ArrayLength::Const(4),
+        };
+        assert_eq!(type_to_noir(&ty, "f").unwrap(), "[u32; 4]");
+    }
+
+    #[test]
+    fn array_type_with_generic_length() {
+        let ty = IrType::Array {
+            kind: volar_compiler::ir::ArrayKind::FixedArray,
+            elem: Box::new(IrType::Primitive(PrimitiveType::U32)),
+            len: volar_compiler::ir::ArrayLength::TypeParam("N".into()),
+        };
+        assert_eq!(type_to_noir(&ty, "f").unwrap(), "[u32; N]");
+    }
+
+    #[test]
+    fn vector_type_is_unsupported() {
+        let ty = IrType::Vector { elem: Box::new(IrType::Primitive(PrimitiveType::U32)) };
+        assert!(type_to_noir(&ty, "f").is_err());
+    }
+
+    #[test]
+    fn plain_struct_type_mapping() {
+        let ty = IrType::Struct {
+            kind: volar_compiler::ir::StructKind::Custom("Point".into()),
+            type_args: Vec::new(),
+        };
+        assert_eq!(type_to_noir(&ty, "f").unwrap(), "Point");
+    }
+
+    #[test]
+    fn generic_array_struct_kind_is_unsupported_in_v1() {
+        let ty = IrType::Struct {
+            kind: volar_compiler::ir::StructKind::GenericArray,
+            type_args: vec![IrType::Primitive(PrimitiveType::U8)],
+        };
+        assert!(type_to_noir(&ty, "f").is_err());
+    }
+
+    #[test]
+    fn fixed_array_literal_prints_directly() {
+        let e = expr(IrExprKind::FixedArray(vec![
+            expr(IrExprKind::Lit(IrLit::Int(1))),
+            expr(IrExprKind::Lit(IrLit::Int(2))),
+            expr(IrExprKind::Lit(IrLit::Int(3))),
+        ]));
+        assert_eq!(print_expr(&e, "f", &[]).unwrap(), "[1, 2, 3]");
+    }
+
+    #[test]
+    fn array_variant_prints_same_as_fixed_array() {
+        // Real parsed Rust source always produces `Array`, never
+        // `FixedArray`, for plain `[a, b, c]` syntax -- see the doc
+        // comment on the `Array | FixedArray` match arm.
+        let e = expr(IrExprKind::Array(vec![
+            expr(IrExprKind::Lit(IrLit::Int(1))),
+            expr(IrExprKind::Lit(IrLit::Int(2))),
+        ]));
+        assert_eq!(print_expr(&e, "f", &[]).unwrap(), "[1, 2]");
+    }
+
+    #[test]
+    fn index_expr_prints_as_bracket_index() {
+        let e = expr(IrExprKind::Index {
+            base: Box::new(expr(IrExprKind::Var("arr".into()))),
+            index: Box::new(expr(IrExprKind::Lit(IrLit::Int(0)))),
+        });
+        assert_eq!(print_expr(&e, "f", &[]).unwrap(), "arr[0]");
+    }
+
+    #[test]
+    fn field_expr_prints_as_dot_access() {
+        let e = expr(IrExprKind::Field {
+            base: Box::new(expr(IrExprKind::Var("p".into()))),
+            field: "x".into(),
+        });
+        assert_eq!(print_expr(&e, "f", &[]).unwrap(), "p.x");
+    }
+
+    #[test]
+    fn struct_expr_prints_as_struct_literal() {
+        let e = expr(IrExprKind::StructExpr {
+            kind: volar_compiler::ir::StructKind::Custom("Point".into()),
+            type_args: Vec::new(),
+            fields: vec![
+                ("x".into(), expr(IrExprKind::Lit(IrLit::Int(1)))),
+                ("y".into(), expr(IrExprKind::Lit(IrLit::Int(2)))),
+            ],
+            rest: None,
+        });
+        assert_eq!(print_expr(&e, "f", &[]).unwrap(), "Point { x: 1, y: 2 }");
+    }
+
+    #[test]
+    fn struct_update_syntax_is_unsupported_in_v1() {
+        let e = expr(IrExprKind::StructExpr {
+            kind: volar_compiler::ir::StructKind::Custom("Point".into()),
+            type_args: Vec::new(),
+            fields: vec![("x".into(), expr(IrExprKind::Lit(IrLit::Int(1))))],
+            rest: Some(Box::new(expr(IrExprKind::Var("other".into())))),
+        });
+        assert!(print_expr(&e, "f", &[]).is_err());
+    }
+
+    #[test]
+    fn struct_declaration_prints_fields() {
+        let s = volar_compiler::ir::IrStruct {
+            kind: volar_compiler::ir::StructKind::Custom("Point".into()),
+            module_path: Vec::new(),
+            generics: Vec::new(),
+            fields: vec![
+                volar_compiler::ir::IrField { name: "x".into(), ty: IrType::Primitive(PrimitiveType::U32), public: true },
+                volar_compiler::ir::IrField { name: "y".into(), ty: IrType::Primitive(PrimitiveType::U32), public: true },
+            ],
+            is_tuple: false,
+            native_volar_type: None,
+            derives: Vec::new(),
+        };
+        let text = print_struct(&s).unwrap();
+        assert!(text.starts_with("struct Point {"), "{text}");
+        assert!(text.contains("x: u32,"), "{text}");
+        assert!(text.contains("y: u32,"), "{text}");
     }
 }

@@ -114,6 +114,57 @@ fn if_else_round_trips_through_nargo() {
 }
 
 #[test]
+fn struct_and_generic_array_round_trip_through_nargo() {
+    if !nargo_available() {
+        eprintln!("skipping: nargo not on PATH");
+        return;
+    }
+
+    // Combines milestone 4 (generics) with milestone 5 (structs/arrays):
+    // `sum_array`'s numeric generic N is inferred from the array literal's
+    // length at the `main` call site, avoiding the turbofish call-site
+    // syntax gap noted in milestone 4's own smoke test.
+    let source = r#"
+        struct Point {
+            x: u32,
+            y: u32,
+        }
+
+        fn sum_array<const N: u32>(arr: [u32; N]) -> u32 {
+            let mut total = 0;
+            for i in 0..N {
+                total = total + arr[i];
+            }
+            total
+        }
+
+        fn main(a: u32, b: u32) -> u32 {
+            let p = Point { x: a, y: b };
+            let arr = [p.x, p.y, 3, 4];
+            sum_array(arr)
+        }
+    "#;
+    let module = parse_source(source, "smoke_struct_array", &["smoke_struct_array".to_string()])
+        .expect("parse failed");
+    let noir_source = print_module_noir(&module).expect("codegen failed");
+    assert!(noir_source.contains("struct Point {"), "generated:\n{noir_source}");
+    assert!(noir_source.contains("fn sum_array<let N: u32>"), "generated:\n{noir_source}");
+
+    let dir = scratch_project("struct_array");
+    fs::write(dir.join("src/main.nr"), &noir_source).unwrap();
+    fs::write(dir.join("Prover.toml"), "a = \"1\"\nb = \"2\"\n").unwrap();
+
+    let execute = run_nargo(&dir, &["execute"]);
+    assert!(
+        execute.status.success(),
+        "nargo execute failed:\nstdout: {}\nstderr: {}\n---\n{}",
+        String::from_utf8_lossy(&execute.stdout),
+        String::from_utf8_lossy(&execute.stderr),
+        noir_source,
+    );
+}
+
+#[test]
 fn literal_bound_loop_round_trips_through_nargo() {
     if !nargo_available() {
         eprintln!("skipping: nargo not on PATH");
