@@ -2529,18 +2529,34 @@ mod tests {
     /// the hoist attempt). See `docs/interpreter-honest-e2e-zk-plan.md`'s
     /// "Cross-chunk locality" section for the full design rationale.
     ///
-    /// `#[ignore]`d: real interpreter scale, run manually:
-    /// `cargo test -p volar-riscv-e2e --release probe_optimized_full_module_print_size -- --ignored --nocapture`.
-    #[test]
-    #[ignore]
-    fn probe_optimized_full_module_print_size() {
+    /// Shared by `probe_optimized_full_module_print_size` and the
+    /// Phase-0 rustc-compile-measurement dump tests below: runs the real,
+    /// CSE+DCE+batch-optimized, packed-parameter split-weave pipeline
+    /// (region tracking, `thread_synthetic_slots`, the full pre-weave
+    /// validation pass, then `weave_vole_prover_ir_split`) and returns the
+    /// woven prover functions. Extracted verbatim from
+    /// `probe_optimized_full_module_print_size`'s own body -- no behavior
+    /// change, purely so the same validated pipeline can be reused to
+    /// extract individual functions for real `rustc` compile-time
+    /// measurement instead of only the aggregate `printed_len`.
+    /// Shared by `build_optimized_prover_module_functions` and its qsim/
+    /// verifier counterparts: runs the real, CSE+DCE+batch-optimized,
+    /// packed-parameter split-weave pipeline up through `circuit`/
+    /// `boundary`/`accum_info` (region tracking, `thread_synthetic_slots`,
+    /// the full pre-weave validation pass) -- everything role-agnostic,
+    /// before any of the three `weave_vole_*_ir_split*` calls. Extracted
+    /// so the (expensive-ish, ~10s) CSE/DCE/batch pipeline runs once, not
+    /// three times, when verifying all 3 roles' own split wiring.
+    fn build_optimized_circuit_and_boundary() -> (
+        volar_ir::ir::IRBlocks, volar_ir::ir::IRTypes,
+        Vec<volar_ir_passes::MovfuscBlockBoundary>, volar_ir_passes::MovfuscAccumInfo,
+    ) {
         use std::collections::BTreeSet;
         use volar_ir::ir::IRType;
         use volar_ir_common::Type;
         use volar_ir_opt::ir::{batch_ir_blocks_with_remap_and_members, cse_ir_blocks_with_remap, dce_ir_blocks_with_remap_and_roots, fold_ir_blocks};
         use volar_ir_opt::store_forward::store_forward_ir_blocks;
         use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, remap_movfusc_accum_info, remap_movfusc_boundaries, thread_synthetic_slots, LoweringMode};
-        use volar_weaver::{StorageMode, weave_vole_prover_ir_split, print_weaved_vole_module};
 
         fn compose(cumulative: std::collections::BTreeMap<u32, u32>, step: &std::collections::BTreeMap<u32, u32>) -> std::collections::BTreeMap<u32, u32> {
             cumulative.into_iter().filter_map(|(old, mid)| step.get(&mid).map(|&new| (old, new))).collect()
@@ -2735,7 +2751,7 @@ mod tests {
         eprintln!("optimized circuit: {} statements", movfuscated.blocks[0].stmts.len());
 
         if std::env::var("VOLAR_SPAN_DIAGNOSTIC_ONLY").is_ok() {
-            return;
+            return (movfuscated, types, Vec::new(), accum_info);
         }
 
         // lower_to_circuit_ir wraps `movfuscated` into a proper
@@ -2906,17 +2922,258 @@ mod tests {
             eprintln!("validation pass complete");
         }
 
+        (circuit, types, boundary, accum_info)
+    }
+
+    /// Prover-role functions from the shared optimized pipeline. See
+    /// `build_optimized_circuit_and_boundary`'s own doc.
+    fn build_optimized_prover_module_functions() -> Vec<volar_compiler::ir::IrFunction> {
+        use volar_weaver::{StorageMode, weave_vole_prover_ir_split};
+        let (circuit, types, boundary, accum_info) = build_optimized_circuit_and_boundary();
         let mode = StorageMode::Commitment;
         let chunk_size = 1usize;
         let mut funcs: Vec<volar_compiler::ir::IrFunction> = Vec::new();
         let _trace = weave_vole_prover_ir_split(&circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, |f| funcs.push(f));
-        eprintln!("woven: {} functions", funcs.len());
+        eprintln!("woven (prover): {} functions", funcs.len());
+        funcs
+    }
+
+    /// Qsim-role functions from the shared optimized pipeline -- same
+    /// circuit/boundary/accum_info as the prover, different weave
+    /// function. See `build_optimized_circuit_and_boundary`'s own doc.
+    fn build_optimized_qsim_module_functions() -> Vec<volar_compiler::ir::IrFunction> {
+        use volar_weaver::{StorageMode, weave_vole_qsim_ir_split};
+        let (circuit, types, boundary, accum_info) = build_optimized_circuit_and_boundary();
+        let mode = StorageMode::Commitment;
+        let chunk_size = 1usize;
+        let mut funcs: Vec<volar_compiler::ir::IrFunction> = Vec::new();
+        let _trace = weave_vole_qsim_ir_split(&circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, |f| funcs.push(f));
+        eprintln!("woven (qsim): {} functions", funcs.len());
+        funcs
+    }
+
+    /// Verifier-role functions from the shared optimized pipeline -- same
+    /// circuit/boundary/accum_info as the prover, different weave
+    /// function. See `build_optimized_circuit_and_boundary`'s own doc.
+    fn build_optimized_verifier_module_functions() -> Vec<volar_compiler::ir::IrFunction> {
+        use volar_weaver::{StorageMode, weave_vole_verifier_ir_split_with_trace, IopSink};
+        let (circuit, types, boundary, accum_info) = build_optimized_circuit_and_boundary();
+        let mode = StorageMode::Commitment;
+        let chunk_size = 1usize;
+        let mut funcs: Vec<volar_compiler::ir::IrFunction> = Vec::new();
+        let _trace = weave_vole_verifier_ir_split_with_trace(&circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size, |f| funcs.push(f));
+        eprintln!("woven (verifier): {} functions", funcs.len());
+        funcs
+    }
+
+    /// Real-scale, `#[ignore]`d probe (weave + print only, no compile):
+    /// confirms the packed-parameter cross-chunk-locality design's actual
+    /// printed size against the real interpreter. See
+    /// `build_optimized_prover_module_functions`'s own doc for what this
+    /// pipeline does.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release probe_optimized_full_module_print_size -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn probe_optimized_full_module_print_size() {
+        use volar_weaver::print_weaved_vole_module;
+        let funcs = build_optimized_prover_module_functions();
         let module = volar_compiler::ir::IrModule {
             name: "riscv_step".into(), functions: funcs, structs: vec![], enums: vec![],
             traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
         };
         let code = print_weaved_vole_module(&module);
         eprintln!("optimized full prover module printed_len={} bytes (baseline was 746,002,390)", code.len());
+    }
+
+    /// Builds a one-function module for `f` and returns its printed byte
+    /// length -- the actual rustc-cost-relevant metric (unlike
+    /// `params.len()`, which measures cross-function state-threading
+    /// width, not in-body statement/expression volume; the two turned out
+    /// NOT to correlate well in practice -- see the dump tests below).
+    fn printed_len_of(f: &volar_compiler::ir::IrFunction) -> usize {
+        let module = volar_compiler::ir::IrModule {
+            name: "riscv_step".into(), functions: vec![f.clone()], structs: vec![], enums: vec![],
+            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+        };
+        volar_weaver::print_weaved_vole_module(&module).len()
+    }
+
+    /// Phase 0 of the rustc-compile-speed investigation
+    /// (`~/.claude/plans/tidy-exploring-duckling.md`): extracts the
+    /// SINGLE largest function (by actual printed byte size -- see
+    /// `printed_len_of`'s own doc for why not param count) from the real,
+    /// optimized, packed-parameter split-weave pipeline -- the same one
+    /// `probe_optimized_full_module_print_size` uses to produce the
+    /// validated 397MB/241-function module -- and compiles it via
+    /// `run_iop_verifier`, so it can be measured with real `cargo check`
+    /// / `cargo build -Z time-passes` / `/usr/bin/time -l` against a
+    /// fixture that actually reflects the current shipped pipeline.
+    /// `largest_chunk_function_compiles` (above) measures an OLDER,
+    /// unoptimized-post-movfuscation pipeline (`lower_interpreter`, which
+    /// explicitly skips post-movfuscation CSE/DCE/batch) -- not
+    /// representative of what's actually in the current 397MB module.
+    /// The generated fixture crate is left on disk at
+    /// `$TMPDIR/volar_verifier_iop_runtime_<pid printed below>/` for
+    /// repeated manual measurement (see the eprintln'd pid).
+    /// Run manually: `cargo test -p volar-riscv-e2e --release dump_largest_optimized_function_for_compile_measurement -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn dump_largest_optimized_function_for_compile_measurement() {
+        let funcs = build_optimized_prover_module_functions();
+        let mut sized: Vec<(usize, volar_compiler::ir::IrFunction)> = funcs.into_iter().map(|f| (printed_len_of(&f), f)).collect();
+        sized.sort_by_key(|(len, _)| std::cmp::Reverse(*len));
+        eprintln!(
+            "top 5 by printed size (name, params, printed_bytes, rust_ir_stmt_count, bytes_per_stmt): {:?}",
+            sized.iter().take(5).map(|(len, f)| (
+                f.name.clone(), f.params.len(), *len, f.body.stmts.len(),
+                *len as f64 / f.body.stmts.len().max(1) as f64,
+            )).collect::<Vec<_>>()
+        );
+        let (len, f) = sized.into_iter().next().expect("at least one function woven");
+        eprintln!("largest function: {} with {} params, {len} printed bytes", f.name, f.params.len());
+        let module = volar_compiler::ir::IrModule {
+            name: "riscv_step".into(), functions: vec![f], structs: vec![], enums: vec![],
+            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+        };
+        let code = volar_weaver::print_weaved_vole_module(&module);
+        eprintln!("printed source length: {} bytes", code.len());
+        eprintln!("fixture pid: {}", std::process::id());
+        volar_verifier_iop_runtime::run_iop_verifier(&code, "#[test]\nfn compiles() {}\n");
+        eprintln!("compiled successfully");
+    }
+
+    /// Phase 1 verification (`~/.claude/plans/tidy-exploring-duckling.md`):
+    /// extracts one KNOWN-OVERSIZED region's own wrapper + piece functions
+    /// (name prefix `vole_prove_ir_riscv_step_block_{block_idx}` -- the
+    /// wrapper keeps that exact name; pieces are named `..._piece_{p}`) as
+    /// their own bundle and compiles it via `run_iop_verifier`. This is
+    /// the actual verification that matters for Phase 1: rustc accepting
+    /// the bundle proves the wrapper/piece wiring (param/return-tuple
+    /// shapes, `oracle_rd_N` repartitioning, `piece_in_{v}` threading,
+    /// hats concatenation -- see `crate::vole_split` and
+    /// `weave_vole_prover_ir_split`'s own "Split:" branch) is at least
+    /// structurally/type correct -- a real compile error here would mean
+    /// a genuine wiring bug, not just a missed diagnostic. Re-run the
+    /// same real `cargo check` / `-Z time-passes` / `/usr/bin/time -l`
+    /// measurement methodology `dump_largest_optimized_function_for_compile_measurement`
+    /// used against the pre-split 6.4MB baseline, against THIS bundle, to
+    /// confirm the split actually reduces `MIR_borrow_checking` cost per
+    /// piece (not just moves the same total cost around).
+    /// Run manually: `cargo test -p volar-riscv-e2e --release dump_split_block_68_bundle_for_compile_measurement -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn dump_split_block_68_bundle_for_compile_measurement() {
+        let funcs = build_optimized_prover_module_functions();
+        let prefix = "vole_prove_ir_riscv_step_block_68";
+        let bundle: Vec<volar_compiler::ir::IrFunction> = funcs.into_iter()
+            .filter(|f| f.name == prefix || f.name.starts_with(&format!("{prefix}_piece_")))
+            .collect();
+        eprintln!(
+            "block_68 bundle: {} functions: {:?}",
+            bundle.len(),
+            bundle.iter().map(|f| (f.name.clone(), f.params.len(), f.body.stmts.len())).collect::<Vec<_>>()
+        );
+        assert!(bundle.len() > 1, "block_68 must actually be split at MAX_STMTS_PER_PIECE -- if this fails, the threshold or region no longer triggers splitting and this test needs retargeting");
+        let module = volar_compiler::ir::IrModule {
+            name: "riscv_step".into(), functions: bundle, structs: vec![], enums: vec![],
+            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+        };
+        let code = volar_weaver::print_weaved_vole_module(&module);
+        eprintln!("printed source length: {} bytes", code.len());
+        eprintln!("fixture pid: {}", std::process::id());
+        volar_verifier_iop_runtime::run_iop_verifier(&code, "#[test]\nfn compiles() {}\n");
+        eprintln!("compiled successfully");
+    }
+
+    /// Same as `dump_split_block_68_bundle_for_compile_measurement` but
+    /// for the qsim role. The split DECISION (`MAX_STMTS_PER_PIECE`
+    /// applied to `boundary[68]`'s own circuit-statement count) is
+    /// identical across all 3 roles since they share the same
+    /// `boundary` -- block_68 splits the same way here too, just with a
+    /// `vole_qsim_ir_` name prefix and its own role-specific `hat`-INPUT
+    /// slicing (see `weave_vole_qsim_ir_split`'s own "Split:" branch).
+    /// Run manually: `cargo test -p volar-riscv-e2e --release dump_split_qsim_block_bundle_for_compile_measurement -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn dump_split_qsim_block_bundle_for_compile_measurement() {
+        let funcs = build_optimized_qsim_module_functions();
+        let prefix = "vole_qsim_ir_riscv_step_block_68";
+        let bundle: Vec<volar_compiler::ir::IrFunction> = funcs.into_iter()
+            .filter(|f| f.name == prefix || f.name.starts_with(&format!("{prefix}_piece_")))
+            .collect();
+        eprintln!(
+            "qsim block_68 bundle: {} functions: {:?}",
+            bundle.len(),
+            bundle.iter().map(|f| (f.name.clone(), f.params.len(), f.body.stmts.len())).collect::<Vec<_>>()
+        );
+        assert!(bundle.len() > 1, "qsim block_68 must actually be split at MAX_STMTS_PER_PIECE");
+        let module = volar_compiler::ir::IrModule {
+            name: "riscv_step".into(), functions: bundle, structs: vec![], enums: vec![],
+            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+        };
+        let code = volar_weaver::print_weaved_vole_module(&module);
+        eprintln!("printed source length: {} bytes", code.len());
+        eprintln!("fixture pid: {}", std::process::id());
+        volar_verifier_iop_runtime::run_iop_verifier(&code, "#[test]\nfn compiles() {}\n");
+        eprintln!("compiled successfully");
+    }
+
+    /// Same as `dump_split_block_68_bundle_for_compile_measurement` but
+    /// for the verifier role -- the most complex of the 3 (three
+    /// and-count-sized arrays `q_and`/`hat`/`r_and`, plus the running
+    /// `all_ok`/`fold_state` accumulator chain threaded through every
+    /// piece in order; see `weave_vole_verifier_ir_split_with_trace`'s
+    /// own "Split:" branch).
+    /// Run manually: `cargo test -p volar-riscv-e2e --release dump_split_verifier_block_bundle_for_compile_measurement -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn dump_split_verifier_block_bundle_for_compile_measurement() {
+        let funcs = build_optimized_verifier_module_functions();
+        let prefix = "vole_verify_ir_riscv_step_block_68";
+        let bundle: Vec<volar_compiler::ir::IrFunction> = funcs.into_iter()
+            .filter(|f| f.name == prefix || f.name.starts_with(&format!("{prefix}_piece_")))
+            .collect();
+        eprintln!(
+            "verifier block_68 bundle: {} functions: {:?}",
+            bundle.len(),
+            bundle.iter().map(|f| (f.name.clone(), f.params.len(), f.body.stmts.len())).collect::<Vec<_>>()
+        );
+        assert!(bundle.len() > 1, "verifier block_68 must actually be split at MAX_STMTS_PER_PIECE");
+        let module = volar_compiler::ir::IrModule {
+            name: "riscv_step".into(), functions: bundle, structs: vec![], enums: vec![],
+            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+        };
+        let code = volar_weaver::print_weaved_vole_module(&module);
+        eprintln!("printed source length: {} bytes", code.len());
+        eprintln!("fixture pid: {}", std::process::id());
+        volar_verifier_iop_runtime::run_iop_verifier(&code, "#[test]\nfn compiles() {}\n");
+        eprintln!("compiled successfully");
+    }
+
+    /// Same as `dump_largest_optimized_function_for_compile_measurement`
+    /// but bundles the top 3 largest (by printed size) functions into one
+    /// crate, to check whether per-crate compile cost is roughly linear
+    /// in function count (parallel codegen-unit friendly) or has
+    /// cross-function superlinear terms (shared monomorphization, one big
+    /// set of `impl` items).
+    /// Run manually: `cargo test -p volar-riscv-e2e --release dump_top3_optimized_functions_for_compile_measurement -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn dump_top3_optimized_functions_for_compile_measurement() {
+        let funcs = build_optimized_prover_module_functions();
+        let mut sized: Vec<(usize, volar_compiler::ir::IrFunction)> = funcs.into_iter().map(|f| (printed_len_of(&f), f)).collect();
+        sized.sort_by_key(|(len, _)| std::cmp::Reverse(*len));
+        let top3: Vec<_> = sized.into_iter().take(3).map(|(_, f)| f).collect();
+        eprintln!("top 3: {:?}", top3.iter().map(|f| (f.name.clone(), f.params.len())).collect::<Vec<_>>());
+        let module = volar_compiler::ir::IrModule {
+            name: "riscv_step".into(), functions: top3, structs: vec![], enums: vec![],
+            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+        };
+        let code = volar_weaver::print_weaved_vole_module(&module);
+        eprintln!("printed source length: {} bytes", code.len());
+        eprintln!("fixture pid: {}", std::process::id());
+        volar_verifier_iop_runtime::run_iop_verifier(&code, "#[test]\nfn compiles() {}\n");
+        eprintln!("compiled successfully");
     }
 
     /// Minimal isolation repro for the "circuit state never changes" bug

@@ -4496,6 +4496,16 @@ pub fn weave_vole_prover_ir_with_mode(
 ///
 /// Same requirements on `boundary`/`accum_info` as the verifier
 /// counterpart; `chunk_size` is clamped to at least 1.
+///
+/// Circuit-statement-count threshold above which a region gets split
+/// into multiple smaller Rust functions -- see [`crate::vole_split`].
+/// Derived from real measurement (`~/.claude/plans/tidy-exploring-duckling.md`):
+/// the known ~6.3-6.4MB outlier functions average ~1,389 printed bytes
+/// per circuit statement; 500 circuit statements/piece targets ~694KB
+/// pieces, comfortably inside the 500KB-1MB band real `rustc
+/// -Z time-passes` profiling identified as a reasonable starting point.
+const MAX_STMTS_PER_PIECE: usize = 500;
+
 pub fn weave_vole_prover_ir_split(
     circuit: &IRBlocks,
     types: &CirTypes,
@@ -4612,107 +4622,390 @@ pub fn weave_vole_prover_ir_split(
             if (v as usize) < num_params { used_w.insert(v); }
         }
 
-        let mut params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
-        params.extend(w_params.iter().enumerate().filter(|(idx, _)| used_w.contains(&(*idx as u32))).map(|(_, p)| p.clone()));
-        for j in 0..local_oracle_reads {
-            params.push(IrParam { name: format!("oracle_rd_{}", j), ty: vope_type() });
-        }
-        for (k, call) in local_ext.oracle_calls.iter().enumerate() {
-            for j in 0..call.total_bits {
-                params.push(IrParam { name: format!("vope_ext_oracle_{}_bit_{}", k, j), ty: vope_type() });
-            }
-        }
-        for (k, call) in local_ext.action_calls.iter().enumerate() {
-            for j in 0..call.total_bits {
-                params.push(IrParam { name: format!("vope_ext_action_{}_bit_{}", k, j), ty: vope_type() });
-            }
-        }
-        for (r, &width) in local_ext.rng_widths.iter().enumerate() {
-            for j in 0..width {
-                params.push(IrParam { name: format!("vope_ext_rng_{}_bit_{}", r, j), ty: vope_type() });
-            }
-        }
-
-        let mut ctx = VoleIrCtx::new(true);
-        insert_w_wires(&mut ctx);
-        for &v in &b.synthetic_in {
-            let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
-                "weave_vole_prover_ir_split: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
-            ));
-            bind_scalar(&mut ctx, &mut params, v, format!("synth_{v}"), ty);
-        }
-        debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
-        ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
-        ctx.emit_circuit_stmts_range(block, types, mode, start..end);
-
-        let local_entry_count = ctx.trace.entries.len() as u32;
-        for mut e in ctx.trace.entries.clone() {
-            e.timestamp += global_ts;
-            overall_trace_entries.push(e);
-        }
-        global_ts += local_entry_count.max(ctx.mem_timestamp);
-
-        let is_active_v = CirVar(b.is_active);
-        let done_v = CirVar(b.done);
-        let is_active_expr = ctx.slot_expr(&is_active_v);
-        let done_expr = ctx.slot_expr(&done_v);
-        let is_active_ty = ctx.slot_type(&is_active_v, &vope_type());
-        let done_ty = ctx.slot_type(&done_v, &vope_type());
-        let next_pc_exprs: Vec<IrExpr> = b.next_pc_bits.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
-        let next_pc_bit_tys: Vec<IrType> = b.next_pc_bits.iter().map(|&v| ctx.slot_type(&CirVar(v), &vope_type())).collect();
-        let next_state_exprs: Vec<IrExpr> = b.next_state.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
-        let next_state_tys: Vec<IrType> = b.next_state.iter().map(|&v| ctx.slot_type(&CirVar(v), &vope_type())).collect();
-        let ret_val_exprs: Vec<IrExpr> = b.ret_vals.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
-        let ret_val_tys: Vec<IrType> = b.ret_vals.iter().map(|&v| ctx.slot_type(&CirVar(v), &vope_type())).collect();
-
-        let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| var(h)).collect()));
-        let hats_ty = hat_array_type(ctx.hat_names.len());
-
-        let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
-        ret_tuple_tys.extend(next_pc_bit_tys.iter().cloned());
-        ret_tuple_tys.extend(next_state_tys.iter().cloned());
-        ret_tuple_tys.extend(ret_val_tys.iter().cloned());
-        ret_tuple_tys.push(hats_ty);
-
-        let mut ret_tuple_exprs = vec![is_active_expr, done_expr];
-        ret_tuple_exprs.extend(next_pc_exprs);
-        ret_tuple_exprs.extend(next_state_exprs);
-        ret_tuple_exprs.extend(ret_val_exprs);
-        ret_tuple_exprs.push(hats_expr);
-
-        // Cross-chunk-shared values this range genuinely produces or
-        // re-exports (pass-through) -- always appended last, after the
-        // native movfuscation fields, in `b.synthetic_out`'s own
-        // (ascending-var-id) order. `slot_type`/`slot_expr` resolve
-        // correctly either way: for the genuine producer, `v`'s own
-        // defining statement was just emitted for real above; for an
-        // intervening/consuming range, `v` was already bound to its own
-        // `synth_{v}` incoming param before emission (see the
-        // `synthetic_in` binding above), so this is a pure pass-through.
-        for &v in &b.synthetic_out {
-            let ty = ctx.slot_type(&CirVar(v), &vope_type());
-            synthetic_types.entry(v).or_insert_with(|| ty.clone());
-            ret_tuple_tys.push(ty);
-            ret_tuple_exprs.push(ctx.slot_expr(&CirVar(v)));
-        }
-
-        let func = IrFunction { no_inline: true,
-            name: format!("vole_prove_ir_{}_block_{}", name, i),
-            module_path: vec![],
-            generics: generics.clone(),
-            receiver: None,
-            params,
-            return_type: Some(IrType::Tuple(ret_tuple_tys)),
-            where_clause: where_clause.clone(),
-            body: IrBlock {
-                stmts: ctx.stmts,
-                expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))),
-            },
-            external_kind: ExternalKind::Normal,
+        // ---- Phase 1 intra-region function splitting ----------------------
+        //
+        // Real `rustc -Z time-passes` profiling found MIR_borrow_checking
+        // (a per-function-item rustc pass) dominates compile cost for the
+        // largest woven functions (see `~/.claude/plans/tidy-exploring-duckling.md`).
+        // When a region's own statement count exceeds `MAX_STMTS_PER_PIECE`,
+        // split it into several small "piece" functions plus one thin
+        // "wrapper" that keeps this region's exact original name/params/
+        // return-tuple shape and calls the pieces in sequence -- invisible
+        // to `thread_synthetic_slots`/`split_driver.rs`/every other
+        // external consumer (see `crate::vole_split`'s own module doc for
+        // the full algorithm and rationale).
+        //
+        // Guarded to skip regions with any external-primitive (oracle/
+        // action/rng) call -- those need their own per-piece encounter-
+        // order repartitioning too (mirroring the `oracle_rd_N`
+        // repartitioning below), not yet implemented. None of the
+        // currently-known oversized regions have any (confirmed via
+        // direct measurement: the ~6.3-6.4MB outliers are storage-heavy,
+        // not oracle/action/rng-heavy), so this costs nothing today and
+        // just fails safe (falls back to one function, identical to
+        // pre-splitting behavior) if a future region needs both.
+        let can_split = local_ext.oracle_calls.is_empty() && local_ext.action_calls.is_empty() && local_ext.rng_widths.is_empty();
+        let mut region_outputs: Vec<u32> = alloc::vec![b.is_active, b.done];
+        region_outputs.extend(b.next_pc_bits.iter().copied());
+        region_outputs.extend(b.next_state.iter().copied());
+        region_outputs.extend(b.ret_vals.iter().copied());
+        region_outputs.extend(b.synthetic_out.iter().copied());
+        let pieces = if can_split {
+            crate::vole_split::split_region_into_pieces(block, num_params, b.start, b.end, &region_outputs, MAX_STMTS_PER_PIECE)
+        } else {
+            alloc::vec![crate::vole_split::PieceSpec { start: b.start, end: b.end, extra_in: Vec::new(), extra_out: Vec::new() }]
         };
-        emit_fn(func);
 
-        interfaces.push(SplitBlockInterface { is_active_ty, done_ty, next_pc_bit_tys, next_state_tys, ret_val_tys });
+        if pieces.len() <= 1 {
+            // ---- Unchanged: single function, exactly as before this session's addition ----
+            let mut params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
+            params.extend(w_params.iter().enumerate().filter(|(idx, _)| used_w.contains(&(*idx as u32))).map(|(_, p)| p.clone()));
+            for j in 0..local_oracle_reads {
+                params.push(IrParam { name: format!("oracle_rd_{}", j), ty: vope_type() });
+            }
+            for (k, call) in local_ext.oracle_calls.iter().enumerate() {
+                for j in 0..call.total_bits {
+                    params.push(IrParam { name: format!("vope_ext_oracle_{}_bit_{}", k, j), ty: vope_type() });
+                }
+            }
+            for (k, call) in local_ext.action_calls.iter().enumerate() {
+                for j in 0..call.total_bits {
+                    params.push(IrParam { name: format!("vope_ext_action_{}_bit_{}", k, j), ty: vope_type() });
+                }
+            }
+            for (r, &width) in local_ext.rng_widths.iter().enumerate() {
+                for j in 0..width {
+                    params.push(IrParam { name: format!("vope_ext_rng_{}_bit_{}", r, j), ty: vope_type() });
+                }
+            }
+
+            let mut ctx = VoleIrCtx::new(true);
+            insert_w_wires(&mut ctx);
+            for &v in &b.synthetic_in {
+                let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
+                    "weave_vole_prover_ir_split: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
+                ));
+                bind_scalar(&mut ctx, &mut params, v, format!("synth_{v}"), ty);
+            }
+            debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
+            ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
+            ctx.emit_circuit_stmts_range(block, types, mode, start..end);
+
+            let local_entry_count = ctx.trace.entries.len() as u32;
+            for mut e in ctx.trace.entries.clone() {
+                e.timestamp += global_ts;
+                overall_trace_entries.push(e);
+            }
+            global_ts += local_entry_count.max(ctx.mem_timestamp);
+
+            let is_active_v = CirVar(b.is_active);
+            let done_v = CirVar(b.done);
+            let is_active_expr = ctx.slot_expr(&is_active_v);
+            let done_expr = ctx.slot_expr(&done_v);
+            let is_active_ty = ctx.slot_type(&is_active_v, &vope_type());
+            let done_ty = ctx.slot_type(&done_v, &vope_type());
+            let next_pc_exprs: Vec<IrExpr> = b.next_pc_bits.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
+            let next_pc_bit_tys: Vec<IrType> = b.next_pc_bits.iter().map(|&v| ctx.slot_type(&CirVar(v), &vope_type())).collect();
+            let next_state_exprs: Vec<IrExpr> = b.next_state.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
+            let next_state_tys: Vec<IrType> = b.next_state.iter().map(|&v| ctx.slot_type(&CirVar(v), &vope_type())).collect();
+            let ret_val_exprs: Vec<IrExpr> = b.ret_vals.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
+            let ret_val_tys: Vec<IrType> = b.ret_vals.iter().map(|&v| ctx.slot_type(&CirVar(v), &vope_type())).collect();
+
+            let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| var(h)).collect()));
+            let hats_ty = hat_array_type(ctx.hat_names.len());
+
+            let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
+            ret_tuple_tys.extend(next_pc_bit_tys.iter().cloned());
+            ret_tuple_tys.extend(next_state_tys.iter().cloned());
+            ret_tuple_tys.extend(ret_val_tys.iter().cloned());
+            ret_tuple_tys.push(hats_ty);
+
+            let mut ret_tuple_exprs = vec![is_active_expr, done_expr];
+            ret_tuple_exprs.extend(next_pc_exprs);
+            ret_tuple_exprs.extend(next_state_exprs);
+            ret_tuple_exprs.extend(ret_val_exprs);
+            ret_tuple_exprs.push(hats_expr);
+
+            // Cross-chunk-shared values this range genuinely produces or
+            // re-exports (pass-through) -- always appended last, after the
+            // native movfuscation fields, in `b.synthetic_out`'s own
+            // (ascending-var-id) order. `slot_type`/`slot_expr` resolve
+            // correctly either way: for the genuine producer, `v`'s own
+            // defining statement was just emitted for real above; for an
+            // intervening/consuming range, `v` was already bound to its own
+            // `synth_{v}` incoming param before emission (see the
+            // `synthetic_in` binding above), so this is a pure pass-through.
+            for &v in &b.synthetic_out {
+                let ty = ctx.slot_type(&CirVar(v), &vope_type());
+                synthetic_types.entry(v).or_insert_with(|| ty.clone());
+                ret_tuple_tys.push(ty);
+                ret_tuple_exprs.push(ctx.slot_expr(&CirVar(v)));
+            }
+
+            let func = IrFunction { no_inline: true,
+                name: format!("vole_prove_ir_{}_block_{}", name, i),
+                module_path: vec![],
+                generics: generics.clone(),
+                receiver: None,
+                params,
+                return_type: Some(IrType::Tuple(ret_tuple_tys)),
+                where_clause: where_clause.clone(),
+                body: IrBlock {
+                    stmts: ctx.stmts,
+                    expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))),
+                },
+                external_kind: ExternalKind::Normal,
+            };
+            emit_fn(func);
+
+            interfaces.push(SplitBlockInterface { is_active_ty, done_ty, next_pc_bit_tys, next_state_tys, ret_val_tys });
+        } else {
+            // ---- Split: K piece functions + 1 wrapper with the region's
+            // original name/params/return-tuple shape. See
+            // `crate::vole_split`'s own doc for the threading algorithm;
+            // this block does the actual IR emission it plans for.
+            debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
+
+            // Every entry of `region_outputs` lands in exactly one piece's
+            // own `extra_out` (see `split_region_into_pieces`'s own doc) --
+            // this map lets both the return-tuple assembly below and
+            // `extra_in` resolution find which piece produced any given var.
+            let mut producer_piece: alloc::collections::BTreeMap<u32, usize> = alloc::collections::BTreeMap::new();
+            for (p, piece) in pieces.iter().enumerate() {
+                for &v in &piece.extra_out {
+                    producer_piece.entry(v).or_insert(p);
+                }
+            }
+
+            let mut piece_names: Vec<String> = Vec::with_capacity(pieces.len());
+            let mut piece_used_w: Vec<alloc::collections::BTreeSet<u32>> = Vec::with_capacity(pieces.len());
+            let mut piece_oracle_counts: Vec<usize> = Vec::with_capacity(pieces.len());
+            let mut piece_hat_counts: Vec<usize> = Vec::with_capacity(pieces.len());
+            // Types of every var any piece has returned so far -- needed
+            // both by later pieces' own `extra_in` binding and by the
+            // wrapper's final return-tuple type assembly.
+            let mut piece_out_types: alloc::collections::BTreeMap<u32, IrType> = alloc::collections::BTreeMap::new();
+
+            for (p, piece) in pieces.iter().enumerate() {
+                let p_start = (piece.start - num_params as u32) as usize;
+                let p_end = (piece.end - num_params as u32) as usize;
+                let p_stmts = &block.stmts[p_start..p_end];
+                let p_oracle_reads = if matches!(mode, StorageMode::Commitment) {
+                    count_storage_reads_range(p_stmts, types)
+                } else { 0 };
+
+                let mut p_used_w: alloc::collections::BTreeSet<u32> = collect_used_top_level_params(&block.stmts[shared_prefix.clone()], num_params);
+                p_used_w.extend(collect_used_top_level_params(p_stmts, num_params));
+                for &v in &piece.extra_out {
+                    if (v as usize) < num_params { p_used_w.insert(v); }
+                }
+
+                let mut p_params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
+                p_params.extend(w_params.iter().enumerate().filter(|(idx, _)| p_used_w.contains(&(*idx as u32))).map(|(_, pr)| pr.clone()));
+                for j in 0..p_oracle_reads {
+                    p_params.push(IrParam { name: format!("oracle_rd_{}", j), ty: vope_type() });
+                }
+
+                let mut ctx = VoleIrCtx::new(true);
+                insert_w_wires(&mut ctx);
+                for &v in &b.synthetic_in {
+                    let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
+                        "weave_vole_prover_ir_split: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
+                    ));
+                    bind_scalar(&mut ctx, &mut p_params, v, format!("synth_{v}"), ty);
+                }
+                for &v in &piece.extra_in {
+                    let ty = piece_out_types.get(&v).cloned().unwrap_or_else(|| panic!(
+                        "weave_vole_prover_ir_split: piece-local var {v} has no known type -- its own producing piece must run before this consuming piece"
+                    ));
+                    bind_scalar(&mut ctx, &mut p_params, v, format!("piece_in_{v}"), ty);
+                }
+
+                // Every piece independently re-derives shared_prefix --
+                // safe (zero extra trace entries / zero extra hats): the
+                // pre-existing `local_oracle_reads` computation above
+                // never includes shared_prefix's own range, which only
+                // works because shared_prefix is already provably
+                // storage-free, and the `debug_assert_eq!` above confirms
+                // it's also AND-gate-free (no hats). Re-deriving it K
+                // times per split region just mirrors the pattern every
+                // OTHER function in this module already relies on
+                // (independently re-deriving shared_prefix once per
+                // region), now applied once per piece instead.
+                ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
+                ctx.emit_circuit_stmts_range(block, types, mode, p_start..p_end);
+
+                let local_entry_count = ctx.trace.entries.len() as u32;
+                for mut e in ctx.trace.entries.clone() {
+                    e.timestamp += global_ts;
+                    overall_trace_entries.push(e);
+                }
+                global_ts += local_entry_count.max(ctx.mem_timestamp);
+
+                let mut p_ret_tys: Vec<IrType> = Vec::with_capacity(piece.extra_out.len() + 1);
+                let mut p_ret_exprs: Vec<IrExpr> = Vec::with_capacity(piece.extra_out.len() + 1);
+                for &v in &piece.extra_out {
+                    let ty = ctx.slot_type(&CirVar(v), &vope_type());
+                    p_ret_exprs.push(ctx.slot_expr(&CirVar(v)));
+                    piece_out_types.insert(v, ty.clone());
+                    p_ret_tys.push(ty);
+                }
+                let p_hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| var(h)).collect()));
+                let p_hats_ty = hat_array_type(ctx.hat_names.len());
+                piece_hat_counts.push(ctx.hat_names.len());
+                p_ret_tys.push(p_hats_ty);
+                p_ret_exprs.push(p_hats_expr);
+
+                let p_name = format!("vole_prove_ir_{}_block_{}_piece_{}", name, i, p);
+                let p_func = IrFunction { no_inline: true,
+                    name: p_name.clone(),
+                    module_path: vec![],
+                    generics: generics.clone(),
+                    receiver: None,
+                    params: p_params,
+                    return_type: Some(IrType::Tuple(p_ret_tys)),
+                    where_clause: where_clause.clone(),
+                    body: IrBlock {
+                        stmts: ctx.stmts,
+                        expr: Some(Box::new(ir_expr(IrExprKind::Tuple(p_ret_exprs)))),
+                    },
+                    external_kind: ExternalKind::Normal,
+                };
+                emit_fn(p_func);
+
+                piece_names.push(p_name);
+                piece_used_w.push(p_used_w);
+                piece_oracle_counts.push(p_oracle_reads);
+            }
+
+            // ---- Wrapper: the region's ORIGINAL external interface
+            // (same name/params/return-tuple shape split_driver.rs and
+            // `thread_synthetic_slots` already expect), built purely from
+            // sequential calls + tuple destructuring -- no `VoleIrCtx` of
+            // its own, cheap to borrowck by construction.
+            let mut wrapper_params: Vec<IrParam> = vec![IrParam { name: "vope_one".into(), ty: vope_type() }];
+            wrapper_params.extend(w_params.iter().enumerate().filter(|(idx, _)| used_w.contains(&(*idx as u32))).map(|(_, p)| p.clone()));
+            for j in 0..local_oracle_reads {
+                wrapper_params.push(IrParam { name: format!("oracle_rd_{}", j), ty: vope_type() });
+            }
+            // `can_split` already guarantees `local_ext` is empty here.
+            for &v in &b.synthetic_in {
+                let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
+                    "weave_vole_prover_ir_split: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
+                ));
+                wrapper_params.push(IrParam { name: format!("synth_{v}"), ty });
+            }
+
+            let mut wrapper_stmts: Vec<IrStmt> = Vec::with_capacity(pieces.len());
+            let mut oracle_offset = 0usize;
+            for (p, piece) in pieces.iter().enumerate() {
+                // Every arg is `.clone()`d -- wrapper-local bindings
+                // (`w_i`/`synth_{v}`/`piece{p}_v{v}`) are non-`Copy`
+                // (`Vope<N,T,U1>`) and may be needed by more than one
+                // piece call and/or the final return tuple, mirroring
+                // `slot_expr`'s own always-clone convention (used
+                // throughout this file for ctx-tracked wires) and
+                // `split_driver.rs`'s own established `.clone()`-per-arg
+                // pattern for its text-templated calls.
+                let mut call_args: Vec<IrExpr> = vec![clone_expr(var("vope_one"))];
+                for &idx in &piece_used_w[p] {
+                    call_args.push(clone_expr(var(&format!("w_{idx}"))));
+                }
+                for j in 0..piece_oracle_counts[p] {
+                    call_args.push(clone_expr(var(&format!("oracle_rd_{}", oracle_offset + j))));
+                }
+                oracle_offset += piece_oracle_counts[p];
+                for &v in &b.synthetic_in {
+                    call_args.push(clone_expr(var(&format!("synth_{v}"))));
+                }
+                for &v in &piece.extra_in {
+                    let producer = producer_piece.get(&v).copied().expect("weave_vole_prover_ir_split: extra_in var must have a producer piece");
+                    call_args.push(clone_expr(var(&format!("piece{producer}_v{v}"))));
+                }
+
+                let mut pattern_names: Vec<String> = piece.extra_out.iter().map(|&v| format!("piece{p}_v{v}")).collect();
+                pattern_names.push(format!("piece{p}_hats"));
+
+                wrapper_stmts.push(ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::Tuple(pattern_names.into_iter().map(IrPattern::ident).collect()),
+                    ty: None,
+                    init: Some(ir_expr(IrExprKind::Call {
+                        func: Box::new(ir_expr(IrExprKind::Path {
+                            segments: vec![piece_names[p].clone()],
+                            type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("T".into())],
+                        })),
+                        args: call_args,
+                    })),
+                }));
+            }
+
+            let field_expr = |v: u32| clone_expr(var(&format!("piece{}_v{}", producer_piece[&v], v)));
+            let field_ty = |v: u32| piece_out_types[&v].clone();
+
+            let is_active_ty = field_ty(b.is_active);
+            let done_ty = field_ty(b.done);
+            let is_active_expr = field_expr(b.is_active);
+            let done_expr = field_expr(b.done);
+            let next_pc_exprs: Vec<IrExpr> = b.next_pc_bits.iter().map(|&v| field_expr(v)).collect();
+            let next_pc_bit_tys: Vec<IrType> = b.next_pc_bits.iter().map(|&v| field_ty(v)).collect();
+            let next_state_exprs: Vec<IrExpr> = b.next_state.iter().map(|&v| field_expr(v)).collect();
+            let next_state_tys: Vec<IrType> = b.next_state.iter().map(|&v| field_ty(v)).collect();
+            let ret_val_exprs: Vec<IrExpr> = b.ret_vals.iter().map(|&v| field_expr(v)).collect();
+            let ret_val_tys: Vec<IrType> = b.ret_vals.iter().map(|&v| field_ty(v)).collect();
+
+            // Combined hats array: every piece's own hats, concatenated in
+            // piece order via direct indexing into each piece's own
+            // destructured `piece{p}_hats` array -- exactly reconstructs
+            // what one un-split emission would have produced, since
+            // shared_prefix contributes zero hats (confirmed above) and
+            // hat_names are accumulated in statement-processing order,
+            // preserved by processing pieces contiguously/sequentially.
+            let mut combined_hats_exprs: Vec<IrExpr> = Vec::new();
+            for p in 0..pieces.len() {
+                for j in 0..piece_hat_counts[p] {
+                    combined_hats_exprs.push(clone_expr(arr_index(&format!("piece{p}_hats"), &j.to_string())));
+                }
+            }
+            let hats_ty = hat_array_type(combined_hats_exprs.len());
+            let hats_expr = ir_expr(IrExprKind::FixedArray(combined_hats_exprs));
+
+            let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
+            ret_tuple_tys.extend(next_pc_bit_tys.iter().cloned());
+            ret_tuple_tys.extend(next_state_tys.iter().cloned());
+            ret_tuple_tys.extend(ret_val_tys.iter().cloned());
+            ret_tuple_tys.push(hats_ty);
+
+            let mut ret_tuple_exprs = vec![is_active_expr, done_expr];
+            ret_tuple_exprs.extend(next_pc_exprs);
+            ret_tuple_exprs.extend(next_state_exprs);
+            ret_tuple_exprs.extend(ret_val_exprs);
+            ret_tuple_exprs.push(hats_expr);
+
+            for &v in &b.synthetic_out {
+                let ty = field_ty(v);
+                synthetic_types.entry(v).or_insert_with(|| ty.clone());
+                ret_tuple_tys.push(ty);
+                ret_tuple_exprs.push(field_expr(v));
+            }
+
+            let wrapper_func = IrFunction { no_inline: true,
+                name: format!("vole_prove_ir_{}_block_{}", name, i),
+                module_path: vec![],
+                generics: generics.clone(),
+                receiver: None,
+                params: wrapper_params,
+                return_type: Some(IrType::Tuple(ret_tuple_tys)),
+                where_clause: where_clause.clone(),
+                body: IrBlock {
+                    stmts: wrapper_stmts,
+                    expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))),
+                },
+                external_kind: ExternalKind::Normal,
+            };
+            emit_fn(wrapper_func);
+
+            interfaces.push(SplitBlockInterface { is_active_ty, done_ty, next_pc_bit_tys, next_state_tys, ret_val_tys });
+        }
     }
 
     // ---- Chunked accumulation: fold blocks in groups, never all at once ----
@@ -5554,105 +5847,368 @@ pub fn weave_vole_qsim_ir_split(
             if (v as usize) < num_params { used_w.insert(v); }
         }
 
-        let mut params: Vec<IrParam> = vec![
-            IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
-        ];
-        if local_and_count > 0 {
-            params.push(IrParam { name: "hat".into(), ty: hat_array_type(local_and_count) });
-        }
-        params.push(IrParam { name: "q_one".into(), ty: q_type() });
-        params.extend(w_params.iter().enumerate().filter(|(idx, _)| used_w.contains(&(*idx as u32))).map(|(_, p)| p.clone()));
-        for j in 0..local_oracle_reads {
-            params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
-        }
-        for (k, call) in local_ext.oracle_calls.iter().enumerate() {
-            for j in 0..call.total_bits {
-                params.push(IrParam { name: format!("q_ext_oracle_{}_bit_{}", k, j), ty: q_type() });
-            }
-        }
-        for (k, call) in local_ext.action_calls.iter().enumerate() {
-            for j in 0..call.total_bits {
-                params.push(IrParam { name: format!("q_ext_action_{}_bit_{}", k, j), ty: q_type() });
-            }
-        }
-        for (r, &width) in local_ext.rng_widths.iter().enumerate() {
-            for j in 0..width {
-                params.push(IrParam { name: format!("q_ext_rng_{}_bit_{}", r, j), ty: q_type() });
-            }
-        }
-
-        let mut ctx = VoleIrCtx::new_qsim();
-        insert_w_wires(&mut ctx);
-        for &v in &b.synthetic_in {
-            let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
-                "weave_vole_qsim_ir_split: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
-            ));
-            bind_scalar(&mut ctx, &mut params, v, format!("synth_{v}"), ty);
-        }
-        debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
-        ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
-        ctx.emit_circuit_stmts_range(block, types, mode, start..end);
-
-        let local_entry_count = ctx.trace.entries.len() as u32;
-        for mut e in ctx.trace.entries.clone() {
-            e.timestamp += global_ts;
-            overall_trace_entries.push(e);
-        }
-        global_ts += local_entry_count.max(ctx.mem_timestamp);
-
-        let is_active_v = CirVar(b.is_active);
-        let done_v = CirVar(b.done);
-        let is_active_expr = ctx.slot_expr(&is_active_v);
-        let done_expr = ctx.slot_expr(&done_v);
-        let is_active_ty = ctx.slot_type(&is_active_v, &q_type());
-        let done_ty = ctx.slot_type(&done_v, &q_type());
-        let next_pc_exprs: Vec<IrExpr> = b.next_pc_bits.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
-        let next_pc_bit_tys: Vec<IrType> = b.next_pc_bits.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
-        let next_state_exprs: Vec<IrExpr> = b.next_state.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
-        let next_state_tys: Vec<IrType> = b.next_state.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
-        let ret_val_exprs: Vec<IrExpr> = b.ret_vals.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
-        let ret_val_tys: Vec<IrType> = b.ret_vals.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
-
-        let hats_ty = q_and_array_type(ctx.q_and_names.len());
-        let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|h| var(h)).collect()));
-
-        let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
-        ret_tuple_tys.extend(next_pc_bit_tys.iter().cloned());
-        ret_tuple_tys.extend(next_state_tys.iter().cloned());
-        ret_tuple_tys.extend(ret_val_tys.iter().cloned());
-        ret_tuple_tys.push(hats_ty);
-
-        let mut ret_tuple_exprs = vec![is_active_expr, done_expr];
-        ret_tuple_exprs.extend(next_pc_exprs);
-        ret_tuple_exprs.extend(next_state_exprs);
-        ret_tuple_exprs.extend(ret_val_exprs);
-        ret_tuple_exprs.push(hats_expr);
-
-        // As `weave_vole_prover_ir_split`'s own synthetic_out handling.
-        for &v in &b.synthetic_out {
-            let ty = ctx.slot_type(&CirVar(v), &q_type());
-            synthetic_types.entry(v).or_insert_with(|| ty.clone());
-            ret_tuple_tys.push(ty);
-            ret_tuple_exprs.push(ctx.slot_expr(&CirVar(v)));
-        }
-
-        let func = IrFunction { no_inline: true,
-            name: format!("vole_qsim_ir_{}_block_{}", name, i),
-            module_path: vec![],
-            generics: generics.clone(),
-            receiver: None,
-            params,
-            return_type: Some(IrType::Tuple(ret_tuple_tys)),
-            where_clause: where_clause.clone(),
-            body: IrBlock {
-                stmts: ctx.stmts,
-                expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))),
-            },
-            external_kind: ExternalKind::Normal,
+        // See `weave_vole_prover_ir_split`'s own doc for the full
+        // rationale -- same guard (skip splitting regions with any
+        // oracle/action/rng call), same threshold. qsim ALSO needs the
+        // prover's own `hat` witnesses as an INPUT array (unlike the
+        // prover, whose hats are an OUTPUT) -- `local_and_count`-sized,
+        // sliced into contiguous per-piece sub-arrays exactly like
+        // `oracle_rd_N`, just as one array-literal argument per piece
+        // instead of N scalar args.
+        let can_split = local_ext.oracle_calls.is_empty() && local_ext.action_calls.is_empty() && local_ext.rng_widths.is_empty();
+        let mut region_outputs: Vec<u32> = alloc::vec![b.is_active, b.done];
+        region_outputs.extend(b.next_pc_bits.iter().copied());
+        region_outputs.extend(b.next_state.iter().copied());
+        region_outputs.extend(b.ret_vals.iter().copied());
+        region_outputs.extend(b.synthetic_out.iter().copied());
+        let pieces = if can_split {
+            crate::vole_split::split_region_into_pieces(block, num_params, b.start, b.end, &region_outputs, MAX_STMTS_PER_PIECE)
+        } else {
+            alloc::vec![crate::vole_split::PieceSpec { start: b.start, end: b.end, extra_in: Vec::new(), extra_out: Vec::new() }]
         };
-        emit_fn(func);
 
-        interfaces.push(SplitBlockInterface { is_active_ty, done_ty, next_pc_bit_tys, next_state_tys, ret_val_tys });
+        if pieces.len() <= 1 {
+            // ---- Unchanged: single function ----
+            let mut params: Vec<IrParam> = vec![
+                IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
+            ];
+            if local_and_count > 0 {
+                params.push(IrParam { name: "hat".into(), ty: hat_array_type(local_and_count) });
+            }
+            params.push(IrParam { name: "q_one".into(), ty: q_type() });
+            params.extend(w_params.iter().enumerate().filter(|(idx, _)| used_w.contains(&(*idx as u32))).map(|(_, p)| p.clone()));
+            for j in 0..local_oracle_reads {
+                params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
+            }
+            for (k, call) in local_ext.oracle_calls.iter().enumerate() {
+                for j in 0..call.total_bits {
+                    params.push(IrParam { name: format!("q_ext_oracle_{}_bit_{}", k, j), ty: q_type() });
+                }
+            }
+            for (k, call) in local_ext.action_calls.iter().enumerate() {
+                for j in 0..call.total_bits {
+                    params.push(IrParam { name: format!("q_ext_action_{}_bit_{}", k, j), ty: q_type() });
+                }
+            }
+            for (r, &width) in local_ext.rng_widths.iter().enumerate() {
+                for j in 0..width {
+                    params.push(IrParam { name: format!("q_ext_rng_{}_bit_{}", r, j), ty: q_type() });
+                }
+            }
+
+            let mut ctx = VoleIrCtx::new_qsim();
+            insert_w_wires(&mut ctx);
+            for &v in &b.synthetic_in {
+                let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
+                    "weave_vole_qsim_ir_split: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
+                ));
+                bind_scalar(&mut ctx, &mut params, v, format!("synth_{v}"), ty);
+            }
+            debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
+            ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
+            ctx.emit_circuit_stmts_range(block, types, mode, start..end);
+
+            let local_entry_count = ctx.trace.entries.len() as u32;
+            for mut e in ctx.trace.entries.clone() {
+                e.timestamp += global_ts;
+                overall_trace_entries.push(e);
+            }
+            global_ts += local_entry_count.max(ctx.mem_timestamp);
+
+            let is_active_v = CirVar(b.is_active);
+            let done_v = CirVar(b.done);
+            let is_active_expr = ctx.slot_expr(&is_active_v);
+            let done_expr = ctx.slot_expr(&done_v);
+            let is_active_ty = ctx.slot_type(&is_active_v, &q_type());
+            let done_ty = ctx.slot_type(&done_v, &q_type());
+            let next_pc_exprs: Vec<IrExpr> = b.next_pc_bits.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
+            let next_pc_bit_tys: Vec<IrType> = b.next_pc_bits.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
+            let next_state_exprs: Vec<IrExpr> = b.next_state.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
+            let next_state_tys: Vec<IrType> = b.next_state.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
+            let ret_val_exprs: Vec<IrExpr> = b.ret_vals.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
+            let ret_val_tys: Vec<IrType> = b.ret_vals.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
+
+            let hats_ty = q_and_array_type(ctx.q_and_names.len());
+            let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|h| var(h)).collect()));
+
+            let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
+            ret_tuple_tys.extend(next_pc_bit_tys.iter().cloned());
+            ret_tuple_tys.extend(next_state_tys.iter().cloned());
+            ret_tuple_tys.extend(ret_val_tys.iter().cloned());
+            ret_tuple_tys.push(hats_ty);
+
+            let mut ret_tuple_exprs = vec![is_active_expr, done_expr];
+            ret_tuple_exprs.extend(next_pc_exprs);
+            ret_tuple_exprs.extend(next_state_exprs);
+            ret_tuple_exprs.extend(ret_val_exprs);
+            ret_tuple_exprs.push(hats_expr);
+
+            // As `weave_vole_prover_ir_split`'s own synthetic_out handling.
+            for &v in &b.synthetic_out {
+                let ty = ctx.slot_type(&CirVar(v), &q_type());
+                synthetic_types.entry(v).or_insert_with(|| ty.clone());
+                ret_tuple_tys.push(ty);
+                ret_tuple_exprs.push(ctx.slot_expr(&CirVar(v)));
+            }
+
+            let func = IrFunction { no_inline: true,
+                name: format!("vole_qsim_ir_{}_block_{}", name, i),
+                module_path: vec![],
+                generics: generics.clone(),
+                receiver: None,
+                params,
+                return_type: Some(IrType::Tuple(ret_tuple_tys)),
+                where_clause: where_clause.clone(),
+                body: IrBlock {
+                    stmts: ctx.stmts,
+                    expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))),
+                },
+                external_kind: ExternalKind::Normal,
+            };
+            emit_fn(func);
+
+            interfaces.push(SplitBlockInterface { is_active_ty, done_ty, next_pc_bit_tys, next_state_tys, ret_val_tys });
+        } else {
+            // ---- Split: K piece functions + 1 wrapper. See
+            // `weave_vole_prover_ir_split`'s own "Split:" branch for the
+            // full design; only the role-specific deltas are called out
+            // here (base type `q_type()`, `VoleIrCtx::new_qsim()`,
+            // `q_one`/`q_ext_*` naming, and the `hat` INPUT array's own
+            // per-piece slicing).
+            debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
+
+            let mut producer_piece: alloc::collections::BTreeMap<u32, usize> = alloc::collections::BTreeMap::new();
+            for (p, piece) in pieces.iter().enumerate() {
+                for &v in &piece.extra_out {
+                    producer_piece.entry(v).or_insert(p);
+                }
+            }
+
+            let mut piece_names: Vec<String> = Vec::with_capacity(pieces.len());
+            let mut piece_used_w: Vec<alloc::collections::BTreeSet<u32>> = Vec::with_capacity(pieces.len());
+            let mut piece_oracle_counts: Vec<usize> = Vec::with_capacity(pieces.len());
+            let mut piece_and_counts: Vec<usize> = Vec::with_capacity(pieces.len());
+            let mut piece_q_and_counts: Vec<usize> = Vec::with_capacity(pieces.len());
+            let mut piece_out_types: alloc::collections::BTreeMap<u32, IrType> = alloc::collections::BTreeMap::new();
+
+            for (p, piece) in pieces.iter().enumerate() {
+                let p_start = (piece.start - num_params as u32) as usize;
+                let p_end = (piece.end - num_params as u32) as usize;
+                let p_stmts = &block.stmts[p_start..p_end];
+                let p_and_count = count_ir_ands_no_storage_range(p_stmts, types);
+                let p_oracle_reads = if matches!(mode, StorageMode::Commitment) {
+                    count_storage_reads_range(p_stmts, types)
+                } else { 0 };
+
+                let mut p_used_w: alloc::collections::BTreeSet<u32> = collect_used_top_level_params(&block.stmts[shared_prefix.clone()], num_params);
+                p_used_w.extend(collect_used_top_level_params(p_stmts, num_params));
+                for &v in &piece.extra_out {
+                    if (v as usize) < num_params { p_used_w.insert(v); }
+                }
+
+                let mut p_params: Vec<IrParam> = vec![
+                    IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
+                ];
+                if p_and_count > 0 {
+                    p_params.push(IrParam { name: "hat".into(), ty: hat_array_type(p_and_count) });
+                }
+                p_params.push(IrParam { name: "q_one".into(), ty: q_type() });
+                p_params.extend(w_params.iter().enumerate().filter(|(idx, _)| p_used_w.contains(&(*idx as u32))).map(|(_, pr)| pr.clone()));
+                for j in 0..p_oracle_reads {
+                    p_params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
+                }
+
+                let mut ctx = VoleIrCtx::new_qsim();
+                insert_w_wires(&mut ctx);
+                for &v in &b.synthetic_in {
+                    let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
+                        "weave_vole_qsim_ir_split: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
+                    ));
+                    bind_scalar(&mut ctx, &mut p_params, v, format!("synth_{v}"), ty);
+                }
+                for &v in &piece.extra_in {
+                    let ty = piece_out_types.get(&v).cloned().unwrap_or_else(|| panic!(
+                        "weave_vole_qsim_ir_split: piece-local var {v} has no known type -- its own producing piece must run before this consuming piece"
+                    ));
+                    bind_scalar(&mut ctx, &mut p_params, v, format!("piece_in_{v}"), ty);
+                }
+
+                ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
+                ctx.emit_circuit_stmts_range(block, types, mode, p_start..p_end);
+
+                let local_entry_count = ctx.trace.entries.len() as u32;
+                for mut e in ctx.trace.entries.clone() {
+                    e.timestamp += global_ts;
+                    overall_trace_entries.push(e);
+                }
+                global_ts += local_entry_count.max(ctx.mem_timestamp);
+
+                let mut p_ret_tys: Vec<IrType> = Vec::with_capacity(piece.extra_out.len() + 1);
+                let mut p_ret_exprs: Vec<IrExpr> = Vec::with_capacity(piece.extra_out.len() + 1);
+                for &v in &piece.extra_out {
+                    let ty = ctx.slot_type(&CirVar(v), &q_type());
+                    p_ret_exprs.push(ctx.slot_expr(&CirVar(v)));
+                    piece_out_types.insert(v, ty.clone());
+                    p_ret_tys.push(ty);
+                }
+                let p_hats_ty = q_and_array_type(ctx.q_and_names.len());
+                let p_hats_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|h| var(h)).collect()));
+                piece_q_and_counts.push(ctx.q_and_names.len());
+                p_ret_tys.push(p_hats_ty);
+                p_ret_exprs.push(p_hats_expr);
+
+                let p_name = format!("vole_qsim_ir_{}_block_{}_piece_{}", name, i, p);
+                let p_func = IrFunction { no_inline: true,
+                    name: p_name.clone(),
+                    module_path: vec![],
+                    generics: generics.clone(),
+                    receiver: None,
+                    params: p_params,
+                    return_type: Some(IrType::Tuple(p_ret_tys)),
+                    where_clause: where_clause.clone(),
+                    body: IrBlock {
+                        stmts: ctx.stmts,
+                        expr: Some(Box::new(ir_expr(IrExprKind::Tuple(p_ret_exprs)))),
+                    },
+                    external_kind: ExternalKind::Normal,
+                };
+                emit_fn(p_func);
+
+                piece_names.push(p_name);
+                piece_used_w.push(p_used_w);
+                piece_oracle_counts.push(p_oracle_reads);
+                piece_and_counts.push(p_and_count);
+            }
+
+            let mut wrapper_params: Vec<IrParam> = vec![
+                IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
+            ];
+            if local_and_count > 0 {
+                wrapper_params.push(IrParam { name: "hat".into(), ty: hat_array_type(local_and_count) });
+            }
+            wrapper_params.push(IrParam { name: "q_one".into(), ty: q_type() });
+            wrapper_params.extend(w_params.iter().enumerate().filter(|(idx, _)| used_w.contains(&(*idx as u32))).map(|(_, p)| p.clone()));
+            for j in 0..local_oracle_reads {
+                wrapper_params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
+            }
+            for &v in &b.synthetic_in {
+                let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
+                    "weave_vole_qsim_ir_split: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
+                ));
+                wrapper_params.push(IrParam { name: format!("synth_{v}"), ty });
+            }
+
+            let mut wrapper_stmts: Vec<IrStmt> = Vec::with_capacity(pieces.len());
+            let mut oracle_offset = 0usize;
+            let mut and_offset = 0usize;
+            for (p, piece) in pieces.iter().enumerate() {
+                // `delta` is `&Delta<N,T>` -- a reference, trivially
+                // `Copy` regardless of whether the pointee is -- cloning
+                // it (`delta.clone()`) would auto-deref through to
+                // `Delta::clone`, producing an OWNED `Delta<N,T>` where
+                // every piece call expects `&Delta<N,T>`. No `.clone()`
+                // needed at all, unlike the genuinely-owned non-`Copy`
+                // wire values below.
+                let mut call_args: Vec<IrExpr> = vec![var("delta")];
+                if piece_and_counts[p] > 0 {
+                    let hat_slice: Vec<IrExpr> = (0..piece_and_counts[p])
+                        .map(|j| clone_expr(arr_index("hat", &(and_offset + j).to_string())))
+                        .collect();
+                    call_args.push(ir_expr(IrExprKind::FixedArray(hat_slice)));
+                }
+                and_offset += piece_and_counts[p];
+                call_args.push(clone_expr(var("q_one")));
+                for &idx in &piece_used_w[p] {
+                    call_args.push(clone_expr(var(&format!("w_{idx}"))));
+                }
+                for j in 0..piece_oracle_counts[p] {
+                    call_args.push(clone_expr(var(&format!("oracle_rd_{}", oracle_offset + j))));
+                }
+                oracle_offset += piece_oracle_counts[p];
+                for &v in &b.synthetic_in {
+                    call_args.push(clone_expr(var(&format!("synth_{v}"))));
+                }
+                for &v in &piece.extra_in {
+                    let producer = producer_piece.get(&v).copied().expect("weave_vole_qsim_ir_split: extra_in var must have a producer piece");
+                    call_args.push(clone_expr(var(&format!("piece{producer}_v{v}"))));
+                }
+
+                let mut pattern_names: Vec<String> = piece.extra_out.iter().map(|&v| format!("piece{p}_v{v}")).collect();
+                pattern_names.push(format!("piece{p}_hats"));
+
+                wrapper_stmts.push(ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::Tuple(pattern_names.into_iter().map(IrPattern::ident).collect()),
+                    ty: None,
+                    init: Some(ir_expr(IrExprKind::Call {
+                        func: Box::new(ir_expr(IrExprKind::Path {
+                            segments: vec![piece_names[p].clone()],
+                            type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("T".into())],
+                        })),
+                        args: call_args,
+                    })),
+                }));
+            }
+
+            let field_expr = |v: u32| clone_expr(var(&format!("piece{}_v{}", producer_piece[&v], v)));
+            let field_ty = |v: u32| piece_out_types[&v].clone();
+
+            let is_active_ty = field_ty(b.is_active);
+            let done_ty = field_ty(b.done);
+            let is_active_expr = field_expr(b.is_active);
+            let done_expr = field_expr(b.done);
+            let next_pc_exprs: Vec<IrExpr> = b.next_pc_bits.iter().map(|&v| field_expr(v)).collect();
+            let next_pc_bit_tys: Vec<IrType> = b.next_pc_bits.iter().map(|&v| field_ty(v)).collect();
+            let next_state_exprs: Vec<IrExpr> = b.next_state.iter().map(|&v| field_expr(v)).collect();
+            let next_state_tys: Vec<IrType> = b.next_state.iter().map(|&v| field_ty(v)).collect();
+            let ret_val_exprs: Vec<IrExpr> = b.ret_vals.iter().map(|&v| field_expr(v)).collect();
+            let ret_val_tys: Vec<IrType> = b.ret_vals.iter().map(|&v| field_ty(v)).collect();
+
+            let mut combined_hats_exprs: Vec<IrExpr> = Vec::new();
+            for p in 0..pieces.len() {
+                for j in 0..piece_q_and_counts[p] {
+                    combined_hats_exprs.push(clone_expr(arr_index(&format!("piece{p}_hats"), &j.to_string())));
+                }
+            }
+            let hats_ty = q_and_array_type(combined_hats_exprs.len());
+            let hats_expr = ir_expr(IrExprKind::FixedArray(combined_hats_exprs));
+
+            let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
+            ret_tuple_tys.extend(next_pc_bit_tys.iter().cloned());
+            ret_tuple_tys.extend(next_state_tys.iter().cloned());
+            ret_tuple_tys.extend(ret_val_tys.iter().cloned());
+            ret_tuple_tys.push(hats_ty);
+
+            let mut ret_tuple_exprs = vec![is_active_expr, done_expr];
+            ret_tuple_exprs.extend(next_pc_exprs);
+            ret_tuple_exprs.extend(next_state_exprs);
+            ret_tuple_exprs.extend(ret_val_exprs);
+            ret_tuple_exprs.push(hats_expr);
+
+            for &v in &b.synthetic_out {
+                let ty = field_ty(v);
+                synthetic_types.entry(v).or_insert_with(|| ty.clone());
+                ret_tuple_tys.push(ty);
+                ret_tuple_exprs.push(field_expr(v));
+            }
+
+            let wrapper_func = IrFunction { no_inline: true,
+                name: format!("vole_qsim_ir_{}_block_{}", name, i),
+                module_path: vec![],
+                generics: generics.clone(),
+                receiver: None,
+                params: wrapper_params,
+                return_type: Some(IrType::Tuple(ret_tuple_tys)),
+                where_clause: where_clause.clone(),
+                body: IrBlock {
+                    stmts: wrapper_stmts,
+                    expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))),
+                },
+                external_kind: ExternalKind::Normal,
+            };
+            emit_fn(wrapper_func);
+
+            interfaces.push(SplitBlockInterface { is_active_ty, done_ty, next_pc_bit_tys, next_state_tys, ret_val_tys });
+        }
     }
 
     let (init_next_state_tys, init_ret_val_tys) = {
@@ -6133,127 +6689,445 @@ pub fn weave_vole_verifier_ir_split_with_trace(
             if (v as usize) < num_params { used_w.insert(v); }
         }
 
-        let mut params: Vec<IrParam> = vec![
-            IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
-        ];
-        if local_and_count > 0 {
-            params.push(IrParam { name: "q_and".into(), ty: q_and_array_type(local_and_count) });
-            params.push(IrParam { name: "hat".into(), ty: hat_array_type(local_and_count) });
-            params.push(IrParam {
-                name: "r_and".into(),
-                ty: r_and_array_type(local_and_count, sink.fold_scalar_type_name()),
-            });
-        }
-        params.push(IrParam { name: "q_one".into(), ty: q_type() });
-        params.extend(w_params.iter().enumerate().filter(|(idx, _)| used_w.contains(&(*idx as u32))).map(|(_, p)| p.clone()));
-        for j in 0..local_oracle_reads {
-            params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
-        }
-        for (k, call) in local_ext.oracle_calls.iter().enumerate() {
-            for j in 0..call.total_bits {
-                params.push(IrParam { name: format!("q_ext_oracle_{}_bit_{}", k, j), ty: q_type() });
-            }
-        }
-        for (k, call) in local_ext.action_calls.iter().enumerate() {
-            for j in 0..call.total_bits {
-                params.push(IrParam { name: format!("q_ext_action_{}_bit_{}", k, j), ty: q_type() });
-            }
-        }
-        for (r, &width) in local_ext.rng_widths.iter().enumerate() {
-            for j in 0..width {
-                params.push(IrParam { name: format!("q_ext_rng_{}_bit_{}", r, j), ty: q_type() });
-            }
-        }
-        params.push(IrParam { name: "all_ok_in".into(), ty: IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool) });
-        params.push(IrParam { name: "fold_state_in".into(), ty: IrType::TypeParam(sink.state_type_name().into()) });
-
-        let mut ctx = VoleIrCtx::new_verifier_with_trace_sink(sink);
-        insert_w_wires(&mut ctx);
-        for &v in &b.synthetic_in {
-            let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
-                "weave_vole_verifier_ir_split_with_trace: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
-            ));
-            bind_scalar(&mut ctx, &mut params, v, format!("synth_{v}"), ty);
-        }
-        ctx.stmts.push(ir_stmt(IrStmtKind::Let {
-            pattern: IrPattern::Ident { mutable: true, name: "all_ok".into(), subpat: None },
-            ty: None,
-            init: Some(var("all_ok_in")),
-        }));
-        ctx.stmts.push(ir_stmt(IrStmtKind::Let {
-            pattern: IrPattern::Ident { mutable: true, name: "fold_state".into(), subpat: None },
-            ty: None,
-            init: Some(var("fold_state_in")),
-        }));
-        // Shared pre-loop prefix (currently just `bit_zero`) first, so any
-        // reference to it from this block's own terminator-handling stmts
-        // resolves. Assumed gate/oracle-free (see `local_and_count`/
-        // `local_oracle_reads`, computed from `local_stmts` alone, above).
-        debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
-        ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
-        ctx.emit_circuit_stmts_range(block, types, mode, start..end);
-
-        // Rebase this block's own (locally-zeroed) trace timestamps onto
-        // the running global offset before merging.
-        let local_entry_count = ctx.trace.entries.len() as u32;
-        for mut e in ctx.trace.entries.clone() {
-            e.timestamp += global_ts;
-            overall_trace_entries.push(e);
-        }
-        global_ts += local_entry_count.max(ctx.mem_timestamp);
-
-        let is_active_v = CirVar(b.is_active);
-        let done_v = CirVar(b.done);
-        let is_active_expr = ctx.slot_expr(&is_active_v);
-        let done_expr = ctx.slot_expr(&done_v);
-        let is_active_ty = ctx.slot_type(&is_active_v, &q_type());
-        let done_ty = ctx.slot_type(&done_v, &q_type());
-        let next_pc_exprs: Vec<IrExpr> = b.next_pc_bits.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
-        let next_pc_bit_tys: Vec<IrType> = b.next_pc_bits.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
-        let next_state_exprs: Vec<IrExpr> = b.next_state.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
-        let next_state_tys: Vec<IrType> = b.next_state.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
-        let ret_val_exprs: Vec<IrExpr> = b.ret_vals.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
-        let ret_val_tys: Vec<IrType> = b.ret_vals.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
-
-        let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
-        ret_tuple_tys.extend(next_pc_bit_tys.iter().cloned());
-        ret_tuple_tys.extend(next_state_tys.iter().cloned());
-        ret_tuple_tys.extend(ret_val_tys.iter().cloned());
-        ret_tuple_tys.push(IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool));
-        ret_tuple_tys.push(IrType::TypeParam(sink.state_type_name().into()));
-
-        let mut ret_tuple_exprs = vec![is_active_expr, done_expr];
-        ret_tuple_exprs.extend(next_pc_exprs);
-        ret_tuple_exprs.extend(next_state_exprs);
-        ret_tuple_exprs.extend(ret_val_exprs);
-        ret_tuple_exprs.push(var("all_ok"));
-        ret_tuple_exprs.push(var("fold_state"));
-
-        // As `weave_vole_prover_ir_split`'s own synthetic_out handling.
-        for &v in &b.synthetic_out {
-            let ty = ctx.slot_type(&CirVar(v), &q_type());
-            synthetic_types.entry(v).or_insert_with(|| ty.clone());
-            ret_tuple_tys.push(ty);
-            ret_tuple_exprs.push(ctx.slot_expr(&CirVar(v)));
-        }
-
-        let func = IrFunction { no_inline: true,
-            name: format!("vole_verify_ir_{}_block_{}", name, i),
-            module_path: vec![],
-            generics: generics.clone(),
-            receiver: None,
-            params,
-            return_type: Some(IrType::Tuple(ret_tuple_tys)),
-            where_clause: where_clause_for(sink),
-            body: IrBlock {
-                stmts: ctx.stmts,
-                expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))),
-            },
-            external_kind: ExternalKind::Normal,
+        // See `weave_vole_prover_ir_split`'s own doc for the general
+        // design/rationale. The verifier ALSO needs `q_and`/`hat`/`r_and`
+        // sliced per piece (three parallel and-count-sized arrays,
+        // instead of qsim's single `hat`), AND a running `all_ok`/
+        // `fold_state` accumulator chain threaded through every piece IN
+        // ORDER (piece 0 seeded from the wrapper's own `all_ok_in`/
+        // `fold_state_in`, each later piece seeded from the PRECEDING
+        // piece's own final `all_ok`/`fold_state`, the wrapper's own
+        // final values taken from the LAST piece) -- unlike
+        // `is_active`/`done`/etc, which route to whichever piece
+        // produces them, `all_ok`/`fold_state` are mutated by every
+        // piece's own emission and so must flow through ALL of them,
+        // mirroring the SAME pattern `split_driver.rs` already uses one
+        // level up (between CHUNKS), just applied one level deeper
+        // (between a single chunk's own split-out pieces).
+        let can_split = local_ext.oracle_calls.is_empty() && local_ext.action_calls.is_empty() && local_ext.rng_widths.is_empty();
+        let mut region_outputs: Vec<u32> = alloc::vec![b.is_active, b.done];
+        region_outputs.extend(b.next_pc_bits.iter().copied());
+        region_outputs.extend(b.next_state.iter().copied());
+        region_outputs.extend(b.ret_vals.iter().copied());
+        region_outputs.extend(b.synthetic_out.iter().copied());
+        let pieces = if can_split {
+            crate::vole_split::split_region_into_pieces(block, num_params, b.start, b.end, &region_outputs, MAX_STMTS_PER_PIECE)
+        } else {
+            alloc::vec![crate::vole_split::PieceSpec { start: b.start, end: b.end, extra_in: Vec::new(), extra_out: Vec::new() }]
         };
-        emit_fn(func);
 
-        interfaces.push(SplitBlockInterface { is_active_ty, done_ty, next_pc_bit_tys, next_state_tys, ret_val_tys });
+        if pieces.len() <= 1 {
+            // ---- Unchanged: single function ----
+            let mut params: Vec<IrParam> = vec![
+                IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
+            ];
+            if local_and_count > 0 {
+                params.push(IrParam { name: "q_and".into(), ty: q_and_array_type(local_and_count) });
+                params.push(IrParam { name: "hat".into(), ty: hat_array_type(local_and_count) });
+                params.push(IrParam {
+                    name: "r_and".into(),
+                    ty: r_and_array_type(local_and_count, sink.fold_scalar_type_name()),
+                });
+            }
+            params.push(IrParam { name: "q_one".into(), ty: q_type() });
+            params.extend(w_params.iter().enumerate().filter(|(idx, _)| used_w.contains(&(*idx as u32))).map(|(_, p)| p.clone()));
+            for j in 0..local_oracle_reads {
+                params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
+            }
+            for (k, call) in local_ext.oracle_calls.iter().enumerate() {
+                for j in 0..call.total_bits {
+                    params.push(IrParam { name: format!("q_ext_oracle_{}_bit_{}", k, j), ty: q_type() });
+                }
+            }
+            for (k, call) in local_ext.action_calls.iter().enumerate() {
+                for j in 0..call.total_bits {
+                    params.push(IrParam { name: format!("q_ext_action_{}_bit_{}", k, j), ty: q_type() });
+                }
+            }
+            for (r, &width) in local_ext.rng_widths.iter().enumerate() {
+                for j in 0..width {
+                    params.push(IrParam { name: format!("q_ext_rng_{}_bit_{}", r, j), ty: q_type() });
+                }
+            }
+            params.push(IrParam { name: "all_ok_in".into(), ty: IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool) });
+            params.push(IrParam { name: "fold_state_in".into(), ty: IrType::TypeParam(sink.state_type_name().into()) });
+
+            let mut ctx = VoleIrCtx::new_verifier_with_trace_sink(sink);
+            insert_w_wires(&mut ctx);
+            for &v in &b.synthetic_in {
+                let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
+                    "weave_vole_verifier_ir_split_with_trace: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
+                ));
+                bind_scalar(&mut ctx, &mut params, v, format!("synth_{v}"), ty);
+            }
+            ctx.stmts.push(ir_stmt(IrStmtKind::Let {
+                pattern: IrPattern::Ident { mutable: true, name: "all_ok".into(), subpat: None },
+                ty: None,
+                init: Some(var("all_ok_in")),
+            }));
+            ctx.stmts.push(ir_stmt(IrStmtKind::Let {
+                pattern: IrPattern::Ident { mutable: true, name: "fold_state".into(), subpat: None },
+                ty: None,
+                init: Some(var("fold_state_in")),
+            }));
+            // Shared pre-loop prefix (currently just `bit_zero`) first, so any
+            // reference to it from this block's own terminator-handling stmts
+            // resolves. Assumed gate/oracle-free (see `local_and_count`/
+            // `local_oracle_reads`, computed from `local_stmts` alone, above).
+            debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
+            ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
+            ctx.emit_circuit_stmts_range(block, types, mode, start..end);
+
+            // Rebase this block's own (locally-zeroed) trace timestamps onto
+            // the running global offset before merging.
+            let local_entry_count = ctx.trace.entries.len() as u32;
+            for mut e in ctx.trace.entries.clone() {
+                e.timestamp += global_ts;
+                overall_trace_entries.push(e);
+            }
+            global_ts += local_entry_count.max(ctx.mem_timestamp);
+
+            let is_active_v = CirVar(b.is_active);
+            let done_v = CirVar(b.done);
+            let is_active_expr = ctx.slot_expr(&is_active_v);
+            let done_expr = ctx.slot_expr(&done_v);
+            let is_active_ty = ctx.slot_type(&is_active_v, &q_type());
+            let done_ty = ctx.slot_type(&done_v, &q_type());
+            let next_pc_exprs: Vec<IrExpr> = b.next_pc_bits.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
+            let next_pc_bit_tys: Vec<IrType> = b.next_pc_bits.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
+            let next_state_exprs: Vec<IrExpr> = b.next_state.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
+            let next_state_tys: Vec<IrType> = b.next_state.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
+            let ret_val_exprs: Vec<IrExpr> = b.ret_vals.iter().map(|&v| ctx.slot_expr(&CirVar(v))).collect();
+            let ret_val_tys: Vec<IrType> = b.ret_vals.iter().map(|&v| ctx.slot_type(&CirVar(v), &q_type())).collect();
+
+            let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
+            ret_tuple_tys.extend(next_pc_bit_tys.iter().cloned());
+            ret_tuple_tys.extend(next_state_tys.iter().cloned());
+            ret_tuple_tys.extend(ret_val_tys.iter().cloned());
+            ret_tuple_tys.push(IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool));
+            ret_tuple_tys.push(IrType::TypeParam(sink.state_type_name().into()));
+
+            let mut ret_tuple_exprs = vec![is_active_expr, done_expr];
+            ret_tuple_exprs.extend(next_pc_exprs);
+            ret_tuple_exprs.extend(next_state_exprs);
+            ret_tuple_exprs.extend(ret_val_exprs);
+            ret_tuple_exprs.push(var("all_ok"));
+            ret_tuple_exprs.push(var("fold_state"));
+
+            // As `weave_vole_prover_ir_split`'s own synthetic_out handling.
+            for &v in &b.synthetic_out {
+                let ty = ctx.slot_type(&CirVar(v), &q_type());
+                synthetic_types.entry(v).or_insert_with(|| ty.clone());
+                ret_tuple_tys.push(ty);
+                ret_tuple_exprs.push(ctx.slot_expr(&CirVar(v)));
+            }
+
+            let func = IrFunction { no_inline: true,
+                name: format!("vole_verify_ir_{}_block_{}", name, i),
+                module_path: vec![],
+                generics: generics.clone(),
+                receiver: None,
+                params,
+                return_type: Some(IrType::Tuple(ret_tuple_tys)),
+                where_clause: where_clause_for(sink),
+                body: IrBlock {
+                    stmts: ctx.stmts,
+                    expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))),
+                },
+                external_kind: ExternalKind::Normal,
+            };
+            emit_fn(func);
+
+            interfaces.push(SplitBlockInterface { is_active_ty, done_ty, next_pc_bit_tys, next_state_tys, ret_val_tys });
+        } else {
+            // ---- Split: K piece functions + 1 wrapper. See
+            // `weave_vole_prover_ir_split`'s own "Split:" branch for the
+            // base design; deltas here: `q_and`/`hat`/`r_and` (three
+            // and-count-sized arrays, all sliced together using the same
+            // per-piece and-count and offset) instead of qsim's single
+            // `hat`, and the `all_ok`/`fold_state` running chain threaded
+            // through every piece in order (see the doc above the
+            // `can_split` computation).
+            debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
+
+            let mut producer_piece: alloc::collections::BTreeMap<u32, usize> = alloc::collections::BTreeMap::new();
+            for (p, piece) in pieces.iter().enumerate() {
+                for &v in &piece.extra_out {
+                    producer_piece.entry(v).or_insert(p);
+                }
+            }
+
+            let mut piece_names: Vec<String> = Vec::with_capacity(pieces.len());
+            let mut piece_used_w: Vec<alloc::collections::BTreeSet<u32>> = Vec::with_capacity(pieces.len());
+            let mut piece_oracle_counts: Vec<usize> = Vec::with_capacity(pieces.len());
+            let mut piece_and_counts: Vec<usize> = Vec::with_capacity(pieces.len());
+            let mut piece_out_types: alloc::collections::BTreeMap<u32, IrType> = alloc::collections::BTreeMap::new();
+
+            for (p, piece) in pieces.iter().enumerate() {
+                let p_start = (piece.start - num_params as u32) as usize;
+                let p_end = (piece.end - num_params as u32) as usize;
+                let p_stmts = &block.stmts[p_start..p_end];
+                let p_and_count = count_ir_ands_no_storage_range(p_stmts, types);
+                let p_oracle_reads = if matches!(mode, StorageMode::Commitment) {
+                    count_storage_reads_range(p_stmts, types)
+                } else { 0 };
+
+                let mut p_used_w: alloc::collections::BTreeSet<u32> = collect_used_top_level_params(&block.stmts[shared_prefix.clone()], num_params);
+                p_used_w.extend(collect_used_top_level_params(p_stmts, num_params));
+                for &v in &piece.extra_out {
+                    if (v as usize) < num_params { p_used_w.insert(v); }
+                }
+
+                let mut p_params: Vec<IrParam> = vec![
+                    IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
+                ];
+                if p_and_count > 0 {
+                    p_params.push(IrParam { name: "q_and".into(), ty: q_and_array_type(p_and_count) });
+                    p_params.push(IrParam { name: "hat".into(), ty: hat_array_type(p_and_count) });
+                    p_params.push(IrParam {
+                        name: "r_and".into(),
+                        ty: r_and_array_type(p_and_count, sink.fold_scalar_type_name()),
+                    });
+                }
+                p_params.push(IrParam { name: "q_one".into(), ty: q_type() });
+                p_params.extend(w_params.iter().enumerate().filter(|(idx, _)| p_used_w.contains(&(*idx as u32))).map(|(_, pr)| pr.clone()));
+                for j in 0..p_oracle_reads {
+                    p_params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
+                }
+                p_params.push(IrParam { name: "all_ok_in".into(), ty: IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool) });
+                p_params.push(IrParam { name: "fold_state_in".into(), ty: IrType::TypeParam(sink.state_type_name().into()) });
+
+                let mut ctx = VoleIrCtx::new_verifier_with_trace_sink(sink);
+                insert_w_wires(&mut ctx);
+                for &v in &b.synthetic_in {
+                    let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
+                        "weave_vole_verifier_ir_split_with_trace: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
+                    ));
+                    bind_scalar(&mut ctx, &mut p_params, v, format!("synth_{v}"), ty);
+                }
+                for &v in &piece.extra_in {
+                    let ty = piece_out_types.get(&v).cloned().unwrap_or_else(|| panic!(
+                        "weave_vole_verifier_ir_split_with_trace: piece-local var {v} has no known type -- its own producing piece must run before this consuming piece"
+                    ));
+                    bind_scalar(&mut ctx, &mut p_params, v, format!("piece_in_{v}"), ty);
+                }
+                ctx.stmts.push(ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::Ident { mutable: true, name: "all_ok".into(), subpat: None },
+                    ty: None,
+                    init: Some(var("all_ok_in")),
+                }));
+                ctx.stmts.push(ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::Ident { mutable: true, name: "fold_state".into(), subpat: None },
+                    ty: None,
+                    init: Some(var("fold_state_in")),
+                }));
+
+                ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
+                ctx.emit_circuit_stmts_range(block, types, mode, p_start..p_end);
+
+                let local_entry_count = ctx.trace.entries.len() as u32;
+                for mut e in ctx.trace.entries.clone() {
+                    e.timestamp += global_ts;
+                    overall_trace_entries.push(e);
+                }
+                global_ts += local_entry_count.max(ctx.mem_timestamp);
+
+                let mut p_ret_tys: Vec<IrType> = Vec::with_capacity(piece.extra_out.len() + 2);
+                let mut p_ret_exprs: Vec<IrExpr> = Vec::with_capacity(piece.extra_out.len() + 2);
+                for &v in &piece.extra_out {
+                    let ty = ctx.slot_type(&CirVar(v), &q_type());
+                    p_ret_exprs.push(ctx.slot_expr(&CirVar(v)));
+                    piece_out_types.insert(v, ty.clone());
+                    p_ret_tys.push(ty);
+                }
+                p_ret_tys.push(IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool));
+                p_ret_tys.push(IrType::TypeParam(sink.state_type_name().into()));
+                p_ret_exprs.push(var("all_ok"));
+                p_ret_exprs.push(var("fold_state"));
+
+                let p_name = format!("vole_verify_ir_{}_block_{}_piece_{}", name, i, p);
+                let p_func = IrFunction { no_inline: true,
+                    name: p_name.clone(),
+                    module_path: vec![],
+                    generics: generics.clone(),
+                    receiver: None,
+                    params: p_params,
+                    return_type: Some(IrType::Tuple(p_ret_tys)),
+                    where_clause: where_clause_for(sink),
+                    body: IrBlock {
+                        stmts: ctx.stmts,
+                        expr: Some(Box::new(ir_expr(IrExprKind::Tuple(p_ret_exprs)))),
+                    },
+                    external_kind: ExternalKind::Normal,
+                };
+                emit_fn(p_func);
+
+                piece_names.push(p_name);
+                piece_used_w.push(p_used_w);
+                piece_oracle_counts.push(p_oracle_reads);
+                piece_and_counts.push(p_and_count);
+            }
+
+            let mut wrapper_params: Vec<IrParam> = vec![
+                IrParam { name: "delta".into(), ty: ref_to_vole(delta_type()) },
+            ];
+            if local_and_count > 0 {
+                wrapper_params.push(IrParam { name: "q_and".into(), ty: q_and_array_type(local_and_count) });
+                wrapper_params.push(IrParam { name: "hat".into(), ty: hat_array_type(local_and_count) });
+                wrapper_params.push(IrParam {
+                    name: "r_and".into(),
+                    ty: r_and_array_type(local_and_count, sink.fold_scalar_type_name()),
+                });
+            }
+            wrapper_params.push(IrParam { name: "q_one".into(), ty: q_type() });
+            wrapper_params.extend(w_params.iter().enumerate().filter(|(idx, _)| used_w.contains(&(*idx as u32))).map(|(_, p)| p.clone()));
+            for j in 0..local_oracle_reads {
+                wrapper_params.push(IrParam { name: format!("oracle_rd_{}", j), ty: q_type() });
+            }
+            // `all_ok_in`/`fold_state_in` BEFORE `synth_*` -- matches the
+            // original unsplit function's own external param order
+            // (`params.push(all_ok_in/fold_state_in)` happens before the
+            // `synthetic_in` binding loop there), which this wrapper's
+            // own signature must preserve exactly (external callers like
+            // `split_driver.rs` depend on it).
+            wrapper_params.push(IrParam { name: "all_ok_in".into(), ty: IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool) });
+            wrapper_params.push(IrParam { name: "fold_state_in".into(), ty: IrType::TypeParam(sink.state_type_name().into()) });
+            for &v in &b.synthetic_in {
+                let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
+                    "weave_vole_verifier_ir_split_with_trace: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
+                ));
+                wrapper_params.push(IrParam { name: format!("synth_{v}"), ty });
+            }
+
+            let mut wrapper_stmts: Vec<IrStmt> = Vec::with_capacity(pieces.len());
+            let mut oracle_offset = 0usize;
+            let mut and_offset = 0usize;
+            for (p, piece) in pieces.iter().enumerate() {
+                // `delta` is `&Delta<N,T>` -- a reference, trivially
+                // `Copy` regardless of whether the pointee is -- cloning
+                // it (`delta.clone()`) would auto-deref through to
+                // `Delta::clone`, producing an OWNED `Delta<N,T>` where
+                // every piece call expects `&Delta<N,T>`. No `.clone()`
+                // needed at all, unlike the genuinely-owned non-`Copy`
+                // wire values below.
+                let mut call_args: Vec<IrExpr> = vec![var("delta")];
+                if piece_and_counts[p] > 0 {
+                    let q_and_slice: Vec<IrExpr> = (0..piece_and_counts[p])
+                        .map(|j| clone_expr(arr_index("q_and", &(and_offset + j).to_string())))
+                        .collect();
+                    call_args.push(ir_expr(IrExprKind::FixedArray(q_and_slice)));
+                    let hat_slice: Vec<IrExpr> = (0..piece_and_counts[p])
+                        .map(|j| clone_expr(arr_index("hat", &(and_offset + j).to_string())))
+                        .collect();
+                    call_args.push(ir_expr(IrExprKind::FixedArray(hat_slice)));
+                    let r_and_slice: Vec<IrExpr> = (0..piece_and_counts[p])
+                        .map(|j| clone_expr(arr_index("r_and", &(and_offset + j).to_string())))
+                        .collect();
+                    call_args.push(ir_expr(IrExprKind::FixedArray(r_and_slice)));
+                }
+                and_offset += piece_and_counts[p];
+                call_args.push(clone_expr(var("q_one")));
+                for &idx in &piece_used_w[p] {
+                    call_args.push(clone_expr(var(&format!("w_{idx}"))));
+                }
+                for j in 0..piece_oracle_counts[p] {
+                    call_args.push(clone_expr(var(&format!("oracle_rd_{}", oracle_offset + j))));
+                }
+                oracle_offset += piece_oracle_counts[p];
+                // `all_ok_in`/`fold_state_in` BEFORE `synth_*`/`piece_in_*`
+                // -- must match each piece's own declared param order,
+                // which (mirroring the original unsplit function) pushes
+                // these two right after `oracle_rd_*`, before the
+                // `synthetic_in`/`extra_in` binding loops. Running
+                // all_ok/fold_state chain: piece 0 takes the wrapper's
+                // own incoming params; every later piece takes the
+                // PRECEDING piece's own output.
+                if p == 0 {
+                    call_args.push(clone_expr(var("all_ok_in")));
+                    call_args.push(clone_expr(var("fold_state_in")));
+                } else {
+                    call_args.push(clone_expr(var(&format!("piece{}_all_ok", p - 1))));
+                    call_args.push(clone_expr(var(&format!("piece{}_fold_state", p - 1))));
+                }
+                for &v in &b.synthetic_in {
+                    call_args.push(clone_expr(var(&format!("synth_{v}"))));
+                }
+                for &v in &piece.extra_in {
+                    let producer = producer_piece.get(&v).copied().expect("weave_vole_verifier_ir_split_with_trace: extra_in var must have a producer piece");
+                    call_args.push(clone_expr(var(&format!("piece{producer}_v{v}"))));
+                }
+
+                let mut pattern_names: Vec<String> = piece.extra_out.iter().map(|&v| format!("piece{p}_v{v}")).collect();
+                pattern_names.push(format!("piece{p}_all_ok"));
+                pattern_names.push(format!("piece{p}_fold_state"));
+
+                wrapper_stmts.push(ir_stmt(IrStmtKind::Let {
+                    pattern: IrPattern::Tuple(pattern_names.into_iter().map(IrPattern::ident).collect()),
+                    ty: None,
+                    init: Some(ir_expr(IrExprKind::Call {
+                        func: Box::new(ir_expr(IrExprKind::Path {
+                            segments: vec![piece_names[p].clone()],
+                            type_args: vec![IrType::TypeParam("N".into()), IrType::TypeParam("T".into())],
+                        })),
+                        args: call_args,
+                    })),
+                }));
+            }
+
+            let field_expr = |v: u32| clone_expr(var(&format!("piece{}_v{}", producer_piece[&v], v)));
+            let field_ty = |v: u32| piece_out_types[&v].clone();
+
+            let is_active_ty = field_ty(b.is_active);
+            let done_ty = field_ty(b.done);
+            let is_active_expr = field_expr(b.is_active);
+            let done_expr = field_expr(b.done);
+            let next_pc_exprs: Vec<IrExpr> = b.next_pc_bits.iter().map(|&v| field_expr(v)).collect();
+            let next_pc_bit_tys: Vec<IrType> = b.next_pc_bits.iter().map(|&v| field_ty(v)).collect();
+            let next_state_exprs: Vec<IrExpr> = b.next_state.iter().map(|&v| field_expr(v)).collect();
+            let next_state_tys: Vec<IrType> = b.next_state.iter().map(|&v| field_ty(v)).collect();
+            let ret_val_exprs: Vec<IrExpr> = b.ret_vals.iter().map(|&v| field_expr(v)).collect();
+            let ret_val_tys: Vec<IrType> = b.ret_vals.iter().map(|&v| field_ty(v)).collect();
+
+            let mut ret_tuple_tys = vec![is_active_ty.clone(), done_ty.clone()];
+            ret_tuple_tys.extend(next_pc_bit_tys.iter().cloned());
+            ret_tuple_tys.extend(next_state_tys.iter().cloned());
+            ret_tuple_tys.extend(ret_val_tys.iter().cloned());
+            ret_tuple_tys.push(IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool));
+            ret_tuple_tys.push(IrType::TypeParam(sink.state_type_name().into()));
+
+            let last = pieces.len() - 1;
+            let mut ret_tuple_exprs = vec![is_active_expr, done_expr];
+            ret_tuple_exprs.extend(next_pc_exprs);
+            ret_tuple_exprs.extend(next_state_exprs);
+            ret_tuple_exprs.extend(ret_val_exprs);
+            ret_tuple_exprs.push(clone_expr(var(&format!("piece{last}_all_ok"))));
+            ret_tuple_exprs.push(clone_expr(var(&format!("piece{last}_fold_state"))));
+
+            for &v in &b.synthetic_out {
+                let ty = field_ty(v);
+                synthetic_types.entry(v).or_insert_with(|| ty.clone());
+                ret_tuple_tys.push(ty);
+                ret_tuple_exprs.push(field_expr(v));
+            }
+
+            let wrapper_func = IrFunction { no_inline: true,
+                name: format!("vole_verify_ir_{}_block_{}", name, i),
+                module_path: vec![],
+                generics: generics.clone(),
+                receiver: None,
+                params: wrapper_params,
+                return_type: Some(IrType::Tuple(ret_tuple_tys)),
+                where_clause: where_clause_for(sink),
+                body: IrBlock {
+                    stmts: wrapper_stmts,
+                    expr: Some(Box::new(ir_expr(IrExprKind::Tuple(ret_tuple_exprs)))),
+                },
+                external_kind: ExternalKind::Normal,
+            };
+            emit_fn(wrapper_func);
+
+            interfaces.push(SplitBlockInterface { is_active_ty, done_ty, next_pc_bit_tys, next_state_tys, ret_val_tys });
+        }
     }
 
     // ---- Chunked accumulation: fold blocks in groups, never all at once ----
