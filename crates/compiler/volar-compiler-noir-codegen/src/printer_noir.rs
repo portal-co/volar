@@ -306,6 +306,22 @@ fn print_expr(expr: &IrExpr, fn_name: &str) -> Result<String, NoirCodegenError> 
             ))
         }
 
+        // Noir (as of 1.0.0-beta.24) has no `match` expression and no enum
+        // type at all — confirmed against the official docs (the control-
+        // flow page covers if/for/while with no mention of match; there is
+        // no enums page; the 1.0 pre-release announcement lists "full
+        // support for primitive types... and complex data structures
+        // including arrays, tuples, vectors" with no mention of enums).
+        // This is a genuine language-level absence, not just an unbuilt v1
+        // restriction — revisit if a future Noir version adds it.
+        IrExprKind::Match { .. } => Err(NoirCodegenError::Unsupported {
+            function: fn_name.into(),
+            reason: "Noir has no `match` expression or enum type (verified against \
+                     current Noir docs) — restructure as nested `if`/`else` over the \
+                     discriminating condition"
+                .into(),
+        }),
+
         IrExprKind::Return(Some(e)) => Ok(format!("return {}", print_expr(e, fn_name)?)),
         IrExprKind::Return(None) => Ok("return".into()),
 
@@ -370,4 +386,154 @@ fn indent(text: &str) -> String {
         .map(|l| if l.is_empty() { l.to_string() } else { format!("    {l}") })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use volar_compiler::ir::{ExternalKind, IrGenericParam};
+
+    fn expr(kind: IrExprKind) -> IrExpr {
+        IrExpr { kind, prov: (), side: None }
+    }
+
+    fn block(stmts: Vec<IrStmtKind>, tail: Option<IrExprKind>) -> IrBlock {
+        IrBlock {
+            stmts: stmts
+                .into_iter()
+                .map(|kind| volar_compiler::ir::IrStmt { kind, prov: (), side: None })
+                .collect(),
+            expr: tail.map(|k| Box::new(expr(k))),
+        }
+    }
+
+    fn function(name: &str, params: Vec<IrParam>, return_type: Option<IrType>, body: IrBlock) -> IrFunction {
+        IrFunction {
+            name: name.into(),
+            module_path: Vec::new(),
+            generics: Vec::new(),
+            receiver: None,
+            params,
+            return_type,
+            where_clause: Vec::new(),
+            body,
+            external_kind: ExternalKind::Normal,
+            no_inline: false,
+        }
+    }
+
+    #[test]
+    fn primitive_type_mapping() {
+        assert_eq!(primitive_to_noir(PrimitiveType::Bool, "f").unwrap(), "bool");
+        assert_eq!(primitive_to_noir(PrimitiveType::U8, "f").unwrap(), "u8");
+        assert_eq!(primitive_to_noir(PrimitiveType::U32, "f").unwrap(), "u32");
+        assert_eq!(primitive_to_noir(PrimitiveType::U64, "f").unwrap(), "u64");
+        assert_eq!(primitive_to_noir(PrimitiveType::Usize, "f").unwrap(), "u64");
+        assert_eq!(primitive_to_noir(PrimitiveType::U128, "f").unwrap(), "u128");
+        assert!(primitive_to_noir(PrimitiveType::I128, "f").is_err());
+        assert!(primitive_to_noir(PrimitiveType::Galois, "f").is_err());
+    }
+
+    #[test]
+    fn straight_line_function_text() {
+        let body = block(
+            vec![],
+            Some(IrExprKind::Binary {
+                op: SpecBinOp::Add,
+                left: Box::new(expr(IrExprKind::Var("a".into()))),
+                right: Box::new(expr(IrExprKind::Var("b".into()))),
+            }),
+        );
+        let f = function(
+            "main",
+            vec![
+                IrParam { name: "a".into(), ty: IrType::Primitive(PrimitiveType::U32) },
+                IrParam { name: "b".into(), ty: IrType::Primitive(PrimitiveType::U32) },
+            ],
+            Some(IrType::Primitive(PrimitiveType::U32)),
+            body,
+        );
+        let text = print_function(&f).unwrap();
+        // `main`'s return type must be `pub` — Noir's entry-point requirement.
+        assert!(text.contains("-> pub u32"), "{text}");
+        assert!(text.contains("(a + b)"), "{text}");
+    }
+
+    #[test]
+    fn non_main_function_return_type_is_not_pub() {
+        let body = block(vec![], Some(IrExprKind::Var("a".into())));
+        let f = function(
+            "helper",
+            vec![IrParam { name: "a".into(), ty: IrType::Primitive(PrimitiveType::U32) }],
+            Some(IrType::Primitive(PrimitiveType::U32)),
+            body,
+        );
+        let text = print_function(&f).unwrap();
+        assert!(text.contains("-> u32") && !text.contains("-> pub u32"), "{text}");
+    }
+
+    #[test]
+    fn if_else_prints_as_value_yielding_expression() {
+        let if_expr = expr(IrExprKind::If {
+            cond: Box::new(expr(IrExprKind::Binary {
+                op: SpecBinOp::Gt,
+                left: Box::new(expr(IrExprKind::Var("a".into()))),
+                right: Box::new(expr(IrExprKind::Var("b".into()))),
+            })),
+            then_branch: block(vec![], Some(IrExprKind::Var("a".into()))),
+            else_branch: Some(Box::new(expr(IrExprKind::Block(block(
+                vec![],
+                Some(IrExprKind::Var("b".into())),
+            ))))),
+        });
+        let text = print_expr(&if_expr, "f").unwrap();
+        assert!(text.starts_with("if (a > b) {"), "{text}");
+        assert!(text.contains("} else {"), "{text}");
+    }
+
+    #[test]
+    fn match_is_rejected_with_a_clear_reason() {
+        let m = expr(IrExprKind::Match {
+            expr: Box::new(expr(IrExprKind::Var("a".into()))),
+            arms: Vec::new(),
+        });
+        let err = print_expr(&m, "f").unwrap_err();
+        match err {
+            NoirCodegenError::Unsupported { reason, .. } => {
+                assert!(reason.contains("match"), "{reason}");
+            }
+            other => panic!("expected Unsupported, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn generic_function_is_rejected_in_v1() {
+        let f = function(
+            "generic_fn",
+            vec![],
+            None,
+            block(vec![], None),
+        );
+        let mut f = f;
+        f.generics = vec![IrGenericParam {
+            name: "T".into(),
+            kind: volar_compiler::ir::IrGenericParamKind::Type,
+            const_ty: None,
+            bounds: Vec::new(),
+            default: None,
+        }];
+        assert!(print_function(&f).is_err());
+    }
+
+    #[test]
+    fn immutable_reference_type_is_transparently_unwrapped() {
+        let ty = IrType::Reference { mutable: false, elem: Box::new(IrType::Primitive(PrimitiveType::U32)) };
+        assert_eq!(type_to_noir(&ty, "f").unwrap(), "u32");
+    }
+
+    #[test]
+    fn mutable_reference_type_is_unsupported_in_v1() {
+        let ty = IrType::Reference { mutable: true, elem: Box::new(IrType::Primitive(PrimitiveType::U32)) };
+        assert!(type_to_noir(&ty, "f").is_err());
+    }
 }
