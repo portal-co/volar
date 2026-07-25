@@ -559,6 +559,139 @@ fn dce_ir_block_once<P: Clone>(block: &mut IRBlock<P>, extra_live: &[u32]) -> (b
 }
 
 // ============================================================================
+// Common subexpression elimination
+// ============================================================================
+
+/// Deduplicate statements that compute the exact same value: two pure
+/// statements with identical kind + operands (after applying any
+/// dedup already discovered earlier in the same forward pass) collapse
+/// to one -- every later occurrence becomes an alias for the first,
+/// instead of a redundant repeated computation. Existing DCE/`batch_ir_blocks`
+/// then have more to work with: DCE can remove statements whose only use
+/// was itself now-deduplicated away, and `batch_ir_blocks`'s own
+/// single-variable-substitution matching sees fewer spurious differences
+/// once genuinely-identical sub-expressions (e.g. movfuscation's own
+/// `is_active_i` MUX selector, or an identical MUXed value recomputed for
+/// two different purposes) collapse to one shared reference.
+///
+/// Only pure statement kinds are considered (`Poly`, `Merge`, `Shuffle`,
+/// `Rol`, `Ror`, `Splat`, `Transmute`, `Const`) -- side-effecting or
+/// storage-addressed statements (`StorageRead`/`StorageWrite`/
+/// `OracleCall`/`ActionCall`/`Rng`/etc.) are left untouched, matching
+/// `dce_ir_blocks`'s own established scope split: storage aliasing is
+/// `store_forward_ir_blocks`'s own, more careful job (has to reason about
+/// intervening writes), not this pass's.
+///
+/// Deliberately exact, not approximate: two statements only collapse when
+/// their `Stmt` values (kind + every operand, post-remap) are literally
+/// equal -- this can only ever miss a real deduplication opportunity
+/// (e.g. two Polys that are algebraically equal but not syntactically
+/// identical), never merge two different computations.
+///
+/// Returns `true` if any block was modified.
+pub fn cse_ir_blocks<P: Clone>(blocks: &mut IRBlocks<P>, _types: &IRTypes) -> bool {
+    let mut any_changed = false;
+    for block in blocks.blocks.iter_mut() {
+        if cse_ir_block_once(block) {
+            any_changed = true;
+        }
+    }
+    any_changed
+}
+
+/// Remap every operand var id in `kind` through `remap`, GF(2)-safely for
+/// `Poly`.
+///
+/// A plain `Stmt::map_var` on `Poly`'s own `coeffs` remaps each
+/// monomial's own var list independently and `.collect()`s the results
+/// back into a `BTreeMap` -- if `remap` ever sends two *different*
+/// monomials to the *same* key (only possible when `remap` is genuinely
+/// many-to-one, e.g. CSE's own dedup map -- never happens for a purely
+/// injective renumbering like `batch_ir_block_once`'s own compaction
+/// remap, which never sends two different old vars to the same new var),
+/// `BTreeMap::collect`'s "last write wins" silently drops one term
+/// instead of combining them. That's wrong: e.g. `a XOR b` where `b` gets
+/// deduplicated onto `a` must become the constant 0 (GF(2): `a XOR a =
+/// 0`), not silently `a`. Reuses the same XOR-combine-then-drop-even-
+/// coefficients discipline as `batch_ir_blocks`'s own `substitute_var`.
+fn remap_stmt_operands(kind: IRStmt, remap: &BTreeMap<u32, u32>) -> IRStmt {
+    if let Stmt::Poly { ty, coeffs, constant } = &kind {
+        let mut new_coeffs: BTreeMap<Vec<IRVarId>, u8> = BTreeMap::new();
+        for (mono, &c) in coeffs {
+            let mut new_mono: Vec<IRVarId> = mono.iter().map(|v| IRVarId(*remap.get(&v.0).unwrap_or(&v.0))).collect();
+            new_mono.sort();
+            let entry = new_coeffs.entry(new_mono).or_insert(0);
+            *entry ^= c;
+        }
+        new_coeffs.retain(|_, c| *c & 1 != 0);
+        return Stmt::Poly { ty: *ty, coeffs: new_coeffs, constant: *constant };
+    }
+    kind.map_var(
+        &mut (),
+        &mut |_: &mut (), v: IRVarId| -> Result<IRVarId, core::convert::Infallible> {
+            Ok(IRVarId(*remap.get(&v.0).unwrap_or(&v.0)))
+        },
+        &mut |_, ty| Ok(ty),
+        &mut |_, s| Ok(s),
+    ).unwrap()
+}
+
+/// One forward pass over a single block: dedup pure statements and
+/// compact the result (removed statements shift every later var id).
+fn cse_ir_block_once<P: Clone>(block: &mut IRBlock<P>) -> bool {
+    let n_params = block.params.len();
+    let mut remap: BTreeMap<u32, u32> = (0..n_params as u32).map(|v| (v, v)).collect();
+    let mut canon_map: BTreeMap<IRStmt, u32> = BTreeMap::new();
+    let mut new_stmts: Vec<Node<IRStmt, P>> = Vec::with_capacity(block.stmts.len());
+    let mut changed = false;
+
+    for i in 0..block.stmts.len() {
+        let old_var = (n_params + i) as u32;
+        let remapped_kind = remap_stmt_operands(block.stmts[i].kind.clone(), &remap);
+
+        let is_pure = matches!(
+            remapped_kind,
+            Stmt::Poly { .. } | Stmt::Merge { .. } | Stmt::Shuffle { .. }
+                | Stmt::Rol { .. } | Stmt::Ror { .. } | Stmt::Splat { .. }
+                | Stmt::Transmute { .. } | Stmt::Const(..)
+        );
+
+        if is_pure {
+            if let Some(&existing_new_var) = canon_map.get(&remapped_kind) {
+                remap.insert(old_var, existing_new_var);
+                changed = true;
+                continue;
+            }
+        }
+
+        let new_var = (n_params + new_stmts.len()) as u32;
+        if new_var != old_var || remapped_kind != block.stmts[i].kind {
+            changed = true;
+        }
+        remap.insert(old_var, new_var);
+        if is_pure {
+            canon_map.insert(remapped_kind.clone(), new_var);
+        }
+        new_stmts.push(Node { kind: remapped_kind, ..block.stmts[i].clone() });
+    }
+
+    if !changed {
+        return false;
+    }
+
+    let new_term = block.terminator.clone().map(
+        &mut (),
+        |_: &mut (), v: IRVarId| -> Result<IRVarId, core::convert::Infallible> {
+            Ok(IRVarId(*remap.get(&v.0).unwrap_or(&v.0)))
+        },
+    ).unwrap();
+
+    block.stmts = new_stmts;
+    block.terminator = new_term;
+    true
+}
+
+// ============================================================================
 // Internal helpers
 // ============================================================================
 
@@ -1166,6 +1299,172 @@ mod batch_tests {
         let mut blocks: IRBlocks = IRBlocks::new(alloc::vec![block]);
         let changed = batch_ir_blocks(&mut blocks, &mut types);
         assert!(!changed, "a degree-2-monomial-count mismatch (1 vs 2) must never be batched");
+        assert_eq!(blocks.blocks[0].stmts.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod cse_tests {
+    use super::*;
+    use volar_ir::ir::{IRBlock, IRTypeId};
+    use volar_ir_common::Type;
+
+    fn bit() -> IRTypeId { IRTypeId(0) }
+    fn types_with_bit() -> IRTypes {
+        IRTypes(alloc::vec![IRType::Primitive(Type::Bit)])
+    }
+
+    /// params: [a, b]. stmts: `a·b` (var 2), `a·b` again (var 3, byte-for-
+    /// byte identical), then a consumer that references ONLY the
+    /// duplicate (var 4). The duplicate must collapse to an alias of the
+    /// first, and the consumer's own reference to var 3 must be remapped
+    /// to var 2's own new position.
+    #[test]
+    fn dedups_two_identical_polys() {
+        let mut types = types_with_bit();
+        let a = IRVarId(0);
+        let b = IRVarId(1);
+        let and_poly = || Stmt::Poly {
+            ty: bit(),
+            coeffs: BTreeMap::from([(alloc::vec![a, b], 1u8)]),
+            constant: Constant { hi: 0, lo: 0 },
+        };
+        let block = IRBlock {
+            params: alloc::vec![bit(), bit()],
+            stmts: alloc::vec![
+                Node::new(and_poly(), (), None),
+                Node::new(and_poly(), (), None),
+                // consumer: NOT of the SECOND copy alone (var 3, soon
+                // deduped) -- no collision, just confirms remapping.
+                Node::new(Stmt::Poly {
+                    ty: bit(),
+                    coeffs: BTreeMap::from([(alloc::vec![IRVarId(3)], 1u8)]),
+                    constant: Constant { hi: 0, lo: 1 },
+                }, (), None),
+            ],
+            terminator: IRTerminator::Jmp {
+                target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![IRVarId(4)]),
+            },
+        };
+        let mut blocks: IRBlocks = IRBlocks::new(alloc::vec![block]);
+
+        let changed = cse_ir_blocks(&mut blocks, &types);
+        assert!(changed, "two byte-for-byte identical Polys must be deduplicated");
+
+        let stmts = &blocks.blocks[0].stmts;
+        assert_eq!(stmts.len(), 2, "the duplicate must be gone entirely, not just aliased-but-kept: {stmts:?}");
+        match &stmts[0].kind {
+            Stmt::Poly { coeffs, .. } => assert_eq!(coeffs, &BTreeMap::from([(alloc::vec![a, b], 1u8)])),
+            other => panic!("expected the surviving a·b Poly at position 0, got {other:?}"),
+        }
+        match &stmts[1].kind {
+            // Must now reference the SAME surviving var (IRVarId(2)) --
+            // the consumer's own reference to the now-removed duplicate
+            // (originally var 3) must have been remapped, not left
+            // dangling.
+            Stmt::Poly { coeffs, .. } => assert_eq!(coeffs, &BTreeMap::from([(alloc::vec![IRVarId(2)], 1u8)])),
+            other => panic!("expected the consumer Poly at position 1, got {other:?}"),
+        }
+        match &blocks.blocks[0].terminator {
+            IRTerminator::Jmp { target } => assert_eq!(target.args, alloc::vec![IRVarId(3)], "terminator must be remapped to the consumer's own new (compacted) var id"),
+            other => panic!("expected Jmp, got {other:?}"),
+        }
+    }
+
+    /// The GF(2)-safety case `remap_stmt_operands` exists for: a consumer
+    /// references BOTH the surviving var (2) and the about-to-be-deduped
+    /// duplicate (3) in the SAME `Poly` (`var2 XOR var3`). Since var 3
+    /// dedups onto var 2, this is algebraically `var2 XOR var2 = 0` (GF(2))
+    /// -- a naive per-monomial remap-and-collect would instead silently
+    /// keep one of the two now-identical-key entries (wrong: `= var2`).
+    #[test]
+    fn poly_remap_is_gf2_safe_on_monomial_collision() {
+        let mut types = types_with_bit();
+        let a = IRVarId(0);
+        let b = IRVarId(1);
+        let and_poly = || Stmt::Poly {
+            ty: bit(),
+            coeffs: BTreeMap::from([(alloc::vec![a, b], 1u8)]),
+            constant: Constant { hi: 0, lo: 0 },
+        };
+        let block = IRBlock {
+            params: alloc::vec![bit(), bit()],
+            stmts: alloc::vec![
+                Node::new(and_poly(), (), None),
+                Node::new(and_poly(), (), None),
+                // consumer: var2 XOR var3 -- BOTH operands, one of which
+                // is about to be deduped onto the other.
+                Node::new(Stmt::Poly {
+                    ty: bit(),
+                    coeffs: BTreeMap::from([(alloc::vec![IRVarId(2)], 1u8), (alloc::vec![IRVarId(3)], 1u8)]),
+                    constant: Constant { hi: 0, lo: 0 },
+                }, (), None),
+            ],
+            terminator: IRTerminator::Jmp {
+                target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![IRVarId(4)]),
+            },
+        };
+        let mut blocks: IRBlocks = IRBlocks::new(alloc::vec![block]);
+
+        let changed = cse_ir_blocks(&mut blocks, &types);
+        assert!(changed);
+
+        let stmts = &blocks.blocks[0].stmts;
+        assert_eq!(stmts.len(), 2, "{stmts:?}");
+        match &stmts[1].kind {
+            Stmt::Poly { coeffs, constant, .. } => {
+                assert!(coeffs.is_empty(), "var2 XOR var2 must collapse to the empty monomial set (always 0), not silently keep one term: {coeffs:?}");
+                assert_eq!(constant.lo & 1, 0, "must evaluate to constant 0");
+            }
+            other => panic!("expected the collapsed consumer Poly at position 1, got {other:?}"),
+        }
+    }
+
+    /// Two Polys with the SAME operands but a DIFFERENT `Stmt` variant
+    /// (`Poly` vs. `Merge`) must never collapse -- `Stmt`'s own derived
+    /// `Eq` already distinguishes variants, this just confirms CSE relies
+    /// on that rather than comparing operand lists loosely.
+    #[test]
+    fn different_stmt_kinds_never_collapse() {
+        let mut types = types_with_bit();
+        let a = IRVarId(0);
+        let b = IRVarId(1);
+        let block = IRBlock {
+            params: alloc::vec![bit(), bit()],
+            stmts: alloc::vec![
+                Node::new(Stmt::Poly { ty: bit(), coeffs: BTreeMap::from([(alloc::vec![a, b], 1u8)]), constant: Constant { hi: 0, lo: 0 } }, (), None),
+                Node::new(Stmt::Merge { parts: alloc::vec![a, b], ty: bit() }, (), None),
+            ],
+            terminator: IRTerminator::Jmp {
+                target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![IRVarId(2), IRVarId(3)]),
+            },
+        };
+        let mut blocks: IRBlocks = IRBlocks::new(alloc::vec![block]);
+        let changed = cse_ir_blocks(&mut blocks, &types);
+        assert!(!changed, "different Stmt variants must never be treated as duplicates");
+        assert_eq!(blocks.blocks[0].stmts.len(), 2);
+    }
+
+    /// Storage reads are explicitly out of scope (left to
+    /// `store_forward_ir_blocks`'s own, more careful handling) -- two
+    /// identical `StorageRead`s must both survive untouched.
+    #[test]
+    fn storage_reads_are_never_deduplicated() {
+        let mut types = types_with_bit();
+        let addr = IRVarId(0);
+        let block = IRBlock {
+            params: alloc::vec![bit()],
+            stmts: alloc::vec![
+                Node::new(Stmt::StorageRead { storage: volar_ir_common::StorageId(0), ty: bit(), addr }, (), None),
+                Node::new(Stmt::StorageRead { storage: volar_ir_common::StorageId(0), ty: bit(), addr }, (), None),
+            ],
+            terminator: IRTerminator::Jmp {
+                target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![IRVarId(1), IRVarId(2)]),
+            },
+        };
+        let mut blocks: IRBlocks = IRBlocks::new(alloc::vec![block]);
+        let changed = cse_ir_blocks(&mut blocks, &types);
+        assert!(!changed, "StorageRead is explicitly out of CSE's scope");
         assert_eq!(blocks.blocks[0].stmts.len(), 2);
     }
 }

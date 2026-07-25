@@ -2405,6 +2405,108 @@ mod tests {
         eprintln!("delta: total={} poly={} shuffle={} merge={}", total1 as i64 - total0 as i64, poly1 as i64 - poly0 as i64, shuffle1 as i64 - shuffle0 as i64, merge1 as i64 - merge0 as i64);
     }
 
+    /// Real-scale correctness + size check for `volar_ir_opt::ir::cse_ir_blocks`
+    /// (deduplicates byte-for-byte identical pure statements -- meant to
+    /// give DCE and `batch_ir_blocks` more to work with: fewer distinct
+    /// values for DCE to find newly-dead, and repeated MUXed values
+    /// (e.g. movfuscation's own `is_active_i` selector, or an identical
+    /// sub-expression computed for two different purposes) collapsed to
+    /// one shared reference before batching looks for structural matches).
+    ///
+    /// Correctness: same methodology as `probe_batch_ir_blocks_on_real_interpreter`
+    /// -- runs the real interpreter's own pre-movfuscation CFG to
+    /// completion via `eval_ir_with_storage`, once without CSE and once
+    /// with, from the exact same starting IR, and asserts the final
+    /// return value AND full storage map match exactly.
+    ///
+    /// Size: reports the real statement-count delta alone, and CSE
+    /// followed by DCE together (the composition the pass is actually
+    /// meant to enable), both pre- and post-movfuscation.
+    ///
+    /// `#[ignore]`d: real interpreter scale, run manually:
+    /// `cargo test -p volar-riscv-e2e --release probe_cse_ir_blocks_on_real_interpreter -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn probe_cse_ir_blocks_on_real_interpreter() {
+        use volar_ir_common::Stmt;
+        use volar_ir_opt::ir::{batch_ir_blocks, cse_ir_blocks, dce_ir_blocks, fold_ir_blocks};
+        use volar_ir_opt::store_forward::store_forward_ir_blocks;
+        use volar_ir_passes::movfuscate_ir_with_boundary;
+        use volar_fuzz::interpreter::ir::eval_ir_with_storage;
+
+        fn count_stmts(blocks: &volar_ir::ir::IRBlocks) -> (usize, usize, usize, usize) {
+            let mut poly = 0usize;
+            let mut shuffle = 0usize;
+            let mut merge = 0usize;
+            let mut total = 0usize;
+            for b in &blocks.blocks {
+                for n in &b.stmts {
+                    total += 1;
+                    match &n.kind {
+                        Stmt::Poly { .. } => poly += 1,
+                        Stmt::Shuffle { .. } => shuffle += 1,
+                        Stmt::Merge { .. } => merge += 1,
+                        _ => {}
+                    }
+                }
+            }
+            (total, poly, shuffle, merge)
+        }
+
+        let wasm_bytes = wat::parse_str(&test_program_wat()).expect("wat should assemble");
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty());
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+
+        // ---- Correctness: pre-movfuscation, exact interpreter match. ----
+        let (total0, poly0, shuffle0, merge0) = count_stmts(&ir_blocks);
+        eprintln!("pre-movfuscation, before CSE: total={total0} poly={poly0} shuffle={shuffle0} merge={merge0}");
+
+        let unbatched_blocks = ir_blocks.clone();
+        let (unbatched_result, unbatched_storage) = eval_ir_with_storage(&unbatched_blocks, &types, &[]);
+        eprintln!("without CSE: result={unbatched_result:?} storage entries={}", unbatched_storage.len());
+
+        let mut cse_blocks = ir_blocks.clone();
+        let cse_types = types.clone();
+        let changed = cse_ir_blocks(&mut cse_blocks, &cse_types);
+        let (total1, poly1, shuffle1, merge1) = count_stmts(&cse_blocks);
+        eprintln!("pre-movfuscation, after CSE (changed={changed}): total={total1} poly={poly1} shuffle={shuffle1} merge={merge1}");
+        eprintln!("delta: total={} poly={} shuffle={} merge={}", total1 as i64 - total0 as i64, poly1 as i64 - poly0 as i64, shuffle1 as i64 - shuffle0 as i64, merge1 as i64 - merge0 as i64);
+
+        let (cse_result, cse_storage) = eval_ir_with_storage(&cse_blocks, &cse_types, &[]);
+        eprintln!("with CSE: result={cse_result:?} storage entries={}", cse_storage.len());
+        assert_eq!(unbatched_result, cse_result, "CSE must not change the interpreter's own final return value");
+        assert_eq!(unbatched_storage, cse_storage, "CSE must not change the interpreter's own final storage contents");
+        eprintln!("MATCH: CSE preserved exact semantics on the real interpreter's own pre-movfuscation CFG");
+
+        // CSE then DCE, the composition this pass is meant to enable.
+        let mut cse_then_dce = ir_blocks.clone();
+        let mut cse_then_dce_types = types.clone();
+        cse_ir_blocks(&mut cse_then_dce, &cse_then_dce_types);
+        dce_ir_blocks(&mut cse_then_dce, &cse_then_dce_types);
+        let (total2, poly2, shuffle2, merge2) = count_stmts(&cse_then_dce);
+        eprintln!("pre-movfuscation, after CSE+DCE: total={total2} poly={poly2} shuffle={shuffle2} merge={merge2}");
+
+        // ---- Size only: post-movfuscation, the scale that matters. ----
+        let (mut movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut cse_then_dce_types);
+        let (mtotal0, mpoly0, mshuffle0, mmerge0) = count_stmts(&movfuscated);
+        eprintln!("post-movfuscation, before CSE: total={mtotal0} poly={mpoly0} shuffle={mshuffle0} merge={mmerge0}");
+        cse_ir_blocks(&mut movfuscated, &cse_then_dce_types);
+        let (mtotal1, mpoly1, mshuffle1, mmerge1) = count_stmts(&movfuscated);
+        eprintln!("post-movfuscation, after CSE alone: total={mtotal1} poly={mpoly1} shuffle={mshuffle1} merge={mmerge1}");
+        dce_ir_blocks(&mut movfuscated, &cse_then_dce_types);
+        batch_ir_blocks(&mut movfuscated, &mut cse_then_dce_types);
+        let (mtotal2, mpoly2, mshuffle2, mmerge2) = count_stmts(&movfuscated);
+        eprintln!("post-movfuscation, after CSE+DCE+batch: total={mtotal2} poly={mpoly2} shuffle={mshuffle2} merge={mmerge2}");
+        eprintln!("post-movfuscation poly delta, CSE alone: {}", mpoly1 as i64 - mpoly0 as i64);
+        eprintln!("post-movfuscation poly delta, CSE+DCE+batch vs baseline: {}", mpoly2 as i64 - mpoly0 as i64);
+    }
+
     /// Minimal isolation repro for the "circuit state never changes" bug
     /// found while investigating `trace_interpreter_plain_values_matches_native_reference`:
     /// a tiny loop that just writes a constant into a local once, then
