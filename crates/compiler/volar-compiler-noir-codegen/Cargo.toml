@@ -1,0 +1,26 @@
+[package]
+name = "volar-compiler-noir-codegen"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+
+[features]
+default = ["std"]
+std = ["volar-compiler/std"]
+parsing = ["volar-compiler/parsing"]
+
+[[bin]]
+name = "volar-codegen-noir"
+path = "src/bin/volar_codegen_noir.rs"
+required-features = ["parsing"]
+
+[dependencies]
+volar-compiler = { path = "../volar-compiler" }
+volar-compiler-passes = { path = "../volar-compiler-passes" }
+thiserror = "1.0"
+
+[dev-dependencies]
+volar-compiler = { path = "../volar-compiler", features = ["parsing"] }
+volar-compiler-noir-codegen = { path = ".", features = ["parsing"] }

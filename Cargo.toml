@@ -13,6 +13,7 @@ members = [
     "crates/ir/volar-vaffle-target",
     "crates/compiler/volar-compiler",
     "crates/compiler/volar-compiler-passes",
+    "crates/compiler/volar-compiler-noir-codegen",
     "crates/compiler/ephemera",
     "crates/compiler/volar-compiler-common",
     "crates/ir/volar-ir-common",
@@ -60,6 +61,7 @@ default-members = [
     "crates/ir/volar-vaffle-target",
     "crates/compiler/volar-compiler",
     "crates/compiler/volar-compiler-passes",
+    "crates/compiler/volar-compiler-noir-codegen",
     "crates/compiler/ephemera",
     "crates/compiler/volar-compiler-common",
     "crates/ir/volar-ir-common",
@@ -113,11 +115,13 @@ volar-oram-core = {path="crates/oram/volar-oram-core", version = "0.1.0"}
 volar-macros = {path="crates/macros/volar-macros", version = "0.1.0"}
 volar-net = {path="crates/net/volar-net", version = "0.1.0"}
 volar-compiler-passes = {path="crates/compiler/volar-compiler-passes", version = "0.1.0"}
+volar-compiler-noir-codegen = {path="crates/compiler/volar-compiler-noir-codegen", version = "0.1.0"}
 volar-lir-test-corpus = {path="crates/compiler/volar-lir-test-corpus", version = "0.1.0"}
 volar-lir-saved = {path="crates/compiler/volar-lir-saved", version = "0.1.0"}
 volar-build = {path="crates/compiler/volar-build", version = "0.1.0"}
 
 portal-pc-waffle-ir = { version = "0.6.0-alpha.1", git = "https://github.com/portal-co/waffle-" }
+portal-lazy-transform = { version = "0.1.0", git = "https://github.com/portal-co/portal-lazy-transform.git" }
 portal-pc-waffle-frontend = { version = "0.6.0-alpha.1", git = "https://github.com/portal-co/waffle-" }
 wax-meta = { version = "0.1.0", git = "https://github.com/portal-co/wax.git" }
 
