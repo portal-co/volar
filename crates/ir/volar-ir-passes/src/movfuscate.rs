@@ -602,10 +602,27 @@ pub fn movfuscate<C: MovfuscCtx>(
     let accum_init_start = ctx.stmt_position();
     let mut done_acc = bit_zero;
     let mut next_pc = vec![bit_zero; pc_width];
-    let mut next_state: Vec<u32> = state_slot_types
-        .iter()
-        .map(|ty| ctx.emit_zero_slot(ty))
-        .collect();
+    // Seeded directly from each slot's own *incoming* value (`state_vars`,
+    // the combined block's own params for the state slots -- see above),
+    // not a zero constant -- no new statement needed, referencing an
+    // existing param requires none (this circuit is fundamentally a
+    // looped, return-to-parameter construction: a slot's own value when no
+    // block in a given step touches it *is* its own incoming param, not a
+    // free-floating zero).
+    //
+    // This is what makes the tunnelled-slot skip below exact:
+    // `Σ_i is_active_i · br_i.next_state[k]` and
+    // `state_vars[k] ⊕ Σ_{i: touches k} is_active_i · (br_i.next_state[k] ⊕ state_vars[k])`
+    // are the *same* value (an algebraic identity given `Σ_i is_active_i = 1`
+    // and GF(2) distributivity -- see `docs/interpreter-honest-e2e-zk-plan.md`),
+    // so skipping the (typically many) blocks that don't touch slot `k`
+    // costs nothing. Consumers (the split-weave, `crates/compiler/volar-weaver/src/vole.rs`)
+    // must bind the circuit's own top-level params (`insert_w_wires` or
+    // equivalent) wherever they resolve `accum_info`'s own var ids, exactly
+    // as they already do for ordinary block processing -- this was the
+    // one real gap (a stray type-only probe context that skipped that
+    // binding), now fixed there too.
+    let mut next_state: Vec<u32> = state_vars.clone();
     let mut ret_vals: Vec<u32> = return_slot_types
         .iter()
         .map(|ty| ctx.emit_zero_slot(ty))
@@ -629,8 +646,21 @@ pub fn movfuscate<C: MovfuscCtx>(
             next_pc[j] = ctx.emit_xor_bit(next_pc[j], g);
         }
         for k in 0..state_width {
-            let g = ctx.emit_gate(br.is_active, br.next_state[k], &state_slot_types[k]);
-            next_state[k] = ctx.emit_field_add(next_state[k], g, &state_slot_types[k]);
+            // Tunnelled/unchanged-state-slot elimination: this block's own
+            // contribution for slot `k` is exactly its own incoming value
+            // (`state_vars[k]`) -- i.e. this block's original logic never
+            // wrote slot `k` at all. Its contribution to the accumulation
+            // is then provably a no-op (see the seed's own comment above)
+            // -- skip the gate + add entirely instead of emitting a
+            // statement pair that would just reproduce `next_state[k]`
+            // unchanged. Sound by construction: this can only under-detect
+            // (a semantically untouched slot reachable via a differently-
+            // numbered but equal var would just miss the optimization,
+            // never break correctness), never over-detect.
+            if br.next_state[k] != state_vars[k] {
+                let g = ctx.emit_gate(br.is_active, br.next_state[k], &state_slot_types[k]);
+                next_state[k] = ctx.emit_field_add(next_state[k], g, &state_slot_types[k]);
+            }
         }
         for m in 0..ret_width {
             let g = ctx.emit_gate(br.is_active, br.ret_vals[m], &return_slot_types[m]);
@@ -3020,6 +3050,92 @@ mod tests {
                 assert_eq!(else_target.args.len(), 3, "loop-back = pc(1) + state(2)");
             }
             other => panic!("expected JumpCond, got {:?}", other),
+        }
+    }
+
+    /// Tunnelled/unchanged-state-slot elimination: block 0 modifies only
+    /// state slot 0 (leaving slot 1 an exact pass-through of its own
+    /// entry param); block 1 modifies only slot 1 (leaving slot 0 an
+    /// exact pass-through). Verifies both the *mechanism* (no new
+    /// accumulation var is allocated for an untouched slot -- the step's
+    /// own `next_state[k]` stays exactly the previous step's, i.e.
+    /// `accum_init`'s or the prior block's) and that end-to-end
+    /// movfuscation still produces a valid, correctly-typed combined
+    /// block. Both blocks loop back via `Jmp` (not `Return`) deliberately:
+    /// a `Return`-bound terminator always resets `next_state` to fresh
+    /// zeros for *every* slot regardless of its own args (nothing carries
+    /// forward past a real return -- see `process_ir_target`'s
+    /// `IRBlockTargetId::Return` arm), so it can never exercise the
+    /// pass-through case this test targets; `Jmp`/`JumpCond` to another
+    /// block is the actual dominant shape in the real interpreter (almost
+    /// every block loops back into dispatch, not a real `Return`).
+    #[test]
+    fn test_ir_tunnelled_state_slot_skips_accumulation_for_untouched_blocks() {
+        let mut types = IRTypes(std::vec![IRType::Primitive(Type::Bit)]);
+        let bit = IRTypeId(0);
+
+        let blocks: IRBlocks<()> = IRBlocks::new(std::vec![
+            IRBlock {
+                params: std::vec![bit.clone(), bit.clone()], // slot0, slot1
+                stmts: std::vec![IRStmt::Poly {
+                    ty: bit.clone(),
+                    coeffs: std::collections::BTreeMap::from([(std::vec![IRVarId(0)], 1u8)]),
+                    constant: Constant { hi: 0, lo: 1 },
+                }].into_iter().map(|s| Node::new(s, (), None)).collect(),
+                terminator: IRTerminator::Jmp {
+                    // slot0 <- Not(slot0) (touched); slot1 <- slot1 (untouched pass-through)
+                    target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(1)), std::vec![IRVarId(2), IRVarId(1)]),
+                },
+            },
+            IRBlock {
+                params: std::vec![bit.clone(), bit.clone()], // slot0, slot1
+                stmts: std::vec![IRStmt::Poly {
+                    ty: bit.clone(),
+                    coeffs: std::collections::BTreeMap::from([(std::vec![IRVarId(1)], 1u8)]),
+                    constant: Constant { hi: 0, lo: 1 },
+                }].into_iter().map(|s| Node::new(s, (), None)).collect(),
+                terminator: IRTerminator::Jmp {
+                    // slot0 <- slot0 (untouched pass-through); slot1 <- Not(slot1) (touched)
+                    target: IRBranchTarget::new(IRBlockTargetId::Block(IRBlockId(0)), std::vec![IRVarId(0), IRVarId(2)]),
+                },
+            },
+            // Block 2: unreachable from 0/1 in this synthetic example, but
+            // movfuscation processes every block unconditionally regardless
+            // of reachability (each gets its own independent is_active/
+            // dispatch entry) -- this just gives `compute_return_slot_types`
+            // a real `Return` to derive `ret_width` from, without disturbing
+            // blocks 0/1's own Jmp-based pass-through behavior under test.
+            IRBlock {
+                params: std::vec![bit.clone(), bit.clone()],
+                stmts: std::vec![],
+                terminator: IRTerminator::Jmp {
+                    target: IRBranchTarget::new(IRBlockTargetId::Return, std::vec![IRVarId(0)]),
+                },
+            },
+        ]);
+
+        let (result, _boundary, accum_info) = movfuscate_ir_with_boundary(&blocks, &mut types);
+        assert!(result.is_movfuscated());
+        assert_eq!(accum_info.steps.len(), 3);
+
+        // Block 0 (steps[0]) touches slot 0 (new var, different from the
+        // seed) but not slot 1 (must stay exactly accum_init's own var --
+        // no gate/add pair was emitted for it).
+        assert_ne!(accum_info.steps[0].next_state[0], accum_info.init.next_state[0], "block 0 touches slot 0 -- must allocate a new accumulation var");
+        assert_eq!(accum_info.steps[0].next_state[1], accum_info.init.next_state[1], "block 0 does not touch slot 1 -- must skip accumulation entirely, not just skip the change");
+
+        // Block 1 (steps[1]) touches slot 1 (new var, different from
+        // steps[0]'s) but not slot 0 (must carry steps[0]'s own var
+        // forward unchanged).
+        assert_eq!(accum_info.steps[1].next_state[0], accum_info.steps[0].next_state[0], "block 1 does not touch slot 0 -- must carry the running value forward untouched");
+        assert_ne!(accum_info.steps[1].next_state[1], accum_info.steps[0].next_state[1], "block 1 touches slot 1 -- must allocate a new accumulation var");
+
+        // End-to-end sanity: still a well-typed, valid combined block (not
+        // asserting an exact param count here -- irrelevant to what this
+        // test targets, and sensitive to slot-splitting details of the
+        // 3rd, return-only block that aren't this test's concern).
+        for ty_id in &result.blocks[0].params {
+            assert!(matches!(types.0[ty_id.0 as usize], IRType::Primitive(Type::Bit)), "every combined param must still be a valid, well-typed Bit slot");
         }
     }
 

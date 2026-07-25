@@ -1,92 +1,112 @@
 # RISC-V interpreter honest end-to-end ZK proof: status and plan
 
-**Status (2026-07-25): compile blocker has a working, low-risk fix
-(`chunk_size=1`, confirmed by direct compile). The deeper movfuscation-level
-elimination that would remove the underlying bloat (not just work around
-it) was attempted, found unsafe as designed, and fully reverted --
-`movfuscate.rs` is back to its exact committed baseline. A separate,
-already-scoped-but-unimplemented optimization was found in
+**Status (2026-07-25): the movfuscation-level tunnelled-slot elimination is
+implemented and landed, on top of a real top-level-parameter-threading fix
+in the split-weave (the actual root cause of the earlier revert — see
+"Attempt 1 → Attempt 2" below). Source size for the interpreter's largest
+accumulator-chunk function dropped a further ~2x on top of the `chunk_size`
+mitigation (chunk_size=8: 46.8MB→24.1MB; chunk_size=1: 7.7MB→3.15MB,
+compiling in 47s instead of ~9min). Full regression sweep green. A separate,
+already-scoped-but-unimplemented optimization remains in
 `waffle_lower.rs`/`target.rs` (bitwise ops lower per-bit instead of as one
-wide `Poly`) -- see "WAFFLE→VAFFLE and vaffle_ssa disassemble/reassemble
+wide `Poly`) — see "WAFFLE→VAFFLE and vaffle_ssa disassemble/reassemble
 audit" below. Generic honest-driver work (Gf128-based multi-storage memory
 check) is designed but not yet built.**
 
-## Working fix: `chunk_size=1` for the split weave
+## `chunk_size` mitigation (still useful, now stacks with the real fix)
 
 `largest_chunk_function_compiles` (`crates/examples/volar-riscv-e2e/src/wat_gen.rs`)
-confirmed printed source size scales ~linearly with `chunk_size`:
+confirmed printed source size scales ~linearly with `chunk_size`, both
+before and after the tunnelled-slot elimination below:
 
-| `chunk_size` | functions | largest chunk params | largest chunk source |
-|---|---|---|---|
-| 8 (old default) | 136 | 5,512 | 46.8MB -- **OOMs rustc after ~28min** |
-| 4 | 151 | 3,296 | 24.4MB |
-| 2 | 181 | 2,188 | 13.3MB |
-| **1** | 241 | 1,634 | 7.7MB -- **compiles in ~9min (536.59s)** |
+| `chunk_size` | functions | largest chunk params | source (before fix) | source (after fix) |
+|---|---|---|---|---|
+| 8 (old default) | 136 | 5,512 | 46.8MB — OOMs rustc after ~28min | 24.1MB — **still OOMs, after ~50min (2983.40s, SIGKILL)** |
+| 4 | 151 | 3,296 | 24.4MB | 10.8MB |
+| 2 | 181 | 2,188 | 13.3MB | 8.7MB |
+| **1** | 241 | 1,634 | 7.7MB — compiles in ~9min (536.59s) | **3.15MB — compiles in 47s** |
 
-`chunk_size=1` is now the confirmed, working choice for anything that
-actually compiles the woven output for the real interpreter. Use it in the
-honest e2e driver work below. `measure_split_weave_on_real_interpreter`
-(weave-time/RSS measurement only, never compiles) is left at `chunk_size=8`
-since it isn't affected by this.
+`largest_chunk_function_compiles` uses `chunk_size=1`. Re-probed
+`chunk_size=8` after the movfuscation fix landed: halving the source size
+(46.8MB→24.1MB) was **not enough** — it still OOMs `rustc`, just after
+~50 minutes instead of ~28. `chunk_size=1` isn't a faster alternative to
+`chunk_size=8`, it's the only one of the two confirmed to actually work.
+**`chunk_size=1` is the recommendation**, not a fallback.
 
-## Attempt 1: tunnelled-slot elimination in `movfuscate.rs` — reverted
+## Attempt 1 → Attempt 2: tunnelled-slot elimination in `movfuscate.rs`
 
-Implemented the fix described below (seed `next_state[k]` from
-`state_vars[k]`, skip a block's own gate+add when it provably doesn't touch
-slot `k`). A new unit test (`test_ir_tunnelled_state_slot_skips_accumulation_for_untouched_blocks`,
-since removed) confirmed the *mechanism* fires correctly and is
-mathematically exact. It was reverted after `honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary`
-(the closest real canary for this exact accumulation machinery, at real
-split-weave scale) failed with a **new** panic: `"no entry found for key"`
-in `crates/compiler/volar-weaver/src/vole.rs` (`slot_type`/`emit_poly_wide`,
-looking up `self.wires[&v.0]`).
+**Attempt 1** (seed `next_state[k]` from `state_vars[k]`, skip a block's
+own gate+add when it provably doesn't touch slot `k`) was implemented,
+found to panic ("no entry found for key" in `crates/compiler/volar-weaver/src/vole.rs`,
+`slot_type`/`emit_poly_wide`) once split-woven, and **fully reverted** —
+`movfuscate.rs` was restored to its exact committed baseline before
+re-attempting.
 
-**Root cause of the panic**: the split-weave (`weave_vole_prover_ir_split`
-et al.) produces one function *per original block* plus separate
-*accumulator-chunk* functions ("120 block functions + 15 chunks + 1
-finish"). Chunk functions only receive, as their own real params, each
-covered block's own **exported** `next_state_{i}_{k}` values (per
-`split_driver.rs`'s documented naming convention) — never the combined
-circuit's own top-level entry params (`state_vars` in `movfuscate.rs`,
-`[pc_width, combined_params)`) directly. `MovfuscAccumInit`/chunk 0
-specifically works by the weaver **replaying** `accum_init`'s own sliced
-statement range as a self-contained prefix of chunk 0's function body — but
-that range, by construction, never includes the definition of `state_vars`
-itself (params are declared before any statement range even starts), so a
-statement that references `state_vars[k]` as an operand has no wire to
-resolve it against once split-woven. This holds whether `state_vars[k]` is
-referenced directly or via a woven `1 · state_vars[k]` identity copy — the
-identity copy statement is real, but the operand it reads still isn't
-available in chunk 0's own scope. Confirmed empirically (both variants
-tried, both panicked the same way), not just reasoned from static reading.
+**Root cause, precisely located** (not the "deep structural wall" the
+first writeup here concluded — that was an incomplete diagnosis): all
+three split-weave functions (`weave_vole_prover_ir_split`,
+`weave_vole_qsim_ir_split`, `weave_vole_verifier_ir_split_with_trace`)
+build `init_next_state_tys`/`init_ret_val_tys` via a **separate,
+throwaway `probe_ctx`** (`VoleIrCtx::new(true)` / `::new_qsim()` /
+`::new_verifier_with_trace_sink(sink)`) used *only* to determine each
+accumulator slot's own type — and none of the three ever called
+`insert_w_wires(&mut probe_ctx)` on it. Every other `VoleIrCtx` used for
+real statement emission (block functions, chunk functions) *does* call
+`insert_w_wires` first. This lone omission meant the one-off type-probe
+couldn't resolve the circuit's own top-level params (`state_vars`) as
+operands — exactly, and only, when a statement referencing them got
+replayed into it. The main per-chunk `ctx` (used for the *real* function
+body, not just type discovery) already binds `accum_info.init.next_state[k]`
+correctly via `bind_scalar`/`bind_running`, which treats *any* var id —
+param or statement-produced — as a normal named parameter; no identity-copy
+workaround is needed there at all.
 
-**Why the `ret_vals` half of the same attempt was reverted too, even though
-it doesn't hit this specific issue**: it compared each block's own
-`ret_vals[m]` against a *captured* zero var id (`ret_zero_vars`, taken once
-at `accum_init` time) to decide whether to skip — but a **non-returning**
-block's own "zero" contribution is a **fresh** `emit_zero_slot` call inside
-`process_ir_target`'s `IRBlockTargetId::Block` arm (no caching/dedup in
-`emit_zero_slot` — every call allocates a new statement/var id), so it
-never actually equals `ret_zero_vars[m]` by var-id. The skip check was
-therefore dead code — harmless, but zero real benefit — not worth keeping
-without a content-based ("is this var a zero constant") check instead of
-a var-id-identity one.
+**The fix** (`crates/compiler/volar-weaver/src/vole.rs`, ~3 lines × 3
+functions): add `insert_w_wires(&mut probe_ctx);` right after each
+`probe_ctx` is constructed, before it processes `accum_info.init`'s own
+statement range. This is exactly the "top-level parameter threading should
+be implemented anyway" fix the user pointed at: this circuit is
+fundamentally a looped, return-to-parameter construction, so the circuit's
+own top-level params should be uniformly resolvable everywhere the
+split-weave touches `accum_info`'s own var ids, not specially available
+only to ordinary block processing.
 
-**What a real fix needs** (not attempted — bigger scope than initially
-estimated): either (a) extend the split-weave's own chunk-0 handling
-(`crates/compiler/volar-weaver/src/vole.rs`) to also bind circuit-level
-params (`state_vars`) as real wires before replaying `accum_init`'s
-statement range, or (b) find a decomposition of the tunnelling identity
-that only ever references values already threaded through the *existing*
-per-block-boundary-export mechanism (no new external references at all —
-attempted partially via "use the first non-touching block's own exported
-value as the effective seed," but this doesn't trivially work across
-*arbitrary* `chunk_size` values chosen later by the weaver, since
-`movfuscate()` itself has no visibility into chunking and can't guarantee
-every chunk's own first block-group contains a non-touching block for
-every slot). Either path needs its own careful design and verification
-pass before attempting again — this doc is the handoff for that, not a
-finished solution.
+**Attempt 2** (this fix, `movfuscate.rs` re-applied): seed `next_state[k]`
+directly from `state_vars[k]` (no identity-copy wrapper needed, given the
+above), skip a block's own gate+add when `br.next_state[k] == state_vars[k]`.
+`ret_vals` was **not** re-attempted — its own "zero" contribution for a
+non-returning block is a *fresh* `emit_zero_slot` call every time (no
+caching/dedup in `emit_zero_slot`), so a var-id-identity skip check would
+be dead code there regardless of the weaver fix; a real `ret_vals`
+optimization would need a content-based ("is this var a zero constant")
+check instead, not attempted.
+
+**A real, separate correctness gap this also surfaced and fixed**:
+`crates/examples/volar-riscv-e2e/src/split_driver.rs`'s own
+`generate_split_step` hardcoded chunk 0's own `in_next_state_{k}` inputs
+as literal `vope_zero()`/`q_zero()` — correct when `accum_init.next_state[k]`
+really was zero (before this fix), silently **wrong** once it became
+`state_vars[k]` (the real per-step entry state, honest for step 0 only,
+where entry state genuinely is zero — the exact case `mem_probe.rs`'s own
+3-step test happens to landed on, meaning it would *not* have caught this
+by itself for steps 1+). Fixed by reusing `entry_w[pc_width + k]`'s own
+already-bound driver-side locals directly (no new binding needed, matching
+`accum_init`'s own "no new statement" property) instead of binding a fresh
+zero. `ret_vals`' own zero-init is untouched (correctly still zero,
+unaffected by the `next_state`-only reseed).
+
+**Verification**: new unit test
+`test_ir_tunnelled_state_slot_skips_accumulation_for_untouched_blocks`
+(`movfuscate.rs`) confirms the skip mechanism fires exactly where expected
+and not elsewhere. Full regression sweep green: `volar-ir-passes` (80/80),
+`volar-weaver` (112/123 — the 11 failures are all pre-existing
+`fhe::tests::*` TFHE issues, unrelated, confirmed by diff scope),
+`interpreter_ir_movfuscates_and_unrolls_to_a_circuit`,
+`halted_flag_triggers_loop_exit_immediately`, and
+`honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary` (back
+to its own pre-existing, unrelated `split_driver.rs:241` index-out-of-bounds
+failure — no new panic, confirming both the weaver and driver fixes are
+compatible with the existing pre-existing-failure baseline).
 
 ## Goal
 

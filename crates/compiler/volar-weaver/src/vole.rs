@@ -4547,6 +4547,15 @@ pub fn weave_vole_prover_ir_split(
 
     let (init_next_state_tys, init_ret_val_tys) = {
         let mut probe_ctx = VoleIrCtx::new(true);
+        // The circuit's own top-level params (`w_i`) must be bound here too
+        // -- `accum_info.init`'s own statement range can (and, once the
+        // tunnelled-slot elimination lands in `movfuscate.rs`, does)
+        // reference them directly, matching the fact that this whole
+        // circuit is a looped, return-to-parameter construction: a slot's
+        // own "no block touched it" default *is* its own incoming param,
+        // not a free-floating zero. Omitting this line previously produced
+        // "no entry found for key" once such a reference was woven.
+        insert_w_wires(&mut probe_ctx);
         let init_start = (accum_info.init.start - num_params as u32) as usize;
         let init_end = (accum_info.init.end - num_params as u32) as usize;
         probe_ctx.emit_circuit_stmts_range(block, types, mode, init_start..init_end);
@@ -5385,6 +5394,9 @@ pub fn weave_vole_qsim_ir_split(
 
     let (init_next_state_tys, init_ret_val_tys) = {
         let mut probe_ctx = VoleIrCtx::new_qsim();
+        // See the matching comment in `weave_vole_prover_ir_split` -- the
+        // circuit's own top-level params must be bound here too.
+        insert_w_wires(&mut probe_ctx);
         let init_start = (accum_info.init.start - num_params as u32) as usize;
         let init_end = (accum_info.init.end - num_params as u32) as usize;
         probe_ctx.emit_circuit_stmts_range(block, types, mode, init_start..init_end);
@@ -5940,6 +5952,9 @@ pub fn weave_vole_verifier_ir_split_with_trace(
     // needing no such lookup.
     let (init_next_state_tys, init_ret_val_tys) = {
         let mut probe_ctx = VoleIrCtx::new_verifier_with_trace_sink(sink);
+        // See the matching comment in `weave_vole_prover_ir_split` -- the
+        // circuit's own top-level params must be bound here too.
+        insert_w_wires(&mut probe_ctx);
         let init_start = (accum_info.init.start - num_params as u32) as usize;
         let init_end = (accum_info.init.end - num_params as u32) as usize;
         probe_ctx.emit_circuit_stmts_range(block, types, mode, init_start..init_end);

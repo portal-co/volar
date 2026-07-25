@@ -1630,9 +1630,12 @@ mod tests {
         let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, boundary, accum_info) =
             lower_interpreter(1, LoweringMode::WithTerminationFlag);
         let mode = StorageMode::Commitment;
-        // chunk_size=1: the confirmed-compilable choice -- see this test's
-        // own doc comment. chunk_size=8 (the original Milestone 1.5 Step B
-        // default) OOMs rustc at real interpreter scale.
+        // chunk_size=1: the confirmed-fast choice (47s, 3.15MB) once the
+        // tunnelled-slot elimination fix landed (movfuscate.rs +
+        // vole.rs's insert_w_wires fix). chunk_size=8 also compiles now
+        // (down from OOM to 24.1MB source), but takes 30+ minutes -- not
+        // worth it over chunk_size=1's 47s for no clear benefit. See
+        // docs/interpreter-honest-e2e-zk-plan.md for the full comparison.
         let chunk_size = 1usize;
 
         let mut biggest: Option<volar_compiler::ir::IrFunction> = None;

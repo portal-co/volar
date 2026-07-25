@@ -541,30 +541,32 @@ pub fn generate_split_step(
         accum_info.init.next_pc.len()
     ));
     // Slot widths aren't recorded by `MovfuscAccumInfo` itself (only slot
-    // *count* is) -- read them back from the first chunk-or-finish
-    // function's own `in_next_state_`/`in_ret_val_` param names, since a
-    // wide slot's zero-init must be a `[T; w]` array literal, not a bare
-    // scalar `{q,vope}_zero()`. Widths are the same on both sides (only the
-    // element type differs), so one reading suffices.
+    // *count* is) -- `ret_vals`' own zero-init below still needs them (a
+    // wide slot's zero-init is a `[T; w]` array literal, not a bare
+    // scalar). Read back from the first chunk-or-finish function's own
+    // `in_ret_val_` param names.
     let n_state = accum_info.init.next_state.len();
     let n_ret = accum_info.init.ret_vals.len();
     let first_chunk_or_finish = &verifier_funcs[n_blocks];
-    let state_widths = slot_widths_from_params(first_chunk_or_finish, "in_next_state_", n_state);
     let ret_widths = slot_widths_from_params(first_chunk_or_finish, "in_ret_val_", n_ret);
+    // `accum_info.init.next_state[k]`'s own real value is `state_vars[k]`
+    // (the circuit's own incoming param for that slot, per
+    // `movfuscate.rs`'s tunnelled-slot elimination) -- *not* zero.
+    // `entry_w` (this driver's own per-param entry-state, index-matched to
+    // `circuit.blocks[0].params` exactly like `state_vars`) already holds
+    // the real value for every step, including step 0 (a driver-level,
+    // honest concern, not movfuscation's) -- reuse its own existing
+    // locals directly rather than binding a fresh zero, matching the fact
+    // that `accum_init` itself needs no new statement for the very same
+    // reason. State slots start right after the `pc_width` PC bits in
+    // both `state_vars` and `entry_w`'s own param-indexed layout.
+    let pc_width_for_state = accum_info.init.next_pc.len();
     let mut init_state_locals_vope = Vec::with_capacity(n_state);
     let mut init_state_locals_q = Vec::with_capacity(n_state);
-    for (k, &w) in state_widths.iter().enumerate() {
-        let name_vope = format!("_acc_init_state_vope_{k}");
-        let name_q = format!("_acc_init_state_q_{k}");
-        if w <= 1 {
-            out.push_str(&format!("let {name_vope}: Vope<N, Galois, cipher::consts::U1> = vope_zero();\n"));
-            out.push_str(&format!("let {name_q}: Q<N, Galois> = q_zero();\n"));
-        } else {
-            out.push_str(&format!("let {name_vope}: [Vope<N, Galois, cipher::consts::U1>; {w}] = core::array::from_fn(|_| vope_zero());\n"));
-            out.push_str(&format!("let {name_q}: [Q<N, Galois>; {w}] = core::array::from_fn(|_| q_zero());\n"));
-        }
-        init_state_locals_vope.push(name_vope);
-        init_state_locals_q.push(name_q);
+    for k in 0..n_state {
+        let (vope_slot, q_slot) = &entry_w[pc_width_for_state + k];
+        init_state_locals_vope.push(slot_name(vope_slot).to_string());
+        init_state_locals_q.push(slot_name(q_slot).to_string());
     }
     out.push_str(&format!("let {running_next_state_vope} = {};\n", tuple_literal(&init_state_locals_vope)));
     out.push_str(&format!("let {running_next_state_q} = {};\n", tuple_literal(&init_state_locals_q)));
