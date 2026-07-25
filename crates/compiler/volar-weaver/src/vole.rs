@@ -3921,6 +3921,32 @@ impl<'a> VoleIrCtx<'a> {
     fn emit_shuffle(&mut self, out_name: &str, out_id: u32, result_bits: &[(u8, CirVar)]) {
         if result_bits.len() == 1 {
             let (bit_idx, src_var) = &result_bits[0];
+            // Pure bit-extraction alias: when the source bit is *already*
+            // a real bound name (a `WireRepr::Vec` entry, or the whole
+            // value when `Scalar` and `bit_idx == 0`), the Shuffle's own
+            // output can just alias that name directly -- skipping a
+            // `let out = src_bit.clone();` statement entirely. Real,
+            // measured motivation: every single-bit Shuffle in the real
+            // interpreter's own circuit (23,408 of them) is part of a
+            // tightly clustered "decompose one wide value into its
+            // individual bits" group (544 groups sharing one source var
+            // each, ~99% of same-group statements within 4 statements of
+            // each other) -- exactly the shape this skips a statement for.
+            match self.wires[&src_var.0].clone() {
+                WireRepr::Scalar(s) if *bit_idx == 0 => {
+                    self.wires.insert(out_id, WireRepr::Scalar(s));
+                    return;
+                }
+                WireRepr::Vec(names) => {
+                    let s = names[*bit_idx as usize].clone();
+                    self.wires.insert(out_id, WireRepr::Scalar(s));
+                    return;
+                }
+                // `Array` source (rare: a top-level param shuffled
+                // directly) and mismatched-width `Scalar` (shouldn't
+                // happen) fall through to the materializing path below.
+                _ => {}
+            }
             let src_parts = self.vec_parts(src_var);
             let src_name = &src_parts[*bit_idx as usize];
             self.stmts.push(ir_stmt(IrStmtKind::Let {

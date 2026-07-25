@@ -2002,6 +2002,89 @@ mod tests {
             eprintln!("total stmts={n_stmts} poly={n_poly} shuffle={n_shuffle} (total result_bits={shuffle_bits}) merge={n_merge} (total parts={merge_parts})");
             eprintln!("poly breakdown: deg0(const)={poly_deg0} deg1_single={poly_deg1_single} deg1_multi(xor-chain)={poly_deg1_multi} deg2plus(and-bearing)={poly_deg2plus} (total and-monomials={poly_deg2plus_monomial_total}) width>1={poly_width_gt1}");
             eprintln!("poly by output type id (top 10): {:?}", poly_by_ty.iter().collect::<Vec<_>>().into_iter().rev().take(10).collect::<Vec<_>>());
+
+            // Shuffle categorization: for each single-bit Shuffle{[(bit_idx, src)]},
+            // classify src's own origin.
+            let num_params = circuit.blocks[0].params.len();
+            let stmt_ty = |var_id: u32| -> volar_ir_common::TypeId {
+                if (var_id as usize) < num_params {
+                    circuit.blocks[0].params[var_id as usize]
+                } else {
+                    match &circuit.blocks[0].stmts[var_id as usize - num_params].kind {
+                        Stmt::Shuffle { ty, .. } => *ty,
+                        Stmt::Merge { ty, .. } => *ty,
+                        Stmt::Poly { ty, .. } => *ty,
+                        Stmt::Const(_, ty) => *ty,
+                        Stmt::Transmute { dst_ty, .. } => *dst_ty,
+                        Stmt::Rol { ty, .. } => *ty,
+                        Stmt::Ror { ty, .. } => *ty,
+                        Stmt::Splat { ty, .. } => *ty,
+                        Stmt::StorageRead { ty, .. } => *ty,
+                        _ => volar_ir_common::TypeId(0),
+                    }
+                }
+            };
+            let is_merge_src = |var_id: u32| -> Option<usize> {
+                if (var_id as usize) < num_params { return None; }
+                match &circuit.blocks[0].stmts[var_id as usize - num_params].kind {
+                    Stmt::Merge { parts, .. } => Some(parts.len()),
+                    _ => None,
+                }
+            };
+            let mut shuffle_identity = 0usize; // bit_idx==0, src already width-1
+            let mut shuffle_merge_extractable = 0usize; // src is a Merge output
+            let mut shuffle_other = 0usize;
+            for node in &circuit.blocks[0].stmts {
+                if let Stmt::Shuffle { result_bits, .. } = &node.kind {
+                    if result_bits.len() == 1 {
+                        let (bit_idx, src) = result_bits[0];
+                        let src_w = bit_width(stmt_ty(src.0), &types);
+                        if bit_idx == 0 && src_w <= 1 {
+                            shuffle_identity += 1;
+                        } else if is_merge_src(src.0).is_some() {
+                            shuffle_merge_extractable += 1;
+                        } else {
+                            shuffle_other += 1;
+                        }
+                    }
+                }
+            }
+            eprintln!("shuffle breakdown: identity(no-op)={shuffle_identity} merge-extractable={shuffle_merge_extractable} other(genuine)={shuffle_other}");
+
+            // Batching opportunity: do multiple Shuffle statements extract
+            // different bits of the SAME source var? Group by source var id.
+            let mut by_src: std::collections::BTreeMap<u32, Vec<(usize, u8)>> = std::collections::BTreeMap::new();
+            for (idx, node) in circuit.blocks[0].stmts.iter().enumerate() {
+                if let Stmt::Shuffle { result_bits, .. } = &node.kind {
+                    if result_bits.len() == 1 {
+                        let (bit_idx, src) = result_bits[0];
+                        by_src.entry(src.0).or_default().push((idx, bit_idx));
+                    }
+                }
+            }
+            let groups_gt1 = by_src.values().filter(|v| v.len() > 1).count();
+            let shuffles_in_groups_gt1: usize = by_src.values().filter(|v| v.len() > 1).map(|v| v.len()).sum();
+            let max_group = by_src.values().map(|v| v.len()).max().unwrap_or(0);
+            let src_count = by_src.len();
+            eprintln!(
+                "shuffle source grouping: {src_count} distinct source vars, {groups_gt1} groups with >1 shuffle (covering {shuffles_in_groups_gt1}/{n_shuffle} shuffles), largest group={max_group}"
+            );
+            // How adjacent (in statement order) are shuffles within the same group?
+            // If they're adjacent/nearby, they're strong candidates for a single
+            // combining pass; if scattered far apart, batching is riskier
+            // (would need real reordering, not just local peephole merging).
+            let mut adjacent_pairs = 0usize;
+            let mut total_pairs = 0usize;
+            for v in by_src.values() {
+                if v.len() < 2 { continue; }
+                let mut idxs: Vec<usize> = v.iter().map(|(i, _)| *i).collect();
+                idxs.sort();
+                for w in idxs.windows(2) {
+                    total_pairs += 1;
+                    if w[1] - w[0] <= 4 { adjacent_pairs += 1; }
+                }
+            }
+            eprintln!("shuffle group locality: {adjacent_pairs}/{total_pairs} consecutive-in-group pairs are within 4 statements of each other");
         }
         let mut funcs: Vec<volar_compiler::ir::IrFunction> = Vec::new();
         let _trace = weave_vole_prover_ir_split(&circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, |f| funcs.push(f));
