@@ -6,12 +6,14 @@ in the split-weave (the actual root cause of the earlier revert — see
 "Attempt 1 → Attempt 2" below). Source size for the interpreter's largest
 accumulator-chunk function dropped a further ~2x on top of the `chunk_size`
 mitigation (chunk_size=8: 46.8MB→24.1MB; chunk_size=1: 7.7MB→3.15MB,
-compiling in 47s instead of ~9min). Full regression sweep green. A separate,
-already-scoped-but-unimplemented optimization remains in
-`waffle_lower.rs`/`target.rs` (bitwise ops lower per-bit instead of as one
-wide `Poly`) — see "WAFFLE→VAFFLE and vaffle_ssa disassemble/reassemble
-audit" below. Generic honest-driver work (Gf128-based multi-storage memory
-check) is designed but not yet built.**
+compiling in 47s instead of ~9min). Full regression sweep green. The
+bitwise-op-widening optimization (`target.rs`, `and`/`or`/`xor`/`not` as one
+wide `Poly` instead of per-bit) is also implemented and landed — see
+"Bitwise-op-widening" below; measured no size change on *this specific*
+circuit (the interpreter's own dispatch logic doesn't route much traffic
+through wide AND/OR/XOR), but is a real, structurally-verified win for any
+program that does. Generic honest-driver work (Gf128-based multi-storage
+memory check) is designed but not yet built.**
 
 ## `chunk_size` mitigation (still useful, now stacks with the real fix)
 
@@ -284,28 +286,48 @@ unnecessarily break wide values into bits and reassemble them later,
 wasting statements the same way movfuscation's untouched-slot accumulation
 does?
 
-**Confirmed, already-scoped, not yet implemented**: `VaffleTarget`'s own
-`and`/`or`/`xor`/`not` (`crates/ir/volar-vaffle-target/src/target.rs`,
-~line 541-556) all delegate to the generic `BitCircuitBuilder` trait
-defaults `bc_and_vec`/`bc_or_vec`/`bc_xor_vec`/`bc_not_vec`
-(`crates/ir/volar-lir/src/circuits.rs`) — simple per-bit loops, each lane
-becoming its own scalar `Poly` statement. Every WASM `i32.and`/`.or`/`.xor`
-(and `i64` counterparts) therefore emits 32 (or 64) separate statements
-where **one** wide `Poly` would do: XOR/OR/NOT are degree ≤1 and AND is
-degree 2, both already within `emit_poly_wide`'s own documented scope
-(used elsewhere, e.g. movfuscation's own `is_active` gating). This is not
-a *disassemble-then-reassemble round trip* — it's "never assembled in the
-first place" — but it's the same class of avoidable per-lane statement
-bloat, already flagged as deferred work in
-`docs/agent-context/circuit-size-optimization-backlog.md`'s "Deferred:
-bitwise-op widening" section (written in an earlier session, still
-unimplemented as of this one). **Recommended fix**: override
-`and`/`or`/`xor`/`not` in `VaffleTarget`'s own impl to build one wide
-`Stmt::Poly` directly (mirroring how `emit_poly_wide`-eligible code already
-works elsewhere) instead of delegating to the bit-by-bit trait defaults.
-Not attempted this session — real, separate, testable unit of work; would
-need the same kind of careful before/after statement-count regression test
-and full-suite verification as the movfuscation attempt above.
+**Implemented and landed** (`crates/ir/volar-vaffle-target/src/target.rs`):
+`and`/`or`/`xor`/`not` used to all delegate to the generic
+`BitCircuitBuilder` trait defaults `bc_and_vec`/`bc_or_vec`/`bc_xor_vec`/
+`bc_not_vec` (`crates/ir/volar-lir/src/circuits.rs`) — simple per-bit loops,
+each lane becoming its own scalar `Poly` statement, `width` separate
+statements per WASM `i32.and`/`.or`/`.xor`/`.and`. Now: `emit_wide_binop_poly`/
+`emit_wide_not_poly` build one wide `Stmt::Poly` directly (`compose_address`
+merges the operand bits, one `Poly` computes every lane, `extract_bit`
+un-merges the result — the same three primitives `mem_load_bytes`/
+`mem_store_bytes` already use, see below), falling back to the original
+per-bit path for `width <= 1` (no benefit) or `width > 64` (outside
+`emit_poly_wide`'s own scope). GF(2) identities used: `a XOR b = a+b`,
+`a AND b = a·b`, `a OR b = a+b+a·b` (verified by truth table — **not**
+degree ≤1 as an earlier version of this doc and the original backlog note
+both claimed; OR is not an affine function of its inputs in GF(2), it
+genuinely needs the `a·b` term, same shape as AND), `NOT a = a+1` with an
+**all-`width`-bits-set** constant (every lane flips at runtime, not just
+bit 0 — `emit_poly_wide` decodes the constant per-lane from the raw
+literal). Confirmed `emit_poly_wide`'s own `operand_expr` closure resolves
+each monomial operand independently by its own `WireRepr` (`Vec` → per-lane
+index, `Scalar` → broadcast) by reading it directly, *not* assumed from
+`Stmt::Poly`'s own doc comment (which describes existing producers' typical
+shape — one wide operand, one Bit selector — not a hard constraint the
+weaver enforces); a monomial with *two* wide, non-selector operands (this
+AND/OR case) is exactly as supported.
+
+**Verification**: two new tests in `target.rs`
+(`test_wide_bitwise_ops_emit_correct_wide_poly`,
+`test_narrow_bitwise_ops_skip_wide_poly`) structurally confirm each op's
+own `Poly` has the exact intended `coeffs`/`constant` (not an independent
+interpreter-based semantic check — would need a `volar-fuzz` dev-dependency
+cycle on `volar-vaffle-target`, out of scope for this fix, though Cargo
+does support dev-dependency cycles if this is worth revisiting later).
+Full `volar-vaffle-target` suite green (55/55, including the corpus smoke
+test). Real interpreter regression tests
+(`interpreter_ir_movfuscates_and_unrolls_to_a_circuit`,
+`halted_flag_triggers_loop_exit_immediately`) still pass. **Measured no
+size change** on the real interpreter's own circuit specifically — its own
+dispatch/decode logic apparently doesn't route much traffic through wide
+AND/OR/XOR (likely equality comparisons instead) — so this is a real,
+structurally-verified win that just isn't exercised much by *this*
+program; still worth having for any program that does use wide bitwise ops.
 
 **Confirmed necessary, not wasteful**: `mem_load_bytes`/`mem_store_bytes`
 (`crates/ir/volar-vaffle-target/src/waffle_lower.rs`, ~line 1185-1271) read

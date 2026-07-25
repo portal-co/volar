@@ -52,6 +52,15 @@ pub struct VaffleValue {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VaffleBlock(pub usize);
 
+/// Which GF(2) bitwise operation [`VaffleTarget::emit_wide_binop_poly`]
+/// should build a wide `Stmt::Poly` for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WideBinOp {
+    And,
+    Or,
+    Xor,
+}
+
 // ============================================================================
 // Internal builders
 // ============================================================================
@@ -200,6 +209,91 @@ impl VaffleTarget {
     fn emit_const(&mut self, val: u128, ty: TypeId) -> ValueId {
         let v = Value::Op(Stmt::Const(Constant { hi: 0, lo: val }, ty));
         self.fb().emit_value(v)
+    }
+
+    /// Bitwise AND/OR/XOR on two `width`-bit operands as **one** wide
+    /// `Stmt::Poly` (a real `Merge`-Poly-`Shuffle` round trip, not per-bit
+    /// `bc_*_vec` loops) — matching `crates/compiler/volar-weaver/src/vole.rs`'s
+    /// own `emit_poly_wide` scope (`width <= 64`, every monomial degree
+    /// `<= 2`), which already collapses a wide Poly into a single shared
+    /// loop body instead of `width` fully-unrolled AND-gate checks.
+    /// `operand_expr` there resolves each monomial operand independently
+    /// by its own `WireRepr` (`Vec` -> per-lane index, `Scalar` ->
+    /// broadcast), so a monomial with *two* wide operands (this AND case)
+    /// is exactly as supported as movfuscation's own one-wide-operand
+    /// `is_active · val` gate — confirmed by reading `emit_poly_wide`'s
+    /// own `operand_expr` closure, not assumed from `Stmt::Poly`'s more
+    /// restrictive "typical usage" doc comment (which describes the
+    /// existing producers, not a hard constraint the weaver enforces).
+    /// GF(2) identities used: `a XOR b = a + b`; `a AND b = a·b`;
+    /// `a OR b = a + b + a·b` (verified: not simply degree `<= 1` despite
+    /// some prior documentation claiming otherwise — OR is not an affine
+    /// function of its inputs in GF(2), it genuinely needs the `a·b` term).
+    /// Returns `None` (caller falls back to the per-bit `bc_*_vec` path)
+    /// for `width <= 1` (no benefit, avoid pointless Merge/Shuffle
+    /// overhead) or `width > 64` (outside `emit_poly_wide`'s own scope).
+    fn emit_wide_binop_poly(
+        &mut self,
+        lhs_bits: &[ValueId],
+        rhs_bits: &[ValueId],
+        op: WideBinOp,
+        width: usize,
+    ) -> Option<Vec<ValueId>> {
+        if width <= 1 || width > 64 {
+            return None;
+        }
+        let bit_tid = self.bit_tid();
+        let wide_ty = self.intern_type(IrType::Vec(width, bit_tid));
+        let lhs_wide = self.compose_address(lhs_bits);
+        let rhs_wide = self.compose_address(rhs_bits);
+        let mut coeffs: BTreeMap<Vec<ValueId>, u8> = BTreeMap::new();
+        let mut and_key = vec![lhs_wide, rhs_wide];
+        and_key.sort();
+        match op {
+            WideBinOp::Xor => {
+                coeffs.insert(vec![lhs_wide], 1);
+                coeffs.insert(vec![rhs_wide], 1);
+            }
+            WideBinOp::And => {
+                coeffs.insert(and_key, 1);
+            }
+            WideBinOp::Or => {
+                coeffs.insert(vec![lhs_wide], 1);
+                coeffs.insert(vec![rhs_wide], 1);
+                coeffs.insert(and_key, 1);
+            }
+        }
+        let result_wide = self.fb().emit_value(Value::Op(Stmt::Poly {
+            ty: wide_ty,
+            coeffs,
+            constant: Constant { hi: 0, lo: 0 },
+        }));
+        Some((0..width as u8).map(|i| self.extract_bit(result_wide, i)).collect())
+    }
+
+    /// `NOT` on a `width`-bit operand as one wide `Stmt::Poly` -- see
+    /// [`Self::emit_wide_binop_poly`]'s own doc for the general approach
+    /// and scope limits. GF(2) identity: `NOT a = a + 1`, so *every* bit
+    /// of the wide constant term must be set (flip every lane), not just
+    /// bit 0 -- `emit_poly_wide` decodes this constant *per lane at
+    /// runtime* (`(CONST >> i) & 1`), so an all-ones `width`-bit mask is
+    /// what makes one shared closure body correct for every lane.
+    fn emit_wide_not_poly(&mut self, bits: &[ValueId], width: usize) -> Option<Vec<ValueId>> {
+        if width <= 1 || width > 64 {
+            return None;
+        }
+        let bit_tid = self.bit_tid();
+        let wide_ty = self.intern_type(IrType::Vec(width, bit_tid));
+        let wide = self.compose_address(bits);
+        let mut coeffs: BTreeMap<Vec<ValueId>, u8> = BTreeMap::new();
+        coeffs.insert(vec![wide], 1);
+        let all_ones = (1u128 << width) - 1;
+        let result_wide = self.fb().emit_value(Value::Op(Stmt::Poly {
+            ty: wide_ty,
+            coeffs,
+            constant: Constant { hi: 0, lo: all_ones },
+        }));
+        Some((0..width as u8).map(|i| self.extract_bit(result_wide, i)).collect())
     }
 
     pub fn register_oracle(&mut self, decl: OracleDecl) { self.module.oracles.push(decl); }
@@ -540,18 +634,34 @@ impl LirTarget for VaffleTarget {
     }
     fn and(&mut self, lhs: VaffleValue, rhs: VaffleValue) -> VaffleValue {
         let ty = lhs.ty.clone();
+        let width = lhs.bits.len();
+        if let Some(bits) = self.emit_wide_binop_poly(&lhs.bits, &rhs.bits, WideBinOp::And, width) {
+            return VaffleValue { bits, ty };
+        }
         VaffleValue { bits: bc_and_vec(self, &lhs.bits, &rhs.bits), ty }
     }
     fn or(&mut self, lhs: VaffleValue, rhs: VaffleValue) -> VaffleValue {
         let ty = lhs.ty.clone();
+        let width = lhs.bits.len();
+        if let Some(bits) = self.emit_wide_binop_poly(&lhs.bits, &rhs.bits, WideBinOp::Or, width) {
+            return VaffleValue { bits, ty };
+        }
         VaffleValue { bits: bc_or_vec(self, &lhs.bits, &rhs.bits), ty }
     }
     fn xor(&mut self, lhs: VaffleValue, rhs: VaffleValue) -> VaffleValue {
         let ty = lhs.ty.clone();
+        let width = lhs.bits.len();
+        if let Some(bits) = self.emit_wide_binop_poly(&lhs.bits, &rhs.bits, WideBinOp::Xor, width) {
+            return VaffleValue { bits, ty };
+        }
         VaffleValue { bits: bc_xor_vec(self, &lhs.bits, &rhs.bits), ty }
     }
     fn not(&mut self, val: VaffleValue) -> VaffleValue {
         let ty = val.ty.clone();
+        let width = val.bits.len();
+        if let Some(bits) = self.emit_wide_not_poly(&val.bits, width) {
+            return VaffleValue { bits, ty };
+        }
         VaffleValue { bits: bc_not_vec(self, &val.bits), ty }
     }
     fn shl(&mut self, val: VaffleValue, shift: VaffleValue) -> VaffleValue {
@@ -1329,5 +1439,135 @@ mod tests {
     #[test]
     fn test_corpus_smoke() {
         volar_lir_test_corpus::for_each_build!(VaffleTarget::new());
+    }
+
+    // ============================================================================
+    // Wide bitwise-op Poly widening: structural correctness
+    // ============================================================================
+
+    /// Confirms `and`/`or`/`xor`/`not` on width-32 operands each emit
+    /// *exactly one* wide `Stmt::Poly`, with `coeffs`/`constant` matching
+    /// the intended GF(2) identity precisely -- `a XOR b = a+b`,
+    /// `a AND b = a·b`, `a OR b = a+b+a·b` (verified by truth table: this
+    /// is *not* degree <= 1, despite an earlier backlog doc's claim to the
+    /// contrary -- OR is not an affine function of its inputs in GF(2)),
+    /// `NOT a = a+1` with an all-32-bits-set constant (every lane flips,
+    /// not just lane 0). A structural check, not an independent semantic
+    /// one -- see this test module's own doc note on why a full
+    /// interpreter-based check wasn't added (would need a `volar-fuzz`
+    /// dev-dependency cycle, out of scope for this fix).
+    #[test]
+    fn test_wide_bitwise_ops_emit_correct_wide_poly() {
+        let mut t = VaffleTarget::new();
+        let (entry, params) = t.begin_function("f", &[LirType::U32, LirType::U32], Some(LirType::U32));
+        t.switch_to_block(entry);
+        let a = params[0][0].clone();
+        let b = params[1][0].clone();
+
+        let and_res = t.and(a.clone(), b.clone());
+        let or_res = t.or(a.clone(), b.clone());
+        let xor_res = t.xor(a.clone(), b.clone());
+        let not_res = t.not(a.clone());
+        t.ret(&[and_res, or_res, xor_res, not_res]);
+        t.end_function();
+
+        let fid = t.module.exports["f"];
+        let body = match &t.module.funcs[fid.0] {
+            vaffle::FuncDecl::Body(b) => b,
+            _ => panic!("expected body"),
+        };
+
+        // Every wide Poly of width 32 in this function's own value list --
+        // and/or/xor/not each contribute exactly one, in emission order.
+        let width = 32;
+        let bit_tid = {
+            let mut types = t.module.types.clone();
+            types.bit()
+        };
+        let wide_ty = {
+            let mut types = t.module.types.clone();
+            types.intern(IrType::Vec(width, bit_tid))
+        };
+        let wide_polys: Vec<(&std::collections::BTreeMap<Vec<ValueId>, u8>, Constant)> = body.values.iter()
+            .filter_map(|v| match &v.kind {
+                Value::Op(Stmt::Poly { ty, coeffs, constant }) if *ty == wide_ty => Some((coeffs, *constant)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(wide_polys.len(), 4, "and/or/xor/not should each emit exactly one wide Poly -- got {}: {:?}", wide_polys.len(), wide_polys.iter().map(|(c, _)| c.len()).collect::<Vec<_>>());
+
+        // `and`/`or`/`xor`/`not` are called on freshly-cloned `VaffleValue`s
+        // but `emit_wide_binop_poly`/`emit_wide_not_poly` cache nothing --
+        // each call emits its *own* fresh `Merge` for the same logical
+        // operand, so each Poly's own operand var ids must be recovered
+        // from *that same Poly's own monomials*, not cross-referenced
+        // against a single assumed-shared merge.
+
+        // and: exactly one degree-2 monomial, coeff 1, constant 0.
+        let (and_coeffs, and_const) = wide_polys[0];
+        assert_eq!(and_coeffs.len(), 1);
+        let and_mono = and_coeffs.keys().next().unwrap();
+        assert_eq!(and_mono.len(), 2, "AND must be one degree-2 monomial (a*b)");
+        assert_eq!(and_coeffs[and_mono], 1u8);
+        assert_eq!(and_const, Constant { hi: 0, lo: 0 });
+
+        // or: {[a]:1, [b]:1, [a,b]:1}, constant 0 -- a+b+ab (verified by
+        // truth table, *not* degree <= 1: OR is not affine in GF(2)).
+        // Own operands recovered from OR's own degree-2 monomial (its own
+        // fresh Merge, not AND's -- emit_wide_binop_poly caches nothing).
+        let (or_coeffs, or_const) = wide_polys[1];
+        assert_eq!(or_coeffs.len(), 3);
+        let or_ab: Vec<ValueId> = or_coeffs.keys().find(|m| m.len() == 2)
+            .expect("OR must have exactly one degree-2 monomial").clone();
+        assert_eq!(or_ab.len(), 2);
+        let (or_a, or_b) = (or_ab[0], or_ab[1]);
+        assert_eq!(or_coeffs.get(&vec![or_a]), Some(&1u8));
+        assert_eq!(or_coeffs.get(&vec![or_b]), Some(&1u8));
+        assert_eq!(or_coeffs.get(&or_ab), Some(&1u8));
+        assert_eq!(or_const, Constant { hi: 0, lo: 0 });
+
+        // xor: {[a]:1, [b]:1}, constant 0.
+        let (xor_coeffs, xor_const) = wide_polys[2];
+        assert_eq!(xor_coeffs.len(), 2);
+        let xor_vars: alloc::collections::BTreeSet<ValueId> = xor_coeffs.keys().flatten().copied().collect();
+        assert_eq!(xor_vars.len(), 2, "XOR must reference exactly 2 distinct degree-1 operands");
+        for mono in xor_coeffs.keys() {
+            assert_eq!(mono.len(), 1, "XOR's own monomials must all be degree 1");
+        }
+        assert!(xor_coeffs.values().all(|&c| c == 1u8));
+        assert_eq!(xor_const, Constant { hi: 0, lo: 0 });
+
+        // not: {[a]:1}, constant = all 32 bits set (every lane flips, not
+        // just lane 0 -- `NOT a = a+1` per bit, and `emit_poly_wide`
+        // decodes the constant per-lane at runtime).
+        let (not_coeffs, not_const) = wide_polys[3];
+        assert_eq!(not_coeffs.len(), 1);
+        let not_mono = not_coeffs.keys().next().unwrap();
+        assert_eq!(not_mono.len(), 1, "NOT must be one degree-1 monomial (a)");
+        assert_eq!(not_coeffs[not_mono], 1u8);
+        assert_eq!(not_const, Constant { hi: 0, lo: (1u128 << 32) - 1 });
+    }
+
+    /// `width <= 1` (e.g. `Bool`) must fall back to the per-bit path --
+    /// no wide Poly, no pointless Merge/Shuffle round trip for a value
+    /// that's already a single bit.
+    #[test]
+    fn test_narrow_bitwise_ops_skip_wide_poly() {
+        let mut t = VaffleTarget::new();
+        let (entry, params) = t.begin_function("f", &[LirType::Bool, LirType::Bool], Some(LirType::Bool));
+        t.switch_to_block(entry);
+        let a = params[0][0].clone();
+        let b = params[1][0].clone();
+        let res = t.and(a, b);
+        t.ret(&[res]);
+        t.end_function();
+
+        let fid = t.module.exports["f"];
+        let body = match &t.module.funcs[fid.0] {
+            vaffle::FuncDecl::Body(b) => b,
+            _ => panic!("expected body"),
+        };
+        let has_wide_merge = body.values.iter().any(|v| matches!(&v.kind, Value::Op(Stmt::Merge { .. })));
+        assert!(!has_wide_merge, "width<=1 and() should skip the wide-Poly path entirely, no Merge expected");
     }
 }
