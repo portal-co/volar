@@ -1129,10 +1129,28 @@ mod tests {
         weave_vole_qsim_ir_split(&circuit, &types, "riscv", &mode, &boundary, &accum_info, chunk_size, |f| qsim_funcs.push(f));
         let mut verifier_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
         weave_vole_verifier_ir_split_with_trace(&circuit, &types, "riscv", &mode, &IopSink, &boundary, &accum_info, chunk_size, |f| verifier_funcs.push(f));
-        assert_eq!(prover_funcs.len(), n_blocks + n_chunks + 1);
-        assert_eq!(qsim_funcs.len(), n_blocks + n_chunks + 1);
-        assert_eq!(verifier_funcs.len(), n_blocks + n_chunks + 1);
-        eprintln!("woven: {} functions per role ({n_blocks} blocks + {n_chunks} chunks + 1 finish)", prover_funcs.len());
+
+        // Positionally-indexed views (one entry per boundary/chunk/finish
+        // position) -- see the matching comment in `mem_probe.rs`'s own
+        // `honest_mem_probe_run_folds_and_finalizes_with_real_memory_boundary`.
+        // Any region exceeding `MAX_STMTS_PER_PIECE` now emits extra
+        // `..._piece_{p}` functions alongside its own wrapper; pieces are
+        // internal-only and must be excluded from positional indexing
+        // (but not from `prover_funcs`/etc themselves, which stay
+        // unfiltered for printing below).
+        let by_pos = |fs: &std::vec::Vec<IrFunction>| -> std::vec::Vec<IrFunction> {
+            fs.iter().filter(|f| !f.name.contains("_piece_")).cloned().collect()
+        };
+        let prover_funcs_by_pos = by_pos(&prover_funcs);
+        let qsim_funcs_by_pos = by_pos(&qsim_funcs);
+        let verifier_funcs_by_pos = by_pos(&verifier_funcs);
+        assert_eq!(prover_funcs_by_pos.len(), n_blocks + n_chunks + 1);
+        assert_eq!(qsim_funcs_by_pos.len(), n_blocks + n_chunks + 1);
+        assert_eq!(verifier_funcs_by_pos.len(), n_blocks + n_chunks + 1);
+        eprintln!(
+            "woven: {} functions per role ({n_blocks} blocks + {n_chunks} chunks + 1 finish, {} total incl. split pieces)",
+            prover_funcs_by_pos.len(), prover_funcs.len(),
+        );
 
         let module_of = |functions: std::vec::Vec<IrFunction>, name: &str| volar_compiler::ir::IrModule {
             name: name.into(), functions, structs: vec![], enums: vec![], traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
@@ -1205,9 +1223,20 @@ mod tests {
                 }
             }
 
+            // Compatibility shim for `generate_split_step`'s new
+            // signature (real per-step literal values, wrapped as
+            // already-formatted Rust expression strings) -- this test
+            // still calls it once per (host-loop) step, same as before;
+            // it doesn't yet use the real-runtime-loop calling convention
+            // `mem_probe.rs`'s own honest test now does (that's Phase B
+            // step 2 -- deferred, needs `MemCheckAccounting`/
+            // `memory_check_driver.rs` converted too).
+            let oracle_bit_exprs: std::vec::Vec<std::vec::Vec<String>> = oracle_bits.iter()
+                .map(|bits| bits.iter().map(|b| b.to_string()).collect())
+                .collect();
             let result = generate_split_step(
-                &prover_funcs, &qsim_funcs, &verifier_funcs, &boundary, &accum_info, n_chunks,
-                &entry_w, all_ok_fold_state.clone(), &oracle_bits, step,
+                &prover_funcs_by_pos, &qsim_funcs_by_pos, &verifier_funcs_by_pos, &boundary, &accum_info, n_chunks,
+                &entry_w, all_ok_fold_state.clone(), &oracle_bit_exprs, &step.to_string(),
             );
             all_steps_stmts += &result.stmts;
             entry_w = result.next_entry_w;

@@ -297,7 +297,7 @@ pub(crate) mod tests {
         };
         use volar_compiler::ir::IrFunction;
         use volar_verifier_iop_runtime::run_iop_verifier;
-        use crate::split_driver::{generate_split_step, Slot};
+        use crate::split_driver::{generate_split_step, slot_name, Slot};
 
         let (_ir_blocks, _movfuscated, circuit, types, boundary, accum_info) = lower_mem_probe();
         let mode = StorageMode::Commitment;
@@ -315,9 +315,28 @@ pub(crate) mod tests {
         weave_vole_qsim_ir_split(&circuit, &types, "mp", &mode, &boundary, &accum_info, chunk_size, |f| qsim_funcs.push(f));
         let mut verifier_funcs: std::vec::Vec<IrFunction> = std::vec::Vec::new();
         weave_vole_verifier_ir_split_with_trace(&circuit, &types, "mp", &mode, &IopSink, &boundary, &accum_info, chunk_size, |f| verifier_funcs.push(f));
-        assert_eq!(prover_funcs.len(), n_blocks + n_chunks + 1);
-        assert_eq!(qsim_funcs.len(), n_blocks + n_chunks + 1);
-        assert_eq!(verifier_funcs.len(), n_blocks + n_chunks + 1);
+
+        // Positionally-indexed views (one entry per boundary/chunk/finish
+        // position), used below for the assert and `generate_split_step`'s
+        // own positional indexing. Any region exceeding
+        // `MAX_STMTS_PER_PIECE` now emits extra `..._piece_{p}` functions
+        // alongside its own wrapper (which keeps the position's original
+        // name/shape) -- see `crate::vole_split`'s own doc. Pieces are
+        // internal-only (called BY the wrapper, never addressed
+        // externally), so they're excluded here -- but NOT from
+        // `prover_funcs`/`qsim_funcs`/`verifier_funcs` themselves, which
+        // stay the full, unfiltered set used for printing below (the
+        // wrapper's own generated body calls its pieces by name, so they
+        // must still be emitted into the compiled source).
+        let by_pos = |fs: &std::vec::Vec<IrFunction>| -> std::vec::Vec<IrFunction> {
+            fs.iter().filter(|f| !f.name.contains("_piece_")).cloned().collect()
+        };
+        let prover_funcs_by_pos = by_pos(&prover_funcs);
+        let qsim_funcs_by_pos = by_pos(&qsim_funcs);
+        let verifier_funcs_by_pos = by_pos(&verifier_funcs);
+        assert_eq!(prover_funcs_by_pos.len(), n_blocks + n_chunks + 1);
+        assert_eq!(qsim_funcs_by_pos.len(), n_blocks + n_chunks + 1);
+        assert_eq!(verifier_funcs_by_pos.len(), n_blocks + n_chunks + 1);
 
         let module_of = |functions: std::vec::Vec<IrFunction>, name: &str| volar_compiler::ir::IrModule {
             name: name.into(), functions, structs: vec![], enums: vec![], traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
@@ -345,67 +364,133 @@ pub(crate) mod tests {
         // Real, plain ground truth for all 3 steps (established and
         // cross-checked above): storage 2 is always [true,false,false];
         // storage 33's byte is 0,1,2 (the value *before* that step's
-        // increment).
-        let byte_before: [u8; 3] = [0, 1, 2];
-        let oracle_bits_per_step: std::vec::Vec<std::vec::Vec<std::vec::Vec<bool>>> = (0..3usize).map(|step| {
-            let s2 = std::vec![true, false, false];
-            let byte = byte_before[step];
-            let s33: std::vec::Vec<bool> = (0..8).map(|i| (byte >> i) & 1 == 1).collect();
-            std::vec![s2, s33]
+        // increment) -- this program's own byte value happens to equal
+        // the step index directly. Emitted as a real Rust array literal
+        // (`STEP_WITNESS`) in the generated driver source below, indexed
+        // at RUNTIME by the loop variable `step` -- unlike the older
+        // per-step-unrolled calling convention (one `generate_split_step`
+        // call per step, values baked in as literals), this lets
+        // `generate_split_step` be called ONCE, with its own returned
+        // `stmts` becoming a real `for` loop body that runs 3 times at
+        // runtime, not 3 separately-generated copies of the same text.
+        struct StepWitness { s2_bits: [bool; 3], s33_bits: [bool; 8], byte_before: u8, byte_after: u8 }
+        let witness: std::vec::Vec<StepWitness> = (0..3usize).map(|step| {
+            let byte = step as u8;
+            StepWitness {
+                s2_bits: [true, false, false],
+                s33_bits: core::array::from_fn(|i| (byte >> i) & 1 == 1),
+                byte_before: byte,
+                byte_after: byte.wrapping_add(1),
+            }
         }).collect();
+        let witness_literal = format!(
+            "struct StepWitness {{ s2_bits: [bool; 3], s33_bits: [bool; 8], byte_before: u8, byte_after: u8 }}\n\
+             let witness: [StepWitness; {}] = [{}];\n",
+            witness.len(),
+            witness.iter().map(|w| format!(
+                "StepWitness {{ s2_bits: [{}], s33_bits: [{}], byte_before: {}u8, byte_after: {}u8 }}",
+                w.s2_bits.iter().map(|b| b.to_string()).collect::<std::vec::Vec<_>>().join(", "),
+                w.s33_bits.iter().map(|b| b.to_string()).collect::<std::vec::Vec<_>>().join(", "),
+                w.byte_before, w.byte_after,
+            )).collect::<std::vec::Vec<_>>().join(", "),
+        );
+        // Oracle bit EXPRESSIONS (not values): `emit_oracle` splices these
+        // in as-is, so they reference the runtime `witness[step]` array
+        // rather than embedding a literal `true`/`false` per step.
+        //
+        // Three entries, not two -- movfuscation's `StorageWrite` handling
+        // (`movfuscate.rs`'s write-gating `is_active`-select) unconditionally
+        // inserts its own synthetic `StorageRead` of the *current* value at
+        // the same address right before every write, in addition to any
+        // "real" read the source program itself performs. For storage 2
+        // (the CPS lowering's constant continuation slot) that's a gating
+        // read before its one write, then a real read-back after -- two
+        // 3-bit oracle reads, both of the same constant value ([true,false,
+        // false] == 1), matching `old2`/`mem2`'s own host-side bookkeeping
+        // below. For storage 33 (the real byte) it's the genuine
+        // `i32.load8_u` read followed immediately by the write-gating
+        // re-read of that same still-unwritten byte -- two 8-bit reads of
+        // the same `byte_before` value, bundled into one 16-bit oracle
+        // read since both land in the same movfuscated region. See
+        // `docs/agent-context/mem-probe-scope-note.md` and this test's own
+        // `mem2`/`mem33` call sequence below, which must mirror these
+        // exact values for the external multiset check to balance against
+        // what's actually committed in-circuit.
+        let oracle_bit_exprs: std::vec::Vec<std::vec::Vec<String>> = std::vec![
+            (0..3).map(|j| format!("witness[step].s2_bits[{j}]")).collect(),
+            (0..3).map(|j| format!("witness[step].s2_bits[{j}]")).collect(),
+            (0..16).map(|j| format!("witness[step].s33_bits[{}]", j % 8)).collect(),
+        ];
 
-        // Host-side generation of the zero entry-state declarations (step
-        // 0's w_i, both Vope and Q sides) -- widths read from the real
-        // circuit above, not assumed.
+        // Entry-state declarations, now OUTER `mut` bindings (no `_0`
+        // suffix -- there's no longer a distinct "step 0" text copy) that
+        // the loop body reassigns at the end of each real iteration.
         let mut zero_stmts = String::new();
         for (i, &w) in widths.iter().enumerate() {
             if w <= 1 {
-                zero_stmts += &format!("let w{i}_vope_0 = vope_zero();\nlet w{i}_q_0 = q_zero();\n");
+                zero_stmts += &format!("let mut w{i}_vope = vope_zero();\nlet mut w{i}_q = q_zero();\n");
             } else {
-                zero_stmts += &format!("let w{i}_vope_0: [Vope<N, Galois, cipher::consts::U1>; {w}] = core::array::from_fn(|_| vope_zero());\n");
-                zero_stmts += &format!("let w{i}_q_0: [Q<N, Galois>; {w}] = core::array::from_fn(|_| q_zero());\n");
+                zero_stmts += &format!("let mut w{i}_vope: [Vope<N, Galois, cipher::consts::U1>; {w}] = core::array::from_fn(|_| vope_zero());\n");
+                zero_stmts += &format!("let mut w{i}_q: [Q<N, Galois>; {w}] = core::array::from_fn(|_| q_zero());\n");
             }
         }
-        let mut entry_w: std::vec::Vec<(Slot, Slot)> = widths.iter().enumerate().map(|(i, &w)| {
+        zero_stmts += "let mut all_ok = true;\nlet mut fold_state = iop_accumulator_fresh();\n";
+        let entry_w: std::vec::Vec<(Slot, Slot)> = widths.iter().enumerate().map(|(i, &w)| {
             if w <= 1 {
-                (Slot::Scalar(format!("w{i}_vope_0")), Slot::Scalar(format!("w{i}_q_0")))
+                (Slot::Scalar(format!("w{i}_vope")), Slot::Scalar(format!("w{i}_q")))
             } else {
-                (Slot::Array(format!("w{i}_vope_0"), w), Slot::Array(format!("w{i}_q_0"), w))
+                (Slot::Array(format!("w{i}_vope"), w), Slot::Array(format!("w{i}_q"), w))
             }
         }).collect();
 
-        let mut all_steps_stmts = String::new();
-        let mut all_ok_fold_state: Option<(String, String)> = None;
-        for step in 0..3usize {
-            let result = generate_split_step(
-                &prover_funcs, &qsim_funcs, &verifier_funcs, &boundary, &accum_info, n_chunks,
-                &entry_w, all_ok_fold_state.clone(), &oracle_bits_per_step[step], step,
-            );
-            all_steps_stmts += &result.stmts;
-            let byte = byte_before[step];
-            let new_byte = byte.wrapping_add(1);
-            all_steps_stmts += &format!(r#"
-                {{
-                    let write_ts2 = ts2 + 1;
-                    mem2.write(Galois(0), Galois(1), write_ts2, old2, ts2);
-                    ts2 = write_ts2;
-                    let read_ts2 = ts2 + 1;
-                    mem2.read(Galois(0), Galois(1), read_ts2, ts2);
-                    ts2 = read_ts2;
-                    old2 = Galois(1);
-
-                    let read_ts33 = ts33 + 1;
-                    mem33.read(Galois(0), Galois({byte}), read_ts33, ts33);
-                    ts33 = read_ts33;
-                    let write_ts33 = ts33 + 1;
-                    mem33.write(Galois(0), Galois({new_byte}), write_ts33, Galois({byte}), ts33);
-                    ts33 = write_ts33;
-                }}
-            "#);
-            entry_w = result.next_entry_w;
-            all_ok_fold_state = Some((result.final_all_ok_expr, result.final_fold_state_expr));
+        let result = generate_split_step(
+            &prover_funcs_by_pos, &qsim_funcs_by_pos, &verifier_funcs_by_pos, &boundary, &accum_info, n_chunks,
+            &entry_w, Some(("all_ok".to_string(), "fold_state".to_string())), &oracle_bit_exprs, "step",
+        );
+        let mut loop_body = result.stmts.clone();
+        // Reassign the OUTER mutable entry-state/accumulator bindings from
+        // this iteration's own final values, so the NEXT real loop
+        // iteration sees them.
+        for (i, (vope_slot, q_slot)) in result.next_entry_w.iter().enumerate() {
+            loop_body += &format!("w{i}_vope = {};\n", slot_name(vope_slot));
+            loop_body += &format!("w{i}_q = {};\n", slot_name(q_slot));
         }
-        let (final_all_ok, final_fold_state) = all_ok_fold_state.expect("at least one step ran");
+        loop_body += &format!("all_ok = {};\nfold_state = {};\n", result.final_all_ok_expr, result.final_fold_state_expr);
+        // Mirrors the real circuit's own per-step trace exactly (see the
+        // oracle_bit_exprs comment above): storage 2 is gating-read, then
+        // written, then read back (R,W,R); storage 33 is really loaded,
+        // then gating-re-read, then written (R,R,W). Each event's
+        // `write_ts`/`old_ts` argument threads to the timestamp the
+        // *previous* event in this same chain produced, so the external
+        // multiset (`mem2.verify()`/`mem33.verify()`) balances.
+        loop_body += r#"
+            {
+                let r1_ts2 = ts2 + 1;
+                mem2.read(Galois(0), old2, r1_ts2, ts2);
+                ts2 = r1_ts2;
+                let write_ts2 = ts2 + 1;
+                mem2.write(Galois(0), Galois(1), write_ts2, old2, ts2);
+                ts2 = write_ts2;
+                old2 = Galois(1);
+                let r2_ts2 = ts2 + 1;
+                mem2.read(Galois(0), Galois(1), r2_ts2, ts2);
+                ts2 = r2_ts2;
+
+                let read1_ts33 = ts33 + 1;
+                mem33.read(Galois(0), Galois(witness[step].byte_before), read1_ts33, ts33);
+                ts33 = read1_ts33;
+                let read2_ts33 = ts33 + 1;
+                mem33.read(Galois(0), Galois(witness[step].byte_before), read2_ts33, ts33);
+                ts33 = read2_ts33;
+                let write_ts33 = ts33 + 1;
+                mem33.write(Galois(0), Galois(witness[step].byte_after), write_ts33, Galois(witness[step].byte_before), ts33);
+                ts33 = write_ts33;
+            }
+        "#;
+        let all_steps_stmts = format!(
+            "{witness_literal}for step in 0..witness.len() {{\n{loop_body}\n}}\n",
+        );
+        let (final_all_ok, final_fold_state) = ("all_ok".to_string(), "fold_state".to_string());
 
         let driver = format!(r#"
             use volar_iop::field::{{Field as _, Gf128}};
@@ -462,11 +547,15 @@ pub(crate) mod tests {
                 let key = ChallengeKey::from_challenge(r);
                 let mut mem2 = MemoryCheckState::<Galois>::new(key.clone());
                 let mut mem33 = MemoryCheckState::<Galois>::new(key);
-                mem2.init(Galois(0), Galois(0));
+                // Storage 2's committed value is constant (1) for its
+                // entire lifetime -- see the oracle_bit_exprs comment
+                // above -- so it's simplest and self-consistent to seed
+                // `init` at that same constant rather than 0-then-write.
+                mem2.init(Galois(0), Galois(1));
                 mem33.init(Galois(0), Galois(0));
                 let mut ts2: u64 = 0;
                 let mut ts33: u64 = 0;
-                let mut old2 = Galois(0);
+                let mut old2 = Galois(1);
 
                 {zero_stmts}
 

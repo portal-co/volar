@@ -70,8 +70,11 @@ fn slot_from_ty(local_name: &str, ty: &IrType) -> Slot {
 }
 
 /// The Rust local name a slot is bound to, regardless of whether it's a
-/// scalar or a whole (unindexed) array value.
-fn slot_name(s: &Slot) -> &str {
+/// scalar or a whole (unindexed) array value. `pub`: real-runtime-loop
+/// callers (e.g. `mem_probe.rs`) need this to build their own end-of-
+/// iteration reassignment statements (`w{i}_vope = {slot_name};`) from
+/// `StepResult::next_entry_w`.
+pub fn slot_name(s: &Slot) -> &str {
     match s {
         Slot::Scalar(n) | Slot::Array(n, _) => n,
     }
@@ -186,14 +189,29 @@ fn slot_widths_from_params(f: &IrFunction, prefix: &str, n_slots: usize) -> Vec<
 /// `all_ok_fold_state_in`: `(all_ok_expr, fold_state_expr)` to seed the
 /// verifier chain's first call; `None` means "use fresh literals"
 /// (`true`/`iop_accumulator_fresh()`).
-/// `oracle_bits`: real plain bit-values for every real `StorageRead` this
-/// step performs, **in the same statement order** the aggregated
-/// `MemoryTrace` (from any one of the three split weaves -- identical
-/// shape across roles) lists them; each inner `Vec<bool>` is LSB-first and
-/// must have exactly the read's own bit-width.
-/// `step_idx`: used only to keep `r_and`/RNG-seed values distinct across
-/// outer steps (soundness doesn't need this to be unpredictable here --
-/// this is a driven *test*, not a real deployment).
+/// `oracle_bit_exprs`: one already-formatted Rust `bool` EXPRESSION (not a
+/// literal `bool` value) per bit, for every real `StorageRead` this step
+/// performs, **in the same statement order** the aggregated `MemoryTrace`
+/// (from any one of the three split weaves -- identical shape across
+/// roles) lists them; each inner `Vec<String>` is LSB-first and must have
+/// exactly the read's own bit-width. This function is agnostic to whether
+/// each expression is a compile-time literal (`"true"`/`"false"`, the
+/// unrolled-per-step calling convention) or a runtime array reference
+/// (`"witness[step].oracle_bits[3][2]"`, the real-runtime-loop calling
+/// convention) -- the caller decides, this just splices the text in.
+/// `step_expr`: a Rust expression (again, either a compile-time literal
+/// like `"0"` or a runtime variable like `"step"`) used only to keep
+/// `r_and`/RNG-seed values distinct across outer steps (soundness doesn't
+/// need this to be unpredictable here -- this is a driven *test*, not a
+/// real deployment). Every OTHER per-call uniqueness concern (local
+/// variable names) no longer depends on this at all: this function is
+/// meant to be called ONCE per real-runtime-loop driver (its own returned
+/// `stmts` becomes the loop BODY, executed many times at runtime) or,
+/// for the older unrolled calling convention, once per outer step with a
+/// distinct literal `step_expr` -- either way, plain Rust block-scoping
+/// already gives every `let` binding inside `stmts` a fresh value per
+/// call/iteration, so names never needed to be step-qualified for
+/// correctness (only `step_expr`'s own r_and-seed use does).
 ///
 /// Returns `(statements, next_entry_w, final_all_ok_expr, final_fold_state_expr, finish_output_slots)`
 /// where `finish_output_slots` are the finish function's own *output*
@@ -217,8 +235,8 @@ pub fn generate_split_step(
     n_chunks: usize,
     entry_w: &[(Slot, Slot)],
     all_ok_fold_state_in: Option<(String, String)>,
-    oracle_bits: &[Vec<bool>],
-    step_idx: usize,
+    oracle_bit_exprs: &[Vec<String>],
+    step_expr: &str,
 ) -> StepResult {
     let n_blocks = boundary.len();
     assert_eq!(prover_funcs.len(), n_blocks + n_chunks + 1);
@@ -256,19 +274,21 @@ pub fn generate_split_step(
     let mut synth_exported_vope: BTreeMap<u32, Slot> = BTreeMap::new();
     let mut synth_exported_q: BTreeMap<u32, Slot> = BTreeMap::new();
 
-    // Emit one committed oracle read (real value known host-side) as a
-    // fresh `vole_commit_bit` call pair, returning (vope_name, q_name).
+    // Emit one committed oracle read (real value known host-side, or a
+    // runtime witness-array reference -- `bit_expr` already decides
+    // which) as a fresh `vole_commit_bit` call pair, returning
+    // (vope_name, q_name).
     let mut emit_oracle = |out: &mut String, uid: &str| -> (String, String) {
-        let bits = &oracle_bits[oracle_cursor];
+        let bit_exprs = &oracle_bit_exprs[oracle_cursor];
         oracle_cursor += 1;
-        let width = bits.len();
+        let width = bit_exprs.len();
         let mut vope_names = Vec::with_capacity(width);
         let mut q_names = Vec::with_capacity(width);
-        for (j, &bit) in bits.iter().enumerate() {
+        for (j, bit_expr) in bit_exprs.iter().enumerate() {
             let vn = format!("_orv_{uid}_{j}");
             let qn = format!("_orq_{uid}_{j}");
             out.push_str(&format!(
-                "let ({vn}, {qn}) = vole_commit_bit(&cot, &mut rng, sample_g, lift_bit_g, {bit});\n"
+                "let ({vn}, {qn}) = vole_commit_bit(&cot, &mut rng, sample_g, lift_bit_g, {bit_expr});\n"
             ));
             vope_names.push(vn);
             q_names.push(qn);
@@ -432,7 +452,12 @@ pub fn generate_split_step(
 
     // ---- Blocks -----------------------------------------------------------
     for (i, b) in boundary.iter().enumerate() {
-        let uid = format!("s{step_idx}_blk{i}");
+        // No step component in `uid` -- this function is now called ONCE
+        // (its own `stmts` becomes a real loop body, or is called once
+        // per step with a literal `step_expr`); either way, plain Rust
+        // block-scoping already gives every `let` a fresh value per
+        // call/iteration.
+        let uid = format!("blk{i}");
         let n_pc = b.next_pc_bits.len();
         let n_state = b.next_state.len();
         let n_ret = b.ret_vals.len();
@@ -487,8 +512,7 @@ pub fn generate_split_step(
         let r_ands_name = format!("_rands_{uid}");
         and_gate_seed += 1;
         out.push_str(&format!(
-            "let {r_ands_name}: [Gf128; {and_count}] = core::array::from_fn(|k| Gf128::from_u64({} * 1_000_003 + k as u64));\n",
-            (step_idx as u64) * 10_000_000 + and_gate_seed * 100_000
+            "let {r_ands_name}: [Gf128; {and_count}] = core::array::from_fn(|k| Gf128::from_u64((({step_expr} as u64) * 10_000_000 + {and_gate_seed}u64 * 100_000) * 1_000_003 + k as u64));\n",
         ));
 
         let local_oracle_count_v = count_params_prefixed(vf, "oracle_rd_");
@@ -510,7 +534,7 @@ pub fn generate_split_step(
             insert_synth_export(&mut synth_exported_q, v, s.clone());
         }
 
-        out.push_str(&format!("assert!({v_all_ok}, \"step {step_idx} block {i}: honest run must pass the woven verifier's own check\");\n"));
+        out.push_str(&format!("assert!({v_all_ok}, \"step {{}} block {i}: honest run must pass the woven verifier's own check\", {step_expr});\n"));
         all_ok_expr = v_all_ok;
         fold_state_expr = v_fold_state;
 
@@ -602,8 +626,14 @@ pub fn generate_split_step(
     let mut init_state_locals_q = Vec::with_capacity(n_state);
     for k in 0..n_state {
         let (vope_slot, q_slot) = &entry_w[pc_width_for_state + k];
-        init_state_locals_vope.push(slot_name(vope_slot).to_string());
-        init_state_locals_q.push(slot_name(q_slot).to_string());
+        // `.clone()`, not a bare move: under the real-runtime-loop calling
+        // convention `entry_w`'s own slots are OUTER `mut` bindings reused
+        // across iterations (and referenced again later in this same
+        // iteration, e.g. by block/chunk calls) -- unlike the older
+        // per-step-unrolled convention, where each step's `entry_w` names
+        // were fresh and single-use, so a bare move here was safe.
+        init_state_locals_vope.push(format!("{}.clone()", slot_name(vope_slot)));
+        init_state_locals_q.push(format!("{}.clone()", slot_name(q_slot)));
     }
     out.push_str(&format!("let {running_next_state_vope} = {};\n", tuple_literal(&init_state_locals_vope)));
     out.push_str(&format!("let {running_next_state_q} = {};\n", tuple_literal(&init_state_locals_q)));
@@ -644,7 +674,7 @@ pub fn generate_split_step(
 
     for c in 0..n_chunks {
         let hi = (lo + chunk_size).min(n_blocks);
-        let uid = format!("s{step_idx}_chunk{c}");
+        let uid = format!("chunk{c}");
         let pf = &prover_funcs[n_blocks + c];
         let qf = &qsim_funcs[n_blocks + c];
         let vf = &verifier_funcs[n_blocks + c];
@@ -683,8 +713,7 @@ pub fn generate_split_step(
         let r_ands_name = format!("_rands_{uid}");
         and_gate_seed += 1;
         out.push_str(&format!(
-            "let {r_ands_name}: [Gf128; {and_count}] = core::array::from_fn(|k| Gf128::from_u64({} * 1_000_003 + k as u64));\n",
-            (step_idx as u64) * 10_000_000 + and_gate_seed * 100_000
+            "let {r_ands_name}: [Gf128; {and_count}] = core::array::from_fn(|k| Gf128::from_u64((({step_expr} as u64) * 10_000_000 + {and_gate_seed}u64 * 100_000) * 1_000_003 + k as u64));\n",
         ));
         let v_outcome = build_call(
             &mut out, vf, "q_one(&delta)", entry_w, 1, Some(&p_hats), Some(&q_and_arr), Some(&r_ands_name), Some(running_in_q), &exported_q, &synth_exported_q, Some((lo, hi)), true,
@@ -699,7 +728,7 @@ pub fn generate_split_step(
             insert_synth_export(&mut synth_exported_q, v, s.clone());
         }
 
-        out.push_str(&format!("assert!({v_all_ok}, \"step {step_idx} chunk {c}: honest run must pass the woven verifier's own check\");\n"));
+        out.push_str(&format!("assert!({v_all_ok}, \"step {{}} chunk {c}: honest run must pass the woven verifier's own check\", {step_expr});\n"));
         all_ok_expr = v_all_ok;
         fold_state_expr = v_fold_state;
 
@@ -744,7 +773,7 @@ pub fn generate_split_step(
 
     // ---- Finish -------------------------------------------------------
     {
-        let uid = format!("s{step_idx}_finish");
+        let uid = "finish".to_string();
         let pf = &prover_funcs[n_blocks + n_chunks];
         let qf = &qsim_funcs[n_blocks + n_chunks];
         let vf = &verifier_funcs[n_blocks + n_chunks];
@@ -789,8 +818,7 @@ pub fn generate_split_step(
         let r_ands_name = format!("_rands_{uid}");
         and_gate_seed += 1;
         out.push_str(&format!(
-            "let {r_ands_name}: [Gf128; {and_count}] = core::array::from_fn(|k| Gf128::from_u64({} * 1_000_003 + k as u64));\n",
-            (step_idx as u64) * 10_000_000 + and_gate_seed * 100_000
+            "let {r_ands_name}: [Gf128; {and_count}] = core::array::from_fn(|k| Gf128::from_u64((({step_expr} as u64) * 10_000_000 + {and_gate_seed}u64 * 100_000) * 1_000_003 + k as u64));\n",
         ));
         let v_outcome = build_call(
             &mut out, vf, "q_one(&delta)", entry_w, 1, Some(&p_hats), Some(&q_and_arr), Some(&r_ands_name), Some(running_in_q), &exported_q, &synth_exported_q, None, true,
@@ -799,7 +827,7 @@ pub fn generate_split_step(
         let v_slots = v_outcome.finish_output;
         let v_all_ok = match &v_slots[v_slots.len() - 2] { Slot::Scalar(n) => n.clone(), _ => unreachable!() };
         let v_fold_state = match &v_slots[v_slots.len() - 1] { Slot::Scalar(n) => n.clone(), _ => unreachable!() };
-        out.push_str(&format!("assert!({v_all_ok}, \"step {step_idx} finish: honest run must pass the woven verifier's own check\");\n"));
+        out.push_str(&format!("assert!({v_all_ok}, \"step {{}} finish: honest run must pass the woven verifier's own check\", {step_expr});\n"));
 
         // Next step's entry state: the finish function's own real output
         // (the terminator's actual return args), Vope side from the real
