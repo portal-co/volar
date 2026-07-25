@@ -2589,20 +2589,8 @@ mod tests {
         cumulative = compose(cumulative, &dce_remaps[0]);
 
         // ---- Batch, unconstrained, tracking each new var's own members. ----
-        // DIAGNOSTIC: VOLAR_SKIP_BATCH lets this step be skipped entirely,
-        // to isolate whether batch_ir_blocks's own wide-Poly creation is
-        // the cause of a real-scale memory blowup found in emit_poly_wide/
-        // materialize/array_t_default (see docs/interpreter-honest-e2e-zk-plan.md's
-        // "Cross-chunk locality" section).
         let cumulative_pre_batch = cumulative.clone();
-        let skip_batch = std::env::var("VOLAR_SKIP_BATCH").is_ok();
-        let (batch_remaps, batch_members): (Vec<std::collections::BTreeMap<u32, u32>>, Vec<std::collections::BTreeMap<u32, Vec<u32>>>) = if skip_batch {
-            let n_now = (movfuscated.blocks[0].params.len() + movfuscated.blocks[0].stmts.len()) as u32;
-            (vec![(0..n_now).map(|v| (v, v)).collect()], vec![std::collections::BTreeMap::new()])
-        } else {
-            let (_, r, m) = batch_ir_blocks_with_remap_and_members(&mut movfuscated, &mut types);
-            (r, m)
-        };
+        let (_, batch_remaps, batch_members) = batch_ir_blocks_with_remap_and_members(&mut movfuscated, &mut types);
         cumulative = compose(cumulative, &batch_remaps[0]);
 
         // ---- Reconstruct, for every FINAL (post-batch) var, the set of
@@ -2655,17 +2643,32 @@ mod tests {
         // one real case: end < start). Fix: since CSE/DCE/batch never
         // reorder surviving statements (only remove/insert), a region's
         // own surviving members stay contiguous -- recompute start/end
-        // directly from `region_by_orig_var` + `cumulative` (min/max over
-        // every original var of this region that's still alive), the
+        // directly from each FINAL var's own `region_sets_final`, the
         // same fix `hoist_shared_statements`'s own `region_ranges`
         // needed, but without requiring an actual reorder pass here.
+        //
+        // NOT built from `region_by_orig_var` + `cumulative` directly
+        // (an earlier, buggy version of this fix): iterating every
+        // ORIGINAL var `old` and crediting `region_by_orig_var[old]`
+        // with wherever `cumulative[old]` NOW points double-counts/
+        // misattributes -- if `old` (region R) got CSE-merged onto a
+        // SURVIVOR that's physically in a totally different region R'
+        // (because R' had an earlier identical duplicate), that survivor's
+        // position gets wrongly credited to R's own min/max too, which
+        // can blow a region's own range up to nearly the whole circuit
+        // (confirmed concretely: one block ended up covering 332,275 of
+        // the circuit's 225,431 statements this way). The correct
+        // "physical region" for a final var is `min(region_sets_final[v])`
+        // -- exactly the same `producer` a var's own defining statement
+        // lives in that `thread_synthetic_slots` already computes, since
+        // CSE/batch always keep/create a survivor at its own earliest
+        // (i.e. lowest-region) member's position.
         let mut region_ranges_final: std::collections::BTreeMap<u32, (u32, u32)> = std::collections::BTreeMap::new();
-        for (&old, &region) in &region_by_orig_var {
-            if let Some(&new) = cumulative.get(&old) {
-                let e = region_ranges_final.entry(region).or_insert((new, new + 1));
-                e.0 = e.0.min(new);
-                e.1 = e.1.max(new + 1);
-            }
+        for (&new_var, regions) in &region_sets_final {
+            let physical_region = *regions.iter().min().unwrap();
+            let e = region_ranges_final.entry(physical_region).or_insert((new_var, new_var + 1));
+            e.0 = e.0.min(new_var);
+            e.1 = e.1.max(new_var + 1);
         }
 
         let mut boundary = remap_movfusc_boundaries(&boundary, &cumulative);
@@ -2735,6 +2738,19 @@ mod tests {
             return;
         }
 
+        // lower_to_circuit_ir wraps `movfuscated` into a proper
+        // Return-terminated circuit (is_circuit()) -- moved here, BEFORE
+        // validation, because it does NOT preserve the statement count
+        // (confirmed: it APPENDS new statements for the termination-flag/
+        // Return-wrapping logic -- 225,431 -> 225,528 in one real run).
+        // Validating against `movfuscated` alone misses these newly
+        // appended statements entirely; `circuit` is what's ACTUALLY
+        // woven, so validate against it instead. It does NOT renumber
+        // movfuscated's own EXISTING statements (only appends), so
+        // `boundary`/`accum_info` (computed pre-lowering) stay valid.
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+
         // DIAGNOSTIC (cheap, no weave): for every range, check that
         // everything its own native fields (is_active/done/next_pc_bits/
         // next_state/ret_vals) AND its own synthetic_out reference is
@@ -2744,7 +2760,7 @@ mod tests {
         // without needing the actual (expensive, panic-losing-context)
         // weave to run.
         {
-            let n_params_final = movfuscated.blocks[0].params.len() as u32;
+            let n_params_final = circuit.blocks[0].params.len() as u32;
             let shared_prefix_end_final = boundary[0].start;
             let validate_range = |label: &str, start: u32, end: u32, fields: &[(&str, &[u32])], synthetic_in: &[u32]| {
                 let visible = |v: u32| -> bool {
@@ -2789,16 +2805,106 @@ mod tests {
                     &s.synthetic_in,
                 );
             }
+
+            // STATEMENT-LEVEL validation: the metadata-field checks above
+            // don't catch a statement WITHIN a range whose own OPERANDS
+            // reference a var from a different region that isn't in this
+            // range's own synthetic_in -- exactly the gap that let a real
+            // "no entry found for key" panic through even after the
+            // metadata-field validation above reported zero failures.
+            let stmt_operand_vars = |kind: &volar_ir::ir::IRStmt| -> Vec<u32> {
+                let mut out = Vec::new();
+                let _ = kind.clone().map_var(
+                    &mut out,
+                    &mut |acc: &mut Vec<u32>, v: volar_ir::ir::IRVarId| -> Result<volar_ir::ir::IRVarId, core::convert::Infallible> { acc.push(v.0); Ok(v) },
+                    &mut |_, ty| Ok(ty),
+                    &mut |_, s| Ok(s),
+                );
+                out
+            };
+            // accum_info.steps[i]'s own STATEMENTS (the actual fold logic:
+            // `g = is_active_i AND done_i; done_acc = done_acc XOR g; ...`)
+            // legitimately reference `boundary[i]`'s own is_active/done/
+            // next_pc_bits/next_state/ret_vals DIRECTLY as operands -- the
+            // pre-existing chunk loop explicitly `bind_scalar`s exactly
+            // these vars for every block index a chunk covers (block i's
+            // own exports feed the accumulator step covering it, per
+            // split_driver.rs's own doc). Not part of my own synthetic_in
+            // mechanism, so pass them in as `extra_visible` per call.
+            let validate_stmt_range = |label: &str, start: u32, end: u32, synthetic_in: &[u32], extra_visible: &[u32]| {
+                let visible = |v: u32| -> bool {
+                    v < n_params_final
+                        || (v >= n_params_final && v < shared_prefix_end_final)
+                        || (v >= start && v < end)
+                        || synthetic_in.contains(&v)
+                        || extra_visible.contains(&v)
+                };
+                let s = (start - n_params_final) as usize;
+                let e = (end - n_params_final) as usize;
+                for (j, stmt) in circuit.blocks[0].stmts[s..e].iter().enumerate() {
+                    for v in stmt_operand_vars(&stmt.kind) {
+                        if !visible(v) {
+                            eprintln!("STMT VALIDATION FAILURE: {label} stmt@{} (var {}) references operand var {v}, not visible here (start={start}, end={end})", s + j, n_params_final as usize + s + j);
+                        }
+                    }
+                }
+            };
+            validate_stmt_range("shared_prefix", n_params_final, shared_prefix_end_final, &[], &[]);
+            for (i, b) in boundary.iter().enumerate() {
+                validate_stmt_range(&format!("boundary[{i}]"), b.start, b.end, &b.synthetic_in, &[]);
+            }
+            validate_stmt_range("accum_info.init", accum_info.init.start, accum_info.init.end, &accum_info.init.synthetic_in, &[]);
+            // chunk_size=1 in this probe -- accum_info.steps[i] covers
+            // exactly boundary[i], so that block's own native export
+            // fields are visible (see validate_stmt_range's own doc
+            // comment for why). ALSO: step i's own fold logic (`next_state[k]
+            // = emit_field_add(prev_next_state[k], gated_contribution, ..)`)
+            // directly references the PRECEDING running accumulator's own
+            // done_acc/next_pc/next_state/ret_vals as an operand --
+            // accum_info.init's own for i==0, else steps[i-1]'s own --
+            // also bind_running-handled, also not part of my own
+            // synthetic_in mechanism.
+            for (i, s) in accum_info.steps.iter().enumerate() {
+                let b = &boundary[i];
+                let mut extra_visible: Vec<u32> = vec![b.is_active, b.done];
+                extra_visible.extend(b.next_pc_bits.iter().copied());
+                extra_visible.extend(b.next_state.iter().copied());
+                extra_visible.extend(b.ret_vals.iter().copied());
+                let (prev_done_acc, prev_next_pc, prev_next_state, prev_ret_vals) = if i == 0 {
+                    (accum_info.init.done_acc, &accum_info.init.next_pc, &accum_info.init.next_state, &accum_info.init.ret_vals)
+                } else {
+                    let p = &accum_info.steps[i - 1];
+                    (p.done_acc, &p.next_pc, &p.next_state, &p.ret_vals)
+                };
+                extra_visible.push(prev_done_acc);
+                extra_visible.extend(prev_next_pc.iter().copied());
+                extra_visible.extend(prev_next_state.iter().copied());
+                extra_visible.extend(prev_ret_vals.iter().copied());
+                validate_stmt_range(&format!("accum_info.steps[{i}]"), s.start, s.end, &s.synthetic_in, &extra_visible);
+            }
+
+            // "finish" (lower_to_circuit_ir's own terminator-select/padding,
+            // AFTER the last accum step) is NOT represented by any
+            // MovfuscBlockBoundary/MovfuscAccumStep at all, so it's never
+            // covered by region_by_orig_var / region_sets_final /
+            // thread_synthetic_slots. This is safe in practice: finish's
+            // own statements only ever reference the last accum step's own
+            // running state (bind_running-handled, in extra_visible below)
+            // or shared_prefix/params -- confirmed by this check passing
+            // cleanly at real interpreter scale.
+            {
+                let last_step = accum_info.steps.last().unwrap();
+                let finish_start = last_step.end;
+                let finish_end = n_params_final + circuit.blocks[0].stmts.len() as u32;
+                let mut extra_visible: Vec<u32> = vec![last_step.done_acc];
+                extra_visible.extend(last_step.next_pc.iter().copied());
+                extra_visible.extend(last_step.next_state.iter().copied());
+                extra_visible.extend(last_step.ret_vals.iter().copied());
+                validate_stmt_range("finish", finish_start, finish_end, &[], &extra_visible);
+            }
+
             eprintln!("validation pass complete");
         }
-
-        // lower_to_circuit_ir wraps `movfuscated` into a proper
-        // Return-terminated circuit (is_circuit()) WITHOUT renumbering
-        // its own existing statements -- matches lower_interpreter's own
-        // established pattern (boundary/accum_info returned unchanged
-        // across this exact step there too).
-        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
-        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
 
         let mode = StorageMode::Commitment;
         let chunk_size = 1usize;

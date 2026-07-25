@@ -2823,7 +2823,11 @@ impl<'a> VoleIrCtx<'a> {
     /// are reserved for combining genuinely different return slots (see
     /// callers), not for repeating one type.
     fn slot_expr(&self, v: &CirVar) -> IrExpr {
-        match &self.wires[&v.0] {
+        let wire = self.wires.get(&v.0).unwrap_or_else(|| panic!(
+            "slot_expr: var {} not bound in this ctx (ctx has {} wires bound, lowest={:?}, highest={:?})",
+            v.0, self.wires.len(), self.wires.keys().next(), self.wires.keys().next_back(),
+        ));
+        match wire {
             WireRepr::Scalar(s) => clone_expr(var(s)),
             WireRepr::Vec(names) => {
                 ir_expr(IrExprKind::FixedArray(names.iter().map(|n| clone_expr(var(n))).collect()))
@@ -2841,7 +2845,11 @@ impl<'a> VoleIrCtx<'a> {
     /// of `base_ty` for a `Vec` wire — the type counterpart of
     /// [`Self::slot_expr`], same array-not-tuple rationale.
     fn slot_type(&self, v: &CirVar, base_ty: &IrType) -> IrType {
-        match &self.wires[&v.0] {
+        let wire = self.wires.get(&v.0).unwrap_or_else(|| panic!(
+            "slot_type: var {} not bound in this ctx (ctx has {} wires bound, lowest={:?}, highest={:?})",
+            v.0, self.wires.len(), self.wires.keys().next(), self.wires.keys().next_back(),
+        ));
+        match wire {
             WireRepr::Scalar(_) => base_ty.clone(),
             WireRepr::Vec(names) => IrType::Array {
                 kind: volar_compiler::ir::ArrayKind::FixedArray,
@@ -4748,6 +4756,15 @@ pub fn weave_vole_prover_ir_split(
         // not a free-floating zero. Omitting this line previously produced
         // "no entry found for key" once such a reference was woven.
         insert_w_wires(&mut probe_ctx);
+        // shared_prefix must be emitted here too -- unconstrained CSE can
+        // (and does, in practice: a Bit-typed zero seed statement is a
+        // prime dedup target) merge one of accum_info.init's own seed
+        // statements onto shared_prefix's own statement, so a reference
+        // into accum_info.init's own next_state/ret_vals can legitimately
+        // point at a shared_prefix var -- every other ctx in this
+        // function already emits shared_prefix before querying anything;
+        // this probe was the one place that didn't.
+        probe_ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
         let init_start = (accum_info.init.start - num_params as u32) as usize;
         let init_end = (accum_info.init.end - num_params as u32) as usize;
         probe_ctx.emit_circuit_stmts_range(block, types, mode, init_start..init_end);
@@ -5643,6 +5660,15 @@ pub fn weave_vole_qsim_ir_split(
         // See the matching comment in `weave_vole_prover_ir_split` -- the
         // circuit's own top-level params must be bound here too.
         insert_w_wires(&mut probe_ctx);
+        // shared_prefix must be emitted here too -- unconstrained CSE can
+        // (and does, in practice: a Bit-typed zero seed statement is a
+        // prime dedup target) merge one of accum_info.init's own seed
+        // statements onto shared_prefix's own statement, so a reference
+        // into accum_info.init's own next_state/ret_vals can legitimately
+        // point at a shared_prefix var -- every other ctx in this
+        // function already emits shared_prefix before querying anything;
+        // this probe was the one place that didn't.
+        probe_ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
         let init_start = (accum_info.init.start - num_params as u32) as usize;
         let init_end = (accum_info.init.end - num_params as u32) as usize;
         probe_ctx.emit_circuit_stmts_range(block, types, mode, init_start..init_end);
@@ -6241,6 +6267,15 @@ pub fn weave_vole_verifier_ir_split_with_trace(
         // See the matching comment in `weave_vole_prover_ir_split` -- the
         // circuit's own top-level params must be bound here too.
         insert_w_wires(&mut probe_ctx);
+        // shared_prefix must be emitted here too -- unconstrained CSE can
+        // (and does, in practice: a Bit-typed zero seed statement is a
+        // prime dedup target) merge one of accum_info.init's own seed
+        // statements onto shared_prefix's own statement, so a reference
+        // into accum_info.init's own next_state/ret_vals can legitimately
+        // point at a shared_prefix var -- every other ctx in this
+        // function already emits shared_prefix before querying anything;
+        // this probe was the one place that didn't.
+        probe_ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
         let init_start = (accum_info.init.start - num_params as u32) as usize;
         let init_end = (accum_info.init.end - num_params as u32) as usize;
         probe_ctx.emit_circuit_stmts_range(block, types, mode, init_start..init_end);

@@ -47,18 +47,16 @@ of them need) — confirmed OOM at 93.6GB. The user redirected to a THIRD
 design — thread cross-chunk values as packed parameters between exactly
 the functions that need them, mirroring `split_driver.rs`'s own
 already-built `all_ok`/`fold_state` linear-chain precedent — which was
-then fully implemented across `movfuscate.rs`/`vole.rs`/`split_driver.rs`,
-unit-tested, and confirmed **logically correct** at real scale (a
-pre-weave validation pass reports zero reference-visibility failures,
-after fixing two real bugs found along the way — see "Cross-chunk
-locality" for the full story). It remains blocked on a THIRD, distinct
-real-scale performance blowup (90.9GB at t=25s, confirmed unrelated to
-both the synthetic-slot count and to `batch_ir_blocks` specifically —
-CSE+DCE alone reproduces it identically) with a plausible but
-unconfirmed cause (wide-value materialization triggered across function
-boundaries by synthetic threading). See "Cross-chunk locality" below for
-the complete, current state. Movfuscation block-finish fall-through
-remains unstarted.**
+fully implemented across `movfuscate.rs`/`vole.rs`/`split_driver.rs`,
+unit-tested, and confirmed **logically correct** at real scale. A THIRD,
+distinct real-scale blowup (90.9GB at t=25s) was then found, root-caused
+(four real bugs, found via a progressively thorough validation pass —
+see "Cross-chunk locality" for the full story), and **fixed**. **The
+real weave now succeeds**: `woven: 241 functions`,
+**`printed_len=397,328,245 bytes`** vs the `746,002,390`-byte baseline
+— a real, validated **~46.7% reduction**, actually woven, completing in
+under 10 seconds. Full regression sweep green. Movfuscation block-finish
+fall-through remains unstarted (natural next step for a fresh session).**
 
 ## `chunk_size` mitigation (still useful, now stacks with the real fix)
 
@@ -1004,61 +1002,90 @@ var reference in the optimized+synthetic-threaded circuit is confirmed
 resolvable. This is real evidence the packed-parameter design is
 **logically correct**.
 
-**Still blocked: a third, distinct real-scale performance blowup,
-unrelated to hoisting's overcounting and unrelated to the synthetic
-slot mechanism's own size.** Attempting the actual weave (not just
-validation) gets SIGKILLed consistently around 60s regardless of
-`ulimit -v` level tried (8GB, 12GB, 16GB all killed at the same point) —
-`sample`-profiled directly (same technique used earlier this session for
-the original `WireRepr::Array` OOM): **90.9GB physical footprint at just
-t=25s**, hot functions `emit_zero`/`emit_poly_wide`/`array_t_default`/
-`materialize`/`arr_index`/`emit_poly_lane` — i.e. the *same function
-family* `WireRepr::Array` was built to keep cheap, now expensive again
-through some other path. Two things ruled out concretely:
-- **Not the synthetic-slot count**: a cheap pre-weave diagnostic
-  (`total_span` = sum over every cross-region var of its own
-  producer-to-last-consumer distance, predicting exactly how many extra
-  param+return pairs get added across all functions) measured only
-  `19,129` vars, `total_span=137,327` (median distance 2, p90 17, max
-  119) — far too small to explain a 90GB blowup on its own.
+**A third, distinct blowup was found — and root-caused and fixed.**
+Attempting the actual weave (not just validation) got SIGKILLed
+consistently around 60s regardless of `ulimit -v` level tried (8GB,
+12GB, 16GB all killed at the same point) — `sample`-profiled directly
+(same technique used earlier this session for the original
+`WireRepr::Array` OOM): **90.9GB physical footprint at just t=25s**, hot
+functions `emit_zero`/`emit_poly_wide`/`array_t_default`/`materialize`/
+`arr_index`/`emit_poly_lane`. Two hypotheses were ruled out concretely
+before finding the real cause:
+- **Not the synthetic-slot count**: `total_span` (sum over every
+  cross-region var of its own producer-to-last-consumer distance,
+  predicting exactly how many extra param+return pairs get added across
+  all functions) measured only `19,129` vars, `total_span=137,327`
+  (median distance 2, p90 17, max 119) — far too small to explain a 90GB
+  blowup on its own.
 - **Not `batch_ir_blocks`**: re-ran with batch skipped entirely
-  (`VOLAR_SKIP_BATCH` env-gated in the probe, CSE+DCE+synthetic-threading
-  only) — circuit size barely changes (224,899 vs 225,431 statements,
-  consistent with batch's own tiny post-movfuscation contribution
-  documented earlier) and the **identical blowup still occurs**. So
-  whatever's expensive is already present from CSE+DCE alone; batch
-  isn't adding or fixing it.
+  (CSE+DCE+synthetic-threading only) — circuit size barely changed
+  (224,899 vs 225,431 statements) and the **identical blowup still
+  occurred**. Whatever was expensive was already present from CSE+DCE
+  alone.
 
-**Leading, unconfirmed hypothesis**: `emit_poly_wide`'s bundling logic
-already materializes a `WireRepr::Array` operand when needed (Merge,
-address composition, unrolled-Poly fallback — see `WireRepr::Array`'s
-own doc). A CSE-shared value threaded via `synth_{v}` crosses a function
-boundary; if the underlying value is *wide* (a common case — this
-interpreter's own registers/words are typically 32-64 bits, and
-`VaffleTarget`'s own bitwise ops already emit one wide `Poly` per
-op) and the consuming statement needs individual bits or combines it
-with something else, materializing it in *every* function it threads
-through could reproduce a variant of the exact eager-unpack cost class
-`WireRepr::Array` was built to eliminate — just triggered via the
-synthetic-threading path instead of top-level param binding. **Not
-confirmed** — would need direct instrumentation (count actual
-`materialize()` calls and their own array widths during a real run) to
-verify, not yet done.
+**Real root cause, found via a progressively more thorough validation
+methodology** (each round: add a cheap pre-weave check, find a false-
+positive class or a real bug, fix, re-run):
+1. **`region_ranges_final` misattribution** (real bug): naively crediting
+   every original var's *original* region with wherever its *final*
+   position landed double-counts/misattributes when CSE merges a var onto
+   a survivor physically in a *different* region — one block's own
+   `[start,end)` was found inflated to 332,275 of the circuit's 225,431
+   statements this way. Fixed by using `min(region_sets_final[v])` (the
+   same "physical producer" derivation `thread_synthetic_slots` already
+   uses) instead of re-deriving from `region_by_orig_var` + `cumulative`
+   directly.
+2. **Two `bind_running` false-positive classes** in an extended
+   statement-level validator (walking every statement's own operands via
+   `map_var`, not just metadata fields): `accum_info.steps[i]`'s own fold
+   logic legitimately references `boundary[i]`'s own is_active/done/
+   next_pc_bits/next_state/ret_vals directly (the pre-existing chunk
+   loop's own explicit `bind_scalar` for exactly these vars), and also
+   the *preceding* step's (or `accum_info.init`'s) own running
+   done_acc/next_pc/next_state/ret_vals. Both are threaded by the
+   pre-existing `bind_running` mechanism, unrelated to `synthetic_in`.
+3. **`lower_to_circuit_ir` appends statements**: confirmed it does NOT
+   preserve statement count (225,431 → 225,528 in one real run, for the
+   termination-flag/Return-wrapping logic) — validating against
+   `movfuscated` alone missed these; moved validation to run against
+   `circuit` (what's actually woven) instead, after `lower_to_circuit_ir`.
+4. **The actual root cause**: the `init_next_state_tys`/`init_ret_val_tys`
+   type-probe in `vole.rs` (used by all 3 roles) was the *one* `VoleIrCtx`
+   in the entire weaver that never emitted `shared_prefix` before
+   querying types — never mattered before CSE existed, because
+   `accum_info.init`'s own `next_state`/`ret_vals` were always either
+   top-level params or fresh local statements. But unconstrained CSE
+   legitimately merges `accum_info.init`'s own `Bit`-typed zero-seed
+   statements (`ret_vals[m] = emit_zero_slot(...)`) onto `shared_prefix`'s
+   own `bit_zero` constant (same "Const(0, Bit)" content, `bit_zero`
+   survives as the earliest occurrence) — so a reference that's
+   perfectly valid everywhere else in the weaver was invisible to this
+   one probe. Fixed by adding the missing `emit_circuit_stmts_range(...,
+   shared_prefix.clone())` call, in all 3 roles (prover/qsim/verifier).
 
-**Where this leaves the investigation**: the packed-parameter design
-itself is complete, unit-tested (4 new tests, all passing), and
-validated logically correct at real scale (zero reference-visibility
-failures) — a real, durable piece of infrastructure. Getting an actual
-printed-size number still requires diagnosing this third performance
-issue, which is a distinct, self-contained follow-up (add materialize()
-call-site instrumentation; if the wide-value hypothesis is confirmed,
-likely fix is to only materialize the *specific bits* a consumer
-actually needs rather than the whole array, or to avoid threading wide
-values through function boundaries that don't need every bit). Natural
-next step for a fresh session.
+**Result: the real weave succeeds.** `woven: 241 functions`,
+**`printed_len=397,328,245 bytes`** vs the `746,002,390`-byte baseline —
+a **~46.7% reduction**, real, validated, actually woven — completing in
+under 10 seconds (the earlier "blowup" was entirely the above bugs, not
+a fundamental resource limit). Confirmed reproducible across multiple
+runs. Full regression sweep green after cleaning up the investigation's
+own temporary instrumentation (`volar-ir-passes` 84/84, `volar-ir-opt`
+25/25, `volar-weaver`'s `vole::` suite 36/36, `volar-riscv-e2e` — same 3
+pre-existing failures as before, confirmed unrelated via `git stash` A/B
+for the one not previously documented).
 
-Not yet implemented as of this doc update — this is the concrete,
-grounded plan for the next work on this investigation.
+The pre-weave validation pass (metadata-field + statement-level operand
+checks, covering `shared_prefix`/`boundary[i]`/`accum_info.init`/
+`accum_info.steps[i]`/`finish`) is kept in the probe as a permanent,
+cheap (single-digit-seconds) correctness check — it caught every one of
+the bugs above before a single expensive weave attempt, and is the
+reason this investigation converged instead of continuing to guess
+against multi-minute SIGKILL cycles.
+
+Movfuscation block-finish fall-through (the other originally-identified
+"next step") remains completely unstarted — the natural next piece of
+work for a fresh session, now that this investigation's own real
+printed-size number is in hand.
 
 <details>
 <summary>Original hoist-to-shared-prefix sketch (superseded by the "implemented and tried" section above, kept for the record)</summary>
