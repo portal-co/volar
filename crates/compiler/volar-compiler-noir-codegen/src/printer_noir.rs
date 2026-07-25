@@ -34,6 +34,26 @@ pub fn print_module_noir(module: &IrModule<IrFunction>) -> Result<String, Vec<No
 
     let mut out = String::new();
     let mut errors = Vec::new();
+
+    // Empirically confirmed (`nargo check`): unlike Rust, Noir does not
+    // put `Add`/`Sub`/`Mul`/etc. in scope for `impl` purposes without an
+    // explicit `use` -- a bare `impl Add for Galois` fails with "Trait Add
+    // not found" otherwise. Collect exactly the trait names actually used
+    // so the import list doesn't grow unboundedly.
+    let mut used_traits = Vec::new();
+    for imp in &module.impls {
+        if let Some(tr) = &imp.trait_ {
+            if let Ok(name) = trait_kind_to_noir_name(&tr.kind) {
+                if !used_traits.contains(&name) {
+                    used_traits.push(name);
+                }
+            }
+        }
+    }
+    if !used_traits.is_empty() {
+        out.push_str(&format!("use std::ops::{{{}}};\n\n", used_traits.join(", ")));
+    }
+
     for s in &module.structs {
         // `GenericArray` is a structural alias for Volar's own generic-
         // array crate type, not a user struct declaration Noir needs to
@@ -44,6 +64,15 @@ pub fn print_module_noir(module: &IrModule<IrFunction>) -> Result<String, Vec<No
             continue;
         }
         match print_struct(s) {
+            Ok(text) => {
+                out.push_str(&text);
+                out.push_str("\n\n");
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+    for imp in &module.impls {
+        match print_impl(imp) {
             Ok(text) => {
                 out.push_str(&text);
                 out.push_str("\n\n");
@@ -67,8 +96,93 @@ pub fn print_module_noir(module: &IrModule<IrFunction>) -> Result<String, Vec<No
     }
 }
 
+/// Print an `impl` block. Trait impls are restricted in v1 to the
+/// `MathTrait` operator-overload set (`Add`/`Sub`/`Mul`/`Div`/`BitAnd`/
+/// `BitOr`/`BitXor`/`Shl`/`Shr`/`Not`/`Neg`) -- confirmed against Noir's
+/// actual stdlib trait definitions (`noir_stdlib/src/ops/{arith,bit}.nr`):
+/// same trait names and method names as Rust's `std::ops` (`fn add(self,
+/// other: Self) -> Self`, `fn bitxor(self, other: Self) -> Self`, etc.),
+/// so the method name text needs no remapping -- `IrFunction.name` already
+/// carries the right Noir method name straight from the source. This is
+/// what makes the `volar-primitives` GF(2^k)/GF(3) software-fallback
+/// strategy fall out "for free": those types are ordinary structs with
+/// exactly these operator-overload impls, parsed as ordinary source (see
+/// the approved plan). Comparison/clone/default traits and any non-`Math`
+/// `TraitKind` are unsupported in v1 (trait-bound/translation work beyond
+/// this narrow set is milestone 6 territory).
+fn print_impl(imp: &volar_compiler::ir::IrImpl) -> Result<String, NoirCodegenError> {
+    let self_ty_text = type_to_noir(&imp.self_ty, "<impl>")?;
+    let generics_text = print_generics(&imp.generics, "<impl>")?;
+
+    let header = match &imp.trait_ {
+        None => format!("impl{generics_text} {self_ty_text}"),
+        Some(tr) => {
+            let trait_name = trait_kind_to_noir_name(&tr.kind)?;
+            format!("impl{generics_text} {trait_name} for {self_ty_text}")
+        }
+    };
+
+    let mut methods = Vec::new();
+    for item in &imp.items {
+        match item {
+            volar_compiler::ir::IrImplItem::Method(f) => methods.push(print_function(f)?),
+            volar_compiler::ir::IrImplItem::AssociatedType { name, .. } => {
+                return Err(NoirCodegenError::Unsupported {
+                    function: "<impl>".into(),
+                    reason: format!("associated type `{name}` in an impl block is not yet supported"),
+                });
+            }
+        }
+    }
+
+    Ok(format!("{header} {{\n{}\n}}", indent(&methods.join("\n\n"))))
+}
+
+fn trait_kind_to_noir_name(kind: &volar_compiler::ir::TraitKind) -> Result<&'static str, NoirCodegenError> {
+    use volar_compiler::ir::{MathTrait, TraitKind};
+    match kind {
+        TraitKind::Math(MathTrait::Add) => Ok("Add"),
+        TraitKind::Math(MathTrait::Sub) => Ok("Sub"),
+        TraitKind::Math(MathTrait::Mul) => Ok("Mul"),
+        TraitKind::Math(MathTrait::Div) => Ok("Div"),
+        TraitKind::Math(MathTrait::BitAnd) => Ok("BitAnd"),
+        TraitKind::Math(MathTrait::BitOr) => Ok("BitOr"),
+        TraitKind::Math(MathTrait::BitXor) => Ok("BitXor"),
+        TraitKind::Math(MathTrait::Shl) => Ok("Shl"),
+        TraitKind::Math(MathTrait::Shr) => Ok("Shr"),
+        TraitKind::Math(MathTrait::Not) => Ok("Not"),
+        TraitKind::Math(MathTrait::Neg) => Ok("Neg"),
+        other => Err(NoirCodegenError::Unsupported {
+            function: "<impl>".into(),
+            reason: format!(
+                "trait `{other:?}` is not yet translated to Noir trait syntax \
+                 (see milestone 6)"
+            ),
+        }),
+    }
+}
+
 fn print_struct(s: &volar_compiler::ir::IrStruct) -> Result<String, NoirCodegenError> {
     let name = s.kind.to_string();
+    // Empirically confirmed (`nargo check`): Noir has no tuple-struct
+    // syntax at all (`struct Galois(u8);` is a parse error -- "Expected a
+    // '{' but found '('"). Volar's own `volar-primitives` fallback types
+    // (Bit/Galois/etc.) are all tuple structs, so this is a real, current
+    // gap blocking that specific fallback, not a hypothetical one --
+    // rejected clearly rather than emitting invalid syntax. Converting to
+    // a synthesized named-field struct (and correspondingly rewriting
+    // `.0`-style field access/tuple-construction call syntax throughout
+    // the expression printer) is tracked future work.
+    if s.is_tuple {
+        return Err(NoirCodegenError::Unsupported {
+            function: name.clone(),
+            reason: format!(
+                "`{name}` is a tuple struct -- Noir has no tuple-struct syntax \
+                 (confirmed via nargo check); needs conversion to a named-field \
+                 struct plus rewriting `.0`-style access, not yet implemented"
+            ),
+        });
+    }
     let generics_text = print_generics(&s.generics, &name)?;
     let mut fields = Vec::new();
     for f in &s.fields {
@@ -83,16 +197,20 @@ fn print_struct(s: &volar_compiler::ir::IrStruct) -> Result<String, NoirCodegenE
 }
 
 fn print_function(function: &IrFunction) -> Result<String, NoirCodegenError> {
-    if function.receiver.is_some() {
-        return Err(NoirCodegenError::Unsupported {
-            function: function.name.clone(),
-            reason: "methods (functions with a receiver) are not yet supported".into(),
-        });
-    }
-
     let generics_text = print_generics(&function.generics, &function.name)?;
 
     let mut params = Vec::new();
+    match function.receiver {
+        None => {}
+        Some(volar_compiler::ir::IrReceiver::Value) => params.push("self".to_string()),
+        Some(volar_compiler::ir::IrReceiver::Ref) => params.push("&self".to_string()),
+        Some(volar_compiler::ir::IrReceiver::RefMut) => {
+            return Err(NoirCodegenError::Unsupported {
+                function: function.name.clone(),
+                reason: "methods taking &mut self are not yet supported".into(),
+            });
+        }
+    }
     for p in &function.params {
         params.push(print_param(p, &function.name)?);
     }
@@ -249,9 +367,24 @@ fn type_to_noir(ty: &IrType, fn_name: &str) -> Result<String, NoirCodegenError> 
                      real fixture demonstrates the shape needed"
                 .into(),
         }),
+        // `Self::Output` (empirically the exact shape the parser produces
+        // for a Rust `impl Add for X { type Output = X; fn add(...) ->
+        // Self::Output }` method signature -- confirmed by parsing real
+        // `volar-primitives` source) resolves to plain `Self`: Noir's own
+        // arithmetic traits (`noir_stdlib/src/ops/{arith,bit}.nr`) have no
+        // `Output` associated type at all -- `fn add(self, other: Self) ->
+        // Self` returns `Self` directly. This is a narrow, targeted rule
+        // for exactly this pattern, not a general associated-type
+        // resolution system (that's out of scope -- see the `Unsupported`
+        // fallback below for every other projection shape).
+        IrType::Projection { base, assoc: volar_compiler::ir::AssociatedType::Output, .. } => {
+            type_to_noir(base, fn_name)
+        }
         IrType::Projection { .. } => Err(NoirCodegenError::Unsupported {
             function: fn_name.into(),
-            reason: "associated-type projections are not supported".into(),
+            reason: "associated-type projections (other than the arithmetic-trait \
+                     `Self::Output` pattern) are not supported"
+                .into(),
         }),
         IrType::Existential { .. } => Err(NoirCodegenError::Unsupported {
             function: fn_name.into(),
@@ -290,21 +423,26 @@ fn primitive_to_noir(p: PrimitiveType, fn_name: &str) -> Result<String, NoirCode
             function: fn_name.into(),
             reason: "Noir has no 128-bit signed integer type".into(),
         }),
-        PrimitiveType::Bit
-        | PrimitiveType::Galois
-        | PrimitiveType::Galois64
-        | PrimitiveType::Galois128
-        | PrimitiveType::Galois256
-        | PrimitiveType::BitsInBytes
-        | PrimitiveType::BitsInBytes64
-        | PrimitiveType::Z3 => Err(NoirCodegenError::Unsupported {
-            function: fn_name.into(),
-            reason: format!(
-                "{p} is a GF(2^k)/GF(3) field-element type — supported via the \
-                 volar-primitives software fallback (see milestone 5), not as a \
-                 bare primitive type reference"
-            ),
-        }),
+        // GF(2^k)/GF(3) field-element types -- supported via the
+        // `volar-primitives` software fallback (see milestone 5 notes),
+        // not any Noir-native field arithmetic. Empirically confirmed
+        // (by parsing the real `volar-primitives` source) that the
+        // compiler's own parser tags a *reference* to one of these types
+        // (e.g. an impl's `self_ty`, a method parameter/return type) as
+        // `IrType::Primitive(PrimitiveType::Galois)`, distinct from the
+        // `IrType::Struct(StructKind::Custom("Galois"))` shape used when
+        // the struct's own *declaration* is parsed -- both must map to
+        // the same Noir identifier for the emitted source to be
+        // internally consistent, so this prints the bare name rather
+        // than rejecting.
+        PrimitiveType::Bit => Ok("Bit".into()),
+        PrimitiveType::Galois => Ok("Galois".into()),
+        PrimitiveType::Galois64 => Ok("Galois64".into()),
+        PrimitiveType::Galois128 => Ok("Galois128".into()),
+        PrimitiveType::Galois256 => Ok("Galois256".into()),
+        PrimitiveType::BitsInBytes => Ok("BitsInBytes".into()),
+        PrimitiveType::BitsInBytes64 => Ok("BitsInBytes64".into()),
+        PrimitiveType::Z3 => Ok("Z3".into()),
     }
 }
 
@@ -386,6 +524,28 @@ fn print_expr(expr: &IrExpr, fn_name: &str, generics: &[IrGenericParam]) -> Resu
             }
             Ok(format!("{}({})", func_text, arg_texts.join(", ")))
         }
+
+        // `MethodKind::Other(name)` is a plain user-defined method (e.g.
+        // an inherent or trait-impl method reachable via `print_impl`) --
+        // direct 1:1 translation, `receiver.name(args)`. `Known(StdMethod)`
+        // (a curated safe subset -- `Len`/`WrappingAdd`/`WrappingSub`/
+        // `Min`/`Max`/`Pow`, per the plan) and `Vole(_)` (backend-specific,
+        // not applicable to Noir) are both deferred to milestone 6.
+        IrExprKind::MethodCall { receiver, method: volar_compiler::ir::MethodKind::Other(name), args, .. } => {
+            let receiver_text = print_expr(receiver, fn_name, generics)?;
+            let mut arg_texts = Vec::new();
+            for a in args {
+                arg_texts.push(print_expr(a, fn_name, generics)?);
+            }
+            Ok(format!("{receiver_text}.{name}({})", arg_texts.join(", ")))
+        }
+        IrExprKind::MethodCall { method, .. } => Err(NoirCodegenError::Unsupported {
+            function: fn_name.into(),
+            reason: format!(
+                "method kind `{method:?}` is not yet translated to Noir (see milestone 6 \
+                 for the curated StdMethod subset)"
+            ),
+        }),
 
         IrExprKind::Cast { expr, ty } => {
             Ok(format!("({} as {})", print_expr(expr, fn_name, generics)?, type_to_noir(ty, fn_name)?))
@@ -651,7 +811,41 @@ mod tests {
         assert_eq!(primitive_to_noir(PrimitiveType::Usize, "f").unwrap(), "u64");
         assert_eq!(primitive_to_noir(PrimitiveType::U128, "f").unwrap(), "u128");
         assert!(primitive_to_noir(PrimitiveType::I128, "f").is_err());
-        assert!(primitive_to_noir(PrimitiveType::Galois, "f").is_err());
+    }
+
+    #[test]
+    fn gf_primitive_types_map_to_bare_struct_names() {
+        // These must match the corresponding `Custom(name)` struct
+        // declaration name exactly, since the parser tags usage sites
+        // (self_ty, param/return types) with `Primitive(Galois)` but
+        // struct *declarations* with `Struct(Custom("Galois"))` -- both
+        // need to emit the same Noir identifier.
+        assert_eq!(primitive_to_noir(PrimitiveType::Bit, "f").unwrap(), "Bit");
+        assert_eq!(primitive_to_noir(PrimitiveType::Galois, "f").unwrap(), "Galois");
+        assert_eq!(primitive_to_noir(PrimitiveType::Galois64, "f").unwrap(), "Galois64");
+        assert_eq!(primitive_to_noir(PrimitiveType::Z3, "f").unwrap(), "Z3");
+    }
+
+    #[test]
+    fn self_output_projection_resolves_to_self() {
+        let ty = IrType::Projection {
+            base: Box::new(IrType::TypeParam("Self".into())),
+            trait_path: None,
+            trait_args: Vec::new(),
+            assoc: volar_compiler::ir::AssociatedType::Output,
+        };
+        assert_eq!(type_to_noir(&ty, "f").unwrap(), "Self");
+    }
+
+    #[test]
+    fn other_projection_shapes_remain_unsupported() {
+        let ty = IrType::Projection {
+            base: Box::new(IrType::TypeParam("B".into())),
+            trait_path: Some("BlockEncrypt".into()),
+            trait_args: Vec::new(),
+            assoc: volar_compiler::ir::AssociatedType::BlockSize,
+        };
+        assert!(type_to_noir(&ty, "f").is_err());
     }
 
     #[test]
@@ -985,5 +1179,129 @@ mod tests {
         assert!(text.starts_with("struct Point {"), "{text}");
         assert!(text.contains("x: u32,"), "{text}");
         assert!(text.contains("y: u32,"), "{text}");
+    }
+
+    fn galois_add_method() -> IrFunction {
+        IrFunction {
+            name: "add".into(),
+            module_path: Vec::new(),
+            generics: Vec::new(),
+            receiver: Some(volar_compiler::ir::IrReceiver::Value),
+            params: vec![IrParam {
+                name: "other".into(),
+                ty: IrType::Struct { kind: volar_compiler::ir::StructKind::Custom("Self".into()), type_args: Vec::new() },
+            }],
+            return_type: Some(IrType::Struct { kind: volar_compiler::ir::StructKind::Custom("Self".into()), type_args: Vec::new() }),
+            where_clause: Vec::new(),
+            body: block(vec![], Some(IrExprKind::Var("other".into()))),
+            external_kind: ExternalKind::Normal,
+            no_inline: false,
+        }
+    }
+
+    #[test]
+    fn trait_impl_prints_method_with_self_receiver() {
+        let imp = volar_compiler::ir::IrImpl {
+            generics: Vec::new(),
+            trait_: Some(volar_compiler::ir::IrTraitRef {
+                kind: volar_compiler::ir::TraitKind::Math(volar_compiler::ir::MathTrait::Add),
+                type_args: Vec::new(),
+            }),
+            self_ty: IrType::Struct { kind: volar_compiler::ir::StructKind::Custom("Galois".into()), type_args: Vec::new() },
+            where_clause: Vec::new(),
+            items: vec![volar_compiler::ir::IrImplItem::Method(galois_add_method())],
+        };
+        let text = print_impl(&imp).unwrap();
+        assert!(text.starts_with("impl Add for Galois {"), "{text}");
+        assert!(text.contains("fn add(self, other: Self)"), "{text}");
+    }
+
+    #[test]
+    fn inherent_impl_has_no_trait_header() {
+        let imp = volar_compiler::ir::IrImpl {
+            generics: Vec::new(),
+            trait_: None,
+            self_ty: IrType::Struct { kind: volar_compiler::ir::StructKind::Custom("Galois".into()), type_args: Vec::new() },
+            where_clause: Vec::new(),
+            items: vec![volar_compiler::ir::IrImplItem::Method(galois_add_method())],
+        };
+        let text = print_impl(&imp).unwrap();
+        assert!(text.starts_with("impl Galois {"), "{text}");
+    }
+
+    #[test]
+    fn non_math_trait_impl_is_unsupported_in_v1() {
+        let imp = volar_compiler::ir::IrImpl {
+            generics: Vec::new(),
+            trait_: Some(volar_compiler::ir::IrTraitRef {
+                kind: volar_compiler::ir::TraitKind::Custom("Digest".into()),
+                type_args: Vec::new(),
+            }),
+            self_ty: IrType::Struct { kind: volar_compiler::ir::StructKind::Custom("Hasher".into()), type_args: Vec::new() },
+            where_clause: Vec::new(),
+            items: Vec::new(),
+        };
+        assert!(print_impl(&imp).is_err());
+    }
+
+    #[test]
+    fn ref_mut_receiver_is_unsupported_in_v1() {
+        let mut f = galois_add_method();
+        f.receiver = Some(volar_compiler::ir::IrReceiver::RefMut);
+        assert!(print_function(&f).is_err());
+    }
+
+    #[test]
+    fn ref_receiver_prints_as_ampersand_self() {
+        let mut f = galois_add_method();
+        f.receiver = Some(volar_compiler::ir::IrReceiver::Ref);
+        let text = print_function(&f).unwrap();
+        assert!(text.contains("fn add(&self, other: Self)"), "{text}");
+    }
+
+    #[test]
+    fn other_method_call_prints_as_dot_call() {
+        let e = expr(IrExprKind::MethodCall {
+            receiver: Box::new(expr(IrExprKind::Var("g1".into()))),
+            method: volar_compiler::ir::MethodKind::Other("add".into()),
+            type_args: Vec::new(),
+            args: vec![expr(IrExprKind::Var("g2".into()))],
+        });
+        assert_eq!(print_expr(&e, "f", &[]).unwrap(), "g1.add(g2)");
+    }
+
+    #[test]
+    fn known_std_method_call_is_unsupported_in_v1() {
+        let e = expr(IrExprKind::MethodCall {
+            receiver: Box::new(expr(IrExprKind::Var("arr".into()))),
+            method: volar_compiler::ir::MethodKind::Known(volar_compiler::ir::StdMethod::Len),
+            type_args: Vec::new(),
+            args: Vec::new(),
+        });
+        assert!(print_expr(&e, "f", &[]).is_err());
+    }
+
+    #[test]
+    fn use_ops_import_is_emitted_only_when_needed() {
+        let module_with_ops = IrModule {
+            name: "m".into(),
+            impls: vec![volar_compiler::ir::IrImpl {
+                generics: Vec::new(),
+                trait_: Some(volar_compiler::ir::IrTraitRef {
+                    kind: volar_compiler::ir::TraitKind::Math(volar_compiler::ir::MathTrait::Add),
+                    type_args: Vec::new(),
+                }),
+                self_ty: IrType::Struct { kind: volar_compiler::ir::StructKind::Custom("Galois".into()), type_args: Vec::new() },
+                where_clause: Vec::new(),
+                items: vec![volar_compiler::ir::IrImplItem::Method(galois_add_method())],
+            }],
+            ..Default::default()
+        };
+        let text = print_module_noir(&module_with_ops).unwrap();
+        assert!(text.starts_with("use std::ops::{Add};"), "{text}");
+
+        let module_without_ops = IrModule { name: "m".into(), ..Default::default() };
+        let text = print_module_noir(&module_without_ops).unwrap();
+        assert!(!text.contains("use std::ops"), "{text}");
     }
 }

@@ -114,6 +114,61 @@ fn if_else_round_trips_through_nargo() {
 }
 
 #[test]
+fn operator_overload_impl_round_trips_through_nargo() {
+    if !nargo_available() {
+        eprintln!("skipping: nargo not on PATH");
+        return;
+    }
+
+    // Proves the mechanism the volar-primitives GF(2^k)/GF(3) software
+    // fallback strategy depends on: a struct with a std::ops trait impl,
+    // parsed as ordinary Rust source, printed with no field-arithmetic-
+    // specific codegen at all. Uses a *named*-field struct rather than
+    // volar-primitives' real (tuple-struct) Galois/Bit/etc. types --
+    // Noir has no tuple-struct syntax at all (confirmed empirically via
+    // nargo check), which is a separate, explicitly tracked gap
+    // (`print_struct`'s `is_tuple` check) blocking the real
+    // volar-primitives source specifically, not this mechanism itself.
+    let source = r#"
+        struct Galois {
+            value: u8,
+        }
+
+        impl Add for Galois {
+            fn add(self, other: Self) -> Self {
+                Galois { value: self.value ^ other.value }
+            }
+        }
+
+        fn main(a: u8, b: u8) -> u8 {
+            let g1 = Galois { value: a };
+            let g2 = Galois { value: b };
+            let g3 = g1.add(g2);
+            g3.value
+        }
+    "#;
+    let module = parse_source(source, "smoke_ops", &["smoke_ops".to_string()]).expect("parse failed");
+    let noir_source = print_module_noir(&module).expect("codegen failed");
+    assert!(noir_source.contains("use std::ops::{Add};"), "generated:\n{noir_source}");
+    assert!(noir_source.contains("impl Add for Galois {"), "generated:\n{noir_source}");
+    assert!(noir_source.contains("fn add(self, other: Self) -> Self {"), "generated:\n{noir_source}");
+
+    let dir = scratch_project("operator_overload");
+    fs::write(dir.join("src/main.nr"), &noir_source).unwrap();
+    // 5 ^ 3 = 6 -- independently computed expected result.
+    fs::write(dir.join("Prover.toml"), "a = \"5\"\nb = \"3\"\n").unwrap();
+
+    let execute = run_nargo(&dir, &["execute"]);
+    assert!(
+        execute.status.success(),
+        "nargo execute failed:\nstdout: {}\nstderr: {}\n---\n{}",
+        String::from_utf8_lossy(&execute.stdout),
+        String::from_utf8_lossy(&execute.stderr),
+        noir_source,
+    );
+}
+
+#[test]
 fn struct_and_generic_array_round_trip_through_nargo() {
     if !nargo_available() {
         eprintln!("skipping: nargo not on PATH");
