@@ -53,7 +53,7 @@ pub fn fold_ir_blocks<P: Clone>(blocks: &mut IRBlocks<P>, types: &IRTypes) -> bo
 pub fn dce_ir_blocks<P: Clone>(blocks: &mut IRBlocks<P>, _types: &IRTypes) -> bool {
     let mut any_changed = false;
     for block in blocks.blocks.iter_mut() {
-        if dce_ir_block_once(block).0 {
+        if dce_ir_block_once(block, &[]).0 {
             any_changed = true;
         }
     }
@@ -79,7 +79,41 @@ pub fn dce_ir_blocks_with_remap<P: Clone>(
     let mut any_changed = false;
     let mut remaps = Vec::with_capacity(blocks.blocks.len());
     for block in blocks.blocks.iter_mut() {
-        let (changed, remap) = dce_ir_block_once(block);
+        let (changed, remap) = dce_ir_block_once(block, &[]);
+        any_changed |= changed;
+        remaps.push(remap);
+    }
+    (any_changed, remaps)
+}
+
+/// As [`dce_ir_blocks_with_remap`], but additionally treats every var id in
+/// `extra_live` as an implicit root, exactly like a terminator reference.
+///
+/// For callers holding *external* var-id-based metadata that isn't part of
+/// the block's own terminator or statements -- e.g. movfuscation's own
+/// `MovfuscBlockBoundary`/`MovfuscAccumInfo` (which live outside this crate,
+/// per `dce_ir_blocks_with_remap`'s own doc comment, and reference
+/// block-local var ids directly). Without this, `dce_ir_block_once`'s
+/// liveness analysis -- sound only when nothing outside a block can
+/// reference one of its statements except via the block's own declared
+/// params or terminator -- can silently strip a variable such metadata
+/// still needs, and the caller's own remap application then panics far
+/// downstream of the actual cause ("no remap entry for var N") with no
+/// indication *why* that var was considered dead.
+///
+/// Only meaningful for a single-block `IRBlocks` (movfuscated circuits are
+/// always exactly one block); `extra_live` is applied to every block for
+/// simplicity, which is a correct no-op for any block that doesn't define
+/// those var ids in its own local space.
+pub fn dce_ir_blocks_with_remap_and_roots<P: Clone>(
+    blocks: &mut IRBlocks<P>,
+    _types: &IRTypes,
+    extra_live: &[u32],
+) -> (bool, Vec<BTreeMap<u32, u32>>) {
+    let mut any_changed = false;
+    let mut remaps = Vec::with_capacity(blocks.blocks.len());
+    for block in blocks.blocks.iter_mut() {
+        let (changed, remap) = dce_ir_block_once(block, extra_live);
         any_changed |= changed;
         remaps.push(remap);
     }
@@ -108,8 +142,10 @@ fn collect_stmt_vars(stmt: &volar_ir::ir::IRStmt) -> Vec<IRVarId> {
 
 /// Returns `(changed, remap)` — `remap` maps every pre-call `IRVarId.0` to
 /// its post-call `IRVarId.0` (identity for every id when `changed` is
-/// `false`).
-fn dce_ir_block_once<P: Clone>(block: &mut IRBlock<P>) -> (bool, BTreeMap<u32, u32>) {
+/// `false`). `extra_live` additionally roots any var id in this block's own
+/// statement range, exactly like a terminator reference — see
+/// [`dce_ir_blocks_with_remap_and_roots`]'s own doc for why this exists.
+fn dce_ir_block_once<P: Clone>(block: &mut IRBlock<P>, extra_live: &[u32]) -> (bool, BTreeMap<u32, u32>) {
     let n_params = block.params.len();
     let n_stmts = block.stmts.len();
     let mut must_keep = vec![false; n_stmts];
@@ -133,6 +169,14 @@ fn dce_ir_block_once<P: Clone>(block: &mut IRBlock<P>) -> (bool, BTreeMap<u32, u
     for v in collect_terminator_vars(&block.terminator) {
         if (v.0 as usize) >= n_params {
             let idx = v.0 as usize - n_params;
+            if idx < n_stmts {
+                live[idx] = true;
+            }
+        }
+    }
+    for &v in extra_live {
+        if (v as usize) >= n_params {
+            let idx = v as usize - n_params;
             if idx < n_stmts {
                 live[idx] = true;
             }

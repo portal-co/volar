@@ -462,11 +462,24 @@ mod tests {
     /// `fold_ir_blocks`/`store_forward_ir_blocks` contribute no remap --
     /// see `dce_ir_blocks_with_remap`'s own doc comment for why neither
     /// ever changes a statement's own index.
+    ///
+    /// `extra_live`: every var id (in the *original*, pre-optimization
+    /// numbering) that `MovfuscBlockBoundary`/`MovfuscAccumInfo` reference
+    /// directly -- these live *outside* the block's own terminator/
+    /// statements (in a different crate entirely), so DCE's own liveness
+    /// analysis has no way to know they must survive. Without this, DCE
+    /// can silently strip a variable that metadata still needs, and
+    /// `remap_movfusc_boundary` et al. then panic far downstream
+    /// ("no remap entry for var N") with no indication of the real cause.
+    /// Translated into each iteration's own current numbering via
+    /// `cumulative` before every DCE call, since var ids drift as earlier
+    /// iterations remove statements.
     fn optimize_to_fixpoint_with_remap<P: Clone>(
         blocks: &mut volar_ir::ir::IRBlocks<P>,
         types: &volar_ir::ir::IRTypes,
         pass_a: &mut dyn FnMut(&mut volar_ir::ir::IRBlocks<P>, &volar_ir::ir::IRTypes) -> bool,
         pass_b: &mut dyn FnMut(&mut volar_ir::ir::IRBlocks<P>, &volar_ir::ir::IRTypes) -> bool,
+        extra_live: &[u32],
     ) -> std::collections::BTreeMap<u32, u32> {
         assert_eq!(
             blocks.blocks.len(), 1,
@@ -479,7 +492,10 @@ mod tests {
         loop {
             let a = pass_a(blocks, types);
             let b = pass_b(blocks, types);
-            let (c, mut remaps) = volar_ir_opt::ir::dce_ir_blocks_with_remap(blocks, types);
+            let current_extra_live: Vec<u32> = extra_live.iter()
+                .filter_map(|v| cumulative.get(v).copied())
+                .collect();
+            let (c, mut remaps) = volar_ir_opt::ir::dce_ir_blocks_with_remap_and_roots(blocks, types, &current_extra_live);
             if c {
                 let step_remap = remaps.remove(0);
                 cumulative = cumulative.into_iter()
@@ -490,7 +506,52 @@ mod tests {
                 break;
             }
         }
+        // `MovfuscBlockBoundary`/`MovfuscAccumInfo`'s own `start`/`end` pairs
+        // are half-open ranges `[start, end)` -- the *last* range's `end`
+        // legitimately equals `n0` itself (one past the last real
+        // statement), which was never a valid statement index for DCE to
+        // protect and so is absent from `cumulative` (seeded from `0..n0`,
+        // exclusive of `n0`). Map that sentinel explicitly to the block's
+        // own current "one past the end", or `remap_movfusc_boundary`/
+        // `remap_movfusc_accum_info` panic on it despite it needing no real
+        // protection.
+        let new_n0 = (blocks.blocks[0].params.len() + blocks.blocks[0].stmts.len()) as u32;
+        cumulative.insert(n0, new_n0);
         cumulative
+    }
+
+    /// Every var id `boundary`/`accum_info` reference directly -- the
+    /// exact set `optimize_to_fixpoint_with_remap`'s own `extra_live`
+    /// parameter needs. See that function's doc for why.
+    fn movfusc_referenced_vars(
+        boundary: &[volar_ir_passes::MovfuscBlockBoundary],
+        accum_info: &volar_ir_passes::MovfuscAccumInfo,
+    ) -> Vec<u32> {
+        let mut out = Vec::new();
+        for b in boundary {
+            out.push(b.start);
+            out.push(b.end);
+            out.push(b.is_active);
+            out.push(b.done);
+            out.extend(b.next_pc_bits.iter().copied());
+            out.extend(b.next_state.iter().copied());
+            out.extend(b.ret_vals.iter().copied());
+        }
+        out.push(accum_info.init.start);
+        out.push(accum_info.init.end);
+        out.push(accum_info.init.done_acc);
+        out.extend(accum_info.init.next_pc.iter().copied());
+        out.extend(accum_info.init.next_state.iter().copied());
+        out.extend(accum_info.init.ret_vals.iter().copied());
+        for s in &accum_info.steps {
+            out.push(s.start);
+            out.push(s.end);
+            out.push(s.done_acc);
+            out.extend(s.next_pc.iter().copied());
+            out.extend(s.next_state.iter().copied());
+            out.extend(s.ret_vals.iter().copied());
+        }
+        out
     }
 
     /// M1.3: weave the real interpreter's one-step batch circuit into VOLE
@@ -762,7 +823,8 @@ mod tests {
         // only DCE renumbers -- see `dce_ir_blocks_with_remap`'s doc comment).
         let mut types_with_opt = types.clone();
         let (mut movfuscated_with_opt, boundary_with_opt, accum_info_with_opt) = movfuscate_ir_with_boundary(&ir_blocks, &mut types_with_opt);
-        let remap = optimize_to_fixpoint_with_remap(&mut movfuscated_with_opt, &types_with_opt, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+        let extra_live = movfusc_referenced_vars(&boundary_with_opt, &accum_info_with_opt);
+        let remap = optimize_to_fixpoint_with_remap(&mut movfuscated_with_opt, &types_with_opt, &mut fold_ir_blocks, &mut store_forward_ir_blocks, &extra_live);
         let boundary_with_opt = volar_ir_passes::remap_movfusc_boundaries(&boundary_with_opt, &remap);
         let accum_info_with_opt = volar_ir_passes::remap_movfusc_accum_info(&accum_info_with_opt, &remap);
         let and_count_with_opt = and_count_via_real_weaver(&mut types_with_opt, &movfuscated_with_opt, &boundary_with_opt, &accum_info_with_opt);
