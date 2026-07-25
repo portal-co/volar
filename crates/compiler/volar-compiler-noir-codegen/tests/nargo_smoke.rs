@@ -180,6 +180,56 @@ fn witness_derived_loop_bound_is_rejected_before_any_file_is_written() {
 }
 
 #[test]
+fn generic_functions_type_check_through_nargo() {
+    if !nargo_available() {
+        eprintln!("skipping: nargo not on PATH");
+        return;
+    }
+
+    // Neither generic function is called from `main` here -- unlike the
+    // other smoke tests, this is a `nargo check` (type-check), not
+    // `execute`, proof. Verified empirically first (see milestone 4's
+    // commit): Noir type-checks an uncalled generic function standalone
+    // (only an "unused function" warning, not an error), so this is a
+    // legitimate proof that the printer's generic-parameter syntax
+    // (`fn add_n<let N: u32>(...)`, `fn identity<T>(...)`) is valid Noir --
+    // wiring a real call site through a numeric generic naturally lands
+    // with milestone 5's array support (N inferred from an array length
+    // argument avoids needing turbofish call-site syntax, which is out of
+    // scope for milestone 4).
+    let source = r#"
+        fn add_n<const N: u32>(x: u32) -> u32 {
+            x + N
+        }
+
+        fn identity<T>(x: T) -> T {
+            x
+        }
+
+        fn main(a: u32) -> u32 {
+            a
+        }
+    "#;
+    let module = parse_source(source, "smoke_generics", &["smoke_generics".to_string()])
+        .expect("parse failed");
+    let noir_source = print_module_noir(&module).expect("codegen failed");
+    assert!(noir_source.contains("fn add_n<let N: u32>"), "generated:\n{noir_source}");
+    assert!(noir_source.contains("fn identity<T>"), "generated:\n{noir_source}");
+
+    let dir = scratch_project("generics");
+    fs::write(dir.join("src/main.nr"), &noir_source).unwrap();
+
+    let check = run_nargo(&dir, &["check"]);
+    assert!(
+        check.status.success(),
+        "nargo check failed:\nstdout: {}\nstderr: {}\n---\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr),
+        noir_source,
+    );
+}
+
+#[test]
 fn while_loop_is_rejected_before_any_file_is_written() {
     let source = r#"
         fn main(a: u32) -> u32 {

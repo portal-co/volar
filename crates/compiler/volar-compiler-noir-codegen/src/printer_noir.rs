@@ -21,6 +21,7 @@ use volar_compiler::ir::{
     IrBlock, IrExpr, IrExprKind, IrFunction, IrGenericParam, IrLit, IrModule, IrParam, IrPattern,
     IrStmtKind, IrType, PrimitiveType, SpecBinOp, SpecUnaryOp,
 };
+use volar_compiler_passes::const_analysis::{classify_generic_with_aliases, GenericKind};
 
 use crate::error::NoirCodegenError;
 use crate::lowering_noir::validate_module;
@@ -50,18 +51,14 @@ pub fn print_module_noir(module: &IrModule<IrFunction>) -> Result<String, Vec<No
 }
 
 fn print_function(function: &IrFunction) -> Result<String, NoirCodegenError> {
-    if !function.generics.is_empty() {
-        return Err(NoirCodegenError::Unsupported {
-            function: function.name.clone(),
-            reason: "generic functions are not yet supported (see milestone 4)".into(),
-        });
-    }
     if function.receiver.is_some() {
         return Err(NoirCodegenError::Unsupported {
             function: function.name.clone(),
             reason: "methods (functions with a receiver) are not yet supported".into(),
         });
     }
+
+    let generics_text = print_generics(&function.generics, &function.name)?;
 
     let mut params = Vec::new();
     for p in &function.params {
@@ -83,8 +80,9 @@ fn print_function(function: &IrFunction) -> Result<String, NoirCodegenError> {
     let body = print_block(&function.body, &function.name, &function.generics)?;
 
     Ok(format!(
-        "fn {}({}){} {{\n{}\n}}",
+        "fn {}{}({}){} {{\n{}\n}}",
         function.name,
+        generics_text,
         params.join(", "),
         ret,
         indent(&body),
@@ -93,6 +91,51 @@ fn print_function(function: &IrFunction) -> Result<String, NoirCodegenError> {
 
 fn print_param(param: &IrParam, fn_name: &str) -> Result<String, NoirCodegenError> {
     Ok(format!("{}: {}", param.name, type_to_noir(&param.ty, fn_name)?))
+}
+
+/// Print a generics list as Noir generic-parameter syntax, or `""` if empty.
+///
+/// Reuses `classify_generic_with_aliases` (unchanged) to split each param
+/// into `GenericKind::Length` vs `GenericKind::Type` — this is the core
+/// "avoid monomorphization" mechanism from the approved plan. Where
+/// `lowering_dyn` converts every `Length`-kind generic into a runtime
+/// `usize` parameter (Rust-dyn/TS have no const generics), this printer
+/// takes the opposite branch: `Length`-kind params are *retained* as real
+/// generic parameters and printed as Noir numeric generics, since Noir has
+/// them natively (`fn foo<let N: u32>(...)`) — confirmed exact syntax
+/// (the `let` keyword is mandatory, default type `u32`) against current
+/// Noir docs.
+fn print_generics(generics: &[IrGenericParam], fn_name: &str) -> Result<String, NoirCodegenError> {
+    if generics.is_empty() {
+        return Ok(String::new());
+    }
+    let all_params: [&[IrGenericParam]; 1] = [generics];
+    let mut parts = Vec::new();
+    for g in generics {
+        match classify_generic_with_aliases(g, &all_params, &[]) {
+            GenericKind::Length => {
+                let const_ty = match &g.const_ty {
+                    Some(t) => type_to_noir(t, fn_name)?,
+                    None => "u32".into(),
+                };
+                parts.push(format!("let {}: {}", g.name, const_ty));
+            }
+            GenericKind::Type => {
+                if !g.bounds.is_empty() {
+                    return Err(NoirCodegenError::Unsupported {
+                        function: fn_name.into(),
+                        reason: format!(
+                            "generic type parameter `{}` has trait bounds, which are not \
+                             yet translated to Noir trait syntax (see milestone 6)",
+                            g.name
+                        ),
+                    });
+                }
+                parts.push(g.name.clone());
+            }
+        }
+    }
+    Ok(format!("<{}>", parts.join(", ")))
 }
 
 /// Map an `IrType` to Noir source text.
@@ -133,9 +176,17 @@ fn type_to_noir(ty: &IrType, fn_name: &str) -> Result<String, NoirCodegenError> 
             function: fn_name.into(),
             reason: "struct types are not yet supported (see milestone 5)".into(),
         }),
-        IrType::TypeParam(_) | IrType::Param { .. } => Err(NoirCodegenError::Unsupported {
+        // A `TypeParam` reference to a declared generic prints as its bare
+        // name; `print_generics` is responsible for rejecting anything
+        // Noir can't express in the generic-parameter list itself, so by
+        // the time a reference is printed here it's already been accepted.
+        IrType::TypeParam(name) => Ok(name.clone()),
+        IrType::Param { .. } => Err(NoirCodegenError::Unsupported {
             function: fn_name.into(),
-            reason: "generic type parameters are not yet supported (see milestone 4)".into(),
+            reason: "IrType::Param (multi-segment path type reference) has not been \
+                     observed reaching this layer yet — treated as unsupported until a \
+                     real fixture demonstrates the shape needed"
+                .into(),
         }),
         IrType::Projection { .. } => Err(NoirCodegenError::Unsupported {
             function: fn_name.into(),
@@ -610,14 +661,13 @@ mod tests {
     }
 
     #[test]
-    fn generic_function_is_rejected_in_v1() {
-        let f = function(
-            "generic_fn",
-            vec![],
-            None,
-            block(vec![], None),
+    fn bare_type_generic_prints_as_noir_generic() {
+        let mut f = function(
+            "identity",
+            vec![IrParam { name: "x".into(), ty: IrType::TypeParam("T".into()) }],
+            Some(IrType::TypeParam("T".into())),
+            block(vec![], Some(IrExprKind::Var("x".into()))),
         );
-        let mut f = f;
         f.generics = vec![IrGenericParam {
             name: "T".into(),
             kind: volar_compiler::ir::IrGenericParamKind::Type,
@@ -625,7 +675,47 @@ mod tests {
             bounds: Vec::new(),
             default: None,
         }];
+        let text = print_function(&f).unwrap();
+        assert!(text.starts_with("fn identity<T>("), "{text}");
+    }
+
+    #[test]
+    fn bounded_type_generic_is_rejected_in_v1() {
+        let mut f = function("bounded_fn", vec![], None, block(vec![], None));
+        f.generics = vec![IrGenericParam {
+            name: "T".into(),
+            kind: volar_compiler::ir::IrGenericParamKind::Type,
+            const_ty: None,
+            bounds: vec![volar_compiler::ir::IrTraitBound {
+                trait_kind: volar_compiler::ir::TraitKind::Custom("SomeTrait".into()),
+                type_args: Vec::new(),
+                assoc_bindings: Vec::new(),
+            }],
+            default: None,
+        }];
         assert!(print_function(&f).is_err());
+    }
+
+    #[test]
+    fn const_generic_prints_as_noir_numeric_generic() {
+        let mut f = function(
+            "make_zero",
+            vec![],
+            Some(IrType::Primitive(PrimitiveType::U32)),
+            block(vec![], Some(IrExprKind::Lit(IrLit::Int(0)))),
+        );
+        f.generics = vec![IrGenericParam {
+            name: "N".into(),
+            kind: volar_compiler::ir::IrGenericParamKind::Const,
+            const_ty: None,
+            bounds: Vec::new(),
+            default: None,
+        }];
+        let text = print_function(&f).unwrap();
+        // Noir's numeric-generic syntax requires the `let` keyword and
+        // defaults to `u32` when unspecified (confirmed against current
+        // Noir docs).
+        assert!(text.starts_with("fn make_zero<let N: u32>("), "{text}");
     }
 
     #[test]
