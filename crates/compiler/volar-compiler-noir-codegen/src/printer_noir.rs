@@ -18,8 +18,8 @@ use std::{format, string::String, string::ToString, vec::Vec};
 use alloc::{format, string::String, string::ToString, vec::Vec};
 
 use volar_compiler::ir::{
-    IrBlock, IrExpr, IrExprKind, IrFunction, IrLit, IrModule, IrParam, IrPattern, IrStmtKind,
-    IrType, PrimitiveType, SpecBinOp, SpecUnaryOp,
+    IrBlock, IrExpr, IrExprKind, IrFunction, IrGenericParam, IrLit, IrModule, IrParam, IrPattern,
+    IrStmtKind, IrType, PrimitiveType, SpecBinOp, SpecUnaryOp,
 };
 
 use crate::error::NoirCodegenError;
@@ -80,7 +80,7 @@ fn print_function(function: &IrFunction) -> Result<String, NoirCodegenError> {
         }
     };
 
-    let body = print_block(&function.body, &function.name)?;
+    let body = print_block(&function.body, &function.name, &function.generics)?;
 
     Ok(format!(
         "fn {}({}){} {{\n{}\n}}",
@@ -196,18 +196,18 @@ fn primitive_to_noir(p: PrimitiveType, fn_name: &str) -> Result<String, NoirCode
     }
 }
 
-fn print_block(block: &IrBlock, fn_name: &str) -> Result<String, NoirCodegenError> {
+fn print_block(block: &IrBlock, fn_name: &str, generics: &[IrGenericParam]) -> Result<String, NoirCodegenError> {
     let mut lines = Vec::new();
     for stmt in &block.stmts {
-        lines.push(print_stmt(&stmt.kind, fn_name)?);
+        lines.push(print_stmt(&stmt.kind, fn_name, generics)?);
     }
     if let Some(tail) = &block.expr {
-        lines.push(print_expr(tail, fn_name)?);
+        lines.push(print_expr(tail, fn_name, generics)?);
     }
     Ok(lines.join(";\n"))
 }
 
-fn print_stmt(stmt: &IrStmtKind, fn_name: &str) -> Result<String, NoirCodegenError> {
+fn print_stmt(stmt: &IrStmtKind, fn_name: &str, generics: &[IrGenericParam]) -> Result<String, NoirCodegenError> {
     match stmt {
         IrStmtKind::Let { pattern, ty, init } => {
             let name = ident_pattern_name(pattern, fn_name)?;
@@ -216,12 +216,12 @@ fn print_stmt(stmt: &IrStmtKind, fn_name: &str) -> Result<String, NoirCodegenErr
                 None => String::new(),
             };
             let init_text = match init {
-                Some(e) => format!(" = {}", print_expr(e, fn_name)?),
+                Some(e) => format!(" = {}", print_expr(e, fn_name, generics)?),
                 None => String::new(),
             };
             Ok(format!("let {name}{ty_ann}{init_text}"))
         }
-        IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => print_expr(e, fn_name),
+        IrStmtKind::Semi(e) | IrStmtKind::Expr(e) => print_expr(e, fn_name, generics),
         other => Err(NoirCodegenError::Unsupported {
             function: fn_name.into(),
             reason: format!("unrecognized statement kind: {other:?}"),
@@ -241,7 +241,7 @@ fn ident_pattern_name(pattern: &IrPattern, fn_name: &str) -> Result<String, Noir
     }
 }
 
-fn print_expr(expr: &IrExpr, fn_name: &str) -> Result<String, NoirCodegenError> {
+fn print_expr(expr: &IrExpr, fn_name: &str, generics: &[IrGenericParam]) -> Result<String, NoirCodegenError> {
     match &expr.kind {
         IrExprKind::Lit(lit) => print_lit(lit),
         IrExprKind::Var(name) => Ok(name.clone()),
@@ -249,60 +249,101 @@ fn print_expr(expr: &IrExpr, fn_name: &str) -> Result<String, NoirCodegenError> 
 
         IrExprKind::Binary { op, left, right } => Ok(format!(
             "({} {} {})",
-            print_expr(left, fn_name)?,
+            print_expr(left, fn_name, generics)?,
             bin_op_str(*op),
-            print_expr(right, fn_name)?,
+            print_expr(right, fn_name, generics)?,
         )),
 
         // References are transparently unwrapped in v1: `&x`/`&mut x`/`*x`
         // all print as just the inner expression's text.
         IrExprKind::Unary { op: SpecUnaryOp::Ref | SpecUnaryOp::RefMut | SpecUnaryOp::Deref, expr } => {
-            print_expr(expr, fn_name)
+            print_expr(expr, fn_name, generics)
         }
         IrExprKind::Unary { op: SpecUnaryOp::Neg, expr } => {
-            Ok(format!("(-{})", print_expr(expr, fn_name)?))
+            Ok(format!("(-{})", print_expr(expr, fn_name, generics)?))
         }
         IrExprKind::Unary { op: SpecUnaryOp::Not, expr } => {
-            Ok(format!("(!{})", print_expr(expr, fn_name)?))
+            Ok(format!("(!{})", print_expr(expr, fn_name, generics)?))
         }
 
         IrExprKind::Call { func, args } => {
-            let func_text = print_expr(func, fn_name)?;
+            let func_text = print_expr(func, fn_name, generics)?;
             let mut arg_texts = Vec::new();
             for a in args {
-                arg_texts.push(print_expr(a, fn_name)?);
+                arg_texts.push(print_expr(a, fn_name, generics)?);
             }
             Ok(format!("{}({})", func_text, arg_texts.join(", ")))
         }
 
         IrExprKind::Cast { expr, ty } => {
-            Ok(format!("({} as {})", print_expr(expr, fn_name)?, type_to_noir(ty, fn_name)?))
+            Ok(format!("({} as {})", print_expr(expr, fn_name, generics)?, type_to_noir(ty, fn_name)?))
         }
 
         IrExprKind::Assign { left, right } => {
-            Ok(format!("{} = {}", print_expr(left, fn_name)?, print_expr(right, fn_name)?))
+            Ok(format!("{} = {}", print_expr(left, fn_name, generics)?, print_expr(right, fn_name, generics)?))
         }
         IrExprKind::AssignOp { op, left, right } => Ok(format!(
             "{} {}= {}",
-            print_expr(left, fn_name)?,
+            print_expr(left, fn_name, generics)?,
             bin_op_str(*op),
-            print_expr(right, fn_name)?,
+            print_expr(right, fn_name, generics)?,
         )),
 
-        IrExprKind::Block(b) => Ok(format!("{{\n{}\n}}", indent(&print_block(b, fn_name)?))),
+        IrExprKind::Block(b) => Ok(format!("{{\n{}\n}}", indent(&print_block(b, fn_name, generics)?))),
 
         IrExprKind::If { cond, then_branch, else_branch } => {
-            let cond_text = print_expr(cond, fn_name)?;
-            let then_text = print_block(then_branch, fn_name)?;
+            let cond_text = print_expr(cond, fn_name, generics)?;
+            let then_text = print_block(then_branch, fn_name, generics)?;
             let else_text = match else_branch {
                 None => String::new(),
-                Some(e) => format!(" else {}", print_else_arm(e, fn_name)?),
+                Some(e) => format!(" else {}", print_else_arm(e, fn_name, generics)?),
             };
             Ok(format!(
                 "if {} {{\n{}\n}}{}",
                 cond_text,
                 indent(&then_text),
                 else_text,
+            ))
+        }
+
+        // Loop-bound legality was already fully checked by the pre-print
+        // validation pass (`lowering_noir::validate_module`) — this
+        // re-derives the same `NoirConstExpr` (cheap, pure) rather than
+        // smuggling it through the shared `IrModule` tree, per the plan's
+        // design note. Defensive `NonConstantLoopBound` fallback below
+        // covers the case where this printer is ever called without going
+        // through validation first — never a panic either way.
+        IrExprKind::BoundedLoop { var, start, end, inclusive, body } => {
+            let start_text = crate::const_eval::eval_const_expr(start, generics)
+                .map(|c| c.to_string())
+                .ok_or_else(|| NoirCodegenError::NonConstantLoopBound {
+                    function: fn_name.into(),
+                    reason: "start bound is not a compile-time constant".into(),
+                })?;
+            let end_text = crate::const_eval::eval_const_expr(end, generics)
+                .map(|c| c.to_string())
+                .ok_or_else(|| NoirCodegenError::NonConstantLoopBound {
+                    function: fn_name.into(),
+                    reason: "end bound is not a compile-time constant".into(),
+                })?;
+            let range_op = if *inclusive { "..=" } else { ".." };
+            let body_text = print_block(body, fn_name, generics)?;
+            Ok(format!(
+                "for {var} in {start_text}{range_op}{end_text} {{\n{}\n}}",
+                indent(&body_text),
+            ))
+        }
+
+        // v1 policy (see `lowering_noir`): only a literal fixed-size
+        // collection is accepted, so `collection` always prints via the
+        // ordinary expression printer here.
+        IrExprKind::IterLoop { pattern, collection, body } => {
+            let pat_text = ident_pattern_name(pattern, fn_name)?;
+            let coll_text = print_expr(collection, fn_name, generics)?;
+            let body_text = print_block(body, fn_name, generics)?;
+            Ok(format!(
+                "for {pat_text} in {coll_text} {{\n{}\n}}",
+                indent(&body_text),
             ))
         }
 
@@ -322,7 +363,7 @@ fn print_expr(expr: &IrExpr, fn_name: &str) -> Result<String, NoirCodegenError> 
                 .into(),
         }),
 
-        IrExprKind::Return(Some(e)) => Ok(format!("return {}", print_expr(e, fn_name)?)),
+        IrExprKind::Return(Some(e)) => Ok(format!("return {}", print_expr(e, fn_name, generics)?)),
         IrExprKind::Return(None) => Ok("return".into()),
 
         other => Err(NoirCodegenError::Unsupported {
@@ -337,9 +378,9 @@ fn print_expr(expr: &IrExpr, fn_name: &str) -> Result<String, NoirCodegenError> 
 /// the ordinary expression printer; anything else would not be valid Noir
 /// `else` syntax on its own, so it's rejected explicitly rather than
 /// emitted as-is.
-fn print_else_arm(expr: &IrExpr, fn_name: &str) -> Result<String, NoirCodegenError> {
+fn print_else_arm(expr: &IrExpr, fn_name: &str, generics: &[IrGenericParam]) -> Result<String, NoirCodegenError> {
     match &expr.kind {
-        IrExprKind::If { .. } | IrExprKind::Block(_) => print_expr(expr, fn_name),
+        IrExprKind::If { .. } | IrExprKind::Block(_) => print_expr(expr, fn_name, generics),
         other => Err(NoirCodegenError::Unsupported {
             function: fn_name.into(),
             reason: format!("unsupported else-arm shape: {other:?}"),
@@ -486,7 +527,7 @@ mod tests {
                 Some(IrExprKind::Var("b".into())),
             ))))),
         });
-        let text = print_expr(&if_expr, "f").unwrap();
+        let text = print_expr(&if_expr, "f", &[]).unwrap();
         assert!(text.starts_with("if (a > b) {"), "{text}");
         assert!(text.contains("} else {"), "{text}");
     }
@@ -497,13 +538,75 @@ mod tests {
             expr: Box::new(expr(IrExprKind::Var("a".into()))),
             arms: Vec::new(),
         });
-        let err = print_expr(&m, "f").unwrap_err();
+        let err = print_expr(&m, "f", &[]).unwrap_err();
         match err {
             NoirCodegenError::Unsupported { reason, .. } => {
                 assert!(reason.contains("match"), "{reason}");
             }
             other => panic!("expected Unsupported, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn literal_bound_loop_prints_as_noir_for() {
+        let loop_expr = expr(IrExprKind::BoundedLoop {
+            var: "i".into(),
+            start: Box::new(expr(IrExprKind::Lit(IrLit::Int(0)))),
+            end: Box::new(expr(IrExprKind::Lit(IrLit::Int(10)))),
+            inclusive: false,
+            body: block(vec![], None),
+        });
+        let text = print_expr(&loop_expr, "f", &[]).unwrap();
+        assert!(text.starts_with("for i in 0..10 {"), "{text}");
+    }
+
+    #[test]
+    fn inclusive_loop_uses_inclusive_range_operator() {
+        let loop_expr = expr(IrExprKind::BoundedLoop {
+            var: "i".into(),
+            start: Box::new(expr(IrExprKind::Lit(IrLit::Int(0)))),
+            end: Box::new(expr(IrExprKind::Lit(IrLit::Int(10)))),
+            inclusive: true,
+            body: block(vec![], None),
+        });
+        let text = print_expr(&loop_expr, "f", &[]).unwrap();
+        assert!(text.starts_with("for i in 0..=10 {"), "{text}");
+    }
+
+    #[test]
+    fn generic_const_bound_loop_prints_symbolic_bound() {
+        let generics = vec![IrGenericParam {
+            name: "N".into(),
+            kind: volar_compiler::ir::IrGenericParamKind::Const,
+            const_ty: None,
+            bounds: Vec::new(),
+            default: None,
+        }];
+        let loop_expr = expr(IrExprKind::BoundedLoop {
+            var: "i".into(),
+            start: Box::new(expr(IrExprKind::Lit(IrLit::Int(0)))),
+            end: Box::new(expr(IrExprKind::Var("N".into()))),
+            inclusive: false,
+            body: block(vec![], None),
+        });
+        let text = print_expr(&loop_expr, "f", &generics).unwrap();
+        assert!(text.starts_with("for i in 0..N {"), "{text}");
+    }
+
+    #[test]
+    fn defensive_rejection_of_non_constant_bound_at_print_time() {
+        // The pre-print validation pass is expected to catch this first in
+        // the normal `print_module_noir` path; this exercises the printer's
+        // own defensive fallback directly (never a panic either way).
+        let loop_expr = expr(IrExprKind::BoundedLoop {
+            var: "i".into(),
+            start: Box::new(expr(IrExprKind::Lit(IrLit::Int(0)))),
+            end: Box::new(expr(IrExprKind::Var("n".into()))),
+            inclusive: false,
+            body: block(vec![], None),
+        });
+        let err = print_expr(&loop_expr, "f", &[]).unwrap_err();
+        assert!(matches!(err, NoirCodegenError::NonConstantLoopBound { .. }));
     }
 
     #[test]

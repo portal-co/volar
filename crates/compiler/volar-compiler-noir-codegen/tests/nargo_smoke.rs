@@ -114,6 +114,72 @@ fn if_else_round_trips_through_nargo() {
 }
 
 #[test]
+fn literal_bound_loop_round_trips_through_nargo() {
+    if !nargo_available() {
+        eprintln!("skipping: nargo not on PATH");
+        return;
+    }
+
+    let source = r#"
+        fn main(a: u32) -> u32 {
+            let mut sum = a;
+            for i in 0..5 {
+                sum = sum + i;
+            }
+            sum
+        }
+    "#;
+    let module = parse_source(source, "smoke_loop", &["smoke_loop".to_string()]).expect("parse failed");
+    let noir_source = print_module_noir(&module).expect("codegen failed");
+    assert!(noir_source.contains("for i in 0..5"), "generated:\n{noir_source}");
+
+    let dir = scratch_project("literal_loop");
+    fs::write(dir.join("src/main.nr"), &noir_source).unwrap();
+    // a=10, loop adds 0+1+2+3+4=10, so sum should be 20 -- nargo execute
+    // doesn't surface the witness value directly, but a successful
+    // execute proves the emitted loop actually elaborates and runs.
+    fs::write(dir.join("Prover.toml"), "a = \"10\"\n").unwrap();
+
+    let execute = run_nargo(&dir, &["execute"]);
+    assert!(
+        execute.status.success(),
+        "nargo execute failed:\nstdout: {}\nstderr: {}\n---\n{}",
+        String::from_utf8_lossy(&execute.stdout),
+        String::from_utf8_lossy(&execute.stderr),
+        noir_source,
+    );
+}
+
+#[test]
+fn witness_derived_loop_bound_is_rejected_before_any_file_is_written() {
+    // `for i in 0..n` where `n` is a runtime parameter (not a generic
+    // const) is exactly the "runtime-but-fixed" bound Volar's AST permits
+    // but Noir's constrained `for` loops cannot express -- the trip count
+    // must be knowable before any witness data exists.
+    let source = r#"
+        fn main(a: u32, n: u32) -> u32 {
+            let mut sum = a;
+            for i in 0..n {
+                sum = sum + i;
+            }
+            sum
+        }
+    "#;
+    let module = parse_source(source, "smoke_dynamic_loop", &["smoke_dynamic_loop".to_string()])
+        .expect("parse failed");
+
+    let result = std::panic::catch_unwind(|| print_module_noir(&module));
+    let result = result.expect("print_module_noir must not panic");
+    let errors = result.expect_err("witness-derived-bound module must be rejected, not accepted");
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e, volar_compiler_noir_codegen::NoirCodegenError::NonConstantLoopBound { .. })),
+        "expected NonConstantLoopBound, got: {errors:?}"
+    );
+}
+
+#[test]
 fn while_loop_is_rejected_before_any_file_is_written() {
     let source = r#"
         fn main(a: u32) -> u32 {
