@@ -443,11 +443,30 @@ fn lower_planned_module<T: LirTarget<P>, P: Clone>(
     target: &mut T,
     plan: &MonoPlan,
 ) {
-    // Nominal generic layout specialization is registered in `structs`; the
-    // empty environment here is only for definitions that are not instantiated.
-    let mut registry = structs::build_struct_registry(module, target, &MonoEnv::new(""));
+    // Nominal generic layout specialization is registered in `structs`; a
+    // struct's own field types (parsed directly from generic source, e.g.
+    // `struct Vope<N,T,K> { u: Array<Array<T,N>,K>, .. }`) still reference
+    // their own unresolved generic params at this point though -- an
+    // always-empty environment here makes `ir_type_to_lir_inner` panic on
+    // *any* struct with a generic array-length field, even before
+    // per-call-site specialization has a chance to matter (confirmed: this
+    // broke even `volar-c-backend/tests/vole_e2e.rs`'s own single-AND-gate
+    // smoke test). Merge every planned instance's own substitutions into
+    // one environment instead: in the common case (one global `MonoEnv`
+    // shared by every root, e.g. via `lower_module_with_opts`) this exactly
+    // recovers that env; for genuinely divergent per-instance envs it's a
+    // best-effort union (last write wins on key collision), still strictly
+    // better than an always-empty environment for definitions that would
+    // otherwise be unresolvable.
+    let mut merged_env = MonoEnv::new("");
+    for env in plan.instances.values() {
+        merged_env.const_params.extend(env.const_params.iter().map(|(k, v)| (k.clone(), *v)));
+        merged_env.type_params.extend(env.type_params.iter().map(|(k, v)| (k.clone(), v.clone())));
+        merged_env.projections.extend(env.projections.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+    let mut registry = structs::build_struct_registry(module, target, &merged_env);
     let enum_registry =
-        structs::build_enum_registry(&module.enums, &mut registry, target, &MonoEnv::new(""));
+        structs::build_enum_registry(&module.enums, &mut registry, target, &merged_env);
 
     for (key, env) in &plan.instances {
         let func = module

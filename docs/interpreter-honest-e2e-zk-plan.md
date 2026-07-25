@@ -19,7 +19,13 @@ is written (`wat_gen.rs`, `#[ignore]`d, real interpreter scale) — but a
 **second, independent scale wall** was found and partially addressed; see
 "`WireRepr::Array`: fixing the real print-time OOM" and "Beyond
 `WireRepr::Array`: where the remaining size actually is" below for the full
-story, and "C-backend path" for the current, in-progress next step.**
+story. The **C-backend path was explored and paused** — real, but deeper
+and buggier than its own test suite's doc comments suggested; see
+"C-backend path: explored, paused" for the full handoff. Current focus has
+shifted to **Rust-side pre-weaving and post-movfuscation optimization**
+(Poly-merging, trivial-Shuffle removal, movfuscation block-finish
+fall-through) — see "Pre-weaving and post-movfuscation optimization
+ideas (next up)" at the bottom.**
 
 ## `chunk_size` mitigation (still useful, now stacks with the real fix)
 
@@ -377,62 +383,107 @@ investigations, both real (not blind optimization attempts):
   genuine, largely irreducible circuit complexity for a 120-block real
   RISC-V interpreter at the bit-circuit level, not a second blowup bug.
 
-## C-backend path (in progress)
+## C-backend path: explored, paused (handoff)
 
-Given the above, further shrinking the *Rust* source isn't likely to close
-a ~16x gap. `crates/compiler/volar-c-backend/tests/vole_e2e.rs` proves an
-**already-working, tested, real-cryptography-verified** alternative
-pipeline exists: `weave_vole_prover`/`weave_vole_verifier` (the older
-`BIrBlocks`-based siblings) → `LinkageSystem` (parses real
-`volar_spec::vole` source files via `parse_sources`, merges structs +
-functions into the woven module) → `lower_module_with_opts` with a
-`MonoEnv` (`N=16, T=Galois, U1=1, U0=0, K=1` — matching `mem_probe.rs`'s
-own field config exactly) → `CBackend` → C source → compiled with `cc` and
-run, verified against 4/4 real OT-based VOLE AND-gate checks. C is
-typically far cheaper for a C compiler to consume at scale than the
-equivalent Rust (no borrow-checker/monomorphization overhead), so this is
-a promising path for the real interpreter's actual scale.
+Given the Rust-side numbers above, further shrinking the *Rust* source
+alone isn't likely to close a ~16x gap, so this session explored an
+alternative: `crates/compiler/volar-c-backend/tests/vole_e2e.rs`'s own doc
+comments describe an "already-working, tested, real-cryptography-verified"
+pipeline — weave → `LinkageSystem` (parses real `volar_spec::vole` source
+via `parse_sources`, merges structs+functions into the woven module) →
+`lower_module_with_opts` with a `MonoEnv` → `CBackend` → C → `cc` → run,
+claimed verified against 4/4 real OT-based VOLE AND-gate checks. **This
+turned out to be materially less solid than advertised** — direct testing
+surfaced three distinct, real bugs in `volar-lir-codegen`, none related to
+this session's other work. Paused here; this needs dedicated debugging in
+a fresh session, not squeezed into an already very long one.
 
-**Status**: `weave_vole_prover_ir_split` (the `IRBlocks`/`CirBlock`-based,
-chunk_size=1 split-weave this whole session's work targets) has no
-`linkage` parameter, unlike its non-split sibling
-`weave_vole_prover_ir_with_mode`. Since `LinkageSystem::apply` is public
-and only mutates `structs`/`enums`/`traits`/`impls`/`functions`/
-`type_aliases`, it can be applied externally with **no changes to
-`vole.rs`** — confirmed via a bounded probe
-(`probe_split_weave_single_block_lowers_to_c`, `wat_gen.rs`, `#[ignore]`d,
-single block function only): linkage merges cleanly (7 functions, 3
-structs after merge), and `lower_module_with_opts` gets meaningfully far
-before hitting a **concrete, well-defined blocker**:
+### Bug 1 (fixed this session): struct registry built with a hardcoded empty `MonoEnv`
+
+`lower_planned_module` (`volar-lir-codegen/src/lib.rs:441-450`, part of the
+"monomorphization 1" refactor per `git log -S`) called
+`structs::build_struct_registry(module, target, &MonoEnv::new(""))` — a
+**brand-new, always-empty environment**, completely discarding whatever
+`env` the caller passed to `lower_module_with_opts`. Confirmed via direct
+reproduction: even `vole_e2e.rs`'s own `vole_prover_and_gate_to_c` (single
+AND gate, the simplest possible case) currently panics with:
 
 ```
 thread '...' panicked at crates/compiler/volar-lir-codegen/src/structs.rs:283:21:
 unsubstituted TypeParam length 'N' — add it to MonoEnv
 ```
 
-`ir_type_to_lir_inner` (`structs.rs:272-290`) resolves `ArrayLength::Const`
-and `ArrayLength::TypeNum` correctly but **unconditionally panics** on
-`ArrayLength::TypeParam` (line 283) — it never actually consults `MonoEnv`
-for the substitution, despite its own message. This fires specifically for
-`[Vope<N,T,U1>; w]`-shaped **arrays of a generic VOLE struct** (the real
-interpreter's wide `w_i` params, from `wide_array_type(vope_type(), w)`) —
-a construct `vole_e2e.rs`'s existing toy circuits (single AND/XOR/
-half-adder gates, all scalar/width=1) never exercise, so this gap was
-never surfaced before. Bare `Vope`/`Q` (as a function param, not array
-element) already lowers fine per `vole_e2e.rs`'s own passing tests, using
-the identical `MonoEnv` config — the gap is specifically in resolving a
-generic struct's own internal `N`-typed array field when that struct
-appears as an array *element* type, not as a bare param/field itself.
+This is a real, pre-existing regression from the monomorphization refactor
+(an "artifact of when there was only one `MonoEnv`" — the refactor moved to
+per-call-site environments but never updated the struct-registry-building
+step, which still needs *some* representative environment for struct
+*definitions* even though those aren't call-site-specific). **Fixed**:
+`lower_planned_module` now merges every planned instance's own
+substitutions (`plan.instances.values()`) into one environment before
+building the struct/enum registries, instead of using an always-empty one.
+In the common case (one global `MonoEnv` shared by every root, e.g. via
+`lower_module_with_opts` — true for every caller in this codebase today)
+this exactly recovers the original global env. Verified: the "N"
+unsubstituted-length panic is gone for both `vole_e2e.rs`'s own tests and
+the real split-weave's own single-block probe.
 
-**Next step** (not yet started): fix `structs.rs:283` to actually consult
-`MonoEnv`'s substitutions before panicking — likely needs the struct
-registry's own layout-resolution pass (used for bare `Vope`/`Q`) to be
-reachable/reused from `ir_type_to_lir_inner`'s array-element-type path,
-rather than duplicating substitution logic. Once fixed, re-run
-`probe_split_weave_single_block_lowers_to_c`, then scale up to all 241
-functions (one role at a time), then attempt an actual `cc` compile
-(`compile_and_run`-style) to get a real printed-C-size and compile-time
-data point comparable to the Rust-path numbers above.
+### Bug 2 (found, not fixed): the merge is unsound for genuinely divergent per-instance envs
+
+The merge fix above is a **last-write-wins union** across every planned
+instance — safe only because every root in every caller today shares one
+identical env. It broke as soon as instances genuinely diverge: after the
+fix, `vole_e2e.rs`'s `vole_prover_xor_gate_to_c`/`vole_verifier_xor_gate_to_c`
+started failing with:
+
+```
+thread '...' panicked at crates/compiler/volar-lir-codegen/src/lib.rs:898:17:
+Binary Mul: operand widths 32 vs 16 — cannot apply element-wise
+```
+
+— i.e. some other, unrelated function's own generic substitution (a
+different width, probably from a different named-the-same generic param in
+a different scope) leaked into the merged struct-registry env and
+corrupted a width that should have stayed 16. A **correct** fix needs to
+distinguish *root* environments (the caller's explicit, uniform intent —
+what `lower_module_with_opts` promises callers) from *discovered/derived*
+per-callee environments (which can and should legitimately diverge): thread
+`options.roots` (currently only available in `lower_module_monomorphized`,
+one level up from `lower_planned_module`) down and merge only those, not
+the full `plan.instances` map. Not attempted — needs `MonoRoot`'s own
+definition studied first (not yet done).
+
+### Bug 3 (found, not fixed): severe performance pathology in `mono_type`/`register_tuples_in_type`
+
+Independent of both bugs above, and **present before any of this session's
+changes**: running `vole_e2e.rs`'s full test suite (12 tests, mostly
+single-gate circuits) hangs, burning **~500% CPU per test thread with no
+termination seen after 15+ minutes**. Confirmed via macOS `sample`
+profiling (not guessed): every hung thread's call stack is identical —
+`lower_module_with_opts` → `register_tuples_in_type` → `mono_type`
+recursing into itself, with `_platform_memcmp` dominating the profile
+(6,216 of ~10,345 total samples across 5 threads) — strongly suggesting a
+superlinear or unbounded recursive comparison, not legitimate work. This
+was likely masked before Bug 1's fix landed, since every test used to
+panic *earlier* in the pipeline (at struct-registry build time) before
+ever reaching `register_tuples_in_type`'s own pathological path — fixing
+Bug 1 let execution proceed further and exposed this. **Not investigated
+further** — needs its own dedicated profiling/debugging session. Caution:
+this pathology consumed real CPU for ~15+ minutes across two separate test
+runs (one orphaned by an earlier `kill` of its parent shell, both
+eventually force-killed) before being caught — anyone picking this up
+should run under a tight timeout/resource limit from the very first
+attempt, not discover the hang empirically.
+
+### Net assessment
+
+`volar-lir-codegen`'s VOLE-to-C pipeline is real (Bug 1's fix demonstrates
+forward progress is possible) but meaningfully less mature than its own
+test suite's doc comments claim, with at least one active performance
+hang. Given the depth remaining (properly distinguish root vs. discovered
+envs, then diagnose and fix the `mono_type` pathology, then re-attempt
+`probe_split_weave_single_block_lowers_to_c`, then scale to all 241
+functions, then attempt a real `cc` compile) this is parked here as a
+scoped, ready-to-resume handoff rather than continued in this session.
 
 ## Known environment note
 
@@ -517,3 +568,62 @@ and only materializing the low `k = log2(sp_step)` bits as fresh consts —
 see `project_vaffle_ssa_spilling_architecture.md` (session memory) for the
 full design. This was already optimized earlier in the same session that
 built it.
+
+## Pre-weaving and post-movfuscation optimization ideas (next up)
+
+With the C-backend path parked (see above), focus shifts back to reducing
+real circuit size on the Rust/weaver path itself. Real statement-mix data
+already measured (`probe_full_module_print_size`, extended; see "Beyond
+`WireRepr::Array`" above) for the real interpreter's combined circuit
+(327,550 total statements): `Poly` 152,830 (47%, dominant), `Shuffle`
+23,408 (7%, every one already single-bit), `Merge` 1,338 (0.4%). Four
+concrete directions, roughly in dependency order:
+
+1. **Trivial bit-to-bit `Shuffle` removal** (pre-weaving, likely a new
+   VAFFLE- or IR-level DCE/forwarding pass). Some fraction of the 23,408
+   `Shuffle` statements are probably identity extractions (bit 0 of an
+   already-1-bit value) or otherwise trivially collapsible — these add
+   indirection that can block downstream pattern recognition (e.g. two
+   `Poly` statements that would otherwise be structurally identical except
+   for going through different `Shuffle`-extracted operands look
+   *different* to a naive comparison). Note the existing finding just
+   above this section: `mem_load_bytes`/`mem_store_bytes`'s own per-bit
+   `Shuffle`/`Merge` round trips ARE structurally necessary (`VaffleValue`
+   is always one `ValueId` per bit, LSB-first, uniformly) — this is about
+   finding the *trivial/no-op* subset, not the necessary bit-decomposition
+   traffic. Scope not yet assessed: how many of the 23,408 are actually
+   trivial vs. genuine.
+2. **`Poly`-merging so `emit_poly_wide`'s existing batching fires more**
+   (pre-weaving or movfuscation-level pass). 68,107 of the 152,830 `Poly`
+   statements are AND-bearing and almost all width=1 — individually
+   minimal (nothing to collapse within one statement), but if many are
+   *structurally identical* (same monomial shape) differing only in which
+   operand they touch — e.g. movfuscation's own repeated
+   `is_active_i · touched_slot_k` pattern across many (block, slot) pairs
+   — bundling their varying operands into one `Merge` and re-expressing as
+   a single wide `Poly` would let `emit_poly_wide`'s existing
+   `Array::from_fn`-loop collapse handle them as ONE statement instead of
+   many. Depends on (1) since trivial `Shuffle` indirection would likely
+   obscure which `Poly`s are actually structurally identical. Not yet
+   scoped: how many of the 68,107 are genuinely mergeable candidates.
+3. **Post-movfuscation general cruft reduction**. Movfuscation's own
+   "always execute everything, gate by `is_active`" design means almost
+   everything is nominally "live" (feeds *some* gated accumulation), so
+   traditional DCE may find little — the opportunity is more likely
+   redundant/duplicate computation (CSE across blocks) than dead code.
+   Not yet scoped.
+4. **Movfuscation block-finish fall-through**. Currently every block
+   unconditionally routes through the full `is_active`-gated dispatch/mux
+   for every step, regardless of whether the next block is statically
+   known. An optimization: when a block's own terminator target is a
+   fixed, known next block (not data-dependent), fall through directly —
+   set the new block/arg variables and continue processing under those
+   newly-muxed values, rather than looping back through the generic,
+   full-width dispatch mux. Potentially the largest win (could reduce
+   movfuscation's own per-step dispatch cost, not just per-statement
+   size), but also the riskiest/most invasive — touches the same
+   correctness-critical movfuscation core that produced this session's
+   "Attempt 1 → Attempt 2" saga earlier. Not started.
+
+**Status**: none of the four started yet as of this handoff point. (1) is
+the natural starting point per the dependency ordering above.

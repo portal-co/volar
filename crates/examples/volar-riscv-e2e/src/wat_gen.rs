@@ -2101,8 +2101,16 @@ mod tests {
         let linkage = make_vole_linkage();
         linkage.apply(&mut module);
         eprintln!("after linkage: {} functions, {} structs", module.functions.len(), module.structs.len());
+        for s in &module.structs {
+            eprintln!("struct {:?}:", s.kind);
+            for f in &s.fields {
+                eprintln!("  field {} : {:?}", f.name, f.ty);
+            }
+        }
 
         let env = galois_vole_env();
+        eprintln!("env.const_params = {:?}", env.const_params);
+        eprintln!("env.type_params = {:?}", env.type_params);
         let mut b = CBackend::new();
         lower_module_with_opts(&module, &mut b, &env);
         let c_src = b.finish();
