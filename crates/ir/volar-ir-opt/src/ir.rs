@@ -2,8 +2,8 @@
 // @ai: assisted
 //! Constant-folding pass for Volar IR (`IRBlocks`).
 
-use alloc::{collections::BTreeMap, vec, vec::Vec};
-use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBlocks, IRBranchTarget, IRTerminator, IRTypes, IRVarId};
+use alloc::{collections::{BTreeMap, BTreeSet}, vec, vec::Vec};
+use volar_ir::ir::{IRBlock, IRBlockTargetId, IRBlocks, IRBranchTarget, IRStmt, IRTerminator, IRType, IRTypes, IRVarId};
 use volar_ir_common::{Constant, Node, Stmt, TypeId};
 
 use crate::common::{
@@ -84,6 +84,323 @@ pub fn dce_ir_blocks_with_remap<P: Clone>(
         remaps.push(remap);
     }
     (any_changed, remaps)
+}
+
+// ============================================================================
+// Poly batching
+// ============================================================================
+
+/// Batch-merge structurally-identical width-1 `Poly` statements that
+/// differ in exactly one operand into a single wide `Poly`, so
+/// `emit_poly_wide` (the weaver's own loop-collapsing optimization for
+/// `width > 1` `Poly`s, `crates/compiler/volar-weaver/src/vole.rs`) can
+/// handle the whole group as one statement instead of N. Each original
+/// `Poly`'s own output var id is preserved (rewritten to a `Shuffle`
+/// extracting its own lane from the new wide `Poly`), so nothing
+/// downstream needs to change -- and that `Shuffle` weaves for free
+/// (aliased directly to the source bit, no new statement) once the
+/// source is a `WireRepr::Vec`/`Array` entry, per this session's own
+/// `emit_shuffle` fix.
+///
+/// Motivation: the real RISC-V interpreter's own combined circuit has
+/// 68,107 AND-bearing `Poly` statements, almost all already width=1
+/// (nothing left for `emit_poly_wide` to collapse *within* one
+/// statement) -- but many share the exact same shape (e.g.
+/// movfuscation's own `is_active_i · touched_slot_k` accumulation
+/// formula, repeated per `(block, slot)` pair, varying only in which
+/// slot). This pass targets exactly that redundancy.
+///
+/// Deliberately conservative: only merges a group when there is an
+/// EXACT, mechanically-verified single-variable substitution mapping one
+/// member's own `coeffs` onto every other member's (never an
+/// approximation, and never more than one differing variable) -- this
+/// can only ever miss a real batching opportunity (safe, just less
+/// optimal), never merge two structurally different `Poly`s. Designed to
+/// run as a generic `IRBlocks` pass -- usable both *before* movfuscation
+/// (per original block) and *after* (on the single combined block).
+///
+/// Requires `&mut IRTypes` (unlike `fold_ir_blocks`/`dce_ir_blocks`)
+/// since merging needs to intern the new wide `Vec(width, Bit)` type.
+///
+/// Returns `true` if any block was modified.
+pub fn batch_ir_blocks<P: Clone>(blocks: &mut IRBlocks<P>, types: &mut IRTypes) -> bool {
+    let mut any_changed = false;
+    for block in blocks.blocks.iter_mut() {
+        if batch_ir_block_once(block, types) {
+            any_changed = true;
+        }
+    }
+    any_changed
+}
+
+/// Every distinct variable referenced anywhere in `coeffs`.
+fn poly_vars(coeffs: &BTreeMap<Vec<IRVarId>, u8>) -> BTreeSet<IRVarId> {
+    coeffs.keys().flatten().copied().collect()
+}
+
+/// Substitute every occurrence of `from` with `to` throughout `coeffs`,
+/// re-sorting each monomial's own var list (required: `Stmt::Poly`'s own
+/// doc mandates sorted monomial keys) and combining monomials that
+/// collide after substitution via GF(2) coefficient XOR (dropping any
+/// that cancel to an even coefficient) -- mirrors `merge_poly_into`'s own
+/// GF(2) discipline elsewhere in this crate.
+fn substitute_var(coeffs: &BTreeMap<Vec<IRVarId>, u8>, from: IRVarId, to: IRVarId) -> BTreeMap<Vec<IRVarId>, u8> {
+    let mut out: BTreeMap<Vec<IRVarId>, u8> = BTreeMap::new();
+    for (mono, &c) in coeffs {
+        let mut new_mono: Vec<IRVarId> = mono.iter().map(|&v| if v == from { to } else { v }).collect();
+        new_mono.sort();
+        let entry = out.entry(new_mono).or_insert(0);
+        *entry ^= c;
+    }
+    out.retain(|_, c| *c & 1 != 0);
+    out
+}
+
+/// A reserved sentinel used only as a canonicalization placeholder inside
+/// this pass -- never written into a real block (`IRVarId`'s own space is
+/// dense from 0, so `u32::MAX` is always free).
+const POLY_BATCH_SENTINEL: u32 = u32::MAX;
+
+/// One batchable group: every member as `(stmt_index, hole_var)` -- the
+/// specific variable that member uses in place of the group's own single
+/// substituted position. `hole_var` is expressed in the block's
+/// *original* (pre-rewrite) numbering.
+struct PolyBatch {
+    ty: TypeId,
+    /// `stmt_index` of whichever member first opened this batch --
+    /// used only to look up that member's own original `coeffs` as the
+    /// substitution template during the rewrite phase.
+    template_idx: usize,
+    hole_var_in_template: IRVarId,
+    members: Vec<(usize, IRVarId)>,
+}
+
+/// One forward pass over a single block: find and merge batchable `Poly`
+/// groups. Returns `true` if the block was modified.
+fn batch_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &mut IRTypes) -> bool {
+    let n_params = block.params.len();
+
+    // ---- Phase 1: discover candidate batches (read-only). -----------------
+    //
+    // A statement can be proposed as a member of several *candidate*
+    // batches at once (one per choice of which of its own variables is
+    // "the hole") -- resolved to at most one real membership in the
+    // dedup step below, so no statement is ever rewritten twice.
+    let mut canon_map: BTreeMap<(TypeId, BTreeMap<Vec<IRVarId>, u8>), usize> = BTreeMap::new();
+    let mut batches: Vec<PolyBatch> = Vec::new();
+
+    for i in 0..block.stmts.len() {
+        let (ty, coeffs) = match &block.stmts[i].kind {
+            Stmt::Poly { ty, coeffs, .. } => (*ty, coeffs),
+            _ => continue,
+        };
+        if type_bit_width(ty, types) != Some(1) {
+            continue;
+        }
+        let vars = poly_vars(coeffs);
+        if vars.is_empty() {
+            continue;
+        }
+
+        let mut joined = false;
+        for &hole in &vars {
+            // Canonicalize by substituting `hole` with the sentinel: two
+            // statements batchable via a single-var substitution always
+            // produce IDENTICAL canonical forms (same monomials, same
+            // coefficients, same sentinel position) -- this key is exact,
+            // not an approximation, so a match here is already correct;
+            // the reconstruction check below is a redundant belt-and-
+            // braces confirmation, not load-bearing for correctness.
+            let canon = substitute_var(coeffs, hole, IRVarId(POLY_BATCH_SENTINEL));
+            let key = (ty, canon);
+            if let Some(&bi) = canon_map.get(&key) {
+                let template_coeffs = match &block.stmts[batches[bi].template_idx].kind {
+                    Stmt::Poly { coeffs, .. } => coeffs.clone(),
+                    _ => continue,
+                };
+                let reconstructed = substitute_var(&template_coeffs, batches[bi].hole_var_in_template, hole);
+                if &reconstructed == coeffs && batches[bi].ty == ty {
+                    batches[bi].members.push((i, hole));
+                    joined = true;
+                    break;
+                }
+            }
+        }
+        if joined {
+            continue;
+        }
+
+        // No existing batch matched under any hole choice -- open a new
+        // (as yet singleton) candidate batch for every choice; a later
+        // statement matching any of these joins there.
+        for &hole in &vars {
+            let canon = substitute_var(coeffs, hole, IRVarId(POLY_BATCH_SENTINEL));
+            let key = (ty, canon);
+            canon_map.entry(key).or_insert_with(|| {
+                batches.push(PolyBatch { ty, template_idx: i, hole_var_in_template: hole, members: vec![(i, hole)] });
+                batches.len() - 1
+            });
+        }
+    }
+
+    // ---- Phase 1.5: enforce SSA ordering -----------------------------------
+    //
+    // The new wide Poly (and the Merge feeding it) must be inserted at the
+    // group's own earliest member position, so every original member's own
+    // Shuffle (at or after that position) can reference it. But a
+    // *non-earliest* member's own hole var can itself be defined ANYWHERE
+    // before *that member's own* original position -- possibly at or after
+    // the group's earliest member. Such a member's hole var would not yet
+    // be defined at the insertion point, violating "operands defined
+    // earlier": drop it from the batch (its own Poly just stays unmerged).
+    // The group's own earliest member is never affected: its hole var is
+    // structurally guaranteed defined before its own position, which IS
+    // the insertion point.
+    for batch in &mut batches {
+        let min_idx = batch.members.iter().map(|(idx, _)| *idx).min().unwrap();
+        batch.members.retain(|&(_, hole)| {
+            (hole.0 as usize) < n_params || (hole.0 as usize - n_params) < min_idx
+        });
+    }
+
+    // ---- Phase 2: resolve overlaps (a statement can appear as a member ----
+    // of several candidate batches -- greedily accept the largest first,
+    // skipping any batch that overlaps an already-claimed statement).
+    let mut order: Vec<usize> = (0..batches.len()).collect();
+    order.sort_by_key(|&bi| core::cmp::Reverse(batches[bi].members.len()));
+    let mut claimed: BTreeSet<usize> = BTreeSet::new();
+    let mut accepted: Vec<usize> = Vec::new();
+    for bi in order {
+        if batches[bi].members.len() < 2 || batches[bi].members.len() > 64 {
+            continue; // no benefit, or beyond emit_poly_wide's own width<=64 scope
+        }
+        if batches[bi].members.iter().any(|(idx, _)| claimed.contains(idx)) {
+            continue;
+        }
+        for (idx, _) in &batches[bi].members {
+            claimed.insert(*idx);
+        }
+        accepted.push(bi);
+    }
+    if accepted.is_empty() {
+        return false;
+    }
+
+    // ---- Phase 3: rewrite. Single forward pass building new_stmts + a -----
+    // var-id remap, inserting each accepted batch's own Merge+wide-Poly
+    // pair right before its lowest-indexed member (preserving the
+    // "operands always defined earlier" invariant), and replacing every
+    // member's own original position with a `Shuffle` extracting its own
+    // lane.
+    let bit_ty = types.bit();
+
+    let mut insert_before: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut member_of: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut sorted_members: BTreeMap<usize, Vec<(usize, IRVarId)>> = BTreeMap::new();
+    for &bi in &accepted {
+        let mut members = batches[bi].members.clone();
+        members.sort_by_key(|(idx, _)| *idx);
+        let min_idx = members[0].0;
+        insert_before.insert(min_idx, bi);
+        for &(idx, _) in &members {
+            member_of.insert(idx, bi);
+        }
+        sorted_members.insert(bi, members);
+    }
+
+    let mut new_stmts: Vec<Node<IRStmt, P>> = Vec::with_capacity(block.stmts.len() + accepted.len());
+    let mut remap: BTreeMap<u32, u32> = (0..n_params as u32).map(|v| (v, v)).collect();
+    let mut next_var = n_params as u32;
+    let mut batch_wide_var: BTreeMap<usize, u32> = BTreeMap::new();
+
+    for i in 0..block.stmts.len() {
+        if let Some(&bi) = insert_before.get(&i) {
+            let members = &sorted_members[&bi];
+            let width = members.len();
+            let wide_ty = types.intern(IRType::Vec(width, bit_ty));
+
+            // Merge: bundle every member's own (remapped) hole var into
+            // one wide value, LSB-first by ascending original stmt index.
+            let merge_parts: Vec<IRVarId> = members.iter()
+                .map(|&(_, hole)| IRVarId(*remap.get(&hole.0).unwrap_or(&hole.0)))
+                .collect();
+            let merge_var = next_var; next_var += 1;
+            new_stmts.push(Node { kind: Stmt::Merge { parts: merge_parts, ty: wide_ty }, ..block.stmts[i].clone() });
+
+            // Wide Poly: the template's own coeffs, with every non-hole
+            // var remapped and the hole var replaced by the Merge's own
+            // new var id.
+            let (template_coeffs, ) = match &block.stmts[batches[bi].template_idx].kind {
+                Stmt::Poly { coeffs, .. } => (coeffs.clone(), ),
+                _ => unreachable!("template_idx always points at a Poly (checked at open time)"),
+            };
+            let remapped_template: BTreeMap<Vec<IRVarId>, u8> = template_coeffs.iter()
+                .map(|(mono, &c)| {
+                    let mut new_mono: Vec<IRVarId> = mono.iter()
+                        .map(|v| IRVarId(*remap.get(&v.0).unwrap_or(&v.0)))
+                        .collect();
+                    new_mono.sort();
+                    (new_mono, c)
+                })
+                .collect();
+            let template_hole_remapped = IRVarId(*remap.get(&batches[bi].hole_var_in_template.0).unwrap_or(&batches[bi].hole_var_in_template.0));
+            let wide_coeffs = substitute_var(&remapped_template, template_hole_remapped, IRVarId(merge_var));
+
+            // Combined constant: bit j = member j's own original
+            // constant's own bit 0 (each member is width=1).
+            let mut lo: u128 = 0;
+            for (j, &(orig_idx, _)) in members.iter().enumerate() {
+                if let Stmt::Poly { constant, .. } = &block.stmts[orig_idx].kind {
+                    if constant.lo & 1 != 0 {
+                        lo |= 1u128 << j;
+                    }
+                }
+            }
+            let wide_poly_var = next_var; next_var += 1;
+            new_stmts.push(Node {
+                kind: Stmt::Poly { ty: wide_ty, coeffs: wide_coeffs, constant: Constant { hi: 0, lo } },
+                ..block.stmts[i].clone()
+            });
+            batch_wide_var.insert(bi, wide_poly_var);
+        }
+
+        if let Some(&bi) = member_of.get(&i) {
+            let members = &sorted_members[&bi];
+            let lane = members.iter().position(|(idx, _)| *idx == i).unwrap();
+            let wide_var = batch_wide_var[&bi];
+            let new_var = next_var; next_var += 1;
+            new_stmts.push(Node {
+                kind: Stmt::Shuffle { result_bits: vec![(lane as u8, IRVarId(wide_var))], ty: bit_ty },
+                ..block.stmts[i].clone()
+            });
+            remap.insert((n_params + i) as u32, new_var);
+            continue;
+        }
+
+        let new_var = next_var; next_var += 1;
+        let old_kind = block.stmts[i].kind.clone();
+        let new_kind = old_kind.map_var(
+            &mut (),
+            &mut |_: &mut (), v: IRVarId| -> Result<IRVarId, core::convert::Infallible> {
+                Ok(IRVarId(*remap.get(&v.0).unwrap_or(&v.0)))
+            },
+            &mut |_, ty| Ok(ty),
+            &mut |_, s| Ok(s),
+        ).unwrap();
+        new_stmts.push(Node { kind: new_kind, ..block.stmts[i].clone() });
+        remap.insert((n_params + i) as u32, new_var);
+    }
+
+    let new_term = block.terminator.clone().map(
+        &mut (),
+        |_: &mut (), v: IRVarId| -> Result<IRVarId, core::convert::Infallible> {
+            Ok(IRVarId(*remap.get(&v.0).unwrap_or(&v.0)))
+        },
+    ).unwrap();
+
+    block.stmts = new_stmts;
+    block.terminator = new_term;
+    true
 }
 
 /// As [`dce_ir_blocks_with_remap`], but additionally treats every var id in
@@ -698,5 +1015,157 @@ mod dce_tests {
         let changed = dce_ir_blocks(&mut blocks, &mut types);
         assert!(!changed, "a StorageWrite must never be removed, even though its own result is unused");
         assert_eq!(blocks.blocks[0].stmts.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+    use volar_ir::ir::{IRBlock, IRType, IRTypeId};
+    use volar_ir_common::Type;
+
+    fn bit() -> IRTypeId { IRTypeId(0) }
+    fn types_with_bit() -> IRTypes {
+        IRTypes(alloc::vec![IRType::Primitive(Type::Bit)])
+    }
+
+    /// params: [a, b, c]. stmts: `a·b` (var 3), `a·c` (var 4), differing
+    /// only in the second AND operand -- the textbook
+    /// `is_active · touched_slot_k` shape this pass exists for. Both feed
+    /// the terminator directly, so both must survive as real values.
+    #[test]
+    fn batches_two_and_gates_differing_in_one_operand() {
+        let mut types = types_with_bit();
+        let a = IRVarId(0);
+        let b = IRVarId(1);
+        let c = IRVarId(2);
+        let block = IRBlock {
+            params: alloc::vec![bit(), bit(), bit()],
+            stmts: alloc::vec![
+                Node::new(Stmt::Poly {
+                    ty: bit(),
+                    coeffs: BTreeMap::from([(alloc::vec![a, b], 1u8)]),
+                    constant: Constant { hi: 0, lo: 0 },
+                }, (), None),
+                Node::new(Stmt::Poly {
+                    ty: bit(),
+                    coeffs: BTreeMap::from([(alloc::vec![a, c], 1u8)]),
+                    constant: Constant { hi: 0, lo: 0 },
+                }, (), None),
+            ],
+            terminator: IRTerminator::Jmp {
+                target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![IRVarId(3), IRVarId(4)]),
+            },
+        };
+        let mut blocks: IRBlocks = IRBlocks::new(alloc::vec![block]);
+
+        let changed = batch_ir_blocks(&mut blocks, &mut types);
+        assert!(changed, "two same-shape Polys differing in one operand must be batched");
+
+        let stmts = &blocks.blocks[0].stmts;
+        assert_eq!(stmts.len(), 4, "expected Merge + wide Poly + 2 Shuffles, got: {stmts:?}");
+
+        let (merge_parts, merge_ty) = match &stmts[0].kind {
+            Stmt::Merge { parts, ty } => (parts.clone(), *ty),
+            other => panic!("expected Merge at position 0, got {other:?}"),
+        };
+        assert_eq!(merge_parts, alloc::vec![b, c], "merge must bundle the two VARYING operands, in original statement order");
+        assert_eq!(types.0[merge_ty.0 as usize], IRType::Vec(2, bit()), "merge output must be a width-2 Bit vector");
+
+        let (wide_coeffs, wide_ty, wide_const) = match &stmts[1].kind {
+            Stmt::Poly { ty, coeffs, constant } => (coeffs.clone(), *ty, *constant),
+            other => panic!("expected wide Poly at position 1, got {other:?}"),
+        };
+        assert_eq!(wide_ty, merge_ty, "wide Poly's own output type must match the Merge's own wide type");
+        assert_eq!(wide_const, Constant { hi: 0, lo: 0 });
+        let merge_var = IRVarId(3); // Merge is the first new statement -> var (n_params + 0)
+        assert_eq!(wide_coeffs, BTreeMap::from([(alloc::vec![a, merge_var], 1u8)]), "wide Poly must keep the SHARED operand `a` broadcast and reference the merged wide value in place of the varying one");
+
+        match &stmts[2].kind {
+            Stmt::Shuffle { result_bits, ty } => {
+                assert_eq!(result_bits, &alloc::vec![(0u8, IRVarId(4))], "first original statement (a·b) must extract lane 0");
+                assert_eq!(*ty, bit());
+            }
+            other => panic!("expected Shuffle at position 2, got {other:?}"),
+        }
+        match &stmts[3].kind {
+            Stmt::Shuffle { result_bits, ty } => {
+                assert_eq!(result_bits, &alloc::vec![(1u8, IRVarId(4))], "second original statement (a·c) must extract lane 1");
+                assert_eq!(*ty, bit());
+            }
+            other => panic!("expected Shuffle at position 3, got {other:?}"),
+        }
+
+        // Both original var ids (3, 4) must still resolve to something
+        // usable -- the terminator (which referenced them directly) must
+        // be remapped to the new Shuffle statements' own var ids (5, 6),
+        // not left dangling or silently dropped.
+        match &blocks.blocks[0].terminator {
+            IRTerminator::Jmp { target } => assert_eq!(target.args, alloc::vec![IRVarId(5), IRVarId(6)], "terminator must be remapped to the new Shuffle statements' own var ids"),
+            other => panic!("expected Jmp, got {other:?}"),
+        }
+    }
+
+    /// Three Polys, two of which share a batchable shape (`a·b`/`a·c`)
+    /// and one genuinely unrelated (`d·e`, disjoint variables entirely)
+    /// -- the unrelated one must survive completely untouched (still a
+    /// plain, unmerged `Poly`), proving this pass doesn't over-merge.
+    #[test]
+    fn leaves_unrelated_poly_untouched() {
+        let mut types = types_with_bit();
+        let a = IRVarId(0);
+        let b = IRVarId(1);
+        let c = IRVarId(2);
+        let d = IRVarId(3);
+        let e = IRVarId(4);
+        let block = IRBlock {
+            params: alloc::vec![bit(), bit(), bit(), bit(), bit()],
+            stmts: alloc::vec![
+                Node::new(Stmt::Poly { ty: bit(), coeffs: BTreeMap::from([(alloc::vec![a, b], 1u8)]), constant: Constant { hi: 0, lo: 0 } }, (), None),
+                Node::new(Stmt::Poly { ty: bit(), coeffs: BTreeMap::from([(alloc::vec![a, c], 1u8)]), constant: Constant { hi: 0, lo: 0 } }, (), None),
+                Node::new(Stmt::Poly { ty: bit(), coeffs: BTreeMap::from([(alloc::vec![d, e], 1u8)]), constant: Constant { hi: 0, lo: 1 } }, (), None),
+            ],
+            terminator: IRTerminator::Jmp {
+                target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![IRVarId(5), IRVarId(6), IRVarId(7)]),
+            },
+        };
+        let mut blocks: IRBlocks = IRBlocks::new(alloc::vec![block]);
+
+        let changed = batch_ir_blocks(&mut blocks, &mut types);
+        assert!(changed);
+
+        let stmts = &blocks.blocks[0].stmts;
+        assert_eq!(stmts.len(), 5, "Merge + wide Poly + 2 Shuffles for the batched pair, plus the untouched d·e Poly: {stmts:?}");
+        match &stmts[4].kind {
+            Stmt::Poly { coeffs, constant, .. } => {
+                assert_eq!(coeffs, &BTreeMap::from([(alloc::vec![d, e], 1u8)]), "the unrelated Poly's own coeffs must survive verbatim");
+                assert_eq!(*constant, Constant { hi: 0, lo: 1 });
+            }
+            other => panic!("expected the untouched d·e Poly at position 4, got {other:?}"),
+        }
+    }
+
+    /// No batchable pair at all (every Poly genuinely distinct) -> no
+    /// change, block left completely untouched.
+    #[test]
+    fn no_batchable_pair_is_a_noop() {
+        let mut types = types_with_bit();
+        let a = IRVarId(0);
+        let b = IRVarId(1);
+        let c = IRVarId(2);
+        let block = IRBlock {
+            params: alloc::vec![bit(), bit(), bit()],
+            stmts: alloc::vec![
+                Node::new(Stmt::Poly { ty: bit(), coeffs: BTreeMap::from([(alloc::vec![a, b], 1u8)]), constant: Constant { hi: 0, lo: 0 } }, (), None),
+                Node::new(Stmt::Poly { ty: bit(), coeffs: BTreeMap::from([(alloc::vec![a, c], 1u8), (alloc::vec![b, c], 1u8)]), constant: Constant { hi: 0, lo: 0 } }, (), None),
+            ],
+            terminator: IRTerminator::Jmp {
+                target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![IRVarId(3), IRVarId(4)]),
+            },
+        };
+        let mut blocks: IRBlocks = IRBlocks::new(alloc::vec![block]);
+        let changed = batch_ir_blocks(&mut blocks, &mut types);
+        assert!(!changed, "a degree-2-monomial-count mismatch (1 vs 2) must never be batched");
+        assert_eq!(blocks.blocks[0].stmts.len(), 2);
     }
 }

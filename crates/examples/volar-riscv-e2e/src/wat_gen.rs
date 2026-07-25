@@ -2263,6 +2263,84 @@ mod tests {
         assert!(!c_src.is_empty());
     }
 
+    /// Real-scale correctness + size check for `volar_ir_opt::ir::batch_ir_blocks`
+    /// (merges structurally-identical width-1 `Poly`s that differ in one
+    /// operand into a wide `Poly`, targeting the real interpreter's own
+    /// 68,107 AND-bearing, almost-all-width-1 `Poly` statements).
+    ///
+    /// Correctness: runs the real interpreter's own PRE-movfuscation CFG
+    /// (`eval_ir_with_storage`, "dramatically cheaper" than the
+    /// movfuscated always-on circuit per its own doc) to completion, once
+    /// unbatched and once batched from the exact same starting IR, and
+    /// compares the final result + full storage map -- if
+    /// `batch_ir_blocks` ever merged two `Poly`s that weren't truly
+    /// equivalent up to the substitution, this would diverge.
+    ///
+    /// Size: reports the real total statement-count delta.
+    ///
+    /// `#[ignore]`d: real interpreter scale, run manually:
+    /// `cargo test -p volar-riscv-e2e --release probe_batch_ir_blocks_on_real_interpreter -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn probe_batch_ir_blocks_on_real_interpreter() {
+        use volar_ir_common::Stmt;
+        use volar_ir_opt::ir::{batch_ir_blocks, fold_ir_blocks};
+        use volar_ir_opt::store_forward::store_forward_ir_blocks;
+        use volar_fuzz::interpreter::ir::eval_ir_with_storage;
+
+        let wasm_bytes = wat::parse_str(&test_program_wat()).expect("wat should assemble");
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty());
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+
+        fn count_stmts(blocks: &volar_ir::ir::IRBlocks) -> (usize, usize, usize, usize) {
+            let mut poly = 0usize;
+            let mut shuffle = 0usize;
+            let mut merge = 0usize;
+            let mut total = 0usize;
+            for b in &blocks.blocks {
+                for n in &b.stmts {
+                    total += 1;
+                    match &n.kind {
+                        Stmt::Poly { .. } => poly += 1,
+                        Stmt::Shuffle { .. } => shuffle += 1,
+                        Stmt::Merge { .. } => merge += 1,
+                        _ => {}
+                    }
+                }
+            }
+            (total, poly, shuffle, merge)
+        }
+
+        let (total0, poly0, shuffle0, merge0) = count_stmts(&ir_blocks);
+        eprintln!("before batching: total={total0} poly={poly0} shuffle={shuffle0} merge={merge0}");
+
+        // Run UNBATCHED to completion first (from a clone, so the batched
+        // run below starts from the exact same pre-batch IR).
+        let unbatched_blocks = ir_blocks.clone();
+        let (unbatched_result, unbatched_storage) = eval_ir_with_storage(&unbatched_blocks, &types, &[]);
+        eprintln!("unbatched: result={unbatched_result:?} storage entries={}", unbatched_storage.len());
+
+        let mut batched_blocks = ir_blocks.clone();
+        let mut batched_types = types.clone();
+        let changed = batch_ir_blocks(&mut batched_blocks, &mut batched_types);
+        let (total1, poly1, shuffle1, merge1) = count_stmts(&batched_blocks);
+        eprintln!("after batching (changed={changed}): total={total1} poly={poly1} shuffle={shuffle1} merge={merge1}");
+        eprintln!("delta: total={} poly={} shuffle={} merge={}", total1 as i64 - total0 as i64, poly1 as i64 - poly0 as i64, shuffle1 as i64 - shuffle0 as i64, merge1 as i64 - merge0 as i64);
+
+        let (batched_result, batched_storage) = eval_ir_with_storage(&batched_blocks, &batched_types, &[]);
+        eprintln!("batched: result={batched_result:?} storage entries={}", batched_storage.len());
+
+        assert_eq!(unbatched_result, batched_result, "batching must not change the interpreter's own final return value");
+        assert_eq!(unbatched_storage, batched_storage, "batching must not change the interpreter's own final storage contents");
+        eprintln!("MATCH: batching preserved exact semantics on the real interpreter's own pre-movfuscation CFG");
+    }
+
     /// Minimal isolation repro for the "circuit state never changes" bug
     /// found while investigating `trace_interpreter_plain_values_matches_native_reference`:
     /// a tiny loop that just writes a constant into a local once, then
