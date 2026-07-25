@@ -790,7 +790,12 @@ mod tests {
         let mode = StorageMode::Commitment;
         // chunk_size=8: bounds the accumulator's own params to O(8 * state
         // width) instead of O(n_blocks * state width) -- the whole point of
-        // Milestone 1.5 Step B's combiner-splitting.
+        // Milestone 1.5 Step B's combiner-splitting. This test only
+        // measures weave time/param counts, not compile -- `chunk_size=8`
+        // is fine for that. For anything that actually *compiles* the
+        // woven output, use `chunk_size=1` instead (see
+        // `largest_chunk_function_compiles`'s own doc comment: `8`'s
+        // largest chunk is 44.6MB of source and OOMs rustc).
         let chunk_size = 8usize;
 
         let mut verifier_and_counts: std::vec::Vec<usize> = std::vec::Vec::new();
@@ -1584,26 +1589,36 @@ mod tests {
     }
 
     /// Feasibility check (not exercised by default) for Stage 2: does the
-    /// *largest* generated split-verifier function (a chunk combiner, per
-    /// `measure_split_weave_on_real_interpreter`'s own measurement, up to
-    /// ~236K params) actually print+compile, on its own, before investing
-    /// in the full interleaved driver?
+    /// *largest* generated split-verifier function (a chunk combiner)
+    /// actually print+compile, on its own, before investing in the full
+    /// interleaved driver?
     ///
-    /// **Currently fails, and is expected to**: `rustc` hard-caps functions
-    /// at 65535 arguments (`error: function can not have more than 65535
-    /// arguments`) -- a real, non-negotiable compiler limit, not a
-    /// performance/RSS issue that `--release` or more chunking headroom can
-    /// route around. `chunk_size=8`'s largest chunk (`accum_chunk_6`) alone
-    /// exceeds it. This is Stage 2's second genuine architectural blocker
-    /// (see `trace_interpreter_plain_values_matches_native_reference`'s doc
-    /// for the first) -- the fix is real design work Milestone 1.5's own
-    /// plan flagged as a "complementary, fold in if it fits naturally"
-    /// optimization and deferred: batch each function's own `hat`/`q_and`/
-    /// `r_and` parameters into `[T; k]` array params (matching `entry_w`'s
-    /// own `w_i_j` convention) instead of one scalar param per AND-gate
-    /// lane, not a smaller `chunk_size` alone (per-block skew means some
-    /// *single* blocks already carry thousands of gates). Left unfixed
-    /// here deliberately, per the plan's own honest risk note.
+    /// **History**: `q_and`/`hat`/`r_and` are already array-batched in the
+    /// split-weave path (`crates/compiler/volar-weaver/src/vole.rs`), so the
+    /// classic rustc 65535-argument limit is not the live blocker here (a
+    /// stale doc note on an earlier version of this test claimed otherwise
+    /// -- confirmed wrong by direct measurement: the largest `chunk_size=8`
+    /// function has only 5,512 params). The real blocker is generated
+    /// *source size*: at `chunk_size=8`, the largest accumulator chunk
+    /// (`accum_chunk_0`) is 44.6MB of printed Rust source, and `rustc`
+    /// SIGKILL's (OOM) after ~28 minutes trying to compile it. Root cause:
+    /// `movfuscate.rs`'s cross-block accumulation loop emits one AND-gate +
+    /// one XOR-add per `(block, slot)` pair unconditionally, regardless of
+    /// whether that block actually touches that slot -- see
+    /// `docs/interpreter-honest-e2e-zk-plan.md` for the deferred, safer
+    /// fix (a real one exists, but requires split-weave changes too; a
+    /// first attempt was implemented, found unsafe, and reverted).
+    ///
+    /// **Working mitigation, confirmed by direct measurement**: printed
+    /// source size scales ~linearly with `chunk_size` (`chunk_size=8`:
+    /// 46.8MB; `4`: 24.4MB; `2`: 13.3MB; `1`: 7.7MB --
+    /// `probe_chunk_size_vs_largest_function_size`), and `chunk_size=1`
+    /// compiles successfully in ~9 minutes (536.59s), vs. `chunk_size=8`'s
+    /// OOM after ~28 minutes. `chunk_size=1` means one accumulator-chunk
+    /// function per original block (241 functions total for this circuit,
+    /// vs. 136 at `chunk_size=8`) -- more functions, but each individually
+    /// tractable. Use `chunk_size=1` for the real interpreter until the
+    /// movfuscation-level fix lands.
     ///
     /// Run manually: `cargo test -p volar-riscv-e2e --release largest_chunk_function_compiles -- --ignored --nocapture`.
     #[test]
@@ -1615,7 +1630,10 @@ mod tests {
         let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, boundary, accum_info) =
             lower_interpreter(1, LoweringMode::WithTerminationFlag);
         let mode = StorageMode::Commitment;
-        let chunk_size = 8usize;
+        // chunk_size=1: the confirmed-compilable choice -- see this test's
+        // own doc comment. chunk_size=8 (the original Milestone 1.5 Step B
+        // default) OOMs rustc at real interpreter scale.
+        let chunk_size = 1usize;
 
         let mut biggest: Option<volar_compiler::ir::IrFunction> = None;
         weave_vole_verifier_ir_split_with_trace(
@@ -1641,6 +1659,49 @@ mod tests {
         // here) -- a no-op driver is enough to force a real compile.
         volar_verifier_iop_runtime::run_iop_verifier(&code, "#[test]\nfn compiles() {}\n");
         eprintln!("compiled successfully");
+    }
+
+    /// Cheap (weave + print only, no compile) probe: does a smaller
+    /// `chunk_size` meaningfully shrink the largest chunk function's own
+    /// printed source size? `largest_chunk_function_compiles` found
+    /// `chunk_size=8`'s largest chunk to be 44.6MB of source and OOM `rustc`
+    /// after ~28 minutes -- this measures (in seconds, not tens of
+    /// minutes) whether a smaller `chunk_size` is a viable mitigation on
+    /// its own, before investing in movfuscation-level codegen changes.
+    /// Run manually: `cargo test -p volar-riscv-e2e --release probe_chunk_size_vs_largest_function_size -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn probe_chunk_size_vs_largest_function_size() {
+        use volar_ir_passes::LoweringMode;
+        use volar_weaver::{StorageMode, weave_vole_verifier_ir_split_with_trace, print_weaved_vole_module, IopSink};
+
+        let (_ir_blocks, _movfuscated, circuit, types, _bit_ty, boundary, accum_info) =
+            lower_interpreter(1, LoweringMode::WithTerminationFlag);
+        let mode = StorageMode::Commitment;
+
+        for &chunk_size in &[1usize, 2, 4, 8] {
+            let mut biggest: Option<volar_compiler::ir::IrFunction> = None;
+            let mut n_funcs = 0usize;
+            weave_vole_verifier_ir_split_with_trace(
+                &circuit, &types, "riscv_step", &mode, &IopSink, &boundary, &accum_info, chunk_size,
+                |f| {
+                    n_funcs += 1;
+                    if biggest.as_ref().map(|b| b.params.len()).unwrap_or(0) < f.params.len() {
+                        biggest = Some(f);
+                    }
+                },
+            );
+            let f = biggest.expect("at least one function woven");
+            let module = volar_compiler::ir::IrModule {
+                name: "riscv_step".into(), functions: vec![f.clone()], structs: vec![], enums: vec![],
+                traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+            };
+            let code = print_weaved_vole_module(&module);
+            eprintln!(
+                "chunk_size={chunk_size}: {n_funcs} functions, largest={} params={} printed_len={} bytes",
+                f.name, f.params.len(), code.len(),
+            );
+        }
     }
 
     /// Minimal isolation repro for the "circuit state never changes" bug
