@@ -41,8 +41,24 @@ not eliminate the panic (moves from `vole.rs:2826` to `vole.rs:3935`);
 the next step (user-directed) is a bigger fix — physically hoist
 cross-chunk-shared statements into `shared_prefix` and extend the
 boundary metadata accordingly, rather than excluding cross-region merges.
-See "Cross-chunk locality" below for the full state. Movfuscation
-block-finish fall-through remains unstarted.**
+**Update**: hoisting was implemented, measured, and found to cause
+~120x overcounting (every one of 241 functions computing a value only 2
+of them need) — confirmed OOM at 93.6GB. The user redirected to a THIRD
+design — thread cross-chunk values as packed parameters between exactly
+the functions that need them, mirroring `split_driver.rs`'s own
+already-built `all_ok`/`fold_state` linear-chain precedent — which was
+then fully implemented across `movfuscate.rs`/`vole.rs`/`split_driver.rs`,
+unit-tested, and confirmed **logically correct** at real scale (a
+pre-weave validation pass reports zero reference-visibility failures,
+after fixing two real bugs found along the way — see "Cross-chunk
+locality" for the full story). It remains blocked on a THIRD, distinct
+real-scale performance blowup (90.9GB at t=25s, confirmed unrelated to
+both the synthetic-slot count and to `batch_ir_blocks` specifically —
+CSE+DCE alone reproduces it identically) with a plausible but
+unconfirmed cause (wide-value materialization triggered across function
+boundaries by synthetic threading). See "Cross-chunk locality" below for
+the complete, current state. Movfuscation block-finish fall-through
+remains unstarted.**
 
 ## `chunk_size` mitigation (still useful, now stacks with the real fix)
 
@@ -896,6 +912,150 @@ var already agree on region — so that panic's real cause remains
 unknown). Likely moot once the packed-parameter design above lands,
 since it would supersede exclusion entirely, but worth a note in case
 exclusion is ever revisited independently.
+
+**Implemented (2026-07-25, follow-up session): fully built, correctness
+confirmed, blocked on a THIRD distinct performance issue.**
+
+All three files from the design above were built:
+
+1. **`movfuscate.rs`**: `MovfuscBlockBoundary`/`MovfuscAccumStep`/
+   `MovfuscAccumInit` gained `synthetic_out: Vec<u32>`/`synthetic_in:
+   Vec<u32>` fields (always empty from `movfuscate()` itself —
+   backward-compatible, zero behavior change for every existing caller,
+   confirmed via the full `volar-weaver`/`volar-riscv-e2e` suites: only
+   the same 2 pre-existing mem_probe failures plus a newly-confirmed
+   THIRD pre-existing failure, `beq_equal_branch_fires_straight_line`
+   ("circuit must halt within budget"), confirmed via `git stash` A/B to
+   already fail identically on the unmodified tree — not a regression).
+   New `thread_synthetic_slots(boundary, accum_info, region_sets_final)`
+   implements the discovery step directly: for a var with region set `S`
+   (`0 ∉ S`, `|S| > 1`), `producer = min(S)`, `last = max(S)`; every
+   region in `[producer, last)` gets the var appended to its own
+   `synthetic_out`, every region in `(producer, last]` gets it appended
+   to `synthetic_in`. 4 new unit tests (adjacent sharing, distant sharing
+   threading through every intervening range, shared_prefix-inclusion
+   needing no slot, repeated calls extending rather than overwriting).
+2. **`vole.rs`**: all three split-weave functions (`weave_vole_prover_ir_split`/
+   `weave_vole_qsim_ir_split`/`weave_vole_verifier_ir_split_with_trace`)
+   bind each range's own `synthetic_in` var ids as extra `synth_{v}`
+   params (via the *existing* `bind_scalar` helper, reused as-is) right
+   after `insert_w_wires`, and append `synthetic_out`'s own
+   `ctx.slot_expr`/`ctx.slot_type` values to the return tuple after
+   emission — for both the per-block loop and the accumulator chunk
+   loop (the latter checks only the chunk's own *boundary* steps,
+   `accum_info.steps[lo]`/`accum_info.steps[hi-1]`, which correctly
+   answers "does the whole `[lo,hi)` chunk need this threaded" for any
+   `chunk_size`, not just `chunk_size=1`). `batch_ir_blocks_with_remap`
+   gained a sibling, `batch_ir_blocks_with_remap_and_members`, exposing
+   each newly-created var's own pre-batch member var ids (needed to
+   compute a batch-created var's own region provenance, since it has no
+   pre-optimization identity of its own to look up directly).
+3. **`split_driver.rs`**: `build_call` gained a `synth_exported: &BTreeMap<u32,
+   Slot>` parameter and a `synth_` param-name branch; two new threading
+   maps (`synth_exported_vope`/`synth_exported_q`, keyed by var id, mirroring
+   `exported_vope`/`exported_q`) get populated after each call by slicing
+   the trailing tuple positions the callee's own `synthetic_out` declared,
+   and consulted before building each later call's own argument list —
+   the prover's own output populates the vope map, the **verifier's**
+   own output populates the q map (qsim's own synthetic outputs are
+   discarded, same as its `is_active`/`done`/etc, mirroring how
+   `exported_q` was already populated from `v_*` not `q_*`).
+
+**Two real bugs found and fixed via a real-scale validation pass** (a
+cheap, no-weave pre-flight check added to the probe: for every range,
+confirm every var its own native fields reference is actually visible —
+a top-level param, in `shared_prefix`, within its own `[start,end)`, or
+in its own `synthetic_in` — catching exactly the class of bug that
+otherwise only surfaces as an opaque "no entry found for key" panic deep
+in a release-mode-inlined weaver call, with no line-level attribution):
+
+1. **`start`/`end` naive-remap bug (real, found first).** Even though
+   this design never physically moves any statement, naively remapping
+   a region's own `start`/`end` var ids through `cumulative`
+   (`remap_movfusc_boundaries`'s own existing behavior) is WRONG: CSE's
+   own "keep the earliest occurrence" behavior can merge a region's own
+   *boundary-marking* statement (its literal first or one-past-last
+   statement) onto an EARLIER position from a completely different
+   region — unconstrained CSE isn't limited to merging within a region
+   the way the start/end proof assumed for the (abandoned)
+   region-exclusion design. Confirmed concretely: `boundary[65]` ended up
+   with `start=524, end=523` (inverted). Fixed the same way
+   `hoist_shared_statements`'s own `region_ranges` fixed the analogous
+   problem for the hoist design, but without needing an actual reorder
+   pass: since CSE/DCE/batch never reorder surviving statements (only
+   remove/insert), a region's own surviving members stay contiguous, so
+   `start`/`end` can be recomputed directly as `min`/`max` over
+   `cumulative[v]` for every original `v` with `region_by_orig_var[v] ==
+   this region` that's still alive.
+2. **Validator false positives (found second, not a real bug).**
+   `accum_info.init`/`.steps[i]`'s own `done_acc`/`next_pc`/`next_state`/
+   `ret_vals` are NOT statement-position references at all in the sense
+   the validator assumed — they're threaded via the **pre-existing,
+   unrelated** `bind_running` mechanism (each chunk receives the
+   previous chunk's own running value as an `in_*` param, *regardless*
+   of that var's own physical position — this is how "unchanged slot,
+   same var id carried across many steps" already worked before any of
+   this investigation). Fixed by narrowing the validator to check only
+   `synthetic_out` for accum ranges (the one field that IS my own new,
+   physical-position-dependent mechanism).
+
+**With both fixed, the validation pass reports zero failures** — every
+var reference in the optimized+synthetic-threaded circuit is confirmed
+resolvable. This is real evidence the packed-parameter design is
+**logically correct**.
+
+**Still blocked: a third, distinct real-scale performance blowup,
+unrelated to hoisting's overcounting and unrelated to the synthetic
+slot mechanism's own size.** Attempting the actual weave (not just
+validation) gets SIGKILLed consistently around 60s regardless of
+`ulimit -v` level tried (8GB, 12GB, 16GB all killed at the same point) —
+`sample`-profiled directly (same technique used earlier this session for
+the original `WireRepr::Array` OOM): **90.9GB physical footprint at just
+t=25s**, hot functions `emit_zero`/`emit_poly_wide`/`array_t_default`/
+`materialize`/`arr_index`/`emit_poly_lane` — i.e. the *same function
+family* `WireRepr::Array` was built to keep cheap, now expensive again
+through some other path. Two things ruled out concretely:
+- **Not the synthetic-slot count**: a cheap pre-weave diagnostic
+  (`total_span` = sum over every cross-region var of its own
+  producer-to-last-consumer distance, predicting exactly how many extra
+  param+return pairs get added across all functions) measured only
+  `19,129` vars, `total_span=137,327` (median distance 2, p90 17, max
+  119) — far too small to explain a 90GB blowup on its own.
+- **Not `batch_ir_blocks`**: re-ran with batch skipped entirely
+  (`VOLAR_SKIP_BATCH` env-gated in the probe, CSE+DCE+synthetic-threading
+  only) — circuit size barely changes (224,899 vs 225,431 statements,
+  consistent with batch's own tiny post-movfuscation contribution
+  documented earlier) and the **identical blowup still occurs**. So
+  whatever's expensive is already present from CSE+DCE alone; batch
+  isn't adding or fixing it.
+
+**Leading, unconfirmed hypothesis**: `emit_poly_wide`'s bundling logic
+already materializes a `WireRepr::Array` operand when needed (Merge,
+address composition, unrolled-Poly fallback — see `WireRepr::Array`'s
+own doc). A CSE-shared value threaded via `synth_{v}` crosses a function
+boundary; if the underlying value is *wide* (a common case — this
+interpreter's own registers/words are typically 32-64 bits, and
+`VaffleTarget`'s own bitwise ops already emit one wide `Poly` per
+op) and the consuming statement needs individual bits or combines it
+with something else, materializing it in *every* function it threads
+through could reproduce a variant of the exact eager-unpack cost class
+`WireRepr::Array` was built to eliminate — just triggered via the
+synthetic-threading path instead of top-level param binding. **Not
+confirmed** — would need direct instrumentation (count actual
+`materialize()` calls and their own array widths during a real run) to
+verify, not yet done.
+
+**Where this leaves the investigation**: the packed-parameter design
+itself is complete, unit-tested (4 new tests, all passing), and
+validated logically correct at real scale (zero reference-visibility
+failures) — a real, durable piece of infrastructure. Getting an actual
+printed-size number still requires diagnosing this third performance
+issue, which is a distinct, self-contained follow-up (add materialize()
+call-site instrumentation; if the wide-value hypothesis is confirmed,
+likely fix is to only materialize the *specific bits* a consumer
+actually needs rather than the whole array, or to avoid threading wide
+values through function boundaries that don't need every bit). Natural
+next step for a fresh session.
 
 Not yet implemented as of this doc update — this is the concrete,
 grounded plan for the next work on this investigation.

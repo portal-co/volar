@@ -97,6 +97,12 @@ fn insert_export(exported: &mut BTreeMap<String, Slot>, base_name: String, slot:
     exported.insert(base_name, slot);
 }
 
+/// As [`insert_export`], for cross-chunk-shared (`synthetic_out`) values,
+/// keyed by the var's own stable global id rather than a param-name string.
+fn insert_synth_export(exported: &mut BTreeMap<u32, Slot>, var_id: u32, slot: Slot) {
+    exported.insert(var_id, slot);
+}
+
 fn tuple_elems(ty: &IrType) -> Vec<IrType> {
     match ty {
         IrType::Tuple(v) => v.clone(),
@@ -235,6 +241,21 @@ pub fn generate_split_step(
     let mut exported_vope: BTreeMap<String, Slot> = BTreeMap::new();
     let mut exported_q: BTreeMap<String, Slot> = BTreeMap::new();
 
+    // Cross-chunk-shared values (CSE-discovered post-movfuscation sharing,
+    // `MovfuscBlockBoundary`/`MovfuscAccumStep`/`MovfuscAccumInit`'s own
+    // `synthetic_in`/`synthetic_out` -- see
+    // `docs/interpreter-honest-e2e-zk-plan.md`'s "Cross-chunk locality"
+    // section), keyed by the var's own STABLE global id (not a
+    // param-name-prefix string like `exported_vope`/`exported_q`, since a
+    // synthetic var's own name -- `synth_{v}` -- is already globally
+    // unique and stable across every function that references it). Same
+    // Vope/Q role split as `exported_vope`/`exported_q`; qsim's own
+    // synthetic outputs are discarded, same as its `is_active`/`done`/etc
+    // -- only the verifier's own (Q-typed) output is threaded onward,
+    // exactly mirroring `exported_q`'s own population from `v_*`, not `q_*`.
+    let mut synth_exported_vope: BTreeMap<u32, Slot> = BTreeMap::new();
+    let mut synth_exported_q: BTreeMap<u32, Slot> = BTreeMap::new();
+
     // Emit one committed oracle read (real value known host-side) as a
     // fresh `vole_commit_bit` call pair, returning (vope_name, q_name).
     let mut emit_oracle = |out: &mut String, uid: &str| -> (String, String) {
@@ -289,6 +310,7 @@ pub fn generate_split_step(
         r_ands: Option<&str>, // verifier only: name of a pre-bound [Gf128; n] local
         running_in: Option<(&str, &str, &str, &str)>, // (done_acc, next_pc_arr, next_state_arr_of_arrs, ret_val_arr_of_arrs) local names, chunk/finish only
         block_exports: &BTreeMap<String, Slot>,
+        synth_exported: &BTreeMap<u32, Slot>, // cross-chunk-shared values, keyed by var id -- see its own declaration site
         block_idx_range: Option<(usize, usize)>, // [lo, hi) block indices this chunk covers
         is_verifier: bool,
         all_ok_in: &str,
@@ -381,6 +403,14 @@ pub fn generate_split_step(
                 args.push(format!("{}.clone()", slot_name(slot)));
                 continue;
             }
+            if let Some(rest) = n.strip_prefix("synth_") {
+                let v: u32 = rest.parse().unwrap_or_else(|_| panic!("malformed synthetic param name: {n}"));
+                let slot = synth_exported.get(&v).unwrap_or_else(|| panic!(
+                    "missing synthetic export for var {v} (param {n}) -- its own producer range must be called before this consumer, in real driver call order"
+                ));
+                args.push(format!("{}.clone()", slot_name(slot)));
+                continue;
+            }
             panic!("unrecognized param name: {n}");
         }
         let _ = block_idx_range;
@@ -419,24 +449,27 @@ pub fn generate_split_step(
 
         // Prover.
         let p_outcome = build_call(
-            &mut out, pf, "vope_one(&delta)", entry_w, 0, None, None, None, None, &exported_vope, Some((i, i + 1)), false,
+            &mut out, pf, "vope_one(&delta)", entry_w, 0, None, None, None, None, &exported_vope, &synth_exported_vope, Some((i, i + 1)), false,
             "", "", oracle_vope.as_deref(), &format!("p_{uid}"),
         );
         let p_slots = p_outcome.finish_output;
-        // Layout: [is_active, done, next_pc.., next_state.., ret_vals.., hats]
+        // Layout: [is_active, done, next_pc.., next_state.., ret_vals.., hats, synth_out..]
         let mut idx = 0usize;
         let p_is_active = p_slots[idx].clone(); idx += 1;
         let p_done = p_slots[idx].clone(); idx += 1;
         let p_next_pc: Vec<Slot> = p_slots[idx..idx + n_pc].to_vec(); idx += n_pc;
         let p_next_state: Vec<Slot> = p_slots[idx..idx + n_state].to_vec(); idx += n_state;
         let p_ret_vals: Vec<Slot> = p_slots[idx..idx + n_ret].to_vec(); idx += n_ret;
-        let p_hats = p_slots[idx].clone();
+        let p_hats = p_slots[idx].clone(); idx += 1;
+        for (&v, s) in b.synthetic_out.iter().zip(&p_slots[idx..]) {
+            insert_synth_export(&mut synth_exported_vope, v, s.clone());
+        }
 
         // QSim: consumes prover's hats as hat_k input.
         let local_oracle_count_q = count_params_prefixed(qf, "oracle_rd_");
         assert_eq!(local_oracle_count_q, local_oracle_count, "block {i}: qsim/prover oracle count mismatch");
         let q_outcome = build_call(
-            &mut out, qf, "q_one(&delta)", entry_w, 1, Some(&p_hats), None, None, None, &exported_q, Some((i, i + 1)), false,
+            &mut out, qf, "q_one(&delta)", entry_w, 1, Some(&p_hats), None, None, None, &exported_q, &synth_exported_q, Some((i, i + 1)), false,
             "", "", oracle_q.as_deref(), &format!("q_{uid}"),
         );
         let q_slots = q_outcome.finish_output;
@@ -447,6 +480,7 @@ pub fn generate_split_step(
         let q_next_state: Vec<Slot> = q_slots[idx..idx + n_state].to_vec(); idx += n_state;
         let q_ret_vals: Vec<Slot> = q_slots[idx..idx + n_ret].to_vec(); idx += n_ret;
         let q_and_arr = q_slots[idx].clone();
+        // QSim's own synthetic outputs are discarded, same as its is_active/done/etc above.
 
         // r_and challenges for this block's own gate count.
         let and_count = and_count_of(vf);
@@ -460,7 +494,7 @@ pub fn generate_split_step(
         let local_oracle_count_v = count_params_prefixed(vf, "oracle_rd_");
         assert_eq!(local_oracle_count_v, local_oracle_count, "block {i}: verifier/prover oracle count mismatch");
         let v_outcome = build_call(
-            &mut out, vf, "q_one(&delta)", entry_w, 1, Some(&p_hats), Some(&q_and_arr), Some(&r_ands_name), None, &exported_q, Some((i, i + 1)), true,
+            &mut out, vf, "q_one(&delta)", entry_w, 1, Some(&p_hats), Some(&q_and_arr), Some(&r_ands_name), None, &exported_q, &synth_exported_q, Some((i, i + 1)), true,
             &all_ok_expr, &fold_state_expr, oracle_q.as_deref(), &format!("v_{uid}"),
         );
         let v_slots = v_outcome.finish_output;
@@ -471,7 +505,10 @@ pub fn generate_split_step(
         let v_next_state: Vec<Slot> = v_slots[idx..idx + n_state].to_vec(); idx += n_state;
         let v_ret_vals: Vec<Slot> = v_slots[idx..idx + n_ret].to_vec(); idx += n_ret;
         let v_all_ok = match &v_slots[idx] { Slot::Scalar(n) => n.clone(), _ => unreachable!() }; idx += 1;
-        let v_fold_state = match &v_slots[idx] { Slot::Scalar(n) => n.clone(), _ => unreachable!() };
+        let v_fold_state = match &v_slots[idx] { Slot::Scalar(n) => n.clone(), _ => unreachable!() }; idx += 1;
+        for (&v, s) in b.synthetic_out.iter().zip(&v_slots[idx..]) {
+            insert_synth_export(&mut synth_exported_q, v, s.clone());
+        }
 
         out.push_str(&format!("assert!({v_all_ok}, \"step {step_idx} block {i}: honest run must pass the woven verifier's own check\");\n"));
         all_ok_expr = v_all_ok;
@@ -622,18 +659,25 @@ pub fn generate_split_step(
         let running_in_q = (running_done_acc_q.as_str(), running_next_pc_q.as_str(), running_next_state_q.as_str(), running_ret_vals_q.as_str());
 
         let p_outcome = build_call(
-            &mut out, pf, "vope_one(&delta)", entry_w, 0, None, None, None, Some(running_in_vope), &exported_vope, Some((lo, hi)), false,
+            &mut out, pf, "vope_one(&delta)", entry_w, 0, None, None, None, Some(running_in_vope), &exported_vope, &synth_exported_vope, Some((lo, hi)), false,
             "", "", oracle_vope.as_deref(), &format!("p_{uid}"),
         );
         let p_slots = p_outcome.finish_output;
-        let p_hats = p_slots.last().unwrap().clone();
+        // Layout: [done_acc, next_pc.., next_state.., ret_vals.., hats, synth_out..]
+        // -- NOT `.last()` for hats: synth_out entries (if any) trail it.
+        let p_hats = p_slots[1 + pc_w + st_w + rv_w].clone();
         let (p_new_done_acc, p_new_next_pc, p_new_next_state, p_new_ret_vals) = parse_running_output(&p_slots);
+        let out_step_for_lo_hi = &accum_info.steps[hi - 1];
+        for (&v, s) in out_step_for_lo_hi.synthetic_out.iter().zip(&p_slots[(2 + pc_w + st_w + rv_w)..]) {
+            insert_synth_export(&mut synth_exported_vope, v, s.clone());
+        }
 
         let q_outcome = build_call(
-            &mut out, qf, "q_one(&delta)", entry_w, 1, Some(&p_hats), None, None, Some(running_in_q), &exported_q, Some((lo, hi)), false,
+            &mut out, qf, "q_one(&delta)", entry_w, 1, Some(&p_hats), None, None, Some(running_in_q), &exported_q, &synth_exported_q, Some((lo, hi)), false,
             "", "", oracle_q.as_deref(), &format!("q_{uid}"),
         );
-        let q_and_arr = q_outcome.finish_output.last().unwrap().clone();
+        let q_and_arr = q_outcome.finish_output[1 + pc_w + st_w + rv_w].clone();
+        // QSim's own synthetic outputs are discarded, same as its running state above.
 
         let and_count = and_count_of(vf);
         let r_ands_name = format!("_rands_{uid}");
@@ -643,14 +687,17 @@ pub fn generate_split_step(
             (step_idx as u64) * 10_000_000 + and_gate_seed * 100_000
         ));
         let v_outcome = build_call(
-            &mut out, vf, "q_one(&delta)", entry_w, 1, Some(&p_hats), Some(&q_and_arr), Some(&r_ands_name), Some(running_in_q), &exported_q, Some((lo, hi)), true,
+            &mut out, vf, "q_one(&delta)", entry_w, 1, Some(&p_hats), Some(&q_and_arr), Some(&r_ands_name), Some(running_in_q), &exported_q, &synth_exported_q, Some((lo, hi)), true,
             &all_ok_expr, &fold_state_expr, oracle_q.as_deref(), &format!("v_{uid}"),
         );
         let v_slots = v_outcome.finish_output;
-        // Layout: [done_acc, next_pc.., next_state.., ret_vals.., all_ok, fold_state]
+        // Layout: [done_acc, next_pc.., next_state.., ret_vals.., all_ok, fold_state, synth_out..]
         let (v_new_done_acc, v_new_next_pc, v_new_next_state, v_new_ret_vals) = parse_running_output(&v_slots);
         let v_all_ok = match &v_slots[1 + pc_w + st_w + rv_w] { Slot::Scalar(n) => n.clone(), _ => unreachable!() };
         let v_fold_state = match &v_slots[2 + pc_w + st_w + rv_w] { Slot::Scalar(n) => n.clone(), _ => unreachable!() };
+        for (&v, s) in out_step_for_lo_hi.synthetic_out.iter().zip(&v_slots[(3 + pc_w + st_w + rv_w)..]) {
+            insert_synth_export(&mut synth_exported_q, v, s.clone());
+        }
 
         out.push_str(&format!("assert!({v_all_ok}, \"step {step_idx} chunk {c}: honest run must pass the woven verifier's own check\");\n"));
         all_ok_expr = v_all_ok;
@@ -712,7 +759,7 @@ pub fn generate_split_step(
         let running_in_q = (running_done_acc_q.as_str(), running_next_pc_q.as_str(), running_next_state_q.as_str(), running_ret_vals_q.as_str());
 
         let p_outcome = build_call(
-            &mut out, pf, "vope_one(&delta)", entry_w, 0, None, None, None, Some(running_in_vope), &exported_vope, None, false,
+            &mut out, pf, "vope_one(&delta)", entry_w, 0, None, None, None, Some(running_in_vope), &exported_vope, &synth_exported_vope, None, false,
             "", "", oracle_vope.as_deref(), &format!("p_{uid}"),
         );
         // Unlike block/chunk functions, finish's return type is doubly
@@ -729,7 +776,7 @@ pub fn generate_split_step(
         let p_output: Vec<Slot> = p_terminator_out[1..].to_vec();
 
         let q_outcome = build_call(
-            &mut out, qf, "q_one(&delta)", entry_w, 1, Some(&p_hats), None, None, Some(running_in_q), &exported_q, None, false,
+            &mut out, qf, "q_one(&delta)", entry_w, 1, Some(&p_hats), None, None, Some(running_in_q), &exported_q, &synth_exported_q, None, false,
             "", "", oracle_q.as_deref(), &format!("q_{uid}"),
         );
         let q_slots = q_outcome.finish_output;
@@ -746,7 +793,7 @@ pub fn generate_split_step(
             (step_idx as u64) * 10_000_000 + and_gate_seed * 100_000
         ));
         let v_outcome = build_call(
-            &mut out, vf, "q_one(&delta)", entry_w, 1, Some(&p_hats), Some(&q_and_arr), Some(&r_ands_name), Some(running_in_q), &exported_q, None, true,
+            &mut out, vf, "q_one(&delta)", entry_w, 1, Some(&p_hats), Some(&q_and_arr), Some(&r_ands_name), Some(running_in_q), &exported_q, &synth_exported_q, None, true,
             &all_ok_expr, &fold_state_expr, oracle_q.as_deref(), &format!("v_{uid}"),
         );
         let v_slots = v_outcome.finish_output;

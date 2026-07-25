@@ -345,6 +345,25 @@ pub struct MovfuscBlockBoundary {
     pub next_pc_bits: Vec<u32>,
     pub next_state: Vec<u32>,
     pub ret_vals: Vec<u32>,
+    /// Cross-chunk-shared values (post-movfuscation CSE/batch dedup
+    /// discoveries, NOT populated by [`movfuscate`] itself -- always empty
+    /// coming out of it) this range's own function must additionally
+    /// expose as extra return values, threaded to whichever later range(s)
+    /// (in the real driver call order: every `boundary[i]` in order, then
+    /// [`MovfuscAccumInfo::init`], then every `steps[i]` in order) actually
+    /// consume them -- either genuinely computed in this range (if it's
+    /// the producer) or passed straight through from `synthetic_in` (if
+    /// this range is a pure intervening hop). See
+    /// `docs/interpreter-honest-e2e-zk-plan.md`'s "Cross-chunk locality"
+    /// section for the full design; populated by a dedicated post-CSE
+    /// discovery pass, not by `movfuscate` itself.
+    pub synthetic_out: Vec<u32>,
+    /// Cross-chunk-shared values this range's own function receives as
+    /// extra incoming parameters (from whichever earlier range produced
+    /// them) -- referenced directly by statements inside `[start, end)`
+    /// that need them, exactly as if they were ordinary top-level circuit
+    /// params. See `synthetic_out`'s own doc for the full picture.
+    pub synthetic_in: Vec<u32>,
 }
 
 /// The fixed, one-time initialization of the cross-block accumulation
@@ -362,6 +381,11 @@ pub struct MovfuscAccumInit {
     pub next_pc: Vec<u32>,
     pub next_state: Vec<u32>,
     pub ret_vals: Vec<u32>,
+    /// As [`MovfuscBlockBoundary::synthetic_out`]. Always empty coming out
+    /// of [`movfuscate`] itself.
+    pub synthetic_out: Vec<u32>,
+    /// As [`MovfuscBlockBoundary::synthetic_in`].
+    pub synthetic_in: Vec<u32>,
 }
 
 /// One original block `i`'s own contiguous contribution to the cross-block
@@ -383,6 +407,11 @@ pub struct MovfuscAccumStep {
     pub next_pc: Vec<u32>,
     pub next_state: Vec<u32>,
     pub ret_vals: Vec<u32>,
+    /// As [`MovfuscBlockBoundary::synthetic_out`]. Always empty coming out
+    /// of [`movfuscate`] itself.
+    pub synthetic_out: Vec<u32>,
+    /// As [`MovfuscBlockBoundary::synthetic_in`].
+    pub synthetic_in: Vec<u32>,
 }
 
 /// The whole cross-block accumulation phase's boundary metadata: the
@@ -424,6 +453,8 @@ pub fn remap_movfusc_boundary(boundary: &MovfuscBlockBoundary, remap: &BTreeMap<
         next_pc_bits: boundary.next_pc_bits.iter().map(|&v| r(v)).collect(),
         next_state: boundary.next_state.iter().map(|&v| r(v)).collect(),
         ret_vals: boundary.ret_vals.iter().map(|&v| r(v)).collect(),
+        synthetic_out: boundary.synthetic_out.iter().map(|&v| r(v)).collect(),
+        synthetic_in: boundary.synthetic_in.iter().map(|&v| r(v)).collect(),
     }
 }
 
@@ -447,6 +478,8 @@ pub fn remap_movfusc_accum_info(info: &MovfuscAccumInfo, remap: &BTreeMap<u32, u
         next_pc: init.next_pc.iter().map(|&v| r(v)).collect(),
         next_state: init.next_state.iter().map(|&v| r(v)).collect(),
         ret_vals: init.ret_vals.iter().map(|&v| r(v)).collect(),
+        synthetic_out: init.synthetic_out.iter().map(|&v| r(v)).collect(),
+        synthetic_in: init.synthetic_in.iter().map(|&v| r(v)).collect(),
     };
     let remap_step = |step: &MovfuscAccumStep| MovfuscAccumStep {
         start: r(step.start),
@@ -455,10 +488,106 @@ pub fn remap_movfusc_accum_info(info: &MovfuscAccumInfo, remap: &BTreeMap<u32, u
         next_pc: step.next_pc.iter().map(|&v| r(v)).collect(),
         next_state: step.next_state.iter().map(|&v| r(v)).collect(),
         ret_vals: step.ret_vals.iter().map(|&v| r(v)).collect(),
+        synthetic_out: step.synthetic_out.iter().map(|&v| r(v)).collect(),
+        synthetic_in: step.synthetic_in.iter().map(|&v| r(v)).collect(),
     };
     MovfuscAccumInfo {
         init: remap_init(&info.init),
         steps: info.steps.iter().map(remap_step).collect(),
+    }
+}
+
+/// Populate every `MovfuscBlockBoundary`/`MovfuscAccumStep`/
+/// `MovfuscAccumInit`'s own `synthetic_in`/`synthetic_out` fields so a
+/// value CSE/batch discovered as shared across more than one chunk (see
+/// `docs/interpreter-honest-e2e-zk-plan.md`'s "Cross-chunk locality"
+/// section) threads as a packed parameter between exactly the chunk
+/// functions that need it -- no statement is moved, no merge is
+/// forbidden, and no value is exposed to a function that doesn't need it
+/// (unlike a universal shared-prefix hoist, which was tried, measured,
+/// and found to cause ~120x overcounting at real interpreter scale).
+///
+/// `region_sets_final`: for every FINAL (post-CSE/DCE/batch) var id, the
+/// set of original "regions" that contributed to it. Region ids follow a
+/// fixed convention matching the real driver call order
+/// (`split_driver.rs`'s own "block 0, block 1, ..., chunk 0, ..., finish"
+/// -- see its module doc): region `0` is always `shared_prefix`, region
+/// `1..=n` is `boundary[0..n)`, region `n+1` is `accum_info.init`, and
+/// region `n+2..=2n+1` is `accum_info.steps[0..n)` (`n = boundary.len()`).
+/// Callers building `region_sets_final` MUST use this exact numbering --
+/// it is not re-derived from `boundary`/`accum_info` here, to avoid
+/// depending on `volar-ir-opt` from this crate (the same reason
+/// `remap_movfusc_boundary` takes a caller-supplied `remap` rather than
+/// computing one itself).
+///
+/// A statement whose own region set includes `0` needs no new slot at
+/// all: `shared_prefix` is already re-executed identically by *every*
+/// chunk function, so such a var is already bound wherever it's
+/// referenced, by construction (CSE always keeps the *first* -- i.e.
+/// lowest-region-id -- occurrence as the survivor, and region 0 is
+/// always first). Only genuinely inter-chunk sharing (every region in
+/// the set non-zero) needs a slot.
+///
+/// For a shared var `v` with region set `S` (`0 ∉ S`), let `producer =
+/// min(S)` (guaranteed to be `v`'s own *physical* defining region --
+/// CSE/batch always position a merged/created var at its earliest
+/// member's own position, and region ids increase monotonically with
+/// position) and `last = max(S)`. Every region `r` with `producer <= r <
+/// last` gets `v` added to its own `synthetic_out` (the producer
+/// genuinely computes it; every later intervening region re-exports
+/// whatever it just received via `synthetic_in`, a cheap pass-through);
+/// every region `r` with `producer < r <= last` gets `v` added to its own
+/// `synthetic_in`. This is safe to layer over any prior `synthetic_in`/
+/// `synthetic_out` content (e.g. from an earlier `thread_synthetic_slots`
+/// call) since it always *extends* (via a `BTreeSet`, deduplicated) each
+/// range's own lists rather than replacing them wholesale.
+pub fn thread_synthetic_slots(
+    boundary: &mut [MovfuscBlockBoundary],
+    accum_info: &mut MovfuscAccumInfo,
+    region_sets_final: &BTreeMap<u32, BTreeSet<u32>>,
+) {
+    let n = boundary.len();
+    assert_eq!(accum_info.steps.len(), n, "thread_synthetic_slots: accum_info.steps must have one entry per boundary");
+
+    let mut synth_out: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+    let mut synth_in: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+
+    for (&v, regions) in region_sets_final {
+        if regions.len() < 2 || regions.contains(&0) {
+            continue;
+        }
+        let producer = *regions.iter().min().unwrap();
+        let last = *regions.iter().max().unwrap();
+        for r in producer..last {
+            synth_out.entry(r).or_default().insert(v);
+        }
+        for r in (producer + 1)..=last {
+            synth_in.entry(r).or_default().insert(v);
+        }
+    }
+
+    let extend_set = |existing: &mut Vec<u32>, extra: Option<&BTreeSet<u32>>| {
+        if let Some(extra) = extra {
+            let mut merged: BTreeSet<u32> = existing.iter().copied().collect();
+            merged.extend(extra.iter().copied());
+            *existing = merged.into_iter().collect();
+        }
+    };
+
+    for (i, b) in boundary.iter_mut().enumerate() {
+        let r = (i + 1) as u32;
+        extend_set(&mut b.synthetic_out, synth_out.get(&r));
+        extend_set(&mut b.synthetic_in, synth_in.get(&r));
+    }
+    {
+        let r = (n + 1) as u32;
+        extend_set(&mut accum_info.init.synthetic_out, synth_out.get(&r));
+        extend_set(&mut accum_info.init.synthetic_in, synth_in.get(&r));
+    }
+    for (i, step) in accum_info.steps.iter_mut().enumerate() {
+        let r = (n + 2 + i) as u32;
+        extend_set(&mut step.synthetic_out, synth_out.get(&r));
+        extend_set(&mut step.synthetic_in, synth_in.get(&r));
     }
 }
 
@@ -497,7 +626,7 @@ pub fn movfuscate<C: MovfuscCtx>(
     let n = C::num_blocks(blocks);
     assert!(n >= 1, "movfuscate: empty block list");
     if n == 1 {
-        let empty_init = MovfuscAccumInit { start: 0, end: 0, done_acc: 0, next_pc: Vec::new(), next_state: Vec::new(), ret_vals: Vec::new() };
+        let empty_init = MovfuscAccumInit { start: 0, end: 0, done_acc: 0, next_pc: Vec::new(), next_state: Vec::new(), ret_vals: Vec::new(), synthetic_out: Vec::new(), synthetic_in: Vec::new() };
         return (blocks.clone(), Vec::new(), MovfuscAccumInfo { init: empty_init, steps: Vec::new() }, Vec::new());
     }
 
@@ -580,6 +709,8 @@ pub fn movfuscate<C: MovfuscCtx>(
             next_pc_bits: br.next_pc_bits.clone(),
             next_state: br.next_state.clone(),
             ret_vals: br.ret_vals.clone(),
+            synthetic_out: Vec::new(),
+            synthetic_in: Vec::new(),
         })
         .collect();
 
@@ -634,6 +765,8 @@ pub fn movfuscate<C: MovfuscCtx>(
         next_pc: next_pc.clone(),
         next_state: next_state.clone(),
         ret_vals: ret_vals.clone(),
+        synthetic_out: Vec::new(),
+        synthetic_in: Vec::new(),
     };
 
     let mut accum_steps: Vec<MovfuscAccumStep> = Vec::with_capacity(n);
@@ -673,6 +806,8 @@ pub fn movfuscate<C: MovfuscCtx>(
             next_pc: next_pc.clone(),
             next_state: next_state.clone(),
             ret_vals: ret_vals.clone(),
+            synthetic_out: Vec::new(),
+            synthetic_in: Vec::new(),
         });
     }
     let accum_info = MovfuscAccumInfo { init: accum_init, steps: accum_steps };
@@ -2525,7 +2660,7 @@ fn movfuscate_ir_impl<P: Clone>(
 
     let n = blocks.blocks.len();
     if n == 1 {
-        let empty_init = MovfuscAccumInit { start: 0, end: 0, done_acc: 0, next_pc: Vec::new(), next_state: Vec::new(), ret_vals: Vec::new() };
+        let empty_init = MovfuscAccumInit { start: 0, end: 0, done_acc: 0, next_pc: Vec::new(), next_state: Vec::new(), ret_vals: Vec::new(), synthetic_out: Vec::new(), synthetic_in: Vec::new() };
         return (blocks.clone(), Vec::new(), MovfuscAccumInfo { init: empty_init, steps: Vec::new() }, Vec::new());
     }
 
@@ -3798,6 +3933,7 @@ mod tests {
         MovfuscBlockBoundary {
             start: 10, end: 20, is_active: 11, done: 12,
             next_pc_bits: vec![13, 14], next_state: vec![15, 16], ret_vals: vec![17],
+            synthetic_out: vec![], synthetic_in: vec![],
         }
     }
 
@@ -3805,9 +3941,11 @@ mod tests {
         MovfuscAccumInfo {
             init: MovfuscAccumInit {
                 start: 0, end: 5, done_acc: 1, next_pc: vec![2], next_state: vec![3], ret_vals: vec![4],
+                synthetic_out: vec![], synthetic_in: vec![],
             },
             steps: vec![MovfuscAccumStep {
                 start: 5, end: 10, done_acc: 6, next_pc: vec![7], next_state: vec![8], ret_vals: vec![9],
+                synthetic_out: vec![], synthetic_in: vec![],
             }],
         }
     }
@@ -3879,5 +4017,108 @@ mod tests {
         let remapped = remap_movfusc_boundaries(&boundaries, &identity);
         assert_eq!(remapped.len(), 2);
         assert_eq!(remapped[0].start, boundaries[0].start);
+    }
+
+    // =========================================================================
+    // thread_synthetic_slots
+    // =========================================================================
+
+    /// n=2: region 0=shared_prefix, 1=boundary[0], 2=boundary[1],
+    /// 3=accum_info.init, 4=accum_step[0], 5=accum_step[1].
+    fn sample_two_block_boundary_and_accum() -> (Vec<MovfuscBlockBoundary>, MovfuscAccumInfo) {
+        let mk_boundary = || MovfuscBlockBoundary {
+            start: 0, end: 0, is_active: 0, done: 0,
+            next_pc_bits: vec![], next_state: vec![], ret_vals: vec![],
+            synthetic_out: vec![], synthetic_in: vec![],
+        };
+        let boundary = vec![mk_boundary(), mk_boundary()];
+        let mk_step = || MovfuscAccumStep {
+            start: 0, end: 0, done_acc: 0, next_pc: vec![], next_state: vec![], ret_vals: vec![],
+            synthetic_out: vec![], synthetic_in: vec![],
+        };
+        let accum_info = MovfuscAccumInfo {
+            init: MovfuscAccumInit {
+                start: 0, end: 0, done_acc: 0, next_pc: vec![], next_state: vec![], ret_vals: vec![],
+                synthetic_out: vec![], synthetic_in: vec![],
+            },
+            steps: vec![mk_step(), mk_step()],
+        };
+        (boundary, accum_info)
+    }
+
+    /// A value shared between two adjacent boundary functions: producer
+    /// gets `synthetic_out`, the sole consumer gets `synthetic_in`, and
+    /// nothing else is touched.
+    #[test]
+    fn adjacent_boundary_functions_thread_directly() {
+        let (mut boundary, mut accum_info) = sample_two_block_boundary_and_accum();
+        let region_sets: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::from([(42, BTreeSet::from([1, 2]))]);
+        thread_synthetic_slots(&mut boundary, &mut accum_info, &region_sets);
+
+        assert_eq!(boundary[0].synthetic_out, vec![42], "boundary[0] (region 1, the producer) must export it");
+        assert!(boundary[0].synthetic_in.is_empty());
+        assert_eq!(boundary[1].synthetic_in, vec![42], "boundary[1] (region 2, the sole consumer) must receive it");
+        assert!(boundary[1].synthetic_out.is_empty(), "no later consumer -- must not re-export");
+        assert!(accum_info.init.synthetic_out.is_empty() && accum_info.init.synthetic_in.is_empty());
+        for s in &accum_info.steps {
+            assert!(s.synthetic_out.is_empty() && s.synthetic_in.is_empty());
+        }
+    }
+
+    /// A value shared between boundary[0] (region 1, producer) and
+    /// accum_step[1] (region 5, the far consumer): every region strictly
+    /// between must both receive AND re-export (pass-through), and the
+    /// final consumer only receives.
+    #[test]
+    fn distant_sharing_threads_through_every_intervening_range() {
+        let (mut boundary, mut accum_info) = sample_two_block_boundary_and_accum();
+        let region_sets: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::from([(7, BTreeSet::from([1, 5]))]);
+        thread_synthetic_slots(&mut boundary, &mut accum_info, &region_sets);
+
+        assert_eq!(boundary[0].synthetic_out, vec![7], "region 1 (producer): export only");
+        assert!(boundary[0].synthetic_in.is_empty());
+
+        assert_eq!(boundary[1].synthetic_in, vec![7], "region 2 (intervening): receive...");
+        assert_eq!(boundary[1].synthetic_out, vec![7], "...and re-export");
+
+        assert_eq!(accum_info.init.synthetic_in, vec![7], "region 3 (intervening)");
+        assert_eq!(accum_info.init.synthetic_out, vec![7]);
+
+        assert_eq!(accum_info.steps[0].synthetic_in, vec![7], "region 4 (intervening)");
+        assert_eq!(accum_info.steps[0].synthetic_out, vec![7]);
+
+        assert_eq!(accum_info.steps[1].synthetic_in, vec![7], "region 5 (final consumer): receive only");
+        assert!(accum_info.steps[1].synthetic_out.is_empty());
+    }
+
+    /// A value whose region set includes region 0 (shared_prefix) needs
+    /// no synthetic slot at all -- it's already universally visible.
+    #[test]
+    fn sharing_with_shared_prefix_needs_no_synthetic_slot() {
+        let (mut boundary, mut accum_info) = sample_two_block_boundary_and_accum();
+        let region_sets: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::from([(9, BTreeSet::from([0, 1, 2]))]);
+        thread_synthetic_slots(&mut boundary, &mut accum_info, &region_sets);
+
+        for b in &boundary {
+            assert!(b.synthetic_out.is_empty() && b.synthetic_in.is_empty());
+        }
+        assert!(accum_info.init.synthetic_out.is_empty() && accum_info.init.synthetic_in.is_empty());
+        for s in &accum_info.steps {
+            assert!(s.synthetic_out.is_empty() && s.synthetic_in.is_empty());
+        }
+    }
+
+    /// Calling `thread_synthetic_slots` twice (e.g. once per discovery
+    /// round) must EXTEND, not overwrite, each range's own lists.
+    #[test]
+    fn repeated_calls_extend_rather_than_overwrite() {
+        let (mut boundary, mut accum_info) = sample_two_block_boundary_and_accum();
+        let first: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::from([(1, BTreeSet::from([1, 2]))]);
+        thread_synthetic_slots(&mut boundary, &mut accum_info, &first);
+        let second: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::from([(2, BTreeSet::from([1, 2]))]);
+        thread_synthetic_slots(&mut boundary, &mut accum_info, &second);
+
+        assert_eq!(boundary[0].synthetic_out, vec![1, 2], "both rounds' own producer exports must accumulate");
+        assert_eq!(boundary[1].synthetic_in, vec![1, 2]);
     }
 }

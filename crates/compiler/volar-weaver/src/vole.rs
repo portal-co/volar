@@ -4565,6 +4565,21 @@ pub fn weave_vole_prover_ir_split(
     let shared_prefix: core::ops::Range<usize> = 0..(boundary[0].start as usize - num_params);
     let mut interfaces: Vec<SplitBlockInterface> = Vec::with_capacity(boundary.len());
 
+    // Cross-chunk-shared values (CSE-discovered post-movfuscation sharing;
+    // see docs/interpreter-honest-e2e-zk-plan.md's "Cross-chunk locality"
+    // section) thread as packed parameters between exactly the functions
+    // that need them -- keyed by the var's own STABLE, globally-unique id
+    // (so the same name works as both a producer's own output and a
+    // consumer's own input, no separate naming scheme needed). Populated
+    // incrementally in real call order (every boundary[i] in order, then
+    // accum_info.init, then every steps[i] in order -- the same order
+    // this function already processes them in): a var's own producer
+    // range (the one where `synthetic_out` contains it but
+    // `synthetic_in` does not) always runs before any consumer, so its
+    // type is always already known by the time a later range needs to
+    // bind it as an incoming param.
+    let mut synthetic_types: alloc::collections::BTreeMap<u32, IrType> = alloc::collections::BTreeMap::new();
+
     for (i, b) in boundary.iter().enumerate() {
         let start = (b.start - num_params as u32) as usize;
         let end = (b.end - num_params as u32) as usize;
@@ -4612,6 +4627,12 @@ pub fn weave_vole_prover_ir_split(
 
         let mut ctx = VoleIrCtx::new(true);
         insert_w_wires(&mut ctx);
+        for &v in &b.synthetic_in {
+            let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
+                "weave_vole_prover_ir_split: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
+            ));
+            bind_scalar(&mut ctx, &mut params, v, format!("synth_{v}"), ty);
+        }
         debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
         ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
         ctx.emit_circuit_stmts_range(block, types, mode, start..end);
@@ -4650,6 +4671,22 @@ pub fn weave_vole_prover_ir_split(
         ret_tuple_exprs.extend(next_state_exprs);
         ret_tuple_exprs.extend(ret_val_exprs);
         ret_tuple_exprs.push(hats_expr);
+
+        // Cross-chunk-shared values this range genuinely produces or
+        // re-exports (pass-through) -- always appended last, after the
+        // native movfuscation fields, in `b.synthetic_out`'s own
+        // (ascending-var-id) order. `slot_type`/`slot_expr` resolve
+        // correctly either way: for the genuine producer, `v`'s own
+        // defining statement was just emitted for real above; for an
+        // intervening/consuming range, `v` was already bound to its own
+        // `synth_{v}` incoming param before emission (see the
+        // `synthetic_in` binding above), so this is a pure pass-through.
+        for &v in &b.synthetic_out {
+            let ty = ctx.slot_type(&CirVar(v), &vope_type());
+            synthetic_types.entry(v).or_insert_with(|| ty.clone());
+            ret_tuple_tys.push(ty);
+            ret_tuple_exprs.push(ctx.slot_expr(&CirVar(v)));
+        }
 
         let func = IrFunction { no_inline: true,
             name: format!("vole_prove_ir_{}_block_{}", name, i),
@@ -4801,6 +4838,25 @@ pub fn weave_vole_prover_ir_split(
             }
         }
 
+        // Cross-chunk-shared values this chunk needs as an external
+        // input: exactly the vars `accum_info.steps[lo]`'s own
+        // `synthetic_in` names -- by `thread_synthetic_slots`'s own
+        // construction, a region `r` has `v` in `synthetic_in` iff
+        // `producer(v) < r <= last_consumer(v)`, so checking only the
+        // chunk's own FIRST covered step answers "does this whole
+        // chunk's producer for v lie strictly before it" for the whole
+        // `[lo, hi)` span, whether `chunk_size` is 1 or many -- a var
+        // whose producer AND every consumer fall inside this same chunk
+        // never appears here at all (correctly: it's already threaded
+        // internally, through this same `ctx`, no external param needed).
+        let chunk_synth_in: Vec<u32> = accum_info.steps[lo].synthetic_in.clone();
+        for &v in &chunk_synth_in {
+            let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
+                "weave_vole_prover_ir_split: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
+            ));
+            bind_scalar(&mut ctx, &mut params, v, format!("synth_{v}"), ty);
+        }
+
         debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
         ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
         ctx.emit_circuit_stmts_range(block, types, mode, chunk_start..chunk_end);
@@ -4819,6 +4875,18 @@ pub fn weave_vole_prover_ir_split(
         let mut ret_tuple_exprs = running_exprs(&ctx, out_step.done_acc, &out_step.next_pc, &out_step.next_state, &out_step.ret_vals);
         let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.hat_names.iter().map(|h| var(h)).collect()));
         ret_tuple_exprs.push(hats_expr);
+
+        // As the per-block loop's own synthetic_out handling above --
+        // `accum_info.steps[hi - 1]`'s own `synthetic_out` correctly
+        // captures "does this chunk need to re-export v" for the whole
+        // `[lo, hi)` span (see `chunk_synth_in`'s own comment for why
+        // checking only the boundary step is sufficient).
+        for &v in &out_step.synthetic_out {
+            let ty = ctx.slot_type(&CirVar(v), &vope_type());
+            synthetic_types.entry(v).or_insert_with(|| ty.clone());
+            ret_tuple_tys.push(ty);
+            ret_tuple_exprs.push(ctx.slot_expr(&CirVar(v)));
+        }
 
         let chunk_func = IrFunction { no_inline: true,
             name: format!("vole_prove_ir_{}_accum_chunk_{}", name, chunk_idx),
@@ -5444,6 +5512,10 @@ pub fn weave_vole_qsim_ir_split(
 
     let mut interfaces: Vec<SplitBlockInterface> = Vec::with_capacity(boundary.len());
 
+    // As `weave_vole_prover_ir_split`'s own `synthetic_types` -- see its
+    // doc comment for the full rationale.
+    let mut synthetic_types: alloc::collections::BTreeMap<u32, IrType> = alloc::collections::BTreeMap::new();
+
     for (i, b) in boundary.iter().enumerate() {
         let start = (b.start - num_params as u32) as usize;
         let end = (b.end - num_params as u32) as usize;
@@ -5494,6 +5566,12 @@ pub fn weave_vole_qsim_ir_split(
 
         let mut ctx = VoleIrCtx::new_qsim();
         insert_w_wires(&mut ctx);
+        for &v in &b.synthetic_in {
+            let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
+                "weave_vole_qsim_ir_split: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
+            ));
+            bind_scalar(&mut ctx, &mut params, v, format!("synth_{v}"), ty);
+        }
         debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
         ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
         ctx.emit_circuit_stmts_range(block, types, mode, start..end);
@@ -5532,6 +5610,14 @@ pub fn weave_vole_qsim_ir_split(
         ret_tuple_exprs.extend(next_state_exprs);
         ret_tuple_exprs.extend(ret_val_exprs);
         ret_tuple_exprs.push(hats_expr);
+
+        // As `weave_vole_prover_ir_split`'s own synthetic_out handling.
+        for &v in &b.synthetic_out {
+            let ty = ctx.slot_type(&CirVar(v), &q_type());
+            synthetic_types.entry(v).or_insert_with(|| ty.clone());
+            ret_tuple_tys.push(ty);
+            ret_tuple_exprs.push(ctx.slot_expr(&CirVar(v)));
+        }
 
         let func = IrFunction { no_inline: true,
             name: format!("vole_qsim_ir_{}_block_{}", name, i),
@@ -5654,6 +5740,15 @@ pub fn weave_vole_qsim_ir_split(
             }
         }
 
+        // As `weave_vole_prover_ir_split`'s own `chunk_synth_in` handling.
+        let chunk_synth_in: Vec<u32> = accum_info.steps[lo].synthetic_in.clone();
+        for &v in &chunk_synth_in {
+            let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
+                "weave_vole_qsim_ir_split: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
+            ));
+            bind_scalar(&mut ctx, &mut params, v, format!("synth_{v}"), ty);
+        }
+
         debug_assert_eq!(count_ir_ands_no_storage_range(&block.stmts[shared_prefix.clone()], types), 0);
         ctx.emit_circuit_stmts_range(block, types, mode, shared_prefix.clone());
         ctx.emit_circuit_stmts_range(block, types, mode, chunk_start..chunk_end);
@@ -5672,6 +5767,14 @@ pub fn weave_vole_qsim_ir_split(
         let mut ret_tuple_exprs = running_exprs(&ctx, out_step.done_acc, &out_step.next_pc, &out_step.next_state, &out_step.ret_vals);
         let hats_expr = ir_expr(IrExprKind::FixedArray(ctx.q_and_names.iter().map(|h| var(h)).collect()));
         ret_tuple_exprs.push(hats_expr);
+
+        // As `weave_vole_prover_ir_split`'s own chunk-level synthetic_out handling.
+        for &v in &out_step.synthetic_out {
+            let ty = ctx.slot_type(&CirVar(v), &q_type());
+            synthetic_types.entry(v).or_insert_with(|| ty.clone());
+            ret_tuple_tys.push(ty);
+            ret_tuple_exprs.push(ctx.slot_expr(&CirVar(v)));
+        }
 
         let chunk_func = IrFunction { no_inline: true,
             name: format!("vole_qsim_ir_{}_accum_chunk_{}", name, chunk_idx),
@@ -5979,6 +6082,10 @@ pub fn weave_vole_verifier_ir_split_with_trace(
 
     let mut interfaces: Vec<SplitBlockInterface> = Vec::with_capacity(boundary.len());
 
+    // As `weave_vole_prover_ir_split`'s own `synthetic_types` -- see its
+    // doc comment for the full rationale.
+    let mut synthetic_types: alloc::collections::BTreeMap<u32, IrType> = alloc::collections::BTreeMap::new();
+
     for (i, b) in boundary.iter().enumerate() {
         let start = (b.start - num_params as u32) as usize;
         let end = (b.end - num_params as u32) as usize;
@@ -6036,6 +6143,12 @@ pub fn weave_vole_verifier_ir_split_with_trace(
 
         let mut ctx = VoleIrCtx::new_verifier_with_trace_sink(sink);
         insert_w_wires(&mut ctx);
+        for &v in &b.synthetic_in {
+            let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
+                "weave_vole_verifier_ir_split_with_trace: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
+            ));
+            bind_scalar(&mut ctx, &mut params, v, format!("synth_{v}"), ty);
+        }
         ctx.stmts.push(ir_stmt(IrStmtKind::Let {
             pattern: IrPattern::Ident { mutable: true, name: "all_ok".into(), subpat: None },
             ty: None,
@@ -6089,6 +6202,14 @@ pub fn weave_vole_verifier_ir_split_with_trace(
         ret_tuple_exprs.extend(ret_val_exprs);
         ret_tuple_exprs.push(var("all_ok"));
         ret_tuple_exprs.push(var("fold_state"));
+
+        // As `weave_vole_prover_ir_split`'s own synthetic_out handling.
+        for &v in &b.synthetic_out {
+            let ty = ctx.slot_type(&CirVar(v), &q_type());
+            synthetic_types.entry(v).or_insert_with(|| ty.clone());
+            ret_tuple_tys.push(ty);
+            ret_tuple_exprs.push(ctx.slot_expr(&CirVar(v)));
+        }
 
         let func = IrFunction { no_inline: true,
             name: format!("vole_verify_ir_{}_block_{}", name, i),
@@ -6219,6 +6340,16 @@ pub fn weave_vole_verifier_ir_split_with_trace(
                 bind_scalar(&mut ctx, &mut params, v, format!("ret_val_{i}_{m}"), iface.ret_val_tys[m].clone());
             }
         }
+
+        // As `weave_vole_prover_ir_split`'s own `chunk_synth_in` handling.
+        let chunk_synth_in: Vec<u32> = accum_info.steps[lo].synthetic_in.clone();
+        for &v in &chunk_synth_in {
+            let ty = synthetic_types.get(&v).cloned().unwrap_or_else(|| panic!(
+                "weave_vole_verifier_ir_split_with_trace: synthetic var {v} has no known type -- its own producer range must run before this consumer in call order"
+            ));
+            bind_scalar(&mut ctx, &mut params, v, format!("synth_{v}"), ty);
+        }
+
         params.push(IrParam { name: "all_ok_in".into(), ty: IrType::Primitive(volar_compiler::ir::PrimitiveType::Bool) });
         params.push(IrParam { name: "fold_state_in".into(), ty: IrType::TypeParam(sink.state_type_name().into()) });
 
@@ -6246,6 +6377,14 @@ pub fn weave_vole_verifier_ir_split_with_trace(
         let mut ret_tuple_exprs = running_exprs(&ctx, out_step.done_acc, &out_step.next_pc, &out_step.next_state, &out_step.ret_vals);
         ret_tuple_exprs.push(var("all_ok"));
         ret_tuple_exprs.push(var("fold_state"));
+
+        // As `weave_vole_prover_ir_split`'s own chunk-level synthetic_out handling.
+        for &v in &out_step.synthetic_out {
+            let ty = ctx.slot_type(&CirVar(v), &q_type());
+            synthetic_types.entry(v).or_insert_with(|| ty.clone());
+            ret_tuple_tys.push(ty);
+            ret_tuple_exprs.push(ctx.slot_expr(&CirVar(v)));
+        }
 
         let chunk_func = IrFunction { no_inline: true,
             name: format!("vole_verify_ir_{}_accum_chunk_{}", name, chunk_idx),

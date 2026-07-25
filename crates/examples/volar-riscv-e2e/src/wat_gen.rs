@@ -2512,20 +2512,22 @@ mod tests {
     /// mirroring `probe_full_module_print_size`'s own methodology but on
     /// the optimized circuit.
     ///
-    /// Unlike an earlier attempt (kept in git history), this runs CSE and
-    /// batch fully *unconstrained* (no per-region exclusion -- that
-    /// approach measurably left real cross-region wins on the table and
-    /// still didn't fully resolve the locality panic) and instead
-    /// physically **hoists** every statement that ends up serving more
-    /// than one original block/accumulation-region into the shared
-    /// prefix via `hoist_shared_statements`, then reconstructs
-    /// `MovfuscBlockBoundary`/`MovfuscAccumInfo` ranges directly from the
-    /// hoist pass's own `region_ranges` output rather than by naively
-    /// remapping the old `start`/`end` var ids (which can point at a var
-    /// that itself got hoisted away -- see `hoist_shared_statements`'s
-    /// own doc comment in `volar-ir-opt` for why that's wrong). See
-    /// `docs/interpreter-honest-e2e-zk-plan.md`'s "Cross-chunk locality"
-    /// section for the full design rationale.
+    /// Two earlier attempts (kept in git history) both hit real dead
+    /// ends: region-exclusion (never merge across chunks) left real wins
+    /// on the table and still panicked at weave time for an
+    /// unexplained reason; universal hoisting (move every cross-region
+    /// statement into `shared_prefix`) was measurably correct but caused
+    /// ~120x overcounting (every one of 241 functions computing a value
+    /// only 2 of them actually needed) and OOM'd at 93.6GB real scale.
+    ///
+    /// This is the user-directed third design: run CSE/batch fully
+    /// **unconstrained** (maximum optimization, no exclusion) and thread
+    /// every cross-region value as a **packed parameter** between exactly
+    /// the chunk functions that need it, via `thread_synthetic_slots` --
+    /// no statement is moved, so `MovfuscBlockBoundary`/`MovfuscAccumInfo`
+    /// only need the *standard* remap (no `region_ranges` override, unlike
+    /// the hoist attempt). See `docs/interpreter-honest-e2e-zk-plan.md`'s
+    /// "Cross-chunk locality" section for the full design rationale.
     ///
     /// `#[ignore]`d: real interpreter scale, run manually:
     /// `cargo test -p volar-riscv-e2e --release probe_optimized_full_module_print_size -- --ignored --nocapture`.
@@ -2535,9 +2537,9 @@ mod tests {
         use std::collections::BTreeSet;
         use volar_ir::ir::IRType;
         use volar_ir_common::Type;
-        use volar_ir_opt::ir::{batch_ir_blocks_with_remap_and_members, cse_ir_blocks_with_remap, dce_ir_blocks_with_remap_and_roots, fold_ir_blocks, hoist_shared_statements};
+        use volar_ir_opt::ir::{batch_ir_blocks_with_remap_and_members, cse_ir_blocks_with_remap, dce_ir_blocks_with_remap_and_roots, fold_ir_blocks};
         use volar_ir_opt::store_forward::store_forward_ir_blocks;
-        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, remap_movfusc_accum_info, remap_movfusc_boundaries, LoweringMode, MovfuscBlockBoundary};
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, remap_movfusc_accum_info, remap_movfusc_boundaries, thread_synthetic_slots, LoweringMode};
         use volar_weaver::{StorageMode, weave_vole_prover_ir_split, print_weaved_vole_module};
 
         fn compose(cumulative: std::collections::BTreeMap<u32, u32>, step: &std::collections::BTreeMap<u32, u32>) -> std::collections::BTreeMap<u32, u32> {
@@ -2561,19 +2563,21 @@ mod tests {
         let mut cumulative: std::collections::BTreeMap<u32, u32> = (0..n0).map(|v| (v, v)).collect();
 
         // One "region" per original block's own [start,end) range, plus
-        // one for the shared prefix and one per accumulation-phase range.
-        // `region_by_orig_var` is keyed by ORIGINAL var id and never
-        // changes -- used only to reconstruct, post-optimization, which
-        // original region(s) each surviving/created var serves (for
-        // `hoist_shared_statements`), not to constrain CSE/batch anymore.
+        // one for the shared prefix and one per accumulation-phase range
+        // -- this exact numbering convention (0=shared_prefix,
+        // 1..=n=boundary[i], n+1=accum_init, n+2..=2n+1=accum_step[i]) is
+        // `thread_synthetic_slots`'s own documented contract. Keyed by
+        // ORIGINAL var id and never changes -- used only to reconstruct,
+        // post-optimization, which original region(s) each surviving/
+        // created var serves.
         let mut region_by_orig_var: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
         let mut next_region = 0u32;
         let shared_prefix_end = boundary.first().map(|b| b.start).unwrap_or(n0);
         for v in n_params..shared_prefix_end { region_by_orig_var.insert(v, next_region); }
         next_region += 1;
-        let boundary_region_ids: Vec<u32> = boundary.iter().map(|b| { let r = next_region; for v in b.start..b.end { region_by_orig_var.insert(v, r); } next_region += 1; r }).collect();
-        let accum_init_region_id = { let r = next_region; for v in accum_info.init.start..accum_info.init.end { region_by_orig_var.insert(v, r); } next_region += 1; r };
-        let accum_step_region_ids: Vec<u32> = accum_info.steps.iter().map(|s| { let r = next_region; for v in s.start..s.end { region_by_orig_var.insert(v, r); } next_region += 1; r }).collect();
+        for b in &boundary { let r = next_region; for v in b.start..b.end { region_by_orig_var.insert(v, r); } next_region += 1; }
+        { let r = next_region; for v in accum_info.init.start..accum_info.init.end { region_by_orig_var.insert(v, r); } next_region += 1; }
+        for s in &accum_info.steps { let r = next_region; for v in s.start..s.end { region_by_orig_var.insert(v, r); } next_region += 1; }
 
         // ---- CSE, unconstrained. ----
         let (_, cse_remaps) = cse_ir_blocks_with_remap(&mut movfuscated, &types);
@@ -2585,8 +2589,20 @@ mod tests {
         cumulative = compose(cumulative, &dce_remaps[0]);
 
         // ---- Batch, unconstrained, tracking each new var's own members. ----
+        // DIAGNOSTIC: VOLAR_SKIP_BATCH lets this step be skipped entirely,
+        // to isolate whether batch_ir_blocks's own wide-Poly creation is
+        // the cause of a real-scale memory blowup found in emit_poly_wide/
+        // materialize/array_t_default (see docs/interpreter-honest-e2e-zk-plan.md's
+        // "Cross-chunk locality" section).
         let cumulative_pre_batch = cumulative.clone();
-        let (_, batch_remaps, batch_members) = batch_ir_blocks_with_remap_and_members(&mut movfuscated, &mut types);
+        let skip_batch = std::env::var("VOLAR_SKIP_BATCH").is_ok();
+        let (batch_remaps, batch_members): (Vec<std::collections::BTreeMap<u32, u32>>, Vec<std::collections::BTreeMap<u32, Vec<u32>>>) = if skip_batch {
+            let n_now = (movfuscated.blocks[0].params.len() + movfuscated.blocks[0].stmts.len()) as u32;
+            (vec![(0..n_now).map(|v| (v, v)).collect()], vec![std::collections::BTreeMap::new()])
+        } else {
+            let (_, r, m) = batch_ir_blocks_with_remap_and_members(&mut movfuscated, &mut types);
+            (r, m)
+        };
         cumulative = compose(cumulative, &batch_remaps[0]);
 
         // ---- Reconstruct, for every FINAL (post-batch) var, the set of
@@ -2616,69 +2632,165 @@ mod tests {
                 }
             }
         }
-        let n_params_final = movfuscated.blocks[0].params.len() as u32;
-        let region_sets_array: Vec<BTreeSet<u32>> = (0..movfuscated.blocks[0].stmts.len() as u32)
-            .map(|j| region_sets_final.get(&(n_params_final + j)).cloned().unwrap_or_default())
-            .collect();
+        // DIAGNOSTIC (cheap): how many statements are genuinely
+        // cross-region (need synthetic threading) vs. single-region.
+        let multi_count = region_sets_final.values().filter(|s| s.len() > 1).count();
+        eprintln!("region_sets_final: {} vars have a known region, {multi_count} are genuinely multi-region", region_sets_final.len());
 
-        // DIAGNOSTIC (cheap, no weave): how many statements will be
-        // hoisted into the shared/universal group, and why -- empty
-        // region_sets (no known original region at all -- a coverage gap
-        // in region_by_orig_var, conservatively treated as "shared") vs.
-        // genuinely multi-region (a real CSE/batch cross-region merge).
-        let empty_count = region_sets_array.iter().filter(|s| s.is_empty()).count();
-        let multi_count = region_sets_array.iter().filter(|s| s.len() > 1).count();
-        let single_count = region_sets_array.len() - empty_count - multi_count;
-        eprintln!(
-            "region_sets_array: total={} empty(unknown-region,conservatively-shared)={} multi(genuine-cross-region)={} single(own-region)={}",
-            region_sets_array.len(), empty_count, multi_count, single_count
-        );
-        eprintln!("region_by_orig_var covers {} of {} vars in [n_params,n0)", region_by_orig_var.len(), (n0 - n_params));
-
-        // TEMPORARY: stop here while diagnosing the coverage-gap
-        // hypothesis -- the actual weave below OOM'd the machine (93.6G
-        // physical footprint, SIGKILLed) on the last attempt. Remove this
-        // once the diagnostic numbers above are understood/fixed.
-        if std::env::var("VOLAR_HOIST_DIAGNOSTIC_ONLY").is_ok() {
-            return;
-        }
-
-        // ---- Hoist every cross-region statement into the shared prefix. ----
-        let (hoist_changed, hoist_remaps, hoist_ranges) = hoist_shared_statements(&mut movfuscated, &region_sets_array);
-        eprintln!("hoist changed anything: {hoist_changed}");
-        cumulative = compose(cumulative, &hoist_remaps[0]);
-
-        // Half-open range sentinel fix (same reasoning as
-        // optimize_to_fixpoint_with_remap): the last range's own `end`
-        // legitimately equals the ORIGINAL n0, which was never a real
-        // statement index and so has no natural remap entry.
         let new_n0 = (movfuscated.blocks[0].params.len() + movfuscated.blocks[0].stmts.len()) as u32;
         cumulative.insert(n0, new_n0);
 
         // Standard remap handles is_active/done/next_pc_bits/next_state/
-        // ret_vals correctly regardless of hoisting; start/end are
-        // overridden afterward from `hoist_ranges`, NOT taken from this
-        // call -- see hoist_shared_statements's own doc comment for why.
-        let boundary_remapped = remap_movfusc_boundaries(&boundary, &cumulative);
-        let accum_info_remapped = remap_movfusc_accum_info(&accum_info, &cumulative);
-        let ranges = &hoist_ranges[0];
-        let boundary: Vec<MovfuscBlockBoundary> = boundary_remapped.into_iter().zip(&boundary_region_ids).map(|(b, &rid)| {
-            let (start, end) = ranges.get(&rid).copied().unwrap_or((b.start, b.start));
-            MovfuscBlockBoundary { start, end, ..b }
-        }).collect();
-        let mut accum_info = accum_info_remapped;
-        {
-            let (start, end) = ranges.get(&accum_init_region_id).copied().unwrap_or((accum_info.init.start, accum_info.init.start));
-            accum_info.init.start = start;
-            accum_info.init.end = end;
+        // ret_vals correctly (they're ordinary var references, and any
+        // one that got CSE-merged elsewhere is exactly what
+        // thread_synthetic_slots exists to thread back in). start/end
+        // are DIFFERENT: naively remapping them (`cumulative[old_start]`)
+        // is WRONG even though no statement is ever physically moved in
+        // this design -- CSE's OWN "keep the earliest occurrence"
+        // behavior can merge a region's own boundary-marking statement
+        // (its literal first or one-past-last statement) onto an EARLIER
+        // position from a DIFFERENT region, which naive remapping
+        // faithfully follows -- producing a `start`/`end` pair that no
+        // longer delimits "this region's own remaining statements" (in
+        // one real case: end < start). Fix: since CSE/DCE/batch never
+        // reorder surviving statements (only remove/insert), a region's
+        // own surviving members stay contiguous -- recompute start/end
+        // directly from `region_by_orig_var` + `cumulative` (min/max over
+        // every original var of this region that's still alive), the
+        // same fix `hoist_shared_statements`'s own `region_ranges`
+        // needed, but without requiring an actual reorder pass here.
+        let mut region_ranges_final: std::collections::BTreeMap<u32, (u32, u32)> = std::collections::BTreeMap::new();
+        for (&old, &region) in &region_by_orig_var {
+            if let Some(&new) = cumulative.get(&old) {
+                let e = region_ranges_final.entry(region).or_insert((new, new + 1));
+                e.0 = e.0.min(new);
+                e.1 = e.1.max(new + 1);
+            }
         }
-        for (step, &rid) in accum_info.steps.iter_mut().zip(&accum_step_region_ids) {
-            let (start, end) = ranges.get(&rid).copied().unwrap_or((step.start, step.start));
-            step.start = start;
-            step.end = end;
+
+        let mut boundary = remap_movfusc_boundaries(&boundary, &cumulative);
+        let mut accum_info = remap_movfusc_accum_info(&accum_info, &cumulative);
+        for (i, b) in boundary.iter_mut().enumerate() {
+            let r = (i + 1) as u32;
+            if let Some(&(start, end)) = region_ranges_final.get(&r) {
+                b.start = start;
+                b.end = end;
+            } else {
+                b.end = b.start; // region has no surviving statements -- zero-width
+            }
+        }
+        {
+            let r = (boundary.len() + 1) as u32;
+            if let Some(&(start, end)) = region_ranges_final.get(&r) {
+                accum_info.init.start = start;
+                accum_info.init.end = end;
+            } else {
+                accum_info.init.end = accum_info.init.start;
+            }
+        }
+        for (i, s) in accum_info.steps.iter_mut().enumerate() {
+            let r = (boundary.len() + 2 + i) as u32;
+            if let Some(&(start, end)) = region_ranges_final.get(&r) {
+                s.start = start;
+                s.end = end;
+            } else {
+                s.end = s.start;
+            }
+        }
+
+        // ---- Thread every cross-region value as a packed parameter. ----
+        thread_synthetic_slots(&mut boundary, &mut accum_info, &region_sets_final);
+
+        // DIAGNOSTIC (cheap): total "pass-through slot" cost this design
+        // adds -- sum over every cross-region var of (last_consumer_region
+        // - producer_region), i.e. how many intervening functions each
+        // one must thread an extra param+return through. Predicts real
+        // weave cost without paying for the expensive weave itself.
+        {
+            let mut total_span: u64 = 0;
+            let mut max_span: u32 = 0;
+            let mut spans: Vec<u32> = Vec::new();
+            for s in region_sets_final.values() {
+                if s.len() < 2 || s.contains(&0) { continue; }
+                let lo = *s.iter().min().unwrap();
+                let hi = *s.iter().max().unwrap();
+                let span = hi - lo;
+                total_span += span as u64;
+                max_span = max_span.max(span);
+                spans.push(span);
+            }
+            spans.sort_unstable();
+            let n = spans.len();
+            eprintln!(
+                "synthetic threading cost: {} vars, total_span={total_span} (extra param+return pairs summed across all functions), max_span={max_span}, median_span={}, p90_span={}",
+                n,
+                spans.get(n / 2).copied().unwrap_or(0),
+                spans.get((n * 9) / 10).copied().unwrap_or(0),
+            );
         }
 
         eprintln!("optimized circuit: {} statements", movfuscated.blocks[0].stmts.len());
+
+        if std::env::var("VOLAR_SPAN_DIAGNOSTIC_ONLY").is_ok() {
+            return;
+        }
+
+        // DIAGNOSTIC (cheap, no weave): for every range, check that
+        // everything its own native fields (is_active/done/next_pc_bits/
+        // next_state/ret_vals) AND its own synthetic_out reference is
+        // actually resolvable there (a top-level param, physically
+        // within shared_prefix or its own [start,end), or present in its
+        // own synthetic_in) -- pinpoints the exact violating var/field
+        // without needing the actual (expensive, panic-losing-context)
+        // weave to run.
+        {
+            let n_params_final = movfuscated.blocks[0].params.len() as u32;
+            let shared_prefix_end_final = boundary[0].start;
+            let validate_range = |label: &str, start: u32, end: u32, fields: &[(&str, &[u32])], synthetic_in: &[u32]| {
+                let visible = |v: u32| -> bool {
+                    v < n_params_final
+                        || (v >= n_params_final && v < shared_prefix_end_final)
+                        || (v >= start && v < end)
+                        || synthetic_in.contains(&v)
+                };
+                for (field_name, vars) in fields {
+                    for &v in *vars {
+                        if !visible(v) {
+                            eprintln!("VALIDATION FAILURE: {label}.{field_name} references var {v}, not visible here (start={start}, end={end}, synthetic_in={synthetic_in:?})");
+                        }
+                    }
+                }
+            };
+            for (i, b) in boundary.iter().enumerate() {
+                validate_range(
+                    &format!("boundary[{i}]"), b.start, b.end,
+                    &[("is_active", &[b.is_active]), ("done", &[b.done]), ("next_pc_bits", &b.next_pc_bits), ("next_state", &b.next_state), ("ret_vals", &b.ret_vals), ("synthetic_out", &b.synthetic_out)],
+                    &b.synthetic_in,
+                );
+            }
+            // accum_info.init/steps' own done_acc/next_pc/next_state/
+            // ret_vals are NOT checked here: they're threaded via the
+            // pre-existing, unrelated `bind_running` mechanism (each
+            // chunk receives the previous chunk's own running value as an
+            // `in_*` param, regardless of that var's own physical
+            // position -- this is how "unchanged slot, same var id
+            // carried across many steps" already worked before any of
+            // this session's changes). Only `synthetic_out` -- MY OWN new
+            // mechanism -- needs the physical-visibility check.
+            validate_range(
+                "accum_info.init", accum_info.init.start, accum_info.init.end,
+                &[("synthetic_out", &accum_info.init.synthetic_out)],
+                &accum_info.init.synthetic_in,
+            );
+            for (i, s) in accum_info.steps.iter().enumerate() {
+                validate_range(
+                    &format!("accum_info.steps[{i}]"), s.start, s.end,
+                    &[("synthetic_out", &s.synthetic_out)],
+                    &s.synthetic_in,
+                );
+            }
+            eprintln!("validation pass complete");
+        }
 
         // lower_to_circuit_ir wraps `movfuscated` into a proper
         // Return-terminated circuit (is_circuit()) WITHOUT renumbering
