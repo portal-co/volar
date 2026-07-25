@@ -30,8 +30,19 @@ storage-map match; only ~2.2% post-movfuscation due to a real SSA-ordering
 constraint — see "Poly batching" below for the full story and why it's
 smaller than hoped at the scale that matters). Two real, independent bugs
 were also found and fixed in `volar-ir-opt`'s own DCE (stripping variables
-external boundary metadata still needed). Movfuscation block-finish
-fall-through remains unstarted.**
+external boundary metadata still needed). A third pass, `cse_ir_blocks`,
+landed with by far the largest structural win found this session
+(post-movfuscation `total=327,453→225,431`, `Poly=152,734→117,499` with
+CSE+DCE+batch combined) — but actually **weaving** the optimized circuit
+hits a real, unresolved gap: CSE/batch can merge/insert across what used
+to be a per-original-block boundary, producing a "no entry found for key"
+panic in the split-weave. A region-constrained variant reduces but does
+not eliminate the panic (moves from `vole.rs:2826` to `vole.rs:3935`);
+the next step (user-directed) is a bigger fix — physically hoist
+cross-chunk-shared statements into `shared_prefix` and extend the
+boundary metadata accordingly, rather than excluding cross-region merges.
+See "Cross-chunk locality" below for the full state. Movfuscation
+block-finish fall-through remains unstarted.**
 
 ## `chunk_size` mitigation (still useful, now stacks with the real fix)
 
@@ -641,15 +652,278 @@ rather than before the earliest member) could capture substantially more
 not just adding a producer, a materially bigger redesign than what
 landed here. Not attempted this session.
 
-### 3. Post-movfuscation general cruft reduction — not started
+### 3. CSE (`cse_ir_blocks`) — landed, biggest single win, but not yet weavable
 
-Movfuscation's own "always execute everything, gate by `is_active`"
-design means almost everything is nominally live (feeds *some* gated
-accumulation), so traditional DCE likely finds little; the real
-opportunity is more likely redundant/duplicate computation (CSE across
-blocks) than dead code. Not scoped.
+`cse_ir_blocks`/`cse_ir_block_once` (`volar-ir-opt/src/ir.rs`, new pass):
+deduplicates statements with byte-for-byte identical kind+operands (pure
+kinds only — `Poly`, `Merge`, `Shuffle`, `Rol`, `Ror`, `Splat`,
+`Transmute`, `Const`; storage/side-effecting statements excluded, left to
+`store_forward_ir_blocks`). One real bug found and fixed *before* running
+any test, via design review: CSE's own remap is deliberately many-to-one
+(that's the point of dedup), so a naive per-monomial remap-and-collect on
+a `Poly`'s coeffs can silently **drop** a term when two different
+monomials collide onto the same key after remapping, instead of
+GF(2)-XOR-combining them (e.g. `a XOR b` where `b` dedups onto `a` must
+become the constant `0`, not silently `a`). Fixed via a dedicated
+`remap_stmt_operands` helper with Poly-specific GF(2)-safe handling,
+confirmed via a targeted unit test
+(`poly_remap_is_gf2_safe_on_monomial_collision`). Verified via a
+real-scale exact-match probe (`probe_cse_ir_blocks_on_real_interpreter`,
+`eval_ir_with_storage` on the real interpreter's pre-movfuscation CFG,
+exact 16,694-entry storage match) plus structural-only post-movfuscation
+measurements:
 
-### 4. Movfuscation block-finish fall-through — not started
+- Post-movfuscation, before CSE: `total=327,453 poly=152,734`.
+- After CSE alone: `total=224,899 poly=122,096` (**-31% total, -20% Poly**)
+  — by far the largest single win found this session, much bigger than
+  `batch_ir_blocks`'s own post-movfuscation -2.2%. Makes sense: unlike
+  batching (blocked by the SSA-ordering constraint above), CSE has no
+  positional constraint — it just needs byte-identical operands, which
+  movfuscation's per-block-duplicated dispatch logic produces in bulk
+  (structurally identical `is_active_i · touched_slot_k`-style
+  expressions recur near-verbatim across blocks).
+- After CSE+DCE+batch combined: `total=225,431 poly=117,499` — DCE+batch
+  add relatively little on top of CSE alone at this scale, confirming CSE
+  is where the real opportunity was.
+
+**Not yet actually weavable — see "Cross-chunk locality" below.** These
+numbers are structural (statement counts on the merged block), not a real
+printed-size measurement, because attempting to actually weave the
+optimized circuit hits a real, unresolved gap in how the split-weave
+locates statements.
+
+### 4. Cross-chunk locality: CSE/batch can merge across a chunk boundary the split-weave still assumes — open, mid-investigation
+
+The split-weave (`weave_vole_prover_ir_split` and its qsim/verifier
+siblings, `vole.rs`) builds one Rust function per **original**
+(pre-movfuscation) block, each emitting only `shared_prefix` (statements
+`[0, boundary[0].start)`) plus its own `[boundary[i].start,
+boundary[i].end)` range — a *static, contiguous-range* assumption about
+where every statement it needs lives. CSE/batch, run post-movfuscation,
+have no notion of this structure and freely merge/insert across whatever
+was originally a per-block boundary, producing a statement whose new
+position is outside the range(s) the chunk(s) that actually use it will
+ever emit. This surfaces only at **weave time**, not pass-run time, as
+`panicked at .../vole.rs:NNNN: no entry found for key` — silent until
+then.
+
+Two variants confirmed so far:
+
+1. **Unconstrained CSE+DCE+batch** (the 225,431-statement number above):
+   panics at `vole.rs:2826`.
+2. **Region-constrained CSE+batch** (see below): panics at a *different*
+   location, `vole.rs:3935`, inside `emit_shuffle` — fewer merges happen
+   (268,259 statements, more conservative than 225,431, as expected) but
+   the panic isn't eliminated, meaning the region model itself still has
+   a gap.
+
+**Region-constrained attempt** (in progress, not yet correct): added
+`region_of: Option<&[u32]>` to both `cse_ir_block_once`/
+`batch_ir_block_once` (their own `canon_map`/grouping keys now include a
+region id, so two statements from different regions can never be
+treated as duplicates/batchable) — `cse_ir_blocks_with_regions`/
+`batch_ir_blocks_with_regions`, unit-tested at small scale
+(`region_aware_cse_never_crosses_a_region_boundary`,
+`region_aware_batch_never_crosses_a_region_boundary`, both pass). Wired
+into a new probe, `probe_optimized_full_module_print_size` (`wat_gen.rs`),
+which computes a `region_by_orig_var` map once from the *original*
+`MovfuscBlockBoundary`/`MovfuscAccumInfo` ranges (shared_prefix = region
+0, each `boundary[i]` = region `i+1`, `accum_info.init` and each
+`accum_info.steps[i]` their own subsequent regions) and a
+`derive_region_of` closure translating it through the running `cumulative`
+remap before each pass. **Still panics** (see above) — the region model
+as built evidently doesn't cover the *whole* combined block's own
+statement space. Leading, not-yet-confirmed hypothesis: `derive_region_of`
+falls back to a sentinel `u32::MAX` for any statement whose old-var
+lookup misses `region_by_orig_var` (e.g. anything not covered by exactly
+one of shared_prefix/boundary[i]/accum_info's ranges — possibly a "finish"
+function's own space, or a gap in how accum_info's ranges relate to
+boundary's ranges, neither audited directly yet) — every such statement
+would share the *same* fallback region and could still be merged/batched
+together across what are, in reality, different real chunks. Not
+confirmed; the audit (compare `region_by_orig_var`'s coverage directly
+against the split-weave's own per-function emission logic in `vole.rs`,
+rather than guessing) was not done before this doc update.
+
+**Implemented and tried at real scale: the hoist-to-shared-prefix design.**
+Built exactly as sketched originally (kept below for the record), plus
+one refinement the first sketch didn't anticipate needing:
+`hoist_shared_statements`/`hoist_shared_statements_once`
+(`volar-ir-opt/src/ir.rs`) physically reorders the block into `[group 0
+(shared)] ++ [each remaining region's own statements, stable order]` via
+a stable sort keyed on `(group_rank, original_index)`, and returns
+`region_ranges: BTreeMap<u32,(u32,u32)>` — each region's own *contiguous*
+`[start,end)` in the **new** numbering — because naively remapping the
+*old* `start`/`end` var ids through the pass's own remap is wrong (the
+specific var that used to sit at a region's old boundary may itself have
+been hoisted away). Region provenance is reconstructed post-hoc from
+`cumulative` (inverted: for each final var, the union of every
+pre-optimization var's own known region that maps onto it) plus, for
+batch's two brand-new vars per accepted group (no pre-optimization
+identity), the union of their own members' region sets — exposed via a
+new `batch_ir_blocks_with_remap_and_members` (the member list wasn't
+otherwise recoverable from a plain remap). 2 new unit tests confirm the
+reordering and the returned ranges are exactly right at small scale.
+
+**Real-scale result: a real, different failure mode, and the original
+"coverage gap" hypothesis was WRONG.** A diagnostic run confirmed
+`region_by_orig_var` covers all 327,453 vars in `[n_params, n0)` with
+**zero gaps** — `region_sets_array: empty=0`. So every statement has a
+definite region provenance; nothing defaults to "unknown → shared" by
+accident. But `multi(genuine-cross-region)=19,130` out of 225,431 total —
+and hoisting **any** multi-region statement moves it into `shared_prefix`,
+which **every one of the 241 split-weave functions emits unconditionally**
+regardless of whether that specific function needs it. A statement that's
+only actually shared between 2 specific chunks (the overwhelmingly common
+case — movfuscation's per-block dispatch logic is structurally similar
+block-to-block, so CSE finds mostly *pairwise* duplicates, not duplicates
+shared across dozens of blocks) still gets computed by all 241 functions
+once hoisted — roughly 120× more instantiations than the 2 chunks that
+actually need it. Running the full probe at real scale confirmed this
+concretely: **93.6GB physical footprint, SIGKILLed** — the same class of
+blowup `WireRepr::Array` fixed earlier this session, but now from real
+statement duplication rather than eager per-function param unpacking.
+
+**This is a real architectural limit of "hoist to a single universal
+shared_prefix," not a bug in the hoist pass itself** (the pass does
+exactly what it says: it's *correct*, just not *scoped* finely enough).
+The split-weave's own "every function gets shared_prefix + its own range"
+structure has no notion of a value shared between exactly 2 (or a handful
+of) specific chunks — only "owned by exactly one chunk" or "owned by
+all of them." Fixing this properly needs either: (a) partitioning
+`shared_prefix` further, so a statement only gets emitted into the
+specific *set* of chunk functions that actually reference it (a real
+change to the split-weave's own per-function emission logic in `vole.rs`,
+not just the IR-side passes); or (b) accepting a coarser, still-useful
+middle ground — e.g. only hoist a statement when its own region-set size
+is *large* (shared across many chunks, where universal hoisting is
+actually a good trade), falling back to the region-exclusion constraint
+(no merge at all) for statements shared between just a few chunks, losing
+some of CSE's win but staying within the split-weave's existing two-tier
+structure.
+
+Also worth revisiting given the coverage-gap hypothesis is now ruled out:
+the **region-exclusion** attempt's own earlier panic (`vole.rs:3935`,
+"Region-constrained CSE+batch" above) almost certainly has a different,
+more mundane cause than a coverage gap — most likely the `derive_region_of`
+closure used there silently overwrites (rather than detects) a
+"multiple old vars, different regions, same new var" collision (BTreeMap
+iteration order picks whichever old var has the largest id), which could
+let two *actually*-different-region statements look like the same region
+right before a later pass runs. Not yet re-investigated with this
+corrected understanding.
+
+**User-directed next design (confirmed grounded, not yet implemented):
+thread cross-chunk values as packed parameters, don't hoist or move
+statements at all.** Rather than relocating a shared statement's own
+computation (hoist) or forbidding the merge (exclusion), leave every
+statement exactly where CSE/batch put it and instead extend the
+split-weave's own **function call interface** so a value computed by
+one chunk function is passed as an *explicit extra parameter* to only
+the specific chunk function(s) that need it — mirroring the mechanism
+`MovfuscAccumStep`'s own `next_state`/`next_pc`/`ret_vals`/`done_acc`
+*already* use to thread the accumulator's running state from chunk `c`
+to chunk `c+1`. This has a **direct, already-built precedent**:
+`split_driver.rs`'s own module doc (top of file) states the verifier's
+`all_ok`/`fold_state` pair already "thread[s] linearly across *every*
+verifier-role call in call order (block 0, block 1, ..., chunk 0, ...,
+finish) -- unlike next_state, this is a single continuous chain, not
+scoped to movfuscation's own block/chunk topology." That's exactly the
+shape a synthetic CSE-shared value needs: a value flows from whichever
+chunk function computes it earliest (in this same real, established
+call order) through every intervening chunk (cheap pass-through, same
+as `next_state`'s own tunnelled-slot skip) to the last chunk that
+consumes it, then stops. **No physical statement movement, no universal
+prefix, no per-statement duplication beyond exactly the intervening
+chunks that must pass it through** — the actual fix.
+
+Concrete design, spanning three files (not yet implemented):
+
+1. **Discovery** (reuse what's already built): run CSE/batch
+   unconstrained (as now), get `region_sets_final` per final statement.
+   For each statement with `region_sets_final.len() > 1`, its "producer"
+   region is whichever appears *earliest* in the real driver call order
+   (`boundary[0..n)` then `accum_init` then `accum_step[0..n)`, per
+   `split_driver.rs`'s own doc); every other region in its set is a
+   "consumer." (Values whose only "sharing" is with `shared_prefix`
+   itself, region 0, need no new mechanism at all — they're already
+   universally visible; only genuinely inter-chunk sharing needs a new
+   slot.)
+2. **Metadata**: extend `MovfuscBlockBoundary`/`MovfuscAccumStep` (or a
+   new parallel structure keyed the same way) with a `synthetic_out:
+   Vec<u32>` (var ids this range's own function must additionally
+   expose as outputs — either genuinely computed here, if this range is
+   the producer, or passed through unchanged from `synthetic_in`, if
+   it's an intervening/consumer range) and `synthetic_in: Vec<u32>` (var
+   ids this range's own function receives as extra incoming params,
+   bound in `vole.rs` as if they were ordinary top-level circuit params
+   for statements inside this range that reference them). Every range
+   strictly between producer and last-consumer (in call order) gets a
+   pass-through pair; the producer only gets `synthetic_out`; the
+   consumer(s) only need `synthetic_in` for the specific ones they use
+   (they need NOT re-export past the last one they consume).
+3. **Weaver** (`vole.rs`, `weave_vole_prover_ir_split`/
+   `weave_vole_qsim_ir_split`/`weave_vole_verifier_ir_split_with_trace`):
+   for each function, bind `synthetic_in`'s own var ids as real params
+   (analogous to `insert_w_wires`) and emit `synthetic_out`'s own var ids
+   as real return values, using a `synth_{k}`-style naming convention
+   distinct from the existing `next_state_{i}_{k}` naming so the driver
+   generator (below) can distinguish "movfuscation-native state" from
+   "CSE-synthetic pass-through."
+4. **Driver** (`split_driver.rs`): thread `synth_{k}` the same way
+   `all_ok`/`fold_state` already thread linearly across every call in
+   order — likely reusable as a THIRD instance of that exact pattern
+   (a `BTreeMap<usize, String>` of "currently live synthetic value ->
+   its own current local name", updated after each call, consulted when
+   building the next call's own argument list), rather than needing a
+   wholly new threading mechanism.
+5. **Correctness discipline**: this touches the same self-looping
+   movfuscation core that produced the earlier "Attempt 1 → Attempt 2"
+   saga this session's predecessor hit — build with the same care (real
+   witness-value tests via `eval_ir_with_storage`/`eval_ir_with_trace`
+   before trusting any circuit-level result, small hand-built fixtures
+   before real-interpreter scale, `(ulimit -v ...)` before any real-scale
+   weave attempt given this exact investigation's own confirmed 93.6GB
+   OOM history).
+
+Also still open, lower priority than the above: the **region-exclusion**
+attempt's own earlier panic (`vole.rs:3935`) is unexplained (coverage-gap
+hypothesis ruled out with data; a `derive_region_of` "last-write-wins
+collision" hypothesis was reasoned through and appears NOT to actually
+manifest under region-constrained CSE specifically, since the region
+constraint itself guarantees any two old vars merged onto the same new
+var already agree on region — so that panic's real cause remains
+unknown). Likely moot once the packed-parameter design above lands,
+since it would supersede exclusion entirely, but worth a note in case
+exclusion is ever revisited independently.
+
+Not yet implemented as of this doc update — this is the concrete,
+grounded plan for the next work on this investigation.
+
+<details>
+<summary>Original hoist-to-shared-prefix sketch (superseded by the "implemented and tried" section above, kept for the record)</summary>
+
+1. Run CSE + batch **unconstrained** (no `region_of`) for maximum
+   optimization — this is the 225,431-statement result.
+2. For each surviving statement, determine whether it's "shared": either
+   (a) it was formed by merging inputs whose own original regions weren't
+   all the same (CSE deduped across regions, or a batch group's members
+   spanned regions), or (b) it has at least one consumer (another
+   statement's operand, or a boundary/accum_info reference) whose own
+   region differs from its own.
+3. Physically reorder the block: `[existing shared_prefix] ++ [newly
+   "shared" statements, stable original relative order] ++ [each region's
+   own remaining statements, stable original relative order, grouped by
+   region]`.
+4. Recompute a position remap from this reordering, rewrite every
+   statement's operands through it, and recompute `MovfuscBlockBoundary`/
+   `MovfuscAccumInfo` ranges as contiguous ranges over the new layout.
+5. Re-verify weave correctness at real scale before trusting the printed
+   size number.
+
+</details>
+
+### 5. Movfuscation block-finish fall-through — not started
 
 Currently every block unconditionally routes through the full
 `is_active`-gated dispatch/mux for every step, regardless of whether the

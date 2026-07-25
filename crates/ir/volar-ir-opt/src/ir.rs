@@ -126,11 +126,81 @@ pub fn dce_ir_blocks_with_remap<P: Clone>(
 pub fn batch_ir_blocks<P: Clone>(blocks: &mut IRBlocks<P>, types: &mut IRTypes) -> bool {
     let mut any_changed = false;
     for block in blocks.blocks.iter_mut() {
-        if batch_ir_block_once(block, types) {
+        if batch_ir_block_once(block, types, None).0 {
             any_changed = true;
         }
     }
     any_changed
+}
+
+/// As [`batch_ir_blocks_with_remap`], but also returns, for each block, a
+/// map from every brand-new var id it created (the wide `Poly` plus its
+/// own feeding `Merge`, one pair per accepted batch) to the list of
+/// member var ids -- in the block's own *pre-call* numbering -- that
+/// batch was built from. A batch-created var has no pre-optimization
+/// identity of its own (unlike every other var, which survives from
+/// before this call under `remap`), so a caller reconstructing
+/// provenance/region info across a pass (e.g. to decide which final
+/// statements need hoisting into a shared region -- see
+/// `docs/interpreter-honest-e2e-zk-plan.md`'s "Cross-chunk locality"
+/// section) needs this separately.
+pub fn batch_ir_blocks_with_remap_and_members<P: Clone>(
+    blocks: &mut IRBlocks<P>,
+    types: &mut IRTypes,
+) -> (bool, Vec<BTreeMap<u32, u32>>, Vec<BTreeMap<u32, Vec<u32>>>) {
+    let mut any_changed = false;
+    let mut remaps = Vec::with_capacity(blocks.blocks.len());
+    let mut members = Vec::with_capacity(blocks.blocks.len());
+    for block in blocks.blocks.iter_mut() {
+        let (changed, remap, new_var_members) = batch_ir_block_once(block, types, None);
+        any_changed |= changed;
+        remaps.push(remap);
+        members.push(new_var_members);
+    }
+    (any_changed, remaps, members)
+}
+
+/// As [`batch_ir_blocks_with_remap`], but never groups two `Poly`s into
+/// the same batch unless `region_of[i] == region_of[j]` for their own
+/// statement indices -- see [`cse_ir_blocks_with_regions`]'s own doc for
+/// why this exists (the same split-weave per-original-block locality
+/// constraint, confirmed by direct testing to matter for batching too).
+pub fn batch_ir_blocks_with_regions<P: Clone>(
+    blocks: &mut IRBlocks<P>,
+    types: &mut IRTypes,
+    region_of: &[u32],
+) -> (bool, Vec<BTreeMap<u32, u32>>) {
+    let mut any_changed = false;
+    let mut remaps = Vec::with_capacity(blocks.blocks.len());
+    for block in blocks.blocks.iter_mut() {
+        let (changed, remap, _new_var_members) = batch_ir_block_once(block, types, Some(region_of));
+        any_changed |= changed;
+        remaps.push(remap);
+    }
+    (any_changed, remaps)
+}
+
+/// As [`batch_ir_blocks`], but also returns each block's own cumulative
+/// var-id remap (old `IRVarId.0` -> new `IRVarId.0`; identity for a block
+/// left untouched) -- same purpose as [`dce_ir_blocks_with_remap`]/
+/// [`cse_ir_blocks_with_remap`]: lets a caller holding external
+/// var-id-based metadata (`MovfuscBlockBoundary`/`MovfuscAccumInfo`)
+/// translate it to stay valid post-batching. Batching inserts new
+/// statements (the `Merge` + wide `Poly` per accepted group), so every
+/// later statement's own var id shifts -- always compose this remap into
+/// any cumulative remap.
+pub fn batch_ir_blocks_with_remap<P: Clone>(
+    blocks: &mut IRBlocks<P>,
+    types: &mut IRTypes,
+) -> (bool, Vec<BTreeMap<u32, u32>>) {
+    let mut any_changed = false;
+    let mut remaps = Vec::with_capacity(blocks.blocks.len());
+    for block in blocks.blocks.iter_mut() {
+        let (changed, remap, _new_var_members) = batch_ir_block_once(block, types, None);
+        any_changed |= changed;
+        remaps.push(remap);
+    }
+    (any_changed, remaps)
 }
 
 /// Every distinct variable referenced anywhere in `coeffs`.
@@ -176,8 +246,14 @@ struct PolyBatch {
 }
 
 /// One forward pass over a single block: find and merge batchable `Poly`
-/// groups. Returns `true` if the block was modified.
-fn batch_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &mut IRTypes) -> bool {
+/// groups. Returns `(changed, remap, new_var_members)` -- `remap` maps
+/// every pre-call `IRVarId.0` to its post-call `IRVarId.0` (identity for
+/// every id when `changed` is `false`); `new_var_members` maps every
+/// brand-new var id (the wide `Poly` + its feeding `Merge`, per accepted
+/// batch) to the pre-call var ids of that batch's own members -- see
+/// [`batch_ir_blocks_with_remap_and_members`]'s own doc for why this is
+/// needed.
+fn batch_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &mut IRTypes, region_of: Option<&[u32]>) -> (bool, BTreeMap<u32, u32>, BTreeMap<u32, Vec<u32>>) {
     let n_params = block.params.len();
 
     // ---- Phase 1: discover candidate batches (read-only). -----------------
@@ -185,8 +261,11 @@ fn batch_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &mut IRTypes) ->
     // A statement can be proposed as a member of several *candidate*
     // batches at once (one per choice of which of its own variables is
     // "the hole") -- resolved to at most one real membership in the
-    // dedup step below, so no statement is ever rewritten twice.
-    let mut canon_map: BTreeMap<(TypeId, BTreeMap<Vec<IRVarId>, u8>), usize> = BTreeMap::new();
+    // dedup step below, so no statement is ever rewritten twice. Keying
+    // on `region_of[i]` too (when given) means two statements from
+    // different regions never join the same batch -- see
+    // `batch_ir_blocks_with_regions`'s own doc for why.
+    let mut canon_map: BTreeMap<(u32, TypeId, BTreeMap<Vec<IRVarId>, u8>), usize> = BTreeMap::new();
     let mut batches: Vec<PolyBatch> = Vec::new();
 
     for i in 0..block.stmts.len() {
@@ -201,6 +280,7 @@ fn batch_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &mut IRTypes) ->
         if vars.is_empty() {
             continue;
         }
+        let region = region_of.map(|r| r[i]).unwrap_or(0);
 
         let mut joined = false;
         for &hole in &vars {
@@ -212,7 +292,7 @@ fn batch_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &mut IRTypes) ->
             // the reconstruction check below is a redundant belt-and-
             // braces confirmation, not load-bearing for correctness.
             let canon = substitute_var(coeffs, hole, IRVarId(POLY_BATCH_SENTINEL));
-            let key = (ty, canon);
+            let key = (region, ty, canon);
             if let Some(&bi) = canon_map.get(&key) {
                 let template_coeffs = match &block.stmts[batches[bi].template_idx].kind {
                     Stmt::Poly { coeffs, .. } => coeffs.clone(),
@@ -235,7 +315,7 @@ fn batch_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &mut IRTypes) ->
         // statement matching any of these joins there.
         for &hole in &vars {
             let canon = substitute_var(coeffs, hole, IRVarId(POLY_BATCH_SENTINEL));
-            let key = (ty, canon);
+            let key = (region, ty, canon);
             canon_map.entry(key).or_insert_with(|| {
                 batches.push(PolyBatch { ty, template_idx: i, hole_var_in_template: hole, members: vec![(i, hole)] });
                 batches.len() - 1
@@ -283,7 +363,8 @@ fn batch_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &mut IRTypes) ->
         accepted.push(bi);
     }
     if accepted.is_empty() {
-        return false;
+        let identity: BTreeMap<u32, u32> = (0..(n_params + block.stmts.len()) as u32).map(|v| (v, v)).collect();
+        return (false, identity, BTreeMap::new());
     }
 
     // ---- Phase 3: rewrite. Single forward pass building new_stmts + a -----
@@ -312,6 +393,7 @@ fn batch_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &mut IRTypes) ->
     let mut remap: BTreeMap<u32, u32> = (0..n_params as u32).map(|v| (v, v)).collect();
     let mut next_var = n_params as u32;
     let mut batch_wide_var: BTreeMap<usize, u32> = BTreeMap::new();
+    let mut new_var_members: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
 
     for i in 0..block.stmts.len() {
         if let Some(&bi) = insert_before.get(&i) {
@@ -362,6 +444,10 @@ fn batch_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &mut IRTypes) ->
                 ..block.stmts[i].clone()
             });
             batch_wide_var.insert(bi, wide_poly_var);
+
+            let member_pre_vars: Vec<u32> = members.iter().map(|&(idx, _)| (n_params + idx) as u32).collect();
+            new_var_members.insert(merge_var, member_pre_vars.clone());
+            new_var_members.insert(wide_poly_var, member_pre_vars);
         }
 
         if let Some(&bi) = member_of.get(&i) {
@@ -400,7 +486,7 @@ fn batch_ir_block_once<P: Clone>(block: &mut IRBlock<P>, types: &mut IRTypes) ->
 
     block.stmts = new_stmts;
     block.terminator = new_term;
-    true
+    (true, remap, new_var_members)
 }
 
 /// As [`dce_ir_blocks_with_remap`], but additionally treats every var id in
@@ -592,11 +678,65 @@ fn dce_ir_block_once<P: Clone>(block: &mut IRBlock<P>, extra_live: &[u32]) -> (b
 pub fn cse_ir_blocks<P: Clone>(blocks: &mut IRBlocks<P>, _types: &IRTypes) -> bool {
     let mut any_changed = false;
     for block in blocks.blocks.iter_mut() {
-        if cse_ir_block_once(block) {
+        if cse_ir_block_once(block, None).0 {
             any_changed = true;
         }
     }
     any_changed
+}
+
+/// As [`cse_ir_blocks`], but also returns each block's own cumulative
+/// var-id remap (old `IRVarId.0` -> new `IRVarId.0`; identity for a block
+/// CSE left untouched) -- same purpose as [`dce_ir_blocks_with_remap`]:
+/// lets a caller holding external var-id-based metadata (e.g.
+/// movfuscation's own `MovfuscBlockBoundary`/`MovfuscAccumInfo`)
+/// translate it to stay valid post-CSE. Unlike `fold_ir_blocks`/
+/// `store_forward_ir_blocks`, CSE genuinely changes statement indices
+/// (deduplication removes statements), so this remap is not the identity
+/// in general -- always compose it into any cumulative remap, the same
+/// way `dce_ir_blocks_with_remap`'s own output must be.
+pub fn cse_ir_blocks_with_remap<P: Clone>(
+    blocks: &mut IRBlocks<P>,
+    _types: &IRTypes,
+) -> (bool, Vec<BTreeMap<u32, u32>>) {
+    let mut any_changed = false;
+    let mut remaps = Vec::with_capacity(blocks.blocks.len());
+    for block in blocks.blocks.iter_mut() {
+        let (changed, remap) = cse_ir_block_once(block, None);
+        any_changed |= changed;
+        remaps.push(remap);
+    }
+    (any_changed, remaps)
+}
+
+/// As [`cse_ir_blocks_with_remap`], but never deduplicates two statements
+/// unless `region_of[i] == region_of[j]` for their own statement indices
+/// `i`/`j` (`region_of.len()` must equal the (single) block's own
+/// `stmts.len()`). Exists for the post-movfuscation, single-combined-
+/// block case: the split-weave's own per-original-block chunking
+/// (`MovfuscBlockBoundary`/`MovfuscAccumInfo`) assumes a chunk function
+/// only ever needs the shared prefix plus its own `[start, end)` range --
+/// unconstrained CSE can dedup two statements from *different* original
+/// blocks, relocating the surviving one outside a chunk that still needs
+/// it (confirmed via direct testing: this produces a "no entry found for
+/// key" panic in the weaver, not a silent wrong answer). Region-aware
+/// CSE never crosses that boundary, at the cost of missing any
+/// cross-region duplicate (which is where most of the unconstrained
+/// win came from -- see `docs/interpreter-honest-e2e-zk-plan.md`'s own
+/// "Poly batching" section for the measured before/after).
+pub fn cse_ir_blocks_with_regions<P: Clone>(
+    blocks: &mut IRBlocks<P>,
+    _types: &IRTypes,
+    region_of: &[u32],
+) -> (bool, Vec<BTreeMap<u32, u32>>) {
+    let mut any_changed = false;
+    let mut remaps = Vec::with_capacity(blocks.blocks.len());
+    for block in blocks.blocks.iter_mut() {
+        let (changed, remap) = cse_ir_block_once(block, Some(region_of));
+        any_changed |= changed;
+        remaps.push(remap);
+    }
+    (any_changed, remaps)
 }
 
 /// Remap every operand var id in `kind` through `remap`, GF(2)-safely for
@@ -638,15 +778,19 @@ fn remap_stmt_operands(kind: IRStmt, remap: &BTreeMap<u32, u32>) -> IRStmt {
 
 /// One forward pass over a single block: dedup pure statements and
 /// compact the result (removed statements shift every later var id).
-fn cse_ir_block_once<P: Clone>(block: &mut IRBlock<P>) -> bool {
+/// Returns `(changed, remap)` -- `remap` maps every pre-call `IRVarId.0`
+/// to its post-call `IRVarId.0` (identity for every id when `changed` is
+/// `false`).
+fn cse_ir_block_once<P: Clone>(block: &mut IRBlock<P>, region_of: Option<&[u32]>) -> (bool, BTreeMap<u32, u32>) {
     let n_params = block.params.len();
     let mut remap: BTreeMap<u32, u32> = (0..n_params as u32).map(|v| (v, v)).collect();
-    let mut canon_map: BTreeMap<IRStmt, u32> = BTreeMap::new();
+    let mut canon_map: BTreeMap<(u32, IRStmt), u32> = BTreeMap::new();
     let mut new_stmts: Vec<Node<IRStmt, P>> = Vec::with_capacity(block.stmts.len());
     let mut changed = false;
 
     for i in 0..block.stmts.len() {
         let old_var = (n_params + i) as u32;
+        let region = region_of.map(|r| r[i]).unwrap_or(0);
         let remapped_kind = remap_stmt_operands(block.stmts[i].kind.clone(), &remap);
 
         let is_pure = matches!(
@@ -657,7 +801,7 @@ fn cse_ir_block_once<P: Clone>(block: &mut IRBlock<P>) -> bool {
         );
 
         if is_pure {
-            if let Some(&existing_new_var) = canon_map.get(&remapped_kind) {
+            if let Some(&existing_new_var) = canon_map.get(&(region, remapped_kind.clone())) {
                 remap.insert(old_var, existing_new_var);
                 changed = true;
                 continue;
@@ -670,13 +814,13 @@ fn cse_ir_block_once<P: Clone>(block: &mut IRBlock<P>) -> bool {
         }
         remap.insert(old_var, new_var);
         if is_pure {
-            canon_map.insert(remapped_kind.clone(), new_var);
+            canon_map.insert((region, remapped_kind.clone()), new_var);
         }
         new_stmts.push(Node { kind: remapped_kind, ..block.stmts[i].clone() });
     }
 
     if !changed {
-        return false;
+        return (false, remap);
     }
 
     let new_term = block.terminator.clone().map(
@@ -688,7 +832,140 @@ fn cse_ir_block_once<P: Clone>(block: &mut IRBlock<P>) -> bool {
 
     block.stmts = new_stmts;
     block.terminator = new_term;
-    true
+    (true, remap)
+}
+
+/// Given a single-block `IRBlocks` (the movfuscated circuit) plus, for
+/// each of its own *current* statements, the set of original "regions"
+/// it serves (`region_sets[i]`, one entry per statement -- typically
+/// computed by a caller that ran unconstrained `cse_ir_blocks_with_remap`/
+/// `batch_ir_blocks_with_remap_and_members` and tracked, for every
+/// surviving/created var, which pre-optimization regions contributed to
+/// it), physically reorders the block so every statement whose own
+/// `region_sets[i]` has more than one entry -- or is empty (unknown;
+/// treated conservatively) -- moves into a leading "region 0"
+/// (shared-prefix) group, immediately followed by each remaining
+/// region's own statements in their original relative order. Also folds
+/// any statement whose *own* single region is already `0` into that same
+/// leading group (a no-op move, since it's already there).
+///
+/// This implements "hoist cross-chunk-shared statements into
+/// shared_prefix and extend the boundary metadata to match" (see
+/// `docs/interpreter-honest-e2e-zk-plan.md`'s "Cross-chunk locality"
+/// section) as an alternative to constraining CSE/batch not to produce
+/// such statements in the first place (`cse_ir_blocks_with_regions`/
+/// `batch_ir_blocks_with_regions`): run CSE/batch fully unconstrained for
+/// maximum optimization, then relocate only the statements that actually
+/// need to be visible to more than one split-weave chunk function.
+///
+/// **Topological validity is preserved by construction, not by
+/// re-sorting**: a statement in single-region group `R` (`R != 0`) can
+/// only ever reference a var either (a) originally defined in region `R`
+/// itself (preserved: within-group order is untouched), or (b) a var
+/// that CSE deduplicated or batch created -- and *any* such var's own
+/// `region_sets` entry is, by construction, either a strict superset of
+/// `{R}` or otherwise multi-region (since matching/batching requires
+/// byte-identical operands, which themselves must already be visible
+/// wherever the match occurs) -- so it is always already assigned to the
+/// leading group. There is no case where a single-region statement
+/// references another *different* single-region statement, so relative
+/// order between distinct non-zero groups is irrelevant to correctness.
+///
+/// Returns `(changed, remap, region_ranges)`:
+/// - `remap` maps every pre-call `IRVarId.0` to its post-call `IRVarId.0`
+///   (identity when `changed` is `false`).
+/// - `region_ranges` maps every region id that appeared in `region_sets`
+///   as a singleton (i.e. every `group_key`, including `0`) to its own
+///   *contiguous* `[start, end)` var-id range in the **post-call**
+///   numbering -- safe to use directly as a `MovfuscBlockBoundary`/
+///   `MovfuscAccumInfo` range's own `start`/`end`. This is deliberately
+///   NOT the same as remapping the *old* `start`/`end` var ids through
+///   `remap`: the specific var that used to sit at a region's old `start`
+///   may itself have been hoisted away (multi-region), so remapping it
+///   directly would point at wherever *that var* ended up (inside the
+///   shared group), not at the true new start of the region's own
+///   remaining, still-contiguous statements.
+pub fn hoist_shared_statements<P: Clone>(
+    blocks: &mut IRBlocks<P>,
+    region_sets: &[BTreeSet<u32>],
+) -> (bool, Vec<BTreeMap<u32, u32>>, Vec<BTreeMap<u32, (u32, u32)>>) {
+    let mut any_changed = false;
+    let mut remaps = Vec::with_capacity(blocks.blocks.len());
+    let mut ranges = Vec::with_capacity(blocks.blocks.len());
+    for block in blocks.blocks.iter_mut() {
+        let (changed, remap, region_ranges) = hoist_shared_statements_once(block, region_sets);
+        any_changed |= changed;
+        remaps.push(remap);
+        ranges.push(region_ranges);
+    }
+    (any_changed, remaps, ranges)
+}
+
+fn hoist_shared_statements_once<P: Clone>(
+    block: &mut IRBlock<P>,
+    region_sets: &[BTreeSet<u32>],
+) -> (bool, BTreeMap<u32, u32>, BTreeMap<u32, (u32, u32)>) {
+    let n_params = block.params.len();
+    assert_eq!(region_sets.len(), block.stmts.len(), "region_sets must have exactly one entry per statement");
+
+    let group_key = |i: usize| -> u32 {
+        let set = &region_sets[i];
+        if set.len() == 1 { *set.iter().next().unwrap() } else { 0 }
+    };
+
+    // Rank groups by first original appearance, with group 0 always rank 0
+    // (guaranteed leading regardless of where it first literally appears).
+    let mut group_rank: BTreeMap<u32, usize> = BTreeMap::new();
+    group_rank.insert(0, 0);
+    let mut next_rank = 1usize;
+    for i in 0..block.stmts.len() {
+        let g = group_key(i);
+        group_rank.entry(g).or_insert_with(|| {
+            let r = next_rank;
+            next_rank += 1;
+            r
+        });
+    }
+
+    let mut new_order: Vec<usize> = (0..block.stmts.len()).collect();
+    new_order.sort_by_key(|&i| (group_rank[&group_key(i)], i));
+
+    // Every group's members end up contiguous in `new_order` (a stable
+    // sort keyed on group rank) -- record each group's own [min, max] new
+    // index while it's cheap to do so, in the SAME pass regardless of
+    // whether anything actually moved.
+    let mut region_ranges: BTreeMap<u32, (u32, u32)> = BTreeMap::new();
+    for (new_idx, &old_idx) in new_order.iter().enumerate() {
+        let g = group_key(old_idx);
+        let v = (n_params + new_idx) as u32;
+        region_ranges.entry(g).and_modify(|(_, end)| *end = v + 1).or_insert((v, v + 1));
+    }
+
+    if new_order.iter().enumerate().all(|(new_i, &old_i)| new_i == old_i) {
+        let identity: BTreeMap<u32, u32> = (0..(n_params + block.stmts.len()) as u32).map(|v| (v, v)).collect();
+        return (false, identity, region_ranges);
+    }
+
+    let mut remap: BTreeMap<u32, u32> = (0..n_params as u32).map(|v| (v, v)).collect();
+    for (new_idx, &old_idx) in new_order.iter().enumerate() {
+        remap.insert((n_params + old_idx) as u32, (n_params + new_idx) as u32);
+    }
+
+    let mut new_stmts: Vec<Node<IRStmt, P>> = Vec::with_capacity(block.stmts.len());
+    for &old_idx in &new_order {
+        let new_kind = remap_stmt_operands(block.stmts[old_idx].kind.clone(), &remap);
+        new_stmts.push(Node { kind: new_kind, ..block.stmts[old_idx].clone() });
+    }
+    let new_term = block.terminator.clone().map(
+        &mut (),
+        |_: &mut (), v: IRVarId| -> Result<IRVarId, core::convert::Infallible> {
+            Ok(IRVarId(*remap.get(&v.0).unwrap_or(&v.0)))
+        },
+    ).unwrap();
+
+    block.stmts = new_stmts;
+    block.terminator = new_term;
+    (true, remap, region_ranges)
 }
 
 // ============================================================================
@@ -1321,7 +1598,7 @@ mod cse_tests {
     /// to var 2's own new position.
     #[test]
     fn dedups_two_identical_polys() {
-        let mut types = types_with_bit();
+        let types = types_with_bit();
         let a = IRVarId(0);
         let b = IRVarId(1);
         let and_poly = || Stmt::Poly {
@@ -1379,7 +1656,7 @@ mod cse_tests {
     /// keep one of the two now-identical-key entries (wrong: `= var2`).
     #[test]
     fn poly_remap_is_gf2_safe_on_monomial_collision() {
-        let mut types = types_with_bit();
+        let types = types_with_bit();
         let a = IRVarId(0);
         let b = IRVarId(1);
         let and_poly = || Stmt::Poly {
@@ -1426,7 +1703,7 @@ mod cse_tests {
     /// on that rather than comparing operand lists loosely.
     #[test]
     fn different_stmt_kinds_never_collapse() {
-        let mut types = types_with_bit();
+        let types = types_with_bit();
         let a = IRVarId(0);
         let b = IRVarId(1);
         let block = IRBlock {
@@ -1450,7 +1727,7 @@ mod cse_tests {
     /// identical `StorageRead`s must both survive untouched.
     #[test]
     fn storage_reads_are_never_deduplicated() {
-        let mut types = types_with_bit();
+        let types = types_with_bit();
         let addr = IRVarId(0);
         let block = IRBlock {
             params: alloc::vec![bit()],
@@ -1465,6 +1742,184 @@ mod cse_tests {
         let mut blocks: IRBlocks = IRBlocks::new(alloc::vec![block]);
         let changed = cse_ir_blocks(&mut blocks, &types);
         assert!(!changed, "StorageRead is explicitly out of CSE's scope");
+        assert_eq!(blocks.blocks[0].stmts.len(), 2);
+    }
+
+    /// Two byte-for-byte identical Polys that WOULD dedup under
+    /// unconstrained CSE must NOT dedup when they fall in different
+    /// regions -- the split-weave per-original-block locality guard.
+    #[test]
+    fn region_aware_cse_never_crosses_a_region_boundary() {
+        let types = types_with_bit();
+        let a = IRVarId(0);
+        let b = IRVarId(1);
+        let and_poly = || Stmt::Poly { ty: bit(), coeffs: BTreeMap::from([(alloc::vec![a, b], 1u8)]), constant: Constant { hi: 0, lo: 0 } };
+        let block = IRBlock {
+            params: alloc::vec![bit(), bit()],
+            stmts: alloc::vec![
+                Node::new(and_poly(), (), None), // region 0
+                Node::new(and_poly(), (), None), // region 1 -- must NOT dedup with the above
+            ],
+            terminator: IRTerminator::Jmp {
+                target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![IRVarId(2), IRVarId(3)]),
+            },
+        };
+        let mut blocks: IRBlocks = IRBlocks::new(alloc::vec![block]);
+        let region_of = [0u32, 1u32];
+        let (changed, _) = cse_ir_blocks_with_regions(&mut blocks, &types, &region_of);
+        assert!(!changed, "identical Polys in different regions must never be deduplicated");
+        assert_eq!(blocks.blocks[0].stmts.len(), 2);
+
+        // Sanity: the SAME input, unconstrained, DOES dedup -- confirms
+        // the region constraint is what's blocking it, not some other
+        // difference between the two Polys.
+        let mut types2 = types_with_bit();
+        let block2 = IRBlock {
+            params: alloc::vec![bit(), bit()],
+            stmts: alloc::vec![Node::new(and_poly(), (), None), Node::new(and_poly(), (), None)],
+            terminator: IRTerminator::Jmp { target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![IRVarId(2), IRVarId(3)]) },
+        };
+        let mut blocks2: IRBlocks = IRBlocks::new(alloc::vec![block2]);
+        let changed2 = cse_ir_blocks(&mut blocks2, &mut types2);
+        assert!(changed2, "sanity: unconstrained CSE must dedup the same input");
+    }
+
+    /// Same guard for `batch_ir_blocks`: two Polys that WOULD batch
+    /// (single-variable substitution) must not batch across regions.
+    #[test]
+    fn region_aware_batch_never_crosses_a_region_boundary() {
+        let mut types = types_with_bit();
+        let a = IRVarId(0);
+        let b = IRVarId(1);
+        let c = IRVarId(2);
+        let block = IRBlock {
+            params: alloc::vec![bit(), bit(), bit()],
+            stmts: alloc::vec![
+                Node::new(Stmt::Poly { ty: bit(), coeffs: BTreeMap::from([(alloc::vec![a, b], 1u8)]), constant: Constant { hi: 0, lo: 0 } }, (), None), // region 0
+                Node::new(Stmt::Poly { ty: bit(), coeffs: BTreeMap::from([(alloc::vec![a, c], 1u8)]), constant: Constant { hi: 0, lo: 0 } }, (), None), // region 1
+            ],
+            terminator: IRTerminator::Jmp {
+                target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![IRVarId(3), IRVarId(4)]),
+            },
+        };
+        let mut blocks: IRBlocks = IRBlocks::new(alloc::vec![block]);
+        let region_of = [0u32, 1u32];
+        let (changed, _) = batch_ir_blocks_with_regions(&mut blocks, &mut types, &region_of);
+        assert!(!changed, "batchable Polys in different regions must never be merged");
+        assert_eq!(blocks.blocks[0].stmts.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod hoist_tests {
+    use super::*;
+    use volar_ir::ir::{IRBlock, IRType, IRTypeId};
+    use volar_ir_common::Type;
+
+    fn bit() -> IRTypeId { IRTypeId(0) }
+    fn types_with_bit() -> IRTypes {
+        IRTypes(alloc::vec![IRType::Primitive(Type::Bit)])
+    }
+
+    /// 4 statements: `a·b` (region 0, already shared), `Const 1`
+    /// (region 1, unrelated), `a·c` (region 1's *own* first occurrence of
+    /// what a later CSE pass decided is shared with region 2), and a
+    /// consumer of `a·c` tagged region 2 (the cross-region reference).
+    /// `a·c`'s own `region_sets` entry is `{1, 2}` (multi-region -> must
+    /// hoist), even though it originally sat *after* the unrelated
+    /// region-1 `Const` -- exercising real physical reordering, not just
+    /// a reclassification that happens to already be in place.
+    #[test]
+    fn hoists_a_multi_region_statement_ahead_of_an_unrelated_earlier_statement() {
+        let _types = types_with_bit();
+        let a = IRVarId(0);
+        let b = IRVarId(1);
+        let c = IRVarId(2);
+        let block = IRBlock {
+            params: alloc::vec![bit(), bit(), bit()],
+            stmts: alloc::vec![
+                Node::new(Stmt::Poly { ty: bit(), coeffs: BTreeMap::from([(alloc::vec![a, b], 1u8)]), constant: Constant { hi: 0, lo: 0 } }, (), None), // var 3, region {0}
+                Node::new(Stmt::Const(Constant { hi: 0, lo: 1 }, bit()), (), None), // var 4, region {1}, unrelated
+                Node::new(Stmt::Poly { ty: bit(), coeffs: BTreeMap::from([(alloc::vec![a, c], 1u8)]), constant: Constant { hi: 0, lo: 0 } }, (), None), // var 5, region {1,2}
+                Node::new(Stmt::Poly { ty: bit(), coeffs: BTreeMap::from([(alloc::vec![IRVarId(5)], 1u8)]), constant: Constant { hi: 0, lo: 0 } }, (), None), // var 6, region {2}
+            ],
+            terminator: IRTerminator::Jmp {
+                target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![IRVarId(3), IRVarId(4), IRVarId(5), IRVarId(6)]),
+            },
+        };
+        let mut blocks: IRBlocks = IRBlocks::new(alloc::vec![block]);
+        let region_sets: Vec<BTreeSet<u32>> = alloc::vec![
+            BTreeSet::from([0]),
+            BTreeSet::from([1]),
+            BTreeSet::from([1, 2]),
+            BTreeSet::from([2]),
+        ];
+
+        let (changed, remaps, region_ranges) = hoist_shared_statements(&mut blocks, &region_sets);
+        assert!(changed, "the multi-region statement must be physically relocated");
+
+        let stmts = &blocks.blocks[0].stmts;
+        assert_eq!(stmts.len(), 4);
+        match &stmts[0].kind {
+            Stmt::Poly { coeffs, .. } => assert_eq!(coeffs, &BTreeMap::from([(alloc::vec![a, b], 1u8)]), "region-0 statement stays first"),
+            other => panic!("expected a·b first, got {other:?}"),
+        }
+        match &stmts[1].kind {
+            Stmt::Poly { coeffs, .. } => assert_eq!(coeffs, &BTreeMap::from([(alloc::vec![a, c], 1u8)]), "the multi-region a·c must be hoisted to position 1, ahead of the unrelated Const"),
+            other => panic!("expected the hoisted a·c at position 1, got {other:?}"),
+        }
+        match &stmts[2].kind {
+            Stmt::Const(c, _) => assert_eq!(*c, Constant { hi: 0, lo: 1 }, "the unrelated region-1 Const is pushed after the hoisted statement"),
+            other => panic!("expected the Const at position 2, got {other:?}"),
+        }
+        match &stmts[3].kind {
+            Stmt::Poly { coeffs, .. } => assert_eq!(coeffs, &BTreeMap::from([(alloc::vec![IRVarId(4)], 1u8)]), "the consumer's own reference to a·c must be remapped to a·c's new var id (4)"),
+            other => panic!("expected the consumer Poly last, got {other:?}"),
+        }
+        match &blocks.blocks[0].terminator {
+            IRTerminator::Jmp { target } => assert_eq!(
+                target.args,
+                alloc::vec![IRVarId(3), IRVarId(5), IRVarId(4), IRVarId(6)],
+                "terminator refs must track each statement's own new position"
+            ),
+            other => panic!("expected Jmp, got {other:?}"),
+        }
+        assert_eq!(remaps.len(), 1);
+        assert_eq!(remaps[0].get(&5), Some(&4), "old var 5 (a·c) must now resolve to var 4");
+        assert_eq!(remaps[0].get(&4), Some(&5), "old var 4 (Const) must now resolve to var 5");
+
+        assert_eq!(region_ranges.len(), 1);
+        assert_eq!(
+            region_ranges[0],
+            BTreeMap::from([(0u32, (3u32, 5u32)), (1u32, (5u32, 6u32)), (2u32, (6u32, 7u32))]),
+            "group 0 (shared) must cover the two hoisted/existing-shared statements at [3,5), \
+             region 1's own remainder shrinks to just the Const at [5,6), region 2's own consumer stays at [6,7)"
+        );
+    }
+
+    /// Every statement already in its own single region (no multi-region
+    /// entries at all, and none already tagged region 0) -> the original
+    /// order already satisfies "region 0 first" trivially (there is no
+    /// region 0 statement at all here), so nothing needs to move.
+    #[test]
+    fn no_multi_region_statements_is_a_noop() {
+        let _types = types_with_bit();
+        let a = IRVarId(0);
+        let b = IRVarId(1);
+        let block = IRBlock {
+            params: alloc::vec![bit(), bit()],
+            stmts: alloc::vec![
+                Node::new(Stmt::Poly { ty: bit(), coeffs: BTreeMap::from([(alloc::vec![a, b], 1u8)]), constant: Constant { hi: 0, lo: 0 } }, (), None),
+                Node::new(Stmt::Const(Constant { hi: 0, lo: 1 }, bit()), (), None),
+            ],
+            terminator: IRTerminator::Jmp {
+                target: IRBranchTarget::new(IRBlockTargetId::Return, alloc::vec![IRVarId(2), IRVarId(3)]),
+            },
+        };
+        let mut blocks: IRBlocks = IRBlocks::new(alloc::vec![block]);
+        let region_sets: Vec<BTreeSet<u32>> = alloc::vec![BTreeSet::from([1]), BTreeSet::from([2])];
+        let (changed, _, _) = hoist_shared_statements(&mut blocks, &region_sets);
+        assert!(!changed);
         assert_eq!(blocks.blocks[0].stmts.len(), 2);
     }
 }

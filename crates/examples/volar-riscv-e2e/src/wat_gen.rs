@@ -2507,6 +2507,200 @@ mod tests {
         eprintln!("post-movfuscation poly delta, CSE+DCE+batch vs baseline: {}", mpoly2 as i64 - mpoly0 as i64);
     }
 
+    /// The number that actually matters: real printed-size impact of
+    /// CSE+DCE+batch on the full 241-function split-woven module,
+    /// mirroring `probe_full_module_print_size`'s own methodology but on
+    /// the optimized circuit.
+    ///
+    /// Unlike an earlier attempt (kept in git history), this runs CSE and
+    /// batch fully *unconstrained* (no per-region exclusion -- that
+    /// approach measurably left real cross-region wins on the table and
+    /// still didn't fully resolve the locality panic) and instead
+    /// physically **hoists** every statement that ends up serving more
+    /// than one original block/accumulation-region into the shared
+    /// prefix via `hoist_shared_statements`, then reconstructs
+    /// `MovfuscBlockBoundary`/`MovfuscAccumInfo` ranges directly from the
+    /// hoist pass's own `region_ranges` output rather than by naively
+    /// remapping the old `start`/`end` var ids (which can point at a var
+    /// that itself got hoisted away -- see `hoist_shared_statements`'s
+    /// own doc comment in `volar-ir-opt` for why that's wrong). See
+    /// `docs/interpreter-honest-e2e-zk-plan.md`'s "Cross-chunk locality"
+    /// section for the full design rationale.
+    ///
+    /// `#[ignore]`d: real interpreter scale, run manually:
+    /// `cargo test -p volar-riscv-e2e --release probe_optimized_full_module_print_size -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn probe_optimized_full_module_print_size() {
+        use std::collections::BTreeSet;
+        use volar_ir::ir::IRType;
+        use volar_ir_common::Type;
+        use volar_ir_opt::ir::{batch_ir_blocks_with_remap_and_members, cse_ir_blocks_with_remap, dce_ir_blocks_with_remap_and_roots, fold_ir_blocks, hoist_shared_statements};
+        use volar_ir_opt::store_forward::store_forward_ir_blocks;
+        use volar_ir_passes::{lower_to_circuit_ir, movfuscate_ir_with_boundary, remap_movfusc_accum_info, remap_movfusc_boundaries, LoweringMode, MovfuscBlockBoundary};
+        use volar_weaver::{StorageMode, weave_vole_prover_ir_split, print_weaved_vole_module};
+
+        fn compose(cumulative: std::collections::BTreeMap<u32, u32>, step: &std::collections::BTreeMap<u32, u32>) -> std::collections::BTreeMap<u32, u32> {
+            cumulative.into_iter().filter_map(|(old, mid)| step.get(&mid).map(|&new| (old, new))).collect()
+        }
+
+        let wasm_bytes = wat::parse_str(&test_program_wat()).expect("wat should assemble");
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty());
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+        let (mut movfuscated, boundary, accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+
+        let extra_live_orig = movfusc_referenced_vars(&boundary, &accum_info);
+        let n_params = movfuscated.blocks[0].params.len() as u32;
+        let n0 = n_params + movfuscated.blocks[0].stmts.len() as u32;
+        let mut cumulative: std::collections::BTreeMap<u32, u32> = (0..n0).map(|v| (v, v)).collect();
+
+        // One "region" per original block's own [start,end) range, plus
+        // one for the shared prefix and one per accumulation-phase range.
+        // `region_by_orig_var` is keyed by ORIGINAL var id and never
+        // changes -- used only to reconstruct, post-optimization, which
+        // original region(s) each surviving/created var serves (for
+        // `hoist_shared_statements`), not to constrain CSE/batch anymore.
+        let mut region_by_orig_var: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+        let mut next_region = 0u32;
+        let shared_prefix_end = boundary.first().map(|b| b.start).unwrap_or(n0);
+        for v in n_params..shared_prefix_end { region_by_orig_var.insert(v, next_region); }
+        next_region += 1;
+        let boundary_region_ids: Vec<u32> = boundary.iter().map(|b| { let r = next_region; for v in b.start..b.end { region_by_orig_var.insert(v, r); } next_region += 1; r }).collect();
+        let accum_init_region_id = { let r = next_region; for v in accum_info.init.start..accum_info.init.end { region_by_orig_var.insert(v, r); } next_region += 1; r };
+        let accum_step_region_ids: Vec<u32> = accum_info.steps.iter().map(|s| { let r = next_region; for v in s.start..s.end { region_by_orig_var.insert(v, r); } next_region += 1; r }).collect();
+
+        // ---- CSE, unconstrained. ----
+        let (_, cse_remaps) = cse_ir_blocks_with_remap(&mut movfuscated, &types);
+        cumulative = compose(cumulative, &cse_remaps[0]);
+
+        // ---- DCE (extra_live-protected). ----
+        let current_extra_live: Vec<u32> = extra_live_orig.iter().filter_map(|v| cumulative.get(v).copied()).collect();
+        let (_, dce_remaps) = dce_ir_blocks_with_remap_and_roots(&mut movfuscated, &types, &current_extra_live);
+        cumulative = compose(cumulative, &dce_remaps[0]);
+
+        // ---- Batch, unconstrained, tracking each new var's own members. ----
+        let cumulative_pre_batch = cumulative.clone();
+        let (_, batch_remaps, batch_members) = batch_ir_blocks_with_remap_and_members(&mut movfuscated, &mut types);
+        cumulative = compose(cumulative, &batch_remaps[0]);
+
+        // ---- Reconstruct, for every FINAL (post-batch) var, the set of
+        // original regions that contributed to it. Every var that traces
+        // back to a pre-optimization var gets its region(s) via inverting
+        // `cumulative_pre_batch` composed through `batch_remaps`; a
+        // batch-created var (the wide Poly + its own feeding Merge, no
+        // pre-optimization identity of its own) gets the union of its own
+        // members' region sets instead.
+        let mut region_sets_pre_batch: std::collections::BTreeMap<u32, BTreeSet<u32>> = std::collections::BTreeMap::new();
+        for (&old, &mid) in &cumulative_pre_batch {
+            if let Some(&r) = region_by_orig_var.get(&old) {
+                region_sets_pre_batch.entry(mid).or_default().insert(r);
+            }
+        }
+        let mut region_sets_final: std::collections::BTreeMap<u32, BTreeSet<u32>> = std::collections::BTreeMap::new();
+        for (&mid, rs) in &region_sets_pre_batch {
+            if let Some(&new) = batch_remaps[0].get(&mid) {
+                region_sets_final.entry(new).or_default().extend(rs.iter().copied());
+            }
+        }
+        for (&new_var, members) in &batch_members[0] {
+            let entry = region_sets_final.entry(new_var).or_default();
+            for m in members {
+                if let Some(rs) = region_sets_pre_batch.get(m) {
+                    entry.extend(rs.iter().copied());
+                }
+            }
+        }
+        let n_params_final = movfuscated.blocks[0].params.len() as u32;
+        let region_sets_array: Vec<BTreeSet<u32>> = (0..movfuscated.blocks[0].stmts.len() as u32)
+            .map(|j| region_sets_final.get(&(n_params_final + j)).cloned().unwrap_or_default())
+            .collect();
+
+        // DIAGNOSTIC (cheap, no weave): how many statements will be
+        // hoisted into the shared/universal group, and why -- empty
+        // region_sets (no known original region at all -- a coverage gap
+        // in region_by_orig_var, conservatively treated as "shared") vs.
+        // genuinely multi-region (a real CSE/batch cross-region merge).
+        let empty_count = region_sets_array.iter().filter(|s| s.is_empty()).count();
+        let multi_count = region_sets_array.iter().filter(|s| s.len() > 1).count();
+        let single_count = region_sets_array.len() - empty_count - multi_count;
+        eprintln!(
+            "region_sets_array: total={} empty(unknown-region,conservatively-shared)={} multi(genuine-cross-region)={} single(own-region)={}",
+            region_sets_array.len(), empty_count, multi_count, single_count
+        );
+        eprintln!("region_by_orig_var covers {} of {} vars in [n_params,n0)", region_by_orig_var.len(), (n0 - n_params));
+
+        // TEMPORARY: stop here while diagnosing the coverage-gap
+        // hypothesis -- the actual weave below OOM'd the machine (93.6G
+        // physical footprint, SIGKILLed) on the last attempt. Remove this
+        // once the diagnostic numbers above are understood/fixed.
+        if std::env::var("VOLAR_HOIST_DIAGNOSTIC_ONLY").is_ok() {
+            return;
+        }
+
+        // ---- Hoist every cross-region statement into the shared prefix. ----
+        let (hoist_changed, hoist_remaps, hoist_ranges) = hoist_shared_statements(&mut movfuscated, &region_sets_array);
+        eprintln!("hoist changed anything: {hoist_changed}");
+        cumulative = compose(cumulative, &hoist_remaps[0]);
+
+        // Half-open range sentinel fix (same reasoning as
+        // optimize_to_fixpoint_with_remap): the last range's own `end`
+        // legitimately equals the ORIGINAL n0, which was never a real
+        // statement index and so has no natural remap entry.
+        let new_n0 = (movfuscated.blocks[0].params.len() + movfuscated.blocks[0].stmts.len()) as u32;
+        cumulative.insert(n0, new_n0);
+
+        // Standard remap handles is_active/done/next_pc_bits/next_state/
+        // ret_vals correctly regardless of hoisting; start/end are
+        // overridden afterward from `hoist_ranges`, NOT taken from this
+        // call -- see hoist_shared_statements's own doc comment for why.
+        let boundary_remapped = remap_movfusc_boundaries(&boundary, &cumulative);
+        let accum_info_remapped = remap_movfusc_accum_info(&accum_info, &cumulative);
+        let ranges = &hoist_ranges[0];
+        let boundary: Vec<MovfuscBlockBoundary> = boundary_remapped.into_iter().zip(&boundary_region_ids).map(|(b, &rid)| {
+            let (start, end) = ranges.get(&rid).copied().unwrap_or((b.start, b.start));
+            MovfuscBlockBoundary { start, end, ..b }
+        }).collect();
+        let mut accum_info = accum_info_remapped;
+        {
+            let (start, end) = ranges.get(&accum_init_region_id).copied().unwrap_or((accum_info.init.start, accum_info.init.start));
+            accum_info.init.start = start;
+            accum_info.init.end = end;
+        }
+        for (step, &rid) in accum_info.steps.iter_mut().zip(&accum_step_region_ids) {
+            let (start, end) = ranges.get(&rid).copied().unwrap_or((step.start, step.start));
+            step.start = start;
+            step.end = end;
+        }
+
+        eprintln!("optimized circuit: {} statements", movfuscated.blocks[0].stmts.len());
+
+        // lower_to_circuit_ir wraps `movfuscated` into a proper
+        // Return-terminated circuit (is_circuit()) WITHOUT renumbering
+        // its own existing statements -- matches lower_interpreter's own
+        // established pattern (boundary/accum_info returned unchanged
+        // across this exact step there too).
+        let bit_ty = types.intern(IRType::Primitive(Type::Bit));
+        let circuit = lower_to_circuit_ir(&movfuscated, &bit_ty, 1, LoweringMode::WithTerminationFlag);
+
+        let mode = StorageMode::Commitment;
+        let chunk_size = 1usize;
+        let mut funcs: Vec<volar_compiler::ir::IrFunction> = Vec::new();
+        let _trace = weave_vole_prover_ir_split(&circuit, &types, "riscv_step", &mode, &boundary, &accum_info, chunk_size, |f| funcs.push(f));
+        eprintln!("woven: {} functions", funcs.len());
+        let module = volar_compiler::ir::IrModule {
+            name: "riscv_step".into(), functions: funcs, structs: vec![], enums: vec![],
+            traits: vec![], impls: vec![], type_aliases: vec![], consts: vec![],
+        };
+        let code = print_weaved_vole_module(&module);
+        eprintln!("optimized full prover module printed_len={} bytes (baseline was 746,002,390)", code.len());
+    }
+
     /// Minimal isolation repro for the "circuit state never changes" bug
     /// found while investigating `trace_interpreter_plain_values_matches_native_reference`:
     /// a tiny loop that just writes a constant into a local once, then
