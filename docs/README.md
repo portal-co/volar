@@ -79,6 +79,7 @@ where applicable.
 | [ir-lowering.md](ir-lowering.md) | The `volar-ir` low-level circuit IR, movfuscation, Volar IR / Boolar IR |
 | [lir.md](lir.md) | LIR target trait, IrModule → LirTarget lowering, monomorphisation |
 | [lir-abi.md](lir-abi.md) | LIR ABI policy and per-target conventions |
+| [noir-backend.md](noir-backend.md) | `volar-compiler-noir-codegen`: AST-layer (not LIR) Noir backend, type mapping, loop-bound policy, GF(2^k) fallback via `volar-primitives` |
 | [text-format-spec.md](text-format-spec.md) | Stable text formats for serialised IR artefacts |
 | [waffle-lowering.md](waffle-lowering.md) | WAFFLE → VAFFLE lowering for WASM-compiled circuits |
 | [wasm-feature-support.md](wasm-feature-support.md) | Which WASM features are supported at each pipeline layer |
