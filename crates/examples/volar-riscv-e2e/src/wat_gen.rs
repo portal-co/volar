@@ -2341,6 +2341,70 @@ mod tests {
         eprintln!("MATCH: batching preserved exact semantics on the real interpreter's own pre-movfuscation CFG");
     }
 
+    /// Structural-only measurement of `batch_ir_blocks` on the
+    /// POST-movfuscation combined circuit -- where the real 68,107
+    /// AND-bearing width=1 `Poly` statements this pass targets actually
+    /// live (the pre-movfuscation circuit only has 3,783 total). Does
+    /// NOT attempt to weave the result: `batch_ir_blocks`, like
+    /// `fold_ir_blocks`'s own already-documented Poly-merging, can
+    /// insert a statement earlier than an original block's own boundary
+    /// -- the same cross-chunk-locality incompatibility with the
+    /// split-weave already found and left unresolved for
+    /// `compare_and_count_with_and_without_post_movfuscation_optimization`.
+    /// Correctness of `batch_ir_blocks` itself is already established
+    /// (exact match, `probe_batch_ir_blocks_on_real_interpreter`); this
+    /// only measures the real statement-count effect at the scale that
+    /// matters.
+    ///
+    /// `#[ignore]`d: real interpreter scale, run manually:
+    /// `cargo test -p volar-riscv-e2e --release probe_batch_ir_blocks_post_movfuscation_size -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn probe_batch_ir_blocks_post_movfuscation_size() {
+        use volar_ir_common::Stmt;
+        use volar_ir_opt::ir::{batch_ir_blocks, fold_ir_blocks};
+        use volar_ir_opt::store_forward::store_forward_ir_blocks;
+        use volar_ir_passes::movfuscate_ir_with_boundary;
+
+        let wasm_bytes = wat::parse_str(&test_program_wat()).expect("wat should assemble");
+        let module = crate::parse_and_expand(&wasm_bytes).expect("wasm should parse+expand");
+        let mut target = volar_vaffle_target::VaffleTarget::new();
+        let errors = volar_vaffle_target::waffle_lower::lower_waffle_module(
+            &module, &mut target, &volar_vaffle_target::import_config::WaffleImportConfig::default(),
+        );
+        assert!(errors.is_empty());
+        let (mut ir_blocks, mut types) = volar_vaffle_target::lower_vaffle_to_ir(&target.module);
+        optimize_to_fixpoint(&mut ir_blocks, &types, &mut fold_ir_blocks, &mut store_forward_ir_blocks);
+        let (mut movfuscated, _boundary, _accum_info) = movfuscate_ir_with_boundary(&ir_blocks, &mut types);
+
+        fn count_stmts(blocks: &volar_ir::ir::IRBlocks) -> (usize, usize, usize, usize) {
+            let mut poly = 0usize;
+            let mut shuffle = 0usize;
+            let mut merge = 0usize;
+            let mut total = 0usize;
+            for b in &blocks.blocks {
+                for n in &b.stmts {
+                    total += 1;
+                    match &n.kind {
+                        Stmt::Poly { .. } => poly += 1,
+                        Stmt::Shuffle { .. } => shuffle += 1,
+                        Stmt::Merge { .. } => merge += 1,
+                        _ => {}
+                    }
+                }
+            }
+            (total, poly, shuffle, merge)
+        }
+
+        let (total0, poly0, shuffle0, merge0) = count_stmts(&movfuscated);
+        eprintln!("post-movfuscation, before batching: total={total0} poly={poly0} shuffle={shuffle0} merge={merge0}");
+
+        let changed = batch_ir_blocks(&mut movfuscated, &mut types);
+        let (total1, poly1, shuffle1, merge1) = count_stmts(&movfuscated);
+        eprintln!("post-movfuscation, after batching (changed={changed}): total={total1} poly={poly1} shuffle={shuffle1} merge={merge1}");
+        eprintln!("delta: total={} poly={} shuffle={} merge={}", total1 as i64 - total0 as i64, poly1 as i64 - poly0 as i64, shuffle1 as i64 - shuffle0 as i64, merge1 as i64 - merge0 as i64);
+    }
+
     /// Minimal isolation repro for the "circuit state never changes" bug
     /// found while investigating `trace_interpreter_plain_values_matches_native_reference`:
     /// a tiny loop that just writes a constant into a local once, then

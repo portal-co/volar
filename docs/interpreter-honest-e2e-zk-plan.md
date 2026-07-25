@@ -21,11 +21,17 @@ is written (`wat_gen.rs`, `#[ignore]`d, real interpreter scale) — but a
 `WireRepr::Array`: where the remaining size actually is" below for the full
 story. The **C-backend path was explored and paused** — real, but deeper
 and buggier than its own test suite's doc comments suggested; see
-"C-backend path: explored, paused" for the full handoff. Current focus has
-shifted to **Rust-side pre-weaving and post-movfuscation optimization**
-(Poly-merging, trivial-Shuffle removal, movfuscation block-finish
-fall-through) — see "Pre-weaving and post-movfuscation optimization
-ideas (next up)" at the bottom.**
+"C-backend path: explored, paused" for the full handoff. Rust-side
+pre-weaving optimization landed two real wins: single-bit `Shuffle`
+aliasing (`emit_shuffle`, modest ~0.11% but validated) and a new
+`batch_ir_blocks` IR pass merging structurally-identical width-1 `Poly`s
+(30% `Poly` reduction pre-movfuscation, semantically verified via exact
+storage-map match; only ~2.2% post-movfuscation due to a real SSA-ordering
+constraint — see "Poly batching" below for the full story and why it's
+smaller than hoped at the scale that matters). Two real, independent bugs
+were also found and fixed in `volar-ir-opt`'s own DCE (stripping variables
+external boundary metadata still needed). Movfuscation block-finish
+fall-through remains unstarted.**
 
 ## `chunk_size` mitigation (still useful, now stacks with the real fix)
 
@@ -569,61 +575,91 @@ see `project_vaffle_ssa_spilling_architecture.md` (session memory) for the
 full design. This was already optimized earlier in the same session that
 built it.
 
-## Pre-weaving and post-movfuscation optimization ideas (next up)
+## Pre-weaving and post-movfuscation optimization: results
 
-With the C-backend path parked (see above), focus shifts back to reducing
+With the C-backend path parked (see above), focus shifted to reducing
 real circuit size on the Rust/weaver path itself. Real statement-mix data
-already measured (`probe_full_module_print_size`, extended; see "Beyond
-`WireRepr::Array`" above) for the real interpreter's combined circuit
-(327,550 total statements): `Poly` 152,830 (47%, dominant), `Shuffle`
-23,408 (7%, every one already single-bit), `Merge` 1,338 (0.4%). Four
-concrete directions, roughly in dependency order:
+(`probe_full_module_print_size`, extended; see "Beyond `WireRepr::Array`"
+above) for the real interpreter's combined circuit (327,550 total
+statements): `Poly` 152,830 (47%, dominant), `Shuffle` 23,408 (7%, every
+one already single-bit), `Merge` 1,338 (0.4%). Four ideas were scoped;
+two landed, one is documented as a real architectural limit (not a bug),
+one wasn't started.
 
-1. **Trivial bit-to-bit `Shuffle` removal** (pre-weaving, likely a new
-   VAFFLE- or IR-level DCE/forwarding pass). Some fraction of the 23,408
-   `Shuffle` statements are probably identity extractions (bit 0 of an
-   already-1-bit value) or otherwise trivially collapsible — these add
-   indirection that can block downstream pattern recognition (e.g. two
-   `Poly` statements that would otherwise be structurally identical except
-   for going through different `Shuffle`-extracted operands look
-   *different* to a naive comparison). Note the existing finding just
-   above this section: `mem_load_bytes`/`mem_store_bytes`'s own per-bit
-   `Shuffle`/`Merge` round trips ARE structurally necessary (`VaffleValue`
-   is always one `ValueId` per bit, LSB-first, uniformly) — this is about
-   finding the *trivial/no-op* subset, not the necessary bit-decomposition
-   traffic. Scope not yet assessed: how many of the 23,408 are actually
-   trivial vs. genuine.
-2. **`Poly`-merging so `emit_poly_wide`'s existing batching fires more**
-   (pre-weaving or movfuscation-level pass). 68,107 of the 152,830 `Poly`
-   statements are AND-bearing and almost all width=1 — individually
-   minimal (nothing to collapse within one statement), but if many are
-   *structurally identical* (same monomial shape) differing only in which
-   operand they touch — e.g. movfuscation's own repeated
-   `is_active_i · touched_slot_k` pattern across many (block, slot) pairs
-   — bundling their varying operands into one `Merge` and re-expressing as
-   a single wide `Poly` would let `emit_poly_wide`'s existing
-   `Array::from_fn`-loop collapse handle them as ONE statement instead of
-   many. Depends on (1) since trivial `Shuffle` indirection would likely
-   obscure which `Poly`s are actually structurally identical. Not yet
-   scoped: how many of the 68,107 are genuinely mergeable candidates.
-3. **Post-movfuscation general cruft reduction**. Movfuscation's own
-   "always execute everything, gate by `is_active`" design means almost
-   everything is nominally "live" (feeds *some* gated accumulation), so
-   traditional DCE may find little — the opportunity is more likely
-   redundant/duplicate computation (CSE across blocks) than dead code.
-   Not yet scoped.
-4. **Movfuscation block-finish fall-through**. Currently every block
-   unconditionally routes through the full `is_active`-gated dispatch/mux
-   for every step, regardless of whether the next block is statically
-   known. An optimization: when a block's own terminator target is a
-   fixed, known next block (not data-dependent), fall through directly —
-   set the new block/arg variables and continue processing under those
-   newly-muxed values, rather than looping back through the generic,
-   full-width dispatch mux. Potentially the largest win (could reduce
-   movfuscation's own per-step dispatch cost, not just per-statement
-   size), but also the riskiest/most invasive — touches the same
-   correctness-critical movfuscation core that produced this session's
-   "Attempt 1 → Attempt 2" saga earlier. Not started.
+### 1. Single-bit `Shuffle` aliasing — landed
 
-**Status**: none of the four started yet as of this handoff point. (1) is
-the natural starting point per the dependency ordering above.
+Investigated "trivial bit-to-bit `Shuffle` removal" directly: measured
+(not assumed) that **zero** of the 23,408 `Shuffle`s are identity no-ops
+or directly Merge-extractable — all 23,408 are "genuine" single-bit
+extractions from a wide, non-trivially-sourced value. But **all 23,408**
+turned out to belong to tightly clustered groups sharing one source var
+each (544 groups, ~99% of same-group statement pairs within 4 statements
+of each other) — the classic "decompose one wide value into its
+individual bits" pattern. `emit_shuffle` (`vole.rs`) always emitted a
+fresh `let out = src_bit.clone();` statement even when the source bit was
+already a real bound name; fixed to alias directly instead. Real,
+validated (`volar-weaver`'s own `vole::tests`, 36/36), modest
+(746,002,390 → 745,190,830 bytes, ~811KB / 0.11%) — confirms `Poly`
+statements are the real dominant cost, not `Shuffle`.
+
+### 2. `Poly` batching — landed, real but bounded by a genuine SSA constraint
+
+`batch_ir_blocks` (`volar-ir-opt/src/ir.rs`, new pass): merges width-1
+`Poly`s related by an exact single-variable substitution (e.g.
+movfuscation's own `is_active_i · touched_slot_k`, repeated per
+`(block, slot)` pair) into one wide `Poly` + a `Merge` bundling the
+varying operands, preserving each original `Poly`'s own output var id via
+a cheap-to-weave `Shuffle` (per fix #1 above). Two real bugs found and
+fixed during development (an over-coarse grouping key that collided
+different "hole" choices; a genuine SSA-ordering violation where a
+non-earliest member's own hole var can be defined after the group's
+earliest member) — see the commit message for the full story. Verified
+via 3 unit tests plus a real-scale correctness probe
+(`probe_batch_ir_blocks_on_real_interpreter`) that runs the real
+interpreter's own pre-movfuscation CFG to completion twice (unbatched vs.
+batched) via `eval_ir_with_storage` and asserts the final return value AND
+full 16,694-entry storage map match exactly. They do.
+
+**Measured effect, two very different numbers**:
+- **Pre-movfuscation** (3,783 total `Poly`s): 3,783 → 2,660, **-30%**.
+- **Post-movfuscation** (152,734 total `Poly`s, the scale that actually
+  matters for the compile-size problem): 152,734 → 149,435, only **-2.2%**.
+
+The gap is a **real architectural constraint, not a bug**: the new wide
+`Poly` (and its feeding `Merge`) must be inserted at the group's own
+*earliest* member's position, so every member's own `Shuffle` (at or
+after that position) can reference it — but a non-earliest member's own
+"hole" variable is only guaranteed defined before *that member's own*
+position, which can be at or after the group's earliest member.
+Post-movfuscation, each `touched_slot_k` is typically computed *fresh,
+immediately before its own use* (not hoisted near the top of the
+combined block), so most candidate members get filtered out by this
+ordering constraint specifically in the regime where the `Poly` count is
+largest. A design that inserted *later* (after the latest hole var,
+rather than before the earliest member) could capture substantially more
+— but that requires moving each member's own *consumption* points too,
+not just adding a producer, a materially bigger redesign than what
+landed here. Not attempted this session.
+
+### 3. Post-movfuscation general cruft reduction — not started
+
+Movfuscation's own "always execute everything, gate by `is_active`"
+design means almost everything is nominally live (feeds *some* gated
+accumulation), so traditional DCE likely finds little; the real
+opportunity is more likely redundant/duplicate computation (CSE across
+blocks) than dead code. Not scoped.
+
+### 4. Movfuscation block-finish fall-through — not started
+
+Currently every block unconditionally routes through the full
+`is_active`-gated dispatch/mux for every step, regardless of whether the
+next block is statically known. An optimization: when a block's own
+terminator target is a fixed, known next block (not data-dependent), fall
+through directly — set the new block/arg variables and continue
+processing under those newly-muxed values, rather than looping back
+through the generic, full-width dispatch mux. Potentially the largest
+remaining win (could reduce movfuscation's own per-step dispatch cost,
+not just per-statement size), but also the riskiest/most invasive —
+touches the same correctness-critical movfuscation core that produced
+this session's "Attempt 1 → Attempt 2" saga earlier. Natural next step
+for a fresh session.
